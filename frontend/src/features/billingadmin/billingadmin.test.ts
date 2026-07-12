@@ -1,21 +1,47 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   buildClaimQuery,
+  buildRepriceRequest,
   buildUsageQuery,
+  canStartReprice,
   claimStatusTone,
+  executeRepriceGuarded,
   formatMoney,
   formatTime,
   shortId,
+  sumRepriceCostDelta,
   toIso,
   trustStatusTone,
+  validateRepriceForm,
 } from './billingadmin'
-import { EMPTY_CLAIM_FILTERS, EMPTY_USAGE_FILTERS, type ClaimFilters, type UsageFilters } from './types'
+import {
+  EMPTY_CLAIM_FILTERS,
+  EMPTY_USAGE_FILTERS,
+  type ClaimFilters,
+  type RepriceForm,
+  type RepriceRequest,
+  type UsageFilters,
+} from './types'
 
 function uf(over: Partial<UsageFilters>): UsageFilters {
   return { ...EMPTY_USAGE_FILTERS, ...over }
 }
 function cf(over: Partial<ClaimFilters>): ClaimFilters {
   return { ...EMPTY_CLAIM_FILTERS, ...over }
+}
+
+function rf(over: Partial<RepriceForm> = {}): RepriceForm {
+  return {
+    scope: 'record',
+    usageRecordId: '41',
+    tenantId: '',
+    from: '',
+    to: '',
+    limit: '100',
+    reason: '修复历史待对账记录',
+    acknowledged: true,
+    ...over,
+  }
 }
 
 describe('buildUsageQuery', () => {
@@ -150,5 +176,76 @@ describe('shortId', () => {
     expect(out.startsWith('req_0123')).toBe(true)
     expect(out.endsWith('0123')).toBe(true)
     expect(out.includes('…')).toBe(true)
+  })
+})
+
+describe('计费重算范围与请求体', () => {
+  it('单条范围只下发 usage_record_id + dry_run，不伪造原因/幂等字段', () => {
+    const request = buildRepriceRequest(rf(), false)
+    expect(request).toEqual({ usage_record_id: 41, dry_run: false })
+    expect('reason' in request).toBe(false)
+    expect('idempotency_key' in request).toBe(false)
+  })
+
+  it('时间窗范围转 RFC3339，严格锁定 tenant/from/to/limit', () => {
+    const request = buildRepriceRequest(
+      rf({
+        scope: 'window',
+        tenantId: '7',
+        from: '2026-07-10T00:00',
+        to: '2026-07-11T00:00',
+        limit: '42',
+      }),
+      true,
+    )
+    expect(request).toMatchObject({ tenant_id: 7, limit: 42, dry_run: true })
+    expect('usage_record_id' in request).toBe(false)
+    if (!('from' in request)) throw new Error('期望时间窗重算请求')
+    expect(Date.parse(request.from)).toBeLessThan(Date.parse(request.to))
+  })
+
+  it('原因必填、时间正序、limit≤100；合法表单才可开始', () => {
+    expect(validateRepriceForm(rf({ reason: '  ' }))).toContain('原因')
+    expect(validateRepriceForm(rf({ scope: 'window', tenantId: '7', from: '2026-07-11T00:00', to: '2026-07-10T00:00' }))).toContain('早于')
+    expect(validateRepriceForm(rf({ scope: 'window', tenantId: '7', from: '2026-07-10T00:00', to: '2026-07-11T00:00', limit: '101' }))).toContain('100')
+    expect(canStartReprice(rf({ acknowledged: false }))).toBe(false)
+    expect(canStartReprice(rf())).toBe(true)
+  })
+})
+
+describe('计费重算危险闸门', () => {
+  it('未勾选知情确认时不发请求', async () => {
+    const send = vi.fn(async () => ({ ok: true }))
+    await expect(executeRepriceGuarded(rf({ acknowledged: false }), 'apply', true, send)).rejects.toThrow('勾选')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('已勾选但未完成二次确认时仍不发实际重算', async () => {
+    const send = vi.fn(async () => ({ ok: true }))
+    await expect(executeRepriceGuarded(rf(), 'apply', false, send)).rejects.toThrow('二次确认')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('预演不要求危险确认但仍要求勾选；实际重算确认后才发 dry_run=false', async () => {
+    const send = vi.fn(async (request: RepriceRequest) => request)
+    await executeRepriceGuarded(rf(), 'preview', false, send)
+    await executeRepriceGuarded(rf(), 'apply', true, send)
+    expect(send).toHaveBeenNthCalledWith(1, { usage_record_id: 41, dry_run: true })
+    expect(send).toHaveBeenNthCalledWith(2, { usage_record_id: 41, dry_run: false })
+  })
+})
+
+describe('重算差额定点汇总', () => {
+  it('正负八位小数精确求和，不经过 Number', () => {
+    expect(sumRepriceCostDelta([
+      { cost_delta: '0.10000001' },
+      { cost_delta: '-0.02000000' },
+      { cost_delta: '0.00000009' },
+    ])).toBe('0.08000010')
+    expect(sumRepriceCostDelta([{ cost_delta: '9007199254740993.00000001' }])).toBe('9007199254740993.00000001')
+  })
+
+  it('响应差额非法时返回 null，不伪造金额', () => {
+    expect(sumRepriceCostDelta([{ cost_delta: 'not-money' }])).toBeNull()
   })
 })

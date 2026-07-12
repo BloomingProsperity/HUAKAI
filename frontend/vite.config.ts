@@ -34,6 +34,7 @@ export default defineConfig({
       '/api': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/v1': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/admin': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      '/.well-known': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
   preview: {
@@ -42,6 +43,7 @@ export default defineConfig({
       '/api': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/v1': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/admin': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      '/.well-known': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
 })

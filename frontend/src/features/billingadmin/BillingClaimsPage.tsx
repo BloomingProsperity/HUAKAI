@@ -3,6 +3,7 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listBillingClaims, listUsageRecords } from './api'
 import { claimStatusTone, formatMoney, formatTime, shortId, trustStatusTone } from './billingadmin'
+import { RepriceCard } from './RepriceCard'
 import {
   EMPTY_CLAIM_FILTERS,
   EMPTY_USAGE_FILTERS,
@@ -28,10 +29,12 @@ export function BillingClaimsPage() {
         <div>
           <h1>用量与计费台账</h1>
           <p className="hk-sub">
-            运营台 · 计费运营。原始逐笔用量成本与预扣/结算 claim 台账(只读)。金额按十进制原样展示,不做四舍五入。
+            运营台 · 计费运营。查看逐笔成本与 claim 台账，并对待对账记录按当前价表执行受控重算。
           </p>
         </div>
       </header>
+
+      <RepriceCard />
 
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)', borderBottom: '1px solid var(--hk-line)' }}>
         <TabBtn active={tab === 'usage'} onClick={() => setTab('usage')}>

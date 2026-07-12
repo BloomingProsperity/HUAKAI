@@ -94,6 +94,54 @@ export interface BillingClaim {
 export type UsageListResponse = ObsListResponse<UsageRecord>
 export type ClaimListResponse = ObsListResponse<BillingClaim>
 
+/** 重算请求只有两种互斥范围；后端不接收原因或客户端幂等键。 */
+export type RepriceRequest =
+  | { usage_record_id: number; dry_run: boolean }
+  | { tenant_id: number; from: string; to: string; limit: number; dry_run: boolean }
+
+export interface RepriceSummary {
+  total: number
+  would_apply: number
+  repriced: number
+  already_repriced: number
+  skipped: number
+  failed: number
+}
+
+export interface RepriceItem {
+  usage_record_id: number
+  tenant_id: number
+  status: string
+  skipped_reason?: string
+  error_code?: string
+  error_message?: string
+  original_cost: string
+  authoritative_cost: string
+  cost_delta: string
+  pricing_source?: string
+}
+
+export interface RepriceResponse {
+  object: 'billing_reprice_report'
+  dry_run: boolean
+  items: RepriceItem[]
+  summary: RepriceSummary
+}
+
+export type RepriceScope = 'record' | 'window'
+
+/** reason 是前端确认信息，不能伪装成后端已留存的审计字段。 */
+export interface RepriceForm {
+  scope: RepriceScope
+  usageRecordId: string
+  tenantId: string
+  from: string
+  to: string
+  limit: string
+  reason: string
+  acknowledged: boolean
+}
+
 /** 原始用量过滤条件(全部可选);空串视为不过滤。 */
 export interface UsageFilters {
   provider: string

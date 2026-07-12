@@ -65,6 +65,14 @@ export const PIPELINE_NAV: NavSection[] = [
   },
   {
     stage: 4,
+    key: 'trust',
+    shell: 'user',
+    label: '信任与证明',
+    hint: '公钥、请求证明、Merkle 锚点',
+    items: [{ path: '/trust', label: '信任验证', built: true }],
+  },
+  {
+    stage: 5,
     key: 'wallet',
     shell: 'user',
     label: '充值与权益',
@@ -79,7 +87,7 @@ export const PIPELINE_NAV: NavSection[] = [
     ],
   },
   {
-    stage: 5,
+    stage: 6,
     key: 'profile',
     shell: 'user',
     label: '账户',

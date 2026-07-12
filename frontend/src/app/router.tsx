@@ -8,6 +8,7 @@ import { AccountDetailPage } from '../features/accounts/AccountDetailPage'
 import { KeysPage } from '../features/keys/KeysPage'
 import { UsagePage } from '../features/usage/UsagePage'
 import { UsageRecordsPage } from '../features/usagerecords/UsageRecordsPage'
+import { TrustPage } from '../features/trust/TrustPage'
 import { RoutingPage } from '../features/routing/RoutingPage'
 import { UsersPage } from '../features/users/UsersPage'
 import { UserDetailPage } from '../features/users/UserDetailPage'
@@ -86,6 +87,7 @@ const BUILT_PAGES: Record<string, ReactElement> = {
   '/keys': <KeysPage />,
   '/usage': <UsagePage />,
   '/usage-records': <UsageRecordsPage />,
+  '/trust': <TrustPage />,
   '/media-tasks': <MediaTasksPage />,
   '/subscriptions': <SubscriptionsPage />,
   '/orders': <OrdersPage />,

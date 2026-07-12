@@ -65,6 +65,10 @@
 .hk-card__body {
   padding: var(--hk-space-3) var(--hk-space-4) var(--hk-space-4);
 }
+.hk-section-copy { color: var(--hk-ink-500); font-size: 12.5px; line-height: 1.65; margin: 0; }
+.hk-errorbox { color: var(--hk-danger); background: var(--hk-danger-soft); border: 1px solid var(--hk-danger); border-radius: var(--hk-radius-sm); padding: var(--hk-space-2) var(--hk-space-3); font-size: 12.5px; }
+.hk-codebox { display: flex; flex-direction: column; gap: var(--hk-space-2); min-width: 0; padding: var(--hk-space-3); background: var(--hk-surface-sunken); border: 1px solid var(--hk-line); border-radius: var(--hk-radius-sm); }
+.hk-codebox .hk-kv__v { max-width: 72%; overflow-wrap: anywhere; }
 
 /* ── 栅格:统一间距 ── */
 .hk-grid { display: grid; gap: var(--hk-space-4); align-items: start; }
@@ -72,6 +76,21 @@
 .hk-grid--3 { grid-template-columns: 1.1fr 1fr 1fr; }
 .hk-grid--detail { grid-template-columns: 300px minmax(0, 1fr) 330px; }
 .hk-col { display: flex; flex-direction: column; gap: var(--hk-space-4); }
+
+/* ── 表单与确认框 ── */
+.hk-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--hk-space-3); align-items: end; }
+.hk-field { display: flex; flex-direction: column; gap: var(--hk-space-1); min-width: 0; color: var(--hk-ink-500); font-size: 12px; }
+.hk-field--actions { justify-content: flex-end; }
+.hk-input { width: 100%; box-sizing: border-box; min-height: 34px; padding: 7px 10px; border: 1px solid var(--hk-line); border-radius: var(--hk-radius-sm); background: var(--hk-surface); color: var(--hk-ink-900); font: inherit; }
+.hk-input:focus { outline: 2px solid var(--hk-primary-100); border-color: var(--hk-primary-500); }
+.hk-textarea { resize: vertical; line-height: 1.5; }
+.hk-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--hk-space-2); }
+.hk-confirmbox { padding: var(--hk-space-3); border: 1px solid var(--hk-danger); border-radius: var(--hk-radius-sm); background: var(--hk-danger-soft); color: var(--hk-ink-700); font-size: 12.5px; line-height: 1.6; }
+.hk-danger-card { border-color: var(--hk-danger); box-shadow: var(--hk-shadow-3); }
+.hk-danger-card > .hk-card__head { border-bottom-color: var(--hk-danger-soft); }
+.hk-verify-result { display: flex; flex-direction: column; gap: var(--hk-space-3); padding: var(--hk-space-3); border: 1px solid var(--hk-line); border-radius: var(--hk-radius-sm); }
+.hk-verify-result--ok { border-color: var(--hk-success); background: var(--hk-success-soft); }
+.hk-verify-result--no { border-color: var(--hk-danger); background: var(--hk-danger-soft); }
 
 /* ── 指标卡 ── */
 .hk-metric-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--hk-space-3); }
@@ -159,6 +178,7 @@
 .hk-btn--danger { background: var(--hk-danger); color: #fff; border-color: transparent; font-weight: 600; }
 .hk-btn--danger:hover { background: var(--hk-danger-700); color: #fff; }
 .hk-btn--sm { padding: 4px 10px; font-size: 12px; }
+.hk-btn:disabled, .hk-act:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── 分段切换(时间窗等) ── */
 .hk-seg { display: inline-flex; gap: 2px; background: var(--hk-canvas); border: 1px solid var(--hk-line); border-radius: var(--hk-radius-sm); padding: 3px; }
@@ -174,4 +194,10 @@
   .hk-grid--3 { grid-template-columns: 1fr; }
   .hk-grid--detail { grid-template-columns: 1fr 1fr; }
   .hk-metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .hk-form-grid { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 760px) {
+  .hk-grid--2, .hk-form-grid { grid-template-columns: 1fr; }
+  .hk-codebox .hk-kv__v { max-width: 62%; }
 }

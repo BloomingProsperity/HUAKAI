@@ -1,6 +1,13 @@
-import { apiGet } from '../../lib/api'
+import { apiGet, apiSend } from '../../lib/api'
 import { buildClaimQuery, buildUsageQuery } from './billingadmin'
-import type { ClaimFilters, ClaimListResponse, UsageFilters, UsageListResponse } from './types'
+import type {
+  ClaimFilters,
+  ClaimListResponse,
+  RepriceRequest,
+  RepriceResponse,
+  UsageFilters,
+  UsageListResponse,
+} from './types'
 
 /*
  * 管理员计费运营观测数据访问层(只读)。两端点均挂在 /admin/v1 下,经 tokenForPath 自动带 admin Bearer。
@@ -42,4 +49,9 @@ export async function listBillingClaims(
     query: { ...buildClaimQuery(filters, cursor), limit },
     signal,
   })
+}
+
+/** `dry_run=false` 会写入重算事件；调用方必须先完成危险操作闸门。 */
+export async function repriceBilling(request: RepriceRequest, signal?: AbortSignal): Promise<RepriceResponse> {
+  return apiSend<RepriceResponse>('POST', '/admin/v1/billing/reprice', request, { signal })
 }

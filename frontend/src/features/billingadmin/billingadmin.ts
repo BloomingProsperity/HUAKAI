@@ -1,4 +1,10 @@
-import type { ClaimFilters, UsageFilters } from './types'
+import type {
+  ClaimFilters,
+  RepriceForm,
+  RepriceItem,
+  RepriceRequest,
+  UsageFilters,
+} from './types'
 
 /*
  * 计费运营观测纯逻辑(可单测):过滤条件 → query 参数构造、money 十进制字符串安全渲染、
@@ -156,4 +162,98 @@ export function shortId(s: string): string {
   const v = (s ?? '').trim()
   if (!v) return '—'
   return v.length > 16 ? `${v.slice(0, 8)}…${v.slice(-4)}` : v
+}
+
+// ── 按当前价表重算 ──────────────────────────────────────────────────────────
+
+export const REPRICE_MAX_LIMIT = 100
+export type RepriceIntent = 'preview' | 'apply'
+
+function positiveSafeInt(raw: string): number | null {
+  const value = raw.trim()
+  if (!/^\d+$/.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+/** 前端先挡住 handler 会拒绝的范围，并额外强制填写操作原因。 */
+export function validateRepriceForm(form: RepriceForm): string | null {
+  if (!form.reason.trim()) return '请填写重算原因'
+  if (form.scope === 'record') {
+    return positiveSafeInt(form.usageRecordId) === null ? '用量记录 ID 必须是正整数' : null
+  }
+  if (positiveSafeInt(form.tenantId) === null) return '租户 ID 必须是正整数'
+  const from = toIso(form.from)
+  const to = toIso(form.to)
+  if (!from || !to) return '请选择有效的起止时间'
+  if (Date.parse(from) >= Date.parse(to)) return '开始时间必须早于结束时间'
+  const limit = positiveSafeInt(form.limit)
+  if (limit === null || limit > REPRICE_MAX_LIMIT) return `记录上限必须是 1–${REPRICE_MAX_LIMIT} 的整数`
+  return null
+}
+
+export function canStartReprice(form: RepriceForm): boolean {
+  return form.acknowledged && validateRepriceForm(form) === null
+}
+
+/** 构造 handler 的真实 body；reason/acknowledged 只属于 UI 闸门，绝不下发假字段。 */
+export function buildRepriceRequest(form: RepriceForm, dryRun: boolean): RepriceRequest {
+  const invalid = validateRepriceForm(form)
+  if (invalid) throw new Error(invalid)
+  if (form.scope === 'record') {
+    return { usage_record_id: positiveSafeInt(form.usageRecordId) as number, dry_run: dryRun }
+  }
+  return {
+    tenant_id: positiveSafeInt(form.tenantId) as number,
+    from: toIso(form.from),
+    to: toIso(form.to),
+    limit: positiveSafeInt(form.limit) as number,
+    dry_run: dryRun,
+  }
+}
+
+/** 发送层再次守闸，避免仅靠 disabled 属性保护触钱操作。 */
+export async function executeRepriceGuarded<T>(
+  form: RepriceForm,
+  intent: RepriceIntent,
+  confirmed: boolean,
+  send: (request: RepriceRequest) => Promise<T>,
+): Promise<T> {
+  const invalid = validateRepriceForm(form)
+  if (invalid) throw new Error(invalid)
+  if (!form.acknowledged) throw new Error('请先勾选已了解重算会改写计费记录')
+  if (intent === 'apply' && !confirmed) throw new Error('实际重算必须完成影响范围二次确认')
+  return send(buildRepriceRequest(form, intent === 'preview'))
+}
+
+export function repriceScopeSummary(form: RepriceForm): string {
+  if (form.scope === 'record') return `用量记录 #${form.usageRecordId.trim() || '—'}`
+  return `租户 #${form.tenantId.trim() || '—'}，${form.from || '—'} 至 ${form.to || '—'}，最多 ${form.limit || '—'} 条`
+}
+
+function parseFixed8(value: string): bigint | null {
+  const matched = value.trim().match(/^([+-]?)(\d+)(?:\.(\d{0,8}))?$/)
+  if (!matched) return null
+  const fraction = (matched[3] ?? '').padEnd(8, '0')
+  const scaled = BigInt(matched[2]) * 100_000_000n + BigInt(fraction || '0')
+  return matched[1] === '-' ? -scaled : scaled
+}
+
+function formatFixed8(value: bigint): string {
+  const negative = value < 0n
+  const absolute = negative ? -value : value
+  const whole = absolute / 100_000_000n
+  const fraction = String(absolute % 100_000_000n).padStart(8, '0')
+  return `${negative ? '-' : ''}${whole}.${fraction}`
+}
+
+/** 后端逐条返回八位小数差额；用 BigInt 定点求和，避免浮点改钱。 */
+export function sumRepriceCostDelta(items: Pick<RepriceItem, 'cost_delta'>[]): string | null {
+  let total = 0n
+  for (const item of items) {
+    const value = parseFixed8(item.cost_delta)
+    if (value === null) return null
+    total += value
+  }
+  return formatFixed8(total)
 }
