@@ -73,6 +73,20 @@ func TestRenderTemplate(t *testing.T) {
 	}
 }
 
+// 主题是纯文本头字段:不做 HTML 转义(变异:主题也走 html.EscapeString → 红)。
+func TestRenderSubjectTemplateNoHTMLEscape(t *testing.T) {
+	out, err := RenderSubjectTemplate("重置 {{email}}", map[string]string{"email": "sales&ops@example.com"})
+	if err != nil {
+		t.Fatalf("主题渲染失败: %v", err)
+	}
+	if out != "重置 sales&ops@example.com" {
+		t.Fatalf("主题不应 HTML 转义: %q", out)
+	}
+	if _, err := RenderSubjectTemplate("{{ghost}}", nil); err == nil {
+		t.Fatal("主题未知占位符必须报错")
+	}
+}
+
 // 模板覆盖生效 + 三层 fail-safe 回退:store 读错 / 无覆盖 / 渲染失败,都必须回到内置默认。
 func TestResolveAuthEmailFailSafe(t *testing.T) {
 	subjectKey, bodyKey := TemplateSettingKeys(TemplateKindVerification)
@@ -105,6 +119,14 @@ func TestResolveAuthEmailFailSafe(t *testing.T) {
 	}
 	if body != "默认正文" {
 		t.Fatalf("坏正文未回退默认: %q", body)
+	}
+
+	// 存量正文缺凭证占位符(渲染本身能成功)→ 也必须回退默认,否则收件人拿不到凭证
+	// (变异:渲染前的 ValidateTemplateOverride 重验删掉 → 红)。
+	store.values[bodyKey] = "<p>好看但没有凭证</p>"
+	_, body = sender.resolveAuthEmail(context.Background(), 1, TemplateKindVerification, vars, "默认主题", "默认正文")
+	if body != "默认正文" {
+		t.Fatalf("缺凭证正文未回退默认: %q", body)
 	}
 
 	// 无任何覆盖 → 默认。

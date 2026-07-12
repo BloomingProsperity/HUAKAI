@@ -22,6 +22,7 @@ export function EmailTemplatesSection() {
   const [kind, setKind] = useState<TemplateKind>('verification')
   const [drafts, setDrafts] = useState<Record<string, TemplateOverride>>({})
   const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
@@ -38,6 +39,7 @@ export function EmailTemplatesSection() {
           next[spec.kind] = overrideFromRows(resp.settings, spec.kind)
         }
         setDrafts(next)
+        setLoaded(true)
       })
       .catch((e: unknown) => {
         if (signal?.aborted) return
@@ -180,13 +182,13 @@ export function EmailTemplatesSection() {
       {msg && <div style={msg.tone === 'ok' ? okBox : errBox}>{msg.text}</div>}
 
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)', marginTop: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
-        <button type="button" className="hk-btn hk-btn--green" disabled={saving || loading} onClick={save}>
+        <button type="button" className="hk-btn hk-btn--green" disabled={saving || loading || !loaded} onClick={save}>
           {saving ? '保存中…' : '保存模板'}
         </button>
-        <button type="button" className="hk-btn" disabled={previewing || loading} onClick={doPreview}>
+        <button type="button" className="hk-btn" disabled={previewing || loading || !loaded} onClick={doPreview}>
           {previewing ? '渲染中…' : '预览(样例值)'}
         </button>
-        <button type="button" className="hk-btn" disabled={saving || loading} onClick={restoreDefault}>
+        <button type="button" className="hk-btn" disabled={saving || loading || !loaded} onClick={restoreDefault}>
           恢复内置默认
         </button>
       </div>

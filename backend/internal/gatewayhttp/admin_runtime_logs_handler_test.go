@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +13,22 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 )
+
+type runtimeLogsAuditStub struct {
+	events []admindb.InsertAdminAuditEventParams
+	err    error
+}
+
+func (s *runtimeLogsAuditStub) InsertAdminAuditEvent(_ context.Context, p admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
+	if s.err != nil {
+		return admindb.InsertAdminAuditEventRow{}, s.err
+	}
+	s.events = append(s.events, p)
+	return admindb.InsertAdminAuditEventRow{}, nil
+}
 
 type runtimeLogsAuthStub struct {
 	ident admin.AdminIdentity
@@ -55,6 +70,7 @@ func TestRuntimeLogsPlatformAdminOnly(t *testing.T) {
 		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
 		Store: &runtimeLogStoreStub{},
 		Sink:  logsink.New(),
+		Audit: &runtimeLogsAuditStub{},
 	})
 	for _, probe := range []struct{ method, path, body string }{
 		{http.MethodGet, "/v1/admin/ops/runtime-logs", ""},
@@ -101,13 +117,15 @@ func TestRuntimeLogsListPassesFiltersAndCursor(t *testing.T) {
 	}
 }
 
-// 清理:RFC3339 校验 + before 透传 + 删除数回显。
+// 清理:RFC3339 校验 + before 透传 + 删除数回显 + 必留管理审计行。
 func TestRuntimeLogsCleanup(t *testing.T) {
 	store := &runtimeLogStoreStub{deleted: 7}
+	audit := &runtimeLogsAuditStub{}
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
 		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: store,
 		Sink:  logsink.New(),
+		Audit: audit,
 	})
 	rec := serveRuntimeLogsJSON(t, handler, http.MethodPost, "/v1/admin/ops/runtime-logs/cleanup", `{"before":"2026-07-01T00:00:00Z"}`)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"deleted":7`) {
@@ -116,9 +134,40 @@ func TestRuntimeLogsCleanup(t *testing.T) {
 	if !store.gotCleanup.Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("before 未透传: %v", store.gotCleanup)
 	}
+	if len(audit.events) != 1 || audit.events[0].Action != "cleanup_runtime_logs" || audit.events[0].TargetType != "runtime_logs" {
+		t.Fatalf("清理必须落审计行: %+v", audit.events)
+	}
 	rec = serveRuntimeLogsJSON(t, handler, http.MethodPost, "/v1/admin/ops/runtime-logs/cleanup", `{"before":"not-a-time"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("非法时间应 400, got %d", rec.Code)
+	}
+}
+
+// 审计先行:审计写失败/未接线 → 拒绝删除,store 不得被触达(变异:先删后审 → 红)。
+func TestRuntimeLogsCleanupAuditFirst(t *testing.T) {
+	store := &runtimeLogStoreStub{deleted: 7}
+	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
+		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store: store,
+		Sink:  logsink.New(),
+		Audit: &runtimeLogsAuditStub{err: errors.New("audit backend down")},
+	})
+	rec := serveRuntimeLogsJSON(t, handler, http.MethodPost, "/v1/admin/ops/runtime-logs/cleanup", `{"before":"2026-07-01T00:00:00Z"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("审计失败应 503, got %d", rec.Code)
+	}
+	if !store.gotCleanup.IsZero() {
+		t.Fatal("审计失败时不得执行删除")
+	}
+
+	noAudit := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
+		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Store: store,
+		Sink:  logsink.New(),
+	})
+	rec = serveRuntimeLogsJSON(t, noAudit, http.MethodPost, "/v1/admin/ops/runtime-logs/cleanup", `{"before":"2026-07-01T00:00:00Z"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("审计依赖未接线应 503, got %d", rec.Code)
 	}
 }
 

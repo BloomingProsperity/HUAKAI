@@ -175,6 +175,24 @@ func (s *Sink) flush(batch []Entry) {
 	s.lastFlushUnix.Store(time.Now().Unix())
 }
 
+// WaitDone 等待落库 worker 退出(drain 完成),超时放弃。从未 Start 过则立即返回。
+// 供停机序列在「日志生产者都停了」之后调用:取消 sink ctx → WaitDone → 关 DB。
+func (s *Sink) WaitDone(timeout time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	started := s.started
+	s.mu.Unlock()
+	if !started {
+		return
+	}
+	select {
+	case <-s.done:
+	case <-time.After(timeout):
+	}
+}
+
 // Health sink 观测:队列积压 / 已入库 / 已丢弃 / 最后成功落库时刻(0=从未)。
 func (s *Sink) Health() (queueLen int, inserted, dropped int64, lastFlush time.Time) {
 	if s == nil {

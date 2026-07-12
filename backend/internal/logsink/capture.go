@@ -130,7 +130,9 @@ func (c *sinkCore) capture(ent zapcore.Entry, fields []zapcore.Field) {
 	for k, v := range enc.Fields {
 		switch k {
 		case "request_id", "logical_request_id":
-			e.RequestID = fmt.Sprint(v)
+			// request_id 同样过禁写扫描:客户端可控的 X-Request-ID 可能携带凭据特征,
+			// 提升为可查询列前必须与其他字段同等消毒。
+			e.RequestID = scrubText(fmt.Sprint(v))
 		default:
 			e.Attrs[k] = scrubValue(v)
 		}

@@ -56,6 +56,9 @@ type gatewayRuntime struct {
 	mediaTaskWorker             *mediatask.Worker
 	obsDLQEnabled               bool
 	outboxRuntime               obsoutbox.RuntimeConfig
+	// logSinkStop 停止运行日志落库 worker 并等 drain;必须在其余 worker 都停完、
+	// 关 DB 之前调用,否则停机窗口产生的 warn/error 会滞留队列丢失。
+	logSinkStop func()
 }
 
 func (rt *gatewayRuntime) close() {
@@ -111,6 +114,10 @@ func (rt *gatewayRuntime) close() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = rt.deps.otelShutdown(ctx)
 		cancel()
+	}
+	// 运行日志 sink 最后停(仅早于关 DB):以上各 worker 停机期间的 warn/error 也要落库。
+	if rt.logSinkStop != nil {
+		rt.logSinkStop()
 	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()

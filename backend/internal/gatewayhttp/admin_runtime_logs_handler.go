@@ -2,15 +2,19 @@ package gatewayhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 )
 
@@ -30,10 +34,15 @@ type RuntimeLogSinkHealth interface {
 	Health() (queueLen int, inserted, dropped int64, lastFlush time.Time)
 }
 
+type RuntimeLogAuditStore interface {
+	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+}
+
 type AdminRuntimeLogsDeps struct {
 	Auth  AdminRuntimeLogsAuth
 	Store RuntimeLogStore
 	Sink  RuntimeLogSinkHealth
+	Audit RuntimeLogAuditStore
 }
 
 func MountAdminRuntimeLogRoutes(r chi.Router, d AdminRuntimeLogsDeps) {
@@ -42,10 +51,10 @@ func MountAdminRuntimeLogRoutes(r chi.Router, d AdminRuntimeLogsDeps) {
 	r.Get("/runtime-logs/health", newAdminRuntimeLogsHealthHandler(d))
 }
 
-func resolveRuntimeLogsAdmin(w http.ResponseWriter, r *http.Request, d AdminRuntimeLogsDeps) bool {
+func resolveRuntimeLogsAdmin(w http.ResponseWriter, r *http.Request, d AdminRuntimeLogsDeps) (admin.AdminIdentity, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "runtime logs dependency unset")
-		return false
+		return admin.AdminIdentity{}, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
@@ -54,18 +63,18 @@ func resolveRuntimeLogsAdmin(w http.ResponseWriter, r *http.Request, d AdminRunt
 		} else {
 			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
 		}
-		return false
+		return admin.AdminIdentity{}, false
 	}
 	if ident.Role != admin.RolePlatformAdmin {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform admin required")
-		return false
+		return admin.AdminIdentity{}, false
 	}
-	return true
+	return ident, true
 }
 
 func newAdminRuntimeLogsListHandler(d AdminRuntimeLogsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !resolveRuntimeLogsAdmin(w, r, d) {
+		if _, ok := resolveRuntimeLogsAdmin(w, r, d); !ok {
 			return
 		}
 		q := r.URL.Query()
@@ -117,7 +126,8 @@ type adminRuntimeLogsCleanupRequest struct {
 
 func newAdminRuntimeLogsCleanupHandler(d AdminRuntimeLogsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !resolveRuntimeLogsAdmin(w, r, d) {
+		ident, ok := resolveRuntimeLogsAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		var req adminRuntimeLogsCleanupRequest
@@ -129,18 +139,38 @@ func newAdminRuntimeLogsCleanupHandler(d AdminRuntimeLogsDeps) http.HandlerFunc 
 			writeJSONError(w, http.StatusBadRequest, "runtime_logs_invalid", "before must be RFC3339 timestamp")
 			return
 		}
+		// 审计先行:清理是抹除运维证据的破坏性操作,审计行写不进(含依赖未接线)就拒绝执行,
+		// 保证不存在"无痕清理"。删除行数事后经运行日志补记(见下)。
+		if d.Audit == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "runtime logs audit dependency unset")
+			return
+		}
+		reqID := chimiddleware.GetReqID(r.Context())
+		reason := "cleanup runtime logs before " + before.Format(time.RFC3339)
+		payload, _ := json.Marshal(map[string]any{"before": before.Format(time.RFC3339)})
+		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
+			ActorID: ident.AuditActor(), ActorRole: string(ident.Role),
+			Action: "cleanup_runtime_logs", TargetType: "runtime_logs",
+			RequestID: &reqID, Reason: &reason, Payload: payload,
+		}); err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "runtime_logs_audit_failed", "audit write failed; cleanup aborted")
+			return
+		}
 		deleted, err := d.Store.CleanupRuntimeLogs(r.Context(), before)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "runtime_logs_cleanup_failed", err.Error())
 			return
 		}
+		// 删除行数入运行日志(warn 级会被 sink 采回本表),补全事后可查的数量证据。
+		slog.Warn("runtime logs cleanup executed",
+			"actor", ident.AuditActor(), "before", before.Format(time.RFC3339), "deleted", deleted)
 		writeAuditJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 	}
 }
 
 func newAdminRuntimeLogsHealthHandler(d AdminRuntimeLogsDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !resolveRuntimeLogsAdmin(w, r, d) {
+		if _, ok := resolveRuntimeLogsAdmin(w, r, d); !ok {
 			return
 		}
 		if d.Sink == nil {

@@ -28,25 +28,30 @@ export function RuntimeLogsPanel() {
   // 过滤条件的即时引用:轮询定时器闭包里读到的永远是最新值。
   const filtersRef = useRef({ level, component, requestID })
   filtersRef.current = { level, component, requestID }
+  // 过滤代:条件每变一次 +1;响应返回时代号不匹配 = 旧条件的迟到响应,丢弃不合入。
+  const filterGenRef = useRef(0)
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setError(null)
     const f = filtersRef.current
+    const gen = filterGenRef.current
     try {
       const resp = await listRuntimeLogs(
         { level: f.level, component: f.component, request_id: f.requestID, limit: PAGE_LIMIT },
         signal,
       )
+      if (gen !== filterGenRef.current) return
       setRows((prev) => mergeRuntimeLogs(prev, resp.items))
       setNoMore(resp.items.length < PAGE_LIMIT)
     } catch (e) {
-      if (signal?.aborted) return
+      if (signal?.aborted || gen !== filterGenRef.current) return
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '查询运行日志失败')
     }
   }, [])
 
-  // 过滤条件变化 → 清空重查(不保留旧条件的结果)。
+  // 过滤条件变化 → 代号 +1(废弃在途旧响应)→ 清空重查。
   useEffect(() => {
+    filterGenRef.current += 1
     const ctrl = new AbortController()
     setRows([])
     setLoading(true)
@@ -80,6 +85,7 @@ export function RuntimeLogsPanel() {
     setLoading(true)
     setError(null)
     const f = filtersRef.current
+    const gen = filterGenRef.current
     try {
       const resp = await listRuntimeLogs({
         level: f.level,
@@ -88,9 +94,11 @@ export function RuntimeLogsPanel() {
         before_id: rows[rows.length - 1].id,
         limit: PAGE_LIMIT,
       })
+      if (gen !== filterGenRef.current) return
       setRows((prev) => appendOlderLogs(prev, resp.items))
       setNoMore(resp.items.length < PAGE_LIMIT)
     } catch (e) {
+      if (gen !== filterGenRef.current) return
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载更旧日志失败')
     } finally {
       setLoading(false)

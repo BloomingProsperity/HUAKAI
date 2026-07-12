@@ -109,10 +109,25 @@ func templateContainsPlaceholder(text, name string) bool {
 	return false
 }
 
-// RenderTemplate 用 vars 渲染模板。出现 vars 之外的占位符返回错误(调用方回退默认)。
+// RenderTemplate 用 vars 渲染 HTML 正文模板。出现 vars 之外的占位符返回错误(调用方回退默认)。
 // 值统一 SanitizeHeaderValue + HTML 转义;link 例外——保持 URL 原样仅做属性安全转义,
 // 与内置正文的 href 处理一致,自定义模板可把 {{link}} 放进 href 或纯文本两用。
 func RenderTemplate(tpl string, vars map[string]string) (string, error) {
+	return renderTemplateWith(tpl, vars, func(name, safe string) string {
+		if name == "link" {
+			return strings.NewReplacer(`"`, "%22", `<`, "%3C", `>`, "%3E").Replace(safe)
+		}
+		return html.EscapeString(safe)
+	})
+}
+
+// RenderSubjectTemplate 渲染邮件主题:主题是纯文本头字段,不做 HTML 转义
+// (否则 sales&ops@example.com 会显示成 sales&amp;ops@...),只做头字段消毒。
+func RenderSubjectTemplate(tpl string, vars map[string]string) (string, error) {
+	return renderTemplateWith(tpl, vars, func(_, safe string) string { return safe })
+}
+
+func renderTemplateWith(tpl string, vars map[string]string, encode func(name, safe string) string) (string, error) {
 	var renderErr error
 	out := templatePlaceholderPattern.ReplaceAllStringFunc(tpl, func(m string) string {
 		name := templatePlaceholderPattern.FindStringSubmatch(m)[1]
@@ -123,11 +138,7 @@ func RenderTemplate(tpl string, vars map[string]string) (string, error) {
 			}
 			return m
 		}
-		safe := SanitizeHeaderValue(val)
-		if name == "link" {
-			return strings.NewReplacer(`"`, "%22", `<`, "%3C", `>`, "%3E").Replace(safe)
-		}
-		return html.EscapeString(safe)
+		return encode(name, SanitizeHeaderValue(val))
 	})
 	if renderErr != nil {
 		return "", renderErr
@@ -153,11 +164,13 @@ func (s *AuthSender) resolveAuthEmail(ctx context.Context, tenantID int64, kind 
 		return subject, body
 	}
 	if tpl := strings.TrimSpace(raw[subjectKey]); tpl != "" {
-		if rendered, err := RenderTemplate(tpl, vars); err == nil {
+		if rendered, err := RenderSubjectTemplate(tpl, vars); err == nil {
 			subject = rendered
 		}
 	}
-	if tpl := strings.TrimSpace(raw[bodyKey]); tpl != "" {
+	// 正文渲染前重跑完整校验:存量坏模板(旧版本/人工写库绕过保存校验)若缺凭证
+	// 占位符,渲染虽能成功但收件人拿不到任何凭证——此时同样回退内置默认。
+	if tpl := strings.TrimSpace(raw[bodyKey]); tpl != "" && ValidateTemplateOverride(kind, "", tpl) == nil {
 		if rendered, err := RenderTemplate(tpl, vars); err == nil {
 			body = rendered
 		}

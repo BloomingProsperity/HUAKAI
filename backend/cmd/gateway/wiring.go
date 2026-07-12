@@ -838,11 +838,19 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	// DB 就绪即启动运行日志落库 worker;进程更早的 warn+ 已积压在 sink 队列,启动后一并
-	// 刷出;ctx 取消(停机)时 worker 尽力 drain。sink 为 nil(测试直构 runtime)时跳过。
+	// DB 就绪即启动运行日志落库 worker;进程更早的 warn+ 已积压在 sink 队列,启动后一并刷出。
+	// 刻意不用信号 ctx:它在 HTTP drain(最长 60s)开始前就取消,期间产生的 warn/error 会
+	// 进入无人消费的队列丢失。sink 用独立生命周期,由 runtime.close() 在各 worker 停完、
+	// 关 DB 之前显式停止并等 drain。sink 为 nil(测试直构 runtime)时跳过。
 	runtimeLogStore := logsink.NewPostgresStore(pgPool)
+	var logSinkStop func()
 	if sink != nil {
-		sink.Start(ctx, runtimeLogStore)
+		sinkCtx, sinkCancel := context.WithCancel(context.Background())
+		sink.Start(sinkCtx, runtimeLogStore)
+		logSinkStop = func() {
+			sinkCancel()
+			sink.WaitDone(3 * time.Second)
+		}
 	}
 	// 可选进程内自迁移(HUAKAI_AUTO_MIGRATE=true,默认关):在任何代码用表之前把 schema 升到最新,
 	// 供裸二进制单实例部署省去"先手动跑迁移再起 gateway"那一步。默认关时迁移仍外置(compose
@@ -853,7 +861,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			return nil, fmt.Errorf("auto-migrate: %w", err)
 		}
 	}
-	rt := &gatewayRuntime{pgPool: pgPool}
+	rt := &gatewayRuntime{pgPool: pgPool, logSinkStop: logSinkStop}
 	ready := false
 	defer func() {
 		if !ready {

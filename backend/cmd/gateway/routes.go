@@ -935,6 +935,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:  d.adminAuth,
 			Store: d.runtimeLogStore,
 			Sink:  d.logSink,
+			Audit: d.adminQueries,
 		})
 	})
 	mountBackupRoutes(r, d) // 只读备份 manifest(platform_admin)

@@ -30,10 +30,16 @@ func openLogsinkIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool
 
 // 真 PG:批量插入 → 过滤/键集分页 → request_id 精确检索 → 清理。
 // 变异:ListRuntimeLogs 丢掉 level/request_id/before_id 任一 WHERE 条件 → 对应断言红。
+// 全程跑在回滚事务里:清理是全表按时刻删除,共享测试库上直跑会误删其他包/在跑网关的数据。
 func TestPostgresStoreRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	pool := openLogsinkIntegrationPool(t, ctx)
-	store := NewPostgresStore(pool)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	store := NewPostgresStore(tx)
 	marker := "logsink-it-" + time.Now().UTC().Format("150405.000000000")
 
 	entries := []Entry{

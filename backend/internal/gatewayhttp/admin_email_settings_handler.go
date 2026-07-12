@@ -280,7 +280,7 @@ func newAdminEmailTemplatePreviewHandler(d AdminEmailSettingsDeps) http.HandlerF
 		vars := sampleTemplateVars(req.Kind)
 		subject, body := strings.TrimSpace(req.Subject), strings.TrimSpace(req.Body)
 		if subject != "" {
-			rendered, err := mailinfra.RenderTemplate(subject, vars)
+			rendered, err := mailinfra.RenderSubjectTemplate(subject, vars)
 			if err != nil {
 				writeJSONError(w, http.StatusBadRequest, "email_template_invalid", err.Error())
 				return
