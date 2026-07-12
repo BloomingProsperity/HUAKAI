@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { EmailSmtpSection } from './EmailSmtpSection'
 import { listSettings, updateSetting } from './api'
 import {
   TAB_GROUPS,
@@ -129,6 +130,9 @@ export function SettingsCenterPage() {
           </div>
         )}
       </div>
+
+      {/* 邮件 tab 追加 SMTP 发信配置分区(走 email 子系统自有端点,非 platform-settings) */}
+      {activeTab === 'email' && <EmailSmtpSection />}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildKeyUpdate, toIsoOrEmpty, type KeyEditForm } from './edit'
+import { buildKeyUpdate, statusToggle, toIsoOrEmpty, type KeyEditForm } from './edit'
 import type { ApiKeyView } from './types'
 
 const withExpiry = { api_key_id: 1, name: 'old', expires_at: '2026-01-01T00:00:00.000Z' } as unknown as ApiKeyView
@@ -48,5 +48,25 @@ describe('toIsoOrEmpty', () => {
   it('空/非法 → 空串', () => {
     expect(toIsoOrEmpty('')).toBe('')
     expect(toIsoOrEmpty('nope')).toBe('')
+  })
+})
+
+describe('statusToggle', () => {
+  it('active → 停用(目标 revoked)', () => {
+    const t = statusToggle('active')
+    // 判别核心:active 的目标状态必须是 revoked。变异(恒 active)→ RED。
+    expect(t?.nextStatus).toBe('revoked')
+    expect(t?.actionLabel).toBe('停用')
+    expect(t?.danger).toBe(true)
+  })
+  it('revoked → 重新启用(目标 active,复活)', () => {
+    const t = statusToggle('revoked')
+    // 判别核心:revoked 必须能复活为 active。变异(返回 null / revoked)→ RED。
+    expect(t?.nextStatus).toBe('active')
+    expect(t?.actionLabel).toBe('重新启用')
+    expect(t?.danger).toBe(false)
+  })
+  it('其它状态(expired)→ null(不提供切换)', () => {
+    expect(statusToggle('expired')).toBeNull()
   })
 })

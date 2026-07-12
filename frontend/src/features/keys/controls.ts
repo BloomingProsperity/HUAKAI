@@ -63,11 +63,12 @@ export function emptyQuotaForm(): QuotaForm {
 
 export type QuotaValidation = { ok: true; value: SetQuotaBody } | { ok: false; error: string }
 
-/** 把 round-trip 的窗口/模式附加到 PUT 体(仅在非空时携带,避免覆盖成后端默认)。 */
+/** 把窗口/模式附加到 PUT 体(仅在非空时携带,避免覆盖成后端默认)。 */
 function withWindowMode(form: QuotaForm, body: SetQuotaBody): SetQuotaBody {
   const out: SetQuotaBody = { ...body }
   if (form.windowKind) out.window_kind = form.windowKind
-  if (form.windowSeconds > 0) out.window_seconds = form.windowSeconds
+  // 仅固定窗口携带 window_seconds:日历窗口后端要求 window_seconds 为 0,否则 ErrInvalidQuota(400)。
+  if (form.windowKind === 'fixed' && form.windowSeconds > 0) out.window_seconds = form.windowSeconds
   if (form.mode) out.mode = form.mode
   return out
 }
@@ -80,6 +81,10 @@ function withWindowMode(form: QuotaForm, body: SetQuotaBody): SetQuotaBody {
  */
 export function validateQuota(form: QuotaForm): QuotaValidation {
   const raw = form.limitUsd.trim()
+  // 固定窗口必须带正的 window_seconds(镜像后端 WindowFixed 校验:<=0 即 ErrInvalidQuota)。
+  if (form.windowKind === 'fixed' && !(form.windowSeconds > 0)) {
+    return { ok: false, error: '固定窗口必须设置大于 0 的窗口秒数' }
+  }
   // 空串=无限额,显式化为 "0"。
   if (raw === '') {
     return { ok: true, value: withWindowMode(form, { limit_usd: '0', metric: form.metric }) }
@@ -132,6 +137,59 @@ export function modeLabel(mode: string): string {
 export function metricLabel(metric: QuotaMetric): string {
   return metric === 'request-count' ? '请求次数' : '消费金额(USD)'
 }
+
+// ── 配额用量(只读展示)────────────────────────────────────────────────────────
+
+/**
+ * 当前窗口用量的只读视图(KEY-007):从配额 GET 的 used_usd/remaining_usd/window_end 拍平。
+ * used_usd = 当前窗口已用(已结算+已预留);remaining_usd 仅 limit>0 时后端返回;window_end 无窗口时缺省。
+ */
+export interface QuotaUsageView {
+  limitUsd: string
+  usedUsd: string
+  remainingUsd: string | null
+  windowEnd: string | null
+}
+
+export function quotaToUsage(view: KeyQuotaView): QuotaUsageView {
+  return {
+    limitUsd: trimDecimal(view.limit_usd ?? '0'),
+    usedUsd: trimDecimal(view.used_usd ?? '0'),
+    remainingUsd: view.remaining_usd != null ? trimDecimal(view.remaining_usd) : null,
+    windowEnd: view.window_end ?? null,
+  }
+}
+
+/**
+ * 已用占比(0-100)。上限为 0 / 无限额 / 非法数值时返回 null(此时不画进度条,只显示已用额)。
+ * 判别核心:limit<=0 必须返回 null(无限额不该显示「已用 X%」);超额时封顶 100。
+ */
+export function usagePercent(usedUsd: string, limitUsd: string): number | null {
+  const limit = Number(limitUsd)
+  if (!Number.isFinite(limit) || limit <= 0) return null
+  const used = Number(usedUsd)
+  if (!Number.isFinite(used) || used <= 0) return 0
+  const pct = (used / limit) * 100
+  return pct > 100 ? 100 : pct
+}
+
+/** 可编辑的窗口口径选项(值 + 中文标签)。'' = 沿用后端默认(每日)。仅这些值被 PUT 接受。 */
+export const WINDOW_KIND_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: '默认(每日)' },
+  { value: 'calendar_day', label: '每日(自然日)' },
+  { value: 'calendar_week', label: '每周(自然周)' },
+  { value: 'calendar_month', label: '每月(自然月)' },
+  { value: 'fixed', label: '固定窗口(自定义秒数)' },
+]
+
+/** 可编辑的消费上限模式选项。'' = 沿用后端默认(阻断)。 */
+export const QUOTA_MODE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: '默认(阻断超限拒绝)' },
+  { value: 'enforce', label: '阻断(超限拒绝)' },
+  { value: 'observe', label: '仅观测(不阻断,只记录)' },
+  { value: 'manual_first', label: '人工优先' },
+  { value: 'disabled', label: '已禁用' },
+]
 
 // ── 分组 ──────────────────────────────────────────────────────────────────────
 

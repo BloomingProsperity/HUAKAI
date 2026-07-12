@@ -193,6 +193,12 @@ export function KeysPage() {
                           </button>
                         </>
                       )}
+                      {/* 已停用的 key 仍可进编辑模态,用其中的「重新启用」复活(后端 PATCH status active) */}
+                      {k.status === 'revoked' && (
+                        <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} className="hk-btn hk-btn--sm">
+                          管理
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

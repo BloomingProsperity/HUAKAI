@@ -44,6 +44,16 @@ export interface ProviderAccount {
   last_refresh_at: string | null
   last_refresh_outcome: string | null
   oauth_endpoint_health?: string
+  /** 账号级自定义错误码开关(启用后按 custom_error_codes 判定上游软失败)。 */
+  custom_error_codes_enabled: boolean
+  /** 自定义错误码列表(HTTP 状态码);后端可能回 null,消费处按空数组处理。 */
+  custom_error_codes: number[]
+  /** 临时不可调度开关(开启后账号被临时移出可调度池)。 */
+  temp_unschedulable_enabled: boolean
+  /** 出站单代理绑定(与 proxy_group_id 互斥);null=未绑单代理。 */
+  proxy_id: number | null
+  /** 出站代理组标识(与 proxy_id 互斥);null/空=未绑组。 */
+  proxy_group_id: string | null
 }
 
 /** 列表响应:{ items, page } —— 与后端 providerAccountListResponse 一致。 */

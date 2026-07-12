@@ -16,7 +16,9 @@ import {
   modelAllowlistFromView,
   parseList,
   quotaToForm,
+  quotaToUsage,
   trimDecimal,
+  usagePercent,
   validateGroup,
   validateQuota,
 } from './controls'
@@ -94,6 +96,49 @@ describe('validateQuota', () => {
   it('metricLabel 给中文', () => {
     expect(metricLabel('cost-usd')).toContain('USD')
     expect(metricLabel('request-count')).toBe('请求次数')
+  })
+
+  it('固定窗口必须带正的 window_seconds,否则拒绝', () => {
+    // 判别核心:windowKind=fixed 且 seconds<=0 必须拒(镜像后端 WindowFixed 校验)。变异(去掉该拦截)→ RED。
+    expect(validateQuota(qf({ limitUsd: '5', windowKind: 'fixed', windowSeconds: 0 })).ok).toBe(false)
+    const r = validateQuota(qf({ limitUsd: '5', windowKind: 'fixed', windowSeconds: 3600 }))
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.value.window_kind).toBe('fixed')
+      expect(r.value.window_seconds).toBe(3600)
+    }
+  })
+
+  it('日历窗口即使表单残留 seconds 也不下发 window_seconds(后端要求为 0)', () => {
+    // 判别核心:非 fixed 窗口绝不带 window_seconds,否则后端 400。变异(无条件下发 seconds)→ RED。
+    const r = validateQuota(qf({ limitUsd: '5', windowKind: 'calendar_month', windowSeconds: 3600 }))
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value.window_seconds).toBeUndefined()
+  })
+})
+
+describe('quotaToUsage / usagePercent', () => {
+  it('quotaToUsage:拍平 used/remaining/window_end,去尾随 0', () => {
+    const view = { limit_usd: '100.00', used_usd: '25.5000', remaining_usd: '74.5000', window_end: '2026-08-01T00:00:00Z' } as unknown as KeyQuotaView
+    const u = quotaToUsage(view)
+    expect(u).toEqual({ limitUsd: '100', usedUsd: '25.5', remainingUsd: '74.5', windowEnd: '2026-08-01T00:00:00Z' })
+  })
+  it('quotaToUsage:remaining/window_end 缺省 → null', () => {
+    const u = quotaToUsage({ limit_usd: '0', used_usd: '3' } as unknown as KeyQuotaView)
+    // 判别核心:无限额(limit 0)时 remaining 缺省必须归 null,而非 '0'/undefined。变异(强转 '0')→ RED。
+    expect(u.remainingUsd).toBeNull()
+    expect(u.windowEnd).toBeNull()
+  })
+  it('usagePercent:limit<=0(无限额)返回 null,不画进度条', () => {
+    // 判别核心:无限额必须 null(否则会误显示「已用 X%」)。变异(limit 0 也算比例)→ NaN/Infinity,RED。
+    expect(usagePercent('5', '0')).toBeNull()
+    expect(usagePercent('5', '-1')).toBeNull()
+  })
+  it('usagePercent:正常比例 + 超额封顶 100', () => {
+    expect(usagePercent('25', '100')).toBe(25)
+    expect(usagePercent('0', '100')).toBe(0)
+    // 判别核心:超额必须封顶 100(进度条不溢出)。变异(去掉封顶)→ 返回 150,RED。
+    expect(usagePercent('150', '100')).toBe(100)
   })
 })
 

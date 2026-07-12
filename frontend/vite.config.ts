@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -7,6 +8,11 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: '/',
+  // vitest 只跑单元测试(src 下);Playwright 的 e2e/ 由 `playwright test` 独立跑,勿被 vitest 误扫。
+  test: {
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['node_modules', 'dist', 'e2e/**'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

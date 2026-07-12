@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { updateApiKey } from './api'
-import { buildKeyUpdate, formFromKey, type ExpiryMode, type KeyEditForm } from './edit'
+import { buildKeyUpdate, formFromKey, statusToggle, type ExpiryMode, type KeyEditForm } from './edit'
 import { KeyControlsSection } from './KeyControlsSection'
 import type { ApiKeyView } from './types'
 
@@ -21,6 +21,9 @@ export function EditKeyModal({
   const [form, setForm] = useState<KeyEditForm>(formFromKey(apiKey))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 启用/停用切换独立于改名/到期保存(走 PATCH status),单独的 busy/error。
+  const [statusBusy, setStatusBusy] = useState(false)
+  const toggle = statusToggle(apiKey.status)
   // 高级控制(配额/分组/IP 白黑名单/模型白名单)默认折叠,展开后逐项 GET 回填 + PUT 保存。
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const set = <K extends keyof KeyEditForm>(k: K, v: KeyEditForm[K]) => setForm((f) => ({ ...f, [k]: v }))
@@ -47,6 +50,22 @@ export function EditKeyModal({
     }
   }
 
+  // 启用/停用切换:PATCH status active|revoked。成功后刷新列表并关闭。
+  const doToggleStatus = async () => {
+    if (!toggle) return
+    if (!window.confirm(toggle.confirmMsg)) return
+    setStatusBusy(true)
+    setError(null)
+    try {
+      await updateApiKey(apiKey.api_key_id, { status: toggle.nextStatus })
+      onSaved()
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '状态切换失败')
+    } finally {
+      setStatusBusy(false)
+    }
+  }
+
   const modes: Array<{ value: ExpiryMode; label: string }> = [
     { value: 'keep', label: '保持不变' },
     { value: 'never', label: '永不过期' },
@@ -60,6 +79,24 @@ export function EditKeyModal({
         <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }}>
           <code style={{ fontFamily: 'var(--hk-font-mono)' }}>{apiKey.key_prefix}</code>
         </p>
+
+        {/* 启用/停用切换(独立于下方改名/到期保存):停用=立即失效,重新启用=复活已撤销 key */}
+        {toggle && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-2) var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface-sunken)' }}>
+            <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>
+              当前状态:{apiKey.status === 'active' ? '活跃' : apiKey.status === 'revoked' ? '已停用' : apiKey.status}
+            </span>
+            <button
+              type="button"
+              disabled={statusBusy}
+              onClick={doToggleStatus}
+              className={toggle.danger ? 'hk-btn hk-btn--danger hk-btn--sm' : 'hk-btn hk-btn--green hk-btn--sm'}
+            >
+              {statusBusy ? '处理中…' : toggle.actionLabel}
+            </button>
+          </div>
+        )}
+
         <Field label="名称">
           <input value={form.name} onChange={(e) => set('name', e.target.value)} style={inp} />
         </Field>

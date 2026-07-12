@@ -17,11 +17,16 @@ import {
   modelAllowlistFromView,
   parseList,
   quotaToForm,
+  quotaToUsage,
+  usagePercent,
   validateGroup,
   validateQuota,
+  QUOTA_MODE_OPTIONS,
+  WINDOW_KIND_OPTIONS,
   type GroupForm,
   type QuotaForm,
   type QuotaMetric,
+  type QuotaUsageView,
 } from './controls'
 import {
   getGroupOrNull,
@@ -48,6 +53,8 @@ export function KeyControlsSection({ apiKeyId }: { apiKeyId: number }) {
 
   // 各项表单态。
   const [quota, setQuota] = useState<QuotaForm>(emptyQuotaForm())
+  // 配额用量(只读):当前窗口已用/剩余/窗口结束时刻。未配置配额时为 null。
+  const [quotaUsage, setQuotaUsage] = useState<QuotaUsageView | null>(null)
   const [group, setGroup] = useState<GroupForm>(emptyGroupForm())
   const [allowText, setAllowText] = useState('')
   const [blockText, setBlockText] = useState('')
@@ -68,6 +75,7 @@ export function KeyControlsSection({ apiKeyId }: { apiKeyId: number }) {
         .then(([q, g, allow, block, models]) => {
           if (signal.aborted) return
           setQuota(q ? quotaToForm(q) : emptyQuotaForm())
+          setQuotaUsage(q ? quotaToUsage(q) : null)
           setGroup(g ? groupToForm(g) : emptyGroupForm())
           setAllowText(listToText(ipAllowlistFromView(allow)))
           setBlockText(listToText(ipBlacklistFromView(block)))
@@ -101,8 +109,8 @@ export function KeyControlsSection({ apiKeyId }: { apiKeyId: number }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       <h3 style={{ fontSize: 14, margin: 0, color: 'var(--hk-ink-900)' }}>高级控制</h3>
 
-      {/* 配额(money 敏感)*/}
-      <QuotaRow apiKeyId={apiKeyId} form={quota} onChange={setQuota} />
+      {/* 配额(money 敏感):只读用量展示 + 上限/度量/窗口口径/模式可编辑 */}
+      <QuotaRow apiKeyId={apiKeyId} form={quota} onChange={setQuota} usage={quotaUsage} onUsageChange={setQuotaUsage} />
       {/* 分组 */}
       <GroupRow apiKeyId={apiKeyId} form={group} onChange={setGroup} />
       {/* IP 白名单 */}
@@ -140,10 +148,14 @@ function QuotaRow({
   apiKeyId,
   form,
   onChange,
+  usage,
+  onUsageChange,
 }: {
   apiKeyId: number
   form: QuotaForm
   onChange: (f: QuotaForm) => void
+  usage: QuotaUsageView | null
+  onUsageChange: (u: QuotaUsageView | null) => void
 }) {
   const [state, setState] = useState<RowState>(idleState)
   const save = async () => {
@@ -152,18 +164,21 @@ function QuotaRow({
       setState({ kind: 'error', msg: v.error })
       return
     }
-    // money 敏感:设定单 key 用量上限。"0"=不限,提示用户确认其影响。
-    // 窗口/模式为 round-trip(保存限额不改窗口口径),确认文案里如实带上当前窗口与模式。
+    // money 敏感:设定单 key 用量上限 + 窗口口径 + 模式,均直接影响计费/限流行为。
+    // 窗口/模式现为可编辑,确认文案如实带上将保存的窗口与模式(空值取选项默认标签),避免静默改动计费口径。
     const isUnlimited = v.value.limit_usd === '0'
-    const windowSuffix = form.windowKind ? `窗口口径:${windowKindLabel(form.windowKind)} · 模式:${modeLabel(form.mode)}。` : ''
+    const windowText = WINDOW_KIND_OPTIONS.find((o) => o.value === form.windowKind)?.label ?? windowKindLabel(form.windowKind)
+    const modeText = QUOTA_MODE_OPTIONS.find((o) => o.value === form.mode)?.label ?? modeLabel(form.mode)
+    const windowSuffix = `\n窗口口径:${windowText}${form.windowKind === 'fixed' ? `(${form.windowSeconds} 秒)` : ''} · 模式:${modeText}。`
     const confirmMsg = isUnlimited
       ? `将该 Key 的用量上限设为「不限」(无限额)?${windowSuffix}`
-      : `将该 Key 的用量上限设为 ${v.value.limit_usd}(${metricLabel(form.metric)})?超出后该 Key 将被限额。${windowSuffix}`
+      : `将该 Key 的用量上限设为 ${v.value.limit_usd}(${metricLabel(form.metric)})?超出后按所选模式处理。${windowSuffix}`
     if (!window.confirm(confirmMsg)) return
     setState(busyState)
     try {
       const out = await putQuota(apiKeyId, v.value)
       onChange(quotaToForm(out))
+      onUsageChange(quotaToUsage(out))
       setState({ kind: 'ok', msg: '已保存' })
     } catch (e) {
       setState({ kind: 'error', msg: errMsg(e) })
@@ -173,12 +188,15 @@ function QuotaRow({
     { value: 'cost-usd', label: '消费金额(USD)' },
     { value: 'request-count', label: '请求次数' },
   ]
+  // 切换窗口口径时,离开固定窗口需清零 window_seconds(日历窗口后端要求为 0)。
+  const onWindowKindChange = (kind: string) => {
+    onChange({ ...form, windowKind: kind, windowSeconds: kind === 'fixed' ? form.windowSeconds : 0 })
+  }
   return (
     <Card title="用量上限(配额)" badge="计费敏感" save={save} state={state}>
-      <p style={help}>
-        设定该 Key 在当前窗口的用量上限。0 或留空 = 不限额。
-        {form.windowKind ? `当前窗口口径:${windowKindLabel(form.windowKind)} · 模式:${modeLabel(form.mode)}(保存限额不会改变窗口口径)。` : ''}
-      </p>
+      {/* 只读用量展示(KEY-007):已用 / 剩余 / 窗口结束时刻 */}
+      <QuotaUsagePanel usage={usage} />
+      <p style={help}>设定该 Key 在当前窗口的用量上限。0 或留空 = 不限额。窗口口径与模式为计费敏感项,保存前会二次确认。</p>
       <div style={{ display: 'flex', gap: 'var(--hk-space-3)', flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <label style={fieldLabel}>
           上限
@@ -194,7 +212,7 @@ function QuotaRow({
           <select
             value={form.metric}
             onChange={(e) => onChange({ ...form, metric: e.target.value as QuotaMetric })}
-            style={{ ...inp, width: 180 }}
+            style={{ ...inp, width: 160 }}
           >
             {metrics.map((m) => (
               <option key={m.value} value={m.value}>
@@ -203,9 +221,83 @@ function QuotaRow({
             ))}
           </select>
         </label>
+        {/* 窗口口径(money 敏感):每日/每周/每月/固定窗 */}
+        <label style={fieldLabel}>
+          窗口口径
+          <select value={form.windowKind} onChange={(e) => onWindowKindChange(e.target.value)} style={{ ...inp, width: 200 }}>
+            {WINDOW_KIND_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {/* 固定窗口专属:窗口秒数(后端要求 >0) */}
+        {form.windowKind === 'fixed' && (
+          <label style={fieldLabel}>
+            窗口秒数
+            <input
+              type="number"
+              min={1}
+              value={form.windowSeconds || ''}
+              onChange={(e) => onChange({ ...form, windowSeconds: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+              placeholder="如 3600"
+              style={{ ...inp, width: 140 }}
+            />
+          </label>
+        )}
+        {/* 消费上限模式(money 敏感):阻断/仅观测/… */}
+        <label style={fieldLabel}>
+          超限模式
+          <select value={form.mode} onChange={(e) => onChange({ ...form, mode: e.target.value })} style={{ ...inp, width: 200 }}>
+            {QUOTA_MODE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
     </Card>
   )
+}
+
+// ── 配额用量只读面板 ───────────────────────────────────────────────────────────
+function QuotaUsagePanel({ usage }: { usage: QuotaUsageView | null }) {
+  if (!usage) {
+    return <p style={help}>当前未配置配额(无用量上限)。设置下方上限后可在此查看已用/剩余。</p>
+  }
+  const unlimited = Number(usage.limitUsd) <= 0 || !Number.isFinite(Number(usage.limitUsd))
+  const pct = usagePercent(usage.usedUsd, usage.limitUsd)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 'var(--hk-space-2) var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)' }}>
+      <div style={{ display: 'flex', gap: 'var(--hk-space-4)', flexWrap: 'wrap', fontSize: 12, color: 'var(--hk-ink-700)' }}>
+        <span>
+          已用 <strong style={{ color: 'var(--hk-ink-900)' }}>{usage.usedUsd}</strong>
+        </span>
+        <span>
+          上限 <strong style={{ color: 'var(--hk-ink-900)' }}>{unlimited ? '不限' : usage.limitUsd}</strong>
+        </span>
+        {!unlimited && usage.remainingUsd != null && (
+          <span>
+            剩余 <strong style={{ color: 'var(--hk-primary-600)' }}>{usage.remainingUsd}</strong>
+          </span>
+        )}
+        {usage.windowEnd && <span>窗口结束 {fmtTime(usage.windowEnd)}</span>}
+      </div>
+      {pct != null && (
+        <div style={{ height: 6, borderRadius: 3, background: 'var(--hk-surface-sunken)', overflow: 'hidden' }} aria-label="用量进度">
+          <div style={{ width: `${pct}%`, height: '100%', background: pct >= 100 ? 'var(--hk-danger)' : 'var(--hk-primary-500)', transition: 'width .2s' }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** ISO 时间 → 本地可读串(展示窗口结束时刻)。 */
+function fmtTime(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 // ── 分组行 ─────────────────────────────────────────────────────────────────────

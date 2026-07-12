@@ -63,6 +63,33 @@ export function toIsoOrEmpty(local: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString()
 }
 
+/**
+ * 启用/停用切换(KEY-026:PATCH status active|revoked)。纯函数:据当前 status 给出目标 status + 文案。
+ * active → 停用(revoked);revoked → 重新启用(active,后端支持复活已撤销 key)。
+ * 其它状态(如 expired)返回 null = 不提供切换。
+ */
+export function statusToggle(
+  current: string,
+): { nextStatus: 'active' | 'revoked'; actionLabel: string; confirmMsg: string; danger: boolean } | null {
+  if (current === 'active') {
+    return {
+      nextStatus: 'revoked',
+      actionLabel: '停用',
+      confirmMsg: '停用后该 Key 立即失效,无法再用于任何请求(之后仍可重新启用)。确认停用?',
+      danger: true,
+    }
+  }
+  if (current === 'revoked') {
+    return {
+      nextStatus: 'active',
+      actionLabel: '重新启用',
+      confirmMsg: '重新启用后该 Key 恢复可用,可再次用于请求。确认启用?',
+      danger: false,
+    }
+  }
+  return null
+}
+
 function sameInstant(iso: string, other?: string | null): boolean {
   if (!other) return false
   const a = new Date(iso).getTime()

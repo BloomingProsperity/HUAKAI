@@ -76,6 +76,9 @@ const BOOL_KEYS = new Set<string>([
   'moderation_external_enabled',
   'moderation_external_image_enabled',
   'warmup_intercept_enabled',
+  // codex 客户端准入加固:app-server 放行开关 / 强制放行开关(布尔)
+  'codex_client_access.allow_app_server',
+  'codex_client_access.force_allow',
 ])
 
 const NUMBER_KEYS = new Set<string>([
@@ -100,6 +103,10 @@ const JSON_KEYS = new Set<string>([
   'passkey_rp_origins',
   'oauth_providers_enabled',
   'oauth_providers_config',
+  // codex 客户端准入加固:黑/白名单(客户端条目 JSON 数组)与引擎指纹信号(JSON 数组)
+  'codex_client_access.blacklist',
+  'codex_client_access.whitelist',
+  'codex_client_access.engine_fingerprint_signals',
 ])
 
 const MULTILINE_KEYS = new Set<string>(['site_home_content', 'site_footer'])
@@ -188,6 +195,15 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'passkey_rp_id', label: 'Passkey RP ID', hint: '依赖方域名标识', control: 'string' },
       { key: 'passkey_rp_display_name', label: 'Passkey RP 显示名', control: 'string' },
       { key: 'passkey_rp_origins', label: 'Passkey 来源列表', hint: 'JSON 字符串数组', control: 'json' },
+      // codex 客户端准入加固(全局)。默认全空 = 仅官方客户端放行;显式配置后才收紧或放宽。
+      // 安全语义:请勿把默认放宽成放行任意客户端,否则 codex_cli_only 形同虚设。
+      { key: 'codex_client_access.blacklist', label: 'codex 客户端黑名单', hint: '客户端条目 JSON 数组;命中即拒绝。留空/[] 表示不拉黑', control: 'json' },
+      { key: 'codex_client_access.whitelist', label: 'codex 客户端白名单', hint: '客户端条目 JSON 数组;非空时仅名单内客户端放行。留空/[] 表示不启用白名单', control: 'json' },
+      { key: 'codex_client_access.min_version', label: 'codex 最低版本', hint: '低于此版本的客户端拒绝(语义化版本);留空=不限下界', control: 'string' },
+      { key: 'codex_client_access.max_version', label: 'codex 最高版本', hint: '高于此版本的客户端拒绝(语义化版本);留空=不限上界', control: 'string' },
+      { key: 'codex_client_access.allow_app_server', label: '放行 codex app-server', hint: '开=允许 app-server 形态客户端;关(默认)时空策略仅放行官方客户端', control: 'bool' },
+      { key: 'codex_client_access.engine_fingerprint_signals', label: 'codex 引擎指纹信号', hint: '引擎指纹信号 JSON 数组,用于识别客户端;留空/[] 表示不校验', control: 'json' },
+      { key: 'codex_client_access.force_allow', label: 'codex 强制放行', hint: '开=绕过以上全部准入检查放行所有客户端(默认关);仅排障临时使用', control: 'bool' },
     ],
   },
   {

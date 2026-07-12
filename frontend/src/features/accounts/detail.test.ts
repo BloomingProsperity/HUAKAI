@@ -11,6 +11,8 @@ function fixture(over: Partial<ProviderAccount>): ProviderAccount {
     model_allow_list: [], capability_flags: [], rate_limited_at: null, rate_limit_reset_at: null,
     rate_limit_reason: null, overload_until: null, temp_unschedulable_until: null,
     token_version: 1, last_refresh_at: null, last_refresh_outcome: null,
+    custom_error_codes_enabled: false, custom_error_codes: [], temp_unschedulable_enabled: false,
+    proxy_id: null, proxy_group_id: null,
     ...over,
   }
 }

@@ -17,7 +17,7 @@ import type { PlatformSetting } from './types'
  *  ③buildSettingUpdate 的密钥空输入 noop 守卫 / env 只读。
  */
 
-// 后端 platformsettings/types.go orderedSettingKeys 的权威全集(55 个)。
+// 后端 platformsettings/types.go orderedSettingKeys 的权威全集(68 个)。
 // 此清单是"别漏 key"的硬契约:后端加/删 key 时必须同步本清单与 TAB_GROUPS,否则本测试 RED。
 const BACKEND_KEYS: string[] = [
   'registration_enabled',
@@ -81,6 +81,14 @@ const BACKEND_KEYS: string[] = [
   'site_api_base_url',
   'site_frontend_base_url',
   'admin_notification_email',
+  // codex 客户端准入加固层 7 键(platformsettings/types.go orderedSettingKeys 尾部)
+  'codex_client_access.blacklist',
+  'codex_client_access.whitelist',
+  'codex_client_access.min_version',
+  'codex_client_access.max_version',
+  'codex_client_access.allow_app_server',
+  'codex_client_access.engine_fingerprint_signals',
+  'codex_client_access.force_allow',
 ]
 
 function setting(over: Partial<PlatformSetting>): PlatformSetting {
@@ -94,7 +102,7 @@ describe('TAB_GROUPS 分签全覆盖', () => {
     const grouped = groupedKeys()
     expect(new Set(grouped).size).toBe(grouped.length) // 无重复
     expect(new Set(grouped)).toEqual(new Set(BACKEND_KEYS)) // 不漏不多
-    expect(grouped.length).toBe(61)
+    expect(grouped.length).toBe(68)
   })
 
   it('正好 9 个分签且 key 唯一', () => {
