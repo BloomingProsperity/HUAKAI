@@ -12,3 +12,7 @@ vite.config.d.ts
 .env
 .env.local
 .DS_Store
+
+# Playwright E2E 产物
+test-results/
+playwright-report/
