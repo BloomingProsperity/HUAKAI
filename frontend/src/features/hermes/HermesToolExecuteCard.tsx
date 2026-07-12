@@ -279,9 +279,9 @@ function Banner({ tone, children }: { tone: 'danger' | 'ok'; children: React.Rea
         padding: 'var(--hk-space-2) var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: danger ? '#8f322a' : 'var(--hk-primary-700)',
-        background: danger ? '#fbe9e7' : 'var(--hk-primary-50, #eef7f2)',
-        border: `1px solid ${danger ? '#f2cdc8' : 'var(--hk-line)'}`,
+        color: danger ? 'var(--hk-danger)' : 'var(--hk-primary-700)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, #eef7f2)',
+        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
       }}
     >
       {children}
@@ -307,4 +307,4 @@ const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space
 const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const badgeRO: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: 'var(--hk-primary-700)', padding: '1px 6px', border: '1px solid var(--hk-line)', borderRadius: 999 }
-const badgeMut: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: '#8f322a', padding: '1px 6px', border: '1px solid #f2cdc8', background: '#fbe9e7', borderRadius: 999 }
+const badgeMut: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: 'var(--hk-danger)', padding: '1px 6px', border: '1px solid var(--hk-danger-soft)', background: 'var(--hk-danger-soft)', borderRadius: 999 }

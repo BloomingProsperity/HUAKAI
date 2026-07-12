@@ -338,7 +338,7 @@ function RecordDrilldown({
             )}
 
             {/* 验签结果(只读密码学校验,不动钱) */}
-            {verifyErr && <div style={{ ...subtle, color: '#8f322a', marginTop: 'var(--hk-space-3)' }}>{verifyErr}</div>}
+            {verifyErr && <div style={{ ...subtle, color: 'var(--hk-danger)', marginTop: 'var(--hk-space-3)' }}>{verifyErr}</div>}
             {verifyResult && (
               <div style={{ marginTop: 'var(--hk-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -449,7 +449,7 @@ function DisputePanel({ requestID, onDisputeCreated }: { requestID: string; onDi
             </span>
           </label>
 
-          {error && <div style={{ ...subtle, color: '#8f322a' }}>{error}</div>}
+          {error && <div style={{ ...subtle, color: 'var(--hk-danger)' }}>{error}</div>}
 
           {stage === 'confirm' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
@@ -631,7 +631,7 @@ function ExportToolbar() {
       <button type="button" onClick={doExport} disabled={busy} style={ghostBtn}>
         {busy ? '导出中…' : '下载 CSV'}
       </button>
-      {error && <span style={{ fontSize: 12, color: '#8f322a' }}>{error}</span>}
+      {error && <span style={{ fontSize: 12, color: 'var(--hk-danger)' }}>{error}</span>}
     </div>
   )
 }
@@ -660,7 +660,7 @@ const panel: React.CSSProperties = { flex: '1 1 320px', minWidth: 280, display: 
 const panelTitle: React.CSSProperties = { fontSize: 14, margin: 0, color: 'var(--hk-ink-900)' }
 const dl: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)', margin: 0 }
 const subtle: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)' }
-const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const exportBar: React.CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)' }
 const dateLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-500)' }
 const dateInput: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13 }

@@ -564,7 +564,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.ReactNode }) {
   const ok = tone === 'ok'
-  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: ok ? '#0b6553' : '#8f322a', background: ok ? 'var(--hk-primary-50)' : '#fbe9e7', border: `1px solid ${ok ? 'var(--hk-primary-100)' : '#f2cdc8'}` }}>{children}</div>
+  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: ok ? '#0b6553' : 'var(--hk-danger)', background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)', border: `1px solid ${ok ? 'var(--hk-primary-100)' : 'var(--hk-danger-soft)'}` }}>{children}</div>
 }
 // 分隔线带居中文案(社交登录区上方)。
 function Divider({ children }: { children: React.ReactNode }) {
@@ -590,6 +590,6 @@ const linkAnchor: React.CSSProperties = { color: 'var(--hk-primary-700)', textDe
 // 邀请码预校验提示文案样式:有效=主色,无效=危险色,校验中/不可用=次要灰。
 function inviteHintStyle(status: InviteHint['status']): React.CSSProperties {
   const color =
-    status === 'ok' ? 'var(--hk-primary-700)' : status === 'invalid' ? '#8f322a' : 'var(--hk-ink-500)'
+    status === 'ok' ? 'var(--hk-primary-700)' : status === 'invalid' ? 'var(--hk-danger)' : 'var(--hk-ink-500)'
   return { fontSize: 12, color, marginTop: 2 }
 }

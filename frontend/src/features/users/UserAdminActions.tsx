@@ -113,8 +113,8 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
       </div>
 
       {/* 危险动作区 */}
-      <div style={{ ...card, borderColor: '#f2cdc8', background: '#fdf6f5' }}>
-        <h3 style={{ fontSize: 13, color: '#8f322a', margin: 0 }}>高危动作</h3>
+      <div style={{ ...card, borderColor: 'var(--hk-danger-soft)', background: '#fdf6f5' }}>
+        <h3 style={{ fontSize: 13, color: 'var(--hk-danger)', margin: 0 }}>高危动作</h3>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
           <button
             type="button"
@@ -175,9 +175,9 @@ function Banner({ tone, children }: { tone: 'danger' | 'ok'; children: React.Rea
         padding: 'var(--hk-space-2) var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: danger ? '#8f322a' : 'var(--hk-primary-700)',
-        background: danger ? '#fbe9e7' : 'var(--hk-primary-50, #eef7f2)',
-        border: `1px solid ${danger ? '#f2cdc8' : 'var(--hk-line)'}`,
+        color: danger ? 'var(--hk-danger)' : 'var(--hk-primary-700)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, #eef7f2)',
+        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
       }}
     >
       {children}
@@ -197,5 +197,5 @@ const card: React.CSSProperties = {
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', flex: 1, minWidth: 120 }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer', flexShrink: 0 }
-const dangerGhost: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #e6b3ab', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: '#8f322a', fontSize: 13, cursor: 'pointer' }
+const dangerGhost: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #e6b3ab', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer' }
 const dangerSolid: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

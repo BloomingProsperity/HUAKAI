@@ -149,7 +149,7 @@ function toneBox(tone: Tone): { color: string; background: string; border: strin
     case 'warn':
       return { color: '#8a5e0f', background: '#fbf3df', border: '#f0e2bd' }
     case 'danger':
-      return { color: '#8f322a', background: '#fbe9e7', border: '#f2cdc8' }
+      return { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: 'var(--hk-danger-soft)' }
   }
 }
 
@@ -173,5 +173,5 @@ const statusBar: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-lg)',
   border: '1px solid',
 }
-const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const ghost: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, cursor: 'pointer', border: '1px solid var(--hk-line)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)' }

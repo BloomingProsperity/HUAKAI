@@ -260,7 +260,7 @@ function SmtpSettingsCard() {
             fontSize: 13,
             ...(result.tone === 'ok'
               ? { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
-              : { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }),
+              : { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }),
           }}
         >
           {result.text}
@@ -371,7 +371,7 @@ function SmtpTestCard() {
             fontSize: 13,
             ...(result.tone === 'ok'
               ? { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
-              : { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }),
+              : { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }),
           }}
         >
           {result.text}
@@ -412,7 +412,7 @@ const card: React.CSSProperties = {
 }
 const cardHead: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)' }
 const cardTitle: React.CSSProperties = { margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--hk-ink-900)' }
-const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const emptyBox: React.CSSProperties = { padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }
 const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }

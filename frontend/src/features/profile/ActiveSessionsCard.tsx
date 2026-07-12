@@ -132,7 +132,7 @@ function Muted({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>{children}</div>
 }
 function ErrBox({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{children}</div>
+  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function OkBox({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
@@ -146,4 +146,4 @@ function fmt(iso: string): string {
 const hint: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--hk-ink-500)' }
 const listRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
 const ghostBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: '#8f322a', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)', flexShrink: 0 }
+const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)', flexShrink: 0 }

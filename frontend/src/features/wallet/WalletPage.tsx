@@ -75,7 +75,7 @@ export function WalletPage() {
         <div style={{ ...card, gridColumn: 'span 2' }}>
           <span style={statLabel}>当前余额(USD)</span>
           {balanceErr ? (
-            <span style={{ color: 'var(--hk-danger-600, #8f322a)', fontSize: 13 }}>{balanceErr}</span>
+            <span style={{ color: 'var(--hk-danger-600, var(--hk-danger))', fontSize: 13 }}>{balanceErr}</span>
           ) : (
             <span style={{ fontSize: 30, fontWeight: 700, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-900)' }}>
               ${balanceCents === null ? '—' : formatMoney(balanceCents)}
@@ -92,7 +92,7 @@ export function WalletPage() {
       <div style={{ ...card, gap: 'var(--hk-space-3)' }}>
         <span style={{ fontSize: 14, fontWeight: 600 }}>充值</span>
         {configErr ? (
-          <span style={{ color: 'var(--hk-danger-600, #8f322a)', fontSize: 13 }}>{configErr}</span>
+          <span style={{ color: 'var(--hk-danger-600, var(--hk-danger))', fontSize: 13 }}>{configErr}</span>
         ) : config === null ? (
           <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</span>
         ) : (
@@ -251,7 +251,7 @@ function TopupForm({ config, onCreated }: { config: PortalTopupConfig; onCreated
       </div>
 
       {error && (
-        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>
+        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
           {error}
         </div>
       )}

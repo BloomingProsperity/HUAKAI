@@ -233,7 +233,7 @@ function StatBlock({
         {metrics.map((m) => (
           <div key={m.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
             <span style={{ color: 'var(--hk-ink-500)' }}>{m.label}</span>
-            <span style={{ fontFamily: 'var(--hk-font-mono)', color: m.danger ? '#8f322a' : 'var(--hk-ink-900)', fontWeight: 600 }}>
+            <span style={{ fontFamily: 'var(--hk-font-mono)', color: m.danger ? 'var(--hk-danger)' : 'var(--hk-ink-900)', fontWeight: 600 }}>
               {m.value}
             </span>
           </div>
@@ -255,7 +255,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.ReactNode }) {
   const palette =
     kind === 'error'
-      ? { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+      ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
       : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }

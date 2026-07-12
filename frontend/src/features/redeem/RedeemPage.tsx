@@ -184,9 +184,9 @@ export function RedeemPage() {
               borderRadius: 'var(--hk-radius-md)',
               fontSize: 13,
               // 限流是「稍候」语气, 用 info/暖黄而非危险红, 避免吓到用户。
-              color: rateLimited ? '#8a5e0f' : '#8f322a',
-              background: rateLimited ? '#fbf3df' : '#fbe9e7',
-              border: rateLimited ? '1px solid #f0e2bd' : '1px solid #f2cdc8',
+              color: rateLimited ? '#8a5e0f' : 'var(--hk-danger)',
+              background: rateLimited ? '#fbf3df' : 'var(--hk-danger-soft)',
+              border: rateLimited ? '1px solid #f0e2bd' : '1px solid var(--hk-danger-soft)',
             }}
           >
             {error}

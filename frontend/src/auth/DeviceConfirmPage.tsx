@@ -69,7 +69,7 @@ export function DeviceConfirmPage() {
         {phase === 'input' && (
           <div style={body}>
             <p style={lead}>把新设备确认邮件里收到的一次性 token 粘贴到这里完成确认。</p>
-            {error && <p style={{ ...lead, color: '#8f322a' }}>{error}</p>}
+            {error && <p style={{ ...lead, color: 'var(--hk-danger)' }}>{error}</p>}
             <input
               type="text"
               value={manualToken}

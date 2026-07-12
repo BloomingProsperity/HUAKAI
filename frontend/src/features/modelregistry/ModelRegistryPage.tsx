@@ -343,7 +343,7 @@ function AliasImportCard() {
 
       {localInvalid.length > 0 && (
         <div style={{ marginTop: 'var(--hk-space-3)' }}>
-          <div style={{ fontSize: 12, color: '#8f322a', marginBottom: 4 }}>{localInvalid.length} 行本地校验未通过(未提交):</div>
+          <div style={{ fontSize: 12, color: 'var(--hk-danger)', marginBottom: 4 }}>{localInvalid.length} 行本地校验未通过(未提交):</div>
           <div style={tableWrap}>
             <table style={tbl}>
               <thead><tr>{['行', '内容', '错误'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
@@ -352,7 +352,7 @@ function AliasImportCard() {
                   <tr key={iv.line} style={{ borderTop: '1px solid var(--hk-line)' }}>
                     <td style={td}>{iv.line}</td>
                     <td style={tdMono}>{iv.raw}</td>
-                    <td style={{ ...td, color: '#8f322a' }}>{iv.error}</td>
+                    <td style={{ ...td, color: 'var(--hk-danger)' }}>{iv.error}</td>
                   </tr>
                 ))}
               </tbody>
@@ -379,7 +379,7 @@ function AliasImportCard() {
                     <td style={tdMono}>{r.alias}</td>
                     <td style={td}>{r.model_id ?? '—'}</td>
                     <td style={td}><StatusBadge tone={importResultTone(r.status)}>{r.status}</StatusBadge></td>
-                    <td style={{ ...td, color: r.error ? '#8f322a' : 'var(--hk-ink-500)' }}>{r.error ?? '—'}</td>
+                    <td style={{ ...td, color: r.error ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{r.error ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -519,7 +519,7 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 function ErrorBox({ children }: { children: React.ReactNode }) {
-  return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{children}</div>
+  return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function OkBox({ children }: { children: React.ReactNode }) {
   return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>

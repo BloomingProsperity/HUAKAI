@@ -85,7 +85,7 @@ export function GroupsPage() {
       {editing && <PoolFormModal mode="edit" pool={editing} onClose={() => setEditing(null)} onDone={refresh} />}
 
       {error && (
-        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>
+        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>
       )}
 
       <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
@@ -204,7 +204,7 @@ function MemberPanel({ poolID, tenantID }: { poolID: number; tenantID: number })
         成员账号(只读 · 增删请到账号中心)
       </div>
       {error ? (
-        <div style={{ fontSize: 13, color: '#8f322a' }}>{error}</div>
+        <div style={{ fontSize: 13, color: 'var(--hk-danger)' }}>{error}</div>
       ) : loading ? (
         <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>加载中…</div>
       ) : members.length === 0 ? (
@@ -307,7 +307,7 @@ function PoolFormModal({
           允许兜底路由(allow_last_resort)
         </label>
         {error && (
-          <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>
+          <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>
         )}
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
           <button type="button" onClick={onClose} style={ghostBtn}>取消</button>

@@ -282,7 +282,7 @@ function Dim({ children }: { children: React.ReactNode }) {
 function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.ReactNode }) {
   const palette =
     kind === 'error'
-      ? { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+      ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
       : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
@@ -305,5 +305,5 @@ const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3)
 const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
 const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c2453a', borderRadius: 'var(--hk-radius-md)', background: '#d9534f', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const dangerSmallBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid #c2453a', borderRadius: 'var(--hk-radius-md)', background: 'transparent', color: '#8f322a', fontSize: 12, cursor: 'pointer' }
+const dangerSmallBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid #c2453a', borderRadius: 'var(--hk-radius-md)', background: 'transparent', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
 const disabledBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface-sunken)', color: 'var(--hk-ink-300)', fontSize: 13, cursor: 'not-allowed' }

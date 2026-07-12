@@ -78,7 +78,7 @@ export function EditKeyModal({
             <input type="datetime-local" value={form.expiryDate} onChange={(e) => set('expiryDate', e.target.value)} style={inp} />
           </Field>
         )}
-        {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>}
+        {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>}
 
         {/* 高级控制:配额(计费敏感)/分组/IP 白黑名单/模型白名单。各项独立保存,与上方改名/到期互不影响。 */}
         <div style={{ borderTop: '1px solid var(--hk-line)', paddingTop: 'var(--hk-space-3)' }}>

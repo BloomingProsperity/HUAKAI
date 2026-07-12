@@ -61,7 +61,7 @@ export function EmailVerifyPage() {
         {phase === 'input' && (
           <div style={body}>
             <p style={lead}>把注册/验证邮件里收到的一次性 token 粘贴到这里完成邮箱验证。</p>
-            {error && <p style={{ ...lead, color: '#8f322a' }}>{error}</p>}
+            {error && <p style={{ ...lead, color: 'var(--hk-danger)' }}>{error}</p>}
             <input
               type="text"
               value={manualToken}

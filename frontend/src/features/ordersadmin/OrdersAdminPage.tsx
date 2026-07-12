@@ -505,7 +505,7 @@ function OrderDetailDrawer({
 
             {refundable && (
               <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', borderTop: '1px solid var(--hk-line)', paddingTop: 'var(--hk-space-4)' }}>
-                <h3 style={{ fontSize: 14, color: '#8f322a' }}>退款(动钱 · 不可撤销)</h3>
+                <h3 style={{ fontSize: 14, color: 'var(--hk-danger)' }}>退款(动钱 · 不可撤销)</h3>
                 <p style={{ margin: 0, fontSize: 12, color: 'var(--hk-ink-500)' }}>
                   仅已到账(completed)的充值订单可退。退款将退回上游并扣减用户 #{order.user_id} 余额。
                   金额留空=全额退,订单原额 {formatCents(order.amount_cents, order.currency_code)}。

@@ -593,9 +593,9 @@ function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.Rea
         padding: 'var(--hk-space-3) var(--hk-space-4)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: ok ? '#0b6553' : '#8f322a',
-        background: ok ? 'var(--hk-primary-50)' : '#fbe9e7',
-        border: `1px solid ${ok ? 'var(--hk-primary-100)' : '#f2cdc8'}`,
+        color: ok ? '#0b6553' : 'var(--hk-danger)',
+        background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)',
+        border: `1px solid ${ok ? 'var(--hk-primary-100)' : 'var(--hk-danger-soft)'}`,
       }}
     >
       {children}
@@ -695,7 +695,7 @@ const ghostBtn: React.CSSProperties = {
 }
 const dangerBtn: React.CSSProperties = {
   ...baseBtn,
-  border: '1px solid #f2cdc8',
-  background: '#fbe9e7',
-  color: '#8f322a',
+  border: '1px solid var(--hk-danger-soft)',
+  background: 'var(--hk-danger-soft)',
+  color: 'var(--hk-danger)',
 }

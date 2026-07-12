@@ -291,7 +291,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.ReactNode }) {
   const palette =
     kind === 'error'
-      ? { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+      ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
       : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }

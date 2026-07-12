@@ -630,7 +630,7 @@ function DangerCard() {
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, color: '#8f322a' }}>确认要永久注销账号吗?</span>
+          <span style={{ fontSize: 13, color: 'var(--hk-danger)' }}>确认要永久注销账号吗?</span>
           <button type="button" disabled={busy} onClick={doDelete} style={dangerBtn}>
             {busy ? '处理中…' : '确认注销'}
           </button>
@@ -649,7 +649,7 @@ function Card({ title, tone, children }: { title: string; tone?: 'danger'; child
     <section
       style={{
         background: 'var(--hk-surface)',
-        border: `1px solid ${tone === 'danger' ? '#f2cdc8' : 'var(--hk-line)'}`,
+        border: `1px solid ${tone === 'danger' ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
         borderRadius: 'var(--hk-radius-lg)',
         boxShadow: 'var(--hk-shadow-1)',
         padding: 'var(--hk-space-5)',
@@ -658,7 +658,7 @@ function Card({ title, tone, children }: { title: string; tone?: 'danger'; child
         gap: 'var(--hk-space-3)',
       }}
     >
-      <h2 style={{ fontSize: 16, margin: 0, color: tone === 'danger' ? '#8f322a' : 'var(--hk-ink-900)' }}>{title}</h2>
+      <h2 style={{ fontSize: 16, margin: 0, color: tone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-900)' }}>{title}</h2>
       {children}
     </section>
   )
@@ -698,7 +698,7 @@ function Muted({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>{children}</div>
 }
 function ErrBox({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{children}</div>
+  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function OkBox({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
@@ -728,6 +728,6 @@ const hint: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--hk-in
 const listRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #d98178', borderRadius: 'var(--hk-radius-md)', background: '#fbe9e7', color: '#8f322a', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #d98178', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger-soft)', color: 'var(--hk-danger)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: '#8f322a', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)', flexShrink: 0 }
+const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)', flexShrink: 0 }

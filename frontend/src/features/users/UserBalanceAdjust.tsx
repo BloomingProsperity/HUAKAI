@@ -142,9 +142,9 @@ function Banner({ tone, children }: { tone: 'danger' | 'ok'; children: React.Rea
         padding: 'var(--hk-space-2) var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: danger ? '#8f322a' : 'var(--hk-primary-700)',
-        background: danger ? '#fbe9e7' : 'var(--hk-primary-50, #eef7f2)',
-        border: `1px solid ${danger ? '#f2cdc8' : 'var(--hk-line)'}`,
+        color: danger ? 'var(--hk-danger)' : 'var(--hk-primary-700)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, #eef7f2)',
+        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
       }}
     >
       {children}

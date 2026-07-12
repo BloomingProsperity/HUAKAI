@@ -120,7 +120,7 @@ export function OrphanReconcilePage() {
         <h1 style={{ fontSize: 22 }}>媒体任务孤儿对账</h1>
         <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
           孤儿 = 上游已创建任务却因租约丢失未落库、可能漏计费的真亏钱线索。对账走 Manual-First:
-          标记终态;勾选「追扣」时<strong style={{ color: '#8f322a' }}>真实从用户余额扣款</strong>(money,需二次确认),
+          标记终态;勾选「追扣」时<strong style={{ color: 'var(--hk-danger)' }}>真实从用户余额扣款</strong>(money,需二次确认),
           幂等防双扣由后端保障。
         </p>
       </header>
@@ -250,7 +250,7 @@ function OrphanRow({
               alignItems: 'center',
               gap: 6,
               fontSize: 12,
-              color: backChargeAllowed ? '#8f322a' : 'var(--hk-ink-300)',
+              color: backChargeAllowed ? 'var(--hk-danger)' : 'var(--hk-ink-300)',
               cursor: backChargeAllowed && !busy ? 'pointer' : 'not-allowed',
             }}
             title={backChargeAllowed ? '勾选后将真实从用户余额追扣(money)' : '仅「对账」终态可追扣'}
@@ -291,7 +291,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.ReactNode }) {
   const palette =
     kind === 'error'
-      ? { color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+      ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
       : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return (
     <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>

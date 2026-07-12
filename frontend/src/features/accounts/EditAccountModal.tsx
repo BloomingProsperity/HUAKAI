@@ -64,7 +64,7 @@ export function EditAccountModal({
         <Field label="变更原因(可选,记入审计)">
           <input value={form.reason} onChange={(e) => set('reason', e.target.value)} style={inp} />
         </Field>
-        {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{error}</div>}
+        {error && <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>}
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
           <button type="button" onClick={onClose} style={ghost}>
             取消

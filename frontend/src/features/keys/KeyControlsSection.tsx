@@ -353,5 +353,5 @@ const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', b
 const saveBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer', flexShrink: 0 }
 const badgeStyle: React.CSSProperties = { fontSize: 11, padding: '1px 6px', borderRadius: 'var(--hk-radius-sm)', background: '#fff3e0', color: '#9a5b13', border: '1px solid #f3d9b5' }
 const okMsg: React.CSSProperties = { fontSize: 12, color: '#0b6553' }
-const errMsgBox: React.CSSProperties = { fontSize: 12, color: '#8f322a' }
-const errBox: React.CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }
+const errMsgBox: React.CSSProperties = { fontSize: 12, color: 'var(--hk-danger)' }
+const errBox: React.CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
