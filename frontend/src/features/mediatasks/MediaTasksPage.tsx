@@ -3,13 +3,26 @@ import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getMediaTask, listMediaTasks } from './api'
 import { CreateMediaTaskModal } from './CreateMediaTaskModal'
+import { MidjourneyConsole } from './MidjourneyConsole'
 import { formatTaskCost, isActive, pollMediaTaskUpdates, statusLabel, statusTone, taskTypeLabel } from './mediatasks'
+import { SunoConsole } from './SunoConsole'
 import type { MediaTask } from './types'
+import { VideoConsole } from './VideoConsole'
+
+type MediaTasksTab = 'overview' | 'midjourney' | 'suno' | 'video'
+
+const TABS: Array<{ value: MediaTasksTab; label: string }> = [
+  { value: 'overview', label: '任务总览' },
+  { value: 'midjourney', label: 'Midjourney' },
+  { value: 'suno', label: 'Suno' },
+  { value: 'video', label: '视频' },
+]
 
 /*
  * 媒体任务页使用 session 鉴权；创建会触发真实生成与计费，页内明确提示。
  */
 export function MediaTasksPage() {
+  const [tab, setTab] = useState<MediaTasksTab>('overview')
   const [tasks, setTasks] = useState<MediaTask[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -68,20 +81,40 @@ export function MediaTasksPage() {
     <div className="hk-page">
       <header className="hk-pagehead">
         <div>
-          <h1>媒体任务记录</h1>
+          <h1>媒体任务中心</h1>
           <p className="hk-sub">
-            绘图 / 视频 / 音频异步任务的历史与状态{activeCount > 0 ? ` · ${activeCount} 个进行中` : ''}。
+            通用任务总览与 Midjourney / Suno / 视频兼容端点专属控制台{activeCount > 0 ? ` · ${activeCount} 个通用任务进行中` : ''}。
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="button" onClick={() => setRefreshKey((k) => k + 1)} className="hk-btn" disabled={loading}>
-            {loading ? '刷新中…' : '刷新'}
-          </button>
-          <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">＋ 新建任务</button>
-        </div>
+        {tab === 'overview' && (
+          <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
+            <button type="button" onClick={() => setRefreshKey((k) => k + 1)} className="hk-btn" disabled={loading}>
+              {loading ? '刷新中…' : '刷新'}
+            </button>
+            <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">＋ 新建任务</button>
+          </div>
+        )}
       </header>
 
-      {createOpen && (
+      <div className="hk-seg" role="tablist" aria-label="媒体任务控制台">
+        {TABS.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.value}
+            className={tab === item.value ? 'is-on' : undefined}
+            onClick={() => {
+              setTab(item.value)
+              if (item.value !== 'overview') setCreateOpen(false)
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && createOpen && (
         <CreateMediaTaskModal
           onClose={() => setCreateOpen(false)}
           onCreated={(created) => {
@@ -91,54 +124,67 @@ export function MediaTasksPage() {
         />
       )}
 
-      {error && (
-        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
-          {error}
-        </div>
-      )}
-      {flash && (
-        <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>
-          {flash}
-        </div>
-      )}
+      <section role="tabpanel" hidden={tab !== 'overview'}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
+          {error && (
+            <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
+              {error}
+            </div>
+          )}
+          {flash && (
+            <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>
+              {flash}
+            </div>
+          )}
 
-      {loading && tasks.length === 0 ? (
-        <Empty>加载中…</Empty>
-      ) : tasks.length === 0 ? (
-        <Empty>还没有媒体任务。点击右上角「新建任务」创建图片、音乐或视频任务。</Empty>
-      ) : (
-        <div className="hk-card">
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['任务', '类型', '提供方', '状态', '进度', '计费', '提交时间'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {tasks.map((t) => (
-                  <tr key={t.id}>
-                    <td className="hk-mono">#{t.id}</td>
-                    <td>{taskTypeLabel(t.task_type)}</td>
-                    <td>{t.provider || '—'}</td>
-                    <td>
-                      <StatusBadge tone={statusTone(t.status)}>{statusLabel(t.status)}</StatusBadge>
-                      {t.status === 'failed' && t.error_class ? (
-                        <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--hk-ink-500)' }}>{t.error_class}</span>
-                      ) : null}
-                    </td>
-                    <td>{isActive(t.status) ? <Progress value={t.progress} /> : t.status === 'succeeded' ? '100%' : '—'}</td>
-                    <td className="hk-mono">{formatTaskCost(t)}</td>
-                    <td className="hk-mono">{new Date(t.created_at).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {loading && tasks.length === 0 ? (
+            <Empty>加载中…</Empty>
+          ) : tasks.length === 0 ? (
+            <Empty>还没有媒体任务。点击右上角「新建任务」创建图片、音乐或视频任务。</Empty>
+          ) : (
+            <div className="hk-card">
+              <div className="hk-tablewrap">
+                <table className="hk-table">
+                  <thead>
+                    <tr>
+                      {['任务', '类型', '提供方', '状态', '进度', '计费', '提交时间'].map((h) => (
+                        <th key={h}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tasks.map((t) => (
+                      <tr key={t.id}>
+                        <td className="hk-mono">#{t.id}</td>
+                        <td>{taskTypeLabel(t.task_type)}</td>
+                        <td>{t.provider || '—'}</td>
+                        <td>
+                          <StatusBadge tone={statusTone(t.status)}>{statusLabel(t.status)}</StatusBadge>
+                          {t.status === 'failed' && t.error_class ? (
+                            <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--hk-ink-500)' }}>{t.error_class}</span>
+                          ) : null}
+                        </td>
+                        <td>{isActive(t.status) ? <Progress value={t.progress} /> : t.status === 'succeeded' ? '100%' : '—'}</td>
+                        <td className="hk-mono">{formatTaskCost(t)}</td>
+                        <td className="hk-mono">{new Date(t.created_at).toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </section>
+      <section role="tabpanel" hidden={tab !== 'midjourney'}>
+        <MidjourneyConsole />
+      </section>
+      <section role="tabpanel" hidden={tab !== 'suno'}>
+        <SunoConsole />
+      </section>
+      <section role="tabpanel" hidden={tab !== 'video'}>
+        <VideoConsole />
+      </section>
     </div>
   )
 }
