@@ -26,20 +26,22 @@ import type { ApiKeyView, KeyUsageSummary, QuotaWindow } from './types'
  */
 export function OverviewPage() {
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
+    <div className="hk-page">
       {/* 用户公告横幅:拉 /v1/announcements,有生效公告才展示;无/失败则整体不渲染,不打扰主内容。 */}
       <AnnouncementBanner />
 
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>概览</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>账户配额、近段用量与快捷入口的一屏速览。</p>
+      <header className="hk-pagehead">
+        <div>
+          <h1>概览</h1>
+          <p className="hk-sub">账户配额、近段用量与快捷入口的一屏速览。</p>
+        </div>
       </header>
 
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: 'var(--hk-space-5)',
+          gap: 'var(--hk-space-4)',
           alignItems: 'start',
         }}
       >
@@ -300,20 +302,13 @@ function QuickLinksCard() {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section
-      style={{
-        background: 'var(--hk-surface)',
-        border: '1px solid var(--hk-line)',
-        borderRadius: 'var(--hk-radius-lg)',
-        boxShadow: 'var(--hk-shadow-1)',
-        padding: 'var(--hk-space-4)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--hk-space-3)',
-      }}
-    >
-      <h2 style={{ fontSize: 14, color: 'var(--hk-ink-500)', margin: 0 }}>{title}</h2>
-      {children}
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>{title}</h3>
+      </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        {children}
+      </div>
     </section>
   )
 }

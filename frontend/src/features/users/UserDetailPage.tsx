@@ -57,19 +57,21 @@ export function UserDetailPage() {
   if (!user) return <Center tone="danger">用户不存在</Center>
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)', maxWidth: 880 }}>
+    <div className="hk-page" style={{ maxWidth: 1000 }}>
       <Link to="/users" style={{ fontSize: 13 }}>
         ← 返回用户列表
       </Link>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
-        <h1 style={{ fontSize: 22 }}>{user.email}</h1>
-        <StatusBadge tone={user.status === 'active' ? 'ok' : user.status === 'locked' ? 'danger' : 'muted'}>
-          {statusLabel(user.status)}
-        </StatusBadge>
-        <span className="hk-mono" style={{ fontSize: 12, color: 'var(--hk-ink-300)' }}>#{user.id}</span>
+      <header className="hk-pagehead">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
+          <h1>{user.email}</h1>
+          <StatusBadge tone={user.status === 'active' ? 'ok' : user.status === 'locked' ? 'danger' : 'muted'}>
+            {statusLabel(user.status)}
+          </StatusBadge>
+          <span className="hk-mono" style={{ fontSize: 12, color: 'var(--hk-ink-300)' }}>#{user.id}</span>
+        </div>
       </header>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--hk-space-4)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--hk-space-3)' }}>
         <Stat label="余额" value={user.balance} mono />
         <Stat label="角色" value={roleLabel(user.role)} />
         <Stat label="用户组" value={user.user_group || '—'} />
@@ -84,47 +86,43 @@ export function UserDetailPage() {
       {/* 通知偏好(代管):GET 回填 + PUT 保存,独立加载自身 tenant/user,不连累上方卡片。 */}
       <UserNotifyPrefs userId={user.id} />
 
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-        <h2 style={{ fontSize: 15, color: 'var(--hk-ink-700)' }}>余额历史(台账)</h2>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>余额历史(台账)</h3>
+        </div>
         {historyError ? (
-          <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#8f322a', background: '#fbe9e7', border: '1px solid #f2cdc8' }}>{historyError}</div>
+          <div style={{ margin: 'var(--hk-space-3) var(--hk-space-4)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{historyError}</div>
+        ) : history.length === 0 ? (
+          <div className="hk-empty">暂无余额变动记录。</div>
         ) : (
-          <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
-            {history.length === 0 ? (
-              <div style={{ padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>暂无余额变动记录。</div>
-            ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      {['时间', '事件', '金额', '来源'].map((h) => (
-                        <th key={h} style={th}>
-                          {h}
-                        </th>
-                      ))}
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead>
+                <tr>
+                  {['时间', '事件', '金额', '来源'].map((h) => (
+                    <th key={h}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((e) => {
+                  const dir = balanceDirection(e.amount)
+                  return (
+                    <tr key={e.id}>
+                      <td className="hk-mono">{fmt(e.occurred_at)}</td>
+                      <td>{eventTypeLabel(e.event_type)}</td>
+                      <td className="hk-mono" style={{ color: dir === 'credit' ? 'var(--hk-primary-700)' : dir === 'debit' ? 'var(--hk-danger)' : 'var(--hk-ink-500)', fontWeight: 600 }}>
+                        {signedAmount(e.amount)}
+                      </td>
+                      <td>
+                        {e.source_type}
+                        {e.source_id ? ` #${e.source_id}` : ''}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {history.map((e) => {
-                      const dir = balanceDirection(e.amount)
-                      return (
-                        <tr key={e.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                          <td style={tdMono}>{fmt(e.occurred_at)}</td>
-                          <td style={td}>{eventTypeLabel(e.event_type)}</td>
-                          <td style={{ ...tdMono, color: dir === 'credit' ? 'var(--hk-primary-700)' : dir === 'debit' ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>
-                            {signedAmount(e.amount)}
-                          </td>
-                          <td style={td}>
-                            {e.source_type}
-                            {e.source_id ? ` #${e.source_id}` : ''}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
@@ -134,9 +132,9 @@ export function UserDetailPage() {
 
 function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div style={{ padding: 'var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{label}</span>
-      <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--hk-ink-900)', fontFamily: mono ? 'var(--hk-font-mono)' : undefined }}>{value}</span>
+    <div className="hk-statcard">
+      <span className="hk-statcard__t">{label}</span>
+      <div className="hk-statcard__v" style={{ fontFamily: mono ? 'var(--hk-font-mono)' : undefined, color: 'var(--hk-ink-900)' }}>{value}</div>
     </div>
   )
 }
@@ -147,7 +145,3 @@ function fmt(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? (iso || '—') : d.toLocaleString('zh-CN', { hour12: false })
 }
-
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', whiteSpace: 'nowrap', color: 'var(--hk-ink-700)' }

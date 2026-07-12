@@ -1,42 +1,57 @@
 /*
- * HUAKAI 设计 token — 反克隆基线。
+ * HUAKAI 设计 token — Owner 认可的"绿净密集"基线。
  *
- * 调研定论(见 docs:frontend-anticlone-design-direction):一眼像 one-api/new-api 抄袭的"克隆味"
- * 集中在 6 个默认 token(主色/圆角/阴影/字体/图标/间距),而非布局。故本文件刻意离开框架默认值:
- *  - 主色取玉青(jade,呼应"华开"语义)而非 one-api 系的科技蓝;
- *  - 圆角偏大且统一阶梯;阴影走"低饱和柔光"而非默认硬阴影;
- *  - 间距用 4px 基数的非线性阶梯;字体显式声明中文优先的栈。
- * 所有组件只准引用这些变量,禁写魔法色值,以保证"离默认"一致可控。
+ * 方向(Owner 2026-07-12 拍板,依其认可的运营台参考稿):
+ *  - 主色取明亮干净的绿(brand 与 success 同源),用于品牌/激活/成功/执行按钮;
+ *  - 中性取"冷中性灰"(非暖灰),配白卡 + 细线,读感干净不糊;
+ *  - 阴影走"极轻扁平"(靠 1px 细线分隔,不靠重投影);圆角收紧成统一阶梯;
+ *  - 危险操作红,语义状态(成功/警告/危险/信息)各自独立于品牌绿;
+ *  - 分类标签用多色软药丸(蓝/紫/青),区分角色/类型。
+ * 所有组件只准引用这些变量,禁写魔法色值,保证"离默认"一致可控。
  */
 :root {
-  /* 主色:玉青阶梯 */
-  --hk-primary-50: #e9f6f1;
-  --hk-primary-100: #c9e9dd;
-  --hk-primary-300: #6cc3a6;
-  --hk-primary-500: #0e7c66;
-  --hk-primary-600: #0b6553;
-  --hk-primary-700: #084e40;
+  /* 主色:亮净绿阶梯(brand + success 同源) */
+  --hk-primary-50: #eaf6f0;
+  --hk-primary-100: #cdebdc;
+  --hk-primary-300: #6bc79e;
+  --hk-primary-500: #21a566;
+  --hk-primary-600: #1b9159;
+  --hk-primary-700: #157a4a;
 
-  /* 中性:暖灰(偏暖,区别于纯冷灰的框架默认) */
-  --hk-ink-900: #1c2622;
-  --hk-ink-700: #3a4641;
-  --hk-ink-500: #66756e;
-  --hk-ink-300: #aab4af;
-  --hk-line: #e2e8e4;
+  /* 中性:冷中性灰(干净,区别于旧暖灰) */
+  --hk-ink-900: #202a36;
+  --hk-ink-700: #414c59;
+  --hk-ink-500: #66717f;
+  --hk-ink-300: #98a2ae;
+  --hk-line: #e6e9ed;
+  --hk-line-soft: #eff1f4;
   --hk-surface: #ffffff;
-  --hk-surface-sunken: #f5f8f6;
-  --hk-canvas: #eef2f0;
+  --hk-surface-sunken: #f4f6f8;
+  --hk-canvas: #f3f5f7;
 
-  /* 语义状态 */
+  /* 语义状态 + 软背景(状态药丸用) */
   --hk-success: #1f9d6b;
-  --hk-warn: #c98a16;
-  --hk-danger: #c0463a;
-  --hk-info: #2f6f9e;
+  --hk-success-soft: rgba(31, 157, 107, 0.12);
+  --hk-warn: #d6902b;
+  --hk-warn-soft: rgba(214, 144, 43, 0.13);
+  --hk-danger: #de4b47;
+  --hk-danger-soft: rgba(222, 75, 71, 0.11);
+  --hk-danger-700: #c53d3a;
+  --hk-info: #3b79ee;
+  --hk-info-soft: rgba(59, 121, 238, 0.11);
 
-  /* 圆角阶梯(偏大,统一) */
+  /* 分类标签:多色软药丸(角色/类型区分) */
+  --hk-cat-blue: #3b79ee;
+  --hk-cat-blue-soft: rgba(59, 121, 238, 0.11);
+  --hk-cat-purple: #7a69db;
+  --hk-cat-purple-soft: rgba(122, 105, 219, 0.12);
+  --hk-cat-teal: #1d9c9c;
+  --hk-cat-teal-soft: rgba(29, 156, 156, 0.12);
+
+  /* 圆角阶梯(收紧,统一) */
   --hk-radius-sm: 6px;
-  --hk-radius-md: 10px;
-  --hk-radius-lg: 16px;
+  --hk-radius-md: 9px;
+  --hk-radius-lg: 14px;
   --hk-radius-pill: 999px;
 
   /* 间距 4px 基数阶梯 */
@@ -48,12 +63,12 @@
   --hk-space-6: 32px;
   --hk-space-8: 48px;
 
-  /* 阴影:低饱和柔光(非框架硬阴影) */
-  --hk-shadow-1: 0 1px 2px rgba(28, 38, 34, 0.06);
-  --hk-shadow-2: 0 4px 16px rgba(28, 38, 34, 0.08);
-  --hk-shadow-3: 0 12px 32px rgba(28, 38, 34, 0.12);
+  /* 阴影:极轻扁平(靠细线分隔,不靠重投影) */
+  --hk-shadow-1: 0 1px 2px rgba(24, 34, 48, 0.05);
+  --hk-shadow-2: 0 1px 2px rgba(24, 34, 48, 0.05), 0 1px 1px rgba(24, 34, 48, 0.03);
+  --hk-shadow-3: 0 8px 28px rgba(24, 34, 48, 0.1);
 
-  /* 字体:中文优先栈 + 等宽用于 key/数值 */
+  /* 字体:中文优先栈 + 等宽用于时间/ID/数值对齐 */
   --hk-font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui,
     -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --hk-font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, Menlo,
