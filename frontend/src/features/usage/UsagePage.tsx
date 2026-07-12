@@ -4,6 +4,8 @@ import { listApiKeys } from '../keys/api'
 import type { ApiKeyView } from '../keys/types'
 import { getKeyUsageSummary, getQuota } from './api'
 import { metricLabel, quotaProgress, windowLabel } from './quota'
+import { resetCountdown } from './windowMeter'
+import { MeterCells } from './Heatmaps'
 import type { KeyUsageSummary, QuotaWindow } from './types'
 import { KeyUsageAnalytics } from './KeyUsageAnalytics'
 
@@ -128,24 +130,26 @@ export function UsagePage() {
 
 function QuotaBar({ w }: { w: QuotaWindow }) {
   const p = quotaProgress(w.consumed, w.cap)
-  const barColor = p.tone === 'danger' ? 'var(--hk-danger)' : p.tone === 'warn' ? 'var(--hk-warn)' : 'var(--hk-primary-500)'
+  // 分段方格条(参照 Claude/Codex 速率窗口):按 consumed/cap 填格 + 重置倒计时。
+  const countdown = resetCountdown(w.window_end, Date.now())
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+    <div className="hk-meter">
+      <div className="hk-meter__head">
         <span style={{ color: 'var(--hk-ink-700)' }}>
           {metricLabel(w.metric)} · {windowLabel(w.window_kind)}
           {w.request_count > 0 ? ` · ${w.request_count} 次请求` : ''}
         </span>
         <span className="hk-mono" style={{ color: p.over ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>
           {w.consumed} / {p.unlimited ? '无上限' : w.cap}
-          {p.over ? `(超额 ${w.overage})` : ''}
+          {p.over ? `(超额 ${w.overage})` : p.unlimited ? '' : ` · ${Math.round(p.pct)}%`}
         </span>
       </div>
-      {!p.unlimited && (
-        <div style={{ height: 8, background: 'var(--hk-surface-sunken)', borderRadius: 'var(--hk-radius-pill)', overflow: 'hidden' }}>
-          <div style={{ width: `${p.pct}%`, height: '100%', background: barColor, transition: 'width .2s' }} />
-        </div>
+      {p.unlimited ? (
+        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>无上限窗口,仅记录消耗。</div>
+      ) : (
+        <MeterCells pct={p.pct} tone={p.tone} />
       )}
+      {countdown && <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{countdown}</div>}
     </div>
   )
 }

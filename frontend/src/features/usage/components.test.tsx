@@ -1,6 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { KeyGenerationDetail, KeyUsageChart, KeyUsageTable } from './KeyUsageAnalytics'
+import { KeyGenerationDetail, KeyUsageChart, KeyUsageTable, UsageHeatPanels } from './KeyUsageAnalytics'
+import { HeatMap, MeterCells } from './Heatmaps'
+import { buildHeatGrid, pickCost } from './heatmap'
 import type { KeyUsageRecord, KeyUsageTimeSeriesResponse } from './types'
 
 const record: KeyUsageRecord = {
@@ -65,5 +67,35 @@ describe('Key 级分析关键渲染', () => {
     expect(html).toContain('ledger-1')
     expect(html).toContain('openai')
     expect(html).toContain('$0.0123')
+  })
+})
+
+describe('小方格显示', () => {
+  it('分段方格条按百分比填格(50% → 12 个 is-on,共 24)', () => {
+    const html = renderToStaticMarkup(<MeterCells pct={50} />)
+    // 收紧:cell 后跟空格或引号,避免匹配到容器 hk-meter__cells
+    const total = (html.match(/hk-meter__cell[ "]/g) || []).length
+    const on = (html.match(/is-on/g) || []).length
+    expect(total).toBe(24)
+    expect(on).toBe(12)
+  })
+
+  it('热力网格每天一格,带强度档 class 与坐标', () => {
+    const grid = buildHeatGrid(series.items, pickCost)
+    const html = renderToStaticMarkup(<HeatMap grid={grid} title="用量热力" formatValue={(v) => `$${v.toFixed(4)}`} unit="" />)
+    expect(html).toContain('class="hk-heat"')
+    expect(html).toContain('hk-heat__cell--l4') // 单点即最大值 → 满档
+    expect(html).toContain('2026-07-12')
+  })
+
+  it('有 time-series 时渲染用量与缓存两张热力 + 命中方格条', () => {
+    const html = renderToStaticMarkup(<UsageHeatPanels response={series} />)
+    expect(html).toContain('用量热力')
+    expect(html).toContain('缓存热力')
+    expect(html).toContain('缓存命中占比')
+  })
+
+  it('无 series 不渲染(null)', () => {
+    expect(renderToStaticMarkup(<UsageHeatPanels response={null} />)).toBe('')
   })
 })

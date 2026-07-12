@@ -9,6 +9,9 @@ import {
   costBarPercent,
   defaultKeyAnalyticsRange,
 } from './keyAnalytics'
+import { buildHeatGrid, pickCache, pickCost } from './heatmap'
+import { cacheHitRate } from './windowMeter'
+import { HeatMap, MeterCells } from './Heatmaps'
 import type {
   KeyUsageGranularity,
   KeyUsageRecord,
@@ -194,6 +197,8 @@ export function KeyUsageAnalytics() {
 
         {error && <Notice>{error}</Notice>}
 
+        <UsageHeatPanels response={series} />
+
         <div style={grid}>
           <KeyUsageChart response={series} loading={loading} />
           <RequestLookup
@@ -214,6 +219,44 @@ export function KeyUsageAnalytics() {
           loadingMore={loadingMore}
           onLoadMore={() => void loadMore()}
         />
+      </div>
+    </section>
+  )
+}
+
+/**
+ * 用量/缓存热力小方格 + 缓存命中方格条(用户端"很多小方格"显示)。数据取自已加载的 time-series。
+ * 仅在有 series 时渲染;缓存命中率按全时段 cache_read 与 input 聚合。
+ */
+export function UsageHeatPanels({ response }: { response: KeyUsageTimeSeriesResponse | null }) {
+  if (!response) return null
+  const usageGrid = buildHeatGrid(response.items, pickCost)
+  const cacheGrid = buildHeatGrid(response.items, pickCache)
+  let cacheRead = 0
+  let input = 0
+  for (const p of response.items) {
+    cacheRead += p.tokens?.cache_read ?? 0
+    input += p.tokens?.input ?? 0
+  }
+  const hit = cacheHitRate(cacheRead, input)
+  return (
+    <section style={subpanel}>
+      <div style={subpanelHead}>
+        <h4 style={subpanelTitle}>用量与缓存热力</h4>
+        <span style={subtle}>每格一天 · 深浅=强度</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        {hit !== null && (
+          <div className="hk-meter">
+            <div className="hk-meter__head">
+              <span style={{ color: 'var(--hk-ink-700)' }}>缓存命中占比(本时段)</span>
+              <span className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>{hit.toFixed(1)}% 命中</span>
+            </div>
+            <MeterCells pct={hit} tone="ok" />
+          </div>
+        )}
+        <HeatMap grid={usageGrid} title="用量热力(按费用)" formatValue={(v) => `$${v.toFixed(4)}`} unit="" />
+        <HeatMap grid={cacheGrid} title="缓存热力(读+写 Token)" formatValue={(v) => `${Math.round(v)}`} unit=" tok" />
       </div>
     </section>
   )

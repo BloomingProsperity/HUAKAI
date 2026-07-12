@@ -201,3 +201,30 @@
   .hk-grid--2, .hk-form-grid { grid-template-columns: 1fr; }
   .hk-codebox .hk-kv__v { max-width: 62%; }
 }
+
+/* ── 分段方格计量条(额度窗口 / 缓存命中,参照 Claude/Codex 速率窗口)── */
+.hk-meter { display: flex; flex-direction: column; gap: 4px; }
+.hk-meter__head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--hk-space-2); font-size: 12.5px; }
+.hk-meter__cells { display: flex; gap: 2px; }
+.hk-meter__cell { flex: 1 1 0; height: 12px; border-radius: 2px; background: var(--hk-surface-sunken); border: 1px solid var(--hk-line-soft); }
+.hk-meter__cell.is-on { background: var(--hk-primary-500); border-color: var(--hk-primary-500); }
+.hk-meter__cell.is-warn { background: var(--hk-warn); border-color: var(--hk-warn); }
+.hk-meter__cell.is-danger { background: var(--hk-danger); border-color: var(--hk-danger); }
+
+/* ── 日历热力网格(用量 / 缓存,GitHub 贡献图风)── */
+.hk-heat { display: grid; grid-template-rows: repeat(7, 13px); grid-auto-flow: column; grid-auto-columns: 13px; gap: 3px; }
+.hk-heat__cell { width: 13px; height: 13px; border-radius: 2px; background: var(--hk-heat-l0); }
+.hk-heat__cell--l0 { background: var(--hk-heat-l0); }
+.hk-heat__cell--l1 { background: var(--hk-heat-l1); }
+.hk-heat__cell--l2 { background: var(--hk-heat-l2); }
+.hk-heat__cell--l3 { background: var(--hk-heat-l3); }
+.hk-heat__cell--l4 { background: var(--hk-heat-l4); }
+.hk-heat-legend { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--hk-ink-300); }
+.hk-heat-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+:root {
+  --hk-heat-l0: var(--hk-surface-sunken);
+  --hk-heat-l1: #cdeede;
+  --hk-heat-l2: #8fdab5;
+  --hk-heat-l3: var(--hk-primary-500);
+  --hk-heat-l4: var(--hk-primary-600);
+}
