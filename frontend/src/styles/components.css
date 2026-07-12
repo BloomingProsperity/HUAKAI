@@ -228,3 +228,8 @@
   --hk-heat-l3: var(--hk-primary-500);
   --hk-heat-l4: var(--hk-primary-600);
 }
+
+/* ── 公开页(免登录)壳:居中、留白,复用卡片/表格样式 ── */
+.hk-public { max-width: 1100px; margin: 0 auto; padding: var(--hk-space-6) var(--hk-space-4); display: flex; flex-direction: column; gap: var(--hk-space-4); }
+.hk-public__head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--hk-space-4); flex-wrap: wrap; }
+.hk-public__foot { font-size: 11px; color: var(--hk-ink-300); text-align: center; padding-top: var(--hk-space-3); }

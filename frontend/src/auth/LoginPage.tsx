@@ -407,11 +407,14 @@ export function LoginPage() {
           </div>
         )}
 
-        {/* 增强:找回密码 + 条款链接(登录态) */}
+        {/* 增强:找回密码 + 免登录查用量 + 条款链接(登录态) */}
         {mode === 'login' && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--hk-space-2)', fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--hk-space-2)', fontSize: 12, gap: 'var(--hk-space-3)' }}>
             <a href="/forgot-password" style={linkAnchor}>
               忘记密码?
+            </a>
+            <a href="/key-usage" style={linkAnchor}>
+              凭 Key 查用量
             </a>
             {site.siteDocUrl ? (
               <a href={site.siteDocUrl} target="_blank" rel="noreferrer" style={linkAnchor}>

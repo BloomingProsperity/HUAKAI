@@ -25,6 +25,7 @@ import { WalletPage } from '../features/wallet/WalletPage'
 import { SubscriptionsPage } from '../features/subscriptions/SubscriptionsPage'
 import { CheckinPage } from '../features/checkin/CheckinPage'
 import { RankingsPage } from '../features/rankings/RankingsPage'
+import { PublicKeyUsagePage } from '../features/keyusage/PublicKeyUsagePage'
 import { VouchersAdminPage } from '../features/vouchersadmin/VouchersAdminPage'
 import { AnnouncementsPage } from '../features/announcements/AnnouncementsPage'
 import { OrdersAdminPage } from '../features/ordersadmin/OrdersAdminPage'
@@ -164,6 +165,7 @@ export const router = createBrowserRouter([
   { path: '/email-verify', element: <EmailVerifyPage />, errorElement: errEl },
   { path: '/device-confirm', element: <DeviceConfirmPage />, errorElement: errEl },
   { path: '/rankings', element: <RankingsPage />, errorElement: errEl },
+  { path: '/key-usage', element: <PublicKeyUsagePage />, errorElement: errEl },
   { path: '/welcome', element: <LandingPage />, errorElement: errEl },
   { path: '/legal', element: <LegalPage />, errorElement: errEl },
   {
