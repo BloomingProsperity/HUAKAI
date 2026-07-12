@@ -219,6 +219,9 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
       { key: 'model_fallback_chains', label: '模型回退链', hint: 'JSON 回退配置', control: 'json' },
       { key: 'budget_limits', label: '预算上限', hint: 'JSON 预算配置', control: 'json' },
       { key: 'warmup_intercept_enabled', label: '预热拦截', control: 'bool' },
+      { key: 'cache.anthropic_ttl_1h_rewrite', label: '缓存 1h TTL 改写', hint: '开启后自动注入的缓存断点按 1 小时 TTL(缓存写入计价由 1.25x 升到 2x);客户端自带 cache_control 时不改写。需先开启自动断点环境开关', control: 'bool' },
+      { key: 'quota_probe.enabled', label: '配额窗口探测', hint: '周期性只读探测上游 OAuth usage API,回填账号 5h/7d 利用率', control: 'bool' },
+      { key: 'quota_probe.interval_minutes', label: '配额探测间隔(分钟)', hint: '探测周期,范围 5–1440', control: 'number' },
     ],
   },
   {

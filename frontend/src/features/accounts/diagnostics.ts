@@ -57,6 +57,11 @@ export function healthRows(h: AccountHealth): [string, string][] {
     ['5h 会话窗起', fmtTime(h.session_window_5h_start)],
     ['5h 会话窗止', fmtTime(h.session_window_5h_end)],
     ['5h 会话窗态', h.session_window_5h_status || '—'],
+    ['5h 利用率', fmtUtil(h.session_window_5h_status, h.session_window_5h_utilization)],
+    ['7d 会话窗起', fmtTime(h.session_window_7d_start)],
+    ['7d 会话窗止', fmtTime(h.session_window_7d_end)],
+    ['7d 会话窗态', h.session_window_7d_status || '—'],
+    ['7d 利用率', fmtUtil(h.session_window_7d_status, h.session_window_7d_utilization)],
     ['最近刷新', fmtTime(h.last_refresh_at)],
     ['刷新结果', h.last_refresh_outcome || '—'],
     ['更新于', fmtTime(h.updated_at)],
@@ -66,6 +71,16 @@ export function healthRows(h: AccountHealth): [string, string][] {
     rows.push(['近期请求', `共 ${r.total} · 成功 ${r.success} · 失败 ${r.failure}`])
   }
   return rows
+}
+
+/**
+ * fmtUtil:利用率展示。后端对过期窗口已置 status="expired" 且 utilization=null;
+ * 过期显示"已过期(空窗)",无数据显示"—",否则百分比。禁把旧利用率当活数据。
+ */
+export function fmtUtil(status: string | null | undefined, util: number | null | undefined): string {
+  if (status === 'expired') return '已过期(空窗)'
+  if (util == null || !Number.isFinite(util)) return '—'
+  return `${util.toFixed(1)}%`
 }
 
 // fmtTime:ISO 字符串 → 本地化;空/非法 → "—"。

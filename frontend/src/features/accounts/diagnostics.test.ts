@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildBulkPayload, healthRows, testSummary, type BulkByTagForm } from './diagnostics'
+import { buildBulkPayload, fmtUtil, healthRows, testSummary, type BulkByTagForm } from './diagnostics'
 import type { AccountHealth, AccountTestResult } from './types'
 
 function testResult(p: Partial<AccountTestResult>): AccountTestResult {
@@ -20,6 +20,11 @@ function health(p: Partial<AccountHealth>): AccountHealth {
     session_window_5h_start: null,
     session_window_5h_end: null,
     session_window_5h_status: null,
+    session_window_5h_utilization: null,
+    session_window_7d_start: null,
+    session_window_7d_end: null,
+    session_window_7d_status: null,
+    session_window_7d_utilization: null,
     last_refresh_at: null,
     last_refresh_outcome: null,
     failure_class: null,
@@ -117,5 +122,24 @@ describe('healthRows', () => {
   it('failure_count 始终渲染(数字 0 也显示,不被当作空)', () => {
     const rows = healthRows(health({ failure_count: 0 }))
     expect(rows.find(([k]) => k === '失败次数')?.[1]).toBe('0')
+  })
+
+  it('7d 窗口与利用率行随健康面板一并展示', () => {
+    const rows = healthRows(health({ session_window_7d_status: 'active', session_window_7d_utilization: 42.5, session_window_5h_utilization: 12.3 }))
+    expect(rows.find(([k]) => k === '7d 会话窗态')?.[1]).toBe('active')
+    expect(rows.find(([k]) => k === '7d 利用率')?.[1]).toBe('42.5%')
+    expect(rows.find(([k]) => k === '5h 利用率')?.[1]).toBe('12.3%')
+  })
+})
+
+describe('fmtUtil', () => {
+  it('过期窗口显示空窗,不沿用旧利用率(变异:漏判 expired 会误显数值)', () => {
+    // 后端对 expired 已置 util=null,但即便传入残留数值也必须显示空窗
+    expect(fmtUtil('expired', 88)).toBe('已过期(空窗)')
+  })
+  it('null/非法显示占位,有效值显示百分比', () => {
+    expect(fmtUtil('active', null)).toBe('—')
+    expect(fmtUtil(null, null)).toBe('—')
+    expect(fmtUtil('active', 63.4)).toBe('63.4%')
   })
 })

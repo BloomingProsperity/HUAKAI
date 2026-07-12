@@ -71,6 +71,9 @@ const BACKEND_KEYS: string[] = [
   'moderation_external_retry_count',
   'moderation_external_image_enabled',
   'warmup_intercept_enabled',
+  'cache.anthropic_ttl_1h_rewrite',
+  'quota_probe.enabled',
+  'quota_probe.interval_minutes',
   'site_name',
   'site_logo',
   'site_footer',
@@ -102,7 +105,7 @@ describe('TAB_GROUPS 分签全覆盖', () => {
     const grouped = groupedKeys()
     expect(new Set(grouped).size).toBe(grouped.length) // 无重复
     expect(new Set(grouped)).toEqual(new Set(BACKEND_KEYS)) // 不漏不多
-    expect(grouped.length).toBe(68)
+    expect(grouped.length).toBe(71)
   })
 
   it('正好 9 个分签且 key 唯一', () => {

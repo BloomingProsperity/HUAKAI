@@ -95,6 +95,12 @@ export interface AccountHealth {
   session_window_5h_start: string | null
   session_window_5h_end: string | null
   session_window_5h_status: string | null
+  // 利用率与 7d 窗口(B3):后端对过期窗口(end<now)投影 status="expired" 且利用率为 null。
+  session_window_5h_utilization: number | null
+  session_window_7d_start: string | null
+  session_window_7d_end: string | null
+  session_window_7d_status: string | null
+  session_window_7d_utilization: number | null
   last_refresh_at: string | null
   last_refresh_outcome: string | null
   failure_class: string | null
