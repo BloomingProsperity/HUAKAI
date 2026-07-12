@@ -99,6 +99,22 @@ export function proxyModeFromAccount(a: ProviderAccount): ProxyBindingMode {
   return 'direct'
 }
 
+/**
+ * 把后端回显的停调规则(仅详情返回)转成表单行,供编辑弹窗预填现值。
+ * 后端缺省或非数组时回空数组;keywords 以逗号串展示。
+ */
+export function rulesToForm(
+  rules: ProviderAccount['temp_unschedulable_rules'],
+): TempUnschedulableRuleForm[] {
+  if (!Array.isArray(rules)) return []
+  return rules.map((r) => ({
+    errorCode: String(r.error_code ?? ''),
+    keywords: (r.keywords ?? []).join(', '),
+    durationMinutes: String(r.duration_minutes ?? ''),
+    description: r.description ?? '',
+  }))
+}
+
 /** 把账号现状填充成编辑表单初值。缺省字段(后端可能回 null)一律降级为安全空值。 */
 export function formFromAccount(a: ProviderAccount): AccountEditForm {
   return {
@@ -113,8 +129,9 @@ export function formFromAccount(a: ProviderAccount): AccountEditForm {
     customErrorCodes: (a.custom_error_codes ?? []).join(', '),
     poolMode: 'unchanged',
     tempUnschedulableEnabled: a.temp_unschedulable_enabled ?? false,
+    // B3 起详情回显现值:预填规则行,用户切到"替换"模式即基于现值编辑而非空白盲替换。
     tempRulesMode: 'unchanged',
-    tempUnschedulableRules: [],
+    tempUnschedulableRules: rulesToForm(a.temp_unschedulable_rules),
     extraJson: JSON.stringify(a.extra ?? {}, null, 2),
     proxyMode: proxyModeFromAccount(a),
     proxyId: a.proxy_id != null ? String(a.proxy_id) : '',

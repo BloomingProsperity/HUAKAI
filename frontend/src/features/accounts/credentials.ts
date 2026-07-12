@@ -45,6 +45,8 @@ export interface CredentialMetadata {
   failure_count: number
   external_account_id?: string | null
   external_account_email?: string | null
+  /** Antigravity 上游 project 标识(B1);存量凭证未解析时后端省略(NULL)。 */
+  project_ref?: string | null
   created_at: string
   updated_at: string
 }

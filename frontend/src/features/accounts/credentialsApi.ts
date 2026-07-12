@@ -67,6 +67,23 @@ export async function rotateAccountCredential(
   )
 }
 
+/**
+ * 解析 Antigravity 上游 project(B1):POST /{id}/credentials/{cid}/resolve-project。
+ * 服务端解密凭证 → 调 ProjectResolver → 事务写回 project_ref;响应只回 {project_ref},绝不含 token。
+ * 真码:backend/internal/credentialprojecthttp/handler.go:57。
+ */
+export async function resolveCredentialProject(
+  accountId: number,
+  credentialId: number,
+  body: { tenant_id: number; reason?: string },
+): Promise<{ project_ref: string }> {
+  return apiSend<{ project_ref: string }>(
+    'POST',
+    `${BASE}/${accountId}/credentials/${credentialId}/resolve-project`,
+    body,
+  )
+}
+
 /** 置状态(active/disabled 等)。PATCH /{id}/credentials/{cid}/state,返回 {id,state}。 */
 export async function setAccountCredentialState(
   accountId: number,

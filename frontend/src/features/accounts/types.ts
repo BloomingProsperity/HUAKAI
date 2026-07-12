@@ -54,6 +54,16 @@ export interface ProviderAccount {
   pool_mode: boolean
   /** 临时停调规则开关;规则命中后账号才会进入临时不可调度状态。 */
   temp_unschedulable_enabled: boolean
+  /**
+   * 临时停调规则(B3:仅账号详情 GET 回显,列表/创建/更新响应省略)。
+   * 无规则或后端未下发时为 undefined/空数组。用于编辑弹窗预填现值,避免盲替换清空。
+   */
+  temp_unschedulable_rules?: Array<{
+    error_code: number
+    keywords: string[]
+    duration_minutes: number
+    description?: string
+  }>
   /** 出站单代理绑定(与 proxy_group_id 互斥);null=未绑单代理。 */
   proxy_id: number | null
   /** 出站代理组标识(与 proxy_id 互斥);null/空=未绑组。 */

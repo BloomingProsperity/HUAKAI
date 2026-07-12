@@ -5,6 +5,7 @@ import {
   createAccountCredential,
   deleteAccountCredential,
   listAccountCredentials,
+  resolveCredentialProject,
   rotateAccountCredential,
   setAccountCredentialState,
 } from './credentialsApi'
@@ -147,6 +148,22 @@ function CredentialRow({
   const fail = (e: unknown, fallback: string) =>
     onChanged('danger', e instanceof ApiError ? `${e.message}(${e.code})` : fallback)
 
+  const doResolveProject = async () => {
+    if (!Number.isInteger(tenantId) || tenantId <= 0) {
+      onChanged('danger', '缺少租户上下文,无法解析')
+      return
+    }
+    setBusy('resolve')
+    try {
+      const res = await resolveCredentialProject(accountId, row.id, { tenant_id: tenantId })
+      onChanged('ok', `已解析 project:${res.project_ref}`)
+    } catch (e) {
+      fail(e, '解析 project 失败')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const doRotate = async () => {
     const built = buildRotateBody({ tenantId, secretJSON: rotateSecret, reason: rotateReason })
     if (!built.ok) {
@@ -226,6 +243,7 @@ function CredentialRow({
       <Grid
         rows={[
           ['上游账号', externalAccountLabel(row)],
+          ...(row.vendor === 'antigravity' ? [['project', row.project_ref || '— (未解析)'] as [string, string]] : []),
           ['access 过期', fmtTime(row.access_expires_at)],
           ['需刷新于', fmtTime(row.refresh_before_at)],
           ['最近刷新', fmtTime(row.last_refresh_at)],
@@ -235,6 +253,20 @@ function CredentialRow({
           ['更新', fmtTime(row.updated_at)],
         ]}
       />
+
+      {/* Antigravity project 解析(B1):载荷内 project_id 决定上游 project 归属。 */}
+      {row.vendor === 'antigravity' && (
+        <Row label="解析 project" hint="调上游解析并写回 project_ref(不回传 token);载荷内 project_id 优先于账号 extra">
+          <button
+            type="button"
+            disabled={busy !== null}
+            onClick={() => void doResolveProject()}
+            style={ghostBtn}
+          >
+            {busy === 'resolve' ? '解析中…' : row.project_ref ? '重新解析 project' : '解析 project'}
+          </button>
+        </Row>
+      )}
 
       {/* 状态切换 */}
       <Row label="切换状态" hint="active/disabled 等;进审计">

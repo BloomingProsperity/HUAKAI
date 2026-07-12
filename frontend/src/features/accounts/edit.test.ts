@@ -7,6 +7,7 @@ import {
   parseExtraJson,
   parseTags,
   proxyModeFromAccount,
+  rulesToForm,
   type AccountEditForm,
 } from './edit'
 import type { ProviderAccount } from './types'
@@ -220,5 +221,24 @@ describe('buildAccountUpdate', () => {
     expect(buildAccountUpdate(bound, { ...formFromAccount(bound), proxyMode: 'direct' })).toEqual({ proxy_binding: { mode: 'direct' } })
     // 现状 proxy=7,表单仍是 proxy=7(初值)→ 无改动。
     expect(buildAccountUpdate(bound, formFromAccount(bound))).toEqual({ noop: true })
+  })
+})
+
+describe('rulesToForm(停调规则预填)', () => {
+  it('详情规则数组 → 表单行(keywords 逗号串,数字转字符串)', () => {
+    const form = rulesToForm([
+      { error_code: 403, keywords: ['risk', 'unusual'], duration_minutes: 30, description: '风控' },
+      { error_code: 429, keywords: [], duration_minutes: 15 },
+    ])
+    expect(form).toHaveLength(2)
+    expect(form[0]).toEqual({ errorCode: '403', keywords: 'risk, unusual', durationMinutes: '30', description: '风控' })
+    expect(form[1]).toEqual({ errorCode: '429', keywords: '', durationMinutes: '15', description: '' })
+  })
+  it('缺省/非数组 → 空数组(不预填出脏行)', () => {
+    expect(rulesToForm(undefined)).toEqual([])
+  })
+  it('formFromAccount 预填现值(变异:若丢弃 rules 则替换列表为空,会误清空)', () => {
+    const acct = { ...base, temp_unschedulable_rules: [{ error_code: 403, keywords: ['x'], duration_minutes: 20 }] } as ProviderAccount
+    expect(formFromAccount(acct).tempUnschedulableRules).toHaveLength(1)
   })
 })
