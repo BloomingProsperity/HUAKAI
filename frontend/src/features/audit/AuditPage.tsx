@@ -98,11 +98,11 @@ export function AuditPage() {
   const setD = <K extends keyof AuditFilters>(k: K, v: AuditFilters[K]) => setDraft((f) => ({ ...f, [k]: v }))
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 'var(--hk-space-4)', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>安全与审计</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>安全与审计</h1>
+          <p className="hk-sub">
             管线第 8 站 · 防篡改审计账本(只读)。已载 {events.length} / 共 {total} 条。
           </p>
         </div>
@@ -112,7 +112,8 @@ export function AuditPage() {
             disabled={exporting || !filters.from || !filters.to}
             onClick={onExport}
             title={!filters.from || !filters.to ? '先在下方设置并应用「起 / 止」时间段,再导出该区间审计链' : '导出当前时间段内整条审计链(含签名与 Merkle 根)的 JSON'}
-            style={{ ...ghostBtn, height: 36, opacity: exporting || !filters.from || !filters.to ? 0.6 : 1, cursor: exporting || !filters.from || !filters.to ? 'not-allowed' : 'pointer' }}
+            className="hk-btn"
+            style={{ opacity: exporting || !filters.from || !filters.to ? 0.6 : 1, cursor: exporting || !filters.from || !filters.to ? 'not-allowed' : 'pointer' }}
           >
             {exporting ? '导出中…' : '导出审计链'}
           </button>
@@ -147,10 +148,10 @@ export function AuditPage() {
           <input type="datetime-local" value={draft.to} onChange={(e) => setD('to', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="submit" style={primaryBtn}>
+          <button type="submit" className="hk-btn hk-btn--green">
             查询
           </button>
-          <button type="button" onClick={() => { setDraft(EMPTY_AUDIT_FILTERS); setFilters(EMPTY_AUDIT_FILTERS) }} style={ghostBtn}>
+          <button type="button" onClick={() => { setDraft(EMPTY_AUDIT_FILTERS); setFilters(EMPTY_AUDIT_FILTERS) }} className="hk-btn">
             重置
           </button>
         </div>
@@ -159,20 +160,18 @@ export function AuditPage() {
       {error && <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>}
       {notice && <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{notice}</div>}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && events.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : events.length === 0 ? (
           <Empty>没有匹配的审计事件。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['时间', '事件', '严重度', '操作者', '原因', 'Request ID', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -194,7 +193,7 @@ export function AuditPage() {
       </div>
 
       {nextCursor && (
-        <button type="button" disabled={loading} onClick={loadMore} style={{ ...ghostBtn, alignSelf: 'center', height: 36 }}>
+        <button type="button" disabled={loading} onClick={loadMore} className="hk-btn" style={{ alignSelf: 'center' }}>
           {loading ? '加载中…' : '加载更多'}
         </button>
       )}
@@ -217,21 +216,21 @@ function FragmentRow({
 }) {
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdMono}>{fmt(ev.created_at)}</td>
-        <td style={td}>
+      <tr>
+        <td className="hk-mono">{fmt(ev.created_at)}</td>
+        <td>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{ev.event_type}</span>
             <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{ev.event_class}</span>
           </div>
         </td>
-        <td style={td}>
+        <td>
           <StatusBadge tone={severityTone(ev.severity)}>{ev.severity || '—'}</StatusBadge>
         </td>
-        <td style={td}>{actorLabel(ev)}</td>
-        <td style={{ ...td, maxWidth: 240, color: 'var(--hk-ink-700)' }}>{ev.reason || '—'}</td>
-        <td style={tdMono}>{ev.request_id ? short(ev.request_id) : '—'}</td>
-        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+        <td>{actorLabel(ev)}</td>
+        <td style={{ maxWidth: 240, color: 'var(--hk-ink-700)' }}>{ev.reason || '—'}</td>
+        <td className="hk-mono">{ev.request_id ? short(ev.request_id) : '—'}</td>
+        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
           {/* 仅当事件带 request_id 时可出具单条签名证明(后端按 request_id 查账本)。 */}
           {ev.request_id && (
             <button type="button" disabled={proofBusy} onClick={onProof} style={{ ...linkBtn, opacity: proofBusy ? 0.6 : 1, cursor: proofBusy ? 'wait' : 'pointer' }} title="下载该事件的签名证明 JSON">
@@ -290,13 +289,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

@@ -34,12 +34,14 @@ export function UpstreamModelsPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>厂商模型同步</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          手动触发全局模型目录同步 · 拉取各厂商最新模型并更新平台目录(高权操作,影响全部租户)。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>厂商模型同步</h1>
+          <p className="hk-sub">
+            手动触发全局模型目录同步 · 拉取各厂商最新模型并更新平台目录(高权操作,影响全部租户)。
+          </p>
+        </div>
       </header>
 
       <form
@@ -62,7 +64,7 @@ export function UpstreamModelsPage() {
           <span style={{ fontSize: 12, color: tooLong ? 'var(--hk-danger)' : 'var(--hk-ink-300)' }}>
             {tooLong ? `超出 ${-remaining} 字` : `剩余 ${remaining} 字`}
           </span>
-          <button type="submit" disabled={running || tooLong} style={{ ...primaryBtn, opacity: running || tooLong ? 0.6 : 1, cursor: running || tooLong ? 'not-allowed' : 'pointer' }}>
+          <button type="submit" disabled={running || tooLong} className="hk-btn hk-btn--green">
             {running ? '同步中…' : '触发同步'}
           </button>
         </div>
@@ -94,36 +96,32 @@ function SyncResultView({ result }: { result: ModelSyncResult }) {
         </span>
       </div>
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {result.results.length === 0 ? (
-          <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>
-            本次同步未返回任何厂商明细。
-          </div>
+          <div className="hk-empty">本次同步未返回任何厂商明细。</div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['厂商', '概况', '新增', '更新', '重启用', '停用', '未变', '快照更新'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {result.results.map((it) => (
-                  <tr key={it.vendor} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={{ ...td, fontWeight: 600, color: 'var(--hk-ink-900)' }}>{it.vendor}</td>
-                    <td style={td}>
+                  <tr key={it.vendor}>
+                    <td style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{it.vendor}</td>
+                    <td>
                       <StatusBadge tone={itemTone(it)}>{itemSummary(it)}</StatusBadge>
                     </td>
-                    <td style={tdNum}>{it.added}</td>
-                    <td style={tdNum}>{it.updated}</td>
-                    <td style={tdNum}>{it.reactivated}</td>
-                    <td style={tdNum}>{it.disabled}</td>
-                    <td style={tdNum}>{it.unchanged}</td>
-                    <td style={tdNum}>{it.snapshot_bumps}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.added}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.updated}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.reactivated}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.disabled}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.unchanged}</td>
+                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.snapshot_bumps}</td>
                   </tr>
                 ))}
               </tbody>
@@ -149,8 +147,4 @@ function fmt(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso || '—' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600 }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

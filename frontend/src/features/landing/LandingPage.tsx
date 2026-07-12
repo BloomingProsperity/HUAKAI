@@ -171,7 +171,7 @@ export function LandingPage() {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 const page: React.CSSProperties = { minHeight: '100vh', background: 'var(--hk-canvas)', color: 'var(--hk-ink-900)' }

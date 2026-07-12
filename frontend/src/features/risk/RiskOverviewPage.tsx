@@ -38,11 +38,11 @@ export function RiskOverviewPage() {
   const cards = data ? buildRiskCards(data) : []
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>风控总览</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>风控总览</h1>
+          <p className="hk-sub">
             运营台 · 已接线风控信号的只读聚合。本页不执行处置,点各卡「去处理」到对应运维页操作。
             {data ? ` 当前共 ${totalRiskSignals(data)} 个风险信号。` : ''}
           </p>
@@ -53,14 +53,14 @@ export function RiskOverviewPage() {
             value={tenantId}
             inputMode="numeric"
             onChange={(e) => setTenantId(parseTenantInput(e.target.value))}
-            style={{ width: 96, padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)' }}
+            style={{ width: 96, padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)' }}
           />
         </label>
       </header>
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)' }}>
           {error}
         </p>
       )}
@@ -72,10 +72,9 @@ export function RiskOverviewPage() {
             return (
               <div
                 key={c.key}
+                className="hk-card"
                 style={{
-                  border: '1px solid var(--hk-line)',
-                  borderLeft: `4px solid ${alert ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ok, var(--hk-success))'}`,
-                  borderRadius: 'var(--hk-radius-3)',
+                  borderLeft: `4px solid ${alert ? 'var(--hk-danger)' : 'var(--hk-success)'}`,
                   padding: 'var(--hk-space-4)',
                   display: 'flex',
                   flexDirection: 'column',
@@ -83,10 +82,10 @@ export function RiskOverviewPage() {
                 }}
               >
                 <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>{c.label}</span>
-                <span style={{ fontSize: 30, fontWeight: 600, color: alert ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ink-900)' }}>
+                <span style={{ fontSize: 30, fontWeight: 600, color: alert ? 'var(--hk-danger)' : 'var(--hk-ink-900)' }}>
                   {c.count}
                 </span>
-                <Link to={c.actionPath} style={{ fontSize: 12, color: 'var(--hk-accent, #2563eb)', textDecoration: 'none' }}>
+                <Link to={c.actionPath} style={{ fontSize: 12, color: 'var(--hk-primary-600)', textDecoration: 'none' }}>
                   去处理 · {c.actionLabel} →
                 </Link>
               </div>

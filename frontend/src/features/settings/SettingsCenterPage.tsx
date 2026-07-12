@@ -56,12 +56,12 @@ export function SettingsCenterPage() {
   const tab = TAB_GROUPS.find((t) => t.key === activeTab) ?? TAB_GROUPS[0]
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>设置中心</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          平台级配置 · 按分签归类。密钥项不回显明文(仅显是否已配置);环境变量项只读。共 {settings.length} 项。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>设置中心</h1>
+          <p className="hk-sub">平台级配置 · 按分签归类。密钥项不回显明文(仅显是否已配置);环境变量项只读。共 {settings.length} 项。</p>
+        </div>
       </header>
 
       {editing && (
@@ -107,11 +107,11 @@ export function SettingsCenterPage() {
       </div>
 
       {/* 当前 tab 的设置卡 */}
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && settings.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <div className="hk-empty">加载中…</div>
         ) : tab.items.length === 0 ? (
-          <Empty>该分签暂无可配置项。</Empty>
+          <div className="hk-empty">该分签暂无可配置项。</div>
         ) : (
           <div>
             {tab.items.map((meta, idx) => {
@@ -262,8 +262,8 @@ function EditModal({
         </Field>
         {error && <div style={errorBoxSmall}>{error}</div>}
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">取消</button>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '保存中…' : '保存'}
           </button>
         </div>
@@ -349,10 +349,6 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </label>
   )
 }
-function Empty({ children }: { children: ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-
 const tabBar: CSSProperties = {
   display: 'flex',
   gap: 'var(--hk-space-1)',
@@ -380,13 +376,11 @@ const rowStyle: CSSProperties = {
   gap: 'var(--hk-space-4)',
   padding: 'var(--hk-space-4)',
 }
-const inp: CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const inp: CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const overlay: CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: 'var(--hk-space-6)', zIndex: 'var(--hk-z-overlay)' as unknown as number, overflowY: 'auto' }
 const modal: CSSProperties = { width: 'min(480px,100%)', background: 'var(--hk-surface)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }
 const errorBox: CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const errorBoxSmall: CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-const primaryBtn: CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
 const toggle: CSSProperties = { position: 'relative', display: 'inline-flex', alignItems: 'center', width: 64, height: 28, borderRadius: 'var(--hk-radius-pill)', border: '1px solid', padding: 3, cursor: 'pointer' }
 const toggleKnob: CSSProperties = { width: 20, height: 20, borderRadius: '50%', flexShrink: 0 }

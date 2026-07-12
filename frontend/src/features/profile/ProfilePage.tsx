@@ -41,10 +41,12 @@ import type { MeResponse, OAuthBinding, PasskeyItem, TwoFASetupResult, TwoFAStat
  */
 export function ProfilePage() {
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)', maxWidth: 760 }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>个人资料 · 安全</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>管理你的账号资料、登录密码、两步验证、通行密钥与社交绑定。</p>
+    <div className="hk-page" style={{ maxWidth: 760 }}>
+      <header className="hk-pagehead">
+        <div>
+          <h1>个人资料 · 安全</h1>
+          <p className="hk-sub">管理你的账号资料、登录密码、两步验证、通行密钥与社交绑定。</p>
+        </div>
       </header>
       <ProfileCard />
       <PasswordCard />
@@ -129,10 +131,10 @@ function ProfileCard() {
             {editing ? (
               <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
                 <input value={draft} onChange={(e) => setDraft(e.target.value)} style={{ ...inp, width: 240 }} />
-                <button type="button" disabled={busy} onClick={save} style={primaryBtn}>
+                <button type="button" disabled={busy} onClick={save} className="hk-btn hk-btn--green">
                   {busy ? '保存中…' : '保存'}
                 </button>
-                <button type="button" onClick={() => { setEditing(false); setDraft(me.display_name); setError(null) }} style={ghostBtn}>
+                <button type="button" onClick={() => { setEditing(false); setDraft(me.display_name); setError(null) }} className="hk-btn">
                   取消
                 </button>
               </div>
@@ -195,7 +197,7 @@ function PasswordCard() {
           <input type="password" autoComplete="new-password" value={form.confirmPassword} onChange={(e) => set('confirmPassword', e.target.value)} style={inp} />
         </Field>
         <div>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '提交中…' : '修改密码'}
           </button>
         </div>
@@ -342,7 +344,7 @@ function TwoFACard() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
               {!setupData ? (
                 <div>
-                  <button type="button" disabled={busy} onClick={beginSetup} style={primaryBtn}>
+                  <button type="button" disabled={busy} onClick={beginSetup} className="hk-btn hk-btn--green">
                     {busy ? '处理中…' : '开启两步验证'}
                   </button>
                 </div>
@@ -362,10 +364,10 @@ function TwoFACard() {
                   )}
                   <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
                     <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="6 位动态码" inputMode="numeric" style={{ ...inp, width: 140 }} />
-                    <button type="button" disabled={busy} onClick={confirmEnable} style={primaryBtn}>
+                    <button type="button" disabled={busy} onClick={confirmEnable} className="hk-btn hk-btn--green">
                       确认开启
                     </button>
-                    <button type="button" onClick={() => { setSetupData(null); setCode('') }} style={ghostBtn}>
+                    <button type="button" onClick={() => { setSetupData(null); setCode('') }} className="hk-btn">
                       取消
                     </button>
                   </div>
@@ -379,10 +381,10 @@ function TwoFACard() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
               <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
                 <input value={actionCode} onChange={(e) => setActionCode(e.target.value)} placeholder="6 位动态码 / 备用码" inputMode="numeric" style={{ ...inp, width: 180 }} />
-                <button type="button" disabled={busy} onClick={confirmDisable} style={dangerBtn}>
+                <button type="button" disabled={busy} onClick={confirmDisable} className="hk-btn hk-btn--danger">
                   关闭两步验证
                 </button>
-                <button type="button" disabled={busy} onClick={regenerate} style={ghostBtn}>
+                <button type="button" disabled={busy} onClick={regenerate} className="hk-btn">
                   重新生成备用码
                 </button>
               </div>
@@ -624,17 +626,17 @@ function DangerCard() {
       {error && <ErrBox>{error}</ErrBox>}
       {!confirming ? (
         <div>
-          <button type="button" onClick={() => setConfirming(true)} style={dangerBtn}>
+          <button type="button" onClick={() => setConfirming(true)} className="hk-btn hk-btn--danger">
             注销我的账号
           </button>
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 13, color: 'var(--hk-danger)' }}>确认要永久注销账号吗?</span>
-          <button type="button" disabled={busy} onClick={doDelete} style={dangerBtn}>
+          <button type="button" disabled={busy} onClick={doDelete} className="hk-btn hk-btn--danger">
             {busy ? '处理中…' : '确认注销'}
           </button>
-          <button type="button" onClick={() => setConfirming(false)} style={ghostBtn}>
+          <button type="button" onClick={() => setConfirming(false)} className="hk-btn">
             取消
           </button>
         </div>
@@ -646,20 +648,13 @@ function DangerCard() {
 // ---- 复用小组件 ----
 function Card({ title, tone, children }: { title: string; tone?: 'danger'; children: React.ReactNode }) {
   return (
-    <section
-      style={{
-        background: 'var(--hk-surface)',
-        border: `1px solid ${tone === 'danger' ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
-        borderRadius: 'var(--hk-radius-lg)',
-        boxShadow: 'var(--hk-shadow-1)',
-        padding: 'var(--hk-space-5)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--hk-space-3)',
-      }}
-    >
-      <h2 style={{ fontSize: 16, margin: 0, color: tone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-900)' }}>{title}</h2>
-      {children}
+    <section className="hk-card" style={tone === 'danger' ? { borderColor: 'var(--hk-danger-soft)' } : undefined}>
+      <div className="hk-card__head">
+        <h3 style={tone === 'danger' ? { color: 'var(--hk-danger)' } : undefined}>{title}</h3>
+      </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        {children}
+      </div>
     </section>
   )
 }
@@ -722,12 +717,9 @@ function panelLabel(panel: string): string {
   }
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const mono: React.CSSProperties = { fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
 const hint: React.CSSProperties = { margin: 0, fontSize: 12, color: 'var(--hk-ink-500)' }
 const listRow: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #d98178', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger-soft)', color: 'var(--hk-danger)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
 const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)', flexShrink: 0 }

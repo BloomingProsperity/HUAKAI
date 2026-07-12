@@ -67,12 +67,12 @@ export function AffiliatePage() {
   const inviteLink = code ? buildInviteLink(window.location.origin, code.code) : ''
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>推广</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          分享你的专属邀请链接,好友注册并达成条件后你将获得返利。以下为只读概览。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>推广</h1>
+          <p className="hk-sub">分享你的专属邀请链接,好友注册并达成条件后你将获得返利。以下为只读概览。</p>
+        </div>
       </header>
 
       {error && (
@@ -80,61 +80,65 @@ export function AffiliatePage() {
       )}
 
       {/* ① 邀请码 / 邀请链接 */}
-      <section style={card}>
-        <h2 style={cardTitle}>专属邀请码</h2>
-        {loading && !code ? (
-          <p style={mutedLine}>加载中…</p>
-        ) : code ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-            <CopyRow label="邀请码" value={code.code} />
-            {inviteLink && <CopyRow label="邀请链接" value={inviteLink} />}
-          </div>
-        ) : (
-          <p style={mutedLine}>暂无邀请码。</p>
-        )}
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>专属邀请码</h3></div>
+        <div className="hk-card__body">
+          {loading && !code ? (
+            <p style={mutedLine}>加载中…</p>
+          ) : code ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+              <CopyRow label="邀请码" value={code.code} />
+              {inviteLink && <CopyRow label="邀请链接" value={inviteLink} />}
+            </div>
+          ) : (
+            <p style={mutedLine}>暂无邀请码。</p>
+          )}
+        </div>
       </section>
 
       {/* ①b 生成活动邀请码(写) */}
       <MintCampaignCode />
 
       {/* ② 累计返利汇总(只读) */}
-      <section style={card}>
-        <h2 style={cardTitle}>返利汇总</h2>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-5)' }}>
-          <Metric label="被邀请人总数" value={String(referralsTotal)} />
-          <Metric label="已合格" value={summary ? String(summary.qualified_count) : '—'} />
-          <Metric label="已返利人数" value={summary ? String(summary.rewarded_count) : '—'} />
-          <Metric label="累计返利(汇总)" value={summary ? formatCents(summary.rewards_earned_cents) : '—'} accent />
-          <Metric label="累计返利(流水)" value={rewards ? formatUsd(rewards.total_reward_usd) : '—'} />
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>返利汇总</h3></div>
+        <div className="hk-card__body">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-5)' }}>
+            <Metric label="被邀请人总数" value={String(referralsTotal)} />
+            <Metric label="已合格" value={summary ? String(summary.qualified_count) : '—'} />
+            <Metric label="已返利人数" value={summary ? String(summary.rewarded_count) : '—'} />
+            <Metric label="累计返利(汇总)" value={summary ? formatCents(summary.rewards_earned_cents) : '—'} accent />
+            <Metric label="累计返利(流水)" value={rewards ? formatUsd(rewards.total_reward_usd) : '—'} />
+          </div>
         </div>
       </section>
 
       {/* ③ 被邀请人列表 */}
-      <section style={card}>
-        <h2 style={cardTitle}>被邀请人</h2>
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>被邀请人</h3></div>
         {loading && referrals.length === 0 ? (
-          <p style={mutedLine}>加载中…</p>
+          <div className="hk-empty">加载中…</div>
         ) : referrals.length === 0 ? (
-          <p style={mutedLine}>还没有被邀请人。分享你的邀请链接开始吧。</p>
+          <div className="hk-empty">还没有被邀请人。分享你的邀请链接开始吧。</div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={table}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['被邀请人', '状态', '邀请时间', '返利时间'].map((h) => (
-                    <th key={h} style={th}>{h}</th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {referrals.map((r) => (
-                  <tr key={r.referral_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>{refereeDisplay(r.referee_user_id)}</td>
-                    <td style={td}>
+                  <tr key={r.referral_id}>
+                    <td className="hk-mono">{refereeDisplay(r.referee_user_id)}</td>
+                    <td>
                       <StatusBadge tone={referralStatusTone(r.status)}>{referralStatusLabel(r.status)}</StatusBadge>
                     </td>
-                    <td style={td}>{fmtTime(r.created_at)}</td>
-                    <td style={td}>{r.rewarded_at ? fmtTime(r.rewarded_at) : '—'}</td>
+                    <td className="hk-mono">{fmtTime(r.created_at)}</td>
+                    <td className="hk-mono">{r.rewarded_at ? fmtTime(r.rewarded_at) : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -144,29 +148,29 @@ export function AffiliatePage() {
       </section>
 
       {/* ③b 返利流水 */}
-      <section style={card}>
-        <h2 style={cardTitle}>返利流水</h2>
+      <section className="hk-card">
+        <div className="hk-card__head"><h3>返利流水</h3></div>
         {loading && !rewards ? (
-          <p style={mutedLine}>加载中…</p>
+          <div className="hk-empty">加载中…</div>
         ) : !rewards || rewards.items.length === 0 ? (
-          <p style={mutedLine}>暂无返利记录。</p>
+          <div className="hk-empty">暂无返利记录。</div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={table}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['关联邀请', '类型', '金额', '时间'].map((h) => (
-                    <th key={h} style={th}>{h}</th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rewards.items.map((it, idx) => (
-                  <tr key={`${it.referral_id}-${idx}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>#{it.referral_id}</td>
-                    <td style={td}>{it.reward_type}</td>
-                    <td style={tdNum}>{formatUsd(it.amount_usd)}</td>
-                    <td style={td}>{fmtTime(it.created_at)}</td>
+                  <tr key={`${it.referral_id}-${idx}`}>
+                    <td className="hk-mono">#{it.referral_id}</td>
+                    <td>{it.reward_type}</td>
+                    <td className="hk-mono">{formatUsd(it.amount_usd)}</td>
+                    <td className="hk-mono">{fmtTime(it.created_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -223,8 +227,9 @@ function MintCampaignCode() {
   }
 
   return (
-    <section style={card}>
-      <h2 style={cardTitle}>生成活动邀请码</h2>
+    <section className="hk-card">
+      <div className="hk-card__head"><h3>生成活动邀请码</h3></div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       <p style={mutedLine}>
         为推广活动批量生成可多次使用的邀请码。被邀请人注册并达标后将给你返利。
         生成的码仅本次展示一次,刷新后不再显示;你的固定自助邀请码见上方「专属邀请码」。
@@ -256,7 +261,7 @@ function MintCampaignCode() {
             disabled={busy}
           />
         </label>
-        <button type="button" onClick={submit} disabled={busy} style={primaryBtn}>
+        <button type="button" onClick={submit} disabled={busy} className="hk-btn hk-btn--green">
           {busy ? '生成中…' : '生成邀请码'}
         </button>
       </div>
@@ -275,6 +280,7 @@ function MintCampaignCode() {
           </p>
         </div>
       )}
+      </div>
     </section>
   )
 }
@@ -292,7 +298,7 @@ function CopyButton({ value }: { value: string }) {
     }
   }
   return (
-    <button type="button" onClick={copy} style={miniBtn}>
+    <button type="button" onClick={copy} className="hk-btn hk-btn--sm">
       {copied ? '已复制' : '复制'}
     </button>
   )
@@ -313,7 +319,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
       <span style={{ fontSize: 11, color: 'var(--hk-ink-500)', minWidth: 72 }}>{label}</span>
       <code style={codeVal}>{value}</code>
-      <button type="button" onClick={copy} style={miniBtn}>
+      <button type="button" onClick={copy} className="hk-btn hk-btn--sm">
         {copied ? '已复制' : '复制'}
       </button>
     </div>
@@ -336,23 +342,8 @@ function fmtTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  padding: 'var(--hk-space-5)',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--hk-space-3)',
-}
-const cardTitle: React.CSSProperties = { fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--hk-ink-900)' }
 const mutedLine: React.CSSProperties = { margin: 0, fontSize: 13, color: 'var(--hk-ink-500)' }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-const table: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
 const codeVal: React.CSSProperties = {
   flex: 1,
   fontSize: 13,
@@ -364,17 +355,6 @@ const codeVal: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-sm)',
   border: '1px solid var(--hk-line)',
 }
-const miniBtn: React.CSSProperties = {
-  height: 28,
-  padding: '0 var(--hk-space-3)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-surface)',
-  color: 'var(--hk-ink-700)',
-  fontSize: 12,
-  cursor: 'pointer',
-  flexShrink: 0,
-}
 const fieldCol: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4 }
 const fieldLabel: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)' }
 const inp: React.CSSProperties = {
@@ -382,22 +362,11 @@ const inp: React.CSSProperties = {
   width: 160,
   padding: '0 var(--hk-space-3)',
   border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
+  borderRadius: 'var(--hk-radius-sm)',
   background: 'var(--hk-surface)',
   color: 'var(--hk-ink-900)',
   fontSize: 13,
   fontFamily: 'var(--hk-font-mono)',
-}
-const primaryBtn: React.CSSProperties = {
-  height: 34,
-  padding: '0 var(--hk-space-5)',
-  border: '1px solid var(--hk-primary-700)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-700)',
-  color: '#fff',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
 }
 const mintedBox: React.CSSProperties = {
   padding: 'var(--hk-space-4)',

@@ -56,13 +56,15 @@ export function AvailableChannelsPage() {
     })
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>可用渠道目录</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          按厂商聚合的可用模型渠道与价目(公开价目表,{unitLabel})。共 {channels.length} 个渠道 ·{' '}
-          {filtered.length} 个模型。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>可用渠道目录</h1>
+          <p className="hk-sub">
+            按厂商聚合的可用模型渠道与价目(公开价目表,{unitLabel})。共 {channels.length} 个渠道 ·{' '}
+            {filtered.length} 个模型。
+          </p>
+        </div>
       </header>
 
       <div style={toolbar}>
@@ -118,7 +120,7 @@ function ChannelCard({
   onToggle: () => void
 }) {
   return (
-    <div style={cardWrap}>
+    <div className="hk-card">
       <button type="button" onClick={onToggle} style={cardHead} aria-expanded={open}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, textAlign: 'left' }}>
           <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--hk-ink-900)' }}>{channel.name}</span>
@@ -139,14 +141,12 @@ function ChannelCard({
       </button>
 
       {open && (
-        <div style={{ overflowX: 'auto', borderTop: '1px solid var(--hk-line)' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap" style={{ borderTop: '1px solid var(--hk-line)' }}>
+          <table className="hk-table">
             <thead>
               <tr>
                 {['模型', '模式', '输入价', '输出价', '上下文', '能力'].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -165,8 +165,8 @@ function ChannelCard({
 function ModelRow({ m, unit }: { m: PricingItem; unit: PriceUnit }) {
   const caps = capabilityList(m.capabilities)
   return (
-    <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-      <td style={td}>
+    <tr>
+      <td>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <code style={{ fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-900)' }}>{m.model}</code>
           {m.canonical_id && m.canonical_id !== m.model && (
@@ -174,11 +174,11 @@ function ModelRow({ m, unit }: { m: PricingItem; unit: PriceUnit }) {
           )}
         </div>
       </td>
-      <td style={td}>{m.mode || '—'}</td>
-      <td style={tdNum}>{formatPrice(m.input_price_per_token, unit)}</td>
-      <td style={tdNum}>{formatPrice(m.output_price_per_token, unit)}</td>
-      <td style={tdNum}>{m.context_length ? fmtTokens(m.context_length) : '—'}</td>
-      <td style={td}>
+      <td>{m.mode || '—'}</td>
+      <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.input_price_per_token, unit)}</td>
+      <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.output_price_per_token, unit)}</td>
+      <td className="hk-mono" style={{ textAlign: 'right' }}>{m.context_length ? fmtTokens(m.context_length) : '—'}</td>
+      <td>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {caps.length > 0 ? (
             caps.map((c) => (
@@ -234,11 +234,7 @@ function fmtTokens(n: number): string {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>
-      {children}
-    </div>
-  )
+  return <div className="hk-empty">{children}</div>
 }
 
 const toolbar: React.CSSProperties = {
@@ -255,18 +251,11 @@ const inp: React.CSSProperties = {
   height: 32,
   padding: '0 var(--hk-space-3)',
   border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
+  borderRadius: 'var(--hk-radius-sm)',
   fontSize: 13,
   background: 'var(--hk-surface)',
   color: 'var(--hk-ink-900)',
   width: '100%',
-}
-const cardWrap: React.CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  overflow: 'hidden',
 }
 const cardHead: React.CSSProperties = {
   display: 'flex',
@@ -286,21 +275,4 @@ const errorBox: React.CSSProperties = {
   color: 'var(--hk-danger)',
   background: 'var(--hk-danger-soft)',
   border: '1px solid var(--hk-danger-soft)',
-}
-const th: React.CSSProperties = {
-  textAlign: 'left',
-  padding: 'var(--hk-space-3) var(--hk-space-4)',
-  fontSize: 12,
-  fontWeight: 600,
-  color: 'var(--hk-ink-500)',
-  background: 'var(--hk-surface-sunken)',
-  whiteSpace: 'nowrap',
-}
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = {
-  ...td,
-  textAlign: 'right',
-  fontFamily: 'var(--hk-font-mono)',
-  color: 'var(--hk-ink-700)',
-  whiteSpace: 'nowrap',
 }

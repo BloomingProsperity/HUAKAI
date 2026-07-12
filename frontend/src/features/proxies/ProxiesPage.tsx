@@ -83,11 +83,11 @@ export function ProxiesPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>出口代理池</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>出口代理池</h1>
+          <p className="hk-sub">
             运营台 · 租户出口代理。新建 / 删除 / 切换状态;点「测试连通」经该代理建隧道到固定探测目标,
             验真实出站连通 + 延迟(非裸 TCP 存活)。
           </p>
@@ -98,7 +98,7 @@ export function ProxiesPage() {
             value={tenantId}
             inputMode="numeric"
             onChange={(e) => setTenantId(parseTenantInput(e.target.value))}
-            style={{ width: 96, padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)' }}
+            style={{ width: 96, padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)' }}
           />
         </label>
       </header>
@@ -107,7 +107,7 @@ export function ProxiesPage() {
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)' }}>
           {error}
         </p>
       )}
@@ -116,16 +116,17 @@ export function ProxiesPage() {
       )}
 
       {!loading && !error && proxies.length > 0 && (
-        <div style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-card">
+          <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
-              <tr style={{ textAlign: 'left', background: 'var(--hk-surface, #fff)' }}>
-                <th style={th}>名称</th>
-                <th style={th}>协议</th>
-                <th style={th}>地址</th>
-                <th style={th}>状态</th>
-                <th style={th}>连通性</th>
-                <th style={{ ...th, textAlign: 'right' }}>操作</th>
+              <tr>
+                <th>名称</th>
+                <th>协议</th>
+                <th>地址</th>
+                <th>状态</th>
+                <th>连通性</th>
+                <th style={{ textAlign: 'right' }}>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -133,66 +134,44 @@ export function ProxiesPage() {
                 const probe = probes[p.id]
                 return (
                   <Fragment key={p.id}>
-                  <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>{p.name}</td>
-                    <td style={td}>{p.protocol}</td>
-                    <td style={{ ...td, fontVariantNumeric: 'tabular-nums' }}>{p.host}:{p.port}</td>
-                    <td style={td}>
+                  <tr>
+                    <td>{p.name}</td>
+                    <td>{p.protocol}</td>
+                    <td className="hk-mono">{p.host}:{p.port}</td>
+                    <td>
                       <select
                         value={p.status}
                         onChange={(e) => onStatusChange(p, e.target.value)}
-                        style={{ color: toneColor[statusTone(p.status)], border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', padding: '2px 6px', fontSize: 12, background: 'transparent' }}
+                        style={{ color: toneColor[statusTone(p.status)], border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', padding: '2px 6px', fontSize: 12, background: 'transparent' }}
                       >
                         {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                       </select>
                     </td>
-                    <td style={{ ...td, color: probe?.summary ? toneColor[probe.summary.tone] : 'var(--hk-ink-500)' }}>
+                    <td style={{ color: probe?.summary ? toneColor[probe.summary.tone] : 'var(--hk-ink-500)' }}>
                       {probe?.testing ? '测试中…' : probe?.summary ? probe.summary.label : '—'}
                     </td>
-                    <td style={{ ...td, textAlign: 'right' }}>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button
                         type="button"
                         disabled={probe?.testing}
                         onClick={() => runTest(p.id)}
-                        style={{
-                          padding: '4px 10px',
-                          border: '1px solid var(--hk-line)',
-                          borderRadius: 'var(--hk-radius-2)',
-                          background: 'transparent',
-                          cursor: probe?.testing ? 'default' : 'pointer',
-                          fontSize: 12,
-                        }}
+                        className="hk-btn hk-btn--sm"
                       >
                         {probe?.testing ? '测试中' : '测试连通'}
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingId((id) => (id === p.id ? null : p.id))}
-                        style={{
-                          marginLeft: 8,
-                          padding: '4px 10px',
-                          border: '1px solid var(--hk-line)',
-                          borderRadius: 'var(--hk-radius-2)',
-                          background: 'transparent',
-                          cursor: 'pointer',
-                          fontSize: 12,
-                        }}
+                        className="hk-btn hk-btn--sm"
+                        style={{ marginLeft: 8 }}
                       >
                         {editingId === p.id ? '收起编辑' : '编辑'}
                       </button>
                       <button
                         type="button"
                         onClick={() => onDelete(p)}
-                        style={{
-                          marginLeft: 8,
-                          padding: '4px 10px',
-                          border: '1px solid var(--hk-danger, var(--hk-danger))',
-                          borderRadius: 'var(--hk-radius-2)',
-                          background: 'transparent',
-                          color: 'var(--hk-danger, var(--hk-danger))',
-                          cursor: 'pointer',
-                          fontSize: 12,
-                        }}
+                        className="hk-btn hk-btn--sm hk-btn--danger"
+                        style={{ marginLeft: 8 }}
                       >
                         删除
                       </button>
@@ -218,11 +197,10 @@ export function ProxiesPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-const th: React.CSSProperties = { padding: '8px 12px', fontWeight: 600, color: 'var(--hk-ink-700)' }
-const td: React.CSSProperties = { padding: '6px 12px' }

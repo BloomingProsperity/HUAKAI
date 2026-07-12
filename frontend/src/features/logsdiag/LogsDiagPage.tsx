@@ -64,12 +64,14 @@ export function LogsDiagPage() {
   const dirty = canSubmit(current, target)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>日志与诊断</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          网关运行时日志级别热调 · platform_admin 专属。调整即时生效,无需重启,无需改配置。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>日志与诊断</h1>
+          <p className="hk-sub">
+            网关运行时日志级别热调 · platform_admin 专属。调整即时生效,无需重启,无需改配置。
+          </p>
+        </div>
       </header>
 
       {error && (
@@ -79,7 +81,7 @@ export function LogsDiagPage() {
         <div style={noticeBox}>{notice}</div>
       )}
 
-      <section style={card}>
+      <section className="hk-card" style={{ padding: 'var(--hk-space-5)', maxWidth: 560 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
           <span style={cardLabel}>当前级别</span>
           {loading ? (
@@ -114,7 +116,7 @@ export function LogsDiagPage() {
                 </option>
               ))}
             </select>
-            <button type="button" disabled={!dirty || saving || loading} onClick={submit} style={dirty && !saving ? primaryBtn : primaryBtnDisabled}>
+            <button type="button" disabled={!dirty || saving || loading} onClick={submit} className="hk-btn hk-btn--green" style={dirty && !saving ? undefined : { opacity: 0.55, cursor: 'not-allowed' }}>
               {saving ? '切换中…' : '应用'}
             </button>
           </div>
@@ -127,42 +129,16 @@ export function LogsDiagPage() {
   )
 }
 
-const card: React.CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  padding: 'var(--hk-space-5)',
-  maxWidth: 560,
-}
 const cardLabel: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)' }
 const select: React.CSSProperties = {
   height: 34,
   padding: '0 var(--hk-space-3)',
   border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
+  borderRadius: 'var(--hk-radius-sm)',
   fontSize: 13,
   background: 'var(--hk-surface)',
   color: 'var(--hk-ink-900)',
   minWidth: 300,
-}
-const primaryBtn: React.CSSProperties = {
-  height: 34,
-  padding: '0 var(--hk-space-5)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
-}
-const primaryBtnDisabled: React.CSSProperties = {
-  ...primaryBtn,
-  background: 'var(--hk-surface-sunken)',
-  color: 'var(--hk-ink-300)',
-  border: '1px solid var(--hk-line)',
-  cursor: 'not-allowed',
 }
 const errorBox: React.CSSProperties = {
   padding: 'var(--hk-space-3)',

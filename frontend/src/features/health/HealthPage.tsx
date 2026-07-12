@@ -41,15 +41,13 @@ export function HealthPage() {
   const rt = data?.runtime
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>系统健康</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-            子系统状态与网关运行时聚合(只读)。{refreshedAt && `更新于 ${refreshedAt}`}
-          </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>系统健康</h1>
+          <p className="hk-sub">子系统状态与网关运行时聚合(只读)。{refreshedAt && `更新于 ${refreshedAt}`}</p>
         </div>
-        <button type="button" onClick={() => load()} disabled={loading} style={ghost}>
+        <button type="button" onClick={() => load()} disabled={loading} className="hk-btn">
           {loading ? '刷新中…' : '刷新'}
         </button>
       </header>
@@ -71,12 +69,12 @@ export function HealthPage() {
             <h2 style={sectionTitle}>子系统组件</h2>
             <div style={cardGrid}>
               {data.components.map((c) => (
-                <div key={c.name} style={card}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 14, fontWeight: 600 }}>{componentLabel(c.name)}</span>
+                <div key={c.name} className="hk-metric">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--hk-space-2)' }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{componentLabel(c.name)}</span>
                     <StatusPill status={c.status} />
                   </div>
-                  <span style={{ fontSize: 12, color: 'var(--hk-ink-500)', minHeight: 16 }}>{c.detail || '—'}</span>
+                  <span style={{ fontSize: 12, color: 'var(--hk-ink-500)', minHeight: 16, display: 'block' }}>{c.detail || '—'}</span>
                 </div>
               ))}
             </div>
@@ -131,15 +129,15 @@ function StatusPill({ status, large }: { status: HealthResponse['status']; large
 
 function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div style={card}>
-      <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{label}</span>
-      <span style={{ fontSize: 18, fontWeight: 600, fontFamily: mono ? 'var(--hk-font-mono)' : undefined, wordBreak: 'break-all' }}>{value}</span>
+    <div className="hk-metric">
+      <div className="hk-metric__label">{label}</div>
+      <div className={mono ? 'hk-metric__v hk-mono' : 'hk-metric__v'} style={{ wordBreak: 'break-all' }}>{value}</div>
     </div>
   )
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function toneBox(tone: Tone): { color: string; background: string; border: string } {
@@ -155,16 +153,6 @@ function toneBox(tone: Tone): { color: string; background: string; border: strin
 
 const sectionTitle: React.CSSProperties = { fontSize: 14, color: 'var(--hk-ink-700)' }
 const cardGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 'var(--hk-space-3)' }
-const card: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--hk-space-1)',
-  padding: 'var(--hk-space-4)',
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-}
 const statusBar: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
@@ -174,4 +162,3 @@ const statusBar: React.CSSProperties = {
   border: '1px solid',
 }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-const ghost: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, cursor: 'pointer', border: '1px solid var(--hk-line)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)' }

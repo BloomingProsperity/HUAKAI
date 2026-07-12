@@ -23,12 +23,14 @@ type Tab = 'usage' | 'claims'
 export function BillingClaimsPage() {
   const [tab, setTab] = useState<Tab>('usage')
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>用量与计费台账</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          运营台 · 计费运营。原始逐笔用量成本与预扣/结算 claim 台账(只读)。金额按十进制原样展示,不做四舍五入。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>用量与计费台账</h1>
+          <p className="hk-sub">
+            运营台 · 计费运营。原始逐笔用量成本与预扣/结算 claim 台账(只读)。金额按十进制原样展示,不做四舍五入。
+          </p>
+        </div>
       </header>
 
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)', borderBottom: '1px solid var(--hk-line)' }}>
@@ -144,10 +146,10 @@ function UsageSection() {
           仅待对账
         </label>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="submit" style={primaryBtn}>
+          <button type="submit" className="hk-btn hk-btn--green">
             查询
           </button>
-          <button type="button" onClick={() => { setDraft(EMPTY_USAGE_FILTERS); setFilters(EMPTY_USAGE_FILTERS) }} style={ghostBtn}>
+          <button type="button" onClick={() => { setDraft(EMPTY_USAGE_FILTERS); setFilters(EMPTY_USAGE_FILTERS) }} className="hk-btn">
             重置
           </button>
         </div>
@@ -157,11 +159,11 @@ function UsageSection() {
       {error && <ErrorBar>{error}</ErrorBar>}
 
       <TableShell empty={!loading && rows.length === 0} loading={loading && rows.length === 0} emptyText="没有匹配的用量记录。">
-        <table style={tableStyle}>
+        <table className="hk-table">
           <thead>
             <tr>
               {['时间', '模型', '供应商', 'Token(入/出)', '实际成本', '信任态', 'Request', ''].map((h) => (
-                <th key={h} style={th}>
+                <th key={h}>
                   {h}
                 </th>
               ))}
@@ -176,7 +178,7 @@ function UsageSection() {
       </TableShell>
 
       {nextCursor && (
-        <button type="button" disabled={loading} onClick={loadMore} style={{ ...ghostBtn, alignSelf: 'center', height: 36 }}>
+        <button type="button" disabled={loading} onClick={loadMore} className="hk-btn" style={{ alignSelf: 'center' }}>
           {loading ? '加载中…' : '加载更多'}
         </button>
       )}
@@ -187,9 +189,9 @@ function UsageSection() {
 function UsageRow({ r, expanded, onToggle }: { r: UsageRecord; expanded: boolean; onToggle: () => void }) {
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdMono}>{formatTime(r.created_at)}</td>
-        <td style={td}>
+      <tr>
+        <td className="hk-mono">{formatTime(r.created_at)}</td>
+        <td>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{r.requested_model || '—'}</span>
             {r.upstream_model && r.upstream_model !== r.requested_model && (
@@ -197,12 +199,12 @@ function UsageRow({ r, expanded, onToggle }: { r: UsageRecord; expanded: boolean
             )}
           </div>
         </td>
-        <td style={td}>{r.provider || '—'}</td>
-        <td style={tdMono}>
+        <td>{r.provider || '—'}</td>
+        <td className="hk-mono">
           {r.tokens_input} / {r.tokens_output}
         </td>
-        <td style={{ ...tdMono, fontWeight: 600 }}>{formatMoney(r.actual_cost)}</td>
-        <td style={td}>
+        <td className="hk-mono" style={{ fontWeight: 600 }}>{formatMoney(r.actual_cost)}</td>
+        <td>
           <StatusBadge tone={trustStatusTone(r.trust_status)}>{r.trust_status || '—'}</StatusBadge>
           {r.pending_reconciliation && (
             <div style={{ marginTop: 2 }}>
@@ -210,9 +212,9 @@ function UsageRow({ r, expanded, onToggle }: { r: UsageRecord; expanded: boolean
             </div>
           )}
         </td>
-        <td style={tdMono}>{shortId(r.request_id)}</td>
-        <td style={{ ...td, textAlign: 'right' }}>
-          <button type="button" onClick={onToggle} style={linkBtn}>
+        <td className="hk-mono">{shortId(r.request_id)}</td>
+        <td style={{ textAlign: 'right' }}>
+          <button type="button" onClick={onToggle} className="hk-btn hk-btn--sm">
             {expanded ? '收起' : '详情'}
           </button>
         </td>
@@ -319,10 +321,10 @@ function ClaimsSection() {
           <input type="datetime-local" value={draft.to} onChange={(e) => setD('to', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="submit" style={primaryBtn}>
+          <button type="submit" className="hk-btn hk-btn--green">
             查询
           </button>
-          <button type="button" onClick={() => { setDraft(EMPTY_CLAIM_FILTERS); setFilters(EMPTY_CLAIM_FILTERS) }} style={ghostBtn}>
+          <button type="button" onClick={() => { setDraft(EMPTY_CLAIM_FILTERS); setFilters(EMPTY_CLAIM_FILTERS) }} className="hk-btn">
             重置
           </button>
         </div>
@@ -332,11 +334,11 @@ function ClaimsSection() {
       {error && <ErrorBar>{error}</ErrorBar>}
 
       <TableShell empty={!loading && rows.length === 0} loading={loading && rows.length === 0} emptyText="没有匹配的 claim。">
-        <table style={tableStyle}>
+        <table className="hk-table">
           <thead>
             <tr>
               {['时间', '模型/端点', '状态', '预扣成本', '实际成本', '结算时间', 'Request', ''].map((h) => (
-                <th key={h} style={th}>
+                <th key={h}>
                   {h}
                 </th>
               ))}
@@ -351,7 +353,7 @@ function ClaimsSection() {
       </TableShell>
 
       {nextCursor && (
-        <button type="button" disabled={loading} onClick={loadMore} style={{ ...ghostBtn, alignSelf: 'center', height: 36 }}>
+        <button type="button" disabled={loading} onClick={loadMore} className="hk-btn" style={{ alignSelf: 'center' }}>
           {loading ? '加载中…' : '加载更多'}
         </button>
       )}
@@ -362,26 +364,26 @@ function ClaimsSection() {
 function ClaimRow({ c, expanded, onToggle }: { c: BillingClaim; expanded: boolean; onToggle: () => void }) {
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdMono}>{formatTime(c.created_at)}</td>
-        <td style={td}>
+      <tr>
+        <td className="hk-mono">{formatTime(c.created_at)}</td>
+        <td>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{c.requested_model || '—'}</span>
             <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{c.endpoint_family || '—'}</span>
           </div>
         </td>
-        <td style={td}>
+        <td>
           <StatusBadge tone={claimStatusTone(c.status)}>{c.status || '—'}</StatusBadge>
           {c.aborted_reason && (
             <div style={{ fontSize: 11, color: 'var(--hk-ink-300)', marginTop: 2 }}>{c.aborted_reason}</div>
           )}
         </td>
-        <td style={tdMono}>{formatMoney(c.predicted_cost, c.currency_code)}</td>
-        <td style={{ ...tdMono, fontWeight: 600 }}>{formatMoney(c.actual_cost, c.currency_code)}</td>
-        <td style={tdMono}>{formatTime(c.settled_at)}</td>
-        <td style={tdMono}>{shortId(c.logical_request_id)}</td>
-        <td style={{ ...td, textAlign: 'right' }}>
-          <button type="button" onClick={onToggle} style={linkBtn}>
+        <td className="hk-mono">{formatMoney(c.predicted_cost, c.currency_code)}</td>
+        <td className="hk-mono" style={{ fontWeight: 600 }}>{formatMoney(c.actual_cost, c.currency_code)}</td>
+        <td className="hk-mono">{formatTime(c.settled_at)}</td>
+        <td className="hk-mono">{shortId(c.logical_request_id)}</td>
+        <td style={{ textAlign: 'right' }}>
+          <button type="button" onClick={onToggle} className="hk-btn hk-btn--sm">
             {expanded ? '收起' : '详情'}
           </button>
         </td>
@@ -441,8 +443,8 @@ function TableShell({
   children: React.ReactNode
 }) {
   return (
-    <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
-      {loading ? <Empty>加载中…</Empty> : empty ? <Empty>{emptyText}</Empty> : <div style={{ overflowX: 'auto' }}>{children}</div>}
+    <div className="hk-card">
+      {loading ? <Empty>加载中…</Empty> : empty ? <Empty>{emptyText}</Empty> : <div className="hk-tablewrap">{children}</div>}
     </div>
   )
 }
@@ -463,7 +465,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 const filterFormStyle: React.CSSProperties = {
@@ -476,12 +478,5 @@ const filterFormStyle: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-lg)',
   padding: 'var(--hk-space-4)',
 }
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 }
 const preStyle: React.CSSProperties = { margin: 0, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-700)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

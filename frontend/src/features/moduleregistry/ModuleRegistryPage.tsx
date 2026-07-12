@@ -66,17 +66,19 @@ export function ModuleRegistryPage() {
   const counts = useMemo(() => countByProbe(modules), [modules])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>模块知识脊柱</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          每个子系统的身份 + 能力 + 静态 parity 状态 + 实时只读探针。只读总览,用于运维分诊与根因定位;此面不含任何密钥或用户数据。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>模块知识脊柱</h1>
+          <p className="hk-sub">
+            每个子系统的身份 + 能力 + 静态 parity 状态 + 实时只读探针。只读总览,用于运维分诊与根因定位;此面不含任何密钥或用户数据。
+          </p>
+        </div>
       </header>
 
       {/* 过滤 + 健康概览 */}
       <div style={{ display: 'flex', gap: 'var(--hk-space-4)', alignItems: 'stretch', flexWrap: 'wrap' }}>
-        <div style={{ ...card, padding: 'var(--hk-space-4)', display: 'flex', alignItems: 'flex-end', gap: 'var(--hk-space-3)' }}>
+        <div className="hk-card" style={{ padding: 'var(--hk-space-4)', display: 'flex', alignItems: 'flex-end', gap: 'var(--hk-space-3)' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
             类别过滤(category)
             <select
@@ -92,12 +94,12 @@ export function ModuleRegistryPage() {
               ))}
             </select>
           </label>
-          <button type="button" onClick={() => load(category)} disabled={loading} style={ghostBtn}>
+          <button type="button" onClick={() => load(category)} disabled={loading} className="hk-btn">
             {loading ? '刷新中…' : '刷新'}
           </button>
         </div>
 
-        <div style={{ ...card, padding: 'var(--hk-space-4)', display: 'flex', gap: 'var(--hk-space-5)', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="hk-card" style={{ padding: 'var(--hk-space-4)', display: 'flex', gap: 'var(--hk-space-5)', alignItems: 'center', flexWrap: 'wrap' }}>
           <Stat label="模块总数" value={counts.total} tone="muted" />
           <Stat label="正常" value={counts.ok} tone="ok" />
           <Stat label="降级" value={counts.degraded} tone="warn" />
@@ -114,34 +116,32 @@ export function ModuleRegistryPage() {
         <Empty>{category ? `类别「${category}」下暂无模块。` : '暂无已注册模块。'}</Empty>
       ) : (
         groups.map((g) => (
-          <section key={g.category} style={card}>
-            <div style={cardHead}>
-              <h2 style={{ fontSize: 15, margin: 0 }}>{g.category}</h2>
-              <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {g.modules.length} 个模块</span>
+          <section key={g.category} className="hk-card">
+            <div className="hk-card__head">
+              <h3>{g.category}</h3>
+              <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {g.modules.length} 个模块</span>
             </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <div className="hk-tablewrap">
+              <table className="hk-table">
                 <thead>
                   <tr>
                     {['模块', '能力', '探针', 'Parity / 状态', 'Section'].map((h) => (
-                      <th key={h} style={th}>
-                        {h}
-                      </th>
+                      <th key={h}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {g.modules.map((m) => (
-                    <tr key={m.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={td}>
+                    <tr key={m.id}>
+                      <td>
                         <div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{m.title || m.id}</div>
                         <div style={{ fontFamily: 'var(--hk-font-mono)', fontSize: 11, color: 'var(--hk-ink-500)' }}>{m.id}</div>
                       </td>
-                      <td style={td}>
+                      <td>
                         {m.capabilities && m.capabilities.length > 0 ? (
                           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                             {m.capabilities.map((c) => (
-                              <span key={c} style={chip}>
+                              <span key={c} className="hk-tag hk-tag--muted">
                                 {c}
                               </span>
                             ))}
@@ -150,7 +150,7 @@ export function ModuleRegistryPage() {
                           <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
                         )}
                       </td>
-                      <td style={td}>
+                      <td>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
                           <StatusBadge tone={probeTone(m.live_probe.status)}>
                             {probeLabel(m.live_probe.status)}
@@ -160,7 +160,7 @@ export function ModuleRegistryPage() {
                           )}
                         </div>
                       </td>
-                      <td style={tdMono}>
+                      <td className="hk-mono">
                         {m.catalog ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                             <span>
@@ -178,7 +178,7 @@ export function ModuleRegistryPage() {
                           <span style={{ color: 'var(--hk-ink-300)' }}>纯实时</span>
                         )}
                       </td>
-                      <td style={td}>{m.catalog?.section || '—'}</td>
+                      <td>{m.catalog?.section || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -210,14 +210,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const chip: React.CSSProperties = { fontSize: 11, padding: '1px 6px', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', color: 'var(--hk-ink-700)' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }

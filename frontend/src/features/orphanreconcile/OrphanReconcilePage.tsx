@@ -115,14 +115,16 @@ export function OrphanReconcilePage() {
   )
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>媒体任务孤儿对账</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          孤儿 = 上游已创建任务却因租约丢失未落库、可能漏计费的真亏钱线索。对账走 Manual-First:
-          标记终态;勾选「追扣」时<strong style={{ color: 'var(--hk-danger)' }}>真实从用户余额扣款</strong>(money,需二次确认),
-          幂等防双扣由后端保障。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>媒体任务孤儿对账</h1>
+          <p className="hk-sub">
+            孤儿 = 上游已创建任务却因租约丢失未落库、可能漏计费的真亏钱线索。对账走 Manual-First:
+            标记终态;勾选「追扣」时<strong style={{ color: 'var(--hk-danger)' }}>真实从用户余额扣款</strong>(money,需二次确认),
+            幂等防双扣由后端保障。
+          </p>
+        </div>
       </header>
 
       <form
@@ -141,10 +143,10 @@ export function OrphanReconcilePage() {
             style={{ ...inp, width: 200 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           应用过滤
         </button>
-        <button type="button" onClick={() => load()} style={ghostBtn}>
+        <button type="button" onClick={() => load()} className="hk-btn">
           刷新
         </button>
       </form>
@@ -152,10 +154,10 @@ export function OrphanReconcilePage() {
       {error && <Banner kind="error">{error}</Banner>}
       {notice && <Banner kind="ok">{notice}</Banner>}
 
-      <section style={card}>
-        <div style={cardHead}>
-          <h2 style={{ fontSize: 15, margin: 0 }}>待处置孤儿(pending)</h2>
-          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>待处置孤儿(pending)</h3>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>
             {loading ? '加载中…' : `共 ${rows.length} 条`}
           </span>
         </div>
@@ -165,14 +167,12 @@ export function OrphanReconcilePage() {
         ) : rows.length === 0 ? (
           <Empty>暂无待处置孤儿。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['孤儿', '任务', '租户', '用户', '厂商', '上游任务 ID', '预估漏扣', '状态', '上报时间', '处置'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -209,24 +209,24 @@ function OrphanRow({
   const backChargeAllowed = status === 'reconciled'
 
   return (
-    <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-      <td style={tdMono}>#{item.id}</td>
-      <td style={tdMono}>#{item.task_id}</td>
-      <td style={tdMono}>#{item.tenant_id}</td>
-      <td style={tdMono}>#{item.user_id}</td>
-      <td style={td}>{item.provider || '—'}</td>
-      <td style={{ ...tdMono, color: 'var(--hk-ink-500)' }}>{short(item.provider_task_id)}</td>
-      <td style={tdMono}>
+    <tr>
+      <td className="hk-mono">#{item.id}</td>
+      <td className="hk-mono">#{item.task_id}</td>
+      <td className="hk-mono">#{item.tenant_id}</td>
+      <td className="hk-mono">#{item.user_id}</td>
+      <td>{item.provider || '—'}</td>
+      <td className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>{short(item.provider_task_id)}</td>
+      <td className="hk-mono">
         {/* 列表口径:estimated_cents 恒 0 占位,真金额以追扣返回为准(后端 routes.go:109)。 */}
         {item.estimated_cents > 0 ? formatCents(item.estimated_cents) : '—'}
       </td>
-      <td style={td}>
+      <td>
         <StatusBadge tone={statusTone(item.reconcile_status)}>
           {statusLabel(item.reconcile_status)}
         </StatusBadge>
       </td>
-      <td style={tdMono}>{fmt(item.observed_at)}</td>
-      <td style={{ ...td, whiteSpace: 'nowrap' }}>
+      <td className="hk-mono">{fmt(item.observed_at)}</td>
+      <td style={{ whiteSpace: 'nowrap' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <select
             value={status}
@@ -267,7 +267,7 @@ function OrphanRow({
             type="button"
             disabled={busy}
             onClick={() => onReconcile(item, status, backCharge)}
-            style={backCharge ? dangerBtn : primaryBtn}
+            className={backCharge ? 'hk-btn hk-btn--sm hk-btn--danger' : 'hk-btn hk-btn--sm hk-btn--green'}
           >
             {busy ? '处理中…' : backCharge ? '对账并追扣' : '提交处置'}
           </button>
@@ -301,7 +301,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function short(s: string): string {
@@ -314,13 +314,5 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const selBox: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid #b03a2e', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const selBox: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 12, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }

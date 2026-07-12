@@ -47,12 +47,12 @@ export function VersionPage() {
   }, [])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>版本与维护</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          运维台 · 查看当前网关构建版本,验证 SMTP 邮件链路是否可用。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>版本与维护</h1>
+          <p className="hk-sub">运维台 · 查看当前网关构建版本,验证 SMTP 邮件链路是否可用。</p>
+        </div>
       </header>
 
       <BuildInfoCard info={info} loading={loading} error={loadError} />
@@ -137,11 +137,14 @@ function SmtpSettingsCard() {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={cardTitle}>SMTP 配置</h2>
-        <StatusBadge tone={pwConfigured ? 'ok' : 'warn'}>{pwConfigured ? '口令已配置' : '口令未配置'}</StatusBadge>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>SMTP 配置</h3>
+        <span style={{ marginLeft: 'auto' }}>
+          <StatusBadge tone={pwConfigured ? 'ok' : 'warn'}>{pwConfigured ? '口令已配置' : '口令未配置'}</StatusBadge>
+        </span>
       </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--hk-ink-500)' }}>
         配置平台发信使用的 SMTP 服务。口令为凭证不回显;留空保存=保留当前口令不变,填入新值才覆盖。
         文本字段留空同样保留原值,开关项始终按当前状态保存。
@@ -158,7 +161,7 @@ function SmtpSettingsCard() {
             style={{ ...inp, width: 120 }}
           />
         </label>
-        <button type="button" onClick={load} disabled={loading} style={secondaryBtn}>
+        <button type="button" onClick={load} disabled={loading} className="hk-btn">
           {loading ? '加载中…' : '读取设置'}
         </button>
       </div>
@@ -246,7 +249,7 @@ function SmtpSettingsCard() {
           </label>
         </div>
         <div>
-          <button type="submit" disabled={saving} style={primaryBtn}>
+          <button type="submit" disabled={saving} className="hk-btn hk-btn--green">
             {saving ? '保存中…' : '保存 SMTP 设置'}
           </button>
         </div>
@@ -266,20 +269,26 @@ function SmtpSettingsCard() {
           {result.text}
         </div>
       )}
+      </div>
     </section>
   )
 }
 
 function BuildInfoCard({ info, loading, error }: { info: BuildInfo | null; loading: boolean; error: string | null }) {
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={cardTitle}>构建版本</h2>
-        {info && isDevBuild(info) && <StatusBadge tone="warn">未打标本地构建</StatusBadge>}
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>构建版本</h3>
+        {info && isDevBuild(info) && (
+          <span style={{ marginLeft: 'auto' }}>
+            <StatusBadge tone="warn">未打标本地构建</StatusBadge>
+          </span>
+        )}
       </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       {error && <div style={errBox}>{error}</div>}
       {loading ? (
-        <div style={emptyBox}>加载中…</div>
+        <div className="hk-empty">加载中…</div>
       ) : info ? (
         <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: 'var(--hk-space-2) var(--hk-space-5)', margin: 0 }}>
           <Row label="版本">{displayVersion(info.version)}</Row>
@@ -292,8 +301,9 @@ function BuildInfoCard({ info, loading, error }: { info: BuildInfo | null; loadi
           </Row>
         </dl>
       ) : (
-        !error && <div style={emptyBox}>暂无版本信息。</div>
+        !error && <div className="hk-empty">暂无版本信息。</div>
       )}
+      </div>
     </section>
   )
 }
@@ -331,10 +341,11 @@ function SmtpTestCard() {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={cardTitle}>SMTP 连接测试</h2>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>SMTP 连接测试</h3>
       </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--hk-ink-500)' }}>
         用当前已保存的 SMTP 配置向下方邮箱发一封测试信。本页不修改 SMTP 设置,仅验证链路。
       </p>
@@ -359,7 +370,7 @@ function SmtpTestCard() {
             style={{ ...inp, width: 120 }}
           />
         </label>
-        <button type="submit" disabled={sending} style={primaryBtn}>
+        <button type="submit" disabled={sending} className="hk-btn hk-btn--green">
           {sending ? '发送中…' : '发送测试信'}
         </button>
       </form>
@@ -377,6 +388,7 @@ function SmtpTestCard() {
           {result.text}
         </div>
       )}
+      </div>
     </section>
   )
 }
@@ -400,22 +412,7 @@ function Row({ label, mono, children }: { label: string; mono?: boolean; childre
   )
 }
 
-const card: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 'var(--hk-space-3)',
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  padding: 'var(--hk-space-5)',
-}
-const cardHead: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)' }
-const cardTitle: React.CSSProperties = { margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--hk-ink-900)' }
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-const emptyBox: React.CSSProperties = { padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }
 const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const secondaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
 const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-900)', cursor: 'pointer' }

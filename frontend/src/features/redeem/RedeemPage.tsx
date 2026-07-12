@@ -103,21 +103,18 @@ export function RedeemPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>兑换码</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          输入兑换码为账户充值或开通订阅。每张码兑换后即生效, 不可重复。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>兑换码</h1>
+          <p className="hk-sub">输入兑换码为账户充值或开通订阅。每张码兑换后即生效, 不可重复。</p>
+        </div>
       </header>
 
       {/* 兑换卡片 */}
       <section
+        className="hk-card"
         style={{
-          background: 'var(--hk-surface)',
-          border: '1px solid var(--hk-line)',
-          borderRadius: 'var(--hk-radius-lg)',
-          boxShadow: 'var(--hk-shadow-1)',
           padding: 'var(--hk-space-5)',
           display: 'flex',
           flexDirection: 'column',
@@ -129,7 +126,7 @@ export function RedeemPage() {
           兑换码
         </label>
         {!promoEnabled && (
-          <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-warn-bg, #fff8e1)', border: '1px solid var(--hk-warn, #b8860b)', color: 'var(--hk-ink-700)' }}>
+          <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-warn-soft)', border: '1px solid var(--hk-warn)', color: 'var(--hk-ink-700)' }}>
             兑换功能当前已由运营者关闭,暂不可兑换。
           </div>
         )}
@@ -150,7 +147,7 @@ export function RedeemPage() {
               height: 38,
               padding: '0 var(--hk-space-3)',
               border: '1px solid var(--hk-line)',
-              borderRadius: 'var(--hk-radius-md)',
+              borderRadius: 'var(--hk-radius-sm)',
               background: 'var(--hk-surface)',
               color: 'var(--hk-ink-900)',
               fontSize: 14,
@@ -158,7 +155,7 @@ export function RedeemPage() {
               letterSpacing: '0.04em',
             }}
           />
-          <button type="button" disabled={submitting || !promoEnabled} onClick={submit} style={submitBtn}>
+          <button type="button" disabled={submitting || !promoEnabled} onClick={submit} className="hk-btn hk-btn--green">
             {submitting ? '兑换中…' : '兑换'}
           </button>
         </div>
@@ -195,55 +192,45 @@ export function RedeemPage() {
       </section>
 
       {/* 兑换历史 */}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-        <h2 style={{ fontSize: 15, margin: 0, color: 'var(--hk-ink-700)' }}>兑换历史</h2>
-        <div
-          style={{
-            background: 'var(--hk-surface)',
-            border: '1px solid var(--hk-line)',
-            borderRadius: 'var(--hk-radius-lg)',
-            boxShadow: 'var(--hk-shadow-1)',
-            overflow: 'hidden',
-          }}
-        >
-          {historyError ? (
-            <Empty>{historyError}</Empty>
-          ) : historyLoading && history.length === 0 ? (
-            <Empty>加载中…</Empty>
-          ) : history.length === 0 ? (
-            <Empty>还没有兑换记录。兑换成功后会显示在这里。</Empty>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    {['到账金额', '状态', '兑换时间', '券 ID'].map((h) => (
-                      <th key={h} style={th}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((row, i) => (
-                    <tr key={`${row.voucher_id}-${row.redeemed_at}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={{ ...td, fontWeight: 600, color: 'var(--hk-ink-900)' }}>
-                        {formatMoney(row.amount_cents, row.currency_code)}
-                      </td>
-                      <td style={td}>
-                        <StatusBadge tone={redemptionTone(row.status)}>{redemptionLabel(row.status)}</StatusBadge>
-                      </td>
-                      <td style={td}>{fmtTime(row.redeemed_at)}</td>
-                      <td style={td}>
-                        <code style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>#{row.voucher_id}</code>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+      <section className="hk-card">
+        <div className="hk-card__head">
+          <h3>兑换历史</h3>
         </div>
+        {historyError ? (
+          <div className="hk-empty">{historyError}</div>
+        ) : historyLoading && history.length === 0 ? (
+          <div className="hk-empty">加载中…</div>
+        ) : history.length === 0 ? (
+          <div className="hk-empty">还没有兑换记录。兑换成功后会显示在这里。</div>
+        ) : (
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead>
+                <tr>
+                  {['到账金额', '状态', '兑换时间', '券 ID'].map((h) => (
+                    <th key={h}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((row, i) => (
+                  <tr key={`${row.voucher_id}-${row.redeemed_at}-${i}`}>
+                    <td className="hk-mono" style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>
+                      {formatMoney(row.amount_cents, row.currency_code)}
+                    </td>
+                    <td>
+                      <StatusBadge tone={redemptionTone(row.status)}>{redemptionLabel(row.status)}</StatusBadge>
+                    </td>
+                    <td className="hk-mono">{fmtTime(row.redeemed_at)}</td>
+                    <td className="hk-mono">
+                      <code>#{row.voucher_id}</code>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
   )
@@ -290,38 +277,3 @@ function fmtTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>
-      {children}
-    </div>
-  )
-}
-
-const th: React.CSSProperties = {
-  textAlign: 'left',
-  padding: 'var(--hk-space-3) var(--hk-space-4)',
-  fontSize: 12,
-  fontWeight: 600,
-  color: 'var(--hk-ink-500)',
-  background: 'var(--hk-surface-sunken)',
-  whiteSpace: 'nowrap',
-}
-const td: React.CSSProperties = {
-  padding: 'var(--hk-space-3) var(--hk-space-4)',
-  verticalAlign: 'middle',
-  whiteSpace: 'nowrap',
-  color: 'var(--hk-ink-700)',
-}
-const submitBtn: React.CSSProperties = {
-  height: 38,
-  padding: '0 var(--hk-space-5)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 14,
-  fontWeight: 600,
-  cursor: 'pointer',
-  flexShrink: 0,
-}

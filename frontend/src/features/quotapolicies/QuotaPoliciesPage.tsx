@@ -40,13 +40,15 @@ export function QuotaPoliciesPage() {
   const [loaded, setLoaded] = useState(false)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>配额策略</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          防滥用限流:按作用域(全局/用户/Key/渠道/池分组/上游账号)对请求数、Token、成本、并发设上限。
-          platform_admin 须填租户 ID;tenant_operator 留空即用自身作用域。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>配额策略</h1>
+          <p className="hk-sub">
+            防滥用限流:按作用域(全局/用户/Key/渠道/池分组/上游账号)对请求数、Token、成本、并发设上限。
+            platform_admin 须填租户 ID;tenant_operator 留空即用自身作用域。
+          </p>
+        </div>
       </header>
 
       <form
@@ -62,7 +64,7 @@ export function QuotaPoliciesPage() {
         <Field label="租户 ID(tenant_id,operator 可留空)">
           <input value={tenantInput} onChange={(e) => setTenantInput(e.target.value)} inputMode="numeric" placeholder="留空=自身作用域" style={{ ...inp, width: 200 }} />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -142,12 +144,12 @@ function PolicyList({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>策略列表</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>策略列表</h3>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
           <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>已载 {rows.length} 条</span>
-          <button type="button" onClick={() => setEditor({ existing: null, initial: emptyPolicyForm() })} style={primaryBtn}>
+          <button type="button" onClick={() => setEditor({ existing: null, initial: emptyPolicyForm() })} className="hk-btn hk-btn--green hk-btn--sm">
             新建策略
           </button>
         </div>
@@ -188,7 +190,7 @@ function PolicyList({ tenantId }: { tenantId: number }) {
             <option value="false">已停用</option>
           </select>
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           查询
         </button>
         <button
@@ -197,7 +199,7 @@ function PolicyList({ tenantId }: { tenantId: number }) {
             setDraft(EMPTY_FILTERS)
             setFilters(EMPTY_FILTERS)
           }}
-          style={ghostBtn}
+          className="hk-btn"
         >
           重置
         </button>
@@ -211,43 +213,41 @@ function PolicyList({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>当前作用域暂无配额策略。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['ID', '作用域', '作用域 ID', '指标', '窗口', '上限', '突发', '模式', '优先级', '状态', ''].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((p) => (
-                <tr key={p.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={tdMono}>#{p.id}</td>
-                  <td style={td}>{scopeKindLabel(p.scope_kind)}</td>
-                  <td style={tdMono}>{p.scope_id}</td>
-                  <td style={td}>{metricLabel(p.metric)}</td>
-                  <td style={td}>
+                <tr key={p.id}>
+                  <td className="hk-mono">#{p.id}</td>
+                  <td>{scopeKindLabel(p.scope_kind)}</td>
+                  <td className="hk-mono">{p.scope_id}</td>
+                  <td>{metricLabel(p.metric)}</td>
+                  <td>
                     {windowKindLabel(p.window_kind)}
                     {p.window_kind === 'fixed' && p.window_seconds > 0 ? ` · ${p.window_seconds}s` : ''}
                   </td>
                   {/* 十进制原样字符串,仅裁展示尾随 0,绝不 Number() 化。 */}
-                  <td style={tdMono}>{formatDecimal(p.limit_value)}</td>
-                  <td style={tdMono}>{formatDecimal(p.burst_value)}</td>
-                  <td style={td}>
+                  <td className="hk-mono">{formatDecimal(p.limit_value)}</td>
+                  <td className="hk-mono">{formatDecimal(p.burst_value)}</td>
+                  <td>
                     <StatusBadge tone={modeTone(p.mode)}>{modeLabel(p.mode)}</StatusBadge>
                   </td>
-                  <td style={tdMono}>{p.priority}</td>
-                  <td style={td}>
+                  <td className="hk-mono">{p.priority}</td>
+                  <td>
                     <StatusBadge tone={p.enabled ? 'ok' : 'muted'}>{p.enabled ? '启用' : '停用'}</StatusBadge>
                   </td>
-                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busyId === p.id} onClick={() => setEditor({ existing: p, initial: policyToForm(p) })} style={linkBtn}>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button type="button" disabled={busyId === p.id} onClick={() => setEditor({ existing: p, initial: policyToForm(p) })} className="hk-btn hk-btn--sm">
                       编辑
                     </button>
-                    <button type="button" disabled={busyId === p.id} onClick={() => remove(p)} style={dangerLink}>
+                    <button type="button" disabled={busyId === p.id} onClick={() => remove(p)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
                       {busyId === p.id ? '处理中…' : '删除'}
                     </button>
                   </td>
@@ -260,7 +260,7 @@ function PolicyList({ tenantId }: { tenantId: number }) {
 
       {hasMore && (
         <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'center' }}>
-          <button type="button" disabled={loading} onClick={() => void fetchPage(offset, true)} style={ghostBtn}>
+          <button type="button" disabled={loading} onClick={() => void fetchPage(offset, true)} className="hk-btn">
             {loading ? '加载中…' : '加载更多'}
           </button>
         </div>
@@ -300,16 +300,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-600)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLink: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

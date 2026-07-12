@@ -42,12 +42,14 @@ import type {
  */
 export function PricingAdminPage() {
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>模型定价设置</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          分组倍率 · 缓存价覆盖 · 计费策略 · 工具附加费。写动作直接影响计费,提交前请确认。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>模型定价设置</h1>
+          <p className="hk-sub">
+            分组倍率 · 缓存价覆盖 · 计费策略 · 工具附加费。写动作直接影响计费,提交前请确认。
+          </p>
+        </div>
       </header>
       <RatioSection />
       <CacheOverrideSection />
@@ -113,9 +115,9 @@ function BillingPolicySection() {
           租户 id
           <input value={draftTenant} onChange={(e) => setDraftTenant(e.target.value)} style={inp} placeholder="如 1" />
         </label>
-        <button type="submit" style={primaryBtn}>查询</button>
+        <button type="submit" className="hk-btn hk-btn--green">查询</button>
         {settings && (
-          <button type="button" onClick={() => setEditOpen(true)} style={ghostBtn}>修改策略</button>
+          <button type="button" onClick={() => setEditOpen(true)} className="hk-btn">修改策略</button>
         )}
       </form>
 
@@ -148,21 +150,21 @@ function BillingPolicySection() {
             <Empty>加载中…</Empty>
           ) : settings ? (
             <Table head={['策略键', '当前值', '来源', '更新人', '更新时间']}>
-              <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-                <td style={{ ...td, fontFamily: 'var(--hk-font-mono)' }}>{settings.key}</td>
-                <td style={td}>
+              <tr>
+                <td className="hk-mono">{settings.key}</td>
+                <td>
                   <StatusBadge tone="info">{billingPolicyLabel(settings.value)}</StatusBadge>
                   <span style={{ marginLeft: 6, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-500)' }}>
                     ({settings.value})
                   </span>
                 </td>
-                <td style={td}>
+                <td>
                   <StatusBadge tone={settings.source === 'tenant' ? 'ok' : 'muted'}>
                     {settings.source === 'tenant' ? '租户自定义' : '全局默认'}
                   </StatusBadge>
                 </td>
-                <td style={td}>{settings.updated_by || '—'}</td>
-                <td style={td}>{fmt(settings.updated_at ?? undefined)}</td>
+                <td>{settings.updated_by || '—'}</td>
+                <td>{fmt(settings.updated_at ?? undefined)}</td>
               </tr>
             </Table>
           ) : (
@@ -314,11 +316,11 @@ function RatioSection() {
           租户 id
           <input value={draftTenant} onChange={(e) => setDraftTenant(e.target.value)} style={inp} placeholder="如 1" />
         </label>
-        <button type="submit" style={primaryBtn}>查询</button>
+        <button type="submit" className="hk-btn hk-btn--green">查询</button>
         {tenantId !== null && (
           <>
-            <button type="button" onClick={() => setEditing('new')} style={ghostBtn}>＋ 新增倍率</button>
-            <button type="button" onClick={runAudit} style={ghostBtn}>审计校验</button>
+            <button type="button" onClick={() => setEditing('new')} className="hk-btn">＋ 新增倍率</button>
+            <button type="button" onClick={runAudit} className="hk-btn">审计校验</button>
           </>
         )}
       </form>
@@ -356,17 +358,17 @@ function RatioSection() {
           ) : (
             <Table head={['分组 id', '倍率', '对外暴露', '更新人', '更新时间', '']}>
               {rows.map((r) => (
-                <tr key={r.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={td}>{r.pool_group_id}</td>
-                  <td style={tdNum}>{r.public_ratio ? r.ratio ?? '—' : '(隐藏)'}</td>
-                  <td style={td}>
+                <tr key={r.id}>
+                  <td className="hk-mono">{r.pool_group_id}</td>
+                  <td className="hk-mono" style={{ textAlign: 'right' }}>{r.public_ratio ? r.ratio ?? '—' : '(隐藏)'}</td>
+                  <td>
                     <StatusBadge tone={r.public_ratio ? 'info' : 'muted'}>{r.public_ratio ? '是' : '否'}</StatusBadge>
                   </td>
-                  <td style={td}>{r.updated_by || '—'}</td>
-                  <td style={td}>{fmt(r.updated_at)}</td>
-                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" onClick={() => setEditing(r)} style={linkBtn}>编辑</button>
-                    <button type="button" disabled={busyId === r.id} onClick={() => remove(r)} style={linkDanger}>删除</button>
+                  <td>{r.updated_by || '—'}</td>
+                  <td>{fmt(r.updated_at)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button type="button" onClick={() => setEditing(r)} className="hk-btn hk-btn--sm">编辑</button>
+                    <button type="button" disabled={busyId === r.id} onClick={() => remove(r)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>删除</button>
                   </td>
                 </tr>
               ))}
@@ -491,7 +493,7 @@ function CacheOverrideSection() {
   return (
     <Section title="缓存价覆盖" subtitle="按 global / model / tenant 覆盖缓存命中计费倍率;未列出的走官方价。">
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-        <button type="button" onClick={() => setEditOpen(true)} style={ghostBtn}>＋ 设置覆盖</button>
+        <button type="button" onClick={() => setEditOpen(true)} className="hk-btn">＋ 设置覆盖</button>
       </div>
 
       {error && <ErrorBox>{error}</ErrorBox>}
@@ -514,15 +516,15 @@ function CacheOverrideSection() {
         ) : (
           <Table head={['范围', '限定', '倍率', '更新时间', '']}>
             {rows.map((r) => (
-              <tr key={rowKey(r)} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                <td style={td}>
+              <tr key={rowKey(r)}>
+                <td>
                   <StatusBadge tone="info">{scopeLabel(r.scope)}</StatusBadge>
                 </td>
-                <td style={td}>{r.model ? r.model : r.tenant_id ? `租户 ${r.tenant_id}` : '—'}</td>
-                <td style={tdNum}>{r.multiplier}</td>
-                <td style={td}>{fmt(r.updated_at)}</td>
-                <td style={{ ...td, textAlign: 'right' }}>
-                  <button type="button" disabled={busyKey === rowKey(r)} onClick={() => remove(r)} style={linkDanger}>清除</button>
+                <td>{r.model ? r.model : r.tenant_id ? `租户 ${r.tenant_id}` : '—'}</td>
+                <td className="hk-mono" style={{ textAlign: 'right' }}>{r.multiplier}</td>
+                <td>{fmt(r.updated_at)}</td>
+                <td style={{ textAlign: 'right' }}>
+                  <button type="button" disabled={busyKey === rowKey(r)} onClick={() => remove(r)} className="hk-btn hk-btn--sm hk-btn--danger">清除</button>
                 </td>
               </tr>
             ))}
@@ -608,11 +610,11 @@ function ToolSurchargeSection() {
       <Card>
         <Table head={['工具', '名称', '价格(USD/1000 次)', '备注']}>
           {TOOL_SURCHARGE_DEFAULTS.map((t) => (
-            <tr key={t.tool} style={{ borderTop: '1px solid var(--hk-line)' }}>
-              <td style={{ ...td, fontFamily: 'var(--hk-font-mono)' }}>{t.tool}</td>
-              <td style={td}>{t.label}</td>
-              <td style={tdNum}>${t.perThousandUSD}</td>
-              <td style={{ ...td, color: 'var(--hk-ink-500)' }}>{t.note}</td>
+            <tr key={t.tool}>
+              <td className="hk-mono">{t.tool}</td>
+              <td>{t.label}</td>
+              <td className="hk-mono" style={{ textAlign: 'right' }}>${t.perThousandUSD}</td>
+              <td style={{ color: 'var(--hk-ink-500)' }}>{t.note}</td>
             </tr>
           ))}
         </Table>
@@ -644,21 +646,17 @@ function Section({ title, subtitle, children }: { title: string; subtitle: strin
 }
 
 function Card({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
-      {children}
-    </div>
-  )
+  return <div className="hk-card">{children}</div>
 }
 
 function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="hk-tablewrap">
+      <table className="hk-table">
         <thead>
           <tr>
             {head.map((h, i) => (
-              <th key={h || i} style={th}>{h}</th>
+              <th key={h || i}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -682,8 +680,8 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 function ModalActions({ onCancel, onConfirm, busy }: { onCancel: () => void; onConfirm: () => void; busy: boolean }) {
   return (
     <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
-      <button type="button" onClick={onCancel} style={ghostBtn}>取消</button>
-      <button type="button" disabled={busy} onClick={onConfirm} style={primaryBtn}>
+      <button type="button" onClick={onCancel} className="hk-btn">取消</button>
+      <button type="button" disabled={busy} onClick={onConfirm} className="hk-btn hk-btn--green">
         {busy ? '提交中…' : '确认提交(需 Owner 确认)'}
       </button>
     </div>
@@ -708,7 +706,7 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function rowKey(r: CacheOverride): string {
@@ -721,13 +719,6 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const toolbar: React.CSSProperties = { display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)' }
 const fieldInline: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const linkDanger: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

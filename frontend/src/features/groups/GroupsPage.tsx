@@ -68,15 +68,15 @@ export function GroupsPage() {
   }
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>分组管理</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>分组管理</h1>
+          <p className="hk-sub">
             池组(逻辑容量分组)· 路由策略默认值与成员账号。共 {pools.length} 组。
           </p>
         </div>
-        <button type="button" onClick={() => setCreateOpen(true)} style={newBtn}>
+        <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">
           ＋ 新建分组
         </button>
       </header>
@@ -88,18 +88,18 @@ export function GroupsPage() {
         <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>
       )}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && pools.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : pools.length === 0 ? (
           <Empty>还没有分组。点击右上角新建。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['名称', '能力默认', 'TopK', '兜底', '状态', '创建时间', ''].map((h) => (
-                    <th key={h} style={th}>{h}</th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -141,33 +141,33 @@ function PoolRow({
 }) {
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={td}>
+      <tr>
+        <td>
           <button type="button" onClick={onToggleExpand} style={{ ...linkBtn, fontWeight: 600, color: 'var(--hk-primary-700)', padding: 0 }}>
             {expanded ? '▾ ' : '▸ '}
             {pool.name}
           </button>
         </td>
-        <td style={td}>{capabilityLabel(pool.capability_default)}</td>
-        <td style={tdNum}>{pool.top_k_default}</td>
-        <td style={td}>
+        <td>{capabilityLabel(pool.capability_default)}</td>
+        <td className="hk-mono">{pool.top_k_default}</td>
+        <td>
           <StatusBadge tone={pool.allow_last_resort ? 'info' : 'muted'}>
             {pool.allow_last_resort ? '允许兜底' : '关闭'}
           </StatusBadge>
         </td>
-        <td style={td}>
+        <td>
           <StatusBadge tone={pool.enabled ? 'ok' : 'muted'}>{pool.enabled ? '启用' : '已禁用'}</StatusBadge>
         </td>
-        <td style={td}>{fmt(pool.created_at)}</td>
-        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-          <button type="button" disabled={busy} onClick={onEdit} style={linkBtn}>编辑</button>
-          <button type="button" disabled={busy} onClick={onToggleEnabled} style={linkBtn}>
+        <td className="hk-mono">{fmt(pool.created_at)}</td>
+        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+          <button type="button" disabled={busy} onClick={onEdit} className="hk-btn hk-btn--sm">编辑</button>
+          <button type="button" disabled={busy} onClick={onToggleEnabled} className="hk-btn hk-btn--sm" style={{ marginLeft: 'var(--hk-space-2)' }}>
             {pool.enabled ? '禁用' : '启用'}
           </button>
         </td>
       </tr>
       {expanded && (
-        <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
+        <tr>
           <td colSpan={7} style={{ padding: 0, background: 'var(--hk-surface-sunken)' }}>
             <MemberPanel poolID={pool.id} tenantID={pool.tenant_id} />
           </td>
@@ -310,8 +310,8 @@ function PoolFormModal({
           <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>
         )}
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">取消</button>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '保存中…' : '保存'}
           </button>
         </div>
@@ -336,11 +336,6 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+// 展开树的行内链接式切换按钮(非标准操作按钮),保留其独有的无边框行内样式
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

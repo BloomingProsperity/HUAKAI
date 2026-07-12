@@ -34,13 +34,15 @@ export function TLSFingerprintsPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>TLS 指纹 Profile</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          出口拟真:管理网关向上游伪装的 TLS ClientHello 指纹基线(加密套件 / 曲线 / 扩展顺序 / ALPN / GREASE)。
-          先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>TLS 指纹 Profile</h1>
+          <p className="hk-sub">
+            出口拟真:管理网关向上游伪装的 TLS ClientHello 指纹基线(加密套件 / 曲线 / 扩展顺序 / ALPN / GREASE)。
+            先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -49,7 +51,7 @@ export function TLSFingerprintsPage() {
           const v = Number(tenantInput.trim())
           setTenantId(Number.isInteger(v) && v > 0 ? v : null)
         }}
-        style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)' }}
+        style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', padding: 'var(--hk-space-4)' }}
       >
         <Field label="租户 ID(tenant_id)">
           <input
@@ -60,7 +62,7 @@ export function TLSFingerprintsPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -161,14 +163,15 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>指纹 Profile(共 {rows.length} 个)</h2>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>指纹 Profile(共 {rows.length} 个)</h3>
         <button
           type="button"
           disabled={busy !== null}
           onClick={() => setEditor({ id: null, form: { ...EMPTY_FORM } })}
-          style={primaryBtn}
+          className="hk-btn hk-btn--green hk-btn--sm"
+          style={{ marginLeft: 'auto' }}
         >
           新建 Profile
         </button>
@@ -194,12 +197,12 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无 TLS 指纹 profile。点「新建 Profile」创建。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['名称', '状态', 'GREASE', '套件数', 'ALPN', 'JA3 基线', '最近校验', ''].map((h) => (
-                  <th key={h} style={th}>
+                  <th key={h}>
                     {h}
                   </th>
                 ))}
@@ -207,27 +210,27 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
             </thead>
             <tbody>
               {rows.map((p) => (
-                <tr key={p.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={td}>
+                <tr key={p.id}>
+                  <td>
                     <div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{p.name}</div>
                     {p.description && (
                       <div style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{p.description}</div>
                     )}
                   </td>
-                  <td style={td}>
+                  <td>
                     <StatusBadge tone={statusTone(p.status)}>{statusLabel(p.status)}</StatusBadge>
                   </td>
-                  <td style={tdMono}>{p.grease_enabled ? '开' : '关'}</td>
-                  <td style={tdMono}>{(p.cipher_suites ?? []).length}</td>
-                  <td style={tdMono}>{(p.alpn_protocols ?? []).join(', ') || '—'}</td>
-                  <td style={{ ...tdMono, color: 'var(--hk-ink-300)' }}>{short(p.expected_ja3_hash)}</td>
-                  <td style={tdMono}>{fmt(p.last_validated_at)}</td>
-                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <td className="hk-mono">{p.grease_enabled ? '开' : '关'}</td>
+                  <td className="hk-mono">{(p.cipher_suites ?? []).length}</td>
+                  <td className="hk-mono">{(p.alpn_protocols ?? []).join(', ') || '—'}</td>
+                  <td className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{short(p.expected_ja3_hash)}</td>
+                  <td className="hk-mono">{fmt(p.last_validated_at)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <button
                       type="button"
                       disabled={busy !== null}
                       onClick={() => setEditor({ id: p.id, form: profileToForm(p) })}
-                      style={linkBtn}
+                      className="hk-btn hk-btn--sm"
                     >
                       编辑
                     </button>
@@ -235,7 +238,8 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
                       type="button"
                       disabled={busy !== null}
                       onClick={() => toggleStatus(p)}
-                      style={linkBtn}
+                      className="hk-btn hk-btn--sm"
+                      style={{ marginLeft: 'var(--hk-space-2)' }}
                     >
                       {busy === p.id ? '处理中…' : nextStatus(p.status) === 'disabled' ? '停用' : '启用'}
                     </button>
@@ -243,7 +247,8 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
                       type="button"
                       disabled={busy !== null}
                       onClick={() => removeProfile(p)}
-                      style={dangerLink}
+                      className="hk-btn hk-btn--sm hk-btn--danger"
+                      style={{ marginLeft: 'var(--hk-space-2)' }}
                     >
                       删除
                     </button>
@@ -317,10 +322,10 @@ function EditorPanel({
         </Field>
       </div>
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-        <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+        <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
           {busy ? '保存中…' : mode === 'create' ? '创建' : '保存'}
         </button>
-        <button type="button" disabled={busy} onClick={onCancel} style={ghostBtn}>
+        <button type="button" disabled={busy} onClick={onCancel} className="hk-btn">
           取消
         </button>
       </div>
@@ -359,7 +364,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function short(s: string): string {
@@ -372,13 +377,4 @@ function fmt(iso?: string | null): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-600)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLink: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

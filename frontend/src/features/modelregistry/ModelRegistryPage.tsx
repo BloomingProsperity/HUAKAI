@@ -29,12 +29,14 @@ import type { AliasImportResult, CapabilityBinding, TenantPolicyView } from './t
  */
 export function ModelRegistryPage() {
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>模型注册</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          能力矩阵 · 能力绑定 · 映射批量导入 · 租户目录继承策略。模型以数字 DB id 定位。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>模型注册</h1>
+          <p className="hk-sub">
+            能力矩阵 · 能力绑定 · 映射批量导入 · 租户目录继承策略。模型以数字 DB id 定位。
+          </p>
+        </div>
       </header>
 
       <CapabilityMatrixCard />
@@ -119,7 +121,7 @@ function CapabilityMatrixCard() {
       </div>
 
       <Actions>
-        <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+        <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
           {busy ? '提交中…' : '提交能力矩阵'}
         </button>
       </Actions>
@@ -208,30 +210,30 @@ function CapabilityBindingsCard() {
           <input value={modelId} onChange={(e) => setModelId(e.target.value)} inputMode="numeric" placeholder="如 42" style={inp} />
         </Field>
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-          <button type="button" disabled={busy} onClick={load} style={ghostBtn}>
+          <button type="button" disabled={busy} onClick={load} className="hk-btn">
             读取绑定
           </button>
         </div>
       </Row>
 
       {bindings != null && (
-        <div style={{ ...tableWrap, marginTop: 'var(--hk-space-3)' }}>
+        <div className="hk-tablewrap" style={{ marginTop: 'var(--hk-space-3)' }}>
           {bindings.length === 0 ? (
             <Empty>该模型暂无能力绑定。</Empty>
           ) : (
-            <table style={tbl}>
+            <table className="hk-table">
               <thead>
-                <tr>{['能力', 'scope', '租户', '值', '启用', '来源'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
+                <tr>{['能力', 'scope', '租户', '值', '启用', '来源'].map((h) => <th key={h}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {bindings.map((b, i) => (
-                  <tr key={`${b.scope}-${b.capability}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>{b.capability}</td>
-                    <td style={td}>{b.scope}</td>
-                    <td style={td}>{b.tenant_id ?? '—'}</td>
-                    <td style={tdMono}>{b.capability_value ?? '—'}</td>
-                    <td style={td}><StatusBadge tone={b.enabled ? 'ok' : 'muted'}>{b.enabled ? '启用' : '停用'}</StatusBadge></td>
-                    <td style={td}>{b.source}</td>
+                  <tr key={`${b.scope}-${b.capability}-${i}`}>
+                    <td className="hk-mono">{b.capability}</td>
+                    <td>{b.scope}</td>
+                    <td>{b.tenant_id ?? '—'}</td>
+                    <td className="hk-mono">{b.capability_value ?? '—'}</td>
+                    <td><StatusBadge tone={b.enabled ? 'ok' : 'muted'}>{b.enabled ? '启用' : '停用'}</StatusBadge></td>
+                    <td>{b.source}</td>
                   </tr>
                 ))}
               </tbody>
@@ -274,7 +276,7 @@ function CapabilityBindingsCard() {
           </Field>
         </Row>
         <Actions>
-          <button type="button" disabled={busy} onClick={upsert} style={primaryBtn}>
+          <button type="button" disabled={busy} onClick={upsert} className="hk-btn hk-btn--green">
             {busy ? '提交中…' : 'upsert 绑定'}
           </button>
         </Actions>
@@ -336,7 +338,7 @@ function AliasImportCard() {
         </Field>
       </Row>
       <Actions>
-        <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+        <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
           {busy ? '导入中…' : '批量导入'}
         </button>
       </Actions>
@@ -344,15 +346,15 @@ function AliasImportCard() {
       {localInvalid.length > 0 && (
         <div style={{ marginTop: 'var(--hk-space-3)' }}>
           <div style={{ fontSize: 12, color: 'var(--hk-danger)', marginBottom: 4 }}>{localInvalid.length} 行本地校验未通过(未提交):</div>
-          <div style={tableWrap}>
-            <table style={tbl}>
-              <thead><tr>{['行', '内容', '错误'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead><tr>{['行', '内容', '错误'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
               <tbody>
                 {localInvalid.map((iv) => (
-                  <tr key={iv.line} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>{iv.line}</td>
-                    <td style={tdMono}>{iv.raw}</td>
-                    <td style={{ ...td, color: 'var(--hk-danger)' }}>{iv.error}</td>
+                  <tr key={iv.line}>
+                    <td>{iv.line}</td>
+                    <td className="hk-mono">{iv.raw}</td>
+                    <td style={{ color: 'var(--hk-danger)' }}>{iv.error}</td>
                   </tr>
                 ))}
               </tbody>
@@ -369,17 +371,17 @@ function AliasImportCard() {
               <StatusBadge tone={summary.failed > 0 ? 'danger' : 'muted'}>失败 {summary.failed}</StatusBadge>
             </div>
           )}
-          <div style={tableWrap}>
-            <table style={tbl}>
-              <thead><tr>{['#', '映射名', '模型 id', '状态', '错误'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
+              <thead><tr>{['#', '映射名', '模型 id', '状态', '错误'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
               <tbody>
                 {results.map((r) => (
-                  <tr key={r.index} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>{r.index}</td>
-                    <td style={tdMono}>{r.alias}</td>
-                    <td style={td}>{r.model_id ?? '—'}</td>
-                    <td style={td}><StatusBadge tone={importResultTone(r.status)}>{r.status}</StatusBadge></td>
-                    <td style={{ ...td, color: r.error ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{r.error ?? '—'}</td>
+                  <tr key={r.index}>
+                    <td>{r.index}</td>
+                    <td className="hk-mono">{r.alias}</td>
+                    <td>{r.model_id ?? '—'}</td>
+                    <td><StatusBadge tone={importResultTone(r.status)}>{r.status}</StatusBadge></td>
+                    <td style={{ color: r.error ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{r.error ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -452,7 +454,7 @@ function TenantPolicyCard() {
           <input value={tenantId} onChange={(e) => setTenantId(e.target.value)} inputMode="numeric" placeholder="如 9" style={inp} />
         </Field>
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-          <button type="button" disabled={busy} onClick={load} style={ghostBtn}>
+          <button type="button" disabled={busy} onClick={load} className="hk-btn">
             读取策略
           </button>
         </div>
@@ -468,10 +470,10 @@ function TenantPolicyCard() {
             {policy.updated_by_actor && <span style={{ color: 'var(--hk-ink-300)', fontSize: 11 }}>由 {policy.updated_by_actor}</span>}
           </div>
           <Actions>
-            <button type="button" disabled={busy || policy.inherit_global_catalog} onClick={() => flip(true)} style={primaryBtn}>
+            <button type="button" disabled={busy || policy.inherit_global_catalog} onClick={() => flip(true)} className="hk-btn hk-btn--green">
               开启继承
             </button>
-            <button type="button" disabled={busy || !policy.inherit_global_catalog} onClick={() => flip(false)} style={ghostBtn}>
+            <button type="button" disabled={busy || !policy.inherit_global_catalog} onClick={() => flip(false)} className="hk-btn">
               关闭继承
             </button>
           </Actions>
@@ -492,12 +494,14 @@ function errText(e: unknown, fallback: string): string {
 // ── 通用布局原子 ──
 function Card({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
-    <section style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-      <div>
-        <h2 style={{ fontSize: 15, margin: 0 }}>{title}</h2>
-        <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: '2px 0 0' }}>{subtitle}</p>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>{title}</h3>
       </div>
-      {children}
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+        <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: '0 0 var(--hk-space-1)' }}>{subtitle}</p>
+        {children}
+      </div>
     </section>
   )
 }
@@ -516,7 +520,7 @@ function Actions({ children }: { children: React.ReactNode }) {
   return <div style={{ display: 'flex', gap: 'var(--hk-space-2)', marginTop: 'var(--hk-space-3)' }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 function ErrorBox({ children }: { children: React.ReactNode }) {
   return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
@@ -525,13 +529,6 @@ function OkBox({ children }: { children: React.ReactNode }) {
   return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-2) var(--hk-space-3)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', verticalAlign: 'top', fontSize: 13 }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const tableWrap: React.CSSProperties = { border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', overflow: 'hidden', overflowX: 'auto' }
-const tbl: React.CSSProperties = { width: '100%', borderCollapse: 'collapse' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const chipOff: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 12, cursor: 'pointer' }
 const chipOn: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-primary-50)', color: 'var(--hk-primary-600)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }

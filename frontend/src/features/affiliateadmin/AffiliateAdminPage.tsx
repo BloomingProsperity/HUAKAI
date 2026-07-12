@@ -136,12 +136,14 @@ export function AffiliateAdminPage() {
   const pageEnd = Math.min(offset + PAGE_SIZE, total)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>分销管理</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          邀请返利链(只读)。平台管理员请先填租户号;租户操作员留空走自身范围。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>分销管理</h1>
+          <p className="hk-sub">
+            邀请返利链(只读)。平台管理员请先填租户号;租户操作员留空走自身范围。
+          </p>
+        </div>
       </header>
 
       {/* 概览统计卡 */}
@@ -178,10 +180,10 @@ export function AffiliateAdminPage() {
           <input value={referrerDraft} onChange={(e) => setReferrerDraft(e.target.value)} inputMode="numeric" placeholder="留空=全部" style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="submit" style={primaryBtn}>
+          <button type="submit" className="hk-btn hk-btn--green">
             查询
           </button>
-          <button type="button" onClick={resetFilters} style={ghostBtn}>
+          <button type="button" onClick={resetFilters} className="hk-btn">
             重置
           </button>
         </div>
@@ -205,7 +207,7 @@ export function AffiliateAdminPage() {
         </div>
       )}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && (tab === 'records' ? records.length === 0 : rewards.length === 0) ? (
           <Empty>加载中…</Empty>
         ) : tab === 'records' ? (
@@ -227,10 +229,10 @@ export function AffiliateAdminPage() {
           第 {pageStart}–{pageEnd} 条 / 共 {total} 条
         </span>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="button" disabled={loading || offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} style={ghostBtn}>
+          <button type="button" disabled={loading || offset <= 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} className="hk-btn hk-btn--sm">
             上一页
           </button>
-          <button type="button" disabled={loading || offset + PAGE_SIZE >= total} onClick={() => setOffset(offset + PAGE_SIZE)} style={ghostBtn}>
+          <button type="button" disabled={loading || offset + PAGE_SIZE >= total} onClick={() => setOffset(offset + PAGE_SIZE)} className="hk-btn hk-btn--sm">
             下一页
           </button>
         </div>
@@ -241,27 +243,25 @@ export function AffiliateAdminPage() {
 
 function RecordsTable({ rows }: { rows: AdminReferralItem[] }) {
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="hk-tablewrap">
+      <table className="hk-table">
         <thead>
           <tr>
             {['记录 ID', '邀请人', '被邀请人', '状态', '创建时间'].map((h) => (
-              <th key={h} style={th}>
-                {h}
-              </th>
+              <th key={h}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-              <td style={tdMono}>#{r.id}</td>
-              <td style={tdMono}>#{r.referrer_user_id}</td>
-              <td style={tdMono}>#{r.referee_user_id}</td>
-              <td style={td}>
+            <tr key={r.id}>
+              <td className="hk-mono">#{r.id}</td>
+              <td className="hk-mono">#{r.referrer_user_id}</td>
+              <td className="hk-mono">#{r.referee_user_id}</td>
+              <td>
                 <StatusBadge tone={statusTone(r.status)}>{statusLabel(r.status)}</StatusBadge>
               </td>
-              <td style={tdMono}>{fmt(r.created_at)}</td>
+              <td className="hk-mono">{fmt(r.created_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -272,26 +272,24 @@ function RecordsTable({ rows }: { rows: AdminReferralItem[] }) {
 
 function RewardsTable({ rows }: { rows: AdminReferralRewardItem[] }) {
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div className="hk-tablewrap">
+      <table className="hk-table">
         <thead>
           <tr>
             {['流水 ID', '分销记录', '邀请人', '类型', '金额(USD)', '发放时间'].map((h) => (
-              <th key={h} style={th}>
-                {h}
-              </th>
+              <th key={h}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-              <td style={tdMono}>#{r.id}</td>
-              <td style={tdMono}>#{r.referral_id}</td>
-              <td style={tdMono}>#{r.referrer_user_id}</td>
-              <td style={td}>{r.reward_type || '—'}</td>
-              <td style={{ ...tdMono, fontWeight: 600, color: 'var(--hk-ink-900)' }}>{formatUsd(r.amount_usd)}</td>
-              <td style={tdMono}>{fmt(r.issued_at)}</td>
+            <tr key={r.id}>
+              <td className="hk-mono">#{r.id}</td>
+              <td className="hk-mono">#{r.referral_id}</td>
+              <td className="hk-mono">#{r.referrer_user_id}</td>
+              <td>{r.reward_type || '—'}</td>
+              <td className="hk-mono" style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{formatUsd(r.amount_usd)}</td>
+              <td className="hk-mono">{fmt(r.issued_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -302,9 +300,9 @@ function RewardsTable({ rows }: { rows: AdminReferralRewardItem[] }) {
 
 function StatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{label}</span>
-      <span style={{ fontSize: 20, fontWeight: 700, fontFamily: 'var(--hk-font-mono)', color: accent ? 'var(--hk-primary-700)' : 'var(--hk-ink-900)' }}>{value}</span>
+    <div className="hk-metric">
+      <span className="hk-metric__label">{label}</span>
+      <div className="hk-metric__v hk-mono" style={{ color: accent ? 'var(--hk-primary-700)' : 'var(--hk-ink-900)' }}>{value}</div>
     </div>
   )
 }
@@ -340,7 +338,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 function Banner({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
@@ -361,9 +359,4 @@ function fmt(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

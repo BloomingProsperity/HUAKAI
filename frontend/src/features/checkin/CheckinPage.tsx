@@ -77,12 +77,12 @@ export function CheckinPage() {
   const currentMonth = monthOf(new Date())
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>每日签到</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          每天签到一次,把奖励直接返还到账户余额。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>每日签到</h1>
+          <p className="hk-sub">每天签到一次,把奖励直接返还到账户余额。</p>
+        </div>
       </header>
 
       {error && (
@@ -93,8 +93,8 @@ export function CheckinPage() {
       )}
 
       {/* 今日签到卡 */}
-      <section style={card}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-4)', flexWrap: 'wrap' }}>
+      <section className="hk-card">
+        <div className="hk-card__body" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-4)', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
               <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)', fontSize: 15 }}>今日状态</span>
@@ -114,7 +114,8 @@ export function CheckinPage() {
             type="button"
             onClick={submit}
             disabled={submitting || checkedToday || !enabled || loading}
-            style={checkedToday || !enabled ? primaryBtnDisabled : primaryBtn}
+            className="hk-btn hk-btn--green"
+            style={checkedToday || !enabled ? { opacity: 0.55, cursor: 'not-allowed' } : undefined}
           >
             {submitting ? '签到中…' : checkedToday ? '今日已签到' : '立即签到'}
           </button>
@@ -122,7 +123,8 @@ export function CheckinPage() {
       </section>
 
       {/* 本月统计 + 日历 */}
-      <section style={card}>
+      <section className="hk-card">
+        <div className="hk-card__body">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--hk-space-4)', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
             <button type="button" onClick={() => setMonth((m) => shiftMonth(m, -1))} style={navBtn} aria-label="上一月">
@@ -179,18 +181,12 @@ export function CheckinPage() {
             </div>
           </div>
         )}
+        </div>
       </section>
     </div>
   )
 }
 
-const card: React.CSSProperties = {
-  background: 'var(--hk-surface)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-lg)',
-  boxShadow: 'var(--hk-shadow-1)',
-  padding: 'var(--hk-space-5)',
-}
 const errBox: React.CSSProperties = {
   padding: 'var(--hk-space-3)',
   borderRadius: 'var(--hk-radius-md)',
@@ -206,25 +202,6 @@ const okBox: React.CSSProperties = {
   color: 'var(--hk-primary-600)',
   background: 'var(--hk-primary-50)',
   border: '1px solid var(--hk-primary-100)',
-}
-const primaryBtn: React.CSSProperties = {
-  height: 40,
-  padding: '0 var(--hk-space-6)',
-  border: '1px solid var(--hk-primary-600)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-primary-500)',
-  color: '#fff',
-  fontSize: 15,
-  fontWeight: 600,
-  cursor: 'pointer',
-  flexShrink: 0,
-}
-const primaryBtnDisabled: React.CSSProperties = {
-  ...primaryBtn,
-  background: 'var(--hk-surface-sunken)',
-  color: 'var(--hk-ink-300)',
-  border: '1px solid var(--hk-line)',
-  cursor: 'not-allowed',
 }
 const navBtn: React.CSSProperties = {
   width: 32,

@@ -110,28 +110,19 @@ export function OpsPage() {
   const points = sparklinePoints(trendValues, 600, 80, 4)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>运维大屏</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>请求量 / 成本 / 成功率 / 延迟分位 / 模型排行 —— 只读观测。</p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>运维大屏</h1>
+          <p className="hk-sub">请求量 / 成本 / 成功率 / 延迟分位 / 模型排行 —— 只读观测。</p>
         </div>
-        <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
+        <div className="hk-seg">
           {OPS_WINDOWS.map((w) => (
             <button
               key={w.value}
               type="button"
               onClick={() => setWindow(w.value)}
-              style={{
-                height: 30,
-                padding: '0 var(--hk-space-3)',
-                border: `1px solid ${window === w.value ? 'var(--hk-primary-600)' : 'var(--hk-line)'}`,
-                borderRadius: 'var(--hk-radius-md)',
-                background: window === w.value ? 'var(--hk-primary-500)' : 'var(--hk-surface)',
-                color: window === w.value ? '#fff' : 'var(--hk-ink-700)',
-                fontSize: 13,
-                cursor: 'pointer',
-              }}
+              className={window === w.value ? 'is-on' : ''}
             >
               {w.label}
             </button>
@@ -197,27 +188,25 @@ export function OpsPage() {
         ) : board.entries.length === 0 ? (
           <Empty>暂无数据。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['#', '模型', '成本', 'Token', '请求数'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {board.entries.map((e) => (
-                  <tr key={e.rank} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>{e.rank}</td>
-                    <td style={td}>
+                  <tr key={e.rank}>
+                    <td className="hk-mono">{e.rank}</td>
+                    <td>
                       <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key}</code>
                     </td>
-                    <td style={tdMono}>${e.total_cost}</td>
-                    <td style={tdMono}>{fmtInt(e.total_tokens)}</td>
-                    <td style={tdMono}>{fmtInt(e.request_count)}</td>
+                    <td className="hk-mono">${e.total_cost}</td>
+                    <td className="hk-mono">{fmtInt(e.total_tokens)}</td>
+                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -274,28 +263,26 @@ export function OpsPage() {
         ) : perfRank.entries.length === 0 ? (
           <Empty>暂无数据。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['#', perfBy === 'model' ? '模型' : 'Provider 账号', '平均 TTFT', '平均 TPS', '请求数', '错误率'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {perfRank.entries.map((e) => (
-                  <tr key={e.rank} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>{e.rank}</td>
-                    <td style={td}>
+                  <tr key={e.rank}>
+                    <td className="hk-mono">{e.rank}</td>
+                    <td>
                       <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
                     </td>
-                    <td style={tdMono}>{e.avg_ttft_ms}ms</td>
-                    <td style={tdMono}>{e.avg_tps}</td>
-                    <td style={tdMono}>{fmtInt(e.request_count)}</td>
-                    <td style={tdMono}>{fmtFractionPct(e.error_rate)}</td>
+                    <td className="hk-mono">{e.avg_ttft_ms}ms</td>
+                    <td className="hk-mono">{e.avg_tps}</td>
+                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
+                    <td className="hk-mono">{fmtFractionPct(e.error_rate)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -314,29 +301,27 @@ export function OpsPage() {
         ) : bucket.entries.length === 0 ? (
           <Empty>暂无数据。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['时间桶', '模型', '平均 TTFT', '平均 TPS', '请求数', '错误数', '错误率'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {bucket.entries.map((e, i) => (
-                  <tr key={`${e.bucket}-${e.key}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>{e.bucket}</td>
-                    <td style={td}>
+                  <tr key={`${e.bucket}-${e.key}-${i}`}>
+                    <td className="hk-mono">{e.bucket}</td>
+                    <td>
                       <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
                     </td>
-                    <td style={tdMono}>{e.avg_ttft_ms}ms</td>
-                    <td style={tdMono}>{e.avg_tps}</td>
-                    <td style={tdMono}>{fmtInt(e.request_count)}</td>
-                    <td style={tdMono}>{fmtInt(e.error_count)}</td>
-                    <td style={tdMono}>{fmtFractionPct(e.error_rate)}</td>
+                    <td className="hk-mono">{e.avg_ttft_ms}ms</td>
+                    <td className="hk-mono">{e.avg_tps}</td>
+                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
+                    <td className="hk-mono">{fmtInt(e.error_count)}</td>
+                    <td className="hk-mono">{fmtFractionPct(e.error_rate)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -354,26 +339,24 @@ export function OpsPage() {
         ) : paCounts.counts.length === 0 ? (
           <Empty>暂无数据。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['账号 ID', '请求数', '输入 Token', '输出 Token', '合计 Token', '费用'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {paCounts.counts.map((c) => (
-                  <tr key={c.provider_account_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>#{c.provider_account_id}</td>
-                    <td style={tdMono}>{fmtInt(c.request_count)}</td>
-                    <td style={tdMono}>{fmtInt(c.total_input_tokens)}</td>
-                    <td style={tdMono}>{fmtInt(c.total_output_tokens)}</td>
-                    <td style={tdMono}>{fmtInt(totalTokens(c))}</td>
-                    <td style={tdMono}>${c.total_cost}</td>
+                  <tr key={c.provider_account_id}>
+                    <td className="hk-mono">#{c.provider_account_id}</td>
+                    <td className="hk-mono">{fmtInt(c.request_count)}</td>
+                    <td className="hk-mono">{fmtInt(c.total_input_tokens)}</td>
+                    <td className="hk-mono">{fmtInt(c.total_output_tokens)}</td>
+                    <td className="hk-mono">{fmtInt(totalTokens(c))}</td>
+                    <td className="hk-mono">${c.total_cost}</td>
                   </tr>
                 ))}
               </tbody>
@@ -397,22 +380,13 @@ function Segmented<T extends string>({
   onChange: (v: T) => void
 }) {
   return (
-    <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
+    <div className="hk-seg">
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          style={{
-            height: 28,
-            padding: '0 var(--hk-space-3)',
-            border: `1px solid ${value === o.value ? 'var(--hk-primary-600)' : 'var(--hk-line)'}`,
-            borderRadius: 'var(--hk-radius-md)',
-            background: value === o.value ? 'var(--hk-primary-500)' : 'var(--hk-surface)',
-            color: value === o.value ? '#fff' : 'var(--hk-ink-700)',
-            fontSize: 12,
-            cursor: 'pointer',
-          }}
+          className={value === o.value ? 'is-on' : ''}
         >
           {o.label}
         </button>
@@ -423,10 +397,10 @@ function Segmented<T extends string>({
 
 function Kpi({ label, value, mono, small, badge }: { label: string; value: string; mono?: boolean; small?: boolean; badge?: 'ok' | 'warn' | 'danger' }) {
   return (
-    <div style={{ padding: 'var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{label}</span>
+    <div className="hk-metric">
+      <div className="hk-metric__label">{label}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
-        <span style={{ fontSize: small ? 18 : 24, fontWeight: 700, color: 'var(--hk-ink-900)', fontFamily: mono ? 'var(--hk-font-mono)' : undefined, lineHeight: 1.1 }}>{value}</span>
+        <span className={mono ? 'hk-metric__v hk-mono' : 'hk-metric__v'} style={small ? { fontSize: 18 } : undefined}>{value}</span>
         {badge && <StatusBadge tone={badge}>{badge === 'ok' ? '健康' : badge === 'warn' ? '注意' : '告警'}</StatusBadge>}
       </div>
     </div>
@@ -434,9 +408,13 @@ function Kpi({ label, value, mono, small, badge }: { label: string; value: strin
 }
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-      <h2 style={{ fontSize: 14, color: 'var(--hk-ink-700)' }}>{title}</h2>
-      {children}
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>{title}</h3>
+      </div>
+      <div className="hk-card__body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        {children}
+      </div>
     </section>
   )
 }
@@ -444,9 +422,5 @@ function Banner({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-6)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
-
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-2) var(--hk-space-3)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }

@@ -64,18 +64,18 @@ export function NotificationsPage() {
   const unreadBadge = unread ?? localUnread
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22, display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1 style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
             站内信
             {unreadBadge > 0 && (
               <span style={badge}>{unreadBadge > 99 ? '99+' : unreadBadge} 未读</span>
             )}
           </h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>平台公告与系统通知。</p>
+          <p className="hk-sub">平台公告与系统通知。</p>
         </div>
-        <div style={{ display: 'flex', gap: 'var(--hk-space-1)' }}>
+        <div className="hk-seg">
           <Seg active={!onlyUnread} onClick={() => setOnlyUnread(false)}>全部</Seg>
           <Seg active={onlyUnread} onClick={() => setOnlyUnread(true)}>未读</Seg>
         </div>
@@ -118,7 +118,7 @@ export function NotificationsPage() {
                   <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{new Date(n.created_at).toLocaleString()}</span>
                 </div>
                 {unreadItem && (
-                  <button type="button" onClick={() => onMarkRead(n.id)} style={readBtn}>
+                  <button type="button" onClick={() => onMarkRead(n.id)} className="hk-btn hk-btn--sm" style={{ alignSelf: 'flex-start' }}>
                     标记已读
                   </button>
                 )}
@@ -131,30 +131,17 @@ export function NotificationsPage() {
   )
 }
 
+// 分段切换按钮:包裹在 .hk-seg 里,选中态用 .is-on。
 function Seg({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        height: 30,
-        padding: '0 var(--hk-space-3)',
-        border: `1px solid ${active ? 'var(--hk-primary-500)' : 'var(--hk-line)'}`,
-        borderRadius: 'var(--hk-radius-md)',
-        background: active ? 'var(--hk-primary-50)' : 'var(--hk-surface)',
-        color: active ? 'var(--hk-primary-700)' : 'var(--hk-ink-500)',
-        fontSize: 13,
-        fontWeight: active ? 600 : 400,
-        cursor: 'pointer',
-      }}
-    >
+    <button type="button" onClick={onClick} className={active ? 'is-on' : undefined}>
       {children}
     </button>
   )
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 const badge: React.CSSProperties = {
@@ -164,16 +151,4 @@ const badge: React.CSSProperties = {
   background: 'var(--hk-primary-500)',
   borderRadius: 999,
   padding: '2px 8px',
-}
-const readBtn: React.CSSProperties = {
-  alignSelf: 'flex-start',
-  height: 30,
-  padding: '0 var(--hk-space-3)',
-  border: '1px solid var(--hk-line)',
-  borderRadius: 'var(--hk-radius-md)',
-  background: 'var(--hk-surface)',
-  color: 'var(--hk-ink-700)',
-  fontSize: 12,
-  cursor: 'pointer',
-  whiteSpace: 'nowrap',
 }

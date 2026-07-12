@@ -61,15 +61,18 @@ export function PlaygroundPage() {
   const ready = canSend(apiKey, model, message) && !sending
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)', maxWidth: 920 }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>Playground 调试台</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          用你自己的 API Key 在浏览器内直接调用模型,看回复与 token 用量。Key 只在本次请求中使用,不保存。
-        </p>
+    <div className="hk-page" style={{ maxWidth: 920 }}>
+      <header className="hk-pagehead">
+        <div>
+          <h1>Playground 调试台</h1>
+          <p className="hk-sub">
+            用你自己的 API Key 在浏览器内直接调用模型,看回复与 token 用量。Key 只在本次请求中使用,不保存。
+          </p>
+        </div>
       </header>
 
-      <div style={{ background: 'var(--hk-warn-bg, #fff8e1)', border: '1px solid var(--hk-warn, #b8860b)', borderRadius: 'var(--hk-radius-2)', padding: 'var(--hk-space-3)', fontSize: 12, color: 'var(--hk-ink-700)' }}>
+      {/* 计费警示条:警告色为风险语义,刻意保留以提示会消耗真实余额 */}
+      <div style={{ background: 'var(--hk-warn-soft)', border: '1px solid var(--hk-warn)', borderRadius: 'var(--hk-radius-sm)', padding: 'var(--hk-space-3)', fontSize: 12, color: 'var(--hk-ink-700)' }}>
         ⚠ 发送会发起<strong>真实上游调用</strong>,按该 Key 正常计费、消耗其余额——与你在外部用该 Key 调用一致。
       </div>
 
@@ -88,7 +91,7 @@ export function PlaygroundPage() {
           </datalist>
         </label>
         <button type="button" onClick={loadModels} disabled={loadingModels}
-          style={{ ...btn, alignSelf: 'flex-end' }}>
+          className="hk-btn" style={{ alignSelf: 'flex-end' }}>
           {loadingModels ? '加载中…' : '加载可用模型'}
         </button>
       </div>
@@ -106,7 +109,7 @@ export function PlaygroundPage() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
         <button type="button" onClick={send} disabled={!ready}
-          style={{ ...btn, opacity: ready ? 1 : 0.5, cursor: ready ? 'pointer' : 'default' }}>
+          className="hk-btn hk-btn--green" style={{ opacity: ready ? 1 : 0.5, cursor: ready ? 'pointer' : 'default' }}>
           {sending ? '发送中…' : '发送'}
         </button>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hk-ink-500)' }}>
@@ -116,28 +119,32 @@ export function PlaygroundPage() {
       </div>
 
       {error && (
-        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)' }}>
           {error}
         </p>
       )}
 
       {streaming && (streamText || sending) && (
-        <section style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-          <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>回复{sending ? '(流式接收中…)' : ''}</div>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit', fontSize: 14 }}>
-            {streamText || (sending ? '…' : '(空回复)')}
-          </pre>
+        <section className="hk-card">
+          <div className="hk-card__head"><h3>回复{sending ? '(流式接收中…)' : ''}</h3></div>
+          <div className="hk-card__body">
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit', fontSize: 14 }}>
+              {streamText || (sending ? '…' : '(空回复)')}
+            </pre>
+          </div>
         </section>
       )}
 
       {!streaming && reply && (
-        <section style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-          <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
-            回复{reply.model ? ` · ${reply.model}` : ''}{formatUsage(reply.usage) ? ` · ${formatUsage(reply.usage)}` : ''}
+        <section className="hk-card">
+          <div className="hk-card__head">
+            <h3>回复{reply.model ? ` · ${reply.model}` : ''}{formatUsage(reply.usage) ? ` · ${formatUsage(reply.usage)}` : ''}</h3>
           </div>
-          <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit', fontSize: 14 }}>
-            {extractReply(reply) || '(空回复)'}
-          </pre>
+          <div className="hk-card__body">
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'inherit', fontSize: 14 }}>
+              {extractReply(reply) || '(空回复)'}
+            </pre>
+          </div>
         </section>
       )}
     </div>
@@ -145,8 +152,7 @@ export function PlaygroundPage() {
 }
 
 const lbl: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)' }
-const inp: React.CSSProperties = { padding: '8px 10px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', fontSize: 13, width: '100%' }
-const btn: React.CSSProperties = { padding: '8px 16px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'var(--hk-accent, #2563eb)', color: '#fff', fontSize: 13 }
+const inp: React.CSSProperties = { padding: '8px 10px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, width: '100%' }
 function col(grow: number): React.CSSProperties {
   return { display: 'flex', flexDirection: 'column', gap: 4, flex: grow, minWidth: 180 }
 }

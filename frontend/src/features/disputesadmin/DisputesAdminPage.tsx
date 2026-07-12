@@ -36,13 +36,15 @@ export function DisputesAdminPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>退款/扣费争议</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          计费运营:用户对某笔已计费请求发起的费用争议。运营可裁决「支持退款」或「驳回维持扣费」。
-          裁决会改动该争议状态,属 money 敏感动作,提交前需二次确认。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>退款/扣费争议</h1>
+          <p className="hk-sub">
+            计费运营:用户对某笔已计费请求发起的费用争议。运营可裁决「支持退款」或「驳回维持扣费」。
+            裁决会改动该争议状态,属 money 敏感动作,提交前需二次确认。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -62,7 +64,7 @@ export function DisputesAdminPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -121,10 +123,10 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>争议列表</h2>
-        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>已载 {rows.length} 条</span>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>争议列表</h3>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>已载 {rows.length} 条</span>
       </div>
 
       <form
@@ -148,7 +150,7 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
             ))}
           </select>
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           查询
         </button>
         <button
@@ -157,7 +159,7 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
             setDraft(EMPTY_DISPUTE_FILTERS)
             setFilters(EMPTY_DISPUTE_FILTERS)
           }}
-          style={ghostBtn}
+          className="hk-btn"
         >
           重置
         </button>
@@ -171,12 +173,12 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无争议记录。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['争议 ID', '状态', '用户', 'request_id', '原因', '运营备注', '创建', '裁决', ''].map((h) => (
-                  <th key={h} style={th}>
+                  <th key={h}>
                     {h}
                   </th>
                 ))}
@@ -200,10 +202,8 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
       )}
 
       {hasMore && (
-        <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'center' }}>
-          <button type="button" disabled={loading} onClick={() => void fetchPage(offset, true)} style={ghostBtn}>
-            {loading ? '加载中…' : '加载更多'}
-          </button>
+        <div className="hk-loadmore" onClick={() => { if (!loading) void fetchPage(offset, true) }}>
+          {loading ? '加载中…' : '加载更多'}
         </div>
       )}
     </section>
@@ -254,20 +254,20 @@ function DisputeRow({
 
   return (
     <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdMono} title={row.dispute_id}>{shortDisputeID(row.dispute_id)}</td>
-        <td style={td}>
+      <tr>
+        <td className="hk-mono" title={row.dispute_id}>{shortDisputeID(row.dispute_id)}</td>
+        <td>
           <StatusBadge tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusBadge>
         </td>
-        <td style={tdMono}>#{row.user_id}</td>
-        <td style={tdMono} title={row.request_id}>{shortRequestID(row.request_id)}</td>
-        <td style={{ ...td, maxWidth: 260, whiteSpace: 'normal', color: 'var(--hk-ink-700)' }}>{row.reason || '—'}</td>
-        <td style={{ ...td, maxWidth: 220, whiteSpace: 'normal', color: 'var(--hk-ink-500)' }}>{row.operator_note || '—'}</td>
-        <td style={tdMono}>{fmt(row.created_at)}</td>
-        <td style={tdMono}>{fmt(row.resolved_at)}</td>
-        <td style={{ ...td, textAlign: 'right' }}>
+        <td className="hk-mono">#{row.user_id}</td>
+        <td className="hk-mono" title={row.request_id}>{shortRequestID(row.request_id)}</td>
+        <td style={{ maxWidth: 260, whiteSpace: 'normal', color: 'var(--hk-ink-700)' }}>{row.reason || '—'}</td>
+        <td style={{ maxWidth: 220, whiteSpace: 'normal', color: 'var(--hk-ink-500)' }}>{row.operator_note || '—'}</td>
+        <td className="hk-mono">{fmt(row.created_at)}</td>
+        <td className="hk-mono">{fmt(row.resolved_at)}</td>
+        <td style={{ textAlign: 'right' }}>
           {resolvable ? (
-            <button type="button" onClick={() => setOpen((o) => !o)} style={ghostBtn}>
+            <button type="button" onClick={() => setOpen((o) => !o)} className="hk-btn hk-btn--sm">
               {open ? '收起' : '裁决'}
             </button>
           ) : (
@@ -298,7 +298,7 @@ function DisputeRow({
                   style={{ ...inp, width: 360 }}
                 />
               </Field>
-              <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+              <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
                 {busy ? '提交中…' : '提交裁决'}
               </button>
             </div>
@@ -333,7 +333,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso?: string): string {
@@ -342,11 +342,4 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

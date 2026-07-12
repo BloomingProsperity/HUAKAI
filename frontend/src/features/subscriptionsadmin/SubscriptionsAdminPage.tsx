@@ -101,35 +101,34 @@ export function SubscriptionsAdminPage() {
   }
 
   return (
-    <div style={page}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>套餐管理</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          订阅套餐(配额 / 价格 / 周期)维护与用户分配。共 {plans.length} 个套餐。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>套餐管理</h1>
+          <p className="hk-sub">
+            订阅套餐(配额 / 价格 / 周期)维护与用户分配。共 {plans.length} 个套餐。
+          </p>
+        </div>
+        <button type="button" className="hk-btn hk-btn--green" onClick={() => setEditing({ plan: null })}>
+          + 新建套餐
+        </button>
       </header>
 
       {error && <Banner tone="danger">{error}</Banner>}
       {notice && <Banner tone="info">{notice}</Banner>}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <button type="button" style={primaryBtn} onClick={() => setEditing({ plan: null })}>
-          + 新建套餐
-        </button>
-      </div>
-
-      <div style={card}>
+      <div className="hk-card">
         {loading && plans.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : plans.length === 0 ? (
           <Empty>暂无套餐,点「新建套餐」创建第一个。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={table}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['套餐', '价格', '周期', '日/周/月封顶(USD)', '用户组', '状态', '操作'].map((h) => (
-                    <th key={h} style={th}>
+                    <th key={h}>
                       {h}
                     </th>
                   ))}
@@ -138,7 +137,7 @@ export function SubscriptionsAdminPage() {
               <tbody>
                 {plans.map((p) => (
                   <tr key={p.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
+                    <td>
                       <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{p.name}</span>
                         {p.description && (
@@ -146,24 +145,24 @@ export function SubscriptionsAdminPage() {
                         )}
                       </div>
                     </td>
-                    <td style={tdMono}>
+                    <td className="hk-mono">
                       {centsToUsd(p.price_cents)} {p.currency_code}
                     </td>
-                    <td style={td}>{p.validity_days} 天</td>
-                    <td style={tdMono}>{capCol(p)}</td>
-                    <td style={td}>{p.granted_group || '—'}</td>
-                    <td style={td}>
+                    <td>{p.validity_days} 天</td>
+                    <td className="hk-mono">{capCol(p)}</td>
+                    <td>{p.granted_group || '—'}</td>
+                    <td>
                       <StatusBadge tone={planTone(p)}>{planStatusLabel(p)}</StatusBadge>
                     </td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                      <button type="button" style={linkBtn} onClick={() => setDetailId(p.id)}>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setDetailId(p.id)}>
                         详情
                       </button>
-                      <button type="button" style={linkBtn} onClick={() => setEditing({ plan: p })}>
+                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setEditing({ plan: p })}>
                         编辑
                       </button>
                       {p.enabled && (
-                        <button type="button" style={linkBtnDanger} onClick={() => onDisable(p)}>
+                        <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" onClick={() => onDisable(p)}>
                           停用
                         </button>
                       )}
@@ -244,7 +243,7 @@ function PlanDetailModal({ tenantID, planId, onClose }: { tenantID: number; plan
           </dl>
         ) : null}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>关闭</button>
+          <button type="button" onClick={onClose} className="hk-btn">关闭</button>
         </div>
       </div>
     </Overlay>
@@ -342,10 +341,10 @@ function PlanModal({
           <input value={f.description} onChange={(e) => set('description', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">
             取消
           </button>
-          <button type="submit" disabled={busy} style={primaryBtn}>
+          <button type="submit" disabled={busy} className="hk-btn hk-btn--green">
             {busy ? '保存中…' : '保存'}
           </button>
         </div>
@@ -440,7 +439,7 @@ function AssignmentPanel({
   }
 
   return (
-    <div style={card}>
+    <div className="hk-card">
       <div style={{ padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }}>
         <h2 style={{ fontSize: 16, margin: '0 0 var(--hk-space-3)' }}>用户订阅分配</h2>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)', flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -457,13 +456,13 @@ function AssignmentPanel({
               ))}
             </select>
           </Field>
-          <button type="button" style={ghostBtn} disabled={busy} onClick={load}>
+          <button type="button" className="hk-btn" disabled={busy} onClick={load}>
             查询订阅
           </button>
-          <button type="button" style={primaryBtn} disabled={busy} onClick={assign}>
+          <button type="button" className="hk-btn hk-btn--green" disabled={busy} onClick={assign}>
             分配套餐
           </button>
-          <button type="button" style={ghostBtn} disabled={busy} onClick={() => setBulkOpen(true)}>
+          <button type="button" className="hk-btn" disabled={busy} onClick={() => setBulkOpen(true)}>
             批量分配
           </button>
         </div>
@@ -473,21 +472,21 @@ function AssignmentPanel({
         <div style={{ padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--hk-space-2)' }}>
             <h3 style={{ fontSize: 14, margin: 0 }}>批量分配结果</h3>
-            <button type="button" style={linkBtn} onClick={() => setBulkResults(null)}>关闭</button>
+            <button type="button" className="hk-btn hk-btn--sm" onClick={() => setBulkResults(null)}>关闭</button>
           </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={table}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
-                <tr>{['用户 ID', '结果', '说明'].map((h) => <th key={h} style={th}>{h}</th>)}</tr>
+                <tr>{['用户 ID', '结果', '说明'].map((h) => <th key={h}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {bulkResults.map((r) => (
                   <tr key={r.user_id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>#{r.user_id}</td>
-                    <td style={td}>
+                    <td className="hk-mono">#{r.user_id}</td>
+                    <td>
                       <StatusBadge tone={r.ok ? 'ok' : 'danger'}>{r.ok ? (r.idempotent ? '已存在(幂等)' : '成功') : '失败'}</StatusBadge>
                     </td>
-                    <td style={{ ...td, color: 'var(--hk-ink-500)' }}>{r.ok ? `订阅 #${r.subscription?.id ?? '—'}` : r.error || '—'}</td>
+                    <td style={{ color: 'var(--hk-ink-500)' }}>{r.ok ? `订阅 #${r.subscription?.id ?? '—'}` : r.error || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -500,12 +499,12 @@ function AssignmentPanel({
         (subs.length === 0 ? (
           <Empty>用户 #{queriedUser} 暂无订阅。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={table}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['订阅 ID', '套餐 ID', '状态', '生效', '到期', '操作'].map((h) => (
-                    <th key={h} style={th}>
+                    <th key={h}>
                       {h}
                     </th>
                   ))}
@@ -514,30 +513,30 @@ function AssignmentPanel({
               <tbody>
                 {subs.map((s) => (
                   <tr key={s.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>#{s.id}</td>
-                    <td style={tdMono}>{s.plan_id}</td>
-                    <td style={td}>
+                    <td className="hk-mono">#{s.id}</td>
+                    <td className="hk-mono">{s.plan_id}</td>
+                    <td>
                       <StatusBadge tone={subscriptionTone(s.status)}>{s.status}</StatusBadge>
                     </td>
-                    <td style={tdMono}>{fmt(s.starts_at)}</td>
-                    <td style={tdMono}>{fmt(s.expires_at)}</td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
-                      <button type="button" style={linkBtn} onClick={() => setDetailSubId(s.id)}>
+                    <td className="hk-mono">{fmt(s.starts_at)}</td>
+                    <td className="hk-mono">{fmt(s.expires_at)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setDetailSubId(s.id)}>
                         详情
                       </button>
-                      <button type="button" style={linkBtn} disabled={busy} onClick={() => act(resetQuota, s, '重置配额')}>
+                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => act(resetQuota, s, '重置配额')}>
                         重置配额
                       </button>
-                      <button type="button" style={linkBtn} disabled={busy} onClick={() => setActing({ sub: s, kind: 'extend' })}>
+                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'extend' })}>
                         延长
                       </button>
-                      <button type="button" style={linkBtn} disabled={busy} onClick={() => setActing({ sub: s, kind: 'change-plan' })}>
+                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'change-plan' })}>
                         改套餐
                       </button>
-                      <button type="button" style={linkBtnDanger} disabled={busy} onClick={() => act(cancelSubscription, s, '取消订阅')}>
+                      <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" disabled={busy} onClick={() => act(cancelSubscription, s, '取消订阅')}>
                         取消
                       </button>
-                      <button type="button" style={linkBtnDanger} disabled={busy} onClick={() => setActing({ sub: s, kind: 'revoke' })}>
+                      <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'revoke' })}>
                         撤销
                       </button>
                     </td>
@@ -641,12 +640,12 @@ function AssignmentDetailModal({
               {events.length === 0 ? (
                 <div style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>暂无审计事件。</div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={table}>
+                <div className="hk-tablewrap">
+                  <table className="hk-table">
                     <thead>
                       <tr>
                         {['事件', '操作者', '原因', '发生时间'].map((h) => (
-                          <th key={h} style={th}>
+                          <th key={h}>
                             {h}
                           </th>
                         ))}
@@ -655,10 +654,10 @@ function AssignmentDetailModal({
                     <tbody>
                       {events.map((ev, i) => (
                         <tr key={`${ev.event_type}-${ev.occurred_at}-${i}`} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                          <td style={td}>{auditEventLabel(ev.event_type)}</td>
-                          <td style={td}>{actorLabel(ev.actor_kind, ev.actor_id)}</td>
-                          <td style={{ ...td, color: 'var(--hk-ink-500)' }}>{ev.reason_class || '—'}</td>
-                          <td style={tdMono}>{fmt(ev.occurred_at)}</td>
+                          <td>{auditEventLabel(ev.event_type)}</td>
+                          <td>{actorLabel(ev.actor_kind, ev.actor_id)}</td>
+                          <td style={{ color: 'var(--hk-ink-500)' }}>{ev.reason_class || '—'}</td>
+                          <td className="hk-mono">{fmt(ev.occurred_at)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -669,7 +668,7 @@ function AssignmentDetailModal({
           </>
         ) : null}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>关闭</button>
+          <button type="button" onClick={onClose} className="hk-btn">关闭</button>
         </div>
       </div>
     </Overlay>
@@ -836,8 +835,8 @@ function SubActionModal({
         )}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
-          <button type="button" disabled={busy} onClick={submit} style={kind === 'revoke' ? dangerBtn : primaryBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">取消</button>
+          <button type="button" disabled={busy} onClick={submit} className={kind === 'revoke' ? 'hk-btn hk-btn--danger' : 'hk-btn hk-btn--green'}>
             {busy ? '提交中…' : `确认${SUB_ACTION_LABEL[kind]}`}
           </button>
         </div>
@@ -911,8 +910,8 @@ function BulkAssignModal({
           </select>
         </Field>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">取消</button>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '提交中…' : '确认批量分配'}
           </button>
         </div>
@@ -937,7 +936,7 @@ function VoucherPanel({
   const [lastCode, setLastCode] = useState<string | null>(null)
 
   return (
-    <div style={card}>
+    <div className="hk-card">
       <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: 16, margin: '0 0 2px' }}>订阅兑换券</h2>
@@ -945,7 +944,7 @@ function VoucherPanel({
             生成可兑换为订阅套餐的券码;用户兑换后获得对应套餐权益。
           </p>
         </div>
-        <button type="button" style={primaryBtn} onClick={() => setOpen(true)}>
+        <button type="button" className="hk-btn hk-btn--green" onClick={() => setOpen(true)}>
           + 发兑换券
         </button>
       </div>
@@ -1057,8 +1056,8 @@ function VoucherModal({
           每用户限兑一次(single_use_per_user)
         </label>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--hk-space-2)' }}>
-          <button type="button" onClick={onClose} style={ghostBtn}>取消</button>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">取消</button>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '提交中…' : '确认发券'}
           </button>
         </div>
@@ -1122,19 +1121,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
-const page: React.CSSProperties = { padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const table: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 }
 const modal: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)', maxHeight: '90vh', overflowY: 'auto' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const linkBtnDanger: React.CSSProperties = { ...linkBtn, color: 'var(--hk-danger)' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

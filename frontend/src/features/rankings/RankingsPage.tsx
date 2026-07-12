@@ -51,12 +51,12 @@ export function RankingsPage() {
   const ranked = useMemo(() => rankBy(entries, metric), [entries, metric])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22, margin: 0 }}>模型排行</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          平台范围 · 按 {metricLabel(metric)} 排序。共 {entries.length} 个模型上榜。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>模型排行</h1>
+          <p className="hk-sub">平台范围 · 按 {metricLabel(metric)} 排序。共 {entries.length} 个模型上榜。</p>
+        </div>
       </header>
 
       <div style={toolbar}>
@@ -85,9 +85,9 @@ export function RankingsPage() {
       {error && <div style={errorBox}>{error}</div>}
 
       {loading && entries.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <div className="hk-empty">加载中…</div>
       ) : ranked.length === 0 ? (
-        <Empty>暂无排行数据。平台尚未产生可统计的调用用量。</Empty>
+        <div className="hk-empty">暂无排行数据。平台尚未产生可统计的调用用量。</div>
       ) : (
         <div style={listCard}>
           {ranked.map((e) => (
@@ -165,10 +165,6 @@ function Toggle({ options, value, onChange }: { options: Array<{ v: string; l: s
       ))}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 
 const toolbar: React.CSSProperties = {

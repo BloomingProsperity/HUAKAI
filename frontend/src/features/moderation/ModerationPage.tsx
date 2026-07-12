@@ -25,12 +25,14 @@ export function ModerationPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>内容审核</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          风控:租户级审核配置(开关/采样/自动封禁/罚款)与命中日志(只读)。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>内容审核</h1>
+          <p className="hk-sub">
+            风控:租户级审核配置(开关/采样/自动封禁/罚款)与命中日志(只读)。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -50,7 +52,7 @@ export function ModerationPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -128,11 +130,11 @@ function ConfigCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>审核配置</h2>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>审核配置</h3>
         {meta.updatedAt && (
-          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>
             最近更新 {fmt(meta.updatedAt)} {meta.updatedBy ? `· by ${meta.updatedBy}` : ''}
           </span>
         )}
@@ -167,10 +169,10 @@ function ConfigCard({ tenantId }: { tenantId: number }) {
             onChange={(v) => setF('banWindowSeconds', v)}
           />
           <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 'var(--hk-space-2)' }}>
-            <button type="button" disabled={saving} onClick={save} style={primaryBtn}>
+            <button type="button" disabled={saving} onClick={save} className="hk-btn hk-btn--green">
               {saving ? '保存中…' : '保存配置'}
             </button>
-            <button type="button" disabled={saving || loading} onClick={() => load()} style={ghostBtn}>
+            <button type="button" disabled={saving || loading} onClick={() => load()} className="hk-btn">
               重新加载
             </button>
           </div>
@@ -219,10 +221,10 @@ function LogsCard({ tenantId }: { tenantId: number }) {
   }, [fetchPage])
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>命中日志(只读)</h2>
-        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>已载 {rows.length} 条</span>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>命中日志(只读)</h3>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>已载 {rows.length} 条</span>
       </div>
 
       <form
@@ -241,7 +243,7 @@ function LogsCard({ tenantId }: { tenantId: number }) {
             style={{ ...inp, width: 180 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           查询
         </button>
         <button
@@ -250,7 +252,7 @@ function LogsCard({ tenantId }: { tenantId: number }) {
             setDraft(EMPTY_LOG_FILTERS)
             setFilters(EMPTY_LOG_FILTERS)
           }}
-          style={ghostBtn}
+          className="hk-btn"
         >
           重置
         </button>
@@ -263,28 +265,26 @@ function LogsCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无命中记录。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['时间', '判定', '原因码', 'API Key', '用户', 'Payload Hash'].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={tdMono}>{fmt(row.occurred_at)}</td>
-                  <td style={td}>
+                <tr key={row.id}>
+                  <td className="hk-mono">{fmt(row.occurred_at)}</td>
+                  <td>
                     <StatusBadge tone={decisionTone(row.decision)}>{decisionLabel(row.decision)}</StatusBadge>
                   </td>
-                  <td style={{ ...td, color: 'var(--hk-ink-700)' }}>{row.reason_code || '—'}</td>
-                  <td style={tdMono}>#{row.api_key_id}</td>
-                  <td style={tdMono}>#{row.user_id}</td>
-                  <td style={{ ...tdMono, color: 'var(--hk-ink-300)' }}>{short(row.payload_hash)}</td>
+                  <td style={{ color: 'var(--hk-ink-700)' }}>{row.reason_code || '—'}</td>
+                  <td className="hk-mono">#{row.api_key_id}</td>
+                  <td className="hk-mono">#{row.user_id}</td>
+                  <td className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{short(row.payload_hash)}</td>
                 </tr>
               ))}
             </tbody>
@@ -294,7 +294,7 @@ function LogsCard({ tenantId }: { tenantId: number }) {
 
       {hasMore && (
         <div style={{ padding: 'var(--hk-space-4)', display: 'flex', justifyContent: 'center' }}>
-          <button type="button" disabled={loading} onClick={() => void fetchPage(offset, true)} style={ghostBtn}>
+          <button type="button" disabled={loading} onClick={() => void fetchPage(offset, true)} className="hk-btn">
             {loading ? '加载中…' : '加载更多'}
           </button>
         </div>
@@ -364,7 +364,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function short(s: string): string {
@@ -377,11 +377,4 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

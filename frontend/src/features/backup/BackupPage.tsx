@@ -33,18 +33,20 @@ export function BackupPage() {
   }, [])
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>备份与恢复</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          运营台 · 只读「可备份清单」(表名 / 行数估算 / schema 版本 / 脱敏边界)。本页不导出任何业务数据、
-          不触发备份;真正的数据导出与恢复为后续受控切片。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>备份与恢复</h1>
+          <p className="hk-sub">
+            运营台 · 只读「可备份清单」(表名 / 行数估算 / schema 版本 / 脱敏边界)。本页不导出任何业务数据、
+            不触发备份;真正的数据导出与恢复为后续受控切片。
+          </p>
+        </div>
       </header>
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)' }}>
           {error}
         </p>
       )}
@@ -58,21 +60,21 @@ export function BackupPage() {
           </div>
           <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }}>行数基准:{data.estimate_basis}</p>
 
-          <section>
-            <h2 style={{ fontSize: 15, marginBottom: 'var(--hk-space-2)' }}>表清单</h2>
-            <div style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', overflow: 'auto', maxHeight: 360 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <section className="hk-card">
+            <div className="hk-card__head"><h3>表清单</h3></div>
+            <div className="hk-tablewrap" style={{ maxHeight: 360 }}>
+              <table className="hk-table">
                 <thead>
-                  <tr style={{ position: 'sticky', top: 0, background: 'var(--hk-surface, #fff)', textAlign: 'left' }}>
-                    <th style={th}>表名</th>
-                    <th style={{ ...th, textAlign: 'right' }}>行数估算</th>
+                  <tr>
+                    <th>表名</th>
+                    <th style={{ textAlign: 'right' }}>行数估算</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.tables.map((t) => (
-                    <tr key={t.name} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={td}>{t.name}</td>
-                      <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{t.estimated_rows.toLocaleString()}</td>
+                    <tr key={t.name}>
+                      <td>{t.name}</td>
+                      <td className="hk-mono" style={{ textAlign: 'right' }}>{t.estimated_rows.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -80,14 +82,17 @@ export function BackupPage() {
             </div>
           </section>
 
-          <section style={{ border: '1px solid var(--hk-line)', borderLeft: '4px solid var(--hk-warn, #b8860b)', borderRadius: 'var(--hk-radius-2)', padding: 'var(--hk-space-4)' }}>
-            <h2 style={{ fontSize: 15, marginTop: 0, marginBottom: 'var(--hk-space-2)' }}>脱敏策略</h2>
-            <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', marginTop: 0 }}>{data.redaction_policy.note}</p>
-            <ul style={{ fontSize: 12, margin: 0, paddingLeft: 18, color: 'var(--hk-ink-700)' }}>
-              {data.redaction_policy.redacted_columns.map((c) => (
-                <li key={c}>{c}</li>
-              ))}
-            </ul>
+          {/* 脱敏策略卡:左侧警示描边为风险语义,刻意保留以提示脱敏边界 */}
+          <section className="hk-card" style={{ borderLeft: '4px solid var(--hk-warn)' }}>
+            <div className="hk-card__head"><h3>脱敏策略</h3></div>
+            <div className="hk-card__body">
+              <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', marginTop: 0 }}>{data.redaction_policy.note}</p>
+              <ul style={{ fontSize: 12, margin: 0, paddingLeft: 18, color: 'var(--hk-ink-700)' }}>
+                {data.redaction_policy.redacted_columns.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </div>
           </section>
         </>
       )}
@@ -97,12 +102,9 @@ export function BackupPage() {
 
 function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
-    <div style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', minWidth: 140 }}>
-      <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600, color: warn ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ink-900)' }}>{value}</div>
+    <div className="hk-metric" style={{ minWidth: 140 }}>
+      <div className="hk-metric__label">{label}</div>
+      <div className="hk-metric__v" style={{ color: warn ? 'var(--hk-danger)' : undefined }}>{value}</div>
     </div>
   )
 }
-
-const th: React.CSSProperties = { padding: '8px 12px', fontWeight: 600, color: 'var(--hk-ink-700)' }
-const td: React.CSSProperties = { padding: '6px 12px' }

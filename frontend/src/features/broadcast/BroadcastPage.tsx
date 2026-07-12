@@ -26,11 +26,11 @@ export function BroadcastPage() {
   const [tenantId, setTenantId] = useState(DEFAULT_TENANT_ID)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>站内信广播</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>站内信广播</h1>
+          <p className="hk-sub">
             运营台 · 向目标租户全体用户群发站内信(标题/正文/级别),并查看订阅提醒/到期 worker 运行统计。
             广播一次即触达全体,发送前会二次确认。
           </p>
@@ -94,10 +94,12 @@ function BroadcastForm({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>群发站内信</h2>
-        <StatusBadge tone={severityTone(severity)}>{severityLabel(severity)}</StatusBadge>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>群发站内信</h3>
+        <span style={{ marginLeft: 'auto' }}>
+          <StatusBadge tone={severityTone(severity)}>{severityLabel(severity)}</StatusBadge>
+        </span>
       </div>
 
       {error && <Banner kind="error">{error}</Banner>}
@@ -132,7 +134,7 @@ function BroadcastForm({ tenantId }: { tenantId: number }) {
               ))}
             </select>
           </Field>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {busy ? '群发中…' : '群发到全体用户'}
           </button>
         </div>
@@ -171,10 +173,10 @@ function WorkerStatsCard() {
   }, [load])
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>通知 Worker 统计(只读)</h2>
-        <button type="button" disabled={loading} onClick={() => load()} style={ghostBtn}>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>通知 Worker 统计(只读)</h3>
+        <button type="button" disabled={loading} onClick={() => load()} className="hk-btn hk-btn--sm" style={{ marginLeft: 'auto' }}>
           {loading ? '刷新中…' : '刷新'}
         </button>
       </div>
@@ -263,8 +265,4 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

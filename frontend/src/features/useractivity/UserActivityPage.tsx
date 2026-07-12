@@ -67,61 +67,59 @@ export function UserActivityPage() {
   const refresh = () => setRefreshNonce((n) => n + 1)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>安全日志</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>安全日志</h1>
+          <p className="hk-sub">
             你账户的敏感操作记录(签发/撤销 Key、登录、两步验证、通行密钥等)。已加载 {items.length} 条。
           </p>
         </div>
-        <button type="button" onClick={refresh} style={ghostBtn} disabled={loading}>
+        <button type="button" onClick={refresh} className="hk-btn" disabled={loading}>
           刷新
         </button>
       </header>
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={card}>
+      <div className="hk-card">
         {loading && items.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : items.length === 0 ? (
           <Empty>暂无安全日志记录。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['时间', '动作', '结果', 'API Key', '原因', '请求 ID'].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
+                    <th key={h}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {items.map((ev) => (
-                  <tr key={ev.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdTime}>{fmt(ev.occurred_at)}</td>
-                    <td style={td}>
+                  <tr key={ev.id}>
+                    <td className="hk-mono">{fmt(ev.occurred_at)}</td>
+                    <td>
                       <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{actionLabel(ev.action)}</span>
                     </td>
-                    <td style={td}>
+                    <td>
                       <StatusBadge tone={outcomeTone(ev.outcome) as BadgeTone}>{outcomeLabel(ev.outcome)}</StatusBadge>
                     </td>
-                    <td style={td}>
+                    <td>
                       {ev.key_prefix ? (
-                        <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{ev.key_prefix}…</code>
+                        <code className="hk-mono" style={{ color: 'var(--hk-ink-700)' }}>{ev.key_prefix}…</code>
                       ) : (
                         <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
                       )}
                     </td>
-                    <td style={{ ...td, color: 'var(--hk-ink-700)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <td style={{ color: 'var(--hk-ink-700)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {ev.reason || '—'}
                     </td>
-                    <td style={td}>
+                    <td>
                       {ev.request_id ? (
-                        <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{ev.request_id}</code>
+                        <code className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{ev.request_id}</code>
                       ) : (
                         <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
                       )}
@@ -137,7 +135,7 @@ export function UserActivityPage() {
       {more && (
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           {/* 刷新进行中也禁用,避免与首屏重拉并发追加导致列表瞬时错位 */}
-          <button type="button" onClick={loadMore} disabled={loadingMore || loading} style={ghostBtn}>
+          <button type="button" onClick={loadMore} disabled={loadingMore || loading} className="hk-btn">
             {loadingMore ? '加载中…' : '加载更多'}
           </button>
         </div>
@@ -147,7 +145,7 @@ export function UserActivityPage() {
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 /** RFC3339(Nano)→ 本地可读串(24 小时制)。非法/空原样或占位。 */
@@ -157,9 +155,4 @@ function fmt(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdTime: React.CSSProperties = { ...td, color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }

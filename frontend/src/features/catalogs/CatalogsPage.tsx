@@ -39,12 +39,14 @@ export function CatalogsPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>上游目录</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          provider 目录(供应商条目)与 channel 目录(路由失败转移条目)的增删改。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>上游目录</h1>
+          <p className="hk-sub">
+            provider 目录(供应商条目)与 channel 目录(路由失败转移条目)的增删改。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -64,7 +66,7 @@ export function CatalogsPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -184,10 +186,10 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>provider 目录</h2>
-        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>provider 目录</h3>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
       </div>
 
       {error && <Banner kind="error">{error}</Banner>}
@@ -225,11 +227,11 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
           <Field label="原因(reason,可选,写入审计)">
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="可选" style={{ ...inp, width: 260 }} />
           </Field>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {editCode == null ? '新建' : '保存修改'}
           </button>
           {editCode != null && (
-            <button type="button" disabled={busy} onClick={resetForm} style={ghostBtn}>
+            <button type="button" disabled={busy} onClick={resetForm} className="hk-btn">
               取消编辑
             </button>
           )}
@@ -242,32 +244,30 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无 provider 目录条目。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={tableStyle}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['code', '展示名', '上游协议', '状态', '创建时间', ''].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={tdMono}>{row.code}</td>
-                  <td style={td}>{row.display_name}</td>
-                  <td style={tdMono}>{row.upstream_protocol}</td>
-                  <td style={td}>
+                <tr key={row.id}>
+                  <td className="hk-mono">{row.code}</td>
+                  <td>{row.display_name}</td>
+                  <td className="hk-mono">{row.upstream_protocol}</td>
+                  <td>
                     <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
                   </td>
-                  <td style={tdMono}>{fmt(row.created_at)}</td>
-                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} style={linkBtn}>
+                  <td className="hk-mono">{fmt(row.created_at)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
                       编辑
                     </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} style={dangerLink}>
+                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
                       删除
                     </button>
                   </td>
@@ -377,10 +377,10 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>channel 目录</h2>
-        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>channel 目录</h3>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
       </div>
 
       {error && <Banner kind="error">{error}</Banner>}
@@ -408,11 +408,11 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
           </Field>
         </div>
         <div style={formRow}>
-          <button type="button" disabled={busy} onClick={submit} style={primaryBtn}>
+          <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
             {editId == null ? '新建' : '保存修改'}
           </button>
           {editId != null && (
-            <button type="button" disabled={busy} onClick={resetForm} style={ghostBtn}>
+            <button type="button" disabled={busy} onClick={resetForm} className="hk-btn">
               取消编辑
             </button>
           )}
@@ -425,33 +425,31 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无 channel 目录条目。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={tableStyle}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['#', '名称', 'pool_group_id', '失败转移码', '状态', '创建时间', ''].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={tdMono}>#{row.id}</td>
-                  <td style={td}>{row.name}</td>
-                  <td style={tdMono}>{row.pool_group_id}</td>
-                  <td style={tdMono}>{formatFailoverCodes(row.failover_status_codes) || '—'}</td>
-                  <td style={td}>
+                <tr key={row.id}>
+                  <td className="hk-mono">#{row.id}</td>
+                  <td>{row.name}</td>
+                  <td className="hk-mono">{row.pool_group_id}</td>
+                  <td className="hk-mono">{formatFailoverCodes(row.failover_status_codes) || '—'}</td>
+                  <td>
                     <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
                   </td>
-                  <td style={tdMono}>{fmt(row.created_at)}</td>
-                  <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} style={linkBtn}>
+                  <td className="hk-mono">{fmt(row.created_at)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
                       编辑
                     </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} style={dangerLink}>
+                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
                       删除
                     </button>
                   </td>
@@ -482,7 +480,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 function fmt(iso?: string): string {
   if (!iso) return '—'
@@ -490,18 +488,8 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
 const formWrap: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }
 const formRow: React.CSSProperties = { display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }
 const chk: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: 'var(--hk-ink-700)', height: 32 }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const disabledInp: React.CSSProperties = { background: 'var(--hk-surface-sunken)', color: 'var(--hk-ink-500)' }
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-600)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLink: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

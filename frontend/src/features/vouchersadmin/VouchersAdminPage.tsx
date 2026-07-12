@@ -101,19 +101,19 @@ export function VouchersAdminPage() {
   const visible = filterByStatus(vouchers, statusFilter) as Voucher[]
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 'var(--hk-space-3)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-          <h1 style={{ fontSize: 22 }}>兑换码管理</h1>
-          <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>兑换码管理</h1>
+          <p className="hk-sub">
             运营台 · 批量发码 / 吊销 / 批次查看。当前租户 {tenantId},共 {visible.length} 张。
           </p>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexShrink: 0 }}>
-          <button type="button" onClick={() => setCreateKind('single')} style={ghostBtn}>
+          <button type="button" onClick={() => setCreateKind('single')} className="hk-btn">
             ＋ 单张
           </button>
-          <button type="button" onClick={() => setCreateKind('batch')} style={newBtn}>
+          <button type="button" onClick={() => setCreateKind('batch')} className="hk-btn hk-btn--green">
             ＋ 批量生成
           </button>
         </div>
@@ -130,7 +130,7 @@ export function VouchersAdminPage() {
           租户 ID
           <input value={tenantInput} onChange={(e) => setTenantInput(e.target.value)} style={{ ...inp, width: 120 }} inputMode="numeric" />
         </label>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           查询
         </button>
         <label style={lbl}>
@@ -143,25 +143,25 @@ export function VouchersAdminPage() {
             ))}
           </select>
         </label>
-        <button type="button" onClick={refresh} style={ghostBtn}>
+        <button type="button" onClick={refresh} className="hk-btn">
           刷新
         </button>
       </form>
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={{ background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }}>
+      <div className="hk-card">
         {loading && vouchers.length === 0 ? (
           <Empty>加载中…</Empty>
         ) : visible.length === 0 ? (
           <Empty>没有兑换码。</Empty>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <div className="hk-tablewrap">
+            <table className="hk-table">
               <thead>
                 <tr>
                   {['ID', '指纹', '面额', '种类', '兑换', '状态', '批次', '有效期', ''].map((h) => (
-                    <th key={h} style={th}>
+                    <th key={h}>
                       {h}
                     </th>
                   ))}
@@ -169,20 +169,20 @@ export function VouchersAdminPage() {
               </thead>
               <tbody>
                 {visible.map((v) => (
-                  <tr key={v.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdNum}>{v.id}</td>
-                    <td style={{ ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }}>{v.code_fingerprint}</td>
-                    <td style={tdNum}>
+                  <tr key={v.id}>
+                    <td className="hk-mono">{v.id}</td>
+                    <td className="hk-mono">{v.code_fingerprint}</td>
+                    <td className="hk-mono">
                       {centsToYuan(v.amount_cents)} {v.currency_code}
                     </td>
-                    <td style={td}>{grantKindLabel(v.grant_kind)}</td>
-                    <td style={tdNum}>
+                    <td>{grantKindLabel(v.grant_kind)}</td>
+                    <td className="hk-mono">
                       {v.redeemed_count}/{v.max_redemptions}
                     </td>
-                    <td style={td}>
+                    <td>
                       <StatusBadge tone={statusTone(v.status)}>{statusLabel(v.status)}</StatusBadge>
                     </td>
-                    <td style={td}>
+                    <td>
                       {v.batch_id ? (
                         <button type="button" onClick={() => setBatchView(v.batch_id ?? null)} style={linkBtn}>
                           #{v.batch_id}
@@ -191,12 +191,12 @@ export function VouchersAdminPage() {
                         <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
                       )}
                     </td>
-                    <td style={{ ...td, whiteSpace: 'nowrap', color: 'var(--hk-ink-500)', fontSize: 12 }}>
+                    <td className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>
                       {fmt(v.valid_from)} ~ {fmt(v.valid_until)}
                     </td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                       {v.status === 'active' && (
-                        <button type="button" disabled={busyId === v.id} onClick={() => onRevoke(v)} style={dangerLinkBtn}>
+                        <button type="button" disabled={busyId === v.id} onClick={() => onRevoke(v)} className="hk-btn hk-btn--danger hk-btn--sm">
                           吊销
                         </button>
                       )}
@@ -255,7 +255,7 @@ function CreateSingleModal({ onClose, onCreated }: { onClose: () => void; onCrea
           </Row>
           <Row label="指纹">{result.voucher.code_fingerprint}</Row>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={primaryBtn}>
+            <button type="button" onClick={onClose} className="hk-btn hk-btn--green">
               完成
             </button>
           </div>
@@ -328,7 +328,7 @@ function CreateBatchModal({ onClose, onCreated }: { onClose: () => void; onCreat
           </div>
           <CodesReveal codes={result.codes.map((c) => c.code)} />
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={primaryBtn}>
+            <button type="button" onClick={onClose} className="hk-btn hk-btn--green">
               完成
             </button>
           </div>
@@ -395,7 +395,7 @@ function BatchDrawer({ tenantId, batchId, onClose }: { tenantId: number; batchId
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ fontSize: 18 }}>批次 #{batchId}</h2>
-          <button type="button" onClick={onClose} style={ghostBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">
             关闭
           </button>
         </div>
@@ -407,32 +407,34 @@ function BatchDrawer({ tenantId, batchId, onClose }: { tenantId: number; batchId
           <>
             <BatchSummary batch={data.batch} />
             <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>该批次券 {data.vouchers.length} 张</div>
-            <div style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                <thead>
-                  <tr>
-                    {['ID', '指纹', '兑换', '状态'].map((h) => (
-                      <th key={h} style={th}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.vouchers.map((v) => (
-                    <tr key={v.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={tdNum}>{v.id}</td>
-                      <td style={{ ...td, fontFamily: 'var(--hk-font-mono)' }}>{v.code_fingerprint}</td>
-                      <td style={tdNum}>
-                        {v.redeemed_count}/{v.max_redemptions}
-                      </td>
-                      <td style={td}>
-                        <StatusBadge tone={statusTone(v.status)}>{statusLabel(v.status)}</StatusBadge>
-                      </td>
+            <div className="hk-card">
+              <div className="hk-tablewrap">
+                <table className="hk-table">
+                  <thead>
+                    <tr>
+                      {['ID', '指纹', '兑换', '状态'].map((h) => (
+                        <th key={h}>
+                          {h}
+                        </th>
+                      ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.vouchers.map((v) => (
+                      <tr key={v.id}>
+                        <td className="hk-mono">{v.id}</td>
+                        <td className="hk-mono">{v.code_fingerprint}</td>
+                        <td className="hk-mono">
+                          {v.redeemed_count}/{v.max_redemptions}
+                        </td>
+                        <td>
+                          <StatusBadge tone={statusTone(v.status)}>{statusLabel(v.status)}</StatusBadge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </>
         ) : null}
@@ -496,10 +498,10 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 function Actions({ busy, onCancel, onSubmit, submitLabel }: { busy: boolean; onCancel: () => void; onSubmit: () => void; submitLabel: string }) {
   return (
     <div style={{ display: 'flex', gap: 'var(--hk-space-2)', justifyContent: 'flex-end' }}>
-      <button type="button" onClick={onCancel} style={ghostBtn}>
+      <button type="button" onClick={onCancel} className="hk-btn">
         取消
       </button>
-      <button type="button" disabled={busy} onClick={onSubmit} style={primaryBtn}>
+      <button type="button" disabled={busy} onClick={onSubmit} className="hk-btn hk-btn--green">
         {busy ? '提交中…' : submitLabel}
       </button>
     </div>
@@ -534,7 +536,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso: string): string {
@@ -544,15 +546,8 @@ function fmt(iso: string): string {
 
 /* ---------------- 样式 token(仅引 var(--hk-*),禁硬编码新色) ---------------- */
 const lbl: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdNum: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const newBtn: React.CSSProperties = { height: 36, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
-const dangerLinkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const successBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
 const overlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', zIndex: 'var(--hk-z-overlay)' as unknown as number }

@@ -31,13 +31,15 @@ export function ChannelTestTemplatesPage() {
   const [tenantId, setTenantId] = useState<number | null>(null)
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>渠道测试模板</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          为渠道连通性测试预存的 HTTP 请求模板(方法 / 路径 / 请求体 / 自定义请求头),按租户隔离。
-          请求头禁止填凭证类(authorization 等)。先指定租户 ID。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>渠道测试模板</h1>
+          <p className="hk-sub">
+            为渠道连通性测试预存的 HTTP 请求模板(方法 / 路径 / 请求体 / 自定义请求头),按租户隔离。
+            请求头禁止填凭证类(authorization 等)。先指定租户 ID。
+          </p>
+        </div>
       </header>
 
       <form
@@ -57,7 +59,7 @@ export function ChannelTestTemplatesPage() {
             style={{ ...inp, width: 160 }}
           />
         </Field>
-        <button type="submit" style={primaryBtn}>
+        <button type="submit" className="hk-btn hk-btn--green">
           加载
         </button>
       </form>
@@ -163,15 +165,15 @@ function TemplatesCard({ tenantId }: { tenantId: number }) {
   }
 
   return (
-    <section style={card}>
-      <div style={cardHead}>
-        <h2 style={{ fontSize: 15, margin: 0 }}>测试模板列表</h2>
-        <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
+    <section className="hk-card">
+      <div className="hk-card__head">
+        <h3>测试模板列表</h3>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
-          <button type="button" onClick={startCreate} style={primaryBtn}>
+          <button type="button" onClick={startCreate} className="hk-btn hk-btn--green hk-btn--sm">
             新建模板
           </button>
-          <button type="button" disabled={loading} onClick={() => load()} style={ghostBtn}>
+          <button type="button" disabled={loading} onClick={() => load()} className="hk-btn hk-btn--sm">
             刷新
           </button>
         </div>
@@ -196,36 +198,34 @@ function TemplatesCard({ tenantId }: { tenantId: number }) {
       ) : rows.length === 0 ? (
         <Empty>该租户暂无测试模板。点击「新建模板」开始。</Empty>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div className="hk-tablewrap">
+          <table className="hk-table">
             <thead>
               <tr>
                 {['名称', '方法', '路径', '请求头数', '请求体', '创建时间', '操作'].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={{ ...td, fontWeight: 600 }}>{row.name}</td>
-                  <td style={tdMono}>{row.method}</td>
-                  <td style={{ ...tdMono, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.path}</td>
-                  <td style={tdMono}>{headerCount(row.headers)}</td>
-                  <td style={{ ...td, color: 'var(--hk-ink-300)' }}>{row.body_template ? '有' : '—'}</td>
-                  <td style={tdMono}>{fmt(row.created_at)}</td>
-                  <td style={td}>
+                <tr key={row.id}>
+                  <td style={{ fontWeight: 600 }}>{row.name}</td>
+                  <td className="hk-mono">{row.method}</td>
+                  <td className="hk-mono" style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.path}</td>
+                  <td className="hk-mono">{headerCount(row.headers)}</td>
+                  <td style={{ color: 'var(--hk-ink-300)' }}>{row.body_template ? '有' : '—'}</td>
+                  <td className="hk-mono">{fmt(row.created_at)}</td>
+                  <td>
                     <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-                      <button type="button" onClick={() => startEdit(row)} style={ghostBtn}>
+                      <button type="button" onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
                         编辑
                       </button>
                       <button
                         type="button"
                         disabled={deletingId === row.id}
                         onClick={() => void remove(row)}
-                        style={dangerBtn}
+                        className="hk-btn hk-btn--sm hk-btn--danger"
                       >
                         {deletingId === row.id ? '删除中…' : '删除'}
                       </button>
@@ -298,10 +298,10 @@ function TemplateEditor({
         />
       </Field>
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-        <button type="button" disabled={saving} onClick={onSave} style={primaryBtn}>
+        <button type="button" disabled={saving} onClick={onSave} className="hk-btn hk-btn--green">
           {saving ? '保存中…' : isNew ? '创建' : '保存'}
         </button>
-        <button type="button" disabled={saving} onClick={onCancel} style={ghostBtn}>
+        <button type="button" disabled={saving} onClick={onCancel} className="hk-btn">
           取消
         </button>
       </div>
@@ -333,7 +333,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
+  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso?: string): string {
@@ -342,12 +342,4 @@ function fmt(iso?: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
-const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
-const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-danger-soft)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger-soft)', color: 'var(--hk-danger)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

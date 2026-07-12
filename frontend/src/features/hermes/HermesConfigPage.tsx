@@ -40,13 +40,15 @@ export function HermesConfigPage() {
       : null
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>Hermes 配置与工具执行</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          管理某用户的 Hermes 启停与 API profile,并执行 Hermes 工具。只读工具可直接运行;
-          <strong>改动型工具强制走 dry-run → 看预览 → 二次确认</strong> 才执行。先设置操作身份。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>Hermes 配置与工具执行</h1>
+          <p className="hk-sub">
+            管理某用户的 Hermes 启停与 API profile,并执行 Hermes 工具。只读工具可直接运行;
+            <strong>改动型工具强制走 dry-run → 看预览 → 二次确认</strong> 才执行。先设置操作身份。
+          </p>
+        </div>
       </header>
 
       <ActorBar actor={actor} editing={editingActor} onEdit={() => setEditingActor(true)} onCancel={() => setEditingActor(false)} onSave={(a) => { setActor(a); saveActor(a); setEditingActor(false) }} />
@@ -97,7 +99,7 @@ function ActorBar({
         </span>
       </div>
       {!editing && (
-        <button type="button" style={ghostBtn} onClick={onEdit}>
+        <button type="button" className="hk-btn" onClick={onEdit}>
           {actorReady(actor) ? '修改' : '设置操作身份'}
         </button>
       )}
@@ -131,12 +133,13 @@ function ActorForm({
         tenant_id(可选)
         <input style={inp} value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder="留空走 token scope" inputMode="numeric" />
       </label>
-      <button type="button" style={ghostBtn} onClick={onCancel}>
+      <button type="button" className="hk-btn" onClick={onCancel}>
         取消
       </button>
       <button
         type="button"
-        style={{ ...primaryBtn, opacity: valid ? 1 : 0.5 }}
+        className="hk-btn hk-btn--green"
+        style={{ opacity: valid ? 1 : 0.5 }}
         disabled={!valid}
         onClick={() => onSave({ asUserId: parsedAsUser, tenantId: parsedTenant })}
       >
@@ -170,7 +173,5 @@ const actorBar: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-lg)',
 }
 const fieldLabel: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-700)' }
-const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', minWidth: 120 }
-const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', minWidth: 120 }
 const emptyState: React.CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'var(--hk-space-6)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', textAlign: 'center' }

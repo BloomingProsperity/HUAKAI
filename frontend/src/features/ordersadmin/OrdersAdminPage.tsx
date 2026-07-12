@@ -20,22 +20,7 @@ import {
   type OrderFilterForm,
 } from './ordersadmin'
 import { RefundRequestsTab } from './RefundRequestsTab'
-import {
-  dangerBtn,
-  errBox,
-  Empty,
-  Field,
-  fmt,
-  ghostBtn,
-  inp,
-  linkBtn,
-  panel,
-  primaryBtn,
-  Row,
-  td,
-  tdNum,
-  th,
-} from './ui'
+import { errBox, Field, fmt, inp, Row } from './ui'
 import type { AdminOrder, OrderAuditEvent } from './types'
 
 type TabKey = 'orders' | 'refund-requests' | 'create-order' | 'provider-config'
@@ -107,12 +92,14 @@ export function OrdersAdminPage() {
     setDraft((f) => ({ ...f, [k]: v }))
 
   return (
-    <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
-      <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-1)' }}>
-        <h1 style={{ fontSize: 22 }}>订单管理台</h1>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>
-          运营台 · 充值/订阅订单的多维查询、状态机查看、卡单处置与退款工单审批(均接已有 admin 端点)。
-        </p>
+    <div className="hk-page">
+      <header className="hk-pagehead">
+        <div>
+          <h1>订单管理台</h1>
+          <p className="hk-sub">
+            运营台 · 充值/订阅订单的多维查询、状态机查看、卡单处置与退款工单审批(均接已有 admin 端点)。
+          </p>
+        </div>
       </header>
 
       {/* 页顶仪表盘汇总(已查询某租户时显示)。 */}
@@ -253,7 +240,7 @@ function OrdersTab({
           <input type="datetime-local" value={draft.createdTo} onChange={(e) => set('createdTo', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-          <button type="submit" style={primaryBtn}>
+          <button type="submit" className="hk-btn hk-btn--green">
             查询
           </button>
           <button
@@ -264,7 +251,7 @@ function OrdersTab({
               setOrders([])
               setError(null)
             }}
-            style={ghostBtn}
+            className="hk-btn"
           >
             重置
           </button>
@@ -274,22 +261,22 @@ function OrdersTab({
       {error && <div style={errBox}>{error}</div>}
 
       {!applied ? (
-        <div style={panel}>
-          <Empty>请填写租户 ID 后查询订单。</Empty>
+        <div className="hk-card">
+          <div className="hk-empty">请填写租户 ID 后查询订单。</div>
         </div>
       ) : (
-        <div style={panel}>
+        <div className="hk-card">
           {loading && orders.length === 0 ? (
-            <Empty>加载中…</Empty>
+            <div className="hk-empty">加载中…</div>
           ) : orders.length === 0 ? (
-            <Empty>该筛选条件下没有订单。</Empty>
+            <div className="hk-empty">该筛选条件下没有订单。</div>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <div className="hk-tablewrap">
+              <table className="hk-table">
                 <thead>
                   <tr>
                     {['订单号', '用户', '金额', '类型', '渠道', '状态', '创建时间', ''].map((h) => (
-                      <th key={h} style={th}>
+                      <th key={h}>
                         {h}
                       </th>
                     ))}
@@ -297,22 +284,22 @@ function OrdersTab({
                 </thead>
                 <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                      <td style={td}>
-                        <button type="button" onClick={() => setDetailId(o.id)} style={{ ...linkBtn, fontWeight: 600 }}>
+                    <tr key={o.id}>
+                      <td>
+                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm" style={{ fontWeight: 600 }}>
                           {o.out_trade_no || `#${o.id}`}
                         </button>
                       </td>
-                      <td style={tdNum}>{o.user_id}</td>
-                      <td style={tdNum}>{formatCents(o.amount_cents, o.currency_code)}</td>
-                      <td style={td}>{o.order_kind || '充值'}</td>
-                      <td style={td}>{o.provider_kind || '—'}</td>
-                      <td style={td}>
+                      <td className="hk-mono">{o.user_id}</td>
+                      <td className="hk-mono">{formatCents(o.amount_cents, o.currency_code)}</td>
+                      <td>{o.order_kind || '充值'}</td>
+                      <td>{o.provider_kind || '—'}</td>
+                      <td>
                         <StatusBadge tone={statusTone(o.status)}>{statusLabel(o.status)}</StatusBadge>
                       </td>
-                      <td style={td}>{fmt(o.created_at)}</td>
-                      <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        <button type="button" onClick={() => setDetailId(o.id)} style={linkBtn}>
+                      <td className="hk-mono">{fmt(o.created_at)}</td>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
                           详情
                         </button>
                       </td>
@@ -328,10 +315,10 @@ function OrdersTab({
       {applied && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 'var(--hk-space-3)', fontSize: 13, color: 'var(--hk-ink-500)' }}>
           <span>第 {page + 1} 页</span>
-          <button type="button" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))} style={ghostBtn}>
+          <button type="button" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))} className="hk-btn">
             上一页
           </button>
-          <button type="button" disabled={orders.length < PAGE_SIZE || loading} onClick={() => setPage((p) => p + 1)} style={ghostBtn}>
+          <button type="button" disabled={orders.length < PAGE_SIZE || loading} onClick={() => setPage((p) => p + 1)} className="hk-btn">
             下一页
           </button>
         </div>
@@ -427,13 +414,13 @@ function OrderDetailDrawer({
       <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(520px,100%)', height: '100%', background: 'var(--hk-surface)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2 style={{ fontSize: 18 }}>订单 #{id}</h2>
-          <button type="button" onClick={onClose} style={ghostBtn}>
+          <button type="button" onClick={onClose} className="hk-btn">
             关闭
           </button>
         </header>
 
         {loading ? (
-          <Empty>加载中…</Empty>
+          <div className="hk-empty">加载中…</div>
         ) : error ? (
           <div style={errBox}>{error}</div>
         ) : order ? (
@@ -459,7 +446,7 @@ function OrderDetailDrawer({
             <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
               <h3 style={{ fontSize: 14, color: 'var(--hk-ink-700)' }}>审计轨迹</h3>
               {events.length === 0 ? (
-                <Empty>暂无审计事件。</Empty>
+                <div className="hk-empty">暂无审计事件。</div>
               ) : (
                 <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
                   {events.map((ev, i) => (
@@ -485,17 +472,17 @@ function OrderDetailDrawer({
                 {actErr && <div style={errBox}>{actErr}</div>}
                 <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
                   {actions.canConfirm && (
-                    <button type="button" disabled={busy} onClick={() => act(() => confirmOrder(order.id, tenantId, reason))} style={primaryBtn}>
+                    <button type="button" disabled={busy} onClick={() => act(() => confirmOrder(order.id, tenantId, reason))} className="hk-btn hk-btn--green">
                       确认到账并履约
                     </button>
                   )}
                   {actions.canRetry && (
-                    <button type="button" disabled={busy} onClick={() => act(() => retryOrder(order.id, tenantId))} style={ghostBtn}>
+                    <button type="button" disabled={busy} onClick={() => act(() => retryOrder(order.id, tenantId))} className="hk-btn">
                       重试履约
                     </button>
                   )}
                   {actions.canCancel && (
-                    <button type="button" disabled={busy} onClick={() => act(() => cancelOrder(order.id, tenantId, reason))} style={dangerBtn}>
+                    <button type="button" disabled={busy} onClick={() => act(() => cancelOrder(order.id, tenantId, reason))} className="hk-btn hk-btn--danger">
                       取消订单
                     </button>
                   )}
@@ -524,7 +511,7 @@ function OrderDetailDrawer({
                 </Field>
                 {actErr && <div style={errBox}>{actErr}</div>}
                 <div>
-                  <button type="button" disabled={busy} onClick={doRefund} style={dangerBtn}>
+                  <button type="button" disabled={busy} onClick={doRefund} className="hk-btn hk-btn--danger">
                     退款
                   </button>
                 </div>
