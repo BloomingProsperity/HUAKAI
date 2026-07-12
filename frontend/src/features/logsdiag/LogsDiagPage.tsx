@@ -176,7 +176,7 @@ const noticeBox: React.CSSProperties = {
   padding: 'var(--hk-space-3)',
   borderRadius: 'var(--hk-radius-md)',
   fontSize: 13,
-  color: '#0b6553',
+  color: 'var(--hk-primary-600)',
   background: 'var(--hk-primary-50)',
   border: '1px solid var(--hk-primary-100)',
 }

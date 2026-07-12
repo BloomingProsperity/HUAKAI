@@ -271,7 +271,7 @@ function TopupForm({ config, onCreated }: { config: PortalTopupConfig; onCreated
             flexDirection: 'column',
             gap: 6,
             padding: 'var(--hk-space-3)',
-            background: 'var(--hk-primary-50, #eef7f2)',
+            background: 'var(--hk-primary-50, var(--hk-primary-50))',
             border: '1px solid var(--hk-line)',
             borderRadius: 'var(--hk-radius-md)',
           }}

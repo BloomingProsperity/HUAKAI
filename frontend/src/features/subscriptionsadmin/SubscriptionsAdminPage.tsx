@@ -1106,7 +1106,7 @@ function Banner({ tone, children }: { tone: 'danger' | 'info'; children: React.R
 /** money 提示条:动权益 / 计费的动作统一加,提醒谨慎执行。 */
 function MoneyHint({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: '#8a5e0f', background: '#fbf3df', border: '1px solid #f0e2bd' }}>
+    <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: 'var(--hk-warn)', background: 'var(--hk-warn-soft)', border: '1px solid var(--hk-warn-soft)' }}>
       {children}
     </div>
   )
@@ -1137,4 +1137,4 @@ const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
 const linkBtnDanger: React.CSSProperties = { ...linkBtn, color: 'var(--hk-danger)' }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

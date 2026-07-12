@@ -280,7 +280,7 @@ function Banner({ tone, children }: { tone: 'danger' | 'ok'; children: React.Rea
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
         color: danger ? 'var(--hk-danger)' : 'var(--hk-primary-700)',
-        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, #eef7f2)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, var(--hk-primary-50))',
         border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
       }}
     >
@@ -300,11 +300,11 @@ const h2: React.CSSProperties = { fontSize: 15, color: 'var(--hk-ink-700)', marg
 const muted: React.CSSProperties = { fontSize: 13, color: 'var(--hk-ink-500)', margin: 0 }
 const runnerBox: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
 const previewBox: React.CSSProperties = { padding: 'var(--hk-space-3)', border: '1px solid #f0d9a8', background: '#fff8e8', borderRadius: 'var(--hk-radius-md)' }
-const resultBox: React.CSSProperties = { padding: 'var(--hk-space-3)', border: '1px solid var(--hk-line)', background: 'var(--hk-primary-50, #eef7f2)', borderRadius: 'var(--hk-radius-md)' }
+const resultBox: React.CSSProperties = { padding: 'var(--hk-space-3)', border: '1px solid var(--hk-line)', background: 'var(--hk-primary-50, var(--hk-primary-50))', borderRadius: 'var(--hk-radius-md)' }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', flex: 1, minWidth: 120 }
 const textArea: React.CSSProperties = { width: '100%', padding: 'var(--hk-space-2) var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, fontFamily: 'monospace', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', resize: 'vertical' }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
-const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
+const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const badgeRO: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: 'var(--hk-primary-700)', padding: '1px 6px', border: '1px solid var(--hk-line)', borderRadius: 999 }
 const badgeMut: React.CSSProperties = { fontSize: 10, fontWeight: 600, color: 'var(--hk-danger)', padding: '1px 6px', border: '1px solid var(--hk-danger-soft)', background: 'var(--hk-danger-soft)', borderRadius: 999 }

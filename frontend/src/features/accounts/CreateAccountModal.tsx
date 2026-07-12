@@ -300,9 +300,9 @@ function Banner({ tone, children }: { tone: 'danger' | 'warn'; children: React.R
         padding: 'var(--hk-space-2) var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: danger ? 'var(--hk-danger)' : '#8a5e0f',
-        background: danger ? 'var(--hk-danger-soft)' : '#fbf3df',
-        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : '#f0e2bd'}`,
+        color: danger ? 'var(--hk-danger)' : 'var(--hk-warn)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-warn-soft)',
+        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-warn-soft)'}`,
       }}
     >
       {children}
@@ -333,6 +333,6 @@ const inp: React.CSSProperties = {
 }
 const baseBtn: React.CSSProperties = { height: 34, padding: '0 var(--hk-space-4)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const primary: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-primary-600)', background: 'var(--hk-primary-500)', color: '#fff' }
-const dangerBtn: React.CSSProperties = { ...baseBtn, border: '1px solid #c0463a', background: '#c0463a', color: '#fff' }
+const dangerBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-danger)', background: 'var(--hk-danger)', color: '#fff' }
 const ghost: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-line)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontWeight: 400 }
 const iconBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 16, cursor: 'pointer' }

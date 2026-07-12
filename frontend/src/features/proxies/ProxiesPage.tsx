@@ -16,8 +16,8 @@ import type { Proxy } from './types'
 type RowProbe = { testing: boolean; summary?: ProbeSummary }
 
 const toneColor: Record<string, string> = {
-  ok: 'var(--hk-ok, #2e7d32)',
-  fail: 'var(--hk-danger, #c0392b)',
+  ok: 'var(--hk-ok, var(--hk-success))',
+  fail: 'var(--hk-danger, var(--hk-danger))',
   muted: 'var(--hk-ink-500)',
 }
 
@@ -107,7 +107,7 @@ export function ProxiesPage() {
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, #c0392b)', background: 'var(--hk-danger-bg, #fdecea)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
           {error}
         </p>
       )}
@@ -186,10 +186,10 @@ export function ProxiesPage() {
                         style={{
                           marginLeft: 8,
                           padding: '4px 10px',
-                          border: '1px solid var(--hk-danger, #c0392b)',
+                          border: '1px solid var(--hk-danger, var(--hk-danger))',
                           borderRadius: 'var(--hk-radius-2)',
                           background: 'transparent',
-                          color: 'var(--hk-danger, #c0392b)',
+                          color: 'var(--hk-danger, var(--hk-danger))',
                           cursor: 'pointer',
                           fontSize: 12,
                         }}

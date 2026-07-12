@@ -145,9 +145,9 @@ function Empty({ children }: { children: React.ReactNode }) {
 function toneBox(tone: Tone): { color: string; background: string; border: string } {
   switch (tone) {
     case 'ok':
-      return { color: '#0b6553', background: 'var(--hk-primary-50, #e8f5ef)', border: 'var(--hk-primary-100, #cfe9df)' }
+      return { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50, #e8f5ef)', border: 'var(--hk-primary-100, #cfe9df)' }
     case 'warn':
-      return { color: '#8a5e0f', background: '#fbf3df', border: '#f0e2bd' }
+      return { color: 'var(--hk-warn)', background: 'var(--hk-warn-soft)', border: 'var(--hk-warn-soft)' }
     case 'danger':
       return { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: 'var(--hk-danger-soft)' }
   }

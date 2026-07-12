@@ -174,9 +174,9 @@ function Banner({ tone, children }: { tone: 'danger' | 'warn'; children: React.R
         padding: 'var(--hk-space-2) var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: danger ? 'var(--hk-danger)' : '#8a5e0f',
-        background: danger ? 'var(--hk-danger-soft)' : '#fbf3df',
-        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : '#f0e2bd'}`,
+        color: danger ? 'var(--hk-danger)' : 'var(--hk-warn)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-warn-soft)',
+        border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-warn-soft)'}`,
       }}
     >
       {children}

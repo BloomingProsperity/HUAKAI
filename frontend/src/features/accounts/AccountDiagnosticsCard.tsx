@@ -66,7 +66,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
           {test.busy ? '测试中…' : '测试连通'}
         </button>
         {test.summary && (
-          <span style={{ fontSize: 13, color: test.summary.tone === 'ok' ? 'var(--hk-ok, #2e7d32)' : 'var(--hk-danger, #c0392b)' }}>
+          <span style={{ fontSize: 13, color: test.summary.tone === 'ok' ? 'var(--hk-ok, var(--hk-success))' : 'var(--hk-danger, var(--hk-danger))' }}>
             {test.summary.label}
           </span>
         )}
@@ -79,7 +79,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
           <button type="button" disabled={health.busy} onClick={loadHealth} style={ghostBtn}>
             {health.busy ? '加载中…' : health.data ? '刷新健康' : '加载实时健康'}
           </button>
-          {health.error && <span style={{ fontSize: 13, color: 'var(--hk-danger, #c0392b)' }}>{health.error}</span>}
+          {health.error && <span style={{ fontSize: 13, color: 'var(--hk-danger, var(--hk-danger))' }}>{health.error}</span>}
         </div>
         {health.data && (
           <dl style={grid}>
@@ -99,7 +99,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
           <button type="button" disabled={models.busy} onClick={loadModels} style={ghostBtn}>
             {models.busy ? '探测中…' : '探测上游模型'}
           </button>
-          {models.error && <span style={{ fontSize: 13, color: 'var(--hk-danger, #c0392b)' }}>{models.error}</span>}
+          {models.error && <span style={{ fontSize: 13, color: 'var(--hk-danger, var(--hk-danger))' }}>{models.error}</span>}
           <span style={hint}>仅 upstream_passthrough 账号支持</span>
         </div>
         {models.data && (

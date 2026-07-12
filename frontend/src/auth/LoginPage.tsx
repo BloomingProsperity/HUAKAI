@@ -564,7 +564,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.ReactNode }) {
   const ok = tone === 'ok'
-  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: ok ? '#0b6553' : 'var(--hk-danger)', background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)', border: `1px solid ${ok ? 'var(--hk-primary-100)' : 'var(--hk-danger-soft)'}` }}>{children}</div>
+  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: ok ? 'var(--hk-primary-600)' : 'var(--hk-danger)', background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)', border: `1px solid ${ok ? 'var(--hk-primary-100)' : 'var(--hk-danger-soft)'}` }}>{children}</div>
 }
 // 分隔线带居中文案(社交登录区上方)。
 function Divider({ children }: { children: React.ReactNode }) {

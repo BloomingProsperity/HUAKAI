@@ -44,7 +44,7 @@ export function BackupPage() {
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, #c0392b)', background: 'var(--hk-danger-bg, #fdecea)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
           {error}
         </p>
       )}
@@ -99,7 +99,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
   return (
     <div style={{ border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', minWidth: 140 }}>
       <div style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600, color: warn ? 'var(--hk-danger, #c0392b)' : 'var(--hk-ink-900)' }}>{value}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: warn ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ink-900)' }}>{value}</div>
     </div>
   )
 }

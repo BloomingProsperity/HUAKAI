@@ -87,8 +87,8 @@ export function AccountBulkByTag({ onApplied }: { onApplied: () => void }) {
           收起
         </button>
       </div>
-      {error && <p style={{ color: 'var(--hk-danger, #c0392b)', margin: 0, fontSize: 13 }}>{error}</p>}
-      {flash && <p style={{ color: 'var(--hk-ok, #2e7d32)', margin: 0, fontSize: 13 }}>{flash}</p>}
+      {error && <p style={{ color: 'var(--hk-danger, var(--hk-danger))', margin: 0, fontSize: 13 }}>{error}</p>}
+      {flash && <p style={{ color: 'var(--hk-ok, var(--hk-success))', margin: 0, fontSize: 13 }}>{flash}</p>}
     </div>
   )
 }

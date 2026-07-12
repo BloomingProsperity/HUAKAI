@@ -81,7 +81,7 @@ export function EditProxyForm({
         <Field label="认证用户名(留空清除)"><input value={form.auth_username} autoComplete="off" onChange={(e) => set('auth_username', e.target.value)} style={inp} /></Field>
         <Field label="认证密钥(留空将清除认证!)"><input type="password" value={form.auth_secret} autoComplete="off" placeholder="留空=清除;要保留认证请重填" onChange={(e) => set('auth_secret', e.target.value)} style={inp} /></Field>
       </div>
-      {error && <p style={{ color: 'var(--hk-danger, #c0392b)', margin: 0, fontSize: 13 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--hk-danger, var(--hk-danger))', margin: 0, fontSize: 13 }}>{error}</p>}
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
         <button type="button" onClick={submit} disabled={submitting} style={primaryBtn}>{submitting ? '保存中…' : '保存'}</button>
         <button type="button" onClick={onCancel} style={ghostBtn}>取消</button>

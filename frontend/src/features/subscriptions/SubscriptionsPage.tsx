@@ -519,7 +519,7 @@ function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.Rea
         padding: 'var(--hk-space-3)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: ok ? '#0b6553' : 'var(--hk-danger)',
+        color: ok ? 'var(--hk-primary-600)' : 'var(--hk-danger)',
         background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)',
         border: ok ? '1px solid var(--hk-primary-100)' : '1px solid var(--hk-danger-soft)',
       }}

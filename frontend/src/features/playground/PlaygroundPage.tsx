@@ -116,7 +116,7 @@ export function PlaygroundPage() {
       </div>
 
       {error && (
-        <p style={{ color: 'var(--hk-danger, #c0392b)', background: 'var(--hk-danger-bg, #fdecea)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
           {error}
         </p>
       )}

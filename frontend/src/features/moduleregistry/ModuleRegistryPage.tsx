@@ -194,7 +194,7 @@ export function ModuleRegistryPage() {
 /* ——— 本文件私有小组件 / 样式 ——— */
 function Stat({ label, value, tone }: { label: string; value: number; tone: 'ok' | 'warn' | 'danger' | 'muted' }) {
   const color =
-    tone === 'ok' ? '#0b6553' : tone === 'warn' ? '#8a5e0f' : tone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-900)'
+    tone === 'ok' ? 'var(--hk-primary-600)' : tone === 'warn' ? 'var(--hk-warn)' : tone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-900)'
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 56 }}>
       <span style={{ fontSize: 20, fontWeight: 700, color }}>{value}</span>
@@ -206,7 +206,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   const palette =
     kind === 'error'
       ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-      : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+      : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 function Empty({ children }: { children: React.ReactNode }) {

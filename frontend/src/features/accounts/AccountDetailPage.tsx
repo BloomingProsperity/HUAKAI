@@ -277,7 +277,7 @@ function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.Rea
         padding: 'var(--hk-space-3) var(--hk-space-4)',
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
-        color: ok ? '#0b6553' : 'var(--hk-danger)',
+        color: ok ? 'var(--hk-primary-600)' : 'var(--hk-danger)',
         background: ok ? 'var(--hk-primary-50)' : 'var(--hk-danger-soft)',
         border: `1px solid ${ok ? 'var(--hk-primary-100)' : 'var(--hk-danger-soft)'}`,
       }}
@@ -305,5 +305,5 @@ const baseBtn: React.CSSProperties = {
   cursor: 'pointer',
 }
 const primaryBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-primary-600)', background: 'var(--hk-primary-500)', color: '#fff' }
-const dangerBtn: React.CSSProperties = { ...baseBtn, border: '1px solid #c0463a', background: '#c0463a', color: '#fff' }
+const dangerBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-danger)', background: 'var(--hk-danger)', color: '#fff' }
 const ghostBtn: React.CSSProperties = { ...baseBtn, border: '1px solid var(--hk-line)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontWeight: 400 }

@@ -292,7 +292,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   const palette =
     kind === 'error'
       ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-      : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+      : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return (
     <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>
       {children}
@@ -322,5 +322,5 @@ const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3)
 const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'top' }
 const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
 const primaryBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid #b03a2e', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+const dangerBtn: React.CSSProperties = { height: 30, padding: '0 var(--hk-space-3)', border: '1px solid #b03a2e', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }

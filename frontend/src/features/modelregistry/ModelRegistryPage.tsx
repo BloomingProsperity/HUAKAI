@@ -522,7 +522,7 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
   return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function OkBox({ children }: { children: React.ReactNode }) {
-  return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
+  return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
@@ -534,4 +534,4 @@ const tbl: React.CSSProperties = { width: '100%', borderCollapse: 'collapse' }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const chipOff: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 12, cursor: 'pointer' }
-const chipOn: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-primary-50)', color: '#0b6553', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+const chipOn: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-primary-50)', color: 'var(--hk-primary-600)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }

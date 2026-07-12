@@ -327,7 +327,7 @@ function TwoFACard() {
             <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
               <StatusBadge tone={view.tone}>{view.label}</StatusBadge>
               {view.enabled && (
-                <span style={{ fontSize: 12, color: view.lowBackupCodes ? '#8a5e0f' : 'var(--hk-ink-500)' }}>
+                <span style={{ fontSize: 12, color: view.lowBackupCodes ? 'var(--hk-warn)' : 'var(--hk-ink-500)' }}>
                   剩余备用码:{view.backupCodesRemaining}
                   {view.lowBackupCodes ? '(偏少,建议重新生成)' : ''}
                 </span>
@@ -701,7 +701,7 @@ function ErrBox({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
 function OkBox({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
+  return <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>{children}</div>
 }
 
 function errMsg(e: unknown, fallback: string): string {

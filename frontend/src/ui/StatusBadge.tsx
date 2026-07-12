@@ -6,8 +6,8 @@ import type { CSSProperties, ReactNode } from 'react'
 export type BadgeTone = 'ok' | 'warn' | 'danger' | 'muted' | 'info'
 
 const TONE_STYLE: Record<BadgeTone, CSSProperties> = {
-  ok: { color: '#0b6553', background: 'var(--hk-primary-50)', borderColor: 'var(--hk-primary-100)' },
-  warn: { color: '#8a5e0f', background: '#fbf3df', borderColor: '#f0e2bd' },
+  ok: { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', borderColor: 'var(--hk-primary-100)' },
+  warn: { color: 'var(--hk-warn)', background: 'var(--hk-warn-soft)', borderColor: 'var(--hk-warn-soft)' },
   danger: { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', borderColor: 'var(--hk-danger-soft)' },
   info: { color: '#235a82', background: '#e8f1f8', borderColor: '#cfe0ee' },
   muted: { color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', borderColor: 'var(--hk-line)' },

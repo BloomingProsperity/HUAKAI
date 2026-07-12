@@ -60,7 +60,7 @@ export function RiskOverviewPage() {
 
       {loading && <p style={{ color: 'var(--hk-ink-500)' }}>加载中…</p>}
       {error && (
-        <p style={{ color: 'var(--hk-danger, #c0392b)', background: 'var(--hk-danger-bg, #fdecea)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
+        <p style={{ color: 'var(--hk-danger, var(--hk-danger))', background: 'var(--hk-danger-bg, var(--hk-danger-soft))', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-2)' }}>
           {error}
         </p>
       )}
@@ -74,7 +74,7 @@ export function RiskOverviewPage() {
                 key={c.key}
                 style={{
                   border: '1px solid var(--hk-line)',
-                  borderLeft: `4px solid ${alert ? 'var(--hk-danger, #c0392b)' : 'var(--hk-ok, #2e7d32)'}`,
+                  borderLeft: `4px solid ${alert ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ok, var(--hk-success))'}`,
                   borderRadius: 'var(--hk-radius-3)',
                   padding: 'var(--hk-space-4)',
                   display: 'flex',
@@ -83,7 +83,7 @@ export function RiskOverviewPage() {
                 }}
               >
                 <span style={{ fontSize: 13, color: 'var(--hk-ink-500)' }}>{c.label}</span>
-                <span style={{ fontSize: 30, fontWeight: 600, color: alert ? 'var(--hk-danger, #c0392b)' : 'var(--hk-ink-900)' }}>
+                <span style={{ fontSize: 30, fontWeight: 600, color: alert ? 'var(--hk-danger, var(--hk-danger))' : 'var(--hk-ink-900)' }}>
                   {c.count}
                 </span>
                 <Link to={c.actionPath} style={{ fontSize: 12, color: 'var(--hk-accent, #2563eb)', textDecoration: 'none' }}>

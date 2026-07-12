@@ -299,7 +299,7 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   const palette =
     kind === 'error'
       ? { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
-      : { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+      : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 
@@ -328,4 +328,4 @@ const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', 
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const dangerBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-danger-soft)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger-soft)', color: 'var(--hk-danger)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
-const warnBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid #f0e2bd', borderRadius: 'var(--hk-radius-md)', background: '#fbf3df', color: '#8a5e0f', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
+const warnBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-warn-soft)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-warn-soft)', color: 'var(--hk-warn)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

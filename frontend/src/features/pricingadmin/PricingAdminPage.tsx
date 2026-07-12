@@ -625,7 +625,7 @@ function ToolSurchargeSection() {
 
 function GatedHint() {
   return (
-    <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: '#8a5e0f', background: '#fbf3df', border: '1px solid #f0e2bd' }}>
+    <div style={{ padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 12, color: 'var(--hk-warn)', background: 'var(--hk-warn-soft)', border: '1px solid var(--hk-warn-soft)' }}>
       该写动作直接修改计费倍率(money-gated),需 Owner 确认。后端要求 platform_admin 角色。
     </div>
   )

@@ -363,7 +363,7 @@ function OrderActions({ order, onChanged }: { order: UserOrder; onChanged: () =>
             borderRadius: 'var(--hk-radius-md)',
             fontSize: 13,
             color: 'var(--hk-primary-700)',
-            background: 'var(--hk-primary-50, #eef7f2)',
+            background: 'var(--hk-primary-50, var(--hk-primary-50))',
             border: '1px solid var(--hk-line)',
           }}
         >
@@ -508,8 +508,8 @@ const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)'
 const selectStyle: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13 }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
 const linkBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer' }
-const dangerBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: '#c0392b', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
-const rowDangerLink: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: '#c0392b', fontSize: 12, cursor: 'pointer' }
+const dangerBtn: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+const rowDangerLink: React.CSSProperties = { height: 28, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-danger)', fontSize: 12, cursor: 'pointer' }
 const closeBtn: React.CSSProperties = { width: 28, height: 28, border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 14, cursor: 'pointer', lineHeight: 1 }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const overlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(15, 23, 27, 0.32)', zIndex: 'var(--hk-z-overlay)' as unknown as number, display: 'flex', justifyContent: 'flex-end' }

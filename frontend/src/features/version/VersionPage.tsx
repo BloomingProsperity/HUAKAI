@@ -259,7 +259,7 @@ function SmtpSettingsCard() {
             borderRadius: 'var(--hk-radius-md)',
             fontSize: 13,
             ...(result.tone === 'ok'
-              ? { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+              ? { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
               : { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }),
           }}
         >
@@ -370,7 +370,7 @@ function SmtpTestCard() {
             borderRadius: 'var(--hk-radius-md)',
             fontSize: 13,
             ...(result.tone === 'ok'
-              ? { color: '#0b6553', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+              ? { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
               : { color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }),
           }}
         >

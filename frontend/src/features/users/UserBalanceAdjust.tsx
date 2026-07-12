@@ -143,7 +143,7 @@ function Banner({ tone, children }: { tone: 'danger' | 'ok'; children: React.Rea
         borderRadius: 'var(--hk-radius-md)',
         fontSize: 13,
         color: danger ? 'var(--hk-danger)' : 'var(--hk-primary-700)',
-        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, #eef7f2)',
+        background: danger ? 'var(--hk-danger-soft)' : 'var(--hk-primary-50, var(--hk-primary-50))',
         border: `1px solid ${danger ? 'var(--hk-danger-soft)' : 'var(--hk-line)'}`,
       }}
     >
@@ -163,4 +163,4 @@ const card: React.CSSProperties = {
 }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', flex: 1, minWidth: 120 }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
-const dangerSolid: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid #c0392b', borderRadius: 'var(--hk-radius-md)', background: '#c0392b', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
+const dangerSolid: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-danger)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-danger)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }
