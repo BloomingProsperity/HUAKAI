@@ -1,4 +1,7 @@
 import type {
+  AlertEvent,
+  AlertRule,
+  AlertSilence,
   Comparator,
   CreateRuleRequest,
   CreateSilenceRequest,
@@ -312,4 +315,112 @@ export function silenceActive(
   const end = Date.parse(s.ends_at)
   if (Number.isNaN(start) || Number.isNaN(end)) return false
   return now >= start && now < end
+}
+
+export interface AlertResourceStat {
+  label: string
+  value: string
+  hint: string
+}
+
+/** 当前 Tab 已加载资源数到统计卡的纯映射。 */
+export function mapAlertResourceStat(label: string, count: number): AlertResourceStat {
+  return { label, value: String(count), hint: '当前页口径' }
+}
+
+/** RFC3339 → 本地可读串(24 小时制)。非法/空则原样/占位。 */
+export function fmtAlertTime(iso?: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
+}
+
+export interface AlertRuleTableRow {
+  id: number
+  name: string
+  metric: string
+  condition: string
+  email: boolean
+  severity: string
+  severityTone: ReturnType<typeof severityTone>
+  window: string
+  enabled: boolean
+  lastTriggeredAt: string
+  source: AlertRule
+}
+
+/** 告警规则响应到列表行的纯映射。 */
+export function mapAlertRuleRows(items: AlertRule[]): AlertRuleTableRow[] {
+  return items.map((rule) => ({
+    id: rule.id,
+    name: rule.name,
+    metric: rule.metric_type || rule.metric,
+    condition: `${comparatorSymbol(rule.comparator)} ${rule.threshold}`,
+    email: rule.notify_email,
+    severity: severityLabel(rule.severity),
+    severityTone: severityTone(rule.severity),
+    window: `${rule.window_seconds}s`,
+    enabled: rule.enabled,
+    lastTriggeredAt: fmtAlertTime(rule.last_triggered_at),
+    source: rule,
+  }))
+}
+
+export interface AlertEventTableRow {
+  id: number
+  ruleID: number
+  state: string
+  stateTone: ReturnType<typeof eventStateTone>
+  observedThreshold: string
+  email: string
+  firedAt: string
+  resolvedAt: string
+  canResolve: boolean
+  source: AlertEvent
+}
+
+/** 告警事件响应到列表行的纯映射。 */
+export function mapAlertEventRows(items: AlertEvent[]): AlertEventTableRow[] {
+  return items.map((event) => ({
+    id: event.id,
+    ruleID: event.rule_id,
+    state: eventStateLabel(event.state),
+    stateTone: eventStateTone(event.state),
+    observedThreshold: event.threshold_value == null ? String(event.observed_value) : `${event.observed_value} / ${event.threshold_value}`,
+    email: event.email_sent ? '已发' : '—',
+    firedAt: fmtAlertTime(event.fired_at),
+    resolvedAt: fmtAlertTime(event.resolved_at),
+    canResolve: isFiring(event.state),
+    source: event,
+  }))
+}
+
+export interface AlertSilenceTableRow {
+  id: number
+  reason: string
+  scope: string
+  active: boolean
+  startsAt: string
+  endsAt: string
+  source: AlertSilence
+}
+
+/** 静默规则响应到列表行的纯映射；now 注入保证生效态可稳定测试。 */
+export function mapAlertSilenceRows(items: AlertSilence[], now: number = Date.now()): AlertSilenceTableRow[] {
+  return items.map((silence) => {
+    const scope: string[] = []
+    if (silence.rule_id != null) scope.push(`规则#${silence.rule_id}`)
+    if (silence.platform) scope.push(silence.platform)
+    if (silence.group_id) scope.push(`组:${silence.group_id}`)
+    if (silence.region) scope.push(silence.region)
+    return {
+      id: silence.id,
+      reason: silence.reason || '—',
+      scope: scope.length ? scope.join(' · ') : '全局',
+      active: silenceActive(silence, now),
+      startsAt: fmtAlertTime(silence.starts_at),
+      endsAt: fmtAlertTime(silence.ends_at),
+      source: silence,
+    }
+  })
 }

@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { createRule, deleteRule, listRules, updateRule } from './api'
 import {
   buildCreateRule,
   buildUpdateRule,
   COMPARATORS,
-  comparatorSymbol,
   EMPTY_RULE_FORM,
   filtersToText,
+  mapAlertResourceStat,
+  mapAlertRuleRows,
   METRIC_TYPES,
   SEVERITIES,
-  severityLabel,
-  severityTone,
   type RuleForm,
+  type AlertRuleTableRow,
 } from './alerting'
 import type { AlertRule } from './types'
-import { card, errBox, fmt, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, td, tdTime, th, Empty, Field, linkBtn, dangerLinkBtn } from './ui'
+import { card, errBox, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, Field } from './ui'
 
 /*
  * 告警规则 Tab。/v1/admin/alert-rules 列表 + 新建/编辑(名称/指标/比较符/阈值/级别/窗口/持续/冷却/
@@ -71,9 +75,12 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   const onToggle = (rule: AlertRule) => act(rule.id, () => updateRule(tenantId, rule.id, { enabled: !rule.enabled }))
 
   const onDelete = (rule: AlertRule) => {
-    if (!window.confirm(`确认删除告警规则「${rule.name}」?此操作不可撤销。`)) return
+    if (!confirmIrreversible(`删除告警规则「${rule.name}」`)) return
     void act(rule.id, () => deleteRule(tenantId, rule.id))
   }
+
+  const rows = mapAlertRuleRows(items)
+  const countStat = mapAlertResourceStat('告警规则', items.length)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
@@ -91,62 +98,25 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
 
       {error && <div style={errBox}>{error}</div>}
 
+      <div style={statGrid}><StatCard {...countStat} /></div>
+
       <div style={card}>
         {loading && items.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载告警规则" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <Empty>暂无告警规则。点击「新建规则」开始配置。</Empty>
+          <EmptyState title="暂无告警规则" hint="点击「新建规则」开始配置。" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  {['规则', '触发条件', '级别', '窗口', '状态', '上次触发', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((rule) => (
-                  <tr key={rule.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{rule.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{rule.metric_type || rule.metric}</span>
-                      </div>
-                    </td>
-                    <td style={td}>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>
-                        {comparatorSymbol(rule.comparator)} {rule.threshold}
-                      </code>
-                      {rule.notify_email && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--hk-ink-300)' }}>✉ 邮件</span>}
-                    </td>
-                    <td style={td}>
-                      <StatusBadge tone={severityTone(rule.severity) as BadgeTone}>{severityLabel(rule.severity)}</StatusBadge>
-                    </td>
-                    <td style={tdTime}>{rule.window_seconds}s</td>
-                    <td style={td}>
-                      <StatusBadge tone={rule.enabled ? 'ok' : 'muted'}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
-                    </td>
-                    <td style={tdTime}>{fmt(rule.last_triggered_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => setEditing(rule)} style={linkBtn}>
-                        编辑
-                      </button>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => onToggle(rule)} style={linkBtn}>
-                        {rule.enabled ? '停用' : '启用'}
-                      </button>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => onDelete(rule)} style={dangerLinkBtn}>
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="告警规则"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={ruleColumns}
+            actions={[
+              { label: '编辑', onClick: (row) => setEditing(row.source), disabled: (row) => busyId === row.id },
+              { label: (row) => row.enabled ? '停用' : '启用', onClick: (row) => void onToggle(row.source), disabled: (row) => busyId === row.id },
+              { label: '删除', tone: 'danger', onClick: (row) => onDelete(row.source), disabled: (row) => busyId === row.id },
+            ]}
+          />
         )}
       </div>
 
@@ -164,6 +134,17 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
     </div>
   )
 }
+
+const ruleColumns: DataListColumn<AlertRuleTableRow>[] = [
+  { key: 'rule', label: '规则', render: (row) => <span style={{ display: 'flex', flexDirection: 'column' }}><strong>{row.name}</strong><small>{row.metric}</small></span> },
+  { key: 'condition', label: '触发条件', render: (row) => <code>{row.condition}{row.email ? ' · ✉ 邮件' : ''}</code> },
+  { key: 'severity', label: '级别', badge: true, render: (row) => <StatusBadge tone={row.severityTone as BadgeTone}>{row.severity}</StatusBadge> },
+  { key: 'window', label: '窗口', render: (row) => row.window },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge> },
+  { key: 'last-triggered', label: '上次触发', render: (row) => row.lastTriggeredAt },
+]
+
+const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(160px,240px)' }
 
 function RuleModal({
   tenantId,

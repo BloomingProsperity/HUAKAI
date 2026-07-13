@@ -11,6 +11,10 @@ import {
   filtersToText,
   isFiring,
   localToISO,
+  mapAlertEventRows,
+  mapAlertResourceStat,
+  mapAlertRuleRows,
+  mapAlertSilenceRows,
   parseFilters,
   severityLabel,
   severityTone,
@@ -239,5 +243,41 @@ describe('silenceActive', () => {
   })
   it('非法时间为假', () => {
     expect(silenceActive({ starts_at: 'x', ends_at: 'y' }, 0)).toBe(false)
+  })
+})
+
+describe('底座列表与统计映射', () => {
+  it('规则行映射条件、语气和状态(变异:比较符或 critical 语气映错会证红)', () => {
+    const rows = mapAlertRuleRows([{
+      id: 1, tenant_id: 7, name: '错误率', metric: 'error_rate', comparator: 'gte', threshold: 0.2,
+      severity: 'critical', window_seconds: 60, sustained_seconds: 0, cooldown_seconds: 0,
+      notify_email: true, enabled: false, created_at: '2026-07-13T00:00:00Z', updated_at: '2026-07-13T00:00:00Z',
+    }])
+    expect(rows[0]).toMatchObject({ id: 1, condition: '≥ 0.2', email: true, severity: '严重', severityTone: 'danger', window: '60s', enabled: false })
+  })
+
+  it('事件行只允许 firing 手动恢复并保留阈值 0(变异:用 truthy 判断阈值或放开 resolved 会证红)', () => {
+    const base = {
+      tenant_id: 7, rule_id: 2, observed_value: 3, threshold_value: 0, email_sent: false,
+      fired_at: '2026-07-13T00:00:00Z',
+    }
+    const rows = mapAlertEventRows([
+      { ...base, id: 3, state: 'firing' },
+      { ...base, id: 4, state: 'resolved', resolved_at: '2026-07-13T00:01:00Z' },
+    ])
+    expect(rows[0]).toMatchObject({ observedThreshold: '3 / 0', canResolve: true, stateTone: 'danger' })
+    expect(rows[1]).toMatchObject({ canResolve: false, stateTone: 'ok' })
+  })
+
+  it('静默行按注入时刻计算生效态并组合完整作用域(变异:边界或任一维度丢失会证红)', () => {
+    const rows = mapAlertSilenceRows([{
+      id: 5, tenant_id: 7, rule_id: 9, reason: '维护', starts_at: '2026-07-13T10:00:00Z',
+      ends_at: '2026-07-13T12:00:00Z', platform: 'p', group_id: 'g', region: 'r', created_at: '2026-07-13T00:00:00Z',
+    }], Date.parse('2026-07-13T11:00:00Z'))
+    expect(rows[0]).toMatchObject({ id: 5, active: true, scope: '规则#9 · p · 组:g · r' })
+  })
+
+  it('统计卡明确使用当前页数量(变异:固定值或错标签会证红)', () => {
+    expect(mapAlertResourceStat('告警事件', 23)).toEqual({ label: '告警事件', value: '23', hint: '当前页口径' })
   })
 })
