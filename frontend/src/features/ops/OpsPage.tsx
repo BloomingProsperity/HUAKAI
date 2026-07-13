@@ -153,7 +153,7 @@ export function OpsPage() {
       ) : (
         <section aria-label="运维总览统计" style={overviewStatsGridStyle}>
           {overviewStats.map((stat) => (
-            <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} tone={stat.tone} />
+            <StatCard key={stat.label} label={stat.label} value={stat.value} valueTitle={stat.valueTitle} hint={stat.hint} tone={stat.tone} />
           ))}
         </section>
       )}
@@ -178,7 +178,7 @@ export function OpsPage() {
         ) : (
           <section aria-label="性能分位统计" style={perfStatsGridStyle}>
             {perfStats.map((stat) => (
-              <StatCard key={stat.label} label={stat.label} value={stat.value} tone={stat.tone} />
+              <StatCard key={stat.label} label={stat.label} value={stat.value} valueTitle={stat.valueTitle} tone={stat.tone} />
             ))}
           </section>
         )}
@@ -310,7 +310,7 @@ function Banner({ children }: { children: React.ReactNode }) {
 const leaderboardColumns: DataListColumn<LeaderboardTableRow>[] = [
   { key: 'rank', label: '#', render: (row) => <span className="hk-mono">{row.rank}</span> },
   { key: 'model', label: '模型', render: (row) => <code style={codeStyle}>{row.model}</code> },
-  { key: 'cost', label: '成本', render: (row) => <span className="hk-mono">{row.cost}</span> },
+  { key: 'cost', label: '成本', render: (row) => <span className="hk-mono" title={row.costTitle}>{row.cost}</span> },
   { key: 'tokens', label: 'Token', render: (row) => <span className="hk-mono">{row.tokens}</span> },
   { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
 ]
@@ -325,8 +325,8 @@ function performanceColumns(dimensionLabel: string): DataListColumn<PerformanceT
   return [
     { key: 'rank', label: '#', render: (row) => <span className="hk-mono">{row.rank}</span> },
     { key: 'dimension', label: dimensionLabel, render: (row) => <code style={codeStyle}>{row.key}</code> },
-    { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono">{row.avgTtft}</span> },
-    { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono">{row.avgTps}</span> },
+    { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono" title={row.avgTtftTitle}>{row.avgTtft}</span> },
+    { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono" title={row.avgTpsTitle}>{row.avgTps}</span> },
     { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
     { key: 'error-rate', label: '错误率', render: (row) => <span className="hk-mono">{row.errorRate}</span> },
   ]
@@ -335,8 +335,8 @@ function performanceColumns(dimensionLabel: string): DataListColumn<PerformanceT
 const bucketColumns: DataListColumn<PerfBucketTableRow>[] = [
   { key: 'bucket', label: '时间桶', render: (row) => <span className="hk-mono">{row.bucket}</span> },
   { key: 'model', label: '模型', render: (row) => <code style={codeStyle}>{row.model}</code> },
-  { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono">{row.avgTtft}</span> },
-  { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono">{row.avgTps}</span> },
+  { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono" title={row.avgTtftTitle}>{row.avgTtft}</span> },
+  { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono" title={row.avgTpsTitle}>{row.avgTps}</span> },
   { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
   { key: 'errors', label: '错误数', render: (row) => <span className="hk-mono">{row.errors}</span> },
   { key: 'error-rate', label: '错误率', render: (row) => <span className="hk-mono">{row.errorRate}</span> },
@@ -348,7 +348,7 @@ const providerAccountColumns: DataListColumn<ProviderAccountTableRow>[] = [
   { key: 'input-tokens', label: '输入 Token', render: (row) => <span className="hk-mono">{row.inputTokens}</span> },
   { key: 'output-tokens', label: '输出 Token', render: (row) => <span className="hk-mono">{row.outputTokens}</span> },
   { key: 'tokens', label: '合计 Token', render: (row) => <span className="hk-mono">{row.tokens}</span> },
-  { key: 'cost', label: '费用', render: (row) => <span className="hk-mono">{row.cost}</span> },
+  { key: 'cost', label: '费用', render: (row) => <span className="hk-mono" title={row.costTitle}>{row.cost}</span> },
 ]
 
 const overviewStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--hk-space-3)' }

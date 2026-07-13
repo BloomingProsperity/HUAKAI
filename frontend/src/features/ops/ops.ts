@@ -12,6 +12,7 @@ import type {
   PerfMetricsResponse,
   ProviderAccountCount,
 } from './types'
+import { formatLatencyMetric, formatTpsMetric, formatUsdMetric } from '../../ui/metricFormat'
 
 /**
  * 趋势值序列 → SVG polyline 的 points 串。Y 轴翻转(值越大越靠上=y 越小),按 [min,max] 归一化
@@ -61,9 +62,7 @@ export function fmtInt(n: number): string {
 
 /** 毫秒延迟展示:≥1000 显示秒,否则毫秒(整数)。 */
 export function fmtLatencyMs(ms: number): string {
-  if (!Number.isFinite(ms)) return '—'
-  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`
-  return `${Math.round(ms)}ms`
+  return formatLatencyMetric(ms).value
 }
 
 // ── 用量性能分析 4 端点的纯逻辑(§14 变异法,均可测)──────────────────────────────
@@ -123,6 +122,7 @@ export type OpsStatTone = 'default' | RateTone
 export interface OpsStatView {
   label: string
   value: string
+  valueTitle?: string
   hint?: string
   tone: OpsStatTone
 }
@@ -138,9 +138,10 @@ export function mapOverviewStats(overview: OverviewResponse | null): OpsStatView
   }
 
   const successTone = successRateTone(overview.totals.success_rate)
+  const totalCost = formatUsdMetric(overview.totals.total_cost)
   return [
     { label: '请求数', value: fmtInt(overview.totals.requests), tone: 'default' },
-    { label: '总成本', value: `$${overview.totals.total_cost}`, tone: 'default' },
+    { label: '总成本', value: totalCost.value, valueTitle: totalCost.title, tone: 'default' },
     { label: '总 Token', value: fmtInt(overview.totals.total_tokens), tone: 'default' },
     { label: '活跃用户', value: fmtInt(overview.totals.active_users), tone: 'default' },
     { label: '活跃 Key', value: fmtInt(overview.totals.active_api_keys), tone: 'default' },
@@ -155,12 +156,14 @@ export function mapOverviewStats(overview: OverviewResponse | null): OpsStatView
 
 /** 性能汇总响应到六张统计卡的纯映射。 */
 export function mapPerfMetricStats(perf: PerfMetricsResponse | null): OpsStatView[] {
+  const ttft = perf ? formatLatencyMetric(perf.summary.avg_ttft_ms) : null
+  const tps = perf ? formatTpsMetric(perf.summary.avg_tps) : null
   return [
     { label: 'P50 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p50) : '…', tone: 'default' },
     { label: 'P95 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p95) : '…', tone: 'default' },
     { label: 'P99 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p99) : '…', tone: 'default' },
-    { label: '平均 TTFT', value: perf ? `${perf.summary.avg_ttft_ms}ms` : '…', tone: 'default' },
-    { label: '平均 TPS', value: perf ? perf.summary.avg_tps : '…', tone: 'default' },
+    { label: '平均 TTFT', value: ttft?.value ?? '…', valueTitle: ttft?.title, tone: 'default' },
+    { label: '平均 TPS', value: tps?.value ?? '…', valueTitle: tps?.title, tone: 'default' },
     { label: '错误率', value: perf ? fmtFractionPct(perf.summary.error_rate) : '…', tone: 'default' },
   ]
 }
@@ -169,19 +172,24 @@ export interface LeaderboardTableRow {
   rank: number
   model: string
   cost: string
+  costTitle: string
   tokens: string
   requests: string
 }
 
 /** 模型成本排行到只读表行的纯映射。 */
 export function mapLeaderboardRows(entries: LeaderboardEntry[]): LeaderboardTableRow[] {
-  return entries.map((entry) => ({
-    rank: entry.rank,
-    model: entry.key,
-    cost: `$${entry.total_cost}`,
-    tokens: fmtInt(entry.total_tokens),
-    requests: fmtInt(entry.request_count),
-  }))
+  return entries.map((entry) => {
+    const cost = formatUsdMetric(entry.total_cost)
+    return {
+      rank: entry.rank,
+      model: entry.key,
+      cost: cost.value,
+      costTitle: cost.title,
+      tokens: fmtInt(entry.total_tokens),
+      requests: fmtInt(entry.request_count),
+    }
+  })
 }
 
 export interface HealthScoreTableRow {
@@ -216,21 +224,29 @@ export interface PerformanceTableRow {
   rank: number
   key: string
   avgTtft: string
+  avgTtftTitle: string
   avgTps: string
+  avgTpsTitle: string
   requests: string
   errorRate: string
 }
 
 /** 性能排行到只读表行的纯映射。 */
 export function mapPerformanceRows(entries: PerformanceEntry[]): PerformanceTableRow[] {
-  return entries.map((entry) => ({
-    rank: entry.rank,
-    key: entry.key || '—',
-    avgTtft: `${entry.avg_ttft_ms}ms`,
-    avgTps: entry.avg_tps,
-    requests: fmtInt(entry.request_count),
-    errorRate: fmtFractionPct(entry.error_rate),
-  }))
+  return entries.map((entry) => {
+    const ttft = formatLatencyMetric(entry.avg_ttft_ms)
+    const tps = formatTpsMetric(entry.avg_tps)
+    return {
+      rank: entry.rank,
+      key: entry.key || '—',
+      avgTtft: ttft.value,
+      avgTtftTitle: ttft.title,
+      avgTps: tps.value,
+      avgTpsTitle: tps.title,
+      requests: fmtInt(entry.request_count),
+      errorRate: fmtFractionPct(entry.error_rate),
+    }
+  })
 }
 
 export interface PerfBucketTableRow {
@@ -238,7 +254,9 @@ export interface PerfBucketTableRow {
   bucket: string
   model: string
   avgTtft: string
+  avgTtftTitle: string
   avgTps: string
+  avgTpsTitle: string
   requests: string
   errors: string
   errorRate: string
@@ -246,16 +264,22 @@ export interface PerfBucketTableRow {
 
 /** 性能分桶到只读表行的纯映射；组合序号保证相同桶与模型的重复聚合行仍有稳定行键。 */
 export function mapPerfBucketRows(entries: PerfBucketEntry[]): PerfBucketTableRow[] {
-  return entries.map((entry, index) => ({
-    id: `${entry.bucket}-${entry.key}-${index}`,
-    bucket: entry.bucket,
-    model: entry.key || '—',
-    avgTtft: `${entry.avg_ttft_ms}ms`,
-    avgTps: entry.avg_tps,
-    requests: fmtInt(entry.request_count),
-    errors: fmtInt(entry.error_count),
-    errorRate: fmtFractionPct(entry.error_rate),
-  }))
+  return entries.map((entry, index) => {
+    const ttft = formatLatencyMetric(entry.avg_ttft_ms)
+    const tps = formatTpsMetric(entry.avg_tps)
+    return {
+      id: `${entry.bucket}-${entry.key}-${index}`,
+      bucket: entry.bucket,
+      model: entry.key || '—',
+      avgTtft: ttft.value,
+      avgTtftTitle: ttft.title,
+      avgTps: tps.value,
+      avgTpsTitle: tps.title,
+      requests: fmtInt(entry.request_count),
+      errors: fmtInt(entry.error_count),
+      errorRate: fmtFractionPct(entry.error_rate),
+    }
+  })
 }
 
 export interface ProviderAccountTableRow {
@@ -266,19 +290,24 @@ export interface ProviderAccountTableRow {
   outputTokens: string
   tokens: string
   cost: string
+  costTitle: string
 }
 
 /** Provider 账号聚合到只读表行的纯映射。 */
 export function mapProviderAccountRows(counts: ProviderAccountCount[]): ProviderAccountTableRow[] {
-  return counts.map((count) => ({
-    id: count.provider_account_id,
-    account: `#${count.provider_account_id}`,
-    requests: fmtInt(count.request_count),
-    inputTokens: fmtInt(count.total_input_tokens),
-    outputTokens: fmtInt(count.total_output_tokens),
-    tokens: fmtInt(totalTokens(count)),
-    cost: `$${count.total_cost}`,
-  }))
+  return counts.map((count) => {
+    const cost = formatUsdMetric(count.total_cost)
+    return {
+      id: count.provider_account_id,
+      account: `#${count.provider_account_id}`,
+      requests: fmtInt(count.request_count),
+      inputTokens: fmtInt(count.total_input_tokens),
+      outputTokens: fmtInt(count.total_output_tokens),
+      tokens: fmtInt(totalTokens(count)),
+      cost: cost.value,
+      costTitle: cost.title,
+    }
+  })
 }
 
 function rateToneLabel(tone: RateTone): string {

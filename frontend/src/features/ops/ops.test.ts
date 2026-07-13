@@ -116,7 +116,7 @@ describe('运维大屏底座映射', () => {
       window: '7d',
       totals: {
         requests: 9552,
-        total_cost: '123.45',
+        total_cost: '241.2743402048',
         total_tokens: 1234567,
         active_users: 18,
         active_api_keys: 23,
@@ -130,7 +130,7 @@ describe('运维大屏底座映射', () => {
     // 判别核心:成功率必须是第六卡且沿用 0~1 阈值；变异顺序、格式或 tone 均 RED。
     expect(stats).toEqual([
       { label: '请求数', value: '9,552', tone: 'default' },
-      { label: '总成本', value: '$123.45', tone: 'default' },
+      { label: '总成本', value: '$241.27', valueTitle: '$241.2743402048', tone: 'default' },
       { label: '总 Token', value: '1,234,567', tone: 'default' },
       { label: '活跃用户', value: '18', tone: 'default' },
       { label: '活跃 Key', value: '23', tone: 'default' },
@@ -144,8 +144,8 @@ describe('运维大屏底座映射', () => {
     const stats = mapPerfMetricStats({
       window: '7d',
       summary: {
-        avg_ttft_ms: '321.4',
-        avg_tps: '18.2',
+        avg_ttft_ms: '3950.1503',
+        avg_tps: '164.2553',
         request_count: 100,
         error_count: 2,
         error_rate: '0.0200',
@@ -158,15 +158,18 @@ describe('运维大屏底座映射', () => {
       ['P50 延迟', '400ms'],
       ['P95 延迟', '1.50s'],
       ['P99 延迟', '2.60s'],
-      ['平均 TTFT', '321.4ms'],
-      ['平均 TPS', '18.2'],
+      ['平均 TTFT', '3.95s'],
+      ['平均 TPS', '164.3'],
       ['错误率', '2.00%'],
     ])
+    // 判别核心：卡片短值与悬浮全精度必须来自同一个原始指标。
+    expect(stats[3]).toMatchObject({ valueTitle: '3950.1503ms' })
+    expect(stats[4]).toMatchObject({ valueTitle: '164.2553' })
   })
 
   it('五张只读表的行映射不丢字段、不混淆输入输出 Token', () => {
     expect(mapLeaderboardRows([{ rank: 1, key: 'model-a', total_cost: '12.34', total_tokens: 3000, request_count: 20 }])).toEqual([
-      { rank: 1, model: 'model-a', cost: '$12.34', tokens: '3,000', requests: '20' },
+      { rank: 1, model: 'model-a', cost: '$12.34', costTitle: '$12.34', tokens: '3,000', requests: '20' },
     ])
 
     expect(mapHealthScoreRows({
@@ -190,16 +193,16 @@ describe('运维大屏底座映射', () => {
     ])
 
     expect(mapPerformanceRows([{ rank: 2, key: '', avg_ttft_ms: '90', avg_tps: '8.5', request_count: 7, error_rate: '0.1000' }])).toEqual([
-      { rank: 2, key: '—', avgTtft: '90ms', avgTps: '8.5', requests: '7', errorRate: '10.00%' },
+      { rank: 2, key: '—', avgTtft: '90ms', avgTtftTitle: '90ms', avgTps: '8.5', avgTpsTitle: '8.5', requests: '7', errorRate: '10.00%' },
     ])
 
     expect(mapPerfBucketRows([{ bucket: '2026-07-13T10:00:00Z', key: 'model-b', avg_ttft_ms: '110', avg_tps: '9.2', request_count: 12, error_count: 3, error_rate: '0.2500' }])).toEqual([
-      { id: '2026-07-13T10:00:00Z-model-b-0', bucket: '2026-07-13T10:00:00Z', model: 'model-b', avgTtft: '110ms', avgTps: '9.2', requests: '12', errors: '3', errorRate: '25.00%' },
+      { id: '2026-07-13T10:00:00Z-model-b-0', bucket: '2026-07-13T10:00:00Z', model: 'model-b', avgTtft: '110ms', avgTtftTitle: '110ms', avgTps: '9.2', avgTpsTitle: '9.2', requests: '12', errors: '3', errorRate: '25.00%' },
     ])
 
     // 判别核心:合计必须为输入 1,000 + 输出 250；变异成单列或调换字段即 RED。
     expect(mapProviderAccountRows([{ provider_account_id: 9, request_count: 8, total_input_tokens: 1000, total_output_tokens: 250, total_cost: '4.56' }])).toEqual([
-      { id: 9, account: '#9', requests: '8', inputTokens: '1,000', outputTokens: '250', tokens: '1,250', cost: '$4.56' },
+      { id: 9, account: '#9', requests: '8', inputTokens: '1,000', outputTokens: '250', tokens: '1,250', cost: '$4.56', costTitle: '$4.56' },
     ])
   })
 })

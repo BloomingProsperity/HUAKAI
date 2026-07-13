@@ -51,6 +51,18 @@ describe('DataListTable', () => {
     expect(onDelete).toHaveBeenCalledWith(row)
   })
 
+  it('逐行动作可按行隐藏，危险动作不会泄露到不合格行', () => {
+    const html = renderToStaticMarkup(<DataListTable
+      label="订单"
+      rows={[{ id: 1, cancellable: true }, { id: 2, cancellable: false }]}
+      rowKey={(row) => row.id}
+      columns={[{ key: 'id', label: 'ID', render: (row) => row.id }]}
+      actions={[{ label: '撤单', tone: 'danger', visible: (row) => row.cancellable, onClick: () => undefined }]}
+    />)
+    expect(html.match(/>撤单<\/button>/g)).toHaveLength(1)
+    expect(html).toContain('hk-btn--danger')
+  })
+
   it('只为可选行提供可用勾选框且全选范围排除不可选行', () => {
     const onToggle = vi.fn()
     const onToggleAll = vi.fn()

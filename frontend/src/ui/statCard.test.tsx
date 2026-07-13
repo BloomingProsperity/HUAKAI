@@ -26,6 +26,15 @@ describe('StatCard 关键渲染分支', () => {
     expect(html).toContain('今日请求量')
   })
 
+  it('长值区有截断兜底，并用 title 暴露完整值', () => {
+    const html = renderToStaticMarkup(<StatCard label="总成本" value="$241.27" valueTitle="$241.2743402048" />)
+    // 判别核心：去掉 overflow/text-overflow 或误把短值写入 title 都会打红。
+    expect(html).toContain('title="$241.2743402048"')
+    expect(html).toContain('overflow:hidden')
+    expect(html).toContain('text-overflow:ellipsis')
+    expect(html).toContain('white-space:nowrap')
+  })
+
   it.each([
     ['warn', 'var(--hk-warn)'],
     ['ok', 'var(--hk-success)'],

@@ -17,6 +17,7 @@ export interface DataListAction<T> {
 export interface DataListLinkAction<T> {
   label: string | ((row: T) => string)
   to: string | ((row: T) => string)
+  visible?: boolean | ((row: T) => boolean)
   onClick?: never
 }
 
@@ -25,6 +26,7 @@ export interface DataListButtonAction<T> {
   onClick: (row: T) => void
   tone?: 'danger' | 'neutral'
   disabled?: boolean | ((row: T) => boolean)
+  visible?: boolean | ((row: T) => boolean)
   to?: never
 }
 
@@ -73,7 +75,7 @@ export function DataListTable<T>({ columns, rows, rowKey, action, actions = [], 
                 {columns.map((column) => <td key={column.key}>{column.badge ? <span style={badgeCellStyle}>{column.render(row)}</span> : column.render(row)}</td>)}
                 {hasActions && <td><span style={actionsStyle}>
                   {action && <Link to={action.to(row)} style={actionStyle}>{resolveValue(action.label, row)}</Link>}
-                  {actions.map((item, index) => isLinkAction(item)
+                  {actions.filter((item) => resolveValue(item.visible ?? true, row)).map((item, index) => isLinkAction(item)
                     ? <Link key={index} to={resolveValue(item.to, row)} style={actionStyle}>{resolveValue(item.label, row)}</Link>
                     : <button key={index} type="button" className={`hk-btn hk-btn--sm${item.tone === 'danger' ? ' hk-btn--danger' : ''}`} disabled={resolveValue(item.disabled ?? false, row)} onClick={() => item.onClick(row)}>{resolveValue(item.label, row)}</button>)}
                 </span></td>}
