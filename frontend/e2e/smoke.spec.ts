@@ -40,6 +40,8 @@ test('全路由 smoke:每页可开、不崩、无 5xx', async ({ page }) => {
     try {
       await page.goto(route, { waitUntil: 'domcontentloaded' })
       await page.waitForTimeout(350) // 给首屏 fetch 一点时间触发
+      // 深链接直开必须拿到 SPA 而非后端 404 文本(曾漏:/admin/* 被整段当 API 代理走)。
+      if ((await page.locator('#root > *').count()) === 0) failures.push(`${route} → 非 SPA 响应(深链接 404?)`)
       if (await hasErrorBoundary(page)) failures.push(`${route} → 路由错误边界(页面崩溃)`)
       if (pageErrors.length) failures.push(`${route} → JS异常: ${pageErrors.slice(0, 2).join(' | ')}`)
       if (bad5xx.length) failures.push(`${route} → 5xx: ${bad5xx.slice(0, 3).join(', ')}`)

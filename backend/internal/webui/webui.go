@@ -20,7 +20,9 @@ import (
 var apiPathPrefixes = []string{
 	"/v1/", "/v1beta/", "/engines/", "/backend-api/",
 	"/mj/", "/suno/", "/video/",
-	"/admin/", "/debug/", "/internal/", "/.well-known/",
+	// 注意:管理 API 的规范前缀是 /admin/v1/;裸 /admin/* 是 SPA 管理页深链接
+	// (如 /admin/model-registry),绝不能整段划为 API,否则直开/刷新一律 404。
+	"/admin/v1/", "/debug/", "/internal/", "/.well-known/",
 }
 
 // apiPathExact 是单端点的 API/运维路径（精确匹配，因此 SPA 仍可拥有同级路径，
