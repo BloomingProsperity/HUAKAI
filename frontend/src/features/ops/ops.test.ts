@@ -3,6 +3,13 @@ import {
   fmtFractionPct,
   fmtLatencyMs,
   healthScoreTone,
+  mapHealthScoreRows,
+  mapLeaderboardRows,
+  mapOverviewStats,
+  mapPerfBucketRows,
+  mapPerfMetricStats,
+  mapPerformanceRows,
+  mapProviderAccountRows,
   sparklinePoints,
   successRateTone,
   totalTokens,
@@ -100,5 +107,99 @@ describe('totalTokens', () => {
     // 判别核心:两列都要加。变异(漏加 output)→ 30 ≠ 10,RED。
     expect(totalTokens({ total_input_tokens: 10, total_output_tokens: 20 })).toBe(30)
     expect(totalTokens({ total_input_tokens: 0, total_output_tokens: 0 })).toBe(0)
+  })
+})
+
+describe('运维大屏底座映射', () => {
+  it('总览六卡保留顺序、格式并把成功率映射为三档 tone', () => {
+    const stats = mapOverviewStats({
+      window: '7d',
+      totals: {
+        requests: 9552,
+        total_cost: '123.45',
+        total_tokens: 1234567,
+        active_users: 18,
+        active_api_keys: 23,
+        success_count: 9500,
+        error_count: 52,
+        success_rate: '0.9950',
+      },
+      trend: [],
+    })
+
+    // 判别核心:成功率必须是第六卡且沿用 0~1 阈值；变异顺序、格式或 tone 均 RED。
+    expect(stats).toEqual([
+      { label: '请求数', value: '9,552', tone: 'default' },
+      { label: '总成本', value: '$123.45', tone: 'default' },
+      { label: '总 Token', value: '1,234,567', tone: 'default' },
+      { label: '活跃用户', value: '18', tone: 'default' },
+      { label: '活跃 Key', value: '23', tone: 'default' },
+      { label: '成功率', value: '99.50%', hint: '健康', tone: 'ok' },
+    ])
+    expect(mapOverviewStats(null)).toHaveLength(6)
+    expect(mapOverviewStats(null).every((stat) => stat.value === '…')).toBe(true)
+  })
+
+  it('性能分位六卡保留毫秒、秒与小数百分比口径', () => {
+    const stats = mapPerfMetricStats({
+      window: '7d',
+      summary: {
+        avg_ttft_ms: '321.4',
+        avg_tps: '18.2',
+        request_count: 100,
+        error_count: 2,
+        error_rate: '0.0200',
+      },
+      latency_percentiles_ms: { p50: 400, p95: 1500, p99: 2600 },
+    })
+
+    // 判别核心:error_rate 必须乘 100，延迟达到 1000ms 必须换算秒；任一映射串列即 RED。
+    expect(stats.map((stat) => [stat.label, stat.value])).toEqual([
+      ['P50 延迟', '400ms'],
+      ['P95 延迟', '1.50s'],
+      ['P99 延迟', '2.60s'],
+      ['平均 TTFT', '321.4ms'],
+      ['平均 TPS', '18.2'],
+      ['错误率', '2.00%'],
+    ])
+  })
+
+  it('五张只读表的行映射不丢字段、不混淆输入输出 Token', () => {
+    expect(mapLeaderboardRows([{ rank: 1, key: 'model-a', total_cost: '12.34', total_tokens: 3000, request_count: 20 }])).toEqual([
+      { rank: 1, model: 'model-a', cost: '$12.34', tokens: '3,000', requests: '20' },
+    ])
+
+    expect(mapHealthScoreRows({
+      window: '7d',
+      overall_score: 91,
+      business_score: 72,
+      infra_score: 68,
+      signals: {
+        error_rate: '0.0123',
+        ttft_p99_ms: 1500,
+        channel_health_available: true,
+        healthy_channels: 4,
+        managed_channels: 5,
+      },
+    })).toEqual([
+      { id: 'overall', metric: '综合分', value: '91', statusText: '健康', statusTone: 'ok' },
+      { id: 'business', metric: '业务面', value: '72', statusText: '注意', statusTone: 'warn' },
+      { id: 'infra', metric: '基础设施面', value: '68', statusText: '告警', statusTone: 'danger' },
+      { id: 'error-rate', metric: '错误率', value: '1.23%', statusText: '观测', statusTone: 'muted' },
+      { id: 'ttft-p99', metric: 'TTFT P99', value: '1.50s', statusText: '观测', statusTone: 'muted' },
+    ])
+
+    expect(mapPerformanceRows([{ rank: 2, key: '', avg_ttft_ms: '90', avg_tps: '8.5', request_count: 7, error_rate: '0.1000' }])).toEqual([
+      { rank: 2, key: '—', avgTtft: '90ms', avgTps: '8.5', requests: '7', errorRate: '10.00%' },
+    ])
+
+    expect(mapPerfBucketRows([{ bucket: '2026-07-13T10:00:00Z', key: 'model-b', avg_ttft_ms: '110', avg_tps: '9.2', request_count: 12, error_count: 3, error_rate: '0.2500' }])).toEqual([
+      { id: '2026-07-13T10:00:00Z-model-b-0', bucket: '2026-07-13T10:00:00Z', model: 'model-b', avgTtft: '110ms', avgTps: '9.2', requests: '12', errors: '3', errorRate: '25.00%' },
+    ])
+
+    // 判别核心:合计必须为输入 1,000 + 输出 250；变异成单列或调换字段即 RED。
+    expect(mapProviderAccountRows([{ provider_account_id: 9, request_count: 8, total_input_tokens: 1000, total_output_tokens: 250, total_cost: '4.56' }])).toEqual([
+      { id: 9, account: '#9', requests: '8', inputTokens: '1,000', outputTokens: '250', tokens: '1,250', cost: '$4.56' },
+    ])
   })
 })

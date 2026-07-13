@@ -3,6 +3,16 @@
  * 以及成功率/错误率配色与数值格式化。
  */
 
+import type {
+  HealthScoreResponse,
+  LeaderboardEntry,
+  OverviewResponse,
+  PerfBucketEntry,
+  PerformanceEntry,
+  PerfMetricsResponse,
+  ProviderAccountCount,
+} from './types'
+
 /**
  * 趋势值序列 → SVG polyline 的 points 串。Y 轴翻转(值越大越靠上=y 越小),按 [min,max] 归一化
  * 铺满 [pad, 高-pad]。空序列返回空串;单点居中。这是大屏趋势图的核心,务必可测。
@@ -106,4 +116,173 @@ export function healthScoreTone(score: number): RateTone {
  */
 export function totalTokens(row: { total_input_tokens: number; total_output_tokens: number }): number {
   return row.total_input_tokens + row.total_output_tokens
+}
+
+export type OpsStatTone = 'default' | RateTone
+
+export interface OpsStatView {
+  label: string
+  value: string
+  hint?: string
+  tone: OpsStatTone
+}
+
+/** 总览响应到六张统计卡的纯映射；成功率沿用原三档健康口径。 */
+export function mapOverviewStats(overview: OverviewResponse | null): OpsStatView[] {
+  if (overview === null) {
+    return ['请求数', '总成本', '总 Token', '活跃用户', '活跃 Key', '成功率'].map((label) => ({
+      label,
+      value: '…',
+      tone: 'default',
+    }))
+  }
+
+  const successTone = successRateTone(overview.totals.success_rate)
+  return [
+    { label: '请求数', value: fmtInt(overview.totals.requests), tone: 'default' },
+    { label: '总成本', value: `$${overview.totals.total_cost}`, tone: 'default' },
+    { label: '总 Token', value: fmtInt(overview.totals.total_tokens), tone: 'default' },
+    { label: '活跃用户', value: fmtInt(overview.totals.active_users), tone: 'default' },
+    { label: '活跃 Key', value: fmtInt(overview.totals.active_api_keys), tone: 'default' },
+    {
+      label: '成功率',
+      value: fmtFractionPct(overview.totals.success_rate),
+      hint: rateToneLabel(successTone),
+      tone: successTone,
+    },
+  ]
+}
+
+/** 性能汇总响应到六张统计卡的纯映射。 */
+export function mapPerfMetricStats(perf: PerfMetricsResponse | null): OpsStatView[] {
+  return [
+    { label: 'P50 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p50) : '…', tone: 'default' },
+    { label: 'P95 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p95) : '…', tone: 'default' },
+    { label: 'P99 延迟', value: perf ? fmtLatencyMs(perf.latency_percentiles_ms.p99) : '…', tone: 'default' },
+    { label: '平均 TTFT', value: perf ? `${perf.summary.avg_ttft_ms}ms` : '…', tone: 'default' },
+    { label: '平均 TPS', value: perf ? perf.summary.avg_tps : '…', tone: 'default' },
+    { label: '错误率', value: perf ? fmtFractionPct(perf.summary.error_rate) : '…', tone: 'default' },
+  ]
+}
+
+export interface LeaderboardTableRow {
+  rank: number
+  model: string
+  cost: string
+  tokens: string
+  requests: string
+}
+
+/** 模型成本排行到只读表行的纯映射。 */
+export function mapLeaderboardRows(entries: LeaderboardEntry[]): LeaderboardTableRow[] {
+  return entries.map((entry) => ({
+    rank: entry.rank,
+    model: entry.key,
+    cost: `$${entry.total_cost}`,
+    tokens: fmtInt(entry.total_tokens),
+    requests: fmtInt(entry.request_count),
+  }))
+}
+
+export interface HealthScoreTableRow {
+  id: 'overall' | 'business' | 'infra' | 'error-rate' | 'ttft-p99'
+  metric: string
+  value: string
+  statusText: string
+  statusTone: RateTone | 'muted'
+}
+
+/** 健康分与信号到五行只读表的纯映射；没有产品阈值的信号只标为观测，不臆造状态。 */
+export function mapHealthScoreRows(health: HealthScoreResponse): HealthScoreTableRow[] {
+  const scoreRow = (
+    id: HealthScoreTableRow['id'],
+    metric: string,
+    score: number,
+  ): HealthScoreTableRow => {
+    const tone = healthScoreTone(score)
+    return { id, metric, value: String(score), statusText: rateToneLabel(tone), statusTone: tone }
+  }
+
+  return [
+    scoreRow('overall', '综合分', health.overall_score),
+    scoreRow('business', '业务面', health.business_score),
+    scoreRow('infra', '基础设施面', health.infra_score),
+    { id: 'error-rate', metric: '错误率', value: fmtFractionPct(health.signals.error_rate), statusText: '观测', statusTone: 'muted' },
+    { id: 'ttft-p99', metric: 'TTFT P99', value: fmtLatencyMs(health.signals.ttft_p99_ms), statusText: '观测', statusTone: 'muted' },
+  ]
+}
+
+export interface PerformanceTableRow {
+  rank: number
+  key: string
+  avgTtft: string
+  avgTps: string
+  requests: string
+  errorRate: string
+}
+
+/** 性能排行到只读表行的纯映射。 */
+export function mapPerformanceRows(entries: PerformanceEntry[]): PerformanceTableRow[] {
+  return entries.map((entry) => ({
+    rank: entry.rank,
+    key: entry.key || '—',
+    avgTtft: `${entry.avg_ttft_ms}ms`,
+    avgTps: entry.avg_tps,
+    requests: fmtInt(entry.request_count),
+    errorRate: fmtFractionPct(entry.error_rate),
+  }))
+}
+
+export interface PerfBucketTableRow {
+  id: string
+  bucket: string
+  model: string
+  avgTtft: string
+  avgTps: string
+  requests: string
+  errors: string
+  errorRate: string
+}
+
+/** 性能分桶到只读表行的纯映射；组合序号保证相同桶与模型的重复聚合行仍有稳定行键。 */
+export function mapPerfBucketRows(entries: PerfBucketEntry[]): PerfBucketTableRow[] {
+  return entries.map((entry, index) => ({
+    id: `${entry.bucket}-${entry.key}-${index}`,
+    bucket: entry.bucket,
+    model: entry.key || '—',
+    avgTtft: `${entry.avg_ttft_ms}ms`,
+    avgTps: entry.avg_tps,
+    requests: fmtInt(entry.request_count),
+    errors: fmtInt(entry.error_count),
+    errorRate: fmtFractionPct(entry.error_rate),
+  }))
+}
+
+export interface ProviderAccountTableRow {
+  id: number
+  account: string
+  requests: string
+  inputTokens: string
+  outputTokens: string
+  tokens: string
+  cost: string
+}
+
+/** Provider 账号聚合到只读表行的纯映射。 */
+export function mapProviderAccountRows(counts: ProviderAccountCount[]): ProviderAccountTableRow[] {
+  return counts.map((count) => ({
+    id: count.provider_account_id,
+    account: `#${count.provider_account_id}`,
+    requests: fmtInt(count.request_count),
+    inputTokens: fmtInt(count.total_input_tokens),
+    outputTokens: fmtInt(count.total_output_tokens),
+    tokens: fmtInt(totalTokens(count)),
+    cost: `$${count.total_cost}`,
+  }))
+}
+
+function rateToneLabel(tone: RateTone): string {
+  if (tone === 'ok') return '健康'
+  if (tone === 'warn') return '注意'
+  return '告警'
 }
