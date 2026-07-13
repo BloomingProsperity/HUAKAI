@@ -5,6 +5,8 @@ import {
   buildCatalogQuery,
   formatFailoverCodes,
   isKnownProtocol,
+  mapChannelCatalogRows,
+  mapProviderCatalogRows,
   parseFailoverCodes,
   validateChannel,
   validateProviderCreate,
@@ -161,5 +163,23 @@ describe('validateChannel', () => {
   it('reason 非空时下发(trim)', () => {
     const v = validateChannel({ ...base, reason: '  调整  ' })
     expect(v.ok && v.value.reason).toBe('调整')
+  })
+})
+
+describe('目录表格列映射', () => {
+  it('provider 映射保留动作源对象并生成状态语义', () => {
+    const provider = { id: 3, code: 'anthropic', display_name: 'Anthropic', upstream_protocol: 'anthropic_messages', enabled: false, created_at: 'bad-date' }
+    const [row] = mapProviderCatalogRows([provider])
+    expect(row).toMatchObject({ id: 3, code: 'anthropic', displayName: 'Anthropic', status: '停用', statusTone: 'muted', createdAt: 'bad-date' })
+    // 判别核心:动作必须收到原 DTO；变异(复制或遗漏源对象)会使引用断开并证红。
+    expect(row.provider).toBe(provider)
+  })
+
+  it('channel 映射格式化编号、失败转移码与启用态', () => {
+    const channel = { id: 9, pool_group_id: 4, name: '主通道', failover_status_codes: [401, 429], enabled: true, created_at: undefined }
+    const [row] = mapChannelCatalogRows([channel])
+    // 判别核心:失败转移码必须进入展示行；变异为空串会在此证红。
+    expect(row).toMatchObject({ displayId: '#9', poolGroupId: 4, failoverCodes: '401, 429', status: '启用', statusTone: 'ok', createdAt: '—' })
+    expect(row.channel).toBe(channel)
   })
 })

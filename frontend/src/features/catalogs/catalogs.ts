@@ -9,9 +9,12 @@
  */
 
 import type {
+  ChannelCatalogItem,
   ChannelCatalogMutationRequest,
+  ProviderCatalogItem,
   ProviderCatalogMutationRequest,
 } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
 
 export type QueryValue = string | number | undefined
 
@@ -198,6 +201,64 @@ export function parseFailoverCodes(text: string): FailoverCodesParse {
 export function formatFailoverCodes(codes: number[] | undefined): string {
   if (!codes || codes.length === 0) return ''
   return codes.join(', ')
+}
+
+export interface ProviderCatalogTableRow {
+  id: number
+  code: string
+  displayName: string
+  upstreamProtocol: string
+  status: string
+  statusTone: BadgeTone
+  createdAt: string
+  provider: ProviderCatalogItem
+}
+
+/** provider 目录 DTO 到列表展示行的纯映射。 */
+export function mapProviderCatalogRows(items: ProviderCatalogItem[]): ProviderCatalogTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    code: item.code,
+    displayName: item.display_name,
+    upstreamProtocol: item.upstream_protocol,
+    status: item.enabled ? '启用' : '停用',
+    statusTone: item.enabled ? 'ok' : 'muted',
+    createdAt: formatCatalogTimestamp(item.created_at),
+    provider: item,
+  }))
+}
+
+export interface ChannelCatalogTableRow {
+  id: number
+  displayId: string
+  name: string
+  poolGroupId: number
+  failoverCodes: string
+  status: string
+  statusTone: BadgeTone
+  createdAt: string
+  channel: ChannelCatalogItem
+}
+
+/** channel 目录 DTO 到列表展示行的纯映射。 */
+export function mapChannelCatalogRows(items: ChannelCatalogItem[]): ChannelCatalogTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    displayId: `#${item.id}`,
+    name: item.name,
+    poolGroupId: item.pool_group_id,
+    failoverCodes: formatFailoverCodes(item.failover_status_codes) || '—',
+    status: item.enabled ? '启用' : '停用',
+    statusTone: item.enabled ? 'ok' : 'muted',
+    createdAt: formatCatalogTimestamp(item.created_at),
+    channel: item,
+  }))
+}
+
+export function formatCatalogTimestamp(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 // ── channel 表单校验 ──────────────────────────────────────────────────────────

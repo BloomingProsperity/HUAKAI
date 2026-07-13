@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   createChannel,
@@ -15,10 +17,13 @@ import {
   DEFAULT_FAILOVER_CODES,
   UPSTREAM_PROTOCOLS,
   formatFailoverCodes,
+  mapChannelCatalogRows,
+  mapProviderCatalogRows,
   validateChannel,
   validateProviderCreate,
   validateProviderUpdate,
 } from './catalogs'
+import type { ChannelCatalogTableRow, ProviderCatalogTableRow } from './catalogs'
 import type { ChannelCatalogItem, ProviderCatalogItem } from './types'
 
 /*
@@ -72,7 +77,7 @@ export function CatalogsPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <>
           <ProvidersCard tenantId={tenantId} />
@@ -98,6 +103,7 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
   const [protocol, setProtocol] = useState<string>(UPSTREAM_PROTOCOLS[0])
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
+  const tableRows = mapProviderCatalogRows(rows)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -240,42 +246,20 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
 
       {/* 列表 */}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载 provider 目录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无 provider 目录条目。</Empty>
+        <EmptyState title="暂无 provider 目录条目" hint="可使用上方表单新建供应商条目。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['code', '展示名', '上游协议', '状态', '创建时间', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="hk-mono">{row.code}</td>
-                  <td>{row.display_name}</td>
-                  <td className="hk-mono">{row.upstream_protocol}</td>
-                  <td>
-                    <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{fmt(row.created_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
-                      编辑
-                    </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="provider 目录"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={providerColumns}
+          actions={[
+            { label: '编辑', disabled: busy, onClick: (row) => startEdit(row.provider) },
+            { label: '删除', tone: 'danger', disabled: busy, onClick: (row) => remove(row.provider) },
+          ]}
+        />
       )}
     </section>
   )
@@ -296,6 +280,7 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [failoverText, setFailoverText] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
+  const tableRows = mapChannelCatalogRows(rows)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -421,43 +406,20 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
 
       {/* 列表 */}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载 channel 目录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无 channel 目录条目。</Empty>
+        <EmptyState title="暂无 channel 目录条目" hint="可使用上方表单新建路由失败转移条目。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['#', '名称', 'pool_group_id', '失败转移码', '状态', '创建时间', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="hk-mono">#{row.id}</td>
-                  <td>{row.name}</td>
-                  <td className="hk-mono">{row.pool_group_id}</td>
-                  <td className="hk-mono">{formatFailoverCodes(row.failover_status_codes) || '—'}</td>
-                  <td>
-                    <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{fmt(row.created_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
-                      编辑
-                    </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="channel 目录"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={channelColumns}
+          actions={[
+            { label: '编辑', disabled: busy, onClick: (row) => startEdit(row.channel) },
+            { label: '删除', tone: 'danger', disabled: busy, onClick: (row) => remove(row.channel) },
+          ]}
+        />
       )}
     </section>
   )
@@ -479,14 +441,23 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
+
+const providerColumns: DataListColumn<ProviderCatalogTableRow>[] = [
+  { key: 'code', label: 'code', render: (row) => <span className="hk-mono">{row.code}</span> },
+  { key: 'name', label: '展示名', render: (row) => row.displayName },
+  { key: 'protocol', label: '上游协议', render: (row) => <span className="hk-mono">{row.upstreamProtocol}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
+
+const channelColumns: DataListColumn<ChannelCatalogTableRow>[] = [
+  { key: 'id', label: '#', render: (row) => <span className="hk-mono">{row.displayId}</span> },
+  { key: 'name', label: '名称', render: (row) => row.name },
+  { key: 'pool-group', label: 'pool_group_id', render: (row) => <span className="hk-mono">{row.poolGroupId}</span> },
+  { key: 'failover', label: '失败转移码', render: (row) => <span className="hk-mono">{row.failoverCodes}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
 
 const formWrap: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }
 const formRow: React.CSSProperties = { display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }

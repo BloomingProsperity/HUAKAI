@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   channelHealthOverride,
@@ -10,12 +12,12 @@ import {
   actionLabel,
   actionNeedsConfirm,
   buildOverride,
-  canOverride,
-  confidenceLabel,
-  signalLabel,
+  formatHealthTimestamp,
+  mapChannelHealthRows,
   stateLabel,
   stateTone,
 } from './channelHealth'
+import type { ChannelHealthTableRow } from './channelHealth'
 import type {
   ChannelHealthItem,
   ChannelHealthSummary,
@@ -71,7 +73,7 @@ export function ChannelHealthPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <ChannelHealthBoard tenantId={tenantId} />
       )}
@@ -87,6 +89,7 @@ function ChannelHealthBoard({ tenantId }: { tenantId: number }) {
   const [notice, setNotice] = useState<string | null>(null)
   // busy 记录正在执行干预的渠道(provider_account_id:credential_version 复合键)+ 动作。
   const [busyKey, setBusyKey] = useState<string | null>(null)
+  const tableRows = mapChannelHealthRows(rows)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -159,76 +162,21 @@ function ChannelHealthBoard({ tenantId }: { tenantId: number }) {
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {rows.length} 条</span>
         </div>
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载渠道健康记录" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>该租户暂无渠道健康记录。</Empty>
+          <EmptyState title="暂无渠道健康记录" hint="该租户尚未产生可展示的渠道健康状态。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['渠道', '厂商', '状态', '健康分', '信号 / 置信', '冷却 / 爬坡', '更新', '人工干预'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((item) => {
-                  const key = rowKey(item)
-                  const writable = canOverride(item)
-                  const busy = busyKey === key
-                  return (
-                    <tr key={key}>
-                      <td className="hk-mono">
-                        <div>{item.channel_id}</div>
-                        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
-                          acct #{item.provider_account_id} · cred #{item.account_credential_id} v{item.credential_version}
-                        </div>
-                      </td>
-                      <td>{item.vendor || '—'}</td>
-                      <td>
-                        <StatusBadge tone={stateTone(item.state)}>{stateLabel(item.state)}</StatusBadge>
-                      </td>
-                      <td className="hk-mono">{fmtNum(item.score)}</td>
-                      <td style={{ color: 'var(--hk-ink-700)' }}>
-                        <div>{signalLabel(item.reason_class)}</div>
-                        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{confidenceLabel(item.confidence_tier)}</div>
-                      </td>
-                      <td style={{ color: 'var(--hk-ink-700)' }}>
-                        {item.cooldown_until ? (
-                          <div title="冷却到期">冷却至 {fmt(item.cooldown_until)}</div>
-                        ) : null}
-                        {item.state === 'ramping' || item.ramp_stage_pct > 0 ? (
-                          <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>
-                            爬坡 {item.ramp_stage_pct}% · 失败 {item.ramp_failure_count}
-                          </div>
-                        ) : null}
-                        {!item.cooldown_until && item.state !== 'ramping' && item.ramp_stage_pct === 0 ? '—' : null}
-                      </td>
-                      <td className="hk-mono">{fmt(item.updated_at)}</td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {writable ? (
-                          <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-                            <button type="button" disabled={busy} onClick={() => override(item, 'pause')} className="hk-btn hk-btn--sm hk-btn--danger">
-                              {busy ? '…' : '暂停'}
-                            </button>
-                            <button type="button" disabled={busy} onClick={() => override(item, 'resume')} className="hk-btn hk-btn--sm">
-                              恢复
-                            </button>
-                            <button type="button" disabled={busy} onClick={() => override(item, 'force-active')} style={warnBtn}>
-                              强制上线
-                            </button>
-                          </div>
-                        ) : (
-                          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>坐标不全</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="渠道健康明细"
+            rows={tableRows}
+            rowKey={(row) => row.key}
+            columns={healthColumns}
+            actions={[
+              { label: (row) => busyKey === row.key ? '…' : '暂停', tone: 'danger', disabled: (row) => !row.writable || busyKey === row.key, onClick: (row) => override(row.item, 'pause') },
+              { label: '恢复', disabled: (row) => !row.writable || busyKey === row.key, onClick: (row) => override(row.item, 'resume') },
+              { label: '强制上线', tone: 'danger', disabled: (row) => !row.writable || busyKey === row.key, onClick: (row) => override(row.item, 'force-active') },
+            ]}
+          />
         )}
       </section>
     </div>
@@ -257,7 +205,7 @@ function SummaryCard({
         <h3>状态聚合</h3>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
           {summary?.oldest_cooldown_at && (
-            <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>最早冷却 {fmt(summary.oldest_cooldown_at)}</span>
+            <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>最早冷却 {formatHealthTimestamp(summary.oldest_cooldown_at)}</span>
           )}
           <button type="button" disabled={loading} onClick={onReload} className="hk-btn hk-btn--sm">
             {loading ? '加载中…' : '刷新'}
@@ -303,22 +251,16 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
-
-function fmtNum(n: number): string {
-  if (typeof n !== 'number' || Number.isNaN(n)) return '—'
-  // 保留 2 位小数但裁掉无意义尾随 0。
-  return String(Math.round(n * 100) / 100)
-}
+const healthColumns: DataListColumn<ChannelHealthTableRow>[] = [
+  { key: 'channel', label: '渠道', render: (row) => <div className="hk-mono"><div>{row.channelId}</div><div style={subtleText}>{row.coordinates}</div></div> },
+  { key: 'vendor', label: '厂商', render: (row) => row.vendor },
+  { key: 'state', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.stateTone}>{row.state}</StatusBadge> },
+  { key: 'score', label: '健康分', render: (row) => <span className="hk-mono">{row.score}</span> },
+  { key: 'signal', label: '信号 / 置信', render: (row) => <div><div>{row.signal}</div><div style={subtleText}>{row.confidence}</div></div> },
+  { key: 'recovery', label: '冷却 / 爬坡', render: (row) => <div><div>{row.recovery}</div>{row.recoveryDetail && <div style={subtleText}>{row.recoveryDetail}</div>}</div> },
+  { key: 'updated-at', label: '更新', render: (row) => <span className="hk-mono">{row.updatedAt}</span> },
+  { key: 'writable', label: '干预条件', render: (row) => row.writable ? '坐标完整' : <span style={subtleText}>坐标不全</span> },
+]
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-// 强制上线为警示类操作(绕过冷却),保留独立琥珀底样式以突出风险语义;共享按钮体系暂无 warn 变体。
-const warnBtn: React.CSSProperties = { border: '1px solid var(--hk-warn-soft)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-warn-soft)', color: 'var(--hk-warn)', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 10px' }
+const subtleText: React.CSSProperties = { fontSize: 11, color: 'var(--hk-ink-300)' }

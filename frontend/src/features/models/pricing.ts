@@ -134,3 +134,35 @@ export function applyFilters(items: PricingItem[], f: ModelFilters): PricingItem
   if (f.capability) out = out.filter((i) => capabilityList(i.capabilities).includes(f.capability))
   return out
 }
+
+export interface ModelTableRow {
+  id: string
+  model: string
+  canonicalId: string | null
+  owner: string
+  inputPrice: string
+  outputPrice: string
+  contextLength: string
+  capabilities: string[]
+  item: PricingItem
+}
+
+/** 当前价格 DTO 到模型主表展示行的纯映射。 */
+export function mapModelTableRows(items: PricingItem[], unit: PriceUnit): ModelTableRow[] {
+  return items.map((item) => ({
+    id: item.model,
+    model: item.model,
+    canonicalId: item.canonical_id && item.canonical_id !== item.model ? item.canonical_id : null,
+    owner: item.owned_by || '其他',
+    inputPrice: formatPrice(item.input_price_per_token, unit),
+    outputPrice: formatPrice(item.output_price_per_token, unit),
+    contextLength: item.context_length ? formatModelTokens(item.context_length) : '—',
+    capabilities: capabilityList(item.capabilities),
+    item,
+  }))
+}
+
+export function formatModelTokens(value: number): string {
+  if (value >= 1000) return `${Math.round(value / 1000)}K`
+  return String(value)
+}
