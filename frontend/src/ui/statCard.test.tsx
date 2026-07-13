@@ -25,4 +25,13 @@ describe('StatCard 关键渲染分支', () => {
     expect(html).toContain('趋势槽')
     expect(html).toContain('今日请求量')
   })
+
+  it.each([
+    ['warn', 'var(--hk-warn)'],
+    ['ok', 'var(--hk-success)'],
+  ] as const)('%s tone 使用对应语义令牌', (tone, token) => {
+    const html = renderToStaticMarkup(<StatCard label="健康状态" value="8" tone={tone} />)
+    expect(html).toContain(`data-tone="${tone}"`)
+    expect(html).toContain(`color:${token}`)
+  })
 })

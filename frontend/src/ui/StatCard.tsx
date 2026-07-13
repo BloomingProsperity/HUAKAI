@@ -5,7 +5,7 @@ export interface StatCardProps {
   label: string
   value: string
   hint?: string
-  tone?: 'default' | 'danger'
+  tone?: 'default' | 'danger' | 'warn' | 'ok'
   to?: string
   icon?: ReactNode
   sparkline?: ReactNode
@@ -18,7 +18,7 @@ export function StatCard({ label, value, hint, tone = 'default', to, icon, spark
         {icon && <span aria-hidden="true" style={iconStyle}>{icon}</span>}
         {label}
       </span>
-      <strong style={{ ...valueStyle, color: tone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-900)' }}>{value}</strong>
+      <strong data-tone={tone} style={{ ...valueStyle, color: toneColors[tone] }}>{value}</strong>
       {hint && <span style={hintStyle}>{hint}</span>}
       {sparkline && <span style={sparklineStyle}>{sparkline}</span>}
     </>
@@ -33,3 +33,9 @@ const iconStyle: CSSProperties = { width: 24, height: 24, display: 'grid', place
 const valueStyle: CSSProperties = { fontSize: 20, lineHeight: 1.3, fontWeight: 700 }
 const hintStyle: CSSProperties = { color: 'var(--hk-ink-500)', fontSize: 12, lineHeight: 1.5 }
 const sparklineStyle: CSSProperties = { display: 'block', minHeight: 30, marginTop: 'auto', paddingTop: 'var(--hk-space-1)' }
+const toneColors: Record<NonNullable<StatCardProps['tone']>, string> = {
+  default: 'var(--hk-ink-900)',
+  danger: 'var(--hk-danger)',
+  warn: 'var(--hk-warn)',
+  ok: 'var(--hk-success)',
+}
