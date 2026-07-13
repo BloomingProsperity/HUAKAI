@@ -7,8 +7,11 @@ import {
   EMPTY_BATCH_FORM,
   EMPTY_CREATE_FORM,
   filterByStatus,
+  formatVoucherDate,
   grantKindLabel,
   MAX_BATCH_COUNT,
+  mapVoucherRows,
+  mapVoucherStats,
   parseListTenantId,
   statusLabel,
   statusTone,
@@ -17,6 +20,7 @@ import {
   type BatchForm,
   type CreateForm,
 } from './vouchersadmin'
+import type { Voucher, VoucherStatus } from './types'
 
 function cForm(over: Partial<CreateForm>): CreateForm {
   // 默认填齐有效期窗口,便于聚焦单字段校验。
@@ -24,6 +28,27 @@ function cForm(over: Partial<CreateForm>): CreateForm {
 }
 function bForm(over: Partial<BatchForm>): BatchForm {
   return { ...EMPTY_BATCH_FORM, validFrom: '2026-01-01T00:00', validUntil: '2026-12-31T00:00', amountYuan: '10', ...over }
+}
+
+function voucher(over: Partial<Voucher> = {}): Voucher {
+  return {
+    id: 1,
+    tenant_id: 1,
+    batch_id: null,
+    code_fingerprint: 'fp-demo',
+    amount_cents: 1234,
+    currency_code: 'USD',
+    valid_from: '2026-01-01T00:00:00Z',
+    valid_until: '2026-12-31T00:00:00Z',
+    max_redemptions: 3,
+    redeemed_count: 0,
+    single_use_per_user: true,
+    grant_kind: 'balance',
+    status: 'active',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    ...over,
+  }
 }
 
 describe('yuanToCents / centsToYuan', () => {
@@ -127,5 +152,62 @@ describe('filterByStatus', () => {
     expect(filterByStatus(rows, '')).toHaveLength(3)
     expect(filterByStatus(rows, 'active')).toHaveLength(2)
     expect(filterByStatus(rows, 'revoked')).toHaveLength(1)
+  })
+})
+
+describe('mapVoucherStats', () => {
+  it('按当前页状态生成四张统计卡，过期券只计入总数', () => {
+    const statuses: VoucherStatus[] = ['active', 'active', 'exhausted', 'revoked', 'expired']
+    const stats = mapVoucherStats(statuses.map((status, index) => voucher({ id: index + 1, status })))
+
+    // 判别核心:四张卡的顺序、数值与语气必须精确匹配，任一状态误分类都会变红。
+    expect(stats.map(({ label, value, tone }) => ({ label, value, tone }))).toEqual([
+      { label: '总数', value: '5 张', tone: 'default' },
+      { label: '可用', value: '2 张', tone: 'ok' },
+      { label: '已用尽', value: '1 张', tone: 'warn' },
+      { label: '已吊销', value: '1 张', tone: 'danger' },
+    ])
+    expect(stats.every((stat) => stat.hint.includes('当前页'))).toBe(true)
+  })
+
+  it('未加载时不把统计伪装成零', () => {
+    expect(mapVoucherStats(null).map((stat) => stat.value)).toEqual(['—', '—', '—', '—'])
+  })
+})
+
+describe('mapVoucherRows', () => {
+  it('把兑换码完整映射为表格展示行并保留动作源记录', () => {
+    const source = voucher({
+      id: 42,
+      batch_id: 9,
+      code_fingerprint: 'fp-42',
+      grant_kind: 'subscription',
+      redeemed_count: 2,
+      status: 'revoked',
+      valid_from: 'invalid-from',
+      valid_until: 'invalid-until',
+    })
+    const [row] = mapVoucherRows([source])
+
+    // 判别核心:金额、兑换进度、状态、批次及有效期任一映射退化都会变红。
+    expect(row).toMatchObject({
+      id: 42,
+      fingerprint: 'fp-42',
+      amount: '12.34 USD',
+      grantKind: '订阅',
+      redemption: '2/3',
+      statusText: '已吊销',
+      statusTone: 'danger',
+      batchID: 9,
+      validity: '— ~ —',
+    })
+    expect(row.source).toBe(source)
+  })
+})
+
+describe('formatVoucherDate', () => {
+  it('合法时间可读、非法时间显示占位', () => {
+    expect(formatVoucherDate('2026-01-01T00:00:00Z')).not.toBe('—')
+    expect(formatVoucherDate('not-a-date')).toBe('—')
   })
 })
