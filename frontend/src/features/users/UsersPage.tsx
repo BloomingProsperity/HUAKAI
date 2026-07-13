@@ -1,17 +1,26 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
-import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { SkeletonRows } from '../../ui/Skeleton'
+import { StatCard } from '../../ui/StatCard'
+import { StatusBadge } from '../../ui/StatusBadge'
 import { createUser, getTwoFAAdoptionStats, listUsers, setUserStatus, unlockUser } from './api'
-import { formatAdoptionRate, type TwoFAAdoptionStats } from './actions'
+import type { TwoFAAdoptionStats } from './actions'
 import {
   buildCreateUser,
   CREATE_USER_ROLES,
   EMPTY_CREATE_USER,
-  roleLabel,
-  statusLabel,
+  mapUserPagination,
+  mapUserRows,
+  mapUserStats,
   toggleStatusTarget,
+  USERS_PAGE_LIMIT,
+  USERS_PAGE_LIMIT_OPTIONS,
   type CreateUserForm,
+  type UserTableRow,
 } from './users'
 import type { AdminUser } from './types'
 
@@ -20,21 +29,27 @@ import type { AdminUser } from './types'
  * 余额列只读展示(money 只读,不在此动钱)。
  */
 export function UsersPage() {
+  const tenantId = useMe().tenantId
   const [users, setUsers] = useState<AdminUser[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [draftQ, setDraftQ] = useState('')
   const [q, setQ] = useState('')
+  const [offset, setOffset] = useState(0)
+  const [limit, setLimit] = useState(USERS_PAGE_LIMIT)
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [createOpen, setCreateOpen] = useState(false)
   const [busyId, setBusyId] = useState<number | null>(null)
   const [twoFA, setTwoFA] = useState<TwoFAAdoptionStats | null>(null)
+  const [twoFALoading, setTwoFALoading] = useState(true)
 
   const load = useCallback(
     (signal: AbortSignal) => {
+      if (tenantId == null) return
       setLoading(true)
       setError(null)
-      listUsers(q, 0, 100, signal)
+      setUsers([])
+      listUsers(tenantId, q, offset, limit, signal)
         .then((resp) => setUsers(resp.items))
         .catch((e: unknown) => {
           if (signal.aborted) return
@@ -44,10 +59,11 @@ export function UsersPage() {
           if (!signal.aborted) setLoading(false)
         })
     },
-    [q],
+    [limit, offset, q, tenantId],
   )
 
   useEffect(() => {
+    if (tenantId == null) return
     const ctrl = new AbortController()
     load(ctrl.signal)
     return () => ctrl.abort()
@@ -55,19 +71,24 @@ export function UsersPage() {
 
   // 2FA 普及率统计独立加载,失败静默(只是少一张统计卡,不连累列表)。
   useEffect(() => {
+    if (tenantId == null) return
     const ctrl = new AbortController()
-    getTwoFAAdoptionStats(ctrl.signal)
+    if (!twoFA) setTwoFALoading(true)
+    getTwoFAAdoptionStats(tenantId, ctrl.signal)
       .then((s) => setTwoFA(s))
       .catch(() => {
         /* 统计失败不提示 */
       })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setTwoFALoading(false)
+      })
     return () => ctrl.abort()
-  }, [refreshNonce])
+  }, [refreshNonce, tenantId])
 
   const refresh = () => setRefreshNonce((n) => n + 1)
 
-  const act = async (u: AdminUser, fn: () => Promise<unknown>) => {
-    setBusyId(u.id)
+  const act = async (id: number, fn: () => Promise<unknown>) => {
+    setBusyId(id)
     setError(null)
     try {
       await fn()
@@ -79,34 +100,80 @@ export function UsersPage() {
     }
   }
 
+  const rows = mapUserRows(users)
+  const statCards = mapUserStats(twoFA)
+  const pagination = mapUserPagination({
+    offset,
+    limit,
+    returnedCount: users.length,
+    totalUsers: twoFA?.total_users ?? null,
+    searching: q !== '',
+  })
+  const totalCopy = twoFA
+    ? `全租户共 ${twoFA.total_users.toLocaleString('zh-CN')} 人。`
+    : twoFALoading
+      ? '全租户总数加载中。'
+      : '全租户总数暂不可用。'
+  const columns: DataListColumn<UserTableRow>[] = [
+    {
+      key: 'email',
+      label: '邮箱',
+      render: (row) => <Link to={`/users/${row.id}`} style={emailLinkStyle}>{row.email}</Link>,
+    },
+    { key: 'role', label: '角色', render: (row) => row.role },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+    { key: 'group', label: '用户组', render: (row) => row.userGroup },
+    {
+      key: 'remark',
+      label: '备注',
+      render: (row) => <span title={row.remark} style={ellipsisStyle}>{row.remark}</span>,
+    },
+    {
+      key: 'balance',
+      label: '余额',
+      render: (row) => <span className="hk-mono" style={numericStyle}>{row.balance}</span>,
+    },
+    { key: 'created', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
         <div>
           <h1>用户管理</h1>
-          <p className="hk-sub">管线第 5 站 · 租户内用户。共 {users.length} 人。</p>
+          <p className="hk-sub">管线第 5 站 · 租户内用户。{totalCopy}</p>
         </div>
         <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">
           ＋ 新建用户
         </button>
       </header>
 
-      {createOpen && <CreateUserModal onClose={() => setCreateOpen(false)} onCreated={refresh} />}
+      {createOpen && tenantId != null && <CreateUserModal tenantId={tenantId} onClose={() => setCreateOpen(false)} onCreated={refresh} />}
 
-      {twoFA && (
-        <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'baseline', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 13 }}>
-          <span style={{ color: 'var(--hk-ink-500)' }}>两步验证(2FA)普及率</span>
-          <strong style={{ fontSize: 18, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-900)' }}>{formatAdoptionRate(twoFA)}</strong>
-          <span style={{ color: 'var(--hk-ink-500)' }}>
-            {twoFA.enabled_users} / {twoFA.total_users} 名用户已开启
-          </span>
-        </div>
-      )}
+      <section aria-label="用户统计" style={statsGridStyle}>
+        {statCards.map((card) => (
+          <StatCard
+            key={card.label}
+            label={card.label}
+            value={card.value}
+            hint={twoFALoading && !twoFA ? '全租户统计加载中' : card.hint}
+            tone={card.label === '2FA 普及率' && twoFA && twoFA.enabled_rate >= 0.8 ? 'ok' : 'default'}
+          />
+        ))}
+      </section>
 
       <form
         onSubmit={(e) => {
           e.preventDefault()
-          setQ(draftQ)
+          const nextQ = draftQ.trim()
+          setOffset(0)
+          if (nextQ === q && offset === 0) refresh()
+          else setQ(nextQ)
         }}
         style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', padding: 'var(--hk-space-4)' }}
       >
@@ -117,7 +184,7 @@ export function UsersPage() {
         <button type="submit" style={primaryBtn}>
           查询
         </button>
-        <button type="button" onClick={() => { setDraftQ(''); setQ('') }} style={ghostBtn}>
+        <button type="button" onClick={() => { setDraftQ(''); setOffset(0); if (q === '' && offset === 0) refresh(); else setQ('') }} style={ghostBtn}>
           重置
         </button>
       </form>
@@ -125,56 +192,66 @@ export function UsersPage() {
       {error && <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>}
 
       <div className="hk-card">
-        {loading && users.length === 0 ? (
-          <Empty>加载中…</Empty>
-        ) : users.length === 0 ? (
-          <Empty>没有用户。</Empty>
+        {loading ? (
+          <div style={skeletonWrapStyle}><SkeletonRows rows={6} cols={8} /></div>
+        ) : rows.length === 0 ? (
+          <EmptyState
+            title={offset > 0 ? '当前页没有更多用户' : q ? '没有匹配的用户' : '暂无用户'}
+            hint={offset > 0 ? '返回上一页继续查看。' : q ? '请调整邮箱或名称关键词后重试。' : '新建用户后会在这里显示。'}
+            action={offset > 0
+              ? { label: '返回上一页', onClick: () => setOffset(Math.max(0, offset - limit)) }
+              : q
+                ? { label: '清除搜索', onClick: () => { setDraftQ(''); setQ(''); setOffset(0) } }
+                : { label: '新建用户', onClick: () => setCreateOpen(true) }}
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['邮箱', '角色', '状态', '余额', '创建时间', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {users.map((u) => (
-                  <tr key={u.id}>
-                    <td>
-                      <Link to={`/users/${u.id}`} style={{ fontWeight: 600, color: 'var(--hk-primary-700)', textDecoration: 'none' }}>
-                        {u.email}
-                      </Link>
-                    </td>
-                    <td>{roleLabel(u.role)}</td>
-                    <td>
-                      <StatusBadge tone={statusTone(u.status)}>{statusLabel(u.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono" style={{ textAlign: 'right', color: 'var(--hk-ink-700)' }}>{u.balance}</td>
-                    <td className="hk-mono">{fmt(u.created_at)}</td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" disabled={busyId === u.id} onClick={() => act(u, () => setUserStatus(u.id, toggleStatusTarget(u.status)))} style={linkBtn}>
-                        {u.status === 'active' ? '停用' : '启用'}
-                      </button>
-                      {u.status === 'locked' && (
-                        <button type="button" disabled={busyId === u.id} onClick={() => act(u, () => unlockUser(u.id))} style={linkBtn}>
-                          解锁
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="用户列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              { label: '余额/调额', to: (row) => `/users/${row.id}` },
+              {
+                label: (row) => row.status === 'active' ? '停用' : '启用',
+                onClick: (row) => { if (tenantId != null) void act(row.id, () => setUserStatus(tenantId, row.id, toggleStatusTarget(row.status))) },
+                disabled: (row) => busyId === row.id,
+              },
+              {
+                label: '解锁',
+                onClick: (row) => { if (tenantId != null) void act(row.id, () => unlockUser(tenantId, row.id)) },
+                disabled: (row) => row.status !== 'locked' || busyId === row.id,
+              },
+            ]}
+          />
         )}
       </div>
+
+      <nav aria-label="用户列表分页" style={paginationStyle}>
+        <span>{pagination.scopeText} · 第 {pagination.page} 页</span>
+        <div style={paginationActionsStyle}>
+          <label style={pageSizeLabelStyle}>
+            每页
+            <select
+              aria-label="每页用户数"
+              value={limit}
+              disabled={loading}
+              onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0) }}
+              className="hk-input"
+              style={pageSizeSelectStyle}
+            >
+              {USERS_PAGE_LIMIT_OPTIONS.map((size) => <option key={size} value={size}>{size} 人</option>)}
+            </select>
+          </label>
+          <button type="button" className="hk-btn hk-btn--sm" disabled={loading || !pagination.canPrevious} onClick={() => setOffset(Math.max(0, offset - limit))}>上一页</button>
+          <button type="button" className="hk-btn hk-btn--sm" disabled={loading || !pagination.canNext} onClick={() => setOffset(offset + limit)}>下一页</button>
+        </div>
+      </nav>
     </div>
   )
 }
 
-function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateUserModal({ tenantId, onClose, onCreated }: { tenantId: number; onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState<CreateUserForm>(EMPTY_CREATE_USER)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -189,7 +266,7 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
     setBusy(true)
     setError(null)
     try {
-      await createUser(built)
+      await createUser(tenantId, built)
       onCreated()
       onClose()
     } catch (e) {
@@ -235,22 +312,6 @@ function CreateUserModal({ onClose, onCreated }: { onClose: () => void; onCreate
   )
 }
 
-function statusTone(status: string): BadgeTone {
-  switch (status) {
-    case 'active':
-      return 'ok'
-    case 'disabled':
-      return 'muted'
-    case 'locked':
-      return 'danger'
-    default:
-      return 'muted'
-  }
-}
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
-}
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
@@ -259,11 +320,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--hk-space-3)' }
+const emailLinkStyle: CSSProperties = { fontWeight: 600, color: 'var(--hk-primary-700)', textDecoration: 'none' }
+const ellipsisStyle: CSSProperties = { display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const numericStyle: CSSProperties = { color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
+const skeletonWrapStyle: CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)' }
+const paginationStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--hk-space-3)', fontSize: 13, color: 'var(--hk-ink-500)' }
+const paginationActionsStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }
+const pageSizeLabelStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }
+const pageSizeSelectStyle: CSSProperties = { width: 92, minHeight: 30, padding: '0 var(--hk-space-2)' }

@@ -29,9 +29,7 @@ import type { AdminNotifyResponse } from './types'
  *     保存前二次确认,避免静默清除(镜像用户侧 NotificationPrefsCard 已修的同款坑)。
  *   - 区别于「站内信收件箱」(那是收件,这是配置投递渠道)。
  */
-export function UserNotifyPrefs({ userId }: { userId: number }) {
-  // 目标租户输入(默认 1),与手动调额卡同款:platform_admin 需指明目标租户。
-  const [tenantInput, setTenantInput] = useState('1')
+export function UserNotifyPrefs({ tenantId, userId }: { tenantId: number; userId: number }) {
   const [prefs, setPrefs] = useState<AdminNotifyResponse | null>(null)
   const [form, setForm] = useState<AdminNotifyForm | null>(null)
   const [loading, setLoading] = useState(true)
@@ -48,7 +46,7 @@ export function UserNotifyPrefs({ userId }: { userId: number }) {
   }, [])
 
   useEffect(() => {
-    const tv = validateTenantId(tenantInput)
+    const tv = validateTenantId(String(tenantId))
     if (!tv.ok) {
       // tenant_id 非法时不发请求,直接提示;清掉旧表单避免误改。
       setLoading(false)
@@ -77,14 +75,14 @@ export function UserNotifyPrefs({ userId }: { userId: number }) {
       })
     return () => ctrl.abort()
     // nonce 触发显式重载;tenantInput 改变也重拉。
-  }, [userId, tenantInput, nonce])
+  }, [userId, tenantId, nonce])
 
   const set = <K extends keyof AdminNotifyForm>(k: K, v: AdminNotifyForm[K]) =>
     setForm((f) => (f ? { ...f, [k]: v } : f))
 
   const save = async () => {
     if (!form) return
-    const tv = validateTenantId(tenantInput)
+    const tv = validateTenantId(String(tenantId))
     if (!tv.ok) {
       setError(tv.error)
       setFlash(null)
@@ -129,16 +127,6 @@ export function UserNotifyPrefs({ userId }: { userId: number }) {
       <h2 style={{ fontSize: 15, color: 'var(--hk-ink-700)' }}>通知偏好(代管)</h2>
 
       <div style={card}>
-        <Field label="目标租户 ID(tenant_id)" hint="用户详情不含租户,需指明;单租户运营者通常为 1。改后重新加载">
-          <input
-            value={tenantInput}
-            onChange={(e) => setTenantInput(e.target.value)}
-            inputMode="numeric"
-            placeholder="如 1"
-            style={{ ...inp, maxWidth: 140 }}
-          />
-        </Field>
-
         <p style={hint}>
           代该用户配置低余额与告警通知的投递渠道(区别于站内信收件箱)。平台绝不回显已存密钥;
           ⚠️ 已配置的密钥 / Token 留空保存会被清除,要保留请重新填写。

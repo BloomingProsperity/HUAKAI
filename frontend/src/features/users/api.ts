@@ -15,57 +15,60 @@ import type {
 const PATH = '/admin/v1/users'
 
 export async function listUsers(
+  tenantId: number,
   q: string,
   offset = 0,
   limit = 50,
   signal?: AbortSignal,
 ): Promise<UserListResponse> {
   return apiGet<UserListResponse>(PATH, {
-    query: { q: q.trim() || undefined, offset, limit },
+    query: { tenant_id: tenantId, q: q.trim() || undefined, offset, limit },
     signal,
   })
 }
 
-export async function createUser(body: CreateUserRequest): Promise<AdminUser> {
-  return apiSend<AdminUser>('POST', PATH, body)
+export async function createUser(tenantId: number, body: CreateUserRequest): Promise<AdminUser> {
+  return apiSend<AdminUser>('POST', PATH, body, { query: { tenant_id: tenantId } })
 }
 
 /** 设用户状态(active/disabled 等):PUT /{id}/status {status}。 */
-export async function setUserStatus(id: number, status: string): Promise<unknown> {
-  return apiSend<unknown>('PUT', `${PATH}/${id}/status`, { status })
+export async function setUserStatus(tenantId: number, id: number, status: string): Promise<unknown> {
+  return apiSend<unknown>('PUT', `${PATH}/${id}/status`, { status }, { query: { tenant_id: tenantId } })
 }
 
 /** 解锁(清登录失败锁):POST /{id}/unlock。 */
-export async function unlockUser(id: number): Promise<unknown> {
-  return apiSend<unknown>('POST', `${PATH}/${id}/unlock`, {})
+export async function unlockUser(tenantId: number, id: number): Promise<unknown> {
+  return apiSend<unknown>('POST', `${PATH}/${id}/unlock`, {}, { query: { tenant_id: tenantId } })
 }
 
 /** 用户详情:GET /admin/v1/users/{id}。 */
-export async function getUser(id: number, signal?: AbortSignal): Promise<import('./detail').UserDetail> {
-  return apiGet<import('./detail').UserDetail>(`${PATH}/${id}`, { signal })
+export async function getUser(tenantId: number, id: number, signal?: AbortSignal): Promise<import('./detail').UserDetail> {
+  return apiGet<import('./detail').UserDetail>(`${PATH}/${id}`, { query: { tenant_id: tenantId }, signal })
 }
 
 /** 余额历史(只读台账):GET /admin/v1/users/{id}/balance-history。 */
 export async function getBalanceHistory(
+  tenantId: number,
   id: number,
   offset = 0,
   limit = 50,
   signal?: AbortSignal,
 ): Promise<import('./detail').BalanceHistoryResponse> {
   return apiGet<import('./detail').BalanceHistoryResponse>(`${PATH}/${id}/balance-history`, {
-    query: { offset, limit },
+    query: { tenant_id: tenantId, offset, limit },
     signal,
   })
 }
 
 /** 用户用量明细：GET /admin/v1/users/{id}/usage，卡片聚合当前批次。 */
 export async function getUserUsage(
+  tenantId: number,
   id: number,
   limit = 200,
   signal?: AbortSignal,
 ): Promise<import('./detail').UserUsageResponse> {
   return apiGet<import('./detail').UserUsageResponse>(`${PATH}/${id}/usage`, {
-    query: { limit },
+    query: { tenant_id: tenantId, limit },
     signal,
   })
 }
@@ -73,38 +76,38 @@ export async function getUserUsage(
 // ── 用户运维动作(adminuserhttp.MountRoutes,均含审计 + 租户隔离) ──────────────
 
 /** 强制清除用户 TOTP 2FA:POST /{id}/2fa/force-disable。返回 {id, two_factor_enabled:false}。 */
-export async function forceDisable2FA(id: number): Promise<unknown> {
-  return apiSend<unknown>('POST', `${PATH}/${id}/2fa/force-disable`, {})
+export async function forceDisable2FA(tenantId: number, id: number): Promise<unknown> {
+  return apiSend<unknown>('POST', `${PATH}/${id}/2fa/force-disable`, {}, { query: { tenant_id: tenantId } })
 }
 
 /** 清空用户全部通行密钥(passkey):DELETE /{id}/passkeys。返回 {id, cleared:<n>}。 */
-export async function resetPasskeys(id: number): Promise<{ id: number; cleared: number }> {
-  return apiSend<{ id: number; cleared: number }>('DELETE', `${PATH}/${id}/passkeys`)
+export async function resetPasskeys(tenantId: number, id: number): Promise<{ id: number; cleared: number }> {
+  return apiSend<{ id: number; cleared: number }>('DELETE', `${PATH}/${id}/passkeys`, undefined, { query: { tenant_id: tenantId } })
 }
 
 /** 设用户组(路由权益/计费倍率随组变):PUT /{id}/group {group}。 */
-export async function setUserGroup(id: number, group: string): Promise<unknown> {
-  return apiSend<unknown>('PUT', `${PATH}/${id}/group`, { group })
+export async function setUserGroup(tenantId: number, id: number, group: string): Promise<unknown> {
+  return apiSend<unknown>('PUT', `${PATH}/${id}/group`, { group }, { query: { tenant_id: tenantId } })
 }
 
 /** 设用户备注:PUT /{id}/remark {remark}。 */
-export async function setUserRemark(id: number, remark: string): Promise<unknown> {
-  return apiSend<unknown>('PUT', `${PATH}/${id}/remark`, { remark })
+export async function setUserRemark(tenantId: number, id: number, remark: string): Promise<unknown> {
+  return apiSend<unknown>('PUT', `${PATH}/${id}/remark`, { remark }, { query: { tenant_id: tenantId } })
 }
 
 /** 软删用户(deleted_at=now,撤会话):DELETE /{id}。返回 {id, deleted:true}。 */
-export async function softDeleteUser(id: number): Promise<unknown> {
-  return apiSend<unknown>('DELETE', `${PATH}/${id}`)
+export async function softDeleteUser(tenantId: number, id: number): Promise<unknown> {
+  return apiSend<unknown>('DELETE', `${PATH}/${id}`, undefined, { query: { tenant_id: tenantId } })
 }
 
 /** 解绑某社交登录绑定:DELETE /{id}/account-bindings/{provider}。返回 {unlinked:<n>}。 */
-export async function unlinkSocialIdentity(id: number, provider: string): Promise<{ unlinked: number }> {
-  return apiSend<{ unlinked: number }>('DELETE', `${PATH}/${id}/account-bindings/${encodeURIComponent(provider)}`)
+export async function unlinkSocialIdentity(tenantId: number, id: number, provider: string): Promise<{ unlinked: number }> {
+  return apiSend<{ unlinked: number }>('DELETE', `${PATH}/${id}/account-bindings/${encodeURIComponent(provider)}`, undefined, { query: { tenant_id: tenantId } })
 }
 
 /** 2FA 普及率统计(只读):GET /admin/v1/users/2fa-adoption-stats。 */
-export async function getTwoFAAdoptionStats(signal?: AbortSignal): Promise<import('./actions').TwoFAAdoptionStats> {
-  return apiGet<import('./actions').TwoFAAdoptionStats>(`${PATH}/2fa-adoption-stats`, { signal })
+export async function getTwoFAAdoptionStats(tenantId: number, signal?: AbortSignal): Promise<import('./actions').TwoFAAdoptionStats> {
+  return apiGet<import('./actions').TwoFAAdoptionStats>(`${PATH}/2fa-adoption-stats`, { query: { tenant_id: tenantId }, signal })
 }
 
 /**
