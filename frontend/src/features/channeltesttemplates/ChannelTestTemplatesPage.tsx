@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import {
   createChannelTestTemplate,
   deleteChannelTestTemplate,
@@ -8,9 +10,10 @@ import {
 } from './api'
 import {
   emptyForm,
-  headerCount,
+  mapChannelTemplateRows,
   templateToForm,
   validateForm,
+  type ChannelTemplateTableRow,
 } from './channeltesttemplates'
 import { ALLOWED_METHODS } from './types'
 import type { ChannelTestTemplate, TemplateForm } from './types'
@@ -65,7 +68,7 @@ export function ChannelTestTemplatesPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <TemplatesCard key={tenantId} tenantId={tenantId} />
       )}
@@ -163,6 +166,7 @@ function TemplatesCard({ tenantId }: { tenantId: number }) {
       setDeletingId(null)
     }
   }
+  const tableRows = mapChannelTemplateRows(rows)
 
   return (
     <section className="hk-card">
@@ -194,52 +198,33 @@ function TemplatesCard({ tenantId }: { tenantId: number }) {
       )}
 
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载测试模板" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无测试模板。点击「新建模板」开始。</Empty>
+        <EmptyState title="暂无测试模板" hint="点击「新建模板」开始配置。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['名称', '方法', '路径', '请求头数', '请求体', '创建时间', '操作'].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td style={{ fontWeight: 600 }}>{row.name}</td>
-                  <td className="hk-mono">{row.method}</td>
-                  <td className="hk-mono" style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.path}</td>
-                  <td className="hk-mono">{headerCount(row.headers)}</td>
-                  <td style={{ color: 'var(--hk-ink-300)' }}>{row.body_template ? '有' : '—'}</td>
-                  <td className="hk-mono">{fmt(row.created_at)}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-                      <button type="button" onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        disabled={deletingId === row.id}
-                        onClick={() => void remove(row)}
-                        className="hk-btn hk-btn--sm hk-btn--danger"
-                      >
-                        {deletingId === row.id ? '删除中…' : '删除'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="渠道测试模板"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={templateColumns}
+          actions={[
+            { label: '编辑', onClick: (row) => startEdit(row.template) },
+            { label: (row) => deletingId === row.id ? '删除中…' : '删除', tone: 'danger', disabled: (row) => deletingId === row.id, onClick: (row) => void remove(row.template) },
+          ]}
+        />
       )}
     </section>
   )
 }
+
+const templateColumns: DataListColumn<ChannelTemplateTableRow>[] = [
+  { key: 'name', label: '名称', render: (row) => <span style={{ fontWeight: 600 }}>{row.name}</span> },
+  { key: 'method', label: '方法', render: (row) => <span className="hk-mono">{row.method}</span> },
+  { key: 'path', label: '路径', render: (row) => <span className="hk-mono" style={{ display: 'block', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.path}</span> },
+  { key: 'header-count', label: '请求头数', render: (row) => <span className="hk-mono">{row.headerCount}</span> },
+  { key: 'body', label: '请求体', render: (row) => <span style={{ color: 'var(--hk-ink-300)' }}>{row.body}</span> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
 
 function TemplateEditor({
   form,
@@ -330,16 +315,6 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       {children}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

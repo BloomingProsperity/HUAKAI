@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_MATCH_PRIORITY,
   displayModelPattern,
+  mapRouteRows,
   sortRoutes,
   validateCreate,
   validateModelPattern,
@@ -143,5 +144,18 @@ describe('displayModelPattern', () => {
     expect(displayModelPattern('')).toBe('全部模型')
     expect(displayModelPattern('*')).toBe('全部模型')
     expect(displayModelPattern('claude-*')).toBe('claude-*')
+  })
+})
+
+describe('mapRouteRows', () => {
+  it('完整映射列表列与状态语气(删 modelPattern/status 映射→红)', () => {
+    const route: Route = {
+      id: 8, tenant_id: 2, name: 'vip', user_group_match: 'gold', model_pattern_match: '',
+      pool_group_id: 7, match_priority: 9, enabled: false, created_at: '', updated_at: '',
+    }
+    expect(mapRouteRows([route])).toEqual([{
+      id: 8, priority: 9, name: 'vip', userGroup: 'gold', modelPattern: '全部模型',
+      poolGroup: '#7', status: '停用', statusTone: 'muted', route,
+    }])
   })
 })

@@ -1,4 +1,6 @@
 import type { CreatePoolRequest, UpdatePoolRequest } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
+import type { PoolGroup } from './types'
 
 /*
  * 分组管理(池组)纯逻辑(可单测)。表单构造 / 校验 / 枚举与展示标签。
@@ -109,4 +111,38 @@ export function buildUpdatePool(
  */
 export function toggleEnabledTarget(enabled: boolean): boolean {
   return !enabled
+}
+
+export interface PoolTableRow {
+  id: number
+  name: string
+  capability: string
+  topK: number
+  fallback: string
+  fallbackTone: BadgeTone
+  status: string
+  statusTone: BadgeTone
+  createdAt: string
+  pool: PoolGroup
+}
+
+/** 池组 DTO 到主列表展示行的纯映射。 */
+export function mapPoolRows(pools: PoolGroup[]): PoolTableRow[] {
+  return pools.map((pool) => ({
+    id: pool.id,
+    name: pool.name,
+    capability: capabilityLabel(pool.capability_default),
+    topK: pool.top_k_default,
+    fallback: pool.allow_last_resort ? '允许兜底' : '关闭',
+    fallbackTone: pool.allow_last_resort ? 'info' : 'muted',
+    status: pool.enabled ? '启用' : '已禁用',
+    statusTone: pool.enabled ? 'ok' : 'muted',
+    createdAt: formatPoolTimestamp(pool.created_at),
+    pool,
+  }))
+}
+
+export function formatPoolTimestamp(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
 }

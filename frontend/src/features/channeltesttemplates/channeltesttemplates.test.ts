@@ -6,6 +6,7 @@ import {
   headersToText,
   isAllowedMethod,
   isCredentialHeaderName,
+  mapChannelTemplateRows,
   parseHeaders,
   templateToForm,
   validateForm,
@@ -176,6 +177,19 @@ describe('headersToText / headerCount / templateToForm', () => {
       path: '/p',
       bodyTemplate: 'b',
       headersText: '{\n  "X-A": "v"\n}',
+    })
+  })
+})
+
+describe('mapChannelTemplateRows', () => {
+  it('完整映射模板列表列(删请求头数/请求体/时间任一映射→红)', () => {
+    const template: ChannelTestTemplate = {
+      id: 6, tenant_id: 2, name: '探测', method: 'POST', path: '/v1/test',
+      body_template: '{}', headers: { A: '1', B: '2' }, created_at: 'bad-date',
+    }
+    expect(mapChannelTemplateRows([template])[0]).toMatchObject({
+      id: 6, name: '探测', method: 'POST', path: '/v1/test', headerCount: 2,
+      body: '有', createdAt: 'bad-date',
     })
   })
 })
