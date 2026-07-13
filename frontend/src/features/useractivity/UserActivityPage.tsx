@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
-import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatusBadge } from '../../ui/StatusBadge'
 import { listMyAuditEvents } from './api'
-import { actionLabel, hasMore, nextOffset, outcomeLabel, outcomeTone, PAGE_LIMIT } from './useractivity'
+import { hasMore, mapActivityRows, nextOffset, PAGE_LIMIT, type ActivityTableRow } from './useractivity'
 import type { UserAuditEvent } from './types'
 
 /*
@@ -65,6 +67,7 @@ export function UserActivityPage() {
   }
 
   const refresh = () => setRefreshNonce((n) => n + 1)
+  const rows = mapActivityRows(items)
 
   return (
     <div className="hk-page">
@@ -84,51 +87,11 @@ export function UserActivityPage() {
 
       <div className="hk-card">
         {loading && items.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载安全日志" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <Empty>暂无安全日志记录。</Empty>
+          <EmptyState title="暂无安全日志记录" hint="账户发生敏感操作后会显示在这里。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['时间', '动作', '结果', 'API Key', '原因', '请求 ID'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((ev) => (
-                  <tr key={ev.id}>
-                    <td className="hk-mono">{fmt(ev.occurred_at)}</td>
-                    <td>
-                      <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{actionLabel(ev.action)}</span>
-                    </td>
-                    <td>
-                      <StatusBadge tone={outcomeTone(ev.outcome) as BadgeTone}>{outcomeLabel(ev.outcome)}</StatusBadge>
-                    </td>
-                    <td>
-                      {ev.key_prefix ? (
-                        <code className="hk-mono" style={{ color: 'var(--hk-ink-700)' }}>{ev.key_prefix}…</code>
-                      ) : (
-                        <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ color: 'var(--hk-ink-700)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {ev.reason || '—'}
-                    </td>
-                    <td>
-                      {ev.request_id ? (
-                        <code className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{ev.request_id}</code>
-                      ) : (
-                        <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="安全日志" rows={rows} rowKey={(row) => row.id} columns={activityColumns} />
         )}
       </div>
 
@@ -144,15 +107,12 @@ export function UserActivityPage() {
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-/** RFC3339(Nano)→ 本地可读串(24 小时制)。非法/空原样或占位。 */
-function fmt(iso: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
-
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
+const activityColumns: DataListColumn<ActivityTableRow>[] = [
+  { key: 'time', label: '时间', render: (row) => <span className="hk-mono">{row.occurredAt}</span> },
+  { key: 'action', label: '动作', render: (row) => <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.action}</span> },
+  { key: 'outcome', label: '结果', badge: true, render: (row) => <StatusBadge tone={row.outcomeTone}>{row.outcome}</StatusBadge> },
+  { key: 'api-key', label: 'API Key', render: (row) => <code className="hk-mono" style={{ color: 'var(--hk-ink-700)' }}>{row.keyPrefix}</code> },
+  { key: 'reason', label: '原因', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reason}</span> },
+  { key: 'request-id', label: '请求 ID', render: (row) => <code className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{row.requestID}</code> },
+]

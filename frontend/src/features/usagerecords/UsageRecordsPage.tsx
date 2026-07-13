@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import {
   createDispute,
@@ -12,11 +15,11 @@ import {
 import {
   MAX_DISPUTE_REASON_LEN,
   defaultExportRange,
-  disputeStatusLabel,
-  disputeStatusTone,
   formatCost,
   formatMicroUSD,
   hasMore,
+  mapDisputeRows,
+  mapUsagePageStats,
   modelDisplay,
   statusLabel,
   statusTone,
@@ -26,6 +29,7 @@ import {
   verifyLabel,
   verifyStatusLabel,
   verifyTone,
+  type DisputeTableRow,
 } from './usagerecords'
 import type { Dispute, ReceiptVerifyResponse, UsageRecord, UserCostReceipt } from './types'
 
@@ -49,6 +53,7 @@ export function UsageRecordsPage() {
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   // 发起争议成功后自增,驱动「我的争议」列表重新拉取(子组件 sibling,故把刷新信号提到页面级)。
   const [disputeNonce, setDisputeNonce] = useState(0)
+  const pageStats = mapUsagePageStats(items)
 
   const loadFirst = useCallback(
     (signal: AbortSignal) => {
@@ -106,6 +111,12 @@ export function UsageRecordsPage() {
           刷新
         </button>
       </header>
+
+      <section aria-label="当前页用量统计" style={statsGrid}>
+        {pageStats.map((stat) => (
+          <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} />
+        ))}
+      </section>
 
       <ExportToolbar />
 
@@ -484,6 +495,7 @@ function MyDisputes({ refreshNonce }: { refreshNonce: number }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
+  const rows = mapDisputeRows(disputes)
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -520,40 +532,11 @@ function MyDisputes({ refreshNonce }: { refreshNonce: number }) {
 
       <div className="hk-card">
         {loading && disputes.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载争议记录" hint="请稍候。" />
         ) : disputes.length === 0 ? (
-          <Empty>暂无争议记录。</Empty>
+          <EmptyState title="暂无争议记录" hint="如需发起争议，请展开上方记录的成本详情。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['争议 ID', '请求 ID', '原因', '状态', '提交时间', '处理时间', '运营备注'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {disputes.map((d) => (
-                  <tr key={d.id || d.dispute_id}>
-                    <td>
-                      <code style={{ fontSize: 11, color: 'var(--hk-ink-700)' }}>{d.dispute_id || d.id}</code>
-                    </td>
-                    <td>
-                      <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{d.request_id || '—'}</code>
-                    </td>
-                    <td style={{ maxWidth: 280, color: 'var(--hk-ink-700)' }}>{d.reason || '—'}</td>
-                    <td>
-                      <StatusBadge tone={disputeStatusTone(d.status) as BadgeTone}>{disputeStatusLabel(d.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmt(d.created_at)}</td>
-                    <td className="hk-mono">{d.resolved_at ? fmt(d.resolved_at) : '—'}</td>
-                    <td style={{ maxWidth: 240, color: 'var(--hk-ink-500)' }}>{d.operator_note || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="我的争议" rows={rows} rowKey={(row) => row.id} columns={disputeColumns} />
         )}
       </div>
     </section>
@@ -653,3 +636,13 @@ const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius
 const exportBar: React.CSSProperties = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-3) var(--hk-space-4)', background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)' }
 const dateLabel: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-500)' }
 const dateInput: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-2)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13 }
+const statsGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-3)' }
+const disputeColumns: DataListColumn<DisputeTableRow>[] = [
+  { key: 'id', label: '争议 ID', render: (row) => <code style={{ fontSize: 11, color: 'var(--hk-ink-700)' }}>{row.id}</code> },
+  { key: 'request-id', label: '请求 ID', render: (row) => <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.requestID}</code> },
+  { key: 'reason', label: '原因', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reason}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.statusLabel}</StatusBadge> },
+  { key: 'created-at', label: '提交时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  { key: 'resolved-at', label: '处理时间', render: (row) => <span className="hk-mono">{row.resolvedAt}</span> },
+  { key: 'operator-note', label: '运营备注', render: (row) => <span style={{ color: 'var(--hk-ink-500)' }}>{row.operatorNote}</span> },
+]

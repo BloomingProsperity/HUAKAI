@@ -14,6 +14,8 @@ import {
   formatMicroUSD,
   hasMore,
   isSuccess,
+  mapDisputeRows,
+  mapUsagePageStats,
   modelDisplay,
   statusLabel,
   statusTone,
@@ -112,6 +114,51 @@ describe('hasMore(游标分页)', () => {
     expect(hasMore('abc123')).toBe(true)
     expect(hasMore('')).toBe(false)
     expect(hasMore('   ')).toBe(false)
+  })
+})
+
+describe('页面展示纯映射', () => {
+  it('当页记录数与合计花费都明确标注当前页', () => {
+    const base = {
+      requested_model: 'model-a', upstream_model: 'model-a', tokens: { input: 1, output: 2 },
+      provider: 'provider-a', ledger_id: 'ledger-1', created_at: '2026-07-13T10:00:00Z',
+      status: 'non_streaming', stream: false,
+    }
+    expect(mapUsagePageStats([
+      { ...base, actual_cost: '0.10' },
+      { ...base, ledger_id: 'ledger-2', actual_cost: '0.25' },
+    ])).toEqual([
+      { label: '记录数', value: '2', hint: '当前页' },
+      { label: '合计花费', value: '$0.35', hint: '当前页' },
+    ])
+    // 变异证红点:删掉 hint 或漏加任一费用 → 上述完整对象断言 RED。
+  })
+
+  it('争议表行保留状态 tone、追踪 ID、原因与运营结果', () => {
+    const createdAt = '2026-07-13T10:00:00Z'
+    const resolvedAt = '2026-07-13T11:00:00Z'
+    expect(mapDisputeRows([{
+      id: 7,
+      dispute_id: 'dispute-7',
+      tenant_id: 2,
+      user_id: 3,
+      request_id: 'request-9',
+      reason: '重复计费',
+      status: 'rejected',
+      operator_note: '核验无误',
+      created_at: createdAt,
+      resolved_at: resolvedAt,
+    }])).toEqual([{
+      id: 'dispute-7',
+      requestID: 'request-9',
+      reason: '重复计费',
+      statusLabel: '已驳回',
+      statusTone: 'danger',
+      createdAt: new Date(createdAt).toLocaleString('zh-CN', { hour12: false }),
+      resolvedAt: new Date(resolvedAt).toLocaleString('zh-CN', { hour12: false }),
+      operatorNote: '核验无误',
+    }])
+    // 变异证红点:删 statusTone 映射或把 rejected 改成 warn → 完整对象断言 RED。
   })
 })
 
