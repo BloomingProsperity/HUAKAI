@@ -5,6 +5,7 @@ import {
   editFormFromBinding,
   EMPTY_CREATE_BINDING,
   hasBindingChanges,
+  mapBindingRows,
 } from './selection'
 import type { PoolBinding } from './types'
 
@@ -87,5 +88,25 @@ describe('buildBindingCreate', () => {
       priority: 0,
       weight: 3,
     })
+  })
+})
+
+describe('mapBindingRows', () => {
+  it('完整映射路由表展示列与状态语气', () => {
+    // 判别核心:每个业务字段都来自对应 DTO 字段;删列、错字段或错 tone 均会转红。
+    const row = mapBindingRows([{ ...binding, id: 7, model_id: 11, pool_group_id: 22, priority: 3, weight: 9, selection_mode: 'priority_weighted', fallback_class: 'quota', enabled: false }])[0]
+    expect(row).toMatchObject({
+      id: 7,
+      model: '#11',
+      pool: '#22',
+      priority: 3,
+      weight: 9,
+      selectionMode: '按权重加权',
+      selectionTone: 'info',
+      fallbackClass: '配额',
+      status: '停用',
+      statusTone: 'muted',
+    })
+    expect(row.binding.id).toBe(7)
   })
 })

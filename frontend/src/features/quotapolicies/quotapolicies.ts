@@ -153,6 +153,41 @@ export function modeTone(mode: string): BadgeTone {
   }
 }
 
+export interface QuotaPolicyTableRow {
+  id: number
+  scope: string
+  scopeId: string
+  metric: string
+  window: string
+  limit: string
+  burst: string
+  mode: string
+  modeTone: BadgeTone
+  priority: number
+  status: string
+  statusTone: BadgeTone
+  policy: QuotaPolicy
+}
+
+/** 仅派生配额策略展示字段，十进制字符串与原策略对象均保持原语义。 */
+export function mapQuotaPolicyRows(policies: QuotaPolicy[]): QuotaPolicyTableRow[] {
+  return policies.map((policy) => ({
+    id: policy.id,
+    scope: scopeKindLabel(policy.scope_kind),
+    scopeId: policy.scope_id,
+    metric: metricLabel(policy.metric),
+    window: `${windowKindLabel(policy.window_kind)}${policy.window_kind === 'fixed' && policy.window_seconds > 0 ? ` · ${policy.window_seconds}s` : ''}`,
+    limit: formatDecimal(policy.limit_value),
+    burst: formatDecimal(policy.burst_value),
+    mode: modeLabel(policy.mode),
+    modeTone: modeTone(policy.mode),
+    priority: policy.priority,
+    status: policy.enabled ? '启用' : '停用',
+    statusTone: policy.enabled ? 'ok' : 'muted',
+    policy,
+  }))
+}
+
 /** mode='enforce' 是真会拦请求的高影响模式,新建/编辑保存须二次确认。 */
 export function isEnforce(mode: string): boolean {
   return mode === 'enforce'

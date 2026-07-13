@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { deleteBinding, listBindings } from './api'
 import { BindingModal } from './BindingModal'
-import { fallbackClassLabel, selectionModeLabel } from './selection'
+import { mapBindingRows, type BindingTableRow } from './selection'
 import type { PoolBinding } from './types'
 
 /*
@@ -12,6 +15,7 @@ import type { PoolBinding } from './types'
  * 选号策略(strict_priority / priority_weighted)是核心,对应后端 PR#118 加权选号。
  */
 export function RoutingPage() {
+  const tenantId = useMe().tenantId
   const [bindings, setBindings] = useState<PoolBinding[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -24,9 +28,10 @@ export function RoutingPage() {
 
   const load = useCallback(
     (signal: AbortSignal) => {
+      if (tenantId == null) return
       setLoading(true)
       setError(null)
-      listBindings(filters, signal)
+      listBindings(tenantId, filters, signal)
         .then((resp) => setBindings(resp.items))
         .catch((e: unknown) => {
           if (signal.aborted) return
@@ -36,29 +41,36 @@ export function RoutingPage() {
           if (!signal.aborted) setLoading(false)
         })
     },
-    [filters],
+    [filters, tenantId],
   )
 
   useEffect(() => {
+    if (tenantId == null) return
     const ctrl = new AbortController()
     load(ctrl.signal)
     return () => ctrl.abort()
   }, [load, refreshNonce])
 
   const refresh = () => setRefreshNonce((n) => n + 1)
+  const rows = mapBindingRows(bindings)
 
   const remove = async (b: PoolBinding) => {
     if (!window.confirm(`确认删除绑定 #${b.id}(model #${b.model_id} → pool #${b.pool_group_id})?`)) return
     setBusyId(b.id)
     setError(null)
     try {
-      await deleteBinding(b.id)
+      if (tenantId == null) return
+      await deleteBinding(b.id, tenantId)
       refresh()
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '删除失败')
     } finally {
       setBusyId(null)
     }
+  }
+
+  if (tenantId == null) {
+    return <EmptyState title="正在加载租户上下文" hint="请稍候。" />
   }
 
   return (
@@ -75,7 +87,7 @@ export function RoutingPage() {
         </button>
       </header>
 
-      {modal.open && <BindingModal binding={modal.binding} onClose={() => setModal({ open: false, binding: null })} onSaved={refresh} />}
+      {modal.open && <BindingModal tenantId={tenantId} binding={modal.binding} onClose={() => setModal({ open: false, binding: null })} onSaved={refresh} />}
 
       <form
         onSubmit={(e) => {
@@ -110,48 +122,20 @@ export function RoutingPage() {
 
       <div className="hk-card">
         {loading && bindings.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载路由绑定" hint="请稍候。" />
         ) : bindings.length === 0 ? (
-          <Empty>没有路由绑定。点击「新建绑定」把模型挂到池组。</Empty>
+          <EmptyState title="没有路由绑定" hint="点击「新建绑定」把模型挂到池组。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['模型', '池组', '优先级', '权重', '选号策略', '兜底类', '状态', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {bindings.map((b) => (
-                  <tr key={b.id}>
-                    <td className="hk-mono">#{b.model_id}</td>
-                    <td className="hk-mono">#{b.pool_group_id}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{b.priority}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{b.weight}</td>
-                    <td>
-                      <StatusBadge tone={b.selection_mode === 'priority_weighted' ? 'info' : 'muted'}>
-                        {selectionModeLabel(b.selection_mode)}
-                      </StatusBadge>
-                    </td>
-                    <td>{fallbackClassLabel(b.fallback_class)}</td>
-                    <td>
-                      <StatusBadge tone={b.enabled ? 'ok' : 'muted'}>{b.enabled ? '启用' : '停用'}</StatusBadge>
-                    </td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" onClick={() => setModal({ open: true, binding: b })} className="hk-btn hk-btn--sm">
-                        编辑
-                      </button>
-                      <button type="button" disabled={busyId === b.id} onClick={() => remove(b)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="路由绑定列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={bindingColumns}
+            actions={[
+              { label: '编辑', disabled: (row) => busyId === row.id, onClick: (row) => setModal({ open: true, binding: row.binding }) },
+              { label: '删除', tone: 'danger', disabled: (row) => busyId === row.id, onClick: (row) => void remove(row.binding) },
+            ]}
+          />
         )}
       </div>
     </div>
@@ -166,8 +150,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
+
+const bindingColumns: DataListColumn<BindingTableRow>[] = [
+  { key: 'model', label: '模型', render: (row) => <span className="hk-mono">{row.model}</span> },
+  { key: 'pool', label: '池组', render: (row) => <span className="hk-mono">{row.pool}</span> },
+  { key: 'priority', label: '优先级', render: (row) => <span className="hk-mono">{row.priority}</span> },
+  { key: 'weight', label: '权重', render: (row) => <span className="hk-mono">{row.weight}</span> },
+  { key: 'selection-mode', label: '选号策略', badge: true, render: (row) => <StatusBadge tone={row.selectionTone}>{row.selectionMode}</StatusBadge> },
+  { key: 'fallback-class', label: '兜底类', render: (row) => row.fallbackClass },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+]
 
 const inp: React.CSSProperties = { height: 32, minWidth: 140, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }

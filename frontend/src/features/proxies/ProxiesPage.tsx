@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { deleteProxy, listProxies, setProxyStatus, testProxy } from './api'
 import { EditProxyForm } from './EditProxyForm'
-import { DEFAULT_TENANT_ID, parseTenantInput, probeSummary, STATUSES, statusTone, type ProbeSummary } from './proxies'
+import { DEFAULT_TENANT_ID, mapProxyRows, parseTenantInput, probeSummary, STATUSES, statusTone, type ProbeSummary, type ProxyTableRow } from './proxies'
 import { ProxyCreateForm } from './ProxyCreateForm'
 import type { Proxy } from './types'
 
@@ -30,6 +32,33 @@ export function ProxiesPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const reload = () => setReloadKey((k) => k + 1)
+  const rows = mapProxyRows(proxies)
+  const columns: DataListColumn<ProxyTableRow>[] = [
+    { key: 'name', label: '名称', render: (row) => row.name },
+    { key: 'protocol', label: '协议', render: (row) => row.protocol },
+    { key: 'address', label: '地址', render: (row) => <span className="hk-mono">{row.address}</span> },
+    {
+      key: 'status',
+      label: '状态',
+      render: (row) => (
+        <select
+          value={row.status}
+          onChange={(e) => void onStatusChange(row.proxy, e.target.value)}
+          style={{ color: toneColor[statusTone(row.status)], border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', padding: '2px 6px', fontSize: 12, background: 'transparent' }}
+        >
+          {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+        </select>
+      ),
+    },
+    {
+      key: 'probe',
+      label: '连通性',
+      render: (row) => {
+        const probe = probes[row.id]
+        return <span style={{ color: probe?.summary ? toneColor[probe.summary.tone] : 'var(--hk-ink-500)' }}>{probe?.testing ? '测试中…' : probe?.summary ? probe.summary.label : '—'}</span>
+      },
+    },
+  ]
 
   useEffect(() => {
     const ac = new AbortController()
@@ -112,95 +141,37 @@ export function ProxiesPage() {
         </p>
       )}
       {!loading && !error && proxies.length === 0 && (
-        <p style={{ color: 'var(--hk-ink-500)' }}>该租户暂无出口代理。</p>
+        <EmptyState title="该租户暂无出口代理" hint="可使用上方表单创建第一个出口代理。" />
       )}
 
       {!loading && !error && proxies.length > 0 && (
         <div className="hk-card">
-          <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>协议</th>
-                <th>地址</th>
-                <th>状态</th>
-                <th>连通性</th>
-                <th style={{ textAlign: 'right' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {proxies.map((p) => {
-                const probe = probes[p.id]
-                return (
-                  <Fragment key={p.id}>
-                  <tr>
-                    <td>{p.name}</td>
-                    <td>{p.protocol}</td>
-                    <td className="hk-mono">{p.host}:{p.port}</td>
-                    <td>
-                      <select
-                        value={p.status}
-                        onChange={(e) => onStatusChange(p, e.target.value)}
-                        style={{ color: toneColor[statusTone(p.status)], border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', padding: '2px 6px', fontSize: 12, background: 'transparent' }}
-                      >
-                        {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </td>
-                    <td style={{ color: probe?.summary ? toneColor[probe.summary.tone] : 'var(--hk-ink-500)' }}>
-                      {probe?.testing ? '测试中…' : probe?.summary ? probe.summary.label : '—'}
-                    </td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button
-                        type="button"
-                        disabled={probe?.testing}
-                        onClick={() => runTest(p.id)}
-                        className="hk-btn hk-btn--sm"
-                      >
-                        {probe?.testing ? '测试中' : '测试连通'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingId((id) => (id === p.id ? null : p.id))}
-                        className="hk-btn hk-btn--sm"
-                        style={{ marginLeft: 8 }}
-                      >
-                        {editingId === p.id ? '收起编辑' : '编辑'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete(p)}
-                        className="hk-btn hk-btn--sm hk-btn--danger"
-                        style={{ marginLeft: 8 }}
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                  {editingId === p.id && (
-                    <tr>
-                      <td colSpan={6} style={{ padding: 'var(--hk-space-3) 12px', background: 'var(--hk-surface-sunken, transparent)' }}>
-                        <EditProxyForm
-                          tenantId={tenantId}
-                          proxy={p}
-                          onCancel={() => setEditingId(null)}
-                          onSaved={() => {
-                            setEditingId(null)
-                            reload()
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-          </div>
+          <DataListTable
+            label="出口代理列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              { label: (row) => probes[row.id]?.testing ? '测试中' : '测试连通', disabled: (row) => probes[row.id]?.testing ?? false, onClick: (row) => void runTest(row.id) },
+              { label: (row) => editingId === row.id ? '收起编辑' : '编辑', onClick: (row) => setEditingId((id) => id === row.id ? null : row.id) },
+              { label: '删除', tone: 'danger', onClick: (row) => void onDelete(row.proxy) },
+            ]}
+          />
+          {editingId !== null && proxies.find((proxy) => proxy.id === editingId) && (
+            <div style={{ padding: 'var(--hk-space-3) 12px', background: 'var(--hk-surface-sunken, transparent)' }}>
+              <EditProxyForm
+                tenantId={tenantId}
+                proxy={proxies.find((proxy) => proxy.id === editingId)!}
+                onCancel={() => setEditingId(null)}
+                onSaved={() => {
+                  setEditingId(null)
+                  reload()
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
-

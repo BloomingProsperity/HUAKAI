@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUpdateInput,
+  mapProxyRows,
   parseTenantInput,
   probeSummary,
   statusTone,
@@ -9,7 +10,7 @@ import {
   type CreateProxyForm,
   type EditProxyForm,
 } from './proxies'
-import type { ProbeResult } from './types'
+import type { ProbeResult, Proxy } from './types'
 
 function editForm(p: Partial<EditProxyForm>): EditProxyForm {
   return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', ...p }
@@ -115,5 +116,15 @@ describe('buildUpdateInput', () => {
   it('请求体不含 status 字段(后端 DisallowUnknownFields,带 status 会 400)', () => {
     const out = buildUpdateInput(editForm({}))
     expect('status' in out).toBe(false)
+  })
+})
+
+describe('mapProxyRows', () => {
+  it('完整映射代理表展示列并保留动作源对象', () => {
+    const proxy: Proxy = { id: 4, name: '出口一', protocol: 'socks5', host: 'proxy.example', port: 1080, auth_username: null, status: 'dead', last_check_at: null, created_at: '', updated_at: '' }
+    // 判别核心:地址必须由 host 与 port 组合;错列或漏端口会转红。
+    const row = mapProxyRows([proxy])[0]
+    expect(row).toMatchObject({ id: 4, name: '出口一', protocol: 'socks5', address: 'proxy.example:1080', status: 'dead' })
+    expect(row.proxy).toBe(proxy)
   })
 })

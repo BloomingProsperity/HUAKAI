@@ -1,4 +1,4 @@
-import type { ProbeResult, UpdateProxyInput } from './types'
+import type { ProbeResult, Proxy, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池纯展示逻辑(与 React 解耦,便于 vitest 变异测试)。
@@ -57,6 +57,27 @@ export function parseTenantInput(raw: string): number {
 export const PROTOCOLS = ['http', 'https', 'socks5', 'socks5h'] as const
 // 后端生命周期状态(proxyadmin validStatus:active/disabled/dead)。
 export const STATUSES = ['active', 'disabled', 'dead'] as const
+
+export interface ProxyTableRow {
+  id: number
+  name: string
+  protocol: string
+  address: string
+  status: string
+  proxy: Proxy
+}
+
+/** 将代理 DTO 转为稳定的表格展示行，不改变状态或凭据处理。 */
+export function mapProxyRows(proxies: Proxy[]): ProxyTableRow[] {
+  return proxies.map((proxy) => ({
+    id: proxy.id,
+    name: proxy.name,
+    protocol: proxy.protocol,
+    address: `${proxy.host}:${proxy.port}`,
+    status: proxy.status,
+    proxy,
+  }))
+}
 
 export interface CreateProxyForm {
   name: string

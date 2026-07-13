@@ -1,4 +1,5 @@
 import type { CreateBindingRequest, PoolBinding, UpdateBindingRequest } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
 
 /*
  * 路由绑定的纯逻辑(可单测)。selection_mode 是核心:strict_priority(默认,同优先级均匀打散)
@@ -23,6 +24,37 @@ export function selectionModeLabel(mode: string): string {
 }
 export function fallbackClassLabel(cls: string): string {
   return FALLBACK_CLASSES.find((c) => c.value === cls)?.label ?? cls
+}
+
+export interface BindingTableRow {
+  id: number
+  model: string
+  pool: string
+  priority: number
+  weight: number
+  selectionMode: string
+  selectionTone: BadgeTone
+  fallbackClass: string
+  status: string
+  statusTone: BadgeTone
+  binding: PoolBinding
+}
+
+/** 将路由绑定转换为表格展示行，不改变绑定本身及请求语义。 */
+export function mapBindingRows(bindings: PoolBinding[]): BindingTableRow[] {
+  return bindings.map((binding) => ({
+    id: binding.id,
+    model: `#${binding.model_id}`,
+    pool: `#${binding.pool_group_id}`,
+    priority: binding.priority,
+    weight: binding.weight,
+    selectionMode: selectionModeLabel(binding.selection_mode),
+    selectionTone: binding.selection_mode === 'priority_weighted' ? 'info' : 'muted',
+    fallbackClass: fallbackClassLabel(binding.fallback_class),
+    status: binding.enabled ? '启用' : '停用',
+    statusTone: binding.enabled ? 'ok' : 'muted',
+    binding,
+  }))
 }
 
 export interface BindingEditForm {

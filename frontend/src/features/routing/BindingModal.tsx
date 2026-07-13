@@ -19,10 +19,12 @@ import type { PoolBinding } from './types'
  * pool_group_id。selection_mode 选择器是核心——切换严格优先级 / 按权重加权(后端 PR#118)。
  */
 export function BindingModal({
+  tenantId,
   binding,
   onClose,
   onSaved,
 }: {
+  tenantId: number
   binding: PoolBinding | null // null=创建
   onClose: () => void
   onSaved: () => void
@@ -50,7 +52,7 @@ export function BindingModal({
           return
         }
         // 回填全字段(后端 PATCH 是整行覆盖,只发 diff 会重置省略字段)。
-        await updateBinding(binding.id, buildBindingUpdate(binding, editForm))
+        await updateBinding(binding.id, buildBindingUpdate(binding, editForm), tenantId)
       } else {
         const built = buildBindingCreate(createForm)
         if ('error' in built) {
@@ -58,7 +60,7 @@ export function BindingModal({
           setBusy(false)
           return
         }
-        await createBinding(built)
+        await createBinding(built, tenantId)
       }
       onSaved()
       onClose()

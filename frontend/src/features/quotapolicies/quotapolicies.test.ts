@@ -5,6 +5,7 @@ import {
   formatDecimal,
   isEnforce,
   isRFC3339,
+  mapQuotaPolicyRows,
   metricLabel,
   modeLabel,
   modeTone,
@@ -247,5 +248,32 @@ describe('emptyPolicyForm', () => {
     expect(validatePolicyForm({ ...f, limitValue: '60' }).ok).toBe(false)
     // 补齐 scope_id + limit 后应通过。
     expect(validatePolicyForm({ ...f, scopeId: 'u-1', limitValue: '60' }).ok).toBe(true)
+  })
+})
+
+describe('mapQuotaPolicyRows', () => {
+  it('完整映射策略展示列且保持十进制字符串精度', () => {
+    const policy: QuotaPolicy = {
+      id: 8, tenant_id: 7, scope_kind: 'provider_account', scope_id: 'acct-9', metric: 'cost_usd',
+      window_kind: 'fixed', window_seconds: 60, limit_value: '12345678901234567890.1200', burst_value: '5.00',
+      mode: 'enforce', priority: 12, enabled: false, valid_from: '', valid_until: null, created_at: '', updated_at: '',
+    }
+    // 判别核心:列值、danger 语气和大十进制展示逐项锁定;Number 化或字段错配会转红。
+    const row = mapQuotaPolicyRows([policy])[0]
+    expect(row).toMatchObject({
+      id: 8,
+      scope: '上游账号',
+      scopeId: 'acct-9',
+      metric: '成本(USD)',
+      window: '固定窗口 · 60s',
+      limit: '12345678901234567890.12',
+      burst: '5',
+      mode: '强制拦截',
+      modeTone: 'danger',
+      priority: 12,
+      status: '停用',
+      statusTone: 'muted',
+    })
+    expect(row.policy).toBe(policy)
   })
 })
