@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useMe } from '../../auth/me'
 import { listProviderAccounts } from '../accounts/api'
 import { EMPTY_ACCOUNT_FILTERS } from '../accounts/query'
 import { listApiKeys } from '../keys/api'
@@ -12,6 +13,7 @@ import { accountCountLabel, keyCount, metricDisplay, quotaWindowCount, type Metr
  * 不连累其余卡与整页。账号=admin、Key/配额=session、模型=公开。
  */
 export function DashboardMetrics() {
+  const tenantId = useMe().tenantId
   const [accounts, setAccounts] = useState<MetricState<string>>({ status: 'loading' })
   const [keys, setKeys] = useState<MetricState<number>>({ status: 'loading' })
   const [models, setModels] = useState<MetricState<number>>({ status: 'loading' })
@@ -30,13 +32,13 @@ export function DashboardMetrics() {
       })
     }
 
-    run(listProviderAccounts(EMPTY_ACCOUNT_FILTERS, signal), setAccounts, (r) => ({ status: 'ok', value: accountCountLabel(r) }))
+    if (tenantId != null) run(listProviderAccounts(tenantId, EMPTY_ACCOUNT_FILTERS, signal), setAccounts, (r) => ({ status: 'ok', value: accountCountLabel(r) }))
     run(listApiKeys(0, 1, signal), setKeys, (r) => ({ status: 'ok', value: keyCount(r) }))
     run(listPricing(signal), setModels, (r) => ({ status: 'ok', value: r.length }))
     run(getQuota(signal), setQuota, (r) => ({ status: 'ok', value: quotaWindowCount(r) }))
 
     return () => ctrl.abort()
-  }, [])
+  }, [tenantId])
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--hk-space-4)' }}>

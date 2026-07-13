@@ -501,6 +501,252 @@ SELECT setval(
     true
 );
 
+-- ---------------------------------------------------------------------------
+-- 8. 用量记录：保留源日志 id，并补齐分析查询所需的最小 claim 关系。
+--
+-- 金额口径：源 usage_logs 的成本列为 numeric(20,10)，HUAKAI 为 numeric(20,8)，
+-- 这里显式 round 到 8 位小数。源表没有 currency_code；本测试种子假设其成本列
+-- 与现有用量界面一致按 USD 计价。actual_cost 表示源侧实际扣除，映射到 HUAKAI
+-- 最终结算金额；各成本分项按源值直传，可能因源侧倍率而不与 actual_cost 相加相等。
+--
+-- 状态口径：源 usage_logs 没有成功/失败列，不能可靠恢复错误分类。已持久化的用量行
+-- 统一视为已完成请求；stream=true 映射为 stream_end_graceful，否则映射为
+-- non_streaming。此假设只服务 seed UI，不作为生产审计或成功率基准。
+--
+-- claim 默认：源日志没有 HUAKAI 的请求指纹、计费策略版本、请求等级和 slot token，
+-- 分别使用稳定 seed 标记、sub2-seed-import-v1、standard 与由日志 id 派生的 UUID；
+-- endpoint_family 使用 chat 测试默认。源 group_id 找不到目标池时仅把 pooling_group_id
+-- 置 NULL，不因此丢弃用量。这些值只用于满足目标约束和 UI 内连接，不是生产审计证据。
+--
+-- 幂等口径：usage_records 有 append-only DELETE/UPDATE 触发器，不能先删再写；因此
+-- claim 和 usage 均复用源日志 id，并以 ON CONFLICT (id) DO NOTHING 支持本段重跑。
+-- 整份脚本正常执行时，前面的 tenant TRUNCATE 已清空这些目标表。
+-- ---------------------------------------------------------------------------
+WITH eligible_usage_logs AS (
+    SELECT
+        l.*,
+        pg.id AS target_pool_group_id,
+        l.created_at
+            - GREATEST(COALESCE(l.duration_ms, 0), 0) * interval '1 millisecond'
+            AS derived_requested_at
+    FROM sub2.usage_logs AS l
+    JOIN public.users AS u
+      ON u.tenant_id = 1
+     AND u.id = l.user_id
+    JOIN public.api_keys AS ak
+      ON ak.tenant_id = 1
+     AND ak.id = l.api_key_id
+     AND ak.user_id = l.user_id
+    JOIN public.provider_accounts AS pa
+      ON pa.tenant_id = 1
+     AND pa.id = l.account_id
+    LEFT JOIN public.pool_groups AS pg
+      ON pg.tenant_id = 1
+     AND pg.id = l.group_id
+)
+INSERT INTO public.billing_ledger_claims (
+    id,
+    tenant_id,
+    idempotency_key,
+    request_fingerprint,
+    api_key_id,
+    user_id,
+    logical_request_id,
+    endpoint_family,
+    requested_model,
+    pooling_group_id,
+    billing_policy_version,
+    request_class,
+    provider_account_id,
+    acquisition_token,
+    attempt_seq,
+    predicted_cost,
+    actual_cost,
+    currency_code,
+    status,
+    reserved_at,
+    settled_at,
+    lease_expires_at
+)
+SELECT
+    l.id,
+    1,
+    'sub2-seed-usage-log-' || l.id::text,
+    'sub2-seed-usage-log-' || l.id::text,
+    l.api_key_id,
+    l.user_id,
+    COALESCE(NULLIF(btrim(l.request_id), ''), 'sub2-seed-request-' || l.id::text),
+    'chat',
+    COALESCE(
+        NULLIF(btrim(l.requested_model), ''),
+        NULLIF(btrim(l.model), ''),
+        'unknown'
+    ),
+    l.target_pool_group_id,
+    'sub2-seed-import-v1',
+    'standard',
+    l.account_id,
+    md5('sub2-seed-acquisition-' || l.id::text)::uuid,
+    1,
+    round(COALESCE(l.actual_cost, 0)::numeric, 8),
+    round(COALESCE(l.actual_cost, 0)::numeric, 8),
+    'USD',
+    'committed',
+    l.derived_requested_at,
+    l.created_at,
+    l.created_at
+FROM eligible_usage_logs AS l
+ORDER BY l.id
+ON CONFLICT (id) DO NOTHING;
+
+SELECT setval(
+    pg_get_serial_sequence('public.billing_ledger_claims', 'id'),
+    (SELECT max(id) FROM public.billing_ledger_claims),
+    true
+);
+
+WITH eligible_usage_logs AS (
+    SELECT
+        l.*,
+        l.created_at
+            - GREATEST(COALESCE(l.duration_ms, 0), 0) * interval '1 millisecond'
+            AS derived_requested_at
+    FROM sub2.usage_logs AS l
+    JOIN public.users AS u
+      ON u.tenant_id = 1
+     AND u.id = l.user_id
+    JOIN public.api_keys AS ak
+      ON ak.tenant_id = 1
+     AND ak.id = l.api_key_id
+     AND ak.user_id = l.user_id
+    JOIN public.provider_accounts AS pa
+      ON pa.tenant_id = 1
+     AND pa.id = l.account_id
+), prepared_usage AS (
+    SELECT
+        l.*,
+        CASE
+            WHEN l.first_token_ms IS NULL THEN NULL
+            ELSE l.derived_requested_at
+                + LEAST(
+                    GREATEST(l.first_token_ms, 0),
+                    GREATEST(COALESCE(l.duration_ms, l.first_token_ms), 0)
+                  ) * interval '1 millisecond'
+        END AS derived_first_byte_at
+    FROM eligible_usage_logs AS l
+)
+INSERT INTO public.usage_records (
+    id,
+    tenant_id,
+    claim_id,
+    api_key_id,
+    user_id,
+    provider_account_id,
+    acquisition_token,
+    attempt_seq,
+    tokens_input,
+    tokens_output,
+    cache_creation_tokens,
+    cache_read_tokens,
+    cache_creation_5m_tokens,
+    cache_creation_1h_tokens,
+    image_output_tokens,
+    actual_cost,
+    input_cost,
+    output_cost,
+    cache_creation_cost,
+    cache_read_cost,
+    image_output_cost,
+    end_class,
+    usage_source,
+    pending_reconciliation,
+    routing_reason,
+    protocol_loss,
+    requested_at,
+    upstream_request_at,
+    first_byte_at,
+    first_event_at,
+    last_event_at,
+    settled_at,
+    requested_model,
+    upstream_model,
+    stream,
+    stream_state,
+    delivered_token_count,
+    settlement_source,
+    cost_snapshot,
+    image_count,
+    image_size,
+    image_size_breakdown,
+    ip_address,
+    user_agent
+)
+SELECT
+    l.id,
+    1,
+    c.id,
+    l.api_key_id,
+    l.user_id,
+    l.account_id,
+    md5('sub2-seed-acquisition-' || l.id::text)::uuid,
+    1,
+    l.input_tokens,
+    l.output_tokens,
+    l.cache_creation_tokens,
+    l.cache_read_tokens,
+    l.cache_creation_5m_tokens,
+    l.cache_creation_1h_tokens,
+    l.image_output_tokens,
+    round(COALESCE(l.actual_cost, 0)::numeric, 8),
+    round(COALESCE(l.input_cost, 0)::numeric, 8),
+    round(COALESCE(l.output_cost, 0)::numeric, 8),
+    round(COALESCE(l.cache_creation_cost, 0)::numeric, 8),
+    round(COALESCE(l.cache_read_cost, 0)::numeric, 8),
+    round(COALESCE(l.image_output_cost, 0)::numeric, 8),
+    CASE WHEN l.stream THEN 'stream_end_graceful' ELSE 'non_streaming' END,
+    'reported',
+    false,
+    jsonb_build_object(
+        'seed_source', 'sub2_usage_log',
+        'source_usage_log_id', l.id
+    ),
+    '[]'::jsonb,
+    l.derived_requested_at,
+    l.derived_requested_at,
+    l.derived_first_byte_at,
+    CASE WHEN l.stream THEN l.derived_first_byte_at ELSE NULL END,
+    CASE WHEN l.stream THEN l.created_at ELSE NULL END,
+    l.created_at,
+    COALESCE(
+        NULLIF(btrim(l.requested_model), ''),
+        NULLIF(btrim(l.model), ''),
+        'unknown'
+    ),
+    COALESCE(NULLIF(btrim(l.upstream_model), ''), NULLIF(btrim(l.model), '')),
+    l.stream,
+    2,
+    GREATEST(l.output_tokens, 0)::bigint,
+    'provider_upstream',
+    'sub2-seed:numeric20_10-to-numeric20_8',
+    l.image_count,
+    l.image_size,
+    l.image_size_breakdown,
+    l.ip_address,
+    l.user_agent
+FROM prepared_usage AS l
+JOIN public.billing_ledger_claims AS c
+  ON c.tenant_id = 1
+ AND c.id = l.id
+ AND c.idempotency_key = 'sub2-seed-usage-log-' || l.id::text
+ORDER BY l.id
+ON CONFLICT (id) DO NOTHING;
+
+SELECT setval(
+    pg_get_serial_sequence('public.usage_records', 'id'),
+    (SELECT max(id) FROM public.usage_records),
+    true
+);
+
 COMMIT;
 
 -- ---------------------------------------------------------------------------
@@ -532,6 +778,10 @@ WITH parity AS (
     SELECT 'user_subscriptions', 22,
            (SELECT count(*) FROM sub2.user_subscriptions),
            (SELECT count(*) FROM public.user_subscriptions WHERE tenant_id = 1)
+    UNION ALL
+    SELECT 'usage_records', 8539,
+           (SELECT count(*) FROM sub2.usage_logs),
+           (SELECT count(*) FROM public.usage_records WHERE tenant_id = 1)
 )
 SELECT
     item,
@@ -542,6 +792,51 @@ SELECT
     target_rows = source_rows AS parity_ok
 FROM parity
 ORDER BY item;
+
+-- 用量映射跳过统计。skipped_rows 是去重后的总跳过行数；各原因列可能重叠。
+-- API key 存在但不属于日志 user_id 时按主体错配跳过，避免 UI 错误归因。
+WITH usage_reference_check AS (
+    SELECT
+        l.id,
+        l.user_id AS source_user_id,
+        u.id AS target_user_id,
+        ak.id AS target_api_key_id,
+        ak.user_id AS target_api_key_user_id,
+        pa.id AS target_provider_account_id
+    FROM sub2.usage_logs AS l
+    LEFT JOIN public.users AS u
+      ON u.tenant_id = 1
+     AND u.id = l.user_id
+    LEFT JOIN public.api_keys AS ak
+      ON ak.tenant_id = 1
+     AND ak.id = l.api_key_id
+    LEFT JOIN public.provider_accounts AS pa
+      ON pa.tenant_id = 1
+     AND pa.id = l.account_id
+)
+SELECT
+    count(*)::bigint AS source_usage_rows,
+    count(*) FILTER (
+        WHERE target_user_id IS NOT NULL
+          AND target_api_key_id IS NOT NULL
+          AND target_api_key_user_id = source_user_id
+          AND target_provider_account_id IS NOT NULL
+    )::bigint AS eligible_rows,
+    count(*) FILTER (
+        WHERE target_user_id IS NULL
+           OR target_api_key_id IS NULL
+           OR target_api_key_user_id IS DISTINCT FROM source_user_id
+           OR target_provider_account_id IS NULL
+    )::bigint AS skipped_rows,
+    count(*) FILTER (WHERE target_user_id IS NULL)::bigint AS missing_user_rows,
+    count(*) FILTER (WHERE target_api_key_id IS NULL)::bigint AS missing_api_key_rows,
+    count(*) FILTER (
+        WHERE target_api_key_id IS NOT NULL
+          AND target_api_key_user_id IS DISTINCT FROM source_user_id
+    )::bigint AS api_key_user_mismatch_rows,
+    count(*) FILTER (WHERE target_provider_account_id IS NULL)::bigint
+        AS missing_provider_account_rows
+FROM usage_reference_check;
 
 SELECT
     (SELECT COALESCE(sum(balance), 0) FROM sub2.users) AS source_balance_total,
