@@ -30,6 +30,9 @@ func (f *fakeKeyServicePatch) Issue(_ context.Context, _ userkey.IssueRequest) (
 func (f *fakeKeyServicePatch) List(_ context.Context, _ userkey.ListRequest) ([]userkey.KeyDescriptor, error) {
 	panic("not implemented")
 }
+func (f *fakeKeyServicePatch) Count(_ context.Context, _, _ int64) (int, error) {
+	panic("not implemented")
+}
 func (f *fakeKeyServicePatch) Get(_ context.Context, _, _, _ int64) (userkey.KeyDescriptor, error) {
 	panic("not implemented")
 }
@@ -240,7 +243,7 @@ func TestKeyPatchExpiresAtResponse(t *testing.T) {
 // CLEAR RESPONSE:已清除(永不过期)的 key 必须从 body 中省略 expires_at。
 // 这个省略依赖 nil 的 *time.Time + `json:"...,omitempty"`(handlers.go 的 patchResponse)。
 // 变异:去掉 ,omitempty(会输出 "expires_at":null),或把字段改为值类型 time.Time
-//(会输出 "0001-01-01T00:00:00Z",前端会把它渲染成一个真实的过去截止时间)-> body
+// (会输出 "0001-01-01T00:00:00Z",前端会把它渲染成一个真实的过去截止时间)-> body
 // 含 expires_at -> 红。已有的 SET 测试钉死了「存在」的情形;本测试钉死「省略」的情形。
 func TestKeyPatchExpiresAtClearResponseOmits(t *testing.T) {
 	// patchResult.ExpiresAt 为 nil = 清除后(永不过期)的状态。

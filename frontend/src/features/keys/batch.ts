@@ -29,6 +29,17 @@ export function toggleSelected(selected: ReadonlySet<number>, id: number): Set<n
   return next
 }
 
+/** 切换当前页全选；全已选时仅清掉本页，否则补齐本页可选项。 */
+export function togglePageSelection(selected: ReadonlySet<number>, pageIds: number[]): Set<number> {
+  const next = new Set(selected)
+  const allSelected = pageIds.length > 0 && pageIds.every((id) => next.has(id))
+  for (const id of pageIds) {
+    if (allSelected) next.delete(id)
+    else next.add(id)
+  }
+  return next
+}
+
 export type BatchBuildResult = BatchRevokeBody | { error: string }
 
 /** 构造批量撤销请求:守卫数量(1-200);reason 透传(去首尾空白)。 */

@@ -19,6 +19,7 @@ export interface ApiKeyView {
 
 export interface ApiKeyListResponse {
   api_keys: ApiKeyView[]
+  /** 当前用户全部未软删除 Key 数量，不受 offset/limit 影响。 */
   count: number
 }
 
