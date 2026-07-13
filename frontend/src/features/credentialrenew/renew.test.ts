@@ -6,6 +6,7 @@ import {
   failureSummary,
   humanizeDuration,
   MAX_RENEW_LIMIT,
+  mapRenewTableRows,
   parseTime,
   relativeTime,
   renewHealth,
@@ -75,6 +76,48 @@ describe('buildRenewStatusQuery', () => {
     // 判别核心:空/空白 cursor 不下发(变异:无条件赋值 → cursor 出现→RED)。
     expect('cursor' in buildRenewStatusQuery({ cursor: '' })).toBe(false)
     expect('cursor' in buildRenewStatusQuery({ cursor: '   ' })).toBe(false)
+  })
+})
+
+describe('mapRenewTableRows', () => {
+  it('逐列映射续期状态且不暴露凭证值', () => {
+    const source = row({
+      id: 8,
+      tenant_id: 12,
+      tenant_name: '租户甲',
+      account_id: 34,
+      account_name: '账号乙',
+      vendor: 'vendor-x',
+      auth_mode: 'oauth',
+      credential_version: 7,
+      access_expires_at: iso(2 * 60 * 60 * 1000),
+      refresh_before_at: iso(-60 * 1000),
+      last_refresh_at: iso(-5 * 60 * 1000),
+      failure_class: 'invalid_grant',
+      failure_count: 2,
+    })
+    const [mapped] = mapRenewTableRows([source], NOW)
+
+    // 判别核心:失败优先级、时间方向及账号/租户列使用不同哨兵，任一错接都会变红。
+    expect(mapped).toEqual({
+      id: 8,
+      health: 'failing',
+      healthLabel: '续期失败',
+      healthTone: 'danger',
+      tenantName: '租户甲',
+      tenantID: '#12',
+      accountName: '账号乙',
+      accountID: '#34',
+      vendor: 'vendor-x',
+      authMode: 'oauth',
+      version: 'v7',
+      expiresIn: '2 小时后',
+      renewWindow: '1 分钟前',
+      lastRefresh: '5 分钟前',
+      failure: 'invalid_grant ×2',
+      failureTone: 'danger',
+    })
+    expect(Object.keys(mapped).some((key) => /token|secret|credential_value/i.test(key))).toBe(false)
   })
 })
 

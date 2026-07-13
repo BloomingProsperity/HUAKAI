@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearAll, getRefreshToken, setSessionTokens } from '../../auth/store'
 import { exportAuditChain } from './api'
-import { appendQuery, buildAuditQuery, buildExportQuery, severityTone, toIso } from './audit'
-import { EMPTY_AUDIT_FILTERS, type AuditFilters } from './types'
+import { appendQuery, buildAuditQuery, buildExportQuery, mapAuditTableRows, severityTone, toIso } from './audit'
+import { EMPTY_AUDIT_FILTERS, type AuditEvent, type AuditFilters } from './types'
 
 function f(over: Partial<AuditFilters>): AuditFilters {
   return { ...EMPTY_AUDIT_FILTERS, ...over }
@@ -82,6 +82,49 @@ describe('severityTone', () => {
     expect(severityTone('warn')).toBe('warn')
     expect(severityTone('info')).toBe('info')
     expect(severityTone('debug')).toBe('muted')
+  })
+})
+
+describe('mapAuditTableRows', () => {
+  it('逐列映射审计事件并保留完整详情来源', () => {
+    const source: AuditEvent = {
+      id: 17,
+      tenant_id: 3,
+      event_class: 'security',
+      event_type: 'token.revoked',
+      severity: 'warn',
+      request_id: 'request-1234567890-tail',
+      actor_id: 9,
+      actor_role: 'platform_admin',
+      reason: 'manual',
+      payload: { safe: true },
+      created_at: 'invalid-time',
+    }
+    const [row] = mapAuditTableRows([source])
+
+    // 判别核心:每一列使用独立哨兵值，互换、漏映射或错误截断都会使断言变红。
+    expect(row).toEqual({
+      id: 17,
+      createdAt: 'invalid-time',
+      eventType: 'token.revoked',
+      eventClass: 'security',
+      severity: 'warn',
+      actor: 'platform_admin #9',
+      reason: 'manual',
+      requestID: 'request-1234567890-tail',
+      requestIDLabel: 'request-…tail',
+      detail: {
+        id: 17,
+        tenant_id: 3,
+        ledger_id: undefined,
+        claim_id: undefined,
+        provider_account_id: undefined,
+        pool_group_id: undefined,
+        request_id: 'request-1234567890-tail',
+        payload: { safe: true },
+      },
+      source,
+    })
   })
 })
 

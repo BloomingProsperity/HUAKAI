@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { createPlatformApiKey, listPlatformApiKeys, revokePlatformApiKey } from './api'
 import {
@@ -7,9 +9,10 @@ import {
   credentialStatusLabel,
   credentialStatusTone,
   EMPTY_PLATFORM_API_KEY_FORM,
-  formatCredentialTime,
+  mapPlatformApiKeyTableRows,
   positiveID,
   type PlatformApiKeyForm,
+  type PlatformApiKeyTableRow,
 } from './credentials'
 import { OneTimeSecretBox } from './OneTimeSecretBox'
 import type { CreatedPlatformApiKey, PlatformApiKeyEnvironment, PlatformApiKeyListItem } from './types'
@@ -95,6 +98,7 @@ export function PlatformApiKeySection() {
       setRevokeID(null)
     }
   }
+  const tableRows = mapPlatformApiKeyTableRows(rows)
 
   return (
     <div className="hk-col">
@@ -162,50 +166,24 @@ export function PlatformApiKeySection() {
           </button>
         </form>
         {activeTenantID === null ? (
-          <div className="hk-empty">平台列表按租户隔离，请输入租户 ID 查询。</div>
+          <EmptyState title="须先指定租户" hint="平台列表按租户隔离，请输入租户 ID 查询。" />
         ) : loading && rows.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载平台 API Key" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <div className="hk-empty">该租户暂无平台 API Key。</div>
+          <EmptyState title="该租户暂无平台 API Key" hint="签发后列表仅展示名称与脱敏前缀。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['名称 / 前缀', '用户', '状态', '过期时间', '最近使用', '创建时间', ''].map((title) => (
-                    <th key={title}>{title}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <strong>{item.name}</strong>
-                      <div className="hk-mono">{item.key_prefix}</div>
-                    </td>
-                    <td className="hk-mono">#{item.user_id}</td>
-                    <td>
-                      <StatusBadge tone={credentialStatusTone(item.status)}>{credentialStatusLabel(item.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{formatCredentialTime(item.expires_at)}</td>
-                    <td className="hk-mono">{item.last_used_at ? formatCredentialTime(item.last_used_at) : '从未使用'}</td>
-                    <td className="hk-mono">{formatCredentialTime(item.created_at)}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        className="hk-btn hk-btn--danger hk-btn--sm"
-                        disabled={item.status !== 'active' || item.revoked_at !== null || revokeID === item.id}
-                        onClick={() => revoke(item)}
-                      >
-                        {revokeID === item.id ? '吊销中…' : '吊销'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="平台 API Key 列表"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={platformApiKeyColumns}
+            actions={[{
+              label: (row) => revokeID === row.id ? '吊销中…' : '吊销',
+              tone: 'danger',
+              disabled: (row) => !row.revocable || revokeID === row.id,
+              onClick: (row) => revoke(row.source),
+            }]}
+          />
         )}
       </section>
     </div>
@@ -237,3 +215,12 @@ function apiMessage(cause: unknown, fallback: string): string {
 const inputStyle: React.CSSProperties = { width: '100%', height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', fontSize: 13 }
 const formGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-3)', alignItems: 'end' }
 const headHint: React.CSSProperties = { marginLeft: 'auto', color: 'var(--hk-ink-300)', fontSize: 11 }
+
+const platformApiKeyColumns: DataListColumn<PlatformApiKeyTableRow>[] = [
+  { key: 'name', label: '名称 / 前缀', render: (row) => <span style={{ display: 'flex', flexDirection: 'column' }}><strong>{row.name}</strong><span className="hk-mono">{row.keyPrefix}</span></span> },
+  { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.userID}</span> },
+  { key: 'status', label: '状态', render: (row) => <StatusBadge tone={credentialStatusTone(row.status)}>{credentialStatusLabel(row.status)}</StatusBadge> },
+  { key: 'expires', label: '过期时间', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+  { key: 'last-used', label: '最近使用', render: (row) => <span className="hk-mono">{row.lastUsedAt}</span> },
+  { key: 'created', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
