@@ -8,6 +8,8 @@ import {
   isMoneySensitiveKind,
   laneTone,
   LIMIT_MAX,
+  mapDlqRows,
+  mapObsDlqRows,
   obsPriorityTone,
   obsStatusLabel,
   obsStatusTone,
@@ -16,6 +18,7 @@ import {
   statusTone,
   validateLimit,
 } from './dlq'
+import type { DlqRecord, ObsDlqRecord } from './types'
 
 describe('validateLimit', () => {
   it('拒 0 / 拒超上限 / 放行边界值', () => {
@@ -150,5 +153,36 @@ describe('shortReason', () => {
     const long = 'x'.repeat(70)
     // 变异(不截断直接返回)→ 长度 70 > 64,此断言 RED。
     expect(shortReason(long)).toBe(`${'x'.repeat(64)}…`)
+  })
+})
+
+describe('死信列表列映射', () => {
+  it('传统死信精确映射身份、状态、原因与可重放性', () => {
+    const record = {
+      id: 17, tenant_id: 9, lane: 'HIGH', status: 'dlq', replay_attempts: 3,
+      failure_reason: '上游持续失败', failure_at: 'not-a-date',
+    } as DlqRecord
+    const [row] = mapDlqRows([record])
+    // 变异任一字段来源或状态分支都会使精确断言变红。
+    expect(row).toMatchObject({
+      id: 17, tenant: '#9', lane: 'HIGH', laneTone: 'danger', status: '死信',
+      statusTone: 'danger', attempts: 3, reason: '上游持续失败', failedAt: 'not-a-date', replayable: true,
+    })
+    expect(row.record).toBe(record)
+  })
+
+  it('观测死信精确映射优先级、状态与失败原因回退', () => {
+    const record = {
+      id: 'dead-2', tenant_id: 4, event_type: 'email.retry', priority: 'critical',
+      outbox_status: 'failed_dead', attempt_count: 6, dead_reason: '',
+      failure_reason: '最终失败', dead_at: 'bad-time',
+    } as ObsDlqRecord
+    const [row] = mapObsDlqRows([record])
+    expect(row).toMatchObject({
+      id: 'dead-2', tenant: '#4', eventType: 'email.retry', priority: 'critical',
+      priorityTone: 'danger', status: '观测死信', statusTone: 'danger', attempts: 6,
+      reason: '最终失败', deadAt: 'bad-time',
+    })
+    expect(row.record).toBe(record)
   })
 })

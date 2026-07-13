@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
 import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
 import { EmptyState } from '../../ui/EmptyState'
@@ -33,8 +34,16 @@ import type { Route } from './types'
  */
 
 export function RouteRulesPage() {
+  const me = useMe()
   const [tenantInput, setTenantInput] = useState('')
   const [tenantId, setTenantId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (tenantId != null || tenantInput.trim() !== '') return
+    if (me.status !== 'ready' || me.tenantId == null || me.tenantId <= 0) return
+    setTenantInput(String(me.tenantId))
+    setTenantId(me.tenantId)
+  }, [me.status, me.tenantId, tenantId, tenantInput])
 
   return (
     <div className="hk-page">
@@ -42,7 +51,7 @@ export function RouteRulesPage() {
         <div>
           <h1>请求路由规则</h1>
           <p className="hk-sub">
-            按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。先指定租户 ID。
+            按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。默认加载当前租户，也可手动切换。
           </p>
         </div>
       </header>

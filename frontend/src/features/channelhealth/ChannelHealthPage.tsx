@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
 import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
 import { EmptyState } from '../../ui/EmptyState'
@@ -36,8 +37,16 @@ import type {
 const PAGE_SIZE = 100
 
 export function ChannelHealthPage() {
+  const me = useMe()
   const [tenantInput, setTenantInput] = useState('')
   const [tenantId, setTenantId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (tenantId != null || tenantInput.trim() !== '') return
+    if (me.status !== 'ready' || me.tenantId == null || me.tenantId <= 0) return
+    setTenantInput(String(me.tenantId))
+    setTenantId(me.tenantId)
+  }, [me.status, me.tenantId, tenantId, tenantInput])
 
   return (
     <div className="hk-page">
@@ -45,7 +54,7 @@ export function ChannelHealthPage() {
         <div>
           <h1>渠道健康台</h1>
           <p className="hk-sub">
-            上游渠道(账号凭证维度)的健康状态机:自动冷却 / 爬坡恢复 / 受损,及人工暂停 / 恢复 / 强制上线。先指定租户 ID。
+            上游渠道(账号凭证维度)的健康状态机:自动冷却 / 爬坡恢复 / 受损,及人工暂停 / 恢复 / 强制上线。默认加载当前租户，也可手动切换。
           </p>
         </div>
       </header>

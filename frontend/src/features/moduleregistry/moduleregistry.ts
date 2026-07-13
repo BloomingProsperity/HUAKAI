@@ -121,3 +121,34 @@ export function countByProbe(modules: ModuleView[]): ProbeCounts {
   }
   return counts
 }
+
+export interface ModuleTableRow {
+  id: string
+  title: string
+  capabilities: string[]
+  probe: string
+  probeTone: BadgeTone
+  probeDetail: string
+  catalogSummary: string
+  featureId: string
+  packages: string
+  section: string
+}
+
+/** 模块视图 DTO 到列表展示行的纯映射。 */
+export function mapModuleRows(modules: ModuleView[]): ModuleTableRow[] {
+  return modules.map((module) => ({
+    id: module.id,
+    title: module.title || module.id,
+    capabilities: module.capabilities ?? [],
+    probe: probeLabel(module.live_probe.status),
+    probeTone: probeTone(module.live_probe.status),
+    probeDetail: module.live_probe.detail ?? '',
+    catalogSummary: module.catalog
+      ? `${module.catalog.status || '—'}${module.catalog.parity ? ` · ${module.catalog.parity}` : ''}`
+      : '纯实时',
+    featureId: module.catalog?.feature_id ?? '',
+    packages: module.catalog?.pkgs?.join(', ') ?? '',
+    section: module.catalog?.section || '—',
+  }))
+}

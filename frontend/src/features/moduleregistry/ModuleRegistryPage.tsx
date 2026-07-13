@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listModules } from './api'
 import {
   countByProbe,
   extractCategories,
   groupByCategory,
-  probeLabel,
-  probeTone,
+  mapModuleRows,
+  type ModuleTableRow,
 } from './moduleregistry'
 import type { ModuleView } from './types'
 
@@ -111,9 +113,12 @@ export function ModuleRegistryPage() {
       {error && <Banner kind="error">{error}</Banner>}
 
       {loading && modules.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载模块清单" hint="请稍候。" />
       ) : modules.length === 0 ? (
-        <Empty>{category ? `类别「${category}」下暂无模块。` : '暂无已注册模块。'}</Empty>
+        <EmptyState
+          title={category ? `类别「${category}」下暂无模块` : '暂无已注册模块'}
+          hint="可切换类别或稍后刷新。"
+        />
       ) : (
         groups.map((g) => (
           <section key={g.category} className="hk-card">
@@ -121,69 +126,12 @@ export function ModuleRegistryPage() {
               <h3>{g.category}</h3>
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {g.modules.length} 个模块</span>
             </div>
-            <div className="hk-tablewrap">
-              <table className="hk-table">
-                <thead>
-                  <tr>
-                    {['模块', '能力', '探针', 'Parity / 状态', 'Section'].map((h) => (
-                      <th key={h}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {g.modules.map((m) => (
-                    <tr key={m.id}>
-                      <td>
-                        <div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{m.title || m.id}</div>
-                        <div style={{ fontFamily: 'var(--hk-font-mono)', fontSize: 11, color: 'var(--hk-ink-500)' }}>{m.id}</div>
-                      </td>
-                      <td>
-                        {m.capabilities && m.capabilities.length > 0 ? (
-                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                            {m.capabilities.map((c) => (
-                              <span key={c} className="hk-tag hk-tag--muted">
-                                {c}
-                              </span>
-                            ))}
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
-                          <StatusBadge tone={probeTone(m.live_probe.status)}>
-                            {probeLabel(m.live_probe.status)}
-                          </StatusBadge>
-                          {m.live_probe.detail && (
-                            <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{m.live_probe.detail}</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="hk-mono">
-                        {m.catalog ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                            <span>
-                              {m.catalog.status || '—'}
-                              {m.catalog.parity ? ` · ${m.catalog.parity}` : ''}
-                            </span>
-                            {m.catalog.feature_id && (
-                              <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{m.catalog.feature_id}</span>
-                            )}
-                            {m.catalog.pkgs && m.catalog.pkgs.length > 0 && (
-                              <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{m.catalog.pkgs.join(', ')}</span>
-                            )}
-                          </div>
-                        ) : (
-                          <span style={{ color: 'var(--hk-ink-300)' }}>纯实时</span>
-                        )}
-                      </td>
-                      <td>{m.catalog?.section || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataListTable
+              label={`${g.category} 模块`}
+              rows={mapModuleRows(g.modules)}
+              rowKey={(row) => row.id}
+              columns={moduleColumns}
+            />
           </section>
         ))
       )}
@@ -209,8 +157,12 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
+const moduleColumns: DataListColumn<ModuleTableRow>[] = [
+  { key: 'module', label: '模块', render: (row) => <div><div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.title}</div><div className="hk-mono" style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{row.id}</div></div> },
+  { key: 'capabilities', label: '能力', render: (row) => row.capabilities.length > 0 ? <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{row.capabilities.map((capability) => <span key={capability} className="hk-tag hk-tag--muted">{capability}</span>)}</div> : <span style={{ color: 'var(--hk-ink-300)' }}>—</span> },
+  { key: 'probe', label: '探针', render: (row) => <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}><StatusBadge tone={row.probeTone}>{row.probe}</StatusBadge>{row.probeDetail && <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{row.probeDetail}</span>}</div> },
+  { key: 'catalog', label: 'Parity / 状态', render: (row) => <div className="hk-mono" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}><span>{row.catalogSummary}</span>{row.featureId && <span style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{row.featureId}</span>}{row.packages && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.packages}</span>}</div> },
+  { key: 'section', label: 'Section', render: (row) => row.section },
+]
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)' }
