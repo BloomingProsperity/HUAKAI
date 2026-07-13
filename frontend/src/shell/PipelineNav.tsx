@@ -106,20 +106,7 @@ export function PipelineNav() {
                   type="button"
                   onClick={() => toggle(section.key)}
                   aria-expanded={open}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--hk-space-2)',
-                    width: '100%',
-                    padding: 'var(--hk-space-2)',
-                    marginBottom: 2,
-                    background: 'transparent',
-                    border: 0,
-                    borderRadius: 'var(--hk-radius-sm)',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    textAlign: 'left',
-                  }}
+                  className={`hk-pipeline-nav__item hk-pipeline-nav__section${section.key === activeSectionKey ? ' is-current' : ''}`}
                 >
                   <span
                     style={{
@@ -151,18 +138,9 @@ export function PipelineNav() {
                     <NavLink
                       key={item.path}
                       to={item.path}
-                      style={({ isActive }) => ({
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: 'var(--hk-space-2) var(--hk-space-3)',
-                        margin: '2px 0',
-                        borderRadius: 'var(--hk-radius-md)',
-                        fontSize: 14,
-                        color: isActive ? 'var(--hk-primary-700)' : 'var(--hk-ink-700)',
-                        background: isActive ? 'var(--hk-primary-50)' : 'transparent',
-                        fontWeight: isActive ? 600 : 400,
-                      })}
+                      className={({ isActive }) =>
+                        `hk-pipeline-nav__item hk-pipeline-nav__link${isActive ? ' is-active' : ''}`
+                      }
                     >
                       <span>{item.label}</span>
                       {!item.built && <span style={{ fontSize: 10, color: 'var(--hk-ink-300)' }}>建设中</span>}

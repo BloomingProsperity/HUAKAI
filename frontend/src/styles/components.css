@@ -141,6 +141,88 @@
 .hk-pill--warn { background: var(--hk-warn-soft); color: var(--hk-warn); }
 .hk-pill--crit { background: var(--hk-danger-soft); color: var(--hk-danger); }
 .hk-pill--info { background: var(--hk-line-soft); color: var(--hk-ink-500); }
+
+/* ── 左侧流水线导航:胶囊层级与交互光效 ── */
+.hk-pipeline-nav__item {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  width: 100%;
+  border-radius: var(--hk-radius-pill);
+  background: transparent;
+  color: var(--hk-ink-700);
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease;
+}
+.hk-pipeline-nav__item::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 auto 0 -45%;
+  width: 42%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--hk-primary-100), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(0) skewX(-18deg);
+}
+.hk-pipeline-nav__item:hover {
+  background: var(--hk-primary-50);
+  color: var(--hk-primary-700);
+  box-shadow: 0 0 10px var(--hk-primary-100);
+}
+.hk-pipeline-nav__item:hover::after {
+  animation: hk-pipeline-nav-sweep 520ms ease-out 1;
+}
+.hk-pipeline-nav__item:focus-visible {
+  outline: 2px solid var(--hk-primary-300);
+  outline-offset: 1px;
+  background: var(--hk-primary-50);
+  color: var(--hk-primary-700);
+}
+.hk-pipeline-nav__section {
+  display: flex;
+  align-items: center;
+  gap: var(--hk-space-2);
+  margin-bottom: 2px;
+  padding: var(--hk-space-2) var(--hk-space-3);
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.hk-pipeline-nav__section.is-current {
+  background: var(--hk-line-soft);
+}
+.hk-pipeline-nav__link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - var(--hk-space-2));
+  margin: 2px 0 2px var(--hk-space-2);
+  padding: var(--hk-space-2) var(--hk-space-3);
+  font-size: 14px;
+  font-weight: 400;
+}
+.hk-pipeline-nav__link.is-active {
+  background: var(--hk-primary-50);
+  color: var(--hk-primary-700);
+  font-weight: 600;
+  box-shadow: 0 0 10px var(--hk-primary-100);
+}
+
+@keyframes hk-pipeline-nav-sweep {
+  0% { opacity: 0; transform: translateX(0) skewX(-18deg); }
+  25% { opacity: 0.8; }
+  100% { opacity: 0; transform: translateX(360%) skewX(-18deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hk-pipeline-nav__item { transition: none; }
+  .hk-pipeline-nav__item:hover::after { animation: none; }
+}
 .hk-tag { font-size: 10px; padding: 2px 8px; border-radius: var(--hk-radius-sm); font-weight: 600; white-space: nowrap; display: inline-block; }
 .hk-tag--blue { background: var(--hk-cat-blue-soft); color: var(--hk-cat-blue); }
 .hk-tag--green { background: var(--hk-primary-50); color: var(--hk-primary-600); }
