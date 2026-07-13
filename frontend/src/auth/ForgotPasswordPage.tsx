@@ -7,7 +7,7 @@ import { requestPasswordResetEmail } from './forgotApi'
 /*
  * 忘记密码页(public 壳,登录页之外)。
  *
- * 流程:输入邮箱(+租户)→ 前置校验 → POST /v1/auth/reset-password(无 token 分支发重置邮件)
+ * 流程:输入邮箱→ 前置校验 → POST /v1/auth/reset-password(无 token 分支发重置邮件)
  *      → 成功切「邮件已发送」确认态 → 提供返回登录链接。
  *
  * 不泄露:无论邮箱是否存在,后端均回 202,前端统一显示「若该邮箱已注册,我们已发送重置邮件」,
@@ -22,7 +22,8 @@ const CAPTCHA_ENABLED =
   String(import.meta.env?.VITE_HUAKAI_CAPTCHA_ENABLED ?? '').toLowerCase() === 'true'
 
 export function ForgotPasswordPage() {
-  const [tenantId, setTenantId] = useState('1')
+  // 单实例:租户固定为 1(不暴露给用户);状态保留供校验与重置邮件请求内部使用。
+  const [tenantId] = useState('1')
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -84,9 +85,6 @@ export function ForgotPasswordPage() {
               }}
               style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}
             >
-              <Field label="租户 ID">
-                <input value={tenantId} onChange={(e) => setTenantId(e.target.value)} inputMode="numeric" style={inp} />
-              </Field>
               <Field label="邮箱">
                 <input
                   type="email"

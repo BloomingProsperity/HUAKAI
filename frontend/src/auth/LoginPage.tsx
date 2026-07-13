@@ -318,8 +318,15 @@ export function LoginPage() {
                 注册态始终显示表单(注册本就需要密码)。 */}
             {(mode === 'register' || af.showPasswordLogin) && (
               <>
-                <Field label="邮箱">
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" style={inp} />
+                {/* 登录接受账号或邮箱；注册仍要求邮箱，并保留浏览器原生邮箱校验。 */}
+                <Field label={mode === 'login' ? '账号' : '邮箱'}>
+                  <input
+                    type={mode === 'login' ? 'text' : 'email'}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete={mode === 'login' ? 'username' : 'email'}
+                    style={inp}
+                  />
                 </Field>
                 {mode === 'register' && (
                   <Field label="显示名(可选)">
