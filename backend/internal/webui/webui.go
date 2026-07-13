@@ -24,8 +24,8 @@ var apiPathPrefixes = []string{
 }
 
 // apiPathExact 是单端点的 API/运维路径（精确匹配，因此 SPA 仍可拥有同级路径，
-// 比如 /metrics-overview）。
-var apiPathExact = []string{"/metrics", "/healthz"}
+// 比如 /metrics-overview;/setup 页面本身也仍走 SPA 兜底,只有这两条子路径是 API）。
+var apiPathExact = []string{"/metrics", "/healthz", "/setup/status", "/setup/install"}
 
 // IsAPIPath 报告 p 是否属于 gateway 的 API/运维面，因而绝不能用 SPA 外壳来响应。
 // 导出它是为了让 cmd/gateway 能针对真实 router 断言完整覆盖。

@@ -35,6 +35,8 @@ export default defineConfig({
       '/v1': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/admin': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/.well-known': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      // 只代理首装 API 两条(正则精确匹配);/setup 本身是前端路由,不能整段代理。
+      '^/setup/(status|install)$': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
   preview: {
@@ -44,6 +46,8 @@ export default defineConfig({
       '/v1': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/admin': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
       '/.well-known': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
+      // 只代理首装 API 两条(正则精确匹配);/setup 本身是前端路由,不能整段代理。
+      '^/setup/(status|install)$': { target: process.env.HUAKAI_GATEWAY_ORIGIN || 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
 })

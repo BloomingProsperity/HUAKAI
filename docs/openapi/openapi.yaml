@@ -3485,6 +3485,83 @@ paths:
                 items: { $ref: '#/components/schemas/PublicPricingPageItem' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /setup/status:
+    get:
+      tags: [public]
+      summary: 首装状态探测(工作租户是否尚无管理员)
+      operationId: getSetupStatus
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-13-setup-wizard-role-nav-claude.md
+        - backend/internal/setuphttp/setuphttp.go
+      security: []
+      description: |
+        公开只读:返回 needs_setup。true 表示工作租户没有任何未软删的 admin 用户,
+        前端应引导进入 /setup 首装向导;false 表示已完成安装。
+      responses:
+        '200':
+          description: 当前安装状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [needs_setup]
+                properties:
+                  needs_setup:
+                    type: boolean
+        '503':
+          description: 存储不可用
+
+  /setup/install:
+    post:
+      tags: [public]
+      summary: 首装创建第一个管理员(fail-closed)
+      operationId: postSetupInstall
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-13-setup-wizard-role-nav-claude.md
+        - backend/internal/setuphttp/setuphttp.go
+      security: []
+      description: |
+        仅当工作租户尚无管理员时可用;一旦存在 admin 一律 403(安装通道永久关死)。
+        并发安装由事务内 advisory lock 串行化,仅一个胜者。邮箱撞已有普通用户返回
+        409,绝不静默提升既有账号。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                display_name:
+                  type: string
+                  maxLength: 64
+      responses:
+        '201':
+          description: 管理员创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email]
+                properties:
+                  email:
+                    type: string
+        '400':
+          description: 入参非法(邮箱/口令强度/JSON)
+        '403':
+          description: 已安装,通道关死
+        '409':
+          description: 邮箱已被既有账号占用
+        '503':
+          description: 存储不可用
+
   /v1/public/rankings:
     get:
       tags: [public]

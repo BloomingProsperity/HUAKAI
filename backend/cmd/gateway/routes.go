@@ -63,6 +63,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/setuphttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
@@ -252,6 +254,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Service: d.voucherService,
 		}))
 	})
+	// 首装向导:status 公开只读;install 由"无管理员才放行"守卫自保护(fail-closed)。
+	// env 非法时回退默认工作租户(非法 env 由启动门另行拦截),nil pool 由 handler 回 503。
+	setupTenantID, setupTenantErr := tenancy.WorkingTenantIDFromEnv()
+	if setupTenantErr != nil {
+		setupTenantID = tenancy.DefaultWorkingTenantID
+	}
+	setuphttp.Mount(r, setuphttp.Deps{Pool: d.pgPool, TenantID: setupTenantID})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/page", pricingpublichttp.NewHandler(pricingpublichttp.Deps{
 		Catalog: d.modelRegistry,

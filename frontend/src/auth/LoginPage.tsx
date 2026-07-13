@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../lib/api'
+import { fetchSetupStatus } from '../features/setup/setup'
 import {
   login,
   loginTwoFactor,
@@ -70,6 +71,19 @@ export function LoginPage() {
   const tid = () => Number(tenantId.trim()) || 0
   const af = deriveAffordances(site)
   const canRenderCaptcha = captchaWidgetRenderable(site)
+
+  // 首装引导:全新部署(工作租户无管理员)→ 送去 /setup 向导;失败静默不挡登录。
+  useEffect(() => {
+    const ctrl = new AbortController()
+    fetchSetupStatus(ctrl.signal)
+      .then((s) => {
+        if (!ctrl.signal.aborted && s.needs_setup) nav('/setup', { replace: true })
+      })
+      .catch(() => {
+        /* 状态探测失败:按已安装处理,正常登录 */
+      })
+    return () => ctrl.abort()
+  }, [nav])
 
   // 进站拉站点配置;组件卸载后丢弃结果。失败静默(回退已是默认),不打扰用户。
   useEffect(() => {

@@ -1,17 +1,20 @@
-import { Link } from 'react-router-dom'
+import { Link, Navigate } from 'react-router-dom'
 import { PIPELINE_NAV } from '../app/nav'
 import { useMe } from '../auth/me'
 import { DashboardMetrics } from '../features/dashboard/DashboardMetrics'
 import { OperatorOverview } from '../features/dashboard/OperatorOverview'
 
 /*
- * 控制台首页(管线总览)。
+ * 控制台首页 = 管理员落地页(sub2api 分流形态:管理员落 /,普通用户送 /overview)。
  * 顶部=真数据指标条(账号/Key/模型/配额,各卡独立加载、无权限端点降级显"—");
- * 运营台角色追加"经营总览"(统计卡/趋势/最近告警,复用 admin 端点);
- * 下方="管线卡片"呈现 8 个阶段,呼应管线即导航的反克隆方向。
+ * 继而"经营总览"(统计卡/趋势/最近告警,复用 admin 端点);
+ * 下方="管线卡片"呈现运营 8 阶段,呼应管线即导航的反克隆方向。
  */
 export function Dashboard() {
   const me = useMe()
+  // 身份未知(首拉进行中)先不渲染,避免把管理员闪跳去 /overview 再弹回。
+  if (me.status === 'idle' || me.status === 'loading') return null
+  if (!me.access.operatorEnabled) return <Navigate to="/overview" replace />
   return (
     <div style={{ padding: 'var(--hk-space-6)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-5)' }}>
       <header style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
@@ -21,7 +24,7 @@ export function Dashboard() {
         </p>
       </header>
       <DashboardMetrics />
-      {me.access.operatorEnabled && <OperatorOverview />}
+      <OperatorOverview />
       <div
         style={{
           display: 'grid',
@@ -29,7 +32,7 @@ export function Dashboard() {
           gap: 'var(--hk-space-4)',
         }}
       >
-        {PIPELINE_NAV.map((section) => (
+        {PIPELINE_NAV.filter((s) => s.shell === 'operator').map((section) => (
           <Link
             key={section.key}
             to={section.items[0].path}
