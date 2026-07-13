@@ -13,10 +13,12 @@ import type { ProviderAccount } from './types'
  * 仅下发改动字段(buildAccountUpdate);无改动时不发请求。
  */
 export function EditAccountModal({
+  tenantId,
   account,
   onClose,
   onSaved,
 }: {
+  tenantId: number
   account: ProviderAccount
   onClose: () => void
   onSaved: (updated: ProviderAccount) => void
@@ -88,7 +90,7 @@ export function EditAccountModal({
     setBusy(true)
     setError(null)
     try {
-      const updated = await updateProviderAccount(account.id, built)
+      const updated = await updateProviderAccount(tenantId, account.id, built)
       onSaved(updated)
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '保存失败')

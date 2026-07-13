@@ -28,8 +28,8 @@ describe('health-summary API', () => {
   it('锁定路径与 GET(变异:改错路径 → RED)', async () => {
     client.get.mockReset()
     client.get.mockResolvedValue({ total: 0, enabled: 0, disabled: 0, needs_attention: 0, states: [] })
-    await getProviderAccountHealthSummary()
-    expect(client.get).toHaveBeenCalledWith('/admin/v1/provider-accounts/health-summary', { signal: undefined })
+    await getProviderAccountHealthSummary(8)
+    expect(client.get).toHaveBeenCalledWith('/admin/v1/provider-accounts/health-summary', { query: { tenant_id: 8 }, signal: undefined })
   })
 })
 

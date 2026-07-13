@@ -81,7 +81,7 @@ export function AccountFingerprintBind({ accountId, tenantId }: { accountId: num
     setFlash(null)
     setError(null)
     try {
-      const res = await setAccountFingerprintProfile(accountId, profileId)
+      const res = await setAccountFingerprintProfile(tenantId, accountId, profileId)
       setKnownBound(res.tls_fingerprint_profile_id)
       setSelection(currentSelectionValue(res.tls_fingerprint_profile_id))
       setFlash(bindResultMessage(res))

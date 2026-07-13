@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../../lib/api'
+import { useMe } from '../../auth/me'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { clearAccountRateLimit, getProviderAccount, setAccountEnabled } from './api'
 import { AccountDangerZone } from './AccountDangerZone'
@@ -18,6 +19,7 @@ import type { ProviderAccount } from './types'
  * 所有 mutation 带审计原因输入(reason 进 admin 审计)。
  */
 export function AccountDetailPage() {
+  const tenantId = useMe().tenantId
   const params = useParams()
   const navigate = useNavigate()
   const id = Number(params.id)
@@ -33,7 +35,8 @@ export function AccountDetailPage() {
     (signal?: AbortSignal) => {
       setLoading(true)
       setError(null)
-      getProviderAccount(id, signal)
+      if (tenantId == null) return
+      getProviderAccount(tenantId, id, signal)
         .then((a) => setAccount(a))
         .catch((e: unknown) => {
           if (signal?.aborted) return
@@ -43,7 +46,7 @@ export function AccountDetailPage() {
           if (!signal?.aborted) setLoading(false)
         })
     },
-    [id],
+    [id, tenantId],
   )
 
   useEffect(() => {
@@ -96,6 +99,7 @@ export function AccountDetailPage() {
 
       {editing && (
         <EditAccountModal
+          tenantId={tenantId!}
           account={account}
           onClose={() => setEditing(false)}
           onSaved={(updated) => {
@@ -123,7 +127,7 @@ export function AccountDetailPage() {
               disabled={busy}
               onClick={() =>
                 runAction(
-                  () => setAccountEnabled(account.id, actions.toggleTo === 'enable', reason),
+                  () => setAccountEnabled(tenantId!, account.id, actions.toggleTo === 'enable', reason),
                   actions.toggleTo === 'enable' ? '已启用账号' : '已停用账号',
                 )
               }
@@ -135,7 +139,7 @@ export function AccountDetailPage() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => runAction(() => clearAccountRateLimit(account.id, reason), '已清除限流态')}
+                onClick={() => runAction(() => clearAccountRateLimit(tenantId!, account.id, reason), '已清除限流态')}
                 className="hk-btn"
               >
                 清除限流态
@@ -153,7 +157,7 @@ export function AccountDetailPage() {
         </div>
       </Card>
 
-      <AccountDiagnosticsCard id={account.id} />
+      <AccountDiagnosticsCard tenantId={tenantId!} id={account.id} />
 
       <AccountFingerprintBind accountId={account.id} tenantId={account.tenant_id} />
 
@@ -207,6 +211,7 @@ export function AccountDetailPage() {
       </Card>
 
       <AccountDangerZone
+        tenantId={tenantId!}
         accountId={account.id}
         accountName={account.name}
         onDeleted={() => navigate('/accounts')}
