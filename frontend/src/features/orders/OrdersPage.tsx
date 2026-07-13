@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   cancelMyOrder,
@@ -17,6 +19,7 @@ import {
   filterByStatus,
   formatMoney,
   hasUserAction,
+  mapOrderTableRows,
   orderKindLabel,
   providerLabel,
   receiptEligible,
@@ -24,6 +27,7 @@ import {
   statusCounts,
   statusLabel,
   statusTone,
+  type OrderTableRow,
 } from './orders'
 import type { UserOrder } from './types'
 
@@ -71,6 +75,15 @@ export function OrdersPage() {
 
   const counts = useMemo(() => statusCounts(orders), [orders])
   const visible = useMemo(() => filterByStatus(orders, statusFilter), [orders, statusFilter])
+  const tableRows = useMemo(() => mapOrderTableRows(visible), [visible])
+  const columns: DataListColumn<OrderTableRow>[] = [
+    { key: 'tradeNo', label: '订单号', render: (row) => <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{row.tradeNo}</code> },
+    { key: 'kind', label: '类型', render: (row) => row.kind },
+    { key: 'amount', label: '金额', render: (row) => <span className="hk-mono" style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.amount}</span> },
+    { key: 'provider', label: '渠道', render: (row) => row.provider },
+    { key: 'status', label: '状态', render: (row) => <StatusBadge tone={row.tone}>{row.status}</StatusBadge> },
+    { key: 'createdAt', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
 
   return (
     <div className="hk-page">
@@ -119,58 +132,24 @@ export function OrdersPage() {
 
       <div className="hk-card">
         {loading && orders.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载订单" hint="请稍候。" />
         ) : visible.length === 0 ? (
-          <Empty>{orders.length === 0 ? '还没有订单记录。' : '当前筛选下没有订单。'}</Empty>
+          <EmptyState
+            title={orders.length === 0 ? '还没有订单记录' : '当前筛选下没有订单'}
+            hint={orders.length === 0 ? '充值或购买套餐后，订单会显示在这里。' : '可切换状态筛选查看其他订单。'}
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['订单号', '类型', '金额', '渠道', '状态', '创建时间', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((o) => (
-                  <tr key={o.id}>
-                    <td>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{o.out_trade_no}</code>
-                    </td>
-                    <td>{orderKindLabel(o.order_kind)}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right', fontWeight: 600, color: 'var(--hk-ink-900)' }}>
-                      {formatMoney(o.amount_cents, o.currency_code)}
-                    </td>
-                    <td>{providerLabel(o.provider_kind)}</td>
-                    <td>
-                      <StatusBadge tone={statusTone(o.status)}>{statusLabel(o.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmt(o.created_at)}</td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <div style={{ display: 'inline-flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
-                        {/* 行内入口:可撤单/可退款时直接给出对应动作入口,点开即落到详情抽屉的二次确认流程,
-                            避免在表格行直接触发 money/破坏性动作(确认与执行集中在抽屉一处)。 */}
-                        {cancellable(o) && (
-                          <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm hk-btn--danger">
-                            撤单
-                          </button>
-                        )}
-                        {refundRequestable(o) && (
-                          <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
-                            申请退款
-                          </button>
-                        )}
-                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
-                          详情
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="我的订单"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              { label: '撤单', tone: 'danger', visible: (row) => row.canCancel, onClick: (row) => setDetailId(row.id) },
+              { label: '申请退款', visible: (row) => row.canRefund, onClick: (row) => setDetailId(row.id) },
+              { label: '详情', onClick: (row) => setDetailId(row.id) },
+            ]}
+          />
         )}
       </div>
 
@@ -287,7 +266,7 @@ function OrderDetailDrawer({
             </section>
           </div>
         ) : (
-          <Empty>未找到订单。</Empty>
+          <EmptyState title="未找到订单" hint="该订单可能已不存在，请关闭详情后刷新列表。" tone="unavailable" />
         )}
       </aside>
     </div>
@@ -482,10 +461,6 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
       {children}
     </button>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
 }
 
 function fmt(iso: string | null | undefined): string {

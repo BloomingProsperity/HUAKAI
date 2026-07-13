@@ -6,6 +6,7 @@ import {
   filterByStatus,
   formatMoney,
   hasUserAction,
+  mapOrderTableRows,
   orderKindLabel,
   providerLabel,
   receiptEligible,
@@ -148,6 +149,28 @@ describe('statusCounts', () => {
     ])
     expect(counts.completed).toBe(2)
     expect(counts.failed).toBe(1)
+  })
+})
+
+describe('mapOrderTableRows', () => {
+  it('六列展示值与动作门槛逐项映射，不能串列或放宽撤单', () => {
+    const rows = mapOrderTableRows([
+      order({ id: 7, out_trade_no: 'T-7', order_kind: 'subscription', amount_cents: 1999, currency_code: 'CNY', provider_kind: 'taobao', status: 'pending' }),
+      order({ id: 8, out_trade_no: 'T-8', order_kind: 'topup', amount_cents: 250, status: 'completed' }),
+    ])
+    expect(rows[0]).toMatchObject({
+      id: 7,
+      tradeNo: 'T-7',
+      kind: '订阅',
+      amount: '19.99 CNY',
+      provider: '淘宝/闲鱼',
+      status: '待支付',
+      tone: 'warn',
+      canCancel: true,
+      canRefund: false,
+    })
+    expect(rows[0].createdAt).not.toBe('')
+    expect(rows[1]).toMatchObject({ id: 8, canCancel: false, canRefund: true })
   })
 })
 

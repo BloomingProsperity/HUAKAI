@@ -43,3 +43,22 @@ export function userGroupLabel(group: string): string {
   if (!v) return '默认等级'
   return GROUP_LABELS[v.toLowerCase()] ?? v
 }
+
+export interface MeGroupTableRow {
+  id: number
+  name: string
+  groupId: string
+  ratio: string
+  tone: 'info' | 'muted'
+}
+
+/** 可达分组到三列表格的纯映射；未公开倍率继续保持不可见。 */
+export function mapMeGroupTableRows(items: ReadonlyArray<MeGroupItem>): MeGroupTableRow[] {
+  return items.map((item) => ({
+    id: item.pool_group_id,
+    name: item.name || `分组 #${item.pool_group_id}`,
+    groupId: String(item.pool_group_id),
+    ratio: ratioDisplay(item),
+    tone: ratioTone(item),
+  }))
+}

@@ -108,6 +108,41 @@ export function statusCounts(orders: ReadonlyArray<UserOrder>): Record<string, n
   return counts
 }
 
+export interface OrderTableRow {
+  id: number
+  tradeNo: string
+  kind: string
+  amount: string
+  provider: string
+  status: string
+  tone: BadgeTone
+  createdAt: string
+  canCancel: boolean
+  canRefund: boolean
+}
+
+/** 把订单 DTO 映射为列表列值；金额只做展示格式化，动作资格仍复用原有门槛。 */
+export function mapOrderTableRows(orders: ReadonlyArray<UserOrder>): OrderTableRow[] {
+  return orders.map((order) => ({
+    id: order.id,
+    tradeNo: order.out_trade_no,
+    kind: orderKindLabel(order.order_kind),
+    amount: formatMoney(order.amount_cents, order.currency_code),
+    provider: providerLabel(order.provider_kind),
+    status: statusLabel(order.status),
+    tone: statusTone(order.status),
+    createdAt: formatOrderTime(order.created_at),
+    canCancel: cancellable(order),
+    canRefund: refundRequestable(order),
+  }))
+}
+
+export function formatOrderTime(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', { hour12: false })
+}
+
 /**
  * 订单是否可下载收据 —— 与后端 invoicehttp/handler.go:60,64 的判定严格对齐:
  *   ① order_kind ∈ {topup, subscription}(receiptEligibleKind);
