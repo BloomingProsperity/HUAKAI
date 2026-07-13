@@ -1,25 +1,26 @@
 /*
- * 三壳导航(登录后按壳分组)。Owner 定的 IA:公开壳(壳外路由)/ 用户门户壳 / 运营台壳。
- * 这里只列登录后两壳;公开页(落地/登录/找回/排行)是壳外独立路由,不在侧导航。
- * built=false 的项先挂占位"建设中",后续切片点亮。
+ * 登录后三壳导航。公开页是壳外独立路由，不进入侧栏。
+ * 导航只负责信息架构与展示元数据；路由注册和后端授权边界保持独立。
  */
 export interface NavItem {
   path: string
   label: string
-  /** 该域是否已有实现页(false=占位"建设中")。 */
+  icon: string
+  /** 该域是否已有实现页(false=占位“建设中”)。 */
   built: boolean
 }
 
 export type Shell = 'user' | 'operator'
 
 export interface NavSection {
-  /** 壳内分组序号(每壳自 1 起),用于导航上的刻度视觉。 */
-  stage: number
   key: string
-  /** 所属壳:用户门户 / 运营台。 */
+  /** 仅兼容旧占位页；侧栏不生成或展示分组编号。 */
+  stage?: number
+  /** 所属壳：用户门户或运营台。 */
   shell: Shell
   label: string
-  hint: string
+  /** 独立入口显示在所有分组标题之前。 */
+  standalone?: boolean
   items: NavItem[]
 }
 
@@ -29,185 +30,134 @@ export const SHELL_LABEL: Record<Shell, string> = {
 }
 
 export const PIPELINE_NAV: NavSection[] = [
-  // ── 用户门户壳(session token,卖额度的客户自助) ──
+  // ── 用户门户壳(session token，客户自助) ──
   {
-    stage: 1,
-    key: 'overview',
+    key: 'user-overview',
     shell: 'user',
     label: '概览',
-    hint: '余额 · 用量 · Key 速览',
-    items: [{ path: '/overview', label: '我的概览', built: true }],
+    standalone: true,
+    items: [{ path: '/overview', label: '概览', icon: '⌂', built: true }],
   },
   {
-    stage: 2,
-    key: 'keys',
+    key: 'user-account',
     shell: 'user',
-    label: 'API Key',
-    hint: '签发、接入客户端、撤销、在线调试',
+    label: '我的账户',
     items: [
-      { path: '/keys', label: '我的密钥', built: true },
-      { path: '/integration', label: '接入指引', built: true },
-      { path: '/playground', label: '在线调试台', built: true },
+      { path: '/keys', label: '我的密钥', icon: '◇', built: true },
+      { path: '/profile', label: '个人资料与安全', icon: '◉', built: true },
+      { path: '/notifications', label: '站内信', icon: '◌', built: true },
+      { path: '/activity', label: '安全日志', icon: '≋', built: true },
     ],
   },
   {
-    stage: 3,
-    key: 'usage',
+    key: 'user-usage-billing',
     shell: 'user',
-    label: '用量与配额',
-    hint: '调用日志、配额窗口',
+    label: '用量与计费',
     items: [
-      { path: '/usage', label: '用量与日志', built: true },
-      { path: '/usage-records', label: '用量明细', built: true },
-      { path: '/media-tasks', label: '媒体任务', built: true },
-      { path: '/available-channels', label: '可用渠道', built: true },
-      { path: '/my-groups', label: '分组与倍率', built: true },
+      { path: '/usage', label: '用量与日志', icon: '▥', built: true },
+      { path: '/usage-records', label: '用量明细', icon: '≡', built: true },
+      { path: '/wallet', label: '钱包与充值', icon: '◈', built: true },
+      { path: '/orders', label: '我的订单', icon: '□', built: true },
+      { path: '/subscriptions', label: '订阅套餐', icon: '◆', built: true },
+      { path: '/redeem', label: '兑换码', icon: '◇', built: true },
+      { path: '/my-groups', label: '分组与倍率', icon: '⊙', built: true },
     ],
   },
   {
-    stage: 4,
-    key: 'trust',
+    key: 'user-more',
     shell: 'user',
-    label: '信任与证明',
-    hint: '公钥、请求证明、Merkle 锚点',
-    items: [{ path: '/trust', label: '信任验证', built: true }],
+    label: '更多',
+    items: [
+      { path: '/integration', label: '接入指引', icon: '↗', built: true },
+      { path: '/playground', label: '在线调试台', icon: '▷', built: true },
+      { path: '/media-tasks', label: '媒体任务', icon: '▣', built: true },
+      { path: '/available-channels', label: '可用渠道', icon: '⌁', built: true },
+      { path: '/trust', label: '信任验证', icon: '✓', built: true },
+      { path: '/checkin', label: '每日签到', icon: '☑', built: true },
+      { path: '/affiliate', label: '推广返利', icon: '♧', built: true },
+    ],
+  },
+
+  // ── 运营台壳(admin token，平台运营) ──
+  {
+    key: 'operator-overview',
+    shell: 'operator',
+    label: '概览',
+    standalone: true,
+    items: [{ path: '/ops', label: '概览', icon: '⌂', built: true }],
   },
   {
-    stage: 5,
-    key: 'wallet',
-    shell: 'user',
-    label: '充值与权益',
-    hint: '钱包、订单、订阅、兑换、签到、推广',
+    key: 'gateway-resources',
+    shell: 'operator',
+    label: '网关资源',
     items: [
-      { path: '/wallet', label: '钱包与充值', built: true },
-      { path: '/orders', label: '我的订单', built: true },
-      { path: '/subscriptions', label: '订阅套餐', built: true },
-      { path: '/redeem', label: '兑换码', built: true },
-      { path: '/checkin', label: '每日签到', built: true },
-      { path: '/affiliate', label: '推广返利', built: true },
+      { path: '/models', label: '模型服务', icon: '◇', built: true },
+      { path: '/admin/model-registry', label: '模型注册', icon: '◆', built: true },
+      { path: '/admin/channel-health', label: '渠道健康', icon: '♥', built: true },
+      { path: '/accounts', label: '上游账号', icon: '◉', built: true },
+      { path: '/routing', label: '账号池', icon: '⊙', built: true },
+      { path: '/admin/route-rules', label: '路由规则', icon: '⇄', built: true },
+      { path: '/admin/quota-policies', label: '流量控制', icon: '◫', built: true },
+      { path: '/admin/groups', label: '分组管理', icon: '▦', built: true },
+      { path: '/admin/model-sync', label: '厂商同步', icon: '↻', built: true },
+      { path: '/admin/catalogs', label: '上游目录', icon: '▤', built: true },
+      { path: '/admin/proxies', label: '出口代理池', icon: '⌁', built: true },
+      { path: '/admin/tls-fingerprints', label: 'TLS 指纹配置', icon: '⌘', built: true },
+      { path: '/admin/channel-test-templates', label: '渠道测试模板', icon: '✓', built: true },
     ],
   },
   {
-    stage: 6,
-    key: 'profile',
-    shell: 'user',
-    label: '账户',
-    hint: '个人资料、安全、2FA、通行密钥、站内信',
-    items: [
-      { path: '/profile', label: '个人资料·安全', built: true },
-      { path: '/notifications', label: '站内信', built: true },
-      { path: '/activity', label: '安全日志', built: true },
-    ],
-  },
-  // ── 运营台壳(admin token,平台运营) ──
-  {
-    stage: 1,
-    key: 'accounts',
+    key: 'users-finance',
     shell: 'operator',
-    label: '上游账号池',
-    hint: '把上游 Claude/OpenAI/Gemini 账号纳入可调度池',
+    label: '用户与财务',
     items: [
-      { path: '/accounts', label: '账号中心', built: true },
-      { path: '/admin/credential-renew', label: '凭证续期监控', built: true },
+      { path: '/users', label: '用户管理', icon: '♙', built: true },
+      { path: '/admin/orders', label: '订单管理', icon: '□', built: true },
+      { path: '/admin/subscriptions', label: '订阅管理', icon: '◆', built: true },
+      { path: '/admin/pricing', label: '定价设置', icon: '＄', built: true },
+      { path: '/admin/vouchers', label: '兑换码管理', icon: '◇', built: true },
+      { path: '/admin/billing-claims', label: '用量与计费台账', icon: '▥', built: true },
+      { path: '/admin/disputes', label: '退款与扣费争议', icon: '!', built: true },
+      { path: '/admin/affiliates', label: '分销管理', icon: '♧', built: true },
     ],
   },
   {
-    stage: 2,
-    key: 'routing',
+    key: 'security-audit',
     shell: 'operator',
-    label: '路由与池',
-    hint: '分组、权重、选号策略、健康与亲和',
+    label: '安全与审计',
     items: [
-      { path: '/routing', label: '路由与池管理', built: true },
-      { path: '/admin/route-rules', label: '请求路由规则', built: true },
-      { path: '/admin/quota-policies', label: '配额策略', built: true },
-      { path: '/admin/groups', label: '分组管理', built: true },
-      { path: '/admin/proxies', label: '出口代理池', built: true },
-      { path: '/admin/tls-fingerprints', label: 'TLS 指纹 Profile', built: true },
+      { path: '/security', label: '审计日志', icon: '≋', built: true },
+      { path: '/admin/risk', label: '风控总览', icon: '⛨', built: true },
+      { path: '/admin/moderation', label: '内容审核', icon: '✓', built: true },
+      { path: '/admin/credential-renew', label: '凭证续期', icon: '↻', built: true },
     ],
   },
   {
-    stage: 3,
-    key: 'tenants',
+    key: 'observability-ops',
     shell: 'operator',
-    label: '用户与租户',
-    hint: '注册登录、权限、租户作用域',
-    items: [{ path: '/users', label: '用户与权限', built: true }],
-  },
-  {
-    stage: 4,
-    key: 'models',
-    shell: 'operator',
-    label: '模型与定价',
-    hint: '模型目录、倍率定价、公开价目',
+    label: '观测与运维',
     items: [
-      { path: '/models', label: '模型与定价', built: true },
-      { path: '/admin/pricing', label: '定价设置', built: true },
-      { path: '/admin/model-registry', label: '模型注册', built: true },
-      { path: '/admin/model-sync', label: '厂商同步', built: true },
-      { path: '/admin/catalogs', label: '上游目录', built: true },
-      { path: '/admin/channel-test-templates', label: '渠道测试模板', built: true },
+      { path: '/health', label: '系统监控', icon: '⌁', built: true },
+      { path: '/admin/alerting', label: '告警中心', icon: '!', built: true },
+      { path: '/admin/logs', label: '日志与诊断', icon: '≡', built: true },
+      { path: '/admin/dlq', label: '死信队列', icon: '□', built: true },
+      { path: '/admin/orphan-reconcile', label: '孤儿对账', icon: '⇄', built: true },
     ],
   },
   {
-    stage: 5,
-    key: 'commerce',
+    key: 'settings',
     shell: 'operator',
-    label: '计费运营',
-    hint: '订单、套餐、兑换码、分销',
+    label: '设置',
     items: [
-      { path: '/admin/orders', label: '订单管理台', built: true },
-      { path: '/admin/subscriptions', label: '套餐管理', built: true },
-      { path: '/admin/vouchers', label: '兑换码管理', built: true },
-      { path: '/admin/affiliates', label: '分销管理', built: true },
-      { path: '/admin/disputes', label: '退款/扣费争议', built: true },
-      { path: '/admin/billing-claims', label: '用量与计费台账', built: true },
-    ],
-  },
-  {
-    stage: 6,
-    key: 'content',
-    shell: 'operator',
-    label: '内容与公告',
-    hint: '公告、内容审核风控',
-    items: [
-      { path: '/admin/announcements', label: '公告管理', built: true },
-      { path: '/admin/broadcast', label: '站内信广播', built: true },
-      { path: '/admin/moderation', label: '内容审核', built: true },
-    ],
-  },
-  {
-    stage: 7,
-    key: 'system',
-    shell: 'operator',
-    label: '系统',
-    hint: '系统设置、运维大屏、系统健康',
-    items: [
-      { path: '/system', label: '系统设置', built: true },
-      { path: '/ops', label: '运维大屏', built: true },
-      { path: '/health', label: '系统健康', built: true },
-      { path: '/admin/channel-health', label: '渠道健康台', built: true },
-      { path: '/admin/modules', label: '模块知识脊柱', built: true },
-      { path: '/admin/version', label: '版本与维护', built: true },
-      { path: '/admin/hermes', label: 'Hermes 配置与工具', built: true },
-      { path: '/admin/logs', label: '日志与诊断', built: true },
-      { path: '/admin/backup', label: '备份与恢复', built: true },
-      { path: '/admin/dlq', label: '死信队列', built: true },
-      { path: '/admin/orphan-reconcile', label: '孤儿对账', built: true },
-      { path: '/admin/cache', label: 'L2 缓存监控', built: true },
-    ],
-  },
-  {
-    stage: 8,
-    key: 'security',
-    shell: 'operator',
-    label: '安全审计',
-    hint: '审计账本、告警、风控',
-    items: [
-      { path: '/security', label: '安全与审计', built: true },
-      { path: '/admin/platform-credentials', label: '平台凭证', built: true },
-      { path: '/admin/alerting', label: '告警控制台', built: true },
-      { path: '/admin/risk', label: '风控总览', built: true },
+      { path: '/system', label: '系统设置', icon: '⚙', built: true },
+      { path: '/admin/modules', label: '模块开关', icon: '▦', built: true },
+      { path: '/admin/platform-credentials', label: '平台凭证', icon: '◇', built: true },
+      { path: '/admin/cache', label: '缓存管理', icon: '▤', built: true },
+      { path: '/admin/backup', label: '备份与恢复', icon: '↥', built: true },
+      { path: '/admin/version', label: '版本与维护', icon: 'ⓘ', built: true },
+      { path: '/admin/announcements', label: '公告管理', icon: '◫', built: true },
+      { path: '/admin/broadcast', label: '站内信广播', icon: '◌', built: true },
+      { path: '/admin/hermes', label: 'Hermes 配置与工具', icon: '⌘', built: true },
     ],
   },
 ]

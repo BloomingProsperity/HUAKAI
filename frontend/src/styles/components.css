@@ -142,7 +142,67 @@
 .hk-pill--crit { background: var(--hk-danger-soft); color: var(--hk-danger); }
 .hk-pill--info { background: var(--hk-line-soft); color: var(--hk-ink-500); }
 
-/* ── 左侧流水线导航:胶囊层级与交互光效 ── */
+/* ── 左侧导航：常开分组、紧凑胶囊热区 ── */
+.hk-pipeline-nav {
+  width: 244px;
+  height: 100%;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  padding: var(--hk-space-3) 10px var(--hk-space-4);
+  background: var(--hk-surface);
+  border-right: 1px solid var(--hk-line);
+  z-index: var(--hk-z-rail);
+}
+.hk-pipeline-nav__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--hk-space-2);
+  margin-bottom: var(--hk-space-2);
+  padding: 7px 10px;
+  border-radius: var(--hk-radius-pill);
+  background: var(--hk-line-soft);
+  color: var(--hk-ink-700);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.hk-pipeline-nav__identity.is-operator {
+  background: var(--hk-primary-50);
+  color: var(--hk-primary-700);
+}
+.hk-pipeline-nav__identity-icon {
+  width: 16px;
+  flex: none;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+.hk-pipeline-nav__content {
+  min-height: 0;
+  flex: 1;
+}
+.hk-pipeline-nav__primary {
+  margin-bottom: var(--hk-space-4);
+}
+.hk-pipeline-nav__group + .hk-pipeline-nav__group {
+  margin-top: var(--hk-space-4);
+}
+.hk-pipeline-nav__caption {
+  margin: 0 0 5px;
+  padding: 0 10px;
+  color: var(--hk-ink-500);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: 0.01em;
+}
+.hk-pipeline-nav__entries {
+  display: grid;
+  gap: 2px;
+}
 .hk-pipeline-nav__item {
   position: relative;
   isolation: isolate;
@@ -151,17 +211,18 @@
   border-radius: var(--hk-radius-pill);
   background: transparent;
   color: var(--hk-ink-700);
+  text-decoration: none;
   transition:
-    background-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease;
+    background-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease;
 }
 .hk-pipeline-nav__item::after {
   content: "";
   position: absolute;
   z-index: -1;
   inset: 0 auto 0 -45%;
-  width: 42%;
+  width: 34%;
   border-radius: inherit;
   background: linear-gradient(90deg, transparent, var(--hk-primary-100), transparent);
   opacity: 0;
@@ -171,51 +232,62 @@
 .hk-pipeline-nav__item:hover {
   background: var(--hk-primary-50);
   color: var(--hk-primary-700);
-  box-shadow: 0 0 10px var(--hk-primary-100);
+  box-shadow: 0 0 7px var(--hk-primary-100);
 }
 .hk-pipeline-nav__item:hover::after {
-  animation: hk-pipeline-nav-sweep 520ms ease-out 1;
+  animation: hk-pipeline-nav-sweep 440ms ease-out 1;
 }
 .hk-pipeline-nav__item:focus-visible {
   outline: 2px solid var(--hk-primary-300);
-  outline-offset: 1px;
+  outline-offset: 0;
   background: var(--hk-primary-50);
   color: var(--hk-primary-700);
-}
-.hk-pipeline-nav__section {
-  display: flex;
-  align-items: center;
-  gap: var(--hk-space-2);
-  margin-bottom: 2px;
-  padding: var(--hk-space-2) var(--hk-space-3);
-  border: 0;
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-}
-.hk-pipeline-nav__section.is-current {
-  background: var(--hk-line-soft);
 }
 .hk-pipeline-nav__link {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: calc(100% - var(--hk-space-2));
-  margin: 2px 0 2px var(--hk-space-2);
-  padding: var(--hk-space-2) var(--hk-space-3);
-  font-size: 14px;
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 13px;
   font-weight: 400;
+  line-height: 20px;
+}
+.hk-pipeline-nav__label {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.hk-pipeline-nav__icon {
+  width: 16px;
+  flex: none;
+  color: var(--hk-ink-500);
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+.hk-pipeline-nav__overview {
+  font-weight: 560;
+}
+.hk-pipeline-nav__pending {
+  flex: none;
+  color: var(--hk-ink-300);
+  font-size: 10px;
 }
 .hk-pipeline-nav__link.is-active {
   background: var(--hk-primary-50);
   color: var(--hk-primary-700);
   font-weight: 600;
-  box-shadow: 0 0 10px var(--hk-primary-100);
+  box-shadow: inset 0 0 0 1px var(--hk-primary-100);
+}
+.hk-pipeline-nav__link.is-active .hk-pipeline-nav__icon {
+  color: var(--hk-primary-700);
 }
 
 @keyframes hk-pipeline-nav-sweep {
   0% { opacity: 0; transform: translateX(0) skewX(-18deg); }
-  25% { opacity: 0.8; }
+  25% { opacity: 0.55; }
   100% { opacity: 0; transform: translateX(360%) skewX(-18deg); }
 }
 
