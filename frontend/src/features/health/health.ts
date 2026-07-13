@@ -1,10 +1,17 @@
-import type { HealthStatus } from './types'
+import type { HealthComponent, HealthStatus, RuntimeInfo } from './types'
 
 /*
  * 系统健康纯逻辑(可单测):状态配色、运行时数值格式化、组件名中文化。
  */
 
 export type Tone = 'ok' | 'warn' | 'danger'
+
+export interface HealthStatView {
+  label: string
+  value: string
+  hint?: string
+  tone?: Tone
+}
 
 /** 健康状态 → 配色 tone。healthy=ok / degraded=warn / unhealthy=danger。 */
 export function statusTone(status: HealthStatus): Tone {
@@ -47,6 +54,16 @@ export function componentLabel(name: string): string {
   return COMPONENT_LABELS[name] ?? name
 }
 
+/** 子系统响应到状态卡的纯映射；状态值与颜色必须使用同一份三态口径。 */
+export function mapComponentStats(components: HealthComponent[]): HealthStatView[] {
+  return components.map((component) => ({
+    label: componentLabel(component.name),
+    value: statusLabel(component.status),
+    hint: component.detail || '—',
+    tone: statusTone(component.status),
+  }))
+}
+
 /**
  * uptime 秒 → 人类可读("Nd Nh Nm" / "Nh Nm" / "Nm Ns" / "Ns")。
  * 取最高的两个非零量级,保持简洁。
@@ -84,4 +101,20 @@ export function fmtBytes(bytes?: number): string {
 export function fmtInt(n: number): string {
   if (!Number.isFinite(n)) return '—'
   return Math.round(n).toLocaleString('en-US')
+}
+
+/** 运行时快照到统计卡的纯映射；后端未提供二进制大小时不生成空卡。 */
+export function mapRuntimeStats(runtime: RuntimeInfo): HealthStatView[] {
+  const stats: HealthStatView[] = [
+    { label: '运行时长', value: fmtUptime(runtime.uptime_seconds) },
+    { label: 'Go 版本', value: runtime.go_version },
+    { label: '协程数', value: fmtInt(runtime.num_goroutine) },
+    { label: 'GC 次数', value: fmtInt(runtime.num_gc) },
+    { label: '堆已分配', value: fmtBytes(runtime.heap_alloc_bytes) },
+    { label: '堆系统占用', value: fmtBytes(runtime.heap_sys_bytes) },
+  ]
+  if (runtime.binary_size_bytes !== undefined && runtime.binary_size_bytes > 0) {
+    stats.push({ label: '二进制大小', value: fmtBytes(runtime.binary_size_bytes) })
+  }
+  return stats
 }
