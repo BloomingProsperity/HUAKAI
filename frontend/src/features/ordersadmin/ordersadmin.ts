@@ -8,6 +8,7 @@
  * admin_panel.go:279 validOrderStatus 列出可作筛选值的 8 个状态)。
  */
 import type { BadgeTone } from '../../ui/StatusBadge'
+import type { AdminOrder, DashboardStats, RefundRequestView } from './types'
 
 /** 后端 validOrderStatus 接受的 8 个订单状态(可作列表筛选值)。 */
 export const ORDER_STATUSES: ReadonlyArray<{ value: string; label: string }> = [
@@ -148,6 +149,66 @@ export function formatCents(cents: number, currency: string): string {
   return `${sign}${whole}.${frac} ${currency || ''}`.trim()
 }
 
+export interface OrderDashboardCard {
+  label: string
+  value: string
+  hint: string
+  tone: 'default' | 'danger' | 'warn' | 'ok'
+}
+
+/** 仪表盘响应到四张统计卡的纯映射；未加载时显式保留未知态，不伪造为零。 */
+export function mapOrderDashboardCards(stats: DashboardStats | null): OrderDashboardCard[] {
+  if (stats === null) {
+    return [
+      { label: '累计金额', value: '—', hint: '正在加载租户汇总', tone: 'default' },
+      { label: '累计订单数', value: '—', hint: '正在加载租户汇总', tone: 'default' },
+      { label: '今日订单数', value: '—', hint: '正在加载租户汇总', tone: 'default' },
+      { label: '笔均金额', value: '—', hint: '正在加载租户汇总', tone: 'default' },
+    ]
+  }
+  return [
+    { label: '累计金额', value: formatCents(stats.total_amount_cents, ''), hint: '所选租户全量口径', tone: 'default' },
+    { label: '累计订单数', value: String(stats.total_count), hint: '所选租户全量口径', tone: 'default' },
+    { label: '今日订单数', value: String(stats.today_count), hint: '按服务端今日口径', tone: stats.today_count > 0 ? 'ok' : 'default' },
+    { label: '笔均金额', value: formatCents(stats.average_amount_cents, ''), hint: '累计金额 ÷ 累计订单数', tone: 'default' },
+  ]
+}
+
+export interface OrderTableRow {
+  id: number
+  source: AdminOrder
+  orderNumber: string
+  userId: number
+  amount: string
+  kind: string
+  provider: string
+  statusText: string
+  statusTone: BadgeTone
+  createdAt: string
+}
+
+/** 后端订单到七个数据列的纯映射；第八列由 DataListTable 统一承载行内操作。 */
+export function mapOrderRows(orders: AdminOrder[]): OrderTableRow[] {
+  return orders.map((order) => ({
+    id: order.id,
+    source: order,
+    orderNumber: order.out_trade_no || `#${order.id}`,
+    userId: order.user_id,
+    amount: formatCents(order.amount_cents, order.currency_code),
+    kind: order.order_kind || '充值',
+    provider: order.provider_kind || '—',
+    statusText: statusLabel(order.status),
+    statusTone: statusTone(order.status),
+    createdAt: formatOrderTime(order.created_at),
+  }))
+}
+
+/** 列表时间展示；非法时间统一显示占位，避免渲染 Invalid Date。 */
+export function formatOrderTime(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
+}
+
 // ── 退款(money 敏感)纯逻辑 ────────────────────────────────────────────────
 
 /**
@@ -210,6 +271,31 @@ export function refundRequestStatusTone(status: string): BadgeTone {
     default:
       return 'muted'
   }
+}
+
+export interface RefundRequestTableRow {
+  id: number
+  source: RefundRequestView
+  orderId: number
+  userId: number | null
+  statusText: string
+  statusTone: BadgeTone
+  reason: string
+  createdAt: string
+}
+
+/** 退款工单到六个数据列的纯映射；第七列保留审批与驳回操作。 */
+export function mapRefundRequestRows(requests: RefundRequestView[]): RefundRequestTableRow[] {
+  return requests.map((request) => ({
+    id: request.id,
+    source: request,
+    orderId: request.order_id,
+    userId: request.user_id ?? null,
+    statusText: refundRequestStatusLabel(request.status),
+    statusTone: refundRequestStatusTone(request.status),
+    reason: request.reason || '—',
+    createdAt: formatOrderTime(request.created_at),
+  }))
 }
 
 // ── CSV 导出时间窗 ────────────────────────────────────────────────────────
