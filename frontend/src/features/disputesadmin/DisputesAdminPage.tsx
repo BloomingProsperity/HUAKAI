@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { confirmIrreversible } from '../../ui/confirmDanger'
 import { listDisputes, resolveDispute } from './api'
 import {
   DEFAULT_PAGE_SIZE,
-  isResolvable,
-  shortDisputeID,
-  shortRequestID,
+  mapDisputeTableRows,
   statusLabel,
   statusTone,
   validateResolve,
+  type DisputeTableRow,
 } from './disputes'
 import {
   DISPUTE_STATUSES,
@@ -70,7 +71,7 @@ export function DisputesAdminPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未加载争议" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <DisputesCard tenantId={tenantId} />
       )}
@@ -87,6 +88,7 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [draft, setDraft] = useState<DisputeFilters>(EMPTY_DISPUTE_FILTERS)
   const [filters, setFilters] = useState<DisputeFilters>(EMPTY_DISPUTE_FILTERS)
+  const [openId, setOpenId] = useState<number | null>(null)
 
   const fetchPage = useCallback(
     async (off: number, append: boolean, signal?: AbortSignal) => {
@@ -121,6 +123,8 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
     setNotice(null)
     void fetchPage(0, false)
   }
+  const tableRows = mapDisputeTableRows(rows)
+  const openRow = tableRows.find((row) => row.id === openId)
 
   return (
     <section className="hk-card">
@@ -169,36 +173,35 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
       {notice && <Banner kind="ok">{notice}</Banner>}
 
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载争议记录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无争议记录。</Empty>
+        <EmptyState title="该租户暂无争议记录" hint="当前筛选范围内没有需要查看的费用争议。" tone="positive" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['争议 ID', '状态', '用户', 'request_id', '原因', '运营备注', '创建', '裁决', ''].map((h) => (
-                  <th key={h}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <DisputeRow
-                  key={row.id}
-                  row={row}
-                  tenantId={tenantId}
-                  onResolved={(msg) => {
-                    setNotice(msg)
-                    reload()
-                  }}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <DataListTable
+            label="争议列表"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={disputeColumns}
+            actions={[{
+              label: (row) => row.resolvable ? (openId === row.id ? '收起' : '裁决') : '已终态',
+              disabled: (row) => !row.resolvable,
+              onClick: (row) => setOpenId((current) => current === row.id ? null : row.id),
+            }]}
+          />
+          {openRow?.resolvable && (
+            <DisputeResolutionPanel
+              key={openRow.id}
+              row={openRow.source}
+              tenantId={tenantId}
+              onResolved={(msg) => {
+                setNotice(msg)
+                setOpenId(null)
+                reload()
+              }}
+            />
+          )}
+        </>
       )}
 
       {hasMore && (
@@ -210,7 +213,7 @@ function DisputesCard({ tenantId }: { tenantId: number }) {
   )
 }
 
-function DisputeRow({
+function DisputeResolutionPanel({
   row,
   tenantId,
   onResolved,
@@ -219,15 +222,12 @@ function DisputeRow({
   tenantId: number
   onResolved: (msg: string) => void
 }) {
-  const [open, setOpen] = useState(false)
   // 裁决=落定终态,只在 resolved(支持退款)/rejected(维持扣费)二选一;
   // money 安全默认 rejected(不动钱、维持现状),要退款须运营显式切换 + 二次确认,避免默认就退款。
   const [status, setStatus] = useState<DisputeStatus>('rejected')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [rowError, setRowError] = useState<string | null>(null)
-  const resolvable = isResolvable(row.status)
-
   const submit = () => {
     const v = validateResolve(tenantId, status, note)
     if (!v.ok) {
@@ -253,59 +253,25 @@ function DisputeRow({
   }
 
   return (
-    <>
-      <tr>
-        <td className="hk-mono" title={row.dispute_id}>{shortDisputeID(row.dispute_id)}</td>
-        <td>
-          <StatusBadge tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusBadge>
-        </td>
-        <td className="hk-mono">#{row.user_id}</td>
-        <td className="hk-mono" title={row.request_id}>{shortRequestID(row.request_id)}</td>
-        <td style={{ maxWidth: 260, whiteSpace: 'normal', color: 'var(--hk-ink-700)' }}>{row.reason || '—'}</td>
-        <td style={{ maxWidth: 220, whiteSpace: 'normal', color: 'var(--hk-ink-500)' }}>{row.operator_note || '—'}</td>
-        <td className="hk-mono">{fmt(row.created_at)}</td>
-        <td className="hk-mono">{fmt(row.resolved_at)}</td>
-        <td style={{ textAlign: 'right' }}>
-          {resolvable ? (
-            <button type="button" onClick={() => setOpen((o) => !o)} className="hk-btn hk-btn--sm">
-              {open ? '收起' : '裁决'}
-            </button>
-          ) : (
-            <span style={{ fontSize: 12, color: 'var(--hk-ink-300)' }}>已终态</span>
-          )}
-        </td>
-      </tr>
-      {open && resolvable && (
-        <tr style={{ background: 'var(--hk-surface-sunken)' }}>
-          <td colSpan={9} style={{ padding: 'var(--hk-space-4)' }}>
-            {rowError && <Banner kind="error">{rowError}</Banner>}
-            <div style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-              <Field label="裁决结果">
-                {/* 裁决只列终态:rejected(维持扣费)/ resolved(支持退款);非终态不作为裁决目标。 */}
-                <select value={status} onChange={(e) => setStatus(e.target.value as DisputeStatus)} style={{ ...inp, width: 220 }}>
-                  {(['rejected', 'resolved'] as DisputeStatus[]).map((s) => (
-                    <option key={s} value={s}>
-                      {statusLabel(s)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="运营备注(operator_note,可选,≤4000)">
-                <input
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="供审计:裁决依据"
-                  style={{ ...inp, width: 360 }}
-                />
-              </Field>
-              <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
-                {busy ? '提交中…' : '提交裁决'}
-              </button>
-            </div>
-          </td>
-        </tr>
-      )}
-    </>
+    <div style={{ padding: 'var(--hk-space-4)', borderTop: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }}>
+      {rowError && <Banner kind="error">{rowError}</Banner>}
+      <div style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <Field label="裁决结果">
+          {/* 裁决只列终态:rejected(维持扣费)/ resolved(支持退款);非终态不作为裁决目标。 */}
+          <select value={status} onChange={(e) => setStatus(e.target.value as DisputeStatus)} style={{ ...inp, width: 220 }}>
+            {(['rejected', 'resolved'] as DisputeStatus[]).map((s) => (
+              <option key={s} value={s}>{statusLabel(s)}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="运营备注(operator_note,可选,≤4000)">
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="供审计:裁决依据" style={{ ...inp, width: 360 }} />
+        </Field>
+        <button type="button" disabled={busy} onClick={submit} className="hk-btn hk-btn--green">
+          {busy ? '提交中…' : '提交裁决'}
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -332,14 +298,15 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+
+const disputeColumns: DataListColumn<DisputeTableRow>[] = [
+  { key: 'disputeId', label: '争议 ID', render: (row) => <span className="hk-mono" title={row.disputeTitle}>{row.disputeId}</span> },
+  { key: 'status', label: '状态', render: (row) => <StatusBadge tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusBadge> },
+  { key: 'userId', label: '用户', render: (row) => <span className="hk-mono">{row.userId}</span> },
+  { key: 'requestId', label: 'request_id', render: (row) => <span className="hk-mono" title={row.requestTitle}>{row.requestId}</span> },
+  { key: 'reason', label: '原因', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reason}</span> },
+  { key: 'operatorNote', label: '运营备注', render: (row) => <span style={{ color: 'var(--hk-ink-500)' }}>{row.operatorNote}</span> },
+  { key: 'createdAt', label: '创建', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  { key: 'resolvedAt', label: '裁决', render: (row) => <span className="hk-mono">{row.resolvedAt}</span> },
+]

@@ -4,6 +4,7 @@ import {
   type DisputeFilters,
   type DisputeResolveRequest,
   type DisputeStatus,
+  type DisputeView,
 } from './types'
 
 /*
@@ -141,4 +142,45 @@ export function shortDisputeID(id: string): string {
 export function shortRequestID(id: string): string {
   if (!id) return '—'
   return id.length > 20 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id
+}
+
+export interface DisputeTableRow {
+  id: number
+  disputeId: string
+  disputeTitle: string
+  status: string
+  userId: string
+  requestId: string
+  requestTitle: string
+  reason: string
+  operatorNote: string
+  createdAt: string
+  resolvedAt: string
+  resolvable: boolean
+  source: DisputeView
+}
+
+/** 争议响应到列表列的纯映射，不改变裁决状态或请求体。 */
+export function mapDisputeTableRows(items: DisputeView[]): DisputeTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    disputeId: shortDisputeID(item.dispute_id),
+    disputeTitle: item.dispute_id,
+    status: item.status,
+    userId: `#${item.user_id}`,
+    requestId: shortRequestID(item.request_id),
+    requestTitle: item.request_id,
+    reason: item.reason || '—',
+    operatorNote: item.operator_note || '—',
+    createdAt: formatDisputeTime(item.created_at),
+    resolvedAt: formatDisputeTime(item.resolved_at),
+    resolvable: isResolvable(item.status),
+    source: item,
+  }))
+}
+
+function formatDisputeTime(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }

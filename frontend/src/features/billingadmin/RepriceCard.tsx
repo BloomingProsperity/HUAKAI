@@ -1,12 +1,17 @@
 import { useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { repriceBilling } from './api'
 import {
   canStartReprice,
   executeRepriceGuarded,
+  mapRepriceTableRows,
   repriceScopeSummary,
   sumRepriceCostDelta,
   validateRepriceForm,
+  type RepriceTableRow,
 } from './billingadmin'
 import type { RepriceForm, RepriceResponse } from './types'
 
@@ -162,6 +167,14 @@ function RepriceResult({ run }: { run: RepriceRun }) {
   const { response } = run
   const changed = response.dry_run ? response.summary.would_apply : response.summary.repriced
   const delta = sumRepriceCostDelta(response.items)
+  const tableRows = mapRepriceTableRows(response.items)
+  const stats = [
+    { label: response.dry_run ? '预计重算' : '已重算', value: String(changed) },
+    { label: '响应总条数', value: String(response.summary.total) },
+    { label: '已重算过', value: String(response.summary.already_repriced) },
+    { label: '跳过 / 失败', value: `${response.summary.skipped} / ${response.summary.failed}`, tone: response.summary.failed > 0 ? 'danger' as const : 'default' as const },
+    { label: '逐条差额合计', value: delta ?? '无法汇总' },
+  ]
   return (
     <div className="hk-codebox" aria-live="polite">
       <div className="hk-inline-actions">
@@ -172,42 +185,13 @@ function RepriceResult({ run }: { run: RepriceRun }) {
       </div>
       <p className="hk-section-copy">范围：{run.scope}；本页确认原因：{run.reason}</p>
       <div className="hk-metric-grid">
-        <Metric label={response.dry_run ? '预计重算' : '已重算'} value={String(changed)} />
-        <Metric label="响应总条数" value={String(response.summary.total)} />
-        <Metric label="已重算过" value={String(response.summary.already_repriced)} />
-        <Metric label="跳过 / 失败" value={`${response.summary.skipped} / ${response.summary.failed}`} />
-        <Metric label="逐条差额合计" value={delta ?? '无法汇总'} mono />
+        {stats.map((stat) => <StatCard key={stat.label} label={stat.label} value={stat.value} tone={stat.tone} />)}
       </div>
-      <div className="hk-tablewrap">
-        <table className="hk-table">
-          <thead>
-            <tr>{['记录', '租户', '状态', '原成本', '当前价成本', '差额', '定价来源 / 原因'].map((title) => <th key={title}>{title}</th>)}</tr>
-          </thead>
-          <tbody>
-            {response.items.map((item) => (
-              <tr key={`${item.tenant_id}-${item.usage_record_id}`}>
-                <td className="hk-mono">{item.usage_record_id}</td>
-                <td className="hk-mono">{item.tenant_id}</td>
-                <td><span className={`hk-pill ${statusClass(item.status)}`}>{item.status}</span></td>
-                <td className="hk-mono">{item.original_cost}</td>
-                <td className="hk-mono">{item.authoritative_cost}</td>
-                <td className="hk-mono">{item.cost_delta}</td>
-                <td>{item.error_message || item.skipped_reason || item.pricing_source || '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {response.items.length === 0 && <div className="hk-empty">该范围没有可重算记录。</div>}
-      </div>
-    </div>
-  )
-}
-
-function Metric({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="hk-metric">
-      <div className="hk-metric__label">{label}</div>
-      <div className={`hk-metric__v ${mono ? 'hk-mono' : ''}`} style={{ fontSize: 17 }}>{value}</div>
+      {tableRows.length === 0 ? (
+        <EmptyState title="该范围没有可重算记录" hint="没有待对账记录符合本次重算范围。" />
+      ) : (
+        <DataListTable label="重算结果列表" rows={tableRows} rowKey={(row) => row.id} columns={repriceColumns} />
+      )}
     </div>
   )
 }
@@ -218,3 +202,13 @@ function statusClass(status: string): string {
   if (status === 'skipped') return 'hk-pill--warn'
   return 'hk-pill--info'
 }
+
+const repriceColumns: DataListColumn<RepriceTableRow>[] = [
+  { key: 'record', label: '记录', render: (row) => <span className="hk-mono">{row.usageRecordId}</span> },
+  { key: 'tenant', label: '租户', render: (row) => <span className="hk-mono">{row.tenantId}</span> },
+  { key: 'status', label: '状态', render: (row) => <span className={`hk-pill ${statusClass(row.status)}`}>{row.status}</span> },
+  { key: 'originalCost', label: '原成本', render: (row) => <span className="hk-mono">{row.originalCost}</span> },
+  { key: 'authoritativeCost', label: '当前价成本', render: (row) => <span className="hk-mono">{row.authoritativeCost}</span> },
+  { key: 'costDelta', label: '差额', render: (row) => <span className="hk-mono">{row.costDelta}</span> },
+  { key: 'detail', label: '定价来源 / 原因', render: (row) => row.detail },
+]

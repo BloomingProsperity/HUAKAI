@@ -1,12 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   getAdminReferralOverview,
   listAdminReferralRewards,
   listAdminReferrals,
 } from './api'
-import { formatUsd, statusCount, statusLabel, statusTone } from './affiliateadmin'
+import {
+  formatUsd,
+  mapAffiliateStats,
+  mapReferralTableRows,
+  mapRewardTableRows,
+  statusLabel,
+  statusTone,
+  withTenantContext,
+  type ReferralTableRow,
+  type RewardTableRow,
+} from './affiliateadmin'
 import {
   EMPTY_AFFILIATE_FILTERS,
   type AdminReferralItem,
@@ -33,8 +47,9 @@ const STATUS_OPTIONS: ReferralStatus[] = ['pending', 'qualified', 'rewarded', 'r
 type Tab = 'records' | 'rewards'
 
 export function AffiliateAdminPage() {
-  const [draft, setDraft] = useState<AffiliateFilters>(EMPTY_AFFILIATE_FILTERS)
-  const [filters, setFilters] = useState<AffiliateFilters>(EMPTY_AFFILIATE_FILTERS)
+  const contextTenantId = useMe().tenantId
+  const [draft, setDraft] = useState<AffiliateFilters>(() => withTenantContext(EMPTY_AFFILIATE_FILTERS, contextTenantId))
+  const [filters, setFilters] = useState<AffiliateFilters>(() => withTenantContext(EMPTY_AFFILIATE_FILTERS, contextTenantId))
   const [referrerDraft, setReferrerDraft] = useState('')
   const [referrer, setReferrer] = useState('')
   const [tab, setTab] = useState<Tab>('records')
@@ -54,8 +69,15 @@ export function AffiliateAdminPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  useEffect(() => {
+    if (contextTenantId == null) return
+    setDraft((current) => withTenantContext(current, contextTenantId))
+    setFilters((current) => withTenantContext(current, contextTenantId))
+  }, [contextTenantId])
+
   // 概览随筛选(主要是租户号)变化重载;与列表解耦,独立错误位。
   useEffect(() => {
+    if (!filters.tenantId.trim()) return
     const ctrl = new AbortController()
     setOverviewErr(null)
     getAdminReferralOverview(filters, ctrl.signal)
@@ -71,6 +93,7 @@ export function AffiliateAdminPage() {
   // 列表加载(分页/筛选/页签切换均触发)。
   const loadList = useCallback(
     (signal: AbortSignal) => {
+      if (!filters.tenantId.trim()) return
       setLoading(true)
       setError(null)
       if (tab === 'records') {
@@ -119,12 +142,13 @@ export function AffiliateAdminPage() {
     setFilters(draft)
   }
   const resetFilters = () => {
-    setDraft(EMPTY_AFFILIATE_FILTERS)
+    const reset = withTenantContext(EMPTY_AFFILIATE_FILTERS, contextTenantId)
+    setDraft(reset)
     setReferrerDraft('')
     setReferrer('')
     setRecordsOffset(0)
     setRewardsOffset(0)
-    setFilters(EMPTY_AFFILIATE_FILTERS)
+    setFilters(reset)
   }
   const setD = <K extends keyof AffiliateFilters>(k: K, v: AffiliateFilters[K]) =>
     setDraft((f) => ({ ...f, [k]: v }))
@@ -134,6 +158,9 @@ export function AffiliateAdminPage() {
   const setOffset = tab === 'records' ? setRecordsOffset : setRewardsOffset
   const pageStart = total === 0 ? 0 : offset + 1
   const pageEnd = Math.min(offset + PAGE_SIZE, total)
+  const overviewStats = mapAffiliateStats(overview)
+  const recordRows = mapReferralTableRows(records)
+  const rewardRows = mapRewardTableRows(rewards)
 
   return (
     <div className="hk-page">
@@ -148,10 +175,7 @@ export function AffiliateAdminPage() {
 
       {/* 概览统计卡 */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--hk-space-3)' }}>
-        <StatCard label="累计返利(USD)" value={overview ? formatUsd(overview.total_reward_usd) : '—'} accent />
-        <StatCard label="已发返利笔数" value={overview ? String(overview.reward_count) : '—'} />
-        <StatCard label="待定 / 已达标" value={overview ? `${statusCount(overview.counts_by_status, 'pending')} / ${statusCount(overview.counts_by_status, 'qualified')}` : '—'} />
-        <StatCard label="已返利 / 已驳回" value={overview ? `${statusCount(overview.counts_by_status, 'rewarded')} / ${statusCount(overview.counts_by_status, 'rejected')}` : '—'} />
+        {overviewStats.map((stat) => <StatCard key={stat.label} label={stat.label} value={stat.value} tone={stat.tone} />)}
       </section>
       {overviewErr && <Banner>{overviewErr}</Banner>}
 
@@ -209,17 +233,17 @@ export function AffiliateAdminPage() {
 
       <div className="hk-card">
         {loading && (tab === 'records' ? records.length === 0 : rewards.length === 0) ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载分销数据" hint="请稍候。" />
         ) : tab === 'records' ? (
           records.length === 0 ? (
-            <Empty>没有匹配的分销记录。</Empty>
+            <EmptyState title="没有匹配的分销记录" hint="可调整租户或状态筛选后重新查询。" />
           ) : (
-            <RecordsTable rows={records} />
+            <DataListTable label="分销记录列表" rows={recordRows} rowKey={(row) => row.id} columns={referralColumns} />
           )
         ) : rewards.length === 0 ? (
-          <Empty>没有匹配的返利记录。</Empty>
+          <EmptyState title="没有匹配的返利记录" hint="可调整租户或邀请人筛选后重新查询。" />
         ) : (
-          <RewardsTable rows={rewards} />
+          <DataListTable label="返利账本列表" rows={rewardRows} rowKey={(row) => row.id} columns={rewardColumns} />
         )}
       </div>
 
@@ -237,72 +261,6 @@ export function AffiliateAdminPage() {
           </button>
         </div>
       </div>
-    </div>
-  )
-}
-
-function RecordsTable({ rows }: { rows: AdminReferralItem[] }) {
-  return (
-    <div className="hk-tablewrap">
-      <table className="hk-table">
-        <thead>
-          <tr>
-            {['记录 ID', '邀请人', '被邀请人', '状态', '创建时间'].map((h) => (
-              <th key={h}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td className="hk-mono">#{r.id}</td>
-              <td className="hk-mono">#{r.referrer_user_id}</td>
-              <td className="hk-mono">#{r.referee_user_id}</td>
-              <td>
-                <StatusBadge tone={statusTone(r.status)}>{statusLabel(r.status)}</StatusBadge>
-              </td>
-              <td className="hk-mono">{fmt(r.created_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function RewardsTable({ rows }: { rows: AdminReferralRewardItem[] }) {
-  return (
-    <div className="hk-tablewrap">
-      <table className="hk-table">
-        <thead>
-          <tr>
-            {['流水 ID', '分销记录', '邀请人', '类型', '金额(USD)', '发放时间'].map((h) => (
-              <th key={h}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td className="hk-mono">#{r.id}</td>
-              <td className="hk-mono">#{r.referral_id}</td>
-              <td className="hk-mono">#{r.referrer_user_id}</td>
-              <td>{r.reward_type || '—'}</td>
-              <td className="hk-mono" style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{formatUsd(r.amount_usd)}</td>
-              <td className="hk-mono">{fmt(r.issued_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function StatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div className="hk-metric">
-      <span className="hk-metric__label">{label}</span>
-      <div className="hk-metric__v hk-mono" style={{ color: accent ? 'var(--hk-primary-700)' : 'var(--hk-ink-900)' }}>{value}</div>
     </div>
   )
 }
@@ -337,9 +295,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
 function Banner({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
@@ -354,9 +309,21 @@ function errMsg(e: unknown, fallback: string): string {
   }
   return fallback
 }
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+
+const referralColumns: DataListColumn<ReferralTableRow>[] = [
+  { key: 'id', label: '记录 ID', render: (row) => <span className="hk-mono">#{row.id}</span> },
+  { key: 'referrer', label: '邀请人', render: (row) => <span className="hk-mono">{row.referrerUserId}</span> },
+  { key: 'referee', label: '被邀请人', render: (row) => <span className="hk-mono">{row.refereeUserId}</span> },
+  { key: 'status', label: '状态', render: (row) => <StatusBadge tone={statusTone(row.status)}>{statusLabel(row.status)}</StatusBadge> },
+  { key: 'createdAt', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
+
+const rewardColumns: DataListColumn<RewardTableRow>[] = [
+  { key: 'id', label: '流水 ID', render: (row) => <span className="hk-mono">#{row.id}</span> },
+  { key: 'referral', label: '分销记录', render: (row) => <span className="hk-mono">{row.referralId}</span> },
+  { key: 'referrer', label: '邀请人', render: (row) => <span className="hk-mono">{row.referrerUserId}</span> },
+  { key: 'type', label: '类型', render: (row) => row.rewardType },
+  { key: 'amount', label: '金额(USD)', render: (row) => <strong className="hk-mono">{row.amountUsd}</strong> },
+  { key: 'issuedAt', label: '发放时间', render: (row) => <span className="hk-mono">{row.issuedAt}</span> },
+]

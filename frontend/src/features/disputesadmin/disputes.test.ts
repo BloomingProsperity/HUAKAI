@@ -3,6 +3,7 @@ import {
   buildListQuery,
   isDisputeStatus,
   isResolvable,
+  mapDisputeTableRows,
   OPERATOR_NOTE_MAX,
   shortDisputeID,
   statusLabel,
@@ -112,5 +113,27 @@ describe('shortDisputeID', () => {
     const out = shortDisputeID(long)
     expect(out.includes('…')).toBe(true)
     expect(out.startsWith('disp_aaaaaaa')).toBe(true)
+  })
+})
+
+describe('争议列表列映射', () => {
+  it('保留可裁决判定、身份方向和退款审计字段', () => {
+    const source = {
+      id: 7,
+      dispute_id: 'disp_' + 'a'.repeat(30),
+      tenant_id: 3,
+      user_id: 42,
+      request_id: 'req_' + 'b'.repeat(30),
+      reason: '重复扣费',
+      status: 'open',
+      operator_note: '',
+      created_at: 'invalid-time',
+    }
+    const [row] = mapDisputeTableRows([source])
+    // 变异(把终态判定写反)会使 resolvable 不再为 true 而 RED。
+    expect(row).toMatchObject({ id: 7, userId: '#42', reason: '重复扣费', operatorNote: '—', createdAt: 'invalid-time', resolvedAt: '—', resolvable: true })
+    expect(row.disputeId).toContain('…')
+    expect(row.requestId).toContain('…')
+    expect(row.source).toBe(source)
   })
 })
