@@ -4,6 +4,9 @@ import {
   importResultTone,
   isKnownCapability,
   KNOWN_CAPABILITIES,
+  mapAliasResultRows,
+  mapAliasValidationRows,
+  mapCapabilityBindingRows,
   parseAliasLines,
   splitParsedAliases,
   summarizeImportResults,
@@ -90,6 +93,24 @@ describe('buildCapabilitiesMap', () => {
     const map = buildCapabilitiesMap({ vision: false, tools: true, '  ': true, ' chat ': true })
     expect(map).toEqual({ vision: false, tools: true, chat: true })
     expect('  ' in map).toBe(false)
+  })
+})
+
+describe('模型注册列表映射', () => {
+  it('完整映射能力绑定状态与空值', () => {
+    const rows = mapCapabilityBindingRows([{ model_id: 4, scope: 'tenant', tenant_id: null, capability: 'vision', capability_value: null, enabled: false, source: 'operator' }])
+    expect(rows[0]).toEqual({ key: 'tenant-vision-0', capability: 'vision', scope: 'tenant', tenant: '—', value: '—', enabled: '停用', enabledTone: 'muted', source: 'operator' })
+  })
+
+  it('保留本地校验行并映射导入结果语气', () => {
+    expect(mapAliasValidationRows([{ line: 3, raw: 'bad', error: '错误' }])).toEqual([{ line: 3, raw: 'bad', error: '错误' }])
+    expect(mapAliasResultRows([
+      { index: 0, alias: 'ok', model_id: 9, status: 'upserted' },
+      { index: 1, alias: 'bad', status: 'failed', error: '冲突' },
+    ])).toEqual([
+      { index: 0, alias: 'ok', modelId: 9, status: 'upserted', statusTone: 'ok', error: '—', hasError: false },
+      { index: 1, alias: 'bad', modelId: '—', status: 'failed', statusTone: 'danger', error: '冲突', hasError: true },
+    ])
   })
 })
 

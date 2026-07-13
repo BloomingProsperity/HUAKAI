@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getModerationConfig, listModerationLogs, updateModerationConfig } from './api'
-import { configToForm, decisionLabel, decisionTone, validateConfig } from './moderation'
+import { configToForm, mapModerationLogRows, validateConfig } from './moderation'
+import type { ModerationLogTableRow } from './moderation'
 import { BannedKeysCard, HashesCard, KeywordsCard } from './ModerationRules'
 import { EMPTY_LOG_FILTERS, type LogFilters, type ModerationConfig, type ModerationLog } from './types'
 
@@ -58,7 +61,7 @@ export function ModerationPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="请先选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <>
           <ConfigCard tenantId={tenantId} />
@@ -144,7 +147,7 @@ function ConfigCard({ tenantId }: { tenantId: number }) {
       {notice && <Banner kind="ok">{notice}</Banner>}
 
       {loading || !form ? (
-        <Empty>{error ? '—' : '加载中…'}</Empty>
+        <EmptyState title={error ? '配置暂不可用' : '正在加载审核配置'} hint={error ? undefined : '请稍候。'} />
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--hk-space-4)', padding: 'var(--hk-space-4)' }}>
           <Toggle label="启用审核(总开关)" checked={form.enabled} onChange={(v) => setF('enabled', v)} />
@@ -261,35 +264,11 @@ function LogsCard({ tenantId }: { tenantId: number }) {
       {error && <Banner kind="error">{error}</Banner>}
 
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载命中记录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无命中记录。</Empty>
+        <EmptyState title="该租户暂无命中记录" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['时间', '判定', '原因码', 'API Key', '用户', 'Payload Hash'].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="hk-mono">{fmt(row.occurred_at)}</td>
-                  <td>
-                    <StatusBadge tone={decisionTone(row.decision)}>{decisionLabel(row.decision)}</StatusBadge>
-                  </td>
-                  <td style={{ color: 'var(--hk-ink-700)' }}>{row.reason_code || '—'}</td>
-                  <td className="hk-mono">#{row.api_key_id}</td>
-                  <td className="hk-mono">#{row.user_id}</td>
-                  <td className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{short(row.payload_hash)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable label="审核命中日志" rows={mapModerationLogRows(rows)} rowKey={(row) => row.id} columns={moderationLogColumns} />
       )}
 
       {hasMore && (
@@ -363,14 +342,6 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function short(s: string): string {
-  if (!s) return '—'
-  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s
-}
 function fmt(iso?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -378,3 +349,12 @@ function fmt(iso?: string): string {
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+
+const moderationLogColumns: DataListColumn<ModerationLogTableRow>[] = [
+  { key: 'time', label: '时间', render: (row) => <span className="hk-mono">{row.occurredAt}</span> },
+  { key: 'decision', label: '判定', badge: true, render: (row) => <StatusBadge tone={row.decisionTone}>{row.decision}</StatusBadge> },
+  { key: 'reason', label: '原因码', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reasonCode}</span> },
+  { key: 'api-key', label: 'API Key', render: (row) => <span className="hk-mono">{row.apiKey}</span> },
+  { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.user}</span> },
+  { key: 'hash', label: 'Payload Hash', render: (row) => <span className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{row.payloadHash}</span> },
+]

@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   bulkImportAliases,
@@ -12,11 +14,14 @@ import {
 import {
   CAPABILITY_GROUPS,
   buildCapabilitiesMap,
-  importResultTone,
+  mapAliasResultRows,
+  mapAliasValidationRows,
+  mapCapabilityBindingRows,
   parseAliasLines,
   splitParsedAliases,
   summarizeImportResults,
 } from './modelregistry'
+import type { AliasResultTableRow, AliasValidationTableRow, CapabilityBindingTableRow } from './modelregistry'
 import type { AliasImportResult, CapabilityBinding, TenantPolicyView } from './types'
 
 /*
@@ -217,27 +222,11 @@ function CapabilityBindingsCard() {
       </Row>
 
       {bindings != null && (
-        <div className="hk-tablewrap" style={{ marginTop: 'var(--hk-space-3)' }}>
+        <div style={{ marginTop: 'var(--hk-space-3)' }}>
           {bindings.length === 0 ? (
-            <Empty>该模型暂无能力绑定。</Empty>
+            <EmptyState title="该模型暂无能力绑定" />
           ) : (
-            <table className="hk-table">
-              <thead>
-                <tr>{['能力', 'scope', '租户', '值', '启用', '来源'].map((h) => <th key={h}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {bindings.map((b, i) => (
-                  <tr key={`${b.scope}-${b.capability}-${i}`}>
-                    <td className="hk-mono">{b.capability}</td>
-                    <td>{b.scope}</td>
-                    <td>{b.tenant_id ?? '—'}</td>
-                    <td className="hk-mono">{b.capability_value ?? '—'}</td>
-                    <td><StatusBadge tone={b.enabled ? 'ok' : 'muted'}>{b.enabled ? '启用' : '停用'}</StatusBadge></td>
-                    <td>{b.source}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataListTable label="能力绑定列表" rows={mapCapabilityBindingRows(bindings)} rowKey={(row) => row.key} columns={capabilityBindingColumns} />
           )}
         </div>
       )}
@@ -346,20 +335,7 @@ function AliasImportCard() {
       {localInvalid.length > 0 && (
         <div style={{ marginTop: 'var(--hk-space-3)' }}>
           <div style={{ fontSize: 12, color: 'var(--hk-danger)', marginBottom: 4 }}>{localInvalid.length} 行本地校验未通过(未提交):</div>
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead><tr>{['行', '内容', '错误'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
-              <tbody>
-                {localInvalid.map((iv) => (
-                  <tr key={iv.line}>
-                    <td>{iv.line}</td>
-                    <td className="hk-mono">{iv.raw}</td>
-                    <td style={{ color: 'var(--hk-danger)' }}>{iv.error}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="别名本地校验失败列表" rows={mapAliasValidationRows(localInvalid)} rowKey={(row) => row.line} columns={aliasValidationColumns} />
         </div>
       )}
 
@@ -371,22 +347,7 @@ function AliasImportCard() {
               <StatusBadge tone={summary.failed > 0 ? 'danger' : 'muted'}>失败 {summary.failed}</StatusBadge>
             </div>
           )}
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead><tr>{['#', '映射名', '模型 id', '状态', '错误'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
-              <tbody>
-                {results.map((r) => (
-                  <tr key={r.index}>
-                    <td>{r.index}</td>
-                    <td className="hk-mono">{r.alias}</td>
-                    <td>{r.model_id ?? '—'}</td>
-                    <td><StatusBadge tone={importResultTone(r.status)}>{r.status}</StatusBadge></td>
-                    <td style={{ color: r.error ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{r.error ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="别名导入结果列表" rows={mapAliasResultRows(results)} rowKey={(row) => row.index} columns={aliasResultColumns} />
         </div>
       )}
 
@@ -519,9 +480,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Actions({ children }: { children: React.ReactNode }) {
   return <div style={{ display: 'flex', gap: 'var(--hk-space-2)', marginTop: 'var(--hk-space-3)' }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
 function ErrorBox({ children }: { children: React.ReactNode }) {
   return <div style={{ marginTop: 'var(--hk-space-3)', padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
@@ -532,3 +490,26 @@ function OkBox({ children }: { children: React.ReactNode }) {
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const chipOff: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-surface)', color: 'var(--hk-ink-500)', fontSize: 12, cursor: 'pointer' }
 const chipOn: React.CSSProperties = { padding: '3px 10px', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-pill)', background: 'var(--hk-primary-50)', color: 'var(--hk-primary-600)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }
+
+const capabilityBindingColumns: DataListColumn<CapabilityBindingTableRow>[] = [
+  { key: 'capability', label: '能力', render: (row) => <span className="hk-mono">{row.capability}</span> },
+  { key: 'scope', label: 'scope', render: (row) => row.scope },
+  { key: 'tenant', label: '租户', render: (row) => row.tenant },
+  { key: 'value', label: '值', render: (row) => <span className="hk-mono">{row.value}</span> },
+  { key: 'enabled', label: '启用', badge: true, render: (row) => <StatusBadge tone={row.enabledTone}>{row.enabled}</StatusBadge> },
+  { key: 'source', label: '来源', render: (row) => row.source },
+]
+
+const aliasValidationColumns: DataListColumn<AliasValidationTableRow>[] = [
+  { key: 'line', label: '行', render: (row) => row.line },
+  { key: 'raw', label: '内容', render: (row) => <span className="hk-mono">{row.raw}</span> },
+  { key: 'error', label: '错误', render: (row) => <span style={{ color: 'var(--hk-danger)' }}>{row.error}</span> },
+]
+
+const aliasResultColumns: DataListColumn<AliasResultTableRow>[] = [
+  { key: 'index', label: '#', render: (row) => row.index },
+  { key: 'alias', label: '映射名', render: (row) => <span className="hk-mono">{row.alias}</span> },
+  { key: 'model-id', label: '模型 id', render: (row) => row.modelId },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'error', label: '错误', render: (row) => <span style={{ color: row.hasError ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{row.error}</span> },
+]
