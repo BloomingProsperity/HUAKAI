@@ -15,6 +15,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
@@ -429,6 +430,10 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			ProviderModelID:     providerModelID,
 			BindingID:           binding.BindingID,
 			MaxParallelRequests: geminiBindingMaxParallelRequests(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
+			SelectionMode:       binding.SelectionMode,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
 		})
 	}
 	return out

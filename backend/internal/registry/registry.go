@@ -78,7 +78,7 @@ type BindingMetadata struct {
 	RPMLimit                *int32  // 绑定级每分钟请求上限。
 	TPMLimit                *int32
 	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
-	FallbackClass           string // 仅存储兼容，无选号/gate/计费消费，UI 已不暴露。
+	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；executor 尚未消费目标 phase。
 
 	// 渠道级请求/响应控制。在本切片中这些字段仅存于内存;
 	// 零值保持既有行为不变。

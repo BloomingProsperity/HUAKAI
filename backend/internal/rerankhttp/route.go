@@ -1,6 +1,7 @@
 package rerankhttp
 
 import (
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -30,6 +31,10 @@ func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 			ProviderModelID:     providerModelID,
 			BindingID:           binding.BindingID,
 			MaxParallelRequests: bindingMaxParallelRequests(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
+			SelectionMode:       binding.SelectionMode,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
 		})
 	}
 	return out

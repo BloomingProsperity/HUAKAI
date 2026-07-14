@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/bodyparamgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -69,6 +70,7 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			MaxParallelRequests: deref32OrZero(binding.MaxParallelRequests),
 			Priority:            binding.Priority,
 			Weight:              binding.Weight,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
 			// 透传 selection_mode:此前丢弃致 pool/router 加权分支永不可达(断点2)。
 			SelectionMode: binding.SelectionMode,
 		})
@@ -541,7 +543,7 @@ func (w *deliveryTracker) statusCode() int {
 // 指向具体上游账号的 response 存储。sticky 未命中换号(绑定账号被健康门/
 // 限流/重试排除挡掉)时,链 ID 跨账号原样转发上游必 404/400;剥掉它让请求
 // 降级为无链续写成功,而非确定性失败。无 binding(短 prompt/TTL 过期)时
-// 无法证明跨账号,保守不动(fail-open,对齐参照 sub2api 9a0e4398)。
+// 无法证明跨账号时保守不动，维持既有 fail-open 行为。
 func (ex *chatExecution) stripCrossAccountResponseChain(body []byte) []byte {
 	if ex == nil || ex.clientProtocol != proto.ClientProtocolOpenAIResponses {
 		return body

@@ -170,6 +170,9 @@ internal/billing/replay_store.go:  unreachable func: MemoryReplayStore.Record
 internal/billing/replay_store.go:  unreachable func: NewMemoryReplayStore
 internal/billing/replay_store.go:  unreachable func: memReplayKey
 internal/billing/state.go:  unreachable func: NewAttempt
+internal/bindingfallback/decision.go:  unreachable func: AllowTransition
+internal/bindingfallback/decision.go:  unreachable func: IsTerminal
+internal/bindingfallback/decision.go:  unreachable func: TargetClass
 internal/budget/redis_store.go:  unreachable func: IsRedisClosed
 internal/budget/scope.go:  unreachable func: RedisCounterKey
 internal/budget/service.go:  unreachable func: WithClock

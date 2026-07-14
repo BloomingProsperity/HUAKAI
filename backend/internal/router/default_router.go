@@ -5,11 +5,13 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 )
 
-// DefaultRouter 生成保守路由计划：保留 registry 的 Priority 硬分层，
-// 仅在连续同优先级段内按绑定 Weight 洗序，并把账号选择与健康 gate 留给
-// executor/pool 层。
+// DefaultRouter 生成保守路由计划：先按 binding class 分桶，再保留各桶的
+// Priority 硬分层，仅在连续同优先级段内按 Weight 洗序，并把账号选择与
+// 健康 gate 留给 executor/pool 层。
 type DefaultRouter struct {
 	// SnapshotVersion 标识规划时刻的 Router 策略版本；它会拼接到
 	// plan.SnapshotVersion 里的 Registry stamp 之后，使审计回放
@@ -27,6 +29,8 @@ func NewDefaultRouter() *DefaultRouter {
 		rand:            newDefaultRouterRand(),
 	}
 }
+
+const fallbackClassPolicyVersion = "v0.3-binding-fallback-class"
 
 const (
 	retryableEndClassUpstreamError5xx  = "upstream_error_5xx"
@@ -76,7 +80,17 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 
 	caps := requiredCapabilities(req.Features)
 	metaByPool := poolMetadataByGroup(req.Model.PoolMetadata)
-	poolCandidates := r.weightedPoolCandidateOrder(req.Model.PoolCandidates, metaByPool)
+	classCandidates, err := poolCandidatesByFallbackClass(req.Model.PoolCandidates, metaByPool)
+	if err != nil {
+		return RoutePlan{}, err
+	}
+	poolCandidates := r.weightedPoolCandidateOrder(classCandidates[bindingfallback.ClassNormal], metaByPool)
+	if len(poolCandidates) == 0 {
+		return RoutePlan{}, &PlanError{
+			Code:    "no_primary_binding",
+			Message: "ResolvedModel has fallback bindings but no normal binding",
+		}
+	}
 	budget := attemptBudgetForPools(len(poolCandidates))
 	seenPools := make(map[int64]struct{}, len(poolCandidates))
 	attempts := make([]AttemptPlan, 0, budget)
@@ -94,6 +108,7 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 			PoolGroupID:          poolGroupID,
 			BindingID:            bindingMeta.BindingID,
 			MaxParallelRequests:  bindingMeta.MaxParallelRequests,
+			FallbackClass:        bindingfallback.ClassNormal,
 			RequiredCapabilities: copyStrings(caps),
 			MaxConcurrencyHint:   0,
 			Reason:               reason,
@@ -101,13 +116,55 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 		})
 		seenPools[poolGroupID] = struct{}{}
 	}
+	fallbackPhases := r.compileFallbackPhases(req.Model, caps, metaByPool, classCandidates)
+	routerPolicyVersion := r.SnapshotVersion
+	if len(fallbackPhases) > 0 {
+		routerPolicyVersion = fallbackClassPolicyVersion
+	}
 
 	return RoutePlan{
 		Attempts:            attempts,
+		FallbackPhases:      fallbackPhases,
 		AttemptBudget:       budget,
 		RetryableEndClasses: copyStrings(retryablePreDeliveryEndClasses),
-		SnapshotVersion:     stampSnapshot(req.Model.SnapshotVersion, r.SnapshotVersion),
+		SnapshotVersion:     stampSnapshot(req.Model.SnapshotVersion, routerPolicyVersion),
 	}, nil
+}
+
+// compileFallbackPhases 按固定 class 顺序编译非 normal 候选。每类只从最高
+// Priority 段按 Weight 选出一个 binding，因此目标子预算始终为 1。
+func (r *DefaultRouter) compileFallbackPhases(
+	model ResolvedModel,
+	caps []string,
+	metadata map[int64]PoolCandidateMeta,
+	classCandidates map[bindingfallback.Class][]int64,
+) []FallbackPhasePlan {
+	var phases []FallbackPhasePlan
+	for _, class := range bindingfallback.FallbackClasses() {
+		ordered := r.weightedPoolCandidateOrder(classCandidates[class], metadata)
+		if len(ordered) == 0 {
+			continue
+		}
+		poolGroupID := ordered[0]
+		bindingMeta := metadata[poolGroupID]
+		attempt := AttemptPlan{
+			Index:                0,
+			PoolGroupID:          poolGroupID,
+			BindingID:            bindingMeta.BindingID,
+			MaxParallelRequests:  bindingMeta.MaxParallelRequests,
+			FallbackClass:        class,
+			RequiredCapabilities: copyStrings(caps),
+			MaxConcurrencyHint:   0,
+			Reason:               "binding_fallback_" + string(class),
+			UpstreamModelID:      upstreamModelIDForPool(model, metadata, poolGroupID),
+		}
+		phases = append(phases, FallbackPhasePlan{
+			FallbackClass: class,
+			Attempts:      []AttemptPlan{attempt},
+			AttemptBudget: 1,
+		})
+	}
+	return phases
 }
 
 func newDefaultRouterRand() *rand.Rand {
@@ -202,6 +259,29 @@ func poolMetadataByGroup(metadata []PoolCandidateMeta) map[int64]PoolCandidateMe
 		}
 	}
 	return out
+}
+
+// poolCandidatesByFallbackClass 只按 class 分桶并保持原相对顺序。Priority 与
+// Weight 随后在各自桶内由既有算法处理，phase 之间从不比较两者。
+func poolCandidatesByFallbackClass(
+	candidates []int64,
+	metadata map[int64]PoolCandidateMeta,
+) (map[bindingfallback.Class][]int64, error) {
+	out := make(map[bindingfallback.Class][]int64, len(bindingfallback.FallbackClasses())+1)
+	for _, poolGroupID := range candidates {
+		class := bindingfallback.ClassNormal
+		if meta, ok := metadata[poolGroupID]; ok {
+			class = bindingfallback.NormalizeClass(string(meta.FallbackClass))
+		}
+		if !bindingfallback.IsKnownClass(class) {
+			return nil, &PlanError{
+				Code:    "invalid_fallback_class",
+				Message: "PoolCandidateMeta.FallbackClass is outside the binding contract",
+			}
+		}
+		out[class] = append(out[class], poolGroupID)
+	}
+	return out, nil
 }
 
 func upstreamModelIDForPool(model ResolvedModel, metadata map[int64]PoolCandidateMeta, poolGroupID int64) string {

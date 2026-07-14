@@ -1789,9 +1789,9 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 	// BW-AT-01：Priority/Weight/SelectionMode 必须完整穿过 registry→router
 	// 翻译边界。变异删除任一字段映射时，下面的结构体精确比较直接变红。
 	want := []router.PoolCandidateMeta{
-		{BindingID: 1, PoolGroupID: 701, ProviderModelID: "pool-a-upstream", Priority: 10, Weight: 5, SelectionMode: "strict_priority", MaxParallelRequests: 7},
-		{BindingID: 2, PoolGroupID: 702, ProviderModelID: "pool-b-upstream", Priority: 20, Weight: 3, SelectionMode: "strict_priority", MaxParallelRequests: 11},
-		{BindingID: 3, PoolGroupID: 703, ProviderModelID: "default-upstream", Priority: 30, Weight: 1, SelectionMode: "strict_priority"},
+		{BindingID: 1, PoolGroupID: 701, ProviderModelID: "pool-a-upstream", Priority: 10, Weight: 5, SelectionMode: "strict_priority", MaxParallelRequests: 7, FallbackClass: "normal"},
+		{BindingID: 2, PoolGroupID: 702, ProviderModelID: "pool-b-upstream", Priority: 20, Weight: 3, SelectionMode: "strict_priority", MaxParallelRequests: 11, FallbackClass: "quota"},
+		{BindingID: 3, PoolGroupID: 703, ProviderModelID: "default-upstream", Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
 	}
 	for i := range want {
 		if got.PoolMetadata[i] != want[i] {
