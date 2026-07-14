@@ -239,7 +239,7 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 			}
 		}
 		reason.Account(account.ID)
-		return &SelectionResult{AccountID: account.ID, AcquisitionToken: acquired.AcquisitionToken, RoutingReasonJSON: reason.JSON()}, true, nil
+		return &SelectionResult{AccountID: account.ID, AcquisitionToken: acquired.AcquisitionToken, Release: acquired.Release, RoutingReasonJSON: reason.JSON()}, true, nil
 	}
 	return nil, false, nil
 }

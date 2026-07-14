@@ -104,6 +104,9 @@ type SelectionRequest struct {
 	BindingID       int64
 	BindingRPMLimit int64
 	BindingTPMLimit int64
+	// MaxParallelRequests 是命中 binding 的全局在途上限。正数启用；0 或负数表示不限。
+	// 外层 selector 只用它快速拒绝，真正抗并发的裁定仍在 DBSlotManager 的事务内完成。
+	MaxParallelRequests int64
 }
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
@@ -122,8 +125,11 @@ const (
 
 // SelectionResult 是 Phase C 输出：已拿到的 Provider Account 或等待计划。
 type SelectionResult struct {
-	AccountID         int64
-	AcquisitionToken  uuid.UUID
+	AccountID        int64
+	AcquisitionToken uuid.UUID
+	// Release 仅供不进入 billing settler 的短生命周期端点使用。计费端点必须继续
+	// 让 settle/abort 按 claim 原子释放，不能在 handler 中提前调用。
+	Release           ReleaseFunc
 	WaitPlan          *WaitPlan
 	RoutingReasonJSON []byte
 	// StickyState 见上;只对 AccountID != 0 的结果有意义。

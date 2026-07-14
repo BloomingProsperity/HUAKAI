@@ -77,7 +77,7 @@ type BindingMetadata struct {
 	ProviderModelIDOverride *string // 可空；覆盖该绑定使用的上游模型标识。
 	RPMLimit                *int32  // 绑定级每分钟请求上限。
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 仅存储兼容，无选号/gate/计费消费，UI 已不暴露。
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
 	FallbackClass           string // 仅存储兼容，无选号/gate/计费消费，UI 已不暴露。
 
 	// 渠道级请求/响应控制。在本切片中这些字段仅存于内存;

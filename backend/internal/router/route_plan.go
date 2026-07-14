@@ -45,6 +45,10 @@ type ResolvedModel struct {
 type PoolCandidateMeta struct {
 	PoolGroupID     int64
 	ProviderModelID string
+	// BindingID 与 MaxParallelRequests 必须随被选中的 pool 一起进入 AttemptPlan，
+	// 否则只知道 pool_group_id 的端点会绕过绑定级全局并发上限。
+	BindingID           int64
+	MaxParallelRequests int64
 	// Priority 是不可跨越的绑定级优先级；Router 不跨值交换，Registry
 	// 输入排序保证数值更小的候选段在前。
 	Priority int32
@@ -102,6 +106,11 @@ type AttemptPlan struct {
 	// PoolGroupID 是路由层级的决策：进入哪个 pool。之后由该 Pool 运行
 	// 它的 9-gate 池内选号。
 	PoolGroupID int64
+
+	// BindingID / MaxParallelRequests 是本 attempt 对应的 model→pool 绑定上下文。
+	// 正上限由 pool 的 DBSlotManager 原子执行；0 表示不限。
+	BindingID           int64
+	MaxParallelRequests int64
 
 	// RequiredCapabilities 是 Pool 在过滤 account 时必须强制要求的
 	// ResolvedModel.Capabilities 子集。之所以单独存储，是因为某些

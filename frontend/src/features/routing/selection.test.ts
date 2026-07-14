@@ -29,19 +29,20 @@ const richBinding: PoolBinding = {
   tpm_limit: 90000,
 }
 
-describe('buildBindingUpdate(仅提交真实生效字段)', () => {
-  it('有效字段精确回填,三个仅存储字段不进入 payload', () => {
+describe('buildBindingUpdate(回填全部运行时字段)', () => {
+  it('有效字段精确回填,并发上限保留，两个仅存储字段不进入 payload', () => {
     const req = buildBindingUpdate(binding, {
       priority: '7',
       selectionMode: 'priority_weighted',
+      maxParallelRequests: '37',
       enabled: false,
     })
     expect(req.priority).toBe(7)
     expect(req.selection_mode).toBe('priority_weighted')
     expect(req.enabled).toBe(false)
-    // 判别核心:把任一欺骗控件重新接回 payload,对应 key 断言立即转红。
+    expect(req.max_parallel_requests).toBe(37)
+    // 判别核心:仅存储兼容字段仍不得重新进入 payload。
     expect('weight' in req).toBe(false)
-    expect('max_parallel_requests' in req).toBe(false)
     expect('fallback_class' in req).toBe(false)
   })
 
@@ -52,6 +53,8 @@ describe('buildBindingUpdate(仅提交真实生效字段)', () => {
     expect(req.provider_model_id_override).toBe('gpt-4o-real')
     expect(req.rpm_limit).toBe(60)
     expect(req.tpm_limit).toBe(90000)
+    // 变异⑤：删掉 PATCH 回填会让该断言立即转红，防编辑其它字段静默清空上限。
+    expect(req.max_parallel_requests).toBe(37)
   })
 
   it('priority 表单非法 → 回退原值(不写非法值)', () => {
@@ -68,6 +71,7 @@ describe('hasBindingChanges', () => {
     expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), priority: '5' })).toBe(true)
     expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), enabled: false })).toBe(true)
     expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), selectionMode: 'priority_weighted' })).toBe(true)
+    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), maxParallelRequests: '5' })).toBe(true)
   })
 })
 
@@ -78,16 +82,24 @@ describe('buildBindingCreate', () => {
   })
 
   it('齐全 → 正确请求体', () => {
-    const req = buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20', priority: '6', selectionMode: 'priority_weighted' })
+    const req = buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20', priority: '6', selectionMode: 'priority_weighted', maxParallelRequests: '4' })
     expect(req).toEqual({
       model_id: 10,
       pool_group_id: 20,
       selection_mode: 'priority_weighted',
       priority: 6,
+      max_parallel_requests: 4,
     })
     expect('weight' in req).toBe(false)
-    expect('max_parallel_requests' in req).toBe(false)
     expect('fallback_class' in req).toBe(false)
+  })
+
+  it('并发上限非法值拒绝，空值保持不限且不下发', () => {
+    expect(buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20', maxParallelRequests: '-1' })).toEqual({
+      error: '最大并发请求数必须是大于等于 0 的整数，留空表示不限',
+    })
+    const req = buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20' })
+    expect('max_parallel_requests' in req).toBe(false)
   })
 })
 

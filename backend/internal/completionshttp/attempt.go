@@ -3,6 +3,7 @@ package completionshttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -27,21 +28,29 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, reques
 		claimID = ex.reserveRes.ClaimID
 	}
 	sel, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
-		TenantID:         ex.ident.TenantID,
-		UserID:           ex.ident.UserID,
-		APIKeyID:         ex.ident.APIKeyID,
-		PoolGroupID:      ex.attempt.PoolGroupID,
-		RequestedModel:   requestedModel,
-		ModelCooldownKey: ex.upstreamModelID,
-		ProtocolFamily:   ex.resolved.ProtocolFamily,
-		EndpointFamily:   ex.endpointFamily,
-		ClaimID:          claimID,
-		AttemptSeq:       attemptSeq,
-		CapabilityFlags:  ex.attempt.RequiredCapabilities,
-		SessionHash:      ex.payloadHash,
-		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
-		UserGroup:        ex.ident.UserGroup,
+		TenantID:            ex.ident.TenantID,
+		UserID:              ex.ident.UserID,
+		APIKeyID:            ex.ident.APIKeyID,
+		PoolGroupID:         ex.attempt.PoolGroupID,
+		RequestedModel:      requestedModel,
+		ModelCooldownKey:    ex.upstreamModelID,
+		ProtocolFamily:      ex.resolved.ProtocolFamily,
+		EndpointFamily:      ex.endpointFamily,
+		ClaimID:             claimID,
+		AttemptSeq:          attemptSeq,
+		CapabilityFlags:     ex.attempt.RequiredCapabilities,
+		SessionHash:         ex.payloadHash,
+		Vendor:              pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		UserGroup:           ex.ident.UserGroup,
+		BindingID:           ex.attempt.BindingID,
+		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	})
+	if errors.Is(err, pool.ErrBindingConcurrencyLimited) {
+		ex.abort(w, "binding_concurrency_limited", 0)
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited))
+		return false
+	}
 	if err != nil || sel == nil || sel.AccountID == 0 || sel.WaitPlan != nil {
 		ex.abort(w, "pool_select_no_account", 0)
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))

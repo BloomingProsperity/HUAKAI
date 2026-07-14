@@ -25,6 +25,7 @@ type AccountSource = router.AccountSource
 type RoutingPolicySource = router.RoutingPolicySource
 type StickyStore = router.StickyStore
 type ClaimGate = router.ClaimGate
+type BindingConcurrencyReader = router.BindingConcurrencyReader
 
 // SelectionMode 与其常量 re-export,供 cmd/gateway 装配生产 RoutingPolicySource 时
 // 按 binding selection_mode 返回对应策略,无需直引 pool/router 内部包。
@@ -107,13 +108,14 @@ type RoutingReasonBuilder = router.RoutingReasonBuilder
 type NoCapacityError = router.NoCapacityError
 
 var (
-	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
-	ErrKeyRateLimited         = router.ErrKeyRateLimited
-	ErrBindingRateLimited     = router.ErrBindingRateLimited
-	ErrAllChannelsDegraded    = router.ErrAllChannelsDegraded
-	ErrClaimRace              = router.ErrClaimRace
-	ErrSlotManagerUnavailable = router.ErrSlotManagerUnavailable
-	ErrNoSlotAvailable        = router.ErrNoSlotAvailable
-	ErrPASRPreMutationFail    = router.ErrPASRPreMutationFail
-	ErrPASRPostMutationFail   = router.ErrPASRPostMutationFail
+	ErrNoEligibleAccount         = router.ErrNoEligibleAccount
+	ErrKeyRateLimited            = router.ErrKeyRateLimited
+	ErrBindingRateLimited        = router.ErrBindingRateLimited
+	ErrBindingConcurrencyLimited = router.ErrBindingConcurrencyLimited
+	ErrAllChannelsDegraded       = router.ErrAllChannelsDegraded
+	ErrClaimRace                 = router.ErrClaimRace
+	ErrSlotManagerUnavailable    = router.ErrSlotManagerUnavailable
+	ErrNoSlotAvailable           = router.ErrNoSlotAvailable
+	ErrPASRPreMutationFail       = router.ErrPASRPreMutationFail
+	ErrPASRPostMutationFail      = router.ErrPASRPostMutationFail
 )

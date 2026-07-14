@@ -63,10 +63,12 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			providerModelID = *binding.ProviderModelIDOverride
 		}
 		out = append(out, router.PoolCandidateMeta{
-			PoolGroupID:     binding.PoolGroupID,
-			ProviderModelID: providerModelID,
-			Priority:        binding.Priority,
-			Weight:          binding.Weight,
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: deref32OrZero(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
 			// 透传 selection_mode:此前丢弃致 pool/router 加权分支永不可达(断点2)。
 			SelectionMode: binding.SelectionMode,
 		})

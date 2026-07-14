@@ -19,7 +19,7 @@ const legacyBinding: PoolBinding = {
 }
 
 describe('路由绑定 UI 只暴露真实生效字段', () => {
-  it('创建与编辑表单 DOM 均不出现三个仅存储字段', () => {
+  it('创建与编辑表单均展示并发上限，不出现两个仅存储字段', () => {
     const createHTML = renderToStaticMarkup(
       <BindingModal tenantId={7} binding={null} onClose={() => undefined} onSaved={() => undefined} />,
     )
@@ -32,7 +32,8 @@ describe('路由绑定 UI 只暴露真实生效字段', () => {
       expect(html).toContain('选号策略')
       expect(html).not.toContain('权重(priority_weighted 时生效)')
       expect(html).not.toContain('兜底类')
-      expect(html).not.toContain('max_parallel_requests')
+      expect(html).toContain('最大并发请求数')
+      expect(html).toContain('0 或留空表示不限')
     }
   })
 

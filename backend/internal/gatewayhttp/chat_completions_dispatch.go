@@ -501,6 +501,11 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
+	if ex.attempt.BindingID > 0 {
+		// 并发上限与 BindingID 都来自同一 AttemptPlan，避免跨 pool fallback 时
+		// 把新 attempt 的 K 配到上一条 binding 上。
+		bindingID = ex.attempt.BindingID
+	}
 	return pool.SelectionRequest{
 		TenantID:         ex.ident.TenantID,
 		UserID:           ex.ident.UserID,
@@ -523,9 +528,10 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
 		// 命中 binding 的 per-binding RPM/TPM 限额透传给 BindingRateLimitSelector(env 门控 + 限额>0 才强制)。
-		BindingID:       bindingID,
-		BindingRPMLimit: bindingRPM,
-		BindingTPMLimit: bindingTPM,
+		BindingID:           bindingID,
+		BindingRPMLimit:     bindingRPM,
+		BindingTPMLimit:     bindingTPM,
+		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	}
 }
 

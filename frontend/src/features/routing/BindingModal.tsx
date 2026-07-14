@@ -7,6 +7,7 @@ import {
   EMPTY_CREATE_BINDING,
   editFormFromBinding,
   hasBindingChanges,
+  maxParallelRequestsError,
   SELECTION_MODES,
   type BindingCreateForm,
   type BindingEditForm,
@@ -30,7 +31,7 @@ export function BindingModal({
 }) {
   const editing = binding !== null
   const [editForm, setEditForm] = useState<BindingEditForm>(
-    binding ? editFormFromBinding(binding) : { priority: '0', selectionMode: 'strict_priority', enabled: true },
+    binding ? editFormFromBinding(binding) : { priority: '0', selectionMode: 'strict_priority', maxParallelRequests: '', enabled: true },
   )
   const [createForm, setCreateForm] = useState<BindingCreateForm>(EMPTY_CREATE_BINDING)
   const [busy, setBusy] = useState(false)
@@ -45,6 +46,12 @@ export function BindingModal({
     setError(null)
     try {
       if (editing && binding) {
+        const validationError = maxParallelRequestsError(editForm.maxParallelRequests)
+        if (validationError) {
+          setError(validationError)
+          setBusy(false)
+          return
+        }
         if (!hasBindingChanges(binding, editForm)) {
           setError('未修改任何字段')
           setBusy(false)
@@ -112,6 +119,22 @@ export function BindingModal({
             ))}
           </select>
           {selHint && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{selHint}</span>}
+        </Field>
+        <Field label="最大并发请求数">
+          <input
+            value={editing ? editForm.maxParallelRequests : createForm.maxParallelRequests}
+            onChange={(e) =>
+              editing
+                ? setEditForm((f) => ({ ...f, maxParallelRequests: e.target.value }))
+                : setCreateForm((f) => ({ ...f, maxParallelRequests: e.target.value }))
+            }
+            type="number"
+            inputMode="numeric"
+            min={0}
+            placeholder="留空表示不限"
+            style={inp}
+          />
+          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>0 或留空表示不限；正整数限制该绑定的全局在途请求数</span>
         </Field>
         {editing && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-700)' }}>

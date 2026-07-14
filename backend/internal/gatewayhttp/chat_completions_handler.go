@@ -958,6 +958,13 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 		return ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
 	}
 	switch {
+	case errors.Is(err, pool.ErrBindingConcurrencyLimited):
+		if e := abort("binding_concurrency_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited), "binding_concurrency_limited", err)
+		f.RetryAfterSeconds = 1
+		return f
 	case errors.Is(err, pool.ErrKeyRateLimited), errors.Is(err, pool.ErrBindingRateLimited):
 		if e := abort("key_rate_limited"); e != nil && w != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)

@@ -46,6 +46,7 @@ type PoolSlotAcquisition struct {
 	ID                int64              `db:"id" json:"id"`
 	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
 	ProviderAccountID int64              `db:"provider_account_id" json:"provider_account_id"`
+	BindingID         *int64             `db:"binding_id" json:"binding_id"`
 	AcquisitionToken  uuid.UUID          `db:"acquisition_token" json:"acquisition_token"`
 	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`

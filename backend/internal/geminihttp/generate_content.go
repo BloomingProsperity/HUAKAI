@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
@@ -181,9 +182,12 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 		}
 		cred, accInfo, ok := relay.resolveCredential(w, ctx, ident, selRes.AccountID)
 		if !ok {
+			releaseCountTokensSelection(ctx, selRes)
 			return
 		}
-		if relay.dispatchCountTokens(w, ctx, resolved.ProtocolFamily, upstreamModelID, body, cred, accInfo) {
+		dispatched := relay.dispatchCountTokens(w, ctx, resolved.ProtocolFamily, upstreamModelID, body, cred, accInfo)
+		releaseCountTokensSelection(ctx, selRes)
+		if dispatched {
 			return
 		}
 		if i+1 >= budget {
@@ -262,19 +266,26 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 func (relay *countTokensRelay) selectAccount(w http.ResponseWriter, ctx context.Context, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int) (*pool.SelectionResult, bool) {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, err := relay.d.Selector.Select(ctx, pool.SelectionRequest{
-		TenantID:         ident.TenantID,
-		UserID:           ident.UserID,
-		APIKeyID:         ident.APIKeyID,
-		PoolGroupID:      attempt.PoolGroupID,
-		RequestedModel:   model,
-		ModelCooldownKey: upstreamModelID,
-		ProtocolFamily:   resolved.ProtocolFamily,
-		EndpointFamily:   "gemini_count_tokens",
-		AttemptSeq:       attemptSeq,
-		CapabilityFlags:  attempt.RequiredCapabilities,
-		Vendor:           pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
-		UserGroup:        ident.UserGroup,
+		TenantID:            ident.TenantID,
+		UserID:              ident.UserID,
+		APIKeyID:            ident.APIKeyID,
+		PoolGroupID:         attempt.PoolGroupID,
+		RequestedModel:      model,
+		ModelCooldownKey:    upstreamModelID,
+		ProtocolFamily:      resolved.ProtocolFamily,
+		EndpointFamily:      "gemini_count_tokens",
+		AttemptSeq:          attemptSeq,
+		CapabilityFlags:     attempt.RequiredCapabilities,
+		Vendor:              pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
+		UserGroup:           ident.UserGroup,
+		BindingID:           attempt.BindingID,
+		MaxParallelRequests: attempt.MaxParallelRequests,
 	})
+	if errors.Is(err, pool.ErrBindingConcurrencyLimited) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited))
+		return nil, false
+	}
 	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
 		return nil, false
@@ -288,6 +299,17 @@ func (relay *countTokensRelay) selectAccount(w http.ResponseWriter, ctx context.
 		return nil, false
 	}
 	return selRes, true
+}
+
+// releaseCountTokensSelection 归还无计费 claim 的短请求槽。脱离客户端取消后再加
+// 短超时，避免断连把释放一并取消，最终只能等待 lease sweep。
+func releaseCountTokensSelection(ctx context.Context, sel *pool.SelectionResult) {
+	if sel == nil || sel.Release == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = sel.Release(releaseCtx)
 }
 
 func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx context.Context, ident auth.Identity, accountID int64) (provider.Credential, provider.AccountInfo, bool) {
@@ -403,11 +425,20 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			providerModelID = *binding.ProviderModelIDOverride
 		}
 		out = append(out, router.PoolCandidateMeta{
-			PoolGroupID:     binding.PoolGroupID,
-			ProviderModelID: providerModelID,
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: geminiBindingMaxParallelRequests(binding.MaxParallelRequests),
 		})
 	}
 	return out
+}
+
+func geminiBindingMaxParallelRequests(v *int32) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {

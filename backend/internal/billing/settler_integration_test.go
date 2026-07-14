@@ -41,6 +41,19 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 	pool := openPool(t, ctx)
 	seed := seedSettlerGraph(t, ctx, pool, "settle-004")
 	settler := NewSettler(pool)
+	bindingID := int64(uuid.New().ID()) + 1<<33
+	if _, err := pool.Exec(ctx,
+		`UPDATE pool_slot_acquisitions SET binding_id=$1 WHERE acquisition_token=$2`,
+		bindingID, seed.acquisitionToken,
+	); err != nil {
+		t.Fatalf("attach binding to acquisition: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET cap_concurrency=4 WHERE id=$1`,
+		seed.providerAccountID,
+	); err != nil {
+		t.Fatalf("raise provider cap for replacement: %v", err)
+	}
 
 	actualCost := decimal.RequireFromString("0.02000000")
 	req := settleRequest(seed, actualCost)
@@ -112,6 +125,35 @@ func TestAT_OBS_004_AtomicFiveEffect(t *testing.T) {
 	}
 	if inFlight != 1 {
 		t.Fatalf("provider account in_flight_count must decrement from 2 to 1; got %d", inFlight)
+	}
+	var slotStatus string
+	var bindingActive int
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
+		seed.acquisitionToken,
+	).Scan(&slotStatus); err != nil {
+		t.Fatalf("read settled slot status: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM pool_slot_acquisitions
+		  WHERE binding_id=$1 AND status='acquired'`,
+		bindingID,
+	).Scan(&bindingActive); err != nil {
+		t.Fatalf("count binding after settle: %v", err)
+	}
+	if slotStatus != "released_success" || bindingActive != 0 {
+		t.Fatalf("settled slot status/active=%q/%d want released_success/0", slotStatus, bindingActive)
+	}
+	replacement, err := pooldispatcher.NewDBSlotManager(pool).Acquire(ctx, &pooldispatcher.AccountSnapshot{
+		ID: seed.providerAccountID, TenantID: seed.tenantID, MaxConcurrency: 4,
+	}, pooldispatcher.SelectionRequest{
+		TenantID: seed.tenantID, BindingID: bindingID, MaxParallelRequests: 1, AttemptSeq: 2,
+	})
+	if err != nil {
+		t.Fatalf("replacement after successful settle: %v", err)
+	}
+	if err := replacement.Release(ctx); err != nil {
+		t.Fatalf("release replacement after successful settle: %v", err)
 	}
 }
 
@@ -334,6 +376,19 @@ func TestSettler_AbortPath(t *testing.T) {
 	pool := openPool(t, ctx)
 	seed := seedSettlerGraph(t, ctx, pool, "settle-abort")
 	settler := NewSettler(pool)
+	bindingID := int64(uuid.New().ID()) + 1<<34
+	if _, err := pool.Exec(ctx,
+		`UPDATE pool_slot_acquisitions SET binding_id=$1 WHERE acquisition_token=$2`,
+		bindingID, seed.acquisitionToken,
+	); err != nil {
+		t.Fatalf("attach binding to aborted acquisition: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts SET cap_concurrency=4 WHERE id=$1`,
+		seed.providerAccountID,
+	); err != nil {
+		t.Fatalf("raise provider cap for abort replacement: %v", err)
+	}
 
 	if err := settler.Abort(ctx, seed.tenantID, seed.claimID, "test abort", "req-settle-abort", 0, nil); err != nil {
 		t.Fatalf("Abort: %v", err)
@@ -401,6 +456,35 @@ func TestSettler_AbortPath(t *testing.T) {
 	}
 	if inFlight != 1 {
 		t.Fatalf("abort path must release slot + decrement in_flight_count from 2 to 1 per T2-INV-27 (slot acquired before abort); got %d", inFlight)
+	}
+	var slotStatus string
+	var bindingActive int
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
+		seed.acquisitionToken,
+	).Scan(&slotStatus); err != nil {
+		t.Fatalf("read aborted slot status: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM pool_slot_acquisitions
+		  WHERE binding_id=$1 AND status='acquired'`,
+		bindingID,
+	).Scan(&bindingActive); err != nil {
+		t.Fatalf("count binding after abort: %v", err)
+	}
+	if slotStatus != "released_failure" || bindingActive != 0 {
+		t.Fatalf("aborted slot status/active=%q/%d want released_failure/0", slotStatus, bindingActive)
+	}
+	replacement, err := pooldispatcher.NewDBSlotManager(pool).Acquire(ctx, &pooldispatcher.AccountSnapshot{
+		ID: seed.providerAccountID, TenantID: seed.tenantID, MaxConcurrency: 4,
+	}, pooldispatcher.SelectionRequest{
+		TenantID: seed.tenantID, BindingID: bindingID, MaxParallelRequests: 1, AttemptSeq: 2,
+	})
+	if err != nil {
+		t.Fatalf("replacement after abort: %v", err)
+	}
+	if err := replacement.Release(ctx); err != nil {
+		t.Fatalf("release replacement after abort: %v", err)
 	}
 }
 
@@ -1309,11 +1393,11 @@ func assertAbortedEvidenceOnce(t *testing.T, ctx context.Context, pg *pgxpool.Po
 		t.Fatalf("abort retry 后 usage_records/tokens_input=%d/%d want 1/%d", usageCount, tokensInput, observedInputTokens)
 	}
 	var releasedSlots int
-	if err := pg.QueryRow(ctx, `SELECT count(*) FROM pool_slot_acquisitions WHERE claim_id=$1 AND status='released_success'`, seed.claimID).Scan(&releasedSlots); err != nil {
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM pool_slot_acquisitions WHERE claim_id=$1 AND status='released_failure'`, seed.claimID).Scan(&releasedSlots); err != nil {
 		t.Fatalf("count released slots: %v", err)
 	}
 	if releasedSlots != 1 {
-		t.Fatalf("abort retry 后 released slots=%d want 1", releasedSlots)
+		t.Fatalf("abort retry 后 released_failure slots=%d want 1", releasedSlots)
 	}
 	assertAccountInFlight(t, ctx, pg, seed.providerAccountID, 1)
 }

@@ -50,7 +50,7 @@ type AdminBinding struct {
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
 	FallbackClass           string // 仅存储兼容，无运行时消费，UI 已不暴露。
 	Enabled                 bool
 	DisabledReason          *string
@@ -73,7 +73,7 @@ type CreateBindingInput struct {
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
 	FallbackClass           string // 仅存储兼容，无运行时消费，UI 已不暴露。
 	Enabled                 bool
 	DisabledReason          *string
@@ -94,7 +94,7 @@ type UpdateBindingInput struct {
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
 	FallbackClass           string // 仅存储兼容，无运行时消费，UI 已不暴露。
 	Enabled                 bool
 	DisabledReason          *string

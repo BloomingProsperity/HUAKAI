@@ -82,6 +82,7 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 	attempts := make([]AttemptPlan, 0, budget)
 	for i := 0; i < budget; i++ {
 		poolGroupID := poolCandidates[i%len(poolCandidates)]
+		bindingMeta := metaByPool[poolGroupID]
 		reason := "cross_pool_fallback"
 		if i == 0 {
 			reason = "primary"
@@ -91,6 +92,8 @@ func (r *DefaultRouter) Plan(_ context.Context, req PlanInput) (RoutePlan, error
 		attempts = append(attempts, AttemptPlan{
 			Index:                i,
 			PoolGroupID:          poolGroupID,
+			BindingID:            bindingMeta.BindingID,
+			MaxParallelRequests:  bindingMeta.MaxParallelRequests,
 			RequiredCapabilities: copyStrings(caps),
 			MaxConcurrencyHint:   0,
 			Reason:               reason,

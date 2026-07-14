@@ -160,6 +160,12 @@ func NewBindingRateLimitSelector(inner Selector, counter *precheck.Counter) Sele
 	return router.NewBindingRateLimitSelector(inner, counter)
 }
 
+// NewBindingConcurrencySelector 在选号前做 acquired 数量快速预检；
+// DBSlotManager.acquireOnce 内仍会执行事务级权威硬闸。
+func NewBindingConcurrencySelector(inner Selector, reader BindingConcurrencyReader) Selector {
+	return router.NewBindingConcurrencySelector(inner, reader)
+}
+
 func WithRoutingPolicySource(v RoutingPolicySource) SelectorOption {
 	return router.WithRoutingPolicySource(v)
 }

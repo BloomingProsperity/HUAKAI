@@ -12,10 +12,49 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acquireBindingConcurrencyLock = `-- name: AcquireBindingConcurrencyLock :exec
+SELECT pg_advisory_lock(
+    hashtextextended('pool_binding_concurrency'::text, $1::bigint)
+)
+`
+
+func (q *Queries) AcquireBindingConcurrencyLock(ctx context.Context, bindingID int64) error {
+	_, err := q.db.Exec(ctx, acquireBindingConcurrencyLock, bindingID)
+	return err
+}
+
+const releaseBindingConcurrencyLock = `-- name: ReleaseBindingConcurrencyLock :one
+SELECT pg_advisory_unlock(
+    hashtextextended('pool_binding_concurrency'::text, $1::bigint)
+)::boolean
+`
+
+func (q *Queries) ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, releaseBindingConcurrencyLock, bindingID)
+	var pg_advisory_unlock bool
+	err := row.Scan(&pg_advisory_unlock)
+	return pg_advisory_unlock, err
+}
+
+const countActiveBindingAcquisitions = `-- name: CountActiveBindingAcquisitions :one
+SELECT COUNT(*)::bigint
+FROM pool_slot_acquisitions
+WHERE binding_id = $1::bigint
+  AND status = 'acquired'
+`
+
+func (q *Queries) CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveBindingAcquisitions, bindingID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const insertSlotAcquisition = `-- name: InsertSlotAcquisition :one
 INSERT INTO pool_slot_acquisitions (
     tenant_id,
     provider_account_id,
+    binding_id,
     acquisition_token,
     claim_id,
     attempt_seq,
@@ -26,7 +65,8 @@ INSERT INTO pool_slot_acquisitions (
     $3,
     $4,
     $5,
-    $6
+    $6,
+    $7
 )
 RETURNING id
 `
@@ -34,6 +74,7 @@ RETURNING id
 type InsertSlotAcquisitionParams struct {
 	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
 	ProviderAccountID int64              `db:"provider_account_id" json:"provider_account_id"`
+	BindingID         *int64             `db:"binding_id" json:"binding_id"`
 	AcquisitionToken  uuid.UUID          `db:"acquisition_token" json:"acquisition_token"`
 	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`
@@ -44,6 +85,7 @@ func (q *Queries) InsertSlotAcquisition(ctx context.Context, arg InsertSlotAcqui
 	row := q.db.QueryRow(ctx, insertSlotAcquisition,
 		arg.TenantID,
 		arg.ProviderAccountID,
+		arg.BindingID,
 		arg.AcquisitionToken,
 		arg.ClaimID,
 		arg.AttemptSeq,
@@ -59,6 +101,7 @@ SELECT
     id,
     tenant_id,
     provider_account_id,
+    binding_id,
     acquisition_token,
     claim_id,
     attempt_seq,
@@ -88,6 +131,7 @@ func (q *Queries) ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcqui
 			&i.ID,
 			&i.TenantID,
 			&i.ProviderAccountID,
+			&i.BindingID,
 			&i.AcquisitionToken,
 			&i.ClaimID,
 			&i.AttemptSeq,

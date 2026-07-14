@@ -15,7 +15,7 @@ export interface PoolBinding {
   provider_model_id_override?: string | null
   rpm_limit?: number | null
   tpm_limit?: number | null
-  /** 旧客户端兼容字段；当前界面不展示也不下发。 */
+  /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
   /** 旧客户端兼容字段；当前界面不展示也不下发。 */
   fallback_class?: string
@@ -34,15 +34,14 @@ export interface CreateBindingRequest {
   /** 旧客户端兼容字段；当前界面不下发。 */
   weight?: number
   selection_mode?: string
-  /** 旧客户端兼容字段；当前界面不下发。 */
+  /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
   /** 旧客户端兼容字段；当前界面不下发。 */
   fallback_class?: string
 }
 
 /**
- * 更新(PATCH)。后端仍接受旧客户端携带的三个兼容字段；当前界面只回填仍有运行时消费的
- * 字段与既有可空字段，不下发仅存储字段。
+ * 更新(PATCH)。后端按整行覆盖，界面必须回填 max_parallel_requests 与其它可空字段。
  */
 export interface UpdateBindingRequest {
   priority: number
@@ -50,7 +49,7 @@ export interface UpdateBindingRequest {
   enabled: boolean
   /** 旧客户端兼容字段；当前界面不下发。 */
   weight?: number
-  /** 旧客户端兼容字段；当前界面不下发。 */
+  /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
   /** 旧客户端兼容字段；当前界面不下发。 */
   fallback_class?: string

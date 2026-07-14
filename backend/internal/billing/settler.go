@@ -251,6 +251,7 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 	releaseReason := "settled_committed"
 	released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 		AcquisitionToken: req.AcquisitionToken,
+		ReleaseStatus:    "released_success",
 		ReleaseReason:    &releaseReason,
 	})
 	if err != nil {
@@ -444,6 +445,7 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 		copy(tokUUID[:], acquisitionToken.Bytes[:])
 		released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 			AcquisitionToken: tokUUID,
+			ReleaseStatus:    "released_failure",
 			ReleaseReason:    &releaseReason,
 		})
 		if err != nil {

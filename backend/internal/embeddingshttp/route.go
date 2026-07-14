@@ -25,7 +25,19 @@ func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
 			providerModelID = *binding.ProviderModelIDOverride
 		}
-		out.PoolMetadata = append(out.PoolMetadata, router.PoolCandidateMeta{PoolGroupID: binding.PoolGroupID, ProviderModelID: providerModelID})
+		out.PoolMetadata = append(out.PoolMetadata, router.PoolCandidateMeta{
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: bindingMaxParallelRequests(binding.MaxParallelRequests),
+		})
 	}
 	return out
+}
+
+func bindingMaxParallelRequests(v *int32) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
 }

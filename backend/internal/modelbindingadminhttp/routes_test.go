@@ -220,6 +220,23 @@ func TestCreateRejectsNonPositiveWeight(t *testing.T) {
 	}
 }
 
+// 负并发上限必须在进入 service 前返回 400；0 明确定义为不限，仍可写入。
+func TestCreateMaxParallelRequestsValidation(t *testing.T) {
+	rejected := &stubService{}
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, rejected, http.MethodPost, "/?tenant_id=1",
+		`{"model_id":5,"pool_group_id":9,"max_parallel_requests":-1}`)
+	if rec.Code != http.StatusBadRequest || rejected.createCalled {
+		t.Fatalf("负上限 code=%d createCalled=%v want 400/false", rec.Code, rejected.createCalled)
+	}
+
+	accepted := &stubService{}
+	rec = do(t, stubAuth{ident: platformAdmin(7)}, accepted, http.MethodPost, "/?tenant_id=1",
+		`{"model_id":5,"pool_group_id":9,"max_parallel_requests":0}`)
+	if rec.Code != http.StatusCreated || !accepted.createCalled || accepted.lastCreate.MaxParallelRequests == nil || *accepted.lastCreate.MaxParallelRequests != 0 {
+		t.Fatalf("零上限 code=%d input=%+v want 201 且透传 0", rec.Code, accepted.lastCreate)
+	}
+}
+
 // 生效窗自证:from>=until 拒;from<until 收。两向都断,确保不是恒红/恒绿。
 // 变异:删 ef.Before(eu) 检查 → 倒序也放行(201)→ 第一半红。
 func TestCreateEffectiveWindowDiscriminates(t *testing.T) {

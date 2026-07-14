@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,8 @@ type adapterSeed struct {
 	userID            int64
 	providerID        int64
 	poolGroupID       int64
+	modelID           int64
+	bindingID         int64
 	channelID         int64
 	providerAccountID int64
 	claimID           int64
@@ -90,6 +93,8 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
@@ -111,6 +116,22 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		seed.tenantID, "pg-"+unique,
 	).Scan(&seed.poolGroupID); err != nil {
 		t.Fatalf("seed pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO models (
+			tenant_id, scope, canonical_id, protocol_family, default_provider_model_id
+		) VALUES ($1, 'tenant', $2, 'openai_chat', $3) RETURNING id`,
+		seed.tenantID, "model-"+unique, "upstream-"+unique,
+	).Scan(&seed.modelID); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO model_pool_bindings (
+			tenant_id, model_id, pool_group_id, max_parallel_requests
+		) VALUES ($1, $2, $3, 3) RETURNING id`,
+		seed.tenantID, seed.modelID, seed.poolGroupID,
+	).Scan(&seed.bindingID); err != nil {
+		t.Fatalf("seed model binding: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
@@ -498,5 +519,190 @@ func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testin
 	}
 	if len(accounts) != 1 || accounts[0].ID != seed.providerAccountID {
 		t.Fatalf("accounts=%+v; want only account on enabled, live channel %d", accounts, seed.providerAccountID)
+	}
+}
+
+func TestDBSlotManager_BindingConcurrencyHardCapAndLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	secondPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "binding-cap")
+
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE provider_accounts
+		    SET cap_concurrency=64, in_flight_count=0
+		  WHERE id=$1 AND tenant_id=$2`,
+		seed.providerAccountID, seed.tenantID,
+	); err != nil {
+		t.Fatalf("raise account cap: %v", err)
+	}
+
+	account := &AccountSnapshot{
+		ID:             seed.providerAccountID,
+		TenantID:       seed.tenantID,
+		MaxConcurrency: 64,
+	}
+	// 两个独立连接池模拟两个 gateway 实例，证明上限不是进程内计数器。
+	managers := []*DBSlotManager{NewDBSlotManager(pgPool), NewDBSlotManager(secondPool)}
+	const (
+		capacity = int64(3)
+		requests = 12
+	)
+	type outcome struct {
+		result *AcquireResult
+		err    error
+	}
+	outcomes := make([]outcome, requests)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range outcomes {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			outcomes[i].result, outcomes[i].err = managers[i%len(managers)].Acquire(ctx, account, SelectionRequest{
+				TenantID:            seed.tenantID,
+				BindingID:           seed.bindingID,
+				MaxParallelRequests: capacity,
+				AttemptSeq:          i + 1,
+			})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var acquired []*AcquireResult
+	limited := 0
+	for i, got := range outcomes {
+		switch {
+		case got.err == nil:
+			if got.result == nil || got.result.AcquisitionToken == uuid.Nil {
+				t.Fatalf("request %d acquired without token: %+v", i, got.result)
+			}
+			acquired = append(acquired, got.result)
+		case errors.Is(got.err, ErrBindingConcurrencyLimited):
+			limited++
+		default:
+			t.Fatalf("request %d returned unexpected error: %v", i, got.err)
+		}
+	}
+	// 变异①：去掉事务内硬闸会让成功数大于 K；只留外层 COUNT 不能通过本断言。
+	if len(acquired) != int(capacity) || limited != requests-int(capacity) {
+		t.Fatalf("acquired=%d limited=%d want acquired=%d limited=%d",
+			len(acquired), limited, capacity, requests-int(capacity))
+	}
+	var active, tagged int
+	if err := pgPool.QueryRow(ctx,
+		`SELECT
+		    count(*) FILTER (WHERE status='acquired')::int,
+		    count(*) FILTER (WHERE status='acquired' AND binding_id=$2)::int
+		   FROM pool_slot_acquisitions
+		  WHERE tenant_id=$1`,
+		seed.tenantID, seed.bindingID,
+	).Scan(&active, &tagged); err != nil {
+		t.Fatalf("read active binding acquisitions: %v", err)
+	}
+	// 变异④：占槽时不写 binding_id 会让 tagged 恒为 0，并让后续硬闸超发。
+	if active != int(capacity) || tagged != int(capacity) {
+		t.Fatalf("active/tagged=%d/%d want %d/%d", active, tagged, capacity, capacity)
+	}
+
+	// 模拟请求上下文已经取消；释放必须使用脱钩上下文，且 abort 类释放落 released_failure。
+	parent, cancelParent := context.WithCancel(ctx)
+	cancelParent()
+	releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+	defer releaseCancel()
+	for i, got := range acquired {
+		if err := got.Release(releaseCtx); err != nil {
+			t.Fatalf("detached release %d: %v", i, err)
+		}
+	}
+	var activeAfterAbort, failed int
+	if err := pgPool.QueryRow(ctx,
+		`SELECT
+		    count(*) FILTER (WHERE status='acquired')::int,
+		    count(*) FILTER (WHERE status='released_failure')::int
+		   FROM pool_slot_acquisitions
+		  WHERE tenant_id=$1 AND binding_id=$2`,
+		seed.tenantID, seed.bindingID,
+	).Scan(&activeAfterAbort, &failed); err != nil {
+		t.Fatalf("read released binding acquisitions: %v", err)
+	}
+	if activeAfterAbort != 0 || failed != int(capacity) {
+		t.Fatalf("after abort active/failed=%d/%d want 0/%d", activeAfterAbort, failed, capacity)
+	}
+
+	// 变异③：COUNT 若不按 status='acquired' 过滤，历史终态行会让这里永久拒绝。
+	replacement, err := managers[0].Acquire(ctx, account, SelectionRequest{
+		TenantID: seed.tenantID, BindingID: seed.bindingID, MaxParallelRequests: capacity, AttemptSeq: 20,
+	})
+	if err != nil {
+		t.Fatalf("replacement after abort: %v", err)
+	}
+	if err := replacement.Release(ctx); err != nil {
+		t.Fatalf("release replacement: %v", err)
+	}
+
+	// 降配不杀在途：先占 3 个，再以新上限 2 获取时拒绝；原 3 个仍保持 acquired。
+	inFlight := make([]*AcquireResult, 0, capacity)
+	for i := int64(0); i < capacity; i++ {
+		got, err := managers[i%int64(len(managers))].Acquire(ctx, account, SelectionRequest{
+			TenantID: seed.tenantID, BindingID: seed.bindingID, MaxParallelRequests: capacity, AttemptSeq: 30 + int(i),
+		})
+		if err != nil {
+			t.Fatalf("seed downscale holder %d: %v", i, err)
+		}
+		inFlight = append(inFlight, got)
+	}
+	if _, err := managers[0].Acquire(ctx, account, SelectionRequest{
+		TenantID: seed.tenantID, BindingID: seed.bindingID, MaxParallelRequests: 2, AttemptSeq: 40,
+	}); !errors.Is(err, ErrBindingConcurrencyLimited) {
+		t.Fatalf("downscaled acquire err=%v want ErrBindingConcurrencyLimited", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`SELECT count(*)::int FROM pool_slot_acquisitions
+		  WHERE tenant_id=$1 AND binding_id=$2 AND status='acquired'`,
+		seed.tenantID, seed.bindingID,
+	).Scan(&active); err != nil {
+		t.Fatalf("count holders after downscale: %v", err)
+	}
+	if active != int(capacity) {
+		t.Fatalf("downscale killed in-flight rows: active=%d want %d", active, capacity)
+	}
+	for i := 0; i < 2; i++ {
+		if err := inFlight[i].Release(ctx); err != nil {
+			t.Fatalf("release downscale holder %d: %v", i, err)
+		}
+	}
+	afterDrain, err := managers[1].Acquire(ctx, account, SelectionRequest{
+		TenantID: seed.tenantID, BindingID: seed.bindingID, MaxParallelRequests: 2, AttemptSeq: 41,
+	})
+	if err != nil {
+		t.Fatalf("acquire after draining below downscaled cap: %v", err)
+	}
+	if err := inFlight[2].Release(ctx); err != nil {
+		t.Fatalf("release final original holder: %v", err)
+	}
+	if err := afterDrain.Release(ctx); err != nil {
+		t.Fatalf("release post-drain holder: %v", err)
+	}
+
+	// 0 表示不限：binding_id 仍写入审计行，但 binding 闸不拒绝。
+	var unlimited []*AcquireResult
+	for i := 0; i < 5; i++ {
+		got, err := managers[i%len(managers)].Acquire(ctx, account, SelectionRequest{
+			TenantID: seed.tenantID, BindingID: seed.bindingID, MaxParallelRequests: 0, AttemptSeq: 50 + i,
+		})
+		if err != nil {
+			t.Fatalf("unlimited acquire %d: %v", i, err)
+		}
+		unlimited = append(unlimited, got)
+	}
+	for i, got := range unlimited {
+		if err := got.Release(ctx); err != nil {
+			t.Fatalf("release unlimited holder %d: %v", i, err)
+		}
 	}
 }
