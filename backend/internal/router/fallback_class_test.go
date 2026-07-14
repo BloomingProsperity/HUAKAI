@@ -12,7 +12,7 @@ import (
 
 // AT-BFC-001 Router 层：class 必须位于 Priority/Weight 外层。quota 候选即使
 // Priority 更高、Weight 极大，也只能进入未被 executor 消费的目标 phase。
-// TODO(第 2 步 executor)：补 A 成功/恢复时 Q 调用数为 0，以及 normal 同类耗尽后 Q=1。
+// 协议 executor 判别测试另锁 A 成功时 Q=0、normal 同类耗尽后 Q=1。
 func TestATBFC001NormalClassCannotBePreemptedByFallbackPriorityOrWeight(t *testing.T) {
 	r := newDefaultRouterWithSeed(0xBFC001)
 	plan, err := r.Plan(context.Background(), fallbackPlanInput(
@@ -95,7 +95,7 @@ func TestRouterRejectsUnknownFallbackClass(t *testing.T) {
 }
 
 // AT-BFC-002 Router 层：四类目标分别编译，顺序固定且各只有一次子预算。
-// TODO(第 2 步 executor)：补同类耗尽只进入精确目标、混合失败不跨类、恢复后无 transition。
+// 共享 Coordinator 判别测试另锁同类耗尽精确转移、混合失败与恢复后零转移。
 func TestATBFC002FallbackPhasesStayTypedOrderedAndBounded(t *testing.T) {
 	r := newDefaultRouterWithSeed(0xBFC002)
 	plan, err := r.Plan(context.Background(), fallbackPlanInput(
@@ -133,7 +133,7 @@ func TestATBFC002FallbackPhasesStayTypedOrderedAndBounded(t *testing.T) {
 
 // AT-BFC-003 Router golden：新增 phase 表达能力后，normal-only 的既有可观察
 // 字段必须逐字节不变；新增 FallbackPhases 必须保持 nil，policy stamp 不升级。
-// TODO(第 2 步 executor)：补 HTTP status/body/header、claim 次数与 routing reason golden。
+// 各协议判别测试另锁 HTTP 结果、claim 次数与 routing reason。
 func TestATBFC003NormalOnlyLegacyProjectionIsByteStable(t *testing.T) {
 	r := newDefaultRouterWithSeed(0xBFC003)
 	plan, err := r.Plan(context.Background(), PlanInput{
@@ -174,7 +174,7 @@ func TestATBFC003NormalOnlyLegacyProjectionIsByteStable(t *testing.T) {
 
 // AT-BFC-008 Router 层：class 内仍复用 Priority/Weight，binding Weight 不由
 // selection_mode 开关。低优先级候选即使巨权重也不得被编入单次目标 attempt。
-// TODO(第 2 步 executor)：联测 selection_mode 只改变目标 pool 内账号分布。
+// executor 必须把目标 binding 自身的 selection_mode 原样交给账号选择器。
 func TestATBFC008FallbackClassPreservesPriorityWeightAcrossSelectionModes(t *testing.T) {
 	for _, mode := range []string{"", "strict_priority", "priority_weighted"} {
 		t.Run("mode="+mode, func(t *testing.T) {
@@ -202,6 +202,9 @@ func TestATBFC008FallbackClassPreservesPriorityWeightAcrossSelectionModes(t *tes
 				phase := requireSingleFallbackPhase(t, plan, bindingfallback.ClassQuota)
 				if phase.AttemptBudget != 1 || len(phase.Attempts) != 1 {
 					t.Fatalf("第 %d 次 quota phase 未保持单次预算：%+v", i, phase)
+				}
+				if phase.Attempts[0].SelectionMode != mode {
+					t.Fatalf("第 %d 次目标 selection_mode=%q，期望 %q", i, phase.Attempts[0].SelectionMode, mode)
 				}
 				switch phase.Attempts[0].PoolGroupID {
 				case 811:

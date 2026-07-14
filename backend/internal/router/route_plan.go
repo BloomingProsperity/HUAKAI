@@ -110,6 +110,17 @@ type FallbackPhasePlan struct {
 	AttemptBudget int
 }
 
+// FallbackPhaseForClass 返回精确类别的目标 phase。不存在、预算为零或没有
+// attempt 时均视为未配置，executor 不得隐式改用其它类别。
+func FallbackPhaseForClass(plan RoutePlan, class bindingfallback.Class) (FallbackPhasePlan, bool) {
+	for _, phase := range plan.FallbackPhases {
+		if phase.FallbackClass == class && phase.AttemptBudget > 0 && len(phase.Attempts) > 0 {
+			return phase, true
+		}
+	}
+	return FallbackPhasePlan{}, false
+}
+
 // AttemptPlan 描述一次上游尝试。Executor 收到它后，请求 Pool 去 Claim
 // 一个匹配该 Plan 的资源，然后请求 Adapter 经由该资源 Forward。
 type AttemptPlan struct {
@@ -126,6 +137,9 @@ type AttemptPlan struct {
 	// 正上限由 pool 的 DBSlotManager 原子执行；0 表示不限。
 	BindingID           int64
 	MaxParallelRequests int64
+	// SelectionMode 与 BindingID/K 来自同一 binding，目标 phase 不得沿用
+	// normal binding 的池内选号策略。
+	SelectionMode string
 
 	// FallbackClass 与 BindingID、并发上限来自同一条 binding。normal 主
 	// attempt 也显式标记为 normal，避免 executor 依赖切片位置猜测类别。

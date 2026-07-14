@@ -249,21 +249,24 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 }
 
-func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
-	ex.abortWithLoss(w, reason, observedInputTokens, nil)
+func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
+	return ex.abortWithLoss(w, reason, observedInputTokens, nil)
 }
 
 // abortWithLoss 在 abort 时把 protocol_loss 审计证据(如 replicate prediction id
 // 与 cancel 结局)一并落 usage_records,供事后对账上游账单。
-func (ex *execution) abortWithLoss(w http.ResponseWriter, reason string, observedInputTokens int64, protocolLoss json.RawMessage) {
+func (ex *execution) abortWithLoss(w http.ResponseWriter, reason string, observedInputTokens int64, protocolLoss json.RawMessage) bool {
 	if ex.reserveRes == nil {
-		return
+		return true
 	}
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
 	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, protocolLoss); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
+		return false
 	}
+	ex.reserveRes = nil
+	return true
 }
 
 func (ex *execution) ensureIdempotency() {

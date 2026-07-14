@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -132,228 +132,49 @@ func clientStatusForUpstreamError(upstreamStatus int, class gateway.ErrorClass) 
 }
 
 func bindingFallbackSignalFromDecision(classification gateway.Classification, decision gateway.AttemptRetryDecision) bindingfallback.Signal {
-	switch classification.Class {
-	case gateway.ErrorClassRateLimited:
-		return bindingfallback.SignalUpstreamRateLimit
-	case gateway.ErrorClassServerError, gateway.ErrorClassOverloaded:
-		return bindingfallback.SignalUpstreamServerError
-	case gateway.ErrorClassNetworkTimeout:
-		return bindingfallback.SignalTransientConnectionFailure
-	case gateway.ErrorClassUpstreamTimeout:
-		return bindingfallback.SignalUpstreamTimeout
-	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked,
-		gateway.ErrorClassKYCRequired, gateway.ErrorClassOrgDisabled,
-		gateway.ErrorClassWorkspaceDeactivated, gateway.ErrorClassCreditExhausted:
-		return bindingfallback.SignalUpstreamAuthFailure
-	case gateway.ErrorClassPlatformPolicy:
-		return bindingfallback.SignalPermissionDenied
-	case gateway.ErrorClassRequestTooLarge:
-		return bindingfallback.SignalRequestBodyTooLarge
-	}
-
-	switch decision.TransportClass {
-	case gateway.TransportErrorConnectTimeout:
-		return bindingfallback.SignalConnectTimeout
-	case gateway.TransportErrorNetworkTimeout:
-		return bindingfallback.SignalTransientConnectionFailure
-	case gateway.TransportErrorUpstreamHeaderTimeout:
-		return bindingfallback.SignalFirstByteTimeout
-	case gateway.TransportErrorUpstreamBodyIdleTimeout:
-		return bindingfallback.SignalUpstreamTimeout
-	case gateway.TransportErrorConnectionRefused, gateway.TransportErrorDNSFailure,
-		gateway.TransportErrorNetworkUnreachable, gateway.TransportErrorProxyFailure:
-		return bindingfallback.SignalTransientConnectionFailure
-	case gateway.TransportErrorCredentialExpired:
-		return bindingfallback.SignalUpstreamAuthFailure
-	case gateway.TransportErrorTLSHandshakeFailed, gateway.TransportErrorLocalDispatch:
-		return bindingfallback.SignalLocalConfigurationFailure
-	}
-
-	switch decision.AbortReason {
-	case "binding_concurrency_limited":
-		return bindingfallback.SignalBindingConcurrencyLimit
-	case "binding_rate_limited":
-		return bindingfallback.SignalBindingRateLimit
-	case "key_rate_limited":
-		return bindingfallback.SignalKeyRateLimit
-	case "pool_no_capacity":
-		return bindingfallback.SignalPoolCapacityExhausted
-	case "queue_wait":
-		return bindingfallback.SignalQueueWaitTimeout
-	case "queue_wait_cancelled":
-		return bindingfallback.SignalQueueWaitCancelled
-	case "upstream_rate_limited":
-		return bindingfallback.SignalUpstreamRateLimit
-	case "upstream_5xx", "upstream_overloaded":
-		return bindingfallback.SignalUpstreamServerError
-	case "upstream_timeout":
-		return bindingfallback.SignalUpstreamTimeout
-	case "upstream_empty_response":
-		return bindingfallback.SignalEmptyResponse
-	case "upstream_auth_failure", "local_credential_expired", "credential_protocol_incompatible":
-		return bindingfallback.SignalUpstreamAuthFailure
-	case "credential_resolve_error":
-		return bindingfallback.SignalCredentialResolutionFailure
-	case "claim_race":
-		return bindingfallback.SignalClaimConflict
-	case "request_too_large":
-		return bindingfallback.SignalRequestBodyTooLarge
-	case "upstream_forbidden":
-		return bindingfallback.SignalPermissionDenied
-	case "upstream_client_4xx":
-		return bindingfallback.SignalRequestMalformed
-	default:
-		return bindingfallback.SignalLocalConfigurationFailure
-	}
+	return fallbackexec.SignalFromDecision(classification, decision)
 }
 
 // bindingFallbackSignalFromUpstream 只读取上游 JSON 中的机器枚举字段，绝不把
 // message 或原始文本带入状态机/审计。普通 413、403、400 不足以触发窗口或
 // safety；必须命中窄机器码，随后其余信号仍由规范化分类器决定。
 func bindingFallbackSignalFromUpstream(status int, body []byte, classification gateway.Classification, decision gateway.AttemptRetryDecision) bindingfallback.Signal {
-	tokens := upstreamMachineErrorTokens(body)
-	if status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge || status == http.StatusUnprocessableEntity {
-		if containsMachineToken(tokens,
-			"context_length_exceeded", "context_window_exceeded", "max_context_length_exceeded",
-			"input_too_long", "too_many_tokens") {
-			return bindingfallback.SignalUpstreamContextWindow
-		}
-	}
-	if status == http.StatusBadRequest || status == http.StatusForbidden {
-		if containsMachineToken(tokens,
-			"content_policy_violation", "content_filter", "content_filtered",
-			"safety_violation", "blocked_by_safety") {
-			return bindingfallback.SignalUpstreamContentPolicy
-		}
-	}
-	return bindingFallbackSignalFromDecision(classification, decision)
-}
-
-func upstreamMachineErrorTokens(body []byte) map[string]struct{} {
-	if len(body) == 0 {
-		return nil
-	}
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
-		return nil
-	}
-	tokens := make(map[string]struct{})
-	var walk func(any)
-	walk = func(node any) {
-		switch typed := node.(type) {
-		case map[string]any:
-			for key, child := range typed {
-				switch strings.ToLower(strings.TrimSpace(key)) {
-				case "code", "type", "reason", "finish_reason", "block_reason":
-					if raw, ok := child.(string); ok {
-						token := strings.ToLower(strings.TrimSpace(raw))
-						if token != "" {
-							tokens[token] = struct{}{}
-						}
-					}
-				}
-				walk(child)
-			}
-		case []any:
-			for _, child := range typed {
-				walk(child)
-			}
-		}
-	}
-	walk(value)
-	return tokens
-}
-
-func containsMachineToken(tokens map[string]struct{}, wanted ...string) bool {
-	for _, token := range wanted {
-		if _, ok := tokens[token]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-type bindingFallbackEvidenceItem struct {
-	signal         bindingfallback.Signal
-	retryPermitted bool
+	return fallbackexec.SignalFromUpstream(status, body, classification, decision)
 }
 
 type bindingFallbackEvidence struct {
-	target bindingfallback.Class
-	items  []bindingFallbackEvidenceItem
-	mixed  bool
+	core bindingfallback.Evidence
 }
 
 func (e *bindingFallbackEvidence) add(failure *classifiedAttemptFailure, plan router.RoutePlan) bool {
 	if e == nil || failure == nil || bindingfallback.IsTerminal(failure.FallbackSignal) {
 		return false
 	}
-	target, ok := bindingfallback.TargetClass(failure.FallbackSignal)
+	target, ok := e.core.Add(failure.FallbackSignal, failure.Decision.RetryableBeforeDelivery)
 	if !ok {
 		return false
 	}
-	if e.target == "" {
-		e.target = target
-	} else if e.target != target {
-		e.mixed = true
-	}
-	e.items = append(e.items, bindingFallbackEvidenceItem{
-		signal:         failure.FallbackSignal,
-		retryPermitted: failure.Decision.RetryableBeforeDelivery,
-	})
-	phase, configured := fallbackPhaseForClass(plan, target)
-	return configured && phase.AttemptBudget > 0 && len(phase.Attempts) > 0
+	_, configured := fallbackPhaseForClass(plan, target)
+	return configured
 }
 
 func (e bindingFallbackEvidence) transition(plan router.RoutePlan, localSafetyPassed bool) (router.FallbackPhasePlan, bindingfallback.Signal, bool) {
-	if e.target == "" || e.mixed || len(e.items) == 0 {
+	transition, allowed := e.core.Transition(bindingfallback.TransitionState{
+		CurrentClass: bindingfallback.ClassNormal, PrimaryExhausted: true,
+		TargetConfigured: true, LocalSafetyPassed: localSafetyPassed,
+	})
+	if !allowed {
 		return router.FallbackPhasePlan{}, "", false
 	}
-	phase, configured := fallbackPhaseForClass(plan, e.target)
-	if !configured || phase.AttemptBudget <= 0 || len(phase.Attempts) == 0 {
+	phase, configured := fallbackPhaseForClass(plan, transition.To)
+	if !configured {
 		return router.FallbackPhasePlan{}, "", false
 	}
-	for _, item := range e.items {
-		target, allowed := bindingfallback.AllowTransition(item.signal, bindingfallback.TransitionState{
-			CurrentClass:      bindingfallback.ClassNormal,
-			PrimaryExhausted:  true,
-			TargetConfigured:  true,
-			RetryPermitted:    item.retryPermitted,
-			LocalSafetyPassed: localSafetyPassed,
-		})
-		if !allowed || target != e.target {
-			return router.FallbackPhasePlan{}, "", false
-		}
-	}
-	return phase, e.auditTrigger(), true
-}
-
-func (e bindingFallbackEvidence) auditTrigger() bindingfallback.Signal {
-	first := e.items[0].signal
-	for _, item := range e.items[1:] {
-		if item.signal != first {
-			switch e.target {
-			case bindingfallback.ClassQuota:
-				return bindingfallback.SignalPoolCapacityExhausted
-			case bindingfallback.ClassContextWindow:
-				return bindingfallback.SignalLocalContextWindow
-			case bindingfallback.ClassSafety:
-				return bindingfallback.SignalUpstreamContentPolicy
-			case bindingfallback.ClassManual:
-				return bindingfallback.SignalTransientConnectionFailure
-			}
-		}
-	}
-	return first
+	return phase, transition.Trigger, true
 }
 
 func fallbackPhaseForClass(plan router.RoutePlan, class bindingfallback.Class) (router.FallbackPhasePlan, bool) {
-	for _, phase := range plan.FallbackPhases {
-		if phase.FallbackClass == class {
-			return phase, true
-		}
-	}
-	return router.FallbackPhasePlan{}, false
+	return router.FallbackPhaseForClass(plan, class)
 }
 
 func closeDispatchResult(res *gateway.DispatchResult) {
@@ -565,4 +386,63 @@ func recordModelCooldownFromUpstreamError(ctx context.Context, d ChatHandlerDeps
 		return false
 	}
 	return true
+}
+
+// classifyPoolSelectFailure 把 pool.Selector 的错误映射为对应的 HTTP 失败和
+// claim abort(含 SEC-249/250 per-key 限流的 429)。err 为 nil → 返回 nil。
+func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err error) *classifiedAttemptFailure {
+	if err == nil {
+		return nil
+	}
+	abort := func(reason string) error {
+		return ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
+	}
+	switch {
+	case errors.Is(err, pool.ErrBindingConcurrencyLimited):
+		if e := abort("binding_concurrency_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited), "binding_concurrency_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingConcurrencyLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrBindingRateLimited):
+		if e := abort("binding_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "binding_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingRateLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrKeyRateLimited):
+		if e := abort("key_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "key_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalKeyRateLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
+		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = poolExhaustionFallbackSignal(err)
+		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。
+		f.RetryAfterSeconds = poolNoCapacityRetryAfter(err, time.Now())
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
+	case errors.Is(err, pool.ErrClaimRace):
+		if e := abort("claim_race"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
+		f.FallbackSignal = bindingfallback.SignalClaimConflict
+		f.RetryAfterSeconds = 1
+		return f
+	default:
+		f := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = bindingfallback.SignalLocalConfigurationFailure
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_select_error"))
+	}
+}
+
+func poolExhaustionFallbackSignal(err error) bindingfallback.Signal {
+	return fallbackexec.SignalFromPoolError(err)
 }

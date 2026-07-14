@@ -80,6 +80,9 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 
 // activeBindingSelectionMode 返回命中 binding 的 selection_mode(取不到则空=默认 strict_priority)。
 func (ex *chatExecution) activeBindingSelectionMode() string {
+	if ex.attempt.SelectionMode != "" {
+		return ex.attempt.SelectionMode
+	}
 	if binding, ok := ex.activeBindingMetadata(); ok {
 		return binding.SelectionMode
 	}

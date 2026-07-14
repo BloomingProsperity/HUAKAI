@@ -1,11 +1,12 @@
 package imageshttp
 
 import (
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
@@ -14,7 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
-func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) bool {
+func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallbackexec.Failure {
 	sel, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
 		TenantID:            ex.ident.TenantID,
 		UserID:              ex.ident.UserID,
@@ -30,29 +31,39 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) bool {
 		SessionHash:         ex.payloadHash,
 		Vendor:              pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:           ex.ident.UserGroup,
+		SelectionMode:       ex.attempt.SelectionMode,
 		BindingID:           ex.attempt.BindingID,
 		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	})
-	if errors.Is(err, pool.ErrBindingConcurrencyLimited) {
-		ex.abort(w, "binding_concurrency_limited", 0)
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited))
-		return false
-	}
 	if err != nil || sel == nil || sel.AccountID == 0 || sel.WaitPlan != nil {
-		ex.abort(w, "pool_select_no_account", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
-		return false
+		failureErr := err
+		if failureErr == nil {
+			failureErr = pool.ErrNoEligibleAccount
+			if sel != nil && sel.WaitPlan != nil {
+				failureErr = pool.ErrNoSlotAvailable
+			}
+		}
+		failure := fallbackexec.PoolFailure(failureErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			return fallbackexec.AbortFailure()
+		}
+		return failure
+	}
+	if ex.classTransition != nil && bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass)) != bindingfallback.ClassNormal {
+		sel.RoutingReasonJSON = bindingfallback.AnnotateRoutingReason(sel.RoutingReasonJSON, *ex.classTransition)
 	}
 	ex.selRes = sel
-	return true
+	return nil
 }
 
 func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	cred, acc, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.selRes.AccountID)
 	if err != nil {
-		ex.abort(w, "credential_resolve_error", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		if !ex.abort(w, "credential_resolve_error", 0) {
+			fallbackexec.WriteHTTP(w, fallbackexec.AbortFailure())
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		}
 		return false
 	}
 	if acc.AccountID == 0 {
@@ -63,10 +74,11 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
-func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bool {
+func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) attemptOutcome {
 	// 把出站 body 的 model 改写成解析后的上游 id。JSON 只改 body 不动 CT(保持原行为=adapter默认);
 	// multipart(edits/variations)才设 InboundContentType(顺带补上 image 原先缺失的 CT)。
-	inboundBody, inboundCT, isMultipart := relaybody.RewriteModel(ex.body, ex.r.Header.Get("Content-Type"), ex.upstreamModelID)
+	originalContentType := ex.r.Header.Get("Content-Type")
+	inboundBody, inboundCT, _ := relaybody.RewriteModel(ex.body, originalContentType, ex.upstreamModelID)
 	dispatchInput := gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		EndpointPath:    ex.endpoint.Path(),
@@ -75,7 +87,7 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 		Account:         ex.accInfo,
 		Credential:      ex.cred,
 	}
-	if isMultipart {
+	if _, isMultipart := multipartBoundary(originalContentType); isMultipart {
 		dispatchInput.InboundContentType = inboundCT
 	}
 	// 图片同步 API 常在 Dispatch(等上游生成完再回 header)一步就阻塞数十秒,期间对客户端零字节;
@@ -83,15 +95,26 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 	dispatchKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, dispatchInput)
 	dispatchKeepalive.Stop()
+	ex.deliveryStarted = dispatchKeepalive.Started()
 	if err != nil {
-		ex.abort(w, "upstream_dispatch_error", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := fallbackexec.DispatchFailure(err)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		if ex.deliveryStarted {
+			return attemptOutcome{done: true}
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		if ex.deliveryStarted {
+			return attemptOutcome{done: true}
+		}
+		return attemptOutcome{failure: failure}
 	}
 	defer func() {
 		if res.Close != nil {
@@ -101,39 +124,51 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 	return ex.finishUpstreamResponse(w, res, attemptSeq)
 }
 
-func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) attemptOutcome {
 	// 若上游改在 body 读阶段才慢(early header + 延迟 body),读全 body 也起 keepalive 兜住;
 	// Stop 在下方任何写 w 之前。与 Dispatch 处的保活互补,覆盖两种慢点形态。
 	readKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval)
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	readKeepalive.Stop()
+	ex.deliveryStarted = ex.deliveryStarted || readKeepalive.Started()
 	if readErr != nil {
-		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return false
+		failure := fallbackexec.ReadFailure(readErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		if ex.deliveryStarted {
+			return attemptOutcome{done: true}
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if strings.TrimSpace(string(raw)) == "" {
-		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		if ex.deliveryStarted {
+			return attemptOutcome{done: true}
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		decision, _, err := gateway.ClassifyAttemptHTTPError(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
-		reason := decision.AbortReason
-		if err != nil || reason == "" {
-			reason = "upstream_error"
+		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
 		}
-		ex.abort(w, reason, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		if ex.deliveryStarted {
+			return attemptOutcome{done: true}
+		}
+		return attemptOutcome{failure: failure}
 	}
 	// family 专属响应翻译(replicate_image:prediction → OpenAI 形)必须在
 	// settle/写客户端之前;翻译失败按上游错误处理,绝不 settle 计费。
 	raw, ok := ex.translateUpstreamResponseForFamily(w, raw)
 	if !ok {
-		return false
+		return attemptOutcome{done: true}
 	}
-	return ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
+	_ = ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
+	return attemptOutcome{done: true}
 }
 
 func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {

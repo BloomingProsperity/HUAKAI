@@ -1,6 +1,7 @@
 package completionshttp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -22,7 +25,7 @@ const settleRecoveryTimeout = 30 * time.Second
 // 交付后结算因 deadline 超时失败时，recovery intent 仍须落盘，故 enqueue 用 fresh ctx。
 const settleRecoveryEnqueueTimeout = 10 * time.Second
 
-func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, requestedModel string) bool {
+func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, requestedModel string) *fallbackexec.Failure {
 	claimID := int64(0)
 	if ex.reserveRes != nil {
 		claimID = ex.reserveRes.ClaimID
@@ -42,29 +45,39 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, reques
 		SessionHash:         ex.payloadHash,
 		Vendor:              pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:           ex.ident.UserGroup,
+		SelectionMode:       ex.attempt.SelectionMode,
 		BindingID:           ex.attempt.BindingID,
 		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	})
-	if errors.Is(err, pool.ErrBindingConcurrencyLimited) {
-		ex.abort(w, "binding_concurrency_limited", 0)
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited))
-		return false
-	}
 	if err != nil || sel == nil || sel.AccountID == 0 || sel.WaitPlan != nil {
-		ex.abort(w, "pool_select_no_account", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
-		return false
+		failureErr := err
+		if failureErr == nil {
+			failureErr = pool.ErrNoEligibleAccount
+			if sel != nil && sel.WaitPlan != nil {
+				failureErr = pool.ErrNoSlotAvailable
+			}
+		}
+		failure := fallbackexec.PoolFailure(failureErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			return fallbackexec.AbortFailure()
+		}
+		return failure
+	}
+	if ex.classTransition != nil && bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass)) != bindingfallback.ClassNormal {
+		sel.RoutingReasonJSON = bindingfallback.AnnotateRoutingReason(sel.RoutingReasonJSON, *ex.classTransition)
 	}
 	ex.selRes = sel
-	return true
+	return nil
 }
 
 func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	cred, acc, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.selRes.AccountID)
 	if err != nil {
-		ex.abort(w, "credential_resolve_error", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		if !ex.abort(w, "credential_resolve_error", 0) {
+			fallbackexec.WriteHTTP(w, fallbackexec.AbortFailure())
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		}
 		return false
 	}
 	if acc.AccountID == 0 {
@@ -75,12 +88,7 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
-const (
-	attemptDone = iota
-	attemptRetryable
-)
-
-func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attemptSeq int) int {
+func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attemptSeq int) attemptOutcome {
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		EndpointPath:    ex.upstreamPath,
@@ -90,34 +98,51 @@ func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attempt
 		Credential:      ex.cred,
 	})
 	if err != nil {
-		ex.abort(w, "upstream_dispatch_error", 0)
-		return attemptRetryable
+		failure := fallbackexec.DispatchFailure(err)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		ex.abort(w, "upstream_empty_response", 0)
-		return attemptRetryable
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	defer closeDispatchResult(res)
-	_ = ex.finishCompletionsResponse(w, res, attemptSeq)
-	return attemptDone
+	return ex.finishCompletionsResponse(w, res, attemptSeq)
 }
 
-func (ex *execution) finishCompletionsResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishCompletionsResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) attemptOutcome {
 	if ex.req.Stream || strings.Contains(strings.ToLower(res.Headers.Get("Content-Type")), "text/event-stream") {
 		return ex.finishStreamingResponse(w, res, attemptSeq)
 	}
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
-		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return false
+		failure := fallbackexec.ReadFailure(readErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		ex.abort(w, upstreamAbortReason(res.StatusCode, res.Headers, raw), 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
-	return ex.settleAndWriteJSON(w, res, raw, attemptSeq)
+	_ = ex.settleAndWriteJSON(w, res, raw, attemptSeq)
+	return attemptOutcome{done: true}
 }
 
 func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {
@@ -151,17 +176,32 @@ func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.Disp
 	return true
 }
 
-func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) attemptOutcome {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		raw, readErr := readUpstreamBody(res.UpstreamReader)
 		if readErr != nil {
-			ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-			return false
+			failure := fallbackexec.ReadFailure(readErr)
+			if !ex.abort(w, failure.AbortReason, 0) {
+				failure = fallbackexec.AbortFailure()
+			}
+			return attemptOutcome{failure: failure}
 		}
-		ex.abort(w, upstreamAbortReason(res.StatusCode, res.Headers, raw), 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
+	}
+	buffered := bufio.NewReader(res.UpstreamReader)
+	if _, err := buffered.Peek(1); err != nil {
+		failure := fallbackexec.ReadFailure(err)
+		if errors.Is(err, io.EOF) {
+			failure = fallbackexec.EmptyResponseFailure()
+		}
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 
 	copyAllowedHeaders(w.Header(), res.Headers)
@@ -171,14 +211,13 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 	w.WriteHeader(http.StatusOK)
 
 	var copied bytes.Buffer
-	streamErr := streamAndCapture(w, res.UpstreamReader, &copied)
+	streamErr := streamAndCapture(w, buffered, &copied)
 	if streamErr != nil && copied.Len() == 0 {
 		// 真零交付:头已 200 但没有任何字节发给客户端、也没捕获到上游内容。此时无可计费交付,
 		// 释放整笔预留是正确的(对齐 chat 流式"仅真零交付才 abort")。
 		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		return false
+		return attemptOutcome{done: true}
 	}
-
 	// 到这里:要么流干净结束,要么中途出错但已有部分交付(copied.Len()>0)。已交付内容对应的
 	// token 上游已生成并会向平台计费,从此处起任何分支都**不得 abort 退款**——否则用户白拿、
 	// 平台吃下上游成本。只能"尽力计费、不足则以 PendingReconciliation 标记待对账并留审计行"。
@@ -212,9 +251,9 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 	defer cancel()
 	if err := ex.settleStreamWithRecovery(settleCtx, ex.settleRequest(usage, cost, attemptSeq, true)); err != nil {
 		w.Header().Set("X-Huakai-Settle-Failed", clienterr.CodeSettleError)
-		return false
+		return attemptOutcome{done: true}
 	}
-	return true
+	return attemptOutcome{done: true}
 }
 
 // appendStreamPendingReason 给交付后待对账的成本快照追加一个 pending 原因标记,供
@@ -257,14 +296,6 @@ func streamAndCapture(w http.ResponseWriter, r io.Reader, captured *bytes.Buffer
 			return readErr
 		}
 	}
-}
-
-func upstreamAbortReason(status int, headers http.Header, raw []byte) string {
-	decision, _, err := gateway.ClassifyAttemptHTTPError(status, headers, raw, "")
-	if err != nil || decision.AbortReason == "" {
-		return "upstream_error"
-	}
-	return decision.AbortReason
 }
 
 func closeDispatchResult(res *gateway.DispatchResult) {

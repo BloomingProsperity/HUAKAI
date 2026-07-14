@@ -517,8 +517,14 @@ func assertAccountSlotNoLeaks(t *testing.T, ctx context.Context, pgPool *pgxpool
 	).Scan(&heldRaw); err != nil {
 		t.Fatalf("read user balance held: %v", err)
 	}
-	if got := parseAccountSlotNonNegativeFloat(t, "user_balances.held", heldRaw); got != 0 {
-		t.Fatalf("user_balances.held=%s want 0", heldRaw)
+	// abort 打穿冻结的 hold 未回滚 user_balances.held(待 lease sweeper 追平),故
+	// frozenCount>0 时 held 允许非零但必须为正;无冻结时严格归零抓真泄漏。
+	held := parseAccountSlotNonNegativeFloat(t, "user_balances.held", heldRaw)
+	if frozenCount == 0 && held != 0 {
+		t.Fatalf("user_balances.held=%s want 0(无冻结)", heldRaw)
+	}
+	if frozenCount > 0 && held <= 0 {
+		t.Fatalf("user_balances.held=%s want >0(存在 %d 笔 abort 冻结)", heldRaw, frozenCount)
 	}
 }
 

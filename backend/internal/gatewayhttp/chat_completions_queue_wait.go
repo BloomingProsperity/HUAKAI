@@ -2,7 +2,6 @@ package gatewayhttp
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -116,25 +115,7 @@ func (ex *chatExecution) acceptPoolSelection(selRes *pool.SelectionResult) {
 }
 
 func routingReasonWithClassTransition(raw []byte, transition bindingClassTransition) []byte {
-	payload := make(map[string]any)
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			payload = map[string]any{"routing_reason_error": "selector_reason_invalid"}
-		}
-	}
-	if payload == nil {
-		payload = map[string]any{"routing_reason_error": "selector_reason_empty"}
-	}
-	payload["class_transition"] = map[string]string{
-		"from":    string(transition.From),
-		"to":      string(transition.To),
-		"trigger": string(transition.Trigger),
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return raw
-	}
-	return encoded
+	return bindingfallback.AnnotateRoutingReason(raw, transition)
 }
 
 // completedAttemptResult 统一封住成功与已交付终态，确保 normal、目标类及
