@@ -23,11 +23,12 @@ describe('路由绑定 API 租户作用域', () => {
   })
 
   it('创建、更新和删除均在 query 透传 tenant_id', async () => {
-    const createBody = { model_id: 11, pool_group_id: 13 }
+    const createBody = { model_id: 11, pool_group_id: 13, fallback_class: 'context_window' as const }
     const updateBody = {
       priority: 100,
       selection_mode: 'strict_priority',
       max_parallel_requests: 5,
+      fallback_class: 'quota' as const,
       enabled: false,
     }
 
@@ -41,7 +42,7 @@ describe('路由绑定 API 租户作用域', () => {
     expect(sentUpdate).toMatchObject({ priority: 100, selection_mode: 'strict_priority', enabled: false })
     expect('weight' in sentUpdate).toBe(false)
     expect(sentUpdate.max_parallel_requests).toBe(5)
-    expect('fallback_class' in sentUpdate).toBe(false)
+    expect(sentUpdate.fallback_class).toBe('quota')
     expect(client.send).toHaveBeenNthCalledWith(3, 'DELETE', '/admin/v1/model-pool-bindings/17', undefined, { query: { tenant_id: 7 } })
   })
 })

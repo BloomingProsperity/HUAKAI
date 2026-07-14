@@ -6,7 +6,10 @@ import {
   buildBindingUpdate,
   EMPTY_CREATE_BINDING,
   editFormFromBinding,
+  FALLBACK_CLASSES,
+  fallbackClassError,
   hasBindingChanges,
+  isFallbackClass,
   maxParallelRequestsError,
   SELECTION_MODES,
   type BindingCreateForm,
@@ -16,7 +19,7 @@ import type { PoolBinding } from './types'
 
 /*
  * 路由绑定创建/编辑模态。编辑模式回填仍由界面管理的有效字段；创建模式带 model_id/
- * pool_group_id。selection_mode 选择器是核心——切换严格优先级 / 按账号权重加权。
+ * pool_group_id。selection_mode 与 fallback_class 都是运行时字段，创建和编辑必须显式提交。
  */
 export function BindingModal({
   tenantId,
@@ -31,7 +34,9 @@ export function BindingModal({
 }) {
   const editing = binding !== null
   const [editForm, setEditForm] = useState<BindingEditForm>(
-    binding ? editFormFromBinding(binding) : { priority: '0', selectionMode: 'strict_priority', maxParallelRequests: '', enabled: true },
+    binding
+      ? editFormFromBinding(binding)
+      : { priority: '0', selectionMode: 'strict_priority', fallbackClass: 'normal', maxParallelRequests: '', enabled: true },
   )
   const [createForm, setCreateForm] = useState<BindingCreateForm>(EMPTY_CREATE_BINDING)
   const [busy, setBusy] = useState(false)
@@ -40,13 +45,23 @@ export function BindingModal({
   const selMode = editing ? editForm.selectionMode : createForm.selectionMode
   const setSelMode = (v: string) => (editing ? setEditForm((f) => ({ ...f, selectionMode: v })) : setCreateForm((f) => ({ ...f, selectionMode: v })))
   const selHint = SELECTION_MODES.find((m) => m.value === selMode)?.hint
+  const fallbackClass = editing ? editForm.fallbackClass : createForm.fallbackClass
+  const setFallbackClass = (value: string) => {
+    if (!isFallbackClass(value)) {
+      setError(fallbackClassError(value)!)
+      return
+    }
+    if (editing) setEditForm((form) => ({ ...form, fallbackClass: value }))
+    else setCreateForm((form) => ({ ...form, fallbackClass: value }))
+  }
+  const fallbackHint = FALLBACK_CLASSES.find((item) => item.value === fallbackClass)?.hint
 
   const submit = async () => {
     setBusy(true)
     setError(null)
     try {
       if (editing && binding) {
-        const validationError = maxParallelRequestsError(editForm.maxParallelRequests)
+        const validationError = fallbackClassError(editForm.fallbackClass) ?? maxParallelRequestsError(editForm.maxParallelRequests)
         if (validationError) {
           setError(validationError)
           setBusy(false)
@@ -57,7 +72,7 @@ export function BindingModal({
           setBusy(false)
           return
         }
-        // 回填仍由界面管理的有效字段；仅存储兼容字段明确不下发。
+        // fallback_class 即使没改也回填，防止后端整行覆盖把非 normal 静默重置。
         await updateBinding(binding.id, buildBindingUpdate(binding, editForm), tenantId)
       } else {
         const built = buildBindingCreate(createForm)
@@ -119,6 +134,16 @@ export function BindingModal({
             ))}
           </select>
           {selHint && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{selHint}</span>}
+        </Field>
+        <Field label="降级类 (fallback_class)">
+          <select value={fallbackClass} onChange={(e) => setFallbackClass(e.target.value)} style={inp}>
+            {FALLBACK_CLASSES.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          {fallbackHint && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{fallbackHint}</span>}
         </Field>
         <Field label="最大并发请求数">
           <input

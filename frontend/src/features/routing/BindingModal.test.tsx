@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { DataListTable } from '../../ui/DataListTable'
 import { BindingModal } from './BindingModal'
 import { bindingColumns } from './RoutingPage'
-import { mapBindingRows } from './selection'
+import { filterBindingRows, mapBindingRows } from './selection'
 import type { PoolBinding } from './types'
 
 const legacyBinding: PoolBinding = {
@@ -18,8 +18,8 @@ const legacyBinding: PoolBinding = {
   enabled: true,
 }
 
-describe('路由绑定 UI 只暴露真实生效字段', () => {
-  it('创建与编辑表单均展示并发上限，不出现两个仅存储字段', () => {
+describe('路由绑定 UI 暴露全部运行时字段', () => {
+  it('创建与编辑表单均展示五类选择、当前说明与并发上限', () => {
     const createHTML = renderToStaticMarkup(
       <BindingModal tenantId={7} binding={null} onClose={() => undefined} onSaved={() => undefined} />,
     )
@@ -31,14 +31,29 @@ describe('路由绑定 UI 只暴露真实生效字段', () => {
       expect(html).toContain('优先级')
       expect(html).toContain('选号策略')
       expect(html).not.toContain('权重(priority_weighted 时生效)')
-      expect(html).not.toContain('兜底类')
+      expect(html).toContain('降级类 (fallback_class)')
+      expect(html).toContain('normal · 主类')
+      expect(html).toContain('context_window · 上下文')
+      expect(html).toContain('safety · 内容安全')
+      expect(html).toContain('quota · 限流配额')
+      expect(html).toContain('manual · 瞬态兜底')
       expect(html).toContain('最大并发请求数')
       expect(html).toContain('0 或留空表示不限')
     }
+    expect(createHTML).toContain('请求总从 normal 开始')
+    expect(editHTML).toContain('承接绑定、账号或上游容量耗尽')
+
+    const contextHTML = renderToStaticMarkup(
+      <BindingModal tenantId={7} binding={{ ...legacyBinding, fallback_class: 'context_window' }} onClose={() => undefined} onSaved={() => undefined} />,
+    )
+    expect(contextHTML).toContain('需管理员确认目标池/模型确有更大窗口，系统不代验')
   })
 
-  it('列表 DOM 忽略旧响应中的权重与兜底类,仍展示有效列', () => {
-    const rows = mapBindingRows([legacyBinding])
+  it('列表 DOM 渲染紧凑 class badge，并可用筛选结果只展示目标类', () => {
+    const rows = filterBindingRows(
+      mapBindingRows([legacyBinding, { ...legacyBinding, id: 72, fallback_class: undefined }]),
+      'quota',
+    )
     const html = renderToStaticMarkup(
       <DataListTable label="路由绑定列表" rows={rows} rowKey={(row) => row.id} columns={bindingColumns} />,
     )
@@ -46,9 +61,10 @@ describe('路由绑定 UI 只暴露真实生效字段', () => {
     expect(html).toContain('优先级')
     expect(html).toContain('选号策略')
     expect(html).toContain('按权重加权')
-    // 变异:把任一死列加回 bindingColumns,独特 fixture 值或列名会使断言转红。
+    expect(html).toContain('降级类')
+    expect(html).toContain('quota · 限流配额')
+    expect(html).not.toContain('normal · 主类')
+    // weight 仍不是可操作列，独特 fixture 值不得泄入 DOM。
     expect(html).not.toContain('9473')
-    expect(html).not.toContain('兜底类')
-    expect(html).not.toContain('配额')
   })
 })

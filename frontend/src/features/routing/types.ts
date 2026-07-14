@@ -3,6 +3,8 @@
  * 端点:/admin/v1/model-pool-bindings(admin 鉴权,session + 租户 scope)。
  */
 
+export type FallbackClass = 'normal' | 'context_window' | 'safety' | 'quota' | 'manual'
+
 export interface PoolBinding {
   id: number
   model_id: number
@@ -17,8 +19,8 @@ export interface PoolBinding {
   tpm_limit?: number | null
   /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
-  /** 旧客户端兼容字段；当前界面不展示也不下发。 */
-  fallback_class?: string
+  /** 运行时降级类别；兼容旧响应缺值，界面按 normal 主类解释。 */
+  fallback_class?: FallbackClass
   enabled: boolean
 }
 
@@ -36,8 +38,8 @@ export interface CreateBindingRequest {
   selection_mode?: string
   /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
-  /** 旧客户端兼容字段；当前界面不下发。 */
-  fallback_class?: string
+  /** 运行时降级类别；省略时后端默认 normal。 */
+  fallback_class?: FallbackClass
 }
 
 /**
@@ -51,8 +53,8 @@ export interface UpdateBindingRequest {
   weight?: number
   /** 绑定级全局并发上限；null/0 表示不限。 */
   max_parallel_requests?: number | null
-  /** 旧客户端兼容字段；当前界面不下发。 */
-  fallback_class?: string
+  /** 运行时降级类别；后端整行覆盖，界面必须回填当前值。 */
+  fallback_class: FallbackClass
   // 可空字段也回填当前值,避免被后端清空(null 表示当前即为空)。
   provider_model_id_override?: string | null
   rpm_limit?: number | null

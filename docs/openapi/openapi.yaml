@@ -16824,12 +16824,23 @@ components:
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0, description: "Lower routes first." }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted], description: "priority_weighted is stored but not yet executed (routes as strict_priority)." }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
         provider_model_id_override: { type: string, nullable: true, description: "Upstream model name override; null uses the model's own id." }
         rpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
         tpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, nullable: true, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别；旧响应缺失或空值按 normal 解释。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string, nullable: true }
         effective_from: { type: string, format: date-time, nullable: true }
@@ -16847,12 +16858,23 @@ components:
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0 }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
         provider_model_id_override: { type: string }
         rpm_limit: { type: integer, format: int32, minimum: 0 }
         tpm_limit: { type: integer, format: int32, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别，省略时默认 normal。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string }
         effective_from: { type: string, format: date-time }
@@ -16862,16 +16884,28 @@ components:
     ModelPoolBindingUpdateRequest:
       type: object
       additionalProperties: false
-      description: "Tunable fields only; model_id / pool_group_id are immutable."
+      description: |
+        仅允许调整可变字段；model_id / pool_group_id 不可变。虽然方法名是 PATCH，当前写口采用整行默认覆盖：省略的标量回到服务端默认，可空字段会清空。尤其省略 fallback_class 会重置为 normal，因此客户端编辑其它字段时必须回填当前 fallback_class。
       properties:
         priority: { type: integer, format: int32, minimum: 0 }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。省略时因整行覆盖回到 strict_priority。"
         provider_model_id_override: { type: string }
         rpm_limit: { type: integer, format: int32, minimum: 0 }
         tpm_limit: { type: integer, format: int32, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别；PATCH 省略该字段会按整行覆盖契约重置为 normal。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string }
         effective_from: { type: string, format: date-time }
