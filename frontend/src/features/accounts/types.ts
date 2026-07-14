@@ -13,6 +13,19 @@ export type AccountState =
   | 'overloaded'
   | 'temp_unschedulable'
 
+export interface ProviderAccountTempRule {
+  error_code: number
+  keywords: string[]
+  duration_minutes: number
+  description?: string
+}
+
+export interface ProviderAccountProxyBinding {
+  mode: 'direct' | 'proxy' | 'group'
+  proxy_id?: number
+  proxy_group_id?: string
+}
+
 export interface ProviderAccount {
   id: number
   tenant_id: number
@@ -22,6 +35,13 @@ export interface ProviderAccount {
   account_type: string
   enabled: boolean
   expires_at: string | null
+  rpm_limit: number
+  tpm_limit: number
+  window_cost_limit_cents: number
+  max_sessions: number
+  disable_cooling: boolean
+  refresh_lead_seconds: number | null
+  tls_fingerprint_rotate: boolean
   health_state: string
   credential_state: string
   cap_concurrency: number
@@ -48,26 +68,20 @@ export interface ProviderAccount {
   oauth_endpoint_health?: string
   /** 账号级自定义错误码开关(启用后按 custom_error_codes 判定上游软失败)。 */
   custom_error_codes_enabled: boolean
-  /** 自定义错误码列表(HTTP 状态码);后端可能回 null,消费处按空数组处理。 */
+  /** 自定义错误码列表(HTTP 状态码)。 */
   custom_error_codes: number[]
   /** 池模式错误处理策略标记。 */
   pool_mode: boolean
   /** 临时停调规则开关;规则命中后账号才会进入临时不可调度状态。 */
   temp_unschedulable_enabled: boolean
-  /**
-   * 临时停调规则(B3:仅账号详情 GET 回显,列表/创建/更新响应省略)。
-   * 无规则或后端未下发时为 undefined/空数组。用于编辑弹窗预填现值,避免盲替换清空。
-   */
-  temp_unschedulable_rules?: Array<{
-    error_code: number
-    keywords: string[]
-    duration_minutes: number
-    description?: string
-  }>
+  /** 临时停调规则；list/get/create/update 统一回显，空值规范为 []。 */
+  temp_unschedulable_rules: ProviderAccountTempRule[]
   /** 出站单代理绑定(与 proxy_group_id 互斥);null=未绑单代理。 */
   proxy_id: number | null
   /** 出站代理组标识(与 proxy_id 互斥);null/空=未绑组。 */
   proxy_group_id: string | null
+  /** 规范化代理绑定；旧两列仍保留用于兼容。 */
+  proxy_binding: ProviderAccountProxyBinding
 }
 
 /** 列表响应:{ items, page } —— 与后端 providerAccountListResponse 一致。 */

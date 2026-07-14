@@ -17815,6 +17815,28 @@ components:
           maxItems: 50
           items: { $ref: '#/components/schemas/ChannelHealthAuditEvent' }
 
+    ProviderAccountTempRule:
+      type: object
+      additionalProperties: false
+      required: [error_code, keywords, duration_minutes]
+      properties:
+        error_code: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        keywords: { type: array, items: { type: string } }
+        duration_minutes: { type: integer, format: int32, minimum: 1, maximum: 2147483647 }
+        description: { type: string }
+
+    ProviderAccountProxyBinding:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [direct, proxy, group]
+          description: direct 清除代理列；proxy 使用 proxy_id；group 使用 proxy_group_id。
+        proxy_id: { type: integer, format: int64, minimum: 1 }
+        proxy_group_id: { type: string, minLength: 1 }
+
     ProviderAccount:
       type: object
       additionalProperties: false
@@ -17830,12 +17852,44 @@ components:
         - name
         - account_type
         - enabled
+        - expires_at
+        - rpm_limit
+        - tpm_limit
+        - window_cost_limit_cents
+        - max_sessions
+        - disable_cooling
+        - refresh_lead_seconds
+        - tls_fingerprint_rotate
         - health_state
         - credential_state
         - cap_concurrency
         - in_flight_count
         - priority
+        - static_weight
+        - probe_model
+        - tags
+        - extra
+        - last_dispatch_at
+        - last_probe_latency_ms
+        - last_probe_at
+        - model_allow_list
+        - capability_flags
+        - rate_limited_at
+        - rate_limit_reset_at
+        - rate_limit_reason
+        - overload_until
+        - temp_unschedulable_until
         - token_version
+        - last_refresh_at
+        - last_refresh_outcome
+        - custom_error_codes_enabled
+        - custom_error_codes
+        - pool_mode
+        - temp_unschedulable_enabled
+        - temp_unschedulable_rules
+        - proxy_id
+        - proxy_group_id
+        - proxy_binding
         - created_at
         - updated_at
       properties:
@@ -17849,6 +17903,13 @@ components:
           enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         enabled: { type: boolean }
         expires_at: { type: [string, 'null'], format: date-time }
+        rpm_limit: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        tpm_limit: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        window_cost_limit_cents: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        max_sessions: { type: integer, format: int32, minimum: 0, maximum: 2147483647 }
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds: { type: [integer, 'null'], format: int32, minimum: 0, maximum: 2147483647 }
+        tls_fingerprint_rotate: { type: boolean }
         health_state:
           type: string
           enum: [operational, degraded, failed, cooling_down, error]
@@ -17858,7 +17919,13 @@ components:
         cap_concurrency: { type: integer, minimum: 1 }
         in_flight_count: { type: integer, minimum: 0 }
         priority: { type: integer }
+        static_weight: { type: integer, minimum: 1 }
+        probe_model: { type: [string, 'null'] }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
         last_dispatch_at: { type: [string, 'null'], format: date-time }
+        last_probe_latency_ms: { type: [integer, 'null'], format: int32, minimum: 0 }
+        last_probe_at: { type: [string, 'null'], format: date-time }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
         rate_limited_at: { type: [string, 'null'], format: date-time }
@@ -17872,22 +17939,18 @@ components:
         oauth_endpoint_health:
           type: string
           enum: [operational, degraded, circuit_open]
-        custom_error_codes_enabled: { type: boolean, default: false }
-        custom_error_codes: { type: array, items: { type: integer } }
-        pool_mode: { type: boolean, default: false }
-        temp_unschedulable_enabled: { type: boolean, default: false }
-        temp_unschedulable_rules:
-          description: 仅账号详情读取接口返回；列表与其它账号响应省略。
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
           type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [error_code, keywords, duration_minutes]
-            properties:
-              error_code: { type: integer }
-              keywords: { type: array, items: { type: string } }
-              duration_minutes: { type: integer }
-              description: { type: string }
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_id: { type: [integer, 'null'], format: int64, minimum: 1 }
+        proxy_group_id: { type: [string, 'null'] }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -17899,6 +17962,7 @@ components:
       additionalProperties: false
       required: [provider_id, channel_id, name, account_type, credentials]
       properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
         provider_id: { type: integer, format: int64 }
         channel_id: { type: integer, format: int64 }
         name: { type: string, minLength: 1 }
@@ -17915,6 +17979,7 @@ components:
           type: boolean
           default: false
           description: Set to true only after operator review to create despite high-risk mixed-channel source/vendor/credential-type differences.
+        enabled: { type: boolean }
         credentials:
           type: object
           additionalProperties: true
@@ -17924,8 +17989,59 @@ components:
             refresh_token, expires_at, plus provider-specific fields.
         cap_concurrency: { type: integer, minimum: 1, default: 4 }
         priority: { type: integer, default: 100 }
+        static_weight: { type: integer, minimum: 1, default: 1 }
+        probe_model: { type: string }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+        rpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时沿用数据库默认值。
+        tpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时沿用数据库默认值。
+        window_cost_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；单位为分。
+        max_sessions:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: 0 表示不限。
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: null 或省略时使用全局预刷新窗口。
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: 允许过去时间；null 清除账号过期时间。
+        tls_fingerprint_rotate: { type: boolean }
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
+          type: array
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        reason: { type: string }
 
     MixedChannelRiskRequired:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
@@ -17970,26 +18086,63 @@ components:
       type: object
       additionalProperties: false
       properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
         enabled: { type: boolean }
         priority: { type: integer }
+        static_weight: { type: integer, minimum: 1 }
         cap_concurrency: { type: integer, minimum: 1 }
+        probe_model: { type: string }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+        rpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时保持当前值。
+        tpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时保持当前值。
+        window_cost_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；单位为分。
+        max_sessions:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: 0 表示不限。
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: null 清除账号覆盖；省略时保持当前值。
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: 允许过去时间；null 清除账号过期时间。
+        tls_fingerprint_rotate: { type: boolean }
         custom_error_codes_enabled: { type: boolean }
-        custom_error_codes: { type: array, items: { type: integer } }
+        custom_error_codes:
+          type: array
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
         pool_mode: { type: boolean }
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules:
           type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [error_code, keywords, duration_minutes]
-            properties:
-              error_code: { type: integer }
-              keywords: { type: array, items: { type: string } }
-              duration_minutes: { type: integer, minimum: 1 }
-              description: { type: string }
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        reason: { type: string }
 
     ProviderAccountEnabledUpdate:
       x-huakai-spec-source:

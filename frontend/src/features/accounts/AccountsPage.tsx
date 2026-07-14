@@ -195,6 +195,7 @@ export function AccountsPage() {
 
       {createOpen && (
         <CreateAccountModal
+          tenantId={tenantId}
           onClose={() => setCreateOpen(false)}
           onCreated={refresh}
         />

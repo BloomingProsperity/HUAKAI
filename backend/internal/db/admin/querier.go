@@ -177,6 +177,7 @@ type Querier interface {
 	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
 	// 由异步 eventbus account_health_probe handler 调用,盖 last_probe_at 戳点亮健康面板。
 	TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error
+	UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)

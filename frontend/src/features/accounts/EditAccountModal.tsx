@@ -1,16 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { ApiError } from '../../lib/api'
-import { listProxies } from '../proxies/api'
-import type { Proxy } from '../proxies/types'
 import { updateProviderAccount } from './api'
 import {
   buildAccountUpdate,
   formFromAccount,
-  proxyGroupBindingWarning,
-  selectedProxyGroupSummary,
-  summarizeProxyGroups,
   type AccountEditForm,
 } from './edit'
+import { AccountAdvancedSettings } from './AccountAdvancedSettings'
+import type { AccountAdvancedFormState } from './advancedFields'
 import type { ProviderAccount } from './types'
 
 /*
@@ -33,67 +30,9 @@ export function EditAccountModal({
   const [form, setForm] = useState<AccountEditForm>(formFromAccount(account))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // 高级分区默认收起;若账号已绑代理/已配高级项,自动展开以露出现状。
-  const [showAdvanced, setShowAdvanced] = useState(
-    account.proxy_id != null ||
-      !!account.proxy_group_id ||
-      (account.custom_error_codes_enabled ?? false) ||
-      (account.pool_mode ?? false) ||
-      (account.temp_unschedulable_enabled ?? false) ||
-      Object.keys(account.extra ?? {}).length > 0,
-  )
-  // 出站单代理下拉的候选(仅本账号租户,secret-free)。
-  const [proxies, setProxies] = useState<Proxy[]>([])
-  const [proxyErr, setProxyErr] = useState<string | null>(null)
-  const [proxyLoading, setProxyLoading] = useState(true)
   const set = <K extends keyof AccountEditForm>(k: K, v: AccountEditForm[K]) => setForm((f) => ({ ...f, [k]: v }))
-  const setRule = <K extends keyof AccountEditForm['tempUnschedulableRules'][number]>(
-    index: number,
-    key: K,
-    value: AccountEditForm['tempUnschedulableRules'][number][K],
-  ) =>
-    setForm((current) => ({
-      ...current,
-      tempUnschedulableRules: current.tempUnschedulableRules.map((rule, ruleIndex) =>
-        ruleIndex === index ? { ...rule, [key]: value } : rule,
-      ),
-    }))
-  const addRule = () =>
-    setForm((current) => ({
-      ...current,
-      tempRulesMode: 'replace',
-      tempUnschedulableRules: [
-        ...current.tempUnschedulableRules,
-        { errorCode: '', keywords: '', durationMinutes: '', description: '' },
-      ],
-    }))
-  const removeRule = (index: number) =>
-    setForm((current) => ({
-      ...current,
-      tempUnschedulableRules: current.tempUnschedulableRules.filter((_, ruleIndex) => ruleIndex !== index),
-    }))
-
-  // 拉本租户出站代理列表供「单代理」模式下拉;失败只提示,不阻塞其它字段编辑。
-  useEffect(() => {
-    const ctrl = new AbortController()
-    setProxyLoading(true)
-    setProxyErr(null)
-    listProxies(account.tenant_id, ctrl.signal)
-      .then((r) => setProxies(r.items))
-      .catch((e: unknown) => {
-        if (ctrl.signal.aborted) return
-        setProxyErr(e instanceof ApiError ? `${e.message}(${e.code})` : '加载代理列表失败')
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setProxyLoading(false)
-      })
-    return () => ctrl.abort()
-  }, [account.tenant_id])
-
-  const proxyGroups = summarizeProxyGroups(proxies)
-  const selectedGroup = selectedProxyGroupSummary(proxyGroups, form.proxyGroupId)
-  const groupWarning = proxyGroupBindingWarning(selectedGroup)
-  const groupListId = `proxy-group-options-${account.id}`
+  const setAdvanced = <K extends keyof AccountAdvancedFormState>(k: K, v: AccountAdvancedFormState[K]) =>
+    setForm((current) => ({ ...current, [k]: v }))
 
   const submit = async () => {
     const built = buildAccountUpdate(account, form)
@@ -135,58 +74,31 @@ export function EditAccountModal({
           <input value={form.tags} onChange={(e) => set('tags', e.target.value)} placeholder="prod, us, tier1" style={inp} />
         </Field>
 
-        <button type="button" onClick={() => setShowAdvanced((s) => !s)} style={{ ...ghost, alignSelf: 'flex-start' }}>
-          {showAdvanced ? '收起高级 / 出站设置' : '展开高级 / 出站设置'}
-        </button>
+        <AccountAdvancedSettings
+          mode="edit"
+          tenantId={tenantId}
+          form={form}
+          onChange={setAdvanced}
+          current={account}
+          defaultOpen={
+            account.rpm_limit > 0 ||
+            account.tpm_limit > 0 ||
+            account.window_cost_limit_cents > 0 ||
+            account.max_sessions > 0 ||
+            account.disable_cooling ||
+            account.refresh_lead_seconds != null ||
+            account.expires_at != null ||
+            account.tls_fingerprint_rotate ||
+            account.custom_error_codes_enabled ||
+            account.pool_mode ||
+            account.temp_unschedulable_enabled ||
+            account.proxy_binding.mode !== 'direct'
+          }
+        />
 
-        {showAdvanced && (
-          <fieldset style={section}>
-            <legend style={legend}>高级 / 出站</legend>
-
-            <Field label="出站代理(proxy_binding)">
-              <select value={form.proxyMode} onChange={(e) => set('proxyMode', e.target.value as AccountEditForm['proxyMode'])} style={inp}>
-                <option value="direct">直连(不走代理)</option>
-                <option value="proxy">指定单代理</option>
-                <option value="group">指定代理组</option>
-              </select>
-            </Field>
-            {form.proxyMode === 'proxy' && (
-              <Field label="选择代理">
-                <select value={form.proxyId} onChange={(e) => set('proxyId', e.target.value)} style={inp}>
-                  <option value="">请选择代理…</option>
-                  {proxies.map((p) => (
-                    <option key={p.id} value={String(p.id)}>
-                      {p.name}({p.protocol}://{p.host}:{p.port}) · {p.status}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
-            {form.proxyMode === 'group' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
-                <Field label="代理组标识(proxy_group_id)">
-                  <input list={groupListId} value={form.proxyGroupId} onChange={(e) => set('proxyGroupId', e.target.value)} placeholder="如 us-residential" style={inp} />
-                  <datalist id={groupListId}>
-                    {proxyGroups.map((group) => (
-                      <option key={group.groupId} value={group.groupId} label={`${group.active} active / ${group.total} 总成员`} />
-                    ))}
-                  </datalist>
-                </Field>
-                {proxyLoading && <p style={hint}>正在核验该组的 active 代理数…</p>}
-                {!proxyLoading && !proxyErr && (
-                  <p style={hint}>当前组 active 成员:{selectedGroup.active}(总成员:{selectedGroup.total})</p>
-                )}
-                {!proxyLoading && !proxyErr && groupWarning && (
-                  <p role="alert" style={groupDanger}>{groupWarning}</p>
-                )}
-              </div>
-            )}
-            {proxyErr && (form.proxyMode === 'proxy' || form.proxyMode === 'group') && (
-              <p style={{ fontSize: 12, color: 'var(--hk-warn)', margin: 0 }}>
-                {form.proxyMode === 'group' ? `无法核验代理组可用性:${proxyErr}` : proxyErr}
-              </p>
-            )}
-
+        <details style={section}>
+          <summary style={summary}>附加调度与扩展字段</summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', marginTop: 'var(--hk-space-3)' }}>
             <Field label="探测模型(probe_model,留空清空)">
               <input value={form.probeModel} onChange={(e) => set('probeModel', e.target.value)} placeholder="如 claude-3-5-haiku" style={inp} />
             </Field>
@@ -196,81 +108,11 @@ export function EditAccountModal({
             <Field label="能力标记(capability_flags,逗号分隔)">
               <input value={form.capabilityFlags} onChange={(e) => set('capabilityFlags', e.target.value)} placeholder="vision, tools" style={inp} />
             </Field>
-
-            <label style={checkRow}>
-              <input type="checkbox" checked={form.customErrorCodesEnabled} onChange={(e) => set('customErrorCodesEnabled', e.target.checked)} />
-              启用账号级自定义错误码(custom_error_codes_enabled)
-            </label>
-            <Field label="自定义错误码(逗号分隔的 HTTP 状态码)">
-              <input value={form.customErrorCodes} onChange={(e) => set('customErrorCodes', e.target.value)} placeholder="429, 529" style={inp} />
-            </Field>
-
-            <Field label="池模式(pool_mode)">
-              <select value={form.poolMode} onChange={(e) => set('poolMode', e.target.value as AccountEditForm['poolMode'])} style={inp}>
-                <option value="unchanged">不改(当前:{account.pool_mode ? '开' : '关'})</option>
-                <option value="enabled">开</option>
-                <option value="disabled">关</option>
-              </select>
-            </Field>
-            <p style={hint}>
-              该字段的后端配置语义是:开启后,未被自定义策略覆盖的上游错误不改写本地冷却状态;它不是账号启停开关。当前仓库未发现在线错误处理链消费该标记,调整前请确认部署版本已接线。
-            </p>
-
-            <label style={checkRow}>
-              <input type="checkbox" checked={form.tempUnschedulableEnabled} onChange={(e) => set('tempUnschedulableEnabled', e.target.checked)} />
-              启用临时停调规则(temp_unschedulable_enabled)
-            </label>
-
-            <div style={subSection}>
-              <Field label="临时停调规则写入方式">
-                <select value={form.tempRulesMode} onChange={(e) => set('tempRulesMode', e.target.value as AccountEditForm['tempRulesMode'])} style={inp}>
-                  <option value="unchanged">保持现有规则(不发送)</option>
-                  <option value="replace">用下方完整列表替换</option>
-                </select>
-              </Field>
-              <p style={hint}>
-                下方列表已按详情现值预填。选"保持现有"不发送;选"替换"则用当前列表整体覆盖(可增删改),空列表=清空全部规则。命中错误码且任一关键词出现在响应体时临时停调,关键词留空表示匹配任意响应体。
-              </p>
-              {form.tempRulesMode === 'replace' && (
-                <>
-                  {form.tempUnschedulableRules.map((rule, index) => (
-                    <div key={index} style={ruleCard}>
-                      <Field label={`规则 ${index + 1} · HTTP 错误码`}>
-                        <input value={rule.errorCode} onChange={(e) => setRule(index, 'errorCode', e.target.value)} inputMode="numeric" placeholder="如 403" style={inp} />
-                      </Field>
-                      <Field label="停调时长(分钟)">
-                        <input value={rule.durationMinutes} onChange={(e) => setRule(index, 'durationMinutes', e.target.value)} inputMode="numeric" placeholder="如 30" style={inp} />
-                      </Field>
-                      <div style={{ gridColumn: '1 / -1' }}>
-                        <Field label="响应体关键词(逗号分隔,留空=任意响应体)">
-                          <input value={rule.keywords} onChange={(e) => setRule(index, 'keywords', e.target.value)} placeholder="unusual activity, risk control" style={inp} />
-                        </Field>
-                      </div>
-                      <div style={{ gridColumn: '1 / -1' }}>
-                        <Field label="说明(可选)">
-                          <input value={rule.description} onChange={(e) => setRule(index, 'description', e.target.value)} style={inp} />
-                        </Field>
-                      </div>
-                      <button type="button" onClick={() => removeRule(index)} style={{ ...ghost, gridColumn: '1 / -1', justifySelf: 'start' }}>
-                        删除此规则
-                      </button>
-                    </div>
-                  ))}
-                  {form.tempUnschedulableRules.length === 0 && <p style={hint}>当前替换列表为空,保存后会清空全部临时停调规则。</p>}
-                  <button type="button" onClick={addRule} style={{ ...ghost, alignSelf: 'flex-start' }}>
-                    添加规则
-                  </button>
-                </>
-              )}
-            </div>
-
-            <details style={subSection}>
-              <summary style={summary}>扩展 JSON(extra)</summary>
-              <p style={hint}>自由扩展字段,谨慎修改。仅接受 JSON 对象;格式变化但内容不变时不会发送。</p>
+            <Field label="扩展 JSON(extra)">
               <textarea value={form.extraJson} onChange={(e) => set('extraJson', e.target.value)} rows={7} spellCheck={false} style={textarea} />
-            </details>
-          </fieldset>
-        )}
+            </Field>
+          </div>
+        </details>
 
         <Field label="变更原因(可选,记入审计)">
           <input value={form.reason} onChange={(e) => set('reason', e.target.value)} style={inp} />
@@ -300,12 +142,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const section: React.CSSProperties = { border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', padding: 'var(--hk-space-3)', margin: 0, display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }
-const subSection: React.CSSProperties = { border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', padding: 'var(--hk-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }
-const ruleCard: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--hk-space-2)', padding: 'var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface-sunken)' }
-const legend: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)', padding: '0 6px' }
-const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 12, color: 'var(--hk-ink-700)' }
-const hint: React.CSSProperties = { margin: 0, fontSize: 11, lineHeight: 1.5, color: 'var(--hk-ink-300)' }
-const groupDanger: React.CSSProperties = { margin: 0, padding: 'var(--hk-space-2)', borderRadius: 'var(--hk-radius-sm)', fontSize: 12, lineHeight: 1.5, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const summary: React.CSSProperties = { cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-700)' }
 const textarea: React.CSSProperties = { ...inp, height: 'auto', minHeight: 112, padding: 'var(--hk-space-2) var(--hk-space-3)', resize: 'vertical', fontFamily: 'var(--hk-font-mono)' }
 const primary: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

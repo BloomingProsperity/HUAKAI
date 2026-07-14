@@ -155,6 +155,62 @@ describe('buildAccountUpdate', () => {
     expect('extra' in (r as object)).toBe(false)
   })
 
+  it('最终 update 请求精确带上高级改动与 clear', () => {
+    const original = {
+      ...base,
+      rpm_limit: 10,
+      tpm_limit: 2000,
+      window_cost_limit_cents: 300,
+      max_sessions: 4,
+      disable_cooling: true,
+      refresh_lead_seconds: 60,
+      expires_at: '2027-01-01T00:00:00Z',
+      tls_fingerprint_rotate: true,
+      custom_error_codes_enabled: true,
+      custom_error_codes: [429],
+      pool_mode: true,
+      temp_unschedulable_enabled: true,
+      temp_unschedulable_rules: [{ error_code: 529, keywords: ['old'], duration_minutes: 2 }],
+      proxy_id: 7,
+      proxy_group_id: null,
+      proxy_binding: { mode: 'proxy', proxy_id: 7 },
+    } as ProviderAccount
+    const advanced = {
+      ...formFromAccount(original),
+      rpmLimit: '0',
+      tpmLimit: '2200',
+      windowCostLimitCents: '333',
+      maxSessions: '5',
+      disableCooling: false,
+      refreshLeadMode: 'clear' as const,
+      expiresAtMode: 'clear' as const,
+      tlsFingerprintRotate: false,
+      customErrorCodesEnabled: false,
+      customErrorCodes: '418',
+      poolMode: 'disabled' as const,
+      tempUnschedulableEnabled: false,
+      tempRulesMode: 'replace' as const,
+      tempUnschedulableRules: [{ errorCode: '503', keywords: 'busy', durationMinutes: '9', description: '' }],
+      proxyMode: 'direct' as const,
+    }
+    expect(buildAccountUpdate(original, advanced)).toEqual({
+      rpm_limit: 0,
+      tpm_limit: 2200,
+      window_cost_limit_cents: 333,
+      max_sessions: 5,
+      disable_cooling: false,
+      refresh_lead_seconds: null,
+      expires_at: null,
+      tls_fingerprint_rotate: false,
+      custom_error_codes_enabled: false,
+      custom_error_codes: [418],
+      pool_mode: false,
+      temp_unschedulable_enabled: false,
+      temp_unschedulable_rules: [{ error_code: 503, keywords: ['busy'], duration_minutes: 9 }],
+      proxy_binding: { mode: 'direct' },
+    })
+  })
+
   it('标签变更被收录,顺序变化也算变更', () => {
     expect(buildAccountUpdate(base, form({ tags: 'prod, eu' }))).toEqual({ tags: ['prod', 'eu'] })
     expect(buildAccountUpdate(base, form({ tags: 'us, prod' }))).toEqual({ tags: ['us', 'prod'] })
