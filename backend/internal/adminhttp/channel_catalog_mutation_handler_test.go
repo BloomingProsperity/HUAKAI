@@ -124,6 +124,26 @@ func TestChannelCatalogCreateHappyPath(t *testing.T) {
 	}
 }
 
+// 老客户端仍可携带 failover_status_codes；删掉 DTO 字段后严格 JSON 解码会返回 400。
+func TestChannelCatalogCreateAcceptsLegacyFailoverStatusCodes(t *testing.T) {
+	store := &channelCatalogStoreStub{createItem: channelCatalogItem{
+		ID: 902, PoolGroupID: 70, Name: "legacy", FailoverStatusCodes: []int32{418, 529}, Enabled: true,
+	}}
+	rec := invokeChannelCatalogMutation(t, AdminChannelCatalogDeps{
+		Auth:  apiKeyAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/channels",
+		`{"pool_group_id":70,"name":"legacy","enabled":true,"failover_status_codes":[418,529]}`)
+	assertChannelCatalogStatus(t, rec, http.StatusCreated)
+	if store.createCalls != 1 || len(store.lastCreate.FailoverStatusCodes) != 2 ||
+		store.lastCreate.FailoverStatusCodes[0] != 418 || store.lastCreate.FailoverStatusCodes[1] != 529 {
+		t.Fatalf("旧字段未兼容透传:calls=%d arg=%+v", store.createCalls, store.lastCreate)
+	}
+	if store.lastCreate.Name != "legacy" || !store.lastCreate.Enabled {
+		t.Fatalf("现存有效字段传播错:arg=%+v", store.lastCreate)
+	}
+}
+
 func TestChannelCatalogCreateValidation(t *testing.T) {
 	cases := map[string]string{
 		"missing name":       `{"pool_group_id":70,"enabled":true}`,

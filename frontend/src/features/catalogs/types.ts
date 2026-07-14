@@ -16,8 +16,8 @@
  * 注意:platform_admin 角色下后端 tenant_id query 必填(provider_catalog_handler.go:161 parseAdminCatalogTenant);
  * 故本页所有读写都先要一个租户 ID。
  *
- * money 说明:两份目录都【不含】任何计费/倍率/金额字段。channel 目录只承载路由失败转移
- * (pool_group_id + failover_status_codes)与启用开关,无 money;provider 目录只承载
+ * money 说明:两份目录都【不含】任何计费/倍率/金额字段。channel 目录只承载
+ * pool_group_id 与启用开关,无 money;provider 目录只承载
  * code/display_name/upstream_protocol/enabled,无 money。本切片不触碰任何计费面。
  */
 
@@ -71,8 +71,8 @@ export interface ChannelCatalogItem {
   id: number
   pool_group_id: number
   name: string
-  /** 触发失败转移的上游 HTTP 状态码列表(默认 [401,403,429,529])。 */
-  failover_status_codes: number[]
+  /** 旧客户端兼容字段；当前界面不展示也不下发。 */
+  failover_status_codes?: number[]
   enabled: boolean
   created_at?: string
 }
@@ -88,12 +88,12 @@ export interface ChannelCatalogListResponse {
 /**
  * channel 新建/更新请求体(镜像 channelCatalogMutationRequest,channel_catalog_mutation_handler.go:63)。
  * 新建/更新:name + pool_group_id 必填,enabled 必填;
- * failover_status_codes 省略/空数组 = 后端回落默认 [401,403,429,529];
  * 更新时 id 来自 URL path;reason 可选(写入审计)。
  */
 export interface ChannelCatalogMutationRequest {
   pool_group_id: number
   name: string
+  /** 旧客户端兼容字段；当前界面不下发。 */
   failover_status_codes?: number[]
   enabled: boolean
   reason?: string

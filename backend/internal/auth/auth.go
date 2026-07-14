@@ -18,8 +18,8 @@ type TokenProvider interface {
 	GetAccessToken(ctx context.Context, tenantID, accountID int64) (string, error)
 }
 
-// MimicryEngine 按 F-AUTH-005 §Phase H 应用 Claude Code mimicry, 仅
-// 当 per-Pool 的 mimicry_policy.enabled = true 且存在 legal_review_id 时生效。
+// MimicryEngine 按 F-AUTH-005 §Phase H 应用请求变换。当前运行时不读取
+// mimicry_policy 表；该表的保留状态见 docs/architecture/deprecated-schema.md。
 type MimicryEngine interface {
 	// ApplyToBody 返回变换后的请求 body + 审计属性。
 	// 6 步变换: 改写 system + 剥离 cache_control + breakpoints +

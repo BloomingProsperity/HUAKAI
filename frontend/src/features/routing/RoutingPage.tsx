@@ -12,7 +12,7 @@ import type { PoolBinding } from './types'
 /*
  * 路由与池 · 模型→池路由绑定(P0)。管线第 2 站。
  * /admin/v1/model-pool-bindings 列表(可按 model_id/pool_group_id 筛选)+ 创建 + 编辑选号策略 + 删除。
- * 选号策略(strict_priority / priority_weighted)是核心,对应后端 PR#118 加权选号。
+ * 选号策略(strict_priority / priority_weighted)是核心；加权模式读取账号 static_weight。
  */
 export function RoutingPage() {
   const tenantId = useMe().tenantId
@@ -151,13 +151,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-const bindingColumns: DataListColumn<BindingTableRow>[] = [
+export const bindingColumns: DataListColumn<BindingTableRow>[] = [
   { key: 'model', label: '模型', render: (row) => <span className="hk-mono">{row.model}</span> },
   { key: 'pool', label: '池组', render: (row) => <span className="hk-mono">{row.pool}</span> },
   { key: 'priority', label: '优先级', render: (row) => <span className="hk-mono">{row.priority}</span> },
-  { key: 'weight', label: '权重', render: (row) => <span className="hk-mono">{row.weight}</span> },
   { key: 'selection-mode', label: '选号策略', badge: true, render: (row) => <StatusBadge tone={row.selectionTone}>{row.selectionMode}</StatusBadge> },
-  { key: 'fallback-class', label: '兜底类', render: (row) => row.fallbackClass },
   { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
 ]
 

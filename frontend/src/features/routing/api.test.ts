@@ -26,9 +26,7 @@ describe('路由绑定 API 租户作用域', () => {
     const createBody = { model_id: 11, pool_group_id: 13 }
     const updateBody = {
       priority: 100,
-      weight: 1,
       selection_mode: 'strict_priority',
-      fallback_class: 'normal',
       enabled: false,
     }
 
@@ -38,6 +36,11 @@ describe('路由绑定 API 租户作用域', () => {
 
     expect(client.send).toHaveBeenNthCalledWith(1, 'POST', '/admin/v1/model-pool-bindings', createBody, { query: { tenant_id: 7 } })
     expect(client.send).toHaveBeenNthCalledWith(2, 'PATCH', '/admin/v1/model-pool-bindings/17', updateBody, { query: { tenant_id: 7 } })
+    const sentUpdate = client.send.mock.calls[1][2] as Record<string, unknown>
+    expect(sentUpdate).toMatchObject({ priority: 100, selection_mode: 'strict_priority', enabled: false })
+    expect('weight' in sentUpdate).toBe(false)
+    expect('max_parallel_requests' in sentUpdate).toBe(false)
+    expect('fallback_class' in sentUpdate).toBe(false)
     expect(client.send).toHaveBeenNthCalledWith(3, 'DELETE', '/admin/v1/model-pool-bindings/17', undefined, { query: { tenant_id: 7 } })
   })
 })

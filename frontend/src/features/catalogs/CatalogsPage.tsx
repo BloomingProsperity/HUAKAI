@@ -14,9 +14,7 @@ import {
   updateProvider,
 } from './api'
 import {
-  DEFAULT_FAILOVER_CODES,
   UPSTREAM_PROTOCOLS,
-  formatFailoverCodes,
   mapChannelCatalogRows,
   mapProviderCatalogRows,
   validateChannel,
@@ -29,7 +27,7 @@ import type { ChannelCatalogItem, ProviderCatalogItem } from './types'
 /*
  * 上游目录运营台。管线「模型与定价」分组下的目录写侧管理面:
  *   - provider 目录:上游账号所属的供应商条目(code / 展示名 / 上游协议 / 启用)
- *   - channel 目录:路由失败转移条目(pool_group_id / 名称 / 触发失败转移的状态码 / 启用)
+ *   - channel 目录:池组路由条目(pool_group_id / 名称 / 启用)
  * 后端 /admin/v1/{providers,channels}(admin token),见 cmd/gateway/routes.go:888-900。
  * 注意:platform_admin 角色下后端 tenant_id 必填,故本页先要租户 ID 再加载。
  * 删除是软删但属破坏性(provider 删除后该供应商不可再新建账号),带二次确认。
@@ -49,7 +47,7 @@ export function CatalogsPage() {
         <div>
           <h1>上游目录</h1>
           <p className="hk-sub">
-            provider 目录(供应商条目)与 channel 目录(路由失败转移条目)的增删改。先指定租户 ID。
+            provider 目录(供应商条目)与 channel 目录(池组路由条目)的增删改。先指定租户 ID。
           </p>
         </div>
       </header>
@@ -267,7 +265,7 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
 
 // ── channel 目录卡 ────────────────────────────────────────────────────────────
 
-function ChannelsCard({ tenantId }: { tenantId: number }) {
+export function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [rows, setRows] = useState<ChannelCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -277,7 +275,6 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [editId, setEditId] = useState<number | null>(null)
   const [name, setName] = useState('')
   const [poolGroupId, setPoolGroupId] = useState('')
-  const [failoverText, setFailoverText] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
   const tableRows = mapChannelCatalogRows(rows)
@@ -309,7 +306,6 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
     setEditId(null)
     setName('')
     setPoolGroupId('')
-    setFailoverText('')
     setEnabled(true)
     setReason('')
   }
@@ -318,7 +314,6 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
     setEditId(row.id)
     setName(row.name)
     setPoolGroupId(String(row.pool_group_id))
-    setFailoverText(formatFailoverCodes(row.failover_status_codes))
     setEnabled(row.enabled)
     setReason('')
     setNotice(null)
@@ -343,7 +338,7 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
     setError(null)
     setNotice(null)
     const pg = Number(poolGroupId.trim())
-    const v = validateChannel({ name, poolGroupId: pg, failoverText, enabled, reason })
+    const v = validateChannel({ name, poolGroupId: pg, enabled, reason })
     if (!v.ok) {
       setError(v.error)
       return
@@ -385,9 +380,6 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
           </label>
         </div>
         <div style={formRow}>
-          <Field label={`失败转移状态码(逗号分隔,留空=默认 ${DEFAULT_FAILOVER_CODES.join(',')})`}>
-            <input value={failoverText} onChange={(e) => setFailoverText(e.target.value)} placeholder="如 401, 403, 429, 529" style={{ ...inp, width: 280 }} />
-          </Field>
           <Field label="原因(reason,可选,写入审计)">
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="可选" style={{ ...inp, width: 220 }} />
           </Field>
@@ -408,7 +400,7 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
       {loading && rows.length === 0 ? (
         <EmptyState title="正在加载 channel 目录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <EmptyState title="暂无 channel 目录条目" hint="可使用上方表单新建路由失败转移条目。" />
+        <EmptyState title="暂无 channel 目录条目" hint="可使用上方表单新建池组路由条目。" />
       ) : (
         <DataListTable
           label="channel 目录"
@@ -450,11 +442,10 @@ const providerColumns: DataListColumn<ProviderCatalogTableRow>[] = [
   { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
 ]
 
-const channelColumns: DataListColumn<ChannelCatalogTableRow>[] = [
+export const channelColumns: DataListColumn<ChannelCatalogTableRow>[] = [
   { key: 'id', label: '#', render: (row) => <span className="hk-mono">{row.displayId}</span> },
   { key: 'name', label: '名称', render: (row) => row.name },
   { key: 'pool-group', label: 'pool_group_id', render: (row) => <span className="hk-mono">{row.poolGroupId}</span> },
-  { key: 'failover', label: '失败转移码', render: (row) => <span className="hk-mono">{row.failoverCodes}</span> },
   { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
   { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
 ]

@@ -63,7 +63,7 @@ type channelCatalogDeleteParams struct {
 type channelCatalogMutationRequest struct {
 	PoolGroupID         *int64  `json:"pool_group_id,omitempty"`
 	Name                string  `json:"name,omitempty"`
-	FailoverStatusCodes []int32 `json:"failover_status_codes,omitempty"`
+	FailoverStatusCodes []int32 `json:"failover_status_codes,omitempty"` // 仅存储兼容，无运行时消费，UI 已不暴露。
 	Enabled             *bool   `json:"enabled,omitempty"`
 	Reason              string  `json:"reason,omitempty"`
 }
@@ -418,7 +418,7 @@ func validateChannelCatalogEnabled(w http.ResponseWriter, enabled *bool) (bool, 
 
 // validateChannelCatalogFailoverCodes 校验 HTTP 状态码,并在 create 时
 // 若列表被省略则应用列默认值。update 时传空也被视为一次明确的
-//「清空为默认值」,以确保任何一行永远不会处于没有 codes 的状态。
+// 「清空为默认值」,以确保任何一行永远不会处于没有 codes 的状态。
 func validateChannelCatalogFailoverCodes(w http.ResponseWriter, codes []int32, _ bool) ([]int32, bool) {
 	if len(codes) == 0 {
 		out := make([]int32, len(defaultFailoverStatusCodes))

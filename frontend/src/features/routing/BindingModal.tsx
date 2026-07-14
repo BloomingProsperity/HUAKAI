@@ -6,7 +6,6 @@ import {
   buildBindingUpdate,
   EMPTY_CREATE_BINDING,
   editFormFromBinding,
-  FALLBACK_CLASSES,
   hasBindingChanges,
   SELECTION_MODES,
   type BindingCreateForm,
@@ -15,8 +14,8 @@ import {
 import type { PoolBinding } from './types'
 
 /*
- * 路由绑定 创建/编辑 模态。编辑模式只发改了的字段(buildBindingUpdate);创建模式带 model_id/
- * pool_group_id。selection_mode 选择器是核心——切换严格优先级 / 按权重加权(后端 PR#118)。
+ * 路由绑定创建/编辑模态。编辑模式回填仍由界面管理的有效字段；创建模式带 model_id/
+ * pool_group_id。selection_mode 选择器是核心——切换严格优先级 / 按账号权重加权。
  */
 export function BindingModal({
   tenantId,
@@ -31,7 +30,7 @@ export function BindingModal({
 }) {
   const editing = binding !== null
   const [editForm, setEditForm] = useState<BindingEditForm>(
-    binding ? editFormFromBinding(binding) : { priority: '0', weight: '1', selectionMode: 'strict_priority', fallbackClass: 'normal', enabled: true },
+    binding ? editFormFromBinding(binding) : { priority: '0', selectionMode: 'strict_priority', enabled: true },
   )
   const [createForm, setCreateForm] = useState<BindingCreateForm>(EMPTY_CREATE_BINDING)
   const [busy, setBusy] = useState(false)
@@ -51,7 +50,7 @@ export function BindingModal({
           setBusy(false)
           return
         }
-        // 回填全字段(后端 PATCH 是整行覆盖,只发 diff 会重置省略字段)。
+        // 回填仍由界面管理的有效字段；仅存储兼容字段明确不下发。
         await updateBinding(binding.id, buildBindingUpdate(binding, editForm), tenantId)
       } else {
         const built = buildBindingCreate(createForm)
@@ -104,14 +103,6 @@ export function BindingModal({
             style={inp}
           />
         </Field>
-        <Field label="权重(priority_weighted 时生效)">
-          <input
-            value={editing ? editForm.weight : createForm.weight}
-            onChange={(e) => (editing ? setEditForm((f) => ({ ...f, weight: e.target.value })) : setCreateForm((f) => ({ ...f, weight: e.target.value })))}
-            inputMode="numeric"
-            style={inp}
-          />
-        </Field>
         <Field label="选号策略">
           <select value={selMode} onChange={(e) => setSelMode(e.target.value)} style={inp}>
             {SELECTION_MODES.map((m) => (
@@ -121,19 +112,6 @@ export function BindingModal({
             ))}
           </select>
           {selHint && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{selHint}</span>}
-        </Field>
-        <Field label="兜底类">
-          <select
-            value={editing ? editForm.fallbackClass : createForm.fallbackClass}
-            onChange={(e) => (editing ? setEditForm((f) => ({ ...f, fallbackClass: e.target.value })) : setCreateForm((f) => ({ ...f, fallbackClass: e.target.value })))}
-            style={inp}
-          >
-            {FALLBACK_CLASSES.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
         </Field>
         {editing && (
           <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 13, color: 'var(--hk-ink-700)' }}>

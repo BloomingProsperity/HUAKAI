@@ -4,7 +4,6 @@
  *   - provider 新建/更新表单的前端校验(镜像后端 validateProviderCatalog*Request)
  *   - 上游协议白名单(镜像后端 knownProviderCatalogProtocols,provider_catalog_mutation_handler.go:489)
  *   - channel 新建/更新表单的前端校验(镜像后端 validateChannelCatalog*Request)
- *   - failover 状态码文本 ↔ number[] 的解析与展示(镜像后端 100..599 区间守卫)
  * 全部为同步纯函数,便于变异测试打红。后端始终是权威,前端先拦以避免无谓 400。
  */
 
@@ -158,51 +157,6 @@ export function validateProviderUpdate(form: {
   }
 }
 
-// ── channel 失败转移状态码解析 ─────────────────────────────────────────────────
-
-/** channel 省略 failover_status_codes 时后端回落的默认值(channel_catalog_mutation_handler.go:39)。 */
-export const DEFAULT_FAILOVER_CODES: readonly number[] = [401, 403, 429, 529]
-
-/** 失败转移码解析结果。 */
-export type FailoverCodesParse =
-  | { ok: true; codes: number[] }
-  | { ok: false; error: string }
-
-/**
- * 把逗号/空白分隔的状态码文本解析成 number[]。
- * 空输入 → 空数组(后端会回落默认值,这是合法的「清空为默认」)。
- * 判别核心:每个码必须是整数且 ∈ [100,599](镜像后端 c<100||c>599 即 400);
- * 任一非法即拒(报具体的值)。重复值去重(后端不去重但无害,前端先收敛展示)。
- */
-export function parseFailoverCodes(text: string): FailoverCodesParse {
-  const raw = text.trim()
-  if (raw === '') return { ok: true, codes: [] }
-  const parts = raw.split(/[\s,]+/).filter((p) => p !== '')
-  const out: number[] = []
-  const seen = new Set<number>()
-  for (const p of parts) {
-    // 仅接受纯整数串(避免 "200.5" / "2e2" / 负号 这类被 Number 容忍的形态)。
-    if (!/^[0-9]+$/.test(p)) {
-      return { ok: false, error: `状态码「${p}」必须是整数` }
-    }
-    const n = Number(p)
-    if (n < 100 || n > 599) {
-      return { ok: false, error: `状态码 ${n} 超出 100~599 范围` }
-    }
-    if (!seen.has(n)) {
-      seen.add(n)
-      out.push(n)
-    }
-  }
-  return { ok: true, codes: out }
-}
-
-/** 把状态码数组格式化成可编辑文本(逗号分隔)。 */
-export function formatFailoverCodes(codes: number[] | undefined): string {
-  if (!codes || codes.length === 0) return ''
-  return codes.join(', ')
-}
-
 export interface ProviderCatalogTableRow {
   id: number
   code: string
@@ -233,7 +187,6 @@ export interface ChannelCatalogTableRow {
   displayId: string
   name: string
   poolGroupId: number
-  failoverCodes: string
   status: string
   statusTone: BadgeTone
   createdAt: string
@@ -247,7 +200,6 @@ export function mapChannelCatalogRows(items: ChannelCatalogItem[]): ChannelCatal
     displayId: `#${item.id}`,
     name: item.name,
     poolGroupId: item.pool_group_id,
-    failoverCodes: formatFailoverCodes(item.failover_status_codes) || '—',
     status: item.enabled ? '启用' : '停用',
     statusTone: item.enabled ? 'ok' : 'muted',
     createdAt: formatCatalogTimestamp(item.created_at),
@@ -272,14 +224,12 @@ export type ChannelValidation =
  * channel_catalog_mutation_handler.go:363/387 —— 两者校验一致):
  *   - name trim 后非空
  *   - pool_group_id 必须为正整数(后端 *PoolGroupID<=0 即 400)
- *   - failover 文本解析合法(空→默认)
- * 判别核心:name 空 / pool_group_id 非正 / 失败转移码非法即拒。reason 可选。
- * failover_status_codes 仅在解析出非空数组时下发(空数组省略,让后端回落默认)。
+ * 判别核心:name 空 / pool_group_id 非正即拒。reason 可选。
+ * failover_status_codes 仅为旧客户端兼容保留在类型中,当前界面不下发。
  */
 export function validateChannel(form: {
   name: string
   poolGroupId: number
-  failoverText: string
   enabled: boolean
   reason: string
 }): ChannelValidation {
@@ -288,8 +238,6 @@ export function validateChannel(form: {
   if (!Number.isInteger(form.poolGroupId) || form.poolGroupId <= 0) {
     return { ok: false, error: 'pool_group_id 必须是正整数' }
   }
-  const parsed = parseFailoverCodes(form.failoverText)
-  if (!parsed.ok) return { ok: false, error: parsed.error }
   const reason = form.reason.trim()
   return {
     ok: true,
@@ -297,7 +245,6 @@ export function validateChannel(form: {
       pool_group_id: form.poolGroupId,
       name,
       enabled: form.enabled,
-      ...(parsed.codes.length > 0 ? { failover_status_codes: parsed.codes } : {}),
       ...(reason !== '' ? { reason } : {}),
     },
   }

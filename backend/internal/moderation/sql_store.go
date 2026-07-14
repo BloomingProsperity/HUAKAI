@@ -64,6 +64,7 @@ func (s *SQLStore) Contains(ctx context.Context, tenantID int64, hashHex string)
 }
 
 func (s *SQLStore) InsertModerationLog(ctx context.Context, event ModerationEvent) (int64, error) {
+	// 违规费链路尚未启用，历史列固定写零且不接 billing；见 docs/architecture/deprecated-schema.md。
 	return s.q.InsertModerationLog(ctx, dbmoderation.InsertModerationLogParams{
 		TenantID:         event.TenantID,
 		APIKeyID:         event.APIKeyID,
@@ -259,6 +260,7 @@ func (s *SQLStore) DeleteHash(ctx context.Context, tenantID int64, id int64) err
 }
 
 func (s *SQLStore) UpsertConfig(ctx context.Context, cfg ModerationConfig) (ModerationConfig, error) {
+	// 管理面不暴露违规费，兼容列固定写零；见 docs/architecture/deprecated-schema.md。
 	row, err := s.q.UpsertModerationConfig(ctx, dbmoderation.UpsertModerationConfigParams{
 		TenantID:         cfg.TenantID,
 		Enabled:          cfg.Enabled,

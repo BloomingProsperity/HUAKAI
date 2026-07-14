@@ -14,9 +14,10 @@ const binding: PoolBinding = {
   model_id: 10,
   pool_group_id: 20,
   priority: 0,
-  weight: 1,
+  weight: 9473,
   selection_mode: 'strict_priority',
-  fallback_class: 'normal',
+  max_parallel_requests: 37,
+  fallback_class: 'quota',
   enabled: true,
 }
 
@@ -28,21 +29,20 @@ const richBinding: PoolBinding = {
   tpm_limit: 90000,
 }
 
-describe('buildBindingUpdate(整行回填,防后端覆盖重置)', () => {
-  it('只改权重 → 仍回填其它当前字段(防 selection_mode/fallback/enabled 被重置默认)', () => {
+describe('buildBindingUpdate(仅提交真实生效字段)', () => {
+  it('有效字段精确回填,三个仅存储字段不进入 payload', () => {
     const req = buildBindingUpdate(binding, {
-      priority: '0',
-      weight: '5',
-      selectionMode: 'strict_priority',
-      fallbackClass: 'normal',
-      enabled: true,
+      priority: '7',
+      selectionMode: 'priority_weighted',
+      enabled: false,
     })
-    // 判别核心:即便只改 weight,其它字段也必须回填当前值,不能省略(省略=后端重置默认)。
-    expect(req.weight).toBe(5)
-    expect(req.priority).toBe(0)
-    expect(req.selection_mode).toBe('strict_priority')
-    expect(req.fallback_class).toBe('normal')
-    expect(req.enabled).toBe(true)
+    expect(req.priority).toBe(7)
+    expect(req.selection_mode).toBe('priority_weighted')
+    expect(req.enabled).toBe(false)
+    // 判别核心:把任一欺骗控件重新接回 payload,对应 key 断言立即转红。
+    expect('weight' in req).toBe(false)
+    expect('max_parallel_requests' in req).toBe(false)
+    expect('fallback_class' in req).toBe(false)
   })
 
   it('回填可空字段当前值(provider_model_id_override/rpm/tpm),不被清空', () => {
@@ -54,10 +54,9 @@ describe('buildBindingUpdate(整行回填,防后端覆盖重置)', () => {
     expect(req.tpm_limit).toBe(90000)
   })
 
-  it('priority/weight 表单非法 → 回退原值(不写非法值)', () => {
-    const req = buildBindingUpdate(binding, { ...editFormFromBinding(binding), priority: 'abc', weight: '-2' })
+  it('priority 表单非法 → 回退原值(不写非法值)', () => {
+    const req = buildBindingUpdate(binding, { ...editFormFromBinding(binding), priority: 'abc' })
     expect(req.priority).toBe(0)
-    expect(req.weight).toBe(1)
   })
 })
 
@@ -66,7 +65,7 @@ describe('hasBindingChanges', () => {
     expect(hasBindingChanges(binding, editFormFromBinding(binding))).toBe(false)
   })
   it('改了任一可见字段 → true', () => {
-    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), weight: '5' })).toBe(true)
+    expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), priority: '5' })).toBe(true)
     expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), enabled: false })).toBe(true)
     expect(hasBindingChanges(binding, { ...editFormFromBinding(binding), selectionMode: 'priority_weighted' })).toBe(true)
   })
@@ -79,34 +78,35 @@ describe('buildBindingCreate', () => {
   })
 
   it('齐全 → 正确请求体', () => {
-    const req = buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20', selectionMode: 'priority_weighted', weight: '3' })
+    const req = buildBindingCreate({ ...EMPTY_CREATE_BINDING, modelId: '10', poolGroupId: '20', priority: '6', selectionMode: 'priority_weighted' })
     expect(req).toEqual({
       model_id: 10,
       pool_group_id: 20,
       selection_mode: 'priority_weighted',
-      fallback_class: 'normal',
-      priority: 0,
-      weight: 3,
+      priority: 6,
     })
+    expect('weight' in req).toBe(false)
+    expect('max_parallel_requests' in req).toBe(false)
+    expect('fallback_class' in req).toBe(false)
   })
 })
 
 describe('mapBindingRows', () => {
   it('完整映射路由表展示列与状态语气', () => {
     // 判别核心:每个业务字段都来自对应 DTO 字段;删列、错字段或错 tone 均会转红。
-    const row = mapBindingRows([{ ...binding, id: 7, model_id: 11, pool_group_id: 22, priority: 3, weight: 9, selection_mode: 'priority_weighted', fallback_class: 'quota', enabled: false }])[0]
+    const row = mapBindingRows([{ ...binding, id: 7, model_id: 11, pool_group_id: 22, priority: 3, selection_mode: 'priority_weighted', enabled: false }])[0]
     expect(row).toMatchObject({
       id: 7,
       model: '#11',
       pool: '#22',
       priority: 3,
-      weight: 9,
       selectionMode: '按权重加权',
       selectionTone: 'info',
-      fallbackClass: '配额',
       status: '停用',
       statusTone: 'muted',
     })
+    expect('weight' in row).toBe(false)
+    expect('fallbackClass' in row).toBe(false)
     expect(row.binding.id).toBe(7)
   })
 })

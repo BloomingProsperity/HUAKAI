@@ -1,13 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_FAILOVER_CODES,
   UPSTREAM_PROTOCOLS,
   buildCatalogQuery,
-  formatFailoverCodes,
   isKnownProtocol,
   mapChannelCatalogRows,
   mapProviderCatalogRows,
-  parseFailoverCodes,
   validateChannel,
   validateProviderCreate,
   validateProviderUpdate,
@@ -88,61 +85,17 @@ describe('validateProviderUpdate', () => {
   })
 })
 
-describe('parseFailoverCodes', () => {
-  it('空输入 → 空数组(后端回落默认)', () => {
-    const r = parseFailoverCodes('   ')
-    expect(r.ok && r.codes).toEqual([])
-  })
-
-  it('逗号/空白混合分隔解析,去重保序', () => {
-    const r = parseFailoverCodes('401, 403 429,401')
-    expect(r.ok && r.codes).toEqual([401, 403, 429])
-  })
-
-  it('超出 100~599 即拒', () => {
-    // 判别核心:区间守卫(镜像后端 c<100||c>599)。变异(去掉区间检查)→ ok 变 true → RED。
-    expect(parseFailoverCodes('99').ok).toBe(false)
-    expect(parseFailoverCodes('600').ok).toBe(false)
-    expect(parseFailoverCodes('100').ok).toBe(true)
-    expect(parseFailoverCodes('599').ok).toBe(true)
-  })
-
-  it('非整数串即拒(防 Number 容忍 200.5 / 2e2 / 负号)', () => {
-    expect(parseFailoverCodes('200.5').ok).toBe(false)
-    expect(parseFailoverCodes('2e2').ok).toBe(false)
-    expect(parseFailoverCodes('-401').ok).toBe(false)
-    expect(parseFailoverCodes('abc').ok).toBe(false)
-  })
-})
-
-describe('formatFailoverCodes', () => {
-  it('数组 → 逗号分隔串;空/undefined → 空串', () => {
-    expect(formatFailoverCodes([401, 429])).toBe('401, 429')
-    expect(formatFailoverCodes([])).toBe('')
-    expect(formatFailoverCodes(undefined)).toBe('')
-  })
-
-  it('默认码常量与后端一致', () => {
-    expect([...DEFAULT_FAILOVER_CODES]).toEqual([401, 403, 429, 529])
-  })
-})
-
 describe('validateChannel', () => {
-  const base = { name: '主通道', poolGroupId: 1, failoverText: '', enabled: true, reason: '' }
+  const base = { name: '主通道', poolGroupId: 1, enabled: true, reason: '' }
 
-  it('合法输入:failover 空则省略字段(后端回落默认)', () => {
+  it('合法输入只提交现存有效字段,不夹带 failover_status_codes', () => {
     const v = validateChannel(base)
     expect(v.ok).toBe(true)
     if (v.ok) {
       expect(v.value).toEqual({ pool_group_id: 1, name: '主通道', enabled: true })
-      // 判别核心:空 failover 不下发字段(交后端回落默认)。变异(总是下发)→ RED。
+      // 判别核心:当前界面永不下发仅存储字段。变异(重新塞入该字段)→ RED。
       expect('failover_status_codes' in v.value).toBe(false)
     }
-  })
-
-  it('failover 非空时下发解析后的数组', () => {
-    const v = validateChannel({ ...base, failoverText: '401,500' })
-    expect(v.ok && v.value.failover_status_codes).toEqual([401, 500])
   })
 
   it('name 空即拒', () => {
@@ -154,10 +107,6 @@ describe('validateChannel', () => {
     expect(validateChannel({ ...base, poolGroupId: 0 }).ok).toBe(false)
     expect(validateChannel({ ...base, poolGroupId: -3 }).ok).toBe(false)
     expect(validateChannel({ ...base, poolGroupId: 1.5 }).ok).toBe(false)
-  })
-
-  it('failover 文本非法即拒(透传 parseFailoverCodes 的错误)', () => {
-    expect(validateChannel({ ...base, failoverText: '700' }).ok).toBe(false)
   })
 
   it('reason 非空时下发(trim)', () => {
@@ -175,11 +124,12 @@ describe('目录表格列映射', () => {
     expect(row.provider).toBe(provider)
   })
 
-  it('channel 映射格式化编号、失败转移码与启用态', () => {
+  it('channel 映射忽略旧响应中的失败转移码并保留有效列', () => {
     const channel = { id: 9, pool_group_id: 4, name: '主通道', failover_status_codes: [401, 429], enabled: true, created_at: undefined }
     const [row] = mapChannelCatalogRows([channel])
-    // 判别核心:失败转移码必须进入展示行；变异为空串会在此证红。
-    expect(row).toMatchObject({ displayId: '#9', poolGroupId: 4, failoverCodes: '401, 429', status: '启用', statusTone: 'ok', createdAt: '—' })
+    expect(row).toMatchObject({ displayId: '#9', poolGroupId: 4, status: '启用', statusTone: 'ok', createdAt: '—' })
+    // 判别核心:把仅存储字段重新映射进列表行会立即转红。
+    expect('failoverCodes' in row).toBe(false)
     expect(row.channel).toBe(channel)
   })
 })

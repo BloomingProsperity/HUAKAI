@@ -167,6 +167,23 @@ func TestCreateDefaultsAndActorPropagation(t *testing.T) {
 	}
 }
 
+// 老客户端仍可携带三个仅存储字段；删掉任一 DTO 字段后严格 JSON 解码会返回 400，测试随即转红。
+func TestCreateAcceptsLegacyStoredOnlyFields(t *testing.T) {
+	svc := &stubService{}
+	body := `{"model_id":5,"pool_group_id":9,"weight":7,"max_parallel_requests":3,"fallback_class":"quota","selection_mode":"priority_weighted","enabled":false}`
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPost, "/?tenant_id=42", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code=%d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	c := svc.lastCreate
+	if !svc.createCalled || c.Weight != 7 || c.MaxParallelRequests == nil || *c.MaxParallelRequests != 3 || c.FallbackClass != "quota" {
+		t.Fatalf("旧字段未兼容透传:called=%v input=%+v", svc.createCalled, c)
+	}
+	if c.SelectionMode != "priority_weighted" || c.Enabled {
+		t.Fatalf("现存有效字段传播错:selection_mode=%q enabled=%v", c.SelectionMode, c.Enabled)
+	}
+}
+
 // 缺 model_id/pool_group_id → 400。
 func TestCreateRequiresModelAndPool(t *testing.T) {
 	svc := &stubService{}
