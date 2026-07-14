@@ -23,7 +23,6 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
-	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
 const (
@@ -539,17 +538,4 @@ func jsonObjectOrEmpty(raw []byte) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(raw)
-}
-
-// BuildMixedRiskParams 组装事务建号的风险检查输入。
-func BuildMixedRiskParams(insert admindb.InsertProviderAccountParams, req CreateRequest, providerFamily string, confirmed bool) accountcreate.Params {
-	return accountcreate.Params{
-		Insert: insert,
-		Candidate: mixedchannelrisk.Account{
-			ProviderID: req.ProviderID, ChannelID: req.ChannelID,
-			AccountType: req.AccountType, Vendor: req.Vendor, AuthMode: req.AuthMode,
-		},
-		ProviderFamily: providerFamily,
-		Confirmed:      confirmed,
-	}
 }

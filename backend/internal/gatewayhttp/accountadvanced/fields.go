@@ -35,19 +35,14 @@ type FieldSpec struct {
 
 var fieldSpecs = mustLoadFieldSpecs()
 
-// Specs 返回规格副本，防止调用方修改进程内唯一清单。
+// Specs 返回规格副本,供跨包一致性守卫(cmd/gateway 契约测试)比对前端 mirror/OpenAPI/SQL。
 func Specs() []FieldSpec {
 	out := make([]FieldSpec, len(fieldSpecs))
 	copy(out, fieldSpecs)
 	return out
 }
 
-// SpecsJSON 返回嵌入的规范 JSON 副本，供跨层一致性门使用。
-func SpecsJSON() []byte {
-	return append([]byte(nil), fieldSpecsJSON...)
-}
-
-// Keys 按规范顺序返回全部 JSON key。
+// Keys 按规范顺序返回全部 JSON key,消费方同 Specs。
 func Keys() []string {
 	out := make([]string, 0, len(fieldSpecs))
 	for _, spec := range fieldSpecs {

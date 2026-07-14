@@ -235,12 +235,7 @@ func (s *channelCatalogQueriesStub) GetAdminChannel(_ context.Context, arg admin
 	}
 	for _, row := range s.rowsByTenant[arg.TenantID] {
 		if row.ID == arg.ID {
-			return admindb.GetAdminChannelRow{
-				ID: row.ID, PoolGroupID: row.PoolGroupID, Name: row.Name,
-				FailoverStatusCodes: row.FailoverStatusCodes,
-				BodyParamStrips:     row.BodyParamStrips, ParamOverride: row.ParamOverride,
-				SensitiveWords: row.SensitiveWords, Enabled: row.Enabled, CreatedAt: row.CreatedAt,
-			}, nil
+			return admindb.GetAdminChannelRow(row), nil
 		}
 	}
 	return admindb.GetAdminChannelRow{}, pgx.ErrNoRows

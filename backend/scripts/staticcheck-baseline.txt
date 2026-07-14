@@ -21,7 +21,6 @@ cmd/gateway/wiring.go:  func refundReceiptSink.GetReceiptBySequence is unused (U
 cmd/gateway/wiring.go:  type refundReceiptAppender is unused (U1000)
 cmd/gateway/wiring.go:  type refundReceiptSequenceReader is unused (U1000)
 cmd/gateway/wiring.go:  type refundReceiptSink is unused (U1000)
-internal/adminhttp/catalog.go:  func enabledChannel is unused (U1000)
 internal/announcement/service_test.go:  func ptrBool is unused (U1000)
 internal/audit/refund_worker.go:  func (*MismatchRefundWorker).existingRefundReceipt is unused (U1000)
 internal/audit/refund_worker.go:  func validateExistingRefundReceipt is unused (U1000)
