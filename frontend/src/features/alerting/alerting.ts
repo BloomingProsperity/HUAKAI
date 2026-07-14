@@ -13,8 +13,8 @@ import type {
 /*
  * Ops 告警控制台的纯逻辑(可单测):枚举/标签/语气、规则表单构造与校验、filters 解析、
  * 静默表单构造与校验、事件状态展示。校验严格镜像后端,客户端先挡住给清晰中文提示避免无谓 400:
- *   validateRule(service.go:392):name 非空、metric|metric_type 至少一个非空、comparator 限四值、
- *     threshold 有限数、severity 限三值、window_seconds>0、sustained/cooldown>=0。
+ *   validateRule(service.go):name/metric 非空、comparator 限四值、threshold 有限数、severity
+ *     限三值、window_seconds 在 1..86400、sustained/cooldown>=0。
  *   validateSilence(service.go:418):rule_id 若有须>0、starts/ends 非零且 ends 严格晚于 starts。
  */
 
@@ -55,12 +55,6 @@ export function severityTone(s: string): 'info' | 'warn' | 'danger' | 'muted' {
 export function isSeverity(s: string): s is Severity {
   return SEVERITIES.some((x) => x.value === s)
 }
-
-// ── 指标类型(runtime evaluator 已识别的内建类型;留空表示自定义 metric)──
-export const METRIC_TYPES: ReadonlyArray<{ value: string; label: string }> = [
-  { value: '', label: '自定义(用指标名)' },
-  { value: 'cpu_usage_percent', label: 'CPU 使用率(%)' },
-]
 
 // ── 事件状态 ────────────────────────────────────────────
 export const EVENT_STATES: ReadonlyArray<{ value: EventState; label: string; tone: 'danger' | 'ok' | 'muted' }> = [
@@ -123,7 +117,6 @@ export function filtersToText(filters?: Record<string, string>): string {
 export interface RuleForm {
   name: string
   metric: string
-  metricType: string
   comparator: Comparator
   threshold: string
   severity: Severity
@@ -138,7 +131,6 @@ export interface RuleForm {
 export const EMPTY_RULE_FORM: RuleForm = {
   name: '',
   metric: '',
-  metricType: '',
   comparator: 'gt',
   threshold: '',
   severity: 'warning',
@@ -153,7 +145,6 @@ export const EMPTY_RULE_FORM: RuleForm = {
 interface RuleCore {
   name: string
   metric: string
-  metricType: string
   threshold: number
   windowSeconds: number
   sustainedSeconds: number
@@ -175,9 +166,7 @@ function validateRuleCore(form: RuleForm): RuleCore | { error: string } {
   if (!name) return { error: '请填写规则名称' }
 
   const metric = form.metric.trim()
-  const metricType = form.metricType.trim()
-  // metricKeyForRule:metric_type 优先,否则用 metric;两者皆空则 metricKey 为空 → 后端 400。
-  if (!metric && !metricType) return { error: '请填写指标名,或选择指标类型' }
+  if (!metric) return { error: '请填写指标名，或从内建指标目录选择一项' }
 
   if (!isComparator(form.comparator)) return { error: '比较符非法' }
   if (!isSeverity(form.severity)) return { error: '级别非法' }
@@ -186,7 +175,8 @@ function validateRuleCore(form: RuleForm): RuleCore | { error: string } {
   if (!Number.isFinite(threshold)) return { error: '阈值必须是有限数字' }
 
   const windowSeconds = parseNonNegInt(form.windowSeconds, 0)
-  if (windowSeconds === null || windowSeconds <= 0) return { error: '观察窗口(秒)必须为正整数' }
+  if (windowSeconds === null || windowSeconds <= 0) return { error: '统计窗口(秒)必须为正整数' }
+  if (windowSeconds > 86400) return { error: '统计窗口不能超过 86400 秒（24 小时）' }
 
   const sustainedSeconds = parseNonNegInt(form.sustainedSeconds, 0)
   if (sustainedSeconds === null) return { error: '持续时长(秒)必须为非负整数' }
@@ -196,7 +186,7 @@ function validateRuleCore(form: RuleForm): RuleCore | { error: string } {
   const parsed = parseFilters(form.filtersText)
   if (!parsed.ok) return { error: parsed.error }
 
-  return { name, metric, metricType, threshold, windowSeconds, sustainedSeconds, cooldownSeconds, filters: parsed.filters }
+  return { name, metric, threshold, windowSeconds, sustainedSeconds, cooldownSeconds, filters: parsed.filters }
 }
 
 /** 构造新建规则请求。校验镜像 validateRule;失败返回 {error}。 */
@@ -216,7 +206,6 @@ export function buildCreateRule(form: RuleForm, tenantId: number): CreateRuleReq
     notify_email: form.notifyEmail,
     enabled: form.enabled,
   }
-  if (core.metricType) req.metric_type = core.metricType
   if (Object.keys(core.filters).length > 0) req.filters = core.filters
   return req
 }
@@ -228,8 +217,8 @@ export function buildUpdateRule(form: RuleForm): UpdateRuleRequest | { error: st
   return {
     name: core.name,
     metric: core.metric,
-    // metric_type 总是显式传(空串=清空内建类型,回退自定义 metric)。
-    metric_type: core.metricType,
+    // 新目录把生产指标键写入 metric；更新时清空旧 metric_type，避免它继续优先覆盖 metric。
+    metric_type: '',
     comparator: form.comparator,
     threshold: core.threshold,
     severity: form.severity,

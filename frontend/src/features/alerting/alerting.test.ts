@@ -112,16 +112,17 @@ describe('buildCreateRule 校验(镜像 validateRule)', () => {
     expect('error' in buildCreateRule(rule({ name: '   ', metric: 'm', threshold: '1' }), 1)).toBe(true)
   })
 
-  it('metric 与 metricType 同时空 → 报错(metricKeyForRule 为空后端会 400)', () => {
-    const out = buildCreateRule(rule({ name: 'r', metric: '', metricType: '', threshold: '1' }), 1)
+  it('metric 为空 → 报错(metricKeyForRule 为空后端会 400)', () => {
+    const out = buildCreateRule(rule({ name: 'r', metric: '', threshold: '1' }), 1)
     expect('error' in out).toBe(true)
   })
 
-  it('仅 metricType 非空也合法(优先作为 metricKey)', () => {
-    const out = buildCreateRule(rule({ name: 'r', metric: '', metricType: 'cpu_usage_percent', threshold: '90' }), 1)
+  it('目录选择把生产指标键写入 metric 即合法', () => {
+    const out = buildCreateRule(rule({ name: 'r', metric: 'usage.request_count', threshold: '90' }), 1)
     expect('error' in out).toBe(false)
     if ('error' in out) return
-    expect(out.metric_type).toBe('cpu_usage_percent')
+    expect(out.metric).toBe('usage.request_count')
+    expect(out.metric_type).toBeUndefined()
   })
 
   it('阈值非有限数 → 报错', () => {
@@ -142,6 +143,11 @@ describe('buildCreateRule 校验(镜像 validateRule)', () => {
     expect('error' in buildCreateRule(rule({ name: 'r', metric: 'm', threshold: '1', windowSeconds: '0' }), 1)).toBe(true)
     expect('error' in buildCreateRule(rule({ name: 'r', metric: 'm', threshold: '1', windowSeconds: '-5' }), 1)).toBe(true)
     expect('error' in buildCreateRule(rule({ name: 'r', metric: 'm', threshold: '1', windowSeconds: '1.5' }), 1)).toBe(true)
+  })
+
+  it('window_seconds 超过 24 小时上限报错', () => {
+    expect('error' in buildCreateRule(rule({ name: 'r', metric: 'm', threshold: '1', windowSeconds: '86400' }), 1)).toBe(false)
+    expect('error' in buildCreateRule(rule({ name: 'r', metric: 'm', threshold: '1', windowSeconds: '86401' }), 1)).toBe(true)
   })
 
   it('sustained/cooldown 空 → 兜底 0;负数报错', () => {
@@ -171,7 +177,7 @@ describe('buildCreateRule 校验(镜像 validateRule)', () => {
 
 describe('buildUpdateRule', () => {
   it('总是显式传 metric_type(空串=清空内建类型)', () => {
-    const out = buildUpdateRule(rule({ name: 'r', metric: 'm', metricType: '', threshold: '2' }))
+    const out = buildUpdateRule(rule({ name: 'r', metric: 'm', threshold: '2' }))
     expect('error' in out).toBe(false)
     if ('error' in out) return
     expect(out.metric_type).toBe('')

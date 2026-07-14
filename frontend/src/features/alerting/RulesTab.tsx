@@ -5,7 +5,7 @@ import { EmptyState } from '../../ui/EmptyState'
 import { StatCard } from '../../ui/StatCard'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import { confirmIrreversible } from '../../ui/confirmDanger'
-import { createRule, deleteRule, listRules, updateRule } from './api'
+import { createRule, deleteRule, fetchMetricCatalog, listRules, updateRule } from './api'
 import {
   buildCreateRule,
   buildUpdateRule,
@@ -14,12 +14,11 @@ import {
   filtersToText,
   mapAlertResourceStat,
   mapAlertRuleRows,
-  METRIC_TYPES,
   SEVERITIES,
   type RuleForm,
   type AlertRuleTableRow,
 } from './alerting'
-import type { AlertRule } from './types'
+import type { AlertMetricCatalogEntry, AlertRule } from './types'
 import { card, errBox, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, Field } from './ui'
 
 /*
@@ -33,6 +32,8 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [editing, setEditing] = useState<AlertRule | 'new' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [metricCatalog, setMetricCatalog] = useState<AlertMetricCatalogEntry[]>([])
+  const [metricCatalogWarning, setMetricCatalogWarning] = useState<string | null>(null)
 
   const load = useCallback(
     (signal: AbortSignal) => {
@@ -56,6 +57,16 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
     load(ctrl.signal)
     return () => ctrl.abort()
   }, [load])
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    loadMetricCatalogState(ctrl.signal).then((state) => {
+      if (ctrl.signal.aborted) return
+      setMetricCatalog(state.entries)
+      setMetricCatalogWarning(state.warning)
+    })
+    return () => ctrl.abort()
+  }, [])
 
   const refresh = () => setRefreshNonce((n) => n + 1)
 
@@ -85,7 +96,7 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>共 {items.length} 条规则。规则在评估窗口内命中阈值即产生告警事件。</p>
+        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>共 {items.length} 条规则。usage.* 指标按每条规则的统计窗口聚合后与阈值比较。</p>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
           <button type="button" onClick={refresh} style={ghostBtn}>
             刷新
@@ -124,6 +135,8 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
         <RuleModal
           tenantId={tenantId}
           existing={editing === 'new' ? null : editing}
+          metricCatalog={metricCatalog}
+          metricCatalogWarning={metricCatalogWarning}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
@@ -149,11 +162,15 @@ const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'm
 function RuleModal({
   tenantId,
   existing,
+  metricCatalog,
+  metricCatalogWarning,
   onClose,
   onSaved,
 }: {
   tenantId: number
   existing: AlertRule | null
+  metricCatalog: AlertMetricCatalogEntry[]
+  metricCatalogWarning: string | null
   onClose: () => void
   onSaved: () => void
 }) {
@@ -161,6 +178,7 @@ function RuleModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const set = <K extends keyof RuleForm>(k: K, v: RuleForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const selectedCatalogEntry = catalogEntryForMetric(metricCatalog, form.metric)
 
   const submit = async () => {
     setError(null)
@@ -198,17 +216,23 @@ function RuleModal({
           <input value={form.name} onChange={(e) => set('name', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
-          <Field label="指标类型">
-            <select value={form.metricType} onChange={(e) => set('metricType', e.target.value)} style={inp}>
-              {METRIC_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
+          <Field label="内建指标">
+            <MetricCatalogSelect
+              entries={metricCatalog}
+              metric={form.metric}
+              warning={metricCatalogWarning}
+              onMetricChange={(metric) => set('metric', metric)}
+            />
           </Field>
-          <Field label="指标名(自定义时填)">
-            <input value={form.metric} onChange={(e) => set('metric', e.target.value)} placeholder="如 error_rate" style={inp} />
+          <Field label="指标名">
+            <input
+              value={form.metric}
+              onChange={(e) => set('metric', e.target.value)}
+              placeholder={selectedCatalogEntry?.is_prefix
+                ? `请在 ${selectedCatalogEntry.name} 后补全状态，如 account.unhealthy_throttled`
+                : '如 custom.metric'}
+              style={inp}
+            />
           </Field>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
@@ -235,7 +259,7 @@ function RuleModal({
           </Field>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
-          <Field label="观察窗口(秒)">
+          <Field label="统计窗口(秒)：usage.* 指标按此窗口聚合后与阈值比较">
             <input value={form.windowSeconds} inputMode="numeric" onChange={(e) => set('windowSeconds', e.target.value)} style={inp} />
           </Field>
           <Field label="持续(秒,可选)">
@@ -284,7 +308,6 @@ function toForm(rule: AlertRule | null): RuleForm {
   return {
     name: rule.name,
     metric: rule.metric,
-    metricType: rule.metric_type ?? '',
     comparator: (COMPARATORS.find((c) => c.value === rule.comparator)?.value ?? 'gt'),
     threshold: String(rule.threshold),
     severity: (SEVERITIES.find((s) => s.value === rule.severity)?.value ?? 'warning'),
@@ -295,4 +318,52 @@ function toForm(rule: AlertRule | null): RuleForm {
     enabled: rule.enabled,
     filtersText: filtersToText(rule.filters),
   }
+}
+
+export interface MetricCatalogLoadState {
+  entries: AlertMetricCatalogEntry[]
+  warning: string | null
+}
+
+/** 目录失败只降级为自定义指标，不阻断规则表单。 */
+export async function loadMetricCatalogState(signal?: AbortSignal): Promise<MetricCatalogLoadState> {
+  try {
+    return { entries: await fetchMetricCatalog(signal), warning: null }
+  } catch {
+    return { entries: [], warning: '指标目录加载失败，仍可使用自定义指标名。' }
+  }
+}
+
+export function catalogEntryForMetric(
+  entries: AlertMetricCatalogEntry[],
+  metric: string,
+): AlertMetricCatalogEntry | undefined {
+  return entries.find((entry) => entry.is_prefix ? metric.startsWith(entry.name) : metric === entry.name)
+}
+
+export function MetricCatalogSelect({
+  entries,
+  metric,
+  warning,
+  onMetricChange,
+}: {
+  entries: AlertMetricCatalogEntry[]
+  metric: string
+  warning: string | null
+  onMetricChange: (metric: string) => void
+}) {
+  const selected = catalogEntryForMetric(entries, metric)?.name ?? ''
+  return (
+    <>
+      <select value={selected} onChange={(e) => onMetricChange(e.target.value)} style={inp}>
+        <option value="">自定义(用指标名)</option>
+        {entries.map((entry) => (
+          <option key={entry.name} value={entry.name}>
+            {entry.label}（{entry.name} · {entry.unit}）
+          </option>
+        ))}
+      </select>
+      {warning && <small style={{ color: 'var(--hk-ink-500)', fontSize: 12 }}>{warning}</small>}
+    </>
+  )
 }

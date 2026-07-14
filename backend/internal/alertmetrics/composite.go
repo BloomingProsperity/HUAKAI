@@ -92,14 +92,25 @@ func NewCompositeMetricSource(cfg CompositeMetricSourceConfig) *CompositeMetricS
 }
 
 func (s *CompositeMetricSource) Snapshot(ctx context.Context, tenantID int64) (map[string]float64, error) {
-	return s.snapshot(ctx, tenantID, nil)
+	return s.snapshot(ctx, tenantID, nil, 0)
+}
+
+// SnapshotWindow 只用 window 改变 usage.* 指标的聚合区间；账号健康指标是
+// 当前状态快照，与统计窗口无关。window 非正数时沿用启动配置的默认窗口。
+func (s *CompositeMetricSource) SnapshotWindow(ctx context.Context, tenantID int64, window time.Duration) (map[string]float64, error) {
+	return s.snapshot(ctx, tenantID, nil, window)
 }
 
 func (s *CompositeMetricSource) SnapshotForDimensions(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
-	return s.snapshot(ctx, tenantID, dimensions)
+	return s.snapshot(ctx, tenantID, dimensions, 0)
 }
 
-func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, dimensions map[string]string) (map[string]float64, error) {
+// SnapshotWindowForDimensions 同时保留维度过滤与规则窗口语义。
+func (s *CompositeMetricSource) SnapshotWindowForDimensions(ctx context.Context, tenantID int64, dimensions map[string]string, window time.Duration) (map[string]float64, error) {
+	return s.snapshot(ctx, tenantID, dimensions, window)
+}
+
+func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, dimensions map[string]string, window time.Duration) (map[string]float64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -112,6 +123,9 @@ func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, di
 	s.overlayAccountHealth(ctx, tenantID, snapshot)
 	if s == nil || s.usageRolluper == nil || tenantID <= 0 {
 		return snapshot, nil
+	}
+	if window <= 0 {
+		window = s.recentWindow
 	}
 	if s.usageStats != nil {
 		enabled, err := s.usageStats.UsageStatsEnabled(ctx, tenantID)
@@ -127,18 +141,18 @@ func (s *CompositeMetricSource) snapshot(ctx context.Context, tenantID int64, di
 		}
 	}
 
-	rollup, err := s.usageRolluper.RecentUsageRollup(ctx, tenantID, s.now().Add(-s.recentWindow))
+	rollup, err := s.usageRolluper.RecentUsageRollup(ctx, tenantID, s.now().Add(-window))
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.WarnContext(ctx, "alert metrics recent usage rollup failed",
 				"tenant_id", tenantID,
-				"window_seconds", int64(s.recentWindow.Seconds()),
+				"window_seconds", int64(window.Seconds()),
 				"error", err.Error(),
 			)
 		}
 		return snapshot, nil
 	}
-	overlayUsageMetrics(snapshot, rollup, s.recentWindow)
+	overlayUsageMetrics(snapshot, rollup, window)
 	return snapshot, nil
 }
 
@@ -161,7 +175,7 @@ func (s *CompositeMetricSource) overlayAccountHealth(ctx context.Context, tenant
 		if count < 0 {
 			count = 0
 		}
-		snapshot[metricAccountUnhealthyPrefix+state] = float64(count)
+		snapshot[MetricAccountUnhealthyPrefix+state] = float64(count)
 		total += count
 	}
 	// 空计数也写 total=0:告警规则需要持续有值才能从 firing 恢复。

@@ -12,6 +12,8 @@ import (
 const (
 	defaultListLimit = 50
 	maxListLimit     = 500
+	// MaxRuleWindow 限制单条规则可请求的聚合区间，避免误配置触发无界历史扫描。
+	MaxRuleWindow = 24 * time.Hour
 )
 
 type Service struct {
@@ -267,31 +269,6 @@ func (s *Service) EvaluateRules(ctx context.Context, tenantID int64, metricSnaps
 	})
 }
 
-func (s *Service) EvaluateRulesFromSource(ctx context.Context, tenantID int64, source MetricSource) error {
-	if source == nil {
-		return ErrStoreNotConfigured
-	}
-	var globalSnapshot map[string]float64
-	var globalLoaded bool
-	return s.evaluateRules(ctx, tenantID, func(rule AlertRule) (map[string]float64, error) {
-		if len(rule.Filters) > 0 {
-			if scoped, ok := source.(DimensionMetricSource); ok {
-				return scoped.SnapshotForDimensions(ctx, tenantID, normalizeStringMap(rule.Filters))
-			}
-		}
-		if globalLoaded {
-			return globalSnapshot, nil
-		}
-		snapshot, err := source.Snapshot(ctx, tenantID)
-		if err != nil {
-			return nil, err
-		}
-		globalSnapshot = snapshot
-		globalLoaded = true
-		return globalSnapshot, nil
-	})
-}
-
 type metricSnapshotResolver func(AlertRule) (map[string]float64, error)
 
 func (s *Service) evaluateRules(ctx context.Context, tenantID int64, resolveSnapshot metricSnapshotResolver) error {
@@ -406,7 +383,7 @@ func validateRule(rule AlertRule) error {
 	default:
 		return ErrInvalidInput
 	}
-	if rule.WindowSeconds <= 0 {
+	if rule.WindowSeconds <= 0 || time.Duration(rule.WindowSeconds)*time.Second > MaxRuleWindow {
 		return ErrInvalidInput
 	}
 	if rule.SustainedSeconds < 0 || rule.CooldownSeconds < 0 {

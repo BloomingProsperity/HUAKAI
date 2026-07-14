@@ -392,6 +392,12 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-SETTLEMENT-INTENT-007 | 多副本 sweeper 与正向 hook 并发时只有一个终态写胜出，新意图受创建宽限保护。 | F-BILL-001 / F-OBS-001 | 真 PostgreSQL 纯净迁移库；同一 delivering 意图；两个 worker 与正向 MarkSettled 可并发。 | 12 goroutine 同时竞争；终态后以当前 version 再调 stale 写；另将 5 秒内新意图置于 10 秒创建宽限内扫描。 | 恰一方成功、version 恰加一、金额无重复；已终态 stale 写返回 no rows；宽限内意图 `status/version` 不变。 | 多副本重复终态、终态反向改写、慢提交边界漏读或误处理。 | PASS（真 PG + `-race`：`backend/internal/settlementintent/sweeper_integration_test.go`） |
 | AT-SETTLEMENT-INTENT-008 | sweeper 默认关闭、可优雅启停，且阶段 1 正向 Mark* 不回归。 | F-BILL-001 / F-GW-001 | 使用生产工厂、runtime 生命周期、短 ticker 与 Tracker。 | disabled/enabled 构造；启动 ticker 后停止两次；注入扫描/时钟 panic；执行 `pending→delivering→settling→settled` 原路径。 | disabled 不构造/不启动；enabled 在 runtime close 前停止；panic 被隔离且下一轮可继续；阶段 1 仍调用原 Mark*、version 依次递增且不触发 stale 写。 | 后台功能默认侵入热路径、worker 泄漏、panic 崩进程、阶段 2 偷改阶段 1 语义。 | PASS（working tree：`backend/cmd/gateway/settlement_intent_sweeper_wiring_test.go`、`backend/internal/settlementintent/sweeper_test.go`；真 PG 正向回归同上） |
 
+## 告警指标目录与规则窗口
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-OBS-ALERT-001 | 运营者从真实指标目录建规则，且每条 `usage.*` 规则按自身窗口聚合。 | F-OBS-001 / Admin operations | 租户已有 60 秒、3600 秒及同窗口规则；usage rolluper 与账号健康计数器可注入；管理员鉴权可用。 | Normal：读取目录并用两个窗口评估规则，再评估两条同窗口规则。Failure：目录请求失败、无管理员凭证请求目录、提交 86401 秒窗口。Recovery：目录失败时用自定义指标名保存；恢复目录后重新选择内建项。 | 目录含 10 个静态生产键与 `account.unhealthy_` 前缀族；不同窗口各查一次、同窗口共享一次；未实现窗口接口的旧源只快照一次；无凭证返回 401/403，超限返回 400；前端失败时仅保留自定义选项并显示轻提示。 | 不存在的内建指标使规则永久不触发、窗口字段存而不用、重复聚合放大数据库负载、目录故障阻断运维。 | PASS（working tree：`backend/internal/alertmetrics/catalog_test.go`、`backend/internal/alerting/service_test.go`、`backend/internal/alertinghttp/handlers_test.go`、`frontend/src/features/alerting/metricCatalog.test.tsx`） |
+
 ## Release Rule
 
 No capability group may be marked release-ready without acceptance tests covering normal path, failure path, and operator recovery path.
