@@ -40,10 +40,16 @@ type ResolvedModel struct {
 }
 
 // PoolCandidateMeta 表示 Router 当前实际消费的候选 pool binding 元数据。
-// 排序仍以 PoolCandidates 的 registry 顺序为准；ranking 需要更多字段时再扩展。
+// Registry 提供 Priority 硬分层顺序，Router 只在连续同优先级段内按 Weight
+// 生成加权无放回顺序。
 type PoolCandidateMeta struct {
 	PoolGroupID     int64
 	ProviderModelID string
+	// Priority 是不可跨越的绑定级优先级；Router 不跨值交换，Registry
+	// 输入排序保证数值更小的候选段在前。
+	Priority int32
+	// Weight 是同 Priority 候选间的相对权重；非正值按 1 消费，避免饿死。
+	Weight int32
 	// SelectionMode 透传 binding 的同优先级选号策略
 	// (model_pool_bindings.selection_mode):""/"strict_priority" = 均匀 Shuffle,
 	// "priority_weighted" = 按账号 static_weight 加权。dispatch 端据此填
