@@ -61,6 +61,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
@@ -115,7 +116,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
-	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
@@ -197,6 +197,7 @@ type deps struct {
 	receiptStore             *auditreceipt.PGXReceiptStorage
 	receiptFormatter         *auditreceipt.ReceiptFormatter
 	disputeStore             *auditreceipt.CostDisputeStore
+	disputeResolver          *auditreceipt.CostDisputeResolver
 	refundQueue              *auditreceipt.MismatchRefundQueue
 	rateTableSource          *billing.PGXRateTableSource
 	pricingRatioStore        pricingcatalog.Store
@@ -1163,6 +1164,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build dispute storage: %w", err)
 	}
+	// 争议裁决必须拿到底层可加入现有事务的退款执行器；外层 Settler 接口的
+	// Refund 会自行开事务，无法与状态更新形成同提交/同回滚。
+	disputeRefundSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
+	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler)
+	if err != nil {
+		return nil, fmt.Errorf("build dispute refund resolver: %w", err)
+	}
 	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler, platformSettingsService)
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
@@ -1466,6 +1474,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		receiptStore:         receiptStore,
 		receiptFormatter:     receiptFormatter,
 		disputeStore:         disputeStore,
+		disputeResolver:      disputeResolver,
 		refundQueue:          refundQueue,
 		rateTableSource:      rateTableSource,
 		pricingRatioStore:    pricingRatioStore,

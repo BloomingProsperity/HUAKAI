@@ -64,10 +64,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/setuphttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
@@ -109,6 +109,14 @@ func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
 	return credentialprojecthttp.Deps{
 		Auth: d.adminAuth, Store: d.credentialStore,
 		Enricher: d.projectEnricher, Audit: d.adminQueries,
+	}
+}
+
+func disputeAdminRouteDeps(d *deps) controlhttp.DisputeAdminDeps {
+	return controlhttp.DisputeAdminDeps{
+		Auth:     d.adminAuth,
+		Store:    d.disputeStore,
+		Resolver: d.disputeResolver,
 	}
 }
 
@@ -947,7 +955,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Audit: d.adminQueries,
 		})
 	})
-	mountBackupRoutes(r, d) // 只读备份 manifest(platform_admin)
+	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
 	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {
@@ -1204,10 +1212,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Service:   d.invitationService,
 		AdminAuth: d.adminAuth,
 	}))
-	disputeAdminDeps := controlhttp.DisputeAdminDeps{
-		Auth:  d.adminAuth,
-		Store: d.disputeStore,
-	}
+	disputeAdminDeps := disputeAdminRouteDeps(d)
 	adminListDisputesHandler := controlhttp.NewAdminListDisputesHandler(disputeAdminDeps)
 	r.Get("/v1/admin/disputes", adminListDisputesHandler)
 	r.Route("/v1/admin/disputes", func(r chi.Router) {

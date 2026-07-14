@@ -32,7 +32,10 @@ type DisputeStore interface {
 	CreateDispute(context.Context, audit.CreateCostDisputeInput) (audit.CostDispute, error)
 	ListForAdmin(context.Context, int64, string, int32, int32) ([]audit.CostDispute, error)
 	ListUserDisputes(context.Context, int64, int64, int32) ([]audit.CostDispute, error)
-	ResolveDispute(context.Context, audit.ResolveCostDisputeInput) (audit.CostDispute, error)
+}
+
+type DisputeResolver interface {
+	ResolveDispute(context.Context, audit.ResolveCostDisputeInput) (audit.ResolveCostDisputeResult, error)
 }
 
 type DisputeAdminAuth interface {
@@ -45,8 +48,9 @@ type DisputeUserDeps struct {
 }
 
 type DisputeAdminDeps struct {
-	Auth  DisputeAdminAuth
-	Store DisputeStore
+	Auth     DisputeAdminAuth
+	Store    DisputeStore
+	Resolver DisputeResolver
 }
 
 type disputeCreateRequest struct {
@@ -60,16 +64,17 @@ type disputeResolveRequest struct {
 }
 
 type disputeView struct {
-	ID           int64   `json:"id"`
-	DisputeID    string  `json:"dispute_id"`
-	TenantID     int64   `json:"tenant_id"`
-	UserID       int64   `json:"user_id"`
-	RequestID    string  `json:"request_id"`
-	Reason       string  `json:"reason"`
-	Status       string  `json:"status"`
-	OperatorNote string  `json:"operator_note,omitempty"`
-	CreatedAt    string  `json:"created_at"`
-	ResolvedAt   *string `json:"resolved_at,omitempty"`
+	ID               int64   `json:"id"`
+	DisputeID        string  `json:"dispute_id"`
+	TenantID         int64   `json:"tenant_id"`
+	UserID           int64   `json:"user_id"`
+	RequestID        string  `json:"request_id"`
+	Reason           string  `json:"reason"`
+	Status           string  `json:"status"`
+	OperatorNote     string  `json:"operator_note,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	ResolvedAt       *string `json:"resolved_at,omitempty"`
+	RefundedMicroUSD int64   `json:"refunded_micro_usd,omitempty"`
 }
 
 func NewCreateDisputeHandler(d DisputeUserDeps) http.HandlerFunc {
@@ -171,7 +176,7 @@ func NewAdminListDisputesHandler(d DisputeAdminDeps) http.HandlerFunc {
 
 func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.Auth == nil || d.Store == nil {
+		if d.Auth == nil || d.Resolver == nil {
 			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "dispute admin dependency unset")
 			return
 		}
@@ -192,7 +197,7 @@ func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 			disputeWriteAdminError(w, err)
 			return
 		}
-		dispute, err := d.Store.ResolveDispute(r.Context(), audit.ResolveCostDisputeInput{
+		result, err := d.Resolver.ResolveDispute(r.Context(), audit.ResolveCostDisputeInput{
 			TenantID:     req.TenantID,
 			ID:           id,
 			Status:       strings.TrimSpace(req.Status),
@@ -202,7 +207,13 @@ func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 			writeDisputeError(w, err)
 			return
 		}
-		controlWriteJSON(w, http.StatusOK, map[string]any{"dispute": disputeToView(dispute)})
+		body := map[string]any{"dispute": disputeToView(result.Dispute)}
+		if result.Dispute.Status == audit.DisputeStatusResolved {
+			body["refund_micro_usd"] = result.RefundMicroUSD
+			body["refund_adjustment_ref"] = result.RefundAdjustmentRef
+			body["refund_idempotent"] = result.RefundIdempotent
+		}
+		controlWriteJSON(w, http.StatusOK, body)
 	}
 }
 
@@ -347,16 +358,17 @@ func disputeToView(row audit.CostDispute) disputeView {
 		resolvedAt = &s
 	}
 	return disputeView{
-		ID:           row.ID,
-		DisputeID:    row.DisputeID,
-		TenantID:     row.TenantID,
-		UserID:       row.UserID,
-		RequestID:    row.RequestID,
-		Reason:       row.Reason,
-		Status:       row.Status,
-		OperatorNote: row.OperatorNote,
-		CreatedAt:    createdAt,
-		ResolvedAt:   resolvedAt,
+		ID:               row.ID,
+		DisputeID:        row.DisputeID,
+		TenantID:         row.TenantID,
+		UserID:           row.UserID,
+		RequestID:        row.RequestID,
+		Reason:           row.Reason,
+		Status:           row.Status,
+		OperatorNote:     row.OperatorNote,
+		CreatedAt:        createdAt,
+		ResolvedAt:       resolvedAt,
+		RefundedMicroUSD: row.RefundedMicroUSD,
 	}
 }
 
@@ -375,6 +387,12 @@ func writeDisputeError(w http.ResponseWriter, err error) {
 		controlWriteJSONError(w, http.StatusConflict, "dispute_duplicate", "dispute already exists for this receipt")
 	case errors.Is(err, audit.ErrDisputeNotFound):
 		controlWriteJSONError(w, http.StatusNotFound, "dispute_not_found", "dispute not found")
+	case errors.Is(err, audit.ErrDisputeNotResolvable):
+		controlWriteJSONError(w, http.StatusConflict, "dispute_not_resolvable", "争议不存在或已终态裁决，不可重复裁决")
+	case errors.Is(err, audit.ErrDisputeNoCharge):
+		controlWriteJSONError(w, http.StatusBadRequest, "dispute_charge_not_committed", "该请求无已结算扣费，无法支持退款")
+	case errors.Is(err, audit.ErrDisputeResolverRequired):
+		controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "dispute resolver dependency unset")
 	case errors.Is(err, audit.ErrDisputeStoreRequired):
 		controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "dispute dependency unset")
 	default:

@@ -58,7 +58,10 @@ func TestCostDisputesQueryAdminListScopesTenantAndDoesNotScopeUser(t *testing.T)
 	if end >= 0 {
 		adminSQL = sql[start : start+1+end]
 	}
-	if !strings.Contains(adminSQL, "where tenant_id = sqlc.arg(tenant_id)") {
+	// 查询引入表别名 cd 后 tenant 过滤写作 cd.tenant_id;两种写法都算命中,
+	// 删掉 tenant 过滤任一写法都不存在,测试仍红。
+	if !strings.Contains(adminSQL, "where tenant_id = sqlc.arg(tenant_id)") &&
+		!strings.Contains(adminSQL, "where cd.tenant_id = sqlc.arg(tenant_id)") {
 		t.Fatalf("ListDisputesForAdmin must filter by tenant_id; query=%s", adminSQL)
 	}
 	if strings.Contains(adminSQL, "user_id = sqlc.arg(user_id)") {
@@ -86,6 +89,50 @@ func TestCostDisputesQueryAdminListSupportsStatusAndPagination(t *testing.T) {
 	if !strings.Contains(adminSQL, "limit sqlc.arg(limit_rows)") ||
 		!strings.Contains(adminSQL, "offset sqlc.arg(offset_rows)") {
 		t.Fatalf("ListDisputesForAdmin must apply limit_rows and offset_rows; query=%s", adminSQL)
+	}
+}
+
+// 变异：从 ResolveCostDispute 删除 open/reviewing 状态守卫。
+// 终态争议就能再次进入裁决事务，并把同一笔钱重复交给退款路径。
+func TestCostDisputesQueryResolveLocksTerminalStates(t *testing.T) {
+	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
+	if err != nil {
+		t.Fatalf("read query: %v", err)
+	}
+	sql := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+	start := strings.Index(sql, "-- name: resolvecostdispute :one")
+	if start < 0 {
+		t.Fatalf("ResolveCostDispute query missing; query=%s", sql)
+	}
+	resolveSQL := sql[start:]
+	if !strings.Contains(resolveSQL, "and status in ('open', 'reviewing')") {
+		t.Fatalf("ResolveCostDispute must reject terminal rows; query=%s", resolveSQL)
+	}
+}
+
+// 变异：删掉 admin 列表的退款事件关联或负额过滤。
+// 已退款争议会重新显示为零，运营无法从列表核对真实账务效果。
+func TestCostDisputesQueryAdminListReturnsDisputeRefundTotal(t *testing.T) {
+	raw, err := os.ReadFile("../../sql/queries/cost_disputes.sql")
+	if err != nil {
+		t.Fatalf("read query: %v", err)
+	}
+	sql := strings.ToLower(strings.Join(strings.Fields(string(raw)), " "))
+	start := strings.Index(sql, "-- name: listdisputesforadmin :many")
+	end := strings.Index(sql[start+1:], "-- name:")
+	adminSQL := sql[start:]
+	if end >= 0 {
+		adminSQL = sql[start : start+1+end]
+	}
+	for _, required := range []string{
+		"left join",
+		"actual_cost_signed < 0",
+		"refunds.audit_request_id = 'dispute-' || cd.dispute_id",
+		"as refunded_micro_usd",
+	} {
+		if !strings.Contains(adminSQL, required) {
+			t.Fatalf("ListDisputesForAdmin missing %q; query=%s", required, adminSQL)
+		}
 	}
 }
 
@@ -129,8 +176,8 @@ func TestDisputeStoreListUserDisputesPassesTenantAndUserScope(t *testing.T) {
 // 变异：在调用 sqlc 的 ListDisputesForAdmin 前传入零值/错误的 tenant_id、忽略 status，或没有对 limit 做封顶。
 // fake 记录了精确的入参，因此当 admin 的 scope/filter/分页发生漂移时测试会失败。
 func TestDisputeStoreListForAdminPassesTenantStatusAndPagination(t *testing.T) {
-	q := &fakeDisputeQueries{adminListRows: []dbaudit.CostDispute{
-		dbCostDispute(1, 7, 42, "req-a", DisputeStatusResolved, ""),
+	q := &fakeDisputeQueries{adminListRows: []dbaudit.ListDisputesForAdminRow{
+		dbAdminCostDispute(1, 7, 42, "req-a", DisputeStatusResolved, "", 12345),
 	}}
 	store := NewCostDisputeStoreFromQueries(q)
 	got, err := store.ListForAdmin(context.Background(), 7, DisputeStatusResolved, 999, 2)
@@ -144,7 +191,7 @@ func TestDisputeStoreListForAdminPassesTenantStatusAndPagination(t *testing.T) {
 		t.Fatalf("admin list arg=%+v, want tenant=7 status=resolved capped-limit=%d offset=2",
 			q.adminListArg, maxDisputeListLimit)
 	}
-	if len(got) != 1 || got[0].TenantID != 7 || got[0].UserID != 42 || got[0].RequestID != "req-a" {
+	if len(got) != 1 || got[0].TenantID != 7 || got[0].UserID != 42 || got[0].RequestID != "req-a" || got[0].RefundedMicroUSD != 12345 {
 		t.Fatalf("admin list result=%+v, want tenant 7 user 42 req-a", got)
 	}
 }
@@ -163,23 +210,14 @@ func TestDisputeStoreListForAdminRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
-// 变异：让 ResolveDispute 保留旧的 status/operator note。
-// operator 的恢复操作必须明显地推进状态，并把备注持久化下来。
-func TestDisputeStoreResolveUpdatesStatusAndNote(t *testing.T) {
-	resolvedAt := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
-	q := &fakeDisputeQueries{resolveRow: dbCostDisputeResolved(9, 7, 42, "req-r", DisputeStatusResolved, "receipt checked", resolvedAt)}
-	store := NewCostDisputeStoreFromQueries(q)
-	got, err := store.ResolveDispute(context.Background(), ResolveCostDisputeInput{
-		TenantID: 7, ID: 9, Status: DisputeStatusResolved, OperatorNote: "receipt checked",
+// 变异：允许把终态裁决目标重新写回 open。
+// 组合层只接受 reviewing/resolved/rejected，不能用 resolve 端点重开终态。
+func TestValidateResolveDisputeRejectsOpenTarget(t *testing.T) {
+	err := validateResolveDispute(ResolveCostDisputeInput{
+		TenantID: 7, ID: 9, Status: DisputeStatusOpen,
 	})
-	if err != nil {
-		t.Fatalf("ResolveDispute: %v", err)
-	}
-	if q.resolveArg.TenantID != 7 || q.resolveArg.ID != 9 || q.resolveArg.Status != DisputeStatusResolved {
-		t.Fatalf("resolve arg=%+v, want tenant=7 id=9 status=resolved", q.resolveArg)
-	}
-	if got.Status != DisputeStatusResolved || got.OperatorNote != "receipt checked" || got.ResolvedAt == nil {
-		t.Fatalf("resolved dispute=%+v, want status/note/resolved_at", got)
+	if !errors.Is(err, ErrDisputeInvalid) {
+		t.Fatalf("open target err=%v, want ErrDisputeInvalid", err)
 	}
 }
 
@@ -192,14 +230,10 @@ type fakeDisputeQueries struct {
 	listErr  error
 	listArg  dbaudit.ListUserCostDisputesParams
 
-	adminListRows   []dbaudit.CostDispute
+	adminListRows   []dbaudit.ListDisputesForAdminRow
 	adminListErr    error
 	adminListArg    dbaudit.ListDisputesForAdminParams
 	adminListCalled bool
-
-	resolveRow dbaudit.CostDispute
-	resolveErr error
-	resolveArg dbaudit.ResolveCostDisputeParams
 }
 
 func (f *fakeDisputeQueries) CreateCostDispute(_ context.Context, arg dbaudit.CreateCostDisputeParams) (dbaudit.CostDispute, error) {
@@ -212,15 +246,10 @@ func (f *fakeDisputeQueries) ListUserCostDisputes(_ context.Context, arg dbaudit
 	return f.listRows, f.listErr
 }
 
-func (f *fakeDisputeQueries) ListDisputesForAdmin(_ context.Context, arg dbaudit.ListDisputesForAdminParams) ([]dbaudit.CostDispute, error) {
+func (f *fakeDisputeQueries) ListDisputesForAdmin(_ context.Context, arg dbaudit.ListDisputesForAdminParams) ([]dbaudit.ListDisputesForAdminRow, error) {
 	f.adminListCalled = true
 	f.adminListArg = arg
 	return f.adminListRows, f.adminListErr
-}
-
-func (f *fakeDisputeQueries) ResolveCostDispute(_ context.Context, arg dbaudit.ResolveCostDisputeParams) (dbaudit.CostDispute, error) {
-	f.resolveArg = arg
-	return f.resolveRow, f.resolveErr
 }
 
 func dbCostDispute(id, tenantID, userID int64, requestID, status, note string) dbaudit.CostDispute {
@@ -243,4 +272,21 @@ func dbCostDisputeResolved(id, tenantID, userID int64, requestID, status, note s
 		row.ResolvedAt = pgtype.Timestamptz{Time: resolvedAt, Valid: true}
 	}
 	return row
+}
+
+func dbAdminCostDispute(id, tenantID, userID int64, requestID, status, note string, refundedMicroUSD int64) dbaudit.ListDisputesForAdminRow {
+	row := dbCostDispute(id, tenantID, userID, requestID, status, note)
+	return dbaudit.ListDisputesForAdminRow{
+		ID:               row.ID,
+		DisputeID:        row.DisputeID,
+		TenantID:         row.TenantID,
+		UserID:           row.UserID,
+		RequestID:        row.RequestID,
+		Reason:           row.Reason,
+		Status:           row.Status,
+		OperatorNote:     row.OperatorNote,
+		CreatedAt:        row.CreatedAt,
+		ResolvedAt:       row.ResolvedAt,
+		RefundedMicroUsd: refundedMicroUSD,
+	}
 }

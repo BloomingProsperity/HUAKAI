@@ -8,6 +8,7 @@ import { listDisputes, resolveDispute } from './api'
 import {
   DEFAULT_PAGE_SIZE,
   mapDisputeTableRows,
+	resolveSuccessNotice,
   statusLabel,
   statusTone,
   validateResolve,
@@ -17,7 +18,7 @@ import {
   DISPUTE_STATUSES,
   EMPTY_DISPUTE_FILTERS,
   type DisputeFilters,
-  type DisputeStatus,
+	type DisputeResolutionStatus,
   type DisputeView,
 } from './types'
 
@@ -224,7 +225,7 @@ function DisputeResolutionPanel({
 }) {
   // 裁决=落定终态,只在 resolved(支持退款)/rejected(维持扣费)二选一;
   // money 安全默认 rejected(不动钱、维持现状),要退款须运营显式切换 + 二次确认,避免默认就退款。
-  const [status, setStatus] = useState<DisputeStatus>('rejected')
+	const [status, setStatus] = useState<DisputeResolutionStatus>('rejected')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [rowError, setRowError] = useState<string | null>(null)
@@ -234,12 +235,15 @@ function DisputeResolutionPanel({
       setRowError(v.error)
       return
     }
-    // money 敏感:裁决落定该笔费用争议的退款/维持结论(不可逆),二次确认并明示无法撤销。
+    // money 敏感:裁决落定该笔费用争议的退款/维持结论(不可逆),二次确认并明示真实余额影响。
     const verb = status === 'resolved' ? '支持退款' : status === 'rejected' ? '驳回(维持扣费)' : statusLabel(status)
+	const detail = status === 'resolved'
+	  ? '支持退款将立即把该笔请求实扣费用全额退回用户余额,不可撤销'
+	  : '裁决为终态,将维持这笔已计费请求的扣费结论。'
     if (
       !confirmIrreversible(
         `将争议「${row.dispute_id}」裁决为「${verb}」`,
-        '裁决为终态,将落定这笔已计费请求的费用结论。',
+		detail,
       )
     ) {
       return
@@ -247,7 +251,7 @@ function DisputeResolutionPanel({
     setBusy(true)
     setRowError(null)
     resolveDispute(row.id, v.value)
-      .then((resp) => onResolved(`已裁决 ${resp.dispute.dispute_id} → ${statusLabel(resp.dispute.status)}`))
+	  .then((resp) => onResolved(resolveSuccessNotice(resp)))
       .catch((e: unknown) => setRowError(e instanceof ApiError ? `${e.message}(${e.code})` : '裁决失败'))
       .finally(() => setBusy(false))
   }
@@ -258,8 +262,8 @@ function DisputeResolutionPanel({
       <div style={{ display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <Field label="裁决结果">
           {/* 裁决只列终态:rejected(维持扣费)/ resolved(支持退款);非终态不作为裁决目标。 */}
-          <select value={status} onChange={(e) => setStatus(e.target.value as DisputeStatus)} style={{ ...inp, width: 220 }}>
-            {(['rejected', 'resolved'] as DisputeStatus[]).map((s) => (
+		  <select value={status} onChange={(e) => setStatus(e.target.value as DisputeResolutionStatus)} style={{ ...inp, width: 220 }}>
+			{(['rejected', 'resolved'] as DisputeResolutionStatus[]).map((s) => (
               <option key={s} value={s}>{statusLabel(s)}</option>
             ))}
           </select>
@@ -307,6 +311,7 @@ const disputeColumns: DataListColumn<DisputeTableRow>[] = [
   { key: 'requestId', label: 'request_id', render: (row) => <span className="hk-mono" title={row.requestTitle}>{row.requestId}</span> },
   { key: 'reason', label: '原因', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reason}</span> },
   { key: 'operatorNote', label: '运营备注', render: (row) => <span style={{ color: 'var(--hk-ink-500)' }}>{row.operatorNote}</span> },
+	{ key: 'refundedAmount', label: '已退金额', render: (row) => <span className="hk-mono">{row.refundedAmount}</span> },
   { key: 'createdAt', label: '创建', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
   { key: 'resolvedAt', label: '裁决', render: (row) => <span className="hk-mono">{row.resolvedAt}</span> },
 ]

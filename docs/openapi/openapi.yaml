@@ -3187,7 +3187,7 @@ paths:
           schema: { type: integer, format: int32, minimum: 0, default: 0 }
       responses:
         '200':
-          description: Tenant-scoped dispute rows across users. This endpoint is read-only and does not refund or mutate billing ledger rows.
+          description: Tenant-scoped dispute rows across users, including the amount refunded by each resolved dispute. This endpoint is read-only.
           content:
             application/json:
               schema:
@@ -3441,7 +3441,7 @@ paths:
             schema: { $ref: '#/components/schemas/ResolveCostDisputeRequest' }
       responses:
         '200':
-          description: Updated dispute state. This endpoint does not issue refunds or mutate ledger rows.
+          description: Updated dispute state. A resolved decision atomically appends a full-charge refund and credits an existing user balance; rejected/reviewing decisions do not touch money.
           content:
             application/json:
               schema:
@@ -3450,10 +3450,26 @@ paths:
                 required: [dispute]
                 properties:
                   dispute: { $ref: '#/components/schemas/CostDispute' }
+                  refund_micro_usd:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                    description: Amount appended by the resolved decision in micro-USD. Omitted for non-resolved decisions.
+                  refund_adjustment_ref:
+                    type: [string, 'null']
+                    description: Immutable billing-event reference for the refund. Omitted for non-resolved decisions.
+                  refund_idempotent:
+                    type: boolean
+                    description: True when the same dispute refund had already committed and no balance was credited again.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The dispute does not exist in an actionable state or has already reached a terminal decision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/pricing/page:
@@ -15891,6 +15907,11 @@ components:
         operator_note: { type: string, maxLength: 4000 }
         created_at: { type: string, format: date-time }
         resolved_at: { type: [string, 'null'], format: date-time }
+        refunded_micro_usd:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Sum of negative dispute refund events in micro-USD; populated by the admin list response.
 
     ReceiptVerifyResponse:
       type: object
