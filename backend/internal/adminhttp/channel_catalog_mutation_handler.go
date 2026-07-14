@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelrewriteconfig"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -43,6 +44,9 @@ type channelCatalogCreateParams struct {
 	PoolGroupID         int64
 	Name                string
 	FailoverStatusCodes []int32
+	BodyParamStrips     []string
+	ParamOverride       []byte
+	SensitiveWords      []string
 	Enabled             bool
 }
 
@@ -52,6 +56,12 @@ type channelCatalogUpdateParams struct {
 	PoolGroupID         int64
 	Name                string
 	FailoverStatusCodes []int32
+	SetBodyParamStrips  bool
+	BodyParamStrips     []string
+	SetParamOverride    bool
+	ParamOverride       []byte
+	SetSensitiveWords   bool
+	SensitiveWords      []string
 	Enabled             bool
 }
 
@@ -61,11 +71,14 @@ type channelCatalogDeleteParams struct {
 }
 
 type channelCatalogMutationRequest struct {
-	PoolGroupID         *int64  `json:"pool_group_id,omitempty"`
-	Name                string  `json:"name,omitempty"`
-	FailoverStatusCodes []int32 `json:"failover_status_codes,omitempty"` // 仅存储兼容，无运行时消费，UI 已不暴露。
-	Enabled             *bool   `json:"enabled,omitempty"`
-	Reason              string  `json:"reason,omitempty"`
+	PoolGroupID         *int64          `json:"pool_group_id,omitempty"`
+	Name                string          `json:"name,omitempty"`
+	FailoverStatusCodes []int32         `json:"failover_status_codes,omitempty"` // 仅存储兼容，无运行时消费，UI 已不暴露。
+	BodyParamStrips     json.RawMessage `json:"body_param_strips"`
+	ParamOverride       json.RawMessage `json:"param_override"`
+	SensitiveWords      json.RawMessage `json:"sensitive_words"`
+	Enabled             *bool           `json:"enabled,omitempty"`
+	Reason              string          `json:"reason,omitempty"`
 }
 
 type channelCatalogDeleteResponse struct {
@@ -119,6 +132,13 @@ func (s channelCatalogStoreAdapter) ListAdminChannelsByTenant(ctx context.Contex
 	return s.base.ListAdminChannelsByTenant(ctx, arg)
 }
 
+func (s channelCatalogStoreAdapter) GetAdminChannel(ctx context.Context, arg admindb.GetAdminChannelParams) (admindb.GetAdminChannelRow, error) {
+	if s.base == nil {
+		return admindb.GetAdminChannelRow{}, errChannelCatalogTxPoolUnset
+	}
+	return s.base.GetAdminChannel(ctx, arg)
+}
+
 func (s channelCatalogStoreAdapter) CreateChannelCatalogWithAudit(ctx context.Context, arg channelCatalogCreateParams, audit admindb.InsertAdminAuditEventParams) (channelCatalogItem, error) {
 	if s.pool == nil {
 		return channelCatalogItem{}, errChannelCatalogTxPoolUnset
@@ -128,7 +148,9 @@ func (s channelCatalogStoreAdapter) CreateChannelCatalogWithAudit(ctx context.Co
 		q := admindb.New(tx)
 		row, err := q.CreateChannel(ctx, admindb.CreateChannelParams{
 			TenantID: arg.TenantID, PoolGroupID: arg.PoolGroupID, Name: arg.Name,
-			FailoverStatusCodes: arg.FailoverStatusCodes, Enabled: arg.Enabled,
+			FailoverStatusCodes: arg.FailoverStatusCodes,
+			BodyParamStrips:     arg.BodyParamStrips, ParamOverride: arg.ParamOverride,
+			SensitiveWords: arg.SensitiveWords, Enabled: arg.Enabled,
 		})
 		if err != nil {
 			// EXISTS pool-group 守卫未命中时不返回任何行。
@@ -156,7 +178,11 @@ func (s channelCatalogStoreAdapter) UpdateChannelCatalogWithAudit(ctx context.Co
 		q := admindb.New(tx)
 		row, err := q.UpdateChannel(ctx, admindb.UpdateChannelParams{
 			TenantID: arg.TenantID, ID: arg.ID, PoolGroupID: arg.PoolGroupID,
-			Name: arg.Name, FailoverStatusCodes: arg.FailoverStatusCodes, Enabled: arg.Enabled,
+			Name: arg.Name, FailoverStatusCodes: arg.FailoverStatusCodes,
+			SetBodyParamStrips: arg.SetBodyParamStrips, BodyParamStrips: arg.BodyParamStrips,
+			SetParamOverride: arg.SetParamOverride, ParamOverride: arg.ParamOverride,
+			SetSensitiveWords: arg.SetSensitiveWords, SensitiveWords: arg.SensitiveWords,
+			Enabled: arg.Enabled,
 		})
 		if err != nil {
 			// 没有返回行意味着:要么该 channel 在此租户下已不存在,
@@ -207,6 +233,7 @@ func (s channelCatalogStoreAdapter) DeleteChannelCatalogWithAudit(ctx context.Co
 func MountChannelCatalogRoutes(r chi.Router, d AdminChannelCatalogDeps) {
 	r.Get("/", NewChannelCatalogListHandler(d))
 	r.Post("/", newCreateChannelCatalogHandler(d))
+	r.Get("/{id}", NewChannelCatalogGetHandler(d))
 	r.Put("/{id}", newUpdateChannelCatalogHandler(d))
 	r.Delete("/{id}", newDeleteChannelCatalogHandler(d))
 }
@@ -229,6 +256,9 @@ func newCreateChannelCatalogHandler(d AdminChannelCatalogDeps) http.HandlerFunc 
 		audit, ok := buildChannelCatalogAuditParams(w, r, ident, tenantID, "create_channel", req.Reason, map[string]any{
 			"tenant_id": tenantID, "pool_group_id": arg.PoolGroupID, "name": arg.Name,
 			"failover_status_codes": arg.FailoverStatusCodes, "enabled": arg.Enabled,
+			"body_param_strips": arg.BodyParamStrips,
+			"param_override":    json.RawMessage(arg.ParamOverride),
+			"sensitive_words":   arg.SensitiveWords,
 		})
 		if !ok {
 			return
@@ -264,6 +294,12 @@ func newUpdateChannelCatalogHandler(d AdminChannelCatalogDeps) http.HandlerFunc 
 		audit, ok := buildChannelCatalogAuditParams(w, r, ident, tenantID, "update_channel", req.Reason, map[string]any{
 			"tenant_id": tenantID, "id": arg.ID, "pool_group_id": arg.PoolGroupID,
 			"name": arg.Name, "failover_status_codes": arg.FailoverStatusCodes, "enabled": arg.Enabled,
+			"set_body_param_strips": arg.SetBodyParamStrips,
+			"body_param_strips":     arg.BodyParamStrips,
+			"set_param_override":    arg.SetParamOverride,
+			"param_override":        json.RawMessage(arg.ParamOverride),
+			"set_sensitive_words":   arg.SetSensitiveWords,
+			"sensitive_words":       arg.SensitiveWords,
 		})
 		if !ok {
 			return
@@ -378,9 +414,15 @@ func validateChannelCatalogCreateRequest(w http.ResponseWriter, tenantID int64, 
 	if !ok {
 		return channelCatalogCreateParams{}, false
 	}
+	gates, ok := validateChannelCatalogRewriteGates(w, req)
+	if !ok {
+		return channelCatalogCreateParams{}, false
+	}
 	return channelCatalogCreateParams{
 		TenantID: tenantID, PoolGroupID: *req.PoolGroupID, Name: name,
-		FailoverStatusCodes: codes, Enabled: enabled,
+		FailoverStatusCodes: codes, BodyParamStrips: gates.BodyParamStrips,
+		ParamOverride: gates.ParamOverride, SensitiveWords: gates.SensitiveWords,
+		Enabled: enabled,
 	}, true
 }
 
@@ -402,10 +444,34 @@ func validateChannelCatalogUpdateRequest(w http.ResponseWriter, tenantID, id int
 	if !ok {
 		return channelCatalogUpdateParams{}, false
 	}
+	gates, ok := validateChannelCatalogRewriteGates(w, req)
+	if !ok {
+		return channelCatalogUpdateParams{}, false
+	}
 	return channelCatalogUpdateParams{
 		TenantID: tenantID, ID: id, PoolGroupID: *req.PoolGroupID, Name: name,
-		FailoverStatusCodes: codes, Enabled: enabled,
+		FailoverStatusCodes: codes,
+		SetBodyParamStrips:  gates.SetBodyParamStrips, BodyParamStrips: gates.BodyParamStrips,
+		SetParamOverride: gates.SetParamOverride, ParamOverride: gates.ParamOverride,
+		SetSensitiveWords: gates.SetSensitiveWords, SensitiveWords: gates.SensitiveWords,
+		Enabled: enabled,
 	}, true
+}
+
+// validateChannelCatalogRewriteGates 在写库前完成三门的结构校验，并保留字段
+// 是否出现。这样 update 可以区分「省略=保留」与「显式空值=清空」。
+func validateChannelCatalogRewriteGates(w http.ResponseWriter, req channelCatalogMutationRequest) (channelrewriteconfig.Values, bool) {
+	values, err := channelrewriteconfig.Decode(req.BodyParamStrips, req.ParamOverride, req.SensitiveWords)
+	if err == nil {
+		return values, true
+	}
+	var validationErr *channelrewriteconfig.ValidationError
+	code := "invalid_channel_rewrite_config"
+	if errors.As(err, &validationErr) {
+		code = "invalid_" + validationErr.Field
+	}
+	writeError(w, http.StatusBadRequest, code, err.Error())
+	return channelrewriteconfig.Values{}, false
 }
 
 func validateChannelCatalogEnabled(w http.ResponseWriter, enabled *bool) (bool, bool) {
@@ -510,28 +576,4 @@ func normalizeChannelCatalogDBError(err error) error {
 		return errChannelCatalogNotFound
 	}
 	return err
-}
-
-func channelCatalogItemFromCreateRow(row admindb.CreateChannelRow) channelCatalogItem {
-	return channelCatalogItem{
-		ID: row.ID, PoolGroupID: row.PoolGroupID, Name: row.Name,
-		FailoverStatusCodes: row.FailoverStatusCodes, Enabled: row.Enabled,
-		CreatedAt: formatCatalogTime(row.CreatedAt),
-	}
-}
-
-func channelCatalogItemFromUpdateRow(row admindb.UpdateChannelRow) channelCatalogItem {
-	return channelCatalogItem{
-		ID: row.ID, PoolGroupID: row.PoolGroupID, Name: row.Name,
-		FailoverStatusCodes: row.FailoverStatusCodes, Enabled: row.Enabled,
-		CreatedAt: formatCatalogTime(row.CreatedAt),
-	}
-}
-
-func channelCatalogItemFromSoftDeleteRow(row admindb.SoftDeleteChannelRow) channelCatalogItem {
-	return channelCatalogItem{
-		ID: row.ID, PoolGroupID: row.PoolGroupID, Name: row.Name,
-		FailoverStatusCodes: row.FailoverStatusCodes, Enabled: row.Enabled,
-		CreatedAt: formatCatalogTime(row.CreatedAt),
-	}
 }

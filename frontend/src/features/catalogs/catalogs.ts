@@ -219,24 +219,55 @@ export type ChannelValidation =
   | { ok: true; value: ChannelCatalogMutationRequest }
   | { ok: false; error: string }
 
-/**
- * 校验 channel 新建/更新表单(镜像 validateChannelCatalogCreate/UpdateRequest,
- * channel_catalog_mutation_handler.go:363/387 —— 两者校验一致):
- *   - name trim 后非空
- *   - pool_group_id 必须为正整数(后端 *PoolGroupID<=0 即 400)
- * 判别核心:name 空 / pool_group_id 非正即拒。reason 可选。
- * failover_status_codes 仅为旧客户端兼容保留在类型中,当前界面不下发。
- */
-export function validateChannel(form: {
+export interface ChannelFormValues {
   name: string
   poolGroupId: number
   enabled: boolean
   reason: string
-}): ChannelValidation {
+  bodyParamStrips: string
+  paramOverride: string
+  sensitiveWords: string
+}
+
+/** 把列表行回显转换为可编辑文本，旧响应缺字段时按三门关闭处理。 */
+export function channelFormFromItem(item: ChannelCatalogItem): Omit<ChannelFormValues, 'reason'> {
+  return {
+    name: item.name,
+    poolGroupId: item.pool_group_id,
+    enabled: item.enabled,
+    bodyParamStrips: (item.body_param_strips ?? []).join(', '),
+    paramOverride: JSON.stringify(item.param_override ?? {}, null, 2),
+    sensitiveWords: (item.sensitive_words ?? []).join(', '),
+  }
+}
+
+/**
+ * 校验 channel 新建/更新表单，与后端两条写接口的输入约束保持一致：
+ *   - name trim 后非空
+ *   - pool_group_id 必须为正整数(后端 *PoolGroupID<=0 即 400)
+ *   - 两个字符串数组按逗号拆分并去除首尾空白，拒绝空项
+ *   - param_override 必须是合法 JSON object，不能是 array/scalar/null
+ * 判别核心:name 空 / pool_group_id 非正 / JSON 类型错误即拒。reason 可选。
+ * failover_status_codes 仅为旧客户端兼容保留在类型中,当前界面不下发。
+ */
+export function validateChannel(form: ChannelFormValues): ChannelValidation {
   const name = form.name.trim()
   if (name === '') return { ok: false, error: 'channel 名称不能为空' }
   if (!Number.isInteger(form.poolGroupId) || form.poolGroupId <= 0) {
     return { ok: false, error: 'pool_group_id 必须是正整数' }
+  }
+  const bodyParamStrips = parseChannelStringList(form.bodyParamStrips, 'body_param_strips')
+  if (!bodyParamStrips.ok) return bodyParamStrips
+  const sensitiveWords = parseChannelStringList(form.sensitiveWords, 'sensitive_words')
+  if (!sensitiveWords.ok) return sensitiveWords
+  let paramOverride: unknown
+  try {
+    paramOverride = JSON.parse(form.paramOverride.trim() === '' ? '{}' : form.paramOverride)
+  } catch {
+    return { ok: false, error: 'param_override 必须是合法 JSON object' }
+  }
+  if (paramOverride === null || Array.isArray(paramOverride) || typeof paramOverride !== 'object') {
+    return { ok: false, error: 'param_override 必须是 JSON object，不能是 array、scalar 或 null' }
   }
   const reason = form.reason.trim()
   return {
@@ -245,7 +276,35 @@ export function validateChannel(form: {
       pool_group_id: form.poolGroupId,
       name,
       enabled: form.enabled,
+      body_param_strips: bodyParamStrips.value,
+      param_override: paramOverride as Record<string, unknown>,
+      sensitive_words: sensitiveWords.value,
       ...(reason !== '' ? { reason } : {}),
     },
   }
+}
+
+/** 仅在校验成功时调用写 API，便于测试非法 JSON 不会越过前端边界。 */
+export function validateAndDispatchChannel(
+  form: ChannelFormValues,
+  onValid: (value: ChannelCatalogMutationRequest) => void,
+): ChannelValidation {
+  const result = validateChannel(form)
+  if (result.ok) onValid(result.value)
+  return result
+}
+
+function parseChannelStringList(
+  raw: string,
+  field: 'body_param_strips' | 'sensitive_words',
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (raw.trim() === '') return { ok: true, value: [] }
+  if (/[\r\n]/.test(raw)) {
+    return { ok: false, error: `${field} 请只用逗号分隔` }
+  }
+  const values = raw.split(',').map((value) => value.trim())
+  if (values.some((value) => value === '')) {
+    return { ok: false, error: `${field} 不能包含空项` }
+  }
+  return { ok: true, value: values }
 }

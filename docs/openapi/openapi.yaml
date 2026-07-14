@@ -9483,15 +9483,48 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/channels/{id}:
+    get:
+      tags: [admin-channel-catalog]
+      summary: Get a tenant-scoped channel
+      operationId: getAdminChannel
+      description: |
+        Returns one non-deleted channel selected by tenant scope plus path
+        `id`, including the three rewrite-gate values consumed by request
+        parameter rewriting and output sensitive-word rewriting.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
     put:
       tags: [admin-channel-catalog]
       summary: Update a tenant-scoped channel
       operationId: updateAdminChannel
       description: |
-        Updates pool_group_id, name, failover_status_codes, and enabled state
-        for a channel selected by tenant scope plus path `id`. `pool_group_id`
-        must belong to the same tenant. Successful mutations write an admin
-        audit event.
+        Updates pool_group_id, name, failover_status_codes, enabled state, and
+        any rewrite-gate field present in the request for a channel selected by
+        tenant scope plus path `id`. Omitted rewrite-gate fields retain their
+        stored values; explicit empty arrays or object clear that gate.
+        `pool_group_id` must belong to the same tenant. Successful mutations
+        write an admin audit event.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -17130,7 +17163,7 @@ components:
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       type: object
       additionalProperties: false
-      required: [id, pool_group_id, name, failover_status_codes, enabled, created_at]
+      required: [id, pool_group_id, name, failover_status_codes, body_param_strips, param_override, sensitive_words, enabled, created_at]
       properties:
         id: { type: integer, format: int64 }
         pool_group_id: { type: integer, format: int64 }
@@ -17138,6 +17171,18 @@ components:
         failover_status_codes:
           type: array
           items: { type: integer }
+        body_param_strips:
+          type: array
+          description: Top-level request JSON fields removed before upstream dispatch.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Top-level request JSON values forced before body_param_strips is applied.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Words obfuscated in supported outbound request text fields.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
 
@@ -17153,6 +17198,18 @@ components:
           type: array
           description: Optional; defaults to [401, 403, 429, 529] when omitted.
           items: { type: integer, minimum: 100, maximum: 599 }
+        body_param_strips:
+          type: array
+          description: Optional; defaults to an empty array when omitted.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Optional; defaults to an empty object when omitted.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Optional; defaults to an empty array when omitted.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         reason:
           type: string
@@ -17170,6 +17227,18 @@ components:
           type: array
           description: Optional; defaults to [401, 403, 429, 529] when omitted.
           items: { type: integer, minimum: 100, maximum: 599 }
+        body_param_strips:
+          type: array
+          description: Optional; omitted preserves the stored array and an explicit empty array clears it.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Optional; omitted preserves the stored object and an explicit empty object clears it.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Optional; omitted preserves the stored array and an explicit empty array clears it.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         reason:
           type: string

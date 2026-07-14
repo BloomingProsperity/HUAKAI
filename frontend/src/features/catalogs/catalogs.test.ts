@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   UPSTREAM_PROTOCOLS,
   buildCatalogQuery,
+  channelFormFromItem,
   isKnownProtocol,
   mapChannelCatalogRows,
   mapProviderCatalogRows,
+  validateAndDispatchChannel,
   validateChannel,
   validateProviderCreate,
   validateProviderUpdate,
@@ -86,13 +88,28 @@ describe('validateProviderUpdate', () => {
 })
 
 describe('validateChannel', () => {
-  const base = { name: '主通道', poolGroupId: 1, enabled: true, reason: '' }
+  const base = {
+    name: '主通道',
+    poolGroupId: 1,
+    enabled: true,
+    reason: '',
+    bodyParamStrips: 'drop_create, store',
+    paramOverride: '{"temperature":0.25,"metadata":{"source":"frontend"}}',
+    sensitiveWords: 'word_create, word_two',
+  }
 
-  it('合法输入只提交现存有效字段,不夹带 failover_status_codes', () => {
+  it('合法输入精确产出三门对象,不夹带 failover_status_codes', () => {
     const v = validateChannel(base)
     expect(v.ok).toBe(true)
     if (v.ok) {
-      expect(v.value).toEqual({ pool_group_id: 1, name: '主通道', enabled: true })
+      expect(v.value).toEqual({
+        pool_group_id: 1,
+        name: '主通道',
+        enabled: true,
+        body_param_strips: ['drop_create', 'store'],
+        param_override: { temperature: 0.25, metadata: { source: 'frontend' } },
+        sensitive_words: ['word_create', 'word_two'],
+      })
       // 判别核心:当前界面永不下发仅存储字段。变异(重新塞入该字段)→ RED。
       expect('failover_status_codes' in v.value).toBe(false)
     }
@@ -113,6 +130,61 @@ describe('validateChannel', () => {
     const v = validateChannel({ ...base, reason: '  调整  ' })
     expect(v.ok && v.value.reason).toBe('调整')
   })
+
+  it('非法 JSON 与非 object JSON 不触发 API 回调', () => {
+    for (const paramOverride of ['{"broken":', '[]', '"scalar"', 'null', '7']) {
+      const send = vi.fn()
+      const result = validateAndDispatchChannel({ ...base, paramOverride }, send)
+      expect(result.ok, paramOverride).toBe(false)
+      expect(send, paramOverride).not.toHaveBeenCalled()
+    }
+  })
+
+  it('数组空项或非逗号分隔不触发 API 回调', () => {
+    for (const fields of [
+      { bodyParamStrips: 'drop_create,,store' },
+      { bodyParamStrips: 'drop_create,   ,store' },
+      { sensitiveWords: 'word_create,' },
+      { sensitiveWords: 'word_create\nword_two' },
+    ]) {
+      const send = vi.fn()
+      const result = validateAndDispatchChannel({ ...base, ...fields }, send)
+      expect(result.ok, JSON.stringify(fields)).toBe(false)
+      expect(send, JSON.stringify(fields)).not.toHaveBeenCalled()
+    }
+  })
+
+  it('合法三门只调用一次 API 回调且 payload 精确', () => {
+    const send = vi.fn()
+    const result = validateAndDispatchChannel(base, send)
+    expect(result.ok).toBe(true)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith({
+      pool_group_id: 1,
+      name: '主通道',
+      enabled: true,
+      body_param_strips: ['drop_create', 'store'],
+      param_override: { temperature: 0.25, metadata: { source: 'frontend' } },
+      sensitive_words: ['word_create', 'word_two'],
+    })
+  })
+})
+
+describe('channelFormFromItem', () => {
+  it('编辑态回显三门并为 JSON object 格式化文本', () => {
+    const form = channelFormFromItem({
+      id: 9,
+      pool_group_id: 4,
+      name: '主通道',
+      enabled: true,
+      body_param_strips: ['drop_create', 'store'],
+      param_override: { temperature: 0.25 },
+      sensitive_words: ['word_create'],
+    })
+    expect(form.bodyParamStrips).toBe('drop_create, store')
+    expect(JSON.parse(form.paramOverride)).toEqual({ temperature: 0.25 })
+    expect(form.sensitiveWords).toBe('word_create')
+  })
 })
 
 describe('目录表格列映射', () => {
@@ -125,7 +197,17 @@ describe('目录表格列映射', () => {
   })
 
   it('channel 映射忽略旧响应中的失败转移码并保留有效列', () => {
-    const channel = { id: 9, pool_group_id: 4, name: '主通道', failover_status_codes: [401, 429], enabled: true, created_at: undefined }
+    const channel = {
+      id: 9,
+      pool_group_id: 4,
+      name: '主通道',
+      failover_status_codes: [401, 429],
+      body_param_strips: [],
+      param_override: {},
+      sensitive_words: [],
+      enabled: true,
+      created_at: undefined,
+    }
     const [row] = mapChannelCatalogRows([channel])
     expect(row).toMatchObject({ displayId: '#9', poolGroupId: 4, status: '启用', statusTone: 'ok', createdAt: '—' })
     // 判别核心:把仅存储字段重新映射进列表行会立即转红。

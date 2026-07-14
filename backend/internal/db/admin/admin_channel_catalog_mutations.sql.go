@@ -1,0 +1,224 @@
+// 本文件按 sqlc 输出格式手工同步；本工作单明确禁止运行生成命令。
+// 版本：
+//   sqlc v1.27.0
+// 来源：admin_channel_catalog_mutations.sql
+
+package admin
+
+import (
+	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+const createChannel = `-- name: CreateChannel :one
+INSERT INTO channels (
+    tenant_id,
+    pool_group_id,
+    name,
+    failover_status_codes,
+    body_param_strips,
+    param_override,
+    sensitive_words,
+    enabled
+)
+SELECT
+    $1::bigint,
+    $2::bigint,
+    $3::text,
+    $4::integer[],
+    COALESCE($5::text[], ARRAY[]::text[]),
+    COALESCE($6::jsonb, '{}'::jsonb),
+    COALESCE($7::text[], ARRAY[]::text[]),
+    $8::boolean
+WHERE EXISTS (
+    SELECT 1 FROM pool_groups pg
+    WHERE pg.id = $2::bigint
+      AND pg.tenant_id = $1::bigint
+)
+RETURNING id, pool_group_id, name, failover_status_codes,
+          body_param_strips, param_override, sensitive_words, enabled, created_at
+`
+
+type CreateChannelParams struct {
+	TenantID            int64    `db:"tenant_id" json:"tenant_id"`
+	PoolGroupID         int64    `db:"pool_group_id" json:"pool_group_id"`
+	Name                string   `db:"name" json:"name"`
+	FailoverStatusCodes []int32  `db:"failover_status_codes" json:"failover_status_codes"`
+	BodyParamStrips     []string `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride       []byte   `db:"param_override" json:"param_override"`
+	SensitiveWords      []string `db:"sensitive_words" json:"sensitive_words"`
+	Enabled             bool     `db:"enabled" json:"enabled"`
+}
+
+type CreateChannelRow struct {
+	ID                  int64              `db:"id" json:"id"`
+	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
+	Name                string             `db:"name" json:"name"`
+	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
+	BodyParamStrips     []string           `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride       []byte             `db:"param_override" json:"param_override"`
+	SensitiveWords      []string           `db:"sensitive_words" json:"sensitive_words"`
+	Enabled             bool               `db:"enabled" json:"enabled"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// pool_group 必须属于同租户(EXISTS 守卫防跨租户链接);name 唯一冲突由
+// uq_channels_tenant_pool_name 抛 23505。
+func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (CreateChannelRow, error) {
+	row := q.db.QueryRow(ctx, createChannel,
+		arg.TenantID,
+		arg.PoolGroupID,
+		arg.Name,
+		arg.FailoverStatusCodes,
+		arg.BodyParamStrips,
+		arg.ParamOverride,
+		arg.SensitiveWords,
+		arg.Enabled,
+	)
+	var i CreateChannelRow
+	err := row.Scan(
+		&i.ID,
+		&i.PoolGroupID,
+		&i.Name,
+		&i.FailoverStatusCodes,
+		&i.BodyParamStrips,
+		&i.ParamOverride,
+		&i.SensitiveWords,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const softDeleteChannel = `-- name: SoftDeleteChannel :one
+UPDATE channels c
+SET
+    deleted_at = COALESCE(c.deleted_at, NOW()),
+    updated_at = NOW(),
+    enabled = false
+WHERE c.tenant_id = $1::bigint
+  AND c.id = $2::bigint
+  AND c.deleted_at IS NULL
+RETURNING id, pool_group_id, name, failover_status_codes, enabled, created_at
+`
+
+type SoftDeleteChannelParams struct {
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	ID       int64 `db:"id" json:"id"`
+}
+
+type SoftDeleteChannelRow struct {
+	ID                  int64              `db:"id" json:"id"`
+	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
+	Name                string             `db:"name" json:"name"`
+	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
+	Enabled             bool               `db:"enabled" json:"enabled"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) SoftDeleteChannel(ctx context.Context, arg SoftDeleteChannelParams) (SoftDeleteChannelRow, error) {
+	row := q.db.QueryRow(ctx, softDeleteChannel, arg.TenantID, arg.ID)
+	var i SoftDeleteChannelRow
+	err := row.Scan(
+		&i.ID,
+		&i.PoolGroupID,
+		&i.Name,
+		&i.FailoverStatusCodes,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateChannel = `-- name: UpdateChannel :one
+UPDATE channels c
+SET
+    pool_group_id = $1::bigint,
+    name = $2::text,
+    failover_status_codes = $3::integer[],
+    body_param_strips = CASE
+        WHEN $4::boolean
+        THEN COALESCE($5::text[], ARRAY[]::text[])
+        ELSE c.body_param_strips
+    END,
+    param_override = CASE
+        WHEN $6::boolean
+        THEN COALESCE($7::jsonb, '{}'::jsonb)
+        ELSE c.param_override
+    END,
+    sensitive_words = CASE
+        WHEN $8::boolean
+        THEN COALESCE($9::text[], ARRAY[]::text[])
+        ELSE c.sensitive_words
+    END,
+    enabled = $10::boolean,
+    updated_at = NOW()
+WHERE c.tenant_id = $11::bigint
+  AND c.id = $12::bigint
+  AND c.deleted_at IS NULL
+  AND EXISTS (
+      SELECT 1 FROM pool_groups pg
+      WHERE pg.id = $1::bigint
+        AND pg.tenant_id = $11::bigint
+  )
+RETURNING id, pool_group_id, name, failover_status_codes,
+          body_param_strips, param_override, sensitive_words, enabled, created_at
+`
+
+type UpdateChannelParams struct {
+	PoolGroupID         int64    `db:"pool_group_id" json:"pool_group_id"`
+	Name                string   `db:"name" json:"name"`
+	FailoverStatusCodes []int32  `db:"failover_status_codes" json:"failover_status_codes"`
+	SetBodyParamStrips  bool     `db:"set_body_param_strips" json:"set_body_param_strips"`
+	BodyParamStrips     []string `db:"body_param_strips" json:"body_param_strips"`
+	SetParamOverride    bool     `db:"set_param_override" json:"set_param_override"`
+	ParamOverride       []byte   `db:"param_override" json:"param_override"`
+	SetSensitiveWords   bool     `db:"set_sensitive_words" json:"set_sensitive_words"`
+	SensitiveWords      []string `db:"sensitive_words" json:"sensitive_words"`
+	Enabled             bool     `db:"enabled" json:"enabled"`
+	TenantID            int64    `db:"tenant_id" json:"tenant_id"`
+	ID                  int64    `db:"id" json:"id"`
+}
+
+type UpdateChannelRow struct {
+	ID                  int64              `db:"id" json:"id"`
+	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
+	Name                string             `db:"name" json:"name"`
+	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
+	BodyParamStrips     []string           `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride       []byte             `db:"param_override" json:"param_override"`
+	SensitiveWords      []string           `db:"sensitive_words" json:"sensitive_words"`
+	Enabled             bool               `db:"enabled" json:"enabled"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error) {
+	row := q.db.QueryRow(ctx, updateChannel,
+		arg.PoolGroupID,
+		arg.Name,
+		arg.FailoverStatusCodes,
+		arg.SetBodyParamStrips,
+		arg.BodyParamStrips,
+		arg.SetParamOverride,
+		arg.ParamOverride,
+		arg.SetSensitiveWords,
+		arg.SensitiveWords,
+		arg.Enabled,
+		arg.TenantID,
+		arg.ID,
+	)
+	var i UpdateChannelRow
+	err := row.Scan(
+		&i.ID,
+		&i.PoolGroupID,
+		&i.Name,
+		&i.FailoverStatusCodes,
+		&i.BodyParamStrips,
+		&i.ParamOverride,
+		&i.SensitiveWords,
+		&i.Enabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}

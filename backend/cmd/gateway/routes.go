@@ -1037,6 +1037,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	}
 	r.Get("/admin/v1/channels", adminhttp.NewChannelCatalogListHandler(channelCatalogDeps))
 	r.Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
+	r.Get("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogGetHandler(channelCatalogDeps))
 	r.Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
 	r.Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
 	quotaPolicyDeps := adminquotahttp.Deps{

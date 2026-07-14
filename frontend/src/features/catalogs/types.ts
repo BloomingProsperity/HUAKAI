@@ -1,19 +1,20 @@
 /*
  * 上游目录(provider 目录 + channel 目录)运营台前端类型 —— 镜像后端 adminhttp 的 JSON 形态。
  *
- * 端点(均 admin token 鉴权,挂在 /admin/v1,见 cmd/gateway/routes.go:888-900):
+ * 端点均由 admin token 鉴权并挂在 /admin/v1：
  *   provider 目录:
- *     GET    /admin/v1/providers?tenant_id=N&limit=&offset=  列表(provider_catalog_handler.go:60)
- *     POST   /admin/v1/providers                             新建(provider_catalog_mutation_handler.go:200)
- *     PUT    /admin/v1/providers/{code}                      更新(provider_catalog_mutation_handler.go:231)
- *     DELETE /admin/v1/providers/{code}                      软删(provider_catalog_mutation_handler.go:267)
+ *     GET    /admin/v1/providers?tenant_id=N&limit=&offset=  列表
+ *     POST   /admin/v1/providers                             新建
+ *     PUT    /admin/v1/providers/{code}                      更新
+ *     DELETE /admin/v1/providers/{code}                      软删
  *   channel 目录:
- *     GET    /admin/v1/channels?tenant_id=N&limit=&offset=   列表(channel_catalog_handler.go:37)
- *     POST   /admin/v1/channels                              新建(channel_catalog_mutation_handler.go:214)
- *     PUT    /admin/v1/channels/{id}                         更新(channel_catalog_mutation_handler.go:245)
- *     DELETE /admin/v1/channels/{id}                         软删(channel_catalog_mutation_handler.go:280)
+ *     GET    /admin/v1/channels?tenant_id=N&limit=&offset=   列表
+ *     POST   /admin/v1/channels                              新建
+ *     GET    /admin/v1/channels/{id}                         单条
+ *     PUT    /admin/v1/channels/{id}                         更新
+ *     DELETE /admin/v1/channels/{id}                         软删
  *
- * 注意:platform_admin 角色下后端 tenant_id query 必填(provider_catalog_handler.go:161 parseAdminCatalogTenant);
+ * 注意：platform_admin 角色下后端 tenant_id query 必填；
  * 故本页所有读写都先要一个租户 ID。
  *
  * money 说明:两份目录都【不含】任何计费/倍率/金额字段。channel 目录只承载
@@ -23,7 +24,7 @@
 
 // ── provider 目录 ─────────────────────────────────────────────────────────────
 
-/** provider 目录项 DTO(镜像 providerCatalogItem,provider_catalog_handler.go:45)。 */
+/** provider 目录项 DTO，与后端 provider 目录项的 JSON 形态一致。 */
 export interface ProviderCatalogItem {
   id: number
   code: string
@@ -43,7 +44,7 @@ export interface ProviderCatalogListResponse {
 }
 
 /**
- * provider 新建/更新请求体(镜像 providerCatalogMutationRequest,provider_catalog_mutation_handler.go:50)。
+ * provider 新建/更新请求体，与后端 provider 写接口 DTO 保持一致。
  * 新建:code/display_name/upstream_protocol/enabled 均必填;
  * 更新:code 来自 URL path,body 只用 display_name/upstream_protocol/enabled;
  * reason 可选(写入审计)。
@@ -66,13 +67,16 @@ export interface ProviderCatalogDeleteResponse {
 
 // ── channel 目录 ──────────────────────────────────────────────────────────────
 
-/** channel 目录项 DTO(镜像 channelCatalogItem,channel_catalog_handler.go:28)。 */
+/** channel 目录项 DTO，与后端 channel 目录项的 JSON 形态一致。 */
 export interface ChannelCatalogItem {
   id: number
   pool_group_id: number
   name: string
   /** 旧客户端兼容字段；当前界面不展示也不下发。 */
   failover_status_codes?: number[]
+  body_param_strips: string[]
+  param_override: Record<string, unknown>
+  sensitive_words: string[]
   enabled: boolean
   created_at?: string
 }
@@ -86,7 +90,7 @@ export interface ChannelCatalogListResponse {
 }
 
 /**
- * channel 新建/更新请求体(镜像 channelCatalogMutationRequest,channel_catalog_mutation_handler.go:63)。
+ * channel 新建/更新请求体，与后端写接口 DTO 保持一致。
  * 新建/更新:name + pool_group_id 必填,enabled 必填;
  * 更新时 id 来自 URL path;reason 可选(写入审计)。
  */
@@ -95,6 +99,12 @@ export interface ChannelCatalogMutationRequest {
   name: string
   /** 旧客户端兼容字段；当前界面不下发。 */
   failover_status_codes?: number[]
+  /** 创建时省略等价于空数组；更新时省略表示保留。 */
+  body_param_strips?: string[]
+  /** 创建时省略等价于空对象；更新时省略表示保留。 */
+  param_override?: Record<string, unknown>
+  /** 创建时省略等价于空数组；更新时省略表示保留。 */
+  sensitive_words?: string[]
   enabled: boolean
   reason?: string
 }

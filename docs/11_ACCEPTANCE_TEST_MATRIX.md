@@ -398,6 +398,14 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | AT-OBS-ALERT-001 | 运营者从真实指标目录建规则，且每条 `usage.*` 规则按自身窗口聚合。 | F-OBS-001 / Admin operations | 租户已有 60 秒、3600 秒及同窗口规则；usage rolluper 与账号健康计数器可注入；管理员鉴权可用。 | Normal：读取目录并用两个窗口评估规则，再评估两条同窗口规则。Failure：目录请求失败、无管理员凭证请求目录、提交 86401 秒窗口。Recovery：目录失败时用自定义指标名保存；恢复目录后重新选择内建项。 | 目录含 10 个静态生产键与 `account.unhealthy_` 前缀族；不同窗口各查一次、同窗口共享一次；未实现窗口接口的旧源只快照一次；无凭证返回 401/403，超限返回 400；前端失败时仅保留自定义选项并显示轻提示。 | 不存在的内建指标使规则永久不触发、窗口字段存而不用、重复聚合放大数据库负载、目录故障阻断运维。 | PASS（working tree：`backend/internal/alertmetrics/catalog_test.go`、`backend/internal/alerting/service_test.go`、`backend/internal/alertinghttp/handlers_test.go`、`frontend/src/features/alerting/metricCatalog.test.tsx`） |
 
+## P2-b 渠道请求改写三门写口
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-P2B-CH-001 | create 写入三门后，create/get/list 精确回显并进入运行时消费链。 | channel catalog `body_param_strips` / `param_override` / `sensitive_words` | 真 PostgreSQL 已应用现有迁移；租户、pool group、model alias 与 binding 已就绪。 | Normal：通过 admin HTTP create 提交三门，再调 get/list，用同一 `PostgresRegistry` 解析 binding 并调用参数剥离、参数覆盖和敏感词混淆消费函数。Failure：删除任一 INSERT/RETURNING/SELECT/Scan 映射。Recovery：恢复 SQL 源与手改生成码的同序映射后重跑。 | create/get/list 三处回显语义等于入参；registry 输出驱动实际请求改写。任一列断线会让精确值或消费断言转红。 | 字段只存不用、SQL 参数/Scan 错位、单条读或列表漏回显。 | READY（工作树：`backend/internal/adminhttp/channel_catalog_rewrite_gates_integration_test.go`；`integration_pg` 已编译；当前沙箱禁止 TCP/Unix socket，真库运行待宿主门） |
+| AT-P2B-CH-002 | update 只修改一门时，另两门不得被误清；显式空值仍可清空。 | presence-aware channel partial update | 已有 channel 的三门均为非空值。 | Normal：update 只提交 `body_param_strips`，通过 update/get/list/registry 核对其余两门。Failure：去掉 `set_*` 布尔位或将 SQL `ELSE` 分支改为空值。Recovery：恢复“省略=保留，显式空=清空”分支并重跑。 | 只有被提交的门改变；另两门的库值、HTTP 回显和 registry 消费值均不变；显式 `[]` / `{}` 可清空。 | 部分更新误清生产策略、无法显式关闭配置。 | READY（单元绿：`channel_catalog_mutation_handler_test.go`；真库断言已写入上述 integration test，待宿主门执行） |
+| AT-P2B-CH-003 | 非法 JSON/类型在 HTTP 边界返回 400 且不写库，前端也不发请求。 | channel rewrite config validation | 可观测 store 调用次数；前端可注入发送 spy。 | Normal：提交字符串数组与 JSON object。Failure：提交损坏 JSON、array/scalar/null override、非字符串数组项、空项。Recovery：改正为合法值后再提交。 | 非法请求稳定返回 400，create/update store 调用次数为 0；前端校验失败时 API spy 为 0；修正后仅发送一次且 payload 精确。 | 宽松反序列化导致运行时类型崩溃、无效请求污染数据。 | PASS（`backend/internal/adminhttp/channel_catalog_mutation_handler_test.go`、`backend/internal/channelrewriteconfig/config_test.go`、`frontend/src/features/catalogs/catalogs.test.ts`） |
+
 ## Release Rule
 
 No capability group may be marked release-ready without acceptance tests covering normal path, failure path, and operator recovery path.

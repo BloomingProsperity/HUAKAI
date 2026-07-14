@@ -100,6 +100,7 @@ type Querier interface {
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
+	GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error)
 	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)

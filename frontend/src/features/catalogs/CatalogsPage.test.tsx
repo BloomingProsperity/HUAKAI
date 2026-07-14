@@ -10,17 +10,26 @@ const legacyChannel: ChannelCatalogItem = {
   pool_group_id: 73,
   name: 'channel-compat-marker',
   failover_status_codes: [598],
+  body_param_strips: ['drop_create'],
+  param_override: { temperature: 0.25 },
+  sensitive_words: ['word_create'],
   enabled: true,
   created_at: '2026-07-14T00:00:00Z',
 }
 
-describe('channel 目录 UI 只暴露真实生效字段', () => {
-  it('表单 DOM 不出现 failover_status_codes 控件,有效字段仍存在', () => {
+describe('channel 目录 UI 暴露真实生效字段', () => {
+  it('表单 DOM 出现三门控件、用途文案且不出现 failover_status_codes 控件', () => {
     const html = renderToStaticMarkup(<ChannelsCard tenantId={7} />)
 
     expect(html).toContain('名称(name)')
     expect(html).toContain('pool_group_id(正整数)')
     expect(html).toContain('启用')
+    expect(html).toContain('name="body_param_strips"')
+    expect(html).toContain('剥离哪些请求字段以降低策略拦截风险')
+    expect(html).toContain('name="param_override"')
+    expect(html).toContain('强制覆盖哪些请求参数')
+    expect(html).toContain('name="sensitive_words"')
+    expect(html).toContain('输出侧敏感词混淆')
     expect(html).toContain('原因(reason,可选,写入审计)')
     expect(html).not.toContain('失败转移状态码')
     expect(html).not.toContain('failover_status_codes')

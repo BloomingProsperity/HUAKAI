@@ -15,9 +15,10 @@ import {
 } from './api'
 import {
   UPSTREAM_PROTOCOLS,
+  channelFormFromItem,
   mapChannelCatalogRows,
   mapProviderCatalogRows,
-  validateChannel,
+  validateAndDispatchChannel,
   validateProviderCreate,
   validateProviderUpdate,
 } from './catalogs'
@@ -277,6 +278,9 @@ export function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [poolGroupId, setPoolGroupId] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
+  const [bodyParamStrips, setBodyParamStrips] = useState('')
+  const [paramOverride, setParamOverride] = useState('{}')
+  const [sensitiveWords, setSensitiveWords] = useState('')
   const tableRows = mapChannelCatalogRows(rows)
 
   const load = useCallback(
@@ -308,13 +312,20 @@ export function ChannelsCard({ tenantId }: { tenantId: number }) {
     setPoolGroupId('')
     setEnabled(true)
     setReason('')
+    setBodyParamStrips('')
+    setParamOverride('{}')
+    setSensitiveWords('')
   }
 
   const startEdit = (row: ChannelCatalogItem) => {
+    const form = channelFormFromItem(row)
     setEditId(row.id)
-    setName(row.name)
-    setPoolGroupId(String(row.pool_group_id))
-    setEnabled(row.enabled)
+    setName(form.name)
+    setPoolGroupId(String(form.poolGroupId))
+    setEnabled(form.enabled)
+    setBodyParamStrips(form.bodyParamStrips)
+    setParamOverride(form.paramOverride)
+    setSensitiveWords(form.sensitiveWords)
     setReason('')
     setNotice(null)
     setError(null)
@@ -338,15 +349,18 @@ export function ChannelsCard({ tenantId }: { tenantId: number }) {
     setError(null)
     setNotice(null)
     const pg = Number(poolGroupId.trim())
-    const v = validateChannel({ name, poolGroupId: pg, enabled, reason })
+    const v = validateAndDispatchChannel(
+      { name, poolGroupId: pg, enabled, reason, bodyParamStrips, paramOverride, sensitiveWords },
+      (value) => {
+        if (editId == null) {
+          runOp(() => createChannel(tenantId, value), `已新建 channel「${value.name}」`)
+        } else {
+          runOp(() => updateChannel(tenantId, editId, value), `已更新 channel #${editId}`)
+        }
+      },
+    )
     if (!v.ok) {
       setError(v.error)
-      return
-    }
-    if (editId == null) {
-      runOp(() => createChannel(tenantId, v.value), `已新建 channel「${v.value.name}」`)
-    } else {
-      runOp(() => updateChannel(tenantId, editId, v.value), `已更新 channel #${editId}`)
     }
   }
 
@@ -378,6 +392,35 @@ export function ChannelsCard({ tenantId }: { tenantId: number }) {
           <label style={chk}>
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> 启用
           </label>
+        </div>
+        <div style={formRow}>
+          <Field label="请求字段剥离(body_param_strips)：剥离哪些请求字段以降低策略拦截风险；逗号分隔">
+            <textarea
+              name="body_param_strips"
+              value={bodyParamStrips}
+              onChange={(e) => setBodyParamStrips(e.target.value)}
+              placeholder="如 store, service_tier"
+              style={{ ...inp, width: 300, height: 72, paddingTop: 8 }}
+            />
+          </Field>
+          <Field label="参数强制覆盖(param_override)：强制覆盖哪些请求参数；填写 JSON object">
+            <textarea
+              name="param_override"
+              value={paramOverride}
+              onChange={(e) => setParamOverride(e.target.value)}
+              spellCheck={false}
+              style={{ ...inp, width: 340, height: 96, paddingTop: 8, fontFamily: 'var(--hk-font-mono)' }}
+            />
+          </Field>
+          <Field label="输出侧敏感词混淆(sensitive_words)：配置需要混淆的词；逗号分隔">
+            <textarea
+              name="sensitive_words"
+              value={sensitiveWords}
+              onChange={(e) => setSensitiveWords(e.target.value)}
+              placeholder="如 keyword-a, keyword-b"
+              style={{ ...inp, width: 300, height: 72, paddingTop: 8 }}
+            />
+          </Field>
         </div>
         <div style={formRow}>
           <Field label="原因(reason,可选,写入审计)">
