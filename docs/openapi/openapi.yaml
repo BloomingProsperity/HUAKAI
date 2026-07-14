@@ -16786,7 +16786,7 @@ components:
     Proxy:
       type: object
       additionalProperties: false
-      required: [id, name, protocol, host, port, auth_username, status, last_check_at, created_at, updated_at]
+      required: [id, name, protocol, host, port, auth_username, group_id, status, last_check_at, created_at, updated_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
@@ -16794,6 +16794,12 @@ components:
         host: { type: string }
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true, description: "Optional proxy auth username. The matching auth_secret is write-only and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；仅允许 ASCII 字母、数字、下划线和短横线，null 表示未分组。"
         status: { type: string, enum: [active, disabled, dead] }
         last_check_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
@@ -16819,6 +16825,12 @@ components:
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true }
         auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；空串或 null 表示未分组。"
         status: { type: string, enum: [active, disabled, dead], description: "Defaults to active when omitted." }
 
     AdminProxyUpdateRequest:
@@ -16832,6 +16844,12 @@ components:
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true }
         auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；空串或 null 会清除现有分组。"
 
     AdminProxySetStatusRequest:
       type: object

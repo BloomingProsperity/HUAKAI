@@ -6,10 +6,14 @@ import {
   parseErrorCodes,
   parseExtraJson,
   parseTags,
+  proxyGroupBindingWarning,
   proxyModeFromAccount,
   rulesToForm,
+  selectedProxyGroupSummary,
+  summarizeProxyGroups,
   type AccountEditForm,
 } from './edit'
+import type { Proxy } from '../proxies/types'
 import type { ProviderAccount } from './types'
 
 const base = {
@@ -32,6 +36,22 @@ const base = {
 
 function form(over: Partial<AccountEditForm>): AccountEditForm {
   return { ...formFromAccount(base), ...over }
+}
+
+function proxy(id: number, groupId: string | null, status: string): Proxy {
+  return {
+    id,
+    name: `p-${id}`,
+    protocol: 'http',
+    host: 'proxy.example',
+    port: 3128,
+    auth_username: null,
+    group_id: groupId,
+    status,
+    last_check_at: null,
+    created_at: '',
+    updated_at: '',
+  }
 }
 
 describe('parseTags', () => {
@@ -93,6 +113,30 @@ describe('proxyModeFromAccount', () => {
     expect(proxyModeFromAccount({ ...base, proxy_id: 7 } as ProviderAccount)).toBe('proxy')
     expect(proxyModeFromAccount({ ...base, proxy_group_id: 'g1' } as ProviderAccount)).toBe('group')
     expect(proxyModeFromAccount(base)).toBe('direct')
+  })
+})
+
+describe('代理组可用性汇总与预警', () => {
+  it('按组汇总总成员，active 计数只认严格 active，未分组不入候选', () => {
+    expect(summarizeProxyGroups([
+      proxy(1, 'group-a', 'active'),
+      proxy(2, 'group-a', 'disabled'),
+      proxy(3, 'group-b', 'dead'),
+      proxy(4, 'group-b', 'ACTIVE'),
+      proxy(5, null, 'active'),
+    ])).toEqual([
+      { groupId: 'group-a', total: 2, active: 1 },
+      { groupId: 'group-b', total: 2, active: 0 },
+    ])
+  })
+
+  it('未知组按零成员处理；零 active 显示危险文案，非零不显示', () => {
+    const groups = summarizeProxyGroups([proxy(1, 'healthy', 'active')])
+    const unknown = selectedProxyGroupSummary(groups, 'missing')
+    expect(unknown).toEqual({ groupId: 'missing', total: 0, active: 0 })
+    expect(proxyGroupBindingWarning(unknown)).toContain('fail-closed')
+    expect(proxyGroupBindingWarning(unknown)).toContain('不会直连')
+    expect(proxyGroupBindingWarning(selectedProxyGroupSummary(groups, 'healthy'))).toBeNull()
   })
 })
 

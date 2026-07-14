@@ -1,5 +1,9 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { EditProxyForm as EditProxyFormComponent } from './EditProxyForm'
 import {
+  buildCreateInput,
   buildUpdateInput,
   mapProxyRows,
   parseTenantInput,
@@ -7,17 +11,18 @@ import {
   statusTone,
   validateCreateForm,
   validateEditForm,
+  validateProxyGroupID,
   type CreateProxyForm,
   type EditProxyForm,
 } from './proxies'
 import type { ProbeResult, Proxy } from './types'
 
 function editForm(p: Partial<EditProxyForm>): EditProxyForm {
-  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', ...p }
+  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', group_id: '', ...p }
 }
 
 function form(p: Partial<CreateProxyForm>): CreateProxyForm {
-  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', status: 'active', ...p }
+  return { name: 'p1', protocol: 'http', host: '1.2.3.4', port: '8080', auth_username: '', auth_secret: '', group_id: '', status: 'active', ...p }
 }
 
 function result(p: Partial<ProbeResult>): ProbeResult {
@@ -75,6 +80,42 @@ describe('validateCreateForm', () => {
     expect(validateCreateForm(form({ port: '70000' }))).toContain('端口')
     expect(validateCreateForm(form({ port: 'abc' }))).toContain('端口')
     expect(validateCreateForm(form({ status: 'weird' }))).toContain('状态')
+    expect(validateCreateForm(form({ group_id: 'bad group!' }))).toContain('代理组')
+  })
+})
+
+describe('validateProxyGroupID', () => {
+  it('空值与合法边界通过，怪字符和 65 字符拒绝', () => {
+    expect(validateProxyGroupID('')).toBeNull()
+    expect(validateProxyGroupID('az_AZ-09')).toBeNull()
+    expect(validateProxyGroupID('a'.repeat(64))).toBeNull()
+    expect(validateProxyGroupID('bad group!')).toContain('代理组')
+    expect(validateProxyGroupID('a'.repeat(65))).toContain('代理组')
+  })
+})
+
+describe('buildCreateInput', () => {
+  it('有组发送规格化组名，未分组显式发送 null', () => {
+    expect(buildCreateInput(form({ name: ' p2 ', host: ' proxy.example ', group_id: ' us-residential ', auth_username: ' user ', auth_secret: 'secret' }))).toEqual({
+      name: 'p2',
+      protocol: 'http',
+      host: 'proxy.example',
+      port: 8080,
+      auth_username: 'user',
+      auth_secret: 'secret',
+      group_id: 'us-residential',
+      status: 'active',
+    })
+    expect(buildCreateInput(form({ group_id: '   ' }))).toEqual({
+      name: 'p1',
+      protocol: 'http',
+      host: '1.2.3.4',
+      port: 8080,
+      auth_username: undefined,
+      auth_secret: undefined,
+      group_id: null,
+      status: 'active',
+    })
   })
 })
 
@@ -117,14 +158,55 @@ describe('buildUpdateInput', () => {
     const out = buildUpdateInput(editForm({}))
     expect('status' in out).toBe(false)
   })
+
+  it('代理组非空精确下发，留空显式下发 null 以清组', () => {
+    expect(buildUpdateInput(editForm({ name: ' p2 ', host: ' proxy.example ', group_id: ' eu-egress ', auth_username: ' user ', auth_secret: 'secret' }))).toEqual({
+      name: 'p2',
+      protocol: 'http',
+      host: 'proxy.example',
+      port: 8080,
+      auth_username: 'user',
+      auth_secret: 'secret',
+      group_id: 'eu-egress',
+    })
+    const cleared = buildUpdateInput(editForm({ group_id: '' }))
+    expect(cleared).toEqual({
+      name: 'p1',
+      protocol: 'http',
+      host: '1.2.3.4',
+      port: 8080,
+      auth_username: undefined,
+      group_id: null,
+    })
+  })
 })
 
 describe('mapProxyRows', () => {
   it('完整映射代理表展示列并保留动作源对象', () => {
-    const proxy: Proxy = { id: 4, name: '出口一', protocol: 'socks5', host: 'proxy.example', port: 1080, auth_username: null, status: 'dead', last_check_at: null, created_at: '', updated_at: '' }
+    const proxy: Proxy = { id: 4, name: '出口一', protocol: 'socks5', host: 'proxy.example', port: 1080, auth_username: null, group_id: 'residential-a', status: 'dead', last_check_at: null, created_at: '', updated_at: '' }
     // 判别核心:地址必须由 host 与 port 组合;错列或漏端口会转红。
     const row = mapProxyRows([proxy])[0]
-    expect(row).toMatchObject({ id: 4, name: '出口一', protocol: 'socks5', address: 'proxy.example:1080', status: 'dead' })
+    expect(row).toMatchObject({ id: 4, name: '出口一', protocol: 'socks5', address: 'proxy.example:1080', group: 'residential-a', status: 'dead' })
     expect(row.proxy).toBe(proxy)
+  })
+
+  it('null 组稳定展示为未分组', () => {
+    const proxy: Proxy = { id: 5, name: '出口二', protocol: 'http', host: 'proxy.example', port: 3128, auth_username: null, group_id: null, status: 'active', last_check_at: null, created_at: '', updated_at: '' }
+    expect(mapProxyRows([proxy])[0].group).toBe('未分组')
+  })
+})
+
+describe('代理编辑表单 SSR', () => {
+  it('渲染代理组输入与字符约束提示', () => {
+    const proxy: Proxy = { id: 6, name: '出口三', protocol: 'http', host: 'proxy.example', port: 3128, auth_username: null, group_id: 'group-a', status: 'active', last_check_at: null, created_at: '', updated_at: '' }
+    const html = renderToStaticMarkup(createElement(EditProxyFormComponent, {
+      tenantId: 1,
+      proxy,
+      onSaved: () => undefined,
+      onCancel: () => undefined,
+    }))
+    expect(html).toContain('name="group_id"')
+    expect(html).toContain('仅限字母、数字、下划线、短横线')
+    expect(html).toContain('留空保存会清除分组')
   })
 })

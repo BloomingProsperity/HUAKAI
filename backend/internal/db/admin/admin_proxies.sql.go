@@ -14,14 +14,14 @@ import (
 const createProxy = `-- name: CreateProxy :one
 INSERT INTO proxies (
     tenant_id, name, protocol, host, port,
-    auth_username, auth_secret, status
+    auth_username, auth_secret, group_id, status
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8
+    $6, $7, $8, $9
 )
 RETURNING
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 `
 
@@ -33,6 +33,7 @@ type CreateProxyParams struct {
 	Port         int32   `db:"port" json:"port"`
 	AuthUsername *string `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string `db:"group_id" json:"group_id"`
 	Status       string  `db:"status" json:"status"`
 }
 
@@ -45,6 +46,7 @@ type CreateProxyRow struct {
 	Port         int32              `db:"port" json:"port"`
 	AuthUsername *string            `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string            `db:"group_id" json:"group_id"`
 	Status       string             `db:"status" json:"status"`
 	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
 	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -62,6 +64,7 @@ func (q *Queries) CreateProxy(ctx context.Context, arg CreateProxyParams) (Creat
 		arg.Port,
 		arg.AuthUsername,
 		arg.AuthSecret,
+		arg.GroupID,
 		arg.Status,
 	)
 	var i CreateProxyRow
@@ -74,6 +77,7 @@ func (q *Queries) CreateProxy(ctx context.Context, arg CreateProxyParams) (Creat
 		&i.Port,
 		&i.AuthUsername,
 		&i.AuthSecret,
+		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
 		&i.CreatedAt,
@@ -85,7 +89,7 @@ func (q *Queries) CreateProxy(ctx context.Context, arg CreateProxyParams) (Creat
 const getProxy = `-- name: GetProxy :one
 SELECT
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 FROM proxies
 WHERE tenant_id = $1
@@ -107,6 +111,7 @@ type GetProxyRow struct {
 	Port         int32              `db:"port" json:"port"`
 	AuthUsername *string            `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string            `db:"group_id" json:"group_id"`
 	Status       string             `db:"status" json:"status"`
 	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
 	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -125,6 +130,7 @@ func (q *Queries) GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow
 		&i.Port,
 		&i.AuthUsername,
 		&i.AuthSecret,
+		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
 		&i.CreatedAt,
@@ -198,7 +204,7 @@ const listProxiesByTenant = `-- name: ListProxiesByTenant :many
 
 SELECT
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 FROM proxies
 WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -214,6 +220,7 @@ type ListProxiesByTenantRow struct {
 	Port         int32              `db:"port" json:"port"`
 	AuthUsername *string            `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string            `db:"group_id" json:"group_id"`
 	Status       string             `db:"status" json:"status"`
 	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
 	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -242,6 +249,7 @@ func (q *Queries) ListProxiesByTenant(ctx context.Context, tenantID int64) ([]Li
 			&i.Port,
 			&i.AuthUsername,
 			&i.AuthSecret,
+			&i.GroupID,
 			&i.Status,
 			&i.LastCheckAt,
 			&i.CreatedAt,
@@ -305,13 +313,14 @@ SET
     port = $4,
     auth_username = $5,
     auth_secret = $6,
+    group_id = $7,
     updated_at = NOW()
-WHERE tenant_id = $7
-  AND id = $8
+WHERE tenant_id = $8
+  AND id = $9
   AND deleted_at IS NULL
 RETURNING
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 `
 
@@ -322,6 +331,7 @@ type UpdateProxyParams struct {
 	Port         int32   `db:"port" json:"port"`
 	AuthUsername *string `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string `db:"group_id" json:"group_id"`
 	TenantID     int64   `db:"tenant_id" json:"tenant_id"`
 	ID           int64   `db:"id" json:"id"`
 }
@@ -335,6 +345,7 @@ type UpdateProxyRow struct {
 	Port         int32              `db:"port" json:"port"`
 	AuthUsername *string            `db:"auth_username" json:"auth_username"`
 	AuthSecret   *string            `db:"auth_secret" json:"auth_secret"`
+	GroupID      *string            `db:"group_id" json:"group_id"`
 	Status       string             `db:"status" json:"status"`
 	LastCheckAt  pgtype.Timestamptz `db:"last_check_at" json:"last_check_at"`
 	CreatedAt    pgtype.Timestamptz `db:"created_at" json:"created_at"`
@@ -349,6 +360,7 @@ func (q *Queries) UpdateProxy(ctx context.Context, arg UpdateProxyParams) (Updat
 		arg.Port,
 		arg.AuthUsername,
 		arg.AuthSecret,
+		arg.GroupID,
 		arg.TenantID,
 		arg.ID,
 	)
@@ -362,6 +374,7 @@ func (q *Queries) UpdateProxy(ctx context.Context, arg UpdateProxyParams) (Updat
 		&i.Port,
 		&i.AuthUsername,
 		&i.AuthSecret,
+		&i.GroupID,
 		&i.Status,
 		&i.LastCheckAt,
 		&i.CreatedAt,

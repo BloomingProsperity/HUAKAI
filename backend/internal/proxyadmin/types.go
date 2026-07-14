@@ -25,6 +25,7 @@ type Proxy struct {
 	Host         string
 	Port         int32
 	AuthUsername *string
+	GroupID      *string
 	Status       string
 	LastCheckAt  *time.Time
 	CreatedAt    time.Time
@@ -39,6 +40,7 @@ type CreateInput struct {
 	Port         int32
 	AuthUsername *string
 	AuthSecret   *string
+	GroupID      *string
 	Status       string
 }
 
@@ -51,4 +53,5 @@ type UpdateInput struct {
 	Port         int32
 	AuthUsername *string
 	AuthSecret   *string
+	GroupID      *string
 }

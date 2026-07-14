@@ -10,6 +10,7 @@ export interface Proxy {
   host: string
   port: number
   auth_username: string | null
+  group_id: string | null
   status: string
   last_check_at: string | null
   created_at: string
@@ -28,6 +29,7 @@ export interface CreateProxyInput {
   port: number
   auth_username?: string
   auth_secret?: string
+  group_id: string | null
   status?: string
 }
 
@@ -44,6 +46,7 @@ export interface UpdateProxyInput {
   port: number
   auth_username?: string
   auth_secret?: string
+  group_id: string | null
 }
 
 /** error_class 枚举(与后端 proxyhealth 一致;ok 时缺省)。 */

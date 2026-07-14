@@ -1,4 +1,5 @@
 import type { ProviderAccount } from './types'
+import type { Proxy } from '../proxies/types'
 
 /*
  * 账号编辑(池调优旋钮 + 出站/高级设置)纯逻辑(可单测)。PATCH /{id} 是部分更新:
@@ -11,6 +12,41 @@ import type { ProviderAccount } from './types'
 
 /** 出站代理绑定模式:直连 / 单代理 / 代理组(三者互斥,后端按 mode 构造性写两列)。 */
 export type ProxyBindingMode = 'direct' | 'proxy' | 'group'
+
+export interface ProxyGroupSummary {
+  groupId: string
+  total: number
+  active: number
+}
+
+/** 按组汇总代理总成员与 active 成员；未分组代理不进入候选。 */
+export function summarizeProxyGroups(proxies: Proxy[]): ProxyGroupSummary[] {
+  const groups = new Map<string, ProxyGroupSummary>()
+  for (const proxy of proxies) {
+    const groupId = proxy.group_id?.trim()
+    if (!groupId) continue
+    const summary = groups.get(groupId) ?? { groupId, total: 0, active: 0 }
+    summary.total += 1
+    if (proxy.status === 'active') summary.active += 1
+    groups.set(groupId, summary)
+  }
+  return [...groups.values()].sort((a, b) => a.groupId.localeCompare(b.groupId))
+}
+
+/** 返回当前输入组的汇总；未知组按零成员处理，供同一计数与预警逻辑消费。 */
+export function selectedProxyGroupSummary(
+  groups: ProxyGroupSummary[],
+  rawGroupId: string,
+): ProxyGroupSummary {
+  const groupId = rawGroupId.trim()
+  return groups.find((group) => group.groupId === groupId) ?? { groupId, total: 0, active: 0 }
+}
+
+/** 零 active 成员必须显式提示请求会 fail-closed；有成员时不显示危险文案。 */
+export function proxyGroupBindingWarning(summary: ProxyGroupSummary): string | null {
+  if (summary.active > 0) return null
+  return '此代理组当前没有 active 成员，绑定后请求将 fail-closed，不会直连。'
+}
 
 /** 三态选择确保默认不触碰后端 pool_mode。 */
 export type PoolModeChoice = 'unchanged' | 'enabled' | 'disabled'

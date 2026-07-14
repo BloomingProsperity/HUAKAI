@@ -3,7 +3,14 @@ import { ApiError } from '../../lib/api'
 import { listProxies } from '../proxies/api'
 import type { Proxy } from '../proxies/types'
 import { updateProviderAccount } from './api'
-import { buildAccountUpdate, formFromAccount, type AccountEditForm } from './edit'
+import {
+  buildAccountUpdate,
+  formFromAccount,
+  proxyGroupBindingWarning,
+  selectedProxyGroupSummary,
+  summarizeProxyGroups,
+  type AccountEditForm,
+} from './edit'
 import type { ProviderAccount } from './types'
 
 /*
@@ -38,6 +45,7 @@ export function EditAccountModal({
   // 出站单代理下拉的候选(仅本账号租户,secret-free)。
   const [proxies, setProxies] = useState<Proxy[]>([])
   const [proxyErr, setProxyErr] = useState<string | null>(null)
+  const [proxyLoading, setProxyLoading] = useState(true)
   const set = <K extends keyof AccountEditForm>(k: K, v: AccountEditForm[K]) => setForm((f) => ({ ...f, [k]: v }))
   const setRule = <K extends keyof AccountEditForm['tempUnschedulableRules'][number]>(
     index: number,
@@ -68,14 +76,24 @@ export function EditAccountModal({
   // 拉本租户出站代理列表供「单代理」模式下拉;失败只提示,不阻塞其它字段编辑。
   useEffect(() => {
     const ctrl = new AbortController()
+    setProxyLoading(true)
+    setProxyErr(null)
     listProxies(account.tenant_id, ctrl.signal)
       .then((r) => setProxies(r.items))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setProxyErr(e instanceof ApiError ? `${e.message}(${e.code})` : '加载代理列表失败')
       })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setProxyLoading(false)
+      })
     return () => ctrl.abort()
   }, [account.tenant_id])
+
+  const proxyGroups = summarizeProxyGroups(proxies)
+  const selectedGroup = selectedProxyGroupSummary(proxyGroups, form.proxyGroupId)
+  const groupWarning = proxyGroupBindingWarning(selectedGroup)
+  const groupListId = `proxy-group-options-${account.id}`
 
   const submit = async () => {
     const built = buildAccountUpdate(account, form)
@@ -145,12 +163,28 @@ export function EditAccountModal({
               </Field>
             )}
             {form.proxyMode === 'group' && (
-              <Field label="代理组标识(proxy_group_id)">
-                <input value={form.proxyGroupId} onChange={(e) => set('proxyGroupId', e.target.value)} placeholder="如 us-residential" style={inp} />
-              </Field>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+                <Field label="代理组标识(proxy_group_id)">
+                  <input list={groupListId} value={form.proxyGroupId} onChange={(e) => set('proxyGroupId', e.target.value)} placeholder="如 us-residential" style={inp} />
+                  <datalist id={groupListId}>
+                    {proxyGroups.map((group) => (
+                      <option key={group.groupId} value={group.groupId} label={`${group.active} active / ${group.total} 总成员`} />
+                    ))}
+                  </datalist>
+                </Field>
+                {proxyLoading && <p style={hint}>正在核验该组的 active 代理数…</p>}
+                {!proxyLoading && !proxyErr && (
+                  <p style={hint}>当前组 active 成员:{selectedGroup.active}(总成员:{selectedGroup.total})</p>
+                )}
+                {!proxyLoading && !proxyErr && groupWarning && (
+                  <p role="alert" style={groupDanger}>{groupWarning}</p>
+                )}
+              </div>
             )}
-            {proxyErr && form.proxyMode === 'proxy' && (
-              <p style={{ fontSize: 12, color: 'var(--hk-warn)', margin: 0 }}>{proxyErr}</p>
+            {proxyErr && (form.proxyMode === 'proxy' || form.proxyMode === 'group') && (
+              <p style={{ fontSize: 12, color: 'var(--hk-warn)', margin: 0 }}>
+                {form.proxyMode === 'group' ? `无法核验代理组可用性:${proxyErr}` : proxyErr}
+              </p>
             )}
 
             <Field label="探测模型(probe_model,留空清空)">
@@ -271,6 +305,7 @@ const ruleCard: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'r
 const legend: React.CSSProperties = { fontSize: 12, color: 'var(--hk-ink-500)', padding: '0 6px' }
 const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)', fontSize: 12, color: 'var(--hk-ink-700)' }
 const hint: React.CSSProperties = { margin: 0, fontSize: 11, lineHeight: 1.5, color: 'var(--hk-ink-300)' }
+const groupDanger: React.CSSProperties = { margin: 0, padding: 'var(--hk-space-2)', borderRadius: 'var(--hk-radius-sm)', fontSize: 12, lineHeight: 1.5, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const summary: React.CSSProperties = { cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-700)' }
 const textarea: React.CSSProperties = { ...inp, height: 'auto', minHeight: 112, padding: 'var(--hk-space-2) var(--hk-space-3)', resize: 'vertical', fontFamily: 'var(--hk-font-mono)' }
 const primary: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }

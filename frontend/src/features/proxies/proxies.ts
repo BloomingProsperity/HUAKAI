@@ -1,4 +1,4 @@
-import type { ProbeResult, Proxy, UpdateProxyInput } from './types'
+import type { CreateProxyInput, ProbeResult, Proxy, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池纯展示逻辑(与 React 解耦,便于 vitest 变异测试)。
@@ -63,6 +63,7 @@ export interface ProxyTableRow {
   name: string
   protocol: string
   address: string
+  group: string
   status: string
   proxy: Proxy
 }
@@ -74,6 +75,7 @@ export function mapProxyRows(proxies: Proxy[]): ProxyTableRow[] {
     name: proxy.name,
     protocol: proxy.protocol,
     address: `${proxy.host}:${proxy.port}`,
+    group: proxy.group_id ?? '未分组',
     status: proxy.status,
     proxy,
   }))
@@ -86,7 +88,18 @@ export interface CreateProxyForm {
   port: string // 表单里是字符串,提交前转 int
   auth_username: string
   auth_secret: string
+  group_id: string
   status: string
+}
+
+const PROXY_GROUP_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+/** 代理组留空合法；非空只允许 ASCII 字母、数字、下划线、短横线且最长 64。 */
+export function validateProxyGroupID(raw: string): string | null {
+  const groupID = raw.trim()
+  if (groupID === '') return null
+  if (!PROXY_GROUP_ID_PATTERN.test(groupID)) return '代理组仅限字母、数字、下划线、短横线，最长 64 个字符'
+  return null
 }
 
 /**
@@ -100,8 +113,24 @@ export function validateCreateForm(f: CreateProxyForm): string | null {
   if (f.host.trim() === '') return '主机必填'
   const port = Number.parseInt(f.port, 10)
   if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口须为 1-65535 的整数'
+  const groupError = validateProxyGroupID(f.group_id)
+  if (groupError) return groupError
   if (f.status !== '' && !STATUSES.includes(f.status as (typeof STATUSES)[number])) return '状态非法'
   return null
+}
+
+/** 把新建表单规格化成稳定请求体；未分组显式发送 null。 */
+export function buildCreateInput(f: CreateProxyForm): CreateProxyInput {
+  return {
+    name: f.name.trim(),
+    protocol: f.protocol,
+    host: f.host.trim(),
+    port: Number.parseInt(f.port, 10),
+    auth_username: f.auth_username.trim() || undefined,
+    auth_secret: f.auth_secret || undefined,
+    group_id: f.group_id.trim() || null,
+    status: f.status || undefined,
+  }
 }
 
 /*
@@ -118,6 +147,7 @@ export interface EditProxyForm {
   auth_username: string
   // 留空 = 清除密钥(见上;非「保留」)。
   auth_secret: string
+  group_id: string
 }
 
 /**
@@ -131,6 +161,8 @@ export function validateEditForm(f: EditProxyForm): string | null {
   if (f.host.trim() === '') return '主机必填'
   const port = Number.parseInt(f.port, 10)
   if (!Number.isInteger(port) || port < 1 || port > 65535) return '端口须为 1-65535 的整数'
+  const groupError = validateProxyGroupID(f.group_id)
+  if (groupError) return groupError
   return null
 }
 
@@ -150,6 +182,7 @@ export function buildUpdateInput(f: EditProxyForm): UpdateProxyInput {
     host: f.host.trim(),
     port: Number.parseInt(f.port, 10),
     auth_username: f.auth_username.trim() || undefined,
+    group_id: f.group_id.trim() || null,
   }
   if (f.auth_secret !== '') {
     out.auth_secret = f.auth_secret

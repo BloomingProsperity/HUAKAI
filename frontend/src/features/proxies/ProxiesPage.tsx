@@ -10,7 +10,7 @@ import type { Proxy } from './types'
 /*
  * 出口代理池(运营台 · 路由与池)。列出租户出口代理 + 新建 + 行内删除/状态切换/编辑 + 「测试连通」主动质检
  * (经该代理建隧道到服务端固定 canary,测真实出站连通 + 延迟,区别于被动 TCP 存活)。
- * 编辑(PATCH /{id}):改 name/protocol/host/port/认证;auth_secret 留空=不改密钥(避免误清空)。
+ * 编辑(PATCH /{id}):改 name/protocol/host/port/分组/认证;认证密钥留空的清除语义会在表单内明确确认。
  * 数据走 /admin/v1/proxies(admin token)。真码:backend/internal/proxyadminhttp、
  * backend/cmd/gateway/routes_proxy_probe.go(双 SSRF 守卫)。
  */
@@ -37,6 +37,7 @@ export function ProxiesPage() {
     { key: 'name', label: '名称', render: (row) => row.name },
     { key: 'protocol', label: '协议', render: (row) => row.protocol },
     { key: 'address', label: '地址', render: (row) => <span className="hk-mono">{row.address}</span> },
+    { key: 'group', label: '分组', render: (row) => row.group },
     {
       key: 'status',
       label: '状态',
