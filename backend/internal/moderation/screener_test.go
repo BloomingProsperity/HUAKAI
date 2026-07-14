@@ -259,6 +259,131 @@ func TestScreener_ExternalFailOpenOnErrorAudits(t *testing.T) {
 	}
 }
 
+func TestScreenerExternalSamplingZeroSkipsAllCallsAndPasses(t *testing.T) {
+	// 变异：删除采样守卫后，pct=0 的三次请求都会调用外部审核，calls 从 0 变 3。
+	external := &externalModeratorStub{result: ExternalModerationResult{Blocked: true}}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 0,
+			External: ExternalModerationConfig{Enabled: true},
+		}},
+		Keywords: &keywordStoreStub{}, Hashes: hashStoreStub{}, External: external,
+		RandomIntn: func(int) int { t.Fatal("pct=0 不应读取随机源"); return 0 },
+	})
+	for i := 0; i < 3; i++ {
+		res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "zero-sample"})
+		if err != nil || res.Decision != DecisionPass {
+			t.Fatalf("第 %d 次 result=%+v err=%v, want pass", i, res, err)
+		}
+	}
+	if external.calls != 0 {
+		t.Fatalf("external calls=%d, want 0", external.calls)
+	}
+}
+
+func TestScreenerExternalSamplingHundredCallsEveryRequest(t *testing.T) {
+	// 变异：把 100% 也送入随机分支会触发本测试的 panic 源；少调一次也会使 calls!=3。
+	external := &externalModeratorStub{}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 100,
+			External: ExternalModerationConfig{Enabled: true},
+		}},
+		Keywords: &keywordStoreStub{}, Hashes: hashStoreStub{}, External: external,
+		RandomIntn: func(int) int { t.Fatal("pct=100 不应读取随机源"); return 0 },
+	})
+	for i := 0; i < 3; i++ {
+		if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "full-sample"}); err != nil {
+			t.Fatalf("第 %d 次 Screen: %v", i, err)
+		}
+	}
+	if external.calls != 3 {
+		t.Fatalf("external calls=%d, want 3", external.calls)
+	}
+}
+
+func TestScreenerExternalSamplingIntermediateUsesInjectedRandomSource(t *testing.T) {
+	// 变异：翻转 < 边界或忽略注入源后，draw=24/25 在 pct=25 下不会分别得到调用/跳过。
+	for _, tc := range []struct {
+		name      string
+		draw      int
+		wantCalls int
+	}{
+		{name: "边界内采样", draw: 24, wantCalls: 1},
+		{name: "边界外跳过", draw: 25, wantCalls: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			external := &externalModeratorStub{}
+			s := NewScreener(ScreenerDeps{
+				Config: configStub{cfg: ModerationConfig{
+					TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 25,
+					External: ExternalModerationConfig{Enabled: true},
+				}},
+				Keywords: &keywordStoreStub{}, Hashes: hashStoreStub{}, External: external,
+				RandomIntn: func(n int) int {
+					if n != 100 {
+						t.Fatalf("random upper bound=%d, want 100", n)
+					}
+					return tc.draw
+				},
+			})
+			res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: tc.name})
+			if err != nil || res.Decision != DecisionPass {
+				t.Fatalf("result=%+v err=%v, want pass", res, err)
+			}
+			if external.calls != tc.wantCalls {
+				t.Fatalf("external calls=%d, want %d", external.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestScreenerExternalSamplingNeverSkipsLocalKeywordOrHash(t *testing.T) {
+	// 变异：把采样守卫错误地放到本地检查之前，会让 pct=0 的两条本地命中都被放行。
+	for _, tc := range []struct {
+		name     string
+		keywords KeywordStore
+		hashes   HashStore
+		want     Decision
+	}{
+		{
+			name: "keyword", keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 1, Keyword: "forbidden"}}},
+			hashes: hashStoreStub{}, want: DecisionBlockKeyword,
+		},
+		{
+			name: "hash", keywords: &keywordStoreStub{},
+			hashes: hashStoreStub{match: HashMatch{Matched: true, ID: 2}}, want: DecisionBlockHash,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			external := &externalModeratorStub{}
+			s := NewScreener(ScreenerDeps{
+				Config: configStub{cfg: ModerationConfig{
+					TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 0,
+					External: ExternalModerationConfig{Enabled: true},
+				}},
+				Keywords: tc.keywords, Hashes: tc.hashes, External: external,
+			})
+			res, err := s.Screen(context.Background(), ScreenRequest{
+				TenantID: 7, PayloadHash: "known", Body: []byte("forbidden"),
+			})
+			if err != nil || res.Decision != tc.want {
+				t.Fatalf("result=%+v err=%v, want %s", res, err, tc.want)
+			}
+			if external.calls != 0 {
+				t.Fatalf("local block 后 external calls=%d, want 0", external.calls)
+			}
+		})
+	}
+}
+
+func TestModerationDefaultSampleRateKeepsPreWiringFullInspection(t *testing.T) {
+	// 防翻转守卫：默认值若从 100 漂移，未改配置的租户会开始跳过外部审核。
+	if got := DefaultConfig(7).SampleRatePct; got != 100 {
+		t.Fatalf("default SampleRatePct=%d, want pre-wiring 100", got)
+	}
+}
+
 func TestScreener_KeywordBoundaryDoesNotMatchInsideWord(t *testing.T) {
 	// 变异:恢复 substring 匹配会让 "ass" 命中 "passage",
 	// 把这条干净请求误判成拦截。

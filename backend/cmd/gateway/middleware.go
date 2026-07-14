@@ -36,6 +36,7 @@ import (
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 	"github.com/BloomingProsperity/HUAKAI/internal/observability/accounthealthprobe"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -286,6 +287,50 @@ func streamDurationEnv(name string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+const defaultGatewayTotalStreamTimeout = 600 * time.Second
+
+// platformCooldownSource 在每个新冷却决策上读取平台设置。platformsettings.Service
+// 自带 30 秒缓存且 Upsert 会立即刷新缓存，因此运营保存后只影响后续事件，不改写已持久化的截止时间。
+type platformCooldownSource struct {
+	settings gatewayPlatformSettings
+}
+
+func (s platformCooldownSource) CooldownForStatus(ctx context.Context, statusCode int) (time.Duration, error) {
+	key := platformsettings.KeyCooldown429Seconds
+	if statusCode == 529 {
+		key = platformsettings.KeyCooldown529Seconds
+	}
+	if s.settings == nil {
+		return 0, platformsettings.ErrStoreNotConfigured
+	}
+	stored, err := s.settings.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(stored.Value) + "s")
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("解析平台冷却设置 %s: %w", key, platformsettings.ErrInvalidValue)
+	}
+	return duration, nil
+}
+
+// totalStreamTimeoutFromSettings 保留接线前的 env 契约：没有 DB 覆盖时仍以
+// HUAKAI_STREAM_TOTAL_TIMEOUT 为准；只有运营显式保存了设置才由平台值接管。
+func totalStreamTimeoutFromSettings(ctx context.Context, settings gatewayPlatformSettings, fallback time.Duration) time.Duration {
+	if settings == nil {
+		return fallback
+	}
+	stored, err := settings.Get(ctx, platformsettings.KeyStreamTimeoutSeconds)
+	if err != nil || stored.Source != platformsettings.SourceDB {
+		return fallback
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(stored.Value) + "s")
+	if err != nil || duration < 0 {
+		return fallback
+	}
+	return duration
+}
+
 // bodyLimitBytesFromEnv 读取以 MB 为单位的容量上限 env(如 "32"),返回字节数;空或非法/非正回退默认。
 // 用 MB 单位对运维更友好(对齐成熟中转站习惯),内部转字节。
 func bodyLimitBytesFromEnv(name string, fallbackBytes int64) int64 {
@@ -311,11 +356,12 @@ func privacyBodyLimitForRequest(r *http.Request, relayMax, nonRelayMax int) int 
 	return nonRelayMax
 }
 
-func buildGatewayTimeoutConfig() gateway.TimeoutConfig {
+func buildGatewayTimeoutConfig(ctx context.Context, settings gatewayPlatformSettings) gateway.TimeoutConfig {
+	totalFallback := streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", defaultGatewayTotalStreamTimeout)
 	return gateway.TimeoutConfig{
 		FirstTokenTimeout:   streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
 		InterEventTimeout:   streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
-		TotalStreamTimeout:  streamDurationEnv("HUAKAI_STREAM_TOTAL_TIMEOUT", 600*time.Second),
+		TotalStreamTimeout:  totalStreamTimeoutFromSettings(ctx, settings, totalFallback),
 		DrainMaxSeconds:     streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
 		KeepAliveInterval:   streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
 		HeaderToFirstByte:   streamDurationEnv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", 15*time.Second),
@@ -323,13 +369,13 @@ func buildGatewayTimeoutConfig() gateway.TimeoutConfig {
 	}
 }
 
-func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer, auditLedgerDLQ auditledger.DLQEnqueuer) *gateway.StreamForwarder {
+func buildStreamForwarder(auditLedger auditledger.Ledger, auditSigner *sign.Signer, auditLedgerDLQ auditledger.DLQEnqueuer, timeouts gateway.TimeoutConfig) *gateway.StreamForwarder {
 	return &gateway.StreamForwarder{
 		ProtocolAdapters: gateway.BuildDefaultProtocolAdapterRegistry(),
 		Scanners:         gateway.BuildDefaultStreamScannerRegistry(),
-		// 流超时改为 env 可配 + 调大默认,适配长跑推理请求:旧硬编码 First=5s/Inter=10s/
-		// Total=60s 会在上游还在思考时就被 HUAKAI 自己掐断。配合 KeepAlive 心跳避开反代空闲超时。
-		Timeouts: buildGatewayTimeoutConfig(),
+		// 流超时支持平台显式值覆盖原 env，并保留 600 秒现实默认，适配长跑推理请求：
+		// 旧硬编码 First=5s/Inter=10s/Total=60s 会在上游还在思考时就中止。KeepAlive 避开反代空闲超时。
+		Timeouts: timeouts,
 		// 上游 SSE 单事件扫描缓冲上限(env 可配,默认 16MiB;normalizeScannerCap 钳到 ≤64MiB 防内存爆)。
 		// 旧版硬写 1MiB 会把大单事件(大 tool-call / Gemini 大块)溢出砍流。
 		ScannerBufferCap: int(bodyLimitBytesFromEnv("HUAKAI_MAX_SSE_EVENT_MB", 16<<20)),

@@ -157,7 +157,7 @@ function ConfigCard({ tenantId }: { tenantId: number }) {
             onChange={(v) => setF('failClosed', v)}
           />
           <NumField
-            label="采样率(%,0~100)"
+            label="外部审核采样率(%,0~100；本地关键词/哈希始终检查)"
             value={form.sampleRatePct}
             onChange={(v) => setF('sampleRatePct', v)}
           />

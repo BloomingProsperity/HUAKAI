@@ -20,6 +20,7 @@ type Service struct {
 	store                     Store
 	now                       func() time.Time
 	firingDeliverer           FiringDeliverer
+	firingEmailDeliverer      FiringEmailDeliverer
 	firingDeliveryErrRecorder FiringDeliveryErrorRecorder
 	mu                        sync.Mutex
 	breachStarts              map[ruleRuntimeKey]time.Time
@@ -39,6 +40,12 @@ func WithClock(now func() time.Time) Option {
 func WithFiringDeliverer(deliverer FiringDeliverer) Option {
 	return func(s *Service) {
 		s.firingDeliverer = deliverer
+	}
+}
+
+func WithFiringEmailDeliverer(deliverer FiringEmailDeliverer) Option {
+	return func(s *Service) {
+		s.firingEmailDeliverer = deliverer
 	}
 }
 
@@ -322,9 +329,15 @@ func (s *Service) evaluateRules(ctx context.Context, tenantID int64, resolveSnap
 				if err := s.store.MarkRuleTriggered(ctx, tenantID, rule.ID, now); err != nil {
 					return err
 				}
-				if !silenceMatches(rule.ID, dimensions, silences) && s.deliverFiring(ctx, tenantID, rule, observed, event.FiredAt) {
-					if _, err := s.store.MarkEventEmailSent(ctx, tenantID, event.ID); err != nil {
-						return err
+				if !silenceMatches(rule.ID, dimensions, silences) {
+					// 原有多渠道通知始终保留；NotifyEmail 只控制新增的管理员邮件链，
+					// 因此默认 false 时不会缩减既有通知行为。
+					delivered := s.deliverFiring(ctx, tenantID, rule, observed, event.FiredAt)
+					emailDelivered := s.deliverFiringEmail(ctx, tenantID, rule, observed, event.FiredAt)
+					if delivered || emailDelivered {
+						if _, err := s.store.MarkEventEmailSent(ctx, tenantID, event.ID); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -345,7 +358,31 @@ func (s *Service) deliverFiring(ctx context.Context, tenantID int64, rule AlertR
 	if s.deliveryLimiter != nil && !s.deliveryLimiter.allow(tenantID, rule.ID, firedAt.UTC()) {
 		return false
 	}
-	notice := FiringNotice{
+	notice := firingNotice(rule, observed, firedAt)
+	if err := s.firingDeliverer.DeliverFiring(ctx, tenantID, notice); err != nil && s.firingDeliveryErrRecorder != nil {
+		s.firingDeliveryErrRecorder(ctx, tenantID, notice, err)
+		return false
+	} else if err != nil {
+		return false
+	}
+	return true
+}
+
+func (s *Service) deliverFiringEmail(ctx context.Context, tenantID int64, rule AlertRule, observed float64, firedAt time.Time) bool {
+	if s == nil || !rule.NotifyEmail || s.firingEmailDeliverer == nil {
+		return false
+	}
+	notice := firingNotice(rule, observed, firedAt)
+	delivered, err := s.firingEmailDeliverer.DeliverFiringEmail(ctx, tenantID, notice)
+	if err != nil && s.firingDeliveryErrRecorder != nil {
+		s.firingDeliveryErrRecorder(ctx, tenantID, notice, err)
+		return false
+	}
+	return err == nil && delivered
+}
+
+func firingNotice(rule AlertRule, observed float64, firedAt time.Time) FiringNotice {
+	return FiringNotice{
 		RuleID:        rule.ID,
 		RuleName:      rule.Name,
 		Metric:        metricKeyForRule(rule),
@@ -357,13 +394,6 @@ func (s *Service) deliverFiring(ctx context.Context, tenantID int64, rule AlertR
 		Dimensions:    normalizeStringMap(rule.Filters),
 		FiredAt:       firedAt.UTC(),
 	}
-	if err := s.firingDeliverer.DeliverFiring(ctx, tenantID, notice); err != nil && s.firingDeliveryErrRecorder != nil {
-		s.firingDeliveryErrRecorder(ctx, tenantID, notice, err)
-		return false
-	} else if err != nil {
-		return false
-	}
-	return true
 }
 
 func validateRule(rule AlertRule) error {

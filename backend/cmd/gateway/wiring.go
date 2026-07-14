@@ -1101,6 +1101,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	channelHealthOptions := []channelhealth.ServiceOption{
 		channelhealth.WithAlertOutbox(outboxStore),
 		channelhealth.WithLogger(slog.Default()),
+		// 未保存设置时，两个默认值均来自 channelhealth.DefaultPolicy 的 5 分钟现实值；
+		// 保存后由 platformsettings 的现有缓存按新事件读取，旧 CooldownUntil 不回写。
+		channelhealth.WithCooldownSource(platformCooldownSource{settings: platformSettingsService}),
 	}
 	if authCooldownStore != nil {
 		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
@@ -1388,6 +1391,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	mediaTaskWorker.Start(ctx)
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
+	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
+	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
+	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1406,14 +1412,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:         channelHealthService,
 		authCooldown:          authCooldownStore,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
-		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
+		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool)), ratelimit.WithCooldownSource(platformCooldownSource{settings: platformSettingsService})),
 		retryBudget:           tenantRetryBudget,
 		claimGate:             newClaimGateWithLease(pgPool),
 		settler:               settler,
 		settlementIntents:     buildSettlementIntentStore(billingQueries, cfg.SettlementIntentEnabled),
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
-		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
+		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService, gatewayTimeouts),
 		credentialVault:       credentialVault,
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
@@ -1457,7 +1463,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:            accountProxyResolver,
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
-			Timeouts:                 buildGatewayTimeoutConfig(),
+			Timeouts:                 gatewayTimeouts,
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
 			AnthropicTTLSettings:     platformSettingsService,
 			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
@@ -1544,6 +1550,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	alertingStore := alerting.NewPostgresStore(pgPool)
 	alertingService := alerting.NewService(alertingStore,
 		alerting.WithFiringDeliverer(notifyFiringDeliverer{notifier: notifier}),
+		// NotifyEmail 的现实默认来自 bool 零值 false，收件人现实默认来自
+		// platformsettings.KeyAdminNotificationEmail 的空串；二者都未配置时不新增任何发送。
+		alerting.WithFiringEmailDeliverer(alerting.NewAdminEmailDeliverer(platformSettingsService, notificationEmailSender, slog.Default())),
 		alerting.WithFiringDeliveryErrorRecorder(func(_ context.Context, tenantID int64, notice alerting.FiringNotice, err error) {
 			logger.Warn("alert firing notification delivery failed",
 				zap.Int64("tenant_id", tenantID),
