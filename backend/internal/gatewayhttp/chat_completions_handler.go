@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -23,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -48,7 +48,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
-	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
 )
 
 type authResolver interface {
@@ -235,6 +234,13 @@ type chatExecution struct {
 
 	queueWaitSpentMS int
 	queueWaitNow     func() time.Time
+	classTransition  *bindingClassTransition
+}
+
+type bindingClassTransition struct {
+	From    bindingfallback.Class
+	To      bindingfallback.Class
+	Trigger bindingfallback.Signal
 }
 
 type modelRunResult struct {
@@ -508,102 +514,6 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 	}
 }
 
-func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
-	// SUB2-EGRESS-04: 在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
-	// 该开关 opt-in(默认关)；关闭时此代码块是真正的空操作。
-	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
-		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
-		maxTok := 0
-		if ex.req.MaxTokens != nil {
-			maxTok = *ex.req.MaxTokens
-		}
-		if kind, ok := warmupintercept.Detect(isClaudeUA, ex.req.Model, maxTok, ex.req.Stream, ex.body); ok {
-			slog.InfoContext(ex.ctx, "warmup_intercept.intercepted",
-				"kind", int(kind),
-				"model", ex.req.Model,
-				"request_id", ex.requestID,
-			)
-			if ex.req.Stream {
-				warmupintercept.WriteStream(w, kind, ex.req.Model)
-			} else {
-				warmupintercept.WriteNonStream(w, kind, ex.req.Model)
-			}
-			return modelRunResult{DeliveryStarted: true}
-		}
-	}
-	if !ex.prepareRoute(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if !ex.screenModerationInput(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if !ex.reserveClaim(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if fallbackAttempts > 0 {
-		setModelFallbackHeaders(w, ex.req.Model, fallbackAttempts)
-	}
-	if !ex.req.Stream {
-		handled, proceed := ex.serveL2CacheIfAvailable(w)
-		if handled || !proceed {
-			return modelRunResult{DeliveryStarted: responseStarted(w)}
-		}
-	}
-	failedAccounts := make(map[int64]struct{})
-	authFailoverUsed := false
-	budget := effectiveAttemptBudget(ex.plan)
-	maxAttempts := len(ex.plan.Attempts)
-	// attemptCap 起始=普通 attempt 预算; 当 401 的 auth-failover 子预算落在本应最后的 slot 时 +1,
-	// 给 auth-failover 一个独立额外 attempt(至多一次, 由 !authFailoverUsed 限定)。
-	attemptCap := budget
-	for i := 0; i < attemptCap; i++ {
-		planIdx := i
-		if planIdx >= maxAttempts {
-			planIdx = maxAttempts - 1 // auth-failover 额外 slot 复用最后一个 pool plan(池排除已 401 账号选新号)
-		}
-		outcome := ex.runAttempt(w, attemptInput{
-			Plan:             ex.plan.Attempts[planIdx],
-			AttemptSeq:       i + 1,
-			ExcludedAccounts: failedAccounts,
-			ReplayableBody:   true,
-			FinalAttempt:     i+1 >= attemptCap,
-		})
-		if outcome.Success != nil {
-			return modelRunResult{Success: &outcome, DeliveryStarted: outcome.DeliveryStarted}
-		}
-		if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
-			return modelRunResult{DeliveryStarted: true}
-		}
-		if outcome.AccountID != 0 && outcome.Failure != nil {
-			if outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
-				ex.triggerCredentialHotRefresh(outcome.AccountID)
-			}
-			if outcome.Failure.Decision.SwitchAccount {
-				failedAccounts[outcome.AccountID] = struct{}{}
-			}
-		}
-		if outcome.Failure == nil {
-			continue
-		}
-		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, i+1 >= attemptCap, authFailoverUsed)
-		if !retry {
-			return modelRunResult{Failure: outcome.Failure, AllowFallback: outcome.Failure.Decision.RetryableBeforeDelivery}
-		}
-		if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
-			return modelRunResult{Failure: outcome.Failure}
-		}
-		if consumeAuthBudget {
-			authFailoverUsed = true
-			if i+1 >= attemptCap {
-				attemptCap++ // auth-failover 落在本应最后的 slot: 额外给一次换号重试(独立子预算)
-			}
-		}
-		clearRetryableAttemptFailureHeaders(w)
-		ex.prepareNextAttemptAfterAbort()
-	}
-	return modelRunResult{}
-}
-
 func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
 	if ex == nil || ex.d.ModerationScreener == nil || ex.moderationScreened {
 		return true
@@ -652,6 +562,7 @@ func (ex *chatExecution) prepareNextModelFallback(model, baseLogicalRequestID st
 	ex.cacheVendor = ""
 	ex.cacheKey = ""
 	ex.protocolLoss = nil
+	ex.classTransition = nil
 	ex.prepareNextAttemptAfterAbort()
 }
 
@@ -796,6 +707,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 		}
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
+		failure.FallbackSignal = bindingFallbackSignalFromUpstream(dispatchRes.StatusCode, raw, classification, decision)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	ex.updateSessionWindowFromHeaders(dispatchRes.Headers)
@@ -963,17 +875,28 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
 		}
 		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited), "binding_concurrency_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingConcurrencyLimit
 		f.RetryAfterSeconds = 1
 		return f
-	case errors.Is(err, pool.ErrKeyRateLimited), errors.Is(err, pool.ErrBindingRateLimited):
+	case errors.Is(err, pool.ErrBindingRateLimited):
+		if e := abort("binding_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "binding_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingRateLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrKeyRateLimited):
 		if e := abort("key_rate_limited"); e != nil && w != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
 		}
 		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "key_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalKeyRateLimit
 		f.RetryAfterSeconds = 1
 		return f
 	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
 		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = poolExhaustionFallbackSignal(err)
 		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。
 		f.RetryAfterSeconds = poolNoCapacityRetryAfter(err, time.Now())
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
@@ -982,10 +905,36 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
 		}
 		f := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
+		f.FallbackSignal = bindingfallback.SignalClaimConflict
 		f.RetryAfterSeconds = 1
 		return f
 	default:
 		f := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = bindingfallback.SignalLocalConfigurationFailure
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_select_error"))
 	}
+}
+
+func poolExhaustionFallbackSignal(err error) bindingfallback.Signal {
+	var noCapacity *pool.NoCapacityError
+	if errors.As(err, &noCapacity) && noCapacity != nil {
+		switch {
+		case noCapacity.ContextWindowOnly():
+			return bindingfallback.SignalLocalContextWindow
+		case noCapacity.PureCapacity():
+			if errors.Is(err, pool.ErrAllChannelsDegraded) {
+				return bindingfallback.SignalAllChannelsDegraded
+			}
+			return bindingfallback.SignalPoolCapacityExhausted
+		default:
+			return bindingfallback.SignalPoolStaticMismatch
+		}
+	}
+	if errors.Is(err, pool.ErrAllChannelsDegraded) {
+		return bindingfallback.SignalAllChannelsDegraded
+	}
+	if errors.Is(err, pool.ErrNoSlotAvailable) {
+		return bindingfallback.SignalPoolCapacityExhausted
+	}
+	return bindingfallback.SignalPoolStaticMismatch
 }

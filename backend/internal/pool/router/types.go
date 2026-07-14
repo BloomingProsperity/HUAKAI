@@ -22,6 +22,7 @@ var (
 type NoCapacityError struct {
 	Cause              error
 	EarliestRecoveryAt time.Time
+	Exhaustion         Exhaustion
 }
 
 func (e *NoCapacityError) Error() string {
@@ -36,6 +37,37 @@ func (e *NoCapacityError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
+}
+
+// ExhaustionFamily 是 selector 在所有候选均不可执行时给出的稳定归约。
+// capacity 只包含可恢复容量闸；static_mismatch 表示换容量车道也无法修复；
+// context_window 单独保留给定向窗口降级；mixed/unknown 一律 fail-closed。
+type ExhaustionFamily string
+
+const (
+	ExhaustionFamilyUnknown        ExhaustionFamily = "unknown"
+	ExhaustionFamilyCapacity       ExhaustionFamily = "capacity"
+	ExhaustionFamilyStaticMismatch ExhaustionFamily = "static_mismatch"
+	ExhaustionFamilyContextWindow  ExhaustionFamily = "context_window"
+	ExhaustionFamilyMixed          ExhaustionFamily = "mixed"
+)
+
+// Exhaustion 保留脱敏后的失败原因直方图。它只含本地枚举，不含上游文本、
+// 凭据或请求内容，可安全用于 executor 判定与路由审计。
+type Exhaustion struct {
+	Family  ExhaustionFamily
+	Reasons map[GateFailureReason]int
+}
+
+// PureCapacity 报告本错误是否只由可恢复容量原因构成。只有 true 才能作为
+// binding quota class 的 selector 触发依据。
+func (e *NoCapacityError) PureCapacity() bool {
+	return e != nil && e.Exhaustion.Family == ExhaustionFamilyCapacity
+}
+
+// ContextWindowOnly 报告所有候选是否只被原 canonical context window 挡下。
+func (e *NoCapacityError) ContextWindowOnly() bool {
+	return e != nil && e.Exhaustion.Family == ExhaustionFamilyContextWindow
 }
 
 // Selector 按 docs/specs/pool-routing.md §Phase A-D 的分层算法为租户请求

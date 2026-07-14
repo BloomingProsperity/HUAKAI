@@ -49,13 +49,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # cmd/gateway 跨包契约守卫(前端 mirror/OpenAPI/SQL 覆盖三测试)真调用,deadcode 不带 -test 看不到,
 # 与 memoryStore/adminsessionauthtest/logsink 先例同类。全量重算收割他片已清债务,净 882→811、
 # staticcheck 94→93,两上限同步调低(棘轮只降)。
-# 2026-07-14 fallback_class 第 1 步补录:bindingfallback 决策层三函数(TargetClass 触发归约/
-# IsTerminal 终态门/AllowTransition 转移门)由已批准综合计划(docs/process/plans/
-# 2026-07-14-binding-fallback-class.md §实施顺序)的第 2 步 executor 消费,本步仅判别测试
-# 调用,属分阶段接线在途消费者(与订阅 auto-renew worker 先例同类)。DC_MAX 811->814
-#(Owner 可见可审);第 2 步接线后三条自然出列。
+# 2026-07-14 fallback_class 第 2 步清债:chat executor 已生产接线 TargetClass、
+# IsTerminal、AllowTransition，三条分阶段补录自然出列，DC_MAX 814->811。
 SC_MAX=93
-DC_MAX=814
+DC_MAX=811
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

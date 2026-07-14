@@ -37,6 +37,8 @@ const (
 )
 
 type GateFailureReason = router.GateFailureReason
+type ExhaustionFamily = router.ExhaustionFamily
+type Exhaustion = router.Exhaustion
 
 const (
 	GateFailureTenantFilter        = router.GateFailureTenantFilter
@@ -44,6 +46,7 @@ const (
 	GateFailureChannel             = router.GateFailureChannel
 	GateFailureProtocolFamily      = router.GateFailureProtocolFamily
 	GateFailureModel               = router.GateFailureModel
+	GateFailureModelCooldown       = router.GateFailureModelCooldown
 	GateFailureCapability          = router.GateFailureCapability
 	GateFailureCredential          = router.GateFailureCredential
 	GateFailureHealth              = router.GateFailureHealth
@@ -54,6 +57,16 @@ const (
 	GateFailureWindowCost          = router.GateFailureWindowCost
 	GateFailureContextWindow       = router.GateFailureContextWindow
 	GateFailureRatePrecheck        = router.GateFailureRatePrecheck
+	GateFailureSlotCapacity        = router.GateFailureSlotCapacity
+	GateFailureSlotManager         = router.GateFailureSlotManager
+)
+
+const (
+	ExhaustionFamilyUnknown        = router.ExhaustionFamilyUnknown
+	ExhaustionFamilyCapacity       = router.ExhaustionFamilyCapacity
+	ExhaustionFamilyStaticMismatch = router.ExhaustionFamilyStaticMismatch
+	ExhaustionFamilyContextWindow  = router.ExhaustionFamilyContextWindow
+	ExhaustionFamilyMixed          = router.ExhaustionFamilyMixed
 )
 
 type Gate = router.Gate

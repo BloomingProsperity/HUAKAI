@@ -145,7 +145,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		snapshots[a.ID] = a
 	}
 	if len(snapshots) == 0 {
-		return nil, ErrNoEligibleAccount
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount}
 	}
 
 	// 一次 Select 只准备一次 gate 链(与 DefaultSelector 同): 把"决策只依赖 req"的
@@ -166,7 +166,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		ring = BuildAccountRingFromSnapshots(accs, p.ringSeed)
 	}
 	if ring == nil || len(ring.Accounts) == 0 {
-		return nil, ErrNoEligibleAccount
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount}
 	}
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
@@ -202,6 +202,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		}
 		if _, excluded := req.ExcludedAccounts[accID]; excluded {
 			reason.GateFailure(accID, GateFailurePerRequestExclusion)
+			failures.other++
 			continue
 		}
 		snap, ok := snapshots[accID]
@@ -364,9 +365,9 @@ func (p *PASRSelector) scheduleHRWFullRing(
 		return p.acquireAndReturn(ctx, req, firstDegraded, reason.JSON())
 	}
 	if failures.onlyHealth() {
-		return nil, ErrAllChannelsDegraded
+		return nil, &NoCapacityError{Cause: ErrAllChannelsDegraded, Exhaustion: reason.exhaustion()}
 	}
-	return nil, ErrNoEligibleAccount
+	return nil, &NoCapacityError{Cause: ErrNoEligibleAccount, Exhaustion: reason.exhaustion()}
 }
 
 type selectionFailures struct {

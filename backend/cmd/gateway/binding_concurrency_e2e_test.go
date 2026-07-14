@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
@@ -161,6 +162,96 @@ func TestBindingConcurrencyE2E(t *testing.T) {
 		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), len(rejects)+len(quotaDenied), frozen)
 	})
 
+	t.Run("normal绑定满后quota目标用独立闸接管且钱账收敛", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+		if err != nil {
+			t.Fatalf("Open dev pool: %v", err)
+		}
+		defer pgPool.Close()
+
+		seed := seedSmokeGraph(t, ctx, pgPool)
+		pricingVersion := "binding-fallback-" + uuid.NewString()
+		cleanupAccountSlotE2E(t, pgPool, seed.tenantID, pricingVersion)
+		fixture := seedBindingFallbackE2E(t, ctx, pgPool, seed, pricingVersion)
+
+		addr := reserveLocalPort(t)
+		cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
+		t.Cleanup(func() { stopGateway(cmd) })
+		waitForGateway(t, addr)
+
+		client := &http.Client{Timeout: 20 * time.Second}
+		holderID := "binding-fallback-holder-" + uuid.NewString()
+		takeoverID := "binding-fallback-takeover-" + uuid.NewString()
+		holderDone := make(chan accountSlotHTTPResult, 1)
+		go func() {
+			holderDone <- postAccountSlotChat(ctx, client, addr, seed.bearer, holderID)
+		}()
+		waitForBindingActive(t, ctx, pgPool, fixture.normalBindingID, 1, 1)
+
+		takeoverDone := make(chan accountSlotHTTPResult, 1)
+		go func() {
+			takeoverDone <- postAccountSlotChat(ctx, client, addr, seed.bearer, takeoverID)
+		}()
+		// 直接观察目标 binding 的 acquired 行，证明不是 normal 释放后的偶然成功。
+		waitForBindingActive(t, ctx, pgPool, fixture.targetBindingID, 1, 1)
+		takeover := <-takeoverDone
+		holder := <-holderDone
+		for _, result := range []accountSlotHTTPResult{holder, takeover} {
+			if result.err != nil || result.statusCode != http.StatusOK {
+				t.Fatalf("logical_id=%s err/status=%v/%d body=%s，期望 200",
+					result.logicalID, result.err, result.statusCode, safeAccountSlotBody(result.body))
+			}
+		}
+
+		assertAccountSlotSuccessPG(t, ctx, pgPool, seed, holderID)
+		assertAccountSlotSuccessPG(t, ctx, pgPool, seed, takeoverID)
+		takeoverClaimID, _ := readAccountSlotClaim(t, ctx, pgPool, seed, takeoverID, "committed")
+		assertAccountSlotCount(t, ctx, pgPool,
+			`SELECT count(*) FROM pool_slot_acquisitions
+			  WHERE tenant_id=$1 AND claim_id=$2 AND binding_id=$3 AND provider_account_id=$4
+			    AND status='released_success'`,
+			1, "takeover 使用 quota binding/account", seed.tenantID, takeoverClaimID,
+			fixture.targetBindingID, fixture.targetAccountID)
+		assertAccountSlotCount(t, ctx, pgPool,
+			`SELECT count(*) FROM pool_slot_acquisitions
+			  WHERE tenant_id=$1 AND claim_id=$2 AND binding_id=$3`,
+			0, "takeover 不得借用 normal binding", seed.tenantID, takeoverClaimID, fixture.normalBindingID)
+		assertAccountSlotCount(t, ctx, pgPool,
+			`SELECT count(*) FROM billing_events
+			  WHERE tenant_id=$1 AND claim_id=$2 AND event_type='claim_aborted'`,
+			2, "两个 normal 失败 attempt 均 abort", seed.tenantID, takeoverClaimID)
+		assertAccountSlotCount(t, ctx, pgPool,
+			`SELECT count(*) FROM billing_events
+			  WHERE tenant_id=$1 AND claim_id=$2 AND event_type='claim_committed'`,
+			1, "quota 成功恰一次 settle", seed.tenantID, takeoverClaimID)
+		if seq := attemptSeqForClaim(t, ctx, pgPool, takeoverClaimID); seq != 3 {
+			t.Fatalf("takeover attempt_seq=%d want 3(normal×2 + quota×1)", seq)
+		}
+
+		var accountID int64
+		var fromClass, toClass, trigger string
+		if err := pgPool.QueryRow(ctx,
+			`SELECT provider_account_id,
+			        routing_reason #>> '{class_transition,from}',
+			        routing_reason #>> '{class_transition,to}',
+			        routing_reason #>> '{class_transition,trigger}'
+			   FROM usage_records WHERE tenant_id=$1 AND claim_id=$2`,
+			seed.tenantID, takeoverClaimID,
+		).Scan(&accountID, &fromClass, &toClass, &trigger); err != nil {
+			t.Fatalf("read takeover usage transition: %v", err)
+		}
+		if accountID != fixture.targetAccountID || fromClass != "normal" || toClass != "quota" || trigger != "binding_concurrency_limit" {
+			t.Fatalf("usage account/transition=%d/%s→%s/%s，期望 %d/normal→quota/binding_concurrency_limit",
+				accountID, fromClass, toClass, trigger, fixture.targetAccountID)
+		}
+
+		waitForBindingActive(t, ctx, pgPool, fixture.normalBindingID, 0, 1)
+		waitForBindingActive(t, ctx, pgPool, fixture.targetBindingID, 0, 1)
+		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, 2, 0, 0)
+	})
+
 	t.Run("客户端断连后脱钩中止仍释放槽与钱账", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
@@ -252,6 +343,94 @@ func seedBindingConcurrencyE2E(
 		t.Fatalf("enable binding concurrency cap: %v", err)
 	}
 	return bindingID
+}
+
+type bindingFallbackE2EFixture struct {
+	normalBindingID int64
+	targetBindingID int64
+	targetAccountID int64
+}
+
+func seedBindingFallbackE2E(
+	t *testing.T,
+	ctx context.Context,
+	pgPool *pgxpool.Pool,
+	seed *smokeSeed,
+	pricingVersion string,
+) bindingFallbackE2EFixture {
+	t.Helper()
+	fixture := bindingFallbackE2EFixture{
+		normalBindingID: seedBindingConcurrencyE2E(t, ctx, pgPool, seed, pricingVersion, 1),
+	}
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE model_pool_bindings SET fallback_class='normal', updated_at=now() WHERE id=$1`,
+		fixture.normalBindingID,
+	); err != nil {
+		t.Fatalf("mark normal binding: %v", err)
+	}
+
+	unique := uuid.NewString()
+	var targetPoolID, targetChannelID int64
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		seed.tenantID, "binding-fallback-pool-"+unique,
+	).Scan(&targetPoolID); err != nil {
+		t.Fatalf("seed target pool: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
+		seed.tenantID, targetPoolID, "binding-fallback-channel-"+unique,
+	).Scan(&targetChannelID); err != nil {
+		t.Fatalf("seed target channel: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+			tenant_id, provider_id, channel_id, name, account_type,
+			cap_concurrency, cap_queue_fallback, in_flight_count, priority,
+			health_state, credential_state, capability_flags
+		 ) VALUES ($1, $2, $3, $4, 'api_key', 64, 0, 0, 100,
+		           'healthy', 'valid', ARRAY['stream','tools','vision','json','audio','file'])
+		 RETURNING id`,
+		seed.tenantID, seed.providerID, targetChannelID, "binding-fallback-account-"+unique,
+	).Scan(&fixture.targetAccountID); err != nil {
+		t.Fatalf("seed target account: %v", err)
+	}
+
+	keyProvider, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
+	if err != nil {
+		t.Fatalf("target credential key provider: %v", err)
+	}
+	envelope, err := credentialstore.NewCipher(keyProvider).Encrypt(ctx,
+		[]byte(`{"api_key":"sk-mock-fallback-key"}`),
+		credentialstore.AAD{TenantID: seed.tenantID, ProviderAccountID: fixture.targetAccountID, Vendor: "openai", AuthMode: "api_key", Version: 1})
+	if err != nil {
+		t.Fatalf("encrypt target credential: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`INSERT INTO account_credentials (
+			tenant_id, provider_account_id, vendor, auth_mode, state,
+			credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash
+		 ) VALUES ($1, $2, 'openai', 'api_key', 'active', 1, $3, 'aes-256-gcm', $4, $5, $6)`,
+		seed.tenantID, fixture.targetAccountID, envelope.Ciphertext, envelope.KeyID, envelope.Nonce, envelope.AADHash,
+	); err != nil {
+		t.Fatalf("seed target credential: %v", err)
+	}
+	if err := pgPool.QueryRow(ctx,
+		`INSERT INTO model_pool_bindings (
+			tenant_id, model_id, pool_group_id, priority, weight, enabled,
+			selection_mode, max_parallel_requests, fallback_class
+		 ) VALUES ($1, $2, $3, 0, 2000000000, true, 'priority_weighted', 1, 'quota')
+		 RETURNING id`,
+		seed.tenantID, seed.modelID, targetPoolID,
+	).Scan(&fixture.targetBindingID); err != nil {
+		t.Fatalf("seed quota binding: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE model_registry_snapshots SET version=version+1 WHERE tenant_id=$1`, seed.tenantID,
+	); err != nil {
+		t.Fatalf("advance registry snapshot: %v", err)
+	}
+	return fixture
 }
 
 // waitForBindingAuditCount 轮询等待异步审计行落库到期望条数(与 waitForBindingActive 同款节奏)。

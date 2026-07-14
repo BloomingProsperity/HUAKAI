@@ -129,6 +129,7 @@ type classifiedAttemptFailure struct {
 	Decision          gateway.AttemptRetryDecision
 	EndClass          gateway.StreamEndClass
 	RetryAfterSeconds int
+	FallbackSignal    bindingfallback.Signal
 
 	DeliveredToClient bool
 	AbortReason       string
@@ -146,6 +147,7 @@ func classifiedFailureFromDecision(code, message string, classification gateway.
 		EndClass:       endClassFromAttemptFailure(classification, decision),
 		AbortReason:    decision.AbortReason,
 		Cause:          cause,
+		FallbackSignal: bindingFallbackSignalFromDecision(classification, decision),
 	}
 }
 
@@ -187,6 +189,7 @@ func degradeFailureIfAbortFailed(ctx context.Context, requestID string, failure 
 	// Abort 失败时 claim 可能仍停在 reserving，禁止同一幂等键继续 retry。
 	failure.AbortReason = reason + ";abort_failed=1"
 	failure.Decision.AbortReason = failure.AbortReason
+	failure.FallbackSignal = bindingfallback.SignalBillingAbortFailure
 	return failure
 }
 

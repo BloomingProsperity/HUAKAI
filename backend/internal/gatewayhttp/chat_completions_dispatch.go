@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/bodyfeatures"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -471,6 +472,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if selRes == nil || selRes.AccountID == 0 {
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		failure.FallbackSignal = bindingfallback.SignalPoolStaticMismatch
 		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
 		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
 		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
@@ -496,9 +498,13 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 	// context-window 预检(它对 ctxWindow<=0 / estInput<=0 fail-open),故仍随 model-fallback 门控。
 	var ctxWindow, maxOut int
 	estInput := tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
-	if ex.modelFallbackEnabled {
-		ctxWindow = ex.resolved.ContextWindow
+	_, hasContextFallback := fallbackPhaseForClass(ex.plan, bindingfallback.ClassContextWindow)
+	currentClass := bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass))
+	if ex.modelFallbackEnabled || hasContextFallback {
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
+		if currentClass != bindingfallback.ClassContextWindow {
+			ctxWindow = ex.resolved.ContextWindow
+		}
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
 	if ex.attempt.BindingID > 0 {
@@ -561,6 +567,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 			status = http.StatusServiceUnavailable
 		}
 		failure := retryableLocalAttemptFailure(status, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), "credential_resolve_error", gateway.UpstreamError5xx, err)
+		failure.FallbackSignal = bindingfallback.SignalCredentialResolutionFailure
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if accInfo.AccountID == 0 {
@@ -582,6 +589,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 				AbortReason:                     "credential_protocol_incompatible",
 				CountsAgainstAuthFailoverBudget: true,
 			}, err)
+			failure.FallbackSignal = bindingfallback.SignalUpstreamAuthFailure
 			failure.EndClass = gateway.UpstreamError5xx
 			return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 		}
@@ -779,6 +787,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			code = ""
 		}
 		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
+		if upstreamErr != nil {
+			failure.FallbackSignal = bindingFallbackSignalFromUpstream(upstreamErr.StatusCode, upstreamErr.Body, classification, decision)
+		}
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)
