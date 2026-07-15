@@ -105,6 +105,9 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 				return nil
 			}
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				if shouldRetryWholeReserveTransaction(err) {
+					return err
+				}
 				decision := failClosedDecision(req, err)
 				result = denyResult(decision)
 				deny = denyErr(decision, err)
@@ -113,6 +116,9 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 
 			resolved, err := ResolvePolicies(ctx, tx, req.TenantID, req.Scopes, reserveMetrics(req), req.At)
 			if err != nil {
+				if shouldRetryWholeReserveTransaction(err) {
+					return err
+				}
 				decision := failClosedDecision(req, err)
 				result = denyResult(decision)
 				deny = denyErr(decision, err)
@@ -618,6 +624,9 @@ func canReactivateReservation(status ReservationStatus) bool {
 func reactivateExistingReservation(ctx context.Context, store PGStore, req ReserveRequest, existing Reservation) (ReserveResult, *DenyError, error) {
 	resolved, err := ResolvePolicies(ctx, store, req.TenantID, req.Scopes, reserveMetrics(req), req.At)
 	if err != nil {
+		if shouldRetryWholeReserveTransaction(err) {
+			return ReserveResult{}, nil, err
+		}
 		decision := failClosedDecision(req, err)
 		return denyResult(decision), denyErr(decision, err), nil
 	}
@@ -738,6 +747,13 @@ func isQuotaReservationClaimUnique(err error) bool {
 func isPgRetryableTxConflict(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01")
+}
+
+// shouldRetryWholeReserveTransaction 判断闭包内错误是否应上抛给外层整事务重试环:
+// 40001/40P01 属瞬时序列化冲突,吞成 fail-closed deny 会把可重试冲突伪装成永久 429。
+// 只回答「是否交给事务重试」,不构造任何业务结果;其余错误仍走 fail-closed 纵深。
+func shouldRetryWholeReserveTransaction(err error) bool {
+	return isPgRetryableTxConflict(err)
 }
 
 func sleepBeforeReserveRetry(ctx context.Context, attempt int) error {
