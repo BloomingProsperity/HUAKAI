@@ -346,7 +346,7 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND status = 'reserved';
 
 -- name: PrepareQuotaReleaseRecovery :one
--- Release 热重试耗尽后按 claim 建立持久恢复资格；可选 reservation_id 只用于一致性守卫。
+-- Release 热重试耗尽后仅为 aborted claim 建立恢复资格，避免旧恢复写污染复活 attempt。
 UPDATE quota_reservations
 SET status = 'reconciliation_needed',
     lease_expires_at = LEAST(lease_expires_at, NOW()),
@@ -355,6 +355,13 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND claim_id = sqlc.arg(claim_id)::bigint
   AND (sqlc.arg(reservation_id)::bigint = 0 OR id = sqlc.arg(reservation_id)::bigint)
   AND status IN ('reserved', 'reconciliation_needed')
+  AND EXISTS (
+      SELECT 1
+      FROM billing_ledger_claims blc
+      WHERE blc.tenant_id = sqlc.arg(tenant_id)::bigint
+        AND blc.id = sqlc.arg(claim_id)::bigint
+        AND blc.status = 'aborted'
+  )
 RETURNING id;
 
 -- name: AcquireQuotaConcurrencySlot :one

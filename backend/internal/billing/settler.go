@@ -305,19 +305,25 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return ErrPoolNotConfigured
 	}
 
+	var generation abortClaimGeneration
 	err := retryTx2(ctx, "abort", abortTx2RetryPolicy, func(ctx context.Context) error {
-		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
+		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss, &generation)
 	}, nil, nil)
 	if err == nil {
 		return nil
 	}
-	return s.expediteAbortLeaseAfterConflict(ctx, tenantID, claimID, err)
+	return s.expediteAbortLeaseAfterConflict(ctx, tenantID, claimID, generation, err)
+}
+
+type abortClaimGeneration struct {
+	attemptSeq int32
+	observed   bool
 }
 
 // abortOnce 执行一次完整 Tx2 中止事务。外层 retryTx2 只在整事务被 Serializable
 // 冲突回滚后重跑;若 claim 已不在 reserving,这里立即返回 ErrClaimNotReserving,
 // 因而不会重复 Release、重复 claim_aborted 事件或重复零成本 usage_record。
-func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
+func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage, generation *abortClaimGeneration) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return fmt.Errorf("billing: begin abort Tx2: %w", err)
@@ -342,6 +348,11 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 			return ErrClaimNotReserving
 		}
 		return fmt.Errorf("billing: get claim for abort: %w", err)
+	}
+	// 事务后段冲突会回滚业务写，但恢复 UPDATE 仍须绑定本轮真实读到的代际。
+	if generation != nil {
+		generation.attemptSeq = attemptSeq
+		generation.observed = true
 	}
 	if status != "reserving" {
 		return ErrClaimNotReserving

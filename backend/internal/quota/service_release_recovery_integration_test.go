@@ -4,11 +4,13 @@ package quota
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 )
 
@@ -52,6 +54,46 @@ func TestServiceRelease_ATCD2002_RealPGSixthTransactionCommits(t *testing.T) {
 	}
 	if got := f.auditSemanticCount("release_aborted"); got != 1 {
 		t.Fatalf("release audit count after replay=%d; want 1", got)
+	}
+}
+
+// TestPrepareQuotaReleaseRecovery_ATCD2008_RevivedClaimIsNoOp 固定旧 Abort
+// 的 prepare 到达前 claim 已复活的交错；删掉 billing 终态守卫会污染活预留。
+func TestPrepareQuotaReleaseRecovery_ATCD2008_RevivedClaimIsNoOp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+	service := NewService(store)
+	now := time.Now().UTC().Truncate(time.Second)
+	reserve := f.reserveForSettlement(ctx, service, now, "cd2-prepare-attempt-aba", "4", false)
+	f.setClaimTerminal(reserve.Reservation.ClaimID, claimStatusAborted, "")
+	if got := f.reviveClaimForNewAttempt(reserve.Reservation.ClaimID, now.Add(10*time.Minute)); got != 2 {
+		t.Fatalf("复活 attempt_seq=%d，want 2", got)
+	}
+
+	reused, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:           f.tenantID,
+		ClaimID:            reserve.Reservation.ClaimID,
+		RequestFingerprint: reserve.Reservation.RequestFingerprint,
+		Scopes:             reserve.Reservation.Scopes,
+		PredictedCost:      reserve.Reservation.PredictedCost,
+		LeaseExpiresAt:     now.Add(10 * time.Minute),
+		At:                 now,
+	})
+	if err != nil || !reused.Allowed || !reused.IdempotencyHit || reused.Reservation.ID != reserve.Reservation.ID {
+		t.Fatalf("新 attempt 复用 err/result=%v/%+v，want 同一活预留", err, reused)
+	}
+	beforeStatus, beforeLease, _ := releaseRecoveryState(t, f, reserve.Reservation.ID)
+
+	gotID, err := store.PrepareReleaseRecovery(ctx, f.tenantID, reserve.Reservation.ClaimID, 0)
+	if !errors.Is(err, pgx.ErrNoRows) || gotID != 0 {
+		t.Fatalf("PrepareReleaseRecovery id/err=%d/%v，want 0/pgx.ErrNoRows", gotID, err)
+	}
+	afterStatus, afterLease, _ := releaseRecoveryState(t, f, reserve.Reservation.ID)
+	if beforeStatus != ReservationReserved || afterStatus != ReservationReserved || !afterLease.Equal(beforeLease) {
+		t.Fatalf("status/lease before=%s/%s after=%s/%s，want 活预留不变", beforeStatus, beforeLease, afterStatus, afterLease)
 	}
 }
 
@@ -230,6 +272,22 @@ type releaseRecoveryFixture struct {
 	costPolicy    int64
 	userScopeID   string
 	at            time.Time
+}
+
+func (f *quotaFixture) reviveClaimForNewAttempt(claimID int64, leaseExpiresAt time.Time) int32 {
+	f.t.Helper()
+	var attemptSeq int32
+	if err := f.pool.QueryRow(f.ctx,
+		`UPDATE billing_ledger_claims
+		 SET status='reserving', aborted_reason=NULL, settled_at=NULL,
+		     attempt_seq=attempt_seq+1, lease_expires_at=$3, reserved_at=clock_timestamp()
+		 WHERE tenant_id=$1 AND id=$2 AND status='aborted'
+		 RETURNING attempt_seq`,
+		f.tenantID, claimID, leaseExpiresAt,
+	).Scan(&attemptSeq); err != nil {
+		f.t.Fatalf("复活 billing claim：%v", err)
+	}
+	return attemptSeq
 }
 
 func seedReleaseRecoveryFixture(t *testing.T, ctx context.Context, f *quotaFixture, service *Service, label string) releaseRecoveryFixture {

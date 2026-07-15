@@ -17,6 +17,13 @@ WHERE tenant_id = $1::bigint
   AND claim_id = $2::bigint
   AND ($3::bigint = 0 OR id = $3::bigint)
   AND status IN ('reserved', 'reconciliation_needed')
+  AND EXISTS (
+      SELECT 1
+      FROM billing_ledger_claims blc
+      WHERE blc.tenant_id = $1::bigint
+        AND blc.id = $2::bigint
+        AND blc.status = 'aborted'
+  )
 RETURNING id
 `
 
@@ -26,7 +33,7 @@ type PrepareQuotaReleaseRecoveryParams struct {
 	ReservationID int64 `db:"reservation_id" json:"reservation_id"`
 }
 
-// Release 热重试耗尽后按 claim 建立持久恢复资格；非零 reservation_id 只作一致性守卫。
+// Release 热重试耗尽后仅为仍处于 aborted 终态的 claim 建立恢复资格。
 func (q *Queries) PrepareQuotaReleaseRecovery(ctx context.Context, arg PrepareQuotaReleaseRecoveryParams) (int64, error) {
 	row := q.db.QueryRow(ctx, prepareQuotaReleaseRecovery, arg.TenantID, arg.ClaimID, arg.ReservationID)
 	var reservationID int64

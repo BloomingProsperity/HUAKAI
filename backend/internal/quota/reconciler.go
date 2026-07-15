@@ -29,6 +29,8 @@ const (
 	claimStatusAborted   = "aborted"
 )
 
+var errReconciliationRecoveryInvalidated = errors.New("quota reconciler: recovery invalidated")
+
 type ReconcilerOptions struct {
 	MaxAttempts int
 	BaseBackoff time.Duration
@@ -302,7 +304,16 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 		})
 		return err
 	case reconciliationKindReleaseAfterAbort:
-		_, err := r.service.Release(ctx, ReleaseRequest{
+		// claim 一旦复活，旧任务的事实前提已失效，继续 Release 会释放后继 attempt 的活预留。
+		claim, err := r.store.GetClaimTerminalState(ctx, tenantID, job.ClaimID)
+		if err != nil {
+			return fmt.Errorf("quota reconciler: recheck release claim %d: %w", job.ClaimID, err)
+		}
+		if claim.Status != claimStatusAborted {
+			return fmt.Errorf("%w: release_after_abort claim %d status %q, want aborted",
+				errReconciliationRecoveryInvalidated, job.ClaimID, claim.Status)
+		}
+		_, err = r.service.Release(ctx, ReleaseRequest{
 			TenantID:      tenantID,
 			ClaimID:       job.ClaimID,
 			ReservationID: reservationID,
@@ -326,9 +337,14 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 
 func (r *Reconciler) failRunningJob(ctx context.Context, tenantID int64, now time.Time, job ReconciliationJob, cause error) error {
 	nextRunAt := r.nextRunAt(now, job.AttemptCount)
-	if r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts {
+	recoveryInvalidated := errors.Is(cause, errReconciliationRecoveryInvalidated)
+	if recoveryInvalidated || (r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts) {
 		nextRunAt = now.Add(terminalReconciliationDelay)
-		r.logger.WarnContext(ctx, "quota reconciliation job reached max attempts",
+		message := "quota reconciliation job reached max attempts"
+		if recoveryInvalidated {
+			message = "quota reconciliation job invalidated by current claim state"
+		}
+		r.logger.WarnContext(ctx, message,
 			"tenant_id", tenantID,
 			"job_id", job.ID,
 			"job_kind", job.Kind,

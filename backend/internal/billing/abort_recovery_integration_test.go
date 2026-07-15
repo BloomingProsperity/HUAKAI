@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+
+	dbbillingrecovery "github.com/BloomingProsperity/HUAKAI/internal/db/billingrecovery"
 )
 
 // TestSettlerAbort_ATCD3002_SeventhTransactionCommits 精确越过旧六次预算，
@@ -201,6 +203,106 @@ func TestSettlerAbort_ATCD3007_DualSweepersRaceLateAbortExactlyOnce(t *testing.T
 		t.Fatalf("成功终结次数=%d，want 1", successes)
 	}
 	assertTerminalAbortEvidenceExactlyOnce(t, ctx, pool, seed)
+}
+
+// TestSettlerAbort_ATCD3008_RevivedAttemptRejectsStaleExpedite 固定旧 Abort
+// 耗尽与恢复写之间的代际交错；删掉 attempt_seq 守卫会把新 attempt 的 lease 压到期。
+func TestSettlerAbort_ATCD3008_RevivedAttemptRejectsStaleExpedite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedAbortRecoveryGraph(t, ctx, pool, "cd3-attempt-aba")
+	fault := installAbortConflictSequenceFault(t, ctx, pool, seed.claimID, 9)
+
+	interleavingDB := &abortRecoveryInterleavingDB{pool: pool}
+	interleavingDB.beforeExec = func(cleanupCtx context.Context) error {
+		if _, err := pool.Exec(cleanupCtx,
+			`UPDATE billing_ledger_claims
+			 SET status='aborted', aborted_reason='superseded_abort', settled_at=clock_timestamp()
+			 WHERE tenant_id=$1 AND id=$2 AND status='reserving'`,
+			seed.tenantID, seed.claimID,
+		); err != nil {
+			return fmt.Errorf("终结旧 attempt：%w", err)
+		}
+		tag, err := pool.Exec(cleanupCtx,
+			`UPDATE billing_ledger_claims
+			 SET status='reserving', aborted_reason=NULL, settled_at=NULL,
+			     attempt_seq=attempt_seq+1,
+			     lease_expires_at=clock_timestamp()+interval '5 minutes',
+			     reserved_at=clock_timestamp()
+			 WHERE tenant_id=$1 AND id=$2 AND status='aborted'`,
+			seed.tenantID, seed.claimID,
+		)
+		if err != nil {
+			return fmt.Errorf("复活新 attempt：%w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("复活新 attempt 行数=%d，want 1", tag.RowsAffected())
+		}
+		return nil
+	}
+	settler := NewSettler(pool)
+	settler.abortRecoveryQ = dbbillingrecovery.New(interleavingDB)
+
+	err := settler.Abort(ctx, seed.tenantID, seed.claimID, "cd3_attempt_aba", "req-cd3-008", 0, nil)
+	assertPGConflictCode(t, err, "40001")
+	if got := fault.attempts(t, ctx); got != 9 {
+		t.Fatalf("Tx2 次数=%d，want 9", got)
+	}
+	if interleavingDB.beforeErr != nil || interleavingDB.execCalls != 1 {
+		t.Fatalf("恢复交错 err/calls=%v/%d，want nil/1", interleavingDB.beforeErr, interleavingDB.execCalls)
+	}
+	if len(interleavingDB.args) != 3 || interleavingDB.args[2] != int32(1) {
+		t.Fatalf("恢复写 args=%v，want 捕获旧 attempt_seq=1", interleavingDB.args)
+	}
+
+	var status string
+	var attemptSeq int32
+	var lease, dbNow time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, attempt_seq, lease_expires_at, clock_timestamp()
+		 FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, seed.claimID,
+	).Scan(&status, &attemptSeq, &lease, &dbNow); err != nil {
+		t.Fatalf("读取复活 claim：%v", err)
+	}
+	if status != "reserving" || attemptSeq != 2 {
+		t.Fatalf("status/attempt=%s/%d，want reserving/2", status, attemptSeq)
+	}
+	if !lease.After(dbNow.Add(4 * time.Minute)) {
+		t.Fatalf("新 attempt lease=%s，want 晚于 %s", lease, dbNow.Add(4*time.Minute))
+	}
+}
+
+type abortRecoveryInterleavingDB struct {
+	pool       *pgxpool.Pool
+	beforeExec func(context.Context) error
+	once       sync.Once
+	beforeErr  error
+	execCalls  int
+	args       []any
+}
+
+func (d *abortRecoveryInterleavingDB) Exec(ctx context.Context, query string, args ...interface{}) (pgconn.CommandTag, error) {
+	d.execCalls++
+	d.args = append([]any(nil), args...)
+	d.once.Do(func() {
+		if d.beforeExec != nil {
+			d.beforeErr = d.beforeExec(ctx)
+		}
+	})
+	if d.beforeErr != nil {
+		return pgconn.NewCommandTag(""), d.beforeErr
+	}
+	return d.pool.Exec(ctx, query, args...)
+}
+
+func (d *abortRecoveryInterleavingDB) Query(ctx context.Context, query string, args ...interface{}) (pgx.Rows, error) {
+	return d.pool.Query(ctx, query, args...)
+}
+
+func (d *abortRecoveryInterleavingDB) QueryRow(ctx context.Context, query string, args ...interface{}) pgx.Row {
+	return d.pool.QueryRow(ctx, query, args...)
 }
 
 func seedAbortRecoveryGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, label string) settlerSeed {

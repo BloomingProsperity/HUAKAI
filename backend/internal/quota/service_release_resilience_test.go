@@ -93,6 +93,9 @@ func TestServiceRelease_ATCD2003_CanceledRequestStillHandsOffByClaim(t *testing.
 	if !store.prepareSawLiveContext || !store.enqueueSawLiveContext {
 		t.Fatalf("cleanup contexts live prepare/enqueue=%v/%v; want true/true", store.prepareSawLiveContext, store.enqueueSawLiveContext)
 	}
+	if !store.prepareSawBoundedContext || !store.enqueueSawBoundedContext {
+		t.Fatalf("cleanup contexts bounded prepare/enqueue=%v/%v; want true/true", store.prepareSawBoundedContext, store.enqueueSawBoundedContext)
+	}
 	if store.prepareTenantID != 1 || store.prepareClaimID != store.reservation.ClaimID || store.prepareGuardID != 0 {
 		t.Fatalf("prepare keys tenant/claim/guard=%d/%d/%d; want 1/%d/0", store.prepareTenantID, store.prepareClaimID, store.prepareGuardID, store.reservation.ClaimID)
 	}
@@ -143,6 +146,8 @@ func TestPrepareQuotaReleaseRecovery_ATCD2004_QueryExpiresLease(t *testing.T) {
 		"claim_id = $2::bigint",
 		"($3::bigint = 0 OR id = $3::bigint)",
 		"status IN ('reserved', 'reconciliation_needed')",
+		"FROM billing_ledger_claims blc",
+		"blc.status = 'aborted'",
 		"RETURNING id",
 	} {
 		if !strings.Contains(db.query, clause) {
@@ -175,6 +180,26 @@ func TestDefaultFinalizationRetryPolicy_RemainsThreeAttempts(t *testing.T) {
 				t.Fatalf("WithTx calls=%d; want unchanged default %d", store.withTxCalls, reserveTxRetryAttempts)
 			}
 		})
+	}
+}
+
+// TestServiceRelease_ATCD2006_BusinessErrorRunsOneTransaction 固定 Release
+// 只对 40001/40P01 重试；把普通错误也归为瞬时冲突时事务次数会从一变为六。
+func TestServiceRelease_ATCD2006_BusinessErrorRunsOneTransaction(t *testing.T) {
+	store := newReleaseResilienceStore(nil)
+	businessErr := errors.New("deterministic release business failure")
+	calls := 0
+
+	err := NewService(store).runQuotaFinalizationWithRetry(context.Background(), "release", releaseFinalizationRetryPolicy, func(PGStore) error {
+		calls++
+		return businessErr
+	})
+
+	if err != businessErr {
+		t.Fatalf("err=%v，want 原业务错误指针 %v", err, businessErr)
+	}
+	if calls != 1 || store.withTxCalls != 1 {
+		t.Fatalf("闭包/事务次数=%d/%d，want 1/1", calls, store.withTxCalls)
 	}
 }
 
@@ -247,6 +272,8 @@ type releaseResilienceStore struct {
 	audits                   []AuditEvent
 	prepareSawLiveContext    bool
 	enqueueSawLiveContext    bool
+	prepareSawBoundedContext bool
+	enqueueSawBoundedContext bool
 	prepareTenantID          int64
 	prepareClaimID           int64
 	prepareGuardID           int64
@@ -255,6 +282,7 @@ type releaseResilienceStore struct {
 	enqueueCalls             int
 	enqueueFailures          []error
 	jobs                     []ReconciliationJob
+	claimStatus              string
 }
 
 type capturingQuotaQueryDB struct {
@@ -317,6 +345,7 @@ func newReleaseResilienceStore(conflicts []error) *releaseResilienceStore {
 		dbNow:          now,
 		conflicts:      append([]error(nil), conflicts...),
 		windowReserved: decimal.NewFromInt(1),
+		claimStatus:    claimStatusAborted,
 	}
 }
 
@@ -377,6 +406,9 @@ func (s *releaseResilienceStore) InsertAuditEvent(_ context.Context, event Audit
 func (s *releaseResilienceStore) PrepareReleaseRecovery(ctx context.Context, tenantID int64, claimID int64, reservationID int64) (int64, error) {
 	s.prepareCalls++
 	s.prepareSawLiveContext = ctx.Err() == nil
+	dl, ok := ctx.Deadline()
+	remaining := time.Until(dl)
+	s.prepareSawBoundedContext = ok && remaining > 0 && remaining <= quotaCleanupTimeout
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -394,6 +426,9 @@ func (s *releaseResilienceStore) PrepareReleaseRecovery(ctx context.Context, ten
 	if s.reservation.Status != ReservationReserved && s.reservation.Status != ReservationReconciliationNeeded {
 		return 0, errors.New("reservation is terminal")
 	}
+	if s.claimStatus != claimStatusAborted {
+		return 0, pgx.ErrNoRows
+	}
 	s.reservation.Status = ReservationReconciliationNeeded
 	if s.reservation.LeaseExpiresAt.After(s.dbNow) {
 		s.reservation.LeaseExpiresAt = s.dbNow
@@ -404,6 +439,9 @@ func (s *releaseResilienceStore) PrepareReleaseRecovery(ctx context.Context, ten
 func (s *releaseResilienceStore) EnqueueReconciliationJob(ctx context.Context, input ReconciliationEnqueue) (ReconciliationJob, error) {
 	s.enqueueCalls++
 	s.enqueueSawLiveContext = ctx.Err() == nil
+	dl, ok := ctx.Deadline()
+	remaining := time.Until(dl)
+	s.enqueueSawBoundedContext = ok && remaining > 0 && remaining <= quotaCleanupTimeout
 	if err := ctx.Err(); err != nil {
 		return ReconciliationJob{}, err
 	}

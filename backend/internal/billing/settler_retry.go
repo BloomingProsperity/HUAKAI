@@ -103,8 +103,12 @@ func retryTx2(
 
 // expediteAbortLeaseAfterConflict 只在 Tx2 冲突预算耗尽后建立下一轮清扫资格。
 // 清理写不参与主错误裁决，避免恢复通道故障掩盖真正的终结失败。
-func (s *DefaultSettler) expediteAbortLeaseAfterConflict(ctx context.Context, tenantID, claimID int64, primaryErr error) error {
+func (s *DefaultSettler) expediteAbortLeaseAfterConflict(ctx context.Context, tenantID, claimID int64, generation abortClaimGeneration, primaryErr error) error {
 	if !isReserveSerializationConflict(primaryErr) {
+		return primaryErr
+	}
+	// 没有成功读到 claim 就没有可证明的代际，安全无为比误伤后继 attempt 更重要。
+	if !generation.observed {
 		return primaryErr
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abortLeaseExpediteTimeout)
@@ -115,8 +119,9 @@ func (s *DefaultSettler) expediteAbortLeaseAfterConflict(ctx context.Context, te
 		expediteErr = errors.New("billing abort recovery query is not configured")
 	} else {
 		_, expediteErr = s.abortRecoveryQ.ExpediteAbortLease(cleanupCtx, dbbillingrecovery.ExpediteAbortLeaseParams{
-			TenantID: tenantID,
-			ClaimID:  claimID,
+			TenantID:   tenantID,
+			ClaimID:    claimID,
+			AttemptSeq: generation.attemptSeq,
 		})
 	}
 	if expediteErr == nil {

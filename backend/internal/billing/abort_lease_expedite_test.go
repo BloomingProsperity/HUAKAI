@@ -16,14 +16,15 @@ import (
 )
 
 // TestExpediteAbortLeaseQuery_ATCD3005_GuardsOnlyLease 固定恢复写只能按租户、
-// claim 与 reserving 状态缩短 lease，不能顺手改终态、hold 或金额。
+// claim、attempt 与 reserving 状态缩短 lease，不能顺手改终态、hold 或金额。
 func TestExpediteAbortLeaseQuery_ATCD3005_GuardsOnlyLease(t *testing.T) {
 	db := &capturingBillingExecDB{tag: pgconn.NewCommandTag("UPDATE 1")}
 	queries := dbbillingrecovery.New(db)
 
 	rows, err := queries.ExpediteAbortLease(context.Background(), dbbillingrecovery.ExpediteAbortLeaseParams{
-		TenantID: 17,
-		ClaimID:  29,
+		TenantID:   17,
+		ClaimID:    29,
+		AttemptSeq: 3,
 	})
 	if err != nil || rows != 1 {
 		t.Fatalf("ExpediteAbortLease rows/err=%d/%v，want 1/nil", rows, err)
@@ -32,6 +33,7 @@ func TestExpediteAbortLeaseQuery_ATCD3005_GuardsOnlyLease(t *testing.T) {
 		"SET lease_expires_at = LEAST(lease_expires_at, NOW())",
 		"WHERE tenant_id = $1::bigint",
 		"AND id = $2::bigint",
+		"AND attempt_seq = $3::integer",
 		"AND status = 'reserving'",
 	} {
 		if !strings.Contains(db.query, clause) {
@@ -44,8 +46,8 @@ func TestExpediteAbortLeaseQuery_ATCD3005_GuardsOnlyLease(t *testing.T) {
 			t.Fatalf("lease 加速 SET 子句不应包含 %q：\n%s", forbidden, setClause)
 		}
 	}
-	if len(db.args) != 2 || db.args[0] != int64(17) || db.args[1] != int64(29) {
-		t.Fatalf("query args=%v，want [17 29]", db.args)
+	if len(db.args) != 3 || db.args[0] != int64(17) || db.args[1] != int64(29) || db.args[2] != int32(3) {
+		t.Fatalf("query args=%v，want [17 29 3]", db.args)
 	}
 }
 
@@ -58,7 +60,7 @@ func TestAbortRetryExhaustion_ATCD3004_CallsLeaseExpedite(t *testing.T) {
 	db := &capturingBillingExecDB{tag: pgconn.NewCommandTag("UPDATE 1")}
 	settler := &DefaultSettler{abortRecoveryQ: dbbillingrecovery.New(db)}
 
-	err := settler.expediteAbortLeaseAfterConflict(requestCtx, 31, 47, primaryErr)
+	err := settler.expediteAbortLeaseAfterConflict(requestCtx, 31, 47, abortClaimGeneration{attemptSeq: 5, observed: true}, primaryErr)
 
 	if err != primaryErr {
 		t.Fatalf("返回错误=%v，want 原始冲突指针 %v", err, primaryErr)
@@ -66,8 +68,8 @@ func TestAbortRetryExhaustion_ATCD3004_CallsLeaseExpedite(t *testing.T) {
 	if !strings.Contains(db.query, "SET lease_expires_at = LEAST(lease_expires_at, NOW())") {
 		t.Fatalf("未执行 lease 加速 query：%q", db.query)
 	}
-	if len(db.args) != 2 || db.args[0] != int64(31) || db.args[1] != int64(47) {
-		t.Fatalf("query args=%v，want [31 47]", db.args)
+	if len(db.args) != 3 || db.args[0] != int64(31) || db.args[1] != int64(47) || db.args[2] != int32(5) {
+		t.Fatalf("query args=%v，want [31 47 5]", db.args)
 	}
 	if db.ctxErr != nil || !db.hasDeadline {
 		t.Fatalf("cleanup ctx err/deadline=%v/%v，want nil/true", db.ctxErr, db.hasDeadline)
@@ -84,7 +86,7 @@ func TestAbortRetryExhaustion_ATCD3005_PreservesPrimaryErrorWhenExpediteFails(t 
 	settler := &DefaultSettler{abortRecoveryQ: dbbillingrecovery.New(db)}
 	before := billingAbortMetricValue("40001", "expedite_failed")
 
-	err := settler.expediteAbortLeaseAfterConflict(requestCtx, 17, 29, primaryErr)
+	err := settler.expediteAbortLeaseAfterConflict(requestCtx, 17, 29, abortClaimGeneration{attemptSeq: 7, observed: true}, primaryErr)
 
 	if err != primaryErr {
 		t.Fatalf("返回错误=%v，want 原始冲突指针 %v", err, primaryErr)
@@ -100,6 +102,23 @@ func TestAbortRetryExhaustion_ATCD3005_PreservesPrimaryErrorWhenExpediteFails(t 
 	}
 	if got := billingAbortMetricValue("40001", "expedite_failed") - before; got != 1 {
 		t.Fatalf("expedite_failed metric delta=%d，want 1", got)
+	}
+}
+
+// TestAbortRetryExhaustion_NoClaimReadSkipsLeaseExpedite 固定九次尝试都未成功
+// 读到 claim 时安全无为；若凭 tenant+claim 猜代际，恢复写会误伤后继 attempt。
+func TestAbortRetryExhaustion_NoClaimReadSkipsLeaseExpedite(t *testing.T) {
+	primaryErr := fakePgErr("40001")
+	db := &capturingBillingExecDB{tag: pgconn.NewCommandTag("UPDATE 1")}
+	settler := &DefaultSettler{abortRecoveryQ: dbbillingrecovery.New(db)}
+
+	err := settler.expediteAbortLeaseAfterConflict(context.Background(), 17, 29, abortClaimGeneration{}, primaryErr)
+
+	if err != primaryErr {
+		t.Fatalf("返回错误=%v，want 原始冲突指针 %v", err, primaryErr)
+	}
+	if db.query != "" || len(db.args) != 0 {
+		t.Fatalf("未读到 claim 却执行恢复 query=%q args=%v", db.query, db.args)
 	}
 }
 

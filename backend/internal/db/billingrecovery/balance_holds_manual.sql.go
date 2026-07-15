@@ -27,17 +27,19 @@ UPDATE billing_ledger_claims
 SET lease_expires_at = LEAST(lease_expires_at, NOW())
 WHERE tenant_id = $1::bigint
   AND id = $2::bigint
+  AND attempt_seq = $3::integer
   AND status = 'reserving'
 `
 
 type ExpediteAbortLeaseParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	ClaimID  int64 `db:"claim_id" json:"claim_id"`
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ClaimID    int64 `db:"claim_id" json:"claim_id"`
+	AttemptSeq int32 `db:"attempt_seq" json:"attempt_seq"`
 }
 
-// ExpediteAbortLease 仅缩短仍未终结 claim 的 lease，不裁决钱账终态。
+// ExpediteAbortLease 仅缩短同一 attempt 仍未终结 claim 的 lease，不裁决钱账终态。
 func (q *Queries) ExpediteAbortLease(ctx context.Context, arg ExpediteAbortLeaseParams) (int64, error) {
-	result, err := q.db.Exec(ctx, expediteAbortLease, arg.TenantID, arg.ClaimID)
+	result, err := q.db.Exec(ctx, expediteAbortLease, arg.TenantID, arg.ClaimID, arg.AttemptSeq)
 	if err != nil {
 		return 0, err
 	}
