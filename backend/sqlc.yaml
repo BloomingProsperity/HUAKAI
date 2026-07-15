@@ -292,6 +292,7 @@ sql:
       - sql/queries/proto_capability.sql
       - sql/queries/proto_policy.sql
       - sql/queries/registry.sql
+      - sql/queries/models_admin.sql
     gen:
       go:
         package: registry

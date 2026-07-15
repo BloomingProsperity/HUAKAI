@@ -6,12 +6,13 @@ import {
   KNOWN_CAPABILITIES,
   mapAliasResultRows,
   mapAliasValidationRows,
+  mapAdminModelRows,
   mapCapabilityBindingRows,
   parseAliasLines,
   splitParsedAliases,
   summarizeImportResults,
 } from './modelregistry'
-import type { AliasImportResult } from './types'
+import type { AdminModel, AliasImportResult } from './types'
 
 describe('parseAliasLines', () => {
   it('跳过空行/纯空白行/# 注释行', () => {
@@ -134,5 +135,36 @@ describe('importResultTone', () => {
     expect(importResultTone('upserted')).toBe('ok')
     expect(importResultTone('failed')).toBe('danger')
     expect(importResultTone('skipped')).toBe('muted')
+  })
+})
+
+describe('mapAdminModelRows', () => {
+  it('保留数字 id 并区分 tenant/global 与 active/disabled', () => {
+    // 判别核心:数字 id 必须原样进入列表选择；若改用 canonical_id 或丢 id，首行断言转红。
+    const base: AdminModel = {
+      id: 17,
+      tenant_id: 42,
+      scope: 'tenant',
+      canonical_id: 'tenant/model-a',
+      protocol_family: 'openai_chat',
+      default_provider_model_id: 'provider-a',
+      default_context_window: 8192,
+      default_request_timeout_ms: 60000,
+      pricing_class: 'standard',
+      model_owner: 'owner',
+      model_created_at: null,
+      capabilities: {},
+      max_output_tokens: null,
+      model_mode: null,
+      status: 'active',
+      created_at: '2026-07-15T00:00:00Z',
+      updated_at: '2026-07-15T00:00:00Z',
+    }
+    const rows = mapAdminModelRows([
+      base,
+      { ...base, id: 18, tenant_id: null, scope: 'global', canonical_id: 'global/model-b', status: 'disabled' },
+    ])
+    expect(rows[0]).toMatchObject({ id: 17, tenant: 42, scope: 'tenant', status: '启用', statusTone: 'ok' })
+    expect(rows[1]).toMatchObject({ id: 18, tenant: '全局', scope: 'global', status: '停用', statusTone: 'muted' })
   })
 })

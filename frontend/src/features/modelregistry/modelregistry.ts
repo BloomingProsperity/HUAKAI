@@ -7,7 +7,7 @@
  *  - 导入结果汇总(成功/失败计数)。
  */
 import type { BadgeTone } from '../../ui/StatusBadge'
-import type { AliasImportResult, AliasImportRow, CapabilityBinding } from './types'
+import type { AdminModel, AliasImportResult, AliasImportRow, CapabilityBinding } from './types'
 
 // 能力绑定白名单 —— 镜像后端 knownModelCapabilityBindings(PUT capability-bindings 只接受表内能力)。
 // 分组仅用于 UI 下拉归类,后端不区分组。任一组外能力提交会被后端 400(invalid_capability)。
@@ -175,5 +175,32 @@ export function mapAliasResultRows(results: AliasImportResult[]): AliasResultTab
     statusTone: importResultTone(result.status),
     error: result.error ?? '—',
     hasError: Boolean(result.error),
+  }))
+}
+
+export interface AdminModelTableRow {
+  id: number
+  canonicalId: string
+  providerModelId: string
+  protocolFamily: string
+  scope: string
+  tenant: number | string
+  contextWindow: number
+  status: string
+  statusTone: BadgeTone
+}
+
+/** 模型主体 DTO 到列表展示行的纯映射，数字 id 原样保留供后续运维卡回填。 */
+export function mapAdminModelRows(models: AdminModel[]): AdminModelTableRow[] {
+  return models.map((model) => ({
+    id: model.id,
+    canonicalId: model.canonical_id,
+    providerModelId: model.default_provider_model_id,
+    protocolFamily: model.protocol_family,
+    scope: model.scope,
+    tenant: model.tenant_id ?? '全局',
+    contextWindow: model.default_context_window,
+    status: model.status === 'active' ? '启用' : '停用',
+    statusTone: model.status === 'active' ? 'ok' : 'muted',
   }))
 }

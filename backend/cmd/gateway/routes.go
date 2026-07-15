@@ -47,6 +47,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/modeladminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelroutingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
@@ -947,6 +948,20 @@ func modelRoutingOverrideRouteDeps(d *deps) modelroutingadminhttp.Deps {
 	return result
 }
 
+func modelAdminRouteDeps(d *deps) modeladminhttp.Deps {
+	if d == nil {
+		return modeladminhttp.Deps{}
+	}
+	var result modeladminhttp.Deps
+	if d.adminAuth != nil {
+		result.Auth = d.adminAuth
+	}
+	if d.modelRegistry != nil {
+		result.Service = d.modelRegistry
+	}
+	return result
+}
+
 func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
@@ -973,6 +988,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	if d.adminAuth != nil {
 		adminResolver = d.adminAuth
 	}
+	modelAdminDeps := modelAdminRouteDeps(d)
+	r.Route("/v1/admin/models", func(r chi.Router) {
+		modeladminhttp.MountRoutes(r, modelAdminDeps)
+	})
 	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
 		adminGate(adminResolver, controlhttp.NewAdminCapabilitiesHandler(controlhttp.AdminCapabilitiesDeps{
 			Store: d.modelRegistry,

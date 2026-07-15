@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
 import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
 import { EmptyState } from '../../ui/EmptyState'
@@ -23,6 +23,7 @@ import {
 } from './modelregistry'
 import type { AliasResultTableRow, AliasValidationTableRow, CapabilityBindingTableRow } from './modelregistry'
 import type { AliasImportResult, CapabilityBinding, TenantPolicyView } from './types'
+import { ModelAdminCard } from './ModelAdminCard'
 
 /*
  * 模型注册(运维台 · admin 壳)。三块运维面,全部命中已存在的 /v1/admin/* 端点:
@@ -30,22 +31,25 @@ import type { AliasImportResult, CapabilityBinding, TenantPolicyView } from './t
  *   2) 能力绑定         GET/PUT /v1/admin/models/{id}/capability-bindings(白名单能力,per-scope)
  *   3) 映射批量导入      POST /v1/admin/models/aliases/bulk-import(逐行结果)
  *   4) 目录继承策略      GET/PUT /v1/admin/model-registry-policy?tenant_id(inherit_global_catalog 开关)
- * 模型用数字 DB id 定位(后端 path 契约);公开目录不回数字 id,故由运维者直接输入。
+ * 模型用数字 DB id 定位(后端 path 契约);由顶部主体清单选择并回填，避免手工输入。
  */
 export function ModelRegistryPage() {
+  const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
         <div>
           <h1>模型注册</h1>
           <p className="hk-sub">
-            能力矩阵 · 能力绑定 · 映射批量导入 · 租户目录继承策略。模型以数字 DB id 定位。
+            模型主体 · 能力矩阵 · 能力绑定 · 映射批量导入 · 租户目录继承策略。列表选择会回填数字 DB id。
           </p>
         </div>
       </header>
 
-      <CapabilityMatrixCard />
-      <CapabilityBindingsCard />
+      <ModelAdminCard selectedModelId={selectedModelId} onSelectModel={setSelectedModelId} />
+      <CapabilityMatrixCard selectedModelId={selectedModelId} />
+      <CapabilityBindingsCard selectedModelId={selectedModelId} />
       <AliasImportCard />
       <TenantPolicyCard />
     </div>
@@ -53,7 +57,7 @@ export function ModelRegistryPage() {
 }
 
 // ── 块 1:能力矩阵编辑(整体替换 capabilities + 上限/模式) ──
-function CapabilityMatrixCard() {
+function CapabilityMatrixCard({ selectedModelId }: { selectedModelId: number | null }) {
   const [modelId, setModelId] = useState('')
   const [toggles, setToggles] = useState<Record<string, boolean>>({})
   const [maxOut, setMaxOut] = useState('')
@@ -62,12 +66,16 @@ function CapabilityMatrixCard() {
   const [error, setError] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
 
+  useEffect(() => {
+    setModelId(selectedModelId == null ? '' : String(selectedModelId))
+  }, [selectedModelId])
+
   const toggle = (cap: string) => setToggles((t) => ({ ...t, [cap]: !t[cap] }))
 
   const submit = async () => {
     const id = Number(modelId)
     if (!Number.isInteger(id) || id <= 0) {
-      setError('请输入正整数模型 id')
+      setError('请先从模型主体列表选择模型')
       return
     }
     setBusy(true)
@@ -94,8 +102,8 @@ function CapabilityMatrixCard() {
   return (
     <Card title="能力矩阵编辑" subtitle="勾选能力 → 整体替换该模型的 capabilities(未勾选即 false)。可选填最大输出 token 与模型模式。">
       <Row>
-        <Field label="模型 id(正整数)">
-          <input value={modelId} onChange={(e) => setModelId(e.target.value)} inputMode="numeric" placeholder="如 42" style={inp} />
+        <Field label="模型 id（列表回填）">
+          <input value={modelId} readOnly placeholder="请从上方列表选择" style={inp} />
         </Field>
         <Field label="最大输出 token(可选)">
           <input value={maxOut} onChange={(e) => setMaxOut(e.target.value)} inputMode="numeric" placeholder="正整数" style={inp} />
@@ -137,7 +145,7 @@ function CapabilityMatrixCard() {
 }
 
 // ── 块 2:能力绑定(per-scope 白名单能力,可读可 upsert) ──
-function CapabilityBindingsCard() {
+function CapabilityBindingsCard({ selectedModelId }: { selectedModelId: number | null }) {
   const [modelId, setModelId] = useState('')
   const [bindings, setBindings] = useState<CapabilityBinding[] | null>(null)
   const [scope, setScope] = useState('tenant')
@@ -149,6 +157,10 @@ function CapabilityBindingsCard() {
   const [error, setError] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
 
+  useEffect(() => {
+    setModelId(selectedModelId == null ? '' : String(selectedModelId))
+  }, [selectedModelId])
+
   const parsedModelId = (): number | null => {
     const id = Number(modelId)
     return Number.isInteger(id) && id > 0 ? id : null
@@ -157,7 +169,7 @@ function CapabilityBindingsCard() {
   const load = async () => {
     const id = parsedModelId()
     if (id == null) {
-      setError('请输入正整数模型 id')
+      setError('请先从模型主体列表选择模型')
       return
     }
     setBusy(true)
@@ -176,7 +188,7 @@ function CapabilityBindingsCard() {
   const upsert = async () => {
     const id = parsedModelId()
     if (id == null) {
-      setError('请输入正整数模型 id')
+      setError('请先从模型主体列表选择模型')
       return
     }
     const body: { scope: string; capability: string; enabled: boolean; tenant_id?: number; capability_value?: string } = {
@@ -211,8 +223,8 @@ function CapabilityBindingsCard() {
   return (
     <Card title="能力绑定(白名单)" subtitle="per-(tenant|global) 的能力绑定;能力名取自后端白名单。来源(source)由服务端强制 operator。">
       <Row>
-        <Field label="模型 id(正整数)">
-          <input value={modelId} onChange={(e) => setModelId(e.target.value)} inputMode="numeric" placeholder="如 42" style={inp} />
+        <Field label="模型 id（列表回填）">
+          <input value={modelId} readOnly placeholder="请从上方列表选择" style={inp} />
         </Field>
         <div style={{ display: 'flex', alignItems: 'flex-end' }}>
           <button type="button" disabled={busy} onClick={load} className="hk-btn">
