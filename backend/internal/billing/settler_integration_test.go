@@ -204,7 +204,7 @@ func TestSettler_SettleRetriesSerializationConflictWithoutDuplicateEffects(t *te
 }
 
 // TestAT_OBS_004_RollbackOnSlotReleaseMiss 是 AT-OBS-004 / AT-POOL-019 的强(回滚)变体:Tx2 必须
-// all-or-nothing。注入一个 mid-Tx2 失败——把 slot 提前置为非 'acquired',使 Settle 内的
+// all-or-nothing。注入一个 mid-Tx2 失败——删除 token 对应 slot,使 Settle 内的
 // ReleaseSlotAndDecrementInFlight 返 0 → ErrSlotReleaseMissed(settler.go),而这发生在 billing_event
 // + usage_record 已在同一事务写入之后。验证那两笔更早的写入被**完整回滚**(无孤儿 usage_record /
 // 无新增 billing_event / claim 未 committed)。这正是 phase-b5/integration-sprint 计划要求过、但一直
@@ -225,16 +225,16 @@ func TestAT_OBS_004_RollbackOnSlotReleaseMiss(t *testing.T) {
 		t.Fatalf("count billing_events before: %v", err)
 	}
 
-	// 注入 mid-Tx2 失败:把 slot 提前置为非 'acquired',ReleaseSlotAndDecrementInFlight 将返 0。
+	// 注入 mid-Tx2 失败:slot 行完全缺失,释放与随后状态点查都无法建立已回收证明。
 	if _, err := pool.Exec(ctx,
-		`UPDATE pool_slot_acquisitions SET status='released_success', released_at=NOW() WHERE acquisition_token=$1`,
+		`DELETE FROM pool_slot_acquisitions WHERE acquisition_token=$1`,
 		seed.acquisitionToken); err != nil {
-		t.Fatalf("预置 slot 为 released: %v", err)
+		t.Fatalf("删除 slot: %v", err)
 	}
 
 	actualCost := decimal.RequireFromString("0.02000000")
 	if _, err := settler.Settle(ctx, settleRequest(seed, actualCost)); !errors.Is(err, ErrSlotReleaseMissed) {
-		t.Fatalf("slot 非 acquired 时 Settle 应返回 ErrSlotReleaseMissed,got %v", err)
+		t.Fatalf("slot 缺行时 Settle 应返回 ErrSlotReleaseMissed,got %v", err)
 	}
 
 	// 回滚验证 1:usage_record 必须为 0(它在 ReleaseSlot 失败前已写入同事务,失败后整体回滚;

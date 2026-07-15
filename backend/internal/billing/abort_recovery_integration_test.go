@@ -416,6 +416,7 @@ func assertTerminalAbortEvidenceExactlyOnce(t *testing.T, ctx context.Context, p
 
 func drainBillingLeaseSweeperBacklog(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
+	quarantineUnreachableTestDebris(t, ctx, pool)
 	sweeper := NewLeaseSweeper(pool, NewSettler(pool), 100)
 	for round := 0; round < 10; round++ {
 		processed, err := sweeper.SweepOnce(ctx)
@@ -427,6 +428,39 @@ func drainBillingLeaseSweeperBacklog(t *testing.T, ctx context.Context, pool *pg
 		}
 	}
 	t.Fatal("drain billing backlog：10 轮后仍有共享库积压")
+}
+
+// quarantineUnreachableTestDebris 终态化两类生产不可达的共享库测试残渣,它们会让
+// 上面的严格 drain 永远失败:①槽行整行缺失(跨包 fixture 删了 pool_slot_acquisitions
+// 行、claim 又被 quota_reservations 外键挡住删不掉;生产从不删行,abort 对缺行
+// fail-closed 是正确行为)②user_balances 行缺失(hold 过账无处落)。只动
+// lease 已过期的 reserving 行,不碰引擎可自愈的状态。
+func quarantineUnreachableTestDebris(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		WITH unreachable AS (
+			SELECT c.id, c.tenant_id
+			FROM billing_ledger_claims c
+			WHERE c.status='reserving' AND c.lease_expires_at < NOW()
+			  AND (
+				(c.acquisition_token IS NOT NULL AND NOT EXISTS (
+					SELECT 1 FROM pool_slot_acquisitions s WHERE s.claim_id = c.id))
+				OR EXISTS (
+					SELECT 1 FROM balance_holds h
+					WHERE h.claim_id = c.id AND h.state='held'
+					  AND NOT EXISTS (
+						SELECT 1 FROM user_balances b
+						WHERE b.tenant_id = c.tenant_id AND b.user_id = c.user_id))
+			  )
+		), released AS (
+			UPDATE balance_holds h SET state='released', resolved_at=NOW()
+			FROM unreachable u WHERE h.claim_id = u.id AND h.state='held'
+			RETURNING h.claim_id
+		)
+		UPDATE billing_ledger_claims c SET status='aborted'
+		FROM unreachable u WHERE c.id = u.id`); err != nil {
+		t.Fatalf("quarantine unreachable test debris：%v", err)
+	}
 }
 
 type abortConflictSequenceFault struct {

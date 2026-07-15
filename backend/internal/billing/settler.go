@@ -265,7 +265,9 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 		return nil, fmt.Errorf("billing: release slot + decrement in-flight count: %w", err)
 	}
 	if released == 0 {
-		return nil, ErrSlotReleaseMissed
+		if err := verifyAlreadyReleasedSlot(ctx, dbbillingrecovery.New(tx), req.AcquisitionToken, slotReleaseSettle); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
 		ID: claim.ID,
@@ -474,7 +476,9 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 			return fmt.Errorf("billing: release slot on abort: %w", err)
 		}
 		if released == 0 {
-			return ErrSlotReleaseMissed
+			if err := verifyAlreadyReleasedSlot(ctx, dbbillingrecovery.New(tx), tokUUID, slotReleaseAbort); err != nil {
+				return err
+			}
 		}
 	}
 
