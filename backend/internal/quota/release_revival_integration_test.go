@@ -4,16 +4,20 @@ package quota
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededDetoxesAndReactivates
-// 复现旧恢复准备先把预留标毒、随后 claim 复活的交错；孤儿标记必须被旧 job 释放，
-// 才能让同指纹的新 attempt 沿 released reactivate 链恢复服务。
-// 变异：把 reconciliation_needed 也纳入复活拒绝分支时，job、窗口和后续 Reserve 断言都会变红。
-func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededDetoxesAndReactivates(t *testing.T) {
+// TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededDefersUntilClaimTerminal
+// 复现旧预留标毒后 claim 复活，且新 attempt 的 Reserve 冲突耗尽并 fail-open 运行的交错；
+// 旧 job 必须先退避，等 claim 终结后再解毒，避免提前释放其结算依据。
+// 变异：把推迟改成立即释放或 invalidated 终停时，首轮 job 状态和最终收敛断言都会变红。
+func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededDefersUntilClaimTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	pool := openQuotaIntegrationPool(t, ctx)
@@ -36,22 +40,55 @@ func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededDetoxesAndReacti
 		t.Fatalf("revived attempt_seq=%d; want 2", attempt)
 	}
 
-	poisoned, poisonErr := service.Reserve(ctx, replayReleaseRecoveryReservation(seed, now.Add(time.Second)))
-	if poisonErr == nil || poisoned.Allowed || poisoned.Reservation.Status != ReservationReconciliationNeeded {
-		t.Fatalf("poisoned Reserve err/result=%v/%+v; want denied reconciliation_needed", poisonErr, poisoned)
+	originalBeginTx := store.beginTx
+	reserveAttempts := 0
+	store.beginTx = func(context.Context, pgx.TxOptions) (pgx.Tx, error) {
+		reserveAttempts++
+		return nil, &pgconn.PgError{Code: "40001", Message: "forced fail-open reserve exhaustion"}
+	}
+	failedOpen, reserveErr := service.Reserve(ctx, replayReleaseRecoveryReservation(seed, now.Add(time.Second)))
+	store.beginTx = originalBeginTx
+	if !IsRetryable(reserveErr) || IsDenied(reserveErr) || failedOpen.Allowed || reserveAttempts != reserveTxRetryAttempts {
+		t.Fatalf("fail-open Reserve attempts/err/result=%d/%v/%+v; want %d/retryable/not allowed",
+			reserveAttempts, reserveErr, failedOpen, reserveTxRetryAttempts)
 	}
 
-	reconciler := NewReconciler(service, store, ReconcilerOptions{Limit: 10})
+	reconciler := NewReconciler(service, store, ReconcilerOptions{
+		BaseBackoff: time.Minute,
+		MaxBackoff:  time.Hour,
+		Limit:       10,
+	})
 	processed, err := reconciler.ReconcileDueJobs(ctx, f.tenantID, now, 10)
-	if err != nil || processed != 1 {
-		t.Fatalf("ReconcileDueJobs processed/err=%d/%v; want 1/nil", processed, err)
+	if !errors.Is(err, ErrReleaseDeferredForRevival) || !IsRetryable(err) || processed != 0 {
+		t.Fatalf("first ReconcileDueJobs processed/err=%d/%v; want 0/Deferred retryable", processed, err)
 	}
-	if state := f.reconcilerJobState(job.ID); state.status != "succeeded" {
-		t.Fatalf("job state=%+v; want succeeded", state)
+	deferred := f.reconcilerJobState(job.ID)
+	if deferred.status != "queued" || deferred.attempts != 1 || !deferred.nextRunAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("deferred job state=%+v; want queued attempt 1 with one-minute backoff", deferred)
+	}
+	if !strings.Contains(deferred.lastError, "release deferred for billing claim revival") {
+		t.Fatalf("deferred last_error=%q; want Deferred reason", deferred.lastError)
+	}
+	assertHeldQuotaFixture(t, f, seed)
+	if got := f.auditSemanticCount("release_aborted"); got != 0 {
+		t.Fatalf("release audit count=%d; want 0 while revival is running", got)
+	}
+	if got := releaseJobCountForClaim(t, f, seed.reserve.Reservation.ClaimID); got != 1 {
+		t.Fatalf("release job count=%d; want original job only", got)
+	}
+
+	f.setClaimTerminal(seed.reserve.Reservation.ClaimID, claimStatusCommitted, seed.reserve.Reservation.PredictedCost.String())
+	processed, err = reconciler.ReconcileDueJobs(ctx, f.tenantID, deferred.nextRunAt, 10)
+	if err != nil || processed != 1 {
+		t.Fatalf("terminal ReconcileDueJobs processed/err=%d/%v; want 1/nil", processed, err)
+	}
+	completed := f.reconcilerJobState(job.ID)
+	if completed.status != "succeeded" || completed.attempts != 2 {
+		t.Fatalf("completed job state=%+v; want succeeded attempt 2", completed)
 	}
 	assertReleasedQuotaFixture(t, f, seed)
 
-	reactivated, err := service.Reserve(ctx, replayReleaseRecoveryReservation(seed, now.Add(2*time.Second)))
+	reactivated, err := service.Reserve(ctx, replayReleaseRecoveryReservation(seed, deferred.nextRunAt.Add(time.Second)))
 	if err != nil || !reactivated.Allowed || !reactivated.IdempotencyHit {
 		t.Fatalf("reactivate Reserve err/result=%v/%+v; want reused allow", err, reactivated)
 	}

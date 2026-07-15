@@ -183,8 +183,8 @@ func TestReconciler_ReconcilesCacheHitJobZeroCost(t *testing.T) {
 	}
 }
 
-// TestReconciler_FailedReconcileBacksOffAndIncrementsAttempt 守住失败 job 不能误标成功,
-// 且必须推进 attempt_count/next_run_at。Mutation: 失败却 Complete 会让 status=succeeded。
+// TestReconciler_FailedReconcileBacksOffAndIncrementsAttempt 守住普通失败 job 必须回到 queued,
+// 且推进 attempt_count/next_run_at；只有失效或耗尽预算才进入 failed 终停态。
 func TestReconciler_FailedReconcileBacksOffAndIncrementsAttempt(t *testing.T) {
 	ctx, f, store, reconciler := newQuotaReconcilerRuntime(t)
 	now := time.Date(2026, 5, 29, 9, 30, 0, 0, time.UTC)
@@ -199,8 +199,8 @@ func TestReconciler_FailedReconcileBacksOffAndIncrementsAttempt(t *testing.T) {
 		t.Fatalf("processed=%d; want 0 on failed job", processed)
 	}
 	state := f.reconcilerJobState(job.ID)
-	if state.status != "failed" || state.attempts != 1 {
-		t.Fatalf("job state=%+v; want failed attempt_count=1", state)
+	if state.status != "queued" || state.attempts != 1 {
+		t.Fatalf("job state=%+v; want queued attempt_count=1", state)
 	}
 	if !state.nextRunAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("next_run_at=%s; want %s", state.nextRunAt, now.Add(time.Minute))

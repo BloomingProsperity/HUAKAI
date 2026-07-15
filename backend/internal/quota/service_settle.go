@@ -19,6 +19,8 @@ var (
 	ErrInvalidFinalization = errors.New("quota: invalid reservation finalization")
 	// ErrReleaseInvalidatedByRevival 表示 billing claim 已复活且当前预留正被新 attempt 使用。
 	ErrReleaseInvalidatedByRevival = errors.New("quota: release invalidated by billing claim revival")
+	// ErrReleaseDeferredForRevival 表示复活 attempt 尚未终结，旧释放必须等待 claim 再入终态。
+	ErrReleaseDeferredForRevival = errors.New("quota: release deferred for billing claim revival")
 )
 
 const (
@@ -199,9 +201,16 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 			if err != nil {
 				return fmt.Errorf("quota: recheck billing claim before release: %w", err)
 			}
-			// reconciliation_needed 说明旧失败已经把预留隔离；claim 复活后 Reserve 不会接管它，
-			// 因此仍需释放解毒。其余活预留可能已被新 attempt 复用，不能由旧 Abort 释放。
-			if claim.Status != claimStatusAborted && reservation.Status != ReservationReconciliationNeeded {
+			// reserving 期间无法判定新 attempt 是否仍会结算旧毒化预留，必须等 claim 再入终态。
+			if claim.Status == claimStatusReserving && reservation.Status == ReservationReconciliationNeeded {
+				return &RetryableError{
+					Operation: fmt.Sprintf("release deferred for billing claim revival: tenant=%d claim=%d reservation=%d claim_status=%q reservation_status=%q",
+						req.TenantID, req.ClaimID, reservation.ID, claim.Status, reservation.Status),
+					Cause: ErrReleaseDeferredForRevival,
+				}
+			}
+			// 非 aborted claim 的 reserved 可能属于后继 attempt，旧 Abort 不能释放。
+			if claim.Status != claimStatusAborted && reservation.Status == ReservationReserved {
 				return fmt.Errorf("%w: tenant=%d claim=%d reservation=%d claim_status=%q reservation_status=%q",
 					ErrReleaseInvalidatedByRevival, req.TenantID, req.ClaimID, reservation.ID, claim.Status, reservation.Status)
 			}
@@ -730,7 +739,7 @@ func shouldQueueQuotaFinalizationFailure(err error) bool {
 	if errors.Is(err, ErrReservationNotFound) || errors.Is(err, ErrReservationMismatch) {
 		return false
 	}
-	if errors.Is(err, ErrReleaseInvalidatedByRevival) {
+	if errors.Is(err, ErrReleaseInvalidatedByRevival) || errors.Is(err, ErrReleaseDeferredForRevival) {
 		return false
 	}
 	var invalid *invalidReservationStatus

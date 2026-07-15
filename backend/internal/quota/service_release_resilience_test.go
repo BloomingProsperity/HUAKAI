@@ -60,16 +60,17 @@ func TestServiceRelease_ATCD2001_SixthTransactionSucceeds(t *testing.T) {
 	}
 }
 
-// TestServiceRelease_ClaimStateThreeWayGuard 固定 Release 行锁后的三分流：
-// aborted 正常释放；复活后的孤儿标记仍释放；复活后仍为 reserved 的活预留必须拒绝。
-// 变异：删除任一状态条件，至少一个子用例会在状态、窗口或 sentinel 断言上变红。
+// TestServiceRelease_ClaimStateThreeWayGuard 固定 Release 行锁后的状态分流：
+// aborted 一律释放；reserving 的毒化预留推迟；其他终态只解毒 reconciliation_needed。
+// 变异：把推迟改回立即释放时，预留、窗口、槽和 Deferred 哨兵断言都会变红。
 func TestServiceRelease_ClaimStateThreeWayGuard(t *testing.T) {
 	tests := []struct {
 		name              string
 		claimStatus       string
 		reservationStatus ReservationStatus
 		wantReleased      bool
-		wantInvalidated   bool
+		wantErr           error
+		wantRetryable     bool
 	}{
 		{
 			name:              "aborted_releases_reserved",
@@ -78,16 +79,35 @@ func TestServiceRelease_ClaimStateThreeWayGuard(t *testing.T) {
 			wantReleased:      true,
 		},
 		{
-			name:              "revived_releases_orphan_marker",
-			claimStatus:       "reserving",
+			name:              "aborted_releases_reconciliation_needed",
+			claimStatus:       claimStatusAborted,
 			reservationStatus: ReservationReconciliationNeeded,
 			wantReleased:      true,
 		},
 		{
-			name:              "revived_protects_live_reserved",
-			claimStatus:       "reserving",
+			name:              "reserving_defers_reconciliation_needed",
+			claimStatus:       claimStatusReserving,
+			reservationStatus: ReservationReconciliationNeeded,
+			wantErr:           ErrReleaseDeferredForRevival,
+			wantRetryable:     true,
+		},
+		{
+			name:              "reserving_protects_reserved",
+			claimStatus:       claimStatusReserving,
 			reservationStatus: ReservationReserved,
-			wantInvalidated:   true,
+			wantErr:           ErrReleaseInvalidatedByRevival,
+		},
+		{
+			name:              "terminal_releases_reconciliation_needed",
+			claimStatus:       claimStatusCommitted,
+			reservationStatus: ReservationReconciliationNeeded,
+			wantReleased:      true,
+		},
+		{
+			name:              "terminal_reserved_stays_invalidated",
+			claimStatus:       claimStatusCommitted,
+			reservationStatus: ReservationReserved,
+			wantErr:           ErrReleaseInvalidatedByRevival,
 		},
 	}
 
@@ -119,14 +139,20 @@ func TestServiceRelease_ClaimStateThreeWayGuard(t *testing.T) {
 				return
 			}
 
-			if !tc.wantInvalidated || !errors.Is(err, ErrReleaseInvalidatedByRevival) {
-				t.Fatalf("err=%v; want ErrReleaseInvalidatedByRevival", err)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err=%v; want %v", err, tc.wantErr)
+			}
+			if got := IsRetryable(err); got != tc.wantRetryable {
+				t.Fatalf("IsRetryable=%v; want %v", got, tc.wantRetryable)
 			}
 			if result.ReconciliationQueued || store.prepareCalls != 0 || len(store.jobs) != 0 {
 				t.Fatalf("queued/prepare/jobs=%v/%d/%d; want false/0/0", result.ReconciliationQueued, store.prepareCalls, len(store.jobs))
 			}
-			if store.reservation.Status != ReservationReserved || !store.windowReserved.Equal(decimal.NewFromInt(1)) {
-				t.Fatalf("status/window=%s/%s; want reserved/1", store.reservation.Status, store.windowReserved)
+			if result.Reservation.Status != tc.reservationStatus {
+				t.Fatalf("result reservation status=%s; want %s", result.Reservation.Status, tc.reservationStatus)
+			}
+			if store.reservation.Status != tc.reservationStatus || !store.windowReserved.Equal(decimal.NewFromInt(1)) {
+				t.Fatalf("status/window=%s/%s; want %s/1", store.reservation.Status, store.windowReserved, tc.reservationStatus)
 			}
 			if store.slotReleased || store.releaseWrites != 0 || len(store.audits) != 0 {
 				t.Fatalf("slot/writes/audits=%v/%d/%d; want false/0/0", store.slotReleased, store.releaseWrites, len(store.audits))

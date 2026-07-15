@@ -190,7 +190,9 @@ func (s *Settler) Abort(ctx context.Context, tenantID, claimID int64, reason, au
 		ClaimID:  claimID,
 		Reason:   releaseReasonForQuota(reason),
 	})
-	if errors.Is(err, quota.ErrReservationNotFound) || errors.Is(err, quota.ErrReleaseInvalidatedByRevival) {
+	if errors.Is(err, quota.ErrReservationNotFound) ||
+		errors.Is(err, quota.ErrReleaseInvalidatedByRevival) ||
+		errors.Is(err, quota.ErrReleaseDeferredForRevival) {
 		return nil
 	}
 	return err
