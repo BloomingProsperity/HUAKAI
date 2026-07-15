@@ -55,7 +55,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
@@ -1000,15 +999,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)
 	})
-	// 出站代理池 admin 面(F-FP-POOL):在无密钥的 proxyadmin.Service 之上提供
-	// list/create/update/delete/set-status。经共享 admin gate 做租户作用域;
-	// auth_secret 只写,绝不向外投影。
+	// 出站代理池 admin 面(F-FP-POOL):CRUD/质检与租户默认出口共享同一组
+	// production deps；auth_secret 只写,绝不向外投影。
+	proxyAdminDeps := proxyAdminRouteDeps(d)
 	r.Route("/admin/v1/proxies", func(r chi.Router) {
-		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
-			Auth:    d.adminAuth,
-			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
-			Prober:  buildProxyProber(d),
-		})
+		proxyadminhttp.MountRoutes(r, proxyAdminDeps)
+	})
+	r.Route("/admin/v1/tenants", func(r chi.Router) {
+		proxyadminhttp.MountTenantRoutes(r, proxyAdminDeps)
 	})
 	// Model -> pool 绑定 admin 面:补上之前的死写路径缺口
 	//(列 + resolver 早已存在,但没有 admin CRUD)。顶层资源,双角色

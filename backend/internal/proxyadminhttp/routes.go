@@ -42,9 +42,10 @@ type proxyService interface {
 // Deps 接线管理代理面。Auth 是共享的管理解析器;Service 是 proxyadmin 业务层;
 // Prober(可选)执行主动 probe-through 质检。
 type Deps struct {
-	Auth    adminAuth
-	Service proxyService
-	Prober  Prober
+	Auth           adminAuth
+	Service        proxyService
+	Prober         Prober
+	TenantDefaults tenantDefaultProxyService
 }
 
 // Prober 抽象"经该代理建隧道到固定 canary 的主动质检"。实现在 cmd/gateway 组合

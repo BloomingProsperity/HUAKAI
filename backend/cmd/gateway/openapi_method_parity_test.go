@@ -87,4 +87,14 @@ func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
 			t.Fatalf("OpenAPI 必须声明 %s %s(已实现,缺契约前端无法 codegen 这个变更动作)", op.method, op.specPath)
 		}
 	}
+
+	const tenantDefaultPath = "/admin/v1/tenants/{id}/default-proxy"
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		if !hasOperation(implOps, method, tenantDefaultPath) {
+			t.Fatalf("runtime 缺 %s %s;租户默认出口未完整接线", method, tenantDefaultPath)
+		}
+		if !hasOperation(specOps, method, tenantDefaultPath) {
+			t.Fatalf("OpenAPI 必须声明 %s %s", method, tenantDefaultPath)
+		}
+	}
 }

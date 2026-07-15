@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
 import { EmptyState } from '../../ui/EmptyState'
-import { deleteProxy, listProxies, setProxyStatus, testProxy } from './api'
+import { deleteProxy, getTenantDefaultProxy, listProxies, setProxyStatus, setTenantDefaultProxy, testProxy } from './api'
 import { EditProxyForm } from './EditProxyForm'
-import { DEFAULT_TENANT_ID, mapProxyRows, parseTenantInput, probeSummary, STATUSES, statusTone, type ProbeSummary, type ProxyTableRow } from './proxies'
+import { buildTenantDefaultProxyInput, DEFAULT_TENANT_ID, mapProxyRows, parseTenantInput, probeSummary, STATUSES, statusTone, tenantDefaultProxyFormValue, type ProbeSummary, type ProxyTableRow } from './proxies'
 import { ProxyCreateForm } from './ProxyCreateForm'
 import type { Proxy } from './types'
 
@@ -30,6 +30,11 @@ export function ProxiesPage() {
   const [error, setError] = useState<string | null>(null)
   const [probes, setProbes] = useState<Record<number, RowProbe>>({})
   const [editingId, setEditingId] = useState<number | null>(null)
+  const [defaultProxyValue, setDefaultProxyValue] = useState('')
+  const [defaultProxyLoading, setDefaultProxyLoading] = useState(true)
+  const [defaultProxySaving, setDefaultProxySaving] = useState(false)
+  const [defaultProxyError, setDefaultProxyError] = useState<string | null>(null)
+  const [defaultProxyNotice, setDefaultProxyNotice] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const reload = () => setReloadKey((k) => k + 1)
   const rows = mapProxyRows(proxies)
@@ -80,6 +85,24 @@ export function ProxiesPage() {
     return () => ac.abort()
   }, [tenantId, reloadKey])
 
+  useEffect(() => {
+    const ac = new AbortController()
+    setDefaultProxyLoading(true)
+    setDefaultProxyError(null)
+    setDefaultProxyNotice(null)
+    getTenantDefaultProxy(tenantId, ac.signal)
+      .then((value) => setDefaultProxyValue(tenantDefaultProxyFormValue(value.proxy_id)))
+      .catch((e: unknown) => {
+        if (ac.signal.aborted) return
+        setDefaultProxyValue('')
+        setDefaultProxyError(e instanceof Error ? e.message : '加载租户默认出口失败')
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setDefaultProxyLoading(false)
+      })
+    return () => ac.abort()
+  }, [tenantId, reloadKey])
+
   async function onDelete(p: Proxy) {
     if (!window.confirm(`确定删除代理「${p.name}」(${p.host}:${p.port})?`)) return
     try {
@@ -112,6 +135,24 @@ export function ProxiesPage() {
     }
   }
 
+  async function saveTenantDefaultProxy() {
+    setDefaultProxySaving(true)
+    setDefaultProxyError(null)
+    setDefaultProxyNotice(null)
+    try {
+      const saved = await setTenantDefaultProxy(tenantId, buildTenantDefaultProxyInput(defaultProxyValue))
+      setDefaultProxyValue(tenantDefaultProxyFormValue(saved.proxy_id))
+      setDefaultProxyNotice(saved.proxy_id === null ? '已清除租户默认出口，未绑定账号将直连。' : `已保存代理 #${saved.proxy_id} 为租户默认出口。`)
+    } catch (e: unknown) {
+      setDefaultProxyError(e instanceof Error ? e.message : '保存租户默认出口失败')
+    } finally {
+      setDefaultProxySaving(false)
+    }
+  }
+
+  const selectedDefaultProxyID = defaultProxyValue === '' ? null : Number(defaultProxyValue)
+  const selectedProxyMissing = selectedDefaultProxyID !== null && !proxies.some((proxy) => proxy.id === selectedDefaultProxyID)
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
@@ -132,6 +173,47 @@ export function ProxiesPage() {
           />
         </label>
       </header>
+
+      <section className="hk-card" aria-label="租户默认出口" style={{ padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 16 }}>租户默认出口</h2>
+          <p style={{ margin: '4px 0 0', color: 'var(--hk-ink-500)', fontSize: 12 }}>
+            仅当账号未绑定代理或代理组时使用；代理不健康会保持失败关闭，不会静默改成直连。
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--hk-space-2)', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
+            默认代理
+            <select
+              aria-label="租户默认出口代理"
+              value={defaultProxyValue}
+              disabled={defaultProxyLoading || defaultProxySaving}
+              onChange={(e) => {
+                setDefaultProxyValue(e.target.value)
+                setDefaultProxyNotice(null)
+              }}
+              style={{ minWidth: 260, padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', fontSize: 13 }}
+            >
+              <option value="">不设(直连)</option>
+              {selectedProxyMissing && <option value={defaultProxyValue}>代理 #{defaultProxyValue}(已不在可选列表)</option>}
+              {proxies.map((proxy) => (
+                <option key={proxy.id} value={String(proxy.id)}>{proxy.name} · {proxy.host}:{proxy.port} · {proxy.status}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => void saveTenantDefaultProxy()}
+            disabled={defaultProxyLoading || defaultProxySaving}
+            style={{ padding: '7px 14px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'var(--hk-accent, #2563eb)', color: '#fff', fontSize: 13, cursor: 'pointer' }}
+          >
+            {defaultProxySaving ? '保存中…' : '保存默认出口'}
+          </button>
+          {defaultProxyLoading && <span style={{ color: 'var(--hk-ink-500)', fontSize: 12 }}>读取中…</span>}
+        </div>
+        {defaultProxyError && <p style={{ color: 'var(--hk-danger)', margin: 0, fontSize: 13 }}>{defaultProxyError}</p>}
+        {defaultProxyNotice && <p style={{ color: 'var(--hk-ok, var(--hk-success))', margin: 0, fontSize: 13 }}>{defaultProxyNotice}</p>}
+      </section>
 
       <ProxyCreateForm tenantId={tenantId} onCreated={reload} />
 

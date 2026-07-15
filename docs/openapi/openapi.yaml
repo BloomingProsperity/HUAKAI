@@ -12844,6 +12844,75 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/tenants/{id}/default-proxy:
+    get:
+      tags: [admin-proxies]
+      summary: Read a tenant's default outbound proxy
+      operationId: getAdminTenantDefaultProxy
+      description: |
+        Returns the default outbound proxy id for the tenant named by the path.
+        `proxy_id=null` means accounts without an account-level proxy or proxy group
+        connect directly. A tenant operator may read only its own tenant; a platform
+        admin may name any tenant explicitly in the path.
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+        - backend/internal/proxyadmin/tenant_default.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Target tenant id; this path value is the sole tenant selector.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current tenant default outbound proxy selection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-proxies]
+      summary: Set or clear a tenant's default outbound proxy
+      operationId: putAdminTenantDefaultProxy
+      description: |
+        Sets the tenant fallback used only when an account has neither an account-level
+        proxy nor a proxy group. A numeric proxy_id must belong to the same tenant and
+        must not be soft-deleted; it need not currently be active because runtime health
+        remains fail-closed. `proxy_id=null` clears the fallback and restores direct
+        connection for otherwise-unbound accounts. The change and its admin audit event
+        commit atomically.
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+        - backend/internal/proxyadmin/tenant_default.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Target tenant id; this path value is the sole tenant selector.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyRequest' }
+      responses:
+        '200':
+          description: Updated tenant default outbound proxy selection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
 # ============================================================================
 # Components
 # ============================================================================
@@ -16994,6 +17063,32 @@ components:
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         status: { type: string, enum: [active, disabled, dead] }
+
+    AdminTenantDefaultProxyRequest:
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+      type: object
+      additionalProperties: false
+      required: [proxy_id]
+      properties:
+        proxy_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Same-tenant, non-soft-deleted proxy id; null clears the fallback to direct connection.
+
+    AdminTenantDefaultProxyResponse:
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+      type: object
+      additionalProperties: false
+      required: [proxy_id]
+      properties:
+        proxy_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Current tenant fallback proxy id, or null when no fallback is configured.
 
     AdminCreateUserRequest:
       type: object

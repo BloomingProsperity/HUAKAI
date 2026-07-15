@@ -6,10 +6,12 @@ import (
 )
 
 var (
-	ErrInvalidInput  = errors.New("proxyadmin: invalid input")
-	ErrInvalidStatus = errors.New("proxyadmin: invalid status")
-	ErrBackend       = errors.New("proxyadmin: backend failure")
-	ErrNotFound      = errors.New("proxyadmin: proxy not found")
+	ErrInvalidInput       = errors.New("proxyadmin: invalid input")
+	ErrInvalidStatus      = errors.New("proxyadmin: invalid status")
+	ErrBackend            = errors.New("proxyadmin: backend failure")
+	ErrNotFound           = errors.New("proxyadmin: proxy not found")
+	ErrTenantNotFound     = errors.New("proxyadmin: tenant not found")
+	ErrStoreNotConfigured = errors.New("proxyadmin: tenant default store not configured")
 	// ErrUnsafeHost 表示租户代理 host 指向了 loopback/内网/link-local/metadata
 	// 等不安全目标(SSRF)。映射 HTTP 400,与 ErrInvalidInput 同档但语义更明确。
 	ErrUnsafeHost = errors.New("proxyadmin: unsafe proxy host")
@@ -54,4 +56,16 @@ type UpdateInput struct {
 	AuthUsername *string
 	AuthSecret   *string
 	GroupID      *string
+}
+
+// TenantDefaultProxy 是租户默认出口的最小读取投影；nil 表示未设置、继续直连。
+type TenantDefaultProxy struct {
+	ProxyID *int64
+}
+
+// TenantDefaultAudit 只携带管理员归属与请求关联，不接收代理地址或凭据。
+type TenantDefaultAudit struct {
+	ActorID   string
+	ActorRole string
+	RequestID string
 }

@@ -2,13 +2,16 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { EditProxyForm as EditProxyFormComponent } from './EditProxyForm'
+import { ProxiesPage } from './ProxiesPage'
 import {
   buildCreateInput,
+  buildTenantDefaultProxyInput,
   buildUpdateInput,
   mapProxyRows,
   parseTenantInput,
   probeSummary,
   statusTone,
+  tenantDefaultProxyFormValue,
   validateCreateForm,
   validateEditForm,
   validateProxyGroupID,
@@ -63,6 +66,20 @@ describe('parseTenantInput', () => {
     expect(parseTenantInput('9')).toBe(9)
     expect(parseTenantInput('0')).toBe(1)
     expect(parseTenantInput('x')).toBe(1)
+  })
+})
+
+describe('租户默认出口表单映射', () => {
+  it('代理选项精确映射为数值 proxy_id', () => {
+    expect(tenantDefaultProxyFormValue(41)).toBe('41')
+    expect(buildTenantDefaultProxyInput('41')).toEqual({ proxy_id: 41 })
+  })
+
+  it('「不设(直连)」空值精确映射为 null，而不是 0 或省略字段', () => {
+    expect(tenantDefaultProxyFormValue(null)).toBe('')
+    const input = buildTenantDefaultProxyInput('')
+    expect(input).toEqual({ proxy_id: null })
+    expect('proxy_id' in input).toBe(true)
   })
 })
 
@@ -208,5 +225,14 @@ describe('代理编辑表单 SSR', () => {
     expect(html).toContain('name="group_id"')
     expect(html).toContain('仅限字母、数字、下划线、短横线')
     expect(html).toContain('留空保存会清除分组')
+  })
+})
+
+describe('租户默认出口表单 SSR', () => {
+  it('在代理页渲染直连项与保存动作', () => {
+    const html = renderToStaticMarkup(createElement(ProxiesPage))
+    expect(html).toContain('租户默认出口')
+    expect(html).toContain('不设(直连)')
+    expect(html).toContain('保存默认出口')
   })
 })

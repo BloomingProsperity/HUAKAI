@@ -1,4 +1,4 @@
-import type { CreateProxyInput, ProbeResult, Proxy, UpdateProxyInput } from './types'
+import type { CreateProxyInput, ProbeResult, Proxy, TenantDefaultProxyInput, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池纯展示逻辑(与 React 解耦,便于 vitest 变异测试)。
@@ -51,6 +51,22 @@ export function statusTone(status: string): 'ok' | 'fail' | 'muted' {
 export function parseTenantInput(raw: string): number {
   const v = Number.parseInt(raw, 10)
   return Number.isInteger(v) && v > 0 ? v : DEFAULT_TENANT_ID
+}
+
+/** 把后端 nullable proxy_id 映射成 select 的稳定字符串值。 */
+export function tenantDefaultProxyFormValue(proxyID: number | null): string {
+  return proxyID === null ? '' : String(proxyID)
+}
+
+/** 把默认出口 select 值映射为 PUT 请求；空值必须保留成显式 null。 */
+export function buildTenantDefaultProxyInput(raw: string): TenantDefaultProxyInput {
+  const value = raw.trim()
+  if (value === '') return { proxy_id: null }
+  const proxyID = Number(value)
+  if (!Number.isSafeInteger(proxyID) || proxyID <= 0) {
+    throw new Error('租户默认出口必须是正整数代理 ID')
+  }
+  return { proxy_id: proxyID }
 }
 
 // 后端支持的代理协议(transport/mimicry proxyDialerFromURL:http/https CONNECT + socks5)。
