@@ -2,7 +2,10 @@
 
 > 建档日期：2026-07-15（UTC）
 >
-> 本文件是第一波“全库分类 manifest，零删除”的唯一产物。它不是实现真伪结论、不是删除授权，也不是最终项目 SSOT。任何 `git rm` 前必须把逐领域删除清单交 Claude 亲检；遇到 Owner-gated、DEFERRED、TODO、未接线或状态存疑，一律停下，不据此判删。
+> 本文件是第一波“全库分类 manifest，零删除”的历史基线。它不是实现真伪结论、不是最终项目
+> SSOT。第一波要求“逐份交 Claude 亲检后才删除”，Owner 在同日后续波已明确更新为：以亲读实现
+> 代码和调用链为准、自主 `git rm`、逐批写删除日志；文档—代码不一致另入 DRIFT。下方 1272 份
+> 分类表保留当时快照，不随删除逐行抹除，避免丢失归并母集。
 
 ## 1. 口径、边界与方法
 
@@ -39,6 +42,19 @@
 | 建议保留/待核验 | 1113 |
 
 加入本 manifest 自记录后，明细总数 1273；全表状态计数为 `CURRENT=351`、`SUPERSEDED=175`、`HISTORICAL-DELETE=8`、`NEEDS-CODE-VERIFY=739`。
+
+### 2.4 后续波进度（代码核验后处置）
+
+| 日期 | 领域 | 代码核验后删除 | SSOT | DRIFT |
+| --- | --- | ---: | --- | --- |
+| 2026-07-15 | frontend | 34 | `docs/architecture/frontend-SSOT.md` | 已登记 |
+| 2026-07-15 | observability-logging | 21 | `docs/architecture/observability-logging-SSOT.md` | 已登记 |
+| 2026-07-15 | deployment | 5 | `docs/architecture/deployment-SSOT.md` | 已登记 |
+
+逐文件理由与代码 `file:line` 见 `docs/architecture/DOC-CONSOLIDATION-DELETION-LOG.md`；
+主入口见 `docs/architecture/PROJECT-SSOT-INDEX.md`；不一致和代码疑点见
+`docs/architecture/DOC-CODE-DRIFT.md`。本表中的被删路径仍作为历史基线存在，文件内容从 git
+history 可恢复。
 
 ### 2.2 明确保护与专门处理的族
 
