@@ -36,13 +36,14 @@ const codeAssistBase = "https://cloudcode-pa.googleapis.com"
 // codeAssistVersion 是 Code Assist 内部 API 版本段。
 const codeAssistVersion = "v1internal"
 
-// codeAssistUserAgent 是让请求看起来像 Gemini CLI 客户端的 User-Agent。
-// 本仓自己的格式串（parity 非逐字），仅功能必需，不加额外伪装。
-const codeAssistUserAgent = "HUAKAI-GeminiCLI/1.0"
+// codeAssistUserAgent 是 Gemini CLI 模型请求的实抓 User-Agent。
+// 来源：tools/fingerprint-collector/templates/gemini-advanced.json；该字段由
+// Owner 自有账号的 mitmproxy 解密流量回填。provider 构造层没有模板注入
+// 路径，因此在此保留静态值，并由精确测试守卫模板漂移。
+const codeAssistUserAgent = "GeminiCLI/0.41.2/gemini-3.1-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
 
-// codeAssistAPIClient 是 X-Goog-Api-Client 的 genai-sdk 形 wire 值（事实
-// wire 值，非可版权表达）。Code Assist 后端按此识别 SDK 客户端。
-const codeAssistAPIClient = "google-genai-sdk/1.0 gl-go/1.0"
+// codeAssistAPIClient 是同一份模型请求抓包中的 X-Goog-Api-Client 真值。
+const codeAssistAPIClient = "gl-node/22.22.2"
 
 // 编译期接口合规断言。
 var _ provider.Adapter = (*CodeAssistAdapter)(nil)

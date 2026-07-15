@@ -170,21 +170,23 @@ func TestCodeAssistGuards(t *testing.T) {
 	}
 }
 
-// TestCodeAssistMimicryHeadersPresent 守卫最小必需 header(UA + X-Goog-Api-Client)
-// 存在且非空——让调用能在 Code Assist 后端工作的最小集。
-// Mutation:删 UA 或 X-Goog-Api-Client set → 红。
-func TestCodeAssistMimicryHeadersPresent(t *testing.T) {
+// TestCodeAssistCapturedIdentityHeaders 守卫 Owner 自有抓包确认的 Gemini CLI
+// 身份头精确值，避免“只要非空”让自编 UA 或 SDK 标识蒙混过关。
+// 变异：任一值改回占位串或换成其它 SDK 标识，本测试都必须转红。
+func TestCodeAssistCapturedIdentityHeaders(t *testing.T) {
 	a := &CodeAssistAdapter{}
 	req, err := a.BuildRequest(context.Background(), codeAssistInput(t,
 		sessionCred(map[string]string{"project_id": "p"}), "gemini-2.5-pro", []byte(`{}`)))
 	if err != nil {
 		t.Fatalf("BuildRequest err=%v", err)
 	}
-	if req.Header.Get("User-Agent") == "" {
-		t.Errorf("User-Agent 缺失")
+	const wantUserAgent = "GeminiCLI/0.41.2/gemini-3.1-pro-preview (linux; x64; terminal) google-api-nodejs-client/9.15.1"
+	if got := req.Header.Get("User-Agent"); got != wantUserAgent {
+		t.Errorf("User-Agent=%q，期望抓包真值 %q", got, wantUserAgent)
 	}
-	if req.Header.Get("X-Goog-Api-Client") == "" {
-		t.Errorf("X-Goog-Api-Client 缺失")
+	const wantAPIClient = "gl-node/22.22.2"
+	if got := req.Header.Get("X-Goog-Api-Client"); got != wantAPIClient {
+		t.Errorf("X-Goog-Api-Client=%q，期望抓包真值 %q", got, wantAPIClient)
 	}
 }
 
