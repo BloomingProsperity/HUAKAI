@@ -390,6 +390,13 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-R1A-007 | per-key 与账号级并发上限饱和后可恢复。 | quota + pool slot 并发 | 真 PostgreSQL、并发测试 tag/E2E 环境。 | 并发抢 quota scope；账号槽打满并触发排队/拒绝；成功与 abort 后重新取槽。 | 同时成功数精确等于 cap；不得超发；终结后容量恢复，claim/quota/slot 无悬挂。 | 并发超卖、排队错误、成功/失败释放不对称。 | PASS（真 PG quota/pool 集成测试；`e2e_concurrency` 四场景整组干净重跑通过：释放后 waiter 成功、等待队列溢出快速拒绝、超时 abort/release、断连释放等待位） |
 | AT-R1A-008 | `count_tokens` 明确不属于本切片。 | Mandatory Roadmap | 无 session count_tokens adapter/contract。 | 用 session family 模型调用既有 `/v1/messages/count_tokens` 路由。 | 在选号、发网和钱账前显式 501；不因 messages family ready 自动推导 count_tokens ready，后续独立切片实现。 | 协议族启用后旧 handler 意外复用 session adapter，造成虚假支持。 | MANDATORY ROADMAP（fail-closed 已判别：`backend/internal/completionshttp/handler_test.go`） |
 
+## 增量 K：配额解毒与槽终结并发
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-K-QUOTA-001 | 复活中的 claim 让旧 release job 等待时，不因历史失败次数耗尽而永久终停。 | F-OBS-001 / F-BILL-001 | `release_after_abort` job 已到 `maxAttempts-1`；reservation 为 `reconciliation_needed`；claim 先为 `reserving`，后变为 `aborted`。 | Failure：执行一轮并让 `Release` 返回包在 `RetryableError.Cause` 中的 Deferred。Recovery：到 backoff 时间后把 claim 推到 aborted，再执行同一 job。负向：用普通 `RetryableError` 耗尽预算，并保留 invalidated 用例。 | Deferred 后 job 精确为 `queued`，`next_run_at` 是普通未来 backoff 而非十年停靠；claim 终态后同一 job 释放并成功。普通耗尽与 invalidated 仍为 `failed`。 | 旧 job 因一次时序等待永久 failed，且 stale sweep 因存在 job 历史无法接管，预留永不解毒。 | COVERED（`backend/internal/quota/reconciler_revival_test.go`；删除 Deferred 例外的亲手变异已红） |
+| AT-K-BILL-001 | slot lease 回收与 `Abort`/`Settle` 在 Serializable 下争同一槽时只允许一次释放。 | F-BILL-001 / F-POOL-001 | 真 PostgreSQL；每轮独立 claim、hold、acquired 槽，账号 `in_flight_count=2`；四种组合各三轮。 | 用 goroutine 起跑屏障和查询级协调分别制造回收先赢、终结先赢；两边均以完整 Serializable 事务吸收真实 `40001`。 | 每轮 loser 精确重开一次事务；无原始 SQLSTATE 泄漏；槽只有 `orphan_swept` 或对应 release 终态；claim/hold/钱账恰一，`in_flight_count=1`；Abort/Settle 两种胜序均有命中计数。 | 双减、漏减、部分 Tx2、只验证“先回收后终结”的静态序而漏掉真实写写冲突。 | PARTIAL（`backend/internal/billing/slot_release_recovery_integration_test.go` 已通过 `integration_pg` 编译；当前沙箱无 `HUAKAI_DATABASE_URL`，待 Claude 本机真 PG 运行） |
+
 ## 持久结算意图
 
 边界：阶段 1 验迁移、正向意图生命周期、旁路 fail-open 与生产依赖装配；阶段 2 只把悬挂意图追平权威 claim，绝不推断金额或改写主账本。运维人工裁决仍属后续强制切片。
@@ -418,6 +425,12 @@ Source: `docs/specs/voucher-system.md` and `docs/decompositions/_cross-cutting/v
 | AT-P2B-CH-001 | create 写入三门后，create/get/list 精确回显并进入运行时消费链。 | channel catalog `body_param_strips` / `param_override` / `sensitive_words` | 真 PostgreSQL 已应用现有迁移；租户、pool group、model alias 与 binding 已就绪。 | Normal：通过 admin HTTP create 提交三门，再调 get/list，用同一 `PostgresRegistry` 解析 binding 并调用参数剥离、参数覆盖和敏感词混淆消费函数。Failure：删除任一 INSERT/RETURNING/SELECT/Scan 映射。Recovery：恢复 SQL 源与手改生成码的同序映射后重跑。 | create/get/list 三处回显语义等于入参；registry 输出驱动实际请求改写。任一列断线会让精确值或消费断言转红。 | 字段只存不用、SQL 参数/Scan 错位、单条读或列表漏回显。 | READY（工作树：`backend/internal/adminhttp/channel_catalog_rewrite_gates_integration_test.go`；`integration_pg` 已编译；当前沙箱禁止 TCP/Unix socket，真库运行待宿主门） |
 | AT-P2B-CH-002 | update 只修改一门时，另两门不得被误清；显式空值仍可清空。 | presence-aware channel partial update | 已有 channel 的三门均为非空值。 | Normal：update 只提交 `body_param_strips`，通过 update/get/list/registry 核对其余两门。Failure：去掉 `set_*` 布尔位或将 SQL `ELSE` 分支改为空值。Recovery：恢复“省略=保留，显式空=清空”分支并重跑。 | 只有被提交的门改变；另两门的库值、HTTP 回显和 registry 消费值均不变；显式 `[]` / `{}` 可清空。 | 部分更新误清生产策略、无法显式关闭配置。 | READY（单元绿：`channel_catalog_mutation_handler_test.go`；真库断言已写入上述 integration test，待宿主门执行） |
 | AT-P2B-CH-003 | 非法 JSON/类型在 HTTP 边界返回 400 且不写库，前端也不发请求。 | channel rewrite config validation | 可观测 store 调用次数；前端可注入发送 spy。 | Normal：提交字符串数组与 JSON object。Failure：提交损坏 JSON、array/scalar/null override、非字符串数组项、空项。Recovery：改正为合法值后再提交。 | 非法请求稳定返回 400，create/update store 调用次数为 0；前端校验失败时 API spy 为 0；修正后仅发送一次且 payload 精确。 | 宽松反序列化导致运行时类型崩溃、无效请求污染数据。 | PASS（`backend/internal/adminhttp/channel_catalog_mutation_handler_test.go`、`backend/internal/channelrewriteconfig/config_test.go`、`frontend/src/features/catalogs/catalogs.test.ts`） |
+
+## 租户默认出口写口与运营恢复
+
+| Test ID | Scenario | Capability | Preconditions | Steps | Expected Result | Risk Covered | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| AT-PROXY-DEFAULT-001 | 管理员设置、拒绝错误绑定并清除租户默认出口，写口与既有 resolver 真实闭合。 | F-FP-POOL / Admin operations | 租户 A/B、A 的正常与软删代理、B 的代理、A 的未绑定账号均存在；admin audit 可查；现有 resolver 可用。 | Normal：A 设置本租户未软删代理，GET 读回并解析未绑定账号。Failure：分别提交 B 的代理与 A 的软删代理。Recovery：提交 `proxy_id:null` 清除后再次 GET/解析。 | Normal：列值与 GET 精确回显，resolver 得到所选 URL，配置与一条脱敏 admin audit 同事务。Failure：两类错误代理均 404、原值不变、无成功写审计。Recovery：GET 精确回 null，未绑定账号恢复直连，清除有审计。 | 跨租户出口劫持、软删代理误绑、写口死列、审计半提交、null 被变成 0、运行时漏注入。 | PASS（工作树：`backend/internal/proxyadmin/tenant_default_test.go`、`backend/internal/proxyadminhttp/tenant_default_routes_test.go`、`backend/cmd/gateway/routes_proxy_admin_test.go`、`frontend/src/features/proxies/proxies.test.ts`；真 PG：`TestTenantDefaultProxyWritePortFeedsResolverPostgres` 已编译，待提供 `HUAKAI_DATABASE_URL` 后执行） |
 
 ## Release Rule
 

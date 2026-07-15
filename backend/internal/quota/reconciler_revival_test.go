@@ -51,13 +51,15 @@ func TestReconcilerReleaseAfterAbort_RevivedClaimTerminallyFails(t *testing.T) {
 	}
 }
 
-// TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededBacksOff 固定复活 attempt
-// 运行期间只推迟旧解毒 job；若误放行或映射成 invalidated，错误和退避时间断言都会变红。
-func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededBacksOff(t *testing.T) {
+// TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededIgnoresTerminalBudget 固定复活 attempt
+// 运行期间只推迟旧解毒 job；即使此前失败已耗尽预算，也必须等 claim 终态后再完成解毒。
+func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededIgnoresTerminalBudget(t *testing.T) {
 	now := time.Date(2026, 7, 15, 13, 30, 0, 0, time.UTC)
 	store := newInvalidatedReleaseReplayStore(now)
 	store.reservation.Status = ReservationReconciliationNeeded
+	store.job.AttemptCount = 2
 	reconciler := NewReconciler(NewService(store), store, ReconcilerOptions{
+		MaxAttempts: 3,
 		BaseBackoff: time.Minute,
 		MaxBackoff:  time.Hour,
 	})
@@ -76,11 +78,51 @@ func TestReconcilerReleaseAfterAbort_RevivedReconciliationNeededBacksOff(t *test
 	if store.failure == nil {
 		t.Fatal("Deferred job 未进入退避")
 	}
-	if store.failure.Terminal || store.job.Status != "queued" || store.job.AttemptCount != 1 {
-		t.Fatalf("failure/job=%+v/%+v，want 非终停 queued 且 attempt_count=1", store.failure, store.job)
+	if store.failure.Terminal || store.job.Status != "queued" || store.job.AttemptCount != 3 {
+		t.Fatalf("failure/job=%+v/%+v，want 非终停 queued 且 attempt_count=3", store.failure, store.job)
 	}
-	if want := now.Add(time.Minute); !store.failure.NextRunAt.Equal(want) {
-		t.Fatalf("next_run_at=%s，want 普通退避 %s", store.failure.NextRunAt, want)
+	nextRunAt := now.Add(4 * time.Minute)
+	if !store.failure.NextRunAt.Equal(nextRunAt) {
+		t.Fatalf("next_run_at=%s，want 普通退避 %s", store.failure.NextRunAt, nextRunAt)
+	}
+	if store.failure.NextRunAt.Equal(now.Add(terminalReconciliationDelay)) {
+		t.Fatalf("next_run_at=%s，不得按终停预算停靠十年", store.failure.NextRunAt)
+	}
+
+	store.claimStatus = claimStatusAborted
+	processed, err = reconciler.ReconcileDueJobs(context.Background(), 1, nextRunAt, 10)
+	if err != nil {
+		t.Fatalf("claim 终态后的下一轮解毒 err=%v", err)
+	}
+	if processed != 1 || store.releaseCalls != 1 || store.completeCalls != 1 {
+		t.Fatalf("processed/release/complete=%d/%d/%d，want 1/1/1", processed, store.releaseCalls, store.completeCalls)
+	}
+	if store.job.Status != "succeeded" {
+		t.Fatalf("job status=%q，want succeeded", store.job.Status)
+	}
+}
+
+// TestReconcilerFailRunningJob_OrdinaryRetryableStillStopsAtBudget 守住例外边界：
+// 只有复活等待可以越过终停预算，普通可重试失败耗尽预算后仍必须进入 failed。
+func TestReconcilerFailRunningJob_OrdinaryRetryableStillStopsAtBudget(t *testing.T) {
+	now := time.Date(2026, 7, 15, 14, 0, 0, 0, time.UTC)
+	store := newInvalidatedReleaseReplayStore(now)
+	store.job.AttemptCount = 2
+	reconciler := NewReconciler(NewService(store), store, ReconcilerOptions{
+		MaxAttempts: 3,
+		BaseBackoff: time.Minute,
+		MaxBackoff:  time.Hour,
+	})
+	cause := &RetryableError{Operation: "ordinary storage failure", Cause: errors.New("storage unavailable")}
+
+	if err := reconciler.failRunningJob(context.Background(), 1, now, store.job, cause); err != nil {
+		t.Fatalf("failRunningJob err=%v", err)
+	}
+	if store.failure == nil || !store.failure.Terminal || store.job.Status != "failed" {
+		t.Fatalf("failure/job=%+v/%+v，want 普通失败耗尽预算后终停", store.failure, store.job)
+	}
+	if want := now.Add(terminalReconciliationDelay); !store.failure.NextRunAt.Equal(want) {
+		t.Fatalf("next_run_at=%s，want 终态停靠 %s", store.failure.NextRunAt, want)
 	}
 }
 
@@ -95,6 +137,7 @@ type invalidatedReleaseReplayStore struct {
 	inTx                bool
 	claimReadsInsideTx  int
 	claimReadsOutsideTx int
+	claimStatus         string
 }
 
 func newInvalidatedReleaseReplayStore(now time.Time) *invalidatedReleaseReplayStore {
@@ -119,6 +162,7 @@ func newInvalidatedReleaseReplayStore(now time.Time) *invalidatedReleaseReplaySt
 			ReservedUnits:  decimal.NewFromInt(1),
 			PolicySnapshot: marshalPolicySnapshot(nil, nil),
 		},
+		claimStatus: claimStatusReserving,
 	}
 }
 
@@ -148,7 +192,7 @@ func (s *invalidatedReleaseReplayStore) GetClaimTerminalState(context.Context, i
 	} else {
 		s.claimReadsOutsideTx++
 	}
-	return ClaimTerminalState{Status: claimStatusReserving}, nil
+	return ClaimTerminalState{Status: s.claimStatus}, nil
 }
 
 func (s *invalidatedReleaseReplayStore) ReleaseConcurrencySlots(context.Context, int64, int64, string) error {

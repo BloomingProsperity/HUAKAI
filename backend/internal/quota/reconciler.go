@@ -332,7 +332,9 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 func (r *Reconciler) failRunningJob(ctx context.Context, tenantID int64, now time.Time, job ReconciliationJob, cause error) error {
 	nextRunAt := r.nextRunAt(now, job.AttemptCount)
 	recoveryInvalidated := errors.Is(cause, errReconciliationRecoveryInvalidated)
-	terminal := recoveryInvalidated || (r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts)
+	releaseDeferredForRevival := errors.Is(cause, ErrReleaseDeferredForRevival)
+	// 复活 attempt 尚未终结是时序等待，不是重复失败；终停会让后续终态永远失去解毒机会。
+	terminal := recoveryInvalidated || (!releaseDeferredForRevival && r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts)
 	if terminal {
 		nextRunAt = now.Add(terminalReconciliationDelay)
 		message := "quota reconciliation job reached max attempts"
