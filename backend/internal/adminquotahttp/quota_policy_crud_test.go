@@ -239,7 +239,7 @@ func TestCreateValidationMatrix(t *testing.T) {
 func TestCreateAcceptsFullUnion(t *testing.T) {
 	scopeKinds := []string{"global", "user", "api_key", "channel", "pool_group", "provider_account"}
 	metrics := []string{"requests", "tokens_estimated", "cost_usd", "concurrency"}
-	windowKinds := []string{"none", "fixed", "calendar_day", "calendar_week", "manual"}
+	windowKinds := []string{"none", "fixed", "calendar_day", "calendar_week", "calendar_month", "manual"}
 	modes := []string{"enforce", "observe", "manual_first", "disabled"}
 	for _, sk := range scopeKinds {
 		for _, m := range metrics {

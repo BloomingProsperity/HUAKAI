@@ -17311,10 +17311,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, description: "Neutral scope encoding: '*' for global, local id string otherwise." }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0 }
-        limit_value: { type: string, description: "Decimal string; 0 = unlimited." }
-        burst_value: { type: string, description: "Decimal string token-bucket burst allowance." }
+        limit_value: { type: string, description: "非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "窗口硬上限增量；实际上限为 limit_value + burst_value，默认 0 时行为不变。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled] }
         priority: { type: integer, description: "Lower = higher priority (tie-break ordering)." }
         enabled: { type: boolean }
@@ -17333,10 +17333,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
-        limit_value: { type: string, description: "Decimal string >= 0; 0 = unlimited." }
-        burst_value: { type: string, description: "Optional decimal string >= 0; default 0." }
+        limit_value: { type: string, description: "必填非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "可选非负十进制字符串；窗口硬上限为 limit_value + burst_value，默认 0。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled], default: enforce }
         priority: { type: integer, default: 100 }
         enabled: { type: boolean, default: true }
@@ -17352,10 +17352,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
-        limit_value: { type: string, description: "Decimal string >= 0; 0 = unlimited." }
-        burst_value: { type: string, description: "Optional decimal string >= 0; default 0." }
+        limit_value: { type: string, description: "必填非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "可选非负十进制字符串；窗口硬上限为 limit_value + burst_value，默认 0。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled], default: enforce }
         priority: { type: integer, default: 100 }
         enabled: { type: boolean, default: true }

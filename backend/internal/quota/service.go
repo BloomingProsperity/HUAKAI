@@ -334,7 +334,7 @@ func applyEnforceReservations(ctx context.Context, store PGStore, req ReserveReq
 				WindowID:          item.window.ID,
 				ReserveDelta:      item.amount,
 				RequestCountDelta: 1,
-				LimitValue:        item.policy.LimitValue,
+				LimitValue:        effectiveLimit(item.policy),
 			}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					decision := exceededDecision(req, item.policy, policyAssessment{
@@ -356,7 +356,7 @@ func applyEnforceReservations(ctx context.Context, store PGStore, req ReserveReq
 				WindowID:          item.window.ID,
 				ReserveDelta:      req.PredictedCost,
 				RequestCountDelta: 0,
-				LimitValue:        item.policy.LimitValue,
+				LimitValue:        effectiveLimit(item.policy),
 			}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					decision := exceededDecision(req, item.policy, policyAssessment{
@@ -377,7 +377,7 @@ func applyEnforceReservations(ctx context.Context, store PGStore, req ReserveReq
 				WindowID:          item.window.ID,
 				ReserveDelta:      item.amount,
 				RequestCountDelta: 0,
-				LimitValue:        item.policy.LimitValue,
+				LimitValue:        effectiveLimit(item.policy),
 			}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					decision := exceededDecision(req, item.policy, policyAssessment{
@@ -872,16 +872,18 @@ func (a policyAssessment) payload(policy Policy) []byte {
 
 func assessmentPayload(policy Policy, current decimal.Decimal, amount decimal.Decimal, limit decimal.Decimal, requestCount int64) []byte {
 	data, err := json.Marshal(map[string]any{
-		"policy_id":     policy.ID,
-		"scope_kind":    policy.Scope.Kind,
-		"scope_id":      normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
-		"metric":        policy.Metric,
-		"mode":          policy.Mode,
-		"window_kind":   policy.Window.Kind,
-		"current":       current.String(),
-		"amount":        amount.String(),
-		"limit":         limit.String(),
-		"request_count": requestCount,
+		"policy_id":       policy.ID,
+		"scope_kind":      policy.Scope.Kind,
+		"scope_id":        normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
+		"metric":          policy.Metric,
+		"mode":            policy.Mode,
+		"window_kind":     policy.Window.Kind,
+		"current":         current.String(),
+		"amount":          amount.String(),
+		"limit":           limit.String(),
+		"burst_value":     policy.BurstValue.String(),
+		"effective_limit": effectiveLimit(policy).String(),
+		"request_count":   requestCount,
 	})
 	if err != nil {
 		return []byte("{}")

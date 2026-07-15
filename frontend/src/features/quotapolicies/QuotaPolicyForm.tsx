@@ -110,7 +110,7 @@ export function QuotaPolicyForm({ tenantId, existing, initial, onClose, onSaved 
           <Field label="上限(limit_value,十进制)">
             <input value={form.limitValue} onChange={(e) => setF('limitValue', e.target.value)} inputMode="decimal" placeholder="如 1000 或 5.50" style={{ ...inp, fontFamily: 'var(--hk-font-mono)' }} />
           </Field>
-          <Field label="突发上限(burst_value,可空=0)">
+          <Field label="突发上限(burst_value,可空=0)" help="窗口内实际上限=上限+突发；0=无突发">
             <input value={form.burstValue} onChange={(e) => setF('burstValue', e.target.value)} inputMode="decimal" placeholder="留空=0" style={{ ...inp, fontFamily: 'var(--hk-font-mono)' }} />
           </Field>
           <SelectField
@@ -154,11 +154,12 @@ export function QuotaPolicyForm({ tenantId, existing, initial, onClose, onSaved 
 }
 
 /* ——— 本文件私有小组件 / 样式 ——— */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
       {label}
       {children}
+      {help && <span style={{ lineHeight: 1.4, color: 'var(--hk-ink-500)' }}>{help}</span>}
     </label>
   )
 }

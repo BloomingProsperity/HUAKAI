@@ -33,7 +33,14 @@ export const SCOPE_KINDS: ScopeKind[] = [
   'provider_account',
 ]
 export const METRICS: Metric[] = ['requests', 'tokens_estimated', 'cost_usd', 'concurrency']
-export const WINDOW_KINDS: WindowKind[] = ['none', 'fixed', 'calendar_day', 'calendar_week', 'manual']
+export const WINDOW_KINDS: WindowKind[] = [
+  'none',
+  'fixed',
+  'calendar_day',
+  'calendar_week',
+  'calendar_month',
+  'manual',
+]
 export const MODES: Mode[] = ['enforce', 'observe', 'manual_first', 'disabled']
 
 /** scope_id 长度上限,镜像后端 maxScopeIDLen(validate.go:37)。 */
@@ -111,6 +118,8 @@ export function windowKindLabel(v: string): string {
       return '自然日'
     case 'calendar_week':
       return '自然周'
+    case 'calendar_month':
+      return '自然月'
     case 'manual':
       return '手动重置'
     default:

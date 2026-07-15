@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  WINDOW_KINDS,
   buildListQuery,
   emptyPolicyForm,
   formatDecimal,
@@ -14,7 +15,7 @@ import {
   validatePolicyForm,
   windowKindLabel,
 } from './quotapolicies'
-import { EMPTY_FILTERS, type PolicyFilters, type PolicyForm, type QuotaPolicy } from './types'
+import { EMPTY_FILTERS, type PolicyFilters, type PolicyForm, type QuotaPolicy, type WindowKind } from './types'
 
 // ── buildListQuery ───────────────────────────────────────────────────────────
 describe('buildListQuery', () => {
@@ -54,6 +55,16 @@ describe('枚举中文标签', () => {
     expect(windowKindLabel('calendar_week')).toBe('自然周')
     expect(modeLabel('manual_first')).toBe('先人工')
     expect(modeLabel('')).toBe('—')
+  })
+
+  it('calendar_month 进入窗口白名单并映射为自然月', () => {
+    // 变异:从 WINDOW_KINDS 移除 calendar_month 会同时打红下拉枚举与提交映射。
+    const calendarMonth: WindowKind = 'calendar_month'
+    expect(WINDOW_KINDS).toContain(calendarMonth)
+    expect(windowKindLabel(calendarMonth)).toBe('自然月')
+    const r = validatePolicyForm({ ...baseForm(), windowKind: calendarMonth, windowSeconds: '0' })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value.window_kind).toBe('calendar_month')
   })
 })
 
