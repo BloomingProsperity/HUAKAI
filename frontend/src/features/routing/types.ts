@@ -60,3 +60,31 @@ export interface UpdateBindingRequest {
   rpm_limit?: number | null
   tpm_limit?: number | null
 }
+
+/** 池组内模型→账号子集的 Layer-1 强制 pin。 */
+export interface ModelRoutingOverride {
+  id: number
+  pool_group_id: number
+  model: string
+  provider_account_ids: number[]
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface RoutingOverrideListResponse {
+  items: ModelRoutingOverride[]
+}
+
+export interface CreateRoutingOverrideRequest {
+  pool_group_id: number
+  model: string
+  provider_account_ids: number[]
+  enabled: boolean
+}
+
+/** PATCH 只发送界面明确编辑的账号数组与启停状态。 */
+export interface UpdateRoutingOverrideRequest {
+  provider_account_ids: number[]
+  enabled: boolean
+}

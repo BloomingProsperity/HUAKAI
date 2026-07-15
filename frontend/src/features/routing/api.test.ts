@@ -3,7 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const client = vi.hoisted(() => ({ get: vi.fn(), send: vi.fn() }))
 vi.mock('../../lib/api', () => ({ apiGet: client.get, apiSend: client.send }))
 
-import { createBinding, deleteBinding, listBindings, updateBinding } from './api'
+import {
+  createBinding,
+  createRoutingOverride,
+  deleteBinding,
+  deleteRoutingOverride,
+  listBindings,
+  listRoutingOverrides,
+  updateBinding,
+  updateRoutingOverride,
+} from './api'
 
 describe('路由绑定 API 租户作用域', () => {
   beforeEach(() => {
@@ -44,5 +53,24 @@ describe('路由绑定 API 租户作用域', () => {
     expect(sentUpdate.max_parallel_requests).toBe(5)
     expect(sentUpdate.fallback_class).toBe('quota')
     expect(client.send).toHaveBeenNthCalledWith(3, 'DELETE', '/admin/v1/model-pool-bindings/17', undefined, { query: { tenant_id: 7 } })
+  })
+
+  it('强制 pin 全部经统一 API 封装并透传 admin tenant_id', async () => {
+    const ctrl = new AbortController()
+    const createBody = { pool_group_id: 9, model: 'gpt-pin', provider_account_ids: [11, 13], enabled: true }
+    const updateBody = { provider_account_ids: [13], enabled: false }
+
+    await listRoutingOverrides(7, ctrl.signal)
+    await createRoutingOverride(createBody, 7)
+    await updateRoutingOverride(17, updateBody, 7)
+    await deleteRoutingOverride(17, 7)
+
+    expect(client.get).toHaveBeenCalledWith('/admin/v1/model-routing-overrides', {
+      query: { tenant_id: 7 },
+      signal: ctrl.signal,
+    })
+    expect(client.send).toHaveBeenNthCalledWith(1, 'POST', '/admin/v1/model-routing-overrides', createBody, { query: { tenant_id: 7 } })
+    expect(client.send).toHaveBeenNthCalledWith(2, 'PATCH', '/admin/v1/model-routing-overrides/17', updateBody, { query: { tenant_id: 7 } })
+    expect(client.send).toHaveBeenNthCalledWith(3, 'DELETE', '/admin/v1/model-routing-overrides/17', undefined, { query: { tenant_id: 7 } })
   })
 })

@@ -12609,6 +12609,139 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/model-routing-overrides:
+    get:
+      tags: [admin-model-routing-overrides]
+      summary: List tenant-scoped model routing account pins
+      operationId: listAdminModelRoutingOverrides
+      description: |
+        Lists Layer-1 routing configuration that narrows one model inside one
+        pool group to an ordered provider-account subset. This resource is
+        distinct from model-pool-bindings: it does not choose the pool, weight
+        a binding, set binding concurrency, or configure fallback classes.
+        platform_admin callers must pass tenant_id; tenant_operator callers may
+        omit it and use their admin credential scope.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Model routing override list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-model-routing-overrides]
+      summary: Create a tenant-scoped model routing account pin
+      operationId: createAdminModelRoutingOverride
+      description: |
+        Creates a Layer-1 account-subset pin. The pool group and every provider
+        account must belong to the selected tenant, and every account must be in
+        that pool group through its channel. Duplicate account ids are collapsed
+        while preserving their first occurrence.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelRoutingOverrideCreateRequest' }
+      responses:
+        '201':
+          description: Created model routing override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Pool group or provider-account subset does not belong to the selected tenant and pool.
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-routing-overrides/{id}:
+    patch:
+      tags: [admin-model-routing-overrides]
+      summary: Update a tenant-scoped model routing account pin
+      operationId: updateAdminModelRoutingOverride
+      description: |
+        Updates only explicitly supplied provider_account_ids or enabled fields.
+        Pool group and model are immutable; change either by deleting and
+        recreating the resource. Omitted fields retain their stored values.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelRoutingOverrideUpdateRequest' }
+      responses:
+        '200':
+          description: Updated model routing override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Provider-account subset does not belong to the override tenant and pool.
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-model-routing-overrides]
+      summary: Delete a tenant-scoped model routing account pin
+      operationId: deleteAdminModelRoutingOverride
+      description: Soft-deletes the override selected by tenant scope plus path id. Returns 204 on success.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '204':
+          description: Model routing override was deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/proxies:
     get:
       tags: [admin-proxies]
@@ -16980,6 +17113,48 @@ components:
         effective_from: { type: string, format: date-time }
         effective_until: { type: string, format: date-time }
         reason: { type: string }
+
+    ModelRoutingOverride:
+      type: object
+      additionalProperties: false
+      required: [id, pool_group_id, model, provider_account_ids, enabled, created_at, updated_at]
+      description: A tenant-scoped Layer-1 model-to-provider-account subset inside one pool group.
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        model: { type: string, minLength: 1 }
+        provider_account_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModelRoutingOverrideCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [pool_group_id, model, provider_account_ids]
+      properties:
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        model: { type: string, minLength: 1 }
+        provider_account_ids:
+          type: array
+          minItems: 1
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean, default: true }
+
+    ModelRoutingOverrideUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        provider_account_ids:
+          type: array
+          minItems: 1
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
 
     Proxy:
       type: object

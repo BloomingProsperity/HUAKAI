@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
+	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
@@ -47,6 +48,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelroutingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/obsdlqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
@@ -934,6 +936,17 @@ func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
 	}
 }
 
+func modelRoutingOverrideRouteDeps(d *deps) modelroutingadminhttp.Deps {
+	if d == nil {
+		return modelroutingadminhttp.Deps{}
+	}
+	result := modelroutingadminhttp.Deps{Auth: d.adminAuth}
+	if d.pgPool != nil {
+		result.Service = modelroutingadminhttp.NewPostgresService(d.pgPool, dbmodelroutingadmin.New(d.pgPool))
+	}
+	return result
+}
+
 func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
@@ -1016,6 +1029,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:    d.adminAuth,
 			Service: registry.NewPostgresRegistry(d.pgPool, nil),
 		})
+	})
+	modelRoutingOverrideDeps := modelRoutingOverrideRouteDeps(d)
+	r.Route("/admin/v1/model-routing-overrides", func(r chi.Router) {
+		modelroutingadminhttp.MountRoutes(r, modelRoutingOverrideDeps)
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
 		Auth: d.adminAuth,

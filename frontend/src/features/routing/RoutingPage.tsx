@@ -6,6 +6,7 @@ import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { deleteBinding, listBindings } from './api'
 import { BindingModal } from './BindingModal'
+import { RoutingOverridesPanel } from './RoutingOverridesPanel'
 import {
   enabledModelIdsWithoutNormal,
   FALLBACK_CLASSES,
@@ -16,6 +17,8 @@ import {
 } from './selection'
 import type { FallbackClass, PoolBinding } from './types'
 
+type RoutingTab = 'bindings' | 'overrides'
+
 /*
  * 路由与池 · 模型→池路由绑定(P0)。管线第 2 站。
  * /admin/v1/model-pool-bindings 列表(可按 model_id/pool_group_id/class 筛选)+ 创建 + 编辑 + 删除。
@@ -23,6 +26,7 @@ import type { FallbackClass, PoolBinding } from './types'
  */
 export function RoutingPage() {
   const tenantId = useMe().tenantId
+  const [tab, setTab] = useState<RoutingTab>('bindings')
   const [bindings, setBindings] = useState<PoolBinding[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -57,11 +61,11 @@ export function RoutingPage() {
   )
 
   useEffect(() => {
-    if (tenantId == null) return
+    if (tenantId == null || tab !== 'bindings') return
     const ctrl = new AbortController()
     load(ctrl.signal)
     return () => ctrl.abort()
-  }, [load, refreshNonce])
+  }, [load, refreshNonce, tab, tenantId])
 
   const refresh = () => setRefreshNonce((n) => n + 1)
   const rows = filterBindingRows(mapBindingRows(bindings), filters.fallbackClass)
@@ -92,16 +96,26 @@ export function RoutingPage() {
         <div>
           <h1>路由与池管理</h1>
           <p className="hk-sub">
-            管线第 2 站 · 模型→池路由绑定、选号策略与降级类。共 {bindings.length} 条
-            {filters.fallbackClass ? `，当前显示 ${rows.length} 条` : ''}。
+            {tab === 'bindings'
+              ? `管线第 2 站 · 模型→池路由绑定、选号策略与降级类。共 ${bindings.length} 条${filters.fallbackClass ? `，当前显示 ${rows.length} 条` : ''}。`
+              : '池组内模型→账号候选强制 pin；命中后只保留指定账号子集。'}
           </p>
         </div>
-        <button type="button" onClick={() => setModal({ open: true, binding: null })} className="hk-btn hk-btn--green">
-          ＋ 新建绑定
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
+          <RoutingTabs value={tab} onChange={setTab} />
+          {tab === 'bindings' && (
+            <button type="button" onClick={() => setModal({ open: true, binding: null })} className="hk-btn hk-btn--green">
+              ＋ 新建绑定
+            </button>
+          )}
+        </div>
       </header>
 
-      {modal.open && <BindingModal tenantId={tenantId} binding={modal.binding} onClose={() => setModal({ open: false, binding: null })} onSaved={refresh} />}
+      {tab === 'overrides' ? (
+        <RoutingOverridesPanel tenantId={tenantId} />
+      ) : (
+      <>
+        {modal.open && <BindingModal tenantId={tenantId} binding={modal.binding} onClose={() => setModal({ open: false, binding: null })} onSaved={refresh} />}
 
       <form
         onSubmit={(e) => {
@@ -178,6 +192,30 @@ export function RoutingPage() {
           />
         )}
       </div>
+      </>
+      )}
+    </div>
+  )
+}
+
+export function RoutingTabs({ value, onChange }: { value: RoutingTab; onChange: (value: RoutingTab) => void }) {
+  return (
+    <div className="hk-seg" role="tablist" aria-label="路由配置类型">
+      {([
+        { value: 'bindings', label: '绑定' },
+        { value: 'overrides', label: '强制 pin' },
+      ] as const).map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="tab"
+          aria-selected={value === option.value}
+          className={value === option.value ? 'is-on' : undefined}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   )
 }

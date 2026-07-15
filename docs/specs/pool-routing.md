@@ -220,6 +220,7 @@ HUAKAI-design scenarios (no Sub2API equivalent):
 - AT-POOL-017 / Capability safe-equivalent opt-in (Q4 default-deny)
 - AT-POOL-018 / `CLAIM_RACE` retry without double-charge
 - AT-POOL-019 / Tx2 atomicity for slot release + Usage Record + claim status
+- AT-POOL-020 / Admin model-routing pin write-to-consumer round trip + tenant isolation
 
 ## Open Questions
 
