@@ -304,22 +304,16 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 		})
 		return err
 	case reconciliationKindReleaseAfterAbort:
-		// claim 一旦复活，旧任务的事实前提已失效，继续 Release 会释放后继 attempt 的活预留。
-		claim, err := r.store.GetClaimTerminalState(ctx, tenantID, job.ClaimID)
-		if err != nil {
-			return fmt.Errorf("quota reconciler: recheck release claim %d: %w", job.ClaimID, err)
-		}
-		if claim.Status != claimStatusAborted {
-			return fmt.Errorf("%w: release_after_abort claim %d status %q, want aborted",
-				errReconciliationRecoveryInvalidated, job.ClaimID, claim.Status)
-		}
-		_, err = r.service.Release(ctx, ReleaseRequest{
+		_, err := r.service.Release(ctx, ReleaseRequest{
 			TenantID:      tenantID,
 			ClaimID:       job.ClaimID,
 			ReservationID: reservationID,
 			Reason:        reconciliationReleaseReason,
 			ReleasedAt:    now,
 		})
+		if errors.Is(err, ErrReleaseInvalidatedByRevival) {
+			return fmt.Errorf("%w: %v", errReconciliationRecoveryInvalidated, err)
+		}
 		return err
 	case reconciliationKindReleaseAfterCacheHit:
 		_, err := r.service.CommitCacheHit(ctx, CacheHitRequest{

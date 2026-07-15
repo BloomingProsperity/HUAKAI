@@ -23,6 +23,7 @@ func TestServiceRelease_ATCD2002_RealPGSixthTransactionCommits(t *testing.T) {
 	store := NewPostgresStore(pool)
 	service := NewService(store)
 	seed := seedReleaseRecoveryFixture(t, ctx, f, service, "cd2-real-pg-sixth")
+	f.setClaimTerminal(seed.reserve.Reservation.ClaimID, claimStatusAborted, "")
 	fault := installReleaseAuditConflictFault(t, ctx, f, 5)
 
 	result, err := service.Release(ctx, ReleaseRequest{

@@ -60,6 +60,81 @@ func TestServiceRelease_ATCD2001_SixthTransactionSucceeds(t *testing.T) {
 	}
 }
 
+// TestServiceRelease_ClaimStateThreeWayGuard 固定 Release 行锁后的三分流：
+// aborted 正常释放；复活后的孤儿标记仍释放；复活后仍为 reserved 的活预留必须拒绝。
+// 变异：删除任一状态条件，至少一个子用例会在状态、窗口或 sentinel 断言上变红。
+func TestServiceRelease_ClaimStateThreeWayGuard(t *testing.T) {
+	tests := []struct {
+		name              string
+		claimStatus       string
+		reservationStatus ReservationStatus
+		wantReleased      bool
+		wantInvalidated   bool
+	}{
+		{
+			name:              "aborted_releases_reserved",
+			claimStatus:       claimStatusAborted,
+			reservationStatus: ReservationReserved,
+			wantReleased:      true,
+		},
+		{
+			name:              "revived_releases_orphan_marker",
+			claimStatus:       "reserving",
+			reservationStatus: ReservationReconciliationNeeded,
+			wantReleased:      true,
+		},
+		{
+			name:              "revived_protects_live_reserved",
+			claimStatus:       "reserving",
+			reservationStatus: ReservationReserved,
+			wantInvalidated:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newReleaseResilienceStore(nil)
+			store.claimStatus = tc.claimStatus
+			store.reservation.Status = tc.reservationStatus
+
+			result, err := NewService(store).Release(context.Background(), ReleaseRequest{
+				TenantID: store.reservation.TenantID,
+				ClaimID:  store.reservation.ClaimID,
+				Reason:   "abort",
+			})
+
+			if store.claimReads != 1 || !store.claimReadInsideTx {
+				t.Fatalf("claim reads/inside tx=%d/%v; want 1/true", store.claimReads, store.claimReadInsideTx)
+			}
+			if tc.wantReleased {
+				if err != nil {
+					t.Fatalf("Release: %v", err)
+				}
+				if result.Reservation.Status != ReservationReleased || store.reservation.Status != ReservationReleased {
+					t.Fatalf("result/store status=%s/%s; want released/released", result.Reservation.Status, store.reservation.Status)
+				}
+				if store.windowReserved.Sign() != 0 || !store.slotReleased || store.releaseWrites != 1 {
+					t.Fatalf("window/slot/writes=%s/%v/%d; want 0/true/1", store.windowReserved, store.slotReleased, store.releaseWrites)
+				}
+				return
+			}
+
+			if !tc.wantInvalidated || !errors.Is(err, ErrReleaseInvalidatedByRevival) {
+				t.Fatalf("err=%v; want ErrReleaseInvalidatedByRevival", err)
+			}
+			if result.ReconciliationQueued || store.prepareCalls != 0 || len(store.jobs) != 0 {
+				t.Fatalf("queued/prepare/jobs=%v/%d/%d; want false/0/0", result.ReconciliationQueued, store.prepareCalls, len(store.jobs))
+			}
+			if store.reservation.Status != ReservationReserved || !store.windowReserved.Equal(decimal.NewFromInt(1)) {
+				t.Fatalf("status/window=%s/%s; want reserved/1", store.reservation.Status, store.windowReserved)
+			}
+			if store.slotReleased || store.releaseWrites != 0 || len(store.audits) != 0 {
+				t.Fatalf("slot/writes/audits=%v/%d/%d; want false/0/0", store.slotReleased, store.releaseWrites, len(store.audits))
+			}
+		})
+	}
+}
+
 // AT-CD2-003:真实 Abort 只传 tenant+claim。即使第六次冲突同时取消请求，恢复准备与入队仍须用独立有界上下文完成。
 func TestServiceRelease_ATCD2003_CanceledRequestStillHandsOffByClaim(t *testing.T) {
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
@@ -283,6 +358,9 @@ type releaseResilienceStore struct {
 	enqueueFailures          []error
 	jobs                     []ReconciliationJob
 	claimStatus              string
+	inTx                     bool
+	claimReads               int
+	claimReadInsideTx        bool
 }
 
 type capturingQuotaQueryDB struct {
@@ -351,6 +429,8 @@ func newReleaseResilienceStore(conflicts []error) *releaseResilienceStore {
 
 func (s *releaseResilienceStore) WithTx(ctx context.Context, fn func(PGStore) error) error {
 	s.withTxCalls++
+	s.inTx = true
+	defer func() { s.inTx = false }()
 	return fn(s)
 }
 
@@ -368,6 +448,18 @@ func (s *releaseResilienceStore) GetReservationByClaimForUpdate(ctx context.Cont
 		return Reservation{}, err
 	}
 	return s.reservation, nil
+}
+
+func (s *releaseResilienceStore) GetClaimTerminalState(_ context.Context, tenantID int64, claimID int64) (ClaimTerminalState, error) {
+	s.claimReads++
+	s.claimReadInsideTx = s.claimReadInsideTx || s.inTx
+	if !s.inTx {
+		return ClaimTerminalState{}, errors.New("billing claim read outside transaction")
+	}
+	if tenantID != s.reservation.TenantID || claimID != s.reservation.ClaimID {
+		return ClaimTerminalState{}, errors.New("unexpected billing claim lookup keys")
+	}
+	return ClaimTerminalState{Status: s.claimStatus}, nil
 }
 
 func (s *releaseResilienceStore) UpsertWindow(context.Context, WindowUpsert) (WindowCounter, error) {

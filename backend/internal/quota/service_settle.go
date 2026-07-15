@@ -17,6 +17,8 @@ var (
 	ErrReservationNotFound = errors.New("quota: reservation not found")
 	ErrReservationMismatch = errors.New("quota: reservation identity mismatch")
 	ErrInvalidFinalization = errors.New("quota: invalid reservation finalization")
+	// ErrReleaseInvalidatedByRevival 表示 billing claim 已复活且当前预留正被新 attempt 使用。
+	ErrReleaseInvalidatedByRevival = errors.New("quota: release invalidated by billing claim revival")
 )
 
 const (
@@ -193,6 +195,16 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 		case ReservationExpired:
 			return reconciliationStateError(req.TenantID, req.ClaimID, req.ReservationID, quotaReconcileKindReleaseFailed, reservation.Status)
 		case ReservationReserved, ReservationReconciliationNeeded:
+			claim, err := tx.GetClaimTerminalState(ctx, req.TenantID, req.ClaimID)
+			if err != nil {
+				return fmt.Errorf("quota: recheck billing claim before release: %w", err)
+			}
+			// reconciliation_needed 说明旧失败已经把预留隔离；claim 复活后 Reserve 不会接管它，
+			// 因此仍需释放解毒。其余活预留可能已被新 attempt 复用，不能由旧 Abort 释放。
+			if claim.Status != claimStatusAborted && reservation.Status != ReservationReconciliationNeeded {
+				return fmt.Errorf("%w: tenant=%d claim=%d reservation=%d claim_status=%q reservation_status=%q",
+					ErrReleaseInvalidatedByRevival, req.TenantID, req.ClaimID, reservation.ID, claim.Status, reservation.Status)
+			}
 			if err := applyReleaseWindows(ctx, tx, reservation); err != nil {
 				return err
 			}
@@ -716,6 +728,9 @@ func shouldQueueQuotaFinalizationFailure(err error) bool {
 		return false
 	}
 	if errors.Is(err, ErrReservationNotFound) || errors.Is(err, ErrReservationMismatch) {
+		return false
+	}
+	if errors.Is(err, ErrReleaseInvalidatedByRevival) {
 		return false
 	}
 	var invalid *invalidReservationStatus

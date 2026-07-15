@@ -10,7 +10,7 @@ import (
 )
 
 // TestReconcilerReleaseAfterAbort_RevivedClaimTerminallyFails 固定旧恢复任务
-// 不能释放已复活 attempt 的活预留；若删掉终态复核，本测试会观测到 Release 与成功 job。
+// 只能依赖 Release 事务内的复活守卫；若守卫仍留在事务外或被删除，事务位置或终态断言会变红。
 func TestReconcilerReleaseAfterAbort_RevivedClaimTerminallyFails(t *testing.T) {
 	now := time.Date(2026, 7, 15, 13, 0, 0, 0, time.UTC)
 	store := newInvalidatedReleaseReplayStore(now)
@@ -30,6 +30,12 @@ func TestReconcilerReleaseAfterAbort_RevivedClaimTerminallyFails(t *testing.T) {
 	if store.releaseCalls != 0 || store.completeCalls != 0 {
 		t.Fatalf("release/complete calls=%d/%d，want 0/0", store.releaseCalls, store.completeCalls)
 	}
+	if store.claimReadsInsideTx != 1 || store.claimReadsOutsideTx != 0 {
+		t.Fatalf("claim 事务内/外读取=%d/%d，want 1/0", store.claimReadsInsideTx, store.claimReadsOutsideTx)
+	}
+	if store.called {
+		t.Fatal("失效 sentinel 不应再进入恢复准备或入队")
+	}
 	if store.failure == nil {
 		t.Fatal("失效 job 未标 failed")
 	}
@@ -43,12 +49,15 @@ func TestReconcilerReleaseAfterAbort_RevivedClaimTerminallyFails(t *testing.T) {
 
 type invalidatedReleaseReplayStore struct {
 	noTxReserveStore
-	now           time.Time
-	job           ReconciliationJob
-	reservation   Reservation
-	failure       *ReconciliationFailure
-	releaseCalls  int
-	completeCalls int
+	now                 time.Time
+	job                 ReconciliationJob
+	reservation         Reservation
+	failure             *ReconciliationFailure
+	releaseCalls        int
+	completeCalls       int
+	inTx                bool
+	claimReadsInsideTx  int
+	claimReadsOutsideTx int
 }
 
 func newInvalidatedReleaseReplayStore(now time.Time) *invalidatedReleaseReplayStore {
@@ -77,6 +86,8 @@ func newInvalidatedReleaseReplayStore(now time.Time) *invalidatedReleaseReplaySt
 }
 
 func (s *invalidatedReleaseReplayStore) WithTx(ctx context.Context, run func(PGStore) error) error {
+	s.inTx = true
+	defer func() { s.inTx = false }()
 	return run(s)
 }
 
@@ -93,6 +104,11 @@ func (s *invalidatedReleaseReplayStore) GetReservationByClaimForUpdate(context.C
 }
 
 func (s *invalidatedReleaseReplayStore) GetClaimTerminalState(context.Context, int64, int64) (ClaimTerminalState, error) {
+	if s.inTx {
+		s.claimReadsInsideTx++
+	} else {
+		s.claimReadsOutsideTx++
+	}
 	return ClaimTerminalState{Status: "reserving"}, nil
 }
 
