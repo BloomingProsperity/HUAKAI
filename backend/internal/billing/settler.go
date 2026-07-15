@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	dbbillingrecovery "github.com/BloomingProsperity/HUAKAI/internal/db/billingrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
@@ -43,10 +44,11 @@ const (
 var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 type DefaultSettler struct {
-	pool          *pgxpool.Pool
-	q             *dbbilling.Queries
-	dlqStore      *dlq.Store
-	replicaTarget string
+	pool           *pgxpool.Pool
+	q              *dbbilling.Queries
+	abortRecoveryQ *dbbillingrecovery.Queries
+	dlqStore       *dlq.Store
+	replicaTarget  string
 }
 
 type SettlerOption func(*DefaultSettler)
@@ -68,7 +70,12 @@ func NewSettler(pool *pgxpool.Pool, opts ...SettlerOption) *DefaultSettler {
 	if pool == nil {
 		return &DefaultSettler{pool: nil}
 	}
-	s := &DefaultSettler{pool: pool, q: dbbilling.New(pool), dlqStore: dlq.NewStore(pool)}
+	s := &DefaultSettler{
+		pool:           pool,
+		q:              dbbilling.New(pool),
+		abortRecoveryQ: dbbillingrecovery.New(pool),
+		dlqStore:       dlq.NewStore(pool),
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -81,7 +88,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	}
 
 	var res *SettleResult
-	err := retryTx2(ctx, "settle", func(ctx context.Context) error {
+	err := retryTx2(ctx, "settle", settleTx2RetryPolicy, func(ctx context.Context) error {
 		next, err := s.settleOnce(ctx, req)
 		if err != nil {
 			return err
@@ -298,9 +305,13 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return ErrPoolNotConfigured
 	}
 
-	return retryTx2(ctx, "abort", func(ctx context.Context) error {
+	err := retryTx2(ctx, "abort", abortTx2RetryPolicy, func(ctx context.Context) error {
 		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
 	}, nil, nil)
+	if err == nil {
+		return nil
+	}
+	return s.expediteAbortLeaseAfterConflict(ctx, tenantID, claimID, err)
 }
 
 // abortOnce 执行一次完整 Tx2 中止事务。外层 retryTx2 只在整事务被 Serializable

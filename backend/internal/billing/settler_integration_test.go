@@ -1538,6 +1538,11 @@ func seedSettlerGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
+		// balance_holds/user_balances 必须先删:否则 claims 删除被外键静默挡下(错误被吞),
+		// 冻结态测试留下的 reserving claim 会在余额行被删后变成 sweeper 永远治不好的孤儿,
+		// 毒化共享测试库里所有依赖 lease sweep 计数的后续测试。
+		_, _ = pool.Exec(context.Background(), `DELETE FROM balance_holds WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM user_balances WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM provider_accounts WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE tenant_id=$1`, tenantID)
