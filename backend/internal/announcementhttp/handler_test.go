@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -58,7 +59,7 @@ func TestAnnounceAdminCRUD(t *testing.T) {
 	// 变异:admin 的 create/update/delete 与用户读取没有共用同一条 store/list 路径;后续某次读取会读到陈旧数据。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
-	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	auth := fakeAdminAuth{identity: admintest.Platform(99)}
 
 	create := `{"tenant_id":7,"title":"Ops window","body":"Maintenance at 23:00 UTC","severity":"warning"}`
 	rec := serveAnnouncements(t, svc, auth, nil, http.MethodPost, "/v1/admin/announcements", []byte(create))
@@ -114,7 +115,7 @@ func TestAnnounceValidation(t *testing.T) {
 	// 变异:绕过 HTTP/service 校验;非法 payload 被持久化而非返回 400。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc := newAnnouncementTestService(t, now)
-	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	auth := fakeAdminAuth{identity: admintest.Platform(99)}
 
 	tests := []struct {
 		name string

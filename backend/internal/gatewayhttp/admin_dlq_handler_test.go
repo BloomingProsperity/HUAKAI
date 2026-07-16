@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 )
 
@@ -79,7 +80,7 @@ func (s *dlqStoreStub) Replay(_ context.Context, id int64, _ string) (*dlq.Recor
 
 func TestAdminDLQListRequiresPlatformAdmin(t *testing.T) {
 	deps := dlqDepsStub{
-		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		auth:  dlqAuthStub{ident: admintest.TenantOperator(1, 7)},
 		store: &dlqStoreStub{},
 	}
 	rec := invokeDLQ(deps, http.MethodGet, "/admin/v1/dlq/usage_record", "")
@@ -89,7 +90,7 @@ func TestAdminDLQListRequiresPlatformAdmin(t *testing.T) {
 func TestAdminDLQListFiltersHandler(t *testing.T) {
 	store := &dlqStoreStub{}
 	deps := dlqDepsStub{
-		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		auth:  dlqAuthStub{ident: admintest.Platform(1)},
 		store: store,
 	}
 	rec := invokeDLQ(deps, http.MethodGet, "/admin/v1/dlq/billing_event_replica?status=operator_review&limit=25", "")
@@ -102,7 +103,7 @@ func TestAdminDLQListFiltersHandler(t *testing.T) {
 func TestAdminDLQReplayUsesID(t *testing.T) {
 	store := &dlqStoreStub{}
 	deps := dlqDepsStub{
-		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		auth:  dlqAuthStub{ident: admintest.Platform(1)},
 		store: store,
 	}
 	rec := invokeDLQ(deps, http.MethodPost, "/admin/v1/dlq/42/replay", "")

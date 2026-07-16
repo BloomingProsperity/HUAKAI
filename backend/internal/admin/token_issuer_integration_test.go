@@ -50,7 +50,15 @@ func seedTenantOperatorToken(t *testing.T, ctx context.Context, f *adminFixture)
 		_, _ = f.pool.Exec(c, `DELETE FROM admin_audit_events WHERE actor_id = $1`, AdminIdentity{TokenID: tokenID, Source: AdminSourceToken}.AuditActor())
 		_, _ = f.pool.Exec(c, `DELETE FROM admin_tokens WHERE id = $1`, tokenID)
 	})
-	return AdminIdentity{TokenID: tokenID, Role: RoleTenantOperator, ScopeTenantID: f.tenantID}
+	identity, err := NewAdminIdentity(ctx, IdentityClaims{
+		TokenID: tokenID, Role: RoleTenantOperator, ScopeTenantID: f.tenantID,
+	}, func(context.Context, int64) ([]TenantScopeNode, error) {
+		return []TenantScopeNode{{TenantID: f.tenantID, Depth: 0}}, nil
+	})
+	if err != nil {
+		t.Fatalf("构造 tenant_operator 测试身份: %v", err)
+	}
+	return identity
 }
 
 // -----------------------------------------------------------------------------
@@ -63,7 +71,7 @@ func TestAdminTokenIssue_HappyPath_PlaintextNotPersisted(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := AdminIdentity{TokenID: f.adminTokenID, Role: RolePlatformAdmin}
+	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
 	issuer := NewAdminTokenIssuer(pool)
 	res, err := issuer.IssueToken(ctx, TokenIssueRequest{
 		Caller:    caller,
@@ -135,7 +143,7 @@ func TestAdminTokenIssue_ExpiredTokenRejectedByResolver(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := AdminIdentity{TokenID: f.adminTokenID, Role: RolePlatformAdmin}
+	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
 	issuer := NewAdminTokenIssuer(pool)
 
 	// 先签一个未来 token,再把 expires_at 直接改成过去(模拟时间流逝),
@@ -188,7 +196,7 @@ func TestAdminTokenRevoke_BlocksResolve(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := AdminIdentity{TokenID: f.adminTokenID, Role: RolePlatformAdmin}
+	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
 	issuer := NewAdminTokenIssuer(pool)
 	res, err := issuer.IssueToken(ctx, TokenIssueRequest{Caller: caller, Role: RolePlatformAdmin})
 	if err != nil {
@@ -266,7 +274,7 @@ func TestAdminTokenIssue_TenantOperatorForbidden(t *testing.T) {
 
 	// 对照:platform_admin 同样的列举调用必须成功(区分性,证明拒绝来自
 	// 角色而非别的失败)。
-	pa := AdminIdentity{TokenID: f.adminTokenID, Role: RolePlatformAdmin}
+	pa := platformIdentityForIntegration(t, ctx, f.adminTokenID)
 	if _, err := issuer.ListTokens(ctx, pa, 50, 0); err != nil {
 		t.Fatalf("platform_admin 列举应成功: %v", err)
 	}
@@ -282,7 +290,7 @@ func TestAdminTokenList_NoHashLeak(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := AdminIdentity{TokenID: f.adminTokenID, Role: RolePlatformAdmin}
+	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
 	issuer := NewAdminTokenIssuer(pool)
 	res, err := issuer.IssueToken(ctx, TokenIssueRequest{Caller: caller, Role: RolePlatformAdmin, Name: "listme-" + f.suffix})
 	if err != nil {

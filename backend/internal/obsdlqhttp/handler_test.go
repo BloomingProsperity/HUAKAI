@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
 
@@ -58,7 +59,7 @@ func TestListPassesFiltersAndReturnsEventTypeAttemptCount(t *testing.T) {
 		DeadAt: now, DeadReason: "smtp failed", AttemptCount: 5, OutboxStatus: obsdlq.StatusFailedDead,
 		CreatedAt: now.Add(-time.Hour), NextRetryAt: now.Add(time.Hour),
 	}}}
-	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store})
+	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admintest.Platform(0)}, Store: store})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin/v1/obs-dlq?tenant=7&event_type=email.retry&from=2026-07-05T00:00:00Z&to=2026-07-06T00:00:00Z", nil)
@@ -83,7 +84,7 @@ func TestListPassesFiltersAndReturnsEventTypeAttemptCount(t *testing.T) {
 
 func TestListRejectsLimitOverMaxBeforeStore(t *testing.T) {
 	store := &fakeStore{}
-	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store})
+	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admintest.Platform(0)}, Store: store})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/obs-dlq?limit=201", nil))
@@ -95,7 +96,7 @@ func TestListRejectsLimitOverMaxBeforeStore(t *testing.T) {
 
 func TestListRejectsNonPlatformAdmin(t *testing.T) {
 	store := &fakeStore{}
-	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}, Store: store})
+	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admintest.TenantOperator(0, 7)}, Store: store})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/obs-dlq", nil))
@@ -109,7 +110,7 @@ func TestReplaySecondCallReturnsConflict(t *testing.T) {
 	store := &fakeStore{}
 	router := chi.NewRouter()
 	router.Post("/admin/v1/obs-dlq/{id}/replay", NewReplayHandler(Deps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Auth:  fakeAdminAuth{ident: admintest.Platform(0)},
 		Store: store,
 	}))
 

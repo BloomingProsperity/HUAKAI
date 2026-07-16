@@ -199,19 +199,18 @@ func notifyAdminTarget(w http.ResponseWriter, r *http.Request, ident admin.Admin
 		return 0, 0, false
 	}
 	rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
-	if rawTenantID == "" && ident.Role == admin.RoleTenantOperator {
-		if ident.ScopeTenantID <= 0 {
-			notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+	tenantID := ident.ScopeTenantID()
+	if rawTenantID != "" {
+		tenantID, err = strconv.ParseInt(rawTenantID, 10, 64)
+		if err != nil || tenantID <= 0 {
+			notifyWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
 			return 0, 0, false
 		}
-		return ident.ScopeTenantID, userID, true
-	}
-	tenantID, err := strconv.ParseInt(rawTenantID, 10, 64)
-	if err != nil || tenantID <= 0 {
+	} else if tenantID <= 0 {
 		notifyWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
 		return 0, 0, false
 	}
-	if ident.Role == admin.RoleTenantOperator && ident.ScopeTenantID != tenantID {
+	if err := ident.CanActOnTenant(tenantID); err != nil {
 		notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, 0, false
 	}

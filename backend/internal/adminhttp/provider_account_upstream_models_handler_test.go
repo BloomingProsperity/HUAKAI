@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -31,20 +32,24 @@ func (s *stubUpstreamModelsAuth) Resolve(_ context.Context, _ *http.Request) (ad
 }
 
 type stubUpstreamModelsAccountStore struct {
-	row admindb.AdminProviderAccountRow
-	err error
+	row   admindb.AdminProviderAccountRow
+	err   error
+	calls int
 }
 
 func (s *stubUpstreamModelsAccountStore) GetAdminProviderAccount(_ context.Context, _ admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
+	s.calls++
 	return s.row, s.err
 }
 
 type stubUpstreamModelsCredStore struct {
-	rec credentialstore.CredentialRecord
-	err error
+	rec   credentialstore.CredentialRecord
+	err   error
+	calls int
 }
 
 func (s *stubUpstreamModelsCredStore) LoadForProviderAccountTest(_ context.Context, _, _ int64) (credentialstore.CredentialRecord, error) {
+	s.calls++
 	return s.rec, s.err
 }
 
@@ -55,7 +60,7 @@ func allowAllTransportWrapper(rt http.RoundTripper) (http.RoundTripper, error) {
 }
 
 func platformAdminIdent() admin.AdminIdentity {
-	return admin.AdminIdentity{Role: admin.RolePlatformAdmin, ScopeTenantID: 42, TokenID: 1}
+	return admintest.Platform(1)
 }
 
 func upstreamStaticPayload(baseURL, authHeader string) []byte {
@@ -109,7 +114,7 @@ func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
 	}
 
 	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models?tenant_id=42", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -129,7 +134,7 @@ func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
 }
 
 // proxyToTestServerRT 把所有请求重定向到指定的 target URL
-//(用于需要访问 httptest.Server 的处理器测试)。
+// (用于需要访问 httptest.Server 的处理器测试)。
 type proxyToTestServerRT struct {
 	target string
 	base   http.RoundTripper
@@ -169,7 +174,7 @@ func TestUpstreamModelsHandler_GuardBlocked(t *testing.T) {
 	}
 
 	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models?tenant_id=42", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -204,7 +209,7 @@ func TestUpstreamModelsHandler_AccountNotFound(t *testing.T) {
 		TransportWrapper: allowAllTransportWrapper,
 	}
 	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models?tenant_id=42", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -231,7 +236,7 @@ func TestUpstreamModelsHandler_MissingBaseURL(t *testing.T) {
 		TransportWrapper: allowAllTransportWrapper,
 	}
 	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
+	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models?tenant_id=42", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnprocessableEntity {

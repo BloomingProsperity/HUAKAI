@@ -193,7 +193,7 @@ func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 		if !disputeDecodeJSON(w, r, &req) {
 			return
 		}
-		if err := ident.CanIssueForTenant(req.TenantID); err != nil {
+		if err := ident.CanActOnTenant(req.TenantID); err != nil {
 			disputeWriteAdminError(w, err)
 			return
 		}
@@ -266,45 +266,26 @@ func parseLimit(w http.ResponseWriter, r *http.Request) (int32, bool) {
 
 func disputeAdminTenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
-	switch ident.Role {
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
-			return 0, false
-		}
-		if raw == "" {
-			return ident.ScopeTenantID, true
-		}
-		tenantID, ok := parsePositiveInt64QueryValue(w, raw, "tenant_id")
-		if !ok {
-			return 0, false
-		}
-		if tenantID != ident.ScopeTenantID {
-			controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
-			return 0, false
-		}
-		return tenantID, true
-	case admin.RolePlatformAdmin:
-		if raw == "" && ident.ScopeTenantID > 0 {
-			return ident.ScopeTenantID, true
-		}
-		if raw == "" {
-			controlWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
-			return 0, false
-		}
-		tenantID, ok := parsePositiveInt64QueryValue(w, raw, "tenant_id")
-		if !ok {
-			return 0, false
-		}
-		if err := ident.CanIssueForTenant(tenantID); err != nil {
-			disputeWriteAdminError(w, err)
-			return 0, false
-		}
-		return tenantID, true
-	default:
+	if !ident.IsValid() {
 		controlWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return 0, false
 	}
+	tenantID := ident.ScopeTenantID()
+	if raw != "" {
+		var ok bool
+		tenantID, ok = parsePositiveInt64QueryValue(w, raw, "tenant_id")
+		if !ok {
+			return 0, false
+		}
+	} else if tenantID <= 0 {
+		controlWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
+		return 0, false
+	}
+	if err := ident.CanActOnTenant(tenantID); err != nil {
+		disputeWriteAdminError(w, err)
+		return 0, false
+	}
+	return tenantID, true
 }
 
 func parsePositiveInt64QueryValue(w http.ResponseWriter, raw, name string) (int64, bool) {

@@ -8,7 +8,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
 
-// tenantFromQueryOrScope 解析操作目标租户:有 ?tenant_id 用它(经 CanIssueForTenant
+// tenantFromQueryOrScope 解析操作目标租户:有 ?tenant_id 用它(经 CanActOnTenant
 // 校验越权),无则要求是 tenant_operator 并落回其 scope。镜像
 // adminhttp.parseAdminCatalogTenant,放行 platform_admin 而不松动 RBAC。
 func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
@@ -20,7 +20,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 				"tenant_id query param required for platform_admin")
 			return 0, false
 		}
-		tenantID = ident.ScopeTenantID
+		tenantID = ident.ScopeTenantID()
 	} else {
 		v, err := strconv.ParseInt(tenantParam, 10, 64)
 		if err != nil || v <= 0 {
@@ -34,7 +34,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 		writeAdminAuthError(w, admin.ErrAdminForbidden)
 		return 0, false
 	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	if err := ident.CanActOnTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, false
 	}

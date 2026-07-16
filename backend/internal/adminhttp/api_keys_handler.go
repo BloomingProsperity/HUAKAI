@@ -230,7 +230,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 				"tenant_id must be a positive int64")
 			return
 		}
-		if err := ident.CanIssueForTenant(tenantID); err != nil {
+		if err := ident.CanActOnTenant(tenantID); err != nil {
 			writeAdminError(w, err)
 			return
 		}

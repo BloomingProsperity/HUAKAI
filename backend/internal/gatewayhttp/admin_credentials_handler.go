@@ -274,40 +274,30 @@ func resolveCredentialRenewStatusAdmin(w http.ResponseWriter, r *http.Request, d
 		}
 		return admin.AdminIdentity{}, nil, false, false
 	}
+	if err := ident.CanAccessProviderAccountControlPlane(); err != nil {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "credential control plane is not available to this tenant scope")
+		return admin.AdminIdentity{}, nil, false, false
+	}
 	queryTenantID, hasQueryTenant, ok := parseCredentialRenewStatusTenantID(w, r)
 	if !ok {
 		return admin.AdminIdentity{}, nil, false, false
 	}
-	switch ident.Role {
-	case admin.RolePlatformAdmin:
-		if ident.ScopeTenantID <= 0 {
-			if hasQueryTenant {
-				tenantID := queryTenantID
-				return ident, &tenantID, false, true
-			}
-			return ident, nil, true, true
-		}
-		if hasQueryTenant && queryTenantID != ident.ScopeTenantID {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_id does not match admin scope")
-			return admin.AdminIdentity{}, nil, false, false
-		}
-		tenantID := ident.ScopeTenantID
-		return ident, &tenantID, false, true
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
-			return admin.AdminIdentity{}, nil, false, false
-		}
-		if hasQueryTenant && queryTenantID != ident.ScopeTenantID {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_id does not match admin scope")
-			return admin.AdminIdentity{}, nil, false, false
-		}
-		tenantID := ident.ScopeTenantID
-		return ident, &tenantID, false, true
-	default:
+	if !ident.IsValid() {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, nil, false, false
 	}
+	if ident.IsPlatformWide() && !hasQueryTenant {
+		return ident, nil, true, true
+	}
+	tenantID := ident.ScopeTenantID()
+	if hasQueryTenant {
+		tenantID = queryTenantID
+	}
+	if err := ident.CanActOnTenant(tenantID); err != nil {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_id does not match admin scope")
+		return admin.AdminIdentity{}, nil, false, false
+	}
+	return ident, &tenantID, false, true
 }
 
 func resolveCredentialAdminRequest(w http.ResponseWriter, r *http.Request, d AdminCredentialDeps, tenantFromQuery bool) (admin.AdminIdentity, int64, int64, bool) {

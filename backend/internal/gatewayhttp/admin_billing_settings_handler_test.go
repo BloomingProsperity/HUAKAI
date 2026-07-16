@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
@@ -26,7 +27,7 @@ func TestAdminBillingSettingsPlatformAdminReadWriteAndAudit(t *testing.T) {
 	store := newAdminBillingSettingsStore()
 	audit := &adminBillingSettingsAuditStore{}
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:         adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:         adminBillingAuthStub{ident: admintest.Platform(11)},
 		Store:        store,
 		AuditUpdater: newAdminBillingSettingsTestAuditUpdater(store, audit),
 	})
@@ -76,7 +77,7 @@ func TestAdminBillingSettingsAuditFailureRollsBackSetting(t *testing.T) {
 		t.Fatalf("seed setting: %v", err)
 	}
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:         adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:         adminBillingAuthStub{ident: admintest.Platform(11)},
 		Store:        store,
 		AuditUpdater: newAdminBillingSettingsTestAuditUpdater(store, audit),
 	})
@@ -105,7 +106,7 @@ func TestAdminBillingSettingsAuditPreviousValueTracksCommittedSetting(t *testing
 	store := newAdminBillingSettingsStore()
 	audit := &adminBillingSettingsAuditStore{}
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:         adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:         adminBillingAuthStub{ident: admintest.Platform(11)},
 		Store:        store,
 		AuditUpdater: newAdminBillingSettingsTestAuditUpdater(store, audit),
 	})
@@ -138,7 +139,7 @@ func TestAdminBillingSettingsAuditPreviousValueTracksCommittedSetting(t *testing
 
 func TestAdminBillingSettingsGetDefaultSource(t *testing.T) {
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:  adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:  adminBillingAuthStub{ident: admintest.Platform(11)},
 		Store: newAdminBillingSettingsStore(),
 	})
 
@@ -159,7 +160,7 @@ func TestAdminBillingSettingsRejectsMissingTenantBeforeSettingsAccess(t *testing
 	checker := &adminBillingTenantCheckerStub{exists: map[int64]bool{99: false}, defaultExists: true}
 	updater := &adminBillingSettingsAuditUpdaterSpy{}
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:          adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:          adminBillingAuthStub{ident: admintest.Platform(11)},
 		Store:         store,
 		TenantChecker: checker,
 		AuditUpdater:  updater,
@@ -194,7 +195,7 @@ func TestAdminBillingSettingsTenantOperatorScope(t *testing.T) {
 	store := newAdminBillingSettingsStore()
 	audit := &adminBillingSettingsAuditStore{}
 	handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-		Auth:         adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:         adminBillingAuthStub{ident: admintest.TenantOperator(22, 7)},
 		Store:        store,
 		AuditUpdater: newAdminBillingSettingsTestAuditUpdater(store, audit),
 	})
@@ -249,7 +250,7 @@ func TestAdminBillingSettingsValidationFailures(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := newAdminBillingSettingsTestRouter(AdminBillingSettingsDeps{
-				Auth:  adminBillingAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+				Auth:  adminBillingAuthStub{ident: admintest.Platform(11)},
 				Store: newAdminBillingSettingsStore(),
 			})
 			rec := serveAdminBillingJSON(t, handler, http.MethodPut, "/admin/v1/billing/settings", tc.body)

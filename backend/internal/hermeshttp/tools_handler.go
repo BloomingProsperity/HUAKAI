@@ -117,7 +117,7 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC:校验 role 下限。tenant scope 在本 handler 运行前已由 H1 中间件
-	// (CanIssueForTenant)执行——跨 tenant 的调用方永远到不了这里。未知工具或权限
+	// (CanActOnTenant)执行——跨 tenant 的调用方永远到不了这里。未知工具或权限
 	// 不足均视为拒绝,记录为一条 denied 行。
 	spec, authErr := h.tools.Authorize(req.ToolName, actor.Role)
 	if authErr != nil {

@@ -107,26 +107,15 @@ func resolveProviderAccountHealthTenant(w http.ResponseWriter, r *http.Request, 
 		writeAdminAuthError(w, err)
 		return admin.AdminIdentity{}, 0, false
 	}
-	switch ident.Role {
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			writeError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
-			return admin.AdminIdentity{}, 0, false
-		}
-		return ident, ident.ScopeTenantID, true
-	case admin.RolePlatformAdmin:
-		if ident.ScopeTenantID > 0 {
-			return ident, ident.ScopeTenantID, true
-		}
-		tenantID, ok := resolvePlatformAdminQueryTenant(w, r, ident)
-		if !ok {
-			return admin.AdminIdentity{}, 0, false
-		}
-		return ident, tenantID, true
-	default:
-		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+	if err := ident.CanAccessProviderAccountControlPlane(); err != nil {
+		writeError(w, http.StatusForbidden, "admin_forbidden", "provider account control plane is not available to this tenant scope")
 		return admin.AdminIdentity{}, 0, false
 	}
+	tenantID, ok := resolveProviderAccountQueryOrScope(w, r, ident)
+	if !ok {
+		return admin.AdminIdentity{}, 0, false
+	}
+	return ident, tenantID, true
 }
 
 func parseProviderAccountHealthID(w http.ResponseWriter, r *http.Request) (int64, bool) {

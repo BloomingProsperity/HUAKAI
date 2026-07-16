@@ -14,13 +14,14 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
 func TestHandlerGETListTenantOperatorGets403(t *testing.T) {
 	svc := &platformSettingsServiceStub{}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:    platformSettingsAuthStub{ident: admintest.TenantOperator(22, 7)},
 		Service: svc,
 	})
 
@@ -36,7 +37,7 @@ func TestHandlerGETListTenantOperatorGets403(t *testing.T) {
 func TestHandlerPUTTenantOperatorGets403(t *testing.T) {
 	svc := &platformSettingsServiceStub{}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:    platformSettingsAuthStub{ident: admintest.TenantOperator(22, 7)},
 		Service: svc,
 	})
 
@@ -60,7 +61,7 @@ func TestHandlerGETSingleAbsentKeyReturnsDefault(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -86,7 +87,7 @@ func TestHandlerGETSingleAbsentKeyReturnsDefault(t *testing.T) {
 func TestHandlerPUTUnknownKeyGets400BeforeService(t *testing.T) {
 	svc := &platformSettingsServiceStub{}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -104,7 +105,7 @@ func TestHandlerPUTUnknownKeyGets400BeforeService(t *testing.T) {
 func TestHandlerPUTMissingValueFieldGets400(t *testing.T) {
 	svc := &platformSettingsServiceStub{}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -131,7 +132,7 @@ func TestHandlerPUTReasonOptionalWritesSetting(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -167,7 +168,7 @@ func TestHandlerPUTCaptchaEnabledRequiresConfiguredSecret(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:                    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service:                 svc,
 		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
@@ -204,7 +205,7 @@ func TestHandlerPUTCaptchaEnabledAllowedWhenSecretConfigured(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:                    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service:                 svc,
 		CaptchaSecretConfigured: func(context.Context) bool { return true },
 	})
@@ -231,7 +232,7 @@ func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:                    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:                    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service:                 svc,
 		CaptchaSecretConfigured: func(context.Context) bool { return false },
 	})
@@ -249,7 +250,7 @@ func TestHandlerGETCaptchaEnabledShowsMissingSecretHealth(t *testing.T) {
 func TestHandlerPUTLargeBodyRejectedWith413(t *testing.T) {
 	svc := &platformSettingsServiceStub{}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 	body := bytes.NewBufferString(`{"value":"` + strings.Repeat("x", 70<<10) + `"}`)
@@ -268,7 +269,7 @@ func TestHandlerPUTLargeBodyRejectedWith413(t *testing.T) {
 
 func TestHandlerNilServiceReturns503(t *testing.T) {
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth: platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth: platformSettingsAuthStub{ident: admintest.Platform(11)},
 	})
 
 	rec := servePlatformSettingsJSON(t, handler, http.MethodGet, "/v1/admin/platform-settings/", nil)
@@ -289,7 +290,7 @@ func TestHandlerGETListReturnsAllDefinedKeys(t *testing.T) {
 		items = append(items, platformsettings.StoredSetting{Key: key, Value: value, Source: source})
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth: platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth: platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: &platformSettingsServiceStub{
 			listResult: items,
 		},
@@ -338,7 +339,7 @@ func TestHandlerGETModerationAPIKeysIsMaskedNotPlaintext(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -370,7 +371,7 @@ func TestHandlerGETModerationAPIKeysEmptyShowsNotConfigured(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: svc,
 	})
 
@@ -412,7 +413,7 @@ func TestHandlerGETListMasksSecretKeysButNotPublicKeys(t *testing.T) {
 		},
 	}
 	handler := newPlatformSettingsTestRouter(PlatformSettingsDeps{
-		Auth:    platformSettingsAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:    platformSettingsAuthStub{ident: admintest.Platform(11)},
 		Service: &platformSettingsServiceStub{listResult: items},
 	})
 

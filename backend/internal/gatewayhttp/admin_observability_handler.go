@@ -197,19 +197,22 @@ func parseTenantScope(w http.ResponseWriter, raw string, ident admin.AdminIdenti
 		}
 		tenantID = &id
 	}
-	if ident.Role == admin.RolePlatformAdmin {
-		return tenantID, true
-	}
-	if ident.Role != admin.RoleTenantOperator || ident.ScopeTenantID <= 0 {
+	if !ident.IsValid() {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
 		return nil, false
 	}
-	if tenantID != nil && *tenantID != ident.ScopeTenantID {
+	if ident.IsPlatformWide() && tenantID == nil {
+		return nil, true
+	}
+	if tenantID == nil {
+		id := ident.ScopeTenantID()
+		tenantID = &id
+	}
+	if err := ident.CanActOnTenant(*tenantID); err != nil {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return nil, false
 	}
-	id := ident.ScopeTenantID
-	return &id, true
+	return tenantID, true
 }
 
 func countUsage(ctx context.Context, s AdminObservabilityStore, q obsQuery) (int64, error) {

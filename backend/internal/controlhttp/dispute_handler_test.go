@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/audit"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 )
@@ -101,7 +102,7 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 		},
 	}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Auth:     disputeFakeAdminAuth{ident: admintest.Platform(77)},
 		Resolver: resolver,
 	})
 
@@ -127,12 +128,12 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 	}
 }
 
-// 变异:在 resolve 之前省略 ident.CanIssueForTenant。
+// 变异:在 resolve 之前省略 ident.CanActOnTenant。
 // tenant 7 的租户运营者将能 resolve tenant 8 的 dispute。
 func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	resolver := &disputeFakeResolver{}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:     disputeFakeAdminAuth{ident: admintest.TenantOperator(88, 7)},
 		Resolver: resolver,
 	})
 
@@ -152,7 +153,7 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 func TestAdminResolveTerminalDisputeReturnsConflict(t *testing.T) {
 	resolver := &disputeFakeResolver{resolveErr: audit.ErrDisputeNotResolvable}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Auth:     disputeFakeAdminAuth{ident: admintest.Platform(77)},
 		Resolver: resolver,
 	})
 	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
@@ -167,7 +168,7 @@ func TestAdminResolveTerminalDisputeReturnsConflict(t *testing.T) {
 func TestAdminResolveWithoutCommittedChargeReturnsBadRequest(t *testing.T) {
 	resolver := &disputeFakeResolver{resolveErr: audit.ErrDisputeNoCharge}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Auth:     disputeFakeAdminAuth{ident: admintest.Platform(77)},
 		Resolver: resolver,
 	})
 	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
@@ -183,7 +184,7 @@ func TestAdminRejectDisputeOmitsRefundFields(t *testing.T) {
 		Dispute: disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusRejected, "charge upheld"),
 	}}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Auth:     disputeFakeAdminAuth{ident: admintest.Platform(77)},
 		Resolver: resolver,
 	})
 	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
@@ -205,7 +206,7 @@ func TestAdminListDisputesSeesMultipleUsersInTenant(t *testing.T) {
 		dispute(3, 8, 42, "req-other-tenant", audit.DisputeStatusOpen),
 	}}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 91, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  disputeFakeAdminAuth{ident: admintest.TenantOperator(91, 7)},
 		Store: store,
 	})
 
@@ -258,7 +259,7 @@ func TestAdminListDisputesStatusFilter(t *testing.T) {
 		dispute(3, 7, 100, "req-rejected", audit.DisputeStatusRejected),
 	}}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 92, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  disputeFakeAdminAuth{ident: admintest.TenantOperator(92, 7)},
 		Store: store,
 	})
 
@@ -296,7 +297,7 @@ func TestAdminListDisputesPaginationCapsLimitAndPassesOffset(t *testing.T) {
 		dispute(4, 7, 42, "req-3", audit.DisputeStatusOpen),
 	}}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 93, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  disputeFakeAdminAuth{ident: admintest.TenantOperator(93, 7)},
 		Store: store,
 	})
 
@@ -315,7 +316,7 @@ func TestAdminListDisputesPaginationCapsLimitAndPassesOffset(t *testing.T) {
 func TestAdminListDisputesAuthRequired(t *testing.T) {
 	store := &disputeFakeStore{}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 94, Role: "viewer", ScopeTenantID: 7}},
+		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 94, Role: "viewer"}},
 		Store: store,
 	})
 

@@ -12,6 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 )
@@ -94,7 +95,7 @@ func TestAdminReferralsTenantScopeStatusAndPagination(t *testing.T) {
 
 	NewAdminReferralsHandler(Deps{
 		Service:   stub,
-		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, 7)},
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
@@ -130,7 +131,7 @@ func TestAdminOverviewPlatformAdminRequiresTenantID(t *testing.T) {
 
 	NewAdminReferralOverviewHandler(Deps{
 		Service:   stub,
-		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		AdminAuth: referralAdminAuthStub{ident: admintest.Platform(1)},
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusBadRequest)
@@ -152,7 +153,7 @@ func TestAdminOverviewFormatsCountsAndTotalReward(t *testing.T) {
 
 	NewAdminReferralOverviewHandler(Deps{
 		Service:   stub,
-		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		AdminAuth: referralAdminAuthStub{ident: admintest.Platform(1)},
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
@@ -179,7 +180,7 @@ func TestAdminReferralsRejectsInvalidStatus(t *testing.T) {
 
 	NewAdminReferralsHandler(Deps{
 		Service:   stub,
-		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, 7)},
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusBadRequest)
@@ -296,7 +297,7 @@ func TestAdminReferralRewardsTenantScopedAndFiltered(t *testing.T) {
 	rec := httptest.NewRecorder()
 	NewAdminReferralRewardsHandler(Deps{
 		Service:   stub,
-		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, 7)},
 	}).ServeHTTP(rec, req)
 
 	assertReferralHTTPStatus(t, rec, http.StatusOK)

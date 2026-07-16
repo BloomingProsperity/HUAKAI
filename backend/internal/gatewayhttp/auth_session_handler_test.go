@@ -22,6 +22,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -582,7 +583,7 @@ func TestAT_AUTH_007_010_AuthRedactionAcrossAuditLogAndStructuredSinks(t *testin
 	sessionSvc.SigningKey = testSessionSigningKey()
 	email := &captureAuthEmail{}
 	events := &captureAuthEventSink{}
-	adminAuth := authAdminStub{ident: admin.AdminIdentity{TokenID: 5, Role: admin.RolePlatformAdmin}}
+	adminAuth := authAdminStub{ident: admintest.Platform(5)}
 	r := chi.NewRouter()
 	r.Route("/v1/auth", func(r chi.Router) {
 		MountAuthRoutes(r, AuthHandlerDeps{Auth: authSvc, Sessions: sessionSvc, EmailSender: email, AdminAuth: adminAuth, EventSink: events})
@@ -740,14 +741,14 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	blockedRouter.Route("/v1/auth", func(r chi.Router) {
 		MountAuthRoutes(r, AuthHandlerDeps{
 			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
-			AdminAuth: authAdminStub{ident: admin.AdminIdentity{TokenID: 7, Role: admin.RoleTenantOperator, ScopeTenantID: 2}},
+			AdminAuth: authAdminStub{ident: admintest.TenantOperator(7, 2)},
 		})
 	})
 	allowedRouter := chi.NewRouter()
 	allowedRouter.Route("/v1/auth", func(r chi.Router) {
 		MountAuthRoutes(r, AuthHandlerDeps{
 			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
-			AdminAuth: authAdminStub{ident: admin.AdminIdentity{TokenID: 8, Role: admin.RoleTenantOperator, ScopeTenantID: 1}},
+			AdminAuth: authAdminStub{ident: admintest.TenantOperator(8, 1)},
 		})
 	})
 

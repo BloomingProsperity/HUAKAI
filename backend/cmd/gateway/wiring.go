@@ -1394,6 +1394,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
 	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
 	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
+	sessionAdminIdentities := adminsessionauth.NewPostgresIdentityStore(pgPool)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1489,9 +1490,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		modelSync:            modelSyncService,
 		routePlanner:         router.NewDefaultRouter(),
 		adminAuth: adminsessionauth.New(
-			admin.NewAdminResolver(adminQueries),   // 令牌通道(hk_admin_,行为不变)
-			userSessionService,                     // session 校验器
-			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
+			admin.NewAdminResolver(adminQueries), // 令牌通道(hk_admin_,行为不变)
+			userSessionService,                   // session 校验器
+			adminsessionauth.IdentityStoreFunc(sessionAdminIdentities.ResolveActiveAdminIdentity), // session 私有作用域查询
 			clientIPResolver,
 		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),

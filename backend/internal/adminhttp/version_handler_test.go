@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/buildinfo"
 )
 
@@ -62,7 +63,7 @@ func TestVersionTenantOperatorOK(t *testing.T) {
 // TestVersionPlatformAdminOK:platform_admin 同样看到 200。
 func TestVersionPlatformAdminOK(t *testing.T) {
 	rec := invokeVersion(t, VersionDeps{
-		Auth: versionAuthStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Auth: versionAuthStub{ident: admintest.Platform(0)},
 	}, "/admin/v1/version")
 
 	assertVersionOK(t, rec)

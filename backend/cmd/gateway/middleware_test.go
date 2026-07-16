@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 )
 
 // 守 adminGate 注入已认证身份到 context: 放行后下游 handler 可经 admin.IdentityFromContext 读回真实身份,
 // 据此做审计/归属(取代信任请求体的归属字段, 防伪造)。
 // mutation: adminGate 不 r.WithContext(IdentityToContext) 注入 → 下游 ok=false → 本测红。
 func TestAdminGateInjectsIdentityIntoContext(t *testing.T) {
-	resolver := fakeAdminResolver{id: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	resolver := fakeAdminResolver{id: admintest.Platform(99)}
 	var gotID admin.AdminIdentity
 	var gotOK bool
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +39,7 @@ func TestAdminGateInjectsIdentityIntoContext(t *testing.T) {
 // 守注入【在 RBAC 之后】: tenant_operator 被 403 拒, 下游 handler 根本不被调用(自然也不会注入身份)。
 // mutation: 把身份注入误移到 RBAC 检查之前并放行 → forbidden 请求也触下游 → innerCalled=true → 红。
 func TestAdminGateDoesNotReachHandlerOnForbidden(t *testing.T) {
-	resolver := fakeAdminResolver{id: admin.AdminIdentity{TokenID: 7, Role: admin.RoleTenantOperator, ScopeTenantID: 42}}
+	resolver := fakeAdminResolver{id: admintest.TenantOperator(7, 42)}
 	innerCalled := false
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		innerCalled = true
