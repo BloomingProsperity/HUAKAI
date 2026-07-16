@@ -1,6 +1,6 @@
 // Package adminsessionauth 组合 admin 鉴权的两条通道:既有令牌通道(admin_tokens,hk_admin_)
 // + session 通道(admin-role 用户 session 直接鉴权 admin 端点)。
-// role 制单登录,详见 docs/process/plans/2026-07-01-role-based-auth-migration-claude.md。
+// 当前身份边界见 docs/process/plans/2026-07-16-three-role-single-level-tenant-model-codex.md。
 package adminsessionauth
 
 import (

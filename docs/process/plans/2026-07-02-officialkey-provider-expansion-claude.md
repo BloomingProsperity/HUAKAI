@@ -34,4 +34,4 @@
 
 ## 镜像对照(§16)
 
-三镜此前已在凭证域做过 9-agent 两镜调研(见 docs/process/plans/2026-07-01-role-based-auth-migration-claude.md 凭证段):new-api 渠道=类型+base_url+key(明文列存);sub2api=账号池+静态密钥;CLIProxyAPI=配置文件式 provider key。HUAKAI delta(三维):架构=加密 v2 credential store(AES-256-GCM+KEK)替代明文列;生态=vendor×auth_mode DB CHECK 白名单 + 审定目录(catalog disposition)分级放行;算法=无(纯数据接入)。本切片不引入新对照面(接入形状=已有 anthropic/api_key 同构复制)。
+本节记录当时凭证域调研得出的历史差异结论，不作为当前身份或租户权限合同。HUAKAI 的实现差异为:架构上使用加密 v2 credential store(AES-256-GCM+KEK);生态上使用 vendor×auth_mode DB CHECK 白名单与审定目录分级放行;本切片不引入新的算法或身份模型。
