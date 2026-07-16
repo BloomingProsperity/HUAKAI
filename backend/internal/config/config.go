@@ -42,7 +42,8 @@ type Config struct {
 	RequestClass string
 
 	// TransportSidecarSocket 让 mimicry 传输模式指向本地 TLS sidecar 的 Unix
-	// socket。为空时沿用现有的 Go uTLS 路径。
+	// socket。由 resolveTransportSidecarSocket 解析:显式 env 优先,生产模式未配置时
+	// 默认走 Rust sidecar,dev/test 留空回落 Go uTLS。为空时沿用 Go uTLS 回退路径。
 	TransportSidecarSocket string
 	// TransportSidecarFallback 是显式的 opt-in。默认 false, 当 Rust sidecar 已配置
 	// 但不可用时, 让生产保持 fail-closed。
@@ -120,11 +121,15 @@ const (
 	DefaultPaymentExpireSweepBatchLimit = 200
 	DefaultAPIKeyExpirySweepInterval    = 5 * time.Minute
 	DefaultAPIKeyExpirySweepBatchLimit  = 500
-	vendorOAuthAuthURL                  = "AUTH_URL"
-	vendorOAuthTokenURL                 = "TOKEN_URL"
-	vendorOAuthClientID                 = "CLIENT_ID"
-	vendorOAuthClientSecret             = "CLIENT_SECRET"
-	vendorOAuthScope                    = "SCOPE"
+	// DefaultTransportSidecarSocket 是生产模式下 Rust BoringSSL TLS sidecar 的默认 unix
+	// socket 路径,与 docker-compose.{prod,direct}.yml 中 tls-sidecar 服务的共享卷挂载点
+	// 一致。生产模式未显式配置 socket 时按此默认——出口默认全部经 Rust sidecar。
+	DefaultTransportSidecarSocket = "/run/huakai/tls-sidecar.sock"
+	vendorOAuthAuthURL            = "AUTH_URL"
+	vendorOAuthTokenURL           = "TOKEN_URL"
+	vendorOAuthClientID           = "CLIENT_ID"
+	vendorOAuthClientSecret       = "CLIENT_SECRET"
+	vendorOAuthScope              = "SCOPE"
 )
 
 // VendorOAuth 是一份运维提供的 OAuth client 配置。
@@ -250,7 +255,7 @@ func Load() (*Config, error) {
 		Listen:                         envDefault("HUAKAI_ADDR", ":8080"),
 		BillingPolicyVersion:           envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
 		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
-		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
+		TransportSidecarSocket:         resolveTransportSidecarSocket(),
 		TransportSidecarFallback:       transportSidecarFallback,
 		TransportSidecarForceH1:        envOptionalForceH1("HUAKAI_TRANSPORT_FORCE_H1"),
 		QuotaEnforce:                   quotaEnforce,
@@ -366,6 +371,25 @@ func envDefault(name, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// resolveTransportSidecarSocket 解析出站 mimicry 的 Rust TLS sidecar unix socket 路径。
+// 显式 HUAKAI_TRANSPORT_SIDECAR_SOCKET 永远优先。未显式设置时:
+//   - 生产模式(HUAKAI_RELEASE_MODE=production)默认走 Rust BoringSSL sidecar 标准路径
+//     —— 出口默认全部经 Rust,Go-native uTLS 为非默认回退路径。纯 Rust fail-closed;
+//     应急回退 Go uTLS 由 HUAKAI_TRANSPORT_SIDECAR_FALLBACK=true 打开。
+//   - dev / test 模式默认留空 → 回落 Go-native uTLS,免去本机 / CI 无 sidecar 时 fail-closed
+//     断出口(dev/CI 通常不起 sidecar 容器)。
+//
+// 只读 env、不引入对 eventbus 的依赖(与 config 包既有对 HUAKAI_RELEASE_MODE 的直读一致)。
+func resolveTransportSidecarSocket() string {
+	if v := strings.TrimSpace(os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET")); v != "" {
+		return v
+	}
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HUAKAI_RELEASE_MODE")), "production") {
+		return DefaultTransportSidecarSocket
+	}
+	return ""
 }
 
 func firstNonEmptyEnv(names ...string) string {

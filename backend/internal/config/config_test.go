@@ -130,6 +130,41 @@ func TestLoadIncludesTransportSidecarSocket(t *testing.T) {
 	}
 }
 
+// TestResolveTransportSidecarSocketDefault 锁定 R3 默认翻转:生产模式未显式配置
+// socket 时默认走 Rust sidecar(出口默认全部经 Rust,Go uTLS 冻结为非默认死路径);
+// dev/test 模式默认留空回落 Go uTLS(免本机/CI 无 sidecar 时 fail-closed 断出口);
+// 显式 env 永远优先(即便 dev 模式也能显式启用 sidecar)。
+//
+// MUTATION:把 resolveTransportSidecarSocket 改回裸 os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET")
+// (生产未设 env → 返回空)→ 子用例 "生产模式默认非空" 断言 DefaultTransportSidecarSocket
+// 失败转红。反向变异:去掉 dev 分支恒返默认 → 子用例 "dev 模式默认留空" 转红。
+func TestResolveTransportSidecarSocketDefault(t *testing.T) {
+	cases := []struct {
+		name        string
+		releaseMode string
+		explicit    string // HUAKAI_TRANSPORT_SIDECAR_SOCKET;"" 视为未显式配置
+		want        string
+	}{
+		{name: "生产模式默认非空", releaseMode: "production", explicit: "", want: DefaultTransportSidecarSocket},
+		{name: "生产模式大小写不敏感", releaseMode: "Production", explicit: "", want: DefaultTransportSidecarSocket},
+		{name: "dev模式默认留空", releaseMode: "dev", explicit: "", want: ""},
+		{name: "test模式默认留空", releaseMode: "test", explicit: "", want: ""},
+		{name: "未设release默认留空", releaseMode: "", explicit: "", want: ""},
+		{name: "显式env优先于生产默认", releaseMode: "production", explicit: "/tmp/custom.sock", want: "/tmp/custom.sock"},
+		{name: "显式env在dev也生效", releaseMode: "dev", explicit: "/tmp/custom.sock", want: "/tmp/custom.sock"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HUAKAI_RELEASE_MODE", tc.releaseMode)
+			// 置空 = 中和 CI/宿主可能存在的环境值,等价"未显式配置"。
+			t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", tc.explicit)
+			if got := resolveTransportSidecarSocket(); got != tc.want {
+				t.Fatalf("resolveTransportSidecarSocket()=%q want %q (release=%q explicit=%q)", got, tc.want, tc.releaseMode, tc.explicit)
+			}
+		})
+	}
+}
+
 func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "true")

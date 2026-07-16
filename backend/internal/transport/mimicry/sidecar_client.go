@@ -28,6 +28,9 @@ func newEgressCorrelationID() string {
 
 const (
 	SidecarProfileAnthropicCLIMimicryV1 = "anthropic-cli-mimicry-v1"
+	SidecarProfileOpenAICodexCLIV1      = "openai-codex-cli-v1"
+	SidecarProfileGeminiCLIV1           = "gemini-cli-v1"
+	SidecarProfileKiroCLIV1             = "kiro-cli-v1"
 	sidecarMaxFrameLen                  = 1024 * 1024
 )
 

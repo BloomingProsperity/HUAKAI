@@ -18,6 +18,9 @@ import (
 // ProxyDialerFunc 在 uTLS 握手【之下】建立到目标的原始 TCP 连接 —— 即先经代理
 // 拨到 target,再在返回的 conn 上跑自定义 ClientHello。这样出口 IP 是代理的,
 // JA3 仍是伪装指纹,二者得以共存(PROXY-02a)。
+//
+// 服务于 Go-native uTLS 回退出口(非默认路径);sidecar 出口的代理隧道由 Rust 侧
+// 经 sidecarProxySpec 独立实现,不复用本拨号器(见 UtlsDialer 冻结说明)。
 type ProxyDialerFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // proxyDialerFromURL 按代理 URL 构造 ProxyDialerFunc。

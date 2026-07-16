@@ -45,6 +45,36 @@ func TestDefaultTemplateRegistryIncludesAnthropicCLIMimicryV1(t *testing.T) {
 	}
 }
 
+func TestSidecarProfileForModeMapsCapturedProfilesAndFailsClosed(t *testing.T) {
+	mapped := []struct {
+		mode TransportMode
+		want string
+	}{
+		{mode: ModeMimicryChatGPT, want: SidecarProfileOpenAICodexCLIV1},
+		{mode: ModeMimicryGeminiAdvanced, want: SidecarProfileGeminiCLIV1},
+		{mode: ModeMimicryKiro, want: SidecarProfileKiroCLIV1},
+	}
+	for _, tc := range mapped {
+		got, ok := SidecarProfileForMode(tc.mode)
+		if !ok || got != tc.want {
+			t.Errorf("SidecarProfileForMode(%q) = (%q, %v), want (%q, true)", tc.mode, got, ok, tc.want)
+		}
+	}
+
+	unmapped := []TransportMode{
+		ModeMimicryAntigravity,
+		ModeMimicryCursor,
+		ModeMimicryCopilot,
+		ModeMimicryWindsurf,
+	}
+	for _, mode := range unmapped {
+		got, ok := SidecarProfileForMode(mode)
+		if ok || got != "" {
+			t.Errorf("SidecarProfileForMode(%q) = (%q, %v), want (\"\", false)", mode, got, ok)
+		}
+	}
+}
+
 func TestAnthropicCLIMimicryProfileDiffersFromChatGPT(t *testing.T) {
 	anthropic := AnthropicCLIMimicryV1Template()
 	chatgpt, err := LoadFromCollectorOutput("../../../../tools/fingerprint-collector/templates/codex-cli.json")

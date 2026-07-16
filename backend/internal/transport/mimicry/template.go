@@ -12,6 +12,8 @@ import (
 )
 
 // ClientHelloTemplate 是 collector 净化输出到 uTLS ClientHelloSpec 的中间格式。
+// 服务于 Go-native uTLS 回退出口(非默认路径,默认出口经 Rust sidecar);新增指纹
+// 应加进 sidecar 的 Rust profile(见 UtlsDialer 冻结说明)。
 type ClientHelloTemplate struct {
 	ModeName string `json:"mode_name,omitempty"`
 	// Preset 非空时走 uTLS 内置浏览器 ClientHello (chrome/firefox/safari/edge/ios),

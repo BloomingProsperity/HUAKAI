@@ -42,6 +42,12 @@ func SidecarProfileForMode(mode TransportMode) (string, bool) {
 	switch mode {
 	case ModeMimicryClaudeCode:
 		return SidecarProfileAnthropicCLIMimicryV1, true
+	case ModeMimicryChatGPT:
+		return SidecarProfileOpenAICodexCLIV1, true
+	case ModeMimicryGeminiAdvanced:
+		return SidecarProfileGeminiCLIV1, true
+	case ModeMimicryKiro:
+		return SidecarProfileKiroCLIV1, true
 	default:
 		return "", false
 	}
@@ -121,6 +127,9 @@ func NewTemplateRegistry() *TemplateRegistry {
 	return &TemplateRegistry{templates: make(map[TransportMode]*ClientHelloTemplate)}
 }
 
+// NewDefaultTemplateRegistry 组装 Go-native uTLS 回退出口的内置模板注册表(非默认
+// 路径;默认出口经 Rust sidecar,见 UtlsDialer 冻结说明)。四家伪装的默认出口指纹
+// 已内置于 sidecar 的 Rust profile;此处仅为回退保留 anthropic 模板。
 func NewDefaultTemplateRegistry() *TemplateRegistry {
 	r := NewTemplateRegistry()
 	if err := r.Register(ModeMimicryClaudeCode, AnthropicCLIMimicryV1Template()); err != nil {
