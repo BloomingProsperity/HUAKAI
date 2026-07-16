@@ -43,6 +43,104 @@ ec_points = [0]
 # TODO(Phase 3 real capture): fill these six values from decrypted Anthropic CLI H2 wire data.
 # Allowed keys: HEADER_TABLE_SIZE / ENABLE_PUSH / MAX_CONCURRENT_STREAMS /
 # INITIAL_WINDOW_SIZE / MAX_FRAME_SIZE / MAX_HEADER_LIST_SIZE.
+
+# 下面三家(codex/gemini/kiro)的 ja4_a/b/c 是【实测值】:用基线 connect_config 让 boring
+# 真 emit ClientHello,再经标准 FoxIO ja4.rs 算出,并由 boring_ctx 自洽测试锁死(存值==线缆)。
+# 与 fingerprint-collector 旧模板里的 JA4(旧采集器算法,b/c 口径不同)【故意不同】,勿改回模板值。
+# 真客户端逐字节吻合的最终确认留待真号实测(R4);a 段的 cipher/ext 计数已与模板一致。
+[[profile]]
+id = "openai-codex-cli-v1"
+target_hosts = ["chatgpt.com"]
+grease = false
+supported_versions = [772, 771]
+cipher_suites = [4866, 4867, 4865, 49196, 49200, 159, 52393, 52392, 52394, 49195, 49199, 158, 49188, 49192, 107, 49187, 49191, 103, 49162, 49172, 57, 49161, 49171, 51, 157, 156, 61, 60, 53, 47]
+extensions = [65281, 0, 11, 10, 35, 22, 23, 13, 43, 45, 51]
+supported_groups = [4588, 29, 23, 30, 24, 25, 256, 257]
+ec_point_formats = [0, 1, 2]
+key_share_groups = [4588, 29]
+psk_modes = [1]
+signature_algorithms = [2309, 2310, 2308, 1027, 1283, 1539, 2055, 2056, 2074, 2075, 2076, 2057, 2058, 2059, 2052, 2053, 2054, 1025, 1281, 1537, 771, 769, 770, 1026, 1282, 1538]
+cipher_list = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA256:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:DHE-RSA-AES128-SHA:AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA"
+extension_order = [65281, 0, 11, 10, 35, 22, 23, 13, 43, 45, 51]
+tls13_cipher_order = [4866, 4867, 4865]
+# BoringSSL 可协商集合不含 X448/FFDHE;线缆 supported_groups 仍由上面的数字列表与 raw profile 精确输出。
+curves = "X25519MLKEM768:X25519:P-256:P-384:P-521"
+sigalgs = "rsa_pss_pss_sha384:rsa_pss_pss_sha512:rsa_pss_pss_sha256:ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:ed25519:ed448:ecdsa_brainpoolP256r1tls13_sha256:ecdsa_brainpoolP384r1tls13_sha384:ecdsa_brainpoolP512r1tls13_sha512:rsa_pss_pss_sha256:rsa_pss_pss_sha384:rsa_pss_pss_sha512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha224:rsa_sha224:dsa_sha224:ecdsa_sha1:rsa_pkcs1_sha1:dsa_sha1"
+alpn = []
+expected_ja3 = "772,4866-4867-4865-49196-49200-159-52393-52392-52394-49195-49199-158-49188-49192-107-49187-49191-103-49162-49172-57-49161-49171-51-157-156-61-60-53-47,65281-0-11-10-35-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2"
+ja4_a = "t13d301100"
+ja4_b = "1d37bd780c83"
+ja4_c = "8e6e362c5eac"
+
+[profile.client_hello_profile]
+ciphers = [49196, 49200, 159, 52393, 52392, 52394, 49195, 49199, 158, 49188, 49192, 107, 49187, 49191, 103, 49162, 49172, 57, 49161, 49171, 51, 157, 156, 61, 60, 53, 47]
+groups = [4588, 29, 23, 30, 24, 25, 256, 257]
+ec_points = [0, 1, 2]
+
+[profile.h2_settings]
+
+[[profile]]
+id = "gemini-cli-v1"
+target_hosts = ["cloudcode-pa.googleapis.com"]
+grease = false
+supported_versions = [772, 771]
+cipher_suites = [4866, 4867, 4865, 49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47]
+extensions = [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
+supported_groups = [4588, 29, 23, 30, 24, 25, 256, 257]
+ec_point_formats = [0, 1, 2]
+key_share_groups = [4588, 29]
+psk_modes = [1]
+signature_algorithms = [2309, 2310, 2308, 1027, 1283, 1539, 2055, 2056, 2074, 2075, 2076, 2057, 2058, 2059, 2052, 2053, 2054, 1025, 1281, 1537, 771, 769, 770, 1026, 1282, 1538]
+cipher_list = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA256:DHE-DSS-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-CCM:DHE-RSA-AES256-CCM:ECDHE-ECDSA-ARIA256-GCM-SHA384:ECDHE-ARIA256-GCM-SHA384:DHE-DSS-ARIA256-GCM-SHA384:DHE-RSA-ARIA256-GCM-SHA384:DHE-DSS-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-CCM:DHE-RSA-AES128-CCM:ECDHE-ECDSA-ARIA128-GCM-SHA256:ECDHE-ARIA128-GCM-SHA256:DHE-DSS-ARIA128-GCM-SHA256:DHE-RSA-ARIA128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:DHE-DSS-AES256-SHA256:ECDHE-ECDSA-AES128-SHA256:DHE-DSS-AES128-SHA256:ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES256-SHA:DHE-DSS-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:DHE-RSA-AES128-SHA:DHE-DSS-AES128-SHA:AES256-GCM-SHA384:AES256-CCM:ARIA256-GCM-SHA384:AES128-GCM-SHA256:AES128-CCM:ARIA128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA"
+extension_order = [65281, 0, 11, 10, 35, 16, 22, 23, 13, 43, 45, 51]
+tls13_cipher_order = [4866, 4867, 4865]
+# BoringSSL 可协商集合不含 X448/FFDHE;线缆 supported_groups 仍由上面的数字列表与 raw profile 精确输出。
+curves = "X25519MLKEM768:X25519:P-256:P-384:P-521"
+sigalgs = "rsa_pss_pss_sha384:rsa_pss_pss_sha512:rsa_pss_pss_sha256:ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:ed25519:ed448:ecdsa_brainpoolP256r1tls13_sha256:ecdsa_brainpoolP384r1tls13_sha384:ecdsa_brainpoolP512r1tls13_sha512:rsa_pss_pss_sha256:rsa_pss_pss_sha384:rsa_pss_pss_sha512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha224:rsa_sha224:dsa_sha224:ecdsa_sha1:rsa_pkcs1_sha1:dsa_sha1"
+alpn = ["h2", "http/1.1"]
+expected_ja3 = "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2"
+ja4_a = "t13d5212h2"
+ja4_b = "b262b3658495"
+ja4_c = "8e6e362c5eac"
+
+[profile.client_hello_profile]
+ciphers = [49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47]
+groups = [4588, 29, 23, 30, 24, 25, 256, 257]
+ec_points = [0, 1, 2]
+
+[profile.h2_settings]
+
+# Kiro 真客户端 JA3 逐请求随机化,sidecar 定序只能对齐 JA4 稳定前缀
+# t13d0910_00_5a0d15427bfb + cipher/groups 集合,不复刻 rustls 乱序,这是已知固有差异。
+[[profile]]
+id = "kiro-cli-v1"
+target_hosts = ["q.us-east-1.amazonaws.com"]
+grease = true
+supported_versions = [772, 771]
+cipher_suites = [4866, 4865, 4867, 49196, 49195, 52393, 49200, 49199, 52392, 255]
+extensions = [10, 43, 51, 0, 45, 11, 5, 35, 23, 13]
+supported_groups = [4588, 29, 23, 24]
+ec_point_formats = [0]
+key_share_groups = [4588, 29]
+psk_modes = [1]
+signature_algorithms = [1283, 1027, 1539, 2055, 2054, 2053, 2052, 1537, 1281, 1025]
+cipher_list = "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-CHACHA20-POLY1305"
+extension_order = [10, 43, 51, 0, 45, 11, 5, 35, 23, 13]
+tls13_cipher_order = [4866, 4865, 4867]
+curves = "X25519MLKEM768:X25519:P-256:P-384"
+sigalgs = "ecdsa_secp384r1_sha384:ecdsa_secp256r1_sha256:ecdsa_secp521r1_sha512:ed25519:rsa_pss_rsae_sha512:rsa_pss_rsae_sha384:rsa_pss_rsae_sha256:rsa_pkcs1_sha512:rsa_pkcs1_sha384:rsa_pkcs1_sha256"
+alpn = []
+expected_ja3 = "772,4866-4865-4867-49196-49195-52393-49200-49199-52392,10-43-51-0-45-11-5-35-23-13,4588-29-23-24,0"
+ja4_a = "t13d091000"
+ja4_b = "f91f431d341e"
+ja4_c = "f9531d972513"
+
+[profile.client_hello_profile]
+ciphers = [49196, 49195, 52393, 49200, 49199, 52392, 255]
+groups = [4588, 29, 23, 24]
+ec_points = [0]
+
+[profile.h2_settings]
     "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -384,6 +482,49 @@ mod tests {
         assert_eq!(profile.ja4_c.as_deref(), Some("43ade6aba3df"));
         assert!(profile.h2_settings.is_empty());
         assert_eq!(profile.h2_initial_connection_window_size, None);
+    }
+
+    #[test]
+    fn built_in_codex_profile_preserves_captured_fingerprint() {
+        let profiles = super::ProfileStore::from_toml(super::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("openai-codex-cli-v1").unwrap();
+
+        assert_eq!(profile.expected_ja3, "772,4866-4867-4865-49196-49200-159-52393-52392-52394-49195-49199-158-49188-49192-107-49187-49191-103-49162-49172-57-49161-49171-51-157-156-61-60-53-47,65281-0-11-10-35-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2");
+        assert_eq!(profile.ja4_a.as_deref(), Some("t13d301100"));
+        assert_eq!(profile.ja4_b.as_deref(), Some("1d37bd780c83"));
+        assert_eq!(profile.ja4_c.as_deref(), Some("8e6e362c5eac"));
+        assert_eq!(profile.cipher_suites, [4866, 4867, 4865, 49196, 49200, 159, 52393, 52392, 52394, 49195, 49199, 158, 49188, 49192, 107, 49187, 49191, 103, 49162, 49172, 57, 49161, 49171, 51, 157, 156, 61, 60, 53, 47]);
+        assert!(profile.alpn.is_empty());
+        crate::boring_ctx::connect_config(profile).unwrap();
+    }
+
+    #[test]
+    fn built_in_gemini_profile_preserves_model_api_ht_fingerprint() {
+        let profiles = super::ProfileStore::from_toml(super::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("gemini-cli-v1").unwrap();
+
+        assert_eq!(profile.expected_ja3, "772,4866-4867-4865-49199-49195-49200-49196-158-49191-103-49192-107-163-159-52393-52392-52394-49325-49311-49245-49249-49239-49235-162-49324-49310-49244-49248-49238-49234-49188-106-49187-64-49162-49172-57-56-49161-49171-51-50-157-49309-49233-156-49308-49232-61-60-53-47,65281-0-11-10-35-16-22-23-13-43-45-51,4588-29-23-30-24-25-256-257,0-1-2");
+        assert_eq!(profile.ja4_a.as_deref(), Some("t13d5212h2"));
+        assert_eq!(profile.ja4_b.as_deref(), Some("b262b3658495"));
+        assert_eq!(profile.ja4_c.as_deref(), Some("8e6e362c5eac"));
+        assert_eq!(profile.cipher_suites, [4866, 4867, 4865, 49199, 49195, 49200, 49196, 158, 49191, 103, 49192, 107, 163, 159, 52393, 52392, 52394, 49325, 49311, 49245, 49249, 49239, 49235, 162, 49324, 49310, 49244, 49248, 49238, 49234, 49188, 106, 49187, 64, 49162, 49172, 57, 56, 49161, 49171, 51, 50, 157, 49309, 49233, 156, 49308, 49232, 61, 60, 53, 47]);
+        assert_eq!(profile.alpn, ["h2", "http/1.1"]);
+        crate::boring_ctx::connect_config(profile).unwrap();
+    }
+
+    #[test]
+    fn built_in_kiro_profile_preserves_fixed_sample_and_stable_prefix() {
+        let profiles = super::ProfileStore::from_toml(super::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("kiro-cli-v1").unwrap();
+
+        assert_eq!(profile.expected_ja3, "772,4866-4865-4867-49196-49195-52393-49200-49199-52392,10-43-51-0-45-11-5-35-23-13,4588-29-23-24,0");
+        assert_eq!(profile.ja4_a.as_deref(), Some("t13d091000"));
+        assert_eq!(profile.ja4_b.as_deref(), Some("f91f431d341e"));
+        assert_eq!(profile.ja4_c.as_deref(), Some("f9531d972513"));
+        assert_eq!(profile.cipher_suites, [4866, 4865, 4867, 49196, 49195, 52393, 49200, 49199, 52392, 255]);
+        assert!(profile.alpn.is_empty());
+        assert!(profile.grease);
+        crate::boring_ctx::connect_config(profile).unwrap();
     }
 
     #[test]

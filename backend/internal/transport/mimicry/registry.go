@@ -42,6 +42,12 @@ func SidecarProfileForMode(mode TransportMode) (string, bool) {
 	switch mode {
 	case ModeMimicryClaudeCode:
 		return SidecarProfileAnthropicCLIMimicryV1, true
+	case ModeMimicryChatGPT:
+		return SidecarProfileOpenAICodexCLIV1, true
+	case ModeMimicryGeminiAdvanced:
+		return SidecarProfileGeminiCLIV1, true
+	case ModeMimicryKiro:
+		return SidecarProfileKiroCLIV1, true
 	default:
 		return "", false
 	}

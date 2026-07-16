@@ -336,6 +336,41 @@ mod tests {
         assert_ne!(bad, profile.expected_ja3);
     }
 
+    // 三家新 profile 的 JA4 自洽:profile 里存的 ja4_a/b/c 必须等于 sidecar 基线握手实际
+    // emit 的 ClientHello 算出的值——即 validate_expected_ja4_before_connect 必过。这咬住
+    // "上线前存值 == 真实线缆指纹",存错(如漏 ALPN 段、用错哈希)会直接 fail-closed 断出口。
+    // 自证:对每家再克隆一份把 ja4_a 改一个字符,validate 必转红(证明本测试判别有效)。
+    #[tokio::test]
+    async fn new_profiles_ja4_expectation_matches_wire_and_mutation_fails() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        for (id, host) in [
+            ("openai-codex-cli-v1", "chatgpt.com"),
+            ("gemini-cli-v1", "cloudcode-pa.googleapis.com"),
+            ("kiro-cli-v1", "q.us-east-1.amazonaws.com"),
+        ] {
+            let profile = profiles.get(id).unwrap();
+            // 存值 == 实际 emit:validate 必过。
+            super::validate_expected_ja4_before_connect(profile, host)
+                .await
+                .unwrap_or_else(|error| panic!("{id} ja4 期望与真实线缆不符: {error}"));
+
+            // 自证判别:把 ja4_a 尾字符改坏,validate 必报 ja4_a 不匹配。
+            let mut mutated = profile.clone();
+            let mut a = mutated.ja4_a.take().unwrap();
+            a.pop();
+            a.push('z');
+            mutated.ja4_a = Some(a);
+            let err = super::validate_expected_ja4_before_connect(&mutated, host)
+                .await
+                .expect_err(&format!("{id} 变异 ja4_a 后 validate 必须转红"));
+            assert!(
+                err.to_string().contains("ja4_a"),
+                "{id} 变异应命中 ja4_a 段: {err}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn boring_wire_ja3_matches_profile_and_changes_when_cipher_order_is_damaged() {
         let profiles =
