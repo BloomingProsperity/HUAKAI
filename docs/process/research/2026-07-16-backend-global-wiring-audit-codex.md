@@ -6,12 +6,12 @@
 | --- | --- |
 | 审计分支 | `audit/backend-global-wiring-20260716-codex` |
 | 基线提交 | `438536e6` |
-| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移，以及以 Sub2 为主轴的完整账号系统对照 |
+| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三层分发/委托授权，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 17 |
-| Inferences | 7 |
-| Open questions | 15 |
+| Observed findings | 18 |
+| Inferences | 11 |
+| Open questions | 18 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -546,7 +546,7 @@ Sub2 允许粘贴一个或多行 `sessionKey`，后端完成组织发现、PKCE�
 
 作为 `Safe Equivalent` 单独建设，不与普通 paste 混用：
 
-1. 默认关闭，按 tenant 显式启用，并要求管理员 step-up。
+1. 默认关闭；目标模型中的部署治理主体只负责部署级开关、授权和撤权，不能替租户执行；被授权租户管理员只能在自身 tenant scope 内使用，操作要求 step-up。
 2. Cookie 只存在于单次请求内，不入库、不进审计正文、不进错误文本；完成后立即清零内存副本。
 3. 使用固定批准的上游域名、client profile、scope 和受控 HTTP client，不接受请求体覆盖 endpoint。
 4. 先返回逐项 dry-run/转换结果，再创建账号；稳定区分 Cookie 无效、组织发现失败、授权拒绝、上游变更和网络失败。
@@ -580,7 +580,7 @@ Sub2 把 Setup Token 作为独立账号类型，使用更窄的推理 scope，�
 1. 增加明确的 Setup Token acquisition plan、专用 start/helper 合同和权限范围展示。
 2. acquisition gate 与 refresher gate 使用同一配置源，启动时校验两者一致，禁止“能导入但不能刷新”。
 3. 管理合同同时展示当前 access token 到期、refresh material 状态、最近刷新和下一重试。
-4. 默认建议保持关闭，按 tenant/account 显式启用；是否改为默认开启由 Owner 决定。
+4. 默认建议保持关闭；目标模型中的部署治理主体只授权或撤权，不替租户执行；被授权租户管理员仅可在自身 tenant scope 内使用，未授权者固定拒绝。
 
 ### GW-WIRE-016：HUAKAI 有账号身份元数据，但没有 Codex Agent Identity 认证链
 
@@ -639,6 +639,39 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 4. 迁移包分为默认无秘密的安全包，以及显式启用的加密恢复包；恢复包必须有版本、来源、生成时间、校验摘要、签名和 step-up。
 5. 每个批次记录新建/更新对象清单、逐项结果、失败重试和撤销能力；不做无法解释的静默字段丢失。
 
+### GW-WIRE-018：三类主体、商业上下级与委托管理尚未拆开
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（跨租户授权模型/后续高风险能力接线） |
+| 分类 | W-02 半接线、W-05 契约漂移、W-12 角色与关系混用 |
+| 状态 | **Confirmed；实现涉及 auth/schema，等待 Owner 决策** |
+| 用户影响 | 当前任意 `users.role=admin` 的有效 session 会成为全平台管理员，可跨租户处理业务。历史分销分支虽建了父子租户和子树 scope，却把商业上下级自动变成整棵子树的管理权限。该模型无法满足“部署管理员只授权/撤权，不替任意租户执行；获权租户管理员只在自身租户内操作”的最新边界。 |
+
+**源码证据**
+
+1. 主线 session admin 直接映射为无 scope 的 `platform_admin`，见 `backend/internal/adminsessionauth/resolver.go:67-91`。
+2. 主线 `platform_admin` 可操作任意租户，`tenant_operator` 只限一个 scope，见 `backend/internal/admin/operator_auth.go:140-157`。
+3. `users` 直接绑定单个 tenant，`users.role` 只有 `admin/user`；主线没有 tenant membership、能力 grant 或 delegated relationship，见 `backend/sql/migrations/0007_l0_inbound_auth.up.sql:17-39`、`0076_user_role.up.sql:1-14`。
+4. `platform_settings` 只支持全局 scope，不能表达部署者给指定租户开通指定能力，见 `backend/sql/migrations/0077_platform_settings.up.sql:3-28`、`backend/internal/platformsettings/service.go:73-166`。
+5. 历史 `feat/reseller-phase1` 只建休眠 schema；查询文件明确说分销商 CRUD 留待后续，见 `feat/reseller-phase1:backend/sql/migrations/0185_reseller_phase1_tenant_hierarchy.up.sql:1-75`、`feat/reseller-phase1:backend/sql/queries/admin_resellers.sql:1-55`。
+6. 历史 resolver 把根租户 admin 变成平台管理员、子租户 admin 变成子树管理员；`CanActOnTenant` 对平台管理员放行任意租户，对租户管理员放行自己和全部后代，见 `feat/reseller-phase1:backend/internal/adminsessionauth/store_postgres.go:28-50`、`feat/reseller-phase1:backend/internal/admin/operator_auth.go:314-331`。
+7. 当前邀请返利是同租户最终用户推广奖励，规格明确排除多级佣金树；订阅也是同租户用户权益，不能替代代理/委托授权，见 `docs/specs/community-invitation-referral.md:14-19`、`backend/sql/migrations/0073_subscription.up.sql:15-96`。
+
+**成熟模式反证**
+
+Microsoft CSP 官方把 reseller relationship 和 admin relationship 分开：可以代客户采购，不等于可以管理客户服务；管理必须另有独立授权。GDAP 进一步把委托授权设计为显式、细粒度、可撤销和可限时。AWS Organizations 也建议管理账号只做必须由管理账号完成的治理任务。该证据支持把 HUAKAI 的商业父子关系、租户能力开通和委托管理拆成独立关系，而不是继续从 `parent_tenant_id` 推导权限。
+
+详细全分支源码记录、官方链接和推荐四层模型见 `docs/process/research/2026-07-16-three-tier-distribution-auth-research-codex.md`。
+
+**建议**
+
+1. 三种主体固定为部署治理主体、租户管理员、最终用户；“代理商”作为租户商业关系，不作为万能管理角色。
+2. 部署者只管理平台、租户生命周期和能力 grant/revoke；租户业务 handler 必须拒绝部署者代操作。
+3. 租户能力授权与商业父子关系分开；Cookie、Setup Token、Agent Identity、CRS 默认未授权。
+4. 租户管理员默认只操作自身 tenant。是否允许管理下级必须另建显式、能力级、可撤销的 delegated grant，不能自动继承整棵子树。
+5. 暂不合并历史 0185；先锁 auth 决策，再决定如何迁移或重写休眠 schema。
+
 ## 非问题与反证
 
 1. `cmd/gateway/routes_*.go` 的 mount helper 本批全部存在生产调用，不支持“很多页面后端路由没挂”的笼统结论。
@@ -659,7 +692,8 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/cmd/gateway/quota_probe_wiring_test.go` | 接线断言升级为必须使用 `workerCtx`、登记四个 waiter，并拒绝退回进程信号 `ctx` |
 | `backend/internal/{proxyhealth,tlsfphealth,windowcost,quotaprobe}/worker.go` | 增加可等待的 goroutine 退出合同 |
 | 对应四个 `worker_test.go` | 验证取消前阻塞、取消后退出 |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十七个确认发现 |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十八个确认发现 |
+| 三层分发调研 | 全历史核对部署者、租户经营者、最终用户、历史 reseller branch、邀请返利与成熟委托授权模式 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
 ## 测试记录
@@ -710,11 +744,14 @@ worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧
 8. 是否批准建设真实账号测试 Safe Equivalent：默认关闭、单账号显式触发、成本上限、不计客户账、真实 protocol/credential/proxy 出站。
 9. 账号批量导入的唯一身份应由哪些字段组成；该决策将影响去重、更新、审计和未来数据迁移。
 10. bulk-by-tag 修复采用逐项事务并返回完整结果，还是整批单事务；推荐逐项原子，避免大批量锁住账号表。
-11. Claude Cookie 自动登录是否按“默认关闭 + tenant 显式启用 + 管理员 step-up + Cookie 仅单次使用”建设。
-12. Setup Token 是否保持默认关闭并由 tenant/account 显式开启；推荐保持关闭，避免半截能力直接变成默认生产鉴权入口。
+11. Claude Cookie 自动登录已确定采用“部署级默认关闭 + 部署治理主体只授权/撤权 + 已授权租户管理员仅操作自身 tenant + 管理员 step-up + Cookie 仅单次使用”；尚需决定授权绑定用户身份还是管理令牌。
+12. Setup Token 已确定沿用同一部署管理员授权模型；未授权租户管理员固定拒绝，不能把半截能力直接变成默认生产鉴权入口。
 13. 是否建设 Codex Agent Identity Experimental 模式；该项包含私钥、签名、任务注册/恢复和真实上游协议验证。
 14. CRS 是否只作为可插拔兼容连接器，并强制地址 allowlist、双时刻 SSRF 检查和一次性管理密码。
 15. 账号迁移包的秘密策略：推荐默认只导出结构；可恢复秘密仅进入 step-up 后生成的加密、签名、短时恢复包。
+16. 是否批准把部署者从当前 `platform_admin=可代操作任意租户` 语义中拆出，成为只做平台治理和租户能力授权的独立主体。
+17. 下级代理创建子租户后，默认只能交易/分发，还是需要管理下级的用户、Key 和余额；若需要，是否必须由下级显式确认委托。
+18. 商业收益首发采用批发加价还是成交佣金；该选择决定余额责任、退款、坏账和税务边界，不能沿用邀请返利代替。
 
 ## 下一批
 
@@ -730,4 +767,4 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 ## 真实性摘要
 
-本报告的十七个问题均来自实际生产源码链。七项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面。没有断言已发生永久资金损失、凭据泄露，也没有把 Sub2 未观察到的能力写成已实现。当前十五个 open question 集中在原有账号链决策，以及 Cookie、Setup Token、Agent Identity、CRS 和迁移包五项高敏感边界。
+本报告的十八个问题均来自实际生产源码链或实际打开的历史分支源码。十一项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义；商业父子关系自动授予管理权会放大跨租户凭据与资金风险；批发余额与用户余额若不分责任账会让退款和坏账难以解释；新的分销实现应先拆身份与授权再恢复历史 schema。没有断言已发生永久资金损失、凭据泄露，也没有把历史分销计划或 Sub2 未观察到的能力写成已实现。当前十八个 open question 集中在账号链、高敏感账号接入、三类主体、委托管理和商业结算边界。

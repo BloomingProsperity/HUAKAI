@@ -9,7 +9,7 @@
 | Time estimate | 低风险基础阶段约 5-8 小时；统一恢复约 3-5 小时；四项高风险能力按 4-6 个独立 PR 推进，每项需单独决策和真实协议验证。 |
 | Blast radius | 基础阶段影响 provider-account 管理 API、admin store、审计事务和导入预检，不改变 selector、鉴权或计费。Setup Token/Cookie/Agent Identity 会改变凭据获取与认证合同；CRS 会新增受控网络出口；秘密恢复包会扩大凭据读取面，均属于高风险。 |
 | Failure modes | 聚合 API 自创一套第六种状态；只展示 provider health 而漏 selector 实际 gate；建议动作与真实路由不一致；bulk 为了“全原子”持有过大事务；审计 payload 泄漏敏感信息；逐项结果仍无法安全重试；测试只断言非空；管理 API 名称诱导前端拆出很多页面。缓解：只读聚合现有权威状态、每项标注来源和影响层、动作能力由实际依赖推导、单账号事务而非整批大事务、结果稳定分类、敏感字段白名单、判别式失败/恢复测试、统一 operations 合同。 |
-| Decision points | 基础阶段按“只读聚合 + 单账号逐项事务 + 纯 dry-run 接入计划”执行，无 schema/资金/鉴权变化。Cookie、Setup Token、Agent Identity、CRS、秘密恢复包、真实账号测试、账号唯一身份和 selector/schema 迁移都必须取得 Owner 明确选择；每项单独 PR，不捆绑上线。 |
+| Decision points | 基础阶段按“只读聚合 + 单账号逐项事务 + 纯 dry-run 接入计划”执行，无 schema/资金/鉴权变化。Owner 已确定产品边界：部署者只管理部署级开关、授权和撤权，不能替任意租户执行账号或凭据操作；获权租户管理员只能在自身 tenant 内操作，默认未授权。**当前代码并不满足该边界**：session admin 会映射为全平台 `platform_admin`，历史 reseller branch 又按租户父子树自动放权。后续必须先决定新的部署治理主体、租户管理员和 grant 持久化合同，不能把现有 `platform_admin/tenant_operator` 名称当成目标已经实现。授权绑定用户身份还是管理令牌仍需 Owner 确认；真实账号测试、账号唯一身份和 selector/schema 迁移也需单独确认。 |
 | Parallel-plan status | Owner 已明确要求 Codex 独立工作且不要管 Claude。本计划不读取、不修改 Claude 计划或工作树，作为独立 Codex 车道执行。 |
 
 ## 设计原则
@@ -24,6 +24,7 @@
 8. **所有入口归一。** OAuth、Cookie、Setup Token、Codex 文件、Agent Identity、CRS 和迁移包都先转成统一接入计划，不允许每种来源各自绕过账号身份、加密、审计和恢复。
 9. **秘密默认不移动。** 预览和普通迁移默认不包含凭据；必须恢复秘密时使用独立加密包、step-up 和短时下载。
 10. **导入完成不是终点。** 新账号只有在凭据可刷新、selector 可识别、健康可解释、恢复动作可用时才算真正接入。
+11. **授权与执行分离。** 目标模型中的部署治理主体只负责能力开关、授权和撤权，不得替租户处理账号数据；执行者必须是已获授权的租户管理员，且目标 tenant 必须等于自身 tenant。现有 `platform_admin/tenant_operator` 只是待迁移的代码事实，不直接等于该目标模型。
 
 ## 四项缺口源码核实
 
@@ -127,18 +128,21 @@
 - 复用现有 acquisition session、加密 store、刷新锁和审计。
 - acquisition plan、生产 gate 和 refresher gate 必须由同一配置源控制。
 - 明确展示 access token 到期与 refresh material 状态。
-- 推荐默认关闭，tenant/account 显式启用。
+- 推荐部署级总开关默认关闭；打开后仍须由部署治理主体授权指定租户管理员，部署治理主体本身不替租户执行。
 
 ### Claude Cookie Safe Equivalent
 
 - Cookie 仅用于单次服务端转换，不落库、不进审计正文、不进入普通错误文本。
 - 固定批准域名、client profile、scope 和 transport；不接受请求输入覆盖 endpoint。
-- 管理员 step-up、批量逐项结果、稳定阶段错误码和失败项重试。
+- 部署治理主体只负责授权与撤权；被其授权的租户管理员可在自身 tenant scope 内使用，且要求管理员 step-up。
+- 未授权租户管理员固定返回 `403`，不能仅依赖前端隐藏。
+- 批量逐项结果、稳定阶段错误码和失败项重试。
 - 完成转换后进入普通 OAuth/Setup Token 凭据链，不新建长期 Cookie 凭据类型。
 
 ### Codex Agent Identity Experimental
 
 - 独立于现有 account ID/email 元数据，作为“签名身份凭据”建模。
+- 部署治理主体不执行导入、轮换或恢复；被单独授权的租户管理员只能操作自身 tenant 内的私钥和任务绑定。
 - Ed25519 私钥进入现有应用级信封加密，审计只记录存在性和指纹。
 - 实现导入校验、请求签名、任务绑定注册/恢复、持久化和连接失效。
 - 未完成真实协议、撤销和租户绑定验证前保持 Experimental。
@@ -146,6 +150,7 @@
 ### CRS 连接器
 
 - 核心域只认识“兼容账号源”，CRS 作为可插拔 adapter。
+- 部署治理主体只管理连接器能力开关和授权；连接配置、预览和执行由被授权租户管理员完成，结果只能同步进自身 tenant。
 - 默认地址 allowlist、解析时和 dial 时双重 SSRF 检查、响应大小和超时上限。
 - 密码使用一次性输入或 secret ref；同步前字段级预览，逐项冲突策略。
 - 导入成功后统一进入账号接入、加密凭据和运营诊断链。
@@ -153,6 +158,7 @@
 ### 安全账号迁移包
 
 - 默认包只含账号结构、调度、分组、代理引用和非秘密元数据。
+- 部署治理主体不替租户执行导入导出；被授权租户管理员只允许处理自身 tenant，秘密恢复包额外要求 step-up。
 - 可恢复包显式包含秘密，必须加密、签名、版本化、step-up、短时一次性下载。
 - 导入前预检；导入后记录对象清单、失败重试和按批次撤销新建对象。
 - 不把账号包宣称为完整系统 DR；资金、使用、审计、用户/API key 另走各自灾备合同。
