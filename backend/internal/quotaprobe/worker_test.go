@@ -107,6 +107,34 @@ func TestWorkerMissingProfileScopeSkipsWithReason(t *testing.T) {
 	}
 }
 
+func TestWorkerWaitBlocksUntilStartContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	worker := NewWorker(WorkerConfig{Settings: settingsStub{enabled: "true", interval: "30"}})
+	worker.Start(ctx)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		waitDone <- worker.Wait(waitCtx)
+	}()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("context 取消前 Wait 已返回: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context 取消后 worker 未退出")
+	}
+}
+
 type accountListerStub struct {
 	accounts []Account
 	calls    int

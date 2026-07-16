@@ -61,6 +61,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
@@ -115,7 +116,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
-	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
@@ -862,6 +862,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		}
 	}
 	rt := &gatewayRuntime{pgPool: pgPool, logSinkStop: logSinkStop}
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	rt.cancelWorkers = cancelWorkers
 	ready := false
 	defer func() {
 		if !ready {
@@ -1111,7 +1113,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// SUB2-EGRESS-02:按账号的最大并发会话封顶 registry。
 	sessionCapRegistry := sessioncap.NewRegistry(0)
 	recentReqRing := recentreq.NewRing()
-	selector, selectorCleanup, err := buildSelector(ctx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
+	selector, selectorCleanup, err := buildSelector(workerCtx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
 	}
@@ -1224,7 +1226,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 				Store:         hermes.NewPostgresMessagePurgeStore(hermesQueries),
 				RetentionDays: retentionDays,
 			})
-			hermesRetentionWorker.Start(ctx)
+			hermesRetentionWorker.Start(workerCtx)
 			rt.hermesRetentionWorker = hermesRetentionWorker
 		}
 	}
@@ -1239,23 +1241,23 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			Store:         usageretention.NewPostgresUsagePurgeStore(billingQueries),
 			RetentionDays: usageRetentionDays,
 		})
-		usageRetentionWorker.Start(ctx)
+		usageRetentionWorker.Start(workerCtx)
 		rt.usageRetentionWorker = usageRetentionWorker
 	}
 
 	// 持久幂等重放存储 + 过期清理 janitor, 防表无界增长。
 	replayStore := billing.NewReplayStore(pgPool)
 	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
-	replayJanitor.Start(ctx)
+	replayJanitor.Start(workerCtx)
 	rt.replayJanitorStop = replayJanitor.Stop
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
-	leaseSweeper.Start(ctx)
+	leaseSweeper.Start(workerCtx)
 	rt.leaseSweepStop = leaseSweeper.Stop
 	// sweeper 与正向意图共用默认关闭的总开关：关闭时不构造、不启动，也不扫描数据库。
 	// 多副本无需选主来保证正确性，终态写由意图行的 version 与悬挂状态守卫裁决单胜者。
 	settlementIntentSweeper := buildSettlementIntentSweeper(billingQueries, cfg.SettlementIntentEnabled)
 	if settlementIntentSweeper != nil {
-		settlementIntentSweeper.Start(ctx)
+		settlementIntentSweeper.Start(workerCtx)
 		rt.settlementIntentSweepStop = settlementIntentSweeper.Stop
 	}
 	pendingReconciler := billing.NewPendingReconciliationWorker(
@@ -1264,7 +1266,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		0,
 		0,
 	)
-	pendingReconciler.Start(ctx)
+	pendingReconciler.Start(workerCtx)
 	rt.pendingReconcileStop = pendingReconciler.Stop
 
 	// quota 补偿器 worker:每轮两段——①重放结算/释放失败后入队的补偿 job;②清扫 lease 已过期、
@@ -1274,7 +1276,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if quotaReconcilerEnabledFromEnv() {
 		quotaReconciler := quota.NewReconciler(nil, quota.NewPostgresStore(pgPool), quota.ReconcilerOptions{})
 		quotaWorker := quota.NewReconciliationWorker(quotaReconciler, 0)
-		quotaWorker.Start(ctx)
+		quotaWorker.Start(workerCtx)
 		rt.quotaReconcileStop = quotaWorker.Stop
 	}
 
@@ -1288,7 +1290,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		proxyhealth.DefaultInterval,
 		nil,
 	)
-	proxyHealthWorker.Start(ctx)
+	proxyHealthWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "proxy health worker",
+		wait: proxyHealthWorker.Wait,
+	})
 
 	// UTLS-06: TLS 指纹 profile 漂移/健康 worker。周期校验 active 自定义 profile
 	// 还能否构建可用 uTLS ClientHello, 坏的标 drift_detected (无 JA3 计算, 无误杀)。
@@ -1298,7 +1304,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		tlsfphealth.DefaultInterval,
 		nil,
 	)
-	tlsProfileHealthWorker.Start(ctx)
+	tlsProfileHealthWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "TLS profile health worker",
+		wait: tlsProfileHealthWorker.Wait,
+	})
 
 	// SUB2-EGRESS-03:启动按账号的 5 小时窗口消费封顶聚合器。
 	windowCostWorker := windowcost.NewWorker(
@@ -1308,7 +1318,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		windowcost.DefaultInterval,
 		nil,
 	)
-	windowCostWorker.Start(ctx)
+	windowCostWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "window cost worker",
+		wait: windowCostWorker.Wait,
+	})
 
 	// 配额探测只写观测窗口，不接入健康状态、冷却或选号依赖。
 	quotaProbeWorker := quotaprobe.NewWorker(quotaprobe.WorkerConfig{
@@ -1318,7 +1332,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		Store:    ratelimit.NewPostgresSessionWindowStore(pgPool),
 		Settings: platformSettingsService,
 	})
-	quotaProbeWorker.Start(ctx)
+	quotaProbeWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "quota probe worker",
+		wait: quotaProbeWorker.Wait,
+	})
 
 	clientIPResolver, err := loadClientIPResolverFromEnv()
 	if err != nil {
@@ -1377,7 +1395,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{
 		OrphanReporter: mediatask.NewPersistingOrphanReporter(mediaTaskStore, nil),
 	})
-	mediaTaskWorker.Start(ctx)
+	mediaTaskWorker.Start(workerCtx)
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
 
@@ -1511,7 +1529,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		Interval: cfg.APIKeyExpirySweepInterval,
 		Logger:   logger,
 	})
-	rt.apiKeyExpirySweepStop = startAPIKeyExpiryWorker(ctx, cfg, apiKeyExpiryWorker)
+	rt.apiKeyExpirySweepStop = startAPIKeyExpiryWorker(workerCtx, cfg, apiKeyExpiryWorker)
 	if cfg.PaymentExpireSweepInterval > 0 {
 		paymentExpireSweeper := payment.NewExpireSweeper(payment.ExpireSweeperConfig{
 			Store:      paymentStore,
@@ -1519,7 +1537,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			BatchLimit: cfg.PaymentExpireSweepBatchLimit,
 			Logger:     logger,
 		})
-		paymentExpireSweeper.Start(ctx)
+		paymentExpireSweeper.Start(workerCtx)
 		rt.paymentExpireSweepStop = paymentExpireSweeper.Stop
 	}
 	metricsProvider, metricsHandler, otelShutdown, err := otelbridge.Setup(ctx)
@@ -1635,24 +1653,24 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialRefresher,
 		credentialSchedulerOptions...,
 	)
-	if err := credentialScheduler.Start(ctx); err != nil {
+	if err := credentialScheduler.Start(workerCtx); err != nil {
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)
 	}
 	d.credentialScheduler = credentialScheduler
 	if opts.obsDLQ.Enabled {
-		dlqWorker.Start(ctx)
+		dlqWorker.Start(workerCtx)
 	}
-	outboxWorker.Start(ctx)
+	outboxWorker.Start(workerCtx)
 	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
 		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{
 			Interval:   opts.modelSync.Interval,
 			RunOnStart: true,
 		})
-		rt.modelSyncStop = scheduler.Start(ctx)
+		rt.modelSyncStop = scheduler.Start(workerCtx)
 	}
 
 	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
-	subscriptionExpiryWorker.Start(ctx)
+	subscriptionExpiryWorker.Start(workerCtx)
 
 	subscriptionReminderWorker := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{
 		Service: subscription.NewReminderService(
@@ -1660,7 +1678,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			subscription.NewEmailReminderMailer(notificationEmailSender),
 		),
 	})
-	subscriptionReminderWorker.Start(ctx)
+	subscriptionReminderWorker.Start(workerCtx)
 	d.subExpiryWorker = subscriptionExpiryWorker
 	d.subReminderWorker = subscriptionReminderWorker
 
@@ -1673,7 +1691,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	var subscriptionAutoRenewWorker *subscription.AutoRenewWorker
 	if autoRenewEnabled {
 		subscriptionAutoRenewWorker = subscription.NewAutoRenewWorker(subscription.AutoRenewWorkerConfig{Service: d.subscriptionService})
-		subscriptionAutoRenewWorker.Start(ctx)
+		subscriptionAutoRenewWorker.Start(workerCtx)
 		if logger != nil {
 			logger.Info("订阅自动续费 worker 已启用 (将自动扣减钱包余额续期到期订阅)",
 				zap.String("enabled_by", subscriptionAutoRenewEnabledEnv+"=true"))
@@ -1721,7 +1739,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingQueries: billingQueries,
 		logger:         logger,
 	}); inspectionWorker != nil {
-		inspectionWorker.Start(ctx)
+		inspectionWorker.Start(workerCtx)
 		rt.hermesInspectionWorker = inspectionWorker
 	}
 	ready = true

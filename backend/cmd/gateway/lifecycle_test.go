@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -52,6 +55,121 @@ func TestServeGatewayReturnsListenAndServeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not-a-port") && !strings.Contains(err.Error(), "unknown port") {
 		t.Fatalf("serveGateway err=%v; want ListenAndServe address error", err)
+	}
+}
+
+func TestShutdownGatewayKeepsWorkersAliveUntilHTTPDrainCompletes(t *testing.T) {
+	handlerEntered := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	handlerDone := make(chan struct{})
+	srv := newGatewayServer("127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerEntered)
+		<-releaseHandler
+		w.WriteHeader(http.StatusNoContent)
+		close(handlerDone)
+	}))
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- srv.Serve(listener)
+	}()
+
+	requestDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + listener.Addr().String())
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			err = resp.Body.Close()
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-handlerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP handler 未进入")
+	}
+
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	workerStopped := make(chan struct{})
+	releaseWorkerExit := make(chan struct{})
+	workerExited := make(chan struct{})
+	go func() {
+		<-workerCtx.Done()
+		close(workerStopped)
+		<-releaseWorkerExit
+		close(workerExited)
+	}()
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- shutdownGateway(srv, &gatewayRuntime{
+			cancelWorkers: cancelWorkers,
+			contextWorkerWaiters: []contextWorkerWaiter{{
+				name: "test worker",
+				wait: func(ctx context.Context) error {
+					select {
+					case <-workerExited:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				},
+			}},
+		})
+	}()
+
+	select {
+	case <-workerStopped:
+		t.Fatal("HTTP handler 尚未排空时 worker 已被取消")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseHandler)
+	select {
+	case <-handlerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP handler 未完成")
+	}
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatalf("HTTP request: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP request 未返回")
+	}
+	select {
+	case <-workerStopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP 排空后 worker 未被取消")
+	}
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("worker 尚未退出时 shutdownGateway 已返回: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseWorkerExit)
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdownGateway: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdownGateway 未返回")
+	}
+	select {
+	case <-workerExited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker 未完成退出")
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve 未退出")
 	}
 }
 

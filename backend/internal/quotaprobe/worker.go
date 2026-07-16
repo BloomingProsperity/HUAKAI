@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -74,6 +75,8 @@ type Worker struct {
 	now      func() time.Time
 	jitter   func(Account, time.Time) time.Duration
 	wait     func(context.Context, time.Duration) bool
+	mu       sync.Mutex
+	done     chan struct{}
 }
 
 func NewWorker(cfg WorkerConfig) *Worker {
@@ -109,7 +112,40 @@ func (w *Worker) Start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	go w.loop(ctx)
+	w.mu.Lock()
+	if w.done != nil {
+		w.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	w.done = done
+	w.mu.Unlock()
+	go func() {
+		defer close(done)
+		w.loop(ctx)
+	}()
+}
+
+// Wait 等待后台循环退出。调用方应先取消传给 Start 的 context。
+func (w *Worker) Wait(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	done := w.done
+	w.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (w *Worker) loop(ctx context.Context) {

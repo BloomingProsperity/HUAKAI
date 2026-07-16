@@ -3,6 +3,7 @@ package windowcost
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,8 @@ type Worker struct {
 	cache      *Cache
 	interval   time.Duration
 	logger     *slog.Logger
+	mu         sync.Mutex
+	done       chan struct{}
 }
 
 // NewWorker 构造一个 Worker。interval<=0 时使用 DefaultInterval。
@@ -59,7 +62,22 @@ func NewWorker(lister Lister, aggregator Aggregator, cache *Cache, interval time
 
 // Start 启动后台聚合循环。它立即返回;循环一直运行直到 ctx 被取消。
 func (w *Worker) Start(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	if w.done != nil {
+		w.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	w.done = done
+	w.mu.Unlock()
 	go func() {
+		defer close(done)
 		// 启动时立即跑一次,之后按 ticker 触发。
 		w.tick(ctx)
 		t := time.NewTicker(w.interval)
@@ -73,6 +91,28 @@ func (w *Worker) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait 等待后台循环退出。调用方应先取消传给 Start 的 context。
+func (w *Worker) Wait(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	done := w.done
+	w.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (w *Worker) tick(ctx context.Context) {
