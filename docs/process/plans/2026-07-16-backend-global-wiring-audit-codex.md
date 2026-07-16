@@ -119,6 +119,18 @@
 
 进度：completions、messages countTokens、embeddings、rerank、images、audio 与 Gemini countTokens 已完成该合同接线和判别测试；Responses、Gemini generate/embed 已由源码确认复用 chat/embeddings 主链。Media task 已完成关闭提交后仍可查询、worker 错误分类观测两项低风险收口，并确认开关 drain、提交歧义、超时取消/快照、统一账号路由四项需要 Owner 定性的结构性问题；图片保活最终状态合同同样等待 Owner 决策。
 
+#### Batch 2E：Released 账号族 opt-in live 验收矩阵
+
+复用现有 `e2e_upstream` 的真实 gateway 子进程、独立 PostgreSQL 种库、客户 key、账号池、计价、quota、claim、usage 和槽释放断言，不再为每家复制整套测试基础设施：
+
+1. 覆盖 Anthropic API key、Claude OAuth/session、Gemini AI Studio API key、Gemini Code Assist、Antigravity OAuth/session、Kimi API key 与 Kimi OAuth。
+2. 上游秘密只从环境变量读取；OAuth/session 使用完整 JSON 环境变量，写入测试库前走现有 handler 严格校验和 AES-GCM 加密。
+3. 每项必须同时提供显式模型环境变量，禁止把易漂移的线上模型名硬编码成“永远可用”。
+4. env-gated adapter 只在对应 live 子进程打开，不改变生产默认值。
+5. 默认执行无真实凭据时全部 `Skip`，不产生上游费用；带 `e2e_upstream` tag 时必须至少编译全部矩阵。
+6. live 成功必须证明 HTTP 内容、usage、committed claim、quota settle 和账号槽释放；未实际提供凭据并运行前，只能标记“验收入口已建”，不得宣称真实账号已验收通过。
+7. Anthropic API key 与 Claude OAuth/session 使用原生 `/v1/messages` 响应合同；Claude OAuth/session 额外满足现有兼容形态门，禁止用 `/v1/chat/completions` 绕过或制造必然 403 的假旅程。
+
 #### Batch 2B：以 Sub2 账号系统为主轴的完整功能总账
 
 Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，包含了那些功能。我怀疑我们这个逻辑乱七八糟，功能缺失很多。”

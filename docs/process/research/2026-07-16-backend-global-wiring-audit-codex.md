@@ -395,7 +395,7 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S2` |
 | 分类 | W-09 测试假覆盖 |
-| 状态 | **Confirmed；建议下一修复批处理** |
+| 状态 | **Opt-in live relay/settlement matrix added；真实凭据运行与刷新/恢复旅程仍未完成** |
 | 用户影响 | Claude、Gemini、Antigravity、Kimi 都有大量 adapter、刷新、协议和接线单测，但当前 live/E2E 文件只明确覆盖 OpenAI/Codex、Grok、图片和通用 upstream。无法用现有测试证明每个 Released/拟发布账号真的完成“授权或导入 → 首次请求 → 临期刷新 → 401/429 → fallback → 管理恢复 → 脱敏”的全旅程。 |
 
 **证据与反证**
@@ -407,6 +407,19 @@ HUAKAI 当前主 chat 链可以还原为：
 **建议**
 
 按账号类型建立 opt-in live harness，凭据只从环境/密钥服务注入，默认跳过；每条旅程记录上游 request ID、最终账号、刷新结果、claim/结算状态和脱敏断言。Antigravity 在合同转绿前只做实验环境验收，不进入 Released gate。
+
+**本分支已完成**
+
+1. 复用现有 `e2e_upstream` 子进程和独立数据库基架，增加 Anthropic API key、Claude AI OAuth、Claude Code、Gemini AI Studio、Gemini Code Assist、Antigravity、Kimi API key 和 Kimi OAuth 八条 opt-in 旅程；Anthropic API key 与 Claude session 使用原生 `/v1/messages`，其中 Claude session 带齐现有兼容形态门要求的头部和请求体，其他账号族走 OpenAI 兼容入口并由现有协议层转换，见 `backend/cmd/gateway/account_family_live_e2e_test.go`、`backend/cmd/gateway/upstream_e2e_test.go`。
+2. 每条旅程必须显式提供当前可用模型；未提供模型、数据库或凭据时明确 `Skip`，不会读取默认秘密或产生上游费用，见 `backend/cmd/gateway/account_family_live_e2e_test.go:154-161`、`backend/cmd/gateway/upstream_e2e_test.go:130-177`。
+3. API key 与 OAuth/session JSON 均走现有 credential handler 严格校验，并以测试专用 AES-GCM key、正确 AAD 写入 `account_credentials`；env-gated adapter 只在对应测试子进程打开，见 `backend/cmd/gateway/upstream_e2e_test.go:386-477,610-629`。
+4. 无网络判别测试覆盖 Claude Messages 严格入口、七种凭据 runtime material 与逐字段 secret redaction；真实响应路径分别解析 OpenAI/Anthropic 成功合同，并继续断言 HTTP 内容、usage、committed claim、quota settle 和账号槽释放，见 `backend/cmd/gateway/account_family_live_e2e_test.go`、`backend/cmd/gateway/upstream_e2e_test.go`。
+
+**仍未完成**
+
+- 当前环境没有提供上述真实模型和凭据，本轮只证明测试入口可编译、缺秘密时安全跳过、凭据物化和脱敏合同可判别；没有声称八条真实上游请求已经通过。
+- 该矩阵从已加密凭据开始验证 relay/settlement，不代替 OAuth 授权或导入入口本身的 live 验收。
+- 临期刷新、401/429、跨账号 fallback、refresh-now 和管理恢复仍需在可控实验账号和成本预算下扩充；Antigravity 仍保持 Experimental。
 
 ### GW-WIRE-009：账号运行状态存在多套真相，管理状态与实际选号不完全一致
 
@@ -1042,6 +1055,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/audiohttp/{handler.go,attempt.go,billing.go}` | speech 交付后结算失败进入统一恢复链；全部 audio 入口接入多 attempt、统一反馈、账号排除、逐 attempt 计价和权威 claim attempt |
 | `backend/internal/audiohttp/{handler_test.go,retry_failover_test.go}` | 判别完整交付恢复、500 换号、400 终止、Abort 成功门、401 子预算、租户预算、计价与 attempt 身份 |
 | `backend/internal/geminihttp/{generate_content.go,count_tokens_retry.go,count_tokens_retry_test.go}` | Gemini countTokens 保持零 claim，同时接入统一反馈、安全换号、失败账号排除、WaitPlan 拒绝和生产共享依赖 |
+| `backend/cmd/gateway/{upstream_e2e_test.go,account_family_live_e2e_test.go}` | 扩展 opt-in 账号族真实上游矩阵，覆盖 Claude、Gemini、Antigravity、Kimi 的主要凭据形态、真实结算链和秘密脱敏 |
 | `backend/internal/mediatask/{service.go,service_test.go}` | 关闭新提交时仍允许用户按 tenant/user 查询既有任务，不再把运营停服误当成历史任务消失 |
 | `backend/internal/mediatask/{worker.go,worker_recover_test.go}` | worker 非取消错误输出脱敏分类日志，关停取消不误告警；资金与重试语义保持不变 |
 | `backend/internal/settlementrecovery/{payload.go,payload_test.go}` | 新增并严格校验 `audio_delivered` 恢复来源 |
@@ -1086,6 +1100,9 @@ go test ./internal/audiohttp ./internal/geminihttp ./internal/gatewayhttp ./inte
 go test ./internal/mediatask ./internal/mediataskhttp ./internal/mjclient ./internal/sunoclient ./internal/videoclient -count=1
 go test -race ./internal/mediatask ./internal/mediataskhttp -count=1
 go vet ./internal/mediatask ./internal/mediataskhttp ./internal/mjclient ./internal/sunoclient ./internal/videoclient
+go test -tags=e2e_upstream ./cmd/gateway -run '^TestAccountFamilyLive_' -count=1 -v
+go test -tags=e2e_upstream ./cmd/gateway -run '^TestUpstreamE2E_' -count=1 -v
+go vet -tags=e2e_upstream ./cmd/gateway
 go test ./internal/codebudget -count=1
 ```
 
