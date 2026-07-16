@@ -41,15 +41,14 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)::bigint
   AND pa.deleted_at IS NULL;
 
 -- name: TouchProviderAccountProbe :exec
--- 由异步 eventbus account_health_probe handler 调用:每次请求完成在对应池账号上
--- 盖一个"最近探测时间"戳,点亮运维健康面板的 last_probe_at 列(迁移 0110 早已加列,
--- 但此前全仓零写入,该列恒 NULL)。纯可观测写,单行 PK 定位,不碰钱/auth/health_state。
--- last_probe_latency_ms 暂留 follow-up(请求延迟分散在多个发射点,见计划工件)。
+-- 由异步请求完成事件调用,沿用旧 last_probe_at 存储列记录被动请求观测时间。
+-- 该值不是主动上游探测结果;管理 API 使用 last_request_observed_at 暴露真实语义。
 UPDATE provider_accounts
 SET last_probe_at = sqlc.arg(probed_at)::timestamptz
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
-  AND deleted_at IS NULL;
+  AND deleted_at IS NULL
+  AND (last_probe_at IS NULL OR last_probe_at < sqlc.arg(probed_at)::timestamptz);
 
 -- name: SummarizeProviderAccountHealth :many
 -- 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。

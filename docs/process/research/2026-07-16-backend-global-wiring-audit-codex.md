@@ -272,13 +272,13 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S2` |
 | 分类 | W-03 假激活、W-08 观测失真、W-12 重复体系 |
-| 状态 | **Owner Decision Required** |
+| 状态 | **Interim fixed in this branch；schema 迁移仍需 Owner 决策** |
 | 用户影响 | 管理端看到 `last_probe_at` 非空，会自然理解为主动健康探测已经执行；真实含义却是“某次普通请求 completion event 到达”。低流量账号为空，高流量账号看似持续被探测，两个含义完全不同。 |
 
 **源码证据**
 
 1. completion event bus 注册 `AccountHealthProbeHandler`，见 `backend/cmd/gateway/middleware.go:408-445`。
-2. handler 输入是 `RequestCompletionEvent`，并用 `time.Now()` 构造 signal，见 `backend/internal/observability/account_health_probe_handler.go:53-64`。
+2. handler 输入是 `RequestCompletionEvent`；本分支已改为优先使用事件自己的 `CreatedAt`，仅在内部直调漏填时回退当前时间，避免队列延迟或重放把观测时间虚假推后，见 `backend/internal/observability/account_health_probe_handler.go`。
 3. PostgreSQL adapter 只把该时间写到 `provider_accounts.last_probe_at`，见 `backend/internal/observability/accounthealthprobe/postgres_probe.go:43-52` 和 `backend/internal/db/admin/admin_provider_account_health.sql.go:115-135`。
 4. admin API 原样返回 `last_probe_at` 与 `last_probe_latency_ms`，见 `backend/internal/adminhttp/provider_account_health_handler.go:37-58`、`149-180`。
 5. `last_probe_latency_ms` 在该链没有写入，生成 SQL 注释也明确留作 follow-up。
@@ -289,7 +289,14 @@ HUAKAI 当前主 chat 链可以还原为：
 - 最干净的合同是新增/迁移为 `last_request_observed_at`，真正主动探测独占 `last_probe_at` 和 `last_probe_latency_ms`。
 - 在 schema/API 调整前，管理面必须明确标记 source，不能把该字段作为主动探测 activation 证据。
 
-该方案涉及 schema 和管理 API 合同，按项目规则等待 Owner 确认。
+**本分支已完成的过渡收口**
+
+- 管理健康响应新增 `last_request_observed_at` 和固定来源 `request_completion_event`，旧 `last_probe_at` 仅作为 deprecated 兼容投影保留；OpenAPI 明确该值不能证明主动探测执行过。
+- composition root、被动观测 adapter 和数据库写入注释已改为真实语义，不再把请求完成事件描述为主动 probe。
+- 数据库写入只接受更晚的事件时间，乱序 worker、重试或 DLQ 重放不能让“最后观测时间”倒退。
+- 判别测试同时锁定事件时间、单调写入、旧字段兼容值、新字段真实值和来源枚举，OpenAPI 一致性测试已通过。
+
+最终将旧存储列迁移为独立 `last_request_observed_at`、让主动探测独占 probe 字段仍涉及 schema，按项目规则等待 Owner 确认。
 
 ### GW-WIRE-004：Grok 网页 session adapter 未注册，且存在 clean-room 高风险
 

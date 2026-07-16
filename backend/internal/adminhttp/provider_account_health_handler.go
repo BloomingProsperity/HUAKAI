@@ -40,6 +40,8 @@ type providerAccountHealthResponseBody struct {
 	HealthStateUntil           *string  `json:"health_state_until,omitempty"`
 	LastProbeLatencyMS         *int32   `json:"last_probe_latency_ms"`
 	LastProbeAt                *string  `json:"last_probe_at"`
+	LastObservedAt             *string  `json:"last_request_observed_at"`
+	ObservationSource          string   `json:"last_request_observation_source"`
 	ModelSyncLastCheckAt       *string  `json:"model_sync_last_check_at"`
 	SessionWindow5hStart       *string  `json:"session_window_5h_start"`
 	SessionWindow5hEnd         *string  `json:"session_window_5h_end"`
@@ -155,12 +157,15 @@ func providerAccountHealthResponseAt(row admindb.GetAdminProviderAccountHealthRo
 	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
 	status5h, utilization5h := activeSessionWindowView(row.SessionWindow5hEnd, row.SessionWindow5hStatus, row.SessionWindow5hUtilization, now)
 	status7d, utilization7d := activeSessionWindowView(row.SessionWindow7dEnd, row.SessionWindow7dStatus, row.SessionWindow7dUtilization, now)
+	lastRequestObservedAt := formatProviderAccountHealthTime(row.LastProbeAt)
 	return providerAccountHealthResponseBody{
 		ID:                         row.ID,
 		HealthState:                row.HealthState,
 		HealthStateUntil:           formatProviderAccountHealthTime(row.HealthStateUntil),
 		LastProbeLatencyMS:         row.LastProbeLatencyMS,
-		LastProbeAt:                formatProviderAccountHealthTime(row.LastProbeAt),
+		LastProbeAt:                lastRequestObservedAt,
+		LastObservedAt:             lastRequestObservedAt,
+		ObservationSource:          "request_completion_event",
 		ModelSyncLastCheckAt:       formatProviderAccountHealthTime(row.ModelSyncLastCheckAt),
 		SessionWindow5hStart:       formatProviderAccountHealthTime(row.SessionWindow5hStart),
 		SessionWindow5hEnd:         formatProviderAccountHealthTime(row.SessionWindow5hEnd),

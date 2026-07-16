@@ -10277,7 +10277,9 @@ paths:
         provider account health state with the newest non-revoked credential
         refresh metadata. The response never includes credential payloads,
         encrypted payload bytes, secret material, nonces, key ids, or raw
-        upstream response bodies.
+        upstream response bodies. `last_request_observed_at` is a passive
+        request-completion observation and does not prove that an active
+        upstream probe ran.
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
         - docs/specs/upstream-credential-management.md
@@ -17893,6 +17895,8 @@ components:
         - health_state
         - last_probe_latency_ms
         - last_probe_at
+        - last_request_observed_at
+        - last_request_observation_source
         - model_sync_last_check_at
         - session_window_5h_start
         - session_window_5h_end
@@ -17918,8 +17922,24 @@ components:
           type: string
           format: date-time
           description: Present only when the current health state has an automatic recovery deadline.
-        last_probe_latency_ms: { type: [integer, 'null'], format: int32, minimum: 0 }
-        last_probe_at: { type: [string, 'null'], format: date-time }
+        last_probe_latency_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          description: Reserved active-probe latency snapshot; null when no active-probe latency was persisted.
+        last_probe_at:
+          type: [string, 'null']
+          format: date-time
+          deprecated: true
+          description: Legacy storage projection. Current production writes come from passive request-completion events; use last_request_observed_at.
+        last_request_observed_at:
+          type: [string, 'null']
+          format: date-time
+          description: Latest passive request-completion observation for this provider account; this is not an active upstream probe result.
+        last_request_observation_source:
+          type: string
+          enum: [request_completion_event]
+          description: Identifies the production event source used for last_request_observed_at.
         model_sync_last_check_at: { type: [string, 'null'], format: date-time }
         session_window_5h_start: { type: [string, 'null'], format: date-time }
         session_window_5h_end: { type: [string, 'null'], format: date-time }

@@ -15,8 +15,8 @@ import (
 // 关键:它不是恒绿桩——它精确记录被写的参数,从而当 probe 被改回 nil(死开关复发)
 // 或写错列/写错账号时,断言能立刻 red(满足 mutation 自检)。
 type fakeProbeStore struct {
-	calls   []admin.TouchProviderAccountProbeParams
-	err     error // 注入 DB 出错,验证 error 透传给 eventbus(走 DLQ)
+	calls []admin.TouchProviderAccountProbeParams
+	err   error // 注入 DB 出错,验证 error 透传给 eventbus(走 DLQ)
 }
 
 func (f *fakeProbeStore) TouchProviderAccountProbe(_ context.Context, arg admin.TouchProviderAccountProbeParams) error {
@@ -24,15 +24,14 @@ func (f *fakeProbeStore) TouchProviderAccountProbe(_ context.Context, arg admin.
 	return f.err
 }
 
-// TestProbeWritesLastProbeAt 是直击原 bug(probe==nil 空转)的回归守卫:
-// probe 非 nil 时,处理一个 RequestCompletionEvent 必须落一次写,且 last_probe_at
-// (ProbedAt) 用 signal.At、定位到正确的 (AccountID, TenantID)。
+// TestProbeWritesRequestObservation 是接线与时间语义的回归守卫:
+// handler 必须落一次写,使用请求完成事件自己的 CreatedAt,不能用队列消费时间。
 //
 // mutation 自检:
 //   - 把 middleware.go 的 probe 改回 nil → handler 进入 if probe==nil 空转分支
 //     → store.calls 为空 → 本测试 red。
 //   - 把 TouchProviderAccountProbe 的 UPDATE 写成别的列 / 别的账号 → 参数断言 red。
-func TestProbeWritesLastProbeAt(t *testing.T) {
+func TestProbeWritesRequestObservation(t *testing.T) {
 	store := &fakeProbeStore{}
 	probe := NewPostgresProbe(store)
 
@@ -40,10 +39,12 @@ func TestProbeWritesLastProbeAt(t *testing.T) {
 	handler := observability.NewAccountHealthProbeHandler(time.Second, probe)
 
 	const wantAccount, wantTenant = int64(4242), int64(7)
+	wantObservedAt := time.Date(2026, 7, 16, 18, 0, 0, 123, time.FixedZone("source", 8*60*60))
 	if err := handler.Handle(context.Background(), eventbus.RequestCompletionEvent{
 		ID:        "evt-1",
 		TenantID:  wantTenant,
 		AccountID: wantAccount,
+		CreatedAt: wantObservedAt,
 	}); err != nil {
 		t.Fatalf("handler.Handle 返回错误: %v", err)
 	}
@@ -58,12 +59,11 @@ func TestProbeWritesLastProbeAt(t *testing.T) {
 	if got.TenantID != wantTenant {
 		t.Errorf("写到错误租户: got tenant=%d want %d", got.TenantID, wantTenant)
 	}
-	// last_probe_at 一定被写成非 NULL(Valid=true),否则面板仍恒空。
 	if !got.ProbedAt.Valid {
-		t.Errorf("last_probe_at 未写入(Valid=false), 面板仍会恒空")
+		t.Errorf("被动请求观测时间未写入(Valid=false)")
 	}
-	if got.ProbedAt.Time.IsZero() {
-		t.Errorf("last_probe_at 写成零值时间, 非真实探测时间")
+	if !got.ProbedAt.Time.Equal(wantObservedAt.UTC()) {
+		t.Errorf("观测时间=%s want event.CreatedAt=%s", got.ProbedAt.Time, wantObservedAt.UTC())
 	}
 }
 
