@@ -64,6 +64,18 @@ type AttemptRetryDecision struct {
 	CountsAgainstAuthFailoverBudget bool
 }
 
+// CredentialProtocolIncompatibleDecision 返回发网前账号身份不匹配时的统一换号决策。
+// 该失败尚未产生上游副作用，因此允许排除当前账号并使用至多一次的鉴权换号预算。
+func CredentialProtocolIncompatibleDecision() AttemptRetryDecision {
+	return AttemptRetryDecision{
+		RetryableBeforeDelivery:         true,
+		SwitchAccount:                   true,
+		ClientStatus:                    http.StatusServiceUnavailable,
+		AbortReason:                     "credential_protocol_incompatible",
+		CountsAgainstAuthFailoverBudget: true,
+	}
+}
+
 // ClassifyAttemptHTTPError 将上游 HTTP 错误先交给既有 Classify 归一化，
 // 再收敛成 attempt loop 可消费的 retry decision。
 func ClassifyAttemptHTTPError(httpStatus int, headers http.Header, body []byte, provider string) (AttemptRetryDecision, Classification, error) {

@@ -81,6 +81,43 @@ func TestImages500RetriesSecondAccountAndSettlesOnce(t *testing.T) {
 	}
 }
 
+func TestImagesCredentialMismatchSkipsDispatchAndUsesNextAccount(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
+	claims := &imageRetryClaimLifecycle{claimID: 9110}
+	selector := &imageRetrySelector{accounts: []int64{44, 45}}
+	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{{status: http.StatusOK, body: successfulImageBody()}}}
+	env.deps.Router = imageRetryRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = imageCompatibilityVault(t)
+	env.deps.Dispatcher = dispatcher
+	env.deps.ClaimGate = claims
+	env.deps.Settler = claims
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"compatibility failover","n":1,"size":"1024x1024"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(selector.requests))
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[44]; !excluded {
+		t.Fatalf("second exclusions=%v want account 44", selector.requests[1].ExcludedAccounts)
+	}
+	if len(dispatcher.accounts) != 1 || dispatcher.accounts[0] != 45 {
+		t.Fatalf("dispatcher accounts=%v want [45]", dispatcher.accounts)
+	}
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "credential_protocol_incompatible" {
+		t.Fatalf("aborts=%+v want one credential_protocol_incompatible", claims.aborts)
+	}
+	if len(claims.settles) != 1 || claims.settles[0].AccountID != 45 {
+		t.Fatalf("settles=%+v want only account 45", claims.settles)
+	}
+	if strings.Contains(rec.Body.String(), "wrong-images-secret") {
+		t.Fatal("response leaked mismatched credential")
+	}
+}
+
 func TestImagesEmpty400DoesNotRetry(t *testing.T) {
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
 	claims := &imageRetryClaimLifecycle{claimID: 8302}
@@ -463,11 +500,29 @@ func imageRetryVault(t *testing.T, platform string, accountIDs ...int64) provide
 			AccountID:           accountID,
 			TenantID:            7,
 			Platform:            platform,
-			AccountType:         "apikey",
+			AccountType:         "api_key",
 			AccountCredentialID: 9000 + accountID,
 			CredentialVersion:   1,
 		}); err != nil {
 			t.Fatalf("vault.Set(%d): %v", accountID, err)
+		}
+	}
+	return vault
+}
+
+func imageCompatibilityVault(t *testing.T) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	rows := []struct {
+		id, credentialID int64
+		platform, secret string
+	}{{44, 9044, "gemini", "wrong-images-secret"}, {45, 9045, "openai", "right-images-secret"}}
+	for _, row := range rows {
+		if err := vault.Set(row.id, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: row.secret}, provider.AccountInfo{
+			AccountID: row.id, TenantID: 7, Platform: row.platform, AccountType: "api_key",
+			AccountCredentialID: row.credentialID, CredentialVersion: 1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", row.id, err)
 		}
 	}
 	return vault

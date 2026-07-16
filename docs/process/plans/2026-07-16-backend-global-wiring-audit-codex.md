@@ -114,6 +114,7 @@
 8. 同一逻辑请求复活已中止 claim 时，选号、槽租约、路由观测和结算必须使用 `ClaimGate.Reserve` 返回的权威 `AttemptSeq`，不能使用当前 HTTP 请求内从 1 重新计数的本地循环号。
 9. 图片生成必须额外服从副作用安全门：裸换行保活一旦已写入客户端，当前 attempt 视为已开始传输，禁止再换号；可能已经创建付费异步任务的协议只在明确 401/429 且响应没有任务 ID，或已有任务已确认取消成功时自动换号。传输错误、空响应、5xx、业务终态失败和取消失败均保守终止并保留对账证据，避免重复生成和重复上游费用。
 10. 图片与音频的计价必须随当前 RoutePlan attempt 重新计算，不能让第一候选的上游模型或 pool 倍率污染后续候选的 reserve/settle；上游成功信号必须先于本地翻译、usage 解析、计价或结算失败写入。
+11. 发网前凭据兼容复核必须覆盖每个真实 `CredentialVault.Resolve` 消费者，不能只保护 chat。completions、embeddings、rerank、images、audio 和 Gemini countTokens 都必须校验协议 family、账号 vendor、auth mode 与物化 runtime kind；不兼容账号不得进入 dispatcher，计费链必须中止当前 claim 并释放资源，随后通过独立且至多一次的鉴权换号预算排除该账号。Gemini generate 复用 chat，Gemini embed 复用 embeddings，因此由对应主链覆盖。
 
 该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
 

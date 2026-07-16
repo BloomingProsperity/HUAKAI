@@ -242,7 +242,10 @@ func (ex *execution) run(w http.ResponseWriter) {
 		if !ex.selectAccount(w, attemptSeq) || !ex.resolveCredential(w) {
 			return
 		}
-		outcome := ex.dispatchAndSettle(w, attemptSeq)
+		outcome := attemptOutcome{Failure: ex.credentialCompatibilityFailure(w)}
+		if outcome.Failure == nil {
+			outcome = ex.dispatchAndSettle(w, attemptSeq)
+		}
 		if outcome.Done || outcome.Failure == nil {
 			return
 		}

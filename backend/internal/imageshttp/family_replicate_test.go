@@ -39,57 +39,69 @@ type replicateVaultStub struct{}
 
 func (replicateVaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8_test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "replicate",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "replicate",
+		AccountType: "api_key",
 	}, nil
 }
 
-// platformImageVaultStub 让测试覆盖解析账号的 Platform(默认 replicateVaultStub
-// 恒返 replicate)。
-type platformImageVaultStub struct{ platform string }
-
-func (s platformImageVaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
-	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8_test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  s.platform,
-	}, nil
-}
-
-// TestReplicateImagesHandler_SettleRepricesByResolvedAccountPlatform F3:per_image
-// 正常交付路径(交付数==请求数)必须按解析账号平台重定价。预扣用协议族 vendor
-// (replicate_image→replicate,0.04/张);解析账号平台是 gemini(0.08/张,价不同)。
-// reserve 估 replicate 价,settle 必须重算成 gemini 价。
-// 变异:正常路径沿用 predictedCost(去掉 perImageCost 重算)→ settle ActualCost
-// 回到 reserve 的 0.04 → 本断言红。判别关键:gemini 价≠replicate 价,且账号平台≠
-// 协议族 vendor(gemini 是合法 transport provider code)。
-func TestReplicateImagesHandler_SettleRepricesByResolvedAccountPlatform(t *testing.T) {
+// TestReplicateImagesRejectsMismatchedAccountBeforeDispatch 守护发网前身份复核：
+// Replicate 图片计划不能把请求和密钥发送给 Gemini 账号，但可安全换到同协议账号。
+func TestReplicateImagesRejectsMismatchedAccountBeforeDispatch(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,
 		body:   `{"status":"succeeded","output":["https://r.test/out.webp"]}`,
 	})
-	env.deps.CredentialVault = platformImageVaultStub{platform: "gemini"}
-	env.rateTable.raw = json.RawMessage(`{
-		"providers": {
-			"replicate": {"models": {"black-forest-labs/flux-1.1-pro": {"pricing_scheme": "per_image", "image_base_micro_usd": "40000", "image_size_multipliers": {"1024x1024": "1"}, "image_quality_multipliers": {"standard": "1"}, "image_amount_range": {"min": 1, "max": 4}}}},
-			"gemini":    {"models": {"black-forest-labs/flux-1.1-pro": {"pricing_scheme": "per_image", "image_base_micro_usd": "80000", "image_size_multipliers": {"1024x1024": "1"}, "image_quality_multipliers": {"standard": "1"}, "image_amount_range": {"min": 1, "max": 4}}}}
-		}
-	}`)
+	claims := &imageRetryClaimLifecycle{claimID: 9120}
+	selector := &imageRetrySelector{accounts: []int64{44, 45}}
+	env.deps.Router = imageRetryRouterForModel(replicateTestModel)
+	env.deps.Selector = selector
+	env.deps.CredentialVault = replicateCompatibilityVault(t)
+	env.deps.ClaimGate = claims
+	env.deps.Settler = claims
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
-	// reserve:1 张 × replicate 0.04(协议族 vendor 估,选号前)。
-	if got := env.claims.reserves[0].req.PredictedCost.String(); got != "0.04" {
-		t.Fatalf("reserve PredictedCost=%s want 0.04(协议族 vendor replicate 估)", got)
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(selector.requests))
 	}
-	// settle:1 张 × gemini 0.08(解析账号平台重算)。
-	if got := env.settler.settles[0].ActualCost.String(); got != "0.08" {
-		t.Fatalf("settle ActualCost=%s want 0.08(账号平台 gemini 重定价,非沿用预估 0.04)", got)
+	if _, excluded := selector.requests[1].ExcludedAccounts[44]; !excluded {
+		t.Fatalf("second exclusions=%v want account 44", selector.requests[1].ExcludedAccounts)
 	}
+	if !env.transport.called || env.transport.auth != "Bearer right-replicate-secret" {
+		t.Fatalf("transport called/auth=%v/%q want only compatible token", env.transport.called, env.transport.auth)
+	}
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "credential_protocol_incompatible" {
+		t.Fatalf("aborts=%+v want one credential_protocol_incompatible", claims.aborts)
+	}
+	if len(claims.settles) != 1 || claims.settles[0].AccountID != 45 {
+		t.Fatalf("settles=%+v want only account 45", claims.settles)
+	}
+	if strings.Contains(rec.Body.String(), "wrong-replicate-secret") {
+		t.Fatal("response leaked mismatched credential")
+	}
+}
+
+func replicateCompatibilityVault(t *testing.T) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	rows := []struct {
+		id, credentialID int64
+		platform, secret string
+	}{{44, 9044, "gemini", "wrong-replicate-secret"}, {45, 9045, "replicate", "right-replicate-secret"}}
+	for _, row := range rows {
+		if err := vault.Set(row.id, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: row.secret}, provider.AccountInfo{
+			AccountID: row.id, TenantID: 7, Platform: row.platform, AccountType: "api_key",
+			AccountCredentialID: row.credentialID, CredentialVersion: 1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", row.id, err)
+		}
+	}
+	return vault
 }
 
 // newReplicateImagesTestEnv 复用 openai 夹具(claims/settler/transport/

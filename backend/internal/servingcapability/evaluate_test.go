@@ -399,6 +399,35 @@ func TestClaudeSessionAccountCompatibility(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeAccountCompatibilityUsesResolvedCredentialType(t *testing.T) {
+	account := provider.AccountInfo{
+		Platform:    credentialstore.VendorOpenAI,
+		AccountType: credentialstore.AuthModeAPIKey,
+	}
+	if err := ValidateRuntimeAccountCompatibility(
+		registrydefault.ProtocolOpenAIChat,
+		provider.Credential{Type: provider.CredentialTypeAPIKey},
+		account,
+	); err != nil {
+		t.Fatalf("compatible runtime account rejected: %v", err)
+	}
+	account.Platform = credentialstore.VendorGemini
+	if err := ValidateRuntimeAccountCompatibility(
+		registrydefault.ProtocolOpenAIChat,
+		provider.Credential{Type: provider.CredentialTypeAPIKey},
+		account,
+	); err == nil {
+		t.Fatal("mismatched runtime account unexpectedly accepted")
+	}
+	if err := ValidateRuntimeAccountCompatibility(
+		"legacy-uncontracted-family",
+		provider.Credential{},
+		provider.AccountInfo{},
+	); err != nil {
+		t.Fatalf("uncontracted legacy family must keep compatibility behavior: %v", err)
+	}
+}
+
 func TestEvaluateModelSellabilityDistinguishesPricingGap(t *testing.T) {
 	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 	evaluator := NewEvaluator(nil, productionRuntimeSources(registrydefault.Build()))

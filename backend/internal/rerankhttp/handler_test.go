@@ -497,9 +497,10 @@ func (s *rerankVault) Resolve(_ context.Context, tenantID, accountID int64) (pro
 		return provider.Credential{}, provider.AccountInfo{}, s.err
 	}
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: accountID,
-		TenantID:  tenantID,
-		Platform:  "openai",
+		AccountID:   accountID,
+		TenantID:    tenantID,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 
