@@ -58,11 +58,16 @@ func Mount(r chi.Router, d Deps) {
 
 func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdminAccountIntake(w, r, d); !ok {
+		ident, ok := resolveAdminAccountIntake(w, r, d)
+		if !ok {
 			return
 		}
 		var req accountIntakePlanRequest
 		if !decodeAccountIntakeJSON(w, r, &req) {
+			return
+		}
+		if !validateAccountIntakeTenant(w, ident, req.TenantID) {
+			req.Content = ""
 			return
 		}
 		result, err := d.Service.Plan(r.Context(), req.planInput())
@@ -83,6 +88,10 @@ func newAdminAccountIntakeExecuteHandler(d Deps) http.HandlerFunc {
 		}
 		var req accountIntakeExecuteRequest
 		if !decodeAccountIntakeJSON(w, r, &req) {
+			return
+		}
+		if !validateAccountIntakeTenant(w, ident, req.TenantID) {
+			req.Content = ""
 			return
 		}
 		result, err := d.Service.Execute(r.Context(), accountintake.ExecuteInput{
@@ -122,8 +131,8 @@ func resolveAdminAccountIntake(w http.ResponseWriter, r *http.Request, d Deps) (
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin || ident.Source == admin.AdminSourceSession {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin token required")
+	if ident.Source == admin.AdminSourceSession || ident.Role != admin.RoleTenantOperator || ident.ScopeTenantID <= 0 {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "scoped tenant_operator token required")
 		return admin.AdminIdentity{}, false
 	}
 	if d.Service == nil {
@@ -131,6 +140,18 @@ func resolveAdminAccountIntake(w http.ResponseWriter, r *http.Request, d Deps) (
 		return admin.AdminIdentity{}, false
 	}
 	return ident, true
+}
+
+func validateAccountIntakeTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) bool {
+	if tenantID <= 0 {
+		writeJSONError(w, http.StatusBadRequest, "account_intake_invalid", "tenant_id must be positive")
+		return false
+	}
+	if tenantID != ident.ScopeTenantID {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope mismatch")
+		return false
+	}
+	return true
 }
 
 func decodeAccountIntakeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

@@ -11,6 +11,17 @@
 | Decision points | 全项目统一执行 Owner 最新规则：只有“源码核实后的成熟项目存在实质分歧”且“没有源码核实的成熟先例或 Safe Equivalent”且“选错会造成高危”三项同时成立，才暂停该实现选择并集中提交 Owner 决策；三项缺一则继续实施、记录风险并用判别测试闭环。PR 合并、生产部署、真实秘密、`LICENSE` 和破坏性操作仍是独立硬门。涉及 schema、鉴权、资金、强配额或真实上游费用时，必须在实施记录中给出当前 HUAKAI 真码链、成熟项目行为、方案优缺点、迁移、测试和回滚；不再因为标签本身自动停工。 |
 | Parallel-plan status | Owner 已要求 Codex 独立工作且不要触碰另一目标。本计划不读取、不修改 Claude 工作树或同题计划，作为 Owner 指定的独立 Codex 车道。后端参考行为仍由隔离 Codex specifier 会话读取并产生报告；本会话为回答 Owner 的前端布局问题单独读取过 Sub2API UI 源码，但该阅读不进入本批后端 schema/API 实现，也不复制其 UI 代码、结构或标识符。 |
 
+### 三身份落地前的高敏账号接入授权过渡合同
+
+账号批量接入会写入上游账号和加密凭据，不能沿用当前 `platform_admin` 可携任意请求体 `tenant_id` 的跨租户能力。正式 capability grant schema 落地前，采用以下可撤销的 Safe Equivalent：
+
+1. 只接受部署者签发的 `tenant_operator` 程序化 token；签发和撤销 token 即当前授权与撤权载体，未签发时默认无权限。
+2. 请求 `tenant_id` 必须与 token 的 `ScopeTenantID` 完全相等且均为正数；tenant 身份取自已认证 scope，请求体只作一致性校验，不能扩大权限。
+3. `platform_admin`、session admin、无 scope token 和跨 tenant 请求全部 fail-closed；部署者不能用平台身份替任意租户执行账号接入。
+4. 该过渡合同不引入租户层级，也不允许租户创建租户。正式租户 capability grant 上线后，用 grant 校验替换 token 载体，继续保留 tenant scope 强绑定和审计归属。
+
+参考项目源码可确认的账号级导入结果是逐项识别后创建、更新、跳过或失败；HUAKAI 只吸收该运营结果，并按自身已确定的单层租户边界重新设计授权，不外推或照搬参考项目的权限模型。行为证据见 `docs/process/research/2026-07-16-backend-global-wiring-audit-codex.md` 的 GW-WIRE-010。
+
 ## 审计判定模型
 
 每项能力使用以下九个状态轴，不再用单一“已实现”结论：

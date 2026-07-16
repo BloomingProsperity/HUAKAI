@@ -52,7 +52,7 @@ func TestAdminAccountIntakePlanStrictDecodeAndRedactedResponse(t *testing.T) {
 		PlanHash: strings.Repeat("b", 64),
 		Plan:     intake.Plan{ContractVersion: intake.ContractVersion, SourceKind: intake.SourceJSON},
 	}}
-	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: platformTokenIdentity()}, service)
+	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
 	body := `{"tenant_id":7,"source_kind":"json_import","content":"{\"api_key\":\"secret\"}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"}}`
 	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/plan", body)
 	if rec.Code != http.StatusOK {
@@ -79,14 +79,14 @@ func TestAdminAccountIntakePlanStrictDecodeAndRedactedResponse(t *testing.T) {
 
 func TestAdminAccountIntakeExecuteMapsPlanChangeAndAuditIdentity(t *testing.T) {
 	service := &accountIntakeServiceStub{executeErr: accountintake.ErrPlanChanged}
-	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: platformTokenIdentity()}, service)
+	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
 	body := `{"tenant_id":7,"source_kind":"json_import","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"},"plan_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmations":["confirm_weak_identity"],"reason":"批量接入"}`
 	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/execute", body)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if service.executeCalls != 1 || service.executeInput.ActorID != "admin_token:9" ||
-		service.executeInput.ActorRole != admin.RolePlatformAdmin ||
+		service.executeInput.ActorRole != admin.RoleTenantOperator ||
 		service.executeInput.PlanHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("execute input=%+v calls=%d", service.executeInput, service.executeCalls)
 	}
@@ -95,18 +95,71 @@ func TestAdminAccountIntakeExecuteMapsPlanChangeAndAuditIdentity(t *testing.T) {
 func TestAdminAccountIntakeRejectsSessionAndOversizedBody(t *testing.T) {
 	service := &accountIntakeServiceStub{}
 	sessionHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: admin.AdminIdentity{
-		Source: admin.AdminSourceSession, UserID: 5, Role: admin.RolePlatformAdmin,
+		Source: admin.AdminSourceSession, UserID: 5, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
 	}}, service)
 	rec := doAccountIntakeRequest(sessionHandler, "/admin/v1/credentials/account-imports/plan", `{}`)
 	if rec.Code != http.StatusForbidden || service.planCalls != 0 {
 		t.Fatalf("session status=%d calls=%d body=%s", rec.Code, service.planCalls, rec.Body.String())
 	}
 
-	tokenHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: platformTokenIdentity()}, service)
+	tokenHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
 	oversized := `{"content":"` + strings.Repeat("x", accountIntakeBodyLimit) + `"}`
 	rec = doAccountIntakeRequest(tokenHandler, "/admin/v1/credentials/account-imports/plan", oversized)
 	if rec.Code != http.StatusRequestEntityTooLarge || service.planCalls != 0 {
 		t.Fatalf("oversized status=%d calls=%d body=%s", rec.Code, service.planCalls, rec.Body.String())
+	}
+}
+
+func TestAdminAccountIntakeRejectsPlatformUnscopedAndCrossTenant(t *testing.T) {
+	service := &accountIntakeServiceStub{}
+	body := `{"tenant_id":7,"source_kind":"json_import","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"}}`
+	tests := []struct {
+		name     string
+		identity admin.AdminIdentity
+		path     string
+		body     string
+	}{
+		{
+			name: "平台管理员不得代租户执行",
+			identity: admin.AdminIdentity{
+				Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RolePlatformAdmin,
+			},
+			path: "/admin/v1/credentials/account-imports/plan",
+			body: body,
+		},
+		{
+			name: "租户令牌必须有正数作用域",
+			identity: admin.AdminIdentity{
+				Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RoleTenantOperator,
+			},
+			path: "/admin/v1/credentials/account-imports/plan",
+			body: body,
+		},
+		{
+			name:     "租户令牌不得请求其他租户",
+			identity: tenantTokenIdentity(8),
+			path:     "/admin/v1/credentials/account-imports/plan",
+			body:     body,
+		},
+		{
+			name:     "执行入口同样拒绝跨租户",
+			identity: tenantTokenIdentity(8),
+			path:     "/admin/v1/credentials/account-imports/execute",
+			body: strings.TrimSuffix(body, "}") +
+				`,"plan_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tc.identity}, service)
+			rec := doAccountIntakeRequest(handler, tc.path, tc.body)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	if service.planCalls != 0 || service.executeCalls != 0 {
+		t.Fatalf("拒绝请求不得触发 service：plan=%d execute=%d", service.planCalls, service.executeCalls)
 	}
 }
 
@@ -121,7 +174,7 @@ func TestAdminAccountIntakeAuthBackendFailure(t *testing.T) {
 
 func TestAdminAccountIntakeDoesNotExposeBackendError(t *testing.T) {
 	service := &accountIntakeServiceStub{planErr: errors.New("pq: relation internal_secret_table does not exist")}
-	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: platformTokenIdentity()}, service)
+	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
 	body := `{"tenant_id":7,"source_kind":"json_import","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"}}`
 	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/plan", body)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -149,8 +202,8 @@ func doAccountIntakeRequest(handler http.Handler, path, body string) *httptest.R
 	return rec
 }
 
-func platformTokenIdentity() admin.AdminIdentity {
+func tenantTokenIdentity(tenantID int64) admin.AdminIdentity {
 	return admin.AdminIdentity{
-		Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RolePlatformAdmin,
+		Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID,
 	}
 }

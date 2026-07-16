@@ -468,7 +468,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S2`（运营效率/feature parity） |
 | 分类 | W-02 半接线 |
-| 状态 | **Confirmed；建议独立中风险 PR** |
+| 状态 | **账号级预检/执行已在 Draft PR #262 接通；正式 capability grant 仍属 GW-WIRE-018** |
 | 用户影响 | 管理员批量导入一组账号材料前，必须先手工建立 provider account，并把所有候选绑定到同一个 account ID。系统没有账号身份去重、创建/更新/跳过/失败汇总，也不能把一批独立账号自动落成独立调度单元。 |
 
 **源码证据**
@@ -481,6 +481,13 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 **建议**
 
 新增独立“账号批量导入”服务，不改现有 credential helper 语义。先 dry-run 解析和去重，再由 operator 确认创建/更新计划；每项事务隔离、返回明确结果，凭据仍通过现有 encrypted store/finalizer 落库。涉及账号身份键和更新策略时先提交 Owner 决策，不应凭邮箱、token 文本或显示名直接猜唯一性。
+
+**Draft PR #262 已完成**
+
+- 新入口先生成不含秘密的 create/update/skip/conflict/fail 计划及状态绑定 hash，再显式执行；批内和存量身份歧义均拒绝自动挑第一条。
+- 每个创建/轮换项在独立事务内完成账号、加密凭据和审计写入，并返回逐项结果；现有单账号 credential helper 语义不变。
+- 账号接入只接受部署者签发且绑定单一租户的 `tenant_operator` 程序化 token；请求 `tenant_id` 必须等于 token scope。`platform_admin`、session admin、无 scope 和跨租户请求均在调用 service 前拒绝，避免部署者代任意租户处理。
+- 该 token 是正式 capability grant 落地前的可撤销授权载体，不代表三身份模型已经全部完成。
 
 ### GW-WIRE-011：账号“测试”不是实际请求链测试，OAuth/session 账号大多无法测试
 
@@ -687,6 +694,8 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 3. 租户只能管理自身 tenant 的客户、已分配账号和可分发额度，不能创建租户。
 4. Cookie、Setup Token、Agent Identity、CRS 等能力默认未授权，由部署者按租户开通，租户侧管理账号代表该租户在自身 tenant 内执行；该账号不构成第四种身份。
 5. 禁止合并历史 0185 及递归租户 scope；后续 schema 不增加 `parent_tenant_id`。
+
+**已落地的局部边界**：Draft PR #262 的高敏账号批量接入不再允许全局 `platform_admin` 携任意 `tenant_id` 执行，而是临时使用部署者签发的单租户 `tenant_operator` token 表达“已授权该租户”，并强制请求 tenant 与认证 scope 相同。该局部修复不会替代后续正式 capability grant、部署者身份拆分和 session admin 降权。
 
 ### GW-WIRE-019：无 claim 的 countTokens 请求在默认 selector 占槽后无人释放
 

@@ -43,7 +43,7 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	}
 	executed, err := service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
-		ActorID: "admin_token:9", ActorRole: admin.RolePlatformAdmin,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
 		RequestID: "req-create", Reason: "集成测试",
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	_, err = service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_credential_rotation"},
-		ActorID:       "admin_token:9", ActorRole: admin.RolePlatformAdmin,
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
 	})
 	if !errors.Is(err, ErrPlanChanged) {
 		t.Fatalf("重复执行旧计划 err=%v，期望 ErrPlanChanged", err)
@@ -185,7 +185,7 @@ RETURNING id`,
 	executed, err := service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
-		ActorID:       "admin_token:9", ActorRole: admin.RolePlatformAdmin,
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
 		RequestID: "req-rotate",
 	})
 	if err != nil {
@@ -216,7 +216,7 @@ RETURNING id`,
 	_, err = service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
-		ActorID:       "admin_token:9", ActorRole: admin.RolePlatformAdmin,
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
 	})
 	if !errors.Is(err, ErrPlanChanged) {
 		t.Fatalf("旧版本计划重放 err=%v，期望 ErrPlanChanged", err)
