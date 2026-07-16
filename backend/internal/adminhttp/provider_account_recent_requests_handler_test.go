@@ -81,19 +81,15 @@ func TestProviderAccountRecentRequestsDefaultAndClampedLimit(t *testing.T) {
 	}
 }
 
-func TestProviderAccountRecentRequestsTenantOverreachIsForbidden(t *testing.T) {
+func TestProviderAccountRecentRequestsTenantOverreachIsNotFound(t *testing.T) {
 	accounts := newProviderAccountHealthStoreStub()
 	accounts.put(providerAccountHealthRow(8, 99))
 	requests := &providerAccountRecentRequestsStoreStub{}
 	rec := invokeProviderAccountRecentRequests(t, ProviderAccountRecentRequestsDeps{
 		Auth: providerAccountHealthAuthStub{ident: tenantOperator(7)}, Accounts: accounts, Requests: requests,
 	}, "/admin/v1/provider-accounts/99/recent-requests?tenant_id=8")
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("跨租户账号 status=%d，期望 403；body=%s", rec.Code, rec.Body.String())
-	}
-	// 破坏点→删除目标租户统一裁决时会触达账号或用量 store，本断言转红。
-	if len(accounts.getArgs) != 0 {
-		t.Fatalf("scope 拒绝后不应查询账号，实际调用=%d", len(accounts.getArgs))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("跨租户账号 status=%d，期望 404；body=%s", rec.Code, rec.Body.String())
 	}
 	if len(requests.args) != 0 {
 		t.Fatalf("账号租户校验失败后不应查询用量，实际调用=%d", len(requests.args))

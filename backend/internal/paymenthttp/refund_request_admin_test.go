@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -198,7 +198,7 @@ func newRefundRequestAdminRouter(svc Service, recorder RefundRequestRecorder) ht
 	r := chi.NewRouter()
 	r.Route("/payments", func(r chi.Router) {
 		MountPaymentAdminRoutes(r, AdminDeps{
-			Auth:           fakeAdminAuth{ident: admintest.Platform(99)},
+			Auth:           fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
 			Service:        svc,
 			RefundRequests: recorder,
 		})

@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 )
 
@@ -102,11 +101,11 @@ func (s quotaAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admintest.TenantOperator(12, tenantID)
+	return admin.AdminIdentity{TokenID: 12, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admintest.Platform(99)
+	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
 }
 
 func numericFromString(t *testing.T, raw string) pgtype.Numeric {
@@ -278,7 +277,7 @@ func TestGuardRejectsNonAdminAndAnon(t *testing.T) {
 	t.Run("user role 403", func(t *testing.T) {
 		store := &quotaStoreStub{}
 		rec := invoke(t, Deps{
-			Auth:  quotaAuthStub{ident: admin.AdminIdentity{TokenID: 5, Role: "user"}},
+			Auth:  quotaAuthStub{ident: admin.AdminIdentity{TokenID: 5, Role: "user", ScopeTenantID: 7}},
 			Store: store,
 		}, http.MethodGet, "/", "")
 		assertStatus(t, rec, http.StatusForbidden)
@@ -325,7 +324,7 @@ func TestPlatformAdminTenantScoping(t *testing.T) {
 
 // TestGetCrossTenantForbidden 证明 tenant_operator 无法取到另一租户的 policy:
 // operator 作用域为 7 却带 ?tenant_id=8 -> 在触及 store 之前返回 403。
-// 变异:去掉 CanActOnTenant 会让跨租户读取通过。
+// 变异:去掉 CanIssueForTenant 会让跨租户读取通过。
 func TestGetCrossTenantForbidden(t *testing.T) {
 	store := &quotaStoreStub{getRow: dbquota.QuotaPolicy{ID: 1, TenantID: 8}}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
@@ -399,7 +398,7 @@ func TestCreateConflictMapsTo409(t *testing.T) {
 }
 
 // TestUpdateEnabledToggle 证明 PUT 会把 enabled=false 流入 update params
-// (reserve 路径的过滤依赖这一列)。
+//(reserve 路径的过滤依赖这一列)。
 func TestUpdateEnabledToggle(t *testing.T) {
 	store := &quotaStoreStub{updateRow: dbquota.QuotaPolicy{ID: 55, TenantID: 7, Enabled: false,
 		LimitValue: numericFromString(t, "1"), BurstValue: numericFromString(t, "0"),
@@ -417,7 +416,7 @@ func TestUpdateEnabledToggle(t *testing.T) {
 }
 
 // TestListAdminIgnoresValidityAndModeFilters 证明 admin list 只传递显式的过滤
-// (scope/metric/enabled),绝不注入 mode 或 valid_until 过滤 —— 运维必须能看到
+//(scope/metric/enabled),绝不注入 mode 或 valid_until 过滤 —— 运维必须能看到
 // disabled+过期+shadow 的行。
 func TestListAdminFiltersPassThrough(t *testing.T) {
 	store := &quotaStoreStub{}

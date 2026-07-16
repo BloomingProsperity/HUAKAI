@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 )
 
 type routeTestAuth struct {
@@ -69,11 +68,11 @@ func (s *routeTestService) Delete(_ context.Context, id, tenantID int64) error {
 }
 
 func routeTestPlatformAdmin() admin.AdminIdentity {
-	return admintest.Platform(7)
+	return admin.AdminIdentity{TokenID: 7, Role: admin.RolePlatformAdmin}
 }
 
 func routeTestTenantOperator(tenantID int64) admin.AdminIdentity {
-	return admintest.TenantOperator(8, tenantID)
+	return admin.AdminIdentity{TokenID: 8, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
 }
 
 func performRouteTest(t *testing.T, identity admin.AdminIdentity, service *routeTestService, method, target, body string) *httptest.ResponseRecorder {

@@ -35,7 +35,8 @@ npm run typecheck
 
 ## 路线
 
-按《docs/frontend/2026-06-24-源码梳理与前端编写方案.md》第四节逐个 P0 切片点亮 8 个域
-(账号中心 → 路由与池 → API Key → 用量计费 → 用户租户 → 模型定价 → 系统 → 安全审计)。
-当前为**地基切片**:外壳 + 管线导航 + API 基座 + 设计 token,域模块挂占位页。
-embed 进单二进制(`backend/internal/webui/dist`)为后续独立切片(触网关 router,Owner-gated 部署前置)。
+当前前端源码不是产品规格，也不能作为后续重构的可信依据。页面能力范围以
+真实后端源码、`docs/openapi/openapi.yaml` 和 `docs/specs/` 下当前合同为准，身份与
+租户边界以 `docs/process/plans/2026-07-16-three-role-single-level-tenant-model-codex.md`
+为权威合同。每个页面实施前必须重新形成来源可追溯的逐页规格，未经核实的旧页面清单
+和现有前端排版均不得作为实现依据。

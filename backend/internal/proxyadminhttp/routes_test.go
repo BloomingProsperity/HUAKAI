@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
@@ -129,11 +128,11 @@ func (s authStub) Resolve(context.Context, *http.Request) (admin.AdminIdentity, 
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admintest.TenantOperator(1, tenantID)
+	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admintest.Platform(99)
+	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
 }
 
 func invoke(t *testing.T, d Deps, method, target, body string) *httptest.ResponseRecorder {
@@ -276,7 +275,7 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 		wantStatus int
 	}{
 		{"unauthorized -> 401", authStub{err: admin.ErrAdminUnauthorized}, http.StatusUnauthorized},
-		{"non-admin role -> 403", authStub{ident: admin.AdminIdentity{TokenID: 3, Role: "user"}}, http.StatusForbidden},
+		{"non-admin role -> 403", authStub{ident: admin.AdminIdentity{TokenID: 3, Role: "user", ScopeTenantID: 7}}, http.StatusForbidden},
 	}
 	endpoints := []struct{ method, target, body string }{
 		{http.MethodGet, "/admin/v1/proxies", ""},
@@ -303,7 +302,7 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 //   - platform_admin 未带 ?tenant_id -> 400(必须指明租户),不触达 service;
 //   - tenant_operator 指明了不同的 ?tenant_id -> 403,不触达 service。
 //
-// 变异:删掉 CanActOnTenant 校验 → 跨租户用例以 tenant 8 抵达 service → 转红。
+// 变异:删掉 CanIssueForTenant 校验 → 跨租户用例以 tenant 8 抵达 service → 转红。
 func TestTenantScoping(t *testing.T) {
 	t.Run("tenant_operator uses own scope", func(t *testing.T) {
 		svc := &proxyServiceStub{}

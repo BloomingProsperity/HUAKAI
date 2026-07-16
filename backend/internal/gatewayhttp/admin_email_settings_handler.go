@@ -182,12 +182,7 @@ func resolveAdminEmailSettings(w http.ResponseWriter, r *http.Request, d AdminEm
 func resolveAdminEmailTenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		tenantID := ident.ScopeTenantID()
-		if !adminCanAccessTenant(ident, tenantID) {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
-			return 0, false
-		}
-		return tenantID, true
+		return ident.ScopeTenantID, true
 	}
 	tenantID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || tenantID <= 0 {

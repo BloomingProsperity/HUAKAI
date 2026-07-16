@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
@@ -465,7 +464,7 @@ func poolOrDefault(pool dbbilling.PoolGroup, tenantID int64, name string) dbbill
 }
 
 func adminPoolsTenantOperator(tenantID int64) adminPoolAuthStub {
-	return adminPoolAuthStub{ident: admintest.TenantOperator(22, tenantID)}
+	return adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 22, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}}
 }
 
 // ------------------------------------------------------------------

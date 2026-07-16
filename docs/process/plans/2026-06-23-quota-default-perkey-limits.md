@@ -2,7 +2,7 @@
 
 - 日期:2026-06-23
 - 分支:`fix/quota-default-perkey-limits`(off `feat/frontend-portal` @ 9be79d65)
-- 决策来源:Owner 拍板商业模式=中转站 SaaS 单租户多用户对外卖额度;核查 workflow w8qhyojwj 揪出此为真 day-1 blocker;Owner「开始」绿灯 + 认可默认值(并发 5 / RPM 60)
+- 决策来源:当时按部署者直属用户售卖 API 额度的场景确认该 day-1 blocker;当前身份边界已更新为三身份、单层租户，但所有用户 Key 均需默认限额的安全结论不变。Owner「开始」绿灯 + 认可默认值(并发 5 / RPM 60)
 - 关联:[[business-model-relay-saas-decision]]、[[owner-prefers-operator-switches]]
 
 ## 一、问题(对外卖额度的真 day-1 blocker)

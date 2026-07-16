@@ -179,7 +179,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, deps Deps) (int64, bo
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "需要 admin 角色")
 		return 0, false
 	}
-	if identity.Role == admin.RoleTenantOperator && identity.ScopeTenantID() <= 0 {
+	if identity.Role == admin.RoleTenantOperator && identity.ScopeTenantID <= 0 {
 		writeError(w, http.StatusForbidden, "admin_tenant_scope_required", "tenant_operator 缺少租户 scope")
 		return 0, false
 	}
@@ -191,7 +191,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, deps Deps) (int64, bo
 			writeError(w, http.StatusBadRequest, "tenant_id_required", "platform_admin 必须提供 tenant_id")
 			return 0, false
 		}
-		tenantID = identity.ScopeTenantID()
+		tenantID = identity.ScopeTenantID
 	} else {
 		tenantID, err = strconv.ParseInt(rawTenantID, 10, 64)
 		if err != nil || tenantID <= 0 {
@@ -199,7 +199,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, deps Deps) (int64, bo
 			return 0, false
 		}
 	}
-	if err := identity.CanActOnTenant(tenantID); err != nil {
+	if err := identity.CanIssueForTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, false
 	}

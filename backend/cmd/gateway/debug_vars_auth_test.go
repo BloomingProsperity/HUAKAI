@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"go.uber.org/zap"
 )
 
@@ -72,7 +71,7 @@ func TestDebugVarsAuth_NoCredentials_Returns_503_When_Resolver_Nil(t *testing.T)
 // 相同的 gate + handler，租户被拒（403，不泄漏 expvar）vs 平台被放行（200，抵达 expvar）。
 // 变异检查：去掉 adminGate 中的角色检查，租户用例就会翻成 200 并泄漏 "memstats" → 红。
 func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
-	resolver := fakeAdminResolver{id: admintest.TenantOperator(0, 42)}
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 42}}
 	gated := adminGate(resolver, expvar.Handler())
 
 	rec := httptest.NewRecorder()
@@ -94,7 +93,7 @@ func TestDebugVarsAuth_TenantOperator_Forbidden_NoLeak(t *testing.T) {
 // 正向一半：platform_admin 能抵达 metrics（证明 gate 并非
 // 一刀切全拒——它是按角色加以鉴别的）。
 func TestDebugVarsAuth_PlatformAdmin_ReachesMetrics(t *testing.T) {
-	resolver := fakeAdminResolver{id: admintest.Platform(0)}
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}
 	gated := adminGate(resolver, expvar.Handler())
 
 	rec := httptest.NewRecorder()

@@ -32,7 +32,7 @@ func requireTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID in
 			"tenant_id must be a positive int64")
 		return false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
 		writeAdminError(w, err)
 		return false
 	}
@@ -42,11 +42,7 @@ func requireTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID in
 func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := r.URL.Query().Get("tenant_id")
 	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		tenantID := ident.ScopeTenantID()
-		if !requireTenant(w, ident, tenantID) {
-			return 0, false
-		}
-		return tenantID, true
+		return ident.ScopeTenantID, true
 	}
 	if raw == "" {
 		writeError(w, http.StatusBadRequest, "tenant_id_required",

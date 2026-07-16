@@ -243,13 +243,13 @@ func adminIdentity(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.A
 
 func resolveAdminTenantValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
 	if tenantID == 0 && ident.Role == admin.RoleTenantOperator {
-		tenantID = ident.ScopeTenantID()
+		tenantID = ident.ScopeTenantID
 	}
 	if tenantID <= 0 {
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 		return 0, false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, false
 	}

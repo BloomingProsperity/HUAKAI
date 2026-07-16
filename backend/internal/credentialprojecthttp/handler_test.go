@@ -15,7 +15,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -107,7 +106,7 @@ func TestResolveProjectWritesBackMaterializedProjectWithoutTokenLeak(t *testing.
 	resolver := &resolverStub{projectRef: "project-manual"}
 	audit := &auditStub{}
 	handler := mountedHandler(Deps{
-		Auth:  authStub{identity: admintest.Platform(9)},
+		Auth:  authStub{identity: admin.AdminIdentity{TokenID: 9, Role: admin.RolePlatformAdmin}},
 		Store: store, Enricher: projectenrich.New(resolver), Audit: audit,
 	})
 
@@ -148,7 +147,7 @@ func TestResolveProjectRejectsTamperedTenant(t *testing.T) {
 	}}
 	resolver := &resolverStub{projectRef: "must-not-resolve"}
 	handler := mountedHandler(Deps{
-		Auth:  authStub{identity: admintest.Platform(9)},
+		Auth:  authStub{identity: admin.AdminIdentity{TokenID: 9, Role: admin.RolePlatformAdmin}},
 		Store: store, Enricher: projectenrich.New(resolver),
 	})
 
@@ -163,39 +162,6 @@ func TestResolveProjectRejectsTamperedTenant(t *testing.T) {
 	}
 }
 
-func TestResellerResolveProjectCredentialSurfaceForbidden(t *testing.T) {
-	actors := []struct {
-		name     string
-		identity admin.AdminIdentity
-	}{
-		{"子租户 token", admintest.Reseller(51, 10)},
-		{"子租户 session", admintest.ResellerSession(61, 10)},
-	}
-	for _, actor := range actors {
-		t.Run(actor.name, func(t *testing.T) {
-			store := &storeStub{}
-			resolver := &resolverStub{projectRef: "must-not-resolve"}
-			audit := &auditStub{}
-			handler := mountedHandler(Deps{
-				Auth: authStub{identity: actor.identity}, Store: store,
-				Enricher: projectenrich.New(resolver), Audit: audit,
-			})
-			request := httptest.NewRequest(http.MethodPost,
-				"/provider-accounts/77/credentials/201/resolve-project",
-				strings.NewReader(`{"tenant_id":10}`))
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			if response.Code != http.StatusForbidden {
-				t.Fatalf("破坏点→删除 project credential 平台守卫时本断言转红：status=%d body=%s", response.Code, response.Body.String())
-			}
-			if store.loadCalls != 0 || store.saveCalls != 0 || resolver.calls != 0 || len(audit.params) != 0 {
-				t.Fatalf("403 后仍触达凭证面：load=%d save=%d resolve=%d audit=%d",
-					store.loadCalls, store.saveCalls, resolver.calls, len(audit.params))
-			}
-		})
-	}
-}
-
 func TestResolveProjectUpstreamFailureDoesNotSave(t *testing.T) {
 	store := &storeStub{record: credentialstore.CredentialRecord{
 		ID: 201, TenantID: 7, ProviderAccountID: 77,
@@ -204,7 +170,7 @@ func TestResolveProjectUpstreamFailureDoesNotSave(t *testing.T) {
 	}}
 	resolver := &resolverStub{err: errors.New("上游暂不可用")}
 	handler := mountedHandler(Deps{
-		Auth:  authStub{identity: admintest.Platform(9)},
+		Auth:  authStub{identity: admin.AdminIdentity{TokenID: 9, Role: admin.RolePlatformAdmin}},
 		Store: store, Enricher: projectenrich.New(resolver),
 	})
 
@@ -231,7 +197,7 @@ func TestResolveProjectZeroizesEnrichedPayloadOnFailure(t *testing.T) {
 	}}
 	enricher := &failureEnricherStub{}
 	handler := mountedHandler(Deps{
-		Auth:  authStub{identity: admintest.Platform(9)},
+		Auth:  authStub{identity: admin.AdminIdentity{TokenID: 9, Role: admin.RolePlatformAdmin}},
 		Store: store, Enricher: enricher,
 	})
 

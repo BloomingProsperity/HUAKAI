@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -147,7 +146,7 @@ func TestReferralOverview_Counts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/referrals/overview", nil)
 	NewAdminReferralOverviewHandler(Deps{
 		Service:   service,
-		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, f.tenantA)},
+		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: f.tenantA}},
 	}).ServeHTTP(rec, req)
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
 
@@ -187,7 +186,7 @@ func TestListReferralsAdmin_StatusFilter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/referrals?status=qualified&limit=1&offset=1", nil)
 	NewAdminReferralsHandler(Deps{
 		Service:   service,
-		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, f.tenantA)},
+		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: f.tenantA}},
 	}).ServeHTTP(rec, req)
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
 	var page struct {
@@ -209,7 +208,7 @@ func TestListReferralsAdmin_StatusFilter(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/v1/admin/referrals?status=pending&limit=500", nil)
 	NewAdminReferralsHandler(Deps{
 		Service:   service,
-		AdminAuth: referralAdminAuthStub{ident: admintest.TenantOperator(1, f.tenantA)},
+		AdminAuth: referralAdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: f.tenantA}},
 	}).ServeHTTP(rec, req)
 	assertReferralHTTPStatus(t, rec, http.StatusOK)
 	decodeReferralHTTPBody(t, rec, &page)

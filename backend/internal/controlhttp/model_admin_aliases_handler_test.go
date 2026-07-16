@@ -11,7 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -155,8 +154,7 @@ func invokeAdminCapabilityBindingUpsert(t *testing.T, deps AdminModelAliasesDeps
 // 守 upsert 核心: model_id 取自 path(42), source 服务端【强制 operator】(不取 body), 其余字段如实透传到 store。
 // 用 enabled=false + scope=tenant + tenant_id=7 做判别值。
 // mutation: handler 不强制 source 写死 operator(留空/取 body)→ upsertParams.Source != "operator" → 红;
-//
-//	model_id 不取 path → != 42 → 红; enabled 读错 → != false → 红。
+//           model_id 不取 path → != 42 → 红; enabled 读错 → != false → 红。
 func TestAdminCapabilityBindingUpsertForcesOperatorSourceAndPathModelID(t *testing.T) {
 	store := &adminModelAliasStoreStub{upsertBinding: registry.ModelCapabilityBinding{ModelID: 42, Scope: "tenant", Capability: "vision", Enabled: false, Source: "operator"}}
 	rec := invokeAdminCapabilityBindingUpsert(t, AdminModelAliasesDeps{Store: store}, "/v1/admin/models/42/capability-bindings",
@@ -297,7 +295,7 @@ func TestAdminAliasBulkImportActorFromIdentityNotBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
 		strings.NewReader(`{"aliases":[{"model_id":7,"alias":"gpt-a","scope":"global"}],"actor":"victim","reason":"user note"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(admin.IdentityToContext(req.Context(), admintest.Platform(4242)))
+	req = req.WithContext(admin.IdentityToContext(req.Context(), admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
 	rec := invokeAdminModelAliasesRequest(t, AdminModelAliasesDeps{Store: store}, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
@@ -334,7 +332,7 @@ func TestAdminAliasBulkImportCSVActorFromIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/aliases/bulk-import",
 		strings.NewReader("scope,model_id,alias,status\nglobal,7,gpt-a,active\n"))
 	req.Header.Set("Content-Type", "text/csv")
-	req = req.WithContext(admin.IdentityToContext(req.Context(), admintest.Platform(4242)))
+	req = req.WithContext(admin.IdentityToContext(req.Context(), admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
 	rec := invokeAdminModelAliasesRequest(t, AdminModelAliasesDeps{Store: store}, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())

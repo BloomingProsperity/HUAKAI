@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -44,10 +43,10 @@ func (s *storeStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertA
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admintest.Platform(99)
+	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
 }
 func tenantOp(tid int64) admin.AdminIdentity {
-	return admintest.TenantOperator(1, tid)
+	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: tid}
 }
 
 func invoke(d Deps, target, body string) *httptest.ResponseRecorder {
@@ -84,29 +83,6 @@ func TestUnbindFingerprintProfile(t *testing.T) {
 	}
 	if store.bind == nil || store.bind.ProfileID != nil {
 		t.Fatalf("解绑应传 nil profile_id(回内置默认): %+v", store.bind)
-	}
-}
-
-func TestResellerFingerprintCredentialSurfaceForbidden(t *testing.T) {
-	actors := []struct {
-		name     string
-		identity admin.AdminIdentity
-	}{
-		{"子租户 token", admintest.Reseller(31, 10)},
-		{"子租户 session", admintest.ResellerSession(41, 10)},
-	}
-	for _, actor := range actors {
-		t.Run(actor.name, func(t *testing.T) {
-			store := &storeStub{}
-			rec := invoke(Deps{Auth: authStub{ident: actor.identity}, Store: store},
-				"/admin/v1/provider-accounts/77/fingerprint-profile", `{"profile_id":5}`)
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("破坏点→删除指纹绑定敏感面守卫时本断言转红：status=%d body=%s", rec.Code, rec.Body.String())
-			}
-			if store.bind != nil || len(store.audits) != 0 {
-				t.Fatalf("403 后仍触达账号 store：bind=%+v audits=%d", store.bind, len(store.audits))
-			}
-		})
 	}
 }
 

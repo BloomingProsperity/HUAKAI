@@ -14,14 +14,13 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 )
 
 func TestPricingRatioHandler_NonAdminIs403(t *testing.T) {
 	store := &fakeRatioStore{}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.TenantOperator(1, 7)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
 		Store: store,
 	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"1.2"}`)
 
@@ -71,7 +70,7 @@ func TestPricingRatioHandler_ExtremeRatioIs422(t *testing.T) {
 
 func TestPricingRatioHandler_DeleteReturns404WhenMissing(t *testing.T) {
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{deleteErr: pricingcatalog.ErrNotFound},
 	}, http.MethodDelete, "/9?tenant_id=7", "")
 
@@ -83,7 +82,7 @@ func TestPricingRatioHandler_DeleteReturns404WhenMissing(t *testing.T) {
 
 func TestPricingRatioHandler_TenantIsolationViaParseAdminCatalogPage(t *testing.T) {
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{},
 	}, http.MethodGet, "/", "")
 
@@ -97,7 +96,7 @@ func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *tes
 	const exact = "123456789.12345678"
 	t.Setenv(pricingRatioMaxEnv, "200000000")
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth: fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth: fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{upsertRow: pricingcatalog.GroupPricingRatio{
 			ID:          1,
 			TenantID:    7,
@@ -123,7 +122,7 @@ func TestPricingRatioHandler_MoneyPrecisionRespondsWithExactDecimalString(t *tes
 func TestPricingRatioHandler_UpsertPassesAuthenticatedActorForAudit(t *testing.T) {
 	store := &fakeRatioStore{}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"1.2","public_ratio":true,"actor_id":"body-spoof"}`)
 
@@ -138,7 +137,7 @@ func TestPricingRatioHandler_UpsertPassesAuthenticatedActorForAudit(t *testing.T
 func TestPricingRatioHandler_DeletePassesAuthenticatedActorForAudit(t *testing.T) {
 	store := &fakeRatioStore{}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(88)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	}, http.MethodDelete, "/9?tenant_id=7&actor_id=body-spoof", "")
 
@@ -155,7 +154,7 @@ func TestPricingRatioHandler_DeletePassesAuthenticatedActorForAudit(t *testing.T
 
 func TestPricingRatioHandler_PublicRatioFalseHidesRatioInDisplay(t *testing.T) {
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth: fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth: fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{getRow: pricingcatalog.GroupPricingRatio{
 			ID:          1,
 			TenantID:    7,
@@ -193,7 +192,7 @@ func TestPricingRatioHandler_DisplayAndBillingResolverReadSameStoreValue(t *test
 	resolver := pricingcatalog.NewRatioResolver(store, time.Nanosecond)
 
 	firstDisplay := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	}, http.MethodGet, "/9?tenant_id=7", "")
 	assertRatioField(t, firstDisplay, "0.8")
@@ -204,7 +203,7 @@ func TestPricingRatioHandler_DisplayAndBillingResolverReadSameStoreValue(t *test
 	time.Sleep(time.Millisecond)
 
 	secondDisplay := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	}, http.MethodGet, "/9?tenant_id=7", "")
 	assertRatioField(t, secondDisplay, "1.2")
@@ -224,7 +223,7 @@ func TestPricingRatioHandler_UpsertInvalidatesBillingResolverCache(t *testing.T)
 	assertCatalogHTTPDecimal(t, "warm resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "0.8")
 
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:     fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:     fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store:    store,
 		Resolver: resolver,
 	}, http.MethodPut, "/9?tenant_id=7", `{"ratio":"1.2","public_ratio":true}`)
@@ -249,7 +248,7 @@ func TestPricingRatioHandler_DeleteInvalidatesBillingResolverCache(t *testing.T)
 	assertCatalogHTTPDecimal(t, "warm resolver ratio", mustResolveHTTPRatio(t, resolver, 7, 9), "0.8")
 
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:     fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:     fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store:    store,
 		Resolver: resolver,
 	}, http.MethodDelete, "/9?tenant_id=7", "")
@@ -263,7 +262,7 @@ func TestPricingRatioHandler_DeleteInvalidatesBillingResolverCache(t *testing.T)
 
 func validPricingRatioDeps() AdminPricingRatioDeps {
 	return AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
 		Store: &fakeRatioStore{},
 	}
 }

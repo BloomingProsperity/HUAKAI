@@ -13,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 )
@@ -27,7 +26,7 @@ func TestBroadcast_AdminAuthRequired(t *testing.T) {
 	body := []byte(`{"title":"Ops","body":"Tenant notice"}`)
 	anon := serveUserNotices(t, svc, fakeAdminAuth{err: admin.ErrAdminUnauthorized}, nil, http.MethodPost, "/v1/admin/notifications/broadcast", body)
 	assertNoticeStatus(t, anon, http.StatusUnauthorized)
-	viewer := serveUserNotices(t, svc, fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: "viewer"}}, nil, http.MethodPost, "/v1/admin/notifications/broadcast", body)
+	viewer := serveUserNotices(t, svc, fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: "viewer", ScopeTenantID: 7}}, nil, http.MethodPost, "/v1/admin/notifications/broadcast", body)
 	assertNoticeStatus(t, viewer, http.StatusForbidden)
 
 	count, err := svc.UnreadCount(context.Background(), 7, 101)
@@ -44,7 +43,7 @@ func TestBroadcast_Validation(t *testing.T) {
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
-	auth := fakeAdminAuth{identity: admintest.TenantOperator(99, 7)}
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
 
 	tests := []struct {
 		name string
@@ -68,7 +67,7 @@ func TestListNotifications_SelfScopedUnreadFirst(t *testing.T) {
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
 	store.AddActiveUser(7, 202)
-	auth := fakeAdminAuth{identity: admintest.TenantOperator(99, 7)}
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
 	sessionA := &sessionauth.SessionIdentity{TenantID: 7, UserID: 101}
 
 	rec := serveUserNotices(t, svc, auth, nil, http.MethodPost, "/v1/admin/notifications/broadcast", []byte(`{"title":"old","body":"body"}`))
@@ -103,7 +102,7 @@ func TestMarkRead_OwnOnly(t *testing.T) {
 	svc, store := newNoticeHTTPService(&now)
 	store.AddActiveUser(7, 101)
 	store.AddActiveUser(7, 202)
-	auth := fakeAdminAuth{identity: admintest.TenantOperator(99, 7)}
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
 	sessionA := &sessionauth.SessionIdentity{TenantID: 7, UserID: 101}
 
 	rec := serveUserNotices(t, svc, auth, nil, http.MethodPost, "/v1/admin/notifications/broadcast", []byte(`{"title":"read","body":"body"}`))

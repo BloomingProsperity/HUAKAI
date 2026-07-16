@@ -113,6 +113,9 @@ func resolveAdminL2(w http.ResponseWriter, r *http.Request, d AdminL2CacheDeps) 
 }
 
 func filterL2EntriesForAdmin(entries []l2cache.EntryStats, ident admin.AdminIdentity) []l2cache.EntryStats {
+	if ident.Role == admin.RolePlatformAdmin {
+		return entries
+	}
 	out := entries[:0]
 	for _, entry := range entries {
 		if adminCanAccessTenant(ident, entry.TenantID) {
@@ -123,7 +126,10 @@ func filterL2EntriesForAdmin(entries []l2cache.EntryStats, ident admin.AdminIden
 }
 
 func adminCanAccessTenant(ident admin.AdminIdentity, tenantID int64) bool {
-	return ident.CanActOnTenant(tenantID) == nil
+	if ident.Role == admin.RolePlatformAdmin {
+		return true
+	}
+	return ident.Role == admin.RoleTenantOperator && ident.ScopeTenantID > 0 && ident.ScopeTenantID == tenantID
 }
 
 func syncL2SizeMetrics(store l2cache.Store) {
