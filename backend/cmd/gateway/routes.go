@@ -813,6 +813,8 @@ func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 
@@ -855,6 +857,8 @@ func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 

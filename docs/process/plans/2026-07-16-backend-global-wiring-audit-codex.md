@@ -115,6 +115,8 @@
 
 该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
 
+进度：completions、messages countTokens、embeddings、rerank 已完成该合同接线和判别测试；下一步继续核 images、audio、Responses、Gemini 与 media task，不能把前四条链的完成状态外推到剩余协议。
+
 #### Batch 2B：以 Sub2 账号系统为主轴的完整功能总账
 
 Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，包含了那些功能。我怀疑我们这个逻辑乱七八糟，功能缺失很多。”

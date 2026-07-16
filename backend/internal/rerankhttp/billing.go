@@ -149,22 +149,41 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 }
 
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
+	_ = ex.abortWithError(w, reason, observedInputTokens)
+}
+
+func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observedInputTokens int64) error {
 	if ex.reserveRes == nil {
-		return
+		return nil
 	}
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
 	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
+		return err
 	}
+	return nil
 }
 
 func (ex *execution) ensureIdempotency() {
+	if ex.logicalRequestID != "" {
+		return
+	}
 	ex.idempotencyKey = ex.r.Header.Get("Idempotency-Key")
 	ex.logicalRequestID = ex.idempotencyKey
 	if ex.logicalRequestID == "" {
 		ex.logicalRequestID = uuid.NewString()
 	}
+}
+
+func authoritativeAttemptSeq(res *billing.ReserveResult, fallback int) int {
+	if res != nil && res.AttemptSeq > 0 {
+		return int(res.AttemptSeq)
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 1
 }
 
 func (ex *execution) balanceMode() billing.BalanceEnforcementMode {

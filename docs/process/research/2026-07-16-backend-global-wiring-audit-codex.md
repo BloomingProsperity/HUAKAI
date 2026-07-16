@@ -9,7 +9,7 @@
 | 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 22 |
+| Observed findings | 23 |
 | Inferences | 8 |
 | Open questions | 17 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
@@ -764,7 +764,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 
 - 本批不改 schema、鉴权角色、费率、余额、quota、上游真实费用默认值或 selector 状态合同。
 - chat 继续使用原有细粒度反馈实现；只把稳定终态映射上提到 `gateway` 共享，既有 chat 测试全绿。
-- embeddings、rerank、images、audio 仍需逐条接入同一反馈/重试合同；本批没有把“completions 已修”外推成所有非 Chat 协议已完成。
+- images、audio 仍需逐条接入同一反馈/重试合同；embeddings、rerank 已在 `GW-WIRE-023` 闭环。本批没有把前四条非 Chat 链已修外推成所有协议已完成。
 
 ### GW-WIRE-022：复活已中止 claim 后，chat/completions 的账号槽仍使用本地 attempt 序号
 
@@ -790,6 +790,36 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 - 新增跨请求复活测试：预置状态为 `aborted/attempt=1`，第一次进入 handler 的 Reserve 返回 attempt 2，selector 与 settle 必须都收到 2。
 - 既有 chat settlement-intent 测试升级为同时断言 selector 收到 Reserve 返回的 attempt 7，避免只验证意图表、却漏掉真实账号槽。
 - 第一轮独立 review 报告“同一逻辑请求第二次 Reserve 必然 `IdempotencyHit`”。生产源码反证该结论：`committed` 才返回重放命中，`aborted` 会复活同一 claim。本批没有按误报改成“只 Reserve 一次”；改为用真实状态机测试覆盖 `aborted → re-reserving`，并修复由此暴露的权威 attempt 传播缺口。
+
+### GW-WIRE-023：embeddings/rerank 复制旧 attempt 骨架，错误反馈、换号和 claim 身份没有形成闭环
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（失败账号反复命中/claim 身份漂移/协议运行态失真） |
+| 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链、W-11 顺序错误、W-09 测试假覆盖 |
+| 状态 | **Fixed for embeddings/rerank in this branch** |
+| 用户影响 | 修复前 embeddings 与 rerank 虽然都有 Router attempt 列表，但只有 dispatcher error/空响应会盲目进入下一次循环；HTTP 500、429、401 直接固定返回 502，不写账号健康、逐模型冷却或 auth 冷却，也不触发凭据热刷新。下一次选号没有排除刚失败的账号；无客户端幂等键时每次 retry 重新生成逻辑请求 ID；跨请求复活 aborted claim 后仍使用本地 `i+1` 选号和结算。Abort 失败也会继续 Reserve，可能在 claim 状态未知时叠加第二次预留。 |
+
+**源码链与修复**
+
+1. 两个协议现在都显式接收共享 `Feedback` 与租户 `RetryBudget`，并保存本请求失败账号排除集，见 `backend/internal/embeddingshttp/handler.go:45-91`、`backend/internal/rerankhttp/handler.go:46-94`。
+2. attempt loop 在每次 Reserve 后读取 `ReserveResult.AttemptSeq`，同一个权威序号进入 selector 和 settle；普通 retry 同时受路由允许终态、attempt budget、租户预算与全局 kill-switch 控制，401 auth failover 只有一次独立子预算，见 `backend/internal/embeddingshttp/handler.go:188-232`、`backend/internal/rerankhttp/handler.go:191-235`。
+3. HTTP/dispatch 失败统一进入共享分类与反馈器；需要换号时把最终失败账号放进 `ExcludedAccounts`。只有 Abort 成功才清理本次尝试并重新 Reserve；Abort 失败保留可观测响应头并终止，见 `backend/internal/embeddingshttp/attempt.go:71-120,151-268`、`backend/internal/rerankhttp/attempt.go:71-129,147-264`。
+4. 上游 2xx 在本地 usage 解析、定价或 settle 之前先写 success，避免本地故障误伤上游账号健康，见 `backend/internal/embeddingshttp/attempt.go:105-139`、`backend/internal/rerankhttp/attempt.go:105-136`。
+5. 无客户端 `Idempotency-Key` 时只生成一次逻辑请求 ID；后续 retry 复用同一身份。Abort 改为返回错误供 retry gate 判定，权威 attempt 只在旧测试桩返回零时回退本地序号，见 `backend/internal/embeddingshttp/billing.go:153-188`、`backend/internal/rerankhttp/billing.go:151-186`。
+6. production composition root 把与 completions 相同的共享 observer 和租户 retry budget 注入 embeddings/rerank，见 `backend/cmd/gateway/routes.go:800-818,844-862`。
+
+**判别验证**
+
+- embeddings 状态机测试证明：首账号 500 后写 `upstream_5xx`、成功 Abort、第二次 Reserve 复活同一逻辑 claim、第二次选号排除账号 44、账号 45 成功且只结算一次；400 不重试，Abort 失败不重试；即使普通 attempt budget 只有 1，明确 401 也只消费一次 auth 子预算；租户 retry budget 拒绝时不会发起第二次选号；跨请求 `aborted/attempt=4` 会以 attempt 5 选号和结算；上游 2xx 即使本地 usage 缺失仍记录 success，见 `backend/internal/embeddingshttp/retry_failover_test.go:24-233`。
+- rerank 对称测试证明同样的 500 换号、400 终止、Abort 成功门、单次 401 auth failover、租户 retry budget、权威 attempt 传播和成功健康顺序；本地 settle 失败不会倒打一笔上游失败信号，见 `backend/internal/rerankhttp/retry_failover_test.go:24-222`。
+- composition-root 测试同时判别 completions、embeddings、rerank 收到同一个共享 feedback observer 与 retry budget，见 `backend/cmd/gateway/routes_completions_wiring_test.go:11-38`。
+
+**辐射检查**
+
+- embeddings/rerank 都在写客户端响应前完成 settle；settle 失败仍可返回 500，因此本批没有引入交付后 settlement recovery DLQ，也没有改变既有“settle 结果不确定时禁止 Abort 双关账”的资金边界。
+- quota reserve、余额模式、定价、claim 状态机、selector slot 合同、鉴权角色和数据库 schema 均未修改；只修复已有身份与反馈信息没有贯穿执行链的问题。
+- images、audio、Responses、Gemini 和 media task 尚未因本项自动获得同等合同，继续作为 Batch 2D 后续源码审计对象。
 
 ## 成熟项目颗粒度基线
 
@@ -833,9 +863,11 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/upstreamfeedback/{observer.go,observer_test.go}` | 新增 provider-neutral 上游错误/成功反馈合同及 429、401、Bedrock 专用分类、传输错误、成功自愈判别测试 |
 | `backend/internal/completionshttp/{handler.go,attempt.go,count_tokens.go,billing.go}` | 接入分类驱动重试、账号排除、Abort 成功门、auth 子预算、共享反馈和权威 attempt 传播 |
 | `backend/internal/completionshttp/retry_failover_test.go` | 以真实 claim 状态机判别 500 换号、复活同一 claim、跨请求 attempt 传播、400 终止、Abort 失败停止、countTokens 零钱账和成功健康顺序 |
+| `backend/internal/embeddingshttp/{handler.go,attempt.go,billing.go,retry_failover_test.go}` | 接入分类驱动换号、失败账号排除、Abort 成功门、稳定逻辑请求 ID、权威 attempt 与成功健康顺序 |
+| `backend/internal/rerankhttp/{handler.go,attempt.go,billing.go,retry_failover_test.go}` | 对称接入统一反馈、安全 retry、最终账号归因与 claim 状态机判别测试 |
 | `backend/internal/gateway/attempt_error.go`、`backend/internal/gatewayhttp/{chat_completions_attempt.go,chat_completions_dispatch.go,settlement_intent_test.go}` | 把稳定终态映射上提为跨协议共享合同，并让 chat 选号使用 Reserve 返回的权威 attempt |
-| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens 与租户 retry budget |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十二个确认发现 |
+| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank 与租户 retry budget |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十三个确认发现 |
 | 三身份与单层租户规划 | 固定部署者、用户、租户三种身份，禁止多级租户，并记录能力、账号和经营额度的分配边界 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
@@ -858,6 +890,7 @@ go test ./internal/pool/router -count=1
 go test ./internal/completionshttp ./internal/geminihttp -count=1
 go test ./internal/audiohttp ./internal/settlementrecovery ./cmd/gateway -run 'TestAudioSpeech_Settle(ErrorAfterDeliveryKeeps200AndEnqueuesRecovery|AndRecoveryDoubleFailureEmitsP0WithoutSecret)|TestValidate_AcceptsAudioDeliveredSource|TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps' -count=1
 go test ./internal/upstreamfeedback ./internal/gateway ./internal/gatewayhttp ./internal/completionshttp ./cmd/gateway -count=1
+go test ./internal/upstreamfeedback ./internal/embeddingshttp ./internal/rerankhttp ./cmd/gateway -count=1
 go test ./internal/codebudget -count=1
 ```
 
@@ -881,6 +914,8 @@ GOTMPDIR=/home/ubuntu/.codex-tmp/global-wiring/go-tmp
 worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧命令中 `review` 子命令后的 `--sandbox`，因此使用等价只读形式 `codex exec --sandbox read-only --ephemeral review --uncommitted`。第一轮报告一个 S1：context worker 取消后没有等待，可能与关库竞态；本分支已按上述方式修复。第二轮使用相同只读形式复核，未发现该批改动引入的明确功能缺陷，未留下 S0/S1。Batch 2B 文档第一轮 review 发现 CLIProxyAPI、New API 的补充 SHA 不在本地 `origin/main` 祖先链，归一化为 S1；随后通过 GitHub 远端 `main` 核实可达 SHA，新增独立默认分支 specifier artifact 并替换全部依赖。第二轮 review 确认新增结论有源码证据、元数据与正文一致，未留下 S0/S1。
 
 GW-WIRE-019/020 提交前 review 也已完成。当前 CLI 的 `codex exec review` 已不再接受旧 `--sandbox/--full-auto` 参数，第一轮改用 `codex exec review --uncommitted --ephemeral`，静态审查无 finding；其自带测试因默认临时目录磁盘配额耗尽未完成，但本会话使用根磁盘目录的同范围测试已经全绿。money-path 第二轮使用物理只读 `codex exec -s read-only --ephemeral`，专项核对 ClaimID=0 资源生命周期、音频完整 settle payload、tenant/claim 幂等键、双故障 P0 脱敏和生产注入，最终结论为 `APPROVE`，无 S0/S1/S2/S3；只读沙箱不能创建 `GOTMPDIR`，故该轮不重复执行测试。
+
+GW-WIRE-023 提交前两轮 review 已完成。第一轮发现一个 S1：rerank 在判断 HTTP 状态前先把空 body 归类为可重试空响应，导致空 body 的 400/401/403 绕过真实状态分类、账号反馈和 auth 子预算。本分支已改为先处理非 2xx，再只对 2xx 空 body 使用 `upstream_empty_response`，并把 400、401 测试改成空 body 判别该顺序。第二轮复核未发现离散功能缺陷，无未解决 S0/S1；修复后全仓测试、相关包 race、`go vet`、代码体量门和 staged diff 检查全部通过。
 
 ## Owner 决策点
 
@@ -908,7 +943,7 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
-Batch 2D 已先闭环 completions 与 messages countTokens 的账号反馈、安全 retry、失败账号排除和生产注入。随后继续横向追踪 embeddings、rerank、images、audio、Responses、Gemini 和 media task，逐协议核对：
+Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入。随后继续横向追踪 images、audio、Responses、Gemini 和 media task，逐协议核对：
 
 `身份 → 规范模型 → 选号 → gate → 凭据 → 出站 → retry/fallback → health → claim/billing → audit → DLQ/recovery`
 
@@ -916,4 +951,4 @@ Batch 2D 已先闭环 completions 与 messages countTokens 的账号反馈、安
 
 ## 真实性摘要
 
-本报告的二十二个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十七个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界，以及尚未完成的 embeddings、rerank、images、audio 等协议健康、retry 与 recovery 对齐。
+本报告的二十三个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十七个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界，以及尚未完成的 images、audio、Responses、Gemini 和 media task 等协议健康、retry 与 recovery 对齐。
