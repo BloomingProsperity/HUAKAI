@@ -40,12 +40,6 @@ func MountRoutes(router chi.Router, deps Deps) {
 	router.Delete("/{id}", newDeleteHandler(deps))
 }
 
-func NewRouter(deps Deps) http.Handler {
-	router := chi.NewRouter()
-	MountRoutes(router, deps)
-	return router
-}
-
 type overrideResponse struct {
 	ID                 int64   `json:"id"`
 	PoolGroupID        int64   `json:"pool_group_id"`

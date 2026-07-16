@@ -9,12 +9,20 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 )
 
 type routeTestAuth struct {
 	identity admin.AdminIdentity
 	err      error
+}
+
+func NewRouter(deps Deps) http.Handler {
+	router := chi.NewRouter()
+	MountRoutes(router, deps)
+	return router
 }
 
 func (a routeTestAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
