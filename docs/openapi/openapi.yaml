@@ -17680,6 +17680,10 @@ components:
         - cap_concurrency
         - in_flight_count
         - priority
+        - last_probe_latency_ms
+        - last_probe_at
+        - last_request_observed_at
+        - last_request_observation_source
         - token_version
         - created_at
         - updated_at
@@ -17704,6 +17708,23 @@ components:
         in_flight_count: { type: integer, minimum: 0 }
         priority: { type: integer }
         last_dispatch_at: { type: [string, 'null'], format: date-time }
+        last_probe_latency_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          description: 最近一次主动上游探测的延迟；没有主动探测结果时为 null。
+        last_probe_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次主动上游探测时间；普通请求完成事件不会写入此字段。
+        last_request_observed_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次普通请求完成事件的观测时间；不代表主动上游探测成功。
+        last_request_observation_source:
+          type: string
+          enum: [request_completion_event]
+          description: last_request_observed_at 的生产事件来源。
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
         rate_limited_at: { type: [string, 'null'], format: date-time }
@@ -17930,8 +17951,7 @@ components:
         last_probe_at:
           type: [string, 'null']
           format: date-time
-          deprecated: true
-          description: Legacy storage projection. Current production writes come from passive request-completion events; use last_request_observed_at.
+          description: Latest active upstream probe timestamp; passive request-completion events do not write this field.
         last_request_observed_at:
           type: [string, 'null']
           format: date-time

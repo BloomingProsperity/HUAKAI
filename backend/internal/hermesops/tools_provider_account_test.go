@@ -6,8 +6,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func paStrPtr(s string) *string { return &s }
@@ -15,6 +17,8 @@ func paStrPtr(s string) *string { return &s }
 // 造含**敏感/自由文本**的账号行:Extra(原始 blob)、RateLimitReason、Tags 值、ProxyGroupID 各埋哨兵串,
 // 验证投影绝不 echo 它们(§14 区分性变异:若投影回退露明文,no-leak 断言转红)。
 func fakeAccountRows() []admindb.AdminProviderAccountRow {
+	probeAt := time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)
+	observedAt := time.Date(2026, 7, 16, 9, 6, 0, 0, time.UTC)
 	return []admindb.AdminProviderAccountRow{
 		{
 			ID: 11, ProviderID: 2, ChannelID: 5, Name: "anthropic-primary", AccountType: "oauth",
@@ -22,11 +26,13 @@ func fakeAccountRows() []admindb.AdminProviderAccountRow {
 			Priority: 1, StaticWeight: 100, CapConcurrency: 8, InFlightCount: 2, PoolMode: true,
 			ProbeModel: paStrPtr("claude-probe"), ModelAllowList: []string{"claude-3-5-sonnet"},
 			CapabilityFlags: []string{"vision"}, TokenVersion: 3,
-			Tags:               []string{"SENTINEL-TAG-must-not-leak", "prod"},
-			Extra:              []byte(`{"SENTINEL-EXTRA":"must-not-leak"}`),
-			RateLimitReason:    paStrPtr("SENTINEL-RLREASON-must-not-leak"),
-			ProxyGroupID:       paStrPtr("SENTINEL-PROXYGRP-must-not-leak"),
-			LastRefreshOutcome: paStrPtr("success"),
+			Tags:                  []string{"SENTINEL-TAG-must-not-leak", "prod"},
+			Extra:                 []byte(`{"SENTINEL-EXTRA":"must-not-leak"}`),
+			RateLimitReason:       paStrPtr("SENTINEL-RLREASON-must-not-leak"),
+			ProxyGroupID:          paStrPtr("SENTINEL-PROXYGRP-must-not-leak"),
+			LastRefreshOutcome:    paStrPtr("success"),
+			LastProbeAt:           pgtype.Timestamptz{Time: probeAt, Valid: true},
+			LastRequestObservedAt: pgtype.Timestamptz{Time: observedAt, Valid: true},
 		},
 		{
 			ID: 12, ProviderID: 2, ChannelID: 6, Name: "anthropic-backup", AccountType: "oauth",
@@ -85,6 +91,17 @@ func TestProviderAccountListSpec(t *testing.T) {
 	}
 	if a0["has_proxy"] != false {
 		t.Fatalf("account[0] 无 ProxyID,has_proxy 应 false: %v", a0["has_proxy"])
+	}
+	probeAt, ok := a0["last_probe_at"].(time.Time)
+	if !ok || !probeAt.Equal(time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)) {
+		t.Fatalf("last_probe_at=%v want active probe timestamp", a0["last_probe_at"])
+	}
+	observedAt, ok := a0["last_request_observed_at"].(time.Time)
+	if !ok || !observedAt.Equal(time.Date(2026, 7, 16, 9, 6, 0, 0, time.UTC)) {
+		t.Fatalf("last_request_observed_at=%v want passive request timestamp", a0["last_request_observed_at"])
+	}
+	if a0["last_request_observation_source"] != "request_completion_event" {
+		t.Fatalf("last_request_observation_source=%v want request_completion_event", a0["last_request_observation_source"])
 	}
 
 	// 绝不投明文敏感/自由文本键,也不回投 tenant_id。

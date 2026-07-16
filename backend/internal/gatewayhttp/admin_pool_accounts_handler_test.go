@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -569,8 +571,13 @@ func TestAdminPoolAccounts_DeleteSoftDeletesAndAudits(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
+	probeAt := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC)
+	observedAt := time.Date(2026, 7, 16, 7, 4, 0, 0, time.UTC)
+	first := adminProviderRow(77, 7)
+	first.LastProbeAt = pgtype.Timestamptz{Time: probeAt, Valid: true}
+	first.LastRequestObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
 	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{
-		adminProviderRow(77, 7),
+		first,
 		adminProviderRow(78, 7),
 	}}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts?limit=1&state_filter=active&pool_group_id=9&tag=prod", "")
@@ -582,10 +589,8 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 		t.Fatalf("list arg mismatch: %+v", store.listArg)
 	}
 	var response struct {
-		Items []struct {
-			ID int64 `json:"id"`
-		} `json:"items"`
-		Page struct {
+		Items []providerAccountResponse `json:"items"`
+		Page  struct {
 			HasMore    bool    `json:"has_more"`
 			NextCursor *string `json:"next_cursor"`
 		} `json:"page"`
@@ -595,6 +600,15 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	}
 	if len(response.Items) != 1 || response.Items[0].ID != 77 || !response.Page.HasMore || response.Page.NextCursor == nil {
 		t.Fatalf("unexpected list response: %+v", response)
+	}
+	if response.Items[0].LastProbeAt == nil || !response.Items[0].LastProbeAt.Equal(probeAt) {
+		t.Fatalf("列表 last_probe_at=%v want %v", response.Items[0].LastProbeAt, probeAt)
+	}
+	if response.Items[0].LastRequestObservedAt == nil || !response.Items[0].LastRequestObservedAt.Equal(observedAt) {
+		t.Fatalf("列表 last_request_observed_at=%v want %v", response.Items[0].LastRequestObservedAt, observedAt)
+	}
+	if response.Items[0].ObservationSource != "request_completion_event" {
+		t.Fatalf("列表 last_request_observation_source=%q want request_completion_event", response.Items[0].ObservationSource)
 	}
 	if strings.Contains(rec.Body.String(), "temp_unschedulable_rules") {
 		t.Fatalf("列表响应不应携带详情规则：%s", rec.Body.String())
@@ -609,6 +623,10 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	row.Tags = []string{"prod", "blue"}
 	row.Extra = []byte(`{"azure_api_version":"2024-08-01"}`)
 	row.TempUnschedulableRules = []byte(`[{"error_code":529,"keywords":["busy"],"duration_minutes":5,"description":"拥塞"}]`)
+	probeAt := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+	observedAt := time.Date(2026, 7, 16, 8, 5, 0, 0, time.UTC)
+	row.LastProbeAt = pgtype.Timestamptz{Time: probeAt, Valid: true}
+	row.LastRequestObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
 	store := &adminPoolStoreStub{get: &row}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts/77", "")
 	if rec.Code != http.StatusOK {
@@ -629,6 +647,15 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	}
 	if !strings.Contains(string(body.Extra), `"azure_api_version":"2024-08-01"`) {
 		t.Fatalf("extra response=%s", string(body.Extra))
+	}
+	if body.LastProbeAt == nil || !body.LastProbeAt.Equal(probeAt) {
+		t.Fatalf("last_probe_at=%v want %v", body.LastProbeAt, probeAt)
+	}
+	if body.LastRequestObservedAt == nil || !body.LastRequestObservedAt.Equal(observedAt) {
+		t.Fatalf("last_request_observed_at=%v want %v", body.LastRequestObservedAt, observedAt)
+	}
+	if body.ObservationSource != "request_completion_event" {
+		t.Fatalf("last_request_observation_source=%q want request_completion_event", body.ObservationSource)
 	}
 	var rules []struct {
 		ErrorCode       int      `json:"error_code"`
