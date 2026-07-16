@@ -1570,7 +1570,7 @@ func pr5CredentialVault(t *testing.T, accountIDs ...int64) provider.CredentialVa
 		}, provider.AccountInfo{
 			AccountID:           accountID,
 			Platform:            "openai",
-			AccountType:         "apikey",
+			AccountType:         credentialstore.AuthModeAPIKey,
 			AccountCredentialID: 9000 + accountID,
 			CredentialVersion:   1,
 		}); err != nil {

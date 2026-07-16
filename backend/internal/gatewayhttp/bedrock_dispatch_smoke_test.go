@@ -199,7 +199,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic(t *testing.T) {
 		},
 	}, provider.AccountInfo{
 		AccountID:   42,
-		Platform:    "bedrock",
+		Platform:    "anthropic",
 		AccountType: "bedrock",
 	}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
@@ -361,7 +361,7 @@ func TestDispatch_FullPipeline_BedrockOnAnthropic_UpstreamFailure(t *testing.T) 
 		Type:  provider.CredentialTypeAWSSigV4,
 		Value: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
 		Extra: map[string]string{"aws_region": "us-east-1", "aws_access_key_id": "AKIDEXAMPLE"},
-	}, provider.AccountInfo{AccountID: 42, Platform: "bedrock", AccountType: "bedrock"}); err != nil {
+	}, provider.AccountInfo{AccountID: 42, Platform: "anthropic", AccountType: "bedrock"}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}
 
