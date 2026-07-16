@@ -832,6 +832,8 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
 		SettleRecoveryDLQ: d.dlqService,
 	}
@@ -939,7 +941,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Audit: d.adminQueries,
 		})
 	})
-	mountBackupRoutes(r, d) // 只读备份 manifest(platform_admin)
+	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
 	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {

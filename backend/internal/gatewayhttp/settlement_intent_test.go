@@ -336,10 +336,12 @@ func TestSettlementIntentCacheHitLifecycle(t *testing.T) {
 func TestSettlementIntentUsesAuthoritativeReserveAttempt(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	intentStore := &recordingSettlementIntentStore{}
+	selector := &recordingSelectionRequestSelector{}
 	d := clientAdapterDeps(t)
 	d.ClaimGate = fixedAttemptClaimGate{claimID: 999, attemptSeq: 7}
 	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
 	d.SettlementIntents = intentStore
+	d.Selector = selector
 
 	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
@@ -348,6 +350,9 @@ func TestSettlementIntentUsesAuthoritativeReserveAttempt(t *testing.T) {
 	}
 	if intentStore.created.AttemptSeq != 7 {
 		t.Fatalf("intent attempt_seq=%d want ReserveResult authority 7", intentStore.created.AttemptSeq)
+	}
+	if len(selector.requests) != 1 || selector.requests[0].AttemptSeq != 7 {
+		t.Fatalf("selector attempt_seq requests=%+v want one request with ReserveResult authority 7", selector.requests)
 	}
 }
 

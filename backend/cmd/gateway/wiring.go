@@ -110,6 +110,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -138,6 +139,7 @@ type deps struct {
 	authCooldown          *authcooldown.Store
 	modelCooldowns        *ratelimit.ModelCooldownService
 	upstreamRate          ratelimit.Service
+	upstreamFeedback      *upstreamfeedback.Observer
 	retryBudget           *retrybudget.Budget
 	claimGate             billing.ClaimGate
 	settler               billing.Settler
@@ -1657,6 +1659,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		return nil, fmt.Errorf("start credential refresh scheduler: %w", err)
 	}
 	d.credentialScheduler = credentialScheduler
+	d.upstreamFeedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{
+		ChannelHealth:          d.channelHealth,
+		ModelCooldowns:         d.modelCooldowns,
+		RateService:            d.upstreamRate,
+		CredentialHotRefresher: credentialScheduler,
+		AuthCooldown:           d.authCooldown,
+		RecentRequests:         d.recentReqRing,
+	})
 	if opts.obsDLQ.Enabled {
 		dlqWorker.Start(workerCtx)
 	}

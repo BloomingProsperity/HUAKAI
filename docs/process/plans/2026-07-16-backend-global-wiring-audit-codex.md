@@ -100,6 +100,21 @@
 - 单独核 Gemini、Responses、媒体任务等旁路是否绕开统一链。
 - 对每条协议画真实调用顺序，检查模块不是简单“都有”，而是以正确次序传递同一请求身份、选号结果、计费 claim、健康反馈和审计引用。
 
+#### Batch 2D：非 Chat 上游反馈与安全重试纵向切片
+
+先以 completions 与 messages countTokens 为首个可判别切片，提炼 provider-neutral 的上游反馈合同，再横向复用到 embeddings、rerank、images、audio：
+
+1. 上游 HTTP 错误必须复用统一分类结果，写入账号健康、账号×模型冷却或 auth 冷却车道；401/明确凭据失效触发去抖热刷新。
+2. 上游成功必须写 success 信号，使 auth 冷却可以自愈；Anthropic 响应头继续进入 session-window 持久化。
+3. retry 只允许发生在客户端交付前；失败账号进入本请求排除集，下一 attempt 不能仅重复命中同一账号。
+4. `Abort` 成功是重新 Reserve 的前置条件；`Abort` 失败时立即终止，避免 claim 状态未知时继续产生第二笔预扣。
+5. 普通 retry 遵守 `RoutePlan.RetryableEndClasses`、attempt budget、租户 retry budget 和全局 retry kill-switch；auth failover 保留独立且至多一次的子预算。
+6. 无计费 claim 的 countTokens 复用同一错误反馈与账号排除逻辑，但不得重新引入并发槽占用或伪造计费动作。
+7. 判别测试至少证明：500/429/401 的状态反馈不同；失败账号被排除；HTTP 500 能换号成功；400 不重试；Abort 失败不重试；成功会清 auth 车道；生产 composition root 注入同一共享反馈器。
+8. 同一逻辑请求复活已中止 claim 时，选号、槽租约、路由观测和结算必须使用 `ClaimGate.Reserve` 返回的权威 `AttemptSeq`，不能使用当前 HTTP 请求内从 1 重新计数的本地循环号。
+
+该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
+
 #### Batch 2B：以 Sub2 账号系统为主轴的完整功能总账
 
 Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，包含了那些功能。我怀疑我们这个逻辑乱七八糟，功能缺失很多。”

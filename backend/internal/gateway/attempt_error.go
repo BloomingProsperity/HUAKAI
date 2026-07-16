@@ -204,6 +204,45 @@ func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecisi
 	}
 }
 
+// EndClassFromAttempt 把一次交付前失败的分类与传输决策收敛成 Router 可判定的稳定终态。
+// 非流式与流式 executor 必须共用这张映射，避免同一种上游错误在不同协议上出现不同重试语义。
+func EndClassFromAttempt(classification Classification, decision AttemptRetryDecision) StreamEndClass {
+	var draft UsageRecordDraft
+	ApplyClassificationToDraft(&draft, classification)
+	if draft.EndClass != "" && draft.EndClass != UnknownTermination {
+		return draft.EndClass
+	}
+	switch decision.TransportClass {
+	case TransportErrorConnectTimeout,
+		TransportErrorNetworkTimeout,
+		TransportErrorUpstreamHeaderTimeout,
+		TransportErrorUpstreamBodyIdleTimeout:
+		return InterEventTimeout
+	case TransportErrorTLSHandshakeFailed,
+		TransportErrorCredentialExpired,
+		TransportErrorConnectionRefused,
+		TransportErrorDNSFailure,
+		TransportErrorNetworkUnreachable,
+		TransportErrorProxyFailure:
+		return UpstreamError5xx
+	}
+	switch decision.AbortReason {
+	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
+		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
+		"upstream_dispatch_error", "upstream_empty_response",
+		"local_credential_expired",
+		"transport_connection_refused", "transport_dns_failure",
+		"transport_network_unreachable", "transport_proxy_failure":
+		return UpstreamError5xx
+	case "upstream_rate_limited", "queue_wait":
+		return UpstreamRateLimit
+	case "upstream_timeout", "transport_connect_timeout", "transport_network_timeout",
+		"transport_upstream_header_timeout", "transport_upstream_body_idle_timeout":
+		return InterEventTimeout
+	}
+	return UnknownTermination
+}
+
 func decisionFromHTTPClassification(httpStatus int, c Classification) AttemptRetryDecision {
 	switch c.Class {
 	case ErrorClassServerError:

@@ -5,12 +5,17 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 // settleRecoveryTimeout 给脱钩后的交付后结算 ctx 一个上限，防止 Tx2 永久挂住。
@@ -37,6 +42,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, reques
 		EndpointFamily:   ex.endpointFamily,
 		ClaimID:          claimID,
 		AttemptSeq:       attemptSeq,
+		ExcludedAccounts: ex.excludedAccounts,
 		CapabilityFlags:  ex.attempt.RequiredCapabilities,
 		SessionHash:      ex.payloadHash,
 		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
@@ -66,12 +72,19 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
-const (
-	attemptDone = iota
-	attemptRetryable
-)
+type attemptFailure struct {
+	Decision       gateway.AttemptRetryDecision
+	Classification gateway.Classification
+	AbortErr       error
+}
 
-func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attemptSeq int) int {
+type attemptOutcome struct {
+	Done    bool
+	Failure *attemptFailure
+}
+
+func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attemptSeq int) attemptOutcome {
+	startedAt := time.Now()
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		EndpointPath:    ex.upstreamPath,
@@ -81,43 +94,58 @@ func (ex *execution) dispatchCompletionsAndSettle(w http.ResponseWriter, attempt
 		Credential:      ex.cred,
 	})
 	if err != nil {
-		ex.abort(w, "upstream_dispatch_error", 0)
-		return attemptRetryable
+		decision := dispatchFailureDecision(err)
+		if ex.d.Feedback != nil {
+			decision = normalizeDispatchFailureDecision(
+				ex.d.Feedback.ObserveDispatchError(ex.ctx, ex.feedbackAttempt(startedAt), err),
+			)
+		}
+		return attemptOutcome{Failure: &attemptFailure{
+			Decision: decision,
+			AbortErr: ex.abortWithError(w, decision.AbortReason, 0),
+		}}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		ex.abort(w, "upstream_empty_response", 0)
-		return attemptRetryable
+		ex.observeChannelError(startedAt, 0)
+		decision := retryableAttemptDecision("upstream_empty_response", http.StatusBadGateway)
+		return attemptOutcome{Failure: &attemptFailure{
+			Decision: decision,
+			AbortErr: ex.abortWithError(w, decision.AbortReason, 0),
+		}}
 	}
 	defer closeDispatchResult(res)
-	_ = ex.finishCompletionsResponse(w, res, attemptSeq)
-	return attemptDone
+	return ex.finishCompletionsResponse(w, res, attemptSeq, startedAt)
 }
 
-func (ex *execution) finishCompletionsResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishCompletionsResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int, startedAt time.Time) attemptOutcome {
 	if ex.req.Stream || strings.Contains(strings.ToLower(res.Headers.Get("Content-Type")), "text/event-stream") {
-		return ex.finishStreamingResponse(w, res, attemptSeq)
+		return ex.finishStreamingResponse(w, res, attemptSeq, startedAt)
 	}
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
+		ex.observeChannelError(startedAt, res.StatusCode)
 		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return false
+		return attemptOutcome{Done: true}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		ex.abort(w, upstreamAbortReason(res.StatusCode, res.Headers, raw), 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := ex.observeHTTPFailure(startedAt, res, raw)
+		failure.AbortErr = ex.abortWithError(w, failure.Decision.AbortReason, 0)
+		return attemptOutcome{Failure: failure}
 	}
-	return ex.settleAndWriteJSON(w, res, raw, attemptSeq)
+	_ = ex.settleAndWriteJSON(w, res, raw, attemptSeq, startedAt)
+	return attemptOutcome{Done: true}
 }
 
-func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {
+func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int, startedAt time.Time) bool {
 	usage, ok := usageFromJSON(raw)
 	if !ok {
+		ex.observeChannelError(startedAt, res.StatusCode)
 		ex.abort(w, "usage_missing", 0)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, clienterr.MessageFor(clienterr.CodeCanonicalResponseError))
 		return false
 	}
+	ex.observeSuccess(startedAt, res)
 	cost, err := ex.actualCost(usage)
 	if err != nil {
 		ex.abort(w, "pricing_unavailable", int64(usage.PromptTokens))
@@ -142,17 +170,18 @@ func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.Disp
 	return true
 }
 
-func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int, startedAt time.Time) attemptOutcome {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		raw, readErr := readUpstreamBody(res.UpstreamReader)
 		if readErr != nil {
+			ex.observeChannelError(startedAt, res.StatusCode)
 			ex.abort(w, clienterr.CodeUpstreamReadError, 0)
 			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-			return false
+			return attemptOutcome{Done: true}
 		}
-		ex.abort(w, upstreamAbortReason(res.StatusCode, res.Headers, raw), 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := ex.observeHTTPFailure(startedAt, res, raw)
+		failure.AbortErr = ex.abortWithError(w, failure.Decision.AbortReason, 0)
+		return attemptOutcome{Failure: failure}
 	}
 
 	copyAllowedHeaders(w.Header(), res.Headers)
@@ -166,8 +195,14 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 	if streamErr != nil && copied.Len() == 0 {
 		// 真零交付:头已 200 但没有任何字节发给客户端、也没捕获到上游内容。此时无可计费交付,
 		// 释放整笔预留是正确的(对齐 chat 流式"仅真零交付才 abort")。
+		ex.observeChannelError(startedAt, res.StatusCode)
 		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		return false
+		return attemptOutcome{Done: true}
+	}
+	if streamErr != nil {
+		ex.observeChannelError(startedAt, res.StatusCode)
+	} else {
+		ex.observeSuccess(startedAt, res)
 	}
 
 	// 到这里:要么流干净结束,要么中途出错但已有部分交付(copied.Len()>0)。已交付内容对应的
@@ -203,9 +238,9 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 	defer cancel()
 	if err := ex.settleStreamWithRecovery(settleCtx, ex.settleRequest(usage, cost, attemptSeq, true)); err != nil {
 		w.Header().Set("X-Huakai-Settle-Failed", clienterr.CodeSettleError)
-		return false
+		return attemptOutcome{Done: true}
 	}
-	return true
+	return attemptOutcome{Done: true}
 }
 
 // appendStreamPendingReason 给交付后待对账的成本快照追加一个 pending 原因标记,供
@@ -256,6 +291,148 @@ func upstreamAbortReason(status int, headers http.Header, raw []byte) string {
 		return "upstream_error"
 	}
 	return decision.AbortReason
+}
+
+func (ex *execution) feedbackAttempt(startedAt time.Time) upstreamfeedback.Attempt {
+	return upstreamfeedback.Attempt{
+		TenantID:       ex.ident.TenantID,
+		Account:        ex.accInfo,
+		ProtocolFamily: ex.resolved.ProtocolFamily,
+		ModelKey:       ex.upstreamModelID,
+		RequestID:      ex.requestID,
+		StartedAt:      startedAt,
+	}
+}
+
+func (ex *execution) observeHTTPFailure(startedAt time.Time, res *gateway.DispatchResult, raw []byte) *attemptFailure {
+	if ex.d.Feedback != nil {
+		observed := ex.d.Feedback.ObserveHTTPError(
+			ex.ctx,
+			ex.feedbackAttempt(startedAt),
+			res.StatusCode,
+			res.Headers,
+			raw,
+		)
+		return &attemptFailure{
+			Decision:       observed.Decision,
+			Classification: observed.Classification,
+		}
+	}
+	decision, classification, err := gateway.ClassifyAttemptHTTPError(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+	if err != nil {
+		decision = gateway.AttemptRetryDecision{
+			ClientStatus: http.StatusBadGateway,
+			AbortReason:  upstreamAbortReason(res.StatusCode, res.Headers, raw),
+		}
+	}
+	return &attemptFailure{Decision: decision, Classification: classification}
+}
+
+func (ex *execution) observeChannelError(startedAt time.Time, statusCode int) {
+	if ex.d.Feedback != nil {
+		ex.d.Feedback.ObserveChannelError(ex.ctx, ex.feedbackAttempt(startedAt), statusCode)
+	}
+}
+
+func (ex *execution) observeSuccess(startedAt time.Time, res *gateway.DispatchResult) {
+	if ex.d.Feedback != nil {
+		ex.d.Feedback.ObserveSuccess(ex.ctx, ex.feedbackAttempt(startedAt), res.StatusCode, res.Headers)
+	}
+}
+
+func (ex *execution) excludeAccount(accountID int64) {
+	if accountID <= 0 {
+		return
+	}
+	if ex.excludedAccounts == nil {
+		ex.excludedAccounts = make(map[int64]struct{})
+	}
+	ex.excludedAccounts[accountID] = struct{}{}
+}
+
+func (ex *execution) prepareNextAttempt() {
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.accInfo = provider.AccountInfo{}
+	ex.cred = provider.Credential{}
+}
+
+func retryableAttemptDecision(reason string, status int) gateway.AttemptRetryDecision {
+	return gateway.AttemptRetryDecision{
+		RetryableBeforeDelivery: true,
+		SwitchAccount:           true,
+		SwitchPool:              true,
+		ClientStatus:            status,
+		AbortReason:             reason,
+	}
+}
+
+func dispatchFailureDecision(err error) gateway.AttemptRetryDecision {
+	return normalizeDispatchFailureDecision(gateway.ClassifyAttemptDispatchError(err))
+}
+
+func normalizeDispatchFailureDecision(decision gateway.AttemptRetryDecision) gateway.AttemptRetryDecision {
+	if !decision.RetryableBeforeDelivery && decision.TransportClass == gateway.TransportErrorLocalDispatch {
+		decision.ClientStatus = http.StatusBadGateway
+		decision.AbortReason = "upstream_dispatch_error"
+	}
+	if decision.AbortReason == "" {
+		decision.AbortReason = "upstream_dispatch_error"
+	}
+	return decision
+}
+
+func shouldRetryFailure(plan router.RoutePlan, failure *attemptFailure, finalAttempt, authFailoverUsed bool) (bool, bool) {
+	if failure == nil || failure.AbortErr != nil {
+		return false, false
+	}
+	if failure.Decision.CountsAgainstAuthFailoverBudget && !authFailoverUsed {
+		return true, true
+	}
+	if finalAttempt || !failure.Decision.RetryableBeforeDelivery {
+		return false, false
+	}
+	endClass := gateway.EndClassFromAttempt(failure.Classification, failure.Decision)
+	for _, allowed := range plan.RetryableEndClasses {
+		if strings.TrimSpace(allowed) == string(endClass) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func effectiveAttemptBudget(plan router.RoutePlan) int {
+	if len(plan.Attempts) == 0 {
+		return 0
+	}
+	if os.Getenv("HUAKAI_ATTEMPT_RETRY_ENABLED") == "0" {
+		return 1
+	}
+	budget := plan.AttemptBudget
+	if budget <= 0 || budget > len(plan.Attempts) {
+		budget = len(plan.Attempts)
+	}
+	if budget < 1 {
+		return 1
+	}
+	return budget
+}
+
+func writeAttemptFailure(w http.ResponseWriter, failure *attemptFailure) {
+	status := http.StatusBadGateway
+	code := clienterr.CodeUpstreamDispatchError
+	if failure != nil {
+		if failure.Decision.ClientStatus > 0 {
+			status = failure.Decision.ClientStatus
+		}
+		if failure.Classification.Class != "" {
+			code = "upstream_" + string(failure.Classification.Class)
+		}
+		if failure.Classification.RetryAfterMs > 0 {
+			w.Header().Set("Retry-After", strconv.FormatInt((failure.Classification.RetryAfterMs+999)/1000, 10))
+		}
+	}
+	writeJSONError(w, status, code, "upstream request failed")
 }
 
 func closeDispatchResult(res *gateway.DispatchResult) {

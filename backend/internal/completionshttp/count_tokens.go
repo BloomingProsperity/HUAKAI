@@ -61,29 +61,50 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 }
 
 func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string) {
-	budget := ex.plan.AttemptBudget
-	if budget <= 0 || budget > len(ex.plan.Attempts) {
-		budget = len(ex.plan.Attempts)
-	}
-	for i := 0; i < budget; i++ {
-		ex.activateAttempt(ex.plan.Attempts[i], requestedModel)
+	budget := effectiveAttemptBudget(ex.plan)
+	authFailoverUsed := false
+	attemptCap := budget
+	for i := 0; i < attemptCap; i++ {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		ex.activateAttempt(ex.plan.Attempts[planIdx], requestedModel)
 		if !ex.selectAccount(w, i+1, requestedModel) || !ex.resolveCredential(w) {
 			return
 		}
-		switch ex.dispatchCountTokens(w) {
-		case attemptDone:
-			return
-		case attemptRetryable:
-			if i+1 < budget {
-				continue
-			}
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
+		outcome := ex.dispatchCountTokens(w)
+		if outcome.Done {
 			return
 		}
+		if outcome.Failure == nil {
+			return
+		}
+		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
+			ex.excludeAccount(ex.accInfo.AccountID)
+		}
+		retry, consumeAuthBudget := shouldRetryFailure(
+			ex.plan,
+			outcome.Failure,
+			i+1 >= attemptCap,
+			authFailoverUsed,
+		)
+		if !retry || (ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+			writeAttemptFailure(w, outcome.Failure)
+			return
+		}
+		if consumeAuthBudget {
+			authFailoverUsed = true
+			if i+1 >= attemptCap {
+				attemptCap++
+			}
+		}
+		ex.prepareNextAttempt()
 	}
 }
 
-func (ex *execution) dispatchCountTokens(w http.ResponseWriter) int {
+func (ex *execution) dispatchCountTokens(w http.ResponseWriter) attemptOutcome {
+	startedAt := time.Now()
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:    ex.resolved.ProtocolFamily,
 		EndpointPath:      ex.upstreamPath,
@@ -94,26 +115,36 @@ func (ex *execution) dispatchCountTokens(w http.ResponseWriter) int {
 		InboundBetaTokens: provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta")),
 	})
 	if err != nil {
-		return attemptRetryable
+		decision := dispatchFailureDecision(err)
+		if ex.d.Feedback != nil {
+			decision = normalizeDispatchFailureDecision(
+				ex.d.Feedback.ObserveDispatchError(ex.ctx, ex.feedbackAttempt(startedAt), err),
+			)
+		}
+		return attemptOutcome{Failure: &attemptFailure{Decision: decision}}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		return attemptRetryable
+		ex.observeChannelError(startedAt, 0)
+		return attemptOutcome{Failure: &attemptFailure{
+			Decision: retryableAttemptDecision("upstream_empty_response", http.StatusBadGateway),
+		}}
 	}
 	defer closeDispatchResult(res)
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
+		ex.observeChannelError(startedAt, res.StatusCode)
 		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return attemptDone
+		return attemptOutcome{Done: true}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return attemptDone
+		return attemptOutcome{Failure: ex.observeHTTPFailure(startedAt, res, raw)}
 	}
+	ex.observeSuccess(startedAt, res)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
-	return attemptDone
+	return attemptOutcome{Done: true}
 }

@@ -328,6 +328,10 @@ func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter, in attemp
 	if ex.reserveRes == nil && !ex.reserveClaim(w) {
 		return false, nil
 	}
+	if ex.reserveRes != nil && ex.reserveRes.AttemptSeq > 0 {
+		in.AttemptSeq = int(ex.reserveRes.AttemptSeq)
+		ex.currentAttemptSeq = in.AttemptSeq
+	}
 	if failure := ex.selectPoolAccount(w, in); failure != nil {
 		return false, failure
 	}
