@@ -6,6 +6,8 @@ import (
 )
 
 // UTLS-03：按账号的 DB TLS 指纹 profile -> ClientHelloTemplate。
+// 服务于 Go-native uTLS 回退出口(非默认路径,默认出口经 Rust sidecar;
+// 见 UtlsDialer 冻结说明)。
 //
 // admin 存储(internal/tlsfpadmin / db)把每租户的指纹 profile 以 int32 列保存。
 // 本转换器将其加宽成既有 uTLS dialer 可消费的 ClientHelloTemplate，使绑定到 DB

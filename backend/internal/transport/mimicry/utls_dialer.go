@@ -15,6 +15,11 @@ import (
 )
 
 // UtlsDialer 是 net.Dialer 风格的 TLS 拨号包装器。
+//
+// Go-native uTLS 出口:自 Rust BoringSSL sidecar 上线后为非默认回退路径。生产默认
+// 出口经 sidecar(transport.Factory 命中 SidecarSocketPath 分支);本路径仅在
+// HUAKAI_TRANSPORT_SIDECAR_FALLBACK=true 应急回退、或 dev/CI 未起 sidecar 时启用。
+// 新增 / 调整伪装能力应落在 sidecar 的 Rust profile,不在此文件扩展。
 type UtlsDialer struct {
 	Template         *ClientHelloTemplate
 	NetDialer        net.Dialer
