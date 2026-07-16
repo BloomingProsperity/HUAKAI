@@ -452,7 +452,7 @@ axis-3 (协议转换) 在 2026 年市场看：
 - [Gartner Market Guide for AI Gateways 2025 | TrueFoundry](https://www.truefoundry.com/blog/building-the-enterprise-ai-control-plane-gartner-r-insights-and-truefoundrys-approach)
 - [Gartner Worldwide AI Spending $2.5T 2026](https://www.gartner.com/en/newsroom/press-releases/2026-1-15-gartner-says-worldwide-ai-spending-will-total-2-point-5-trillion-dollars-in-2026)
 
-### 白标 / Reseller
+### 白标服务（外部市场术语，非 HUAKAI 身份模型）
 - [SuiteDash Best White-Label SaaS Reseller Programs 2026](https://suitedash.com/best-white-label-saas-reseller-programs/)
 - [Best AI White Label Software 2026 | Parallel AI](https://parallellabs.app/best-ai-white-label-software-the-complete-guide-for-agencies-and-service-providers-who-want-to-resell-ai-without-building-from-scratch/)
 

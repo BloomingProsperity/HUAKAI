@@ -142,7 +142,7 @@ docker 自选网段且必落 RFC1918 内,见 `docker-compose.prod.yml:126`)信�
 对非可信来源的 XFF 一律忽略(fail-closed 防伪造)。
 
 > 本地无公网域名联调:`HUAKAI_PUBLIC_DOMAIN=localhost`(Caddy 发本地自签证书,浏览器提示不受信,仅联调)。
-> 多级代理上线后若要每个代理自带白标域名,Caddyfile 末尾已预留 on-demand TLS 模板(需配 ask 授权端点,默认不启用)。
+> 若单层下级租户需要自定义品牌域名,Caddyfile 末尾已预留 on-demand TLS 模板(需配 ask 授权端点,默认不启用)。
 
 ## 6. 验证
 

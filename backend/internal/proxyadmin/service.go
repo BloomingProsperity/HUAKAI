@@ -208,8 +208,8 @@ var blockedMetadataIPs = []netip.Addr{
 //   - 主机名:仅精确匹配 metadata/本机名单(见 blockedProxyHostnames),其余放行。
 //
 // 注:这是写时静态校验,不做 DNS 解析(无法挡 rebinding);代理目标本就 admin-gated,
-// 此处是纵深防御。是否进一步【默认封私网 / CGNAT 100.64.0.0/10 等 special-use】属
-// 信任模型决策(多级代理/委派 admin 时才需要),留作 Owner 决策,不在本切片。
+// 此处是纵深防御。若未来允许租户管理员自行配置代理,是否进一步【默认封私网 /
+// CGNAT 100.64.0.0/10 等 special-use】属于租户能力授权与网络边界决策,不在本切片。
 func proxyHostSafe(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
