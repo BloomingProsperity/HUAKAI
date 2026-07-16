@@ -18,6 +18,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountops"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/poolaccountadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
@@ -46,10 +47,23 @@ func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
 	r.Get("/", newListProviderAccountsHandler(d))
 	r.Post("/", newCreateProviderAccountHandler(d))
 	r.Get("/{id}", newGetProviderAccountHandler(d))
+	r.Get("/{id}/operations", newGetProviderAccountOperationsHandler(d))
 	r.Patch("/{id}", newUpdateProviderAccountHandler(d))
 	r.Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
 	r.Post("/{id}/clear-rate-limit", newClearProviderAccountRateLimitHandler(d))
 	r.Delete("/{id}", newDeleteProviderAccountHandler(d))
+}
+
+type providerAccountOperationsStateReader interface {
+	GetProviderAccountOperationsState(context.Context, admindb.GetProviderAccountOperationsStateParams) (admindb.ProviderAccountOperationsState, error)
+}
+
+type providerAccountCredentialInventory interface {
+	ListByAccount(context.Context, int64, int64) ([]credentialstore.CredentialMetadata, error)
+}
+
+type providerAccountChannelHealthReader interface {
+	LatestByProviderAccount(context.Context, int64, int64) (channelhealth.Record, error)
 }
 
 type createProviderAccountRequest = poolaccountadmin.CreateRequest
@@ -275,6 +289,63 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
+	}
+}
+
+func newGetProviderAccountOperationsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, tenantID, ok := resolveProviderAccountAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := parseAdminPoolID(w, r)
+		if !ok {
+			return
+		}
+		stateReader, ok := d.Store.(providerAccountOperationsStateReader)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account operations state dependency unset")
+			return
+		}
+		credentialReader, ok := d.Credentials.(providerAccountCredentialInventory)
+		if !ok {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account credential inventory dependency unset")
+			return
+		}
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		if err != nil {
+			writeProviderAccountReadError(w, err, "provider_account_get_failed")
+			return
+		}
+		routingState, err := stateReader.GetProviderAccountOperationsState(r.Context(), admindb.GetProviderAccountOperationsStateParams{
+			ID: id, TenantID: tenantID,
+		})
+		if err != nil {
+			writeProviderAccountReadError(w, err, "provider_account_operations_state_failed")
+			return
+		}
+		credentials, err := credentialReader.ListByAccount(r.Context(), tenantID, id)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_credentials_failed", "provider account credential inventory is temporarily unavailable")
+			return
+		}
+		var health *channelhealth.Record
+		healthAvailable := false
+		if reader, ok := d.ChannelHealth.(providerAccountChannelHealthReader); ok {
+			healthAvailable = true
+			record, err := reader.LatestByProviderAccount(r.Context(), tenantID, id)
+			if err != nil && !errors.Is(err, channelhealth.ErrNotFound) {
+				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_channel_health_failed", "provider account channel health is temporarily unavailable")
+				return
+			}
+			if err == nil {
+				health = &record
+			}
+		}
+		writeAuditJSON(w, http.StatusOK, accountops.Aggregate(accountops.Input{
+			Account: account, RoutingState: routingState, Credentials: credentials,
+			ChannelHealth: health, ChannelHealthAvailable: healthAvailable,
+		}))
 	}
 }
 

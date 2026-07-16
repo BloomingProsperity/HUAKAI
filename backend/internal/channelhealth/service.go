@@ -841,6 +841,14 @@ func (s *Service) Store() Store {
 	return s.store
 }
 
+// LatestByProviderAccount 暴露账号运营面需要的只读健康快照。
+func (s *Service) LatestByProviderAccount(ctx context.Context, tenantID, providerAccountID int64) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	return s.store.LatestByProviderAccount(ctx, tenantID, providerAccountID)
+}
+
 func (s *Service) String() string {
 	if s == nil {
 		return "channelhealth.Service<nil>"

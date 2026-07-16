@@ -164,6 +164,7 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND (
       pa.health_state = 'healthy'
       OR pa.id IN (SELECT id FROM normalized_health)
+      OR (pa.disable_cooling = true AND pa.health_state IN ('throttled', 'cooldown'))
   )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[sqlc.arg(requested_model)::text])

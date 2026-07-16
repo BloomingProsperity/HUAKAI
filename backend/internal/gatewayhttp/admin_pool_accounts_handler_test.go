@@ -66,6 +66,7 @@ type adminPoolStoreStub struct {
 	clear            *admindb.ClearProviderAccountRateLimitParams
 	delete           *admindb.SoftDeleteProviderAccountParams
 	audits           []admindb.InsertAdminAuditEventParams
+	operationsState  admindb.ProviderAccountOperationsState
 }
 
 func (s *adminPoolStoreStub) GetProviderProtocolForAccountCreate(_ context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
@@ -86,17 +87,26 @@ type providerAccountRiskPeerForTest struct {
 }
 
 type adminPoolCredentialWriterStub struct {
-	input *credentialstore.CreateCredentialInput
-	id    int64
+	input    *credentialstore.CreateCredentialInput
+	id       int64
+	metadata []credentialstore.CredentialMetadata
 }
 
 type adminPoolChannelHealthStub struct {
-	key *channelhealth.ChannelKey
+	key    *channelhealth.ChannelKey
+	latest *channelhealth.Record
 }
 
 func (s *adminPoolChannelHealthStub) EnsureDefaultActive(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
 	s.key = &key
 	return channelhealth.Record{Key: key, State: channelhealth.StateActive}, nil
+}
+
+func (s *adminPoolChannelHealthStub) LatestByProviderAccount(_ context.Context, _, _ int64) (channelhealth.Record, error) {
+	if s.latest == nil {
+		return channelhealth.Record{}, channelhealth.ErrNotFound
+	}
+	return *s.latest, nil
 }
 
 func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error) {
@@ -110,6 +120,10 @@ func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentials
 		Vendor: credentialstore.Normalize(in.Vendor), AuthMode: credentialstore.Normalize(in.AuthMode),
 		State: credentialstore.StateActive, Version: 1,
 	}, nil
+}
+
+func (s *adminPoolCredentialWriterStub) ListByAccount(_ context.Context, _, _ int64) ([]credentialstore.CredentialMetadata, error) {
+	return append([]credentialstore.CredentialMetadata(nil), s.metadata...), nil
 }
 
 func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
@@ -188,6 +202,11 @@ func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg admi
 		return adminProviderRowFromInsert(id, *s.insert), nil
 	}
 	return adminProviderRow(id, arg.TenantID), nil
+}
+
+func (s *adminPoolStoreStub) GetProviderAccountOperationsState(_ context.Context, arg admindb.GetProviderAccountOperationsStateParams) (admindb.ProviderAccountOperationsState, error) {
+	s.getArg = &admindb.GetAdminProviderAccountParams{ID: arg.ID, TenantID: arg.TenantID}
+	return s.operationsState, nil
 }
 
 func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
@@ -677,6 +696,50 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0].ErrorCode != 529 || rules[0].DurationMinutes != 5 || rules[0].Description != "拥塞" {
 		t.Fatalf("temp_unschedulable_rules=%+v", rules)
+	}
+}
+
+func TestAdminPoolAccounts_GetOperationsAggregatesExistingSubsystems(t *testing.T) {
+	row := adminProviderRow(77, 7)
+	row.HealthState = "healthy"
+	row.CredentialState = "valid"
+	store := &adminPoolStoreStub{
+		get: &row,
+		operationsState: admindb.ProviderAccountOperationsState{
+			ModelRateLimits: []byte(`{"gpt-x":{"rate_limit_reset_at":"2099-07-16T12:15:00Z","reason":"upstream_429"}}`),
+		},
+	}
+	credentials := &adminPoolCredentialWriterStub{metadata: []credentialstore.CredentialMetadata{
+		{ID: 9001, TenantID: 7, ProviderAccountID: 77, Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, State: credentialstore.StateActive},
+	}}
+	health := &adminPoolChannelHealthStub{latest: &channelhealth.Record{State: channelhealth.StateActive}}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, Credentials: credentials, ChannelHealth: health,
+	}, http.MethodGet, "/admin/v1/provider-accounts/77/operations", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		AccountID int64 `json:"account_id"`
+		Summary   struct {
+			Status            string `json:"status"`
+			Schedulable       bool   `json:"schedulable"`
+			ModelBlockerCount int    `json:"model_blocker_count"`
+		} `json:"summary"`
+		Credentials []struct {
+			ID          int64 `json:"id"`
+			Refreshable bool  `json:"refreshable"`
+		} `json:"credentials"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if response.AccountID != 77 || !response.Summary.Schedulable ||
+		response.Summary.Status != "partially_schedulable" || response.Summary.ModelBlockerCount != 1 {
+		t.Fatalf("response=%+v", response)
+	}
+	if len(response.Credentials) != 1 || response.Credentials[0].ID != 9001 || !response.Credentials[0].Refreshable {
+		t.Fatalf("credentials=%+v", response.Credentials)
 	}
 }
 

@@ -69,6 +69,11 @@ type ChannelHealthInitializer interface {
 	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
 }
 
+// OperationsStateReader 读取账号运营聚合所需的 selector 状态。
+type OperationsStateReader interface {
+	GetProviderAccountOperationsState(context.Context, admindb.GetProviderAccountOperationsStateParams) (admindb.ProviderAccountOperationsState, error)
+}
+
 // Deps 集中 provider account 管理路由依赖。
 type Deps struct {
 	Auth          Auth
@@ -101,6 +106,14 @@ func (s storeAdapter) ListAdminProviderAccounts(ctx context.Context, arg admindb
 
 func (s storeAdapter) GetAdminProviderAccount(ctx context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	return s.base.GetAdminProviderAccount(ctx, arg)
+}
+
+func (s storeAdapter) GetProviderAccountOperationsState(ctx context.Context, arg admindb.GetProviderAccountOperationsStateParams) (admindb.ProviderAccountOperationsState, error) {
+	reader, ok := s.base.(OperationsStateReader)
+	if !ok {
+		return admindb.ProviderAccountOperationsState{}, errors.New("provider account operations state reader unset")
+	}
+	return reader.GetProviderAccountOperationsState(ctx, arg)
 }
 
 func (s storeAdapter) UpdateAdminProviderAccount(ctx context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {

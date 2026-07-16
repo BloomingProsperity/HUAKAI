@@ -70,6 +70,17 @@ type GetAdminProviderAccountParams struct {
 	TenantID int64 `db:"tenant_id" json:"tenant_id"`
 }
 
+type GetProviderAccountOperationsStateParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+type ProviderAccountOperationsState struct {
+	HealthStateUntil        pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	ModelRateLimits         []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	TempUnschedulableReason *string            `db:"temp_unschedulable_reason" json:"temp_unschedulable_reason"`
+}
+
 type ListProviderAccountRiskPeersParams struct {
 	TenantID  int64 `db:"tenant_id" json:"tenant_id"`
 	ChannelID int64 `db:"channel_id" json:"channel_id"`
@@ -203,6 +214,25 @@ func (q *Queries) GetAdminProviderAccount(ctx context.Context, arg GetAdminProvi
 	var i AdminProviderAccountRow
 	err := scanAdminProviderAccount(row, &i)
 	return i, err
+}
+
+const getProviderAccountOperationsState = `
+SELECT
+    health_state_until,
+    model_rate_limits,
+    temp_unschedulable_reason
+FROM provider_accounts
+WHERE id = $1
+  AND tenant_id = $2
+  AND deleted_at IS NULL
+`
+
+// GetProviderAccountOperationsState 读取 selector 与运维聚合需要、但通用账号 DTO 未投影的状态。
+func (q *Queries) GetProviderAccountOperationsState(ctx context.Context, arg GetProviderAccountOperationsStateParams) (ProviderAccountOperationsState, error) {
+	row := q.db.QueryRow(ctx, getProviderAccountOperationsState, arg.ID, arg.TenantID)
+	var state ProviderAccountOperationsState
+	err := row.Scan(&state.HealthStateUntil, &state.ModelRateLimits, &state.TempUnschedulableReason)
+	return state, err
 }
 
 const listProviderAccountRiskPeers = `

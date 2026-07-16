@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -27,12 +28,34 @@ func (s *stubBulkAuth) Resolve(_ context.Context, _ *http.Request) (admin.AdminI
 
 // stubBulkStore 是一个判别式 stub:只有当 TagFilter 等于 "flaky" 时才返回账号。
 type stubBulkStore struct {
-	// 记录对 UpdateAdminProviderAccount 的调用
+	// 记录原子更新与审计调用
 	updateCalls []admindb.UpdateAdminProviderAccountParams
-	// InsertAdminAuditEvent 的调用次数
-	auditCount int
-	// 按需模拟一个更新错误
-	updateErr error
+	auditCalls  []admindb.InsertAdminAuditEventParams
+	auditCount  int
+	// 按账号模拟原子操作错误
+	updateErrors map[int64]error
+}
+
+type pagedBulkStore struct {
+	rows      []admindb.AdminProviderAccountRow
+	listCalls int
+}
+
+func (s *pagedBulkStore) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
+	s.listCalls++
+	start := 0
+	for start < len(s.rows) && s.rows[start].ID <= arg.AfterID {
+		start++
+	}
+	end := start + int(arg.LimitCount)
+	if end > len(s.rows) {
+		end = len(s.rows)
+	}
+	return s.rows[start:end], nil
+}
+
+func (s *pagedBulkStore) UpdateAdminProviderAccountWithAudit(_ context.Context, _ admindb.UpdateAdminProviderAccountWithAuditParams) (admindb.AdminProviderAccountRow, error) {
+	return admindb.AdminProviderAccountRow{}, nil
 }
 
 func (s *stubBulkStore) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -46,17 +69,14 @@ func (s *stubBulkStore) ListAdminProviderAccounts(_ context.Context, arg admindb
 	}, nil
 }
 
-func (s *stubBulkStore) UpdateAdminProviderAccount(_ context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	if s.updateErr != nil {
-		return admindb.AdminProviderAccountRow{}, s.updateErr
+func (s *stubBulkStore) UpdateAdminProviderAccountWithAudit(_ context.Context, arg admindb.UpdateAdminProviderAccountWithAuditParams) (admindb.AdminProviderAccountRow, error) {
+	if err := s.updateErrors[arg.Update.ID]; err != nil {
+		return admindb.AdminProviderAccountRow{}, err
 	}
-	s.updateCalls = append(s.updateCalls, arg)
-	return admindb.AdminProviderAccountRow{ID: arg.ID}, nil
-}
-
-func (s *stubBulkStore) InsertAdminAuditEvent(_ context.Context, _ admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
+	s.updateCalls = append(s.updateCalls, arg.Update)
+	s.auditCalls = append(s.auditCalls, arg.Audit)
 	s.auditCount++
-	return admindb.InsertAdminAuditEventRow{}, nil
+	return admindb.AdminProviderAccountRow{ID: arg.Update.ID}, nil
 }
 
 func buildBulkTestDeps(store *stubBulkStore, tenantID int64) ProviderAccountBulkDeps {
@@ -116,6 +136,9 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 	if resp.Count != 2 {
 		t.Errorf("count=%d want 2", resp.Count)
 	}
+	if !resp.Complete || resp.FailedCount != 0 || resp.MatchedCount != 2 {
+		t.Fatalf("resp=%+v", resp)
+	}
 	if len(resp.AffectedIDs) != 2 {
 		t.Errorf("len(affected_ids)=%d want 2", len(resp.AffectedIDs))
 	}
@@ -140,7 +163,46 @@ func TestProviderAccountBulk_HappyPath(t *testing.T) {
 
 	// 判别式:恰好 2 条审计事件
 	if store.auditCount != 2 {
-		t.Errorf("InsertAdminAuditEvent call count=%d want 2", store.auditCount)
+		t.Errorf("atomic audit count=%d want 2", store.auditCount)
+	}
+	for _, audit := range store.auditCalls {
+		if audit.Action != "update_provider_account" {
+			t.Fatalf("audit action=%q，必须使用数据库现行白名单 action", audit.Action)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(audit.Payload, &payload); err != nil || payload["source"] != "bulk_by_tag" {
+			t.Fatalf("audit payload=%s err=%v", string(audit.Payload), err)
+		}
+	}
+}
+
+func TestProviderAccountBulk_ItemFailureContinuesAndReturnsDetails(t *testing.T) {
+	const tenantID = int64(1)
+	store := &stubBulkStore{updateErrors: map[int64]error{101: context.DeadlineExceeded}}
+	rec := doProviderAccountBulkPOST(t, buildBulkTestDeps(store, tenantID), map[string]any{
+		"tag": "flaky", "enabled": false,
+	}, tenantID)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp providerAccountBulkResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Complete || resp.MatchedCount != 2 || resp.Count != 1 || resp.FailedCount != 1 {
+		t.Fatalf("resp=%+v", resp)
+	}
+	if len(resp.AffectedIDs) != 1 || resp.AffectedIDs[0] != 202 {
+		t.Fatalf("affected_ids=%v，第一项失败后必须继续处理第二项", resp.AffectedIDs)
+	}
+	if len(resp.Failed) != 1 || resp.Failed[0].ID != 101 || resp.Failed[0].Code != "update_and_audit_failed" {
+		t.Fatalf("failed=%+v", resp.Failed)
+	}
+	if resp.Failed[0].Message != "account update and audit failed" {
+		t.Fatalf("message=%q，不能向客户端泄露底层错误", resp.Failed[0].Message)
+	}
+	if len(store.updateCalls) != 1 || store.updateCalls[0].ID != 202 || store.auditCount != 1 {
+		t.Fatalf("atomic calls=%+v audit=%d", store.updateCalls, store.auditCount)
 	}
 }
 
@@ -202,5 +264,42 @@ func TestProviderAccountBulk_TagFilterPassedThrough(t *testing.T) {
 	// 如果 TagFilter 没有被传递(为空),stub 会返回 0 条结果。
 	if resp.Count != 2 {
 		t.Errorf("count=%d want 2: handler must pass TagFilter='flaky' to ListAdminProviderAccounts", resp.Count)
+	}
+}
+
+func TestListAllProviderAccountsByTag_PaginatesUntilShortPage(t *testing.T) {
+	rows := make([]admindb.AdminProviderAccountRow, 201)
+	for i := range rows {
+		rows[i].ID = int64(i + 1)
+		rows[i].TenantID = 7
+	}
+	store := &pagedBulkStore{rows: rows}
+
+	got, err := listAllProviderAccountsByTag(context.Background(), store, 7, "flaky")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(got) != len(rows) || got[0].ID != 1 || got[len(got)-1].ID != 201 {
+		t.Fatalf("rows=%d first=%d last=%d", len(got), got[0].ID, got[len(got)-1].ID)
+	}
+	if store.listCalls != 2 {
+		t.Fatalf("list calls=%d want 2", store.listCalls)
+	}
+}
+
+func TestListAllProviderAccountsByTag_RejectsOversizedScope(t *testing.T) {
+	rows := make([]admindb.AdminProviderAccountRow, providerAccountBulkMaxMatched+1)
+	for i := range rows {
+		rows[i].ID = int64(i + 1)
+		rows[i].TenantID = 7
+	}
+	store := &pagedBulkStore{rows: rows}
+
+	got, err := listAllProviderAccountsByTag(context.Background(), store, 7, "flaky")
+	if !errors.Is(err, errProviderAccountBulkTooLarge) {
+		t.Fatalf("err=%v want errProviderAccountBulkTooLarge", err)
+	}
+	if got != nil {
+		t.Fatalf("oversized scope must not return a partial result")
 	}
 }

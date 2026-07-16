@@ -59,6 +59,33 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersAccountExpiry(t *testing.T) {
 	}
 }
 
+func TestListEligibleAccountsByPoolGroupSQLHonorsSoftCoolingOverride(t *testing.T) {
+	const predicate = "OR (pa.disable_cooling = true AND pa.health_state IN ('throttled', 'cooldown'))"
+	generatedSQL := strings.Join(strings.Fields(listEligibleAccountsByPoolGroup), " ")
+	if !strings.Contains(generatedSQL, predicate) {
+		t.Fatalf("生成查询缺少软冷却豁免 %q: %s", predicate, generatedSQL)
+	}
+	if strings.Contains(generatedSQL, "pa.health_state IN ('throttled', 'revoked', 'cooldown'))") &&
+		strings.Contains(generatedSQL, "pa.disable_cooling = true AND pa.health_state IN ('throttled', 'revoked', 'cooldown')") {
+		t.Fatalf("disable_cooling 不得豁免 revoked: %s", generatedSQL)
+	}
+
+	raw, err := os.ReadFile("../../../sql/queries/pool_accounts.sql")
+	if err != nil {
+		t.Fatalf("读取 pool_accounts.sql: %v", err)
+	}
+	const marker = "-- name: ListEligibleAccountsByPoolGroup :many"
+	_, queryTail, found := strings.Cut(string(raw), marker)
+	if !found {
+		t.Fatalf("pool_accounts.sql 缺少 ListEligibleAccountsByPoolGroup 查询")
+	}
+	queryBody, _, _ := strings.Cut(queryTail, "\n-- name:")
+	sourceSQL := strings.Join(strings.Fields(queryBody), " ")
+	if !strings.Contains(sourceSQL, predicate) {
+		t.Fatalf("源查询缺少软冷却豁免 %q: %s", predicate, sourceSQL)
+	}
+}
+
 func TestBillingSettingsSQLTenantScoped(t *testing.T) {
 	for name, sqlText := range map[string]string{
 		"get":        getBillingSetting,

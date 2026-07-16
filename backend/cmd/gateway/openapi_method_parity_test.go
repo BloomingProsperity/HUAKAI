@@ -2,7 +2,9 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/openapicheck"
@@ -48,6 +50,45 @@ func TestOpenAPI_DLQListAndProviderAccountDeleteMethodParity(t *testing.T) {
 	}
 	if !hasOperation(specOps, http.MethodDelete, paSpecPath) {
 		t.Fatalf("OpenAPI 必须声明 DELETE %s(软删已实现,缺契约前端无法 codegen)", paSpecPath)
+	}
+}
+
+func TestOpenAPI_ProviderAccountOperationsAndBulkResultContract(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
+
+	const implPath = "/v1/admin/provider-accounts/{id}/operations"
+	const specPath = "/admin/v1/provider-accounts/{id}/operations"
+	if !hasOperation(implOps, http.MethodGet, implPath) {
+		t.Fatalf("runtime 缺 GET %s", implPath)
+	}
+	if !hasOperation(specOps, http.MethodGet, specPath) {
+		t.Fatalf("OpenAPI 必须声明 GET %s", specPath)
+	}
+
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	source := string(raw)
+	operationsBlock := yamlSchemaBlock(source, "ProviderAccountOperations:")
+	for _, property := range []string{"account_id", "tenant_id", "summary", "blockers", "signals", "actions", "warnings", "credentials"} {
+		if !strings.Contains(operationsBlock, "\n        "+property+":") {
+			t.Errorf("ProviderAccountOperations 缺字段 %s", property)
+		}
+	}
+	bulkBlock := yamlSchemaBlock(source, "ProviderAccountBulkByTagResponse:")
+	for _, property := range []string{"affected_ids", "failed", "count", "failed_count", "matched_count", "complete"} {
+		if !strings.Contains(bulkBlock, "\n        "+property+":") {
+			t.Errorf("ProviderAccountBulkByTagResponse 缺字段 %s", property)
+		}
 	}
 }
 

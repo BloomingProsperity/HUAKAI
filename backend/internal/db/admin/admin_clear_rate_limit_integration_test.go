@@ -127,6 +127,70 @@ func TestClearProviderAccountRateLimit_ClearsEveryCascadeColumn(t *testing.T) {
 	}
 }
 
+func TestUpdateAdminProviderAccountWithAudit_RollsBackWhenAuditRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openAdminAuditIntegrationPool(t, ctx)
+	q := New(pool)
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID, accountID := seedClearRateLimitAccount(t, ctx, pool, suffix)
+	t.Cleanup(func() {
+		cleanupAdminProviderAccountHealthGraph(t, context.Background(), pool, tenantID)
+	})
+
+	disabled := false
+	actor := "admin:bulk-atomic"
+	badAction := "provider_account.bulk_update_by_tag"
+	_, err := q.UpdateAdminProviderAccountWithAudit(ctx, UpdateAdminProviderAccountWithAuditParams{
+		Update: UpdateAdminProviderAccountParams{
+			ID: accountID, TenantID: tenantID, ActorID: &actor, Enabled: &disabled,
+		},
+		Audit: InsertAdminAuditEventParams{
+			TenantID: &tenantID, ActorID: actor, ActorRole: "tenant_operator",
+			Action: badAction, TargetType: "provider_account", TargetID: &accountID,
+			Payload: []byte(`{"source":"bulk_by_tag"}`),
+		},
+	})
+	if err == nil {
+		t.Fatalf("数据库审计 CHECK 应拒绝 action=%q", badAction)
+	}
+
+	var enabled bool
+	if err := pool.QueryRow(ctx,
+		`SELECT enabled FROM provider_accounts WHERE tenant_id=$1 AND id=$2`,
+		tenantID, accountID,
+	).Scan(&enabled); err != nil {
+		t.Fatalf("query enabled after rollback: %v", err)
+	}
+	if !enabled {
+		t.Fatalf("审计失败后账号更新未回滚")
+	}
+
+	_, err = q.UpdateAdminProviderAccountWithAudit(ctx, UpdateAdminProviderAccountWithAuditParams{
+		Update: UpdateAdminProviderAccountParams{
+			ID: accountID, TenantID: tenantID, ActorID: &actor, Enabled: &disabled,
+		},
+		Audit: InsertAdminAuditEventParams{
+			TenantID: &tenantID, ActorID: actor, ActorRole: "tenant_operator",
+			Action: "update_provider_account", TargetType: "provider_account", TargetID: &accountID,
+			Payload: []byte(`{"source":"bulk_by_tag"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("valid atomic update: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT enabled FROM provider_accounts WHERE tenant_id=$1 AND id=$2`,
+		tenantID, accountID,
+	).Scan(&enabled); err != nil {
+		t.Fatalf("query enabled after commit: %v", err)
+	}
+	if enabled {
+		t.Fatalf("合法 update+audit 应共同提交")
+	}
+}
+
 // TestAdminAuditClearRateLimitActionWhitelisted 证明迁移 0141 确实把两个运维
 // 审计 action 加进了白名单,同时保持 CHECK 仍然生效。两个被允许的 insert 必须
 // 成功;一个伪造 action 仍必须在同一约束上触发 CHECK 23514。伪造子断言是
