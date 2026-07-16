@@ -254,7 +254,7 @@ func newTrustChainE2E(t *testing.T) *trustChainE2EEnv {
 	}, provider.AccountInfo{
 		AccountID:   trustE2EAccountID,
 		Platform:    trustE2EProvider,
-		AccountType: "apikey",
+		AccountType: "api_key",
 	}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}

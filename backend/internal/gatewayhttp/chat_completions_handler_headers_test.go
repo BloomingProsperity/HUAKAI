@@ -11,6 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
@@ -78,14 +79,28 @@ func TestChatCompletionResponseHeaderIncludesUpstreamProvider(t *testing.T) {
 		ProtocolFamily:   "anthropic_messages",
 		PoolCandidates:   []int64{42},
 	}}
+	vault := provider.NewStaticVault()
+	if err := vault.Set(1, provider.Credential{
+		Type:  provider.CredentialTypeAPIKey,
+		Value: "sk-ant-test",
+	}, provider.AccountInfo{
+		AccountID:           1,
+		Platform:            "anthropic",
+		AccountType:         "api_key",
+		AccountCredentialID: 9002,
+		CredentialVersion:   1,
+	}); err != nil {
+		t.Fatalf("vault.Set: %v", err)
+	}
+	d.CredentialVault = vault
 	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
 
 	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"claude-opus-4","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get(trust.HeaderUpstreamProvider); got != "openai" {
-		t.Fatalf("%s=%q want openai from selected provider account", trust.HeaderUpstreamProvider, got)
+	if got := rec.Header().Get(trust.HeaderUpstreamProvider); got != "anthropic" {
+		t.Fatalf("%s=%q want anthropic from selected provider account", trust.HeaderUpstreamProvider, got)
 	}
 	if got := rec.Header().Get(trust.HeaderUpstreamModel); got != "claude-opus-4" {
 		t.Fatalf("%s=%q want claude-opus-4", trust.HeaderUpstreamModel, got)

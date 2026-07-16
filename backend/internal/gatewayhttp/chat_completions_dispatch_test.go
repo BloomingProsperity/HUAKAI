@@ -345,8 +345,8 @@ func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recor
 		Value: "codex-session-test",
 	}, provider.AccountInfo{
 		AccountID:           codexForcedStreamingAccountID,
-		Platform:            "openai_codex",
-		AccountType:         "session",
+		Platform:            "openai",
+		AccountType:         "codex_cli_oauth",
 		AccountCredentialID: 9201,
 		CredentialVersion:   1,
 	}); err != nil {
@@ -1929,7 +1929,7 @@ func anthropicClientAdapterDeps(t *testing.T) ChatHandlerDeps {
 		PoolCandidates:   []int64{42},
 	}}
 	vault := provider.NewStaticVault()
-	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "apikey", AccountCredentialID: 9002, CredentialVersion: 1}); err != nil {
+	if err := vault.Set(1, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-ant-test"}, provider.AccountInfo{AccountID: 1, Platform: "anthropic", AccountType: "api_key", AccountCredentialID: 9002, CredentialVersion: 1}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}
 	d.CredentialVault = vault
