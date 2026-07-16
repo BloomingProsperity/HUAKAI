@@ -12,8 +12,33 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
+
+// panicProxyQuerier 只用于证明非法 HTTP 输入会被真实 service 在数据库前拒绝。
+// 若权威校验被删除，测试会触发 panic 并立即转红，而不会伪装成成功写入。
+type panicProxyQuerier struct{}
+
+func (panicProxyQuerier) CreateProxy(context.Context, admindb.CreateProxyParams) (admindb.CreateProxyRow, error) {
+	panic("非法 group_id 触达 CreateProxy")
+}
+func (panicProxyQuerier) UpdateProxy(context.Context, admindb.UpdateProxyParams) (admindb.UpdateProxyRow, error) {
+	panic("非法 group_id 触达 UpdateProxy")
+}
+func (panicProxyQuerier) GetProxy(context.Context, admindb.GetProxyParams) (admindb.GetProxyRow, error) {
+	panic("测试不应读取代理")
+}
+func (panicProxyQuerier) ListProxiesByTenant(context.Context, int64) ([]admindb.ListProxiesByTenantRow, error) {
+	panic("测试不应列代理")
+}
+func (panicProxyQuerier) SetProxyStatus(context.Context, admindb.SetProxyStatusParams) error {
+	panic("测试不应改状态")
+}
+func (panicProxyQuerier) SoftDeleteProxy(context.Context, admindb.SoftDeleteProxyParams) error {
+	panic("测试不应删除代理")
+}
 
 // proxyServiceStub 记录每一次调用并返回预设值。它刻意构造不带任何凭据字段的
 // Proxy 值(该类型本就没有),以便测试能证明:即使 create/update 输入携带了
@@ -104,11 +129,11 @@ func (s authStub) Resolve(context.Context, *http.Request) (admin.AdminIdentity, 
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
+	return admintest.TenantOperator(1, tenantID)
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
+	return admintest.Platform(99)
 }
 
 func invoke(t *testing.T, d Deps, method, target, body string) *httptest.ResponseRecorder {
@@ -140,10 +165,11 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 // 删掉某个被投影的字段 → body 断言转红。
 func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 	user := "proxy-user"
+	groupID := "group-a"
 	checked := time.Date(2026, 6, 10, 8, 0, 0, 0, time.UTC)
 	svc := &proxyServiceStub{listRet: []proxyadmin.Proxy{{
 		ID: 11, TenantID: 7, Name: "residential-a", Protocol: "http",
-		Host: "proxy.example.com", Port: 3128, AuthUsername: &user, Status: "active",
+		Host: "proxy.example.com", Port: 3128, AuthUsername: &user, GroupID: &groupID, Status: "active",
 		LastCheckAt: &checked, CreatedAt: checked, UpdatedAt: checked,
 	}}}
 	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodGet, "/admin/v1/proxies", "")
@@ -159,6 +185,7 @@ func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 			Host         string  `json:"host"`
 			Port         int32   `json:"port"`
 			AuthUsername *string `json:"auth_username"`
+			GroupID      *string `json:"group_id"`
 			Status       string  `json:"status"`
 			LastCheckAt  *string `json:"last_check_at"`
 		} `json:"items"`
@@ -175,12 +202,15 @@ func TestListProjectsNonSecretFieldsAndScopesTenant(t *testing.T) {
 	if it.LastCheckAt == nil {
 		t.Fatalf("list must project last_check_at")
 	}
+	if it.GroupID == nil || *it.GroupID != groupID {
+		t.Fatalf("list must project group_id=%q; got %v", groupID, it.GroupID)
+	}
 }
 
 // TestResponseNeverContainsAuthSecret 是泄露绊线。create 输入携带明文 auth_secret;
 // 桩回显一个 Proxy(它在结构上没有凭据字段)。响应 JSON 既不能含键 "auth_secret",
 // 也不能含该凭据的值。变异:给 proxyResponse 加一个 auth_secret 字段
-//(或回显输入的凭据)→ 子串断言转红。
+// (或回显输入的凭据)→ 子串断言转红。
 func TestResponseNeverContainsAuthSecret(t *testing.T) {
 	const secret = "PLAINTEXT-PROXY-SECRET-9c1f"
 	user := "u"
@@ -246,7 +276,7 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 		wantStatus int
 	}{
 		{"unauthorized -> 401", authStub{err: admin.ErrAdminUnauthorized}, http.StatusUnauthorized},
-		{"non-admin role -> 403", authStub{ident: admin.AdminIdentity{TokenID: 3, Role: "user", ScopeTenantID: 7}}, http.StatusForbidden},
+		{"non-admin role -> 403", authStub{ident: admin.AdminIdentity{TokenID: 3, Role: "user"}}, http.StatusForbidden},
 	}
 	endpoints := []struct{ method, target, body string }{
 		{http.MethodGet, "/admin/v1/proxies", ""},
@@ -273,7 +303,7 @@ func TestAuthGateFiresBeforeService(t *testing.T) {
 //   - platform_admin 未带 ?tenant_id -> 400(必须指明租户),不触达 service;
 //   - tenant_operator 指明了不同的 ?tenant_id -> 403,不触达 service。
 //
-// 变异:删掉 CanIssueForTenant 校验 → 跨租户用例以 tenant 8 抵达 service → 转红。
+// 变异:删掉 CanActOnTenant 校验 → 跨租户用例以 tenant 8 抵达 service → 转红。
 func TestTenantScoping(t *testing.T) {
 	t.Run("tenant_operator uses own scope", func(t *testing.T) {
 		svc := &proxyServiceStub{}
@@ -392,5 +422,73 @@ func TestCreateForwardsTenantFromScope(t *testing.T) {
 	assertStatus(t, rec, http.StatusCreated)
 	if svc.createIn.TenantID != 7 {
 		t.Fatalf("create tenant=%d want 7 (from gate scope)", svc.createIn.TenantID)
+	}
+}
+
+// TestProxyGroupDTOForwardsAndResponds 钉住 create/update/get 的 group_id 传输契约；
+// list 路径由 TestListProjectsNonSecretFieldsAndScopesTenant 同时覆盖。变异:删请求透传、
+// 响应投影或 json 键稳定性，精确值/键存在断言会转红。
+func TestProxyGroupDTOForwardsAndResponds(t *testing.T) {
+	groupID := "us-residential"
+	base := proxyadmin.Proxy{ID: 5, TenantID: 7, Name: "p", Protocol: "http", Host: "h", Port: 3128, Status: "active"}
+
+	t.Run("create 透传并回显组", func(t *testing.T) {
+		ret := base
+		ret.GroupID = &groupID
+		svc := &proxyServiceStub{createRet: ret}
+		rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPost,
+			"/admin/v1/proxies", `{"name":"p","protocol":"http","host":"h","port":3128,"group_id":"us-residential"}`)
+		assertStatus(t, rec, http.StatusCreated)
+		if svc.createIn.GroupID == nil || *svc.createIn.GroupID != groupID {
+			t.Fatalf("create group_id=%v want %q", svc.createIn.GroupID, groupID)
+		}
+		var body map[string]any
+		decodeBody(t, rec, &body)
+		if body["group_id"] != groupID {
+			t.Fatalf("create response group_id=%v want %q", body["group_id"], groupID)
+		}
+	})
+
+	t.Run("update 显式 null 清组并稳定回显 null", func(t *testing.T) {
+		svc := &proxyServiceStub{updateRet: base}
+		rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPatch,
+			"/admin/v1/proxies/5", `{"name":"p","protocol":"http","host":"h","port":3128,"group_id":null}`)
+		assertStatus(t, rec, http.StatusOK)
+		if svc.updateIn.GroupID != nil {
+			t.Fatalf("update clear group_id=%v want nil", svc.updateIn.GroupID)
+		}
+		var body map[string]any
+		decodeBody(t, rec, &body)
+		value, exists := body["group_id"]
+		if !exists || value != nil {
+			t.Fatalf("update response must contain group_id:null; exists=%v value=%v", exists, value)
+		}
+	})
+
+	t.Run("get 回显组", func(t *testing.T) {
+		ret := base
+		ret.GroupID = &groupID
+		svc := &proxyServiceStub{getRet: ret}
+		rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodGet,
+			"/admin/v1/proxies/5", "")
+		assertStatus(t, rec, http.StatusOK)
+		var body map[string]any
+		decodeBody(t, rec, &body)
+		if body["group_id"] != groupID {
+			t.Fatalf("get response group_id=%v want %q", body["group_id"], groupID)
+		}
+	})
+}
+
+// TestProxyGroupHTTPValidationUsesRealService 通过真实 proxyadmin.Service 验证非法
+// 字符与 65 字符均映射 400。变异:删除 service 校验后请求会触达 panic querier，测试转红。
+func TestProxyGroupHTTPValidationUsesRealService(t *testing.T) {
+	for _, groupID := range []string{"bad group!", strings.Repeat("a", 65)} {
+		t.Run(groupID, func(t *testing.T) {
+			svc := proxyadmin.New(panicProxyQuerier{}, nil)
+			rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPost,
+				"/admin/v1/proxies", `{"name":"p","protocol":"http","host":"h","port":3128,"group_id":"`+groupID+`"}`)
+			assertStatus(t, rec, http.StatusBadRequest)
+		})
 	}
 }

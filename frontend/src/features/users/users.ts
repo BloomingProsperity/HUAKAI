@@ -1,4 +1,7 @@
-import type { CreateUserRequest } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
+import type { TwoFAAdoptionStats } from './actions'
+import { formatAdoptionRate } from './actions'
+import type { AdminUser, CreateUserRequest } from './types'
 
 /*
  * 用户管理的纯逻辑(可单测)。创建请求构造 + 角色/状态枚举与展示。
@@ -63,4 +66,111 @@ export function buildCreateUser(form: CreateUserForm): CreateUserRequest | { err
 /** 启停目标:active → 停用(disabled);其余 → 启用(active)。 */
 export function toggleStatusTarget(status: string): string {
   return status === 'active' ? 'disabled' : 'active'
+}
+
+export const USERS_PAGE_LIMIT = 100
+export const USERS_PAGE_LIMIT_OPTIONS = [25, 50, 100] as const
+
+export interface UserStatView {
+  label: string
+  value: string
+  hint: string
+}
+
+/** 统计端点到两张统计卡的唯一映射；缺数时明确不可用，不把失败伪装成零。 */
+export function mapUserStats(stats: TwoFAAdoptionStats | null): UserStatView[] {
+  if (!stats) {
+    return [
+      { label: '总用户', value: '—', hint: '全租户统计暂不可用' },
+      { label: '2FA 普及率', value: '—', hint: '全租户统计暂不可用' },
+    ]
+  }
+  return [
+    {
+      label: '总用户',
+      value: `${stats.total_users.toLocaleString('zh-CN')} 人`,
+      hint: '全租户用户，不受当前分页影响',
+    },
+    {
+      label: '2FA 普及率',
+      value: formatAdoptionRate(stats),
+      hint: `${stats.enabled_users.toLocaleString('zh-CN')} 人已开启 / 共 ${stats.total_users.toLocaleString('zh-CN')} 人`,
+    },
+  ]
+}
+
+export interface UserTableRow {
+  id: number
+  email: string
+  role: string
+  status: string
+  statusText: string
+  statusTone: BadgeTone
+  userGroup: string
+  remark: string
+  balance: string
+  createdAt: string
+}
+
+/** 后端列表项到表格行的纯映射；空组与空备注都给可辨认占位。 */
+export function mapUserRows(users: AdminUser[]): UserTableRow[] {
+  return users.map((user) => {
+    const date = new Date(user.created_at)
+    const statusTones: Record<string, BadgeTone> = { active: 'ok', disabled: 'muted', locked: 'danger' }
+    return {
+      id: user.id,
+      email: user.email,
+      role: roleLabel(user.role),
+      status: user.status,
+      statusText: statusLabel(user.status),
+      statusTone: statusTones[user.status] ?? 'muted',
+      userGroup: user.user_group.trim() || '未分组',
+      remark: user.remark.trim() || '无备注',
+      balance: `${user.balance} USD`,
+      createdAt: Number.isNaN(date.getTime())
+        ? '—'
+        : date.toLocaleString('zh-CN', { hour12: false }),
+    }
+  })
+}
+
+export interface UserPaginationView {
+  page: number
+  start: number
+  end: number
+  canPrevious: boolean
+  canNext: boolean
+  scopeText: string
+}
+
+/** offset 分页展示映射；搜索无筛选总数时只用满页信号，不冒充精确总数。 */
+export function mapUserPagination(input: {
+  offset: number
+  limit: number
+  returnedCount: number
+  totalUsers: number | null
+  searching: boolean
+}): UserPaginationView {
+  const { offset, limit, returnedCount, totalUsers, searching } = input
+  const safeLimit = limit > 0 ? limit : USERS_PAGE_LIMIT
+  const start = returnedCount > 0 ? offset + 1 : 0
+  const end = returnedCount > 0 ? offset + returnedCount : 0
+  const hasExactPageTotal = !searching && totalUsers !== null
+  const canNext = hasExactPageTotal
+    ? end < totalUsers
+    : returnedCount >= safeLimit
+  const totalContext = totalUsers === null
+    ? '全体总数暂不可用'
+    : `全体共 ${totalUsers.toLocaleString('zh-CN')} 人`
+
+  return {
+    page: Math.floor(offset / safeLimit) + 1,
+    start,
+    end,
+    canPrevious: offset > 0,
+    canNext,
+    scopeText: searching
+      ? `当前搜索第 ${start}–${end} 条 · ${totalContext}`
+      : `第 ${start}–${end} 条 · ${totalContext}`,
+  }
 }

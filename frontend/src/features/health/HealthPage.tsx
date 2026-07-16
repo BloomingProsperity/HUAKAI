@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { getSystemHealth } from './api'
-import { componentLabel, fmtBytes, fmtInt, fmtUptime, statusLabel, statusTone, type Tone } from './health'
+import { mapComponentStats, mapRuntimeStats, statusLabel, statusTone, type Tone } from './health'
 import type { HealthResponse } from './types'
 
 /*
@@ -39,6 +41,8 @@ export function HealthPage() {
   }, [load])
 
   const rt = data?.runtime
+  const componentStats = mapComponentStats(data?.components ?? [])
+  const runtimeStats = rt ? mapRuntimeStats(rt) : []
 
   return (
     <div className="hk-page">
@@ -62,20 +66,14 @@ export function HealthPage() {
       )}
 
       {loading && !data ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载系统健康" hint="请稍候。" />
       ) : data ? (
         <>
           <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
             <h2 style={sectionTitle}>子系统组件</h2>
             <div style={cardGrid}>
-              {data.components.map((c) => (
-                <div key={c.name} className="hk-metric">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--hk-space-2)' }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{componentLabel(c.name)}</span>
-                    <StatusPill status={c.status} />
-                  </div>
-                  <span style={{ fontSize: 12, color: 'var(--hk-ink-500)', minHeight: 16, display: 'block' }}>{c.detail || '—'}</span>
-                </div>
+              {componentStats.map((stat) => (
+                <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} tone={stat.tone} />
               ))}
             </div>
           </section>
@@ -84,21 +82,19 @@ export function HealthPage() {
             <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
               <h2 style={sectionTitle}>网关运行时</h2>
               <div style={cardGrid}>
-                <Stat label="运行时长" value={fmtUptime(rt.uptime_seconds)} />
-                <Stat label="Go 版本" value={rt.go_version} mono />
-                <Stat label="协程数" value={fmtInt(rt.num_goroutine)} />
-                <Stat label="GC 次数" value={fmtInt(rt.num_gc)} />
-                <Stat label="堆已分配" value={fmtBytes(rt.heap_alloc_bytes)} />
-                <Stat label="堆系统占用" value={fmtBytes(rt.heap_sys_bytes)} />
-                {rt.binary_size_bytes !== undefined && rt.binary_size_bytes > 0 && (
-                  <Stat label="二进制大小" value={fmtBytes(rt.binary_size_bytes)} />
-                )}
+                {runtimeStats.map((stat) => (
+                  <StatCard
+                    key={stat.label}
+                    label={stat.label}
+                    value={stat.value}
+                  />
+                ))}
               </div>
             </section>
           )}
         </>
       ) : (
-        !error && <Empty>暂无数据。</Empty>
+        !error && <EmptyState title="暂无健康数据" hint="刷新后仍无数据时，请检查健康聚合端点。" />
       )}
     </div>
   )
@@ -125,19 +121,6 @@ function StatusPill({ status, large }: { status: HealthResponse['status']; large
       {statusLabel(status)}
     </span>
   )
-}
-
-function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="hk-metric">
-      <div className="hk-metric__label">{label}</div>
-      <div className={mono ? 'hk-metric__v hk-mono' : 'hk-metric__v'} style={{ wordBreak: 'break-all' }}>{value}</div>
-    </div>
-  )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
 }
 
 function toneBox(tone: Tone): { color: string; background: string; border: string } {

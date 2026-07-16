@@ -52,7 +52,7 @@ func parseCatalogTenant(w http.ResponseWriter, r *http.Request, ident admin.Admi
 			writeError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query param required")
 			return 0, false
 		}
-		tenantID = ident.ScopeTenantID
+		tenantID = ident.ScopeTenantID()
 	} else {
 		v, err := strconv.ParseInt(tenantParam, 10, 64)
 		if err != nil || v <= 0 {
@@ -65,7 +65,7 @@ func parseCatalogTenant(w http.ResponseWriter, r *http.Request, ident admin.Admi
 		writeAdminError(w, admin.ErrAdminForbidden)
 		return 0, false
 	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	if err := ident.CanActOnTenant(tenantID); err != nil {
 		writeAdminError(w, err)
 		return 0, false
 	}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { keyStatusLabel, mapAuditVerification, mapTrustVerification, parseTrustProofJSON } from './trust'
+import { keyStatusLabel, mapAuditKeyTableRows, mapAuditVerification, mapTrustVerification, parseTrustProofJSON } from './trust'
 import type { AuditVerifyResponse, TrustVerifyResponse } from './types'
 
 const ROOT_A = 'a'.repeat(64)
@@ -96,5 +96,28 @@ describe('keyStatusLabel', () => {
   it('轮换态不误写成吊销态', () => {
     expect(keyStatusLabel('rotated')).toBe('已轮换')
     expect(keyStatusLabel('revoked')).toBe('已吊销')
+  })
+})
+
+describe('mapAuditKeyTableRows', () => {
+  it('公开清单状态覆盖历史状态，吊销态必须映射为红色且时间不串列', () => {
+    const rows = mapAuditKeyTableRows([{
+      algorithm: 'Ed25519',
+      fingerprint: 'fp-revoked',
+      pubkey_fingerprint: 'fp-revoked',
+      public_key_base64: 'key',
+      key_status: 'active',
+      effective_from: '2026-01-01T00:00:00Z',
+      effective_to: '2026-06-01T00:00:00Z',
+    }], { 'fp-revoked': 'revoked' })
+    expect(rows[0]).toMatchObject({
+      id: 'fp-revoked',
+      fingerprint: 'fp-revoked',
+      algorithm: 'Ed25519',
+      status: '已吊销',
+      tone: 'crit',
+    })
+    expect(rows[0].effectiveFrom).not.toBe('—')
+    expect(rows[0].effectiveTo).not.toBe(rows[0].effectiveFrom)
   })
 })

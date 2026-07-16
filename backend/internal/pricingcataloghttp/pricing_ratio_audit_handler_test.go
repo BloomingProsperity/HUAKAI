@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 )
 
@@ -15,7 +15,7 @@ import (
 func TestPricingRatioAuditVerify_OKWhenChainIntact(t *testing.T) {
 	store := &fakeRatioStore{verifyResult: pricingcatalog.VerifyChainResult{OK: true}}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
 		Store: store,
 	}, http.MethodGet, "/audit/verify?tenant_id=7", "")
 
@@ -45,7 +45,7 @@ func TestPricingRatioAuditVerify_ReportsTamperedRow(t *testing.T) {
 		Reason: "entry_hash mismatch",
 	}}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
 		Store: store,
 	}, http.MethodGet, "/audit/verify?tenant_id=7", "")
 
@@ -69,7 +69,7 @@ func TestPricingRatioAuditVerify_ReportsTamperedRow(t *testing.T) {
 func TestPricingRatioAuditVerify_NonAdminIs403(t *testing.T) {
 	store := &fakeRatioStore{verifyResult: pricingcatalog.VerifyChainResult{OK: true}}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  fakeAdminAuth{ident: admintest.TenantOperator(1, 7)},
 		Store: store,
 	}, http.MethodGet, "/audit/verify?tenant_id=7", "")
 
@@ -91,7 +91,7 @@ func TestPricingRatioAuditVerify_ResponseMasksSecrets(t *testing.T) {
 		Reason: "signature mismatch",
 	}}
 	rec := doPricingRatioRequest(t, AdminPricingRatioDeps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  fakeAdminAuth{ident: admintest.Platform(1)},
 		Store: store,
 	}, http.MethodGet, "/audit/verify?tenant_id=7", "")
 

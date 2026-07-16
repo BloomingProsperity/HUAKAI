@@ -26,6 +26,7 @@ import (
 type UserKeyService interface {
 	Issue(ctx context.Context, req userkey.IssueRequest) (userkey.IssueResult, error)
 	List(ctx context.Context, req userkey.ListRequest) ([]userkey.KeyDescriptor, error)
+	Count(ctx context.Context, tenantID, userID int64) (int, error)
 	Get(ctx context.Context, tenantID, userID, apiKeyID int64) (userkey.KeyDescriptor, error)
 	Revoke(ctx context.Context, req userkey.RevokeRequest) (userkey.RevokeResult, error)
 	// KEY-026:部分更新
@@ -163,7 +164,12 @@ func newListHandler(d Deps) http.HandlerFunc {
 			writeUserKeyError(w, err)
 			return
 		}
-		out := listResponse{APIKeys: make([]apiKeyView, 0, len(rows)), Count: len(rows)}
+		total, err := d.Service.Count(r.Context(), ident.TenantID, ident.UserID)
+		if err != nil {
+			writeUserKeyError(w, err)
+			return
+		}
+		out := listResponse{APIKeys: make([]apiKeyView, 0, len(rows)), Count: total}
 		for _, row := range rows {
 			out.APIKeys = append(out.APIKeys, descriptorToView(row))
 		}
@@ -441,7 +447,7 @@ type batchRevokeRequest struct {
 
 // newBatchRevokeHandler 在一个请求中批量吊销 caller 自己的多个 key。
 // 每个 id 都走同一个幂等、owner 作用域的 Service.Revoke;不属于自己或不存在的 id
-//(ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
+// (ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
 // KEY-028。
 func newBatchRevokeHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

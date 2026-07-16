@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 )
@@ -67,7 +68,7 @@ func newRuntimeLogsTestRouter(d AdminRuntimeLogsDeps) http.Handler {
 // 角色闸门:运行日志是平台级数据,tenant_operator 必须 403(变异:放行 → 红)。
 func TestRuntimeLogsPlatformAdminOnly(t *testing.T) {
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.TenantOperator(1, 7)},
 		Store: &runtimeLogStoreStub{},
 		Sink:  logsink.New(),
 		Audit: &runtimeLogsAuditStub{},
@@ -92,7 +93,7 @@ func TestRuntimeLogsListPassesFiltersAndCursor(t *testing.T) {
 		{ID: 40, Level: "warn", Component: "billing", Message: "careful", Attrs: json.RawMessage(`{}`)},
 	}}
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.Platform(1)},
 		Store: store,
 		Sink:  logsink.New(),
 	})
@@ -122,7 +123,7 @@ func TestRuntimeLogsCleanup(t *testing.T) {
 	store := &runtimeLogStoreStub{deleted: 7}
 	audit := &runtimeLogsAuditStub{}
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.Platform(1)},
 		Store: store,
 		Sink:  logsink.New(),
 		Audit: audit,
@@ -147,7 +148,7 @@ func TestRuntimeLogsCleanup(t *testing.T) {
 func TestRuntimeLogsCleanupAuditFirst(t *testing.T) {
 	store := &runtimeLogStoreStub{deleted: 7}
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.Platform(1)},
 		Store: store,
 		Sink:  logsink.New(),
 		Audit: &runtimeLogsAuditStub{err: errors.New("audit backend down")},
@@ -161,7 +162,7 @@ func TestRuntimeLogsCleanupAuditFirst(t *testing.T) {
 	}
 
 	noAudit := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.Platform(1)},
 		Store: store,
 		Sink:  logsink.New(),
 	})
@@ -176,7 +177,7 @@ func TestRuntimeLogsHealth(t *testing.T) {
 	sink := logsink.New(logsink.WithQueueSize(4))
 	sink.Enqueue(logsink.Entry{Level: "warn", Message: "queued"})
 	handler := newRuntimeLogsTestRouter(AdminRuntimeLogsDeps{
-		Auth:  runtimeLogsAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  runtimeLogsAuthStub{ident: admintest.Platform(1)},
 		Store: &runtimeLogStoreStub{},
 		Sink:  sink,
 	})

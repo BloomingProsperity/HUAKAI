@@ -250,6 +250,7 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 	}
 	failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
+	failure.FallbackSignal = bindingFallbackSignalFromUpstream(dispatchRes.StatusCode, errBody, classification, decision)
 	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }
 

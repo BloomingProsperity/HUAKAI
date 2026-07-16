@@ -100,6 +100,7 @@ type Querier interface {
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
+	GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error)
 	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
@@ -121,6 +122,7 @@ type Querier interface {
 	ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error)
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
+	ListActiveTenantScope(ctx context.Context, rootTenantID int64) ([]ListActiveTenantScopeRow, error)
 	ListAdminChannelsByTenant(ctx context.Context, arg ListAdminChannelsByTenantParams) ([]ListAdminChannelsByTenantRow, error)
 	// Metadata-only listing of admin tokens for the operator console. NEVER
 	// selects key_hash — only key_prefix (insufficient on its own to
@@ -157,6 +159,7 @@ type Querier interface {
 	// resolve, but tenant_operator tokens whose tenant is disabled/deleted
 	// get filtered at the SQL layer — no app-side check required.
 	LookupAdminTokenByPrefix(ctx context.Context, keyPrefix string) ([]LookupAdminTokenByPrefixRow, error)
+	ResolveActiveSessionAdmin(ctx context.Context, arg ResolveActiveSessionAdminParams) (ResolveActiveSessionAdminRow, error)
 	// Soft-revoke an admin token. Tenant-bound revocation isn't enforced here
 	// because admin_tokens has no tenant ownership for platform_admin rows;
 	// the handler-side RBAC check decides whether the caller can revoke.
@@ -177,6 +180,7 @@ type Querier interface {
 	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
 	// 由异步 eventbus account_health_probe handler 调用,盖 last_probe_at 戳点亮健康面板。
 	TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error
+	UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)

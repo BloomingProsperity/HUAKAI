@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { deleteQuotaPolicy, listQuotaPolicies } from './api'
 import { QuotaPolicyForm } from './QuotaPolicyForm'
@@ -7,13 +9,11 @@ import {
   METRICS,
   SCOPE_KINDS,
   emptyPolicyForm,
-  formatDecimal,
+  mapQuotaPolicyRows,
   metricLabel,
-  modeLabel,
-  modeTone,
   policyToForm,
   scopeKindLabel,
-  windowKindLabel,
+  type QuotaPolicyTableRow,
 } from './quotapolicies'
 import { EMPTY_FILTERS, type PolicyFilters, type PolicyForm, type QuotaPolicy } from './types'
 
@@ -70,7 +70,7 @@ export function QuotaPoliciesPage() {
       </form>
 
       {!loaded ? (
-        <Empty>点击「加载」按当前租户作用域列出配额策略。</Empty>
+        <EmptyState title="尚未加载配额策略" hint="点击「加载」按当前租户作用域列出策略。" />
       ) : (
         <PolicyList tenantId={tenantId} />
       )}
@@ -90,6 +90,7 @@ function PolicyList({ tenantId }: { tenantId: number }) {
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_FILTERS)
   // 编辑/新建表单态:open=是否展示;existing=编辑目标(null=新建);initial=表单初值。
   const [editor, setEditor] = useState<{ existing: QuotaPolicy | null; initial: PolicyForm } | null>(null)
+  const tableRows = mapQuotaPolicyRows(rows)
 
   const fetchPage = useCallback(
     async (off: number, append: boolean, signal?: AbortSignal) => {
@@ -209,53 +210,20 @@ function PolicyList({ tenantId }: { tenantId: number }) {
       {notice && <Banner kind="ok">{notice}</Banner>}
 
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载配额策略" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>当前作用域暂无配额策略。</Empty>
+        <EmptyState title="当前作用域暂无配额策略" hint="可点击「新建策略」添加限流规则。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['ID', '作用域', '作用域 ID', '指标', '窗口', '上限', '突发', '模式', '优先级', '状态', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p) => (
-                <tr key={p.id}>
-                  <td className="hk-mono">#{p.id}</td>
-                  <td>{scopeKindLabel(p.scope_kind)}</td>
-                  <td className="hk-mono">{p.scope_id}</td>
-                  <td>{metricLabel(p.metric)}</td>
-                  <td>
-                    {windowKindLabel(p.window_kind)}
-                    {p.window_kind === 'fixed' && p.window_seconds > 0 ? ` · ${p.window_seconds}s` : ''}
-                  </td>
-                  {/* 十进制原样字符串,仅裁展示尾随 0,绝不 Number() 化。 */}
-                  <td className="hk-mono">{formatDecimal(p.limit_value)}</td>
-                  <td className="hk-mono">{formatDecimal(p.burst_value)}</td>
-                  <td>
-                    <StatusBadge tone={modeTone(p.mode)}>{modeLabel(p.mode)}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{p.priority}</td>
-                  <td>
-                    <StatusBadge tone={p.enabled ? 'ok' : 'muted'}>{p.enabled ? '启用' : '停用'}</StatusBadge>
-                  </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busyId === p.id} onClick={() => setEditor({ existing: p, initial: policyToForm(p) })} className="hk-btn hk-btn--sm">
-                      编辑
-                    </button>
-                    <button type="button" disabled={busyId === p.id} onClick={() => remove(p)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                      {busyId === p.id ? '处理中…' : '删除'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="配额策略列表"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={quotaPolicyColumns}
+          actions={[
+            { label: '编辑', disabled: (row) => busyId === row.id, onClick: (row) => setEditor({ existing: row.policy, initial: policyToForm(row.policy) }) },
+            { label: (row) => busyId === row.id ? '处理中…' : '删除', tone: 'danger', disabled: (row) => busyId === row.id, onClick: (row) => remove(row.policy) },
+          ]}
+        />
       )}
 
       {hasMore && (
@@ -299,8 +267,18 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
+
+const quotaPolicyColumns: DataListColumn<QuotaPolicyTableRow>[] = [
+  { key: 'id', label: 'ID', render: (row) => <span className="hk-mono">#{row.id}</span> },
+  { key: 'scope', label: '作用域', render: (row) => row.scope },
+  { key: 'scope-id', label: '作用域 ID', render: (row) => <span className="hk-mono">{row.scopeId}</span> },
+  { key: 'metric', label: '指标', render: (row) => row.metric },
+  { key: 'window', label: '窗口', render: (row) => row.window },
+  { key: 'limit', label: '上限', render: (row) => <span className="hk-mono">{row.limit}</span> },
+  { key: 'burst', label: '突发', render: (row) => <span className="hk-mono">{row.burst}</span> },
+  { key: 'mode', label: '模式', badge: true, render: (row) => <StatusBadge tone={row.modeTone}>{row.mode}</StatusBadge> },
+  { key: 'priority', label: '优先级', render: (row) => <span className="hk-mono">{row.priority}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+]
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
@@ -86,7 +87,7 @@ func (d obsRealDepsStub) AdminObservabilityStore() AdminObservabilityStore { ret
 type obsRealAuthStub struct{ tenantID int64 }
 
 func (a obsRealAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
-	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: a.tenantID}, nil
+	return admintest.TenantOperator(1, a.tenantID), nil
 }
 
 type obsIPUAFixture struct {

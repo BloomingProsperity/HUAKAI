@@ -277,27 +277,23 @@ func resolveAdminTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, 
 	if !ok {
 		return 0, false
 	}
-	switch ident.Role {
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			writeError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
-			return 0, false
-		}
-		if hasQueryTenant && queryTenantID != ident.ScopeTenantID {
-			writeError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
-			return 0, false
-		}
-		return ident.ScopeTenantID, true
-	case admin.RolePlatformAdmin:
-		if !hasQueryTenant {
-			writeError(w, http.StatusBadRequest, "invalid_request", "tenant_id is required")
-			return 0, false
-		}
-		return queryTenantID, true
-	default:
+	if !ident.IsValid() {
 		writeError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return 0, false
 	}
+	tenantID := queryTenantID
+	if !hasQueryTenant {
+		tenantID = ident.ScopeTenantID()
+		if tenantID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "tenant_id is required")
+			return 0, false
+		}
+	}
+	if err := ident.CanActOnTenant(tenantID); err != nil {
+		writeError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+		return 0, false
+	}
+	return tenantID, true
 }
 
 func parseTenantQuery(w http.ResponseWriter, r *http.Request) (int64, bool, bool) {
@@ -416,7 +412,7 @@ type adminReferralRewardsResponse struct {
 }
 
 // NewAdminReferralRewardsHandler 是按 tenant 限定的管理员 referral-reward 流水
-//(只读)。GET /v1/admin/referrals/rewards?referrer_user_id=&limit=&offset=。
+// (只读)。GET /v1/admin/referrals/rewards?referrer_user_id=&limit=&offset=。
 // F-RES-2 / AFF-019。
 func NewAdminReferralRewardsHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -117,7 +117,7 @@ const (
 )
 
 // Roles 镜像 internal/admin 的角色标识符。保留为本地常量,这样本包就不必为两个字符串去 import
-// admin 包(RBAC 校验本身由调用方经 admin.AdminIdentity.CanIssueForTenant 执行,本包永不绕过它)。
+// admin 包(RBAC 校验本身由调用方经 admin.AdminIdentity.CanActOnTenant 执行,本包永不绕过它)。
 const (
 	RolePlatformAdmin  = "platform_admin"
 	RoleTenantOperator = "tenant_operator"
@@ -145,7 +145,7 @@ var (
 	// ErrToolUnknown 在工具名未注册时返回。
 	ErrToolUnknown = errors.New("hermesops: unknown tool")
 	// ErrToolForbidden 在调用方角色低于工具最低要求角色时返回。租户作用域的拒绝由调用方经
-	// CanIssueForTenant 单独强制执行,也会同样呈现为一条 denied 行。
+	// CanActOnTenant 单独强制执行,也会同样呈现为一条 denied 行。
 	ErrToolForbidden = errors.New("hermesops: tool forbidden for role")
 	// ErrDependencyUnwired 由其底层读依赖为 nil 的工具返回。工具 MUST(必须)以此 fail-closed
 	// 而非 panic。
@@ -165,7 +165,7 @@ var (
 )
 
 // ToolRequest 是交给工具 Run 的、已 resolve 且已授权的调用上下文。TenantID 是由中间件推导、
-// 经作用域校验的租户;HTTP 层保证在调用 Run 之前 CanIssueForTenant 已通过。
+// 经作用域校验的租户;HTTP 层保证在调用 Run 之前 CanActOnTenant 已通过。
 type ToolRequest struct {
 	// TenantID 是工具必须把其读操作限定到的、已 resolve 的租户。永远 > 0(HTTP 层会在 dispatch
 	// 之前拒绝非正的租户)。

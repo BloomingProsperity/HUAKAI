@@ -17,7 +17,7 @@ import type { UserDetail } from './detail'
  * 用户组变更影响计费倍率(随组),故单独标注;软删/清 passkey/解绑为高危,带二次确认。
  * 余额变更不在此(money 另走 Wave E 的手动调额卡)。
  */
-export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChanged: () => void }) {
+export function UserAdminActions({ tenantId, user, onChanged }: { tenantId: number; user: UserDetail; onChanged: () => void }) {
   const [group, setGroup] = useState(user.user_group || '')
   const [remark, setRemark] = useState(user.remark || '')
   const [busy, setBusy] = useState<string | null>(null)
@@ -47,7 +47,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
       setError(err)
       return
     }
-    void run('group', () => setUserGroup(user.id, group.trim()), '用户组已更新(计费倍率随新组生效)')
+    void run('group', () => setUserGroup(tenantId, user.id, group.trim()), '用户组已更新(计费倍率随新组生效)')
   }
 
   const saveRemark = () => {
@@ -56,7 +56,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
       setError(err)
       return
     }
-    void run('remark', () => setUserRemark(user.id, remark), '备注已保存')
+    void run('remark', () => setUserRemark(tenantId, user.id, remark), '备注已保存')
   }
 
   return (
@@ -98,7 +98,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
             onClick={() =>
               void run(
                 'unlink',
-                () => unlinkSocialIdentity(user.id, provider).then((r) => {
+                () => unlinkSocialIdentity(tenantId, user.id, provider).then((r) => {
                   if (r.unlinked === 0) throw new ApiError(404, 'not_bound', '该用户未绑定此登录方式')
                   return r
                 }),
@@ -121,7 +121,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
             disabled={busy !== null}
             onClick={() => {
               if (!window.confirm(`强制关闭 ${user.email} 的两步验证(2FA)?用户下次需重新设置。`)) return
-              void run('2fa', () => forceDisable2FA(user.id), '已强制关闭该用户 2FA')
+              void run('2fa', () => forceDisable2FA(tenantId, user.id), '已强制关闭该用户 2FA')
             }}
             style={dangerGhost}
           >
@@ -132,7 +132,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
             disabled={busy !== null}
             onClick={() => {
               if (!window.confirm(`清空 ${user.email} 的全部通行密钥(passkey)?`)) return
-              void run('passkey', () => resetPasskeys(user.id), '已清空该用户通行密钥')
+              void run('passkey', () => resetPasskeys(tenantId, user.id), '已清空该用户通行密钥')
             }}
             style={dangerGhost}
           >
@@ -143,7 +143,7 @@ export function UserAdminActions({ user, onChanged }: { user: UserDetail; onChan
             disabled={busy !== null}
             onClick={() => {
               if (!window.confirm(`软删用户 ${user.email}?将停用账号并撤销其全部会话(可由后端恢复)。`)) return
-              void run('delete', () => softDeleteUser(user.id), '用户已软删', true)
+              void run('delete', () => softDeleteUser(tenantId, user.id), '用户已软删', true)
             }}
             style={dangerSolid}
           >

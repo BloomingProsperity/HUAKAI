@@ -27,6 +27,7 @@ type quotaQueries interface {
 	ListTenantsWithDueQuotaReconciliationJobs(ctx context.Context, arg dbquota.ListTenantsWithDueQuotaReconciliationJobsParams) ([]int64, error)
 	MarkQuotaReconciliationJobRunning(ctx context.Context, arg dbquota.MarkQuotaReconciliationJobRunningParams) (int64, error)
 	MarkQuotaReservationReconciliationNeeded(ctx context.Context, arg dbquota.MarkQuotaReservationReconciliationNeededParams) (int64, error)
+	PrepareQuotaReleaseRecovery(ctx context.Context, arg dbquota.PrepareQuotaReleaseRecoveryParams) (int64, error)
 	ReactivateQuotaReservation(ctx context.Context, arg dbquota.ReactivateQuotaReservationParams) (dbquota.ReactivateQuotaReservationRow, error)
 	ReleaseQuotaConcurrencySlotsByReservation(ctx context.Context, arg dbquota.ReleaseQuotaConcurrencySlotsByReservationParams) (int64, error)
 	ReleaseQuotaReservation(ctx context.Context, arg dbquota.ReleaseQuotaReservationParams) (int64, error)

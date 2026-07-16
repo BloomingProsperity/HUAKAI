@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import {
   getAuditMerkleTree,
   getAuditPubkeyByFingerprint,
@@ -12,10 +14,12 @@ import {
 import {
   formatTrustTime,
   keyStatusLabel,
+  mapAuditKeyTableRows,
   mapAuditVerification,
   mapTrustVerification,
   parseTrustProofJSON,
 } from './trust'
+import type { AuditKeyTableRow } from './trust'
 import type {
   AuditMerkleTreeResponse,
   AuditPubkey,
@@ -91,6 +95,15 @@ function PlatformKeysSection() {
   )
 
   const currentStatus = current ? statusFor(current) : undefined
+  const publicStatuses = Object.fromEntries((wellKnown?.keys ?? []).map((key) => [key.kid, key.status]))
+  const keyRows = mapAuditKeyTableRows(history, publicStatuses)
+  const columns: DataListColumn<AuditKeyTableRow>[] = [
+    { key: 'fingerprint', label: '指纹', render: (row) => <span className="hk-mono">{row.fingerprint}</span> },
+    { key: 'algorithm', label: '算法', render: (row) => row.algorithm },
+    { key: 'status', label: '状态', render: (row) => <span className={`hk-pill hk-pill--${row.tone}`}>{row.status}</span> },
+    { key: 'effectiveFrom', label: '生效时间', render: (row) => row.effectiveFrom },
+    { key: 'effectiveTo', label: '失效时间', render: (row) => row.effectiveTo },
+  ]
 
   return (
     <section className="hk-card">
@@ -110,7 +123,7 @@ function PlatformKeysSection() {
           <ErrorBox>审计当前公钥与公开清单的当前指纹不一致，请暂停采信新证明。</ErrorBox>
         )}
         {loading ? (
-          <div className="hk-empty">正在读取公钥与轮换历史…</div>
+          <EmptyState title="正在读取公钥与轮换历史" hint="请稍候。" />
         ) : (
           <>
             <div className="hk-grid hk-grid--2">
@@ -132,36 +145,21 @@ function PlatformKeysSection() {
               </div>
             </div>
 
-            <div className="hk-tablewrap">
-              <table className="hk-table">
-                <thead>
-                  <tr>
-                    {['指纹', '算法', '状态', '生效时间', '失效时间', ''].map((title) => <th key={title || 'action'}>{title}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {history.map((key) => (
-                    <tr key={key.fingerprint}>
-                      <td className="hk-mono">{key.fingerprint}</td>
-                      <td>{key.algorithm}</td>
-                      <td>
-                        <span className={`hk-pill ${statusFor(key) === 'active' ? 'hk-pill--ok' : statusFor(key) === 'revoked' ? 'hk-pill--crit' : 'hk-pill--info'}`}>
-                          {keyStatusLabel(statusFor(key))}
-                        </span>
-                      </td>
-                      <td>{formatTrustTime(key.effective_from)}</td>
-                      <td>{formatTrustTime(key.effective_to)}</td>
-                      <td>
-                        <button type="button" className="hk-btn hk-btn--sm" disabled={inspecting === key.fingerprint} onClick={() => inspect(key.fingerprint)}>
-                          {inspecting === key.fingerprint ? '核对中…' : '按指纹核对'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {history.length === 0 && <div className="hk-empty">暂无可展示的公钥历史。</div>}
-            </div>
+            {keyRows.length === 0 ? (
+              <EmptyState title="暂无可展示的公钥历史" hint="当前公钥信息仍会显示在上方。" />
+            ) : (
+              <DataListTable
+                label="公钥轮换历史"
+                rows={keyRows}
+                rowKey={(row) => row.id}
+                columns={columns}
+                actions={[{
+                  label: (row) => inspecting === row.fingerprint ? '核对中…' : '按指纹核对',
+                  disabled: (row) => inspecting === row.fingerprint,
+                  onClick: (row) => void inspect(row.fingerprint),
+                }]}
+              />
+            )}
 
             {selected && (
               <div className="hk-codebox" aria-live="polite">

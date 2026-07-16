@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 )
 
@@ -56,7 +57,7 @@ func TestDryRunDefaultsTrueAndReturnsMoneyStrings(t *testing.T) {
 		}},
 		Summary: billing.RepriceSummary{Total: 1, WouldApply: 1},
 	}}
-	h := NewHandler(Deps{Auth: authStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Service: svc})
+	h := NewHandler(Deps{Auth: authStub{ident: admintest.Platform(0)}, Service: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/billing/reprice", strings.NewReader(`{"usage_record_id":11}`)))
 
@@ -81,7 +82,7 @@ func TestApplyRequiresExplicitDryRunFalse(t *testing.T) {
 		Items:   []billing.RepriceItem{{UsageRecordID: 11, TenantID: 7, Status: billing.RepriceStatusRepriced}},
 		Summary: billing.RepriceSummary{Total: 1, Repriced: 1},
 	}}
-	h := NewHandler(Deps{Auth: authStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Service: svc})
+	h := NewHandler(Deps{Auth: authStub{ident: admintest.Platform(0)}, Service: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/billing/reprice", strings.NewReader(`{"usage_record_id":11,"dry_run":false}`)))
 
@@ -102,7 +103,7 @@ func TestApplyRequiresExplicitDryRunFalse(t *testing.T) {
 
 func TestBatchScopeParsesTenantWindowAndLimit(t *testing.T) {
 	svc := &repriceServiceStub{result: billing.RepriceResult{DryRun: true}}
-	h := NewHandler(Deps{Auth: authStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Service: svc})
+	h := NewHandler(Deps{Auth: authStub{ident: admintest.Platform(0)}, Service: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/billing/reprice", strings.NewReader(`{
 		"tenant_id":7,
@@ -121,7 +122,7 @@ func TestBatchScopeParsesTenantWindowAndLimit(t *testing.T) {
 
 func TestNonPlatformAdminRejectedBeforeService(t *testing.T) {
 	svc := &repriceServiceStub{}
-	h := NewHandler(Deps{Auth: authStub{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}, Service: svc})
+	h := NewHandler(Deps{Auth: authStub{ident: admintest.TenantOperator(0, 7)}, Service: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/billing/reprice", strings.NewReader(`{"usage_record_id":11}`)))
 
@@ -135,7 +136,7 @@ func TestNonPlatformAdminRejectedBeforeService(t *testing.T) {
 
 func TestAmbiguousScopeRejected(t *testing.T) {
 	svc := &repriceServiceStub{}
-	h := NewHandler(Deps{Auth: authStub{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Service: svc})
+	h := NewHandler(Deps{Auth: authStub{ident: admintest.Platform(0)}, Service: svc})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/billing/reprice", strings.NewReader(`{"usage_record_id":11,"tenant_id":7}`)))
 

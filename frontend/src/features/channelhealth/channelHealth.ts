@@ -243,3 +243,54 @@ export function clampLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit <= 0) return DEFAULT_LIMIT
   return Math.min(limit, MAX_LIMIT)
 }
+
+export interface ChannelHealthTableRow {
+  key: string
+  channelId: string
+  coordinates: string
+  vendor: string
+  state: string
+  stateTone: BadgeTone
+  score: string
+  signal: string
+  confidence: string
+  recovery: string
+  recoveryDetail: string | null
+  updatedAt: string
+  writable: boolean
+  item: ChannelHealthItem
+}
+
+/** 渠道健康 DTO 到运维列表展示行的纯映射。 */
+export function mapChannelHealthRows(items: ChannelHealthItem[]): ChannelHealthTableRow[] {
+  return items.map((item) => ({
+    key: `${item.provider_account_id}:${item.credential_version}:${item.account_credential_id}`,
+    channelId: item.channel_id,
+    coordinates: `acct #${item.provider_account_id} · cred #${item.account_credential_id} v${item.credential_version}`,
+    vendor: item.vendor || '—',
+    state: stateLabel(item.state),
+    stateTone: stateTone(item.state),
+    score: formatHealthNumber(item.score),
+    signal: signalLabel(item.reason_class),
+    confidence: confidenceLabel(item.confidence_tier),
+    recovery: item.cooldown_until ? `冷却至 ${formatHealthTimestamp(item.cooldown_until)}` : '—',
+    recoveryDetail:
+      item.state === 'ramping' || item.ramp_stage_pct > 0
+        ? `爬坡 ${item.ramp_stage_pct}% · 失败 ${item.ramp_failure_count}`
+        : null,
+    updatedAt: formatHealthTimestamp(item.updated_at),
+    writable: canOverride(item),
+    item,
+  }))
+}
+
+export function formatHealthTimestamp(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+export function formatHealthNumber(value: number): string {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—'
+  return String(Math.round(value * 100) / 100)
+}

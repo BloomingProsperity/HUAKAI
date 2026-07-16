@@ -210,7 +210,7 @@ func resolveChannelHealthAdmin(w http.ResponseWriter, r *http.Request, d Channel
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
+	if !ident.IsPlatformWide() {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
 		return admin.AdminIdentity{}, false
 	}

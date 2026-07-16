@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   assignSubscription,
@@ -26,12 +29,17 @@ import {
   buildVoucherRequest,
   centsToUsd,
   EMPTY_VOUCHER_FORM,
+  formatAdminDate,
+  formatCaps,
+  mapAssignmentRows,
+  mapPlanRows,
+  mapPlanStats,
   parseBulkUserIDs,
   planStatusLabel,
   planToForm,
-  planTone,
-  subscriptionTone,
+  type AssignmentTableRow,
   type ExtendMode,
+  type PlanTableRow,
   type VoucherFormState,
 } from './subscriptions'
 import {
@@ -100,6 +108,31 @@ export function SubscriptionsAdminPage() {
     loadPlans()
   }
 
+  const rows = mapPlanRows(plans)
+  const stats = mapPlanStats(loading && plans.length === 0 ? null : plans)
+  const columns: DataListColumn<PlanTableRow>[] = [
+    {
+      key: 'plan',
+      label: '套餐',
+      render: (row) => (
+        <span style={planNameStyle}>
+          <strong style={{ color: 'var(--hk-ink-900)' }}>{row.name}</strong>
+          {row.description && <span style={secondaryTextStyle}>{row.description}</span>}
+        </span>
+      ),
+    },
+    { key: 'price', label: '价格', render: (row) => <span className="hk-mono">{row.price}</span> },
+    { key: 'validity', label: '周期', render: (row) => row.validity },
+    { key: 'caps', label: '日/周/月封顶(USD)', render: (row) => <span className="hk-mono">{row.caps}</span> },
+    { key: 'group', label: '用户组', render: (row) => row.group },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+  ]
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
@@ -117,61 +150,33 @@ export function SubscriptionsAdminPage() {
       {error && <Banner tone="danger">{error}</Banner>}
       {notice && <Banner tone="info">{notice}</Banner>}
 
+      <section aria-label="套餐统计" style={statsGridStyle}>
+        {stats.map((stat) => (
+          <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} tone={stat.tone} />
+        ))}
+      </section>
+
       <div className="hk-card">
         {loading && plans.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载套餐" hint="请稍候。" />
         ) : plans.length === 0 ? (
-          <Empty>暂无套餐,点「新建套餐」创建第一个。</Empty>
+          <EmptyState
+            title="暂无套餐"
+            hint="新建套餐后会在这里显示价格、配额与状态。"
+            action={{ label: '新建套餐', onClick: () => setEditing({ plan: null }) }}
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['套餐', '价格', '周期', '日/周/月封顶(USD)', '用户组', '状态', '操作'].map((h) => (
-                    <th key={h}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {plans.map((p) => (
-                  <tr key={p.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{p.name}</span>
-                        {p.description && (
-                          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{p.description}</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="hk-mono">
-                      {centsToUsd(p.price_cents)} {p.currency_code}
-                    </td>
-                    <td>{p.validity_days} 天</td>
-                    <td className="hk-mono">{capCol(p)}</td>
-                    <td>{p.granted_group || '—'}</td>
-                    <td>
-                      <StatusBadge tone={planTone(p)}>{planStatusLabel(p)}</StatusBadge>
-                    </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setDetailId(p.id)}>
-                        详情
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setEditing({ plan: p })}>
-                        编辑
-                      </button>
-                      {p.enabled && (
-                        <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" onClick={() => onDisable(p)}>
-                          停用
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="套餐列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              { label: '详情', onClick: (row) => setDetailId(row.id) },
+              { label: '编辑', onClick: (row) => setEditing({ plan: row.source }) },
+              { label: '停用', onClick: (row) => { void onDisable(row.source) }, tone: 'danger', disabled: (row) => !row.source.enabled },
+            ]}
+          />
         )}
       </div>
 
@@ -235,11 +240,11 @@ function PlanDetailModal({ tenantID, planId, onClose }: { tenantID: number; plan
             <DetailRow k="价格" v={`${centsToUsd(plan.price_cents)} ${plan.currency_code}`} />
             <DetailRow k="有效天数" v={`${plan.validity_days} 天`} />
             <DetailRow k="授予用户组" v={plan.granted_group || '—'} />
-            <DetailRow k="日/周/月封顶(USD)" v={capCol(plan)} />
+            <DetailRow k="日/周/月封顶(USD)" v={formatCaps(plan.daily_cap_usd, plan.weekly_cap_usd, plan.monthly_cap_usd)} />
             <DetailRow k="状态" v={planStatusLabel(plan)} />
             <DetailRow k="排序值" v={String(plan.sort_order)} />
-            <DetailRow k="创建时间" v={fmt(plan.created_at)} />
-            <DetailRow k="更新时间" v={fmt(plan.updated_at)} />
+            <DetailRow k="创建时间" v={formatAdminDate(plan.created_at)} />
+            <DetailRow k="更新时间" v={formatAdminDate(plan.updated_at)} />
           </dl>
         ) : null}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -438,6 +443,20 @@ function AssignmentPanel({
     }
   }
 
+  const rows = mapAssignmentRows(subs)
+  const columns: DataListColumn<AssignmentTableRow>[] = [
+    { key: 'subscription-id', label: '订阅 ID', render: (row) => <span className="hk-mono">{row.subscriptionID}</span> },
+    { key: 'plan-id', label: '套餐 ID', render: (row) => <span className="hk-mono">{row.planID}</span> },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge>,
+    },
+    { key: 'starts-at', label: '生效', render: (row) => <span className="hk-mono">{row.startsAt}</span> },
+    { key: 'expires-at', label: '到期', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+  ]
+
   return (
     <div className="hk-card">
       <div style={{ padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }}>
@@ -497,54 +516,25 @@ function AssignmentPanel({
 
       {queriedUser != null &&
         (subs.length === 0 ? (
-          <Empty>用户 #{queriedUser} 暂无订阅。</Empty>
+          <EmptyState
+            title={`用户 #${queriedUser} 暂无订阅`}
+            hint="可在上方选择套餐并执行分配。"
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['订阅 ID', '套餐 ID', '状态', '生效', '到期', '操作'].map((h) => (
-                    <th key={h}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {subs.map((s) => (
-                  <tr key={s.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td className="hk-mono">#{s.id}</td>
-                    <td className="hk-mono">{s.plan_id}</td>
-                    <td>
-                      <StatusBadge tone={subscriptionTone(s.status)}>{s.status}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmt(s.starts_at)}</td>
-                    <td className="hk-mono">{fmt(s.expires_at)}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>
-                      <button type="button" className="hk-btn hk-btn--sm" onClick={() => setDetailSubId(s.id)}>
-                        详情
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => act(resetQuota, s, '重置配额')}>
-                        重置配额
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'extend' })}>
-                        延长
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'change-plan' })}>
-                        改套餐
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" disabled={busy} onClick={() => act(cancelSubscription, s, '取消订阅')}>
-                        取消
-                      </button>
-                      <button type="button" className="hk-btn hk-btn--danger hk-btn--sm" disabled={busy} onClick={() => setActing({ sub: s, kind: 'revoke' })}>
-                        撤销
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label={`用户 #${queriedUser} 的订阅列表`}
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              { label: '详情', onClick: (row) => setDetailSubId(row.id) },
+              { label: '重置配额', onClick: (row) => { void act(resetQuota, row.source, '重置配额') }, disabled: busy },
+              { label: '延长', onClick: (row) => setActing({ sub: row.source, kind: 'extend' }), disabled: busy },
+              { label: '改套餐', onClick: (row) => setActing({ sub: row.source, kind: 'change-plan' }), disabled: busy },
+              { label: '取消', onClick: (row) => { void act(cancelSubscription, row.source, '取消订阅') }, disabled: busy },
+              { label: '撤销', onClick: (row) => setActing({ sub: row.source, kind: 'revoke' }), tone: 'danger', disabled: busy },
+            ]}
+          />
         ))}
 
       {bulkOpen && (
@@ -626,11 +616,11 @@ function AssignmentDetailModal({
               <DetailRow k="状态" v={sub.status} />
               <DetailRow k="来源" v={subSourceLabel(sub.source)} />
               <DetailRow k="授予用户组" v={sub.granted_group || '—'} />
-              <DetailRow k="日/周/月封顶(USD)" v={subCapCol(sub)} />
-              <DetailRow k="生效时间" v={fmt(sub.starts_at)} />
-              <DetailRow k="到期时间" v={fmt(sub.expires_at)} />
-              <DetailRow k="取消时间" v={sub.cancelled_at ? fmt(sub.cancelled_at) : '—'} />
-              <DetailRow k="创建时间" v={fmt(sub.created_at)} />
+              <DetailRow k="日/周/月封顶(USD)" v={formatCaps(sub.daily_cap_usd, sub.weekly_cap_usd, sub.monthly_cap_usd)} />
+              <DetailRow k="生效时间" v={formatAdminDate(sub.starts_at)} />
+              <DetailRow k="到期时间" v={formatAdminDate(sub.expires_at)} />
+              <DetailRow k="取消时间" v={sub.cancelled_at ? formatAdminDate(sub.cancelled_at) : '—'} />
+              <DetailRow k="创建时间" v={formatAdminDate(sub.created_at)} />
               <DetailRow k="分配管理员" v={sub.assigned_by_admin_id ? `#${sub.assigned_by_admin_id}` : '—'} />
               <DetailRow k="原用户组" v={sub.prev_user_group || '—'} />
             </dl>
@@ -657,7 +647,7 @@ function AssignmentDetailModal({
                           <td>{auditEventLabel(ev.event_type)}</td>
                           <td>{actorLabel(ev.actor_kind, ev.actor_id)}</td>
                           <td style={{ color: 'var(--hk-ink-500)' }}>{ev.reason_class || '—'}</td>
-                          <td className="hk-mono">{fmt(ev.occurred_at)}</td>
+                          <td className="hk-mono">{formatAdminDate(ev.occurred_at)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -687,14 +677,6 @@ function subSourceLabel(source: string): string {
     default:
       return source || '—'
   }
-}
-
-/** 订阅级日/周/月封顶展示(null=不限,∞)。与 capCol(套餐版)同形,但取订阅字段。 */
-function subCapCol(s: AdminSubscription): string {
-  const d = s.daily_cap_usd ?? '∞'
-  const w = s.weekly_cap_usd ?? '∞'
-  const m = s.monthly_cap_usd ?? '∞'
-  return `${d} / ${w} / ${m}`
 }
 
 /* ---- 订阅级动作:延长 / 改套餐 / 撤销(均 money,改权益) ---- */
@@ -1067,20 +1049,8 @@ function VoucherModal({
 }
 
 /* ---- 小工具 ---- */
-function capCol(p: Plan): string {
-  const d = p.daily_cap_usd ?? '∞'
-  const w = p.weekly_cap_usd ?? '∞'
-  const m = p.monthly_cap_usd ?? '∞'
-  return `${d} / ${w} / ${m}`
-}
-
 function toMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError ? `${e.message}(${e.code})` : fallback
-}
-
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('zh-CN')
 }
 
 function Overlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
@@ -1120,9 +1090,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 const modal: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-3)', padding: 'var(--hk-space-5)', width: 'min(640px, 92vw)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)', maxHeight: '90vh', overflowY: 'auto' }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+const statsGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--hk-space-3)' }
+const planNameStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
+const secondaryTextStyle: React.CSSProperties = { fontSize: 11, color: 'var(--hk-ink-300)' }

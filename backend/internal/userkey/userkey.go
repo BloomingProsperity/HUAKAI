@@ -395,6 +395,31 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]KeyDescriptor, e
 	return out, nil
 }
 
+// Count 返回 caller 自己名下未软删除的全部 api_keys 数量，不受列表分页影响。
+// 查询使用与 List 相同的租户、用户有效性约束，避免总数泄漏失活主体的元数据。
+func (s *Service) Count(ctx context.Context, tenantID, userID int64) (int, error) {
+	if s == nil || s.pool == nil {
+		return 0, fmt.Errorf("%w: pool unset", ErrServiceMisconfig)
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return 0, ErrInvalidName
+	}
+	var total int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*)
+		   FROM api_keys k
+		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+		   JOIN users   u ON u.id = k.user_id AND u.tenant_id = k.tenant_id
+		                  AND u.deleted_at IS NULL AND u.status = 'active'
+		  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.deleted_at IS NULL`,
+		tenantID, userID,
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("%w: count: %v", ErrBackend, err)
+	}
+	return total, nil
+}
+
 // Get 取 caller 自己的单条 api_keys。归属不符 → ErrNotFound (不区分"不存在"与
 // "别人的",防 ID 枚举泄漏)。
 func (s *Service) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (KeyDescriptor, error) {
@@ -635,6 +660,7 @@ func auditAPIKeyID(id int64) *int64 {
 //   - ExpiresAt == nil && !ClearExpiry → 截止时间保持不变
 //   - ExpiresAt != nil                 → 把截止时间设为 *ExpiresAt(必须是将来)
 //   - ClearExpiry == true              → 清除截止时间(key 变为永不过期)
+//
 // 优先级为 clear > set > unchanged;set 时若传入过去的截止时间会以
 // ErrInvalidExpiry 拒绝,与 Issue 创建路径中的将来时刻检查保持一致。
 type PatchRequest struct {

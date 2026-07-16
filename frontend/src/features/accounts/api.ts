@@ -21,18 +21,19 @@ import type {
 const ACCOUNTS_PATH = '/admin/v1/provider-accounts'
 
 export async function listProviderAccounts(
+  tenantId: number,
   filters: AccountListFilters,
   signal?: AbortSignal,
 ): Promise<ProviderAccountListResponse> {
   return apiGet<ProviderAccountListResponse>(ACCOUNTS_PATH, {
-    query: buildAccountListQuery(filters),
+    query: { tenant_id: tenantId, ...buildAccountListQuery(filters) },
     signal,
   })
 }
 
 /** 取单个账号详情:GET /admin/v1/provider-accounts/{id}。 */
-export async function getProviderAccount(id: number, signal?: AbortSignal): Promise<ProviderAccount> {
-  return apiGet<ProviderAccount>(`${ACCOUNTS_PATH}/${id}`, { signal })
+export async function getProviderAccount(tenantId: number, id: number, signal?: AbortSignal): Promise<ProviderAccount> {
+  return apiGet<ProviderAccount>(`${ACCOUNTS_PATH}/${id}`, { query: { tenant_id: tenantId }, signal })
 }
 
 /**
@@ -41,24 +42,24 @@ export async function getProviderAccount(id: number, signal?: AbortSignal): Prom
  * (否则 tags/model_allow_list/capability_flags 等字段丢失,渲染读 .length 会崩)。
  * 故启停成功后重新拉取完整账号返回,保证调用方拿到完整 DTO。
  */
-export async function setAccountEnabled(id: number, enabled: boolean, reason: string): Promise<ProviderAccount> {
+export async function setAccountEnabled(tenantId: number, id: number, enabled: boolean, reason: string): Promise<ProviderAccount> {
   await apiSend<{ id: number; enabled: boolean }>('PATCH', `${ACCOUNTS_PATH}/${id}/enabled`, {
     enabled,
     reason: reason.trim() || undefined,
-  })
-  return getProviderAccount(id)
+  }, { query: { tenant_id: tenantId } })
+  return getProviderAccount(tenantId, id)
 }
 
 /** 清除账号限流态:POST /admin/v1/provider-accounts/{id}/clear-rate-limit。reason 进审计。 */
-export async function clearAccountRateLimit(id: number, reason: string): Promise<ProviderAccount> {
+export async function clearAccountRateLimit(tenantId: number, id: number, reason: string): Promise<ProviderAccount> {
   return apiSend<ProviderAccount>('POST', `${ACCOUNTS_PATH}/${id}/clear-rate-limit`, {
     reason: reason.trim() || undefined,
-  })
+  }, { query: { tenant_id: tenantId } })
 }
 
 /** 通用编辑账号(池调优旋钮):PATCH /admin/v1/provider-accounts/{id}。仅下发改动字段。 */
-export async function updateProviderAccount(id: number, body: object): Promise<ProviderAccount> {
-  return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}`, body)
+export async function updateProviderAccount(tenantId: number, id: number, body: object): Promise<ProviderAccount> {
+  return apiSend<ProviderAccount>('PATCH', `${ACCOUNTS_PATH}/${id}`, body, { query: { tenant_id: tenantId } })
 }
 
 /**
@@ -73,11 +74,11 @@ export async function updateProviderAccount(id: number, body: object): Promise<P
  * 真码:backend/internal/gatewayhttp/admin_pool_accounts_handler.go:665
  *      (newDeleteProviderAccountHandler)+ :172(MountAdminPoolAccountRoutes 挂 DELETE /{id})。
  */
-export async function deleteProviderAccount(id: number, reason: string): Promise<DeleteAccountResult> {
+export async function deleteProviderAccount(tenantId: number, id: number, reason: string): Promise<DeleteAccountResult> {
   const body: { reason?: string } = {}
   const trimmed = reason.trim()
   if (trimmed) body.reason = trimmed
-  return apiSend<DeleteAccountResult>('DELETE', `${ACCOUNTS_PATH}/${id}`, body)
+  return apiSend<DeleteAccountResult>('DELETE', `${ACCOUNTS_PATH}/${id}`, body, { query: { tenant_id: tenantId } })
 }
 
 /**
@@ -85,8 +86,8 @@ export async function deleteProviderAccount(id: number, reason: string): Promise
  * 后端做 dry-run 校验(不计费、进审计),回 {ok, error_class, message}。
  * 真码:backend/internal/adminhttp/provider_account_test_handler.go:57。
  */
-export async function testProviderAccount(id: number): Promise<AccountTestResult> {
-  return apiSend<AccountTestResult>('POST', `${ACCOUNTS_PATH}/${id}/test`)
+export async function testProviderAccount(tenantId: number, id: number): Promise<AccountTestResult> {
+  return apiSend<AccountTestResult>('POST', `${ACCOUNTS_PATH}/${id}/test`, undefined, { query: { tenant_id: tenantId } })
 }
 
 /**
@@ -94,8 +95,8 @@ export async function testProviderAccount(id: number): Promise<AccountTestResult
  * 字段严格对齐 handler(health_state / failure_count / session_window_5h_* / recent_requests…)。
  * 真码:backend/internal/adminhttp/provider_account_health_handler.go:67。
  */
-export async function getProviderAccountHealth(id: number, signal?: AbortSignal): Promise<AccountHealth> {
-  return apiGet<AccountHealth>(`${ACCOUNTS_PATH}/${id}/health`, { signal })
+export async function getProviderAccountHealth(tenantId: number, id: number, signal?: AbortSignal): Promise<AccountHealth> {
+  return apiGet<AccountHealth>(`${ACCOUNTS_PATH}/${id}/health`, { query: { tenant_id: tenantId }, signal })
 }
 
 /**
@@ -103,8 +104,8 @@ export async function getProviderAccountHealth(id: number, signal?: AbortSignal)
  * 仅 upstream_passthrough(upstream_static)凭证支持;否则后端 422。回 {models, count}。
  * 真码:backend/internal/adminhttp/provider_account_upstream_models_handler.go:68。
  */
-export async function getProviderAccountUpstreamModels(id: number): Promise<UpstreamModelsResult> {
-  return apiGet<UpstreamModelsResult>(`${ACCOUNTS_PATH}/${id}/upstream-models`)
+export async function getProviderAccountUpstreamModels(tenantId: number, id: number): Promise<UpstreamModelsResult> {
+  return apiGet<UpstreamModelsResult>(`${ACCOUNTS_PATH}/${id}/upstream-models`, { query: { tenant_id: tenantId } })
 }
 
 /**
@@ -112,8 +113,8 @@ export async function getProviderAccountUpstreamModels(id: number): Promise<Upst
  * 跨整个租户池按健康态计数(非分页),只读、不含钱字段。
  * 真码:backend/internal/adminhttp/provider_account_health_summary_handler.go。
  */
-export async function getProviderAccountHealthSummary(signal?: AbortSignal): Promise<AccountHealthSummary> {
-  return apiGet<AccountHealthSummary>(`${ACCOUNTS_PATH}/health-summary`, { signal })
+export async function getProviderAccountHealthSummary(tenantId: number, signal?: AbortSignal): Promise<AccountHealthSummary> {
+  return apiGet<AccountHealthSummary>(`${ACCOUNTS_PATH}/health-summary`, { query: { tenant_id: tenantId }, signal })
 }
 
 /**
@@ -122,12 +123,13 @@ export async function getProviderAccountHealthSummary(signal?: AbortSignal): Pro
  * 真码:backend/internal/adminhttp/provider_account_recent_requests_handler.go:53。
  */
 export async function getProviderAccountRecentRequests(
+  tenantId: number,
   id: number,
   limit = 20,
   signal?: AbortSignal,
 ): Promise<AccountRecentRequestsResponse> {
   return apiGet<AccountRecentRequestsResponse>(`${ACCOUNTS_PATH}/${id}/recent-requests`, {
-    query: { limit },
+    query: { tenant_id: tenantId, limit },
     signal,
   })
 }
@@ -138,13 +140,13 @@ export async function getProviderAccountRecentRequests(
  * 后端逐条更新并写审计,回 {affected_ids, count}。
  * 真码:backend/internal/adminhttp/provider_account_bulk_handler.go:48。
  */
-export async function bulkUpdateAccountsByTag(body: {
+export async function bulkUpdateAccountsByTag(tenantId: number, body: {
   tag: string
   enabled?: boolean
   priority?: number
   static_weight?: number
 }): Promise<BulkByTagResult> {
-  return apiSend<BulkByTagResult>('POST', `${ACCOUNTS_PATH}/bulk-by-tag`, body)
+  return apiSend<BulkByTagResult>('POST', `${ACCOUNTS_PATH}/bulk-by-tag`, body, { query: { tenant_id: tenantId } })
 }
 
 /*
@@ -159,6 +161,7 @@ export async function bulkUpdateAccountsByTag(body: {
  * profile 不存在 / 跨租户 → 400 invalid_fingerprint_profile(FK 23503 / 触发器 P0001)。
  */
 export async function setAccountFingerprintProfile(
+  tenantId: number,
   id: number,
   profileId: number | null,
   reason?: string,
@@ -168,7 +171,7 @@ export async function setAccountFingerprintProfile(
   const body: { profile_id: number | null; reason?: string } = { profile_id: profileId }
   const trimmed = reason?.trim()
   if (trimmed) body.reason = trimmed
-  return apiSend<FingerprintBindResult>('PATCH', `${ACCOUNTS_PATH}/${id}/fingerprint-profile`, body)
+  return apiSend<FingerprintBindResult>('PATCH', `${ACCOUNTS_PATH}/${id}/fingerprint-profile`, body, { query: { tenant_id: tenantId } })
 }
 
 /*

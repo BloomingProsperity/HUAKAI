@@ -26,7 +26,7 @@ type RevokeRequest struct {
 }
 
 // RevokeResult 告诉 handler 发生了什么。当吊销为幂等时
-//(status 原本不是 'active'),AlreadyRevoked=true。
+// (status 原本不是 'active'),AlreadyRevoked=true。
 type RevokeResult struct {
 	APIKeyID       int64
 	AlreadyRevoked bool
@@ -51,7 +51,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 	if req.APIKeyID == 0 || req.TenantID == 0 {
 		return RevokeResult{}, fmt.Errorf("%w: api_key_id and tenant_id required", ErrAdminBadRequest)
 	}
-	if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
+	if err := req.Caller.CanActOnTenant(req.TenantID); err != nil {
 		// 被拒绝的吊销尝试必须进入审计轨迹。
 		// best-effort 写入;即便 audit 插入失败,调用方仍会得到 403。
 		_ = r.auditDeny(ctx, req, "rbac_violation")

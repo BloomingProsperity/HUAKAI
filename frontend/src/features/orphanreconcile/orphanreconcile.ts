@@ -1,5 +1,5 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import { RECONCILE_STATUSES, type ReconcileRequest, type ReconcileStatus } from './types'
+import { RECONCILE_STATUSES, type OrphanItem, type ReconcileRequest, type ReconcileStatus } from './types'
 
 /*
  * 媒体任务孤儿对账页纯逻辑(可单测,无 DOM / 网络副作用):
@@ -183,4 +183,46 @@ export function summarizeReconcile(resp: {
     return '该孤儿此前已处于终态,本次无状态变化(幂等)。'
   }
   return `已将孤儿标记为「${statusLabel(resp.status)}」(未追扣)。`
+}
+
+export interface OrphanTableRow {
+  id: number
+  task: string
+  tenant: string
+  user: string
+  provider: string
+  providerTaskId: string
+  estimatedCharge: string
+  status: string
+  statusTone: BadgeTone
+  observedAt: string
+  item: OrphanItem
+}
+
+/** 孤儿 DTO 到列表展示行的纯映射；金额仅按列表占位口径展示。 */
+export function mapOrphanRows(items: OrphanItem[]): OrphanTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    task: `#${item.task_id}`,
+    tenant: `#${item.tenant_id}`,
+    user: `#${item.user_id}`,
+    provider: item.provider || '—',
+    providerTaskId: shortProviderTaskId(item.provider_task_id),
+    estimatedCharge: item.estimated_cents > 0 ? formatCents(item.estimated_cents) : '—',
+    status: statusLabel(item.reconcile_status),
+    statusTone: statusTone(item.reconcile_status),
+    observedAt: formatObservedAt(item.observed_at),
+    item,
+  }))
+}
+
+export function shortProviderTaskId(value: string): string {
+  if (!value) return '—'
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value
+}
+
+export function formatObservedAt(value?: string): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }

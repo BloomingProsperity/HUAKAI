@@ -100,6 +100,9 @@ func TestKeepaliveWritesNewlinesAndFlushes(t *testing.T) {
 	if !waitForByteCount(w, 1, 500*time.Millisecond) {
 		t.Fatal("等待保活字节超时")
 	}
+	if !k.Started() {
+		t.Fatal("写入保活字节后 Started=false")
+	}
 	time.Sleep(50 * time.Millisecond)
 
 	k.Stop()
@@ -154,6 +157,9 @@ func TestFirstKeepaliveIsDelayed(t *testing.T) {
 
 	time.Sleep(30 * time.Millisecond)
 	k.Stop()
+	if k.Started() {
+		t.Fatal("首个 interval 前 Started=true")
+	}
 
 	data, flushes, attempts := w.snapshot()
 	if len(data) != 0 {

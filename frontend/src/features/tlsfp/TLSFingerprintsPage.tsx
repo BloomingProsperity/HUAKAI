@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   createProfile,
@@ -9,12 +12,12 @@ import {
   updateProfile,
 } from './api'
 import {
+  mapTLSProfileRows,
   nextStatus,
   profileToForm,
-  statusLabel,
-  statusTone,
   toCreateRequest,
   validateForm,
+  type TLSProfileTableRow,
 } from './tlsfp'
 import { EMPTY_FORM, type ProfileForm, type TLSFingerprintProfile } from './types'
 
@@ -30,8 +33,16 @@ import { EMPTY_FORM, type ProfileForm, type TLSFingerprintProfile } from './type
  */
 
 export function TLSFingerprintsPage() {
+  const me = useMe()
   const [tenantInput, setTenantInput] = useState('')
   const [tenantId, setTenantId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (tenantId != null || tenantInput.trim() !== '') return
+    if (me.status !== 'ready' || me.tenantId == null || me.tenantId <= 0) return
+    setTenantInput(String(me.tenantId))
+    setTenantId(me.tenantId)
+  }, [me.status, me.tenantId, tenantId, tenantInput])
 
   return (
     <div className="hk-page">
@@ -40,7 +51,7 @@ export function TLSFingerprintsPage() {
           <h1>TLS 指纹 Profile</h1>
           <p className="hk-sub">
             出口拟真:管理网关向上游伪装的 TLS ClientHello 指纹基线(加密套件 / 曲线 / 扩展顺序 / ALPN / GREASE)。
-            先指定租户 ID。
+            默认加载当前租户，也可手动切换租户 ID。
           </p>
         </div>
       </header>
@@ -68,7 +79,7 @@ export function TLSFingerprintsPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <ProfileManager key={tenantId} tenantId={tenantId} />
       )}
@@ -161,6 +172,7 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
     if (!window.confirm(`删除 profile「${p.name}」(#${p.id})?此操作不可在本页撤销。`)) return
     void runRow(p.id, () => deleteProfile(p.id, tenantId), `已删除 #${p.id}`)
   }
+  const tableRows = mapTLSProfileRows(rows)
 
   return (
     <section className="hk-card">
@@ -193,75 +205,35 @@ function ProfileManager({ tenantId }: { tenantId: number }) {
       )}
 
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载 TLS 指纹 Profile" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无 TLS 指纹 profile。点「新建 Profile」创建。</Empty>
+        <EmptyState title="暂无 TLS 指纹 Profile" hint="点击「新建 Profile」创建第一条指纹基线。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['名称', '状态', 'GREASE', '套件数', 'ALPN', 'JA3 基线', '最近校验', ''].map((h) => (
-                  <th key={h}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{p.name}</div>
-                    {p.description && (
-                      <div style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{p.description}</div>
-                    )}
-                  </td>
-                  <td>
-                    <StatusBadge tone={statusTone(p.status)}>{statusLabel(p.status)}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{p.grease_enabled ? '开' : '关'}</td>
-                  <td className="hk-mono">{(p.cipher_suites ?? []).length}</td>
-                  <td className="hk-mono">{(p.alpn_protocols ?? []).join(', ') || '—'}</td>
-                  <td className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{short(p.expected_ja3_hash)}</td>
-                  <td className="hk-mono">{fmt(p.last_validated_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button
-                      type="button"
-                      disabled={busy !== null}
-                      onClick={() => setEditor({ id: p.id, form: profileToForm(p) })}
-                      className="hk-btn hk-btn--sm"
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy !== null}
-                      onClick={() => toggleStatus(p)}
-                      className="hk-btn hk-btn--sm"
-                      style={{ marginLeft: 'var(--hk-space-2)' }}
-                    >
-                      {busy === p.id ? '处理中…' : nextStatus(p.status) === 'disabled' ? '停用' : '启用'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy !== null}
-                      onClick={() => removeProfile(p)}
-                      className="hk-btn hk-btn--sm hk-btn--danger"
-                      style={{ marginLeft: 'var(--hk-space-2)' }}
-                    >
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="TLS 指纹 Profile"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={profileColumns}
+          actions={[
+            { label: '编辑', disabled: busy !== null, onClick: (row) => setEditor({ id: row.id, form: profileToForm(row.profile) }) },
+            { label: (row) => busy === row.id ? '处理中…' : nextStatus(row.profile.status) === 'disabled' ? '停用' : '启用', disabled: busy !== null, onClick: (row) => toggleStatus(row.profile) },
+            { label: '删除', tone: 'danger', disabled: busy !== null, onClick: (row) => removeProfile(row.profile) },
+          ]}
+        />
       )}
     </section>
   )
 }
+
+const profileColumns: DataListColumn<TLSProfileTableRow>[] = [
+  { key: 'name', label: '名称', render: (row) => <div><div style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.name}</div>{row.description && <div style={{ fontSize: 11, color: 'var(--hk-ink-500)' }}>{row.description}</div>}</div> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'grease', label: 'GREASE', render: (row) => <span className="hk-mono">{row.grease}</span> },
+  { key: 'suite-count', label: '套件数', render: (row) => <span className="hk-mono">{row.cipherSuiteCount}</span> },
+  { key: 'alpn', label: 'ALPN', render: (row) => <span className="hk-mono">{row.alpn}</span> },
+  { key: 'ja3', label: 'JA3 基线', render: (row) => <span className="hk-mono" style={{ color: 'var(--hk-ink-300)' }}>{row.ja3}</span> },
+  { key: 'validated-at', label: '最近校验', render: (row) => <span className="hk-mono">{row.lastValidatedAt}</span> },
+]
 
 /* ——— 新建 / 编辑面板 ——— */
 function EditorPanel({
@@ -361,20 +333,6 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       {children}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function short(s: string): string {
-  if (!s) return '—'
-  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s
-}
-function fmt(iso?: string | null): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

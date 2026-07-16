@@ -36,7 +36,7 @@ func resolveAdmin(deps AdminDeps, w http.ResponseWriter, r *http.Request) (admin
 func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		return tenantFromValue(w, ident, ident.ScopeTenantID)
+		return tenantFromValue(w, ident, ident.ScopeTenantID())
 	}
 	if raw == "" {
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
@@ -52,13 +52,13 @@ func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminId
 
 func tenantFromValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
 	if tenantID == 0 && ident.Role == admin.RoleTenantOperator {
-		tenantID = ident.ScopeTenantID
+		tenantID = ident.ScopeTenantID()
 	}
 	if tenantID <= 0 {
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 		return 0, false
 	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	if err := ident.CanActOnTenant(tenantID); err != nil {
 		writeAdminError(w, err)
 		return 0, false
 	}

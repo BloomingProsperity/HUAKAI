@@ -35,7 +35,7 @@ type adminActor struct {
 // ADMIN/OPERATOR 调用方。它对齐 cmd/gateway.adminGate 的状态码映射(凭证失败 401、
 // backend 故障 / resolver 为 nil 时 503),随后推导出 tenant 以及 operator 当前所操作
 // Hermes ops context 所属的 tenant user,并在请求到达任何 tenant 范围的 handler
-// 之前先执行 CanIssueForTenant。
+// 之前先执行 CanActOnTenant。
 //
 // Tenant 推导:
 //   - tenant_operator  => tenant_id 取 token 的 ScopeTenantID。若带了 ?tenant_id
@@ -70,7 +70,7 @@ func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Han
 				return
 			}
 			// 解析出的 tenant 非正(例如既无 scope 又无 ?tenant_id 的 operator
-			// token)永远无法指向一个真实 tenant;在 CanIssueForTenant 之前就拒绝,
+			// token)永远无法指向一个真实 tenant;在 CanActOnTenant 之前就拒绝,
 			// 而不是把一个 0 值 tenant 继续传下去。
 			if tenantID <= 0 {
 				writeError(w, http.StatusForbidden, "hermes_admin_forbidden_scope", "operator token has no usable tenant scope")
@@ -79,7 +79,7 @@ func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Han
 			// 在任何 tenant 范围的操作之前先执行 scope 校验。这里是 tenant
 			// scoping 的唯一权威:tenant_operator 只能触及自身 ScopeTenantID;
 			// platform_admin 可触及任意 tenant。
-			if err := id.CanIssueForTenant(tenantID); err != nil {
+			if err := id.CanActOnTenant(tenantID); err != nil {
 				writeError(w, http.StatusForbidden, "hermes_admin_forbidden_scope", "operator may not access this tenant's hermes resources")
 				return
 			}
@@ -99,7 +99,7 @@ func AdminAuthMiddleware(resolver AdminAuthResolver) func(http.Handler) http.Han
 
 // deriveAdminTenantID 根据 operator 身份与可选的 ?tenant_id query 参数,解析出
 // 请求的目标 tenant。它本身不执行 operator scope 校验——中间件里的
-// CanIssueForTenant 才是授权该 tenant 的唯一权威,因此 tenant_operator 请求一个外部
+// CanActOnTenant 才是授权该 tenant 的唯一权威,因此 tenant_operator 请求一个外部
 // ?tenant_id 时,这里会先解析出来、再由那里拒绝(把 scope 规则集中在唯一一处)。
 // 本函数只执行 platform_admin 的「无隐含 tenant」规则(platform admin 没有可默认的
 // scope,故缺省 ?tenant_id 即 400,绝不静默默认)。
@@ -117,18 +117,18 @@ func deriveAdminTenantID(w http.ResponseWriter, r *http.Request, id admin.AdminI
 		return paramTenant, true
 	case admin.RoleTenantOperator:
 		// 显式的 ?tenant_id 会被当作请求的 tenant(哪怕是外部 tenant),以便
-		// CanIssueForTenant 能拒绝它;缺省时则默认为 operator 自身的 scope。
+		// CanActOnTenant 能拒绝它;缺省时则默认为 operator 自身的 scope。
 		if hasParam {
 			return paramTenant, true
 		}
-		return id.ScopeTenantID, true
+		return id.ScopeTenantID(), true
 	default:
-		// 未知 role:解析出请求的 tenant(或 0),交由 CanIssueForTenant 拒绝
+		// 未知 role:解析出请求的 tenant(或 0),交由 CanActOnTenant 拒绝
 		// (它把未知 role 映射为 unauthorized)。
 		if hasParam {
 			return paramTenant, true
 		}
-		return id.ScopeTenantID, true
+		return id.ScopeTenantID(), true
 	}
 }
 

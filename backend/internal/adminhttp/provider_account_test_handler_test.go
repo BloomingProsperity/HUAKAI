@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -96,7 +97,7 @@ func TestProviderAccountTestPlatformAdminRequiresExplicitTenant(t *testing.T) {
 		PlaintextPayload: []byte(`{"refresh_token":"rt-old"}`),
 	})
 	deps := ProviderAccountTestDeps{
-		Auth:     testerAuthStub{ident: admin.AdminIdentity{TokenID: 4, Role: admin.RolePlatformAdmin}},
+		Auth:     testerAuthStub{ident: admintest.Platform(4)},
 		Accounts: accounts, Tester: NewProviderAccountCredentialTester(credentials, registry.registry), Now: fixedProviderAccountTestNow,
 	}
 
@@ -298,7 +299,7 @@ func providerAccountTestAuthForTenant(tenantID int64) testerAuthStub {
 }
 
 func providerAccountTestAdmin(tenantID int64) admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 10, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
+	return admintest.TenantOperator(10, tenantID)
 }
 
 type testerAuthStub struct {
@@ -410,6 +411,7 @@ func (s *providerAccountTestRegistryStub) RefreshCredential(context.Context, cre
 }
 
 type providerAccountProbeModelTester struct {
+	calls      int
 	tenantID   int64
 	accountID  int64
 	at         time.Time
@@ -417,6 +419,7 @@ type providerAccountProbeModelTester struct {
 }
 
 func (s *providerAccountProbeModelTester) TestProviderAccountCredential(_ context.Context, tenantID, accountID int64, now time.Time, probeModel string) (credentialworker.ProviderAccountCredentialTestResult, error) {
+	s.calls++
 	s.tenantID = tenantID
 	s.accountID = accountID
 	s.at = now

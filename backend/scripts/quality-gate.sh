@@ -43,8 +43,16 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
 # memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
 # env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
-SC_MAX=94
-DC_MAX=882
+# 2026-07-14 绑定三字段 arc 收口清债+补录:真死码删除(accountadvanced SpecsJSON 零消费者、
+# poolaccountadmin BuildMixedRiskParams 平行建参路径从未接线——handler 走 insertProviderAccountWithMixedRiskCheck
+# 内联建参)+修 S1016(channel catalog 测试行转换)。补录 2 项:accountadvanced Specs/Keys 被
+# cmd/gateway 跨包契约守卫(前端 mirror/OpenAPI/SQL 覆盖三测试)真调用,deadcode 不带 -test 看不到,
+# 与 memoryStore/adminsessionauthtest/logsink 先例同类。全量重算收割他片已清债务,净 882→811、
+# staticcheck 94→93,两上限同步调低(棘轮只降)。
+# 2026-07-14 fallback_class 第 2 步清债:chat executor 已生产接线 TargetClass、
+# IsTerminal、AllowTransition，三条分阶段补录自然出列，DC_MAX 814->811。
+SC_MAX=93
+DC_MAX=811
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

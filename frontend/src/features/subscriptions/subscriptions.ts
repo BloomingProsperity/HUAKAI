@@ -203,6 +203,33 @@ export function sortSubscriptionHistory(rows: SubscriptionView[]): SubscriptionV
   return [...rows].sort((a, b) => ts(b) - ts(a))
 }
 
+export interface SubscriptionHistoryTableRow {
+  id: number
+  planId: string
+  status: string
+  tone: SubTone
+  group: string
+  startsAt: string
+  expiresAt: string
+  cancelledAt: string
+  createdAt: string
+}
+
+/** 订阅历史到七列表格的纯映射；空字段统一展示为破折号。 */
+export function mapSubscriptionHistoryRows(rows: SubscriptionView[]): SubscriptionHistoryTableRow[] {
+  return sortSubscriptionHistory(rows).map((row) => ({
+    id: row.id,
+    planId: String(row.plan_id),
+    status: subscriptionStatusLabel(row.status),
+    tone: subscriptionStatusTone(row.status),
+    group: row.granted_group || '—',
+    startsAt: formatDate(row.starts_at) || '—',
+    expiresAt: formatDate(row.expires_at) || '—',
+    cancelledAt: formatDate(row.cancelled_at) || '—',
+    createdAt: formatDate(row.created_at) || '—',
+  }))
+}
+
 /**
  * 自助换套餐的目标套餐候选:从在售套餐里剔除「当前订阅所属套餐」(换成自己无意义,后端也会拒),
  * 且只保留可购(enabled && for_sale)的套餐。

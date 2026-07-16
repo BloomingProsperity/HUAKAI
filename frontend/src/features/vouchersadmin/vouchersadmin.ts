@@ -1,6 +1,7 @@
 import type {
   BatchCreateVoucherRequest,
   CreateVoucherRequest,
+  Voucher,
   VoucherStatus,
 } from './types'
 import type { BadgeTone } from '../../ui/StatusBadge'
@@ -83,6 +84,68 @@ export function grantKindLabel(kind: string): string {
     default:
       return kind || '余额'
   }
+}
+
+export interface VoucherStatView {
+  label: string
+  value: string
+  hint: string
+  tone: 'default' | 'danger' | 'warn' | 'ok'
+}
+
+/** 已加载兑换码到四张统计卡的纯映射；无 count 端点，因此只陈述当前页口径。 */
+export function mapVoucherStats(vouchers: Voucher[] | null): VoucherStatView[] {
+  if (vouchers === null) {
+    return [
+      { label: '总数', value: '—', hint: '当前页数据加载中', tone: 'default' },
+      { label: '可用', value: '—', hint: '当前页数据加载中', tone: 'ok' },
+      { label: '已用尽', value: '—', hint: '当前页数据加载中', tone: 'warn' },
+      { label: '已吊销', value: '—', hint: '当前页数据加载中', tone: 'danger' },
+    ]
+  }
+  const count = (status: VoucherStatus) => vouchers.filter((voucher) => voucher.status === status).length
+  const format = (value: number) => `${value.toLocaleString('zh-CN')} 张`
+  return [
+    { label: '总数', value: format(vouchers.length), hint: '当前页口径（最多 200 条）', tone: 'default' },
+    { label: '可用', value: format(count('active')), hint: '当前页口径', tone: 'ok' },
+    { label: '已用尽', value: format(count('exhausted')), hint: '当前页口径', tone: 'warn' },
+    { label: '已吊销', value: format(count('revoked')), hint: '当前页口径', tone: 'danger' },
+  ]
+}
+
+export interface VoucherTableRow {
+  id: number
+  source: Voucher
+  fingerprint: string
+  amount: string
+  grantKind: string
+  redemption: string
+  statusText: string
+  statusTone: BadgeTone
+  batchID: number | null
+  validity: string
+}
+
+/** 后端兑换码到九列表格行的纯映射；保留 source 供吊销动作使用。 */
+export function mapVoucherRows(vouchers: Voucher[]): VoucherTableRow[] {
+  return vouchers.map((voucher) => ({
+    id: voucher.id,
+    source: voucher,
+    fingerprint: voucher.code_fingerprint,
+    amount: `${centsToYuan(voucher.amount_cents)} ${voucher.currency_code}`,
+    grantKind: grantKindLabel(voucher.grant_kind),
+    redemption: `${voucher.redeemed_count}/${voucher.max_redemptions}`,
+    statusText: statusLabel(voucher.status),
+    statusTone: statusTone(voucher.status),
+    batchID: voucher.batch_id ?? null,
+    validity: `${formatVoucherDate(voucher.valid_from)} ~ ${formatVoucherDate(voucher.valid_until)}`,
+  }))
+}
+
+/** 列表时间展示；非法时间统一显示占位，避免渲染 Invalid Date。 */
+export function formatVoucherDate(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 /** datetime-local(无时区)→ ISO8601;空串/非法 → 空串(调用方据此判错)。 */
@@ -218,7 +281,7 @@ export function parseListTenantId(raw: string): number | null {
 }
 
 /** 客户端二次过滤:按状态筛已加载列表(后端列表不按状态过滤,故在前端做)。 */
-export function filterByStatus(vouchers: { status: string }[], status: string): { status: string }[] {
+export function filterByStatus<T extends { status: string }>(vouchers: T[], status: string): T[] {
   if (!status) return vouchers
   return vouchers.filter((v) => v.status === status)
 }

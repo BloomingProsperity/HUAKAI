@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "ui:guard": "node scripts/ui-overflow-guard.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

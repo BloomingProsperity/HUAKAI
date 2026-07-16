@@ -63,7 +63,7 @@ func TestModelRateLimitGateBlocksOnlyCurrentAccountAndModelUntilReset(t *testing
 	accountB := &AccountSnapshot{ID: 20, TenantID: 1, HealthState: "healthy"}
 
 	ok, reason, err := gate.Allow(ctx, accountA, SelectionRequest{TenantID: 1, RequestedModel: "public-model", ModelCooldownKey: "model-x"})
-	if err != nil || ok || reason != GateFailureModel {
+	if err != nil || ok || reason != GateFailureModelCooldown {
 		t.Fatalf("account A model-x Allow=(%v,%s,%v) want blocked by model gate", ok, reason, err)
 	}
 	ok, reason, err = gate.Allow(ctx, accountA, SelectionRequest{TenantID: 1, RequestedModel: "public-model", ModelCooldownKey: "model-y"})

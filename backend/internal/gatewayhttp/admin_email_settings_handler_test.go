@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 )
@@ -21,7 +22,7 @@ func TestAdminEmailSettingsPutEncryptsPasswordAndGetMasks(t *testing.T) {
 	keys := testGatewayEmailKeys(t)
 	store := newGatewayEmailSettingsStore()
 	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:  adminEmailAuthStub{ident: admintest.Platform(11)},
 		Store: store,
 		Keys:  keys,
 	})
@@ -54,7 +55,7 @@ func TestAdminEmailSettingsPutEncryptsPasswordAndGetMasks(t *testing.T) {
 func TestAdminEmailSettingsRejectsCrossTenantOperator(t *testing.T) {
 	keys := testGatewayEmailKeys(t)
 	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  adminEmailAuthStub{ident: admintest.TenantOperator(11, 7)},
 		Store: newGatewayEmailSettingsStore(),
 		Keys:  keys,
 	})
@@ -71,7 +72,7 @@ func TestAdminEmailTestUsesTenantScopedSettings(t *testing.T) {
 	var gotSettings mailinfra.SMTPSettings
 	var gotMessage mailinfra.Message
 	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  adminEmailAuthStub{ident: admintest.TenantOperator(11, 7)},
 		Store: store,
 		Keys:  keys,
 		TestDispatch: func(_ context.Context, settings mailinfra.SMTPSettings, msg mailinfra.Message) error {
@@ -196,7 +197,7 @@ func TestAdminEmailSettingsPutTemplates(t *testing.T) {
 	keys := testGatewayEmailKeys(t)
 	store := newGatewayEmailSettingsStore()
 	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:  adminEmailAuthStub{ident: admintest.Platform(11)},
 		Store: store,
 		Keys:  keys,
 	})
@@ -239,7 +240,7 @@ func TestAdminEmailSettingsPutTemplates(t *testing.T) {
 func TestAdminEmailTemplatePreview(t *testing.T) {
 	keys := testGatewayEmailKeys(t)
 	handler := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}},
+		Auth:  adminEmailAuthStub{ident: admintest.Platform(11)},
 		Store: newGatewayEmailSettingsStore(),
 		Keys:  keys,
 	})
@@ -257,7 +258,7 @@ func TestAdminEmailTemplatePreview(t *testing.T) {
 	assertHTTPStatus(t, rec, http.StatusBadRequest)
 
 	scoped := newAdminEmailSettingsTestRouter(AdminEmailSettingsDeps{
-		Auth:  adminEmailAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  adminEmailAuthStub{ident: admintest.TenantOperator(11, 7)},
 		Store: newGatewayEmailSettingsStore(),
 		Keys:  keys,
 	})

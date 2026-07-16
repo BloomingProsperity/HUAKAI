@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { createAdminToken, listAdminTokens, revokeAdminToken } from './api'
 import {
@@ -7,8 +9,9 @@ import {
   credentialStatusLabel,
   credentialStatusTone,
   EMPTY_ADMIN_TOKEN_FORM,
-  formatCredentialTime,
+  mapAdminTokenTableRows,
   type AdminTokenForm,
+  type AdminTokenTableRow,
 } from './credentials'
 import { OneTimeSecretBox } from './OneTimeSecretBox'
 import type { AdminTokenListItem, AdminTokenRole, CreatedAdminToken } from './types'
@@ -86,6 +89,7 @@ export function AdminTokenSection() {
       setRevokeID(null)
     }
   }
+  const tableRows = mapAdminTokenTableRows(rows)
 
   return (
     <div className="hk-col">
@@ -144,52 +148,22 @@ export function AdminTokenSection() {
           <span style={headHint}>{loading ? '刷新中…' : `共 ${rows.length} 条`}</span>
         </div>
         {loading && rows.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载运维令牌" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <div className="hk-empty">暂无运维令牌。</div>
+          <EmptyState title="暂无运维令牌" hint="签发后仅在创建响应中展示一次明文。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['名称 / 前缀', '角色 / 作用域', '状态', '过期时间', '最近使用', '创建时间', ''].map((title) => (
-                    <th key={title}>{title}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <strong>{item.name || `令牌 #${item.id}`}</strong>
-                      <div className="hk-mono">{item.key_prefix}</div>
-                    </td>
-                    <td>
-                      {item.role === 'platform_admin' ? '平台管理员' : '租户运维'}
-                      <div className="hk-mono">{item.scope_tenant_id ? `租户 #${item.scope_tenant_id}` : '全平台'}</div>
-                    </td>
-                    <td>
-                      <StatusBadge tone={credentialStatusTone(item.status)}>{credentialStatusLabel(item.status)}</StatusBadge>
-                      {item.bootstrap && <div style={subtle}>启动令牌</div>}
-                    </td>
-                    <td className="hk-mono">{formatCredentialTime(item.expires_at)}</td>
-                    <td className="hk-mono">{item.last_used_at ? formatCredentialTime(item.last_used_at) : '从未使用'}</td>
-                    <td className="hk-mono">{formatCredentialTime(item.created_at)}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        className="hk-btn hk-btn--danger hk-btn--sm"
-                        disabled={item.status !== 'active' || item.revoked_at !== null || revokeID === item.id}
-                        onClick={() => revoke(item)}
-                      >
-                        {revokeID === item.id ? '吊销中…' : '吊销'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="运维令牌列表"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={adminTokenColumns}
+            actions={[{
+              label: (row) => revokeID === row.id ? '吊销中…' : '吊销',
+              tone: 'danger',
+              disabled: (row) => !row.revocable || revokeID === row.id,
+              onClick: (row) => revoke(row.source),
+            }]}
+          />
         )}
       </section>
     </div>
@@ -222,3 +196,16 @@ const inputStyle: React.CSSProperties = { width: '100%', height: 32, padding: '0
 const formGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-3)', alignItems: 'end' }
 const headHint: React.CSSProperties = { marginLeft: 'auto', color: 'var(--hk-ink-300)', fontSize: 11 }
 const subtle: React.CSSProperties = { marginTop: 3, color: 'var(--hk-ink-300)', fontSize: 10 }
+
+const adminTokenColumns: DataListColumn<AdminTokenTableRow>[] = [
+  { key: 'name', label: '名称 / 前缀', render: (row) => <StackedCredential primary={row.name} secondary={row.keyPrefix} strong /> },
+  { key: 'role', label: '角色 / 作用域', render: (row) => <StackedCredential primary={row.role} secondary={row.scope} /> },
+  { key: 'status', label: '状态', render: (row) => <><StatusBadge tone={credentialStatusTone(row.status)}>{credentialStatusLabel(row.status)}</StatusBadge>{row.bootstrap && <div style={subtle}>启动令牌</div>}</> },
+  { key: 'expires', label: '过期时间', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+  { key: 'last-used', label: '最近使用', render: (row) => <span className="hk-mono">{row.lastUsedAt}</span> },
+  { key: 'created', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
+
+function StackedCredential({ primary, secondary, strong = false }: { primary: string; secondary: string; strong?: boolean }) {
+  return <span style={{ display: 'flex', flexDirection: 'column' }}>{strong ? <strong>{primary}</strong> : <span>{primary}</span>}<span className="hk-mono">{secondary}</span></span>
+}

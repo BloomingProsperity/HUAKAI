@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
@@ -24,7 +25,7 @@ func (a obsAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdentit
 	if a.err != nil {
 		return admin.AdminIdentity{}, a.err
 	}
-	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}, nil
+	return admintest.TenantOperator(1, 7), nil
 }
 
 type obsDepsStub struct {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 )
 
@@ -85,7 +85,7 @@ func TestAdminUpdatePlanRoutePassesActorAndMutableFields(t *testing.T) {
 	})
 	svc := &adminOpsServiceStub{}
 	router := newSubAdminTestRouter(AdminDeps{
-		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
+		Auth:    fakeAdminAuth{ident: admintest.Platform(77)},
 		Service: svc,
 	})
 
@@ -114,7 +114,7 @@ func TestAdminAssignmentLifecycleRoutesPassRequestIDAndReason(t *testing.T) {
 	until := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	svc := &adminOpsServiceStub{}
 	router := newSubAdminTestRouter(AdminDeps{
-		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
+		Auth:    fakeAdminAuth{ident: admintest.Platform(77)},
 		Service: svc,
 	})
 
@@ -203,7 +203,7 @@ func TestAdminBulkAssignRouteReturnsPerUserResults(t *testing.T) {
 	}}}
 	svc.bulk.Results[0].Subscription.UserID = 41
 	router := newSubAdminTestRouter(AdminDeps{
-		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
+		Auth:    fakeAdminAuth{ident: admintest.Platform(77)},
 		Service: svc,
 	})
 

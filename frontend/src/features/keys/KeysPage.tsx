@@ -1,18 +1,33 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { ApiError } from '../../lib/api'
-import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { SkeletonRows } from '../../ui/Skeleton'
+import { StatCard } from '../../ui/StatCard'
+import { StatusBadge } from '../../ui/StatusBadge'
 import { batchRevokeApiKeys, listApiKeys, revokeApiKey } from './api'
-import { buildBatchRevoke, isSelectable, summarizeBatchResult, toggleSelected } from './batch'
+import { buildBatchRevoke, isSelectable, summarizeBatchResult, togglePageSelection, toggleSelected } from './batch'
 import { CreateKeyModal } from './CreateKeyModal'
 import { EditKeyModal } from './EditKeyModal'
+import {
+  KEYS_PAGE_LIMIT,
+  KEYS_PAGE_LIMIT_OPTIONS,
+  mapKeyPagination,
+  mapKeyRows,
+  mapKeyStats,
+  type KeyTableRow,
+} from './keys'
 import type { ApiKeyView } from './types'
 
 /*
- * API Key · 我的密钥(P0)。/v1/api-keys 列表 + 创建(一次性明文)+ 撤销。
- * 仅展示 key_prefix(脱敏),绝不回显明文(后端存 hash,物理不可逆)。
+ * API Key · 我的密钥(P0)。/v1/api-keys 使用 session 鉴权，只管理当前用户自己的 Key。
+ * 列表只展示 key_prefix(脱敏)，绝不回显明文；全量总数直接使用后端 count。
  */
 export function KeysPage() {
   const [keys, setKeys] = useState<ApiKeyView[]>([])
+  const [totalCount, setTotalCount] = useState<number | null>(null)
+  const [offset, setOffset] = useState(0)
+  const [limit, setLimit] = useState(KEYS_PAGE_LIMIT)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -26,8 +41,18 @@ export function KeysPage() {
   const load = useCallback((signal: AbortSignal) => {
     setLoading(true)
     setError(null)
-    listApiKeys(0, 100, signal)
-      .then((resp) => setKeys(resp.api_keys))
+    setKeys([])
+    setTotalCount(null)
+    listApiKeys(offset, limit, signal)
+      .then((resp) => {
+        setKeys(resp.api_keys)
+        setTotalCount(resp.count)
+        // 刷新后只保留当前页仍为活跃态的选择，避免对失效 Key 发批量请求。
+        setSelected((current) => {
+          const activeIds = new Set(resp.api_keys.filter(isSelectable).map((key) => key.api_key_id))
+          return new Set([...current].filter((id) => activeIds.has(id)))
+        })
+      })
       .catch((e: unknown) => {
         if (signal.aborted) return
         setError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载密钥列表失败')
@@ -35,7 +60,7 @@ export function KeysPage() {
       .finally(() => {
         if (!signal.aborted) setLoading(false)
       })
-  }, [])
+  }, [limit, offset])
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -43,23 +68,24 @@ export function KeysPage() {
     return () => ctrl.abort()
   }, [load, refreshNonce])
 
-  const revoke = async (k: ApiKeyView) => {
-    if (!window.confirm(`确认撤销 Key「${k.name}」(${k.key_prefix})?撤销后不可恢复。`)) return
-    setBusyId(k.api_key_id)
+  // 翻页时选择范围切到新页面，避免批量条显示不可见的旧页项目。
+  useEffect(() => setSelected(new Set()), [limit, offset])
+
+  const refresh = () => setRefreshNonce((nonce) => nonce + 1)
+
+  const revoke = async (key: ApiKeyView) => {
+    if (!window.confirm(`确认撤销 Key「${key.name}」(${key.key_prefix})?撤销后不可恢复。`)) return
+    setBusyId(key.api_key_id)
     setError(null)
     try {
-      await revokeApiKey(k.api_key_id, '')
-      setRefreshNonce((n) => n + 1)
+      await revokeApiKey(key.api_key_id, '')
+      refresh()
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '撤销失败')
     } finally {
       setBusyId(null)
     }
   }
-
-  // 仅活跃 Key 可被批量选中;勾选集随之过滤,避免对已撤销项操作。
-  const selectableIds = keys.filter(isSelectable).map((k) => k.api_key_id)
-  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id))
 
   const batchRevoke = async () => {
     const ids = [...selected]
@@ -76,7 +102,7 @@ export function KeysPage() {
       const resp = await batchRevokeApiKeys(built.ids, built.reason)
       setFlash(summarizeBatchResult(resp))
       setSelected(new Set())
-      setRefreshNonce((n) => n + 1)
+      refresh()
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '批量撤销失败')
     } finally {
@@ -84,164 +110,146 @@ export function KeysPage() {
     }
   }
 
+  const rows = mapKeyRows(keys)
+  const stats = mapKeyStats(keys, totalCount)
+  const pagination = mapKeyPagination({ offset, limit, returnedCount: keys.length, totalCount })
+  const totalCopy = totalCount === null
+    ? loading ? '总数加载中。' : '总数暂不可用。'
+    : `共 ${totalCount.toLocaleString('zh-CN')} 个。`
+  const columns: DataListColumn<KeyTableRow>[] = [
+    { key: 'name', label: '名称', render: (row) => <span style={nameStyle}>{row.name}</span> },
+    { key: 'prefix', label: '前缀', render: (row) => <code className="hk-mono">{row.prefix}</code> },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+    { key: 'expires', label: '过期', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+    { key: 'last-used', label: '最近使用', render: (row) => <span className="hk-mono">{row.lastUsedAt}</span> },
+    { key: 'created', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
         <div>
           <h1>我的密钥</h1>
-          <p className="hk-sub">
-            管线第 3 站 · 把账号池签发成可用密钥。共 {keys.length} 个。
-          </p>
+          <p className="hk-sub">管线第 3 站 · 把账号池签发成可用密钥。{totalCopy}</p>
         </div>
         <button type="button" onClick={() => setCreateOpen(true)} className="hk-btn hk-btn--green">
           ＋ 新建 Key
         </button>
       </header>
 
-      {createOpen && (
-        <CreateKeyModal onClose={() => setCreateOpen(false)} onCreated={() => setRefreshNonce((n) => n + 1)} />
-      )}
+      {createOpen && <CreateKeyModal onClose={() => setCreateOpen(false)} onCreated={refresh} />}
       {editing && (
         <EditKeyModal
           apiKey={editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
-            setRefreshNonce((n) => n + 1)
+            refresh()
           }}
         />
       )}
 
-      {error && (
-        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
-          {error}
-        </div>
-      )}
-      {flash && (
-        <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }}>
-          {flash}
-        </div>
-      )}
+      <section aria-label="密钥统计" style={statsGridStyle}>
+        {stats.map((card) => (
+          <StatCard key={card.label} label={card.label} value={card.value} hint={card.hint} tone={card.tone} />
+        ))}
+      </section>
+
+      {error && <div style={errorStyle}>{error}</div>}
+      {flash && <div style={flashStyle}>{flash}</div>}
+
       {selected.size > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-2) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }}>
+        <div style={batchBarStyle}>
           <span style={{ fontSize: 13, color: 'var(--hk-ink-700)' }}>已选 {selected.size} 个</span>
-          <button type="button" disabled={batchBusy} onClick={batchRevoke} className="hk-btn hk-btn--danger hk-btn--sm">
+          <button type="button" disabled={batchBusy} onClick={() => void batchRevoke()} className="hk-btn hk-btn--danger hk-btn--sm">
             {batchBusy ? '撤销中…' : '批量撤销'}
           </button>
-          <button type="button" onClick={() => setSelected(new Set())} style={{ border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 13, cursor: 'pointer' }}>
-            清空选择
-          </button>
+          <button type="button" onClick={() => setSelected(new Set())} style={clearSelectionStyle}>清空选择</button>
         </div>
       )}
 
       <div className="hk-card">
-        {loading && keys.length === 0 ? (
-          <Empty>加载中…</Empty>
-        ) : keys.length === 0 ? (
-          <Empty>还没有密钥。点击右上角「新建 Key」创建第一个。</Empty>
+        {loading ? (
+          <div style={skeletonWrapStyle}><SkeletonRows rows={6} cols={8} /></div>
+        ) : rows.length === 0 ? (
+          <EmptyState
+            title={offset > 0 ? '当前页没有更多密钥' : '暂无密钥'}
+            hint={offset > 0 ? '返回上一页继续查看。' : '新建 Key 后会在这里显示脱敏前缀与使用状态。'}
+            action={offset > 0
+              ? { label: '返回上一页', onClick: () => setOffset(Math.max(0, offset - limit)) }
+              : { label: '新建 Key', onClick: () => setCreateOpen(true) }}
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  <th style={{ width: 36 }}>
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      aria-label="全选活跃 Key"
-                      onChange={(e) => setSelected(e.target.checked ? new Set(selectableIds) : new Set())}
-                    />
-                  </th>
-                  {['名称', '前缀', '状态', '过期', '最近使用', '创建时间', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {keys.map((k) => (
-                  <tr key={k.api_key_id}>
-                    <td style={{ textAlign: 'center' }}>
-                      {isSelectable(k) && (
-                        <input
-                          type="checkbox"
-                          checked={selected.has(k.api_key_id)}
-                          aria-label={`选择 ${k.name}`}
-                          onChange={() => setSelected((s) => toggleSelected(s, k.api_key_id))}
-                        />
-                      )}
-                    </td>
-                    <td>
-                      <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{k.name}</span>
-                    </td>
-                    <td>
-                      <code className="hk-mono">{k.key_prefix}</code>
-                    </td>
-                    <td>
-                      <StatusBadge tone={statusTone(k.status)}>{statusLabel(k.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmt(k.expires_at) || '永不'}</td>
-                    <td className="hk-mono">{fmt(k.last_used_at) || '从未'}</td>
-                    <td className="hk-mono">{fmt(k.created_at)}</td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {k.status === 'active' && (
-                        <>
-                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} className="hk-btn hk-btn--sm" style={{ marginRight: 'var(--hk-space-2)' }}>
-                            编辑
-                          </button>
-                          <button type="button" disabled={busyId === k.api_key_id} onClick={() => revoke(k)} className="hk-btn hk-btn--danger hk-btn--sm">
-                            撤销
-                          </button>
-                        </>
-                      )}
-                      {/* 已停用的 key 仍可进编辑模态,用其中的「重新启用」复活(后端 PATCH status active) */}
-                      {k.status === 'revoked' && (
-                        <button type="button" disabled={busyId === k.api_key_id} onClick={() => setEditing(k)} className="hk-btn hk-btn--sm">
-                          管理
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="我的密钥列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            selectable={{
+              selectedIds: selected,
+              onToggle: (id) => {
+                if (typeof id === 'number') setSelected((current) => toggleSelected(current, id))
+              },
+              onToggleAll: (ids) => {
+                const pageIds = ids.filter((id): id is number => typeof id === 'number')
+                setSelected((current) => togglePageSelection(current, pageIds))
+              },
+              isSelectable: (row) => isSelectable(row.source),
+            }}
+            actions={[
+              {
+                label: (row) => row.status === 'active' ? '编辑' : '管理',
+                onClick: (row) => setEditing(row.source),
+                disabled: (row) => busyId === row.id,
+              },
+              {
+                label: '撤销',
+                onClick: (row) => { void revoke(row.source) },
+                tone: 'danger',
+                disabled: (row) => !isSelectable(row.source) || busyId === row.id,
+              },
+            ]}
+          />
         )}
       </div>
+
+      <nav aria-label="密钥列表分页" style={paginationStyle}>
+        <span>{pagination.scopeText} · 第 {pagination.page} 页</span>
+        <div style={paginationActionsStyle}>
+          <label style={pageSizeLabelStyle}>
+            每页
+            <select
+              aria-label="每页密钥数"
+              value={limit}
+              disabled={loading}
+              onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0) }}
+              className="hk-input"
+              style={pageSizeSelectStyle}
+            >
+              {KEYS_PAGE_LIMIT_OPTIONS.map((size) => <option key={size} value={size}>{size} 个</option>)}
+            </select>
+          </label>
+          <button type="button" className="hk-btn hk-btn--sm" disabled={loading || !pagination.canPrevious} onClick={() => setOffset(Math.max(0, offset - limit))}>上一页</button>
+          <button type="button" className="hk-btn hk-btn--sm" disabled={loading || !pagination.canNext} onClick={() => setOffset(offset + limit)}>下一页</button>
+        </div>
+      </nav>
     </div>
   )
 }
 
-function statusTone(status: string): BadgeTone {
-  switch (status) {
-    case 'active':
-      return 'ok'
-    case 'revoked':
-      return 'muted'
-    case 'expired':
-      return 'danger'
-    default:
-      return 'muted'
-  }
-}
-function statusLabel(status: string): string {
-  switch (status) {
-    case 'active':
-      return '活跃'
-    case 'revoked':
-      return '已撤销'
-    case 'expired':
-      return '已过期'
-    default:
-      return status
-  }
-}
-
-function fmt(iso: string | null | undefined): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
+const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--hk-space-3)' }
+const nameStyle: CSSProperties = { fontWeight: 600, color: 'var(--hk-ink-900)' }
+const errorStyle: CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
+const flashStyle: CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
+const batchBarStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-2) var(--hk-space-4)', background: 'var(--hk-surface-sunken)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)' }
+const clearSelectionStyle: CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 13, cursor: 'pointer' }
+const skeletonWrapStyle: CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)' }
+const paginationStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 'var(--hk-space-3)', fontSize: 13, color: 'var(--hk-ink-500)' }
+const paginationActionsStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }
+const pageSizeLabelStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }
+const pageSizeSelectStyle: CSSProperties = { width: 92, minHeight: 30, padding: '0 var(--hk-space-2)' }

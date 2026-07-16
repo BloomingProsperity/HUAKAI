@@ -1,20 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { approveRefundRequest, listRefundRequests, rejectRefundRequest } from './api'
-import { refundRequestStatusLabel, refundRequestStatusTone } from './ordersadmin'
+import { mapRefundRequestRows, type RefundRequestTableRow } from './ordersadmin'
 import {
   dangerBtn,
   errBox,
-  Empty,
-  fmt,
   ghostBtn,
   inp,
   panel,
-  primaryBtn,
-  td,
-  tdNum,
-  th,
 } from './ui'
 import type { RefundRequestView } from './types'
 
@@ -31,6 +27,9 @@ export function RefundRequestsTab({ tenantId }: { tenantId: number }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [rejectingId, setRejectingId] = useState<number | null>(null)
+  const [reason, setReason] = useState('')
 
   const load = useCallback(
     (signal: AbortSignal) => {
@@ -56,10 +55,53 @@ export function RefundRequestsTab({ tenantId }: { tenantId: number }) {
     return () => ctrl.abort()
   }, [load, nonce])
 
+  const run = async (id: number, fn: () => Promise<unknown>) => {
+    setBusyId(id)
+    setError(null)
+    try {
+      await fn()
+      setRejectingId(null)
+      setReason('')
+      setNonce((n) => n + 1)
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '操作失败')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const onApprove = (row: RefundRequestTableRow) => {
+    const rr = row.source
+    // money 敏感 + 破坏性:保留既有二次确认,确认后才调用原审批端点。
+    if (
+      !window.confirm(
+        `确认通过退款工单 #${rr.id}?\n将以订单 #${rr.order_id} 原额退款并扣减用户 #${rr.user_id ?? '?'} 余额,此操作动钱不可轻易撤销。`,
+      )
+    ) {
+      return
+    }
+    void run(rr.id, () => approveRefundRequest(rr.id, tenantId))
+  }
+
+  const rowsForTable = mapRefundRequestRows(rows)
+  const columns: DataListColumn<RefundRequestTableRow>[] = [
+    { key: 'request', label: '工单', render: (row) => <span className="hk-mono">#{row.id}</span> },
+    { key: 'order', label: '订单', render: (row) => <span className="hk-mono">#{row.orderId}</span> },
+    { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.userId ?? '—'}</span> },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+    { key: 'reason', label: '原因', render: (row) => row.reason },
+    { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
+
   if (tenantId <= 0) {
     return (
       <div style={panel}>
-        <Empty>请先在「订单列表」Tab 填写并查询租户 ID,退款工单按该租户加载。</Empty>
+        <EmptyState title="尚未选择租户" hint="请先在「订单列表」Tab 填写并查询租户 ID，退款工单按该租户加载。" />
       </div>
     )
   }
@@ -77,140 +119,58 @@ export function RefundRequestsTab({ tenantId }: { tenantId: number }) {
       {error && <div style={errBox}>{error}</div>}
       <div style={panel}>
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载退款工单" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>该租户暂无待审批退款工单。</Empty>
+          <EmptyState title="暂无待审批退款工单" hint="该租户当前没有需要运营处置的退款申请。" tone="positive" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  {['工单', '订单', '用户', '状态', '原因', '创建时间', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((rr) => (
-                  <RefundRequestRow
-                    key={rr.id}
-                    rr={rr}
-                    tenantId={tenantId}
-                    onDone={() => setNonce((n) => n + 1)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="退款工单列表"
+            rows={rowsForTable}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[
+              {
+                label: '通过退款',
+                onClick: onApprove,
+                disabled: (row) => row.source.status !== 'pending' || busyId !== null,
+              },
+              {
+                label: '驳回',
+                tone: 'danger',
+                onClick: (row) => {
+                  setRejectingId((current) => current === row.id ? null : row.id)
+                  setReason('')
+                },
+                disabled: (row) => row.source.status !== 'pending' || busyId !== null,
+              },
+            ]}
+          />
         )}
       </div>
-    </div>
-  )
-}
-
-function RefundRequestRow({
-  rr,
-  tenantId,
-  onDone,
-}: {
-  rr: RefundRequestView
-  tenantId: number
-  onDone: () => void
-}) {
-  const [busy, setBusy] = useState(false)
-  const [actErr, setActErr] = useState<string | null>(null)
-  const [rejecting, setRejecting] = useState(false)
-  const [reason, setReason] = useState('')
-
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true)
-    setActErr(null)
-    try {
-      await fn()
-      onDone()
-    } catch (e) {
-      setActErr(e instanceof ApiError ? `${e.message}(${e.code})` : '操作失败')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onApprove = () => {
-    // money 敏感 + 破坏性:二次确认。
-    if (
-      !window.confirm(
-        `确认通过退款工单 #${rr.id}?\n将以订单 #${rr.order_id} 原额退款并扣减用户 #${rr.user_id ?? '?'} 余额,此操作动钱不可轻易撤销。`,
-      )
-    ) {
-      return
-    }
-    void run(() => approveRefundRequest(rr.id, tenantId))
-  }
-
-  const onReject = () => {
-    void run(() => rejectRefundRequest(rr.id, tenantId, reason)).then(() => setRejecting(false))
-  }
-
-  const pending = rr.status === 'pending'
-
-  return (
-    <>
-      <tr style={{ borderTop: '1px solid var(--hk-line)' }}>
-        <td style={tdNum}>#{rr.id}</td>
-        <td style={tdNum}>#{rr.order_id}</td>
-        <td style={tdNum}>{rr.user_id ?? '—'}</td>
-        <td style={td}>
-          <StatusBadge tone={refundRequestStatusTone(rr.status)}>
-            {refundRequestStatusLabel(rr.status)}
-          </StatusBadge>
-        </td>
-        <td style={td}>{rr.reason || '—'}</td>
-        <td style={td}>{fmt(rr.created_at)}</td>
-        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-          {pending ? (
-            <div style={{ display: 'inline-flex', gap: 'var(--hk-space-2)' }}>
-              <button type="button" disabled={busy} onClick={onApprove} style={primaryBtn}>
-                通过退款
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setRejecting((v) => !v)}
-                style={dangerBtn}
-              >
-                驳回
-              </button>
-            </div>
-          ) : (
-            <span style={{ color: 'var(--hk-ink-500)' }}>已处置</span>
-          )}
-        </td>
-      </tr>
-      {(rejecting || actErr) && pending && (
-        <tr>
-          <td colSpan={7} style={{ ...td, background: 'var(--hk-surface-sunken)' }}>
-            {actErr && <div style={{ ...errBox, marginBottom: 'var(--hk-space-2)' }}>{actErr}</div>}
-            {rejecting && (
-              <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center' }}>
-                <input
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="驳回原因(可选,记入工单)"
-                  style={{ ...inp, maxWidth: 360 }}
-                />
-                <button type="button" disabled={busy} onClick={onReject} style={dangerBtn}>
-                  确认驳回
-                </button>
-                <button type="button" disabled={busy} onClick={() => setRejecting(false)} style={ghostBtn}>
-                  取消
-                </button>
-              </div>
-            )}
-          </td>
-        </tr>
+      {rejectingId !== null && (
+        <section style={{ ...panel, padding: 'var(--hk-space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+          <strong style={{ fontSize: 13 }}>驳回退款工单 #{rejectingId}</strong>
+          <div style={{ display: 'flex', gap: 'var(--hk-space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="驳回原因(可选,记入工单)"
+              style={{ ...inp, maxWidth: 360 }}
+            />
+            <button
+              type="button"
+              disabled={busyId !== null}
+              onClick={() => { void run(rejectingId, () => rejectRefundRequest(rejectingId, tenantId, reason)) }}
+              style={dangerBtn}
+            >
+              确认驳回
+            </button>
+            <button type="button" disabled={busyId !== null} onClick={() => setRejectingId(null)} style={ghostBtn}>
+              取消
+            </button>
+          </div>
+        </section>
       )}
-    </>
+    </div>
   )
 }

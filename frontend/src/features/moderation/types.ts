@@ -19,7 +19,7 @@ export interface ModerationConfig {
   enabled: boolean
   /** fail-closed:审核后端异常时是放行还是拦截(true=拦截更安全)。 */
   fail_closed: boolean
-  /** 采样率百分比 0~100:抽多少比例的请求过审。 */
+  /** 外部审核采样率百分比 0~100；本地关键词/哈希检查不采样，默认 100=全检。 */
   sample_rate_pct: number
   /** 自动封禁阈值:窗口内命中多少次后封 Key。 */
   ban_threshold: number

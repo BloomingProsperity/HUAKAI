@@ -150,15 +150,18 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 }
 
-func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
+func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
 	if ex.reserveRes == nil {
-		return
+		return true
 	}
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
 	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
+		return false
 	}
+	ex.reserveRes = nil
+	return true
 }
 
 func (ex *execution) ensureIdempotency() {

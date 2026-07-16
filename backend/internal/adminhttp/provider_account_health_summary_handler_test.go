@@ -1,7 +1,6 @@
 package adminhttp
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -48,23 +48,16 @@ func TestHealthSummaryTenantScoped(t *testing.T) {
 	store := newProviderAccountHealthStoreStub()
 	store.summaryRows = []admindb.SummarizeProviderAccountHealthRow{{HealthState: "operational", Enabled: true, N: 5}}
 	deps := ProviderAccountHealthDeps{
-		Auth:  providerAccountHealthAuthStub{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  providerAccountHealthAuthStub{ident: admintest.TenantOperator(0, 7)},
 		Store: store,
 	}
 	rec := invokeHealthSummary(t, deps, "/admin/v1/provider-accounts/health-summary?tenant_id=999")
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
-	// tenant_operator 忽略 query tenant_id,只用身份内 scope=7(变异:若读 query 则 summaryArgs=999)
-	if len(store.summaryArgs) != 1 || store.summaryArgs[0] != 7 {
-		t.Fatalf("summaryArgs=%v want [7]", store.summaryArgs)
-	}
-	var body providerAccountHealthSummaryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if body.Total != 5 {
-		t.Fatalf("total=%d want 5", body.Total)
+	// 破坏点→删除 CanActOnTenant 时会以 999 查询汇总，本断言与零调用断言转红。
+	if len(store.summaryArgs) != 0 {
+		t.Fatalf("scope 拒绝后不应查询汇总，summaryArgs=%v", store.summaryArgs)
 	}
 }
 

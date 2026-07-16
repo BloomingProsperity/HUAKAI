@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
@@ -31,7 +32,7 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 	now := time.Now().UTC()
 	store := voucher.NewMemoryStore()
 	svc := voucher.NewService(store)
-	auth := staticVoucherAdminAuth{ident: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	auth := staticVoucherAdminAuth{ident: admintest.Platform(99)}
 
 	r := chi.NewRouter()
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
@@ -151,7 +152,7 @@ func TestAT_BILL_002_011_VoucherGetBatchRouteTenantScoped(t *testing.T) {
 	now := time.Now().UTC()
 	store := voucher.NewMemoryStore()
 	svc := voucher.NewService(store)
-	auth := staticVoucherAdminAuth{ident: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	auth := staticVoucherAdminAuth{ident: admintest.Platform(99)}
 
 	r := chi.NewRouter()
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
@@ -199,7 +200,7 @@ func TestVoucherRedeemPromoGate(t *testing.T) {
 	now := time.Now().UTC()
 	store := voucher.NewMemoryStore()
 	svc := voucher.NewService(store)
-	auth := staticVoucherAdminAuth{ident: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	auth := staticVoucherAdminAuth{ident: admintest.Platform(99)}
 
 	sessionMW := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

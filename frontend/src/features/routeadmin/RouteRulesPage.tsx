@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   createRoute,
@@ -9,13 +12,14 @@ import {
   updateRoute,
 } from './api'
 import {
-  displayModelPattern,
   emptyForm,
+  mapRouteRows,
   routeToForm,
   sortRoutes,
   validateCreate,
   validateUpdate,
   type RouteForm,
+  type RouteTableRow,
 } from './routeadmin'
 import type { Route } from './types'
 
@@ -30,8 +34,16 @@ import type { Route } from './types'
  */
 
 export function RouteRulesPage() {
+  const me = useMe()
   const [tenantInput, setTenantInput] = useState('')
   const [tenantId, setTenantId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (tenantId != null || tenantInput.trim() !== '') return
+    if (me.status !== 'ready' || me.tenantId == null || me.tenantId <= 0) return
+    setTenantInput(String(me.tenantId))
+    setTenantId(me.tenantId)
+  }, [me.status, me.tenantId, tenantId, tenantInput])
 
   return (
     <div className="hk-page">
@@ -39,7 +51,7 @@ export function RouteRulesPage() {
         <div>
           <h1>请求路由规则</h1>
           <p className="hk-sub">
-            按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。先指定租户 ID。
+            按(用户组 × 模型模式)把请求路由到目标 pool_group,按优先级(数值小=先生效)裁决。默认加载当前租户，也可手动切换。
           </p>
         </div>
       </header>
@@ -59,7 +71,7 @@ export function RouteRulesPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <RulesCard tenantId={tenantId} />
       )}
@@ -157,6 +169,7 @@ function RulesCard({ tenantId }: { tenantId: number }) {
     if (!window.confirm(`删除路由规则「${r.name}」?此操作不可撤销(软删)。`)) return
     void run(() => deleteRoute(r.id, tenantId), '已删除')
   }
+  const tableRows = mapRouteRows(rows)
 
   return (
     <section className="hk-card">
@@ -177,86 +190,39 @@ function RulesCard({ tenantId }: { tenantId: number }) {
         <RuleForm mode="new" form={form} setForm={setForm} busy={busy} onSubmit={submit} onCancel={cancelEdit} />
       )}
 
+      {typeof editing === 'number' && (
+        <RuleForm mode="edit" form={form} setForm={setForm} busy={busy} onSubmit={submit} onCancel={cancelEdit} />
+      )}
+
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载路由规则" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无路由规则。新建第一条以把请求按用户组/模型路由到 pool_group。</Empty>
+        <EmptyState title="暂无路由规则" hint="新建第一条规则，把请求按用户组和模型路由到 pool_group。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['优先级', '规则名', '用户组匹配', '模型模式', 'pool_group', '状态', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <RuleRow
-                  key={r.id}
-                  route={r}
-                  editing={editing === r.id}
-                  form={form}
-                  setForm={setForm}
-                  busy={busy}
-                  onEdit={() => openEdit(r)}
-                  onCancel={cancelEdit}
-                  onSubmit={submit}
-                  onToggle={() => toggleEnabled(r)}
-                  onDelete={() => remove(r)}
-                />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="路由规则"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={routeColumns}
+          actions={[
+            { label: '编辑', disabled: busy, onClick: (row) => openEdit(row.route) },
+            { label: (row) => row.route.enabled ? '停用' : '启用', disabled: busy, onClick: (row) => toggleEnabled(row.route) },
+            { label: '删除', tone: 'danger', disabled: busy, onClick: (row) => remove(row.route) },
+          ]}
+        />
       )}
     </section>
   )
 }
 
-// 单行:非编辑态展示规则;编辑态内联展开一个 RuleForm(跨整行)。
-function RuleRow({
-  route, editing, form, setForm, busy, onEdit, onCancel, onSubmit, onToggle, onDelete,
-}: {
-  route: Route
-  editing: boolean
-  form: RouteForm
-  setForm: (f: RouteForm) => void
-  busy: boolean
-  onEdit: () => void
-  onCancel: () => void
-  onSubmit: () => void
-  onToggle: () => void
-  onDelete: () => void
-}) {
-  if (editing) {
-    return (
-      <tr>
-        <td colSpan={7} style={{ padding: 0 }}>
-          <RuleForm mode="edit" form={form} setForm={setForm} busy={busy} onSubmit={onSubmit} onCancel={onCancel} />
-        </td>
-      </tr>
-    )
-  }
-  return (
-    <tr>
-      <td className="hk-mono">{route.match_priority}</td>
-      <td>{route.name}</td>
-      <td className="hk-mono">{route.user_group_match}</td>
-      <td className="hk-mono">{displayModelPattern(route.model_pattern_match)}</td>
-      <td className="hk-mono">#{route.pool_group_id}</td>
-      <td>
-        <StatusBadge tone={route.enabled ? 'ok' : 'muted'}>{route.enabled ? '启用' : '停用'}</StatusBadge>
-      </td>
-      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-        <button type="button" disabled={busy} onClick={onEdit} className="hk-btn hk-btn--sm">编辑</button>
-        <button type="button" disabled={busy} onClick={onToggle} className="hk-btn hk-btn--sm" style={{ marginLeft: 'var(--hk-space-2)' }}>{route.enabled ? '停用' : '启用'}</button>
-        <button type="button" disabled={busy} onClick={onDelete} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>删除</button>
-      </td>
-    </tr>
-  )
-}
+const routeColumns: DataListColumn<RouteTableRow>[] = [
+  { key: 'priority', label: '优先级', render: (row) => <span className="hk-mono">{row.priority}</span> },
+  { key: 'name', label: '规则名', render: (row) => row.name },
+  { key: 'user-group', label: '用户组匹配', render: (row) => <span className="hk-mono">{row.userGroup}</span> },
+  { key: 'model-pattern', label: '模型模式', render: (row) => <span className="hk-mono">{row.modelPattern}</span> },
+  { key: 'pool-group', label: 'pool_group', render: (row) => <span className="hk-mono">{row.poolGroup}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+]
 
 // 新建/编辑共用表单。编辑态隐含全替换语义,优先级始终显式提交(留空回落默认 100)。
 function RuleForm({
@@ -315,8 +281,4 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

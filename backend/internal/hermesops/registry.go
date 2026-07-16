@@ -19,7 +19,7 @@ func roleRank(role string) int {
 }
 
 // RoleAllowed 报告 actorRole 是否满足 requiredRole。租户作用域校验
-// (CanIssueForTenant)是一个 SEPARATE(独立)权威,由 HTTP 层在 dispatch 前强制执行;
+// (CanActOnTenant)是一个 SEPARATE(独立)权威,由 HTTP 层在 dispatch 前强制执行;
 // 本函数只检查角色下限。
 func RoleAllowed(actorRole, requiredRole string) bool {
 	return roleRank(actorRole) >= roleRank(requiredRole) && roleRank(actorRole) > 0
@@ -69,7 +69,7 @@ func (r *Registry) List() []ToolSpec {
 
 // Authorize 在 NOT(不)运行工具的前提下检查其角色下限。对未注册的 name 返回 ErrToolUnknown,
 // 角色低于工具下限时返回 ErrToolForbidden。HTTP 层会在 Run 之前调用本函数(以及
-// CanIssueForTenant),好让一次拒绝被记录成一条 denied 的 tool-call 行。
+// CanActOnTenant),好让一次拒绝被记录成一条 denied 的 tool-call 行。
 func (r *Registry) Authorize(name, actorRole string) (ToolSpec, error) {
 	spec, ok := r.Get(name)
 	if !ok {
@@ -84,7 +84,7 @@ func (r *Registry) Authorize(name, actorRole string) (ToolSpec, error) {
 // Run 先授权,再 dispatch 一个 READ-ONLY(只读)工具。它是唯一的只读 dispatch 入口;
 // 永不绕过角色下限,并且会 REFUSE(拒绝)一个 mutating 工具(ErrNotMutating),从而让状态
 // 改动永远无法从只读路径偷溜进来。租户作用域授权是调用方的责任(在 Run 之前经
-// CanIssueForTenant 强制执行)——Run 信任 req.TenantID 已经过作用域校验。
+// CanActOnTenant 强制执行)——Run 信任 req.TenantID 已经过作用域校验。
 func (r *Registry) Run(ctx context.Context, name string, req ToolRequest) (ToolResult, error) {
 	spec, err := r.Authorize(name, req.Role)
 	if err != nil {

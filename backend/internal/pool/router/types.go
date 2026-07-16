@@ -22,6 +22,7 @@ var (
 type NoCapacityError struct {
 	Cause              error
 	EarliestRecoveryAt time.Time
+	Exhaustion         Exhaustion
 }
 
 func (e *NoCapacityError) Error() string {
@@ -36,6 +37,37 @@ func (e *NoCapacityError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
+}
+
+// ExhaustionFamily 是 selector 在所有候选均不可执行时给出的稳定归约。
+// capacity 只包含可恢复容量闸；static_mismatch 表示换容量车道也无法修复；
+// context_window 单独保留给定向窗口降级；mixed/unknown 一律 fail-closed。
+type ExhaustionFamily string
+
+const (
+	ExhaustionFamilyUnknown        ExhaustionFamily = "unknown"
+	ExhaustionFamilyCapacity       ExhaustionFamily = "capacity"
+	ExhaustionFamilyStaticMismatch ExhaustionFamily = "static_mismatch"
+	ExhaustionFamilyContextWindow  ExhaustionFamily = "context_window"
+	ExhaustionFamilyMixed          ExhaustionFamily = "mixed"
+)
+
+// Exhaustion 保留脱敏后的失败原因直方图。它只含本地枚举，不含上游文本、
+// 凭据或请求内容，可安全用于 executor 判定与路由审计。
+type Exhaustion struct {
+	Family  ExhaustionFamily
+	Reasons map[GateFailureReason]int
+}
+
+// PureCapacity 报告本错误是否只由可恢复容量原因构成。只有 true 才能作为
+// binding quota class 的 selector 触发依据。
+func (e *NoCapacityError) PureCapacity() bool {
+	return e != nil && e.Exhaustion.Family == ExhaustionFamilyCapacity
+}
+
+// ContextWindowOnly 报告所有候选是否只被原 canonical context window 挡下。
+func (e *NoCapacityError) ContextWindowOnly() bool {
+	return e != nil && e.Exhaustion.Family == ExhaustionFamilyContextWindow
 }
 
 // Selector 按 docs/specs/pool-routing.md §Phase A-D 的分层算法为租户请求
@@ -104,6 +136,9 @@ type SelectionRequest struct {
 	BindingID       int64
 	BindingRPMLimit int64
 	BindingTPMLimit int64
+	// MaxParallelRequests 是命中 binding 的全局在途上限。正数启用；0 或负数表示不限。
+	// 外层 selector 只用它快速拒绝，真正抗并发的裁定仍在 DBSlotManager 的事务内完成。
+	MaxParallelRequests int64
 }
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
@@ -122,8 +157,11 @@ const (
 
 // SelectionResult 是 Phase C 输出：已拿到的 Provider Account 或等待计划。
 type SelectionResult struct {
-	AccountID         int64
-	AcquisitionToken  uuid.UUID
+	AccountID        int64
+	AcquisitionToken uuid.UUID
+	// Release 仅供不进入 billing settler 的短生命周期端点使用。计费端点必须继续
+	// 让 settle/abort 按 claim 原子释放，不能在 handler 中提前调用。
+	Release           ReleaseFunc
 	WaitPlan          *WaitPlan
 	RoutingReasonJSON []byte
 	// StickyState 见上;只对 AccountID != 0 的结果有意义。

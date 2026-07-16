@@ -12,12 +12,15 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -126,6 +129,52 @@ func clientStatusForUpstreamError(upstreamStatus int, class gateway.ErrorClass) 
 		return http.StatusServiceUnavailable
 	}
 	return http.StatusBadGateway
+}
+
+func bindingFallbackSignalFromDecision(classification gateway.Classification, decision gateway.AttemptRetryDecision) bindingfallback.Signal {
+	return fallbackexec.SignalFromDecision(classification, decision)
+}
+
+// bindingFallbackSignalFromUpstream 只读取上游 JSON 中的机器枚举字段，绝不把
+// message 或原始文本带入状态机/审计。普通 413、403、400 不足以触发窗口或
+// safety；必须命中窄机器码，随后其余信号仍由规范化分类器决定。
+func bindingFallbackSignalFromUpstream(status int, body []byte, classification gateway.Classification, decision gateway.AttemptRetryDecision) bindingfallback.Signal {
+	return fallbackexec.SignalFromUpstream(status, body, classification, decision)
+}
+
+type bindingFallbackEvidence struct {
+	core bindingfallback.Evidence
+}
+
+func (e *bindingFallbackEvidence) add(failure *classifiedAttemptFailure, plan router.RoutePlan) bool {
+	if e == nil || failure == nil || bindingfallback.IsTerminal(failure.FallbackSignal) {
+		return false
+	}
+	target, ok := e.core.Add(failure.FallbackSignal, failure.Decision.RetryableBeforeDelivery)
+	if !ok {
+		return false
+	}
+	_, configured := fallbackPhaseForClass(plan, target)
+	return configured
+}
+
+func (e bindingFallbackEvidence) transition(plan router.RoutePlan, localSafetyPassed bool) (router.FallbackPhasePlan, bindingfallback.Signal, bool) {
+	transition, allowed := e.core.Transition(bindingfallback.TransitionState{
+		CurrentClass: bindingfallback.ClassNormal, PrimaryExhausted: true,
+		TargetConfigured: true, LocalSafetyPassed: localSafetyPassed,
+	})
+	if !allowed {
+		return router.FallbackPhasePlan{}, "", false
+	}
+	phase, configured := fallbackPhaseForClass(plan, transition.To)
+	if !configured {
+		return router.FallbackPhasePlan{}, "", false
+	}
+	return phase, transition.Trigger, true
+}
+
+func fallbackPhaseForClass(plan router.RoutePlan, class bindingfallback.Class) (router.FallbackPhasePlan, bool) {
+	return router.FallbackPhaseForClass(plan, class)
 }
 
 func closeDispatchResult(res *gateway.DispatchResult) {
@@ -337,4 +386,63 @@ func recordModelCooldownFromUpstreamError(ctx context.Context, d ChatHandlerDeps
 		return false
 	}
 	return true
+}
+
+// classifyPoolSelectFailure 把 pool.Selector 的错误映射为对应的 HTTP 失败和
+// claim abort(含 SEC-249/250 per-key 限流的 429)。err 为 nil → 返回 nil。
+func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err error) *classifiedAttemptFailure {
+	if err == nil {
+		return nil
+	}
+	abort := func(reason string) error {
+		return ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
+	}
+	switch {
+	case errors.Is(err, pool.ErrBindingConcurrencyLimited):
+		if e := abort("binding_concurrency_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeBindingConcurrencyLimited, clienterr.MessageFor(clienterr.CodeBindingConcurrencyLimited), "binding_concurrency_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingConcurrencyLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrBindingRateLimited):
+		if e := abort("binding_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "binding_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalBindingRateLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrKeyRateLimited):
+		if e := abort("key_rate_limited"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "key_rate_limited", err)
+		f.FallbackSignal = bindingfallback.SignalKeyRateLimit
+		f.RetryAfterSeconds = 1
+		return f
+	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
+		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = poolExhaustionFallbackSignal(err)
+		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。
+		f.RetryAfterSeconds = poolNoCapacityRetryAfter(err, time.Now())
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
+	case errors.Is(err, pool.ErrClaimRace):
+		if e := abort("claim_race"); e != nil && w != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
+		}
+		f := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
+		f.FallbackSignal = bindingfallback.SignalClaimConflict
+		f.RetryAfterSeconds = 1
+		return f
+	default:
+		f := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
+		f.FallbackSignal = bindingfallback.SignalLocalConfigurationFailure
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_select_error"))
+	}
+}
+
+func poolExhaustionFallbackSignal(err error) bindingfallback.Signal {
+	return fallbackexec.SignalFromPoolError(err)
 }

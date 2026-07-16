@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
@@ -185,7 +186,7 @@ func TestUsageExportCSVShape(t *testing.T) {
 }
 
 func TestExportAuthRequiredAdmin(t *testing.T) {
-	router := newExportTestRouter(&paymentExportStub{}, &usageExportStub{}, admin.AdminIdentity{TokenID: 9, Role: "viewer", ScopeTenantID: 7}, 10)
+	router := newExportTestRouter(&paymentExportStub{}, &usageExportStub{}, admin.AdminIdentity{TokenID: 9, Role: "viewer"}, 10)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/payments/export.csv?from=2026-06-01T00:00:00Z&to=2026-06-02T00:00:00Z", nil)
@@ -231,7 +232,7 @@ func newExportTestRouter(payments *paymentExportStub, usage *usageExportStub, id
 }
 
 func scopedAdmin(tenantID int64) admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
+	return admintest.TenantOperator(1, tenantID)
 }
 
 func readCSV(t *testing.T, body string) [][]string {

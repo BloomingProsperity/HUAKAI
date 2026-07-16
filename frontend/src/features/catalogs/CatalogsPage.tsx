@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   createChannel,
@@ -12,19 +14,21 @@ import {
   updateProvider,
 } from './api'
 import {
-  DEFAULT_FAILOVER_CODES,
   UPSTREAM_PROTOCOLS,
-  formatFailoverCodes,
-  validateChannel,
+  channelFormFromItem,
+  mapChannelCatalogRows,
+  mapProviderCatalogRows,
+  validateAndDispatchChannel,
   validateProviderCreate,
   validateProviderUpdate,
 } from './catalogs'
+import type { ChannelCatalogTableRow, ProviderCatalogTableRow } from './catalogs'
 import type { ChannelCatalogItem, ProviderCatalogItem } from './types'
 
 /*
  * 上游目录运营台。管线「模型与定价」分组下的目录写侧管理面:
  *   - provider 目录:上游账号所属的供应商条目(code / 展示名 / 上游协议 / 启用)
- *   - channel 目录:路由失败转移条目(pool_group_id / 名称 / 触发失败转移的状态码 / 启用)
+ *   - channel 目录:池组路由条目(pool_group_id / 名称 / 启用)
  * 后端 /admin/v1/{providers,channels}(admin token),见 cmd/gateway/routes.go:888-900。
  * 注意:platform_admin 角色下后端 tenant_id 必填,故本页先要租户 ID 再加载。
  * 删除是软删但属破坏性(provider 删除后该供应商不可再新建账号),带二次确认。
@@ -44,7 +48,7 @@ export function CatalogsPage() {
         <div>
           <h1>上游目录</h1>
           <p className="hk-sub">
-            provider 目录(供应商条目)与 channel 目录(路由失败转移条目)的增删改。先指定租户 ID。
+            provider 目录(供应商条目)与 channel 目录(池组路由条目)的增删改。先指定租户 ID。
           </p>
         </div>
       </header>
@@ -72,7 +76,7 @@ export function CatalogsPage() {
       </form>
 
       {tenantId == null ? (
-        <Empty>请输入正整数租户 ID 后点击「加载」。</Empty>
+        <EmptyState title="尚未选择租户" hint="请输入正整数租户 ID 后点击「加载」。" />
       ) : (
         <>
           <ProvidersCard tenantId={tenantId} />
@@ -98,6 +102,7 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
   const [protocol, setProtocol] = useState<string>(UPSTREAM_PROTOCOLS[0])
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
+  const tableRows = mapProviderCatalogRows(rows)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -240,42 +245,20 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
 
       {/* 列表 */}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载 provider 目录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无 provider 目录条目。</Empty>
+        <EmptyState title="暂无 provider 目录条目" hint="可使用上方表单新建供应商条目。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['code', '展示名', '上游协议', '状态', '创建时间', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="hk-mono">{row.code}</td>
-                  <td>{row.display_name}</td>
-                  <td className="hk-mono">{row.upstream_protocol}</td>
-                  <td>
-                    <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{fmt(row.created_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
-                      编辑
-                    </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="provider 目录"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={providerColumns}
+          actions={[
+            { label: '编辑', disabled: busy, onClick: (row) => startEdit(row.provider) },
+            { label: '删除', tone: 'danger', disabled: busy, onClick: (row) => remove(row.provider) },
+          ]}
+        />
       )}
     </section>
   )
@@ -283,7 +266,7 @@ function ProvidersCard({ tenantId }: { tenantId: number }) {
 
 // ── channel 目录卡 ────────────────────────────────────────────────────────────
 
-function ChannelsCard({ tenantId }: { tenantId: number }) {
+export function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [rows, setRows] = useState<ChannelCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -293,9 +276,12 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
   const [editId, setEditId] = useState<number | null>(null)
   const [name, setName] = useState('')
   const [poolGroupId, setPoolGroupId] = useState('')
-  const [failoverText, setFailoverText] = useState('')
   const [enabled, setEnabled] = useState(true)
   const [reason, setReason] = useState('')
+  const [bodyParamStrips, setBodyParamStrips] = useState('')
+  const [paramOverride, setParamOverride] = useState('{}')
+  const [sensitiveWords, setSensitiveWords] = useState('')
+  const tableRows = mapChannelCatalogRows(rows)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -324,17 +310,22 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
     setEditId(null)
     setName('')
     setPoolGroupId('')
-    setFailoverText('')
     setEnabled(true)
     setReason('')
+    setBodyParamStrips('')
+    setParamOverride('{}')
+    setSensitiveWords('')
   }
 
   const startEdit = (row: ChannelCatalogItem) => {
+    const form = channelFormFromItem(row)
     setEditId(row.id)
-    setName(row.name)
-    setPoolGroupId(String(row.pool_group_id))
-    setFailoverText(formatFailoverCodes(row.failover_status_codes))
-    setEnabled(row.enabled)
+    setName(form.name)
+    setPoolGroupId(String(form.poolGroupId))
+    setEnabled(form.enabled)
+    setBodyParamStrips(form.bodyParamStrips)
+    setParamOverride(form.paramOverride)
+    setSensitiveWords(form.sensitiveWords)
     setReason('')
     setNotice(null)
     setError(null)
@@ -358,15 +349,18 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
     setError(null)
     setNotice(null)
     const pg = Number(poolGroupId.trim())
-    const v = validateChannel({ name, poolGroupId: pg, failoverText, enabled, reason })
+    const v = validateAndDispatchChannel(
+      { name, poolGroupId: pg, enabled, reason, bodyParamStrips, paramOverride, sensitiveWords },
+      (value) => {
+        if (editId == null) {
+          runOp(() => createChannel(tenantId, value), `已新建 channel「${value.name}」`)
+        } else {
+          runOp(() => updateChannel(tenantId, editId, value), `已更新 channel #${editId}`)
+        }
+      },
+    )
     if (!v.ok) {
       setError(v.error)
-      return
-    }
-    if (editId == null) {
-      runOp(() => createChannel(tenantId, v.value), `已新建 channel「${v.value.name}」`)
-    } else {
-      runOp(() => updateChannel(tenantId, editId, v.value), `已更新 channel #${editId}`)
     }
   }
 
@@ -400,9 +394,35 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
           </label>
         </div>
         <div style={formRow}>
-          <Field label={`失败转移状态码(逗号分隔,留空=默认 ${DEFAULT_FAILOVER_CODES.join(',')})`}>
-            <input value={failoverText} onChange={(e) => setFailoverText(e.target.value)} placeholder="如 401, 403, 429, 529" style={{ ...inp, width: 280 }} />
+          <Field label="请求字段剥离(body_param_strips)：剥离哪些请求字段以降低策略拦截风险；逗号分隔">
+            <textarea
+              name="body_param_strips"
+              value={bodyParamStrips}
+              onChange={(e) => setBodyParamStrips(e.target.value)}
+              placeholder="如 store, service_tier"
+              style={{ ...inp, width: 300, height: 72, paddingTop: 8 }}
+            />
           </Field>
+          <Field label="参数强制覆盖(param_override)：强制覆盖哪些请求参数；填写 JSON object">
+            <textarea
+              name="param_override"
+              value={paramOverride}
+              onChange={(e) => setParamOverride(e.target.value)}
+              spellCheck={false}
+              style={{ ...inp, width: 340, height: 96, paddingTop: 8, fontFamily: 'var(--hk-font-mono)' }}
+            />
+          </Field>
+          <Field label="输出侧敏感词混淆(sensitive_words)：配置需要混淆的词；逗号分隔">
+            <textarea
+              name="sensitive_words"
+              value={sensitiveWords}
+              onChange={(e) => setSensitiveWords(e.target.value)}
+              placeholder="如 keyword-a, keyword-b"
+              style={{ ...inp, width: 300, height: 72, paddingTop: 8 }}
+            />
+          </Field>
+        </div>
+        <div style={formRow}>
           <Field label="原因(reason,可选,写入审计)">
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="可选" style={{ ...inp, width: 220 }} />
           </Field>
@@ -421,43 +441,20 @@ function ChannelsCard({ tenantId }: { tenantId: number }) {
 
       {/* 列表 */}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载 channel 目录" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无 channel 目录条目。</Empty>
+        <EmptyState title="暂无 channel 目录条目" hint="可使用上方表单新建池组路由条目。" />
       ) : (
-        <div className="hk-tablewrap">
-          <table className="hk-table">
-            <thead>
-              <tr>
-                {['#', '名称', 'pool_group_id', '失败转移码', '状态', '创建时间', ''].map((h) => (
-                  <th key={h}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td className="hk-mono">#{row.id}</td>
-                  <td>{row.name}</td>
-                  <td className="hk-mono">{row.pool_group_id}</td>
-                  <td className="hk-mono">{formatFailoverCodes(row.failover_status_codes) || '—'}</td>
-                  <td>
-                    <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{fmt(row.created_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" disabled={busy} onClick={() => startEdit(row)} className="hk-btn hk-btn--sm">
-                      编辑
-                    </button>
-                    <button type="button" disabled={busy} onClick={() => remove(row)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="channel 目录"
+          rows={tableRows}
+          rowKey={(row) => row.id}
+          columns={channelColumns}
+          actions={[
+            { label: '编辑', disabled: busy, onClick: (row) => startEdit(row.channel) },
+            { label: '删除', tone: 'danger', disabled: busy, onClick: (row) => remove(row.channel) },
+          ]}
+        />
       )}
     </section>
   )
@@ -479,14 +476,22 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
+
+const providerColumns: DataListColumn<ProviderCatalogTableRow>[] = [
+  { key: 'code', label: 'code', render: (row) => <span className="hk-mono">{row.code}</span> },
+  { key: 'name', label: '展示名', render: (row) => row.displayName },
+  { key: 'protocol', label: '上游协议', render: (row) => <span className="hk-mono">{row.upstreamProtocol}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
+
+export const channelColumns: DataListColumn<ChannelCatalogTableRow>[] = [
+  { key: 'id', label: '#', render: (row) => <span className="hk-mono">{row.displayId}</span> },
+  { key: 'name', label: '名称', render: (row) => row.name },
+  { key: 'pool-group', label: 'pool_group_id', render: (row) => <span className="hk-mono">{row.poolGroupId}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
 
 const formWrap: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)' }
 const formRow: React.CSSProperties = { display: 'flex', gap: 'var(--hk-space-3)', alignItems: 'flex-end', flexWrap: 'wrap' }

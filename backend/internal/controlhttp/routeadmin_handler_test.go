@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 )
 
@@ -105,7 +106,7 @@ func (s *routeAdminStubService) Delete(_ context.Context, tenantID, id, adminID 
 }
 
 func routeAdminPlatformAdmin(tokenID int64) routeAdminStubAuth {
-	return routeAdminStubAuth{ident: admin.AdminIdentity{TokenID: tokenID, Role: admin.RolePlatformAdmin}}
+	return routeAdminStubAuth{ident: admintest.Platform(tokenID)}
 }
 
 func newRouteAdminTestServer(d RouteAdminDeps) *httptest.Server {

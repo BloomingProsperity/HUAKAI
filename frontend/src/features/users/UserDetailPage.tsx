@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getBalanceHistory, getUser, getUserUsage } from './api'
@@ -15,6 +16,7 @@ import { UserUsageCard } from './UserUsageCard'
  * 余额台账纯只读展示(贷记/借记按金额符号配色),不做任何金额变更。
  */
 export function UserDetailPage() {
+  const tenantId = useMe().tenantId
   const params = useParams()
   const id = Number(params.id)
   const [user, setUser] = useState<UserDetail | null>(null)
@@ -29,6 +31,12 @@ export function UserDetailPage() {
   const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
+    if (tenantId == null) {
+      setError('当前会话缺少租户 ID')
+      setLoading(false)
+      setUsageLoading(false)
+      return
+    }
     if (!Number.isInteger(id) || id <= 0) {
       setError('非法用户 ID')
       setLoading(false)
@@ -41,7 +49,7 @@ export function UserDetailPage() {
     setUsage(null)
     setUsageLoading(true)
     setUsageError(null)
-    getUser(id, ctrl.signal)
+    getUser(tenantId, id, ctrl.signal)
       .then((u) => setUser(u))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
@@ -51,14 +59,14 @@ export function UserDetailPage() {
         if (!ctrl.signal.aborted) setLoading(false)
       })
     // 余额历史独立加载:失败只提示该卡,不连累用户信息。
-    getBalanceHistory(id, 0, 100, ctrl.signal)
+    getBalanceHistory(tenantId, id, 0, 100, ctrl.signal)
       .then((resp) => setHistory(resp.items))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
         setHistoryError(e instanceof ApiError ? `${e.message}(${e.code})` : '加载余额历史失败')
       })
     // 用量独立加载，失败只影响本卡；limit=200 与后端单页上限一致。
-    getUserUsage(id, 200, ctrl.signal)
+    getUserUsage(tenantId, id, 200, ctrl.signal)
       .then((response) => setUsage(response))
       .catch((e: unknown) => {
         if (ctrl.signal.aborted) return
@@ -68,9 +76,10 @@ export function UserDetailPage() {
         if (!ctrl.signal.aborted) setUsageLoading(false)
       })
     return () => ctrl.abort()
-  }, [id, nonce])
+  }, [id, nonce, tenantId])
 
   if (loading) return <Center>加载中…</Center>
+  if (tenantId == null) return <Center tone="danger">当前会话缺少租户 ID</Center>
   if (error && !user) return <Center tone="danger">{error}</Center>
   if (!user) return <Center tone="danger">用户不存在</Center>
 
@@ -99,12 +108,12 @@ export function UserDetailPage() {
       <UserUsageCard response={usage} loading={usageLoading} error={usageError} />
 
       {/* 手动调额(money 敏感):成功后复用同一 nonce 刷新机制,重新拉余额 + 台账。 */}
-      <UserBalanceAdjust user={user} onChanged={() => setNonce((n) => n + 1)} />
+      <UserBalanceAdjust tenantId={tenantId} user={user} onChanged={() => setNonce((n) => n + 1)} />
 
-      <UserAdminActions user={user} onChanged={() => setNonce((n) => n + 1)} />
+      <UserAdminActions tenantId={tenantId} user={user} onChanged={() => setNonce((n) => n + 1)} />
 
       {/* 通知偏好(代管):GET 回填 + PUT 保存,独立加载自身 tenant/user,不连累上方卡片。 */}
-      <UserNotifyPrefs userId={user.id} />
+      <UserNotifyPrefs tenantId={tenantId} userId={user.id} />
 
       <section className="hk-card">
         <div className="hk-card__head">

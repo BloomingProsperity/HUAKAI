@@ -1,5 +1,5 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import type { LogFilters, ModerationConfig, ModerationConfigUpdate } from './types'
+import type { BannedAPIKey, LogFilters, ModerationConfig, ModerationConfigUpdate, ModerationLog } from './types'
 
 /*
  * 内容审核页纯逻辑(可单测,无 DOM/网络副作用):
@@ -201,4 +201,92 @@ export function configToForm(cfg: ModerationConfig): {
     banThreshold: cfg.ban_threshold,
     banWindowSeconds: cfg.ban_window_seconds,
   }
+}
+
+export interface ModerationLogTableRow {
+  id: number
+  occurredAt: string
+  decision: string
+  decisionTone: BadgeTone
+  reasonCode: string
+  apiKey: string
+  user: string
+  payloadHash: string
+}
+
+/** 审核命中日志 DTO 到列表展示行的纯映射。 */
+export function mapModerationLogRows(logs: ModerationLog[]): ModerationLogTableRow[] {
+  return logs.map((log) => ({
+    id: log.id,
+    occurredAt: formatModerationTimestamp(log.occurred_at),
+    decision: decisionLabel(log.decision),
+    decisionTone: decisionTone(log.decision),
+    reasonCode: log.reason_code || '—',
+    apiKey: `#${log.api_key_id}`,
+    user: `#${log.user_id}`,
+    payloadHash: shortenModerationValue(log.payload_hash),
+  }))
+}
+
+export interface ModerationRuleTableRow<T> {
+  id: number
+  value: string
+  status: string
+  statusTone: BadgeTone
+  rule: T
+}
+
+/** 关键词或哈希规则到通用列表展示行的纯映射。 */
+export function mapModerationRuleRows<T>(
+  rows: T[],
+  rowId: (row: T) => number,
+  rowValue: (row: T) => string,
+  rowEnabled: (row: T) => boolean,
+  display?: (value: string) => string,
+): ModerationRuleTableRow<T>[] {
+  return rows.map((rule) => {
+    const enabled = rowEnabled(rule)
+    const value = rowValue(rule)
+    return {
+      id: rowId(rule),
+      value: display ? display(value) : value,
+      status: enabled ? '启用' : '停用',
+      statusTone: enabled ? 'ok' : 'muted',
+      rule,
+    }
+  })
+}
+
+export interface BannedKeyTableRow {
+  id: number
+  name: string
+  keyPrefix: string
+  user: string
+  violationCount: number
+  lastViolationAt: string
+  key: BannedAPIKey
+}
+
+/** 被封 API Key DTO 到列表展示行的纯映射。 */
+export function mapBannedKeyRows(keys: BannedAPIKey[]): BannedKeyTableRow[] {
+  return keys.map((key) => ({
+    id: key.id,
+    name: key.name || '—',
+    keyPrefix: key.key_prefix,
+    user: `#${key.user_id}`,
+    violationCount: key.violation_count,
+    lastViolationAt: formatModerationTimestamp(key.last_violation_at),
+    key,
+  }))
+}
+
+export function shortenModerationValue(value: string): string {
+  if (!value) return '—'
+  return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+export function formatModerationTimestamp(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }

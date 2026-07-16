@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
 import {
   cancelRenew,
@@ -24,15 +26,16 @@ import {
   friendlyChangePlanError,
   isOverLimit,
   isSubscriptionActive,
+  mapSubscriptionHistoryRows,
   purchaseGuidance,
   sortProgressWindows,
-  sortSubscriptionHistory,
   subscriptionStatusLabel,
   subscriptionStatusTone,
   validateChangePlan,
   validatePurchasable,
   windowLabel,
   type SubTone,
+  type SubscriptionHistoryTableRow,
 } from './subscriptions'
 import type {
   CurrentSubscriptionResponse,
@@ -123,7 +126,16 @@ export function SubscriptionsPage() {
   const active = isSubscriptionActive(sub)
   const windows = sortProgressWindows(progress?.progress ?? [])
   // 订阅历史按创建时间倒序(最新在前),纯逻辑已变异测试。
-  const historyRows = sortSubscriptionHistory(history)
+  const historyRows = mapSubscriptionHistoryRows(history)
+  const historyColumns: DataListColumn<SubscriptionHistoryTableRow>[] = [
+    { key: 'planId', label: '套餐 ID', render: (row) => <span className="hk-mono">{row.planId}</span> },
+    { key: 'status', label: '状态', render: (row) => <StatusBadge tone={toBadgeTone(row.tone)}>{row.status}</StatusBadge> },
+    { key: 'group', label: '权益组', render: (row) => row.group },
+    { key: 'startsAt', label: '生效时间', render: (row) => <span className="hk-mono">{row.startsAt}</span> },
+    { key: 'expiresAt', label: '到期时间', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+    { key: 'cancelledAt', label: '取消时间', render: (row) => <span className="hk-mono">{row.cancelledAt}</span> },
+    { key: 'createdAt', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
 
   return (
     <div className="hk-page">
@@ -143,9 +155,9 @@ export function SubscriptionsPage() {
         <div className="hk-card__head"><h3>我的订阅</h3></div>
         <div className="hk-card__body">
           {loading && !current ? (
-            <Empty>加载中…</Empty>
+            <EmptyState title="正在加载订阅" hint="请稍候。" />
           ) : !active ? (
-            <Empty>当前没有生效中的订阅。在下方选购一个套餐开始使用。</Empty>
+            <EmptyState title="当前没有生效中的订阅" hint="可在下方选购一个套餐开始使用。" />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-5)', alignItems: 'center' }}>
@@ -188,42 +200,11 @@ export function SubscriptionsPage() {
       <section className="hk-card">
         <div className="hk-card__head"><h3>订阅历史</h3></div>
         {loading && history.length === 0 ? (
-          <div className="hk-card__body"><Empty>加载中…</Empty></div>
+          <div className="hk-card__body"><EmptyState title="正在加载订阅历史" hint="请稍候。" /></div>
         ) : historyRows.length === 0 ? (
-          <div className="hk-card__body"><Empty>暂无订阅记录。</Empty></div>
+          <div className="hk-card__body"><EmptyState title="暂无订阅记录" hint="购买并完成支付后，订阅记录会显示在这里。" /></div>
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  <th>套餐 ID</th>
-                  <th>状态</th>
-                  <th>权益组</th>
-                  <th>生效时间</th>
-                  <th>到期时间</th>
-                  <th>取消时间</th>
-                  <th>创建时间</th>
-                </tr>
-              </thead>
-              <tbody>
-                {historyRows.map((h) => (
-                  <tr key={h.id}>
-                    <td className="hk-mono">{h.plan_id}</td>
-                    <td>
-                      <StatusBadge tone={toBadgeTone(subscriptionStatusTone(h.status))}>
-                        {subscriptionStatusLabel(h.status)}
-                      </StatusBadge>
-                    </td>
-                    <td>{h.granted_group || '—'}</td>
-                    <td className="hk-mono">{formatDate(h.starts_at) || '—'}</td>
-                    <td className="hk-mono">{formatDate(h.expires_at) || '—'}</td>
-                    <td className="hk-mono">{formatDate(h.cancelled_at) || '—'}</td>
-                    <td className="hk-mono">{formatDate(h.created_at) || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="订阅历史" rows={historyRows} rowKey={(row) => row.id} columns={historyColumns} />
         )}
       </section>
 
@@ -236,11 +217,11 @@ export function SubscriptionsPage() {
 
         {loading && plans.length === 0 ? (
           <div className="hk-card">
-            <Empty>加载中…</Empty>
+            <EmptyState title="正在加载在售套餐" hint="请稍候。" />
           </div>
         ) : plans.length === 0 ? (
           <div className="hk-card">
-            <Empty>当前没有在售套餐。</Empty>
+            <EmptyState title="当前没有在售套餐" hint="请稍后再来查看。" />
           </div>
         ) : (
           <div
@@ -534,10 +515,6 @@ function Banner({ tone, children }: { tone: 'ok' | 'danger'; children: React.Rea
       {children}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
 }
 
 // 把纯逻辑的 SubTone 适配到 StatusBadge 的 BadgeTone(两者命名一致,显式映射避免耦合)。

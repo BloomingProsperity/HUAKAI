@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMe } from '../../auth/me'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge, healthTone } from '../../ui/StatusBadge'
 import { createPool, listPoolMembers, listPools, updatePool } from './api'
 import {
   buildCreatePool,
   buildUpdatePool,
   CAPABILITY_DEFAULTS,
-  capabilityLabel,
   EMPTY_POOL_FORM,
+  mapPoolRows,
   toggleEnabledTarget,
   type PoolForm,
+  type PoolTableRow,
 } from './groups'
 import type { PoolGroup, PoolMemberAccount } from './types'
 
@@ -23,6 +27,7 @@ import type { PoolGroup, PoolMemberAccount } from './types'
  *  - 成员账号此处只读;增删成员是账号中心(provider-accounts)的职责,不在本页。
  */
 export function GroupsPage() {
+  const tenantId = useMe().tenantId
   const [pools, setPools] = useState<PoolGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -33,9 +38,10 @@ export function GroupsPage() {
   const [busyId, setBusyId] = useState<number | null>(null)
 
   const load = useCallback((signal: AbortSignal) => {
+    if (tenantId == null) return
     setLoading(true)
     setError(null)
-    listPools(undefined, 200, signal)
+    listPools(tenantId, 200, signal)
       .then((resp) => setPools(resp.items ?? []))
       .catch((e: unknown) => {
         if (signal.aborted) return
@@ -44,9 +50,10 @@ export function GroupsPage() {
       .finally(() => {
         if (!signal.aborted) setLoading(false)
       })
-  }, [])
+  }, [tenantId])
 
   useEffect(() => {
+    if (tenantId == null) return
     const ctrl = new AbortController()
     load(ctrl.signal)
     return () => ctrl.abort()
@@ -58,13 +65,19 @@ export function GroupsPage() {
     setBusyId(p.id)
     setError(null)
     try {
-      await updatePool(p.id, { enabled: toggleEnabledTarget(p.enabled) })
+      if (tenantId == null) return
+      await updatePool(p.id, { enabled: toggleEnabledTarget(p.enabled) }, tenantId)
       refresh()
     } catch (e) {
       setError(e instanceof ApiError ? `${e.message}(${e.code})` : '操作失败')
     } finally {
       setBusyId(null)
     }
+  }
+  const rows = mapPoolRows(pools)
+
+  if (tenantId == null) {
+    return <EmptyState title="正在加载租户上下文" hint="请稍候。" />
   }
 
   return (
@@ -81,8 +94,8 @@ export function GroupsPage() {
         </button>
       </header>
 
-      {createOpen && <PoolFormModal mode="create" onClose={() => setCreateOpen(false)} onDone={refresh} />}
-      {editing && <PoolFormModal mode="edit" pool={editing} onClose={() => setEditing(null)} onDone={refresh} />}
+      {createOpen && <PoolFormModal mode="create" tenantID={tenantId} onClose={() => setCreateOpen(false)} onDone={refresh} />}
+      {editing && <PoolFormModal mode="edit" tenantID={tenantId} pool={editing} onClose={() => setEditing(null)} onDone={refresh} />}
 
       {error && (
         <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{error}</div>
@@ -90,92 +103,43 @@ export function GroupsPage() {
 
       <div className="hk-card">
         {loading && pools.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载分组" hint="请稍候。" />
         ) : pools.length === 0 ? (
-          <Empty>还没有分组。点击右上角新建。</Empty>
+          <EmptyState title="还没有分组" hint="点击右上角「新建分组」开始配置。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['名称', '能力默认', 'TopK', '兜底', '状态', '创建时间', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {pools.map((p) => (
-                  <PoolRow
-                    key={p.id}
-                    pool={p}
-                    busy={busyId === p.id}
-                    expanded={expandedId === p.id}
-                    onToggleExpand={() => setExpandedId((cur) => (cur === p.id ? null : p.id))}
-                    onEdit={() => setEditing(p)}
-                    onToggleEnabled={() => toggleEnabled(p)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <DataListTable
+              label="分组列表"
+              rows={rows}
+              rowKey={(row) => row.id}
+              columns={poolColumns}
+              actions={[
+                { label: (row) => expandedId === row.id ? '收起成员' : '查看成员', onClick: (row) => setExpandedId((cur) => cur === row.id ? null : row.id) },
+                { label: '编辑', disabled: (row) => busyId === row.id, onClick: (row) => setEditing(row.pool) },
+                { label: (row) => row.pool.enabled ? '禁用' : '启用', disabled: (row) => busyId === row.id, onClick: (row) => void toggleEnabled(row.pool) },
+              ]}
+            />
+            {expandedId !== null && pools.find((pool) => pool.id === expandedId) && (
+              <MemberPanel
+                poolID={expandedId}
+                tenantID={tenantId}
+              />
+            )}
+          </>
         )}
       </div>
     </div>
   )
 }
 
-function PoolRow({
-  pool,
-  busy,
-  expanded,
-  onToggleExpand,
-  onEdit,
-  onToggleEnabled,
-}: {
-  pool: PoolGroup
-  busy: boolean
-  expanded: boolean
-  onToggleExpand: () => void
-  onEdit: () => void
-  onToggleEnabled: () => void
-}) {
-  return (
-    <>
-      <tr>
-        <td>
-          <button type="button" onClick={onToggleExpand} style={{ ...linkBtn, fontWeight: 600, color: 'var(--hk-primary-700)', padding: 0 }}>
-            {expanded ? '▾ ' : '▸ '}
-            {pool.name}
-          </button>
-        </td>
-        <td>{capabilityLabel(pool.capability_default)}</td>
-        <td className="hk-mono">{pool.top_k_default}</td>
-        <td>
-          <StatusBadge tone={pool.allow_last_resort ? 'info' : 'muted'}>
-            {pool.allow_last_resort ? '允许兜底' : '关闭'}
-          </StatusBadge>
-        </td>
-        <td>
-          <StatusBadge tone={pool.enabled ? 'ok' : 'muted'}>{pool.enabled ? '启用' : '已禁用'}</StatusBadge>
-        </td>
-        <td className="hk-mono">{fmt(pool.created_at)}</td>
-        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-          <button type="button" disabled={busy} onClick={onEdit} className="hk-btn hk-btn--sm">编辑</button>
-          <button type="button" disabled={busy} onClick={onToggleEnabled} className="hk-btn hk-btn--sm" style={{ marginLeft: 'var(--hk-space-2)' }}>
-            {pool.enabled ? '禁用' : '启用'}
-          </button>
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan={7} style={{ padding: 0, background: 'var(--hk-surface-sunken)' }}>
-            <MemberPanel poolID={pool.id} tenantID={pool.tenant_id} />
-          </td>
-        </tr>
-      )}
-    </>
-  )
-}
+const poolColumns: DataListColumn<PoolTableRow>[] = [
+  { key: 'name', label: '名称', render: (row) => <span style={{ fontWeight: 600 }}>{row.name}</span> },
+  { key: 'capability', label: '能力默认', render: (row) => row.capability },
+  { key: 'top-k', label: 'TopK', render: (row) => <span className="hk-mono">{row.topK}</span> },
+  { key: 'fallback', label: '兜底', badge: true, render: (row) => <StatusBadge tone={row.fallbackTone}>{row.fallback}</StatusBadge> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+]
 
 function MemberPanel({ poolID, tenantID }: { poolID: number; tenantID: number }) {
   const [members, setMembers] = useState<PoolMemberAccount[]>([])
@@ -227,11 +191,13 @@ function MemberPanel({ poolID, tenantID }: { poolID: number; tenantID: number })
 
 function PoolFormModal({
   mode,
+  tenantID,
   pool,
   onClose,
   onDone,
 }: {
   mode: 'create' | 'edit'
+  tenantID: number
   pool?: PoolGroup
   onClose: () => void
   onDone: () => void
@@ -259,7 +225,7 @@ function PoolFormModal({
           return
         }
         setBusy(true)
-        await createPool(built)
+        await createPool(built, tenantID)
       } else if (pool) {
         const built = buildUpdatePool(form, initial)
         if ('error' in built) {
@@ -267,7 +233,7 @@ function PoolFormModal({
           return
         }
         setBusy(true)
-        await updatePool(pool.id, built, pool.tenant_id)
+        await updatePool(pool.id, built, tenantID)
       }
       onDone()
       onClose()
@@ -320,10 +286,6 @@ function PoolFormModal({
   )
 }
 
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
-}
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
@@ -332,10 +294,4 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-// 展开树的行内链接式切换按钮(非标准操作按钮),保留其独有的无边框行内样式
-const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

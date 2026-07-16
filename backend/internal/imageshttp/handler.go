@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -109,6 +111,8 @@ type execution struct {
 	// 用它做"按交付数对账":上游(如 Replicate model-specific num_outputs
 	// 被忽略只回 1 张)交付少于请求数时,不得按请求数多收用户钱。
 	deliveredImageCount int
+	classTransition     *bindingfallback.Transition
+	deliveryStarted     bool
 }
 
 func NewGenerationsHandler(d Deps) http.HandlerFunc {
@@ -173,7 +177,7 @@ func newHandler(d Deps, endpoint imageEndpoint) http.HandlerFunc {
 			amount:      req.Amount(),
 			quality:     req.NormalizedQuality(),
 		}
-		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) || !ex.preparePricing(w) {
+		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) {
 			return
 		}
 		ex.run(w)
@@ -219,10 +223,58 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	if !ex.reserve(w) || !ex.selectAccount(w, 1) || !ex.resolveCredential(w) {
-		return
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := ex.runAttempt(w, ex.plan.Attempts[i], i+1)
+		if outcome.done {
+			return
+		}
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, ex.deliveryStarted, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runAttempt(w, phase.Attempts[0], i+2)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
+		}
 	}
-	_ = ex.dispatchAndSettle(w, 1)
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int) attemptOutcome {
+	// validateRequest 已把 JSON/multipart 限长读入不可变 []byte；每个 attempt
+	// 都从该缓冲重新生成出站 body，因此 edits/variations 也可安全有界重放。
+	ex.activateAttempt(attempt)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.accInfo = provider.AccountInfo{}
+	ex.deliveredImageCount = 0
+	ex.deliveryStarted = false
+	if !ex.preparePricing(w) {
+		return attemptOutcome{done: true}
+	}
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.selectAccount(w, attemptSeq); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	return ex.dispatchAndSettle(w, attemptSeq)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {

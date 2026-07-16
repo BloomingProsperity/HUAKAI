@@ -2,33 +2,24 @@ package gatewayhttp
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/poolaccountadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
-)
-
-const (
-	defaultAdminProviderAccountLimit = int32(50)
-	maxAdminProviderAccountLimit     = int32(200)
-	providerAccountCursorPrefix      = "provider_account_id:"
 )
 
 var (
@@ -37,95 +28,18 @@ var (
 	errProviderAccountProtocolIncompatible          = accountcreate.ErrProtocolIncompatible
 )
 
-type AdminPoolAccountAuth interface {
-	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
-}
-
-type AdminPoolAccountStore interface {
-	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
-	InsertProviderAccount(context.Context, admindb.InsertProviderAccountParams) (int64, error)
-	ListAdminProviderAccounts(context.Context, admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
-	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
-	UpdateAdminProviderAccount(context.Context, admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
-	UpdateProviderAccountEnabled(context.Context, admindb.UpdateProviderAccountEnabledParams) error
-	ClearProviderAccountRateLimit(context.Context, admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error)
-	SoftDeleteProviderAccount(context.Context, admindb.SoftDeleteProviderAccountParams) error
-	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
-}
-
-type AdminPoolAccountRiskStore interface {
-	ListProviderAccountRiskPeers(context.Context, admindb.ListProviderAccountRiskPeersParams) ([]admindb.ProviderAccountRiskPeerRow, error)
-}
-
-type AdminPoolAccountAtomicCreateStore interface {
-	InsertProviderAccountWithMixedRiskCheck(context.Context, adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error)
-}
-
-type AdminPoolAccountCredentialWriter interface {
-	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
-}
-
-type AdminPoolAccountChannelHealthInitializer interface {
-	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
-}
-
-type AdminPoolAccountDeps struct {
-	Auth          AdminPoolAccountAuth
-	Store         AdminPoolAccountStore
-	Credentials   AdminPoolAccountCredentialWriter
-	ChannelHealth AdminPoolAccountChannelHealthInitializer
-}
-
-type adminPoolAccountStoreAdapter struct {
-	base AdminPoolAccountStore
-	pool *pgxpool.Pool
-}
-
+type AdminPoolAccountAuth = poolaccountadmin.Auth
+type AdminPoolAccountStore = poolaccountadmin.Store
+type AdminPoolAccountRiskStore = poolaccountadmin.RiskStore
+type AdminPoolAccountAtomicCreateStore = poolaccountadmin.AtomicCreateStore
+type AdminPoolAccountCredentialWriter = poolaccountadmin.CredentialWriter
+type AdminPoolAccountChannelHealthInitializer = poolaccountadmin.ChannelHealthInitializer
+type AdminPoolAccountDeps = poolaccountadmin.Deps
 type adminPoolAccountCreateWithMixedRiskParams = accountcreate.Params
 type adminPoolAccountCreateWithMixedRiskResult = accountcreate.Result
 
 func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.Pool) AdminPoolAccountStore {
-	return adminPoolAccountStoreAdapter{base: base, pool: pool}
-}
-
-func (s adminPoolAccountStoreAdapter) InsertProviderAccount(ctx context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
-	return s.base.InsertProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) GetProviderProtocolForAccountCreate(ctx context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
-	return s.base.GetProviderProtocolForAccountCreate(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) ListAdminProviderAccounts(ctx context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
-	return s.base.ListAdminProviderAccounts(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) GetAdminProviderAccount(ctx context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.GetAdminProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) UpdateAdminProviderAccount(ctx context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.UpdateAdminProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) UpdateProviderAccountEnabled(ctx context.Context, arg admindb.UpdateProviderAccountEnabledParams) error {
-	return s.base.UpdateProviderAccountEnabled(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) ClearProviderAccountRateLimit(ctx context.Context, arg admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.ClearProviderAccountRateLimit(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) SoftDeleteProviderAccount(ctx context.Context, arg admindb.SoftDeleteProviderAccountParams) error {
-	return s.base.SoftDeleteProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) InsertAdminAuditEvent(ctx context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
-	return s.base.InsertAdminAuditEvent(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	return accountcreate.Insert(ctx, s.pool, arg)
+	return poolaccountadmin.NewStoreAdapter(base, pool)
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
@@ -138,117 +52,17 @@ func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
 	r.Delete("/{id}", newDeleteProviderAccountHandler(d))
 }
 
-type createProviderAccountRequest struct {
-	TenantID        *int64          `json:"tenant_id,omitempty"`
-	ProviderID      int64           `json:"provider_id"`
-	ChannelID       int64           `json:"channel_id"`
-	Name            string          `json:"name"`
-	AccountType     string          `json:"account_type"`
-	Vendor          string          `json:"vendor,omitempty"`
-	AuthMode        string          `json:"auth_mode,omitempty"`
-	Confirm         *bool           `json:"confirm,omitempty"`
-	Enabled         *bool           `json:"enabled,omitempty"`
-	CapConcurrency  *int32          `json:"cap_concurrency,omitempty"`
-	Priority        *int32          `json:"priority,omitempty"`
-	StaticWeight    *int32          `json:"static_weight,omitempty"`
-	ProbeModel      *string         `json:"probe_model,omitempty"`
-	Tags            []string        `json:"tags,omitempty"`
-	Extra           json.RawMessage `json:"extra,omitempty"`
-	ModelAllowList  []string        `json:"model_allow_list,omitempty"`
-	CapabilityFlags []string        `json:"capability_flags,omitempty"`
-	Credentials     json.RawMessage `json:"credentials"`
-	Reason          string          `json:"reason,omitempty"`
+type createProviderAccountRequest = poolaccountadmin.CreateRequest
+type mutateProviderAccountRequest = poolaccountadmin.MutateRequest
+type updateProviderAccountRequest = poolaccountadmin.UpdateRequest
+
+type providerAccountAdvancedCarrier interface {
+	SetProviderAccountAdvanced(accountadvanced.Mutation)
 }
 
-type mutateProviderAccountRequest struct {
-	TenantID *int64 `json:"tenant_id,omitempty"`
-	Enabled  *bool  `json:"enabled,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-}
-
-type updateProviderAccountRequest struct {
-	TenantID                   *int64           `json:"tenant_id,omitempty"`
-	Enabled                    *bool            `json:"enabled,omitempty"`
-	Priority                   *int32           `json:"priority,omitempty"`
-	StaticWeight               *int32           `json:"static_weight,omitempty"`
-	CapConcurrency             *int32           `json:"cap_concurrency,omitempty"`
-	ProbeModel                 *string          `json:"probe_model,omitempty"`
-	Tags                       *[]string        `json:"tags,omitempty"`
-	Extra                      *json.RawMessage `json:"extra,omitempty"`
-	ModelAllowList             *[]string        `json:"model_allow_list,omitempty"`
-	CapabilityFlags            *[]string        `json:"capability_flags,omitempty"`
-	CustomErrorCodesEnabled    *bool            `json:"custom_error_codes_enabled,omitempty"`
-	CustomErrorCodes           *[]int32         `json:"custom_error_codes,omitempty"`
-	PoolMode                   *bool            `json:"pool_mode,omitempty"`
-	TempUnschedulableEnabled   *bool            `json:"temp_unschedulable_enabled,omitempty"`
-	TempUnschedulableRulesJSON *json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	// ProxyBinding 省略=不动出站代理绑定;present=按 mode 设置(互斥由 handler 构造保证)。
-	ProxyBinding *proxyBindingInput `json:"proxy_binding,omitempty"`
-	Reason       string             `json:"reason,omitempty"`
-}
-
-// proxyBindingInput 表达账号出站代理的目标绑定:mode∈{direct,proxy,group}。
-// direct=直连(清两列);proxy=单绑 ProxyID(清组);group=绑组 ProxyGroupID(清单代理)。
-// 互斥由 handler 在每个 mode 同时写两列保证(配合 0148 DB CHECK 兜底)。
-type proxyBindingInput struct {
-	Mode         string  `json:"mode"`
-	ProxyID      *int64  `json:"proxy_id,omitempty"`
-	ProxyGroupID *string `json:"proxy_group_id,omitempty"`
-}
-
-type providerAccountListResponse struct {
-	Items []providerAccountResponse `json:"items"`
-	Page  providerAccountPage       `json:"page"`
-}
-
-type providerAccountPage struct {
-	Cursor     *string `json:"cursor"`
-	NextCursor *string `json:"next_cursor"`
-	HasMore    bool    `json:"has_more"`
-}
-
-type providerAccountResponse struct {
-	ID                       int64           `json:"id"`
-	TenantID                 int64           `json:"tenant_id"`
-	ProviderID               int64           `json:"provider_id"`
-	ChannelID                int64           `json:"channel_id"`
-	Name                     string          `json:"name"`
-	AccountType              string          `json:"account_type"`
-	Enabled                  bool            `json:"enabled"`
-	ExpiresAt                *time.Time      `json:"expires_at"`
-	HealthState              string          `json:"health_state"`
-	CredentialState          string          `json:"credential_state"`
-	CapConcurrency           int32           `json:"cap_concurrency"`
-	InFlightCount            int32           `json:"in_flight_count"`
-	Priority                 int32           `json:"priority"`
-	StaticWeight             int32           `json:"static_weight"`
-	ProbeModel               *string         `json:"probe_model"`
-	Tags                     []string        `json:"tags"`
-	Extra                    json.RawMessage `json:"extra"`
-	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
-	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
-	LastProbeAt              *time.Time      `json:"last_probe_at"`
-	ModelAllowList           []string        `json:"model_allow_list"`
-	CapabilityFlags          []string        `json:"capability_flags"`
-	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time      `json:"rate_limit_reset_at"`
-	RateLimitReason          *string         `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time      `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time      `json:"temp_unschedulable_until"`
-	TokenVersion             int32           `json:"token_version"`
-	LastRefreshAt            *time.Time      `json:"last_refresh_at"`
-	LastRefreshOutcome       *string         `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string          `json:"oauth_endpoint_health,omitempty"`
-	CustomErrorCodesEnabled  bool            `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32         `json:"custom_error_codes"`
-	PoolMode                 bool            `json:"pool_mode"`
-	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	ProxyID                  *int64          `json:"proxy_id"`
-	ProxyGroupID             *string         `json:"proxy_group_id"`
-	CreatedAt                *time.Time      `json:"created_at"`
-	UpdatedAt                *time.Time      `json:"updated_at"`
-}
+type providerAccountListResponse = poolaccountadmin.ListResponse
+type providerAccountPage = poolaccountadmin.Page
+type providerAccountResponse = poolaccountadmin.Response
 
 func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -267,12 +81,12 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		req.AccountType = strings.TrimSpace(req.AccountType)
 		req.Vendor = credentialstore.Normalize(req.Vendor)
 		req.AuthMode = credentialstore.Normalize(req.AuthMode)
-		req.ProbeModel = cleanOptionalString(req.ProbeModel)
-		req.Tags = cleanStringList(req.Tags)
-		req.ModelAllowList = cleanStringList(req.ModelAllowList)
-		req.CapabilityFlags = cleanStringList(req.CapabilityFlags)
+		req.ProbeModel = poolaccountadmin.CleanOptionalString(req.ProbeModel)
+		req.Tags = poolaccountadmin.CleanStringList(req.Tags)
+		req.ModelAllowList = poolaccountadmin.CleanStringList(req.ModelAllowList)
+		req.CapabilityFlags = poolaccountadmin.CleanStringList(req.CapabilityFlags)
 		useCredentialStore := req.Vendor != "" || req.AuthMode != ""
-		if err := validateCreateProviderAccount(req, useCredentialStore && d.Credentials != nil); err != nil {
+		if err := poolaccountadmin.ValidateCreate(req, useCredentialStore && d.Credentials != nil); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
@@ -309,9 +123,10 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			Name: req.Name, AccountType: req.AccountType, Enabled: req.Enabled,
 			Credentials: dbCredentials, CapConcurrency: req.CapConcurrency, Priority: req.Priority,
 			StaticWeight: req.StaticWeight, ProbeModel: req.ProbeModel, Tags: req.Tags,
-			Extra:          normalizedProviderAccountExtra(req.Extra),
+			Extra:          poolaccountadmin.NormalizedExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
+		accountadvanced.ApplyCreate(req.Advanced, &createArg)
 		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, providerFamily, confirmed)
 		if err != nil {
 			if errors.Is(err, errProviderAccountProtocolIncompatible) {
@@ -411,34 +226,22 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		limit, ok := parseProviderAccountLimit(w, r)
-		if !ok {
+		options, requestError := poolaccountadmin.ParseListOptions(r)
+		if requestError != nil {
+			writeJSONError(w, requestError.Status, requestError.Code, requestError.Message)
 			return
 		}
-		afterID, cursor, ok := parseProviderAccountCursor(w, r)
-		if !ok {
-			return
-		}
-		poolGroupID, ok := parseProviderAccountPoolGroupID(w, r)
-		if !ok {
-			return
-		}
-		stateFilter, ok := parseProviderAccountStateFilter(w, r)
-		if !ok {
-			return
-		}
-		tagFilter := parseProviderAccountTagFilter(r)
 		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), admindb.ListAdminProviderAccountsParams{
-			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
-			PoolGroupID: poolGroupID, StateFilter: stateFilter, TagFilter: tagFilter,
+			TenantID: tenantID, AfterID: options.AfterID, LimitCount: options.Limit + 1,
+			PoolGroupID: options.PoolGroupID, StateFilter: options.StateFilter, TagFilter: options.TagFilter,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_list_failed", err.Error())
 			return
 		}
-		hasMore := int32(len(rows)) > limit
+		hasMore := int32(len(rows)) > options.Limit
 		if hasMore {
-			rows = rows[:limit]
+			rows = rows[:options.Limit]
 		}
 		items := make([]providerAccountResponse, 0, len(rows))
 		for _, row := range rows {
@@ -446,12 +249,12 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		}
 		var nextCursor *string
 		if hasMore && len(rows) > 0 {
-			next := encodeProviderAccountCursor(rows[len(rows)-1].ID)
+			next := poolaccountadmin.EncodeCursor(rows[len(rows)-1].ID)
 			nextCursor = &next
 		}
 		writeAuditJSON(w, http.StatusOK, providerAccountListResponse{
 			Items: items,
-			Page:  providerAccountPage{Cursor: cursor, NextCursor: nextCursor, HasMore: hasMore},
+			Page:  providerAccountPage{Cursor: options.Cursor, NextCursor: nextCursor, HasMore: hasMore},
 		})
 	}
 }
@@ -471,7 +274,7 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, providerAccountDetailDTO(account))
+		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
 	}
 }
 
@@ -492,7 +295,7 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !validateProviderAccountTenant(w, req.TenantID, tenantID) {
 			return
 		}
-		if err := validateUpdateProviderAccount(req); err != nil {
+		if err := poolaccountadmin.ValidateUpdate(req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
@@ -500,67 +303,28 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 			Enabled: req.Enabled, Priority: req.Priority, StaticWeight: req.StaticWeight, CapConcurrency: req.CapConcurrency,
-			CustomErrorCodesEnabled: req.CustomErrorCodesEnabled,
-			PoolMode:                req.PoolMode, TempUnschedulableEnabled: req.TempUnschedulableEnabled,
 		}
 		if req.ProbeModel != nil {
 			arg.SetProbeModel = true
-			arg.ProbeModel = cleanOptionalString(req.ProbeModel)
+			arg.ProbeModel = poolaccountadmin.CleanOptionalString(req.ProbeModel)
 		}
 		if req.Tags != nil {
 			arg.SetTags = true
-			arg.Tags = cleanStringList(*req.Tags)
+			arg.Tags = poolaccountadmin.CleanStringList(*req.Tags)
 		}
 		if req.Extra != nil {
 			arg.SetExtra = true
-			arg.Extra = normalizedProviderAccountExtra(*req.Extra)
+			arg.Extra = poolaccountadmin.NormalizedExtra(*req.Extra)
 		}
 		if req.ModelAllowList != nil {
 			arg.SetModelAllowList = true
-			arg.ModelAllowList = cleanStringList(*req.ModelAllowList)
+			arg.ModelAllowList = poolaccountadmin.CleanStringList(*req.ModelAllowList)
 		}
 		if req.CapabilityFlags != nil {
 			arg.SetCapabilityFlags = true
-			arg.CapabilityFlags = cleanStringList(*req.CapabilityFlags)
+			arg.CapabilityFlags = poolaccountadmin.CleanStringList(*req.CapabilityFlags)
 		}
-		if req.CustomErrorCodes != nil {
-			arg.SetCustomErrorCodes = true
-			arg.CustomErrorCodes = *req.CustomErrorCodes
-		}
-		if req.TempUnschedulableRulesJSON != nil {
-			arg.SetTempUnschedulableRules = true
-			arg.TempUnschedulableRulesJSON = []byte(*req.TempUnschedulableRulesJSON)
-		}
-		// 出站代理绑定:按 mode 构造性写两列,互斥由"每 mode 同时设两列"保证;
-		// proxy_id 跨租户由 0038 DB 触发器兜底(前端代理下拉只给本租户代理为主防线)。
-		if req.ProxyBinding != nil {
-			switch req.ProxyBinding.Mode {
-			case "direct":
-				arg.SetProxyID, arg.ProxyID = true, nil
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil
-			case "proxy":
-				if req.ProxyBinding.ProxyID == nil || *req.ProxyBinding.ProxyID <= 0 {
-					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=proxy 需正整数 proxy_id")
-					return
-				}
-				arg.SetProxyID, arg.ProxyID = true, req.ProxyBinding.ProxyID
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil // 互斥:清组
-			case "group":
-				g := ""
-				if req.ProxyBinding.ProxyGroupID != nil {
-					g = strings.TrimSpace(*req.ProxyBinding.ProxyGroupID)
-				}
-				if g == "" {
-					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=group 需非空 proxy_group_id")
-					return
-				}
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, &g
-				arg.SetProxyID, arg.ProxyID = true, nil // 互斥:清单代理
-			default:
-				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode 须为 direct/proxy/group")
-				return
-			}
-		}
+		accountadvanced.ApplyUpdate(req.Advanced, &arg)
 		account, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_update_failed")
@@ -683,115 +447,43 @@ func newDeleteProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 }
 
 func resolveProviderAccountAdmin(w http.ResponseWriter, r *http.Request, d AdminPoolAccountDeps) (admin.AdminIdentity, int64, bool) {
-	if d.Auth == nil || d.Store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin pool account dependency unset")
+	identity, tenantID, requestError := poolaccountadmin.ResolveTenant(r, d)
+	if requestError != nil {
+		writeJSONError(w, requestError.Status, requestError.Code, requestError.Message)
 		return admin.AdminIdentity{}, 0, false
 	}
-	ident, err := d.Auth.Resolve(r.Context(), r)
-	if err != nil {
-		if errors.Is(err, admin.ErrAdminBackend) {
-			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
-		} else {
-			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
-		}
-		return admin.AdminIdentity{}, 0, false
-	}
-	switch ident.Role {
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
-			return admin.AdminIdentity{}, 0, false
-		}
-		return ident, ident.ScopeTenantID, true
-	case admin.RolePlatformAdmin:
-		// 全局 platform_admin 不持有任何隐式 tenant 作用域：它必须通过
-		// ?tenant_id=N 显式指明目标 tenant。静默默认到 tenant 1 既会 (a) 让全局
-		// admin 永远够不到 tenant>1（body 的 tenant_id 守卫会拒绝任何 != 1 的值），
-		// 又会 (b) 冒着误改 tenant 1 账号的风险。这与 provider/channel catalog +
-		// api-keys 中的显式 tenant 作用域要求保持一致。
-		if ident.ScopeTenantID > 0 {
-			return ident, ident.ScopeTenantID, true
-		}
-		tenantID, okTenant := parsePositiveQueryInt(w, r, "tenant_id")
-		if !okTenant {
-			return admin.AdminIdentity{}, 0, false
-		}
-		if err := ident.CanIssueForTenant(tenantID); err != nil {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope not permitted")
-			return admin.AdminIdentity{}, 0, false
-		}
-		return ident, tenantID, true
-	default:
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
-		return admin.AdminIdentity{}, 0, false
-	}
+	return identity, tenantID, true
 }
 
 func resolvePlatformAdmin(w http.ResponseWriter, r *http.Request, d AdminPoolAccountDeps) (admin.AdminIdentity, bool) {
-	if d.Auth == nil || d.Store == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin pool account dependency unset")
+	identity, requestError := poolaccountadmin.ResolvePlatform(r, d)
+	if requestError != nil {
+		writeJSONError(w, requestError.Status, requestError.Code, requestError.Message)
 		return admin.AdminIdentity{}, false
 	}
-	ident, err := d.Auth.Resolve(r.Context(), r)
-	if err != nil {
-		if errors.Is(err, admin.ErrAdminBackend) {
-			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
-		} else {
-			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
-		}
-		return admin.AdminIdentity{}, false
-	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
-		return admin.AdminIdentity{}, false
-	}
-	return ident, true
+	return identity, true
 }
 
 func decodeAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return false
 	}
-	return true
-}
-
-func validateCreateProviderAccount(req createProviderAccountRequest, requireCredentialV2 bool) error {
-	if req.ProviderID <= 0 || req.ChannelID <= 0 || req.Name == "" {
-		return fmt.Errorf("provider_id, channel_id, and name are required")
+	if err := json.Unmarshal(raw, dst); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
 	}
-	switch req.AccountType {
-	case "oauth", "api_key", "service_account", "upstream_static", "session", "aws_sigv4":
-	default:
-		return fmt.Errorf("account_type is invalid")
-	}
-	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
-		return fmt.Errorf("cap_concurrency must be positive")
-	}
-	if req.StaticWeight != nil && *req.StaticWeight <= 0 {
-		return fmt.Errorf("static_weight must be positive")
-	}
-	if len(req.Extra) > 0 && !jsonRawObject(req.Extra) {
-		return fmt.Errorf("extra must be a JSON object")
-	}
-	var obj map[string]json.RawMessage
-	if len(req.Credentials) == 0 || json.Unmarshal(req.Credentials, &obj) != nil || obj == nil {
-		return fmt.Errorf("credentials must be a JSON object")
-	}
-	if requireCredentialV2 {
-		if req.Vendor == "" || req.AuthMode == "" {
-			return fmt.Errorf("vendor and auth_mode are required for account_credentials")
-		}
-		handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(req.Vendor, req.AuthMode)
+	if carrier, ok := dst.(providerAccountAdvancedCarrier); ok {
+		advanced, err := accountadvanced.Parse(raw)
 		if err != nil {
-			return err
+			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+			return false
 		}
-		if err := handler.ValidatePayload(req.Credentials); err != nil {
-			return err
-		}
+		carrier.SetProviderAccountAdvanced(advanced)
 	}
-	return nil
+	return true
 }
 
 func parseProviderAccountMixedRiskConfirm(w http.ResponseWriter, r *http.Request, req createProviderAccountRequest) (bool, bool) {
@@ -838,35 +530,9 @@ func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedch
 	})
 }
 
-func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
-	if req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
-		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
-		req.CapabilityFlags == nil && req.CustomErrorCodesEnabled == nil && req.CustomErrorCodes == nil &&
-		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil &&
-		req.ProxyBinding == nil {
-		return fmt.Errorf("at least one supported field is required")
-	}
-	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
-		return fmt.Errorf("cap_concurrency must be positive")
-	}
-	if req.StaticWeight != nil && *req.StaticWeight <= 0 {
-		return fmt.Errorf("static_weight must be positive")
-	}
-	if req.Extra != nil && !jsonRawObject(*req.Extra) {
-		return fmt.Errorf("extra must be a JSON object")
-	}
-	if req.TempUnschedulableRulesJSON != nil {
-		var rules []map[string]any
-		if len(*req.TempUnschedulableRulesJSON) == 0 || json.Unmarshal(*req.TempUnschedulableRulesJSON, &rules) != nil {
-			return fmt.Errorf("temp_unschedulable_rules must be a JSON array")
-		}
-	}
-	return nil
-}
-
 func parseAdminPoolID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil || id <= 0 {
+	id, err := poolaccountadmin.ParsePositiveID(chi.URLParam(r, "id"))
+	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_provider_account_id", "id must be a positive int64")
 		return 0, false
 	}
@@ -892,175 +558,13 @@ func validateProviderAccountTenant(w http.ResponseWriter, tenantID *int64, scope
 	return true
 }
 
-func parseProviderAccountLimit(w http.ResponseWriter, r *http.Request) (int32, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("limit"))
-	if raw == "" {
-		return defaultAdminProviderAccountLimit, true
-	}
-	n, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil || n <= 0 || n > int64(maxAdminProviderAccountLimit) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 200")
-		return 0, false
-	}
-	return int32(n), true
-}
-
-func parseProviderAccountCursor(w http.ResponseWriter, r *http.Request) (int64, *string, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	if raw == "" {
-		return 0, nil, true
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be an opaque base64 cursor")
-		return 0, nil, false
-	}
-	text := string(decoded)
-	if !strings.HasPrefix(text, providerAccountCursorPrefix) {
-		writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be an opaque base64 cursor")
-		return 0, nil, false
-	}
-	id, err := strconv.ParseInt(strings.TrimPrefix(text, providerAccountCursorPrefix), 10, 64)
-	if err != nil || id < 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_cursor", "cursor must be an opaque base64 cursor")
-		return 0, nil, false
-	}
-	return id, &raw, true
-}
-
-func encodeProviderAccountCursor(id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(providerAccountCursorPrefix + strconv.FormatInt(id, 10)))
-}
-
-func parseProviderAccountPoolGroupID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	raw := strings.TrimSpace(r.URL.Query().Get("pool_group_id"))
-	if raw == "" {
-		return 0, true
-	}
-	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || n <= 0 {
-		writeJSONError(w, http.StatusBadRequest, "invalid_pool_group_id", "pool_group_id must be a positive int64")
-		return 0, false
-	}
-	return n, true
-}
-
-func parseProviderAccountStateFilter(w http.ResponseWriter, r *http.Request) (string, bool) {
-	state := strings.TrimSpace(r.URL.Query().Get("state_filter"))
-	switch state {
-	case "", "active", "error", "disabled", "rate_limited", "overloaded", "temp_unschedulable":
-		return state, true
-	default:
-		writeJSONError(w, http.StatusBadRequest, "invalid_state_filter", "state_filter is invalid")
-		return "", false
-	}
-}
-
-func parseProviderAccountTagFilter(r *http.Request) string {
-	return strings.TrimSpace(r.URL.Query().Get("tag"))
-}
-
 func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
-	return providerAccountResponse{
-		ID: row.ID, TenantID: row.TenantID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
-		Name: row.Name, AccountType: row.AccountType, Enabled: row.Enabled, ExpiresAt: pgTimePtr(row.ExpiresAt),
-		HealthState: row.HealthState, CredentialState: row.CredentialState,
-		CapConcurrency: row.CapConcurrency, InFlightCount: row.InFlightCount, Priority: row.Priority,
-		StaticWeight: row.StaticWeight, ProbeModel: row.ProbeModel, Tags: nonNilStringSlice(row.Tags),
-		Extra:          jsonObjectOrEmpty(row.Extra),
-		LastDispatchAt: pgTimePtr(row.LastDispatchAt), LastProbeLatencyMS: row.LastProbeLatencyMS,
-		LastProbeAt: pgTimePtr(row.LastProbeAt), ModelAllowList: nonNilStringSlice(row.ModelAllowList),
-		CapabilityFlags: nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
-		RateLimitResetAt: pgTimePtr(row.RateLimitResetAt), RateLimitReason: row.RateLimitReason,
-		OverloadUntil: pgTimePtr(row.OverloadUntil), TempUnschedulableUntil: pgTimePtr(row.TempUnschedulableUntil),
-		TokenVersion: row.TokenVersion, LastRefreshAt: pgTimePtr(row.LastRefreshAt),
-		LastRefreshOutcome: row.LastRefreshOutcome, OAuthEndpointHealth: row.OAuthEndpointHealth,
-		CustomErrorCodesEnabled: row.CustomErrorCodesEnabled, CustomErrorCodes: nonNilInt32Slice(row.CustomErrorCodes),
-		PoolMode: row.PoolMode, TempUnschedulableEnabled: row.TempUnschedulableEnabled,
-		ProxyID: row.ProxyID, ProxyGroupID: row.ProxyGroupID,
-		CreatedAt: pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
-	}
-}
-
-func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
-	response := providerAccountDTO(row)
-	response.TempUnschedulableRules = jsonArrayOrEmpty(row.TempUnschedulableRules)
-	return response
-}
-
-func jsonArrayOrEmpty(raw []byte) json.RawMessage {
-	var values []json.RawMessage
-	if len(raw) == 0 || json.Unmarshal(raw, &values) != nil || values == nil {
-		return json.RawMessage(`[]`)
-	}
-	return json.RawMessage(append([]byte(nil), raw...))
-}
-
-func pgTimePtr(ts pgtype.Timestamptz) *time.Time {
-	if !ts.Valid {
-		return nil
-	}
-	t := ts.Time.UTC()
-	return &t
-}
-
-func nonNilStringSlice(in []string) []string {
-	if in == nil {
-		return []string{}
-	}
-	return in
-}
-
-func nonNilInt32Slice(in []int32) []int32 {
-	if in == nil {
-		return []int32{}
-	}
-	return in
-}
-
-func cleanOptionalString(in *string) *string {
-	if in == nil {
-		return nil
-	}
-	out := strings.TrimSpace(*in)
-	return &out
-}
-
-func cleanStringList(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, item := range in {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
-}
-
-func jsonRawObject(raw json.RawMessage) bool {
-	var obj map[string]json.RawMessage
-	return len(raw) > 0 && json.Unmarshal(raw, &obj) == nil && obj != nil
-}
-
-func normalizedProviderAccountExtra(raw json.RawMessage) []byte {
-	if len(raw) == 0 {
-		return nil
-	}
-	return []byte(raw)
-}
-
-func jsonObjectOrEmpty(raw []byte) json.RawMessage {
-	if len(raw) == 0 {
-		return json.RawMessage(`{}`)
-	}
-	return json.RawMessage(raw)
+	return poolaccountadmin.DTO(row)
 }
 
 func writeProviderAccountReadError(w http.ResponseWriter, err error, code string) {
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeJSONError(w, http.StatusNotFound, "provider_account_not_found", "provider account not found")
-		return
-	}
-	writeJSONError(w, http.StatusServiceUnavailable, code, err.Error())
+	requestError := poolaccountadmin.ReadError(err, code)
+	writeJSONError(w, requestError.Status, requestError.Code, requestError.Message)
 }
 
 func chineseReason(got, fallback string) *string {
@@ -1071,12 +575,5 @@ func chineseReason(got, fallback string) *string {
 }
 
 func writeProviderAccountAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
-	actorID := ident.AuditActor()
-	reqID := middleware.GetReqID(r.Context())
-	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
-		Action: action, TargetType: "provider_account", TargetID: &targetID,
-		RequestID: &reqID, Reason: reason, Payload: payload,
-	})
-	return err
+	return poolaccountadmin.WriteAudit(ctx, r, store, ident, tenantID, action, targetID, reason, payload)
 }

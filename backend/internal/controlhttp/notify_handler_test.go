@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 )
@@ -58,11 +59,7 @@ func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
 	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
 	MountNotifyAdminRoutes(router, NotifyAdminDeps{
-		Auth: notifyFakeAdminAuth{identity: admin.AdminIdentity{
-			TokenID:       99,
-			Role:          admin.RoleTenantOperator,
-			ScopeTenantID: 7,
-		}},
+		Auth:    notifyFakeAdminAuth{identity: admintest.TenantOperator(99, 7)},
 		Service: service,
 	})
 	body := `{"notify_type":"email","notification_email":"ops@example.test","balance_threshold":"3.00000000"}`
@@ -86,11 +83,7 @@ func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
 	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
 	MountNotifyAdminRoutes(router, NotifyAdminDeps{
-		Auth: notifyFakeAdminAuth{identity: admin.AdminIdentity{
-			TokenID:       99,
-			Role:          admin.RoleTenantOperator,
-			ScopeTenantID: 7,
-		}},
+		Auth:    notifyFakeAdminAuth{identity: admintest.TenantOperator(99, 7)},
 		Service: service,
 	})
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/42/notifications?tenant_id=8", bytes.NewBufferString(`{"notify_type":"none"}`))
@@ -174,7 +167,8 @@ func TestUserPutGotifyRejectsOutOfRangePriority(t *testing.T) {
 // 守 extra_emails 双向接线: PUT 的 extra_emails 经 notifyRequestToSettings 映射进 settings(service 收到),
 // 且 notifyResponseFromSettings 把它回写进响应(read-modify-write)。用两条判别邮箱。
 // MUTATION: notifyRequestToSettings 漏映射 ExtraEmails → saved.ExtraEmails 空 → 红;
-//           notifyResponseFromSettings 漏映射 → 响应缺 extra_emails → 红。
+//
+//	notifyResponseFromSettings 漏映射 → 响应缺 extra_emails → 红。
 func TestUserPutRoundTripsExtraEmails(t *testing.T) {
 	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()

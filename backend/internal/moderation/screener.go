@@ -5,6 +5,7 @@ import (
 	"expvar"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"time"
 	"unicode"
@@ -25,16 +26,19 @@ type ScreenerDeps struct {
 	External       ExternalModerator
 	ConfigCacheTTL time.Duration
 	Now            func() time.Time
+	// RandomIntn 只控制外部审核的 1..99% 抽样；nil 使用并发安全的 math/rand 全局源。
+	RandomIntn func(int) int
 }
 
 type storeScreener struct {
-	config   ConfigStore
-	keywords KeywordStore
-	hashes   HashStore
-	audit    AuditLogger
-	ban      AutoBanCounter
-	external ExternalModerator
-	configs  *ttlLRU[int64, ModerationConfig]
+	config     ConfigStore
+	keywords   KeywordStore
+	hashes     HashStore
+	audit      AuditLogger
+	ban        AutoBanCounter
+	external   ExternalModerator
+	randomIntn func(int) int
+	configs    *ttlLRU[int64, ModerationConfig]
 }
 
 type AutoBanCounter interface {
@@ -54,14 +58,19 @@ func NewScreener(deps ScreenerDeps) Screener {
 			Now:        deps.Now,
 		})
 	}
+	randomIntn := deps.RandomIntn
+	if randomIntn == nil {
+		randomIntn = rand.Intn
+	}
 	return &storeScreener{
-		config:   deps.Config,
-		keywords: deps.Keywords,
-		hashes:   deps.Hashes,
-		audit:    deps.Audit,
-		ban:      deps.Ban,
-		external: deps.External,
-		configs:  configs,
+		config:     deps.Config,
+		keywords:   deps.Keywords,
+		hashes:     deps.Hashes,
+		audit:      deps.Audit,
+		ban:        deps.Ban,
+		external:   deps.External,
+		randomIntn: randomIntn,
+		configs:    configs,
 	}
 }
 
@@ -188,6 +197,11 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 
 func (s *storeScreener) checkExternal(ctx context.Context, req ScreenRequest, cfg ModerationConfig) (ScreenResult, error) {
 	if s.external == nil || !cfg.External.Enabled {
+		return ScreenResult{}, nil
+	}
+	// 本地 hash/keyword 已在调用本函数前完成；只采样有成本的外部调用。
+	// 0%=按外部审核未启用路径放行，100%=不取随机数、保持接线前逐请求全检。
+	if !shouldSampleExternal(cfg.SampleRatePct, s.randomIntn) {
 		return ScreenResult{}, nil
 	}
 	externalResult, err := s.external.ScreenExternal(ctx, req, cfg.External)

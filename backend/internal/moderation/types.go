@@ -96,9 +96,10 @@ type ExternalModerationResult struct {
 
 func DefaultConfig(tenantID int64) ModerationConfig {
 	return ModerationConfig{
-		TenantID:         tenantID,
-		Enabled:          false,
-		FailClosed:       true,
+		TenantID:   tenantID,
+		Enabled:    false,
+		FailClosed: true,
+		// 现实默认来自 moderation_config.sample_rate_pct 的数据库 DEFAULT 100；接线前即为全检。
 		SampleRatePct:    100,
 		BanThreshold:     3,
 		BanWindowSeconds: 3600,

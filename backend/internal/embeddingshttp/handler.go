@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -81,6 +83,7 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
+	classTransition  *bindingfallback.Transition
 }
 
 func NewEmbeddingsHandler(d Deps) http.HandlerFunc {
@@ -178,28 +181,50 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	budget := ex.plan.AttemptBudget
-	if budget <= 0 || budget > len(ex.plan.Attempts) {
-		budget = len(ex.plan.Attempts)
-	}
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
 	for i := 0; i < budget; i++ {
-		ex.activateAttempt(ex.plan.Attempts[i])
-		if !ex.reserve(w) || !ex.selectAccount(w, i+1) || !ex.resolveCredential(w) {
+		outcome := ex.runAttempt(w, ex.plan.Attempts[i], i+1)
+		if outcome.done {
 			return
 		}
-		// dispatch 网络层失败(投递前、未写响应) → 可重试:还有 attempt 就换账号重试,耗尽才写错误。
-		// 已读响应/HTTP错误/结算失败是终态,由 dispatchAndSettle 自己写响应。
-		switch ex.dispatchAndSettle(w, i+1) {
-		case embedAttemptDone:
-			return
-		case embedAttemptRetryable:
-			if i+1 < budget {
-				continue
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runAttempt(w, phase.Attempts[0], i+2)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
 			}
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
 			return
 		}
 	}
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int) attemptOutcome {
+	ex.activateAttempt(attempt)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.selectAccount(w, attemptSeq); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	return ex.dispatchAndSettle(w, attemptSeq)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {

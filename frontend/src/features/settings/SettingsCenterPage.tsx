@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { ApiError } from '../../lib/api'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { EmailSmtpSection } from './EmailSmtpSection'
 import { EmailTemplatesSection } from './EmailTemplatesSection'
@@ -111,9 +112,9 @@ export function SettingsCenterPage() {
       {/* 当前 tab 的设置卡 */}
       <div className="hk-card">
         {loading && settings.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载设置" hint="请稍候。" />
         ) : tab.items.length === 0 ? (
-          <div className="hk-empty">该分签暂无可配置项。</div>
+          <EmptyState title="该分签暂无可配置项" />
         ) : (
           <div>
             {tab.items.map((meta, idx) => {

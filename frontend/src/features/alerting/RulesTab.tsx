@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
-import { createRule, deleteRule, listRules, updateRule } from './api'
+import { confirmIrreversible } from '../../ui/confirmDanger'
+import { createRule, deleteRule, fetchMetricCatalog, listRules, updateRule } from './api'
 import {
   buildCreateRule,
   buildUpdateRule,
   COMPARATORS,
-  comparatorSymbol,
   EMPTY_RULE_FORM,
   filtersToText,
-  METRIC_TYPES,
+  mapAlertResourceStat,
+  mapAlertRuleRows,
   SEVERITIES,
-  severityLabel,
-  severityTone,
   type RuleForm,
+  type AlertRuleTableRow,
 } from './alerting'
-import type { AlertRule } from './types'
-import { card, errBox, fmt, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, td, tdTime, th, Empty, Field, linkBtn, dangerLinkBtn } from './ui'
+import type { AlertMetricCatalogEntry, AlertRule } from './types'
+import { card, errBox, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, Field } from './ui'
 
 /*
  * 告警规则 Tab。/v1/admin/alert-rules 列表 + 新建/编辑(名称/指标/比较符/阈值/级别/窗口/持续/冷却/
@@ -29,6 +32,8 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [editing, setEditing] = useState<AlertRule | 'new' | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [metricCatalog, setMetricCatalog] = useState<AlertMetricCatalogEntry[]>([])
+  const [metricCatalogWarning, setMetricCatalogWarning] = useState<string | null>(null)
 
   const load = useCallback(
     (signal: AbortSignal) => {
@@ -53,6 +58,16 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
     return () => ctrl.abort()
   }, [load])
 
+  useEffect(() => {
+    const ctrl = new AbortController()
+    loadMetricCatalogState(ctrl.signal).then((state) => {
+      if (ctrl.signal.aborted) return
+      setMetricCatalog(state.entries)
+      setMetricCatalogWarning(state.warning)
+    })
+    return () => ctrl.abort()
+  }, [])
+
   const refresh = () => setRefreshNonce((n) => n + 1)
 
   const act = async (id: number, fn: () => Promise<unknown>) => {
@@ -71,14 +86,17 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   const onToggle = (rule: AlertRule) => act(rule.id, () => updateRule(tenantId, rule.id, { enabled: !rule.enabled }))
 
   const onDelete = (rule: AlertRule) => {
-    if (!window.confirm(`确认删除告警规则「${rule.name}」?此操作不可撤销。`)) return
+    if (!confirmIrreversible(`删除告警规则「${rule.name}」`)) return
     void act(rule.id, () => deleteRule(tenantId, rule.id))
   }
+
+  const rows = mapAlertRuleRows(items)
+  const countStat = mapAlertResourceStat('告警规则', items.length)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--hk-space-3)' }}>
-        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>共 {items.length} 条规则。规则在评估窗口内命中阈值即产生告警事件。</p>
+        <p style={{ color: 'var(--hk-ink-500)', margin: 0, fontSize: 13 }}>共 {items.length} 条规则。usage.* 指标按每条规则的统计窗口聚合后与阈值比较。</p>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
           <button type="button" onClick={refresh} style={ghostBtn}>
             刷新
@@ -91,62 +109,25 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
 
       {error && <div style={errBox}>{error}</div>}
 
+      <div style={statGrid}><StatCard {...countStat} /></div>
+
       <div style={card}>
         {loading && items.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载告警规则" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <Empty>暂无告警规则。点击「新建规则」开始配置。</Empty>
+          <EmptyState title="暂无告警规则" hint="点击「新建规则」开始配置。" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  {['规则', '触发条件', '级别', '窗口', '状态', '上次触发', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((rule) => (
-                  <tr key={rule.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{rule.name}</span>
-                        <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{rule.metric_type || rule.metric}</span>
-                      </div>
-                    </td>
-                    <td style={td}>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>
-                        {comparatorSymbol(rule.comparator)} {rule.threshold}
-                      </code>
-                      {rule.notify_email && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--hk-ink-300)' }}>✉ 邮件</span>}
-                    </td>
-                    <td style={td}>
-                      <StatusBadge tone={severityTone(rule.severity) as BadgeTone}>{severityLabel(rule.severity)}</StatusBadge>
-                    </td>
-                    <td style={tdTime}>{rule.window_seconds}s</td>
-                    <td style={td}>
-                      <StatusBadge tone={rule.enabled ? 'ok' : 'muted'}>{rule.enabled ? '启用' : '停用'}</StatusBadge>
-                    </td>
-                    <td style={tdTime}>{fmt(rule.last_triggered_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => setEditing(rule)} style={linkBtn}>
-                        编辑
-                      </button>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => onToggle(rule)} style={linkBtn}>
-                        {rule.enabled ? '停用' : '启用'}
-                      </button>
-                      <button type="button" disabled={busyId === rule.id} onClick={() => onDelete(rule)} style={dangerLinkBtn}>
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="告警规则"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={ruleColumns}
+            actions={[
+              { label: '编辑', onClick: (row) => setEditing(row.source), disabled: (row) => busyId === row.id },
+              { label: (row) => row.enabled ? '停用' : '启用', onClick: (row) => void onToggle(row.source), disabled: (row) => busyId === row.id },
+              { label: '删除', tone: 'danger', onClick: (row) => onDelete(row.source), disabled: (row) => busyId === row.id },
+            ]}
+          />
         )}
       </div>
 
@@ -154,6 +135,8 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
         <RuleModal
           tenantId={tenantId}
           existing={editing === 'new' ? null : editing}
+          metricCatalog={metricCatalog}
+          metricCatalogWarning={metricCatalogWarning}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
@@ -165,14 +148,29 @@ export function RulesTab({ tenantId }: { tenantId: number }) {
   )
 }
 
+const ruleColumns: DataListColumn<AlertRuleTableRow>[] = [
+  { key: 'rule', label: '规则', render: (row) => <span style={{ display: 'flex', flexDirection: 'column' }}><strong>{row.name}</strong><small>{row.metric}</small></span> },
+  { key: 'condition', label: '触发条件', render: (row) => <code>{row.condition}{row.email ? ' · ✉ 邮件' : ''}</code> },
+  { key: 'severity', label: '级别', badge: true, render: (row) => <StatusBadge tone={row.severityTone as BadgeTone}>{row.severity}</StatusBadge> },
+  { key: 'window', label: '窗口', render: (row) => row.window },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.enabled ? 'ok' : 'muted'}>{row.enabled ? '启用' : '停用'}</StatusBadge> },
+  { key: 'last-triggered', label: '上次触发', render: (row) => row.lastTriggeredAt },
+]
+
+const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(160px,240px)' }
+
 function RuleModal({
   tenantId,
   existing,
+  metricCatalog,
+  metricCatalogWarning,
   onClose,
   onSaved,
 }: {
   tenantId: number
   existing: AlertRule | null
+  metricCatalog: AlertMetricCatalogEntry[]
+  metricCatalogWarning: string | null
   onClose: () => void
   onSaved: () => void
 }) {
@@ -180,6 +178,7 @@ function RuleModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const set = <K extends keyof RuleForm>(k: K, v: RuleForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const selectedCatalogEntry = catalogEntryForMetric(metricCatalog, form.metric)
 
   const submit = async () => {
     setError(null)
@@ -217,17 +216,23 @@ function RuleModal({
           <input value={form.name} onChange={(e) => set('name', e.target.value)} style={inp} />
         </Field>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
-          <Field label="指标类型">
-            <select value={form.metricType} onChange={(e) => set('metricType', e.target.value)} style={inp}>
-              {METRIC_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
+          <Field label="内建指标">
+            <MetricCatalogSelect
+              entries={metricCatalog}
+              metric={form.metric}
+              warning={metricCatalogWarning}
+              onMetricChange={(metric) => set('metric', metric)}
+            />
           </Field>
-          <Field label="指标名(自定义时填)">
-            <input value={form.metric} onChange={(e) => set('metric', e.target.value)} placeholder="如 error_rate" style={inp} />
+          <Field label="指标名">
+            <input
+              value={form.metric}
+              onChange={(e) => set('metric', e.target.value)}
+              placeholder={selectedCatalogEntry?.is_prefix
+                ? `请在 ${selectedCatalogEntry.name} 后补全状态，如 account.unhealthy_throttled`
+                : '如 custom.metric'}
+              style={inp}
+            />
           </Field>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
@@ -254,7 +259,7 @@ function RuleModal({
           </Field>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-3)' }}>
-          <Field label="观察窗口(秒)">
+          <Field label="统计窗口(秒)：usage.* 指标按此窗口聚合后与阈值比较">
             <input value={form.windowSeconds} inputMode="numeric" onChange={(e) => set('windowSeconds', e.target.value)} style={inp} />
           </Field>
           <Field label="持续(秒,可选)">
@@ -303,7 +308,6 @@ function toForm(rule: AlertRule | null): RuleForm {
   return {
     name: rule.name,
     metric: rule.metric,
-    metricType: rule.metric_type ?? '',
     comparator: (COMPARATORS.find((c) => c.value === rule.comparator)?.value ?? 'gt'),
     threshold: String(rule.threshold),
     severity: (SEVERITIES.find((s) => s.value === rule.severity)?.value ?? 'warning'),
@@ -314,4 +318,52 @@ function toForm(rule: AlertRule | null): RuleForm {
     enabled: rule.enabled,
     filtersText: filtersToText(rule.filters),
   }
+}
+
+export interface MetricCatalogLoadState {
+  entries: AlertMetricCatalogEntry[]
+  warning: string | null
+}
+
+/** 目录失败只降级为自定义指标，不阻断规则表单。 */
+export async function loadMetricCatalogState(signal?: AbortSignal): Promise<MetricCatalogLoadState> {
+  try {
+    return { entries: await fetchMetricCatalog(signal), warning: null }
+  } catch {
+    return { entries: [], warning: '指标目录加载失败，仍可使用自定义指标名。' }
+  }
+}
+
+export function catalogEntryForMetric(
+  entries: AlertMetricCatalogEntry[],
+  metric: string,
+): AlertMetricCatalogEntry | undefined {
+  return entries.find((entry) => entry.is_prefix ? metric.startsWith(entry.name) : metric === entry.name)
+}
+
+export function MetricCatalogSelect({
+  entries,
+  metric,
+  warning,
+  onMetricChange,
+}: {
+  entries: AlertMetricCatalogEntry[]
+  metric: string
+  warning: string | null
+  onMetricChange: (metric: string) => void
+}) {
+  const selected = catalogEntryForMetric(entries, metric)?.name ?? ''
+  return (
+    <>
+      <select value={selected} onChange={(e) => onMetricChange(e.target.value)} style={inp}>
+        <option value="">自定义(用指标名)</option>
+        {entries.map((entry) => (
+          <option key={entry.name} value={entry.name}>
+            {entry.label}（{entry.name} · {entry.unit}）
+          </option>
+        ))}
+      </select>
+      {warning && <small style={{ color: 'var(--hk-ink-500)', fontSize: 12 }}>{warning}</small>}
+    </>
+  )
 }

@@ -5,7 +5,7 @@
 // 顶层资源 /admin/v1/model-pool-bindings(D1:对齐成熟参照把 channel/model 绑定做成
 // 顶层 admin CRUD 的惯例,并复用双角色门让 tenant_operator 能管自己租户的绑定 ——
 // model-admin 那个 platform_admin-only 门会把它挡在外面)。门照 proxyadminhttp:
-// tenant_operator 自 scope,或 platform_admin 经 ?tenant_id + CanIssueForTenant。
+// tenant_operator 自 scope,或 platform_admin 经 ?tenant_id + CanActOnTenant。
 package modelbindingadminhttp
 
 import (
@@ -198,7 +198,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_binding", "model_id and pool_group_id are required positive ids")
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.EffectiveFrom, req.EffectiveUntil)
+		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
 		if !ok {
 			return
 		}
@@ -235,7 +235,7 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.EffectiveFrom, req.EffectiveUntil)
+		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
 		if !ok {
 			return
 		}
@@ -277,7 +277,7 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 }
 
 // validateCommon 校验共享可变字段并解析生效窗。成功时返回解析出的 *time.Time 对。
-func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, weight *int32, efRaw, euRaw *string) (*time.Time, *time.Time, bool) {
+func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, weight, maxParallelRequests *int32, efRaw, euRaw *string) (*time.Time, *time.Time, bool) {
 	if selMode != "" && !validSelectionModes[selMode] {
 		writeError(w, http.StatusBadRequest, "invalid_selection_mode", "selection_mode must be strict_priority or priority_weighted")
 		return nil, nil, false
@@ -292,6 +292,10 @@ func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, we
 	}
 	if weight != nil && *weight <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_weight", "weight must be > 0")
+		return nil, nil, false
+	}
+	if maxParallelRequests != nil && *maxParallelRequests < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_max_parallel_requests", "max_parallel_requests must be >= 0")
 		return nil, nil, false
 	}
 	ef, ok := parseTimePtr(w, efRaw, "effective_from")
@@ -324,7 +328,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, strin
 	actor := ident.AuditActor()
 	switch ident.Role {
 	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
+		if ident.ScopeTenantID() <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required", "tenant_operator scope_tenant_id required")
 			return 0, "", false
 		}
@@ -347,7 +351,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 			writeError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query param required for platform_admin")
 			return 0, false
 		}
-		tenantID = ident.ScopeTenantID
+		tenantID = ident.ScopeTenantID()
 	} else {
 		v, err := strconv.ParseInt(tenantParam, 10, 64)
 		if err != nil || v <= 0 {
@@ -360,7 +364,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 		writeAdminAuthError(w, admin.ErrAdminForbidden)
 		return 0, false
 	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	if err := ident.CanActOnTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, false
 	}

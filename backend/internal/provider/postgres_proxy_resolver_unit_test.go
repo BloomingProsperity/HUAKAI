@@ -3,8 +3,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -111,6 +114,41 @@ func TestPostgresProxyResolver_NilPoolReturnsMisconfigured(t *testing.T) {
 	_, err := r.Resolve(nil, 1)
 	if !errors.Is(err, ErrProxyResolverMisconfigured) {
 		t.Errorf("nil pool 应返回 ErrProxyResolverMisconfigured，得到 %v", err)
+	}
+}
+
+// TestProxyGroupUnavailablePreservesSentinelAndLogsContext 钉住空组 fail-closed 的
+// 错误链与结构化证据。变异:去掉 %w、任一上下文字段或降低 Warn 级别都会转红。
+func TestProxyGroupUnavailablePreservesSentinelAndLogsContext(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	err := proxyGroupUnavailable(context.Background(), 33, 44, "us-residential")
+	if !errors.Is(err, ErrProxyUnhealthy) {
+		t.Fatalf("empty group error=%v; want ErrProxyUnhealthy in chain", err)
+	}
+	for _, want := range []string{"租户 33", "账号 44", "us-residential", "无 active 成员", "不落直连"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error=%q missing %q", err, want)
+		}
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+		t.Fatalf("decode structured log:%v raw=%q", err, logs.String())
+	}
+	if record["level"] != "WARN" {
+		t.Fatalf("log level=%v want WARN", record["level"])
+	}
+	if record["tenant_id"] != float64(33) || record["account_id"] != float64(44) || record["group_id"] != "us-residential" {
+		t.Fatalf("log context mismatch:%v", record)
+	}
+	for _, forbidden := range []string{"auth_secret", "password", "proxy_url", "username"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("empty-group log must not contain credential field %q: %s", forbidden, logs.String())
+		}
 	}
 }
 

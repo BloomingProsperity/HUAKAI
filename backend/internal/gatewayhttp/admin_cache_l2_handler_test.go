@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 )
 
@@ -31,7 +32,7 @@ func TestAdminL2CacheStatsAndDelete(t *testing.T) {
 	store.Set(context.Background(), l2cache.Entry{Key: "l2:v1:test", TenantID: 7, Vendor: "openai", Model: "gpt-4o", Status: 200, Body: []byte("body")})
 	r := chi.NewRouter()
 	MountAdminL2CacheRoutes(r, AdminL2CacheDeps{
-		Auth:  l2AdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth:  l2AdminAuthStub{ident: admintest.Platform(1)},
 		Store: store,
 	})
 
@@ -56,7 +57,7 @@ func TestAdminL2CacheTenantOperatorScope(t *testing.T) {
 	store.Set(context.Background(), l2cache.Entry{Key: "tenant-8", TenantID: 8, Vendor: "openai", Model: "gpt-4o", Status: 200, Body: []byte("body")})
 	r := chi.NewRouter()
 	MountAdminL2CacheRoutes(r, AdminL2CacheDeps{
-		Auth:  l2AdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Auth:  l2AdminAuthStub{ident: admintest.TenantOperator(1, 7)},
 		Store: store,
 	})
 
@@ -76,7 +77,7 @@ func TestAdminL2CacheTenantOperatorScope(t *testing.T) {
 func TestAdminL2CacheStatsDisabledReturnsEntriesArray(t *testing.T) {
 	r := chi.NewRouter()
 	MountAdminL2CacheRoutes(r, AdminL2CacheDeps{
-		Auth: l2AdminAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		Auth: l2AdminAuthStub{ident: admintest.Platform(1)},
 	})
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stats", strings.NewReader("")))

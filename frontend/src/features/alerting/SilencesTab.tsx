@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { createSilence, deleteSilence, listSilences } from './api'
-import { buildCreateSilence, EMPTY_SILENCE_FORM, silenceActive, type SilenceForm } from './alerting'
+import {
+  buildCreateSilence,
+  EMPTY_SILENCE_FORM,
+  mapAlertResourceStat,
+  mapAlertSilenceRows,
+  type AlertSilenceTableRow,
+  type SilenceForm,
+} from './alerting'
 import type { AlertSilence } from './types'
-import { card, dangerLinkBtn, errBox, fmt, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, td, tdTime, th, Empty, Field } from './ui'
+import { card, errBox, ghostBtn, inp, modal, newBtn, overlay, primaryBtn, Field } from './ui'
 
 /*
  * 告警静默 Tab。/v1/admin/alert-silences 列表(生效态徽章/时间窗/作用域)+ 新建(原因/起止/
@@ -44,7 +55,7 @@ export function SilencesTab({ tenantId }: { tenantId: number }) {
   const refresh = () => setRefreshNonce((n) => n + 1)
 
   const onDelete = (s: AlertSilence) => {
-    if (!window.confirm(`确认删除静默规则 #${s.id}(${s.reason})?`)) return
+    if (!confirmIrreversible(`删除静默规则 #${s.id}(${s.reason})`)) return
     void (async () => {
       setBusyId(s.id)
       setError(null)
@@ -59,14 +70,8 @@ export function SilencesTab({ tenantId }: { tenantId: number }) {
     })()
   }
 
-  const scope = (s: AlertSilence): string => {
-    const parts: string[] = []
-    if (s.rule_id != null) parts.push(`规则#${s.rule_id}`)
-    if (s.platform) parts.push(s.platform)
-    if (s.group_id) parts.push(`组:${s.group_id}`)
-    if (s.region) parts.push(s.region)
-    return parts.length ? parts.join(' · ') : '全局'
-  }
+  const rows = mapAlertSilenceRows(items)
+  const countStat = mapAlertResourceStat('静默规则', items.length)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
@@ -84,52 +89,26 @@ export function SilencesTab({ tenantId }: { tenantId: number }) {
 
       {error && <div style={errBox}>{error}</div>}
 
+      <div style={statGrid}><StatCard {...countStat} /></div>
+
       <div style={card}>
         {loading && items.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载静默规则" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <Empty>暂无静默规则。</Empty>
+          <EmptyState title="暂无静默规则" hint="可按维护窗口新建临时静默。" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  {['静默', '原因', '作用域', '生效态', '开始', '结束', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((s) => (
-                  <tr key={s.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>#{s.id}</td>
-                    <td style={td}>
-                      <span style={{ color: 'var(--hk-ink-900)' }}>{s.reason || '—'}</span>
-                    </td>
-                    <td style={td}>
-                      <span style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>{scope(s)}</span>
-                    </td>
-                    <td style={td}>
-                      {silenceActive(s) ? (
-                        <StatusBadge tone="warn">静默中</StatusBadge>
-                      ) : (
-                        <StatusBadge tone="muted">未生效</StatusBadge>
-                      )}
-                    </td>
-                    <td style={tdTime}>{fmt(s.starts_at)}</td>
-                    <td style={tdTime}>{fmt(s.ends_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <button type="button" disabled={busyId === s.id} onClick={() => onDelete(s)} style={dangerLinkBtn}>
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="静默规则"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={silenceColumns}
+            actions={[{
+              label: '删除',
+              tone: 'danger',
+              onClick: (row) => onDelete(row.source),
+              disabled: (row) => busyId === row.id,
+            }]}
+          />
         )}
       </div>
 
@@ -146,6 +125,17 @@ export function SilencesTab({ tenantId }: { tenantId: number }) {
     </div>
   )
 }
+
+const silenceColumns: DataListColumn<AlertSilenceTableRow>[] = [
+  { key: 'silence', label: '静默', render: (row) => `#${row.id}` },
+  { key: 'reason', label: '原因', render: (row) => row.reason },
+  { key: 'scope', label: '作用域', render: (row) => row.scope },
+  { key: 'active', label: '生效态', badge: true, render: (row) => <StatusBadge tone={row.active ? 'warn' : 'muted'}>{row.active ? '静默中' : '未生效'}</StatusBadge> },
+  { key: 'starts-at', label: '开始', render: (row) => row.startsAt },
+  { key: 'ends-at', label: '结束', render: (row) => row.endsAt },
+]
+
+const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(160px,240px)' }
 
 function SilenceModal({ tenantId, onClose, onSaved }: { tenantId: number; onClose: () => void; onSaved: () => void }) {
   const [form, setForm] = useState<SilenceForm>(EMPTY_SILENCE_FORM)

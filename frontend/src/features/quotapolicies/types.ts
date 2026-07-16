@@ -25,7 +25,7 @@ export type ScopeKind = 'global' | 'user' | 'api_key' | 'channel' | 'pool_group'
 export type Metric = 'requests' | 'tokens_estimated' | 'cost_usd' | 'concurrency'
 
 /** window_kind 枚举(镜像 validWindowKinds,validate.go:28)。 */
-export type WindowKind = 'none' | 'fixed' | 'calendar_day' | 'calendar_week' | 'manual'
+export type WindowKind = 'none' | 'fixed' | 'calendar_day' | 'calendar_week' | 'calendar_month' | 'manual'
 
 /** mode 枚举(镜像 validModes,validate.go:31)。 */
 export type Mode = 'enforce' | 'observe' | 'manual_first' | 'disabled'
@@ -41,7 +41,7 @@ export interface QuotaPolicy {
   window_seconds: number
   /** 上限,十进制字符串(原样渲染,防精度丢失)。 */
   limit_value: string
-  /** 突发上限,十进制字符串。 */
+  /** 窗口硬上限增量,十进制字符串；实际上限为 limit_value + burst_value。 */
   burst_value: string
   mode: string
   priority: number

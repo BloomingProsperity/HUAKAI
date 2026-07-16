@@ -1,9 +1,13 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
+import { formatMicroUSD } from '../usagerecords/usagerecords'
 import {
   DISPUTE_STATUSES,
   type DisputeFilters,
   type DisputeResolveRequest,
+	type DisputeResolveResponse,
+	type DisputeResolutionStatus,
   type DisputeStatus,
+  type DisputeView,
 } from './types'
 
 /*
@@ -52,6 +56,11 @@ export function isDisputeStatus(value: string): value is DisputeStatus {
   return (DISPUTE_STATUSES as string[]).includes(value)
 }
 
+/** resolve 端点不允许把争议重新写回 open。 */
+export function isDisputeResolutionStatus(value: string): value is DisputeResolutionStatus {
+	return value === 'reviewing' || value === 'resolved' || value === 'rejected'
+}
+
 /**
  * 争议状态 → 徽章语气。open=待处理(warn);reviewing=审核中(info);
  * resolved=已裁决退款/支持(ok);rejected=驳回维持扣费(danger);未知=中性。
@@ -95,7 +104,7 @@ export type ResolveValidation =
 /**
  * 校验裁决表单(镜像后端 validateResolveDispute,dispute_store.go:206):
  *   - tenant_id > 0
- *   - status ∈ {open, reviewing, resolved, rejected}
+ *   - status ∈ {reviewing, resolved, rejected}
  *   - operator_note trim 后 ≤ 4000
  * 前端先拦,避免无谓 400;后端仍是权威。运营备注允许为空(后端不强制)。
  */
@@ -108,8 +117,8 @@ export function validateResolve(
     return { ok: false, error: 'tenant_id 必须为正整数' }
   }
   // 判别核心:status 必须是合法枚举,否则后端 invalid status 400。
-  if (!isDisputeStatus(status)) {
-    return { ok: false, error: '裁决状态非法(须为 open/reviewing/resolved/rejected)' }
+  if (!isDisputeResolutionStatus(status)) {
+	return { ok: false, error: '裁决状态非法(须为 reviewing/resolved/rejected)' }
   }
   const note = operatorNote.trim()
   // 判别核心:备注超 4000 即拒(镜像后端 len(TrimSpace)>4000)。
@@ -141,4 +150,56 @@ export function shortDisputeID(id: string): string {
 export function shortRequestID(id: string): string {
   if (!id) return '—'
   return id.length > 20 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id
+}
+
+export interface DisputeTableRow {
+  id: number
+  disputeId: string
+  disputeTitle: string
+  status: string
+  userId: string
+  requestId: string
+  requestTitle: string
+  reason: string
+  operatorNote: string
+  createdAt: string
+  resolvedAt: string
+	refundedAmount: string
+  resolvable: boolean
+  source: DisputeView
+}
+
+/** 争议响应到列表列的纯映射，不改变裁决状态或请求体。 */
+export function mapDisputeTableRows(items: DisputeView[]): DisputeTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    disputeId: shortDisputeID(item.dispute_id),
+    disputeTitle: item.dispute_id,
+    status: item.status,
+    userId: `#${item.user_id}`,
+    requestId: shortRequestID(item.request_id),
+    requestTitle: item.request_id,
+    reason: item.reason || '—',
+    operatorNote: item.operator_note || '—',
+    createdAt: formatDisputeTime(item.created_at),
+	resolvedAt: formatDisputeTime(item.resolved_at),
+	refundedAmount: item.status === 'resolved' ? formatMicroUSD(item.refunded_micro_usd ?? 0) : '—',
+    resolvable: isResolvable(item.status),
+    source: item,
+  }))
+}
+
+/** 裁决成功提示以服务端真实退款结果为准，禁止仅凭 resolved 状态声称已退款。 */
+export function resolveSuccessNotice(response: DisputeResolveResponse): string {
+	if (response.dispute.status === 'resolved') {
+		if (response.refund_idempotent) return '此前已退款,未重复退款'
+		return `已裁决并退款 ${formatMicroUSD(response.refund_micro_usd ?? 0)} 到用户余额`
+	}
+	return `已裁决 ${response.dispute.dispute_id} → ${statusLabel(response.dispute.status)}`
+}
+
+function formatDisputeTime(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }

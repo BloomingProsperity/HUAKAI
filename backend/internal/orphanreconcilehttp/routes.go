@@ -117,8 +117,8 @@ func toItem(rec mediatask.OrphanRecord) orphanItem {
 	}
 }
 
-// resolveListScope 鉴权并定 scope:platform_admin 默认全局扫(tenantID=0,可用 ?tenant_id 收窄);
-// tenant_operator 强制限自己 ScopeTenantID(防越权看他租户孤儿)。
+// resolveListScope 鉴权并定 scope:平台全域身份默认全局扫(tenantID=0)，
+// 其他身份缺省使用自身 scope；显式目标统一经 CanActOnTenant 裁决。
 func resolveListScope(w http.ResponseWriter, r *http.Request, d Deps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeError(w, http.StatusServiceUnavailable, "orphan_not_configured", "orphan reconcile dependency unset")
@@ -129,28 +129,25 @@ func resolveListScope(w http.ResponseWriter, r *http.Request, d Deps) (admin.Adm
 		writeAdminAuthError(w, err)
 		return admin.AdminIdentity{}, 0, false
 	}
-	switch ident.Role {
-	case admin.RolePlatformAdmin:
-		// 可选 ?tenant_id 收窄;缺省 0=跨租户全局扫(ListPendingOrphans 对 tenantID<=0 即全局)。
-		if raw := strings.TrimSpace(r.URL.Query().Get("tenant_id")); raw != "" {
-			v, perr := strconv.ParseInt(raw, 10, 64)
-			if perr != nil || v <= 0 {
-				writeError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
-				return admin.AdminIdentity{}, 0, false
-			}
-			return ident, v, true
-		}
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if raw == "" && ident.IsPlatformWide() {
+		// 仅真正的平台全域身份可用 0 表示跨租户全局扫。
 		return ident, 0, true
-	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID <= 0 {
-			writeError(w, http.StatusForbidden, "admin_tenant_scope_required", "tenant_operator scope_tenant_id required")
+	}
+	tenantID := ident.ScopeTenantID()
+	if raw != "" {
+		var err error
+		tenantID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || tenantID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
 			return admin.AdminIdentity{}, 0, false
 		}
-		return ident, ident.ScopeTenantID, true
-	default:
-		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "admin role required")
+	}
+	if err := ident.CanActOnTenant(tenantID); err != nil {
+		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "caller cannot act on this tenant scope")
 		return admin.AdminIdentity{}, 0, false
 	}
+	return ident, tenantID, true
 }
 
 func parseLimit(w http.ResponseWriter, r *http.Request) int {

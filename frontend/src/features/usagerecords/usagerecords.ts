@@ -1,4 +1,4 @@
-import type { UsageRecord, UsageTokens } from './types'
+import type { Dispute, UsageRecord, UsageTokens } from './types'
 
 /*
  * 用量明细的纯逻辑(可单测):请求状态(end_class)→中文+配色、费用/token 格式化、游标分页。
@@ -88,6 +88,56 @@ export function modelDisplay(record: Pick<UsageRecord, 'requested_model' | 'upst
 /** 游标分页:next_cursor 非空即还有下一页。 */
 export function hasMore(nextCursor: string): boolean {
   return nextCursor.trim() !== ''
+}
+
+export interface UsagePageStatView {
+  label: string
+  value: string
+  hint: string
+}
+
+/** 当前页面已加载记录到页头统计卡的纯映射。 */
+export function mapUsagePageStats(records: UsageRecord[]): UsagePageStatView[] {
+  const totalCost = records.reduce((sum, record) => {
+    const value = Number(record.actual_cost)
+    return Number.isFinite(value) ? sum + value : sum
+  }, 0)
+  return [
+    { label: '记录数', value: records.length.toLocaleString('en-US'), hint: '当前页' },
+    { label: '合计花费', value: formatCost(String(totalCost)), hint: '当前页' },
+  ]
+}
+
+export interface DisputeTableRow {
+  id: string
+  requestID: string
+  reason: string
+  statusLabel: string
+  statusTone: Tone
+  createdAt: string
+  resolvedAt: string
+  operatorNote: string
+}
+
+/** 我的争议响应到只读表行的纯映射；取证字段与状态色不可丢失。 */
+export function mapDisputeRows(disputes: Dispute[]): DisputeTableRow[] {
+  return disputes.map((dispute) => ({
+    id: dispute.dispute_id || String(dispute.id),
+    requestID: dispute.request_id || '—',
+    reason: dispute.reason || '—',
+    statusLabel: disputeStatusLabel(dispute.status),
+    statusTone: disputeStatusTone(dispute.status),
+    createdAt: formatTimestamp(dispute.created_at),
+    resolvedAt: dispute.resolved_at ? formatTimestamp(dispute.resolved_at) : '—',
+    operatorNote: dispute.operator_note || '—',
+  }))
+}
+
+/** RFC3339(Nano)→ 本地可读串(24 小时制)。非法或空值保留诊断信息。 */
+export function formatTimestamp(iso: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 // ── 用量 CSV 导出(GET /v1/me/usage/export.csv)的纯逻辑 ────────────────────────

@@ -15,17 +15,17 @@ describe('账号 recent-requests API', () => {
 
   it('锁定路径、GET、limit 与 signal', async () => {
     const ctrl = new AbortController()
-    await getProviderAccountRecentRequests(99, 50, ctrl.signal)
+    await getProviderAccountRecentRequests(8, 99, 50, ctrl.signal)
     expect(client.get).toHaveBeenCalledWith('/admin/v1/provider-accounts/99/recent-requests', {
-      query: { limit: 50 },
+      query: { tenant_id: 8, limit: 50 },
       signal: ctrl.signal,
     })
     expect(client.send).not.toHaveBeenCalled()
   })
 
   it('默认 limit=20', async () => {
-    await getProviderAccountRecentRequests(7)
-    expect(client.get).toHaveBeenCalledWith('/admin/v1/provider-accounts/7/recent-requests', { query: { limit: 20 }, signal: undefined })
+    await getProviderAccountRecentRequests(8, 7)
+    expect(client.get).toHaveBeenCalledWith('/admin/v1/provider-accounts/7/recent-requests', { query: { tenant_id: 8, limit: 20 }, signal: undefined })
   })
 })
 

@@ -293,25 +293,31 @@ func (q *Queries) ExpireQuotaConcurrencySlots(ctx context.Context, arg ExpireQuo
 
 const failQuotaReconciliationJob = `-- name: FailQuotaReconciliationJob :execrows
 UPDATE quota_reconciliation_jobs
-SET status = 'failed',
-    last_error = $1::text,
-    next_run_at = $2::timestamptz,
+SET status = CASE
+        WHEN $1::boolean THEN 'failed'
+        ELSE 'queued'
+    END,
+    last_error = $2::text,
+    next_run_at = $3::timestamptz,
+    locked_at = NULL,
     updated_at = NOW()
-WHERE tenant_id = $3::bigint
-  AND id = $4::bigint
+WHERE tenant_id = $4::bigint
+  AND id = $5::bigint
   AND status = 'running'
 `
 
 type FailQuotaReconciliationJobParams struct {
+	Terminal  bool               `db:"terminal" json:"terminal"`
 	LastError string             `db:"last_error" json:"last_error"`
 	NextRunAt pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
 	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 	JobID     int64              `db:"job_id" json:"job_id"`
 }
 
-// 补偿失败后按调用方给出的 next_run_at 重新排队。
+// 普通失败按 next_run_at 重新排队；只有失效或耗尽预算才进入 failed 终停态。
 func (q *Queries) FailQuotaReconciliationJob(ctx context.Context, arg FailQuotaReconciliationJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, failQuotaReconciliationJob,
+		arg.Terminal,
 		arg.LastError,
 		arg.NextRunAt,
 		arg.TenantID,

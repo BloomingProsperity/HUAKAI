@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 )
 
 type fakeWorkerStatsReader struct {
@@ -52,7 +53,7 @@ func TestAdminWorkerStatsRejectsUnauthenticated(t *testing.T) {
 
 func TestAdminWorkerStatsReturnsCountersForPlatformAdmin(t *testing.T) {
 	h := NewAdminWorkerStatsHandler(AdminWorkerStatsDeps{
-		Auth:   fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Auth:   fakeAdminAuth{ident: admintest.Platform(0)},
 		Reader: fakeWorkerStatsReader{stats: sampleWorkerStats()},
 	})
 
@@ -85,7 +86,7 @@ func TestAdminWorkerStatsReturnsCountersForPlatformAdmin(t *testing.T) {
 
 func TestAdminWorkerStatsNilReaderFailsClosed(t *testing.T) {
 	h := NewAdminWorkerStatsHandler(AdminWorkerStatsDeps{
-		Auth: fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
+		Auth: fakeAdminAuth{ident: admintest.Platform(0)},
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/worker-stats", nil)

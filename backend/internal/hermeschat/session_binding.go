@@ -24,7 +24,7 @@ import (
 // 推导出的 admin actor,使内部 tool-execute 路径强制执行与显式 operator 驱动端点相同的
 // role 下限 + tenant 范围 + 审计归属。
 type SessionOperator struct {
-	// TenantID 是会话经范围校验后的 tenant(H1 中间件的 CanIssueForTenant 已授权该
+	// TenantID 是会话经范围校验后的 tenant(H1 中间件的 CanActOnTenant 已授权该
 	// operator 可操作的 tenant)。每次会话式工具调用都被钉死在此 tenant 上——工具绝不
 	// 能通过会话读取另一个 tenant 的数据。
 	TenantID int64
@@ -63,7 +63,7 @@ func NewSessionBindings(now func() time.Time) *SessionBindings {
 }
 
 // Bind 为一个会话 request_id 记录 operator 身份。它会覆盖同一 request_id 的任何先前绑定
-//(每次聊天开始 request_id 都唯一,因此冲突意味着请求被重新 prepare——后写者胜)。空白的
+// (每次聊天开始 request_id 都唯一,因此冲突意味着请求被重新 prepare——后写者胜)。空白的
 // request_id 会被忽略(调用方在上游已校验;这里是纵深防御,使空白键永远无法匹配以空白键
 // 进行的 lookup)。
 func (s *SessionBindings) Bind(requestID string, op SessionOperator) {

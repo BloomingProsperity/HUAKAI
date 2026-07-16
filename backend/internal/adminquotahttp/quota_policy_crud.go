@@ -26,7 +26,7 @@ var (
 		"requests": {}, "tokens_estimated": {}, "cost_usd": {}, "concurrency": {},
 	}
 	validWindowKinds = map[string]struct{}{
-		"none": {}, "fixed": {}, "calendar_day": {}, "calendar_week": {}, "manual": {},
+		"none": {}, "fixed": {}, "calendar_day": {}, "calendar_week": {}, "calendar_month": {}, "manual": {},
 	}
 	validModes = map[string]struct{}{
 		"enforce": {}, "observe": {}, "manual_first": {}, "disabled": {},
@@ -39,7 +39,8 @@ const (
 )
 
 // quotaPolicyItem 是响应 DTO。数值上限以十进制字符串渲染
-//(limit_value / burst_value),以免在 JSON 传输中丢失精度。
+// (limit_value / burst_value),以免在 JSON 传输中丢失精度；burst_value 表示
+// 窗口硬上限在 limit_value 之上的增量。
 type quotaPolicyItem struct {
 	ID                  int64   `json:"id"`
 	TenantID            int64   `json:"tenant_id"`

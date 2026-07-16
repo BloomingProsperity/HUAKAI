@@ -233,11 +233,16 @@ func resolveTenantScope(w http.ResponseWriter, r *http.Request, auth Auth) (int6
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return 0, false
 	}
-	if ident.ScopeTenantID <= 0 {
+	tenantID := ident.ScopeTenantID()
+	if tenantID <= 0 {
 		writeJSONError(w, http.StatusBadRequest, "tenant_scope_required", "tenant-scoped admin credential required for CSV export")
 		return 0, false
 	}
-	return ident.ScopeTenantID, true
+	if err := ident.CanActOnTenant(tenantID); err != nil {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
+		return 0, false
+	}
+	return tenantID, true
 }
 
 func parseExportRange(w http.ResponseWriter, r *http.Request) (exportRange, bool) {

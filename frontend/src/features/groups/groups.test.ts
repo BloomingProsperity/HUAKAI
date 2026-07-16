@@ -3,11 +3,13 @@ import {
   buildCreatePool,
   buildUpdatePool,
   EMPTY_POOL_FORM,
+  mapPoolRows,
   runeCount,
   toggleEnabledTarget,
   validatePoolName,
   type PoolForm,
 } from './groups'
+import type { PoolGroup } from './types'
 
 function form(over: Partial<PoolForm>): PoolForm {
   return { ...EMPTY_POOL_FORM, ...over }
@@ -78,5 +80,21 @@ describe('toggleEnabledTarget', () => {
     // 判别核心:启用态必须翻成禁用。变异(恒返回 true)→ 第一断言 RED。
     expect(toggleEnabledTarget(true)).toBe(false)
     expect(toggleEnabledTarget(false)).toBe(true)
+  })
+})
+
+describe('mapPoolRows', () => {
+  it('完整映射池组展示列(删兜底/状态/能力任一映射→红)', () => {
+    const pool: PoolGroup = {
+      id: 3, tenant_id: 2, name: '主池', routing_policy_version: 'v1', top_k_default: 4,
+      capability_default: 'safe_equivalent_allowed', allow_tenant_operator_force: false,
+      allow_last_resort: true, sticky_wait_max_waiting: 0, fallback_wait_max_waiting: 0,
+      sticky_wait_timeout_ms: 0, fallback_wait_timeout_ms: 0, forced_route_rate_limit_per_hour: 0,
+      enabled: false, created_at: 'bad-date', updated_at: '',
+    }
+    expect(mapPoolRows([pool])[0]).toMatchObject({
+      id: 3, name: '主池', capability: '允许安全等价', topK: 4,
+      fallback: '允许兜底', fallbackTone: 'info', status: '已禁用', statusTone: 'muted', createdAt: '—',
+    })
   })
 })

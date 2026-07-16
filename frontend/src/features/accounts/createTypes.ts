@@ -4,7 +4,9 @@
  *  - 上游目录   GET /admin/v1/providers          → providerCatalogListResponse
  *  - 渠道目录   GET /admin/v1/channels           → channelCatalogListResponse
  *  - 创建账号   POST /admin/v1/provider-accounts → createProviderAccountRequest
- */
+*/
+
+import type { AccountAdvancedPayload } from './advancedFields'
 
 /** 凭据字段渲染规格(credentialacq.FieldSpec)。 */
 export interface FieldSpec {
@@ -68,7 +70,7 @@ export interface ChannelCatalogResponse {
 }
 
 /** 创建账号请求体(createProviderAccountRequest 的子集,只发向导覆盖的字段)。 */
-export interface CreateAccountRequest {
+export interface CreateAccountRequest extends AccountAdvancedPayload {
   provider_id: number
   channel_id: number
   name: string

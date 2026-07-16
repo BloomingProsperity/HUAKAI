@@ -11,13 +11,15 @@ import {
   type CreateAccountForm,
 } from './create'
 import type { AccountMode, ChannelCatalogItem, ProviderCatalogItem } from './createTypes'
+import { AccountAdvancedSettings } from './AccountAdvancedSettings'
+import type { AccountAdvancedFormState } from './advancedFields'
 
 /*
  * 新建账号向导(单模态)。account-modes 元数据驱动:选模式 → 据 required_fields 渲染凭据输入
  * (secret 字段密文输入、不回显)→ 提交;混合渠道风险时弹二次确认(confirm=true 复发)。
  * 成功后回调刷新列表。
  */
-export function CreateAccountModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+export function CreateAccountModal({ tenantId, onClose, onCreated }: { tenantId: number | null; onClose: () => void; onCreated: () => void }) {
   const [providers, setProviders] = useState<ProviderCatalogItem[]>([])
   const [channels, setChannels] = useState<ChannelCatalogItem[]>([])
   const [modes, setModes] = useState<AccountMode[]>([])
@@ -50,6 +52,8 @@ export function CreateAccountModal({ onClose, onCreated }: { onClose: () => void
   )
 
   const set = <K extends keyof CreateAccountForm>(k: K, v: CreateAccountForm[K]) =>
+    setForm((f) => ({ ...f, [k]: v }))
+  const setAdvanced = <K extends keyof AccountAdvancedFormState>(k: K, v: AccountAdvancedFormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }))
 
   const setCred = (name: string, v: string) =>
@@ -211,6 +215,13 @@ export function CreateAccountModal({ onClose, onCreated }: { onClose: () => void
               </Field>
             </Section>
           )}
+
+          <AccountAdvancedSettings
+            mode="create"
+            tenantId={tenantId}
+            form={form}
+            onChange={setAdvanced}
+          />
 
           <Field label="审计原因(可选)">
             <input value={form.reason} onChange={(e) => set('reason', e.target.value)} placeholder="记入 admin 审计" style={inp} />

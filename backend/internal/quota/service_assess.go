@@ -38,7 +38,7 @@ func assessPolicy(ctx context.Context, store PGStore, req ReserveRequest, policy
 			current:      current,
 			amount:       amount,
 			limit:        limit,
-			exceeded:     current.Add(amount).GreaterThan(limit),
+			exceeded:     current.Add(amount).GreaterThan(effectiveLimit(policy)),
 			retryAfter:   retryAfter(req.At, policy),
 			requestCount: counter.RequestCount,
 		}, nil
@@ -55,7 +55,7 @@ func assessPolicy(ctx context.Context, store PGStore, req ReserveRequest, policy
 			current:    current,
 			amount:     amount,
 			limit:      policy.LimitValue,
-			exceeded:   current.Add(amount).GreaterThan(policy.LimitValue),
+			exceeded:   current.Add(amount).GreaterThan(effectiveLimit(policy)),
 			retryAfter: retryAfter(req.At, policy),
 		}, nil
 	case MetricTokensEstimated:
@@ -75,7 +75,7 @@ func assessPolicy(ctx context.Context, store PGStore, req ReserveRequest, policy
 			current:    current,
 			amount:     amount,
 			limit:      policy.LimitValue,
-			exceeded:   current.Add(amount).GreaterThan(policy.LimitValue),
+			exceeded:   current.Add(amount).GreaterThan(effectiveLimit(policy)),
 			retryAfter: retryAfter(req.At, policy),
 		}, nil
 	case MetricConcurrency:
@@ -88,6 +88,12 @@ func assessPolicy(ctx context.Context, store PGStore, req ReserveRequest, policy
 	default:
 		return policyAssessment{skipped: true}, nil
 	}
+}
+
+// effectiveLimit 是窗口内真正的硬上限:基础上限加突发值；突发值默认 0,
+// 因而未配置突发的策略保持原有判定边界不变。
+func effectiveLimit(policy Policy) decimal.Decimal {
+	return policy.LimitValue.Add(policy.BurstValue)
 }
 
 func policyWindowForUpdate(ctx context.Context, store PGStore, req ReserveRequest, policy Policy) (WindowCounter, error) {

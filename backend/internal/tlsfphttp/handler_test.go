@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 )
 
@@ -51,7 +52,7 @@ func (m mockSvc) SetStatus(context.Context, tlsfpadmin.SetStatusInput) (tlsfpadm
 func (m mockSvc) Delete(context.Context, int64, int64) error { return m.deleteErr }
 
 func adminDeps(svc Service) AdminDeps {
-	return AdminDeps{Auth: mockAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 1}}, Service: svc}
+	return AdminDeps{Auth: mockAuth{ident: admintest.Platform(1)}, Service: svc}
 }
 
 func do(d AdminDeps, method, target, body string) *httptest.ResponseRecorder {

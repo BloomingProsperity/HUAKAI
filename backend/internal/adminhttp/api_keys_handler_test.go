@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -234,7 +235,7 @@ func (s *apiKeyIssuerStub) Issue(_ context.Context, req admin.IssueRequest) (adm
 	s.called = true
 	s.got = req
 	if s.enforceScope {
-		if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
+		if err := req.Caller.CanActOnTenant(req.TenantID); err != nil {
 			return admin.IssueResult{}, err
 		}
 	}
@@ -265,7 +266,7 @@ func (s *apiKeyRevokerStub) Revoke(_ context.Context, req admin.RevokeRequest) (
 	s.called = true
 	s.got = req
 	if s.enforceScope {
-		if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
+		if err := req.Caller.CanActOnTenant(req.TenantID); err != nil {
 			return admin.RevokeResult{}, err
 		}
 	}
@@ -364,11 +365,11 @@ func assertAdminAPIKeyStatus(t *testing.T, rec *httptest.ResponseRecorder, want 
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}
+	return admintest.Platform(11)
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admin.AdminIdentity{TokenID: 12, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
+	return admintest.TenantOperator(12, tenantID)
 }
 
 func pgTimestamp(t time.Time) pgtype.Timestamptz {

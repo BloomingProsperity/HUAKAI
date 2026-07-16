@@ -168,3 +168,34 @@ export function emptyForm(): TemplateForm {
 export function headerCount(headers: Record<string, unknown> | null | undefined): number {
   return headers ? Object.keys(headers).length : 0
 }
+
+export interface ChannelTemplateTableRow {
+  id: number
+  name: string
+  method: string
+  path: string
+  headerCount: number
+  body: string
+  createdAt: string
+  template: ChannelTestTemplate
+}
+
+/** 渠道测试模板 DTO 到列表展示行的纯映射。 */
+export function mapChannelTemplateRows(templates: ChannelTestTemplate[]): ChannelTemplateTableRow[] {
+  return templates.map((template) => ({
+    id: template.id,
+    name: template.name,
+    method: template.method,
+    path: template.path,
+    headerCount: headerCount(template.headers),
+    body: template.body_template ? '有' : '—',
+    createdAt: formatTemplateTimestamp(template.created_at),
+    template,
+  }))
+}
+
+export function formatTemplateTimestamp(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
+}

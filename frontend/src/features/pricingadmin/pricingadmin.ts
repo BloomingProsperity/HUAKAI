@@ -1,4 +1,11 @@
-import type { CacheOverrideScope, ToolSurchargeDefault, UpdateBillingSettingsRequest } from './types'
+import type {
+  BillingSettingsResponse,
+  CacheOverride,
+  CacheOverrideScope,
+  PricingRatio,
+  ToolSurchargeDefault,
+  UpdateBillingSettingsRequest,
+} from './types'
 
 /*
  * 模型定价设置的纯逻辑(可单测)。把后端的计费约束投影成前端校验,提交前先挡住非法值,
@@ -144,6 +151,108 @@ export function billingPolicyLabel(value: string): string {
     default:
       return value
   }
+}
+
+export interface PricingRatioTableRow {
+  id: number
+  source: PricingRatio
+  poolGroupId: number
+  ratio: string
+  publicRatio: boolean
+  updatedBy: string
+  updatedAt: string
+}
+
+/** 分组倍率响应到列表展示行的纯映射；保留 source 供编辑与删除动作使用。 */
+export function mapPricingRatioRows(ratios: PricingRatio[]): PricingRatioTableRow[] {
+  return ratios.map((ratio) => ({
+    id: ratio.id,
+    source: ratio,
+    poolGroupId: ratio.pool_group_id,
+    ratio: ratio.public_ratio ? ratio.ratio ?? '—' : '(隐藏)',
+    publicRatio: ratio.public_ratio,
+    updatedBy: ratio.updated_by || '—',
+    updatedAt: formatPricingDate(ratio.updated_at),
+  }))
+}
+
+export interface CacheOverrideTableRow {
+  id: string
+  source: CacheOverride
+  scope: string
+  qualifier: string
+  multiplier: string
+  updatedAt: string
+}
+
+/** 缓存价覆盖响应到列表展示行的纯映射；复合键同时用于稳定渲染与忙碌态。 */
+export function mapCacheOverrideRows(overrides: CacheOverride[]): CacheOverrideTableRow[] {
+  return overrides.map((override) => ({
+    id: cacheOverrideKey(override),
+    source: override,
+    scope: scopeLabel(override.scope),
+    qualifier: override.model ? override.model : override.tenant_id ? `租户 ${override.tenant_id}` : '—',
+    multiplier: override.multiplier,
+    updatedAt: formatPricingDate(override.updated_at),
+  }))
+}
+
+/** 缓存价覆盖没有单独 id，使用范围及其限定值组成稳定键。 */
+export function cacheOverrideKey(override: CacheOverride): string {
+  return `${override.scope}:${override.model ?? ''}:${override.tenant_id ?? ''}`
+}
+
+export interface BillingPolicyTableRow {
+  id: string
+  key: string
+  value: string
+  rawValue: string
+  tenantSource: boolean
+  source: string
+  updatedBy: string
+  updatedAt: string
+}
+
+/** 单条生效策略映射为 DataListTable 所需的一行。 */
+export function mapBillingPolicyRows(settings: BillingSettingsResponse | null): BillingPolicyTableRow[] {
+  if (settings === null) return []
+  const tenantSource = settings.source === 'tenant'
+  return [{
+    id: settings.key,
+    key: settings.key,
+    value: billingPolicyLabel(settings.value),
+    rawValue: settings.value,
+    tenantSource,
+    source: tenantSource ? '租户自定义' : '全局默认',
+    updatedBy: settings.updated_by || '—',
+    updatedAt: formatPricingDate(settings.updated_at ?? undefined),
+  }]
+}
+
+export interface ToolSurchargeTableRow {
+  id: string
+  tool: string
+  label: string
+  price: string
+  note: string
+}
+
+/** 只读常量价表到展示行的纯映射，不改变默认价精度。 */
+export function mapToolSurchargeRows(defaults: ReadonlyArray<ToolSurchargeDefault>): ToolSurchargeTableRow[] {
+  return defaults.map((item) => ({
+    id: item.tool,
+    tool: item.tool,
+    label: item.label,
+    price: `$${item.perThousandUSD}`,
+    note: item.note,
+  }))
+}
+
+/** 列表时间统一格式化；缺失或非法时间不向运维台泄露 Invalid Date。 */
+export function formatPricingDate(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 /**

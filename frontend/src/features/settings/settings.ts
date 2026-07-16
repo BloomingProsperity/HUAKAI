@@ -211,9 +211,9 @@ export const TAB_GROUPS: SettingsTabGroup[] = [
     label: '网关行为',
     icon: '🛰️',
     items: [
-      { key: 'stream_timeout_seconds', label: '流式超时(秒)', control: 'number' },
-      { key: 'cooldown_429_seconds', label: '429 冷却(秒)', hint: '上游限流后冷却时长', control: 'number' },
-      { key: 'cooldown_529_seconds', label: '529 冷却(秒)', hint: '上游过载后冷却时长', control: 'number' },
+      { key: 'stream_timeout_seconds', label: '流式超时(秒)', hint: '流式请求总时限；现实默认 600 秒', control: 'number' },
+      { key: 'cooldown_429_seconds', label: '429 冷却(秒)', hint: '上游未返回 Retry-After/窗口重置时的新限流事件冷却；现实默认 300 秒', control: 'number' },
+      { key: 'cooldown_529_seconds', label: '529 冷却(秒)', hint: '上游 529/过载未返回 Retry-After 时的新事件冷却；现实默认 300 秒', control: 'number' },
       { key: 'response_header_deny_extra', label: '响应头额外拒绝', hint: '逗号分隔的 header 名', control: 'string' },
       { key: 'response_header_allow_override', label: '响应头允许覆盖', hint: '逗号分隔的 header 名', control: 'string' },
       { key: 'model_fallback_chains', label: '模型回退链', hint: 'JSON 回退配置', control: 'json' },

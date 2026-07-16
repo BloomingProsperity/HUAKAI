@@ -33,7 +33,14 @@ export const SCOPE_KINDS: ScopeKind[] = [
   'provider_account',
 ]
 export const METRICS: Metric[] = ['requests', 'tokens_estimated', 'cost_usd', 'concurrency']
-export const WINDOW_KINDS: WindowKind[] = ['none', 'fixed', 'calendar_day', 'calendar_week', 'manual']
+export const WINDOW_KINDS: WindowKind[] = [
+  'none',
+  'fixed',
+  'calendar_day',
+  'calendar_week',
+  'calendar_month',
+  'manual',
+]
 export const MODES: Mode[] = ['enforce', 'observe', 'manual_first', 'disabled']
 
 /** scope_id 长度上限,镜像后端 maxScopeIDLen(validate.go:37)。 */
@@ -111,6 +118,8 @@ export function windowKindLabel(v: string): string {
       return '自然日'
     case 'calendar_week':
       return '自然周'
+    case 'calendar_month':
+      return '自然月'
     case 'manual':
       return '手动重置'
     default:
@@ -151,6 +160,41 @@ export function modeTone(mode: string): BadgeTone {
     default:
       return 'muted'
   }
+}
+
+export interface QuotaPolicyTableRow {
+  id: number
+  scope: string
+  scopeId: string
+  metric: string
+  window: string
+  limit: string
+  burst: string
+  mode: string
+  modeTone: BadgeTone
+  priority: number
+  status: string
+  statusTone: BadgeTone
+  policy: QuotaPolicy
+}
+
+/** 仅派生配额策略展示字段，十进制字符串与原策略对象均保持原语义。 */
+export function mapQuotaPolicyRows(policies: QuotaPolicy[]): QuotaPolicyTableRow[] {
+  return policies.map((policy) => ({
+    id: policy.id,
+    scope: scopeKindLabel(policy.scope_kind),
+    scopeId: policy.scope_id,
+    metric: metricLabel(policy.metric),
+    window: `${windowKindLabel(policy.window_kind)}${policy.window_kind === 'fixed' && policy.window_seconds > 0 ? ` · ${policy.window_seconds}s` : ''}`,
+    limit: formatDecimal(policy.limit_value),
+    burst: formatDecimal(policy.burst_value),
+    mode: modeLabel(policy.mode),
+    modeTone: modeTone(policy.mode),
+    priority: policy.priority,
+    status: policy.enabled ? '启用' : '停用',
+    statusTone: policy.enabled ? 'ok' : 'muted',
+    policy,
+  }))
 }
 
 /** mode='enforce' 是真会拦请求的高影响模式,新建/编辑保存须二次确认。 */

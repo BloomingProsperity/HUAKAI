@@ -10,6 +10,7 @@ export interface Proxy {
   host: string
   port: number
   auth_username: string | null
+  group_id: string | null
   status: string
   last_check_at: string | null
   created_at: string
@@ -20,6 +21,16 @@ export interface ProxyListResponse {
   items: Proxy[]
 }
 
+/** GET/PUT 租户默认出口响应；null 表示未设置、未绑定账号继续直连。 */
+export interface TenantDefaultProxyResponse {
+  proxy_id: number | null
+}
+
+/** PUT 租户默认出口请求；字段必须存在，null 是显式清除。 */
+export interface TenantDefaultProxyInput {
+  proxy_id: number | null
+}
+
 /** 新建代理的请求体(auth_secret write-only,仅创建时发,后端加密存、从不回显)。 */
 export interface CreateProxyInput {
   name: string
@@ -28,6 +39,7 @@ export interface CreateProxyInput {
   port: number
   auth_username?: string
   auth_secret?: string
+  group_id: string | null
   status?: string
 }
 
@@ -44,6 +56,7 @@ export interface UpdateProxyInput {
   port: number
   auth_username?: string
   auth_secret?: string
+  group_id: string | null
 }
 
 /** error_class 枚举(与后端 proxyhealth 一致;ok 时缺省)。 */

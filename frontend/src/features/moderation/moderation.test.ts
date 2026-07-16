@@ -5,6 +5,9 @@ import {
   configToForm,
   decisionLabel,
   decisionTone,
+  mapBannedKeyRows,
+  mapModerationLogRows,
+  mapModerationRuleRows,
   validateConfig,
 } from './moderation'
 import { EMPTY_LOG_FILTERS, type ModerationConfig } from './types'
@@ -122,6 +125,30 @@ describe('configToForm', () => {
       banThreshold: 5,
       banWindowSeconds: 600,
     })
+  })
+})
+
+describe('审核列表映射', () => {
+  it('完整映射命中日志的判定、标识与缩写', () => {
+    const rows = mapModerationLogRows([{
+      id: 1, tenant_id: 2, api_key_id: 3, user_id: 4, payload_hash: 'abcdefghijklmnop',
+      decision: 'block_keyword', reason_code: '',
+    }])
+    expect(rows[0]).toMatchObject({
+      id: 1, occurredAt: '—', decision: '关键词拦截', decisionTone: 'danger', reasonCode: '—',
+      apiKey: '#3', user: '#4', payloadHash: 'abcdefgh…mnop',
+    })
+  })
+
+  it('规则映射保留原对象并区分启停', () => {
+    const input = [{ id: 7, value: 'bad', enabled: false }]
+    const rows = mapModerationRuleRows(input, (row) => row.id, (row) => row.value, (row) => row.enabled, (value) => value.toUpperCase())
+    expect(rows[0]).toEqual({ id: 7, value: 'BAD', status: '停用', statusTone: 'muted', rule: input[0] })
+  })
+
+  it('被封 Key 映射空名称、用户与违规信息', () => {
+    const key = { id: 5, tenant_id: 2, user_id: 9, name: '', key_prefix: 'hk-', status: 'banned', violation_count: 3 }
+    expect(mapBannedKeyRows([key])[0]).toEqual({ id: 5, name: '—', keyPrefix: 'hk-', user: '#9', violationCount: 3, lastViolationAt: '—', key })
   })
 })
 
