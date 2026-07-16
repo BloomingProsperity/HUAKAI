@@ -192,9 +192,47 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 6. 修复方案、测试方案、回滚方式。
 7. 状态：`Confirmed`、`Fixed`、`Owner Decision Required` 或 `Not a Bug`。
 
+## GW-WIRE-009 实施切片：账号调度真相只读聚合
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “找到之后接线，修复他们！”；“像这种问题不要糊弄过去，参考成熟项目就行”；“注意颗粒度……整个链路调用出现的细小的功能我们有没有”。 |
+| Scope | 扩展现有 provider-account health 管理接口，聚合生产 selector 已实际消费的账号启用状态、provider health、credential state、channel health、进程内 auth cooldown 和逐模型 cooldown；旧 `rate_limit_reset_at`、`overload_until`、`temp_unschedulable_until` 继续只读展示但明确标记为不参与当前 selector。不得修改 selector、状态写入、数据库结构、鉴权角色、资金、强配额或真实上游调用。 |
+| Success criteria | 管理端能区分 `eligible`、`blocked`、`request_dependent`，返回明确阻断原因、条件原因、状态来源、持久化范围和未评估的请求级 gate；channel health/auth cooldown 接线缺失、记录不存在和读取失败不得被混成同一种“健康”。测试删除任一真实状态读取后必须精确变红。 |
+| Time estimate | 约 2-4 小时，包含查询扩展、运行时依赖接线、单元/集成/竞态/全仓验证、独立 review 和 Draft PR。 |
+| Blast radius | 只增加管理 API 响应字段和只读状态方法；现有字段与路由保持兼容。若聚合判断错误，会误导运维但不会直接改变流量。 |
+| Failure modes | 把“没有 channel health 记录”误报为故障；把进程内 auth cooldown 冒充跨副本真相；把 ramping 简化成全放或全禁；把模型级 cooldown 错算成整号禁用；把旧账号时间字段继续冒充 selector 状态；读取辅助状态失败仍返回绿色。缓解方式是三态结论、来源/持久化标记、请求级未评估门清单和失败时 503。 |
+| Decision points | 本切片不命中 schema、鉴权、资金、真实费用或秘密边界，不需要新增 Owner 决策。后续若要让旧账号时间字段进入 selector、持久化 auth cooldown 或改变 ramp admission，必须另开决策与迁移切片。 |
+
+### 实施顺序
+
+1. 查询补齐 selector 当前读取的 `credential_state`、`model_rate_limits` 和三个旧账号时间字段。
+2. 为 channel health service 增加按 provider account 的只读最新状态查询。
+3. 为 auth cooldown 增加并发安全只读快照，明确 `process_local`。
+4. 在 provider-account health 响应增加调度评估对象，不改变现有字段。
+5. 增加 provider/channel/auth/model/legacy 各轴的判别测试与 PostgreSQL 查询测试。
+6. 运行目标包、`-race`、全仓、`vet`、质量门、代码预算和变异自检。
+7. 暂存后执行独立 Codex review；无 S0/S1 后提交独立 Draft PR，未经 Owner 同意不合并。
+
+### 实施结果
+
+- 已完成账号启用、provider/channel 可用性、provider health、credential state、channel health、进程内 auth cooldown、逐模型 cooldown 和旧时间字段的只读聚合。
+- 已完成 `eligible / blocked / request_dependent` 三态合同，明确阻断原因、条件原因、数据来源、持久化范围和未评估请求级 gate。
+- 已把管理详情接到 selector 共用的 channel health/auth cooldown 实例；辅助状态读取失败和损坏 JSON 均 fail-closed 返回 503。
+- 已完成判别性变异自检：临时断开 channel health 阻断接线后，目标测试精确变红；恢复后通过。
+- 已通过目标测试、相关包 `-race`、全仓 `go test ./...`、`go vet ./...`、OpenAPI 一致性、代码预算、`git diff --check` 和质量门。本机 PostgreSQL 集成测试因未设置 `HUAKAI_DATABASE_URL` 明确跳过，交由 PR CI 真库任务验证。
+- 尚未改变 selector、schema、auth cooldown 副本语义、旧时间字段权威关系或 `clear-rate-limit` 恢复范围；这些属于后续独立切片。
+
+### 回滚
+
+本切片无数据迁移。回滚新增响应对象、只读方法、查询列和测试即可；不得通过吞掉
+channel health 读取错误或把未知状态强行归为 `eligible` 来保住接口可用性。
+
 ## Pre-execution checklist
 
-1. 只使用 `HUAKAI-wt-global-wiring-codex` 和分支 `audit/backend-global-wiring-20260716-codex`。
+1. 审计使用 `HUAKAI-wt-global-wiring-codex`；本切片只使用独立工作树
+   `HUAKAI-wt-account-scheduling-truth-codex` 和分支
+   `fix/account-scheduling-truth-20260716-codex`。
 2. 每批开始和结束检查 `git status`，所有改动通过该批次的 Draft PR 提交；未经 Owner 同意不合并。
 3. 当前会话不读取参考项目源码，不触碰 Claude 或其它目标工作树。
 4. 参考源码由隔离 specifier 会话读取，输出行为报告后退出。

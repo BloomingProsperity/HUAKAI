@@ -13,13 +13,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp/accounthealthview"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
 
 type ProviderAccountHealthDeps struct {
-	Auth  providerAccountHealthAuth
-	Store providerAccountHealthStore
+	Auth          providerAccountHealthAuth
+	Store         providerAccountHealthStore
+	ChannelHealth providerAccountSchedulingChannelHealth
+	AuthCooldown  providerAccountSchedulingAuthCooldown
+	Now           func() time.Time
 	// RecentReqRing 暴露进程内的近期请求结果(MGMT-RECENTREQ-01)。
 	// 传 nil 是安全的:此时响应中会省略 recent_requests 字段。
 	RecentReqRing *recentreq.Ring
@@ -34,30 +40,39 @@ type providerAccountHealthStore interface {
 	SummarizeProviderAccountHealth(context.Context, int64) ([]admindb.SummarizeProviderAccountHealthRow, error)
 }
 
+type providerAccountSchedulingChannelHealth interface {
+	LatestByProviderAccount(context.Context, int64, int64) (channelhealth.Record, error)
+}
+
+type providerAccountSchedulingAuthCooldown interface {
+	Snapshot(int64, time.Time) authcooldown.Snapshot
+}
+
 type providerAccountHealthResponseBody struct {
-	ID                         int64    `json:"id"`
-	HealthState                string   `json:"health_state"`
-	HealthStateUntil           *string  `json:"health_state_until,omitempty"`
-	LastProbeLatencyMS         *int32   `json:"last_probe_latency_ms"`
-	LastProbeAt                *string  `json:"last_probe_at"`
-	LastObservedAt             *string  `json:"last_request_observed_at"`
-	ObservationSource          string   `json:"last_request_observation_source"`
-	ModelSyncLastCheckAt       *string  `json:"model_sync_last_check_at"`
-	SessionWindow5hStart       *string  `json:"session_window_5h_start"`
-	SessionWindow5hEnd         *string  `json:"session_window_5h_end"`
-	SessionWindow5hStatus      *string  `json:"session_window_5h_status"`
-	SessionWindow5hUtilization *float64 `json:"session_window_5h_utilization"`
-	SessionWindow7dStart       *string  `json:"session_window_7d_start"`
-	SessionWindow7dEnd         *string  `json:"session_window_7d_end"`
-	SessionWindow7dStatus      *string  `json:"session_window_7d_status"`
-	SessionWindow7dUtilization *float64 `json:"session_window_7d_utilization"`
-	LastRefreshAt              *string  `json:"last_refresh_at"`
-	LastRefreshOutcome         *string  `json:"last_refresh_outcome"`
-	FailureClass               *string  `json:"failure_class"`
-	FailureCount               int32    `json:"failure_count"`
-	Enabled                    bool     `json:"enabled"`
-	RequiresAction             bool     `json:"requires_action"`
-	UpdatedAt                  string   `json:"updated_at"`
+	ID                         int64                      `json:"id"`
+	HealthState                string                     `json:"health_state"`
+	HealthStateUntil           *string                    `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS         *int32                     `json:"last_probe_latency_ms"`
+	LastProbeAt                *string                    `json:"last_probe_at"`
+	LastObservedAt             *string                    `json:"last_request_observed_at"`
+	ObservationSource          string                     `json:"last_request_observation_source"`
+	ModelSyncLastCheckAt       *string                    `json:"model_sync_last_check_at"`
+	SessionWindow5hStart       *string                    `json:"session_window_5h_start"`
+	SessionWindow5hEnd         *string                    `json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string                    `json:"session_window_5h_status"`
+	SessionWindow5hUtilization *float64                   `json:"session_window_5h_utilization"`
+	SessionWindow7dStart       *string                    `json:"session_window_7d_start"`
+	SessionWindow7dEnd         *string                    `json:"session_window_7d_end"`
+	SessionWindow7dStatus      *string                    `json:"session_window_7d_status"`
+	SessionWindow7dUtilization *float64                   `json:"session_window_7d_utilization"`
+	LastRefreshAt              *string                    `json:"last_refresh_at"`
+	LastRefreshOutcome         *string                    `json:"last_refresh_outcome"`
+	FailureClass               *string                    `json:"failure_class"`
+	FailureCount               int32                      `json:"failure_count"`
+	Enabled                    bool                       `json:"enabled"`
+	RequiresAction             bool                       `json:"requires_action"`
+	UpdatedAt                  string                     `json:"updated_at"`
+	Scheduling                 accounthealthview.Response `json:"scheduling"`
 	// 当没有进程内数据可用时(ring 为 nil 或没有记录到请求),
 	// RecentRequests 会被省略。零值不会被输出。
 	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
@@ -95,7 +110,38 @@ func newProviderAccountHealthHandler(d ProviderAccountHealthDeps) http.HandlerFu
 			writeProviderAccountHealthReadError(w, err)
 			return
 		}
-		writeProviderAccountHealthJSON(w, http.StatusOK, providerAccountHealthResponse(row, d.RecentReqRing))
+		if d.ChannelHealth == nil {
+			writeError(w, http.StatusServiceUnavailable, "provider_account_scheduling_unavailable", "provider account scheduling diagnostics are unavailable")
+			return
+		}
+		channelRecord, err := d.ChannelHealth.LatestByProviderAccount(r.Context(), tenantID, id)
+		channelRecordFound := true
+		if errors.Is(err, channelhealth.ErrNotFound) {
+			channelRecordFound = false
+			err = nil
+		}
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "provider_account_scheduling_unavailable", "provider account scheduling diagnostics are unavailable")
+			return
+		}
+		now := time.Now
+		if d.Now != nil {
+			now = d.Now
+		}
+		at := now().UTC()
+		authSnapshot := authcooldown.Snapshot{Eligible: true}
+		authConfigured := d.AuthCooldown != nil
+		if authConfigured {
+			authSnapshot = d.AuthCooldown.Snapshot(id, at)
+		}
+		body, err := providerAccountHealthResponseWithSchedulingAt(
+			row, d.RecentReqRing, at, channelRecord, channelRecordFound, authSnapshot, authConfigured,
+		)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, "provider_account_scheduling_unavailable", "provider account scheduling diagnostics are unavailable")
+			return
+		}
+		writeProviderAccountHealthJSON(w, http.StatusOK, body)
 	}
 }
 
@@ -148,16 +194,24 @@ func writeProviderAccountHealthReadError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusServiceUnavailable, "provider_account_health_unavailable", "provider account health is unavailable")
 }
 
-func providerAccountHealthResponse(row admindb.GetAdminProviderAccountHealthRow, ring *recentreq.Ring) providerAccountHealthResponseBody {
-	return providerAccountHealthResponseAt(row, ring, time.Now().UTC())
-}
-
-func providerAccountHealthResponseAt(row admindb.GetAdminProviderAccountHealthRow, ring *recentreq.Ring, now time.Time) providerAccountHealthResponseBody {
+func providerAccountHealthResponseWithSchedulingAt(
+	row admindb.GetAdminProviderAccountHealthRow,
+	ring *recentreq.Ring,
+	now time.Time,
+	channelRecord channelhealth.Record,
+	channelRecordFound bool,
+	authSnapshot authcooldown.Snapshot,
+	authConfigured bool,
+) (providerAccountHealthResponseBody, error) {
 	// requires_action 是确定性 admin 视图规则,不从请求输入或上游响应推断。
 	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
 	status5h, utilization5h := activeSessionWindowView(row.SessionWindow5hEnd, row.SessionWindow5hStatus, row.SessionWindow5hUtilization, now)
 	status7d, utilization7d := activeSessionWindowView(row.SessionWindow7dEnd, row.SessionWindow7dStatus, row.SessionWindow7dUtilization, now)
 	lastRequestObservedAt := formatProviderAccountHealthTime(row.LastProbeAt)
+	scheduling, err := accounthealthview.Build(row, channelRecord, channelRecordFound, authSnapshot, authConfigured, now)
+	if err != nil {
+		return providerAccountHealthResponseBody{}, err
+	}
 	return providerAccountHealthResponseBody{
 		ID:                         row.ID,
 		HealthState:                row.HealthState,
@@ -182,8 +236,9 @@ func providerAccountHealthResponseAt(row admindb.GetAdminProviderAccountHealthRo
 		Enabled:                    row.Enabled,
 		RequiresAction:             requiresAction,
 		UpdatedAt:                  requiredProviderAccountHealthTime(row.UpdatedAt),
+		Scheduling:                 scheduling,
 		RecentRequests:             recentRequestsSummaryFor(ring, row.ID),
-	}
+	}, nil
 }
 
 func activeSessionWindowView(end pgtype.Timestamptz, status *string, utilization pgtype.Numeric, now time.Time) (*string, *float64) {
