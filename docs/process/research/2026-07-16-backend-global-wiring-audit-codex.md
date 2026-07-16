@@ -1,4 +1,4 @@
-# 2026-07-16 HUAKAI 后端全局接线真实性审计 Batch 1-2
+# 2026-07-16 HUAKAI 后端全局接线真实性审计 Batch 1-2B
 
 ## 元数据
 
@@ -6,12 +6,12 @@
 | --- | --- |
 | 审计分支 | `audit/backend-global-wiring-20260716-codex` |
 | 基线提交 | `438536e6` |
-| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表，以及 Claude、Gemini、Antigravity、Kimi 账号链 |
+| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 8 |
-| Inferences | 4 |
-| Open questions | 7 |
+| Observed findings | 13 |
+| Inferences | 6 |
+| Open questions | 10 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -37,6 +37,8 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 
 账号链对照见 `docs/process/research/2026-07-16-reference-account-chains-sub2-specifier.md`。隔离 specifier 实际核实的本地 SHA 中，Sub2API 的 Claude、Gemini、Antigravity 已形成专属账号运营闭环；Kimi 主要是通用 API-key/协议/计量能力。CLIProxyAPI 补充了 Kimi 设备授权、续期和设备身份保存；New API 补充了 Kimi/Moonshot API-key 渠道、模型同步、余额和跨渠道 retry。
 
+Sub2 整套账号系统深读见 `docs/process/research/2026-07-16-sub2-account-system-full-logic-specifier.md`。CLIProxyAPI 与 New API 的运行时补充对照已重新锁定远端默认分支可达 SHA，见 `docs/process/research/2026-07-16-reference-default-branch-account-runtime-supplement.md`。
+
 ## Batch 2 账号链总览
 
 ### 代码能力与主库现实
@@ -60,6 +62,80 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 上述 Released chat family 最终共用 HUAKAI 的 selector、账号健康/冷却、并发槽、claim、retry/fallback、channel health、billing、audit 和恢复骨架。Kimi 不是另起一套 handler，而是规范化为 OpenAI chat 形态后进入统一 HCSF/dispatcher；Claude session 和 Gemini 原生族则使用各自协议 adapter。
 
 这部分的优点是资金、claim 和审计没有按 vendor 复制。缺点是账号运营能力没有同样统一：额度探测只认 Claude OAuth，模型同步只认 OpenAI/Anthropic/Gemini 三个全局 API-key 源，主动健康探测又尚未进入生产。
+
+## Batch 2B：Sub2 整套账号系统对照 HUAKAI
+
+### 大白话结论
+
+Sub2 的账号系统不是“建账号、存 token、发请求”三个零件，而是一整条持续流转的生产链：
+
+`创建/导入/授权 → 秘密保护 → 自动续期与防旧 token 回滚 → 账号运行状态 → 候选硬门 → 排序与粘性 → 并发/RPM/session 占用 → 凭据/代理/协议准备 → 单账号 retry → 跨账号 fallback → 错误反写 → 最终账号计量计费 → 管理恢复 → 多副本后台收敛`
+
+隔离 specifier 实际观察到，Sub2 会让账号的到期、限流、过载、临时不可调度、逐模型限流、额度和人工调度状态直接影响候选；选中后仍需占槽、准备 token/代理/协议；失败后按 401/403/429/529 等分类修改运行态；最终按真正成功的账号和上游结果归因；管理端测试、刷新、重新授权、清状态和后台快照又回到同一条链。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account.go:148` `Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_account_scheduler.go:368` `Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/ratelimit_service.go:221` `Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_gateway_usage.go:249`
+
+HUAKAI 不是“后端功能少”。相反，HUAKAI 的 claim、slot、结算恢复、审计、多租户数据库边界、加密凭据仓库和协议规范化骨架很强。真正的问题是：**核心数据面已经比较完整，但账号运营闭环较弱；同一账号同时受多套状态体系管理；部分高级能力默认关闭或只在局部 provider 生效；管理端看到的状态和 selector 真正使用的状态不总是同一份。**
+
+### 真实调用顺序
+
+HUAKAI 当前主 chat 链可以还原为：
+
+`管理端先建 provider account → 再向既有 account 写入/采集 credential → selector 从 PostgreSQL 拉候选 → SQL 先按 enabled/provider/channel/health_state/credential_state/模型/协议/能力过滤 → channelhealth/auth/window/session/rate 等 gate 再过滤 → DB slot + claim → 凭据物化与出站 → retry/fallback → channelhealth/逐模型冷却/凭据热刷新反馈 → 最终结算、审计和恢复`
+
+这条主链能够工作，但有三个明显分叉：
+
+1. `provider_accounts.health_state` 主要由凭据刷新结果维护，`channel_health_state` 主要由真实请求反馈维护，auth 还有独立降级车道。
+2. `provider_accounts.rate_limit_reset_at/overload_until/temp_unschedulable_until` 能被管理列表识别和清除，但生产候选 SQL不读取；请求错误通常改写 `channelhealth` 或逐模型 JSON。
+3. 管理“测试”走 credential refresh dry-run，不走真实 selector、协议映射、上游请求、错误回写和计费链。
+
+### 功能总账
+
+状态含义：
+
+- `完整接入`：生产热路径、失败反馈、管理或恢复已形成闭环。
+- `实现更强`：HUAKAI 在多租户、资金或恢复保证上更严格。
+- `部分接入`：请求能跑，但运营、恢复或跨 provider 统一合同不完整。
+- `重复体系`：同一职责存在两套以上状态或入口，尚无统一真相。
+- `建而未用`：代码已存在，但默认或生产 composition root 未激活。
+- `缺失`：本轮源码范围没有找到对应生产能力。
+- `待真实验证`：存在实现和单测，但没有 live 全旅程证据。
+
+| 功能域 | Sub2 源码观察 | HUAKAI 真码 | 判定 |
+| --- | --- | --- | --- |
+| 账号创建与类型 | 创建时同时带平台、凭据形态、分组、代理、并发、优先级和到期策略。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:108` | account CRUD 支持并发、优先级、权重、模型、能力、标签、代理和错误规则；凭据通常在账号创建后另走 acquisition/store。 | `部分接入`，对象能力丰富但入口分两段 |
+| 账号级批量导入 | 混合输入逐项解析、去重，并决定创建、更新、跳过或失败。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_codex_import.go:144` | helper 强制要求一个既有 `ProviderAccountID`，所有 candidate 都写入同一账号，见 `admin_credential_acquisition_handler.go:70-80,248-267,352-360`。 | `缺失`：现有是批量凭据导入，不是批量账号导入 |
+| 敏感值边界 | 管理读取遮蔽 token/key/cookie；未回传敏感子项时保留旧值。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account_credentials_redact.go:3` | 独立加密 credential store、明文零化、审计脱敏、rotate/acquisition 分离。 | `实现更强`，但需继续验证所有管理响应 |
+| 刷新锁与竞态 | 后台刷新、请求准备和管理员重授权防止旧 token 覆盖新 token。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/token_cache_invalidator.go:71` | 刷新事务、advisory lock、版本/CAS、storm slot 和 stale slot reaper 已接。 | `完整接入` |
+| 自动续期 | 分页扫描，按平台做并发/QPS/超时/重试/熔断。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/token_refresh_service.go:20` | credential scheduler 有扫描、预算、重试、审计、告警和多种 mode adapter。 | `完整接入` |
+| 手动立即刷新 | 管理端可以刷新单账号，结果回到同一账号状态。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/grok_oauth_handler.go:128` | runtime 有 401 `RefreshHotPath`；provider-account 管理路由有 rotate/acquisition，但没有直接的 refresh-now 路由，见 `routes.go:1049-1095`。 | `缺失` |
+| 重新授权 | 无法续期或撤销后进入重新授权。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:209` | 可重新走 credential acquisition/rotate。 | `完整接入`，但没有统一“需要重授权”运营状态 |
+| 正交状态轴 | 活动、人工调度、到期、限流、过载、临时冷却、逐模型限制和额度分别表达。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account.go:148` | `provider_accounts`、`channel_health_state`、credential state、auth cooldown、model rate limits 并存。 | `重复体系` |
+| 到期硬门 | 账号到期直接排除候选。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account.go:148` | account `expires_at` 用于刷新扫描，但生产 pool-group 候选 SQL不读取该字段，见 `pool_accounts.sql:125-177`。 | `部分接入/合同不清` |
+| 账号级限流/过载/临时冷却 | 对应时间状态直接影响后续候选。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/ratelimit_service.go:221` | 管理列表识别三类字段，但 selector SQL不读；请求热路径主要写 channelhealth，见 `admin_provider_accounts.go:174-185`、`chat_completions_error.go:249-302`。 | `重复体系` |
+| 逐模型冷却 | 429/模型错误可以只下掉账号×模型，不必下掉整号。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/ratelimit_service.go:271` | `model_rate_limits` 真实写库、加载到 `AccountSnapshot` 并进入 gate。 | `完整接入` |
+| 候选硬门 | 状态、分组、模型、能力、账号类型和传输先过滤，再排序。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account_service.go:231` | SQL已过滤 tenant/channel/provider/enabled/health/credential/model/protocol/capability，随后再过真实 gate。 | `完整接入` |
+| 优先级与权重 | 硬门后可综合优先级、负载、排队、错误率、TTFT、额度和成本。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_account_scheduler.go:924` | 默认 selector 支持 strict priority/priority weighted；高级 PASR 支持 segment 学习，但全局 mode 默认 `default`。 | `部分接入`，高级能力默认关闭 |
+| 粘性与逃逸 | 前一响应和 session 粘性不得绕过健康、模型、传输和容量。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_account_scheduler.go:379` | DB sticky store 与 gate/slot/claim 同链，失败可重新选号。 | `完整接入` |
+| 并发槽 | 请求前原子占槽，异常和 fallback 释放。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_account_scheduler.go:511` | PostgreSQL slot manager、租约和回收链已接。 | `实现更强` |
+| RPM/TPM/session/window | 账号运行数据既参与调度也可在管理端查看。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:218` | session/window gate 已接但依赖缺失时 fail-open；主动 RPM/TPM 预检默认关闭。 | `部分接入` |
+| 代理与传输 | 账号代理、身份、传输和协议在最终发网前准备。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_gateway_service.go:383` | 账号代理绑定、代理组、TLS profile、协议 adapter 和 transport selection 已接。 | `完整接入` |
+| 单账号 retry | 短暂失败可在同号内按预算重试。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_gateway_service.go:310` | 有分类、预算和 delivery 边界。 | `完整接入` |
+| 跨账号 fallback | 下一账号从原始请求重新应用自己的模型和身份。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_failover_cached_body_test.go:26` | attempt loop 重新 acquire、重新物化账号和 credential；claim/slot 边界有测试。 | `完整接入` |
+| 错误反写 | 401/403/429/529 改变后续账号运行态。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/ratelimit_service.go:221` | 逐模型冷却、channelhealth、auth cooldown、credential hot refresh 都存在，但写入不同状态源。 | `重复体系` |
+| 最终账号计量计费 | 以最终成功账号、最终上游模型和 token 桶结算。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/openai_gateway_usage.go:249` | claim、settlement、delivery intent、DLQ/recovery 和 audit 共享最终 acquire 身份。 | `实现更强` |
+| 账号级 quota/余额/模型 | 主动探测、被动头和本地统计形成账号视图。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account_usage_service.go:87` | 额度采集只完整覆盖 Claude OAuth；模型同步主要是全局源；account upstream-models 只支持 passthrough。 | `部分接入` |
+| 真实账号测试 | 测试复用真实账号凭据和模型路径，并可写额度/恢复状态。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account_test_service_openai_test.go:104` | `/{id}/test` 是 refresh adapter dry-run；多数 OAuth/session mode 直接返回 unsupported，见 `provider_account_test_handler.go:51-90`、`provider_account_dry_run.go:58-105`。 | `缺失` |
+| 管理恢复动作 | 测试、刷新、重新授权、清状态、重置 quota、批量修改和调度启停相互收敛。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:181` | 有 clear-rate-limit、rotate、acquisition、channelhealth pause/resume/force-active；缺 refresh-now、复制和统一 quota reset。 | `部分接入` |
+| 批量修改一致性 | 批量操作逐项返回结果；本次未观察到全链补偿保证。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:147` | bulk-by-tag 只改 enabled/priority/weight，逐行 update 后逐行 audit，中途失败会留下部分成功。 | `部分接入` |
+| 多副本路由收敛 | DB 账号通过 outbox、水位、fencing、租约和全量重建发布调度快照。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/scheduler_snapshot_service.go:299` | selector 每次直接查 PostgreSQL，避免快照陈旧，但增加数据库热路径压力；channelhealth 也持久化在 PostgreSQL。 | `产品差异`，不是功能缺失 |
+| 真实全旅程证据 | 局部竞态测试较深，但未观察到所有 provider 的真实外部 E2E。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/token_refresh_service_test.go:179` | Released 账号链同样缺 provider 级授权/导入到恢复的 live E2E。 | `待真实验证` |
+
+### 对比后的架构判断
+
+1. **HUAKAI 强在数据面正确性。** selector、DB slot、claim、结算、审计和恢复是一条共享骨架，没有让每个 provider 各写一套资金逻辑。
+2. **Sub2 强在账号运行态闭环。** 管理动作、后台刷新、请求失败和 selector 围绕同一账号状态持续流转，运维看到的状态更接近实际调度状态。
+3. **HUAKAI 当前最需要的不是继续堆 provider adapter。** 应先把账号状态、账号测试、账号级 quota/model 观测和管理恢复动作收敛成 provider-neutral 合同。
+4. **PASR 不是当前第一矛盾。** 高级 selector 已存在，但默认关闭；即使立刻打开，也不能解决账号测试是假测试、运营状态分裂、批量导入不是账号导入等问题。
+5. **不能照搬 Sub2 的 Redis 快照。** HUAKAI 当前 PostgreSQL 直选有更简单的权威性；是否引入快照应由压测和数据库负载决定，不应为了形式对标而增加一致性系统。
 
 ## 生产路由矩阵
 
@@ -330,6 +406,121 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 
 按账号类型建立 opt-in live harness，凭据只从环境/密钥服务注入，默认跳过；每条旅程记录上游 request ID、最终账号、刷新结果、claim/结算状态和脱敏断言。Antigravity 在合同转绿前只做实验环境验收，不进入 Released gate。
 
+### GW-WIRE-009：账号运行状态存在多套真相，管理状态与实际选号不完全一致
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（运营判断/路由一致性） |
+| 分类 | W-02 半接线、W-08 观测失真、W-10 信息断链、W-12 重复体系 |
+| 状态 | **Owner Decision Required** |
+| 用户影响 | 运维可能在 provider-account 列表中看到账号处于 active，也可能看到 `rate_limit_reset_at/overload_until/temp_unschedulable_until`，但生产 selector 不直接读取这些时间字段；真实请求产生的冷却又主要写到 `channel_health_state`。因此“管理页面认为账号什么状态”和“下一次请求是否选到账号”需要跨两个接口人工拼接。 |
+
+**源码证据**
+
+1. 生产候选 SQL只返回并过滤 `health_state/health_state_until`、`credential_state`、逐模型限制、模型、协议和能力，没有读取账号级 `expires_at/rate_limit_reset_at/overload_until/temp_unschedulable_until`，见 `backend/sql/queries/pool_accounts.sql:125-177`。
+2. `DBAccountSource` 也只把查询返回的健康、逐模型冷却、窗口/session/RPM 等有限字段放进 `AccountSnapshot`，见 `backend/internal/pool/dispatcher/account_source.go:46-91`。
+3. 管理列表却明确用三类账号级时间字段计算 `active/rate_limited/overloaded/temp_unschedulable`，见 `backend/internal/db/admin/admin_provider_accounts.go:162-185`。
+4. `rate.Service.HandleUpstreamError` 只计算 `Decision`；它的 PostgreSQL store 只用于 clear cascade，不负责写入新冷却，见 `backend/internal/rate/upstream_service.go:192-213,215-291`。
+5. chat 热路径拿到该决策后，逐模型 429 写 `model_rate_limits`，整号冷却则调用 `channelhealth.ForceCooldown` 或继续 `ApplySignal`，见 `backend/internal/gatewayhttp/chat_completions_error.go:249-302` 和 `backend/internal/gatewayhttp/chat_completions_dispatch.go:760-769`。
+6. 生产 gate 最终按 provider account 查询最新 `channel_health_state` 并决定放行，见 `backend/internal/channelhealth/failover.go:47-92`。
+7. 凭据刷新失败又单独写 `provider_accounts.health_state`，见 `backend/internal/credentialworker/health_state.go:48-81,124-159`。
+
+**判断**
+
+这不是“限流完全不生效”：逐模型冷却和 channelhealth 会真实挡住请求。问题是同一个账号至少有 provider health、channel health、auth cooldown、credential state、逐模型限制五套状态，写入者、恢复者和管理视图不统一。Sub2 的优势不是状态少，而是这些状态最终由同一账号候选门消费。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account.go:148`
+
+**建议**
+
+先定“账号调度真相合同”，再改代码：
+
+1. 明确哪些是正交状态、哪些是历史兼容字段，禁止两个字段表达同一冷却。
+2. provider-account 详情聚合返回 selector 当前实际使用的 channel health、auth cooldown、credential state 和逐模型状态，并标注来源。
+3. 选择一种迁移方向：要么账号级时间状态进入 selector；要么停止把它们当实时调度状态并迁移到 channelhealth。
+4. `clear-rate-limit` 必须清理 selector 真正读取的状态，不能只清 provider account 列和 model JSON。
+5. 该项可能改变 selector、管理 API 和历史数据解释，按高风险合同变更等待 Owner 确认。
+
+### GW-WIRE-010：现有批量导入只能向一个既有账号导入多份凭据
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S2`（运营效率/feature parity） |
+| 分类 | W-02 半接线 |
+| 状态 | **Confirmed；建议独立中风险 PR** |
+| 用户影响 | 管理员批量导入一组账号材料前，必须先手工建立 provider account，并把所有候选绑定到同一个 account ID。系统没有账号身份去重、创建/更新/跳过/失败汇总，也不能把一批独立账号自动落成独立调度单元。 |
+
+**源码证据**
+
+1. helper 请求强制携带一个 `ProviderAccountID`，见 `backend/internal/gatewayhttp/admin_credential_acquisition_handler.go:70-80`。
+2. CSV/JSON/CLI 可以解析出多个 candidate，但循环为每个 candidate 创建的 flow 都复用同一个 `req.ProviderAccountID`，最终再次覆盖 candidate 的 account ID，见 `admin_credential_acquisition_handler.go:232-267`。
+3. 创建 flow 时 `tenant_id` 和 `provider_account_id` 都是必填，见 `admin_credential_acquisition_handler.go:352-360`。
+4. Sub2 的账号级导入会逐项识别账号身份并决定创建、更新、跳过或失败；access-token-only 更新还保护已有 refresh material。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_codex_import.go:144` `Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_codex_import.go:265`
+
+**建议**
+
+新增独立“账号批量导入”服务，不改现有 credential helper 语义。先 dry-run 解析和去重，再由 operator 确认创建/更新计划；每项事务隔离、返回明确结果，凭据仍通过现有 encrypted store/finalizer 落库。涉及账号身份键和更新策略时先提交 Owner 决策，不应凭邮箱、token 文本或显示名直接猜唯一性。
+
+### GW-WIRE-011：账号“测试”不是实际请求链测试，OAuth/session 账号大多无法测试
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（发布证据/运维误判） |
+| 分类 | W-03 假激活、W-09 测试假覆盖 |
+| 状态 | **Owner Decision Required** |
+| 用户影响 | 运维点击 test 可能以为已经验证“该账号能按当前模型和协议真实出站”，实际只是调用 refresh adapter 的非持久化 dry-run；Claude/OpenAI/Gemini/Antigravity 多种 OAuth/session mode 被明确返回 unsupported。 |
+
+**源码证据**
+
+1. `POST /{id}/test` 直接委托 `DryRunProviderAccountCredentialWithProbeModel`，见 `backend/internal/adminhttp/provider_account_test_handler.go:47-56,75-108`。
+2. dry-run 不经过 selector、claim、协议 adapter、真实 relay、错误回写和计费；它只调用 mode refresh adapter，见 `backend/internal/credentialworker/provider_account_dry_run.go:44-78`。
+3. Claude OAuth/Code、OpenAI OAuth/Codex、Gemini Code Assist/Google One/Antigravity/OAuth、Copilot 和 canonical Antigravity 都被列为需要持久化刷新，因此直接返回 unsupported，见 `provider_account_dry_run.go:81-105`。
+4. 账号级 upstream-models 也只支持 `upstream_passthrough` credential，不覆盖官方 API key 或 OAuth/session 账号，见 `backend/internal/adminhttp/provider_account_upstream_models_handler.go:96-125`。
+5. Sub2 的账号测试实际使用账号凭据和模型路径，并能解析用量反馈；但其全外部旅程也不是所有 provider 都完整覆盖。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account_test_service_openai_test.go:104`
+
+**建议**
+
+建设默认不计费或严格成本封顶的真实账号测试合同：复用生产协议映射、凭据物化、代理和 transport，但使用独立 test claim/usage 分类，不进入客户账；结果要明确区分 credential validation、relay validation、model validation 和 quota probe。该动作会发真实上游请求并影响风控/限流，默认策略和成本预算需 Owner 批准。
+
+### GW-WIRE-012：账号恢复动作没有形成一个完整管理闭环
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S2` |
+| 分类 | W-02 半接线、W-06 恢复断路 |
+| 状态 | **Confirmed；部分动作需要 Owner 决策** |
+| 用户影响 | 当前可以 rotate/re-acquire credential、清账号限流字段、暂停/恢复 channelhealth，但没有直接 refresh-now、复制账号或统一 reset provider quota。运维处理事故时需要知道每套状态该去哪个入口恢复。 |
+
+**源码证据**
+
+1. provider-account 路由总账只挂 CRUD、test、health、recent requests、bulk、upstream models、credential、acquisition 和 channelhealth，见 `backend/cmd/gateway/routes.go:1049-1095`。
+2. account CRUD 的恢复动作只有 `clear-rate-limit`，见 `backend/internal/gatewayhttp/admin_pool_accounts_handler.go:131-138`。
+3. channelhealth 的手工动作是 pause/resume/force-active，且请求必须提供 credential ID/version，见 `backend/internal/gatewayhttp/channel_health_admin_handler.go:40-57`。
+4. 401 热路径能调用 `RefreshHotPath`，但该能力未暴露为管理端单账号立即刷新入口。
+5. Sub2 把测试、刷新、重新授权、清状态、重置 quota、批量修改和调度开关放在同一账号运营面。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:181`
+
+**建议**
+
+先增加只读“可执行恢复动作”诊断，让系统根据当前 credential/health 状态返回允许的 action，不立即改状态。随后分批补 refresh-now 和统一 clear/recover orchestration；复制账号和 quota reset 需要先定义哪些配置可复制、哪些运行态必须清空，不能盲目复制秘密或瞬态限制。
+
+### GW-WIRE-013：bulk-by-tag 会留下部分更新或“已更新但无审计”的状态
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（管理操作一致性/审计完整性） |
+| 分类 | W-02 半接线、W-11 顺序错误 |
+| 状态 | **Confirmed；建议下一修复批** |
+| 用户影响 | 一批账号逐行更新，任意中途错误都会保留前面已成功的行；更严重的是每行先 update 再写 audit，若 audit 插入失败，该账号已经修改但没有对应审计记录。响应只报告“前 N 个成功”，没有每项结果或补偿信息。 |
+
+**源码证据**
+
+1. bulk 只支持按 tag 修改 enabled、priority、static weight，见 `backend/internal/adminhttp/provider_account_bulk_handler.go:58-78`。
+2. handler 在普通循环中逐行 `UpdateAdminProviderAccount`，失败时立即返回并明确显示已有成功数量，见 `provider_account_bulk_handler.go:84-100`。
+3. 每行 update 完成后才构造并插入 audit；audit 失败同样立即返回，不回滚前面的 update，见 `provider_account_bulk_handler.go:102-142`。
+4. Sub2 本轮也没有证明所有批量动作具备全链补偿，因此这里不宣称其事务性更强；只确认 HUAKAI 当前存在可复现的部分成功合同。
+
+**建议**
+
+把单账号 update + audit 收敛到同一数据库事务；批次层面可选择“全有或全无”或“逐项隔离并完整返回结果”，但必须显式定义。推荐先做逐项隔离：每个账号事务原子，响应返回 succeeded/failed/skipped 列表，支持幂等请求键和安全重试；是否做整批原子由规模与锁影响决定。
+
 ## 非问题与反证
 
 1. `cmd/gateway/routes_*.go` 的 mount helper 本批全部存在生产调用，不支持“很多页面后端路由没挂”的笼统结论。
@@ -337,6 +528,8 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 3. 某些包级 `MountRoutes` wrapper 没被调用，不代表 handler 没挂；生产 router 可能使用细粒度 mount。
 4. `deps.mediaTaskWorker` 等字段若未被 handler 读取，但实例被 `gatewayRuntime` 保留用于 lifecycle，不属于“构造后丢弃”。
 5. worker 同时由 `shutdownGateway` 和 `runtime.close` 调 Stop，在已核实现中 Stop/cancel 具有幂等语义；本批不把重复调用本身报为 bug。
+6. HUAKAI 不使用 Sub2 的 Redis 调度快照不自动构成功能缺失；当前 PostgreSQL 直选提供更直接的权威读取，是否需要快照必须由热路径压测决定。
+7. PASR 默认关闭是显式发布策略，不是代码不存在；当前问题是高级能力尚未激活，不能把它当作线上已具备的默认行为。
 
 ## 本批修改
 
@@ -348,8 +541,8 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 | `backend/cmd/gateway/quota_probe_wiring_test.go` | 接线断言升级为必须使用 `workerCtx`、登记四个 waiter，并拒绝退回进程信号 `ctx` |
 | `backend/internal/{proxyhealth,tlsfphealth,windowcost,quotaprobe}/worker.go` | 增加可等待的 goroutine 退出合同 |
 | 对应四个 `worker_test.go` | 验证取消前阻塞、取消后退出 |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵和八个确认问题 |
-| 参考报告 | 保存隔离 specifier 的运行接线与账号链三镜证据 |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十三个确认问题 |
+| 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑与默认分支补充证据 |
 
 ## 测试记录
 
@@ -364,6 +557,8 @@ go test ./internal/channelprobe ./internal/channelhealth ./internal/observabilit
 go test ./internal/codebudget -count=1
 go test ./... -count=1
 go test ./internal/servingcapability ./internal/adminhttp ./internal/credentialacq ./internal/credentialstore ./internal/credentialworker ./internal/provider/anthropic ./internal/provider/gemini ./internal/provider/antigravity ./internal/provider/registrydefault ./internal/gatewayhttp/accountcreate -count=1
+go test ./internal/adminhttp ./internal/gatewayhttp ./internal/credentialworker ./internal/channelhealth ./internal/rate ./internal/pool/... -count=1
+go test ./cmd/gateway -run 'Test.*(Selector|ProviderAccount|Credential|QuotaProbe|Wiring)' -count=1
 ```
 
 所有最终验证均显式设置：
@@ -383,7 +578,7 @@ GOTMPDIR=/home/ubuntu/.codex-tmp/global-wiring/go-tmp
 => 失败原因：HTTP handler 尚未排空时 worker 已被取消
 ```
 
-第一轮独立 review 已完成。当前 Codex CLI 不接受旧命令中 `review` 子命令后的 `--sandbox`，因此使用等价只读形式 `codex exec --sandbox read-only --ephemeral review --uncommitted`。第一轮报告一个 S1：context worker 取消后没有等待，可能与关库竞态；本分支已按上述方式修复。第二轮使用相同只读形式复核，未发现当前改动引入的明确功能缺陷，未留下 S0/S1。
+worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧命令中 `review` 子命令后的 `--sandbox`，因此使用等价只读形式 `codex exec --sandbox read-only --ephemeral review --uncommitted`。第一轮报告一个 S1：context worker 取消后没有等待，可能与关库竞态；本分支已按上述方式修复。第二轮使用相同只读形式复核，未发现该批改动引入的明确功能缺陷，未留下 S0/S1。Batch 2B 文档第一轮 review 发现 CLIProxyAPI、New API 的补充 SHA 不在本地 `origin/main` 祖先链，归一化为 S1；随后通过 GitHub 远端 `main` 核实可达 SHA，新增独立默认分支 specifier artifact 并替换全部依赖。第二轮 review 确认新增结论有源码证据、元数据与正文一致，未留下 S0/S1。
 
 ## Owner 决策点
 
@@ -393,10 +588,16 @@ GOTMPDIR=/home/ubuntu/.codex-tmp/global-wiring/go-tmp
 4. 是否批准把运行时 `ValidateAccountCompatibility` 泛化到全部有 serving contract 的 family；该项会改变异常/遗留账号的凭据放行规则。
 5. 是否批准以 `antigravity/oauth` 为唯一 canonical 身份，并另开数据迁移决策包处置 `gemini/antigravity` legacy 行。
 6. 是否批准建设 Gemini、Antigravity、Kimi 的账号级只读观测合同；第一阶段只展示，不进入强配额、资金或 selector。
+7. 是否批准把 provider health、channel health、auth cooldown、credential state 和 model cooldown 收敛为一份“账号调度真相合同”；第一阶段先做聚合只读视图，不改 selector。
+8. 是否批准建设真实账号测试 Safe Equivalent：默认关闭、单账号显式触发、成本上限、不计客户账、真实 protocol/credential/proxy 出站。
+9. 账号批量导入的唯一身份应由哪些字段组成；该决策将影响去重、更新、审计和未来数据迁移。
+10. bulk-by-tag 修复采用逐项事务并返回完整结果，还是整批单事务；推荐逐项原子，避免大批量锁住账号表。
 
 ## 下一批
 
-Batch 2 已完成 Claude、Gemini、Antigravity、Kimi 账号链切片。下一切片继续横向追踪 chat、completions、embeddings、rerank、images、audio、Responses、Gemini 和 media task，逐协议核对：
+Batch 2B 已完成 Sub2 整套账号系统与 HUAKAI 账号链的第一轮功能总账。下一修复批优先闭环不需要 schema 的 `GW-WIRE-013` bulk update+audit 原子性与逐项结果合同；涉及账号状态真相、真实账号测试和账号级批量导入身份的部分先等 Owner 选择。
+
+随后继续横向追踪 chat、completions、embeddings、rerank、images、audio、Responses、Gemini 和 media task，逐协议核对：
 
 `身份 → 规范模型 → 选号 → gate → 凭据 → 出站 → retry/fallback → health → claim/billing → audit → DLQ/recovery`
 
@@ -404,4 +605,4 @@ Batch 2 已完成 Claude、Gemini、Antigravity、Kimi 账号链切片。下一�
 
 ## 真实性摘要
 
-本报告的八个问题均来自实际生产源码链。四项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证。没有断言已发生永久资金损失或凭据泄露。当前七个 open question 集中在主动探测成本与租约、健康状态优先级、观测字段迁移、Grok clean-room、Antigravity canonical/迁移、账号观测是否参与 selector，以及各 provider live 凭据验收。
+本报告的十三个问题均来自实际生产源码链。六项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定。没有断言已发生永久资金损失、凭据泄露，也没有把 Sub2 未观察到的能力写成已实现。当前十个 open question 集中在主动探测成本与租约、观测字段迁移、Grok clean-room、Antigravity canonical/迁移、账号调度真相、真实账号测试预算、批量导入身份、bulk 事务语义、账号观测是否参与 selector，以及各 provider live 凭据验收。
