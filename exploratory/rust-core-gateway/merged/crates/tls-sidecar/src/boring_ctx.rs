@@ -83,21 +83,6 @@ pub fn connect_config(profile: &TlsProfile) -> Result<ConnectConfiguration, Bori
     connect_config_with_alpn(profile, None)
 }
 
-// connect_config_force_h1 构造一个握手只广告 ALPN=http/1.1 的连接配置。
-// force_h1=true 时收窄 ALPN,服务端无从选 h2,connect.rs 的 selected_alpn 不可能等于 b"h2",
-// 必走 Raw 隧道,H2 bridge 分支被从根绕开;force_h1=false 时退回 profile.alpn(=今日行为)。
-pub fn connect_config_force_h1(
-    profile: &TlsProfile,
-    force_h1: bool,
-) -> Result<ConnectConfiguration, BoringCtxError> {
-    if force_h1 {
-        let http11 = [HTTP_1_1_ALPN.to_owned()];
-        connect_config_with_alpn(profile, Some(&http11))
-    } else {
-        connect_config_with_alpn(profile, None)
-    }
-}
-
 fn connect_config_with_alpn(
     profile: &TlsProfile,
     alpn_override: Option<&[String]>,
@@ -109,9 +94,6 @@ fn connect_config_with_alpn(
     }
     Ok(config)
 }
-
-// 强制 H1 时唯一广告的 ALPN 协议标识。
-const HTTP_1_1_ALPN: &str = "http/1.1";
 
 pub async fn validate_expected_ja4_before_connect(
     profile: &TlsProfile,
@@ -371,6 +353,41 @@ mod tests {
         }
     }
 
+    // 证明 sidecar 运行时(connect_tls_upstream 现统一走 connect_config,即本 capture 用的
+    // 同一条)按【每家真实 ALPN】广告:gemini 广告 h2(JA4 a 段以 h2 结尾)、codex 不发 ALPN
+    // (以 00 结尾)。这是 Owner 2026-07-16"逐字节按真实客户端 ALPN 广告"决定的落地证明。
+    // 变异:若把 connect_config 改回 force_h1 收窄 ALPN(或给 codex 强加 http/1.1),gemini
+    // 线缆 ALPN 变 http/1.1、codex 多出 ALPN 段,两条断言分别转红。
+    #[tokio::test]
+    async fn runtime_config_advertises_per_profile_real_alpn() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+
+        let gemini = profiles.get("gemini-cli-v1").unwrap();
+        let gem_raw = super::capture_client_hello_record(gemini, "cloudcode-pa.googleapis.com")
+            .await
+            .unwrap();
+        let gem_a = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&gem_raw)
+            .unwrap()
+            .a;
+        assert!(
+            gem_a.ends_with("h2"),
+            "gemini 运行时 ClientHello 必须广告 h2(不得被 force_h1 收窄),ja4_a={gem_a}"
+        );
+
+        let codex = profiles.get("openai-codex-cli-v1").unwrap();
+        let codex_raw = super::capture_client_hello_record(codex, "chatgpt.com")
+            .await
+            .unwrap();
+        let codex_a = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&codex_raw)
+            .unwrap()
+            .a;
+        assert!(
+            codex_a.ends_with("00"),
+            "codex 运行时 ClientHello 不得发 ALPN(真客户端无 ALPN),ja4_a={codex_a}"
+        );
+    }
+
     #[tokio::test]
     async fn boring_wire_ja3_matches_profile_and_changes_when_cipher_order_is_damaged() {
         let profiles =
@@ -498,46 +515,6 @@ mod tests {
         assert_ne!(damaged_wire.signature_algorithms, good.signature_algorithms);
     }
 
-    // 抓的缺陷:force_h1=true 必须把线缆 ALPN 收窄为仅 http/1.1(不含 h2),否则服务端仍可能
-    // 选 h2,connect.rs 的 selected_alpn 等于 b"h2" 走 H2 bridge,force_h1 旋钮形同虚设。
-    // 注:生产内置 anthropic profile 本身 alpn=["http/1.1"](真 Claude Code 只走 H1),
-    // 故这里构造一个广告 [h2, http/1.1] 的 fixture profile,才能区分 force_h1 收窄前后,
-    // 同时也覆盖将来若有 h2 档案接入 sidecar 的场景。
-    // 自证:同一 fixture 在 force_h1=false 时线缆 ALPN 含 h2,force_h1=true 时只剩 http/1.1,
-    // 两者必须不同,证明 override 真正落到线缆。
-    #[tokio::test]
-    async fn boring_force_h1_narrows_wire_alpn_to_http11_only() {
-        let mut profile = anthropic_profile();
-        profile.alpn = vec!["h2".to_owned(), "http/1.1".to_owned()];
-        // 前提自检:fixture 确实广告 h2,否则本测试没有区分力。
-        assert!(
-            profile.alpn.iter().any(|p| p == "h2"),
-            "fixture profile 必须广告 h2,才能区分 force_h1 收窄前后"
-        );
-
-        let forced = capture_wire_client_hello_force_h1(&profile, true).await;
-        assert_eq!(
-            forced.alpn_protocols,
-            vec!["http/1.1".to_owned()],
-            "force_h1=true 时线缆 ALPN 必须只含 http/1.1"
-        );
-        assert!(
-            !forced.alpn_protocols.iter().any(|p| p == "h2"),
-            "force_h1=true 时线缆 ALPN 不得包含 h2"
-        );
-
-        let unforced = capture_wire_client_hello_force_h1(&profile, false).await;
-        assert!(
-            unforced.alpn_protocols.iter().any(|p| p == "h2"),
-            "force_h1=false 时必须保持 profile.alpn 含 h2(今日行为),实际={:?}",
-            unforced.alpn_protocols
-        );
-        assert_ne!(
-            forced.alpn_protocols, unforced.alpn_protocols,
-            "force_h1 开关前后线缆 ALPN 必须不同,证明 override 真正落到线缆"
-        );
-    }
-
     #[tokio::test]
     async fn empty_boring_setter_fields_keep_boring_default_extension_path() {
         let mut profile = anthropic_profile();
@@ -599,22 +576,6 @@ mod tests {
     }
 
     // 用 force_h1 开关构造连接配置并抓取线缆 ClientHello,供 force_h1 ALPN 断言用。
-    async fn capture_wire_client_hello_force_h1(
-        profile: &crate::profile::TlsProfile,
-        force_h1: bool,
-    ) -> WireClientHello {
-        let (client, server) = tokio::io::duplex(16 * 1024);
-        let capture = tokio::spawn(async move { read_first_tls_record(server).await });
-        let config = super::connect_config_force_h1(profile, force_h1).unwrap();
-        let _ = timeout(
-            Duration::from_secs(1),
-            tokio_boring::connect(config, "api.anthropic.com", client),
-        )
-        .await;
-        let raw = capture.await.unwrap();
-        parse_wire_client_hello(&raw).unwrap()
-    }
-
     fn anthropic_profile() -> crate::profile::TlsProfile {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();

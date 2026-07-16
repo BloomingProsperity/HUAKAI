@@ -59,15 +59,15 @@ where
         return Ok(());
     }
 
-    // force_h1=Some(true) 收窄 ALPN 为仅 http/1.1,从根消除 h2 升级;缺省(老客户端不发)= None
-    // = 今日行为,由 profile.alpn 决定。
-    let force_h1 = request.force_h1.unwrap_or(false);
-    // proxy=Some 时,先经代理建隧道再在隧道之上握手;None=直连目标(今日行为)。
+    // sidecar 按每家 profile.alpn 原样广告 ALPN(Owner 2026-07-16 拍板:逐字节按真实客户端
+    // ALPN 广告——codex/kiro 无 ALPN、anthropic 仅 http/1.1、gemini 广告 h2+http/1.1)。
+    // request.force_h1 仅保留于日志/线缆兼容与 Go uTLS 冻结路径,不再在 sidecar 侧收窄 ALPN;
+    // 真实协议由服务端 selected_alpn 决定(选 h2→H2 bridge,否则 Raw 隧道)。
+    // proxy=Some 时,先经代理建隧道再在隧道之上握手;None=直连目标。
     let upstream = match connect_upstream(
         &request.target_host,
         request.port,
         &profile,
-        force_h1,
         request.proxy.as_ref(),
     )
     .await
@@ -118,10 +118,9 @@ async fn connect_upstream(
     target_host: &str,
     port: u16,
     profile: &crate::profile::TlsProfile,
-    force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
 ) -> Result<ConnectedUpstream<tokio_boring::SslStream<TcpStream>>, ConnectError> {
-    let tls = connect_tls_upstream(target_host, port, profile, force_h1, proxy).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, proxy).await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
@@ -133,7 +132,6 @@ async fn connect_tls_upstream(
     target_host: &str,
     port: u16,
     profile: &crate::profile::TlsProfile,
-    force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
     boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
@@ -146,12 +144,13 @@ async fn connect_tls_upstream(
         Some(spec) => crate::proxy_tunnel::connect_through_proxy(spec, target_host, port).await?,
         None => TcpStream::connect((target_host, port)).await?,
     };
-    // force_h1 时握手只广告 ALPN=http/1.1,服务端无从选 h2;selected_alpn 因此不可能等于 b"h2",
-    // finish_upstream_connect 必走 Raw 隧道,H2 bridge 从根被绕开。
-    // 关键不变量:无论 tcp 来自直连还是代理隧道,这里的 config 与 target_host(SNI)完全相同,
-    // TLS 握手始终在该 TCP 底座【之上】进行——故指纹(JA3/JA4)与 validate_expected_ja4 逻辑
-    // 不因走代理而改变。
-    let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
+    // 按 profile.alpn 原样广告 ALPN(逐字节对齐真实客户端:codex/kiro 无 ALPN、anthropic 仅
+    // http/1.1、gemini 广告 h2+http/1.1)。真实协议由服务端 selected_alpn 决定:选 h2 走 H2
+    // bridge,否则 Raw 隧道。这里的 config 与 validate_expected_ja4_before_connect 走同一条
+    // connect_config,故校验的指纹即真实上线的指纹,不再有"校验一套、上线另一套"的偏差。
+    // 关键不变量:无论 tcp 来自直连还是代理隧道,config 与 target_host(SNI)完全相同,
+    // TLS 握手始终在该 TCP 底座【之上】进行——故指纹不因走代理而改变。
+    let config = boring_ctx::connect_config(profile)?;
     tokio_boring::connect(config, target_host, tcp)
         .await
         .map_err(|error| ConnectError::Handshake(error.to_string()))
@@ -211,8 +210,8 @@ pub(crate) async fn connect_h2_upstream(
     ),
     ConnectError,
 > {
-    // 本 helper 专为 h2 路径,固定 force_h1=false 保持广告 profile.alpn(含 h2);proxy=None 直连。
-    let tls = connect_tls_upstream(target_host, port, profile, false, None).await?;
+    // 本 helper 专为 h2 路径:握手按 profile.alpn 广告(含 h2),proxy=None 直连。
+    let tls = connect_tls_upstream(target_host, port, profile, None).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -356,7 +355,6 @@ mod tests {
             &target_host,
             target_addr.port(),
             &profile,
-            false,
             Some(&proxy),
         )
         .await;
