@@ -78,6 +78,43 @@ func TestAudio500RetriesSecondAccountAndSettlesOnce(t *testing.T) {
 	}
 }
 
+func TestAudioCredentialMismatchSkipsDispatchAndUsesNextAccount(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{})
+	claims := &audioRetryClaimLifecycle{claimID: 9210}
+	selector := &audioRetrySelector{accounts: []int64{44, 45}}
+	dispatcher := &audioRetryDispatcher{steps: []audioRetryResponse{{status: http.StatusOK, body: "audio-bytes"}}}
+	env.deps.Router = audioRetryRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = audioCompatibilityVault(t)
+	env.deps.Dispatcher = dispatcher
+	env.deps.ClaimGate = claims
+	env.deps.Settler = claims
+
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"compatibility failover","voice":"alloy"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(selector.requests))
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[44]; !excluded {
+		t.Fatalf("second exclusions=%v want account 44", selector.requests[1].ExcludedAccounts)
+	}
+	if len(dispatcher.accounts) != 1 || dispatcher.accounts[0] != 45 {
+		t.Fatalf("dispatcher accounts=%v want [45]", dispatcher.accounts)
+	}
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "credential_protocol_incompatible" {
+		t.Fatalf("aborts=%+v want one credential_protocol_incompatible", claims.aborts)
+	}
+	if len(claims.settles) != 1 || claims.settles[0].AccountID != 45 {
+		t.Fatalf("settles=%+v want only account 45", claims.settles)
+	}
+	if strings.Contains(rec.Body.String(), "wrong-audio-secret") {
+		t.Fatal("response leaked mismatched credential")
+	}
+}
+
 func TestAudio400DoesNotRetry(t *testing.T) {
 	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{})
 	claims := &audioRetryClaimLifecycle{claimID: 8402}
@@ -296,11 +333,29 @@ func audioRetryVault(t *testing.T, accountIDs ...int64) provider.CredentialVault
 			AccountID:           accountID,
 			TenantID:            7,
 			Platform:            "openai",
-			AccountType:         "apikey",
+			AccountType:         "api_key",
 			AccountCredentialID: 9000 + accountID,
 			CredentialVersion:   1,
 		}); err != nil {
 			t.Fatalf("vault.Set(%d): %v", accountID, err)
+		}
+	}
+	return vault
+}
+
+func audioCompatibilityVault(t *testing.T) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	rows := []struct {
+		id, credentialID int64
+		platform, secret string
+	}{{44, 9044, "gemini", "wrong-audio-secret"}, {45, 9045, "openai", "right-audio-secret"}}
+	for _, row := range rows {
+		if err := vault.Set(row.id, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: row.secret}, provider.AccountInfo{
+			AccountID: row.id, TenantID: 7, Platform: row.platform, AccountType: "api_key",
+			AccountCredentialID: row.credentialID, CredentialVersion: 1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", row.id, err)
 		}
 	}
 	return vault

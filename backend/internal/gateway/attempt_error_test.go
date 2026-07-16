@@ -189,6 +189,16 @@ func TestClassifyAttemptDispatchErrorCredentialExpiredUsesAuthBudget(t *testing.
 	})
 }
 
+func TestCredentialProtocolIncompatibleDecision(t *testing.T) {
+	assertDecision(t, CredentialProtocolIncompatibleDecision(), AttemptRetryDecision{
+		RetryableBeforeDelivery:         true,
+		SwitchAccount:                   true,
+		ClientStatus:                    http.StatusServiceUnavailable,
+		AbortReason:                     "credential_protocol_incompatible",
+		CountsAgainstAuthFailoverBudget: true,
+	})
+}
+
 func TestClassifyAttemptHTTPErrorReadsBodyForIronCladSignals(t *testing.T) {
 	t.Parallel()
 

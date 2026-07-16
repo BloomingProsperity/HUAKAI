@@ -377,51 +377,6 @@ func TestAudioSpeech_SettleAndRecoveryDoubleFailureEmitsP0WithoutSecret(t *testi
 	}
 }
 
-// platformVaultStub 让测试覆盖解析账号的 Platform(默认 vaultStub 恒返 openai)。
-type platformVaultStub struct{ platform string }
-
-func (s platformVaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
-	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  s.platform,
-	}, nil
-}
-
-// TestAudioSpeech_SettleRepricesByResolvedAccountPlatform F3:per-char speech 在
-// settle 时必须按解析账号平台重定价。预扣用协议族 vendor(openai_chat→openai,
-// 1000/char);解析账号平台是 gemini(2000/char,价不同)。reserve 估 openai 价,
-// settle 必须重算成 gemini 价。
-// MUTATION: settle 沿用 ex.predictedCost(去掉 charCost 重算)→ settle ActualCost
-// 回到 reserve 的 0.005 → 本断言红。判别关键:gemini 价≠openai 价,且账号平台≠
-// 协议族 vendor,否则 reserve/settle 同值非判别(gemini 是合法 transport provider
-// code,azure 等未知码会被 transport policy 拒成 dispatch error)。
-func TestAudioSpeech_SettleRepricesByResolvedAccountPlatform(t *testing.T) {
-	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{
-		status:  http.StatusOK,
-		body:    "audio-bytes",
-		headers: http.Header{"Content-Type": []string{"audio/mpeg"}},
-	})
-	env.deps.CredentialVault = platformVaultStub{platform: "gemini"}
-	env.rateTable.raw = json.RawMessage(`{
-		"providers": {
-			"openai": {"models": {"tts-1": {"pricing_scheme": "per_char", "input_char_micro_usd": "1000"}}},
-			"gemini": {"models": {"tts-1": {"pricing_scheme": "per_char", "input_char_micro_usd": "2000"}}}
-		}
-	}`)
-
-	rec := env.invokeJSON(t, `{"model":"tts-1","input":"héllo","voice":"alloy","response_format":"mp3"}`)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
-	}
-	env.assertNoHangingClaims(t)
-	// 5 runes × 1000/char = 0.005(协议族 vendor openai,选号前估)。
-	assertAudioDecimal(t, "reserve PredictedCost(协议族 vendor 估)", env.claims.reserves[0].req.PredictedCost, decimal.RequireFromString("0.005"))
-	// 5 runes × 2000/char = 0.010(解析账号平台 gemini,settle 重算)。
-	assertAudioDecimal(t, "settle ActualCost(账号平台重定价)", env.settler.settles[0].ActualCost, decimal.RequireFromString("0.010"))
-}
-
 // failingWriter 在 WriteHeader 之后的 Write 一律失败,模拟客户端断连。
 type failingWriter struct {
 	hdr  http.Header
@@ -670,9 +625,10 @@ type vaultStub struct{}
 
 func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "openai",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 
