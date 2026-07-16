@@ -88,3 +88,28 @@ func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAPI_ProviderAccountRecoveryActionMethodParity(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
+
+	const runtimePath = "/v1/admin/provider-accounts/{id}/recovery-actions"
+	if !hasOperation(implOps, http.MethodGet, runtimePath) {
+		t.Fatalf("runtime 缺 GET %s；恢复动作诊断未接入共享 provider-account 子树", runtimePath)
+	}
+	for _, specPath := range []string{
+		"/admin/v1/provider-accounts/{id}/recovery-actions",
+		"/v1/admin/provider-accounts/{id}/recovery-actions",
+	} {
+		if !hasOperation(specOps, http.MethodGet, specPath) {
+			t.Fatalf("OpenAPI 必须声明 GET %s", specPath)
+		}
+	}
+}
