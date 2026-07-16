@@ -2,7 +2,7 @@ package openai
 
 import "strings"
 
-// 反封禁(SUB2-01)：出站 User-Agent 浏览器指纹清洗。
+// 出站 User-Agent 浏览器指纹清洗。
 //
 // Codex session/OAuth 出口若把浏览器型 UA(Mozilla/...)透传给 OpenAI/Codex
 // 上游,Cloudflare/风控会立刻识别为"非官方客户端"。官方 Codex CLI 的 UA 从不

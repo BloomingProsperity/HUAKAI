@@ -21,7 +21,7 @@ import (
 
 const (
 	// ANT-3 D-4=B: 收敛 legacy refresher 默认 endpoint 到 ANT-1 同款 approved
-	// built-in profile (api.anthropic.com),与 CLIProxyAPI 公开观察一致;
+	// built-in profile (api.anthropic.com)；
 	// console.anthropic.com 是历史遗留路径,不在 Anthropic 公开 Claude Code
 	// CLI OAuth flow 中。
 	AnthropicRefreshTokenURL = AnthropicTokenURL

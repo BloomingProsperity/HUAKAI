@@ -110,7 +110,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "build request:", err)
 		os.Exit(2)
 	}
-	// 测一下 /responses 路径而不是 /completions (跟 sub2api 一致, codex CLI 0.128.0 用 /responses)
+	// 验证 Codex CLI 0.128.0 使用的 /responses 路径，而不是旧的 /completions 路径。
 	if strings.Contains(req.URL.Path, "completions") {
 		req.URL.Path = strings.Replace(req.URL.Path, "/completions", "/responses", 1)
 	}

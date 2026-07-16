@@ -188,7 +188,7 @@ func toAuditEventViews(events []payment.AuditEvent) []auditEventView {
 
 // MountPaymentAdminRoutes 挂载管理员支付端点 (建单 / 确认+履约 / 查单 / 列单)。
 func MountPaymentAdminRoutes(r chi.Router, d AdminDeps) {
-	// money-via-login:动钱 admin 操作放开给登录 admin(session),对标 new-api;危险者靠前端确认弹窗。
+	// money-via-login：动钱 admin 操作放开给登录 admin(session)，危险操作靠前端确认弹窗。
 	// provider config 只含 enabled+checkout_url(无密钥),归 SessionSafe;归属经 P2b-2 双身份 text 列可追。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.With(safe).Post("/", newAdminCreateOrderHandler(d))

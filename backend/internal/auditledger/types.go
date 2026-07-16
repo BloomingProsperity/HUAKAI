@@ -10,10 +10,8 @@
 //   - 本包是 **end-user-facing** ledger（用户验证 HUAKAI 没偷换模型 / 没虚报
 //     token / 没伪造 cache hit）。
 //
-// 与 portkey / litellm / new-api / sub2api 的根本差异：
-//   - 4 个 ref 项目全部"信任 operator"，user 拿不到验证数据；
-//   - HUAKAI 强制每个 request 末端写一条 LedgerEntry，公开 Merkle root，
-//     `huakai-verify` CLI 用 PubkeyFingerprint 索引到公钥独立验签。
+// HUAKAI 强制每个 request 末端写一条 LedgerEntry 并公开 Merkle root；
+// `huakai-verify` CLI 用 PubkeyFingerprint 索引到公钥独立验签，用户无需信任运营端自报。
 //
 // 本片仅实现 in-memory ledger + Merkle 计算，DB binding 留 T4.x。
 

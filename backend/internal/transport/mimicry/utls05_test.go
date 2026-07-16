@@ -19,7 +19,7 @@ func TestClientHelloIDForPreset(t *testing.T) {
 			t.Errorf("preset %q should NOT resolve", p)
 		}
 	}
-	// chrome 映射到 uTLS 真实的 Chrome ClientHello(与 CLIProxyAPI 对齐)。
+	// chrome 映射到 uTLS 真实的 Chrome ClientHello。
 	id, ok := clientHelloIDForPreset("chrome")
 	if !ok || id != utls.HelloChrome_Auto {
 		t.Fatalf("chrome -> %v,%v want HelloChrome_Auto", id, ok)

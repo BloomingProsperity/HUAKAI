@@ -635,6 +635,7 @@ func auditAPIKeyID(id int64) *int64 {
 //   - ExpiresAt == nil && !ClearExpiry → 截止时间保持不变
 //   - ExpiresAt != nil                 → 把截止时间设为 *ExpiresAt(必须是将来)
 //   - ClearExpiry == true              → 清除截止时间(key 变为永不过期)
+//
 // 优先级为 clear > set > unchanged;set 时若传入过去的截止时间会以
 // ErrInvalidExpiry 拒绝,与 Issue 创建路径中的将来时刻检查保持一致。
 type PatchRequest struct {
@@ -678,9 +679,8 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 		}
 		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status, ExpiresAt: row.ExpiresAt}, nil
 	}
-	// set 时拒绝过去的截止时间,与创建路径(Issue)保持一致。这
-	// 堵住了两个参考项目都带的「静默砖化」陷阱(sub2api/new-api
-	// 在更新时接受过去的时间戳)。clear 没有可校验的时刻。
+	// set 时拒绝过去的截止时间，与创建路径(Issue)保持一致，避免更新后
+	// API key 立即且静默失效。clear 没有可校验的时刻。
 	if req.ExpiresAt != nil && !req.ExpiresAt.After(s.now().UTC()) {
 		return PatchResult{}, ErrInvalidExpiry
 	}

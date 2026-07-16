@@ -1,7 +1,6 @@
 // clientid_test.go — U6-A 测试: client identity detector 决策树覆盖。
 //
-// fixture 来自真实客户端 User-Agent 字符串 (公开 GitHub issue / changelog
-// 中观察到的形态)，不读 sub2api / 商业项目源码。
+// fixture 来自公开 GitHub issue 和 changelog 中可观察的真实客户端 User-Agent 字符串。
 package clientid
 
 import (

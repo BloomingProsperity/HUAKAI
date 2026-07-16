@@ -126,7 +126,7 @@ func TestKeyPatchBothFields(t *testing.T) {
 	}
 }
 
-// expires_at 三态解码(sub2api 风格,CLAUDE.md #16)。handler 必须把线上的 *string
+// expires_at 三态解码遵守 CLAUDE.md #16。handler 必须把线上的 *string
 // 精确转换为 service 的「值 + 清除标志」二分形式。
 
 // SET:非空 RFC3339 字符串 -> service 收到解析出的截止时间,ClearExpiry=false。
@@ -240,7 +240,7 @@ func TestKeyPatchExpiresAtResponse(t *testing.T) {
 // CLEAR RESPONSE:已清除(永不过期)的 key 必须从 body 中省略 expires_at。
 // 这个省略依赖 nil 的 *time.Time + `json:"...,omitempty"`(handlers.go 的 patchResponse)。
 // 变异:去掉 ,omitempty(会输出 "expires_at":null),或把字段改为值类型 time.Time
-//(会输出 "0001-01-01T00:00:00Z",前端会把它渲染成一个真实的过去截止时间)-> body
+// (会输出 "0001-01-01T00:00:00Z",前端会把它渲染成一个真实的过去截止时间)-> body
 // 含 expires_at -> 红。已有的 SET 测试钉死了「存在」的情形;本测试钉死「省略」的情形。
 func TestKeyPatchExpiresAtClearResponseOmits(t *testing.T) {
 	// patchResult.ExpiresAt 为 nil = 清除后(永不过期)的状态。

@@ -37,7 +37,7 @@ func TestAllowSessionWriteSetsContext(t *testing.T) {
 	}
 }
 
-// SessionSafe:session-admin 可直接写(Owner 终审 new-api 模型,无后端 step-up)。
+// SessionSafe：session-admin 可直接写，Owner 终审不要求后端 step-up。
 // 变异:把 resolver 的 `writeClassFromContext(...) != SessionSafe` 判定改错 → RED。
 func TestSessionSafeAllowsWrite(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
