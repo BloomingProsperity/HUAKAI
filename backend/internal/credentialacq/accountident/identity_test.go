@@ -84,6 +84,9 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 	if id.Email != "jwt@example.com" {
 		t.Fatalf("Email = %q, want jwt@example.com", id.Email)
 	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
+	}
 }
 
 func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
@@ -93,6 +96,9 @@ func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
 	id := ExtractChatGPT(token, "acct-FROM-BODY")
 	if id.AccountID != "acct-FROM-BODY" {
 		t.Fatalf("AccountID = %q, want acct-FROM-BODY (body must win over sub when claim absent)", id.AccountID)
+	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
 	}
 
 	// 没有 auth claim、也没有 body -> sub 作为最后兜底。
@@ -158,6 +164,9 @@ func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 	id := ExtractGemini(token, "userinfo@x.com")
 	if id.AccountID != "g-sub-1" {
 		t.Fatalf("AccountID = %q, want g-sub-1", id.AccountID)
+	}
+	if id.SubjectID != "g-sub-1" {
+		t.Fatalf("SubjectID = %q, want g-sub-1", id.SubjectID)
 	}
 	if id.Email != "g@x.com" {
 		t.Fatalf("Email = %q, want g@x.com (email claim wins over userinfo fallback)", id.Email)

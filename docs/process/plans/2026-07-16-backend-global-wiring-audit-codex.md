@@ -205,6 +205,50 @@ Owner 已批准把普通请求观测从 `last_probe_at` 迁到独立合同。本
 6. 修复方案、测试方案、回滚方式。
 7. 状态：`Confirmed`、`Fixed`、`Owner Decision Required` 或 `Not a Bug`。
 
+## GW-WIRE-010 实施切片：账号级批量接入
+
+Owner 已授权按源码核实结果直接修复，并明确要求同一上游身份命中多条账号时不得任选第一条。本切片只关闭账号级批量导入及其身份持久化链，不混入账号运营聚合、其它协议修复或租户授权模型重做。
+
+### 范围与合同
+
+1. 在 `/admin/v1/credentials` 下增加账号批量接入预检与执行入口；保留既有 `paste/cli-import/csv-import/json-import` 作为“向已知账号写凭据”的低层助手，不改变其兼容合同。
+2. 预检请求携带租户、来源类型、provider/channel/account 默认配置和原始导入内容；响应只返回脱敏逐项动作、原因、已有账号、风险、确认项和摘要，绝不回显 token、cookie、密钥或原始内容。
+3. 预检生成覆盖输入形态、账号默认配置、当前无秘密身份 inventory 和逐项动作的 `plan_hash`。执行必须重新读取当前 inventory、重新生成计划并精确匹配 `plan_hash`，避免预检后数据库变化仍按旧结论落库。
+4. 支持 `create/update/skip/conflict/fail` 五种逐项结果。`conflict/fail` 永不自动执行；`skip` 不写库；`create/update` 只有在请求提供全部必要确认项时才执行。
+5. 每个候选是独立账号接入单元：单项事务内完成账号行、加密凭据、凭据审计和管理审计；某项失败回滚该项，但继续处理其它项并返回完整结果。
+6. 新账号默认名称由请求前缀和输入序号稳定生成，不使用 email、token、上游个人标识或其它秘密派生名称。账号协议兼容和同渠道混用风险继续复用现有 `accountcreate` 与 `mixedchannelrisk` 合同。
+7. 更新已有账号时必须锁定精确 credential ID、auth mode 和 credential version，并走既有凭据轮换 CAS；预检后凭据版本变化必须返回冲突，不覆盖新版本。
+
+### 身份与 schema 决策
+
+1. 使用 `0190_account_credential_intake_identity` 加性迁移，为 `account_credentials` 增加上游个人主体、身份来源和稳定凭据材料指纹；`external_account_id/external_account_email` 继续复用既有 `0141` 列。
+2. 不增加唯一约束：历史数据可能已经重复，强行建唯一索引会让迁移失败或替 Owner 擅自删除数据。查询命中多个账号或同账号同模式多条候选时统一返回显式冲突，要求人工消歧。
+3. 凭据材料指纹只选择当前实际认证材料，使用租户域分隔和单向 SHA-256；它不参与鉴权、计费、配额或出站，只用于无刷新材料账号的精确去重。凭据 rotate/refresh 后必须同步更新为当前材料，旧材料不得继续命中。代价是数据库与低熵秘密同时泄露时存在离线枚举风险；当前凭据形态均要求高熵 token/key，仍禁止把普通密码类材料纳入该指纹。
+4. OAuth/token exchange 自动提取的主体来源可作为强身份；导入文件声明的主体只作为弱身份和冲突证据，不能无确认自动选择已有强身份账号。
+5. access-token-only 候选只按稳定材料指纹匹配，不按 workspace/email/显示名合并，避免共享账号作用域中的不同个人被误覆盖。
+
+### 鉴权与风险边界
+
+1. 本切片沿用现有敏感凭据采集的 token-only、`platform_admin` 边界，不扩大 session 管理员或租户管理员权限。
+2. “部署管理员授权某个租户管理员、默认未授权，部署管理员不得任意代办”的最终合同仍由 GW-WIRE-018 统一实现；本切片不得自行发明 grant 表或扩大角色。
+3. 不触碰资金、quota、billing ledger、真实上游请求和生产秘密；预检纯本地解析与数据库只读，不发网、不产生上游费用。
+
+### 判别测试与回滚
+
+1. 领域测试覆盖：批内重复、同身份多账号、同账号多 auth mode、缺少目标 mode、邮箱弱匹配、强弱身份冲突、access-token-only 指纹、过期且不可刷新、撤销/刷新中/operator-attention 状态门和秘密不回显。
+2. HTTP 测试覆盖：预检无写入、执行哈希漂移拒绝、缺确认不执行、部分成功返回完整逐项结果、tenant/body 校验、token-only 鉴权和请求体大小限制。
+3. PostgreSQL 集成测试覆盖：创建账号与凭据同事务、任一步失败无孤儿；轮换版本 CAS；重复存量身份显式冲突；身份列和材料指纹 create/rotate/refresh 持久化；迁移 up/down/up。
+4. composition-root 与 OpenAPI 判别测试必须证明两条新路由真实挂载且生产依赖非空；删除 wiring 或 schema 字段时测试精确变红。
+5. 回滚优先停用新路由；代码回滚后 `0190` down 只删除新增索引和三列，不影响 `0141` 既有身份字段、账号、凭据密文或其它业务数据。
+
+### 实施状态
+
+1. 状态：`Implemented / Reviewed`。账号级预检、执行、身份 inventory、精确版本轮换、逐项事务、双审计、健康初始化、管理路由和 OpenAPI 已接线。
+2. HTTP handler 已放入独立 `accountintakehttp` 子包，未继续扩大超预算的根 `gatewayhttp` 包。
+3. 真 PostgreSQL 已验证创建原子性、审计失败回滚、精确轮换、旧计划拒绝和 `0190` up/down/up；普通测试已覆盖身份歧义、状态门、秘密不回显、严格 JSON、错误收敛和鉴权边界。
+4. `0190` 所在分支堆叠在迁移 `0189` 的 PR #259 之上。由于项目使用 `golang-migrate` 单一版本轴，合并顺序必须为 #259 后本批；不得先部署 `0190` 再补 `0189`。
+5. 本批不扩大租户管理员权限；GW-WIRE-018 完成授权合同前仍只允许 token 来源的 `platform_admin` 使用。
+
 ## Pre-execution checklist
 
 1. 主审计只使用 `HUAKAI-wt-global-wiring-codex`；已获批 schema 批次使用其堆叠工作树 `HUAKAI-wt-request-observation-codex` 和分支 `fix/request-observation-schema-20260716-codex`，PR 基于主审计分支。

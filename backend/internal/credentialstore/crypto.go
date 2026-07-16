@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -200,4 +201,98 @@ func HMACFingerprint(key Key, label string, secret []byte) string {
 	mac.Write([]byte{0})
 	mac.Write(secret)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// CredentialMaterialFingerprint 为账号接入去重生成租户域隔离的稳定单向指纹。
+// 只选择运行时真正使用的高熵认证材料，不把显示名、邮箱或普通业务字段纳入。
+func CredentialMaterialFingerprint(tenantID int64, vendor, authMode string, payload []byte) string {
+	if tenantID <= 0 {
+		return ""
+	}
+	fields, err := parsePayloadFields(payload)
+	if err != nil {
+		return ""
+	}
+	material := credentialFingerprintMaterial(vendor, authMode, fields)
+	if len(material) == 0 {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("huakai-credential-material-fingerprint:v1\x00"))
+	_, _ = hash.Write([]byte(fmt.Sprintf("%d\x00%s\x00%s\x00",
+		tenantID, Normalize(vendor), Normalize(authMode))))
+	_, _ = hash.Write(material)
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func credentialFingerprintMaterial(vendor, authMode string, fields map[string]json.RawMessage) []byte {
+	if len(fields) == 0 {
+		return nil
+	}
+	vendor = Normalize(vendor)
+	authMode = Normalize(authMode)
+	if fieldString(fields, "private_key") != "" {
+		return canonicalFingerprintFields(fields, "client_email", "private_key", "project_id", "token_uri")
+	}
+	if fieldString(fields, "aws_secret_access_key") != "" {
+		return canonicalFingerprintFields(fields, "aws_access_key_id", "aws_secret_access_key")
+	}
+	if handler, ok := DefaultHandlerRegistry().Lookup(vendor, authMode); ok {
+		switch handler.RuntimeKind() {
+		case RuntimeAPIKey:
+			if key := firstFingerprintField(fields, "api_key", "azure_api_key", "access_token"); key != "" {
+				return []byte("runtime_key\x00" + key)
+			}
+		case RuntimeOAuthAccessToken:
+			if token := fieldString(fields, "refresh_token"); token != "" {
+				return []byte("refresh_token\x00" + token)
+			}
+			if token := fieldString(fields, "access_token"); token != "" {
+				return []byte("runtime_token\x00" + token)
+			}
+		case RuntimeSessionToken:
+			if token := fieldString(fields, "refresh_token"); token != "" {
+				return []byte("refresh_token\x00" + token)
+			}
+			if token := firstFingerprintField(fields, "github_access_token", "session_token", "access_token", "cookie"); token != "" {
+				return []byte("runtime_token\x00" + token)
+			}
+		case RuntimeAWSSigV4:
+			return canonicalFingerprintFields(fields, "aws_access_key_id", "aws_secret_access_key")
+		case RuntimeUpstreamPassthrough:
+			if token := fieldString(fields, "refresh_token"); token != "" {
+				return []byte("refresh_token\x00" + token)
+			}
+			if token := firstFingerprintField(fields, "api_key", "auth_header_value", "access_token"); token != "" {
+				return []byte("runtime_passthrough\x00" + token)
+			}
+		}
+	}
+	return nil
+}
+
+func canonicalFingerprintFields(fields map[string]json.RawMessage, names ...string) []byte {
+	selected := make(map[string]string, len(names))
+	for _, name := range names {
+		if value := fieldString(fields, name); value != "" {
+			selected[name] = value
+		}
+	}
+	if len(selected) == 0 {
+		return nil
+	}
+	normalized, err := json.Marshal(selected)
+	if err != nil {
+		return nil
+	}
+	return append([]byte("structured_material\x00"), normalized...)
+}
+
+func firstFingerprintField(fields map[string]json.RawMessage, names ...string) string {
+	for _, name := range names {
+		if value := fieldString(fields, name); value != "" {
+			return value
+		}
+	}
+	return ""
 }

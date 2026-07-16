@@ -290,11 +290,13 @@ func TestListRenewStatusPlaintextFreeTenantCursorQuery(t *testing.T) {
 
 func TestListByAccountExposesProjectRef(t *testing.T) {
 	projectRef := "project-from-column"
+	subjectID := "subject-from-column"
 	now := pgtype.Timestamptz{Time: time.Date(2026, 7, 12, 0, 0, 0, 0, time.UTC), Valid: true}
 	emptyTime := pgtype.Timestamptz{}
 	var nilString *string
 	db := &credentialStoreDBStub{query: func(_ context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
-		if !strings.Contains(sql, "external_account_email, project_ref, created_at") {
+		if !strings.Contains(sql, "external_account_id, external_subject_id") ||
+			!strings.Contains(sql, "external_account_email, project_ref, created_at") {
 			t.Fatalf("ListByAccount SQL 未选择 project_ref：\n%s", sql)
 		}
 		if len(args) != 2 || args[0] != int64(7) || args[1] != int64(77) {
@@ -303,7 +305,7 @@ func TestListByAccountExposesProjectRef(t *testing.T) {
 		return &credentialMetadataRowsStub{values: [][]any{{
 			int64(201), int64(7), int64(77), VendorAntigravity, AuthModeOAuth, StateActive, int32(3),
 			emptyTime, emptyTime, emptyTime, nilString, nilString, int32(0),
-			nilString, nilString, &projectRef, now, now,
+			nilString, &subjectID, nilString, &projectRef, now, now,
 		}}}, nil
 	}}
 	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
@@ -313,6 +315,9 @@ func TestListByAccountExposesProjectRef(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ProjectRef == nil || *rows[0].ProjectRef != projectRef {
 		t.Fatalf("project_ref 未暴露：%+v", rows)
+	}
+	if rows[0].ExternalSubjectID == nil || *rows[0].ExternalSubjectID != subjectID {
+		t.Fatalf("external_subject_id 未暴露：%+v", rows)
 	}
 }
 

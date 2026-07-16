@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -115,11 +116,19 @@ func importCandidatesFromDecoded(decoded any, defaultVendor, defaultAuthMode str
 func importCandidateFromMap(fields map[string]any, defaultVendor, defaultAuthMode string) CredentialCandidate {
 	vendor := importStringField(fields, "vendor", defaultVendor)
 	mode := importStringField(fields, "auth_mode", defaultAuthMode)
-	payload, _ := json.Marshal(flattenCLITokenObject(fields))
-	return CredentialCandidate{
+	flattened := flattenCLITokenObject(fields)
+	payload, _ := json.Marshal(flattened)
+	candidate := CredentialCandidate{
 		Vendor: credentialstore.Normalize(vendor), AuthMode: credentialstore.Normalize(mode), Payload: payload,
 		RedactedContext: map[string]any{"shape": "json_object"},
 	}
+	AttachIdentity(&candidate, accountident.Identity{
+		AccountID: firstImportString(flattened, "external_account_id", "chatgpt_account_id", "account_id"),
+		SubjectID: firstImportString(flattened, "external_subject_id", "chatgpt_user_id"),
+		Email:     firstImportString(flattened, "external_account_email", "email"),
+		Source:    accountident.SourceImportPayload,
+	})
+	return candidate
 }
 
 // flattenCLITokenObject 识别 CLI 凭据文件的 {token:{...}} 外层，把运行时
@@ -162,4 +171,15 @@ func importStringField(fields map[string]any, key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func firstImportString(fields map[string]any, names ...string) string {
+	for _, name := range names {
+		if value, ok := fields[name].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
