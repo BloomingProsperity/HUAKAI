@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use boring::ssl::{ConnectConfiguration, SslConnector, SslMethod, SslVersion};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
+    sync::OnceCell,
     time::{Duration, timeout},
 };
 
@@ -95,6 +99,21 @@ fn connect_config_with_alpn(
     Ok(config)
 }
 
+// JA4 自校验结果缓存。key = (target_host, profile 完整内容的 Debug 指纹)。profile 任一字段
+// 变化(含 wire 字段与存的 ja4_a/b/c)→ 键变 → 强制重新校验,绝不被旧缓存盖住(变异检测不失效);
+// 生产中 profile 内容运行期稳定 → 键稳定 → 每 (profile,host) 只校验一次。
+//
+// 为什么要缓存:profile 的 JA4 是【确定的静态属性】(密码/扩展/组/sigalgs/ALPN 固定,只有临时
+// 密钥和 GREASE 随机、不影响 JA4)。此校验抓的是"存值写错/BoringSSL 版本变了改了 ClientHello"
+// 这类【进程内不变】的漂移,只需一次即可。此前每次真连都空跑一次内存握手(含 ECDHE keygen)+
+// 1 秒超时闸:高并发下纯冗余 CPU,且并发打满→CPU 饥饿→内存握手被饿超 1 秒→误 fail-closed 拒掉
+// 健康请求(自我放大)。改为单飞一次后,每请求只查缓存标志,去掉冗余与误拒面,安全性不降。
+static VALIDATED: OnceLock<Mutex<HashMap<(String, String), Arc<OnceCell<()>>>>> = OnceLock::new();
+
+// 实际校验(capture+verify)真正跑过的次数,按 target_host 计。仅供并发测试断言"每 profile 只跑
+// 一次"用;生产路径每命中一次真校验才 +1,缓存命中不动。
+pub(crate) static VALIDATION_RUNS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
 pub async fn validate_expected_ja4_before_connect(
     profile: &TlsProfile,
     target_host: &str,
@@ -102,9 +121,32 @@ pub async fn validate_expected_ja4_before_connect(
     if !crate::ja4::profile_has_expectation(profile) {
         return Ok(());
     }
-    let raw = capture_client_hello_record(profile, target_host).await?;
-    let actual = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&raw)?;
-    crate::ja4::verify_profile_expectation(profile, &actual)?;
+    let cache_key = (target_host.to_string(), format!("{profile:?}"));
+    let cell = {
+        let map = VALIDATED.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = map.lock().expect("VALIDATED 锁中毒");
+        guard
+            .entry(cache_key)
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .clone()
+    };
+    // 单飞:并发同键只有一个真跑校验,其余 await 同一 cell。get_or_try_init 语义:校验返回 Err
+    // 时【不】写入 cell → 下次调用会重试,保持 fail-closed 且可恢复(坏 profile 每次都拦)。
+    cell.get_or_try_init(|| async {
+        {
+            let runs = VALIDATION_RUNS.get_or_init(|| Mutex::new(HashMap::new()));
+            *runs
+                .lock()
+                .expect("VALIDATION_RUNS 锁中毒")
+                .entry(target_host.to_string())
+                .or_insert(0) += 1;
+        }
+        let raw = capture_client_hello_record(profile, target_host).await?;
+        let actual = crate::ja4::Ja4Fingerprint::from_tls_client_hello_record(&raw)?;
+        crate::ja4::verify_profile_expectation(profile, &actual)?;
+        Ok::<(), BoringCtxError>(())
+    })
+    .await?;
     Ok(())
 }
 
@@ -349,6 +391,112 @@ mod tests {
             assert!(
                 err.to_string().contains("ja4_a"),
                 "{id} 变异应命中 ja4_a 段: {err}"
+            );
+        }
+    }
+
+    // 并发下 JA4 自校验【每 profile 只真跑一次】(缓存生效,不随请求数重复空跑内存握手)。
+    // 这是修"每请求重验"并发缺陷的判别性证:并发 64 个同 (profile,host) 校验,实际 capture+verify
+    // 应恰为 1 次。变异:把 validate_expected_ja4_before_connect 改回每请求都 capture(去缓存)→
+    // 计数变 64 → 本断言转红。用独占 host 避免与其它并行测试撞 VALIDATION_RUNS 计数。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ja4_validation_runs_once_per_profile_under_concurrency() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        // codex 无 padding 扩展,JA4 与 SNI 长度无关,适合做稳定的缓存键。
+        let profile = profiles.get("openai-codex-cli-v1").unwrap().clone();
+        let host = "concurrency-once.sidecar-test.invalid";
+
+        let mut tasks = Vec::with_capacity(64);
+        for _ in 0..64 {
+            let p = profile.clone();
+            let h = host.to_string();
+            tasks.push(tokio::spawn(async move {
+                super::validate_expected_ja4_before_connect(&p, &h).await
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap().unwrap();
+        }
+
+        let runs = super::VALIDATION_RUNS
+            .get()
+            .expect("并发后 VALIDATION_RUNS 应已初始化")
+            .lock()
+            .unwrap();
+        let n = runs.get(host).copied().unwrap_or(0);
+        assert_eq!(
+            n, 1,
+            "并发 64 个同 profile 校验应只真跑 1 次(缓存生效),实际跑了 {n} 次——每请求重验缺陷未修"
+        );
+    }
+
+    // 重压 soak:4 家 profile × 500 并发 = 2000 并发同时打,再来第二波,证明缓存在真高压下
+    // 扛得住(每家只校验 1 次)且【持久】(第二波不再新增校验)。这是"运营并发能不能 hold"的
+    // 直接数据:改前每请求重验,2000 并发会触发 2000 次空跑握手 + 2000 次 1 秒超时机会;改后
+    // 恒定 4 次,与请求数解耦。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn ja4_validation_holds_under_heavy_multi_profile_concurrency() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        // 四家各配独占 host(与其它测试不撞计数)。anthropic 含 padding 但同 host 稳定。
+        let cases = [
+            (
+                "anthropic-cli-mimicry-v1",
+                "soak-anthropic.sidecar-test.invalid",
+            ),
+            ("openai-codex-cli-v1", "soak-codex.sidecar-test.invalid"),
+            ("gemini-cli-v1", "soak-gemini.sidecar-test.invalid"),
+            ("kiro-cli-v1", "soak-kiro.sidecar-test.invalid"),
+        ];
+
+        // 第一波:每家 500 并发,共 2000 同时打。
+        let mut wave1 = Vec::with_capacity(2000);
+        for (id, host) in cases {
+            let profile = profiles.get(id).unwrap().clone();
+            for _ in 0..500 {
+                let p = profile.clone();
+                let h = host.to_string();
+                wave1.push(tokio::spawn(async move {
+                    super::validate_expected_ja4_before_connect(&p, &h).await
+                }));
+            }
+        }
+        for t in wave1 {
+            t.await.unwrap().unwrap();
+        }
+        {
+            let runs = super::VALIDATION_RUNS.get().unwrap().lock().unwrap();
+            for (_, host) in cases {
+                assert_eq!(
+                    runs.get(host).copied().unwrap_or(0),
+                    1,
+                    "{host} 在 2000 并发第一波下应只校验 1 次"
+                );
+            }
+        }
+
+        // 第二波:再各 200 并发。校验计数【不应增加】——证明缓存持久,soak 稳定不退化。
+        let mut wave2 = Vec::with_capacity(800);
+        for (id, host) in cases {
+            let profile = profiles.get(id).unwrap().clone();
+            for _ in 0..200 {
+                let p = profile.clone();
+                let h = host.to_string();
+                wave2.push(tokio::spawn(async move {
+                    super::validate_expected_ja4_before_connect(&p, &h).await
+                }));
+            }
+        }
+        for t in wave2 {
+            t.await.unwrap().unwrap();
+        }
+        let runs = super::VALIDATION_RUNS.get().unwrap().lock().unwrap();
+        for (_, host) in cases {
+            assert_eq!(
+                runs.get(host).copied().unwrap_or(0),
+                1,
+                "{host} 第二波后仍应只校验 1 次(缓存持久,不随请求波次增长)"
             );
         }
     }
