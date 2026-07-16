@@ -168,6 +168,20 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 - 查 producer 有而 consumer 未注册、注册未启动、失败只记录不入 DLQ、DLQ 有事件无 replay handler、恢复成功不清状态。
 - 查事件 payload 是否携带下游完成动作所需的全部身份和幂等证据，避免“事件发了但消费者无法正确闭环”。
 
+#### Batch 4A：账号清限流动作收敛到真实调度状态
+
+目标是修复 `GW-WIRE-012` 中“管理动作成功，但 selector 仍被另一套状态挡住”的恢复断路，不扩大为通用强制恢复：
+
+1. `clear-rate-limit` 必须原子清理 `provider_accounts` 的账号级、逐模型和临时不可调度字段，并在同一事务写管理员审计；审计失败不得留下无审计的数据变更。
+2. 账号字段提交后，再按当前凭据版本清理 `channel_health_state` 中由 rate-limit 导致的冷却；仅清限流样本、限流原因和冷却时间，保留 401/auth cooldown、封禁、人工暂停、5xx、延迟及其它健康证据。
+3. 渠道从 rate-limit cooling 恢复时进入 1% ramp，不直接全量 active；该动作不得调用会清 auth hard-disable 的通用 `ManualResume` 或 `ForceActive`。
+4. 若账号事务失败，不得触碰渠道状态；若账号已清而渠道恢复失败，返回明确的可重试 partial 错误。该顺序保持 fail-closed，重试可继续完成剩余动作。
+5. 没有渠道记录或当前渠道不是 rate-limit 冷却时按幂等 no-op 成功，禁止误改其它原因状态。
+6. 生产 composition root 必须注入统一恢复 service；handler 只负责鉴权、租户作用域、请求身份和响应，不继续承载跨存储编排。
+7. 判别测试覆盖：限流样本被清而 5xx 样本保留；账号事务失败不调用渠道；渠道失败返回 partial；非限流状态不变；审计与账号更新同事务；生产路由真实注入。
+
+该切片不改 schema、权限角色、资金、quota enforcement、真实上游调用和秘密边界。分支基于恢复诊断 Draft PR，继续作为独立堆叠 Draft PR，未经 Owner 同意不合并。
+
 ### Batch 5：管理面、Hermes 与真实能力观测
 
 - 模块注册表、system health、admin observability、Hermes context/tools、OpenAPI。

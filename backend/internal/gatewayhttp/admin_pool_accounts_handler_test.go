@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
+	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
 // adminAuditActionWhitelist 镜像已迁移的 admin_audit_events_action_check CHECK
@@ -63,7 +64,6 @@ type adminPoolStoreStub struct {
 	get              *admindb.AdminProviderAccountRow
 	updateFull       *admindb.UpdateAdminProviderAccountParams
 	update           *admindb.UpdateProviderAccountEnabledParams
-	clear            *admindb.ClearProviderAccountRateLimitParams
 	delete           *admindb.SoftDeleteProviderAccountParams
 	audits           []admindb.InsertAdminAuditEventParams
 }
@@ -92,6 +92,20 @@ type adminPoolCredentialWriterStub struct {
 
 type adminPoolChannelHealthStub struct {
 	key *channelhealth.ChannelKey
+}
+
+type adminPoolRateLimitRecoveryStub struct {
+	input  *provideraccountrecovery.ClearRateLimitInput
+	result provideraccountrecovery.ClearRateLimitResult
+	err    error
+}
+
+func (s *adminPoolRateLimitRecoveryStub) ClearRateLimit(_ context.Context, in provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error) {
+	s.input = &in
+	if s.result.Account.ID == 0 {
+		s.result.Account = adminProviderRow(in.AccountID, in.TenantID)
+	}
+	return s.result, s.err
 }
 
 func (s *adminPoolChannelHealthStub) EnsureDefaultActive(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
@@ -238,11 +252,6 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 func (s *adminPoolStoreStub) UpdateProviderAccountEnabled(_ context.Context, arg admindb.UpdateProviderAccountEnabledParams) error {
 	s.update = &arg
 	return nil
-}
-
-func (s *adminPoolStoreStub) ClearProviderAccountRateLimit(_ context.Context, arg admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error) {
-	s.clear = &arg
-	return adminProviderRow(arg.ID, arg.TenantID), nil
 }
 
 func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg admindb.SoftDeleteProviderAccountParams) error {
@@ -670,54 +679,57 @@ func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 
 func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 	store := &adminPoolStoreStub{}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
-	// 对齐或更优:该端点现在返回被重新激活的账号行(200 + body)而非不透明的
-	// 204,以便运维 UI 看到该账号已解除停用(对齐参考实现恢复账号的响应)。
+	recovery := &adminPoolRateLimitRecoveryStub{
+		result: provideraccountrecovery.ClearRateLimitResult{
+			Account:        adminProviderRow(77, 7),
+			Channel:        &channelhealth.Record{State: channelhealth.StateRamping},
+			ChannelChanged: true,
+		},
+	}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, RateLimitRecovery: recovery,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if store.clear == nil || store.clear.ID != 77 || store.clear.TenantID != 7 {
-		t.Fatalf("clear arg mismatch: %+v", store.clear)
+	if recovery.input == nil || recovery.input.AccountID != 77 || recovery.input.TenantID != 7 ||
+		recovery.input.ActorID != "admin_token:11" || recovery.input.ActorRole != admin.RoleTenantOperator {
+		t.Fatalf("recovery input mismatch: %+v", recovery.input)
 	}
 	var body providerAccountResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode clear-rate-limit response: %v body=%s", err, rec.Body.String())
 	}
-	if body.ID != 77 {
-		t.Fatalf("clear-rate-limit response must echo the reactivated account id 77, got %+v", body)
-	}
-	if len(store.audits) != 1 || store.audits[0].Action != "clear_provider_account_rate_limit" {
-		t.Fatalf("clear audit mismatch: %+v", store.audits)
+	if body.ID != 77 || body.RateLimitRecovery == nil ||
+		!body.RateLimitRecovery.AccountBackoffCleared ||
+		!body.RateLimitRecovery.ChannelRecordFound ||
+		!body.RateLimitRecovery.ChannelChanged ||
+		body.RateLimitRecovery.ChannelState != channelhealth.StateRamping {
+		t.Fatalf("clear-rate-limit response mismatch: %+v", body)
 	}
 }
 
-// TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating
-// 证明加固后的 audit stub 确实能抓住本切片所修的潜在缺陷:若
-// 'clear_provider_account_rate_limit' 「未」列入白名单(迁移 0141 之前的世界),
-// audit INSERT 会触发 CHECK 23514,handler 返回 503 audit_write_failed —— 正是先前
-// 被掩盖的那种失败模式。上面的 happy-path 测试「仅」因为该 action 现已在白名单中
-// 才通过;本测试钉住没有它时会发生什么,因此这一对测试自我证明(正确路径 vs
-// 损坏/基线路径 不同)。
-func TestAdminPoolAccounts_ClearRateLimit_AuditWhitelistGuardIsDiscriminating(t *testing.T) {
-	// 临时移除该 action 以模拟 0141 之前的白名单。
-	if _, ok := adminAuditActionWhitelist["clear_provider_account_rate_limit"]; !ok {
-		t.Fatal("precondition: action must be whitelisted before the test removes it")
-	}
-	delete(adminAuditActionWhitelist, "clear_provider_account_rate_limit")
-	t.Cleanup(func() {
-		adminAuditActionWhitelist["clear_provider_account_rate_limit"] = struct{}{}
-	})
-
+func TestAdminPoolAccounts_ClearRateLimitPartialRecoveryIsExplicit(t *testing.T) {
 	store := &adminPoolStoreStub{}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
+	recovery := &adminPoolRateLimitRecoveryStub{err: provideraccountrecovery.ErrPartialRecovery}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, RateLimitRecovery: recovery,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("non-whitelisted clear action must surface 503, got status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("partial recovery status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "audit_write_failed") {
-		t.Fatalf("expected audit_write_failed error, got body=%s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "provider_account_recovery_partial") {
+		t.Fatalf("partial recovery code missing: %s", rec.Body.String())
 	}
-	if len(store.audits) != 0 {
-		t.Fatalf("rejected audit must not be recorded, got %+v", store.audits)
+}
+
+func TestAdminPoolAccounts_ClearRateLimitFailsClosedWhenRecoveryUnset(t *testing.T) {
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/clear-rate-limit", "")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "gateway_not_configured") {
+		t.Fatalf("unset recovery status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -790,7 +802,10 @@ func invokeAdminPool(t *testing.T, store *adminPoolStoreStub, auth AdminPoolAcco
 
 func invokeAdminPoolWithCredentialStore(t *testing.T, store *adminPoolStoreStub, credentials AdminPoolAccountCredentialWriter, auth AdminPoolAccountAuth, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	return invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{Auth: auth, Store: store, Credentials: credentials}, method, target, body)
+	return invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: auth, Store: store, Credentials: credentials,
+		RateLimitRecovery: &adminPoolRateLimitRecoveryStub{},
+	}, method, target, body)
 }
 
 func invokeAdminPoolWithDeps(t *testing.T, deps AdminPoolAccountDeps, method, target, body string) *httptest.ResponseRecorder {

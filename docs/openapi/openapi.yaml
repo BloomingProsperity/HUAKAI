@@ -10215,16 +10215,18 @@ paths:
       summary: Cascade-clear Account cooldown state
       operationId: clearProviderAccountRateLimit
       description: |
-        Atomically clears rate_limit_reset_at + overload_until +
-        temp_unschedulable_until + model_rate_limits + openai_403_counter
-        per docs/specs/rate-limiting.md §Phase F. Generates audit event with
-        actor_id = the admin user. Returns the reactivated account so the
-        operator UI can confirm the account is no longer benched.
+        先在同一数据库事务中清除账号级 rate_limit_reset_at、overload_until、
+        temp_unschedulable_until、model_rate_limits、openai_403_counter 等退避状态，
+        并写入管理员审计；审计失败时账号更新回滚。随后按账号当前凭据版本清除
+        channel-health 中由 rate-limit 导致的冷却和限流样本，保留 auth hard-disable、
+        人工暂停、封禁、5xx、延迟及其它健康证据。渠道恢复进入 1% ramp，不直接
+        force-active。若账号事务已提交而渠道恢复失败，返回
+        provider_account_recovery_partial，调用方可安全重试。
       x-huakai-spec-source: [docs/specs/rate-limiting.md]
       x-huakai-required-role: tenant_operator
       responses:
         '200':
-          description: Cleared; returns the reactivated account (credentials redacted).
+          description: 已清理账号退避；返回账号和渠道限流恢复结果（不包含凭据）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderAccount' }
@@ -17798,8 +17800,32 @@ components:
               keywords: { type: array, items: { type: string } }
               duration_minutes: { type: integer }
               description: { type: string }
+        rate_limit_recovery:
+          description: 仅 clear-rate-limit 成功响应返回。
+          $ref: '#/components/schemas/ProviderAccountRateLimitRecovery'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ProviderAccountRateLimitRecovery:
+      type: object
+      additionalProperties: false
+      required:
+        - account_backoff_cleared
+        - channel_record_found
+        - channel_changed
+      properties:
+        account_backoff_cleared:
+          type: boolean
+          const: true
+        channel_record_found:
+          type: boolean
+          description: 当前账号是否存在可用于调度的最新 channel-health 记录。
+        channel_changed:
+          type: boolean
+          description: 最新渠道记录是否确实从 rate-limit cooling 转入 ramp。
+        channel_state:
+          type: string
+          enum: [active, degraded, cooling_down, ramping, disabled, manual_paused]
 
     ProviderAccountCreate:
       x-huakai-spec-source:

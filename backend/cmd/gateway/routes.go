@@ -55,6 +55,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecoveryhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
@@ -1066,10 +1067,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
-			Auth:          d.adminAuth,
-			Store:         gatewayhttp.NewAdminPoolAccountStoreAdapter(d.adminQueries, d.pgPool),
-			Credentials:   d.credentialStore,
-			ChannelHealth: d.channelHealth,
+			Auth:              d.adminAuth,
+			Store:             gatewayhttp.NewAdminPoolAccountStoreAdapter(d.adminQueries, d.pgPool),
+			Credentials:       d.credentialStore,
+			ChannelHealth:     d.channelHealth,
+			RateLimitRecovery: provideraccountrecovery.NewService(provideraccountrecovery.NewPostgresStore(d.pgPool), d.channelHealth),
 		})
 		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
 			Auth:     d.adminAuth,
