@@ -10963,11 +10963,18 @@ paths:
             schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagRequest" }
       responses:
         "200":
-          description: Bulk update applied.
+          description: Bulk update completed without item failures. Items that no longer match or already have the requested values are reported as skipped.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
+        "207":
+          description: Bulk update completed with per-item failures; successful and skipped items remain committed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
 
   /v1/admin/provider-accounts/{id}/upstream-models:
     get:
@@ -11005,11 +11012,18 @@ paths:
             schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagRequest" }
       responses:
         "200":
-          description: Bulk update applied.
+          description: Bulk update completed without item failures. Items that no longer match or already have the requested values are reported as skipped.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
+        "207":
+          description: Bulk update completed with per-item failures; successful and skipped items remain committed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ProviderAccountBulkByTagResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/ServiceBusy" }
 
   /admin/v1/credentials/paste:
     post:
@@ -18029,13 +18043,50 @@ components:
         static_weight: { type: integer, format: int32 }
 
     ProviderAccountBulkByTagResponse:
-      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-spec-source:
+        - docs/specs/pool-routing.md
+        - backend/internal/adminhttp/provider_account_bulk_handler.go
       type: object
       additionalProperties: false
-      required: [affected_ids, count]
+      required: [affected_ids, count, total, succeeded, failed, skipped, results]
       properties:
-        affected_ids: { type: array, items: { type: integer, format: int64 } }
-        count: { type: integer, format: int32, minimum: 0 }
+        affected_ids:
+          type: array
+          description: Successfully updated account ids retained for backward compatibility.
+          items: { type: integer, format: int64 }
+        count:
+          type: integer
+          format: int32
+          minimum: 0
+          description: Number of successfully updated accounts retained for backward compatibility.
+        total: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        succeeded: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        failed: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        skipped: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        results:
+          type: array
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/ProviderAccountBulkItemResult' }
+
+    ProviderAccountBulkItemResult:
+      x-huakai-spec-source:
+        - backend/internal/adminhttp/provider_account_bulk_handler.go
+      type: object
+      additionalProperties: false
+      required: [id, status, retryable]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        status:
+          type: string
+          enum: [succeeded, failed, skipped]
+        code:
+          type: string
+          enum:
+            - provider_account_update_failed
+            - target_no_longer_matches
+            - already_in_desired_state
+        message: { type: string }
+        retryable: { type: boolean }
 
     AccountCredentialMetadata:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]

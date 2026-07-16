@@ -1089,7 +1089,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 		adminhttp.MountProviderAccountBulkRoutes(r, adminhttp.ProviderAccountBulkDeps{
 			Auth:  d.adminAuth,
-			Store: d.adminQueries,
+			Store: adminhttp.NewProviderAccountBulkStoreAdapter(d.adminQueries, d.pgPool),
 		})
 		adminhttp.MountProviderAccountUpstreamModelsRoutes(r, adminhttp.UpstreamModelsDeps{
 			Auth:     d.adminAuth,

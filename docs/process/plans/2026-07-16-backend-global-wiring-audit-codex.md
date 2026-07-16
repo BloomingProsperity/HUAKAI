@@ -147,6 +147,29 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 - 查“配置能写但运行时不读”“只启动读取但管理面声称实时生效”“错误 fallback 静默翻转”“默认值与诊断不一致”。
 - 记录配置来源、缓存刷新、跨副本传播和实际消费者。
 
+#### Batch 3B：账号按标签批量变更与审计原子化
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “找到之后接线，修复他们！”；“像这种问题不要糊弄过去，参考成熟项目就行”；“有问题就修 有决策就问我”。 |
+| Scope | 修复 `GW-WIRE-013`：仅调整 provider account 的 `bulk-by-tag` 管理入口、生产依赖装配、OpenAPI 和判别测试。每个账号的状态修改与管理员审计必须在同一 PostgreSQL 事务提交；批次允许单项失败后继续，并返回逐项 `succeeded/failed/skipped`。不修改 schema、鉴权角色、资金、quota、真实上游请求或前端。 |
+| Success criteria | 审计写入失败时对应账号更新真实回滚；单个账号失败不阻断后续账号；响应兼容保留 `affected_ids/count` 并提供完整逐项结果；已是目标状态和执行时已不再匹配标签的账号明确记为 `skipped`；匹配超过 1000 条时显式拒绝而非静默截断；真实数据库接受合法 `update_provider_account` 审计动作；两条 API alias 使用同一事务 adapter。 |
+| Time estimate | 约 1.5-3 小时，包含实现、普通单测、真实 PostgreSQL 回滚测试、OpenAPI 校验、只读 Codex review 和 Draft PR。 |
+| Blast radius | 仅影响管理员按标签批量修改账号的返回合同和事务边界。旧客户端仍可读取原有成功 ID 与数量；新增部分失败结果可能返回 HTTP 207。若实现错误，可能造成批量动作误报、漏改或审计缺失。 |
+| Failure modes | 继续使用不存在于数据库白名单的审计动作导致所有真实写审计失败；为追求整批原子而持有过多行锁；列表上限静默遗漏；逐项错误泄露数据库文本；执行期账号标签或删除状态变化后仍盲写；测试只用 stub 而没有证明 PostgreSQL 回滚。缓解方式是复用合法 `update_provider_account`、每账号短事务、1001 条探测上限、稳定错误码、事务内重新读取并核标签、真实触发器拒审计测试。 |
+| Decision points | 隔离 specifier 已确认成熟项目在整批事务和逐项部分成功之间存在不同策略，但逐项原子、完整结果和同事务审计存在明确 Safe Equivalent，且不命中“三项同时成立才暂停”的决策门。本批直接实施。批次幂等键和乐观版本字段需要新持久化合同，留给后续独立设计，不在本批伪造。 |
+
+执行顺序：
+
+1. 读取真实审计 action CHECK、当前 handler、sqlc 查询和生产路由装配。
+2. 用现有计划记录明确逐项原子合同，不新增独立文档。
+3. 增加持有 `pgxpool.Pool` 的生产 adapter；每项事务内重读账号、核租户和标签、判断 no-op、更新并写审计。
+4. handler 使用 1001 条探测上限，生成兼容旧字段的完整结果；未知字段和尾随 JSON fail-closed。
+5. 更新两个 alias 的 OpenAPI 及响应 schema。
+6. 补普通单测和 `integration_pg` 判别测试：正常提交、审计拒绝回滚、单项失败继续、执行时标签漂移跳过、超过上限拒绝。
+7. 运行格式化、目标测试、OpenAPI 校验和必要的 composition-root 测试。
+8. 暂存后执行只读 Codex review；修完 S0/S1 后提交独立分支并创建 Draft PR，未经 Owner 同意不合并。
+
 ### Batch 4：事件、DLQ、恢复和后台闭环
 
 - event bus 注册、审计引用、结算恢复、通知 outbox、凭据刷新、模型同步、健康探测、账务对账、租约清理。
@@ -194,7 +217,7 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 
 ## Pre-execution checklist
 
-1. 只使用 `HUAKAI-wt-global-wiring-codex` 和分支 `audit/backend-global-wiring-20260716-codex`。
+1. 审计总账使用 `HUAKAI-wt-global-wiring-codex`；每项修复从该分支建立独立干净工作树和子分支。本批使用 `HUAKAI-wt-provider-account-bulk-codex` / `fix/provider-account-bulk-atomic-20260716-codex`。
 2. 每批开始和结束检查 `git status`，所有改动通过该批次的 Draft PR 提交；未经 Owner 同意不合并。
 3. 当前会话不读取参考项目源码，不触碰 Claude 或其它目标工作树。
 4. 参考源码由隔离 specifier 会话读取，输出行为报告后退出。
