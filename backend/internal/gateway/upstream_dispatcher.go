@@ -19,9 +19,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cacheplan"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamusage"
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -65,7 +67,8 @@ type DispatchInput struct {
 	// Credential 出站凭据。
 	Credential provider.Credential
 	// TransportMode 决定走 standard / mimicry / diagnostics RoundTripper。
-	// 零值 ("") 视为 TransportModeStandard。
+	// 零值 ("") 按 ProtocolFamily、Account.Platform 与 Account.AccountType
+	// 自动选择；显式 standard 可强制普通出口。
 	TransportMode transport.TransportMode
 	// NonStreamingBuffered 启用非流式出站的硬超时。
 	// 流式调用方保持其为 false,使流式专属的超时维度仍由
@@ -98,6 +101,78 @@ type HTTPDoer interface {
 
 type AnthropicTTLSettings interface {
 	AnthropicTTL1hRewriteEnabled(context.Context) (bool, error)
+}
+
+// ResolveDispatchTransport 统一解析一次账号出站所需的 provider 与 transport
+// mode。协议族优先表达订阅/session 出口，账号类型用于兼容同一平台下的多种
+// 鉴权形态；公开 API key 保持 standard。
+func ResolveDispatchTransport(account provider.AccountInfo, protocolFamily string) (provider.AccountInfo, transport.TransportMode) {
+	providerCode := dispatchTransportProvider(account, protocolFamily)
+	account.Platform = string(providerCode)
+	return account, dispatchTransportMode(providerCode, account.AccountType)
+}
+
+func dispatchTransportProvider(account provider.AccountInfo, protocolFamily string) transport.ProviderCode {
+	switch strings.ToLower(strings.TrimSpace(protocolFamily)) {
+	case "openai_codex":
+		return transport.ProviderOpenAICodex
+	case "gemini_advanced_session":
+		return transport.ProviderGeminiAdvanced
+	case "gemini_code_assist":
+		return transport.ProviderGeminiCodeAssist
+	case "antigravity_session":
+		return transport.ProviderAntigravity
+	case "cursor_session":
+		return transport.ProviderCursor
+	case "copilot_session":
+		return transport.ProviderCopilot
+	case "kiro_session":
+		return transport.ProviderKiro
+	case "windsurf_session":
+		return transport.ProviderWindsurf
+	}
+
+	providerCode := transport.ProviderCode(strings.ToLower(strings.TrimSpace(account.Platform)))
+	switch providerCode {
+	case transport.ProviderOpenAI:
+		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
+		case credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth:
+			return transport.ProviderOpenAICodex
+		}
+	case transport.ProviderGemini:
+		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
+		case credentialstore.AuthModeGoogleOne:
+			return transport.ProviderGeminiAdvanced
+		case credentialstore.AuthModeAntigravity:
+			return transport.ProviderAntigravity
+		}
+	}
+	return providerCode
+}
+
+func dispatchTransportMode(providerCode transport.ProviderCode, accountType string) transport.TransportMode {
+	switch providerCode {
+	case transport.ProviderOpenAICodex:
+		return transport.TransportModeMimicryChatGPT
+	case transport.ProviderGeminiAdvanced:
+		return transport.TransportModeMimicryGeminiAdvanced
+	case transport.ProviderAntigravity:
+		return transport.TransportModeMimicryAntigravity
+	case transport.ProviderCursor:
+		return transport.TransportModeMimicryCursor
+	case transport.ProviderCopilot:
+		return transport.TransportModeMimicryCopilot
+	case transport.ProviderKiro:
+		return transport.TransportModeMimicryKiro
+	case transport.ProviderWindsurf:
+		return transport.TransportModeMimicryWindsurf
+	case transport.ProviderAnthropic:
+		switch strings.ToLower(strings.TrimSpace(accountType)) {
+		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode:
+			return transport.TransportModeMimicryClaudeCode
+		}
+	}
+	return transport.TransportModeStandard
 }
 
 // UpstreamDispatcher 串起 adapter / transport / HTTP client。
@@ -141,6 +216,11 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	if d.TransportFactory == nil {
 		return nil, errors.New("dispatcher: TransportFactory 未配置")
+	}
+	resolvedAccount, automaticMode := ResolveDispatchTransport(in.Account, in.ProtocolFamily)
+	in.Account = resolvedAccount
+	if in.TransportMode == "" {
+		in.TransportMode = automaticMode
 	}
 
 	// 1. 选 adapter
@@ -186,9 +266,6 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 
 	// 3. 取 transport
 	mode := in.TransportMode
-	if mode == "" {
-		mode = transport.TransportModeStandard
-	}
 	rt, err := d.TransportFactory.For(transport.ProviderCode(in.Account.Platform), mode)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 RoundTripper 失败: %w", err)
