@@ -1,4 +1,4 @@
-# 2026-07-16 HUAKAI 后端全局接线真实性审计 Batch 1-2B
+# 2026-07-16 HUAKAI 后端全局接线真实性审计 Batch 1-2C
 
 ## 元数据
 
@@ -6,12 +6,12 @@
 | --- | --- |
 | 审计分支 | `audit/backend-global-wiring-20260716-codex` |
 | 基线提交 | `438536e6` |
-| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链，以及以 Sub2 为主轴的完整账号系统对照 |
+| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 13 |
-| Inferences | 6 |
-| Open questions | 10 |
+| Observed findings | 17 |
+| Inferences | 7 |
+| Open questions | 15 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -38,6 +38,8 @@ Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 route
 账号链对照见 `docs/process/research/2026-07-16-reference-account-chains-sub2-specifier.md`。隔离 specifier 实际核实的本地 SHA 中，Sub2API 的 Claude、Gemini、Antigravity 已形成专属账号运营闭环；Kimi 主要是通用 API-key/协议/计量能力。CLIProxyAPI 补充了 Kimi 设备授权、续期和设备身份保存；New API 补充了 Kimi/Moonshot API-key 渠道、模型同步、余额和跨渠道 retry。
 
 Sub2 整套账号系统深读见 `docs/process/research/2026-07-16-sub2-account-system-full-logic-specifier.md`。CLIProxyAPI 与 New API 的运行时补充对照已重新锁定远端默认分支可达 SHA，见 `docs/process/research/2026-07-16-reference-default-branch-account-runtime-supplement.md`。
+
+账号导入四项能力的独立 clean-room 深读见 `docs/process/research/2026-07-16-sub2-account-import-four-gaps-specifier.md`。该报告把 `Agent Identity` 核实为包含 Ed25519 私钥和任务绑定的实际认证模式，并把 CRS 核实为 `claude-relay-service` 专用同步协议；二者都不能按名称猜成普通账号元数据或通用同步标准。
 
 ## Batch 2 账号链总览
 
@@ -521,6 +523,122 @@ HUAKAI 当前主 chat 链可以还原为：
 
 把单账号 update + audit 收敛到同一数据库事务；批次层面可选择“全有或全无”或“逐项隔离并完整返回结果”，但必须显式定义。推荐先做逐项隔离：每个账号事务原子，响应返回 succeeded/failed/skipped 列表，支持幂等请求键和安全重试；是否做整批原子由规模与锁影响决定。
 
+### GW-WIRE-014：Claude Cookie 自动登录整条链缺失
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S2`（账号接入效率/feature parity；实现本身属于高风险凭据处理） |
+| 分类 | W-01 能力缺失、W-10 信息断链 |
+| 状态 | **Confirmed；实现前需要 Owner 确认安全策略** |
+| 用户影响 | 管理员目前只能走浏览器 PKCE 或向既有账号导入凭据，不能粘贴 `sessionKey` 后由服务端完成账号识别、授权码获取和正式 OAuth/Setup Token 转换。批量接入 Claude 账号时仍依赖逐个浏览器流程或外部手工处理。 |
+
+**HUAKAI 源码证据**
+
+1. Anthropic 正式计划只有 API key、交互式 OAuth 和 Claude Code CLI/JSON 导入；没有 Cookie/sessionKey flow，见 `backend/internal/credentialacq/types.go:214-225`。
+2. 管理 helper 只挂 paste、CLI、CSV、JSON 和 OAuth init/callback，没有 Cookie 转换入口，见 `backend/internal/gatewayhttp/admin_credential_acquisition_handler.go:83-98`。
+3. 当前 Claude OAuth exchanger 从浏览器回调取得授权码，再用已保存 PKCE verifier 换 token，见 `backend/internal/credentialacq/anthropic_oauth.go:62-124`；没有用 Cookie 发现组织和服务端取得授权码的路径。
+
+**参考行为**
+
+Sub2 允许粘贴一个或多行 `sessionKey`，后端完成组织发现、PKCE、授权码取得和令牌交换；原 Cookie 只作为转换输入，最终保存转换后的 OAuth/Setup Token 凭据。`Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/service/oauth_service.go:175-282`
+
+**建议**
+
+作为 `Safe Equivalent` 单独建设，不与普通 paste 混用：
+
+1. 默认关闭，按 tenant 显式启用，并要求管理员 step-up。
+2. Cookie 只存在于单次请求内，不入库、不进审计正文、不进错误文本；完成后立即清零内存副本。
+3. 使用固定批准的上游域名、client profile、scope 和受控 HTTP client，不接受请求体覆盖 endpoint。
+4. 先返回逐项 dry-run/转换结果，再创建账号；稳定区分 Cookie 无效、组织发现失败、授权拒绝、上游变更和网络失败。
+5. 批量任务允许只重试失败项，成功项不重复换取。
+
+### GW-WIRE-015：Setup Token 只有枚举、闸门和刷新影子，没有正式生产入口
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（鉴权合同半接线/账号长期可用性） |
+| 分类 | W-02 半接线、W-03 假激活风险、W-10 信息断链 |
+| 状态 | **Confirmed；涉及鉴权合同，需 Owner 确认默认策略** |
+| 用户影响 | 代码看起来支持 `setup_token`，但生产模式目录没有任何账号类型允许该 flow，管理路由没有专用入口，production deps 也没有开启 long-lived gate；即使通过旁路写入，生产 refresher 默认仍会拒绝使用 setup token。 |
+
+**源码证据**
+
+1. `FlowKindSetupToken` 和 `LongLivedToggle` 已存在，见 `backend/internal/credentialacq/types.go:11-23,106-120`。
+2. `DefaultModePlans` 的 Anthropic OAuth 与 Claude Code 计划都没有把 `FlowKindSetupToken` 放进 `AllowedHelpers`，见 `types.go:214-225`。
+3. 管理依赖有 `AllowLongLivedSetupToken`，但 production `credentialAcquisitionRouteDeps` 没有赋值，零值为 false，见 `backend/internal/gatewayhttp/admin_credential_acquisition_handler.go:22-33`、`backend/cmd/gateway/routes.go:95-103`。
+4. start 请求 long-lived 时会被该闸直接拒绝，见 `admin_credential_acquisition_handler.go:352-355`。
+5. Anthropic refresh adapter 能识别 setup token，但默认实例的 allow 仍为 false；生产注册使用零值 adapter，见 `backend/internal/credentialworker/adapters/anthropic.go:24-45`、`backend/internal/credentialworker/mode_refresh.go:96-104`。
+
+**参考行为**
+
+Sub2 把 Setup Token 作为独立账号类型，使用更窄的推理 scope，并由统一后台 refresher 维持长期可用；“长期”指可刷新账号，不是访问令牌永久有效。`Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/server/routes/admin.go:365-371` `Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/service/token_refresher.go:40-71`
+
+**建议**
+
+把现有半截能力收敛成一等账号形态，而不是再造另一套刷新器：
+
+1. 增加明确的 Setup Token acquisition plan、专用 start/helper 合同和权限范围展示。
+2. acquisition gate 与 refresher gate 使用同一配置源，启动时校验两者一致，禁止“能导入但不能刷新”。
+3. 管理合同同时展示当前 access token 到期、refresh material 状态、最近刷新和下一重试。
+4. 默认建议保持关闭，按 tenant/account 显式启用；是否改为默认开启由 Owner 决定。
+
+### GW-WIRE-016：HUAKAI 有账号身份元数据，但没有 Codex Agent Identity 认证链
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（新认证模式/私钥生命周期） |
+| 分类 | W-01 能力缺失、W-02 半接线、W-05 协议差异 |
+| 状态 | **Confirmed；禁止把现有 account identity 误当成已实现** |
+| 用户影响 | HUAKAI 可以从 ChatGPT/Codex token 提取上游账号 ID 和邮箱用于管理展示，但这只是非授权元数据。系统没有导入、验证、加密保存、请求签名、任务绑定注册/恢复和撤销 Agent Identity 的完整认证链。 |
+
+**源码证据**
+
+1. HUAKAI 的 `accountident.Identity` 明确只用于管理元数据，不得进入访问控制、计费或配额，见 `backend/internal/credentialacq/accountident/identity.go:1-10,34-41`。
+2. ChatGPT/Codex identity 只从 token claims/body 提取 account ID 和 email，见 `identity.go:104-129`。
+3. `AttachIdentity` 只把非机密 ID/email/source 放进 credential candidate 和 redacted context，见 `backend/internal/credentialacq/accountident_wire.go:18-49`。
+4. 现有通用 CLI parser 能解析多行、JSON 和 raw token，但只生成 token credential candidate，不包含运行时私钥、签名或任务绑定语义，见 `backend/internal/credentialacq/cli_import.go:11-50,91-155`。
+
+**参考行为**
+
+Sub2 的 Agent Identity 是实际认证模式：包含运行时标识、Ed25519 私钥、上游账号/用户标识和可选任务绑定；每次请求生成签名声明，任务绑定失效后可以注册或恢复。`Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/service/openai_agent_identity.go:64-132` `Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/service/openai_agent_identity.go:175-313`
+
+**建议**
+
+1. 继续保留现有 `accountident` 为纯管理元数据，禁止扩权复用。
+2. 若 Owner 批准，另建“签名身份凭据”模式，私钥必须进入现有 AES-GCM 信封仓库并绑定 tenant/account/vendor/version AAD。
+3. 专用导入先 dry-run 校验 Ed25519 材料和身份冲突；不得把私钥、任务绑定秘密或原始载荷写入审计。
+4. 请求签名、任务注册、持久化恢复和连接失效必须形成一条可判别测试链。
+5. 在真实协议和撤销边界未验证前保持 Experimental/Feature Flag，不宣称 Released。
+
+### GW-WIRE-017：CRS 同步和安全账号迁移包均未进入账号域
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S2`（迁移效率/灾备完整度；秘密导出与远程同步实现属于高风险） |
+| 分类 | W-01 能力缺失、W-06 恢复断路、W-10 信息断链 |
+| 状态 | **Confirmed in account domain；实现前需要 Owner 确认秘密和网络边界** |
+| 用户影响 | 管理员不能从 `claude-relay-service` 预览并同步账号，也不能把账号、调度配置、分组、代理引用和凭据打成可验证迁移包。现有 credential helper 只向既有单账号写凭据，无法承担跨实例迁移和恢复。 |
+
+**HUAKAI 源码证据**
+
+1. 生产账号 helper 路由只有 paste、CLI、CSV、JSON 和 OAuth，没有远程账号源同步或账号包导入导出入口，见 `backend/internal/gatewayhttp/admin_credential_acquisition_handler.go:83-98`。
+2. 通用导入要求既有 `ProviderAccountID`，所有 candidate 复用同一账号，见 `admin_credential_acquisition_handler.go:229-275`。
+3. HUAKAI 的 credential store 已提供应用级加密、tenant/account 绑定和 mutation+audit 同事务，可作为安全迁移落库基础，见 `backend/internal/credentialstore/postgres_store.go:280-353`。
+
+**参考行为**
+
+Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增账号并逐项创建、更新、跳过或失败，同时可选同步代理。`Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/service/crs_sync_service.go:222-380`
+
+其账号迁移包可以包含原始账号凭据和代理秘密，但不会完整保存影子关系、分组和多类运行状态；文件本身未观察到加密、签名或批次撤销，因此只能视为有损管理员迁移包。`Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/handler/admin/account_data.go:27-73` `Wei-Shaw/sub2api@7f5d067af21c836b359aef9a70863bd90bf9f5a5:backend/internal/handler/admin/account_data.go:245-484`
+
+**建议**
+
+1. 把 CRS 建成“兼容账号源连接器”插件，不让专用协议侵入账号核心域。
+2. 地址默认 allowlist，解析时和 dial 时双重 SSRF 校验；密码只作为一次输入或外部 secret ref，不持久化明文。
+3. 同步和文件导入共用统一 `AccountIntakePlan`：先预览字段级差异，再选择保持本地、采用远端或仅补空值。
+4. 迁移包分为默认无秘密的安全包，以及显式启用的加密恢复包；恢复包必须有版本、来源、生成时间、校验摘要、签名和 step-up。
+5. 每个批次记录新建/更新对象清单、逐项结果、失败重试和撤销能力；不做无法解释的静默字段丢失。
+
 ## 非问题与反证
 
 1. `cmd/gateway/routes_*.go` 的 mount helper 本批全部存在生产调用，不支持“很多页面后端路由没挂”的笼统结论。
@@ -541,8 +659,8 @@ HUAKAI 当前主 chat 链可以还原为：
 | `backend/cmd/gateway/quota_probe_wiring_test.go` | 接线断言升级为必须使用 `workerCtx`、登记四个 waiter，并拒绝退回进程信号 `ctx` |
 | `backend/internal/{proxyhealth,tlsfphealth,windowcost,quotaprobe}/worker.go` | 增加可等待的 goroutine 退出合同 |
 | 对应四个 `worker_test.go` | 验证取消前阻塞、取消后退出 |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十三个确认问题 |
-| 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑与默认分支补充证据 |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十七个确认发现 |
+| 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
 ## 测试记录
 
@@ -592,10 +710,17 @@ worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧
 8. 是否批准建设真实账号测试 Safe Equivalent：默认关闭、单账号显式触发、成本上限、不计客户账、真实 protocol/credential/proxy 出站。
 9. 账号批量导入的唯一身份应由哪些字段组成；该决策将影响去重、更新、审计和未来数据迁移。
 10. bulk-by-tag 修复采用逐项事务并返回完整结果，还是整批单事务；推荐逐项原子，避免大批量锁住账号表。
+11. Claude Cookie 自动登录是否按“默认关闭 + tenant 显式启用 + 管理员 step-up + Cookie 仅单次使用”建设。
+12. Setup Token 是否保持默认关闭并由 tenant/account 显式开启；推荐保持关闭，避免半截能力直接变成默认生产鉴权入口。
+13. 是否建设 Codex Agent Identity Experimental 模式；该项包含私钥、签名、任务注册/恢复和真实上游协议验证。
+14. CRS 是否只作为可插拔兼容连接器，并强制地址 allowlist、双时刻 SSRF 检查和一次性管理密码。
+15. 账号迁移包的秘密策略：推荐默认只导出结构；可恢复秘密仅进入 step-up 后生成的加密、签名、短时恢复包。
 
 ## 下一批
 
-Batch 2B 已完成 Sub2 整套账号系统与 HUAKAI 账号链的第一轮功能总账。下一修复批优先闭环不需要 schema 的 `GW-WIRE-013` bulk update+audit 原子性与逐项结果合同；涉及账号状态真相、真实账号测试和账号级批量导入身份的部分先等 Owner 选择。
+Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。下一修复批优先闭环不需要 schema 的 `GW-WIRE-013` bulk update+audit 原子性、账号运营聚合诊断和统一 `AccountIntakePlan` dry-run 合同；这些工作不启用 Cookie、Setup Token、Agent Identity、CRS 远程登录或秘密导出。
+
+`GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
 随后继续横向追踪 chat、completions、embeddings、rerank、images、audio、Responses、Gemini 和 media task，逐协议核对：
 
@@ -605,4 +730,4 @@ Batch 2B 已完成 Sub2 整套账号系统与 HUAKAI 账号链的第一轮功能
 
 ## 真实性摘要
 
-本报告的十三个问题均来自实际生产源码链。六项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定。没有断言已发生永久资金损失、凭据泄露，也没有把 Sub2 未观察到的能力写成已实现。当前十个 open question 集中在主动探测成本与租约、观测字段迁移、Grok clean-room、Antigravity canonical/迁移、账号调度真相、真实账号测试预算、批量导入身份、bulk 事务语义、账号观测是否参与 selector，以及各 provider live 凭据验收。
+本报告的十七个问题均来自实际生产源码链。七项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面。没有断言已发生永久资金损失、凭据泄露，也没有把 Sub2 未观察到的能力写成已实现。当前十五个 open question 集中在原有账号链决策，以及 Cookie、Setup Token、Agent Identity、CRS 和迁移包五项高敏感边界。
