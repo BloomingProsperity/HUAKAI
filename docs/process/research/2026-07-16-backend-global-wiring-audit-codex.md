@@ -9,9 +9,9 @@
 | 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 23 |
+| Observed findings | 25 |
 | Inferences | 8 |
-| Open questions | 17 |
+| Open questions | 18 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -764,7 +764,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 
 - 本批不改 schema、鉴权角色、费率、余额、quota、上游真实费用默认值或 selector 状态合同。
 - chat 继续使用原有细粒度反馈实现；只把稳定终态映射上提到 `gateway` 共享，既有 chat 测试全绿。
-- images、audio 仍需逐条接入同一反馈/重试合同；embeddings、rerank 已在 `GW-WIRE-023` 闭环。本批没有把前四条非 Chat 链已修外推成所有协议已完成。
+- audio 仍需逐条接入同一反馈/重试合同；embeddings、rerank 已在 `GW-WIRE-023` 闭环，images 已在 `GW-WIRE-024` 闭环。本批没有把已修协议外推成所有协议已完成。
 
 ### GW-WIRE-022：复活已中止 claim 后，chat/completions 的账号槽仍使用本地 attempt 序号
 
@@ -819,7 +819,56 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 
 - embeddings/rerank 都在写客户端响应前完成 settle；settle 失败仍可返回 500，因此本批没有引入交付后 settlement recovery DLQ，也没有改变既有“settle 结果不确定时禁止 Abort 双关账”的资金边界。
 - quota reserve、余额模式、定价、claim 状态机、selector slot 合同、鉴权角色和数据库 schema 均未修改；只修复已有身份与反馈信息没有贯穿执行链的问题。
-- images、audio、Responses、Gemini 和 media task 尚未因本项自动获得同等合同，继续作为 Batch 2D 后续源码审计对象。
+- images 已在 `GW-WIRE-024` 获得同等合同；audio、Responses、Gemini 和 media task 尚未因本项自动获得，继续作为 Batch 2D 后续源码审计对象。
+
+### GW-WIRE-024：images 只执行首个 RoutePlan attempt，反馈、换号、计价与 claim 身份没有贯通
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（路由计划失效/失败账号反复命中/最终账号与计价漂移） |
+| 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链、W-11 顺序错误、W-09 测试假覆盖 |
+| 状态 | **Fixed for images in this branch** |
+| 用户影响 | 修复前 images 在 Router 返回多个 attempt 后仍只激活第一项；HTTP 401/429/5xx 不写统一账号反馈，也不会按路由合同换号。若直接补循环，原实现还会在每次 retry 重新生成逻辑请求 ID、使用本地序号代替数据库 claim 的权威 attempt，并沿用第一候选的 pool/model 计价，可能把后续账号归因和预留金额写错。 |
+
+**源码链与修复**
+
+1. handler 现在遍历 Router 允许的 attempt，并在每次尝试重新激活 pool/model、重新计价、Reserve、选号和物化凭据；普通 retry 同时受路由允许终态、attempt budget、租户 retry budget 与全局 kill-switch 控制，401 只有一次独立 auth 子预算，见 `backend/internal/imageshttp/handler.go:228-269`。
+2. 每次 Reserve 后以 `ReserveResult.AttemptSeq` 作为 selector 与 settle 的权威序号；逻辑请求 ID 只初始化一次。失败账号进入本请求排除集，只有 Abort 成功后才允许下一次 Reserve，见 `backend/internal/imageshttp/attempt.go:22-45,224-240,267-296`、`backend/internal/imageshttp/billing.go:252-298`。
+3. HTTP 状态在空 body 判断之前分类，401/429/5xx 与 transport error 进入共享反馈器；上游 2xx success 在本地翻译、usage、计价和 settle 前写入，见 `backend/internal/imageshttp/attempt.go:93-162,176-220`。
+4. Replicate 可能已经创建付费异步任务，因此只在明确 401/429 且响应没有 prediction ID，或已有 prediction 已确认取消成功时自动换号；transport error、空响应、5xx、业务失败和取消失败均保守终止。HTTP 失败 body 的任务 ID、状态和取消结局写入 `protocol_loss`，见 `backend/internal/imageshttp/attempt.go:287-300`、`backend/internal/imageshttp/family_replicate.go:84-92`。
+5. production composition root 把共享 feedback observer 与租户 retry budget 注入 images，见 `backend/cmd/gateway/routes.go:865-887`。
+
+**判别验证**
+
+- 状态机测试证明：首账号 500 后成功 Abort，同一逻辑请求重新 Reserve；第二次按新 pool 倍率重新计价、排除账号 44、使用账号 45 和 attempt 2 只结算一次；success 反馈早于 settle，见 `backend/internal/imageshttp/retry_failover_test.go:25-82`。
+- 空 body 的 400 不重试；Abort 失败不重试；401 只有一次 auth failover；租户 retry budget 可阻断第二次选号；跨请求 `aborted/attempt=4` 使用 attempt 5 选号和结算，见 `backend/internal/imageshttp/retry_failover_test.go:84-197,287-311`。
+- Replicate 5xx 不创建第二个任务，并对已返回的 prediction 发起取消、写入对账证据；429 无任务 ID 时可直接换号，带任务 ID 时取消失败必须终止、取消成功才允许换号，见 `backend/internal/imageshttp/retry_failover_test.go:226-347`。
+- composition-root 测试证明 images 与 completions、embeddings、rerank 共享同一个反馈器和租户预算，见 `backend/cmd/gateway/routes_completions_wiring_test.go:11-39`。
+
+**辐射检查**
+
+- 图片成功后的 settlement recovery、quota、余额模式、费率表、claim 状态机、selector slot 合同、鉴权角色和数据库 schema 均未修改。
+- 本项没有把图片重试规则机械外推到 audio/media；有真实副作用的协议必须单独定义“可以证明尚未创建任务”的换号边界。
+
+### GW-WIRE-025：图片裸换行保活会提前提交 HTTP 200，失败后无法再返回真实状态
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（客户端状态误报/错误重试可能重复生成） |
+| 分类 | W-11 顺序错误、W-12 运维合同缺口 |
+| 状态 | **Confirmed；本分支先阻止保活后自动换号，保活机制等待 Owner 决策** |
+| 用户影响 | `HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL` 启用后，保活器会向 `ResponseWriter` 写裸换行并 Flush。Go 会在首次写入时提交默认 HTTP 200；若上游随后返回 401、429、5xx 或 transport error，handler 虽能追加错误 JSON，却无法把已经提交的 200 改回真实失败状态。客户端可能把失败当成功，或解析失败后自行重试并产生重复图片费用。 |
+
+**已完成的安全收口**
+
+- `httpkeepalive.Keepalive` 记录是否真正成功写出字节；未启用或写入失败不会误报，见 `backend/internal/httpkeepalive/keepalive.go:10-100`。
+- images attempt 把 dispatch/read 两阶段的保活写入状态带进 retry gate；一旦已有字节交付，禁止自动换号，避免同一 HTTP 请求内部再次创建图片，见 `backend/internal/imageshttp/attempt.go:91-146,267-269`。
+- 默认配置仍为 `0=关闭`，本分支没有擅自更换代理兼容性未知的心跳协议，见 `backend/cmd/gateway/routes.go:883-886`。
+
+**尚未解决**
+
+- 保活已写后的最终 HTTP 状态仍可能是 200；当前修复只消除了“保活后继续自动换号”的重复副作用风险，没有伪称状态语义已经修复。
+- 需要在“继续使用 body 换行”“实验性 1xx informational heartbeat”“移除应用层 body 保活并改异步任务/代理超时”之间选择，见 Owner 决策点 18。
 
 ## 成熟项目颗粒度基线
 
@@ -865,9 +914,11 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/completionshttp/retry_failover_test.go` | 以真实 claim 状态机判别 500 换号、复活同一 claim、跨请求 attempt 传播、400 终止、Abort 失败停止、countTokens 零钱账和成功健康顺序 |
 | `backend/internal/embeddingshttp/{handler.go,attempt.go,billing.go,retry_failover_test.go}` | 接入分类驱动换号、失败账号排除、Abort 成功门、稳定逻辑请求 ID、权威 attempt 与成功健康顺序 |
 | `backend/internal/rerankhttp/{handler.go,attempt.go,billing.go,retry_failover_test.go}` | 对称接入统一反馈、安全 retry、最终账号归因与 claim 状态机判别测试 |
+| `backend/internal/imageshttp/{handler.go,attempt.go,billing.go,family_replicate.go,retry_failover_test.go}` | 接入 RoutePlan 多 attempt、统一反馈、失败账号排除、逐 attempt 计价、权威 claim 身份与副作用安全门；Replicate 失败保留取消/对账证据 |
+| `backend/internal/httpkeepalive/{keepalive.go,keepalive_test.go}` | 暴露真实写入状态，让图片 retry gate 在响应已提交后 fail-closed |
 | `backend/internal/gateway/attempt_error.go`、`backend/internal/gatewayhttp/{chat_completions_attempt.go,chat_completions_dispatch.go,settlement_intent_test.go}` | 把稳定终态映射上提为跨协议共享合同，并让 chat 选号使用 Reserve 返回的权威 attempt |
-| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank 与租户 retry budget |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十三个确认发现 |
+| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank、images 与租户 retry budget |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十五个确认发现 |
 | 三身份与单层租户规划 | 固定部署者、用户、租户三种身份，禁止多级租户，并记录能力、账号和经营额度的分配边界 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
@@ -891,6 +942,9 @@ go test ./internal/completionshttp ./internal/geminihttp -count=1
 go test ./internal/audiohttp ./internal/settlementrecovery ./cmd/gateway -run 'TestAudioSpeech_Settle(ErrorAfterDeliveryKeeps200AndEnqueuesRecovery|AndRecoveryDoubleFailureEmitsP0WithoutSecret)|TestValidate_AcceptsAudioDeliveredSource|TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps' -count=1
 go test ./internal/upstreamfeedback ./internal/gateway ./internal/gatewayhttp ./internal/completionshttp ./cmd/gateway -count=1
 go test ./internal/upstreamfeedback ./internal/embeddingshttp ./internal/rerankhttp ./cmd/gateway -count=1
+go test ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway -count=1
+go test -race ./internal/httpkeepalive ./internal/imageshttp -count=1
+go vet ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway
 go test ./internal/codebudget -count=1
 ```
 
@@ -917,6 +971,8 @@ GW-WIRE-019/020 提交前 review 也已完成。当前 CLI 的 `codex exec revie
 
 GW-WIRE-023 提交前两轮 review 已完成。第一轮发现一个 S1：rerank 在判断 HTTP 状态前先把空 body 归类为可重试空响应，导致空 body 的 400/401/403 绕过真实状态分类、账号反馈和 auth 子预算。本分支已改为先处理非 2xx，再只对 2xx 空 body 使用 `upstream_empty_response`，并把 400、401 测试改成空 body 判别该顺序。第二轮复核未发现离散功能缺陷，无未解决 S0/S1；修复后全仓测试、相关包 race、`go vet`、代码体量门和 staged diff 检查全部通过。
 
+GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writer` 可以在已写出 1 字节时同时返回错误，保活器原先会误报“尚未交付”，从而允许图片继续换号；现已按真实 `n > 0` 记录交付并增加该合法返回组合的判别测试。第二轮发现一个 S1：Replicate 的 401/429 若已带 prediction ID，取消失败后仍换号会产生重复任务费用；现已要求“无任务 ID”或“取消明确成功”才允许继续。第三轮复核未发现需要阻止提交的功能缺陷，无未解决 S0/S1。
+
 ## Owner 决策点
 
 1. 是否批准建设真正主动探测 Safe Equivalent：默认关闭、成本预算、账号级开关、数据库租约、多副本去重、真实 health write。
@@ -936,6 +992,7 @@ GW-WIRE-023 提交前两轮 review 已完成。第一轮发现一个 S1：rerank
 15. 账号迁移包的秘密策略：推荐默认只导出结构；可恢复秘密仅进入 step-up 后生成的加密、签名、短时恢复包。
 16. 是否批准把部署者从当前 `platform_admin=可代操作任意租户` 语义中拆出，成为只做平台治理和租户能力授权的独立主体。
 17. 租户经营额度采用预充值额度还是平台授信；该选择决定回收、退款、超额、坏账和并发结算边界，不能沿用邀请返利代替。
+18. 图片长请求保活采用哪种合同：继续保留裸换行但接受最终错误可能仍是 HTTP 200；实验性改用 1xx informational heartbeat 并做 Cloudflare/nginx/客户端兼容矩阵；或移除应用层 body 保活，改为异步媒体任务/代理超时治理。
 
 ## 下一批
 
@@ -943,7 +1000,7 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
-Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入。随后继续横向追踪 images、audio、Responses、Gemini 和 media task，逐协议核对：
+Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门与逐 attempt 计价。随后继续横向追踪 audio、Responses、Gemini 和 media task，逐协议核对：
 
 `身份 → 规范模型 → 选号 → gate → 凭据 → 出站 → retry/fallback → health → claim/billing → audit → DLQ/recovery`
 
@@ -951,4 +1008,4 @@ Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank 的�
 
 ## 真实性摘要
 
-本报告的二十三个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十七个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界，以及尚未完成的 images、audio、Responses、Gemini 和 media task 等协议健康、retry 与 recovery 对齐。
+本报告的二十五个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十八个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及尚未完成的 audio、Responses、Gemini 和 media task 等协议健康、retry 与 recovery 对齐。

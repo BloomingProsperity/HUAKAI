@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -41,6 +42,10 @@ type pricingRatioResolver interface {
 
 type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }
 
 // cancelHTTPDoer 发送 best-effort 上游任务取消请求(family_replicate)。控制面
@@ -66,6 +71,8 @@ type Deps struct {
 	BillingPolicyVersion  string
 	RequestClass          string
 	ClientIPResolver      *clientip.Resolver
+	Feedback              *upstreamfeedback.Observer
+	RetryBudget           retryBudgetGate
 	// ReplicateCancelClient 可注入(测试/定制);nil 用包内默认 client(10s 超时)。
 	ReplicateCancelClient cancelHTTPDoer
 	// NonStreamKeepAliveInterval:图片生成(强制 buffered,可达数十秒)期间每隔此时长向客户端写
@@ -95,6 +102,7 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
+	excludedAccounts map[int64]struct{}
 
 	catalog       *imagepricing.Catalog
 	scheme        imagepricing.Scheme
@@ -173,7 +181,7 @@ func newHandler(d Deps, endpoint imageEndpoint) http.HandlerFunc {
 			amount:      req.Amount(),
 			quality:     req.NormalizedQuality(),
 		}
-		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) || !ex.preparePricing(w) {
+		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) {
 			return
 		}
 		ex.run(w)
@@ -214,15 +222,52 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.plan = plan
-	ex.activateAttempt(plan.Attempts[0])
 	return true
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	if !ex.reserve(w) || !ex.selectAccount(w, 1) || !ex.resolveCredential(w) {
-		return
+	budget := effectiveAttemptBudget(ex.plan)
+	authFailoverUsed := false
+	attemptCap := budget
+	for i := 0; i < attemptCap; i++ {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		ex.activateAttempt(ex.plan.Attempts[planIdx])
+		if !ex.preparePricing(w) || !ex.reserve(w) {
+			return
+		}
+		attemptSeq := authoritativeAttemptSeq(ex.reserveRes, i+1)
+		if !ex.selectAccount(w, attemptSeq) || !ex.resolveCredential(w) {
+			return
+		}
+		outcome := ex.dispatchAndSettle(w, attemptSeq)
+		if outcome.Done || outcome.Failure == nil {
+			return
+		}
+		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
+			ex.excludeAccount(ex.accInfo.AccountID)
+		}
+		retry, consumeAuthBudget := shouldRetryFailure(
+			ex.plan,
+			outcome.Failure,
+			i+1 >= attemptCap,
+			authFailoverUsed,
+		)
+		if !retry || !ex.retrySafeForFamily(outcome.Failure) ||
+			(ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+			writeAttemptFailure(w, outcome.Failure)
+			return
+		}
+		if consumeAuthBudget {
+			authFailoverUsed = true
+			if i+1 >= attemptCap {
+				attemptCap++
+			}
+		}
+		ex.prepareNextAttempt()
 	}
-	_ = ex.dispatchAndSettle(w, 1)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {

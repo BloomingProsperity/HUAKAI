@@ -880,6 +880,8 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 		ClientIPResolver:      d.clientIPResolver,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
 		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}

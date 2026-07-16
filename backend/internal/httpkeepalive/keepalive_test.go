@@ -13,6 +13,7 @@ type fakeWriter struct {
 	data     []byte
 	flushes  int
 	attempts int
+	writeN   int
 	writeErr error
 }
 
@@ -27,7 +28,15 @@ func (w *fakeWriter) Write(p []byte) (int, error) {
 
 	w.attempts++
 	if w.writeErr != nil {
-		return 0, w.writeErr
+		n := w.writeN
+		if n < 0 {
+			n = 0
+		}
+		if n > len(p) {
+			n = len(p)
+		}
+		w.data = append(w.data, p[:n]...)
+		return n, w.writeErr
 	}
 
 	w.data = append(w.data, p...)
@@ -88,6 +97,9 @@ func TestStartWithNonPositiveIntervalIsLazy(t *testing.T) {
 			if flushes != 0 {
 				t.Fatalf("惰性保活发生了 %d 次刷新", flushes)
 			}
+			if k.Wrote() {
+				t.Fatal("惰性保活不得报告已写入")
+			}
 		})
 	}
 }
@@ -118,6 +130,9 @@ func TestKeepaliveWritesNewlinesAndFlushes(t *testing.T) {
 	}
 	if attempts != len(data) {
 		t.Fatalf("成功写入 %d 个字节，但写入尝试次数为 %d", len(data), attempts)
+	}
+	if !k.Wrote() {
+		t.Fatal("成功保活后必须报告已写入")
 	}
 }
 
@@ -245,5 +260,31 @@ func TestWriteErrorStopsKeepalive(t *testing.T) {
 	}
 	if flushes != 0 {
 		t.Fatalf("失败写入后发生了 %d 次刷新", flushes)
+	}
+	if k.Wrote() {
+		t.Fatal("失败写入不得报告已向客户端写入")
+	}
+}
+
+func TestWriteErrorAfterDeliveredByteReportsDelivery(t *testing.T) {
+	w := &fakeWriter{writeN: 1, writeErr: fakeWriteError{}}
+	k := Start(w, 10*time.Millisecond)
+	defer k.Stop()
+
+	select {
+	case <-k.doneCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("部分成功写入后后台任务没有退出")
+	}
+
+	data, flushes, attempts := w.snapshot()
+	if attempts != 1 || len(data) != 1 {
+		t.Fatalf("写入尝试/已交付字节=%d/%d want 1/1", attempts, len(data))
+	}
+	if flushes != 0 {
+		t.Fatalf("带错误的写入不应主动刷新，实际刷新 %d 次", flushes)
+	}
+	if !k.Wrote() {
+		t.Fatal("已交付字节即使伴随错误，也必须报告已向客户端写入")
 	}
 }

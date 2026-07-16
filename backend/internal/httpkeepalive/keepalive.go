@@ -11,6 +11,7 @@ import (
 type Keepalive struct {
 	mu       sync.Mutex
 	w        io.Writer
+	written  int64
 	stopped  bool
 	stopCh   chan struct{}
 	doneCh   chan struct{}
@@ -64,6 +65,9 @@ func (k *Keepalive) writeKeepalive() bool {
 	}
 
 	n, err := k.w.Write([]byte{'\n'})
+	if n > 0 {
+		k.written += int64(n)
+	}
 	if err != nil || n != 1 {
 		k.stopped = true
 		return false
@@ -86,4 +90,14 @@ func (k *Keepalive) Stop() {
 	})
 
 	<-k.doneCh
+}
+
+// Wrote 报告本次保活是否已经向客户端写过字节。
+func (k *Keepalive) Wrote() bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.written > 0
 }

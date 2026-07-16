@@ -112,10 +112,12 @@
 6. 无计费 claim 的 countTokens 复用同一错误反馈与账号排除逻辑，但不得重新引入并发槽占用或伪造计费动作。
 7. 判别测试至少证明：500/429/401 的状态反馈不同；失败账号被排除；HTTP 500 能换号成功；400 不重试；Abort 失败不重试；成功会清 auth 车道；生产 composition root 注入同一共享反馈器。
 8. 同一逻辑请求复活已中止 claim 时，选号、槽租约、路由观测和结算必须使用 `ClaimGate.Reserve` 返回的权威 `AttemptSeq`，不能使用当前 HTTP 请求内从 1 重新计数的本地循环号。
+9. 图片生成必须额外服从副作用安全门：裸换行保活一旦已写入客户端，当前 attempt 视为已开始传输，禁止再换号；可能已经创建付费异步任务的协议只在明确 401/429 且响应没有任务 ID，或已有任务已确认取消成功时自动换号。传输错误、空响应、5xx、业务终态失败和取消失败均保守终止并保留对账证据，避免重复生成和重复上游费用。
+10. 图片与音频的计价必须随当前 RoutePlan attempt 重新计算，不能让第一候选的上游模型或 pool 倍率污染后续候选的 reserve/settle；上游成功信号必须先于本地翻译、usage 解析、计价或结算失败写入。
 
 该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
 
-进度：completions、messages countTokens、embeddings、rerank 已完成该合同接线和判别测试；下一步继续核 images、audio、Responses、Gemini 与 media task，不能把前四条链的完成状态外推到剩余协议。
+进度：completions、messages countTokens、embeddings、rerank、images 已完成该合同接线和判别测试；下一步继续核 audio、Responses、Gemini 与 media task，不能把前五条链的完成状态外推到剩余协议。
 
 #### Batch 2B：以 Sub2 账号系统为主轴的完整功能总账
 
