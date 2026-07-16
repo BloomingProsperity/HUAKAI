@@ -6,12 +6,12 @@
 | --- | --- |
 | 审计分支 | `audit/backend-global-wiring-20260716-codex` |
 | 基线提交 | `438536e6` |
-| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
+| 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、媒体异步任务、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 27 |
+| Observed findings | 31 |
 | Inferences | 8 |
-| Open questions | 16 |
+| Open questions | 20 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -924,6 +924,85 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 - `/v1/responses` 与 Codex Responses alias 直接复用完整 chat 主链，只改变 endpoint family，不是独立旁路，见 `backend/internal/gatewayhttp/chat_completions_handler.go:854-862`。
 - Gemini `generateContent/streamGenerateContent` 进入 NativeClientGateway，`embedContent/batchEmbedContents` 翻译后复用已闭环的 embeddings handler；本轮没有重复实现第二套 retry/billing，见 `backend/internal/geminihttp/generate_content.go:90-113`、`backend/internal/geminihttp/embed_content.go:100-123`。
 
+### GW-WIRE-028：媒体任务总开关同时切断提交、查询和后台收口，停服会隐藏并冻结既有任务
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（既有任务不可见/预扣久挂/关闭开关改变资金收口） |
+| 分类 | W-04 激活语义错误、W-10 运维信息断链、W-11 顺序错误 |
+| 状态 | **Status/List 与 worker 错误观测已修；worker drain 语义等待 Owner 决策** |
+| 用户影响 | 修复前 `mediatask_enabled=false` 不仅拒绝新任务，还让用户无法查询历史和进行中任务，并让 worker 在取得租约前直接退出。已经预扣的任务会停在队列中，直到开关恢复或外围 claim 清扫先行终结，用户看不到状态，运维也无法从原 worker 循环错误中判断停滞原因。 |
+
+**源码链与安全收口**
+
+1. `Submit` 继续使用启用配置门，关闭时不会建任务、预扣或访问上游；`Status`、`List` 改为只校验 store，允许关闭新提交后继续查看既有任务，见 `backend/internal/mediatask/service.go:33-81`。
+2. worker 当前仍会在总开关关闭时停止取任务，见 `backend/internal/mediatask/worker.go:113-133`。是否把该开关重新定义为“只关闭新提交，既有任务继续 drain”，会影响真实上游调用和资金收口，留在 Owner 决策点 19。
+3. worker 主循环不再吞掉非取消错误；日志只写固定 `error_class`，不写可能携带秘密的原始错误。正常关停取消不告警，见 `backend/internal/mediatask/worker.go:162-194`。
+4. 判别测试证明开关关闭后 `Submit` 仍被拒绝且不碰 store，`Status/List` 仍按 tenant/user 读取；无法确认来源的 timeout 会留下 `operation_timeout`，内部取消会告警，只有 worker context 已取消的正常关停才静默，见 `backend/internal/mediatask/service_test.go:45-82`、`backend/internal/mediatask/worker_recover_test.go:43-86`。
+
+**成熟链证据**
+
+- Sub2 的媒体生成权限门可以禁止新生成，但状态查询仍进入独立查询链；这支持“关入口不关查询”的运维合同。`sub2api@09c6c6d74050:backend/internal/service/grok_media.go:37`、`backend/internal/handler/grok_media.go:111`
+- New API 的后台更新开关会停止自动轮询，但提交和本地查询入口不由同一开关直接关闭，说明 intake、poll 和 query 是不同控制面；它也暴露了“停轮询会冻结既有任务”的同类风险。`new-api@246d62aa5ed3:common/init.go:150`、`controller/system_task_handlers.go:114`、`controller/relay.go:471`
+
+### GW-WIRE-029：媒体 Submit 把所有错误都当成明确失败退款，无法表达“上游可能已创建”
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（重复上游费用/错误退款/孤儿任务） |
+| 分类 | W-05 协议漂移、W-10 信息断链、W-11 不可逆副作用顺序错误 |
+| 状态 | **Confirmed；等待 Owner 选择不确定提交合同** |
+| 用户影响 | worker 已生成稳定幂等键，但网络超时、连接断开、5xx、4xx、响应解析失败全部被压成同一 `provider_submit_failed` 终态并释放预扣。若上游已创建任务但响应丢失，客户已退款，平台仍可能承担上游费用；若随后人工或客户端重提，不支持幂等的上游还可能重复创建。 |
+
+**源码证据**
+
+1. worker 在调用 `Submit` 后只区分“拿到任务 ID”或“任意 error”，任意 error 都立即 `CompleteFailure`，见 `backend/internal/mediatask/worker.go:209-231`。
+2. HTTP provider 会发送由本地任务身份派生的稳定 `Idempotency-Key`，但它把网络错误、非 2xx、响应解析错误和空任务 ID 都返回为普通 error，没有返回“明确拒绝/结果未知/已接受”的结构化结果，见 `backend/internal/mediatask/provider.go:27-67`。
+3. `CompleteFailure` 在同一终态事务中 abort claim、释放 hold 并标记任务 failed；已有上游任务 ID 时才会留下孤儿记录，响应丢失场景没有 ID 可对账，见 `backend/internal/mediatask/store_money.go:93-99,146-206`。
+
+**成熟链证据**
+
+- New API 会在部分状态码上切换渠道并在最终失败时退款，但没有观察到响应丢失后的“结果未知”状态或稳定上游幂等合同，因此成熟项目本身也存在重复创建边界。`new-api@246d62aa5ed3:relay/relay_task.go:219`、`controller/relay.go:502`、`:616`
+- Sub2 的视频提交进入统一账号重试与错误反馈，但没有观察到本地“提交结果未知”账务状态。`sub2api@09c6c6d74050:backend/internal/handler/grok_media.go:177`、`backend/internal/service/grok_media.go:339`
+- CLIProxyAPI 会把客户端幂等键转发给视频上游，但未观察到本地资金和任务状态机；它能借鉴的是上游幂等传递，不是完整结算合同。`CLIProxyAPI@26d45fd46a2d:sdk/api/handlers/handlers.go:258`、`sdk/api/handlers/openai/openai_videos_handlers.go:679`
+
+### GW-WIRE-030：媒体超时读取运行时配置并直接退款，没有取消或不确定态
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（运行中配置漂移/上游继续计费/本地已退款） |
+| 分类 | W-04 配置快照缺失、W-10 恢复信息断链、W-11 资金顺序错误 |
+| 状态 | **Confirmed；schema、provider 能力和退款策略等待 Owner 决策** |
+| 用户影响 | 任务只保存创建时间，不保存创建时采用的 deadline。调短全局 timeout 会让旧任务提前过期，调长又可能超出创建时 claim 租约。过期时直接释放预扣，但 provider 接口没有取消能力，上游任务可能继续成功并计费。 |
+
+**源码证据**
+
+1. worker 每轮使用当前配置的 `TaskTimeout` 与 `CreatedAt` 比较；`Task` 没有 deadline/timeout 快照字段，见 `backend/internal/mediatask/worker.go:196-200`、`backend/internal/mediatask/types.go:86-107`。
+2. 创建 claim 时租约窗口按当时的 `TaskTimeout` 计算，但后续 worker 可读到另一份 timeout，两个生命周期可能漂移，见 `backend/internal/mediatask/service.go:55-63`、`backend/internal/mediatask/store_money.go:113-122`。
+3. `ExpireTask` 直接进入 abort/release；`AsyncMediaProvider` 只有 `Submit/Poll`，没有 `Cancel` 或取消确认结果，见 `backend/internal/mediatask/store_money.go:97-99,146-206`、`backend/internal/mediatask/types.go:139-142`。
+4. 三个参考项目均未观察到“本地超时先取消上游、取消不确定转对账”的完整闭环；New API 同样使用当前全局时限并在超时路径退款。因此本项应做 HUAKAI 的 Safe Equivalent，而不是照搬其缺口。
+
+### GW-WIRE-031：媒体任务绕开统一账号池、健康、路由与额度归因，多个 provider 名只是同一通用 URL 别名
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（账号调度与健康失真/无法归因上游账号/强配额旁路） |
+| 分类 | W-02 半接线、W-05 协议漂移、W-10 身份与状态断链 |
+| 状态 | **Confirmed；需要独立纵向改造 PR** |
+| 用户影响 | Midjourney、Suno、Kling、Vidu 等名称都会解析成同一个全局 `ProviderBaseURL`，通过统一 `/tasks`、`/tasks/{id}` 协议出站。链路不选择 provider account，不读取账号健康/模型冷却，不占账号并发，不记录最终账号，也没有把任务请求接入 gateway 的路由计划与账号额度。当前能计客户余额，但不能回答“真正用了哪个上游账号、该账号是否健康、为何选择它”。 |
+
+**源码证据**
+
+1. provider registry 只验证名称是否在静态别名集合，然后为全部名称构造同一个 `ProviderBaseURL` 客户端，见 `backend/internal/mediatask/provider.go:132-162`。
+2. production 只构造该 registry、service、worker 和 store，没有注入 route planner、selector、credential resolver 或 upstream feedback observer，见 `backend/cmd/gateway/wiring.go:1382-1401`。
+3. 任务与账务保存 tenant/user/provider/request/claim，但 `Task` 没有 provider account、route attempt、credential version 或健康反馈身份，见 `backend/internal/mediatask/types.go:86-107`、`backend/internal/mediatask/store_money.go:113-143`。
+4. session 入口在建 claim 时从用户的 active API key 中取第一条作为账务外键，不是调用方明确选择的 key，也没有复用该 key 的模型/RPM/并发合同，见 `backend/internal/mediatask/store_money.go:220-233`。
+
+**成熟链证据**
+
+- New API 的异步任务提交进入统一渠道分发并保存渠道身份，后台按原渠道批量轮询，终态通过条件更新后结算或退款；其可借鉴点是“任务绑定原渠道并走统一选择”，不是复制实现。`new-api@246d62aa5ed3:controller/relay.go:574`、`service/task_polling.go:90`、`service/task_billing.go:39`
+- Sub2 的视频请求和状态查询复用账号选择、账号错误反馈和任务到账号粘性，但没有本地异步账务 worker；它证明媒体不应绕开账号运行态。`sub2api@09c6c6d74050:backend/internal/handler/grok_media.go:147`、`:177`、`backend/internal/service/grok_media.go:547`
+
 ## 成熟项目颗粒度基线
 
 隔离 clean-room specifier 对 Sub2、New API、CLIProxyAPI 当前默认分支源码拆出 46 个微功能节点。本轮以后不再用“大功能存在”作完成结论，重点核以下六类协作：
@@ -963,6 +1042,8 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/audiohttp/{handler.go,attempt.go,billing.go}` | speech 交付后结算失败进入统一恢复链；全部 audio 入口接入多 attempt、统一反馈、账号排除、逐 attempt 计价和权威 claim attempt |
 | `backend/internal/audiohttp/{handler_test.go,retry_failover_test.go}` | 判别完整交付恢复、500 换号、400 终止、Abort 成功门、401 子预算、租户预算、计价与 attempt 身份 |
 | `backend/internal/geminihttp/{generate_content.go,count_tokens_retry.go,count_tokens_retry_test.go}` | Gemini countTokens 保持零 claim，同时接入统一反馈、安全换号、失败账号排除、WaitPlan 拒绝和生产共享依赖 |
+| `backend/internal/mediatask/{service.go,service_test.go}` | 关闭新提交时仍允许用户按 tenant/user 查询既有任务，不再把运营停服误当成历史任务消失 |
+| `backend/internal/mediatask/{worker.go,worker_recover_test.go}` | worker 非取消错误输出脱敏分类日志，关停取消不误告警；资金与重试语义保持不变 |
 | `backend/internal/settlementrecovery/{payload.go,payload_test.go}` | 新增并严格校验 `audio_delivered` 恢复来源 |
 | `backend/cmd/gateway/{routes.go,wiring_test.go}` | 生产注入并判别音频复用统一 settlement recovery queue |
 | `backend/internal/upstreamfeedback/{observer.go,observer_test.go}` | 新增 provider-neutral 上游错误/成功反馈合同及 429、401、Bedrock 专用分类、传输错误、成功自愈判别测试 |
@@ -974,7 +1055,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/httpkeepalive/{keepalive.go,keepalive_test.go}` | 暴露真实写入状态，让图片 retry gate 在响应已提交后 fail-closed |
 | `backend/internal/gateway/attempt_error.go`、`backend/internal/gatewayhttp/{chat_completions_attempt.go,chat_completions_dispatch.go,settlement_intent_test.go}` | 把稳定终态映射上提为跨协议共享合同，并让 chat 选号使用 Reserve 返回的权威 attempt |
 | `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank、images、audio、Gemini countTokens 与租户 retry budget |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十七个确认发现 |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和三十一个确认发现 |
 | 三身份与单层租户规划 | 固定部署者、用户、租户三种身份，禁止多级租户，并记录能力、账号和经营额度的分配边界 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
@@ -1002,6 +1083,9 @@ go test ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway -count=1
 go test -race ./internal/httpkeepalive ./internal/imageshttp -count=1
 go vet ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway
 go test ./internal/audiohttp ./internal/geminihttp ./internal/gatewayhttp ./internal/embeddingshttp ./cmd/gateway -count=1
+go test ./internal/mediatask ./internal/mediataskhttp ./internal/mjclient ./internal/sunoclient ./internal/videoclient -count=1
+go test -race ./internal/mediatask ./internal/mediataskhttp -count=1
+go vet ./internal/mediatask ./internal/mediataskhttp ./internal/mjclient ./internal/sunoclient ./internal/videoclient
 go test ./internal/codebudget -count=1
 ```
 
@@ -1050,6 +1134,10 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 16. 是否批准把部署者从当前 `platform_admin=可代操作任意租户` 语义中拆出，成为只做平台治理和租户能力授权的独立主体。
 17. 租户经营额度采用预充值额度还是平台授信；该选择决定回收、退款、超额、坏账和并发结算边界，不能沿用邀请返利代替。
 18. 图片长请求保活采用哪种合同：继续保留裸换行但接受最终错误可能仍是 HTTP 200；实验性改用 1xx informational heartbeat 并做 Cloudflare/nginx/客户端兼容矩阵；或移除应用层 body 保活，改为异步媒体任务/代理超时治理。
+19. 是否把 `mediatask_enabled` 定义为“只禁止新提交”，既有任务继续 worker drain、用户查询和财务收口；推荐该方案。另设高风险 emergency pause 才允许停止主动轮询。
+20. Submit 网络超时、断连和响应丢失采用哪种合同：推荐按 provider 能力区分；支持稳定幂等和反查的 adapter 可有界重试，明确 4xx 可失败退款，不支持幂等/反查的歧义错误进入 `submission_unknown` 并冻结预扣、禁止盲目换号。
+21. 是否批准新增创建时 deadline/计价/账号快照与 provider 可选 Cancel 能力：推荐先取消并区分“确认取消/已完成/无法确认”，只有确认未执行或明确失败才退款；无法确认转对账。该项涉及 schema、资金和 provider 合同。
+22. 是否批准把异步媒体任务纳入统一 route planner、账号 selector、credential、健康、quota 和最终账号归因；推荐保留通用 HTTP relay 作为一个 adapter，不再让多个 provider 名共享一条无账号身份的假专用链。
 
 ## 下一批
 
@@ -1057,7 +1145,7 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
-Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images、audio 和 Gemini countTokens 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门，图片与音频均按当前 attempt 重新计价。Responses、Gemini generate/embed 已由源码反证为复用统一主链，不重复建设第二套数据面。随后继续横向追踪 media task，并等待 Owner 决定图片保活最终合同，逐协议核对：
+Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images、audio 和 Gemini countTokens 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门，图片与音频均按当前 attempt 重新计价。Responses、Gemini generate/embed 已由源码反证为复用统一主链，不重复建设第二套数据面。Media task 已完成低风险可查性和 worker 观测修复，并确认开关、提交歧义、超时取消/快照、统一账号路由四个结构性问题；其余实施等待 Owner 对第 19-22 项定性。继续按以下链路核对并等待图片保活最终合同：
 
 `身份 → 规范模型 → 选号 → gate → 凭据 → 出站 → retry/fallback → health → claim/billing → audit → DLQ/recovery`
 
@@ -1065,4 +1153,4 @@ Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、im
 
 ## 真实性摘要
 
-本报告的二十七个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十六个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及尚未完成的 media task 健康、重试、资金和恢复对齐。
+本报告的三十一个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前二十个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及 media task 开关、提交歧义、超时取消/快照和统一账号路由。
