@@ -117,7 +117,7 @@
 
 该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
 
-进度：completions、messages countTokens、embeddings、rerank、images 已完成该合同接线和判别测试；下一步继续核 audio、Responses、Gemini 与 media task，不能把前五条链的完成状态外推到剩余协议。
+进度：completions、messages countTokens、embeddings、rerank、images、audio 与 Gemini countTokens 已完成该合同接线和判别测试；Responses、Gemini generate/embed 已由源码确认复用 chat/embeddings 主链。下一步继续核 media task，图片保活最终状态合同等待 Owner 决策。
 
 #### Batch 2B：以 Sub2 账号系统为主轴的完整功能总账
 

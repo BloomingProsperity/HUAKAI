@@ -145,7 +145,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
 	}))
-	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(chatHandlerDeps(d), modelListHandler, embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d))))
+	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(
+		chatHandlerDeps(d),
+		modelListHandler,
+		embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)),
+		d.upstreamFeedback,
+		d.retryBudget,
+	))
 	r.Get("/v1beta/models", geminiV1BetaHandler.ServeHTTP)
 	r.Post("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
@@ -904,6 +910,8 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 

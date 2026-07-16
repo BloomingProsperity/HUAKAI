@@ -26,6 +26,7 @@ func TestNonChatHandlerDepsInjectSharedFeedbackAndRetryBudget(t *testing.T) {
 		{name: "embeddings", feedback: embeddingsHandlerDeps(d).Feedback, budget: embeddingsHandlerDeps(d).RetryBudget},
 		{name: "rerank", feedback: rerankHandlerDeps(d).Feedback, budget: rerankHandlerDeps(d).RetryBudget},
 		{name: "images", feedback: imageHandlerDeps(d).Feedback, budget: imageHandlerDeps(d).RetryBudget},
+		{name: "audio", feedback: audioHandlerDeps(d).Feedback, budget: audioHandlerDeps(d).RetryBudget},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

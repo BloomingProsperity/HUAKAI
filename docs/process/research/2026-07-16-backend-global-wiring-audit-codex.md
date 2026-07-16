@@ -9,9 +9,9 @@
 | 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 25 |
+| Observed findings | 27 |
 | Inferences | 8 |
-| Open questions | 18 |
+| Open questions | 16 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
 
 ## 本批结论
@@ -870,6 +870,60 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 - 保活已写后的最终 HTTP 状态仍可能是 200；当前修复只消除了“保活后继续自动换号”的重复副作用风险，没有伪称状态语义已经修复。
 - 需要在“继续使用 body 换行”“实验性 1xx informational heartbeat”“移除应用层 body 保活并改异步任务/代理超时”之间选择，见 Owner 决策点 18。
 
+### GW-WIRE-026：audio 只执行首个路由候选，失败反馈、换号、计价和 claim attempt 没有贯通
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（路由计划失效/失败账号重复命中/跨请求 claim 身份漂移） |
+| 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链、W-11 顺序错误、W-09 测试假覆盖 |
+| 状态 | **Fixed for speech/transcriptions/translations in this branch** |
+| 用户影响 | 修复前 audio 在 Router 返回多个 attempt 后仍只激活 `Attempts[0]`；HTTP 401/429/5xx 不写统一账号健康、逐模型冷却或鉴权刷新，也不会换号。若简单补循环，旧实现还会在每次 Reserve 重新生成逻辑请求 ID、沿用本地 `1` 作为 selector/settle attempt，并让第一 pool 的计价污染后续候选。 |
+
+**源码链与修复**
+
+1. handler 现在遍历路由允许的 attempt，并在每次尝试重新激活 pool/model、重新计价、Reserve、选号和凭据解析；普通 retry 受路由允许终态、attempt budget、租户 retry budget 和全局 kill-switch 约束，明确 401 只有一次独立鉴权换号预算，见 `backend/internal/audiohttp/handler.go:221-266`。
+2. 每次 Reserve 后以 `ReserveResult.AttemptSeq` 作为 selector 与 settle 的权威序号；逻辑请求 ID 只生成一次。失败账号进入 `ExcludedAccounts`，Abort 失败立即停止，见 `backend/internal/audiohttp/attempt.go:25-49,258-338`、`backend/internal/audiohttp/billing.go:203-239`。
+3. dispatch/HTTP 失败进入共享反馈器；非 2xx 先按真实状态分类，再处理空 body。上游成功在本地 usage、计价和结算前写 success；speech 必须先读到真实首字节，之后才记录成功并进入客户端交付，见 `backend/internal/audiohttp/attempt.go:78-162,199-255`。
+4. 每个 attempt 按当前 pool/model 重新执行 `preparePricing`；切换候选时清除旧账号、旧凭据和旧计价快照，最终 settle 使用真正成功账号和权威 attempt，见 `backend/internal/audiohttp/handler.go:225-242`、`backend/internal/audiohttp/attempt.go:268-277`。
+5. production composition root 注入与其它非 chat 协议相同的共享 feedback observer 和租户 retry budget，见 `backend/cmd/gateway/routes.go:896-915`。
+
+**判别验证**
+
+- 首账号 500 后写 `upstream_5xx`、成功 Abort、以同一逻辑请求重新 Reserve；第二次按新 pool 比率重新计价、排除账号 44、使用账号 45 与 attempt 2，只结算一次，且 success 先于 settle，见 `backend/internal/audiohttp/retry_failover_test.go:25-79`。
+- 400 不重试；Abort 失败不重试；单 attempt 计划遇到明确 401 只扩展一次鉴权换号；租户 retry budget 可阻断第二次请求；跨请求 `aborted/attempt=4` 使用 attempt 5 选号和结算，见 `backend/internal/audiohttp/retry_failover_test.go:81-217`。
+- 既有 speech 完整交付后结算恢复、客户端断流不收费、transcription/translation 定价和 multipart 原样转发测试继续通过。
+
+**边界**
+
+- audio 只有收到非 2xx 或 dispatch 级失败时才按路由合同换号；speech 一旦开始向客户端写二进制就不会进入 retry loop。
+- 本项不改变费率、余额、quota、鉴权角色、schema 或真实上游费用默认值。
+
+### GW-WIRE-027：Gemini `countTokens` 有 attempt 循环，但绕过统一反馈、账号排除和重试预算
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（失败账号反复命中/账号运行态失真/辅助流量绕过全局重试治理） |
+| 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链、W-09 测试假覆盖 |
+| 状态 | **Fixed for Gemini countTokens in this branch** |
+| 用户影响 | 修复前 Gemini `:countTokens` 会按路由候选循环，但 dispatch error 才会盲目尝试下一个候选；HTTP 401/429/5xx 直接固定返回 502，不写 channel/model/auth 状态。下一次选号不排除失败账号，也不检查租户 retry budget 或全局 kill-switch；带 `WaitPlan` 的结果还会被当作可直接出站账号。 |
+
+**源码链与修复**
+
+1. Gemini `countTokens` 现在保存本请求失败账号集合，逐 attempt 重新选号和解析凭据；`ClaimID` 保持零，不 reserve、abort、settle，也不重新引入账号并发槽，见 `backend/internal/geminihttp/count_tokens_retry.go:31-94`、`backend/internal/geminihttp/generate_content.go:256-294`。
+2. HTTP/dispatch 失败复用统一分类和共享 feedback observer；401 使用一次 auth 子预算，普通 retry 遵守路由终态、attempt budget、租户预算和全局 kill-switch。成功写 success，2xx 空 body 写 channel error 并返回 502，见 `backend/internal/geminihttp/count_tokens_retry.go:96-282`。
+3. `WaitPlan`、空账号和已知无容量错误统一失败闭合，不能绕过排队合同直接出站，见 `backend/internal/geminihttp/generate_content.go:267-294`。
+4. production 构造显式传入与 chat/completions/embeddings/audio 相同的 observer 与 retry budget，不在 Gemini handler 内另建一套状态，见 `backend/internal/geminihttp/generate_content.go:59-71,137-149`、`backend/cmd/gateway/routes.go:148-154`。
+
+**判别验证**
+
+- 首账号 500 后写 `upstream_5xx`，第二次选号排除账号 44 并使用账号 45；两次 `SelectionRequest.ClaimID` 均为零，成功写 success，见 `backend/internal/geminihttp/count_tokens_retry_test.go:29-60`。
+- 400 不重试；单 attempt 计划遇到 401 只扩展一次鉴权换号；租户 budget 拒绝后不发第二次请求；构造测试证明 relay 保留生产共享 observer 与 budget，见 `backend/internal/geminihttp/count_tokens_retry_test.go:62-129`。
+
+**旁路反证**
+
+- `/v1/responses` 与 Codex Responses alias 直接复用完整 chat 主链，只改变 endpoint family，不是独立旁路，见 `backend/internal/gatewayhttp/chat_completions_handler.go:854-862`。
+- Gemini `generateContent/streamGenerateContent` 进入 NativeClientGateway，`embedContent/batchEmbedContents` 翻译后复用已闭环的 embeddings handler；本轮没有重复实现第二套 retry/billing，见 `backend/internal/geminihttp/generate_content.go:90-113`、`backend/internal/geminihttp/embed_content.go:100-123`。
+
 ## 成熟项目颗粒度基线
 
 隔离 clean-room specifier 对 Sub2、New API、CLIProxyAPI 当前默认分支源码拆出 46 个微功能节点。本轮以后不再用“大功能存在”作完成结论，重点核以下六类协作：
@@ -892,6 +946,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 5. worker 同时由 `shutdownGateway` 和 `runtime.close` 调 Stop，在已核实现中 Stop/cancel 具有幂等语义；本批不把重复调用本身报为 bug。
 6. HUAKAI 不使用 Sub2 的 Redis 调度快照不自动构成功能缺失；当前 PostgreSQL 直选提供更直接的权威读取，是否需要快照必须由热路径压测决定。
 7. PASR 默认关闭是显式发布策略，不是代码不存在；当前问题是高级能力尚未激活，不能把它当作线上已具备的默认行为。
+8. `/v1/responses`、Codex Responses alias、Gemini generate/embed 不是漏接的独立数据面：它们分别复用 chat NativeClientGateway 或 embeddings 主链；横向审计不能因入口协议不同就重复造 selector、billing 和 retry。
 
 ## 本批修改
 
@@ -905,8 +960,9 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | 对应四个 `worker_test.go` | 验证取消前阻塞、取消后退出 |
 | `backend/internal/pool/router/default_selector.go` | 无 claim 的辅助请求完成 gate 后不再占用无法释放的真实并发槽 |
 | `backend/internal/pool/router/default_selector_protocol_family_test.go` | 判别 ClaimID=0 时协议门仍生效且 slot acquire 精确为零 |
-| `backend/internal/audiohttp/{handler.go,attempt.go,billing.go}` | speech 交付后结算失败进入统一持久恢复链 |
-| `backend/internal/audiohttp/handler_test.go` | 判别完整交付、禁止 abort、单次入队和重放字段一致性 |
+| `backend/internal/audiohttp/{handler.go,attempt.go,billing.go}` | speech 交付后结算失败进入统一恢复链；全部 audio 入口接入多 attempt、统一反馈、账号排除、逐 attempt 计价和权威 claim attempt |
+| `backend/internal/audiohttp/{handler_test.go,retry_failover_test.go}` | 判别完整交付恢复、500 换号、400 终止、Abort 成功门、401 子预算、租户预算、计价与 attempt 身份 |
+| `backend/internal/geminihttp/{generate_content.go,count_tokens_retry.go,count_tokens_retry_test.go}` | Gemini countTokens 保持零 claim，同时接入统一反馈、安全换号、失败账号排除、WaitPlan 拒绝和生产共享依赖 |
 | `backend/internal/settlementrecovery/{payload.go,payload_test.go}` | 新增并严格校验 `audio_delivered` 恢复来源 |
 | `backend/cmd/gateway/{routes.go,wiring_test.go}` | 生产注入并判别音频复用统一 settlement recovery queue |
 | `backend/internal/upstreamfeedback/{observer.go,observer_test.go}` | 新增 provider-neutral 上游错误/成功反馈合同及 429、401、Bedrock 专用分类、传输错误、成功自愈判别测试 |
@@ -917,8 +973,8 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/internal/imageshttp/{handler.go,attempt.go,billing.go,family_replicate.go,retry_failover_test.go}` | 接入 RoutePlan 多 attempt、统一反馈、失败账号排除、逐 attempt 计价、权威 claim 身份与副作用安全门；Replicate 失败保留取消/对账证据 |
 | `backend/internal/httpkeepalive/{keepalive.go,keepalive_test.go}` | 暴露真实写入状态，让图片 retry gate 在响应已提交后 fail-closed |
 | `backend/internal/gateway/attempt_error.go`、`backend/internal/gatewayhttp/{chat_completions_attempt.go,chat_completions_dispatch.go,settlement_intent_test.go}` | 把稳定终态映射上提为跨协议共享合同，并让 chat 选号使用 Reserve 返回的权威 attempt |
-| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank、images 与租户 retry budget |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十五个确认发现 |
+| `backend/cmd/gateway/{wiring.go,routes.go,routes_completions_wiring_test.go}` | 生产构造共享 feedback observer，并注入 completions/countTokens、embeddings、rerank、images、audio、Gemini countTokens 与租户 retry budget |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十七个确认发现 |
 | 三身份与单层租户规划 | 固定部署者、用户、租户三种身份，禁止多级租户，并记录能力、账号和经营额度的分配边界 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
@@ -945,6 +1001,7 @@ go test ./internal/upstreamfeedback ./internal/embeddingshttp ./internal/rerankh
 go test ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway -count=1
 go test -race ./internal/httpkeepalive ./internal/imageshttp -count=1
 go vet ./internal/httpkeepalive ./internal/imageshttp ./cmd/gateway
+go test ./internal/audiohttp ./internal/geminihttp ./internal/gatewayhttp ./internal/embeddingshttp ./cmd/gateway -count=1
 go test ./internal/codebudget -count=1
 ```
 
@@ -1000,7 +1057,7 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
-Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门与逐 attempt 计价。随后继续横向追踪 audio、Responses、Gemini 和 media task，逐协议核对：
+Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images、audio 和 Gemini countTokens 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门，图片与音频均按当前 attempt 重新计价。Responses、Gemini generate/embed 已由源码反证为复用统一主链，不重复建设第二套数据面。随后继续横向追踪 media task，并等待 Owner 决定图片保活最终合同，逐协议核对：
 
 `身份 → 规范模型 → 选号 → gate → 凭据 → 出站 → retry/fallback → health → claim/billing → audit → DLQ/recovery`
 
@@ -1008,4 +1065,4 @@ Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、im
 
 ## 真实性摘要
 
-本报告的二十五个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十八个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及尚未完成的 audio、Responses、Gemini 和 media task 等协议健康、retry 与 recovery 对齐。
+本报告的二十七个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十六个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及尚未完成的 media task 健康、重试、资金和恢复对齐。
