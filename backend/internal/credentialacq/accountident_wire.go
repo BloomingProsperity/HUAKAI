@@ -25,6 +25,7 @@ func AttachIdentity(candidate *CredentialCandidate, identity accountident.Identi
 		return
 	}
 	accountID := strings.TrimSpace(identity.AccountID)
+	subjectID := strings.TrimSpace(identity.SubjectID)
 	candidate.AccountIDSource = strings.TrimSpace(identity.Source)
 	if identity.Empty() {
 		// 即使没有提取到任何内容也记录来源，让 UI 能展示该绑定已回退为 manual，
@@ -35,10 +36,13 @@ func AttachIdentity(candidate *CredentialCandidate, identity accountident.Identi
 		return
 	}
 	candidate.ExternalAccountID = accountID
+	candidate.ExternalSubjectID = subjectID
 	candidate.ExternalAccountEmail = strings.TrimSpace(identity.Email)
 
 	ctx := candidate.RedactedContext
-	ctx = setRedactedKey(ctx, RedactedKeyUpstreamAccountID, accountID)
+	if accountID != "" {
+		ctx = setRedactedKey(ctx, RedactedKeyUpstreamAccountID, accountID)
+	}
 	if candidate.ExternalAccountEmail != "" {
 		ctx = setRedactedKey(ctx, RedactedKeyUpstreamAccountEmail, candidate.ExternalAccountEmail)
 	}

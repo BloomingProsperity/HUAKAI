@@ -34,6 +34,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -1133,6 +1135,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
+		accountintakehttp.Mount(r, accountintakehttp.Deps{
+			Auth:    d.adminAuth,
+			Service: accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth),
+		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{

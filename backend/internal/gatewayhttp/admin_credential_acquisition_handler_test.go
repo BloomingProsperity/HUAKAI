@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
 )
 
 func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
@@ -749,6 +750,7 @@ func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth 
 	})
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
 		MountAdminCredentialAcquisitionHelperRoutes(r, deps)
+		accountintakehttp.Mount(r, accountintakehttp.Deps{Auth: auth})
 	})
 	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, adminAudit: adminAudit, exchanger: exchanger}
 }
