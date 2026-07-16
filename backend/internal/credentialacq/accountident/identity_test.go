@@ -182,3 +182,18 @@ func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 		t.Fatalf("Email = %q, want userinfo@x.com (fallback)", id2.Email)
 	}
 }
+
+func TestIdentityEmptyIncludesEmail(t *testing.T) {
+	if !(Identity{}).Empty() {
+		t.Fatal("零值 identity 应为空")
+	}
+	for _, identity := range []Identity{
+		{AccountID: "account-1"},
+		{SubjectID: "subject-1"},
+		{Email: "person@example.com"},
+	} {
+		if identity.Empty() {
+			t.Fatalf("identity=%+v 携带标识时不应为空", identity)
+		}
+	}
+}

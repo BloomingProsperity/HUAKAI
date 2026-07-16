@@ -42,9 +42,11 @@ type Identity struct {
 	Source    string
 }
 
-// Empty 报告该 identity 是否不携带任何上游账号或个人主体标识。
+// Empty 报告该 identity 是否不携带任何上游账号、个人主体或邮箱标识。
 func (i Identity) Empty() bool {
-	return strings.TrimSpace(i.AccountID) == "" && strings.TrimSpace(i.SubjectID) == ""
+	return strings.TrimSpace(i.AccountID) == "" &&
+		strings.TrimSpace(i.SubjectID) == "" &&
+		strings.TrimSpace(i.Email) == ""
 }
 
 // manualIdentity 是 fail-open 的结果：无 id、无 email、来源为 manual。
