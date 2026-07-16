@@ -381,6 +381,29 @@ func (s *Service) GetChannelHealth(ctx context.Context, tenantID int64, channelI
 	return s.store.GetChannelHealth(ctx, tenantID, channelID)
 }
 
+func (s *Service) GetRecord(ctx context.Context, key ChannelKey) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	if err := key.Validate(); err != nil {
+		return Record{}, err
+	}
+	return s.store.Get(ctx, key)
+}
+
+func (s *Service) LatestByProviderAccount(ctx context.Context, tenantID, providerAccountID int64) (Record, error) {
+	if s == nil || s.store == nil {
+		return Record{}, errors.New("channelhealth: service not configured")
+	}
+	if tenantID <= 0 {
+		return Record{}, errors.New("tenant_id must be positive")
+	}
+	if providerAccountID <= 0 {
+		return Record{}, errors.New("provider_account_id must be positive")
+	}
+	return s.store.LatestByProviderAccount(ctx, tenantID, providerAccountID)
+}
+
 func (s *Service) SummarizeChannelHealth(ctx context.Context, tenantID int64) (ChannelHealthSummary, error) {
 	if s == nil || s.store == nil {
 		return ChannelHealthSummary{}, errors.New("channelhealth: service not configured")
