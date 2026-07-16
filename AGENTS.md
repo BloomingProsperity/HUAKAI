@@ -59,7 +59,9 @@ High-risk files include:
 
 ## Risk-Based Confirmation Rule
 
-Agents should use this risk model:
+Agents should use this risk model to identify blast radius and required safeguards. A
+`High Risk` label alone is not a reason to stop; the project-wide three-factor gate
+below decides whether an implementation decision must be held for Owner approval.
 
 ### Low Risk
 
@@ -90,7 +92,8 @@ Examples:
 
 ### High Risk
 
-Stop and ask Owner before acting.
+Add stronger evidence, tests, rollback design, and review. Continue after the Owner
+has started the goal unless all three factors in the project-wide gate are true.
 
 Examples:
 
@@ -104,6 +107,35 @@ Examples:
 - touching real secrets
 - destructive shell commands
 - production deployment
+
+## Project-Wide Three-Factor Owner Decision Gate
+
+This rule applies globally to the whole HUAKAI project, every module, every goal,
+and every agent, including Codex's own execution.
+
+After the Owner has started a goal, an implementation decision is deferred for
+Owner approval only when all three conditions are simultaneously true:
+
+1. Source-verified mature projects materially disagree on the handling.
+2. No source-verified mature project provides an applicable precedent or safe
+   equivalent for the disputed part.
+3. A wrong choice can cause high harm, such as money loss, authorization bypass,
+   credential exposure, cross-tenant corruption, irreversible data loss, or an
+   unsafe schema transition.
+
+The relationship is `1 AND 2 AND 3`, never `1 OR 2 OR 3`. One or two conditions
+alone do not justify delay. The agent must continue with source evidence, HUAKAI's
+existing contracts, discriminating tests, rollback or feature gating as needed,
+and record the decision.
+
+Unknown reference evidence is not automatically "no mature precedent": investigate
+through the clean-room workflow first. When all three conditions are true, continue
+all other executable work and collect the decision for the Owner at the end instead
+of blocking the whole goal.
+
+Independent asset and release gates remain unchanged: do not merge a PR, deploy to
+production, touch real secrets, modify `LICENSE`, or perform destructive operations
+without the separately required explicit Owner approval.
 
 ## Do Not Over-Block Rule
 

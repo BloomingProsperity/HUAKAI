@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -115,11 +116,54 @@ func importCandidatesFromDecoded(decoded any, defaultVendor, defaultAuthMode str
 func importCandidateFromMap(fields map[string]any, defaultVendor, defaultAuthMode string) CredentialCandidate {
 	vendor := importStringField(fields, "vendor", defaultVendor)
 	mode := importStringField(fields, "auth_mode", defaultAuthMode)
-	payload, _ := json.Marshal(flattenCLITokenObject(fields))
-	return CredentialCandidate{
+	flattened := flattenCLITokenObject(fields)
+	payload, _ := json.Marshal(flattened)
+	candidate := CredentialCandidate{
 		Vendor: credentialstore.Normalize(vendor), AuthMode: credentialstore.Normalize(mode), Payload: payload,
 		RedactedContext: map[string]any{"shape": "json_object"},
 	}
+	attachImportIdentity(&candidate, flattened)
+	return candidate
+}
+
+func attachImportIdentity(candidate *CredentialCandidate, fields map[string]any) {
+	if candidate == nil {
+		return
+	}
+	explicit := accountident.Identity{
+		AccountID: firstImportString(fields, "external_account_id", "chatgpt_account_id", "account_id"),
+		SubjectID: firstImportString(fields, "external_subject_id", "chatgpt_user_id"),
+		Email:     firstImportString(fields, "external_account_email", "email"),
+		Source:    accountident.SourceImportPayload,
+	}
+	identity := explicit
+	switch candidate.Vendor {
+	case credentialstore.VendorOpenAI:
+		idToken := firstImportString(fields, "id_token")
+		extracted := accountident.ExtractChatGPT(
+			idToken,
+			explicit.AccountID,
+			explicit.SubjectID,
+		)
+		if !extracted.Empty() {
+			extracted.Email = firstNonEmptyImport(extracted.Email, explicit.Email)
+			identity = extracted
+		}
+	case credentialstore.VendorGemini:
+		extracted := accountident.ExtractGemini(firstImportString(fields, "id_token"), explicit.Email)
+		if !extracted.Empty() {
+			identity = extracted
+		}
+	case credentialstore.VendorAnthropic:
+		extracted := accountident.ExtractAnthropic(explicit.AccountID, explicit.Email, "")
+		if !extracted.Empty() {
+			identity = extracted
+		}
+	}
+	// 导入文件完全由运营者提供；即使其中的 JWT 能解析，也不能把声明升级成
+	// provider token 交换来源，否则伪造 subject 会获得自动覆盖已有账号的能力。
+	identity.Source = accountident.SourceImportPayload
+	AttachIdentity(candidate, identity)
 }
 
 // flattenCLITokenObject 识别 CLI 凭据文件的 {token:{...}} 外层，把运行时
@@ -162,4 +206,24 @@ func importStringField(fields map[string]any, key, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+func firstImportString(fields map[string]any, names ...string) string {
+	for _, name := range names {
+		if value, ok := fields[name].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyImport(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

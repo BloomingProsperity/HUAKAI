@@ -2,8 +2,8 @@
 package intake
 
 import (
+	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +40,11 @@ const (
 	ActionFail     Action = "fail"
 )
 
-var ErrSourceDisabled = errors.New("credential intake source disabled")
+var (
+	ErrSourceDisabled               = errors.New("credential intake source disabled")
+	ErrIdentityInventoryUnavailable = errors.New("credential intake identity inventory unavailable")
+	ErrTenantRequired               = errors.New("credential intake tenant required")
+)
 
 type ExistingCredential struct {
 	ProviderAccountID     int64
@@ -51,16 +55,22 @@ type ExistingCredential struct {
 	ExternalAccountID     string
 	ExternalAccountEmail  string
 	ExternalSubjectID     string
+	AccountIDSource       string
 	CredentialFingerprint string
 }
 
 type BuildInput struct {
+	TenantID        int64
 	SourceKind      SourceKind
 	DefaultVendor   string
 	DefaultAuthMode string
 	Content         string
 	Existing        []ExistingCredential
 	Now             time.Time
+}
+
+type IdentityInventory interface {
+	ListIdentityInventory(context.Context, int64, string) ([]credentialstore.CredentialIdentityMetadata, error)
 }
 
 type Plan struct {
@@ -99,6 +109,7 @@ type IdentitySummary struct {
 	ExternalAccountID      string `json:"external_account_id,omitempty"`
 	ExternalAccountEmail   string `json:"external_account_email,omitempty"`
 	SubjectIdentityPresent bool   `json:"subject_identity_present"`
+	SubjectIdentityTrusted bool   `json:"subject_identity_trusted"`
 	Source                 string `json:"source"`
 	Strength               string `json:"strength"`
 }
@@ -111,6 +122,9 @@ type LifecycleSummary struct {
 }
 
 func Build(in BuildInput) (Plan, error) {
+	if in.TenantID <= 0 {
+		return Plan{}, ErrTenantRequired
+	}
 	source := SourceKind(strings.TrimSpace(string(in.SourceKind)))
 	candidates, err := parseSource(source, in.Content, in.DefaultVendor, in.DefaultAuthMode)
 	if err != nil {
@@ -128,9 +142,13 @@ func Build(in BuildInput) (Plan, error) {
 		Items:           make([]Item, 0, len(candidates)),
 	}
 	seenIdentity := make(map[string]int)
+	seenUntrustedIdentity := make(map[string]int)
 	seenPayload := make(map[[32]byte]int)
 	for index, candidate := range candidates {
-		item := planCandidate(index, candidate, in.Existing, registry, now, seenIdentity, seenPayload)
+		item := planCandidate(
+			index, in.TenantID, candidate, in.Existing, registry, now,
+			seenIdentity, seenUntrustedIdentity, seenPayload,
+		)
 		plan.Items = append(plan.Items, item)
 		switch item.Action {
 		case ActionCreate:
@@ -146,6 +164,22 @@ func Build(in BuildInput) (Plan, error) {
 		}
 	}
 	return plan, nil
+}
+
+// BuildFromInventory 使用租户范围内的无秘密凭据 inventory 生成预检计划。
+func BuildFromInventory(ctx context.Context, inventory IdentityInventory, in BuildInput) (Plan, error) {
+	if in.TenantID <= 0 {
+		return Plan{}, ErrTenantRequired
+	}
+	if inventory == nil {
+		return Plan{}, ErrIdentityInventoryUnavailable
+	}
+	rows, err := inventory.ListIdentityInventory(ctx, in.TenantID, "")
+	if err != nil {
+		return Plan{}, fmt.Errorf("%w: %v", ErrIdentityInventoryUnavailable, err)
+	}
+	in.Existing = ExistingFromIdentityMetadata(rows)
+	return Build(in)
 }
 
 func parseSource(source SourceKind, content, vendor, authMode string) ([]credentialacq.CredentialCandidate, error) {
@@ -169,11 +203,13 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 
 func planCandidate(
 	index int,
+	tenantID int64,
 	candidate credentialacq.CredentialCandidate,
 	existing []ExistingCredential,
 	registry *credentialstore.HandlerRegistry,
 	now time.Time,
 	seenIdentity map[string]int,
+	seenUntrustedIdentity map[string]int,
 	seenPayload map[[32]byte]int,
 ) Item {
 	candidate.Vendor = credentialstore.Normalize(candidate.Vendor)
@@ -193,9 +229,13 @@ func planCandidate(
 	}
 
 	payloadKey := sha256.Sum256(append([]byte(credentialstore.ModeKey(candidate.Vendor, candidate.AuthMode)+"\x00"), candidate.Payload...))
-	identity := extractIdentity(candidate, hex.EncodeToString(payloadKey[:]))
+	identity := extractIdentity(candidate, credentialstore.CredentialMaterialFingerprint(tenantID, candidate.Vendor, candidate.AuthMode, candidate.Payload))
 	item.Identity = identity.Summary
 	item.Lifecycle = extractLifecycle(candidate.Payload, handler, now)
+	if identity.SubjectID != "" && !identity.SubjectTrusted {
+		item.Warnings = append(item.Warnings, "unverified_subject_metadata")
+		item.RequiredConfirmations = append(item.RequiredConfirmations, "confirm_unverified_subject_metadata")
+	}
 	if item.Lifecycle.Expired && !item.Lifecycle.HasRefreshMaterial {
 		item.Action = ActionFail
 		item.Code = "expired_without_refresh"
@@ -209,13 +249,23 @@ func planCandidate(
 		item.Warnings = append(item.Warnings, "refresh_material_missing")
 	}
 
-	identityKey := identityMatchKey(identity, candidate.Vendor, item.Lifecycle.HasRefreshMaterial)
 	if firstIndex, duplicate := seenPayload[payloadKey]; duplicate {
 		item.Action = ActionSkip
 		item.Code = "duplicate_input"
 		item.Message = fmt.Sprintf("与本批第 %d 项重复", firstIndex+1)
 		return item
 	}
+	untrustedIdentityKey := untrustedIdentityMatchKey(identity, candidate.Vendor)
+	if untrustedIdentityKey != "" {
+		if firstIndex, duplicate := seenUntrustedIdentity[untrustedIdentityKey]; duplicate {
+			item.Action = ActionConflict
+			item.Code = "unverified_identity_collision"
+			item.Message = fmt.Sprintf("与本批第 %d 项声明了相同但未经验证的上游身份", firstIndex+1)
+			item.RequiredConfirmations = append(item.RequiredConfirmations, "resolve_identity_conflict")
+			return item
+		}
+	}
+	identityKey := identityMatchKey(identity, candidate.Vendor, item.Lifecycle.HasRefreshMaterial)
 	if identityKey != "" {
 		if firstIndex, duplicate := seenIdentity[identityKey]; duplicate {
 			item.Action = ActionSkip
@@ -244,7 +294,10 @@ func planCandidate(
 		item.FieldChanges = []string{"credential_payload", "credential_version", "credential_lifecycle"}
 		item.Warnings = append(item.Warnings, match.warnings...)
 		item.RequiredConfirmations = append(item.RequiredConfirmations, match.confirmations...)
-		markExecutableIdentity(seenPayload, seenIdentity, payloadKey, identityKey, index)
+		markExecutableIdentity(
+			seenPayload, seenIdentity, seenUntrustedIdentity,
+			payloadKey, identityKey, untrustedIdentityKey, index,
+		)
 		return item
 	}
 
@@ -256,183 +309,28 @@ func planCandidate(
 		item.Warnings = append(item.Warnings, "weak_identity")
 		item.RequiredConfirmations = append(item.RequiredConfirmations, "confirm_weak_identity")
 	}
-	markExecutableIdentity(seenPayload, seenIdentity, payloadKey, identityKey, index)
+	markExecutableIdentity(
+		seenPayload, seenIdentity, seenUntrustedIdentity,
+		payloadKey, identityKey, untrustedIdentityKey, index,
+	)
 	return item
 }
 
-func markExecutableIdentity(seenPayload map[[32]byte]int, seenIdentity map[string]int, payloadKey [32]byte, identityKey string, index int) {
+func markExecutableIdentity(
+	seenPayload map[[32]byte]int,
+	seenIdentity map[string]int,
+	seenUntrustedIdentity map[string]int,
+	payloadKey [32]byte,
+	identityKey string,
+	untrustedIdentityKey string,
+	index int,
+) {
 	seenPayload[payloadKey] = index
 	if identityKey != "" {
 		seenIdentity[identityKey] = index
 	}
-}
-
-type existingConflict struct {
-	code        string
-	message     string
-	accountID   int64
-	accountName string
-}
-
-type existingMatch struct {
-	credential    *ExistingCredential
-	code          string
-	message       string
-	warnings      []string
-	confirmations []string
-}
-
-type candidateIdentity struct {
-	Summary               IdentitySummary
-	SubjectID             string
-	CredentialFingerprint string
-	AccountIsSharedScope  bool
-}
-
-func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candidate credentialacq.CredentialCandidate, existing []ExistingCredential) (*existingMatch, *existingConflict) {
-	available := make([]*ExistingCredential, 0, len(existing))
-	for index := range existing {
-		current := &existing[index]
-		if credentialstore.Normalize(current.Vendor) != candidate.Vendor {
-			continue
-		}
-		available = append(available, current)
-	}
-	if !lifecycle.HasRefreshMaterial {
-		matches := filterExisting(available, func(current *ExistingCredential) bool {
-			return identity.CredentialFingerprint != "" &&
-				strings.EqualFold(strings.TrimSpace(current.CredentialFingerprint), identity.CredentialFingerprint)
-		})
-		return resolveExactMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
-	}
-
-	if identity.SubjectID != "" {
-		matches := filterExisting(available, func(current *ExistingCredential) bool {
-			return sameIdentity(current.ExternalSubjectID, identity.SubjectID)
-		})
-		if len(matches) > 1 {
-			return nil, conflictFromExisting("subject_identity_ambiguous", "同一上游个人身份命中多个已有账号", matches[0])
-		}
-		if len(matches) == 1 {
-			match := matches[0]
-			if identity.Summary.ExternalAccountID != "" && strings.TrimSpace(match.ExternalAccountID) != "" &&
-				!sameIdentity(match.ExternalAccountID, identity.Summary.ExternalAccountID) {
-				return nil, conflictFromExisting("subject_scope_conflict", "同一上游个人身份关联了不同账号作用域", match)
-			}
-			return exactExistingMatch(match, candidate)
-		}
-		if identity.AccountIsSharedScope && identity.Summary.ExternalAccountID != "" {
-			legacy := filterExisting(available, func(current *ExistingCredential) bool {
-				return sameIdentity(current.ExternalAccountID, identity.Summary.ExternalAccountID) &&
-					strings.TrimSpace(current.ExternalSubjectID) == ""
-			})
-			if len(legacy) > 1 {
-				return nil, conflictFromExisting("legacy_scope_ambiguous", "账号作用域命中多个缺少个人身份的旧账号", legacy[0])
-			}
-			if len(legacy) == 1 {
-				return legacyIdentityUpgrade(legacy[0], candidate)
-			}
-		}
-		return nil, nil
-	}
-
-	if identity.Summary.ExternalAccountID != "" {
-		matches := filterExisting(available, func(current *ExistingCredential) bool {
-			return sameIdentity(current.ExternalAccountID, identity.Summary.ExternalAccountID)
-		})
-		if len(matches) > 1 {
-			return nil, conflictFromExisting("account_scope_ambiguous", "同一上游账号作用域命中多个已有账号", matches[0])
-		}
-		if len(matches) == 1 {
-			match := matches[0]
-			if identity.AccountIsSharedScope && strings.TrimSpace(match.ExternalSubjectID) != "" {
-				return nil, conflictFromExisting("workspace_member_unknown", "导入项缺少个人身份，无法确定账号作用域中的具体成员", match)
-			}
-			if identity.AccountIsSharedScope {
-				return legacyIdentityUpgrade(match, candidate)
-			}
-			return exactExistingMatch(match, candidate)
-		}
-		return nil, nil
-	}
-
-	if identity.Summary.ExternalAccountEmail != "" {
-		matches := filterExisting(available, func(current *ExistingCredential) bool {
-			return strings.EqualFold(strings.TrimSpace(current.ExternalAccountEmail), identity.Summary.ExternalAccountEmail)
-		})
-		if len(matches) > 1 {
-			return nil, conflictFromExisting("email_identity_ambiguous", "同一邮箱命中多个已有账号", matches[0])
-		}
-		if len(matches) == 1 {
-			match := matches[0]
-			if strings.TrimSpace(match.ExternalSubjectID) != "" || strings.TrimSpace(match.ExternalAccountID) != "" {
-				return nil, conflictFromExisting("weak_identity_matches_strong_account", "导入项只有邮箱，无法证明与已有强身份账号相同", match)
-			}
-			if credentialstore.Normalize(match.AuthMode) != candidate.AuthMode {
-				return nil, conflictFromExisting("identity_mode_conflict", "同一弱身份账号已使用其它 auth_mode", match)
-			}
-			return &existingMatch{
-				credential: match, code: "rotate_email_only_credential",
-				message:       "将按邮箱弱身份轮换已有账号凭据",
-				warnings:      []string{"weak_identity_match"},
-				confirmations: []string{"confirm_weak_identity_match", "confirm_credential_rotation"},
-			}, nil
-		}
-	}
-	return nil, nil
-}
-
-func resolveExactMatches(matches []*ExistingCredential, candidate credentialacq.CredentialCandidate, conflictCode, conflictMessage string) (*existingMatch, *existingConflict) {
-	if len(matches) > 1 {
-		return nil, conflictFromExisting(conflictCode, conflictMessage, matches[0])
-	}
-	if len(matches) == 1 {
-		return exactExistingMatch(matches[0], candidate)
-	}
-	return nil, nil
-}
-
-func exactExistingMatch(match *ExistingCredential, candidate credentialacq.CredentialCandidate) (*existingMatch, *existingConflict) {
-	if credentialstore.Normalize(match.AuthMode) != candidate.AuthMode {
-		return nil, conflictFromExisting("identity_mode_conflict", "同一上游身份已使用其它 auth_mode", match)
-	}
-	return &existingMatch{
-		credential: match, code: "rotate_existing_credential",
-		message:       "将轮换已存在账号的同模式凭据",
-		confirmations: []string{"confirm_credential_rotation"},
-	}, nil
-}
-
-func legacyIdentityUpgrade(match *ExistingCredential, candidate credentialacq.CredentialCandidate) (*existingMatch, *existingConflict) {
-	if credentialstore.Normalize(match.AuthMode) != candidate.AuthMode {
-		return nil, conflictFromExisting("identity_mode_conflict", "旧账号作用域已使用其它 auth_mode", match)
-	}
-	return &existingMatch{
-		credential: match, code: "upgrade_legacy_identity",
-		message:       "将为缺少个人身份的旧账号补齐身份并轮换凭据",
-		warnings:      []string{"legacy_identity_upgrade"},
-		confirmations: []string{"confirm_legacy_identity_upgrade", "confirm_credential_rotation"},
-	}, nil
-}
-
-func filterExisting(values []*ExistingCredential, keep func(*ExistingCredential) bool) []*ExistingCredential {
-	out := make([]*ExistingCredential, 0, len(values))
-	for _, value := range values {
-		if keep(value) {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-func sameIdentity(left, right string) bool {
-	return strings.TrimSpace(left) != "" && strings.TrimSpace(left) == strings.TrimSpace(right)
-}
-
-func conflictFromExisting(code, message string, existing *ExistingCredential) *existingConflict {
-	return &existingConflict{
-		code: code, message: message,
-		accountID: existing.ProviderAccountID, accountName: existing.ProviderAccountName,
+	if untrustedIdentityKey != "" {
+		seenUntrustedIdentity[untrustedIdentityKey] = index
 	}
 }
 
@@ -443,7 +341,7 @@ func extractIdentity(candidate credentialacq.CredentialCandidate, fingerprint st
 		Source:               strings.TrimSpace(candidate.AccountIDSource),
 	}
 	fields := payloadFields(candidate.Payload)
-	subjectID := firstString(fields, "external_subject_id", "chatgpt_user_id")
+	subjectID := firstNonEmpty(candidate.ExternalSubjectID, firstString(fields, "external_subject_id", "chatgpt_user_id"))
 	explicitChatGPTAccountID := firstString(fields, "chatgpt_account_id")
 	if summary.ExternalAccountID == "" {
 		summary.ExternalAccountID = firstNonEmpty(explicitChatGPTAccountID, firstString(fields, "external_account_id", "account_id"))
@@ -451,32 +349,23 @@ func extractIdentity(candidate credentialacq.CredentialCandidate, fingerprint st
 	if summary.ExternalAccountEmail == "" {
 		summary.ExternalAccountEmail = firstString(fields, "external_account_email", "email")
 	}
-	if candidate.Vendor == credentialstore.VendorOpenAI {
-		if claims, err := accountident.ParseJWTClaimsUnverified(firstString(fields, "id_token")); err == nil {
-			subjectID = firstNonEmpty(subjectID, firstString(claims, "sub"))
-		}
-		if summary.ExternalAccountID == "" {
-			extracted := accountident.ExtractChatGPT(firstString(fields, "id_token"), firstString(fields, "account_id"))
-			summary.ExternalAccountID = strings.TrimSpace(extracted.AccountID)
-			summary.ExternalAccountEmail = firstNonEmpty(summary.ExternalAccountEmail, extracted.Email)
-			if summary.Source == "" {
-				summary.Source = extracted.Source
-			}
-		}
-	}
 	if summary.Source == "" {
 		if subjectID != "" || summary.ExternalAccountID != "" {
-			summary.Source = "import_payload"
+			summary.Source = accountident.SourceImportPayload
 		} else {
 			summary.Source = accountident.SourceManual
 		}
 	}
 	summary.SubjectIdentityPresent = subjectID != ""
+	subjectTrusted := trustedIdentitySource(summary.Source)
+	summary.SubjectIdentityTrusted = subjectTrusted
 	switch {
-	case subjectID != "":
+	case subjectID != "" && subjectTrusted:
 		summary.Strength = "strong"
 	case summary.ExternalAccountID != "":
 		summary.Strength = "scoped"
+	case subjectID != "":
+		summary.Strength = "weak"
 	case summary.ExternalAccountEmail != "":
 		summary.Strength = "weak"
 	default:
@@ -484,8 +373,35 @@ func extractIdentity(candidate credentialacq.CredentialCandidate, fingerprint st
 	}
 	return candidateIdentity{
 		Summary: summary, SubjectID: subjectID, CredentialFingerprint: fingerprint,
+		SubjectTrusted:       subjectTrusted,
 		AccountIsSharedScope: isSharedAccountScope(candidate, explicitChatGPTAccountID),
 	}
+}
+
+func trustedIdentitySource(source string) bool {
+	switch strings.TrimSpace(source) {
+	case accountident.SourceAnthropicAccountID,
+		accountident.SourceChatGPTJWTClaim,
+		accountident.SourceGoogleIDTokenSub:
+		return true
+	default:
+		return false
+	}
+}
+
+// ExistingFromIdentityMetadata 把 credential store 的无秘密 inventory 转为预检输入。
+func ExistingFromIdentityMetadata(rows []credentialstore.CredentialIdentityMetadata) []ExistingCredential {
+	out := make([]ExistingCredential, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ExistingCredential{
+			ProviderAccountID: row.ProviderAccountID, ProviderAccountName: row.ProviderAccountName,
+			Vendor: row.Vendor, AuthMode: row.AuthMode, State: row.State,
+			ExternalAccountID: row.ExternalAccountID, ExternalSubjectID: row.ExternalSubjectID,
+			ExternalAccountEmail: row.ExternalAccountEmail, AccountIDSource: row.ExternalIdentitySource,
+			CredentialFingerprint: row.CredentialMaterialFingerprint,
+		})
+	}
+	return out
 }
 
 func isSharedAccountScope(candidate credentialacq.CredentialCandidate, explicitChatGPTAccountID string) bool {
@@ -541,14 +457,31 @@ func identityMatchKey(identity candidateIdentity, vendor string, hasRefreshMater
 	if !hasRefreshMaterial && identity.CredentialFingerprint != "" {
 		return prefix + "/fingerprint/" + identity.CredentialFingerprint
 	}
-	if identity.SubjectID != "" {
+	if identity.SubjectID != "" && identity.SubjectTrusted {
 		return prefix + "/subject/" + identity.SubjectID
+	}
+	if identity.CredentialFingerprint != "" {
+		return prefix + "/fingerprint/" + identity.CredentialFingerprint
 	}
 	if identity.Summary.ExternalAccountID != "" {
 		return prefix + "/account/" + identity.Summary.ExternalAccountID
 	}
 	if identity.Summary.ExternalAccountEmail != "" {
 		return prefix + "/email/" + strings.ToLower(identity.Summary.ExternalAccountEmail)
+	}
+	return ""
+}
+
+func untrustedIdentityMatchKey(identity candidateIdentity, vendor string) string {
+	if identity.SubjectTrusted {
+		return ""
+	}
+	prefix := credentialstore.Normalize(vendor)
+	if identity.SubjectID != "" {
+		return prefix + "/subject/" + identity.SubjectID
+	}
+	if identity.Summary.ExternalAccountID != "" {
+		return prefix + "/account/" + identity.Summary.ExternalAccountID
 	}
 	return ""
 }

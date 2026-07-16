@@ -28,6 +28,11 @@ type credentialAuditSnapshot struct {
 	Version            int32
 	PayloadFingerprint string
 	RefreshFingerprint string
+	AccessFingerprint  string
+	ExternalAccountID  string
+	ExternalSubjectID  string
+	ExternalEmail      string
+	IdentitySource     string
 	LastOutcome        string
 	FailureClass       string
 	FailureCount       int32
@@ -58,6 +63,15 @@ func TestCredentialAuditTxRotateFailurePreservesPreviousVersion(t *testing.T) {
 	ctx, pool := openCredentialAuditTxPool(t)
 	fixture, meta := seedCredentialWithStore(t, ctx, pool, "rotate-fail")
 	defer cleanupCredentialAuditTxFixture(t, context.Background(), pool, fixture)
+	if _, err := pool.Exec(ctx, `
+		UPDATE account_credentials
+		SET external_account_id='workspace-before',
+		    external_subject_id='subject-before',
+		    external_account_email='subject-before@example.test',
+		    external_identity_source='provider_exchange_before'
+		WHERE id=$1`, meta.ID); err != nil {
+		t.Fatalf("seed rotate identity: %v", err)
+	}
 	before := credentialAuditSnapshotForID(t, ctx, pool, meta.ID)
 	cleanupRejector := installCredentialAuditRejector(t, ctx, pool, CredentialEventRotated)
 	defer cleanupRejector()
@@ -66,12 +80,17 @@ func TestCredentialAuditTxRotateFailurePreservesPreviousVersion(t *testing.T) {
 	_, err := store.Rotate(ctx, RotateCredentialInput{
 		TenantID: fixture.tenantID, ProviderAccountID: fixture.providerAccountID, CredentialID: meta.ID,
 		Payload: []byte(`{"api_key":"sk-rotate-fail-next"}`), ActorID: "owner",
+		ExternalAccountID: "workspace-after", ExternalSubjectID: "subject-after",
+		ExternalAccountEmail: "subject-after@example.test", ExternalIdentitySource: "provider_exchange_after",
 	})
 	if err == nil {
 		t.Fatal("Rotate audit failure returned nil error")
 	}
 	after := credentialAuditSnapshotForID(t, ctx, pool, meta.ID)
-	if after.Version != before.Version || after.PayloadFingerprint != before.PayloadFingerprint || after.RefreshFingerprint != before.RefreshFingerprint {
+	if after.Version != before.Version || after.PayloadFingerprint != before.PayloadFingerprint ||
+		after.RefreshFingerprint != before.RefreshFingerprint || after.AccessFingerprint != before.AccessFingerprint ||
+		after.ExternalAccountID != before.ExternalAccountID || after.ExternalSubjectID != before.ExternalSubjectID ||
+		after.ExternalEmail != before.ExternalEmail || after.IdentitySource != before.IdentitySource {
 		t.Fatalf("Rotate audit failure changed row: before=%+v after=%+v", before, after)
 	}
 }
@@ -113,7 +132,8 @@ func TestCredentialAuditTxRefreshSuccessFailureRollsBackTokenVersion(t *testing.
 		t.Fatal("SaveRefreshSuccess audit failure returned nil error")
 	}
 	after := credentialAuditSnapshotForID(t, ctx, pool, meta.ID)
-	if after.Version != before.Version || after.PayloadFingerprint != before.PayloadFingerprint || after.LastOutcome != before.LastOutcome {
+	if after.Version != before.Version || after.PayloadFingerprint != before.PayloadFingerprint ||
+		after.AccessFingerprint != before.AccessFingerprint || after.LastOutcome != before.LastOutcome {
 		t.Fatalf("Refresh success audit failure changed row: before=%+v after=%+v", before, after)
 	}
 }
@@ -204,6 +224,108 @@ func TestCredentialAuditTxRotateSuccessCommitsMutationAndAudit(t *testing.T) {
 	}
 	if got := countCredentialAuditEvents(t, ctx, pool, meta.ID, CredentialEventRotated); got != 1 {
 		t.Fatalf("credential_rotated audit rows=%d want 1", got)
+	}
+}
+
+func TestCredentialIdentityFingerprintPersistsInPostgres(t *testing.T) {
+	ctx, pool := openCredentialAuditTxPool(t)
+	fixture := seedCredentialAuditTxFixture(t, ctx, pool, "identity-fingerprint")
+	defer cleanupCredentialAuditTxFixture(t, context.Background(), pool, fixture)
+	store := NewStore(pool, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	createPayload := []byte(`{"access_token":"access-create","refresh_token":"refresh-create"}`)
+	created, err := store.Create(ctx, CreateCredentialInput{
+		TenantID: fixture.tenantID, ProviderAccountID: fixture.providerAccountID,
+		Vendor: VendorOpenAI, AuthMode: AuthModeCodexCLIOAuth, Payload: createPayload,
+		ActorID: "owner", ExternalAccountID: "workspace-a",
+		ExternalSubjectID: "subject-a", ExternalAccountEmail: "subject-a@example.test",
+		ExternalIdentitySource: "provider_exchange_a",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	assertCredentialIdentityFingerprint(t, ctx, pool, created.ID, "workspace-a", "subject-a", "provider_exchange_a",
+		CredentialMaterialFingerprint(fixture.tenantID, VendorOpenAI, AuthModeCodexCLIOAuth, createPayload))
+
+	rotatePayload := []byte(`{"access_token":"access-rotate","refresh_token":"refresh-rotate"}`)
+	rotated, err := store.Rotate(ctx, RotateCredentialInput{
+		TenantID: fixture.tenantID, ProviderAccountID: fixture.providerAccountID, CredentialID: created.ID,
+		Payload: rotatePayload, ActorID: "owner", ExternalAccountID: "workspace-b",
+		ExternalSubjectID: "subject-b", ExternalAccountEmail: "subject-b@example.test",
+		ExternalIdentitySource: "provider_exchange_b",
+	})
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	assertCredentialIdentityFingerprint(t, ctx, pool, created.ID, "workspace-b", "subject-b", "provider_exchange_b",
+		CredentialMaterialFingerprint(fixture.tenantID, VendorOpenAI, AuthModeCodexCLIOAuth, rotatePayload))
+	fingerprintBeforeRefresh := CredentialMaterialFingerprint(fixture.tenantID, VendorOpenAI, AuthModeCodexCLIOAuth, rotatePayload)
+
+	rec := credentialRecordForID(t, ctx, pool, created.ID)
+	if rec.CredentialVersion != rotated.Version {
+		t.Fatalf("record version=%d want %d", rec.CredentialVersion, rotated.Version)
+	}
+	refreshPayload := []byte(`{"access_token":"access-refresh","refresh_token":"refresh-next"}`)
+	if err := store.SaveRefreshSuccess(ctx, rec, refreshPayload, time.Time{}, "refresh_succeeded"); err != nil {
+		t.Fatalf("SaveRefreshSuccess: %v", err)
+	}
+	assertCredentialIdentityFingerprint(t, ctx, pool, created.ID, "workspace-b", "subject-b", "provider_exchange_b",
+		fingerprintBeforeRefresh)
+}
+
+func TestCredentialRefreshBackfillsNullAndEmptyMaterialFingerprint(t *testing.T) {
+	ctx, pool := openCredentialAuditTxPool(t)
+	fixture := seedCredentialAuditTxFixture(t, ctx, pool, "fingerprint-backfill")
+	defer cleanupCredentialAuditTxFixture(t, context.Background(), pool, fixture)
+	store := NewStore(pool, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	created, err := store.Create(ctx, CreateCredentialInput{
+		TenantID: fixture.tenantID, ProviderAccountID: fixture.providerAccountID,
+		Vendor: VendorOpenAI, AuthMode: AuthModeCodexCLIOAuth,
+		Payload: []byte(`{"access_token":"access-create","refresh_token":"refresh-create"}`),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		clearValue any
+		payload    []byte
+	}{
+		{
+			name:       "null",
+			clearValue: nil,
+			payload:    []byte(`{"access_token":"access-null","refresh_token":"refresh-null"}`),
+		},
+		{
+			name:       "empty",
+			clearValue: "",
+			payload:    []byte(`{"access_token":"access-empty","refresh_token":"refresh-empty"}`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := pool.Exec(ctx,
+				`UPDATE account_credentials SET credential_material_fingerprint=$1 WHERE id=$2`,
+				tt.clearValue, created.ID,
+			); err != nil {
+				t.Fatalf("clear fingerprint: %v", err)
+			}
+			rec := credentialRecordForID(t, ctx, pool, created.ID)
+			if err := store.SaveRefreshSuccess(ctx, rec, tt.payload, time.Time{}, "refresh_succeeded"); err != nil {
+				t.Fatalf("SaveRefreshSuccess: %v", err)
+			}
+			want := CredentialMaterialFingerprint(
+				fixture.tenantID,
+				VendorOpenAI,
+				AuthModeCodexCLIOAuth,
+				tt.payload,
+			)
+			if got := credentialAuditSnapshotForID(t, ctx, pool, created.ID).AccessFingerprint; got != want {
+				t.Fatalf("backfilled fingerprint=%q want %q", got, want)
+			}
+		})
 	}
 }
 
@@ -343,13 +465,48 @@ func credentialAuditSnapshotForID(t *testing.T, ctx context.Context, pool *pgxpo
 	var s credentialAuditSnapshot
 	if err := pool.QueryRow(ctx, `
 		SELECT state, credential_version, COALESCE(payload_fingerprint, ''), COALESCE(refresh_token_fingerprint, ''),
-		       COALESCE(last_refresh_outcome, ''), COALESCE(failure_class, ''), failure_count
-		FROM account_credentials WHERE id=$1 AND deleted_at IS NULL`, credentialID).Scan(
-		&s.State, &s.Version, &s.PayloadFingerprint, &s.RefreshFingerprint, &s.LastOutcome, &s.FailureClass, &s.FailureCount,
+		       COALESCE(credential_material_fingerprint, ''),
+		       COALESCE(external_account_id, ''), COALESCE(external_subject_id, ''),
+		       COALESCE(external_account_email, ''), COALESCE(external_identity_source, ''),
+		       COALESCE(last_refresh_outcome, ''),
+		       COALESCE(failure_class, ''), failure_count
+			FROM account_credentials WHERE id=$1 AND deleted_at IS NULL`, credentialID).Scan(
+		&s.State, &s.Version, &s.PayloadFingerprint, &s.RefreshFingerprint, &s.AccessFingerprint,
+		&s.ExternalAccountID, &s.ExternalSubjectID, &s.ExternalEmail, &s.IdentitySource,
+		&s.LastOutcome, &s.FailureClass, &s.FailureCount,
 	); err != nil {
 		t.Fatalf("credential snapshot: %v", err)
 	}
 	return s
+}
+
+func assertCredentialIdentityFingerprint(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	credentialID int64,
+	wantAccountID string,
+	wantSubjectID string,
+	wantIdentitySource string,
+	wantFingerprint string,
+) {
+	t.Helper()
+	var accountID, subjectID, identitySource, fingerprint string
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(external_account_id, ''), COALESCE(external_subject_id, ''),
+		       COALESCE(external_identity_source, ''), COALESCE(credential_material_fingerprint, '')
+		FROM account_credentials
+		WHERE id=$1 AND deleted_at IS NULL`, credentialID).Scan(
+		&accountID, &subjectID, &identitySource, &fingerprint,
+	); err != nil {
+		t.Fatalf("query credential identity: %v", err)
+	}
+	if accountID != wantAccountID || subjectID != wantSubjectID ||
+		identitySource != wantIdentitySource || fingerprint != wantFingerprint {
+		t.Fatalf("identity account=%q subject=%q source=%q fingerprint=%q，期望 %q/%q/%q/%q",
+			accountID, subjectID, identitySource, fingerprint,
+			wantAccountID, wantSubjectID, wantIdentitySource, wantFingerprint)
+	}
 }
 
 func credentialRecordForID(t *testing.T, ctx context.Context, pool *pgxpool.Pool, credentialID int64) CredentialRecord {

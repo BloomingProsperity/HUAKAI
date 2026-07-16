@@ -132,6 +132,32 @@ func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCred
 	}
 }
 
+// 缺陷：helper CLI 导入若只把 JSON 当凭据 payload，生产 finalize 链创建的
+// credential 会丢失账号作用域和个人主体，后续预检无法识别同一上游账号。
+// 判别变异：删除 ParseImportContent 的身份挂接后，创建输入的身份断言会变红。
+func TestAdminCredentialAcquisitionCLIImportFinalizesExtractedIdentity(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
+	rec := fx.do(t, http.MethodPost, "/admin/v1/credentials/cli-import", `{
+		"tenant_id":1,
+		"provider_account_id":101,
+		"finalize":true,
+		"content":"{\"account_id\":\"workspace-helper\",\"chatgpt_user_id\":\"subject-helper\",\"email\":\"helper@example.test\",\"access_token\":\"access-helper\",\"refresh_token\":\"refresh-helper\"}"
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	created := fx.creator.inputsSnapshot()
+	if len(created) != 1 {
+		t.Fatalf("created credentials=%d want 1", len(created))
+	}
+	got := created[0]
+	if got.ExternalAccountID != "workspace-helper" ||
+		got.ExternalSubjectID != "subject-helper" ||
+		got.ExternalAccountEmail != "helper@example.test" {
+		t.Fatalf("created identity=%+v", got)
+	}
+}
+
 // 缺陷：浏览器 OAuth 回跳没有 Bearer，helper callback 若继续解析 admin token 会永远 401。
 // 判别变异：恢复 callback handler 的 Bearer 闸时，本测试必须因 401 变红。
 func TestOAuthBrowserCallbackCompletesWithoutBearer(t *testing.T) {

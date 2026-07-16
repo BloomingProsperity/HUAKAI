@@ -92,6 +92,39 @@ func TestOpenAPI_ProviderAccountOperationsAndBulkResultContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_AccountCredentialIdentityContractExcludesFingerprint(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	source := string(raw)
+	for _, schema := range []string{
+		"AccountCredentialMetadata:",
+		"AccountCredentialWriteRequest:",
+		"AccountCredentialRotateRequest:",
+	} {
+		block := yamlSchemaBlock(source, schema)
+		if !strings.Contains(block, "\n        external_subject_id:") {
+			t.Errorf("%s 缺 external_subject_id", schema)
+		}
+		for _, internalProperty := range []string{"credential_material_fingerprint", "external_identity_source"} {
+			if strings.Contains(block, internalProperty) {
+				t.Errorf("%s 不得暴露内部字段 %s", schema, internalProperty)
+			}
+		}
+	}
+	rotateBlock := yamlSchemaBlock(source, "AccountCredentialRotateRequest:")
+	for _, property := range []string{"external_account_id", "external_subject_id", "external_account_email"} {
+		if !strings.Contains(rotateBlock, "\n        "+property+":") {
+			t.Errorf("AccountCredentialRotateRequest 缺字段 %s", property)
+		}
+	}
+}
+
 // TestOpenAPI_ProxyAdminMethodParity 钉死 /admin/v1/proxies 的 method 维度:
 // 全局 path-集合一致性测试只比 path,抓不到「共享 path 上掉了一个 method」。
 // 代理管理的 POST(建)/PATCH(改)/DELETE(软删)都与 GET 共享 path

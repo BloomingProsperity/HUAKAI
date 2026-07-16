@@ -24,9 +24,13 @@ or genuine forks. One PR per slice; report after each.
 1. **Verify real code — never trust snapshots or memory.** Before any claim / estimate / menu / "X is unbuilt",
    `grep`/read the *actual current branch* and show the evidence. Negative claims especially must be
    code-disproven first. (This repo's audit snapshots have been wrong; the code is the only truth.)
-2. **Owner-gated (require sign-off):** money / billing / quota-enforcement, DB schema migration, auth-core
-   (login / 2FA / token / session / RBAC / passkey), deployment, new runtime dependencies, **and any
-   default-behavior flip**.
+2. **Owner decision gate is a project-wide three-factor AND:** after Owner start, defer an implementation
+   choice only when mature projects materially disagree **and** no source-verified mature precedent/safe
+   equivalent exists **and** a wrong choice can cause high harm. One or two factors alone do not justify
+   stopping: proceed with evidence, discriminating tests, rollback/gating, and recorded risk. This applies
+   to money / billing / quota-enforcement, DB schema, auth-core, runtime dependencies, and default-behavior
+   changes alike. Independent asset/release gates remain: no PR merge, production deployment, real-secret
+   handling, `LICENSE` change, or destructive operation without its separately required Owner approval.
 3. **Clean-room:** research all three mirrors (sub2api / new-api / CLIProxyAPI) before a feature (§16); never
    reproduce upstream identifiers / comments / code verbatim — paraphrase; `file:line` cites are allowed but
    the cited identifier must not appear verbatim in surrounding prose; cite production code, not tests.
@@ -216,7 +220,11 @@ License risk and security risk must not reduce functionality. If a feature is ri
 
 ## Risk-Based Confirmation Rule
 
-Low-risk docs, tests, prompts, type fixes, UI copy, small refactors, and non-sensitive config examples may proceed after Owner start. Medium-risk implementation support may proceed when needed with recorded reason and risk. High-risk changes require Owner confirmation, including `LICENSE`, production secrets, real credentials, payment logic, authentication core, billing ledger, quota enforcement, database schema, deployment scripts, destructive migration files, destructive shell commands, new runtime dependencies, and production deployment.
+Low-risk docs, tests, prompts, type fixes, UI copy, small refactors, and non-sensitive config examples may proceed after Owner start. Medium-risk implementation support proceeds with recorded reason and risk. High-risk classification requires stronger evidence, discriminating tests, rollback design, and review, but does not by itself require stopping.
+
+The project-wide decision gate is conjunctive: pause an implementation choice for Owner approval only when (1) source-verified mature projects materially disagree, (2) no source-verified mature precedent or safe equivalent applies, and (3) a wrong choice can cause high harm. The relationship is `1 AND 2 AND 3`, not `OR`, and applies to every module, goal, and agent. If all three are true, continue unrelated executable work and collect the decision at the end. Unknown reference evidence must be investigated through the clean-room workflow rather than treated as absence.
+
+Independent asset and release controls remain explicit Owner gates: merging a PR, production deployment, touching real secrets, changing `LICENSE`, and destructive operations. These controls do not turn ordinary implementation uncertainty into a stop condition.
 
 ## Parallel-Edit Coordination (added 2026-05-30 Owner directive)
 

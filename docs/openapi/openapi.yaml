@@ -18885,6 +18885,12 @@ components:
             Upstream provider account identifier, auto-extracted from the OAuth token-exchange
             response / id_token at acquisition (or operator-supplied for manual binding). Omitted
             when not captured. Non-secret account-management metadata; never an authorization input.
+        external_subject_id:
+          type: string
+          description: >-
+            Upstream personal subject identifier captured from the credential acquisition response
+            or ID token. Omitted when unavailable. Tenant-scoped account-management metadata only;
+            never an authorization, billing, or quota input.
         external_account_email:
           type: string
           description: Upstream provider account email captured alongside external_account_id. Omitted when not captured.
@@ -18968,6 +18974,9 @@ components:
             For OAuth modes this is auto-extracted from the token-exchange response; the manual
             value is an override/fallback used when no auto-extraction occurred. Non-secret
             account-management metadata; never an authorization input.
+        external_subject_id:
+          type: string
+          description: Optional operator-supplied upstream personal subject identifier for manual binding fallback.
         external_account_email:
           type: string
           description: Optional operator-supplied upstream provider account email (manual binding fallback).
@@ -18985,6 +18994,15 @@ components:
           writeOnly: true
           description: Raw credential payload. The server stores encrypted material and never returns this field.
         reason: { type: string }
+        external_account_id:
+          type: string
+          description: Optional replacement upstream provider account identifier.
+        external_subject_id:
+          type: string
+          description: Optional replacement upstream personal subject identifier.
+        external_account_email:
+          type: string
+          description: Optional replacement upstream provider account email.
 
     AccountCredentialStateRequest:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]

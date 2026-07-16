@@ -165,11 +165,12 @@ type CredentialCandidate struct {
 	Payload           []byte
 	ActorID           string
 	RedactedContext   map[string]any
-	// ExternalAccountID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
+	// ExternalAccountID/ExternalSubjectID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
 	// 自动提取出的上游 provider 账号身份(accountident)。
 	// 它们属于非机密的账号管理元数据,绝非授权输入,
 	// 当提取无结果时为空(手工/operator 值优先)。
 	ExternalAccountID    string
+	ExternalSubjectID    string
 	ExternalAccountEmail string
 	AccountIDSource      string
 }

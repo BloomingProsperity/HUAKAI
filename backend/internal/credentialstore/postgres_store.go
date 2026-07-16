@@ -66,16 +66,22 @@ type CreateCredentialInput struct {
 	ActorID           string
 	// ExternalAccountID/ExternalAccountEmail 是在 acquisition 时自动提取的上游 provider
 	// 账号标识(非密钥,可查询的元数据)。空值以 SQL NULL 存储,而非空字符串。
-	ExternalAccountID    string
-	ExternalAccountEmail string
+	ExternalAccountID      string
+	ExternalSubjectID      string
+	ExternalAccountEmail   string
+	ExternalIdentitySource string
 }
 
 type RotateCredentialInput struct {
-	TenantID          int64
-	ProviderAccountID int64
-	CredentialID      int64
-	Payload           []byte
-	ActorID           string
+	TenantID               int64
+	ProviderAccountID      int64
+	CredentialID           int64
+	Payload                []byte
+	ActorID                string
+	ExternalAccountID      string
+	ExternalSubjectID      string
+	ExternalAccountEmail   string
+	ExternalIdentitySource string
 }
 
 type CredentialRecord struct {
@@ -131,6 +137,7 @@ type CredentialMetadata struct {
 	// ExternalAccountID/ExternalAccountEmail 向 admin API/UI 暴露自动提取的上游 provider
 	// 账号标识。未捕获到时为 nil。
 	ExternalAccountID    *string   `json:"external_account_id,omitempty"`
+	ExternalSubjectID    *string   `json:"external_subject_id,omitempty"`
 	ExternalAccountEmail *string   `json:"external_account_email,omitempty"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
@@ -304,35 +311,40 @@ func (s *Store) Create(ctx context.Context, in CreateCredentialInput) (Credentia
 INSERT INTO account_credentials (
     tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
     encrypted_payload, encryption_scheme, key_id, nonce, aad_hash,
-    payload_fingerprint, refresh_token_fingerprint,
+    payload_fingerprint, refresh_token_fingerprint, credential_material_fingerprint,
     access_expires_at, refresh_expires_at, refresh_before_at,
     created_by_actor, last_modified_by_actor,
-    external_account_id, external_account_email, project_ref
+    external_account_id, external_subject_id, external_account_email,
+    external_identity_source, project_ref
 ) VALUES (
     $1, $2, $3, $4, 'active', 1,
     $5, $6, $7, $8, $9,
-    $10, $11,
-    $12, $13, $14,
-    NULLIF($15, ''), NULLIF($15, ''),
-    NULLIF($16, ''), NULLIF($17, ''), $18
+    $10, $11, NULLIF($12, ''),
+    $13, $14, $15,
+    NULLIF($16, ''), NULLIF($16, ''),
+    NULLIF($17, ''), NULLIF($18, ''), NULLIF($19, ''),
+    NULLIF($20, ''), $21
 )
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-          failure_class, failure_count, external_account_id, external_account_email, project_ref, created_at, updated_at`
+          failure_class, failure_count, external_account_id, external_subject_id,
+          external_account_email, project_ref, created_at, updated_at`
 	var meta CredentialMetadata
 	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		var rec credentialMetadataRow
 		if err := txStore.db.QueryRow(ctx, q,
 			in.TenantID, in.ProviderAccountID, in.Vendor, in.AuthMode,
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
 			strings.TrimSpace(in.ActorID),
-			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalAccountEmail),
+			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalSubjectID), strings.TrimSpace(in.ExternalAccountEmail),
+			strings.TrimSpace(in.ExternalIdentitySource),
 			prepared.projectRef,
 		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalSubjectID,
+			&rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
 		meta = rec.metadata()
@@ -388,36 +400,46 @@ SET encrypted_payload = $1,
     aad_hash = $5,
     payload_fingerprint = $6,
     refresh_token_fingerprint = $7,
-    access_expires_at = $8,
-    refresh_expires_at = $9,
-    refresh_before_at = $10,
-    project_ref = $11,
+    credential_material_fingerprint = NULLIF($8, ''),
+    access_expires_at = $9,
+    refresh_expires_at = $10,
+    refresh_before_at = $11,
+    project_ref = $12,
+    external_account_id = COALESCE(NULLIF($14, ''), external_account_id),
+    external_subject_id = COALESCE(NULLIF($15, ''), external_subject_id),
+    external_account_email = COALESCE(NULLIF($16, ''), external_account_email),
+    external_identity_source = COALESCE(NULLIF($17, ''), external_identity_source),
     state = 'active',
     credential_version = credential_version + 1,
     failure_class = NULL,
     failure_count = 0,
     next_attempt_at = NULL,
     updated_at = NOW(),
-    last_modified_by_actor = NULLIF($12, '')
-WHERE id = $13
-  AND tenant_id = $14
-  AND provider_account_id = $15
+    last_modified_by_actor = NULLIF($13, '')
+WHERE id = $18
+  AND tenant_id = $19
+  AND provider_account_id = $20
   AND deleted_at IS NULL
-  AND credential_version = $16
+  AND credential_version = $21
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-          failure_class, failure_count, project_ref, created_at, updated_at`
+          failure_class, failure_count, external_account_id, external_subject_id,
+          external_account_email, project_ref, created_at, updated_at`
 	var meta CredentialMetadata
 	err = s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		var rec credentialMetadataRow
 		if err := txStore.db.QueryRow(ctx, q,
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			prepared.projectRef, strings.TrimSpace(in.ActorID), current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
+			prepared.projectRef, strings.TrimSpace(in.ActorID),
+			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalSubjectID), strings.TrimSpace(in.ExternalAccountEmail),
+			strings.TrimSpace(in.ExternalIdentitySource),
+			current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
 		).Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalSubjectID,
+			&rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
 			}
@@ -447,7 +469,8 @@ func (s *Store) ListByAccount(ctx context.Context, tenantID, providerAccountID i
 	const q = `
 SELECT id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
        access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
-       failure_class, failure_count, external_account_id, external_account_email, project_ref, created_at, updated_at
+       failure_class, failure_count, external_account_id, external_subject_id,
+       external_account_email, project_ref, created_at, updated_at
 FROM account_credentials
 WHERE tenant_id = $1
   AND provider_account_id = $2
@@ -463,7 +486,8 @@ ORDER BY updated_at DESC, id DESC`
 		var rec credentialMetadataRow
 		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ProviderAccountID, &rec.Vendor, &rec.AuthMode, &rec.State, &rec.Version,
 			&rec.AccessExpiresAt, &rec.RefreshBeforeAt, &rec.LastRefreshAt, &rec.LastRefreshOutcome,
-			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			&rec.FailureClass, &rec.FailureCount, &rec.ExternalAccountID, &rec.ExternalSubjectID,
+			&rec.ExternalAccountEmail, &rec.ProjectRef, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, rec.metadata())
@@ -939,23 +963,27 @@ SET encrypted_payload = $1,
     aad_hash = $5,
     payload_fingerprint = $6,
     refresh_token_fingerprint = $7,
-    access_expires_at = $8,
-    refresh_expires_at = $9,
-    refresh_before_at = $10,
-    project_ref = $11,
+    credential_material_fingerprint = COALESCE(
+        NULLIF(credential_material_fingerprint, ''),
+        NULLIF($8, '')
+    ),
+    access_expires_at = $9,
+    refresh_expires_at = $10,
+    refresh_before_at = $11,
+    project_ref = $12,
     state = 'active',
     credential_version = credential_version + 1,
     last_refresh_at = NOW(),
-    last_refresh_outcome = $12,
+    last_refresh_outcome = $13,
     failure_class = NULL,
     failure_count = 0,
-    next_attempt_at = $17,
+    next_attempt_at = $18,
     updated_at = NOW()
-WHERE id = $13
-  AND tenant_id = $14
-  AND provider_account_id = $15
+WHERE id = $14
+  AND tenant_id = $15
+  AND provider_account_id = $16
   AND deleted_at IS NULL
-  AND credential_version = $16`
+  AND credential_version = $17`
 	now := time.Now().UTC()
 	// 计算 next_attempt_at:正常有效 refresh 时为 NULL,无效时做节流。
 	// 当 accessExpiresAt 为零(无过期信息)时 refreshBeforeAt 为零;此时视为有效。
@@ -966,7 +994,7 @@ WHERE id = $13
 	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
 		tag, err := txStore.db.Exec(ctx, q,
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-			prepared.payloadFingerprint, prepared.refreshFingerprint,
+			prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
 			prepared.projectRef, outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
 		)
@@ -1161,13 +1189,14 @@ func (s *Store) ensureProviderAccountTenant(ctx context.Context, tenantID, provi
 }
 
 type preparedEnvelope struct {
-	env                Envelope
-	payloadFingerprint *string
-	refreshFingerprint *string
-	accessExpiresAt    time.Time
-	refreshExpiresAt   time.Time
-	refreshBeforeAt    time.Time
-	projectRef         *string
+	env                 Envelope
+	payloadFingerprint  *string
+	refreshFingerprint  *string
+	materialFingerprint *string
+	accessExpiresAt     time.Time
+	refreshExpiresAt    time.Time
+	refreshBeforeAt     time.Time
+	projectRef          *string
 }
 
 func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID int64, vendor, authMode string, version int32, payload []byte, handler ModeHandler) (preparedEnvelope, error) {
@@ -1200,13 +1229,14 @@ func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID
 		}
 	}
 	return preparedEnvelope{
-		env:                env,
-		payloadFingerprint: stringPtr(payloadFP),
-		refreshFingerprint: stringPtr(refreshFP),
-		accessExpiresAt:    accessExp,
-		refreshExpiresAt:   refreshExp,
-		refreshBeforeAt:    refreshBefore,
-		projectRef:         stringPtr(fieldString(fields, "project_id")),
+		env:                 env,
+		payloadFingerprint:  stringPtr(payloadFP),
+		refreshFingerprint:  stringPtr(refreshFP),
+		materialFingerprint: stringPtr(CredentialMaterialFingerprint(tenantID, vendor, authMode, payload)),
+		accessExpiresAt:     accessExp,
+		refreshExpiresAt:    refreshExp,
+		refreshBeforeAt:     refreshBefore,
+		projectRef:          stringPtr(fieldString(fields, "project_id")),
 	}, nil
 }
 
@@ -1296,6 +1326,7 @@ type credentialMetadataRow struct {
 	FailureClass         *string
 	FailureCount         int32
 	ExternalAccountID    *string
+	ExternalSubjectID    *string
 	ExternalAccountEmail *string
 	ProjectRef           *string
 	CreatedAt            pgtype.Timestamptz
@@ -1310,8 +1341,9 @@ func (r credentialMetadataRow) metadata() CredentialMetadata {
 		LastRefreshAt: optionalTime(r.LastRefreshAt), LastRefreshOutcome: r.LastRefreshOutcome,
 		FailureClass: r.FailureClass, FailureCount: r.FailureCount,
 		ProjectRef:        trimmedNonEmpty(r.ProjectRef),
-		ExternalAccountID: trimmedNonEmpty(r.ExternalAccountID), ExternalAccountEmail: trimmedNonEmpty(r.ExternalAccountEmail),
-		CreatedAt: pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
+		ExternalAccountID: trimmedNonEmpty(r.ExternalAccountID), ExternalSubjectID: trimmedNonEmpty(r.ExternalSubjectID),
+		ExternalAccountEmail: trimmedNonEmpty(r.ExternalAccountEmail),
+		CreatedAt:            pgTime(r.CreatedAt), UpdatedAt: pgTime(r.UpdatedAt),
 	}
 }
 

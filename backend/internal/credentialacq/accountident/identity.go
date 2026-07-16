@@ -17,13 +17,14 @@ import (
 	"strings"
 )
 
-// Identity.Source 的来源标识值。它们让 admin 界面能区分自动探测出的上游 id
-// 与 operator 手动录入的回退值，并供审计使用。
+// Identity.Source 的来源标识值。它们区分 provider token 交换中捕获的账号元数据、
+// 导入声明与 operator 手工录入值，供账号接入预检决定能否自动匹配已有账号。
 const (
 	SourceManual             = "manual"
 	SourceAnthropicAccountID = "anthropic_account_uuid"
 	SourceChatGPTJWTClaim    = "chatgpt_jwt_claim"
 	SourceGoogleIDTokenSub   = "google_id_token_sub"
+	SourceImportPayload      = "import_payload"
 )
 
 // openAIAuthClaimKey 是 ChatGPT/Codex id_token 中带命名空间的自定义 claim，
@@ -36,13 +37,14 @@ const openAIAuthClaimKey = "https://api.openai.com/auth"
 // 任何结果，应以 manual/operator 录入的值为准。
 type Identity struct {
 	AccountID string
+	SubjectID string
 	Email     string
 	Source    string
 }
 
-// Empty 报告该 identity 是否不携带任何上游 account id。
+// Empty 报告该 identity 是否不携带任何可用的上游账号或个人主体标识。
 func (i Identity) Empty() bool {
-	return strings.TrimSpace(i.AccountID) == ""
+	return strings.TrimSpace(i.AccountID) == "" && strings.TrimSpace(i.SubjectID) == ""
 }
 
 // manualIdentity 是 fail-open 的结果：无 id、无 email、来源为 manual。
@@ -51,7 +53,7 @@ func manualIdentity() Identity {
 }
 
 // ParseJWTClaimsUnverified 按 "." 切分 compact JWT，对 payload 段做 base64url 解码
-//（补回 compact 编码省略的 padding），再反序列化成一个通用的 claims map。签名有意
+// （补回 compact 编码省略的 padding），再反序列化成一个通用的 claims map。签名有意
 // 不做验证：这是对 provider auth server 已经颁发的 token 做身份元数据自省，
 // 不是一个认证步骤。调用方必须把结果当作不可信的展示用元数据来对待。
 func ParseJWTClaimsUnverified(idToken string) (map[string]any, error) {
@@ -75,7 +77,7 @@ func ParseJWTClaimsUnverified(idToken string) (map[string]any, error) {
 }
 
 // decodeBase64URLSegment 解码一个可能缺少尾部 padding 的 base64url 段
-//（compact JWT 序列化会丢弃 padding）。它补回 padding，使固定字母表的解码器
+// （compact JWT 序列化会丢弃 padding）。它补回 padding，使固定字母表的解码器
 // 能够读取它；没有这一步，长度不是 4 的倍数的段会解码失败。
 func decodeBase64URLSegment(segment string) ([]byte, error) {
 	segment = strings.TrimSpace(segment)
@@ -106,23 +108,30 @@ func ExtractAnthropic(accountUUID, accountEmail, topEmail string) Identity {
 // 然后是 token-body 值，再然后是标准的 subject claim。Email 取自 email claim。
 // 格式错误/为空的 id_token 不会中止流程：若存在 body 回退值仍会使用它，
 // 否则返回一个 manual 的 Identity。
-func ExtractChatGPT(idToken, bodyAccountID string) Identity {
+func ExtractChatGPT(idToken, bodyAccountID, bodySubjectID string) Identity {
 	bodyAccountID = strings.TrimSpace(bodyAccountID)
+	bodySubjectID = strings.TrimSpace(bodySubjectID)
 	claims, err := ParseJWTClaimsUnverified(idToken)
 	if err != nil {
-		if bodyAccountID != "" {
-			return Identity{AccountID: bodyAccountID, Source: SourceChatGPTJWTClaim}
+		accountID := firstNonEmpty(bodyAccountID, bodySubjectID)
+		if accountID != "" {
+			return Identity{
+				AccountID: accountID,
+				SubjectID: bodySubjectID,
+				Source:    SourceChatGPTJWTClaim,
+			}
 		}
 		return manualIdentity()
 	}
 	claimAccountID := chatgptAccountIDFromClaims(claims)
-	subject := stringClaim(claims, "sub")
+	subject := firstNonEmpty(stringClaim(claims, "sub"), bodySubjectID)
 	accountID := firstNonEmpty(claimAccountID, bodyAccountID, subject)
 	if accountID == "" {
 		return manualIdentity()
 	}
 	return Identity{
 		AccountID: accountID,
+		SubjectID: subject,
 		Email:     stringClaim(claims, "email"),
 		Source:    SourceChatGPTJWTClaim,
 	}
@@ -143,6 +152,7 @@ func ExtractGemini(idToken, userinfoEmail string) Identity {
 	}
 	return Identity{
 		AccountID: subject,
+		SubjectID: subject,
 		Email:     firstNonEmpty(stringClaim(claims, "email"), userinfoEmail),
 		Source:    SourceGoogleIDTokenSub,
 	}

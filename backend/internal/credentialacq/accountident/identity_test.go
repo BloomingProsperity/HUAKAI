@@ -73,10 +73,13 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 	}
 	token := buildJWT(t, claims, false)
 
-	id := ExtractChatGPT(token, "acct-FROM-BODY")
+	id := ExtractChatGPT(token, "acct-FROM-BODY", "user-from-body")
 	if id.AccountID != "acct-FROM-JWT" {
 		// 变异：返回 body 值或 sub 而非该 claim -> 变红。
 		t.Fatalf("AccountID = %q, want acct-FROM-JWT (claim must win over body and sub)", id.AccountID)
+	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
 	}
 	if id.Source != SourceChatGPTJWTClaim {
 		t.Fatalf("Source = %q, want %q", id.Source, SourceChatGPTJWTClaim)
@@ -90,15 +93,21 @@ func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
 	// 没有 auth claim -> body 优先于 sub。
 	claims := map[string]any{"sub": "u-sub"}
 	token := buildJWT(t, claims, false)
-	id := ExtractChatGPT(token, "acct-FROM-BODY")
+	id := ExtractChatGPT(token, "acct-FROM-BODY", "user-from-body")
 	if id.AccountID != "acct-FROM-BODY" {
 		t.Fatalf("AccountID = %q, want acct-FROM-BODY (body must win over sub when claim absent)", id.AccountID)
 	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
+	}
 
 	// 没有 auth claim、也没有 body -> sub 作为最后兜底。
-	id = ExtractChatGPT(token, "")
+	id = ExtractChatGPT(token, "", "")
 	if id.AccountID != "u-sub" {
 		t.Fatalf("AccountID = %q, want u-sub (sub is last-resort)", id.AccountID)
+	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
 	}
 }
 
@@ -134,7 +143,7 @@ func TestExtract_FailClosedToManual(t *testing.T) {
 		}
 
 		// ChatGPT 且无 body 回退 -> manual。
-		if id := ExtractChatGPT(bad, ""); id.Source != SourceManual || id.AccountID != "" {
+		if id := ExtractChatGPT(bad, "", ""); id.Source != SourceManual || id.AccountID != "" {
 			// 变异：若提取器在此处把解码 error 传播出去，或返回了一个
 			// 非 manual 的 identity，则此处变红。
 			t.Fatalf("ExtractChatGPT(%q): got %+v, want empty manual identity", bad, id)
@@ -152,12 +161,27 @@ func TestExtract_FailClosedToManual(t *testing.T) {
 	}
 }
 
+func TestExtractChatGPTUsesBodySubjectWhenIDTokenIsAbsent(t *testing.T) {
+	id := ExtractChatGPT("", "workspace-body", "user-body")
+	if id.AccountID != "workspace-body" || id.SubjectID != "user-body" {
+		t.Fatalf("identity=%+v，期望保留 body 中的账号作用域和个人主体", id)
+	}
+
+	id = ExtractChatGPT("", "", "user-only")
+	if id.AccountID != "user-only" || id.SubjectID != "user-only" {
+		t.Fatalf("identity=%+v，只有个人主体时应兼容填充账号标识", id)
+	}
+}
+
 func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 	claims := map[string]any{"sub": "g-sub-1", "email": "g@x.com"}
 	token := buildJWT(t, claims, false)
 	id := ExtractGemini(token, "userinfo@x.com")
 	if id.AccountID != "g-sub-1" {
 		t.Fatalf("AccountID = %q, want g-sub-1", id.AccountID)
+	}
+	if id.SubjectID != "g-sub-1" {
+		t.Fatalf("SubjectID = %q, want g-sub-1", id.SubjectID)
 	}
 	if id.Email != "g@x.com" {
 		t.Fatalf("Email = %q, want g@x.com (email claim wins over userinfo fallback)", id.Email)

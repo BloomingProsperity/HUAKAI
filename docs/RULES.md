@@ -1,6 +1,6 @@
 # HUAKAI 规则清单（Rules Manifest）
 
-> **每次 PM session 开头必读这一份。** 70+ 份规则散文件不可能每次都加载，本文件是浓缩版"宪法"——每条 binding 规则一行 + 来源指针。规则原文以来源文件为权威；本文件是导航。最近刷新：**2026-06-04**。
+> **每次 PM session 开头必读这一份。** 70+ 份规则散文件不可能每次都加载，本文件是浓缩版"宪法"——每条 binding 规则一行 + 来源指针。规则原文以来源文件为权威；本文件是导航。最近刷新：**2026-07-16**。
 
 ## 0. 关于本文件
 
@@ -24,7 +24,10 @@
 | ID | 规则 | 来源 |
 | --- | --- | --- |
 | S-001 | Agent 不在 Owner 明确"开始/Proceed/确认开始/开干"等信号前推进实现 | [00](00_PM_OPERATING_SYSTEM.md) |
-| S-002 | Owner 给出 start signal 后，agent 主动跑——低风险直接做，中风险记录原因，高风险停下问 | [00 §Risk-Based Confirmation](00_PM_OPERATING_SYSTEM.md) |
+| S-002 | Owner 给出 start signal 后，agent 主动跑；风险等级决定证据、测试、回滚和审查强度，不单独决定停工 | [AGENTS.md §Project-Wide Three-Factor Owner Decision Gate](../AGENTS.md#project-wide-three-factor-owner-decision-gate) |
+| S-003 | 全项目、全模块、全目标、所有 agent 统一使用三项同时命中门：成熟项目做法有实质分歧 **且** 没有经源码核实的成熟先例或 Safe Equivalent **且** 选错可能造成高危，三项同时成立才留给 Owner 审批；命中一项或两项必须继续做 | [AGENTS.md §Project-Wide Three-Factor Owner Decision Gate](../AGENTS.md#project-wide-three-factor-owner-decision-gate), [CLAUDE.md §Risk-Based Confirmation Rule](../CLAUDE.md#risk-based-confirmation-rule) |
+| S-004 | 三项同时命中时不得卡住整个目标：先完成其他可执行工作，最后集中提交决策；未知参考证据先按 clean-room 流程查证，不能直接当成“成熟项目没有” | 同上 |
+| S-005 | PR 合并、生产部署、真实秘密、`LICENSE` 和破坏性操作仍是独立资产/发布硬门，不受 S-003 的工程决策门替代 | 同上 |
 
 ## 3. Clean-Room（Phase 1 起到永远）
 
@@ -185,4 +188,3 @@
 | ID | 规则 |
 | --- | --- |
 | CB-001 | **反检测/反封号规避工具不做**：冒充第一方客户端、绕过上游检测/访问控制（R7 `ApplyMimicryPlan` 请求体伪装）= **park**。D-R3-A 仍待 Owner 裁决；PM 立场为只走合规版（transport policy + 出站诊断，不做指纹复刻）。 |
-

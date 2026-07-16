@@ -15,6 +15,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
@@ -45,10 +46,11 @@ type credentialWriteRequest struct {
 	AuthMode    string          `json:"auth_mode"`
 	Credentials json.RawMessage `json:"credentials"`
 	Reason      string          `json:"reason,omitempty"`
-	// ExternalAccountID/ExternalAccountEmail 是运营者在手动创建路径中提供的上游账号
+	// ExternalAccountID/ExternalSubjectID/ExternalAccountEmail 是运营者在手动创建路径中提供的上游账号
 	// 身份。OAuth token 交换时的自动提取是主要来源；当没有走 OAuth 流程时，
-	// 这两个字段作为手动覆盖/兜底。
+	// 这些字段作为手动覆盖/兜底。
 	ExternalAccountID    string `json:"external_account_id,omitempty"`
+	ExternalSubjectID    string `json:"external_subject_id,omitempty"`
 	ExternalAccountEmail string `json:"external_account_email,omitempty"`
 }
 
@@ -171,8 +173,10 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 			TenantID: req.TenantID, ProviderAccountID: accountID,
 			Vendor: req.Vendor, AuthMode: req.AuthMode,
 			Payload: req.Credentials, ActorID: ident.AuditActor(),
-			ExternalAccountID:    req.ExternalAccountID,
-			ExternalAccountEmail: req.ExternalAccountEmail,
+			ExternalAccountID:      req.ExternalAccountID,
+			ExternalSubjectID:      req.ExternalSubjectID,
+			ExternalAccountEmail:   req.ExternalAccountEmail,
+			ExternalIdentitySource: manualIdentitySource(req),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_create_failed", err.Error())
@@ -196,6 +200,9 @@ func newRotateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		meta, err := d.Credentials.Rotate(r.Context(), credentialstore.RotateCredentialInput{
 			TenantID: req.TenantID, ProviderAccountID: accountID, CredentialID: credentialID,
 			Payload: req.Credentials, ActorID: ident.AuditActor(),
+			ExternalAccountID: req.ExternalAccountID, ExternalSubjectID: req.ExternalSubjectID,
+			ExternalAccountEmail:   req.ExternalAccountEmail,
+			ExternalIdentitySource: manualIdentitySource(req),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "account_credential_rotate_failed", err.Error())
@@ -204,6 +211,15 @@ func newRotateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		writeCredentialAdminAudit(r, d, ident, meta, "rotate_account_credential", req.Reason)
 		writeAuditJSON(w, http.StatusOK, meta)
 	}
+}
+
+func manualIdentitySource(req credentialWriteRequest) string {
+	if strings.TrimSpace(req.ExternalAccountID) == "" &&
+		strings.TrimSpace(req.ExternalSubjectID) == "" &&
+		strings.TrimSpace(req.ExternalAccountEmail) == "" {
+		return ""
+	}
+	return accountident.SourceManual
 }
 
 func newSetAccountCredentialStateHandler(d AdminCredentialDeps) http.HandlerFunc {

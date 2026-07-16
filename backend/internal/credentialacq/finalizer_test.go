@@ -21,12 +21,15 @@ type fakeCredentialCreator struct {
 	mu    sync.Mutex
 	calls int
 	next  int64
+	last  credentialstore.CreateCredentialInput
 }
 
 func (f *fakeCredentialCreator) Create(_ context.Context, in credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	f.last = in
+	f.last.Payload = append([]byte(nil), in.Payload...)
 	if f.next == 0 {
 		f.next = 1000
 	}
@@ -43,6 +46,14 @@ func (f *fakeCredentialCreator) Calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeCredentialCreator) LastInput() credentialstore.CreateCredentialInput {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.last
+	out.Payload = append([]byte(nil), f.last.Payload...)
+	return out
 }
 
 func TestFinalizerValidatesCredentialStoreRegistryModes(t *testing.T) {
@@ -86,6 +97,29 @@ func TestFinalizerIsIdempotentByFlowID(t *testing.T) {
 	}
 	if got := creator.Calls(); got != 1 {
 		t.Fatalf("creator calls=%d want 1", got)
+	}
+}
+
+func TestFinalizerPersistsExtractedAccountIdentity(t *testing.T) {
+	creator := &fakeCredentialCreator{}
+	store := newProductionTestStore(t, "flow-identity", credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth)
+	finalizer := NewFinalizer(store, credentialstore.DefaultHandlerRegistry(), creator, nil)
+	_, err := finalizer.Finalize(context.Background(), "flow-identity", CredentialCandidate{
+		TenantID: 1, ProviderAccountID: 2,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth,
+		Payload: samplePayloadForMode(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth),
+		ActorID: "admin-1", ExternalAccountID: "workspace-a",
+		ExternalSubjectID: "subject-a", ExternalAccountEmail: "subject@example.test",
+		AccountIDSource: "chatgpt_jwt_claim",
+	}, "admin-1", "req-identity")
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	got := creator.LastInput()
+	if got.ExternalAccountID != "workspace-a" || got.ExternalSubjectID != "subject-a" ||
+		got.ExternalAccountEmail != "subject@example.test" ||
+		got.ExternalIdentitySource != "chatgpt_jwt_claim" {
+		t.Fatalf("CreateCredentialInput 丢失提取身份：%+v", got)
 	}
 }
 

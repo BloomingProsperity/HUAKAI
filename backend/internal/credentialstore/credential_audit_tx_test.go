@@ -26,6 +26,8 @@ func TestCreateAuditFailureRollsBackCredentialWithTransaction(t *testing.T) {
 		AuthMode:          AuthModeAPIKey,
 		Payload:           []byte(`{"api_key":"sk-create-rollback"}`),
 		ActorID:           "owner",
+		ExternalAccountID: "workspace-create", ExternalSubjectID: "subject-create",
+		ExternalAccountEmail: "subject-create@example.test", ExternalIdentitySource: "provider_exchange_create",
 	})
 	if !errors.Is(err, ErrCredentialAuditWriteFailed) {
 		t.Fatalf("Create err=%v want ErrCredentialAuditWriteFailed", err)
@@ -40,10 +42,16 @@ func TestCreateAuditFailureRollsBackCredentialWithTransaction(t *testing.T) {
 
 func TestRotateAuditFailureRollsBackVersionWithTransaction(t *testing.T) {
 	db := newCredentialAuditTxFakeDB()
+	oldAccountID := "workspace-before"
+	oldSubjectID := "subject-before"
+	oldEmail := "subject-before@example.test"
+	oldSource := "provider_exchange_before"
 	db.credential = &credentialAuditTxFakeCredential{
 		id: db.credentialID, tenantID: db.tenantID, providerAccountID: db.providerAccountID,
 		vendor: VendorOpenAI, authMode: AuthModeAPIKey, state: StateActive, version: 1,
-		payloadFingerprint: "payload-before", refreshFingerprint: "refresh-before",
+		payloadFingerprint: "payload-before", refreshFingerprint: "refresh-before", accessFingerprint: "access-before",
+		externalAccountID: &oldAccountID, externalSubjectID: &oldSubjectID,
+		externalEmail: &oldEmail, externalIdentitySource: &oldSource,
 	}
 	db.failAuditEvent = CredentialEventRotated
 	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
@@ -54,11 +62,18 @@ func TestRotateAuditFailureRollsBackVersionWithTransaction(t *testing.T) {
 		CredentialID:      db.credentialID,
 		Payload:           []byte(`{"api_key":"sk-rotate-rollback"}`),
 		ActorID:           "owner",
+		ExternalAccountID: "workspace-after", ExternalSubjectID: "subject-after",
+		ExternalAccountEmail: "subject-after@example.test", ExternalIdentitySource: "provider_exchange_after",
 	})
 	if !errors.Is(err, ErrCredentialAuditWriteFailed) {
 		t.Fatalf("Rotate err=%v want ErrCredentialAuditWriteFailed", err)
 	}
-	if db.credential.version != 1 || db.credential.payloadFingerprint != "payload-before" || db.credential.refreshFingerprint != "refresh-before" {
+	if db.credential.version != 1 || db.credential.payloadFingerprint != "payload-before" ||
+		db.credential.refreshFingerprint != "refresh-before" || db.credential.accessFingerprint != "access-before" ||
+		credentialAuditStringArg(db.credential.externalAccountID) != oldAccountID ||
+		credentialAuditStringArg(db.credential.externalSubjectID) != oldSubjectID ||
+		credentialAuditStringArg(db.credential.externalEmail) != oldEmail ||
+		credentialAuditStringArg(db.credential.externalIdentitySource) != oldSource {
 		t.Fatalf("Rotate audit failure mutated credential: %+v", db.credential)
 	}
 	if db.rollbackCount != 1 || db.commitCount != 0 {
@@ -121,6 +136,68 @@ func TestProjectRefPersistsAcrossCredentialWritePaths(t *testing.T) {
 	}
 }
 
+func TestCredentialIdentityAndMaterialFingerprintPersistAcrossWritePaths(t *testing.T) {
+	db := newCredentialAuditTxFakeDB()
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	createPayload := []byte(`{"access_token":"access-create","refresh_token":"refresh-create"}`)
+	created, err := store.Create(context.Background(), CreateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		Vendor: VendorOpenAI, AuthMode: AuthModeCodexCLIOAuth, Payload: createPayload,
+		ExternalAccountID: "workspace-a", ExternalSubjectID: "subject-a",
+		ExternalAccountEmail: "subject-a@example.test", ExternalIdentitySource: "provider_exchange_a",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wantCreateFingerprint := CredentialMaterialFingerprint(db.tenantID, VendorOpenAI, AuthModeCodexCLIOAuth, createPayload)
+	if db.credential.accessFingerprint != wantCreateFingerprint ||
+		created.ExternalSubjectID == nil || *created.ExternalSubjectID != "subject-a" ||
+		db.credential.externalIdentitySource == nil || *db.credential.externalIdentitySource != "provider_exchange_a" {
+		t.Fatalf("创建未持久化身份/指纹：credential=%+v metadata=%+v", db.credential, created)
+	}
+
+	rotatePayload := []byte(`{"access_token":"access-rotate","refresh_token":"refresh-rotate"}`)
+	rotated, err := store.Rotate(context.Background(), RotateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID, CredentialID: created.ID,
+		Payload: rotatePayload, ExternalAccountID: "workspace-b", ExternalSubjectID: "subject-b",
+		ExternalAccountEmail: "subject-b@example.test", ExternalIdentitySource: "provider_exchange_b",
+	})
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	wantRotateFingerprint := CredentialMaterialFingerprint(db.tenantID, VendorOpenAI, AuthModeCodexCLIOAuth, rotatePayload)
+	if db.credential.accessFingerprint != wantRotateFingerprint ||
+		rotated.ExternalSubjectID == nil || *rotated.ExternalSubjectID != "subject-b" ||
+		db.credential.externalIdentitySource == nil || *db.credential.externalIdentitySource != "provider_exchange_b" {
+		t.Fatalf("轮换未更新身份/指纹：credential=%+v metadata=%+v", db.credential, rotated)
+	}
+
+	fingerprintBeforeRefresh := db.credential.accessFingerprint
+	refreshPayload := []byte(`{"access_token":"access-refresh","refresh_token":"refresh-next"}`)
+	err = store.SaveRefreshSuccess(context.Background(), CredentialRecord{
+		ID: created.ID, TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		Vendor: VendorOpenAI, AuthMode: AuthModeCodexCLIOAuth, CredentialVersion: rotated.Version,
+	}, refreshPayload, time.Time{}, "refresh_succeeded")
+	if err != nil {
+		t.Fatalf("SaveRefreshSuccess: %v", err)
+	}
+	if db.credential.accessFingerprint != fingerprintBeforeRefresh {
+		t.Fatalf("自动刷新不得覆盖稳定身份指纹：got=%q want %q", db.credential.accessFingerprint, fingerprintBeforeRefresh)
+	}
+	if db.credential.externalSubjectID == nil || *db.credential.externalSubjectID != "subject-b" {
+		t.Fatalf("刷新错误覆盖个人身份：%+v", db.credential)
+	}
+	if db.credential.externalIdentitySource == nil || *db.credential.externalIdentitySource != "provider_exchange_b" {
+		t.Fatalf("刷新错误覆盖身份来源：%+v", db.credential)
+	}
+	for _, secret := range []string{"access-create", "access-rotate", "access-refresh"} {
+		if strings.Contains(db.credential.accessFingerprint, secret) {
+			t.Fatalf("指纹泄漏 token %q：%s", secret, db.credential.accessFingerprint)
+		}
+	}
+}
+
 type credentialAuditTxFakeDB struct {
 	tenantID          int64
 	providerAccountID int64
@@ -135,21 +212,26 @@ type credentialAuditTxFakeDB struct {
 }
 
 type credentialAuditTxFakeCredential struct {
-	id                 int64
-	tenantID           int64
-	providerAccountID  int64
-	vendor             string
-	authMode           string
-	state              string
-	version            int32
-	payloadFingerprint string
-	refreshFingerprint string
-	projectRef         *string
-	encryptedPayload   []byte
-	encryptionScheme   string
-	keyID              string
-	nonce              []byte
-	aadHash            string
+	id                     int64
+	tenantID               int64
+	providerAccountID      int64
+	vendor                 string
+	authMode               string
+	state                  string
+	version                int32
+	payloadFingerprint     string
+	refreshFingerprint     string
+	accessFingerprint      string
+	externalAccountID      *string
+	externalSubjectID      *string
+	externalEmail          *string
+	externalIdentitySource *string
+	projectRef             *string
+	encryptedPayload       []byte
+	encryptionScheme       string
+	keyID                  string
+	nonce                  []byte
+	aadHash                string
 }
 
 func newCredentialAuditTxFakeDB() *credentialAuditTxFakeDB {
@@ -183,8 +265,8 @@ func (db *credentialAuditTxFakeDB) QueryRow(ctx context.Context, sql string, arg
 }
 
 func (db *credentialAuditTxFakeDB) exec(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
-	if strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "last_refresh_outcome") && len(args) > 10 {
-		db.refreshProjectRef = credentialAuditOptionalStringArg(args[10])
+	if strings.Contains(sql, "UPDATE account_credentials") && strings.Contains(sql, "last_refresh_outcome") && len(args) > 11 {
+		db.refreshProjectRef = credentialAuditOptionalStringArg(args[11])
 	}
 	if strings.Contains(sql, "INSERT INTO credential_audit_events") && len(args) >= 4 && args[3] == db.failAuditEvent {
 		return pgconn.CommandTag{}, errors.New("forced audit insert failure")
@@ -272,7 +354,7 @@ func (tx *credentialAuditTxFakeTx) Exec(ctx context.Context, sql string, args ..
 			return pgconn.NewCommandTag("UPDATE 0"), nil
 		}
 		tx.staged.applyRefreshArgs(args)
-		tx.parent.refreshProjectRef = credentialAuditOptionalStringArg(args[10])
+		tx.parent.refreshProjectRef = credentialAuditOptionalStringArg(args[11])
 		return pgconn.NewCommandTag("UPDATE 1"), nil
 	}
 	return tx.parent.exec(ctx, sql, args...)
@@ -327,12 +409,17 @@ func credentialAuditCredentialFromCreateArgs(id int64, args []any) *credentialAu
 		id: id, tenantID: args[0].(int64), providerAccountID: args[1].(int64),
 		vendor: args[2].(string), authMode: args[3].(string), state: StateActive, version: 1,
 		payloadFingerprint: credentialAuditStringArg(args[9]), refreshFingerprint: credentialAuditStringArg(args[10]),
-		projectRef:       credentialAuditOptionalStringArg(args[17]),
-		encryptedPayload: append([]byte(nil), args[4].([]byte)...),
-		encryptionScheme: args[5].(string),
-		keyID:            args[6].(string),
-		nonce:            append([]byte(nil), args[7].([]byte)...),
-		aadHash:          args[8].(string),
+		accessFingerprint:      credentialAuditStringArg(args[11]),
+		externalAccountID:      credentialAuditOptionalStringArg(args[16]),
+		externalSubjectID:      credentialAuditOptionalStringArg(args[17]),
+		externalEmail:          credentialAuditOptionalStringArg(args[18]),
+		externalIdentitySource: credentialAuditOptionalStringArg(args[19]),
+		projectRef:             credentialAuditOptionalStringArg(args[20]),
+		encryptedPayload:       append([]byte(nil), args[4].([]byte)...),
+		encryptionScheme:       args[5].(string),
+		keyID:                  args[6].(string),
+		nonce:                  append([]byte(nil), args[7].([]byte)...),
+		aadHash:                args[8].(string),
 	}
 }
 
@@ -341,7 +428,22 @@ func (c *credentialAuditTxFakeCredential) applyRotateArgs(args []any) {
 	c.version++
 	c.payloadFingerprint = credentialAuditStringArg(args[5])
 	c.refreshFingerprint = credentialAuditStringArg(args[6])
-	c.projectRef = credentialAuditOptionalStringArg(args[10])
+	c.accessFingerprint = credentialAuditStringArg(args[7])
+	c.projectRef = credentialAuditOptionalStringArg(args[11])
+	if len(args) > 16 {
+		if value := credentialAuditOptionalStringArg(args[13]); value != nil {
+			c.externalAccountID = value
+		}
+		if value := credentialAuditOptionalStringArg(args[14]); value != nil {
+			c.externalSubjectID = value
+		}
+		if value := credentialAuditOptionalStringArg(args[15]); value != nil {
+			c.externalEmail = value
+		}
+		if value := credentialAuditOptionalStringArg(args[16]); value != nil {
+			c.externalIdentitySource = value
+		}
+	}
 	c.encryptedPayload = append(c.encryptedPayload[:0], args[0].([]byte)...)
 	c.encryptionScheme = args[1].(string)
 	c.keyID = args[2].(string)
@@ -350,7 +452,19 @@ func (c *credentialAuditTxFakeCredential) applyRotateArgs(args []any) {
 }
 
 func (c *credentialAuditTxFakeCredential) applyRefreshArgs(args []any) {
-	c.applyRotateArgs(args)
+	c.state = StateActive
+	c.version++
+	c.payloadFingerprint = credentialAuditStringArg(args[5])
+	c.refreshFingerprint = credentialAuditStringArg(args[6])
+	if c.accessFingerprint == "" {
+		c.accessFingerprint = credentialAuditStringArg(args[7])
+	}
+	c.projectRef = credentialAuditOptionalStringArg(args[11])
+	c.encryptedPayload = append(c.encryptedPayload[:0], args[0].([]byte)...)
+	c.encryptionScheme = args[1].(string)
+	c.keyID = args[2].(string)
+	c.nonce = append(c.nonce[:0], args[3].([]byte)...)
+	c.aadHash = args[4].(string)
 }
 
 func (c credentialAuditTxFakeCredential) metadataValues() []any {
@@ -360,7 +474,7 @@ func (c credentialAuditTxFakeCredential) metadataValues() []any {
 	return []any{
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
 		emptyTime, emptyTime, emptyTime, nilString,
-		nilString, int32(0), c.projectRef, now, now,
+		nilString, int32(0), c.externalAccountID, c.externalSubjectID, c.externalEmail, c.projectRef, now, now,
 	}
 }
 
@@ -372,7 +486,7 @@ func (c credentialAuditTxFakeCredential) createMetadataValues() []any {
 	return []any{
 		c.id, c.tenantID, c.providerAccountID, c.vendor, c.authMode, c.state, c.version,
 		emptyTime, emptyTime, emptyTime, nilString,
-		nilString, int32(0), nilString, nilString, c.projectRef, now, now,
+		nilString, int32(0), c.externalAccountID, c.externalSubjectID, c.externalEmail, c.projectRef, now, now,
 	}
 }
 

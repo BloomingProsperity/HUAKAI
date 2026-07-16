@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
@@ -19,8 +20,10 @@ import (
 func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 	t.Run("list account credentials", func(t *testing.T) {
 		projectRef := "project-visible"
+		subjectID := "subject-visible"
 		meta := adminCredentialMeta(201, 7, 77, credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, 1)
 		meta.ProjectRef = &projectRef
+		meta.ExternalSubjectID = &subjectID
 		store := &adminCredentialStoreStub{
 			listRows: []credentialstore.CredentialMetadata{meta},
 		}
@@ -39,8 +42,15 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Credentials []credentialstore.CredentialMetadata `json:"credentials"`
 		}
 		decodeAdminCredentialBody(t, rec, &body)
-		if len(body.Credentials) != 1 || body.Credentials[0].ID != 201 || body.Credentials[0].ProjectRef == nil || *body.Credentials[0].ProjectRef != projectRef {
+		if len(body.Credentials) != 1 || body.Credentials[0].ID != 201 ||
+			body.Credentials[0].ProjectRef == nil || *body.Credentials[0].ProjectRef != projectRef ||
+			body.Credentials[0].ExternalSubjectID == nil || *body.Credentials[0].ExternalSubjectID != subjectID {
 			t.Fatalf("list body mismatch: %+v", body)
+		}
+		for _, internalField := range []string{"credential_material_fingerprint", "external_identity_source"} {
+			if strings.Contains(rec.Body.String(), internalField) {
+				t.Fatalf("list body leaked internal field %q: %s", internalField, rec.Body.String())
+			}
 		}
 	})
 
@@ -50,11 +60,16 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 		rec := invokeAdminCredentials(t, AdminCredentialDeps{
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
-			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"reason":"initial load"}`)
+			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"reason":"initial load","external_account_id":"workspace-a","external_subject_id":"subject-a","external_account_email":"subject-a@example.test","external_identity_source":"chatgpt_jwt_claim"}`)
 		assertStatus(t, rec, http.StatusCreated)
 		if store.createInput == nil || store.createInput.TenantID != 7 || store.createInput.ProviderAccountID != 77 ||
 			store.createInput.Vendor != credentialstore.VendorOpenAI || store.createInput.AuthMode != credentialstore.AuthModeAPIKey {
 			t.Fatalf("create input mismatch: %+v", store.createInput)
+		}
+		if store.createInput.ExternalAccountID != "workspace-a" || store.createInput.ExternalSubjectID != "subject-a" ||
+			store.createInput.ExternalAccountEmail != "subject-a@example.test" ||
+			store.createInput.ExternalIdentitySource != accountident.SourceManual {
+			t.Fatalf("create identity mismatch: %+v", store.createInput)
 		}
 		if len(audit.audits) != 1 || audit.audits[0].Action != "create_account_credential" {
 			t.Fatalf("create audit mismatch: %+v", audit.audits)
@@ -70,17 +85,34 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 		rec := invokeAdminCredentials(t, AdminCredentialDeps{
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials/201/rotate",
-			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-rotated"},"reason":"rotation"}`)
+			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-rotated"},"reason":"rotation","external_account_id":"workspace-b","external_subject_id":"subject-b","external_account_email":"subject-b@example.test","external_identity_source":"google_id_token_sub"}`)
 		assertStatus(t, rec, http.StatusOK)
 		if store.rotateInput == nil || store.rotateInput.TenantID != 7 || store.rotateInput.ProviderAccountID != 77 ||
 			store.rotateInput.CredentialID != 201 {
 			t.Fatalf("rotate input mismatch: %+v", store.rotateInput)
+		}
+		if store.rotateInput.ExternalAccountID != "workspace-b" || store.rotateInput.ExternalSubjectID != "subject-b" ||
+			store.rotateInput.ExternalAccountEmail != "subject-b@example.test" ||
+			store.rotateInput.ExternalIdentitySource != accountident.SourceManual {
+			t.Fatalf("rotate identity mismatch: %+v", store.rotateInput)
 		}
 		if len(audit.audits) != 1 || audit.audits[0].Action != "rotate_account_credential" {
 			t.Fatalf("rotate audit mismatch: %+v", audit.audits)
 		}
 		if strings.Contains(string(audit.audits[0].Payload), "sk-rotated") {
 			t.Fatalf("rotate audit leaked credential: %s", string(audit.audits[0].Payload))
+		}
+	})
+
+	t.Run("rotate credential without identity preserves source", func(t *testing.T) {
+		store := &adminCredentialStoreStub{}
+		rec := invokeAdminCredentials(t, AdminCredentialDeps{
+			Auth: adminPoolAdmin(), Credentials: store, AuditStore: &adminPoolStoreStub{},
+		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials/201/rotate",
+			`{"tenant_id":7,"credentials":{"api_key":"sk-rotated"}}`)
+		assertStatus(t, rec, http.StatusOK)
+		if store.rotateInput == nil || store.rotateInput.ExternalIdentitySource != "" {
+			t.Fatalf("普通轮换不得覆盖已有身份来源：%+v", store.rotateInput)
 		}
 	})
 
