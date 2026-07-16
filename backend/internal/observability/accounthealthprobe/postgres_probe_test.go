@@ -11,15 +11,15 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/observability"
 )
 
-// fakeProbeStore 记录每次 TouchProviderAccountProbe 调用的参数,供断言。
+// fakeProbeStore 记录每次被动请求观测写入的参数,供断言。
 // 关键:它不是恒绿桩——它精确记录被写的参数,从而当 probe 被改回 nil(死开关复发)
 // 或写错列/写错账号时,断言能立刻 red(满足 mutation 自检)。
 type fakeProbeStore struct {
-	calls []admin.TouchProviderAccountProbeParams
+	calls []admin.TouchProviderAccountRequestObservedAtParams
 	err   error // 注入 DB 出错,验证 error 透传给 eventbus(走 DLQ)
 }
 
-func (f *fakeProbeStore) TouchProviderAccountProbe(_ context.Context, arg admin.TouchProviderAccountProbeParams) error {
+func (f *fakeProbeStore) TouchProviderAccountRequestObservedAt(_ context.Context, arg admin.TouchProviderAccountRequestObservedAtParams) error {
 	f.calls = append(f.calls, arg)
 	return f.err
 }
@@ -28,9 +28,8 @@ func (f *fakeProbeStore) TouchProviderAccountProbe(_ context.Context, arg admin.
 // handler 必须落一次写,使用请求完成事件自己的 CreatedAt,不能用队列消费时间。
 //
 // mutation 自检:
-//   - 把 middleware.go 的 probe 改回 nil → handler 进入 if probe==nil 空转分支
-//     → store.calls 为空 → 本测试 red。
-//   - 把 TouchProviderAccountProbe 的 UPDATE 写成别的列 / 别的账号 → 参数断言 red。
+//   - 把 adapter 返回的写入回调改成 nil/空转 → store.calls 为空 → 本测试 red。
+//   - 把请求观测 UPDATE 写成别的列 / 别的账号 → 参数断言 red。
 func TestProbeWritesRequestObservation(t *testing.T) {
 	store := &fakeProbeStore{}
 	probe := NewPostgresProbe(store)
@@ -59,11 +58,11 @@ func TestProbeWritesRequestObservation(t *testing.T) {
 	if got.TenantID != wantTenant {
 		t.Errorf("写到错误租户: got tenant=%d want %d", got.TenantID, wantTenant)
 	}
-	if !got.ProbedAt.Valid {
+	if !got.ObservedAt.Valid {
 		t.Errorf("被动请求观测时间未写入(Valid=false)")
 	}
-	if !got.ProbedAt.Time.Equal(wantObservedAt.UTC()) {
-		t.Errorf("观测时间=%s want event.CreatedAt=%s", got.ProbedAt.Time, wantObservedAt.UTC())
+	if !got.ObservedAt.Time.Equal(wantObservedAt.UTC()) {
+		t.Errorf("观测时间=%s want event.CreatedAt=%s", got.ObservedAt.Time, wantObservedAt.UTC())
 	}
 }
 

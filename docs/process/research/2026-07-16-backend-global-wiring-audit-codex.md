@@ -272,16 +272,16 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S2` |
 | 分类 | W-03 假激活、W-08 观测失真、W-12 重复体系 |
-| 状态 | **Interim fixed in this branch；schema 迁移仍需 Owner 决策** |
+| 状态 | **Fixed in stacked Draft PR；schema/API 合同已闭环** |
 | 用户影响 | 管理端看到 `last_probe_at` 非空，会自然理解为主动健康探测已经执行；真实含义却是“某次普通请求 completion event 到达”。低流量账号为空，高流量账号看似持续被探测，两个含义完全不同。 |
 
 **源码证据**
 
 1. completion event bus 注册 `AccountHealthProbeHandler`，见 `backend/cmd/gateway/middleware.go:408-445`。
 2. handler 输入是 `RequestCompletionEvent`；本分支已改为优先使用事件自己的 `CreatedAt`，仅在内部直调漏填时回退当前时间，避免队列延迟或重放把观测时间虚假推后，见 `backend/internal/observability/account_health_probe_handler.go`。
-3. PostgreSQL adapter 只把该时间写到 `provider_accounts.last_probe_at`，见 `backend/internal/observability/accounthealthprobe/postgres_probe.go:43-52` 和 `backend/internal/db/admin/admin_provider_account_health.sql.go:115-135`。
-4. admin API 原样返回 `last_probe_at` 与 `last_probe_latency_ms`，见 `backend/internal/adminhttp/provider_account_health_handler.go:37-58`、`149-180`。
-5. `last_probe_latency_ms` 在该链没有写入，生成 SQL 注释也明确留作 follow-up。
+3. PostgreSQL adapter 现只把该时间单调写入 `provider_accounts.last_request_observed_at`，见 `backend/internal/observability/accounthealthprobe/postgres_probe.go` 和 `backend/internal/db/admin/admin_provider_account_health.sql.go`。
+4. admin health、账号列表和 Hermes 分别返回真正的 `last_probe_at` 与 `last_request_observed_at`，不再用一个字段投影两种含义。
+5. `last_probe_at` 与 `last_probe_latency_ms` 留给真正主动探测；本批没有启动或伪造真实上游探测。
 
 **推荐方案**
 
@@ -289,14 +289,15 @@ HUAKAI 当前主 chat 链可以还原为：
 - 最干净的合同是新增/迁移为 `last_request_observed_at`，真正主动探测独占 `last_probe_at` 和 `last_probe_latency_ms`。
 - 在 schema/API 调整前，管理面必须明确标记 source，不能把该字段作为主动探测 activation 证据。
 
-**本分支已完成的过渡收口**
+**本堆叠分支已完成的最终收口**
 
-- 管理健康响应新增 `last_request_observed_at` 和固定来源 `request_completion_event`，旧 `last_probe_at` 仅作为 deprecated 兼容投影保留；OpenAPI 明确该值不能证明主动探测执行过。
-- composition root、被动观测 adapter 和数据库写入注释已改为真实语义，不再把请求完成事件描述为主动 probe。
-- 数据库写入只接受更晚的事件时间，乱序 worker、重试或 DLQ 重放不能让“最后观测时间”倒退。
-- 判别测试同时锁定事件时间、单调写入、旧字段兼容值、新字段真实值和来源枚举，OpenAPI 一致性测试已通过。
+- 迁移 `0189` 新增独立 `last_request_observed_at`。历史 `last_probe_at` 仅在 latency 为空时迁入新列并清空旧列；带 latency 的潜在主动探测记录保持不变。
+- down 迁移只在 `last_probe_at` 为空时恢复历史被动值，不覆盖已有主动探测时间；同一旧列无法同时保存两种时间，因此回滚期间新增的被动观测不冒充主动探测。
+- 请求完成事件调用的数据库 API 已改为真实语义名称，并且只接受更晚时间，乱序 worker、重试或 DLQ 重放不能让观测时间倒退。
+- health API、账号列表、Hermes 和 OpenAPI 均分别暴露主动探测时间、延迟与普通请求观测时间、来源。
+- 真 PostgreSQL 测试覆盖 `181 → 189 → 181 → 189`、历史被动迁移、带 latency 记录保留、回滚不覆盖主动探测、单调写和跨租户隔离；全仓 race、`go vet` 和质量门已通过。
 
-最终将旧存储列迁移为独立 `last_request_observed_at`、让主动探测独占 probe 字段仍涉及 schema，按项目规则等待 Owner 确认。
+GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存储和 API 语义，没有执行任何真实上游请求，也没有产生费用或健康状态写入。
 
 ### GW-WIRE-004：Grok 网页 session adapter 未注册，且存在 clean-room 高风险
 
@@ -1140,8 +1141,8 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 
 ## Owner 决策点
 
-1. 是否批准建设真正主动探测 Safe Equivalent：默认关闭、成本预算、账号级开关、数据库租约、多副本去重、真实 health write。
-2. 是否批准把普通请求观测时间从 `last_probe_at` 迁到独立 `last_request_observed_at` 合同；该项涉及 schema/API。
+1. 真正主动探测 Safe Equivalent 已获批准，实施时继续遵守默认关闭、成本预算、账号级开关、数据库租约、多副本去重和真实 health write；本批尚未启动该能力。
+2. 普通请求观测迁移到独立 `last_request_observed_at` 合同已获批准，并由迁移 `0189`、管理消费者、OpenAPI 和真 PostgreSQL 往返测试闭环。
 3. Grok 网页 session 能力是保留为插件、重做 clean-room Safe Equivalent，还是继续 Mandatory Roadmap；当前禁止直接注册。
 4. 是否批准把运行时 `ValidateAccountCompatibility` 泛化到全部有 serving contract 的 family；该项会改变异常/遗留账号的凭据放行规则。
 5. 是否批准以 `antigravity/oauth` 为唯一 canonical 身份，并另开数据迁移决策包处置 `gemini/antigravity` legacy 行。

@@ -228,6 +228,8 @@ type providerAccountResponse struct {
 	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
 	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
 	LastProbeAt              *time.Time      `json:"last_probe_at"`
+	LastRequestObservedAt    *time.Time      `json:"last_request_observed_at"`
+	ObservationSource        string          `json:"last_request_observation_source"`
 	ModelAllowList           []string        `json:"model_allow_list"`
 	CapabilityFlags          []string        `json:"capability_flags"`
 	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
@@ -969,8 +971,11 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		StaticWeight: row.StaticWeight, ProbeModel: row.ProbeModel, Tags: nonNilStringSlice(row.Tags),
 		Extra:          jsonObjectOrEmpty(row.Extra),
 		LastDispatchAt: pgTimePtr(row.LastDispatchAt), LastProbeLatencyMS: row.LastProbeLatencyMS,
-		LastProbeAt: pgTimePtr(row.LastProbeAt), ModelAllowList: nonNilStringSlice(row.ModelAllowList),
-		CapabilityFlags: nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
+		LastProbeAt:           pgTimePtr(row.LastProbeAt),
+		LastRequestObservedAt: pgTimePtr(row.LastRequestObservedAt),
+		ObservationSource:     "request_completion_event",
+		ModelAllowList:        nonNilStringSlice(row.ModelAllowList),
+		CapabilityFlags:       nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
 		RateLimitResetAt: pgTimePtr(row.RateLimitResetAt), RateLimitReason: row.RateLimitReason,
 		OverloadUntil: pgTimePtr(row.OverloadUntil), TempUnschedulableUntil: pgTimePtr(row.TempUnschedulableUntil),
 		TokenVersion: row.TokenVersion, LastRefreshAt: pgTimePtr(row.LastRefreshAt),

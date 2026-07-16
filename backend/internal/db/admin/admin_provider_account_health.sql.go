@@ -20,6 +20,7 @@ SELECT
     pa.enabled,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
+    pa.last_request_observed_at,
     pa.model_sync_last_check_at,
     pa.session_window_5h_start,
     pa.session_window_5h_end,
@@ -67,6 +68,7 @@ type GetAdminProviderAccountHealthRow struct {
 	Enabled                    bool               `db:"enabled" json:"enabled"`
 	LastProbeLatencyMS         *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
 	LastProbeAt                pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	LastRequestObservedAt      pgtype.Timestamptz `db:"last_request_observed_at" json:"last_request_observed_at"`
 	ModelSyncLastCheckAt       pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
 	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
 	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
@@ -94,6 +96,7 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.Enabled,
 		&i.LastProbeLatencyMS,
 		&i.LastProbeAt,
+		&i.LastRequestObservedAt,
 		&i.ModelSyncLastCheckAt,
 		&i.SessionWindow5hStart,
 		&i.SessionWindow5hEnd,
@@ -112,25 +115,27 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 	return i, err
 }
 
-const touchProviderAccountProbe = `-- name: TouchProviderAccountProbe :exec
+const touchProviderAccountRequestObservedAt = `-- name: TouchProviderAccountRequestObservedAt :exec
 UPDATE provider_accounts
-SET last_probe_at = $1::timestamptz
+SET last_request_observed_at = $1::timestamptz
 WHERE id = $2::bigint
   AND tenant_id = $3::bigint
   AND deleted_at IS NULL
-  AND (last_probe_at IS NULL OR last_probe_at < $1::timestamptz)
+  AND (
+      last_request_observed_at IS NULL
+      OR last_request_observed_at < $1::timestamptz
+  )
 `
 
-type TouchProviderAccountProbeParams struct {
-	ProbedAt pgtype.Timestamptz `db:"probed_at" json:"probed_at"`
-	ID       int64              `db:"id" json:"id"`
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
+type TouchProviderAccountRequestObservedAtParams struct {
+	ObservedAt pgtype.Timestamptz `db:"observed_at" json:"observed_at"`
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
 }
 
-// 由异步请求完成事件调用,沿用旧 last_probe_at 存储列记录被动请求观测时间。
-// 该值不是主动上游探测结果;管理 API 使用 last_request_observed_at 暴露真实语义。
-func (q *Queries) TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error {
-	_, err := q.db.Exec(ctx, touchProviderAccountProbe, arg.ProbedAt, arg.ID, arg.TenantID)
+// 由异步请求完成事件调用,单调记录被动请求观测时间。
+func (q *Queries) TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error {
+	_, err := q.db.Exec(ctx, touchProviderAccountRequestObservedAt, arg.ObservedAt, arg.ID, arg.TenantID)
 	return err
 }
 

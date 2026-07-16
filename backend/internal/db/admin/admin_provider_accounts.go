@@ -27,6 +27,7 @@ type AdminProviderAccountRow struct {
 	LastDispatchAt           pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
 	LastProbeLatencyMS       *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
 	LastProbeAt              pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	LastRequestObservedAt    pgtype.Timestamptz `db:"last_request_observed_at" json:"last_request_observed_at"`
 	ModelAllowList           []string           `db:"model_allow_list" json:"model_allow_list"`
 	CapabilityFlags          []string           `db:"capability_flags" json:"capability_flags"`
 	RateLimitedAt            pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
@@ -138,6 +139,7 @@ const adminProviderAccountColumns = `
     last_dispatch_at,
     last_probe_latency_ms,
     last_probe_at,
+    last_request_observed_at,
     model_allow_list,
     capability_flags,
     rate_limited_at,
@@ -452,6 +454,7 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.LastDispatchAt,
 		&i.LastProbeLatencyMS,
 		&i.LastProbeAt,
+		&i.LastRequestObservedAt,
 		&i.ModelAllowList,
 		&i.CapabilityFlags,
 		&i.RateLimitedAt,

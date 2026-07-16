@@ -18,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5"
 
-	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
+	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
 func TestUp_AppliesAllMigrationsToEmptyDB_AndIsIdempotent(t *testing.T) {
@@ -30,35 +32,7 @@ func TestUp_AppliesAllMigrationsToEmptyDB_AndIsIdempotent(t *testing.T) {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping integration_pg")
 	}
 	ctx := context.Background()
-
-	// 临时空库名(带纳秒时戳避免并发/重跑撞名)。
-	tmpDB := fmt.Sprintf("huakai_dbmigrate_test_%d", time.Now().UnixNano())
-
-	admin, err := pgx.Connect(ctx, baseDSN)
-	if err != nil {
-		t.Fatalf("连接维护库失败: %v", err)
-	}
-	defer admin.Close(ctx)
-
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgxQuoteIdent(tmpDB)); err != nil {
-		t.Fatalf("CREATE DATABASE %s 失败: %v", tmpDB, err)
-	}
-	t.Cleanup(func() {
-		// 断开残留连接再 DROP,避免"数据库正被使用"。
-		cleanup, cerr := pgx.Connect(context.Background(), baseDSN)
-		if cerr != nil {
-			t.Logf("清理连接失败(临时库 %s 可能残留): %v", tmpDB, cerr)
-			return
-		}
-		defer cleanup.Close(context.Background())
-		_, _ = cleanup.Exec(context.Background(),
-			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", tmpDB)
-		if _, derr := cleanup.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgxQuoteIdent(tmpDB)); derr != nil {
-			t.Logf("DROP DATABASE %s 失败(需手动清理): %v", tmpDB, derr)
-		}
-	})
-
-	tmpDSN := swapDatabaseName(t, baseDSN, tmpDB)
+	tmpDSN := createTemporaryMigrationDatabase(t, ctx, baseDSN, "huakai_dbmigrate_test")
 
 	// 首次:空库 → 应用全部迁移。
 	if err := dbmigrate.Up(sqlmigrations.Files, tmpDSN); err != nil {
@@ -97,6 +71,220 @@ func TestUp_AppliesAllMigrationsToEmptyDB_AndIsIdempotent(t *testing.T) {
 	if err := dbmigrate.Up(sqlmigrations.Files, tmpDSN); err != nil {
 		t.Fatalf("第二次 Up(已最新)应幂等返回 nil,got %v", err)
 	}
+}
+
+func TestRequestObservationMigrationSeparatesAndRoundTrips(t *testing.T) {
+	baseDSN := os.Getenv("HUAKAI_DATABASE_URL")
+	if baseDSN == "" {
+		t.Skip("HUAKAI_DATABASE_URL not set; skipping integration_pg")
+	}
+	ctx := context.Background()
+	tmpDSN := createTemporaryMigrationDatabase(t, ctx, baseDSN, "huakai_request_observation_test")
+
+	src, err := iofs.New(sqlmigrations.Files, "migrations")
+	if err != nil {
+		t.Fatalf("构建迁移源失败: %v", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", src, tmpDSN)
+	if err != nil {
+		t.Fatalf("初始化迁移器失败: %v", err)
+	}
+	defer func() {
+		sourceErr, databaseErr := m.Close()
+		if sourceErr != nil || databaseErr != nil {
+			t.Logf("关闭迁移器: source=%v database=%v", sourceErr, databaseErr)
+		}
+	}()
+
+	if err := m.Migrate(181); err != nil {
+		t.Fatalf("迁移到旧合同版本 181 失败: %v", err)
+	}
+	conn, err := pgx.Connect(ctx, tmpDSN)
+	if err != nil {
+		t.Fatalf("连接临时库失败: %v", err)
+	}
+	defer conn.Close(ctx)
+
+	passiveAt := time.Date(2026, 7, 15, 8, 0, 0, 0, time.UTC)
+	activeAt := time.Date(2026, 7, 15, 9, 0, 0, 0, time.UTC)
+	postMigrationObservedAt := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	passiveID, activeID := seedRequestObservationMigrationRows(t, ctx, conn, passiveAt, activeAt)
+
+	if err := m.Migrate(189); err != nil {
+		t.Fatalf("应用 0189 上迁移失败: %v", err)
+	}
+	assertRequestObservationMigrationState(t, ctx, conn, passiveID, activeID, passiveAt, activeAt)
+
+	// 模拟迁移后同一主动探测账号又收到普通请求完成事件。回滚时不得用它覆盖 activeAt。
+	if _, err := conn.Exec(ctx,
+		`UPDATE provider_accounts SET last_request_observed_at = $1 WHERE id = $2`,
+		postMigrationObservedAt, activeID,
+	); err != nil {
+		t.Fatalf("种入迁移后普通请求观测: %v", err)
+	}
+	if err := m.Migrate(181); err != nil {
+		t.Fatalf("回滚 0189 失败: %v", err)
+	}
+
+	var passiveProbeAt, activeProbeAt *time.Time
+	if err := conn.QueryRow(ctx,
+		`SELECT
+		    (SELECT last_probe_at FROM provider_accounts WHERE id = $1),
+		    (SELECT last_probe_at FROM provider_accounts WHERE id = $2)`,
+		passiveID, activeID,
+	).Scan(&passiveProbeAt, &activeProbeAt); err != nil {
+		t.Fatalf("读取回滚后时间: %v", err)
+	}
+	if passiveProbeAt == nil || !passiveProbeAt.Equal(passiveAt) {
+		t.Fatalf("回滚未恢复历史被动时间: got %v want %v", passiveProbeAt, passiveAt)
+	}
+	if activeProbeAt == nil || !activeProbeAt.Equal(activeAt) {
+		t.Fatalf("回滚覆盖了主动探测时间: got %v want %v", activeProbeAt, activeAt)
+	}
+	var observationColumnExists bool
+	if err := conn.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'provider_accounts'
+      AND column_name = 'last_request_observed_at'
+)`).Scan(&observationColumnExists); err != nil {
+		t.Fatalf("检查回滚列状态: %v", err)
+	}
+	if observationColumnExists {
+		t.Fatal("0189 down 后 last_request_observed_at 仍存在")
+	}
+
+	if err := m.Migrate(189); err != nil {
+		t.Fatalf("0189 回滚后重新上迁移失败: %v", err)
+	}
+	assertRequestObservationMigrationState(t, ctx, conn, passiveID, activeID, passiveAt, activeAt)
+}
+
+func seedRequestObservationMigrationRows(
+	t *testing.T,
+	ctx context.Context,
+	conn *pgx.Conn,
+	passiveAt time.Time,
+	activeAt time.Time,
+) (passiveID int64, activeID int64) {
+	t.Helper()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	var tenantID, providerID, poolGroupID, channelID int64
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		"request-observation-"+suffix,
+	).Scan(&tenantID); err != nil {
+		t.Fatalf("插入租户: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+		 VALUES ($1, $2, 'Request Observation Provider', 'openai_chat') RETURNING id`,
+		tenantID, "request-observation-"+suffix,
+	).Scan(&providerID); err != nil {
+		t.Fatalf("插入 provider: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		tenantID, "request-observation-pool-"+suffix,
+	).Scan(&poolGroupID); err != nil {
+		t.Fatalf("插入 pool group: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`,
+		tenantID, poolGroupID, "request-observation-channel-"+suffix,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("插入 channel: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+		    tenant_id, provider_id, channel_id, name, account_type, last_probe_at
+		 ) VALUES ($1, $2, $3, $4, 'api_key', $5) RETURNING id`,
+		tenantID, providerID, channelID, "legacy-passive-"+suffix, passiveAt,
+	).Scan(&passiveID); err != nil {
+		t.Fatalf("插入历史被动记录: %v", err)
+	}
+	if err := conn.QueryRow(ctx,
+		`INSERT INTO provider_accounts (
+		    tenant_id, provider_id, channel_id, name, account_type,
+		    last_probe_at, last_probe_latency_ms
+		 ) VALUES ($1, $2, $3, $4, 'api_key', $5, 87) RETURNING id`,
+		tenantID, providerID, channelID, "active-probe-"+suffix, activeAt,
+	).Scan(&activeID); err != nil {
+		t.Fatalf("插入主动探测记录: %v", err)
+	}
+	return passiveID, activeID
+}
+
+func assertRequestObservationMigrationState(
+	t *testing.T,
+	ctx context.Context,
+	conn *pgx.Conn,
+	passiveID int64,
+	activeID int64,
+	passiveAt time.Time,
+	activeAt time.Time,
+) {
+	t.Helper()
+	var passiveProbeAt, passiveObservedAt, activeProbeAt, activeObservedAt *time.Time
+	var activeLatency *int32
+	if err := conn.QueryRow(ctx, `
+SELECT
+    (SELECT last_probe_at FROM provider_accounts WHERE id = $1),
+    (SELECT last_request_observed_at FROM provider_accounts WHERE id = $1),
+    (SELECT last_probe_at FROM provider_accounts WHERE id = $2),
+    (SELECT last_request_observed_at FROM provider_accounts WHERE id = $2),
+    (SELECT last_probe_latency_ms FROM provider_accounts WHERE id = $2)`,
+		passiveID, activeID,
+	).Scan(&passiveProbeAt, &passiveObservedAt, &activeProbeAt, &activeObservedAt, &activeLatency); err != nil {
+		t.Fatalf("读取迁移后字段: %v", err)
+	}
+	if passiveProbeAt != nil {
+		t.Fatalf("历史被动值仍占用 last_probe_at: %v", passiveProbeAt)
+	}
+	if passiveObservedAt == nil || !passiveObservedAt.Equal(passiveAt) {
+		t.Fatalf("历史被动值未迁入新列: got %v want %v", passiveObservedAt, passiveAt)
+	}
+	if activeProbeAt == nil || !activeProbeAt.Equal(activeAt) {
+		t.Fatalf("主动探测时间被迁移破坏: got %v want %v", activeProbeAt, activeAt)
+	}
+	if activeLatency == nil || *activeLatency != 87 {
+		t.Fatalf("主动探测延迟被迁移破坏: %v", activeLatency)
+	}
+	if activeObservedAt != nil {
+		t.Fatalf("带 latency 的主动探测记录不应被推断出普通请求观测: %v", activeObservedAt)
+	}
+}
+
+func createTemporaryMigrationDatabase(t *testing.T, ctx context.Context, baseDSN, prefix string) string {
+	t.Helper()
+	tmpDB := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
+	admin, err := pgx.Connect(ctx, baseDSN)
+	if err != nil {
+		t.Fatalf("连接维护库失败: %v", err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgxQuoteIdent(tmpDB)); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("CREATE DATABASE %s 失败: %v", tmpDB, err)
+	}
+	if err := admin.Close(ctx); err != nil {
+		t.Fatalf("关闭维护连接失败: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanup, cleanupErr := pgx.Connect(context.Background(), baseDSN)
+		if cleanupErr != nil {
+			t.Logf("清理连接失败(临时库 %s 可能残留): %v", tmpDB, cleanupErr)
+			return
+		}
+		defer cleanup.Close(context.Background())
+		_, _ = cleanup.Exec(context.Background(),
+			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1", tmpDB)
+		if _, dropErr := cleanup.Exec(context.Background(), "DROP DATABASE IF EXISTS "+pgxQuoteIdent(tmpDB)); dropErr != nil {
+			t.Logf("DROP DATABASE %s 失败(需手动清理): %v", tmpDB, dropErr)
+		}
+	})
+	return swapDatabaseName(t, baseDSN, tmpDB)
 }
 
 // swapDatabaseName 把 DSN 里的库名换成 newDB,保留其余连接参数。

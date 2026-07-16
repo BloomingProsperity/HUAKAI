@@ -163,12 +163,19 @@ func TestAccountHealthDiagnoseShape(t *testing.T) {
 	// 回归:工具必须露出 account health 行的 state + 失败分类/计数,以及 channel summary
 	// 的逐状态计数。变异:丢掉 failure_class 会破坏下面断言的 error_class 推导。
 	fc := "rate_limit_exceeded"
+	probeAt := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	observedAt := time.Date(2026, 7, 16, 10, 7, 0, 0, time.UTC)
 	deps := AccountHealthDeps{
 		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
 			if p.TenantID != 7 || p.ID != 5 {
 				t.Fatalf("scope leaked: params=%+v want tenant=7 id=5", p)
 			}
-			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "degraded", Enabled: true, FailureClass: &fc, FailureCount: 2}, nil
+			return admindb.GetAdminProviderAccountHealthRow{
+				ID: 5, TenantID: 7, HealthState: "degraded", Enabled: true,
+				FailureClass: &fc, FailureCount: 2,
+				LastProbeAt:           pgtype.Timestamptz{Time: probeAt, Valid: true},
+				LastRequestObservedAt: pgtype.Timestamptz{Time: observedAt, Valid: true},
+			}, nil
 		},
 		ChannelSummary: func(_ context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error) {
 			return channelhealth.ChannelHealthSummary{Total: 4, ByState: map[channelhealth.HealthState]int64{"active": 3, "cooldown": 1}}, nil
@@ -183,6 +190,15 @@ func TestAccountHealthDiagnoseShape(t *testing.T) {
 	}
 	if res.Summary["health_state"] != "degraded" || res.ErrorClass != "rate_limit_exceeded" {
 		t.Fatalf("summary=%v error_class=%q want degraded/rate_limit_exceeded", res.Summary, res.ErrorClass)
+	}
+	if got, ok := res.Summary["last_probe_at"].(time.Time); !ok || !got.Equal(probeAt) {
+		t.Fatalf("last_probe_at=%v want %v", res.Summary["last_probe_at"], probeAt)
+	}
+	if got, ok := res.Summary["last_request_observed_at"].(time.Time); !ok || !got.Equal(observedAt) {
+		t.Fatalf("last_request_observed_at=%v want %v", res.Summary["last_request_observed_at"], observedAt)
+	}
+	if res.Summary["last_request_observation_source"] != "request_completion_event" {
+		t.Fatalf("last_request_observation_source=%v want request_completion_event", res.Summary["last_request_observation_source"])
 	}
 	cs, ok := res.Summary["channel_summary"].(map[string]any)
 	if !ok || cs["total"].(int64) != 4 {

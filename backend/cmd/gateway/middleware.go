@@ -421,8 +421,8 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 		}
 	}))
 	// 接通请求完成观测:内部 handler 保留历史 probe 命名,但这里只记录被动请求完成时间,
-	// 不执行主动上游探测。写入沿用旧 last_probe_at 存储列,管理 API 以
-	// last_request_observed_at 暴露真实语义。该写入纯可观测、异步、单行 PK update,
+	// 不执行主动上游探测。写入独立 last_request_observed_at 存储列。该写入纯可观测、
+	// 异步、单行 PK update,
 	// 不在请求转发热路径上。pgPool 为 nil 时退回空转,保持旧行为不致启动失败。
 	var healthProbe func(context.Context, observability.AccountHealthSignal) error
 	if pgPool != nil {

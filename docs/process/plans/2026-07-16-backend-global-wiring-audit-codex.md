@@ -9,7 +9,7 @@
 | Blast radius | 审计本身为只读；后续低/中风险修复可能影响诊断合同、依赖装配、后台任务启动、开关读取和非资金业务路径。任何涉及数据库 schema、资金账、鉴权核心、billing ledger、quota enforcement、运行时依赖或生产部署的改动停止在决策包。 |
 | Failure modes | 只搜名字不读消费代码导致假阳性；把 nil fallback 当未接线或把 non-nil 当已激活；只看 chat 漏掉其他协议；只看请求路径漏 worker/恢复路径；把单机内存状态误称多副本安全；修复一个入口却漏 alias/Hermes/OpenAPI；测试 fixture 没制造接线差异；把参考源码阅读和实现放进同一会话造成 clean-room 污染；在含其它目标改动的工作树误混 PR。缓解方式是九轴矩阵、逐链引用、协议横向表、差异 fixture、参考 specifier 隔离车道、独立工作树和分批 PR。 |
 | Decision points | 全项目统一执行 Owner 最新规则：只有“源码核实后的成熟项目存在实质分歧”且“没有源码核实的成熟先例或 Safe Equivalent”且“选错会造成高危”三项同时成立，才暂停该实现选择并集中提交 Owner 决策；三项缺一则继续实施、记录风险并用判别测试闭环。PR 合并、生产部署、真实秘密、`LICENSE` 和破坏性操作仍是独立硬门。涉及 schema、鉴权、资金、强配额或真实上游费用时，必须在实施记录中给出当前 HUAKAI 真码链、成熟项目行为、方案优缺点、迁移、测试和回滚；不再因为标签本身自动停工。 |
-| Parallel-plan status | Owner 已要求 Codex 独立工作且不要触碰另一目标。本计划不读取、不修改 Claude 工作树或同题计划，作为 Owner 指定的独立 Codex 车道。参考项目由另一个隔离 Codex specifier 会话读取并产生行为报告；当前审计/实现会话不直接读取参考源码。 |
+| Parallel-plan status | Owner 已要求 Codex 独立工作且不要触碰另一目标。本计划不读取、不修改 Claude 工作树或同题计划，作为 Owner 指定的独立 Codex 车道。后端参考行为仍由隔离 Codex specifier 会话读取并产生报告；本会话为回答 Owner 的前端布局问题单独读取过 Sub2API UI 源码，但该阅读不进入本批后端 schema/API 实现，也不复制其 UI 代码、结构或标识符。 |
 
 ## 审计判定模型
 
@@ -147,6 +147,19 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 - 查“配置能写但运行时不读”“只启动读取但管理面声称实时生效”“错误 fallback 静默翻转”“默认值与诊断不一致”。
 - 记录配置来源、缓存刷新、跨副本传播和实际消费者。
 
+#### Batch 3A：请求观测与主动探测存储合同拆分
+
+Owner 已批准把普通请求观测从 `last_probe_at` 迁到独立合同。本批使用独立堆叠分支和 Draft PR，只处理存储与消费者切换，不启动真实主动探测：
+
+1. 使用迁移 `0189` 新增 nullable `last_request_observed_at`，避开其它未合并分支已经使用的 `0182～0188` 编号。
+2. 上迁移只搬运 `last_probe_at IS NOT NULL AND last_probe_latency_ms IS NULL` 的历史值，并清空这些旧 probe 值；带 latency 的记录保留为潜在主动探测证据，不做不可证实覆盖。
+3. 下迁移在 `last_probe_at` 为空时把请求观测值放回旧列，再删除新列，保证回滚不把已有主动 probe 覆盖掉。
+4. 请求完成事件只单调写 `last_request_observed_at`；事件乱序、重试和 DLQ 重放不得让时间倒退。
+5. 健康详情、账号列表和 Hermes 必须分别暴露 `last_request_observed_at` 与来源；`last_probe_at` 只保留真正 probe 语义。
+6. OpenAPI 同步两套字段，不用 deprecated alias 冒充迁移完成。
+7. 真 PostgreSQL 测试覆盖：历史无 latency 行迁移、带 latency 行保留、单调写、跨租户隔离、down 回滚；普通测试覆盖所有管理消费者。
+8. 失败回滚：若任何消费者仍依赖旧被动值，撤销本堆叠 PR；不得在生产部署后手工双写或静默混用两列。
+
 ### Batch 4：事件、DLQ、恢复和后台闭环
 
 - event bus 注册、审计引用、结算恢复、通知 outbox、凭据刷新、模型同步、健康探测、账务对账、租约清理。
@@ -194,9 +207,9 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 
 ## Pre-execution checklist
 
-1. 只使用 `HUAKAI-wt-global-wiring-codex` 和分支 `audit/backend-global-wiring-20260716-codex`。
+1. 主审计只使用 `HUAKAI-wt-global-wiring-codex`；已获批 schema 批次使用其堆叠工作树 `HUAKAI-wt-request-observation-codex` 和分支 `fix/request-observation-schema-20260716-codex`，PR 基于主审计分支。
 2. 每批开始和结束检查 `git status`，所有改动通过该批次的 Draft PR 提交；未经 Owner 同意不合并。
-3. 当前会话不读取参考项目源码，不触碰 Claude 或其它目标工作树。
+3. 当前后端实现不使用本会话为前端答疑读取的参考 UI 源码；后端参考行为只消费隔离 specifier 报告，并且不触碰 Claude 或其它目标工作树。
 4. 参考源码由隔离 specifier 会话读取，输出行为报告后退出。
 5. 建立生产入口、worker 和协议 handler 的源码清单。
 6. 每个候选发现至少打开构造、注入和消费源码，不以 `rg` 输出直接下结论。
