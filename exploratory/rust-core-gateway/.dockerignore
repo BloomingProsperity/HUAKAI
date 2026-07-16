@@ -1,0 +1,8 @@
+# tls-sidecar 镜像构建上下文忽略:cargo 产物与各 lane 的 target 巨大且无需进镜像。
+**/target
+merged/target
+codex-lane/target
+claude-lane/target
+claude-m3/target
+**/*.rs.bk
+.git

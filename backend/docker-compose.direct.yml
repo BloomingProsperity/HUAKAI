@@ -39,6 +39,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      tls-sidecar:
+        condition: service_healthy
     restart: unless-stopped
     # 直接把 gateway 发布到宿主端口(无 Caddy 反代)。
     # HUAKAI_HTTP_BIND 控制绑定网卡:
@@ -80,11 +82,17 @@ services:
       # 并把下方 gateway 的 volumes 审计挂载段一并取消注释。
       HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-}
       HUAKAI_AUDIT_PRIVATE_KEY_PATH: ${HUAKAI_AUDIT_PRIVATE_KEY_PATH:-}
-    # ---- production 直连才需要:持久审计私钥(默认注释,dev 无需任何密钥文件)----
-    # 运维在宿主用 `openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem` 生成后,取消下面挂载,
-    # 并在 .env 设齐上面三个 HUAKAI_AUDIT_*(BACKEND=postgres / PATH=容器内读取路径 / HOST=宿主源路径)。
-    # volumes:
-    #   - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
+      # 出口默认走 Rust BoringSSL sidecar(经共享卷同一 unix socket)。SidecarFallbackEnabled
+      # 默认 false=纯 Rust fail-closed;应急回退 Go uTLS 设 HUAKAI_TRANSPORT_SIDECAR_FALLBACK=true。
+      HUAKAI_TRANSPORT_SIDECAR_SOCKET: /run/huakai/tls-sidecar.sock
+      HUAKAI_TRANSPORT_SIDECAR_FALLBACK: ${HUAKAI_TRANSPORT_SIDECAR_FALLBACK:-false}
+    volumes:
+      # 与 tls-sidecar 共享的 unix socket 卷(网关按上面 env 连该 socket)。
+      - huakai-direct-sidecar-run:/run/huakai
+      # ---- production 直连才需要:持久审计私钥(默认注释,dev 无需任何密钥文件)----
+      # 运维在宿主用 `openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem` 生成后,取消下面挂载,
+      # 并在 .env 设齐三个 HUAKAI_AUDIT_*(BACKEND=postgres / PATH=容器内读取路径 / HOST=宿主源路径)。
+      # - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
     networks:
       - huakai-direct
     healthcheck:
@@ -93,6 +101,26 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # Rust BoringSSL TLS mimicry sidecar:网关出站伪装出口(逐字节复刻真客户端 ClientHello +
+  # 代理隧道 fail-closed)。纯传输层,不碰 body;经共享 unix socket 卷与网关通信。
+  tls-sidecar:
+    build:
+      context: ../exploratory/rust-core-gateway
+      dockerfile: merged/crates/tls-sidecar/Dockerfile
+    restart: unless-stopped
+    environment:
+      HUAKAI_TLS_SIDECAR_SOCKET: /run/huakai/tls-sidecar.sock
+    volumes:
+      - huakai-direct-sidecar-run:/run/huakai
+    networks:
+      - huakai-direct
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/huakai/tls-sidecar.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   # 一次性数据库迁移:与 prod 一致,gateway 之前把 sql/migrations 应用到 postgres,成功退出后
   # gateway 才启动。迁移幂等,重复 up 安全。
@@ -139,3 +167,5 @@ networks:
 volumes:
   # 独立卷名,与 prod 的 huakai-prod-pgdata 隔离。
   huakai-direct-pgdata:
+  # 网关↔sidecar 共享 unix socket 卷。
+  huakai-direct-sidecar-run:

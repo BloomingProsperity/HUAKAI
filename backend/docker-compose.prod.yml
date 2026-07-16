@@ -24,6 +24,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      tls-sidecar:
+        condition: service_healthy
     restart: unless-stopped
     # gateway 不再对宿主暴露明文端口:外部流量经下方 caddy 反代终结 TLS 后转发,gateway 仅
     # 在 compose 内网可达(防绕过 TLS 直连明文 + 防外部伪造 X-Forwarded-For)。
@@ -56,10 +58,18 @@ services:
       # 生成后挂载到容器内固定路径;切勿提交私钥进仓库。
       HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-postgres}
       HUAKAI_AUDIT_PRIVATE_KEY_PATH: /run/secrets/audit/key.pem
+      # 出口默认走 Rust BoringSSL sidecar(与 tls-sidecar 服务经共享卷同一 unix socket)。
+      # 反转/OAuth 号的 mimicry 出站由 sidecar 逐字节复刻真客户端 ClientHello;api-key 官方号
+      # 仍走裸 standard(不伪装)。SidecarFallbackEnabled 默认 false=纯 Rust fail-closed;
+      # 应急回退 Go uTLS 设 HUAKAI_TRANSPORT_SIDECAR_FALLBACK=true(break-glass,默认关)。
+      HUAKAI_TRANSPORT_SIDECAR_SOCKET: /run/huakai/tls-sidecar.sock
+      HUAKAI_TRANSPORT_SIDECAR_FALLBACK: ${HUAKAI_TRANSPORT_SIDECAR_FALLBACK:-false}
     volumes:
       # 运维在宿主生成 ed25519 私钥并经 HUAKAI_AUDIT_PRIVATE_KEY_HOST 指向它
       # (默认 ./secrets/audit_key.pem);只读挂载,容器内路径与上面 env 对应。
       - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
+      # 与 tls-sidecar 共享的 unix socket 卷(网关按上面 env 连该 socket)。
+      - huakai-prod-sidecar-run:/run/huakai
     networks:
       - huakai-prod
     healthcheck:
@@ -68,6 +78,29 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # Rust BoringSSL TLS mimicry sidecar:网关出站的伪装出口(逐字节复刻真客户端 ClientHello +
+  # 代理隧道 fail-closed)。纯传输层,不碰 body;经共享 unix socket 卷与网关通信。
+  tls-sidecar:
+    build:
+      # context = rust workspace 父目录(含 merged/ 与 vendored boring fork vendor/)。
+      context: ../exploratory/rust-core-gateway
+      dockerfile: merged/crates/tls-sidecar/Dockerfile
+    restart: unless-stopped
+    # 不对宿主暴露任何端口:仅经共享卷的 unix socket 被网关调用。
+    environment:
+      HUAKAI_TLS_SIDECAR_SOCKET: /run/huakai/tls-sidecar.sock
+    volumes:
+      - huakai-prod-sidecar-run:/run/huakai
+    networks:
+      - huakai-prod
+    healthcheck:
+      # 就绪 = socket 已绑定(网关据此 depends_on service_healthy 再启,避免连空 socket)。
+      test: ["CMD-SHELL", "test -S /run/huakai/tls-sidecar.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
 
   # 反向代理 + 自动 HTTPS(一键上线的 TLS 终结层)。Caddy 对 HUAKAI_PUBLIC_DOMAIN 自动签发/
   # 续期 Let's Encrypt 证书(需 80/443 对公网可达 + 域名解析到本机),并反代到内网 gateway:8080。
@@ -140,3 +173,5 @@ volumes:
   huakai-prod-pgdata:
   huakai-prod-caddy-data:
   huakai-prod-caddy-config:
+  # 网关↔sidecar 共享 unix socket 卷(sidecar 绑定、网关连接)。
+  huakai-prod-sidecar-run:
