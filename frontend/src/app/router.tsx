@@ -69,6 +69,7 @@ import { PlatformCredentialsPage } from '../features/platformcredentials/Platfor
 import { LandingPage } from '../features/landing/LandingPage'
 import { LegalPage } from '../features/legal/LegalPage'
 import { LoginPage } from '../auth/LoginPage'
+import { SetupWizardPage } from '../features/setup/SetupWizardPage'
 import { OAuthCallbackPage } from '../auth/OAuthCallbackPage'
 import { ForgotPasswordPage } from '../auth/ForgotPasswordPage'
 import { ResetPasswordPage } from '../auth/ResetPasswordPage'
@@ -160,6 +161,7 @@ const errEl = <ErrorFallback />
 
 export const router = createBrowserRouter([
   // 公开壳:登录/找回/重置/邮箱验证/模型排行,壳外、无需鉴权。
+  { path: '/setup', element: <SetupWizardPage />, errorElement: errEl },
   { path: '/login', element: <LoginPage />, errorElement: errEl },
   { path: '/oauth/callback', element: <OAuthCallbackPage />, errorElement: errEl },
   { path: '/forgot-password', element: <ForgotPasswordPage />, errorElement: errEl },

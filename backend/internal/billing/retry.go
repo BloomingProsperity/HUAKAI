@@ -12,16 +12,38 @@ import (
 
 // Serializable 预扣事务的重试默认参数。PostgreSQL 官方立场:Serializable 隔离下
 // 40001 序列化失败是预期的、应由应用层重试的错误(40P01 死锁同理)。base 取小
-//(常态几乎无争用、重试代价可忽略),decorrelated jitter 把同用户并发惊群在时间轴上
+// (常态几乎无争用、重试代价可忽略),decorrelated jitter 把同用户并发惊群在时间轴上
 // 打散避免重试再撞,cap 封顶避免长尾延迟。5 次预算足以吸收现实并发突发。
 const (
 	reserveRetryMax    = 5
 	reserveBackoffBase = 2 * time.Millisecond
 	reserveBackoffCap  = 50 * time.Millisecond
+	abortTx2Attempts   = 9
+)
+
+type txRetryPolicy struct {
+	attempts    int
+	backoffBase time.Duration
+	backoffCap  time.Duration
+}
+
+var (
+	// Settle 保持原六次预算；Abort 是终结路径，独立增加到九次以降低 hold 冻结概率，
+	// 但不扩大单次退避上下界。
+	settleTx2RetryPolicy = txRetryPolicy{
+		attempts:    reserveRetryMax + 1,
+		backoffBase: reserveBackoffBase,
+		backoffCap:  reserveBackoffCap,
+	}
+	abortTx2RetryPolicy = txRetryPolicy{
+		attempts:    abortTx2Attempts,
+		backoffBase: reserveBackoffBase,
+		backoffCap:  reserveBackoffCap,
+	}
 )
 
 // isReserveSerializationConflict 判定错误是否为可安全重试的 Serializable 冲突
-//(40001 序列化失败 / 40P01 死锁)。业务哨兵(ErrClaimRace / ErrFingerprintConflict /
+// (40001 序列化失败 / 40P01 死锁)。业务哨兵(ErrClaimRace / ErrFingerprintConflict /
 // ErrInsufficientBalance)是 Go error 值而非 *pgconn.PgError,天然不命中——它们是
 // 确定性业务结果,重试无意义、必须立即原样返回。
 func isReserveSerializationConflict(err error) bool {
@@ -37,17 +59,29 @@ func isReserveSerializationConflict(err error) bool {
 // 更快收敛(纯指数在惊群下每轮仍同步再撞)。这是相对项目内既有「立即无退避重试」
 // 形态(mediatask/dispatcher)的算法升级。
 func reserveBackoff(prev time.Duration, rnd func(int64) int64) time.Duration {
-	hi := prev * 3
-	if hi < reserveBackoffBase {
-		hi = reserveBackoffBase
+	return txRetryBackoff(settleTx2RetryPolicy, prev, rnd)
+}
+
+func txRetryBackoff(policy txRetryPolicy, prev time.Duration, rnd func(int64) int64) time.Duration {
+	base := policy.backoffBase
+	if base <= 0 {
+		base = reserveBackoffBase
 	}
-	span := int64(hi - reserveBackoffBase)
-	d := reserveBackoffBase
+	capDelay := policy.backoffCap
+	if capDelay < base {
+		capDelay = base
+	}
+	hi := prev * 3
+	if hi < base {
+		hi = base
+	}
+	span := int64(hi - base)
+	d := base
 	if span > 0 {
 		d += time.Duration(rnd(span))
 	}
-	if d > reserveBackoffCap {
-		d = reserveBackoffCap
+	if d > capDelay {
+		d = capDelay
 	}
 	return d
 }

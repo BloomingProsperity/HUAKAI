@@ -206,3 +206,45 @@ export function statusLabel(status: string): string {
 export function nextStatus(current: string): 'active' | 'disabled' {
   return current === 'active' ? 'disabled' : 'active'
 }
+
+export interface TLSProfileTableRow {
+  id: number
+  name: string
+  description: string
+  status: string
+  statusTone: BadgeTone
+  grease: string
+  cipherSuiteCount: number
+  alpn: string
+  ja3: string
+  lastValidatedAt: string
+  profile: TLSFingerprintProfile
+}
+
+/** TLS 指纹 DTO 到列表展示行的纯映射。 */
+export function mapTLSProfileRows(profiles: TLSFingerprintProfile[]): TLSProfileTableRow[] {
+  return profiles.map((profile) => ({
+    id: profile.id,
+    name: profile.name,
+    description: profile.description ?? '',
+    status: statusLabel(profile.status),
+    statusTone: statusTone(profile.status),
+    grease: profile.grease_enabled ? '开' : '关',
+    cipherSuiteCount: (profile.cipher_suites ?? []).length,
+    alpn: (profile.alpn_protocols ?? []).join(', ') || '—',
+    ja3: shortenJa3(profile.expected_ja3_hash),
+    lastValidatedAt: formatProfileTimestamp(profile.last_validated_at),
+    profile,
+  }))
+}
+
+export function shortenJa3(value: string): string {
+  if (!value) return '—'
+  return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+export function formatProfileTimestamp(iso?: string | null): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
+}

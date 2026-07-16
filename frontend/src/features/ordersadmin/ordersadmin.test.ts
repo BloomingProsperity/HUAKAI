@@ -11,7 +11,11 @@ import {
   EMPTY_ORDER_FILTER,
   EXPORT_MAX_WINDOW_DAYS,
   formatCents,
+  formatOrderTime,
   hasAnyAction,
+  mapOrderDashboardCards,
+  mapOrderRows,
+  mapRefundRequestRows,
   MAX_AMOUNT_CENTS,
   orderActions,
   parseAmountToCents,
@@ -25,6 +29,7 @@ import {
   type CreateOrderForm,
   type OrderFilterForm,
 } from './ordersadmin'
+import type { AdminOrder, DashboardStats, RefundRequestView } from './types'
 
 function filter(over: Partial<OrderFilterForm>): OrderFilterForm {
   return { ...EMPTY_ORDER_FILTER, ...over }
@@ -118,6 +123,95 @@ describe('formatCents', () => {
     expect(formatCents(-1234, 'USD')).toBe('-12.34 USD')
   })
 })
+
+describe('订单管理台展示映射', () => {
+  it('四张统计卡保留真实零值，未加载时不伪装成零', () => {
+    const stats: DashboardStats = {
+      total_amount_cents: 0,
+      total_count: 0,
+      today_count: 0,
+      average_amount_cents: 0,
+      daily_series: [],
+    }
+
+    // 判别核心：真实零必须展示为 0/0.00；若用 truthy 回退会错误显示未知态。
+    expect(mapOrderDashboardCards(stats).map((card) => card.value)).toEqual(['0.00', '0', '0', '0.00'])
+    // 判别核心：未加载与真实零不可混同；变异(null 也映射成零)会使断言变红。
+    expect(mapOrderDashboardCards(null).map((card) => card.value)).toEqual(['—', '—', '—', '—'])
+  })
+
+  it('订单完整映射七个数据列并保留行内动作源记录', () => {
+    const source = order({
+      id: 42,
+      out_trade_no: '',
+      amount_cents: 1999,
+      currency_code: 'CNY',
+      status: 'failed',
+      provider_kind: '',
+      order_kind: '',
+      created_at: 'not-a-date',
+    })
+    const [row] = mapOrderRows([source])
+
+    // 判别核心：回退订单号、金额、状态危险色与非法时间任一退化都会变红。
+    expect(row).toMatchObject({
+      id: 42,
+      orderNumber: '#42',
+      userId: 7,
+      amount: '19.99 CNY',
+      kind: '充值',
+      provider: '—',
+      statusText: '失败',
+      statusTone: 'danger',
+      createdAt: '—',
+    })
+    expect(row.source).toBe(source)
+  })
+
+  it('退款工单映射保留缺省用户/原因与审批状态语义', () => {
+    const source: RefundRequestView = {
+      id: 8,
+      order_id: 42,
+      status: 'pending',
+      created_at: 'not-a-date',
+    }
+    const [row] = mapRefundRequestRows([source])
+
+    // 判别核心：缺省字段不能误显 0/空白，pending 不能丢失警示语气。
+    expect(row).toMatchObject({
+      id: 8,
+      orderId: 42,
+      userId: null,
+      statusText: '待审批',
+      statusTone: 'warn',
+      reason: '—',
+      createdAt: '—',
+    })
+    expect(row.source).toBe(source)
+  })
+
+  it('合法与非法时间明确分流', () => {
+    // 变异(忽略非法日期)会渲染 Invalid Date；变异(恒占位)会丢失真实时间。
+    expect(formatOrderTime('2026-07-13T00:00:00Z')).not.toBe('—')
+    expect(formatOrderTime('invalid')).toBe('—')
+  })
+})
+
+function order(overrides: Partial<AdminOrder>): AdminOrder {
+  return {
+    id: 1,
+    out_trade_no: 'trade-1',
+    user_id: 7,
+    amount_cents: 100,
+    currency_code: 'CNY',
+    status: 'pending',
+    provider_kind: 'manual',
+    order_kind: 'recharge',
+    created_at: '2026-07-13T00:00:00Z',
+    updated_at: '2026-07-13T00:00:00Z',
+    ...overrides,
+  }
+}
 
 describe('toRfc3339', () => {
   it('空串 → 空串;非法 → 空串', () => {

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listPricing } from './api'
 import { RateVersionPanel } from './RateVersionPanel'
@@ -11,7 +13,9 @@ import {
   collectOwners,
   EMPTY_MODEL_FILTERS,
   formatPrice,
+  mapModelTableRows,
   type ModelFilters,
+  type ModelTableRow,
   type PriceUnit,
 } from './pricing'
 import type { PricingItem } from './types'
@@ -94,9 +98,9 @@ export function ModelsPage() {
       {error && <div style={errorBox}>{error}</div>}
 
       {loading && items.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载模型目录" hint="请稍候。" />
       ) : filtered.length === 0 ? (
-        <Empty>没有匹配的模型。</Empty>
+        <EmptyState title="没有匹配的模型" hint="请调整搜索词或筛选条件。" />
       ) : view === 'cards' ? (
         <div style={cardGrid}>
           {filtered.map((m) => (
@@ -147,44 +151,17 @@ function PriceCell({ label, value }: { label: string; value: string }) {
 }
 
 function ModelTable({ items, unit, unitLabel, onOpen }: { items: PricingItem[]; unit: PriceUnit; unitLabel: string; onOpen: (m: PricingItem) => void }) {
+  const rows = mapModelTableRows(items, unit)
+  const columns = modelColumns(unitLabel)
   return (
     <div className="hk-card">
-      <div className="hk-tablewrap">
-        <table className="hk-table">
-          <thead>
-            <tr>
-              {['模型', '厂商', `输入 ${unitLabel}`, `输出 ${unitLabel}`, '上下文', '能力'].map((h) => (
-                <th key={h}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((m) => (
-              <tr key={m.model} onClick={() => onOpen(m)} style={{ cursor: 'pointer' }}>
-                <td>
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <code style={{ fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-900)' }}>{m.model}</code>
-                    {m.canonical_id && m.canonical_id !== m.model && (
-                      <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{m.canonical_id}</span>
-                    )}
-                  </div>
-                </td>
-                <td>{m.owned_by || '其他'}</td>
-                <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.input_price_per_token, unit)}</td>
-                <td className="hk-mono" style={{ textAlign: 'right' }}>{formatPrice(m.output_price_per_token, unit)}</td>
-                <td className="hk-mono" style={{ textAlign: 'right' }}>{m.context_length ? fmtTokens(m.context_length) : '—'}</td>
-                <td>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {capabilityList(m.capabilities).map((c) => (
-                      <StatusBadge key={c} tone="info">{c}</StatusBadge>
-                    ))}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataListTable
+        label="模型目录"
+        rows={rows}
+        rowKey={(row) => row.id}
+        columns={columns}
+        actions={[{ label: '查看', onClick: (row) => onOpen(row.item) }]}
+      />
     </div>
   )
 }
@@ -259,12 +236,15 @@ function Toggle({ options, value, onChange }: { options: Array<{ v: string; l: s
   )
 }
 
-function fmtTokens(n: number): string {
-  if (n >= 1000) return `${Math.round(n / 1000)}K`
-  return String(n)
-}
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
+function modelColumns(unitLabel: string): DataListColumn<ModelTableRow>[] {
+  return [
+    { key: 'model', label: '模型', render: (row) => <div style={{ display: 'flex', flexDirection: 'column' }}><code style={modelCode}>{row.model}</code>{row.canonicalId && <span style={secondaryText}>{row.canonicalId}</span>}</div> },
+    { key: 'owner', label: '厂商', render: (row) => row.owner },
+    { key: 'input', label: `输入 ${unitLabel}`, render: (row) => <span className="hk-mono">{row.inputPrice}</span> },
+    { key: 'output', label: `输出 ${unitLabel}`, render: (row) => <span className="hk-mono">{row.outputPrice}</span> },
+    { key: 'context', label: '上下文', render: (row) => <span className="hk-mono">{row.contextLength}</span> },
+    { key: 'capabilities', label: '能力', render: (row) => <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>{row.capabilities.map((capability) => <StatusBadge key={capability} tone="info">{capability}</StatusBadge>)}</div> },
+  ]
 }
 
 const toolbar: React.CSSProperties = {
@@ -294,6 +274,8 @@ const card: React.CSSProperties = {
 }
 const errorBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const mono: React.CSSProperties = { fontFamily: 'var(--hk-font-mono)', fontSize: 12 }
+const modelCode: React.CSSProperties = { fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-900)' }
+const secondaryText: React.CSSProperties = { fontSize: 11, color: 'var(--hk-ink-300)' }
 const iconBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-ink-500)', fontSize: 16, cursor: 'pointer' }
 const drawerOverlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', justifyContent: 'flex-end', zIndex: 'var(--hk-z-overlay)' as unknown as number }
 const drawer: React.CSSProperties = {

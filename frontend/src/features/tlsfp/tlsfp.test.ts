@@ -3,6 +3,7 @@ import {
   buildTenantQuery,
   formatIntList,
   formatStrList,
+  mapTLSProfileRows,
   nextStatus,
   parseIntList,
   parseStrList,
@@ -198,5 +199,21 @@ describe('profileToForm', () => {
     expect(f.cipherSuites).toBe('4865, 4866')
     expect(f.extensionsOrder).toBe('0, 23')
     expect(f.greaseEnabled).toBe(false)
+  })
+})
+
+describe('mapTLSProfileRows', () => {
+  it('完整映射指纹列表摘要(删 JA3/ALPN/状态任一映射→红)', () => {
+    const profile: TLSFingerprintProfile = {
+      id: 4, tenant_id: 1, name: 'chrome', description: '桌面', grease_enabled: true,
+      cipher_suites: [1, 2], supported_curves: [], ec_point_formats: [], signature_algorithms: [],
+      alpn_protocols: ['h2', 'http/1.1'], tls_supported_versions: [], key_share_groups: [], psk_modes: [],
+      extensions_order: [], expected_ja3_hash: '1234567890abcdef1234567890abcdef', status: 'drift_detected',
+      last_validated_at: null,
+    }
+    expect(mapTLSProfileRows([profile])[0]).toMatchObject({
+      id: 4, name: 'chrome', description: '桌面', status: '指纹漂移', statusTone: 'danger',
+      grease: '开', cipherSuiteCount: 2, alpn: 'h2, http/1.1', ja3: '12345678…cdef', lastValidatedAt: '—',
+    })
   })
 })

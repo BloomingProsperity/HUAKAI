@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strconv"
@@ -329,18 +330,39 @@ func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 	pgA := insertCatalogPoolGroup(t, ctx, pool, tenantA, "pg-a-"+suffix)
 	pgB := insertCatalogPoolGroup(t, ctx, pool, tenantB, "pg-b-"+suffix)
 	codes := []int32{401, 429}
+	bodyParamStrips := []string{"drop_create"}
+	paramOverride := []byte(`{"temperature":0.25,"metadata":{"source":"create"}}`)
+	sensitiveWords := []string{"word_create"}
 
 	// 在租户 A 自己的 pool group 里创建成功。
 	row, err := q.CreateChannel(ctx, CreateChannelParams{
-		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes, Enabled: true,
+		TenantID: tenantA, PoolGroupID: pgA, Name: "primary", FailoverStatusCodes: codes,
+		BodyParamStrips: bodyParamStrips, ParamOverride: paramOverride,
+		SensitiveWords: sensitiveWords, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("create channel: %v", err)
 	}
-	if row.ID == 0 || row.PoolGroupID != pgA || row.Name != "primary" {
+	if row.ID == 0 || row.PoolGroupID != pgA || row.Name != "primary" ||
+		!reflect.DeepEqual(row.BodyParamStrips, bodyParamStrips) ||
+		!reflect.DeepEqual(row.SensitiveWords, sensitiveWords) ||
+		!jsonBytesEqual(row.ParamOverride, paramOverride) {
 		t.Fatalf("create row wrong: %+v", row)
 	}
 	chID := row.ID
+	got, err := q.GetAdminChannel(ctx, GetAdminChannelParams{TenantID: tenantA, ID: chID})
+	if err != nil {
+		t.Fatalf("get created channel: %v", err)
+	}
+	if got.ID != chID || got.PoolGroupID != pgA || got.Name != "primary" ||
+		!reflect.DeepEqual(got.BodyParamStrips, bodyParamStrips) ||
+		!jsonBytesEqual(got.ParamOverride, paramOverride) ||
+		!reflect.DeepEqual(got.SensitiveWords, sensitiveWords) {
+		t.Fatalf("get 未精确回显 create 三门:%+v", got)
+	}
+	if _, err := q.GetAdminChannel(ctx, GetAdminChannelParams{TenantID: tenantB, ID: chID}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-tenant get: err=%v want pgx.ErrNoRows (tenant fence)", err)
+	}
 
 	// pool-group 跨租户守卫:租户 A 不能挂载租户 B 的 pool group。
 	if _, err := q.CreateChannel(ctx, CreateChannelParams{
@@ -365,15 +387,39 @@ func TestChannelCRUD_TenantScopedAndUnique(t *testing.T) {
 
 	// 属主更新成功。
 	upd, err := q.UpdateChannel(ctx, UpdateChannelParams{
-		TenantID: tenantA, ID: chID, PoolGroupID: pgA, Name: "renamed", FailoverStatusCodes: []int32{500}, Enabled: false,
+		TenantID: tenantA, ID: chID, PoolGroupID: pgA, Name: "renamed", FailoverStatusCodes: []int32{500},
+		SetSensitiveWords: true, SensitiveWords: []string{"word_updated"}, Enabled: false,
 	})
 	if err != nil {
 		t.Fatalf("owner update: %v", err)
 	}
-	if upd.Name != "renamed" || upd.Enabled {
+	if upd.Name != "renamed" || upd.Enabled ||
+		!reflect.DeepEqual(upd.BodyParamStrips, bodyParamStrips) ||
+		!jsonBytesEqual(upd.ParamOverride, paramOverride) ||
+		!reflect.DeepEqual(upd.SensitiveWords, []string{"word_updated"}) {
 		t.Fatalf("update row wrong: %+v", upd)
 	}
-
+	listed, err := q.ListAdminChannelsByTenant(ctx, ListAdminChannelsByTenantParams{
+		TenantID: tenantA, PageLimit: 10, PageOffset: 0,
+	})
+	if err != nil {
+		t.Fatalf("list updated channels: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != chID ||
+		!reflect.DeepEqual(listed[0].BodyParamStrips, bodyParamStrips) ||
+		!jsonBytesEqual(listed[0].ParamOverride, paramOverride) ||
+		!reflect.DeepEqual(listed[0].SensitiveWords, []string{"word_updated"}) {
+		t.Fatalf("list 未回显 update 改一保二结果:%+v", listed)
+	}
+	got, err = q.GetAdminChannel(ctx, GetAdminChannelParams{TenantID: tenantA, ID: chID})
+	if err != nil {
+		t.Fatalf("get updated channel: %v", err)
+	}
+	if !reflect.DeepEqual(got.BodyParamStrips, bodyParamStrips) ||
+		!jsonBytesEqual(got.ParamOverride, paramOverride) ||
+		!reflect.DeepEqual(got.SensitiveWords, []string{"word_updated"}) {
+		t.Fatalf("get 未回显 update 改一保二结果:%+v", got)
+	}
 	// delete 上的租户围栏:租户 B 不能删除租户 A 的 channel。
 	if _, err := q.SoftDeleteChannel(ctx, SoftDeleteChannelParams{TenantID: tenantB, ID: chID}); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-tenant delete: err=%v want pgx.ErrNoRows (tenant fence)", err)
@@ -395,4 +441,13 @@ func isChannelUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) &&
 		pgErr.Code == "23505" &&
 		pgErr.ConstraintName == "uq_channels_tenant_pool_name"
+}
+
+func jsonBytesEqual(left, right []byte) bool {
+	var leftValue any
+	var rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
 }

@@ -64,8 +64,8 @@ describe('resolveNavMatch —— 最长前缀判定本身(合成 nav,可对 tieb
   // 构造一个"短前缀属 user、更具体的长前缀属 operator"的 nav:用真实 PIPELINE_NAV 无法触发
   // 这条 tiebreak(其路径互不为前缀),故用合成数据精确验证"取更长前缀"。
   const synthetic: NavSection[] = [
-    { stage: 1, key: 'short', shell: 'user', label: '短前缀页', hint: '', items: [{ path: '/area', label: '短前缀页', built: true }] },
-    { stage: 2, key: 'long', shell: 'operator', label: '长前缀页', hint: '', items: [{ path: '/area/detail', label: '长前缀页', built: true }] },
+    { key: 'short', shell: 'user', label: '短前缀页', items: [{ path: '/area', label: '短前缀页', icon: '◇', built: true }] },
+    { key: 'long', shell: 'operator', label: '长前缀页', items: [{ path: '/area/detail', label: '长前缀页', icon: '◆', built: true }] },
   ]
 
   it('两个前缀都命中时取更长的那条(变异:若改成取更短前缀,shell/label 会反转)', () => {
@@ -85,11 +85,11 @@ describe('resolveNavMatch —— 最长前缀判定本身(合成 nav,可对 tieb
 
 describe('getCurrentPageLabel', () => {
   it('取对应 nav item 的中文 label(变异:取错项则文案不符)', () => {
-    expect(getCurrentPageLabel('/accounts')).toBe('账号中心')
-    expect(getCurrentPageLabel('/routing')).toBe('路由与池管理')
+    expect(getCurrentPageLabel('/accounts')).toBe('上游账号')
+    expect(getCurrentPageLabel('/routing')).toBe('账号池')
   })
   it('详情路径用最长前缀取父项 label', () => {
-    expect(getCurrentPageLabel('/accounts/123')).toBe('账号中心')
+    expect(getCurrentPageLabel('/accounts/123')).toBe('上游账号')
   })
   it('无匹配返回回退文案', () => {
     expect(getCurrentPageLabel('/nope')).toBe('运营台')

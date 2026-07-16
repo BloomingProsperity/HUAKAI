@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatRatio, ratioDisplay, ratioTone, userGroupLabel } from './megroups'
+import { formatRatio, mapMeGroupTableRows, ratioDisplay, ratioTone, userGroupLabel } from './megroups'
 
 describe('formatRatio', () => {
   it('去尾零收敛("1.50000000"→"1.5")', () => {
@@ -47,5 +47,17 @@ describe('userGroupLabel', () => {
     expect(userGroupLabel('team_gold')).toBe('team_gold')
     expect(userGroupLabel('')).toBe('默认等级')
     expect(userGroupLabel('   ')).toBe('默认等级')
+  })
+})
+
+describe('mapMeGroupTableRows', () => {
+  it('名称、ID、倍率与语气严格对列，未公开倍率不得泄露', () => {
+    expect(mapMeGroupTableRows([
+      { pool_group_id: 3, name: '快速组', ratio: '1.50000000', has_public_ratio: true },
+      { pool_group_id: 9, name: '', ratio: '8.00000000', has_public_ratio: false },
+    ])).toEqual([
+      { id: 3, name: '快速组', groupId: '3', ratio: '1.5×', tone: 'info' },
+      { id: 9, name: '分组 #9', groupId: '9', ratio: '未公开', tone: 'muted' },
+    ])
   })
 })

@@ -5,9 +5,13 @@ import {
   buildRewardsQuery,
   formatUsd,
   isReferralStatus,
+  mapAffiliateStats,
+  mapReferralTableRows,
+  mapRewardTableRows,
   statusCount,
   statusLabel,
   statusTone,
+  withTenantContext,
 } from './affiliateadmin'
 import { EMPTY_AFFILIATE_FILTERS, type AffiliateFilters } from './types'
 
@@ -98,5 +102,27 @@ describe('statusCount', () => {
     expect(statusCount({}, 'rewarded')).toBe(0)
     expect(statusCount({ rewarded: 5 }, 'rewarded')).toBe(5)
     expect(statusCount({ pending: Number.NaN }, 'pending')).toBe(0)
+  })
+})
+
+describe('租户上下文与展示列映射', () => {
+  it('空租户采用 me 上下文，显式租户不被覆盖', () => {
+    // 变异(忽略上下文)会让 platform_admin 首次请求缺 tenant_id 而使首断言 RED。
+    expect(withTenantContext(EMPTY_AFFILIATE_FILTERS, 7)).toEqual({ tenantId: '7', status: '' })
+    expect(withTenantContext(f({ tenantId: '9' }), 7).tenantId).toBe('9')
+  })
+
+  it('分销与返利列保持身份方向和 money 精度', () => {
+    const [referral] = mapReferralTableRows([{ id: 1, referrer_user_id: 12, referee_user_id: 34, status: 'rewarded', created_at: 'invalid-time' }])
+    expect(referral).toEqual({ id: 1, referrerUserId: '#12', refereeUserId: '#34', status: 'rewarded', createdAt: 'invalid-time' })
+    const [reward] = mapRewardTableRows([{ id: 2, referral_id: 1, referrer_user_id: 12, reward_type: 'qualified', amount_usd: '0.123456789012345678', issued_at: 'invalid-time' }])
+    // 变异(Number(amount_usd))会丢精度并打红。
+    expect(reward.amountUsd).toBe('0.123456789012345678')
+    expect(reward.referralId).toBe('#1')
+  })
+
+  it('概览指标固定映射累计、发放与四状态计数', () => {
+    const stats = mapAffiliateStats({ object: 'overview', total_reward_usd: '12.3400', reward_count: 5, counts_by_status: { pending: 1, qualified: 2, rewarded: 3, rejected: 4 } })
+    expect(stats.map((item) => item.value)).toEqual(['12.3400', '5', '1 / 2', '3 / 4'])
   })
 })

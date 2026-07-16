@@ -351,6 +351,18 @@ func (s *PostgresStore) MarkReservationReconciliationNeeded(ctx context.Context,
 	return requireAffected(rows, err)
 }
 
+func (s *PostgresStore) PrepareReleaseRecovery(ctx context.Context, tenantID int64, claimID int64, reservationID int64) (int64, error) {
+	q, err := s.queries()
+	if err != nil {
+		return 0, err
+	}
+	return q.PrepareQuotaReleaseRecovery(ctx, dbquota.PrepareQuotaReleaseRecoveryParams{
+		TenantID:      tenantID,
+		ClaimID:       claimID,
+		ReservationID: reservationID,
+	})
+}
+
 func (s *PostgresStore) AcquireConcurrencySlot(ctx context.Context, input ConcurrencyAcquire) (ConcurrencySlot, error) {
 	q, err := s.queries()
 	if err != nil {

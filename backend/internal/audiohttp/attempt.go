@@ -1,6 +1,7 @@
 package audiohttp
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,43 +11,63 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/relaybody"
 )
 
-func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) bool {
+func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallbackexec.Failure {
 	sel, err := ex.d.Selector.Select(ex.ctx, pool.SelectionRequest{
-		TenantID:         ex.ident.TenantID,
-		UserID:           ex.ident.UserID,
-		APIKeyID:         ex.ident.APIKeyID,
-		PoolGroupID:      ex.attempt.PoolGroupID,
-		RequestedModel:   ex.req.Model,
-		ModelCooldownKey: ex.upstreamModelID,
-		ProtocolFamily:   ex.resolved.ProtocolFamily,
-		EndpointFamily:   endpointFamilyAudio,
-		ClaimID:          ex.reserveRes.ClaimID,
-		AttemptSeq:       attemptSeq,
-		CapabilityFlags:  ex.attempt.RequiredCapabilities,
-		SessionHash:      ex.payloadHash,
-		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
-		UserGroup:        ex.ident.UserGroup,
+		TenantID:            ex.ident.TenantID,
+		UserID:              ex.ident.UserID,
+		APIKeyID:            ex.ident.APIKeyID,
+		PoolGroupID:         ex.attempt.PoolGroupID,
+		RequestedModel:      ex.req.Model,
+		ModelCooldownKey:    ex.upstreamModelID,
+		ProtocolFamily:      ex.resolved.ProtocolFamily,
+		EndpointFamily:      endpointFamilyAudio,
+		ClaimID:             ex.reserveRes.ClaimID,
+		AttemptSeq:          attemptSeq,
+		CapabilityFlags:     ex.attempt.RequiredCapabilities,
+		SessionHash:         ex.payloadHash,
+		Vendor:              pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
+		UserGroup:           ex.ident.UserGroup,
+		SelectionMode:       ex.attempt.SelectionMode,
+		BindingID:           ex.attempt.BindingID,
+		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	})
 	if err != nil || sel == nil || sel.AccountID == 0 || sel.WaitPlan != nil {
-		ex.abort(w, "pool_select_no_account", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
-		return false
+		failureErr := err
+		if failureErr == nil {
+			failureErr = pool.ErrNoEligibleAccount
+			if sel != nil && sel.WaitPlan != nil {
+				failureErr = pool.ErrNoSlotAvailable
+			}
+		}
+		failure := fallbackexec.PoolFailure(failureErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			return fallbackexec.AbortFailure()
+		}
+		return failure
+	}
+	if ex.classTransition != nil && bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass)) != bindingfallback.ClassNormal {
+		sel.RoutingReasonJSON = bindingfallback.AnnotateRoutingReason(sel.RoutingReasonJSON, *ex.classTransition)
 	}
 	ex.selRes = sel
-	return true
+	return nil
 }
 
 func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	cred, acc, err := ex.d.CredentialVault.Resolve(ex.ctx, ex.ident.TenantID, ex.selRes.AccountID)
 	if err != nil {
-		ex.abort(w, "credential_resolve_error", 0)
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		if !ex.abort(w, "credential_resolve_error", 0) {
+			fallbackexec.WriteHTTP(w, fallbackexec.AbortFailure())
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError))
+		}
 		return false
 	}
 	if acc.AccountID == 0 {
@@ -57,7 +78,7 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
-func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bool {
+func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) attemptOutcome {
 	// 把出站 body 的 model 改写成解析后的上游 id(JSON/multipart 皆可);multipart 会带新 boundary。
 	inboundBody, inboundCT, _ := relaybody.RewriteModel(ex.body, ex.contentType, ex.upstreamModelID)
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
@@ -70,14 +91,18 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 		Credential:         ex.cred,
 	})
 	if err != nil {
-		ex.abort(w, "upstream_dispatch_error", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		failure := fallbackexec.DispatchFailure(err)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	defer func() {
 		if res.Close != nil {
@@ -87,46 +112,47 @@ func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) bo
 	return ex.finishUpstreamResponse(w, res, attemptSeq)
 }
 
-func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
+func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) attemptOutcome {
 	if res.StatusCode >= 200 && res.StatusCode < 300 && ex.endpoint == audioEndpointSpeech {
 		return ex.settleAndStreamSpeech(w, res, attemptSeq)
 	}
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
-		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return false
+		failure := fallbackexec.ReadFailure(readErr)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if strings.TrimSpace(string(raw)) == "" {
-		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
+		failure := fallbackexec.EmptyResponseFailure()
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		decision, _, err := gateway.ClassifyAttemptHTTPError(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
-		reason := decision.AbortReason
-		if err != nil || reason == "" {
-			reason = "upstream_error"
+		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
 		}
-		ex.abort(w, reason, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return false
+		return attemptOutcome{failure: failure}
 	}
-	return ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
+	_ = ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
+	return attemptOutcome{done: true}
 }
 
-func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) bool {
-	first := make([]byte, 1)
-	n, err := res.UpstreamReader.Read(first)
-	if err == io.EOF {
-		ex.abort(w, "upstream_empty_response", 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse))
-		return false
-	}
-	if err != nil {
-		ex.abort(w, clienterr.CodeUpstreamReadError, 0)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return false
+func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.DispatchResult, attemptSeq int) attemptOutcome {
+	buffered := bufio.NewReader(res.UpstreamReader)
+	if _, err := buffered.Peek(1); err != nil {
+		failure := fallbackexec.ReadFailure(err)
+		if err == io.EOF {
+			failure = fallbackexec.EmptyResponseFailure()
+		}
+		if !ex.abort(w, failure.AbortReason, 0) {
+			failure = fallbackexec.AbortFailure()
+		}
+		return attemptOutcome{failure: failure}
 	}
 	// 重定价必须在写响应头之前:预扣用协议族 vendor 估的 predictedCost,选号后
 	// 真账号平台(providerForPricing 此刻已含 accInfo.Platform)可能价不同,沿用
@@ -136,23 +162,16 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 	if err != nil {
 		ex.abort(w, "pricing_unavailable", 0)
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
-		return false
+		return attemptOutcome{done: true}
 	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.WriteHeader(http.StatusOK)
-	if n > 0 {
-		if _, werr := w.Write(first[:n]); werr != nil {
-			// 交付失败 → abort 不扣费(响应头已发,无法再返回 JSON 错误)。
-			ex.abort(w, "client_delivery_failed", 0)
-			return false
-		}
-	}
-	if _, cerr := io.Copy(w, res.UpstreamReader); cerr != nil {
+	if _, cerr := io.Copy(w, buffered); cerr != nil {
 		ex.abort(w, "client_delivery_failed", 0)
-		return false
+		return attemptOutcome{done: true}
 	}
 	// 音频完整交付后才结算,避免二进制断流误扣费(F1);结算走 billingCtx 防客户端断连取消(F2)。
 	bctx, cancel := ex.billingCtx()
@@ -160,9 +179,9 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 	if _, err := ex.d.Settler.Settle(bctx, ex.settleRequest(audioTokenUsage{}, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
 		// 交付后结算失败:响应已发出,无法回 500;响亮告警让对账可见(防静默漏记)。
 		ex.logSettleAfterDeliveryFailure(err)
-		return false
+		return attemptOutcome{done: true}
 	}
-	return true
+	return attemptOutcome{done: true}
 }
 
 func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {

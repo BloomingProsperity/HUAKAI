@@ -1,5 +1,6 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
 import type {
+  AdminSubscription,
   CreateSubscriptionVoucherRequest,
   ExtendAssignmentRequest,
   Plan,
@@ -139,6 +140,100 @@ export function planTone(plan: Plan): BadgeTone {
 export function planStatusLabel(plan: Plan): string {
   if (!plan.enabled) return '已停用'
   return plan.for_sale ? '在售' : '未上架'
+}
+
+export interface PlanStatView {
+  label: string
+  value: string
+  hint: string
+  tone: 'default' | 'danger' | 'warn' | 'ok'
+}
+
+/** 当前套餐列表到三张统计卡的纯映射，未加载不冒充为零。 */
+export function mapPlanStats(plans: Plan[] | null): PlanStatView[] {
+  if (plans === null) {
+    return [
+      { label: '套餐总数', value: '—', hint: '当前页数据加载中', tone: 'default' },
+      { label: '启用', value: '—', hint: '当前页数据加载中', tone: 'ok' },
+      { label: '停用', value: '—', hint: '当前页数据加载中', tone: 'danger' },
+    ]
+  }
+  const enabled = plans.filter((plan) => plan.enabled).length
+  const disabled = plans.length - enabled
+  return [
+    { label: '套餐总数', value: `${plans.length.toLocaleString('zh-CN')} 个`, hint: '当前页口径', tone: 'default' },
+    { label: '启用', value: `${enabled.toLocaleString('zh-CN')} 个`, hint: '当前页口径', tone: 'ok' },
+    { label: '停用', value: `${disabled.toLocaleString('zh-CN')} 个`, hint: '当前页口径', tone: 'danger' },
+  ]
+}
+
+export interface PlanTableRow {
+  id: number
+  source: Plan
+  name: string
+  description: string
+  price: string
+  validity: string
+  caps: string
+  group: string
+  statusText: string
+  statusTone: BadgeTone
+}
+
+/** 后端套餐项到列表行的纯映射；金额仅做分到主货币单位的展示换算。 */
+export function mapPlanRows(plans: Plan[]): PlanTableRow[] {
+  return plans.map((plan) => ({
+    id: plan.id,
+    source: plan,
+    name: plan.name,
+    description: plan.description ?? '',
+    price: `${centsToUsd(plan.price_cents)} ${plan.currency_code}`,
+    validity: `${plan.validity_days} 天`,
+    caps: formatCaps(plan.daily_cap_usd, plan.weekly_cap_usd, plan.monthly_cap_usd),
+    group: plan.granted_group || '—',
+    statusText: planStatusLabel(plan),
+    statusTone: planTone(plan),
+  }))
+}
+
+export interface AssignmentTableRow {
+  id: number
+  source: AdminSubscription
+  subscriptionID: string
+  planID: string
+  status: string
+  statusTone: BadgeTone
+  startsAt: string
+  expiresAt: string
+}
+
+/** 后端用户订阅项到分配子表行的纯映射，保留 source 供行内动作使用。 */
+export function mapAssignmentRows(subscriptions: AdminSubscription[]): AssignmentTableRow[] {
+  return subscriptions.map((subscription) => ({
+    id: subscription.id,
+    source: subscription,
+    subscriptionID: `#${subscription.id}`,
+    planID: String(subscription.plan_id),
+    status: subscription.status,
+    statusTone: subscriptionTone(subscription.status),
+    startsAt: formatAdminDate(subscription.starts_at),
+    expiresAt: formatAdminDate(subscription.expires_at),
+  }))
+}
+
+/** 套餐与订阅共用的日/周/月封顶展示，空值代表不限。 */
+export function formatCaps(
+  daily: string | null | undefined,
+  weekly: string | null | undefined,
+  monthly: string | null | undefined,
+): string {
+  return `${daily ?? '∞'} / ${weekly ?? '∞'} / ${monthly ?? '∞'}`
+}
+
+/** 运维列表与详情共用的日期展示；非法原值不丢失，便于排查数据问题。 */
+export function formatAdminDate(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString('zh-CN')
 }
 
 /* ---- 批量分配 / 延长 / 撤销 / 兑换券 的纯逻辑校验 ---- */

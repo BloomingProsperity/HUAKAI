@@ -1,9 +1,30 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
+
+type fakeRuntimeSettings struct {
+	values map[platformsettings.SettingKey]platformsettings.StoredSetting
+	err    error
+	calls  []platformsettings.SettingKey
+}
+
+func (s *fakeRuntimeSettings) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
+	s.calls = append(s.calls, key)
+	if s.err != nil {
+		return platformsettings.StoredSetting{}, s.err
+	}
+	if value, ok := s.values[key]; ok {
+		return value, nil
+	}
+	return platformsettings.StoredSetting{}, errors.New("setting missing")
+}
 
 // TestStreamDurationEnv 守护可经环境变量配置的流式超时:合法的 duration 字符串
 // 会覆盖默认值,空/非法值则回退到默认值(永不 panic,永不把超时清零)。
@@ -48,7 +69,8 @@ func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 	} {
 		t.Setenv(k, "")
 	}
-	f := buildStreamForwarder(nil, nil, nil)
+	timeouts := buildGatewayTimeoutConfig(context.Background(), nil)
+	f := buildStreamForwarder(nil, nil, nil, timeouts)
 	if f.Timeouts.TotalStreamTimeout < 300*time.Second {
 		t.Fatalf("TotalStreamTimeout default too short for long-running AI: %v", f.Timeouts.TotalStreamTimeout)
 	}
@@ -69,11 +91,55 @@ func TestBuildStreamForwarderHasLongDefaults(t *testing.T) {
 func TestBuildGatewayTimeoutConfigReadsNonStreamingEnv(t *testing.T) {
 	t.Setenv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", "40ms")
 	t.Setenv("HUAKAI_UPSTREAM_REQUEST_TIMEOUT", "900ms")
-	cfg := buildGatewayTimeoutConfig()
+	cfg := buildGatewayTimeoutConfig(context.Background(), nil)
 	if cfg.HeaderToFirstByte != 40*time.Millisecond {
 		t.Fatalf("HeaderToFirstByte=%v want 40ms override", cfg.HeaderToFirstByte)
 	}
 	if cfg.RequestTotalTimeout != 900*time.Millisecond {
 		t.Fatalf("RequestTotalTimeout=%v want 900ms override", cfg.RequestTotalTimeout)
+	}
+}
+
+func TestBuildGatewayTimeoutConfigReadsExplicitPlatformStreamTimeout(t *testing.T) {
+	// 变异：删除平台设置读取后会回落到 env 的 91 秒，而不是运营保存的 37 秒。
+	t.Setenv("HUAKAI_STREAM_TOTAL_TIMEOUT", "91s")
+	settings := &fakeRuntimeSettings{values: map[platformsettings.SettingKey]platformsettings.StoredSetting{
+		platformsettings.KeyStreamTimeoutSeconds: {
+			Key:    platformsettings.KeyStreamTimeoutSeconds,
+			Value:  "37",
+			Source: platformsettings.SourceDB,
+		},
+	}}
+	cfg := buildGatewayTimeoutConfig(context.Background(), settings)
+	if cfg.TotalStreamTimeout != 37*time.Second {
+		t.Fatalf("TotalStreamTimeout=%v, want explicit platform value 37s", cfg.TotalStreamTimeout)
+	}
+	if len(settings.calls) != 1 || settings.calls[0] != platformsettings.KeyStreamTimeoutSeconds {
+		t.Fatalf("设置读取=%v, want [stream_timeout_seconds]", settings.calls)
+	}
+}
+
+func TestBuildGatewayTimeoutConfigDefaultSourceKeepsPreWiringEnvBehavior(t *testing.T) {
+	// 防翻转守卫：运营未保存 DB 值时，平台默认只负责 UI 展示，原有 env 仍保持优先。
+	t.Setenv("HUAKAI_STREAM_TOTAL_TIMEOUT", "73s")
+	settings := &fakeRuntimeSettings{values: map[platformsettings.SettingKey]platformsettings.StoredSetting{
+		platformsettings.KeyStreamTimeoutSeconds: {
+			Key:    platformsettings.KeyStreamTimeoutSeconds,
+			Value:  "600",
+			Source: platformsettings.SourceDefault,
+		},
+	}}
+	cfg := buildGatewayTimeoutConfig(context.Background(), settings)
+	if cfg.TotalStreamTimeout != 73*time.Second {
+		t.Fatalf("TotalStreamTimeout=%v, want pre-wiring env value 73s", cfg.TotalStreamTimeout)
+	}
+}
+
+func TestBuildGatewayTimeoutConfigUnconfiguredKeepsRealityDefault(t *testing.T) {
+	// 防翻转守卫：没有 env、没有设置服务时仍是接线前的 600 秒现实默认。
+	t.Setenv("HUAKAI_STREAM_TOTAL_TIMEOUT", "")
+	cfg := buildGatewayTimeoutConfig(context.Background(), nil)
+	if cfg.TotalStreamTimeout != defaultGatewayTotalStreamTimeout {
+		t.Fatalf("TotalStreamTimeout=%v, want reality default %v", cfg.TotalStreamTimeout, defaultGatewayTotalStreamTimeout)
 	}
 }

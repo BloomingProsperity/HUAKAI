@@ -148,6 +148,7 @@ func (s *PostgresStore) FailReconciliationJob(ctx context.Context, input Reconci
 		return err
 	}
 	rows, err := q.FailQuotaReconciliationJob(ctx, dbquota.FailQuotaReconciliationJobParams{
+		Terminal:  input.Terminal,
 		LastError: input.LastError,
 		NextRunAt: pgTimestamptz(input.NextRunAt),
 		TenantID:  input.TenantID,

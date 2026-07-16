@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { evictL2Key, getL2Stats } from './api'
 import {
@@ -11,8 +13,9 @@ import {
   formatBytes,
   formatTTL,
   hitRatePercent,
-  shortKey,
+  mapCacheEntryRows,
   validateEvictKey,
+  type CacheEntryTableRow,
 } from './cachemonitor'
 import type { L2StatsResponse } from './types'
 
@@ -96,6 +99,7 @@ export function CacheMonitorPage() {
 
   const totals = stats ? aggregateMetrics(stats.metrics) : null
   const entries = stats?.entries ?? []
+  const tableRows = mapCacheEntryRows(entries)
 
   return (
     <div className="hk-page">
@@ -179,52 +183,25 @@ export function CacheMonitorPage() {
           <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--hk-ink-300)' }}>共 {entries.length} 条</span>
         </div>
         {loading && !stats ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载缓存条目" hint="请稍候。" />
         ) : entries.length === 0 ? (
-          <Empty>当前无缓存条目(缓存未启用、为空,或当前作用域内无可见条目)。</Empty>
+          <EmptyState title="当前无缓存条目" hint="缓存可能未启用、为空，或当前作用域内没有可见条目。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['key', '租户', '厂商', '模型', '状态码', '大小', '存入时间', '过期时间', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((row) => (
-                  <tr key={row.key}>
-                    <td className="hk-mono" title={row.key}>
-                      {shortKey(row.key)}
-                    </td>
-                    <td className="hk-mono">#{row.tenant_id}</td>
-                    <td>{row.vendor || '—'}</td>
-                    <td>{row.model || '—'}</td>
-                    <td className="hk-mono">{row.status}</td>
-                    <td className="hk-mono">{formatBytes(row.size_bytes)}</td>
-                    <td className="hk-mono">{formatTs(row.stored_at)}</td>
-                    <td className="hk-mono">{formatTs(row.expires_at)}</td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        disabled={evicting}
-                        onClick={() => {
-                          setEvictKeyInput(row.key)
-                          quickEvict(row.key)
-                        }}
-                        className="hk-btn hk-btn--danger hk-btn--sm"
-                        style={evicting ? { opacity: 0.55, cursor: 'not-allowed' } : undefined}
-                        title="驱逐该条目"
-                      >
-                        驱逐
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="缓存条目"
+            rows={tableRows}
+            rowKey={(row) => row.key}
+            columns={cacheColumns}
+            actions={[{
+              label: '驱逐',
+              tone: 'danger',
+              disabled: evicting,
+              onClick: (row) => {
+                setEvictKeyInput(row.key)
+                quickEvict(row.key)
+              },
+            }]}
+          />
         )}
       </section>
     </div>
@@ -287,16 +264,15 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-/** 时间串展示:把 RFC3339 转本地可读;空/非法原样回退 —。本页只读不参与校验,放在组件内。 */
-function formatTs(ts: string | null | undefined): string {
-  if (!ts) return '—'
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString()
-}
+const cacheColumns: DataListColumn<CacheEntryTableRow>[] = [
+  { key: 'key', label: 'key', render: (row) => <span className="hk-mono" title={row.key}>{row.keyLabel}</span> },
+  { key: 'tenant', label: '租户', render: (row) => <span className="hk-mono">{row.tenant}</span> },
+  { key: 'vendor', label: '厂商', render: (row) => row.vendor },
+  { key: 'model', label: '模型', render: (row) => row.model },
+  { key: 'status', label: '状态码', render: (row) => <span className="hk-mono">{row.status}</span> },
+  { key: 'size', label: '大小', render: (row) => <span className="hk-mono">{row.size}</span> },
+  { key: 'stored-at', label: '存入时间', render: (row) => <span className="hk-mono">{row.storedAt}</span> },
+  { key: 'expires-at', label: '过期时间', render: (row) => <span className="hk-mono">{row.expiresAt}</span> },
+]
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

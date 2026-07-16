@@ -10,7 +10,7 @@ import { buildBulkPayload, EMPTY_BULK_FORM, type BulkByTagForm } from './diagnos
  * 注:enabled='false' 会停用整批命中账号 —— 破坏性,故确认弹窗里显式列出将要下发的字段。
  */
 
-export function AccountBulkByTag({ onApplied }: { onApplied: () => void }) {
+export function AccountBulkByTag({ tenantId, onApplied }: { tenantId: number; onApplied: () => void }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState<BulkByTagForm>(EMPTY_BULK_FORM)
   const [busy, setBusy] = useState(false)
@@ -40,7 +40,7 @@ export function AccountBulkByTag({ onApplied }: { onApplied: () => void }) {
     }
     setBusy(true)
     try {
-      const res = await bulkUpdateAccountsByTag(p)
+      const res = await bulkUpdateAccountsByTag(tenantId, p)
       setFlash(`已更新 ${res.count} 个账号`)
       setForm(EMPTY_BULK_FORM)
       onApplied()

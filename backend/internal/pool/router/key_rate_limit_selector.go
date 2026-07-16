@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 )
@@ -106,3 +107,42 @@ func (s *BindingRateLimitSelector) Select(ctx context.Context, req SelectionRequ
 }
 
 var _ Selector = (*BindingRateLimitSelector)(nil)
+
+// BindingConcurrencyReader 读取某个 binding 当前仍处于 acquired 的槽数。
+// 它只服务选号前快速拒绝；事务内 DBSlotManager 会在同一事实源上再次权威裁定。
+type BindingConcurrencyReader interface {
+	CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error)
+}
+
+// BindingConcurrencySelector 在枚举候选账号前做一次低成本预检。该层能减少饱和
+// binding 对账号行与 selector 的无谓竞争，但不能替代 acquire 事务内的线性化硬闸。
+type BindingConcurrencySelector struct {
+	inner  Selector
+	reader BindingConcurrencyReader
+}
+
+func NewBindingConcurrencySelector(inner Selector, reader BindingConcurrencyReader) *BindingConcurrencySelector {
+	return &BindingConcurrencySelector{inner: inner, reader: reader}
+}
+
+func (s *BindingConcurrencySelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {
+	if req.MaxParallelRequests <= 0 {
+		return s.inner.Select(ctx, req)
+	}
+	if req.BindingID <= 0 {
+		return nil, errors.New("pool: binding concurrency limit missing binding id")
+	}
+	if s.reader == nil {
+		return nil, errors.New("pool: binding concurrency reader unavailable")
+	}
+	active, err := s.reader.CountActiveBindingAcquisitions(ctx, req.BindingID)
+	if err != nil {
+		return nil, fmt.Errorf("pool: precheck binding concurrency: %w", err)
+	}
+	if active >= req.MaxParallelRequests {
+		return nil, ErrBindingConcurrencyLimited
+	}
+	return s.inner.Select(ctx, req)
+}
+
+var _ Selector = (*BindingConcurrencySelector)(nil)

@@ -1,4 +1,4 @@
-import type { AuditFilters } from './types'
+import type { AuditEvent, AuditFilters } from './types'
 
 /*
  * 审计查看器纯逻辑(可单测):过滤条件 → query 参数构造(空串省略),严重度配色,本地时间 → RFC3339。
@@ -88,4 +88,64 @@ export function severityTone(severity: string): SeverityTone {
     default:
       return 'muted'
   }
+}
+
+export interface AuditTableRow {
+  id: number
+  createdAt: string
+  eventType: string
+  eventClass: string
+  severity: string
+  actor: string
+  reason: string
+  requestID: string | null
+  requestIDLabel: string
+  detail: Record<string, unknown>
+  source: AuditEvent
+}
+
+/** 把审计事件映射为稳定的表格展示模型，不改变原事件与敏感载荷。 */
+export function mapAuditTableRows(events: AuditEvent[]): AuditTableRow[] {
+  return events.map((event) => ({
+    id: event.id,
+    createdAt: formatAuditTime(event.created_at),
+    eventType: event.event_type,
+    eventClass: event.event_class,
+    severity: event.severity || '—',
+    actor: auditActorLabel(event),
+    reason: event.reason || '—',
+    requestID: event.request_id ?? null,
+    requestIDLabel: event.request_id ? compactRequestID(event.request_id) : '—',
+    detail: auditDetail(event),
+    source: event,
+  }))
+}
+
+function auditActorLabel(event: AuditEvent): string {
+  if (event.actor_id == null && !event.actor_role) return '系统'
+  const role = event.actor_role || ''
+  const id = event.actor_id != null ? `#${event.actor_id}` : ''
+  return [role, id].filter(Boolean).join(' ') || '—'
+}
+
+function auditDetail(event: AuditEvent): Record<string, unknown> {
+  return {
+    id: event.id,
+    tenant_id: event.tenant_id,
+    ledger_id: event.ledger_id,
+    claim_id: event.claim_id,
+    provider_account_id: event.provider_account_id,
+    pool_group_id: event.pool_group_id,
+    request_id: event.request_id,
+    payload: event.payload,
+  }
+}
+
+function compactRequestID(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+function formatAuditTime(value: string): string {
+  const time = new Date(value)
+  return Number.isNaN(time.getTime()) ? value : time.toLocaleString('zh-CN', { hour12: false })
 }

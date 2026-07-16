@@ -1,6 +1,7 @@
 package audiohttp
 
 import (
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -44,7 +45,23 @@ func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 		if binding.ProviderModelIDOverride != nil && *binding.ProviderModelIDOverride != "" {
 			providerModelID = *binding.ProviderModelIDOverride
 		}
-		out.PoolMetadata = append(out.PoolMetadata, router.PoolCandidateMeta{PoolGroupID: binding.PoolGroupID, ProviderModelID: providerModelID})
+		out.PoolMetadata = append(out.PoolMetadata, router.PoolCandidateMeta{
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: bindingMaxParallelRequests(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
+			SelectionMode:       binding.SelectionMode,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
+		})
 	}
 	return out
+}
+
+func bindingMaxParallelRequests(v *int32) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
 }

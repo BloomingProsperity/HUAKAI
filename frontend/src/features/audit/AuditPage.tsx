@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { downloadAuditProof, exportAuditChain, listAuditEvents } from './api'
-import { severityTone } from './audit'
+import { mapAuditTableRows, severityTone, type AuditTableRow } from './audit'
 import { EMPTY_AUDIT_FILTERS, type AuditEvent, type AuditFilters } from './types'
 
 /*
@@ -96,6 +98,48 @@ export function AuditPage() {
   }
 
   const setD = <K extends keyof AuditFilters>(k: K, v: AuditFilters[K]) => setDraft((f) => ({ ...f, [k]: v }))
+  const tableRows = mapAuditTableRows(events)
+  const columns: DataListColumn<AuditTableRow>[] = [
+    { key: 'time', label: '时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+    {
+      key: 'event',
+      label: '事件',
+      render: (row) => (
+        <span style={{ display: 'flex', flexDirection: 'column' }}>
+          <strong style={{ color: 'var(--hk-ink-900)' }}>{row.eventType}</strong>
+          <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.eventClass}</span>
+        </span>
+      ),
+    },
+    { key: 'severity', label: '严重度', render: (row) => <StatusBadge tone={severityTone(row.severity)}>{row.severity}</StatusBadge> },
+    { key: 'actor', label: '操作者', render: (row) => row.actor },
+    { key: 'reason', label: '原因', render: (row) => <span style={{ color: 'var(--hk-ink-700)' }}>{row.reason}</span> },
+    { key: 'request-id', label: 'Request ID', render: (row) => <span className="hk-mono">{row.requestIDLabel}</span> },
+    {
+      key: 'detail',
+      label: '详情',
+      render: (row) => (
+        <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 'var(--hk-space-2)' }}>
+          <span style={{ whiteSpace: 'nowrap' }}>
+            {/* 仅当事件带 request_id 时可出具单条签名证明。 */}
+            {row.requestID && (
+              <button type="button" disabled={proofBusy === row.id} onClick={() => onProof(row.source)} style={{ ...linkBtn, opacity: proofBusy === row.id ? 0.6 : 1, cursor: proofBusy === row.id ? 'wait' : 'pointer' }} title="下载该事件的签名证明 JSON">
+                {proofBusy === row.id ? '下载中…' : '签名证明'}
+              </button>
+            )}
+            <button type="button" onClick={() => setExpanded(expanded === row.id ? null : row.id)} style={linkBtn}>
+              {expanded === row.id ? '收起' : '详情'}
+            </button>
+          </span>
+          {expanded === row.id && (
+            <pre style={{ margin: 0, minWidth: 320, maxWidth: 560, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-700)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', textAlign: 'left' }}>
+              {JSON.stringify(row.detail, null, 2)}
+            </pre>
+          )}
+        </span>
+      ),
+    },
+  ]
 
   return (
     <div className="hk-page">
@@ -162,33 +206,11 @@ export function AuditPage() {
 
       <div className="hk-card">
         {loading && events.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载审计事件" hint="请稍候。" />
         ) : events.length === 0 ? (
-          <Empty>没有匹配的审计事件。</Empty>
+          <EmptyState title="没有匹配的审计事件" hint="可调整筛选条件后重新查询。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['时间', '事件', '严重度', '操作者', '原因', 'Request ID', ''].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {events.map((ev) => (
-                  <FragmentRow
-                    key={ev.id}
-                    ev={ev}
-                    expanded={expanded === ev.id}
-                    onToggle={() => setExpanded(expanded === ev.id ? null : ev.id)}
-                    proofBusy={proofBusy === ev.id}
-                    onProof={() => onProof(ev)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="审计事件列表" rows={tableRows} rowKey={(row) => row.id} columns={columns} />
         )}
       </div>
 
@@ -201,85 +223,6 @@ export function AuditPage() {
   )
 }
 
-function FragmentRow({
-  ev,
-  expanded,
-  onToggle,
-  proofBusy,
-  onProof,
-}: {
-  ev: AuditEvent
-  expanded: boolean
-  onToggle: () => void
-  proofBusy: boolean
-  onProof: () => void
-}) {
-  return (
-    <>
-      <tr>
-        <td className="hk-mono">{fmt(ev.created_at)}</td>
-        <td>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{ev.event_type}</span>
-            <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{ev.event_class}</span>
-          </div>
-        </td>
-        <td>
-          <StatusBadge tone={severityTone(ev.severity)}>{ev.severity || '—'}</StatusBadge>
-        </td>
-        <td>{actorLabel(ev)}</td>
-        <td style={{ maxWidth: 240, color: 'var(--hk-ink-700)' }}>{ev.reason || '—'}</td>
-        <td className="hk-mono">{ev.request_id ? short(ev.request_id) : '—'}</td>
-        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-          {/* 仅当事件带 request_id 时可出具单条签名证明(后端按 request_id 查账本)。 */}
-          {ev.request_id && (
-            <button type="button" disabled={proofBusy} onClick={onProof} style={{ ...linkBtn, opacity: proofBusy ? 0.6 : 1, cursor: proofBusy ? 'wait' : 'pointer' }} title="下载该事件的签名证明 JSON">
-              {proofBusy ? '下载中…' : '签名证明'}
-            </button>
-          )}
-          <button type="button" onClick={onToggle} style={linkBtn}>
-            {expanded ? '收起' : '详情'}
-          </button>
-        </td>
-      </tr>
-      {expanded && (
-        <tr style={{ background: 'var(--hk-surface-sunken)' }}>
-          <td colSpan={7} style={{ padding: 'var(--hk-space-4)' }}>
-            <pre style={{ margin: 0, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-700)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              {JSON.stringify(detailObject(ev), null, 2)}
-            </pre>
-          </td>
-        </tr>
-      )}
-    </>
-  )
-}
-
-function actorLabel(ev: AuditEvent): string {
-  if (ev.actor_id == null && !ev.actor_role) return '系统'
-  const role = ev.actor_role ? `${ev.actor_role}` : ''
-  const id = ev.actor_id != null ? `#${ev.actor_id}` : ''
-  return [role, id].filter(Boolean).join(' ') || '—'
-}
-function detailObject(ev: AuditEvent): Record<string, unknown> {
-  return {
-    id: ev.id,
-    tenant_id: ev.tenant_id,
-    ledger_id: ev.ledger_id,
-    claim_id: ev.claim_id,
-    provider_account_id: ev.provider_account_id,
-    pool_group_id: ev.pool_group_id,
-    request_id: ev.request_id,
-    payload: ev.payload,
-  }
-}
-function short(s: string): string {
-  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-4)}` : s
-}
-function fmt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--hk-ink-500)' }}>
@@ -288,9 +231,5 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   )
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
 const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }

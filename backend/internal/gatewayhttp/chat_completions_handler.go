@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -23,20 +20,17 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
-	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
-	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
-	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
@@ -48,7 +42,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
-	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
 )
 
 type authResolver interface {
@@ -235,7 +228,10 @@ type chatExecution struct {
 
 	queueWaitSpentMS int
 	queueWaitNow     func() time.Time
+	classTransition  *bindingClassTransition
 }
+
+type bindingClassTransition = bindingfallback.Transition
 
 type modelRunResult struct {
 	Success         *attemptOutcome
@@ -508,102 +504,6 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 	}
 }
 
-func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
-	// SUB2-EGRESS-04: 在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
-	// 该开关 opt-in(默认关)；关闭时此代码块是真正的空操作。
-	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
-		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())
-		maxTok := 0
-		if ex.req.MaxTokens != nil {
-			maxTok = *ex.req.MaxTokens
-		}
-		if kind, ok := warmupintercept.Detect(isClaudeUA, ex.req.Model, maxTok, ex.req.Stream, ex.body); ok {
-			slog.InfoContext(ex.ctx, "warmup_intercept.intercepted",
-				"kind", int(kind),
-				"model", ex.req.Model,
-				"request_id", ex.requestID,
-			)
-			if ex.req.Stream {
-				warmupintercept.WriteStream(w, kind, ex.req.Model)
-			} else {
-				warmupintercept.WriteNonStream(w, kind, ex.req.Model)
-			}
-			return modelRunResult{DeliveryStarted: true}
-		}
-	}
-	if !ex.prepareRoute(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if !ex.screenModerationInput(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if !ex.reserveClaim(w) {
-		return modelRunResult{DeliveryStarted: responseStarted(w)}
-	}
-	if fallbackAttempts > 0 {
-		setModelFallbackHeaders(w, ex.req.Model, fallbackAttempts)
-	}
-	if !ex.req.Stream {
-		handled, proceed := ex.serveL2CacheIfAvailable(w)
-		if handled || !proceed {
-			return modelRunResult{DeliveryStarted: responseStarted(w)}
-		}
-	}
-	failedAccounts := make(map[int64]struct{})
-	authFailoverUsed := false
-	budget := effectiveAttemptBudget(ex.plan)
-	maxAttempts := len(ex.plan.Attempts)
-	// attemptCap 起始=普通 attempt 预算; 当 401 的 auth-failover 子预算落在本应最后的 slot 时 +1,
-	// 给 auth-failover 一个独立额外 attempt(至多一次, 由 !authFailoverUsed 限定)。
-	attemptCap := budget
-	for i := 0; i < attemptCap; i++ {
-		planIdx := i
-		if planIdx >= maxAttempts {
-			planIdx = maxAttempts - 1 // auth-failover 额外 slot 复用最后一个 pool plan(池排除已 401 账号选新号)
-		}
-		outcome := ex.runAttempt(w, attemptInput{
-			Plan:             ex.plan.Attempts[planIdx],
-			AttemptSeq:       i + 1,
-			ExcludedAccounts: failedAccounts,
-			ReplayableBody:   true,
-			FinalAttempt:     i+1 >= attemptCap,
-		})
-		if outcome.Success != nil {
-			return modelRunResult{Success: &outcome, DeliveryStarted: outcome.DeliveryStarted}
-		}
-		if outcome.DeliveryStarted || (outcome.Failure != nil && outcome.Failure.DeliveredToClient) {
-			return modelRunResult{DeliveryStarted: true}
-		}
-		if outcome.AccountID != 0 && outcome.Failure != nil {
-			if outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
-				ex.triggerCredentialHotRefresh(outcome.AccountID)
-			}
-			if outcome.Failure.Decision.SwitchAccount {
-				failedAccounts[outcome.AccountID] = struct{}{}
-			}
-		}
-		if outcome.Failure == nil {
-			continue
-		}
-		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, i+1 >= attemptCap, authFailoverUsed)
-		if !retry {
-			return modelRunResult{Failure: outcome.Failure, AllowFallback: outcome.Failure.Decision.RetryableBeforeDelivery}
-		}
-		if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
-			return modelRunResult{Failure: outcome.Failure}
-		}
-		if consumeAuthBudget {
-			authFailoverUsed = true
-			if i+1 >= attemptCap {
-				attemptCap++ // auth-failover 落在本应最后的 slot: 额外给一次换号重试(独立子预算)
-			}
-		}
-		clearRetryableAttemptFailureHeaders(w)
-		ex.prepareNextAttemptAfterAbort()
-	}
-	return modelRunResult{}
-}
-
 func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
 	if ex == nil || ex.d.ModerationScreener == nil || ex.moderationScreened {
 		return true
@@ -652,6 +552,7 @@ func (ex *chatExecution) prepareNextModelFallback(model, baseLogicalRequestID st
 	ex.cacheVendor = ""
 	ex.cacheKey = ""
 	ex.protocolLoss = nil
+	ex.classTransition = nil
 	ex.prepareNextAttemptAfterAbort()
 }
 
@@ -680,305 +581,4 @@ func chatHandlerConfigured(d ChatHandlerDeps) bool {
 
 func hcsfDispatchEnabled() bool {
 	return os.Getenv("HUAKAI_DISPATCH_HCSF") != "0"
-}
-
-func hcsfDispatcher(d ChatHandlerDeps) HCSFDispatcher {
-	if d.CanonicalDispatcher != nil {
-		return d.CanonicalDispatcher
-	}
-	if d.Dispatcher == nil {
-		return nil
-	}
-	return d.Dispatcher
-}
-
-func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily string) (proto.UpstreamAdapter, error) {
-	var adapters gateway.ProtocolAdapterRegistry
-	if f != nil {
-		adapters = f.ProtocolAdapters
-	}
-	if adapters == nil {
-		adapters = gateway.BuildDefaultProtocolAdapterRegistry()
-	}
-	return adapters.For(protocolFamily)
-}
-
-const maxRawBufferedUpstreamBodyBytes = 1 << 20
-
-var errRawBufferedUpstreamBodyTooLarge = errors.New("gatewayhttp: upstream buffered response exceeds 1MiB limit")
-
-func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, maxRawBufferedUpstreamBodyBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxRawBufferedUpstreamBodyBytes {
-		// 超限时保留截断 body，供调用方对非 2xx 上游响应继续做错误分类。
-		return raw[:maxRawBufferedUpstreamBodyBytes], errRawBufferedUpstreamBodyTooLarge
-	}
-	return raw, nil
-}
-
-func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
-	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
-	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
-		ProtocolFamily:  ex.resolved.ProtocolFamily,
-		UpstreamModelID: ex.upstreamModelID,
-		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
-		InboundBody:          chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, ex.upstreamInboundBody(ex.body), ex.identityRewrite),
-		BodyControls:         ex.activeDispatchBodyControls(),
-		InboundBetaTokens:    ex.clientBetaTokens(),
-		Account:              transportSelection.account,
-		Credential:           ex.cred,
-		TransportMode:        transportSelection.mode,
-		NonStreamingBuffered: true,
-	})
-	if err != nil {
-		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.errorClassProvider())
-		decision := gateway.ClassifyAttemptDispatchError(err)
-		if !decision.RetryableBeforeDelivery && decision.TransportClass == gateway.TransportErrorLocalDispatch {
-			decision.ClientStatus = http.StatusBadGateway
-		}
-		if decision.AbortReason == "" {
-			decision.AbortReason = "upstream_dispatch_error"
-		}
-		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, nil)
-		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), 0, time.Since(startedAt), ex.requestID, nil, gateway.AuthFailureClassFromClassification(classification))
-		}
-		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
-		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
-	}
-	if dispatchRes == nil || dispatchRes.UpstreamReader == nil {
-		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_empty_response", 0, nil)
-		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, 0, time.Since(startedAt), ex.requestID, nil, 0)
-		}
-		failure := retryableLocalAttemptFailure(http.StatusBadGateway, clienterr.CodeUpstreamEmptyResponse, clienterr.MessageFor(clienterr.CodeUpstreamEmptyResponse), "upstream_empty_response", gateway.UpstreamError5xx, nil)
-		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
-	}
-	defer closeDispatchResult(dispatchRes)
-	if dispatchRes.StatusCode >= 200 && dispatchRes.StatusCode < 300 && ex.shouldAggregateForcedStreamingBuffered() {
-		return ex.dispatchForcedStreamingBuffered(w, dispatchRes, seed, seedCtx, startedAt)
-	}
-	rawKeepalive := httpkeepalive.Start(w, ex.d.NonStreamKeepAliveInterval) // buffered 读慢接缝保活(见 Deps 字段注释)
-	raw, readErr := readRawBufferedUpstreamBody(dispatchRes.UpstreamReader)
-	rawKeepalive.Stop()
-	oversizedNon2xx := errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) && (dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300)
-	if readErr != nil && !oversizedNon2xx {
-		code := clienterr.CodeUpstreamReadError
-		if errors.Is(readErr, errRawBufferedUpstreamBodyTooLarge) {
-			code = clienterr.CodeUpstreamResponseTooLarge
-		}
-		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, code, 0, nil); abortErr != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
-		}
-		if ex.healthKeyOK {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
-		}
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, code, readErr)
-		return nil, nil, false
-	}
-	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
-		decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
-		if classifyErr != nil {
-			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
-			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
-		}
-		decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
-		modelScopedRateLimit := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
-			StatusCode: dispatchRes.StatusCode,
-			Body:       raw,
-			Header:     dispatchRes.Headers,
-		}, classification, false)
-		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, nil)
-		if ex.healthKeyOK && !modelScopedRateLimit {
-			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
-		}
-		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
-		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
-	}
-	ex.updateSessionWindowFromHeaders(dispatchRes.Headers)
-	upstreamAdapter, err := protocolAdapterForBuffered(ex.d.Forwarder, ex.resolved.ProtocolFamily)
-	if err != nil {
-		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "upstream_adapter_error", 0, nil); abortErr != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
-		}
-		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeUpstreamAdapterError, err)
-		return nil, nil, false
-	}
-	bufferedEnv, _, err := upstreamAdapter.ProviderResponseToCanonical(seedCtx, raw)
-	if err != nil {
-		if reconstructedEnv, _, ok := protosse.ReconstructBufferedFromSSE(upstreamAdapter, raw); ok && reconstructedEnv != nil {
-			bufferedEnv = reconstructedEnv
-		} else {
-			if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "canonical_response_error", 0, nil); abortErr != nil {
-				setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
-			}
-			if ex.healthKeyOK {
-				recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalChannelError, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
-			}
-			writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, err)
-			return nil, nil, false
-		}
-	}
-	if bufferedEnv != nil {
-		_ = seed.ApplyToRequestMeta(&bufferedEnv.RequestMeta)
-		enrichCanonicalRequestMeta(bufferedEnv, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
-	}
-	return ex.finalizeBufferedEnvelope(w, bufferedEnv, dispatchRes.StatusCode, startedAt)
-}
-
-func (ex *chatExecution) updateSessionWindowFromHeaders(headers http.Header) {
-	if ex == nil || ex.d.RateService == nil || ex.acquiredAccountID <= 0 {
-		return
-	}
-	// 这些头的语义只属于 Anthropic 车道，避免兼容网关伪造同名头污染其它账号。
-	if !strings.EqualFold(strings.TrimSpace(ex.accInfo.Platform), "anthropic") {
-		return
-	}
-	if err := ex.d.RateService.UpdateSessionWindow(ex.ctx, ex.acquiredAccountID, headers); err != nil {
-		logInternalError(ex.ctx, ex.requestID, "session_window_update_failed", err)
-	}
-}
-
-// NewMessagesHandler 是 /v1/messages 端点 handler。它复用 chat completions
-// 管线，只把 billing endpoint family 标为 messages。
-func NewMessagesHandler(d ChatHandlerDeps) http.HandlerFunc {
-	if d.EndpointFamily == "" {
-		d.EndpointFamily = "messages"
-	}
-	return NewChatCompletionsHandler(d)
-}
-
-// NewResponsesHandler 是 /v1/responses 端点 handler。它复用同一条
-// auth/routing/billing/forwarding pipeline，仅把 billing endpoint family 标为
-// openai_responses；真实上下游协议仍由 registry 的 ProtocolFamily 决定。
-func NewResponsesHandler(d ChatHandlerDeps) http.HandlerFunc {
-	if d.EndpointFamily == "" {
-		d.EndpointFamily = "openai_responses"
-	}
-	return NewChatCompletionsHandler(d)
-}
-
-// platformSettingsReader 是读取单个平台设置的最小接口。
-// *platformsettings.Service 满足此接口。
-type platformSettingsReader interface {
-	Get(ctx context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error)
-}
-
-// warmupInterceptEnabled 报告预热拦截是否启用。
-// 当 PlatformSettings 为 nil，或该设置缺失/无效时，返回 false(安全默认)。
-func warmupInterceptEnabled(ctx context.Context, settings platformSettingsReader) bool {
-	if settings == nil {
-		return false
-	}
-	s, err := settings.Get(ctx, platformsettings.KeyWarmupInterceptEnabled)
-	if err != nil {
-		return false
-	}
-	return s.Value == "true"
-}
-
-// clientBetaTokens 惰性解析并缓存客户端 anthropic-beta 请求头(DM-03)。
-// 产出只被 anthropic 族出站 adapter 消费(与凭据 beta 合并去重;OAuth 池
-// 账号侧另有白名单);attempt 重试不重复解析。
-func (ex *chatExecution) clientBetaTokens() []string {
-	if ex == nil || ex.r == nil {
-		return nil
-	}
-	if !ex.inboundBetaTokensParsed {
-		ex.inboundBetaTokensParsed = true
-		ex.inboundBetaTokens = provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta"))
-	}
-	return ex.inboundBetaTokens
-}
-
-// clientTailMessageRole 解析请求体最后一条消息的角色,供输入审核区分
-// "新用户轮"与"agent 工具循环重发轮"(DM-16)。按客户端协议取字段:
-// chat/anthropic=messages[].role;gemini=contents[].role;responses=input
-// (字符串=用户输入;数组取尾项 role,无 role 的工具输出项归 "tool")。
-// 解析失败返回 ""(未知,审核按首轮处理)。
-func clientTailMessageRole(clientProtocol proto.ClientProtocol, body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	switch clientProtocol {
-	case proto.ClientProtocolOpenAIResponses:
-		var req struct {
-			Input json.RawMessage `json:"input"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil || len(req.Input) == 0 {
-			return ""
-		}
-		if req.Input[0] == '"' {
-			return "user"
-		}
-		var items []struct {
-			Role string `json:"role"`
-		}
-		if err := json.Unmarshal(req.Input, &items); err != nil || len(items) == 0 {
-			return ""
-		}
-		if role := strings.TrimSpace(items[len(items)-1].Role); role != "" {
-			return strings.ToLower(role)
-		}
-		return "tool"
-	case proto.ClientProtocolGemini:
-		var req struct {
-			Contents []struct {
-				Role string `json:"role"`
-			} `json:"contents"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil || len(req.Contents) == 0 {
-			return ""
-		}
-		return strings.ToLower(strings.TrimSpace(req.Contents[len(req.Contents)-1].Role))
-	default:
-		var req struct {
-			Messages []struct {
-				Role string `json:"role"`
-			} `json:"messages"`
-		}
-		if err := json.Unmarshal(body, &req); err != nil || len(req.Messages) == 0 {
-			return ""
-		}
-		return strings.ToLower(strings.TrimSpace(req.Messages[len(req.Messages)-1].Role))
-	}
-}
-
-// classifyPoolSelectFailure 把 pool.Selector 的错误映射为对应的 HTTP 失败和
-// claim abort(含 SEC-249/250 per-key 限流的 429)。err 为 nil → 返回 nil。
-// 放在这里而非单独文件，是为了不突破 gatewayhttp 包的文件数预算。
-func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err error) *classifiedAttemptFailure {
-	if err == nil {
-		return nil
-	}
-	abort := func(reason string) error {
-		return ex.abortReservation(ex.reserveRes.ClaimID, reason, 0, ex.protocolLoss)
-	}
-	switch {
-	case errors.Is(err, pool.ErrKeyRateLimited), errors.Is(err, pool.ErrBindingRateLimited):
-		if e := abort("key_rate_limited"); e != nil && w != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
-		}
-		f := terminalLocalAttemptFailure(http.StatusTooManyRequests, clienterr.CodeKeyRateLimited, clienterr.MessageFor(clienterr.CodeKeyRateLimited), "key_rate_limited", err)
-		f.RetryAfterSeconds = 1
-		return f
-	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
-		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
-		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。
-		f.RetryAfterSeconds = poolNoCapacityRetryAfter(err, time.Now())
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_no_capacity"))
-	case errors.Is(err, pool.ErrClaimRace):
-		if e := abort("claim_race"); e != nil && w != nil {
-			setAbortFailedHeader(w, ex.ctx, ex.requestID, e)
-		}
-		f := terminalLocalAttemptFailure(http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace), "claim_race", err)
-		f.RetryAfterSeconds = 1
-		return f
-	default:
-		f := retryableLocalAttemptFailure(http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError), "pool_select_error", gateway.UpstreamError5xx, err)
-		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("pool_select_error"))
-	}
 }

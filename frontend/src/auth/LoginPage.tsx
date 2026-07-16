@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError } from '../lib/api'
+import { fetchSetupStatus } from '../features/setup/setup'
 import {
   login,
   loginTwoFactor,
@@ -12,7 +13,7 @@ import {
   validateInvitationCode,
 } from './api'
 import { TelegramLoginWidget } from './TelegramLoginWidget'
-import { setAdminToken, setSessionTokens, useAuth, type AuthUser } from './store'
+import { setSessionTokens, type AuthUser } from './store'
 import { fetchSiteConfig, FALLBACK_SITE_CONFIG, type SiteConfig } from './siteConfig'
 import {
   captchaWidgetRenderable,
@@ -40,7 +41,6 @@ type Mode = 'login' | 'register' | '2fa'
 
 export function LoginPage() {
   const nav = useNavigate()
-  const auth = useAuth()
   const [mode, setMode] = useState<Mode>('login')
   // 单实例:租户固定为 1(不暴露给用户);状态保留供 tid() 内部使用。
   const [tenantId] = useState('1')
@@ -60,7 +60,6 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [adminTokenDraft, setAdminTokenDraft] = useState('')
 
   // 站点配置:初始用回退(只显密码登录),进站异步拉取覆盖。加载失败保持回退,绝不阻断登录。
   const [site, setSite] = useState<SiteConfig>(FALLBACK_SITE_CONFIG)
@@ -70,6 +69,19 @@ export function LoginPage() {
   const tid = () => Number(tenantId.trim()) || 0
   const af = deriveAffordances(site)
   const canRenderCaptcha = captchaWidgetRenderable(site)
+
+  // 首装引导:全新部署(工作租户无管理员)→ 送去 /setup 向导;失败静默不挡登录。
+  useEffect(() => {
+    const ctrl = new AbortController()
+    fetchSetupStatus(ctrl.signal)
+      .then((s) => {
+        if (!ctrl.signal.aborted && s.needs_setup) nav('/setup', { replace: true })
+      })
+      .catch(() => {
+        /* 状态探测失败:按已安装处理,正常登录 */
+      })
+    return () => ctrl.abort()
+  }, [nav])
 
   // 进站拉站点配置;组件卸载后丢弃结果。失败静默(回退已是默认),不打扰用户。
   useEffect(() => {
@@ -304,8 +316,15 @@ export function LoginPage() {
                 注册态始终显示表单(注册本就需要密码)。 */}
             {(mode === 'register' || af.showPasswordLogin) && (
               <>
-                <Field label="邮箱">
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" style={inp} />
+                {/* 登录接受账号或邮箱；注册仍要求邮箱，并保留浏览器原生邮箱校验。 */}
+                <Field label={mode === 'login' ? '账号' : '邮箱'}>
+                  <input
+                    type={mode === 'login' ? 'text' : 'email'}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete={mode === 'login' ? 'username' : 'email'}
+                    style={inp}
+                  />
                 </Field>
                 {mode === 'register' && (
                   <Field label="显示名(可选)">
@@ -407,14 +426,11 @@ export function LoginPage() {
           </div>
         )}
 
-        {/* 增强:找回密码 + 免登录查用量 + 条款链接(登录态) */}
+        {/* 增强:找回密码 + 条款链接(登录态) */}
         {mode === 'login' && (
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'var(--hk-space-2)', fontSize: 12, gap: 'var(--hk-space-3)' }}>
             <a href="/forgot-password" style={linkAnchor}>
               忘记密码?
-            </a>
-            <a href="/key-usage" style={linkAnchor}>
-              凭 Key 查用量
             </a>
             {site.siteDocUrl ? (
               <a href={site.siteDocUrl} target="_blank" rel="noreferrer" style={linkAnchor}>
@@ -428,23 +444,6 @@ export function LoginPage() {
           </div>
         )}
 
-        <details style={{ marginTop: 'var(--hk-space-3)', fontSize: 12, color: 'var(--hk-ink-500)' }}>
-          <summary style={{ cursor: 'pointer' }}>运维者:配置 admin token{auth.hasAdminToken ? '(已配置)' : ''}</summary>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)', marginTop: 'var(--hk-space-2)' }}>
-            <p style={{ margin: 0 }}>运维端点(账号池 / 路由)用独立 admin token 鉴权。粘贴你的 admin token:</p>
-            <input type="password" value={adminTokenDraft} onChange={(e) => setAdminTokenDraft(e.target.value)} placeholder="admin token" style={inp} />
-            <div style={{ display: 'flex', gap: 'var(--hk-space-2)' }}>
-              <button type="button" onClick={() => { setAdminToken(adminTokenDraft); setAdminTokenDraft(''); setNotice('admin token 已保存。') }} style={ghost}>
-                保存
-              </button>
-              {auth.hasAdminToken && (
-                <button type="button" onClick={() => setAdminToken(null)} style={ghost}>
-                  清除
-                </button>
-              )}
-            </div>
-          </div>
-        </details>
       </div>
     </div>
   )

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   billingPolicyLabel,
   buildBillingSettingsUpdate,
+  mapBillingPolicyRows,
+  mapCacheOverrideRows,
+  mapPricingRatioRows,
+  mapToolSurchargeRows,
   parsePositiveDecimal,
   RATIO_MAX_DEFAULT,
   RATIO_MIN,
@@ -11,6 +15,7 @@ import {
   validateRatio,
   validateTenantId,
 } from './pricingadmin'
+import type { BillingSettingsResponse, CacheOverride, PricingRatio } from './types'
 
 describe('parsePositiveDecimal', () => {
   it('拒绝空 / 非数字 / 科学计数 / 负数 / 零', () => {
@@ -96,6 +101,72 @@ describe('billingPolicyLabel', () => {
     expect(billingPolicyLabel('no_bill_record')).toContain('记录')
     expect(billingPolicyLabel('bill_input')).toContain('路线图')
     expect(billingPolicyLabel('weird')).toBe('weird')
+  })
+})
+
+describe('定价设置表格映射', () => {
+  it('倍率行保留动作源记录，并严格区分公开倍率与隐藏倍率', () => {
+    const visible: PricingRatio = {
+      object: 'pricing_ratio', id: 7, tenant_id: 1, pool_group_id: 23,
+      ratio: '1.250', public_ratio: true, updated_by: 'owner', updated_at: '2026-07-13T00:00:00Z',
+    }
+    const hidden: PricingRatio = { ...visible, id: 8, pool_group_id: 24, ratio: undefined, public_ratio: false }
+    const rows = mapPricingRatioRows([visible, hidden])
+
+    // 判别核心:若忽略 public_ratio 或丢失 source，隐藏价会泄露或行内动作失效。
+    expect(rows[0]).toMatchObject({ id: 7, source: visible, poolGroupId: 23, ratio: '1.250', publicRatio: true, updatedBy: 'owner' })
+    expect(rows[1]).toMatchObject({ id: 8, source: hidden, ratio: '(隐藏)', publicRatio: false })
+    expect(rows[0].updatedAt).not.toBe('—')
+  })
+
+  it('缓存覆盖按范围生成不碰撞的键与限定说明', () => {
+    const overrides: CacheOverride[] = [
+      { scope: 'global', multiplier: '0.5', updated_at: 'invalid' },
+      { scope: 'model', model: 'model-a', multiplier: '0.7', updated_at: '2026-07-13T00:00:00Z' },
+      { scope: 'tenant', tenant_id: 9, multiplier: '0.8', updated_at: '2026-07-13T00:00:00Z' },
+    ]
+    const rows = mapCacheOverrideRows(overrides)
+
+    // 判别核心:scope、model、tenant 任一未参与映射都会造成清除错行或限定信息错误。
+    expect(rows.map(({ id, scope, qualifier }) => ({ id, scope, qualifier }))).toEqual([
+      { id: 'global::', scope: '全局', qualifier: '—' },
+      { id: 'model:model-a:', scope: '按模型', qualifier: 'model-a' },
+      { id: 'tenant::9', scope: '按租户', qualifier: '租户 9' },
+    ])
+    expect(new Set(rows.map((row) => row.id)).size).toBe(3)
+    expect(rows[0].updatedAt).toBe('—')
+  })
+
+  it('计费策略明确显示全局默认，并保留原始策略值', () => {
+    const settings: BillingSettingsResponse = {
+      tenant_id: 1,
+      key: 'stream_input_only_interrupted_policy',
+      value: 'no_bill',
+      source: 'default',
+      allowed_values: ['no_bill', 'no_bill_record'],
+      roadmap_values: ['bill_input'],
+      updated_at: null,
+      updated_by: null,
+    }
+    const [row] = mapBillingPolicyRows(settings)
+
+    // 判别核心:default 不能误标成租户配置，否则运维会误判配置来源。
+    expect(row).toMatchObject({ source: '全局默认', tenantSource: false, rawValue: 'no_bill', updatedBy: '—', updatedAt: '—' })
+    expect(row.value).toContain('不结算')
+    expect(mapBillingPolicyRows(null)).toEqual([])
+  })
+
+  it('工具附加费满表映射且价格保留两位精度', () => {
+    const rows = mapToolSurchargeRows([
+      { tool: 'a', label: '甲', perThousandUSD: '10.00', note: '说明甲' },
+      { tool: 'b', label: '乙', perThousandUSD: '0.00', note: '说明乙' },
+    ])
+
+    // 判别核心:不得过滤零价路线图项，价表必须逐项完整呈现。
+    expect(rows).toEqual([
+      { id: 'a', tool: 'a', label: '甲', price: '$10.00', note: '说明甲' },
+      { id: 'b', tool: 'b', label: '乙', price: '$0.00', note: '说明乙' },
+    ])
   })
 })
 

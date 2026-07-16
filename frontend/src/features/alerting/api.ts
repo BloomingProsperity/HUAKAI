@@ -2,6 +2,7 @@ import { apiGet, apiSend } from '../../lib/api'
 import type {
   AlertEvent,
   AlertEventListResponse,
+  AlertMetricCatalogEntry,
   AlertRule,
   AlertRuleListResponse,
   AlertSilence,
@@ -20,6 +21,7 @@ import type {
  */
 
 const RULES = '/v1/admin/alert-rules'
+const METRIC_CATALOG = `${RULES}/metric-catalog`
 const EVENTS = '/v1/admin/alert-events'
 const SILENCES = '/v1/admin/alert-silences'
 
@@ -32,6 +34,11 @@ export async function listRules(
   signal?: AbortSignal,
 ): Promise<AlertRuleListResponse> {
   return apiGet<AlertRuleListResponse>(RULES, { query: { tenant_id: tenantId, limit, offset }, signal })
+}
+
+/** 列出后端真实生产的告警指标；失败策略由表单层降级为自定义指标。 */
+export async function fetchMetricCatalog(signal?: AbortSignal): Promise<AlertMetricCatalogEntry[]> {
+  return apiGet<AlertMetricCatalogEntry[]>(METRIC_CATALOG, { signal })
 }
 
 /** 新建规则。返回 201 + 新规则。tenant_id 已在 body 内。 */

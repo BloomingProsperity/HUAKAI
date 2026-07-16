@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getRateSnapshot, listRateSnapshots } from './rateTableApi'
 import {
@@ -51,9 +52,9 @@ export function RateVersionPanel() {
       {error && <div style={errorBox}>{error}</div>}
 
       {loading && snapshots.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载费率快照" hint="请稍候。" />
       ) : snapshots.length === 0 ? (
-        <Empty>暂无费率快照。价格调整后会在此留存历史版本。</Empty>
+        <EmptyState title="暂无费率快照" hint="价格调整后会在此留存历史版本。" />
       ) : (
         <div style={tableWrap}>
           <div style={{ overflowX: 'auto' }}>
@@ -140,7 +141,7 @@ function SnapshotDrawer({ snapshot, onClose }: { snapshot: RateTableSnapshot; on
         {error && <div style={{ ...errorBox, marginTop: 'var(--hk-space-3)' }}>{error}</div>}
 
         {loading ? (
-          <Empty>加载费率明细…</Empty>
+          <EmptyState title="正在加载费率明细" hint="请稍候。" />
         ) : table ? (
           <div style={{ marginTop: 'var(--hk-space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -191,10 +192,6 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <div style={{ fontSize: 13, color: 'var(--hk-ink-900)' }}>{children}</div>
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 
 const tableWrap: React.CSSProperties = {

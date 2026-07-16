@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { triggerModelSync } from './api'
-import { buildSyncRequest, hasChanges, isReasonTooLong, itemSummary, itemTone } from './modelsync'
+import { buildSyncRequest, hasChanges, isReasonTooLong, mapModelSyncRows, type ModelSyncTableRow } from './modelsync'
 import { REASON_MAX, type ModelSyncResult } from './types'
 
 /*
@@ -82,6 +84,7 @@ export function UpstreamModelsPage() {
 }
 
 function SyncResultView({ result }: { result: ModelSyncResult }) {
+  const rows = mapModelSyncRows(result.results)
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--hk-space-3)', alignItems: 'center' }}>
@@ -98,40 +101,25 @@ function SyncResultView({ result }: { result: ModelSyncResult }) {
 
       <div className="hk-card">
         {result.results.length === 0 ? (
-          <div className="hk-empty">本次同步未返回任何厂商明细。</div>
+          <EmptyState title="本次同步没有厂商明细" hint="同步已完成，但端点未返回可展示的厂商结果。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['厂商', '概况', '新增', '更新', '重启用', '停用', '未变', '快照更新'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {result.results.map((it) => (
-                  <tr key={it.vendor}>
-                    <td style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{it.vendor}</td>
-                    <td>
-                      <StatusBadge tone={itemTone(it)}>{itemSummary(it)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.added}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.updated}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.reactivated}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.disabled}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.unchanged}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>{it.snapshot_bumps}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="厂商模型同步明细" rows={rows} rowKey={(row) => row.vendor} columns={modelSyncColumns} />
         )}
       </div>
     </div>
   )
 }
+
+const modelSyncColumns: DataListColumn<ModelSyncTableRow>[] = [
+  { key: 'vendor', label: '厂商', render: (row) => <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.vendor}</span> },
+  { key: 'summary', label: '概况', badge: true, render: (row) => <StatusBadge tone={row.tone}>{row.summary}</StatusBadge> },
+  { key: 'added', label: '新增', render: (row) => <span className="hk-mono">{row.added}</span> },
+  { key: 'updated', label: '更新', render: (row) => <span className="hk-mono">{row.updated}</span> },
+  { key: 'reactivated', label: '重启用', render: (row) => <span className="hk-mono">{row.reactivated}</span> },
+  { key: 'disabled', label: '停用', render: (row) => <span className="hk-mono">{row.disabled}</span> },
+  { key: 'unchanged', label: '未变', render: (row) => <span className="hk-mono">{row.unchanged}</span> },
+  { key: 'snapshot-bumps', label: '快照更新', render: (row) => <span className="hk-mono">{row.snapshotBumps}</span> },
+]
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (

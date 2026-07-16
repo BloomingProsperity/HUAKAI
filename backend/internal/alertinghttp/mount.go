@@ -35,6 +35,7 @@ type AdminDeps struct {
 func MountAdminRoutes(r chi.Router, deps AdminDeps) {
 	r.Get("/v1/admin/alert-rules", newRuleListHandler(deps))
 	r.Post("/v1/admin/alert-rules", newRuleCreateHandler(deps))
+	r.Get("/v1/admin/alert-rules/metric-catalog", newMetricCatalogHandler(deps))
 	r.Get("/v1/admin/alert-rules/{id}", newRuleGetHandler(deps))
 	r.Put("/v1/admin/alert-rules/{id}", newRuleUpdateHandler(deps))
 	r.Delete("/v1/admin/alert-rules/{id}", newRuleDeleteHandler(deps))

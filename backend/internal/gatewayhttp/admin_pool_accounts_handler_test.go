@@ -193,6 +193,9 @@ func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg admi
 func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	s.updateFull = &arg
 	row := adminProviderRow(arg.ID, arg.TenantID)
+	if s.get != nil {
+		row = *s.get
+	}
 	if arg.Enabled != nil {
 		row.Enabled = *arg.Enabled
 	}
@@ -204,6 +207,30 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	}
 	if arg.CapConcurrency != nil {
 		row.CapConcurrency = *arg.CapConcurrency
+	}
+	if arg.RPMLimit != nil {
+		row.RPMLimit = *arg.RPMLimit
+	}
+	if arg.TPMLimit != nil {
+		row.TPMLimit = *arg.TPMLimit
+	}
+	if arg.WindowCostLimitCents != nil {
+		row.WindowCostLimitCents = *arg.WindowCostLimitCents
+	}
+	if arg.MaxSessions != nil {
+		row.MaxSessions = *arg.MaxSessions
+	}
+	if arg.DisableCooling != nil {
+		row.DisableCooling = *arg.DisableCooling
+	}
+	if arg.SetRefreshLeadSeconds {
+		row.RefreshLeadSeconds = arg.RefreshLeadSeconds
+	}
+	if arg.SetExpiresAt {
+		row.ExpiresAt = arg.ExpiresAt
+	}
+	if arg.TLSFingerprintRotate != nil {
+		row.TLSFingerprintRotate = *arg.TLSFingerprintRotate
 	}
 	if arg.SetProbeModel {
 		row.ProbeModel = arg.ProbeModel
@@ -231,6 +258,15 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	}
 	if arg.TempUnschedulableEnabled != nil {
 		row.TempUnschedulableEnabled = *arg.TempUnschedulableEnabled
+	}
+	if arg.SetTempUnschedulableRules {
+		row.TempUnschedulableRules = arg.TempUnschedulableRulesJSON
+	}
+	if arg.SetProxyID {
+		row.ProxyID = arg.ProxyID
+	}
+	if arg.SetProxyGroupID {
+		row.ProxyGroupID = arg.ProxyGroupID
 	}
 	return row, nil
 }
@@ -596,8 +632,8 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	if len(response.Items) != 1 || response.Items[0].ID != 77 || !response.Page.HasMore || response.Page.NextCursor == nil {
 		t.Fatalf("unexpected list response: %+v", response)
 	}
-	if strings.Contains(rec.Body.String(), "temp_unschedulable_rules") {
-		t.Fatalf("列表响应不应携带详情规则：%s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"temp_unschedulable_rules":[]`) {
+		t.Fatalf("列表响应必须携带统一高级规则字段：%s", rec.Body.String())
 	}
 }
 
@@ -826,6 +862,7 @@ func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams
 	if in.Enabled != nil {
 		row.Enabled = *in.Enabled
 	}
+	row.ExpiresAt = in.ExpiresAt
 	if in.CapConcurrency != nil {
 		row.CapConcurrency = *in.CapConcurrency
 	}
@@ -840,5 +877,37 @@ func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams
 	row.Extra = in.Extra
 	row.ModelAllowList = in.ModelAllowList
 	row.CapabilityFlags = in.CapabilityFlags
+	if in.RPMLimit != nil {
+		row.RPMLimit = *in.RPMLimit
+	}
+	if in.TPMLimit != nil {
+		row.TPMLimit = *in.TPMLimit
+	}
+	if in.WindowCostLimitCents != nil {
+		row.WindowCostLimitCents = *in.WindowCostLimitCents
+	}
+	if in.MaxSessions != nil {
+		row.MaxSessions = *in.MaxSessions
+	}
+	if in.DisableCooling != nil {
+		row.DisableCooling = *in.DisableCooling
+	}
+	row.RefreshLeadSeconds = in.RefreshLeadSeconds
+	if in.TLSFingerprintRotate != nil {
+		row.TLSFingerprintRotate = *in.TLSFingerprintRotate
+	}
+	if in.CustomErrorCodesEnabled != nil {
+		row.CustomErrorCodesEnabled = *in.CustomErrorCodesEnabled
+	}
+	row.CustomErrorCodes = in.CustomErrorCodes
+	if in.PoolMode != nil {
+		row.PoolMode = *in.PoolMode
+	}
+	if in.TempUnschedulableEnabled != nil {
+		row.TempUnschedulableEnabled = *in.TempUnschedulableEnabled
+	}
+	row.TempUnschedulableRules = in.TempUnschedulableRulesJSON
+	row.ProxyID = in.ProxyID
+	row.ProxyGroupID = in.ProxyGroupID
 	return row
 }

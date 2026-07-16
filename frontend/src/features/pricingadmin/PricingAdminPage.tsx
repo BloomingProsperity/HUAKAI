@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   deleteCacheOverride,
@@ -15,14 +17,22 @@ import {
 import {
   billingPolicyLabel,
   buildBillingSettingsUpdate,
+  cacheOverrideKey,
   CACHE_SCOPES,
-  scopeLabel,
+  mapBillingPolicyRows,
+  mapCacheOverrideRows,
+  mapPricingRatioRows,
+  mapToolSurchargeRows,
   TOOL_SURCHARGE_DEFAULTS,
   validateCacheQualifier,
   validateMultiplier,
   validateRatio,
   validateTenantId,
+  type BillingPolicyTableRow,
   type CacheOverrideQualifier,
+  type CacheOverrideTableRow,
+  type PricingRatioTableRow,
+  type ToolSurchargeTableRow,
 } from './pricingadmin'
 import type {
   BillingSettingsResponse,
@@ -63,7 +73,7 @@ export function PricingAdminPage() {
 
 function BillingPolicySection() {
   const [draftTenant, setDraftTenant] = useState('1')
-  const [tenantId, setTenantId] = useState<number | null>(null)
+  const [tenantId, setTenantId] = useState<number | null>(1)
   const [settings, setSettings] = useState<BillingSettingsResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -98,6 +108,32 @@ function BillingPolicySection() {
     setError(null)
     setTenantId(v.value)
   }
+
+  const rows = mapBillingPolicyRows(settings)
+  const columns: DataListColumn<BillingPolicyTableRow>[] = [
+    { key: 'key', label: '策略键', render: (row) => <span className="hk-mono">{row.key}</span> },
+    {
+      key: 'value',
+      label: '当前值',
+      badge: true,
+      render: (row) => (
+        <>
+          <StatusBadge tone="info">{row.value}</StatusBadge>
+          <span style={{ marginLeft: 6, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-500)' }}>
+            ({row.rawValue})
+          </span>
+        </>
+      ),
+    },
+    {
+      key: 'source',
+      label: '来源',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.tenantSource ? 'ok' : 'muted'}>{row.source}</StatusBadge>,
+    },
+    { key: 'updated-by', label: '更新人', render: (row) => row.updatedBy },
+    { key: 'updated-at', label: '更新时间', render: (row) => row.updatedAt },
+  ]
 
   return (
     <Section
@@ -143,32 +179,15 @@ function BillingPolicySection() {
       )}
 
       {tenantId === null ? (
-        <Empty>输入租户 id 后查询当前计费策略。</Empty>
+        <EmptyState title="尚未查询计费策略" hint="输入租户 ID 后查询当前生效策略。" />
       ) : (
         <Card>
           {loading && !settings ? (
-            <Empty>加载中…</Empty>
-          ) : settings ? (
-            <Table head={['策略键', '当前值', '来源', '更新人', '更新时间']}>
-              <tr>
-                <td className="hk-mono">{settings.key}</td>
-                <td>
-                  <StatusBadge tone="info">{billingPolicyLabel(settings.value)}</StatusBadge>
-                  <span style={{ marginLeft: 6, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-500)' }}>
-                    ({settings.value})
-                  </span>
-                </td>
-                <td>
-                  <StatusBadge tone={settings.source === 'tenant' ? 'ok' : 'muted'}>
-                    {settings.source === 'tenant' ? '租户自定义' : '全局默认'}
-                  </StatusBadge>
-                </td>
-                <td>{settings.updated_by || '—'}</td>
-                <td>{fmt(settings.updated_at ?? undefined)}</td>
-              </tr>
-            </Table>
+            <EmptyState title="正在加载计费策略" hint="请稍候。" />
+          ) : rows.length > 0 ? (
+            <DataListTable label="计费策略列表" rows={rows} rowKey={(row) => row.id} columns={columns} />
           ) : (
-            <Empty>无数据。</Empty>
+            <EmptyState title="暂无计费策略" hint="未取得该租户的全局默认或租户自定义策略。" />
           )}
         </Card>
       )}
@@ -238,7 +257,7 @@ function BillingPolicyModal({
 
 function RatioSection() {
   const [draftTenant, setDraftTenant] = useState('1')
-  const [tenantId, setTenantId] = useState<number | null>(null)
+  const [tenantId, setTenantId] = useState<number | null>(1)
   const [rows, setRows] = useState<PricingRatio[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -300,6 +319,20 @@ function RatioSection() {
     }
   }
 
+  const tableRows = mapPricingRatioRows(rows)
+  const columns: DataListColumn<PricingRatioTableRow>[] = [
+    { key: 'pool-group', label: '分组 ID', render: (row) => <span className="hk-mono">{row.poolGroupId}</span> },
+    { key: 'ratio', label: '倍率', render: (row) => <span className="hk-mono">{row.ratio}</span> },
+    {
+      key: 'public-ratio',
+      label: '对外暴露',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.publicRatio ? 'info' : 'muted'}>{row.publicRatio ? '是' : '否'}</StatusBadge>,
+    },
+    { key: 'updated-by', label: '更新人', render: (row) => row.updatedBy },
+    { key: 'updated-at', label: '更新时间', render: (row) => row.updatedAt },
+  ]
+
   return (
     <Section
       title="分组倍率"
@@ -348,31 +381,28 @@ function RatioSection() {
       )}
 
       {tenantId === null ? (
-        <Empty>输入租户 id 后查询。</Empty>
+        <EmptyState title="尚未查询分组倍率" hint="输入租户 ID 后查询自定义倍率。" />
       ) : (
         <Card>
           {loading && rows.length === 0 ? (
-            <Empty>加载中…</Empty>
+            <EmptyState title="正在加载分组倍率" hint="请稍候。" />
           ) : rows.length === 0 ? (
-            <Empty>该租户暂无自定义倍率(走默认)。</Empty>
+            <EmptyState
+              title="暂无自定义倍率"
+              hint="该租户当前使用默认倍率，可新增分组倍率覆盖。"
+              action={{ label: '新增倍率', onClick: () => setEditing('new') }}
+            />
           ) : (
-            <Table head={['分组 id', '倍率', '对外暴露', '更新人', '更新时间', '']}>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td className="hk-mono">{r.pool_group_id}</td>
-                  <td className="hk-mono" style={{ textAlign: 'right' }}>{r.public_ratio ? r.ratio ?? '—' : '(隐藏)'}</td>
-                  <td>
-                    <StatusBadge tone={r.public_ratio ? 'info' : 'muted'}>{r.public_ratio ? '是' : '否'}</StatusBadge>
-                  </td>
-                  <td>{r.updated_by || '—'}</td>
-                  <td>{fmt(r.updated_at)}</td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" onClick={() => setEditing(r)} className="hk-btn hk-btn--sm">编辑</button>
-                    <button type="button" disabled={busyId === r.id} onClick={() => remove(r)} className="hk-btn hk-btn--sm hk-btn--danger" style={{ marginLeft: 'var(--hk-space-2)' }}>删除</button>
-                  </td>
-                </tr>
-              ))}
-            </Table>
+            <DataListTable
+              label="分组倍率列表"
+              rows={tableRows}
+              rowKey={(row) => row.id}
+              columns={columns}
+              actions={[
+                { label: '编辑', onClick: (row) => setEditing(row.source) },
+                { label: '删除', onClick: (row) => { void remove(row.source) }, tone: 'danger', disabled: (row) => busyId === row.id },
+              ]}
+            />
           )}
         </Card>
       )}
@@ -474,7 +504,7 @@ function CacheOverrideSection() {
   }, [refreshNonce])
 
   const remove = async (r: CacheOverride) => {
-    const key = rowKey(r)
+    const key = cacheOverrideKey(r)
     setBusyKey(key)
     setError(null)
     try {
@@ -489,6 +519,14 @@ function CacheOverrideSection() {
       setBusyKey(null)
     }
   }
+
+  const tableRows = mapCacheOverrideRows(rows)
+  const columns: DataListColumn<CacheOverrideTableRow>[] = [
+    { key: 'scope', label: '范围', badge: true, render: (row) => <StatusBadge tone="info">{row.scope}</StatusBadge> },
+    { key: 'qualifier', label: '限定', render: (row) => row.qualifier },
+    { key: 'multiplier', label: '倍率', render: (row) => <span className="hk-mono">{row.multiplier}</span> },
+    { key: 'updated-at', label: '更新时间', render: (row) => row.updatedAt },
+  ]
 
   return (
     <Section title="缓存价覆盖" subtitle="按 global / model / tenant 覆盖缓存命中计费倍率;未列出的走官方价。">
@@ -510,25 +548,26 @@ function CacheOverrideSection() {
 
       <Card>
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载缓存价覆盖" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>无覆盖(全部走官方价)。</Empty>
+          <EmptyState
+            title="暂无缓存价覆盖"
+            hint="当前全部使用官方价，可按全局、模型或租户设置覆盖。"
+            action={{ label: '设置覆盖', onClick: () => setEditOpen(true) }}
+          />
         ) : (
-          <Table head={['范围', '限定', '倍率', '更新时间', '']}>
-            {rows.map((r) => (
-              <tr key={rowKey(r)}>
-                <td>
-                  <StatusBadge tone="info">{scopeLabel(r.scope)}</StatusBadge>
-                </td>
-                <td>{r.model ? r.model : r.tenant_id ? `租户 ${r.tenant_id}` : '—'}</td>
-                <td className="hk-mono" style={{ textAlign: 'right' }}>{r.multiplier}</td>
-                <td>{fmt(r.updated_at)}</td>
-                <td style={{ textAlign: 'right' }}>
-                  <button type="button" disabled={busyKey === rowKey(r)} onClick={() => remove(r)} className="hk-btn hk-btn--sm hk-btn--danger">清除</button>
-                </td>
-              </tr>
-            ))}
-          </Table>
+          <DataListTable
+            label="缓存价覆盖列表"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[{
+              label: '清除',
+              onClick: (row) => { void remove(row.source) },
+              tone: 'danger',
+              disabled: (row) => busyKey === row.id,
+            }]}
+          />
         )}
       </Card>
     </Section>
@@ -599,6 +638,14 @@ function CacheOverrideModal({ onClose, onSaved }: { onClose: () => void; onSaved
 // ============ 工具附加费(只读) ============
 
 function ToolSurchargeSection() {
+  const rows = mapToolSurchargeRows(TOOL_SURCHARGE_DEFAULTS)
+  const columns: DataListColumn<ToolSurchargeTableRow>[] = [
+    { key: 'tool', label: '工具', render: (row) => <span className="hk-mono">{row.tool}</span> },
+    { key: 'label', label: '名称', render: (row) => row.label },
+    { key: 'price', label: '价格(USD/1000 次)', render: (row) => <span className="hk-mono">{row.price}</span> },
+    { key: 'note', label: '备注', render: (row) => <span style={{ color: 'var(--hk-ink-500)' }}>{row.note}</span> },
+  ]
+
   return (
     <Section
       title="工具附加费"
@@ -608,16 +655,7 @@ function ToolSurchargeSection() {
         该价表无运维写端点,启停由环境变量 <code>HUAKAI_TOOL_SURCHARGE_ENABLED</code>(默认开)控制。下表为后端默认价(只读)。
       </div>
       <Card>
-        <Table head={['工具', '名称', '价格(USD/1000 次)', '备注']}>
-          {TOOL_SURCHARGE_DEFAULTS.map((t) => (
-            <tr key={t.tool}>
-              <td className="hk-mono">{t.tool}</td>
-              <td>{t.label}</td>
-              <td className="hk-mono" style={{ textAlign: 'right' }}>${t.perThousandUSD}</td>
-              <td style={{ color: 'var(--hk-ink-500)' }}>{t.note}</td>
-            </tr>
-          ))}
-        </Table>
+        <DataListTable label="工具附加费列表" rows={rows} rowKey={(row) => row.id} columns={columns} />
       </Card>
     </Section>
   )
@@ -647,23 +685,6 @@ function Section({ title, subtitle, children }: { title: string; subtitle: strin
 
 function Card({ children }: { children: React.ReactNode }) {
   return <div className="hk-card">{children}</div>
-}
-
-function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
-  return (
-    <div className="hk-tablewrap">
-      <table className="hk-table">
-        <thead>
-          <tr>
-            {head.map((h, i) => (
-              <th key={h || i}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
-    </div>
-  )
 }
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
@@ -703,20 +724,6 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function rowKey(r: CacheOverride): string {
-  return `${r.scope}:${r.model ?? ''}:${r.tenant_id ?? ''}`
-}
-
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

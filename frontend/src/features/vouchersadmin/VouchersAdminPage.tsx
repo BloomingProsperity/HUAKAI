@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { confirmIrreversible } from '../../ui/confirmDanger'
 import { createVoucher, createVoucherBatch, getBatch, listVouchers, revokeVoucher } from './api'
@@ -11,12 +14,14 @@ import {
   EMPTY_BATCH_FORM,
   EMPTY_CREATE_FORM,
   filterByStatus,
-  grantKindLabel,
+  mapVoucherRows,
+  mapVoucherStats,
   parseListTenantId,
   statusLabel,
   statusTone,
   type BatchForm,
   type CreateForm,
+  type VoucherTableRow,
 } from './vouchersadmin'
 import type { Batch, BatchCreateResult, CreateResult, GetBatchResult, Voucher } from './types'
 
@@ -98,7 +103,30 @@ export function VouchersAdminPage() {
     }
   }
 
-  const visible = filterByStatus(vouchers, statusFilter) as Voucher[]
+  const visible = filterByStatus(vouchers, statusFilter)
+  const rows = mapVoucherRows(visible)
+  const stats = mapVoucherStats(loading && vouchers.length === 0 ? null : vouchers)
+  const columns: DataListColumn<VoucherTableRow>[] = [
+    { key: 'id', label: 'ID', render: (row) => <span className="hk-mono">{row.id}</span> },
+    { key: 'fingerprint', label: '指纹', render: (row) => <span className="hk-mono">{row.fingerprint}</span> },
+    { key: 'amount', label: '面额', render: (row) => <span className="hk-mono">{row.amount}</span> },
+    { key: 'grant-kind', label: '种类', render: (row) => row.grantKind },
+    { key: 'redemption', label: '兑换', render: (row) => <span className="hk-mono">{row.redemption}</span> },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+    {
+      key: 'batch',
+      label: '批次',
+      render: (row) => row.batchID === null
+        ? <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
+        : <button type="button" onClick={() => setBatchView(row.batchID)} style={linkBtn}>#{row.batchID}</button>,
+    },
+    { key: 'validity', label: '有效期', render: (row) => <span className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>{row.validity}</span> },
+  ]
 
   return (
     <div className="hk-page">
@@ -106,7 +134,7 @@ export function VouchersAdminPage() {
         <div>
           <h1>兑换码管理</h1>
           <p className="hk-sub">
-            运营台 · 批量发码 / 吊销 / 批次查看。当前租户 {tenantId},共 {visible.length} 张。
+            运营台 · 批量发码 / 吊销 / 批次查看。当前租户 {tenantId}，当前页 {vouchers.length} 张（最多 200 条；全量 count 与服务端分页二期接入）。
           </p>
         </div>
         <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexShrink: 0 }}>
@@ -118,6 +146,12 @@ export function VouchersAdminPage() {
           </button>
         </div>
       </header>
+
+      <section aria-label="兑换码统计" style={statsGridStyle}>
+        {stats.map((stat) => (
+          <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} tone={stat.tone} />
+        ))}
+      </section>
 
       <form
         onSubmit={(e) => {
@@ -152,60 +186,28 @@ export function VouchersAdminPage() {
 
       <div className="hk-card">
         {loading && vouchers.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载兑换码" hint="请稍候。" />
         ) : visible.length === 0 ? (
-          <Empty>没有兑换码。</Empty>
+          <EmptyState
+            title={vouchers.length === 0 ? '暂无兑换码' : '当前筛选下暂无兑换码'}
+            hint={vouchers.length === 0 ? '批量生成后会在这里显示兑换码指纹、状态与批次信息。' : '当前页没有符合该状态的兑换码，可清除筛选查看全部。'}
+            action={vouchers.length === 0
+              ? { label: '批量生成', onClick: () => setCreateKind('batch') }
+              : { label: '清除筛选', onClick: () => setStatusFilter('') }}
+          />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['ID', '指纹', '面额', '种类', '兑换', '状态', '批次', '有效期', ''].map((h) => (
-                    <th key={h}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((v) => (
-                  <tr key={v.id}>
-                    <td className="hk-mono">{v.id}</td>
-                    <td className="hk-mono">{v.code_fingerprint}</td>
-                    <td className="hk-mono">
-                      {centsToYuan(v.amount_cents)} {v.currency_code}
-                    </td>
-                    <td>{grantKindLabel(v.grant_kind)}</td>
-                    <td className="hk-mono">
-                      {v.redeemed_count}/{v.max_redemptions}
-                    </td>
-                    <td>
-                      <StatusBadge tone={statusTone(v.status)}>{statusLabel(v.status)}</StatusBadge>
-                    </td>
-                    <td>
-                      {v.batch_id ? (
-                        <button type="button" onClick={() => setBatchView(v.batch_id ?? null)} style={linkBtn}>
-                          #{v.batch_id}
-                        </button>
-                      ) : (
-                        <span style={{ color: 'var(--hk-ink-300)' }}>—</span>
-                      )}
-                    </td>
-                    <td className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>
-                      {fmt(v.valid_from)} ~ {fmt(v.valid_until)}
-                    </td>
-                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {v.status === 'active' && (
-                        <button type="button" disabled={busyId === v.id} onClick={() => onRevoke(v)} className="hk-btn hk-btn--danger hk-btn--sm">
-                          吊销
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="兑换码列表"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={columns}
+            actions={[{
+              label: '吊销',
+              onClick: (row) => { void onRevoke(row.source) },
+              tone: 'danger',
+              disabled: (row) => row.source.status !== 'active' || busyId === row.id,
+            }]}
+          />
         )}
       </div>
 
@@ -551,3 +553,4 @@ const linkBtn: React.CSSProperties = { border: 'none', background: 'transparent'
 const errBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }
 const successBox: React.CSSProperties = { padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
 const overlay: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(28,38,34,0.4)', display: 'flex', zIndex: 'var(--hk-z-overlay)' as unknown as number }
+const statsGridStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--hk-space-3)' }

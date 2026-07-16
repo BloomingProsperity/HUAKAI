@@ -226,6 +226,7 @@ func TestServiceRelease_AbortReleasesWindowsAndSlotsWithoutCost(t *testing.T) {
 	if got := f.activeSlotCount(ScopeUser, fmt.Sprint(f.userID)); got != 1 {
 		t.Fatalf("active slots before release=%d; want 1", got)
 	}
+	f.setClaimTerminal(reserve.Reservation.ClaimID, claimStatusAborted, "")
 
 	result, err := service.Release(ctx, ReleaseRequest{
 		TenantID:      f.tenantID,
@@ -273,6 +274,7 @@ func TestServiceRelease_IdempotentAfterReleased(t *testing.T) {
 	requestPolicy := f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricRequests, WindowFixed, 3600, "100", ModeEnforce)
 	costPolicy := f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
 	reserve := f.reserveForSettlement(ctx, service, now, "release-idempotent", "4", false)
+	f.setClaimTerminal(reserve.Reservation.ClaimID, claimStatusAborted, "")
 	req := ReleaseRequest{
 		TenantID:      f.tenantID,
 		ClaimID:       reserve.Reservation.ClaimID,

@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getMyGroups } from './api'
-import { ratioDisplay, ratioTone, userGroupLabel } from './megroups'
+import { mapMeGroupTableRows, userGroupLabel, type MeGroupTableRow } from './megroups'
 import type { MeGroupItem } from './types'
 
 /*
@@ -16,6 +18,12 @@ export function MyGroupsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshNonce, setRefreshNonce] = useState(0)
+  const rows = mapMeGroupTableRows(items)
+  const columns: DataListColumn<MeGroupTableRow>[] = [
+    { key: 'name', label: '分组名称', render: (row) => <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{row.name}</span> },
+    { key: 'groupId', label: '分组 ID', render: (row) => <code className="hk-mono">{row.groupId}</code> },
+    { key: 'ratio', label: '计费倍率', render: (row) => <StatusBadge tone={row.tone}>{row.ratio}</StatusBadge> },
+  ]
 
   useEffect(() => {
     const ctrl = new AbortController()
@@ -57,36 +65,11 @@ export function MyGroupsPage() {
 
       <div className="hk-card">
         {loading && items.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载模型分组" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <div className="hk-empty">当前等级暂无可调度的模型分组。如需更高权益,请联系运营方或升级套餐。</div>
+          <EmptyState title="当前等级暂无可调度的模型分组" hint="如需更高权益，请联系运营方或升级套餐。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['分组名称', '分组 ID', '计费倍率'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((g) => (
-                  <tr key={g.pool_group_id}>
-                    <td>
-                      <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{g.name || `分组 #${g.pool_group_id}`}</span>
-                    </td>
-                    <td className="hk-mono">
-                      <code>{g.pool_group_id}</code>
-                    </td>
-                    <td>
-                      <StatusBadge tone={ratioTone(g)}>{ratioDisplay(g)}</StatusBadge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="可调度模型分组" rows={rows} rowKey={(row) => row.id} columns={columns} />
         )}
       </div>
 

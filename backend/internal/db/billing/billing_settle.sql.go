@@ -324,9 +324,9 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 const releaseSlotAndDecrementInFlight = `-- name: ReleaseSlotAndDecrementInFlight :execrows
 WITH released AS (
     UPDATE pool_slot_acquisitions
-    SET status = 'released_success',
+    SET status = $2,
         released_at = NOW(),
-        release_reason = $2
+        release_reason = $3
     WHERE acquisition_token = $1 AND status = 'acquired'
     RETURNING provider_account_id
 )
@@ -338,17 +338,13 @@ WHERE r.provider_account_id = pa.id AND pa.in_flight_count > 0
 
 type ReleaseSlotAndDecrementInFlightParams struct {
 	AcquisitionToken uuid.UUID `db:"acquisition_token" json:"acquisition_token"`
+	ReleaseStatus    string    `db:"release_status" json:"release_status"`
 	ReleaseReason    *string   `db:"release_reason" json:"release_reason"`
 }
 
-// TRULY IDEMPOTENT in_flight decrement.
-// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
-// AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
-// replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
-// is no longer 'acquired'; the outer UPDATE no-ops; in_flight_count stays correct.
-// $2 = release_reason text ('settled_committed' / 'settled_aborted' / etc.)
+// 只有 acquisition 从 acquired 翻到指定终态后才递减账号在途数；重放 token 不会重复递减。
 func (q *Queries) ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseSlotAndDecrementInFlight, arg.AcquisitionToken, arg.ReleaseReason)
+	result, err := q.db.Exec(ctx, releaseSlotAndDecrementInFlight, arg.AcquisitionToken, arg.ReleaseStatus, arg.ReleaseReason)
 	if err != nil {
 		return 0, err
 	}

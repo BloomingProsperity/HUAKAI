@@ -82,3 +82,73 @@ func TestBindingRateLimitSelector_WaitPlanNotRecorded(t *testing.T) {
 		t.Fatalf("WaitPlan 不应消费预算, got %v", err)
 	}
 }
+
+type stubBindingConcurrencyReader struct {
+	active int64
+	err    error
+	calls  int
+}
+
+func (r *stubBindingConcurrencyReader) CountActiveBindingAcquisitions(context.Context, int64) (int64, error) {
+	r.calls++
+	return r.active, r.err
+}
+
+func TestBindingConcurrencySelector_FastRejectAndFailClosed(t *testing.T) {
+	t.Run("达到上限返回专用哨兵", func(t *testing.T) {
+		reader := &stubBindingConcurrencyReader{active: 3}
+		res, err := NewBindingConcurrencySelector(
+			fakeRecSelector{res: &SelectionResult{AccountID: 9}}, reader,
+		).Select(context.Background(), SelectionRequest{
+			BindingID: 7, MaxParallelRequests: 3,
+		})
+		if res != nil || !errors.Is(err, ErrBindingConcurrencyLimited) {
+			t.Fatalf("res/err=%v/%v want nil/ErrBindingConcurrencyLimited", res, err)
+		}
+		if reader.calls != 1 {
+			t.Fatalf("reader calls=%d want 1", reader.calls)
+		}
+	})
+
+	t.Run("未达上限进入内层选号", func(t *testing.T) {
+		want := &SelectionResult{AccountID: 9}
+		reader := &stubBindingConcurrencyReader{active: 2}
+		got, err := NewBindingConcurrencySelector(
+			fakeRecSelector{res: want}, reader,
+		).Select(context.Background(), SelectionRequest{
+			BindingID: 7, MaxParallelRequests: 3,
+		})
+		if err != nil || got != want {
+			t.Fatalf("got/err=%v/%v want inner result/nil", got, err)
+		}
+	})
+
+	t.Run("数据库读失败不绕过硬上限", func(t *testing.T) {
+		readerErr := errors.New("count failed")
+		res, err := NewBindingConcurrencySelector(
+			fakeRecSelector{res: &SelectionResult{AccountID: 9}},
+			&stubBindingConcurrencyReader{err: readerErr},
+		).Select(context.Background(), SelectionRequest{
+			BindingID: 7, MaxParallelRequests: 3,
+		})
+		if res != nil || !errors.Is(err, readerErr) {
+			t.Fatalf("res/err=%v/%v want nil/wrapped reader error", res, err)
+		}
+	})
+}
+
+func TestBindingConcurrencySelector_ZeroLimitIsTransparent(t *testing.T) {
+	want := &SelectionResult{AccountID: 9}
+	reader := &stubBindingConcurrencyReader{active: 99}
+	got, err := NewBindingConcurrencySelector(
+		fakeRecSelector{res: want}, reader,
+	).Select(context.Background(), SelectionRequest{
+		BindingID: 7, MaxParallelRequests: 0,
+	})
+	if err != nil || got != want {
+		t.Fatalf("got/err=%v/%v want transparent inner result", got, err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("zero limit reader calls=%d want 0", reader.calls)
+	}
+}

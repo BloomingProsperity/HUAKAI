@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { listEvents, manualResolveEvent } from './api'
-import { eventStateLabel, eventStateTone, EVENT_STATES, isFiring } from './alerting'
+import { EVENT_STATES, mapAlertEventRows, mapAlertResourceStat, type AlertEventTableRow } from './alerting'
 import type { AlertEvent, EventState } from './types'
-import { card, errBox, fmt, ghostBtn, inp, td, tdTime, th, Empty, Field, linkBtn } from './ui'
+import { card, errBox, ghostBtn, inp, Field } from './ui'
 
 /*
  * 告警事件 Tab。/v1/admin/alert-events 列表(状态徽章/观测值/阈值/触发时间)+ 状态过滤
@@ -46,7 +50,7 @@ export function EventsTab({ tenantId }: { tenantId: number }) {
   const refresh = () => setRefreshNonce((n) => n + 1)
 
   const onResolve = async (ev: AlertEvent) => {
-    if (!window.confirm(`确认手动恢复规则 #${ev.rule_id} 的告警事件 #${ev.id}?`)) return
+    if (!confirmIrreversible(`手动恢复规则 #${ev.rule_id} 的告警事件 #${ev.id}`, '恢复后该事件不再处于触发中。')) return
     setBusyId(ev.id)
     setError(null)
     try {
@@ -58,6 +62,9 @@ export function EventsTab({ tenantId }: { tenantId: number }) {
       setBusyId(null)
     }
   }
+
+  const rows = mapAlertEventRows(items)
+  const countStat = mapAlertResourceStat('告警事件', items.length)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
@@ -83,56 +90,39 @@ export function EventsTab({ tenantId }: { tenantId: number }) {
 
       {error && <div style={errBox}>{error}</div>}
 
+      <div style={statGrid}><StatCard {...countStat} /></div>
+
       <div style={card}>
         {loading && items.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载告警事件" hint="请稍候。" />
         ) : items.length === 0 ? (
-          <Empty>没有匹配的告警事件。</Empty>
+          <EmptyState title="没有匹配的告警事件" hint="可调整状态或规则 ID 过滤条件。" />
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr>
-                  {['事件', '规则', '状态', '观测值 / 阈值', '邮件', '触发时间', '恢复时间', ''].map((h) => (
-                    <th key={h} style={th}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((ev) => (
-                  <tr key={ev.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={td}>#{ev.id}</td>
-                    <td style={td}>#{ev.rule_id}</td>
-                    <td style={td}>
-                      <StatusBadge tone={eventStateTone(ev.state) as BadgeTone}>{eventStateLabel(ev.state)}</StatusBadge>
-                    </td>
-                    <td style={td}>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-700)' }}>
-                        {ev.observed_value}
-                        {ev.threshold_value != null ? ` / ${ev.threshold_value}` : ''}
-                      </code>
-                    </td>
-                    <td style={td}>{ev.email_sent ? '已发' : '—'}</td>
-                    <td style={tdTime}>{fmt(ev.fired_at)}</td>
-                    <td style={tdTime}>{fmt(ev.resolved_at)}</td>
-                    <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {isFiring(ev.state) ? (
-                        <button type="button" disabled={busyId === ev.id} onClick={() => onResolve(ev)} style={linkBtn}>
-                          手动恢复
-                        </button>
-                      ) : (
-                        <span style={{ color: 'var(--hk-ink-300)', fontSize: 12 }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="告警事件"
+            rows={rows}
+            rowKey={(row) => row.id}
+            columns={eventColumns}
+            actions={[{
+              label: (row) => row.canResolve ? '手动恢复' : '已结束',
+              onClick: (row) => void onResolve(row.source),
+              disabled: (row) => !row.canResolve || busyId === row.id,
+            }]}
+          />
         )}
       </div>
     </div>
   )
 }
+
+const eventColumns: DataListColumn<AlertEventTableRow>[] = [
+  { key: 'event', label: '事件', render: (row) => `#${row.id}` },
+  { key: 'rule', label: '规则', render: (row) => `#${row.ruleID}` },
+  { key: 'state', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.stateTone as BadgeTone}>{row.state}</StatusBadge> },
+  { key: 'value', label: '观测值 / 阈值', render: (row) => <code>{row.observedThreshold}</code> },
+  { key: 'email', label: '邮件', render: (row) => row.email },
+  { key: 'fired-at', label: '触发时间', render: (row) => row.firedAt },
+  { key: 'resolved-at', label: '恢复时间', render: (row) => row.resolvedAt },
+]
+
+const statGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(160px,240px)' }

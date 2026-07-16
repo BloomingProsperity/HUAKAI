@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildListQuery,
+	isDisputeResolutionStatus,
   isDisputeStatus,
   isResolvable,
+  mapDisputeTableRows,
   OPERATOR_NOTE_MAX,
+	resolveSuccessNotice,
   shortDisputeID,
   statusLabel,
   statusTone,
@@ -59,6 +62,11 @@ describe('validateResolve', () => {
     const r = validateResolve(1, 'approve', '')
     expect(r.ok).toBe(false)
   })
+	it('open 只能由创建流程产生,resolve 端点拒绝回开', () => {
+		// 变异(继续复用四状态 isDisputeStatus)→ open 被放行，断言 RED。
+		expect(isDisputeResolutionStatus('open')).toBe(false)
+		expect(validateResolve(1, 'open', '')).toEqual(expect.objectContaining({ ok: false }))
+	})
   it('合法裁决产出 trim 后的 body', () => {
     // 变异(漏 trim)→ operator_note 含首尾空白，第二断言 RED。
     const r = validateResolve(3, 'rejected', '  维持扣费  ')
@@ -113,4 +121,71 @@ describe('shortDisputeID', () => {
     expect(out.includes('…')).toBe(true)
     expect(out.startsWith('disp_aaaaaaa')).toBe(true)
   })
+})
+
+describe('争议列表列映射', () => {
+  it('保留可裁决判定、身份方向和退款审计字段', () => {
+    const source = {
+      id: 7,
+      dispute_id: 'disp_' + 'a'.repeat(30),
+      tenant_id: 3,
+      user_id: 42,
+      request_id: 'req_' + 'b'.repeat(30),
+      reason: '重复扣费',
+      status: 'open',
+      operator_note: '',
+      created_at: 'invalid-time',
+    }
+    const [row] = mapDisputeTableRows([source])
+    // 变异(把终态判定写反)会使 resolvable 不再为 true 而 RED。
+    expect(row).toMatchObject({ id: 7, userId: '#42', reason: '重复扣费', operatorNote: '—', createdAt: 'invalid-time', resolvedAt: '—', resolvable: true })
+    expect(row.disputeId).toContain('…')
+    expect(row.requestId).toContain('…')
+    expect(row.source).toBe(source)
+  })
+
+	it('仅 resolved 行渲染服务端回显的已退金额', () => {
+		const base = {
+			id: 8,
+			dispute_id: 'disp_refund',
+			tenant_id: 3,
+			user_id: 42,
+			request_id: 'req_refund',
+			reason: '费用有误',
+			operator_note: '',
+			created_at: '2026-07-14T00:00:00Z',
+			refunded_micro_usd: 12_345,
+		}
+		const [resolved, rejected] = mapDisputeTableRows([
+			{ ...base, status: 'resolved' },
+			{ ...base, id: 9, status: 'rejected' },
+		])
+		// 变异(忽略 refunded_micro_usd 或所有状态都显示)→ 任一断言 RED。
+		// 期待值与全站共享 formatMicroUSD/formatCost 的 4 位显示惯例一致。
+		expect(resolved.refundedAmount).toBe('$0.0123')
+		expect(rejected.refundedAmount).toBe('—')
+	})
+})
+
+describe('裁决成功提示', () => {
+	const dispute = {
+		id: 7,
+		dispute_id: 'disp_7',
+		tenant_id: 3,
+		user_id: 42,
+		request_id: 'req_7',
+		reason: '费用有误',
+		status: 'resolved',
+		created_at: '2026-07-14T00:00:00Z',
+	}
+
+	it('按 refund_micro_usd 渲染真实退款金额', () => {
+		// 变异(只看 status 输出笼统“支持退款”)→ 金额缺失，断言 RED。
+		expect(resolveSuccessNotice({ dispute, refund_micro_usd: 12_345 })).toBe('已裁决并退款 $0.0123 到用户余额')
+	})
+
+	it('幂等重放明确说明未重复退款', () => {
+		// 变异(忽略 refund_idempotent)→ 显示再次退款金额，断言 RED。
+		expect(resolveSuccessNotice({ dispute, refund_micro_usd: 12_345, refund_idempotent: true })).toBe('此前已退款,未重复退款')
+	})
 })

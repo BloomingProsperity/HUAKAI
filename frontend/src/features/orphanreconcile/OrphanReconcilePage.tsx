@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listOrphans, reconcileOrphan } from './api'
 import {
   buildReconcileRequest,
-  formatCents,
+  mapOrphanRows,
   needsBackChargeConfirm,
   parseTenantFilter,
   reconcileStatusLabel,
   statusLabel,
-  statusTone,
   summarizeReconcile,
+  type OrphanTableRow,
 } from './orphanreconcile'
 import { RECONCILE_STATUSES, type OrphanItem, type ReconcileStatus } from './types'
 
@@ -113,6 +115,7 @@ export function OrphanReconcilePage() {
     },
     [load],
   )
+  const tableRows = mapOrphanRows(rows)
 
   return (
     <div className="hk-page">
@@ -163,38 +166,23 @@ export function OrphanReconcilePage() {
         </div>
 
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载待处置孤儿" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>暂无待处置孤儿。</Empty>
+          <EmptyState title="暂无待处置孤儿" hint="当前过滤范围内没有需要人工对账的孤儿记录。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['孤儿', '任务', '租户', '用户', '厂商', '上游任务 ID', '预估漏扣', '状态', '上报时间', '处置'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <OrphanRow
-                    key={row.id}
-                    item={row}
-                    busy={busyId === row.id}
-                    onReconcile={doReconcile}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label="待处置孤儿"
+            rows={tableRows}
+            rowKey={(row) => row.id}
+            columns={orphanColumns(busyId, doReconcile)}
+          />
         )}
       </section>
     </div>
   )
 }
 
-function OrphanRow({
+function OrphanActions({
   item,
   busy,
   onReconcile,
@@ -209,25 +197,7 @@ function OrphanRow({
   const backChargeAllowed = status === 'reconciled'
 
   return (
-    <tr>
-      <td className="hk-mono">#{item.id}</td>
-      <td className="hk-mono">#{item.task_id}</td>
-      <td className="hk-mono">#{item.tenant_id}</td>
-      <td className="hk-mono">#{item.user_id}</td>
-      <td>{item.provider || '—'}</td>
-      <td className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>{short(item.provider_task_id)}</td>
-      <td className="hk-mono">
-        {/* 列表口径:estimated_cents 恒 0 占位,真金额以追扣返回为准(后端 routes.go:109)。 */}
-        {item.estimated_cents > 0 ? formatCents(item.estimated_cents) : '—'}
-      </td>
-      <td>
-        <StatusBadge tone={statusTone(item.reconcile_status)}>
-          {statusLabel(item.reconcile_status)}
-        </StatusBadge>
-      </td>
-      <td className="hk-mono">{fmt(item.observed_at)}</td>
-      <td style={{ whiteSpace: 'nowrap' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, whiteSpace: 'nowrap' }}>
           <select
             value={status}
             disabled={busy}
@@ -271,10 +241,26 @@ function OrphanRow({
           >
             {busy ? '处理中…' : backCharge ? '对账并追扣' : '提交处置'}
           </button>
-        </div>
-      </td>
-    </tr>
+    </div>
   )
+}
+
+function orphanColumns(
+  busyId: number | null,
+  onReconcile: (item: OrphanItem, status: ReconcileStatus, backCharge: boolean) => void,
+): DataListColumn<OrphanTableRow>[] {
+  return [
+    { key: 'id', label: '孤儿', render: (row) => <span className="hk-mono">#{row.id}</span> },
+    { key: 'task', label: '任务', render: (row) => <span className="hk-mono">{row.task}</span> },
+    { key: 'tenant', label: '租户', render: (row) => <span className="hk-mono">{row.tenant}</span> },
+    { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.user}</span> },
+    { key: 'provider', label: '厂商', render: (row) => row.provider },
+    { key: 'provider-task', label: '上游任务 ID', render: (row) => <span className="hk-mono" style={{ color: 'var(--hk-ink-500)' }}>{row.providerTaskId}</span> },
+    { key: 'estimated-charge', label: '预估漏扣', render: (row) => <span className="hk-mono">{row.estimatedCharge}</span> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+    { key: 'observed-at', label: '上报时间', render: (row) => <span className="hk-mono">{row.observedAt}</span> },
+    { key: 'actions', label: '处置', render: (row) => <OrphanActions item={row.item} busy={busyId === row.id} onReconcile={onReconcile} /> },
+  ]
 }
 
 /* ——— 小工具组件 / 样式(本页私有) ——— */
@@ -298,20 +284,6 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       {children}
     </div>
   )
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
-function short(s: string): string {
-  if (!s) return '—'
-  return s.length > 18 ? `${s.slice(0, 10)}…${s.slice(-4)}` : s
-}
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
 }
 
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }

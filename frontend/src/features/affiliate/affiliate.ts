@@ -1,4 +1,22 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
+import type { ReferralItem, RewardLedgerItem } from './types'
+
+export interface ReferralTableRow {
+  id: number
+  referee: string
+  statusLabel: string
+  statusTone: BadgeTone
+  invitedAt: string
+  rewardedAt: string
+}
+
+export interface RewardTableRow {
+  id: string
+  referral: string
+  type: string
+  amount: string
+  createdAt: string
+}
 
 /*
  * 推广页纯逻辑(可单测):邀请链接构造、金额格式化、状态标签/语气映射。
@@ -78,6 +96,34 @@ export function referralStatusTone(status: string): BadgeTone {
 /** 把被邀请人 user id 脱敏成「用户 #<id>」展示名(不暴露邮箱等 PII)。 */
 export function refereeDisplay(userId: number): string {
   return `用户 #${userId}`
+}
+
+/** 被邀请人响应到列表展示行的纯映射。 */
+export function mapReferralRows(items: ReferralItem[]): ReferralTableRow[] {
+  return items.map((item) => ({
+    id: item.referral_id,
+    referee: refereeDisplay(item.referee_user_id),
+    statusLabel: referralStatusLabel(item.status),
+    statusTone: referralStatusTone(item.status),
+    invitedAt: formatPortalTime(item.created_at),
+    rewardedAt: item.rewarded_at ? formatPortalTime(item.rewarded_at) : '—',
+  }))
+}
+
+/** 返利流水响应到列表展示行的纯映射，序号仅用于保持重复关联记录的行键唯一。 */
+export function mapRewardRows(items: RewardLedgerItem[]): RewardTableRow[] {
+  return items.map((item, index) => ({
+    id: `${item.referral_id}-${index}`,
+    referral: `#${item.referral_id}`,
+    type: item.reward_type,
+    amount: formatUsd(item.amount_usd),
+    createdAt: formatPortalTime(item.created_at),
+  }))
+}
+
+function formatPortalTime(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 /*

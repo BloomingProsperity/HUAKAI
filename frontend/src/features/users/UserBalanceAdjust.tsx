@@ -23,8 +23,7 @@ import type { UserDetail } from './detail'
  *   - reason 必填(审计);idempotency_key 同一次提交意图复用同一 key,重复点击合并为一次入账。
  *   - 二次确认明确展示「将给 {email} {加/扣} {金额} 美元」,money 影响一目了然。
  */
-export function UserBalanceAdjust({ user, onChanged }: { user: UserDetail; onChanged: () => void }) {
-  const [tenantInput, setTenantInput] = useState('1')
+export function UserBalanceAdjust({ tenantId, user, onChanged }: { tenantId: number; user: UserDetail; onChanged: () => void }) {
   const [direction, setDirection] = useState<AdjustDirection>('credit')
   const [amount, setAmount] = useState('')
   const [reason, setReason] = useState('')
@@ -37,7 +36,6 @@ export function UserBalanceAdjust({ user, onChanged }: { user: UserDetail; onCha
   const submit = () => {
     setError(null)
     setOk(null)
-    const tenantId = Number(tenantInput.trim())
     const v = validateAdjustment(tenantId, user.id, direction, amount, reason)
     if (!v.ok) {
       setError(v.error)
@@ -80,16 +78,6 @@ export function UserBalanceAdjust({ user, onChanged }: { user: UserDetail; onCha
       {ok && <Banner tone="ok">{ok}</Banner>}
 
       <div style={card}>
-        <Row label="目标租户 ID(tenant_id)" hint="用户详情不含租户,需指明;单租户运营者通常为 1">
-          <input
-            value={tenantInput}
-            onChange={(e) => setTenantInput(e.target.value)}
-            inputMode="numeric"
-            placeholder="如 1"
-            style={{ ...inp, maxWidth: 120 }}
-          />
-        </Row>
-
         <Row label="方向" hint="加款=贷记余额;扣款=借记余额(扣款暂可能被后端拒)">
           <select value={direction} onChange={(e) => setDirection(e.target.value as AdjustDirection)} style={{ ...inp, maxWidth: 140 }}>
             <option value="credit">加款(+)</option>

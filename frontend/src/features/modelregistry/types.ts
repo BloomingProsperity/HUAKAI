@@ -107,3 +107,53 @@ export interface TenantPolicyEnvelope {
 export interface TenantPolicySetRequest {
   inherit_global_catalog: boolean
 }
+
+// ── 模型主体 GET/POST /v1/admin/models 与 GET/PATCH/DELETE /{id} ──
+export type AdminModelScope = 'tenant' | 'global'
+export type AdminModelStatus = 'active' | 'disabled'
+
+export interface AdminModel {
+  id: number
+  tenant_id: number | null
+  scope: AdminModelScope
+  canonical_id: string
+  protocol_family: string
+  default_provider_model_id: string
+  default_context_window: number
+  default_request_timeout_ms: number
+  pricing_class: string
+  model_owner: string
+  model_created_at: string | null
+  capabilities: Record<string, boolean>
+  max_output_tokens: number | null
+  model_mode: string | null
+  status: AdminModelStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminModelListResponse {
+  object: 'admin_models_list'
+  items: AdminModel[]
+}
+
+export interface AdminModelCreateRequest {
+  canonical_id: string
+  protocol_family: string
+  default_provider_model_id: string
+  default_context_window?: number
+  default_request_timeout_ms?: number
+  pricing_class?: string
+  model_owner?: string
+  status?: AdminModelStatus
+}
+
+export interface AdminModelUpdateRequest {
+  default_provider_model_id?: string
+  default_context_window?: number
+  default_request_timeout_ms?: number
+  pricing_class?: string
+  protocol_family?: string
+  model_owner?: string
+  status?: AdminModelStatus
+}

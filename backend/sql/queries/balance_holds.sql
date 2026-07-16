@@ -94,3 +94,11 @@ WHERE blc.status = 'reserving'
 ORDER BY blc.lease_expires_at
 LIMIT @batch_size
 FOR UPDATE SKIP LOCKED;
+
+-- name: ExpediteAbortLease :execrows
+UPDATE billing_ledger_claims
+SET lease_expires_at = LEAST(lease_expires_at, NOW())
+WHERE tenant_id = @tenant_id::bigint
+  AND id = @claim_id::bigint
+  AND attempt_seq = @attempt_seq::integer
+  AND status = 'reserving';

@@ -1,8 +1,10 @@
 import type {
+  AdminTokenListItem,
   AdminTokenRole,
   CreateAdminTokenRequest,
   CreatePlatformApiKeyRequest,
   PlatformApiKeyEnvironment,
+  PlatformApiKeyListItem,
 } from './types'
 
 export interface AdminTokenForm {
@@ -130,4 +132,66 @@ export function formatCredentialTime(value: string | null | undefined): string {
   if (!value) return '永不过期'
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? value : time.toLocaleString('zh-CN', { hour12: false })
+}
+
+export interface AdminTokenTableRow {
+  id: number
+  name: string
+  keyPrefix: string
+  role: string
+  scope: string
+  status: string
+  bootstrap: boolean
+  expiresAt: string
+  lastUsedAt: string
+  createdAt: string
+  revocable: boolean
+  source: AdminTokenListItem
+}
+
+export interface PlatformApiKeyTableRow {
+  id: number
+  name: string
+  keyPrefix: string
+  userID: string
+  status: string
+  expiresAt: string
+  lastUsedAt: string
+  createdAt: string
+  revocable: boolean
+  source: PlatformApiKeyListItem
+}
+
+/** 列表仅映射后端提供的脱敏前缀，不构造或暴露任何凭证明文。 */
+export function mapAdminTokenTableRows(items: AdminTokenListItem[]): AdminTokenTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    name: item.name || `令牌 #${item.id}`,
+    keyPrefix: item.key_prefix,
+    role: item.role === 'platform_admin' ? '平台管理员' : '租户运维',
+    scope: item.scope_tenant_id ? `租户 #${item.scope_tenant_id}` : '全平台',
+    status: item.status,
+    bootstrap: item.bootstrap,
+    expiresAt: formatCredentialTime(item.expires_at),
+    lastUsedAt: item.last_used_at ? formatCredentialTime(item.last_used_at) : '从未使用',
+    createdAt: formatCredentialTime(item.created_at),
+    revocable: item.status === 'active' && item.revoked_at === null,
+    source: item,
+  }))
+}
+
+/** 平台 Key 列表只保留名称和脱敏前缀，明文仍仅由一次性创建响应展示。 */
+export function mapPlatformApiKeyTableRows(items: PlatformApiKeyListItem[]): PlatformApiKeyTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    keyPrefix: item.key_prefix,
+    userID: `#${item.user_id}`,
+    status: item.status,
+    expiresAt: formatCredentialTime(item.expires_at),
+    lastUsedAt: item.last_used_at ? formatCredentialTime(item.last_used_at) : '从未使用',
+    createdAt: formatCredentialTime(item.created_at),
+    revocable: item.status === 'active' && item.revoked_at === null,
+    source: item,
+  }))
 }

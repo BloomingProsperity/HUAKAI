@@ -15,6 +15,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -91,6 +93,7 @@ type execution struct {
 	predictedCost     decimal.Decimal
 	costSnapshot      string
 	pending           bool
+	classTransition   *bindingfallback.Transition
 }
 
 func NewSpeechHandler(d Deps) http.HandlerFunc {
@@ -167,10 +170,6 @@ func newHandler(d Deps, endpoint audioEndpoint) http.HandlerFunc {
 		if !ex.prepareRoute(w) {
 			return
 		}
-		if err := ex.preparePricing(); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
-			return
-		}
 		ex.run(w)
 	}
 }
@@ -214,10 +213,57 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	if !ex.reserve(w) || !ex.selectAccount(w, 1) || !ex.resolveCredential(w) {
-		return
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := ex.runAttempt(w, ex.plan.Attempts[i], i+1)
+		if outcome.done {
+			return
+		}
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runAttempt(w, phase.Attempts[0], i+2)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
+		}
 	}
-	_ = ex.dispatchAndSettle(w, 1)
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int) attemptOutcome {
+	// validateAudioRequest 已把 JSON/multipart 限长读入不可变 []byte；每个 attempt
+	// 都从该缓冲重新生成出站 body，因此跨账号/跨类不会复用已消费的流。
+	ex.activateAttempt(attempt)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.accInfo = provider.AccountInfo{}
+	if err := ex.preparePricing(); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
+		return attemptOutcome{done: true}
+	}
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.selectAccount(w, attemptSeq); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	return ex.dispatchAndSettle(w, attemptSeq)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {

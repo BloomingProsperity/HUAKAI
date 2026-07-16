@@ -1,4 +1,5 @@
 import type { CreateRouteRequest, Route, UpdateRouteRequest } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
 
 /*
  * 请求路由规则页的纯逻辑(可单测,无 DOM/网络副作用):
@@ -142,6 +143,33 @@ export function sortRoutes(routes: Route[]): Route[] {
     if (a.match_priority !== b.match_priority) return a.match_priority - b.match_priority
     return a.id - b.id
   })
+}
+
+export interface RouteTableRow {
+  id: number
+  priority: number
+  name: string
+  userGroup: string
+  modelPattern: string
+  poolGroup: string
+  status: string
+  statusTone: BadgeTone
+  route: Route
+}
+
+/** 路由规则 DTO 到列表展示行的纯映射。 */
+export function mapRouteRows(routes: Route[]): RouteTableRow[] {
+  return routes.map((route) => ({
+    id: route.id,
+    priority: route.match_priority,
+    name: route.name,
+    userGroup: route.user_group_match,
+    modelPattern: displayModelPattern(route.model_pattern_match),
+    poolGroup: `#${route.pool_group_id}`,
+    status: route.enabled ? '启用' : '停用',
+    statusTone: route.enabled ? 'ok' : 'muted',
+    route,
+  }))
 }
 
 /** 模型模式展示文案:空串/'*' → 「全部模型」;其余原样(前缀模式保留尾随 '*')。 */

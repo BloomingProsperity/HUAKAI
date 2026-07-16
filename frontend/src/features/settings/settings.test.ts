@@ -122,6 +122,17 @@ describe('TAB_GROUPS 分签全覆盖', () => {
       'backup',
     ])
   })
+
+  it('网关运行时开关说明锁住真实作用域与现实默认', () => {
+    // 变异:把 529 文案退回模糊的“过载后冷却”会丢失 Retry-After 优先级与仅新事件生效的关键信息。
+    const gateway = TAB_GROUPS.find((tab) => tab.key === 'gateway')
+    const byKey = new Map(gateway?.items.map((item) => [item.key, item.hint]))
+    expect(byKey.get('stream_timeout_seconds')).toContain('600 秒')
+    expect(byKey.get('cooldown_429_seconds')).toContain('Retry-After')
+    expect(byKey.get('cooldown_429_seconds')).toContain('300 秒')
+    expect(byKey.get('cooldown_529_seconds')).toContain('529/过载')
+    expect(byKey.get('cooldown_529_seconds')).toContain('新事件')
+  })
 })
 
 describe('controlFor 控件判定', () => {

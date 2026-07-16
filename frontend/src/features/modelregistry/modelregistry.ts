@@ -6,7 +6,8 @@
  *  - 能力矩阵 toggle → capabilities map 构造。
  *  - 导入结果汇总(成功/失败计数)。
  */
-import type { AliasImportResult, AliasImportRow } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
+import type { AdminModel, AliasImportResult, AliasImportRow, CapabilityBinding } from './types'
 
 // 能力绑定白名单 —— 镜像后端 knownModelCapabilityBindings(PUT capability-bindings 只接受表内能力)。
 // 分组仅用于 UI 下拉归类,后端不区分组。任一组外能力提交会被后端 400(invalid_capability)。
@@ -116,4 +117,90 @@ export function importResultTone(status: string): 'ok' | 'danger' | 'muted' {
   if (status === 'upserted') return 'ok'
   if (status === 'failed') return 'danger'
   return 'muted'
+}
+
+export interface CapabilityBindingTableRow {
+  key: string
+  capability: string
+  scope: string
+  tenant: number | string
+  value: string
+  enabled: string
+  enabledTone: BadgeTone
+  source: string
+}
+
+/** 能力绑定 DTO 到列表展示行的纯映射。 */
+export function mapCapabilityBindingRows(bindings: CapabilityBinding[]): CapabilityBindingTableRow[] {
+  return bindings.map((binding, index) => ({
+    key: `${binding.scope}-${binding.capability}-${index}`,
+    capability: binding.capability,
+    scope: binding.scope,
+    tenant: binding.tenant_id ?? '—',
+    value: binding.capability_value ?? '—',
+    enabled: binding.enabled ? '启用' : '停用',
+    enabledTone: binding.enabled ? 'ok' : 'muted',
+    source: binding.source,
+  }))
+}
+
+export interface AliasValidationTableRow {
+  line: number
+  raw: string
+  error: string
+}
+
+/** 本地校验失败项到列表展示行的纯映射。 */
+export function mapAliasValidationRows(rows: AliasValidationTableRow[]): AliasValidationTableRow[] {
+  return rows.map((row) => ({ line: row.line, raw: row.raw, error: row.error }))
+}
+
+export interface AliasResultTableRow {
+  index: number
+  alias: string
+  modelId: number | string
+  status: string
+  statusTone: BadgeTone
+  error: string
+  hasError: boolean
+}
+
+/** 后端逐行导入结果到列表展示行的纯映射。 */
+export function mapAliasResultRows(results: AliasImportResult[]): AliasResultTableRow[] {
+  return results.map((result) => ({
+    index: result.index,
+    alias: result.alias,
+    modelId: result.model_id ?? '—',
+    status: result.status,
+    statusTone: importResultTone(result.status),
+    error: result.error ?? '—',
+    hasError: Boolean(result.error),
+  }))
+}
+
+export interface AdminModelTableRow {
+  id: number
+  canonicalId: string
+  providerModelId: string
+  protocolFamily: string
+  scope: string
+  tenant: number | string
+  contextWindow: number
+  status: string
+  statusTone: BadgeTone
+}
+
+/** 模型主体 DTO 到列表展示行的纯映射，数字 id 原样保留供后续运维卡回填。 */
+export function mapAdminModelRows(models: AdminModel[]): AdminModelTableRow[] {
+  return models.map((model) => ({
+    id: model.id,
+    canonicalId: model.canonical_id,
+    providerModelId: model.default_provider_model_id,
+    protocolFamily: model.protocol_family,
+    scope: model.scope,
+    tenant: model.tenant_id ?? '全局',
+    contextWindow: model.default_context_window,
+    status: model.status === 'active' ? '启用' : '停用',
+    statusTone: model.status === 'active' ? 'ok' : 'muted',
+  }))
 }

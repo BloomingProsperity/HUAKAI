@@ -1,9 +1,11 @@
 import type {
+  BillingClaim,
   ClaimFilters,
   RepriceForm,
   RepriceItem,
   RepriceRequest,
   UsageFilters,
+  UsageRecord,
 } from './types'
 
 /*
@@ -164,6 +166,68 @@ export function shortId(s: string): string {
   return v.length > 16 ? `${v.slice(0, 8)}…${v.slice(-4)}` : v
 }
 
+export interface UsageTableRow {
+  id: number
+  createdAt: string
+  requestedModel: string
+  upstreamModel: string | null
+  provider: string
+  tokens: string
+  actualCost: string
+  trustStatus: string
+  pendingReconciliation: boolean
+  requestId: string
+  source: UsageRecord
+}
+
+/** 原始用量响应到展示列的纯映射；金额始终沿用十进制字符串格式化。 */
+export function mapUsageTableRows(records: UsageRecord[]): UsageTableRow[] {
+  return records.map((record) => ({
+    id: record.id,
+    createdAt: formatTime(record.created_at),
+    requestedModel: record.requested_model || '—',
+    upstreamModel: record.upstream_model && record.upstream_model !== record.requested_model ? record.upstream_model : null,
+    provider: record.provider || '—',
+    tokens: `${record.tokens_input} / ${record.tokens_output}`,
+    actualCost: formatMoney(record.actual_cost),
+    trustStatus: record.trust_status || '—',
+    pendingReconciliation: record.pending_reconciliation,
+    requestId: shortId(record.request_id),
+    source: record,
+  }))
+}
+
+export interface ClaimTableRow {
+  id: number
+  createdAt: string
+  requestedModel: string
+  endpointFamily: string
+  status: string
+  abortedReason: string | null
+  predictedCost: string
+  actualCost: string
+  settledAt: string
+  requestId: string
+  source: BillingClaim
+}
+
+/** Claim 响应到展示列的纯映射；预扣与实际成本不经过浮点转换。 */
+export function mapClaimTableRows(claims: BillingClaim[]): ClaimTableRow[] {
+  return claims.map((claim) => ({
+    id: claim.id,
+    createdAt: formatTime(claim.created_at),
+    requestedModel: claim.requested_model || '—',
+    endpointFamily: claim.endpoint_family || '—',
+    status: claim.status || '—',
+    abortedReason: claim.aborted_reason || null,
+    predictedCost: formatMoney(claim.predicted_cost, claim.currency_code),
+    actualCost: formatMoney(claim.actual_cost, claim.currency_code),
+    settledAt: formatTime(claim.settled_at),
+    requestId: shortId(claim.logical_request_id),
+    source: claim,
+  }))
+}
+
 // ── 按当前价表重算 ──────────────────────────────────────────────────────────
 
 export const REPRICE_MAX_LIMIT = 100
@@ -256,4 +320,29 @@ export function sumRepriceCostDelta(items: Pick<RepriceItem, 'cost_delta'>[]): s
     total += value
   }
   return formatFixed8(total)
+}
+
+export interface RepriceTableRow {
+  id: string
+  usageRecordId: string
+  tenantId: string
+  status: string
+  originalCost: string
+  authoritativeCost: string
+  costDelta: string
+  detail: string
+}
+
+/** 重算响应到结果表列的纯映射；所有 money 字段保持服务端原字符串。 */
+export function mapRepriceTableRows(items: RepriceItem[]): RepriceTableRow[] {
+  return items.map((item) => ({
+    id: `${item.tenant_id}-${item.usage_record_id}`,
+    usageRecordId: String(item.usage_record_id),
+    tenantId: String(item.tenant_id),
+    status: item.status,
+    originalCost: item.original_cost,
+    authoritativeCost: item.authoritative_cost,
+    costDelta: item.cost_delta,
+    detail: item.error_message || item.skipped_reason || item.pricing_source || '—',
+  }))
 }

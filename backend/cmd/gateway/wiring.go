@@ -61,6 +61,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
@@ -115,7 +116,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/usernotice"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
-	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
@@ -133,6 +133,7 @@ type deps struct {
 	billingPolicyStore    billing.PolicyStore
 	billingPolicyResolver *billing.PolicyResolver
 	selector              pool.Selector
+	selectorConfig        *runtimeconfig.PoolSelectorConfig
 	queueWaiter           *queuewait.Executor
 	channelHealth         *channelhealth.Service
 	authCooldown          *authcooldown.Store
@@ -186,6 +187,7 @@ type deps struct {
 	responseCache            l2cache.Store
 	cacheScope               string
 	dlqService               *legacydlq.Service
+	settleRecoveryReady      bool
 	obsDLQAdminStore         *obsoutbox.PostgresOutbox
 	completionBus            *eventbus.Bus
 	auditRefPolicy           *eventbus.AuditRefPolicy
@@ -197,6 +199,7 @@ type deps struct {
 	receiptStore             *auditreceipt.PGXReceiptStorage
 	receiptFormatter         *auditreceipt.ReceiptFormatter
 	disputeStore             *auditreceipt.CostDisputeStore
+	disputeResolver          *auditreceipt.CostDisputeResolver
 	refundQueue              *auditreceipt.MismatchRefundQueue
 	rateTableSource          *billing.PGXRateTableSource
 	pricingRatioStore        pricingcatalog.Store
@@ -1100,6 +1103,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	channelHealthOptions := []channelhealth.ServiceOption{
 		channelhealth.WithAlertOutbox(outboxStore),
 		channelhealth.WithLogger(slog.Default()),
+		// 未保存设置时，两个默认值均来自 channelhealth.DefaultPolicy 的 5 分钟现实值；
+		// 保存后由 platformsettings 的现有缓存按新事件读取，旧 CooldownUntil 不回写。
+		channelhealth.WithCooldownSource(platformCooldownSource{settings: platformSettingsService}),
 	}
 	if authCooldownStore != nil {
 		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
@@ -1163,6 +1169,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("build dispute storage: %w", err)
 	}
+	// 争议裁决必须拿到底层可加入现有事务的退款执行器；外层 Settler 接口的
+	// Refund 会自行开事务，无法与状态更新形成同提交/同回滚。
+	disputeRefundSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
+	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler)
+	if err != nil {
+		return nil, fmt.Errorf("build dispute refund resolver: %w", err)
+	}
 	settler, quotaReserver := buildQuotaEnforcement(cfg, pgPool, settler, platformSettingsService)
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
@@ -1180,7 +1193,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 行后重调 Settler.Settle。三证 proof 用 PG 直接查 claim/usage/billing_events。
 	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
 	settlementHandler := newSettlementRecoveryHandler(settler, settlementProof, auditRefPolicy)
-	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
+	settleRecoveryReady := dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 	// WAVE H3 只读诊断工具脊柱 + 它的 hermes_tool_calls 审计写入器,在这里构建
 	//(早于 chat bridge),这样 WAVE H3b 对话式工具循环就能把 registry(catalog
 	// provider)+ session-binding store 与 bridge 以及 internal tool-execute handler
@@ -1380,6 +1393,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	mediaTaskWorker.Start(ctx)
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
+	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
+	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
+	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1391,6 +1407,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		selectorConfig:        opts.selector,
 		queueWaiter:           queuewait.NewExecutor(),
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
@@ -1398,14 +1415,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealth:         channelHealthService,
 		authCooldown:          authCooldownStore,
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
-		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool))),
+		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool)), ratelimit.WithCooldownSource(platformCooldownSource{settings: platformSettingsService})),
 		retryBudget:           tenantRetryBudget,
 		claimGate:             newClaimGateWithLease(pgPool),
 		settler:               settler,
 		settlementIntents:     buildSettlementIntentStore(billingQueries, cfg.SettlementIntentEnabled),
 		quotaReserver:         quotaReserver,
 		replayStore:           replayStore,
-		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService),
+		forwarder:             buildStreamForwarder(auditLedger, auditSigner, dlqService, gatewayTimeouts),
 		credentialVault:       credentialVault,
 		credentialStore:       credentialStore,
 		credentialKeys:        credentialKeys,
@@ -1441,6 +1458,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		responseCache:         opts.responseCache,
 		cacheScope:            opts.cacheScope,
 		dlqService:            dlqService,
+		settleRecoveryReady:   settleRecoveryReady,
 		obsDLQAdminStore:      outboxStore,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
@@ -1449,7 +1467,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
 			ProxyResolver:            accountProxyResolver,
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
-			Timeouts:                 buildGatewayTimeoutConfig(),
+			Timeouts:                 gatewayTimeouts,
 			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
 			AnthropicTTLSettings:     platformSettingsService,
 			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
@@ -1466,6 +1484,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		receiptStore:         receiptStore,
 		receiptFormatter:     receiptFormatter,
 		disputeStore:         disputeStore,
+		disputeResolver:      disputeResolver,
 		refundQueue:          refundQueue,
 		rateTableSource:      rateTableSource,
 		pricingRatioStore:    pricingRatioStore,
@@ -1535,6 +1554,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	alertingStore := alerting.NewPostgresStore(pgPool)
 	alertingService := alerting.NewService(alertingStore,
 		alerting.WithFiringDeliverer(notifyFiringDeliverer{notifier: notifier}),
+		// NotifyEmail 的现实默认来自 bool 零值 false，收件人现实默认来自
+		// platformsettings.KeyAdminNotificationEmail 的空串；二者都未配置时不新增任何发送。
+		alerting.WithFiringEmailDeliverer(alerting.NewAdminEmailDeliverer(platformSettingsService, notificationEmailSender, slog.Default())),
 		alerting.WithFiringDeliveryErrorRecorder(func(_ context.Context, tenantID int64, notice alerting.FiringNotice, err error) {
 			logger.Warn("alert firing notification delivery failed",
 				zap.Int64("tenant_id", tenantID),

@@ -92,6 +92,53 @@ describe('buildCreateRequest', () => {
     expect(req.model_allow_list).toEqual(['gpt-4o', 'claude-3-5-sonnet'])
     expect(req.capability_flags).toEqual(['vision', 'tools'])
   })
+
+  it('最终 create 请求精确带上高级设置', () => {
+    const req = buildCreateRequest(
+      form({
+        providerId: '1',
+        channelId: '2',
+        name: 'advanced',
+        accountType: 'api_key',
+        credentialValues: { api_key: 'k' },
+        rpmLimit: '0',
+        tpmLimit: '1200',
+        windowCostLimitCents: '345',
+        maxSessions: '6',
+        disableCooling: true,
+        refreshLeadMode: 'value',
+        refreshLeadSeconds: '90',
+        expiresAtMode: 'clear',
+        tlsFingerprintRotate: true,
+        customErrorCodesEnabled: true,
+        customErrorCodes: '429',
+        poolMode: 'enabled',
+        tempUnschedulableEnabled: true,
+        tempRulesMode: 'replace',
+        tempUnschedulableRules: [{ errorCode: '529', keywords: 'busy', durationMinutes: '5', description: '' }],
+        proxyMode: 'group',
+        proxyGroupId: 'edge',
+      }),
+      mode,
+      false,
+    )
+    expect(req).toMatchObject({
+      rpm_limit: 0,
+      tpm_limit: 1200,
+      window_cost_limit_cents: 345,
+      max_sessions: 6,
+      disable_cooling: true,
+      refresh_lead_seconds: 90,
+      expires_at: null,
+      tls_fingerprint_rotate: true,
+      custom_error_codes_enabled: true,
+      custom_error_codes: [429],
+      pool_mode: true,
+      temp_unschedulable_enabled: true,
+      temp_unschedulable_rules: [{ error_code: 529, keywords: ['busy'], duration_minutes: 5 }],
+      proxy_binding: { mode: 'group', proxy_group_id: 'edge' },
+    })
+  })
 })
 
 describe('validateCreateForm', () => {

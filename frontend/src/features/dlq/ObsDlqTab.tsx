@@ -1,16 +1,16 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listObsDlq, replayObsDlq } from './api'
 import {
   formatPayload,
   formatTs,
   LIMIT_DEFAULT,
-  obsPriorityTone,
-  obsStatusLabel,
-  obsStatusTone,
-  shortReason,
+  mapObsDlqRows,
   validateLimit,
+  type ObsDlqTableRow,
 } from './dlq'
 import type { ObsDlqRecord } from './types'
 
@@ -146,75 +146,54 @@ export function ObsDlqTable({
   onToggle: (id: string) => void
   onReplay: (record: ObsDlqRecord) => void
 }) {
-  if (loading && rows.length === 0) return <div className="hk-empty">加载中…</div>
-  if (rows.length === 0) return <div className="hk-empty">当前条件下暂无观测死信。</div>
+  if (loading && rows.length === 0) return <EmptyState title="正在加载观测死信" hint="请稍候。" />
+  if (rows.length === 0) return <EmptyState title="暂无观测死信" hint="当前查询条件下没有需要处理的观测死信。" />
+
+  const tableRows = mapObsDlqRows(rows)
+  const expanded = expandedID == null ? undefined : rows.find((record) => record.id === expandedID)
 
   return (
-    <div className="hk-tablewrap">
-      <table className="hk-table">
-        <thead>
-          <tr>
-            {['死信 ID', '租户', '事件类型', '优先级', '状态', '尝试', '失败原因', '死信时间', ''].map((title) => (
-              <th key={title}>{title}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((record) => {
-            const expanded = expandedID === record.id
-            return (
-              <Fragment key={record.id}>
-                <tr>
-                  <td className="hk-mono">
-                    <button type="button" onClick={() => onToggle(record.id)} style={linkButton} title="展开或收起详情">
-                      {record.id} {expanded ? '▾' : '▸'}
-                    </button>
-                  </td>
-                  <td className="hk-mono">#{record.tenant_id}</td>
-                  <td className="hk-mono">{record.event_type}</td>
-                  <td>
-                    <StatusBadge tone={obsPriorityTone(record.priority)}>{record.priority || 'default'}</StatusBadge>
-                  </td>
-                  <td>
-                    <StatusBadge tone={obsStatusTone(record.outbox_status)}>{obsStatusLabel(record.outbox_status)}</StatusBadge>
-                  </td>
-                  <td className="hk-mono">{record.attempt_count}</td>
-                  <td style={{ maxWidth: 280 }}>{shortReason(record.dead_reason || record.failure_reason)}</td>
-                  <td className="hk-mono">{formatTs(record.dead_at)}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button
-                      type="button"
-                      className="hk-btn hk-btn--green hk-btn--sm"
-                      disabled={replayingID === record.id}
-                      onClick={() => onReplay(record)}
-                    >
-                      {replayingID === record.id ? '重放中…' : '重放'}
-                    </button>
-                  </td>
-                </tr>
-                {expanded && (
-                  <tr style={{ background: 'var(--hk-surface-sunken)' }}>
-                    <td colSpan={9} style={{ padding: 'var(--hk-space-4)' }}>
-                      <div className="hk-kv" style={{ marginBottom: 'var(--hk-space-3)' }}>
-                        <KV label="outbox_event_id" value={record.outbox_event_id} />
-                        <KV label="failure_reason" value={record.failure_reason || '—'} />
-                        <KV label="created_at" value={formatTs(record.created_at)} />
-                        <KV label="next_retry_at" value={formatTs(record.next_retry_at)} />
-                      </div>
-                      <details>
-                        <summary style={{ cursor: 'pointer', color: 'var(--hk-ink-500)', fontSize: 12 }}>payload（原始载荷）</summary>
-                        <pre style={payloadStyle}>{formatPayload(record.payload)}</pre>
-                      </details>
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <DataListTable
+        label="观测死信"
+        rows={tableRows}
+        rowKey={(row) => row.id}
+        columns={obsDlqColumns(expandedID, onToggle)}
+        actions={[{
+          label: (row) => replayingID === row.id ? '重放中…' : '重放',
+          disabled: (row) => replayingID === row.id,
+          onClick: (row) => onReplay(row.record),
+        }]}
+      />
+      {expanded && (
+        <div style={{ padding: 'var(--hk-space-4)', background: 'var(--hk-surface-sunken)', borderTop: '1px solid var(--hk-line)' }}>
+          <div className="hk-kv" style={{ marginBottom: 'var(--hk-space-3)' }}>
+            <KV label="outbox_event_id" value={expanded.outbox_event_id} />
+            <KV label="failure_reason" value={expanded.failure_reason || '—'} />
+            <KV label="created_at" value={formatTs(expanded.created_at)} />
+            <KV label="next_retry_at" value={formatTs(expanded.next_retry_at)} />
+          </div>
+          <details>
+            <summary style={{ cursor: 'pointer', color: 'var(--hk-ink-500)', fontSize: 12 }}>payload（原始载荷）</summary>
+            <pre style={payloadStyle}>{formatPayload(expanded.payload)}</pre>
+          </details>
+        </div>
+      )}
+    </>
   )
+}
+
+function obsDlqColumns(expandedID: string | null, onToggle: (id: string) => void): DataListColumn<ObsDlqTableRow>[] {
+  return [
+    { key: 'id', label: '死信 ID', render: (row) => <button type="button" onClick={() => onToggle(row.id)} style={linkButton} title="展开或收起详情">{row.id} {expandedID === row.id ? '▾' : '▸'}</button> },
+    { key: 'tenant', label: '租户', render: (row) => <span className="hk-mono">{row.tenant}</span> },
+    { key: 'event-type', label: '事件类型', render: (row) => <span className="hk-mono">{row.eventType}</span> },
+    { key: 'priority', label: '优先级', badge: true, render: (row) => <StatusBadge tone={row.priorityTone}>{row.priority}</StatusBadge> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+    { key: 'attempts', label: '尝试', render: (row) => <span className="hk-mono">{row.attempts}</span> },
+    { key: 'reason', label: '失败原因', render: (row) => <span style={{ maxWidth: 280 }}>{row.reason}</span> },
+    { key: 'dead-at', label: '死信时间', render: (row) => <span className="hk-mono">{row.deadAt}</span> },
+  ]
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

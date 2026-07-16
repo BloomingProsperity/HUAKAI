@@ -89,6 +89,18 @@ export async function listChannels(
   })
 }
 
+/** 取单条 channel。GET /admin/v1/channels/{id}?tenant_id=N。 */
+export async function getChannel(
+  id: number,
+  tenantId: number,
+  signal?: AbortSignal,
+): Promise<ChannelCatalogItem> {
+  return apiGet<ChannelCatalogItem>(`/admin/v1/channels/${id}`, {
+    query: { tenant_id: tenantId },
+    signal,
+  })
+}
+
 /** 新建 channel。POST /admin/v1/channels?tenant_id=N(body 含 pool_group_id/name/...)。 */
 export async function createChannel(
   tenantId: number,

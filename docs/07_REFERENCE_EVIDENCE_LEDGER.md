@@ -398,6 +398,24 @@ Lane: implementer (docs)
 Agent: GPT-5 Codex
 UTC timestamp: 2026-05-28T02:39:40Z
 
+## Behavior Evidence — Binding Fallback Class Routing（2026-07-14）
+
+本节只把已批准的 specifier 行为稿
+[`docs/process/plans/2026-07-14-binding-fallback-class-codex.md`](process/plans/2026-07-14-binding-fallback-class-codex.md)
+§2 证据转录进台账。实施者没有重新读取任何参考项目源码；以下行为结论、提交
+SHA 与源码定位均来自该稿，供 HUAKAI 自主的 typed fallback 契约使用。
+
+| Evidence ID | Reference | Source Type | Observed Behavior Or Scenario | Feature Candidate | Risk Notes | Clean-Room Notes | Date | Agent |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| E-BFC-S2A-001 | Sub2API（LGPL-3.0，E-LIC-001） | 已批准 specifier 行为稿；观察提交 `Wei-Shaw/sub2api@12d811bd76572836d6df6e1fa8aa5ff91be3b12e`，证据区域 `backend/internal/service/gateway_scheduling.go:251-310,400-485,607-651,675-739`、`backend/internal/service/account.go:145-165`、`backend/internal/service/gateway_multiplatform_test.go:2780-2893` | 首选候选会先完成资格与容量判断；即时槽不可得但仍有等待资格时继续留在首选层，只有首选层全部满载或不再具备等待资格才进入普通候选层。 | 主类等待优先；只有 typed capacity 耗尽后才允许进入对应 binding fallback phase。 | 把单次无槽误判为主类耗尽会跳过可恢复等待并放大请求。 | 仅转录行为与证据锚点；未复制函数、字段、注释、文件结构或算法实现。 | 2026-07-14 | GPT-5 Codex（implementer，证据转录） |
+| E-BFC-NAI-001 | New API（AGPL-3.0-or-later，E-LIC-002） | 已批准 specifier 行为稿；观察提交 `QuantumNous/new-api@246d62aa5ed3ba2a4728322c269c180a016dc9cd`，证据区域 `model/channel_cache.go:108-202`、`controller/relay.go:181-237,325-355`、`setting/operation_setting/status_code_ranges.go:17-38,70-85`、`service/channel_select.go:84-162` | 候选先按离散优先级分层并在层内按权重选择；转发失败经过规范化和预算判断后，外层才推进下一轮或下一组。 | Router 只编译 class 内 Priority/Weight 次序；executor 根据规范化失败类型决定是否激活目标 phase。 | 若 Router 预先混合所有 fallback 候选，就无法区分容量、上下文、安全和通用瞬态故障。 | 仅转录行为与证据锚点；未复制函数、字段、注释、文件结构或算法实现。 | 2026-07-14 | GPT-5 Codex（implementer，证据转录） |
+| E-BFC-CPA-001 | CLIProxyAPI（MIT，E-LIC-009） | 已批准 specifier 行为稿；观察提交 `router-for-me/CLIProxyAPI@26d45fd46a2d2911adef14772465131066dae465`，证据区域 `sdk/cliproxy/auth/selector.go:199-361`、`sdk/cliproxy/auth/selector_test.go:64-125`、`sdk/cliproxy/auth/conductor.go:2519-2635,3586-3617`、`sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go:161-193,230-259,315-335` | 账号选择只暴露最高可用优先级桶；请求无效时立即终止，账号级可恢复失败才继续；认证恢复先留在当前凭据/账号边界，耗尽后才进入受限备用路径。 | class 外层严格分桶；请求无效与 auth 终态不得触发跨 binding class。 | 粗粒度地把所有 4xx、401 或账号错误都当 fallback 会掩盖坏凭据并扩大权限边界。 | MIT 源同样未由本 implementer 重读；仅转录已批准行为结论与证据锚点。 | 2026-07-14 | GPT-5 Codex（implementer，证据转录） |
+
+Source artifact read: `docs/process/plans/2026-07-14-binding-fallback-class-codex.md`
+Lane: implementer（evidence transcription）
+Agent: GPT-5 Codex `/root`
+UTC timestamp: 2026-07-14
+
 ## Rules
 
 - Record behavior, not implementation.

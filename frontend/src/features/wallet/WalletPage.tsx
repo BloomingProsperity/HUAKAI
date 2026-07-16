@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listMyOrders } from '../orders/api'
 import type { UserOrder } from '../orders/types'
@@ -9,10 +12,10 @@ import {
   completedTopupCents,
   formatCentsRange,
   formatMoney,
-  orderStatusLabel,
-  orderStatusTone,
+  mapWalletOrderRows,
   parseTopupAmount,
   providerLabel,
+  type WalletOrderTableRow,
 } from './wallet'
 
 /*
@@ -63,6 +66,14 @@ export function WalletPage() {
 
   const reload = useCallback(() => setRefreshNonce((n) => n + 1), [])
   const topupTotal = completedTopupCents(orders)
+  const orderRows = mapWalletOrderRows(orders)
+  const orderColumns: DataListColumn<WalletOrderTableRow>[] = [
+    { key: 'tradeNo', label: '单号', render: (row) => <code style={{ fontSize: 12 }}>{row.tradeNo}</code> },
+    { key: 'kind', label: '类型', render: (row) => row.kind },
+    { key: 'amount', label: '金额', render: (row) => <span className="hk-mono">{row.amount}</span> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.statusLabel}</StatusBadge> },
+    { key: 'createdAt', label: '时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
 
   return (
     <div className="hk-page">
@@ -74,18 +85,13 @@ export function WalletPage() {
       </header>
 
       <div style={cardGrid}>
-        <div className="hk-metric" style={{ gridColumn: 'span 2' }}>
-          <div className="hk-metric__label">当前余额(USD)</div>
-          {balanceErr ? (
-            <span style={{ color: 'var(--hk-danger)', fontSize: 13 }}>{balanceErr}</span>
-          ) : (
-            <div className="hk-metric__v hk-mono">${balanceCents === null ? '—' : formatMoney(balanceCents)}</div>
-          )}
-        </div>
-        <div className="hk-metric">
-          <div className="hk-metric__label">累计已充值(USD)</div>
-          <div className="hk-metric__v hk-mono">${formatMoney(topupTotal)}</div>
-        </div>
+        <StatCard
+          label="当前余额(USD)"
+          value={balanceErr ? '—' : `$${balanceCents === null ? '—' : formatMoney(balanceCents)}`}
+          hint={balanceErr ?? undefined}
+          tone={balanceErr ? 'danger' : 'default'}
+        />
+        <StatCard label="累计已充值(USD)" value={`$${formatMoney(topupTotal)}`} />
       </div>
 
       {/* 自助充值开单卡:金额输入(按 config 区间校验)+ 选支付方式 → 建 pending 单 + 展示人工支付指引。 */}
@@ -109,34 +115,11 @@ export function WalletPage() {
           <h3>最近订单</h3>
         </div>
         {loading && orders.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载最近订单" hint="请稍候。" />
         ) : orders.length === 0 ? (
-          <div className="hk-empty">还没有订单。</div>
+          <EmptyState title="还没有订单" hint="创建充值订单后会显示在这里。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['单号', '类型', '金额', '状态', '时间'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map((o) => (
-                  <tr key={o.id}>
-                    <td><code style={{ fontSize: 12 }}>{o.out_trade_no}</code></td>
-                    <td>{o.order_kind === 'topup' ? '充值' : o.order_kind === 'subscription' ? '订阅' : o.order_kind}</td>
-                    <td className="hk-mono" style={{ textAlign: 'right' }}>${formatMoney(o.amount_cents)}</td>
-                    <td>
-                      <StatusBadge tone={orderStatusTone(o.status)}>{orderStatusLabel(o.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{new Date(o.created_at).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="最近订单" rows={orderRows} rowKey={(row) => row.id} columns={orderColumns} />
         )}
       </section>
     </div>

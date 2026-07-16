@@ -7,6 +7,8 @@ package audit
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createCostDispute = `-- name: CreateCostDispute :one
@@ -62,12 +64,24 @@ func (q *Queries) CreateCostDispute(ctx context.Context, arg CreateCostDisputePa
 }
 
 const listDisputesForAdmin = `-- name: ListDisputesForAdmin :many
-SELECT id, dispute_id, tenant_id, user_id, request_id, reason, status,
-       operator_note, created_at, resolved_at
-FROM cost_disputes
-WHERE tenant_id = $1
-  AND ($2::text = '' OR status = $2::text)
-ORDER BY created_at DESC, id DESC
+SELECT cd.id, cd.dispute_id, cd.tenant_id, cd.user_id, cd.request_id, cd.reason, cd.status,
+       cd.operator_note, cd.created_at, cd.resolved_at,
+       COALESCE(refunds.refunded_micro_usd, 0)::bigint AS refunded_micro_usd
+FROM cost_disputes AS cd
+LEFT JOIN (
+    SELECT tenant_id,
+           audit_request_id,
+           SUM(ROUND(-actual_cost_signed * 1000000))::bigint AS refunded_micro_usd
+    FROM billing_events
+    WHERE event_type = 'reconciliation_appended'
+      AND actual_cost_signed < 0
+    GROUP BY tenant_id, audit_request_id
+) AS refunds
+  ON refunds.tenant_id = cd.tenant_id
+ AND refunds.audit_request_id = 'dispute-' || cd.dispute_id
+WHERE cd.tenant_id = $1
+  AND ($2::text = '' OR cd.status = $2::text)
+ORDER BY cd.created_at DESC, cd.id DESC
 LIMIT $4
 OFFSET $3
 `
@@ -79,7 +93,21 @@ type ListDisputesForAdminParams struct {
 	LimitRows    int32  `db:"limit_rows" json:"limit_rows"`
 }
 
-func (q *Queries) ListDisputesForAdmin(ctx context.Context, arg ListDisputesForAdminParams) ([]CostDispute, error) {
+type ListDisputesForAdminRow struct {
+	ID               int64              `db:"id" json:"id"`
+	DisputeID        string             `db:"dispute_id" json:"dispute_id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	UserID           int64              `db:"user_id" json:"user_id"`
+	RequestID        string             `db:"request_id" json:"request_id"`
+	Reason           string             `db:"reason" json:"reason"`
+	Status           string             `db:"status" json:"status"`
+	OperatorNote     string             `db:"operator_note" json:"operator_note"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	ResolvedAt       pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+	RefundedMicroUsd int64              `db:"refunded_micro_usd" json:"refunded_micro_usd"`
+}
+
+func (q *Queries) ListDisputesForAdmin(ctx context.Context, arg ListDisputesForAdminParams) ([]ListDisputesForAdminRow, error) {
 	rows, err := q.db.Query(ctx, listDisputesForAdmin,
 		arg.TenantID,
 		arg.StatusFilter,
@@ -90,9 +118,9 @@ func (q *Queries) ListDisputesForAdmin(ctx context.Context, arg ListDisputesForA
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CostDispute
+	var items []ListDisputesForAdminRow
 	for rows.Next() {
-		var i CostDispute
+		var i ListDisputesForAdminRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.DisputeID,
@@ -104,6 +132,7 @@ func (q *Queries) ListDisputesForAdmin(ctx context.Context, arg ListDisputesForA
 			&i.OperatorNote,
 			&i.CreatedAt,
 			&i.ResolvedAt,
+			&i.RefundedMicroUsd,
 		); err != nil {
 			return nil, err
 		}
@@ -172,6 +201,7 @@ SET status = $1,
     END
 WHERE tenant_id = $3
   AND id = $4
+  AND status IN ('open', 'reviewing')
 RETURNING id, dispute_id, tenant_id, user_id, request_id, reason, status,
           operator_note, created_at, resolved_at
 `

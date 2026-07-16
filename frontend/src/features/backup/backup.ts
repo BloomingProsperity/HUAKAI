@@ -17,3 +17,16 @@ export function topTablesByRows(tables: BackupTable[], n: number): BackupTable[]
     .slice(0, n)
     .map((x) => x.t)
 }
+
+export interface BackupTableRow {
+  name: string
+  estimatedRows: string
+}
+
+/** 把备份表清单映射为只读展示列，不触碰备份或恢复流程。 */
+export function mapBackupTableRows(tables: BackupTable[]): BackupTableRow[] {
+  return tables.map((table) => ({
+    name: table.name,
+    estimatedRows: table.estimated_rows.toLocaleString(),
+  }))
+}

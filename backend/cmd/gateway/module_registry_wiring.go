@@ -65,6 +65,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"score-based account selection",
 			"locality + headroom blending",
 		},
+		Activation: selectorActivation(d),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if selector == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "selector unwired"}
@@ -109,6 +110,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"adaptive cooldown + lazy ramp recovery",
 			"pool gate flow admission",
 		},
+		Activation: channelHealthActivation(d),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if channelHealth == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "channel-health service unwired"}
@@ -117,9 +119,28 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	queueWaiter := d.queueWaiter
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "queue.wait",
+		Category: "routing",
+		Title:    "Queue wait admission",
+		Capabilities: []string{
+			"request queue waiting before dispatch",
+			"chat-path admission smoothing",
+		},
+		Activation: queueWaitActivation(d),
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if queueWaiter == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "handler default"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	// ── reliability: 死信队列 / 重放 ──────────────────────────────────────────
 	// Probe: dlq 重放服务接线即 wired。只报 wired/degraded,不含任何队列内容。
 	dlqService := d.dlqService
+	settlementRecoveryReady := d.settleRecoveryReady
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID:       "dlq.service",
 		Category: "reliability",
@@ -137,6 +158,26 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "settlement.recovery",
+		Category: "reliability",
+		Title:    "Settlement recovery delivery",
+		Capabilities: []string{
+			"post-response settlement recovery",
+			"durable replay after settlement failure",
+		},
+		Activation: settlementRecoveryActivation(d),
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if dlqService == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "settlement recovery unwired"}
+			}
+			if !settlementRecoveryReady {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "settlement recovery handler unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	// ── registry: 模型注册表 / 模型→池绑定解析(路由栈第 1 层)──────────────────
 	// Probe: 注册表接线即 wired。只报 wired/degraded,不含任何模型/租户配置明细。
 	modelRegistry := d.modelRegistry
@@ -149,9 +190,28 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"model → pool-group binding resolution",
 			"capability graph projection",
 		},
+		Activation: modelRegistryActivation(d),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if modelRegistry == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "model registry unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	responseCache := d.responseCache
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID:       "cache.response",
+		Category: "cache",
+		Title:    "Response cache",
+		Capabilities: []string{
+			"chat response cache lookup",
+			"cache key scope enforcement",
+		},
+		Activation: responseCacheActivation(d),
+		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
+			if responseCache == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "response cache unwired"}
 			}
 			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
 		},
@@ -339,7 +399,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 
 // seedCatalogJoin 把每个已播种的 live-module ID 映射到它应被补充的
 // feature-tree catalog 包短名。不在此 map 中的 ID 被视为 live-only
-//(无静态叠加层),因此脊柱绝不会为未映射的模块凭空捏造一条 catalog 记录。
+// (无静态叠加层),因此脊柱绝不会为未映射的模块凭空捏造一条 catalog 记录。
 var seedCatalogJoin = map[string]string{
 	"billing.service":       "billing",
 	"routing.selector":      "pool",

@@ -3,6 +3,7 @@ import {
   buildListQuery,
   buildReconcileRequest,
   formatCents,
+  mapOrphanRows,
   needsBackChargeConfirm,
   outcomeLabel,
   parseTenantFilter,
@@ -11,6 +12,7 @@ import {
   statusTone,
   summarizeReconcile,
 } from './orphanreconcile'
+import type { OrphanItem } from './types'
 
 describe('buildListQuery', () => {
   it('正整数 tenant_id 与 limit 都下发', () => {
@@ -190,5 +192,23 @@ describe('summarizeReconcile', () => {
       status: 'reconciled',
     })
     expect(s).toContain('幂等')
+  })
+})
+
+describe('mapOrphanRows', () => {
+  it('精确映射 money 邻接列表展示且保留原 DTO', () => {
+    const item: OrphanItem = {
+      id: 8, task_id: 31, tenant_id: 5, user_id: 12, provider: 'acme',
+      provider_task_id: 'provider-task-abcdefghijkl', estimated_cents: 1234,
+      reconcile_status: 'pending', observed_at: 'bad-time',
+    }
+    const [row] = mapOrphanRows([item])
+    // 变异金额换算、ID 来源、状态语气或截断规则都会变红。
+    expect(row).toMatchObject({
+      id: 8, task: '#31', tenant: '#5', user: '#12', provider: 'acme',
+      providerTaskId: 'provider-t…ijkl', estimatedCharge: '$12.34',
+      status: '待处置', statusTone: 'warn', observedAt: 'bad-time',
+    })
+    expect(row.item).toBe(item)
   })
 })

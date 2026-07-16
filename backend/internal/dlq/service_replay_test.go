@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+func TestServiceRegisterReportsWhetherHandlerWasInstalled(t *testing.T) {
+	service := NewService(nil)
+	if service.Register(EventKindMetrics, nil) {
+		t.Fatal("nil handler 不能报告注册成功")
+	}
+	if !service.Register(EventKindMetrics, func(context.Context, Record) error { return nil }) {
+		t.Fatal("有效 handler 应报告注册成功")
+	}
+	var nilService *Service
+	if nilService.Register(EventKindMetrics, func(context.Context, Record) error { return nil }) {
+		t.Fatal("nil service 不能报告注册成功")
+	}
+}
+
 // fakeReplayStore 是注入用的 recordStore 实现:ClaimByID 返回预置 record,MarkFailed 返回预置错误,
 // 用于驱动 Service.Replay 的 "handler 失败 + 状态写失败" 分支(无需真实 Postgres)。
 type fakeReplayStore struct {

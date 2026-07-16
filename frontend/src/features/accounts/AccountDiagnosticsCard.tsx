@@ -22,7 +22,7 @@ function errText(e: unknown, fallback: string): string {
   return e instanceof ApiError ? `${e.message}(${e.code})` : fallback
 }
 
-export function AccountDiagnosticsCard({ id }: { id: number }) {
+export function AccountDiagnosticsCard({ tenantId, id }: { tenantId: number; id: number }) {
   // 三块各自独立的 busy / 结果态。
   const [test, setTest] = useState<{ busy: boolean; summary?: TestSummary }>({ busy: false })
   const [health, setHealth] = useState<{ busy: boolean; data?: AccountHealth; error?: string }>({ busy: false })
@@ -32,7 +32,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
   async function loadRecent(limit = recent.limit) {
     setRecent((s) => ({ ...s, busy: true, limit }))
     try {
-      const data = await getProviderAccountRecentRequests(id, limit)
+      const data = await getProviderAccountRecentRequests(tenantId, id, limit)
       setRecent({ busy: false, data, limit })
     } catch (e) {
       setRecent({ busy: false, error: errText(e, '加载最近请求失败'), limit })
@@ -42,7 +42,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
   async function runTest() {
     setTest({ busy: true })
     try {
-      const res = await testProviderAccount(id)
+      const res = await testProviderAccount(tenantId, id)
       setTest({ busy: false, summary: testSummary(res) })
     } catch (e) {
       setTest({ busy: false, summary: { label: errText(e, '测试请求失败'), tone: 'fail' } })
@@ -52,7 +52,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
   async function loadHealth() {
     setHealth({ busy: true })
     try {
-      const data = await getProviderAccountHealth(id)
+      const data = await getProviderAccountHealth(tenantId, id)
       setHealth({ busy: false, data })
     } catch (e) {
       setHealth({ busy: false, error: errText(e, '加载健康失败') })
@@ -62,7 +62,7 @@ export function AccountDiagnosticsCard({ id }: { id: number }) {
   async function loadModels() {
     setModels({ busy: true })
     try {
-      const data = await getProviderAccountUpstreamModels(id)
+      const data = await getProviderAccountUpstreamModels(tenantId, id)
       setModels({ busy: false, data })
     } catch (e) {
       setModels({ busy: false, error: errText(e, '加载上游模型失败') })

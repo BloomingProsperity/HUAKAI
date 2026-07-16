@@ -9,7 +9,15 @@ vi.mock('../../lib/api', async () => {
 
 import { listRuntimeLogs } from './api'
 import type { RuntimeLogRow } from './api'
-import { appendOlderLogs, fmtAttrs, fmtLogTime, levelToneOf, mergeRuntimeLogs } from './runtimeLogs'
+import {
+  appendOlderLogs,
+  fmtAttrs,
+  fmtLogTime,
+  levelToneOf,
+  mapRuntimeLogRows,
+  mapRuntimeLogSinkStats,
+  mergeRuntimeLogs,
+} from './runtimeLogs'
 import { RuntimeLogsPanel } from './RuntimeLogsPanel'
 
 function row(id: number, msg = 'm'): RuntimeLogRow {
@@ -37,6 +45,20 @@ describe('格式化', () => {
     expect(fmtAttrs({})).toBe('')
     expect(levelToneOf('error')).toBe('danger')
     expect(levelToneOf('warn')).toBe('warn')
+  })
+})
+
+describe('底座展示映射', () => {
+  it('日志行保留 request_id 并格式化属性(变异:漏映 request_id 或 attrs 会证红)', () => {
+    const out = mapRuntimeLogRows([{ ...row(9), request_id: 'req-9', attrs: { retry: 2 } }])
+    expect(out[0]).toMatchObject({ id: 9, requestID: 'req-9', attrs: 'retry=2', levelTone: 'warn' })
+  })
+
+  it('dropped>0 使用 danger 统计语气(变异:恒用 default 会证红)', () => {
+    const stats = mapRuntimeLogSinkStats({ inserted: 12, queue_len: 3, dropped: 1 })
+    expect(stats.map((stat) => stat.value)).toEqual(['12', '3', '1'])
+    expect(stats[2]).toMatchObject({ label: '累计丢弃', tone: 'danger', hint: '存在日志丢弃' })
+    expect(mapRuntimeLogSinkStats({ inserted: 0, queue_len: 0, dropped: 0 })[2].tone).toBe('default')
   })
 })
 

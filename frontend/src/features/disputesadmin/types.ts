@@ -16,6 +16,9 @@
 /** 争议状态:镜像后端 audit.DisputeStatus*(dispute_store.go:28-31)。 */
 export type DisputeStatus = 'open' | 'reviewing' | 'resolved' | 'rejected'
 
+/** 裁决端点允许推进到的状态；open 只能由创建流程产生。 */
+export type DisputeResolutionStatus = Exclude<DisputeStatus, 'open'>
+
 /** 后端认可的全部状态值(裁决下拉与前端校验都用它)。 */
 export const DISPUTE_STATUSES: DisputeStatus[] = ['open', 'reviewing', 'resolved', 'rejected']
 
@@ -36,6 +39,8 @@ export interface DisputeView {
   created_at: string
   /** 裁决落定时间(omitempty:未裁决为 null/缺省)。 */
   resolved_at?: string
+	/** 该争议通过负向账务事件累计退回的 micro-USD，仅管理列表回显。 */
+	refunded_micro_usd?: number
 }
 
 /** 列表响应(镜像 {"disputes": []},dispute_handler.go:168)。 */
@@ -46,13 +51,19 @@ export interface DisputeListResponse {
 /** 裁决请求体(镜像 disputeResolveRequest,dispute_handler.go:56-60)。 */
 export interface DisputeResolveRequest {
   tenant_id: number
-  status: DisputeStatus
+  status: DisputeResolutionStatus
   operator_note: string
 }
 
 /** 裁决响应(镜像 {"dispute": {...}},dispute_handler.go:205)。 */
 export interface DisputeResolveResponse {
   dispute: DisputeView
+	/** 本次裁决对应的退款额；rejected 响应省略。 */
+	refund_micro_usd?: number
+	/** 不可变 billing event 引用；rejected 响应省略。 */
+	refund_adjustment_ref?: string
+	/** true 表示同一审计请求已退款，本次未再次回补余额。 */
+	refund_idempotent?: boolean
 }
 
 /** 列表过滤草稿(状态空串=不下发 status,取全部)。 */

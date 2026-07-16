@@ -23,6 +23,7 @@ func TestMessageForKnownCodesAndFallback(t *testing.T) {
 		{CodeInsufficientBalance, "余额不足"},
 		{CodeCanonicalResponseError, "upstream response could not be converted"},
 		{CodeQueueWait, "request is queued; retry later"},
+		{CodeBindingConcurrencyLimited, "binding concurrency limit exceeded; retry later"},
 		{CodeAuditRefMissing, "Audit reference missing for money-path operation."},
 		{CodeStreamForwardError, "upstream stream failed before delivery"},
 		{CodeContentPolicyViolation, "request violates content policy"},

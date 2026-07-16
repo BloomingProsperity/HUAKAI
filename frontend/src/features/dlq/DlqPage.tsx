@@ -1,18 +1,18 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listDlq, replayDlq, replayUsageRecordDlq } from './api'
 import {
-  canReplay,
   eventKindLabel,
   formatPayload,
   formatTs,
   isMoneySensitiveKind,
-  laneTone,
   LIMIT_DEFAULT,
-  shortReason,
+  mapDlqRows,
   statusLabel,
-  statusTone,
+  type DlqTableRow,
   validateLimit,
 } from './dlq'
 import { EVENT_KINDS, STATUS_FILTERS, type DlqRecord } from './types'
@@ -135,6 +135,8 @@ export function DlqPage() {
       .finally(() => setReplayingId(null))
   }
 
+  const tableRows = mapDlqRows(rows)
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
@@ -215,73 +217,28 @@ export function DlqPage() {
         </div>
 
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载死信记录" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>当前条件下暂无死信记录。</Empty>
+          <EmptyState title="暂无死信记录" hint="当前查询条件下没有需要处理的死信。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['ID', '租户', '泳道', '状态', '重试', '失败原因', '失败时间', ''].map((h) => (
-                    <th key={h}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const expanded = expandedId === r.id
-                  const replayable = canReplay(r)
-                  return (
-                    <Fragment key={r.id}>
-                      <tr>
-                        <td className="hk-mono">
-                          <button
-                            type="button"
-                            onClick={() => setExpandedId(expanded ? null : r.id)}
-                            style={linkBtn}
-                            title="展开/收起详情"
-                          >
-                            #{r.id} {expanded ? '▾' : '▸'}
-                          </button>
-                        </td>
-                        <td className="hk-mono">#{r.tenant_id}</td>
-                        <td>
-                          <StatusBadge tone={laneTone(r.lane)}>{r.lane || '—'}</StatusBadge>
-                        </td>
-                        <td>
-                          <StatusBadge tone={statusTone(r.status)}>{statusLabel(r.status)}</StatusBadge>
-                        </td>
-                        <td className="hk-mono">{r.replay_attempts}</td>
-                        <td style={{ maxWidth: 320 }}>{shortReason(r.failure_reason)}</td>
-                        <td className="hk-mono">{formatTs(r.failure_at)}</td>
-                        <td style={{ textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            disabled={!replayable || replayingId === r.id}
-                            onClick={() => onReplay(r)}
-                            className={replayable ? 'hk-btn hk-btn--green hk-btn--sm' : 'hk-btn hk-btn--sm'}
-                            title={replayable ? '重放此死信' : '已投递,无需重放'}
-                          >
-                            {replayingId === r.id ? '重放中…' : '重放'}
-                          </button>
-                        </td>
-                      </tr>
-                      {expanded && (
-                        <tr style={{ borderTop: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }}>
-                          <td colSpan={8} style={{ padding: 'var(--hk-space-4)' }}>
-                            <DetailGrid record={r} />
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <DataListTable
+              label="死信记录"
+              rows={tableRows}
+              rowKey={(row) => row.id}
+              columns={dlqColumns(expandedId, (id) => setExpandedId(expandedId === id ? null : id))}
+              actions={[{
+                label: (row) => replayingId === row.id ? '重放中…' : '重放',
+                disabled: (row) => !row.replayable || replayingId === row.id,
+                onClick: (row) => onReplay(row.record),
+              }]}
+            />
+            {expandedId != null && rows.find((row) => row.id === expandedId) && (
+              <div style={{ padding: 'var(--hk-space-4)', background: 'var(--hk-surface-sunken)', borderTop: '1px solid var(--hk-line)' }}>
+                <DetailGrid record={rows.find((row) => row.id === expandedId)!} />
+              </div>
+            )}
+          </>
         )}
       </section>
         </>
@@ -342,8 +299,16 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
+function dlqColumns(expandedId: number | null, onToggle: (id: number) => void): DataListColumn<DlqTableRow>[] {
+  return [
+    { key: 'id', label: 'ID', render: (row) => <button type="button" onClick={() => onToggle(row.id)} style={linkBtn} title="展开/收起详情">#{row.id} {expandedId === row.id ? '▾' : '▸'}</button> },
+    { key: 'tenant', label: '租户', render: (row) => <span className="hk-mono">{row.tenant}</span> },
+    { key: 'lane', label: '泳道', badge: true, render: (row) => <StatusBadge tone={row.laneTone}>{row.lane}</StatusBadge> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+    { key: 'attempts', label: '重试', render: (row) => <span className="hk-mono">{row.attempts}</span> },
+    { key: 'reason', label: '失败原因', render: (row) => <span style={{ maxWidth: 320 }}>{row.reason}</span> },
+    { key: 'failed-at', label: '失败时间', render: (row) => <span className="hk-mono">{row.failedAt}</span> },
+  ]
 }
 
 // 查询表单输入框:共享层无表单 input 类,保留本地 token 化样式。

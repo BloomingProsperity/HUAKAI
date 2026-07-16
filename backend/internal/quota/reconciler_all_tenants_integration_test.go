@@ -38,6 +38,7 @@ func TestReconciliationWorker_SweepsCrossTenant(t *testing.T) {
 		f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricConcurrency, WindowNone, 0, "1", ModeEnforce)
 		reserve := f.reserveForSettlement(ctx, NewService(store), now, "sweep-"+tag, "4", true)
 		f.requireReservationReconciliation(ctx, store, reserve.Reservation)
+		f.setClaimTerminal(reserve.Reservation.ClaimID, claimStatusAborted, "")
 		f.enqueueReconcilerJob(ctx, store, reserve.Reservation.ClaimID, &reserve.Reservation.ID, "release_after_abort", now.Add(-time.Minute))
 		return f, reserve.Reservation.ID
 	}

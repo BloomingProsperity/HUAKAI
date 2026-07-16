@@ -145,7 +145,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		snapshots[a.ID] = a
 	}
 	if len(snapshots) == 0 {
-		return nil, ErrNoEligibleAccount
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount}
 	}
 
 	// 一次 Select 只准备一次 gate 链(与 DefaultSelector 同): 把"决策只依赖 req"的
@@ -166,7 +166,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		ring = BuildAccountRingFromSnapshots(accs, p.ringSeed)
 	}
 	if ring == nil || len(ring.Accounts) == 0 {
-		return nil, ErrNoEligibleAccount
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount}
 	}
 	prefixKey := []byte(req.SessionHash)
 	if len(prefixKey) == 0 {
@@ -202,6 +202,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 		}
 		if _, excluded := req.ExcludedAccounts[accID]; excluded {
 			reason.GateFailure(accID, GateFailurePerRequestExclusion)
+			failures.other++
 			continue
 		}
 		snap, ok := snapshots[accID]
@@ -364,9 +365,9 @@ func (p *PASRSelector) scheduleHRWFullRing(
 		return p.acquireAndReturn(ctx, req, firstDegraded, reason.JSON())
 	}
 	if failures.onlyHealth() {
-		return nil, ErrAllChannelsDegraded
+		return nil, &NoCapacityError{Cause: ErrAllChannelsDegraded, Exhaustion: reason.exhaustion()}
 	}
-	return nil, ErrNoEligibleAccount
+	return nil, &NoCapacityError{Cause: ErrNoEligibleAccount, Exhaustion: reason.exhaustion()}
 }
 
 type selectionFailures struct {
@@ -437,18 +438,16 @@ func (p *PASRSelector) acquireAndReturn(
 	}
 	accountID := snapshot.ID
 
-	// HIGH-1 fix: ClaimID=0 → 不调 Slots.Acquire 直接走 token-only。
-	// 真 SlotManager 已 acquire 但没 ClaimGate 写 acquisition 时, SelectionResult
-	// 没暴露 ReleaseFunc, caller 无法 release → slot 泄漏到 sweeper。
-	// shadow 实例 / dispatcher 已设 ClaimID=0 表示"不持 slot"路径。
-	if req.ClaimID == 0 {
+	// 无 claim 且没有 binding 并发上限时保持 token-only 兼容路径。正 binding 上限
+	// 必须走真实 slot 才有事务级线性化点；SelectionResult.Release 让短端点负责归还。
+	if req.ClaimID == 0 && req.MaxParallelRequests <= 0 {
 		return p.tokenOnlyResult(ctx, req, accountID, routingReasonJSON)
 	}
 
 	// HIGH-1 fix: 真 SlotManager 注入但 Claims=nil 是 misconfigure —
 	// acquireAndReturn 后无法写 acquisition, slot 同样会泄漏。 启动期就该挡住,
 	// 这里 fail-fast 避免悄悄漏 slot。
-	if p.slots != nil && p.claims == nil {
+	if req.ClaimID != 0 && p.slots != nil && p.claims == nil {
 		return nil, fmt.Errorf("%w: slots configured without claim gate (account=%d)",
 			ErrPASRPreMutationFail, accountID)
 	}
@@ -497,27 +496,27 @@ func (p *PASRSelector) acquireAndReturn(
 	}
 
 	// post-mutation: 写 claim — 失败必须 release slot 并标 PostMutationFail。
-	if err := p.claims.WriteAcquisition(ctx, req.TenantID, req.ClaimID, accountID, token); err != nil {
-		// HIGH-2 fix: release 用 WithoutCancel 派生独立 ctx + 2s timeout, 防止
-		// 上游 ctx (req timeout / handler cancel) 把 release 也带走 — D4 要求
-		// "post-mutation 失败必须 release" 是硬不变量, 不能 best-effort。
-		// release 错误也包入返回链, dispatcher / ops 能定位"slot 没真还原"事件。
-		cleanupCtx, cancel := context.WithTimeout(
-			context.WithoutCancel(ctx), pasrPostMutationReleaseTimeout)
-		defer cancel()
-		if release != nil {
-			if relErr := release(cleanupCtx); relErr != nil {
-				return nil, fmt.Errorf("%w: claim write account=%d: %w; slot release failed: %w",
-					ErrPASRPostMutationFail, accountID, err, relErr)
+	if req.ClaimID != 0 {
+		if err := p.claims.WriteAcquisition(ctx, req.TenantID, req.ClaimID, accountID, token); err != nil {
+			// claim 回写失败必须用脱离请求取消的上下文释放已拿到的槽。
+			cleanupCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), pasrPostMutationReleaseTimeout)
+			defer cancel()
+			if release != nil {
+				if relErr := release(cleanupCtx); relErr != nil {
+					return nil, fmt.Errorf("%w: claim write account=%d: %w; slot release failed: %w",
+						ErrPASRPostMutationFail, accountID, err, relErr)
+				}
 			}
+			return nil, fmt.Errorf("%w: claim write account=%d: %w",
+				ErrPASRPostMutationFail, accountID, err)
 		}
-		return nil, fmt.Errorf("%w: claim write account=%d: %w",
-			ErrPASRPostMutationFail, accountID, err)
 	}
 
 	return &SelectionResult{
 		AccountID:         accountID,
 		AcquisitionToken:  token,
+		Release:           release,
 		RoutingReasonJSON: routingReasonJSON,
 	}, nil
 }
@@ -525,8 +524,7 @@ func (p *PASRSelector) acquireAndReturn(
 // tokenOnlyResult 兼容路径: 不持 slot, 直接返 fresh uuid。 触发场景:
 //  1. PASRSelector.Slots == nil (shadow 实例 + dispatcher 显式不要 slot 写)
 //  2. SlotManager.Acquire 返 ErrSlotManagerUnavailable (兼容老 atom 测试)
-//  3. req.ClaimID == 0 (HIGH-1 fix: 真 Slots 注入但 caller 不要 claim, 避开
-//     slot 泄漏 — caller 拿不到 ReleaseFunc)
+//  3. req.ClaimID == 0 且 binding 未启用并发上限(不需要在途事实行)
 //
 // 注意: ClaimID != 0 时本函数仍会调 Claims.WriteAcquisition 写 acquisition,
 // 与"不持 slot"语义并存; 老 atom 测试矩阵依赖此行为, 不要改。

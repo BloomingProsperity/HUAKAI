@@ -96,10 +96,11 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 		// 池内无可用账号:估算最早恢复时刻并包进错误,供 HTTP 层算精确 Retry-After。
 		// 仅丰富错误内容,不改"返回哪个哨兵"的既有语义(Unwrap 保 errors.Is 成立)。
 		recoverAt := earliestPoolRecovery(accounts, modelCooldownKey(req), s.currentTime())
+		exhaustion := reason.exhaustion()
 		if reason.onlyFailure(GateFailureHealth, len(accounts)) {
-			return nil, &NoCapacityError{Cause: ErrAllChannelsDegraded, EarliestRecoveryAt: recoverAt}
+			return nil, &NoCapacityError{Cause: ErrAllChannelsDegraded, EarliestRecoveryAt: recoverAt, Exhaustion: exhaustion}
 		}
-		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount, EarliestRecoveryAt: recoverAt}
+		return nil, &NoCapacityError{Cause: ErrNoEligibleAccount, EarliestRecoveryAt: recoverAt, Exhaustion: exhaustion}
 	}
 
 	routeConstrained := hasModelRoute(policy, req.RequestedModel)
@@ -164,7 +165,11 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 		reason.Wait(plan)
 		return &SelectionResult{WaitPlan: plan, RoutingReasonJSON: reason.JSON()}, nil
 	}
-	return nil, ErrNoEligibleAccount
+	return nil, &NoCapacityError{
+		Cause:              ErrNoEligibleAccount,
+		EarliestRecoveryAt: earliestPoolRecovery(accounts, modelCooldownKey(req), s.currentTime()),
+		Exhaustion:         reason.exhaustion(),
+	}
 }
 
 func (s *DefaultSelector) policy(ctx context.Context, req SelectionRequest) (*RoutingPolicy, error) {
@@ -215,13 +220,19 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 			continue
 		}
 		acquired, err := s.slots.Acquire(ctx, account, req)
-		if errors.Is(err, ErrNoSlotAvailable) || errors.Is(err, ErrSlotManagerUnavailable) {
+		if errors.Is(err, ErrNoSlotAvailable) {
+			reason.GateFailure(account.ID, GateFailureSlotCapacity)
+			continue
+		}
+		if errors.Is(err, ErrSlotManagerUnavailable) {
+			reason.GateFailure(account.ID, GateFailureSlotManager)
 			continue
 		}
 		if err != nil {
 			return nil, true, err
 		}
 		if acquired == nil || acquired.AcquisitionToken == uuid.Nil {
+			reason.GateFailure(account.ID, GateFailureSlotManager)
 			continue
 		}
 		// money path 一致性: caller 传了 ClaimID 但 claims writer 没注入 = 配置 bug,
@@ -239,7 +250,7 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 			}
 		}
 		reason.Account(account.ID)
-		return &SelectionResult{AccountID: account.ID, AcquisitionToken: acquired.AcquisitionToken, RoutingReasonJSON: reason.JSON()}, true, nil
+		return &SelectionResult{AccountID: account.ID, AcquisitionToken: acquired.AcquisitionToken, Release: acquired.Release, RoutingReasonJSON: reason.JSON()}, true, nil
 	}
 	return nil, false, nil
 }

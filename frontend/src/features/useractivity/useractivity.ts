@@ -1,3 +1,5 @@
+import type { UserAuditEvent } from './types'
+
 /*
  * 用户安全日志的纯逻辑(可单测):动作/结果的中文化与配色、分页推进、是否还有下一页。
  * action/outcome 是后端自由字符串(无固定枚举),这里对已知常见值给中文标签,未知值做兜底人性化
@@ -86,4 +88,36 @@ export function hasMore(returnedCount: number, limit: number): boolean {
 /** 推进到下一页 offset。 */
 export function nextOffset(offset: number, limit: number): number {
   return offset + limit
+}
+
+export interface ActivityTableRow {
+  id: number
+  occurredAt: string
+  action: string
+  outcome: string
+  outcomeTone: Tone
+  keyPrefix: string
+  reason: string
+  requestID: string
+}
+
+/** 用户审计事件到只读表行的纯映射；请求 ID 与失败原因保留用于追踪。 */
+export function mapActivityRows(events: UserAuditEvent[]): ActivityTableRow[] {
+  return events.map((event) => ({
+    id: event.id,
+    occurredAt: formatTimestamp(event.occurred_at),
+    action: actionLabel(event.action),
+    outcome: outcomeLabel(event.outcome),
+    outcomeTone: outcomeTone(event.outcome),
+    keyPrefix: event.key_prefix ? `${event.key_prefix}…` : '—',
+    reason: event.reason || '—',
+    requestID: event.request_id || '—',
+  }))
+}
+
+/** RFC3339(Nano)→ 本地可读串(24 小时制)。非法或空值保留诊断信息。 */
+export function formatTimestamp(iso: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }

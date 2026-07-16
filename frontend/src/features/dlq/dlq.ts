@@ -1,5 +1,5 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import { EVENT_KINDS, type DlqRecord } from './types'
+import { EVENT_KINDS, type DlqRecord, type ObsDlqRecord } from './types'
 
 /*
  * 死信队列页纯逻辑(可单测,无 DOM/网络副作用):
@@ -219,4 +219,66 @@ export function shortReason(reason: string, max = 64): string {
   const r = (reason || '').trim()
   if (r === '') return '—'
   return r.length > max ? `${r.slice(0, max)}…` : r
+}
+
+export interface DlqTableRow {
+  id: number
+  tenant: string
+  lane: string
+  laneTone: BadgeTone
+  status: string
+  statusTone: BadgeTone
+  attempts: number
+  reason: string
+  failedAt: string
+  replayable: boolean
+  record: DlqRecord
+}
+
+/** 传统死信 DTO 到列表展示行的纯映射。 */
+export function mapDlqRows(records: DlqRecord[]): DlqTableRow[] {
+  return records.map((record) => ({
+    id: record.id,
+    tenant: `#${record.tenant_id}`,
+    lane: record.lane || '—',
+    laneTone: laneTone(record.lane),
+    status: statusLabel(record.status),
+    statusTone: statusTone(record.status),
+    attempts: record.replay_attempts,
+    reason: shortReason(record.failure_reason),
+    failedAt: formatTs(record.failure_at),
+    replayable: canReplay(record),
+    record,
+  }))
+}
+
+export interface ObsDlqTableRow {
+  id: string
+  tenant: string
+  eventType: string
+  priority: string
+  priorityTone: BadgeTone
+  status: string
+  statusTone: BadgeTone
+  attempts: number
+  reason: string
+  deadAt: string
+  record: ObsDlqRecord
+}
+
+/** 观测死信 DTO 到列表展示行的纯映射。 */
+export function mapObsDlqRows(records: ObsDlqRecord[]): ObsDlqTableRow[] {
+  return records.map((record) => ({
+    id: record.id,
+    tenant: `#${record.tenant_id}`,
+    eventType: record.event_type,
+    priority: record.priority || 'default',
+    priorityTone: obsPriorityTone(record.priority),
+    status: obsStatusLabel(record.outbox_status),
+    statusTone: obsStatusTone(record.outbox_status),
+    attempts: record.attempt_count,
+    reason: shortReason(record.dead_reason || record.failure_reason),
+    deadAt: formatTs(record.dead_at),
+    record,
+  }))
 }

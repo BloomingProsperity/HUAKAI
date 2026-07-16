@@ -3,6 +3,7 @@ import {
   countByProbe,
   extractCategories,
   groupByCategory,
+  mapModuleRows,
   probeLabel,
   probeTone,
 } from './moduleregistry'
@@ -94,5 +95,22 @@ describe('countByProbe', () => {
     expect(c.unknown).toBe(1)
     // 各桶之和必须等于 total —— 变异(default 分支不计数)→ 和 < total,RED。
     expect(c.ok + c.degraded + c.error + c.unknown).toBe(c.total)
+  })
+})
+
+describe('mapModuleRows', () => {
+  it('精确映射能力、探针与 catalog 展示列', () => {
+    const module: ModuleView = {
+      id: 'billing.service', category: 'money-path', title: 'Billing', capabilities: ['settle', 'refund'],
+      live_probe: { status: 'degraded', detail: '延迟升高' },
+      catalog: { status: 'tested', parity: 'strong', feature_id: 'F-7', pkgs: ['billing', 'ledger'], section: '§5' },
+    }
+    const [row] = mapModuleRows([module])
+    // 变异字段来源、拼接或探针语气都会使精确断言变红。
+    expect(row).toEqual({
+      id: 'billing.service', title: 'Billing', capabilities: ['settle', 'refund'],
+      probe: '降级', probeTone: 'warn', probeDetail: '延迟升高',
+      catalogSummary: 'tested · strong', featureId: 'F-7', packages: 'billing, ledger', section: '§5',
+    })
   })
 })

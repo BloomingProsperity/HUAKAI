@@ -35,12 +35,24 @@ func newFakeSource() *fakeSource {
 				Descriptor: moduleregistry.ModuleDescriptor{
 					ID: "billing.service", Category: "money-path", Title: "Billing",
 					Capabilities: []string{"settle", "reserve"},
+					Activation: &moduleregistry.ActivationSnapshot{
+						Declared:    boolPtr(true),
+						Constructed: boolPtr(true),
+						Injected:    boolPtr(true),
+						Active:      boolPtr(true),
+						SharedSafe:  boolPtr(false),
+						Backend:     "local",
+					},
 				},
 				Probe: moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"},
 			},
 			{
 				Descriptor: moduleregistry.ModuleDescriptor{
 					ID: "routing.selector", Category: "routing", Title: "Selector",
+					Activation: &moduleregistry.ActivationSnapshot{
+						Declared: boolPtr(true),
+						Backend:  "mixed",
+					},
 				},
 				Probe: moduleregistry.ProbeResult{Status: moduleregistry.StatusUnknown},
 			},
@@ -77,6 +89,15 @@ func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	if billing.Catalog == nil || billing.Catalog.FeatureID != "F-BILL-001" {
 		t.Fatalf("billing static overlay not merged: %+v", billing.Catalog)
 	}
+	if billing.Activation == nil || billing.Activation.Backend != "local" {
+		t.Fatalf("billing activation not carried through: %+v", billing.Activation)
+	}
+	if billing.Activation.SharedSafe == nil || *billing.Activation.SharedSafe {
+		t.Fatalf("billing shared_safe=%v want false", billing.Activation.SharedSafe)
+	}
+	if billing.Activation.Verified == nil || !*billing.Activation.Verified {
+		t.Fatalf("billing verified=%v want true from successful live probe", billing.Activation.Verified)
+	}
 	if billing.LiveProbe.Status != moduleregistry.StatusOK {
 		t.Fatalf("billing live probe=%q want ok (probe not carried through)", billing.LiveProbe.Status)
 	}
@@ -84,6 +105,9 @@ func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	for _, v := range views {
 		if v.ID == "routing.selector" && v.Catalog != nil {
 			t.Fatalf("unmapped module got a spurious catalog overlay: %+v", v.Catalog)
+		}
+		if v.ID == "routing.selector" && v.Activation != nil && v.Activation.Verified != nil {
+			t.Fatalf("unknown probe must not claim verification: %+v", v.Activation)
 		}
 	}
 }
@@ -105,6 +129,9 @@ func TestHandlerReturnsSeededModules(t *testing.T) {
 	}
 	if len(resp.Modules) != 2 {
 		t.Fatalf("modules=%d want 2", len(resp.Modules))
+	}
+	if resp.Modules[0].Activation == nil && resp.Modules[1].Activation == nil {
+		t.Fatalf("activation should be projected in handler response")
 	}
 }
 
@@ -139,3 +166,5 @@ func TestHandlerNilSourceFailsClosed(t *testing.T) {
 		t.Fatalf("nil source status=%d want 503", rec.Code)
 	}
 }
+
+func boolPtr(v bool) *bool { return &v }

@@ -2,6 +2,8 @@ package moduleregistry
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -174,6 +176,35 @@ func TestSnapshotProbePanicBecomesError(t *testing.T) {
 	}
 }
 
+func TestActivationSnapshotJSONOmitsNilAndKeepsAdditiveContract(t *testing.T) {
+	d := ModuleDescriptor{
+		ID:       "routing.selector",
+		Category: "routing",
+		Title:    "Selector",
+		Activation: &ActivationSnapshot{
+			Declared:    boolPtr(true),
+			Constructed: boolPtr(true),
+			Mode:        "canary",
+			Endpoints: []ActivationEndpoint{
+				{Name: "chat", Injected: boolPtr(true)},
+				{Name: "images"},
+			},
+		},
+	}
+
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, `"activation":{"declared":true,"constructed":true,"mode":"canary","endpoints":[{"name":"chat","injected":true},{"name":"images"}]}`) {
+		t.Fatalf("activation JSON = %s", got)
+	}
+	if strings.Contains(got, `"active"`) || strings.Contains(got, `"shared_safe"`) || strings.Contains(got, `"traffic_percent"`) {
+		t.Fatalf("nil activation fields should be omitted: %s", got)
+	}
+}
+
 func mustRegister(t *testing.T, r *Registry, d ModuleDescriptor) {
 	t.Helper()
 	if err := r.Register(d); err != nil {
@@ -188,3 +219,5 @@ func idsOf(ds []ModuleDescriptor) []string {
 	}
 	return out
 }
+
+func boolPtr(v bool) *bool { return &v }

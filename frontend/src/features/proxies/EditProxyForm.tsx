@@ -31,6 +31,7 @@ export function EditProxyForm({
     port: String(proxy.port),
     auth_username: proxy.auth_username ?? '',
     auth_secret: '',
+    group_id: proxy.group_id ?? '',
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,6 +77,10 @@ export function EditProxyForm({
         </Field>
         <Field label="主机"><input value={form.host} onChange={(e) => set('host', e.target.value)} style={inp} /></Field>
         <Field label="端口"><input value={form.port} inputMode="numeric" onChange={(e) => set('port', e.target.value)} style={{ ...inp, width: 90 }} /></Field>
+        <Field label="代理组(可选)">
+          <input name="group_id" value={form.group_id} maxLength={64} pattern="[A-Za-z0-9_-]{0,64}" placeholder="如 us-residential" onChange={(e) => set('group_id', e.target.value)} style={inp} />
+          <span style={fieldHint}>仅限字母、数字、下划线、短横线，最长 64；留空保存会清除分组。</span>
+        </Field>
       </div>
       <div style={{ display: 'flex', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
         <Field label="认证用户名(留空清除)"><input value={form.auth_username} autoComplete="off" onChange={(e) => set('auth_username', e.target.value)} style={inp} /></Field>
@@ -109,5 +114,6 @@ const panel: React.CSSProperties = {
   background: 'var(--hk-surface, #fff)',
 }
 const inp: React.CSSProperties = { padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', fontSize: 13 }
+const fieldHint: React.CSSProperties = { color: 'var(--hk-ink-300)', fontSize: 11, lineHeight: 1.4 }
 const primaryBtn: React.CSSProperties = { padding: '7px 14px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'var(--hk-accent, #2563eb)', color: '#fff', fontSize: 13, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { padding: '7px 14px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'transparent', fontSize: 13, cursor: 'pointer' }

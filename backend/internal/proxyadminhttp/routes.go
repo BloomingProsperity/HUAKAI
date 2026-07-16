@@ -1,5 +1,5 @@
 // Package proxyadminhttp 暴露出站代理池按租户收敛的管理 HTTP 面
-//(list / create / update / delete / set-status)。它是 internal/proxyadmin.Service
+// (list / create / update / delete / set-status)。它是 internal/proxyadmin.Service
 // 之上的一层薄传输层:管理门(tenant_operator 限本租户、platform_admin 经
 // ?tenant_id+CanIssueForTenant)与 adminuserhttp 一致,且每个响应 DTO 都不含凭据——
 // 加密的 auth_secret 只写,绝不投影到任何读取路径。
@@ -42,9 +42,10 @@ type proxyService interface {
 // Deps 接线管理代理面。Auth 是共享的管理解析器;Service 是 proxyadmin 业务层;
 // Prober(可选)执行主动 probe-through 质检。
 type Deps struct {
-	Auth    adminAuth
-	Service proxyService
-	Prober  Prober
+	Auth           adminAuth
+	Service        proxyService
+	Prober         Prober
+	TenantDefaults tenantDefaultProxyService
 }
 
 // Prober 抽象"经该代理建隧道到固定 canary 的主动质检"。实现在 cmd/gateway 组合
@@ -62,7 +63,7 @@ type ProbeOutcome struct {
 }
 
 // MountRoutes 把代理管理端点注册到 r 上。调用方将其挂在 /admin/v1/proxies 下
-//(与挂在 /admin/v1/users 下的 adminuserhttp.MountRoutes 对应)。
+// (与挂在 /admin/v1/users 下的 adminuserhttp.MountRoutes 对应)。
 func MountRoutes(r chi.Router, d Deps) {
 	r.Get("/", newListHandler(d))
 	r.Post("/", newCreateHandler(d))
@@ -89,6 +90,7 @@ type proxyResponse struct {
 	Host         string  `json:"host"`
 	Port         int32   `json:"port"`
 	AuthUsername *string `json:"auth_username"`
+	GroupID      *string `json:"group_id"`
 	Status       string  `json:"status"`
 	LastCheckAt  *string `json:"last_check_at"`
 	CreatedAt    string  `json:"created_at"`
@@ -103,6 +105,7 @@ func toProxyResponse(p proxyadmin.Proxy) proxyResponse {
 		Host:         p.Host,
 		Port:         p.Port,
 		AuthUsername: p.AuthUsername,
+		GroupID:      p.GroupID,
 		Status:       p.Status,
 		LastCheckAt:  timestampPtr(p.LastCheckAt),
 		CreatedAt:    timestamp(p.CreatedAt),
@@ -117,6 +120,7 @@ type createProxyRequest struct {
 	Port         int32   `json:"port"`
 	AuthUsername *string `json:"auth_username,omitempty"`
 	AuthSecret   *string `json:"auth_secret,omitempty"`
+	GroupID      *string `json:"group_id"`
 	Status       string  `json:"status,omitempty"`
 }
 
@@ -127,6 +131,7 @@ type updateProxyRequest struct {
 	Port         int32   `json:"port"`
 	AuthUsername *string `json:"auth_username,omitempty"`
 	AuthSecret   *string `json:"auth_secret,omitempty"`
+	GroupID      *string `json:"group_id"`
 }
 
 type setStatusRequest struct {
@@ -195,6 +200,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			Port:         req.Port,
 			AuthUsername: req.AuthUsername,
 			AuthSecret:   req.AuthSecret,
+			GroupID:      req.GroupID,
 			Status:       req.Status,
 		})
 		if err != nil {
@@ -234,6 +240,7 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 			Port:         req.Port,
 			AuthUsername: req.AuthUsername,
 			AuthSecret:   req.AuthSecret,
+			GroupID:      req.GroupID,
 		})
 		if err != nil {
 			writeServiceError(w, err, "update proxy failed")

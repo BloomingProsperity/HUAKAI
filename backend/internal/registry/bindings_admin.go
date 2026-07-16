@@ -45,13 +45,13 @@ type AdminBinding struct {
 	ModelID                 int64
 	PoolGroupID             int64
 	Priority                int32
-	Weight                  int32
+	Weight                  int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
 	SelectionMode           string
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32
-	FallbackClass           string
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
+	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
 	Enabled                 bool
 	DisabledReason          *string
 	EffectiveFrom           *time.Time
@@ -68,13 +68,13 @@ type CreateBindingInput struct {
 	ModelID                 int64
 	PoolGroupID             int64
 	Priority                int32
-	Weight                  int32
+	Weight                  int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
 	SelectionMode           string
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32
-	FallbackClass           string
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
+	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
 	Enabled                 bool
 	DisabledReason          *string
 	EffectiveFrom           *time.Time
@@ -89,13 +89,13 @@ type UpdateBindingInput struct {
 	ID                      int64
 	TenantID                int64
 	Priority                int32
-	Weight                  int32
+	Weight                  int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
 	SelectionMode           string
 	ProviderModelIDOverride *string
 	RPMLimit                *int32
 	TPMLimit                *int32
-	MaxParallelRequests     *int32
-	FallbackClass           string
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
+	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
 	Enabled                 bool
 	DisabledReason          *string
 	EffectiveFrom           *time.Time

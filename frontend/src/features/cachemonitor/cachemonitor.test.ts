@@ -9,10 +9,11 @@ import {
   formatBytes,
   formatTTL,
   hitRatePercent,
+  mapCacheEntryRows,
   shortKey,
   validateEvictKey,
 } from './cachemonitor'
-import type { L2MetricsRow } from './types'
+import type { L2EntryStat, L2MetricsRow } from './types'
 
 describe('formatBytes', () => {
   it('按二进制 1024 分档,各档不同后缀', () => {
@@ -129,5 +130,21 @@ describe('shortKey', () => {
     // 判别核心:<=24 不缩。变异(阈值写成 10)→ 短 key 被截 → RED。
     expect(shortKey('shortkey-123456')).toBe('shortkey-123456')
     expect(shortKey('')).toBe('—')
+  })
+})
+
+describe('mapCacheEntryRows', () => {
+  it('精确映射缓存条目的标识、容量与时间列', () => {
+    const entry: L2EntryStat = {
+      key: 'abcdefghijklmnopqrstuvwxyz1234567890', tenant_id: 7, vendor: 'openai', model: 'gpt-x',
+      status: 201, size_bytes: 2048, stored_at: 'bad-stored', expires_at: 'bad-expires',
+    }
+    const [row] = mapCacheEntryRows([entry])
+    // 变异 key 缩写、租户来源、字节换算或时间字段互换都会变红。
+    expect(row).toMatchObject({
+      key: entry.key, keyLabel: 'abcdefghijklmnop…567890', tenant: '#7', vendor: 'openai',
+      model: 'gpt-x', status: 201, size: '2.0 KB', storedAt: 'bad-stored', expiresAt: 'bad-expires',
+    })
+    expect(row.entry).toBe(entry)
   })
 })

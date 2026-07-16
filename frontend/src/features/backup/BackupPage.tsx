@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { StatCard } from '../../ui/StatCard'
 import { getBackupManifest } from './api'
-import { totalEstimatedRows } from './backup'
+import { mapBackupTableRows, totalEstimatedRows, type BackupTableRow } from './backup'
 import type { BackupManifest } from './types'
 
 /*
@@ -54,31 +56,16 @@ export function BackupPage() {
       {!loading && !error && data && (
         <>
           <div style={{ display: 'flex', gap: 'var(--hk-space-4)', flexWrap: 'wrap' }}>
-            <Stat label="迁移版本" value={`#${data.schema_version}${data.schema_dirty ? ' (dirty)' : ''}`} warn={data.schema_dirty} />
-            <Stat label="表数量" value={String(data.table_count)} />
-            <Stat label="行数估算合计" value={totalEstimatedRows(data).toLocaleString()} />
+            <StatCard label="迁移版本" value={`#${data.schema_version}${data.schema_dirty ? ' (dirty)' : ''}`} tone={data.schema_dirty ? 'danger' : 'default'} />
+            <StatCard label="表数量" value={String(data.table_count)} />
+            <StatCard label="行数估算合计" value={totalEstimatedRows(data).toLocaleString()} />
           </div>
           <p style={{ fontSize: 12, color: 'var(--hk-ink-500)', margin: 0 }}>行数基准:{data.estimate_basis}</p>
 
           <section className="hk-card">
             <div className="hk-card__head"><h3>表清单</h3></div>
-            <div className="hk-tablewrap" style={{ maxHeight: 360 }}>
-              <table className="hk-table">
-                <thead>
-                  <tr>
-                    <th>表名</th>
-                    <th style={{ textAlign: 'right' }}>行数估算</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.tables.map((t) => (
-                    <tr key={t.name}>
-                      <td>{t.name}</td>
-                      <td className="hk-mono" style={{ textAlign: 'right' }}>{t.estimated_rows.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div style={{ maxHeight: 360, overflow: 'auto' }}>
+              <DataListTable label="备份表清单" rows={mapBackupTableRows(data.tables)} rowKey={(row) => row.name} columns={backupColumns} />
             </div>
           </section>
 
@@ -100,11 +87,7 @@ export function BackupPage() {
   )
 }
 
-function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
-  return (
-    <div className="hk-metric" style={{ minWidth: 140 }}>
-      <div className="hk-metric__label">{label}</div>
-      <div className="hk-metric__v" style={{ color: warn ? 'var(--hk-danger)' : undefined }}>{value}</div>
-    </div>
-  )
-}
+const backupColumns: DataListColumn<BackupTableRow>[] = [
+  { key: 'name', label: '表名', render: (row) => row.name },
+  { key: 'rows', label: '行数估算', render: (row) => <span className="hk-mono">{row.estimatedRows}</span> },
+]
