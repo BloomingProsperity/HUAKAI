@@ -9,7 +9,7 @@
 | 审计范围 | `backend/cmd/gateway` composition root、生产路由、后台 worker、内部包生产可达性、渠道健康/探测、provider 注册表、Claude/Gemini/Antigravity/Kimi 账号链、账号导入/同步/迁移、三身份与单层租户边界，以及以 Sub2 为主轴的完整账号系统对照 |
 | 证据原则 | `rg` 只用于定位；结论来自实际打开的生产源码、调用链和可判别测试 |
 | 参考项目车道 | 独立 specifier 会话，只读 CLIProxyAPI、Sub2API、New API 快照；本会话未读取参考源码 |
-| Observed findings | 18 |
+| Observed findings | 20 |
 | Inferences | 8 |
 | Open questions | 17 |
 | PR 规则 | 所有修改通过独立 Draft PR；未经 Owner 明确同意不合并 |
@@ -667,6 +667,79 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 4. Cookie、Setup Token、Agent Identity、CRS 等能力默认未授权，由部署者按租户开通，租户侧管理账号代表该租户在自身 tenant 内执行；该账号不构成第四种身份。
 5. 禁止合并历史 0185 及递归租户 scope；后续 schema 不增加 `parent_tenant_id`。
 
+### GW-WIRE-019：无 claim 的 countTokens 请求在默认 selector 占槽后无人释放
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（账号并发容量泄漏/协议横向半接线） |
+| 分类 | W-05 协议漂移、W-10 信息断链、W-11 顺序错误 |
+| 状态 | **Fixed in this branch** |
+| 用户影响 | `/v1/messages/count_tokens` 和 Gemini `:countTokens` 是不走 billing claim 的辅助请求。修复前它们仍通过默认 selector 真实递增账号 `in_flight_count` 并写 slot acquisition，但响应合同不携带 release 闭包，handler 也没有 settle/abort。每次只数 token 都会占用一个账号并发槽，直到 90 秒租约回收；频繁调用时可把正常生成请求错误挤成无容量。 |
+
+**源码链**
+
+1. Anthropic 形 count-tokens 明确不 reserve/settle，只直接进入 route、selector、credential 和 dispatch，见 `backend/internal/completionshttp/count_tokens.go:40-80`；共用 `selectAccount` 因 `reserveRes=nil` 把 `ClaimID=0` 传给 selector，见 `backend/internal/completionshttp/attempt.go:25-44`。
+2. Gemini count-tokens 同样直接选号、取凭据和出站，`SelectionRequest` 未设置 claim，见 `backend/internal/geminihttp/generate_content.go:171-193,262-277`。
+3. 修复前默认 selector 在 gate 通过后无条件调用 `SlotManager.Acquire`；真实 PostgreSQL slot manager 会递增 `provider_accounts.in_flight_count`、插入 acquisition，并把租约设为 90 秒，见 `backend/internal/pool/dispatcher/slot_manager.go:68-115`。
+4. `SelectionResult` 只有 account、token、wait plan 和路由原因，没有 release 函数，见 `backend/internal/pool/router/types.go:123-131`；count-tokens 两个 handler 也没有任何释放调用。
+5. 同仓 PASR 已明确识别这一不变量：`ClaimID=0` 时必须在 acquire 前短路，否则 caller 无法释放，见 `backend/internal/pool/router/pasr.go:440-445,525-548`。这提供了可验证的 HUAKAI 内部 Safe Equivalent，不需要另造资源生命周期。
+
+**修复**
+
+- 默认 selector 在完成候选、协议和 gate 判定后，若 `ClaimID=0`，返回临时 acquisition token，但不调用真实 `SlotManager.Acquire`，见 `backend/internal/pool/router/default_selector.go:206-227`。
+- money path 的非零 claim 行为保持不变：仍然先占槽，再把 acquisition 写回 claim，失败时脱钩释放。
+- 判别测试给默认 selector 注入计数 slot manager，确认仍选择正确 protocol family 账号，同时 `Acquire calls=0`，见 `backend/internal/pool/router/default_selector_protocol_family_test.go:10-52`。删除短路后该测试精确变红。
+
+**辐射检查**
+
+- 当前直接受益入口：Anthropic 形 count-tokens、Gemini count-tokens，以及所有明确以 `ClaimID=0` 调默认 selector 的只读/辅助路径。
+- PASR 原有 ClaimID=0 语义不变。
+- 正常 chat、completions、embeddings、rerank、images、audio money path 均在 reserve 后传非零 claim，不受本修复影响。
+- 后续仍需单独审计 count-tokens 的 401/429 健康反写、运行时凭据兼容门和跨账号 fallback；本修复只闭环资源泄漏，不把整个辅助协议链宣称为完整。
+
+### GW-WIRE-020：音频 speech 已完整交付后的结算失败只有日志，没有持久恢复
+
+| 项目 | 内容 |
+| --- | --- |
+| 严重度 | `S1`（已交付未入账/协议横向恢复链缺口） |
+| 分类 | W-05 协议漂移、W-10 信息断链、W-12 恢复缺失 |
+| 状态 | **Fixed in this branch** |
+| 用户影响 | `/v1/audio/speech` 会先把二进制音频完整写给客户端，再执行结算。修复前若此时数据库、锁或结算服务瞬时失败，客户端已经得到 200，claim 仍未完成，系统只写一条错误日志；日志丢失、未被及时处理或进程退出后，没有机器可重放的完整 settle intent，形成已交付但可能长期未入账的缺口。 |
+
+**源码链**
+
+1. speech 分支先写响应头和音频体，完整交付后才调用 settle；客户端写失败走 Abort，不计费，见 `backend/internal/audiohttp/attempt.go:130-164`。这个顺序本身正确，不能为了结算方便改回交付前扣费。
+2. 修复前 settle 失败只调用日志方法；该日志只保留 tenant、claim、endpoint 和脱敏错误类，不能重构最终账号、金额、模型、路由快照和 acquisition token，见修复前 `backend/internal/audiohttp/billing.go` 的 `logSettleAfterDeliveryFailure` 路径。
+3. 同仓图片和 completions 已经证明可用的 Safe Equivalent：响应交付后把完整 `billing.SettleRequest` 转为恢复载荷并进入统一 DLQ，见 `backend/internal/imageshttp/billing.go:171-187`、`backend/internal/completionshttp/billing.go:151-176`。
+4. 统一恢复队列使用 tenant、claim、request 组成幂等键；worker 只重调公开 `Settler.Settle`，若 claim 已提交则通过 claim、usage、billing event 三证确认幂等成功，见 `backend/internal/settlementrecovery/enqueue.go:40-91`、`backend/internal/settlementrecovery/handler.go:41-90`。
+
+**修复**
+
+- `audiohttp.Deps` 增加统一 settlement recovery enqueuer，composition root 注入现有 `dlqService`，见 `backend/internal/audiohttp/handler.go:48-64`、`backend/cmd/gateway/routes.go:882-900`。
+- speech 完整交付后构造一次最终 `SettleRequest`；直接结算失败时，以 `audio_delivered` 来源保存完整恢复载荷，并继续写脱敏运营事件，见 `backend/internal/audiohttp/attempt.go:157-164`、`backend/internal/audiohttp/billing.go:159-200`。
+- recovery payload 严格允许新增音频来源，其他未知来源仍 fail-closed，见 `backend/internal/settlementrecovery/payload.go:27-43,159-172`。
+- 判别测试验证：客户端仍得到完整 200、不会错误 Abort、只尝试一次直接 settle、只入队一次恢复事件，并且重放载荷中的 claim、最终账号、模型和金额与原请求完全一致；若 settle 与恢复入队双故障，还必须发出不含原始秘密的 P0 事件，见 `backend/internal/audiohttp/handler_test.go:308-378`。composition root 和 payload source 另有独立接线测试，见 `backend/cmd/gateway/wiring_test.go:337-354`、`backend/internal/settlementrecovery/payload_test.go:243-255`。
+
+**辐射检查**
+
+- transcription/translation 当前在写业务响应前完成 settle；settle 失败还能安全返回 500，没有“已交付后不可反悔”的同类缺口，本批不强行改成异步恢复。
+- 图片、chat、completions 的原恢复来源和重放合同不变；音频只是新增合法来源，复用同一幂等键、HIGH lane、重试和三证 proof。
+- 本批没有改变费率、预测金额、实际金额、余额、quota、claim 状态机或数据库 schema。
+- 后续仍需横向审计 audio 的 401/429 健康反写、等待队列和跨账号 retry；不能因本次补齐 recovery 就宣称整个音频链与 chat 等价。
+
+## 成熟项目颗粒度基线
+
+隔离 clean-room specifier 对 Sub2、New API、CLIProxyAPI 当前默认分支源码拆出 46 个微功能节点。本轮以后不再用“大功能存在”作完成结论，重点核以下六类协作：
+
+| 颗粒度 | 已观察的成熟链行为 | HUAKAI 审计动作 |
+| --- | --- | --- |
+| 导入 | 批量输入会展开多种格式、逐项返回、区分批内重复和存量冲突，并避免简化凭据覆盖续期材料。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/handler/admin/account_codex_import.go:159`、`:237`、`:259` | 每种账号入口分别核解析、严格校验、身份、冲突、合并、逐项错误和缓存生效 |
+| 状态 | 主状态、可调度、全账号限流、逐模型限流、过载、过期和错误说明是不同轴。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/service/account_service.go:80`、`:95` | 不再用一个 `active` 或 health 分数代替所有运行状态 |
+| 选择 | 用户槽、候选硬门、账号槽、等待上限、粘性写入和失败逃逸有明确顺序。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/handler/openai_gateway_handler.go:318`、`backend/internal/handler/gateway_handler.go:377`、`:414` | 逐协议检查是否绕过 queue、slot、粘性复核或 claim 生命周期 |
+| 重试 | 每次尝试从原始请求体重建；区分同号 retry、跨号 fallback；首块交付后禁止透明换号。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/handler/openai_gateway_handler.go:217`、`:480`、`:494` | 横向核对 chat、completions、embeddings、rerank、images、audio、Gemini 和 media task |
+| 状态回写 | 认证、限流、过载等错误会写到不同账号状态，并影响下一次选号；渠道停用也是受分类和开关控制的后果。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/service/account_service.go:95`、`new-api@a63364d156cf2a64f1c3d1ee4923d73d5f3222a1:controller/relay.go:357` | 检查“错误枚举存在”后是否真有写入、缓存传播、恢复和运维动作 |
+| 最终归因 | retry 后使用最终账号、最终模型、最终渠道和真实金额落账；重复提交必须可判别且幂等。`sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/handler/gateway_handler.go:527`、`backend/internal/service/account_usage_service.go:28` | 每个交付路径核 claim、slot、usage、billing、audit、DLQ 是否指向同一最终尝试 |
+
 ## 非问题与反证
 
 1. `cmd/gateway/routes_*.go` 的 mount helper 本批全部存在生产调用，不支持“很多页面后端路由没挂”的笼统结论。
@@ -687,7 +760,13 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 | `backend/cmd/gateway/quota_probe_wiring_test.go` | 接线断言升级为必须使用 `workerCtx`、登记四个 waiter，并拒绝退回进程信号 `ctx` |
 | `backend/internal/{proxyhealth,tlsfphealth,windowcost,quotaprobe}/worker.go` | 增加可等待的 goroutine 退出合同 |
 | 对应四个 `worker_test.go` | 验证取消前阻塞、取消后退出 |
-| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、Sub2 完整账号系统对照和十八个确认发现 |
+| `backend/internal/pool/router/default_selector.go` | 无 claim 的辅助请求完成 gate 后不再占用无法释放的真实并发槽 |
+| `backend/internal/pool/router/default_selector_protocol_family_test.go` | 判别 ClaimID=0 时协议门仍生效且 slot acquire 精确为零 |
+| `backend/internal/audiohttp/{handler.go,attempt.go,billing.go}` | speech 交付后结算失败进入统一持久恢复链 |
+| `backend/internal/audiohttp/handler_test.go` | 判别完整交付、禁止 abort、单次入队和重放字段一致性 |
+| `backend/internal/settlementrecovery/{payload.go,payload_test.go}` | 新增并严格校验 `audio_delivered` 恢复来源 |
+| `backend/cmd/gateway/{routes.go,wiring_test.go}` | 生产注入并判别音频复用统一 settlement recovery queue |
+| 本报告 | 记录 route、worker、registry、setting、账号链矩阵、成熟项目微功能颗粒度和二十个确认发现 |
 | 三身份与单层租户规划 | 固定部署者、用户、租户三种身份，禁止多级租户，并记录能力、账号和经营额度的分配边界 |
 | 参考报告 | 保存隔离 specifier 的运行接线、账号链三镜证据、Sub2 账号系统完整生产逻辑、默认分支补充证据和账号导入四项能力证据 |
 
@@ -706,6 +785,9 @@ go test ./... -count=1
 go test ./internal/servingcapability ./internal/adminhttp ./internal/credentialacq ./internal/credentialstore ./internal/credentialworker ./internal/provider/anthropic ./internal/provider/gemini ./internal/provider/antigravity ./internal/provider/registrydefault ./internal/gatewayhttp/accountcreate -count=1
 go test ./internal/adminhttp ./internal/gatewayhttp ./internal/credentialworker ./internal/channelhealth ./internal/rate ./internal/pool/... -count=1
 go test ./cmd/gateway -run 'Test.*(Selector|ProviderAccount|Credential|QuotaProbe|Wiring)' -count=1
+go test ./internal/pool/router -count=1
+go test ./internal/completionshttp ./internal/geminihttp -count=1
+go test ./internal/audiohttp ./internal/settlementrecovery ./cmd/gateway -run 'TestAudioSpeech_Settle(ErrorAfterDeliveryKeeps200AndEnqueuesRecovery|AndRecoveryDoubleFailureEmitsP0WithoutSecret)|TestValidate_AcceptsAudioDeliveredSource|TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDeps' -count=1
 ```
 
 所有最终验证均显式设置：
@@ -726,6 +808,8 @@ GOTMPDIR=/home/ubuntu/.codex-tmp/global-wiring/go-tmp
 ```
 
 worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧命令中 `review` 子命令后的 `--sandbox`，因此使用等价只读形式 `codex exec --sandbox read-only --ephemeral review --uncommitted`。第一轮报告一个 S1：context worker 取消后没有等待，可能与关库竞态；本分支已按上述方式修复。第二轮使用相同只读形式复核，未发现该批改动引入的明确功能缺陷，未留下 S0/S1。Batch 2B 文档第一轮 review 发现 CLIProxyAPI、New API 的补充 SHA 不在本地 `origin/main` 祖先链，归一化为 S1；随后通过 GitHub 远端 `main` 核实可达 SHA，新增独立默认分支 specifier artifact 并替换全部依赖。第二轮 review 确认新增结论有源码证据、元数据与正文一致，未留下 S0/S1。
+
+GW-WIRE-019/020 提交前 review 也已完成。当前 CLI 的 `codex exec review` 已不再接受旧 `--sandbox/--full-auto` 参数，第一轮改用 `codex exec review --uncommitted --ephemeral`，静态审查无 finding；其自带测试因默认临时目录磁盘配额耗尽未完成，但本会话使用根磁盘目录的同范围测试已经全绿。money-path 第二轮使用物理只读 `codex exec -s read-only --ephemeral`，专项核对 ClaimID=0 资源生命周期、音频完整 settle payload、tenant/claim 幂等键、双故障 P0 脱敏和生产注入，最终结论为 `APPROVE`，无 S0/S1/S2/S3；只读沙箱不能创建 `GOTMPDIR`，故该轮不重复执行测试。
 
 ## Owner 决策点
 
@@ -749,7 +833,7 @@ worker 修复批第一轮独立 review 已完成。当前 Codex CLI 不接受旧
 
 ## 下一批
 
-Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。下一修复批优先闭环不需要 schema 的 `GW-WIRE-013` bulk update+audit 原子性、账号运营聚合诊断和统一 `AccountIntakePlan` dry-run 合同；这些工作不启用 Cookie、Setup Token、Agent Identity、CRS 远程登录或秘密导出。
+Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。`GW-WIRE-013` 的账号接入身份、冲突和稳定凭据指纹已在独立 Draft PR #258 闭环；未经 Owner 同意未合并。
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
@@ -761,4 +845,4 @@ Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导�
 
 ## 真实性摘要
 
-本报告的十八个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把历史分销计划或参考项目未观察到的能力写成已实现。当前十七个 open question 集中在账号链、高敏感账号接入、三种身份落地和租户经营额度边界。
+本报告的二十个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。当前十七个 open question 集中在账号链、高敏感账号接入、三种身份落地、租户经营额度边界，以及非 chat 协议的健康、retry 与 recovery 对齐。

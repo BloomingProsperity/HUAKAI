@@ -892,6 +892,7 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 		CredentialVault:       d.credentialVault,
 		Dispatcher:            d.dispatcher,
 		Settler:               d.settler,
+		SettleRecoveryDLQ:     d.dlqService,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,

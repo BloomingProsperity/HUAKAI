@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 const (
@@ -56,6 +57,7 @@ type Deps struct {
 	CredentialVault       provider.CredentialVault
 	Dispatcher            dispatcher
 	Settler               billing.Settler
+	SettleRecoveryDLQ     settlementrecovery.Enqueuer
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string

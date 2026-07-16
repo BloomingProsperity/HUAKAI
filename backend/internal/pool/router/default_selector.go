@@ -214,6 +214,17 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 			reason.GateFailure(account.ID, why)
 			continue
 		}
+		// 无 billing claim 的只读/辅助请求没有后续 settlement 来释放并发槽，
+		// SelectionResult 也不暴露 Release 闭包。此类请求只完成候选与 gate
+		// 判定，返回临时 token，避免 count-tokens 等入口把槽占到租约回收。
+		if req.ClaimID == 0 {
+			reason.Account(account.ID)
+			return &SelectionResult{
+				AccountID:         account.ID,
+				AcquisitionToken:  uuid.New(),
+				RoutingReasonJSON: reason.JSON(),
+			}, true, nil
+		}
 		acquired, err := s.slots.Acquire(ctx, account, req)
 		if errors.Is(err, ErrNoSlotAvailable) || errors.Is(err, ErrSlotManagerUnavailable) {
 			continue
