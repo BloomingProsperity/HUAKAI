@@ -397,9 +397,9 @@ type registrationMasterGate interface {
 	InvitationRequired(context.Context, int64) (bool, error)
 }
 
-// registrationMode 决定社交注册门。settings-first(对齐 sub2api 的请求期主门 IsRegistrationEnabled):
+// registrationMode 决定社交注册门，优先读取请求期后台设置：
 // 若注入的 gate 支持后台设置读取,则 registration_enabled / invitation_required 由后台设置驱动
-//(运营在管理台改即生效,fail-closed);否则回退到 boot 时 env 注入的静态字段(back-compat)。
+// (运营在管理台改即生效,fail-closed);否则回退到 boot 时 env 注入的静态字段(back-compat)。
 func (s *Service) registrationMode(ctx context.Context, tenantID int64) (RegistrationMode, error) {
 	if s == nil {
 		return RegistrationModeOpen, nil

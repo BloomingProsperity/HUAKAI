@@ -10,7 +10,7 @@ import (
 // 默认态的关键不变量——只有显式挂了本标注的路由,session-admin 才够得到写。
 // token 通道与只读方法不受本机制影响。
 //
-// role 制单登录 P3(Owner 终审:采用 new-api 模型):写分级收敛成二元——token-only(默认)
+// role 制单登录 P3 的 Owner 终审把写分级收敛成二元：token-only(默认)
 // vs SessionSafe(session 可直接写)。危险/不可逆操作靠前端确认弹窗防误操作,后端不做二次密码/2FA。
 type AdminWriteClass int
 

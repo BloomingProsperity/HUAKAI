@@ -218,7 +218,7 @@ func TestPG_SelfServiceDowngradeAllowedWhenExpired(t *testing.T) {
 // 判别: 续期漏覆盖 caps → active 策略仍=10 → 断言 active cap=100 变红。
 // TestPG_MidCycleUpgradeReconcilesCapsInPlace 期中(未过期)升档:caps 策略应**原地 UPDATE**
 // (同一 policy_id,limit 升到新值,仍 enabled),而非关旧装新铸新 policy_id。这样 quota_windows
-// 按 policy_id 记的已用量在升档后完整保留(对齐 sub2api 期中续期不重置用量)。
+// 按 policy_id 记的已用量在升档后必须完整保留。
 // 判别:把 reconcileCapsTx 退回 closeCapsTx+installCapsTx → daily policy_id 变化 + 出现一条 disabled
 // limit=10 的旧策略 → 下方"policy_id 不变"与"无 disabled 旧策略"两个断言转红。
 func TestPG_MidCycleUpgradeReconcilesCapsInPlace(t *testing.T) {

@@ -78,7 +78,7 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	}
 	// 只读方法(GET/HEAD)照放。写方法按路由在注册处标注的写分级 fail-closed 判定:
 	// 未标注 → 拒(默认 token-only,P1 的写端点隐患物理上无法触发);SessionSafe → 放。
-	//(Owner 终审:采用 new-api 模型,不做后端 step-up;危险操作靠前端确认弹窗。)
+	// Owner 终审不做后端 step-up；危险操作靠前端确认弹窗。
 	if !isReadOnlyMethod(req.Method) && writeClassFromContext(req.Context()) != SessionSafe {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}

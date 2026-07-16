@@ -229,10 +229,10 @@ func buildGroupRoutingGates(routesRepo subscriptionenforce.RoutesRepo, healthSer
 		subscriptionenforce.WithFailOpenObserver(newGroupPolicyFailOpenObserver(logger)),
 		subscriptionenforce.WithFailClosedObserver(newGroupPolicyFailClosedObserver(logger)),
 	)
-	// SUB2-EGRESS-03:按账号的 5 小时窗口消费封顶 gate。
+	// ACCOUNT-WINDOW-COST：按账号的 5 小时窗口消费封顶 gate。
 	// windowCostReader 为 nil → WindowCostGate 为 fail-open(等价 AllowAll)。
 	gates.WindowCost = pool.WindowCostGate{Reader: windowCostReader}
-	// SUB2-EGRESS-02:按账号的最大并发会话封顶 gate。
+	// ACCOUNT-SESSION-CAP：按账号的最大并发会话封顶 gate。
 	// sessionCapRegistry 为 nil → SessionCountGate 为 fail-open。
 	gates.SessionCount = pool.SessionCountGate{Registry: sessionCapRegistry}
 	// ROUTE-023:按模型的上下文窗口准入 gate。无注入依赖

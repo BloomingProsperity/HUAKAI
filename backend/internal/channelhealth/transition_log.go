@@ -16,8 +16,8 @@ const logComponent = "channelhealth"
 
 // transitionLogLevel 按转换后的目标状态定运维日志级别:恢复上线(active)/开始放量(ramping)
 // 是良性事件打 Info;降级/冷却/禁用/回滚/人工暂停都让账号退出正常选号、运营需即时知晓,打 Warn。
-// 三镜对照:sub2api 按「预期短冷却=Info / 硬下线=Warn」分档,HUAKAI 取「离开可用池即 Warn」
-// 更偏可见性(本功能目的正是让运营看见账号退池),按 reason 细分 rate_limit 冷却降 Info 留作后续。
+// HUAKAI 选择「离开可用池即 Warn」以优先保证退池可见性；按 reason 把预期的
+// rate_limit 短冷却细分为 Info 留作后续。
 func transitionLogLevel(state HealthState) slog.Level {
 	switch state {
 	case StateActive, StateRamping:

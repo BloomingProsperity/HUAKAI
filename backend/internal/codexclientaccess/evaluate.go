@@ -72,7 +72,7 @@ func Evaluate(policy Policy, cand Candidate) Decision {
 		}
 	}
 
-	// 版本门按匹配路径分域(比 sub2 无条件 undetectable 更安全,不误拒已双因子确立身份的官方 UA):
+	// 版本门按匹配路径分域，避免误拒已由双因子确立身份的官方 UA：
 	//  - matched_official_originator:originator 头单因子可伪造,无论是否配版本边界都要求 UA 是可解析
 	//    的 codex 形态版本作第二因子(闭合 originator 单因子伪造)。
 	//  - matched_official_ua:strict UA 匹配已确立身份,仅当运维配了 min/max 才要求可解析版本;未配

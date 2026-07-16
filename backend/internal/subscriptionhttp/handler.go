@@ -250,7 +250,7 @@ func toAuditEventViews(events []subscription.AuditEvent) []auditEventView {
 
 // MountSubscriptionAdminRoutes 挂载管理员订阅端点 (套餐 CRUD + 分配/取消/查询)。
 func MountSubscriptionAdminRoutes(r chi.Router, d AdminDeps) {
-	// money-via-login:订阅套餐/指派/发券等 admin 动钱操作放开给登录 admin(session),对标 new-api;
+	// money-via-login：订阅套餐、指派和发券等 admin 动钱操作放开给登录 admin(session)；
 	// 危险者靠前端确认弹窗。归属经 P2b-2 双身份 text 列(assigned_by_actor/actor_ref)可追。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.With(safe).Post("/plans", newAdminCreatePlanHandler(d))

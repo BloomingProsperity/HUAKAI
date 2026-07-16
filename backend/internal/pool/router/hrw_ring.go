@@ -21,7 +21,7 @@
 // 用途: PASR-lite 调度器把 prompt prefix 路由到 K=3 段 — Owner directive
 // 2026-05-08: "用我们自己的东西"，本文件是自有调度算法第一个原子。
 //
-// clean-room: 算法引用学术 paper（公开），不读外部参考项目源码。
+// 算法依据来自公开学术论文,实现仅依赖标准库。
 // 零新依赖: 仅用 stdlib crypto/sha256 + encoding/binary。
 package router
 

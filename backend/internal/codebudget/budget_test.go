@@ -14,6 +14,8 @@ package codebudget
 import (
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,6 +31,27 @@ const (
 	// 在余量内;余量耗尽 = 该把新逻辑拆出去了。
 	growthAllowance = 0.05
 )
+
+var forbiddenCommentTerms = []string{
+	"sub2api",
+	"sub2-api",
+	"sub2",
+	"new-api",
+	"cliproxyapi",
+	"cli-proxy-api",
+	"cli proxy api",
+	"litellm",
+	"portkey",
+	"helicone",
+	"all-api-hub",
+	"all api hub",
+	"one-api",
+	"envoy ai gateway",
+	"aiclient-2-api",
+	"三镜",
+	"参考项目",
+	"借鉴项目",
+}
 
 type baseline struct {
 	// Files: 相对 internal/ 的文件路径 → 入基线时的行数。
@@ -122,6 +145,87 @@ func TestFileAndPackageBudgets(t *testing.T) {
 		sort.Strings(violations)
 		t.Fatalf("代码体量软预算超标 %d 项:\n%s\n(确属有意重构后体量下降可再生成基线:HUAKAI_REWRITE_CODE_BUDGET_BASELINE=1)", len(violations), strings.Join(violations, "\n"))
 	}
+}
+
+func TestGoCommentsDoNotNameReferenceProjects(t *testing.T) {
+	root := filepath.Join("..", "..") // backend/
+	fset := token.NewFileSet()
+	checked := 0
+	var violations []string
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if path != root && (info.Name() == "vendor" || strings.HasPrefix(info.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		checked++
+		for _, group := range file.Comments {
+			for _, comment := range group.List {
+				if term, found := forbiddenTermInComment(comment.Text); found {
+					pos := fset.Position(comment.Pos())
+					rel, relErr := filepath.Rel(root, path)
+					if relErr != nil {
+						return relErr
+					}
+					violations = append(violations, fmt.Sprintf("%s:%d: 注释包含禁止词 %q", filepath.ToSlash(rel), pos.Line, term))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("扫描 Go 注释: %v", err)
+	}
+	if checked < 100 {
+		t.Fatalf("只检查了 %d 个 Go 文件,扫描面异常缩水", checked)
+	}
+	if len(violations) > 0 {
+		sort.Strings(violations)
+		t.Fatalf("代码注释必须只描述 HUAKAI 自身机制,%d 处违规:\n%s", len(violations), strings.Join(violations, "\n"))
+	}
+}
+
+func TestForbiddenTermInComment(t *testing.T) {
+	tests := []struct {
+		name    string
+		comment string
+		found   bool
+	}{
+		{name: "拦截英文项目名", comment: "// Sub2API behavior", found: true},
+		{name: "拦截中文对照标签", comment: "// 参考项目的做法", found: true},
+		{name: "允许普通 API 描述", comment: "// create a new API key", found: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, found := forbiddenTermInComment(tt.comment)
+			if found != tt.found {
+				t.Fatalf("found = %v, want %v", found, tt.found)
+			}
+		})
+	}
+}
+
+func forbiddenTermInComment(comment string) (string, bool) {
+	lower := strings.ToLower(comment)
+	for _, term := range forbiddenCommentTerms {
+		if strings.Contains(lower, term) {
+			return term, true
+		}
+	}
+	return "", false
 }
 
 func writeBaseline(t *testing.T, fileLines, pkgLines, pkgFiles map[string]int) {

@@ -4,12 +4,7 @@
 // 恒 StateActive、PoolGate 恒放行,占据池首优先级时每个请求首选它、吃一发 401;auth-failover
 // 子预算硬限一次,≥2 个坏号即请求直接 401 给客户端——坏号黑洞整个模型流量。
 //
-// 设计要点(三镜对照 §16):
-//   - sub2api SetTempUnschedulable:临时不可调度但保 status=active,定长 10min 冷却;
-//   - new-api DisableChannel:整渠道二元停,瞬时 401 也会误禁好号;
-//   - CLIProxy per-(auth,model) TTL:定长 30min,成功即时 reset。
-//
-// HUAKAI delta:
+// 设计要点：
 //   - 架构:独立 auth 车道,不写健康 State/Score、不进 error-rate/ban-ramp 窗口(auth blip 不污染健康分);
 //   - 算法:封顶指数退避(base<<(strike-1),cap 封顶)替代定长冷却——常态 token 过期几秒热刷新自愈、
 //     真死 key 几何增长快速止损;iron-clad 达 strike 上限升 HardDisabled,ambiguous 通用 401 永不永久禁;
@@ -32,7 +27,7 @@ type FailureClass int
 
 const (
 	// ClassAmbiguous:通用 401(无关键词铁证)。永远停在指数退避自愈,绝不升 HardDisabled
-	//(修 new-api 把瞬时 401 好号整渠道误禁)。
+	// 避免因瞬时 401 把正常账号永久禁用。
 	ClassAmbiguous FailureClass = iota
 	// ClassIronClad:invalid_grant / token_revoked / Grok 400-auth 等铁证类。达 strike 上限 K 升 HardDisabled。
 	ClassIronClad

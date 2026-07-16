@@ -228,7 +228,7 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
-	// expires_at 三态(CLAUDE.md #16,sub2api 风格):
+	// expires_at 三态遵守 CLAUDE.md #16：
 	//   缺省 / JSON null -> nil 指针 = 保持截止时间不变
 	//   空字符串 ""      -> 清除截止时间(key 变为永不过期)
 	//   RFC3339 字符串   -> 把截止时间设为该时刻(解析失败 -> 400)
@@ -441,7 +441,7 @@ type batchRevokeRequest struct {
 
 // newBatchRevokeHandler 在一个请求中批量吊销 caller 自己的多个 key。
 // 每个 id 都走同一个幂等、owner 作用域的 Service.Revoke;不属于自己或不存在的 id
-//(ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
+// (ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
 // KEY-028。
 func newBatchRevokeHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -11,8 +11,8 @@ import (
 // 身份(tenantID/userID)由调用方从已认证 session 注入,service 不信任何 body 字段。
 
 // ErrLastAdmin 表示删号被「末位 admin 保护」拒绝:本人是 tenant 内最后一个 role='admin'。
-// 语义等价于成熟参考项目「不能删最后的 root/admin」,但用「未软删 admin 计数」而非单一 root-flag,
-// 多 admin 运营场景下仍可删非末位 admin。store 层在同一事务内原子判定后返回此错误。
+// 使用「未软删 admin 计数」保护租户的最后一个管理入口,多 admin 场景下仍可删除非末位 admin。
+// store 层在同一事务内原子判定后返回此错误。
 var ErrLastAdmin = errors.New("userauth: cannot delete the last admin")
 
 type ownPasswordUpdateStore interface {
