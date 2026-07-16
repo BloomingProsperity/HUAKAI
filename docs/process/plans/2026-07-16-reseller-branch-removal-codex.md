@@ -10,7 +10,7 @@
 | Blast radius | 反向撤销提交触及鉴权核心和 schema 文件；若范围错误，可能误删后续集成能力或留下半接线。 |
 | Failure modes | 误碰原工作树；只删 schema 未删运行时；只删运行时未删生成查询；保留旧前端/部署规划导致模型复发；把新三身份实现偷渡进删除 PR。缓解：独立工作树、完整逆向提交、全局残留扫描、目标测试、交叉审查。 |
 | Decision points | Owner 已批准删除。新的部署者/用户/单层租户鉴权、账号分配和经营额度合同仍按权威规划另开 PR。 |
-| Parallel-plan status | Codex 独立执行，不触碰其他 agent 的目标和工作树。 |
+| Parallel-plan status | 本次没有执行 Claude/Codex 双计划合并，属于已知治理流程偏差。原因是 Owner 明确要求 Codex 独立执行、不得触碰另一目标；本文不把事后记录伪装成事前交叉审批。补偿门禁为两轮只读审查、真实 PostgreSQL 与全仓测试、仅提交 Draft PR，并继续由 Owner 决定是否合并。 |
 
 ## 执行结果
 
@@ -32,4 +32,5 @@
 16. 第二轮只读审查发现一个 S1：新 session 角色查询只检查用户状态，遗漏租户停用/软删除状态，可能让停用租户的旧管理员会话继续保权。
 17. 已把 `ActiveUserRole` 收紧为同一查询同时验证用户和所属租户均为 `active` 且未软删除，并增加真 PostgreSQL 回归测试；部署者自营租户停用时同样不会被提升为平台管理员。
 18. 修复后 `go test ./internal/panelauth ./internal/adminsessionauth -count=1`、真实 PostgreSQL 集成测试、`TestMigrationFullRoundtrip` 和 `go test ./... -count=1` 全部通过。
-19. 第二轮审查的唯一 S1 已闭环；待完成：提交、推送和 Draft PR。
+19. 第二轮审查的唯一 S1 已闭环；实现提交为 `d1e9ccc7`，Draft PR 为 [#257 清理递归租户分销实现并固化三身份模型](https://github.com/BloomingProsperity/HUAKAI/pull/257)。
+20. 流程偏差：未执行双 agent 独立计划与合并计划。该步骤不会事后补写成“执行前审批”；Owner 合并确认仍是最终落地门禁。
