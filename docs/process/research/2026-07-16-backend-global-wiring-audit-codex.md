@@ -233,7 +233,7 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S1`（功能完整度/运维可靠性） |
 | 分类 | W-01 建而未用、W-03 假激活风险 |
-| 状态 | **Partial Fixed in this branch；只读调度真相已聚合，selector/持久化迁移仍需后续决策** |
+| 状态 | **Owner Decision Required** |
 | 用户影响 | 当前渠道健康主要依赖真实用户请求产生被动信号。无流量账号不会被主动验证；运维不能把 health 页面上的时间戳当作主动探测证据。 |
 
 **源码证据**
@@ -434,7 +434,7 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S1`（运营判断/路由一致性） |
 | 分类 | W-02 半接线、W-08 观测失真、W-10 信息断链、W-12 重复体系 |
-| 状态 | **Owner Decision Required** |
+| 状态 | **Partial Fixed in this branch；只读调度真相已聚合，selector/持久化迁移仍需后续决策** |
 | 用户影响 | 运维可能在 provider-account 列表中看到账号处于 active，也可能看到 `rate_limit_reset_at/overload_until/temp_unschedulable_until`，但生产 selector 不直接读取这些时间字段；真实请求产生的冷却又主要写到 `channel_health_state`。因此“管理页面认为账号什么状态”和“下一次请求是否选到账号”需要跨两个接口人工拼接。 |
 
 **源码证据**
