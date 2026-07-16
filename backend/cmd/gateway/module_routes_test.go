@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
@@ -19,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
@@ -62,7 +66,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 }
 
 // TestModulesEndpointReturnsSeededModulesForAdmin —— 在 gate 被满足时
-//(注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
+// (注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
 // 这用一个由 buildModuleRegistry 播种的真实 registry(而非 fake)来检验
 // handler+source 的接线,因此播种注册中的回归(例如漏了一次 Register 调用)
 // 会在这里变红。
@@ -386,4 +390,209 @@ func TestModulesRegistryWiresSyncAndMedia(t *testing.T) {
 			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
 		}
 	}
+}
+
+func TestActivationSelectorModePercentAndSaltRedaction(t *testing.T) {
+	t.Setenv("HUAKAI_POOL_SELECTOR_MODE", "shadow")
+	t.Setenv("HUAKAI_POOL_SELECTOR_SHADOW_PCT", "99")
+	t.Setenv("HUAKAI_POOL_SELECTOR_SALT", "changed-after-start")
+
+	resp, raw := fetchModulesResponseJSON(t, &deps{
+		selectorConfig: &runtimeconfig.PoolSelectorConfig{
+			Mode:          runtimeconfig.PoolSelectorModeCanary,
+			CanaryPercent: 37,
+			SamplingSalt:  "owner-secret-salt",
+		},
+	})
+	selector := mustModule(t, resp.Modules, "routing.selector")
+	if selector.Activation == nil {
+		t.Fatal("routing.selector 缺 activation")
+	}
+	if selector.Activation.Mode != "canary" {
+		t.Fatalf("selector mode=%q want canary", selector.Activation.Mode)
+	}
+	if selector.Activation.TrafficPercent == nil || *selector.Activation.TrafficPercent != 37 {
+		t.Fatalf("selector traffic_percent=%v want 37", selector.Activation.TrafficPercent)
+	}
+	if selector.Activation.Backend != "mixed" {
+		t.Fatalf("selector backend=%q want mixed", selector.Activation.Backend)
+	}
+	if selector.Activation.SharedSafe == nil || *selector.Activation.SharedSafe {
+		t.Fatalf("selector shared_safe=%v want false", selector.Activation.SharedSafe)
+	}
+	if selector.Activation.Active == nil || *selector.Activation.Active {
+		t.Fatalf("nil selector 不能 active: %+v", selector.Activation)
+	}
+	if selector.Activation.Verified == nil || *selector.Activation.Verified {
+		t.Fatalf("degraded selector 不能 verified: %+v", selector.Activation)
+	}
+	for _, ep := range selector.Activation.Endpoints {
+		if ep.Active == nil || *ep.Active {
+			t.Fatalf("nil selector 时端点 %s 不应 active: %+v", ep.Name, ep)
+		}
+	}
+	if strings.Contains(raw, "owner-secret-salt") || strings.Contains(raw, "changed-after-start") || strings.Contains(raw, "SamplingSalt") || strings.Contains(raw, "sampling_salt") {
+		t.Fatalf("selector JSON 泄露采样盐: %s", raw)
+	}
+}
+
+func TestActivationQueueDefaultAndCacheRemainLocalAndNotSharedSafe(t *testing.T) {
+	resp, _ := fetchModulesResponseJSON(t, &deps{})
+	queue := mustModule(t, resp.Modules, "queue.wait")
+	cache := mustModule(t, resp.Modules, "cache.response")
+
+	for _, mod := range []modulehttp.ModuleView{queue, cache} {
+		if mod.Activation == nil {
+			t.Fatalf("%s 缺 activation", mod.ID)
+		}
+		if mod.Activation.Backend != "local" {
+			t.Fatalf("%s backend=%q want local", mod.ID, mod.Activation.Backend)
+		}
+		if mod.Activation.SharedSafe == nil || *mod.Activation.SharedSafe {
+			t.Fatalf("%s shared_safe=%v want false", mod.ID, mod.Activation.SharedSafe)
+		}
+	}
+	if queue.Activation.Active == nil || !*queue.Activation.Active {
+		t.Fatalf("queue handler 默认执行器应 active: %+v", queue.Activation)
+	}
+	if queue.Activation.Injected == nil || *queue.Activation.Injected {
+		t.Fatalf("queue 默认执行器不是 composition-root 注入: %+v", queue.Activation)
+	}
+	if queue.Activation.Mode != "handler-default" {
+		t.Fatalf("queue mode=%q want handler-default", queue.Activation.Mode)
+	}
+	if queue.Activation.Verified == nil || !*queue.Activation.Verified {
+		t.Fatalf("queue 默认执行器应通过 live probe 验证: %+v", queue.Activation)
+	}
+	if cache.Activation.Active == nil || *cache.Activation.Active {
+		t.Fatalf("nil cache 不应 active: %+v", cache.Activation)
+	}
+	assertEndpointState(t, queue.Activation, "chat", false, true)
+	assertEndpointState(t, queue.Activation, "images", false, false)
+	assertEndpointState(t, cache.Activation, "chat", false, false)
+	assertEndpointState(t, cache.Activation, "audio", false, false)
+}
+
+func TestActivationEndpointCoverageReflectsRealHandlerDifferences(t *testing.T) {
+	resp, _ := fetchModulesResponseJSON(t, &deps{
+		modelRegistry:       &registry.PostgresRegistry{},
+		dlqService:          &legacydlq.Service{},
+		settleRecoveryReady: true,
+		channelHealth:       &channelhealth.Service{},
+		selector:            activationSelectorStub{},
+	})
+
+	model := mustModule(t, resp.Modules, "registry.model")
+	recovery := mustModule(t, resp.Modules, "settlement.recovery")
+	channel := mustModule(t, resp.Modules, "channelhealth.service")
+
+	assertEndpointState(t, model.Activation, "chat", true, true)
+	assertEndpointState(t, model.Activation, "completions", true, true)
+	assertEndpointState(t, model.Activation, "embeddings", true, true)
+	assertEndpointState(t, model.Activation, "rerank", true, true)
+	assertEndpointState(t, model.Activation, "images", true, true)
+	assertEndpointState(t, model.Activation, "audio", true, true)
+
+	assertEndpointState(t, recovery.Activation, "chat", true, true)
+	assertEndpointState(t, recovery.Activation, "completions", true, true)
+	assertEndpointState(t, recovery.Activation, "images", true, true)
+	assertEndpointState(t, recovery.Activation, "embeddings", false, false)
+	assertEndpointState(t, recovery.Activation, "audio", false, false)
+
+	assertEndpointState(t, channel.Activation, "chat", true, true)
+	assertEndpointState(t, channel.Activation, "completions", true, true)
+	assertEndpointState(t, channel.Activation, "embeddings", true, true)
+	assertEndpointState(t, channel.Activation, "rerank", true, true)
+	assertEndpointState(t, channel.Activation, "images", true, true)
+	assertEndpointState(t, channel.Activation, "audio", true, true)
+}
+
+func TestActivationSettlementRecoveryRequiresRegisteredHandler(t *testing.T) {
+	resp, _ := fetchModulesResponseJSON(t, &deps{dlqService: &legacydlq.Service{}})
+	recovery := mustModule(t, resp.Modules, "settlement.recovery")
+
+	if recovery.Activation.Constructed == nil || !*recovery.Activation.Constructed {
+		t.Fatalf("DLQ service 已构造: %+v", recovery.Activation)
+	}
+	if recovery.Activation.Injected == nil || !*recovery.Activation.Injected {
+		t.Fatalf("恢复 enqueuer 已注入端点: %+v", recovery.Activation)
+	}
+	if recovery.Activation.Active == nil || *recovery.Activation.Active {
+		t.Fatalf("恢复 handler 未注册时不能 active: %+v", recovery.Activation)
+	}
+	if recovery.Activation.Verified == nil || *recovery.Activation.Verified {
+		t.Fatalf("恢复 handler 未注册时不能 verified: %+v", recovery.Activation)
+	}
+	assertEndpointState(t, recovery.Activation, "chat", true, false)
+	assertEndpointState(t, recovery.Activation, "images", true, false)
+}
+
+func TestActivationChannelHealthMarksLocalAuthLaneAsMixed(t *testing.T) {
+	resp, _ := fetchModulesResponseJSON(t, &deps{
+		channelHealth: &channelhealth.Service{},
+		authCooldown:  authcooldown.NewStore(authcooldown.Config{}),
+	})
+	channel := mustModule(t, resp.Modules, "channelhealth.service")
+
+	if channel.Activation.Backend != "mixed" {
+		t.Fatalf("channel backend=%q want mixed", channel.Activation.Backend)
+	}
+	if channel.Activation.SharedSafe == nil || *channel.Activation.SharedSafe {
+		t.Fatalf("进程内 auth cooldown 开启后不能标 shared-safe: %+v", channel.Activation)
+	}
+	assertEndpointState(t, channel.Activation, "chat", true, true)
+	assertEndpointState(t, channel.Activation, "completions", false, false)
+}
+
+type activationSelectorStub struct{}
+
+func (activationSelectorStub) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+	return nil, nil
+}
+
+func fetchModulesResponseJSON(t *testing.T, d *deps) (modulehttp.ModulesResponse, string) {
+	t.Helper()
+	src := newModuleSource(buildModuleRegistry(d))
+	h := modulehttp.NewModulesHandler(src)
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp modulehttp.ModulesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp, rec.Body.String()
+}
+
+func mustModule(t *testing.T, modules []modulehttp.ModuleView, id string) modulehttp.ModuleView {
+	t.Helper()
+	for _, mod := range modules {
+		if mod.ID == id {
+			return mod
+		}
+	}
+	t.Fatalf("missing module %s", id)
+	return modulehttp.ModuleView{}
+}
+
+func assertEndpointState(t *testing.T, activation *moduleregistry.ActivationSnapshot, name string, injected, active bool) {
+	t.Helper()
+	if activation == nil {
+		t.Fatal("activation is nil")
+	}
+	for _, ep := range activation.Endpoints {
+		if ep.Name != name {
+			continue
+		}
+		if ep.Injected == nil || *ep.Injected != injected {
+			t.Fatalf("endpoint %s injected=%v want %v", name, ep.Injected, injected)
+		}
+		if ep.Active == nil || *ep.Active != active {
+			t.Fatalf("endpoint %s active=%v want %v", name, ep.Active, active)
+		}
+		return
+	}
+	t.Fatalf("missing endpoint %s", name)
 }

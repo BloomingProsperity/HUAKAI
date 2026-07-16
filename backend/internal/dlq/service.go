@@ -83,11 +83,12 @@ func NewService(store *Store, opts ...ServiceOption) *Service {
 	return s
 }
 
-func (s *Service) Register(kind EventKind, h Handler) {
+func (s *Service) Register(kind EventKind, h Handler) bool {
 	if s == nil || h == nil {
-		return
+		return false
 	}
 	s.handlers[kind] = h
+	return true
 }
 
 func (s *Service) Enqueue(ctx context.Context, e Event) (int64, error) {

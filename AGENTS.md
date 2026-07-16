@@ -117,6 +117,45 @@ If a rule seems to block a real product requirement, the agent should:
 4. Mark high-risk parts for Owner confirmation.
 5. Never delete the feature silently.
 
+## Owner Benefit-First Global Execution Rule (2026-07-16)
+
+本节对所有 agent、所有目标、所有工作树全局生效。它扩展阅读和执行边界，但不覆盖
+高风险确认、clean-room、真实性、测试质量和互审硬规则。
+
+1. **有明确收益就深入。** 只要能增强基础、正确性、可维护性、可观测性、可测试性
+   或真实功能闭环，agent 可以主动扩大源码阅读面和低/中风险修复面，不得用过窄的
+   自设 scope 把跨模块链路问题切断。
+2. **探索必须指向闭环。** 每项扩展阅读都要能回答一个具体问题，并落到证据、修复、
+   测试、风险记录或明确的下一步；禁止无目标全仓扫描和重复消耗 token。
+3. **低/中风险直接完成。** 对收益清楚、可测试、可回滚且不改变数据库结构、资金、
+   鉴权核心、billing ledger、quota enforcement、真实密钥或生产部署的改动，直接
+   实现、验证和记录，不为普通工程判断反复请求 Owner。
+4. **仪式按风险和改动规模配置。** 已有计划、双计划、review、clean-room 等硬门仍然
+   有效，但产物应简洁、复用现有证据并聚焦当前决策，不得把流程本身变成延迟交付或
+   浪费算力的理由。
+5. **高风险先交决策包再询问。** 真正要改变数据库 schema、资金路径、鉴权核心、
+   billing ledger、强配额执行、运行时依赖或生产部署时，必须停下并向 Owner 提供：
+   HUAKAI 当前真实源码链路；借鉴项目当前源码做法及逐项引用；双方优缺点和功能不缩水
+   对比；至少两个可执行选项；迁移、测试、回滚和风险；agent 的明确推荐；以及需要
+   Owner 决定的精确问题。涉及非 MIT 源码时，调研与实现必须保持 clean-room 分车道。
+6. **跨模块影响必须检查。** 修复不能只盯报错点，要沿入口、装配、运行时状态、
+   持久化、观测、恢复和相关端点检查辐射影响；无法在本轮安全闭环的部分必须记录，
+   不能静默遗忘。
+
+## Owner PR And Merge Gate (2026-07-16)
+
+本节对后续所有 agent、目标和工作树全局生效。
+
+1. **所有修复与改动必须通过 PR 提交。** 代码、测试、合同、规则和正式文档均在
+   独立分支完成 review、测试、commit、push 后创建 PR；不得把改动直接提交到主线。
+2. **默认创建 Draft PR。** PR 必须说明改了什么、根因、影响面、验证结果、风险、
+   是否有功能缩水和需要 Owner 决策的事项。
+3. **禁止 agent 自行合并。** 无论检查是否全部通过，进入 `main` 或其它主线分支前
+   都必须获得 Owner 针对该 PR 的明确合并同意。创建 PR、更新 PR 和处理 review
+   不等于获得合并授权。
+4. **批次边界清楚。** 全局审计等长任务按可独立验证的闭环拆 PR；不得把无关目标、
+   其它 agent 的改动或尚未核实的问题混入同一 PR。
+
 ## Feature Preservation Rule
 
 License risk and security risk must not reduce functionality.

@@ -133,6 +133,7 @@ type deps struct {
 	billingPolicyStore    billing.PolicyStore
 	billingPolicyResolver *billing.PolicyResolver
 	selector              pool.Selector
+	selectorConfig        *runtimeconfig.PoolSelectorConfig
 	queueWaiter           *queuewait.Executor
 	channelHealth         *channelhealth.Service
 	authCooldown          *authcooldown.Store
@@ -186,6 +187,7 @@ type deps struct {
 	responseCache            l2cache.Store
 	cacheScope               string
 	dlqService               *legacydlq.Service
+	settleRecoveryReady      bool
 	obsDLQAdminStore         *obsoutbox.PostgresOutbox
 	completionBus            *eventbus.Bus
 	auditRefPolicy           *eventbus.AuditRefPolicy
@@ -1191,7 +1193,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 行后重调 Settler.Settle。三证 proof 用 PG 直接查 claim/usage/billing_events。
 	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
 	settlementHandler := newSettlementRecoveryHandler(settler, settlementProof, auditRefPolicy)
-	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
+	settleRecoveryReady := dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
 	// WAVE H3 只读诊断工具脊柱 + 它的 hermes_tool_calls 审计写入器,在这里构建
 	//(早于 chat bridge),这样 WAVE H3b 对话式工具循环就能把 registry(catalog
 	// provider)+ session-binding store 与 bridge 以及 internal tool-execute handler
@@ -1405,6 +1407,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		selectorConfig:        opts.selector,
 		queueWaiter:           queuewait.NewExecutor(),
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
@@ -1455,6 +1458,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		responseCache:         opts.responseCache,
 		cacheScope:            opts.cacheScope,
 		dlqService:            dlqService,
+		settleRecoveryReady:   settleRecoveryReady,
 		obsDLQAdminStore:      outboxStore,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,

@@ -2217,7 +2217,9 @@ paths:
         admin-gated Hermes ops assistant: per HUAKAI subsystem it returns
         identity (id, category, title, capabilities), the static feature-tree
         catalog overlay (section, feature id, parity status, owning packages),
-        and a live read-only health probe result. Probe details are
+        a structured activation snapshot (construction, injection, endpoint
+        coverage, replica safety, backend and verification), and a live
+        read-only health probe result. Probe details and activation fields are
         system-diagnostic enums/counts only — never secrets or user data. No
         upstream paid calls; zero billing side effects. Requires platform-admin.
       operationId: getAdminModules
@@ -2234,11 +2236,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  modules:
-                    type: array
-                    items: { type: object }
+                $ref: '#/components/schemas/ModulesResponse'
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role (platform-admin required). }
         '503': { description: Module registry not configured. }
@@ -2260,11 +2258,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  modules:
-                    type: array
-                    items: { type: object }
+                $ref: '#/components/schemas/ModulesResponse'
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role (platform-admin required). }
         '503': { description: Module registry not configured. }
@@ -2667,15 +2661,15 @@ paths:
       operationId: getHermesContext
       description: >-
         Returns the merged module-knowledge view (module identity, capabilities,
-        live probe state, static catalog overlay) the Hermes ops assistant uses to
-        ground root-cause diagnostics. Module identity + enum statuses only; never
-        secrets or user data. Admin-gated.
+        structured activation state, live probe state, static catalog overlay)
+        the Hermes ops assistant uses to ground root-cause diagnostics. Module
+        identity + enum statuses only; never secrets or user data. Admin-gated.
       responses:
         '200':
           description: Merged module-knowledge view.
           content:
             application/json:
-              schema: { type: object }
+              schema: { $ref: '#/components/schemas/ModulesResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -13338,6 +13332,95 @@ components:
           schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperResponse' }
 
   schemas:
+    ModuleActivationEndpoint:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Stable endpoint or handler family name.
+        injected:
+          type: boolean
+          description: Whether the composition root injected this module dependency.
+        active:
+          type: boolean
+          description: Whether the module capability is available to this endpoint family.
+
+    ModuleActivationSnapshot:
+      type: object
+      additionalProperties: false
+      description: Privacy-safe startup and live-probe activation state; never contains raw configuration or secrets.
+      properties:
+        declared: { type: boolean }
+        constructed: { type: boolean }
+        injected: { type: boolean }
+        active: { type: boolean }
+        shared_safe:
+          type: boolean
+          description: Whether this module's complete runtime state is safe and consistent across replicas.
+        observable: { type: boolean }
+        verified:
+          type: boolean
+          description: True for a successful live probe, false for a definite degraded/error probe, omitted when unknown.
+        backend:
+          type: string
+          enum: [local, postgresql, mixed]
+        mode: { type: string }
+        traffic_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/ModuleActivationEndpoint' }
+
+    ModuleProbeResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [unknown, ok, degraded, error]
+        detail: { type: string }
+
+    ModuleCatalogOverlay:
+      type: object
+      additionalProperties: false
+      properties:
+        section: { type: string }
+        feature_id: { type: string }
+        status: { type: string }
+        parity: { type: string }
+        pkgs:
+          type: array
+          items: { type: string }
+
+    ModuleView:
+      type: object
+      additionalProperties: false
+      required: [id, category, title, live_probe]
+      properties:
+        id: { type: string }
+        category: { type: string }
+        title: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }
+        activation: { $ref: '#/components/schemas/ModuleActivationSnapshot' }
+        catalog: { $ref: '#/components/schemas/ModuleCatalogOverlay' }
+        live_probe: { $ref: '#/components/schemas/ModuleProbeResult' }
+
+    ModulesResponse:
+      type: object
+      additionalProperties: false
+      required: [modules]
+      properties:
+        modules:
+          type: array
+          items: { $ref: '#/components/schemas/ModuleView' }
+
     AuthUser:
       type: object
       additionalProperties: false
