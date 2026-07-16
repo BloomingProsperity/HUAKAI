@@ -1394,7 +1394,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
 	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
 	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
-	sessionAdminIdentities := adminsessionauth.NewPostgresIdentityStore(pgPool)
+	workingTenantID, err := tenancy.WorkingTenantIDFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("resolve working tenant: %w", err)
+	}
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1490,10 +1493,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		modelSync:            modelSyncService,
 		routePlanner:         router.NewDefaultRouter(),
 		adminAuth: adminsessionauth.New(
-			admin.NewAdminResolver(adminQueries), // 令牌通道(hk_admin_,行为不变)
-			userSessionService,                   // session 校验器
-			adminsessionauth.IdentityStoreFunc(sessionAdminIdentities.ResolveActiveAdminIdentity), // session 私有作用域查询
+			admin.NewAdminResolver(adminQueries),   // 令牌通道(hk_admin_,行为不变)
+			userSessionService,                     // session 校验器
+			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
 			clientIPResolver,
+			workingTenantID,
 		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
@@ -1590,9 +1594,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	}
 	// role 制单登录 bootstrap:把 HUAKAI_ADMIN_BOOTSTRAP_EMAIL 指定的已注册账号提升为
 	// role=admin(env 未设 = no-op)。租户走与种默认租户同一真相源,尊重 env 覆盖。
-	if workingTenantID, err := tenancy.WorkingTenantIDFromEnv(); err != nil {
-		return nil, fmt.Errorf("resolve working tenant: %w", err)
-	} else if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, workingTenantID, logger); err != nil {
+	if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, workingTenantID, logger); err != nil {
 		return nil, fmt.Errorf("admin user bootstrap: %w", err)
 	}
 	// Production-required gate: credentialScheduler 必须装

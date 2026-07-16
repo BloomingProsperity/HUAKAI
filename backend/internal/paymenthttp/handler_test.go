@@ -15,7 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 )
 
@@ -200,7 +199,7 @@ func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdent
 func newAdminTestRouter(svc Service) http.Handler {
 	r := chi.NewRouter()
 	d := AdminDeps{
-		Auth:    fakeAdminAuth{ident: admintest.Platform(99)},
+		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
 		Service: svc,
 	}
 	r.Route("/orders", func(r chi.Router) { MountPaymentAdminRoutes(r, d) })

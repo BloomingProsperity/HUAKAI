@@ -22,8 +22,6 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
 func dsn(t *testing.T) string {
@@ -57,7 +55,7 @@ func TestPgConnect(t *testing.T) {
 }
 
 // TestPgSchemaApplied 确认 migration 已落地，且关键钱路径表
-// （claim ledger + usage records + outbox）及当前切片要求的结构存在。
+// （claim ledger + usage records + outbox）存在。
 // 失败时请运行 `make db-migrate`。
 func TestPgSchemaApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -77,8 +75,6 @@ func TestPgSchemaApplied(t *testing.T) {
 		"oauth_refresh_audit_events",
 		"sticky_bindings",
 		"settlement_intents",
-		// 破坏点→0185 未应用或漏建 allocation 表，此项存在性探测会转红。
-		"tenant_provider_account_allocations",
 	}
 	for _, table := range expected {
 		var present bool
@@ -108,24 +104,6 @@ func TestPgSchemaApplied(t *testing.T) {
 	}
 	if version != want {
 		t.Fatalf("schema_migrations version=%d, expected %d (latest on-disk migration); run `make db-migrate`", version, want)
-	}
-}
-
-// TestMigration0185Embedded 守住进程内自迁移使用的 go:embed 输入。破坏点→
-// 新增 0185 文件后缩窄 embed 规则、漏掉 up 或 down，读取对应路径会失败并转红。
-func TestMigration0185Embedded(t *testing.T) {
-	paths := []string{
-		"migrations/0185_reseller_phase1_tenant_hierarchy.up.sql",
-		"migrations/0185_reseller_phase1_tenant_hierarchy.down.sql",
-	}
-	for _, path := range paths {
-		raw, err := sqlmigrations.Files.ReadFile(path)
-		if err != nil {
-			t.Fatalf("内嵌 migration %s: %v", path, err)
-		}
-		if len(raw) == 0 {
-			t.Fatalf("内嵌 migration %s 为空", path)
-		}
 	}
 }
 

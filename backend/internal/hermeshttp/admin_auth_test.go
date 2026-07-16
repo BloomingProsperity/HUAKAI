@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
@@ -87,10 +86,11 @@ func TestAdminAuthMiddlewareNilResolverIs503(t *testing.T) {
 }
 
 func TestAdminAuthMiddlewareTenantOperatorCrossTenant403(t *testing.T) {
-	// 回归(变异:去掉 CanActOnTenant / scope 不匹配检查):scope 为 tenant 7 的
+	// 回归(变异:去掉 CanIssueForTenant / scope 不匹配检查):scope 为 tenant 7 的
 	// tenant_operator 请求 tenant 9 的资源时,必须被拒绝 403,且不应到达任何 handler。
-	resolver := &fakeAdminResolver{identity: admintest.TenantOperator(
-		100, 7)}
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 100, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+	}}
 	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=9&as_user_id=42")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
@@ -103,8 +103,9 @@ func TestAdminAuthMiddlewareTenantOperatorCrossTenant403(t *testing.T) {
 func TestAdminAuthMiddlewarePlatformAdminRequiresTenantParam(t *testing.T) {
 	// 回归:platform_admin 没有隐含 tenant;缺省 ?tenant_id 必须是 400,绝不能静默
 	// 默认成某个跨 tenant 的值并泄露进 tenant 范围的 handler。
-	resolver := &fakeAdminResolver{identity: admintest.Platform(
-		200)}
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 200, Role: admin.RolePlatformAdmin,
+	}}
 	rec, next := runAdminMiddleware(resolver, "/conversations?as_user_id=42")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
@@ -117,8 +118,9 @@ func TestAdminAuthMiddlewarePlatformAdminRequiresTenantParam(t *testing.T) {
 func TestAdminAuthMiddlewareRequiresAsUserID(t *testing.T) {
 	// 回归:admin 模式要求 ?as_user_id,以便贯穿传递的 user id 能解析 users FK;
 	// 缺省它必须是 400,而不是用 0 值 user id 去写入、在 DB 层违反 FK。
-	resolver := &fakeAdminResolver{identity: admintest.TenantOperator(
-		300, 7)}
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 300, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+	}}
 	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=7")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
@@ -132,8 +134,9 @@ func TestAdminAuthMiddlewareOperatorSuccessInjectsScopedIdentityAndActor(t *test
 	// 回归:成功时,中间件必须贯穿传递 operator 的 scoped tenant + 请求的
 	// as_user_id,并记录 operator 的 token id/role 用于审计归因。去掉 actor 注入的
 	// 变异会使 gotActorOK 为 false;忽略 ScopeTenantID 的变异会改变 gotIdentity。
-	resolver := &fakeAdminResolver{identity: admintest.TenantOperator(
-		400, 7)}
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 400, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+	}}
 	rec, next := runAdminMiddleware(resolver, "/conversations?as_user_id=42")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
@@ -191,8 +194,9 @@ func TestWithAdminActorFoldsAttributionOnlyInAdminMode(t *testing.T) {
 func TestAdminAuthMiddlewarePlatformAdminCrossTenantAllowedWithParam(t *testing.T) {
 	// 回归:platform_admin 可对一个显式 tenant 进行操作;scoped tenant 必须是
 	// ?tenant_id 的值,而不是 operator(缺失)的 scope。
-	resolver := &fakeAdminResolver{identity: admintest.Platform(
-		500)}
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 500, Role: admin.RolePlatformAdmin,
+	}}
 	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=9&as_user_id=42")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())

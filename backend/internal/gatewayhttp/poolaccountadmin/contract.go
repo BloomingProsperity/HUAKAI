@@ -325,23 +325,27 @@ func ResolveTenant(r *http.Request, deps Deps) (admin.AdminIdentity, int64, *Req
 		}
 		return admin.AdminIdentity{}, 0, &RequestError{http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential"}
 	}
-	if err := identity.CanAccessProviderAccountControlPlane(); err != nil {
-		return admin.AdminIdentity{}, 0, &RequestError{http.StatusForbidden, "admin_forbidden", "provider account control plane is not available to this tenant scope"}
-	}
-	tenantID := identity.ScopeTenantID()
-	if rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); rawTenantID != "" {
-		var err error
-		tenantID, err = ParsePositiveID(rawTenantID)
+	switch identity.Role {
+	case admin.RoleTenantOperator:
+		if identity.ScopeTenantID <= 0 {
+			return admin.AdminIdentity{}, 0, &RequestError{http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required"}
+		}
+		return identity, identity.ScopeTenantID, nil
+	case admin.RolePlatformAdmin:
+		if identity.ScopeTenantID > 0 {
+			return identity, identity.ScopeTenantID, nil
+		}
+		tenantID, err := ParsePositiveID(strings.TrimSpace(r.URL.Query().Get("tenant_id")))
 		if err != nil {
 			return admin.AdminIdentity{}, 0, &RequestError{http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive"}
 		}
-	} else if tenantID <= 0 {
-		return admin.AdminIdentity{}, 0, &RequestError{http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive"}
+		if err := identity.CanIssueForTenant(tenantID); err != nil {
+			return admin.AdminIdentity{}, 0, &RequestError{http.StatusForbidden, "admin_forbidden", "tenant scope not permitted"}
+		}
+		return identity, tenantID, nil
+	default:
+		return admin.AdminIdentity{}, 0, &RequestError{http.StatusForbidden, "admin_forbidden", "admin role required"}
 	}
-	if err := identity.CanActOnTenant(tenantID); err != nil {
-		return admin.AdminIdentity{}, 0, &RequestError{http.StatusForbidden, "admin_forbidden", "tenant scope not permitted"}
-	}
-	return identity, tenantID, nil
 }
 
 // ResolvePlatform 解析只允许 platform_admin 的管理请求。
@@ -356,7 +360,7 @@ func ResolvePlatform(r *http.Request, deps Deps) (admin.AdminIdentity, *RequestE
 		}
 		return admin.AdminIdentity{}, &RequestError{http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential"}
 	}
-	if !identity.IsPlatformWide() {
+	if identity.Role != admin.RolePlatformAdmin {
 		return admin.AdminIdentity{}, &RequestError{http.StatusForbidden, "admin_forbidden", "platform_admin role required"}
 	}
 	return identity, nil

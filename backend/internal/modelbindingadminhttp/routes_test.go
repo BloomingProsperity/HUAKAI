@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -78,10 +77,10 @@ func (s *stubService) DeletePoolBinding(_ context.Context, id, tenantID int64, a
 }
 
 func platformAdmin(tokenID int64) admin.AdminIdentity {
-	return admintest.Platform(tokenID)
+	return admin.AdminIdentity{TokenID: tokenID, Role: admin.RolePlatformAdmin}
 }
 func tenantOperator(tokenID, scope int64) admin.AdminIdentity {
-	return admintest.TenantOperator(tokenID, scope)
+	return admin.AdminIdentity{TokenID: tokenID, Role: admin.RoleTenantOperator, ScopeTenantID: scope}
 }
 
 func do(t *testing.T, auth stubAuth, svc *stubService, method, target, body string) *httptest.ResponseRecorder {
@@ -126,7 +125,7 @@ func TestTenantOperatorScopedToOwnTenant(t *testing.T) {
 }
 
 // 跨租户拒绝:operator(scope=42)带 ?tenant_id=99 → 403,service 不被调用。
-// 变异:门跳过 CanActOnTenant → 会放行到 99 → service 被调用 → 红。
+// 变异:门跳过 CanIssueForTenant → 会放行到 99 → service 被调用 → 红。
 func TestCrossTenantForbidden(t *testing.T) {
 	svc := &stubService{}
 	rec := do(t, stubAuth{ident: tenantOperator(7, 42)}, svc, http.MethodGet, "/?tenant_id=99", "")

@@ -159,10 +159,6 @@ func resolveProviderAccountBulkAdmin(w http.ResponseWriter, r *http.Request, d P
 		writeAdminAuthError(w, err)
 		return admin.AdminIdentity{}, 0, false
 	}
-	if err := ident.CanAccessProviderAccountControlPlane(); err != nil {
-		writeError(w, http.StatusForbidden, "admin_forbidden", "provider account control plane is not available to this tenant scope")
-		return admin.AdminIdentity{}, 0, false
-	}
 	switch ident.Role {
 	case admin.RoleTenantOperator, admin.RolePlatformAdmin:
 	default:

@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 )
 
 type fakeAuth struct {
@@ -51,7 +50,7 @@ func do(h http.Handler, url string) *httptest.ResponseRecorder {
 
 func TestOverviewPlatformAdminPassesResolvedTenant(t *testing.T) {
 	store := &fakeStore{ov: Overview{DisabledKeys: 3, FiringAlerts: 1, DisabledUsers: 2, IPBlacklistedKeys: 4}}
-	h := mount(fakeAuth{ident: admintest.Platform(0)}, store)
+	h := mount(fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, store)
 
 	rec := do(h, "/admin/v1/risk/overview?tenant_id=7")
 	if rec.Code != http.StatusOK {
@@ -71,7 +70,7 @@ func TestOverviewPlatformAdminPassesResolvedTenant(t *testing.T) {
 
 func TestOverviewTenantOperatorDefaultsToOwnScope(t *testing.T) {
 	store := &fakeStore{}
-	h := mount(fakeAuth{ident: admintest.TenantOperator(0, 7)}, store)
+	h := mount(fakeAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}, store)
 
 	rec := do(h, "/admin/v1/risk/overview") // 不传 tenant_id
 	if rec.Code != http.StatusOK {
@@ -85,7 +84,7 @@ func TestOverviewTenantOperatorDefaultsToOwnScope(t *testing.T) {
 // IDOR 守卫:租户运营者请求**他人** tenant_id 必 403,且**绝不触达 store**(防跨租户读)。
 func TestOverviewTenantOperatorCannotReadOtherTenant(t *testing.T) {
 	store := &fakeStore{}
-	h := mount(fakeAuth{ident: admintest.TenantOperator(0, 7)}, store)
+	h := mount(fakeAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}, store)
 
 	rec := do(h, "/admin/v1/risk/overview?tenant_id=9") // 越权请求他人租户
 	if rec.Code != http.StatusForbidden {
@@ -98,7 +97,7 @@ func TestOverviewTenantOperatorCannotReadOtherTenant(t *testing.T) {
 
 func TestOverviewPlatformAdminRequiresTenantID(t *testing.T) {
 	store := &fakeStore{}
-	h := mount(fakeAuth{ident: admintest.Platform(0)}, store)
+	h := mount(fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, store)
 
 	rec := do(h, "/admin/v1/risk/overview") // 平台 admin 不传 tenant_id
 	if rec.Code != http.StatusBadRequest {
@@ -123,7 +122,7 @@ func TestOverviewAuthFailureRejected(t *testing.T) {
 }
 
 func TestOverviewStoreUnconfiguredReturns503(t *testing.T) {
-	h := mount(fakeAuth{ident: admintest.Platform(0)}, nil)
+	h := mount(fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, nil)
 	rec := do(h, "/admin/v1/risk/overview?tenant_id=7")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("状态码=%d 期望 503(Store 未配)", rec.Code)

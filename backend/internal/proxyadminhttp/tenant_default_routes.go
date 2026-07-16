@@ -95,7 +95,7 @@ func resolveTenantDefaultIdentity(w http.ResponseWriter, r *http.Request, d Deps
 	if !ok {
 		return 0, admin.AdminIdentity{}, false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, admin.AdminIdentity{}, false
 	}

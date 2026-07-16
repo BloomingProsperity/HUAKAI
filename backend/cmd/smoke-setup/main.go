@@ -379,15 +379,11 @@ func upsertOpenAICredential(ctx context.Context, pool *pgxpool.Pool, keyMaterial
 
 func issueHUAKAIAPIKey(ctx context.Context, pool *pgxpool.Pool) (admin.IssueResult, error) {
 	issuer := admin.NewKeyIssuer(pool)
-	caller, err := admin.NewAdminIdentity(ctx, admin.IdentityClaims{
-		TokenID: time.Now().UnixNano(),
-		Role:    admin.RolePlatformAdmin,
-	}, nil)
-	if err != nil {
-		return admin.IssueResult{}, fmt.Errorf("construct smoke admin identity: %w", err)
-	}
 	result, err := issuer.Issue(ctx, admin.IssueRequest{
-		Caller:      caller,
+		Caller: admin.AdminIdentity{
+			TokenID: time.Now().UnixNano(),
+			Role:    admin.RolePlatformAdmin,
+		},
 		TenantID:    tenantID,
 		UserID:      userID,
 		Name:        smokeAPIKeyName,

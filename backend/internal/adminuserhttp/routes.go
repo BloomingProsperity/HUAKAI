@@ -406,7 +406,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID() <= 0 {
+		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 				"tenant_operator scope_tenant_id required")
 			return admin.AdminIdentity{}, 0, false
@@ -419,8 +419,8 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 	case admin.RolePlatformAdmin:
 		// 单租户开箱即用(定位 2026-06-11):platform_admin 现可管理用户,镜像
 		// provider_catalog 的 parseAdminCatalogTenant 模式——必须显式带
-		// ?tenant_id,经 CanActOnTenant 放行(单租户部署即默认租户 id)。
-		// RBAC 语义不变:platform_admin 跨租户但须指名,越权由 CanActOnTenant 挡。
+		// ?tenant_id,经 CanIssueForTenant 放行(单租户部署即默认租户 id)。
+		// RBAC 语义不变:platform_admin 跨租户但须指名,越权由 CanIssueForTenant 挡。
 		if tenantID, ok := tenantFromQueryOrScope(w, r, ident); ok {
 			return ident, tenantID, true
 		}

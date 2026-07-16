@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -814,11 +813,11 @@ func TestAdminPoolAccounts_GlobalAdminCreateScopesToQueryTenant(t *testing.T) {
 }
 
 func adminPoolAdmin() adminPoolAuthStub {
-	return adminPoolAuthStub{ident: admintest.Platform(11)}
+	return adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}}
 }
 
 func providerAccountAdmin() adminPoolAuthStub {
-	return adminPoolAuthStub{ident: admintest.TenantOperator(11, 7)}
+	return adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
 }
 
 func invokeAdminPool(t *testing.T, store *adminPoolStoreStub, auth AdminPoolAccountAuth, method, target, body string) *httptest.ResponseRecorder {

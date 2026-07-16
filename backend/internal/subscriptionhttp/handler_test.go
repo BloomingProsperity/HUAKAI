@@ -16,7 +16,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
@@ -206,7 +205,7 @@ func TestCreateSubscriptionVoucherForcesSubscriptionGrantKind(t *testing.T) {
 		Voucher: voucher.Voucher{ID: 1, GrantKind: voucher.GrantKindSubscription}, Code: "ABC",
 	}}
 	d := AdminDeps{
-		Auth:           fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:           fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
 		Service:        &fakeSubscriptionService{plan: subscription.Plan{ID: 42}},
 		VoucherService: vsvc,
 	}
@@ -242,7 +241,7 @@ func TestCreateSubscriptionVoucherForcesSubscriptionGrantKind(t *testing.T) {
 func TestCreateSubscriptionVoucherPlanNotFound(t *testing.T) {
 	vsvc := &fakeVoucherService{}
 	d := AdminDeps{
-		Auth:           fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:           fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
 		Service:        &fakeSubscriptionService{getPlanErr: subscription.ErrPlanNotFound},
 		VoucherService: vsvc,
 	}
@@ -264,7 +263,7 @@ func TestCreateSubscriptionVoucherPlanNotFound(t *testing.T) {
 func TestCreateSubscriptionVoucherRejectsNonPositivePlan(t *testing.T) {
 	vsvc := &fakeVoucherService{}
 	d := AdminDeps{
-		Auth:           fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:           fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
 		Service:        &fakeSubscriptionService{},
 		VoucherService: vsvc,
 	}
@@ -285,7 +284,7 @@ func TestCreateSubscriptionVoucherRejectsNonPositivePlan(t *testing.T) {
 // 守 nil 依赖安全: VoucherService 未注入时该端点回 503 (而非 panic), 不影响其余订阅 admin 端点。
 func TestCreateSubscriptionVoucherNilVoucherServiceReturns503(t *testing.T) {
 	d := AdminDeps{
-		Auth:    fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
 		Service: &fakeSubscriptionService{plan: subscription.Plan{ID: 42}},
 		// VoucherService 故意 nil
 	}
@@ -308,7 +307,7 @@ func TestAdminListAssignmentsByGroupUsesGroupFilter(t *testing.T) {
 		{ID: 2, TenantID: 5, UserID: 8, GrantedGroup: "vip"},
 	}}
 	d := AdminDeps{
-		Auth:    fakeAdminAuth{ident: admintest.Platform(77)},
+		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77}},
 		Service: svc,
 	}
 	router := newSubAdminTestRouter(d)

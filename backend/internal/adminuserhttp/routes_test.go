@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
@@ -135,7 +134,7 @@ func TestAdminUsersAuthRequired(t *testing.T) {
 	t.Run("resolved non-admin role returns 403 before store", func(t *testing.T) {
 		store := &usersStoreStub{}
 		rec := invokeAdminUsers(t, Deps{
-			Auth:  usersAuthStub{ident: admin.AdminIdentity{TokenID: 99, Role: "user"}},
+			Auth:  usersAuthStub{ident: admin.AdminIdentity{TokenID: 99, Role: "user", ScopeTenantID: 7}},
 			Store: store,
 		}, http.MethodGet, "/admin/v1/users", nil)
 
@@ -527,7 +526,7 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admintest.TenantOperator(12, tenantID)
+	return admin.AdminIdentity{TokenID: 12, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
 }
 
 func pgTimestamp(t time.Time) pgtype.Timestamptz {
@@ -752,7 +751,7 @@ func TestAdminSetUserRemarkRequiresAdmin(t *testing.T) {
 
 // platformAdmin 构造 platform_admin 身份(ScopeTenantID=0,跨租户但须显式 ?tenant_id)。
 func platformAdmin() admin.AdminIdentity {
-	return admintest.Platform(99)
+	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
 }
 
 type userStatusSetterStub struct {
@@ -824,8 +823,8 @@ func TestAdminUsersPlatformAdminRequiresTenantID(t *testing.T) {
 }
 
 // TestAdminUsersTenantOperatorCrossTenantForbidden tenant_operator 带别租户
-// ?tenant_id → 403(CanActOnTenant 越权守卫,RBAC 语义不松动)。
-// MUTATION: tenantFromQueryOrScope 漏 CanActOnTenant 校验 → 跨租户读到 200 → 红。
+// ?tenant_id → 403(CanIssueForTenant 越权守卫,RBAC 语义不松动)。
+// MUTATION: tenantFromQueryOrScope 漏 CanIssueForTenant 校验 → 跨租户读到 200 → 红。
 func TestAdminUsersTenantOperatorCrossTenantForbidden(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	rec := invokeAdminUsersBody(t, Deps{

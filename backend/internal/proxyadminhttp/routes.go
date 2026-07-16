@@ -1,7 +1,7 @@
 // Package proxyadminhttp 暴露出站代理池按租户收敛的管理 HTTP 面
 // (list / create / update / delete / set-status)。它是 internal/proxyadmin.Service
 // 之上的一层薄传输层:管理门(tenant_operator 限本租户、platform_admin 经
-// ?tenant_id+CanActOnTenant)与 adminuserhttp 一致,且每个响应 DTO 都不含凭据——
+// ?tenant_id+CanIssueForTenant)与 adminuserhttp 一致,且每个响应 DTO 都不含凭据——
 // 加密的 auth_secret 只写,绝不投影到任何读取路径。
 package proxyadminhttp
 
@@ -305,14 +305,14 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool)
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID() <= 0 {
+		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 				"tenant_operator scope_tenant_id required")
 			return 0, false
 		}
 		return tenantFromQueryOrScope(w, r, ident)
 	case admin.RolePlatformAdmin:
-		// 开箱单租户:platform_admin 必须指明 ?tenant_id,由 CanActOnTenant 把关。
+		// 开箱单租户:platform_admin 必须指明 ?tenant_id,由 CanIssueForTenant 把关。
 		// RBAC 不变——跨租户但显式。
 		return tenantFromQueryOrScope(w, r, ident)
 	default:
@@ -321,7 +321,7 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool)
 	}
 }
 
-// tenantFromQueryOrScope 从 ?tenant_id(经 CanActOnTenant 校验)解析目标租户,
+// tenantFromQueryOrScope 从 ?tenant_id(经 CanIssueForTenant 校验)解析目标租户,
 // 否则回退到 tenant_operator 自身的作用域。这是 adminuserhttp 模式的本地副本。
 func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	tenantParam := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
@@ -332,7 +332,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 				"tenant_id query param required for platform_admin")
 			return 0, false
 		}
-		tenantID = ident.ScopeTenantID()
+		tenantID = ident.ScopeTenantID
 	} else {
 		v, err := strconv.ParseInt(tenantParam, 10, 64)
 		if err != nil || v <= 0 {
@@ -346,7 +346,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 		writeAdminAuthError(w, admin.ErrAdminForbidden)
 		return 0, false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, false
 	}

@@ -40,7 +40,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 	d := &deps{
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503),
 		// 与 Hermes admin-gate 测试所依赖的行为完全一致。
-		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil),
+		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, 0),
 		moduleRegistry: moduleregistry.New(),
 	}
 	r := chi.NewRouter()
@@ -62,7 +62,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 }
 
 // TestModulesEndpointReturnsSeededModulesForAdmin —— 在 gate 被满足时
-//(注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
+// (注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
 // 这用一个由 buildModuleRegistry 播种的真实 registry(而非 fake)来检验
 // handler+source 的接线,因此播种注册中的回归(例如漏了一次 Register 调用)
 // 会在这里变红。

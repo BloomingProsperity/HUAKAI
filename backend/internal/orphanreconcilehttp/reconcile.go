@@ -49,7 +49,7 @@ func newReconcileHandler(d Deps) http.HandlerFunc {
 			writeAdminAuthError(w, err)
 			return
 		}
-		// 任何对账动作都需 admin 角色;tenant_operator 还要进一步用 CanActOnTenant
+		// 任何对账动作都需 admin 角色;tenant_operator 还要进一步用 CanIssueForTenant
 		// 校验该孤儿属其租户(在 store 拿到 orphan.TenantID 后,见下方 audit hook 前的检查)。
 		if ident.Role != admin.RolePlatformAdmin && ident.Role != admin.RoleTenantOperator {
 			writeError(w, http.StatusForbidden, "admin_forbidden_scope", "admin role required")
@@ -110,7 +110,7 @@ var errOrphanForbiddenTenant = errors.New("orphanreconcilehttp: orphan not in op
 // 形成"孤儿可见→admin 处置→状态推进(+可选追扣)"的闭环留痕。
 func buildAuditHook(ident admin.AdminIdentity, req reconcileRequest, reqID string) mediatask.OrphanReconcileAuditHook {
 	return func(ctx context.Context, tx pgx.Tx, result mediatask.OrphanReconcileResult) error {
-		if err := ident.CanActOnTenant(result.TenantID); err != nil {
+		if err := ident.CanIssueForTenant(result.TenantID); err != nil {
 			// 越权:tenant_operator 对账他租户孤儿。回滚整笔(含任何追扣 Capture)。
 			return errOrphanForbiddenTenant
 		}

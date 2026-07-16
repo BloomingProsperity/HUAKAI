@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
@@ -38,11 +37,11 @@ func TestAllowSessionWriteSetsContext(t *testing.T) {
 	}
 }
 
-// SessionSafe:session-admin 可直接写(Owner 终审 new-api 模型,无后端 step-up)。
+// SessionSafe:session-admin 可按路由分级直接写。
 // 变异:把 resolver 的 `writeClassFromContext(...) != SessionSafe` 判定改错 → RED。
 func TestSessionSafeAllowsWrite(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	r := New(tok, adminSession(3, 9), stubIdentities{role: "admin"}, nil)
+	r := New(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil, 3)
 	req := withClass(reqM(http.MethodPost, "valid-session"), SessionSafe)
 	id, err := r.Resolve(req.Context(), req)
 	if err != nil {
@@ -59,7 +58,7 @@ func TestSessionSafeAllowsWrite(t *testing.T) {
 func TestUnclassifiedWriteDeniedFailClosed(t *testing.T) {
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
-		r := New(tok, adminSession(3, 9), stubIdentities{role: "admin"}, nil)
+		r := New(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil, 3)
 		// 不挂 AllowSessionWrite 中间件 → writeClassNone。
 		_, err := r.Resolve(context.Background(), reqM(m, "valid-session"))
 		if !errors.Is(err, admin.ErrAdminUnauthorized) {
@@ -72,8 +71,8 @@ func TestUnclassifiedWriteDeniedFailClosed(t *testing.T) {
 // 这里故意让路由【不挂】SessionSafe(默认拒 session 写),证明令牌仍能写——即令牌不吃写分级那套。
 // 变异:若把 hk_admin_ 前缀判定挪到写分级之后 → 令牌写会被 writeClassNone 拒 → RED。
 func TestTokenChannelExemptFromWriteClass(t *testing.T) {
-	tok := &stubToken{id: admintest.Platform(8)}
-	r := New(tok, &stubSession{}, stubIdentities{role: "admin"}, nil)
+	tok := &stubToken{id: admin.AdminIdentity{TokenID: 8, Role: admin.RolePlatformAdmin, Source: admin.AdminSourceToken}}
+	r := New(tok, &stubSession{}, stubRoles{role: "admin"}, nil, 1)
 	// 未标注写分级的写请求,但带 hk_admin 令牌。
 	req := reqM(http.MethodPost, "hk_admin_TOKENTOKENTOKENTOKEN0009")
 	id, err := r.Resolve(req.Context(), req)
@@ -86,7 +85,7 @@ func TestTokenChannelExemptFromWriteClass(t *testing.T) {
 // 变异:若把写分级判定的 `!isReadOnlyMethod` 前置删掉(对所有方法都判分级)→ 未标注 GET 会被拒 → RED。
 func TestReadMethodIgnoresWriteClass(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	r := New(tok, adminSession(1, 2), stubIdentities{role: "admin"}, nil)
+	r := New(tok, adminSession(1, 2), stubRoles{role: "admin"}, nil, 1)
 	req := reqM(http.MethodGet, "valid-session") // 未挂写分级
 	id, err := r.Resolve(req.Context(), req)
 	if err != nil {

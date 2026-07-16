@@ -62,17 +62,6 @@ type adminFixture struct {
 	suffix       string
 }
 
-func platformIdentityForIntegration(t *testing.T, ctx context.Context, tokenID int64) AdminIdentity {
-	t.Helper()
-	identity, err := NewAdminIdentity(ctx, IdentityClaims{
-		TokenID: tokenID, Source: AdminSourceToken, Role: RolePlatformAdmin,
-	}, nil)
-	if err != nil {
-		t.Fatalf("构造平台测试身份: %v", err)
-	}
-	return identity
-}
-
 func newAdminFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *adminFixture {
 	t.Helper()
 	f := &adminFixture{t: t, pool: pool, suffix: uuid.NewString()}

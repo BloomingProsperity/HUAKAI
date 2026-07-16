@@ -37,4 +37,4 @@
 
 - 初稿准备把 admin CRUD 生成码继续放入 `internal/db/billing`，codebudget 实测会把该包推到 6327 行并越过 6000 行门。最终改为独立 `internal/db/modelroutingadmin` sqlc 生成块；既有消费查询仍留在 `internal/db/billing.GetModelRoutingForGroup`，没有修改 resolver 或选择算法，也没有放大 baseline。
 - 当前机器未设置 `HUAKAI_DATABASE_URL`，且本地 PostgreSQL 不可用。三条 `integration_pg` 测试已完成编译并明确显示 SKIP；须由 Claude 本机执行后才能把 AT-POOL-020 从 PARTIAL 提升为 PASS。
-- 工作期间出现与本任务无关的并行新文件 `docs/process/plans/2026-07-15-reseller-arc-final-model.md`；本任务未读取、未修改，也不把它计入改动清单。
+- 工作期间出现与本任务无关、后来已被三身份单层租户模型废止的旧分销规划文件；本任务未读取、未修改，也不把它计入改动清单。

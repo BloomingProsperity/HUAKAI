@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 )
 
@@ -114,7 +113,7 @@ func sampleOrphans() []mediatask.OrphanRecord {
 // 判别:断言返回了具体 task_id / provider / provider_task_id,不是空壳——若 toItem 漏映射字段则 RED。
 func TestListVisualizesPendingOrphans(t *testing.T) {
 	store := newFakeStore(sampleOrphans()...)
-	d := Deps{Auth: fakeAuth{ident: admintest.Platform(0)}, Store: store}
+	d := Deps{Auth: fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store}
 	rr := httptest.NewRecorder()
 	newRouter(d).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/v1/media-task-orphans", nil))
 
@@ -142,7 +141,7 @@ func TestListVisualizesPendingOrphans(t *testing.T) {
 // operator 当全局扫(传 0)→ RED(防越权看他租户孤儿)。
 func TestListTenantOperatorScopedToOwnTenant(t *testing.T) {
 	store := newFakeStore(sampleOrphans()...)
-	d := Deps{Auth: fakeAuth{ident: admintest.TenantOperator(0, 9)}, Store: store}
+	d := Deps{Auth: fakeAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 9}}, Store: store}
 	rr := httptest.NewRecorder()
 	newRouter(d).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/v1/media-task-orphans", nil))
 
@@ -198,7 +197,7 @@ func TestNonAdminRoleForbidden(t *testing.T) {
 // 判别:断言 captureCalls 始终为 0。若 handler 把 back_charge 默认成 true → RED。
 func TestReconcileMarkOnlyDefaultNoCharge(t *testing.T) {
 	store := newFakeStore(sampleOrphans()...)
-	d := Deps{Auth: fakeAuth{ident: admintest.Platform(0)}, Store: store}
+	d := Deps{Auth: fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/v1/media-task-orphans/1/reconcile",
 		strings.NewReader(`{"status":"reconciled"}`))
@@ -223,7 +222,7 @@ func TestReconcileMarkOnlyDefaultNoCharge(t *testing.T) {
 // captureCalls 变 2,本测试断言 captureCalls==1 RED。这就是防双扣的判别。
 func TestReconcileBackChargeIdempotentNoDoubleCharge(t *testing.T) {
 	store := newFakeStore(sampleOrphans()...)
-	d := Deps{Auth: fakeAuth{ident: admintest.Platform(0)}, Store: store}
+	d := Deps{Auth: fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store}
 	body := `{"status":"reconciled","back_charge":true}`
 
 	for i := 0; i < 2; i++ {
@@ -241,10 +240,10 @@ func TestReconcileBackChargeIdempotentNoDoubleCharge(t *testing.T) {
 
 // TestBuildAuditHookForbidsCrossTenant:租户越权守卫(RBAC)——tenant_operator 对账不属其
 // 租户的孤儿,audit hook 在触碰任何 DB 前就返回 errOrphanForbiddenTenant(回滚整笔)。
-// 判别:若去掉 CanActOnTenant 越权检查 → hook 会继续往下写 admin_audit_events(对 nil tx
+// 判别:若去掉 CanIssueForTenant 越权检查 → hook 会继续往下写 admin_audit_events(对 nil tx
 // panic 或越权写库),本测试断言它返回 errOrphanForbiddenTenant RED。
 func TestBuildAuditHookForbidsCrossTenant(t *testing.T) {
-	ident := admintest.TenantOperator(0, 7)
+	ident := admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}
 	hook := buildAuditHook(ident, reconcileRequest{Status: "reconciled"}, "req-x")
 	// 孤儿属租户 9,operator 限租户 7 → 越权,必须在写库前拒绝。
 	err := hook(context.Background(), nil /*tx 不会被触碰*/, mediatask.OrphanReconcileResult{
@@ -262,7 +261,7 @@ func TestBuildAuditHookForbidsCrossTenant(t *testing.T) {
 // cancelled/ignored 带 back_charge → 400,不扣钱(防"忽略却追扣"的矛盾输入)。
 func TestReconcileBackChargeWithNonReconciledStatusRejected(t *testing.T) {
 	store := newFakeStore(sampleOrphans()...)
-	d := Deps{Auth: fakeAuth{ident: admintest.Platform(0)}, Store: store}
+	d := Deps{Auth: fakeAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}, Store: store}
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/admin/v1/media-task-orphans/1/reconcile",
 		strings.NewReader(`{"status":"ignored","back_charge":true}`))

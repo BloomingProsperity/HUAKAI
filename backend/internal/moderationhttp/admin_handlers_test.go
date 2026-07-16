@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 )
 
@@ -351,11 +350,11 @@ func (s adminAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 func platformAdmin() admin.AdminIdentity {
-	return admintest.Platform(1)
+	return admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}
 }
 
 func tenantOperator(tenantID int64) admin.AdminIdentity {
-	return admintest.TenantOperator(2, tenantID)
+	return admin.AdminIdentity{TokenID: 2, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}
 }
 
 type adminStoreStub struct {

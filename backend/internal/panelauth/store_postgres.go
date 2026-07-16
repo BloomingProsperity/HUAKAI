@@ -40,17 +40,24 @@ WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
 	return role, nil
 }
 
-// ActiveUserRole 同 UserRole 但仅 status='active' 行——封禁/锁定/强制改密/待验证的账号
-// 即刻失去 admin 权力(每请求生效,不等 session 过期)。admin 权力面与 /v1/auth/me 面板
-// 归属都走它:非 active 账号绝不映射到 admin 面板(见 Resolver.PanelForUser)。
+// ActiveUserRole 同时要求用户与所属租户均为 active 且未软删。用户封禁、租户停用
+// 或任一方软删除后,该用户即刻失去 admin 权力(每请求生效,不等 session 过期)。
+// admin 权力面与 /v1/auth/me 面板归属都走它,避免两条入口出现状态口径分叉。
 func (s *PostgresRoleStore) ActiveUserRole(ctx context.Context, tenantID, userID int64) (string, error) {
 	if s == nil || s.pool == nil {
 		return "", ErrStoreNotConfigured
 	}
 	var role string
 	err := s.pool.QueryRow(ctx, `
-SELECT role FROM users
-WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND status = 'active'`,
+SELECT u.role
+FROM users u
+JOIN tenants t ON t.id = u.tenant_id
+WHERE u.id = $1
+  AND u.tenant_id = $2
+  AND u.deleted_at IS NULL
+  AND u.status = 'active'
+  AND t.deleted_at IS NULL
+  AND t.status = 'active'`,
 		userID, tenantID).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrUserNotFound

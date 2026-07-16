@@ -72,7 +72,7 @@ func NewResolveHandler(deps Deps) http.HandlerFunc {
 			}
 			return
 		}
-		if !identity.IsPlatformWide() {
+		if identity.Role != admin.RolePlatformAdmin {
 			writeError(w, http.StatusForbidden, "admin_forbidden", "需要 platform_admin 权限")
 			return
 		}
@@ -95,6 +95,11 @@ func NewResolveHandler(deps Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id 必须为正整数")
 			return
 		}
+		if identity.ScopeTenantID > 0 && identity.ScopeTenantID != request.TenantID {
+			writeError(w, http.StatusForbidden, "admin_forbidden", "tenant_id 与管理员作用域不一致")
+			return
+		}
+
 		record, err := deps.Store.LoadForRefresh(r.Context(), accountID)
 		if err != nil {
 			if errors.Is(err, credentialstore.ErrCredentialNotFound) {

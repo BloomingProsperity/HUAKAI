@@ -121,7 +121,7 @@ func TestAuditActor_AdminTokenIssueRevoke_ActorIDPersisted(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
+	caller := AdminIdentity{TokenID: f.adminTokenID, Source: AdminSourceToken, Role: RolePlatformAdmin}
 	wantActor := caller.AuditActor() // "admin_token:<真库id>"
 
 	issuer := NewAdminTokenIssuer(pool)
@@ -178,7 +178,7 @@ func TestAuditActor_RateWindowKeyMatchesPersistedActorID(t *testing.T) {
 	pool := openIntegrationPool(t, ctx)
 	f := newAdminFixture(t, ctx, pool)
 
-	caller := platformIdentityForIntegration(t, ctx, f.adminTokenID)
+	caller := AdminIdentity{TokenID: f.adminTokenID, Source: AdminSourceToken, Role: RolePlatformAdmin}
 	wantActor := caller.AuditActor()
 
 	issuer := NewKeyIssuer(pool)

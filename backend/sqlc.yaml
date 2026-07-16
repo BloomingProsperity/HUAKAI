@@ -10,7 +10,6 @@ sql:
       - sql/queries/admin_provider_account_health.sql
       - sql/queries/admin_provider_account_mutations.sql
       - sql/queries/admin_proxies.sql
-      - sql/queries/admin_resellers.sql
       - sql/queries/admin_tls_fingerprint_profiles.sql
       - sql/queries/admin_tokens.sql
       - sql/queries/admin_users.sql

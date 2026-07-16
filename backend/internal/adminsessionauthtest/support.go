@@ -28,9 +28,7 @@ type tokenReject struct{}
 
 func (tokenReject) Resolve(_ context.Context, req *http.Request) (admin.AdminIdentity, error) {
 	if strings.HasPrefix(req.Header.Get("Authorization"), "Bearer hk_admin_") {
-		return admin.NewAdminIdentity(context.Background(), admin.IdentityClaims{
-			TokenID: 1, Source: admin.AdminSourceToken, Role: admin.RolePlatformAdmin,
-		}, nil)
+		return admin.AdminIdentity{TokenID: 1, Source: admin.AdminSourceToken, Role: admin.RolePlatformAdmin}, nil
 	}
 	return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 }
@@ -41,14 +39,13 @@ func (sessionAdmin) Validate(context.Context, string, string, string) (usersessi
 	return usersession.ValidatedSession{TenantID: 1, UserID: 42}, nil
 }
 
+type roleAdmin struct{}
+
+func (roleAdmin) ActiveUserRole(context.Context, int64, int64) (string, error) { return "admin", nil }
+
 // Resolver 返回组合解析器:非 hk_admin bearer 走 session→admin(登录即管理员,无开关)。
 func Resolver() *adminsessionauth.Resolver {
-	identities := adminsessionauth.IdentityStoreFunc(func(_ context.Context, _ int64, userID int64) (admin.AdminIdentity, error) {
-		return admin.NewAdminIdentity(context.Background(), admin.IdentityClaims{
-			UserID: userID, Source: admin.AdminSourceSession, Role: admin.RolePlatformAdmin,
-		}, nil)
-	})
-	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, identities, nil)
+	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, roleAdmin{}, nil, 1)
 }
 
 // Status 发一个带 bearer 的请求(body="{}" 满足多数 handler 的 JSON 解码),返回响应码。

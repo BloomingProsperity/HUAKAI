@@ -189,12 +189,7 @@ func ensureAdminBillingTenantExists(w http.ResponseWriter, r *http.Request, d Ad
 func resolveAdminBillingTenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	if raw == "" && ident.Role == admin.RoleTenantOperator {
-		tenantID := ident.ScopeTenantID()
-		if !adminCanAccessTenant(ident, tenantID) {
-			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
-			return 0, false
-		}
-		return tenantID, true
+		return ident.ScopeTenantID, true
 	}
 	tenantID, ok := parseRequiredPositiveInt64(w, raw, "tenant_id_required", "tenant_id query parameter must be positive")
 	if !ok {

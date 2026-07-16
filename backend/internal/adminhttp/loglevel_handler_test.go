@@ -11,7 +11,6 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
 )
 
@@ -32,7 +31,7 @@ func buildLogLevelRouter(d LogLevelDeps) *chi.Mux {
 
 func TestLogLevel_GetReturnsCurrent_PlatformAdmin(t *testing.T) {
 	loglevel.Level.SetLevel(zapcore.InfoLevel)
-	r := buildLogLevelRouter(LogLevelDeps{Auth: stubLogLevelAuth{ident: admintest.Platform(0)}})
+	r := buildLogLevelRouter(LogLevelDeps{Auth: stubLogLevelAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}})
 	req := httptest.NewRequest(http.MethodGet, "/loglevel", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -47,7 +46,7 @@ func TestLogLevel_GetReturnsCurrent_PlatformAdmin(t *testing.T) {
 func TestLogLevel_PutSetsGlobalLevel_PlatformAdmin(t *testing.T) {
 	loglevel.Level.SetLevel(zapcore.InfoLevel)
 	defer loglevel.Level.SetLevel(zapcore.InfoLevel)
-	r := buildLogLevelRouter(LogLevelDeps{Auth: stubLogLevelAuth{ident: admintest.Platform(0)}})
+	r := buildLogLevelRouter(LogLevelDeps{Auth: stubLogLevelAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}})
 	req := httptest.NewRequest(http.MethodPut, "/loglevel", strings.NewReader(`{"level":"debug"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

@@ -375,7 +375,7 @@ func resolveAdminPoolOperator(w http.ResponseWriter, r *http.Request, d AdminPoo
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID() <= 0 {
+		if ident.ScopeTenantID <= 0 {
 			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
 			return admin.AdminIdentity{}, false
 		}
@@ -404,7 +404,7 @@ func resolveAdminPoolTenant(w http.ResponseWriter, r *http.Request, ident admin.
 		}
 		tenantID = *bodyTenantID
 	case ident.Role == admin.RoleTenantOperator:
-		tenantID = ident.ScopeTenantID()
+		tenantID = ident.ScopeTenantID
 	default:
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be provided explicitly")
 		return 0, false

@@ -14,7 +14,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -79,9 +78,8 @@ func tenantPolicyReq(method, target, body string, ident *admin.AdminIdentity) *h
 func TestTenantPolicySet_FlipsTenantFromQueryInheritFromBodyActorFromIdentity(t *testing.T) {
 	store := &tenantPolicyStoreStub{setPolicy: registry.TenantPolicy{TenantID: 7, InheritGlobalCatalog: true, UpdatedByActor: "admin_token:4242", UpdatedAt: time.Unix(1700000000, 0).UTC()}}
 	rec := httptest.NewRecorder()
-	identity := admintest.Platform(4242)
 	tenantPolicyRouter(AdminTenantPolicyDeps{Store: store}).ServeHTTP(rec,
-		tenantPolicyReq(http.MethodPut, "/v1/admin/model-registry-policy?tenant_id=7", `{"inherit_global_catalog":true}`, &identity))
+		tenantPolicyReq(http.MethodPut, "/v1/admin/model-registry-policy?tenant_id=7", `{"inherit_global_catalog":true}`, &admin.AdminIdentity{TokenID: 4242, Role: admin.RolePlatformAdmin}))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())

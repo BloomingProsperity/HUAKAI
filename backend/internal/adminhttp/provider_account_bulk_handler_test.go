@@ -12,7 +12,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -62,7 +61,13 @@ func (s *stubBulkStore) InsertAdminAuditEvent(_ context.Context, _ admindb.Inser
 
 func buildBulkTestDeps(store *stubBulkStore, tenantID int64) ProviderAccountBulkDeps {
 	return ProviderAccountBulkDeps{
-		Auth:  &stubBulkAuth{ident: admintest.TenantOperator(999, tenantID)},
+		Auth: &stubBulkAuth{
+			ident: admin.AdminIdentity{
+				Role:          admin.RoleTenantOperator,
+				ScopeTenantID: tenantID,
+				TokenID:       999,
+			},
+		},
 		Store: store,
 	}
 }

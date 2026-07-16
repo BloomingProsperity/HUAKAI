@@ -107,9 +107,8 @@ func TestPG_UserRoleResolution(t *testing.T) {
 	}
 }
 
-// TestPG_ActiveUserRoleExcludesNonActive 守 S2 修复:封禁(disabled)的 admin 经 ActiveUserRole
-// 即刻失去 session-admin 权力面;UserRole(panel 判定用)不受 status 影响。
-// mutation: ActiveUserRole 去掉 `AND status = 'active'` → disabled 断言红。
+// TestPG_ActiveUserRoleExcludesNonActive 守状态联动:用户或租户非 active 时,
+// admin 经 ActiveUserRole 即刻失去 session-admin 权力面。
 func TestPG_ActiveUserRoleExcludesNonActive(t *testing.T) {
 	ctx := context.Background()
 	pool := openPool(t, ctx)
@@ -145,5 +144,16 @@ func TestPG_ActiveUserRoleExcludesNonActive(t *testing.T) {
 	}
 	if _, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("locked admin 应被 ActiveUserRole 拒,得 err=%v", err)
+	}
+
+	// 用户恢复但租户停用时仍须拒,避免停租后旧 session 继续保有管理权限。
+	if _, err := pool.Exec(ctx, `UPDATE users SET status='active' WHERE id=$1`, admin); err != nil {
+		t.Fatalf("restore user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='suspended' WHERE id=$1`, tenant); err != nil {
+		t.Fatalf("suspend tenant: %v", err)
+	}
+	if _, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("停用租户内的 active admin 应被拒,得 err=%v", err)
 	}
 }

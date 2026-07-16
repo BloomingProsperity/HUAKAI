@@ -45,7 +45,7 @@ func newHermesGateTestDeps(t *testing.T, adminOnly bool) *deps {
 		hermesAdminOnly: adminOnly,
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503)。
 		// 组合器包一层,session 依赖为 nil → 委托令牌通道,行为不变。
-		adminAuth: adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil),
+		adminAuth: adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, 0),
 		// inboundAuth 故意为 nil:旧版 APIKeyMiddleware 会把 nil 的
 		// resolver 映射为 503 hermes_auth_unavailable,与 admin 的错误码有区别。
 	}

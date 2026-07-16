@@ -1,5 +1,5 @@
 // Package adminquotahttp 暴露按租户作用域的、针对 quota policies 的 admin CRUD
-// (/admin/v1/quota-policies)。这属于防滥用的运维配置:它绝不触碰 user_balances
+//(/admin/v1/quota-policies)。这属于防滥用的运维配置:它绝不触碰 user_balances
 // 或计费账本。它与 adminuserhttp / adminhttp 的 channel-catalog 保持一致:
 // platform_admin/tenant_operator 守卫、显式的租户作用域,以及每次变更都原子写入
 // 一行 admin_audit_events。
@@ -85,7 +85,7 @@ func NewRouter(d Deps) http.Handler {
 
 // resolveTenantIdentity 对调用方做认证并解析出操作所针对的租户。tenant_operator
 // 可省略 ?tenant_id(使用其自身作用域);platform_admin 必须传 ?tenant_id,并经
-// CanActOnTenant 校验。它与 adminuserhttp.resolveTenantIdentity 保持一致,以使
+// CanIssueForTenant 校验。它与 adminuserhttp.resolveTenantIdentity 保持一致,以使
 // RBAC 语义完全相同。
 func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Store == nil {
@@ -100,7 +100,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
-		if ident.ScopeTenantID() <= 0 {
+		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 				"tenant_operator scope_tenant_id required")
 			return admin.AdminIdentity{}, 0, false
@@ -120,8 +120,8 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 	}
 }
 
-// tenantFromQueryOrScope 解析目标租户:若带有 ?tenant_id,则通过 CanActOnTenant
-// (跨租户守卫)校验;若不带,则回退到 tenant_operator 自身的作用域。
+// tenantFromQueryOrScope 解析目标租户:若带有 ?tenant_id,则通过 CanIssueForTenant
+//(跨租户守卫)校验;若不带,则回退到 tenant_operator 自身的作用域。
 func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	tenantParam := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	var tenantID int64
@@ -131,7 +131,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 				"tenant_id query param required for platform_admin")
 			return 0, false
 		}
-		tenantID = ident.ScopeTenantID()
+		tenantID = ident.ScopeTenantID
 	} else {
 		v, err := strconv.ParseInt(tenantParam, 10, 64)
 		if err != nil || v <= 0 {
@@ -145,7 +145,7 @@ func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.
 		writeAdminAuthError(w, admin.ErrAdminForbidden)
 		return 0, false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
 		return 0, false
 	}

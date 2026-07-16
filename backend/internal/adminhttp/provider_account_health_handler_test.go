@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/admintest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
@@ -38,9 +37,9 @@ func TestProviderAccountHealthUnauthorized(t *testing.T) {
 	}
 }
 
-func TestProviderAccountHealthTenantScopeRejectsQueryOverreach(t *testing.T) {
-	// 判别防串租户:query tenant_id=8 是明确目标，必须先经 CanActOnTenant 拒绝。
-	// 破坏点→删除统一裁决时会命中 tenant 8 row 并返回 200，本断言转红。
+func TestProviderAccountHealthTenantScopeIgnoresQueryTenantID(t *testing.T) {
+	// 判别防串租户:query tenant_id=8 必须被忽略,查询只能使用 admin identity 的 tenant 7。
+	// 变异:从 query/body 收 tenant_id 或漏 tenant predicate 时会命中 tenant 8 row 并返回 200。
 	store := newProviderAccountHealthStoreStub()
 	store.put(providerAccountHealthRow(8, 200))
 
@@ -49,11 +48,11 @@ func TestProviderAccountHealthTenantScopeRejectsQueryOverreach(t *testing.T) {
 		Store: store,
 	}, "/admin/v1/provider-accounts/200/health?tenant_id=8")
 
-	if rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(store.getArgs) != 0 {
-		t.Fatalf("scope 拒绝后不应触达 store，args=%+v", store.getArgs)
+	if len(store.getArgs) != 1 || store.getArgs[0].TenantID != 7 || store.getArgs[0].ID != 200 {
+		t.Fatalf("GetAdminProviderAccountHealth args=%+v, want tenant scoped lookup tenant=7 id=200", store.getArgs)
 	}
 	if strings.Contains(rec.Body.String(), "tenant-8") || strings.Contains(rec.Body.String(), "8") {
 		t.Fatalf("cross-tenant response leaked target tenant detail: %s", rec.Body.String())
@@ -69,7 +68,7 @@ func TestProviderAccountHealthPlatformAdminRequiresExplicitTenant(t *testing.T) 
 	store := newProviderAccountHealthStoreStub()
 	store.put(providerAccountHealthRow(7, 200)) // 行位于 tenant 7(非 1)
 	deps := ProviderAccountHealthDeps{
-		Auth:  providerAccountHealthAuthStub{ident: admintest.Platform(4)},
+		Auth:  providerAccountHealthAuthStub{ident: admin.AdminIdentity{TokenID: 4, Role: admin.RolePlatformAdmin}},
 		Store: store,
 	}
 

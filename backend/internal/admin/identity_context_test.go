@@ -11,20 +11,13 @@ func TestIdentityContextRoundTrip(t *testing.T) {
 	if _, ok := IdentityFromContext(context.Background()); ok {
 		t.Fatal("空 context 不应有身份, 但 ok=true")
 	}
-	want, err := NewAdminIdentity(context.Background(), IdentityClaims{
-		TokenID: 4242, Role: RoleTenantOperator, ScopeTenantID: 7,
-	}, func(context.Context, int64) ([]TenantScopeNode, error) {
-		return []TenantScopeNode{{TenantID: 7, Depth: 0}}, nil
-	})
-	if err != nil {
-		t.Fatalf("构造测试身份: %v", err)
-	}
+	want := AdminIdentity{TokenID: 4242, Role: RolePlatformAdmin, ScopeTenantID: 7}
 	ctx := IdentityToContext(context.Background(), want)
 	got, ok := IdentityFromContext(ctx)
 	if !ok {
 		t.Fatal("注入后应能读回身份, 但 ok=false")
 	}
-	if got.TokenID != 4242 || got.Role != RoleTenantOperator || got.ScopeTenantID() != 7 {
-		t.Fatalf("读回身份=%+v, want TokenID=4242 / tenant_operator / scope=7", got)
+	if got.TokenID != 4242 || got.Role != RolePlatformAdmin || got.ScopeTenantID != 7 {
+		t.Fatalf("读回身份=%+v, want TokenID=4242 / platform_admin / scope=7", got)
 	}
 }

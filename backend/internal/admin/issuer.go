@@ -98,7 +98,7 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	}
 
 	// RBAC。
-	if err := req.Caller.CanActOnTenant(req.TenantID); err != nil {
+	if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
 		_ = i.audit(ctx, req, "denied", "rbac_violation", 0)
 		return IssueResult{}, err
 	}

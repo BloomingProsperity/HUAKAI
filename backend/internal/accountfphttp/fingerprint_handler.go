@@ -7,7 +7,7 @@
 //
 // 独立成包(而非塞进已达体量预算上限的 god 包 gatewayhttp)以遵守 §13;鉴权/审计范式与
 // gatewayhttp 的 provider-account admin 一致:tenant_operator 用自身 scope;platform_admin 须
-// ?tenant_id 显式指定并过 CanActOnTenant。跨租户/不存在 profile 由 DB 触发器(迁移 0038)+ FK 拒绝。
+// ?tenant_id 显式指定并过 CanIssueForTenant。跨租户/不存在 profile 由 DB 触发器(迁移 0038)+ FK 拒绝。
 package accountfphttp
 
 import (
@@ -118,7 +118,7 @@ func newHandler(d Deps) http.HandlerFunc {
 }
 
 // resolveAdmin 复刻 provider-account admin 的租户范式:tenant_operator 自身 scope;
-// platform_admin 须 ?tenant_id 显式指定 + CanActOnTenant。鉴权失败一律拒(防 IDOR)。
+// platform_admin 须 ?tenant_id 显式指定 + CanIssueForTenant。鉴权失败一律拒(防 IDOR)。
 func resolveAdmin(w http.ResponseWriter, r *http.Request, auth AdminAuth) (admin.AdminIdentity, int64, bool) {
 	ident, err := auth.Resolve(r.Context(), r)
 	if err != nil {
@@ -129,27 +129,32 @@ func resolveAdmin(w http.ResponseWriter, r *http.Request, auth AdminAuth) (admin
 		}
 		return admin.AdminIdentity{}, 0, false
 	}
-	if err := ident.CanAccessProviderAccountControlPlane(); err != nil {
-		writeErr(w, http.StatusForbidden, "admin_forbidden", "provider account control plane is not available to this tenant scope")
-		return admin.AdminIdentity{}, 0, false
-	}
-	tenantID := ident.ScopeTenantID()
-	if raw := strings.TrimSpace(r.URL.Query().Get("tenant_id")); raw != "" {
-		var parseErr error
-		tenantID, parseErr = strconv.ParseInt(raw, 10, 64)
-		if parseErr != nil || tenantID <= 0 {
-			writeErr(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
+	switch ident.Role {
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			writeErr(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
 			return admin.AdminIdentity{}, 0, false
 		}
-	} else if tenantID <= 0 {
-		writeErr(w, http.StatusBadRequest, "tenant_id_required", "platform_admin must pass a positive ?tenant_id")
+		return ident, ident.ScopeTenantID, true
+	case admin.RolePlatformAdmin:
+		if ident.ScopeTenantID > 0 {
+			return ident, ident.ScopeTenantID, true
+		}
+		raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		tid, perr := strconv.ParseInt(raw, 10, 64)
+		if perr != nil || tid <= 0 {
+			writeErr(w, http.StatusBadRequest, "tenant_id_required", "platform_admin must pass a positive ?tenant_id")
+			return admin.AdminIdentity{}, 0, false
+		}
+		if err := ident.CanIssueForTenant(tid); err != nil {
+			writeErr(w, http.StatusForbidden, "admin_forbidden", "tenant scope not permitted")
+			return admin.AdminIdentity{}, 0, false
+		}
+		return ident, tid, true
+	default:
+		writeErr(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, 0, false
 	}
-	if err := ident.CanActOnTenant(tenantID); err != nil {
-		writeErr(w, http.StatusForbidden, "admin_forbidden", "tenant scope not permitted")
-		return admin.AdminIdentity{}, 0, false
-	}
-	return ident, tenantID, true
 }
 
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
