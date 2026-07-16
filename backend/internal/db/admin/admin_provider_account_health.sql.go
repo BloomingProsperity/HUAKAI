@@ -18,6 +18,27 @@ SELECT
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
+    pa.disable_cooling,
+    pa.credential_state,
+    pa.model_rate_limits,
+    pa.rate_limit_reset_at,
+    pa.overload_until,
+    pa.temp_unschedulable_until,
+    EXISTS (
+        SELECT 1
+        FROM channels c
+        WHERE c.id = pa.channel_id
+          AND c.tenant_id = pa.tenant_id
+          AND c.enabled = true
+          AND c.deleted_at IS NULL
+    ) AS channel_enabled,
+    EXISTS (
+        SELECT 1
+        FROM providers p
+        WHERE p.id = pa.provider_id
+          AND p.tenant_id = pa.tenant_id
+          AND p.deleted_at IS NULL
+    ) AS provider_available,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
     pa.model_sync_last_check_at,
@@ -65,6 +86,14 @@ type GetAdminProviderAccountHealthRow struct {
 	HealthState                string             `db:"health_state" json:"health_state"`
 	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
 	Enabled                    bool               `db:"enabled" json:"enabled"`
+	DisableCooling             bool               `db:"disable_cooling" json:"disable_cooling"`
+	CredentialState            string             `db:"credential_state" json:"credential_state"`
+	ModelRateLimits            []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	RateLimitResetAt           pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
+	OverloadUntil              pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
+	TempUnschedulableUntil     pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
+	ChannelEnabled             bool               `db:"channel_enabled" json:"channel_enabled"`
+	ProviderAvailable          bool               `db:"provider_available" json:"provider_available"`
 	LastProbeLatencyMS         *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
 	LastProbeAt                pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
 	ModelSyncLastCheckAt       pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
@@ -92,6 +121,14 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.HealthState,
 		&i.HealthStateUntil,
 		&i.Enabled,
+		&i.DisableCooling,
+		&i.CredentialState,
+		&i.ModelRateLimits,
+		&i.RateLimitResetAt,
+		&i.OverloadUntil,
+		&i.TempUnschedulableUntil,
+		&i.ChannelEnabled,
+		&i.ProviderAvailable,
 		&i.LastProbeLatencyMS,
 		&i.LastProbeAt,
 		&i.ModelSyncLastCheckAt,

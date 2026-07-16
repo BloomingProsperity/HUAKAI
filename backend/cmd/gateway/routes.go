@@ -1080,6 +1080,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
 			Auth:          d.adminAuth,
 			Store:         d.adminQueries,
+			ChannelHealth: d.channelHealth,
+			AuthCooldown:  d.authCooldown,
 			RecentReqRing: d.recentReqRing,
 		})
 		adminhttp.MountProviderAccountRecentRequestsRoutes(r, adminhttp.ProviderAccountRecentRequestsDeps{

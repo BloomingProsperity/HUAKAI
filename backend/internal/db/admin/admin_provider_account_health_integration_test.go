@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"testing"
 	"time"
@@ -30,6 +31,21 @@ func TestGetAdminProviderAccountHealthJoinsLatestNonRevokedCredential(t *testing
 	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "api_key", "active", 10, oldRefreshAt, "old_outcome", "temporary", 1)
 	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "refresh_token", "active", 1, latestRefreshAt, "auth_expired", "invalid_grant", 4)
 	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "codex_cli_oauth", "revoked", 9, revokedRefreshAt, "revoked_should_not_win", "revoked", 99)
+	rateReset := time.Date(2026, 6, 2, 12, 40, 0, 0, time.UTC)
+	overloadUntil := time.Date(2026, 6, 2, 12, 50, 0, 0, time.UTC)
+	tempUntil := time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+UPDATE provider_accounts
+SET credential_state = 'refresh_failed',
+    model_rate_limits = '{"model-x":{"rate_limit_reset_at":"2026-06-02T12:45:00Z","reason":"upstream_429"}}'::jsonb,
+    rate_limit_reset_at = $1,
+    overload_until = $2,
+    temp_unschedulable_until = $3
+WHERE tenant_id = $4 AND id = $5`,
+		rateReset, overloadUntil, tempUntil, tenantID, accountID,
+	); err != nil {
+		t.Fatalf("seed scheduling snapshot: %v", err)
+	}
 
 	row, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{
 		TenantID: tenantID,
@@ -52,6 +68,19 @@ func TestGetAdminProviderAccountHealthJoinsLatestNonRevokedCredential(t *testing
 	}
 	if !row.LastRefreshAt.Valid || !row.LastRefreshAt.Time.Equal(latestRefreshAt) {
 		t.Fatalf("last_refresh_at=%+v want latest active credential timestamp", row.LastRefreshAt)
+	}
+	var modelLimits map[string]map[string]string
+	if err := json.Unmarshal(row.ModelRateLimits, &modelLimits); err != nil {
+		t.Fatalf("decode model_rate_limits: %v raw=%s", err, string(row.ModelRateLimits))
+	}
+	if row.CredentialState != "refresh_failed" ||
+		modelLimits["model-x"]["reason"] != "upstream_429" ||
+		modelLimits["model-x"]["rate_limit_reset_at"] != "2026-06-02T12:45:00Z" ||
+		row.DisableCooling || !row.ChannelEnabled || !row.ProviderAvailable ||
+		!row.RateLimitResetAt.Valid || !row.RateLimitResetAt.Time.Equal(rateReset) ||
+		!row.OverloadUntil.Valid || !row.OverloadUntil.Time.Equal(overloadUntil) ||
+		!row.TempUnschedulableUntil.Valid || !row.TempUnschedulableUntil.Time.Equal(tempUntil) {
+		t.Fatalf("selector/legacy 状态快照未完整回读：%+v", row)
 	}
 
 	_, err = q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{

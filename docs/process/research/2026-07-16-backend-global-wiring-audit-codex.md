@@ -434,7 +434,7 @@ HUAKAI 当前主 chat 链可以还原为：
 | --- | --- |
 | 严重度 | `S1`（运营判断/路由一致性） |
 | 分类 | W-02 半接线、W-08 观测失真、W-10 信息断链、W-12 重复体系 |
-| 状态 | **Owner Decision Required** |
+| 状态 | **Partial Fixed in this branch；只读调度真相已聚合，selector/持久化迁移仍需后续决策** |
 | 用户影响 | 运维可能在 provider-account 列表中看到账号处于 active，也可能看到 `rate_limit_reset_at/overload_until/temp_unschedulable_until`，但生产 selector 不直接读取这些时间字段；真实请求产生的冷却又主要写到 `channel_health_state`。因此“管理页面认为账号什么状态”和“下一次请求是否选到账号”需要跨两个接口人工拼接。 |
 
 **源码证据**
@@ -449,17 +449,26 @@ HUAKAI 当前主 chat 链可以还原为：
 
 **判断**
 
-这不是“限流完全不生效”：逐模型冷却和 channelhealth 会真实挡住请求。问题是同一个账号至少有 provider health、channel health、auth cooldown、credential state、逐模型限制五套状态，写入者、恢复者和管理视图不统一。Sub2 的优势不是状态少，而是这些状态最终由同一账号候选门消费。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/service/account.go:148`
+这不是“限流完全不生效”：逐模型冷却和 channelhealth 会真实挡住请求。问题是同一个账号至少有 provider health、channel health、auth cooldown、credential state、逐模型限制五套状态，写入者、恢复者和管理视图原先不统一。成熟参考的优势不是状态少，而是这些状态最终能被同一账号候选门消费，并能在一个账号运维入口中解释。
+
+**本分支已完成**
+
+1. 扩展现有账号健康查询，一次回读账号启用、`disable_cooling`、凭据状态、逐模型冷却、provider/channel 存在性和三个旧时间字段；查询仍强制 tenant 作用域，见 `backend/sql/queries/admin_provider_account_health.sql:5-40`。
+2. 账号健康详情新增 `scheduling` 三态合同：`eligible`、`blocked`、`request_dependent`。provider health 复用 selector 的同一时间判定；channel health 读取 selector 实际使用的最新账号记录；auth cooldown 读取同一进程内 store 的并发安全快照，见 `backend/internal/adminhttp/accounthealthview/view.go:87-176`、`backend/internal/pool/router/gates.go:329-345`。
+3. 明确标注状态来源和持久化范围：provider、credential、channel 为 PostgreSQL；auth cooldown 为 `process_local`。没有 channel 记录按生产 selector 的默认 active 展示；辅助状态读取失败或模型冷却 JSON 损坏时返回 503，不伪造绿色结论，见 `backend/internal/adminhttp/provider_account_health_handler.go:105-146`。
+4. `disable_cooling` 只豁免 channel 冷却/渐进放量和 auth 软退避，不豁免手工暂停、硬禁用、provider health、凭据失效或 auth hard disable；逐模型冷却和渐进放量被标为请求相关，不能错误扩大成整号禁用，见 `backend/internal/adminhttp/accounthealthview/view.go:185-251`。
+5. `rate_limit_reset_at`、`overload_until`、`temp_unschedulable_until` 继续展示，但固定标记 `affects_selector=false`，不再冒充生产 selector 的权威状态；请求级协议、模型白名单、能力、并发、分组、窗口、session、上下文和 RPM/TPM gate 明确列为未评估，见 `backend/internal/adminhttp/accounthealthview/view.go:154-171`、`285-313`。
+6. production composition root 把账号详情接到与 selector 共享的 channel health 和 auth cooldown 实例，见 `backend/cmd/gateway/routes.go:1077-1086`。OpenAPI 已加入完整对象和枚举，见 `docs/openapi/openapi.yaml:17978-18124`。
+7. 判别测试覆盖健康默认、六类阻断、`disable_cooling` 边界、渐进放量、逐模型冷却、旧字段非权威、读取失败和损坏数据；临时删除 channel health 阻断接线后，测试精确因缺少 `channel_health` 失败，恢复后通过，见 `backend/internal/adminhttp/provider_account_health_handler_test.go:321-542`。目标包、相关包 `-race`、全仓 `go test ./...`、`go vet ./...`、OpenAPI 一致性、代码预算和质量门均通过；本机未设置 `HUAKAI_DATABASE_URL`，PostgreSQL 集成测试仅编译并明确跳过，等待 PR CI 真库任务。
 
 **建议**
 
-先定“账号调度真相合同”，再改代码：
+后续仍需处理：
 
-1. 明确哪些是正交状态、哪些是历史兼容字段，禁止两个字段表达同一冷却。
-2. provider-account 详情聚合返回 selector 当前实际使用的 channel health、auth cooldown、credential state 和逐模型状态，并标注来源。
-3. 选择一种迁移方向：要么账号级时间状态进入 selector；要么停止把它们当实时调度状态并迁移到 channelhealth。
-4. `clear-rate-limit` 必须清理 selector 真正读取的状态，不能只清 provider account 列和 model JSON。
-5. 该项可能改变 selector、管理 API 和历史数据解释，按高风险合同变更等待 Owner 确认。
+1. 选择旧账号时间字段的迁移方向：进入 selector，或停止作为实时调度状态并迁移/退役。
+2. `clear-rate-limit` 必须清理 selector 真正读取的 channel/model/auth 状态，不能只清 provider account 列和 model JSON。
+3. auth cooldown 当前仍是进程内状态，多副本只能展示当前实例真相；若要成为平台级权威状态，需要单独设计持久化、传播、恢复和回滚。
+4. 若要提供“某个具体请求下一次会不会选中该账号”的预演，还需把协议、模型、能力、分组、容量和配额等请求级 gate 纳入独立 dry-run 合同，不能把本批账号级三态结果扩张成保证。
 
 ### GW-WIRE-010：现有批量导入只能向一个既有账号导入多份凭据
 
@@ -1146,7 +1155,7 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 4. 是否批准把运行时 `ValidateAccountCompatibility` 泛化到全部有 serving contract 的 family；该项会改变异常/遗留账号的凭据放行规则。
 5. 是否批准以 `antigravity/oauth` 为唯一 canonical 身份，并另开数据迁移决策包处置 `gemini/antigravity` legacy 行。
 6. 是否批准建设 Gemini、Antigravity、Kimi 的账号级只读观测合同；第一阶段只展示，不进入强配额、资金或 selector。
-7. 是否批准把 provider health、channel health、auth cooldown、credential state 和 model cooldown 收敛为一份“账号调度真相合同”；第一阶段先做聚合只读视图，不改 selector。
+7. 第一阶段账号调度真相只读聚合已批准并在本分支完成；下一阶段是否持久化 auth cooldown、迁移旧账号时间字段、统一 `clear-rate-limit`，以及建设具体请求 dry-run，仍需按 schema/运行时影响拆分决策。
 8. 是否批准建设真实账号测试 Safe Equivalent：默认关闭、单账号显式触发、成本上限、不计客户账、真实 protocol/credential/proxy 出站。
 9. 账号批量导入的唯一身份应由哪些字段组成；该决策将影响去重、更新、审计和未来数据迁移。
 10. bulk-by-tag 修复采用逐项事务并返回完整结果，还是整批单事务；推荐逐项原子，避免大批量锁住账号表。

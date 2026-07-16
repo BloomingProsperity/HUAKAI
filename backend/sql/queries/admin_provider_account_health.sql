@@ -5,6 +5,27 @@ SELECT
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
+    pa.disable_cooling,
+    pa.credential_state,
+    pa.model_rate_limits,
+    pa.rate_limit_reset_at,
+    pa.overload_until,
+    pa.temp_unschedulable_until,
+    EXISTS (
+        SELECT 1
+        FROM channels c
+        WHERE c.id = pa.channel_id
+          AND c.tenant_id = pa.tenant_id
+          AND c.enabled = true
+          AND c.deleted_at IS NULL
+    ) AS channel_enabled,
+    EXISTS (
+        SELECT 1
+        FROM providers p
+        WHERE p.id = pa.provider_id
+          AND p.tenant_id = pa.tenant_id
+          AND p.deleted_at IS NULL
+    ) AS provider_available,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
     pa.model_sync_last_check_at,
