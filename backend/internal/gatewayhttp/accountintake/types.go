@@ -30,6 +30,7 @@ type ChannelHealthInitializer interface {
 type AccountDefaults struct {
 	ProviderID      int64           `json:"provider_id"`
 	ChannelID       int64           `json:"channel_id"`
+	Name            string          `json:"name,omitempty"`
 	NamePrefix      string          `json:"name_prefix"`
 	AccountType     string          `json:"account_type"`
 	Enabled         *bool           `json:"enabled,omitempty"`

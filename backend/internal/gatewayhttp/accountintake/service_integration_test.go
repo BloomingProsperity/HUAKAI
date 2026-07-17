@@ -65,7 +65,7 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	var accountCount, credentialCount, adminAuditCount, credentialAuditCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND name=$2 AND deleted_at IS NULL`,
-		seed.tenantID, accountName(input.Account.NamePrefix, 0),
+		seed.tenantID, accountName(input.Account, 0),
 	).Scan(&accountCount); err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {
 	var accountCount, credentialCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND name=$2`,
-		seed.tenantID, accountName(input.Account.NamePrefix, 0),
+		seed.tenantID, accountName(input.Account, 0),
 	).Scan(&accountCount); err != nil {
 		t.Fatal(err)
 	}

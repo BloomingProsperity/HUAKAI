@@ -29,6 +29,8 @@ const (
 	SourceClaudeSetupToken   SourceKind = "claude_setup_token"
 	SourceClaudeCookie       SourceKind = "claude_cookie"
 	SourceCodexAgentIdentity SourceKind = "codex_agent_identity"
+	SourceCRSSync            SourceKind = "crs_sync"
+	SourceAccountRecovery    SourceKind = "account_bundle_recovery"
 )
 
 type Action string

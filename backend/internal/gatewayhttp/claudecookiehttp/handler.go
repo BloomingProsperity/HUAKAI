@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 const requestBodyLimit = 256 << 10
@@ -29,9 +30,14 @@ type Service interface {
 	Execute(context.Context, claudecookie.ExecuteInput) (accountintake.ExecutionResult, error)
 }
 
+type CapabilityChecker interface {
+	Require(context.Context, int64, tenantcapability.Capability) error
+}
+
 type Deps struct {
-	Auth    AdminAuth
-	Service Service
+	Auth         AdminAuth
+	Service      Service
+	Capabilities CapabilityChecker
 }
 
 type convertRequest struct {
@@ -70,6 +76,10 @@ func convertHandler(deps Deps) http.HandlerFunc {
 			request.SessionKey = ""
 			return
 		}
+		if !requireCapability(w, r, deps, request.TenantID) {
+			request.SessionKey = ""
+			return
+		}
 		result, err := deps.Service.Convert(r.Context(), claudecookie.ConvertInput{
 			TenantID: request.TenantID, SessionKey: request.SessionKey, OrganizationID: request.OrganizationID,
 			ActorID: identity.AuditActor(), ActorRole: identity.Role, RequestID: middleware.GetReqID(r.Context()),
@@ -91,6 +101,9 @@ func planHandler(deps Deps) http.HandlerFunc {
 		}
 		var request planRequest
 		if !decodeJSON(w, r, &request) || !validateTenant(w, identity, request.TenantID) {
+			return
+		}
+		if !requireCapability(w, r, deps, request.TenantID) {
 			return
 		}
 		result, err := deps.Service.Plan(r.Context(), claudecookie.PlanInput{
@@ -115,6 +128,9 @@ func executeHandler(deps Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &request) || !validateTenant(w, identity, request.TenantID) {
 			return
 		}
+		if !requireCapability(w, r, deps, request.TenantID) {
+			return
+		}
 		result, err := deps.Service.Execute(r.Context(), claudecookie.ExecuteInput{
 			PlanInput: claudecookie.PlanInput{
 				TenantID: request.TenantID, SessionID: request.SessionID,
@@ -129,6 +145,22 @@ func executeHandler(deps Deps) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func requireCapability(w http.ResponseWriter, r *http.Request, deps Deps, tenantID int64) bool {
+	if deps.Capabilities == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
+		return false
+	}
+	if err := deps.Capabilities.Require(r.Context(), tenantID, tenantcapability.ClaudeCookie); err != nil {
+		if errors.Is(err, tenantcapability.ErrDenied) {
+			writeJSONError(w, http.StatusForbidden, "capability_not_granted", "tenant capability is not granted")
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability service is temporarily unavailable")
+		}
+		return false
+	}
+	return true
 }
 
 func resolve(w http.ResponseWriter, r *http.Request, deps Deps) (admin.AdminIdentity, bool) {

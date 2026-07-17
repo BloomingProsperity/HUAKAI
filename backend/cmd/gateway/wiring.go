@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountsource"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
@@ -106,6 +107,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpresolve"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
@@ -156,6 +158,8 @@ type deps struct {
 	credentialExchangers  *credentialacq.ExchangerRegistry
 	claudeCookieStore     *claudecookie.Store
 	claudeCookieExchanger claudecookie.Exchanger
+	accountSourceStore    *accountsource.Store
+	tenantCapabilities    *tenantcapability.Store
 	projectEnricher       projectenrich.Enricher
 	credentialScheduler   *credentialworker.Scheduler
 	emailSettings         *mailinfra.PostgresSettingsStore
@@ -988,6 +992,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
+	tenantCapabilities := tenantcapability.NewStore(pgPool)
 	accountProxyResolver := provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys)
 	codexAgentRuntime := codexagent.NewPostgresRuntimeService(pgPool, credentialKeys, credentialStore, accountProxyResolver)
 	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore, codexAgentRuntime)
@@ -1003,6 +1008,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	anthropicOAuthHTTPClient := anthropicoauth.DefaultHTTPClient()
 	claudeCookieStore := claudecookie.NewStore(pgPool, credentialKeys)
 	claudeCookieExchanger := claudecookie.NewClient(anthropicOAuthHTTPClient)
+	accountSourceStore := accountsource.NewStore(pgPool, credentialKeys)
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicOAuthHTTPClient); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
@@ -1440,6 +1446,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialExchangers:  credentialExchangers,
 		claudeCookieStore:     claudeCookieStore,
 		claudeCookieExchanger: claudeCookieExchanger,
+		accountSourceStore:    accountSourceStore,
+		tenantCapabilities:    tenantCapabilities,
 		projectEnricher:       credentialProjectEnricher,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
@@ -1683,6 +1691,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	outboxWorker.Start(workerCtx)
 	claudecookie.NewCleanupWorker(claudeCookieStore, claudecookie.WithCleanupErrorHandler(func(err error) {
 		logger.Warn("Claude Cookie intake cleanup failed", zap.Error(err))
+	})).Start(workerCtx)
+	accountsource.NewCleanupWorker(accountSourceStore, accountsource.WithCleanupErrorHandler(func(err error) {
+		logger.Warn("account source intake cleanup failed", zap.Error(err))
 	})).Start(workerCtx)
 	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
 		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{

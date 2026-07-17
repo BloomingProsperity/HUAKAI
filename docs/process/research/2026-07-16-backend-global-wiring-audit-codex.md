@@ -595,8 +595,8 @@ Sub2 允许粘贴一个或多行 `sessionKey`，后端完成组织发现、PKCE�
 | --- | --- |
 | 严重度 | `S1`（鉴权合同半接线/账号长期可用性） |
 | 分类 | W-02 半接线、W-03 假激活风险、W-10 信息断链 |
-| 状态 | **Confirmed；涉及鉴权合同，需 Owner 确认默认策略** |
-| 用户影响 | 代码看起来支持 `setup_token`，但生产模式目录没有任何账号类型允许该 flow，管理路由没有专用入口，production deps 也没有开启 long-lived gate；即使通过旁路写入，生产 refresher 默认仍会拒绝使用 setup token。 |
+| 状态 | **Fixed in current branch；等待 Draft PR 审查与 Owner 合并批准** |
+| 用户影响 | 已形成独立 Setup Token 导入、预检、执行、加密落库和静态长期模式，并由正式租户能力授权控制；未授权租户固定拒绝。 |
 
 **源码证据**
 
@@ -618,6 +618,14 @@ Sub2 把 Setup Token 作为独立账号类型，使用更窄的推理 scope，�
 2. acquisition gate 与 refresher gate 使用同一配置源，启动时校验两者一致，禁止“能导入但不能刷新”。
 3. 管理合同同时展示当前 access token 到期、refresh material 状态、最近刷新和下一重试。
 4. 默认建议保持关闭；目标模型中的部署治理主体只授权或撤权，不替租户执行；被授权租户管理员仅可在自身 tenant scope 内使用，未授权者固定拒绝。
+
+**本批闭环**
+
+1. `claude_setup_token` 已成为独立账号接入 source 和独立 `anthropic/claude_setup_token` 凭据模式；严格解析只接受 Setup Token 本体，不允许输入覆盖 vendor、auth mode 或出站端点。
+2. 账号接入继续复用统一 `plan → execute` 合同，逐项返回 create/update/skip/conflict/fail；凭据进入既有 AES-GCM 信封仓库，账号、凭据和审计同事务写入。
+3. Setup Token 运行时使用静态长期凭据语义，不再依赖半截 long-lived OAuth gate 或错误进入普通 OAuth refresher；迁移 `0191` 同步收紧生产约束。
+4. `account_intake.claude_setup_token` 默认无授权即拒绝；只有部署级 `platform_admin` 程序化令牌可授予指定租户，真正执行仍必须是该租户的单租户 `tenant_operator` 程序化令牌。
+5. 真实 PostgreSQL 测试覆盖 Setup Token 创建、加密凭据落库、运行时解析和迁移往返；全仓单测、竞态检查和静态检查通过。
 
 ### GW-WIRE-016：HUAKAI 有账号身份元数据，但没有 Codex Agent Identity 认证链
 
@@ -661,8 +669,8 @@ Sub2 的 Agent Identity 是实际认证模式：包含运行时标识、Ed25519 
 | --- | --- |
 | 严重度 | `S2`（迁移效率/灾备完整度；秘密导出与远程同步实现属于高风险） |
 | 分类 | W-01 能力缺失、W-06 恢复断路、W-10 信息断链 |
-| 状态 | **Confirmed in account domain；实现前需要 Owner 确认秘密和网络边界** |
-| 用户影响 | 管理员不能从 `claude-relay-service` 预览并同步账号，也不能把账号、调度配置、分组、代理引用和凭据打成可验证迁移包。现有 credential helper 只向既有单账号写凭据，无法承担跨实例迁移和恢复。 |
+| 状态 | **Fixed as Safe Equivalent in current branch；等待 Draft PR 审查与 Owner 合并批准** |
+| 用户影响 | 已提供受白名单约束的兼容账号源预览/同步，以及默认无秘密结构包和短时加密恢复包；所有账号候选统一进入账号级预检/执行链。 |
 
 **HUAKAI 源码证据**
 
@@ -684,13 +692,22 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 4. 迁移包分为默认无秘密的安全包，以及显式启用的加密恢复包；恢复包必须有版本、来源、生成时间、校验摘要、签名和 step-up。
 5. 每个批次记录新建/更新对象清单、逐项结果、失败重试和撤销能力；不做无法解释的静默字段丢失。
 
+**本批闭环**
+
+1. CRS 作为独立兼容连接器接线；默认关闭，仅允许部署者配置的精确公网 HTTPS 主机。解析时拒绝私网/回环地址，拨号时继续使用 SSRF 防护 client，禁止重定向、代理继承和任意端口。
+2. CRS 管理密码只进入单次请求；拉取后的候选以 tenant/source/session 绑定 AAD 加密进入十分钟短时批次。后台 worker 会到期擦除密文，未被再次读取的会话也不会长期滞留秘密。
+3. CRS 与恢复包共用 `AccountIntakePlan` 和逐项执行：目标映射、身份冲突、稳定计划 hash、风险确认、账号/凭据/审计事务均不另开旁路；底层 conflict/failed 状态会原样返回，不再被批次层误报为成功。执行端在加载短时会话后再次核对来源类型，CRS 与秘密恢复包不能借用对方路由或授权执行。
+4. 结构包默认不包含 credential、vendor、auth mode 和账号 `extra`，导入只创建默认禁用、无凭据的账号骨架；同名存量和包内重复目标名称均显式冲突，不自动覆盖。
+5. 恢复包使用短时版本化信封、`scrypt` 派生、AES-GCM 加密和独立 HMAC 完整性校验；必须同时具备结构包和秘密包授权，并提交明确秘密传输确认。导出与解包均执行全账号完整性检查并保留稳定身份元数据；凭据歧义、解密失败或任一账号没有活动凭据时整体拒绝，要求无凭据账号改走结构包，不静默少恢复。
+6. 真实 PostgreSQL 端到端测试覆盖加密临时批次、跨租户拒绝、到期擦除、CRS/恢复候选统一落库、结构/恢复导出、禁用骨架导入、重复冲突和迁移回滚保护。
+
 ### GW-WIRE-018：三种身份与单层租户权限尚未落地
 
 | 项目 | 内容 |
 | --- | --- |
 | 严重度 | `S1`（跨租户授权模型/后续高风险能力接线） |
 | 分类 | W-02 半接线、W-05 契约漂移、W-12 身份边界缺失 |
-| 状态 | **Confirmed；产品定性已完成，实现涉及 auth/schema** |
+| 状态 | **正式 capability grant 与高敏操作边界已落地；旧 session admin 全局降权仍待后续 auth 核心改造** |
 | 用户影响 | 当前任意 `users.role=admin` 的有效 session 会成为全平台管理员，可跨租户处理业务，不符合已确定的三身份边界。目标只有系统部署者、系统用户和下级租户：部署者负责平台治理及能力、账号、经营额度分配；租户负责自己的客户用户和已分配资源；用户只负责自己的资源。租户不能继续创建租户，不存在多级代理、租户子树或跨租户委托管理。 |
 
 **源码证据**
@@ -712,7 +729,9 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 4. Cookie、Setup Token、Agent Identity、CRS 等能力默认未授权，由部署者按租户开通，租户侧管理账号代表该租户在自身 tenant 内执行；该账号不构成第四种身份。
 5. 禁止合并历史 0185 及递归租户 scope；后续 schema 不增加 `parent_tenant_id`。
 
-**已落地的局部边界**：Draft PR #262 的高敏账号批量接入不再允许全局 `platform_admin` 携任意 `tenant_id` 执行，而是临时使用部署者签发的单租户 `tenant_operator` token 表达“已授权该租户”，并强制请求 tenant 与认证 scope 相同。该局部修复不会替代后续正式 capability grant、部署者身份拆分和 session admin 降权。
+**本批已落地的正式授权边界**：迁移 `0194` 建立默认拒绝、可撤销、可过期、带 revision 和追加事件的租户能力授权。只有无 tenant scope 的部署级 `platform_admin` 程序化令牌可查询、授权或撤权；浏览器 session 和租户令牌均不能改授权。Cookie、Setup Token、Agent Identity、CRS、结构包和秘密恢复包分别受能力门控制。真正执行高敏操作只接受 scope 精确匹配的 `tenant_operator` 程序化令牌，部署者不能携任意 `tenant_id` 代租户处理。授权状态和事件同一串行化事务写入，列表额外返回 `effective`，避免把已过期的 `granted` 误显示为仍生效。
+
+尚未宣称完成的是旧 `users.role=admin` 浏览器 session 到 `platform_admin` 的全局映射改造；本批保持 session 无权执行上述高敏账号操作，也没有引入租户层级或第四种身份。
 
 ### GW-WIRE-019：无 claim 的 countTokens 请求在默认 selector 占槽后无人释放
 
@@ -1148,6 +1167,8 @@ go test ./... -count=1
 go vet ./...
 go test -race ./internal/codexagent ./internal/credentialacq/claudecookie ./internal/credentialacq/intake ./internal/gateway ./internal/gatewayhttp/accountintake ./internal/gatewayhttp/claudecookiehttp ./internal/credentialstore -count=1
 go test -tags=integration_pg -count=1 ./internal/codexagent ./internal/credentialacq/claudecookie ./internal/gatewayhttp/accountintake
+go test -race ./internal/accountsource/... ./internal/accountbundle ./internal/accountsourcehttp ./internal/tenantcapability ./internal/tenantcapabilityhttp ./internal/gatewayhttp/accountintake
+go test -tags=integration_pg ./internal/accountbundle ./internal/accountsource ./internal/tenantcapability ./internal/gatewayhttp/accountintake
 ```
 
 所有最终验证均显式设置：
@@ -1187,12 +1208,12 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 8. 是否批准建设真实账号测试 Safe Equivalent：默认关闭、单账号显式触发、成本上限、不计客户账、真实 protocol/credential/proxy 出站。
 9. 账号批量导入的唯一身份应由哪些字段组成；该决策将影响去重、更新、审计和未来数据迁移。
 10. bulk-by-tag 修复采用逐项事务并返回完整结果，还是整批单事务；推荐逐项原子，避免大批量锁住账号表。
-11. Claude Cookie 已批准并按“部署治理主体只授权/撤权 + 已授权租户管理员仅操作自身 tenant + Cookie 单次输入 + 程序化单租户管理令牌”闭环；正式 capability grant 和浏览器 step-up 仍归 `GW-WIRE-018`，本批没有放宽现有 session 权限。
-12. Setup Token 已确定沿用同一部署管理员授权模型；未授权租户管理员固定拒绝，不能把半截能力直接变成默认生产鉴权入口。
+11. Claude Cookie 已批准并按“部署治理主体只授权/撤权 + 已授权租户管理员仅操作自身 tenant + Cookie 单次输入 + 程序化单租户管理令牌”闭环；正式 capability grant 已落地，本批没有放宽现有 session 权限。
+12. Setup Token 已按同一正式租户能力授权模型落地；未授权租户管理员固定拒绝。
 13. Codex Agent Identity Experimental 已批准并按数据库租约/fencing 方案闭环；真实上游 live 凭据验证仍是发布门，当前不宣称 Released。
-14. CRS 是否只作为可插拔兼容连接器，并强制地址 allowlist、双时刻 SSRF 检查和一次性管理密码。
-15. 账号迁移包的秘密策略：推荐默认只导出结构；可恢复秘密仅进入 step-up 后生成的加密、签名、短时恢复包。
-16. 是否批准把部署者从当前 `platform_admin=可代操作任意租户` 语义中拆出，成为只做平台治理和租户能力授权的独立主体。
+14. CRS 已按兼容连接器落地，并强制地址 allowlist、解析/拨号双时刻 SSRF 检查和一次性管理密码。
+15. 账号迁移包已按默认结构包、显式秘密授权和短时加密恢复包策略落地。
+16. 高敏账号能力已把部署者限定为只授权/撤权、不能代租户执行；旧 session admin 的全局身份拆分仍需单独 auth 核心改造。
 17. 租户经营额度采用预充值额度还是平台授信；该选择决定回收、退款、超额、坏账和并发结算边界，不能沿用邀请返利代替。
 18. 图片长请求保活采用哪种合同：继续保留裸换行但接受最终错误可能仍是 HTTP 200；实验性改用 1xx informational heartbeat 并做 Cloudflare/nginx/客户端兼容矩阵；或移除应用层 body 保活，改为异步媒体任务/代理超时治理。
 19. 是否把 `mediatask_enabled` 定义为“只禁止新提交”，既有任务继续 worker drain、用户查询和财务收口；推荐该方案。另设高风险 emergency pause 才允许停止主动轮询。
@@ -1204,7 +1225,7 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 
 Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。`GW-WIRE-013` 的账号接入身份、冲突和稳定凭据指纹已在独立 Draft PR #258 闭环；未经 Owner 同意未合并。
 
-`GW-WIRE-014` 与 `GW-WIRE-016` 已在当前分支按 Owner 批准的 A+A1 方案闭环，并将合并到同一个 Draft PR；未经 Owner 同意不合并。`GW-WIRE-015` 的 Setup Token 一等入口和统一开关、`GW-WIRE-017` 的 CRS/安全迁移包仍未实施，不因 Cookie 或 Agent Identity 接通而视为完成。
+`GW-WIRE-014`、`GW-WIRE-015`、`GW-WIRE-016`、`GW-WIRE-017` 以及 `GW-WIRE-018` 的正式 capability grant 已在当前分支闭环，并更新到同一个 Draft PR；未经 Owner 同意不合并。`GW-WIRE-018` 剩余的是旧浏览器 session admin 的全局身份降权，不影响本批高敏账号能力默认拒绝和部署者不可代操作边界。
 
 Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、images、audio 和 Gemini countTokens 的账号反馈、安全 retry、失败账号排除、稳定 claim 身份和生产注入；图片额外增加副作用安全门，图片与音频均按当前 attempt 重新计价。Responses、Gemini generate/embed 已由源码反证为复用统一主链，不重复建设第二套数据面。Media task 已完成低风险可查性和 worker 观测修复，并确认开关、提交歧义、超时取消/快照、统一账号路由四个结构性问题；其余实施等待 Owner 对第 19-22 项定性。继续按以下链路核对并等待图片保活最终合同：
 
@@ -1214,4 +1235,4 @@ Batch 2D 已闭环 completions、messages countTokens、embeddings、rerank、im
 
 ## 真实性摘要
 
-本报告的三十一个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让新增租户授权再次混入跨租户管理员语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。Claude Cookie 与 Agent Identity 的实现结论来自本分支生产源码、可判别单测和真实 PostgreSQL 往返测试；两项真实上游 live 凭据验证仍未执行。当前十八个 open question 集中在其余账号链、高敏感账号接入、三种身份落地、租户经营额度边界、图片保活状态语义，以及 media task 开关、提交歧义、超时取消/快照和统一账号路由。
+本报告的三十一个问题均来自实际生产源码链或实际打开的历史分支源码。八项推断是：主动探测若直接启用会产生真实上游费用/多副本重复；停机窗口影响因各 worker 持久化语义不同而表现不同；非 Claude 凭据错配需要遗留/旁路条件才会触发；Kimi OAuth 缺设备身份是否影响真实上游仍需 live 验证；多套账号状态会增加运维误判概率；PostgreSQL 直选是否需要演进为路由快照必须由压测而不是对标形式决定；账号恢复包若包含秘密而无文件级加密会扩大浏览器下载和离线存储泄露面；继续沿用两档 admin 会让旧 session 管理身份仍保持过宽语义。没有断言已发生永久资金损失、凭据泄露，也没有把参考项目 Open Question 写成既定行为。Claude Cookie、Setup Token、Agent Identity、CRS、安全迁移包和正式 capability grant 的实现结论来自本分支生产源码、可判别单测和真实 PostgreSQL 往返测试；Cookie、Agent Identity 和真实 CRS 服务的 live 凭据验证仍未执行。剩余 open question 集中在其余账号链、旧 session admin 降权、租户经营额度边界、图片保活状态语义，以及 media task 开关、提交歧义、超时取消/快照和统一账号路由。

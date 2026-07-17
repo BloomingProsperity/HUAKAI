@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 const accountIntakeBodyLimit = 2 << 20
@@ -30,9 +31,14 @@ type AdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
+type CapabilityChecker interface {
+	Require(context.Context, int64, tenantcapability.Capability) error
+}
+
 type Deps struct {
-	Auth    AdminAuth
-	Service AdminAccountIntakeService
+	Auth         AdminAuth
+	Service      AdminAccountIntakeService
+	Capabilities CapabilityChecker
 }
 
 type accountIntakePlanRequest struct {
@@ -70,6 +76,10 @@ func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
 			req.Content = ""
 			return
 		}
+		if !requireSourceCapability(w, r, d, req.TenantID, req.SourceKind) {
+			req.Content = ""
+			return
+		}
 		result, err := d.Service.Plan(r.Context(), req.planInput())
 		req.Content = ""
 		if err != nil {
@@ -94,6 +104,10 @@ func newAdminAccountIntakeExecuteHandler(d Deps) http.HandlerFunc {
 			req.Content = ""
 			return
 		}
+		if !requireSourceCapability(w, r, d, req.TenantID, req.SourceKind) {
+			req.Content = ""
+			return
+		}
 		result, err := d.Service.Execute(r.Context(), accountintake.ExecuteInput{
 			PlanInput: req.planInput(), PlanHash: req.PlanHash,
 			Confirmations: req.Confirmations,
@@ -107,6 +121,31 @@ func newAdminAccountIntakeExecuteHandler(d Deps) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func requireSourceCapability(w http.ResponseWriter, r *http.Request, deps Deps, tenantID int64, source intake.SourceKind) bool {
+	var capability tenantcapability.Capability
+	switch source {
+	case intake.SourceClaudeSetupToken:
+		capability = tenantcapability.ClaudeSetupToken
+	case intake.SourceCodexAgentIdentity:
+		capability = tenantcapability.CodexAgentIdentity
+	default:
+		return true
+	}
+	if deps.Capabilities == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
+		return false
+	}
+	if err := deps.Capabilities.Require(r.Context(), tenantID, capability); err != nil {
+		if errors.Is(err, tenantcapability.ErrDenied) {
+			writeJSONError(w, http.StatusForbidden, "capability_not_granted", "tenant capability is not granted")
+		} else {
+			writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability service is temporarily unavailable")
+		}
+		return false
+	}
+	return true
 }
 
 func (r accountIntakePlanRequest) planInput() accountintake.PlanInput {

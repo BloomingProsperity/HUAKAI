@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 type authStub struct {
@@ -33,6 +34,20 @@ type serviceStub struct {
 	planCalls    int
 	executeCalls int
 	convertErr   error
+}
+
+type capabilityStub struct {
+	err        error
+	tenantID   int64
+	capability tenantcapability.Capability
+	calls      int
+}
+
+func (s *capabilityStub) Require(_ context.Context, tenantID int64, capability tenantcapability.Capability) error {
+	s.calls++
+	s.tenantID = tenantID
+	s.capability = capability
+	return s.err
 }
 
 func (s *serviceStub) Convert(_ context.Context, input claudecookie.ConvertInput) (claudecookie.Session, error) {
@@ -119,6 +134,18 @@ func TestClaudeCookieRoutesStayTokenOnlyWithProductionStyleResolver(t *testing.T
 	}
 }
 
+func TestClaudeCookieRequiresExplicitTenantCapabilityGrant(t *testing.T) {
+	service := &serviceStub{}
+	checker := &capabilityStub{err: tenantcapability.ErrDenied}
+	handler := testHandlerWithCapabilities(authStub{identity: tenantOperator(7)}, service, checker)
+	recorder := post(handler, "/admin/v1/credentials/claude-cookie/convert",
+		`{"tenant_id":7,"session_key":"session-cookie-secret"}`)
+	if recorder.Code != http.StatusForbidden || service.convertCalls != 0 || checker.calls != 1 ||
+		checker.tenantID != 7 || checker.capability != tenantcapability.ClaudeCookie {
+		t.Fatalf("status=%d service_calls=%d checker=%+v body=%s", recorder.Code, service.convertCalls, checker, recorder.Body.String())
+	}
+}
+
 func TestPlanAndExecuteBindAuditActorAndRejectUnknownFields(t *testing.T) {
 	service := &serviceStub{}
 	handler := testHandler(authStub{identity: tenantOperator(7)}, service)
@@ -152,8 +179,14 @@ func TestUpstreamFailureDoesNotExposeBackendDetails(t *testing.T) {
 }
 
 func testHandler(auth AdminAuth, service Service) http.Handler {
+	return testHandlerWithCapabilities(auth, service, &capabilityStub{})
+}
+
+func testHandlerWithCapabilities(auth AdminAuth, service Service, capabilities CapabilityChecker) http.Handler {
 	router := chi.NewRouter()
-	router.Route("/admin/v1/credentials", func(router chi.Router) { Mount(router, Deps{Auth: auth, Service: service}) })
+	router.Route("/admin/v1/credentials", func(router chi.Router) {
+		Mount(router, Deps{Auth: auth, Service: service, Capabilities: capabilities})
+	})
 	return router
 }
 

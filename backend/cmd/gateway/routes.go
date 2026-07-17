@@ -13,7 +13,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/accountsource"
+	"github.com/BloomingProsperity/HUAKAI/internal/accountsource/crs"
+	"github.com/BloomingProsperity/HUAKAI/internal/accountsourcehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
@@ -70,6 +74,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapabilityhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
@@ -1117,10 +1122,16 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1", func(r chi.Router) {
 		adminhttp.MountVersionRoutes(r, adminhttp.VersionDeps{Auth: d.adminAuth})
 		adminhttp.MountLogLevelRoutes(r, adminhttp.LogLevelDeps{Auth: d.adminAuth})
+		r.Route("/tenant-capabilities", func(r chi.Router) {
+			tenantcapabilityhttp.Mount(r, tenantcapabilityhttp.Deps{Auth: d.adminAuth, Service: d.tenantCapabilities})
+		})
 	})
 	r.Route("/v1/admin", func(r chi.Router) {
 		adminhttp.MountVersionRoutes(r, adminhttp.VersionDeps{Auth: d.adminAuth})
 		adminhttp.MountLogLevelRoutes(r, adminhttp.LogLevelDeps{Auth: d.adminAuth})
+		r.Route("/tenant-capabilities", func(r chi.Router) {
+			tenantcapabilityhttp.Mount(r, tenantcapabilityhttp.Deps{Auth: d.adminAuth, Service: d.tenantCapabilities})
+		})
 	})
 	r.Route("/v1/admin/channel-health", func(r chi.Router) {
 		gatewayhttp.MountChannelHealthReadAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
@@ -1139,8 +1150,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
 		accountIntakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth)
 		accountintakehttp.Mount(r, accountintakehttp.Deps{
-			Auth:    d.adminAuth,
-			Service: accountIntakeService,
+			Auth: d.adminAuth, Service: accountIntakeService,
+			Capabilities: d.tenantCapabilities,
 		})
 		var claudeCookieService claudecookiehttp.Service
 		if d.claudeCookieExchanger != nil && d.claudeCookieStore != nil {
@@ -1150,6 +1161,15 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		}
 		claudecookiehttp.Mount(r, claudecookiehttp.Deps{
 			Auth: d.adminAuth, Service: claudeCookieService,
+			Capabilities: d.tenantCapabilities,
+		})
+		sourceService := accountsource.NewService(d.accountSourceStore, accountIntakeService)
+		accountsourcehttp.Mount(r, accountsourcehttp.Deps{
+			Auth: d.adminAuth, Capabilities: d.tenantCapabilities,
+			CRS:      crs.NewClient(strings.Split(os.Getenv(crs.AllowedHostsEnv), ",")),
+			Sessions: d.accountSourceStore, Sources: sourceService,
+			Bundles:    accountbundle.NewExporter(d.pgPool, d.credentialStore),
+			Structures: accountbundle.NewStructureImporter(d.pgPool), Audit: d.adminQueries,
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {

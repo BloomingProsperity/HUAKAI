@@ -143,7 +143,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 				TenantID:        prepared.input.TenantID,
 				ProviderID:      prepared.input.Account.ProviderID,
 				ChannelID:       prepared.input.Account.ChannelID,
-				Name:            accountName(prepared.input.Account.NamePrefix, expected.Index),
+				Name:            accountName(prepared.input.Account, expected.Index),
 				AccountType:     prepared.input.Account.AccountType,
 				Enabled:         prepared.input.Account.Enabled,
 				Credentials:     []byte(`{}`),
@@ -364,8 +364,11 @@ func baseExecutionItem(item intake.Item) ExecutionItem {
 	}
 }
 
-func accountName(prefix string, index int) string {
-	return fmt.Sprintf("%s-%03d", strings.TrimSpace(prefix), index+1)
+func accountName(defaults AccountDefaults, index int) string {
+	if name := strings.TrimSpace(defaults.Name); name != "" {
+		return name
+	}
+	return fmt.Sprintf("%s-%03d", strings.TrimSpace(defaults.NamePrefix), index+1)
 }
 
 func normalizedExtra(raw json.RawMessage) []byte {

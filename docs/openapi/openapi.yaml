@@ -11027,6 +11027,80 @@ paths:
         '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /admin/v1/tenant-capabilities:
+    get:
+      tags: [admin-credential-acquisition]
+      summary: List high-sensitivity account capability grants for one tenant
+      operationId: listTenantCapabilityGrants
+      x-huakai-spec-source: [backend/internal/tenantcapabilityhttp/handler.go]
+      x-huakai-required-role: deployment_platform_admin_token
+      parameters:
+        - { name: tenant_id, in: query, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200': { description: Current grants and the known capability catalog., content: { application/json: { schema: { $ref: '#/components/schemas/TenantCapabilityListResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenant-capabilities/{capability}:
+    put:
+      tags: [admin-credential-acquisition]
+      summary: Grant or revoke one tenant account capability
+      operationId: setTenantCapabilityGrant
+      x-huakai-spec-source: [backend/internal/tenantcapabilityhttp/handler.go]
+      x-huakai-required-role: deployment_platform_admin_token
+      parameters:
+        - { name: capability, in: path, required: true, schema: { $ref: '#/components/schemas/TenantCapabilityName' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TenantCapabilityMutation' }
+      responses:
+        '200': { description: Persisted grant state and revision., content: { application/json: { schema: { $ref: '#/components/schemas/TenantCapabilityGrant' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/tenant-capabilities:
+    get:
+      tags: [admin-credential-acquisition]
+      summary: List high-sensitivity account capability grants for one tenant (v1 alias)
+      operationId: listTenantCapabilityGrantsV1
+      x-huakai-spec-source: [backend/internal/tenantcapabilityhttp/handler.go]
+      x-huakai-required-role: deployment_platform_admin_token
+      parameters:
+        - { name: tenant_id, in: query, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200': { description: Current grants and known capabilities., content: { application/json: { schema: { $ref: '#/components/schemas/TenantCapabilityListResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/tenant-capabilities/{capability}:
+    put:
+      tags: [admin-credential-acquisition]
+      summary: Grant or revoke one tenant account capability (v1 alias)
+      operationId: setTenantCapabilityGrantV1
+      x-huakai-spec-source: [backend/internal/tenantcapabilityhttp/handler.go]
+      x-huakai-required-role: deployment_platform_admin_token
+      parameters:
+        - { name: capability, in: path, required: true, schema: { $ref: '#/components/schemas/TenantCapabilityName' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TenantCapabilityMutation' }
+      responses:
+        '200': { description: Persisted grant state and revision., content: { application/json: { schema: { $ref: '#/components/schemas/TenantCapabilityGrant' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/account-imports/plan:
     post:
       tags: [admin-credential-acquisition]
@@ -11159,6 +11233,114 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '410': { $ref: '#/components/responses/Conflict' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/crs-sync/preview:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Fetch and preflight accounts from an allowlisted compatible account source
+      operationId: previewCRSAccountSync
+      x-huakai-spec-source: [backend/internal/accountsourcehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      description: The deployment administrator must grant account_sync.crs first. The scoped tenant operator supplies the connector login once; the password is not persisted. HTTPS, exact-host allowlist, parse-time public-IP validation, dial-time DNS-rebinding protection, redirect refusal, response limits, and a ten-minute encrypted intake session are mandatory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CRSAccountSourcePreviewRequest' }
+      responses:
+        '200': { description: Per-account unified intake plans., content: { application/json: { schema: { $ref: '#/components/schemas/AccountSourceBatchPlan' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/crs-sync/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute selected plans from a short-lived CRS intake session
+      operationId: executeCRSAccountSync
+      x-huakai-spec-source: [backend/internal/accountsourcehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountSourceExecuteRequest' }
+      responses:
+        '200': { description: Per-item create, update, skip, conflict, or failure results., content: { application/json: { schema: { $ref: '#/components/schemas/AccountSourceBatchExecution' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/export:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Export a tenant account structure or encrypted recovery bundle
+      operationId: exportAccountBundle
+      x-huakai-spec-source: [backend/internal/accountbundle/export.go]
+      x-huakai-required-role: tenant_operator_token
+      description: Structure mode never contains credentials. Recovery mode additionally requires account_bundle.secrets, an explicit confirmation, a strong transfer passphrase, authenticated encryption, a keyed signature, and an expiry of at most fifteen minutes. Responses are marked no-store and are account migration artifacts, not complete system disaster recovery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleExportRequest' }
+      responses:
+        '200': { description: Portable structure manifest or encrypted recovery envelope., headers: { Cache-Control: { schema: { type: string }, description: Always no-store. } }, content: { application/json: { schema: { $ref: '#/components/schemas/AccountBundleExportResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Preflight an account structure or encrypted recovery bundle
+      operationId: planAccountBundleImport
+      x-huakai-spec-source: [backend/internal/accountsourcehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundlePlanRequest' }
+      responses:
+        '200': { description: Structure collision plan or credential-aware unified intake plans., content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute selected account bundle import plans
+      operationId: executeAccountBundleImport
+      x-huakai-spec-source: [backend/internal/accountsourcehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      description: Structure imports create disabled credential-free skeletons and never overwrite same-name accounts. Recovery imports use the encrypted short-lived session and the same identity, conflict, encryption, audit, and health initialization chain as other credential intake sources.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleExecuteRequest' }
+      responses:
+        '200': { description: Per-item execution results., content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/credentials/renew-status:
@@ -18481,10 +18663,16 @@ components:
     AccountIntakeAccountDefaults:
       type: object
       additionalProperties: false
-      required: [provider_id, channel_id, name_prefix, account_type]
+      required: [provider_id, channel_id, account_type]
+      oneOf:
+        - required: [name]
+          not: { required: [name_prefix] }
+        - required: [name_prefix]
+          not: { required: [name] }
       properties:
         provider_id: { type: integer, format: int64, minimum: 1 }
         channel_id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string, minLength: 1, maxLength: 200, description: Exact account name for one server-side candidate. }
         name_prefix: { type: string, minLength: 1 }
         account_type:
           type: string
@@ -18498,6 +18686,180 @@ components:
         extra: { type: object, additionalProperties: true }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+
+    TenantCapabilityName:
+      type: string
+      enum:
+        - account_intake.claude_cookie
+        - account_intake.claude_setup_token
+        - account_intake.codex_agent_identity
+        - account_sync.crs
+        - account_bundle.structure
+        - account_bundle.secrets
+
+    TenantCapabilityMutation:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, enabled, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        expires_at: { type: string, format: date-time }
+        reason: { type: string, minLength: 8, maxLength: 1000 }
+
+    TenantCapabilityGrant:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, capability, status, effective, revision, reason, created_at, updated_at]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        capability: { $ref: '#/components/schemas/TenantCapabilityName' }
+        status: { type: string, enum: [granted, revoked] }
+        effective: { type: boolean, description: 当前时刻是否真正生效，已过期的 granted 返回 false。 }
+        expires_at: { type: string, format: date-time }
+        revision: { type: integer, format: int64, minimum: 1 }
+        granted_by_actor: { type: string }
+        revoked_by_actor: { type: string }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TenantCapabilityListResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, grants, known_capabilities]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        grants: { type: array, items: { $ref: '#/components/schemas/TenantCapabilityGrant' } }
+        known_capabilities: { type: array, uniqueItems: true, items: { $ref: '#/components/schemas/TenantCapabilityName' } }
+
+    AccountSourceMapping:
+      type: object
+      additionalProperties: false
+      required: [provider_id, channel_id]
+      anyOf:
+        - required: [source_provider]
+        - required: [vendor]
+      properties:
+        source_provider: { type: string }
+        vendor: { type: string }
+        provider_id: { type: integer, format: int64, minimum: 1 }
+        channel_id: { type: integer, format: int64, minimum: 1 }
+        account_type: { type: string, enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4] }
+        name_prefix: { type: string }
+
+    AccountSourceSelection:
+      type: object
+      additionalProperties: false
+      required: [index, plan_hash]
+      properties:
+        index: { type: integer, minimum: 0, maximum: 499 }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations: { type: array, uniqueItems: true, items: { type: string } }
+
+    CRSAccountSourcePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, base_url, username, password, mappings]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        base_url: { type: string, format: uri, description: HTTPS origin whose exact host is enabled in HUAKAI_CRS_ALLOWED_HOSTS. }
+        login_path: { type: string, pattern: '^/api/' }
+        export_path: { type: string, pattern: '^/api/' }
+        username: { type: string, minLength: 1, maxLength: 320 }
+        password: { type: string, minLength: 1, maxLength: 16384, writeOnly: true }
+        mappings: { type: array, minItems: 1, items: { $ref: '#/components/schemas/AccountSourceMapping' } }
+
+    AccountSourceExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, intake_session_id, mappings, selections, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        intake_session_id: { type: string, format: uuid }
+        mappings: { type: array, minItems: 1, items: { $ref: '#/components/schemas/AccountSourceMapping' } }
+        selections: { type: array, minItems: 1, maxItems: 500, items: { $ref: '#/components/schemas/AccountSourceSelection' } }
+        reason: { type: string, minLength: 8 }
+
+    AccountSourceBatchPlan:
+      type: object
+      additionalProperties: false
+      required: [intake_session_id, expires_at, items]
+      properties:
+        intake_session_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        items: { type: array, maxItems: 500, items: { type: object, additionalProperties: true } }
+
+    AccountSourceBatchExecution:
+      type: object
+      additionalProperties: false
+      required: [intake_session_id, items]
+      properties:
+        intake_session_id: { type: string, format: uuid }
+        items: { type: array, maxItems: 500, items: { type: object, additionalProperties: true } }
+
+    AccountBundleExportRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, mode, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        mode: { type: string, enum: [structure, recovery] }
+        passphrase: { type: string, minLength: 20, writeOnly: true, description: Required only for recovery mode and never persisted. }
+        expires_in_seconds: { type: integer, format: int64, minimum: 1, maximum: 900 }
+        confirmation: { type: string, enum: [confirm_account_secret_transfer] }
+        reason: { type: string, minLength: 8 }
+
+    AccountBundleExportResponse:
+      type: object
+      additionalProperties: false
+      required: [mode, bundle_id, account_count, credential_count, bundle]
+      properties:
+        mode: { type: string, enum: [structure, recovery] }
+        bundle_id: { type: string }
+        account_count: { type: integer, minimum: 1, maximum: 500 }
+        credential_count: { type: integer, minimum: 0, maximum: 500 }
+        bundle: { type: object, additionalProperties: true }
+
+    AccountBundlePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, mode, bundle, mappings]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        mode: { type: string, enum: [structure, recovery] }
+        bundle: { type: object, additionalProperties: true }
+        passphrase: { type: string, minLength: 20, writeOnly: true }
+        confirmation: { type: string, enum: [confirm_account_secret_transfer] }
+        mappings: { type: array, minItems: 1, items: { $ref: '#/components/schemas/AccountSourceMapping' } }
+
+    AccountBundleExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, mode, mappings, reason]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        mode: { type: string, enum: [structure, recovery] }
+        bundle: { type: object, additionalProperties: true, description: Required for structure mode only; structure bundles contain no credentials. }
+        intake_session_id: { type: string, format: uuid, description: Required for recovery mode only. }
+        confirmation: { type: string, enum: [confirm_account_secret_transfer] }
+        mappings: { type: array, minItems: 1, items: { $ref: '#/components/schemas/AccountSourceMapping' } }
+        selections: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/AccountSourceSelection' } }
+        structure_selections:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, plan_hash]
+            properties:
+              index: { type: integer, minimum: 0, maximum: 499 }
+              plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+              confirmations:
+                type: array
+                uniqueItems: true
+                items: { type: string, enum: [confirm_mixed_channel_risk] }
+        reason: { type: string, minLength: 8 }
 
     ClaudeCookieConvertRequest:
       type: object
@@ -18701,7 +19063,7 @@ components:
       required: [contract_version, source_kind, input_count, items, summary]
       properties:
         contract_version: { type: string, enum: [account-intake-v1] }
-        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token] }
+        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, claude_cookie, crs_sync, account_bundle_recovery] }
         input_count: { type: integer, minimum: 0, maximum: 500 }
         items:
           type: array

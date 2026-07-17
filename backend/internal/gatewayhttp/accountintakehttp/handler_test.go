@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 type accountIntakeAuthStub struct {
@@ -33,6 +34,20 @@ type accountIntakeServiceStub struct {
 	executeErr    error
 	planCalls     int
 	executeCalls  int
+}
+
+type accountIntakeCapabilityStub struct {
+	err        error
+	tenantID   int64
+	capability tenantcapability.Capability
+	calls      int
+}
+
+func (s *accountIntakeCapabilityStub) Require(_ context.Context, tenantID int64, capability tenantcapability.Capability) error {
+	s.calls++
+	s.tenantID = tenantID
+	s.capability = capability
+	return s.err
 }
 
 func (s *accountIntakeServiceStub) Plan(_ context.Context, in accountintake.PlanInput) (accountintake.PlanResult, error) {
@@ -113,6 +128,18 @@ func TestAdminAccountIntakeExecuteDoesNotEchoClaudeSetupToken(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), secret) {
 		t.Fatalf("执行响应不应回显 Setup Token：%s", rec.Body.String())
+	}
+}
+
+func TestAdminAccountIntakeSensitiveSourceRequiresTenantGrant(t *testing.T) {
+	service := &accountIntakeServiceStub{}
+	checker := &accountIntakeCapabilityStub{err: tenantcapability.ErrDenied}
+	handler := accountIntakeTestHandlerWithCapabilities(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service, checker)
+	body := `{"tenant_id":7,"source_kind":"codex_agent_identity","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"oauth"}}`
+	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/plan", body)
+	if rec.Code != http.StatusForbidden || service.planCalls != 0 || checker.calls != 1 ||
+		checker.tenantID != 7 || checker.capability != tenantcapability.CodexAgentIdentity {
+		t.Fatalf("status=%d service_calls=%d checker=%+v body=%s", rec.Code, service.planCalls, checker, rec.Body.String())
 	}
 }
 
@@ -226,9 +253,13 @@ func TestAdminAccountIntakeDoesNotExposeBackendError(t *testing.T) {
 }
 
 func accountIntakeTestHandler(auth AdminAuth, service AdminAccountIntakeService) http.Handler {
+	return accountIntakeTestHandlerWithCapabilities(auth, service, &accountIntakeCapabilityStub{})
+}
+
+func accountIntakeTestHandlerWithCapabilities(auth AdminAuth, service AdminAccountIntakeService, capabilities CapabilityChecker) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
-		Mount(r, Deps{Auth: auth, Service: service})
+		Mount(r, Deps{Auth: auth, Service: service, Capabilities: capabilities})
 	})
 	return r
 }

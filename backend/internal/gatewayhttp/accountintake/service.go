@@ -109,7 +109,9 @@ func (s *Service) prepareCandidate(ctx context.Context, in CandidatePlanInput) (
 	if err := validateAccountInput(base); err != nil {
 		return preparedPlan{}, err
 	}
-	if in.SourceKind != intake.SourceClaudeCookie {
+	switch in.SourceKind {
+	case intake.SourceClaudeCookie, intake.SourceCRSSync, intake.SourceAccountRecovery:
+	default:
 		return preparedPlan{}, fmt.Errorf("%w: unsupported server-side source_kind", ErrInvalidInput)
 	}
 	if !validPlanHash(strings.TrimSpace(in.SourceCommitment)) {
@@ -169,6 +171,7 @@ func normalizeInput(in PlanInput) PlanInput {
 	}
 	in.DefaultVendor = credentialstore.Normalize(in.DefaultVendor)
 	in.DefaultAuthMode = credentialstore.Normalize(in.DefaultAuthMode)
+	in.Account.Name = strings.TrimSpace(in.Account.Name)
 	in.Account.NamePrefix = strings.TrimSpace(in.Account.NamePrefix)
 	in.Account.AccountType = strings.TrimSpace(in.Account.AccountType)
 	in.Account.ProbeModel = cleanOptionalString(in.Account.ProbeModel)
@@ -198,8 +201,14 @@ func validateAccountInput(in PlanInput) error {
 	if in.TenantID <= 0 {
 		return fmt.Errorf("%w: tenant_id must be positive", ErrInvalidInput)
 	}
-	if in.Account.ProviderID <= 0 || in.Account.ChannelID <= 0 || in.Account.NamePrefix == "" {
-		return fmt.Errorf("%w: provider_id, channel_id, and name_prefix are required", ErrInvalidInput)
+	if in.Account.ProviderID <= 0 || in.Account.ChannelID <= 0 || (in.Account.Name == "" && in.Account.NamePrefix == "") {
+		return fmt.Errorf("%w: provider_id, channel_id, and account name are required", ErrInvalidInput)
+	}
+	if in.Account.Name != "" && in.Account.NamePrefix != "" {
+		return fmt.Errorf("%w: name and name_prefix are mutually exclusive", ErrInvalidInput)
+	}
+	if len(in.Account.Name) > 200 {
+		return fmt.Errorf("%w: name exceeds 200 bytes", ErrInvalidInput)
 	}
 	if len(in.Account.NamePrefix) > 200 {
 		return fmt.Errorf("%w: name_prefix exceeds 200 bytes", ErrInvalidInput)
