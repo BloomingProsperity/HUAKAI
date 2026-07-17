@@ -126,10 +126,11 @@
 9. 图片生成必须额外服从副作用安全门：裸换行保活一旦已写入客户端，当前 attempt 视为已开始传输，禁止再换号；可能已经创建付费异步任务的协议只在明确 401/429 且响应没有任务 ID，或已有任务已确认取消成功时自动换号。传输错误、空响应、5xx、业务终态失败和取消失败均保守终止并保留对账证据，避免重复生成和重复上游费用。
 10. 图片与音频的计价必须随当前 RoutePlan attempt 重新计算，不能让第一候选的上游模型或 pool 倍率污染后续候选的 reserve/settle；上游成功信号必须先于本地翻译、usage 解析、计价或结算失败写入。
 11. 发网前凭据兼容复核必须覆盖每个真实 `CredentialVault.Resolve` 消费者，不能只保护 chat。completions、embeddings、rerank、images、audio 和 Gemini countTokens 都必须校验协议 family、账号 vendor、auth mode 与物化 runtime kind；不兼容账号不得进入 dispatcher，计费链必须中止当前 claim 并释放资源，随后通过独立且至多一次的鉴权换号预算排除该账号。Gemini generate 复用 chat，Gemini embed 复用 embeddings，因此由对应主链覆盖。
+12. 账号 transport 选择必须在唯一发网边界统一解析，不能只由 chat handler 私有决定。空 `TransportMode` 按协议 family、账号平台和账号类型自动选择并规范化 provider；显式 `standard` 仍保留为调用方强制普通出口的合同。raw `Dispatch` 与 `DispatchHCSF` 必须复用同一选择器，确保 completions、embeddings、rerank、images、audio、Gemini countTokens 及未来调用方不会把订阅/session 账号静默降为普通 TLS/HTTP 出口。判别测试至少覆盖 Claude、Codex、Gemini Advanced、Antigravity、Cursor、Copilot、Kiro、Windsurf 与公开 API key，并证明显式 standard 不被自动覆盖。
 
 该切片不改 schema、余额算法、费率、quota 规则、鉴权角色和真实上游默认费用；只复用现有 HUAKAI 分类、健康、冷却、刷新、selector 和 billing 合同。若实现过程中发现现有合同无法同时满足 claim 安全与重试，则停止该分支并提交 Owner 决策，不以静默降级换取测试通过。
 
-进度：completions、messages countTokens、embeddings、rerank、images、audio 与 Gemini countTokens 已完成该合同接线和判别测试；Responses、Gemini generate/embed 已由源码确认复用 chat/embeddings 主链。Media task 已完成关闭提交后仍可查询、worker 错误分类观测两项低风险收口，并确认开关 drain、提交歧义、超时取消/快照、统一账号路由四项需要 Owner 定性的结构性问题；图片保活最终状态合同同样等待 Owner 决策。
+进度：completions、messages countTokens、embeddings、rerank、images、audio 与 Gemini countTokens 已完成凭据兼容、统一反馈和安全重试接线；Responses、Gemini generate/embed 已由源码确认复用 chat/embeddings 主链。横向复核又确认上述非 Chat raw dispatch 均遗漏 `TransportMode`，导致零值在 dispatcher 内回退 standard；该辐射问题进入独立堆叠修复，先把选择逻辑下沉到唯一发网边界，再由已有协议测试证明真实消费。Media task 已完成关闭提交后仍可查询、worker 错误分类观测两项低风险收口，并确认开关 drain、提交歧义、超时取消/快照、统一账号路由四项需要 Owner 定性的结构性问题；图片保活最终状态合同同样等待 Owner 决策。
 
 #### Batch 2E：Released 账号族 opt-in live 验收矩阵
 

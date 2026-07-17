@@ -137,6 +137,11 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if account.Platform == "" {
 		account.Platform = env.RequestMeta.Provider
 	}
+	account, automaticMode := ResolveDispatchTransport(account, family)
+	mode := in.TransportMode
+	if mode == "" {
+		mode = automaticMode
+	}
 
 	providerAdapter, err := d.Adapters.For(family)
 	if err != nil {
@@ -155,10 +160,6 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, err
 	}
 
-	mode := in.TransportMode
-	if mode == "" {
-		mode = transport.TransportModeStandard
-	}
 	rt, err := d.TransportFactory.For(transport.ProviderCode(account.Platform), mode)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: 取 RoundTripper 失败: %w", err)

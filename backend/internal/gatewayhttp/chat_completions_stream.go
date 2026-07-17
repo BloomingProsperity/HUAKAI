@@ -159,7 +159,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 			return markAttemptOutcomeDelivered(outcome)
 		}
 	}
-	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
+	dispatchAccount, transportMode := gateway.ResolveDispatchTransport(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
@@ -167,9 +167,9 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		InboundBody:       chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, ex.upstreamInboundBody(inboundBody), ex.identityRewrite),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
-		Account:           transportSelection.account,
+		Account:           dispatchAccount,
 		Credential:        ex.cred,
-		TransportMode:     transportSelection.mode,
+		TransportMode:     transportMode,
 		// 跨协议流式意图:非 gemini ingress 不注入 Extra["stream"],marshal 出的
 		// gemini body 又无顶层 stream 字段,没有这条 gemini-shaped 上游会错选
 		// 非流 :generateContent(评审 A4/A5 共识缺口)。

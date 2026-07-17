@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +19,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/clientgate"
@@ -37,7 +35,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
-	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
@@ -73,81 +70,6 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 
 func requestClientSessionID(r *http.Request, validated chatValidatedRequest) string {
 	return chatpipe.RequestClientSessionID(r, validated.ClientProtocol, validated.Body)
-}
-
-type dispatchTransportSelection struct {
-	account provider.AccountInfo
-	mode    transport.TransportMode
-}
-
-func transportSelectionForDispatch(account provider.AccountInfo, protocolFamily string) dispatchTransportSelection {
-	providerCode := transportProviderForDispatch(account, protocolFamily)
-	account.Platform = string(providerCode)
-	return dispatchTransportSelection{
-		account: account,
-		mode:    transportModeForProvider(providerCode, account.AccountType),
-	}
-}
-
-func transportProviderForDispatch(account provider.AccountInfo, protocolFamily string) transport.ProviderCode {
-	switch strings.ToLower(strings.TrimSpace(protocolFamily)) {
-	case "openai_codex":
-		return transport.ProviderOpenAICodex
-	case "gemini_advanced_session":
-		return transport.ProviderGeminiAdvanced
-	case "antigravity_session":
-		return transport.ProviderAntigravity
-	case "cursor_session":
-		return transport.ProviderCursor
-	case "copilot_session":
-		return transport.ProviderCopilot
-	case "kiro_session":
-		return transport.ProviderKiro
-	case "windsurf_session":
-		return transport.ProviderWindsurf
-	}
-
-	providerCode := transport.ProviderCode(strings.ToLower(strings.TrimSpace(account.Platform)))
-	switch providerCode {
-	case transport.ProviderOpenAI:
-		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
-		case credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth:
-			return transport.ProviderOpenAICodex
-		}
-	case transport.ProviderGemini:
-		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
-		case credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne:
-			return transport.ProviderGeminiAdvanced
-		case credentialstore.AuthModeAntigravity:
-			return transport.ProviderAntigravity
-		}
-	}
-	return providerCode
-}
-
-func transportModeForProvider(providerCode transport.ProviderCode, accountType string) transport.TransportMode {
-	switch providerCode {
-	case transport.ProviderOpenAICodex:
-		return transport.TransportModeMimicryChatGPT
-	case transport.ProviderGeminiAdvanced:
-		return transport.TransportModeMimicryGeminiAdvanced
-	case transport.ProviderAntigravity:
-		return transport.TransportModeMimicryAntigravity
-	case transport.ProviderCursor:
-		return transport.TransportModeMimicryCursor
-	case transport.ProviderCopilot:
-		return transport.TransportModeMimicryCopilot
-	case transport.ProviderKiro:
-		return transport.TransportModeMimicryKiro
-	case transport.ProviderWindsurf:
-		return transport.TransportModeMimicryWindsurf
-	case transport.ProviderAnthropic:
-		switch strings.ToLower(strings.TrimSpace(accountType)) {
-		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode:
-			return transport.TransportModeMimicryClaudeCode
-		}
-	}
-	return transport.TransportModeStandard
 }
 
 func (ex *chatExecution) refreshRequestSessionHashes() {
@@ -681,13 +603,13 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeNonStreamingNotYetWired, err)
 		return nil, nil, false
 	}
-	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
+	dispatchAccount, transportMode := gateway.ResolveDispatchTransport(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchCtx := gateway.ContextWithHCSFDispatchInput(seedCtx, gateway.HCSFDispatchInput{
 		ProtocolFamily:    ex.resolved.ProtocolFamily,
 		UpstreamModelID:   ex.upstreamModelID,
-		Account:           transportSelection.account,
+		Account:           dispatchAccount,
 		Credential:        ex.cred,
-		TransportMode:     transportSelection.mode,
+		TransportMode:     transportMode,
 		RawBody:           ex.upstreamInboundBody(ex.body),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),

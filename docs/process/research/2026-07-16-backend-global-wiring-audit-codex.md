@@ -371,12 +371,28 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
    结算。原非 Chat 测试 vault 普遍漏填 auth mode，另有两条测试故意让协议 family 与账号
    vendor 不一致来测试跨 provider 计价；这些夹具已改为生产形身份，跨 vendor 用例改为
    断言发网前拒绝，避免用非法账号组合制造伪覆盖。
+9. 凭据复核接通后继续向下追踪发现，Chat 私有逻辑会按账号与协议选择拟态 transport，
+   但 completions、embeddings、rerank、images、audio 与 Gemini countTokens 的 raw
+   `DispatchInput` 均不传 `TransportMode`；dispatcher 原合同把空值直接解释为 standard。
+   因此同一订阅/session 账号换到非 Chat 入口时，可能绕开对应的 TLS/HTTP 客户端形态。
+10. 堆叠分支把账号 transport 选择下沉到唯一发网边界：raw `Dispatch` 与
+    `DispatchHCSF` 在调用方未显式指定时，共同按协议 family、账号平台和账号类型解析
+    provider/mode；显式 standard 仍可用于运维回退和隔离测试。Chat 删除私有重复实现并
+    调用同一解析器，未来新增协议也不会因漏填字段静默降级。
+11. 收敛过程中同时修正 Gemini Code Assist 的旧映射：该协议使用独立
+    `gemini_code_assist` provider 与 standard transport，不再被账号类型误归到 Gemini
+    Advanced 网页拟态；这与现有 transport 白名单和专用 adapter 的出口合同一致。
+12. 判别测试覆盖 Claude、Codex、Gemini Advanced、Gemini Code Assist、Antigravity、
+    Cursor、Copilot、Kiro、Windsurf 和公开 API key；raw/HCSF 两条真实 dispatcher 测试
+    把 standard transport 设为失败、mimicry 设为成功。临时把自动选择退回 standard 后，
+    两条测试均以命中错误 transport 失败，恢复实现后重新通过。
 
 **验证**
 
 - `go test ./internal/gatewayhttp -count=1`
 - `go test ./internal/completionshttp ./internal/embeddingshttp ./internal/rerankhttp ./internal/imageshttp ./internal/audiohttp ./internal/geminihttp -count=1`
 - `go test ./internal/servingcapability ./internal/provider -count=1`
+- `go test ./internal/gateway ./internal/gatewayhttp -count=1`
 - `go test -race ./internal/gatewayhttp ./internal/servingcapability ./internal/provider -count=1`
 - `go test ./... -count=1`
 - `go vet ./...`

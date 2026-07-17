@@ -9,9 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/vertex"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 const openAIHCSFResponse = `{"id":"chatcmpl-hcsf","object":"chat.completion","model":"gpt-4o-upstream","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`
@@ -93,6 +95,101 @@ func TestDispatchHCSFHappyPathBuildsBodyFromEnvelope(t *testing.T) {
 	msgs := body["messages"].([]any)
 	if msgs[0].(map[string]any)["content"] != "graph text" {
 		t.Fatalf("messages = %+v; want CapabilityGraph text", msgs)
+	}
+}
+
+func TestDispatchHCSFAutoTransportModeUsesSessionMimicry(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
+	standardCalls, mimicryCalls := 0, 0
+	standard := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		standardCalls++
+		return nil, errors.New("HCSF session 账号不得落入 standard transport")
+	})
+	mimicry := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mimicryCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(openAIHCSFResponse)),
+			Request:    req,
+		}, nil
+	})
+	factory := transport.NewFactory()
+	factory.SetStandard(standard)
+	factory.SetMimicry(mimicry)
+	adapter := &stubAdapter{platform: "copilot"}
+	dispatcher := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: adapter},
+		TransportFactory: factory,
+	}
+	env := testHCSFEnvelope()
+	env.RequestMeta.ProtocolFamily = "copilot_session"
+	env.RequestMeta.EndpointFamily = "copilot_session"
+	env.RequestMeta.Provider = "copilot"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "copilot_session",
+		UpstreamModelID: "gpt-4o-upstream",
+		Account: provider.AccountInfo{
+			AccountID: 7, Platform: "copilot", AccountType: credentialstore.AuthModeCopilotOAuth,
+		},
+		Credential: provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
+	})
+
+	got, err := dispatcher.DispatchHCSF(ctx, env)
+	if err != nil {
+		t.Fatalf("DispatchHCSF: %v", err)
+	}
+	if got.BufferedResponse == nil || got.BufferedResponse.Model != "gpt-4o-upstream" {
+		t.Fatalf("buffered response=%+v", got.BufferedResponse)
+	}
+	if standardCalls != 0 || mimicryCalls != 1 {
+		t.Fatalf("transport calls standard/mimicry=%d/%d want 0/1", standardCalls, mimicryCalls)
+	}
+	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
+		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
+	}
+}
+
+func TestDispatchHCSFExplicitStandardStillNormalizesProvider(t *testing.T) {
+	standardCalls := 0
+	factory := transport.NewFactory()
+	factory.SetStandard(dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		standardCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(openAIHCSFResponse)),
+			Request:    req,
+		}, nil
+	}))
+	adapter := &stubAdapter{platform: "copilot"}
+	dispatcher := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: adapter},
+		TransportFactory: factory,
+	}
+	env := testHCSFEnvelope()
+	env.RequestMeta.ProtocolFamily = "copilot_session"
+	env.RequestMeta.EndpointFamily = "copilot_session"
+	env.RequestMeta.Provider = "openai"
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "copilot_session",
+		UpstreamModelID: "gpt-4o-upstream",
+		Account: provider.AccountInfo{
+			AccountID: 7, Platform: "openai", AccountType: credentialstore.AuthModeCopilotOAuth,
+		},
+		Credential:    provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
+		TransportMode: transport.TransportModeStandard,
+	})
+
+	got, err := dispatcher.DispatchHCSF(ctx, env)
+	if err != nil {
+		t.Fatalf("DispatchHCSF: %v", err)
+	}
+	if got.BufferedResponse == nil || standardCalls != 1 {
+		t.Fatalf("buffered response=%+v standard calls=%d", got.BufferedResponse, standardCalls)
+	}
+	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
+		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
 	}
 }
 
@@ -445,7 +542,10 @@ func TestDispatchHCSFOpenAICompatibleAliasUsesModeledChatBody(t *testing.T) {
 				UpstreamModelID: tc.model,
 				Account:         provider.AccountInfo{AccountID: 8, Platform: tc.provider, AccountType: "apikey"},
 				Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-alias-test"},
-				RawBody:         []byte(`{"model":"raw-stale-model","messages":[{"role":"user","content":"raw stale"}],"max_tokens":5,"max_completion_tokens":64,"seed":999,"n":2,"frequency_penalty":0.75,"logit_bias":{"198":-100},"metadata":{"trace":"alias-raw-control"}}`),
+				// 本用例只验证 HCSF 线形映射；显式 standard，避免 session alias
+				// 的生产拟态选择掺入独立的 transport 模板依赖。
+				TransportMode: transport.TransportModeStandard,
+				RawBody:       []byte(`{"model":"raw-stale-model","messages":[{"role":"user","content":"raw stale"}],"max_tokens":5,"max_completion_tokens":64,"seed":999,"n":2,"frequency_penalty":0.75,"logit_bias":{"198":-100},"metadata":{"trace":"alias-raw-control"}}`),
 			})
 			adapter := &stubAdapter{platform: tc.provider}
 			doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
