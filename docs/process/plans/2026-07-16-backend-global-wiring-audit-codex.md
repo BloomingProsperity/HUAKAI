@@ -240,8 +240,8 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 
 ### 鉴权与风险边界
 
-1. 本切片沿用现有敏感凭据采集的 token-only、`platform_admin` 边界，不扩大 session 管理员或租户管理员权限。
-2. “部署管理员授权某个租户管理员、默认未授权，部署管理员不得任意代办”的最终合同仍由 GW-WIRE-018 统一实现；本切片不得自行发明 grant 表或扩大角色。
+1. 本切片只允许带正数租户作用域的 `tenant_operator` 程序令牌操作其绑定租户；session 管理员、无作用域令牌和 `platform_admin` 均不得代租户执行。
+2. 当前授权证据是部署管理员签发的租户作用域令牌；本切片不自行发明第二套 grant 表，也不扩大令牌绑定的租户范围。
 3. 不触碰资金、quota、billing ledger、真实上游请求和生产秘密；预检纯本地解析与数据库只读，不发网、不产生上游费用。
 
 ### 判别测试与回滚
@@ -258,7 +258,7 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 2. HTTP handler 已放入独立 `accountintakehttp` 子包，未继续扩大超预算的根 `gatewayhttp` 包。
 3. 真 PostgreSQL 已验证创建原子性、审计失败回滚、精确轮换、旧计划拒绝和 `0190` up/down/up；普通测试已覆盖身份歧义、状态门、秘密不回显、严格 JSON、错误收敛和鉴权边界。
 4. `0190` 所在分支堆叠在迁移 `0189` 的 PR #259 之上。由于项目使用 `golang-migrate` 单一版本轴，合并顺序必须为 #259 后本批；不得先部署 `0190` 再补 `0189`。
-5. 本批不扩大租户管理员权限；GW-WIRE-018 完成授权合同前仍只允许 token 来源的 `platform_admin` 使用。
+5. 本批不允许部署管理员代租户执行；只有已获部署管理员签发作用域令牌的租户运营者可以操作其绑定租户。
 
 ## 账号导入凭证总修复：整合与专用入口
 
@@ -269,7 +269,7 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 | Success criteria | #258 不再保有未迁移的独有账号导入能力；普通凭据批量接入可准确保存账号作用域与个人 subject，重复身份不任选第一条。四类专用入口均具备预检、权限、秘密处理、原子落库、审计、失败分类和恢复合同，并分别通过单元、PostgreSQL、OpenAPI、全仓与独立 review。 |
 | Time estimate | 整合切片约 1-2 小时；四类专用能力按独立 PR 连续实施，不用一个巨型提交承载。 |
 | Blast radius | 整合切片只影响 OpenAI/Codex 身份元数据，不改变鉴权、计费、配额或出站。后续 Cookie/Setup/Agent/CRS 会触及高敏感凭据、网络和 schema，必须默认关闭并逐批验证。 |
-| Failure modes | 把个人 subject 误当账号作用域导致错合并；把弱导入声明当可信身份；Cookie/私钥进入日志或审计；Setup Token 能导入但不能刷新；CRS 被用于 SSRF；迁移包明文泄密。分别以双层身份、显式冲突、secret-mask、统一开关、固定上游/双时刻 SSRF 和加密签名恢复包缓解。 |
+| Failure modes | 把个人 subject 误当账号作用域导致错合并；把弱导入声明当可信身份；Cookie/私钥进入日志或审计；把 Setup Token 误当 refresh token；CRS 被用于 SSRF；迁移包明文泄密。分别以双层身份、显式冲突、secret-mask、静态凭据模式、固定上游/双时刻 SSRF 和加密签名恢复包缓解。 |
 | Decision points | Owner 已明确要求直接完成账号导入凭证模块。采用既定安全默认：部署治理主体只授权/撤权，不代租户操作；能力默认未授权；Agent Identity 保持 Experimental；CRS 为插件；迁移包默认不含秘密，含秘密恢复包必须 step-up、加密、签名、短时有效。若源码证明这些默认与现有鉴权/schema 无法兼容，再按“有疑问必须停下”提交具体冲突。 |
 
 ### 执行顺序
@@ -277,10 +277,19 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 1. 从 #262 建立整合分支，对照 #258 真码迁移 ChatGPT/Codex subject 身份和被删减的判别测试；不得重新引入 #258 的死代码入口、旧迁移编号或已拆分运营模块。
 2. 跑目标、race、PostgreSQL、全仓和质量门，独立 review 后提交叠放 Draft PR；确认 #258 无独有能力遗留后再处理旧 PR，未经 Owner 同意不合并。
 3. Claude Cookie：单次 Cookie 转换、固定域名、step-up、授权租户自操作、逐项 dry-run/execute、内存清零。
-4. Setup Token：一等 acquisition plan、专用入口、acquisition/refresher 同源开关和启动一致性门。
+4. Setup Token：一等导入计划、租户专属入口、静态 access-token 生命周期和启动一致性门；禁止进入 refresh grant。
 5. Codex：专用多行 `auth.json`/access token 接入；Agent Identity 使用独立凭据模式、AES-GCM 信封、签名/任务绑定/恢复/撤销，并保持 Experimental。
 6. CRS 与迁移包：插件化远程源、allowlist 与双时刻 SSRF、逐项差异预览；结构包默认无秘密，恢复包加密签名且短时有效。
 7. 每一项使用独立干净分支、独立 Draft PR 和独立回滚，不跨 PR 合并数据库迁移、鉴权授权和真实上游网络风险。
+
+### Setup Token 实施定性（2026-07-17）
+
+1. 官方合同：`claude setup-token` 生成一年期、仅推理用途的 OAuth access token，面向 CI/脚本，以 `CLAUDE_CODE_OAUTH_TOKEN` 使用；它不是 refresh token，也不能建立 Remote Control 会话。[Claude Code Authentication](https://code.claude.com/docs/en/authentication)
+2. 成熟项目观察：该能力以独立账号类型和独立授权入口呈现，普通 OAuth 与 inference-only token 分开；Cookie 自动授权也显式选择 full/inference 两种 scope。行为证据：`Wei-Shaw/sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/service/oauth_service.go:64-73,143-172,175-239`。
+3. HUAKAI 当前错误：`setup_token` 仅出现在 flow 枚举和未接入生产配置的刷新器回退分支；该分支把 setup token 当 refresh token 发往刷新 grant，与官方合同冲突，且默认 registry 从未开启。
+4. 本切片采用独立 `anthropic/claude_setup_token` 模式：只允许专用 `setup_token` 来源，作为 Bearer access token 物化；worker 只注册显式静态策略并返回无需刷新，不注册任何可发网上游请求的刷新 adapter，不与 `claude_code` 普通 OAuth 混用。
+5. 导入仍走现有账号接入 `plan -> execute`：租户作用域、显式冲突、单向指纹、计划哈希、原子账号/凭据写入、审计和健康初始化全部复用；旧的错误刷新回退删除，不保留兼容暗门。
+6. 数据库只扩展 vendor/auth-mode 约束，不新增秘密列；回滚会恢复原约束，并因存在新模式行而明确失败，禁止静默丢数据。
 
 ## Pre-execution checklist
 

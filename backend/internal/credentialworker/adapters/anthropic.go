@@ -22,10 +22,9 @@ const defaultAnthropicTokenEndpoint = "https://api.anthropic.com/v1/oauth/token"
 // payload 的 endpoint / client_id 覆盖, 防止凭据被篡改后把 refresh 流量
 // 导到攻击者 token endpoint (SSRF / auth token 泄露)。
 type AnthropicRefresh struct {
-	Endpoint                 string
-	ClientID                 string
-	HTTPClient               *http.Client
-	AllowLongLivedSetupToken bool
+	Endpoint   string
+	ClientID   string
+	HTTPClient *http.Client
 }
 
 func (r AnthropicRefresh) RefreshForProvider(ctx context.Context, accountID int64, providerName string, currentCredential []byte) ([]byte, time.Time, error) {
@@ -34,13 +33,6 @@ func (r AnthropicRefresh) RefreshForProvider(ctx context.Context, accountID int6
 		return nil, time.Time{}, fmt.Errorf("anthropic refresh account %d: %w", accountID, err)
 	}
 	refreshToken := credentialString(cred, "refresh_token")
-	if refreshToken == "" {
-		setupToken := firstNonEmpty(credentialString(cred, "setup_token"), credentialString(cred, "long_lived_setup_token"))
-		if setupToken != "" && !r.AllowLongLivedSetupToken {
-			return nil, time.Time{}, fmt.Errorf("anthropic refresh account %d: long-lived setup token mode disabled", accountID)
-		}
-		refreshToken = setupToken
-	}
 	if refreshToken == "" {
 		return nil, time.Time{}, fmt.Errorf("anthropic refresh account %d: refresh_token is empty", accountID)
 	}

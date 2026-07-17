@@ -9,8 +9,120 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
+const maxClaudeSetupTokenBytes = 16 << 10
+
 func ParseCLIImportContent(input string) ([]CredentialCandidate, error) {
 	return ParseImportContent(input, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+}
+
+// ParseClaudeSetupTokenContent 只接受 Claude Code 长期 access token，强制落到
+// anthropic/claude_setup_token，不允许输入覆盖 vendor、auth_mode 或出站端点。
+func ParseClaudeSetupTokenContent(input string) ([]CredentialCandidate, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil, ErrInvalidImportBody
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+		return claudeSetupTokenCandidatesFromDecoded(decoded)
+	}
+	lines := strings.Split(trimmed, "\n")
+	out := make([]CredentialCandidate, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var one any
+		if err := json.Unmarshal([]byte(line), &one); err == nil {
+			candidates, err := claudeSetupTokenCandidatesFromDecoded(one)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, candidates...)
+			continue
+		}
+		if jsonLikeLine(line) {
+			return nil, ErrInvalidImportBody
+		}
+		candidate, err := claudeSetupTokenCandidate(line, nil, "single_token")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidate)
+	}
+	if len(out) == 0 {
+		return nil, ErrInvalidImportBody
+	}
+	return out, nil
+}
+
+func claudeSetupTokenCandidatesFromDecoded(decoded any) ([]CredentialCandidate, error) {
+	switch value := decoded.(type) {
+	case map[string]any:
+		candidate, err := claudeSetupTokenCandidate(firstImportString(value, "setup_token"), value, "json_object")
+		if err != nil {
+			return nil, err
+		}
+		return []CredentialCandidate{candidate}, nil
+	case []any:
+		out := make([]CredentialCandidate, 0, len(value))
+		for _, item := range value {
+			var candidate CredentialCandidate
+			var err error
+			switch typed := item.(type) {
+			case string:
+				candidate, err = claudeSetupTokenCandidate(typed, nil, "json_array")
+			case map[string]any:
+				candidate, err = claudeSetupTokenCandidate(firstImportString(typed, "setup_token"), typed, "json_array")
+			default:
+				return nil, ErrInvalidImportBody
+			}
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, candidate)
+		}
+		if len(out) == 0 {
+			return nil, ErrInvalidImportBody
+		}
+		return out, nil
+	case string:
+		candidate, err := claudeSetupTokenCandidate(value, nil, "json_string")
+		if err != nil {
+			return nil, err
+		}
+		return []CredentialCandidate{candidate}, nil
+	default:
+		return nil, ErrInvalidImportBody
+	}
+}
+
+func claudeSetupTokenCandidate(token string, identityFields map[string]any, shape string) (CredentialCandidate, error) {
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > maxClaudeSetupTokenBytes {
+		return CredentialCandidate{}, ErrInvalidImportBody
+	}
+	payload, err := json.Marshal(map[string]string{"setup_token": token})
+	if err != nil {
+		return CredentialCandidate{}, ErrInvalidImportBody
+	}
+	candidate := CredentialCandidate{
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeSetupToken,
+		Payload: payload,
+		RedactedContext: map[string]any{
+			"shape": shape, "credential_kind": "claude_setup_token",
+		},
+	}
+	if identityFields != nil {
+		AttachIdentity(&candidate, accountident.Identity{
+			AccountID: firstImportString(identityFields, "external_account_id", "account_id"),
+			SubjectID: firstImportString(identityFields, "external_subject_id"),
+			Email:     firstImportString(identityFields, "external_account_email", "email"),
+			Source:    accountident.SourceImportPayload,
+		})
+	}
+	return candidate, nil
 }
 
 func ParseImportContent(input, defaultVendor, defaultAuthMode string) ([]CredentialCandidate, error) {

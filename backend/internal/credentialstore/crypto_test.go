@@ -95,3 +95,17 @@ func TestCredentialMaterialFingerprintUsesOnlyRuntimeSecretMaterial(t *testing.T
 		t.Fatalf("缺少 tenant 时 fingerprint=%q，期望为空", got)
 	}
 }
+
+func TestClaudeSetupTokenFingerprintIsTenantScoped(t *testing.T) {
+	payload := []byte(`{"setup_token":"long-lived-setup-material"}`)
+	got := CredentialMaterialFingerprint(7, VendorAnthropic, AuthModeClaudeSetupToken, payload)
+	if got == "" {
+		t.Fatal("setup token 必须生成去重指纹")
+	}
+	if other := CredentialMaterialFingerprint(8, VendorAnthropic, AuthModeClaudeSetupToken, payload); other == got {
+		t.Fatal("setup token 指纹未按 tenant 隔离")
+	}
+	if strings.Contains(got, "long-lived-setup-material") {
+		t.Fatal("setup token 指纹泄漏明文")
+	}
+}

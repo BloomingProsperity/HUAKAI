@@ -167,7 +167,7 @@ func DefaultContracts() []ServingCapabilityContract {
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
 			registrydefault.ProtocolAnthropicMessages, registrydefault.ProtocolAnthropicMessages, streamFramingSSE, ModelDiscoveryGlobal),
 		releasedContract(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic,
-			[]string{credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode},
+			[]string{credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode, credentialstore.AuthModeClaudeSetupToken},
 			[]string{credentialstore.RuntimeOAuthAccessToken, credentialstore.RuntimeSessionToken, credentialstore.RuntimeUpstreamPassthrough},
 			registrydefault.ProtocolAnthropicMessages, registrydefault.ProtocolAnthropicMessages, streamFramingSSE, ModelDiscoveryAccountScoped),
 		releasedContract(registrydefault.ProtocolGeminiMessages, credentialstore.VendorGemini,

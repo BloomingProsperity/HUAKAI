@@ -75,6 +75,7 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeCode, Kind: flowKindCLIImport, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeSetupToken, Kind: flowKindSetupToken, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone, ManualFirst: true},
 		{Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeVertexAnthropic, Kind: flowKindJSONImport, ClientIdentitySource: clientSourceOperatorConfig},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
@@ -206,6 +207,19 @@ func TestXAIOAuthModePlan(t *testing.T) {
 	}
 	if !plan.IsEnabled {
 		t.Fatal("grok/xai_oauth should be enabled")
+	}
+}
+
+func TestClaudeSetupTokenModePlanIsDedicated(t *testing.T) {
+	plan, ok := LookupModePlan(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken)
+	if !ok {
+		t.Fatal("DefaultModePlans 缺少 anthropic/claude_setup_token")
+	}
+	if plan.Kind != FlowKindSetupToken || plan.LongLivedToggle || len(plan.AllowedHelpers) != 1 || plan.AllowedHelpers[0] != FlowKindSetupToken {
+		t.Fatalf("setup token plan=%+v", plan)
+	}
+	if len(plan.RequiredFields) != 1 || plan.RequiredFields[0].Name != "setup_token" || plan.RequiredFields[0].Redaction != RedactionSecret {
+		t.Fatalf("setup token fields=%+v", plan.RequiredFields)
 	}
 }
 

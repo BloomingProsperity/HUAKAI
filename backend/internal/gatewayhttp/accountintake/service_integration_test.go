@@ -5,8 +5,10 @@ package accountintake
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
@@ -93,6 +96,142 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	if !errors.Is(err, ErrPlanChanged) {
 		t.Fatalf("重复执行旧计划 err=%v，期望 ErrPlanChanged", err)
 	}
+}
+
+func TestServiceCreatesClaudeSetupTokenCredentialEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='anthropic_claude_session' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	service := newAccountIntakeService(t, pool)
+	secret := "setup-token-" + seed.suffix
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceClaudeSetupToken,
+		DefaultVendor: "untrusted", DefaultAuthMode: credentialstore.AuthModeAPIKey,
+		Content: secret,
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "claude-setup-" + seed.suffix, AccountType: "oauth",
+		},
+		Now: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatalf("Plan 失败：%v", err)
+	}
+	if planned.Plan.Summary.Create != 1 || len(planned.Plan.Items) != 1 ||
+		planned.Plan.Items[0].Vendor != credentialstore.VendorAnthropic ||
+		planned.Plan.Items[0].AuthMode != credentialstore.AuthModeClaudeSetupToken ||
+		!containsString(planned.Plan.Items[0].RequiredConfirmations, "confirm_weak_identity") {
+		t.Fatalf("plan=%+v，期望强制 Claude Setup Token 模式并要求弱身份确认", planned)
+	}
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		Confirmations: []string{"confirm_weak_identity"},
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-setup-token", Reason: "导入 Claude Setup Token",
+	})
+	if err != nil {
+		t.Fatalf("Execute 失败：%v", err)
+	}
+	if executed.Summary.Created != 1 || len(executed.Items) != 1 || executed.Items[0].Status != StatusCreated {
+		t.Fatalf("execution=%+v，期望账号与凭据创建成功", executed)
+	}
+	executionJSON, err := json.Marshal(executed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(executionJSON, []byte(secret)) {
+		t.Fatalf("执行结果泄漏 Setup Token：%s", executionJSON)
+	}
+	record, err := service.credentials.ResolveActive(ctx, seed.tenantID, executed.Items[0].ProviderAccountID)
+	if err != nil {
+		t.Fatalf("ResolveActive 失败：%v", err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	if record.Vendor != credentialstore.VendorAnthropic || record.AuthMode != credentialstore.AuthModeClaudeSetupToken ||
+		record.State != credentialstore.StateActive {
+		t.Fatalf("record vendor/mode/state=%s/%s/%s", record.Vendor, record.AuthMode, record.State)
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(record.Vendor, record.AuthMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := handler.RuntimeMaterial(record.PlaintextPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if material.Kind != credentialstore.RuntimeOAuthAccessToken || material.Value != secret {
+		t.Fatalf("runtime material kind/value=%q/%q", material.Kind, material.Value)
+	}
+	var legacyCredentials []byte
+	var encryptedPayload []byte
+	if err := pool.QueryRow(ctx, `
+SELECT pa.credentials, ac.encrypted_payload
+FROM provider_accounts pa
+JOIN account_credentials ac ON ac.tenant_id=pa.tenant_id AND ac.provider_account_id=pa.id
+WHERE pa.tenant_id=$1 AND pa.id=$2 AND ac.id=$3`,
+		seed.tenantID, executed.Items[0].ProviderAccountID, executed.Items[0].AccountCredentialID,
+	).Scan(&legacyCredentials, &encryptedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if string(legacyCredentials) != "{}" || bytes.Contains(encryptedPayload, []byte(secret)) {
+		t.Fatalf("Setup Token 明文落入旧账号字段或可搜索密文：legacy=%s encrypted_contains_secret=%v", legacyCredentials, bytes.Contains(encryptedPayload, []byte(secret)))
+	}
+	var adminAuditJSON, credentialAuditJSON []byte
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(jsonb_agg(to_jsonb(events)), '[]'::jsonb)
+FROM (
+    SELECT * FROM admin_audit_events
+    WHERE tenant_id=$1 AND target_type='provider_account' AND target_id=$2
+) events`, seed.tenantID, executed.Items[0].ProviderAccountID).Scan(&adminAuditJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(jsonb_agg(to_jsonb(events)), '[]'::jsonb)
+FROM (
+    SELECT * FROM credential_audit_events
+    WHERE tenant_id=$1 AND provider_account_id=$2
+) events`, seed.tenantID, executed.Items[0].ProviderAccountID).Scan(&credentialAuditJSON); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(adminAuditJSON, []byte(secret)) || bytes.Contains(credentialAuditJSON, []byte(secret)) || strings.Contains(logs.String(), secret) {
+		t.Fatalf("Setup Token 泄漏到审计或日志：admin=%s credential=%s logs=%s", adminAuditJSON, credentialAuditJSON, logs.String())
+	}
+	if string(adminAuditJSON) == "[]" || string(credentialAuditJSON) == "[]" {
+		t.Fatalf("缺少可扫描的审计证据：admin=%s credential=%s", adminAuditJSON, credentialAuditJSON)
+	}
+
+	down, err := sqlmigrations.Files.ReadFile("migrations/0191_claude_setup_token_mode.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, string(down)); err == nil {
+		t.Fatal("存在 Setup Token 凭据时 0191 down 不应成功")
+	}
+	if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
+		t.Fatalf("清理失败的 down 事务：%v", err)
+	}
+	var preserved int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM account_credentials WHERE id=$1 AND auth_mode='claude_setup_token'`, executed.Items[0].AccountCredentialID).Scan(&preserved); err != nil {
+		t.Fatal(err)
+	}
+	if preserved != 1 {
+		t.Fatalf("失败回滚后 Setup Token 凭据数=%d，期望 1", preserved)
+	}
+	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", true)
 }
 
 func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {
@@ -246,6 +385,34 @@ func TestAccountIntakeMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("执行 0190 up 失败：%v", err)
 	}
 	assertAccountIntakeSchema(t, ctx, pool, true)
+}
+
+func TestClaudeSetupTokenMigrationRoundTripWithoutRows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", true)
+	assertVendorModeConstraint(t, ctx, pool, "credential_acquisition_flow_sessions", "credential_acq_vendor_mode_check", "claude_setup_token", true)
+
+	down, err := sqlmigrations.Files.ReadFile("migrations/0191_claude_setup_token_mode.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err != nil {
+		t.Fatalf("无 Setup Token 行时执行 0191 down：%v", err)
+	}
+	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", false)
+	assertVendorModeConstraint(t, ctx, pool, "credential_acquisition_flow_sessions", "credential_acq_vendor_mode_check", "claude_setup_token", false)
+
+	up, err := sqlmigrations.Files.ReadFile("migrations/0191_claude_setup_token_mode.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(up)); err != nil {
+		t.Fatalf("重新执行 0191 up：%v", err)
+	}
+	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", true)
+	assertVendorModeConstraint(t, ctx, pool, "credential_acquisition_flow_sessions", "credential_acq_vendor_mode_check", "claude_setup_token", true)
 }
 
 type accountIntakeSeed struct {
@@ -402,5 +569,19 @@ WHERE schemaname='public'
 	}
 	if !present && (columns != 0 || indexes != 0) {
 		t.Fatalf("down 后 schema columns=%d indexes=%d，期望 0/0", columns, indexes)
+	}
+}
+
+func assertVendorModeConstraint(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, constraint, mode string, present bool) {
+	t.Helper()
+	var definition string
+	if err := pool.QueryRow(ctx, `
+SELECT pg_get_constraintdef(c.oid)
+FROM pg_constraint c
+WHERE c.conrelid=$1::regclass AND c.conname=$2`, table, constraint).Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(definition, mode) != present {
+		t.Fatalf("约束 %s.%s=%q，模式 %q presence=%v，期望 %v", table, constraint, definition, mode, strings.Contains(definition, mode), present)
 	}
 }

@@ -77,6 +77,45 @@ func TestAdminAccountIntakePlanStrictDecodeAndRedactedResponse(t *testing.T) {
 	}
 }
 
+func TestAdminAccountIntakePlanPassesClaudeSetupTokenSourceWithoutOverrides(t *testing.T) {
+	service := &accountIntakeServiceStub{planResult: accountintake.PlanResult{
+		PlanHash: strings.Repeat("c", 64),
+		Plan:     intake.Plan{ContractVersion: intake.ContractVersion, SourceKind: intake.SourceClaudeSetupToken},
+	}}
+	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
+	body := `{"tenant_id":7,"source_kind":"claude_setup_token","default_vendor":"attacker","default_auth_mode":"api_key","content":"setup-secret","account":{"provider_id":2,"channel_id":3,"name_prefix":"claude","account_type":"oauth"}}`
+	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/plan", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if service.planCalls != 1 || service.planInput.SourceKind != intake.SourceClaudeSetupToken || service.planInput.Content != "setup-secret" {
+		t.Fatalf("service input=%+v calls=%d", service.planInput, service.planCalls)
+	}
+	if strings.Contains(rec.Body.String(), "setup-secret") {
+		t.Fatalf("响应不应回显 Setup Token：%s", rec.Body.String())
+	}
+}
+
+func TestAdminAccountIntakeExecuteDoesNotEchoClaudeSetupToken(t *testing.T) {
+	service := &accountIntakeServiceStub{executeResult: accountintake.ExecutionResult{
+		Summary: accountintake.ExecutionSummary{Created: 1},
+		Items:   []accountintake.ExecutionItem{{Status: accountintake.StatusCreated, ProviderAccountID: 101, AccountCredentialID: 202}},
+	}}
+	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
+	secret := "setup-secret-execute"
+	body := `{"tenant_id":7,"source_kind":"claude_setup_token","content":"` + secret + `","account":{"provider_id":2,"channel_id":3,"name_prefix":"claude","account_type":"oauth"},"plan_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","confirmations":["confirm_weak_identity"]}`
+	rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/execute", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if service.executeCalls != 1 || service.executeInput.PlanInput.Content != secret {
+		t.Fatalf("execute input=%+v calls=%d", service.executeInput, service.executeCalls)
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("执行响应不应回显 Setup Token：%s", rec.Body.String())
+	}
+}
+
 func TestAdminAccountIntakeExecuteMapsPlanChangeAndAuditIdentity(t *testing.T) {
 	service := &accountIntakeServiceStub{executeErr: accountintake.ErrPlanChanged}
 	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)

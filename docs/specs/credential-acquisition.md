@@ -23,7 +23,7 @@ This Phase A draft consumes HUAKAI-owned plans, specs, and review artifacts. It 
 - `docs/process/reviews/2026-05-15-f-cred-001-preservation-codex-review.md` — prior reviewer-lane findings, read as a review artifact only.
 - `docs/process/reviews/2026-05-15-f-cred-001-preservation-sonnet-review.md` — prior reviewer-lane findings, read as a review artifact only.
 - `docs/specs/upstream-credential-management.md` — F-AUTH-005 final encrypted credential store boundary.
-- `backend/internal/credentialstore/types.go` — HUAKAI-owned 15-mode handler registry shape.
+- `backend/internal/credentialstore/types.go` — HUAKAI-owned credential handler registry shape.
 - `docs/03_FEATURE_PARITY_MATRIX.md` — F-CRED-001 row.
 
 ## Capability
@@ -42,7 +42,7 @@ F-CRED-001 owns **first acquisition** only. F-AUTH-005 continues to own storage 
 ## Preconditions
 
 1. Admin identity is authenticated and authorized for the target tenant and Provider Account.
-2. Target `(vendor, auth_mode)` is one of the 15 F-AUTH-005 mode cells.
+2. Target `(vendor, auth_mode)` exists in the F-AUTH-005 credential handler registry.
 3. A tenant-scoped Provider Account exists, or the create-account operation has reserved an account target for finalization.
 4. Phase B has an approved `credential_acquisition_flow_sessions` migration before any production storage is added.
 5. Phase A tests use mocks only and do not write real credential rows.
@@ -86,7 +86,7 @@ TTL: 10 minutes from `created_at` to `expires_at` for any unfinalized interactiv
 | `tenant_id` | tenant id | yes | Tenant isolation and audit scope. |
 | `provider_account_id` | account id | yes | Finalization target. |
 | `vendor` | text enum | yes | One of `anthropic`, `openai`, `gemini`. |
-| `auth_mode` | text enum | yes | One of the 15 F-AUTH-005 modes. |
+| `auth_mode` | text enum | yes | One mode registered by F-AUTH-005 for the selected vendor. |
 | `flow_kind` | text enum | yes | `oauth`, `cli_import`, `paste`, `csv_import`, `json_import`, `cloud_bootstrap`, `token_exchange`, `setup_token`, or `manual_first`. |
 | `status` | text enum | yes | `started`, `waiting_for_user`, `callback_received`, `validated`, `finalized`, `cancelled`, `expired`, or `failed`. |
 | `actor_id` | admin id | yes | Admin who started the flow. |
@@ -98,7 +98,7 @@ TTL: 10 minutes from `created_at` to `expires_at` for any unfinalized interactiv
 | `redirect_uri` | text | oauth only | Callback URI selected for the flow. |
 | `requested_scopes` | JSON text array | optional | Redacted OAuth scope names needed for operator preview. |
 | `redacted_context` | JSON object | yes | Provider account email hash, org/project/tier labels, import counts, warning flags, and error classes. |
-| `long_lived_requested` | boolean | anthropic setup token only | Records explicit admin selection for long-lived token acquisition; UI warning lands in Phase C. |
+| `long_lived_requested` | boolean | legacy interactive flows only | Legacy flow-session compatibility field. Dedicated Setup Token account import does not use this switch because the imported value is already a static access token. |
 | `idempotency_key_hash` | bytes/text | yes | Prevents duplicate finalize/callback effects. |
 | `result_account_credential_id` | credential id | no | Set after F-AUTH-005 create succeeds. |
 | `error_class` | text | failed only | Machine-readable failure reason. |
@@ -126,13 +126,14 @@ Owner OCAW S4 selects a hybrid strategy:
 4. **No client secret in repo**: client secrets, if any, come from operator configuration or per-account override and are never committed.
 5. **Audit every source**: acquisition audit includes `client_identity_source`, not the actual client identifier or secret.
 
-## 15-Mode Acquisition Plan
+## Registry-Backed Acquisition Plan
 
 | Vendor | Auth mode | Primary strategy | OAuth client source | Finalizer payload expectation | Phase A disposition |
 | --- | --- | --- | --- | --- | --- |
 | anthropic | `api_key` | `paste` | n/a | API key payload accepted by F-AUTH-005 handler. | Implemented in Phase B manual path. |
 | anthropic | `claude_ai_oauth` | `oauth` plus optional cookie/session bootstrap input | public CLI client if verified, otherwise operator config | OAuth/session payload with org metadata preview. | Specified; production exchange waits for Phase B. |
 | anthropic | `claude_code` | `cli_import` or browser flow | public CLI client if verified, otherwise operator config | Session/OAuth payload accepted by `claude_code` handler. | Specified; no server-side file reads. |
+| anthropic | `claude_setup_token` | dedicated account import | n/a | Static OAuth access-token payload containing only `setup_token`; no refresh token or endpoint override. | Implemented through tenant-scoped plan/execute import; generic interactive acquisition rejects this mode. |
 | anthropic | `bedrock` | `paste` now; `cloud_bootstrap` STS later | n/a | AWS SigV4 payload with region and expiry metadata when temporary. | Manual path included; STS bootstrap gated by Owner. |
 | anthropic | `vertex_anthropic` | `json_import` service-account bootstrap | operator config for project/location defaults where needed | Upstream-passthrough or service-account payload with token endpoint controlled by HUAKAI. | Specified; implementation Phase B. |
 | openai | `api_key` | `paste` | n/a | API key payload. | Implemented in Phase B manual path. |
@@ -148,7 +149,7 @@ Owner OCAW S4 selects a hybrid strategy:
 
 Additional policy from OCAW:
 
-- Anthropic long-lived setup-token acquisition is represented by `flow_kind=setup_token` and `long_lived_requested=true`. It is default off and must surface an explicit admin warning in Phase C before production enablement.
+- Anthropic Setup Token is a static OAuth access token, not a refresh token. It enters through the tenant-scoped account-import plan/execute contract, is encrypted by F-AUTH-005, materializes as `oauth_access_token`, and is explicitly skipped by refresh workers. The generic platform-admin acquisition flow rejects both this mode and `flow_kind=setup_token` so it cannot create credentials for an arbitrary tenant.
 - Gemini cross-client fallback is allowed only through a compatibility matrix approved in Phase B. Each fallback attempt emits audit with source/target family labels and success flag.
 - Antigravity dedicated adapter is in scope, but runtime hardening remains Phase R-E+1 roadmap work and must not be specified as Phase A behavior.
 
@@ -202,7 +203,7 @@ Required behavior:
 
 ### Failure: Unknown Mode
 
-- Trigger: `(vendor, auth_mode)` is not in the 15-mode F-AUTH-005 registry.
+- Trigger: `(vendor, auth_mode)` is not in the F-AUTH-005 registry.
 - Observable outcome: flow is rejected or marked failed before external calls.
 - Operator-visible signal: redacted error class `unknown_mode`; no credential row.
 
@@ -253,14 +254,14 @@ Required behavior:
 | Failure | Recovery |
 | --- | --- |
 | Unauthorized admin | Reauthenticate or adjust admin RBAC outside this feature. |
-| Unknown mode | Select one of the 15 published modes or wait for a new mode registry change. |
+| Unknown mode | Select one of the currently published registry modes or wait for a registry change. |
 | State mismatch/replay | Start a fresh OAuth flow from the admin UI. |
 | Expired flow | Restart acquisition; old flow remains audit-only. |
 | Parser failure | Correct file/input shape and re-import; failed raw content is not recoverable from HUAKAI. |
 | Metadata enrichment failure | Use the credential if finalization succeeded, then retry metadata fill through the Phase B worker policy. |
 | Antigravity project metadata transient failure | Account can be marked operator-attention or metadata-stale per Owner S5; background retry is Phase B. |
 | Missing AI Studio/operator client config | Configure tenant/operator OAuth client identity, then restart flow. |
-| Long-lived Anthropic setup token blocked | Enable future feature flag and acknowledge UI warning after Phase C/Owner confirmation. |
+| Anthropic Setup Token import rejected | Use a tenant-scoped `tenant_operator` token whose tenant exactly matches the request; platform administrators and session-admin identities cannot import on a tenant's behalf. |
 
 ## Audit / Usage / Log Evidence
 
@@ -280,15 +281,15 @@ Audit invariants:
 2. Token-shaped substrings are rejected or replaced with `[REDACTED]` before log/audit emission.
 3. Audit payload never contains authorization code, access token, refresh token, API key, session token, cookie, private key, PKCE verifier, client secret, or cloud secret.
 4. Batch import audit contains aggregate counts and stable row ordinals only.
-5. Privacy action outcomes, Gemini cross-client fallback attempts, Antigravity metadata retry status, and long-lived token usage are separate event details or follow-on audit events, never raw credential fields.
+5. Privacy action outcomes, Gemini cross-client fallback attempts, Antigravity metadata retry status, and Setup Token import outcomes are separate event details or follow-on audit events, never raw credential fields.
 
 ## Acceptance Test Direction
 
-Acceptance coverage is `AT-CRED-001-001..026` plus `AT-AUTH-SESSION-001` in `docs/11_ACCEPTANCE_TEST_MATRIX.md`.
+Acceptance coverage is `AT-CRED-001-001..027` plus `AT-AUTH-SESSION-001` in `docs/11_ACCEPTANCE_TEST_MATRIX.md`.
 
 Phase A mock-only Go scaffold covers:
 
-- Flow enum and 15-mode plan coverage.
+- Flow enum and credential-registry plan coverage.
 - In-memory acquisition session CRUD, TTL, cancel, expire, and consume behavior.
 - OAuth state mismatch, callback replay, and exchange success/failure.
 - CLI import parsing for JSON object, JSON array, JSON-lines, and single-token shapes.
@@ -305,13 +306,13 @@ None for Phase A. Phase B still requires Owner confirmation before:
 2. Wiring production admin endpoints.
 3. Fetching/verifying current public CLI client identity values from approved sources.
 4. Enabling cloud bootstrap beyond manual-first paths.
-5. Enabling Anthropic long-lived setup token mode in production UI.
-6. Implementing Antigravity runtime-hardening work in the separate Phase R-E+1 track.
+5. Implementing Antigravity runtime-hardening work in the separate Phase R-E+1 track.
 
 ## Implementer Notes
 
 - 2026-05-16 — Codex GPT-5 — Phase A creates mock-only tests under `backend/internal/credentialacq`; no production package files, schema migrations, real credential store changes, or existing admin credential handler edits.
 - 2026-05-16 — Codex GPT-5 — Review-fix pass closes endpoint drift, table-name drift, S8 refresh-lock mapping, and concurrent finalize scaffold gap without reading reference-project source.
+- 2026-07-17 — Codex GPT-5 — Setup Token is corrected to a dedicated static credential mode and tenant-scoped import source; the old refresh fallback is removed, generic platform-admin acquisition is denied, and PostgreSQL/runtime integration coverage is added.
 
 Source files read: docs/specs/credential-acquisition.md; docs/decompositions/_cross-cutting/credential-acquisition.md; docs/03_FEATURE_PARITY_MATRIX.md; docs/11_ACCEPTANCE_TEST_MATRIX.md; docs/process/plans/2026-05-16-f-cred-001-phase-a-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-codex.md; docs/process/plans/2026-05-15-f-cred-001-acquisition-claude.md; backend/internal/credentialacq/finalizer_test.go; .agents/skills/acceptance-test-writer/SKILL.md
 Lane: implementer

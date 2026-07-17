@@ -38,6 +38,20 @@ func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
 	}
 }
 
+func TestClaudeSetupTokenModeIsExplicitlyStatic(t *testing.T) {
+	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken)
+	if !ok {
+		t.Fatal("Claude Setup Token mode adapter missing")
+	}
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeSetupToken,
+		Payload: []byte(`{"setup_token":"static-secret"}`),
+	})
+	if !errors.Is(err, ErrNoRefreshRequired) || len(result.Payload) != 0 || !result.AccessExpiresAt.IsZero() {
+		t.Fatalf("result=%+v err=%v，期望静态凭据明确跳过刷新", result, err)
+	}
+}
+
 func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
 	registry := DefaultModeAdapterRegistry()
 	cases := []struct {

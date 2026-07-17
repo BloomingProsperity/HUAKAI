@@ -247,7 +247,7 @@ func credentialFingerprintMaterial(vendor, authMode string, fields map[string]js
 			if token := fieldString(fields, "refresh_token"); token != "" {
 				return []byte("refresh_token\x00" + token)
 			}
-			if token := fieldString(fields, "access_token"); token != "" {
+			if token := firstFingerprintField(fields, "access_token", "setup_token"); token != "" {
 				return []byte("runtime_token\x00" + token)
 			}
 		case RuntimeSessionToken:
