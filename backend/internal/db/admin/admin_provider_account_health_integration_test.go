@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestGetAdminProviderAccountHealthJoinsLatestNonRevokedCredential(t *testing.T) {
+func TestGetAdminProviderAccountHealthSeparatesCurrentCredentialFromRefreshHistory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pool := openAdminAuditIntegrationPool(t, ctx)
@@ -26,17 +26,23 @@ func TestGetAdminProviderAccountHealthJoinsLatestNonRevokedCredential(t *testing
 	})
 
 	oldRefreshAt := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
-	latestRefreshAt := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	revokedRefreshAt := time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC)
-	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "api_key", "active", 10, oldRefreshAt, "old_outcome", "temporary", 1)
-	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "refresh_token", "active", 1, latestRefreshAt, "auth_expired", "invalid_grant", 4)
+	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "api_key", "expired", 10, oldRefreshAt, "old_outcome", "temporary", 1)
+	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "refresh_token", "active", 1, nil, "current_never_refreshed", "", 0)
 	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "codex_cli_oauth", "revoked", 9, revokedRefreshAt, "revoked_should_not_win", "revoked", 99)
+	if _, err := pool.Exec(ctx, `
+UPDATE account_credentials
+SET project_ref = 'project-latest'
+WHERE tenant_id = $1 AND provider_account_id = $2 AND auth_mode = 'refresh_token'`, tenantID, accountID); err != nil {
+		t.Fatalf("seed latest credential project_ref: %v", err)
+	}
 	rateReset := time.Date(2026, 6, 2, 12, 40, 0, 0, time.UTC)
 	overloadUntil := time.Date(2026, 6, 2, 12, 50, 0, 0, time.UTC)
 	tempUntil := time.Date(2026, 6, 2, 13, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
 UPDATE provider_accounts
-SET credential_state = 'refresh_failed',
+SET enabled = true,
+    credential_state = 'refresh_failed',
     model_rate_limits = '{"model-x":{"rate_limit_reset_at":"2026-06-02T12:45:00Z","reason":"upstream_429"}}'::jsonb,
     rate_limit_reset_at = $1,
     overload_until = $2,
@@ -54,20 +60,26 @@ WHERE tenant_id = $4 AND id = $5`,
 	if err != nil {
 		t.Fatalf("GetAdminProviderAccountHealth: %v", err)
 	}
-	if row.ID != accountID || row.TenantID != tenantID || row.HealthState != "throttled" || row.Enabled {
-		t.Fatalf("provider account fields=%+v, want tenant/account throttled disabled snapshot", row)
+	if row.ID != accountID || row.TenantID != tenantID || row.HealthState != "throttled" || !row.Enabled {
+		t.Fatalf("provider account fields=%+v, want tenant/account throttled enabled snapshot", row)
+	}
+	if row.ProviderCode != "admin-health-"+suffix || row.AccountType != "api_key" ||
+		row.CredentialVendor != "openai" || row.CredentialAuthMode != "refresh_token" ||
+		row.CredentialProjectRef == nil || *row.CredentialProjectRef != "project-latest" ||
+		row.ServingCredentialCandidates != 1 {
+		t.Fatalf("账号观测来源元数据未取当前可服务凭据：%+v", row)
 	}
 	if !row.HealthStateUntil.Valid || !row.HealthStateUntil.Time.Equal(time.Date(2026, 6, 2, 12, 30, 0, 0, time.UTC)) {
 		t.Fatalf("health_state_until=%+v want 2026-06-02T12:30:00Z", row.HealthStateUntil)
 	}
-	if row.LastRefreshOutcome == nil || *row.LastRefreshOutcome != "auth_expired" {
-		t.Fatalf("last_refresh_outcome=%v want most recent non-revoked auth_expired", row.LastRefreshOutcome)
+	if row.LastRefreshOutcome == nil || *row.LastRefreshOutcome != "old_outcome" {
+		t.Fatalf("last_refresh_outcome=%v want most recent non-revoked refresh history", row.LastRefreshOutcome)
 	}
-	if row.FailureClass == nil || *row.FailureClass != "invalid_grant" || row.FailureCount != 4 {
-		t.Fatalf("failure metadata class=%v count=%d want invalid_grant/4", row.FailureClass, row.FailureCount)
+	if row.FailureClass == nil || *row.FailureClass != "temporary" || row.FailureCount != 1 {
+		t.Fatalf("failure metadata class=%v count=%d want temporary/1", row.FailureClass, row.FailureCount)
 	}
-	if !row.LastRefreshAt.Valid || !row.LastRefreshAt.Time.Equal(latestRefreshAt) {
-		t.Fatalf("last_refresh_at=%+v want latest active credential timestamp", row.LastRefreshAt)
+	if !row.LastRefreshAt.Valid || !row.LastRefreshAt.Time.Equal(oldRefreshAt) {
+		t.Fatalf("last_refresh_at=%+v want latest refresh history timestamp", row.LastRefreshAt)
 	}
 	var modelLimits map[string]map[string]string
 	if err := json.Unmarshal(row.ModelRateLimits, &modelLimits); err != nil {
@@ -81,6 +93,25 @@ WHERE tenant_id = $4 AND id = $5`,
 		!row.OverloadUntil.Valid || !row.OverloadUntil.Time.Equal(overloadUntil) ||
 		!row.TempUnschedulableUntil.Valid || !row.TempUnschedulableUntil.Time.Equal(tempUntil) {
 		t.Fatalf("selector/legacy 状态快照未完整回读：%+v", row)
+	}
+
+	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "codex_cli_oauth", "active", 2, nil, "second_current", "", 0)
+	ambiguous, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{TenantID: tenantID, ID: accountID})
+	if err != nil {
+		t.Fatalf("GetAdminProviderAccountHealth ambiguous: %v", err)
+	}
+	if ambiguous.ServingCredentialCandidates != 2 {
+		t.Fatalf("serving_credential_candidates=%d want 2，禁止静默挑选冲突凭据", ambiguous.ServingCredentialCandidates)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE provider_accounts SET enabled = false WHERE tenant_id = $1 AND id = $2`, tenantID, accountID); err != nil {
+		t.Fatalf("disable provider account: %v", err)
+	}
+	disabled, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{TenantID: tenantID, ID: accountID})
+	if err != nil {
+		t.Fatalf("GetAdminProviderAccountHealth disabled: %v", err)
+	}
+	if disabled.ServingCredentialCandidates != 0 || disabled.CredentialVendor != "" || disabled.CredentialAuthMode != "" {
+		t.Fatalf("停用账号不得报告可服务凭据：%+v", disabled)
 	}
 
 	_, err = q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{
@@ -237,7 +268,7 @@ func insertAdminProviderAccountHealthCredential(
 	authMode string,
 	state string,
 	version int32,
-	lastRefreshAt time.Time,
+	lastRefreshAt any,
 	outcome string,
 	failureClass string,
 	failureCount int32,
