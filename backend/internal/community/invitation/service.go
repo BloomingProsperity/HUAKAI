@@ -167,8 +167,8 @@ func validateGenerateParams(params GenerateInvitationParams) error {
 // GetOrCreateSelfReferralCode 返回调用方那唯一且稳定的自助推荐码，首次调用
 // 时惰性铸造。与活动 Generate 不同，它不受每月租户配额的限制：个人推荐码是
 // 用户身份，而不是活动量，因此当某个共享的单租户部署已耗尽本月活动上限后，
-// 仅仅获取自己的码也绝不能被拦截（new-api 的 GetAffCode 与 sub2api 都把自荐码
-// 视为免配额的身份；HUAKAI 保留活动上限并额外加上这条豁免路径）。
+// 仅仅获取自己的码也绝不能被活动配额拦截；HUAKAI 保留活动上限，
+// 同时为稳定的个人身份码提供豁免路径。
 // 幂等：重复调用会通过保留的 self:<userID> 幂等键返回同一个码。
 func (s *Service) GetOrCreateSelfReferralCode(ctx context.Context, tenantID, inviterUserID int64, now time.Time) (GenerateInvitationOutput, error) {
 	if s == nil || s.store == nil {

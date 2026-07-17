@@ -15,9 +15,9 @@ type burstCounterStore interface {
 	IncrementWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error)
 }
 
-// RedisBurstLimiter 用共享计数后端实现【跨实例】的"只计失败"反猜码限流(对齐 sub2api 兑换错误计数):
-//   - CheckVoucherBurst 只读计数,达上限即拒;后端出错时 fail-open 放行(对齐 sub2api"Redis 出错不阻止
-//     用户操作"),绝不因限流后端故障误伤合法兑换;
+// RedisBurstLimiter 用共享计数后端实现【跨实例】的"只计失败"反猜码限流：
+//   - CheckVoucherBurst 只读计数，达上限即拒；后端出错时 fail-open 放行，
+//     绝不因限流后端故障误伤合法兑换；
 //   - RecordVoucherFailure 仅在猜码类失败时由 service 调用,增计数并按 Window 设 TTL(过期即自动重置窗口)。
 //
 // 与单进程的 MemoryBurstLimiter 同实现 BurstLimiter 接口,可由 wiring 按是否配置 Redis 二选一注入。
@@ -44,7 +44,7 @@ func (l *RedisBurstLimiter) CheckVoucherBurst(ctx context.Context, attempt Burst
 	}
 	count, err := l.store.Count(ctx, redisBurstKey(attempt))
 	if err != nil {
-		// 后端不可用:fail-open 放行,绝不因限流故障阻断合法用户兑换(对齐 sub2api)。
+		// 后端不可用时 fail-open，绝不因限流故障阻断合法用户兑换。
 		return BurstDecision{Allowed: true}, nil
 	}
 	if count >= int64(l.policy.Limit) {

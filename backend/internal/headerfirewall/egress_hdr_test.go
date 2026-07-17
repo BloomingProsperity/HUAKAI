@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// 出站反检测卫生措施(与 CLIProxyAPI/sub2api/AIClient-2-API 保持对齐)。
+// 出站反检测卫生措施。
 // 变异覆盖:
 //   - 把 NormalizeEgressRequestHeaders 改成空操作,则 proxy-leak 头会残留在出站请求中
 //     → 剥离类断言变红。

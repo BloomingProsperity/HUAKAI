@@ -1,4 +1,4 @@
-// windowcost 包实现 SUB2-EGRESS-03:按账号的 5 小时会话窗口花费上限。
+// windowcost 包实现按账号的 5 小时会话窗口花费上限。
 // 一个后台 Worker 把 usage_records 中的 actual_cost 聚合进内存中的 Cache;
 // pool gate 在热点选择路径上读取该缓存,不走 SQL。
 //

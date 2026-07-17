@@ -1109,10 +1109,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		channelHealthOptions = append(channelHealthOptions, channelhealth.WithAuthCooldownLane(authCooldownStore))
 	}
 	channelHealthService := channelhealth.NewService(channelHealthStore, channelhealth.DefaultPolicy(), nil, channelHealthOptions...)
-	// SUB2-EGRESS-03:在 selector 之前构建 window cost cache,这样 gate
+	// ACCOUNT-WINDOW-COST：在 selector 之前构建 window cost cache，这样 gate
 	// 在启动时就能引用它。worker 在 selector 就绪后再启动。
 	windowCostCache := windowcost.NewCache()
-	// SUB2-EGRESS-02:按账号的最大并发会话封顶 registry。
+	// ACCOUNT-SESSION-CAP：按账号的最大并发会话封顶 registry。
 	sessionCapRegistry := sessioncap.NewRegistry(0)
 	recentReqRing := recentreq.NewRing()
 	selector, selectorCleanup, err := buildSelector(workerCtx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
@@ -1313,7 +1313,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		wait: tlsProfileHealthWorker.Wait,
 	})
 
-	// SUB2-EGRESS-03:启动按账号的 5 小时窗口消费封顶聚合器。
+	// ACCOUNT-WINDOW-COST：启动按账号的 5 小时窗口消费封顶聚合器。
 	windowCostWorker := windowcost.NewWorker(
 		windowcost.NewPostgresLister(pgPool),
 		windowcost.NewPostgresAggregator(pgPool),

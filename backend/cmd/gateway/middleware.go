@@ -99,7 +99,7 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// 解压缓冲(解码先于限流=未认证内存放大面)。非 relay 路径的慢解压还受 aiAwareTimeout
 	// 总超时约束;relay 路径被该超时刻意豁免(长跑推理),其解压由 DefaultMaxDecodedBytes
 	// (64MiB→413)兜底。仍在 privacy 缓冲 body 之前,故下游 handler 读到的是解码后明文。
-	// 对齐 sub2api:其请求体解码也在各 handler 内、限流之后(非全局 pre-限流)。
+	// 解压必须位于认证和限流之后，避免未认证请求放大内存消耗。
 	router.Use(reqdecompress.Middleware(reqdecompress.DefaultMaxDecodedBytes))
 	// privacy.Middleware 在 auth 之前对所有路由全量缓冲 body 解析元数据。若给非 relay 的未认证端点
 	// (login/register 等)也用 relay 的大上限,会无谓抬高它们的 pre-auth 内存放大面。故按路径区分:
@@ -477,8 +477,7 @@ func logAuditRefEscapeFlag(policy *eventbus.AuditRefPolicy, logger *zap.Logger) 
 // aiAwareTimeout 套连接级总超时,但豁免 AI 数据面 relay 路径。chi middleware.Timeout 会给
 // r.Context() 加一个总 deadline;对长流(SSE 推理/agent)与长非流推理,这会在 forwarder 自己
 // 的 first-token/inter-event/total 预算之前把合法长响应砍断(并误判为 TotalStreamTimeout)。
-// new-api / sub2api / CLIProxyAPI 与 OpenAI 官方在数据面都不设这种连接级总超时——只靠
-// first-byte + inter-token 空闲超时 + 客户端断连。故 relay 路径不套总 deadline(仍保留
+// relay 路径只依赖 first-byte、inter-token 空闲超时和客户端断连，不套连接级总 deadline(仍保留
 // r.Context() 的客户端断连取消),控制面/admin 路径保留 60s(无 AI relay,长挂死应被砍)。
 func aiAwareTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

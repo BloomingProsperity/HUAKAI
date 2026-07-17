@@ -75,9 +75,9 @@ type BindingMetadata struct {
 	Weight                  int32
 	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
 	ProviderModelIDOverride *string // 可空;类比上游的 ModelMapping
-	RPMLimit                *int32  // 类比 LiteLLM proxy/_types KeyRequestBase.rpm_limit
+	RPMLimit                *int32  // 每分钟请求上限
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 类比 LiteLLM GenerateRequestBase.max_parallel_requests
+	MaxParallelRequests     *int32 // 最大并行请求数
 	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
 
 	// 渠道级请求/响应控制。在本切片中这些字段仅存于内存;

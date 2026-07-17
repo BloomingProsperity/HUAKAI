@@ -145,7 +145,7 @@ func TestIronCladHardDisableAtStrikeK(t *testing.T) {
 }
 
 // TestAmbiguousNeverHardDisables:ambiguous 通用 401 即使远超 K 次也永不 HardDisabled(自愈)。
-// 判别:若把 ambiguous 也纳入硬禁,hard 会变 true,断言红。修 new-api「瞬时 401 误禁好号」。
+// 判别：若把 ambiguous 也纳入硬禁，hard 会变 true，断言红。
 func TestAmbiguousNeverHardDisables(t *testing.T) {
 	s := NewStore(testCfg())
 	now := time.Unix(1_000_000, 0)

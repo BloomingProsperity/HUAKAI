@@ -111,7 +111,7 @@ type ChatHandlerDeps struct {
 	// NonStreamKeepAliveInterval:非流式 buffered 长响应期间每隔此时长写裸换行保活,避开反代空闲超时;0=关。
 	NonStreamKeepAliveInterval time.Duration
 	// PlatformSettings 提供对平台级 feature flag 的读取访问。
-	// warmup_intercept_enabled 开关(SUB2-EGRESS-04)需要它。
+	// warmup_intercept_enabled 开关需要它。
 	PlatformSettings     platformSettingsReader
 	BillingPolicyVersion string
 	RequestClass         string
@@ -509,7 +509,7 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 }
 
 func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts int) modelRunResult {
-	// SUB2-EGRESS-04: 在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
+	// WARMUP-INTERCEPT：在计费前拦截 Claude Code 的一次性预热(throwaway)请求。
 	// 该开关 opt-in(默认关)；关闭时此代码块是真正的空操作。
 	if warmupInterceptEnabled(ex.ctx, ex.d.PlatformSettings) {
 		isClaudeUA := warmupintercept.IsClaudeCodeUserAgent(ex.r.UserAgent())

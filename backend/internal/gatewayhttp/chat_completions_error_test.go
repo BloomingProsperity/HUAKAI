@@ -38,7 +38,7 @@ func TestSignalFromClassification_AuthRoutesToChallengeLane(t *testing.T) {
 }
 
 // TestAuthFailureClassFromClassification:iron-clad(关键词铁证/token_revoked/grok)vs ambiguous(通用 401)。
-// 判别:把通用 401(R-009)错标 iron-clad → 断言红(会让瞬时 401 好号被推向硬禁,修 new-api 误禁)。
+// 判别：把通用 401(R-009)错标 iron-clad 会让瞬时 401 的正常账号被推向硬禁，断言必须变红。
 func TestAuthFailureClassFromClassification(t *testing.T) {
 	cases := []struct {
 		name string

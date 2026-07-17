@@ -1,11 +1,11 @@
 // Package reqdecompress 透明解码入站请求体的 Content-Encoding。
 //
-// 缘由:Codex CLI 0.125+ 默认带 Content-Encoding: zstd 发请求体(delta-mine #8,
-// 参照 sub2api 798fd673/40feb86b)。网关若不解压,下游 JSON 解析把压缩字节当损坏
+// 缘由：Codex CLI 0.125+ 默认带 Content-Encoding: zstd 发送请求体(delta-mine #8)。
+// 网关若不解压，下游 JSON 解析会把压缩字节当作损坏的
 // JSON 拒掉,Codex 系新版客户端整体打不通。本中间件在最外层透明解码 zstd/gzip/
 // deflate/br,剥掉 Content-Encoding 头并修正 ContentLength,使下游各 handler 的
 // 原始 io.ReadAll 读到明文。配解压上限防解压炸弹(小压缩体膨胀成 OOM),超限返 413
-// (parity-or-better:sub2api 静默截断,HUAKAI 明确拒绝)。
+// 并在超限时明确返回 413，而不是静默截断。
 package reqdecompress
 
 import (

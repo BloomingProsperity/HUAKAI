@@ -52,8 +52,8 @@ type AdminIdentity struct {
 //	token 源(含空源,兼容既有)-> "admin_token:<TokenID>"
 //	session 源                -> "admin_user:<UserID>"
 //
-// 相较 new-api/sub2api 单身份模型把 admin 动作坍缩成同一个登录 id,本方法保留
-// 「程序化 token vs 人的会话」通道来源(取证可分)。写端点接入 session 通道前,
+// 本方法保留「程序化 token vs 人的会话」通道来源，确保取证可区分。
+// 写端点接入 session 通道前，
 // 所有 actor 字段须改走本方法——那是改动持久化审计格式的一步,Owner-gated。
 func (i AdminIdentity) AuditActor() string {
 	if i.Source == AdminSourceSession {
@@ -74,7 +74,7 @@ func NewAdminResolver(q *admindb.Queries) *AdminResolver {
 
 // Resolve 解析 Authorization header 并认证运维。
 // 成功时返回 AdminIdentity;对任何凭证失败模式返回 ErrAdminUnauthorized
-//(D1 反枚举);对瞬时数据存储故障返回 ErrAdminBackend。
+// (D1 反枚举);对瞬时数据存储故障返回 ErrAdminBackend。
 func (r *AdminResolver) Resolve(ctx context.Context, req *http.Request) (AdminIdentity, error) {
 	if r == nil || r.q == nil {
 		return AdminIdentity{}, fmt.Errorf("%w: resolver not configured", ErrAdminBackend)

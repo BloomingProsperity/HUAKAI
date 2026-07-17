@@ -83,10 +83,8 @@ func TestVerifyWidgetRejectsExpiredAuthDate(t *testing.T) {
 	}
 }
 
-// TestVerifyWidgetRejectsFutureAuthDate 锁定 HUAKAI 相对借鉴项目的算法升级点:未来时间戳拒绝。
-// new-api 的 checkTelegramAuthorization 只校验 HMAC、对 auth_date 不做任何时间判断,
-// 因此一个 auth_date 在未来的(被时钟偏移或伪造的)payload 只要 HMAC 对就被接受;
-// HUAKAI 额外拒绝「auth_date 晚于 now 一分钟以上」的 payload。
+// TestVerifyWidgetRejectsFutureAuthDate 锁定未来时间戳拒绝：即使 HMAC 正确，
+// auth_date 晚于 now 一分钟以上的 payload 也不能被接受。
 // 变异:删 telegramauth.go 里 authTime.After(now.Add(time.Minute)) 这条守卫 → 本用例放行,断言红。
 func TestVerifyWidgetRejectsFutureAuthDate(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
