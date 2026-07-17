@@ -71,7 +71,7 @@ func isRateLimitReason(reason SignalClass) bool {
 
 // ForceActiveByProviderAccount 把某账号最新渠道记录直接强制回 active(满流量),供运维"完整
 // 恢复账号"原语调用:与 ClearRateLimitByProviderAccount 只清限流冷却(且会落入 ramping 1%)不同,
-// 这里直接跳到 active 立即满血,对应运维显式恢复语义(对齐 sub2 ForceActive/RecoverAccountState)。
+// 这里直接跳到 active 立即满血,对应运维显式恢复语义。
 // 无渠道记录 → (false, nil) 视为无需恢复;已是 active → (false, nil) 无变化。
 func (s *Service) ForceActiveByProviderAccount(ctx context.Context, tenantID, providerAccountID int64, actorID, reason string) (Record, bool, error) {
 	if tenantID <= 0 {

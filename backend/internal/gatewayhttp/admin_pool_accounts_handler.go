@@ -25,7 +25,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
-	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
 const (
@@ -69,11 +68,6 @@ type AdminPoolAccountCredentialWriter interface {
 
 type AdminPoolAccountChannelHealthInitializer interface {
 	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
-}
-
-type AdminPoolAccountRateLimitRecovery interface {
-	ClearRateLimit(context.Context, provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error)
-	RecoverAccountState(context.Context, provideraccountrecovery.RecoverAccountInput) (provideraccountrecovery.RecoverAccountResult, error)
 }
 
 type AdminPoolAccountDeps struct {
@@ -250,13 +244,6 @@ type providerAccountResponse struct {
 	CreatedAt         *time.Time                                `json:"created_at"`
 	UpdatedAt         *time.Time                                `json:"updated_at"`
 	RateLimitRecovery *providerAccountRateLimitRecoveryResponse `json:"rate_limit_recovery,omitempty"`
-}
-
-type providerAccountRateLimitRecoveryResponse struct {
-	AccountBackoffCleared bool                      `json:"account_backoff_cleared"`
-	ChannelRecordFound    bool                      `json:"channel_record_found"`
-	ChannelChanged        bool                      `json:"channel_changed"`
-	ChannelState          channelhealth.HealthState `json:"channel_state,omitempty"`
 }
 
 func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
@@ -598,91 +585,6 @@ func newUpdateProviderAccountEnabledHandler(d AdminPoolAccountDeps) http.Handler
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": *req.Enabled})
-	}
-}
-
-func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, tenantID, ok := resolveProviderAccountAdmin(w, r, d)
-		if !ok {
-			return
-		}
-		if d.RateLimitRecovery == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account rate-limit recovery dependency unset")
-			return
-		}
-		id, ok := parseAdminPoolID(w, r)
-		if !ok {
-			return
-		}
-		result, err := d.RateLimitRecovery.ClearRateLimit(r.Context(), provideraccountrecovery.ClearRateLimitInput{
-			TenantID: tenantID, AccountID: id,
-			ActorID: ident.AuditActor(), ActorRole: ident.Role,
-			RequestID: middleware.GetReqID(r.Context()),
-		})
-		if err != nil {
-			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
-				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account backoff cleared, but channel rate-limit recovery failed; retry the operation")
-				return
-			}
-			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
-			return
-		}
-		response := providerAccountDTO(result.Account)
-		recovery := &providerAccountRateLimitRecoveryResponse{
-			AccountBackoffCleared: true,
-			ChannelRecordFound:    result.Channel != nil,
-			ChannelChanged:        result.ChannelChanged,
-		}
-		if result.Channel != nil {
-			recovery.ChannelState = result.Channel.State
-		}
-		response.RateLimitRecovery = recovery
-		writeAuditJSON(w, http.StatusOK, response)
-	}
-}
-
-// newRecoverProviderAccountStateHandler 运维"完整恢复账号"端点:把 health_state 复位 healthy
-// (消终态 revoked 无恢复路径)+ 清限流五轴 + 渠道强制回 active 满血,一口收齐各分裂恢复口。
-// 与 clear-rate-limit(窄口,只清限流冷却)并存,对应 sub2 双原语。
-func newRecoverProviderAccountStateHandler(d AdminPoolAccountDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, tenantID, ok := resolveProviderAccountAdmin(w, r, d)
-		if !ok {
-			return
-		}
-		if d.RateLimitRecovery == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account recovery dependency unset")
-			return
-		}
-		id, ok := parseAdminPoolID(w, r)
-		if !ok {
-			return
-		}
-		result, err := d.RateLimitRecovery.RecoverAccountState(r.Context(), provideraccountrecovery.RecoverAccountInput{
-			TenantID: tenantID, AccountID: id,
-			ActorID: ident.AuditActor(), ActorRole: ident.Role,
-			RequestID: middleware.GetReqID(r.Context()),
-		})
-		if err != nil {
-			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
-				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account state recovered, but channel force-active failed; retry the operation")
-				return
-			}
-			writeProviderAccountReadError(w, err, "provider_account_recover_failed")
-			return
-		}
-		response := providerAccountDTO(result.Account)
-		recovery := &providerAccountRateLimitRecoveryResponse{
-			AccountBackoffCleared: true,
-			ChannelRecordFound:    result.Channel != nil,
-			ChannelChanged:        result.ChannelChanged,
-		}
-		if result.Channel != nil {
-			recovery.ChannelState = result.Channel.State
-		}
-		response.RateLimitRecovery = recovery
-		writeAuditJSON(w, http.StatusOK, response)
 	}
 }
 

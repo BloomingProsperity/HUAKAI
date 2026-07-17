@@ -125,9 +125,9 @@ type RecoverAccountInput = ClearRateLimitInput
 type RecoverAccountResult = ClearRateLimitResult
 
 // RecoverAccountState 是运维"完整恢复账号"原语:一次调用把 health_state 复位 healthy(消终态
-// revoked 无恢复路径,根因B①)、清限流五轴、并把渠道强制回 active 满流量——各恢复口各清一半的
-// 分裂(根因B④)由此一口收齐。与 ClearRateLimit(轻量、只清限流冷却、渠道走 ramping 渐进)并存,
-// 对应 sub2 的 ClearRateLimit(窄)+ RecoverAccountState(全)双原语。
+// revoked 无恢复路径)、清限流五轴、并把渠道强制回 active 满流量——各恢复口各清一半的分裂
+// 由此一口收齐。与 ClearRateLimit(轻量、只清限流冷却、渠道走 ramping 渐进)并存:
+// 窄口日常清冷却、全口救终态,两原语各管一头。
 func (s *Service) RecoverAccountState(ctx context.Context, in RecoverAccountInput) (RecoverAccountResult, error) {
 	if s == nil || s.accounts == nil || s.channels == nil {
 		return RecoverAccountResult{}, errors.New("provider account recovery service is not configured")
