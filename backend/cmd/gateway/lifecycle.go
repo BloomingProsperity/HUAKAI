@@ -450,6 +450,10 @@ func buildDLQRuntime(pgPool *pgxpool.Pool, cfg *runtimeconfig.ObsDLQConfig, audi
 	}))
 	dlqService.Register(legacydlq.EventKindUsageRecord, legacydlq.NewUsageRecordHandler(pgPool))
 	dlqService.Register(legacydlq.EventKindAuditLedgerEntry, auditledger.NewDLQHandler(auditLedger))
+	// 时效性信号(账号观察戳/指标触发)迟到重放无意义:不注册会走 ErrNoHandler 永久隔离堆积,
+	// 显式确认丢弃并全上下文留痕。
+	dlqService.Register(legacydlq.EventKindAccountHealth, legacydlq.NewEphemeralSignalDiscardHandler(legacydlq.EventKindAccountHealth))
+	dlqService.Register(legacydlq.EventKindMetrics, legacydlq.NewEphemeralSignalDiscardHandler(legacydlq.EventKindMetrics))
 	replicaTarget := ""
 	var closeReplica func()
 	if cfg.ReplicaDSN != "" {
