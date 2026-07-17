@@ -82,6 +82,20 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
       pa.health_state = 'healthy'
       OR pa.id IN (SELECT id FROM normalized_health)
   )
+  -- 凭据真相门:只放至少有一条可服务凭据的账号。真相在 account_credentials.state
+  -- (credentialstore 写生命周期),不是冻死的 provider_accounts.credential_state
+  -- (无生命周期写点、恒 'valid' → 虚设过滤且放空壳账号进池)。谓词逐字匹配物化
+  -- resolveActiveQuery 的可服务判定(active / grace 未过期),使"选到却物化不出"归零。
+  AND EXISTS (
+      SELECT 1 FROM account_credentials ac
+      WHERE ac.provider_account_id = pa.id
+        AND ac.tenant_id = pa.tenant_id
+        AND ac.deleted_at IS NULL
+        AND (
+            ac.state = 'active'
+            OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
+        )
+  )
 ORDER BY priority, last_dispatch_at NULLS FIRST;
 
 -- name: ListEligibleAccountsByPoolGroup :many
@@ -170,12 +184,21 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.arg(requested_protocol_family)::text = ''
        OR p.upstream_protocol = sqlc.arg(requested_protocol_family)::text)
   AND pa.capability_flags @> sqlc.arg(required_capabilities)::text[]
-  -- codex review v3 P2#3 fix: production selector 不接 AuthCredentialGate
-  -- (无 TokenProvider 注入), 改 SQL 层直接过滤 credential_state.
-  -- 跟 binding.AuthCredentialGate spec 一致: 只放 {valid, refreshing_with_grace}.
-  -- 'refreshing' (无 grace) 当短暂状态走线上后被 cooldown 接住; 'refresh_failed'
-  -- + 'revoked' 直接跳过, 防 selector 选到已死账号 → 401 后再 cooldown 浪费一轮。
-  AND pa.credential_state IN ('valid', 'refreshing_with_grace')
+  -- 凭据真相门:只放至少有一条可服务凭据的账号。此前过滤 pa.credential_state
+  -- (冻死列、无生命周期写点、恒 'valid') 是虚设过滤且放空壳账号进池;改读真相
+  -- account_credentials.state(credentialstore 写生命周期)。谓词逐字匹配物化
+  -- resolveActiveQuery 的可服务判定(active / grace 未过期),防 selector 选到无
+  -- 可用凭据账号 → 物化落空浪费一轮。EXISTS 保一账号一行(多凭据不放大行数)。
+  AND EXISTS (
+      SELECT 1 FROM account_credentials ac
+      WHERE ac.provider_account_id = pa.id
+        AND ac.tenant_id = pa.tenant_id
+        AND ac.deleted_at IS NULL
+        AND (
+            ac.state = 'active'
+            OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
+        )
+  )
 ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST;
 
 -- name: SetProviderAccountModelRateLimit :exec
