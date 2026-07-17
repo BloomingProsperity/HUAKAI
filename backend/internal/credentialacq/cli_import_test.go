@@ -3,9 +3,11 @@ package credentialacq
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -151,5 +153,32 @@ func TestCLIImportRejectsMalformedJSONLine(t *testing.T) {
 	got, err := ParseImportContent("session-raw-value-xyz", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
 	if err != nil || len(got) != 1 || got[0].RedactedContext["shape"] != "single_token" {
 		t.Fatalf("non-JSON raw token must still import as single_token; got=%d err=%v", len(got), err)
+	}
+}
+
+func TestCLIImportAttachesIdentityWithoutPuttingSubjectInAuditContext(t *testing.T) {
+	candidates, err := ParseImportContent(`{
+		"vendor":"openai",
+		"auth_mode":"codex_cli_oauth",
+		"account_id":"workspace-import",
+		"chatgpt_user_id":"subject-import",
+		"email":"import@example.test",
+		"access_token":"access-import",
+		"refresh_token":"refresh-import"
+	}`, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("ParseImportContent candidates=%d err=%v", len(candidates), err)
+	}
+	got := candidates[0]
+	if got.ExternalAccountID != "workspace-import" || got.ExternalSubjectID != "subject-import" ||
+		got.ExternalAccountEmail != "import@example.test" || got.AccountIDSource != accountident.SourceImportPayload {
+		t.Fatalf("candidate identity=%+v", got)
+	}
+	redacted, err := json.Marshal(got.RedactedContext)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if _, exists := got.RedactedContext["upstream_subject_id"]; exists || strings.Contains(string(redacted), "subject-import") {
+		t.Fatalf("RedactedContext 泄漏个人 subject: %v", got.RedactedContext)
 	}
 }

@@ -377,7 +377,10 @@ func firstString(fields map[string]any, names ...string) string {
 
 func trustedIdentitySource(source string) bool {
 	switch strings.TrimSpace(source) {
-	case accountident.SourceAnthropicAccountID, accountident.SourceChatGPTJWTClaim, accountident.SourceGoogleIDTokenSub:
+	case accountident.SourceAnthropicAccountID,
+		accountident.SourceChatGPTJWTClaim,
+		accountident.SourceOpenAITokenBody,
+		accountident.SourceGoogleIDTokenSub:
 		return true
 	default:
 		return false
