@@ -350,6 +350,9 @@ func startCredentialAcqFlow(w http.ResponseWriter, r *http.Request, d AdminCrede
 }
 
 func createOrStartCredentialAcqSession(ctx context.Context, d AdminCredentialAcquisitionDeps, ident admin.AdminIdentity, req credentialAcqStartRequest, idem string) (credentialacq.Session, credentialacq.OAuthStartResult, error) {
+	if credentialstore.Normalize(req.AuthMode) == credentialstore.AuthModeClaudeSetupToken || req.FlowKind == credentialacq.FlowKindSetupToken {
+		return credentialacq.Session{}, credentialacq.OAuthStartResult{}, credentialacq.ErrFeatureDisabled
+	}
 	if req.LongLivedRequested && !d.AllowLongLivedSetupToken {
 		return credentialacq.Session{}, credentialacq.OAuthStartResult{}, credentialacq.ErrFeatureDisabled
 	}

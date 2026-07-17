@@ -124,6 +124,39 @@ func TestBuildCandidatesMatchesOpaqueAPIKeyOnlyByFingerprint(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeSetupTokenPlanIsStaticRedactedAndDeduplicated(t *testing.T) {
+	content := "setup-token-secret"
+	first, err := Build(BuildInput{TenantID: 7, SourceKind: SourceClaudeSetupToken, Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := requireSingleItem(t, first.Plan)
+	if item.Vendor != credentialstore.VendorAnthropic || item.AuthMode != credentialstore.AuthModeClaudeSetupToken ||
+		item.Action != ActionCreate || item.Lifecycle.Refreshable || item.Lifecycle.HasRefreshMaterial {
+		t.Fatalf("item=%+v", item)
+	}
+	raw, _ := json.Marshal(first.Plan)
+	if strings.Contains(string(raw), content) {
+		t.Fatalf("plan 泄漏 setup token: %s", raw)
+	}
+	fingerprint := credentialstore.CredentialMaterialFingerprint(7, credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken, first.Candidates[0].Payload)
+	second, err := Build(BuildInput{
+		TenantID: 7, SourceKind: SourceClaudeSetupToken, Content: content,
+		Existing: []ExistingCredential{{
+			CredentialID: 11, CredentialVersion: 2, ProviderAccountID: 101,
+			Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeSetupToken,
+			State: credentialstore.StateActive, CredentialFingerprint: fingerprint,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := requireSingleItem(t, second.Plan)
+	if matched.Action != ActionUpdate || matched.ExistingAccountID != 101 || matched.ExistingCredentialID != 11 {
+		t.Fatalf("matched=%+v", matched)
+	}
+}
+
 func oauthCandidate(accountID, email, payload string) credentialacq.CredentialCandidate {
 	return credentialacq.CredentialCandidate{
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,

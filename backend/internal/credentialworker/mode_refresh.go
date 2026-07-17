@@ -101,6 +101,7 @@ func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
+	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, vertexSAModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})

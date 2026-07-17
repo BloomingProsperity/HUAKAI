@@ -263,6 +263,8 @@ func samplePayloadForMode(vendor, mode string) []byte {
 	case "anthropic/vertex_anthropic", "gemini/vertex_sa":
 		fields["client_email"] = "service@example.test"
 		fields["metadata_token_endpoint"] = "https://metadata.example.test/token"
+	case "anthropic/claude_setup_token":
+		fields["setup_token"] = "test-setup-token"
 	case "openai/azure":
 		fields["azure_api_key"] = "test-azure-key"
 	case "openai/refresh_token":

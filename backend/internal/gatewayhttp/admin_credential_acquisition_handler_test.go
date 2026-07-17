@@ -524,6 +524,35 @@ func TestAdminCredentialAcquisitionOAuthStartSelectsBootstrapTTL(t *testing.T) {
 	}
 }
 
+func TestAdminCredentialAcquisitionRejectsTenantScopedSetupTokenMode(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
+	before := len(fx.db.rows)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "按模式绕过",
+			body: `{"tenant_id":1,"vendor":"anthropic","auth_mode":"claude_setup_token","flow_kind":"json_import"}`,
+		},
+		{
+			name: "按流程绕过",
+			body: `{"tenant_id":1,"vendor":"anthropic","auth_mode":"claude_code","flow_kind":"setup_token"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions", tc.body)
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential_acquisition_feature_disabled") {
+				t.Fatalf("status=%d body=%s，期望专属租户接入模式被平台入口拒绝", rec.Code, rec.Body.String())
+			}
+			if len(fx.db.rows) != before {
+				t.Fatalf("拒绝请求后 flow 数=%d，期望 %d", len(fx.db.rows), before)
+			}
+		})
+	}
+}
+
 func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
 	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	fakeCode := `{"access_token":"FAKE"}`
@@ -693,11 +722,6 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 func newCredentialAcqHTTPFixtureWithProjectEnricher(t *testing.T, auth AdminCredentialAuth, enricher projectenrich.Enricher) *credentialAcqHTTPFixture {
 	t.Helper()
 	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, enricher)
-}
-
-func newCredentialAcqHTTPFixtureWithLongLivedSetupToken(t *testing.T, auth AdminCredentialAuth, allow bool) *credentialAcqHTTPFixture {
-	t.Helper()
-	return newCredentialAcqHTTPFixtureWithBootstrapTTLs(t, auth, allow, 0, 0)
 }
 
 func newCredentialAcqHTTPFixtureWithBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {

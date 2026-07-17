@@ -377,6 +377,7 @@ func TestClaudeSessionAccountCompatibility(t *testing.T) {
 	}{
 		{credentialstore.AuthModeClaudeAIOAuth, credentialstore.RuntimeOAuthAccessToken},
 		{credentialstore.AuthModeClaudeCode, credentialstore.RuntimeSessionToken},
+		{credentialstore.AuthModeClaudeSetupToken, credentialstore.RuntimeOAuthAccessToken},
 	}
 	for _, tc := range valid {
 		if err := ValidateAccountCompatibility(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic, tc.authMode, tc.runtime); err != nil {

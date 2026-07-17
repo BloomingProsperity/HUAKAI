@@ -23,9 +23,10 @@ const (
 type SourceKind string
 
 const (
-	SourceCLI  SourceKind = "cli_import"
-	SourceJSON SourceKind = "json_import"
-	SourceCSV  SourceKind = "csv_import"
+	SourceCLI              SourceKind = "cli_import"
+	SourceJSON             SourceKind = "json_import"
+	SourceCSV              SourceKind = "csv_import"
+	SourceClaudeSetupToken SourceKind = "claude_setup_token"
 )
 
 type Action string
@@ -203,6 +204,8 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 		return credentialacq.ParseCSVImportContent(content,
 			firstNonEmpty(vendor, credentialstore.VendorOpenAI),
 			firstNonEmpty(authMode, credentialstore.AuthModeCodexCLIOAuth))
+	case SourceClaudeSetupToken:
+		return credentialacq.ParseClaudeSetupTokenContent(content)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrSourceInvalid, source)
 	}

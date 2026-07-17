@@ -3,6 +3,7 @@ package credentialacq
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -180,5 +181,54 @@ func TestCLIImportAttachesIdentityWithoutPuttingSubjectInAuditContext(t *testing
 	}
 	if _, exists := got.RedactedContext["upstream_subject_id"]; exists || strings.Contains(string(redacted), "subject-import") {
 		t.Fatalf("RedactedContext 泄漏个人 subject: %v", got.RedactedContext)
+	}
+}
+
+func TestClaudeSetupTokenImportForcesDedicatedModeAndStripsOverrides(t *testing.T) {
+	candidates, err := ParseClaudeSetupTokenContent(`{
+		"setup_token":"setup-secret-a",
+		"vendor":"openai",
+		"auth_mode":"api_key",
+		"oauth_token_endpoint":"https://attacker.test/token",
+		"account_id":"claimed-account",
+		"email":"claimed@example.test"
+	}`)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("candidates=%d err=%v", len(candidates), err)
+	}
+	got := candidates[0]
+	if got.Vendor != credentialstore.VendorAnthropic || got.AuthMode != credentialstore.AuthModeClaudeSetupToken {
+		t.Fatalf("mode=%s/%s", got.Vendor, got.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 1 || payload["setup_token"] != "setup-secret-a" {
+		t.Fatalf("payload=%v，期望只保留 setup_token", payload)
+	}
+	if got.ExternalAccountID != "claimed-account" || got.ExternalAccountEmail != "claimed@example.test" || got.AccountIDSource != accountident.SourceImportPayload {
+		t.Fatalf("identity=%+v", got)
+	}
+	redacted, _ := json.Marshal(got.RedactedContext)
+	if strings.Contains(string(redacted), "setup-secret-a") || strings.Contains(string(redacted), "attacker.test") {
+		t.Fatalf("RedactedContext 泄漏秘密或输入端点：%s", redacted)
+	}
+}
+
+func TestClaudeSetupTokenImportSupportsBatchAndRejectsMalformedJSON(t *testing.T) {
+	candidates, err := ParseClaudeSetupTokenContent("setup-a\nsetup-b")
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("raw batch candidates=%d err=%v", len(candidates), err)
+	}
+	candidates, err = ParseClaudeSetupTokenContent("{\"setup_token\":\"setup-c\"}\n{\"setup_token\":\"setup-d\"}")
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("jsonl candidates=%d err=%v", len(candidates), err)
+	}
+	if _, err := ParseClaudeSetupTokenContent(`{"setup_token":"broken"`); !errors.Is(err, ErrInvalidImportBody) {
+		t.Fatalf("malformed err=%v", err)
+	}
+	if _, err := ParseClaudeSetupTokenContent(`{"access_token":"wrong-kind"}`); !errors.Is(err, ErrInvalidImportBody) {
+		t.Fatalf("wrong-kind err=%v", err)
 	}
 }
