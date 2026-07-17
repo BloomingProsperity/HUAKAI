@@ -43,8 +43,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
 # memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
 # env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
+# 2026-07-17 删除从未进入生产依赖图且带 clean-room 风险的 Grok 网页 session 实现，
+# 同步移除其 6 条 deadcode 豁免，DC_MAX 882->876，防止同路径同名死实现以后绕过质量门。
 SC_MAX=94
-DC_MAX=882
+DC_MAX=876
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
