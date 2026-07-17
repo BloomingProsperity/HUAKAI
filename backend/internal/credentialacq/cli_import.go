@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/codexagentimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -13,6 +14,50 @@ const maxClaudeSetupTokenBytes = 16 << 10
 
 func ParseCLIImportContent(input string) ([]CredentialCandidate, error) {
 	return ParseImportContent(input, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+}
+
+// ParseCodexAgentIdentityContent 固定 Agent Identity 的 vendor 与 auth_mode，
+// 导入内容不能覆盖路由或上游端点。
+func ParseCodexAgentIdentityContent(input string) ([]CredentialCandidate, error) {
+	entries, err := codexagentimport.Parse(input)
+	if err != nil {
+		return nil, ErrInvalidImportBody
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(
+		credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgentIdentity,
+	)
+	if err != nil {
+		return nil, ErrInvalidImportBody
+	}
+	out := make([]CredentialCandidate, 0, len(entries))
+	for _, entry := range entries {
+		payloadObject := map[string]any{
+			"runtime_id": entry.RuntimeID, "private_key_pkcs8": entry.PrivateKeyPKCS8,
+			"upstream_account_id": entry.UpstreamAccountID, "upstream_user_id": entry.UpstreamUserID,
+		}
+		for key, value := range map[string]string{"task_id": entry.TaskID, "email": entry.Email, "plan": entry.Plan} {
+			if value != "" {
+				payloadObject[key] = value
+			}
+		}
+		if entry.FedRAMPSet {
+			payloadObject["fedramp"] = entry.FedRAMP
+		}
+		payload, marshalErr := json.Marshal(payloadObject)
+		if marshalErr != nil || handler.ValidatePayload(payload) != nil {
+			return nil, ErrInvalidImportBody
+		}
+		candidate := CredentialCandidate{
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+			Payload: payload, RedactedContext: map[string]any{"shape": "codex_agent_identity"},
+		}
+		AttachIdentity(&candidate, accountident.Identity{
+			AccountID: entry.UpstreamAccountID, SubjectID: entry.UpstreamUserID,
+			Email: entry.Email, Source: accountident.SourceImportPayload,
+		})
+		out = append(out, candidate)
+	}
+	return out, nil
 }
 
 // ParseClaudeSetupTokenContent 只接受 Claude Code 长期 access token，强制落到

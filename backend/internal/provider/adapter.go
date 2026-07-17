@@ -50,6 +50,9 @@ type Credential struct {
 	// Extra 携带 vendor-specific 附加字段（如 OpenAI 的 org_id / project_id；
 	// Gemini 的 X-Goog-User-Project；Cursor 的 client_key 等）。
 	Extra map[string]string
+	// RuntimeRef 是仅供网关内部恢复动态凭据的非秘密版本引用。adapter 不读取、
+	// 不写入任何出站头，也不应把它返回给客户端。
+	RuntimeRef string
 }
 
 // AccountInfo 是池中选中的 account 摘要，供 adapter 与只读后台任务引用。

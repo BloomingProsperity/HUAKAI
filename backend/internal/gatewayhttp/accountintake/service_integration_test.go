@@ -5,6 +5,10 @@ package accountintake
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,6 +236,84 @@ FROM (
 		t.Fatalf("失败回滚后 Setup Token 凭据数=%d，期望 1", preserved)
 	}
 	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", true)
+}
+
+func TestServiceImportsCodexAgentIdentityEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedKey := base64.StdEncoding.EncodeToString(der)
+	content, err := json.Marshal(map[string]any{
+		"agentRuntimeId":          "runtime-" + seed.suffix,
+		"agentPrivateKey":         encodedKey,
+		"chatgptAccountId":        "account-" + seed.suffix,
+		"chatgptUserId":           "user-" + seed.suffix,
+		"chatgptAccountIsFedramp": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newAccountIntakeService(t, pool)
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCodexAgentIdentity,
+		DefaultVendor: "untrusted", DefaultAuthMode: credentialstore.AuthModeAPIKey,
+		Content: string(content),
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "codex-agent-" + seed.suffix, AccountType: "oauth",
+		},
+		Now: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatalf("Plan 失败：%v", err)
+	}
+	if planned.Plan.Summary.Create != 1 || len(planned.Plan.Items) != 1 ||
+		planned.Plan.Items[0].Vendor != credentialstore.VendorOpenAI ||
+		planned.Plan.Items[0].AuthMode != credentialstore.AuthModeCodexAgentIdentity {
+		t.Fatalf("plan=%+v，期望强制 Agent Identity 模式", planned)
+	}
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-codex-agent", Reason: "导入 Codex Agent Identity",
+	})
+	if err != nil || executed.Summary.Created != 1 {
+		t.Fatalf("execution=%+v err=%v", executed, err)
+	}
+	record, err := service.credentials.LoadForProviderAccountTest(ctx, seed.tenantID, executed.Items[0].ProviderAccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	if record.Vendor != credentialstore.VendorOpenAI || record.AuthMode != credentialstore.AuthModeCodexAgentIdentity ||
+		!bytes.Contains(record.PlaintextPayload, []byte("runtime-"+seed.suffix)) ||
+		!bytes.Contains(record.PlaintextPayload, []byte(encodedKey)) {
+		t.Fatalf("record mode=%s/%s payload_shape_valid=false", record.Vendor, record.AuthMode)
+	}
+	var encrypted []byte
+	var taskBindings int
+	if err := pool.QueryRow(ctx, `SELECT encrypted_payload FROM account_credentials WHERE id=$1`, record.ID).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM codex_agent_task_bindings WHERE account_credential_id=$1`, record.ID).Scan(&taskBindings); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encrypted, []byte(encodedKey)) || taskBindings != 0 {
+		t.Fatalf("私钥未加密或导入阶段提前注册 task: encrypted=%d task_bindings=%d", len(encrypted), taskBindings)
+	}
 }
 
 func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {

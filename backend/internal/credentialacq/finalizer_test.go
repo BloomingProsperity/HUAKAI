@@ -2,6 +2,10 @@ package credentialacq
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -269,6 +273,13 @@ func samplePayloadForMode(vendor, mode string) []byte {
 		fields["azure_api_key"] = "test-azure-key"
 	case "openai/refresh_token":
 		fields["refresh_token"] = "test-refresh-value"
+	case "openai/codex_agent_identity":
+		_, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+		der, _ := x509.MarshalPKCS8PrivateKey(privateKey)
+		fields["runtime_id"] = "runtime-test"
+		fields["private_key_pkcs8"] = base64.StdEncoding.EncodeToString(der)
+		fields["upstream_account_id"] = "account-test"
+		fields["upstream_user_id"] = "user-test"
 	default:
 		// 官 key 厂商(grok/deepseek/kimi/国内大厂)统一走纯 api_key 形状;其余默认按 OAuth 会话形状。
 		if credentialstore.Normalize(mode) == credentialstore.AuthModeAPIKey {

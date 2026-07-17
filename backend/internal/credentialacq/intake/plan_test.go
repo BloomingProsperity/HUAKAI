@@ -1,6 +1,9 @@
 package intake
 
 import (
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -154,6 +157,68 @@ func TestBuildClaudeSetupTokenPlanIsStaticRedactedAndDeduplicated(t *testing.T) 
 	matched := requireSingleItem(t, second.Plan)
 	if matched.Action != ActionUpdate || matched.ExistingAccountID != 101 || matched.ExistingCredentialID != 11 {
 		t.Fatalf("matched=%+v", matched)
+	}
+}
+
+func TestBuildCodexAgentIdentityKeepsExactImportIdempotent(t *testing.T) {
+	candidate := codexAgentCandidate(t, 1)
+	fingerprint := credentialstore.CredentialMaterialFingerprint(7, candidate.Vendor, candidate.AuthMode, candidate.Payload)
+	plan := BuildCandidates(BuildInput{
+		TenantID: 7,
+		Existing: []ExistingCredential{{
+			CredentialID: 11, CredentialVersion: 2, ProviderAccountID: 101,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+			State: credentialstore.StateActive, ExternalAccountID: candidate.ExternalAccountID,
+			ExternalSubjectID: candidate.ExternalSubjectID, CredentialFingerprint: fingerprint,
+		}},
+	}, []credentialacq.CredentialCandidate{candidate}).Plan
+
+	item := requireSingleItem(t, plan)
+	if item.Action != ActionUpdate || item.ExistingAccountID != 101 || item.ExistingCredentialID != 11 {
+		t.Fatalf("item=%+v，完全相同的 Agent Identity 应幂等命中已有凭据", item)
+	}
+}
+
+func TestBuildCodexAgentIdentityKeyChangeRequiresIdentityDisambiguation(t *testing.T) {
+	candidate := codexAgentCandidate(t, 2)
+	plan := BuildCandidates(BuildInput{
+		TenantID: 7,
+		Existing: []ExistingCredential{{
+			CredentialID: 11, CredentialVersion: 2, ProviderAccountID: 101,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+			State: credentialstore.StateActive, ExternalAccountID: candidate.ExternalAccountID,
+			ExternalSubjectID:     candidate.ExternalSubjectID,
+			CredentialFingerprint: "different-agent-material-fingerprint",
+		}},
+	}, []credentialacq.CredentialCandidate{candidate}).Plan
+
+	item := requireSingleItem(t, plan)
+	if item.Action != ActionConflict || item.Code != "subject_identity_unverified" || item.ExistingAccountID != 101 {
+		t.Fatalf("item=%+v，Agent key 变化且身份声明命中时必须人工消歧", item)
+	}
+}
+
+func codexAgentCandidate(t *testing.T, seedByte byte) credentialacq.CredentialCandidate {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	for index := range seed {
+		seed[index] = seedByte
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(ed25519.NewKeyFromSeed(seed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]string{
+		"runtime_id": "runtime-a", "private_key_pkcs8": base64.StdEncoding.EncodeToString(der),
+		"upstream_account_id": "workspace-a", "upstream_user_id": "user-a",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+		Payload: payload, ExternalAccountID: "workspace-a", ExternalSubjectID: "user-a",
+		AccountIDSource: accountident.SourceImportPayload,
 	}
 }
 

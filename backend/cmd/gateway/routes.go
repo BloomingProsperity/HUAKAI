@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
@@ -36,6 +37,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/claudecookiehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -1135,9 +1137,19 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
+		accountIntakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth)
 		accountintakehttp.Mount(r, accountintakehttp.Deps{
 			Auth:    d.adminAuth,
-			Service: accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth),
+			Service: accountIntakeService,
+		})
+		var claudeCookieService claudecookiehttp.Service
+		if d.claudeCookieExchanger != nil && d.claudeCookieStore != nil {
+			claudeCookieService = claudecookie.NewService(
+				d.claudeCookieExchanger, d.claudeCookieStore, accountIntakeService,
+			)
+		}
+		claudecookiehttp.Mount(r, claudecookiehttp.Deps{
+			Auth: d.adminAuth, Service: claudeCookieService,
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {

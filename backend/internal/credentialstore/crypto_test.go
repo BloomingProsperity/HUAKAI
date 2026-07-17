@@ -36,6 +36,33 @@ func TestCipherRoundTripAndAADMismatch(t *testing.T) {
 	}
 }
 
+func TestCipherOptionalContextBindsShortLivedEnvelopeWithoutChangingLegacyAAD(t *testing.T) {
+	provider, err := NewStaticKeyProvider("local", []byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cipher := NewCipher(provider)
+	legacy := AAD{TenantID: 7, ProviderAccountID: 9, Vendor: VendorAnthropic, AuthMode: AuthModeClaudeAIOAuth, Version: 1}
+	legacyEnvelope, err := cipher.Encrypt(t.Context(), []byte("legacy"), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plaintext, err := cipher.Decrypt(t.Context(), legacyEnvelope, legacy); err != nil || string(plaintext) != "legacy" {
+		t.Fatalf("旧 AAD round-trip plaintext=%q err=%v", plaintext, err)
+	}
+	bound := legacy
+	bound.Context = "account-credential-intake:first"
+	boundEnvelope, err := cipher.Encrypt(t.Context(), []byte("short-lived"), bound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := bound
+	other.Context = "account-credential-intake:second"
+	if _, err := cipher.Decrypt(t.Context(), boundEnvelope, other); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("更换会话上下文后 err=%v，期望 ErrDecryptFailed", err)
+	}
+}
+
 func TestDecodeKeyMaterialAcceptsBase64AndHex(t *testing.T) {
 	base64Key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 	if key, err := DecodeKeyMaterial(base64Key); err != nil || len(key) != 32 {

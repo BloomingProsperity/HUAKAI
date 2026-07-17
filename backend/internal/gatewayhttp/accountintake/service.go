@@ -46,6 +46,15 @@ func (s *Service) Plan(ctx context.Context, in PlanInput) (PlanResult, error) {
 	return prepared.result, nil
 }
 
+func (s *Service) PlanCandidate(ctx context.Context, in CandidatePlanInput) (PlanResult, error) {
+	prepared, err := s.prepareCandidate(ctx, in)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	defer zeroizeCandidates(prepared.candidates)
+	return prepared.result, nil
+}
+
 func (s *Service) prepare(ctx context.Context, in PlanInput) (preparedPlan, error) {
 	if s == nil || s.pool == nil || s.credentials == nil {
 		return preparedPlan{}, ErrNotConfigured
@@ -92,6 +101,68 @@ func (s *Service) prepare(ctx context.Context, in PlanInput) (preparedPlan, erro
 	}, nil
 }
 
+func (s *Service) prepareCandidate(ctx context.Context, in CandidatePlanInput) (preparedPlan, error) {
+	if s == nil || s.pool == nil || s.credentials == nil {
+		return preparedPlan{}, ErrNotConfigured
+	}
+	base := normalizeInput(PlanInput{TenantID: in.TenantID, SourceKind: in.SourceKind, Account: in.Account, Now: in.Now})
+	if err := validateAccountInput(base); err != nil {
+		return preparedPlan{}, err
+	}
+	if in.SourceKind != intake.SourceClaudeCookie {
+		return preparedPlan{}, fmt.Errorf("%w: unsupported server-side source_kind", ErrInvalidInput)
+	}
+	if !validPlanHash(strings.TrimSpace(in.SourceCommitment)) {
+		return preparedPlan{}, fmt.Errorf("%w: source commitment must be 64 lowercase hexadecimal characters", ErrInvalidInput)
+	}
+	candidate := in.Candidate
+	if candidate.TenantID != 0 && candidate.TenantID != in.TenantID {
+		return preparedPlan{}, fmt.Errorf("%w: candidate tenant mismatch", ErrInvalidInput)
+	}
+	candidate.TenantID = in.TenantID
+	candidate.Vendor = credentialstore.Normalize(candidate.Vendor)
+	candidate.AuthMode = credentialstore.Normalize(candidate.AuthMode)
+	candidate.Payload = append([]byte(nil), candidate.Payload...)
+	if candidate.Vendor == "" || candidate.AuthMode == "" || len(candidate.Payload) == 0 {
+		zeroizeCandidates([]credentialacq.CredentialCandidate{candidate})
+		return preparedPlan{}, fmt.Errorf("%w: candidate credential is incomplete", ErrInvalidInput)
+	}
+	q := admindb.New(s.pool)
+	family, err := q.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{
+		TenantID: base.TenantID, ProviderID: base.Account.ProviderID,
+	})
+	if err != nil {
+		zeroizeCandidates([]credentialacq.CredentialCandidate{candidate})
+		return preparedPlan{}, err
+	}
+	inventory, err := s.credentials.ListIdentityInventory(ctx, base.TenantID, "")
+	if err != nil {
+		zeroizeCandidates([]credentialacq.CredentialCandidate{candidate})
+		return preparedPlan{}, err
+	}
+	built := intake.BuildCandidates(intake.BuildInput{
+		TenantID: base.TenantID, SourceKind: base.SourceKind,
+		Existing: intake.ExistingFromIdentityMetadata(inventory), Now: base.Now,
+	}, []credentialacq.CredentialCandidate{candidate})
+	peers, err := q.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
+		TenantID: base.TenantID, ChannelID: base.Account.ChannelID,
+	})
+	if err != nil {
+		zeroizeCandidates(built.Candidates)
+		return preparedPlan{}, err
+	}
+	enrichPlan(&built.Plan, built.Candidates, family, base.Account, riskPeers(peers))
+	hash, err := candidatePlanHash(base, strings.TrimSpace(in.SourceCommitment), built.Plan)
+	if err != nil {
+		zeroizeCandidates(built.Candidates)
+		return preparedPlan{}, err
+	}
+	return preparedPlan{
+		result: PlanResult{PlanHash: hash, Plan: built.Plan}, input: base,
+		candidates: built.Candidates, providerFamily: family,
+	}, nil
+}
+
 func normalizeInput(in PlanInput) PlanInput {
 	if in.Now.IsZero() {
 		in.Now = time.Now().UTC()
@@ -111,6 +182,19 @@ func normalizeInput(in PlanInput) PlanInput {
 }
 
 func validateInput(in PlanInput) error {
+	if err := validateAccountInput(in); err != nil {
+		return err
+	}
+	if strings.TrimSpace(in.Content) == "" {
+		return fmt.Errorf("%w: content is required", ErrInvalidInput)
+	}
+	if len(in.Content) > accountIntakeContentLimit {
+		return fmt.Errorf("%w: content exceeds 2 MiB", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateAccountInput(in PlanInput) error {
 	if in.TenantID <= 0 {
 		return fmt.Errorf("%w: tenant_id must be positive", ErrInvalidInput)
 	}
@@ -139,12 +223,6 @@ func validateInput(in PlanInput) error {
 		if json.Unmarshal(in.Account.Extra, &object) != nil || object == nil {
 			return fmt.Errorf("%w: extra must be a JSON object", ErrInvalidInput)
 		}
-	}
-	if strings.TrimSpace(in.Content) == "" {
-		return fmt.Errorf("%w: content is required", ErrInvalidInput)
-	}
-	if len(in.Content) > accountIntakeContentLimit {
-		return fmt.Errorf("%w: content exceeds 2 MiB", ErrInvalidInput)
 	}
 	for name, values := range map[string][]string{
 		"tags":             in.Account.Tags,
@@ -241,6 +319,26 @@ func planHash(in PlanInput, plan intake.Plan) (string, error) {
 		TenantID:        in.TenantID, SourceKind: in.SourceKind,
 		DefaultVendor: in.DefaultVendor, DefaultAuthMode: in.DefaultAuthMode,
 		ContentSHA256: hex.EncodeToString(contentSum[:]), Account: in.Account, Plan: plan,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func candidatePlanHash(in PlanInput, commitment string, plan intake.Plan) (string, error) {
+	payload := struct {
+		ContractVersion  string            `json:"contract_version"`
+		TenantID         int64             `json:"tenant_id"`
+		SourceKind       intake.SourceKind `json:"source_kind"`
+		SourceCommitment string            `json:"source_commitment"`
+		Account          AccountDefaults   `json:"account"`
+		Plan             intake.Plan       `json:"plan"`
+	}{
+		ContractVersion: intake.ContractVersion, TenantID: in.TenantID,
+		SourceKind: in.SourceKind, SourceCommitment: commitment, Account: in.Account, Plan: plan,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

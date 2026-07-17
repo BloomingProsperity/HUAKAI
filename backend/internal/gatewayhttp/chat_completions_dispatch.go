@@ -112,7 +112,8 @@ func transportProviderForDispatch(account provider.AccountInfo, protocolFamily s
 	switch providerCode {
 	case transport.ProviderOpenAI:
 		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
-		case credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth:
+		case credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth,
+			credentialstore.AuthModeCodexAgentIdentity, credentialstore.AuthModeCodexWebOAuth:
 			return transport.ProviderOpenAICodex
 		}
 	case transport.ProviderGemini:

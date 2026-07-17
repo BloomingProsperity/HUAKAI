@@ -16,6 +16,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
+func TestClaudeAIOAuthTokenEndpointMatchesCurrentApprovedProfile(t *testing.T) {
+	const expected = "https://platform.claude.com/v1/oauth/token"
+	if claudeAIOAuthTokenURL != expected {
+		t.Fatalf("claudeAIOAuthTokenURL=%q want %q", claudeAIOAuthTokenURL, expected)
+	}
+}
+
 func TestClaudeAIOAuthExchangerUsesBuiltinProfile(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
 	store, _ := newClaudeAIOAuthTestStore(t, now)

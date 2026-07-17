@@ -23,10 +23,12 @@ const (
 type SourceKind string
 
 const (
-	SourceCLI              SourceKind = "cli_import"
-	SourceJSON             SourceKind = "json_import"
-	SourceCSV              SourceKind = "csv_import"
-	SourceClaudeSetupToken SourceKind = "claude_setup_token"
+	SourceCLI                SourceKind = "cli_import"
+	SourceJSON               SourceKind = "json_import"
+	SourceCSV                SourceKind = "csv_import"
+	SourceClaudeSetupToken   SourceKind = "claude_setup_token"
+	SourceClaudeCookie       SourceKind = "claude_cookie"
+	SourceCodexAgentIdentity SourceKind = "codex_agent_identity"
 )
 
 type Action string
@@ -206,6 +208,8 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 			firstNonEmpty(authMode, credentialstore.AuthModeCodexCLIOAuth))
 	case SourceClaudeSetupToken:
 		return credentialacq.ParseClaudeSetupTokenContent(content)
+	case SourceCodexAgentIdentity:
+		return credentialacq.ParseCodexAgentIdentityContent(content)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrSourceInvalid, source)
 	}
@@ -341,6 +345,7 @@ func extractIdentity(tenantID int64, candidate credentialacq.CredentialCandidate
 		SharedAccountScope: candidate.Vendor == credentialstore.VendorOpenAI &&
 			(candidate.AuthMode == credentialstore.AuthModeChatGPTOAuth ||
 				candidate.AuthMode == credentialstore.AuthModeCodexCLIOAuth ||
+				candidate.AuthMode == credentialstore.AuthModeCodexAgentIdentity ||
 				candidate.AuthMode == credentialstore.AuthModeCodexWebOAuth),
 	}
 }

@@ -12,6 +12,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 )
 
+func TestAnthropicRefreshDefaultEndpointMatchesCurrentApprovedProfile(t *testing.T) {
+	const expected = "https://platform.claude.com/v1/oauth/token"
+	if defaultAnthropicTokenEndpoint != expected {
+		t.Fatalf("defaultAnthropicTokenEndpoint=%q want %q", defaultAnthropicTokenEndpoint, expected)
+	}
+}
+
 // 即使 credential payload 写着
 // oauth_token_endpoint=http://attacker.test, refresh 出站只能打 operator
 // 配置 (r.Endpoint) 或 HUAKAI 硬编 defaultAnthropicTokenEndpoint。

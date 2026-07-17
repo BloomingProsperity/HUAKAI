@@ -11078,6 +11078,89 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/credentials/claude-cookie/convert:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Convert a Claude session cookie into a short-lived encrypted intake candidate
+      operationId: convertClaudeCookieCredential
+      x-huakai-spec-source:
+        - backend/internal/gatewayhttp/claudecookiehttp/handler.go
+        - backend/internal/credentialacq/claudecookie/service.go
+      description: Requires a programmatic tenant_operator token scoped to the exact tenant. Browser sessions and platform administrators are rejected.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeCookieConvertRequest' }
+      responses:
+        '201':
+          description: Short-lived encrypted intake session; no converted access or refresh token is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaudeCookieIntakeSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/claude-cookie/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Preflight a converted Claude Cookie intake session
+      operationId: planClaudeCookieCredential
+      x-huakai-spec-source: [backend/internal/gatewayhttp/claudecookiehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeCookiePlanRequest' }
+      responses:
+        '200':
+          description: Redacted account plan bound to the encrypted candidate commitment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/claude-cookie/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute a freshly recomputed Claude Cookie intake plan once
+      operationId: executeClaudeCookieCredential
+      x-huakai-spec-source: [backend/internal/gatewayhttp/claudecookiehttp/handler.go]
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeCookieExecuteRequest' }
+      responses:
+        '200':
+          description: Account create or credential rotation result; the short-lived session is consumed atomically.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/renew-status:
     get:
       tags: [admin-accounts]
@@ -18416,6 +18499,61 @@ components:
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
 
+    ClaudeCookieConvertRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, session_key]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        session_key:
+          type: string
+          minLength: 1
+          writeOnly: true
+          description: Raw Claude session cookie value. It is exchanged server-side and never persisted or returned.
+        organization_id:
+          type: string
+          description: Required only when the session can access more than one organization.
+
+    ClaudeCookieIntakeSession:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, source_kind, vendor, auth_mode, status, redacted_context, expires_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: integer, format: int64 }
+        source_kind: { type: string, enum: [claude_cookie] }
+        vendor: { type: string, enum: [anthropic] }
+        auth_mode: { type: string, enum: [claude_ai_oauth] }
+        status: { type: string, enum: [ready, consumed, expired, cancelled] }
+        redacted_context: { type: object, additionalProperties: true }
+        expires_at: { type: string, format: date-time }
+        consumed_at: { type: string, format: date-time }
+        result_provider_account_id: { type: integer, format: int64 }
+        result_credential_id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ClaudeCookiePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, intake_session_id, account]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        intake_session_id: { type: string, format: uuid }
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    ClaudeCookieExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, intake_session_id, account, plan_hash]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        intake_session_id: { type: string, format: uuid }
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations: { type: array, uniqueItems: true, items: { type: string } }
+        reason: { type: string }
+
     AccountIntakePlanRequest:
       type: object
       additionalProperties: false
@@ -18428,8 +18566,8 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token]
-          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity]
+          description: claude_setup_token accepts token lines or structured setup_token values. codex_agent_identity accepts structured objects or JSON lines and pins the OpenAI Agent Identity mode. Source-specific vendor, auth mode, and endpoint overrides are ignored.
         default_vendor: { type: string }
         default_auth_mode: { type: string }
         content:
@@ -18451,8 +18589,8 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token]
-          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity]
+          description: claude_setup_token accepts token lines or structured setup_token values. codex_agent_identity accepts structured objects or JSON lines and pins the OpenAI Agent Identity mode. Source-specific vendor, auth mode, and endpoint overrides are ignored.
         default_vendor: { type: string }
         default_auth_mode: { type: string }
         content:

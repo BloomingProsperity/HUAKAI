@@ -20,7 +20,7 @@ import (
 
 const (
 	claudeAIOAuthAuthURL          = "https://claude.ai/oauth/authorize"
-	claudeAIOAuthTokenURL         = "https://api.anthropic.com/v1/oauth/token"
+	claudeAIOAuthTokenURL         = "https://platform.claude.com/v1/oauth/token"
 	claudeAIOAuthPublicClientID   = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	claudeAIOAuthScope            = "org:create_api_key user:profile user:inference"
 	claudeAIOAuthLoopbackRedirect = "http://localhost:54545/callback"
@@ -32,6 +32,54 @@ const (
 type claudeAIOAuthExchanger struct {
 	now        func() time.Time
 	httpClient *http.Client
+}
+
+// ClaudeAIOAuthTokenInput 是服务器侧换码结果进入统一凭据接入链的最小合同。
+type ClaudeAIOAuthTokenInput struct {
+	AccessToken         string
+	RefreshToken        string
+	TokenType           string
+	Scope               string
+	ExpiresIn           json.RawMessage
+	AccountUUID         string
+	AccountEmailAddress string
+	Email               string
+}
+
+// BuildClaudeAIOAuthCandidate 生成与交互式 Claude OAuth 相同格式的候选凭据。
+func BuildClaudeAIOAuthCandidate(tenantID int64, actorID string, tokenInput ClaudeAIOAuthTokenInput, now time.Time) (CredentialCandidate, error) {
+	token := oauthTokenResponse{
+		AccessToken: tokenInput.AccessToken, RefreshToken: tokenInput.RefreshToken,
+		TokenType: tokenInput.TokenType, Scope: tokenInput.Scope, ExpiresIn: tokenInput.ExpiresIn,
+		Email: tokenInput.Email,
+	}
+	token.Account.UUID = tokenInput.AccountUUID
+	token.Account.EmailAddress = tokenInput.AccountEmailAddress
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	raw, err := tokenCandidatePayload(token, storedPKCEPayload{
+		ClientID: claudeAIOAuthPublicClientID, TokenURL: claudeAIOAuthTokenURL,
+		RedirectURI: "https://platform.claude.com/oauth/code/callback",
+		Scopes:      strings.Fields(claudeAIOAuthScope),
+	}, now.UTC())
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	fields, _, err := parseFakeTokenPayload(string(raw))
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	if err := validateTokenShape(fields, TokenShapeAccessRefresh); err != nil {
+		return CredentialCandidate{}, err
+	}
+	candidate := CredentialCandidate{
+		TenantID: tenantID, Vendor: credentialstore.VendorAnthropic,
+		AuthMode: credentialstore.AuthModeClaudeAIOAuth, Payload: raw, ActorID: strings.TrimSpace(actorID),
+		RedactedContext: map[string]any{"client_identity_source": claudeAIOAuthApprovedProfileSource},
+	}
+	AttachIdentity(&candidate, accountident.ExtractAnthropic(token.Account.UUID, token.Account.EmailAddress, token.Email))
+	return candidate, nil
 }
 
 func newClaudeAIOAuthExchanger() claudeAIOAuthExchanger {

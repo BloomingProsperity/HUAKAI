@@ -228,6 +228,7 @@ func DefaultModePlans() []ModePlan {
 		apiKeyPlan(credentialstore.VendorOpenAI),
 		oauthPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		cliSessionPlan(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindCLIImport, FlowKindJSONImport, FlowKindOAuth}),
+		codexAgentIdentityPlan(),
 		// codex_web_oauth 是 Codex CLI 浏览器侧 authorization-code(PKCE)登录路径,与 codex_cli_oauth
 		// 的 device-code 路径并列,作为独立可选的获取模式暴露为 OAuth-only(AllowedHelpers 仅含 FlowKindOAuth,
 		// 同 chatgpt_oauth),由 boot 期 ValidateOAuthModeConsistency 闸守住其 exchanger 必须存在且非-fake。
@@ -320,6 +321,22 @@ func setupTokenPlan() ModePlan {
 		RequiredFields: []FieldSpec{secretField("setup_token", true)},
 		IsEnabled:      true, RiskLevel: RiskLevelMedium,
 		RiskReasons: []string{"长期访问令牌必须只通过秘密输入与加密存储处理"},
+	}
+}
+
+func codexAgentIdentityPlan() ModePlan {
+	return ModePlan{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+		Kind: FlowKindJSONImport, ClientIdentitySource: ClientSourceOperatorConfig,
+		AllowedHelpers: []FlowKind{FlowKindJSONImport},
+		RequiredFields: []FieldSpec{
+			secretField("private_key_pkcs8", true),
+			{Name: "runtime_id", Kind: FieldKindString, Required: true, Redaction: RedactionNone, Group: FieldGroupCredential},
+			{Name: "upstream_account_id", Kind: FieldKindString, Required: true, Redaction: RedactionNone, Group: FieldGroupCredential},
+			{Name: "upstream_user_id", Kind: FieldKindString, Required: true, Redaction: RedactionNone, Group: FieldGroupCredential},
+		},
+		IsEnabled: true, RiskLevel: RiskLevelHigh,
+		RiskReasons: []string{"长期签名私钥必须经专用结构化导入、加密存储和数据库租约恢复"},
 	}
 }
 

@@ -33,6 +33,14 @@ func TestLoadFromCollectorOutput_AnthropicSample(t *testing.T) {
 	}
 }
 
+func TestAnthropicMimicryOAuthEndpointsMatchCurrentApprovedProfile(t *testing.T) {
+	const expected = "https://platform.claude.com/v1/oauth/token"
+	tmpl := AnthropicCLIMimicryV1Template()
+	if tmpl.HTTPLayer.Endpoint != expected || tmpl.HTTPLayer.RefreshEndpoint != expected || tmpl.AuthLayer.RefreshEndpoint != expected {
+		t.Fatalf("OAuth endpoints=(%q,%q,%q) want %q", tmpl.HTTPLayer.Endpoint, tmpl.HTTPLayer.RefreshEndpoint, tmpl.AuthLayer.RefreshEndpoint, expected)
+	}
+}
+
 func TestLoadFromCollectorOutput_PhaseAMergedTemplate(t *testing.T) {
 	tmpl, err := LoadFromCollectorOutput(mergedTemplateFixture)
 	if err != nil {

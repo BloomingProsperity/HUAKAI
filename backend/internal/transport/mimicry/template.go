@@ -191,16 +191,16 @@ func AnthropicCLIMimicryV1Template() *ClientHelloTemplate {
 		PSKModes:            []uint8{1},
 		HTTPLayer: HTTPLayer{
 			Protocol:        "h2_or_http1.1_nodejs_openssl",
-			Endpoint:        "https://api.anthropic.com/v1/oauth/token",
+			Endpoint:        "https://platform.claude.com/v1/oauth/token",
 			UserAgent:       "claude-cli-compatible",
 			HeaderOrder:     []string{"Content-Type", "Accept", "Authorization"},
 			AuthMechanism:   "oauth_bearer",
-			RefreshEndpoint: "https://api.anthropic.com/v1/oauth/token",
+			RefreshEndpoint: "https://platform.claude.com/v1/oauth/token",
 		},
 		AuthLayer: AuthLayer{
 			Mechanism:           "oauth_bearer",
 			AuthorizationHeader: "Authorization: Bearer <access_token>",
-			RefreshEndpoint:     "https://api.anthropic.com/v1/oauth/token",
+			RefreshEndpoint:     "https://platform.claude.com/v1/oauth/token",
 			TokenSource:         "HUAKAI encrypted account credential",
 		},
 	}

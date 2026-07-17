@@ -174,6 +174,35 @@ func TestDryRunProviderAccountCredentialBlocksRotatingRefreshGrantBeforeAdapterC
 	}
 }
 
+func TestDryRunProviderAccountCredentialClassifiesAgentIdentityAsDynamicRuntime(t *testing.T) {
+	calls := []string{}
+	payload := []byte(`{"runtime_id":"runtime-a"}`)
+	store := &dryRunCredentialStoreStub{
+		calls: &calls,
+		rec: credentialstore.CredentialRecord{
+			ID: 50, TenantID: 7, ProviderAccountID: 104,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity,
+			PlaintextPayload: payload,
+		},
+	}
+
+	result, err := DryRunProviderAccountCredential(context.Background(), store, NewModeAdapterRegistry(), 7, 104, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("DryRunProviderAccountCredential: %v", err)
+	}
+	if result.OK || result.ErrorClass != "dynamic_runtime_required" {
+		t.Fatalf("result=%+v want dynamic_runtime_required", result)
+	}
+	if got := strings.Join(calls, ","); got != "load:7:104" {
+		t.Fatalf("calls=%v, dynamic mode must not reach refresh adapter", calls)
+	}
+	for index, value := range payload {
+		if value != 0 {
+			t.Fatalf("payload byte %d not zeroized", index)
+		}
+	}
+}
+
 func TestDryRunProviderAccountCredentialNoRefreshRequiredFailsClosed(t *testing.T) {
 	// 判别 false-positive: static/no-op adapter 没有上游探测时不能返回 ok=true。
 	// Mutation:把 ErrNoRefreshRequired 当成功,该测试会红。

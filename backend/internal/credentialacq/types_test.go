@@ -81,6 +81,7 @@ func phaseAModePlans() []acqModePlan {
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAPIKey, Kind: flowKindPaste, ClientIdentitySource: clientSourceNone},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeChatGPTOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth, Kind: flowKindCLIImport, ClientIdentitySource: clientSourcePublicCLI},
+		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgentIdentity, Kind: flowKindJSONImport, ClientIdentitySource: clientSourceOperatorConfig},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexWebOAuth, Kind: flowKindOAuth, ClientIdentitySource: clientSourcePublicCLI},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeAzure, Kind: flowKindPaste, ClientIdentitySource: clientSourceOperatorConfig, ManualFirst: true},
 		{Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeRefreshToken, Kind: flowKindTokenExchange, ClientIdentitySource: clientSourcePerAccountOverride},

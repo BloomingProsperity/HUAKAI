@@ -84,6 +84,7 @@ type AAD struct {
 	AuthMode          string
 	Version           int32
 	KeyID             string
+	Context           string
 }
 
 type Envelope struct {
@@ -164,8 +165,12 @@ func (c *Cipher) Decrypt(ctx context.Context, env Envelope, aad AAD) ([]byte, er
 }
 
 func (a AAD) Bytes() []byte {
-	return []byte(fmt.Sprintf("tenant=%d;provider_account=%d;vendor=%s;auth_mode=%s;version=%d;key_id=%s",
-		a.TenantID, a.ProviderAccountID, Normalize(a.Vendor), Normalize(a.AuthMode), a.Version, strings.TrimSpace(a.KeyID)))
+	base := fmt.Sprintf("tenant=%d;provider_account=%d;vendor=%s;auth_mode=%s;version=%d;key_id=%s",
+		a.TenantID, a.ProviderAccountID, Normalize(a.Vendor), Normalize(a.AuthMode), a.Version, strings.TrimSpace(a.KeyID))
+	if contextLabel := strings.TrimSpace(a.Context); contextLabel != "" {
+		base += ";context=" + contextLabel
+	}
+	return []byte(base)
 }
 
 func hashAAD(raw []byte) string {
@@ -239,6 +244,8 @@ func credentialFingerprintMaterial(vendor, authMode string, fields map[string]js
 	}
 	if handler, ok := DefaultHandlerRegistry().Lookup(vendor, authMode); ok {
 		switch handler.RuntimeKind() {
+		case RuntimeCodexAgentIdentity:
+			return canonicalFingerprintFields(fields, "runtime_id", "private_key_pkcs8", "upstream_account_id", "upstream_user_id")
 		case RuntimeAPIKey:
 			if key := firstFingerprintField(fields, "api_key", "azure_api_key", "access_token"); key != "" {
 				return []byte("runtime_key\x00" + key)

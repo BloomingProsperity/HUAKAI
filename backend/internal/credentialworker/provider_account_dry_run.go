@@ -49,6 +49,13 @@ func DryRunProviderAccountCredentialWithProbeModel(ctx context.Context, store Pr
 		return ProviderAccountCredentialTestResult{}, err
 	}
 	defer privacy.Zeroize(rec.PlaintextPayload)
+	if credentialstore.ModeKey(rec.Vendor, rec.AuthMode) == credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgentIdentity) {
+		return ProviderAccountCredentialTestResult{
+			OK:         false,
+			ErrorClass: "dynamic_runtime_required",
+			Message:    "credential format is valid; runtime task registration is established by the first upstream request",
+		}, nil
+	}
 
 	adapter, ok := registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {

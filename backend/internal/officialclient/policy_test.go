@@ -160,6 +160,7 @@ func TestIsReverseAccountType(t *testing.T) {
 		credentialstore.AuthModeClaudeCode,
 		credentialstore.AuthModeChatGPTOAuth,
 		credentialstore.AuthModeCodexCLIOAuth,
+		credentialstore.AuthModeCodexAgentIdentity,
 		credentialstore.AuthModeCodexWebOAuth,
 		credentialstore.AuthModeCodeAssist,
 		credentialstore.AuthModeGoogleOne,

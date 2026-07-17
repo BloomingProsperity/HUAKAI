@@ -26,12 +26,34 @@ import (
 
 func TestDefaultModeAdapterRegistryCoversCredentialStoreModes(t *testing.T) {
 	registry := DefaultModeAdapterRegistry()
-	wantCount := len(credentialstore.DefaultHandlerRegistry().Names())
+	handlers := credentialstore.DefaultHandlerRegistry()
+	wantCount := 0
+	for _, key := range handlers.Names() {
+		vendor, mode := splitCredentialModeKey(key)
+		handler, err := handlers.MustLookup(vendor, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if handler.RuntimeKind() == credentialstore.RuntimeCodexAgentIdentity {
+			if _, ok := registry.Lookup(vendor, mode); ok {
+				t.Fatalf("dynamic runtime mode must not register refresh adapter %s", key)
+			}
+			continue
+		}
+		wantCount++
+	}
 	if got := registry.Names(); len(got) != wantCount {
 		t.Fatalf("mode adapter count=%d want %d: %v", len(got), wantCount, got)
 	}
-	for _, key := range credentialstore.DefaultHandlerRegistry().Names() {
+	for _, key := range handlers.Names() {
 		vendor, mode := splitCredentialModeKey(key)
+		handler, err := handlers.MustLookup(vendor, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if handler.RuntimeKind() == credentialstore.RuntimeCodexAgentIdentity {
+			continue
+		}
 		if _, ok := registry.Lookup(vendor, mode); !ok {
 			t.Fatalf("missing mode refresh adapter %s", key)
 		}

@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,8 +29,9 @@ var ErrCredentialFormat = errors.New("provider credential format invalid")
 // 从 provider_accounts JOIN providers 表中读取凭据。
 // 使用 REPEATABLE READ + READ ONLY 事务，与 postgres_registry.go 保持一致。
 type PostgresCredentialVault struct {
-	pool  *pgxpool.Pool
-	store *credentialstore.Store
+	pool            *pgxpool.Pool
+	store           *credentialstore.Store
+	dynamicResolver DynamicCredentialResolver
 }
 
 // 编译期接口合规断言。
@@ -45,8 +45,12 @@ func NewPostgresCredentialVault(pool *pgxpool.Pool) *PostgresCredentialVault {
 
 // NewPostgresCredentialVaultWithStore 优先读取 account_credentials v2；
 // 找不到 v2 行时回落旧 provider_accounts.credentials，便于灰度迁移。
-func NewPostgresCredentialVaultWithStore(pool *pgxpool.Pool, store *credentialstore.Store) *PostgresCredentialVault {
-	return &PostgresCredentialVault{pool: pool, store: store}
+func NewPostgresCredentialVaultWithStore(pool *pgxpool.Pool, store *credentialstore.Store, resolver ...DynamicCredentialResolver) *PostgresCredentialVault {
+	vault := &PostgresCredentialVault{pool: pool, store: store}
+	if len(resolver) > 0 {
+		vault.dynamicResolver = resolver[0]
+	}
+	return vault
 }
 
 // providerAccountRow 是查询结果的内部映射结构。
@@ -140,82 +144,6 @@ func (v *PostgresCredentialVault) Resolve(ctx context.Context, tenantID, account
 	}
 
 	return cred, info, nil
-}
-
-func (v *PostgresCredentialVault) resolveFromStore(
-	ctx context.Context,
-	tenantID, accountID int64,
-) (Credential, AccountInfo, bool, error) {
-	rec, err := v.store.ResolveActive(ctx, tenantID, accountID)
-	if err != nil {
-		if errors.Is(err, credentialstore.ErrCredentialNotActive) {
-			return Credential{}, AccountInfo{}, true, fmt.Errorf("account %d: %w", accountID, ErrAccountDisabled)
-		}
-		if errors.Is(err, credentialstore.ErrCredentialNotFound) {
-			return Credential{}, AccountInfo{}, false, nil
-		}
-		return Credential{}, AccountInfo{}, true, err
-	}
-	defer privacy.Zeroize(rec.PlaintextPayload)
-	handler, err := v.store.HandlerRegistry().MustLookup(rec.Vendor, rec.AuthMode)
-	if err != nil {
-		return Credential{}, AccountInfo{}, true, err
-	}
-	material, err := handler.RuntimeMaterial(rec.PlaintextPayload)
-	if err != nil {
-		return Credential{}, AccountInfo{}, true, err
-	}
-	cred := mapRuntimeMaterial(material)
-	oauthScope := strings.TrimSpace(material.Extra["scope"])
-	accountExtra, err := v.loadProviderAccountExtra(ctx, tenantID, accountID)
-	if err != nil {
-		return Credential{}, AccountInfo{}, true, err
-	}
-	cred = mergeCredentialAccountExtra(cred, accountExtra)
-	return cred, AccountInfo{
-		AccountID:           rec.ProviderAccountID,
-		TenantID:            rec.TenantID,
-		OAuthScope:          oauthScope,
-		Platform:            rec.Vendor,
-		AccountType:         rec.AuthMode,
-		CodexCLIOnly:        codexCLIOnlyFromAccountExtra(accountExtra),
-		AccountCredentialID: rec.ID,
-		CredentialVersion:   int(rec.CredentialVersion),
-		// 把凭据行上的上游账号标识(迁移 0141 列)投影进 AccountInfo,供 R7 身份
-		// 改写把它写进 metadata.user_id 的 account 组件。nil(未提取到)→ 空串 →
-		// 下游 fail-open 不改写,与 account_uuid=="" 跳过语义一致。
-		ExternalAccountID: derefString(rec.ExternalAccountID),
-	}, true, nil
-}
-
-// derefString 解引用 *string;nil 返回空串。用于把可空的上游账号标识列投影成
-// AccountInfo 的非指针字段(空串语义 = 未提取到 = 下游 fail-open)。
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func (v *PostgresCredentialVault) loadProviderAccountExtra(ctx context.Context, tenantID, accountID int64) (map[string]string, error) {
-	if v == nil || v.pool == nil {
-		return nil, nil
-	}
-	var raw []byte
-	err := v.pool.QueryRow(ctx, `
-SELECT extra
-FROM provider_accounts
-WHERE tenant_id = $1
-  AND id = $2
-  AND deleted_at IS NULL
-LIMIT 1`, tenantID, accountID).Scan(&raw)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("account %d: %w", accountID, ErrAccountNotFound)
-		}
-		return nil, err
-	}
-	return decodeProviderAccountExtra(raw), nil
 }
 
 const providerAccountExtraCodexCLIOnlyKey = "codex_cli_only"

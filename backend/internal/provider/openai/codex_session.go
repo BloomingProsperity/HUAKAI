@@ -183,6 +183,9 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if accountID := firstNonEmptyCodexExtra(in.Credential.Extra, "chatgpt_account_id", "account_id"); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
+	if strings.EqualFold(strings.TrimSpace(in.Credential.Extra["x_openai_fedramp"]), "true") {
+		req.Header.Set("x-openai-fedramp", "true")
+	}
 	if version := strings.TrimSpace(in.Credential.Extra["codex_version"]); version != "" {
 		req.Header.Set("version", version)
 	}

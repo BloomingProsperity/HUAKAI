@@ -36,9 +36,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
@@ -152,6 +154,8 @@ type deps struct {
 	credentialKeys        credentialstore.KeyProvider
 	credentialAcqStore    *credentialacq.PostgresSessionStore
 	credentialExchangers  *credentialacq.ExchangerRegistry
+	claudeCookieStore     *claudecookie.Store
+	claudeCookieExchanger claudecookie.Exchanger
 	projectEnricher       projectenrich.Enricher
 	credentialScheduler   *credentialworker.Scheduler
 	emailSettings         *mailinfra.PostgresSettingsStore
@@ -984,8 +988,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		hermesService.WithMessageContentKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
-	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore)
 	accountProxyResolver := provider.NewPostgresProxyResolverWithKeys(pgPool, credentialKeys)
+	codexAgentRuntime := codexagent.NewPostgresRuntimeService(pgPool, credentialKeys, credentialStore, accountProxyResolver)
+	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore, codexAgentRuntime)
 	antigravityProjectResolver := &providerantigravity.ProjectResolver{}
 	credentialProjectEnricher := projectenrich.New(antigravityProjectResolver)
 	// 启动期凭证密钥自检(fail-closed):用当前 KEK 解一条既有 active 凭证,解不开则拒绝启动,
@@ -996,6 +1001,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
 	anthropicOAuthHTTPClient := anthropicoauth.DefaultHTTPClient()
+	claudeCookieStore := claudecookie.NewStore(pgPool, credentialKeys)
+	claudeCookieExchanger := claudecookie.NewClient(anthropicOAuthHTTPClient)
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicOAuthHTTPClient); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
@@ -1431,6 +1438,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialKeys:        credentialKeys,
 		credentialAcqStore:    credentialAcqStore,
 		credentialExchangers:  credentialExchangers,
+		claudeCookieStore:     claudeCookieStore,
+		claudeCookieExchanger: claudeCookieExchanger,
 		projectEnricher:       credentialProjectEnricher,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
@@ -1465,13 +1474,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
-			Adapters:                 registrydefault.Build(),
-			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
-			ProxyResolver:            accountProxyResolver,
-			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
-			Timeouts:                 buildGatewayTimeoutConfig(),
-			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
-			AnthropicTTLSettings:     platformSettingsService,
+			Adapters:                   registrydefault.Build(),
+			TransportFactory:           buildTransportFactory(cfg, mimicryRegistry),
+			ProxyResolver:              accountProxyResolver,
+			DynamicCredentialRecoverer: codexAgentRuntime,
+			TLSProfileResolver:         tlsfpresolve.NewPostgresResolver(pgPool),
+			Timeouts:                   buildGatewayTimeoutConfig(),
+			AnthropicAutoBreakpoints:   cfg.CacheAnthropicAutoBreakpoints,
+			AnthropicTTLSettings:       platformSettingsService,
 			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
 			// production 模式时,一个伪造的 doer 会捏造上游 SSE,使本地 MVP
 			// 循环无需真实 provider 即可运行。在 production / 未设置时为 nil →
@@ -1671,6 +1681,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		dlqWorker.Start(workerCtx)
 	}
 	outboxWorker.Start(workerCtx)
+	claudecookie.NewCleanupWorker(claudeCookieStore, claudecookie.WithCleanupErrorHandler(func(err error) {
+		logger.Warn("Claude Cookie intake cleanup failed", zap.Error(err))
+	})).Start(workerCtx)
 	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
 		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{
 			Interval:   opts.modelSync.Interval,

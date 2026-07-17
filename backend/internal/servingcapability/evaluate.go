@@ -485,6 +485,8 @@ func providerCredentialType(runtimeKind string) (provider.CredentialType, bool) 
 		return provider.CredentialTypeAWSSigV4, true
 	case credentialstore.RuntimeUpstreamPassthrough:
 		return provider.CredentialTypeUpstreamPassthrough, true
+	case credentialstore.RuntimeCodexAgentIdentity:
+		return provider.CredentialTypeUpstreamPassthrough, true
 	default:
 		return "", false
 	}

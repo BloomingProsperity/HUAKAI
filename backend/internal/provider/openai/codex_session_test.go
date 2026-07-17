@@ -44,6 +44,24 @@ func TestCodexSessionAdapter_AcceptableCredentialTypes(t *testing.T) {
 	}
 }
 
+func TestCodexSessionAdapterAgentAssertionHeaders(t *testing.T) {
+	adapter := &CodexSessionAdapter{Endpoint: "https://chatgpt.com/backend-api/codex/responses"}
+	req, err := adapter.BuildRequest(t.Context(), provider.BuildInput{
+		UpstreamModelID: "codex-model", InboundBody: []byte(`{"input":"x"}`),
+		Credential: provider.Credential{
+			Type: provider.CredentialTypeUpstreamPassthrough, Value: "AgentAssertion signed-envelope",
+			Extra: map[string]string{"chatgpt_account_id": "account-1", "x_openai_fedramp": "true"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Header.Get("Authorization") != "AgentAssertion signed-envelope" ||
+		req.Header.Get("chatgpt-account-id") != "account-1" || req.Header.Get("x-openai-fedramp") != "true" {
+		t.Fatalf("headers=%v", req.Header)
+	}
+}
+
 // ── BuildRequest 正常路径：session token → Authorization Bearer + endpoint ─
 
 func TestCodexSessionAdapter_BuildRequest_SessionToken(t *testing.T) {

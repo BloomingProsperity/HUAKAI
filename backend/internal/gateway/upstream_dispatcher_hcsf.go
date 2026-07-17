@@ -179,7 +179,19 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		client = d.httpClientForRoundTripper(rt, true)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := d.doWithDynamicCredentialRecovery(ctx, account, in.Credential, client, req, func(credential provider.Credential) (*http.Request, error) {
+		rebuilt, buildErr := buildHCSFProviderRequest(ctx, providerAdapter, provider.BuildInput{
+			UpstreamModelID: upstreamModel, Credential: credential,
+			Account: account, InboundBetaTokens: in.InboundBetaTokens,
+		}, env, ingressFamily, endpointFamily, in.RawBody, in.IdentityRewrite, in.BodyControls)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if buildErr = validatePassthroughEndpointTarget(ctx, credential, rebuilt); buildErr != nil {
+			return nil, buildErr
+		}
+		return rebuilt, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: HTTP Do 失败: %w", err)
 	}

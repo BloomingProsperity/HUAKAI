@@ -11,7 +11,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 )
 
-const defaultAnthropicTokenEndpoint = "https://api.anthropic.com/v1/oauth/token"
+const defaultAnthropicTokenEndpoint = "https://platform.claude.com/v1/oauth/token"
 
 // AnthropicRefresh 用 Anthropic OAuth refresh_token grant 刷新 Claude 账号。
 //

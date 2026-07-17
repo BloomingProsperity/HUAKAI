@@ -116,6 +116,9 @@ type UpstreamDispatcher struct {
 	// 未注册 account（ErrAccountNotFound）= 直连，不视为错误。
 	// 仅在 HTTPClient 为 nil 的生产路径生效。
 	ProxyResolver provider.ProxyResolver
+	// DynamicCredentialRecoverer 只处理上游明确拒绝短期动态绑定的响应。
+	// nil 时保持既有 401 行为。
+	DynamicCredentialRecoverer provider.DynamicCredentialRecoverer
 	// TLSProfileResolver 可选:按 accountID 解析账号绑定的 DB TLS-fingerprint
 	// profile -> per-account uTLS RoundTripper。nil 返回 = 保持 builtin per-mode
 	// 指纹(未绑定/非 active/profile 非法)。仅 mimicry mode + HTTPClient 为 nil
@@ -210,7 +213,23 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		}
 		client = d.httpClientForRoundTripper(rt, in.NonStreamingBuffered)
 	}
-	resp, err := client.Do(req)
+	resp, err := d.doWithDynamicCredentialRecovery(ctx, in.Account, in.Credential, client, req, func(credential provider.Credential) (*http.Request, error) {
+		rebuilt, buildErr := adapter.BuildRequest(ctx, provider.BuildInput{
+			UpstreamModelID: in.UpstreamModelID, InboundBody: in.InboundBody,
+			InboundContentType: in.InboundContentType, Credential: credential,
+			Account: in.Account, EndpointPath: in.EndpointPath,
+			InboundBetaTokens: in.InboundBetaTokens, ClientStreamIntent: in.ClientStreamIntent,
+		})
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if buildErr = validatePassthroughEndpointTarget(ctx, credential, rebuilt); buildErr != nil {
+			return nil, buildErr
+		}
+		headerfirewall.StripHopByHopRequestHeaders(rebuilt.Header)
+		headerfirewall.NormalizeEgressRequestHeaders(rebuilt.Header)
+		return rebuilt, nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: HTTP Do 失败: %w", err)
 	}

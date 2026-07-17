@@ -36,7 +36,12 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 			return identity.CredentialFingerprint != "" &&
 				strings.EqualFold(strings.TrimSpace(current.CredentialFingerprint), identity.CredentialFingerprint)
 		})
-		return resolveExistingMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
+		if len(matches) > 0 {
+			return resolveExistingMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
+		}
+		if !identity.SharedAccountScope {
+			return nil, nil
+		}
 	}
 
 	if identity.SubjectID != "" {

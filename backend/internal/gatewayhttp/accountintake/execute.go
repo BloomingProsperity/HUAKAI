@@ -23,18 +23,37 @@ import (
 )
 
 func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult, error) {
-	in.PlanHash = strings.TrimSpace(in.PlanHash)
-	if in.PlanHash == "" {
-		return ExecutionResult{}, ErrPlanHashMissing
-	}
-	if !validPlanHash(in.PlanHash) {
-		return ExecutionResult{}, fmt.Errorf("%w: plan_hash must be 64 lowercase hexadecimal characters", ErrInvalidInput)
-	}
-	if err := validateConfirmations(in.Confirmations); err != nil {
+	if err := validateExecutionRequest(in.PlanHash, in.Confirmations); err != nil {
 		return ExecutionResult{}, err
 	}
 	prepared, err := s.prepare(ctx, in.PlanInput)
 	if err != nil {
+		return ExecutionResult{}, err
+	}
+	return s.executePrepared(ctx, prepared, in, nil)
+}
+
+func (s *Service) ExecuteCandidate(ctx context.Context, in CandidateExecuteInput) (ExecutionResult, error) {
+	if in.Finalize == nil {
+		return ExecutionResult{}, fmt.Errorf("%w: candidate finalizer is required", ErrInvalidInput)
+	}
+	if err := validateExecutionRequest(in.PlanHash, in.Confirmations); err != nil {
+		return ExecutionResult{}, err
+	}
+	prepared, err := s.prepareCandidate(ctx, in.CandidatePlanInput)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	return s.executePrepared(ctx, prepared, ExecuteInput{
+		PlanInput: PlanInput{TenantID: in.TenantID, SourceKind: in.SourceKind, Account: in.Account, Now: in.Now},
+		PlanHash:  in.PlanHash, Confirmations: in.Confirmations,
+		ActorID: in.ActorID, ActorRole: in.ActorRole, RequestID: in.RequestID, Reason: in.Reason,
+	}, in.Finalize)
+}
+
+func (s *Service) executePrepared(ctx context.Context, prepared preparedPlan, in ExecuteInput, finalize CandidateFinalizer) (ExecutionResult, error) {
+	in.PlanHash = strings.TrimSpace(in.PlanHash)
+	if err := validateExecutionRequest(in.PlanHash, in.Confirmations); err != nil {
 		return ExecutionResult{}, err
 	}
 	defer zeroizeCandidates(prepared.candidates)
@@ -77,9 +96,9 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 			}
 			candidate := prepared.candidates[item.Index]
 			if item.Action == intake.ActionCreate {
-				result = s.executeCreate(ctx, prepared, in, item, candidate)
+				result = s.executeCreate(ctx, prepared, in, item, candidate, finalize)
 			} else {
-				result = s.executeUpdate(ctx, prepared, in, item, candidate)
+				result = s.executeUpdate(ctx, prepared, in, item, candidate, finalize)
 			}
 		default:
 			result.Status = StatusFailed
@@ -92,7 +111,18 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 	return out, nil
 }
 
-func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {
+func validateExecutionRequest(planHash string, confirmations []string) error {
+	planHash = strings.TrimSpace(planHash)
+	if planHash == "" {
+		return ErrPlanHashMissing
+	}
+	if !validPlanHash(planHash) {
+		return fmt.Errorf("%w: plan_hash must be 64 lowercase hexadecimal characters", ErrInvalidInput)
+	}
+	return validateConfirmations(confirmations)
+}
+
+func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate, finalize CandidateFinalizer) ExecutionItem {
 	result := baseExecutionItem(expected)
 	var accountID int64
 	var metadata credentialstore.CredentialMetadata
@@ -152,7 +182,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err != nil {
 			return err
 		}
-		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "create_provider_account", "provider_account", accountID, map[string]any{
+		if err := insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "create_provider_account", "provider_account", accountID, map[string]any{
 			"provider_id":                  prepared.input.Account.ProviderID,
 			"channel_id":                   prepared.input.Account.ChannelID,
 			"vendor":                       candidate.Vendor,
@@ -161,7 +191,16 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 			"credential_version":           metadata.Version,
 			"batch_intake":                 true,
 			"mixed_channel_risk_confirmed": expected.MixedChannelRisk != nil && expected.MixedChannelRisk.HighRisk,
-		})
+		}); err != nil {
+			return err
+		}
+		if finalize != nil {
+			return finalize(ctx, tx, ExecutionItem{
+				Status: StatusCreated, ProviderAccountID: accountID,
+				AccountCredentialID: metadata.ID, CredentialVersion: metadata.Version,
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		result.Status = StatusFailed
@@ -179,7 +218,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 	return result
 }
 
-func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {
+func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate, finalize CandidateFinalizer) ExecutionItem {
 	result := baseExecutionItem(expected)
 	var metadata credentialstore.CredentialMetadata
 	err := s.credentials.WithTransaction(ctx, func(txStore *credentialstore.Store, database db.DBTX) error {
@@ -210,13 +249,22 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 		if err != nil {
 			return err
 		}
-		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "rotate_account_credential", "account_credential", metadata.ID, map[string]any{
+		if err := insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "rotate_account_credential", "account_credential", metadata.ID, map[string]any{
 			"provider_account_id": expected.ExistingAccountID,
 			"vendor":              candidate.Vendor,
 			"auth_mode":           candidate.AuthMode,
 			"credential_version":  metadata.Version,
 			"batch_intake":        true,
-		})
+		}); err != nil {
+			return err
+		}
+		if finalize != nil {
+			return finalize(ctx, tx, ExecutionItem{
+				Status: StatusUpdated, ProviderAccountID: expected.ExistingAccountID,
+				AccountCredentialID: metadata.ID, CredentialVersion: metadata.Version,
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		result.Status = StatusFailed

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 var (
@@ -54,6 +56,28 @@ type PlanInput struct {
 type PlanResult struct {
 	PlanHash string      `json:"plan_hash"`
 	Plan     intake.Plan `json:"plan"`
+}
+
+type CandidatePlanInput struct {
+	TenantID         int64
+	SourceKind       intake.SourceKind
+	Candidate        credentialacq.CredentialCandidate
+	SourceCommitment string
+	Account          AccountDefaults
+	Now              time.Time
+}
+
+type CandidateFinalizer func(context.Context, db.DBTX, ExecutionItem) error
+
+type CandidateExecuteInput struct {
+	CandidatePlanInput
+	PlanHash      string
+	Confirmations []string
+	ActorID       string
+	ActorRole     string
+	RequestID     string
+	Reason        string
+	Finalize      CandidateFinalizer
 }
 
 type ExecuteInput struct {

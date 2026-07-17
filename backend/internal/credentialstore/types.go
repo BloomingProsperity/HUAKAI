@@ -39,26 +39,27 @@ const (
 	VendorHunyuan  = "hunyuan"  // 腾讯混元(OpenAI 兼容端点)
 	VendorStep     = "step"     // 阶跃星辰
 
-	AuthModeAPIKey           = "api_key"
-	AuthModeClaudeAIOAuth    = "claude_ai_oauth"
-	AuthModeClaudeCode       = "claude_code"
-	AuthModeClaudeSetupToken = "claude_setup_token"
-	AuthModeBedrock          = "bedrock"
-	AuthModeVertexAnthropic  = "vertex_anthropic"
-	AuthModeChatGPTOAuth     = "chatgpt_oauth"
-	AuthModeCodexCLIOAuth    = "codex_cli_oauth"
-	AuthModeCodexWebOAuth    = "codex_web_oauth"
-	AuthModeAzure            = "azure"
-	AuthModeRefreshToken     = "refresh_token"
-	AuthModeAIStudioAPIKey   = "aistudio_api_key"
-	AuthModeVertexSA         = "vertex_sa"
-	AuthModeCodeAssist       = "code_assist"
-	AuthModeGoogleOne        = "google_one"
-	AuthModeAntigravity      = "antigravity"
-	AuthModeCopilotOAuth     = "copilot_oauth"
-	AuthModeXAIOAuth         = "xai_oauth"
-	AuthModeOAuth            = "oauth"
-	AuthModeKimiOAuth        = "kimi_oauth"
+	AuthModeAPIKey             = "api_key"
+	AuthModeClaudeAIOAuth      = "claude_ai_oauth"
+	AuthModeClaudeCode         = "claude_code"
+	AuthModeClaudeSetupToken   = "claude_setup_token"
+	AuthModeBedrock            = "bedrock"
+	AuthModeVertexAnthropic    = "vertex_anthropic"
+	AuthModeChatGPTOAuth       = "chatgpt_oauth"
+	AuthModeCodexCLIOAuth      = "codex_cli_oauth"
+	AuthModeCodexAgentIdentity = "codex_agent_identity"
+	AuthModeCodexWebOAuth      = "codex_web_oauth"
+	AuthModeAzure              = "azure"
+	AuthModeRefreshToken       = "refresh_token"
+	AuthModeAIStudioAPIKey     = "aistudio_api_key"
+	AuthModeVertexSA           = "vertex_sa"
+	AuthModeCodeAssist         = "code_assist"
+	AuthModeGoogleOne          = "google_one"
+	AuthModeAntigravity        = "antigravity"
+	AuthModeCopilotOAuth       = "copilot_oauth"
+	AuthModeXAIOAuth           = "xai_oauth"
+	AuthModeOAuth              = "oauth"
+	AuthModeKimiOAuth          = "kimi_oauth"
 
 	StateActive              = "active"
 	StateRefreshing          = "refreshing"
@@ -74,6 +75,7 @@ const (
 	RuntimeSessionToken        = "session_token"
 	RuntimeAWSSigV4            = "aws_sigv4"
 	RuntimeUpstreamPassthrough = "upstream_passthrough"
+	RuntimeCodexAgentIdentity  = "codex_agent_identity"
 )
 
 var (
@@ -288,6 +290,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeChatGPTOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexCLIOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		codexAgentIdentityHandler{},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexWebOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAzure, runtimeKind: RuntimeAPIKey, anyOf: []string{"api_key", "azure_api_key", "access_token", "mock_token_endpoint"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeRefreshToken, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},

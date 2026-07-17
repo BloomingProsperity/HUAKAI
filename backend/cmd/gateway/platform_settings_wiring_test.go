@@ -28,7 +28,7 @@ func TestGatewayWiringInjectsAnthropicTTLSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 wiring.go: %v", err)
 	}
-	if !strings.Contains(string(raw), "AnthropicTTLSettings:     platformSettingsService") {
+	if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), "AnthropicTTLSettings: platformSettingsService") {
 		t.Fatal("UpstreamDispatcher.AnthropicTTLSettings 未注入 platformSettingsService")
 	}
 }

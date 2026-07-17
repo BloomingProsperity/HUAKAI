@@ -19,6 +19,30 @@ type CredentialVault interface {
 	Resolve(ctx context.Context, tenantID, accountID int64) (Credential, AccountInfo, error)
 }
 
+// DynamicCredentialInput 描述需要在每次请求前动态生成的凭据。
+type DynamicCredentialInput struct {
+	TenantID            int64
+	ProviderAccountID   int64
+	AccountCredentialID int64
+	CredentialVersion   int32
+	Vendor              string
+	AuthMode            string
+	Payload             []byte
+}
+
+// DynamicCredentialResolver 把加密仓库解出的长期材料转换成单次出站凭据。
+// 实现不得把长期秘密放进返回值。
+type DynamicCredentialResolver interface {
+	ResolveDynamicCredential(context.Context, DynamicCredentialInput) (Credential, error)
+}
+
+// DynamicCredentialRecoverer 在上游明确拒绝某个短期动态绑定时，原账号生成
+// 一份新凭据。recovered=false 表示该账号不适用此恢复协议。
+type DynamicCredentialRecoverer interface {
+	ShouldRecoverDynamicCredential(AccountInfo, int, []byte) bool
+	RecoverDynamicCredential(context.Context, AccountInfo, Credential) (credential Credential, recovered bool, err error)
+}
+
 type staticVaultEntry struct {
 	credential Credential
 	account    AccountInfo

@@ -18,6 +18,7 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"openai/api_key",
 		"openai/chatgpt_oauth",
 		"openai/codex_cli_oauth",
+		"openai/codex_agent_identity",
 		"openai/codex_web_oauth",
 		"openai/azure",
 		"openai/refresh_token",

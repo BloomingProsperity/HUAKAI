@@ -206,19 +206,20 @@ func vendorEnforcesOfficialClient(vendor string) bool {
 // (api_key/aistudio_api_key/bedrock/vertex_*/azure)不在此集合。取值为
 // credentialstore.AuthMode*。
 var reverseAuthModes = map[string]struct{}{
-	credentialstore.AuthModeClaudeAIOAuth: {},
-	credentialstore.AuthModeClaudeCode:    {},
-	credentialstore.AuthModeChatGPTOAuth:  {},
-	credentialstore.AuthModeCodexCLIOAuth: {},
-	credentialstore.AuthModeCodexWebOAuth: {},
-	credentialstore.AuthModeCodeAssist:    {},
-	credentialstore.AuthModeGoogleOne:     {},
-	credentialstore.AuthModeAntigravity:   {},
-	credentialstore.AuthModeCopilotOAuth:  {},
-	credentialstore.AuthModeXAIOAuth:      {},
-	credentialstore.AuthModeKimiOAuth:     {},
-	credentialstore.AuthModeOAuth:         {},
-	credentialstore.AuthModeRefreshToken:  {},
+	credentialstore.AuthModeClaudeAIOAuth:      {},
+	credentialstore.AuthModeClaudeCode:         {},
+	credentialstore.AuthModeChatGPTOAuth:       {},
+	credentialstore.AuthModeCodexCLIOAuth:      {},
+	credentialstore.AuthModeCodexAgentIdentity: {},
+	credentialstore.AuthModeCodexWebOAuth:      {},
+	credentialstore.AuthModeCodeAssist:         {},
+	credentialstore.AuthModeGoogleOne:          {},
+	credentialstore.AuthModeAntigravity:        {},
+	credentialstore.AuthModeCopilotOAuth:       {},
+	credentialstore.AuthModeXAIOAuth:           {},
+	credentialstore.AuthModeKimiOAuth:          {},
+	credentialstore.AuthModeOAuth:              {},
+	credentialstore.AuthModeRefreshToken:       {},
 }
 
 // IsReverseAccountType 报告账号类型是否为反转/订阅号(OAuth/session 类)。
