@@ -89,6 +89,17 @@ type Store struct {
 	cfg     Config
 }
 
+// Snapshot 是单个账号当前 auth 降级状态的只读副本。
+// AuthUntil 过期后 Eligible 会恢复为 true，但 strike 会保留到成功、轮换或人工恢复。
+type Snapshot struct {
+	Found             bool
+	Eligible          bool
+	HardDisabled      bool
+	Strike            int
+	AuthUntil         *time.Time
+	CredentialVersion int
+}
+
 // NewStore 构造车道。零值 Config → 默认(base=30s、cap=30min、K=3)。
 func NewStore(cfg Config) *Store {
 	return &Store{
@@ -192,6 +203,31 @@ func (s *Store) Eligible(accountID int64, now time.Time) (ok bool, hardDisabled 
 	// 已过退避窗口 → 放行,但条目(含 strike)保留:下一发 auth 失败从保留的 strike 几何升级,
 	// 使真死 key 快速撞顶。条目仅在成功/轮换/运营 resume 时由 Clear 清除。
 	return true, false
+}
+
+// Snapshot 返回与 Eligible 相同时间语义的只读状态，供管理诊断展示。
+func (s *Store) Snapshot(accountID int64, now time.Time) Snapshot {
+	if s == nil || accountID == 0 {
+		return Snapshot{Eligible: true}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entries[accountID]
+	if e == nil {
+		return Snapshot{Eligible: true}
+	}
+	snap := Snapshot{
+		Found:             true,
+		Eligible:          !e.hardDisabled && !now.Before(e.authUntil),
+		HardDisabled:      e.hardDisabled,
+		Strike:            e.strike,
+		CredentialVersion: e.credVersion,
+	}
+	if !e.authUntil.IsZero() {
+		until := e.authUntil.UTC()
+		snap.AuthUntil = &until
+	}
+	return snap
 }
 
 // Clear 彻底清除账号的车道状态(strike 归零 + AuthUntil 清 + 解除 HardDisabled)。

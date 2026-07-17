@@ -10319,6 +10319,10 @@ paths:
         upstream response bodies. `last_request_observed_at` is a passive
         request-completion observation and does not prove that an active
         upstream probe ran.
+        `scheduling` separately reports the account-level selector gates that can
+        be evaluated without a concrete relay request. Its verdict is not a
+        promise that every model or protocol request will select this account;
+        request-specific gates are listed in `unevaluated_gates`.
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
         - docs/specs/upstream-credential-management.md
@@ -18146,6 +18150,7 @@ components:
         - enabled
         - requires_action
         - updated_at
+        - scheduling
       properties:
         id: { type: integer, format: int64 }
         health_state:
@@ -18202,6 +18207,163 @@ components:
           type: boolean
           description: True when health_state is revoked or failure_count is greater than 3.
         updated_at: { type: string, format: date-time }
+        scheduling: { $ref: '#/components/schemas/ProviderAccountSchedulingSnapshot' }
+        recent_requests:
+          type: object
+          additionalProperties: false
+          required: [total, success, failure]
+          properties:
+            total: { type: integer, minimum: 0 }
+            success: { type: integer, minimum: 0 }
+            failure: { type: integer, minimum: 0 }
+            last_at: { type: string, format: date-time }
+
+    ProviderAccountSchedulingSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - verdict
+        - blocking_reasons
+        - conditional_reasons
+        - evaluated_at
+        - provider_account
+        - credential
+        - channel_health
+        - auth_cooldown
+        - model_cooldowns
+        - legacy_account_timers
+        - unevaluated_gates
+      properties:
+        verdict:
+          type: string
+          enum: [eligible, blocked, request_dependent]
+          description: |
+            Account-level result only. request_dependent means channel ramp
+            admission or a model-specific cooldown requires a concrete request.
+        blocking_reasons:
+          type: array
+          items:
+            type: string
+            enum:
+              - account_disabled
+              - channel_disabled
+              - provider_unavailable
+              - provider_health
+              - credential_state
+              - channel_health
+              - auth_cooldown
+        conditional_reasons:
+          type: array
+          items:
+            type: string
+            enum: [channel_ramp_admission, model_cooldown]
+        evaluated_at: { type: string, format: date-time }
+        provider_account:
+          type: object
+          additionalProperties: false
+          required:
+            - enabled
+            - disable_cooling
+            - channel_enabled
+            - provider_available
+            - health_state
+            - eligible
+            - persistence
+          properties:
+            enabled: { type: boolean }
+            disable_cooling: { type: boolean }
+            channel_enabled: { type: boolean }
+            provider_available: { type: boolean }
+            health_state: { type: string }
+            health_state_until: { type: string, format: date-time }
+            eligible: { type: boolean }
+            persistence: { type: string, enum: [postgres] }
+        credential:
+          type: object
+          additionalProperties: false
+          required: [state, eligible, persistence]
+          properties:
+            state: { type: string }
+            eligible: { type: boolean }
+            persistence: { type: string, enum: [postgres] }
+        channel_health:
+          type: object
+          additionalProperties: false
+          required:
+            - record_found
+            - state
+            - eligibility
+            - bypassed_by_disable_cooling
+            - source
+            - persistence
+          properties:
+            record_found: { type: boolean }
+            state: { type: string }
+            eligibility: { type: string, enum: [eligible, blocked, request_dependent] }
+            reason_class: { type: string }
+            cooldown_until: { type: string, format: date-time }
+            ramp_stage_pct: { type: integer, minimum: 0, maximum: 100 }
+            bypassed_by_disable_cooling: { type: boolean }
+            source:
+              type: string
+              enum: [latest_provider_account_record, no_record_default_active]
+            persistence: { type: string, enum: [postgres] }
+        auth_cooldown:
+          type: object
+          additionalProperties: false
+          required:
+            - configured
+            - record_found
+            - eligibility
+            - hard_disabled
+            - strike
+            - bypassed_by_disable_cooling
+            - persistence
+          properties:
+            configured: { type: boolean }
+            record_found: { type: boolean }
+            eligibility: { type: string, enum: [eligible, blocked] }
+            hard_disabled: { type: boolean }
+            strike: { type: integer, minimum: 0 }
+            auth_until: { type: string, format: date-time }
+            credential_version: { type: integer, minimum: 1 }
+            bypassed_by_disable_cooling: { type: boolean }
+            persistence:
+              type: string
+              enum: [process_local]
+              description: Auth cooldown is local to the gateway process in the current phase.
+        model_cooldowns:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [model_key, reset_at, active]
+            properties:
+              model_key: { type: string }
+              reset_at: { type: string, format: date-time }
+              reason: { type: string }
+              active: { type: boolean }
+        legacy_account_timers:
+          type: object
+          additionalProperties: false
+          required: [affects_selector, active_reasons]
+          properties:
+            affects_selector:
+              type: boolean
+              enum: [false]
+              description: These compatibility fields are not consumed by the current production selector.
+            active_reasons:
+              type: array
+              items:
+                type: string
+                enum: [rate_limited, overloaded, temp_unschedulable]
+            rate_limit_reset_at: { type: string, format: date-time }
+            overload_until: { type: string, format: date-time }
+            temp_unschedulable_until: { type: string, format: date-time }
+        unevaluated_gates:
+          type: array
+          description: Gates that require a concrete model, protocol, capacity or request context.
+          items: { type: string }
 
     ProviderAccountRecoveryResponse:
       x-huakai-spec-source:

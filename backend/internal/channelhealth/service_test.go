@@ -98,6 +98,36 @@ func TestChannelHealthLatestByProviderAccountMatchesPersistentOrdering(t *testin
 	}
 }
 
+func TestLatestByProviderAccountReturnsSelectorRecord(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)})
+	older := testKey()
+	older.CredentialVersion = 1
+	newer := older
+	newer.CredentialVersion = 2
+	if _, err := svc.EnsureDefaultActive(ctx, older); err != nil {
+		t.Fatalf("写入旧版本：%v", err)
+	}
+	if _, err := svc.EnsureDefaultActive(ctx, newer); err != nil {
+		t.Fatalf("写入新版本：%v", err)
+	}
+
+	got, err := svc.LatestByProviderAccount(ctx, newer.TenantID, newer.ProviderAccountID)
+	if err != nil {
+		t.Fatalf("LatestByProviderAccount：%v", err)
+	}
+	if got.Key.CredentialVersion != 2 || got.State != StateActive {
+		t.Fatalf("最新 selector 记录不一致：%+v", got)
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, 0, newer.ProviderAccountID); err == nil {
+		t.Fatal("tenant_id=0 必须拒绝")
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, newer.TenantID, 0); err == nil {
+		t.Fatal("provider_account_id=0 必须拒绝")
+	}
+}
+
 func TestChannelHealth_AT002_ErrorRateCooldownAndAudit(t *testing.T) {
 	ctx, svc, store, clock := testService()
 	key := testKey()

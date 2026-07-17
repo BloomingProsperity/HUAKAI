@@ -391,6 +391,7 @@ func (s *Service) GetRecord(ctx context.Context, key ChannelKey) (Record, error)
 	return s.store.Get(ctx, key)
 }
 
+// LatestByProviderAccount 返回 selector 健康门实际读取的账号级最新记录。
 func (s *Service) LatestByProviderAccount(ctx context.Context, tenantID, providerAccountID int64) (Record, error) {
 	if s == nil || s.store == nil {
 		return Record{}, errors.New("channelhealth: service not configured")

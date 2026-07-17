@@ -3,6 +3,7 @@ package adminhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
@@ -142,9 +145,10 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"session_window_7d_start",
 		"session_window_7d_status",
 		"session_window_7d_utilization",
+		"scheduling",
 		"updated_at",
 	})
-	forbiddenFragments := []string{"credential", "credentials", "encrypted", "payload", "secret", "token", "nonce", "key_id"}
+	forbiddenFragments := []string{"credentials", "encrypted", "payload", "secret", "access_token", "refresh_token", "nonce", "key_id"}
 	lowerBody := strings.ToLower(rec.Body.String())
 	for _, fragment := range forbiddenFragments {
 		if strings.Contains(lowerBody, fragment) {
@@ -298,7 +302,12 @@ func TestProviderAccountHealthExpiredWindowHidesUtilization(t *testing.T) {
 	row.SessionWindow7dStatus = &status
 	row.SessionWindow7dUtilization = pgNumeric(42.25)
 
-	body := providerAccountHealthResponseAt(row, nil, now)
+	body, err := providerAccountHealthResponseWithSchedulingAt(
+		row, nil, now, channelhealth.Record{}, false, authcooldown.Snapshot{Eligible: true}, false,
+	)
+	if err != nil {
+		t.Fatalf("构造健康响应：%v", err)
+	}
 	if body.SessionWindow5hStatus == nil || *body.SessionWindow5hStatus != "expired" {
 		t.Fatalf("过期 5h status=%v，期望 expired", body.SessionWindow5hStatus)
 	}
@@ -311,8 +320,236 @@ func TestProviderAccountHealthExpiredWindowHidesUtilization(t *testing.T) {
 	}
 }
 
+func TestProviderAccountSchedulingHealthyDefaultsEligible(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 105))
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+		Now:   func() time.Time { return now },
+	}, "/admin/v1/provider-accounts/105/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode：%v body=%s", err, rec.Body.String())
+	}
+	got := body.Scheduling
+	if got.Verdict != "eligible" || len(got.BlockingReasons) != 0 || len(got.ConditionalReasons) != 0 {
+		t.Fatalf("健康账号调度结论不一致：%+v", got)
+	}
+	if got.ChannelHealth.RecordFound || got.ChannelHealth.Source != "no_record_default_active" ||
+		got.ChannelHealth.Eligibility != "eligible" {
+		t.Fatalf("无 channel 记录必须按 selector 默认 active 明确展示：%+v", got.ChannelHealth)
+	}
+	if got.AuthCooldown.Configured || got.AuthCooldown.Persistence != "process_local" ||
+		got.AuthCooldown.Eligibility != "eligible" {
+		t.Fatalf("关闭的 auth 车道展示不一致：%+v", got.AuthCooldown)
+	}
+	if len(got.UnevaluatedGates) == 0 {
+		t.Fatal("必须标明尚未按具体请求评估的 gate")
+	}
+}
+
+func TestProviderAccountSchedulingAggregatesPersistentAndLocalBlockers(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	row := providerAccountHealthRow(7, 106)
+	row.HealthState = "cooldown"
+	row.HealthStateUntil = pgTimestamp(now.Add(5 * time.Minute))
+	row.CredentialState = "refresh_failed"
+	row.ChannelEnabled = false
+	row.ProviderAvailable = false
+	store := newProviderAccountHealthStoreStub()
+	store.put(row)
+
+	channelUntil := now.Add(10 * time.Minute)
+	channelReader := &providerAccountSchedulingChannelHealthStub{record: channelhealth.Record{
+		Key:   channelhealth.ChannelKey{TenantID: 7, ProviderAccountID: 106},
+		State: channelhealth.StateCoolingDown, ReasonClass: channelhealth.SignalRateLimit,
+		CooldownUntil: &channelUntil,
+	}}
+	authStore := authcooldown.NewStore(authcooldown.Config{Base: time.Minute, Cap: time.Minute, HardDisableStrikeK: 3})
+	authStore.Suspend(context.Background(), 106, authcooldown.ClassAmbiguous, 4, now)
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:          providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		ChannelHealth: channelReader,
+		AuthCooldown:  authStore,
+		Now:           func() time.Time { return now.Add(time.Second) },
+	}, "/admin/v1/provider-accounts/106/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode：%v body=%s", err, rec.Body.String())
+	}
+	got := body.Scheduling
+	if got.Verdict != "blocked" {
+		t.Fatalf("verdict=%q want blocked：%+v", got.Verdict, got)
+	}
+	for _, reason := range []string{
+		"channel_disabled",
+		"provider_unavailable",
+		"provider_health",
+		"credential_state",
+		"channel_health",
+		"auth_cooldown",
+	} {
+		if !containsString(got.BlockingReasons, reason) {
+			t.Fatalf("blocking_reasons=%v 缺 %q", got.BlockingReasons, reason)
+		}
+	}
+	if !got.ChannelHealth.RecordFound || got.ChannelHealth.Eligibility != "blocked" ||
+		got.ChannelHealth.ReasonClass != string(channelhealth.SignalRateLimit) {
+		t.Fatalf("channel health 未进入结论：%+v", got.ChannelHealth)
+	}
+	if !got.AuthCooldown.Configured || !got.AuthCooldown.RecordFound ||
+		got.AuthCooldown.Eligibility != "blocked" || got.AuthCooldown.Strike != 1 ||
+		got.AuthCooldown.CredentialVersion != 4 {
+		t.Fatalf("auth cooldown 未进入结论：%+v", got.AuthCooldown)
+	}
+}
+
+func TestProviderAccountSchedulingDisableCoolingBypassesOnlySoftRuntimeLanes(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	row := providerAccountHealthRow(7, 110)
+	row.DisableCooling = true
+	store := newProviderAccountHealthStoreStub()
+	store.put(row)
+	channelUntil := now.Add(10 * time.Minute)
+	channelReader := &providerAccountSchedulingChannelHealthStub{record: channelhealth.Record{
+		Key:   channelhealth.ChannelKey{TenantID: 7, ProviderAccountID: 110},
+		State: channelhealth.StateCoolingDown, CooldownUntil: &channelUntil,
+	}}
+	authStore := authcooldown.NewStore(authcooldown.Config{Base: time.Minute, Cap: time.Minute, HardDisableStrikeK: 3})
+	authStore.Suspend(context.Background(), 110, authcooldown.ClassAmbiguous, 1, now)
+
+	deps := ProviderAccountHealthDeps{
+		Auth:          providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		ChannelHealth: channelReader,
+		AuthCooldown:  authStore,
+		Now:           func() time.Time { return now.Add(time.Second) },
+	}
+	rec := invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/110/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode：%v body=%s", err, rec.Body.String())
+	}
+	if body.Scheduling.Verdict != "eligible" ||
+		!body.Scheduling.ChannelHealth.BypassedByDisableCooling ||
+		!body.Scheduling.AuthCooldown.BypassedByDisableCooling {
+		t.Fatalf("disable_cooling 未按 selector 豁免软车道：%+v", body.Scheduling)
+	}
+
+	authStore.OnRefreshResult(context.Background(), 110, false, true)
+	rec = invokeProviderAccountHealth(t, deps, "/admin/v1/provider-accounts/110/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hard disabled status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode hard disabled：%v", err)
+	}
+	if body.Scheduling.Verdict != "blocked" ||
+		body.Scheduling.AuthCooldown.BypassedByDisableCooling ||
+		!body.Scheduling.AuthCooldown.HardDisabled ||
+		!containsString(body.Scheduling.BlockingReasons, "auth_cooldown") {
+		t.Fatalf("disable_cooling 不得豁免 auth hard disable：%+v", body.Scheduling)
+	}
+}
+
+func TestProviderAccountSchedulingRampingAndModelCooldownAreRequestDependent(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	row := providerAccountHealthRow(7, 107)
+	row.ModelRateLimits = []byte(`{
+		"model-b":{"rate_limit_reset_at":"2026-07-16T10:10:00Z","reason":"upstream_429"},
+		"model-a":{"rate_limit_reset_at":"2026-07-16T09:59:00Z","reason":"expired"}
+	}`)
+	row.RateLimitResetAt = pgTimestamp(now.Add(time.Hour))
+	row.OverloadUntil = pgTimestamp(now.Add(2 * time.Hour))
+	row.TempUnschedulableUntil = pgTimestamp(now.Add(3 * time.Hour))
+	store := newProviderAccountHealthStoreStub()
+	store.put(row)
+
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+		ChannelHealth: &providerAccountSchedulingChannelHealthStub{record: channelhealth.Record{
+			Key:   channelhealth.ChannelKey{TenantID: 7, ProviderAccountID: 107},
+			State: channelhealth.StateRamping, RampStagePct: 25,
+		}},
+		Now: func() time.Time { return now },
+	}, "/admin/v1/provider-accounts/107/health")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountHealthResponseBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode：%v body=%s", err, rec.Body.String())
+	}
+	got := body.Scheduling
+	if got.Verdict != "request_dependent" ||
+		!containsString(got.ConditionalReasons, "channel_ramp_admission") ||
+		!containsString(got.ConditionalReasons, "model_cooldown") {
+		t.Fatalf("请求相关结论不一致：%+v", got)
+	}
+	if len(got.ModelCooldowns) != 2 || got.ModelCooldowns[0].ModelKey != "model-a" ||
+		got.ModelCooldowns[0].Active || got.ModelCooldowns[1].ModelKey != "model-b" ||
+		!got.ModelCooldowns[1].Active {
+		t.Fatalf("模型冷却排序/活跃状态不一致：%+v", got.ModelCooldowns)
+	}
+	if got.LegacyAccountTimers.AffectsSelector ||
+		len(got.LegacyAccountTimers.ActiveReasons) != 3 ||
+		len(got.BlockingReasons) != 0 {
+		t.Fatalf("旧账号时间字段不得阻断当前 selector：%+v", got.LegacyAccountTimers)
+	}
+}
+
+func TestProviderAccountSchedulingReadFailureDoesNotReturnGreen(t *testing.T) {
+	store := newProviderAccountHealthStoreStub()
+	store.put(providerAccountHealthRow(7, 108))
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:          providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		ChannelHealth: &providerAccountSchedulingChannelHealthStub{err: errors.New("db unavailable")},
+	}, "/admin/v1/provider-accounts/108/health")
+	if rec.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(rec.Body.String(), "provider_account_scheduling_unavailable") {
+		t.Fatalf("channel health 读取失败必须 503：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProviderAccountSchedulingInvalidModelCooldownDoesNotReturnGreen(t *testing.T) {
+	row := providerAccountHealthRow(7, 109)
+	row.ModelRateLimits = []byte(`{"broken"`)
+	store := newProviderAccountHealthStoreStub()
+	store.put(row)
+	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
+		Auth:  providerAccountHealthAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, "/admin/v1/provider-accounts/109/health")
+	if rec.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(rec.Body.String(), "provider_account_scheduling_unavailable") {
+		t.Fatalf("损坏 model cooldown 必须 503：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func invokeProviderAccountHealth(t *testing.T, deps ProviderAccountHealthDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
+	if deps.ChannelHealth == nil {
+		deps.ChannelHealth = &providerAccountSchedulingChannelHealthStub{err: channelhealth.ErrNotFound}
+	}
 	r := chi.NewRouter()
 	r.Route("/admin/v1/provider-accounts", func(r chi.Router) {
 		MountProviderAccountHealthRoutes(r, deps)
@@ -482,24 +719,42 @@ func TestProviderAccountHealthRecentRequestsEmptyRingOmitted(t *testing.T) {
 // 挂载在真实的路径模式上,使 handler 能够接收到 {id} URL 参数。
 func invokeProviderAccountHealthWithRing(t *testing.T, deps ProviderAccountHealthDeps, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	r := chi.NewRouter()
-	r.Route("/admin/v1/provider-accounts", func(r chi.Router) {
-		MountProviderAccountHealthRoutes(r, deps)
-	})
-	req := httptest.NewRequest(http.MethodGet, target, nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	return rec
+	return invokeProviderAccountHealth(t, deps, target)
 }
 
 func providerAccountHealthRow(tenantID, id int64) admindb.GetAdminProviderAccountHealthRow {
 	return admindb.GetAdminProviderAccountHealthRow{
-		ID:          id,
-		TenantID:    tenantID,
-		HealthState: "healthy",
-		Enabled:     true,
-		UpdatedAt:   pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)),
+		ID:                id,
+		TenantID:          tenantID,
+		HealthState:       "healthy",
+		Enabled:           true,
+		ChannelEnabled:    true,
+		ProviderAvailable: true,
+		CredentialState:   "valid",
+		ModelRateLimits:   []byte(`{}`),
+		UpdatedAt:         pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)),
 	}
+}
+
+type providerAccountSchedulingChannelHealthStub struct {
+	record channelhealth.Record
+	err    error
+}
+
+func (s *providerAccountSchedulingChannelHealthStub) LatestByProviderAccount(_ context.Context, _, _ int64) (channelhealth.Record, error) {
+	if s.err != nil {
+		return channelhealth.Record{}, s.err
+	}
+	return s.record, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func pgNumeric(value float64) pgtype.Numeric {
