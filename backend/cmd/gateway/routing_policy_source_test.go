@@ -10,7 +10,6 @@ package main
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -227,6 +226,28 @@ type routingPolicyGetPoolGate struct {
 	release     chan struct{}
 	enterOnce   sync.Once
 	releaseOnce sync.Once
+}
+
+// inflightWaitObservedContext 在 singleflight 等待分支读取 Done 时发出信号。
+// 返回的 done 永不关闭，保证测试只观察等待者已经就位，不改变生产控制流。
+type inflightWaitObservedContext struct {
+	context.Context
+	observed chan struct{}
+	done     chan struct{}
+	once     sync.Once
+}
+
+func newInflightWaitObservedContext() *inflightWaitObservedContext {
+	return &inflightWaitObservedContext{
+		Context:  context.Background(),
+		observed: make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+func (c *inflightWaitObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.done
 }
 
 func newRoutingPolicyGetPoolGate() *routingPolicyGetPoolGate {
@@ -579,23 +600,28 @@ func TestBindingRoutingPolicySource_InflightErrorPropagatesAndDoesNotCache(t *te
 	}
 	req := poolrouter.SelectionRequest{TenantID: 7, PoolGroupID: 42}
 
-	const waiters = 8
-	start := make(chan struct{})
-	errs := make(chan error, waiters)
-	for i := 0; i < waiters; i++ {
+	const followers = 7
+	errs := make(chan error, followers+1)
+	go func() {
+		_, err := src.GetRoutingPolicy(context.Background(), req)
+		errs <- err
+	}()
+	<-gate.entered
+
+	observed := make([]<-chan struct{}, 0, followers)
+	for i := 0; i < followers; i++ {
+		waitCtx := newInflightWaitObservedContext()
+		observed = append(observed, waitCtx.observed)
 		go func() {
-			<-start
-			_, err := src.GetRoutingPolicy(context.Background(), req)
+			_, err := src.GetRoutingPolicy(waitCtx, req)
 			errs <- err
 		}()
 	}
-	close(start)
-	<-gate.entered
-	for i := 0; i < 1000; i++ {
-		runtime.Gosched()
+	for _, waiterObserved := range observed {
+		<-waiterObserved
 	}
 	gate.releaseQuery()
-	for i := 0; i < waiters; i++ {
+	for i := 0; i < followers+1; i++ {
 		if err := <-errs; !errors.Is(err, boom) {
 			t.Fatalf("waiter[%d] err=%v want %v", i, err, boom)
 		}
