@@ -23,6 +23,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
+	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
 const (
@@ -48,7 +49,6 @@ type AdminPoolAccountStore interface {
 	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
 	UpdateAdminProviderAccount(context.Context, admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
 	UpdateProviderAccountEnabled(context.Context, admindb.UpdateProviderAccountEnabledParams) error
-	ClearProviderAccountRateLimit(context.Context, admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error)
 	SoftDeleteProviderAccount(context.Context, admindb.SoftDeleteProviderAccountParams) error
 	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
 }
@@ -69,11 +69,16 @@ type AdminPoolAccountChannelHealthInitializer interface {
 	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
 }
 
+type AdminPoolAccountRateLimitRecovery interface {
+	ClearRateLimit(context.Context, provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error)
+}
+
 type AdminPoolAccountDeps struct {
-	Auth          AdminPoolAccountAuth
-	Store         AdminPoolAccountStore
-	Credentials   AdminPoolAccountCredentialWriter
-	ChannelHealth AdminPoolAccountChannelHealthInitializer
+	Auth              AdminPoolAccountAuth
+	Store             AdminPoolAccountStore
+	Credentials       AdminPoolAccountCredentialWriter
+	ChannelHealth     AdminPoolAccountChannelHealthInitializer
+	RateLimitRecovery AdminPoolAccountRateLimitRecovery
 }
 
 type adminPoolAccountStoreAdapter struct {
@@ -110,10 +115,6 @@ func (s adminPoolAccountStoreAdapter) UpdateAdminProviderAccount(ctx context.Con
 
 func (s adminPoolAccountStoreAdapter) UpdateProviderAccountEnabled(ctx context.Context, arg admindb.UpdateProviderAccountEnabledParams) error {
 	return s.base.UpdateProviderAccountEnabled(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) ClearProviderAccountRateLimit(ctx context.Context, arg admindb.ClearProviderAccountRateLimitParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.ClearProviderAccountRateLimit(ctx, arg)
 }
 
 func (s adminPoolAccountStoreAdapter) SoftDeleteProviderAccount(ctx context.Context, arg admindb.SoftDeleteProviderAccountParams) error {
@@ -208,48 +209,56 @@ type providerAccountPage struct {
 }
 
 type providerAccountResponse struct {
-	ID                       int64           `json:"id"`
-	TenantID                 int64           `json:"tenant_id"`
-	ProviderID               int64           `json:"provider_id"`
-	ChannelID                int64           `json:"channel_id"`
-	Name                     string          `json:"name"`
-	AccountType              string          `json:"account_type"`
-	Enabled                  bool            `json:"enabled"`
-	ExpiresAt                *time.Time      `json:"expires_at"`
-	HealthState              string          `json:"health_state"`
-	CredentialState          string          `json:"credential_state"`
-	CapConcurrency           int32           `json:"cap_concurrency"`
-	InFlightCount            int32           `json:"in_flight_count"`
-	Priority                 int32           `json:"priority"`
-	StaticWeight             int32           `json:"static_weight"`
-	ProbeModel               *string         `json:"probe_model"`
-	Tags                     []string        `json:"tags"`
-	Extra                    json.RawMessage `json:"extra"`
-	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
-	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
-	LastProbeAt              *time.Time      `json:"last_probe_at"`
-	LastRequestObservedAt    *time.Time      `json:"last_request_observed_at"`
-	ObservationSource        string          `json:"last_request_observation_source"`
-	ModelAllowList           []string        `json:"model_allow_list"`
-	CapabilityFlags          []string        `json:"capability_flags"`
-	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time      `json:"rate_limit_reset_at"`
-	RateLimitReason          *string         `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time      `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time      `json:"temp_unschedulable_until"`
-	TokenVersion             int32           `json:"token_version"`
-	LastRefreshAt            *time.Time      `json:"last_refresh_at"`
-	LastRefreshOutcome       *string         `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string          `json:"oauth_endpoint_health,omitempty"`
-	CustomErrorCodesEnabled  bool            `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32         `json:"custom_error_codes"`
-	PoolMode                 bool            `json:"pool_mode"`
-	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	ProxyID                  *int64          `json:"proxy_id"`
-	ProxyGroupID             *string         `json:"proxy_group_id"`
-	CreatedAt                *time.Time      `json:"created_at"`
-	UpdatedAt                *time.Time      `json:"updated_at"`
+	ID                       int64                                     `json:"id"`
+	TenantID                 int64                                     `json:"tenant_id"`
+	ProviderID               int64                                     `json:"provider_id"`
+	ChannelID                int64                                     `json:"channel_id"`
+	Name                     string                                    `json:"name"`
+	AccountType              string                                    `json:"account_type"`
+	Enabled                  bool                                      `json:"enabled"`
+	ExpiresAt                *time.Time                                `json:"expires_at"`
+	HealthState              string                                    `json:"health_state"`
+	CredentialState          string                                    `json:"credential_state"`
+	CapConcurrency           int32                                     `json:"cap_concurrency"`
+	InFlightCount            int32                                     `json:"in_flight_count"`
+	Priority                 int32                                     `json:"priority"`
+	StaticWeight             int32                                     `json:"static_weight"`
+	ProbeModel               *string                                   `json:"probe_model"`
+	Tags                     []string                                  `json:"tags"`
+	Extra                    json.RawMessage                           `json:"extra"`
+	LastDispatchAt           *time.Time                                `json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32                                    `json:"last_probe_latency_ms"`
+	LastProbeAt              *time.Time                                `json:"last_probe_at"`
+	LastRequestObservedAt    *time.Time                                `json:"last_request_observed_at"`
+	ObservationSource        string                                    `json:"last_request_observation_source"`
+	ModelAllowList           []string                                  `json:"model_allow_list"`
+	CapabilityFlags          []string                                  `json:"capability_flags"`
+	RateLimitedAt            *time.Time                                `json:"rate_limited_at"`
+	RateLimitResetAt         *time.Time                                `json:"rate_limit_reset_at"`
+	RateLimitReason          *string                                   `json:"rate_limit_reason"`
+	OverloadUntil            *time.Time                                `json:"overload_until"`
+	TempUnschedulableUntil   *time.Time                                `json:"temp_unschedulable_until"`
+	TokenVersion             int32                                     `json:"token_version"`
+	LastRefreshAt            *time.Time                                `json:"last_refresh_at"`
+	LastRefreshOutcome       *string                                   `json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string                                    `json:"oauth_endpoint_health,omitempty"`
+	CustomErrorCodesEnabled  bool                                      `json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32                                   `json:"custom_error_codes"`
+	PoolMode                 bool                                      `json:"pool_mode"`
+	TempUnschedulableEnabled bool                                      `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage                           `json:"temp_unschedulable_rules,omitempty"`
+	ProxyID                  *int64                                    `json:"proxy_id"`
+	ProxyGroupID             *string                                   `json:"proxy_group_id"`
+	CreatedAt                *time.Time                                `json:"created_at"`
+	UpdatedAt                *time.Time                                `json:"updated_at"`
+	RateLimitRecovery        *providerAccountRateLimitRecoveryResponse `json:"rate_limit_recovery,omitempty"`
+}
+
+type providerAccountRateLimitRecoveryResponse struct {
+	AccountBackoffCleared bool                      `json:"account_backoff_cleared"`
+	ChannelRecordFound    bool                      `json:"channel_record_found"`
+	ChannelChanged        bool                      `json:"channel_changed"`
+	ChannelState          channelhealth.HealthState `json:"channel_state,omitempty"`
 }
 
 func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
@@ -626,27 +635,38 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 		if !ok {
 			return
 		}
+		if d.RateLimitRecovery == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account rate-limit recovery dependency unset")
+			return
+		}
 		id, ok := parseAdminPoolID(w, r)
 		if !ok {
 			return
 		}
-		actorID := ident.AuditActor()
-		account, err := d.Store.ClearProviderAccountRateLimit(r.Context(), admindb.ClearProviderAccountRateLimitParams{
-			ID: id, TenantID: tenantID, ActorID: &actorID,
+		result, err := d.RateLimitRecovery.ClearRateLimit(r.Context(), provideraccountrecovery.ClearRateLimitInput{
+			TenantID: tenantID, AccountID: id,
+			ActorID: ident.AuditActor(), ActorRole: ident.Role,
+			RequestID: middleware.GetReqID(r.Context()),
 		})
 		if err != nil {
+			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
+				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account backoff cleared, but channel rate-limit recovery failed; retry the operation")
+				return
+			}
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
 			return
 		}
-		payload, _ := json.Marshal(map[string]any{"tenant_id": tenantID, "cleared": true})
-		if err := writeProviderAccountAudit(r.Context(), r, d.Store, ident, tenantID,
-			"clear_provider_account_rate_limit", id, chineseReason("", "清除 provider account rate limit"), payload); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
-			return
+		response := providerAccountDTO(result.Account)
+		recovery := &providerAccountRateLimitRecoveryResponse{
+			AccountBackoffCleared: true,
+			ChannelRecordFound:    result.Channel != nil,
+			ChannelChanged:        result.ChannelChanged,
 		}
-		// 返回重新激活后的 account 行（UPDATE...RETURNING 已经给到清除后的状态），
-		// 让运维 UI 看到该账号不再被停用，而不是一个不透明的 204。
-		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
+		if result.Channel != nil {
+			recovery.ChannelState = result.Channel.State
+		}
+		response.RateLimitRecovery = recovery
+		writeAuditJSON(w, http.StatusOK, response)
 	}
 }
 

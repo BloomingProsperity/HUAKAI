@@ -459,7 +459,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 1. 明确哪些是正交状态、哪些是历史兼容字段，禁止两个字段表达同一冷却。
 2. provider-account 详情聚合返回 selector 当前实际使用的 channel health、auth cooldown、credential state 和逐模型状态，并标注来源。
 3. 选择一种迁移方向：要么账号级时间状态进入 selector；要么停止把它们当实时调度状态并迁移到 channelhealth。
-4. `clear-rate-limit` 必须清理 selector 真正读取的状态，不能只清 provider account 列和 model JSON。
+4. `clear-rate-limit` 必须清理 selector 真正读取的状态，不能只清 provider account 列和 model JSON。该子项已在账号恢复清限流切片闭环。
 5. 该项可能改变 selector、管理 API 和历史数据解释，按高风险合同变更等待 Owner 确认。
 
 ### GW-WIRE-010：现有批量导入只能向一个既有账号导入多份凭据
@@ -516,20 +516,20 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S2` |
 | 分类 | W-02 半接线、W-06 恢复断路 |
-| 状态 | **Partially Fixed；只读统一诊断已闭环，真实副作用动作仍待后续** |
+| 状态 | **Partially Fixed；只读统一诊断和清限流真实恢复已闭环，其它副作用动作仍待后续** |
 | 用户影响 | 当前可以 rotate/re-acquire credential、清账号限流字段、暂停/恢复 channelhealth，但没有直接 refresh-now、复制账号或统一 reset provider quota。运维处理事故时需要知道每套状态该去哪个入口恢复。 |
 
 **源码证据**
 
-1. provider-account 路由总账只挂 CRUD、test、health、recent requests、bulk、upstream models、credential、acquisition 和 channelhealth，见 `backend/cmd/gateway/routes.go:1049-1095`。
-2. account CRUD 的恢复动作只有 `clear-rate-limit`，见 `backend/internal/gatewayhttp/admin_pool_accounts_handler.go:131-138`。
-3. channelhealth 的手工动作是 pause/resume/force-active，且请求必须提供 credential ID/version，见 `backend/internal/gatewayhttp/channel_health_admin_handler.go:40-57`。
+1. provider-account 路由总账挂载 CRUD、test、health、recent requests、bulk、upstream models、credential、acquisition、恢复诊断和 channelhealth，见 `backend/cmd/gateway/routes.go`。
+2. account CRUD 的恢复动作仍以 `clear-rate-limit` 为主，但该入口现在委托统一恢复 service，不再只改账号表，见 `backend/internal/gatewayhttp/admin_pool_accounts_handler.go`。
+3. channelhealth 的通用手工动作是 pause/resume/force-active，且请求必须提供 credential ID/version；清限流入口新增 provider-account 级专用动作，只处理 rate-limit cooling，见 `backend/internal/gatewayhttp/channel_health_admin_handler.go`、`backend/internal/channelhealth/rate_limit_recovery.go`。
 4. 401 热路径能调用 `RefreshHotPath`，但该能力未暴露为管理端单账号立即刷新入口。
 5. Sub2 把测试、刷新、重新授权、清状态、重置 quota、批量修改和调度开关放在同一账号运营面。`Wei-Shaw/sub2api@09c6c6d74050cf49ed2fb864be6c11647798ef53:backend/internal/handler/admin/account_handler.go:181`
 
 **建议**
 
-先增加只读“可执行恢复动作”诊断，让系统根据当前 credential/health 状态返回允许的 action，不立即改状态。随后分批补 refresh-now 和统一 clear/recover orchestration；复制账号和 quota reset 需要先定义哪些配置可复制、哪些运行态必须清空，不能盲目复制秘密或瞬态限制。
+继续分批补 refresh-now 和其它明确恢复动作；复制账号和 quota reset 需要先定义哪些配置可复制、哪些运行态必须清空，不能盲目复制秘密或瞬态限制。
 
 **本批闭环**
 
@@ -538,6 +538,9 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 3. production composition root 将该端点接入三个既有 provider-account 前缀；OpenAPI 声明两个正式前缀，并用 method parity 测试防止运行时与契约再次漂移，见 `backend/cmd/gateway/routes.go`、`backend/cmd/gateway/openapi_method_parity_test.go`、`docs/openapi/openapi.yaml`。
 4. 同步修正内存 channel-health store 的 latest 排序，使其与 PostgreSQL 一致：优先 credential version，版本相同时再比较更新时间，避免测试环境给出与生产不同的恢复建议，见 `backend/internal/channelhealth/store_memory.go`。
 5. 判别测试覆盖问题状态映射、历史失败计数不误报、可刷新 access token 到期不误报、历史 channel 不参与建议、角色授权差异、跨租户拒绝、缺少 channel 记录、依赖错误脱敏、latest 排序和 OpenAPI/runtime 接线。
+6. `POST /{id}/clear-rate-limit` 现在先在同一 PostgreSQL 事务清账号退避字段并写管理员审计；审计失败会回滚账号更新。随后按账号最新凭据版本清理 selector 实际读取的 channel-health rate-limit cooling，进入 1% ramp，不调用会清 auth hard-disable 的通用 resume/force-active，见 `backend/internal/provideraccountrecovery`、`backend/internal/channelhealth/rate_limit_recovery.go`。
+7. 渠道恢复只删除 rate-limit 样本和原因，保留 401/auth lane、人工暂停、封禁、5xx、延迟及其它样本；无渠道记录或当前不是限流冷却时幂等成功。账号已提交而渠道事务失败时返回 `provider_account_recovery_partial`，重试可继续完成剩余步骤。
+8. OpenAPI 成功响应新增 `rate_limit_recovery`，明确账号事务和渠道恢复的两阶段边界；production composition root 变异测试锁定 PostgreSQL store 与共享 channel-health service 的真实注入。
 
 剩余 `refresh-now` 会真实访问上游且可能旋转 token；复制账号涉及秘密与瞬态字段边界；统一 quota reset 尚未确定权威状态来源。这三项没有用静态按钮或假 action 冒充完成，继续进入后续独立切片。
 

@@ -71,6 +71,29 @@ func summarizeSamples(samples []SignalSample) WindowSummary {
 	return out
 }
 
+func clearRateLimitSamples(w WindowSummary) WindowSummary {
+	samples := make([]SignalSample, 0, len(w.Samples))
+	for _, sample := range w.Samples {
+		if normalizeSignalClass(sample.Class) != SignalRateLimit {
+			samples = append(samples, sample)
+		}
+	}
+	return summarizeSamples(samples)
+}
+
+func latestSignalSample(w WindowSummary) (SignalSample, bool) {
+	if len(w.Samples) == 0 {
+		return SignalSample{}, false
+	}
+	latest := w.Samples[0]
+	for _, sample := range w.Samples[1:] {
+		if sample.At.After(latest.At) {
+			latest = sample
+		}
+	}
+	return latest, true
+}
+
 func windowFor(w WindowSummary, d time.Duration, now time.Time) WindowSummary {
 	if d <= 0 {
 		return summarizeSamples(w.Samples)
