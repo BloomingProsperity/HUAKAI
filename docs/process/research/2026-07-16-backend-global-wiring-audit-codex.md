@@ -537,19 +537,31 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S1`（管理操作一致性/审计完整性） |
 | 分类 | W-02 半接线、W-11 顺序错误 |
-| 状态 | **Confirmed；建议下一修复批** |
-| 用户影响 | 一批账号逐行更新，任意中途错误都会保留前面已成功的行；更严重的是每行先 update 再写 audit，若 audit 插入失败，该账号已经修改但没有对应审计记录。响应只报告“前 N 个成功”，没有每项结果或补偿信息。 |
+| 状态 | **Fixed；独立 Draft PR 待创建，未经 Owner 同意不合并** |
+| 用户影响 | 修复前一批账号逐行更新，任意中途错误都会保留前面已成功的行；更严重的是每行先 update 再写 audit，若 audit 插入失败，该账号已经修改但没有对应审计记录。数据库真实 action 白名单也不接受原先的 `provider_account.bulk_update_by_tag`，因此真实库会稳定触发该缺口。修复后每个账号使用独立短事务原子写账号和审计，单项失败不阻断后续账号，并返回完整逐项结果。 |
 
 **源码证据**
 
-1. bulk 只支持按 tag 修改 enabled、priority、static weight，见 `backend/internal/adminhttp/provider_account_bulk_handler.go:58-78`。
-2. handler 在普通循环中逐行 `UpdateAdminProviderAccount`，失败时立即返回并明确显示已有成功数量，见 `provider_account_bulk_handler.go:84-100`。
-3. 每行 update 完成后才构造并插入 audit；audit 失败同样立即返回，不回滚前面的 update，见 `provider_account_bulk_handler.go:102-142`。
-4. Sub2 本轮也没有证明所有批量动作具备全链补偿，因此这里不宣称其事务性更强；只确认 HUAKAI 当前存在可复现的部分成功合同。
+1. 生产路由不再直接注入裸 sqlc 查询对象，而是注入持有 `pgxpool.Pool` 的事务 adapter，两个 alias 共用同一 mount，见 `backend/cmd/gateway/routes.go` 与 `backend/internal/adminhttp/provider_account_bulk_handler.go`。
+2. adapter 对每个目标开启短事务，先按 tenant、ID、tag 重新锁定账号；账号已删除、标签已漂移或已经是目标状态时明确返回 `skipped`，否则在同一事务内更新账号并写管理员审计。
+3. 审计 action 改为数据库既有白名单中的 `update_provider_account`；payload 同时保存变更前后值，目标仍是单个 provider account。审计写入失败会让该账号更新回滚。
+4. handler 以 1001 条查询探测上限；超过 1000 条直接返回 409，不再静默遗漏。响应保留原有 `affected_ids/count`，新增 `total/succeeded/failed/skipped/results`；有单项失败时返回 207，数据库错误不原样泄露。
+5. 请求 JSON 现在拒绝未知字段和尾随第二个 JSON 值，与 OpenAPI 的 `additionalProperties: false` 对齐。
 
-**建议**
+**成熟项目行为与本地选择**
 
-把单账号 update + audit 收敛到同一数据库事务；批次层面可选择“全有或全无”或“逐项隔离并完整返回结果”，但必须显式定义。推荐先做逐项隔离：每个账号事务原子，响应返回 succeeded/failed/skipped 列表，支持幂等请求键和安全重试；是否做整批原子由规模与锁影响决定。
+1. Sub2API 的普通字段批改采用集合事务，但关联关系随后逐项执行；凭据子字段批改则逐项失败继续并返回成功/失败 ID 与逐项结果。`Wei-Shaw/sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/repository/account_repo.go:2608`、`backend/internal/handler/admin/account_handler.go:1843`
+2. New API 同时存在逐项启停和整批事务型标签/删除入口；其批次审计在业务提交后单独写，仍有变更成功但审计缺失窗口。`QuantumNous/new-api@a63364d156cf2a64f1c3d1ee4923d73d5f3222a1:controller/channel.go:1122`、`model/channel.go:1040`、`model/log.go:229`
+3. CLIProxyAPI 的近似批量凭据文件入口逐项失败继续并返回成功文件和失败详情，但跨文件/存储不具备整批事务。`router-for-me/CLIProxyAPI@106270bea6f18ba2f2cc8b0b5887987f2874eed8:internal/api/handlers/management/auth_files.go:760`
+4. HUAKAI 选择“逐项原子 + 完整结果 + 同事务逐项审计”：比无上限整批事务锁影响更小，也避免成熟项目中业务提交后尽力写审计的缺口。当前字段更新天然幂等，重试已成功项会被识别为 no-op 并跳过；持久化批次幂等键和乐观版本字段留给后续独立合同，不在本批伪造。
+
+**判别验证**
+
+1. 普通测试：`go test ./internal/adminhttp ./internal/openapicheck ./cmd/gateway -count=1`。
+2. 真实 PostgreSQL：空库应用 1→181 全部迁移后，`TestProviderAccountBulkAdapter_AuditFailureRollsBackAccount` 证明审计拒绝时账号字段回滚。
+3. `TestProviderAccountBulkAdapter_CommitsUpdateAndLegalAudit` 证明账号变更和合法 `update_provider_account` 审计同时提交。
+4. `TestProviderAccountBulkAdapter_NoLongerMatchingTagIsSkipped` 证明执行期标签漂移不会误写。
+5. `TestProviderAccountBulkHandler_RealPGItemFailureDoesNotBlockNextAccount` 证明第一条真实审计失败并回滚后，第二条仍能提交且得到独立审计。
 
 ### GW-WIRE-014：Claude Cookie 自动登录整条链缺失
 
@@ -1175,7 +1187,7 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 
 ## 下一批
 
-Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。`GW-WIRE-013` 的账号接入身份、冲突和稳定凭据指纹已在独立 Draft PR #258 闭环；未经 Owner 同意未合并。
+Batch 2C 已完成 Sub2 整套账号系统、HUAKAI 账号链和四项账号导入/同步能力的第一轮功能总账。`GW-WIRE-010` 的账号接入身份、冲突和稳定凭据指纹已在独立 Draft PR #258 闭环；未经 Owner 同意未合并。
 
 `GW-WIRE-014` 至 `GW-WIRE-017` 的生产写入和真实网络能力等待 Owner 对第 11-15 项作出选择后，分别作为独立 PR 实现，避免把多个高敏感凭据入口一次性混入同一提交。
 
