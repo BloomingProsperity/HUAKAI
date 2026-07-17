@@ -29,7 +29,7 @@ import (
 // 默认 generativelanguage v1beta endpoint 模板。{model} 由 caller 传入。
 const defaultGenerateEndpointTemplate = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-// streamGenerateEndpointTemplate 是流式 SSE endpoint 模板。
+// streamGenerateEndpointTemplate 是流式 action endpoint 模板；SSE 模式由查询参数启用。
 const streamGenerateEndpointTemplate = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent"
 
 // PassthroughAdapter 把客户原始 Gemini 形态请求直通到 generativelanguage
@@ -95,6 +95,14 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	endpoint, err := provider.EndpointForCredential(substituted, in.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("gemini passthrough: endpoint rejected: %w", err)
+	}
+
+	// 流式追加 ?alt=sse（已存在则不重复）。
+	if streamSignal {
+		endpoint, err = provider.EndpointWithQueryParamIfMissing(endpoint, "alt", "sse")
+		if err != nil {
+			return nil, fmt.Errorf("gemini passthrough: 追加 alt=sse 失败: %w", err)
+		}
 	}
 
 	// API key 在 query 还是 header

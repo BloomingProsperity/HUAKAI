@@ -36,6 +36,9 @@ func TestPassthroughAdapter_BuildRequest_HeaderAuth(t *testing.T) {
 	if strings.Contains(req.URL.String(), "key=") {
 		t.Errorf("URL 不应含 key= query 参数：%q", req.URL.String())
 	}
+	if got := req.URL.Query().Get("alt"); got != "" {
+		t.Errorf("非流式 URL 的 alt=%q，期望为空", got)
+	}
 }
 
 func TestPassthroughAdapter_BuildRequest_QueryAuth(t *testing.T) {
@@ -79,6 +82,34 @@ func TestPassthroughAdapter_BuildRequest_StreamEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(req.URL.String(), ":streamGenerateContent") {
 		t.Errorf("stream=true 应走 streamGenerateContent: URL=%q", req.URL.String())
+	}
+	if got := req.URL.Query().Get("alt"); got != "sse" {
+		t.Errorf("stream=true 的 alt=%q，期望 sse", got)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_StreamQueryAuth(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID: "gemini-2.5-pro",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "AIzaTestKey",
+			Extra: map[string]string{
+				"auth_in_query": "true",
+				"stream":        "true",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.Query().Get("alt"); got != "sse" {
+		t.Errorf("流式 query 鉴权的 alt=%q，期望 sse", got)
+	}
+	if got := req.URL.Query().Get("key"); got != "AIzaTestKey" {
+		t.Errorf("流式 query 鉴权的 key=%q，期望 AIzaTestKey", got)
 	}
 }
 
@@ -185,6 +216,9 @@ func TestPassthroughAdapter_CrossProtocolStreamIntent(t *testing.T) {
 	}
 	if !strings.Contains(req.URL.String(), ":streamGenerateContent") {
 		t.Fatalf("URL=%q want :streamGenerateContent(跨协议流式意图被丢)", req.URL.String())
+	}
+	if got := req.URL.Query().Get("alt"); got != "sse" {
+		t.Fatalf("跨协议流式 URL 的 alt=%q，期望 sse", got)
 	}
 }
 
