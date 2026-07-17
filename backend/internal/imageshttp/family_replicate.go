@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -90,6 +92,23 @@ func (ex *execution) abortHTTPFailure(w http.ResponseWriter, reason string, raw 
 	abortErr := ex.abortWithLossError(w, reason, 0, replicateAbortLoss(meta, outcome))
 	retrySafe := meta.ID == "" || outcome == "cancel_issued"
 	return abortErr, retrySafe
+}
+
+// familyRetrySafe 判定 family 专属的换号重试副作用安全性。Replicate prediction
+// 一经提交即按产出计费:只有「未建 prediction 或已确认取消」且失败类属限流/授权
+// (换号才有意义)时才许重试;5xx 多为提交后半途失败,换号重试=第二个号再建
+// 付费任务(平台重复扣费),一律终态。其余 family 无上游侧付费副作用,放行。
+func (ex *execution) familyRetrySafe(failure *fallbackexec.Failure, sideEffectRetrySafe bool) bool {
+	if ex.resolved.ProtocolFamily != replicateImageFamily {
+		return true
+	}
+	if failure == nil || !sideEffectRetrySafe {
+		return false
+	}
+	if failure.AuthFailoverEligible {
+		return true
+	}
+	return failure.Signal == bindingfallback.SignalUpstreamRateLimit
 }
 
 // countDeliveredImages 数翻译后 OpenAI images 响应的 data 条数。解析失败

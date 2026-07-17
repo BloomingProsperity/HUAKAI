@@ -223,14 +223,31 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan, requestedModel 
 
 func (ex *execution) runCompletions(w http.ResponseWriter) {
 	budget := fallbackexec.NormalBudget(ex.plan)
+	authFailoverUsed := false
 	var coordinator bindingfallback.Coordinator
 	for i := 0; i < budget; i++ {
-		outcome := ex.runPaidAttempt(w, ex.plan.Attempts[i], i+1, ex.req.Model)
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		outcome := ex.runPaidAttempt(w, ex.plan.Attempts[planIdx], i+1, ex.req.Model)
 		if outcome.done {
 			return
 		}
 		if ex.selRes != nil {
 			ex.excludeAccount(ex.selRes.AccountID)
+		}
+		// 上游 401/发网前凭据错配走授权换号子预算:整请求最多一次、预算末位也放行
+		// (必要时扩一格),不进 Coordinator 的跨类终态门(auth 对类别转移保持
+		// fail-closed)。第二次授权失败落到 Coordinator 原地终止,防 401 风暴烧号。
+		if f := outcome.failure; f != nil && f.AuthFailoverEligible && f.RetryPermitted {
+			if !authFailoverUsed && (ex.d.RetryBudget == nil || ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+				authFailoverUsed = true
+				if i+1 >= budget {
+					budget++
+				}
+				continue
+			}
 		}
 		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
 		switch decision.Action {
@@ -266,11 +283,17 @@ func (ex *execution) runPaidAttempt(w http.ResponseWriter, attempt router.Attemp
 	if !ex.reserve(w) {
 		return attemptOutcome{done: true}
 	}
+	// 幂等重放续用被 abort 的 claim 时,billing 返回的 attempt_seq 是权威值
+	// (跨请求单调),选号与结算必须用同一个,否则 settle 身份对不上。
+	attemptSeq = authoritativeAttemptSeq(ex.reserveRes, attemptSeq)
 	if failure := ex.selectAccount(w, attemptSeq, requestedModel); failure != nil {
 		return attemptOutcome{failure: failure}
 	}
 	if !ex.resolveCredential(w) {
 		return attemptOutcome{done: true}
+	}
+	if failure := ex.credentialCompatibilityFailure(w); failure != nil {
+		return attemptOutcome{failure: failure}
 	}
 	return ex.dispatchCompletionsAndSettle(w, attemptSeq)
 }

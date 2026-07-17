@@ -9,6 +9,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -72,6 +73,20 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
+// credentialCompatibilityFailure 发网前校验凭据形态与协议族匹配(oauth 号不能打
+// api-key 直连等)。不匹配=本号静态必败:退预留、经授权换号子预算换下一个号,
+// 绝不带着错配凭据发网(上游 401 白烧一轮还可能触发风控)。
+func (ex *execution) credentialCompatibilityFailure(w http.ResponseWriter) *fallbackexec.Failure {
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, ex.accInfo); err == nil {
+		return nil
+	}
+	failure := fallbackexec.CredentialCompatibilityFailure()
+	if !ex.abort(w, failure.AbortReason, 0) {
+		return fallbackexec.AbortFailure()
+	}
+	return failure
+}
+
 func (ex *execution) dispatchAndSettle(w http.ResponseWriter, attemptSeq int) attemptOutcome {
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
@@ -115,16 +130,21 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 		}
 		return attemptOutcome{failure: failure}
 	}
-	if strings.TrimSpace(string(raw)) == "" {
-		failure := fallbackexec.EmptyResponseFailure()
-		if !ex.abort(w, failure.AbortReason, 0) {
-			failure = fallbackexec.AbortFailure()
-		}
-		return attemptOutcome{failure: failure}
-	}
+	// 非 2xx 必须先于空 body 判定:400/401 常带空 body,先判空会把终态客户端错误
+	// 伪装成可重试的 empty_response。
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		ex.observeHTTPError(res, raw)
 		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		if ex.abortWithError(w, failure.AbortReason, 0) != nil {
+			// abort 失败=预留状态不明,终态不再换号(防双份扣费);仍按上游语义回
+			// 客户端,X-Huakai-Abort-Failed 头已由 abort 助手落下。
+			failure.RetryPermitted = false
+			failure.AuthFailoverEligible = false
+		}
+		return attemptOutcome{failure: failure}
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		failure := fallbackexec.EmptyResponseFailure()
 		if !ex.abort(w, failure.AbortReason, 0) {
 			failure = fallbackexec.AbortFailure()
 		}

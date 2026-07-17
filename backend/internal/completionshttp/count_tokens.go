@@ -71,6 +71,9 @@ func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string
 		if outcome.done {
 			return
 		}
+		if ex.selRes != nil {
+			ex.excludeAccount(ex.selRes.AccountID)
+		}
 		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
 		switch decision.Action {
 		case bindingfallback.ActionContinuePrimary:

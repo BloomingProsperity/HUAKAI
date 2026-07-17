@@ -153,7 +153,7 @@ func (s *embeddingsFallbackSelector) Select(_ context.Context, req pool.Selectio
 type embeddingsFallbackVault struct{}
 
 func (embeddingsFallbackVault) Resolve(_ context.Context, tenantID, accountID int64) (provider.Credential, provider.AccountInfo, error) {
-	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{TenantID: tenantID, AccountID: accountID, Platform: "openai"}, nil
+	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{TenantID: tenantID, AccountID: accountID, Platform: "openai", AccountType: "api_key"}, nil
 }
 
 type embeddingsFallbackDispatcher struct {
