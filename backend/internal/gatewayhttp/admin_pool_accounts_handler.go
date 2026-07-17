@@ -73,6 +73,7 @@ type AdminPoolAccountChannelHealthInitializer interface {
 
 type AdminPoolAccountRateLimitRecovery interface {
 	ClearRateLimit(context.Context, provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error)
+	RecoverAccountState(context.Context, provideraccountrecovery.RecoverAccountInput) (provideraccountrecovery.RecoverAccountResult, error)
 }
 
 type AdminPoolAccountDeps struct {
@@ -138,6 +139,7 @@ func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
 	r.Patch("/{id}", newUpdateProviderAccountHandler(d))
 	r.Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
 	r.Post("/{id}/clear-rate-limit", newClearProviderAccountRateLimitHandler(d))
+	r.Post("/{id}/recover", newRecoverProviderAccountStateHandler(d))
 	r.Delete("/{id}", newDeleteProviderAccountHandler(d))
 }
 
@@ -624,6 +626,50 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 				return
 			}
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
+			return
+		}
+		response := providerAccountDTO(result.Account)
+		recovery := &providerAccountRateLimitRecoveryResponse{
+			AccountBackoffCleared: true,
+			ChannelRecordFound:    result.Channel != nil,
+			ChannelChanged:        result.ChannelChanged,
+		}
+		if result.Channel != nil {
+			recovery.ChannelState = result.Channel.State
+		}
+		response.RateLimitRecovery = recovery
+		writeAuditJSON(w, http.StatusOK, response)
+	}
+}
+
+// newRecoverProviderAccountStateHandler 运维"完整恢复账号"端点:把 health_state 复位 healthy
+// (消终态 revoked 无恢复路径)+ 清限流五轴 + 渠道强制回 active 满血,一口收齐各分裂恢复口。
+// 与 clear-rate-limit(窄口,只清限流冷却)并存,对应 sub2 双原语。
+func newRecoverProviderAccountStateHandler(d AdminPoolAccountDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveProviderAccountAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		if d.RateLimitRecovery == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account recovery dependency unset")
+			return
+		}
+		id, ok := parseAdminPoolID(w, r)
+		if !ok {
+			return
+		}
+		result, err := d.RateLimitRecovery.RecoverAccountState(r.Context(), provideraccountrecovery.RecoverAccountInput{
+			TenantID: tenantID, AccountID: id,
+			ActorID: ident.AuditActor(), ActorRole: ident.Role,
+			RequestID: middleware.GetReqID(r.Context()),
+		})
+		if err != nil {
+			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
+				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account state recovered, but channel force-active failed; retry the operation")
+				return
+			}
+			writeProviderAccountReadError(w, err, "provider_account_recover_failed")
 			return
 		}
 		response := providerAccountDTO(result.Account)

@@ -97,13 +97,22 @@ type adminPoolChannelHealthStub struct {
 }
 
 type adminPoolRateLimitRecoveryStub struct {
-	input  *provideraccountrecovery.ClearRateLimitInput
-	result provideraccountrecovery.ClearRateLimitResult
-	err    error
+	input        *provideraccountrecovery.ClearRateLimitInput
+	recoverInput *provideraccountrecovery.RecoverAccountInput
+	result       provideraccountrecovery.ClearRateLimitResult
+	err          error
 }
 
 func (s *adminPoolRateLimitRecoveryStub) ClearRateLimit(_ context.Context, in provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error) {
 	s.input = &in
+	if s.result.Account.ID == 0 {
+		s.result.Account = adminProviderRow(in.AccountID, in.TenantID)
+	}
+	return s.result, s.err
+}
+
+func (s *adminPoolRateLimitRecoveryStub) RecoverAccountState(_ context.Context, in provideraccountrecovery.RecoverAccountInput) (provideraccountrecovery.RecoverAccountResult, error) {
+	s.recoverInput = &in
 	if s.result.Account.ID == 0 {
 		s.result.Account = adminProviderRow(in.AccountID, in.TenantID)
 	}

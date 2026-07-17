@@ -10382,6 +10382,34 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/{id}/recover:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-accounts]
+      summary: Fully recover Account state
+      operationId: recoverProviderAccountState
+      description: |
+        运维完整恢复账号原语。在同一数据库事务中把 health_state 复位为 healthy、
+        清空 health_state_until，并清除 rate_limit_reset_at、overload_until、
+        temp_unschedulable_until、model_rate_limits、openai_403_counter 等退避状态，
+        写入管理员审计（审计失败回滚）。随后把账号当前凭据版本的 channel-health 直接
+        force-active（满流量，非 1% ramp）。与 clear-rate-limit（窄口、只清限流冷却、
+        渠道走 ramp 渐进）互补：终态 revoked 账号只有本端点能恢复。若账号事务已提交而
+        渠道 force-active 失败，返回 provider_account_recovery_partial，调用方可安全重试。
+      x-huakai-spec-source: [docs/specs/rate-limiting.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: 已完整恢复账号;返回账号和渠道恢复结果（不包含凭据）。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/recovery-actions:
     parameters:
       - $ref: '#/components/parameters/ResourceId'

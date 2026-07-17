@@ -92,6 +92,12 @@ type ClearProviderAccountRateLimitParams struct {
 	ActorID  *string `db:"actor_id" json:"actor_id"`
 }
 
+type RecoverProviderAccountStateParams struct {
+	ID       int64   `db:"id" json:"id"`
+	TenantID int64   `db:"tenant_id" json:"tenant_id"`
+	ActorID  *string `db:"actor_id" json:"actor_id"`
+}
+
 const adminProviderAccountColumns = `
     id,
     tenant_id,
@@ -341,6 +347,41 @@ RETURNING` + adminProviderAccountColumns + `
 
 func (q *Queries) ClearProviderAccountRateLimit(ctx context.Context, arg ClearProviderAccountRateLimitParams) (AdminProviderAccountRow, error) {
 	row := q.db.QueryRow(ctx, clearProviderAccountRateLimit, arg.ActorID, arg.ID, arg.TenantID)
+	var i AdminProviderAccountRow
+	err := scanAdminProviderAccount(row, &i)
+	return i, err
+}
+
+// recoverProviderAccountState 是运维"完整恢复账号"原语:在 clear-rate-limit 清限流/过载/临时
+// 停调/model 限流/403 五轴之外,额外把 health_state 复位为 healthy、health_state_until 清空。
+// 缺此原语时终态 revoked(auth_expired/风控/账号禁用,health_state_until 恒 NULL)的账号无任何
+// 恢复路径——clear-rate-limit 不碰 health_state,内存选号 gate 对 revoked 永久拒(修根因B①);
+// 各恢复口(clear-rate-limit / force-active)各清一半亦由本原语一次清齐(修根因B④)。
+const recoverProviderAccountState = `
+UPDATE provider_accounts
+SET
+    health_state = 'healthy',
+    health_state_until = NULL,
+    rate_limited_at = NULL,
+    rate_limit_reset_at = NULL,
+    rate_limit_reason = NULL,
+    overload_until = NULL,
+    temp_unschedulable_until = NULL,
+    temp_unschedulable_reason = NULL,
+    temp_unschedulable_rule_index = NULL,
+    model_rate_limits = '{}'::jsonb,
+    openai_403_counter = 0,
+    openai_403_window_start = NULL,
+    updated_at = NOW(),
+    last_modified_by_actor = $1::text
+WHERE id = $2
+  AND tenant_id = $3
+  AND deleted_at IS NULL
+RETURNING` + adminProviderAccountColumns + `
+`
+
+func (q *Queries) RecoverProviderAccountState(ctx context.Context, arg RecoverProviderAccountStateParams) (AdminProviderAccountRow, error) {
+	row := q.db.QueryRow(ctx, recoverProviderAccountState, arg.ActorID, arg.ID, arg.TenantID)
 	var i AdminProviderAccountRow
 	err := scanAdminProviderAccount(row, &i)
 	return i, err

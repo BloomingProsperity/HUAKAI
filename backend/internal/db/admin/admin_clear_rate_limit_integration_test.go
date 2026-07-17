@@ -145,7 +145,7 @@ func TestAdminAuditClearRateLimitActionWhitelisted(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM admin_audit_events WHERE actor_id = $1`, actorID)
 	})
 
-	for _, action := range []string{"clear_provider_account_rate_limit", "update_provider_account"} {
+	for _, action := range []string{"clear_provider_account_rate_limit", "recover_provider_account_state", "update_provider_account"} {
 		if _, err := q.InsertAdminAuditEvent(ctx, InsertAdminAuditEventParams{
 			ActorID:    actorID,
 			ActorRole:  "platform_admin",
@@ -178,6 +178,90 @@ func TestAdminAuditClearRateLimitActionWhitelisted(t *testing.T) {
 	if pgErr.Code != "23514" || pgErr.ConstraintName != "admin_audit_events_action_check" {
 		t.Fatalf("bogus action error code=%s constraint=%s want CHECK admin_audit_events_action_check",
 			pgErr.Code, pgErr.ConstraintName)
+	}
+}
+
+// TestRecoverProviderAccountState_ResetsHealthAndCascade 种入一个终态 revoked
+// (health_state_until IS NULL)且各冷却级联列都非清空的账号,运行 RecoverProviderAccountState,
+// 断言 health_state 复位 healthy、health_state_until 清空,且级联列全部重置。核心区分度:
+// health_state 起于 'revoked' —— 若 UPDATE 漏掉 health_state 复位(退化成 clear-rate-limit),
+// 它仍是 revoked,测试变红。这正是修「终态 revoked 无恢复路径」的守卫。
+func TestRecoverProviderAccountState_ResetsHealthAndCascade(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openAdminAuditIntegrationPool(t, ctx)
+	q := New(pool)
+
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID, accountID := seedClearRateLimitAccount(t, ctx, pool, suffix)
+	t.Cleanup(func() {
+		cleanupAdminProviderAccountHealthGraph(t, context.Background(), pool, tenantID)
+	})
+
+	now := time.Now().UTC()
+	if _, err := pool.Exec(ctx,
+		`UPDATE provider_accounts
+		 SET health_state = 'revoked',
+		     health_state_until = NULL,
+		     rate_limited_at = $2,
+		     rate_limit_reset_at = $3,
+		     rate_limit_reason = 'rate_limit_5h_exceeded',
+		     overload_until = $4,
+		     temp_unschedulable_until = $5,
+		     temp_unschedulable_reason = 'temp-unsched-y',
+		     temp_unschedulable_rule_index = 2,
+		     model_rate_limits = '{"gpt-x":1}'::jsonb,
+		     openai_403_counter = 3,
+		     openai_403_window_start = $6
+		 WHERE tenant_id = $1 AND id = $7`,
+		tenantID, now, now.Add(time.Hour), now.Add(time.Hour), now.Add(time.Hour), now, accountID,
+	); err != nil {
+		t.Fatalf("seed revoked + benched cooldown columns: %v", err)
+	}
+
+	actor := "admin:recover-full"
+	row, err := q.RecoverProviderAccountState(ctx, RecoverProviderAccountStateParams{
+		ID: accountID, TenantID: tenantID, ActorID: &actor,
+	})
+	if err != nil {
+		t.Fatalf("RecoverProviderAccountState: %v", err)
+	}
+	if row.ID != accountID {
+		t.Fatalf("RETURNING row id=%d want %d", row.ID, accountID)
+	}
+
+	var (
+		healthState    string
+		healthUntil    *time.Time
+		rateLimitReset *time.Time
+		overloadUntil  *time.Time
+		tempUntil      *time.Time
+		modelLimits    []byte
+		openai403      int32
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT health_state, health_state_until, rate_limit_reset_at, overload_until,
+		        temp_unschedulable_until, model_rate_limits, openai_403_counter
+		   FROM provider_accounts WHERE tenant_id = $1 AND id = $2`,
+		tenantID, accountID,
+	).Scan(&healthState, &healthUntil, &rateLimitReset, &overloadUntil, &tempUntil, &modelLimits, &openai403); err != nil {
+		t.Fatalf("re-select recovered row: %v", err)
+	}
+
+	if healthState != "healthy" {
+		t.Errorf("health_state not reset to healthy: %q (revoked account remained unrecoverable)", healthState)
+	}
+	if healthUntil != nil {
+		t.Errorf("health_state_until not cleared: %v", healthUntil)
+	}
+	if rateLimitReset != nil || overloadUntil != nil || tempUntil != nil {
+		t.Errorf("cooldown columns not cleared: reset=%v overload=%v temp=%v", rateLimitReset, overloadUntil, tempUntil)
+	}
+	if string(modelLimits) != "{}" {
+		t.Errorf("model_rate_limits not reset: %s", string(modelLimits))
+	}
+	if openai403 != 0 {
+		t.Errorf("openai_403_counter not reset: %d", openai403)
 	}
 }
 
