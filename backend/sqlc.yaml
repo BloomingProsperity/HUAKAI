@@ -78,7 +78,6 @@ sql:
       - sql/queries/billing_settings.sql
       - sql/queries/billing_settle.sql
       - sql/queries/balance_holds.sql
-      - sql/queries/idempotency_replay.sql
       - sql/queries/observability.sql
       - sql/queries/obs_queries.sql
       - sql/queries/usage_analytics.sql

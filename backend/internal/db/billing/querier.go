@@ -102,7 +102,6 @@ type Querier interface {
 	CountUsageRecords(ctx context.Context, arg CountUsageRecordsParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
 	// 过期清理扫描 (供后台 janitor 周期调用)。
-	DeleteExpiredIdempotencyReplayRecords(ctx context.Context) (int64, error)
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
@@ -136,7 +135,6 @@ type Querier interface {
 	// acquisition_token matches.
 	GetClaimForSettle(ctx context.Context, arg GetClaimForSettleParams) (GetClaimForSettleRow, error)
 	// 取未过期的重放记录; 过期记录视为不存在。
-	GetIdempotencyReplayRecord(ctx context.Context, arg GetIdempotencyReplayRecordParams) (GetIdempotencyReplayRecordRow, error)
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
 	GetSettlementIntentByClaimAttempt(ctx context.Context, arg GetSettlementIntentByClaimAttemptParams) (SettlementIntent, error)
@@ -155,7 +153,6 @@ type Querier interface {
 	// 请求成功完成后存原始响应体, 供同 Idempotency-Key 重试 (claim 已 committed
 	// → IdempotencyHit) 时路由无关地重放。 ON CONFLICT DO NOTHING: 重放路径本身
 	// 不应再写, 并发亦去重。
-	InsertIdempotencyReplayRecord(ctx context.Context, arg InsertIdempotencyReplayRecordParams) error
 	// Admin Pool Group CRUD (F-POOL-001).
 	InsertPool(ctx context.Context, arg InsertPoolParams) (PoolGroup, error)
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error

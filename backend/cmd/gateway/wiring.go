@@ -29,6 +29,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingmaint"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
@@ -1265,6 +1266,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
 	replayJanitor.Start(workerCtx)
 	rt.replayJanitorStop = replayJanitor.Stop
+	// scheduler_outbox 修剪 janitor:每笔成功结算写一行 outbox,无修剪会无界增长。
+	outboxJanitor := billingmaint.NewSchedulerOutboxJanitor(billingmaint.NewOutboxPruneStore(pgPool), 0, 0)
+	outboxJanitor.Start(workerCtx)
+	rt.outboxJanitorStop = outboxJanitor.Stop
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(workerCtx)
 	rt.leaseSweepStop = leaseSweeper.Stop

@@ -42,6 +42,7 @@ type gatewayRuntime struct {
 	contextWorkerWaiters        []contextWorkerWaiter
 	selectorCleanup             func()
 	replayJanitorStop           func()
+	outboxJanitorStop           func()
 	hermesRetentionWorker       *hermes.MessageRetentionWorker
 	usageRetentionWorker        *usageretention.Worker
 	leaseSweepStop              func()
@@ -83,6 +84,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.replayJanitorStop != nil {
 		rt.replayJanitorStop()
+	}
+	if rt.outboxJanitorStop != nil {
+		rt.outboxJanitorStop()
 	}
 	if rt.hermesRetentionWorker != nil {
 		rt.hermesRetentionWorker.Stop()

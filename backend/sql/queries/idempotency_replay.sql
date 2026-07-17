@@ -1,4 +1,5 @@
--- Phase E 持久幂等重放记录的 CRUD。 表见 migration 0044。
+-- 持久幂等重放记录的 CRUD。 表见 migration 0044。
+-- 生成代码已迁到手工维护包 internal/db/billingmaint(不进 sqlc 再生成),本文件仅存查询原文。
 
 -- name: InsertIdempotencyReplayRecord :exec
 -- 请求成功完成后存原始响应体, 供同 Idempotency-Key 重试 (claim 已 committed
