@@ -10284,6 +10284,10 @@ paths:
         be evaluated without a concrete relay request. Its verdict is not a
         promise that every model or protocol request will select this account;
         request-specific gates are listed in `unevaluated_gates`.
+        `observability` reports where quota, model and project data came from.
+        Provider catalog synchronization is explicitly not account-specific
+        model discovery, and an absent quota collector is never projected as
+        zero utilization.
       x-huakai-spec-source:
         - docs/specs/pool-routing.md
         - docs/specs/upstream-credential-management.md
@@ -17918,6 +17922,7 @@ components:
         - requires_action
         - updated_at
         - scheduling
+        - observability
       properties:
         id: { type: integer, format: int64 }
         health_state:
@@ -17976,6 +17981,7 @@ components:
           description: True when health_state is revoked or failure_count is greater than 3.
         updated_at: { type: string, format: date-time }
         scheduling: { $ref: '#/components/schemas/ProviderAccountSchedulingSnapshot' }
+        observability: { $ref: '#/components/schemas/ProviderAccountObservabilitySnapshot' }
         recent_requests:
           type: object
           additionalProperties: false
@@ -17985,6 +17991,93 @@ components:
             success: { type: integer, minimum: 0 }
             failure: { type: integer, minimum: 0 }
             last_at: { type: string, format: date-time }
+
+    ProviderAccountObservabilitySnapshot:
+      type: object
+      additionalProperties: false
+      required: [identity, quota, models, project]
+      properties:
+        identity:
+          type: object
+          additionalProperties: false
+          required:
+            - provider_code
+            - provider_available
+            - account_type
+            - credential_found
+            - credential_selection_state
+            - serving_credential_candidates
+            - persistence
+          properties:
+            provider_code: { type: string }
+            provider_available: { type: boolean }
+            account_type: { type: string }
+            credential_found: { type: boolean }
+            credential_selection_state:
+              type: string
+              enum: [resolved, unavailable, ambiguous]
+            serving_credential_candidates: { type: integer, format: int32, minimum: 0 }
+            credential_vendor: { type: string }
+            credential_auth_mode: { type: string }
+            persistence: { type: string, enum: [postgres] }
+        quota:
+          type: object
+          additionalProperties: false
+          required: [collection_state, source, account_specific, persistence]
+          properties:
+            collection_state:
+              type: string
+              enum:
+                - observed
+                - expired
+                - no_snapshot
+                - not_implemented_for_mode
+                - credential_unavailable
+                - credential_ambiguous
+                - provider_unavailable
+              description: 不存在采集器时明确返回未实现，不把空快照解释为 0% 用量。
+            source:
+              type: string
+              enum: [anthropic_oauth_usage, none]
+            account_specific: { type: boolean, enum: [true] }
+            persistence: { type: string, enum: [postgres] }
+        models:
+          type: object
+          additionalProperties: false
+          required: [collection_state, source, account_specific, persistence]
+          properties:
+            collection_state:
+              type: string
+              enum:
+                - provider_catalog_observed
+                - no_snapshot
+                - not_implemented_for_provider
+                - provider_unavailable
+            source:
+              type: string
+              enum: [provider_catalog_sync, none]
+            account_specific:
+              type: boolean
+              enum: [false]
+              description: 当前模型同步是 provider 全局目录，不证明该账号具备这些模型。
+            last_checked_at: { type: string, format: date-time }
+            persistence: { type: string, enum: [postgres] }
+        project:
+          type: object
+          additionalProperties: false
+          required: [required, state, source, persistence]
+          properties:
+            required: { type: boolean }
+            state:
+              type: string
+              enum: [not_required, resolved, missing, credential_unavailable, credential_ambiguous]
+            source:
+              type: string
+              enum: [credential_metadata, none]
+            project_ref:
+              type: string
+              description: 已持久化的非秘密 project 引用；不读取或返回 credential payload。
+            persistence: { type: string, enum: [postgres] }
 
     ProviderAccountSchedulingSnapshot:
       type: object

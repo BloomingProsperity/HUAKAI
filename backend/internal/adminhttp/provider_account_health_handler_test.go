@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
@@ -107,6 +108,13 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 	row.LastRefreshOutcome = &outcome
 	row.FailureClass = &failureClass
 	row.FailureCount = 4
+	row.ProviderCode = credentialstore.VendorGemini
+	row.AccountType = "session"
+	row.CredentialVendor = credentialstore.VendorGemini
+	row.CredentialAuthMode = credentialstore.AuthModeCodeAssist
+	row.ServingCredentialCandidates = 1
+	projectRef := "project-safe-7"
+	row.CredentialProjectRef = &projectRef
 	store.put(row)
 
 	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
@@ -135,6 +143,7 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"last_refresh_at",
 		"last_refresh_outcome",
 		"model_sync_last_check_at",
+		"observability",
 		"requires_action",
 		"session_window_5h_end",
 		"session_window_5h_start",
@@ -153,6 +162,29 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		if strings.Contains(lowerBody, fragment) {
 			t.Fatalf("response leaked forbidden fragment %q: %s", fragment, rec.Body.String())
 		}
+	}
+	var observability struct {
+		Identity struct {
+			ProviderCode                string `json:"provider_code"`
+			CredentialAuthMode          string `json:"credential_auth_mode"`
+			CredentialSelectionState    string `json:"credential_selection_state"`
+			ServingCredentialCandidates int32  `json:"serving_credential_candidates"`
+		} `json:"identity"`
+		Project struct {
+			State      string  `json:"state"`
+			ProjectRef *string `json:"project_ref"`
+		} `json:"project"`
+	}
+	if err := json.Unmarshal(body["observability"], &observability); err != nil {
+		t.Fatalf("decode observability: %v", err)
+	}
+	if observability.Identity.ProviderCode != credentialstore.VendorGemini ||
+		observability.Identity.CredentialAuthMode != credentialstore.AuthModeCodeAssist ||
+		observability.Identity.CredentialSelectionState != "resolved" ||
+		observability.Identity.ServingCredentialCandidates != 1 ||
+		observability.Project.State != "resolved" || observability.Project.ProjectRef == nil ||
+		*observability.Project.ProjectRef != projectRef {
+		t.Fatalf("observability 未返回安全来源元数据：%+v", observability)
 	}
 }
 
