@@ -349,6 +349,65 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 4. 定时刷新查询返回 `account_credentials.vendor`，Codex 行因此携带 `openai`；生产配置化刷新器却以 `openai_codex` 注册，只能覆盖部分热路径，定时链会回落到缺配置的默认适配器。修复后 mode registry 与热路径 vendor refresher 共用 `HUAKAI_OPENAI_CODEX_OAUTH_*`；只要配置了任一字段，令牌端点或客户端 ID 缺失就启动失败，scope 保持可选，不允许“能导入、不能续期”。
 5. 新增 `/admin/v1/credentials/account-imports/codex/plan` 与 `/execute` 专用合同，请求不暴露 source/vendor/auth-mode 覆盖；仍复用统一 `plan -> execute`、作用域令牌、计划哈希、逐项事务、双审计、健康初始化和显式冲突。
 6. 普通 Codex token 与 Agent Identity 分批交付：本切片只接 OAuth/access token；Agent Identity 的私钥、任务绑定、恢复和撤销保持下一独立 Experimental PR，避免在低风险批量导入中夹带新认证核心。
+## GW-WIRE-005 实施切片：发网前全族凭据兼容复核
+
+Owner 已授权按源码和成熟合同继续修复确定问题。本切片复用 HUAKAI 已存在的
+`servingcapability` 合同，把目前只保护 Claude session 的发网前兼容复核扩展到
+所有已经声明 serving contract 的协议族。
+
+### 范围与合同
+
+1. 凭据从 vault 物化后、构造 `ForwardRequest` 和任何上游请求之前，按当前
+   `ProtocolFamily`、凭据记录的 vendor/auth mode 和物化后的 runtime kind 复核
+   `servingcapability` 合同。
+2. 没有 serving contract 的历史协议族继续保持原行为，避免本批把尚未纳入合同的
+   能力误拒；已经有合同的协议族必须 fail-closed。
+3. 运行时凭据类型无法映射为稳定 runtime kind 时，也必须按不兼容处理，不能把原始
+   类型直接当成合法合同值绕过检查。
+4. 不兼容账号不得进入 transport、协议 adapter、健康成功回写或结算；必须先中止
+   当前 claim，释放 quota/账号槽，并进入本请求排除集后才能换下一个账号。
+5. 若 `Abort` 失败，沿用现有保护立即停止重试，避免 claim 状态未知时继续产生第二次
+   预留。
+
+### 风险与不变量
+
+1. 本批不修改 schema、鉴权角色、凭据格式、计费算法、quota 规则、真实秘密或生产
+   默认开关。
+2. 正常账号组合由 `TestAllContractAuthModesMaterializeCompatibly` 全矩阵守卫；
+   泛化后不得误拒任何合同已经声明且 handler 可以物化的合法组合。
+3. 异常数据只改变“是否允许把秘密发给当前上游”的结果；错误响应继续使用稳定通用
+   文案，不返回 vendor/auth/runtime 细节或凭据值。
+4. 当前修复只覆盖 chat/HCSF 主执行链。其它协议如果不复用该链，仍按各自纵向审计
+   继续核对，不能用本切片宣称全协议自动完成。
+
+### 判别测试
+
+1. OpenAI chat 族先选中 Gemini API key 异常账号，再选中 OpenAI API key 正常账号：
+   只允许第二个账号产生一次 dispatch/settle。
+2. 第一个异常账号必须产生一次 `credential_protocol_incompatible` abort、一次 quota
+   release，并出现在第二次 selector 请求的排除集。
+3. 只有异常账号时必须返回稳定 503，dispatch 次数为零，秘密不出现在响应。
+4. 保留 Claude session 原有错配回归，证明泛化没有削弱其现有保护。
+5. 全合同 auth mode/runtime kind 矩阵继续通过；目标包运行 `-race`、`go vet`、
+   `codebudget` 和全仓测试。
+
+### 回滚
+
+本批没有数据迁移。若发现合法合同被误拒，回滚热路径泛化条件和对应测试即可；不得
+通过对单个 vendor 增加静默例外绕过合同，必须先修正错误的 serving contract 或
+runtime kind 映射。
+
+### 实施状态
+
+1. 状态：`Implemented / verified / reviewed`。
+2. 热路径已经对全部有 contract 的 family 执行发网前复核；异常账号先释放资源并
+   排除，只有兼容账号能够进入 dispatcher。
+3. 新增错误 vendor 换号成功、仅错误账号零 dispatch 两条判别测试；Claude session
+   原有回归和全 contract auth/runtime 矩阵保持通过。
+4. 全包测试暴露的测试 vault 字面量漂移已按生产 `PostgresCredentialVault` 真实输出
+   修正，没有通过新增例外削弱合同。
+5. 目标包 race、全仓测试、全仓 vet、质量门、代码预算和变异自检均已通过；提交前
+   Codex review 未发现明确且可操作的回归，尚待提交推送和 Draft PR。
 
 ## Pre-execution checklist
 

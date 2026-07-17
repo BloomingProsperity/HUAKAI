@@ -30,7 +30,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -566,11 +565,8 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	}
 	ex.cred = credentialWithNativeStreamMode(cred, ex.clientProtocol, ex.req.Stream)
 	ex.accInfo = accInfo
-	if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
-		runtimeKind, ok := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
-		if !ok {
-			runtimeKind = string(ex.cred.Type)
-		}
+	if servingcapability.HasContract(ex.resolved.ProtocolFamily) {
+		runtimeKind, _ := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
 		if err := servingcapability.ValidateAccountCompatibility(ex.resolved.ProtocolFamily, accInfo.Platform, accInfo.AccountType, runtimeKind); err != nil {
 			abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
 			failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.AttemptRetryDecision{

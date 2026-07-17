@@ -333,7 +333,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S1`（凭据错投/协议正确性） |
 | 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链 |
-| 状态 | **Owner Decision Required** |
+| 状态 | **Fixed in dedicated branch** |
 | 用户影响 | 正常管理写入会校验 family/vendor/auth/runtime，但该写入校验在账号或 provider 查询失败时明确 fail-open，并声称由运行时兜底。真实热路径却只对 Claude session 复核。旧数据、直接数据库写入、并发变更或未来旁路若把 Gemini/Kimi/Antigravity/Grok 凭据绑错 family，非 Claude 请求可能把错误 secret 发给错误上游，并让 health、计价归因和 auth cooldown 一起串线。 |
 
 **源码证据**
@@ -344,9 +344,36 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 4. 发网前复核却被 `if family == anthropic_claude_session` 限定，见 `backend/internal/gatewayhttp/chat_completions_dispatch.go:565-582`。
 5. `TestAllContractAuthModesMaterializeCompatibly` 已证明所有已声明合同的 handler runtime kind 可被自身合同接受，可作为泛化前置安全网。
 
-**建议**
+**修复**
 
-把发网前复核泛化到所有存在 serving contract 的 family；不兼容账号必须先释放/中止 claim，再切换账号，且绝不能构造上游请求。该改动会改变凭据鉴权契约和异常数据的线上行为，按 Owner 规则先确认再改。
+1. 发网前复核已从 Claude session 专属条件泛化为：所有存在
+   `servingcapability` contract 的 family 都校验 vendor、auth mode 和物化后的
+   runtime kind；没有 contract 的历史族保持原行为。
+2. runtime kind 无法映射时使用空值进入 fail-closed 校验，不再把 provider 内部凭据
+   类型字面量当成合同值尝试放行。
+3. 不兼容账号沿用既有 `credential_protocol_incompatible` 路径：先 abort 当前
+   claim、释放 quota/账号槽，再进入本请求排除集；`Abort` 失败时禁止继续换号。
+4. 判别测试证明 OpenAI chat 先选中 Gemini API key 时 dispatcher 调用为零，只有后续
+   OpenAI API key 能出站和结算；只有错误账号时返回稳定 503，响应不含 secret。
+5. 泛化测试同时暴露并修正了历史夹具漂移：测试 vault 必须像生产
+   `PostgresCredentialVault` 一样把 `AccountInfo.Platform/AccountType` 填为真实
+   vendor/auth mode，而不是 provider runtime 类型或协议 family。
+6. 旧 R7 HCSF 测试曾依赖 `anthropic_messages + OAuth` 的非法组合；修复后改用合同合法
+   的 Anthropic API key，并证明身份钩子虽然仍接线，但不会越过 API key 作用域伪装
+   OAuth/session 身份。Claude session 严格官方直发继续保持原始 body。
+
+**验证**
+
+- `go test ./internal/gatewayhttp -count=1`
+- `go test ./internal/servingcapability ./internal/provider -count=1`
+- `go test -race ./internal/gatewayhttp ./internal/servingcapability ./internal/provider -count=1`
+- `go test ./... -count=1`
+- `go vet ./...`
+- `scripts/quality-gate.sh` 与 `go test ./internal/codebudget -count=1`
+- 变异自检把热路径临时退回 Claude session 专属条件后，两条新测试分别暴露“错误账号
+  未被排除”和“错误 secret 实际进入 dispatcher 并返回 200”；恢复全族条件后重新通过。
+- 提交前 Codex review 未发现明确且可操作的回归；复核确认兼容门位于上游请求构造前，
+  错误账号的中止、排除和换号路径有判别测试覆盖。
 
 ### GW-WIRE-006：Antigravity 两套凭据身份没有收敛成一条合法生产链
 

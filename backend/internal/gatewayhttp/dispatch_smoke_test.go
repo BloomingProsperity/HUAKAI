@@ -207,7 +207,7 @@ func TestDispatch_FullPipeline_OpenAIChat(t *testing.T) {
 	}, provider.AccountInfo{
 		AccountID:   42,
 		Platform:    "openai",
-		AccountType: "apikey",
+		AccountType: "api_key",
 	}); err != nil {
 		t.Fatalf("vault.Set: %v", err)
 	}
@@ -522,7 +522,7 @@ func newFullChainChatHarness(tb testing.TB) *fullChainChatHarness {
 	}, provider.AccountInfo{
 		AccountID:   42,
 		Platform:    "openai",
-		AccountType: "apikey",
+		AccountType: "api_key",
 	}); err != nil {
 		tb.Fatalf("vault.Set: %v", err)
 	}
