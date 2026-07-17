@@ -93,14 +93,7 @@ func TestRuntimeServiceCoordinatesRegistrationRecoveryAndCredentialVersions(t *t
 	if registrations.Load() != 1 {
 		t.Fatalf("12 个并发请求注册次数=%d want 1", registrations.Load())
 	}
-	var rowCount int
-	var encrypted []byte
-	if err := pool.QueryRow(ctx, `SELECT count(*), max(encrypted_task_id) FROM codex_agent_task_bindings WHERE tenant_id=$1 AND provider_account_id=$2`, tenantID, accountID).Scan(&rowCount, &encrypted); err != nil {
-		t.Fatal(err)
-	}
-	if rowCount != 1 || bytes.Contains(encrypted, []byte("task-1")) {
-		t.Fatalf("binding rows=%d ciphertext=%q", rowCount, encrypted)
-	}
+	assertEncryptedTaskBindings(t, ctx, pool, metaV1.ID, 1, "task-1")
 
 	subjectV1 := taskSubject{TenantID: tenantID, ProviderAccountID: accountID, AccountCredentialID: metaV1.ID, CredentialVersion: metaV1.Version, RuntimeID: "runtime-v1"}
 	if invalidated, err := store.invalidate(ctx, subjectV1, credentials[0].RuntimeRef); err != nil || !invalidated {
@@ -144,12 +137,7 @@ func TestRuntimeServiceCoordinatesRegistrationRecoveryAndCredentialVersions(t *t
 	if infoV2.CredentialVersion != int(metaV2.Version) || registrations.Load() != 4 || credentialV2.RuntimeRef == recovered.RuntimeRef {
 		t.Fatalf("v2 info=%+v registrations=%d old_ref=%s new_ref=%s", infoV2, registrations.Load(), recovered.RuntimeRef, credentialV2.RuntimeRef)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM codex_agent_task_bindings WHERE account_credential_id=$1`, metaV1.ID).Scan(&rowCount); err != nil {
-		t.Fatal(err)
-	}
-	if rowCount != 2 {
-		t.Fatalf("凭据版本绑定数=%d want 2", rowCount)
-	}
+	assertEncryptedTaskBindings(t, ctx, pool, metaV1.ID, 2, "task-1", "task-2", "task-3", "task-4")
 
 	payloadV3 := codexAgentPayload(t, "runtime-v3", "account-upstream", "user-upstream", "task-imported")
 	metaV3, err := credentialStore.Rotate(ctx, credentialstore.RotateCredentialInput{
@@ -166,12 +154,7 @@ func TestRuntimeServiceCoordinatesRegistrationRecoveryAndCredentialVersions(t *t
 	if infoV3.CredentialVersion != int(metaV3.Version) || registrations.Load() != 4 || credentialV3.RuntimeRef == credentialV2.RuntimeRef {
 		t.Fatalf("导入 task 未直接建立版本绑定: info=%+v registrations=%d", infoV3, registrations.Load())
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM codex_agent_task_bindings WHERE account_credential_id=$1`, metaV1.ID).Scan(&rowCount); err != nil {
-		t.Fatal(err)
-	}
-	if rowCount != 3 {
-		t.Fatalf("含导入 task 的凭据版本绑定数=%d want 3", rowCount)
-	}
+	assertEncryptedTaskBindings(t, ctx, pool, metaV1.ID, 3, "task-1", "task-2", "task-3", "task-4", "task-imported")
 
 	subjectV3 := taskSubject{TenantID: tenantID, ProviderAccountID: accountID, AccountCredentialID: metaV3.ID, CredentialVersion: metaV3.Version, RuntimeID: "runtime-v3"}
 	if invalidated, err := store.invalidate(ctx, subjectV3, credentialV3.RuntimeRef); err != nil || !invalidated {
@@ -278,6 +261,34 @@ SELECT to_regclass('public.codex_agent_task_bindings') IS NOT NULL,
 	if tableExists != want || credentialModeAllowed != want || flowModeAllowed != want {
 		t.Fatalf("schema table=%v credential_mode=%v flow_mode=%v want %v",
 			tableExists, credentialModeAllowed, flowModeAllowed, want)
+	}
+}
+
+func assertEncryptedTaskBindings(t *testing.T, ctx context.Context, pool *pgxpool.Pool, credentialID int64, expected int, plaintexts ...string) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `SELECT encrypted_task_id FROM codex_agent_task_bindings WHERE account_credential_id=$1 ORDER BY credential_version`, credentialID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var ciphertext []byte
+		if err := rows.Scan(&ciphertext); err != nil {
+			t.Fatal(err)
+		}
+		for _, plaintext := range plaintexts {
+			if bytes.Contains(ciphertext, []byte(plaintext)) {
+				t.Fatalf("第 %d 条任务绑定密文包含任务明文 %q", count, plaintext)
+			}
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != expected {
+		t.Fatalf("任务绑定数=%d want %d", count, expected)
 	}
 }
 
