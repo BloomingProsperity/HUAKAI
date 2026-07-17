@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 var audioQuotaReserveFailedOpenTotal = expvar.NewInt("audio_quota_reserve_failed_open_total")
@@ -155,8 +156,29 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 }
 
-// logSettleAfterDeliveryFailure 在响应已完整交付后 settle 仍失败时响亮告警。此刻无法再
-// 返回错误码,这条 error 级系统日志是对账发现"已交付未入账"的唯一线索(防静默漏记)。
+// settleDeliveredResponse 在响应完整交付后尝试结算。失败时先持久化完整 settle
+// intent，交给统一 DLQ worker 通过 public Settler 幂等重放；日志用于运维定位。
+func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		payload := settlementrecovery.FromSettleRequest(
+			settlementrecovery.SourceAudioDelivered,
+			ex.requestID,
+			req,
+		)
+		_ = settlementrecovery.EnqueueFailure(
+			ctx,
+			ex.d.SettleRecoveryDLQ,
+			payload,
+			err,
+			"audiohttp.settle_recovery",
+		)
+		ex.logSettleAfterDeliveryFailure(err)
+		return err
+	}
+	return nil
+}
+
+// logSettleAfterDeliveryFailure 在响应已完整交付后 settle 仍失败时写脱敏错误事件。
 func (ex *execution) logSettleAfterDeliveryFailure(err error) {
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
@@ -166,11 +188,11 @@ func (ex *execution) logSettleAfterDeliveryFailure(err error) {
 	}
 	_ = privacy.LogSystem(bctx, privacy.SystemEvent{
 		Severity:   privacy.SeverityError,
-		Component:  "audiohttp.settle_after_delivery",
+		Component:  "audiohttp.settle_recovery",
 		RequestID:  ex.requestID,
 		ErrorClass: privacy.ErrorClassFor(bctx, err),
 		Attrs: map[string]any{
-			"event_class": "settle_after_delivery_failed",
+			"event_class": "audio_settlement_deferred",
 			"tenant_id":   ex.ident.TenantID,
 			"claim_id":    claimID,
 			"endpoint":    string(ex.endpoint),
@@ -179,22 +201,41 @@ func (ex *execution) logSettleAfterDeliveryFailure(err error) {
 }
 
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
+	_ = ex.abortWithError(w, reason, observedInputTokens)
+}
+
+func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observedInputTokens int64) error {
 	if ex.reserveRes == nil {
-		return
+		return nil
 	}
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
 	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
+		return err
 	}
+	return nil
 }
 
 func (ex *execution) ensureIdempotency() {
+	if ex.logicalRequestID != "" {
+		return
+	}
 	ex.idempotencyKey = ex.r.Header.Get("Idempotency-Key")
 	ex.logicalRequestID = ex.idempotencyKey
 	if ex.logicalRequestID == "" {
 		ex.logicalRequestID = uuid.NewString()
 	}
+}
+
+func authoritativeAttemptSeq(res *billing.ReserveResult, fallback int) int {
+	if res != nil && res.AttemptSeq > 0 {
+		return int(res.AttemptSeq)
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 1
 }
 
 func (ex *execution) balanceMode() billing.BalanceEnforcementMode {

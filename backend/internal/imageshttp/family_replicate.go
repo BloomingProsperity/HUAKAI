@@ -81,6 +81,17 @@ func (ex *execution) translateUpstreamResponseForFamily(w http.ResponseWriter, r
 	return translated, true
 }
 
+func (ex *execution) abortHTTPFailure(w http.ResponseWriter, reason string, raw []byte) (error, bool) {
+	if ex.resolved.ProtocolFamily != replicateImageFamily {
+		return ex.abortWithError(w, reason, 0), true
+	}
+	meta := replicate.PredictionMetaFromResponse(raw)
+	outcome := ex.bestEffortCancelReplicatePrediction(meta)
+	abortErr := ex.abortWithLossError(w, reason, 0, replicateAbortLoss(meta, outcome))
+	retrySafe := meta.ID == "" || outcome == "cancel_issued"
+	return abortErr, retrySafe
+}
+
 // countDeliveredImages 数翻译后 OpenAI images 响应的 data 条数。解析失败
 // 返回 0(回退按请求 amount 计费,保守不少收)。
 func countDeliveredImages(translated []byte) int {

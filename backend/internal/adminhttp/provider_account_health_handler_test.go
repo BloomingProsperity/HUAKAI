@@ -127,6 +127,8 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"id",
 		"last_probe_at",
 		"last_probe_latency_ms",
+		"last_request_observation_source",
+		"last_request_observed_at",
 		"last_refresh_at",
 		"last_refresh_outcome",
 		"model_sync_last_check_at",
@@ -224,6 +226,12 @@ func TestProviderAccountHealthResponseIncludesLastProbeSnapshot(t *testing.T) {
 	}
 	if body.LastProbeAt == nil || *body.LastProbeAt != "2026-06-02T12:03:04Z" {
 		t.Fatalf("last_probe_at=%v want 2026-06-02T12:03:04Z", body.LastProbeAt)
+	}
+	if body.LastObservedAt == nil || *body.LastObservedAt != "2026-06-02T12:03:04Z" {
+		t.Fatalf("last_request_observed_at=%v want 2026-06-02T12:03:04Z", body.LastObservedAt)
+	}
+	if body.ObservationSource != "request_completion_event" {
+		t.Fatalf("last_request_observation_source=%q want request_completion_event", body.ObservationSource)
 	}
 }
 

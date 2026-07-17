@@ -65,20 +65,14 @@ func (s *Service) Submit(ctx context.Context, tenantID, userID int64, input Subm
 }
 
 func (s *Service) Status(ctx context.Context, tenantID, userID, id int64) (Task, error) {
-	if _, err := s.enabledConfig(ctx); err != nil {
-		return Task{}, err
-	}
-	if s.store == nil {
+	if s == nil || s.store == nil {
 		return Task{}, ErrStoreNotConfigured
 	}
 	return s.store.GetTask(ctx, tenantID, userID, id)
 }
 
 func (s *Service) List(ctx context.Context, tenantID, userID int64, limit int) ([]Task, error) {
-	if _, err := s.enabledConfig(ctx); err != nil {
-		return nil, err
-	}
-	if s.store == nil {
+	if s == nil || s.store == nil {
 		return nil, ErrStoreNotConfigured
 	}
 	if limit <= 0 || limit > 200 {

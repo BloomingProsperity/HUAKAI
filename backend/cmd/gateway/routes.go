@@ -145,7 +145,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Catalog: d.modelRegistry,
 		Pricing: d.rateTableSource,
 	}))
-	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(chatHandlerDeps(d), modelListHandler, embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d))))
+	geminiV1BetaHandler := geminihttp.NewGenerateContentHandler(geminihttp.NewDeps(
+		chatHandlerDeps(d),
+		modelListHandler,
+		embeddingshttp.NewEmbeddingsHandler(embeddingsHandlerDeps(d)),
+		d.upstreamFeedback,
+		d.retryBudget,
+	))
 	r.Get("/v1beta/models", geminiV1BetaHandler.ServeHTTP)
 	r.Post("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
@@ -813,6 +819,8 @@ func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 
@@ -832,6 +840,8 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
 		SettleRecoveryDLQ: d.dlqService,
 	}
@@ -853,6 +863,8 @@ func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 
@@ -874,6 +886,8 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
 		ClientIPResolver:      d.clientIPResolver,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
 		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}
@@ -892,9 +906,12 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 		CredentialVault:       d.credentialVault,
 		Dispatcher:            d.dispatcher,
 		Settler:               d.settler,
+		SettleRecoveryDLQ:     d.dlqService,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
+		Feedback:              d.upstreamFeedback,
+		RetryBudget:           d.retryBudget,
 	}
 }
 
@@ -938,7 +955,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Audit: d.adminQueries,
 		})
 	})
-	mountBackupRoutes(r, d) // 只读备份 manifest(platform_admin)
+	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
 	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {

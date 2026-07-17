@@ -119,3 +119,31 @@ func TestWorker_Tick_TouchesWhenNoChange(t *testing.T) {
 		t.Fatalf("expected no status change, got %v", store.set)
 	}
 }
+
+func TestWorker_WaitBlocksUntilStartContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	w := NewWorker(fakeLister{}, fakeProber{}, &fakeStore{}, time.Hour, nil)
+	w.Start(ctx)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		waitDone <- w.Wait(waitCtx)
+	}()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("context 取消前 Wait 已返回: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context 取消后 worker 未退出")
+	}
+}

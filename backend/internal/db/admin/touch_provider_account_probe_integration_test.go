@@ -1,6 +1,6 @@
 //go:build integration_pg
 
-// TouchProviderAccountProbe 真 PG 验证:点亮 last_probe_at 死列。
+// TouchProviderAccountProbe 真 PG 验证被动请求观测时间的单调写入和租户隔离。
 //
 // 背景:provider_accounts.last_probe_at(迁移 0110)读取侧齐全(健康面板回显),
 // 但此前全仓零写入,该列恒 NULL。本测试种一个 last_probe_at 为 NULL 的池账号,
@@ -9,7 +9,8 @@
 // mutation 自检:
 //   - 把 UPDATE 的 SET 列从 last_probe_at 改成别的列 → after.Valid 仍为 false → red。
 //   - 把 WHERE 的 id / tenant_id 写错 → 0 行受影响 → after.Valid 仍为 false → red。
-//   - 跨租户调用(错误 tenant_id)→ 不应写到该账号 → 第二段断言 red。
+//   - 较旧事件晚到 → 不得覆盖较新观测时间。
+//   - 跨租户调用(错误 tenant_id)→ 不应写到该账号 → 最后一段断言 red。
 
 package admin
 
@@ -67,6 +68,26 @@ func TestTouchProviderAccountProbeWritesLastProbeAt(t *testing.T) {
 	}
 	if !after.Time.Equal(probedAt) {
 		t.Fatalf("last_probe_at=%v want %v", after.Time, probedAt)
+	}
+
+	// 乱序消费或 DLQ 重放较旧事件时,最新观测时间不得倒退。
+	olderObservedAt := probedAt.Add(-time.Hour)
+	if err := q.TouchProviderAccountProbe(ctx, TouchProviderAccountProbeParams{
+		ProbedAt: pgtype.Timestamptz{Time: olderObservedAt, Valid: true},
+		ID:       accountID,
+		TenantID: tenantID,
+	}); err != nil {
+		t.Fatalf("写入较旧观测时间: %v", err)
+	}
+	var afterOlder pgtype.Timestamptz
+	if err := pool.QueryRow(ctx,
+		`SELECT last_probe_at FROM provider_accounts WHERE id = $1 AND tenant_id = $2`,
+		accountID, tenantID,
+	).Scan(&afterOlder); err != nil {
+		t.Fatalf("读取较旧事件写入后的 last_probe_at: %v", err)
+	}
+	if !afterOlder.Time.Equal(probedAt) {
+		t.Fatalf("较旧事件使观测时间倒退: got %v want unchanged %v", afterOlder.Time, probedAt)
 	}
 
 	// 跨租户隔离:用错误 tenant_id 调,不应改动该账号(WHERE tenant_id 守卫)。

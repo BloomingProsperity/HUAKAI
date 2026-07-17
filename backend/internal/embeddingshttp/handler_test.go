@@ -430,7 +430,13 @@ func (twoAttemptRouter) Plan(context.Context, router.PlanInput) (router.RoutePla
 			{Index: 0, PoolGroupID: 101, Reason: "primary", UpstreamModelID: "text-embedding-3-small"},
 			{Index: 1, PoolGroupID: 101, Reason: "failover", UpstreamModelID: "text-embedding-3-small"},
 		},
-		AttemptBudget:   2,
+		AttemptBudget: 2,
+		RetryableEndClasses: []string{
+			string(gateway.UpstreamError5xx),
+			string(gateway.UpstreamRateLimit),
+			string(gateway.FirstTokenTimeout),
+			string(gateway.InterEventTimeout),
+		},
 		SnapshotVersion: "registry:7:1;router:retry-test",
 	}, nil
 }

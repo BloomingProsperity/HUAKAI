@@ -22,6 +22,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -44,6 +46,10 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
+}
+
 type Deps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -56,9 +62,12 @@ type Deps struct {
 	CredentialVault       provider.CredentialVault
 	Dispatcher            dispatcher
 	Settler               billing.Settler
+	SettleRecoveryDLQ     settlementrecovery.Enqueuer
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
+	Feedback              *upstreamfeedback.Observer
+	RetryBudget           retryBudgetGate
 }
 
 type execution struct {
@@ -84,6 +93,7 @@ type execution struct {
 	selRes            *pool.SelectionResult
 	accInfo           provider.AccountInfo
 	cred              provider.Credential
+	excludedAccounts  map[int64]struct{}
 	catalog           *audiopricing.Catalog
 	scheme            audiopricing.Scheme
 	charCount         int
@@ -167,10 +177,6 @@ func newHandler(d Deps, endpoint audioEndpoint) http.HandlerFunc {
 		if !ex.prepareRoute(w) {
 			return
 		}
-		if err := ex.preparePricing(); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
-			return
-		}
 		ex.run(w)
 	}
 }
@@ -209,15 +215,55 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.plan = plan
-	ex.activateAttempt(plan.Attempts[0])
 	return true
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	if !ex.reserve(w) || !ex.selectAccount(w, 1) || !ex.resolveCredential(w) {
-		return
+	budget := effectiveAttemptBudget(ex.plan)
+	authFailoverUsed := false
+	attemptCap := budget
+	for i := 0; i < attemptCap; i++ {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		ex.activateAttempt(ex.plan.Attempts[planIdx])
+		if err := ex.preparePricing(); err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
+			return
+		}
+		if !ex.reserve(w) {
+			return
+		}
+		attemptSeq := authoritativeAttemptSeq(ex.reserveRes, i+1)
+		if !ex.selectAccount(w, attemptSeq) || !ex.resolveCredential(w) {
+			return
+		}
+		outcome := ex.dispatchAndSettle(w, attemptSeq)
+		if outcome.Done || outcome.Failure == nil {
+			return
+		}
+		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
+			ex.excludeAccount(ex.accInfo.AccountID)
+		}
+		retry, consumeAuthBudget := shouldRetryFailure(
+			ex.plan,
+			outcome.Failure,
+			i+1 >= attemptCap,
+			authFailoverUsed,
+		)
+		if !retry || (ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+			writeAttemptFailure(w, outcome.Failure)
+			return
+		}
+		if consumeAuthBudget {
+			authFailoverUsed = true
+			if i+1 >= attemptCap {
+				attemptCap++
+			}
+		}
+		ex.prepareNextAttempt()
 	}
-	_ = ex.dispatchAndSettle(w, 1)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {

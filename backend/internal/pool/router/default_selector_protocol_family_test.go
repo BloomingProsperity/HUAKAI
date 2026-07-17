@@ -28,7 +28,8 @@ func TestDefaultSelectorProtocolFamilyGateRejectsPriorityFirstWrongFamily(t *tes
 			ProtocolFamily: "anthropic_messages",
 		},
 	}
-	sel := NewDefaultSelector(&stubAccountSource{accounts: accounts}, WithSlotManager(newMemSlotManager()))
+	slots := &spySlotManager{inner: newMemSlotManager()}
+	sel := NewDefaultSelector(&stubAccountSource{accounts: accounts}, WithSlotManager(slots))
 
 	res, err := sel.Select(context.Background(), SelectionRequest{
 		TenantID:       7,
@@ -45,5 +46,8 @@ func TestDefaultSelectorProtocolFamilyGateRejectsPriorityFirstWrongFamily(t *tes
 	// 变异:删掉 protocol-family gate 会按优先级优先选中账号 101。
 	if res.AccountID != 202 {
 		t.Fatalf("selected AccountID=%d, want anthropic family account 202", res.AccountID)
+	}
+	if slots.calls() != 0 {
+		t.Fatalf("ClaimID=0 不应占用并发槽，Acquire calls=%d want 0", slots.calls())
 	}
 }

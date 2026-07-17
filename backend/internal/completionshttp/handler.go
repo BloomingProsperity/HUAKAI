@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -44,6 +45,10 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
+}
+
 type Deps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -59,6 +64,8 @@ type Deps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
+	Feedback              *upstreamfeedback.Observer
+	RetryBudget           retryBudgetGate
 	// SettleRecoveryDLQ 是流式交付后(响应已发给客户端)settle 失败时的 durable 兜底队列。
 	// 镜像 gatewayhttp chat 路径的同名依赖。nil 时退回原行为(仅置 X-Huakai-Settle-Failed 头)，
 	// 不破坏现有 wiring；生产由 cmd/gateway/routes.go 注入 d.dlqService。
@@ -90,6 +97,7 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
+	excludedAccounts map[int64]struct{}
 }
 
 func NewCompletionsHandler(d Deps) http.HandlerFunc {
@@ -211,24 +219,48 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan, requestedModel 
 }
 
 func (ex *execution) runCompletions(w http.ResponseWriter) {
-	budget := ex.plan.AttemptBudget
-	if budget <= 0 || budget > len(ex.plan.Attempts) {
-		budget = len(ex.plan.Attempts)
-	}
-	for i := 0; i < budget; i++ {
-		ex.activateAttempt(ex.plan.Attempts[i], ex.req.Model)
-		if !ex.reserve(w) || !ex.selectAccount(w, i+1, ex.req.Model) || !ex.resolveCredential(w) {
+	budget := effectiveAttemptBudget(ex.plan)
+	authFailoverUsed := false
+	attemptCap := budget
+	for i := 0; i < attemptCap; i++ {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		ex.activateAttempt(ex.plan.Attempts[planIdx], ex.req.Model)
+		if !ex.reserve(w) {
 			return
 		}
-		switch ex.dispatchCompletionsAndSettle(w, i+1) {
-		case attemptDone:
+		attemptSeq := authoritativeAttemptSeq(ex.reserveRes, i+1)
+		if !ex.selectAccount(w, attemptSeq, ex.req.Model) || !ex.resolveCredential(w) {
 			return
-		case attemptRetryable:
-			if i+1 < budget {
-				continue
+		}
+		outcome := ex.dispatchCompletionsAndSettle(w, attemptSeq)
+		if outcome.Done {
+			return
+		}
+		if outcome.Failure == nil {
+			return
+		}
+		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
+			ex.excludeAccount(ex.accInfo.AccountID)
+		}
+		retry, consumeAuthBudget := shouldRetryFailure(
+			ex.plan,
+			outcome.Failure,
+			i+1 >= attemptCap,
+			authFailoverUsed,
+		)
+		if !retry || (ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+			writeAttemptFailure(w, outcome.Failure)
+			return
+		}
+		if consumeAuthBudget {
+			authFailoverUsed = true
+			if i+1 >= attemptCap {
+				attemptCap++
 			}
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-			return
 		}
+		ex.prepareNextAttempt()
 	}
 }

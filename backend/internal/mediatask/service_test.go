@@ -56,6 +56,31 @@ func TestServiceDisabledDoesNotTouchStoreOrProvider(t *testing.T) {
 	}
 }
 
+func TestServiceDisabledStillAllowsReadingExistingTasks(t *testing.T) {
+	store := &fakeStore{
+		statusTask: Task{ID: 10, TenantID: 7, UserID: 42, RequestID: "req-10", Status: StatusInProgress},
+		listTasks:  []Task{{ID: 10, TenantID: 7, UserID: 42, RequestID: "req-10", Status: StatusInProgress}},
+	}
+	cfg := testConfig()
+	cfg.Enabled = false
+	svc := NewService(store, StaticConfigSource{Config: cfg}, StaticProviderRegistry{"http": NewNoopProvider()})
+
+	task, err := svc.Status(context.Background(), 7, 42, 10)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if task.ID != 10 {
+		t.Fatalf("status task=%+v want id 10", task)
+	}
+	tasks, err := svc.List(context.Background(), 7, 42, 20)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != 10 {
+		t.Fatalf("list tasks=%+v want existing task 10", tasks)
+	}
+}
+
 func TestServiceStatusAndListAreTenantUserScoped(t *testing.T) {
 	// 变异:从 Status/List 的 store 调用中去掉 user_id, 本测试就会观察到
 	// 一个为零的 user 范围, 而非已认证的用户。

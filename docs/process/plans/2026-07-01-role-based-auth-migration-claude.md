@@ -1,6 +1,7 @@
-# HUAKAI role 制单登录迁移计划(auth-core + schema)
+# HUAKAI role 制单登录迁移计划(auth-core + schema，历史实现记录)
 
-> 状态:**草案,Owner 门控**。本文只做设计与分阶段拆解,不含实现代码。
+> 状态:**目标模型已被 2026-07-16 Owner 定性取代**。本文保留为历史实现与风险记录，不能再作为部署者/租户权限设计依据。
+> 当前权威规划:`docs/process/plans/2026-07-16-three-role-single-level-tenant-model-codex.md`。
 > 作者:首席架构师 · 日期:2026-07-01
 > 前置事实已亲核真码(见文末「源码核验」),四镜研究见附录 §7。
 
@@ -9,10 +10,10 @@
 ## ★ 决策定案(2026-07-01 Owner 拍板,覆盖下文草案中不一致的推荐)
 
 1. **D1 = 硬切,砍掉 admin token 粘贴**(不采用草案的"双接受长期并存")。终态:部署者正常登录即管理员,登录页不再有令牌粘贴区,对标 new-api 纯 role 制。实现仍分阶段:P0 组合解析器(session 分支 knob 默认关)→ 灰度验证 → 翻 knob → 最后移除令牌粘贴通道。admin_tokens 后端可保留作纯 programmatic/内部(Hermes 等)通道,但不作运营者登录方式、不在 UI 暴露。
-2. **D3 = 平台级全权超管**:admin = 部署者本人,拥有平台所有权限。
+2. **D3 = 当时采用的平台级全权超管**:这是当前代码形成的历史决定，已被 2026-07-16 三身份边界否定；后续必须拆出独立部署者身份，不能继续把登录 admin 当成可代操作任意租户的目标。
 3. **首个 admin 引导 = 管理员邮箱 env**(方案 A):部署时填 `HUAKAI_ADMIN_BOOTSTRAP_EMAIL`,该邮箱账号登录即被认定全权 admin;复用现有 advisory-lock + 幂等 no-op + 陈旧 env 不崩契约;不做弱口令自动建号。
 4. **D6 = 加 step-up 二次校验**:令牌通道砍掉后 session 是唯一 admin 凭据,充值/凭证 KEK/签发凭据等 A 级危险操作 session 通道强制二次输密码;只读不受影响。
-5. **范围**:本 arc 只做顶层部署者 admin(users.role 二值)。多租户"二级管理员/代理商"是独立后续 arc(D2 多级角色本次不做)。
+5. **范围**:本 arc 当时只做登录 admin 接线。后续不建设多级角色或递归租户，而是按权威规划拆分部署者、用户和单层租户。
 
 ---
 
@@ -54,7 +55,7 @@ Owner 选定方向 = 对齐 sub2api/new-api 的 **role 制单登录**:一次登�
 - **deny-by-default**:`PanelForRole` 已经是「仅精确 =='admin' 才授管理面板,一切其他值(空/污染/未来新值/大小写不符)→ user」。授权层必须复用**同一个** `role == RoleAdmin` 精确比较,绝不用「!= user」这种反向判断。
 - **admin_tokens 体系保留,不删**(见 §3)。programmatic/API/CI 访问继续用 `hk_admin_` token;session 授权是**并列新增的第二条通道**,不是替换。
 - **身份仍取自服务端已验证凭据**,绝不信前端声明的 role(沿用 `panelauth_handler.go:94-95` 的既有铁律)。
-- **tenant scope 语义保留**:HUAKAI 是多租户(`UserRole` 查询按 `tenant_id + user_id`)。新增的 session-admin 默认对齐 `platform_admin`(全租户)还是 `tenant_operator`(限本租户)是一个 **Owner 决策点**(见 §8-D3)。默认建议:session-admin 映射为**平台级 admin**,因为当前单运营者场景只有 tenant0 系统租户下的运营者;多级代理角色树是独立的后续 arc。
+- **历史 tenant scope 选择**:本计划曾建议把 session-admin 映射成全域 `platform_admin`，该选择已经落入当前代码，但不再是目标模型。后续应建立独立部署者身份和绑定单个 tenant 的租户管理员；租户不能创建租户，部署者不能通过租户业务接口代操作。
 
 ---
 
@@ -73,7 +74,7 @@ ALTER TABLE users ADD COLUMN role text NOT NULL DEFAULT 'user'
 
 **2.1 是否扩枚举?** 当前 CHECK 只有 `('admin','user')`。两个决策点:
 - **保持二值**(推荐 MVP):对齐 sub2api 的极简双值模型,单运营者够用。admin=平台运营者,user=终端用户/员工。
-- **若 Owner 要「平台超管 vs 租户运营者」两级 admin**:扩为 `CHECK (role IN ('platform_admin','tenant_operator','user'))` 或加独立的 `admin_scope` 语义,并把 0010 的 `scope_tenant_consistency` CHECK 思路(platform→scope NULL / operator→scope 非 NULL)平移到 users 层。**这是 Owner 决策点 D2**,不建议 MVP 阶段做,会显著放大爆炸半径。
+- **后续身份拆分**:系统部署者和租户管理员必须是不同认证主体，不应仅靠扩充一个 `users.role` 枚举混在同一授权语义中。具体 schema 由新的三身份规划单独设计。
 
 **2.2 回填**:0076 的 `DEFAULT 'user'` 已保证现有用户全部是普通角色。迁移时**唯一要显式回填的**是「把当前运营者本人的 users 行置为 admin」——但这属于 §4 的 bootstrap 演进,不在 schema DDL 里硬编 UPDATE(硬编 email/id 是启动脆性来源,呼应记忆里 tenant0 卡启动的教训)。
 
@@ -190,7 +191,7 @@ AdminAuthResolver.Resolve(ctx, req) →
 
 | 决策维度 | sub2api | new-api | HUAKAI 现状 & 目标 delta |
 |---|---|---|---|
-| **角色字段设计** | `users` 上单字符串列(≤20),默认 'user',取值 admin/user;常量 `domain/constants.go:14-17`;判定 `service/user.go:66-68` | `users` 上单整型等级 0/1/10/100,常量 `common/constants.go:188-192`,校验 `194-196`,判定 `model/user.go:724-735` | 已有 `users.role text CHECK('admin','user') DEFAULT 'user'`(迁移 0076)。**Delta**:字段已存在且正确,MVP 保持二值(对齐 sub2api);扩多级 = Owner D2。绝不用整型等级(HUAKAI 是命名角色 + 多租户,阈值模型不适配)。 |
+| **角色字段设计** | `users` 上单字符串列(≤20),默认 'user',取值 admin/user;常量 `domain/constants.go:14-17`;判定 `service/user.go:66-68` | `users` 上单整型等级 0/1/10/100,常量 `common/constants.go:188-192`,校验 `194-196`,判定 `model/user.go:724-735` | 已有 `users.role text CHECK('admin','user') DEFAULT 'user'`(迁移 0076)。该二值字段是当前代码事实，不足以表达新的部署者、用户、单层租户边界；后续按权威规划重做身份合同，不采用等级阈值或递归角色。 |
 | **admin 端点放行** | 管理路由组统一挂一个 `admin_auth` 中间件,x-api-key 常量时间比对 **或** 角色化 JWT(带 token 版本防改密复用)`middleware/admin_auth.go:27-204`,角色闸门 `191-194` | 统一鉴权助手带「最低等级」入参 `middleware/auth.go:36-167`,门槛比较 `:131`,三档便捷入口 `:180-196`,审计内聚进鉴权链 `:159-166` | **per-handler** `d.Auth.Resolve`(~170 处,~30 路由模块),非中间件;`adminGate` 强制 platform_admin。**Delta**:不改 handler,改注入的 `d.adminAuth` 为组合 `AdminAuthResolver`(双接受 token+session);借鉴 sub2api「双通道并列」+ new-api「审计内聚鉴权链」;保留 HUAKAI 反枚举 `ErrAdminUnauthorized` + `ErrAdminBackend`→503 语义。 |
 | **first-admin bootstrap** | 独立 setup 流程,`decideAdminBootstrap` 空库才建/已有则拒 `setup/setup.go:128-145`;env 自动安装 `AutoSetupFromEnv` 读 `ADMIN_EMAIL/PASSWORD` `:539-570`;常规注册永不建 admin | 一次性向导 `controller/setup.go:54-130`;遗留「空库自动建 root/123456」`model/main.go:68-89` **已弃用不调用** | env `HUAKAI_ADMIN_BOOTSTRAP_TOKEN` + advisory-lock + 表空才插 + 陈旧不崩 `bootstrap.go:48-116`。**Delta**:方案 A 新增 `BOOTSTRAP_EMAIL` 把某 users 置 admin,复用 sub2api「空库才建/已有则拒」幂等哲学 + HUAKAI 现有 lock/no-op 韧性;**照搬 new-api 的教训:绝不保留弱口令自动建号**。向导式 = Owner D5。 |
 | **登录/UI 切壳** | 单入口 Vue SPA,`requiresAdmin` meta + 全局守卫按角色重定向 `router/index.ts:721+`,`setupRedirect.ts:1-7`;管理端 DTO 与用户端 DTO 严格分离(防字段越权读) | 单入口,角色写进 session 回前端 `controller/user.go:130-157`;后端下发按角色侧栏 `model/user.go:103-152` + 前端二次过滤 `use-sidebar-view.ts:48-57`(前端裁剪仅体验) | `/v1/auth/me` 已返回 `Panel`,前端已能路由。**Delta**:补「按 panel 切 AppShell 壳」+ 弱化 admin token 粘贴区;借鉴两镜「前端裁剪≠授权,后端每端点校验」;借鉴 sub2api「管理/用户 DTO 分离防 IDOR」(HUAKAI 已有 userView/adminView 之分,继续守)。 |
@@ -211,15 +212,15 @@ AdminAuthResolver.Resolve(ctx, req) →
 | **P4** | bootstrap 演进 | 新增 `BOOTSTRAP_EMAIL` 把某 users 置 admin(方案 A),复用 lock/no-op 韧性 | 加法 | env 非空才生效 | **D5**:方案 A vs 安装向导 |
 | **P5** | 前端切壳 + 弱化 token 区 | AppShell 按 `panel` 切壳,全局守卫,token 粘贴区降级为高级项;走查 `tokenForPath` | 前端独立 | 可跟随后端 knob | — |
 | **P6(可选)** | token 通道收敛 | 观察稳定期后,决定是否把 token 通道收敛为仅 programmatic | 加法/配置 | — | **D4**:是否收敛 token |
-| **P7(可选/后期)** | 多级角色 | 若 Owner 要平台超管 vs 租户运营者两级 admin,扩 CHECK + scope 一致性 | schema 迁移 | — | **D2**:是否扩多级(不建议 MVP) |
+| **P7(已废止)** | 旧角色扩展设想 | 不再执行；由三身份与单层租户规划替代 | — | — | 已定性 |
 
 **Owner 必须拍板的决策点汇总**:
 - **D1 硬切 vs 双接受**(本计划强烈建议双接受)——最关键。
-- **D3 session-admin 的 tenant scope 映射**(platform 级 / 租户级)——影响 §3.3 所有下游 scope 判断。
+- **D3 已被后续定性取代**:当前全域 session-admin 仅作为待迁移代码事实。
 - **D6 step-up 二次校验是否 MVP 必须**——直接决定爆炸半径收敛程度。
 - **D5 bootstrap 方案 A(env 提升)vs 向导**。
 - **D4 token 通道是否收敛**(后期)。
-- **D2 是否扩多级角色**(后期,不建议 MVP)。
+- **D2 已废止**:不扩展多级角色，不建设递归租户。
 - 翻 `HUAKAI_ADMIN_SESSION_AUTH_ENABLED` 激活(生产切换点)。
 
 ---
@@ -235,7 +236,7 @@ AdminAuthResolver.Resolve(ctx, req) →
 - P4 bootstrap 演进:**~1 人日**(复用现有 lock/no-op)。
 - P5 前端切壳:**~1.5~2 人日**(含 `tokenForPath` 走查,踩过的坑)。
 
-**合计后端 auth-core ~7~9.5 人日,加前端 ~1.5~2 人日,总 ~9~11.5 人日**(不含 D2 多级角色 / D6 若加重的 step-up UX)。
+**合计后端 auth-core ~7~9.5 人日,加前端 ~1.5~2 人日,总 ~9~11.5 人日**(历史估算，不含后续三身份重构 / D6 若加重的 step-up UX)。
 
 **风险评级**:
 

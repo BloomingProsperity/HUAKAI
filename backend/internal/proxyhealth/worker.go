@@ -6,6 +6,7 @@ package proxyhealth
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -51,6 +52,8 @@ type Worker struct {
 	interval time.Duration
 	logger   *slog.Logger
 	state    map[int64]*counters
+	mu       sync.Mutex
+	done     chan struct{}
 }
 
 func NewWorker(l Lister, p Prober, s StatusStore, interval time.Duration, logger *slog.Logger) *Worker {
@@ -65,7 +68,22 @@ func NewWorker(l Lister, p Prober, s StatusStore, interval time.Duration, logger
 
 // Start 在后台跑探测循环,直到 ctx 取消。
 func (w *Worker) Start(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	if w.done != nil {
+		w.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	w.done = done
+	w.mu.Unlock()
 	go func() {
+		defer close(done)
 		t := time.NewTicker(w.interval)
 		defer t.Stop()
 		for {
@@ -77,6 +95,28 @@ func (w *Worker) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait 等待后台循环退出。调用方应先取消传给 Start 的 context。
+func (w *Worker) Wait(ctx context.Context) error {
+	if w == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	done := w.done
+	w.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (w *Worker) tick(ctx context.Context) {

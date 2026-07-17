@@ -70,11 +70,36 @@ type upstreamE2ECase struct {
 	vendor                string
 	protocolFamily        string
 	model                 string
+	clientShape           upstreamE2EClientShape
+	officialClaudeClient  bool
 	keyEnv                string
+	credentialJSONEnv     string
+	authMode              string
 	accountType           string
 	baseURL               string
+	gatewayEnv            []string
+	skipConcurrency       bool
 	accountConcurrencyCap int
 	concurrentRequests    int
+}
+
+type upstreamE2ECredential struct {
+	legacySecret string
+	payload      []byte
+}
+
+type upstreamE2EClientShape string
+
+const (
+	upstreamE2EClientOpenAI    upstreamE2EClientShape = "openai"
+	upstreamE2EClientAnthropic upstreamE2EClientShape = "anthropic"
+)
+
+func (tc upstreamE2ECase) normalizedClientShape() upstreamE2EClientShape {
+	if tc.clientShape == "" {
+		return upstreamE2EClientOpenAI
+	}
+	return tc.clientShape
 }
 
 func TestUpstreamE2E_DoubaoChatCompletions(t *testing.T) {
@@ -124,10 +149,7 @@ func runUpstreamE2E(t *testing.T, tc upstreamE2ECase) {
 	if dsn == "" {
 		t.Skip("HUAKAI_E2E_DATABASE_URL 未设")
 	}
-	upstreamKey := strings.TrimSpace(os.Getenv(tc.keyEnv))
-	if upstreamKey == "" {
-		t.Skip(tc.keyEnv + " 未设")
-	}
+	credential := loadUpstreamE2ECredential(t, tc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -138,7 +160,7 @@ func runUpstreamE2E(t *testing.T, tc upstreamE2ECase) {
 	}
 	defer pgPool.Close()
 
-	seed := seedUpstreamE2EGraph(t, ctx, pgPool, tc, upstreamKey)
+	seed := seedUpstreamE2EGraph(t, ctx, pgPool, tc, credential)
 	assertUpstreamE2ESeedSelectable(t, ctx, pgPool, seed)
 
 	binPath := buildUpstreamE2EGateway(t)
@@ -160,9 +182,11 @@ func runUpstreamE2E(t *testing.T, tc upstreamE2ECase) {
 		waitForUpstreamE2EInFlight(t, ctx, pgPool, seed.failoverProviderAccountID, 0)
 	})
 
-	t.Run("concurrency", func(t *testing.T) {
-		runUpstreamE2EConcurrency(t, ctx, client, pgPool, addr, seed)
-	})
+	if !tc.skipConcurrency {
+		t.Run("concurrency", func(t *testing.T) {
+			runUpstreamE2EConcurrency(t, ctx, client, pgPool, addr, seed)
+		})
+	}
 }
 
 type upstreamE2ESeed struct {
@@ -183,7 +207,7 @@ type upstreamE2ESeed struct {
 	bearer                    string
 }
 
-func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tc upstreamE2ECase, upstreamKey string) *upstreamE2ESeed {
+func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tc upstreamE2ECase, credential upstreamE2ECredential) *upstreamE2ESeed {
 	t.Helper()
 	unique := uuid.NewString()
 	s := &upstreamE2ESeed{
@@ -307,8 +331,8 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	).Scan(&s.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	s.providerAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, upstreamKey, "primary-"+unique, 100)
-	s.failoverProviderAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, upstreamKey, "failover-"+unique, 200)
+	s.providerAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, credential, "primary-"+unique, 100)
+	s.failoverProviderAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, credential, "failover-"+unique, 200)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -372,10 +396,10 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	return s
 }
 
-func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed, upstreamKey, nameSuffix string, priority int) int64 {
+func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed, credential upstreamE2ECredential, nameSuffix string, priority int) int64 {
 	t.Helper()
 
-	credentialsJSON := upstreamE2EProviderAccountCredentials(t, seed.testCase, upstreamKey)
+	credentialsJSON := upstreamE2EProviderAccountCredentials(t, seed.testCase, credential.legacySecret)
 	var accountID int64
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO provider_accounts (
@@ -391,25 +415,32 @@ func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *p
 		t.Fatalf("seed provider account %s: %v", nameSuffix, err)
 	}
 
-	if seed.testCase.accountType != upstreamE2EAccountTypeAPIKey {
+	if len(credential.payload) == 0 {
 		return accountID
 	}
 
-	payload, err := json.Marshal(map[string]string{"api_key": upstreamKey})
+	authMode := strings.TrimSpace(seed.testCase.authMode)
+	if authMode == "" {
+		authMode = credentialstore.AuthModeAPIKey
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(seed.testCase.vendor, authMode)
 	if err != nil {
-		t.Fatalf("marshal credential payload: %v", err)
+		t.Fatalf("lookup credential handler %s/%s: %v", seed.testCase.vendor, authMode, err)
+	}
+	if err := handler.ValidatePayload(credential.payload); err != nil {
+		t.Fatalf("validate credential payload %s/%s: %v", seed.testCase.vendor, authMode, err)
 	}
 	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
 	if err != nil {
 		t.Fatalf("cred key provider: %v", err)
 	}
 	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
-		payload,
+		credential.payload,
 		credentialstore.AAD{
 			TenantID:          seed.tenantID,
 			ProviderAccountID: accountID,
 			Vendor:            seed.testCase.vendor,
-			AuthMode:          credentialstore.AuthModeAPIKey,
+			AuthMode:          authMode,
 			Version:           1,
 		})
 	if err != nil {
@@ -419,7 +450,7 @@ func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *p
 		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
 		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
 		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, seed.testCase.vendor, credentialstore.AuthModeAPIKey,
+		seed.tenantID, accountID, seed.testCase.vendor, authMode,
 		credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
 	); err != nil {
 		t.Fatalf("seed credential for account %d: %v", accountID, err)
@@ -427,15 +458,46 @@ func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *p
 	return accountID
 }
 
-func upstreamE2EProviderAccountCredentials(t *testing.T, tc upstreamE2ECase, upstreamKey string) string {
+func loadUpstreamE2ECredential(t *testing.T, tc upstreamE2ECase) upstreamE2ECredential {
+	t.Helper()
+	switch {
+	case strings.TrimSpace(tc.credentialJSONEnv) != "":
+		raw := strings.TrimSpace(os.Getenv(tc.credentialJSONEnv))
+		if raw == "" {
+			t.Skip(tc.credentialJSONEnv + " 未设")
+		}
+		if !json.Valid([]byte(raw)) {
+			t.Fatalf("%s 不是合法 JSON", tc.credentialJSONEnv)
+		}
+		return upstreamE2ECredential{payload: []byte(raw)}
+	case strings.TrimSpace(tc.keyEnv) != "":
+		secret := strings.TrimSpace(os.Getenv(tc.keyEnv))
+		if secret == "" {
+			t.Skip(tc.keyEnv + " 未设")
+		}
+		if tc.accountType == upstreamE2EAccountTypeUpstreamStatic {
+			return upstreamE2ECredential{legacySecret: secret}
+		}
+		payload, err := json.Marshal(map[string]string{"api_key": secret})
+		if err != nil {
+			t.Fatalf("marshal credential payload: %v", err)
+		}
+		return upstreamE2ECredential{legacySecret: secret, payload: payload}
+	default:
+		t.Fatalf("e2e case %q 没有 credential env", tc.slug)
+		return upstreamE2ECredential{}
+	}
+}
+
+func upstreamE2EProviderAccountCredentials(t *testing.T, tc upstreamE2ECase, legacySecret string) string {
 	t.Helper()
 	switch tc.accountType {
-	case upstreamE2EAccountTypeAPIKey:
+	case upstreamE2EAccountTypeAPIKey, upstreamE2EAccountTypeOAuth:
 		return `{}`
 	case upstreamE2EAccountTypeUpstreamStatic:
 		payload, err := json.Marshal(map[string]string{
 			"base_url":          tc.baseURL,
-			"auth_header_value": upstreamE2EBearerValue(upstreamKey),
+			"auth_header_value": upstreamE2EBearerValue(legacySecret),
 		})
 		if err != nil {
 			t.Fatalf("marshal upstream_static credential payload: %v", err)
@@ -577,6 +639,7 @@ func startUpstreamE2EGateway(t *testing.T, binPath, dsn, addr string, seed *upst
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 	)
+	cmd.Env = append(cmd.Env, seed.testCase.gatewayEnv...)
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -642,29 +705,14 @@ type upstreamE2EUsage struct {
 
 func postUpstreamE2EChat(t *testing.T, ctx context.Context, client *http.Client, addr string, seed *upstreamE2ESeed, logicalID string) upstreamE2EChatResult {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"model": seed.testCase.model,
-		"messages": []map[string]string{
-			{"role": "user", "content": "ping"},
-		},
-		"max_tokens": 16,
-		"stream":     false,
-	})
-	if err != nil {
-		t.Fatalf("marshal chat body: %v", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"http://"+addr+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := newUpstreamE2ERequest(ctx, addr, seed, logicalID)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+seed.bearer)
-	req.Header.Set("Idempotency-Key", logicalID)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("POST /v1/chat/completions: %v", err)
+		t.Fatalf("POST %s: %v", req.URL.Path, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
@@ -673,6 +721,54 @@ func postUpstreamE2EChat(t *testing.T, ctx context.Context, client *http.Client,
 	}
 	result := upstreamE2EChatResult{statusCode: resp.StatusCode, body: raw, logicalID: logicalID}
 	if resp.StatusCode == http.StatusOK {
+		decodeUpstreamE2ESuccessResponse(t, seed.testCase.normalizedClientShape(), raw, &result)
+	}
+	return result
+}
+
+func newUpstreamE2ERequest(ctx context.Context, addr string, seed *upstreamE2ESeed, logicalID string) (*http.Request, error) {
+	shape := seed.testCase.normalizedClientShape()
+	path := "/v1/chat/completions"
+	bodyPayload := map[string]any{
+		"model": seed.testCase.model,
+		"messages": []map[string]string{
+			{"role": "user", "content": "ping"},
+		},
+		"max_tokens": 16,
+		"stream":     false,
+	}
+	if shape == upstreamE2EClientAnthropic {
+		path = "/v1/messages"
+	}
+	body, err := json.Marshal(bodyPayload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+seed.bearer)
+	req.Header.Set("Idempotency-Key", logicalID)
+	if shape == upstreamE2EClientAnthropic {
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+	}
+	if seed.testCase.officialClaudeClient {
+		req.Header.Set("User-Agent", "claude-cli/2.0.0")
+		req.Header.Set("X-App", "cli")
+		req.Header.Set("X-Stainless-Lang", "js")
+		req.Header.Set("X-Stainless-Runtime", "node")
+		req.Header.Set("X-Stainless-Package-Version", "2.0.0")
+		req.Header.Set("X-Stainless-Retry-Count", "0")
+	}
+	return req, nil
+}
+
+func decodeUpstreamE2ESuccessResponse(t *testing.T, shape upstreamE2EClientShape, raw []byte, result *upstreamE2EChatResult) {
+	t.Helper()
+	switch shape {
+	case upstreamE2EClientOpenAI:
 		var decoded struct {
 			Choices []struct {
 				Message struct {
@@ -688,8 +784,35 @@ func postUpstreamE2EChat(t *testing.T, ctx context.Context, client *http.Client,
 			result.content = decoded.Choices[0].Message.Content
 		}
 		result.usage = decoded.Usage
+	case upstreamE2EClientAnthropic:
+		var decoded struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("decode anthropic success response: %v body=%s", err, safeUpstreamE2EBody(raw))
+		}
+		var text strings.Builder
+		for _, block := range decoded.Content {
+			if block.Type == "text" {
+				text.WriteString(block.Text)
+			}
+		}
+		result.content = text.String()
+		result.usage = upstreamE2EUsage{
+			PromptTokens:     decoded.Usage.InputTokens,
+			CompletionTokens: decoded.Usage.OutputTokens,
+			TotalTokens:      decoded.Usage.InputTokens + decoded.Usage.OutputTokens,
+		}
+	default:
+		t.Fatalf("unsupported e2e client shape %q", shape)
 	}
-	return result
 }
 
 func assertUpstreamE2ESuccessResponse(t *testing.T, result upstreamE2EChatResult) {
@@ -908,9 +1031,17 @@ func safeUpstreamE2EBody(raw []byte) string {
 }
 
 func redactUpstreamE2ESecrets(s string) string {
-	for _, envName := range []string{upstreamE2EARKKeyEnv, upstreamE2EHunyuanKeyEnv} {
+	for _, envName := range upstreamE2ESecretEnvNames {
 		if secret := strings.TrimSpace(os.Getenv(envName)); secret != "" {
 			s = strings.ReplaceAll(s, secret, "<redacted>")
+			var fields map[string]any
+			if json.Unmarshal([]byte(secret), &fields) == nil {
+				for _, key := range []string{"api_key", "access_token", "refresh_token", "session_token", "cookie"} {
+					if value, ok := fields[key].(string); ok && strings.TrimSpace(value) != "" {
+						s = strings.ReplaceAll(s, value, "<redacted>")
+					}
+				}
+			}
 		}
 	}
 	return upstreamE2EBearerRedactionRE.ReplaceAllString(s, "Bearer <redacted>")

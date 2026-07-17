@@ -484,6 +484,7 @@ type recordingSettler struct {
 	settles          []billing.SettleRequest
 	aborts           []abortCall
 	settleErr        error
+	abortErr         error
 	lastSettleCtx    context.Context
 	lastSettleCtxErr error // ctx.Err() 在 Settle 被调那一刻的快照(defer cancel 之前)，守 WithoutCancel 脱钩
 }
@@ -525,7 +526,7 @@ func (q *recordingRecoveryEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (i
 
 func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, _ string, _ int64, _ json.RawMessage) error {
 	s.aborts = append(s.aborts, abortCall{tenantID: tenantID, claimID: claimID, reason: reason})
-	return nil
+	return s.abortErr
 }
 
 func (s *recordingSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {

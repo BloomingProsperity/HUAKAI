@@ -15,7 +15,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
-	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -23,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -43,6 +43,10 @@ type CountTokensRelay interface {
 	ServeGeminiCountTokens(http.ResponseWriter, *http.Request, string)
 }
 
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
+}
+
 type Deps struct {
 	Gateway     NativeGateway
 	CountTokens CountTokensRelay
@@ -52,10 +56,16 @@ type Deps struct {
 	Embeddings http.Handler
 }
 
-func NewDeps(chat gatewayhttp.ChatHandlerDeps, models http.Handler, embeddings http.Handler) Deps {
+func NewDeps(
+	chat gatewayhttp.ChatHandlerDeps,
+	models http.Handler,
+	embeddings http.Handler,
+	feedback *upstreamfeedback.Observer,
+	retryBudget retryBudgetGate,
+) Deps {
 	return Deps{
 		Gateway:     gatewayhttp.NewNativeClientGateway(chat),
-		CountTokens: NewCountTokensRelay(chat),
+		CountTokens: NewCountTokensRelay(chat, feedback, retryBudget),
 		Models:      models,
 		Embeddings:  embeddings,
 	}
@@ -125,11 +135,17 @@ func parseModelAction(path string) (string, string, bool) {
 }
 
 type countTokensRelay struct {
-	d gatewayhttp.ChatHandlerDeps
+	d           gatewayhttp.ChatHandlerDeps
+	feedback    *upstreamfeedback.Observer
+	retryBudget retryBudgetGate
 }
 
-func NewCountTokensRelay(d gatewayhttp.ChatHandlerDeps) CountTokensRelay {
-	return &countTokensRelay{d: d}
+func NewCountTokensRelay(
+	d gatewayhttp.ChatHandlerDeps,
+	feedback *upstreamfeedback.Observer,
+	retryBudget retryBudgetGate,
+) CountTokensRelay {
+	return &countTokensRelay{d: d, feedback: feedback, retryBudget: retryBudget}
 }
 
 func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *http.Request, model string) {
@@ -168,29 +184,7 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
-	budget := plan.AttemptBudget
-	if budget <= 0 || budget > len(plan.Attempts) {
-		budget = len(plan.Attempts)
-	}
-	for i := 0; i < budget; i++ {
-		attempt := plan.Attempts[i]
-		upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
-		selRes, ok := relay.selectAccount(w, ctx, ident, model, resolved, attempt, i+1)
-		if !ok {
-			return
-		}
-		cred, accInfo, ok := relay.resolveCredential(w, ctx, ident, selRes.AccountID)
-		if !ok {
-			return
-		}
-		if relay.dispatchCountTokens(w, ctx, resolved.ProtocolFamily, upstreamModelID, body, cred, accInfo) {
-			return
-		}
-		if i+1 >= budget {
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-			return
-		}
-	}
+	relay.runCountTokens(w, ctx, requestID, model, body, ident, resolved, plan)
 }
 
 func (relay *countTokensRelay) configured() bool {
@@ -259,7 +253,16 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 	return plan, true
 }
 
-func (relay *countTokensRelay) selectAccount(w http.ResponseWriter, ctx context.Context, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int) (*pool.SelectionResult, bool) {
+func (relay *countTokensRelay) selectAccount(
+	w http.ResponseWriter,
+	ctx context.Context,
+	ident auth.Identity,
+	model string,
+	resolved registry.Resolved,
+	attempt router.AttemptPlan,
+	attemptSeq int,
+	excludedAccounts map[int64]struct{},
+) (*pool.SelectionResult, bool) {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, err := relay.d.Selector.Select(ctx, pool.SelectionRequest{
 		TenantID:         ident.TenantID,
@@ -271,6 +274,7 @@ func (relay *countTokensRelay) selectAccount(w http.ResponseWriter, ctx context.
 		ProtocolFamily:   resolved.ProtocolFamily,
 		EndpointFamily:   "gemini_count_tokens",
 		AttemptSeq:       attemptSeq,
+		ExcludedAccounts: excludedAccounts,
 		CapabilityFlags:  attempt.RequiredCapabilities,
 		Vendor:           pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
 		UserGroup:        ident.UserGroup,
@@ -283,7 +287,7 @@ func (relay *countTokensRelay) selectAccount(w http.ResponseWriter, ctx context.
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError))
 		return nil, false
 	}
-	if selRes == nil || selRes.AccountID == 0 {
+	if selRes == nil || selRes.AccountID == 0 || selRes.WaitPlan != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
 		return nil, false
 	}
@@ -300,43 +304,6 @@ func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx cont
 		accInfo.AccountID = accountID
 	}
 	return cred, accInfo, true
-}
-
-func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, protocolFamily, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo) bool {
-	res, err := relay.d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
-		ProtocolFamily:  protocolFamily,
-		EndpointPath:    "/v1beta/models/" + url.PathEscape(upstreamModelID) + ":countTokens",
-		UpstreamModelID: upstreamModelID,
-		InboundBody:     body,
-		Account:         accInfo,
-		Credential:      cred,
-	})
-	if err != nil {
-		return false
-	}
-	if res == nil || res.UpstreamReader == nil {
-		return false
-	}
-	if res.Close != nil {
-		defer func() { _ = res.Close() }()
-	}
-	raw, readErr := readUpstreamBody(res.UpstreamReader)
-	if readErr != nil {
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return true
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
-		return true
-	}
-	if ct := res.Headers.Get("Content-Type"); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
-	return true
 }
 
 func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
