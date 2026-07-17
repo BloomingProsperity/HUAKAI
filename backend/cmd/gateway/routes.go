@@ -112,6 +112,13 @@ func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
 	}
 }
 
+func credentialModeAdapterRegistry(d *deps) *credentialworker.ModeAdapterRegistry {
+	if d == nil || d.cfg == nil {
+		return credentialworker.DefaultModeAdapterRegistry()
+	}
+	return credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.cfg.VendorOAuth)
+}
+
 // mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
 func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	liveness := healthhttp.NewLivenessHandler()
@@ -1075,7 +1082,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
 			Auth:     d.adminAuth,
 			Accounts: d.adminQueries,
-			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
+			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialModeAdapterRegistry(d)),
 		})
 		// 账号 TLS 指纹 profile 绑定/解绑(独立包 accountfphttp,§13 不塞进 god 包 gatewayhttp)。
 		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: d.adminQueries})

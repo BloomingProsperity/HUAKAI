@@ -234,6 +234,235 @@ FROM (
 	assertVendorModeConstraint(t, ctx, pool, "account_credentials", "account_credentials_vendor_mode_check", "claude_setup_token", true)
 }
 
+func TestServiceImportsOfficialCodexAuthJSONEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	service := newAccountIntakeService(t, pool)
+	accessToken := "codex-access-" + seed.suffix
+	refreshToken := "codex-refresh-" + seed.suffix
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		DefaultVendor: "anthropic", DefaultAuthMode: credentialstore.AuthModeAPIKey,
+		Content: fmt.Sprintf(`{
+			"auth_mode":"chatgpt",
+			"OPENAI_API_KEY":"must-not-be-imported",
+			"tokens":{
+				"access_token":%q,
+				"refresh_token":%q,
+				"account_id":"workspace-%s",
+				"vendor":"anthropic",
+				"auth_mode":"api_key",
+				"oauth_token_endpoint":"https://attacker.invalid/token",
+				"client_secret":"must-not-be-imported"
+			}
+		}`, accessToken, refreshToken, seed.suffix),
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "codex-" + seed.suffix, AccountType: "session",
+		},
+		Now: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatalf("Plan 失败：%v", err)
+	}
+	if planned.Plan.Summary.Create != 1 || len(planned.Plan.Items) != 1 ||
+		planned.Plan.Items[0].Vendor != credentialstore.VendorOpenAI ||
+		planned.Plan.Items[0].AuthMode != credentialstore.AuthModeCodexCLIOAuth ||
+		planned.Plan.Items[0].Identity.Source != "import_payload" ||
+		planned.Plan.Items[0].Identity.SubjectIdentityTrusted {
+		t.Fatalf("plan=%+v，期望强制 Codex 模式且导入身份不受信", planned)
+	}
+	planJSON, err := json.Marshal(planned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(planJSON, []byte(accessToken)) || bytes.Contains(planJSON, []byte(refreshToken)) {
+		t.Fatalf("计划结果泄漏 Codex 凭据：%s", planJSON)
+	}
+
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-codex-import", Reason: "导入 Codex auth.json",
+	})
+	if err != nil {
+		t.Fatalf("Execute 失败：%v", err)
+	}
+	if executed.Summary.Created != 1 || len(executed.Items) != 1 || executed.Items[0].Status != StatusCreated {
+		t.Fatalf("execution=%+v，期望 Codex 账号与凭据创建成功", executed)
+	}
+	record, err := service.credentials.ResolveActive(ctx, seed.tenantID, executed.Items[0].ProviderAccountID)
+	if err != nil {
+		t.Fatalf("ResolveActive 失败：%v", err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	if record.Vendor != credentialstore.VendorOpenAI || record.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("record vendor/mode=%s/%s", record.Vendor, record.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(record.PlaintextPayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["access_token"] != accessToken || payload["session_token"] != accessToken || payload["refresh_token"] != refreshToken {
+		t.Fatalf("Codex 凭据未归一化：%v", payload)
+	}
+	for _, forbidden := range []string{"vendor", "auth_mode", "oauth_token_endpoint", "client_secret", "OPENAI_API_KEY"} {
+		if _, exists := payload[forbidden]; exists {
+			t.Fatalf("未批准字段 %q 进入 Codex 凭据：%v", forbidden, payload)
+		}
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(record.Vendor, record.AuthMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := handler.RuntimeMaterial(record.PlaintextPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if material.Kind != credentialstore.RuntimeSessionToken || material.Value != accessToken {
+		t.Fatalf("runtime material kind/value=%q/%q", material.Kind, material.Value)
+	}
+
+	var legacyCredentials, adminAuditJSON, credentialAuditJSON []byte
+	var identitySource string
+	if err := pool.QueryRow(ctx, `
+SELECT pa.credentials, COALESCE(ac.external_identity_source, '')
+FROM provider_accounts pa
+JOIN account_credentials ac ON ac.tenant_id=pa.tenant_id AND ac.provider_account_id=pa.id
+WHERE pa.tenant_id=$1 AND pa.id=$2 AND ac.id=$3`,
+		seed.tenantID, executed.Items[0].ProviderAccountID, executed.Items[0].AccountCredentialID,
+	).Scan(&legacyCredentials, &identitySource); err != nil {
+		t.Fatal(err)
+	}
+	if identitySource != "import_payload" {
+		t.Fatalf("external_identity_source=%q，导入身份不得冒充受信来源", identitySource)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(jsonb_agg(to_jsonb(events)), '[]'::jsonb)
+FROM (SELECT * FROM admin_audit_events WHERE tenant_id=$1 AND target_type='provider_account' AND target_id=$2) events`,
+		seed.tenantID, executed.Items[0].ProviderAccountID).Scan(&adminAuditJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(jsonb_agg(to_jsonb(events)), '[]'::jsonb)
+FROM (SELECT * FROM credential_audit_events WHERE tenant_id=$1 AND provider_account_id=$2) events`,
+		seed.tenantID, executed.Items[0].ProviderAccountID).Scan(&credentialAuditJSON); err != nil {
+		t.Fatal(err)
+	}
+	for label, raw := range map[string][]byte{
+		"legacy": legacyCredentials, "admin_audit": adminAuditJSON,
+		"credential_audit": credentialAuditJSON, "logs": []byte(logs.String()),
+	} {
+		if bytes.Contains(raw, []byte(accessToken)) || bytes.Contains(raw, []byte(refreshToken)) || bytes.Contains(raw, []byte("must-not-be-imported")) {
+			t.Fatalf("Codex 凭据泄漏到 %s：%s", label, raw)
+		}
+	}
+	if string(legacyCredentials) != "{}" || string(adminAuditJSON) == "[]" || string(credentialAuditJSON) == "[]" {
+		t.Fatalf("落库边界或审计证据异常：legacy=%s admin=%s credential=%s", legacyCredentials, adminAuditJSON, credentialAuditJSON)
+	}
+}
+
+func TestServiceRejectsAmbiguousCodexUpstreamIdentityWithoutWriting(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	service := newAccountIntakeService(t, pool)
+
+	const upstreamAccountID = "workspace-ambiguous"
+	versions := make(map[int64]int32, 2)
+	for index := 0; index < 2; index++ {
+		var accountID int64
+		if err := pool.QueryRow(ctx, `
+INSERT INTO provider_accounts (
+    tenant_id, provider_id, channel_id, name, account_type, credentials, extra
+) VALUES ($1,$2,$3,$4,'session','{}','{}')
+RETURNING id`, seed.tenantID, seed.providerID, seed.channelID,
+			fmt.Sprintf("ambiguous-%d-%s", index+1, seed.suffix)).Scan(&accountID); err != nil {
+			t.Fatal(err)
+		}
+		created, err := service.credentials.Create(ctx, credentialstore.CreateCredentialInput{
+			TenantID: seed.tenantID, ProviderAccountID: accountID,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+			Payload:                []byte(fmt.Sprintf(`{"access_token":"old-%d","session_token":"old-%d","refresh_token":"refresh-old-%d"}`, index, index, index)),
+			ExternalAccountID:      upstreamAccountID,
+			ExternalIdentitySource: "import_payload",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		versions[created.ID] = created.Version
+	}
+
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		Content: `{"tokens":{"access_token":"new-access","refresh_token":"new-refresh","account_id":"workspace-ambiguous"}}`,
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "must-not-create-" + seed.suffix, AccountType: "session",
+		},
+		Now: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Plan.Summary.Conflict != 1 || planned.Plan.Items[0].Action != intake.ActionConflict ||
+		planned.Plan.Items[0].Code != "account_scope_ambiguous" {
+		t.Fatalf("plan=%+v，期望同一上游身份命中两账号时明确冲突", planned)
+	}
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-codex-ambiguous",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Summary.Conflict != 1 || executed.Items[0].Status != StatusConflict {
+		t.Fatalf("execution=%+v，期望冲突项不执行写入", executed)
+	}
+	var accountCount, auditCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND deleted_at IS NULL`,
+		seed.tenantID).Scan(&accountCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM admin_audit_events WHERE tenant_id=$1 AND request_id='req-codex-ambiguous'`,
+		seed.tenantID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if accountCount != 2 || auditCount != 0 {
+		t.Fatalf("冲突执行后 account=%d audit=%d，期望保持 2/0", accountCount, auditCount)
+	}
+	for credentialID, wantVersion := range versions {
+		var gotVersion int32
+		if err := pool.QueryRow(ctx,
+			`SELECT credential_version FROM account_credentials WHERE tenant_id=$1 AND id=$2`,
+			seed.tenantID, credentialID).Scan(&gotVersion); err != nil {
+			t.Fatal(err)
+		}
+		if gotVersion != wantVersion {
+			t.Fatalf("credential %d version=%d，冲突路径不得轮换，期望 %d", credentialID, gotVersion, wantVersion)
+		}
+	}
+}
+
 func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

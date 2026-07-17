@@ -43,8 +43,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
 # memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
 # env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
+# 2026-07-17 删除零调用 Codex CLI 通用导入包装器，专用解析入口已接入生产账号导入链；
+# deadcode baseline 与上限同步收紧 882->881。
 SC_MAX=94
-DC_MAX=882
+DC_MAX=881
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

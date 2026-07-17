@@ -90,10 +90,20 @@ func DefaultModeAdapterRegistry() *ModeAdapterRegistry {
 }
 
 func DefaultModeAdapterRegistryWithProjectResolver(resolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
-	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver)
+	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver, nil)
 }
 
-func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver) *ModeAdapterRegistry {
+// DefaultModeAdapterRegistryWithRuntimeOAuth 把生产 OAuth 配置接入模式刷新器。
+func DefaultModeAdapterRegistryWithRuntimeOAuth(configs appconfig.VendorOAuthConfigs) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithProjectResolver(nil, &providerantigravity.ProjectResolver{}, configs)
+}
+
+// DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth 同时注入项目解析器与生产 OAuth 配置。
+func DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth(resolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver, configs)
+}
+
+func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs) *ModeAdapterRegistry {
 	r := NewModeAdapterRegistry()
 	register := func(vendor, authMode string, adapter ModeRefreshAdapter) {
 		_ = r.Register(vendor, authMode, adapter)
@@ -106,11 +116,15 @@ func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, vertexSAModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, newOpenAIChatGPTBuiltinOAuthModeAdapter())
-	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}})
+	codexRefresh := adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}
+	if cfg, ok := configs.Configured()[appconfig.VendorOAuthOpenAICodex]; ok {
+		codexRefresh = adapters.NewCodexRefresh(cfg.TokenURL, cfg.ClientID, cfg.Scope, operatorOAuthClient)
+	}
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: codexRefresh})
 	// codex_web_oauth(authorization-code/PKCE 浏览器获取)与 codex_cli_oauth(device-code)凭据
 	// 形状一致(access_token + refresh_token + id_token),共享同一 codex refresh adapter,避免 web
 	// 获取的 token 因无 refresh 绑定而静默过期(auth/可用性回退)。
-	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}})
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: codexRefresh})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})

@@ -157,6 +157,33 @@ func TestBuildClaudeSetupTokenPlanIsStaticRedactedAndDeduplicated(t *testing.T) 
 	}
 }
 
+func TestBuildCLIPlanUsesStrictCodexParser(t *testing.T) {
+	built, err := Build(BuildInput{
+		TenantID: 7, SourceKind: SourceCLI,
+		Content: `{"vendor":"anthropic","auth_mode":"chatgpt","access_token":"codex-access","oauth_token_endpoint":"https://attacker.test/token"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built.Candidates) != 1 || len(built.Plan.Items) != 1 {
+		t.Fatalf("candidate/item count=%d/%d", len(built.Candidates), len(built.Plan.Items))
+	}
+	candidate := built.Candidates[0]
+	if candidate.Vendor != credentialstore.VendorOpenAI || candidate.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("mode=%s/%s", candidate.Vendor, candidate.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := payload["oauth_token_endpoint"]; exists {
+		t.Fatalf("专用 Codex 解析器保留了输入 endpoint：%v", payload)
+	}
+	if built.Plan.Items[0].Vendor != credentialstore.VendorOpenAI || built.Plan.Items[0].AuthMode != credentialstore.AuthModeCodexCLIOAuth {
+		t.Fatalf("plan item=%+v", built.Plan.Items[0])
+	}
+}
+
 func oauthCandidate(accountID, email, payload string) credentialacq.CredentialCandidate {
 	return credentialacq.CredentialCandidate{
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,

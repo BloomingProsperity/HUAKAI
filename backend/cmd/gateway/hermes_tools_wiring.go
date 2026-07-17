@@ -9,6 +9,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -40,6 +41,7 @@ type hermesToolDeps struct {
 	// modelRegistry 暴露 model_resolve_diagnose 工具所封装的、已存在的只读 ResolveModel
 	//(alias -> canonical/pool-binding 路由)。Nil => 该工具 fail closed。
 	modelRegistry *registry.PostgresRegistry
+	vendorOAuth   runtimeconfig.VendorOAuthConfigs
 }
 
 // buildHermesToolRegistry 组装只读诊断工具的 registry,做法是把每个工具的 Run
@@ -56,7 +58,7 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	//(非持久化的校验)+ credentialstore.Store.ListRenewStatus(读)。
 	credDeps := hermesops.CredentialDiagnoseDeps{
 		DryRun:   credentialworker.DryRunProviderAccountCredential,
-		Registry: credentialworker.DefaultModeAdapterRegistry(),
+		Registry: credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.vendorOAuth),
 	}
 	if d.credentialStr != nil {
 		credDeps.TestStore = d.credentialStr

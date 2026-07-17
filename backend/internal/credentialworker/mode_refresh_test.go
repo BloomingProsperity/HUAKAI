@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	appconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -163,6 +164,95 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 	}
 }
 
+func TestConfiguredModeAdapterRegistryRefreshesCodexWithRuntimeConfig(t *testing.T) {
+	var gotURL string
+	var gotForm url.Values
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(`{"access_token":"access-new","refresh_token":"refresh-new","expires_in":1800}`), nil
+	})}
+	configs := appconfig.VendorOAuthConfigs{
+		appconfig.VendorOAuthOpenAICodex: {
+			AuthURL: "https://operator.example.test/device", TokenURL: "https://operator.example.test/token",
+			ClientID: "operator-client", Scope: "openid offline_access",
+		},
+	}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, nil, configs)
+	adapter, ok := registry.Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if !ok {
+		t.Fatal("Codex CLI OAuth mode adapter missing")
+	}
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 43,
+		Vendor:            credentialstore.VendorOpenAI,
+		AuthMode:          credentialstore.AuthModeCodexCLIOAuth,
+		Payload: []byte(`{
+			"access_token":"access-old",
+			"session_token":"access-old",
+			"refresh_token":"refresh-old",
+			"client_id":"attacker-client",
+			"scope":"attacker-scope",
+			"oauth_token_endpoint":"https://attacker.test/token"
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if gotURL != "https://operator.example.test/token" || gotForm.Get("client_id") != "operator-client" || gotForm.Get("scope") != "openid offline_access" || gotForm.Get("refresh_token") != "refresh-old" {
+		t.Fatalf("refresh request url=%q form=%v", gotURL, gotForm)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["access_token"] != "access-new" || payload["session_token"] != "access-new" || payload["refresh_token"] != "refresh-new" {
+		t.Fatalf("刷新后运行材料未同步：%v", payload)
+	}
+	if _, exists := payload["oauth_token_endpoint"]; exists {
+		t.Fatalf("输入 endpoint 未被清除：%v", payload)
+	}
+}
+
+func TestConfiguredModeAdapterRegistryAllowsCodexRefreshWithoutScope(t *testing.T) {
+	var gotForm url.Values
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(`{"access_token":"access-new","expires_in":1800}`), nil
+	})}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, nil, appconfig.VendorOAuthConfigs{
+		appconfig.VendorOAuthOpenAICodex: {TokenURL: "https://operator.example.test/token", ClientID: "operator-client"},
+	})
+	adapter, ok := registry.Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if !ok {
+		t.Fatal("Codex CLI OAuth mode adapter missing")
+	}
+	if _, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 44, Vendor: credentialstore.VendorOpenAI,
+		AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload:  []byte(`{"access_token":"old","session_token":"old","refresh_token":"refresh-old"}`),
+	}); err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if gotForm.Get("client_id") != "operator-client" || gotForm.Get("scope") != "" {
+		t.Fatalf("refresh form=%v", gotForm)
+	}
+}
+
 // TestGeminiAntigravityRefreshUsesBuiltinProfile 守住重激活路径：canonical 的
 // gemini/antigravity mode 必须调用既有 Antigravity 刷新核，并且只把内置公开
 // endpoint/client/secret/scope 发给 Google。退回暂停 adapter 或改用 Gemini
@@ -183,7 +273,7 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 		return jsonResponse(`{"access_token":"ag-access-new","refresh_token":"ag-refresh-new","expires_in":1800,"token_type":"Bearer"}`), nil
 	})}
 
-	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil, nil).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
 	if !ok {
 		t.Fatal("缺少 gemini/antigravity refresh adapter")
 	}
@@ -295,7 +385,7 @@ func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRe
 				return jsonResponse(`{"access_token":"` + wantAccessToken + `","refresh_token":"` + wantRefreshToken + `","expires_in":1800,"token_type":"Bearer"}`), nil
 			})}
 
-			adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil).Lookup(tc.vendor, tc.authMode)
+			adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil, nil).Lookup(tc.vendor, tc.authMode)
 			if !ok {
 				t.Fatalf("missing mode refresh adapter %s/%s", tc.vendor, tc.authMode)
 			}
@@ -363,7 +453,7 @@ func TestDefaultModeAdapterRegistryWiresAntigravityProjectResolver(t *testing.T)
 		return jsonResponse(`{"access_token":"access-after-refresh","refresh_token":"refresh-after-refresh","expires_in":1800}`), nil
 	})}
 	resolver := &modeProjectResolverStub{projectID: "project-through-registry"}
-	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, resolver)
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, resolver, nil)
 	adapter, ok := registry.Lookup(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
 	if !ok {
 		t.Fatal("缺少 antigravity/oauth refresh adapter")

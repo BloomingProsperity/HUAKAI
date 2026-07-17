@@ -225,7 +225,6 @@ internal/credentialacq/bootstrap.go:  unreachable func: SelectBootstrapTTL
 internal/credentialacq/chatgpt_oauth.go:  unreachable func: NewChatGPTOAuthExchangerWithClient
 internal/credentialacq/chatgpt_oauth.go:  unreachable func: validateChatGPTBuiltinProfile
 internal/credentialacq/chatgpt_oauth.go:  unreachable func: validateChatGPTRedirectURI
-internal/credentialacq/cli_import.go:  unreachable func: ParseCLIImportContent
 internal/credentialacq/cloud_bootstrap.go:  unreachable func: BuildAzureCandidate
 internal/credentialacq/cloud_bootstrap.go:  unreachable func: BuildBedrockCandidate
 internal/credentialacq/cloud_bootstrap.go:  unreachable func: BuildVertexCandidate

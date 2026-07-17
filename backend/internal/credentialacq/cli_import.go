@@ -11,10 +11,6 @@ import (
 
 const maxClaudeSetupTokenBytes = 16 << 10
 
-func ParseCLIImportContent(input string) ([]CredentialCandidate, error) {
-	return ParseImportContent(input, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
-}
-
 // ParseClaudeSetupTokenContent 只接受 Claude Code 长期 access token，强制落到
 // anthropic/claude_setup_token，不允许输入覆盖 vendor、auth_mode 或出站端点。
 func ParseClaudeSetupTokenContent(input string) ([]CredentialCandidate, error) {

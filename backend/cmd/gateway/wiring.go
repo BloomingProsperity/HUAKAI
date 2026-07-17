@@ -1204,6 +1204,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		// PostgresRegistry 是 pgPool 的无状态包装(noopCache),ResolveModel 每次自开只读 TX,
 		// 两份实例语义等价且彼此隔离,避免为接线而重排这个 god-file 的 100+ 行依赖顺序。
 		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
+		vendorOAuth:   cfg.VendorOAuth,
 	}, hermesMutateGuard.orchestratorOptions()...)
 	// S2 (c):按 operator-token 的限流器,在 mutate handler 中强制。
 	hermesMutateRateLimiter := hermesMutateGuard.newRateLimiter()
@@ -1609,7 +1610,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
-	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithProjectResolver(antigravityProjectResolver))
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth(antigravityProjectResolver, cfg.VendorOAuth))
 	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),

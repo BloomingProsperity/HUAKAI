@@ -11078,6 +11078,57 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/credentials/account-imports/codex/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Preflight Codex OAuth account imports without writing data
+      operationId: planCodexAccountCredentialImport
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. The server forces openai/codex_cli_oauth and ignores no caller-selectable vendor, auth mode, or OAuth endpoint because those fields are not accepted.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAccountIntakePlanRequest' }
+      responses:
+        '200':
+          description: Redacted Codex item plan and state-bound execution hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/codex/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute a freshly recomputed Codex OAuth account import plan
+      operationId: executeCodexAccountCredentialImport
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. PAT and Agent Identity payloads are rejected because they require separate authentication contracts.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAccountIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: Per-item Codex execution outcomes; one item failure does not hide other results.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/renew-status:
     get:
       tags: [admin-accounts]
@@ -18459,6 +18510,54 @@ components:
           type: string
           writeOnly: true
           maxLength: 2097152
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    CodexAccountIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: Official token-mode Codex auth.json, raw access-token lines, token objects, arrays, JSON Lines, or adjacent JSON documents. PAT, Agent Identity, API-key-only, and incompatible auth_mode payloads are rejected.
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    CodexAccountIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: The same Codex credential material used to create the plan; it is recomputed before execution and never returned.
         account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
         plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
         confirmations:

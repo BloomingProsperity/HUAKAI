@@ -54,6 +54,8 @@ type accountIntakeExecuteRequest struct {
 func Mount(r chi.Router, d Deps) {
 	r.Post("/account-imports/plan", newAdminAccountIntakePlanHandler(d))
 	r.Post("/account-imports/execute", newAdminAccountIntakeExecuteHandler(d))
+	r.Post("/account-imports/codex/plan", newCodexAccountIntakePlanHandler(d))
+	r.Post("/account-imports/codex/execute", newCodexAccountIntakeExecuteHandler(d))
 }
 
 func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
