@@ -83,7 +83,7 @@ func TestValidateOAuthProvidersSecretsValue(t *testing.T) {
 }
 
 // TestOAuthConfigKeysRoutedThroughValidateValue 确保两 key 真被 ValidateValue 路由到上面的校验器
-//(而非落到默认 validatePublicTextValue 而漏掉结构校验)。变异:删掉 ValidateValue 里的路由分支
+// (而非落到默认 validatePublicTextValue 而漏掉结构校验)。变异:删掉 ValidateValue 里的路由分支
 // → JSON 结构错误将被默认校验放行 → 本断言 RED。
 func TestOAuthConfigKeysRoutedThroughValidateValue(t *testing.T) {
 	if _, err := ValidateValue(KeyOAuthProvidersConfig, `{"evilcorp":{}}`); err == nil {
