@@ -89,17 +89,14 @@ INSERT INTO scheduler_outbox (
 RETURNING id, created_at;
 
 -- name: ReleaseSlotAndDecrementInFlight :execrows
--- Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
--- Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
--- AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
--- replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
--- is no longer 'acquired'; the outer UPDATE no-ops; in_flight_count stays correct.
--- $2 = release_reason text ('settled_committed' / 'settled_aborted' / etc.)
+-- Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
+-- 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
+-- $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
 WITH released AS (
     UPDATE pool_slot_acquisitions
-    SET status = 'released_success',
+    SET status = $2,
         released_at = NOW(),
-        release_reason = $2
+        release_reason = $3
     WHERE acquisition_token = $1 AND status = 'acquired'
     RETURNING provider_account_id
 )

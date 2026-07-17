@@ -43,8 +43,18 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
 # memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
 # env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
-SC_MAX=94
-DC_MAX=882
+# 2026-07-17 删除零调用 Codex CLI 通用导入包装器，专用解析入口已接入生产账号导入链；
+# 同时删除从未进入生产依赖图且带 clean-room 风险的 Grok 网页 session 实现及其 6 条 deadcode 豁免（codex 侧）。
+# 2026-07-14 绑定三字段 arc 收口清债+fallback_class 清债（#252 侧）：删真死码+补录测试专用引用。
+# 2026-07-17 合并 codex 扇形与 #252 后,两侧删改叠加,基线文件净收紧;上限=合并后基线真实行数
+# (deadcode-baseline.txt=804 / staticcheck-baseline.txt=93,棘轮只降)。
+# 2026-07-17 账号运营台统一收官:删冗余 poolaccountadmin 替代 handler 包(35 处死代码清零,
+# accountadvanced 统一字段契约改由活 handler 引用),staticcheck 93->92 棘轮收紧;deadcode 净 +2
+# = #252 C②/C③ 模型管理路由 modeladminhttp/modelroutingadminhttp 的 NewRouter(被各自 routes_test.go
+# 真调用,deadcode 不带 -test 看不到跨测试引用而误命中,与 memoryStore/logsink/adminsessionauthtest
+# 先例同类;生产入口是 MountRoutes),DC_MAX 804->806(Owner 可见可审;非死代码堆积,是测试专用构造器)。
+SC_MAX=92
+DC_MAX=806
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

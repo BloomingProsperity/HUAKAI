@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -21,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -63,6 +66,11 @@ type Deps struct {
 	// 镜像 gatewayhttp chat 路径的同名依赖。nil 时退回原行为(仅置 X-Huakai-Settle-Failed 头)，
 	// 不破坏现有 wiring；生产由 cmd/gateway/routes.go 注入 d.dlqService。
 	SettleRecoveryDLQ settlementrecovery.Enqueuer
+	// Feedback 把上游结果喂账号健康 FSM(坏号冷却→下次选号自动跳过=自动换号)。
+	// nil 时健康观测为 no-op,不破坏 wiring;生产由 cmd/gateway/routes.go 注入。
+	Feedback *upstreamfeedback.Observer
+	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
+	RetryBudget retryBudgetGate
 }
 
 type execution struct {
@@ -90,6 +98,9 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
+	classTransition  *bindingfallback.Transition
+	// excludedAccounts 本请求内已失败的账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
+	excludedAccounts map[int64]struct{}
 }
 
 func NewCompletionsHandler(d Deps) http.HandlerFunc {
@@ -211,24 +222,82 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan, requestedModel 
 }
 
 func (ex *execution) runCompletions(w http.ResponseWriter) {
-	budget := ex.plan.AttemptBudget
-	if budget <= 0 || budget > len(ex.plan.Attempts) {
-		budget = len(ex.plan.Attempts)
-	}
+	budget := fallbackexec.NormalBudget(ex.plan)
+	authFailoverUsed := false
+	var coordinator bindingfallback.Coordinator
 	for i := 0; i < budget; i++ {
-		ex.activateAttempt(ex.plan.Attempts[i], ex.req.Model)
-		if !ex.reserve(w) || !ex.selectAccount(w, i+1, ex.req.Model) || !ex.resolveCredential(w) {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		outcome := ex.runPaidAttempt(w, ex.plan.Attempts[planIdx], i+1, ex.req.Model)
+		if outcome.done {
 			return
 		}
-		switch ex.dispatchCompletionsAndSettle(w, i+1) {
-		case attemptDone:
-			return
-		case attemptRetryable:
-			if i+1 < budget {
+		if ex.selRes != nil {
+			ex.excludeAccount(ex.selRes.AccountID)
+		}
+		// 上游 401/发网前凭据错配走授权换号子预算:整请求最多一次、预算末位也放行
+		// (必要时扩一格),不进 Coordinator 的跨类终态门(auth 对类别转移保持
+		// fail-closed)。第二次授权失败落到 Coordinator 原地终止,防 401 风暴烧号。
+		if f := outcome.failure; f != nil && f.AuthFailoverEligible && f.RetryPermitted {
+			if !authFailoverUsed && (ex.d.RetryBudget == nil || ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+				authFailoverUsed = true
+				if i+1 >= budget {
+					budget++
+				}
 				continue
 			}
-			writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError))
+		}
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
+			}
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runPaidAttempt(w, phase.Attempts[0], i+2, ex.req.Model)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
 			return
 		}
 	}
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runPaidAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int, requestedModel string) attemptOutcome {
+	ex.activateAttempt(attempt, requestedModel)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	// 幂等重放续用被 abort 的 claim 时,billing 返回的 attempt_seq 是权威值
+	// (跨请求单调),选号与结算必须用同一个,否则 settle 身份对不上。
+	attemptSeq = authoritativeAttemptSeq(ex.reserveRes, attemptSeq)
+	if failure := ex.selectAccount(w, attemptSeq, requestedModel); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.credentialCompatibilityFailure(w); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	return ex.dispatchCompletionsAndSettle(w, attemptSeq)
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }

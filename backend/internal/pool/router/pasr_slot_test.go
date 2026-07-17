@@ -7,7 +7,8 @@
 //	T-M3-3: Slots=memSlotManager (健康) → 真持 slot + Claims 写入, token 来自 slot
 //	T-M3-4: Slots.Acquire 返 ErrNoSlotAvailable → ErrPASRPreMutationFail (无副作用)
 //	T-M3-5: Slot OK + Claims 写失败 → release slot + ErrPASRPostMutationFail
-//	T-M3-6: ClaimID=0 + 真 Slots → token-only 短路, **不调** Slots.Acquire (HIGH-1)
+//	T-M3-6: ClaimID=0 + 无 binding 上限 → token-only 短路, **不调** Slots.Acquire
+//	T-M3-6b: ClaimID=0 + 正 binding 上限 → 真占槽并向短端点返回 Release
 //	T-M3-7: 真 Slots + Claims=nil → ErrPASRPreMutationFail fail-fast (HIGH-1)
 //	T-M3-8: Acquire 返 token=Nil + Release 非 nil → release + PostMutationFail (MEDIUM-1)
 //	T-M3-9: Claim 写失败 + Release 也失败 → 错误链含 release 错误 (HIGH-2)
@@ -27,8 +28,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// spySlotManager 包 inner SlotManager + 计数 Acquire 调用次数, 验证 ClaimID=0
-// 短路是否真的没调 Acquire (T-M3-6)。
+// spySlotManager 包 inner SlotManager + 计数 Acquire 调用次数，验证 ClaimID=0
+// 是否按 binding 上限选择短路或真实占槽。
 type spySlotManager struct {
 	inner        SlotManager
 	mu           sync.Mutex
@@ -240,8 +241,7 @@ func TestPASRSlot_ClaimFailsAfterAcquire_ErrPostMutation_ReleaseSlot(t *testing.
 }
 
 func TestPASRSlot_ZeroClaimID_ShortCircuitsBeforeAcquire(t *testing.T) {
-	// HIGH-1 fix: req.ClaimID=0 → tokenOnlyResult 短路, 不调 Slots.Acquire
-	// (避免拿到无 ReleaseFunc 的 SelectionResult 让 caller 漏 release 致泄漏)。
+	// req.ClaimID=0 且上限未启用时继续走 tokenOnlyResult，不制造无意义槽行。
 	mm := newMemSlotManager()
 	spy := &spySlotManager{inner: mm}
 	failClaim := &failingClaimGate{}
@@ -260,6 +260,43 @@ func TestPASRSlot_ZeroClaimID_ShortCircuitsBeforeAcquire(t *testing.T) {
 	}
 	if failClaim.calls != 0 {
 		t.Errorf("ClaimID=0 时 Claims 不应被调, 实际 %d", failClaim.calls)
+	}
+}
+
+func TestPASRSlot_ZeroClaimIDWithBindingCapAcquiresAndExposesRelease(t *testing.T) {
+	mm := newMemSlotManager()
+	spy := &spySlotManager{inner: mm}
+	failClaim := &failingClaimGate{}
+	sel, _ := newPASRSlotRig(t, []int64{1, 2, 3}, spy, failClaim)
+	req := SelectionRequest{
+		TenantID: 1, ClaimID: 0, BindingID: 7, MaxParallelRequests: 1,
+		RequestedModel: "m", SessionHash: "slot-no-claimid-with-binding-cap",
+	}
+
+	res, err := sel.Select(context.Background(), req)
+	if err != nil {
+		t.Fatalf("正 binding 上限的无 claim 请求应真实占槽，err=%v", err)
+	}
+	if res == nil || res.AcquisitionToken == uuid.Nil || res.Release == nil {
+		t.Fatalf("result=%+v want token 与 Release", res)
+	}
+	if spy.calls() != 1 {
+		t.Fatalf("Slots.Acquire calls=%d want 1", spy.calls())
+	}
+	if failClaim.calls != 0 {
+		t.Fatalf("ClaimID=0 时 Claims calls=%d want 0", failClaim.calls)
+	}
+	if err := res.Release(context.Background()); err != nil {
+		t.Fatalf("短端点释放槽失败: %v", err)
+	}
+	mm.mu.Lock()
+	releaseCount := 0
+	for _, count := range mm.releases {
+		releaseCount += count
+	}
+	mm.mu.Unlock()
+	if releaseCount != 1 {
+		t.Fatalf("release calls=%d want 1", releaseCount)
 	}
 }
 

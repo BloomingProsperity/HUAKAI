@@ -74,7 +74,7 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 			assertAccountSlotSuccessPG(t, ctx, pgPool, seed, result.logicalID)
 		}
 		waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, 0, accountSlotE2ECapacity)
-		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 0)
+		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 0, 0)
 	})
 
 	t.Run("max_waiting_plus_one_overflows_fast", func(t *testing.T) {
@@ -109,7 +109,7 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 		}
 		assertAccountSlotRejectPG(t, ctx, pgPool, seed, overflow.logicalID)
 		waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, 0, accountSlotE2ECapacity)
-		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 1)
+		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 1, 0)
 	})
 
 	t.Run("timeout_aborts_claim_and_releases_hold", func(t *testing.T) {
@@ -132,7 +132,7 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 		}
 		assertAccountSlotRejectPG(t, ctx, pgPool, seed, waiter.logicalID)
 		waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, 0, accountSlotE2ECapacity)
-		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(holders), 1)
+		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(holders), 1, 0)
 	})
 
 	t.Run("disconnect_releases_waiting_slot", func(t *testing.T) {
@@ -164,7 +164,7 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 		}
 		assertAccountSlotRejectReasonPG(t, ctx, pgPool, seed, cancelLogicalID, "queue_wait_cancelled")
 		waitForAccountSlotInFlight(t, ctx, pgPool, seed.providerAccountID, 0, accountSlotE2ECapacity)
-		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 1)
+		assertAccountSlotNoLeaks(t, ctx, pgPool, seed, len(successes), 1, 0)
 	})
 }
 

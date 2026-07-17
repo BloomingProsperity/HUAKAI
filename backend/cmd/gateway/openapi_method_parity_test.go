@@ -87,4 +87,39 @@ func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
 			t.Fatalf("OpenAPI 必须声明 %s %s(已实现,缺契约前端无法 codegen 这个变更动作)", op.method, op.specPath)
 		}
 	}
+
+	const tenantDefaultPath = "/admin/v1/tenants/{id}/default-proxy"
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		if !hasOperation(implOps, method, tenantDefaultPath) {
+			t.Fatalf("runtime 缺 %s %s;租户默认出口未完整接线", method, tenantDefaultPath)
+		}
+		if !hasOperation(specOps, method, tenantDefaultPath) {
+			t.Fatalf("OpenAPI 必须声明 %s %s", method, tenantDefaultPath)
+		}
+	}
+}
+
+func TestOpenAPI_ProviderAccountRecoveryActionMethodParity(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
+
+	const runtimePath = "/v1/admin/provider-accounts/{id}/recovery-actions"
+	if !hasOperation(implOps, http.MethodGet, runtimePath) {
+		t.Fatalf("runtime 缺 GET %s；恢复动作诊断未接入共享 provider-account 子树", runtimePath)
+	}
+	for _, specPath := range []string{
+		"/admin/v1/provider-accounts/{id}/recovery-actions",
+		"/v1/admin/provider-accounts/{id}/recovery-actions",
+	} {
+		if !hasOperation(specOps, http.MethodGet, specPath) {
+			t.Fatalf("OpenAPI 必须声明 GET %s", specPath)
+		}
+	}
 }

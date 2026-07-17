@@ -21,13 +21,16 @@ import (
 type stubService struct {
 	issueCalls  []userkey.IssueRequest
 	listCalls   []userkey.ListRequest
+	countCalls  []struct{ tenantID, userID int64 }
 	getCalls    []struct{ tenantID, userID, apiKeyID int64 }
 	revokeCalls []userkey.RevokeRequest
 
 	issueReturn   userkey.IssueResult
 	issueErr      error
 	listReturn    []userkey.KeyDescriptor
+	countReturn   int
 	listErr       error
+	countErr      error
 	getReturn     userkey.KeyDescriptor
 	getErr        error
 	revokeReturn  userkey.RevokeResult
@@ -42,6 +45,10 @@ func (s *stubService) Issue(ctx context.Context, req userkey.IssueRequest) (user
 func (s *stubService) List(ctx context.Context, req userkey.ListRequest) ([]userkey.KeyDescriptor, error) {
 	s.listCalls = append(s.listCalls, req)
 	return s.listReturn, s.listErr
+}
+func (s *stubService) Count(_ context.Context, tenantID, userID int64) (int, error) {
+	s.countCalls = append(s.countCalls, struct{ tenantID, userID int64 }{tenantID, userID})
+	return s.countReturn, s.countErr
 }
 func (s *stubService) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (userkey.KeyDescriptor, error) {
 	s.getCalls = append(s.getCalls, struct{ tenantID, userID, apiKeyID int64 }{tenantID, userID, apiKeyID})
@@ -190,6 +197,7 @@ func TestPostAPIKeys_NoSessionFails(t *testing.T) {
 // T4: GET /v1/api-keys/ — list 调用把 session ident 透传给 service,offset/limit 校验。
 func TestListAPIKeys_PassesSessionAndPagination(t *testing.T) {
 	svc := &stubService{
+		countReturn: 259,
 		listReturn: []userkey.KeyDescriptor{
 			{APIKeyID: 1, Name: "a", KeyPrefix: "hk_live_aaaaaaaa", Status: "active", CreatedAt: time.Now()},
 			{APIKeyID: 2, Name: "b", KeyPrefix: "hk_live_bbbbbbbb", Status: "revoked", CreatedAt: time.Now()},
@@ -206,8 +214,12 @@ func TestListAPIKeys_PassesSessionAndPagination(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Count != 2 {
-		t.Fatalf("count: want 2 got %d", resp.Count)
+	if resp.Count != 259 {
+		// 变异自检:若 handler 退回 len(当前页),这里会得到 2 而变红。
+		t.Fatalf("count: want full total 259 got %d", resp.Count)
+	}
+	if len(svc.countCalls) != 1 || svc.countCalls[0].tenantID != 7 || svc.countCalls[0].userID != 42 {
+		t.Fatalf("Count must use session scope; got %+v", svc.countCalls)
 	}
 	if len(svc.listCalls) != 1 {
 		t.Fatalf("List called %d times; want 1", len(svc.listCalls))

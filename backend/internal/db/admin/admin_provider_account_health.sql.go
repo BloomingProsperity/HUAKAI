@@ -15,11 +15,39 @@ const getAdminProviderAccountHealth = `-- name: GetAdminProviderAccountHealth :o
 SELECT
     pa.id,
     pa.tenant_id,
+    COALESCE(p.code, '')::text AS provider_code,
+    pa.account_type,
+    COALESCE(current_ac.vendor, '')::text AS credential_vendor,
+    COALESCE(current_ac.auth_mode, '')::text AS credential_auth_mode,
+    current_ac.project_ref AS credential_project_ref,
+    COALESCE(current_ac.serving_credential_candidates, 0)::integer AS serving_credential_candidates,
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
+    pa.disable_cooling,
+    pa.credential_state,
+    pa.model_rate_limits,
+    pa.rate_limit_reset_at,
+    pa.overload_until,
+    pa.temp_unschedulable_until,
+    EXISTS (
+        SELECT 1
+        FROM channels c
+        WHERE c.id = pa.channel_id
+          AND c.tenant_id = pa.tenant_id
+          AND c.enabled = true
+          AND c.deleted_at IS NULL
+    ) AS channel_enabled,
+    EXISTS (
+        SELECT 1
+        FROM providers p
+        WHERE p.id = pa.provider_id
+          AND p.tenant_id = pa.tenant_id
+          AND p.deleted_at IS NULL
+    ) AS provider_available,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
+    pa.last_request_observed_at,
     pa.model_sync_last_check_at,
     pa.session_window_5h_start,
     pa.session_window_5h_end,
@@ -29,12 +57,36 @@ SELECT
     pa.session_window_7d_end,
     pa.session_window_7d_status,
     pa.session_window_7d_utilization,
-    COALESCE(ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
-    COALESCE(ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
-    ac.failure_class,
-    COALESCE(ac.failure_count, 0)::integer AS failure_count,
+    COALESCE(refresh_ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
+    COALESCE(refresh_ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
+    refresh_ac.failure_class,
+    COALESCE(refresh_ac.failure_count, 0)::integer AS failure_count,
     pa.updated_at
 FROM provider_accounts pa
+LEFT JOIN providers p
+  ON p.id = pa.provider_id
+ AND p.tenant_id = pa.tenant_id
+LEFT JOIN LATERAL (
+    SELECT
+        vendor,
+        auth_mode,
+        project_ref,
+        count(*) OVER ()::integer AS serving_credential_candidates
+    FROM account_credentials ac
+    WHERE ac.tenant_id = pa.tenant_id
+      AND ac.provider_account_id = pa.id
+      AND ac.deleted_at IS NULL
+      AND pa.enabled
+      AND (
+          ac.state = 'active'
+          OR (
+              ac.state = 'refreshing_with_grace'
+              AND (ac.grace_until IS NULL OR ac.grace_until > now())
+          )
+      )
+    ORDER BY CASE ac.state WHEN 'active' THEN 0 ELSE 1 END, ac.updated_at DESC, ac.id DESC
+    LIMIT 1
+) current_ac ON true
 LEFT JOIN LATERAL (
     SELECT
         last_refresh_at,
@@ -48,7 +100,7 @@ LEFT JOIN LATERAL (
       AND ac.state NOT IN ('revoked')
     ORDER BY ac.last_refresh_at DESC NULLS LAST, ac.updated_at DESC, ac.credential_version DESC, ac.id DESC
     LIMIT 1
-) ac ON true
+) refresh_ac ON true
 WHERE pa.tenant_id = $1::bigint
   AND pa.id = $2::bigint
   AND pa.deleted_at IS NULL
@@ -60,27 +112,42 @@ type GetAdminProviderAccountHealthParams struct {
 }
 
 type GetAdminProviderAccountHealthRow struct {
-	ID                         int64              `db:"id" json:"id"`
-	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
-	HealthState                string             `db:"health_state" json:"health_state"`
-	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	Enabled                    bool               `db:"enabled" json:"enabled"`
-	LastProbeLatencyMS         *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
-	LastProbeAt                pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
-	ModelSyncLastCheckAt       pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
-	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
-	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
-	SessionWindow5hStatus      *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
-	SessionWindow5hUtilization pgtype.Numeric     `db:"session_window_5h_utilization" json:"session_window_5h_utilization"`
-	SessionWindow7dStart       pgtype.Timestamptz `db:"session_window_7d_start" json:"session_window_7d_start"`
-	SessionWindow7dEnd         pgtype.Timestamptz `db:"session_window_7d_end" json:"session_window_7d_end"`
-	SessionWindow7dStatus      *string            `db:"session_window_7d_status" json:"session_window_7d_status"`
-	SessionWindow7dUtilization pgtype.Numeric     `db:"session_window_7d_utilization" json:"session_window_7d_utilization"`
-	LastRefreshAt              pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
-	LastRefreshOutcome         *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
-	FailureClass               *string            `db:"failure_class" json:"failure_class"`
-	FailureCount               int32              `db:"failure_count" json:"failure_count"`
-	UpdatedAt                  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                          int64              `db:"id" json:"id"`
+	TenantID                    int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderCode                string             `db:"provider_code" json:"provider_code"`
+	AccountType                 string             `db:"account_type" json:"account_type"`
+	CredentialVendor            string             `db:"credential_vendor" json:"credential_vendor"`
+	CredentialAuthMode          string             `db:"credential_auth_mode" json:"credential_auth_mode"`
+	CredentialProjectRef        *string            `db:"credential_project_ref" json:"credential_project_ref"`
+	ServingCredentialCandidates int32              `db:"serving_credential_candidates" json:"serving_credential_candidates"`
+	HealthState                 string             `db:"health_state" json:"health_state"`
+	HealthStateUntil            pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	Enabled                     bool               `db:"enabled" json:"enabled"`
+	DisableCooling              bool               `db:"disable_cooling" json:"disable_cooling"`
+	CredentialState             string             `db:"credential_state" json:"credential_state"`
+	ModelRateLimits             []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	RateLimitResetAt            pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
+	OverloadUntil               pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
+	TempUnschedulableUntil      pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
+	ChannelEnabled              bool               `db:"channel_enabled" json:"channel_enabled"`
+	ProviderAvailable           bool               `db:"provider_available" json:"provider_available"`
+	LastProbeLatencyMS          *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt                 pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	LastRequestObservedAt       pgtype.Timestamptz `db:"last_request_observed_at" json:"last_request_observed_at"`
+	ModelSyncLastCheckAt        pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
+	SessionWindow5hStart        pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
+	SessionWindow5hEnd          pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
+	SessionWindow5hStatus       *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
+	SessionWindow5hUtilization  pgtype.Numeric     `db:"session_window_5h_utilization" json:"session_window_5h_utilization"`
+	SessionWindow7dStart        pgtype.Timestamptz `db:"session_window_7d_start" json:"session_window_7d_start"`
+	SessionWindow7dEnd          pgtype.Timestamptz `db:"session_window_7d_end" json:"session_window_7d_end"`
+	SessionWindow7dStatus       *string            `db:"session_window_7d_status" json:"session_window_7d_status"`
+	SessionWindow7dUtilization  pgtype.Numeric     `db:"session_window_7d_utilization" json:"session_window_7d_utilization"`
+	LastRefreshAt               pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome          *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	FailureClass                *string            `db:"failure_class" json:"failure_class"`
+	FailureCount                int32              `db:"failure_count" json:"failure_count"`
+	UpdatedAt                   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
 func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error) {
@@ -89,11 +156,26 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
+		&i.ProviderCode,
+		&i.AccountType,
+		&i.CredentialVendor,
+		&i.CredentialAuthMode,
+		&i.CredentialProjectRef,
+		&i.ServingCredentialCandidates,
 		&i.HealthState,
 		&i.HealthStateUntil,
 		&i.Enabled,
+		&i.DisableCooling,
+		&i.CredentialState,
+		&i.ModelRateLimits,
+		&i.RateLimitResetAt,
+		&i.OverloadUntil,
+		&i.TempUnschedulableUntil,
+		&i.ChannelEnabled,
+		&i.ProviderAvailable,
 		&i.LastProbeLatencyMS,
 		&i.LastProbeAt,
+		&i.LastRequestObservedAt,
 		&i.ModelSyncLastCheckAt,
 		&i.SessionWindow5hStart,
 		&i.SessionWindow5hEnd,
@@ -112,31 +194,7 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 	return i, err
 }
 
-const touchProviderAccountProbe = `-- name: TouchProviderAccountProbe :exec
-UPDATE provider_accounts
-SET last_probe_at = $1::timestamptz
-WHERE id = $2::bigint
-  AND tenant_id = $3::bigint
-  AND deleted_at IS NULL
-`
-
-type TouchProviderAccountProbeParams struct {
-	ProbedAt pgtype.Timestamptz `db:"probed_at" json:"probed_at"`
-	ID       int64              `db:"id" json:"id"`
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
-}
-
-// 由异步 eventbus account_health_probe handler 调用:每次请求完成在对应池账号上
-// 盖一个"最近探测时间"戳,点亮运维健康面板的 last_probe_at 列(迁移 0110 早已加列,
-// 但此前全仓零写入,该列恒 NULL)。纯可观测写,单行 PK 定位,不碰钱/auth/health_state。
-// last_probe_latency_ms 暂留 follow-up(请求延迟分散在多个发射点,见计划工件)。
-func (q *Queries) TouchProviderAccountProbe(ctx context.Context, arg TouchProviderAccountProbeParams) error {
-	_, err := q.db.Exec(ctx, touchProviderAccountProbe, arg.ProbedAt, arg.ID, arg.TenantID)
-	return err
-}
-
 const summarizeProviderAccountHealth = `-- name: SummarizeProviderAccountHealth :many
-
 SELECT health_state, enabled, count(*)::bigint AS n
 FROM provider_accounts
 WHERE tenant_id = $1::bigint
@@ -151,8 +209,8 @@ type SummarizeProviderAccountHealthRow struct {
 	N           int64  `db:"n" json:"n"`
 }
 
-// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数(非分页)。
-// 只读、不含钱字段;软删账号排除。手写生成码(避免全量 sqlc regen 触碰 billing 生成码)。
+// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
+// 只读、不含钱字段;供管理端一眼看清问题账号分布。软删账号排除。
 func (q *Queries) SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error) {
 	rows, err := q.db.Query(ctx, summarizeProviderAccountHealth, tenantID)
 	if err != nil {
@@ -171,4 +229,28 @@ func (q *Queries) SummarizeProviderAccountHealth(ctx context.Context, tenantID i
 		return nil, err
 	}
 	return items, nil
+}
+
+const touchProviderAccountRequestObservedAt = `-- name: TouchProviderAccountRequestObservedAt :exec
+UPDATE provider_accounts
+SET last_request_observed_at = $1::timestamptz
+WHERE id = $2::bigint
+  AND tenant_id = $3::bigint
+  AND deleted_at IS NULL
+  AND (
+      last_request_observed_at IS NULL
+      OR last_request_observed_at < $1::timestamptz
+  )
+`
+
+type TouchProviderAccountRequestObservedAtParams struct {
+	ObservedAt pgtype.Timestamptz `db:"observed_at" json:"observed_at"`
+	ID         int64              `db:"id" json:"id"`
+	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+// 由异步请求完成事件调用,单调记录被动请求观测时间。
+func (q *Queries) TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error {
+	_, err := q.db.Exec(ctx, touchProviderAccountRequestObservedAt, arg.ObservedAt, arg.ID, arg.TenantID)
+	return err
 }

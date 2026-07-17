@@ -101,6 +101,12 @@ type FiringDeliverer interface {
 	DeliverFiring(context.Context, int64, FiringNotice) error
 }
 
+// FiringEmailDeliverer 返回 delivered=false 表示安全跳过（例如管理员收件人未配置）；
+// error 只用于观测，Service 不把它传播到告警持久化主链。
+type FiringEmailDeliverer interface {
+	DeliverFiringEmail(context.Context, int64, FiringNotice) (delivered bool, err error)
+}
+
 type FiringDeliveryErrorRecorder func(context.Context, int64, FiringNotice, error)
 
 type CreateRuleInput struct {

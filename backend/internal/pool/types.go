@@ -25,6 +25,7 @@ type AccountSource = router.AccountSource
 type RoutingPolicySource = router.RoutingPolicySource
 type StickyStore = router.StickyStore
 type ClaimGate = router.ClaimGate
+type BindingConcurrencyReader = router.BindingConcurrencyReader
 
 // SelectionMode 与其常量 re-export,供 cmd/gateway 装配生产 RoutingPolicySource 时
 // 按 binding selection_mode 返回对应策略,无需直引 pool/router 内部包。
@@ -36,6 +37,8 @@ const (
 )
 
 type GateFailureReason = router.GateFailureReason
+type ExhaustionFamily = router.ExhaustionFamily
+type Exhaustion = router.Exhaustion
 
 const (
 	GateFailureTenantFilter        = router.GateFailureTenantFilter
@@ -43,6 +46,7 @@ const (
 	GateFailureChannel             = router.GateFailureChannel
 	GateFailureProtocolFamily      = router.GateFailureProtocolFamily
 	GateFailureModel               = router.GateFailureModel
+	GateFailureModelCooldown       = router.GateFailureModelCooldown
 	GateFailureCapability          = router.GateFailureCapability
 	GateFailureCredential          = router.GateFailureCredential
 	GateFailureHealth              = router.GateFailureHealth
@@ -53,6 +57,16 @@ const (
 	GateFailureWindowCost          = router.GateFailureWindowCost
 	GateFailureContextWindow       = router.GateFailureContextWindow
 	GateFailureRatePrecheck        = router.GateFailureRatePrecheck
+	GateFailureSlotCapacity        = router.GateFailureSlotCapacity
+	GateFailureSlotManager         = router.GateFailureSlotManager
+)
+
+const (
+	ExhaustionFamilyUnknown        = router.ExhaustionFamilyUnknown
+	ExhaustionFamilyCapacity       = router.ExhaustionFamilyCapacity
+	ExhaustionFamilyStaticMismatch = router.ExhaustionFamilyStaticMismatch
+	ExhaustionFamilyContextWindow  = router.ExhaustionFamilyContextWindow
+	ExhaustionFamilyMixed          = router.ExhaustionFamilyMixed
 )
 
 type Gate = router.Gate
@@ -107,13 +121,14 @@ type RoutingReasonBuilder = router.RoutingReasonBuilder
 type NoCapacityError = router.NoCapacityError
 
 var (
-	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
-	ErrKeyRateLimited         = router.ErrKeyRateLimited
-	ErrBindingRateLimited     = router.ErrBindingRateLimited
-	ErrAllChannelsDegraded    = router.ErrAllChannelsDegraded
-	ErrClaimRace              = router.ErrClaimRace
-	ErrSlotManagerUnavailable = router.ErrSlotManagerUnavailable
-	ErrNoSlotAvailable        = router.ErrNoSlotAvailable
-	ErrPASRPreMutationFail    = router.ErrPASRPreMutationFail
-	ErrPASRPostMutationFail   = router.ErrPASRPostMutationFail
+	ErrNoEligibleAccount         = router.ErrNoEligibleAccount
+	ErrKeyRateLimited            = router.ErrKeyRateLimited
+	ErrBindingRateLimited        = router.ErrBindingRateLimited
+	ErrBindingConcurrencyLimited = router.ErrBindingConcurrencyLimited
+	ErrAllChannelsDegraded       = router.ErrAllChannelsDegraded
+	ErrClaimRace                 = router.ErrClaimRace
+	ErrSlotManagerUnavailable    = router.ErrSlotManagerUnavailable
+	ErrNoSlotAvailable           = router.ErrNoSlotAvailable
+	ErrPASRPreMutationFail       = router.ErrPASRPreMutationFail
+	ErrPASRPostMutationFail      = router.ErrPASRPostMutationFail
 )

@@ -54,12 +54,18 @@ func (h *AccountHealthProbeHandler) Handle(ctx context.Context, event eventbus.R
 	if h == nil || h.probe == nil {
 		return nil
 	}
+	observedAt := event.CreatedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	} else {
+		observedAt = observedAt.UTC()
+	}
 	return h.probe(ctx, AccountHealthSignal{
 		EventID:   event.ID,
 		TenantID:  event.TenantID,
 		AccountID: event.AccountID,
 		ClaimID:   event.ClaimID,
 		Model:     event.RequestedModel,
-		At:        time.Now().UTC(),
+		At:        observedAt,
 	})
 }

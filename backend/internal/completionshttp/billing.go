@@ -193,9 +193,13 @@ func (ex *execution) settleWithRecovery(ctx context.Context, source settlementre
 	return nil
 }
 
-func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
+func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
+	return ex.abortWithError(w, reason, observedInputTokens) == nil
+}
+
+func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observedInputTokens int64) error {
 	if ex.reserveRes == nil {
-		return
+		return nil
 	}
 	// 脱离请求 ctx 释放 hold 与并发槽:客户端断连时 ex.ctx 已取消,不脱离会让 Abort 失败,
 	// hold/并发槽泄漏到 lease 过期才回收(与 images/rerank/embeddings/audio 的 billingCtx 同)。
@@ -203,15 +207,31 @@ func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTo
 	defer cancel()
 	if err := ex.d.Settler.Abort(abortCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
+		return err
 	}
+	ex.reserveRes = nil
+	return nil
 }
 
 func (ex *execution) ensureIdempotency() {
+	if ex.logicalRequestID != "" {
+		return
+	}
 	ex.idempotencyKey = ex.r.Header.Get("Idempotency-Key")
 	ex.logicalRequestID = ex.idempotencyKey
 	if ex.logicalRequestID == "" {
 		ex.logicalRequestID = uuid.NewString()
 	}
+}
+
+func authoritativeAttemptSeq(res *billing.ReserveResult, fallback int) int {
+	if res != nil && res.AttemptSeq > 0 {
+		return int(res.AttemptSeq)
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 1
 }
 
 func (ex *execution) balanceMode() billing.BalanceEnforcementMode {

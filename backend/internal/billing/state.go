@@ -141,7 +141,7 @@ func AttemptFromGatewayDraft(stream bool, draft gateway.UsageRecordDraft) Attemp
 			// token, 仍产生真实 cache 成本。之前一律判 Failed → CostForAttempt 把 cache 成本
 			// 一并归零、不写 usage_record(漏计 + 丢审计行)。cache 桶非零时改判 chargeable
 			// AmbiguousUsage 已在上方分支单独处理, 不会进入此 else-if 走到本 cache 分支被复活。
-			// 参考项目对照与计费方向决策见 docs/process/plans/2026-05-29-s1015-cache-stream-fu-claude.md。
+			// 该缓存流计费方向的决策与证据见 docs/process/plans/2026-05-29-s1015-cache-stream-fu-claude.md。
 			if streamDraftHasCacheTokens(draft) {
 				state = StreamStatePartial
 			} else {

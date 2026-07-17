@@ -69,6 +69,12 @@ type SessionWindowStore interface {
 	UpdateProviderAccountSessionWindows(context.Context, SessionWindowUpdate) error
 }
 
+// StatusCooldownSource 为没有 Retry-After/窗口重置头的新事件提供按状态码的默认冷却。
+// 返回错误或非正值时，服务回退构造时的现实默认，不让设置后端故障阻断上游失败转移。
+type StatusCooldownSource interface {
+	CooldownForStatus(context.Context, int) (time.Duration, error)
+}
+
 // CooldownStateStore 原子地清除单个账号上的每一个冷却状态列,使一个被下场
 // (benched)的上游账号重新变为可调度。它不带 tenant 作用域:ClearCascade 的
 // 调用方是系统可信的(或在委派前已自行做过 tenant 归属守卫),因此该实现
@@ -94,6 +100,7 @@ type upstreamRateService struct {
 	defaultCooldown time.Duration
 	sessionWindows  SessionWindowStore
 	cooldownState   CooldownStateStore // nil = 空操作(默认)
+	cooldownSource  StatusCooldownSource
 	transient       TransientCooldownConfig
 	disableCooling  bool
 	rulesProvider   AccountErrorRulesProvider // nil = 空操作(默认)
@@ -110,6 +117,12 @@ func WithDisableCooling(disabled bool) UpstreamRateServiceOption {
 func WithTransientCooldown(duration time.Duration) UpstreamRateServiceOption {
 	return func(s *upstreamRateService) {
 		s.transient = TransientCooldownConfig{Duration: duration}
+	}
+}
+
+func WithCooldownSource(source StatusCooldownSource) UpstreamRateServiceOption {
+	return func(s *upstreamRateService) {
+		s.cooldownSource = source
 	}
 }
 
@@ -271,7 +284,8 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 		}
 	}
 	if !ok {
-		retryAfterSeconds = durationSeconds(s.defaultCooldown)
+		cooldown := s.defaultCooldownFor(ctx, statusCode)
+		retryAfterSeconds = durationSeconds(cooldown)
 		until = now.Add(time.Duration(retryAfterSeconds) * time.Second)
 	}
 	dec := Decision{
@@ -289,6 +303,24 @@ func (s *upstreamRateService) HandleUpstreamError(ctx context.Context, accountID
 	dec.StateChange = StateRateLimited
 	dec.Reason = reason
 	return dec, nil
+}
+
+func (s *upstreamRateService) defaultCooldownFor(ctx context.Context, statusCode int) time.Duration {
+	if s == nil {
+		return defaultUpstreamCooldown
+	}
+	fallback := s.defaultCooldown
+	if fallback <= 0 {
+		fallback = defaultUpstreamCooldown
+	}
+	if s.cooldownSource == nil {
+		return fallback
+	}
+	cooldown, err := s.cooldownSource.CooldownForStatus(ctx, statusCode)
+	if err != nil || cooldown <= 0 {
+		return fallback
+	}
+	return cooldown
 }
 
 // ClearCascade 遵守 rate.Service 契约(rate.go §ClearCascade):原子地清除

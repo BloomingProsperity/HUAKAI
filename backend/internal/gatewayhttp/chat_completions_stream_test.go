@@ -398,7 +398,7 @@ func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
 	})
 }
 
-func TestTransportSelectionForDispatch_V2ReverseSessionShapes(t *testing.T) {
+func TestResolveDispatchTransport_V2ReverseSessionShapes(t *testing.T) {
 	cases := []struct {
 		name           string
 		account        provider.AccountInfo
@@ -428,6 +428,13 @@ func TestTransportSelectionForDispatch_V2ReverseSessionShapes(t *testing.T) {
 			wantMode:       transport.TransportModeMimicryGeminiAdvanced,
 		},
 		{
+			name:           "gemini code assist uses dedicated standard provider",
+			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeCodeAssist},
+			protocolFamily: "gemini_code_assist",
+			wantPlatform:   string(transport.ProviderGeminiCodeAssist),
+			wantMode:       transport.TransportModeStandard,
+		},
+		{
 			name:           "gemini antigravity auth mode uses antigravity provider",
 			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
 			protocolFamily: "antigravity_session",
@@ -452,11 +459,11 @@ func TestTransportSelectionForDispatch_V2ReverseSessionShapes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := transportSelectionForDispatch(tc.account, tc.protocolFamily)
-			if got.account.Platform != tc.wantPlatform || got.mode != tc.wantMode {
-				t.Fatalf("transport selection platform/mode=%q/%q want %q/%q", got.account.Platform, got.mode, tc.wantPlatform, tc.wantMode)
+			account, mode := gateway.ResolveDispatchTransport(tc.account, tc.protocolFamily)
+			if account.Platform != tc.wantPlatform || mode != tc.wantMode {
+				t.Fatalf("transport selection platform/mode=%q/%q want %q/%q", account.Platform, mode, tc.wantPlatform, tc.wantMode)
 			}
-			if err := transport.ValidateModeForProvider(transport.ProviderCode(got.account.Platform), got.mode); err != nil {
+			if err := transport.ValidateModeForProvider(transport.ProviderCode(account.Platform), mode); err != nil {
 				t.Fatalf("selected transport is not policy-valid: %v", err)
 			}
 		})

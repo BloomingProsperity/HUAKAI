@@ -15,6 +15,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -22,6 +24,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -59,6 +63,12 @@ type Deps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
+	// SettleRecoveryDLQ 交付后结算失败的 durable 兜底队列(防掉钱)。nil 时退回原行为。
+	SettleRecoveryDLQ settlementrecovery.Enqueuer
+	// Feedback 把上游结果喂账号健康 FSM(坏号冷却→下次选号自动跳过=自动换号)。nil 时 no-op。
+	Feedback *upstreamfeedback.Observer
+	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
+	RetryBudget retryBudgetGate
 }
 
 type execution struct {
@@ -91,6 +101,9 @@ type execution struct {
 	predictedCost     decimal.Decimal
 	costSnapshot      string
 	pending           bool
+	classTransition   *bindingfallback.Transition
+	// excludedAccounts 本请求已失败账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
+	excludedAccounts map[int64]struct{}
 }
 
 func NewSpeechHandler(d Deps) http.HandlerFunc {
@@ -167,10 +180,6 @@ func newHandler(d Deps, endpoint audioEndpoint) http.HandlerFunc {
 		if !ex.prepareRoute(w) {
 			return
 		}
-		if err := ex.preparePricing(); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
-			return
-		}
 		ex.run(w)
 	}
 }
@@ -214,10 +223,87 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	if !ex.reserve(w) || !ex.selectAccount(w, 1) || !ex.resolveCredential(w) {
-		return
+	budget := fallbackexec.NormalBudget(ex.plan)
+	authFailoverUsed := false
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		outcome := ex.runAttempt(w, ex.plan.Attempts[planIdx], i+1)
+		if outcome.done {
+			return
+		}
+		if ex.selRes != nil {
+			ex.excludeAccount(ex.selRes.AccountID)
+		}
+		// 上游 401/发网前凭据错配走授权换号子预算:整请求最多一次、预算末位也放行
+		// (必要时扩一格),不进 Coordinator 的跨类终态门(auth 对类别转移保持
+		// fail-closed)。第二次授权失败落到 Coordinator 原地终止,防 401 风暴烧号。
+		if f := outcome.failure; f != nil && f.AuthFailoverEligible && f.RetryPermitted {
+			if !authFailoverUsed && (ex.d.RetryBudget == nil || ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+				authFailoverUsed = true
+				if i+1 >= budget {
+					budget++
+				}
+				continue
+			}
+		}
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
+			}
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runAttempt(w, phase.Attempts[0], i+2)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
+		}
 	}
-	_ = ex.dispatchAndSettle(w, 1)
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int) attemptOutcome {
+	// validateAudioRequest 已把 JSON/multipart 限长读入不可变 []byte；每个 attempt
+	// 都从该缓冲重新生成出站 body，因此跨账号/跨类不会复用已消费的流。
+	ex.activateAttempt(attempt)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.accInfo = provider.AccountInfo{}
+	if err := ex.preparePricing(); err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
+		return attemptOutcome{done: true}
+	}
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	// 幂等重放续用被 abort 的 claim 时,billing 返回的 attempt_seq 是权威值
+	// (跨请求单调),选号与结算必须用同一个,否则 settle 身份对不上。
+	attemptSeq = authoritativeAttemptSeq(ex.reserveRes, attemptSeq)
+	if failure := ex.selectAccount(w, attemptSeq); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.credentialCompatibilityFailure(w); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	return ex.dispatchAndSettle(w, attemptSeq)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {
@@ -229,4 +315,8 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan) {
 	if ex.upstreamModelID == "" {
 		ex.upstreamModelID = ex.req.Model
 	}
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }

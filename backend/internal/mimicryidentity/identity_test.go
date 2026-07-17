@@ -103,7 +103,7 @@ func TestA_默认开_未配置即改写(t *testing.T) {
 }
 
 // TestB_failopen_空外部账号id 验证:开关开启但 external account id 为空时,
-// 不改写、字节等价(镜像 sub2 account_uuid==” 跳过)。
+// 不改写并保持字节等价。
 //
 // 变异证伪:把 fail-open 改成"空也强行改写"(删去 ExternalAccountID=="" 短路)
 // → 会拿空 account 组件去改写 → 字节不再等价 → 本测试变红。

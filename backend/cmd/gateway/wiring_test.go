@@ -349,6 +349,9 @@ func TestWiring_PricingRatioResolverSharedByChatEmbeddingsRerankImagesAndAudioDe
 	if audioDeps.RateTables != rateTables || audioDeps.ClaimGate != claimGate || audioDeps.Settler != settler {
 		t.Fatal("audio deps did not reuse shared money-path wiring")
 	}
+	if audioDeps.SettleRecoveryDLQ != recovery {
+		t.Fatal("audio deps did not reuse shared settlement recovery queue")
+	}
 }
 
 type wiringAlertingRunner struct {

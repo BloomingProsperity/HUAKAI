@@ -9,8 +9,9 @@ import (
 )
 
 var (
-	ErrSlotManagerUnavailable = errors.New("pool slot manager unavailable")
-	ErrNoSlotAvailable        = errors.New("pool account concurrency slot unavailable")
+	ErrSlotManagerUnavailable    = errors.New("pool slot manager unavailable")
+	ErrNoSlotAvailable           = errors.New("pool account concurrency slot unavailable")
+	ErrBindingConcurrencyLimited = errors.New("pool binding concurrency limit exceeded")
 )
 
 type SlotManager interface {

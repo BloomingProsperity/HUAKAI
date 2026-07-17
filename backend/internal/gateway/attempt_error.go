@@ -64,6 +64,18 @@ type AttemptRetryDecision struct {
 	CountsAgainstAuthFailoverBudget bool
 }
 
+// CredentialProtocolIncompatibleDecision 返回发网前账号身份不匹配时的统一换号决策。
+// 该失败尚未产生上游副作用，因此允许排除当前账号并使用至多一次的鉴权换号预算。
+func CredentialProtocolIncompatibleDecision() AttemptRetryDecision {
+	return AttemptRetryDecision{
+		RetryableBeforeDelivery:         true,
+		SwitchAccount:                   true,
+		ClientStatus:                    http.StatusServiceUnavailable,
+		AbortReason:                     "credential_protocol_incompatible",
+		CountsAgainstAuthFailoverBudget: true,
+	}
+}
+
 // ClassifyAttemptHTTPError 将上游 HTTP 错误先交给既有 Classify 归一化，
 // 再收敛成 attempt loop 可消费的 retry decision。
 func ClassifyAttemptHTTPError(httpStatus int, headers http.Header, body []byte, provider string) (AttemptRetryDecision, Classification, error) {
@@ -202,6 +214,45 @@ func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecisi
 			TransportClass: class,
 		}
 	}
+}
+
+// EndClassFromAttempt 把一次交付前失败的分类与传输决策收敛成 Router 可判定的稳定终态。
+// 非流式与流式 executor 必须共用这张映射，避免同一种上游错误在不同协议上出现不同重试语义。
+func EndClassFromAttempt(classification Classification, decision AttemptRetryDecision) StreamEndClass {
+	var draft UsageRecordDraft
+	ApplyClassificationToDraft(&draft, classification)
+	if draft.EndClass != "" && draft.EndClass != UnknownTermination {
+		return draft.EndClass
+	}
+	switch decision.TransportClass {
+	case TransportErrorConnectTimeout,
+		TransportErrorNetworkTimeout,
+		TransportErrorUpstreamHeaderTimeout,
+		TransportErrorUpstreamBodyIdleTimeout:
+		return InterEventTimeout
+	case TransportErrorTLSHandshakeFailed,
+		TransportErrorCredentialExpired,
+		TransportErrorConnectionRefused,
+		TransportErrorDNSFailure,
+		TransportErrorNetworkUnreachable,
+		TransportErrorProxyFailure:
+		return UpstreamError5xx
+	}
+	switch decision.AbortReason {
+	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
+		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
+		"upstream_dispatch_error", "upstream_empty_response",
+		"local_credential_expired",
+		"transport_connection_refused", "transport_dns_failure",
+		"transport_network_unreachable", "transport_proxy_failure":
+		return UpstreamError5xx
+	case "upstream_rate_limited", "queue_wait":
+		return UpstreamRateLimit
+	case "upstream_timeout", "transport_connect_timeout", "transport_network_timeout",
+		"transport_upstream_header_timeout", "transport_upstream_body_idle_timeout":
+		return InterEventTimeout
+	}
+	return UnknownTermination
 }
 
 func decisionFromHTTPClassification(httpStatus int, c Classification) AttemptRetryDecision {

@@ -184,9 +184,8 @@ var egressLeakRequestRules = []headerRule{
 }
 
 // NormalizeEgressRequestHeaders 从 OUTBOUND(出站)上游请求中剥离 proxy/forwarding/CDN
-// 泄露头,使本网关不会被上游 WAF 轻易地指纹识别为中继(relay)。这是出站反检测的卫生措施;
-// 对所有路径都安全(这些头上游从不需要,也从不携带鉴权)。与 CLIProxyAPI / sub2api /
-// AIClient-2-API 的出站头规范化保持对齐。
+// 泄露头，使本网关不会被上游 WAF 轻易地指纹识别为中继(relay)。这是出站反检测的卫生措施；
+// 对所有路径都安全，因为这些头上游不需要，也不携带鉴权。
 func NormalizeEgressRequestHeaders(h http.Header) {
 	if h == nil {
 		return

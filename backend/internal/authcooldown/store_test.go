@@ -37,7 +37,7 @@ func TestBackoffCappedExponential(t *testing.T) {
 		{4, 240 * time.Second},
 		{5, 480 * time.Second},
 		{6, 960 * time.Second},
-		{7, 30 * time.Minute}, // 1920s > 1800s cap → 封顶
+		{7, 30 * time.Minute},  // 1920s > 1800s cap → 封顶
 		{50, 30 * time.Minute}, // 大 shift 不溢出 → 封顶
 	}
 	for _, c := range cases {
@@ -62,6 +62,28 @@ func TestSuspendFirstStrikeRemovesFromSelection(t *testing.T) {
 	strike, _, _ := inspect(s, 7)
 	if strike != 1 {
 		t.Fatalf("首发应 strike=1,实际 %d", strike)
+	}
+}
+
+func TestSnapshotMatchesEligibleAndPreservesExpiredStrike(t *testing.T) {
+	s := NewStore(testCfg())
+	now := time.Unix(1_000_000, 0).UTC()
+	s.Suspend(context.Background(), 7, ClassAmbiguous, 4, now)
+
+	active := s.Snapshot(7, now.Add(time.Second))
+	if !active.Found || active.Eligible || active.HardDisabled || active.Strike != 1 ||
+		active.CredentialVersion != 4 || active.AuthUntil == nil || !active.AuthUntil.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("活动冷却快照不一致：%+v", active)
+	}
+
+	expired := s.Snapshot(7, now.Add(30*time.Second))
+	if !expired.Found || !expired.Eligible || expired.Strike != 1 || expired.AuthUntil == nil {
+		t.Fatalf("过期冷却应恢复合格但保留失败历史：%+v", expired)
+	}
+
+	missing := s.Snapshot(8, now)
+	if missing.Found || !missing.Eligible || missing.AuthUntil != nil {
+		t.Fatalf("无状态账号快照不一致：%+v", missing)
 	}
 }
 
@@ -123,7 +145,7 @@ func TestIronCladHardDisableAtStrikeK(t *testing.T) {
 }
 
 // TestAmbiguousNeverHardDisables:ambiguous 通用 401 即使远超 K 次也永不 HardDisabled(自愈)。
-// 判别:若把 ambiguous 也纳入硬禁,hard 会变 true,断言红。修 new-api「瞬时 401 误禁好号」。
+// 判别：若把 ambiguous 也纳入硬禁，hard 会变 true，断言红。
 func TestAmbiguousNeverHardDisables(t *testing.T) {
 	s := NewStore(testCfg())
 	now := time.Unix(1_000_000, 0)

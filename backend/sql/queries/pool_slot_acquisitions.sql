@@ -1,7 +1,24 @@
+-- name: AcquireBindingConcurrencyLock :exec
+SELECT pg_advisory_lock(
+    hashtextextended('pool_binding_concurrency'::text, sqlc.arg(binding_id)::bigint)
+);
+
+-- name: ReleaseBindingConcurrencyLock :one
+SELECT pg_advisory_unlock(
+    hashtextextended('pool_binding_concurrency'::text, sqlc.arg(binding_id)::bigint)
+)::boolean;
+
+-- name: CountActiveBindingAcquisitions :one
+SELECT COUNT(*)::bigint
+FROM pool_slot_acquisitions
+WHERE binding_id = sqlc.arg(binding_id)::bigint
+  AND status = 'acquired';
+
 -- name: InsertSlotAcquisition :one
 INSERT INTO pool_slot_acquisitions (
     tenant_id,
     provider_account_id,
+    binding_id,
     acquisition_token,
     claim_id,
     attempt_seq,
@@ -9,6 +26,7 @@ INSERT INTO pool_slot_acquisitions (
 ) VALUES (
     sqlc.arg(tenant_id),
     sqlc.arg(provider_account_id),
+    sqlc.narg(binding_id),
     sqlc.arg(acquisition_token),
     sqlc.narg(claim_id),
     sqlc.arg(attempt_seq),
@@ -30,6 +48,7 @@ SELECT
     id,
     tenant_id,
     provider_account_id,
+    binding_id,
     acquisition_token,
     claim_id,
     attempt_seq,

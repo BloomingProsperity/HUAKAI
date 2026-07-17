@@ -41,7 +41,7 @@ func (s *Service) ReverseCost(ctx context.Context, req ReverseCostRequest) (Reve
 		result.Skipped = true
 		return result, nil
 	}
-	err := s.runQuotaFinalizationWithRetry(ctx, "reverse_cost", func(tx PGStore) error {
+	err := s.runQuotaFinalizationWithRetry(ctx, "reverse_cost", defaultFinalizationRetryPolicy, func(tx PGStore) error {
 		result = ReverseCostResult{}
 		reservation, err := getFinalizationReservation(ctx, tx, finalizationReservationInput{
 			TenantID:  req.TenantID,

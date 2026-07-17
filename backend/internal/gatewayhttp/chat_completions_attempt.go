@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/bodyparamgate"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -63,8 +64,13 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			providerModelID = *binding.ProviderModelIDOverride
 		}
 		out = append(out, router.PoolCandidateMeta{
-			PoolGroupID:     binding.PoolGroupID,
-			ProviderModelID: providerModelID,
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: deref32OrZero(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
 			// 透传 selection_mode:此前丢弃致 pool/router 加权分支永不可达(断点2)。
 			SelectionMode: binding.SelectionMode,
 		})
@@ -74,6 +80,9 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 
 // activeBindingSelectionMode 返回命中 binding 的 selection_mode(取不到则空=默认 strict_priority)。
 func (ex *chatExecution) activeBindingSelectionMode() string {
+	if ex.attempt.SelectionMode != "" {
+		return ex.attempt.SelectionMode
+	}
 	if binding, ok := ex.activeBindingMetadata(); ok {
 		return binding.SelectionMode
 	}
@@ -123,6 +132,7 @@ type classifiedAttemptFailure struct {
 	Decision          gateway.AttemptRetryDecision
 	EndClass          gateway.StreamEndClass
 	RetryAfterSeconds int
+	FallbackSignal    bindingfallback.Signal
 
 	DeliveredToClient bool
 	AbortReason       string
@@ -140,6 +150,7 @@ func classifiedFailureFromDecision(code, message string, classification gateway.
 		EndClass:       endClassFromAttemptFailure(classification, decision),
 		AbortReason:    decision.AbortReason,
 		Cause:          cause,
+		FallbackSignal: bindingFallbackSignalFromDecision(classification, decision),
 	}
 }
 
@@ -181,6 +192,7 @@ func degradeFailureIfAbortFailed(ctx context.Context, requestID string, failure 
 	// Abort 失败时 claim 可能仍停在 reserving，禁止同一幂等键继续 retry。
 	failure.AbortReason = reason + ";abort_failed=1"
 	failure.Decision.AbortReason = failure.AbortReason
+	failure.FallbackSignal = bindingfallback.SignalBillingAbortFailure
 	return failure
 }
 
@@ -202,40 +214,7 @@ func (ex *chatExecution) abortReservation(claimID int64, reason string, observed
 }
 
 func endClassFromAttemptFailure(classification gateway.Classification, decision gateway.AttemptRetryDecision) gateway.StreamEndClass {
-	var draft gateway.UsageRecordDraft
-	gateway.ApplyClassificationToDraft(&draft, classification)
-	if draft.EndClass != "" && draft.EndClass != gateway.UnknownTermination {
-		return draft.EndClass
-	}
-	switch decision.TransportClass {
-	case gateway.TransportErrorConnectTimeout,
-		gateway.TransportErrorNetworkTimeout,
-		gateway.TransportErrorUpstreamHeaderTimeout,
-		gateway.TransportErrorUpstreamBodyIdleTimeout:
-		return gateway.InterEventTimeout
-	case gateway.TransportErrorTLSHandshakeFailed,
-		gateway.TransportErrorCredentialExpired,
-		gateway.TransportErrorConnectionRefused,
-		gateway.TransportErrorDNSFailure,
-		gateway.TransportErrorNetworkUnreachable,
-		gateway.TransportErrorProxyFailure:
-		return gateway.UpstreamError5xx
-	}
-	switch decision.AbortReason {
-	case "upstream_5xx", "upstream_overloaded", "pool_no_capacity",
-		"pool_select_error", "pool_select_no_account", "credential_resolve_error",
-		"upstream_dispatch_error", "upstream_empty_response",
-		"local_credential_expired",
-		"transport_connection_refused", "transport_dns_failure",
-		"transport_network_unreachable", "transport_proxy_failure":
-		return gateway.UpstreamError5xx
-	case "upstream_rate_limited", "queue_wait":
-		return gateway.UpstreamRateLimit
-	case "upstream_timeout", "transport_connect_timeout", "transport_network_timeout",
-		"transport_upstream_header_timeout", "transport_upstream_body_idle_timeout":
-		return gateway.InterEventTimeout
-	}
-	return gateway.UnknownTermination
+	return gateway.EndClassFromAttempt(classification, decision)
 }
 
 func effectiveAttemptBudget(plan router.RoutePlan) int {
@@ -537,7 +516,7 @@ func (w *deliveryTracker) statusCode() int {
 // 指向具体上游账号的 response 存储。sticky 未命中换号(绑定账号被健康门/
 // 限流/重试排除挡掉)时,链 ID 跨账号原样转发上游必 404/400;剥掉它让请求
 // 降级为无链续写成功,而非确定性失败。无 binding(短 prompt/TTL 过期)时
-// 无法证明跨账号,保守不动(fail-open,对齐参照 sub2api 9a0e4398)。
+// 无法证明跨账号时保守不动，维持既有 fail-open 行为。
 func (ex *chatExecution) stripCrossAccountResponseChain(body []byte) []byte {
 	if ex == nil || ex.clientProtocol != proto.ClientProtocolOpenAIResponses {
 		return body

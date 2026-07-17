@@ -141,7 +141,9 @@ func (s *MemoryStore) LatestByProviderAccount(_ context.Context, tenantID, provi
 		if rec.Key.TenantID != tenantID || rec.Key.ProviderAccountID != providerAccountID {
 			continue
 		}
-		if !ok || rec.Key.CredentialVersion > best.Key.CredentialVersion || rec.UpdatedAt.After(best.UpdatedAt) {
+		if !ok ||
+			rec.Key.CredentialVersion > best.Key.CredentialVersion ||
+			(rec.Key.CredentialVersion == best.Key.CredentialVersion && rec.UpdatedAt.After(best.UpdatedAt)) {
 			best, ok = rec, true
 		}
 	}

@@ -8,21 +8,24 @@ import (
 type GateFailureReason string
 
 const (
-	GateFailureTenantFilter        GateFailureReason = "tenant_filter"
-	GateFailureLifecycle           GateFailureReason = "lifecycle"
-	GateFailureChannel             GateFailureReason = "channel"
-	GateFailureProtocolFamily      GateFailureReason = "protocol_family"
-	GateFailureModel               GateFailureReason = "model"
-	GateFailureCapability          GateFailureReason = "capability"
-	GateFailureCredential          GateFailureReason = "credential"
-	GateFailureHealth              GateFailureReason = "health"
+	GateFailureTenantFilter   GateFailureReason = "tenant_filter"
+	GateFailureLifecycle      GateFailureReason = "lifecycle"
+	GateFailureChannel        GateFailureReason = "channel"
+	GateFailureProtocolFamily GateFailureReason = "protocol_family"
+	GateFailureModel          GateFailureReason = "model"
+	GateFailureModelCooldown  GateFailureReason = "model_cooldown"
+	GateFailureCapability     GateFailureReason = "capability"
+	GateFailureCredential     GateFailureReason = "credential"
+	GateFailureHealth         GateFailureReason = "health"
 	// GateFailureAuthCooldown 是 auth 降级车道(authcooldown)专用的不合格原因,与 GateFailureHealth
 	// 区分:auth 失败不写健康分,单独临时排除,便于审计/计数辨识「因坏 key 被移出选号」。
-	GateFailureAuthCooldown GateFailureReason = "auth_cooldown"
+	GateFailureAuthCooldown        GateFailureReason = "auth_cooldown"
 	GateFailureGroupPolicy         GateFailureReason = "group_policy"
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
 	GateFailurePinnedAccount       GateFailureReason = "pinned_account"
 	GateFailureScoredBand          GateFailureReason = "scored_band"
+	GateFailureSlotCapacity        GateFailureReason = "slot_capacity"
+	GateFailureSlotManager         GateFailureReason = "slot_manager"
 )
 
 type Gate interface {
@@ -270,7 +273,7 @@ func (g modelRateLimitGate) Allow(_ context.Context, account *AccountSnapshot, r
 		return true, "", nil
 	}
 	if limit.RateLimitResetAt.After(g.now()) {
-		return false, GateFailureModel, nil
+		return false, GateFailureModelCooldown, nil
 	}
 	return true, "", nil
 }
@@ -295,7 +298,7 @@ func (g ProviderAccountHealthGate) Allow(_ context.Context, account *AccountSnap
 	if account.DisableCooling {
 		return true, "", nil
 	}
-	if providerAccountHealthEligible(account.HealthState, account.HealthStateUntil, g.now()) {
+	if ProviderAccountHealthEligible(account.HealthState, account.HealthStateUntil, g.now()) {
 		return true, "", nil
 	}
 	return false, GateFailureHealth, nil
@@ -306,7 +309,7 @@ func (g ProviderAccountHealthGate) HealthStatus(_ context.Context, account *Acco
 		return HealthStatus{State: HealthStateDisabled}, nil
 	}
 	state := account.HealthState
-	if providerAccountHealthEligible(state, account.HealthStateUntil, g.now()) {
+	if ProviderAccountHealthEligible(state, account.HealthStateUntil, g.now()) {
 		return HealthStatus{State: HealthStateActive}, nil
 	}
 	switch state {
@@ -326,7 +329,9 @@ func (g ProviderAccountHealthGate) now() time.Time {
 	return time.Now()
 }
 
-func providerAccountHealthEligible(state string, until time.Time, now time.Time) bool {
+// ProviderAccountHealthEligible 是 provider_accounts 健康字段的统一时间判定。
+// selector 与只读管理诊断共用该函数，避免过期冷却在两个视图中得出相反结论。
+func ProviderAccountHealthEligible(state string, until time.Time, now time.Time) bool {
 	switch state {
 	case "", "healthy":
 		return true

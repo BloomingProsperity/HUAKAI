@@ -698,6 +698,8 @@ WHERE pa.tenant_id = $1
   AND c.tenant_id = $1
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
+  -- 未设过期时间(NULL)的账号不受影响;已过期账号排除出选号候选。
+  AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
   AND (
       pa.health_state = 'healthy'
       OR pa.id IN (SELECT id FROM normalized_health)

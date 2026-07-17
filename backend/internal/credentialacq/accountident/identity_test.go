@@ -73,7 +73,7 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 	}
 	token := buildJWT(t, claims, false)
 
-	id := ExtractChatGPT(token, "acct-FROM-BODY")
+	id := ExtractChatGPT(token, "acct-FROM-BODY", "user-FROM-BODY")
 	if id.AccountID != "acct-FROM-JWT" {
 		// 变异：返回 body 值或 sub 而非该 claim -> 变红。
 		t.Fatalf("AccountID = %q, want acct-FROM-JWT (claim must win over body and sub)", id.AccountID)
@@ -84,21 +84,46 @@ func TestExtractChatGPT_PrefersJWTClaimOverBodyAndSub(t *testing.T) {
 	if id.Email != "jwt@example.com" {
 		t.Fatalf("Email = %q, want jwt@example.com", id.Email)
 	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
+	}
 }
 
 func TestExtractChatGPT_FallsBackToBodyThenSub(t *testing.T) {
 	// 没有 auth claim -> body 优先于 sub。
 	claims := map[string]any{"sub": "u-sub"}
 	token := buildJWT(t, claims, false)
-	id := ExtractChatGPT(token, "acct-FROM-BODY")
+	id := ExtractChatGPT(token, "acct-FROM-BODY", "user-FROM-BODY")
 	if id.AccountID != "acct-FROM-BODY" {
 		t.Fatalf("AccountID = %q, want acct-FROM-BODY (body must win over sub when claim absent)", id.AccountID)
 	}
+	if id.Source != SourceOpenAITokenBody {
+		t.Fatalf("Source = %q, want %q", id.Source, SourceOpenAITokenBody)
+	}
+	if id.SubjectID != "u-sub" {
+		t.Fatalf("SubjectID = %q, want u-sub", id.SubjectID)
+	}
 
 	// 没有 auth claim、也没有 body -> sub 作为最后兜底。
-	id = ExtractChatGPT(token, "")
+	id = ExtractChatGPT(token, "", "")
 	if id.AccountID != "u-sub" {
 		t.Fatalf("AccountID = %q, want u-sub (sub is last-resort)", id.AccountID)
+	}
+	if id.Source != SourceChatGPTJWTClaim {
+		t.Fatalf("Source = %q, want %q", id.Source, SourceChatGPTJWTClaim)
+	}
+
+	// token 没有 subject 时，受信 token response 中的个人主体必须保留。
+	withoutSubject := buildJWT(t, map[string]any{}, false)
+	id = ExtractChatGPT(withoutSubject, "", "user-FROM-BODY")
+	if id.AccountID != "user-FROM-BODY" || id.SubjectID != "user-FROM-BODY" || id.Source != SourceOpenAITokenBody {
+		t.Fatalf("body subject fallback = %+v, want account/subject user-FROM-BODY", id)
+	}
+
+	// id_token 不可解析也不能丢掉同一 token response 中的已解析身份字段。
+	id = ExtractChatGPT("invalid", "acct-FROM-BODY", "user-FROM-BODY")
+	if id.AccountID != "acct-FROM-BODY" || id.SubjectID != "user-FROM-BODY" || id.Source != SourceOpenAITokenBody {
+		t.Fatalf("invalid token body fallback = %+v", id)
 	}
 }
 
@@ -134,7 +159,7 @@ func TestExtract_FailClosedToManual(t *testing.T) {
 		}
 
 		// ChatGPT 且无 body 回退 -> manual。
-		if id := ExtractChatGPT(bad, ""); id.Source != SourceManual || id.AccountID != "" {
+		if id := ExtractChatGPT(bad, "", ""); id.Source != SourceManual || id.AccountID != "" {
 			// 变异：若提取器在此处把解码 error 传播出去，或返回了一个
 			// 非 manual 的 identity，则此处变红。
 			t.Fatalf("ExtractChatGPT(%q): got %+v, want empty manual identity", bad, id)
@@ -159,6 +184,9 @@ func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 	if id.AccountID != "g-sub-1" {
 		t.Fatalf("AccountID = %q, want g-sub-1", id.AccountID)
 	}
+	if id.SubjectID != "g-sub-1" {
+		t.Fatalf("SubjectID = %q, want g-sub-1", id.SubjectID)
+	}
 	if id.Email != "g@x.com" {
 		t.Fatalf("Email = %q, want g@x.com (email claim wins over userinfo fallback)", id.Email)
 	}
@@ -171,5 +199,20 @@ func TestExtractGemini_UsesSubAndEmail(t *testing.T) {
 	id2 := ExtractGemini(token2, "userinfo@x.com")
 	if id2.Email != "userinfo@x.com" {
 		t.Fatalf("Email = %q, want userinfo@x.com (fallback)", id2.Email)
+	}
+}
+
+func TestIdentityEmptyIncludesEmail(t *testing.T) {
+	if !(Identity{}).Empty() {
+		t.Fatal("零值 identity 应为空")
+	}
+	for _, identity := range []Identity{
+		{AccountID: "account-1"},
+		{SubjectID: "subject-1"},
+		{Email: "person@example.com"},
+	} {
+		if identity.Empty() {
+			t.Fatalf("identity=%+v 携带标识时不应为空", identity)
+		}
 	}
 }

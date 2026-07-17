@@ -32,7 +32,7 @@ type BurstDecision struct {
 	BlockedUntil time.Time
 }
 
-// BurstLimiter 把"判定"与"计数"分开,实现"只计失败"的反猜码限流(对齐 sub2api 兑换错误计数):
+// BurstLimiter 把"判定"与"计数"分开，实现"只计失败"的反猜码限流：
 //   - CheckVoucherBurst 只读判定该 (租户,用户,源IP) 近窗失败次数是否已达上限,绝不增计数;
 //   - RecordVoucherFailure 仅在兑换确因猜码类失败时调用,增计数。
 //

@@ -438,9 +438,10 @@ type vaultStub struct{}
 
 func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "openai",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 
@@ -484,6 +485,7 @@ type recordingSettler struct {
 	settles          []billing.SettleRequest
 	aborts           []abortCall
 	settleErr        error
+	abortErr         error
 	lastSettleCtx    context.Context
 	lastSettleCtxErr error // ctx.Err() 在 Settle 被调那一刻的快照(defer cancel 之前)，守 WithoutCancel 脱钩
 }
@@ -525,7 +527,7 @@ func (q *recordingRecoveryEnqueuer) Enqueue(ctx context.Context, e dlq.Event) (i
 
 func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, reason, _ string, _ int64, _ json.RawMessage) error {
 	s.aborts = append(s.aborts, abortCall{tenantID: tenantID, claimID: claimID, reason: reason})
-	return nil
+	return s.abortErr
 }
 
 func (s *recordingSettler) CommitCacheHit(context.Context, billing.SettleRequest) error {
@@ -796,9 +798,9 @@ func TestCompletionsStreamMidStreamErrorAfterDeliveryDoesNotRefund(t *testing.T)
 	}
 }
 
-// TestCompletionsStreamZeroDeliveryErrorStillAborts 守边界:头已 200 但上游一个字节都没交付就断开
-// (真零交付),此时无可计费交付,释放整笔预留(abort)是正确的——不可被上面的修复过度纠正成"也结算"。
-// Mutation: 把 attempt.go 的 copied.Len()==0 守卫去掉(出错就一律走结算)→ settle==1/abort==0 → 本测试 RED。
+// TestCompletionsStreamZeroDeliveryErrorStillAborts 守边界:上游首字节前断开时先释放预留，
+// 此时仍可安全返回 JSON 失败；不得先写 200 再发现真零交付。
+// Mutation: 删除首字节 Peek 或把零交付也结算，会让状态、settle/abort 断言变红。
 func TestCompletionsStreamZeroDeliveryErrorStillAborts(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{
 		status:      http.StatusOK,
@@ -808,9 +810,8 @@ func TestCompletionsStreamZeroDeliveryErrorStillAborts(t *testing.T) {
 
 	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
 
-	// 流式分支在 streamAndCapture 之前已 WriteHeader(200)。
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502(首字节前仍可返回失败)", rec.Code)
 	}
 	if got := len(env.settler.settles); got != 0 {
 		t.Fatalf("settle 调用=%d want 0(真零交付无可计费内容)", got)

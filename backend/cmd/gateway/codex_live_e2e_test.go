@@ -152,8 +152,7 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 		},
 		{
 			// max 是 gpt-5.6 专属最高 effort 档(gpt-5.5 及以下上游直接 400)。
-			// 三镜有折叠先例(sub2api 把 xhigh/extrahigh/max 一律压成 xhigh),本用例
-			// 钉死 HUAKAI 对合法 effort 字节直通、不折叠——上游会原样回显 effort=max。
+			// 本用例钉死 HUAKAI 对合法 effort 字节直通、不折叠；上游会原样回显 effort=max。
 			// 注:ultra 不是 wire 层 effort 枚举值(上游返回 Invalid value: 'ultra'),
 			// 它是客户端编排 mode(response 里体现为 reasoning.mode 而非 effort),故 relay
 			// 层无从透传 ultra effort,这里验证的是最高合法档 max。
@@ -169,7 +168,7 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 			}(),
 			assert: func(t *testing.T, res codexLiveResult) {
 				assertCodexLiveSSEEvents(t, res, "response.created", "response.completed")
-				// 变异=网关折叠 max→xhigh(如 sub2api)→ 回显 xhigh 而非 max → 红。
+				// 变异：网关若把 max 折叠为 xhigh，回显会变化，本断言必须变红。
 				if !bytes.Contains(res.body, []byte(`"effort":"max"`)) {
 					t.Fatalf("max 未字节直通回显(疑被折叠): events=%v body=%s", res.events, safeCodexLiveBody(res.body, ""))
 				}

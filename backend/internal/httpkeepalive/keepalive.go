@@ -11,7 +11,9 @@ import (
 type Keepalive struct {
 	mu       sync.Mutex
 	w        io.Writer
+	written  int64
 	stopped  bool
+	started  bool
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	stopOnce sync.Once
@@ -64,16 +66,31 @@ func (k *Keepalive) writeKeepalive() bool {
 	}
 
 	n, err := k.w.Write([]byte{'\n'})
+	if n > 0 {
+		k.written += int64(n)
+	}
 	if err != nil || n != 1 {
 		k.stopped = true
 		return false
 	}
+	k.started = true
 
 	if flusher, ok := k.w.(http.Flusher); ok {
 		flusher.Flush()
 	}
 
 	return true
+}
+
+// Started 报告是否已有保活字节成功写给客户端。executor 用它守住
+// “任何字节交付后不得重放”的边界。
+func (k *Keepalive) Started() bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.started
 }
 
 // Stop 停止保活并等待后台任务完全退出。重复调用是安全的。
@@ -86,4 +103,14 @@ func (k *Keepalive) Stop() {
 	})
 
 	<-k.doneCh
+}
+
+// Wrote 报告本次保活是否已经向客户端写过字节。
+func (k *Keepalive) Wrote() bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.written > 0
 }

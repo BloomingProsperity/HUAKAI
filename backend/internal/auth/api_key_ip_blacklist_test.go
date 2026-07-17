@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -57,16 +59,37 @@ func buildResolverRequest(bearer string, remoteAddr string) *http.Request {
 	return req
 }
 
-// TestIPBlacklistDeny 是 KEY-016 的判别性测试。
+// TestIPBlacklistDeny 是 KEY-016 的判别性测试,同时守住源 SQL 投影与
+// resolver 的 deny 优先语义。
 //
-// 变异: 把 deny 检查挪到 allowlist 检查之后 (allowlist 为 nil -> allow-all
-// 在 deny 能触发前短路) -> 1.2.3.4 就会被放行 -> 红。
+// 变异:删除源 SQL 的 ip_blacklist 投影会让投影子测试变红;让返回行的
+// IpBlacklist 恒空或在 allowlist 命中后提前放行,会让拒绝断言变红。
 func TestIPBlacklistDeny(t *testing.T) {
 	const bearer = "hk_live_blacklisttest0001"
 	blacklisted := "1.2.3.4/32"
+	allowlisted := "1.2.3.4/32"
+
+	t.Run("source query projects blacklist", func(t *testing.T) {
+		raw, err := os.ReadFile("../../sql/queries/auth_inbound.sql")
+		if err != nil {
+			t.Fatalf("读取 auth_inbound.sql: %v", err)
+		}
+		const marker = "-- name: LookupAPIKeysByPrefix :many"
+		_, queryTail, found := strings.Cut(string(raw), marker)
+		if !found {
+			t.Fatalf("auth_inbound.sql 缺少 LookupAPIKeysByPrefix 查询")
+		}
+		queryBody, _, _ := strings.Cut(queryTail, "\n-- name:")
+		normalized := strings.Join(strings.Fields(queryBody), " ")
+		if !strings.Contains(normalized, "ak.ip_allowlist, ak.ip_blacklist, ak.allowed_models") {
+			t.Fatalf("LookupAPIKeysByPrefix 必须按顺序投影 ip_allowlist、ip_blacklist、allowed_models: %s", normalized)
+		}
+	})
 
 	t.Run("blacklisted IP is denied", func(t *testing.T) {
-		q := &fakeIPBlacklistQueries{rows: []dbauth.LookupAPIKeysByPrefixRow{makeBlacklistRow(t, bearer, &blacklisted)}}
+		row := makeBlacklistRow(t, bearer, &blacklisted)
+		row.IpAllowlist = &allowlisted
+		q := &fakeIPBlacklistQueries{rows: []dbauth.LookupAPIKeysByPrefixRow{row}}
 		r := auth.NewAPIKeyResolverWithFakeQueries(q)
 		req := buildResolverRequest(bearer, "1.2.3.4")
 		_, err := r.Resolve(context.Background(), req)

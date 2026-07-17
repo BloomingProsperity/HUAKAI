@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -487,6 +488,131 @@ func TestDispatcher_DefaultTransportModeIsStandard(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveDispatchTransportMatrix(t *testing.T) {
+	tests := []struct {
+		name           string
+		platform       string
+		accountType    string
+		protocolFamily string
+		wantProvider   transport.ProviderCode
+		wantMode       transport.TransportMode
+	}{
+		{"Claude AI", "anthropic", credentialstore.AuthModeClaudeAIOAuth, "anthropic_claude_session", transport.ProviderAnthropic, transport.TransportModeMimicryClaudeCode},
+		{"Claude Code", "anthropic", credentialstore.AuthModeClaudeCode, "anthropic_claude_session", transport.ProviderAnthropic, transport.TransportModeMimicryClaudeCode},
+		{"Codex", "openai", credentialstore.AuthModeCodexCLIOAuth, "openai_codex", transport.ProviderOpenAICodex, transport.TransportModeMimicryChatGPT},
+		{"Gemini Advanced", "gemini", credentialstore.AuthModeGoogleOne, "gemini_advanced_session", transport.ProviderGeminiAdvanced, transport.TransportModeMimicryGeminiAdvanced},
+		{"Gemini Code Assist", "gemini", credentialstore.AuthModeCodeAssist, "gemini_code_assist", transport.ProviderGeminiCodeAssist, transport.TransportModeStandard},
+		{"Antigravity", "gemini", credentialstore.AuthModeAntigravity, "antigravity_session", transport.ProviderAntigravity, transport.TransportModeMimicryAntigravity},
+		{"Cursor", "cursor", "session", "cursor_session", transport.ProviderCursor, transport.TransportModeMimicryCursor},
+		{"Copilot", "copilot", credentialstore.AuthModeCopilotOAuth, "copilot_session", transport.ProviderCopilot, transport.TransportModeMimicryCopilot},
+		{"Kiro", "kiro", "session", "kiro_session", transport.ProviderKiro, transport.TransportModeMimicryKiro},
+		{"Windsurf", "windsurf", "session", "windsurf_session", transport.ProviderWindsurf, transport.TransportModeMimicryWindsurf},
+		{"OpenAI API key", "openai", credentialstore.AuthModeAPIKey, "openai_chat", transport.ProviderOpenAI, transport.TransportModeStandard},
+		{"Gemini API key", "gemini", credentialstore.AuthModeAIStudioAPIKey, "gemini_messages", transport.ProviderGemini, transport.TransportModeStandard},
+		{"Kimi API key", "kimi", credentialstore.AuthModeAPIKey, "kimi_chat", transport.ProviderKimi, transport.TransportModeStandard},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			account, mode := ResolveDispatchTransport(provider.AccountInfo{
+				Platform: tc.platform, AccountType: tc.accountType,
+			}, tc.protocolFamily)
+			if account.Platform != string(tc.wantProvider) || mode != tc.wantMode {
+				t.Fatalf("provider/mode=%q/%q want %q/%q", account.Platform, mode, tc.wantProvider, tc.wantMode)
+			}
+			if err := transport.ValidateModeForProvider(tc.wantProvider, mode); err != nil {
+				t.Fatalf("解析出策略不允许的组合: %v", err)
+			}
+		})
+	}
+}
+
+func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
+	standardCalls, mimicryCalls := 0, 0
+	standard := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		standardCalls++
+		return nil, errors.New("session 账号不得落入 standard transport")
+	})
+	mimicry := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		mimicryCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    req,
+		}, nil
+	})
+	factory := transport.NewFactory()
+	factory.SetStandard(standard)
+	factory.SetMimicry(mimicry)
+	adapter := &stubAdapter{platform: "copilot"}
+	dispatcher := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: adapter},
+		TransportFactory: factory,
+	}
+
+	res, err := dispatcher.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "copilot_session",
+		Account: provider.AccountInfo{
+			AccountID: 7, Platform: "copilot", AccountType: credentialstore.AuthModeCopilotOAuth,
+		},
+		Credential: provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	defer res.Close()
+	if standardCalls != 0 || mimicryCalls != 1 {
+		t.Fatalf("transport calls standard/mimicry=%d/%d want 0/1", standardCalls, mimicryCalls)
+	}
+	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
+		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
+	}
+}
+
+func TestDispatcher_ExplicitStandardOverridesSessionAutoSelection(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
+	standardCalls, mimicryCalls := 0, 0
+	standard := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		standardCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			Request:    req,
+		}, nil
+	})
+	mimicry := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		mimicryCalls++
+		return nil, errors.New("显式 standard 不得被自动覆盖")
+	})
+	factory := transport.NewFactory()
+	factory.SetStandard(standard)
+	factory.SetMimicry(mimicry)
+	adapter := &stubAdapter{platform: "openai_codex"}
+	dispatcher := &UpstreamDispatcher{
+		Adapters:         &stubRegistry{adapter: adapter},
+		TransportFactory: factory,
+	}
+
+	res, err := dispatcher.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_codex",
+		Account:        provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: credentialstore.AuthModeCodexCLIOAuth},
+		Credential:     provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
+		TransportMode:  transport.TransportModeStandard,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	defer res.Close()
+	if standardCalls != 1 || mimicryCalls != 0 {
+		t.Fatalf("transport calls standard/mimicry=%d/%d want 1/0", standardCalls, mimicryCalls)
+	}
+	if adapter.lastInput.Account.Platform != string(transport.ProviderOpenAICodex) {
+		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderOpenAICodex)
 	}
 }
 

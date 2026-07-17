@@ -158,6 +158,51 @@ func TestSettlerAbortIgnoresMissingQuotaReservationAfterQuotaDeny(t *testing.T) 
 	}
 }
 
+// TestSettlerAbort_RevivalInvalidatesQuotaReleaseAsNoOp 固定 billing Abort 提交后 claim
+// 在 quota Release 前复活的插缝；新 attempt 已接管活预留时，Release sentinel 不能把请求报错。
+// 变异：只忽略 ErrReservationNotFound 时，本测试会把 sentinel 原样收到并变红。
+func TestSettlerAbort_RevivalInvalidatesQuotaReleaseAsNoOp(t *testing.T) {
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{releaseErr: quota.ErrReleaseInvalidatedByRevival}
+	settler := NewSettler(inner, finalizer)
+
+	err := settler.Abort(context.Background(), 7, 9010, "upstream_error", "req-revived", 0, nil)
+
+	if err != nil {
+		t.Fatalf("Abort with revived quota reservation: %v", err)
+	}
+	if got := inner.events; !reflect.DeepEqual(got, []string{"billing_abort"}) {
+		t.Fatalf("inner events=%v; want billing abort committed first", got)
+	}
+	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_release"}) {
+		t.Fatalf("quota events=%v; want one guarded quota release attempt", got)
+	}
+}
+
+// TestSettlerAbort_RevivalDefersQuotaReleaseAsNoOp 固定复活 attempt 运行期间旧 Abort
+// 只留下既有 job 重试，不把 Deferred 哨兵返回给已经完成 billing Abort 的调用方。
+// 变异：Abort 不忽略 Deferred 时，本测试会收到 quota 错误并变红。
+func TestSettlerAbort_RevivalDefersQuotaReleaseAsNoOp(t *testing.T) {
+	inner := &recordingBillingSettler{}
+	finalizer := &recordingQuotaFinalizer{releaseErr: &quota.RetryableError{
+		Operation: "release deferred for billing claim revival",
+		Cause:     quota.ErrReleaseDeferredForRevival,
+	}}
+	settler := NewSettler(inner, finalizer)
+
+	err := settler.Abort(context.Background(), 7, 9011, "upstream_error", "req-revival-deferred", 0, nil)
+
+	if err != nil {
+		t.Fatalf("Abort with deferred quota release: %v", err)
+	}
+	if got := inner.events; !reflect.DeepEqual(got, []string{"billing_abort"}) {
+		t.Fatalf("inner events=%v; want billing abort committed first", got)
+	}
+	if got := finalizer.events; !reflect.DeepEqual(got, []string{"quota_release"}) {
+		t.Fatalf("quota events=%v; want one deferred quota release attempt", got)
+	}
+}
+
 func TestSettlerCommitCacheHitFinalizesQuotaAsCacheHit(t *testing.T) {
 	inner := &recordingBillingSettler{}
 	finalizer := &recordingQuotaFinalizer{}

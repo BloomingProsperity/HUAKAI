@@ -22,10 +22,8 @@ var ErrBootstrapBackend = errors.New("panelauth: admin user bootstrap backend er
 // 账号提升为 role=admin。解决 role 制单登录(D1 硬切,取消粘贴 admin token 入口)的鸡生蛋:
 // 第一个 admin 账号从哪来——运维自己用正常注册流建账号,再由本钩子按邮箱提升。
 //
-// 相较三镜提升的是真账号而非建合成账号:new-api 空库自动建 root/密码 123456
-// (model/main.go:createRootAccountIfNeed);sub2api 用 ADMIN_EMAIL+ADMIN_PASSWORD 建账号
-// (internal/setup)。HUAKAI 不建合成账号、env 只放邮箱(非凭据、无泄密面)、复用真实注册流
-// (含社交登录 / 2FA),无默认弱密码。
+// HUAKAI 不创建合成账号，env 只保存邮箱而非凭据，并复用包含社交登录和 2FA 的
+// 真实注册流，因此不存在默认弱密码。
 //
 // 安全姿态镜像 admin.MaybeBootstrap:
 //   - env 未设 → no-op(绝大多数部署)。

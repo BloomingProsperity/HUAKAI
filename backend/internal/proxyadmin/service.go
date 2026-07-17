@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -49,6 +50,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Proxy, error) {
 		Port:         in.Port,
 		AuthUsername: cleanPtr(in.AuthUsername),
 		AuthSecret:   secret,
+		GroupID:      normalizeGroupID(in.GroupID),
 		Status:       statusOrActive(in.Status),
 	})
 	if err != nil {
@@ -74,6 +76,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (Proxy, error) {
 		Port:         in.Port,
 		AuthUsername: cleanPtr(in.AuthUsername),
 		AuthSecret:   secret,
+		GroupID:      normalizeGroupID(in.GroupID),
 	})
 	if err != nil {
 		return Proxy{}, mapErr(err)
@@ -154,11 +157,37 @@ func (s *Service) encryptAuthSecret(ctx context.Context, tenantID int64, raw *st
 }
 
 func validateCreate(in CreateInput) error {
-	return validateCommon(in.TenantID, 1, in.Name, in.Protocol, in.Host, in.Port, in.Status)
+	if err := validateCommon(in.TenantID, 1, in.Name, in.Protocol, in.Host, in.Port, in.Status); err != nil {
+		return err
+	}
+	return validateGroupID(in.GroupID)
 }
 
 func validateUpdate(in UpdateInput) error {
-	return validateCommon(in.TenantID, in.ID, in.Name, in.Protocol, in.Host, in.Port, "active")
+	if err := validateCommon(in.TenantID, in.ID, in.Name, in.Protocol, in.Host, in.Port, "active"); err != nil {
+		return err
+	}
+	return validateGroupID(in.GroupID)
+}
+
+var proxyGroupIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
+
+// validateGroupID 把代理组标识限制在可安全比较、可稳定输入的 ASCII 子集内。
+// nil 与空串都表示未分组；非空值必须完整匹配，不能靠截断或清洗掩盖非法输入。
+func validateGroupID(groupID *string) error {
+	if groupID == nil || proxyGroupIDPattern.MatchString(*groupID) {
+		return nil
+	}
+	return ErrInvalidInput
+}
+
+// normalizeGroupID 在写入前把空串规格化为 NULL，避免同一“未分组”状态出现两种存储值。
+func normalizeGroupID(groupID *string) *string {
+	if groupID == nil || *groupID == "" {
+		return nil
+	}
+	normalized := *groupID
+	return &normalized
 }
 
 func validateCommon(tenantID, id int64, name, protocol, host string, port int32, status string) error {
@@ -208,8 +237,8 @@ var blockedMetadataIPs = []netip.Addr{
 //   - 主机名:仅精确匹配 metadata/本机名单(见 blockedProxyHostnames),其余放行。
 //
 // 注:这是写时静态校验,不做 DNS 解析(无法挡 rebinding);代理目标本就 admin-gated,
-// 此处是纵深防御。是否进一步【默认封私网 / CGNAT 100.64.0.0/10 等 special-use】属
-// 信任模型决策(多级代理/委派 admin 时才需要),留作 Owner 决策,不在本切片。
+// 此处是纵深防御。若未来允许租户管理员自行配置代理,是否进一步【默认封私网 /
+// CGNAT 100.64.0.0/10 等 special-use】属于租户能力授权与网络边界决策,不在本切片。
 func proxyHostSafe(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
@@ -272,7 +301,7 @@ func mapErr(err error) error {
 func fromCreate(r admindb.CreateProxyRow) Proxy {
 	return Proxy{
 		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
+		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
 		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
 	}
 }
@@ -280,7 +309,7 @@ func fromCreate(r admindb.CreateProxyRow) Proxy {
 func fromUpdate(r admindb.UpdateProxyRow) Proxy {
 	return Proxy{
 		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
+		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
 		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
 	}
 }
@@ -288,7 +317,7 @@ func fromUpdate(r admindb.UpdateProxyRow) Proxy {
 func fromGet(r admindb.GetProxyRow) Proxy {
 	return Proxy{
 		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
+		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
 		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
 	}
 }
@@ -296,7 +325,7 @@ func fromGet(r admindb.GetProxyRow) Proxy {
 func fromList(r admindb.ListProxiesByTenantRow) Proxy {
 	return Proxy{
 		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
+		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
 		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
 	}
 }

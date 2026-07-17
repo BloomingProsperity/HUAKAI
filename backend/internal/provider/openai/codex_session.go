@@ -38,7 +38,7 @@ var codexResponsesLiveUnsupportedFields = [...]string{
 	"stop",
 }
 
-// 三镜对齐的 Codex Responses 不支持字段,仅在 openai_codex session adapter 出站前剥离。
+// Codex Responses 上游不支持的字段,仅在 openai_codex session adapter 出站前剥离。
 var codexResponsesAlignedUnsupportedFields = [...]string{
 	"max_completion_tokens",
 	"frequency_penalty",

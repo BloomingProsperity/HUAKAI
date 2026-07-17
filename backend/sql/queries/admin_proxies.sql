@@ -6,7 +6,7 @@
 -- name: ListProxiesByTenant :many
 SELECT
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 FROM proxies
 WHERE tenant_id = sqlc.arg(tenant_id) AND deleted_at IS NULL
@@ -27,7 +27,7 @@ ORDER BY id;
 -- name: GetProxy :one
 SELECT
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at
 FROM proxies
 WHERE tenant_id = sqlc.arg(tenant_id)
@@ -39,14 +39,14 @@ WHERE tenant_id = sqlc.arg(tenant_id)
 -- sqlc 层是字节流, 不强制加密格式 — 业务层负责。
 INSERT INTO proxies (
     tenant_id, name, protocol, host, port,
-    auth_username, auth_secret, status
+    auth_username, auth_secret, group_id, status
 ) VALUES (
     sqlc.arg(tenant_id), sqlc.arg(name), sqlc.arg(protocol), sqlc.arg(host), sqlc.arg(port),
-    sqlc.arg(auth_username), sqlc.arg(auth_secret), sqlc.arg(status)
+    sqlc.arg(auth_username), sqlc.arg(auth_secret), sqlc.arg(group_id), sqlc.arg(status)
 )
 RETURNING
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at;
 
 -- name: UpdateProxy :one
@@ -58,13 +58,14 @@ SET
     port = sqlc.arg(port),
     auth_username = sqlc.arg(auth_username),
     auth_secret = sqlc.arg(auth_secret),
+    group_id = sqlc.arg(group_id),
     updated_at = NOW()
 WHERE tenant_id = sqlc.arg(tenant_id)
   AND id = sqlc.arg(id)
   AND deleted_at IS NULL
 RETURNING
     id, tenant_id, name, protocol, host, port,
-    auth_username, auth_secret,
+    auth_username, auth_secret, group_id,
     status, last_check_at, created_at, updated_at;
 
 -- name: SetProxyStatus :exec

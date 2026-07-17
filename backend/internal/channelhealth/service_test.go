@@ -14,6 +14,16 @@ type fixedClock struct{ now time.Time }
 func (c *fixedClock) Now() time.Time      { return c.now }
 func (c *fixedClock) Add(d time.Duration) { c.now = c.now.Add(d) }
 
+type fakeHealthCooldownSource struct {
+	values map[int]time.Duration
+	calls  []int
+}
+
+func (s *fakeHealthCooldownSource) CooldownForStatus(_ context.Context, status int) (time.Duration, error) {
+	s.calls = append(s.calls, status)
+	return s.values[status], nil
+}
+
 func testPolicy() Policy {
 	p := DefaultPolicy()
 	p.MinSampleCount = 3
@@ -55,6 +65,76 @@ func TestChannelHealth_AT001_DefaultActiveSubject(t *testing.T) {
 	}
 	if len(store.Audits()) != 0 {
 		t.Fatalf("default active should not emit degradation audit")
+	}
+}
+
+func TestChannelHealthLatestByProviderAccountMatchesPersistentOrdering(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)})
+	base := testKey()
+	olderHighVersion := Record{
+		Key:       base,
+		State:     StateManualPaused,
+		UpdatedAt: time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC),
+	}
+	olderHighVersion.Key.CredentialVersion = 2
+	newerLowVersion := Record{
+		Key:       base,
+		State:     StateActive,
+		UpdatedAt: time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC),
+	}
+	newerLowVersion.Key.AccountCredentialID = 9002
+	newerLowVersion.Key.CredentialVersion = 1
+	if _, err := store.UpsertRecord(ctx, olderHighVersion); err != nil {
+		t.Fatalf("写入高版本记录：%v", err)
+	}
+	if _, err := store.UpsertRecord(ctx, newerLowVersion); err != nil {
+		t.Fatalf("写入低版本记录：%v", err)
+	}
+
+	rec, err := svc.LatestByProviderAccount(ctx, base.TenantID, base.ProviderAccountID)
+	if err != nil {
+		t.Fatalf("LatestByProviderAccount: %v", err)
+	}
+	if rec.Key.CredentialVersion != 2 || rec.State != StateManualPaused {
+		t.Fatalf("latest=%+v，期望凭据版本优先选择 v2/manual_paused", rec)
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, 0, base.ProviderAccountID); err == nil {
+		t.Fatal("tenant_id=0 必须拒绝")
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, base.TenantID, 0); err == nil {
+		t.Fatal("provider_account_id=0 必须拒绝")
+	}
+}
+
+func TestLatestByProviderAccountReturnsSelectorRecord(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)})
+	older := testKey()
+	older.CredentialVersion = 1
+	newer := older
+	newer.CredentialVersion = 2
+	if _, err := svc.EnsureDefaultActive(ctx, older); err != nil {
+		t.Fatalf("写入旧版本：%v", err)
+	}
+	if _, err := svc.EnsureDefaultActive(ctx, newer); err != nil {
+		t.Fatalf("写入新版本：%v", err)
+	}
+
+	got, err := svc.LatestByProviderAccount(ctx, newer.TenantID, newer.ProviderAccountID)
+	if err != nil {
+		t.Fatalf("LatestByProviderAccount：%v", err)
+	}
+	if got.Key.CredentialVersion != 2 || got.State != StateActive {
+		t.Fatalf("最新 selector 记录不一致：%+v", got)
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, 0, newer.ProviderAccountID); err == nil {
+		t.Fatal("tenant_id=0 必须拒绝")
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, newer.TenantID, 0); err == nil {
+		t.Fatal("provider_account_id=0 必须拒绝")
 	}
 }
 
@@ -125,6 +205,128 @@ func TestChannelHealth_AT004_RateLimitCooldownUsesResetTimestamp(t *testing.T) {
 	rec, _ := store.Get(ctx, key)
 	if rec.State != StateCoolingDown || rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(reset) {
 		t.Fatalf("cooldown_until=%v want reset %v", rec.CooldownUntil, reset)
+	}
+}
+
+func TestChannelHealthRateLimitReadsRuntimeCooldownForNewEvent(t *testing.T) {
+	// 变异：删掉运行时设置源后会回到 testPolicy 的 1 分钟，精确的 37 秒截止时间立即变红。
+	ctx := context.Background()
+	store := NewMemoryStore()
+	clock := &fixedClock{now: time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)}
+	source := &fakeHealthCooldownSource{values: map[int]time.Duration{429: 37 * time.Second}}
+	svc := NewService(store, testPolicy(), clock, WithCooldownSource(source))
+	key := testKey()
+	for i := 0; i < 3; i++ {
+		clock.Add(time.Millisecond)
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalRateLimit, StatusCode: 429}); err != nil {
+			t.Fatalf("ApplySignal: %v", err)
+		}
+	}
+	rec, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := clock.Now().Add(37 * time.Second)
+	if rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(want) {
+		t.Fatalf("cooldown_until=%v, want %s", rec.CooldownUntil, want)
+	}
+	if len(source.calls) != 1 || source.calls[0] != 429 {
+		t.Fatalf("设置源调用=%v, want [429]", source.calls)
+	}
+}
+
+func TestChannelHealth529ReadsOverloadCooldownOnlyForNewEvent(t *testing.T) {
+	// 变异：把 529 继续当普通 5xx 使用 1 分钟，会使 43 秒截止时间断言变红。
+	ctx := context.Background()
+	store := NewMemoryStore()
+	clock := &fixedClock{now: time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)}
+	source := &fakeHealthCooldownSource{values: map[int]time.Duration{529: 43 * time.Second}}
+	svc := NewService(store, testPolicy(), clock, WithCooldownSource(source))
+	key := testKey()
+	var rec Record
+	for i := 0; i < 8; i++ {
+		clock.Add(time.Millisecond)
+		var err error
+		rec, err = svc.ApplySignal(ctx, Signal{Key: key, Class: SignalUpstream5xx, StatusCode: 529})
+		if err != nil {
+			t.Fatalf("ApplySignal: %v", err)
+		}
+		if rec.State == StateCoolingDown {
+			break
+		}
+	}
+	want := clock.Now().Add(43 * time.Second)
+	if rec.State != StateCoolingDown || rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(want) {
+		t.Fatalf("state=%s cooldown_until=%v, want cooling_down/%s", rec.State, rec.CooldownUntil, want)
+	}
+	if len(source.calls) != 1 || source.calls[0] != 529 {
+		t.Fatalf("设置源调用=%v, want [529]", source.calls)
+	}
+}
+
+func TestChannelHealthRuntimeCooldownUnconfiguredKeepsPolicyDefault(t *testing.T) {
+	// 防翻转守卫：不注入设置源时仍严格使用接线前 Policy.DefaultRateLimitCooldown。
+	ctx, svc, store, clock := testService()
+	key := testKey()
+	for i := 0; i < 3; i++ {
+		clock.Add(time.Millisecond)
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalRateLimit, StatusCode: 429}); err != nil {
+			t.Fatalf("ApplySignal: %v", err)
+		}
+	}
+	rec, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := clock.Now().Add(testPolicy().DefaultRateLimitCooldown)
+	if rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(want) {
+		t.Fatalf("cooldown_until=%v, want pre-wiring default %s", rec.CooldownUntil, want)
+	}
+}
+
+func TestChannelHealthCooldownChangeDoesNotRewriteStoredDeadline(t *testing.T) {
+	// 变异：若设置更新会回写已有记录，旧账号的截止时间会从 17 秒漂到 29 秒；
+	// 若服务只在构造时读一次，新账号又不会拿到 29 秒。两个方向由同一用例同时咬住。
+	ctx := context.Background()
+	store := NewMemoryStore()
+	clock := &fixedClock{now: time.Date(2026, 7, 14, 11, 0, 0, 0, time.UTC)}
+	source := &fakeHealthCooldownSource{values: map[int]time.Duration{429: 17 * time.Second}}
+	svc := NewService(store, testPolicy(), clock, WithCooldownSource(source))
+	applyThree := func(key ChannelKey) Record {
+		t.Helper()
+		var rec Record
+		for i := 0; i < 3; i++ {
+			clock.Add(time.Millisecond)
+			var err error
+			rec, err = svc.ApplySignal(ctx, Signal{Key: key, Class: SignalRateLimit, StatusCode: 429})
+			if err != nil {
+				t.Fatalf("ApplySignal: %v", err)
+			}
+		}
+		return rec
+	}
+
+	oldKey := testKey()
+	oldRec := applyThree(oldKey)
+	if oldRec.CooldownUntil == nil {
+		t.Fatal("旧记录缺少 cooldown_until")
+	}
+	oldDeadline := *oldRec.CooldownUntil
+
+	source.values[429] = 29 * time.Second
+	newKey := oldKey
+	newKey.ProviderAccountID++
+	newKey.AccountCredentialID++
+	newRec := applyThree(newKey)
+	if newRec.CooldownUntil == nil || !newRec.CooldownUntil.Equal(clock.Now().Add(29*time.Second)) {
+		t.Fatalf("新记录 cooldown_until=%v, want %s", newRec.CooldownUntil, clock.Now().Add(29*time.Second))
+	}
+	oldAfter, err := store.Get(ctx, oldKey)
+	if err != nil {
+		t.Fatalf("Get old: %v", err)
+	}
+	if oldAfter.CooldownUntil == nil || !oldAfter.CooldownUntil.Equal(oldDeadline) {
+		t.Fatalf("存量 deadline 从 %s 漂到 %v", oldDeadline, oldAfter.CooldownUntil)
 	}
 }
 

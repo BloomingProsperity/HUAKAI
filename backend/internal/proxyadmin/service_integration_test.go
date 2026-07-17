@@ -185,3 +185,83 @@ func TestProxy_LifecycleAndSecretFreeReads(t *testing.T) {
 		}
 	}
 }
+
+// TestProxy_GroupRoundTripAndClear 通过真实 PostgreSQL 钉住 create/get/list/update
+// 的 group_id 列、参数与 Scan 顺序，并验证 nil 更新会把列清为 NULL。变异:删掉
+// INSERT/SELECT/UPDATE/RETURNING 中任一 group_id，至少一个精确往返断言会转红。
+func TestProxy_GroupRoundTripAndClear(t *testing.T) {
+	ctx := context.Background()
+	pool := openProxyPool(t, ctx)
+	tenantID := seedProxyTenant(t, ctx, pool, "group")
+	svc := New(admindb.New(pool), testKeys(t))
+
+	firstGroup := "us-residential_1"
+	created, err := svc.Create(ctx, CreateInput{
+		TenantID: tenantID, Name: "group-proxy", Protocol: "http", Host: "10.0.0.21", Port: 3128,
+		GroupID: &firstGroup,
+	})
+	if err != nil {
+		t.Fatalf("create grouped proxy: %v", err)
+	}
+	if created.GroupID == nil || *created.GroupID != firstGroup {
+		t.Fatalf("create group_id=%v want %q", created.GroupID, firstGroup)
+	}
+
+	got, err := svc.Get(ctx, tenantID, created.ID)
+	if err != nil {
+		t.Fatalf("get grouped proxy: %v", err)
+	}
+	if got.GroupID == nil || *got.GroupID != firstGroup {
+		t.Fatalf("get group_id=%v want %q", got.GroupID, firstGroup)
+	}
+
+	listed, err := svc.List(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("list grouped proxy: %v", err)
+	}
+	found := false
+	for _, proxy := range listed {
+		if proxy.ID != created.ID {
+			continue
+		}
+		found = true
+		if proxy.GroupID == nil || *proxy.GroupID != firstGroup {
+			t.Fatalf("list group_id=%v want %q", proxy.GroupID, firstGroup)
+		}
+	}
+	if !found {
+		t.Fatalf("list did not return created proxy %d", created.ID)
+	}
+
+	secondGroup := "eu-egress"
+	updated, err := svc.Update(ctx, UpdateInput{
+		TenantID: tenantID, ID: created.ID, Name: created.Name, Protocol: created.Protocol,
+		Host: created.Host, Port: created.Port, GroupID: &secondGroup,
+	})
+	if err != nil {
+		t.Fatalf("update proxy group: %v", err)
+	}
+	if updated.GroupID == nil || *updated.GroupID != secondGroup {
+		t.Fatalf("updated group_id=%v want %q", updated.GroupID, secondGroup)
+	}
+
+	cleared, err := svc.Update(ctx, UpdateInput{
+		TenantID: tenantID, ID: created.ID, Name: created.Name, Protocol: created.Protocol,
+		Host: created.Host, Port: created.Port, GroupID: nil,
+	})
+	if err != nil {
+		t.Fatalf("clear proxy group: %v", err)
+	}
+	if cleared.GroupID != nil {
+		t.Fatalf("clear response group_id=%v want nil", cleared.GroupID)
+	}
+	var storedGroup *string
+	if err := pool.QueryRow(ctx,
+		`SELECT group_id FROM proxies WHERE tenant_id=$1 AND id=$2`, tenantID, created.ID,
+	).Scan(&storedGroup); err != nil {
+		t.Fatalf("read cleared group_id: %v", err)
+	}
+	if storedGroup != nil {
+		t.Fatalf("stored group_id=%v want SQL NULL", storedGroup)
+	}
+}

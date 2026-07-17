@@ -116,6 +116,60 @@ func (b *RoutingReasonBuilder) onlyFailure(reason GateFailureReason, total int) 
 	return b.reason.CandidateCountsByExclusion[reason] == total
 }
 
+func (b *RoutingReasonBuilder) exhaustion() Exhaustion {
+	if b == nil {
+		return Exhaustion{Family: ExhaustionFamilyUnknown}
+	}
+	reasons := make(map[GateFailureReason]int, len(b.reason.CandidateCountsByExclusion))
+	for reason, count := range b.reason.CandidateCountsByExclusion {
+		if count > 0 {
+			reasons[reason] = count
+		}
+	}
+	return Exhaustion{Family: exhaustionFamily(reasons), Reasons: reasons}
+}
+
+func exhaustionFamily(reasons map[GateFailureReason]int) ExhaustionFamily {
+	if len(reasons) == 0 {
+		return ExhaustionFamilyUnknown
+	}
+	var capacity, contextWindow, static bool
+	for reason, count := range reasons {
+		if count <= 0 {
+			continue
+		}
+		switch reason {
+		case GateFailureHealth, GateFailureAuthCooldown, GateFailureModelCooldown,
+			GateFailureWindowCost, GateFailureSessionCount, GateFailureRatePrecheck,
+			GateFailureSlotCapacity, GateFailureScoredBand:
+			capacity = true
+		case GateFailureContextWindow:
+			contextWindow = true
+		default:
+			static = true
+		}
+	}
+	groups := 0
+	for _, present := range []bool{capacity, contextWindow, static} {
+		if present {
+			groups++
+		}
+	}
+	if groups != 1 {
+		return ExhaustionFamilyMixed
+	}
+	switch {
+	case capacity:
+		return ExhaustionFamilyCapacity
+	case contextWindow:
+		return ExhaustionFamilyContextWindow
+	case static:
+		return ExhaustionFamilyStaticMismatch
+	default:
+		return ExhaustionFamilyUnknown
+	}
+}
+
 func affinityKeyClass(req SelectionRequest) string {
 	if req.ContinuationKey != "" {
 		return "continuation_marker"

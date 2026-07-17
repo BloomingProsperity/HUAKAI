@@ -6,6 +6,7 @@ sql:
       - sql/queries/admin_api_keys.sql
       - sql/queries/admin_audit.sql
       - sql/queries/admin_provider_channel_catalog.sql
+      - sql/queries/admin_channel_catalog_mutations.sql
       - sql/queries/admin_provider_account_health.sql
       - sql/queries/admin_provider_account_mutations.sql
       - sql/queries/admin_proxies.sql
@@ -112,6 +113,27 @@ sql:
           ip_address: IPAddress
           oauth_endpoint_health: OAuthEndpointHealth
           openai_403_counter: OpenAI403Counter
+  - engine: postgresql
+    schema: sql/migrations
+    queries:
+      - sql/queries/model_routing_overrides.sql
+    gen:
+      go:
+        package: modelroutingadmindb
+        out: internal/db/modelroutingadmin
+        sql_package: pgx/v5
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_pointers_for_null_types: true
+        emit_interface: true
+        omit_unused_structs: true
+        emit_methods_with_db_argument: false
+        emit_prepared_queries: false
+        rename:
+          tenant_id: TenantID
+          pool_group_id: PoolGroupID
+          provider_account_id: ProviderAccountID
+          provider_account_ids: ProviderAccountIDs
   - engine: postgresql
     schema: sql/migrations
     queries:
@@ -270,6 +292,7 @@ sql:
       - sql/queries/proto_capability.sql
       - sql/queries/proto_policy.sql
       - sql/queries/registry.sql
+      - sql/queries/models_admin.sql
     gen:
       go:
         package: registry

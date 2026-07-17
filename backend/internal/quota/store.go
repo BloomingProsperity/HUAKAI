@@ -140,4 +140,5 @@ type ReconciliationFailure struct {
 	JobID     int64
 	LastError string
 	NextRunAt time.Time
+	Terminal  bool
 }

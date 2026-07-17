@@ -59,7 +59,7 @@ INSERT INTO subscription_policy_links (
 //
 // 与「关旧装新(closeCapsTx+installCapsTx)铸新 policy_id」的本质区别:同一窗口 policy_id 不变、
 // 用量不归零。这正是修复点——此前期中续期无条件关旧装新,使当月 cost_usd 计数归零,被自助复购
-// 同档套餐绕过月度护栏、白吃约一倍上游成本。对齐 sub2api「期中续期只顺延、不触碰已用计数」姿态。
+// 同档套餐绕过月度护栏、白吃约一倍上游成本。期中续期只能顺延，不能重置已用计数。
 func reconcileCapsTx(ctx context.Context, tx pgx.Tx, sub UserSubscription, now time.Time) error {
 	actor := fmt.Sprintf("subscription:%d", sub.ID)
 	// 读现有 active 策略的 window_kind → policy_id。

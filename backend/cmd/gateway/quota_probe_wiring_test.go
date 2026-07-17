@@ -19,10 +19,23 @@ func TestGatewayWiringInjectsAndStartsQuotaProbe(t *testing.T) {
 		"Fetcher:  quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver)",
 		"Store:    ratelimit.NewPostgresSessionWindowStore(pgPool)",
 		"Settings: platformSettingsService",
-		"quotaProbeWorker.Start(ctx)",
+		"workerCtx, cancelWorkers := context.WithCancel(context.Background())",
+		"rt.cancelWorkers = cancelWorkers",
+		"name: \"proxy health worker\"",
+		"wait: proxyHealthWorker.Wait",
+		"name: \"TLS profile health worker\"",
+		"wait: tlsProfileHealthWorker.Wait",
+		"name: \"window cost worker\"",
+		"wait: windowCostWorker.Wait",
+		"quotaProbeWorker.Start(workerCtx)",
+		"name: \"quota probe worker\"",
+		"wait: quotaProbeWorker.Wait",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("quota probe 生产接线缺少 %q", required)
 		}
+	}
+	if strings.Contains(source, "quotaProbeWorker.Start(ctx)") {
+		t.Fatal("quota probe 不得继续绑定进程信号 ctx，否则会在 HTTP 排空前停止")
 	}
 }

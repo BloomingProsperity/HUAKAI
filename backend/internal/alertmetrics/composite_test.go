@@ -126,6 +126,34 @@ func TestCompositeMetricSourceTenantScoped(t *testing.T) {
 	}
 }
 
+// 变异：SnapshotWindow 忽略传入窗口并改回 recentWindow 时，since 与请求速率都会变红；
+// 非正窗口不再回退默认值时，第二次 since 断言变红。
+func TestCompositeMetricSourceSnapshotWindowUsesRequestedWindow(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	rolluper := &stubUsageRolluper{rollup: RecentUsageRollup{RequestCount: 60}}
+	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
+		UsageRolluper: rolluper,
+		RecentWindow:  10 * time.Minute,
+		Now:           func() time.Time { return now },
+	})
+
+	got, err := source.SnapshotWindow(context.Background(), 7, time.Hour)
+	if err != nil {
+		t.Fatalf("SnapshotWindow() error = %v", err)
+	}
+	if len(rolluper.calls) != 1 || !rolluper.calls[0].settledSince.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("一小时窗口调用=%+v，want since=%s", rolluper.calls, now.Add(-time.Hour))
+	}
+	assertFloat(t, got[MetricUsageRequestRatePerMinute], 1)
+
+	if _, err := source.SnapshotWindow(context.Background(), 7, 0); err != nil {
+		t.Fatalf("SnapshotWindow(default) error = %v", err)
+	}
+	if len(rolluper.calls) != 2 || !rolluper.calls[1].settledSince.Equal(now.Add(-10*time.Minute)) {
+		t.Fatalf("默认窗口调用=%+v，want second since=%s", rolluper.calls, now.Add(-10*time.Minute))
+	}
+}
+
 // 变异:把 usage rollup 的 DB 错误向上传播 → 调度器评估中断而非退回用全局指标 → 红。
 func TestCompositeMetricSourceDBErrorFailsSoft(t *testing.T) {
 	source := NewCompositeMetricSource(CompositeMetricSourceConfig{
@@ -255,7 +283,7 @@ func TestCompositeSnapshotOverlaysAccountHealth(t *testing.T) {
 	if got[MetricAccountUnhealthyCount] != 3 {
 		t.Fatalf("total=%v want 3; snapshot=%v", got[MetricAccountUnhealthyCount], got)
 	}
-	if got["account.unhealthy_count.cooldown"] != 2 || got["account.unhealthy_count.throttled"] != 1 {
+	if got["account.unhealthy_cooldown"] != 2 || got["account.unhealthy_throttled"] != 1 {
 		t.Fatalf("per-state 缺失: %v", got)
 	}
 

@@ -377,6 +377,7 @@ func TestClaudeSessionAccountCompatibility(t *testing.T) {
 	}{
 		{credentialstore.AuthModeClaudeAIOAuth, credentialstore.RuntimeOAuthAccessToken},
 		{credentialstore.AuthModeClaudeCode, credentialstore.RuntimeSessionToken},
+		{credentialstore.AuthModeClaudeSetupToken, credentialstore.RuntimeOAuthAccessToken},
 	}
 	for _, tc := range valid {
 		if err := ValidateAccountCompatibility(registrydefault.ProtocolAnthropicClaudeSession, credentialstore.VendorAnthropic, tc.authMode, tc.runtime); err != nil {
@@ -396,6 +397,35 @@ func TestClaudeSessionAccountCompatibility(t *testing.T) {
 		if err := ValidateAccountCompatibility(registrydefault.ProtocolAnthropicClaudeSession, tc.vendor, tc.authMode, tc.runtime); err == nil {
 			t.Fatalf("invalid tuple unexpectedly accepted: vendor=%s auth=%s runtime=%s", tc.vendor, tc.authMode, tc.runtime)
 		}
+	}
+}
+
+func TestValidateRuntimeAccountCompatibilityUsesResolvedCredentialType(t *testing.T) {
+	account := provider.AccountInfo{
+		Platform:    credentialstore.VendorOpenAI,
+		AccountType: credentialstore.AuthModeAPIKey,
+	}
+	if err := ValidateRuntimeAccountCompatibility(
+		registrydefault.ProtocolOpenAIChat,
+		provider.Credential{Type: provider.CredentialTypeAPIKey},
+		account,
+	); err != nil {
+		t.Fatalf("compatible runtime account rejected: %v", err)
+	}
+	account.Platform = credentialstore.VendorGemini
+	if err := ValidateRuntimeAccountCompatibility(
+		registrydefault.ProtocolOpenAIChat,
+		provider.Credential{Type: provider.CredentialTypeAPIKey},
+		account,
+	); err == nil {
+		t.Fatal("mismatched runtime account unexpectedly accepted")
+	}
+	if err := ValidateRuntimeAccountCompatibility(
+		"legacy-uncontracted-family",
+		provider.Credential{},
+		provider.AccountInfo{},
+	); err != nil {
+		t.Fatalf("uncontracted legacy family must keep compatibility behavior: %v", err)
 	}
 }
 

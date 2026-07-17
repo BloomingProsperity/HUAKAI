@@ -7,11 +7,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
-// TestPasswordPolicyDefaults 锁定「注册默认关」的正确默认(对齐 sub2api fail-closed IsRegistrationEnabled
-// 与前端 registrationEnabled && passwordRegisterEnabled 语义):默认设置下主开关 registration_enabled=false,
+// TestPasswordPolicyDefaults 锁定「注册默认关」及前端
+// registrationEnabled && passwordRegisterEnabled 的一致语义：默认设置下主开关 registration_enabled=false，
 // 密码注册**默认不允许**(运营须在后台开总开关);但密码登录不受注册总开关约束,默认允许。
 // 变异:PasswordRegistrationAllowed 去掉主开关 registration_enabled 检查 → 默认变 true,首断言 RED
-//(这正是修复前「后端比前端宽松、直打 API 可绕过隐藏的注册入口」的口子)。
+// (这正是修复前「后端比前端宽松、直打 API 可绕过隐藏的注册入口」的口子)。
 func TestPasswordPolicyDefaults(t *testing.T) {
 	svc := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
 	policy := New(svc)

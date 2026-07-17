@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,11 +15,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/bodyfeatures"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/clientgate"
@@ -38,7 +37,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
-	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
@@ -74,81 +72,6 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 
 func requestClientSessionID(r *http.Request, validated chatValidatedRequest) string {
 	return chatpipe.RequestClientSessionID(r, validated.ClientProtocol, validated.Body)
-}
-
-type dispatchTransportSelection struct {
-	account provider.AccountInfo
-	mode    transport.TransportMode
-}
-
-func transportSelectionForDispatch(account provider.AccountInfo, protocolFamily string) dispatchTransportSelection {
-	providerCode := transportProviderForDispatch(account, protocolFamily)
-	account.Platform = string(providerCode)
-	return dispatchTransportSelection{
-		account: account,
-		mode:    transportModeForProvider(providerCode, account.AccountType),
-	}
-}
-
-func transportProviderForDispatch(account provider.AccountInfo, protocolFamily string) transport.ProviderCode {
-	switch strings.ToLower(strings.TrimSpace(protocolFamily)) {
-	case "openai_codex":
-		return transport.ProviderOpenAICodex
-	case "gemini_advanced_session":
-		return transport.ProviderGeminiAdvanced
-	case "antigravity_session":
-		return transport.ProviderAntigravity
-	case "cursor_session":
-		return transport.ProviderCursor
-	case "copilot_session":
-		return transport.ProviderCopilot
-	case "kiro_session":
-		return transport.ProviderKiro
-	case "windsurf_session":
-		return transport.ProviderWindsurf
-	}
-
-	providerCode := transport.ProviderCode(strings.ToLower(strings.TrimSpace(account.Platform)))
-	switch providerCode {
-	case transport.ProviderOpenAI:
-		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
-		case credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth:
-			return transport.ProviderOpenAICodex
-		}
-	case transport.ProviderGemini:
-		switch strings.ToLower(strings.TrimSpace(account.AccountType)) {
-		case credentialstore.AuthModeCodeAssist, credentialstore.AuthModeGoogleOne:
-			return transport.ProviderGeminiAdvanced
-		case credentialstore.AuthModeAntigravity:
-			return transport.ProviderAntigravity
-		}
-	}
-	return providerCode
-}
-
-func transportModeForProvider(providerCode transport.ProviderCode, accountType string) transport.TransportMode {
-	switch providerCode {
-	case transport.ProviderOpenAICodex:
-		return transport.TransportModeMimicryChatGPT
-	case transport.ProviderGeminiAdvanced:
-		return transport.TransportModeMimicryGeminiAdvanced
-	case transport.ProviderAntigravity:
-		return transport.TransportModeMimicryAntigravity
-	case transport.ProviderCursor:
-		return transport.TransportModeMimicryCursor
-	case transport.ProviderCopilot:
-		return transport.TransportModeMimicryCopilot
-	case transport.ProviderKiro:
-		return transport.TransportModeMimicryKiro
-	case transport.ProviderWindsurf:
-		return transport.TransportModeMimicryWindsurf
-	case transport.ProviderAnthropic:
-		switch strings.ToLower(strings.TrimSpace(accountType)) {
-		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode:
-			return transport.TransportModeMimicryClaudeCode
-		}
-	}
-	return transport.TransportModeStandard
 }
 
 func (ex *chatExecution) refreshRequestSessionHashes() {
@@ -328,6 +251,10 @@ func (ex *chatExecution) prepareClaimAndAccount(w http.ResponseWriter, in attemp
 	if ex.reserveRes == nil && !ex.reserveClaim(w) {
 		return false, nil
 	}
+	if ex.reserveRes != nil && ex.reserveRes.AttemptSeq > 0 {
+		in.AttemptSeq = int(ex.reserveRes.AttemptSeq)
+		ex.currentAttemptSeq = in.AttemptSeq
+	}
 	if failure := ex.selectPoolAccount(w, in); failure != nil {
 		return false, failure
 	}
@@ -471,6 +398,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if selRes == nil || selRes.AccountID == 0 {
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		failure.FallbackSignal = bindingfallback.SignalPoolStaticMismatch
 		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
 		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
 		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
@@ -496,11 +424,20 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 	// context-window 预检(它对 ctxWindow<=0 / estInput<=0 fail-open),故仍随 model-fallback 门控。
 	var ctxWindow, maxOut int
 	estInput := tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
-	if ex.modelFallbackEnabled {
-		ctxWindow = ex.resolved.ContextWindow
+	_, hasContextFallback := fallbackPhaseForClass(ex.plan, bindingfallback.ClassContextWindow)
+	currentClass := bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass))
+	if ex.modelFallbackEnabled || hasContextFallback {
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
+		if currentClass != bindingfallback.ClassContextWindow {
+			ctxWindow = ex.resolved.ContextWindow
+		}
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
+	if ex.attempt.BindingID > 0 {
+		// 并发上限与 BindingID 都来自同一 AttemptPlan，避免跨 pool fallback 时
+		// 把新 attempt 的 K 配到上一条 binding 上。
+		bindingID = ex.attempt.BindingID
+	}
 	return pool.SelectionRequest{
 		TenantID:         ex.ident.TenantID,
 		UserID:           ex.ident.UserID,
@@ -523,9 +460,10 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
 		// 命中 binding 的 per-binding RPM/TPM 限额透传给 BindingRateLimitSelector(env 门控 + 限额>0 才强制)。
-		BindingID:       bindingID,
-		BindingRPMLimit: bindingRPM,
-		BindingTPMLimit: bindingTPM,
+		BindingID:           bindingID,
+		BindingRPMLimit:     bindingRPM,
+		BindingTPMLimit:     bindingTPM,
+		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	}
 }
 
@@ -555,6 +493,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 			status = http.StatusServiceUnavailable
 		}
 		failure := retryableLocalAttemptFailure(status, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), "credential_resolve_error", gateway.UpstreamError5xx, err)
+		failure.FallbackSignal = bindingfallback.SignalCredentialResolutionFailure
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if accInfo.AccountID == 0 {
@@ -562,6 +501,13 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	}
 	ex.cred = credentialWithNativeStreamMode(cred, ex.clientProtocol, ex.req.Stream)
 	ex.accInfo = accInfo
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, accInfo); err != nil {
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
+		failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.CredentialProtocolIncompatibleDecision(), err)
+		failure.FallbackSignal = bindingfallback.SignalUpstreamAuthFailure
+		failure.EndClass = gateway.UpstreamError5xx
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
+	}
 	if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
 		runtimeKind, ok := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
 		if !ok {
@@ -576,6 +522,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 				AbortReason:                     "credential_protocol_incompatible",
 				CountsAgainstAuthFailoverBudget: true,
 			}, err)
+			failure.FallbackSignal = bindingfallback.SignalUpstreamAuthFailure
 			failure.EndClass = gateway.UpstreamError5xx
 			return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 		}
@@ -690,13 +637,13 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeNonStreamingNotYetWired, err)
 		return nil, nil, false
 	}
-	transportSelection := transportSelectionForDispatch(ex.accInfo, ex.resolved.ProtocolFamily)
+	dispatchAccount, transportMode := gateway.ResolveDispatchTransport(ex.accInfo, ex.resolved.ProtocolFamily)
 	dispatchCtx := gateway.ContextWithHCSFDispatchInput(seedCtx, gateway.HCSFDispatchInput{
 		ProtocolFamily:    ex.resolved.ProtocolFamily,
 		UpstreamModelID:   ex.upstreamModelID,
-		Account:           transportSelection.account,
+		Account:           dispatchAccount,
 		Credential:        ex.cred,
-		TransportMode:     transportSelection.mode,
+		TransportMode:     transportMode,
 		RawBody:           ex.upstreamInboundBody(ex.body),
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
@@ -773,6 +720,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			code = ""
 		}
 		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
+		if upstreamErr != nil {
+			failure.FallbackSignal = bindingFallbackSignalFromUpstream(upstreamErr.StatusCode, upstreamErr.Body, classification, decision)
+		}
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)

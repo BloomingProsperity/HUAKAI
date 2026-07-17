@@ -723,8 +723,7 @@ func TestPostgresRegistry_EffectiveTimeWindow(t *testing.T) {
 // 测试 13 — ProviderModelOverrideOnPrimary
 // 主 binding 带有 provider_model_id_override → ResolvedModel.ProviderModelID
 // 反映该 override,而非 canonical model 的默认值。
-// (对照参考项目的 model mapping 行为,见
-// model/channel.go @ 3915ce9 —— 已于 2026-04-30T09:35Z 经 WebFetch 核实。)
+// 该用例验证 HUAKAI 自身的主绑定模型覆盖合同。
 // -----------------------------------------------------------------------------
 
 func TestPostgresRegistry_ProviderModelOverrideOnPrimary(t *testing.T) {

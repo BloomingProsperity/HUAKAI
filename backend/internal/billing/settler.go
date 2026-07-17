@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	dbbillingrecovery "github.com/BloomingProsperity/HUAKAI/internal/db/billingrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 )
@@ -43,10 +44,11 @@ const (
 var maxCostMicroUSDDecimal = decimal.NewFromInt(maxCostMicroUSDInt64)
 
 type DefaultSettler struct {
-	pool          *pgxpool.Pool
-	q             *dbbilling.Queries
-	dlqStore      *dlq.Store
-	replicaTarget string
+	pool           *pgxpool.Pool
+	q              *dbbilling.Queries
+	abortRecoveryQ *dbbillingrecovery.Queries
+	dlqStore       *dlq.Store
+	replicaTarget  string
 }
 
 type SettlerOption func(*DefaultSettler)
@@ -68,7 +70,12 @@ func NewSettler(pool *pgxpool.Pool, opts ...SettlerOption) *DefaultSettler {
 	if pool == nil {
 		return &DefaultSettler{pool: nil}
 	}
-	s := &DefaultSettler{pool: pool, q: dbbilling.New(pool), dlqStore: dlq.NewStore(pool)}
+	s := &DefaultSettler{
+		pool:           pool,
+		q:              dbbilling.New(pool),
+		abortRecoveryQ: dbbillingrecovery.New(pool),
+		dlqStore:       dlq.NewStore(pool),
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -81,7 +88,7 @@ func (s *DefaultSettler) Settle(ctx context.Context, req SettleRequest) (*Settle
 	}
 
 	var res *SettleResult
-	err := retryTx2(ctx, "settle", func(ctx context.Context) error {
+	err := retryTx2(ctx, "settle", settleTx2RetryPolicy, func(ctx context.Context) error {
 		next, err := s.settleOnce(ctx, req)
 		if err != nil {
 			return err
@@ -251,13 +258,16 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 	releaseReason := "settled_committed"
 	released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 		AcquisitionToken: req.AcquisitionToken,
+		ReleaseStatus:    "released_success",
 		ReleaseReason:    &releaseReason,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("billing: release slot + decrement in-flight count: %w", err)
 	}
 	if released == 0 {
-		return nil, ErrSlotReleaseMissed
+		if err := verifyAlreadyReleasedSlot(ctx, dbbillingrecovery.New(tx), req.AcquisitionToken, slotReleaseSettle); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := qtx.UpdateClaimCommitted(ctx, dbbilling.UpdateClaimCommittedParams{
 		ID: claim.ID,
@@ -297,15 +307,25 @@ func (s *DefaultSettler) Abort(ctx context.Context, tenantID, claimID int64, rea
 		return ErrPoolNotConfigured
 	}
 
-	return retryTx2(ctx, "abort", func(ctx context.Context) error {
-		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss)
+	var generation abortClaimGeneration
+	err := retryTx2(ctx, "abort", abortTx2RetryPolicy, func(ctx context.Context) error {
+		return s.abortOnce(ctx, tenantID, claimID, reason, auditRequestID, observedInputTokens, protocolLoss, &generation)
 	}, nil, nil)
+	if err == nil {
+		return nil
+	}
+	return s.expediteAbortLeaseAfterConflict(ctx, tenantID, claimID, generation, err)
+}
+
+type abortClaimGeneration struct {
+	attemptSeq int32
+	observed   bool
 }
 
 // abortOnce 执行一次完整 Tx2 中止事务。外层 retryTx2 只在整事务被 Serializable
 // 冲突回滚后重跑;若 claim 已不在 reserving,这里立即返回 ErrClaimNotReserving,
 // 因而不会重复 Release、重复 claim_aborted 事件或重复零成本 usage_record。
-func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage) error {
+func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64, reason, auditRequestID string, observedInputTokens int64, protocolLoss json.RawMessage, generation *abortClaimGeneration) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return fmt.Errorf("billing: begin abort Tx2: %w", err)
@@ -330,6 +350,11 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 			return ErrClaimNotReserving
 		}
 		return fmt.Errorf("billing: get claim for abort: %w", err)
+	}
+	// 事务后段冲突会回滚业务写，但恢复 UPDATE 仍须绑定本轮真实读到的代际。
+	if generation != nil {
+		generation.attemptSeq = attemptSeq
+		generation.observed = true
 	}
 	if status != "reserving" {
 		return ErrClaimNotReserving
@@ -444,13 +469,16 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 		copy(tokUUID[:], acquisitionToken.Bytes[:])
 		released, err := qtx.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 			AcquisitionToken: tokUUID,
+			ReleaseStatus:    "released_failure",
 			ReleaseReason:    &releaseReason,
 		})
 		if err != nil {
 			return fmt.Errorf("billing: release slot on abort: %w", err)
 		}
 		if released == 0 {
-			return ErrSlotReleaseMissed
+			if err := verifyAlreadyReleasedSlot(ctx, dbbillingrecovery.New(tx), tokUUID, slotReleaseAbort); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1033,7 +1061,7 @@ func outputTokensForAttempt(draft gateway.UsageRecordDraft, _ Attempt) int64 {
 	// 会先把内容感知估算基数写入 draft.TokensOutput 再进本函数——该类行 usage_source=inferred 且
 	// cost_snapshot 携带 usage_basis=estimated_from_delivered_content 标记;在 C3 计划的
 	// usage_source='estimated' 枚举(需 schema 迁移,park 待 Owner)落地前以该标记区分估算行。
-	// 参考项目对照(带 repo@sha:file:line)见 docs/process/plans/2026-05-29-money-path-worker-claude.md §9。
+	// 使用量估算与真实 token 分离的决策证据见 docs/process/plans/2026-05-29-money-path-worker-claude.md §9。
 	output := int64(draft.TokensOutput)
 	if output < 0 {
 		return 0

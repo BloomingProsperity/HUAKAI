@@ -1,4 +1,4 @@
-// 包 sessioncap 实现 SUB2-EGRESS-02: per-account 并发 session 上限。
+// 包 sessioncap 实现 per-account 并发 session 上限。
 // 内存版 Registry 按账号追踪不同的活跃 sessionHash 值; 当账号已达到
 // 其配置的上限时, pool gate 会拒绝新 session。
 //

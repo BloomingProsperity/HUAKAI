@@ -39,25 +39,26 @@ const (
 	VendorHunyuan  = "hunyuan"  // 腾讯混元(OpenAI 兼容端点)
 	VendorStep     = "step"     // 阶跃星辰
 
-	AuthModeAPIKey          = "api_key"
-	AuthModeClaudeAIOAuth   = "claude_ai_oauth"
-	AuthModeClaudeCode      = "claude_code"
-	AuthModeBedrock         = "bedrock"
-	AuthModeVertexAnthropic = "vertex_anthropic"
-	AuthModeChatGPTOAuth    = "chatgpt_oauth"
-	AuthModeCodexCLIOAuth   = "codex_cli_oauth"
-	AuthModeCodexWebOAuth   = "codex_web_oauth"
-	AuthModeAzure           = "azure"
-	AuthModeRefreshToken    = "refresh_token"
-	AuthModeAIStudioAPIKey  = "aistudio_api_key"
-	AuthModeVertexSA        = "vertex_sa"
-	AuthModeCodeAssist      = "code_assist"
-	AuthModeGoogleOne       = "google_one"
-	AuthModeAntigravity     = "antigravity"
-	AuthModeCopilotOAuth    = "copilot_oauth"
-	AuthModeXAIOAuth        = "xai_oauth"
-	AuthModeOAuth           = "oauth"
-	AuthModeKimiOAuth       = "kimi_oauth"
+	AuthModeAPIKey           = "api_key"
+	AuthModeClaudeAIOAuth    = "claude_ai_oauth"
+	AuthModeClaudeCode       = "claude_code"
+	AuthModeClaudeSetupToken = "claude_setup_token"
+	AuthModeBedrock          = "bedrock"
+	AuthModeVertexAnthropic  = "vertex_anthropic"
+	AuthModeChatGPTOAuth     = "chatgpt_oauth"
+	AuthModeCodexCLIOAuth    = "codex_cli_oauth"
+	AuthModeCodexWebOAuth    = "codex_web_oauth"
+	AuthModeAzure            = "azure"
+	AuthModeRefreshToken     = "refresh_token"
+	AuthModeAIStudioAPIKey   = "aistudio_api_key"
+	AuthModeVertexSA         = "vertex_sa"
+	AuthModeCodeAssist       = "code_assist"
+	AuthModeGoogleOne        = "google_one"
+	AuthModeAntigravity      = "antigravity"
+	AuthModeCopilotOAuth     = "copilot_oauth"
+	AuthModeXAIOAuth         = "xai_oauth"
+	AuthModeOAuth            = "oauth"
+	AuthModeKimiOAuth        = "kimi_oauth"
 
 	StateActive              = "active"
 	StateRefreshing          = "refreshing"
@@ -251,7 +252,7 @@ func (h handlerSpec) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
 			}
 		}
 	case RuntimeOAuthAccessToken:
-		value = fieldString(fields, "access_token")
+		value = firstField(fields, "access_token", "setup_token")
 	case RuntimeSessionToken:
 		value = firstField(fields, "session_token", "access_token")
 	case RuntimeAWSSigV4:
@@ -281,6 +282,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeAIOAuth, runtimeKind: RuntimeOAuthAccessToken, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeCode, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeClaudeSetupToken, runtimeKind: RuntimeOAuthAccessToken, required: []string{"setup_token"}},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeBedrock, runtimeKind: RuntimeAWSSigV4, required: []string{"aws_access_key_id", "aws_secret_access_key", "aws_region"}},
 		handlerSpec{vendor: VendorAnthropic, authMode: AuthModeVertexAnthropic, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "metadata_token_endpoint", "client_email"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},

@@ -30,18 +30,21 @@ func (r CodexRefresh) RefreshForProvider(ctx context.Context, accountID int64, p
 	endpoint := strings.TrimSpace(r.OpenAI.Endpoint)
 	clientID := strings.TrimSpace(r.OpenAI.ClientID)
 	scope := strings.TrimSpace(r.OpenAI.Scope)
-	if endpoint == "" || clientID == "" || scope == "" {
+	if endpoint == "" || clientID == "" {
 		return nil, time.Time{}, fmt.Errorf("codex refresh account %d: %w", accountID, ErrCodexOAuthConfigRequired)
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
 	form.Set("client_id", clientID)
-	form.Set("scope", scope)
+	if scope != "" {
+		form.Set("scope", scope)
+	}
 	resp, err := postTokenWithRetry(ctx, r.OpenAI.httpClient(), endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("codex refresh account %d: %w", accountID, err)
 	}
+	cred["session_token"] = resp.AccessToken
 	newCredential, expiresAt, err := mergeTokenResponse(cred, resp)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("codex refresh account %d: %w", accountID, err)

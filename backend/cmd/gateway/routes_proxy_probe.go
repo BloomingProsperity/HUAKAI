@@ -21,6 +21,20 @@ type gatewayProxyProber struct {
 	canary string
 }
 
+// proxyAdminRouteDeps 集中装配代理 CRUD、主动质检和租户默认出口，避免新增能力
+// 只挂路由却漏注入数据库 store。nil 输入保持全空，由 handler 统一 fail-closed。
+func proxyAdminRouteDeps(d *deps) proxyadminhttp.Deps {
+	if d == nil {
+		return proxyadminhttp.Deps{}
+	}
+	return proxyadminhttp.Deps{
+		Auth:           d.adminAuth,
+		Service:        proxyadmin.New(d.adminQueries, d.credentialKeys),
+		Prober:         buildProxyProber(d),
+		TenantDefaults: proxyadmin.NewPostgresTenantDefaultStore(d.pgPool),
+	}
+}
+
 func (p *gatewayProxyProber) Probe(ctx context.Context, tenantID, id int64) (proxyadminhttp.ProbeOutcome, error) {
 	dialURL, err := p.svc.DialTarget(ctx, tenantID, id)
 	if err != nil {

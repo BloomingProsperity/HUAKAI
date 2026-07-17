@@ -165,7 +165,35 @@ func (w *Worker) runOnceRecovered(ctx context.Context) {
 			w.logger.Error("mediatask worker RunOnce panicked; recovered to keep worker alive", slog.Any("recover", rec))
 		}
 	}()
-	_, _ = w.RunOnce(ctx)
+	_, err := w.RunOnce(ctx)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, context.Canceled) && ctx != nil && ctx.Err() != nil {
+		return
+	}
+	logger := w.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "mediatask worker RunOnce failed",
+		slog.String("error_class", mediaTaskWorkerErrorClass(err)),
+	)
+}
+
+func mediaTaskWorkerErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "operation_timeout"
+	case errors.Is(err, ErrProviderUnavailable):
+		return "provider_unavailable"
+	case errors.Is(err, ErrLeaseLost):
+		return "lease_lost"
+	case errors.Is(err, ErrStoreNotConfigured):
+		return "store_not_configured"
+	default:
+		return "runtime_error"
+	}
 }
 
 func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now time.Time) error {

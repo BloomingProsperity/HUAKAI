@@ -59,7 +59,7 @@ func validateRequest(w http.ResponseWriter, req quotaPolicyRequest) (validatedPo
 	}
 	if _, ok := validWindowKinds[windowKind]; !ok {
 		writeError(w, http.StatusBadRequest, "invalid_window_kind",
-			"window_kind must be one of none, fixed, calendar_day, calendar_week, manual")
+			"window_kind must be one of none, fixed, calendar_day, calendar_week, calendar_month, manual")
 		return vp, false
 	}
 	vp.windowKind = windowKind

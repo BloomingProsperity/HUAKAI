@@ -165,11 +165,12 @@ type CredentialCandidate struct {
 	Payload           []byte
 	ActorID           string
 	RedactedContext   map[string]any
-	// ExternalAccountID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
+	// ExternalAccountID/ExternalSubjectID/ExternalAccountEmail/AccountIDSource 携带在 token 交换时
 	// 自动提取出的上游 provider 账号身份(accountident)。
 	// 它们属于非机密的账号管理元数据,绝非授权输入,
 	// 当提取无结果时为空(手工/operator 值优先)。
 	ExternalAccountID    string
+	ExternalSubjectID    string
 	ExternalAccountEmail string
 	AccountIDSource      string
 }
@@ -221,6 +222,7 @@ func DefaultModePlans() []ModePlan {
 		// (FlowKindCLIImport/JSONImport);粘贴 API key 走 anthropic/api_key(FlowKindPaste)。
 		oauthPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		cliSessionPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, ClientSourcePublicCLI, []FlowKind{FlowKindCLIImport, FlowKindJSONImport}),
+		setupTokenPlan(),
 		cloudPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, FlowKindPaste, ClientSourceNone, []FlowKind{FlowKindPaste, FlowKindCloudBootstrap, FlowKindOAuth}, awsSigV4Fields()),
 		upstreamTokenPlan(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, FlowKindJSONImport, ClientSourceOperatorConfig, []FlowKind{FlowKindJSONImport, FlowKindCloudBootstrap}, vertexFields()),
 		apiKeyPlan(credentialstore.VendorOpenAI),
@@ -307,6 +309,17 @@ func cliSessionPlan(vendor, authMode, clientSource string, helpers []FlowKind) M
 		RequiredFields: sessionTokenFields(),
 		IsEnabled:      true,
 		RiskLevel:      RiskLevelMedium,
+	}
+}
+
+func setupTokenPlan() ModePlan {
+	return ModePlan{
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeSetupToken,
+		Kind: FlowKindSetupToken, ClientIdentitySource: ClientSourcePublicCLI,
+		AllowedHelpers: []FlowKind{FlowKindSetupToken},
+		RequiredFields: []FieldSpec{secretField("setup_token", true)},
+		IsEnabled:      true, RiskLevel: RiskLevelMedium,
+		RiskReasons: []string{"长期访问令牌必须只通过秘密输入与加密存储处理"},
 	}
 }
 

@@ -486,7 +486,7 @@ func TestChatCompletionsL2RejectsTenantMismatchedEntry(t *testing.T) {
 }
 
 // 守 缓存-P0c(principal-scope, 默认 apikey): 同租户不同 api-key 在 apikey scope 下**不共享**缓存
-// (堵死红队中危: reseller 同租户跨用户共享响应/探针)。变异: 把 principal 移出 key(退回 tenant)
+// (堵死红队中危: 同租户跨用户共享响应/探针)。变异: 把 principal 移出 key(退回 tenant)
 // -> 第二个 api-key 命中第一个的缓存 -> dispatcher 仅 1 次 -> 红。
 func TestChatCompletionsL2ApikeyScopeIsolatesCrossApiKey(t *testing.T) {
 	enableHCSFDispatchForTest(t)

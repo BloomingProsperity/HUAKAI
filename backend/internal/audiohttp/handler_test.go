@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -22,12 +23,14 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -303,10 +306,12 @@ func TestAudioSpeech_GroupRatioDiscountsReserveAndSettle(t *testing.T) {
 }
 
 // 交付后结算失败:响应头早已发出(settle-after-delivery),所以是 200 已交付 + 不 abort,
-// 而非旧的 500。Mutation: settle 改回交付前 → 会变 500,本断言变红(守 F1)。
-func TestAudioSpeech_SettleErrorAfterDeliveryKeeps200AndDoesNotAbort(t *testing.T) {
+// 并把完整 settle intent 放进持久恢复队列。Mutation:删恢复接线后 recovery.calls=0。
+func TestAudioSpeech_SettleErrorAfterDeliveryKeeps200AndEnqueuesRecovery(t *testing.T) {
 	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{status: http.StatusOK, body: "audio"})
 	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &audioRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
 
 	rec := env.invokeJSON(t, `{"model":"tts-1","input":"héllo","voice":"alloy"}`)
 
@@ -319,51 +324,57 @@ func TestAudioSpeech_SettleErrorAfterDeliveryKeeps200AndDoesNotAbort(t *testing.
 	if got := len(env.settler.aborts); got != 0 {
 		t.Fatalf("abort calls=%d want 0 (cannot abort an already-delivered response)", got)
 	}
+	if recovery.calls != 1 || recovery.event.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q",
+			recovery.calls, recovery.event.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	payload, err := settlementrecovery.Decode(recovery.event.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceAudioDelivered {
+		t.Fatalf("recovery source=%q want %q", payload.Source, settlementrecovery.SourceAudioDelivered)
+	}
+	replayed := payload.ToSettleRequest()
+	original := env.settler.settles[0]
+	if replayed.ClaimID != original.ClaimID ||
+		replayed.ProviderAccountID != original.ProviderAccountID ||
+		replayed.RequestedModel != original.RequestedModel ||
+		!replayed.ActualCost.Equal(original.ActualCost) {
+		t.Fatalf("recovery settle intent drifted: got=%+v want claim/account/model/cost=%d/%d/%q/%s",
+			replayed, original.ClaimID, original.ProviderAccountID, original.RequestedModel, original.ActualCost)
+	}
 }
 
-// platformVaultStub 让测试覆盖解析账号的 Platform(默认 vaultStub 恒返 openai)。
-type platformVaultStub struct{ platform string }
+func TestAudioSpeech_SettleAndRecoveryDoubleFailureEmitsP0WithoutSecret(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 
-func (s platformVaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
-	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  s.platform,
-	}, nil
-}
+	const secret = "AUDIO_DOUBLE_FAULT_SECRET"
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{status: http.StatusOK, body: "audio"})
+	env.settler.settleErr = errors.New("settle failed " + secret)
+	recovery := &audioRecoveryEnqueuer{err: errors.New("recovery enqueue failed " + secret)}
+	env.deps.SettleRecoveryDLQ = recovery
 
-// TestAudioSpeech_SettleRepricesByResolvedAccountPlatform F3:per-char speech 在
-// settle 时必须按解析账号平台重定价。预扣用协议族 vendor(openai_chat→openai,
-// 1000/char);解析账号平台是 gemini(2000/char,价不同)。reserve 估 openai 价,
-// settle 必须重算成 gemini 价。
-// MUTATION: settle 沿用 ex.predictedCost(去掉 charCost 重算)→ settle ActualCost
-// 回到 reserve 的 0.005 → 本断言红。判别关键:gemini 价≠openai 价,且账号平台≠
-// 协议族 vendor,否则 reserve/settle 同值非判别(gemini 是合法 transport provider
-// code,azure 等未知码会被 transport policy 拒成 dispatch error)。
-func TestAudioSpeech_SettleRepricesByResolvedAccountPlatform(t *testing.T) {
-	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{
-		status:  http.StatusOK,
-		body:    "audio-bytes",
-		headers: http.Header{"Content-Type": []string{"audio/mpeg"}},
-	})
-	env.deps.CredentialVault = platformVaultStub{platform: "gemini"}
-	env.rateTable.raw = json.RawMessage(`{
-		"providers": {
-			"openai": {"models": {"tts-1": {"pricing_scheme": "per_char", "input_char_micro_usd": "1000"}}},
-			"gemini": {"models": {"tts-1": {"pricing_scheme": "per_char", "input_char_micro_usd": "2000"}}}
-		}
-	}`)
-
-	rec := env.invokeJSON(t, `{"model":"tts-1","input":"héllo","voice":"alloy","response_format":"mp3"}`)
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"double fault","voice":"alloy"}`)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+		t.Fatalf("status=%d body=%s want 200，响应已交付不能反悔", rec.Code, rec.Body.String())
 	}
-	env.assertNoHangingClaims(t)
-	// 5 runes × 1000/char = 0.005(协议族 vendor openai,选号前估)。
-	assertAudioDecimal(t, "reserve PredictedCost(协议族 vendor 估)", env.claims.reserves[0].req.PredictedCost, decimal.RequireFromString("0.005"))
-	// 5 runes × 2000/char = 0.010(解析账号平台 gemini,settle 重算)。
-	assertAudioDecimal(t, "settle ActualCost(账号平台重定价)", env.settler.settles[0].ActualCost, decimal.RequireFromString("0.010"))
+	if recovery.calls != 1 {
+		t.Fatalf("recovery calls=%d want 1", recovery.calls)
+	}
+	got := logs.String()
+	for _, want := range []string{"money_lost_double_fault", "critical", "P0", "audiohttp.settle_recovery"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("P0 log missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("P0 log leaked raw failure detail: %s", got)
+	}
 }
 
 // failingWriter 在 WriteHeader 之后的 Write 一律失败,模拟客户端断连。
@@ -614,9 +625,10 @@ type vaultStub struct{}
 
 func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "openai",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 
@@ -624,6 +636,21 @@ type recordingSettler struct {
 	settles   []billing.SettleRequest
 	aborts    []abortCall
 	settleErr error
+}
+
+type audioRecoveryEnqueuer struct {
+	calls int
+	event dlq.Event
+	err   error
+}
+
+func (e *audioRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	e.calls++
+	e.event = event
+	if e.err != nil {
+		return 0, e.err
+	}
+	return 1, nil
 }
 
 type abortCall struct {

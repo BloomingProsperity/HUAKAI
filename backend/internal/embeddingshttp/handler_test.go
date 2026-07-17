@@ -311,9 +311,10 @@ type vaultStub struct{}
 
 func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "openai",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 
@@ -430,7 +431,13 @@ func (twoAttemptRouter) Plan(context.Context, router.PlanInput) (router.RoutePla
 			{Index: 0, PoolGroupID: 101, Reason: "primary", UpstreamModelID: "text-embedding-3-small"},
 			{Index: 1, PoolGroupID: 101, Reason: "failover", UpstreamModelID: "text-embedding-3-small"},
 		},
-		AttemptBudget:   2,
+		AttemptBudget: 2,
+		RetryableEndClasses: []string{
+			string(gateway.UpstreamError5xx),
+			string(gateway.UpstreamRateLimit),
+			string(gateway.FirstTokenTimeout),
+			string(gateway.InterEventTimeout),
+		},
 		SnapshotVersion: "registry:7:1;router:retry-test",
 	}, nil
 }

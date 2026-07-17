@@ -651,9 +651,10 @@ type vaultStub struct{}
 
 func (vaultStub) Resolve(context.Context, int64, int64) (provider.Credential, provider.AccountInfo, error) {
 	return provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test"}, provider.AccountInfo{
-		AccountID: 44,
-		TenantID:  7,
-		Platform:  "openai",
+		AccountID:   44,
+		TenantID:    7,
+		Platform:    "openai",
+		AccountType: "api_key",
 	}, nil
 }
 

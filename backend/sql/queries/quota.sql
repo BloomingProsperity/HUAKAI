@@ -345,6 +345,25 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND claim_id = sqlc.arg(claim_id)::bigint
   AND status = 'reserved';
 
+-- name: PrepareQuotaReleaseRecovery :one
+-- Release 热重试耗尽后仅为 aborted claim 建立恢复资格，避免旧恢复写污染复活 attempt。
+UPDATE quota_reservations
+SET status = 'reconciliation_needed',
+    lease_expires_at = LEAST(lease_expires_at, NOW()),
+    updated_at = NOW()
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND claim_id = sqlc.arg(claim_id)::bigint
+  AND (sqlc.arg(reservation_id)::bigint = 0 OR id = sqlc.arg(reservation_id)::bigint)
+  AND status IN ('reserved', 'reconciliation_needed')
+  AND EXISTS (
+      SELECT 1
+      FROM billing_ledger_claims blc
+      WHERE blc.tenant_id = sqlc.arg(tenant_id)::bigint
+        AND blc.id = sqlc.arg(claim_id)::bigint
+        AND blc.status = 'aborted'
+  )
+RETURNING id;
+
 -- name: AcquireQuotaConcurrencySlot :one
 -- 本地 scope 并发槽; DB 函数按 tenant/scope 锁行串行化 COUNT+UPSERT。
 SELECT
@@ -568,11 +587,15 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND status = 'running';
 
 -- name: FailQuotaReconciliationJob :execrows
--- 补偿失败后按调用方给出的 next_run_at 重新排队。
+-- 普通失败按 next_run_at 重新排队；只有失效或耗尽预算才进入 failed 终停态。
 UPDATE quota_reconciliation_jobs
-SET status = 'failed',
+SET status = CASE
+        WHEN sqlc.arg(terminal)::boolean THEN 'failed'
+        ELSE 'queued'
+    END,
     last_error = sqlc.arg(last_error)::text,
     next_run_at = sqlc.arg(next_run_at)::timestamptz,
+    locked_at = NULL,
     updated_at = NOW()
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND id = sqlc.arg(job_id)::bigint

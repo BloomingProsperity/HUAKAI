@@ -169,7 +169,7 @@ These are capability lines no reference project ships because they were never th
 
 **Why no reference does this**: gateways are not designed as "share your subscription with friends, charge them, scale to managed-service" pipelines. CLIProxyAPI is closest but doesn't have monetization.
 
-**Why HUAKAI should**: this is the **scaling story** for Personal Edition → SaaS Edition. Operator starts as "I share my Claude Pro with 5 friends" and scales to "I run a 50-customer reseller". HUAKAI captures the journey.
+**Why HUAKAI should**: this is the **scaling story** for Personal Edition → SaaS Edition. An operator starts by serving a few direct users, while the SaaS edition lets a single-level tenant operate its own customer base. HUAKAI does not introduce recursive tenant or reseller tiers.
 
 **HUAKAI capability**: built-in user invite flow + trial usage tracking + Stripe/Alipay billing handoff + operator-receives-cut accounting. Maps to new F-CREATIVE-009.
 

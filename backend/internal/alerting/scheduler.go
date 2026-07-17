@@ -24,8 +24,18 @@ type MetricSource interface {
 	Snapshot(context.Context, int64) (map[string]float64, error)
 }
 
+// WindowedMetricSource 允许规则按自身统计窗口取快照。未实现时评估器回退到 MetricSource。
+type WindowedMetricSource interface {
+	SnapshotWindow(context.Context, int64, time.Duration) (map[string]float64, error)
+}
+
 type DimensionMetricSource interface {
 	SnapshotForDimensions(context.Context, int64, map[string]string) (map[string]float64, error)
+}
+
+// WindowedDimensionMetricSource 让带维度过滤的规则同时保留窗口化聚合语义。
+type WindowedDimensionMetricSource interface {
+	SnapshotWindowForDimensions(context.Context, int64, map[string]string, time.Duration) (map[string]float64, error)
 }
 
 type SchedulerTicker interface {
