@@ -451,6 +451,38 @@ runtime kind 映射。
 本切片无数据迁移。回滚新增响应对象、只读方法、查询列和测试即可；不得通过吞掉
 channel health 读取错误或把未知状态强行归为 `eligible` 来保住接口可用性。
 
+## GW-WIRE-007 实施切片：账号观测来源与覆盖真相轴
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “找到之后接线，修复他们！”；“主要看建立了很多功能但没接入使用，没有完美的配合起来”；“注意颗粒度”。 |
+| Scope | 在账号健康详情现有只读聚合中增加 provider、账号类型、当前凭据模式、账号额度、模型目录和 project 身份的来源/覆盖状态。只消费现有 PostgreSQL 安全元数据、Claude OAuth 5h/7d 快照、全局 provider 模型同步时间和 credential `project_ref`；不解密凭据、不请求新上游、不改变 selector、schema、鉴权、资金、配额或账号状态。 |
+| Success criteria | 运维能明确区分：Claude OAuth 额度“已观测/已过期/尚无快照”，其他模式“尚未实现账号额度采集”；模型同步是 provider 全局目录而非账号级模型；Code Assist/Antigravity 所需 project 是否已解析。缺少凭据、provider 被删除、无快照和过期快照必须是不同状态。现有字段保持兼容，两个 admin alias 使用同一响应合同。 |
+| Time estimate | 约 2-3 小时，包含查询、只读视图、OpenAPI、单元/集成/全仓门禁、独立 review 和 Draft PR。 |
+| Blast radius | 只增加管理 API 响应对象和 SQL 查询列；错误只会影响运维展示，不改变真实流量。 |
+| Failure modes | 把 provider 目录同步误报为账号模型发现；把没有快照误报为 0% 用量；把过期窗口当可用；把所有 Gemini 模式混成同一种；为展示 project 去解密并泄露 secret；使用删除 provider 的 code 仍报可用。通过来源、粒度、覆盖枚举、时间判定和响应敏感词测试缓解。 |
+| Decision points | 本切片不命中高风险边界，无需新增 Owner 决策。它不宣称完成 Gemini/Antigravity/Kimi 的真实额度采集；后续 provider-neutral 持久化快照、上游 quota/model fetcher、真实费用和让观测参与 selector，仍需单独 schema/费用决策。 |
+
+后续主动探测切片的 Owner 决策已确定：成本预算采用 **B**，建设按自然日持久化的探测账本，并同时以请求数、Token 和金额设置硬上限；自动恢复范围采用 **A**，只允许探测当前健康/降级账号以及冷却到期、具备恢复资格的账号，成功后进入渐进恢复。人工停用、鉴权失效和凭据失效账号不得自动探测或自动恢复。该切片涉及 schema、真实上游费用和账号状态写入，必须另开干净分支与 Draft PR，不混入本只读观测切片。
+
+### 实施顺序
+
+1. 健康查询补齐 provider code、account type 和运行时可服务 credential 的 vendor/auth mode/project ref；刷新历史继续独立选择，禁止用最近刷新记录冒充当前凭据。
+2. 在 `accounthealthview` 构建独立 observability 对象，使用稳定枚举表达来源、粒度和覆盖状态。
+3. 健康 handler 复用该对象，不读取明文凭据；现有 session-window 字段继续兼容。
+4. OpenAPI 补齐新增对象及枚举，明确 provider 目录不代表账号可用模型。
+5. 增加 Claude 有效/过期/空快照、Gemini/Antigravity project、Kimi 未实现额度、删除 provider、凭据轮换/多模式冲突和敏感字段排除测试。
+6. 运行目标测试、PostgreSQL 集成、`-race`、全仓、`vet`、质量门、代码预算和变异自检。
+7. 暂存后执行独立 Codex review；无 S0/S1 后提交叠放在账号调度真相 PR 之上的 Draft PR，未经 Owner 同意不合并。
+
+### 提交前审查记录
+
+第一轮 review 发现刷新历史可能冒充当前运行凭据，归一化为 S1；现已拆分“运行时可服务凭据”和“最近刷新历史”，多个可服务模式明确返回冲突。第二轮 review 发现已停用账号仍可能被观测为存在可服务凭据，同样归一化为 S1；现已把账号启用状态纳入与生产解析一致的候选条件，并增加“停用后候选归零”的 PostgreSQL 判别测试。两次修复后专项、race、`sqlc compile`、全仓测试、`go vet` 和质量门均通过；本机 PostgreSQL 集成测试因未配置 `HUAKAI_DATABASE_URL` 明确跳过，等待 CI 真库执行。
+
+### 回滚
+
+本切片无数据迁移。回滚新增查询列、observability 响应对象、OpenAPI 和测试即可；不得回滚为把 provider 目录或空 quota 快照冒充账号级已验证能力。
+
 ## Pre-execution checklist
 
 1. 审计使用 `HUAKAI-wt-global-wiring-codex`；本切片只使用独立工作树

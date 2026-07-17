@@ -435,7 +435,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S1`（运营可靠性/feature parity） |
 | 分类 | W-02 半接线、W-05 协议漂移、W-12 重复体系 |
-| 状态 | **Owner Decision Required** |
+| 状态 | **Partial fixed in implementation branch；真实跨 provider 采集与 selector 联动仍需 Owner 决策** |
 | 用户影响 | Claude OAuth 能看到 5h/7d 配额窗口；Gemini、Antigravity、Kimi 账号即使请求能跑，也没有同等级的账号额度、套餐、逐模型范围、人工验证或余额状态。模型同步是独立的全局 API-key 目录，不能代表某个 OAuth/订阅账号实际可用模型。主动 health 又尚未接线，因此运维容易把“请求 adapter 存在”误当成“账号可运营”。 |
 
 **源码证据**
@@ -446,10 +446,26 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 4. production fetcher 同样只构造这三类，见 `backend/cmd/gateway/wiring.go:1757-1798`。
 5. Batch 1 已确认主动 channel probe 包完整存在但生产未启动。
 6. 隔离参考报告观察到 Sub2 对 Claude、Gemini、Antigravity 分别提供不同的额度/套餐/逐模型健康与管理恢复，而不是用一个全局 models endpoint 代替账号状态。
+7. Gemini refresh 当前只维护 `drive_tier_cache_status/checked_at` 元数据，没有实际套餐读取器或管理消费者，见 `backend/internal/credentialworker/adapters/gemini.go:185-203`；不能把该字段当作已采集套餐。
+8. Antigravity refresh 能解析/保留 `project_id` 与 `plan`，但 `plan` 仍在加密 payload 内且没有安全管理投影；`project_id` 已由 credential store 投影到非秘密 `project_ref`，见 `backend/internal/credentialworker/adapters/antigravity.go:43-68`、`backend/internal/credentialstore/postgres_store.go:1170-1210`。
+9. 现有 model sync 完成后按 provider code 给所有账号写 `model_sync_last_check_at`，数据来源仍是 provider 全局 catalog，不是某个 OAuth/session 账号的模型发现，见 `backend/internal/registry/model_sync_writer.go:219-253`。
 
 **建议**
 
 建立 provider-neutral 的账号观测合同，但允许每家返回不同维度：数据来源、抓取时间、旧快照、套餐、窗口、余额、模型能力、验证/封禁/重授权状态。额度默认只读，不直接改变强配额或资金；是否让观测结果参与 selector 必须另行 Owner 决策。
+
+**本切片已完成**
+
+1. 在账号健康详情增加独立 `observability` 真相轴，统一返回 provider/account/auth 身份、quota、models 和 project 四组只读状态；所有数据来自现有 PostgreSQL 安全列，不解密 payload、不产生新上游请求。凭据身份按运行时可服务状态读取，与最近刷新历史分离；多条可服务模式明确返回 `ambiguous`，不静默选第一条。
+2. Claude AI OAuth 的 5h/7d 数据明确区分 `observed / expired / no_snapshot`；其他账号模式固定显示 `not_implemented_for_mode`，缺凭据和 provider 不可用分别显示独立状态，禁止把空快照解释为 0% 用量。
+3. 模型状态明确标记 `provider_catalog_sync` 且 `account_specific=false`；OpenAI/Anthropic/Gemini 之外的 provider 显示未实现，不再把全局目录时间暗示成账号级模型可用性。
+4. Gemini Code Assist 与 Antigravity 的 project 要求使用既有非秘密 `project_ref` 展示 `resolved / missing / credential_unavailable`，不读取或返回 credential payload。
+5. SQL、handler、OpenAPI 和单元测试已形成同一合同；变异测试临时把 provider catalog 改成账号级后目标测试精确变红，恢复后通过。
+
+**仍未完成**
+
+- Gemini、Antigravity、Kimi 的真实账号额度/套餐/逐模型采集器和 provider-neutral 持久化快照尚未建设；这会涉及真实上游调用、schema 与失败恢复。
+- 观测结果仍不参与 selector、强配额或资金计算；是否联动必须在采集准确性、旧快照和回滚合同明确后单独审批。
 
 ### GW-WIRE-008：Released 账号链缺少真实上游全旅程验收
 
@@ -1245,6 +1261,8 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 
 1. 真正主动探测 Safe Equivalent 已获批准，实施时继续遵守默认关闭、成本预算、账号级开关、数据库租约、多副本去重和真实 health write；本批尚未启动该能力。
 2. 普通请求观测迁移到独立 `last_request_observed_at` 合同已获批准，并由迁移 `0189`、管理消费者、OpenAPI 和真 PostgreSQL 往返测试闭环。
+1. **已批准主动探测 Safe Equivalent，待独立实现。** 成本预算采用 **B**：按自然日持久化探测账本，并以请求数、Token、金额三项硬上限共同限额；自动恢复范围采用 **A**：仅探测健康/降级账号及冷却到期且具备恢复资格的账号，成功后进入渐进恢复。人工停用、鉴权失效和凭据失效账号一律禁止自动探测与自动恢复。实现仍须默认关闭、账号级开关、数据库租约、多副本去重和真实 health write，并单独提交 schema/真实费用 Draft PR。
+2. 是否批准把普通请求观测时间从 `last_probe_at` 迁到独立 `last_request_observed_at` 合同；该项涉及 schema/API。
 3. Grok 网页 session 能力是保留为插件、重做 clean-room Safe Equivalent，还是继续 Mandatory Roadmap；当前禁止直接注册。
 4. 是否批准把运行时 `ValidateAccountCompatibility` 泛化到全部有 serving contract 的 family；该项会改变异常/遗留账号的凭据放行规则。
 5. 是否批准以 `antigravity/oauth` 为唯一 canonical 身份，并另开数据迁移决策包处置 `gemini/antigravity` legacy 行。

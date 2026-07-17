@@ -49,30 +49,31 @@ type providerAccountSchedulingAuthCooldown interface {
 }
 
 type providerAccountHealthResponseBody struct {
-	ID                         int64                      `json:"id"`
-	HealthState                string                     `json:"health_state"`
-	HealthStateUntil           *string                    `json:"health_state_until,omitempty"`
-	LastProbeLatencyMS         *int32                     `json:"last_probe_latency_ms"`
-	LastProbeAt                *string                    `json:"last_probe_at"`
-	LastObservedAt             *string                    `json:"last_request_observed_at"`
-	ObservationSource          string                     `json:"last_request_observation_source"`
-	ModelSyncLastCheckAt       *string                    `json:"model_sync_last_check_at"`
-	SessionWindow5hStart       *string                    `json:"session_window_5h_start"`
-	SessionWindow5hEnd         *string                    `json:"session_window_5h_end"`
-	SessionWindow5hStatus      *string                    `json:"session_window_5h_status"`
-	SessionWindow5hUtilization *float64                   `json:"session_window_5h_utilization"`
-	SessionWindow7dStart       *string                    `json:"session_window_7d_start"`
-	SessionWindow7dEnd         *string                    `json:"session_window_7d_end"`
-	SessionWindow7dStatus      *string                    `json:"session_window_7d_status"`
-	SessionWindow7dUtilization *float64                   `json:"session_window_7d_utilization"`
-	LastRefreshAt              *string                    `json:"last_refresh_at"`
-	LastRefreshOutcome         *string                    `json:"last_refresh_outcome"`
-	FailureClass               *string                    `json:"failure_class"`
-	FailureCount               int32                      `json:"failure_count"`
-	Enabled                    bool                       `json:"enabled"`
-	RequiresAction             bool                       `json:"requires_action"`
-	UpdatedAt                  string                     `json:"updated_at"`
-	Scheduling                 accounthealthview.Response `json:"scheduling"`
+	ID                         int64                           `json:"id"`
+	HealthState                string                          `json:"health_state"`
+	HealthStateUntil           *string                         `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS         *int32                          `json:"last_probe_latency_ms"`
+	LastProbeAt                *string                         `json:"last_probe_at"`
+	LastObservedAt             *string                         `json:"last_request_observed_at"`
+	ObservationSource          string                          `json:"last_request_observation_source"`
+	ModelSyncLastCheckAt       *string                         `json:"model_sync_last_check_at"`
+	SessionWindow5hStart       *string                         `json:"session_window_5h_start"`
+	SessionWindow5hEnd         *string                         `json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string                         `json:"session_window_5h_status"`
+	SessionWindow5hUtilization *float64                        `json:"session_window_5h_utilization"`
+	SessionWindow7dStart       *string                         `json:"session_window_7d_start"`
+	SessionWindow7dEnd         *string                         `json:"session_window_7d_end"`
+	SessionWindow7dStatus      *string                         `json:"session_window_7d_status"`
+	SessionWindow7dUtilization *float64                        `json:"session_window_7d_utilization"`
+	LastRefreshAt              *string                         `json:"last_refresh_at"`
+	LastRefreshOutcome         *string                         `json:"last_refresh_outcome"`
+	FailureClass               *string                         `json:"failure_class"`
+	FailureCount               int32                           `json:"failure_count"`
+	Enabled                    bool                            `json:"enabled"`
+	RequiresAction             bool                            `json:"requires_action"`
+	UpdatedAt                  string                          `json:"updated_at"`
+	Scheduling                 accounthealthview.Response      `json:"scheduling"`
+	Observability              accounthealthview.Observability `json:"observability"`
 	// 当没有进程内数据可用时(ring 为 nil 或没有记录到请求),
 	// RecentRequests 会被省略。零值不会被输出。
 	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
@@ -236,6 +237,7 @@ func providerAccountHealthResponseWithSchedulingAt(
 		RequiresAction:             requiresAction,
 		UpdatedAt:                  requiredProviderAccountHealthTime(row.UpdatedAt),
 		Scheduling:                 scheduling,
+		Observability:              accounthealthview.BuildObservability(row, now),
 		RecentRequests:             recentRequestsSummaryFor(ring, row.ID),
 	}, nil
 }
