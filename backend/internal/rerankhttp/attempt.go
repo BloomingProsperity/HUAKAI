@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -57,10 +58,23 @@ func (ex *execution) resolveCredential(w http.ResponseWriter) bool {
 	return true
 }
 
+func (ex *execution) credentialCompatibilityFailure(w http.ResponseWriter) *attemptFailure {
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, ex.accInfo); err == nil {
+		return nil
+	}
+	decision := gateway.CredentialProtocolIncompatibleDecision()
+	return &attemptFailure{
+		Decision:   decision,
+		AbortErr:   ex.abortWithError(w, decision.AbortReason, 0),
+		ClientCode: clienterr.CodeCredentialResolveError,
+	}
+}
+
 type attemptFailure struct {
 	Decision       gateway.AttemptRetryDecision
 	Classification gateway.Classification
 	AbortErr       error
+	ClientCode     string
 }
 
 type attemptOutcome struct {
@@ -288,7 +302,9 @@ func writeAttemptFailure(w http.ResponseWriter, failure *attemptFailure) {
 		if failure.Decision.ClientStatus > 0 {
 			status = failure.Decision.ClientStatus
 		}
-		if failure.Classification.Class != "" {
+		if failure.ClientCode != "" {
+			code = failure.ClientCode
+		} else if failure.Classification.Class != "" {
 			code = "upstream_" + string(failure.Classification.Class)
 		}
 		if failure.Classification.RetryAfterMs > 0 {

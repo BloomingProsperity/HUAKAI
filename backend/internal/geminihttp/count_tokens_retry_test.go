@@ -59,6 +59,30 @@ func TestGeminiCountTokens500RetriesSecondAccountWithoutClaim(t *testing.T) {
 	}
 }
 
+func TestGeminiCountTokensCredentialMismatchSkipsDispatchAndUsesNextAccount(t *testing.T) {
+	env := newGeminiCountTokensTestEnv(t, geminiCountTokensRetryRouter{})
+	env.relay.d.CredentialVault = geminiCountTokensCompatibilityVault(t)
+	env.transport.steps = []geminiCountTokensResponse{{status: http.StatusOK, body: `{"totalTokens":7}`}}
+
+	rec := env.invoke(t)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"totalTokens":7`) {
+		t.Fatalf("status/body=%d/%s want 200 totalTokens=7", rec.Code, rec.Body.String())
+	}
+	if len(env.selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(env.selector.requests))
+	}
+	if _, excluded := env.selector.requests[1].ExcludedAccounts[44]; !excluded {
+		t.Fatalf("second exclusions=%v want account 44", env.selector.requests[1].ExcludedAccounts)
+	}
+	if len(env.transport.authorization) != 1 || env.transport.authorization[0] != "Bearer right-gemini-count-secret" {
+		t.Fatalf("transport authorization=%v want only compatible account", env.transport.authorization)
+	}
+	if strings.Contains(rec.Body.String(), "wrong-gemini-count-secret") {
+		t.Fatal("response leaked mismatched credential")
+	}
+}
+
 func TestGeminiCountTokens400DoesNotRetry(t *testing.T) {
 	env := newGeminiCountTokensTestEnv(t, geminiCountTokensRetryRouter{})
 	env.transport.steps = []geminiCountTokensResponse{{
@@ -164,7 +188,7 @@ func newGeminiCountTokensTestEnv(t *testing.T, route router.Router) *geminiCount
 			AccountID:           accountID,
 			TenantID:            7,
 			Platform:            "openai",
-			AccountType:         "apikey",
+			AccountType:         "api_key",
 			AccountCredentialID: 7000 + accountID,
 			CredentialVersion:   1,
 		}); err != nil {
@@ -187,6 +211,24 @@ func newGeminiCountTokensTestEnv(t *testing.T, route router.Router) *geminiCount
 	}}
 	handler := NewGenerateContentHandler(Deps{CountTokens: relay})
 	return &geminiCountTokensTestEnv{relay: relay, handler: handler, selector: selector, transport: rt}
+}
+
+func geminiCountTokensCompatibilityVault(t *testing.T) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	rows := []struct {
+		id, credentialID int64
+		platform, secret string
+	}{{44, 7044, "gemini", "wrong-gemini-count-secret"}, {45, 7045, "openai", "right-gemini-count-secret"}}
+	for _, row := range rows {
+		if err := vault.Set(row.id, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: row.secret}, provider.AccountInfo{
+			AccountID: row.id, TenantID: 7, Platform: row.platform, AccountType: "api_key",
+			AccountCredentialID: row.credentialID, CredentialVersion: 1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", row.id, err)
+		}
+	}
+	return vault
 }
 
 func (e *geminiCountTokensTestEnv) invoke(t *testing.T) *httptest.ResponseRecorder {

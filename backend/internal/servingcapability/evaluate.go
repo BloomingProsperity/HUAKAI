@@ -509,6 +509,16 @@ func RuntimeKindForProviderCredential(credentialType provider.CredentialType) (s
 	}
 }
 
+// ValidateRuntimeAccountCompatibility 在发网前复核已解析账号与凭据是否属于目标协议族。
+// 尚未建立能力合同的历史协议保持兼容；已有合同的协议必须完整匹配。
+func ValidateRuntimeAccountCompatibility(family string, credential provider.Credential, account provider.AccountInfo) error {
+	if !HasContract(family) {
+		return nil
+	}
+	runtimeKind, _ := RuntimeKindForProviderCredential(credential.Type)
+	return ValidateAccountCompatibility(family, account.Platform, account.AccountType, runtimeKind)
+}
+
 func releaseRank(state ReleaseState) int {
 	switch state {
 	case ReleaseStateReleased:

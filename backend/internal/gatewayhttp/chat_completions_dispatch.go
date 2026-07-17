@@ -565,20 +565,11 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	}
 	ex.cred = credentialWithNativeStreamMode(cred, ex.clientProtocol, ex.req.Stream)
 	ex.accInfo = accInfo
-	if servingcapability.HasContract(ex.resolved.ProtocolFamily) {
-		runtimeKind, _ := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
-		if err := servingcapability.ValidateAccountCompatibility(ex.resolved.ProtocolFamily, accInfo.Platform, accInfo.AccountType, runtimeKind); err != nil {
-			abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
-			failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.AttemptRetryDecision{
-				RetryableBeforeDelivery:         true,
-				SwitchAccount:                   true,
-				ClientStatus:                    http.StatusServiceUnavailable,
-				AbortReason:                     "credential_protocol_incompatible",
-				CountsAgainstAuthFailoverBudget: true,
-			}, err)
-			failure.EndClass = gateway.UpstreamError5xx
-			return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
-		}
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, accInfo); err != nil {
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
+		failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.CredentialProtocolIncompatibleDecision(), err)
+		failure.EndClass = gateway.UpstreamError5xx
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	ex.forwardReq = gateway.ForwardRequest{
 		TenantID:             ex.ident.TenantID,

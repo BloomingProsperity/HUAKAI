@@ -333,7 +333,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S1`（凭据错投/协议正确性） |
 | 分类 | W-02 半接线、W-05 协议漂移、W-10 信息断链 |
-| 状态 | **Fixed in dedicated branch** |
+| 状态 | **Fixed for chat in PR #263；all relay credential-resolution paths fixed in stacked branch** |
 | 用户影响 | 正常管理写入会校验 family/vendor/auth/runtime，但该写入校验在账号或 provider 查询失败时明确 fail-open，并声称由运行时兜底。真实热路径却只对 Claude session 复核。旧数据、直接数据库写入、并发变更或未来旁路若把 Gemini/Kimi/Antigravity/Grok 凭据绑错 family，非 Claude 请求可能把错误 secret 发给错误上游，并让 health、计价归因和 auth cooldown 一起串线。 |
 
 **源码证据**
@@ -361,10 +361,21 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 6. 旧 R7 HCSF 测试曾依赖 `anthropic_messages + OAuth` 的非法组合；修复后改用合同合法
    的 Anthropic API key，并证明身份钩子虽然仍接线，但不会越过 API key 作用域伪装
    OAuth/session 身份。Claude session 严格官方直发继续保持原始 body。
+7. 后续全链核验发现 #263 只在 chat dispatch 调用兼容合同；completions、embeddings、
+   rerank、images、audio 与 Gemini countTokens 各自解析凭据后直接进入 dispatcher。堆叠
+   分支已在这些链的 dispatcher 前接入同一兼容复核；不兼容账号先中止当前 claim、释放
+   quota/账号槽、进入本请求排除集，再使用独立且至多一次的鉴权换号预算。无 claim 的
+   Gemini countTokens 同样排除错误账号，但不伪造账务动作。
+8. 六条新增判别测试均使用“第一个账号 vendor 错误、第二个账号正确”的差异夹具，证明
+   错误 secret 从未进入 dispatcher，第二次 selector 收到排除集，只有正确账号出站和
+   结算。原非 Chat 测试 vault 普遍漏填 auth mode，另有两条测试故意让协议 family 与账号
+   vendor 不一致来测试跨 provider 计价；这些夹具已改为生产形身份，跨 vendor 用例改为
+   断言发网前拒绝，避免用非法账号组合制造伪覆盖。
 
 **验证**
 
 - `go test ./internal/gatewayhttp -count=1`
+- `go test ./internal/completionshttp ./internal/embeddingshttp ./internal/rerankhttp ./internal/imageshttp ./internal/audiohttp ./internal/geminihttp -count=1`
 - `go test ./internal/servingcapability ./internal/provider -count=1`
 - `go test -race ./internal/gatewayhttp ./internal/servingcapability ./internal/provider -count=1`
 - `go test ./... -count=1`

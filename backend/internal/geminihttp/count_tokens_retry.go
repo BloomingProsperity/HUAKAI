@@ -15,12 +15,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 type countTokensAttemptFailure struct {
 	decision       gateway.AttemptRetryDecision
 	classification gateway.Classification
+	clientCode     string
 }
 
 type countTokensAttemptOutcome struct {
@@ -57,17 +59,20 @@ func (relay *countTokensRelay) runCountTokens(
 		if !ok {
 			return
 		}
-		outcome := relay.dispatchCountTokensAttempt(
-			w,
-			ctx,
-			requestID,
-			ident.TenantID,
-			resolved.ProtocolFamily,
-			upstreamModelID,
-			body,
-			cred,
-			accInfo,
-		)
+		outcome := countTokensAttemptOutcome{failure: countTokensCredentialCompatibilityFailure(resolved.ProtocolFamily, cred, accInfo)}
+		if outcome.failure == nil {
+			outcome = relay.dispatchCountTokensAttempt(
+				w,
+				ctx,
+				requestID,
+				ident.TenantID,
+				resolved.ProtocolFamily,
+				upstreamModelID,
+				body,
+				cred,
+				accInfo,
+			)
+		}
 		if outcome.done || outcome.failure == nil {
 			return
 		}
@@ -90,6 +95,16 @@ func (relay *countTokensRelay) runCountTokens(
 				attemptCap++
 			}
 		}
+	}
+}
+
+func countTokensCredentialCompatibilityFailure(protocolFamily string, credential provider.Credential, account provider.AccountInfo) *countTokensAttemptFailure {
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(protocolFamily, credential, account); err == nil {
+		return nil
+	}
+	return &countTokensAttemptFailure{
+		decision:   gateway.CredentialProtocolIncompatibleDecision(),
+		clientCode: clienterr.CodeCredentialResolveError,
 	}
 }
 
@@ -271,7 +286,9 @@ func writeCountTokensAttemptFailure(w http.ResponseWriter, failure *countTokensA
 		if failure.decision.ClientStatus > 0 {
 			status = failure.decision.ClientStatus
 		}
-		if failure.classification.Class != "" {
+		if failure.clientCode != "" {
+			code = failure.clientCode
+		} else if failure.classification.Class != "" {
 			code = "upstream_" + string(failure.classification.Class)
 		}
 		if failure.classification.RetryAfterMs > 0 {
