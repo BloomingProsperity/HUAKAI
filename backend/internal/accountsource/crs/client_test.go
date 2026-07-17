@@ -31,7 +31,7 @@ func (d *doerStub) Do(request *http.Request) (*http.Response, error) {
 
 func TestFetchUsesAllowlistAndReturnsCanonicalCandidate(t *testing.T) {
 	doer := &doerStub{}
-	client := NewClientForTesting(doer, resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}, []string{"relay.example.com"})
+	client := &Client{http: doer, resolver: resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}, allowed: normalizedHosts([]string{"relay.example.com"})}
 	items, contextMap, err := client.Fetch(context.Background(), FetchInput{BaseURL: "https://relay.example.com", Username: "admin", Password: "password"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
@@ -49,7 +49,7 @@ func TestFetchUsesAllowlistAndReturnsCanonicalCandidate(t *testing.T) {
 
 func TestFetchRejectsPrivateResolutionBeforeHTTP(t *testing.T) {
 	doer := &doerStub{}
-	client := NewClientForTesting(doer, resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}, []string{"relay.example.com"})
+	client := &Client{http: doer, resolver: resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}}, allowed: normalizedHosts([]string{"relay.example.com"})}
 	_, _, err := client.Fetch(context.Background(), FetchInput{BaseURL: "https://relay.example.com", Username: "admin", Password: "password"})
 	if err != ErrEndpointBlocked {
 		t.Fatalf("err=%v want endpoint blocked", err)
@@ -60,7 +60,7 @@ func TestFetchRejectsPrivateResolutionBeforeHTTP(t *testing.T) {
 }
 
 func TestFetchRejectsHostOutsideDeploymentAllowlist(t *testing.T) {
-	client := NewClientForTesting(&doerStub{}, resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}, []string{"approved.example.com"})
+	client := &Client{http: &doerStub{}, resolver: resolverStub{addresses: []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}}, allowed: normalizedHosts([]string{"approved.example.com"})}
 	_, _, err := client.Fetch(context.Background(), FetchInput{BaseURL: "https://relay.example.com", Username: "admin", Password: "password"})
 	if err != ErrDisabled {
 		t.Fatalf("err=%v want disabled", err)

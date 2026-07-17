@@ -67,10 +67,6 @@ func NewClient(allowedHosts []string) *Client {
 	}
 }
 
-func NewClientForTesting(httpClient HTTPDoer, resolver Resolver, allowedHosts []string) *Client {
-	return &Client{http: httpClient, resolver: resolver, allowed: normalizedHosts(allowedHosts), now: time.Now}
-}
-
 func (c *Client) Fetch(ctx context.Context, in FetchInput) ([]accountsource.Item, map[string]any, error) {
 	base, err := c.validateEndpoint(ctx, in.BaseURL)
 	if err != nil {
