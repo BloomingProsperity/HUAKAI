@@ -34,6 +34,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -108,6 +110,13 @@ func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
 		Auth: d.adminAuth, Store: d.credentialStore,
 		Enricher: d.projectEnricher, Audit: d.adminQueries,
 	}
+}
+
+func credentialModeAdapterRegistry(d *deps) *credentialworker.ModeAdapterRegistry {
+	if d == nil || d.cfg == nil {
+		return credentialworker.DefaultModeAdapterRegistry()
+	}
+	return credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.cfg.VendorOAuth)
 }
 
 // mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
@@ -1073,7 +1082,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
 			Auth:     d.adminAuth,
 			Accounts: d.adminQueries,
-			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialworker.DefaultModeAdapterRegistry()),
+			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialModeAdapterRegistry(d)),
 		})
 		// 账号 TLS 指纹 profile 绑定/解绑(独立包 accountfphttp,§13 不塞进 god 包 gatewayhttp)。
 		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: d.adminQueries})
@@ -1133,6 +1142,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
+		accountintakehttp.Mount(r, accountintakehttp.Deps{
+			Auth:    d.adminAuth,
+			Service: accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth),
+		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
 		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{

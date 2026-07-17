@@ -148,7 +148,7 @@ func (e chatgptOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, s
 	}
 	// 上游账户身份从 id_token 的 chatgpt 账户声明提取(claim > body > sub),
 	// 仅作账户管理元数据;解析失败回退空/manual,不阻断凭据获取。
-	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, token.ChatGPTAccountID))
+	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, token.ChatGPTAccountID, token.ChatGPTUserID))
 	return candidate, nil
 }
 

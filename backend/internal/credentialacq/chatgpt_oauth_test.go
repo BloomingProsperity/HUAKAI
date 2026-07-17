@@ -328,7 +328,13 @@ func TestChatGPTOAuthCallbackPersistsChatGPTMetadataInCredAndRedactedContext(t *
 	if got := stringFieldFromAny(candidate.RedactedContext["chatgpt_plan_type_class"]); got != "Plus" {
 		t.Fatalf("redacted plan class=%q want Plus", got)
 	}
-	for _, piiKey := range []string{"chatgpt_user_id", "chatgpt_account_id"} {
+	if candidate.ExternalAccountID != "acct-456" || candidate.ExternalSubjectID != "user-123" {
+		t.Fatalf("candidate identity=%+v，期望保留账号作用域和个人主体", candidate)
+	}
+	if _, ok := candidate.RedactedContext["upstream_subject_id"]; ok {
+		t.Fatalf("个人 subject 不得进入 RedactedContext: %v", candidate.RedactedContext)
+	}
+	for _, piiKey := range []string{"chatgpt_user_id", "chatgpt_account_id", "external_subject_id"} {
 		if _, ok := candidate.RedactedContext[piiKey]; ok {
 			t.Fatalf("RedactedContext leaked %s: %v", piiKey, candidate.RedactedContext)
 		}

@@ -147,8 +147,8 @@ func TestAnthropicRefreshOperatorEndpointOverrideUsedForOutbound(t *testing.T) {
 	}
 }
 
-// ANT-3 credential payload 缺 refresh_token + setup_token 也无 long-lived 模式 →
-// 直接报错;mutation: 把 r.AllowLongLivedSetupToken 静默接受空 setup_token 这里仍变红。
+// setup token 是长期 access token，不是 refresh token；刷新器必须拒绝把它塞进
+// refresh_token grant。普通缺 refresh_token 的凭据同样直接报错。
 func TestAnthropicRefreshFailsClosedWithoutRefreshToken(t *testing.T) {
 	refresher := AnthropicRefresh{
 		HTTPClient: &http.Client{Transport: anthropicAdapterRoundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -156,13 +156,19 @@ func TestAnthropicRefreshFailsClosedWithoutRefreshToken(t *testing.T) {
 			return nil, errors.New("unreachable")
 		})},
 	}
-	cred := []byte(`{"access_token":"old"}`)
-	_, _, err := refresher.RefreshForProvider(context.Background(), 101, "anthropic", cred)
-	if err == nil {
-		t.Fatal("expected error when refresh_token missing")
-	}
-	if !strings.Contains(err.Error(), "refresh_token") {
-		t.Fatalf("err=%v want refresh_token is empty signal", err)
+	for name, cred := range map[string][]byte{
+		"只有 access token":  []byte(`{"access_token":"old"}`),
+		"setup token 不得刷新": []byte(`{"setup_token":"long-lived-access"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := refresher.RefreshForProvider(context.Background(), 101, "anthropic", cred)
+			if err == nil {
+				t.Fatal("expected error when refresh_token missing")
+			}
+			if !strings.Contains(err.Error(), "refresh_token") {
+				t.Fatalf("err=%v want refresh_token is empty signal", err)
+			}
+		})
 	}
 }
 

@@ -62,6 +62,8 @@ func TestAdminCredentialAcquisitionStaysTokenOnly(t *testing.T) {
 		"/admin/v1/credentials/csv-import",
 		"/admin/v1/credentials/json-import",
 		"/admin/v1/credentials/oauth-init",
+		"/admin/v1/credentials/account-imports/plan",
+		"/admin/v1/credentials/account-imports/execute",
 	} {
 		if code := adminsessionauthtest.Status(fx.handler, http.MethodPost, p, adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
 			t.Fatalf("采集流 POST %s 应仍 token-only(session 401),得 %d", p, code)

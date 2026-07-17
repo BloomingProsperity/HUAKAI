@@ -94,42 +94,55 @@ func Insert(ctx context.Context, pool *pgxpool.Pool, arg Params) (Result, error)
 	}
 	var out Result
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		q := admindb.New(tx)
-		family, err := q.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{
-			TenantID: arg.Insert.TenantID, ProviderID: arg.Insert.ProviderID,
-		})
-		if err != nil {
-			return err
-		}
-		if family != arg.ProviderFamily {
-			return fmt.Errorf("%w: provider protocol changed during create", ErrProtocolIncompatible)
-		}
-		if err := ValidateProtocolCompatibility(family, arg.Candidate.AccountType, arg.Candidate.Vendor, arg.Candidate.AuthMode); err != nil {
-			return err
-		}
-
-		// 同一 tenant/channel 的检查与写入必须串行，避免两个空渠道并发绕过风险门。
-		lockKey := fmt.Sprintf("provider-account-mixed-risk:%d:%d", arg.Insert.TenantID, arg.Insert.ChannelID)
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
-			return err
-		}
-		peers, err := q.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
-			TenantID: arg.Insert.TenantID, ChannelID: arg.Insert.ChannelID,
-		})
-		if err != nil {
-			return err
-		}
-		out.RiskReport = mixedchannelrisk.Evaluate(arg.Candidate, peerAccounts(peers))
-		if out.RiskReport.HighRisk && !arg.Confirmed {
-			return ErrMixedRiskConfirmRequired
-		}
-		out.ID, err = q.InsertProviderAccount(ctx, arg.Insert)
+		var err error
+		out, err = InsertTx(ctx, tx, arg)
 		return err
 	})
 	if err != nil {
 		return Result{RiskReport: out.RiskReport}, err
 	}
 	return out, nil
+}
+
+// InsertTx 在调用方事务内完成协议复核、渠道风险串行化和账号插入。
+func InsertTx(ctx context.Context, tx pgx.Tx, arg Params) (Result, error) {
+	if tx == nil {
+		return Result{}, ErrPoolUnset
+	}
+	q := admindb.New(tx)
+	family, err := q.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{
+		TenantID: arg.Insert.TenantID, ProviderID: arg.Insert.ProviderID,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	if family != arg.ProviderFamily {
+		return Result{}, fmt.Errorf("%w: provider protocol changed during create", ErrProtocolIncompatible)
+	}
+	if err := ValidateProtocolCompatibility(family, arg.Candidate.AccountType, arg.Candidate.Vendor, arg.Candidate.AuthMode); err != nil {
+		return Result{}, err
+	}
+
+	// 同一 tenant/channel 的检查与写入必须串行，避免两个空渠道并发绕过风险门。
+	lockKey := fmt.Sprintf("provider-account-mixed-risk:%d:%d", arg.Insert.TenantID, arg.Insert.ChannelID)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
+		return Result{}, err
+	}
+	peers, err := q.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
+		TenantID: arg.Insert.TenantID, ChannelID: arg.Insert.ChannelID,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	report := mixedchannelrisk.Evaluate(arg.Candidate, peerAccounts(peers))
+	if report.HighRisk && !arg.Confirmed {
+		return Result{RiskReport: report}, ErrMixedRiskConfirmRequired
+	}
+	id, err := q.InsertProviderAccount(ctx, arg.Insert)
+	if err != nil {
+		return Result{RiskReport: report}, err
+	}
+	return Result{ID: id, RiskReport: report}, nil
 }
 
 func peerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {

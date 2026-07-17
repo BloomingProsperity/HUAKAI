@@ -77,16 +77,38 @@ func TestMapCredential_UnknownAccountTypeStillRejected(t *testing.T) {
 }
 
 func TestMapRuntimeMaterialFromAccountCredentials(t *testing.T) {
-	cred := mapRuntimeMaterial(credentialstore.RuntimeMaterial{
-		Kind:  credentialstore.RuntimeUpstreamPassthrough,
-		Value: "Bearer oauth-token",
-		Extra: map[string]string{"auth_header": "Authorization"},
-	})
-	if cred.Type != CredentialTypeUpstreamPassthrough || cred.Value != "Bearer oauth-token" {
-		t.Fatalf("cred=%+v", cred)
+	tests := []struct {
+		name     string
+		material credentialstore.RuntimeMaterial
+		wantType CredentialType
+	}{
+		{
+			name: "上游透传",
+			material: credentialstore.RuntimeMaterial{
+				Kind:  credentialstore.RuntimeUpstreamPassthrough,
+				Value: "Bearer oauth-token",
+				Extra: map[string]string{"auth_header": "Authorization"},
+			},
+			wantType: CredentialTypeUpstreamPassthrough,
+		},
+		{
+			name: "静态 OAuth access token",
+			material: credentialstore.RuntimeMaterial{
+				Kind: credentialstore.RuntimeOAuthAccessToken, Value: "setup-token-value",
+			},
+			wantType: CredentialTypeOAuthAccessToken,
+		},
 	}
-	if cred.Extra["auth_header"] != "Authorization" {
-		t.Fatalf("extra=%v", cred.Extra)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cred := mapRuntimeMaterial(tc.material)
+			if cred.Type != tc.wantType || cred.Value != tc.material.Value {
+				t.Fatalf("cred=%+v", cred)
+			}
+			if tc.material.Extra["auth_header"] != "" && cred.Extra["auth_header"] != "Authorization" {
+				t.Fatalf("extra=%v", cred.Extra)
+			}
+		})
 	}
 }
 

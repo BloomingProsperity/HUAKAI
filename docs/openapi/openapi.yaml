@@ -11027,6 +11027,108 @@ paths:
         '201': { $ref: '#/components/responses/CredentialAcquisitionHelperCreated' }
         '400': { $ref: '#/components/responses/BadRequest' }
 
+  /admin/v1/credentials/account-imports/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Preflight account-level credential imports without writing data
+      operationId: planAccountCredentialImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-16-backend-global-wiring-audit-codex.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. Platform and session administrators cannot execute this tenant operation.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountIntakePlanRequest' }
+      responses:
+        '200':
+          description: Redacted item plan and state-bound execution hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute a freshly recomputed account-level credential import plan
+      operationId: executeAccountCredentialImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-16-backend-global-wiring-audit-codex.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. Platform and session administrators cannot execute this tenant operation.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: Per-item execution outcomes; one item failure does not hide other results.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/codex/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Preflight Codex OAuth account imports without writing data
+      operationId: planCodexAccountCredentialImport
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. The server forces openai/codex_cli_oauth and ignores no caller-selectable vendor, auth mode, or OAuth endpoint because those fields are not accepted.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAccountIntakePlanRequest' }
+      responses:
+        '200':
+          description: Redacted Codex item plan and state-bound execution hash.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/codex/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: Execute a freshly recomputed Codex OAuth account import plan
+      operationId: executeCodexAccountCredentialImport
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. PAT and Agent Identity payloads are rejected because they require separate authentication contracts.
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAccountIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: Per-item Codex execution outcomes; one item failure does not hide other results.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/renew-status:
     get:
       tags: [admin-accounts]
@@ -12792,6 +12894,11 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
     UnprocessableEntity:
       description: Request is syntactically valid but cannot be processed for this resource kind.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    PayloadTooLarge:
+      description: Request body exceeds the endpoint byte limit.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -17680,6 +17787,10 @@ components:
         - cap_concurrency
         - in_flight_count
         - priority
+        - last_probe_latency_ms
+        - last_probe_at
+        - last_request_observed_at
+        - last_request_observation_source
         - token_version
         - created_at
         - updated_at
@@ -17704,6 +17815,23 @@ components:
         in_flight_count: { type: integer, minimum: 0 }
         priority: { type: integer }
         last_dispatch_at: { type: [string, 'null'], format: date-time }
+        last_probe_latency_ms:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          description: 最近一次主动上游探测的延迟；没有主动探测结果时为 null。
+        last_probe_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次主动上游探测时间；普通请求完成事件不会写入此字段。
+        last_request_observed_at:
+          type: [string, 'null']
+          format: date-time
+          description: 最近一次普通请求完成事件的观测时间；不代表主动上游探测成功。
+        last_request_observation_source:
+          type: string
+          enum: [request_completion_event]
+          description: last_request_observed_at 的生产事件来源。
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
         rate_limited_at: { type: [string, 'null'], format: date-time }
@@ -17930,8 +18058,7 @@ components:
         last_probe_at:
           type: [string, 'null']
           format: date-time
-          deprecated: true
-          description: Legacy storage projection. Current production writes come from passive request-completion events; use last_request_observed_at.
+          description: Latest active upstream probe timestamp; passive request-completion events do not write this field.
         last_request_observed_at:
           type: [string, 'null']
           format: date-time
@@ -18223,6 +18350,7 @@ components:
             - api_key
             - claude_ai_oauth
             - claude_code
+            - claude_setup_token
             - bedrock
             - vertex_anthropic
             - chatgpt_oauth
@@ -18317,6 +18445,277 @@ components:
           description: When true, helper immediately finalizes using the supplied raw material.
         redacted_context: { type: object, additionalProperties: true }
         reason: { type: string }
+
+    AccountIntakeAccountDefaults:
+      type: object
+      additionalProperties: false
+      required: [provider_id, channel_id, name_prefix, account_type]
+      properties:
+        provider_id: { type: integer, format: int64, minimum: 1 }
+        channel_id: { type: integer, format: int64, minimum: 1 }
+        name_prefix: { type: string, minLength: 1 }
+        account_type:
+          type: string
+          enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
+        enabled: { type: boolean, default: true }
+        cap_concurrency: { type: integer, format: int32, minimum: 1 }
+        priority: { type: integer, format: int32 }
+        static_weight: { type: integer, format: int32, minimum: 1 }
+        probe_model: { type: string }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
+        model_allow_list: { type: array, items: { type: string } }
+        capability_flags: { type: array, items: { type: string } }
+
+    AccountIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, source_kind, content, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        source_kind:
+          type: string
+          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+        default_vendor: { type: string }
+        default_auth_mode: { type: string }
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: Raw import material used only for local parsing and encrypted credential writes; never returned.
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    AccountIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, source_kind, content, account, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        source_kind:
+          type: string
+          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+        default_vendor: { type: string }
+        default_auth_mode: { type: string }
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    CodexAccountIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: Official token-mode Codex auth.json, raw access-token lines, token objects, arrays, JSON Lines, or adjacent JSON documents. PAT, Agent Identity, API-key-only, and incompatible auth_mode payloads are rejected.
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    CodexAccountIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Must equal the authenticated tenant_operator token scope.
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: The same Codex credential material used to create the plan; it is recomputed before execution and never returned.
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    AccountIntakeIdentitySummary:
+      type: object
+      additionalProperties: false
+      required: [subject_identity_present, subject_identity_trusted, source, strength]
+      properties:
+        external_account_id:
+          type: string
+          description: Irreversible short hint, not the raw upstream account identifier.
+        external_account_email:
+          type: string
+          description: Irreversible short hint, not the raw email address.
+        subject_identity_present: { type: boolean }
+        subject_identity_trusted: { type: boolean }
+        source: { type: string }
+        strength: { type: string, enum: [strong, scoped, weak, opaque] }
+
+    AccountIntakeLifecycleSummary:
+      type: object
+      additionalProperties: false
+      required: [refreshable, has_refresh_material, expired]
+      properties:
+        refreshable: { type: boolean }
+        has_refresh_material: { type: boolean }
+        access_expires_at: { type: string, format: date-time }
+        expired: { type: boolean }
+
+    AccountIntakeMixedRiskItem:
+      type: object
+      additionalProperties: false
+      required: [dimension, existing_account_id, existing_value, candidate_value, message]
+      properties:
+        dimension: { type: string, enum: [source, vendor, credential_type] }
+        existing_account_id: { type: integer, format: int64 }
+        existing_value: { type: string }
+        candidate_value: { type: string }
+        message: { type: string }
+
+    AccountIntakeMixedRisk:
+      type: object
+      additionalProperties: false
+      required: [high_risk, items]
+      properties:
+        high_risk: { type: boolean }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AccountIntakeMixedRiskItem' }
+
+    AccountIntakePlanItem:
+      type: object
+      additionalProperties: false
+      required: [index, vendor, auth_mode, action, code, message, identity, lifecycle]
+      properties:
+        index: { type: integer, minimum: 0 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        action:
+          type: string
+          enum: [create, update, skip, conflict, fail]
+        code: { type: string }
+        message: { type: string }
+        existing_account_id: { type: integer, format: int64 }
+        existing_account_name: { type: string }
+        existing_credential_id: { type: integer, format: int64 }
+        existing_credential_version: { type: integer, format: int32 }
+        identity: { $ref: '#/components/schemas/AccountIntakeIdentitySummary' }
+        lifecycle: { $ref: '#/components/schemas/AccountIntakeLifecycleSummary' }
+        field_changes: { type: array, items: { type: string } }
+        warnings: { type: array, items: { type: string } }
+        required_confirmations: { type: array, items: { type: string } }
+        mixed_channel_risk: { $ref: '#/components/schemas/AccountIntakeMixedRisk' }
+
+    AccountIntakePlanSummary:
+      type: object
+      additionalProperties: false
+      required: [create, update, skip, conflict, fail]
+      properties:
+        create: { type: integer, minimum: 0 }
+        update: { type: integer, minimum: 0 }
+        skip: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        fail: { type: integer, minimum: 0 }
+
+    AccountIntakePlan:
+      type: object
+      additionalProperties: false
+      required: [contract_version, source_kind, input_count, items, summary]
+      properties:
+        contract_version: { type: string, enum: [account-intake-v1] }
+        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token] }
+        input_count: { type: integer, minimum: 0, maximum: 500 }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountIntakePlanItem' }
+        summary: { $ref: '#/components/schemas/AccountIntakePlanSummary' }
+
+    AccountIntakePlanResponse:
+      type: object
+      additionalProperties: false
+      required: [plan_hash, plan]
+      properties:
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        plan: { $ref: '#/components/schemas/AccountIntakePlan' }
+
+    AccountIntakeExecutionItem:
+      type: object
+      additionalProperties: false
+      required: [index, planned_action, status, code, message, channel_health_initialized]
+      properties:
+        index: { type: integer, minimum: 0 }
+        planned_action: { type: string, enum: [create, update, skip, conflict, fail] }
+        status: { type: string, enum: [created, updated, skipped, conflict, failed] }
+        code: { type: string }
+        message: { type: string }
+        provider_account_id: { type: integer, format: int64 }
+        account_credential_id: { type: integer, format: int64 }
+        credential_version: { type: integer, format: int32 }
+        channel_health_initialized: { type: boolean }
+        warnings: { type: array, items: { type: string } }
+
+    AccountIntakeExecutionSummary:
+      type: object
+      additionalProperties: false
+      required: [created, updated, skipped, conflict, failed]
+      properties:
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+
+    AccountIntakeExecutionResponse:
+      type: object
+      additionalProperties: false
+      required: [plan_hash, items, summary]
+      properties:
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountIntakeExecutionItem' }
+        summary: { $ref: '#/components/schemas/AccountIntakeExecutionSummary' }
 
     CredentialAcquisitionFlow:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]

@@ -9,7 +9,18 @@
 | Blast radius | 审计本身为只读；后续低/中风险修复可能影响诊断合同、依赖装配、后台任务启动、开关读取和非资金业务路径。任何涉及数据库 schema、资金账、鉴权核心、billing ledger、quota enforcement、运行时依赖或生产部署的改动停止在决策包。 |
 | Failure modes | 只搜名字不读消费代码导致假阳性；把 nil fallback 当未接线或把 non-nil 当已激活；只看 chat 漏掉其他协议；只看请求路径漏 worker/恢复路径；把单机内存状态误称多副本安全；修复一个入口却漏 alias/Hermes/OpenAPI；测试 fixture 没制造接线差异；把参考源码阅读和实现放进同一会话造成 clean-room 污染；在含其它目标改动的工作树误混 PR。缓解方式是九轴矩阵、逐链引用、协议横向表、差异 fixture、参考 specifier 隔离车道、独立工作树和分批 PR。 |
 | Decision points | 全项目统一执行 Owner 最新规则：只有“源码核实后的成熟项目存在实质分歧”且“没有源码核实的成熟先例或 Safe Equivalent”且“选错会造成高危”三项同时成立，才暂停该实现选择并集中提交 Owner 决策；三项缺一则继续实施、记录风险并用判别测试闭环。PR 合并、生产部署、真实秘密、`LICENSE` 和破坏性操作仍是独立硬门。涉及 schema、鉴权、资金、强配额或真实上游费用时，必须在实施记录中给出当前 HUAKAI 真码链、成熟项目行为、方案优缺点、迁移、测试和回滚；不再因为标签本身自动停工。 |
-| Parallel-plan status | Owner 已要求 Codex 独立工作且不要触碰另一目标。本计划不读取、不修改 Claude 工作树或同题计划，作为 Owner 指定的独立 Codex 车道。参考项目由另一个隔离 Codex specifier 会话读取并产生行为报告；当前审计/实现会话不直接读取参考源码。 |
+| Parallel-plan status | Owner 已要求 Codex 独立工作且不要触碰另一目标。本计划不读取、不修改 Claude 工作树或同题计划，作为 Owner 指定的独立 Codex 车道。后端参考行为仍由隔离 Codex specifier 会话读取并产生报告；本会话为回答 Owner 的前端布局问题单独读取过 Sub2API UI 源码，但该阅读不进入本批后端 schema/API 实现，也不复制其 UI 代码、结构或标识符。 |
+
+### 三身份落地前的高敏账号接入授权过渡合同
+
+账号批量接入会写入上游账号和加密凭据，不能沿用当前 `platform_admin` 可携任意请求体 `tenant_id` 的跨租户能力。正式 capability grant schema 落地前，采用以下可撤销的 Safe Equivalent：
+
+1. 只接受部署者签发的 `tenant_operator` 程序化 token；签发和撤销 token 即当前授权与撤权载体，未签发时默认无权限。
+2. 请求 `tenant_id` 必须与 token 的 `ScopeTenantID` 完全相等且均为正数；tenant 身份取自已认证 scope，请求体只作一致性校验，不能扩大权限。
+3. `platform_admin`、session admin、无 scope token 和跨 tenant 请求全部 fail-closed；部署者不能用平台身份替任意租户执行账号接入。
+4. 该过渡合同不引入租户层级，也不允许租户创建租户。正式租户 capability grant 上线后，用 grant 校验替换 token 载体，继续保留 tenant scope 强绑定和审计归属。
+
+参考项目源码可确认的账号级导入结果是逐项识别后创建、更新、跳过或失败；HUAKAI 只吸收该运营结果，并按自身已确定的单层租户边界重新设计授权，不外推或照搬参考项目的权限模型。行为证据见 `docs/process/research/2026-07-16-backend-global-wiring-audit-codex.md` 的 GW-WIRE-010。
 
 ## 审计判定模型
 
@@ -147,6 +158,19 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 - 查“配置能写但运行时不读”“只启动读取但管理面声称实时生效”“错误 fallback 静默翻转”“默认值与诊断不一致”。
 - 记录配置来源、缓存刷新、跨副本传播和实际消费者。
 
+#### Batch 3A：请求观测与主动探测存储合同拆分
+
+Owner 已批准把普通请求观测从 `last_probe_at` 迁到独立合同。本批使用独立堆叠分支和 Draft PR，只处理存储与消费者切换，不启动真实主动探测：
+
+1. 使用迁移 `0189` 新增 nullable `last_request_observed_at`，避开其它未合并分支已经使用的 `0182～0188` 编号。
+2. 上迁移只搬运 `last_probe_at IS NOT NULL AND last_probe_latency_ms IS NULL` 的历史值，并清空这些旧 probe 值；带 latency 的记录保留为潜在主动探测证据，不做不可证实覆盖。
+3. 下迁移在 `last_probe_at` 为空时把请求观测值放回旧列，再删除新列，保证回滚不把已有主动 probe 覆盖掉。
+4. 请求完成事件只单调写 `last_request_observed_at`；事件乱序、重试和 DLQ 重放不得让时间倒退。
+5. 健康详情、账号列表和 Hermes 必须分别暴露 `last_request_observed_at` 与来源；`last_probe_at` 只保留真正 probe 语义。
+6. OpenAPI 同步两套字段，不用 deprecated alias 冒充迁移完成。
+7. 真 PostgreSQL 测试覆盖：历史无 latency 行迁移、带 latency 行保留、单调写、跨租户隔离、down 回滚；普通测试覆盖所有管理消费者。
+8. 失败回滚：若任何消费者仍依赖旧被动值，撤销本堆叠 PR；不得在生产部署后手工双写或静默混用两列。
+
 ### Batch 4：事件、DLQ、恢复和后台闭环
 
 - event bus 注册、审计引用、结算恢复、通知 outbox、凭据刷新、模型同步、健康探测、账务对账、租约清理。
@@ -192,11 +216,95 @@ Owner 补充指令：“你主要看 sub2 他一整套逻辑是怎么样的，�
 6. 修复方案、测试方案、回滚方式。
 7. 状态：`Confirmed`、`Fixed`、`Owner Decision Required` 或 `Not a Bug`。
 
+## GW-WIRE-010 实施切片：账号级批量接入
+
+Owner 已授权按源码核实结果直接修复，并明确要求同一上游身份命中多条账号时不得任选第一条。本切片只关闭账号级批量导入及其身份持久化链，不混入账号运营聚合、其它协议修复或租户授权模型重做。
+
+### 范围与合同
+
+1. 在 `/admin/v1/credentials` 下增加账号批量接入预检与执行入口；保留既有 `paste/cli-import/csv-import/json-import` 作为“向已知账号写凭据”的低层助手，不改变其兼容合同。
+2. 预检请求携带租户、来源类型、provider/channel/account 默认配置和原始导入内容；响应只返回脱敏逐项动作、原因、已有账号、风险、确认项和摘要，绝不回显 token、cookie、密钥或原始内容。
+3. 预检生成覆盖输入形态、账号默认配置、当前无秘密身份 inventory 和逐项动作的 `plan_hash`。执行必须重新读取当前 inventory、重新生成计划并精确匹配 `plan_hash`，避免预检后数据库变化仍按旧结论落库。
+4. 支持 `create/update/skip/conflict/fail` 五种逐项结果。`conflict/fail` 永不自动执行；`skip` 不写库；`create/update` 只有在请求提供全部必要确认项时才执行。
+5. 每个候选是独立账号接入单元：单项事务内完成账号行、加密凭据、凭据审计和管理审计；某项失败回滚该项，但继续处理其它项并返回完整结果。
+6. 新账号默认名称由请求前缀和输入序号稳定生成，不使用 email、token、上游个人标识或其它秘密派生名称。账号协议兼容和同渠道混用风险继续复用现有 `accountcreate` 与 `mixedchannelrisk` 合同。
+7. 更新已有账号时必须锁定精确 credential ID、auth mode 和 credential version，并走既有凭据轮换 CAS；预检后凭据版本变化必须返回冲突，不覆盖新版本。
+
+### 身份与 schema 决策
+
+1. 使用 `0190_account_credential_intake_identity` 加性迁移，为 `account_credentials` 增加上游个人主体、身份来源和稳定凭据材料指纹；`external_account_id/external_account_email` 继续复用既有 `0141` 列。
+2. 不增加唯一约束：历史数据可能已经重复，强行建唯一索引会让迁移失败或替 Owner 擅自删除数据。查询命中多个账号或同账号同模式多条候选时统一返回显式冲突，要求人工消歧。
+3. 凭据材料指纹只选择当前实际认证材料，使用租户域分隔和单向 SHA-256；它不参与鉴权、计费、配额或出站，只用于无刷新材料账号的精确去重。凭据 rotate/refresh 后必须同步更新为当前材料，旧材料不得继续命中。代价是数据库与低熵秘密同时泄露时存在离线枚举风险；当前凭据形态均要求高熵 token/key，仍禁止把普通密码类材料纳入该指纹。
+4. OAuth/token exchange 自动提取的主体来源可作为强身份；导入文件声明的主体只作为弱身份和冲突证据，不能无确认自动选择已有强身份账号。
+5. access-token-only 候选只按稳定材料指纹匹配，不按 workspace/email/显示名合并，避免共享账号作用域中的不同个人被误覆盖。
+
+### 鉴权与风险边界
+
+1. 本切片只允许带正数租户作用域的 `tenant_operator` 程序令牌操作其绑定租户；session 管理员、无作用域令牌和 `platform_admin` 均不得代租户执行。
+2. 当前授权证据是部署管理员签发的租户作用域令牌；本切片不自行发明第二套 grant 表，也不扩大令牌绑定的租户范围。
+3. 不触碰资金、quota、billing ledger、真实上游请求和生产秘密；预检纯本地解析与数据库只读，不发网、不产生上游费用。
+
+### 判别测试与回滚
+
+1. 领域测试覆盖：批内重复、同身份多账号、同账号多 auth mode、缺少目标 mode、邮箱弱匹配、强弱身份冲突、access-token-only 指纹、过期且不可刷新、撤销/刷新中/operator-attention 状态门和秘密不回显。
+2. HTTP 测试覆盖：预检无写入、执行哈希漂移拒绝、缺确认不执行、部分成功返回完整逐项结果、tenant/body 校验、token-only 鉴权和请求体大小限制。
+3. PostgreSQL 集成测试覆盖：创建账号与凭据同事务、任一步失败无孤儿；轮换版本 CAS；重复存量身份显式冲突；身份列和材料指纹 create/rotate/refresh 持久化；迁移 up/down/up。
+4. composition-root 与 OpenAPI 判别测试必须证明两条新路由真实挂载且生产依赖非空；删除 wiring 或 schema 字段时测试精确变红。
+5. 回滚优先停用新路由；代码回滚后 `0190` down 只删除新增索引和三列，不影响 `0141` 既有身份字段、账号、凭据密文或其它业务数据。
+
+### 实施状态
+
+1. 状态：`Implemented / Reviewed`。账号级预检、执行、身份 inventory、精确版本轮换、逐项事务、双审计、健康初始化、管理路由和 OpenAPI 已接线。
+2. HTTP handler 已放入独立 `accountintakehttp` 子包，未继续扩大超预算的根 `gatewayhttp` 包。
+3. 真 PostgreSQL 已验证创建原子性、审计失败回滚、精确轮换、旧计划拒绝和 `0190` up/down/up；普通测试已覆盖身份歧义、状态门、秘密不回显、严格 JSON、错误收敛和鉴权边界。
+4. `0190` 所在分支堆叠在迁移 `0189` 的 PR #259 之上。由于项目使用 `golang-migrate` 单一版本轴，合并顺序必须为 #259 后本批；不得先部署 `0190` 再补 `0189`。
+5. 本批不允许部署管理员代租户执行；只有已获部署管理员签发作用域令牌的租户运营者可以操作其绑定租户。
+
+## 账号导入凭证总修复：整合与专用入口
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “做这个啊”；“账号导入凭证模块都修复了吗”。 |
+| Scope | 以已接入生产路由且 CI 全绿的 PR #262 为唯一主干，迁移 PR #258 中仍有价值但漏接的上游个人 subject 身份与判别测试；bulk、恢复动作继续归属既有独立 PR，不重复并入。随后依次建设 Claude Cookie、Setup Token、Codex 专用批量与 Agent Identity、CRS 插件与安全迁移包。前端不在本目标范围。 |
+| Success criteria | #258 不再保有未迁移的独有账号导入能力；普通凭据批量接入可准确保存账号作用域与个人 subject，重复身份不任选第一条。四类专用入口均具备预检、权限、秘密处理、原子落库、审计、失败分类和恢复合同，并分别通过单元、PostgreSQL、OpenAPI、全仓与独立 review。 |
+| Time estimate | 整合切片约 1-2 小时；四类专用能力按独立 PR 连续实施，不用一个巨型提交承载。 |
+| Blast radius | 整合切片只影响 OpenAI/Codex 身份元数据，不改变鉴权、计费、配额或出站。后续 Cookie/Setup/Agent/CRS 会触及高敏感凭据、网络和 schema，必须默认关闭并逐批验证。 |
+| Failure modes | 把个人 subject 误当账号作用域导致错合并；把弱导入声明当可信身份；Cookie/私钥进入日志或审计；把 Setup Token 误当 refresh token；CRS 被用于 SSRF；迁移包明文泄密。分别以双层身份、显式冲突、secret-mask、静态凭据模式、固定上游/双时刻 SSRF 和加密签名恢复包缓解。 |
+| Decision points | Owner 已明确要求直接完成账号导入凭证模块。采用既定安全默认：部署治理主体只授权/撤权，不代租户操作；能力默认未授权；Agent Identity 保持 Experimental；CRS 为插件；迁移包默认不含秘密，含秘密恢复包必须 step-up、加密、签名、短时有效。若源码证明这些默认与现有鉴权/schema 无法兼容，再按“有疑问必须停下”提交具体冲突。 |
+
+### 执行顺序
+
+1. 从 #262 建立整合分支，对照 #258 真码迁移 ChatGPT/Codex subject 身份和被删减的判别测试；不得重新引入 #258 的死代码入口、旧迁移编号或已拆分运营模块。
+2. 跑目标、race、PostgreSQL、全仓和质量门，独立 review 后提交叠放 Draft PR；确认 #258 无独有能力遗留后再处理旧 PR，未经 Owner 同意不合并。
+3. Claude Cookie：单次 Cookie 转换、固定域名、step-up、授权租户自操作、逐项 dry-run/execute、内存清零。
+4. Setup Token：一等导入计划、租户专属入口、静态 access-token 生命周期和启动一致性门；禁止进入 refresh grant。
+5. Codex：专用多行 `auth.json`/access token 接入；Agent Identity 使用独立凭据模式、AES-GCM 信封、签名/任务绑定/恢复/撤销，并保持 Experimental。
+6. CRS 与迁移包：插件化远程源、allowlist 与双时刻 SSRF、逐项差异预览；结构包默认无秘密，恢复包加密签名且短时有效。
+7. 每一项使用独立干净分支、独立 Draft PR 和独立回滚，不跨 PR 合并数据库迁移、鉴权授权和真实上游网络风险。
+
+### Setup Token 实施定性（2026-07-17）
+
+1. 官方合同：`claude setup-token` 生成一年期、仅推理用途的 OAuth access token，面向 CI/脚本，以 `CLAUDE_CODE_OAUTH_TOKEN` 使用；它不是 refresh token，也不能建立 Remote Control 会话。[Claude Code Authentication](https://code.claude.com/docs/en/authentication)
+2. 成熟项目观察：该能力以独立账号类型和独立授权入口呈现，普通 OAuth 与 inference-only token 分开；Cookie 自动授权也显式选择 full/inference 两种 scope。行为证据：`Wei-Shaw/sub2api@bc2244c83fd8e92769d89ca01eb980513a720486:backend/internal/service/oauth_service.go:64-73,143-172,175-239`。
+3. HUAKAI 当前错误：`setup_token` 仅出现在 flow 枚举和未接入生产配置的刷新器回退分支；该分支把 setup token 当 refresh token 发往刷新 grant，与官方合同冲突，且默认 registry 从未开启。
+4. 本切片采用独立 `anthropic/claude_setup_token` 模式：只允许专用 `setup_token` 来源，作为 Bearer access token 物化；worker 只注册显式静态策略并返回无需刷新，不注册任何可发网上游请求的刷新 adapter，不与 `claude_code` 普通 OAuth 混用。
+5. 导入仍走现有账号接入 `plan -> execute`：租户作用域、显式冲突、单向指纹、计划哈希、原子账号/凭据写入、审计和健康初始化全部复用；旧的错误刷新回退删除，不保留兼容暗门。
+6. 数据库只扩展 vendor/auth-mode 约束，不新增秘密列；回滚会恢复原约束，并因存在新模式行而明确失败，禁止静默丢数据。
+
+### Codex 专用批量实施定性（2026-07-17）
+
+1. OpenAI 官方 Codex 当前 `auth.json` 把 OAuth 材料放在 `tokens` 对象中，字段为 `id_token`、`access_token`、`refresh_token` 和可选 `account_id`；外层还可能存在 `OPENAI_API_KEY`、`last_refresh`、`personal_access_token` 与独立 `agent_identity`。源码证据：`openai/codex@315195492c80fdade38e917c18f9584efd599304:codex-rs/login/src/auth/storage.rs:37-60`、`codex-rs/login/src/token_data.rs:10-25`。
+2. `agent_identity` 与 `personal_access_token` 已是官方独立认证材料，不能在普通 token 导入中静默丢弃、当账号备注处理或伪装成可刷新的 OAuth；本切片遇到这两种模式明确拒绝并指向各自专用合同，不擅自保存私钥。源码证据：`openai/codex@315195492c80fdade38e917c18f9584efd599304:codex-rs/protocol/src/auth.rs:8-56`、`codex-rs/login/src/auth/storage.rs:37-112`。
+3. HUAKAI 的 `cli_import` 当前实际调用通用解析器，输入可覆盖 vendor/auth mode，且整包保留未批准字段；`ParseCLIImportContent` 本身在仓库内零调用。专用解析必须强制 `openai/codex_cli_oauth`、只保留运行与身份所需字段，并删除零调用 wrapper。
+4. 定时刷新查询返回 `account_credentials.vendor`，Codex 行因此携带 `openai`；生产配置化刷新器却以 `openai_codex` 注册，只能覆盖部分热路径，定时链会回落到缺配置的默认适配器。修复后 mode registry 与热路径 vendor refresher 共用 `HUAKAI_OPENAI_CODEX_OAUTH_*`；只要配置了任一字段，令牌端点或客户端 ID 缺失就启动失败，scope 保持可选，不允许“能导入、不能续期”。
+5. 新增 `/admin/v1/credentials/account-imports/codex/plan` 与 `/execute` 专用合同，请求不暴露 source/vendor/auth-mode 覆盖；仍复用统一 `plan -> execute`、作用域令牌、计划哈希、逐项事务、双审计、健康初始化和显式冲突。
+6. 普通 Codex token 与 Agent Identity 分批交付：本切片只接 OAuth/access token；Agent Identity 的私钥、任务绑定、恢复和撤销保持下一独立 Experimental PR，避免在低风险批量导入中夹带新认证核心。
+
 ## Pre-execution checklist
 
-1. 只使用 `HUAKAI-wt-global-wiring-codex` 和分支 `audit/backend-global-wiring-20260716-codex`。
+1. 主审计只使用 `HUAKAI-wt-global-wiring-codex`；已获批 schema 批次使用其堆叠工作树 `HUAKAI-wt-request-observation-codex` 和分支 `fix/request-observation-schema-20260716-codex`，PR 基于主审计分支。
 2. 每批开始和结束检查 `git status`，所有改动通过该批次的 Draft PR 提交；未经 Owner 同意不合并。
-3. 当前会话不读取参考项目源码，不触碰 Claude 或其它目标工作树。
+3. 当前后端实现不使用本会话为前端答疑读取的参考 UI 源码；后端参考行为只消费隔离 specifier 报告，并且不触碰 Claude 或其它目标工作树。
 4. 参考源码由隔离 specifier 会话读取，输出行为报告后退出。
 5. 建立生产入口、worker 和协议 handler 的源码清单。
 6. 每个候选发现至少打开构造、注入和消费源码，不以 `rg` 输出直接下结论。

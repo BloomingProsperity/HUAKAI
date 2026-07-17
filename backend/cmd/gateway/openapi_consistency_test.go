@@ -1048,6 +1048,61 @@ func TestPublicPricingPageItemSchemaListsCatalogMetadata(t *testing.T) {
 	}
 }
 
+// TestProviderAccountObservationSchemasSeparatePassiveAndActive 把账号列表与健康详情
+// 的观测字段绑定到 OpenAPI。变异:删除任一 required/property、把 source enum 改名、
+// 或重新把请求观测字段标成 deprecated,本测试都会转红。
+func TestProviderAccountObservationSchemasSeparatePassiveAndActive(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	raw, err := os.ReadFile(specAbs)
+	if err != nil {
+		t.Fatalf("read OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, schemaName := range []string{"ProviderAccount:", "ProviderAccountHealthSnapshot:"} {
+		block := yamlSchemaBlock(spec, schemaName)
+		if block == "" {
+			t.Fatalf("%s schema block not found in OpenAPI", strings.TrimSuffix(schemaName, ":"))
+		}
+		for _, field := range []string{
+			"last_probe_latency_ms",
+			"last_probe_at",
+			"last_request_observed_at",
+			"last_request_observation_source",
+		} {
+			if !strings.Contains(block, "        - "+field) {
+				t.Fatalf("%s required list missing %q", schemaName, field)
+			}
+			if yamlPropertyBlock(block, field) == "" {
+				t.Fatalf("%s properties missing %q", schemaName, field)
+			}
+		}
+
+		sourceBlock := yamlPropertyBlock(block, "last_request_observation_source")
+		if !strings.Contains(sourceBlock, "enum: [request_completion_event]") {
+			t.Fatalf("%s request observation source enum mismatch: %s", schemaName, sourceBlock)
+		}
+		requestBlock := yamlPropertyBlock(block, "last_request_observed_at")
+		if strings.Contains(requestBlock, "deprecated: true") {
+			t.Fatalf("%s request observation field must not remain a deprecated alias: %s", schemaName, requestBlock)
+		}
+		probeBlock := yamlPropertyBlock(block, "last_probe_at")
+		if strings.Contains(probeBlock, "deprecated: true") {
+			t.Fatalf("%s active probe field must not be deprecated: %s", schemaName, probeBlock)
+		}
+		if !strings.Contains(strings.ToLower(probeBlock), "active") &&
+			!strings.Contains(probeBlock, "主动上游探测") {
+			t.Fatalf("%s last_probe_at description does not preserve active-probe semantics: %s", schemaName, probeBlock)
+		}
+		if !strings.Contains(strings.ToLower(requestBlock), "not an active") &&
+			!strings.Contains(requestBlock, "不代表主动上游探测") {
+			t.Fatalf("%s last_request_observed_at description does not reject active-probe semantics: %s", schemaName, requestBlock)
+		}
+	}
+}
+
 // yamlSchemaBlock 返回某个具名 schema 的 YAML 文本(从其缩进 4 空格的头行起,
 // 到同一缩进层级的下一个兄弟 schema 为止);不存在则返回 ""。
 func yamlSchemaBlock(spec, header string) string {
@@ -1067,6 +1122,32 @@ func yamlSchemaBlock(spec, header string) string {
 		ln := lines[i]
 		// 下一个兄弟 schema = 恰好 4 个前导空格、第 5 列为非空格、且以 ':' 结尾
 		if len(ln) > 4 && ln[:4] == "    " && ln[4] != ' ' && strings.HasSuffix(strings.TrimSpace(ln), ":") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// yamlPropertyBlock 从具名 schema 文本中截取一个 properties 子字段。
+func yamlPropertyBlock(schema, field string) string {
+	lines := strings.Split(schema, "\n")
+	marker := "        " + field + ":"
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, marker) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		line := lines[i]
+		if len(line) > 8 && line[:8] == "        " && line[8] != ' ' &&
+			!strings.HasPrefix(strings.TrimSpace(line), "-") {
 			end = i
 			break
 		}

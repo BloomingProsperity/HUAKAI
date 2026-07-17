@@ -12,6 +12,7 @@ func TestDefaultHandlerRegistryCoversRefreshableModes(t *testing.T) {
 		"anthropic/api_key",
 		"anthropic/claude_ai_oauth",
 		"anthropic/claude_code",
+		"anthropic/claude_setup_token",
 		"anthropic/bedrock",
 		"anthropic/vertex_anthropic",
 		"openai/api_key",
@@ -82,6 +83,7 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		{VendorAnthropic, AuthModeAPIKey, `{"api_key":"sk-ant"}`, RuntimeAPIKey, "sk-ant"},
 		{VendorAnthropic, AuthModeClaudeAIOAuth, `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","auth_mode":"claude_ai_oauth"}`, RuntimeOAuthAccessToken, "anthropic-access"},
 		{VendorAnthropic, AuthModeClaudeCode, `{"session_token":"anthropic-session","access_token":"anthropic-access","auth_mode":"claude_code"}`, RuntimeSessionToken, "anthropic-session"},
+		{VendorAnthropic, AuthModeClaudeSetupToken, `{"setup_token":"anthropic-long-lived"}`, RuntimeOAuthAccessToken, "anthropic-long-lived"},
 		{VendorAnthropic, AuthModeBedrock, `{"aws_access_key_id":"ak","aws_secret_access_key":"sec","aws_region":"us-east-1"}`, RuntimeAWSSigV4, "sec"},
 		{VendorOpenAI, AuthModeRefreshToken, `{"access_token":"tok","refresh_token":"rt"}`, RuntimeUpstreamPassthrough, "Bearer tok"},
 		{VendorGemini, AuthModeAntigravity, `{"session_token":"sess"}`, RuntimeSessionToken, "sess"},
@@ -103,6 +105,19 @@ func TestRuntimeMaterialMappings(t *testing.T) {
 		if got.Kind != tc.kind || got.Value != tc.value {
 			t.Fatalf("%s/%s got kind=%q value=%q want %q/%q", tc.vendor, tc.mode, got.Kind, got.Value, tc.kind, tc.value)
 		}
+	}
+}
+
+func TestClaudeSetupTokenIsStaticAccessToken(t *testing.T) {
+	handler, err := DefaultHandlerRegistry().MustLookup(VendorAnthropic, AuthModeClaudeSetupToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handler.Refreshable() || handler.AllowGrace() {
+		t.Fatalf("setup token refreshable=%v allow_grace=%v，期望静态长期 access token", handler.Refreshable(), handler.AllowGrace())
+	}
+	if err := handler.ValidatePayload([]byte(`{"access_token":"wrong-shape"}`)); !errors.Is(err, ErrInvalidPayload) {
+		t.Fatalf("普通 access_token 不得冒充 setup_token: %v", err)
 	}
 }
 

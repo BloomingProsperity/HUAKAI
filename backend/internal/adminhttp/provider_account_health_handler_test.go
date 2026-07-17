@@ -96,6 +96,7 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 	row := providerAccountHealthRow(7, 99)
 	row.HealthStateUntil = pgTimestamp(time.Date(2026, 6, 2, 12, 10, 0, 0, time.UTC))
 	row.LastProbeAt = pgTimestamp(time.Date(2026, 6, 2, 12, 9, 0, 0, time.UTC))
+	row.LastRequestObservedAt = pgTimestamp(time.Date(2026, 6, 2, 12, 8, 0, 0, time.UTC))
 	latencyMS := int32(217)
 	row.LastProbeLatencyMS = &latencyMS
 	row.LastRefreshAt = pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC))
@@ -201,12 +202,13 @@ func TestProviderAccountHealthJoinsLatestRefreshMetadata(t *testing.T) {
 	}
 }
 
-func TestProviderAccountHealthResponseIncludesLastProbeSnapshot(t *testing.T) {
+func TestProviderAccountHealthResponseSeparatesProbeAndRequestObservation(t *testing.T) {
 	store := newProviderAccountHealthStoreStub()
 	row := providerAccountHealthRow(7, 102)
 	latencyMS := int32(321)
 	row.LastProbeLatencyMS = &latencyMS
 	row.LastProbeAt = pgTimestamp(time.Date(2026, 6, 2, 12, 3, 4, 0, time.UTC))
+	row.LastRequestObservedAt = pgTimestamp(time.Date(2026, 6, 2, 12, 5, 6, 0, time.UTC))
 	store.put(row)
 
 	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
@@ -227,8 +229,8 @@ func TestProviderAccountHealthResponseIncludesLastProbeSnapshot(t *testing.T) {
 	if body.LastProbeAt == nil || *body.LastProbeAt != "2026-06-02T12:03:04Z" {
 		t.Fatalf("last_probe_at=%v want 2026-06-02T12:03:04Z", body.LastProbeAt)
 	}
-	if body.LastObservedAt == nil || *body.LastObservedAt != "2026-06-02T12:03:04Z" {
-		t.Fatalf("last_request_observed_at=%v want 2026-06-02T12:03:04Z", body.LastObservedAt)
+	if body.LastObservedAt == nil || *body.LastObservedAt != "2026-06-02T12:05:06Z" {
+		t.Fatalf("last_request_observed_at=%v want 2026-06-02T12:05:06Z", body.LastObservedAt)
 	}
 	if body.ObservationSource != "request_completion_event" {
 		t.Fatalf("last_request_observation_source=%q want request_completion_event", body.ObservationSource)

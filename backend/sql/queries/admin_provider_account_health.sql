@@ -7,6 +7,7 @@ SELECT
     pa.enabled,
     pa.last_probe_latency_ms,
     pa.last_probe_at,
+    pa.last_request_observed_at,
     pa.model_sync_last_check_at,
     pa.session_window_5h_start,
     pa.session_window_5h_end,
@@ -40,15 +41,17 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)::bigint
   AND pa.id = sqlc.arg(id)::bigint
   AND pa.deleted_at IS NULL;
 
--- name: TouchProviderAccountProbe :exec
--- 由异步请求完成事件调用,沿用旧 last_probe_at 存储列记录被动请求观测时间。
--- 该值不是主动上游探测结果;管理 API 使用 last_request_observed_at 暴露真实语义。
+-- name: TouchProviderAccountRequestObservedAt :exec
+-- 由异步请求完成事件调用,单调记录被动请求观测时间。
 UPDATE provider_accounts
-SET last_probe_at = sqlc.arg(probed_at)::timestamptz
+SET last_request_observed_at = sqlc.arg(observed_at)::timestamptz
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL
-  AND (last_probe_at IS NULL OR last_probe_at < sqlc.arg(probed_at)::timestamptz);
+  AND (
+      last_request_observed_at IS NULL
+      OR last_request_observed_at < sqlc.arg(observed_at)::timestamptz
+  );
 
 -- name: SummarizeProviderAccountHealth :many
 -- 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
