@@ -57,61 +57,6 @@ func (q *Queries) CountActiveProviderAccountsForProvider(ctx context.Context, ar
 	return column_1, err
 }
 
-const createChannel = `-- name: CreateChannel :one
-INSERT INTO channels (tenant_id, pool_group_id, name, failover_status_codes, enabled)
-SELECT
-    $1::bigint,
-    $2::bigint,
-    $3::text,
-    $4::integer[],
-    $5::boolean
-WHERE EXISTS (
-    SELECT 1 FROM pool_groups pg
-    WHERE pg.id = $2::bigint
-      AND pg.tenant_id = $1::bigint
-)
-RETURNING id, pool_group_id, name, failover_status_codes, enabled, created_at
-`
-
-type CreateChannelParams struct {
-	TenantID            int64   `db:"tenant_id" json:"tenant_id"`
-	PoolGroupID         int64   `db:"pool_group_id" json:"pool_group_id"`
-	Name                string  `db:"name" json:"name"`
-	FailoverStatusCodes []int32 `db:"failover_status_codes" json:"failover_status_codes"`
-	Enabled             bool    `db:"enabled" json:"enabled"`
-}
-
-type CreateChannelRow struct {
-	ID                  int64              `db:"id" json:"id"`
-	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
-	Name                string             `db:"name" json:"name"`
-	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
-	Enabled             bool               `db:"enabled" json:"enabled"`
-	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-// pool_group 必须属于同租户(EXISTS 守卫防跨租户链接);name 唯一冲突由
-// uq_channels_tenant_pool_name 抛 23505。
-func (q *Queries) CreateChannel(ctx context.Context, arg CreateChannelParams) (CreateChannelRow, error) {
-	row := q.db.QueryRow(ctx, createChannel,
-		arg.TenantID,
-		arg.PoolGroupID,
-		arg.Name,
-		arg.FailoverStatusCodes,
-		arg.Enabled,
-	)
-	var i CreateChannelRow
-	err := row.Scan(
-		&i.ID,
-		&i.PoolGroupID,
-		&i.Name,
-		&i.FailoverStatusCodes,
-		&i.Enabled,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createChannelTestTemplate = `-- name: CreateChannelTestTemplate :one
 INSERT INTO channel_test_templates (
     tenant_id,
@@ -186,6 +131,57 @@ func (q *Queries) DeleteChannelTestTemplate(ctx context.Context, arg DeleteChann
 		&i.Path,
 		&i.BodyTemplate,
 		&i.Headers,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getAdminChannel = `-- name: GetAdminChannel :one
+SELECT
+    id,
+    pool_group_id,
+    name,
+    failover_status_codes,
+    body_param_strips,
+    param_override,
+    sensitive_words,
+    enabled,
+    created_at
+FROM channels
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+  AND deleted_at IS NULL
+`
+
+type GetAdminChannelParams struct {
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+	ID       int64 `db:"id" json:"id"`
+}
+
+type GetAdminChannelRow struct {
+	ID                  int64              `db:"id" json:"id"`
+	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
+	Name                string             `db:"name" json:"name"`
+	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
+	BodyParamStrips     []string           `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride       []byte             `db:"param_override" json:"param_override"`
+	SensitiveWords      []string           `db:"sensitive_words" json:"sensitive_words"`
+	Enabled             bool               `db:"enabled" json:"enabled"`
+	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error) {
+	row := q.db.QueryRow(ctx, getAdminChannel, arg.TenantID, arg.ID)
+	var i GetAdminChannelRow
+	err := row.Scan(
+		&i.ID,
+		&i.PoolGroupID,
+		&i.Name,
+		&i.FailoverStatusCodes,
+		&i.BodyParamStrips,
+		&i.ParamOverride,
+		&i.SensitiveWords,
+		&i.Enabled,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -287,6 +283,9 @@ SELECT
     pool_group_id,
     name,
     failover_status_codes,
+    body_param_strips,
+    param_override,
+    sensitive_words,
     enabled,
     created_at
 FROM channels
@@ -308,6 +307,9 @@ type ListAdminChannelsByTenantRow struct {
 	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
 	Name                string             `db:"name" json:"name"`
 	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
+	BodyParamStrips     []string           `db:"body_param_strips" json:"body_param_strips"`
+	ParamOverride       []byte             `db:"param_override" json:"param_override"`
+	SensitiveWords      []string           `db:"sensitive_words" json:"sensitive_words"`
 	Enabled             bool               `db:"enabled" json:"enabled"`
 	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
@@ -326,6 +328,9 @@ func (q *Queries) ListAdminChannelsByTenant(ctx context.Context, arg ListAdminCh
 			&i.PoolGroupID,
 			&i.Name,
 			&i.FailoverStatusCodes,
+			&i.BodyParamStrips,
+			&i.ParamOverride,
+			&i.SensitiveWords,
 			&i.Enabled,
 			&i.CreatedAt,
 		); err != nil {
@@ -453,46 +458,6 @@ func (q *Queries) ListChannelTestTemplatesByTenant(ctx context.Context, arg List
 	return items, nil
 }
 
-const softDeleteChannel = `-- name: SoftDeleteChannel :one
-UPDATE channels c
-SET
-    deleted_at = COALESCE(c.deleted_at, NOW()),
-    updated_at = NOW(),
-    enabled = false
-WHERE c.tenant_id = $1::bigint
-  AND c.id = $2::bigint
-  AND c.deleted_at IS NULL
-RETURNING id, pool_group_id, name, failover_status_codes, enabled, created_at
-`
-
-type SoftDeleteChannelParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	ID       int64 `db:"id" json:"id"`
-}
-
-type SoftDeleteChannelRow struct {
-	ID                  int64              `db:"id" json:"id"`
-	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
-	Name                string             `db:"name" json:"name"`
-	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
-	Enabled             bool               `db:"enabled" json:"enabled"`
-	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-func (q *Queries) SoftDeleteChannel(ctx context.Context, arg SoftDeleteChannelParams) (SoftDeleteChannelRow, error) {
-	row := q.db.QueryRow(ctx, softDeleteChannel, arg.TenantID, arg.ID)
-	var i SoftDeleteChannelRow
-	err := row.Scan(
-		&i.ID,
-		&i.PoolGroupID,
-		&i.Name,
-		&i.FailoverStatusCodes,
-		&i.Enabled,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const softDeleteProvider = `-- name: SoftDeleteProvider :one
 UPDATE providers p
 SET
@@ -535,64 +500,6 @@ func (q *Queries) SoftDeleteProvider(ctx context.Context, arg SoftDeleteProvider
 		&i.Code,
 		&i.DisplayName,
 		&i.UpstreamProtocol,
-		&i.Enabled,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const updateChannel = `-- name: UpdateChannel :one
-UPDATE channels c
-SET
-    pool_group_id = $1::bigint,
-    name = $2::text,
-    failover_status_codes = $3::integer[],
-    enabled = $4::boolean,
-    updated_at = NOW()
-WHERE c.tenant_id = $5::bigint
-  AND c.id = $6::bigint
-  AND c.deleted_at IS NULL
-  AND EXISTS (
-      SELECT 1 FROM pool_groups pg
-      WHERE pg.id = $1::bigint
-        AND pg.tenant_id = $5::bigint
-  )
-RETURNING id, pool_group_id, name, failover_status_codes, enabled, created_at
-`
-
-type UpdateChannelParams struct {
-	PoolGroupID         int64   `db:"pool_group_id" json:"pool_group_id"`
-	Name                string  `db:"name" json:"name"`
-	FailoverStatusCodes []int32 `db:"failover_status_codes" json:"failover_status_codes"`
-	Enabled             bool    `db:"enabled" json:"enabled"`
-	TenantID            int64   `db:"tenant_id" json:"tenant_id"`
-	ID                  int64   `db:"id" json:"id"`
-}
-
-type UpdateChannelRow struct {
-	ID                  int64              `db:"id" json:"id"`
-	PoolGroupID         int64              `db:"pool_group_id" json:"pool_group_id"`
-	Name                string             `db:"name" json:"name"`
-	FailoverStatusCodes []int32            `db:"failover_status_codes" json:"failover_status_codes"`
-	Enabled             bool               `db:"enabled" json:"enabled"`
-	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-func (q *Queries) UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error) {
-	row := q.db.QueryRow(ctx, updateChannel,
-		arg.PoolGroupID,
-		arg.Name,
-		arg.FailoverStatusCodes,
-		arg.Enabled,
-		arg.TenantID,
-		arg.ID,
-	)
-	var i UpdateChannelRow
-	err := row.Scan(
-		&i.ID,
-		&i.PoolGroupID,
-		&i.Name,
-		&i.FailoverStatusCodes,
 		&i.Enabled,
 		&i.CreatedAt,
 	)

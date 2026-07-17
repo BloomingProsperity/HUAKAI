@@ -198,7 +198,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_binding", "model_id and pool_group_id are required positive ids")
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.EffectiveFrom, req.EffectiveUntil)
+		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
 		if !ok {
 			return
 		}
@@ -235,7 +235,7 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.EffectiveFrom, req.EffectiveUntil)
+		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
 		if !ok {
 			return
 		}
@@ -277,7 +277,7 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 }
 
 // validateCommon 校验共享可变字段并解析生效窗。成功时返回解析出的 *time.Time 对。
-func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, weight *int32, efRaw, euRaw *string) (*time.Time, *time.Time, bool) {
+func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, weight, maxParallelRequests *int32, efRaw, euRaw *string) (*time.Time, *time.Time, bool) {
 	if selMode != "" && !validSelectionModes[selMode] {
 		writeError(w, http.StatusBadRequest, "invalid_selection_mode", "selection_mode must be strict_priority or priority_weighted")
 		return nil, nil, false
@@ -292,6 +292,10 @@ func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, we
 	}
 	if weight != nil && *weight <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_weight", "weight must be > 0")
+		return nil, nil, false
+	}
+	if maxParallelRequests != nil && *maxParallelRequests < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_max_parallel_requests", "max_parallel_requests must be >= 0")
 		return nil, nil, false
 	}
 	ef, ok := parseTimePtr(w, efRaw, "effective_from")

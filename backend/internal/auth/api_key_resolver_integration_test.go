@@ -194,6 +194,33 @@ func TestAPIKeyResolver_ResolvesUserGroup(t *testing.T) {
 	}
 }
 
+// TestAPIKeyResolver_IPBlacklistFromQueryDeniesBeforeAllowlist 验证数据库投影出的
+// 黑名单会进入 resolver,且 deny 优先于同时命中的 allowlist。
+// 变异:从 LookupAPIKeysByPrefix 删除 ip_blacklist 投影或让 Scan 后该字段恒空,
+// 请求会被 allowlist 放行,本测试应由 ErrForbidden 断言变红。
+func TestAPIKeyResolver_IPBlacklistFromQueryDeniesBeforeAllowlist(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
+
+	const clientIP = "203.0.113.7"
+	matchingCIDR := clientIP + "/32"
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_keys SET ip_allowlist=$1, ip_blacklist=$1 WHERE id=$2`,
+		matchingCIDR, seed.apiKeyID,
+	); err != nil {
+		t.Fatalf("设置 API key IP 规则: %v", err)
+	}
+
+	req := newRequest(t, "Bearer "+seed.plaintext)
+	req.RemoteAddr = clientIP + ":5100"
+	r := NewAPIKeyResolver(dbauth.New(pool))
+	if _, err := r.Resolve(ctx, req); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("黑名单与白名单同时命中应由 deny 优先并返回 ErrForbidden,实际错误=%v", err)
+	}
+}
+
 func TestAPIKeyResolver_TouchesLastUsedAtOnSuccessfulResolve(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

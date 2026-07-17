@@ -8,6 +8,39 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const prepareQuotaReleaseRecovery = `-- name: PrepareQuotaReleaseRecovery :one
+UPDATE quota_reservations
+SET status = 'reconciliation_needed',
+    lease_expires_at = LEAST(lease_expires_at, NOW()),
+    updated_at = NOW()
+WHERE tenant_id = $1::bigint
+  AND claim_id = $2::bigint
+  AND ($3::bigint = 0 OR id = $3::bigint)
+  AND status IN ('reserved', 'reconciliation_needed')
+  AND EXISTS (
+      SELECT 1
+      FROM billing_ledger_claims blc
+      WHERE blc.tenant_id = $1::bigint
+        AND blc.id = $2::bigint
+        AND blc.status = 'aborted'
+  )
+RETURNING id
+`
+
+type PrepareQuotaReleaseRecoveryParams struct {
+	TenantID      int64 `db:"tenant_id" json:"tenant_id"`
+	ClaimID       int64 `db:"claim_id" json:"claim_id"`
+	ReservationID int64 `db:"reservation_id" json:"reservation_id"`
+}
+
+// Release 热重试耗尽后仅为仍处于 aborted 终态的 claim 建立恢复资格。
+func (q *Queries) PrepareQuotaReleaseRecovery(ctx context.Context, arg PrepareQuotaReleaseRecoveryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, prepareQuotaReleaseRecovery, arg.TenantID, arg.ClaimID, arg.ReservationID)
+	var reservationID int64
+	err := row.Scan(&reservationID)
+	return reservationID, err
+}
+
 const getBillingClaimTerminalState = `-- name: GetBillingClaimTerminalState :one
 SELECT status, actual_cost
 FROM billing_ledger_claims

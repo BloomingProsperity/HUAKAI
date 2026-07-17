@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/affinityrules"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/bodyfeatures"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
@@ -28,6 +29,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -396,6 +398,7 @@ func (ex *chatExecution) selectPoolAccount(w http.ResponseWriter, in attemptInpu
 	if selRes == nil || selRes.AccountID == 0 {
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pool_select_no_account", 0, ex.protocolLoss)
 		failure := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_select_no_account", gateway.UpstreamError5xx, nil)
+		failure.FallbackSignal = bindingfallback.SignalPoolStaticMismatch
 		// 此分支 err 为 nil(无哨兵携带恢复时刻),给一个默认 Retry-After 修掉"503 却无退避头"缺陷,
 		// 避免客户端盲目重试。与无容量错误路径的回退值一致。
 		failure.RetryAfterSeconds = noCapacityFallbackRetryAfter
@@ -421,11 +424,20 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 	// context-window 预检(它对 ctxWindow<=0 / estInput<=0 fail-open),故仍随 model-fallback 门控。
 	var ctxWindow, maxOut int
 	estInput := tokenestimate.Estimate(ex.body, ex.resolved.ProtocolFamily)
-	if ex.modelFallbackEnabled {
-		ctxWindow = ex.resolved.ContextWindow
+	_, hasContextFallback := fallbackPhaseForClass(ex.plan, bindingfallback.ClassContextWindow)
+	currentClass := bindingfallback.NormalizeClass(string(ex.attempt.FallbackClass))
+	if ex.modelFallbackEnabled || hasContextFallback {
 		maxOut = derefIntOrZero(ex.req.MaxTokens)
+		if currentClass != bindingfallback.ClassContextWindow {
+			ctxWindow = ex.resolved.ContextWindow
+		}
 	}
 	bindingID, bindingRPM, bindingTPM := ex.activeBindingRateLimits()
+	if ex.attempt.BindingID > 0 {
+		// 并发上限与 BindingID 都来自同一 AttemptPlan，避免跨 pool fallback 时
+		// 把新 attempt 的 K 配到上一条 binding 上。
+		bindingID = ex.attempt.BindingID
+	}
 	return pool.SelectionRequest{
 		TenantID:         ex.ident.TenantID,
 		UserID:           ex.ident.UserID,
@@ -448,9 +460,10 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		EstimatedInputTokens: estInput,
 		MaxOutputTokens:      maxOut,
 		// 命中 binding 的 per-binding RPM/TPM 限额透传给 BindingRateLimitSelector(env 门控 + 限额>0 才强制)。
-		BindingID:       bindingID,
-		BindingRPMLimit: bindingRPM,
-		BindingTPMLimit: bindingTPM,
+		BindingID:           bindingID,
+		BindingRPMLimit:     bindingRPM,
+		BindingTPMLimit:     bindingTPM,
+		MaxParallelRequests: ex.attempt.MaxParallelRequests,
 	}
 }
 
@@ -480,6 +493,7 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 			status = http.StatusServiceUnavailable
 		}
 		failure := retryableLocalAttemptFailure(status, clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), "credential_resolve_error", gateway.UpstreamError5xx, err)
+		failure.FallbackSignal = bindingfallback.SignalCredentialResolutionFailure
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 	}
 	if accInfo.AccountID == 0 {
@@ -490,8 +504,28 @@ func (ex *chatExecution) resolveCredential() *classifiedAttemptFailure {
 	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, accInfo); err != nil {
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
 		failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.CredentialProtocolIncompatibleDecision(), err)
+		failure.FallbackSignal = bindingfallback.SignalUpstreamAuthFailure
 		failure.EndClass = gateway.UpstreamError5xx
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
+	}
+	if ex.resolved.ProtocolFamily == registrydefault.ProtocolAnthropicClaudeSession {
+		runtimeKind, ok := servingcapability.RuntimeKindForProviderCredential(ex.cred.Type)
+		if !ok {
+			runtimeKind = string(ex.cred.Type)
+		}
+		if err := servingcapability.ValidateAccountCompatibility(ex.resolved.ProtocolFamily, accInfo.Platform, accInfo.AccountType, runtimeKind); err != nil {
+			abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "credential_protocol_incompatible", 0, ex.protocolLoss)
+			failure := classifiedFailureFromDecision(clienterr.CodeCredentialResolveError, clienterr.MessageFor(clienterr.CodeCredentialResolveError), gateway.Classification{}, gateway.AttemptRetryDecision{
+				RetryableBeforeDelivery:         true,
+				SwitchAccount:                   true,
+				ClientStatus:                    http.StatusServiceUnavailable,
+				AbortReason:                     "credential_protocol_incompatible",
+				CountsAgainstAuthFailoverBudget: true,
+			}, err)
+			failure.FallbackSignal = bindingfallback.SignalUpstreamAuthFailure
+			failure.EndClass = gateway.UpstreamError5xx
+			return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
+		}
 	}
 	ex.forwardReq = gateway.ForwardRequest{
 		TenantID:             ex.ident.TenantID,
@@ -686,6 +720,9 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			code = ""
 		}
 		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
+		if upstreamErr != nil {
+			failure.FallbackSignal = bindingFallbackSignalFromUpstream(upstreamErr.StatusCode, upstreamErr.Body, classification, decision)
+		}
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}
 	return ex.finalizeBufferedEnvelope(w, bufferedEnv, 0, startedAt)

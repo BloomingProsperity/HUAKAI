@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -45,10 +47,6 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
-type retryBudgetGate interface {
-	Allow(tenantID int64) bool
-}
-
 type Deps struct {
 	Auth                  authResolver
 	Registry              registry.Registry
@@ -64,12 +62,15 @@ type Deps struct {
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
-	Feedback              *upstreamfeedback.Observer
-	RetryBudget           retryBudgetGate
 	// SettleRecoveryDLQ 是流式交付后(响应已发给客户端)settle 失败时的 durable 兜底队列。
 	// 镜像 gatewayhttp chat 路径的同名依赖。nil 时退回原行为(仅置 X-Huakai-Settle-Failed 头)，
 	// 不破坏现有 wiring；生产由 cmd/gateway/routes.go 注入 d.dlqService。
 	SettleRecoveryDLQ settlementrecovery.Enqueuer
+	// Feedback 把上游结果喂账号健康 FSM(坏号冷却→下次选号自动跳过=自动换号)。
+	// nil 时健康观测为 no-op,不破坏 wiring;生产由 cmd/gateway/routes.go 注入。
+	Feedback *upstreamfeedback.Observer
+	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
+	RetryBudget retryBudgetGate
 }
 
 type execution struct {
@@ -97,6 +98,8 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
+	classTransition  *bindingfallback.Transition
+	// excludedAccounts 本请求内已失败的账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
 	excludedAccounts map[int64]struct{}
 }
 
@@ -219,51 +222,59 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan, requestedModel 
 }
 
 func (ex *execution) runCompletions(w http.ResponseWriter) {
-	budget := effectiveAttemptBudget(ex.plan)
-	authFailoverUsed := false
-	attemptCap := budget
-	for i := 0; i < attemptCap; i++ {
-		planIdx := i
-		if planIdx >= len(ex.plan.Attempts) {
-			planIdx = len(ex.plan.Attempts) - 1
-		}
-		ex.activateAttempt(ex.plan.Attempts[planIdx], ex.req.Model)
-		if !ex.reserve(w) {
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := ex.runPaidAttempt(w, ex.plan.Attempts[i], i+1, ex.req.Model)
+		if outcome.done {
 			return
 		}
-		attemptSeq := authoritativeAttemptSeq(ex.reserveRes, i+1)
-		if !ex.selectAccount(w, attemptSeq, ex.req.Model) || !ex.resolveCredential(w) {
-			return
+		if ex.selRes != nil {
+			ex.excludeAccount(ex.selRes.AccountID)
 		}
-		outcome := attemptOutcome{Failure: ex.credentialCompatibilityFailure(w)}
-		if outcome.Failure == nil {
-			outcome = ex.dispatchCompletionsAndSettle(w, attemptSeq)
-		}
-		if outcome.Done {
-			return
-		}
-		if outcome.Failure == nil {
-			return
-		}
-		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
-			ex.excludeAccount(ex.accInfo.AccountID)
-		}
-		retry, consumeAuthBudget := shouldRetryFailure(
-			ex.plan,
-			outcome.Failure,
-			i+1 >= attemptCap,
-			authFailoverUsed,
-		)
-		if !retry || (ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
-			writeAttemptFailure(w, outcome.Failure)
-			return
-		}
-		if consumeAuthBudget {
-			authFailoverUsed = true
-			if i+1 >= attemptCap {
-				attemptCap++
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
 			}
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runPaidAttempt(w, phase.Attempts[0], i+2, ex.req.Model)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
 		}
-		ex.prepareNextAttempt()
 	}
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runPaidAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int, requestedModel string) attemptOutcome {
+	ex.activateAttempt(attempt, requestedModel)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.selectAccount(w, attemptSeq, requestedModel); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	return ex.dispatchCompletionsAndSettle(w, attemptSeq)
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }

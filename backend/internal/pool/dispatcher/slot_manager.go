@@ -46,6 +46,19 @@ func NewDBSlotManager(pool *pgxpool.Pool) *DBSlotManager {
 	return &DBSlotManager{pool: pool, q: dbbilling.New(pool)}
 }
 
+// CountActiveBindingAcquisitions 为选号前快速拒绝层读取派生在途数。
+// SQL 固定只统计 status='acquired'，终态行不会永久占用容量。
+func (m *DBSlotManager) CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error) {
+	if m == nil || m.q == nil {
+		return 0, ErrSlotManagerUnavailable
+	}
+	count, err := m.q.CountActiveBindingAcquisitions(ctx, bindingID)
+	if err != nil {
+		return 0, fmt.Errorf("pool: count active binding acquisitions: %w", err)
+	}
+	return count, nil
+}
+
 func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
 	if m == nil || m.pool == nil {
 		return nil, ErrSlotManagerUnavailable
@@ -66,13 +79,53 @@ func (m *DBSlotManager) Acquire(ctx context.Context, account *AccountSnapshot, r
 }
 
 func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
+	if req.MaxParallelRequests > 0 {
+		if req.BindingID <= 0 {
+			return nil, errors.New("pool: binding concurrency limit missing binding id")
+		}
+		// 会话级锁必须先于 SERIALIZABLE 事务获取。若在事务启动后才等待锁，
+		// 等待者可能保留锁前旧快照，看不到前一持有者刚提交的 acquisition。
+		// 锁定后再开事务，事务内 COUNT、账号递增与 acquisition 插入共享新快照。
+		conn, err := m.pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("pool: acquire binding lock connection: %w", err)
+		}
+		lockQueries := dbbilling.New(conn)
+		if err := lockQueries.AcquireBindingConcurrencyLock(ctx, req.BindingID); err != nil {
+			discardBindingLockConnection(conn)
+			return nil, fmt.Errorf("pool: lock binding concurrency: %w", err)
+		}
+		defer releaseBindingLockConnection(conn, lockQueries, req.BindingID)
+
+		tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+		if err != nil {
+			return nil, fmt.Errorf("pool: begin acquire tx after binding lock: %w", err)
+		}
+		return m.acquireInTransaction(ctx, tx, account, req)
+	}
+
 	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return nil, fmt.Errorf("pool: begin acquire tx: %w", err)
 	}
+	return m.acquireInTransaction(ctx, tx, account, req)
+}
+
+func (m *DBSlotManager) acquireInTransaction(ctx context.Context, tx pgx.Tx, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := m.q.WithTx(tx)
+	if req.MaxParallelRequests > 0 {
+		// 外层 COUNT 只是优化；锁后的事务内重读才是账号递增与 acquisition
+		// 插入前的权威硬闸。
+		active, err := qtx.CountActiveBindingAcquisitions(ctx, req.BindingID)
+		if err != nil {
+			return nil, fmt.Errorf("pool: count binding concurrency in acquire tx: %w", err)
+		}
+		if active >= req.MaxParallelRequests {
+			return nil, ErrBindingConcurrencyLimited
+		}
+	}
 	rows, err := qtx.IncrementInFlightCount(ctx, dbbilling.IncrementInFlightCountParams{
 		ID:       account.ID,
 		TenantID: account.TenantID,
@@ -90,9 +143,15 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 		c := req.ClaimID
 		claimID = &c
 	}
+	var bindingID *int64
+	if req.BindingID > 0 {
+		b := req.BindingID
+		bindingID = &b
+	}
 	if _, err := qtx.InsertSlotAcquisition(ctx, dbbilling.InsertSlotAcquisitionParams{
 		TenantID:          account.TenantID,
 		ProviderAccountID: account.ID,
+		BindingID:         bindingID,
 		AcquisitionToken:  token,
 		ClaimID:           claimID,
 		AttemptSeq:        int32(req.AttemptSeq),
@@ -115,6 +174,31 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 	}, nil
 }
 
+const bindingLockCleanupTimeout = 2 * time.Second
+
+// releaseBindingLockConnection 用脱钩上下文解锁；若无法确认锁已释放，就销毁
+// 该物理连接，绝不把仍持有会话级锁的连接放回池中。
+func releaseBindingLockConnection(conn *pgxpool.Conn, q *dbbilling.Queries, bindingID int64) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), bindingLockCleanupTimeout)
+	defer cancel()
+	unlocked, err := q.ReleaseBindingConcurrencyLock(cleanupCtx, bindingID)
+	if err != nil || !unlocked {
+		discardBindingLockConnection(conn)
+		return
+	}
+	conn.Release()
+}
+
+func discardBindingLockConnection(conn *pgxpool.Conn) {
+	if conn == nil {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), bindingLockCleanupTimeout)
+	defer cancel()
+	raw := conn.Hijack()
+	_ = raw.Close(closeCtx)
+}
+
 // releaseFunc 返回幂等地回滚 Acquire 的闭包。
 // ReleaseSlotAndDecrementInFlight 内部的 CTE 只翻转 status 仍为
 // 'acquired' 的 slot，因此并发调用（如结算器 vs selector 清理）
@@ -124,6 +208,7 @@ func (m *DBSlotManager) releaseFunc(token uuid.UUID) ReleaseFunc {
 		reason := "selector_release"
 		if _, err := m.q.ReleaseSlotAndDecrementInFlight(ctx, dbbilling.ReleaseSlotAndDecrementInFlightParams{
 			AcquisitionToken: token,
+			ReleaseStatus:    "released_failure",
 			ReleaseReason:    &reason,
 		}); err != nil {
 			return fmt.Errorf("pool: release slot: %w", err)
@@ -133,3 +218,4 @@ func (m *DBSlotManager) releaseFunc(token uuid.UUID) ReleaseFunc {
 }
 
 var _ SlotManager = (*DBSlotManager)(nil)
+var _ BindingConcurrencyReader = (*DBSlotManager)(nil)

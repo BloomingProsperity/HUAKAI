@@ -5,8 +5,11 @@ import {
   credentialStatusLabel,
   EMPTY_ADMIN_TOKEN_FORM,
   EMPTY_PLATFORM_API_KEY_FORM,
+  mapAdminTokenTableRows,
+  mapPlatformApiKeyTableRows,
   positiveID,
 } from './credentials'
+import type { AdminTokenListItem, PlatformApiKeyListItem } from './types'
 
 const NOW = new Date('2026-07-12T12:00:00.000Z')
 
@@ -93,5 +96,73 @@ describe('凭证辅助逻辑', () => {
     expect(credentialStatusLabel('active')).toBe('有效')
     expect(credentialStatusLabel('revoked')).toBe('已吊销')
     expect(credentialStatusLabel('expired')).toBe('已过期')
+  })
+})
+
+describe('凭证列表列映射', () => {
+  it('运维令牌仅展示脱敏前缀并精确映射状态与作用域', () => {
+    const source: AdminTokenListItem = {
+      id: 41,
+      name: '夜班令牌',
+      key_prefix: 'hua_masked',
+      role: 'tenant_operator',
+      scope_tenant_id: 7,
+      bootstrap: true,
+      status: 'active',
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: null,
+      revoked_reason: null,
+      created_at: 'invalid-created',
+    }
+    const [row] = mapAdminTokenTableRows([source])
+
+    // 判别核心:keyPrefix 必须来自已脱敏前缀；作用域、状态与可吊销条件错接即变红。
+    expect(row).toEqual({
+      id: 41,
+      name: '夜班令牌',
+      keyPrefix: 'hua_masked',
+      role: '租户运维',
+      scope: '租户 #7',
+      status: 'active',
+      bootstrap: true,
+      expiresAt: '永不过期',
+      lastUsedAt: '从未使用',
+      createdAt: 'invalid-created',
+      revocable: true,
+      source,
+    })
+    expect('plaintext' in row).toBe(false)
+  })
+
+  it('平台 API Key 仅展示名称与脱敏前缀，吊销态不可再次吊销', () => {
+    const source: PlatformApiKeyListItem = {
+      id: 52,
+      tenant_id: 7,
+      user_id: 19,
+      name: '联调 Key',
+      key_prefix: 'hk_live_masked',
+      status: 'revoked',
+      expires_at: null,
+      last_used_at: null,
+      revoked_at: '2026-07-12T00:00:00Z',
+      revoked_reason: 'manual',
+      created_at: 'invalid-created',
+    }
+    const [row] = mapPlatformApiKeyTableRows([source])
+
+    expect(row).toEqual({
+      id: 52,
+      name: '联调 Key',
+      keyPrefix: 'hk_live_masked',
+      userID: '#19',
+      status: 'revoked',
+      expiresAt: '永不过期',
+      lastUsedAt: '从未使用',
+      createdAt: 'invalid-created',
+      revocable: false,
+      source,
+    })
+    expect('plaintext_bearer' in row).toBe(false)
   })
 })

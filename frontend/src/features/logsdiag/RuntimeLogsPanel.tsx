@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getRuntimeLogSinkHealth, listRuntimeLogs } from './api'
 import type { RuntimeLogRow, RuntimeLogSinkHealth } from './api'
-import { appendOlderLogs, fmtAttrs, fmtLogTime, levelToneOf, mergeRuntimeLogs } from './runtimeLogs'
+import {
+  appendOlderLogs,
+  mapRuntimeLogRows,
+  mapRuntimeLogSinkStats,
+  mergeRuntimeLogs,
+  type RuntimeLogTableRow,
+} from './runtimeLogs'
 
 /*
  * 运行日志面板(platform_admin)。后端 sink 只采集 warn+;「实时」= 开关打开后
@@ -105,20 +114,37 @@ export function RuntimeLogsPanel() {
     }
   }
 
+  const tableRows = mapRuntimeLogRows(rows)
+  const sinkStats = mapRuntimeLogSinkStats(health)
+  const columns: DataListColumn<RuntimeLogTableRow>[] = [
+    { key: 'time', label: '时间', render: (row) => <span style={mono}>{row.createdAt}</span> },
+    { key: 'level', label: '级别', badge: true, render: (row) => <StatusBadge tone={row.levelTone}>{row.level}</StatusBadge> },
+    { key: 'component', label: '组件', render: (row) => <span style={mono}>{row.component}</span> },
+    { key: 'message', label: '消息', render: (row) => <span style={ellipsis} title={row.message}>{row.message}</span> },
+    {
+      key: 'request-id',
+      label: 'request_id',
+      render: (row) => row.requestID ? (
+        <button type="button" style={linkBtn} title="按此 request_id 过滤" onClick={() => setRequestID(row.requestID)}>
+          {row.requestID}
+        </button>
+      ) : '—',
+    },
+    { key: 'attrs', label: '属性', render: (row) => <span style={{ ...mono, ...ellipsis }} title={row.attrs}>{row.attrs}</span> },
+  ]
+
   return (
     <section className="hk-card" style={{ padding: 'var(--hk-space-5)', marginTop: 'var(--hk-space-4)' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--hk-space-3)', flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 15, margin: 0 }}>运行日志(warn 及以上)</h2>
-        {health && (
-          <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>
-            采集:入库 {health.inserted} · 积压 {health.queue_len} · 丢弃 {health.dropped}
-            {health.dropped > 0 && <StatusBadge tone="warn">有丢弃</StatusBadge>}
-          </span>
-        )}
       </div>
       <p className="hk-sub" style={{ marginTop: 4 }}>
         两栈(zap+slog)警告与错误异步入库;可按 request_id 关联单请求。实时 = 3 秒轮询增量。
       </p>
+
+      <div aria-label="运行日志采集健康" style={statsGrid}>
+        {sinkStats.map((stat) => <StatCard key={stat.label} {...stat} />)}
+      </div>
 
       <div style={{ display: 'flex', gap: 'var(--hk-space-2)', flexWrap: 'wrap', marginTop: 'var(--hk-space-3)', alignItems: 'center' }}>
         <select value={level} onChange={(e) => setLevel(e.target.value)} style={inp} aria-label="级别过滤">
@@ -141,39 +167,15 @@ export function RuntimeLogsPanel() {
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={{ overflowX: 'auto', marginTop: 'var(--hk-space-3)' }}>
-        <table className="hk-table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>级别</th>
-              <th>组件</th>
-              <th>消息</th>
-              <th>request_id</th>
-              <th>属性</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td colSpan={6} className="hk-empty">{loading ? '加载中…' : '暂无满足条件的运行日志(warn+ 才采集)。'}</td></tr>
-            ) : rows.map((r) => (
-              <tr key={r.id}>
-                <td style={mono}>{fmtLogTime(r.created_at)}</td>
-                <td><StatusBadge tone={levelToneOf(r.level)}>{r.level}</StatusBadge></td>
-                <td style={mono}>{r.component}</td>
-                <td style={{ maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.message}>{r.message}</td>
-                <td style={mono}>
-                  {r.request_id ? (
-                    <button type="button" style={linkBtn} title="按此 request_id 过滤" onClick={() => setRequestID(r.request_id ?? '')}>
-                      {r.request_id}
-                    </button>
-                  ) : '—'}
-                </td>
-                <td style={{ ...mono, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fmtAttrs(r.attrs)}>{fmtAttrs(r.attrs)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ marginTop: 'var(--hk-space-3)' }}>
+        {tableRows.length === 0 ? (
+          <EmptyState
+            title={loading ? '正在加载运行日志' : '暂无满足条件的运行日志'}
+            hint={loading ? '请稍候。' : '仅采集 warn 及以上级别；可调整过滤条件后重试。'}
+          />
+        ) : (
+          <DataListTable label="运行日志" rows={tableRows} rowKey={(row) => row.id} columns={columns} />
+        )}
       </div>
 
       {rows.length > 0 && !noMore && (
@@ -191,3 +193,5 @@ const inp: CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border:
 const mono: CSSProperties = { fontFamily: 'var(--hk-font-mono)', fontSize: 12 }
 const errBox: CSSProperties = { padding: 'var(--hk-space-2) var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', marginTop: 'var(--hk-space-2)' }
 const linkBtn: CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-primary-700)', fontSize: 12, cursor: 'pointer', fontFamily: 'var(--hk-font-mono)', padding: 0 }
+const ellipsis: CSSProperties = { display: 'block', maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+const statsGrid: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 'var(--hk-space-3)', marginTop: 'var(--hk-space-3)' }

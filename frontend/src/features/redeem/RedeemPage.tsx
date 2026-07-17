@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchSiteConfig } from '../../auth/siteConfig'
 import { ApiError } from '../../lib/api'
-import { StatusBadge, type BadgeTone } from '../../ui/StatusBadge'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatusBadge } from '../../ui/StatusBadge'
 import { listRedemptions, redeemVoucher } from './api'
 import {
   buildRedeemRequest,
-  formatMoney,
   friendlyRedeemError,
   isRateLimited,
+  mapRedemptionRows,
   newIdempotencyKey,
   summarizeRedeem,
   validateCode,
+  type RedemptionTableRow,
 } from './redeem'
 import type { RedemptionHistoryItem } from './types'
 
@@ -101,6 +104,14 @@ export function RedeemPage() {
       setSubmitting(false)
     }
   }
+
+  const historyRows = mapRedemptionRows(history)
+  const historyColumns: DataListColumn<RedemptionTableRow>[] = [
+    { key: 'amount', label: '到账金额', render: (row) => <strong className="hk-mono" style={{ color: 'var(--hk-ink-900)' }}>{row.amount}</strong> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.statusLabel}</StatusBadge> },
+    { key: 'redeemedAt', label: '兑换时间', render: (row) => <span className="hk-mono">{row.redeemedAt}</span> },
+    { key: 'voucherId', label: '券 ID', render: (row) => <code className="hk-mono">{row.voucherId}</code> },
+  ]
 
   return (
     <div className="hk-page">
@@ -197,83 +208,15 @@ export function RedeemPage() {
           <h3>兑换历史</h3>
         </div>
         {historyError ? (
-          <div className="hk-empty">{historyError}</div>
+          <EmptyState title="兑换历史暂不可用" hint={historyError} tone="unavailable" />
         ) : historyLoading && history.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载兑换历史" hint="请稍候。" />
         ) : history.length === 0 ? (
-          <div className="hk-empty">还没有兑换记录。兑换成功后会显示在这里。</div>
+          <EmptyState title="还没有兑换记录" hint="兑换成功后会显示在这里。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['到账金额', '状态', '兑换时间', '券 ID'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((row, i) => (
-                  <tr key={`${row.voucher_id}-${row.redeemed_at}-${i}`}>
-                    <td className="hk-mono" style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>
-                      {formatMoney(row.amount_cents, row.currency_code)}
-                    </td>
-                    <td>
-                      <StatusBadge tone={redemptionTone(row.status)}>{redemptionLabel(row.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmtTime(row.redeemed_at)}</td>
-                    <td className="hk-mono">
-                      <code>#{row.voucher_id}</code>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="兑换历史" rows={historyRows} rowKey={(row) => row.id} columns={historyColumns} />
         )}
       </section>
     </div>
   )
 }
-
-function redemptionTone(status: string): BadgeTone {
-  switch (status) {
-    case 'redeemed':
-    case 'success':
-    case 'completed':
-      return 'ok'
-    case 'reversed':
-    case 'refunded':
-      return 'warn'
-    case 'failed':
-      return 'danger'
-    default:
-      // 后端历史项 status 多为「已兑换」语义, 缺省按成功展示。
-      return status ? 'muted' : 'ok'
-  }
-}
-
-function redemptionLabel(status: string): string {
-  switch (status) {
-    case 'redeemed':
-    case 'success':
-    case 'completed':
-      return '已到账'
-    case 'reversed':
-      return '已冲正'
-    case 'refunded':
-      return '已退回'
-    case 'failed':
-      return '失败'
-    case '':
-      return '已到账'
-    default:
-      return status
-  }
-}
-
-function fmtTime(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('zh-CN', { hour12: false })
-}
-

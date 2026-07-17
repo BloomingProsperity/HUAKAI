@@ -3,8 +3,11 @@ package alerting
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 )
 
 func TestAlertRuleCRUD(t *testing.T) {
@@ -431,6 +434,130 @@ func TestEvaluateRulesFromSourcePassesFilters(t *testing.T) {
 	}
 }
 
+// 变异：按启动固定窗口取数、或把两个规则窗口错误合并时，rolluper 的两个 since
+// 不再分别等于 now-60s 与 now-3600s，本测试变红。
+func TestEvaluateRulesFromSourceUsesDistinctRuleWindows(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	rolluper := &recordingWindowRolluper{rollup: alertmetrics.RecentUsageRollup{RequestCount: 10}}
+	source := alertmetrics.NewCompositeMetricSource(alertmetrics.CompositeMetricSourceConfig{
+		UsageRolluper: rolluper,
+		RecentWindow:  10 * time.Minute,
+		Now:           func() time.Time { return now },
+	})
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	for _, input := range []struct {
+		name   string
+		window int32
+	}{
+		{name: "一分钟窗口", window: 60},
+		{name: "一小时窗口", window: 3600},
+	} {
+		mustCreateRule(t, svc, CreateRuleInput{
+			TenantID:      7,
+			Name:          input.name,
+			Metric:        alertmetrics.MetricUsageRequestCount,
+			Comparator:    ComparatorGTE,
+			Threshold:     1000,
+			Severity:      SeverityWarning,
+			WindowSeconds: input.window,
+		})
+	}
+
+	if err := svc.EvaluateRulesFromSource(ctx, 7, source); err != nil {
+		t.Fatalf("EvaluateRulesFromSource() error = %v", err)
+	}
+	if len(rolluper.since) != 2 {
+		t.Fatalf("rolluper 调用=%d，want 每个不同窗口各一次", len(rolluper.since))
+	}
+	sort.Slice(rolluper.since, func(i, j int) bool { return rolluper.since[i].Before(rolluper.since[j]) })
+	want := []time.Time{now.Add(-time.Hour), now.Add(-time.Minute)}
+	for i := range want {
+		if !rolluper.since[i].Equal(want[i]) {
+			t.Fatalf("since[%d]=%s，want %s；all=%v", i, rolluper.since[i], want[i], rolluper.since)
+		}
+	}
+}
+
+// 变异：去掉按窗口缓存后，两条同窗口规则各查一次 rollup，调用数从 1 变 2。
+func TestEvaluateRulesFromSourceSharesSameWindowSnapshot(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	rolluper := &recordingWindowRolluper{rollup: alertmetrics.RecentUsageRollup{RequestCount: 10}}
+	source := alertmetrics.NewCompositeMetricSource(alertmetrics.CompositeMetricSourceConfig{
+		UsageRolluper: rolluper,
+		Now:           func() time.Time { return now },
+	})
+	svc := NewService(NewMemoryStore(), WithClock(func() time.Time { return now }))
+	for _, name := range []string{"同窗口甲", "同窗口乙"} {
+		mustCreateRule(t, svc, CreateRuleInput{
+			TenantID:      7,
+			Name:          name,
+			Metric:        alertmetrics.MetricUsageRequestCount,
+			Comparator:    ComparatorGTE,
+			Threshold:     1000,
+			Severity:      SeverityWarning,
+			WindowSeconds: 60,
+		})
+	}
+	if err := svc.EvaluateRulesFromSource(context.Background(), 7, source); err != nil {
+		t.Fatalf("EvaluateRulesFromSource() error = %v", err)
+	}
+	if len(rolluper.since) != 1 || !rolluper.since[0].Equal(now.Add(-time.Minute)) {
+		t.Fatalf("同窗口 rolluper 调用=%v，want 仅 %s", rolluper.since, now.Add(-time.Minute))
+	}
+}
+
+// 变异：强制断言 WindowedMetricSource 或按规则重复 Snapshot 时，旧源会报错或调用数变 2。
+func TestEvaluateRulesFromSourceFallsBackToLegacySnapshot(t *testing.T) {
+	source := &legacyMetricSourceStub{snapshot: map[string]float64{"usage.request_count": 10}}
+	svc := NewService(NewMemoryStore())
+	for i, window := range []int32{60, 3600} {
+		mustCreateRule(t, svc, CreateRuleInput{
+			TenantID:      7,
+			Name:          string(rune('甲' + i)),
+			Metric:        "usage.request_count",
+			Comparator:    ComparatorGTE,
+			Threshold:     1000,
+			Severity:      SeverityWarning,
+			WindowSeconds: window,
+		})
+	}
+	if err := svc.EvaluateRulesFromSource(context.Background(), 7, source); err != nil {
+		t.Fatalf("EvaluateRulesFromSource() error = %v", err)
+	}
+	if source.calls != 1 {
+		t.Fatalf("旧 MetricSource Snapshot 调用=%d，want 1", source.calls)
+	}
+}
+
+// 变异：删除 24 小时上限后，超大历史扫描规则会被持久化而非返回 ErrInvalidInput。
+func TestRuleWindowRejectsAboveMaximum(t *testing.T) {
+	svc := NewService(NewMemoryStore())
+	if _, err := svc.CreateRule(context.Background(), CreateRuleInput{
+		TenantID:      7,
+		Name:          "上限窗口",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     1,
+		Severity:      SeverityWarning,
+		WindowSeconds: int32(MaxRuleWindow / time.Second),
+	}); err != nil {
+		t.Fatalf("24 小时边界应合法：%v", err)
+	}
+	_, err := svc.CreateRule(context.Background(), CreateRuleInput{
+		TenantID:      7,
+		Name:          "超大窗口",
+		Metric:        "usage.request_count",
+		Comparator:    ComparatorGTE,
+		Threshold:     1,
+		Severity:      SeverityWarning,
+		WindowSeconds: int32(MaxRuleWindow/time.Second) + 1,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("超出上限 err=%v，want ErrInvalidInput", err)
+	}
+}
+
 func TestSilenceScope(t *testing.T) {
 	// MUTATION：忽略 platform/group/region 作用域，把受限作用域的 silence 当作全局；p2 告警的投递会被错误地抑制。
 	ctx := context.Background()
@@ -789,6 +916,26 @@ type scopedMetricSourceStub struct {
 	global      map[string]float64
 	scoped      map[string]float64
 	scopedCalls []map[string]string
+}
+
+type recordingWindowRolluper struct {
+	rollup alertmetrics.RecentUsageRollup
+	since  []time.Time
+}
+
+func (r *recordingWindowRolluper) RecentUsageRollup(_ context.Context, _ int64, since time.Time) (alertmetrics.RecentUsageRollup, error) {
+	r.since = append(r.since, since)
+	return r.rollup, nil
+}
+
+type legacyMetricSourceStub struct {
+	snapshot map[string]float64
+	calls    int
+}
+
+func (s *legacyMetricSourceStub) Snapshot(context.Context, int64) (map[string]float64, error) {
+	s.calls++
+	return cloneMetricSnapshot(s.snapshot), nil
 }
 
 func (s *scopedMetricSourceStub) Snapshot(_ context.Context, _ int64) (map[string]float64, error) {

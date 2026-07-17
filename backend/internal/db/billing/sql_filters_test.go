@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,31 @@ func TestListEligibleAccountsByPoolGroupSQLFiltersProviderProtocolFamily(t *test
 		if !strings.Contains(sql, want) {
 			t.Fatalf("ListEligibleAccountsByPoolGroup SQL missing provider protocol filter %q in %q", want, sql)
 		}
+	}
+}
+
+func TestListEligibleAccountsByPoolGroupSQLFiltersAccountExpiry(t *testing.T) {
+	const predicate = "AND (pa.expires_at IS NULL OR pa.expires_at > NOW())"
+	generatedSQL := strings.Join(strings.Fields(listEligibleAccountsByPoolGroup), " ")
+	if !strings.Contains(generatedSQL, predicate) {
+		t.Fatalf("生成查询缺少账号到期过滤 %q: %s", predicate, generatedSQL)
+	}
+
+	raw, err := os.ReadFile("../../../sql/queries/pool_accounts.sql")
+	if err != nil {
+		t.Fatalf("读取 pool_accounts.sql: %v", err)
+	}
+	const marker = "-- name: ListEligibleAccountsByPoolGroup :many"
+	_, queryTail, found := strings.Cut(string(raw), marker)
+	if !found {
+		t.Fatalf("pool_accounts.sql 缺少 ListEligibleAccountsByPoolGroup 查询")
+	}
+	queryBody, _, _ := strings.Cut(queryTail, "\n-- name:")
+	sourceSQL := strings.Join(strings.Fields(queryBody), " ")
+	// 变异:从源 SQL 或手写生成查询任一处删除 expires_at 谓词,本测试立即变红;
+	// 真实候选结果由 integration_pg 测试验证。
+	if !strings.Contains(sourceSQL, predicate) {
+		t.Fatalf("源查询缺少账号到期过滤 %q: %s", predicate, sourceSQL)
 	}
 }
 

@@ -44,3 +44,30 @@ export function itemSummary(item: ModelSyncResultItem): string {
   if (item.disabled > 0) parts.push(`${item.disabled} 停用`)
   return parts.length > 0 ? parts.join(' · ') : '无变化'
 }
+
+export interface ModelSyncTableRow {
+  vendor: string
+  summary: string
+  tone: BadgeTone
+  added: number
+  updated: number
+  reactivated: number
+  disabled: number
+  unchanged: number
+  snapshotBumps: number
+}
+
+/** 将厂商同步明细转换为表格展示行，不参与同步请求。 */
+export function mapModelSyncRows(items: ModelSyncResultItem[]): ModelSyncTableRow[] {
+  return items.map((item) => ({
+    vendor: item.vendor,
+    summary: itemSummary(item),
+    tone: itemTone(item),
+    added: item.added,
+    updated: item.updated,
+    reactivated: item.reactivated,
+    disabled: item.disabled,
+    unchanged: item.unchanged,
+    snapshotBumps: item.snapshot_bumps,
+  }))
+}

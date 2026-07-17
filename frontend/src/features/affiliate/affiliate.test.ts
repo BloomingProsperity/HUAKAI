@@ -3,6 +3,8 @@ import {
   buildInviteLink,
   formatCents,
   formatUsd,
+  mapReferralRows,
+  mapRewardRows,
   referralStatusLabel,
   referralStatusTone,
   refereeDisplay,
@@ -75,6 +77,40 @@ describe('referralStatusTone', () => {
 describe('refereeDisplay', () => {
   it('脱敏成 用户 #id', () => {
     expect(refereeDisplay(42)).toBe('用户 #42')
+  })
+})
+
+describe('推广列表纯映射', () => {
+  it('被邀请人四列完整映射且未返利明确显示占位符', () => {
+    const createdAt = '2026-07-01T08:00:00Z'
+    // 判别核心:用户脱敏、状态标签/语气、邀请时间和空返利时间均不可漏列。
+    expect(mapReferralRows([{
+      referral_id: 19,
+      referee_user_id: 42,
+      status: 'qualified',
+      created_at: createdAt,
+      rewarded_at: null,
+    }])).toEqual([{
+      id: 19,
+      referee: '用户 #42',
+      statusLabel: '已合格',
+      statusTone: 'info',
+      invitedAt: new Date(createdAt).toLocaleString('zh-CN', { hour12: false }),
+      rewardedAt: '—',
+    }])
+  })
+
+  it('返利流水四列完整映射且重复关联行键仍唯一', () => {
+    const createdAt = '2026-07-02T09:00:00Z'
+    const rows = mapRewardRows([
+      { referral_id: 5, reward_type: 'qualified', amount_usd: '1.5', created_at: createdAt },
+      { referral_id: 5, reward_type: 'bonus', amount_usd: '2', created_at: createdAt },
+    ])
+    // 判别核心:金额必须使用 USD 两位格式，不能误用汇总金额或丢失第二条同关联记录。
+    expect(rows).toEqual([
+      { id: '5-0', referral: '#5', type: 'qualified', amount: '$1.50', createdAt: new Date(createdAt).toLocaleString('zh-CN', { hour12: false }) },
+      { id: '5-1', referral: '#5', type: 'bonus', amount: '$2.00', createdAt: new Date(createdAt).toLocaleString('zh-CN', { hour12: false }) },
+    ])
   })
 })
 

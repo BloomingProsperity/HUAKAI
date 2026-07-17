@@ -1,4 +1,5 @@
 import type {
+  AuditPubkey,
   AuditVerifyResponse,
   TrustVerifyRequest,
   TrustVerifyResponse,
@@ -103,4 +104,33 @@ export function formatTrustTime(value: string | undefined): string {
   if (!value) return '—'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+export interface AuditKeyTableRow {
+  id: string
+  fingerprint: string
+  algorithm: string
+  status: string
+  tone: 'ok' | 'crit' | 'info'
+  effectiveFrom: string
+  effectiveTo: string
+}
+
+/** 公钥历史到列表列值的纯映射；公开清单状态优先于历史 DTO 的状态。 */
+export function mapAuditKeyTableRows(
+  keys: ReadonlyArray<AuditPubkey>,
+  publicStatuses: Readonly<Record<string, string>> = {},
+): AuditKeyTableRow[] {
+  return keys.map((key) => {
+    const status = publicStatuses[key.fingerprint] ?? key.key_status
+    return {
+      id: key.fingerprint,
+      fingerprint: key.fingerprint,
+      algorithm: key.algorithm,
+      status: keyStatusLabel(status),
+      tone: status === 'active' ? 'ok' : status === 'revoked' ? 'crit' : 'info',
+      effectiveFrom: formatTrustTime(key.effective_from),
+      effectiveTo: formatTrustTime(key.effective_to),
+    }
+  })
 }

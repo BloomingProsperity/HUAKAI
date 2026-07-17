@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"net"
 	"net/url"
 	"strconv"
@@ -175,7 +176,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		}
 		chosen := pickGroupMember(accountID, members)
 		if chosen == nil {
-			return nil, fmt.Errorf("account %d: %w", accountID, ErrProxyUnhealthy)
+			return nil, proxyGroupUnavailable(ctx, row.tenantID, accountID, row.proxyGroupID)
 		}
 		grow := proxyRow{protocol: chosen.protocol, host: chosen.host, port: chosen.port, username: chosen.username, secret: chosen.secret}
 		if err := r.decryptRowAuthSecret(ctx, &grow); err != nil {
@@ -199,6 +200,18 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
 	}
 	return buildProxyURL(chosen, accountID)
+}
+
+// proxyGroupUnavailable 统一记录空组故障并保留 ErrProxyUnhealthy 错误链。
+// 日志只带定位所需的租户、账号和组标识，不包含代理地址或任何认证凭据。
+func proxyGroupUnavailable(ctx context.Context, tenantID, accountID int64, groupID string) error {
+	slog.WarnContext(ctx, "provider proxy resolver: 代理组无 active 成员，保持 fail-closed",
+		slog.Int64("tenant_id", tenantID),
+		slog.Int64("account_id", accountID),
+		slog.String("group_id", groupID),
+	)
+	return fmt.Errorf("租户 %d 账号 %d 的代理组 %q 无 active 成员，为防止出口泄漏不落直连: %w",
+		tenantID, accountID, groupID, ErrProxyUnhealthy)
 }
 
 func (r *PostgresProxyResolver) decryptRowAuthSecret(ctx context.Context, row *proxyRow) error {

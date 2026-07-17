@@ -1,4 +1,4 @@
-import type { RuntimeLogRow } from './api'
+import type { RuntimeLogRow, RuntimeLogSinkHealth } from './api'
 
 /*
  * 运行日志面板纯逻辑:增量合并(轮询首页与已有列表按 id 去重)、时间/属性格式化。
@@ -39,4 +39,50 @@ export function fmtAttrs(attrs: Record<string, unknown>): string {
 
 export function levelToneOf(level: string): 'warn' | 'danger' {
   return level === 'error' ? 'danger' : 'warn'
+}
+
+export interface RuntimeLogTableRow {
+  id: number
+  createdAt: string
+  level: string
+  levelTone: 'warn' | 'danger'
+  component: string
+  message: string
+  requestID: string
+  attrs: string
+}
+
+/** 后端日志行到表格展示行的纯映射。 */
+export function mapRuntimeLogRows(rows: RuntimeLogRow[]): RuntimeLogTableRow[] {
+  return rows.map((row) => ({
+    id: row.id,
+    createdAt: fmtLogTime(row.created_at),
+    level: row.level,
+    levelTone: levelToneOf(row.level),
+    component: row.component,
+    message: row.message,
+    requestID: row.request_id ?? '',
+    attrs: fmtAttrs(row.attrs),
+  }))
+}
+
+export interface RuntimeLogSinkStat {
+  label: string
+  value: string
+  hint: string
+  tone: 'default' | 'danger'
+}
+
+/** sink 健康到三张统计卡的纯映射；丢弃数非零必须显式告警。 */
+export function mapRuntimeLogSinkStats(health: RuntimeLogSinkHealth | null): RuntimeLogSinkStat[] {
+  return [
+    { label: '累计入库', value: health ? String(health.inserted) : '…', hint: 'warn+ 日志', tone: 'default' },
+    { label: '当前积压', value: health ? String(health.queue_len) : '…', hint: '等待写入', tone: 'default' },
+    {
+      label: '累计丢弃',
+      value: health ? String(health.dropped) : '…',
+      hint: health?.dropped ? '存在日志丢弃' : '未发现丢弃',
+      tone: health && health.dropped > 0 ? 'danger' : 'default',
+    },
+  ]
 }

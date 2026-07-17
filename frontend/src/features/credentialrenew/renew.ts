@@ -185,3 +185,47 @@ export function failureSummary(row: RenewStatusRow): string {
   const cls = (row.failure_class ?? '').trim() || '未知'
   return `${cls} ×${Math.max(row.failure_count, 0)}`
 }
+
+export interface RenewTableRow {
+  id: number
+  health: RenewHealth
+  healthLabel: string
+  healthTone: BadgeTone
+  tenantName: string
+  tenantID: string
+  accountName: string
+  accountID: string
+  vendor: string
+  authMode: string
+  version: string
+  expiresIn: string
+  renewWindow: string
+  lastRefresh: string
+  failure: string
+  failureTone: 'danger' | 'muted'
+}
+
+/** 把续期状态映射为表格展示模型，凭证值不会进入展示层。 */
+export function mapRenewTableRows(rows: RenewStatusRow[], nowMs: number): RenewTableRow[] {
+  return rows.map((row) => {
+    const health = renewHealth(row, nowMs)
+    return {
+      id: row.id,
+      health,
+      healthLabel: renewHealthLabel(health),
+      healthTone: renewHealthTone(health),
+      tenantName: row.tenant_name || '—',
+      tenantID: `#${row.tenant_id}`,
+      accountName: row.account_name || '—',
+      accountID: `#${row.account_id}`,
+      vendor: row.vendor || '—',
+      authMode: row.auth_mode || '—',
+      version: `v${row.credential_version}`,
+      expiresIn: relativeTime(row.access_expires_at, nowMs),
+      renewWindow: relativeTime(row.refresh_before_at, nowMs),
+      lastRefresh: relativeTime(row.last_refresh_at, nowMs),
+      failure: failureSummary(row),
+      failureTone: health === 'failing' ? 'danger' : 'muted',
+    }
+  })
+}

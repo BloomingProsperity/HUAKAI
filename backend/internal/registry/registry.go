@@ -72,13 +72,13 @@ type BindingMetadata struct {
 	BindingID               int64
 	PoolGroupID             int64
 	Priority                int32
-	Weight                  int32
+	Weight                  int32   // Router 在相同 Priority 的绑定候选间实际消费。
 	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
-	ProviderModelIDOverride *string // 可空;类比上游的 ModelMapping
-	RPMLimit                *int32  // 每分钟请求上限
+	ProviderModelIDOverride *string // 可空；覆盖该绑定使用的上游模型标识。
+	RPMLimit                *int32  // 绑定级每分钟请求上限。
 	TPMLimit                *int32
-	MaxParallelRequests     *int32 // 最大并行请求数
-	FallbackClass           string // 'normal'|'context_window'|'safety'|'quota'|'manual'
+	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
+	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
 
 	// 渠道级请求/响应控制。在本切片中这些字段仅存于内存;
 	// 零值保持既有行为不变。

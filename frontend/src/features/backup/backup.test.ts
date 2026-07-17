@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { topTablesByRows, totalEstimatedRows } from './backup'
+import { mapBackupTableRows, topTablesByRows, totalEstimatedRows } from './backup'
 import type { BackupManifest, BackupTable } from './types'
 
 function manifest(tables: BackupTable[]): BackupManifest {
@@ -57,5 +57,16 @@ describe('topTablesByRows', () => {
     ]
     topTablesByRows(tables, 1)
     expect(tables.map((t) => t.name)).toEqual(['x', 'y'])
+  })
+})
+
+describe('mapBackupTableRows', () => {
+  it('逐列映射表名和本地化行数且不修改来源', () => {
+    const source = [{ name: 'usage_records', estimated_rows: 12345 }]
+    const mapped = mapBackupTableRows(source)
+
+    // 判别核心:表名与行数使用不同类型哨兵，漏格式化或互换列都会变红。
+    expect(mapped).toEqual([{ name: 'usage_records', estimatedRows: (12345).toLocaleString() }])
+    expect(source).toEqual([{ name: 'usage_records', estimated_rows: 12345 }])
   })
 })

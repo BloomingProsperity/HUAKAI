@@ -18,10 +18,13 @@ import (
 )
 
 var (
-	ErrDisputeStoreRequired = errors.New("audit: dispute store required")
-	ErrDisputeInvalid       = errors.New("audit: invalid dispute")
-	ErrDisputeDuplicate     = errors.New("audit: dispute already exists")
-	ErrDisputeNotFound      = errors.New("audit: dispute not found")
+	ErrDisputeStoreRequired    = errors.New("audit: dispute store required")
+	ErrDisputeInvalid          = errors.New("audit: invalid dispute")
+	ErrDisputeDuplicate        = errors.New("audit: dispute already exists")
+	ErrDisputeNotFound         = errors.New("audit: dispute not found")
+	ErrDisputeNotResolvable    = errors.New("audit: dispute not found or already terminal")
+	ErrDisputeNoCharge         = errors.New("audit: dispute has no committed refundable charge")
+	ErrDisputeResolverRequired = errors.New("audit: dispute resolver required")
 )
 
 const (
@@ -35,16 +38,17 @@ const (
 )
 
 type CostDispute struct {
-	ID           int64
-	DisputeID    string
-	TenantID     int64
-	UserID       int64
-	RequestID    string
-	Reason       string
-	Status       string
-	OperatorNote string
-	CreatedAt    time.Time
-	ResolvedAt   *time.Time
+	ID               int64
+	DisputeID        string
+	TenantID         int64
+	UserID           int64
+	RequestID        string
+	Reason           string
+	Status           string
+	OperatorNote     string
+	CreatedAt        time.Time
+	ResolvedAt       *time.Time
+	RefundedMicroUSD int64
 }
 
 type CreateCostDisputeInput struct {
@@ -61,11 +65,17 @@ type ResolveCostDisputeInput struct {
 	OperatorNote string
 }
 
+type ResolveCostDisputeResult struct {
+	Dispute             CostDispute
+	RefundMicroUSD      int64
+	RefundAdjustmentRef string
+	RefundIdempotent    bool
+}
+
 type costDisputeQueries interface {
 	CreateCostDispute(context.Context, dbaudit.CreateCostDisputeParams) (dbaudit.CostDispute, error)
-	ListDisputesForAdmin(context.Context, dbaudit.ListDisputesForAdminParams) ([]dbaudit.CostDispute, error)
+	ListDisputesForAdmin(context.Context, dbaudit.ListDisputesForAdminParams) ([]dbaudit.ListDisputesForAdminRow, error)
 	ListUserCostDisputes(context.Context, dbaudit.ListUserCostDisputesParams) ([]dbaudit.CostDispute, error)
-	ResolveCostDispute(context.Context, dbaudit.ResolveCostDisputeParams) (dbaudit.CostDispute, error)
 }
 
 type CostDisputeStore struct {
@@ -162,28 +172,9 @@ func (s *CostDisputeStore) ListForAdmin(ctx context.Context, tenantID int64, sta
 	}
 	out := make([]CostDispute, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, costDisputeFromDB(row))
+		out = append(out, costDisputeFromAdminDB(row))
 	}
 	return out, nil
-}
-
-func (s *CostDisputeStore) ResolveDispute(ctx context.Context, in ResolveCostDisputeInput) (CostDispute, error) {
-	if s == nil || s.q == nil {
-		return CostDispute{}, ErrDisputeStoreRequired
-	}
-	if err := validateResolveDispute(in); err != nil {
-		return CostDispute{}, err
-	}
-	row, err := s.q.ResolveCostDispute(ctx, dbaudit.ResolveCostDisputeParams{
-		TenantID:     in.TenantID,
-		ID:           in.ID,
-		Status:       in.Status,
-		OperatorNote: strings.TrimSpace(in.OperatorNote),
-	})
-	if err != nil {
-		return CostDispute{}, mapCostDisputeError(err)
-	}
-	return costDisputeFromDB(row), nil
 }
 
 func validateCreateDispute(in CreateCostDisputeInput) error {
@@ -209,12 +200,21 @@ func validateResolveDispute(in ResolveCostDisputeInput) error {
 		return fmt.Errorf("%w: tenant_id required", ErrDisputeInvalid)
 	case in.ID <= 0:
 		return fmt.Errorf("%w: id required", ErrDisputeInvalid)
-	case !validDisputeStatus(in.Status):
+	case !validDisputeResolutionStatus(in.Status):
 		return fmt.Errorf("%w: invalid status", ErrDisputeInvalid)
 	case len(strings.TrimSpace(in.OperatorNote)) > 4000:
 		return fmt.Errorf("%w: operator_note too long", ErrDisputeInvalid)
 	default:
 		return nil
+	}
+}
+
+func validDisputeResolutionStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case DisputeStatusReviewing, DisputeStatusResolved, DisputeStatusRejected:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -253,6 +253,22 @@ func costDisputeFromDB(row dbaudit.CostDispute) CostDispute {
 		OperatorNote: row.OperatorNote,
 		CreatedAt:    timeFromPg(row.CreatedAt),
 		ResolvedAt:   optionalTimeFromPg(row.ResolvedAt),
+	}
+}
+
+func costDisputeFromAdminDB(row dbaudit.ListDisputesForAdminRow) CostDispute {
+	return CostDispute{
+		ID:               row.ID,
+		DisputeID:        row.DisputeID,
+		TenantID:         row.TenantID,
+		UserID:           row.UserID,
+		RequestID:        row.RequestID,
+		Reason:           row.Reason,
+		Status:           row.Status,
+		OperatorNote:     row.OperatorNote,
+		CreatedAt:        timeFromPg(row.CreatedAt),
+		ResolvedAt:       optionalTimeFromPg(row.ResolvedAt),
+		RefundedMicroUSD: row.RefundedMicroUsd,
 	}
 }
 

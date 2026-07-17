@@ -115,8 +115,8 @@ describe('isSameIdentity:同人重验 vs 换人(防跨身份残留提权)', () =
 
 describe('visibleNavSections:按壳过滤', () => {
   const NAV: NavSection[] = [
-    { stage: 1, key: 'u1', shell: 'user', label: '概览', hint: '', items: [{ path: '/overview', label: '概览', built: true }] },
-    { stage: 1, key: 'o1', shell: 'operator', label: '账号池', hint: '', items: [{ path: '/accounts', label: '账号', built: true }] },
+    { key: 'u1', shell: 'user', label: '概览', items: [{ path: '/overview', label: '概览', icon: '⌂', built: true }] },
+    { key: 'o1', shell: 'operator', label: '账号池', items: [{ path: '/accounts', label: '账号', icon: '◉', built: true }] },
   ]
 
   it('admin(两壳)→ 保留全部 section', () => {

@@ -68,6 +68,7 @@ func TestServiceRelease_ClaimOnlyResolvesReservationID(t *testing.T) {
 	if v := f.windowValues(costPolicy, now); !v.reserved.Equal(decimal.NewFromInt(4)) {
 		t.Fatalf("reserve 后 window reserved=%s; want 4", v.reserved)
 	}
+	f.setClaimTerminal(reserve.Reservation.ClaimID, claimStatusAborted, "")
 
 	result, err := service.Release(ctx, ReleaseRequest{
 		TenantID:   f.tenantID,

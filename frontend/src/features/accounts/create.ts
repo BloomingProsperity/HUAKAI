@@ -1,4 +1,9 @@
 import type { AccountMode, CreateAccountRequest, FieldSpec } from './createTypes'
+import {
+  buildAdvancedCreate,
+  emptyAdvancedForm,
+  type AccountAdvancedFormState,
+} from './advancedFields'
 
 /*
  * 新建账号的纯逻辑(可单测):把向导表单态构造成后端创建请求体。后端契约关键点:
@@ -22,7 +27,7 @@ export const ACCOUNT_TYPE_OPTIONS = [
 
 export type AccountType = (typeof ACCOUNT_TYPE_OPTIONS)[number]
 
-export interface CreateAccountForm {
+export interface CreateAccountForm extends AccountAdvancedFormState {
   providerId: string
   channelId: string
   name: string
@@ -43,6 +48,7 @@ export interface CreateAccountForm {
 }
 
 export const EMPTY_CREATE_FORM: CreateAccountForm = {
+  ...emptyAdvancedForm(),
   providerId: '',
   channelId: '',
   name: '',
@@ -128,6 +134,9 @@ export function buildCreateRequest(
   if (modelAllowList) req.model_allow_list = modelAllowList
   const capabilityFlags = splitTags(form.capabilityFlags)
   if (capabilityFlags) req.capability_flags = capabilityFlags
+  const advanced = buildAdvancedCreate(form)
+  if ('error' in advanced) throw new Error(advanced.error)
+  Object.assign(req, advanced)
   const reason = form.reason.trim()
   if (reason) req.reason = reason
   if (confirm) req.confirm = true
@@ -150,5 +159,7 @@ export function validateCreateForm(form: CreateAccountForm, selectedMode: Accoun
   }
   const creds = assembleCredentials(selectedMode?.required_fields ?? [], form.credentialValues)
   if (Object.keys(creds).length === 0) return '请填写至少一项凭据'
+  const advanced = buildAdvancedCreate(form)
+  if ('error' in advanced) return advanced.error
   return null
 }

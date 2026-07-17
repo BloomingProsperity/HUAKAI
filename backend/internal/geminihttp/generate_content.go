@@ -8,13 +8,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -184,7 +188,52 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
-	relay.runCountTokens(w, ctx, requestID, model, body, ident, resolved, plan)
+	budget := fallbackexec.NormalBudget(plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := relay.runCountTokensAttempt(w, ctx, ident, model, body, resolved, plan.Attempts[i], i+1, nil)
+		if outcome.done {
+			return
+		}
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			continue
+		case bindingfallback.ActionTransition:
+			target := relay.runCountTokensAttempt(w, ctx, ident, model, body, resolved, phase.Attempts[0], i+2, &decision.Transition)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
+		}
+	}
+}
+
+type countTokensAttemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, transition *bindingfallback.Transition) countTokensAttemptOutcome {
+	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
+	selRes, failure := relay.selectAccount(ctx, ident, model, resolved, attempt, attemptSeq)
+	if failure != nil {
+		return countTokensAttemptOutcome{failure: failure}
+	}
+	if transition != nil && bindingfallback.NormalizeClass(string(attempt.FallbackClass)) != bindingfallback.ClassNormal {
+		selRes.RoutingReasonJSON = bindingfallback.AnnotateRoutingReason(selRes.RoutingReasonJSON, *transition)
+	}
+	cred, accInfo, ok := relay.resolveCredential(w, ctx, ident, selRes.AccountID)
+	if !ok {
+		releaseCountTokensSelection(ctx, selRes)
+		return countTokensAttemptOutcome{done: true}
+	}
+	outcome := relay.dispatchCountTokens(w, ctx, resolved.ProtocolFamily, upstreamModelID, body, cred, accInfo)
+	releaseCountTokensSelection(ctx, selRes)
+	return outcome
 }
 
 func (relay *countTokensRelay) configured() bool {
@@ -253,45 +302,47 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 	return plan, true
 }
 
-func (relay *countTokensRelay) selectAccount(
-	w http.ResponseWriter,
-	ctx context.Context,
-	ident auth.Identity,
-	model string,
-	resolved registry.Resolved,
-	attempt router.AttemptPlan,
-	attemptSeq int,
-	excludedAccounts map[int64]struct{},
-) (*pool.SelectionResult, bool) {
+func (relay *countTokensRelay) selectAccount(ctx context.Context, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int) (*pool.SelectionResult, *fallbackexec.Failure) {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, err := relay.d.Selector.Select(ctx, pool.SelectionRequest{
-		TenantID:         ident.TenantID,
-		UserID:           ident.UserID,
-		APIKeyID:         ident.APIKeyID,
-		PoolGroupID:      attempt.PoolGroupID,
-		RequestedModel:   model,
-		ModelCooldownKey: upstreamModelID,
-		ProtocolFamily:   resolved.ProtocolFamily,
-		EndpointFamily:   "gemini_count_tokens",
-		AttemptSeq:       attemptSeq,
-		ExcludedAccounts: excludedAccounts,
-		CapabilityFlags:  attempt.RequiredCapabilities,
-		Vendor:           pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
-		UserGroup:        ident.UserGroup,
+		TenantID:            ident.TenantID,
+		UserID:              ident.UserID,
+		APIKeyID:            ident.APIKeyID,
+		PoolGroupID:         attempt.PoolGroupID,
+		RequestedModel:      model,
+		ModelCooldownKey:    upstreamModelID,
+		ProtocolFamily:      resolved.ProtocolFamily,
+		EndpointFamily:      "gemini_count_tokens",
+		AttemptSeq:          attemptSeq,
+		CapabilityFlags:     attempt.RequiredCapabilities,
+		Vendor:              pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
+		UserGroup:           ident.UserGroup,
+		SelectionMode:       attempt.SelectionMode,
+		BindingID:           attempt.BindingID,
+		MaxParallelRequests: attempt.MaxParallelRequests,
 	})
-	if errors.Is(err, pool.ErrNoEligibleAccount) || errors.Is(err, pool.ErrNoSlotAvailable) || errors.Is(err, pool.ErrAllChannelsDegraded) {
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
-		return nil, false
+	if err != nil || selRes == nil || selRes.AccountID == 0 || selRes.WaitPlan != nil {
+		failureErr := err
+		if failureErr == nil {
+			failureErr = pool.ErrNoEligibleAccount
+			if selRes != nil && selRes.WaitPlan != nil {
+				failureErr = pool.ErrNoSlotAvailable
+			}
+		}
+		return nil, fallbackexec.PoolFailure(failureErr)
 	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodePoolSelectError, clienterr.MessageFor(clienterr.CodePoolSelectError))
-		return nil, false
+	return selRes, nil
+}
+
+// releaseCountTokensSelection 归还无计费 claim 的短请求槽。脱离客户端取消后再加
+// 短超时，避免断连把释放一并取消，最终只能等待 lease sweep。
+func releaseCountTokensSelection(ctx context.Context, sel *pool.SelectionResult) {
+	if sel == nil || sel.Release == nil {
+		return
 	}
-	if selRes == nil || selRes.AccountID == 0 || selRes.WaitPlan != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity))
-		return nil, false
-	}
-	return selRes, true
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = sel.Release(releaseCtx)
 }
 
 func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx context.Context, ident auth.Identity, accountID int64) (provider.Credential, provider.AccountInfo, bool) {
@@ -304,6 +355,44 @@ func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx cont
 		accInfo.AccountID = accountID
 	}
 	return cred, accInfo, true
+}
+
+func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, protocolFamily, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo) countTokensAttemptOutcome {
+	res, err := relay.d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
+		ProtocolFamily:  protocolFamily,
+		EndpointPath:    "/v1beta/models/" + url.PathEscape(upstreamModelID) + ":countTokens",
+		UpstreamModelID: upstreamModelID,
+		InboundBody:     body,
+		Account:         accInfo,
+		Credential:      cred,
+	})
+	if err != nil {
+		return countTokensAttemptOutcome{failure: fallbackexec.DispatchFailure(err)}
+	}
+	if res == nil || res.UpstreamReader == nil {
+		return countTokensAttemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
+	}
+	if res.Close != nil {
+		defer func() { _ = res.Close() }()
+	}
+	raw, readErr := readUpstreamBody(res.UpstreamReader)
+	if readErr != nil {
+		return countTokensAttemptOutcome{failure: fallbackexec.ReadFailure(readErr)}
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return countTokensAttemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return countTokensAttemptOutcome{failure: fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, accInfo.Platform)}
+	}
+	if ct := res.Headers.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+	return countTokensAttemptOutcome{done: true}
 }
 
 func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -370,11 +459,24 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			providerModelID = *binding.ProviderModelIDOverride
 		}
 		out = append(out, router.PoolCandidateMeta{
-			PoolGroupID:     binding.PoolGroupID,
-			ProviderModelID: providerModelID,
+			PoolGroupID:         binding.PoolGroupID,
+			ProviderModelID:     providerModelID,
+			BindingID:           binding.BindingID,
+			MaxParallelRequests: geminiBindingMaxParallelRequests(binding.MaxParallelRequests),
+			Priority:            binding.Priority,
+			Weight:              binding.Weight,
+			SelectionMode:       binding.SelectionMode,
+			FallbackClass:       bindingfallback.NormalizeClass(binding.FallbackClass),
 		})
 	}
 	return out
+}
+
+func geminiBindingMaxParallelRequests(v *int32) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {

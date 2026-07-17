@@ -9,10 +9,11 @@ import (
 
 const (
 	// MetricAccountUnhealthyCount 当前被自动摘除(非 healthy 且仍在生效期)
-	// 的账号总数;按状态细分见 account.unhealthy_count.<state>
-	// (如 account.unhealthy_count.cooldown)。
-	MetricAccountUnhealthyCount  = "account.unhealthy_count"
-	metricAccountUnhealthyPrefix = "account.unhealthy_count."
+	// 的账号总数;按状态细分见 account.unhealthy_<state>
+	// (如 account.unhealthy_cooldown)。
+	MetricAccountUnhealthyCount = "account.unhealthy_count"
+	// MetricAccountUnhealthyPrefix 是按健康状态输出账号数的指标名前缀。
+	MetricAccountUnhealthyPrefix = "account.unhealthy_"
 )
 
 // AccountHealthCounter 供 CompositeMetricSource 拉取 per-tenant 非健康账号

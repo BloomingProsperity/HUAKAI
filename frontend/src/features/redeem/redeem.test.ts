@@ -4,6 +4,7 @@ import {
   formatMoney,
   friendlyRedeemError,
   isRateLimited,
+  mapRedemptionRows,
   newIdempotencyKey,
   normalizeCode,
   summarizeRedeem,
@@ -119,5 +120,42 @@ describe('isRateLimited', () => {
   it('仅限流码为 true', () => {
     expect(isRateLimited('voucher_attempt_limited')).toBe(true)
     expect(isRateLimited('voucher_not_found')).toBe(false)
+  })
+})
+
+describe('mapRedemptionRows', () => {
+  it('完整映射兑换历史四列与稳定展示语义', () => {
+    const redeemedAt = '2026-07-13T10:20:30Z'
+    // 判别核心:到账金额、冲正状态、兑换时间与券 ID 必须精确来自该历史项。
+    expect(mapRedemptionRows([{
+      voucher_id: 23,
+      amount_cents: 2500,
+      currency_code: 'USD',
+      status: 'reversed',
+      redeemed_at: redeemedAt,
+      billing_event_id: 99,
+    }])).toEqual([{
+      id: `23-${redeemedAt}-0`,
+      amount: '$25.00',
+      statusLabel: '已冲正',
+      statusTone: 'warn',
+      redeemedAt: new Date(redeemedAt).toLocaleString('zh-CN', { hour12: false }),
+      voucherId: '#23',
+    }])
+  })
+
+  it('空状态保持既有已到账缺省语义', () => {
+    const [row] = mapRedemptionRows([{
+      voucher_id: 24,
+      amount_cents: 1,
+      currency_code: 'CNY',
+      status: '',
+      redeemed_at: 'invalid',
+      billing_event_id: 100,
+    }])
+    expect(row.amount).toBe('¥0.01')
+    expect(row.statusLabel).toBe('已到账')
+    expect(row.statusTone).toBe('ok')
+    expect(row.redeemedAt).toBe('')
   })
 })

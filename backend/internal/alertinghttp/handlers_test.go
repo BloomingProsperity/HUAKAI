@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
+	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 )
 
 func TestAlertRuleAdminCRUD(t *testing.T) {
@@ -78,12 +79,55 @@ func TestAlertRuleAdminValidation(t *testing.T) {
 		{name: "bad comparator", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"eq","threshold":100,"severity":"critical","window_seconds":60}`},
 		{name: "bad severity", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"emergency","window_seconds":60}`},
 		{name: "bad window", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":0}`},
+		{name: "window too large", body: `{"tenant_id":7,"name":"bad","metric":"gateway.requests","comparator":"gte","threshold":100,"severity":"critical","window_seconds":86401}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := serveAlerting(t, svc, auth, http.MethodPost, "/v1/admin/alert-rules", []byte(tt.body))
 			assertStatus(t, rec, http.StatusBadRequest)
 		})
+	}
+}
+
+func TestAlertMetricCatalogRequiresAdminAndReturnsProductionMetrics(t *testing.T) {
+	// 变异：绕过相邻 admin 鉴权会让 401/403 请求放行；漏接目录或手写错误键/错标签
+	// 会让成功响应中的两个生产指标断言变红。
+	svc := alerting.NewService(alerting.NewMemoryStore())
+	for _, authCase := range []struct {
+		err    error
+		status int
+	}{
+		{err: admin.ErrAdminUnauthorized, status: http.StatusUnauthorized},
+		{err: admin.ErrAdminForbidden, status: http.StatusForbidden},
+	} {
+		rec := serveAlerting(t, svc, fakeAdminAuth{err: authCase.err}, http.MethodGet, "/v1/admin/alert-rules/metric-catalog", nil)
+		assertStatus(t, rec, authCase.status)
+	}
+
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+	rec := serveAlerting(t, svc, auth, http.MethodGet, "/v1/admin/alert-rules/metric-catalog", nil)
+	assertStatus(t, rec, http.StatusOK)
+	var entries []alertmetrics.CatalogEntry
+	decodeJSON(t, rec, &entries)
+	byName := make(map[string]alertmetrics.CatalogEntry, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	wantLabels := map[string]string{
+		"usage.request_count":     "请求总数",
+		"account.unhealthy_count": "异常账号总数",
+	}
+	for name, wantLabel := range wantLabels {
+		entry, ok := byName[name]
+		if !ok {
+			t.Fatalf("目录缺生产指标 %q：%+v", name, entries)
+		}
+		if entry.Label != wantLabel {
+			t.Fatalf("目录指标 %q label=%q，want %q", name, entry.Label, wantLabel)
+		}
+	}
+	if prefix := byName["account.unhealthy_"]; !prefix.IsPrefix || prefix.Label == "" {
+		t.Fatalf("健康状态前缀目录项错误：%+v", prefix)
 	}
 }
 

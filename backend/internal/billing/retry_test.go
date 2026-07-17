@@ -54,7 +54,7 @@ func TestRetryTx2_RetriesSerializationThenSucceeds(t *testing.T) {
 	for _, code := range []string{"40001", "40P01"} {
 		t.Run(code, func(t *testing.T) {
 			calls, sleeps := 0, 0
-			err := retryTx2(context.Background(), "settle", func(context.Context) error {
+			err := retryTx2(context.Background(), "settle", settleTx2RetryPolicy, func(context.Context) error {
 				calls++
 				if calls <= 2 {
 					return fakePgErr(code)
@@ -85,7 +85,7 @@ func TestRetryTx2_BusinessErrorsNotRetried(t *testing.T) {
 		errors.New("plain tx2 error"),
 	} {
 		calls := 0
-		err := retryTx2(context.Background(), "abort", func(context.Context) error {
+		err := retryTx2(context.Background(), "abort", abortTx2RetryPolicy, func(context.Context) error {
 			calls++
 			return sentinel
 		}, countingSleep(new(int)), zeroRand)
@@ -104,18 +104,18 @@ func TestRetryTx2_BusinessErrorsNotRetried(t *testing.T) {
 func TestRetryTx2_ExhaustsToLastError(t *testing.T) {
 	calls, sleeps := 0, 0
 	lastErr := fakePgErr("40001")
-	err := retryTx2(context.Background(), "settle", func(context.Context) error {
+	err := retryTx2(context.Background(), "settle", settleTx2RetryPolicy, func(context.Context) error {
 		calls++
 		return lastErr
 	}, countingSleep(&sleeps), zeroRand)
 	if err != lastErr {
 		t.Fatalf("Tx2 耗尽应返回最后原始错误,got %v want %v", err, lastErr)
 	}
-	if calls != reserveRetryMax+1 {
-		t.Fatalf("Tx2 应跑 max+1=%d 次,得 %d", reserveRetryMax+1, calls)
+	if calls != 6 {
+		t.Fatalf("Settle Tx2 应维持 6 次总尝试,得 %d", calls)
 	}
-	if sleeps != reserveRetryMax {
-		t.Fatalf("Tx2 应退避 max=%d 次,得 %d", reserveRetryMax, sleeps)
+	if sleeps != 5 {
+		t.Fatalf("Settle Tx2 应维持 5 次退避,得 %d", sleeps)
 	}
 }
 

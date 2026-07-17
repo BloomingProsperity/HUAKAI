@@ -167,6 +167,23 @@ func TestCreateDefaultsAndActorPropagation(t *testing.T) {
 	}
 }
 
+// 老客户端仍可携带三个仅存储字段；删掉任一 DTO 字段后严格 JSON 解码会返回 400，测试随即转红。
+func TestCreateAcceptsLegacyStoredOnlyFields(t *testing.T) {
+	svc := &stubService{}
+	body := `{"model_id":5,"pool_group_id":9,"weight":7,"max_parallel_requests":3,"fallback_class":"quota","selection_mode":"priority_weighted","enabled":false}`
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPost, "/?tenant_id=42", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code=%d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	c := svc.lastCreate
+	if !svc.createCalled || c.Weight != 7 || c.MaxParallelRequests == nil || *c.MaxParallelRequests != 3 || c.FallbackClass != "quota" {
+		t.Fatalf("旧字段未兼容透传:called=%v input=%+v", svc.createCalled, c)
+	}
+	if c.SelectionMode != "priority_weighted" || c.Enabled {
+		t.Fatalf("现存有效字段传播错:selection_mode=%q enabled=%v", c.SelectionMode, c.Enabled)
+	}
+}
+
 // 缺 model_id/pool_group_id → 400。
 func TestCreateRequiresModelAndPool(t *testing.T) {
 	svc := &stubService{}
@@ -200,6 +217,23 @@ func TestCreateRejectsNonPositiveWeight(t *testing.T) {
 		`{"model_id":5,"pool_group_id":9,"weight":0}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code=%d want 400 (weight 0)", rec.Code)
+	}
+}
+
+// 负并发上限必须在进入 service 前返回 400；0 明确定义为不限，仍可写入。
+func TestCreateMaxParallelRequestsValidation(t *testing.T) {
+	rejected := &stubService{}
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, rejected, http.MethodPost, "/?tenant_id=1",
+		`{"model_id":5,"pool_group_id":9,"max_parallel_requests":-1}`)
+	if rec.Code != http.StatusBadRequest || rejected.createCalled {
+		t.Fatalf("负上限 code=%d createCalled=%v want 400/false", rec.Code, rejected.createCalled)
+	}
+
+	accepted := &stubService{}
+	rec = do(t, stubAuth{ident: platformAdmin(7)}, accepted, http.MethodPost, "/?tenant_id=1",
+		`{"model_id":5,"pool_group_id":9,"max_parallel_requests":0}`)
+	if rec.Code != http.StatusCreated || !accepted.createCalled || accepted.lastCreate.MaxParallelRequests == nil || *accepted.lastCreate.MaxParallelRequests != 0 {
+		t.Fatalf("零上限 code=%d input=%+v want 201 且透传 0", rec.Code, accepted.lastCreate)
 	}
 }
 

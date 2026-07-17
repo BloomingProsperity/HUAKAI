@@ -1,5 +1,5 @@
 import type { BadgeTone } from '../../ui/StatusBadge'
-import type { L2MetricsRow, L2StatsResponse } from './types'
+import type { L2EntryStat, L2MetricsRow, L2StatsResponse } from './types'
 
 /*
  * L2 响应缓存监控页纯逻辑(可单测,无 DOM/网络副作用):
@@ -139,4 +139,39 @@ export function hitRatePercent(stats: Pick<L2StatsResponse, 'metrics'>): string 
 export function shortKey(key: string): string {
   if (!key) return '—'
   return key.length > 24 ? `${key.slice(0, 16)}…${key.slice(-6)}` : key
+}
+
+export interface CacheEntryTableRow {
+  key: string
+  keyLabel: string
+  tenant: string
+  vendor: string
+  model: string
+  status: number
+  size: string
+  storedAt: string
+  expiresAt: string
+  entry: L2EntryStat
+}
+
+/** 缓存元数据 DTO 到列表展示行的纯映射。 */
+export function mapCacheEntryRows(entries: L2EntryStat[]): CacheEntryTableRow[] {
+  return entries.map((entry) => ({
+    key: entry.key,
+    keyLabel: shortKey(entry.key),
+    tenant: `#${entry.tenant_id}`,
+    vendor: entry.vendor || '—',
+    model: entry.model || '—',
+    status: entry.status,
+    size: formatBytes(entry.size_bytes),
+    storedAt: formatCacheTimestamp(entry.stored_at),
+    expiresAt: formatCacheTimestamp(entry.expires_at),
+    entry,
+  }))
+}
+
+export function formatCacheTimestamp(value: string | null | undefined): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }

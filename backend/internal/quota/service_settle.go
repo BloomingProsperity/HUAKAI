@@ -17,6 +17,10 @@ var (
 	ErrReservationNotFound = errors.New("quota: reservation not found")
 	ErrReservationMismatch = errors.New("quota: reservation identity mismatch")
 	ErrInvalidFinalization = errors.New("quota: invalid reservation finalization")
+	// ErrReleaseInvalidatedByRevival 表示 billing claim 已复活且当前预留正被新 attempt 使用。
+	ErrReleaseInvalidatedByRevival = errors.New("quota: release invalidated by billing claim revival")
+	// ErrReleaseDeferredForRevival 表示复活 attempt 尚未终结，旧释放必须等待 claim 再入终态。
+	ErrReleaseDeferredForRevival = errors.New("quota: release deferred for billing claim revival")
 )
 
 const (
@@ -83,7 +87,7 @@ func (s *Service) Settle(ctx context.Context, req SettleRequest) (SettleResult, 
 	}
 
 	var result SettleResult
-	err := s.runQuotaFinalizationWithRetry(ctx, "settle", func(tx PGStore) error {
+	err := s.runQuotaFinalizationWithRetry(ctx, "settle", defaultFinalizationRetryPolicy, func(tx PGStore) error {
 		result = SettleResult{}
 		reservation, err := getFinalizationReservation(ctx, tx, finalizationReservationInput{
 			TenantID:      req.TenantID,
@@ -171,7 +175,7 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 	}
 
 	var result ReleaseResult
-	err := s.runQuotaFinalizationWithRetry(ctx, "release", func(tx PGStore) error {
+	err := s.runQuotaFinalizationWithRetry(ctx, "release", releaseFinalizationRetryPolicy, func(tx PGStore) error {
 		result = ReleaseResult{}
 		reservation, err := getFinalizationReservation(ctx, tx, finalizationReservationInput{
 			TenantID:      req.TenantID,
@@ -193,6 +197,23 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 		case ReservationExpired:
 			return reconciliationStateError(req.TenantID, req.ClaimID, req.ReservationID, quotaReconcileKindReleaseFailed, reservation.Status)
 		case ReservationReserved, ReservationReconciliationNeeded:
+			claim, err := tx.GetClaimTerminalState(ctx, req.TenantID, req.ClaimID)
+			if err != nil {
+				return fmt.Errorf("quota: recheck billing claim before release: %w", err)
+			}
+			// reserving 期间无法判定新 attempt 是否仍会结算旧毒化预留，必须等 claim 再入终态。
+			if claim.Status == claimStatusReserving && reservation.Status == ReservationReconciliationNeeded {
+				return &RetryableError{
+					Operation: fmt.Sprintf("release deferred for billing claim revival: tenant=%d claim=%d reservation=%d claim_status=%q reservation_status=%q",
+						req.TenantID, req.ClaimID, reservation.ID, claim.Status, reservation.Status),
+					Cause: ErrReleaseDeferredForRevival,
+				}
+			}
+			// 非 aborted claim 的 reserved 可能属于后继 attempt，旧 Abort 不能释放。
+			if claim.Status != claimStatusAborted && reservation.Status == ReservationReserved {
+				return fmt.Errorf("%w: tenant=%d claim=%d reservation=%d claim_status=%q reservation_status=%q",
+					ErrReleaseInvalidatedByRevival, req.TenantID, req.ClaimID, reservation.ID, claim.Status, reservation.Status)
+			}
 			if err := applyReleaseWindows(ctx, tx, reservation); err != nil {
 				return err
 			}
@@ -231,7 +252,9 @@ func (s *Service) Release(ctx context.Context, req ReleaseRequest) (ReleaseResul
 	})
 	if err != nil {
 		if shouldQueueQuotaFinalizationFailure(err) {
-			queued, queueErr := s.enqueueFinalizationReconciliation(ctx, req.TenantID, req.ClaimID, req.ReservationID, quotaReconcileKindReleaseFailed, err)
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), quotaCleanupTimeout)
+			queued, queueErr := s.handoffReleaseRecovery(cleanupCtx, req.TenantID, req.ClaimID, req.ReservationID, err)
+			cancelCleanup()
 			result.ReconciliationQueued = queued
 			if queueErr != nil {
 				return result, errors.Join(err, queueErr)
@@ -249,7 +272,7 @@ func (s *Service) CommitCacheHit(ctx context.Context, req CacheHitRequest) (Cach
 	}
 
 	var result CacheHitResult
-	err := s.runQuotaFinalizationWithRetry(ctx, "cache_hit", func(tx PGStore) error {
+	err := s.runQuotaFinalizationWithRetry(ctx, "cache_hit", defaultFinalizationRetryPolicy, func(tx PGStore) error {
 		result = CacheHitResult{}
 		reservation, err := getFinalizationReservation(ctx, tx, finalizationReservationInput{
 			TenantID:      req.TenantID,
@@ -326,26 +349,6 @@ func (s *Service) CommitCacheHit(ctx context.Context, req CacheHitRequest) (Cach
 		return result, err
 	}
 	return result, nil
-}
-
-func (s *Service) runQuotaFinalizationWithRetry(ctx context.Context, operation string, run func(PGStore) error) error {
-	if s == nil || s.store == nil {
-		return ErrStoreNotConfigured
-	}
-	var err error
-	for attempt := 0; attempt < reserveTxRetryAttempts; attempt++ {
-		err = s.withStore(ctx, run)
-		if !isPgRetryableTxConflict(err) {
-			break
-		}
-		if attempt == reserveTxRetryAttempts-1 {
-			return &RetryableError{Operation: "quota " + operation + " transaction", Cause: err}
-		}
-		if sleepErr := sleepBeforeReserveRetry(ctx, attempt); sleepErr != nil {
-			return sleepErr
-		}
-	}
-	return err
 }
 
 type finalizationReservationInput struct {
@@ -660,60 +663,6 @@ func insertQuotaFinalizationAudit(ctx context.Context, store PGStore, audit quot
 	return err
 }
 
-func (s *Service) enqueueFinalizationReconciliation(ctx context.Context, tenantID int64, claimID int64, reservationID int64, requestedKind string, cause error) (bool, error) {
-	if s == nil || s.store == nil {
-		return false, fmt.Errorf("quota reconciliation enqueue failed: %w", ErrStoreNotConfigured)
-	}
-	lastError := requestedKind
-	if cause != nil {
-		lastError += ": " + cause.Error()
-	}
-	if reservationID != 0 {
-		_ = s.runQuotaOutsideFailedTx(ctx, func(store PGStore) error {
-			return store.MarkReservationReconciliationNeeded(ctx, tenantID, reservationID, claimID)
-		})
-	}
-	var reservationPtr *int64
-	if reservationID != 0 {
-		reservationPtr = &reservationID
-	}
-	err := s.runQuotaOutsideFailedTx(ctx, func(store PGStore) error {
-		_, err := store.EnqueueReconciliationJob(ctx, ReconciliationEnqueue{
-			TenantID:      tenantID,
-			ClaimID:       claimID,
-			ReservationID: reservationPtr,
-			Kind:          reconciliationDBKind(requestedKind),
-			LastError:     &lastError,
-			NextRunAt:     time.Now().UTC(),
-		})
-		return err
-	})
-	if err != nil {
-		return false, fmt.Errorf("quota reconciliation enqueue failed: %w", err)
-	}
-	return true, nil
-}
-
-func (s *Service) runQuotaOutsideFailedTx(ctx context.Context, run func(PGStore) error) error {
-	if txStore, ok := s.store.(quotaTxStore); ok {
-		return txStore.WithTx(ctx, run)
-	}
-	return run(s.store)
-}
-
-func reconciliationDBKind(requestedKind string) string {
-	switch requestedKind {
-	case quotaReconcileKindSettleFailed:
-		return "settle_after_billing_success"
-	case quotaReconcileKindReleaseFailed:
-		return "release_after_abort"
-	case quotaReconcileKindCacheHitFailed:
-		return "release_after_cache_hit"
-	default:
-		return requestedKind
-	}
-}
-
 func normalizeSettleRequest(req SettleRequest) SettleRequest {
 	if req.SettledAt.IsZero() {
 		req.SettledAt = time.Now().UTC()
@@ -788,6 +737,9 @@ func shouldQueueQuotaFinalizationFailure(err error) bool {
 		return false
 	}
 	if errors.Is(err, ErrReservationNotFound) || errors.Is(err, ErrReservationMismatch) {
+		return false
+	}
+	if errors.Is(err, ErrReleaseInvalidatedByRevival) || errors.Is(err, ErrReleaseDeferredForRevival) {
 		return false
 	}
 	var invalid *invalidReservationStatus

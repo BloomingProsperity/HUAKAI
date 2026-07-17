@@ -798,9 +798,9 @@ func TestCompletionsStreamMidStreamErrorAfterDeliveryDoesNotRefund(t *testing.T)
 	}
 }
 
-// TestCompletionsStreamZeroDeliveryErrorStillAborts 守边界:头已 200 但上游一个字节都没交付就断开
-// (真零交付),此时无可计费交付,释放整笔预留(abort)是正确的——不可被上面的修复过度纠正成"也结算"。
-// Mutation: 把 attempt.go 的 copied.Len()==0 守卫去掉(出错就一律走结算)→ settle==1/abort==0 → 本测试 RED。
+// TestCompletionsStreamZeroDeliveryErrorStillAborts 守边界:上游首字节前断开时先释放预留，
+// 此时仍可安全返回 JSON 失败；不得先写 200 再发现真零交付。
+// Mutation: 删除首字节 Peek 或把零交付也结算，会让状态、settle/abort 断言变红。
 func TestCompletionsStreamZeroDeliveryErrorStillAborts(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{
 		status:      http.StatusOK,
@@ -810,9 +810,8 @@ func TestCompletionsStreamZeroDeliveryErrorStillAborts(t *testing.T) {
 
 	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
 
-	// 流式分支在 streamAndCapture 之前已 WriteHeader(200)。
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d want 200", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502(首字节前仍可返回失败)", rec.Code)
 	}
 	if got := len(env.settler.settles); got != 0 {
 		t.Fatalf("settle 调用=%d want 0(真零交付无可计费内容)", got)

@@ -13,6 +13,25 @@ export function formatMoney(cents: number): string {
 
 export type Tone = 'ok' | 'warn' | 'danger' | 'muted'
 
+export interface WalletOrderSource {
+  id: number
+  out_trade_no: string
+  order_kind: string
+  amount_cents: number
+  status: string
+  created_at: string
+}
+
+export interface WalletOrderTableRow {
+  id: number
+  tradeNo: string
+  kind: string
+  amount: string
+  statusLabel: string
+  statusTone: Tone
+  createdAt: string
+}
+
 /** 订单状态 → 配色 tone。 */
 export function orderStatusTone(status: string): Tone {
   switch (status) {
@@ -45,6 +64,19 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function orderStatusLabel(status: string): string {
   return STATUS_LABELS[status] ?? status
+}
+
+/** 最近订单到展示行的纯映射，集中固定类型、金额、状态和时间列语义。 */
+export function mapWalletOrderRows(orders: WalletOrderSource[]): WalletOrderTableRow[] {
+  return orders.map((order) => ({
+    id: order.id,
+    tradeNo: order.out_trade_no,
+    kind: order.order_kind === 'topup' ? '充值' : order.order_kind === 'subscription' ? '订阅' : order.order_kind,
+    amount: `$${formatMoney(order.amount_cents)}`,
+    statusLabel: orderStatusLabel(order.status),
+    statusTone: orderStatusTone(order.status),
+    createdAt: new Date(order.created_at).toLocaleString(),
+  }))
 }
 
 /** 充值单(order_kind=topup)且已完成的入账总额(分)。 */

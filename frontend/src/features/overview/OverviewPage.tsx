@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { EmptyState } from '../../ui/EmptyState'
+import { Skeleton, SkeletonText } from '../../ui/Skeleton'
+import { StatCard } from '../../ui/StatCard'
 import { AnnouncementBanner } from './AnnouncementBanner'
 import { getKeyUsageSummary, getQuota, listApiKeys } from './api'
 import {
@@ -79,21 +82,31 @@ function QuotaCard() {
 
   return (
     <Card title="配额窗口">
-      {state === 'loading' ? (
-        <Muted>加载中…</Muted>
-      ) : state === 'fail' ? (
-        <Dash hint="配额暂不可用" />
-      ) : !headline ? (
-        <Muted>当前账户未配置配额限制(无上限)。</Muted>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
-          <QuotaBar w={headline} />
-          {items && items.length > 1 && (
-            <span style={{ fontSize: 12, color: 'var(--hk-ink-300)' }}>另有 {items.length - 1} 个配额窗口,见用量页。</span>
-          )}
-        </div>
-      )}
+      <QuotaCardContent state={state} items={items} headline={headline} />
     </Card>
+  )
+}
+
+export function QuotaCardContent({ state, items, headline }: { state: 'loading' | 'ok' | 'fail'; items: QuotaWindow[] | null; headline: QuotaWindow | null }) {
+  if (state === 'loading') return <SkeletonText lines={3} />
+  if (state === 'fail') return <Dash hint="配额暂不可用" />
+  if (!headline) {
+    return (
+      <EmptyState
+        tone="positive"
+        title="配额无上限"
+        hint="当前账户未设置配额限制，可按需使用；用量仍会正常记录。"
+        secondaryAction={{ label: '查看用量明细', to: '/usage-records' }}
+      />
+    )
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-3)' }}>
+      <QuotaBar w={headline} />
+      {items && items.length > 1 && (
+        <span style={{ fontSize: 12, color: 'var(--hk-ink-300)' }}>另有 {items.length - 1} 个配额窗口,见用量页。</span>
+      )}
+    </div>
   )
 }
 
@@ -146,24 +159,15 @@ function KeyCountCard() {
   return (
     <Card title="我的密钥">
       {state === 'loading' ? (
-        <Muted>加载中…</Muted>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+          <Skeleton width="34%" height={12} />
+          <Skeleton width="24%" height={26} />
+          <Skeleton width="48%" height={12} />
+        </div>
       ) : state === 'fail' || !counts ? (
         <Dash hint="密钥数暂不可用" />
       ) : (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--hk-space-4)' }}>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 30, fontWeight: 700, color: 'var(--hk-ink-900)', lineHeight: 1 }} className="hk-mono">
-              {formatCount(counts.total)}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>密钥总数</span>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--hk-primary-600)', lineHeight: 1 }} className="hk-mono">
-              {formatCount(counts.active)}
-            </span>
-            <span style={{ fontSize: 12, color: 'var(--hk-ink-500)' }}>活跃</span>
-          </div>
-        </div>
+        <StatCard label="密钥总数" value={formatCount(counts.total)} hint={`${formatCount(counts.active)} 个活跃密钥`} to="/keys" />
       )}
     </Card>
   )
@@ -201,17 +205,34 @@ function UsageSparkCard() {
 
   return (
     <Card title="近段用量(按密钥花费)">
-      {state === 'loading' ? (
-        <Muted>加载中…</Muted>
-      ) : state === 'fail' || !bars ? (
-        <Dash hint="用量暂不可用" />
-      ) : bars.length === 0 ? (
-        <Muted>暂无可统计的用量(活跃密钥尚无花费)。</Muted>
-      ) : (
-        <UsageSpark bars={bars} />
-      )}
+      <UsageCardContent state={state} bars={bars} />
     </Card>
   )
+}
+
+export function UsageCardContent({ state, bars }: { state: 'loading' | 'ok' | 'fail'; bars: ReturnType<typeof buildUsageBars> | null }) {
+  if (state === 'loading') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-2)' }}>
+        <Skeleton width="82%" height={16} />
+        <Skeleton width="64%" height={16} />
+        <Skeleton width="46%" height={12} />
+      </div>
+    )
+  }
+  if (state === 'fail' || !bars) return <Dash hint="用量暂不可用" />
+  if (bars.length === 0) {
+    return (
+      <EmptyState
+        tone="neutral"
+        title="暂无用量数据"
+        hint="活跃密钥尚未产生花费，完成首次调用后即可在这里查看。"
+        action={{ label: '查看接入指引', to: '/integration' }}
+        secondaryAction={{ label: '管理我的密钥', to: '/keys' }}
+      />
+    )
+  }
+  return <UsageSpark bars={bars} />
 }
 
 function UsageSpark({ bars }: { bars: ReturnType<typeof buildUsageBars> }) {
@@ -273,7 +294,7 @@ const QUICK_LINKS: ReadonlyArray<{ href: string; label: string; hint: string }> 
 function QuickLinksCard() {
   return (
     <Card title="快捷入口">
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-3)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 'var(--hk-space-2)' }}>
         {QUICK_LINKS.map((l) => (
           <a
             key={l.href}
@@ -282,7 +303,7 @@ function QuickLinksCard() {
               display: 'flex',
               flexDirection: 'column',
               gap: 2,
-              padding: 'var(--hk-space-3) var(--hk-space-4)',
+              padding: 'var(--hk-space-2) var(--hk-space-3)',
               border: '1px solid var(--hk-line)',
               borderRadius: 'var(--hk-radius-md)',
               background: 'var(--hk-surface)',
@@ -311,10 +332,6 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       </div>
     </section>
   )
-}
-
-function Muted({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-3)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
 }
 
 /** 降级占位:端点不可用时显示醒目的 "—" + 说明,而非报错条。 */

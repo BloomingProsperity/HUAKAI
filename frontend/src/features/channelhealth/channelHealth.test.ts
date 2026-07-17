@@ -10,6 +10,7 @@ import {
   confidenceLabel,
   DEFAULT_LIMIT,
   eventLabel,
+  mapChannelHealthRows,
   MAX_LIMIT,
   signalLabel,
   stateLabel,
@@ -153,5 +154,39 @@ describe('clampLimit', () => {
     // 判别核心:超 MAX_LIMIT 必须截断(后端 >200 即 400);
     // 变异(直接返回入参)→ 返回 999 → RED。
     expect(clampLimit(999)).toBe(MAX_LIMIT)
+  })
+})
+
+describe('mapChannelHealthRows', () => {
+  it('把状态、信号、恢复进度和动作条件映射为表格行', () => {
+    const source = {
+      ...baseItem,
+      channel_id: 'anthropic:42:v3',
+      state: 'cooling_down',
+      score: 91.236,
+      reason_class: 'rate_limit',
+      confidence_tier: 'observed',
+      policy_version: 'v1',
+      ramp_stage_pct: 25,
+      ramp_failure_count: 2,
+      cooldown_until: 'bad-date',
+      updated_at: undefined,
+    }
+    const [row] = mapChannelHealthRows([source])
+    expect(row).toMatchObject({
+      key: '11:3:42',
+      state: '冷却中',
+      stateTone: 'warn',
+      score: '91.24',
+      signal: '限流',
+      confidence: '已观测',
+      recovery: '冷却至 bad-date',
+      recoveryDetail: '爬坡 25% · 失败 2',
+      updatedAt: '—',
+      writable: true,
+    })
+    // 判别核心:健康状态必须映射到 warn；变异为 ok/danger 会直接证红。
+    expect(row.stateTone).toBe('warn')
+    expect(row.item).toBe(source)
   })
 })

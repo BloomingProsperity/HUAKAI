@@ -3,16 +3,19 @@ package completionshttp
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
-	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
 func NewCountTokensHandler(d Deps) http.HandlerFunc {
@@ -61,50 +64,57 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 }
 
 func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string) {
-	budget := effectiveAttemptBudget(ex.plan)
-	authFailoverUsed := false
-	attemptCap := budget
-	for i := 0; i < attemptCap; i++ {
-		planIdx := i
-		if planIdx >= len(ex.plan.Attempts) {
-			planIdx = len(ex.plan.Attempts) - 1
-		}
-		ex.activateAttempt(ex.plan.Attempts[planIdx], requestedModel)
-		if !ex.selectAccount(w, i+1, requestedModel) || !ex.resolveCredential(w) {
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := ex.runCountTokensAttempt(w, ex.plan.Attempts[i], i+1, requestedModel)
+		if outcome.done {
 			return
 		}
-		outcome := ex.dispatchCountTokens(w)
-		if outcome.Done {
-			return
-		}
-		if outcome.Failure == nil {
-			return
-		}
-		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
-			ex.excludeAccount(ex.accInfo.AccountID)
-		}
-		retry, consumeAuthBudget := shouldRetryFailure(
-			ex.plan,
-			outcome.Failure,
-			i+1 >= attemptCap,
-			authFailoverUsed,
-		)
-		if !retry || (ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
-			writeAttemptFailure(w, outcome.Failure)
-			return
-		}
-		if consumeAuthBudget {
-			authFailoverUsed = true
-			if i+1 >= attemptCap {
-				attemptCap++
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runCountTokensAttempt(w, phase.Attempts[0], i+2, requestedModel)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
 			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
 		}
-		ex.prepareNextAttempt()
 	}
 }
 
+func (ex *execution) runCountTokensAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int, requestedModel string) attemptOutcome {
+	ex.activateAttempt(attempt, requestedModel)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	if failure := ex.selectAccount(w, attemptSeq, requestedModel); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		ex.releaseCountTokensSelection()
+		return attemptOutcome{done: true}
+	}
+	outcome := ex.dispatchCountTokens(w)
+	ex.releaseCountTokensSelection()
+	return outcome
+}
+
+func (ex *execution) releaseCountTokensSelection() {
+	if ex.selRes == nil || ex.selRes.Release == nil {
+		return
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 2*time.Second)
+	defer cancel()
+	_ = ex.selRes.Release(releaseCtx)
+}
+
 func (ex *execution) dispatchCountTokens(w http.ResponseWriter) attemptOutcome {
-	startedAt := time.Now()
 	res, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
 		ProtocolFamily:    ex.resolved.ProtocolFamily,
 		EndpointPath:      ex.upstreamPath,
@@ -115,36 +125,27 @@ func (ex *execution) dispatchCountTokens(w http.ResponseWriter) attemptOutcome {
 		InboundBetaTokens: provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta")),
 	})
 	if err != nil {
-		decision := dispatchFailureDecision(err)
-		if ex.d.Feedback != nil {
-			decision = normalizeDispatchFailureDecision(
-				ex.d.Feedback.ObserveDispatchError(ex.ctx, ex.feedbackAttempt(startedAt), err),
-			)
-		}
-		return attemptOutcome{Failure: &attemptFailure{Decision: decision}}
+		return attemptOutcome{failure: fallbackexec.DispatchFailure(err)}
 	}
 	if res == nil || res.UpstreamReader == nil {
-		ex.observeChannelError(startedAt, 0)
-		return attemptOutcome{Failure: &attemptFailure{
-			Decision: retryableAttemptDecision("upstream_empty_response", http.StatusBadGateway),
-		}}
+		return attemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
 	defer closeDispatchResult(res)
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
-		ex.observeChannelError(startedAt, res.StatusCode)
-		writeJSONError(w, http.StatusBadGateway, clienterr.CodeUpstreamReadError, clienterr.MessageFor(clienterr.CodeUpstreamReadError))
-		return attemptOutcome{Done: true}
+		return attemptOutcome{failure: fallbackexec.ReadFailure(readErr)}
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return attemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return attemptOutcome{Failure: ex.observeHTTPFailure(startedAt, res, raw)}
+		return attemptOutcome{failure: fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)}
 	}
-	ex.observeSuccess(startedAt, res)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
-	return attemptOutcome{Done: true}
+	return attemptOutcome{done: true}
 }

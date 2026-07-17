@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
+import { confirmIrreversible } from '../../ui/confirmDanger'
 import { AdminCreateOrder } from './AdminCreateOrder'
 import { cancelOrder, confirmOrder, getOrder, listOrders, refundOrder, retryOrder } from './api'
 import { DashboardCards } from './DashboardCards'
@@ -12,11 +15,13 @@ import {
   EMPTY_ORDER_FILTER,
   formatCents,
   hasAnyAction,
+  mapOrderRows,
   ORDER_STATUSES,
   orderActions,
   parseRefundAmount,
   statusLabel,
   statusTone,
+  type OrderTableRow,
   type OrderFilterForm,
 } from './ordersadmin'
 import { RefundRequestsTab } from './RefundRequestsTab'
@@ -156,6 +161,7 @@ export function OrdersAdminPage() {
           setOrders={setOrders}
           setError={setError}
           setPage={setPage}
+          onReload={refresh}
         />
       )}
 
@@ -189,6 +195,7 @@ function OrdersTab({
   setOrders,
   setError,
   setPage,
+  onReload,
 }: {
   draft: OrderFilterForm
   applied: OrderFilterForm | null
@@ -204,7 +211,54 @@ function OrdersTab({
   setOrders: (o: AdminOrder[]) => void
   setError: (e: string | null) => void
   setPage: React.Dispatch<React.SetStateAction<number>>
+  onReload: () => void
 }) {
+  const [busyOrderId, setBusyOrderId] = useState<number | null>(null)
+  const rows = mapOrderRows(orders)
+  const columns: DataListColumn<OrderTableRow>[] = [
+    { key: 'order-number', label: '订单号', render: (row) => <span className="hk-mono" style={{ fontWeight: 600 }}>{row.orderNumber}</span> },
+    { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.userId}</span> },
+    { key: 'amount', label: '金额', render: (row) => <span className="hk-mono">{row.amount}</span> },
+    { key: 'kind', label: '类型', render: (row) => row.kind },
+    { key: 'provider', label: '渠道', render: (row) => row.provider },
+    {
+      key: 'status',
+      label: '状态',
+      badge: true,
+      render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge>,
+    },
+    { key: 'created-at', label: '创建时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
+
+  const runInlineAction = async (row: OrderTableRow, kind: 'confirm' | 'retry' | 'cancel') => {
+    const order = row.source
+    let reason = ''
+    if (kind === 'confirm') {
+      if (!confirmIrreversible(`确认订单 #${order.id} 已到账并履约`, `将按现有订单流程为用户 #${order.user_id} 完成履约。`)) return
+      const input = window.prompt(`订单 #${order.id} 的确认原因(可选,记入审计):`, '')
+      if (input === null) return
+      reason = input
+    }
+    if (kind === 'cancel') {
+      if (!confirmIrreversible(`取消订单 #${order.id}`, '订单取消后不能继续支付或履约。')) return
+      const input = window.prompt(`订单 #${order.id} 的取消原因(可选,记入审计):`, '')
+      if (input === null) return
+      reason = input
+    }
+    setBusyOrderId(order.id)
+    setError(null)
+    try {
+      if (kind === 'confirm') await confirmOrder(order.id, Number(applied?.tenantId), reason)
+      if (kind === 'retry') await retryOrder(order.id, Number(applied?.tenantId))
+      if (kind === 'cancel') await cancelOrder(order.id, Number(applied?.tenantId), reason)
+      onReload()
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.message}(${e.code})` : '订单处置失败')
+    } finally {
+      setBusyOrderId(null)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
       {/* CSV 导出工具栏(只读)。 */}
@@ -262,52 +316,27 @@ function OrdersTab({
 
       {!applied ? (
         <div className="hk-card">
-          <div className="hk-empty">请填写租户 ID 后查询订单。</div>
+          <EmptyState title="尚未查询订单" hint="请填写租户 ID 后查询订单。" />
         </div>
       ) : (
         <div className="hk-card">
           {loading && orders.length === 0 ? (
-            <div className="hk-empty">加载中…</div>
+            <EmptyState title="正在加载订单" hint="请稍候。" />
           ) : orders.length === 0 ? (
-            <div className="hk-empty">该筛选条件下没有订单。</div>
+            <EmptyState title="暂无订单" hint="该筛选条件下没有订单，可调整状态、用户或时间范围后重试。" />
           ) : (
-            <div className="hk-tablewrap">
-              <table className="hk-table">
-                <thead>
-                  <tr>
-                    {['订单号', '用户', '金额', '类型', '渠道', '状态', '创建时间', ''].map((h) => (
-                      <th key={h}>
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id}>
-                      <td>
-                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm" style={{ fontWeight: 600 }}>
-                          {o.out_trade_no || `#${o.id}`}
-                        </button>
-                      </td>
-                      <td className="hk-mono">{o.user_id}</td>
-                      <td className="hk-mono">{formatCents(o.amount_cents, o.currency_code)}</td>
-                      <td>{o.order_kind || '充值'}</td>
-                      <td>{o.provider_kind || '—'}</td>
-                      <td>
-                        <StatusBadge tone={statusTone(o.status)}>{statusLabel(o.status)}</StatusBadge>
-                      </td>
-                      <td className="hk-mono">{fmt(o.created_at)}</td>
-                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        <button type="button" onClick={() => setDetailId(o.id)} className="hk-btn hk-btn--sm">
-                          详情
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataListTable
+              label="订单列表"
+              rows={rows}
+              rowKey={(row) => row.id}
+              columns={columns}
+              actions={[
+                { label: '详情', onClick: (row) => setDetailId(row.id), disabled: (row) => busyOrderId === row.id },
+                { label: '确认', onClick: (row) => { void runInlineAction(row, 'confirm') }, disabled: (row) => !orderActions(row.source.status).canConfirm || busyOrderId !== null },
+                { label: '重试', onClick: (row) => { void runInlineAction(row, 'retry') }, disabled: (row) => !orderActions(row.source.status).canRetry || busyOrderId !== null },
+                { label: '取消', tone: 'danger', onClick: (row) => { void runInlineAction(row, 'cancel') }, disabled: (row) => !orderActions(row.source.status).canCancel || busyOrderId !== null },
+              ]}
+            />
           )}
         </div>
       )}
@@ -523,4 +552,3 @@ function OrderDetailDrawer({
     </div>
   )
 }
-

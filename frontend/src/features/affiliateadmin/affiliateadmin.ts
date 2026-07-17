@@ -1,4 +1,10 @@
-import type { AffiliateFilters, ReferralStatus } from './types'
+import type {
+  AdminReferralItem,
+  AdminReferralOverview,
+  AdminReferralRewardItem,
+  AffiliateFilters,
+  ReferralStatus,
+} from './types'
 
 /*
  * 分销管理纯逻辑(可单测):筛选条件 → query 参数构造、状态配色/中文标签、
@@ -6,6 +12,12 @@ import type { AffiliateFilters, ReferralStatus } from './types'
  */
 
 export type QueryValue = string | number | undefined
+
+/** 空租户筛选优先采用登录上下文；显式输入始终保留。 */
+export function withTenantContext(filters: AffiliateFilters, tenantId: number | null): AffiliateFilters {
+  if (filters.tenantId.trim() || tenantId == null || !Number.isInteger(tenantId) || tenantId <= 0) return filters
+  return { ...filters, tenantId: String(tenantId) }
+}
 
 /**
  * 据筛选条件构造列表 query。判别核心:tenant_id 仅在非空白时下发;
@@ -117,4 +129,65 @@ export function statusCount(counts: Record<string, number> | null | undefined, s
   if (!counts) return 0
   const v = counts[status]
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+export interface AffiliateStatView {
+  label: string
+  value: string
+  tone: 'default' | 'ok'
+}
+
+/** 分销概览到共享指标卡的纯映射。 */
+export function mapAffiliateStats(overview: AdminReferralOverview | null): AffiliateStatView[] {
+  return [
+    { label: '累计返利(USD)', value: overview ? formatUsd(overview.total_reward_usd) : '—', tone: 'ok' },
+    { label: '已发返利笔数', value: overview ? String(overview.reward_count) : '—', tone: 'default' },
+    { label: '待定 / 已达标', value: overview ? `${statusCount(overview.counts_by_status, 'pending')} / ${statusCount(overview.counts_by_status, 'qualified')}` : '—', tone: 'default' },
+    { label: '已返利 / 已驳回', value: overview ? `${statusCount(overview.counts_by_status, 'rewarded')} / ${statusCount(overview.counts_by_status, 'rejected')}` : '—', tone: 'default' },
+  ]
+}
+
+export interface ReferralTableRow {
+  id: number
+  referrerUserId: string
+  refereeUserId: string
+  status: string
+  createdAt: string
+}
+
+/** 分销记录到列表列的纯映射。 */
+export function mapReferralTableRows(items: AdminReferralItem[]): ReferralTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    referrerUserId: `#${item.referrer_user_id}`,
+    refereeUserId: `#${item.referee_user_id}`,
+    status: item.status,
+    createdAt: formatAffiliateTime(item.created_at),
+  }))
+}
+
+export interface RewardTableRow {
+  id: number
+  referralId: string
+  referrerUserId: string
+  rewardType: string
+  amountUsd: string
+  issuedAt: string
+}
+
+/** 返利流水到列表列的纯映射，金额不转换为 number。 */
+export function mapRewardTableRows(items: AdminReferralRewardItem[]): RewardTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    referralId: `#${item.referral_id}`,
+    referrerUserId: `#${item.referrer_user_id}`,
+    rewardType: item.reward_type || '—',
+    amountUsd: formatUsd(item.amount_usd),
+    issuedAt: formatAffiliateTime(item.issued_at),
+  }))
+}
+
+function formatAffiliateTime(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }

@@ -249,8 +249,8 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 }
 
-func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
-	_ = ex.abortWithError(w, reason, observedInputTokens)
+func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
+	return ex.abortWithError(w, reason, observedInputTokens) == nil
 }
 
 func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observedInputTokens int64) error {
@@ -259,8 +259,8 @@ func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observ
 
 // abortWithLoss 在 abort 时把 protocol_loss 审计证据(如 replicate prediction id
 // 与 cancel 结局)一并落 usage_records,供事后对账上游账单。
-func (ex *execution) abortWithLoss(w http.ResponseWriter, reason string, observedInputTokens int64, protocolLoss json.RawMessage) {
-	_ = ex.abortWithLossError(w, reason, observedInputTokens, protocolLoss)
+func (ex *execution) abortWithLoss(w http.ResponseWriter, reason string, observedInputTokens int64, protocolLoss json.RawMessage) bool {
+	return ex.abortWithLossError(w, reason, observedInputTokens, protocolLoss) == nil
 }
 
 func (ex *execution) abortWithLossError(w http.ResponseWriter, reason string, observedInputTokens int64, protocolLoss json.RawMessage) error {
@@ -273,6 +273,7 @@ func (ex *execution) abortWithLossError(w http.ResponseWriter, reason string, ob
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 		return err
 	}
+	ex.reserveRes = nil
 	return nil
 }
 

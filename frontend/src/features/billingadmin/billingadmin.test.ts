@@ -8,6 +8,9 @@ import {
   executeRepriceGuarded,
   formatMoney,
   formatTime,
+  mapClaimTableRows,
+  mapRepriceTableRows,
+  mapUsageTableRows,
   shortId,
   sumRepriceCostDelta,
   toIso,
@@ -20,6 +23,8 @@ import {
   type ClaimFilters,
   type RepriceForm,
   type RepriceRequest,
+  type BillingClaim,
+  type UsageRecord,
   type UsageFilters,
 } from './types'
 
@@ -176,6 +181,56 @@ describe('shortId', () => {
     expect(out.startsWith('req_0123')).toBe(true)
     expect(out.endsWith('0123')).toBe(true)
     expect(out.includes('…')).toBe(true)
+  })
+})
+
+describe('计费列表列映射', () => {
+  it('用量列锁定模型、Token、money 与待对账语义', () => {
+    const source = {
+      id: 9,
+      created_at: '2026-07-13T00:00:00Z',
+      requested_model: 'claude-a',
+      upstream_model: 'claude-b',
+      provider: 'anthropic',
+      tokens_input: 12,
+      tokens_output: 34,
+      actual_cost: '0.01000000',
+      trust_status: 'verified',
+      pending_reconciliation: true,
+      request_id: 'req_0123456789abcdef0123',
+    } as UsageRecord
+    const [row] = mapUsageTableRows([source])
+    // 变异(输入输出 Token 漏一项或 money 转 Number)会使精确列值不相等而 RED。
+    expect(row).toMatchObject({ id: 9, requestedModel: 'claude-a', upstreamModel: 'claude-b', tokens: '12 / 34', actualCost: '0.01000000', pendingReconciliation: true })
+    expect(row.source).toBe(source)
+  })
+
+  it('Claim 列严格区分预扣、实际成本与结算时间', () => {
+    const claim = {
+      id: 4,
+      created_at: '2026-07-13T00:00:00Z',
+      requested_model: 'gpt-x',
+      endpoint_family: 'responses',
+      status: 'settled',
+      predicted_cost: '1.2300',
+      actual_cost: '1.1000',
+      currency_code: 'USD',
+      settled_at: '2026-07-13T00:01:00Z',
+      logical_request_id: 'logical-1',
+    } as BillingClaim
+    const [row] = mapClaimTableRows([claim])
+    // 变异(预扣/实际列互换)会直接打红。
+    expect(row.predictedCost).toBe('1.2300 USD')
+    expect(row.actualCost).toBe('1.1000 USD')
+    expect(row.status).toBe('settled')
+  })
+
+  it('重算结果列保留原始金额并按错误优先展示原因', () => {
+    const [row] = mapRepriceTableRows([{
+      usage_record_id: 8, tenant_id: 3, status: 'error', original_cost: '0.10000000',
+      authoritative_cost: '0.20000000', cost_delta: '0.10000000', error_message: '价表缺失', pricing_source: 'fallback',
+    }])
+    expect(row).toEqual({ id: '3-8', usageRecordId: '8', tenantId: '3', status: 'error', originalCost: '0.10000000', authoritativeCost: '0.20000000', costDelta: '0.10000000', detail: '价表缺失' })
   })
 })
 

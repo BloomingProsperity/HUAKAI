@@ -13,6 +13,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeymodelallow"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -44,10 +46,6 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
-type retryBudgetGate interface {
-	Allow(tenantID int64) bool
-}
-
 // cancelHTTPDoer 发送 best-effort 上游任务取消请求(family_replicate)。控制面
 // 调用,独立于 Dispatcher 的 per-vendor transport 策略。
 type cancelHTTPDoer interface {
@@ -71,13 +69,15 @@ type Deps struct {
 	BillingPolicyVersion  string
 	RequestClass          string
 	ClientIPResolver      *clientip.Resolver
-	Feedback              *upstreamfeedback.Observer
-	RetryBudget           retryBudgetGate
 	// ReplicateCancelClient 可注入(测试/定制);nil 用包内默认 client(10s 超时)。
 	ReplicateCancelClient cancelHTTPDoer
 	// NonStreamKeepAliveInterval:图片生成(强制 buffered,可达数十秒)期间每隔此时长向客户端写
 	// 一个裸换行保活,避开 Cloudflare 等反代 ~100s 空闲超时。0=关(默认)。JSON 容忍前导空白。
 	NonStreamKeepAliveInterval time.Duration
+	// Feedback 喂账号健康 FSM(坏号冷却→选号自动跳过=自动换号)。nil 时 no-op。
+	Feedback *upstreamfeedback.Observer
+	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
+	RetryBudget retryBudgetGate
 }
 
 type execution struct {
@@ -102,7 +102,6 @@ type execution struct {
 	selRes           *pool.SelectionResult
 	accInfo          provider.AccountInfo
 	cred             provider.Credential
-	excludedAccounts map[int64]struct{}
 
 	catalog       *imagepricing.Catalog
 	scheme        imagepricing.Scheme
@@ -117,6 +116,9 @@ type execution struct {
 	// 用它做"按交付数对账":上游(如 Replicate model-specific num_outputs
 	// 被忽略只回 1 张)交付少于请求数时,不得按请求数多收用户钱。
 	deliveredImageCount int
+	classTransition     *bindingfallback.Transition
+	deliveryStarted     bool
+	excludedAccounts    map[int64]struct{}
 }
 
 func NewGenerationsHandler(d Deps) http.HandlerFunc {
@@ -222,55 +224,70 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.plan = plan
+	ex.activateAttempt(plan.Attempts[0])
 	return true
 }
 
 func (ex *execution) run(w http.ResponseWriter) {
-	budget := effectiveAttemptBudget(ex.plan)
-	authFailoverUsed := false
-	attemptCap := budget
-	for i := 0; i < attemptCap; i++ {
-		planIdx := i
-		if planIdx >= len(ex.plan.Attempts) {
-			planIdx = len(ex.plan.Attempts) - 1
-		}
-		ex.activateAttempt(ex.plan.Attempts[planIdx])
-		if !ex.preparePricing(w) || !ex.reserve(w) {
+	budget := fallbackexec.NormalBudget(ex.plan)
+	var coordinator bindingfallback.Coordinator
+	for i := 0; i < budget; i++ {
+		outcome := ex.runAttempt(w, ex.plan.Attempts[i], i+1)
+		if outcome.done {
 			return
 		}
-		attemptSeq := authoritativeAttemptSeq(ex.reserveRes, i+1)
-		if !ex.selectAccount(w, attemptSeq) || !ex.resolveCredential(w) {
-			return
+		if ex.selRes != nil {
+			ex.excludeAccount(ex.selRes.AccountID)
 		}
-		outcome := attemptOutcome{Failure: ex.credentialCompatibilityFailure(w)}
-		if outcome.Failure == nil {
-			outcome = ex.dispatchAndSettle(w, attemptSeq)
-		}
-		if outcome.Done || outcome.Failure == nil {
-			return
-		}
-		if outcome.Failure.Decision.SwitchAccount && ex.accInfo.AccountID > 0 {
-			ex.excludeAccount(ex.accInfo.AccountID)
-		}
-		retry, consumeAuthBudget := shouldRetryFailure(
-			ex.plan,
-			outcome.Failure,
-			i+1 >= attemptCap,
-			authFailoverUsed,
-		)
-		if !retry || !ex.retrySafeForFamily(outcome.Failure) ||
-			(ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
-			writeAttemptFailure(w, outcome.Failure)
-			return
-		}
-		if consumeAuthBudget {
-			authFailoverUsed = true
-			if i+1 >= attemptCap {
-				attemptCap++
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, ex.deliveryStarted, true)
+		switch decision.Action {
+		case bindingfallback.ActionContinuePrimary:
+			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
 			}
+			continue
+		case bindingfallback.ActionTransition:
+			ex.classTransition = &decision.Transition
+			target := ex.runAttempt(w, phase.Attempts[0], i+2)
+			if !target.done {
+				fallbackexec.WriteHTTP(w, target.failure)
+			}
+			return
+		default:
+			fallbackexec.WriteHTTP(w, outcome.failure)
+			return
 		}
-		ex.prepareNextAttempt()
 	}
+}
+
+type attemptOutcome struct {
+	failure *fallbackexec.Failure
+	done    bool
+}
+
+func (ex *execution) runAttempt(w http.ResponseWriter, attempt router.AttemptPlan, attemptSeq int) attemptOutcome {
+	// validateRequest 已把 JSON/multipart 限长读入不可变 []byte；每个 attempt
+	// 都从该缓冲重新生成出站 body，因此 edits/variations 也可安全有界重放。
+	ex.activateAttempt(attempt)
+	ex.reserveRes = nil
+	ex.selRes = nil
+	ex.accInfo = provider.AccountInfo{}
+	ex.deliveredImageCount = 0
+	ex.deliveryStarted = false
+	if !ex.preparePricing(w) {
+		return attemptOutcome{done: true}
+	}
+	if !ex.reserve(w) {
+		return attemptOutcome{done: true}
+	}
+	if failure := ex.selectAccount(w, attemptSeq); failure != nil {
+		return attemptOutcome{failure: failure}
+	}
+	if !ex.resolveCredential(w) {
+		return attemptOutcome{done: true}
+	}
+	return ex.dispatchAndSettle(w, attemptSeq)
 }
 
 func (ex *execution) activateAttempt(attempt router.AttemptPlan) {
@@ -282,4 +299,8 @@ func (ex *execution) activateAttempt(attempt router.AttemptPlan) {
 	if ex.upstreamModelID == "" {
 		ex.upstreamModelID = ex.req.Model
 	}
+}
+
+type retryBudgetGate interface {
+	Allow(tenantID int64) bool
 }

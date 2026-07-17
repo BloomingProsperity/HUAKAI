@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { listApiKeys } from '../keys/api'
 import type { ApiKeyView } from '../keys/types'
 import { getKeyUsageSummary, getQuota } from './api'
@@ -8,6 +11,7 @@ import { resetCountdown } from './windowMeter'
 import { MeterCells } from './Heatmaps'
 import type { KeyUsageSummary, QuotaWindow } from './types'
 import { KeyUsageAnalytics } from './KeyUsageAnalytics'
+import { mapKeyUsageRows, mapUsageStats, type KeyUsageTableRow } from './usage'
 
 /*
  * 用量与配额(P0)。管线第 4 站:
@@ -51,6 +55,27 @@ export function UsagePage() {
     return () => ctrl.abort()
   }, [load])
 
+  const usageRows = mapKeyUsageRows(rows)
+  const stats = mapUsageStats(rows, loading, error !== null)
+  const columns: DataListColumn<KeyUsageTableRow>[] = [
+    {
+      key: 'key',
+      label: '密钥',
+      render: (row) => (
+        <span style={{ display: 'flex', flexDirection: 'column' }}>
+          <strong style={{ color: 'var(--hk-ink-900)' }}>{row.name}</strong>
+          <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.prefix}</code>
+          {!row.available && <span style={{ fontSize: 11, color: 'var(--hk-warn)' }}>汇总不可用</span>}
+        </span>
+      ),
+    },
+    { key: 'cost', label: '花费(USD)', render: (row) => <span className="hk-mono">{row.cost}</span> },
+    { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
+    { key: 'input', label: '输入 Token', render: (row) => <span className="hk-mono">{row.inputTokens}</span> },
+    { key: 'output', label: '输出 Token', render: (row) => <span className="hk-mono">{row.outputTokens}</span> },
+    { key: 'cache', label: '缓存读/写', render: (row) => <span className="hk-mono">{row.cacheTokens}</span> },
+  ]
+
   return (
     <div className="hk-page">
       <header className="hk-pagehead">
@@ -62,11 +87,19 @@ export function UsagePage() {
 
       {error && <Banner>{error}</Banner>}
 
+      <section aria-label="当前页用量统计" style={statsGrid}>
+        {stats.map((stat) => (
+          <StatCard key={stat.label} label={stat.label} value={stat.value} hint={stat.hint} />
+        ))}
+      </section>
+
       <Card title="配额窗口">
         {loading && windows.length === 0 ? (
-          <Muted>加载中…</Muted>
+          <EmptyState title="正在加载配额窗口" hint="请稍候。" />
+        ) : error && windows.length === 0 ? (
+          <EmptyState title="配额窗口暂不可用" hint="请稍后重新打开本页。" tone="unavailable" />
         ) : windows.length === 0 ? (
-          <Muted>当前账户未配置配额限制(无上限)。</Muted>
+          <EmptyState title="当前账户无配额上限" hint="系统仍会记录实际消耗。" tone="positive" />
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--hk-space-4)' }}>
             {windows.map((w, i) => (
@@ -78,48 +111,13 @@ export function UsagePage() {
 
       <Card title="各密钥用量汇总">
         {loading && rows.length === 0 ? (
-          <Muted>加载中…</Muted>
+          <EmptyState title="正在加载密钥用量" hint="请稍候。" />
+        ) : error && rows.length === 0 ? (
+          <EmptyState title="密钥用量暂不可用" hint="请稍后重新打开本页。" tone="unavailable" />
         ) : rows.length === 0 ? (
-          <Muted>没有活跃密钥可统计。</Muted>
+          <EmptyState title="没有活跃密钥可统计" hint="创建并启用 Key 后，用量汇总会显示在这里。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['密钥', '花费(USD)', '请求数', '输入 Token', '输出 Token', '缓存读/写'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(({ key, summary }) => (
-                  <tr key={key.api_key_id}>
-                    <td>
-                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{key.name}</span>
-                        <code style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{key.key_prefix}</code>
-                      </div>
-                    </td>
-                    {summary ? (
-                      <>
-                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_cost}</td>
-                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.request_count}</td>
-                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_tokens_input}</td>
-                        <td className="hk-mono" style={{ textAlign: 'right' }}>{summary.total_tokens_output}</td>
-                        <td className="hk-mono" style={{ textAlign: 'right' }}>
-                          {summary.total_cache_read_tokens}/{summary.total_cache_creation_tokens}
-                        </td>
-                      </>
-                    ) : (
-                      <td style={{ color: 'var(--hk-ink-300)' }} colSpan={5}>
-                        汇总不可用
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="各密钥用量汇总" rows={usageRows} rowKey={(row) => row.id} columns={columns} />
         )}
       </Card>
 
@@ -165,10 +163,6 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
-function Muted({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 function Banner({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>
@@ -176,3 +170,5 @@ function Banner({ children }: { children: React.ReactNode }) {
     </div>
   )
 }
+
+const statsGrid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 'var(--hk-space-3)' }

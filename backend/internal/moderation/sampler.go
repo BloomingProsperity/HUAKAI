@@ -27,3 +27,17 @@ func sampleKey(event ModerationEvent) string {
 	}
 	return strconv.FormatInt(event.TenantID, 10) + ":" + event.PayloadHash
 }
+
+func shouldSampleExternal(sampleRatePct int32, randomIntn func(int) int) bool {
+	if sampleRatePct <= 0 {
+		return false
+	}
+	if sampleRatePct >= 100 {
+		return true
+	}
+	if randomIntn == nil {
+		return false
+	}
+	draw := randomIntn(100)
+	return draw >= 0 && draw < int(sampleRatePct)
+}

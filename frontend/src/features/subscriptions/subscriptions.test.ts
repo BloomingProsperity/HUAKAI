@@ -12,6 +12,7 @@ import {
   friendlyChangePlanError,
   isOverLimit,
   isSubscriptionActive,
+  mapSubscriptionHistoryRows,
   purchaseGuidance,
   sortProgressWindows,
   sortSubscriptionHistory,
@@ -186,6 +187,20 @@ describe('sortSubscriptionHistory', () => {
   it('无效 created_at 当作最早,排最后,不抛错', () => {
     const rows = [sub(1, 'not-a-date'), sub(2, '2026-06-01T00:00:00Z')]
     expect(sortSubscriptionHistory(rows).map((r) => r.id)).toEqual([2, 1])
+  })
+})
+
+describe('mapSubscriptionHistoryRows', () => {
+  it('排序后完整映射七列，缺失值不能伪装成真实权益或日期', () => {
+    const rows = mapSubscriptionHistoryRows([
+      { id: 1, plan_id: 11, status: 'expired', starts_at: '2026-01-01T00:00:00Z', expires_at: '2026-02-01T00:00:00Z', created_at: '2026-01-01T00:00:00Z' },
+      { id: 2, plan_id: 22, status: 'active', granted_group: 'pro', starts_at: '2026-06-01T00:00:00Z', expires_at: '2026-07-01T00:00:00Z', cancelled_at: null, created_at: '2026-06-01T00:00:00Z' },
+    ])
+    expect(rows.map((row) => row.id)).toEqual([2, 1])
+    expect(rows[0]).toMatchObject({ planId: '22', status: '生效中', tone: 'ok', group: 'pro', cancelledAt: '—' })
+    expect(rows[1]).toMatchObject({ planId: '11', status: '已过期', tone: 'danger', group: '—', cancelledAt: '—' })
+    expect(rows[0].startsAt).not.toBe('—')
+    expect(rows[0].expiresAt).not.toBe(rows[0].startsAt)
   })
 })
 

@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listRenewStatus } from './api'
 import {
   DEFAULT_RENEW_LIMIT,
-  failureSummary,
-  relativeTime,
-  renewHealth,
-  renewHealthLabel,
-  renewHealthTone,
+  mapRenewTableRows,
+  type RenewTableRow,
 } from './renew'
 import type { RenewStatusRow } from './types'
 
@@ -101,6 +100,7 @@ export function CredentialRenewPage() {
     const v = Number(raw)
     setTenantFilter(Number.isInteger(v) && v > 0 ? v : undefined)
   }
+  const tableRows = mapRenewTableRows(rows, nowMs)
 
   return (
     <div className="hk-page">
@@ -156,50 +156,11 @@ export function CredentialRenewPage() {
         {error && <Banner kind="error">{error}</Banner>}
 
         {loading && rows.length === 0 ? (
-          <Empty>加载中…</Empty>
+          <EmptyState title="正在加载凭证续期状态" hint="请稍候。" />
         ) : rows.length === 0 ? (
-          <Empty>暂无凭证续期记录。</Empty>
+          <EmptyState title="暂无凭证续期记录" hint="当前身份范围与筛选条件下没有可展示记录。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['续期状态', '租户', '账号', '厂商 / 模式', '版本', '距到期', '续期窗口', '最近刷新', '失败'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const h = renewHealth(row, nowMs)
-                  return (
-                    <tr key={row.id}>
-                      <td>
-                        <StatusBadge tone={renewHealthTone(h)}>{renewHealthLabel(h)}</StatusBadge>
-                      </td>
-                      <td>
-                        <div style={{ color: 'var(--hk-ink-900)' }}>{row.tenant_name || '—'}</div>
-                        <div className="hk-mono" style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>#{row.tenant_id}</div>
-                      </td>
-                      <td>
-                        <div style={{ color: 'var(--hk-ink-900)' }}>{row.account_name || '—'}</div>
-                        <div className="hk-mono" style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>#{row.account_id}</div>
-                      </td>
-                      <td>
-                        <div style={{ color: 'var(--hk-ink-700)' }}>{row.vendor || '—'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.auth_mode || '—'}</div>
-                      </td>
-                      <td className="hk-mono">v{row.credential_version}</td>
-                      <td className="hk-mono">{relativeTime(row.access_expires_at, nowMs)}</td>
-                      <td className="hk-mono">{relativeTime(row.refresh_before_at, nowMs)}</td>
-                      <td className="hk-mono">{relativeTime(row.last_refresh_at, nowMs)}</td>
-                      <td style={{ color: h === 'failing' ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{failureSummary(row)}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="凭证续期状态列表" rows={tableRows} rowKey={(row) => row.id} columns={renewColumns} />
         )}
 
         {cursor !== null && rows.length > 0 && (
@@ -230,8 +191,25 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+
+const renewColumns: DataListColumn<RenewTableRow>[] = [
+  { key: 'health', label: '续期状态', render: (row) => <StatusBadge tone={row.healthTone}>{row.healthLabel}</StatusBadge> },
+  { key: 'tenant', label: '租户', render: (row) => <Stacked primary={row.tenantName} secondary={row.tenantID} mono /> },
+  { key: 'account', label: '账号', render: (row) => <Stacked primary={row.accountName} secondary={row.accountID} mono /> },
+  { key: 'vendor', label: '厂商 / 模式', render: (row) => <Stacked primary={row.vendor} secondary={row.authMode} /> },
+  { key: 'version', label: '版本', render: (row) => <span className="hk-mono">{row.version}</span> },
+  { key: 'expires', label: '距到期', render: (row) => <span className="hk-mono">{row.expiresIn}</span> },
+  { key: 'window', label: '续期窗口', render: (row) => <span className="hk-mono">{row.renewWindow}</span> },
+  { key: 'refresh', label: '最近刷新', render: (row) => <span className="hk-mono">{row.lastRefresh}</span> },
+  { key: 'failure', label: '失败', render: (row) => <span style={{ color: row.failureTone === 'danger' ? 'var(--hk-danger)' : 'var(--hk-ink-500)' }}>{row.failure}</span> },
+]
+
+function Stacked({ primary, secondary, mono = false }: { primary: string; secondary: string; mono?: boolean }) {
+  return (
+    <span style={{ display: 'flex', flexDirection: 'column' }}>
+      <span style={{ color: 'var(--hk-ink-900)' }}>{primary}</span>
+      <span className={mono ? 'hk-mono' : undefined} style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{secondary}</span>
+    </span>
+  )
+}

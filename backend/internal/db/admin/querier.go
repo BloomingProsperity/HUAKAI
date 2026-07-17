@@ -100,6 +100,7 @@ type Querier interface {
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
 	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
+	GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error)
 	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
@@ -177,6 +178,7 @@ type Querier interface {
 	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
 	// 由异步请求完成事件调用,单调写入 last_request_observed_at。
 	TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error
+	UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)

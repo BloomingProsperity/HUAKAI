@@ -23,11 +23,13 @@ const (
 	// Release 校验已有白名单; reconciler 使用现有合法 reason, 不扩展主路径校验面。
 	reconciliationReleaseReason = "upstream_error"
 
-	// billing_ledger_claims.status 终态值(与 0002 迁移 CHECK 对齐)。
-	// quota 不 import internal/billing(避免反向依赖), 以字面值对齐。
+	// quota 不反向依赖 billing，因此在本包固定 claim 状态字面值并与迁移约束同步。
+	claimStatusReserving = "reserving"
 	claimStatusCommitted = "committed"
 	claimStatusAborted   = "aborted"
 )
+
+var errReconciliationRecoveryInvalidated = errors.New("quota reconciler: recovery invalidated")
 
 type ReconcilerOptions struct {
 	MaxAttempts int
@@ -309,6 +311,9 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 			Reason:        reconciliationReleaseReason,
 			ReleasedAt:    now,
 		})
+		if errors.Is(err, ErrReleaseInvalidatedByRevival) {
+			return fmt.Errorf("%w: %v", errReconciliationRecoveryInvalidated, err)
+		}
 		return err
 	case reconciliationKindReleaseAfterCacheHit:
 		_, err := r.service.CommitCacheHit(ctx, CacheHitRequest{
@@ -326,9 +331,17 @@ func (r *Reconciler) replayJob(ctx context.Context, tenantID int64, now time.Tim
 
 func (r *Reconciler) failRunningJob(ctx context.Context, tenantID int64, now time.Time, job ReconciliationJob, cause error) error {
 	nextRunAt := r.nextRunAt(now, job.AttemptCount)
-	if r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts {
+	recoveryInvalidated := errors.Is(cause, errReconciliationRecoveryInvalidated)
+	releaseDeferredForRevival := errors.Is(cause, ErrReleaseDeferredForRevival)
+	// 复活 attempt 尚未终结是时序等待，不是重复失败；终停会让后续终态永远失去解毒机会。
+	terminal := recoveryInvalidated || (!releaseDeferredForRevival && r.maxAttempts > 0 && job.AttemptCount+1 >= r.maxAttempts)
+	if terminal {
 		nextRunAt = now.Add(terminalReconciliationDelay)
-		r.logger.WarnContext(ctx, "quota reconciliation job reached max attempts",
+		message := "quota reconciliation job reached max attempts"
+		if recoveryInvalidated {
+			message = "quota reconciliation job invalidated by current claim state"
+		}
+		r.logger.WarnContext(ctx, message,
 			"tenant_id", tenantID,
 			"job_id", job.ID,
 			"job_kind", job.Kind,
@@ -342,6 +355,7 @@ func (r *Reconciler) failRunningJob(ctx context.Context, tenantID int64, now tim
 		JobID:     job.ID,
 		LastError: cause.Error(),
 		NextRunAt: nextRunAt,
+		Terminal:  terminal,
 	}); err != nil {
 		return fmt.Errorf("quota reconciler: fail job %d: %w", job.ID, err)
 	}

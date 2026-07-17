@@ -124,7 +124,7 @@ func (m *mockProxyQuerier) CreateProxy(_ context.Context, arg admindb.CreateProx
 	return admindb.CreateProxyRow{
 		ID: arg.TenantID + 100, TenantID: arg.TenantID, Name: arg.Name, Protocol: arg.Protocol,
 		Host: arg.Host, Port: arg.Port, AuthUsername: arg.AuthUsername, AuthSecret: arg.AuthSecret,
-		Status: arg.Status,
+		GroupID: arg.GroupID, Status: arg.Status,
 	}, nil
 }
 
@@ -134,8 +134,116 @@ func (m *mockProxyQuerier) UpdateProxy(_ context.Context, arg admindb.UpdateProx
 	return admindb.UpdateProxyRow{
 		ID: arg.ID, TenantID: arg.TenantID, Name: arg.Name, Protocol: arg.Protocol,
 		Host: arg.Host, Port: arg.Port, AuthUsername: arg.AuthUsername, AuthSecret: arg.AuthSecret,
-		Status: "active",
+		GroupID: arg.GroupID, Status: "active",
 	}, nil
+}
+
+// TestProxyGroupWritesAndClears 守护代理组写链:create 写入并回显组，update 可改组，
+// nil 会明确清组。变异:删掉任一 Params 赋值或 row 投影，对应精确断言都会转红。
+func TestProxyGroupWritesAndClears(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("create 写入并回显组", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		groupID := "us-residential_1"
+		got, err := New(q, testKeys(t)).Create(ctx, CreateInput{
+			TenantID: 7, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+			GroupID: &groupID,
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if q.createCalls != 1 || q.createArg.GroupID == nil || *q.createArg.GroupID != groupID {
+			t.Fatalf("CreateProxy group_id=%v calls=%d; want %q once", q.createArg.GroupID, q.createCalls, groupID)
+		}
+		if got.GroupID == nil || *got.GroupID != groupID {
+			t.Fatalf("Create result group_id=%v; want %q", got.GroupID, groupID)
+		}
+	})
+
+	t.Run("update 改组", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		groupID := "eu-egress"
+		got, err := New(q, testKeys(t)).Update(ctx, UpdateInput{
+			TenantID: 7, ID: 11, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+			GroupID: &groupID,
+		})
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if q.updateCalls != 1 || q.updateArg.GroupID == nil || *q.updateArg.GroupID != groupID {
+			t.Fatalf("UpdateProxy group_id=%v calls=%d; want %q once", q.updateArg.GroupID, q.updateCalls, groupID)
+		}
+		if got.GroupID == nil || *got.GroupID != groupID {
+			t.Fatalf("Update result group_id=%v; want %q", got.GroupID, groupID)
+		}
+	})
+
+	t.Run("nil 清组", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		got, err := New(q, testKeys(t)).Update(ctx, UpdateInput{
+			TenantID: 7, ID: 11, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+			GroupID: nil,
+		})
+		if err != nil {
+			t.Fatalf("Update clear group: %v", err)
+		}
+		if q.updateCalls != 1 || q.updateArg.GroupID != nil || got.GroupID != nil {
+			t.Fatalf("nil 清组未贯通:arg=%v result=%v calls=%d", q.updateArg.GroupID, got.GroupID, q.updateCalls)
+		}
+	})
+
+	t.Run("空串规格化为未分组", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		emptyGroup := ""
+		got, err := New(q, testKeys(t)).Create(ctx, CreateInput{
+			TenantID: 7, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+			GroupID: &emptyGroup,
+		})
+		if err != nil {
+			t.Fatalf("Create empty group: %v", err)
+		}
+		if q.createArg.GroupID != nil || got.GroupID != nil {
+			t.Fatalf("空串应规格化为 nil:arg=%v result=%v", q.createArg.GroupID, got.GroupID)
+		}
+	})
+}
+
+// TestProxyGroupValidationRejectsBeforeWrite 钉死权威 service 校验。变异:删除或
+// 放宽组名校验后，非法值会触达 querier，错误与零调用断言同时转红。
+func TestProxyGroupValidationRejectsBeforeWrite(t *testing.T) {
+	cases := []struct {
+		name    string
+		groupID string
+		update  bool
+	}{
+		{name: "含非法字符", groupID: "us residential!"},
+		{name: "超过 64 字符", groupID: strings.Repeat("a", 65), update: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &mockProxyQuerier{}
+			svc := New(q, testKeys(t))
+			var err error
+			if tc.update {
+				_, err = svc.Update(context.Background(), UpdateInput{
+					TenantID: 7, ID: 11, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+					GroupID: &tc.groupID,
+				})
+			} else {
+				_, err = svc.Create(context.Background(), CreateInput{
+					TenantID: 7, Name: "p", Protocol: "http", Host: "proxy.example.com", Port: 3128,
+					GroupID: &tc.groupID,
+				})
+			}
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("Create group_id=%q err=%v; want ErrInvalidInput", tc.groupID, err)
+			}
+			if q.createCalls != 0 || q.updateCalls != 0 {
+				t.Fatalf("非法 group_id 不得触达 querier;create=%d update=%d", q.createCalls, q.updateCalls)
+			}
+		})
+	}
 }
 
 func (m *mockProxyQuerier) GetProxy(_ context.Context, arg admindb.GetProxyParams) (admindb.GetProxyRow, error) {
@@ -170,7 +278,7 @@ func (m *mockProxyQuerier) SoftDeleteProxy(_ context.Context, arg admindb.SoftDe
 
 // TestListProjectsNonSecretFieldsTenantScoped 守护读取路径的投影:List 必须把
 // tenant id 透传给按租户收敛的查询,并把非凭据列
-//(name/protocol/host/port/auth_username/status/timestamps)映射进结果,
+// (name/protocol/host/port/auth_username/status/timestamps)映射进结果,
 // 同时底层行上加密的 auth_secret 列绝不可携带(Proxy 类型没有该字段——这断言
 // 映射在结构上不含凭据)。变异:删掉 fromList 里的 AuthUsername 映射,或透传
 // 错误的 tenant id → 转红。
@@ -181,7 +289,7 @@ func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 	q := &mockProxyQuerier{
 		listRows: []admindb.ListProxiesByTenantRow{{
 			ID: 11, TenantID: 7, Name: "residential-a", Protocol: "http",
-			Host: "proxy.example.com", Port: 3128, AuthUsername: &user,
+			Host: "proxy.example.com", Port: 3128, AuthUsername: &user, GroupID: strPtr("group-a"),
 			// 刻意设置的加密密文:它绝不可浮现到结果中。
 			AuthSecret:  strPtr("hk_proxy_v1$leakcanary$ciphertext"),
 			Status:      "active",
@@ -209,6 +317,9 @@ func TestListProjectsNonSecretFieldsTenantScoped(t *testing.T) {
 	if got.AuthUsername == nil || *got.AuthUsername != "proxy-user" {
 		t.Fatalf("List must project auth_username; got %v", got.AuthUsername)
 	}
+	if got.GroupID == nil || *got.GroupID != "group-a" {
+		t.Fatalf("List must project group_id; got %v", got.GroupID)
+	}
 	if got.LastCheckAt == nil || !got.LastCheckAt.Equal(checked) {
 		t.Fatalf("List must project last_check_at; got %v", got.LastCheckAt)
 	}
@@ -230,7 +341,7 @@ func TestGetTenantScopedAndNotFound(t *testing.T) {
 	t.Run("found projects non-secret fields", func(t *testing.T) {
 		q := &mockProxyQuerier{getRow: admindb.GetProxyRow{
 			ID: 5, TenantID: 9, Name: "n", Protocol: "socks5", Host: "h", Port: 1080,
-			AuthUsername: &user, AuthSecret: strPtr("hk_proxy_v1$secret"), Status: "disabled",
+			AuthUsername: &user, AuthSecret: strPtr("hk_proxy_v1$secret"), GroupID: strPtr("group-b"), Status: "disabled",
 			CreatedAt: pgts(now), UpdatedAt: pgts(now),
 		}}
 		got, err := New(q, testKeys(t)).Get(ctx, 9, 5)
@@ -242,6 +353,9 @@ func TestGetTenantScopedAndNotFound(t *testing.T) {
 		}
 		if got.ID != 5 || got.Protocol != "socks5" || got.Status != "disabled" {
 			t.Fatalf("Get projection mismatch: %+v", got)
+		}
+		if got.GroupID == nil || *got.GroupID != "group-b" {
+			t.Fatalf("Get must project group_id; got %v", got.GroupID)
 		}
 		assertProxySecretFree(t, got)
 	})

@@ -3,6 +3,7 @@ import {
   actionLabel,
   hasMore,
   humanizeAction,
+  mapActivityRows,
   nextOffset,
   outcomeLabel,
   outcomeTone,
@@ -103,5 +104,45 @@ describe('分页推断', () => {
   it('nextOffset 累加 limit', () => {
     expect(nextOffset(0, 50)).toBe(50)
     expect(nextOffset(50, 50)).toBe(100)
+  })
+})
+
+describe('安全日志表行纯映射', () => {
+  it('保留动作、结果 tone、Key 前缀、原因和请求 ID', () => {
+    const occurredAt = '2026-07-13T10:00:00Z'
+    expect(mapActivityRows([{
+      id: 17,
+      action: 'revoke_api_key',
+      outcome: 'denied',
+      key_prefix: 'hk_live',
+      reason: '二次验证失败',
+      request_id: 'request-17',
+      occurred_at: occurredAt,
+    }])).toEqual([{
+      id: 17,
+      occurredAt: new Date(occurredAt).toLocaleString('zh-CN', { hour12: false }),
+      action: '撤销 API Key',
+      outcome: '已拒绝',
+      outcomeTone: 'danger',
+      keyPrefix: 'hk_live…',
+      reason: '二次验证失败',
+      requestID: 'request-17',
+    }])
+    // 变异证红点:删 outcomeTone 映射或丢 requestID → 完整对象断言 RED。
+  })
+
+  it('缺省可选字段映射为占位符', () => {
+    expect(mapActivityRows([{
+      id: 18,
+      action: 'login',
+      outcome: 'committed',
+      occurred_at: 'invalid-time',
+    }])[0]).toMatchObject({
+      occurredAt: 'invalid-time',
+      keyPrefix: '—',
+      reason: '—',
+      requestID: '—',
+    })
+    // 变异证红点:删除任一缺省回退 → 占位字段断言 RED。
   })
 })

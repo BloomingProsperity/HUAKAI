@@ -24,6 +24,7 @@ backend/.tmp/
 backend/.gotmp/
 backend/.gocache/
 .gocache/
+.gotmp/
 
 # Secrets & env
 .env

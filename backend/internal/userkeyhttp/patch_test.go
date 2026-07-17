@@ -30,6 +30,9 @@ func (f *fakeKeyServicePatch) Issue(_ context.Context, _ userkey.IssueRequest) (
 func (f *fakeKeyServicePatch) List(_ context.Context, _ userkey.ListRequest) ([]userkey.KeyDescriptor, error) {
 	panic("not implemented")
 }
+func (f *fakeKeyServicePatch) Count(_ context.Context, _, _ int64) (int, error) {
+	panic("not implemented")
+}
 func (f *fakeKeyServicePatch) Get(_ context.Context, _, _, _ int64) (userkey.KeyDescriptor, error) {
 	panic("not implemented")
 }

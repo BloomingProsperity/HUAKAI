@@ -13,15 +13,17 @@ type SelectionRequest = router.SelectionRequest
 type SelectionResult = router.SelectionResult
 type Selector = router.Selector
 type SlotManager = router.SlotManager
+type BindingConcurrencyReader = router.BindingConcurrencyReader
 type AcquireResult = router.AcquireResult
 type ReleaseFunc = router.ReleaseFunc
 
 var (
-	ErrNoEligibleAccount      = router.ErrNoEligibleAccount
-	ErrNoSlotAvailable        = router.ErrNoSlotAvailable
-	ErrSlotManagerUnavailable = router.ErrSlotManagerUnavailable
-	ErrPASRPreMutationFail    = router.ErrPASRPreMutationFail
-	ErrPASRPostMutationFail   = router.ErrPASRPostMutationFail
+	ErrNoEligibleAccount         = router.ErrNoEligibleAccount
+	ErrNoSlotAvailable           = router.ErrNoSlotAvailable
+	ErrBindingConcurrencyLimited = router.ErrBindingConcurrencyLimited
+	ErrSlotManagerUnavailable    = router.ErrSlotManagerUnavailable
+	ErrPASRPreMutationFail       = router.ErrPASRPreMutationFail
+	ErrPASRPostMutationFail      = router.ErrPASRPostMutationFail
 )
 
 func NewIdempotentRelease(token uuid.UUID, fn ReleaseFunc) ReleaseFunc {

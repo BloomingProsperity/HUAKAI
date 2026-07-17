@@ -15,6 +15,13 @@ type AdminProviderAccountRow struct {
 	AccountType              string             `db:"account_type" json:"account_type"`
 	Enabled                  bool               `db:"enabled" json:"enabled"`
 	ExpiresAt                pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	RPMLimit                 int64              `db:"rpm_limit" json:"rpm_limit"`
+	TPMLimit                 int64              `db:"tpm_limit" json:"tpm_limit"`
+	WindowCostLimitCents     int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions              int32              `db:"max_sessions" json:"max_sessions"`
+	DisableCooling           bool               `db:"disable_cooling" json:"disable_cooling"`
+	RefreshLeadSeconds       *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
+	TLSFingerprintRotate     bool               `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
 	HealthState              string             `db:"health_state" json:"health_state"`
 	CredentialState          string             `db:"credential_state" json:"credential_state"`
 	CapConcurrency           int32              `db:"cap_concurrency" json:"cap_concurrency"`
@@ -79,39 +86,6 @@ type ProviderAccountRiskPeerRow struct {
 	CredentialAuthMode string `db:"credential_auth_mode" json:"credential_auth_mode"`
 }
 
-type UpdateAdminProviderAccountParams struct {
-	ID                         int64   `db:"id" json:"id"`
-	TenantID                   int64   `db:"tenant_id" json:"tenant_id"`
-	ActorID                    *string `db:"actor_id" json:"actor_id"`
-	Enabled                    *bool   `db:"enabled" json:"enabled"`
-	Priority                   *int32  `db:"priority" json:"priority"`
-	StaticWeight               *int32  `db:"static_weight" json:"static_weight"`
-	CapConcurrency             *int32  `db:"cap_concurrency" json:"cap_concurrency"`
-	SetProbeModel              bool    `db:"set_probe_model" json:"set_probe_model"`
-	ProbeModel                 *string `db:"probe_model" json:"probe_model"`
-	SetTags                    bool    `db:"set_tags" json:"set_tags"`
-	Tags                       []string
-	SetExtra                   bool `db:"set_extra" json:"set_extra"`
-	Extra                      []byte
-	SetModelAllowList          bool `db:"set_model_allow_list" json:"set_model_allow_list"`
-	ModelAllowList             []string
-	SetCapabilityFlags         bool `db:"set_capability_flags" json:"set_capability_flags"`
-	CapabilityFlags            []string
-	CustomErrorCodesEnabled    *bool `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
-	SetCustomErrorCodes        bool  `db:"set_custom_error_codes" json:"set_custom_error_codes"`
-	CustomErrorCodes           []int32
-	PoolMode                   *bool  `db:"pool_mode" json:"pool_mode"`
-	TempUnschedulableEnabled   *bool  `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
-	SetTempUnschedulableRules  bool   `db:"set_temp_unschedulable_rules" json:"set_temp_unschedulable_rules"`
-	TempUnschedulableRulesJSON []byte `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
-	// 代理绑定(Set-flag 范式,照 SetProbeModel):Set*=false 保留旧值;true 时写
-	// 对应值(ProxyID/ProxyGroupID 可为 nil/"" 表示清回直连)。互斥由 handler 保证。
-	SetProxyID      bool    `db:"set_proxy_id" json:"set_proxy_id"`
-	ProxyID         *int64  `db:"proxy_id" json:"proxy_id"`
-	SetProxyGroupID bool    `db:"set_proxy_group_id" json:"set_proxy_group_id"`
-	ProxyGroupID    *string `db:"proxy_group_id" json:"proxy_group_id"`
-}
-
 type ClearProviderAccountRateLimitParams struct {
 	ID       int64   `db:"id" json:"id"`
 	TenantID int64   `db:"tenant_id" json:"tenant_id"`
@@ -127,6 +101,13 @@ const adminProviderAccountColumns = `
     account_type,
     enabled,
     expires_at,
+    rpm_limit,
+    tpm_limit,
+    window_cost_limit_cents,
+    max_sessions,
+    disable_cooling,
+    refresh_lead_seconds,
+    tls_fingerprint_rotate,
     health_state,
     credential_state,
     cap_concurrency,
@@ -337,69 +318,6 @@ func (q *Queries) ListProviderAccountsForProviderCompat(ctx context.Context, arg
 	return items, nil
 }
 
-const updateAdminProviderAccount = `
-UPDATE provider_accounts
-SET
-    enabled = COALESCE($1::boolean, enabled),
-    priority = COALESCE($2::integer, priority),
-    cap_concurrency = COALESCE($3::integer, cap_concurrency),
-    static_weight = COALESCE($15::integer, static_weight),
-    probe_model = CASE WHEN $16::boolean THEN NULLIF(BTRIM($17::text), '') ELSE probe_model END,
-    tags = CASE WHEN $18::boolean THEN COALESCE($19::text[], ARRAY[]::text[]) ELSE tags END,
-    extra = CASE WHEN $20::boolean THEN COALESCE($21::jsonb, '{}'::jsonb) ELSE extra END,
-    model_allow_list = CASE WHEN $4::boolean THEN COALESCE($5::text[], ARRAY[]::text[]) ELSE model_allow_list END,
-    capability_flags = CASE WHEN $6::boolean THEN COALESCE($7::text[], ARRAY[]::text[]) ELSE capability_flags END,
-    custom_error_codes_enabled = COALESCE($8::boolean, custom_error_codes_enabled),
-    custom_error_codes = CASE WHEN $9::boolean THEN COALESCE($10::integer[], ARRAY[]::integer[]) ELSE custom_error_codes END,
-    pool_mode = COALESCE($11::boolean, pool_mode),
-    temp_unschedulable_enabled = COALESCE($12::boolean, temp_unschedulable_enabled),
-    temp_unschedulable_rules = CASE WHEN $13::boolean THEN COALESCE($14::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
-    proxy_id = CASE WHEN $25::boolean THEN $26::bigint ELSE proxy_id END,
-    proxy_group_id = CASE WHEN $27::boolean THEN NULLIF($28::text, '') ELSE proxy_group_id END,
-    updated_at = NOW(),
-    last_modified_by_actor = $22::text
-WHERE id = $23
-  AND tenant_id = $24
-  AND deleted_at IS NULL
-RETURNING` + adminProviderAccountColumns + `
-`
-
-func (q *Queries) UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error) {
-	row := q.db.QueryRow(ctx, updateAdminProviderAccount,
-		arg.Enabled,
-		arg.Priority,
-		arg.CapConcurrency,
-		arg.SetModelAllowList,
-		arg.ModelAllowList,
-		arg.SetCapabilityFlags,
-		arg.CapabilityFlags,
-		arg.CustomErrorCodesEnabled,
-		arg.SetCustomErrorCodes,
-		arg.CustomErrorCodes,
-		arg.PoolMode,
-		arg.TempUnschedulableEnabled,
-		arg.SetTempUnschedulableRules,
-		arg.TempUnschedulableRulesJSON,
-		arg.StaticWeight,
-		arg.SetProbeModel,
-		arg.ProbeModel,
-		arg.SetTags,
-		arg.Tags,
-		arg.SetExtra,
-		arg.Extra,
-		arg.ActorID,
-		arg.ID,
-		arg.TenantID,
-		arg.SetProxyID,
-		arg.ProxyID,
-		arg.SetProxyGroupID,
-		arg.ProxyGroupID,
-	)
-	var i AdminProviderAccountRow
-	err := scanAdminProviderAccount(row, &i)
-	return i, err
-}
-
 const clearProviderAccountRateLimit = `
 UPDATE provider_accounts
 SET
@@ -442,6 +360,13 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 		&i.AccountType,
 		&i.Enabled,
 		&i.ExpiresAt,
+		&i.RPMLimit,
+		&i.TPMLimit,
+		&i.WindowCostLimitCents,
+		&i.MaxSessions,
+		&i.DisableCooling,
+		&i.RefreshLeadSeconds,
+		&i.TLSFingerprintRotate,
 		&i.HealthState,
 		&i.CredentialState,
 		&i.CapConcurrency,

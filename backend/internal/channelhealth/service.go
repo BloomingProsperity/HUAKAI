@@ -18,6 +18,7 @@ type Service struct {
 	store       Store
 	policy      Policy
 	clock       Clock
+	cooldowns   StatusCooldownSource
 	alertOutbox obsdlq.Outbox
 	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,SignalAuthChallenge 变 no-op)。
 	authLane AuthCooldownLane
@@ -132,7 +133,7 @@ func (s *Service) applySignal(ctx context.Context, sig Signal) (Record, error) {
 	rec.LastSignalClass = normalizeSignalClass(sig.Class)
 	rec.LastSignalAt = &sig.At
 	rec.UpdatedAt = now
-	decision := s.evaluate(rec, sig, now)
+	decision := s.evaluate(ctx, rec, sig, now)
 	if decision.state != "" && decision.state != rec.State {
 		if decision.state == StateCoolingDown && hasEvent(decision.eventTypes, EventRampRolledBack) {
 			s.rollbackRamp(&rec, now, decision.reason)
@@ -527,7 +528,7 @@ type decision struct {
 	auditEvenWithoutStateChange bool
 }
 
-func (s *Service) evaluate(rec Record, sig Signal, now time.Time) decision {
+func (s *Service) evaluate(ctx context.Context, rec Record, sig Signal, now time.Time) decision {
 	class := normalizeSignalClass(sig.Class)
 	if rec.State == StateManualPaused {
 		return decision{}
@@ -561,10 +562,10 @@ func (s *Service) evaluate(rec Record, sig Signal, now time.Time) decision {
 			}
 		}
 	}
-	if dec := s.rateLimitDecision(rec, sig, now); dec.state != "" {
+	if dec := s.rateLimitDecision(ctx, rec, sig, now); dec.state != "" {
 		return dec
 	}
-	if dec := s.upstream5xxDecision(rec, now); dec.state != "" {
+	if dec := s.upstream5xxDecision(ctx, rec, sig, now); dec.state != "" {
 		return dec
 	}
 	if dec := s.latencyDecision(rec, now); dec.state != "" {
@@ -576,7 +577,7 @@ func (s *Service) evaluate(rec Record, sig Signal, now time.Time) decision {
 	return decision{}
 }
 
-func (s *Service) rateLimitDecision(rec Record, sig Signal, now time.Time) decision {
+func (s *Service) rateLimitDecision(ctx context.Context, rec Record, sig Signal, now time.Time) decision {
 	w := windowFor(rec.SampleWindow, s.policy.RateLimitWindow, now)
 	if w.TotalAttempts < s.policy.MinSampleCount {
 		return decision{}
@@ -584,9 +585,15 @@ func (s *Service) rateLimitDecision(rec Record, sig Signal, now time.Time) decis
 	if rate(w.RateLimitHits, w.TotalAttempts) <= s.policy.RateLimitHitRateThresholdPct {
 		return decision{}
 	}
-	until := now.Add(s.policy.DefaultRateLimitCooldown)
+	var until time.Time
 	if sig.RateLimitResetAt != nil && sig.RateLimitResetAt.After(now) {
 		until = sig.RateLimitResetAt.UTC()
+	} else {
+		statusCode := sig.StatusCode
+		if statusCode == 0 {
+			statusCode = 429
+		}
+		until = now.Add(s.statusCooldown(ctx, statusCode, s.policy.DefaultRateLimitCooldown))
 	}
 	return decision{
 		state:         StateCoolingDown,
@@ -615,7 +622,7 @@ func (s *Service) errorRateDecision(rec Record, now time.Time) decision {
 	}
 }
 
-func (s *Service) upstream5xxDecision(rec Record, now time.Time) decision {
+func (s *Service) upstream5xxDecision(ctx context.Context, rec Record, sig Signal, now time.Time) decision {
 	w := windowFor(rec.SampleWindow, s.policy.Upstream5xxWindow, now)
 	attempts := w.TotalAttempts - w.LocalGateway5xxHits
 	if attempts < s.policy.MinSampleCount {
@@ -625,10 +632,14 @@ func (s *Service) upstream5xxDecision(rec Record, now time.Time) decision {
 		return decision{}
 	}
 	if rec.State == StateDegraded && rec.ReasonClass == SignalUpstream5xx {
+		cooldown := s.policy.Upstream5xxCooldown
+		if sig.StatusCode == 529 {
+			cooldown = s.statusCooldown(ctx, 529, cooldown)
+		}
 		return decision{
 			state:      StateCoolingDown,
 			reason:     SignalUpstream5xx,
-			cooldown:   s.policy.Upstream5xxCooldown,
+			cooldown:   cooldown,
 			confidence: ConfidenceObserved,
 			eventTypes: []AuditEventType{EventDisabled},
 		}

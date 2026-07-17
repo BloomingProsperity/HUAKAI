@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSyncRequest, hasChanges, isReasonTooLong, itemSummary, itemTone } from './modelsync'
+import { buildSyncRequest, hasChanges, isReasonTooLong, itemSummary, itemTone, mapModelSyncRows } from './modelsync'
 import type { ModelSyncResult, ModelSyncResultItem } from './types'
 
 function item(over: Partial<ModelSyncResultItem>): ModelSyncResultItem {
@@ -49,5 +49,22 @@ describe('itemSummary', () => {
   it('拼接各非零计数;全零 → 无变化', () => {
     expect(itemSummary(item({ added: 2, updated: 1, disabled: 1 }))).toBe('+2 新增 · 1 更新 · 1 停用')
     expect(itemSummary(item({ unchanged: 4 }))).toBe('无变化')
+  })
+})
+
+describe('mapModelSyncRows', () => {
+  it('完整映射厂商同步明细与摘要语气', () => {
+    // 判别核心:八个展示列逐一锁定;任何列错接计数字段都会转红。
+    expect(mapModelSyncRows([item({ vendor: 'alpha', added: 1, updated: 2, reactivated: 3, disabled: 4, unchanged: 5, snapshot_bumps: 6 })])[0]).toEqual({
+      vendor: 'alpha',
+      summary: '+1 新增 · 2 更新 · 3 重启用 · 4 停用',
+      tone: 'warn',
+      added: 1,
+      updated: 2,
+      reactivated: 3,
+      disabled: 4,
+      unchanged: 5,
+      snapshotBumps: 6,
+    })
   })
 })

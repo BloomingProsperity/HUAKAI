@@ -43,6 +43,7 @@ func TestServiceReserve_ReactivateAcceptsUpdatedPredictedAndScopes(t *testing.T)
 	if err != nil || !first.Allowed {
 		t.Fatalf("首次 Reserve err=%v result=%+v; want allowed", err, first)
 	}
+	f.setClaimTerminal(claimID, claimStatusAborted, "")
 	if _, err := service.Release(ctx, ReleaseRequest{
 		TenantID:      f.tenantID,
 		ClaimID:       claimID,
@@ -51,6 +52,9 @@ func TestServiceReserve_ReactivateAcceptsUpdatedPredictedAndScopes(t *testing.T)
 		ReleasedAt:    now,
 	}); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+	if attempt := f.reviveClaimForNewAttempt(claimID, now.Add(10*time.Minute)); attempt != 2 {
+		t.Fatalf("复活 attempt_seq=%d; want 2", attempt)
 	}
 
 	// 同 fingerprint,新 predicted(4→6)+ 新 pool_group(7→9):模拟 admin 改价/改绑后重试。
@@ -106,6 +110,7 @@ func TestServiceReserve_ReactivateStillRejectsFingerprintMismatch(t *testing.T) 
 	if err != nil || !first.Allowed {
 		t.Fatalf("首次 Reserve err=%v result=%+v; want allowed", err, first)
 	}
+	f.setClaimTerminal(claimID, claimStatusAborted, "")
 	if _, err := service.Release(ctx, ReleaseRequest{
 		TenantID:      f.tenantID,
 		ClaimID:       claimID,
@@ -114,6 +119,9 @@ func TestServiceReserve_ReactivateStillRejectsFingerprintMismatch(t *testing.T) 
 		ReleasedAt:    now,
 	}); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+	if attempt := f.reviveClaimForNewAttempt(claimID, now.Add(10*time.Minute)); attempt != 2 {
+		t.Fatalf("复活 attempt_seq=%d; want 2", attempt)
 	}
 
 	retry, err := service.Reserve(ctx, ReserveRequest{

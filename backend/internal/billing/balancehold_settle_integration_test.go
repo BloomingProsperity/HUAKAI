@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+
+	pooldispatcher "github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 )
 
 func TestSettler_SettleAppliesCaptureAndReturnsUpdatedBalance(t *testing.T) {
@@ -323,6 +325,7 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
 	sweeper := NewLeaseSweeper(pool, set, 10)
 	graph := seedRetryAtomicityGraph(t, ctx, pool, "slot-orphan-sweep")
 	token := uuid.New()
+	bindingID := int64(uuid.New().ID()) + 1<<32
 
 	if _, err := pool.Exec(ctx,
 		`UPDATE provider_accounts SET in_flight_count=1 WHERE id=$1`,
@@ -332,11 +335,23 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO pool_slot_acquisitions (
-			tenant_id, provider_account_id, acquisition_token, claim_id, attempt_seq, lease_expires_at
-		) VALUES ($1, $2, $3, NULL, 1, NOW() - interval '100 years')`,
-		graph.tenantID, graph.firstAccountID, token,
+			tenant_id, provider_account_id, binding_id, acquisition_token,
+			claim_id, attempt_seq, lease_expires_at
+		) VALUES ($1, $2, $3, $4, NULL, 1, NOW() - interval '100 years')`,
+		graph.tenantID, graph.firstAccountID, bindingID, token,
 	); err != nil {
 		t.Fatalf("seed expired slot acquisition: %v", err)
+	}
+	var bindingActive int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM pool_slot_acquisitions
+		  WHERE binding_id=$1 AND status='acquired'`,
+		bindingID,
+	).Scan(&bindingActive); err != nil {
+		t.Fatalf("count binding before sweep: %v", err)
+	}
+	if bindingActive != 1 {
+		t.Fatalf("binding active before sweep=%d want 1", bindingActive)
 	}
 
 	count, err := sweeper.SweepOnce(ctx)
@@ -367,6 +382,31 @@ func TestSettler_LeaseSweepReclaimsExpiredSlotAcquisitions(t *testing.T) {
 	}
 	if inFlight != 0 {
 		t.Fatalf("in_flight_count=%d want 0 after orphan slot sweep", inFlight)
+	}
+
+	// 变异③：sweep 只靠翻转 status 降低 binding 派生计数；若 COUNT 不过滤
+	// acquired，旧 orphan_swept 行会让 replacement 永久被拒。
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM pool_slot_acquisitions
+		  WHERE binding_id=$1 AND status='acquired'`,
+		bindingID,
+	).Scan(&bindingActive); err != nil {
+		t.Fatalf("count binding after sweep: %v", err)
+	}
+	if bindingActive != 0 {
+		t.Fatalf("binding active after sweep=%d want 0", bindingActive)
+	}
+	manager := pooldispatcher.NewDBSlotManager(pool)
+	replacement, err := manager.Acquire(ctx, &pooldispatcher.AccountSnapshot{
+		ID: graph.firstAccountID, TenantID: graph.tenantID, MaxConcurrency: 4,
+	}, pooldispatcher.SelectionRequest{
+		TenantID: graph.tenantID, BindingID: bindingID, MaxParallelRequests: 1, AttemptSeq: 2,
+	})
+	if err != nil {
+		t.Fatalf("replacement after SweepOnce: %v", err)
+	}
+	if err := replacement.Release(ctx); err != nil {
+		t.Fatalf("release replacement after SweepOnce: %v", err)
 	}
 }
 

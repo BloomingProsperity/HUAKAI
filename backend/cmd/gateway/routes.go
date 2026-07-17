@@ -30,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
+	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
@@ -48,7 +49,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mequotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meusagehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/modeladminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelroutingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/obsdlqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/orphanreconcilehttp"
@@ -59,7 +62,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecoveryhttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
@@ -67,9 +69,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/setuphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
@@ -119,6 +123,14 @@ func credentialModeAdapterRegistry(d *deps) *credentialworker.ModeAdapterRegistr
 		return credentialworker.DefaultModeAdapterRegistry()
 	}
 	return credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.cfg.VendorOAuth)
+}
+
+func disputeAdminRouteDeps(d *deps) controlhttp.DisputeAdminDeps {
+	return controlhttp.DisputeAdminDeps{
+		Auth:     d.adminAuth,
+		Store:    d.disputeStore,
+		Resolver: d.disputeResolver,
+	}
 }
 
 // mountRoutes 按 docs/openapi/openapi.yaml 接线 HTTP 路由。
@@ -269,6 +281,13 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Service: d.voucherService,
 		}))
 	})
+	// 首装向导:status 公开只读;install 由"无管理员才放行"守卫自保护(fail-closed)。
+	// env 非法时回退默认工作租户(非法 env 由启动门另行拦截),nil pool 由 handler 回 503。
+	setupTenantID, setupTenantErr := tenancy.WorkingTenantIDFromEnv()
+	if setupTenantErr != nil {
+		setupTenantID = tenancy.DefaultWorkingTenantID
+	}
+	setuphttp.Mount(r, setuphttp.Deps{Pool: d.pgPool, TenantID: setupTenantID})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/page", pricingpublichttp.NewHandler(pricingpublichttp.Deps{
 		Catalog: d.modelRegistry,
@@ -946,6 +965,31 @@ func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
 	}
 }
 
+func modelRoutingOverrideRouteDeps(d *deps) modelroutingadminhttp.Deps {
+	if d == nil {
+		return modelroutingadminhttp.Deps{}
+	}
+	result := modelroutingadminhttp.Deps{Auth: d.adminAuth}
+	if d.pgPool != nil {
+		result.Service = modelroutingadminhttp.NewPostgresService(d.pgPool, dbmodelroutingadmin.New(d.pgPool))
+	}
+	return result
+}
+
+func modelAdminRouteDeps(d *deps) modeladminhttp.Deps {
+	if d == nil {
+		return modeladminhttp.Deps{}
+	}
+	var result modeladminhttp.Deps
+	if d.adminAuth != nil {
+		result.Auth = d.adminAuth
+	}
+	if d.modelRegistry != nil {
+		result.Service = d.modelRegistry
+	}
+	return result
+}
+
 func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
@@ -972,6 +1016,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	if d.adminAuth != nil {
 		adminResolver = d.adminAuth
 	}
+	modelAdminDeps := modelAdminRouteDeps(d)
+	r.Route("/v1/admin/models", func(r chi.Router) {
+		modeladminhttp.MountRoutes(r, modelAdminDeps)
+	})
 	r.Method(http.MethodPut, "/v1/admin/models/{id}/capabilities",
 		adminGate(adminResolver, controlhttp.NewAdminCapabilitiesHandler(controlhttp.AdminCapabilitiesDeps{
 			Store: d.modelRegistry,
@@ -1011,15 +1059,14 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/users", func(r chi.Router) {
 		adminuserhttp.MountRoutes(r, adminUserDeps)
 	})
-	// 出站代理池 admin 面(F-FP-POOL):在无密钥的 proxyadmin.Service 之上提供
-	// list/create/update/delete/set-status。经共享 admin gate 做租户作用域;
-	// auth_secret 只写,绝不向外投影。
+	// 出站代理池 admin 面(F-FP-POOL):CRUD/质检与租户默认出口共享同一组
+	// production deps；auth_secret 只写,绝不向外投影。
+	proxyAdminDeps := proxyAdminRouteDeps(d)
 	r.Route("/admin/v1/proxies", func(r chi.Router) {
-		proxyadminhttp.MountRoutes(r, proxyadminhttp.Deps{
-			Auth:    d.adminAuth,
-			Service: proxyadmin.New(d.adminQueries, d.credentialKeys),
-			Prober:  buildProxyProber(d),
-		})
+		proxyadminhttp.MountRoutes(r, proxyAdminDeps)
+	})
+	r.Route("/admin/v1/tenants", func(r chi.Router) {
+		proxyadminhttp.MountTenantRoutes(r, proxyAdminDeps)
 	})
 	// Model -> pool 绑定 admin 面:补上之前的死写路径缺口
 	//(列 + resolver 早已存在,但没有 admin CRUD)。顶层资源,双角色
@@ -1029,6 +1076,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:    d.adminAuth,
 			Service: registry.NewPostgresRegistry(d.pgPool, nil),
 		})
+	})
+	modelRoutingOverrideDeps := modelRoutingOverrideRouteDeps(d)
+	r.Route("/admin/v1/model-routing-overrides", func(r chi.Router) {
+		modelroutingadminhttp.MountRoutes(r, modelRoutingOverrideDeps)
 	})
 	r.Get("/admin/v1/account-modes", adminhttp.NewAccountModeListHandler(adminhttp.AdminAccountModesDeps{
 		Auth: d.adminAuth,
@@ -1048,6 +1099,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	}
 	r.Get("/admin/v1/channels", adminhttp.NewChannelCatalogListHandler(channelCatalogDeps))
 	r.Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
+	r.Get("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogGetHandler(channelCatalogDeps))
 	r.Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
 	r.Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
 	quotaPolicyDeps := adminquotahttp.Deps{
@@ -1236,10 +1288,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Service:   d.invitationService,
 		AdminAuth: d.adminAuth,
 	}))
-	disputeAdminDeps := controlhttp.DisputeAdminDeps{
-		Auth:  d.adminAuth,
-		Store: d.disputeStore,
-	}
+	disputeAdminDeps := disputeAdminRouteDeps(d)
 	adminListDisputesHandler := controlhttp.NewAdminListDisputesHandler(disputeAdminDeps)
 	r.Get("/v1/admin/disputes", adminListDisputesHandler)
 	r.Route("/v1/admin/disputes", func(r chi.Router) {

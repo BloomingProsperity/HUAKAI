@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { createProxy } from './api'
-import { PROTOCOLS, STATUSES, validateCreateForm, type CreateProxyForm } from './proxies'
+import { buildCreateInput, PROTOCOLS, STATUSES, validateCreateForm, type CreateProxyForm } from './proxies'
 
 /*
  * 新建出口代理表单。校验走纯函数 validateCreateForm(已变异测试);提交成功后回调刷新列表。
  * auth_secret 用 password 框,仅创建时随请求发出(后端加密存、从不回显)。
  */
 
-const empty: CreateProxyForm = { name: '', protocol: 'http', host: '', port: '', auth_username: '', auth_secret: '', status: 'active' }
+const empty: CreateProxyForm = { name: '', protocol: 'http', host: '', port: '', auth_username: '', auth_secret: '', group_id: '', status: 'active' }
 
 export function ProxyCreateForm({ tenantId, onCreated }: { tenantId: number; onCreated: () => void }) {
   const [open, setOpen] = useState(false)
@@ -28,15 +28,7 @@ export function ProxyCreateForm({ tenantId, onCreated }: { tenantId: number; onC
     setSubmitting(true)
     setError(null)
     try {
-      await createProxy(tenantId, {
-        name: form.name.trim(),
-        protocol: form.protocol,
-        host: form.host.trim(),
-        port: Number.parseInt(form.port, 10),
-        auth_username: form.auth_username.trim() || undefined,
-        auth_secret: form.auth_secret || undefined,
-        status: form.status || undefined,
-      })
+      await createProxy(tenantId, buildCreateInput(form))
       setForm(empty)
       setOpen(false)
       onCreated()
@@ -66,6 +58,10 @@ export function ProxyCreateForm({ tenantId, onCreated }: { tenantId: number; onC
         </Field>
         <Field label="主机"><input value={form.host} placeholder="如 1.2.3.4 或 proxy.example.com" onChange={(e) => set('host', e.target.value)} style={inp} /></Field>
         <Field label="端口"><input value={form.port} inputMode="numeric" onChange={(e) => set('port', e.target.value)} style={{ ...inp, width: 90 }} /></Field>
+        <Field label="代理组(可选)">
+          <input name="group_id" value={form.group_id} maxLength={64} pattern="[A-Za-z0-9_-]{0,64}" placeholder="如 us-residential" onChange={(e) => set('group_id', e.target.value)} style={inp} />
+          <span style={fieldHint}>仅限字母、数字、下划线、短横线，最长 64；留空表示未分组。</span>
+        </Field>
         <Field label="状态">
           <select value={form.status} onChange={(e) => set('status', e.target.value)} style={inp}>
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -95,5 +91,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const inp: React.CSSProperties = { padding: '6px 8px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', fontSize: 13 }
+const fieldHint: React.CSSProperties = { color: 'var(--hk-ink-300)', fontSize: 11, lineHeight: 1.4 }
 const primaryBtn: React.CSSProperties = { padding: '7px 14px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'var(--hk-accent, #2563eb)', color: '#fff', fontSize: 13, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { padding: '7px 14px', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-2)', background: 'transparent', fontSize: 13, cursor: 'pointer' }

@@ -19,10 +19,12 @@ import { confirmPromptText, deleteResultMessage, nameMatchesConfirmation } from 
  * 独立成卡,不动 Wave C 的 AccountDiagnosticsCard / Wave I 的 AccountFingerprintBind。
  */
 export function AccountDangerZone({
+  tenantId,
   accountId,
   accountName,
   onDeleted,
 }: {
+  tenantId: number
   accountId: number
   accountName: string
   onDeleted: () => void
@@ -50,7 +52,7 @@ export function AccountDangerZone({
     setError(null)
     setFlash(null)
     try {
-      const res = await deleteProviderAccount(accountId, reason)
+      const res = await deleteProviderAccount(tenantId, accountId, reason)
       setFlash(deleteResultMessage(res, accountName))
       // 删除成功 → 交父页跳回列表(短暂展示成功文案后由父页接管)。
       onDeleted()

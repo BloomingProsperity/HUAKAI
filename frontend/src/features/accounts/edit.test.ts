@@ -6,10 +6,14 @@ import {
   parseErrorCodes,
   parseExtraJson,
   parseTags,
+  proxyGroupBindingWarning,
   proxyModeFromAccount,
   rulesToForm,
+  selectedProxyGroupSummary,
+  summarizeProxyGroups,
   type AccountEditForm,
 } from './edit'
+import type { Proxy } from '../proxies/types'
 import type { ProviderAccount } from './types'
 
 const base = {
@@ -32,6 +36,22 @@ const base = {
 
 function form(over: Partial<AccountEditForm>): AccountEditForm {
   return { ...formFromAccount(base), ...over }
+}
+
+function proxy(id: number, groupId: string | null, status: string): Proxy {
+  return {
+    id,
+    name: `p-${id}`,
+    protocol: 'http',
+    host: 'proxy.example',
+    port: 3128,
+    auth_username: null,
+    group_id: groupId,
+    status,
+    last_check_at: null,
+    created_at: '',
+    updated_at: '',
+  }
 }
 
 describe('parseTags', () => {
@@ -96,6 +116,30 @@ describe('proxyModeFromAccount', () => {
   })
 })
 
+describe('代理组可用性汇总与预警', () => {
+  it('按组汇总总成员，active 计数只认严格 active，未分组不入候选', () => {
+    expect(summarizeProxyGroups([
+      proxy(1, 'group-a', 'active'),
+      proxy(2, 'group-a', 'disabled'),
+      proxy(3, 'group-b', 'dead'),
+      proxy(4, 'group-b', 'ACTIVE'),
+      proxy(5, null, 'active'),
+    ])).toEqual([
+      { groupId: 'group-a', total: 2, active: 1 },
+      { groupId: 'group-b', total: 2, active: 0 },
+    ])
+  })
+
+  it('未知组按零成员处理；零 active 显示危险文案，非零不显示', () => {
+    const groups = summarizeProxyGroups([proxy(1, 'healthy', 'active')])
+    const unknown = selectedProxyGroupSummary(groups, 'missing')
+    expect(unknown).toEqual({ groupId: 'missing', total: 0, active: 0 })
+    expect(proxyGroupBindingWarning(unknown)).toContain('fail-closed')
+    expect(proxyGroupBindingWarning(unknown)).toContain('不会直连')
+    expect(proxyGroupBindingWarning(selectedProxyGroupSummary(groups, 'healthy'))).toBeNull()
+  })
+})
+
 describe('buildAccountUpdate', () => {
   it('只改一个字段 → 体里只含该字段(+reason),不含未改字段', () => {
     // 判别核心:部分更新只发改动项。变异(无脑全量赋值)→ body 会含 static_weight/cap_concurrency/proxy_binding→本断言 RED。
@@ -109,6 +153,62 @@ describe('buildAccountUpdate', () => {
     expect('pool_mode' in (r as object)).toBe(false)
     expect('temp_unschedulable_rules' in (r as object)).toBe(false)
     expect('extra' in (r as object)).toBe(false)
+  })
+
+  it('最终 update 请求精确带上高级改动与 clear', () => {
+    const original = {
+      ...base,
+      rpm_limit: 10,
+      tpm_limit: 2000,
+      window_cost_limit_cents: 300,
+      max_sessions: 4,
+      disable_cooling: true,
+      refresh_lead_seconds: 60,
+      expires_at: '2027-01-01T00:00:00Z',
+      tls_fingerprint_rotate: true,
+      custom_error_codes_enabled: true,
+      custom_error_codes: [429],
+      pool_mode: true,
+      temp_unschedulable_enabled: true,
+      temp_unschedulable_rules: [{ error_code: 529, keywords: ['old'], duration_minutes: 2 }],
+      proxy_id: 7,
+      proxy_group_id: null,
+      proxy_binding: { mode: 'proxy', proxy_id: 7 },
+    } as ProviderAccount
+    const advanced = {
+      ...formFromAccount(original),
+      rpmLimit: '0',
+      tpmLimit: '2200',
+      windowCostLimitCents: '333',
+      maxSessions: '5',
+      disableCooling: false,
+      refreshLeadMode: 'clear' as const,
+      expiresAtMode: 'clear' as const,
+      tlsFingerprintRotate: false,
+      customErrorCodesEnabled: false,
+      customErrorCodes: '418',
+      poolMode: 'disabled' as const,
+      tempUnschedulableEnabled: false,
+      tempRulesMode: 'replace' as const,
+      tempUnschedulableRules: [{ errorCode: '503', keywords: 'busy', durationMinutes: '9', description: '' }],
+      proxyMode: 'direct' as const,
+    }
+    expect(buildAccountUpdate(original, advanced)).toEqual({
+      rpm_limit: 0,
+      tpm_limit: 2200,
+      window_cost_limit_cents: 333,
+      max_sessions: 5,
+      disable_cooling: false,
+      refresh_lead_seconds: null,
+      expires_at: null,
+      tls_fingerprint_rotate: false,
+      custom_error_codes_enabled: false,
+      custom_error_codes: [418],
+      pool_mode: false,
+      temp_unschedulable_enabled: false,
+      temp_unschedulable_rules: [{ error_code: 503, keywords: ['busy'], duration_minutes: 9 }],
+      proxy_binding: { mode: 'direct' },
+    })
   })
 
   it('标签变更被收录,顺序变化也算变更', () => {

@@ -9,6 +9,7 @@ import {
   formatPrice,
   formatScaled,
   groupByOwner,
+  mapModelTableRows,
   pricePerMillion,
 } from './pricing'
 import type { PricingItem } from './types'
@@ -133,5 +134,27 @@ describe('applyFilters', () => {
   })
   it('全空筛选返回原集', () => {
     expect(applyFilters(items, { query: '', owner: '', mode: '', capability: '' })).toHaveLength(3)
+  })
+})
+
+describe('mapModelTableRows', () => {
+  it('按当前单位映射价格、上下文、能力及详情动作源', () => {
+    const source = item({
+      model: 'gpt-4o',
+      canonical_id: 'openai/gpt-4o',
+      owned_by: 'openai',
+      input_price_per_token: '0.000003',
+      output_price_per_token: '0.000015',
+      context_length: 128000,
+      capabilities: { vision: true, tools: false },
+    })
+    const [row] = mapModelTableRows([source], 'mtok')
+    // 判别核心:映射必须使用所选单位；变异为每 token 展示会使价格断言证红。
+    expect(row).toMatchObject({ id: 'gpt-4o', canonicalId: 'openai/gpt-4o', owner: 'openai', inputPrice: '$3.00', outputPrice: '$15.00', contextLength: '128K', capabilities: ['vision'] })
+    expect(row.item).toBe(source)
+  })
+
+  it('canonical 与模型相同时不重复展示', () => {
+    expect(mapModelTableRows([item({ model: 'same', canonical_id: 'same' })], 'token')[0].canonicalId).toBeNull()
   })
 })

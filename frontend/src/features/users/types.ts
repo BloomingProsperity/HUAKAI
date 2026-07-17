@@ -7,9 +7,11 @@ export interface AdminUser {
   email: string
   role: string
   status: string
+  user_group: string
+  remark: string
   balance: string
   created_at: string
-  // 注:列表端点 userBody 不返回 display_name(routes.go),故列表项不含该字段,避免死读。
+  // 列表端点不返回 display_name,故列表项不含该字段,避免死读。
 }
 
 export interface UserListResponse {

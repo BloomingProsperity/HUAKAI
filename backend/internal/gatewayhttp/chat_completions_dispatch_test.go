@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"expvar"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/cache_routing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	protoanthropic "github.com/BloomingProsperity/HUAKAI/internal/proto/anthropic"
@@ -1756,6 +1758,8 @@ func TestHandler_AttemptLoopPassesAttemptSeqAndEmptyExclusionsOnFirstSuccess(t *
 func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) {
 	poolAOverride := "pool-a-upstream"
 	poolBOverride := "pool-b-upstream"
+	poolAMaxParallel := int32(7)
+	poolBMaxParallel := int32(11)
 	resolved := registry.Resolved{
 		PublicAlias:            "gpt-4o",
 		CanonicalModelID:       "openai/gpt-4o",
@@ -1767,8 +1771,8 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 		ProtocolFamily:         "openai_chat",
 		PoolCandidates:         []int64{701, 702, 703},
 		BindingMetadata: []registry.BindingMetadata{
-			{BindingID: 1, PoolGroupID: 701, Priority: 10, Weight: 5, SelectionMode: "strict_priority", FallbackClass: "normal", ProviderModelIDOverride: &poolAOverride},
-			{BindingID: 2, PoolGroupID: 702, Priority: 20, Weight: 3, SelectionMode: "strict_priority", FallbackClass: "quota", ProviderModelIDOverride: &poolBOverride},
+			{BindingID: 1, PoolGroupID: 701, Priority: 10, Weight: 5, SelectionMode: "strict_priority", FallbackClass: "normal", ProviderModelIDOverride: &poolAOverride, MaxParallelRequests: &poolAMaxParallel},
+			{BindingID: 2, PoolGroupID: 702, Priority: 20, Weight: 3, SelectionMode: "strict_priority", FallbackClass: "quota", ProviderModelIDOverride: &poolBOverride, MaxParallelRequests: &poolBMaxParallel},
 			{BindingID: 3, PoolGroupID: 703, Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
 		},
 		SnapshotVersion: "registry:7:3",
@@ -1782,17 +1786,77 @@ func TestRouterResolvedModelFromRegistryMapsPerPoolModelOverrides(t *testing.T) 
 	if len(got.PoolMetadata) != 3 {
 		t.Fatalf("PoolMetadata len=%d want 3", len(got.PoolMetadata))
 	}
-	// 路由加权激活闭环:routerPoolMetadataFromRegistry 现透传 binding.SelectionMode,
-	// 故期望值带上各 binding 的 selection_mode(此处三条均为 strict_priority)。
+	// BW-AT-01：Priority/Weight/SelectionMode 必须完整穿过 registry→router
+	// 翻译边界。变异删除任一字段映射时，下面的结构体精确比较直接变红。
 	want := []router.PoolCandidateMeta{
-		{PoolGroupID: 701, ProviderModelID: "pool-a-upstream", SelectionMode: "strict_priority"},
-		{PoolGroupID: 702, ProviderModelID: "pool-b-upstream", SelectionMode: "strict_priority"},
-		{PoolGroupID: 703, ProviderModelID: "default-upstream", SelectionMode: "strict_priority"},
+		{BindingID: 1, PoolGroupID: 701, ProviderModelID: "pool-a-upstream", Priority: 10, Weight: 5, SelectionMode: "strict_priority", MaxParallelRequests: 7, FallbackClass: "normal"},
+		{BindingID: 2, PoolGroupID: 702, ProviderModelID: "pool-b-upstream", Priority: 20, Weight: 3, SelectionMode: "strict_priority", MaxParallelRequests: 11, FallbackClass: "quota"},
+		{BindingID: 3, PoolGroupID: 703, ProviderModelID: "default-upstream", Priority: 30, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "manual"},
 	}
 	for i := range want {
 		if got.PoolMetadata[i] != want[i] {
 			t.Fatalf("PoolMetadata[%d]=%+v want %+v", i, got.PoolMetadata[i], want[i])
 		}
+	}
+}
+
+func TestClassifyPoolSelectFailureBindingConcurrencyUsesDedicated429AndAbortReason(t *testing.T) {
+	settler := &recordingSettler{}
+	ex := &chatExecution{
+		ctx:        context.Background(),
+		ident:      auth.Identity{TenantID: 7},
+		d:          ChatHandlerDeps{Settler: settler},
+		requestID:  "binding-concurrency-429",
+		reserveRes: &billing.ReserveResult{ClaimID: 91},
+	}
+	failure := ex.classifyPoolSelectFailure(
+		httptest.NewRecorder(),
+		fmt.Errorf("wrapped: %w", pool.ErrBindingConcurrencyLimited),
+	)
+	if failure == nil {
+		t.Fatal("binding concurrency failure must be classified")
+	}
+	if failure.ClientStatus != http.StatusTooManyRequests ||
+		failure.ClientCode != clienterr.CodeBindingConcurrencyLimited ||
+		failure.AbortReason != "binding_concurrency_limited" ||
+		failure.RetryAfterSeconds != 1 {
+		t.Fatalf("failure=%+v want dedicated binding 429 contract", failure)
+	}
+	if failure.Decision.RetryableBeforeDelivery ||
+		failure.Decision.SwitchAccount ||
+		failure.Decision.SwitchPool {
+		t.Fatalf("binding cap must be terminal, got decision=%+v", failure.Decision)
+	}
+	if len(settler.aborts) != 1 {
+		t.Fatalf("abort calls=%d want 1", len(settler.aborts))
+	}
+	abort := settler.aborts[0]
+	if abort.tenantID != 7 || abort.claimID != 91 || abort.reason != "binding_concurrency_limited" {
+		t.Fatalf("abort=%+v want tenant=7 claim=91 dedicated reason", abort)
+	}
+}
+
+func TestBuildPoolSelectionRequestKeepsBindingConcurrencyPairFromAttempt(t *testing.T) {
+	ex := &chatExecution{
+		ctx:        context.Background(),
+		ident:      auth.Identity{TenantID: 7, UserID: 8, APIKeyID: 9},
+		body:       []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+		req:        chatRequest{Model: "gpt-4o"},
+		reserveRes: &billing.ReserveResult{ClaimID: 91},
+		attempt: router.AttemptPlan{
+			PoolGroupID: 702, BindingID: 22, MaxParallelRequests: 5,
+		},
+		resolved: registry.Resolved{
+			ProtocolFamily: "openai_chat",
+			BindingMetadata: []registry.BindingMetadata{
+				{BindingID: 11, PoolGroupID: 701},
+				{BindingID: 22, PoolGroupID: 702},
+			},
+		},
+	}
+	got := ex.buildPoolSelectionRequest(attemptInput{AttemptSeq: 1})
+	if got.BindingID != 22 || got.MaxParallelRequests != 5 {
+		t.Fatalf("BindingID/MaxParallelRequests=%d/%d want 22/5", got.BindingID, got.MaxParallelRequests)
 	}
 }
 

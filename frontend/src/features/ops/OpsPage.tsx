@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
+import { StatCard } from '../../ui/StatCard'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   getHealthScore,
@@ -11,14 +14,21 @@ import {
   getProviderAccountCounts,
 } from './api'
 import {
-  fmtFractionPct,
   fmtInt,
-  fmtLatencyMs,
-  healthScoreTone,
+  mapHealthScoreRows,
+  mapLeaderboardRows,
+  mapOverviewStats,
+  mapPerfBucketRows,
+  mapPerfMetricStats,
+  mapPerformanceRows,
+  mapProviderAccountRows,
   sparklinePoints,
-  successRateTone,
-  totalTokens,
   windowToRange,
+  type HealthScoreTableRow,
+  type LeaderboardTableRow,
+  type PerfBucketTableRow,
+  type PerformanceTableRow,
+  type ProviderAccountTableRow,
 } from './ops'
 import {
   OPS_WINDOWS,
@@ -108,6 +118,13 @@ export function OpsPage() {
   const trend = overview?.trend ?? []
   const trendValues = trend.map((p) => p.requests)
   const points = sparklinePoints(trendValues, 600, 80, 4)
+  const overviewStats = mapOverviewStats(overview)
+  const perfStats = mapPerfMetricStats(perf)
+  const leaderboardRows = mapLeaderboardRows(board?.entries ?? [])
+  const healthRows = health ? mapHealthScoreRows(health) : []
+  const performanceRows = mapPerformanceRows(perfRank?.entries ?? [])
+  const bucketRows = mapPerfBucketRows(bucket?.entries ?? [])
+  const providerAccountRows = mapProviderAccountRows(paCounts?.counts ?? [])
 
   return (
     <div className="hk-page">
@@ -134,19 +151,11 @@ export function OpsPage() {
       {errOverview ? (
         <Banner>{errOverview}</Banner>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--hk-space-3)' }}>
-          <Kpi label="请求数" value={overview ? fmtInt(overview.totals.requests) : '…'} />
-          <Kpi label="总成本" value={overview ? `$${overview.totals.total_cost}` : '…'} mono />
-          <Kpi label="总 Token" value={overview ? fmtInt(overview.totals.total_tokens) : '…'} />
-          <Kpi label="活跃用户" value={overview ? fmtInt(overview.totals.active_users) : '…'} />
-          <Kpi label="活跃 Key" value={overview ? fmtInt(overview.totals.active_api_keys) : '…'} />
-          <Kpi
-            label="成功率"
-            // success_rate 是 0~1 小数(同 error_rate),须经 fmtFractionPct ×100 展示;原 `${x}%` 少算 100 倍。
-            value={overview ? fmtFractionPct(overview.totals.success_rate) : '…'}
-            badge={overview ? successRateTone(overview.totals.success_rate) : undefined}
-          />
-        </div>
+        <section aria-label="运维总览统计" style={overviewStatsGridStyle}>
+          {overviewStats.map((stat) => (
+            <StatCard key={stat.label} label={stat.label} value={stat.value} valueTitle={stat.valueTitle} hint={stat.hint} tone={stat.tone} />
+          ))}
+        </section>
       )}
 
       {/* 请求趋势(内联 SVG) */}
@@ -167,15 +176,11 @@ export function OpsPage() {
         {errPerf ? (
           <Banner>{errPerf}</Banner>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 'var(--hk-space-3)' }}>
-            <Kpi label="P50 延迟" value={perf ? fmtLatencyMs(perf.latency_percentiles_ms.p50) : '…'} mono small />
-            <Kpi label="P95 延迟" value={perf ? fmtLatencyMs(perf.latency_percentiles_ms.p95) : '…'} mono small />
-            <Kpi label="P99 延迟" value={perf ? fmtLatencyMs(perf.latency_percentiles_ms.p99) : '…'} mono small />
-            <Kpi label="平均 TTFT" value={perf ? `${perf.summary.avg_ttft_ms}ms` : '…'} mono small />
-            <Kpi label="平均 TPS" value={perf ? perf.summary.avg_tps : '…'} mono small />
-            {/* error_rate 是 0~1 小数(errorRateText=errorCount/requestCount StringFixed(4)),须 ×100 展示;原 `${x}%` 少算 100 倍。 */}
-            <Kpi label="错误率" value={perf ? fmtFractionPct(perf.summary.error_rate) : '…'} mono small />
-          </div>
+          <section aria-label="性能分位统计" style={perfStatsGridStyle}>
+            {perfStats.map((stat) => (
+              <StatCard key={stat.label} label={stat.label} value={stat.value} valueTitle={stat.valueTitle} tone={stat.tone} />
+            ))}
+          </section>
         )}
       </Card>
 
@@ -184,34 +189,11 @@ export function OpsPage() {
         {errBoard ? (
           <Banner>{errBoard}</Banner>
         ) : !board ? (
-          <Empty>加载中…</Empty>
-        ) : board.entries.length === 0 ? (
-          <Empty>暂无数据。</Empty>
+          <EmptyState title="正在加载模型成本排行" hint="请稍候。" />
+        ) : leaderboardRows.length === 0 ? (
+          <EmptyState title="暂无模型成本数据" hint="窗口内产生真实模型调用后会显示成本、Token 与请求排行。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['#', '模型', '成本', 'Token', '请求数'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {board.entries.map((e) => (
-                  <tr key={e.rank}>
-                    <td className="hk-mono">{e.rank}</td>
-                    <td>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key}</code>
-                    </td>
-                    <td className="hk-mono">${e.total_cost}</td>
-                    <td className="hk-mono">{fmtInt(e.total_tokens)}</td>
-                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="模型成本排行榜" rows={leaderboardRows} rowKey={(row) => row.rank} columns={leaderboardColumns} />
         )}
       </Card>
 
@@ -219,36 +201,16 @@ export function OpsPage() {
       <Card title="健康分(用量业务面 + 渠道基础设施面)">
         {errHealth ? (
           <Banner>{errHealth}</Banner>
+        ) : !health ? (
+          <EmptyState title="正在加载健康分" hint="请稍候。" />
         ) : (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 'var(--hk-space-3)' }}>
-              <Kpi
-                label="综合分"
-                value={health ? String(health.overall_score) : '…'}
-                badge={health ? healthScoreTone(health.overall_score) : undefined}
-              />
-              <Kpi
-                label="业务面"
-                value={health ? String(health.business_score) : '…'}
-                badge={health ? healthScoreTone(health.business_score) : undefined}
-                small
-              />
-              <Kpi
-                label="基础设施面"
-                value={health ? String(health.infra_score) : '…'}
-                badge={health ? healthScoreTone(health.infra_score) : undefined}
-                small
-              />
-              <Kpi label="错误率" value={health ? fmtFractionPct(health.signals.error_rate) : '…'} mono small />
-              <Kpi label="TTFT P99" value={health ? fmtLatencyMs(health.signals.ttft_p99_ms) : '…'} mono small />
-            </div>
-            {health && (
-              <p style={{ margin: 0, fontSize: 11, color: 'var(--hk-ink-300)' }}>
-                {health.signals.channel_health_available
-                  ? `渠道健康:可服务 ${fmtInt(health.signals.healthy_channels)} / 托管 ${fmtInt(health.signals.managed_channels)}`
-                  : '渠道健康信号未接入(平台级总览不绑租户),基础设施面按保守满分计。'}
-              </p>
-            )}
+            <DataListTable label="平台健康分与观测信号" rows={healthRows} rowKey={(row) => row.id} columns={healthColumns} />
+            <p style={{ margin: 0, fontSize: 11, color: 'var(--hk-ink-300)' }}>
+              {health.signals.channel_health_available
+                ? `渠道健康:可服务 ${fmtInt(health.signals.healthy_channels)} / 托管 ${fmtInt(health.signals.managed_channels)}`
+                : '渠道健康信号未接入(平台级总览不绑租户),基础设施面按保守满分计。'}
+            </p>
           </>
         )}
       </Card>
@@ -259,35 +221,16 @@ export function OpsPage() {
         {errPerfRank ? (
           <Banner>{errPerfRank}</Banner>
         ) : !perfRank ? (
-          <Empty>加载中…</Empty>
-        ) : perfRank.entries.length === 0 ? (
-          <Empty>暂无数据。</Empty>
+          <EmptyState title="正在加载性能排行" hint="请稍候。" />
+        ) : performanceRows.length === 0 ? (
+          <EmptyState title="暂无性能排行数据" hint="窗口内产生真实调用后会显示延迟、吞吐与错误率排行。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['#', perfBy === 'model' ? '模型' : 'Provider 账号', '平均 TTFT', '平均 TPS', '请求数', '错误率'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {perfRank.entries.map((e) => (
-                  <tr key={e.rank}>
-                    <td className="hk-mono">{e.rank}</td>
-                    <td>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
-                    </td>
-                    <td className="hk-mono">{e.avg_ttft_ms}ms</td>
-                    <td className="hk-mono">{e.avg_tps}</td>
-                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
-                    <td className="hk-mono">{fmtFractionPct(e.error_rate)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable
+            label={perfBy === 'model' ? '模型性能排行榜' : 'Provider 账号性能排行榜'}
+            rows={performanceRows}
+            rowKey={(row) => row.rank}
+            columns={performanceColumns(perfBy === 'model' ? '模型' : 'Provider 账号')}
+          />
         )}
       </Card>
 
@@ -297,36 +240,11 @@ export function OpsPage() {
         {errBucket ? (
           <Banner>{errBucket}</Banner>
         ) : !bucket ? (
-          <Empty>加载中…</Empty>
-        ) : bucket.entries.length === 0 ? (
-          <Empty>暂无数据。</Empty>
+          <EmptyState title="正在加载性能分桶" hint="请稍候。" />
+        ) : bucketRows.length === 0 ? (
+          <EmptyState title="暂无性能分桶数据" hint="窗口内产生真实调用后会按所选时间粒度显示聚合性能。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['时间桶', '模型', '平均 TTFT', '平均 TPS', '请求数', '错误数', '错误率'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {bucket.entries.map((e, i) => (
-                  <tr key={`${e.bucket}-${e.key}-${i}`}>
-                    <td className="hk-mono">{e.bucket}</td>
-                    <td>
-                      <code style={{ fontSize: 12, color: 'var(--hk-ink-900)' }}>{e.key || '—'}</code>
-                    </td>
-                    <td className="hk-mono">{e.avg_ttft_ms}ms</td>
-                    <td className="hk-mono">{e.avg_tps}</td>
-                    <td className="hk-mono">{fmtInt(e.request_count)}</td>
-                    <td className="hk-mono">{fmtInt(e.error_count)}</td>
-                    <td className="hk-mono">{fmtFractionPct(e.error_rate)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="按时间聚合的性能分桶" rows={bucketRows} rowKey={(row) => row.id} columns={bucketColumns} />
         )}
       </Card>
 
@@ -335,33 +253,11 @@ export function OpsPage() {
         {errPaCounts ? (
           <Banner>{errPaCounts}</Banner>
         ) : !paCounts ? (
-          <Empty>加载中…</Empty>
-        ) : paCounts.counts.length === 0 ? (
-          <Empty>暂无数据。</Empty>
+          <EmptyState title="正在加载 Provider 账号分布" hint="请稍候。" />
+        ) : providerAccountRows.length === 0 ? (
+          <EmptyState title="暂无 Provider 账号用量" hint="窗口内账号产生真实调用后会显示请求、Token 与费用分布。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['账号 ID', '请求数', '输入 Token', '输出 Token', '合计 Token', '费用'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {paCounts.counts.map((c) => (
-                  <tr key={c.provider_account_id}>
-                    <td className="hk-mono">#{c.provider_account_id}</td>
-                    <td className="hk-mono">{fmtInt(c.request_count)}</td>
-                    <td className="hk-mono">{fmtInt(c.total_input_tokens)}</td>
-                    <td className="hk-mono">{fmtInt(c.total_output_tokens)}</td>
-                    <td className="hk-mono">{fmtInt(totalTokens(c))}</td>
-                    <td className="hk-mono">${c.total_cost}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="Provider 账号用量分布" rows={providerAccountRows} rowKey={(row) => row.id} columns={providerAccountColumns} />
         )}
       </Card>
     </div>
@@ -395,17 +291,6 @@ function Segmented<T extends string>({
   )
 }
 
-function Kpi({ label, value, mono, small, badge }: { label: string; value: string; mono?: boolean; small?: boolean; badge?: 'ok' | 'warn' | 'danger' }) {
-  return (
-    <div className="hk-metric">
-      <div className="hk-metric__label">{label}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--hk-space-2)' }}>
-        <span className={mono ? 'hk-metric__v hk-mono' : 'hk-metric__v'} style={small ? { fontSize: 18 } : undefined}>{value}</span>
-        {badge && <StatusBadge tone={badge}>{badge === 'ok' ? '健康' : badge === 'warn' ? '注意' : '告警'}</StatusBadge>}
-      </div>
-    </div>
-  )
-}
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="hk-card">
@@ -421,6 +306,51 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 function Banner({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
+
+const leaderboardColumns: DataListColumn<LeaderboardTableRow>[] = [
+  { key: 'rank', label: '#', render: (row) => <span className="hk-mono">{row.rank}</span> },
+  { key: 'model', label: '模型', render: (row) => <code style={codeStyle}>{row.model}</code> },
+  { key: 'cost', label: '成本', render: (row) => <span className="hk-mono" title={row.costTitle}>{row.cost}</span> },
+  { key: 'tokens', label: 'Token', render: (row) => <span className="hk-mono">{row.tokens}</span> },
+  { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
+]
+
+const healthColumns: DataListColumn<HealthScoreTableRow>[] = [
+  { key: 'metric', label: '指标', render: (row) => row.metric },
+  { key: 'value', label: '当前值', render: (row) => <span className="hk-mono">{row.value}</span> },
+  { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.statusText}</StatusBadge> },
+]
+
+function performanceColumns(dimensionLabel: string): DataListColumn<PerformanceTableRow>[] {
+  return [
+    { key: 'rank', label: '#', render: (row) => <span className="hk-mono">{row.rank}</span> },
+    { key: 'dimension', label: dimensionLabel, render: (row) => <code style={codeStyle}>{row.key}</code> },
+    { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono" title={row.avgTtftTitle}>{row.avgTtft}</span> },
+    { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono" title={row.avgTpsTitle}>{row.avgTps}</span> },
+    { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
+    { key: 'error-rate', label: '错误率', render: (row) => <span className="hk-mono">{row.errorRate}</span> },
+  ]
 }
+
+const bucketColumns: DataListColumn<PerfBucketTableRow>[] = [
+  { key: 'bucket', label: '时间桶', render: (row) => <span className="hk-mono">{row.bucket}</span> },
+  { key: 'model', label: '模型', render: (row) => <code style={codeStyle}>{row.model}</code> },
+  { key: 'ttft', label: '平均 TTFT', render: (row) => <span className="hk-mono" title={row.avgTtftTitle}>{row.avgTtft}</span> },
+  { key: 'tps', label: '平均 TPS', render: (row) => <span className="hk-mono" title={row.avgTpsTitle}>{row.avgTps}</span> },
+  { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
+  { key: 'errors', label: '错误数', render: (row) => <span className="hk-mono">{row.errors}</span> },
+  { key: 'error-rate', label: '错误率', render: (row) => <span className="hk-mono">{row.errorRate}</span> },
+]
+
+const providerAccountColumns: DataListColumn<ProviderAccountTableRow>[] = [
+  { key: 'account', label: '账号 ID', render: (row) => <span className="hk-mono">{row.account}</span> },
+  { key: 'requests', label: '请求数', render: (row) => <span className="hk-mono">{row.requests}</span> },
+  { key: 'input-tokens', label: '输入 Token', render: (row) => <span className="hk-mono">{row.inputTokens}</span> },
+  { key: 'output-tokens', label: '输出 Token', render: (row) => <span className="hk-mono">{row.outputTokens}</span> },
+  { key: 'tokens', label: '合计 Token', render: (row) => <span className="hk-mono">{row.tokens}</span> },
+  { key: 'cost', label: '费用', render: (row) => <span className="hk-mono" title={row.costTitle}>{row.cost}</span> },
+]
+
+const overviewStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--hk-space-3)' }
+const perfStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 'var(--hk-space-3)' }
+const codeStyle = { fontSize: 12, color: 'var(--hk-ink-900)' }

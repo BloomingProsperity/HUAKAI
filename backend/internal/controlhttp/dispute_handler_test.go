@@ -93,12 +93,16 @@ func TestListMyDisputesIsScopedToSessionUser(t *testing.T) {
 // 变异:resolve handler 忽略 status/operator_note 或保留旧 status。
 // 运营者恢复操作必须可见地持久化这次状态迁移。
 func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
-	store := &disputeFakeStore{
-		resolveReturn: disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusResolved, "receipt checked"),
+	resolver := &disputeFakeResolver{
+		resolveReturn: audit.ResolveCostDisputeResult{
+			Dispute:             disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusResolved, "receipt checked"),
+			RefundMicroUSD:      12345,
+			RefundAdjustmentRef: "billing_event:91",
+		},
 	}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
-		Store: store,
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver: resolver,
 	})
 
 	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
@@ -107,27 +111,29 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
 	}
-	if !store.resolveCalled {
+	if !resolver.resolveCalled {
 		t.Fatal("ResolveDispute not called")
 	}
-	if store.resolveArg.TenantID != 7 || store.resolveArg.ID != 55 ||
-		store.resolveArg.Status != audit.DisputeStatusResolved ||
-		store.resolveArg.OperatorNote != "receipt checked" {
-		t.Fatalf("resolve arg=%+v, want tenant=7 id=55 status=resolved note", store.resolveArg)
+	if resolver.resolveArg.TenantID != 7 || resolver.resolveArg.ID != 55 ||
+		resolver.resolveArg.Status != audit.DisputeStatusResolved ||
+		resolver.resolveArg.OperatorNote != "receipt checked" {
+		t.Fatalf("resolve arg=%+v, want tenant=7 id=55 status=resolved note", resolver.resolveArg)
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte(`"status":"resolved"`)) ||
-		!bytes.Contains(rec.Body.Bytes(), []byte(`"operator_note":"receipt checked"`)) {
-		t.Fatalf("response did not expose updated status/note: %s", rec.Body.String())
+		!bytes.Contains(rec.Body.Bytes(), []byte(`"operator_note":"receipt checked"`)) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte(`"refund_micro_usd":12345`)) ||
+		!bytes.Contains(rec.Body.Bytes(), []byte(`"refund_adjustment_ref":"billing_event:91"`)) {
+		t.Fatalf("response did not expose updated status/refund: %s", rec.Body.String())
 	}
 }
 
 // 变异:在 resolve 之前省略 ident.CanIssueForTenant。
 // tenant 7 的租户运营者将能 resolve tenant 8 的 dispute。
 func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
-	store := &disputeFakeStore{}
+	resolver := &disputeFakeResolver{}
 	router := disputeAdminRouter(DisputeAdminDeps{
-		Auth:  disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
-		Store: store,
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 88, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
+		Resolver: resolver,
 	})
 
 	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
@@ -136,8 +142,57 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
 	}
-	if store.resolveCalled {
+	if resolver.resolveCalled {
 		t.Fatal("ResolveDispute must not run for cross-tenant operator")
+	}
+}
+
+// 变异:把终态守卫零行错误继续映射成普通 404/503。
+// 运营重放必须得到明确冲突，且不能误以为可以安全再试同一终态裁决。
+func TestAdminResolveTerminalDisputeReturnsConflict(t *testing.T) {
+	resolver := &disputeFakeResolver{resolveErr: audit.ErrDisputeNotResolvable}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver: resolver,
+	})
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+		`{"tenant_id":7,"status":"resolved","operator_note":"retry"}`)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("dispute_not_resolvable")) {
+		t.Fatalf("status=%d body=%s, want explicit 409 terminal conflict", rec.Code, rec.Body.String())
+	}
+}
+
+// 变异:查不到 committed claim 时仍提交 resolved 状态。
+// 组合层的明确失败必须保留为 400，不能伪装成后端暂时不可用或成功。
+func TestAdminResolveWithoutCommittedChargeReturnsBadRequest(t *testing.T) {
+	resolver := &disputeFakeResolver{resolveErr: audit.ErrDisputeNoCharge}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver: resolver,
+	})
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+		`{"tenant_id":7,"status":"resolved","operator_note":"support"}`)
+	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("dispute_charge_not_committed")) {
+		t.Fatalf("status=%d body=%s, want explicit 400 no committed charge", rec.Code, rec.Body.String())
+	}
+}
+
+// 变异:rejected 路径伪造退款字段，前端会误报用户已收到余额。
+func TestAdminRejectDisputeOmitsRefundFields(t *testing.T) {
+	resolver := &disputeFakeResolver{resolveReturn: audit.ResolveCostDisputeResult{
+		Dispute: disputeResolved(55, 7, 42, "req-r", audit.DisputeStatusRejected, "charge upheld"),
+	}}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver: resolver,
+	})
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+		`{"tenant_id":7,"status":"rejected","operator_note":"charge upheld"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("refund_micro_usd")) || bytes.Contains(rec.Body.Bytes(), []byte("refund_adjustment_ref")) {
+		t.Fatalf("rejected response must omit refund fields: %s", rec.Body.String())
 	}
 }
 
@@ -195,9 +250,11 @@ func TestAdminListDisputesSeesMultipleUsersInTenant(t *testing.T) {
 // 变异:调用 store 之前忽略 status query 参数。
 // fake store 按传入的 status 过滤;空 status 会返回 open 和 resolved 的行。
 func TestAdminListDisputesStatusFilter(t *testing.T) {
+	resolved := dispute(2, 7, 99, "req-resolved", audit.DisputeStatusResolved)
+	resolved.RefundedMicroUSD = 54321
 	store := &disputeFakeStore{rows: []audit.CostDispute{
 		dispute(1, 7, 42, "req-open", audit.DisputeStatusOpen),
-		dispute(2, 7, 99, "req-resolved", audit.DisputeStatusResolved),
+		resolved,
 		dispute(3, 7, 100, "req-rejected", audit.DisputeStatusRejected),
 	}}
 	router := disputeAdminRouter(DisputeAdminDeps{
@@ -215,14 +272,16 @@ func TestAdminListDisputesStatusFilter(t *testing.T) {
 	}
 	var body struct {
 		Disputes []struct {
-			RequestID string `json:"request_id"`
-			Status    string `json:"status"`
+			RequestID        string `json:"request_id"`
+			Status           string `json:"status"`
+			RefundedMicroUSD int64  `json:"refunded_micro_usd"`
 		} `json:"disputes"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
 	}
-	if len(body.Disputes) != 1 || body.Disputes[0].RequestID != "req-resolved" || body.Disputes[0].Status != audit.DisputeStatusResolved {
+	if len(body.Disputes) != 1 || body.Disputes[0].RequestID != "req-resolved" ||
+		body.Disputes[0].Status != audit.DisputeStatusResolved || body.Disputes[0].RefundedMicroUSD != 54321 {
 		t.Fatalf("disputes=%+v, want only resolved req-resolved", body.Disputes)
 	}
 }
@@ -334,11 +393,6 @@ type disputeFakeStore struct {
 	adminListStatus   string
 	adminListLimit    int32
 	adminListOffset   int32
-
-	resolveCalled bool
-	resolveArg    audit.ResolveCostDisputeInput
-	resolveReturn audit.CostDispute
-	resolveErr    error
 }
 
 func (f *disputeFakeStore) CreateDispute(_ context.Context, in audit.CreateCostDisputeInput) (audit.CostDispute, error) {
@@ -393,11 +447,18 @@ func (f *disputeFakeStore) ListForAdmin(_ context.Context, tenantID int64, statu
 	return out, nil
 }
 
-func (f *disputeFakeStore) ResolveDispute(_ context.Context, in audit.ResolveCostDisputeInput) (audit.CostDispute, error) {
+type disputeFakeResolver struct {
+	resolveCalled bool
+	resolveArg    audit.ResolveCostDisputeInput
+	resolveReturn audit.ResolveCostDisputeResult
+	resolveErr    error
+}
+
+func (f *disputeFakeResolver) ResolveDispute(_ context.Context, in audit.ResolveCostDisputeInput) (audit.ResolveCostDisputeResult, error) {
 	f.resolveCalled = true
 	f.resolveArg = in
 	if f.resolveErr != nil {
-		return audit.CostDispute{}, f.resolveErr
+		return audit.ResolveCostDisputeResult{}, f.resolveErr
 	}
 	return f.resolveReturn, nil
 }

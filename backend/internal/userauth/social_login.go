@@ -58,6 +58,7 @@ type OAuthService struct {
 	providers map[string]OAuthProvider
 	// resolver 是请求期 provider 解析器(由 cmd/gateway 注入):按 provider 名 + ctx 读后台设置,
 	// settings-first 覆盖 env 基线后现构 provider。nil = 不启用,只用下面 boot 期 env 静态 providers。
+	// 当前 resolver 不读取 oidc_provider_configs 表；该表保留状态见 docs/architecture/deprecated-schema.md。
 	// 放在这里而非直接依赖 platformsettings,是为让 userauth 包保持对配置来源无感(依赖倒置)。
 	resolver func(ctx context.Context, name string) (OAuthProvider, bool)
 }
@@ -298,7 +299,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 // 因 !EmailVerified 返回 pending 后,前端收集邮箱、端点向该邮箱发码并验码,证明用户拥有该邮箱,再调本方法落号。
 //
 // 调用方责任(本方法不重复做):① 已用对应 verifier 校验出可信 identity;② 已通过「发码→验码」证明邮箱所有权
-//(故这里以 EmailVerified=true 建号)。tenant 取自可信上下文,绝不取自请求体明文。
+// (故这里以 EmailVerified=true 建号)。tenant 取自可信上下文,绝不取自请求体明文。
 //
 // 安全:
 //   - 既有绑定优先:该社交身份已绑某用户 → 直接返回那个用户(幂等,不重复建号);

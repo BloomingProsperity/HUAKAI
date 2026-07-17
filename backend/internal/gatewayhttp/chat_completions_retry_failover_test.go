@@ -1386,9 +1386,12 @@ func TestModelFallback_PostDeliveryStreamErrorDoesNotFallback(t *testing.T) {
 	}
 	deps := streamingReplayDeps(t, 94001, false, "", replayStore)
 	deps.Dispatcher.HTTPClient = doer
-	deps.Router = stubRouter{plan: pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"})}
-	deps.Selector = newPR5Selector(t, 2401)
-	deps.CredentialVault = pr5CredentialVault(t, 2401)
+	plan := pr5RoutePlan(router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "gpt-4o", Reason: "primary"})
+	plan.FallbackPhases = []router.FallbackPhasePlan{bfcPhase("manual", 55, 550, 1)}
+	deps.Router = stubRouter{plan: plan}
+	selector := newPR5Selector(t, 2401, 2402)
+	deps.Selector = selector
+	deps.CredentialVault = pr5CredentialVault(t, 2401, 2402)
 	deps.Settler = settler
 	deps.ModelFallbackSettings = modelFallbackSettings(t, `{
 		"enabled": true,
@@ -1405,8 +1408,8 @@ func TestModelFallback_PostDeliveryStreamErrorDoesNotFallback(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s; want delivered partial stream, not fallback JSON", rec.Code, rec.Body.String())
 	}
-	if doer.calls != 1 {
-		t.Fatalf("stream dispatch calls=%d want 1; delivery-started failure must not fallback", doer.calls)
+	if doer.calls != 1 || selector.calls != 1 {
+		t.Fatalf("stream dispatch/selector calls=%d/%d want 1/1; delivery-started failure must not fallback", doer.calls, selector.calls)
 	}
 	if got := rec.Header().Get("X-Huakai-Model-Fallback"); got != "" {
 		t.Fatalf("fallback header=%q want empty after post-delivery failure", got)

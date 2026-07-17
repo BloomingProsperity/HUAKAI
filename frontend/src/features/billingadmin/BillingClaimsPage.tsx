@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { listBillingClaims, listUsageRecords } from './api'
-import { claimStatusTone, formatMoney, formatTime, shortId, trustStatusTone } from './billingadmin'
+import {
+  claimStatusTone,
+  mapClaimTableRows,
+  mapUsageTableRows,
+  trustStatusTone,
+  type ClaimTableRow,
+  type UsageTableRow,
+} from './billingadmin'
 import { RepriceCard } from './RepriceCard'
 import {
   EMPTY_CLAIM_FILTERS,
@@ -105,6 +114,8 @@ function UsageSection() {
   }
 
   const setD = <K extends keyof UsageFilters>(k: K, v: UsageFilters[K]) => setDraft((f) => ({ ...f, [k]: v }))
+  const tableRows = mapUsageTableRows(rows)
+  const expandedRow = tableRows.find((row) => row.id === expanded)
 
   return (
     <>
@@ -161,73 +172,32 @@ function UsageSection() {
       <Counter loaded={rows.length} total={total} unit="条用量记录" />
       {error && <ErrorBar>{error}</ErrorBar>}
 
-      <TableShell empty={!loading && rows.length === 0} loading={loading && rows.length === 0} emptyText="没有匹配的用量记录。">
-        <table className="hk-table">
-          <thead>
-            <tr>
-              {['时间', '模型', '供应商', 'Token(入/出)', '实际成本', '信任态', 'Request', ''].map((h) => (
-                <th key={h}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <UsageRow key={r.id} r={r} expanded={expanded === r.id} onToggle={() => setExpanded(expanded === r.id ? null : r.id)} />
-            ))}
-          </tbody>
-        </table>
-      </TableShell>
+      <div className="hk-card">
+        {loading && rows.length === 0 ? (
+          <EmptyState title="正在加载用量记录" hint="请稍候。" />
+        ) : rows.length === 0 ? (
+          <EmptyState title="没有匹配的用量记录" hint="可调整筛选条件后重新查询。" />
+        ) : (
+          <>
+            <DataListTable
+              label="原始用量列表"
+              rows={tableRows}
+              rowKey={(row) => row.id}
+              columns={usageColumns}
+              actions={[{
+                label: (row) => expanded === row.id ? '收起' : '详情',
+                onClick: (row) => setExpanded((current) => current === row.id ? null : row.id),
+              }]}
+            />
+            {expandedRow && <pre style={detailPreStyle}>{JSON.stringify(expandedRow.source, null, 2)}</pre>}
+          </>
+        )}
+      </div>
 
       {nextCursor && (
         <button type="button" disabled={loading} onClick={loadMore} className="hk-btn" style={{ alignSelf: 'center' }}>
           {loading ? '加载中…' : '加载更多'}
         </button>
-      )}
-    </>
-  )
-}
-
-function UsageRow({ r, expanded, onToggle }: { r: UsageRecord; expanded: boolean; onToggle: () => void }) {
-  return (
-    <>
-      <tr>
-        <td className="hk-mono">{formatTime(r.created_at)}</td>
-        <td>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{r.requested_model || '—'}</span>
-            {r.upstream_model && r.upstream_model !== r.requested_model && (
-              <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>→ {r.upstream_model}</span>
-            )}
-          </div>
-        </td>
-        <td>{r.provider || '—'}</td>
-        <td className="hk-mono">
-          {r.tokens_input} / {r.tokens_output}
-        </td>
-        <td className="hk-mono" style={{ fontWeight: 600 }}>{formatMoney(r.actual_cost)}</td>
-        <td>
-          <StatusBadge tone={trustStatusTone(r.trust_status)}>{r.trust_status || '—'}</StatusBadge>
-          {r.pending_reconciliation && (
-            <div style={{ marginTop: 2 }}>
-              <StatusBadge tone="warn">待对账</StatusBadge>
-            </div>
-          )}
-        </td>
-        <td className="hk-mono">{shortId(r.request_id)}</td>
-        <td style={{ textAlign: 'right' }}>
-          <button type="button" onClick={onToggle} className="hk-btn hk-btn--sm">
-            {expanded ? '收起' : '详情'}
-          </button>
-        </td>
-      </tr>
-      {expanded && (
-        <tr style={{ background: 'var(--hk-surface-sunken)' }}>
-          <td colSpan={8} style={{ padding: 'var(--hk-space-4)' }}>
-            <pre style={preStyle}>{JSON.stringify(r, null, 2)}</pre>
-          </td>
-        </tr>
       )}
     </>
   )
@@ -288,6 +258,8 @@ function ClaimsSection() {
   }
 
   const setD = <K extends keyof ClaimFilters>(k: K, v: ClaimFilters[K]) => setDraft((f) => ({ ...f, [k]: v }))
+  const tableRows = mapClaimTableRows(rows)
+  const expandedRow = tableRows.find((row) => row.id === expanded)
 
   return (
     <>
@@ -336,67 +308,32 @@ function ClaimsSection() {
       <Counter loaded={rows.length} total={total} unit="条 claim" />
       {error && <ErrorBar>{error}</ErrorBar>}
 
-      <TableShell empty={!loading && rows.length === 0} loading={loading && rows.length === 0} emptyText="没有匹配的 claim。">
-        <table className="hk-table">
-          <thead>
-            <tr>
-              {['时间', '模型/端点', '状态', '预扣成本', '实际成本', '结算时间', 'Request', ''].map((h) => (
-                <th key={h}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((c) => (
-              <ClaimRow key={c.id} c={c} expanded={expanded === c.id} onToggle={() => setExpanded(expanded === c.id ? null : c.id)} />
-            ))}
-          </tbody>
-        </table>
-      </TableShell>
+      <div className="hk-card">
+        {loading && rows.length === 0 ? (
+          <EmptyState title="正在加载 Claim 台账" hint="请稍候。" />
+        ) : rows.length === 0 ? (
+          <EmptyState title="没有匹配的 Claim" hint="可调整筛选条件后重新查询。" />
+        ) : (
+          <>
+            <DataListTable
+              label="Claim 台账列表"
+              rows={tableRows}
+              rowKey={(row) => row.id}
+              columns={claimColumns}
+              actions={[{
+                label: (row) => expanded === row.id ? '收起' : '详情',
+                onClick: (row) => setExpanded((current) => current === row.id ? null : row.id),
+              }]}
+            />
+            {expandedRow && <pre style={detailPreStyle}>{JSON.stringify(expandedRow.source, null, 2)}</pre>}
+          </>
+        )}
+      </div>
 
       {nextCursor && (
         <button type="button" disabled={loading} onClick={loadMore} className="hk-btn" style={{ alignSelf: 'center' }}>
           {loading ? '加载中…' : '加载更多'}
         </button>
-      )}
-    </>
-  )
-}
-
-function ClaimRow({ c, expanded, onToggle }: { c: BillingClaim; expanded: boolean; onToggle: () => void }) {
-  return (
-    <>
-      <tr>
-        <td className="hk-mono">{formatTime(c.created_at)}</td>
-        <td>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <span style={{ fontWeight: 600, color: 'var(--hk-ink-900)' }}>{c.requested_model || '—'}</span>
-            <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{c.endpoint_family || '—'}</span>
-          </div>
-        </td>
-        <td>
-          <StatusBadge tone={claimStatusTone(c.status)}>{c.status || '—'}</StatusBadge>
-          {c.aborted_reason && (
-            <div style={{ fontSize: 11, color: 'var(--hk-ink-300)', marginTop: 2 }}>{c.aborted_reason}</div>
-          )}
-        </td>
-        <td className="hk-mono">{formatMoney(c.predicted_cost, c.currency_code)}</td>
-        <td className="hk-mono" style={{ fontWeight: 600 }}>{formatMoney(c.actual_cost, c.currency_code)}</td>
-        <td className="hk-mono">{formatTime(c.settled_at)}</td>
-        <td className="hk-mono">{shortId(c.logical_request_id)}</td>
-        <td style={{ textAlign: 'right' }}>
-          <button type="button" onClick={onToggle} className="hk-btn hk-btn--sm">
-            {expanded ? '收起' : '详情'}
-          </button>
-        </td>
-      </tr>
-      {expanded && (
-        <tr style={{ background: 'var(--hk-surface-sunken)' }}>
-          <td colSpan={8} style={{ padding: 'var(--hk-space-4)' }}>
-            <pre style={preStyle}>{JSON.stringify(c, null, 2)}</pre>
-          </td>
-        </tr>
       )}
     </>
   )
@@ -434,24 +371,6 @@ function Counter({ loaded, total, unit }: { loaded: number; total: number; unit:
   )
 }
 
-function TableShell({
-  empty,
-  loading,
-  emptyText,
-  children,
-}: {
-  empty: boolean
-  loading: boolean
-  emptyText: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="hk-card">
-      {loading ? <Empty>加载中…</Empty> : empty ? <Empty>{emptyText}</Empty> : <div className="hk-tablewrap">{children}</div>}
-    </div>
-  )
-}
-
 function ErrorBar({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, color: 'var(--hk-danger)', background: 'var(--hk-danger-soft)', border: '1px solid var(--hk-danger-soft)' }}>{children}</div>
@@ -467,10 +386,6 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="hk-empty">{children}</div>
-}
-
 const filterFormStyle: React.CSSProperties = {
   display: 'grid',
   gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -481,5 +396,25 @@ const filterFormStyle: React.CSSProperties = {
   borderRadius: 'var(--hk-radius-lg)',
   padding: 'var(--hk-space-4)',
 }
-const preStyle: React.CSSProperties = { margin: 0, fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-700)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
+const detailPreStyle: React.CSSProperties = { margin: 0, padding: 'var(--hk-space-4)', borderTop: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)', fontFamily: 'var(--hk-font-mono)', fontSize: 12, color: 'var(--hk-ink-700)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-sm)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
+
+const usageColumns: DataListColumn<UsageTableRow>[] = [
+  { key: 'createdAt', label: '时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  { key: 'model', label: '模型', render: (row) => <div style={{ display: 'flex', flexDirection: 'column' }}><strong>{row.requestedModel}</strong>{row.upstreamModel && <span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>→ {row.upstreamModel}</span>}</div> },
+  { key: 'provider', label: '供应商', render: (row) => row.provider },
+  { key: 'tokens', label: 'Token(入/出)', render: (row) => <span className="hk-mono">{row.tokens}</span> },
+  { key: 'actualCost', label: '实际成本', render: (row) => <strong className="hk-mono">{row.actualCost}</strong> },
+  { key: 'trustStatus', label: '信任态', render: (row) => <div><StatusBadge tone={trustStatusTone(row.trustStatus)}>{row.trustStatus}</StatusBadge>{row.pendingReconciliation && <div style={{ marginTop: 2 }}><StatusBadge tone="warn">待对账</StatusBadge></div>}</div> },
+  { key: 'requestId', label: 'Request', render: (row) => <span className="hk-mono">{row.requestId}</span> },
+]
+
+const claimColumns: DataListColumn<ClaimTableRow>[] = [
+  { key: 'createdAt', label: '时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  { key: 'model', label: '模型/端点', render: (row) => <div style={{ display: 'flex', flexDirection: 'column' }}><strong>{row.requestedModel}</strong><span style={{ fontSize: 11, color: 'var(--hk-ink-300)' }}>{row.endpointFamily}</span></div> },
+  { key: 'status', label: '状态', render: (row) => <div><StatusBadge tone={claimStatusTone(row.status)}>{row.status}</StatusBadge>{row.abortedReason && <div style={{ fontSize: 11, color: 'var(--hk-ink-300)', marginTop: 2 }}>{row.abortedReason}</div>}</div> },
+  { key: 'predictedCost', label: '预扣成本', render: (row) => <span className="hk-mono">{row.predictedCost}</span> },
+  { key: 'actualCost', label: '实际成本', render: (row) => <strong className="hk-mono">{row.actualCost}</strong> },
+  { key: 'settledAt', label: '结算时间', render: (row) => <span className="hk-mono">{row.settledAt}</span> },
+  { key: 'requestId', label: 'Request', render: (row) => <span className="hk-mono">{row.requestId}</span> },
+]

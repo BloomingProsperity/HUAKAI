@@ -1,5 +1,5 @@
 import { apiGet, apiSend } from '../../lib/api'
-import type { CreateProxyInput, ProbeResult, Proxy, ProxyListResponse, UpdateProxyInput } from './types'
+import type { CreateProxyInput, ProbeResult, Proxy, ProxyListResponse, TenantDefaultProxyInput, TenantDefaultProxyResponse, UpdateProxyInput } from './types'
 
 /*
  * 出口代理池数据访问层。端点 /admin/v1/proxies(admin 鉴权,apiGet/apiSend 经 authHeaders
@@ -45,4 +45,14 @@ export async function deleteProxy(tenantId: number, id: number): Promise<void> {
 /** 切换代理生命周期状态(active/disabled/dead)。 */
 export async function setProxyStatus(tenantId: number, id: number, status: string): Promise<void> {
   await apiSend<void>('PUT', `${PATH}/${id}/status`, { status }, { query: { tenant_id: tenantId } })
+}
+
+/** 读取 path 所指租户的默认出口；admin 前缀由统一封装自动附带管理 Bearer。 */
+export async function getTenantDefaultProxy(tenantId: number, signal?: AbortSignal): Promise<TenantDefaultProxyResponse> {
+  return apiGet<TenantDefaultProxyResponse>(`/admin/v1/tenants/${tenantId}/default-proxy`, { signal })
+}
+
+/** 设置或清除租户默认出口；proxy_id:null 是显式恢复直连。 */
+export async function setTenantDefaultProxy(tenantId: number, input: TenantDefaultProxyInput): Promise<TenantDefaultProxyResponse> {
+  return apiSend<TenantDefaultProxyResponse>('PUT', `/admin/v1/tenants/${tenantId}/default-proxy`, input)
 }

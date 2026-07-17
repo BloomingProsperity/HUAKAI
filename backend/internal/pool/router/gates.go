@@ -13,6 +13,7 @@ const (
 	GateFailureChannel        GateFailureReason = "channel"
 	GateFailureProtocolFamily GateFailureReason = "protocol_family"
 	GateFailureModel          GateFailureReason = "model"
+	GateFailureModelCooldown  GateFailureReason = "model_cooldown"
 	GateFailureCapability     GateFailureReason = "capability"
 	GateFailureCredential     GateFailureReason = "credential"
 	GateFailureHealth         GateFailureReason = "health"
@@ -23,6 +24,8 @@ const (
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
 	GateFailurePinnedAccount       GateFailureReason = "pinned_account"
 	GateFailureScoredBand          GateFailureReason = "scored_band"
+	GateFailureSlotCapacity        GateFailureReason = "slot_capacity"
+	GateFailureSlotManager         GateFailureReason = "slot_manager"
 )
 
 type Gate interface {
@@ -270,7 +273,7 @@ func (g modelRateLimitGate) Allow(_ context.Context, account *AccountSnapshot, r
 		return true, "", nil
 	}
 	if limit.RateLimitResetAt.After(g.now()) {
-		return false, GateFailureModel, nil
+		return false, GateFailureModelCooldown, nil
 	}
 	return true, "", nil
 }

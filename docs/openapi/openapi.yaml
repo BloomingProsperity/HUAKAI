@@ -3187,7 +3187,7 @@ paths:
           schema: { type: integer, format: int32, minimum: 0, default: 0 }
       responses:
         '200':
-          description: Tenant-scoped dispute rows across users. This endpoint is read-only and does not refund or mutate billing ledger rows.
+          description: Tenant-scoped dispute rows across users, including the amount refunded by each resolved dispute. This endpoint is read-only.
           content:
             application/json:
               schema:
@@ -3441,7 +3441,7 @@ paths:
             schema: { $ref: '#/components/schemas/ResolveCostDisputeRequest' }
       responses:
         '200':
-          description: Updated dispute state. This endpoint does not issue refunds or mutate ledger rows.
+          description: Updated dispute state. A resolved decision atomically appends a full-charge refund and credits an existing user balance; rejected/reviewing decisions do not touch money.
           content:
             application/json:
               schema:
@@ -3450,10 +3450,26 @@ paths:
                 required: [dispute]
                 properties:
                   dispute: { $ref: '#/components/schemas/CostDispute' }
+                  refund_micro_usd:
+                    type: integer
+                    format: int64
+                    minimum: 0
+                    description: Amount appended by the resolved decision in micro-USD. Omitted for non-resolved decisions.
+                  refund_adjustment_ref:
+                    type: [string, 'null']
+                    description: Immutable billing-event reference for the refund. Omitted for non-resolved decisions.
+                  refund_idempotent:
+                    type: boolean
+                    description: True when the same dispute refund had already committed and no balance was credited again.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The dispute does not exist in an actionable state or has already reached a terminal decision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/pricing/page:
@@ -3484,6 +3500,83 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/PublicPricingPageItem' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /setup/status:
+    get:
+      tags: [public]
+      summary: 首装状态探测(工作租户是否尚无管理员)
+      operationId: getSetupStatus
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-13-setup-wizard-role-nav-claude.md
+        - backend/internal/setuphttp/setuphttp.go
+      security: []
+      description: |
+        公开只读:返回 needs_setup。true 表示工作租户没有任何未软删的 admin 用户,
+        前端应引导进入 /setup 首装向导;false 表示已完成安装。
+      responses:
+        '200':
+          description: 当前安装状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [needs_setup]
+                properties:
+                  needs_setup:
+                    type: boolean
+        '503':
+          description: 存储不可用
+
+  /setup/install:
+    post:
+      tags: [public]
+      summary: 首装创建第一个管理员(fail-closed)
+      operationId: postSetupInstall
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-13-setup-wizard-role-nav-claude.md
+        - backend/internal/setuphttp/setuphttp.go
+      security: []
+      description: |
+        仅当工作租户尚无管理员时可用;一旦存在 admin 一律 403(安装通道永久关死)。
+        并发安装由事务内 advisory lock 串行化,仅一个胜者。邮箱撞已有普通用户返回
+        409,绝不静默提升既有账号。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                display_name:
+                  type: string
+                  maxLength: 64
+      responses:
+        '201':
+          description: 管理员创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email]
+                properties:
+                  email:
+                    type: string
+        '400':
+          description: 入参非法(邮箱/口令强度/JSON)
+        '403':
+          description: 已安装,通道关死
+        '409':
+          description: 邮箱已被既有账号占用
+        '503':
+          description: 存储不可用
 
   /v1/public/rankings:
     get:
@@ -7788,6 +7881,27 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/alert-rules/metric-catalog:
+    get:
+      tags: [admin-alerting]
+      summary: List metrics produced for alert rules
+      operationId: adminListAlertMetricCatalog
+      x-huakai-spec-source:
+        - backend/internal/alertmetrics/catalog.go
+        - backend/internal/alertinghttp/metric_catalog_handler.go
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      responses:
+        '200':
+          description: Built-in alert metrics and dynamic metric prefixes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertMetricCatalogEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/alert-rules/{id}:
     parameters:
       - in: path
@@ -9369,15 +9483,48 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/channels/{id}:
+    get:
+      tags: [admin-channel-catalog]
+      summary: Get a tenant-scoped channel
+      operationId: getAdminChannel
+      description: |
+        Returns one non-deleted channel selected by tenant scope plus path
+        `id`, including the three rewrite-gate values consumed by request
+        parameter rewriting and output sensitive-word rewriting.
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminChannelCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
     put:
       tags: [admin-channel-catalog]
       summary: Update a tenant-scoped channel
       operationId: updateAdminChannel
       description: |
-        Updates pool_group_id, name, failover_status_codes, and enabled state
-        for a channel selected by tenant scope plus path `id`. `pool_group_id`
-        must belong to the same tenant. Successful mutations write an admin
-        audit event.
+        Updates pool_group_id, name, failover_status_codes, enabled state, and
+        any rewrite-gate field present in the request for a channel selected by
+        tenant scope plus path `id`. Omitted rewrite-gate fields retain their
+        stored values; explicit empty arrays or object clear that gate.
+        `pool_group_id` must belong to the same tenant. Successful mutations
+        write an admin audit event.
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -11752,6 +11899,170 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/admin/models:
+    get:
+      tags: [admin-models]
+      summary: List model registry subjects with numeric database ids
+      operationId: listAdminModels
+      description: |
+        Lists non-deleted model subjects in one explicit scope. Tenant operators
+        default to their authenticated tenant and may read the global scope only
+        when their tenant has enabled global-catalog inheritance; platform
+        administrators must provide tenant_id for tenant scope. The
+        response is the administrative projection and therefore includes the
+        numeric models.id required by capability, alias, and routing workflows.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+        - backend/internal/registry/models_admin.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: scope
+          required: false
+          schema: { type: string, enum: [tenant, global], default: tenant }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin when scope=tenant; tenant_operator may omit and use its authenticated scope. Forbidden for scope=global.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Models in the selected administrative scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModelListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-models]
+      summary: Manually register a model subject
+      operationId: createAdminModel
+      description: |
+        Creates a tenant or global model subject. Tenant operators can create
+        only inside their authenticated tenant scope. Global creation requires
+        platform_admin. The authenticated identity, never the request body,
+        supplies the authorization scope and snapshot audit actor.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+        - backend/internal/registry/models_admin.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: scope
+          required: false
+          schema: { type: string, enum: [tenant, global], default: tenant }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin when scope=tenant; tenant_operator may omit and use its authenticated scope. Forbidden for scope=global.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminModelCreateRequest' }
+      responses:
+        '201':
+          description: Model subject created and affected registry snapshots incremented in the same transaction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/models/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        description: Internal models.id numeric identifier.
+        schema: { type: integer, format: int64, minimum: 1 }
+      - in: query
+        name: scope
+        required: false
+        schema: { type: string, enum: [tenant, global], default: tenant }
+      - in: query
+        name: tenant_id
+        required: false
+        description: Required for platform_admin when scope=tenant; tenant_operator may omit and use its authenticated scope. Forbidden for scope=global.
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-models]
+      summary: Read one model registry subject
+      operationId: getAdminModel
+      description: Tenant operators may read a global subject only when their authenticated tenant has enabled global-catalog inheritance.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Model subject in the authorized scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    patch:
+      tags: [admin-models]
+      summary: Update editable fields or enable/disable a model subject
+      operationId: updateAdminModel
+      description: |
+        Partially updates an existing non-deleted subject. canonical_id, scope,
+        and tenant_id remain immutable. Status may transition only between
+        active and disabled. Tenant operators cannot write global subjects.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+        - backend/internal/registry/models_admin.go
+      x-huakai-required-role: tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminModelUpdateRequest' }
+      responses:
+        '200':
+          description: Model subject updated and affected registry snapshots incremented in the same transaction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-models]
+      summary: Soft-delete a model registry subject
+      operationId: deleteAdminModel
+      description: |
+        Sets status=deleted and deleted_at in the selected scope. Existing alias
+        and binding rows are retained for audit and fail closed because the
+        model subject is no longer active. Tenant operators cannot delete global subjects.
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+        - backend/internal/registry/models_admin.go
+      x-huakai-required-role: tenant_operator
+      responses:
+        '204': { description: Model subject soft-deleted and affected registry snapshots incremented in the same transaction. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/models/aliases/bulk-import:
     post:
       tags: [admin-models]
@@ -12655,6 +12966,139 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/model-routing-overrides:
+    get:
+      tags: [admin-model-routing-overrides]
+      summary: List tenant-scoped model routing account pins
+      operationId: listAdminModelRoutingOverrides
+      description: |
+        Lists Layer-1 routing configuration that narrows one model inside one
+        pool group to an ordered provider-account subset. This resource is
+        distinct from model-pool-bindings: it does not choose the pool, weight
+        a binding, set binding concurrency, or configure fallback classes.
+        platform_admin callers must pass tenant_id; tenant_operator callers may
+        omit it and use their admin credential scope.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Model routing override list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-model-routing-overrides]
+      summary: Create a tenant-scoped model routing account pin
+      operationId: createAdminModelRoutingOverride
+      description: |
+        Creates a Layer-1 account-subset pin. The pool group and every provider
+        account must belong to the selected tenant, and every account must be in
+        that pool group through its channel. Duplicate account ids are collapsed
+        while preserving their first occurrence.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelRoutingOverrideCreateRequest' }
+      responses:
+        '201':
+          description: Created model routing override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Pool group or provider-account subset does not belong to the selected tenant and pool.
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-routing-overrides/{id}:
+    patch:
+      tags: [admin-model-routing-overrides]
+      summary: Update a tenant-scoped model routing account pin
+      operationId: updateAdminModelRoutingOverride
+      description: |
+        Updates only explicitly supplied provider_account_ids or enabled fields.
+        Pool group and model are immutable; change either by deleting and
+        recreating the resource. Omitted fields retain their stored values.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelRoutingOverrideUpdateRequest' }
+      responses:
+        '200':
+          description: Updated model routing override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelRoutingOverride' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Provider-account subset does not belong to the override tenant and pool.
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-model-routing-overrides]
+      summary: Delete a tenant-scoped model routing account pin
+      operationId: deleteAdminModelRoutingOverride
+      description: Soft-deletes the override selected by tenant scope plus path id. Returns 204 on success.
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator may omit and uses its admin token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '204':
+          description: Model routing override was deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/proxies:
     get:
       tags: [admin-proxies]
@@ -12884,6 +13328,75 @@ paths:
                     type: string
                     enum: [unsafe_proxy_host, target_denied, bad_proxy_url, dial_timeout, tunnel_refused, tls_fail]
                   probed_at: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenants/{id}/default-proxy:
+    get:
+      tags: [admin-proxies]
+      summary: Read a tenant's default outbound proxy
+      operationId: getAdminTenantDefaultProxy
+      description: |
+        Returns the default outbound proxy id for the tenant named by the path.
+        `proxy_id=null` means accounts without an account-level proxy or proxy group
+        connect directly. A tenant operator may read only its own tenant; a platform
+        admin may name any tenant explicitly in the path.
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+        - backend/internal/proxyadmin/tenant_default.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Target tenant id; this path value is the sole tenant selector.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current tenant default outbound proxy selection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-proxies]
+      summary: Set or clear a tenant's default outbound proxy
+      operationId: putAdminTenantDefaultProxy
+      description: |
+        Sets the tenant fallback used only when an account has neither an account-level
+        proxy nor a proxy group. A numeric proxy_id must belong to the same tenant and
+        must not be soft-deleted; it need not currently be active because runtime health
+        remains fail-closed. `proxy_id=null` clears the fallback and restores direct
+        connection for otherwise-unbound accounts. The change and its admin audit event
+        commit atomically.
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+        - backend/internal/proxyadmin/tenant_default.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Target tenant id; this path value is the sole tenant selector.
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyRequest' }
+      responses:
+        '200':
+          description: Updated tenant default outbound proxy selection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDefaultProxyResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -14298,7 +14811,8 @@ components:
         metric: { type: string, minLength: 1 }
         metric_type:
           type: string
-          enum: [cpu_usage_percent]
+          deprecated: true
+          description: Legacy compatibility field. New clients use metric with the metric-catalog endpoint.
         filters:
           type: object
           additionalProperties: { type: string }
@@ -14309,7 +14823,7 @@ components:
         severity:
           type: string
           enum: [info, warning, critical]
-        window_seconds: { type: integer, format: int32, minimum: 1 }
+        window_seconds: { type: integer, format: int32, minimum: 1, maximum: 86400 }
         sustained_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
         cooldown_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
         notify_email: { type: boolean, default: false }
@@ -14333,6 +14847,23 @@ components:
         limit: { type: integer, minimum: 1, maximum: 500 }
         offset: { type: integer, minimum: 0 }
 
+    AlertMetricCatalogEntry:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/alertmetrics/catalog.go
+        - backend/internal/alertinghttp/metric_catalog_handler.go
+      required: [name, label, unit, description, is_prefix]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Exact metric name, or a prefix when is_prefix is true.
+        label: { type: string, minLength: 1 }
+        unit: { type: string, minLength: 1 }
+        description: { type: string, minLength: 1 }
+        is_prefix: { type: boolean }
+
     AlertRuleCreateRequest:
       type: object
       additionalProperties: false
@@ -14351,7 +14882,8 @@ components:
         metric: { type: string, minLength: 1 }
         metric_type:
           type: string
-          enum: [cpu_usage_percent]
+          deprecated: true
+          description: Legacy compatibility field. New clients use metric with the metric-catalog endpoint.
         filters:
           type: object
           additionalProperties: { type: string }
@@ -14362,7 +14894,7 @@ components:
         severity:
           type: string
           enum: [info, warning, critical]
-        window_seconds: { type: integer, format: int32, minimum: 1 }
+        window_seconds: { type: integer, format: int32, minimum: 1, maximum: 86400 }
         sustained_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
         cooldown_seconds: { type: integer, format: int32, minimum: 0, default: 0 }
         notify_email: { type: boolean, default: false }
@@ -14382,7 +14914,8 @@ components:
         metric: { type: string, minLength: 1 }
         metric_type:
           type: string
-          enum: [cpu_usage_percent]
+          deprecated: true
+          description: Legacy compatibility field; send an empty string to clear it when updating metric.
         filters:
           type: object
           additionalProperties: { type: string }
@@ -14393,7 +14926,7 @@ components:
         severity:
           type: string
           enum: [info, warning, critical]
-        window_seconds: { type: integer, format: int32, minimum: 1 }
+        window_seconds: { type: integer, format: int32, minimum: 1, maximum: 86400 }
         sustained_seconds: { type: integer, format: int32, minimum: 0 }
         cooldown_seconds: { type: integer, format: int32, minimum: 0 }
         notify_email: { type: boolean }
@@ -15563,6 +16096,92 @@ components:
           type: string
           description: Public model mode, for example chat or embedding.
 
+    AdminModel:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-15-model-registry-admin-crud.md
+        - backend/internal/modeladminhttp/routes.go
+      required:
+        - id
+        - tenant_id
+        - scope
+        - canonical_id
+        - protocol_family
+        - default_provider_model_id
+        - default_context_window
+        - default_request_timeout_ms
+        - pricing_class
+        - model_owner
+        - capabilities
+        - status
+        - created_at
+        - updated_at
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Null only for global scope.
+        scope: { type: string, enum: [tenant, global] }
+        canonical_id: { type: string, minLength: 1 }
+        protocol_family: { type: string, enum: [anthropic_messages, openai_chat, openai_responses, gemini] }
+        default_provider_model_id: { type: string, minLength: 1 }
+        default_context_window: { type: integer, format: int32, minimum: 0 }
+        default_request_timeout_ms: { type: integer, format: int32, minimum: 1 }
+        pricing_class: { type: string, minLength: 1 }
+        model_owner: { type: string, minLength: 1 }
+        model_created_at: { type: [string, 'null'], format: date-time }
+        capabilities:
+          type: object
+          additionalProperties: { type: boolean }
+        max_output_tokens: { type: [integer, 'null'], format: int32, minimum: 1 }
+        model_mode: { type: [string, 'null'] }
+        status: { type: string, enum: [active, disabled] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AdminModelListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/process/plans/2026-07-15-model-registry-admin-crud.md]
+      required: [object, items]
+      properties:
+        object: { type: string, enum: [admin_models_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminModel' }
+
+    AdminModelCreateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/process/plans/2026-07-15-model-registry-admin-crud.md]
+      required: [canonical_id, protocol_family, default_provider_model_id]
+      properties:
+        canonical_id: { type: string, minLength: 1 }
+        protocol_family: { type: string, enum: [anthropic_messages, openai_chat, openai_responses, gemini] }
+        default_provider_model_id: { type: string, minLength: 1 }
+        default_context_window: { type: integer, format: int32, minimum: 0, default: 0 }
+        default_request_timeout_ms: { type: integer, format: int32, minimum: 1, default: 60000 }
+        pricing_class: { type: string, minLength: 1, default: standard }
+        model_owner: { type: string, minLength: 1, default: HUAKAI }
+        status: { type: string, enum: [active, disabled], default: active }
+
+    AdminModelUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      x-huakai-spec-source: [docs/process/plans/2026-07-15-model-registry-admin-crud.md]
+      properties:
+        default_provider_model_id: { type: string, minLength: 1 }
+        default_context_window: { type: integer, format: int32, minimum: 0 }
+        default_request_timeout_ms: { type: integer, format: int32, minimum: 1 }
+        pricing_class: { type: string, minLength: 1 }
+        protocol_family: { type: string, enum: [anthropic_messages, openai_chat, openai_responses, gemini] }
+        model_owner: { type: string, minLength: 1 }
+        status: { type: string, enum: [active, disabled] }
+
     ModelCapabilitiesUpdateRequest:
       type: object
       additionalProperties: false
@@ -15971,6 +16590,11 @@ components:
         operator_note: { type: string, maxLength: 4000 }
         created_at: { type: string, format: date-time }
         resolved_at: { type: [string, 'null'], format: date-time }
+        refunded_micro_usd:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Sum of negative dispute refund events in micro-USD; populated by the admin list response.
 
     ReceiptVerifyResponse:
       type: object
@@ -16850,12 +17474,23 @@ components:
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0, description: "Lower routes first." }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted], description: "priority_weighted is stored but not yet executed (routes as strict_priority)." }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
         provider_model_id_override: { type: string, nullable: true, description: "Upstream model name override; null uses the model's own id." }
         rpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
         tpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, nullable: true, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别；旧响应缺失或空值按 normal 解释。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string, nullable: true }
         effective_from: { type: string, format: date-time, nullable: true }
@@ -16873,12 +17508,23 @@ components:
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0 }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
         provider_model_id_override: { type: string }
         rpm_limit: { type: integer, format: int32, minimum: 0 }
         tpm_limit: { type: integer, format: int32, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别，省略时默认 normal。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string }
         effective_from: { type: string, format: date-time }
@@ -16888,26 +17534,80 @@ components:
     ModelPoolBindingUpdateRequest:
       type: object
       additionalProperties: false
-      description: "Tunable fields only; model_id / pool_group_id are immutable."
+      description: |
+        仅允许调整可变字段；model_id / pool_group_id 不可变。虽然方法名是 PATCH，当前写口采用整行默认覆盖：省略的标量回到服务端默认，可空字段会清空。尤其省略 fallback_class 会重置为 normal，因此客户端编辑其它字段时必须回填当前 fallback_class。
       properties:
         priority: { type: integer, format: int32, minimum: 0 }
         weight: { type: integer, format: int32, minimum: 1 }
-        selection_mode: { type: string, enum: [strict_priority, priority_weighted] }
+        selection_mode:
+          type: string
+          enum: [strict_priority, priority_weighted]
+          default: strict_priority
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。省略时因整行覆盖回到 strict_priority。"
         provider_model_id_override: { type: string }
         rpm_limit: { type: integer, format: int32, minimum: 0 }
         tpm_limit: { type: integer, format: int32, minimum: 0 }
         max_parallel_requests: { type: integer, format: int32, minimum: 0 }
-        fallback_class: { type: string, enum: [normal, context_window, safety, quota, manual] }
+        fallback_class:
+          type: string
+          enum: [normal, context_window, safety, quota, manual]
+          default: normal
+          description: |
+            绑定运行时类别；PATCH 省略该字段会按整行覆盖契约重置为 normal。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
+            用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
         disabled_reason: { type: string }
         effective_from: { type: string, format: date-time }
         effective_until: { type: string, format: date-time }
         reason: { type: string }
 
+    ModelRoutingOverride:
+      type: object
+      additionalProperties: false
+      required: [id, pool_group_id, model, provider_account_ids, enabled, created_at, updated_at]
+      description: A tenant-scoped Layer-1 model-to-provider-account subset inside one pool group.
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        model: { type: string, minLength: 1 }
+        provider_account_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModelRoutingOverrideCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [pool_group_id, model, provider_account_ids]
+      properties:
+        pool_group_id: { type: integer, format: int64, minimum: 1 }
+        model: { type: string, minLength: 1 }
+        provider_account_ids:
+          type: array
+          minItems: 1
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean, default: true }
+
+    ModelRoutingOverrideUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        provider_account_ids:
+          type: array
+          minItems: 1
+          items: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+
     Proxy:
       type: object
       additionalProperties: false
-      required: [id, name, protocol, host, port, auth_username, status, last_check_at, created_at, updated_at]
+      required: [id, name, protocol, host, port, auth_username, group_id, status, last_check_at, created_at, updated_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
@@ -16915,6 +17615,12 @@ components:
         host: { type: string }
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true, description: "Optional proxy auth username. The matching auth_secret is write-only and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；仅允许 ASCII 字母、数字、下划线和短横线，null 表示未分组。"
         status: { type: string, enum: [active, disabled, dead] }
         last_check_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
@@ -16940,6 +17646,12 @@ components:
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true }
         auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；空串或 null 表示未分组。"
         status: { type: string, enum: [active, disabled, dead], description: "Defaults to active when omitted." }
 
     AdminProxyUpdateRequest:
@@ -16953,6 +17665,12 @@ components:
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
         auth_username: { type: string, nullable: true }
         auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        group_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          pattern: '^[A-Za-z0-9_-]{0,64}$'
+          description: "代理组标识；空串或 null 会清除现有分组。"
 
     AdminProxySetStatusRequest:
       type: object
@@ -16968,6 +17686,32 @@ components:
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         status: { type: string, enum: [active, disabled, dead] }
+
+    AdminTenantDefaultProxyRequest:
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+      type: object
+      additionalProperties: false
+      required: [proxy_id]
+      properties:
+        proxy_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Same-tenant, non-soft-deleted proxy id; null clears the fallback to direct connection.
+
+    AdminTenantDefaultProxyResponse:
+      x-huakai-spec-source:
+        - backend/internal/proxyadminhttp/tenant_default_routes.go
+      type: object
+      additionalProperties: false
+      required: [proxy_id]
+      properties:
+        proxy_id:
+          type: [integer, 'null']
+          format: int64
+          minimum: 1
+          description: Current tenant fallback proxy id, or null when no fallback is configured.
 
     AdminCreateUserRequest:
       type: object
@@ -17171,7 +17915,7 @@ components:
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       type: object
       additionalProperties: false
-      required: [id, pool_group_id, name, failover_status_codes, enabled, created_at]
+      required: [id, pool_group_id, name, failover_status_codes, body_param_strips, param_override, sensitive_words, enabled, created_at]
       properties:
         id: { type: integer, format: int64 }
         pool_group_id: { type: integer, format: int64 }
@@ -17179,6 +17923,18 @@ components:
         failover_status_codes:
           type: array
           items: { type: integer }
+        body_param_strips:
+          type: array
+          description: Top-level request JSON fields removed before upstream dispatch.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Top-level request JSON values forced before body_param_strips is applied.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Words obfuscated in supported outbound request text fields.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
 
@@ -17194,6 +17950,18 @@ components:
           type: array
           description: Optional; defaults to [401, 403, 429, 529] when omitted.
           items: { type: integer, minimum: 100, maximum: 599 }
+        body_param_strips:
+          type: array
+          description: Optional; defaults to an empty array when omitted.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Optional; defaults to an empty object when omitted.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Optional; defaults to an empty array when omitted.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         reason:
           type: string
@@ -17211,6 +17979,18 @@ components:
           type: array
           description: Optional; defaults to [401, 403, 429, 529] when omitted.
           items: { type: integer, minimum: 100, maximum: 599 }
+        body_param_strips:
+          type: array
+          description: Optional; omitted preserves the stored array and an explicit empty array clears it.
+          items: { type: string, minLength: 1 }
+        param_override:
+          type: object
+          description: Optional; omitted preserves the stored object and an explicit empty object clears it.
+          additionalProperties: true
+        sensitive_words:
+          type: array
+          description: Optional; omitted preserves the stored array and an explicit empty array clears it.
+          items: { type: string, minLength: 1 }
         enabled: { type: boolean }
         reason:
           type: string
@@ -17249,10 +18029,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, description: "Neutral scope encoding: '*' for global, local id string otherwise." }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0 }
-        limit_value: { type: string, description: "Decimal string; 0 = unlimited." }
-        burst_value: { type: string, description: "Decimal string token-bucket burst allowance." }
+        limit_value: { type: string, description: "非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "窗口硬上限增量；实际上限为 limit_value + burst_value，默认 0 时行为不变。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled] }
         priority: { type: integer, description: "Lower = higher priority (tie-break ordering)." }
         enabled: { type: boolean }
@@ -17271,10 +18051,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
-        limit_value: { type: string, description: "Decimal string >= 0; 0 = unlimited." }
-        burst_value: { type: string, description: "Optional decimal string >= 0; default 0." }
+        limit_value: { type: string, description: "必填非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "可选非负十进制字符串；窗口硬上限为 limit_value + burst_value，默认 0。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled], default: enforce }
         priority: { type: integer, default: 100 }
         enabled: { type: boolean, default: true }
@@ -17290,10 +18070,10 @@ components:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
-        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, manual] }
+        window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
-        limit_value: { type: string, description: "Decimal string >= 0; 0 = unlimited." }
-        burst_value: { type: string, description: "Optional decimal string >= 0; default 0." }
+        limit_value: { type: string, description: "必填非负十进制字符串；表示不含 burst_value 的基础上限。" }
+        burst_value: { type: string, description: "可选非负十进制字符串；窗口硬上限为 limit_value + burst_value，默认 0。" }
         mode: { type: string, enum: [enforce, observe, manual_first, disabled], default: enforce }
         priority: { type: integer, default: 100 }
         enabled: { type: boolean, default: true }
@@ -17856,6 +18636,28 @@ components:
           maxItems: 50
           items: { $ref: '#/components/schemas/ChannelHealthAuditEvent' }
 
+    ProviderAccountTempRule:
+      type: object
+      additionalProperties: false
+      required: [error_code, keywords, duration_minutes]
+      properties:
+        error_code: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        keywords: { type: array, items: { type: string } }
+        duration_minutes: { type: integer, format: int32, minimum: 1, maximum: 2147483647 }
+        description: { type: string }
+
+    ProviderAccountProxyBinding:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [direct, proxy, group]
+          description: direct 清除代理列；proxy 使用 proxy_id；group 使用 proxy_group_id。
+        proxy_id: { type: integer, format: int64, minimum: 1 }
+        proxy_group_id: { type: string, minLength: 1 }
+
     ProviderAccount:
       type: object
       additionalProperties: false
@@ -17871,6 +18673,14 @@ components:
         - name
         - account_type
         - enabled
+        - expires_at
+        - rpm_limit
+        - tpm_limit
+        - window_cost_limit_cents
+        - max_sessions
+        - disable_cooling
+        - refresh_lead_seconds
+        - tls_fingerprint_rotate
         - health_state
         - credential_state
         - cap_concurrency
@@ -17881,9 +18691,25 @@ components:
         - last_request_observed_at
         - last_request_observation_source
         - token_version
+        - last_refresh_at
+        - last_refresh_outcome
+        - custom_error_codes_enabled
+        - custom_error_codes
+        - pool_mode
+        - temp_unschedulable_enabled
+        - temp_unschedulable_rules
+        - proxy_id
+        - proxy_group_id
+        - proxy_binding
         - created_at
         - updated_at
       properties:
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         id: { type: integer, format: int64 }
         tenant_id: { type: integer, format: int64 }
         provider_id: { type: integer, format: int64 }
@@ -17894,6 +18720,13 @@ components:
           enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         enabled: { type: boolean }
         expires_at: { type: [string, 'null'], format: date-time }
+        rpm_limit: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        tpm_limit: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        window_cost_limit_cents: { type: integer, format: int64, minimum: 0, maximum: 9223372036854775807 }
+        max_sessions: { type: integer, format: int32, minimum: 0, maximum: 2147483647 }
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds: { type: [integer, 'null'], format: int32, minimum: 0, maximum: 2147483647 }
+        tls_fingerprint_rotate: { type: boolean }
         health_state:
           type: string
           enum: [operational, degraded, failed, cooling_down, error]
@@ -17903,6 +18736,10 @@ components:
         cap_concurrency: { type: integer, minimum: 1 }
         in_flight_count: { type: integer, minimum: 0 }
         priority: { type: integer }
+        static_weight: { type: integer, minimum: 1 }
+        probe_model: { type: [string, 'null'] }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
         last_dispatch_at: { type: [string, 'null'], format: date-time }
         last_probe_latency_ms:
           type: [integer, 'null']
@@ -17934,12 +18771,8 @@ components:
         oauth_endpoint_health:
           type: string
           enum: [operational, degraded, circuit_open]
-        custom_error_codes_enabled: { type: boolean, default: false }
-        custom_error_codes: { type: array, items: { type: integer } }
-        pool_mode: { type: boolean, default: false }
-        temp_unschedulable_enabled: { type: boolean, default: false }
-        temp_unschedulable_rules:
-          description: 仅账号详情读取接口返回；列表与其它账号响应省略。
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
           type: array
           items:
             type: object
@@ -17985,6 +18818,13 @@ components:
       additionalProperties: false
       required: [provider_id, channel_id, name, account_type, credentials]
       properties:
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
         provider_id: { type: integer, format: int64 }
         channel_id: { type: integer, format: int64 }
         name: { type: string, minLength: 1 }
@@ -18001,6 +18841,7 @@ components:
           type: boolean
           default: false
           description: Set to true only after operator review to create despite high-risk mixed-channel source/vendor/credential-type differences.
+        enabled: { type: boolean }
         credentials:
           type: object
           additionalProperties: true
@@ -18010,8 +18851,59 @@ components:
             refresh_token, expires_at, plus provider-specific fields.
         cap_concurrency: { type: integer, minimum: 1, default: 4 }
         priority: { type: integer, default: 100 }
+        static_weight: { type: integer, minimum: 1, default: 1 }
+        probe_model: { type: string }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+        rpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时沿用数据库默认值。
+        tpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时沿用数据库默认值。
+        window_cost_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；单位为分。
+        max_sessions:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: 0 表示不限。
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: null 或省略时使用全局预刷新窗口。
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: 允许过去时间；null 清除账号过期时间。
+        tls_fingerprint_rotate: { type: boolean }
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
+          type: array
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        reason: { type: string }
 
     MixedChannelRiskRequired:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
@@ -18056,26 +18948,69 @@ components:
       type: object
       additionalProperties: false
       properties:
-        enabled: { type: boolean }
-        priority: { type: integer }
-        cap_concurrency: { type: integer, minimum: 1 }
-        model_allow_list: { type: array, items: { type: string } }
-        capability_flags: { type: array, items: { type: string } }
-        custom_error_codes_enabled: { type: boolean }
-        custom_error_codes: { type: array, items: { type: integer } }
         pool_mode: { type: boolean }
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules:
           type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [error_code, keywords, duration_minutes]
-            properties:
-              error_code: { type: integer }
-              keywords: { type: array, items: { type: string } }
-              duration_minutes: { type: integer, minimum: 1 }
-              description: { type: string }
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        priority: { type: integer }
+        static_weight: { type: integer, minimum: 1 }
+        cap_concurrency: { type: integer, minimum: 1 }
+        probe_model: { type: string }
+        tags: { type: array, items: { type: string } }
+        extra: { type: object, additionalProperties: true }
+        model_allow_list: { type: array, items: { type: string } }
+        capability_flags: { type: array, items: { type: string } }
+        rpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时保持当前值。
+        tpm_limit:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；省略时保持当前值。
+        window_cost_limit_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9223372036854775807
+          description: 0 表示不限；单位为分。
+        max_sessions:
+          type: integer
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: 0 表示不限。
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds:
+          type: [integer, 'null']
+          format: int32
+          minimum: 0
+          maximum: 2147483647
+          description: null 清除账号覆盖；省略时保持当前值。
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: 允许过去时间；null 清除账号过期时间。
+        tls_fingerprint_rotate: { type: boolean }
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
+          type: array
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
+        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
+        reason: { type: string }
 
     ProviderAccountEnabledUpdate:
       x-huakai-spec-source:

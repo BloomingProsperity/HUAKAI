@@ -14,6 +14,8 @@ type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
 	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
+	AcquireBindingConcurrencyLock(ctx context.Context, bindingID int64) error
+	ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error)
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
 	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
@@ -88,6 +90,7 @@ type Querier interface {
 	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
 	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)
 	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
+	CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error)
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
 	// Operator overview: how many claims are in each status for one tenant.
 	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)

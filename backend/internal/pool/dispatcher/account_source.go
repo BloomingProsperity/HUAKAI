@@ -59,6 +59,8 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		if err != nil {
 			return nil, err
 		}
+		// 生产快照不投影 provider_accounts.cap_quota_* 历史列；保留状态与启用缺链
+		// 见 docs/architecture/deprecated-schema.md。
 		snap := &AccountSnapshot{
 			ID:             r.ID,
 			TenantID:       r.TenantID,

@@ -1,4 +1,15 @@
 import type { RedeemRequest, RedeemResult } from './types'
+import type { RedemptionHistoryItem } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
+
+export interface RedemptionTableRow {
+  id: string
+  amount: string
+  statusLabel: string
+  statusTone: BadgeTone
+  redeemedAt: string
+  voucherId: string
+}
 
 /*
  * 兑换码页纯逻辑(可单测, 不触 DOM / 不发请求)。
@@ -128,4 +139,56 @@ export function friendlyRedeemError(code: string, fallbackMessage?: string): str
 /** 限流码判定:UI 据此把提示渲染成「等待」语气而非「错误」语气。 */
 export function isRateLimited(code: string): boolean {
   return code === 'voucher_attempt_limited'
+}
+
+/** 兑换历史响应到列表展示行的纯映射。 */
+export function mapRedemptionRows(items: RedemptionHistoryItem[]): RedemptionTableRow[] {
+  return items.map((item, index) => ({
+    id: `${item.voucher_id}-${item.redeemed_at}-${index}`,
+    amount: formatMoney(item.amount_cents, item.currency_code),
+    statusLabel: redemptionLabel(item.status),
+    statusTone: redemptionTone(item.status),
+    redeemedAt: formatRedemptionTime(item.redeemed_at),
+    voucherId: `#${item.voucher_id}`,
+  }))
+}
+
+function redemptionTone(status: string): BadgeTone {
+  switch (status) {
+    case 'redeemed':
+    case 'success':
+    case 'completed':
+      return 'ok'
+    case 'reversed':
+    case 'refunded':
+      return 'warn'
+    case 'failed':
+      return 'danger'
+    default:
+      return status ? 'muted' : 'ok'
+  }
+}
+
+function redemptionLabel(status: string): string {
+  switch (status) {
+    case 'redeemed':
+    case 'success':
+    case 'completed':
+      return '已到账'
+    case 'reversed':
+      return '已冲正'
+    case 'refunded':
+      return '已退回'
+    case 'failed':
+      return '失败'
+    case '':
+      return '已到账'
+    default:
+      return status
+  }
+}
+
+function formatRedemptionTime(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', { hour12: false })
 }

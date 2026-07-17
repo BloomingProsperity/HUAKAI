@@ -7,6 +7,10 @@ import {
   buildVoucherRequest,
   centsToUsd,
   EMPTY_VOUCHER_FORM,
+  formatAdminDate,
+  mapAssignmentRows,
+  mapPlanRows,
+  mapPlanStats,
   parseBulkUserIDs,
   planStatusLabel,
   planToForm,
@@ -15,7 +19,7 @@ import {
   usdToCents,
   type VoucherFormState,
 } from './subscriptions'
-import { EMPTY_PLAN_FORM, type Plan, type PlanFormState } from './types'
+import { EMPTY_PLAN_FORM, type AdminSubscription, type Plan, type PlanFormState } from './types'
 
 function form(over: Partial<PlanFormState>): PlanFormState {
   return { ...EMPTY_PLAN_FORM, ...over }
@@ -34,6 +38,20 @@ function plan(over: Partial<Plan>): Plan {
     sort_order: 0,
     created_at: '2026-06-25T00:00:00Z',
     updated_at: '2026-06-25T00:00:00Z',
+    ...over,
+  }
+}
+
+function subscription(over: Partial<AdminSubscription>): AdminSubscription {
+  return {
+    id: 81,
+    plan_id: 9,
+    user_id: 6,
+    source: 'admin',
+    status: 'active',
+    starts_at: '2026-07-01T00:00:00Z',
+    expires_at: '2026-08-01T00:00:00Z',
+    created_at: '2026-07-01T00:00:00Z',
     ...over,
   }
 }
@@ -153,6 +171,77 @@ describe('planTone / planStatusLabel', () => {
     expect(planStatusLabel(plan({ enabled: false }))).toBe('已停用')
     expect(planStatusLabel(plan({ enabled: true, for_sale: true }))).toBe('在售')
     expect(planStatusLabel(plan({ enabled: true, for_sale: false }))).toBe('未上架')
+  })
+})
+
+describe('mapPlanStats', () => {
+  it('数据未返回时显示未知而不是伪造零值', () => {
+    const stats = mapPlanStats(null)
+    expect(stats.map((stat) => stat.value)).toEqual(['—', '—', '—'])
+    expect(stats.every((stat) => stat.hint === '当前页数据加载中')).toBe(true)
+  })
+
+  it('严格按 enabled 拆分当前页启用与停用数', () => {
+    const stats = mapPlanStats([
+      plan({ id: 1, enabled: true }),
+      plan({ id: 2, enabled: false }),
+      plan({ id: 3, enabled: true }),
+    ])
+    // 判别核心:总数=3、启用=2、停用=1；变异 enabled 过滤条件会立即 RED。
+    expect(stats.map((stat) => [stat.label, stat.value, stat.tone])).toEqual([
+      ['套餐总数', '3 个', 'default'],
+      ['启用', '2 个', 'ok'],
+      ['停用', '1 个', 'danger'],
+    ])
+  })
+})
+
+describe('mapPlanRows', () => {
+  it('将套餐的金额、封顶、组与状态映射到表格行', () => {
+    const source = plan({
+      id: 23,
+      description: '满表验收',
+      price_cents: 2599,
+      validity_days: 45,
+      daily_cap_usd: '5',
+      weekly_cap_usd: null,
+      monthly_cap_usd: '99',
+      granted_group: '',
+      enabled: false,
+    })
+    const [row] = mapPlanRows([source])
+    // 判别核心:分到美元、null cap 到∞、停用状态必须同时成立。
+    expect(row).toMatchObject({
+      id: 23,
+      source,
+      description: '满表验收',
+      price: '25.99 USD',
+      validity: '45 天',
+      caps: '5 / ∞ / 99',
+      group: '—',
+      statusText: '已停用',
+      statusTone: 'danger',
+    })
+  })
+})
+
+describe('mapAssignmentRows', () => {
+  it('保留订阅源对象并映射 ID、状态与日期', () => {
+    const source = subscription({ id: 108, plan_id: 23, status: 'cancelled' })
+    const [row] = mapAssignmentRows([source])
+    // 判别核心:订阅 ID 带 #、套餐 ID 不带 #，cancelled 必须映射 danger。
+    expect(row.id).toBe(108)
+    expect(row.source).toBe(source)
+    expect(row.subscriptionID).toBe('#108')
+    expect(row.planID).toBe('23')
+    expect(row.statusTone).toBe('danger')
+    expect(row.startsAt).toBe(formatAdminDate(source.starts_at))
+    expect(row.expiresAt).toBe(formatAdminDate(source.expires_at))
+  })
+
+  it('非法日期原值保留，不伪装成正常时间', () => {
+    const [row] = mapAssignmentRows([subscription({ starts_at: 'invalid-start' })])
+    expect(row.startsAt).toBe('invalid-start')
   })
 })
 

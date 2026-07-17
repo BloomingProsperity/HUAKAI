@@ -2,6 +2,7 @@
  * Ops 告警控制台(运营台)前端类型 —— 镜像 alertinghttp 的 JSON DTO。
  * 端点(admin token 鉴权,/v1/admin/* 由 tokenForPath 注入):
  *   GET    /v1/admin/alert-rules                      列出规则(需 tenant_id query)
+ *   GET    /v1/admin/alert-rules/metric-catalog       列出后端真实生产的告警指标
  *   POST   /v1/admin/alert-rules                      新建规则(tenant_id 在 body)
  *   GET    /v1/admin/alert-rules/{id}                  取规则(需 tenant_id query)
  *   PUT    /v1/admin/alert-rules/{id}                  改规则(需 tenant_id query)
@@ -51,6 +52,15 @@ export interface AlertRuleListResponse {
   items: AlertRule[]
   limit: number
   offset: number
+}
+
+/** 后端告警指标目录项；is_prefix=true 时 name 需要补全状态等后缀。 */
+export interface AlertMetricCatalogEntry {
+  name: string
+  label: string
+  unit: string
+  description: string
+  is_prefix: boolean
 }
 
 /** 新建规则请求体(ruleCreateRequest,rule_handlers.go:9)。tenant_id 在 body。 */

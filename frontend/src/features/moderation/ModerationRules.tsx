@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import {
   bulkCreateHashes,
@@ -14,6 +16,8 @@ import {
   unbanAPIKey,
 } from './api'
 import {
+  mapBannedKeyRows,
+  mapModerationRuleRows,
   normalizeHash,
   parseBulkLines,
   shortHash,
@@ -21,6 +25,7 @@ import {
   validateHash,
   validateKeyword,
 } from './moderation'
+import type { BannedKeyTableRow, ModerationRuleTableRow } from './moderation'
 import type { BannedAPIKey, BulkCreateResult, HashRule, KeywordRule } from './types'
 
 /*
@@ -188,50 +193,25 @@ function RuleManager<T>({
 
       {/* 列表 */}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title={`正在加载${title}`} hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无{title}。</Empty>
+        <EmptyState title={`该租户暂无${title}`} />
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                {[valueLabel, '状态', ''].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const id = rowId(row)
-                const v = rowValue(row)
-                return (
-                  <tr key={id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                    <td style={tdMono}>{display ? display(v) : v}</td>
-                    <td style={td}>
-                      <StatusBadge tone={rowEnabled(row) ? 'ok' : 'muted'}>{rowEnabled(row) ? '启用' : '停用'}</StatusBadge>
-                    </td>
-                    <td style={{ ...td, textAlign: 'right' }}>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          if (!window.confirm(`删除该${valueLabel}「${display ? display(v) : v}」?`)) return
-                          void run(() => remove(id, tenantId), '已删除')
-                        }}
-                        style={dangerLink}
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label={`${title}列表`}
+          rows={mapModerationRuleRows(rows, rowId, rowValue, rowEnabled, display)}
+          rowKey={(row) => row.id}
+          columns={moderationRuleColumns<T>(valueLabel)}
+          actions={[{
+            label: '删除',
+            tone: 'danger',
+            disabled: busy,
+            onClick: (row) => {
+              if (!window.confirm(`删除该${valueLabel}「${row.value}」?`)) return
+              void run(() => remove(row.id, tenantId), '已删除')
+            },
+          }]}
+        />
       )}
     </section>
   )
@@ -330,39 +310,17 @@ export function BannedKeysCard({ tenantId }: { tenantId: number }) {
       {error && <Banner kind="error">{error}</Banner>}
       {notice && <Banner kind="ok">{notice}</Banner>}
       {loading && rows.length === 0 ? (
-        <Empty>加载中…</Empty>
+        <EmptyState title="正在加载被封 Key" hint="请稍候。" />
       ) : rows.length === 0 ? (
-        <Empty>该租户暂无被封 Key。</Empty>
+        <EmptyState title="该租户暂无被封 Key" />
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                {['名称', 'Key 前缀', '用户', '违规次数', '最近违规', ''].map((h) => (
-                  <th key={h} style={th}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((k) => (
-                <tr key={k.id} style={{ borderTop: '1px solid var(--hk-line)' }}>
-                  <td style={td}>{k.name || '—'}</td>
-                  <td style={tdMono}>{k.key_prefix}</td>
-                  <td style={tdMono}>#{k.user_id}</td>
-                  <td style={tdMono}>{k.violation_count}</td>
-                  <td style={tdMono}>{fmt(k.last_violation_at)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>
-                    <button type="button" disabled={busy === k.id} onClick={() => unban(k)} style={primaryBtn}>
-                      {busy === k.id ? '解封中…' : '解封'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataListTable
+          label="被封 API Key 列表"
+          rows={mapBannedKeyRows(rows)}
+          rowKey={(row) => row.id}
+          columns={bannedKeyColumns}
+          actions={[{ label: (row) => busy === row.id ? '解封中…' : '解封', disabled: (row) => busy === row.id, onClick: (row) => unban(row.key) }]}
+        />
       )}
     </section>
   )
@@ -384,21 +342,24 @@ function Banner({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       : { color: 'var(--hk-primary-600)', background: 'var(--hk-primary-50)', border: '1px solid var(--hk-primary-100)' }
   return <div style={{ margin: 'var(--hk-space-4)', marginBottom: 0, padding: 'var(--hk-space-3)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, ...palette }}>{children}</div>
 }
-function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: 'var(--hk-space-8)', textAlign: 'center', color: 'var(--hk-ink-500)', fontSize: 13 }}>{children}</div>
-}
-function fmt(iso?: string): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { hour12: false })
-}
 
 const card: React.CSSProperties = { background: 'var(--hk-surface)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-lg)', boxShadow: 'var(--hk-shadow-1)', overflow: 'hidden' }
 const cardHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--hk-space-4)', borderBottom: '1px solid var(--hk-line)', background: 'var(--hk-surface-sunken)' }
 const inp: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-3)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', fontSize: 13, background: 'var(--hk-surface)', color: 'var(--hk-ink-900)', width: '100%' }
-const th: React.CSSProperties = { textAlign: 'left', padding: 'var(--hk-space-3) var(--hk-space-4)', fontSize: 12, fontWeight: 600, color: 'var(--hk-ink-500)', background: 'var(--hk-surface-sunken)', whiteSpace: 'nowrap' }
-const td: React.CSSProperties = { padding: 'var(--hk-space-3) var(--hk-space-4)', verticalAlign: 'middle' }
-const tdMono: React.CSSProperties = { ...td, fontFamily: 'var(--hk-font-mono)', color: 'var(--hk-ink-700)', whiteSpace: 'nowrap' }
 const primaryBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-primary-600)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-primary-500)', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }
 const ghostBtn: React.CSSProperties = { height: 32, padding: '0 var(--hk-space-4)', border: '1px solid var(--hk-line)', borderRadius: 'var(--hk-radius-md)', background: 'var(--hk-surface)', color: 'var(--hk-ink-700)', fontSize: 13, cursor: 'pointer' }
-const dangerLink: React.CSSProperties = { border: 'none', background: 'transparent', color: 'var(--hk-danger)', fontSize: 13, cursor: 'pointer', padding: '0 var(--hk-space-2)' }
+
+function moderationRuleColumns<T>(valueLabel: string): DataListColumn<ModerationRuleTableRow<T>>[] {
+  return [
+    { key: 'value', label: valueLabel, render: (row) => <span className="hk-mono">{row.value}</span> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.status}</StatusBadge> },
+  ]
+}
+
+const bannedKeyColumns: DataListColumn<BannedKeyTableRow>[] = [
+  { key: 'name', label: '名称', render: (row) => row.name },
+  { key: 'prefix', label: 'Key 前缀', render: (row) => <span className="hk-mono">{row.keyPrefix}</span> },
+  { key: 'user', label: '用户', render: (row) => <span className="hk-mono">{row.user}</span> },
+  { key: 'violations', label: '违规次数', render: (row) => <span className="hk-mono">{row.violationCount}</span> },
+  { key: 'last-violation', label: '最近违规', render: (row) => <span className="hk-mono">{row.lastViolationAt}</span> },
+]

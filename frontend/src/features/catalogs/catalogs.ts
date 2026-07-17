@@ -4,14 +4,16 @@
  *   - provider 新建/更新表单的前端校验(镜像后端 validateProviderCatalog*Request)
  *   - 上游协议白名单(镜像后端 knownProviderCatalogProtocols,provider_catalog_mutation_handler.go:489)
  *   - channel 新建/更新表单的前端校验(镜像后端 validateChannelCatalog*Request)
- *   - failover 状态码文本 ↔ number[] 的解析与展示(镜像后端 100..599 区间守卫)
  * 全部为同步纯函数,便于变异测试打红。后端始终是权威,前端先拦以避免无谓 400。
  */
 
 import type {
+  ChannelCatalogItem,
   ChannelCatalogMutationRequest,
+  ProviderCatalogItem,
   ProviderCatalogMutationRequest,
 } from './types'
+import type { BadgeTone } from '../../ui/StatusBadge'
 
 export type QueryValue = string | number | undefined
 
@@ -155,49 +157,60 @@ export function validateProviderUpdate(form: {
   }
 }
 
-// ── channel 失败转移状态码解析 ─────────────────────────────────────────────────
-
-/** channel 省略 failover_status_codes 时后端回落的默认值(channel_catalog_mutation_handler.go:39)。 */
-export const DEFAULT_FAILOVER_CODES: readonly number[] = [401, 403, 429, 529]
-
-/** 失败转移码解析结果。 */
-export type FailoverCodesParse =
-  | { ok: true; codes: number[] }
-  | { ok: false; error: string }
-
-/**
- * 把逗号/空白分隔的状态码文本解析成 number[]。
- * 空输入 → 空数组(后端会回落默认值,这是合法的「清空为默认」)。
- * 判别核心:每个码必须是整数且 ∈ [100,599](镜像后端 c<100||c>599 即 400);
- * 任一非法即拒(报具体的值)。重复值去重(后端不去重但无害,前端先收敛展示)。
- */
-export function parseFailoverCodes(text: string): FailoverCodesParse {
-  const raw = text.trim()
-  if (raw === '') return { ok: true, codes: [] }
-  const parts = raw.split(/[\s,]+/).filter((p) => p !== '')
-  const out: number[] = []
-  const seen = new Set<number>()
-  for (const p of parts) {
-    // 仅接受纯整数串(避免 "200.5" / "2e2" / 负号 这类被 Number 容忍的形态)。
-    if (!/^[0-9]+$/.test(p)) {
-      return { ok: false, error: `状态码「${p}」必须是整数` }
-    }
-    const n = Number(p)
-    if (n < 100 || n > 599) {
-      return { ok: false, error: `状态码 ${n} 超出 100~599 范围` }
-    }
-    if (!seen.has(n)) {
-      seen.add(n)
-      out.push(n)
-    }
-  }
-  return { ok: true, codes: out }
+export interface ProviderCatalogTableRow {
+  id: number
+  code: string
+  displayName: string
+  upstreamProtocol: string
+  status: string
+  statusTone: BadgeTone
+  createdAt: string
+  provider: ProviderCatalogItem
 }
 
-/** 把状态码数组格式化成可编辑文本(逗号分隔)。 */
-export function formatFailoverCodes(codes: number[] | undefined): string {
-  if (!codes || codes.length === 0) return ''
-  return codes.join(', ')
+/** provider 目录 DTO 到列表展示行的纯映射。 */
+export function mapProviderCatalogRows(items: ProviderCatalogItem[]): ProviderCatalogTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    code: item.code,
+    displayName: item.display_name,
+    upstreamProtocol: item.upstream_protocol,
+    status: item.enabled ? '启用' : '停用',
+    statusTone: item.enabled ? 'ok' : 'muted',
+    createdAt: formatCatalogTimestamp(item.created_at),
+    provider: item,
+  }))
+}
+
+export interface ChannelCatalogTableRow {
+  id: number
+  displayId: string
+  name: string
+  poolGroupId: number
+  status: string
+  statusTone: BadgeTone
+  createdAt: string
+  channel: ChannelCatalogItem
+}
+
+/** channel 目录 DTO 到列表展示行的纯映射。 */
+export function mapChannelCatalogRows(items: ChannelCatalogItem[]): ChannelCatalogTableRow[] {
+  return items.map((item) => ({
+    id: item.id,
+    displayId: `#${item.id}`,
+    name: item.name,
+    poolGroupId: item.pool_group_id,
+    status: item.enabled ? '启用' : '停用',
+    statusTone: item.enabled ? 'ok' : 'muted',
+    createdAt: formatCatalogTimestamp(item.created_at),
+    channel: item,
+  }))
+}
+
+export function formatCatalogTimestamp(iso?: string): string {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 // ── channel 表单校验 ──────────────────────────────────────────────────────────
@@ -206,29 +219,56 @@ export type ChannelValidation =
   | { ok: true; value: ChannelCatalogMutationRequest }
   | { ok: false; error: string }
 
-/**
- * 校验 channel 新建/更新表单(镜像 validateChannelCatalogCreate/UpdateRequest,
- * channel_catalog_mutation_handler.go:363/387 —— 两者校验一致):
- *   - name trim 后非空
- *   - pool_group_id 必须为正整数(后端 *PoolGroupID<=0 即 400)
- *   - failover 文本解析合法(空→默认)
- * 判别核心:name 空 / pool_group_id 非正 / 失败转移码非法即拒。reason 可选。
- * failover_status_codes 仅在解析出非空数组时下发(空数组省略,让后端回落默认)。
- */
-export function validateChannel(form: {
+export interface ChannelFormValues {
   name: string
   poolGroupId: number
-  failoverText: string
   enabled: boolean
   reason: string
-}): ChannelValidation {
+  bodyParamStrips: string
+  paramOverride: string
+  sensitiveWords: string
+}
+
+/** 把列表行回显转换为可编辑文本，旧响应缺字段时按三门关闭处理。 */
+export function channelFormFromItem(item: ChannelCatalogItem): Omit<ChannelFormValues, 'reason'> {
+  return {
+    name: item.name,
+    poolGroupId: item.pool_group_id,
+    enabled: item.enabled,
+    bodyParamStrips: (item.body_param_strips ?? []).join(', '),
+    paramOverride: JSON.stringify(item.param_override ?? {}, null, 2),
+    sensitiveWords: (item.sensitive_words ?? []).join(', '),
+  }
+}
+
+/**
+ * 校验 channel 新建/更新表单，与后端两条写接口的输入约束保持一致：
+ *   - name trim 后非空
+ *   - pool_group_id 必须为正整数(后端 *PoolGroupID<=0 即 400)
+ *   - 两个字符串数组按逗号拆分并去除首尾空白，拒绝空项
+ *   - param_override 必须是合法 JSON object，不能是 array/scalar/null
+ * 判别核心:name 空 / pool_group_id 非正 / JSON 类型错误即拒。reason 可选。
+ * failover_status_codes 仅为旧客户端兼容保留在类型中,当前界面不下发。
+ */
+export function validateChannel(form: ChannelFormValues): ChannelValidation {
   const name = form.name.trim()
   if (name === '') return { ok: false, error: 'channel 名称不能为空' }
   if (!Number.isInteger(form.poolGroupId) || form.poolGroupId <= 0) {
     return { ok: false, error: 'pool_group_id 必须是正整数' }
   }
-  const parsed = parseFailoverCodes(form.failoverText)
-  if (!parsed.ok) return { ok: false, error: parsed.error }
+  const bodyParamStrips = parseChannelStringList(form.bodyParamStrips, 'body_param_strips')
+  if (!bodyParamStrips.ok) return bodyParamStrips
+  const sensitiveWords = parseChannelStringList(form.sensitiveWords, 'sensitive_words')
+  if (!sensitiveWords.ok) return sensitiveWords
+  let paramOverride: unknown
+  try {
+    paramOverride = JSON.parse(form.paramOverride.trim() === '' ? '{}' : form.paramOverride)
+  } catch {
+    return { ok: false, error: 'param_override 必须是合法 JSON object' }
+  }
+  if (paramOverride === null || Array.isArray(paramOverride) || typeof paramOverride !== 'object') {
+    return { ok: false, error: 'param_override 必须是 JSON object，不能是 array、scalar 或 null' }
+  }
   const reason = form.reason.trim()
   return {
     ok: true,
@@ -236,8 +276,35 @@ export function validateChannel(form: {
       pool_group_id: form.poolGroupId,
       name,
       enabled: form.enabled,
-      ...(parsed.codes.length > 0 ? { failover_status_codes: parsed.codes } : {}),
+      body_param_strips: bodyParamStrips.value,
+      param_override: paramOverride as Record<string, unknown>,
+      sensitive_words: sensitiveWords.value,
       ...(reason !== '' ? { reason } : {}),
     },
   }
+}
+
+/** 仅在校验成功时调用写 API，便于测试非法 JSON 不会越过前端边界。 */
+export function validateAndDispatchChannel(
+  form: ChannelFormValues,
+  onValid: (value: ChannelCatalogMutationRequest) => void,
+): ChannelValidation {
+  const result = validateChannel(form)
+  if (result.ok) onValid(result.value)
+  return result
+}
+
+function parseChannelStringList(
+  raw: string,
+  field: 'body_param_strips' | 'sensitive_words',
+): { ok: true; value: string[] } | { ok: false; error: string } {
+  if (raw.trim() === '') return { ok: true, value: [] }
+  if (/[\r\n]/.test(raw)) {
+    return { ok: false, error: `${field} 请只用逗号分隔` }
+  }
+  const values = raw.split(',').map((value) => value.trim())
+  if (values.some((value) => value === '')) {
+    return { ok: false, error: `${field} 不能包含空项` }
+  }
+  return { ok: true, value: values }
 }

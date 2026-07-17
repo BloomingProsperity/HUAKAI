@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildBatchRevoke, isSelectable, summarizeBatchResult, toggleSelected } from './batch'
+import { buildBatchRevoke, isSelectable, summarizeBatchResult, togglePageSelection, toggleSelected } from './batch'
 import type { ApiKeyView } from './types'
 
 describe('isSelectable', () => {
@@ -18,6 +18,14 @@ describe('toggleSelected', () => {
     expect([...b].sort()).toEqual([1, 2])
     expect([...toggleSelected(b, 1)]).toEqual([2])
     expect([...a]).toEqual([1]) // 原集不变
+  })
+})
+
+describe('togglePageSelection', () => {
+  it('只补齐或清除当前页，不改其它页选择', () => {
+    expect([...togglePageSelection(new Set([9]), [1, 2])].sort()).toEqual([1, 2, 9])
+    // 判别核心：本页已全选时必须清掉 1/2，同时保留其它页的 9。
+    expect([...togglePageSelection(new Set([1, 2, 9]), [1, 2])]).toEqual([9])
   })
 })
 

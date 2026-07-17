@@ -55,7 +55,7 @@ func TestRouter_Plan_RejectsUnknownModel(t *testing.T) {
 // TestRouter_Plan_RequiresPoolCandidates 验证当 Registry 暴露出一个空的
 // PoolCandidates 列表时，Router 会 fail closed。Registry 在上游本应
 // 已经返回 ErrTenantNoAccess —— 这是纵深防御
-//（N+5b 合成 plan §"requestPoolGroupID rewrite"）。
+// （N+5b 合成 plan §"requestPoolGroupID rewrite"）。
 func TestRouter_Plan_RequiresPoolCandidates(t *testing.T) {
 	r := NewDefaultRouter()
 	_, err := r.Plan(context.Background(), PlanInput{
@@ -173,8 +173,8 @@ func TestRouter_Plan_CarriesPerPoolUpstreamModelOverride(t *testing.T) {
 			ProviderModelID: "default-model",
 			PoolCandidates:  []int64{501, 502},
 			PoolMetadata: []PoolCandidateMeta{
-				{PoolGroupID: 501, ProviderModelID: "pool-a-model"},
-				{PoolGroupID: 502, ProviderModelID: "pool-b-model"},
+				{PoolGroupID: 501, ProviderModelID: "pool-a-model", Priority: 10},
+				{PoolGroupID: 502, ProviderModelID: "pool-b-model", Priority: 20},
 			},
 		},
 	})
@@ -241,7 +241,7 @@ func TestRouter_Plan_StampsConcatenatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	want := "registry:8:5;router:v0.1-phase-c"
+	want := "registry:8:5;router:v0.2-binding-weighted"
 	if plan.SnapshotVersion != want {
 		t.Fatalf("SnapshotVersion = %q; want %q", plan.SnapshotVersion, want)
 	}

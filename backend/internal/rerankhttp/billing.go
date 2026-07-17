@@ -148,8 +148,8 @@ func (ex *execution) billingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 }
 
-func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) {
-	_ = ex.abortWithError(w, reason, observedInputTokens)
+func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
+	return ex.abortWithError(w, reason, observedInputTokens) == nil
 }
 
 func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observedInputTokens int64) error {
@@ -162,6 +162,7 @@ func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observ
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 		return err
 	}
+	ex.reserveRes = nil
 	return nil
 }
 

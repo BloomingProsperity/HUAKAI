@@ -107,6 +107,11 @@ func buildSelector(
 		logger.Info("per-binding RPM/TPM rate limit ENABLED (opt-in via model_pool_bindings.rpm_limit/tpm_limit)")
 	}
 
+	// 同一个 DBSlotManager 同时承担三件事：default/PASR 的真实槽获取、
+	// binding 外层快速计数读取、以及 acquire 事务内的权威并发硬闸。
+	// 共享实例只共享连接池与查询句柄，不保存进程内并发计数。
+	slotManager := pool.NewDBSlotManager(pgPool)
+
 	// wrapRecording 组合这些 opt-in 的 selector 包装层(全部在关闭时惰性):
 	// BindingRateLimit(按 binding,最外层)套在 KeyRateLimit(按 key,在选号前就拒绝)外,
 	// 再套在 Recording(按账号消耗预算,ROUTE-121)外。
@@ -120,6 +125,9 @@ func buildSelector(
 		if bindingRateCounter != nil {
 			s = pool.NewBindingRateLimitSelector(s, bindingRateCounter)
 		}
+		// binding 并发字段本身就是开关，无额外 env 门。该包装层最外置，
+		// 饱和时不消耗 key/binding RPM/TPM，也不进入账号选号。
+		s = pool.NewBindingConcurrencySelector(s, slotManager)
 		return s
 	}
 
@@ -131,7 +139,7 @@ func buildSelector(
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
-		pool.WithSlotManager(pool.NewDBSlotManager(pgPool)),
+		pool.WithSlotManager(slotManager),
 		pool.WithClaimGate(pool.NewDBClaimGate(q)),
 		pool.WithStickyStore(pool.NewDBStickyStore(q)),
 		// 路由加权激活闭环:注入生产 RoutingPolicySource,据请求命中 binding 的 selection_mode
@@ -172,7 +180,7 @@ func buildSelector(
 		actual, err := pool.NewPASRSelector(pool.PASRSelectorConfig{
 			Accounts: pool.NewDBAccountSource(q),
 			Claims:   pool.NewDBClaimGate(q),
-			Slots:    pool.NewDBSlotManager(pgPool),
+			Slots:    slotManager,
 			Segments: segments,
 			Gates:    gates,
 			// RingProvider 不注入 — 走 request-scoped ring。

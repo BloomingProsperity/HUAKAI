@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError } from '../../lib/api'
+import { DataListTable, type DataListColumn } from '../../ui/DataListTable'
+import { EmptyState } from '../../ui/EmptyState'
 import { StatusBadge } from '../../ui/StatusBadge'
 import { getInvitationSummary, getMyInvitationCode, listReferralRewards, listReferrals, mintInvitation } from './api'
 import {
@@ -10,12 +12,13 @@ import {
   EXPIRES_DAYS_MIN,
   formatCents,
   formatUsd,
+  mapReferralRows,
+  mapRewardRows,
   MAX_USAGE_MAX,
   MAX_USAGE_MIN,
-  refereeDisplay,
-  referralStatusLabel,
-  referralStatusTone,
   validateMintForm,
+  type ReferralTableRow,
+  type RewardTableRow,
 } from './affiliate'
 import type { InvitationSummary, MintInvitationResponse, MyInvitationCode, ReferralItem, RewardLedgerResponse } from './types'
 
@@ -65,6 +68,20 @@ export function AffiliatePage() {
   }, [load])
 
   const inviteLink = code ? buildInviteLink(window.location.origin, code.code) : ''
+  const referralRows = mapReferralRows(referrals)
+  const rewardRows = mapRewardRows(rewards?.items ?? [])
+  const referralColumns: DataListColumn<ReferralTableRow>[] = [
+    { key: 'referee', label: '被邀请人', render: (row) => <span className="hk-mono">{row.referee}</span> },
+    { key: 'status', label: '状态', badge: true, render: (row) => <StatusBadge tone={row.statusTone}>{row.statusLabel}</StatusBadge> },
+    { key: 'invitedAt', label: '邀请时间', render: (row) => <span className="hk-mono">{row.invitedAt}</span> },
+    { key: 'rewardedAt', label: '返利时间', render: (row) => <span className="hk-mono">{row.rewardedAt}</span> },
+  ]
+  const rewardColumns: DataListColumn<RewardTableRow>[] = [
+    { key: 'referral', label: '关联邀请', render: (row) => <span className="hk-mono">{row.referral}</span> },
+    { key: 'type', label: '类型', render: (row) => row.type },
+    { key: 'amount', label: '金额', render: (row) => <span className="hk-mono">{row.amount}</span> },
+    { key: 'createdAt', label: '时间', render: (row) => <span className="hk-mono">{row.createdAt}</span> },
+  ]
 
   return (
     <div className="hk-page">
@@ -117,33 +134,11 @@ export function AffiliatePage() {
       <section className="hk-card">
         <div className="hk-card__head"><h3>被邀请人</h3></div>
         {loading && referrals.length === 0 ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载被邀请人" hint="请稍候。" />
         ) : referrals.length === 0 ? (
-          <div className="hk-empty">还没有被邀请人。分享你的邀请链接开始吧。</div>
+          <EmptyState title="还没有被邀请人" hint="分享你的邀请链接开始吧。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['被邀请人', '状态', '邀请时间', '返利时间'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {referrals.map((r) => (
-                  <tr key={r.referral_id}>
-                    <td className="hk-mono">{refereeDisplay(r.referee_user_id)}</td>
-                    <td>
-                      <StatusBadge tone={referralStatusTone(r.status)}>{referralStatusLabel(r.status)}</StatusBadge>
-                    </td>
-                    <td className="hk-mono">{fmtTime(r.created_at)}</td>
-                    <td className="hk-mono">{r.rewarded_at ? fmtTime(r.rewarded_at) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="被邀请人" rows={referralRows} rowKey={(row) => row.id} columns={referralColumns} />
         )}
       </section>
 
@@ -151,31 +146,11 @@ export function AffiliatePage() {
       <section className="hk-card">
         <div className="hk-card__head"><h3>返利流水</h3></div>
         {loading && !rewards ? (
-          <div className="hk-empty">加载中…</div>
+          <EmptyState title="正在加载返利流水" hint="请稍候。" />
         ) : !rewards || rewards.items.length === 0 ? (
-          <div className="hk-empty">暂无返利记录。</div>
+          <EmptyState title="暂无返利记录" hint="返利产生后会显示在这里。" />
         ) : (
-          <div className="hk-tablewrap">
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  {['关联邀请', '类型', '金额', '时间'].map((h) => (
-                    <th key={h}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rewards.items.map((it, idx) => (
-                  <tr key={`${it.referral_id}-${idx}`}>
-                    <td className="hk-mono">#{it.referral_id}</td>
-                    <td>{it.reward_type}</td>
-                    <td className="hk-mono">{formatUsd(it.amount_usd)}</td>
-                    <td className="hk-mono">{fmtTime(it.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataListTable label="返利流水" rows={rewardRows} rowKey={(row) => row.id} columns={rewardColumns} />
         )}
       </section>
     </div>

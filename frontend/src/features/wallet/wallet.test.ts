@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { completedTopupCents, formatMoney, orderStatusLabel, orderStatusTone } from './wallet'
+import { completedTopupCents, formatMoney, mapWalletOrderRows, orderStatusLabel, orderStatusTone } from './wallet'
 
 describe('formatMoney', () => {
   it('分→元补零,带符号', () => {
@@ -36,5 +36,42 @@ describe('completedTopupCents', () => {
       { order_kind: 'topup', status: 'completed', amount_cents: 1200 },
     ]
     expect(completedTopupCents(orders)).toBe(6200)
+  })
+})
+
+describe('mapWalletOrderRows', () => {
+  it('完整映射订单五列且保留稳定行键', () => {
+    const createdAt = '2026-07-13T09:10:11Z'
+    // 判别核心:类型、分转金额、状态标签/语气和时间必须全部来自同一订单。
+    expect(mapWalletOrderRows([{
+      id: 7,
+      out_trade_no: 'TOPUP-7',
+      order_kind: 'topup',
+      amount_cents: 1234,
+      status: 'completed',
+      created_at: createdAt,
+    }])).toEqual([{
+      id: 7,
+      tradeNo: 'TOPUP-7',
+      kind: '充值',
+      amount: '$12.34',
+      statusLabel: '已完成',
+      statusTone: 'ok',
+      createdAt: new Date(createdAt).toLocaleString(),
+    }])
+  })
+
+  it('未知订单类型与状态不被伪装成已知值', () => {
+    const [row] = mapWalletOrderRows([{
+      id: 8,
+      out_trade_no: 'OTHER-8',
+      order_kind: 'credit_adjustment',
+      amount_cents: 5,
+      status: 'custom',
+      created_at: '2026-07-13T00:00:00Z',
+    }])
+    expect(row.kind).toBe('credit_adjustment')
+    expect(row.statusLabel).toBe('custom')
+    expect(row.statusTone).toBe('muted')
   })
 })
