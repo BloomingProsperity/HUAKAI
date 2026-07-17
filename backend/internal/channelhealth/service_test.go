@@ -58,6 +58,46 @@ func TestChannelHealth_AT001_DefaultActiveSubject(t *testing.T) {
 	}
 }
 
+func TestChannelHealthLatestByProviderAccountMatchesPersistentOrdering(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store, testPolicy(), &fixedClock{now: time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)})
+	base := testKey()
+	olderHighVersion := Record{
+		Key:       base,
+		State:     StateManualPaused,
+		UpdatedAt: time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC),
+	}
+	olderHighVersion.Key.CredentialVersion = 2
+	newerLowVersion := Record{
+		Key:       base,
+		State:     StateActive,
+		UpdatedAt: time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC),
+	}
+	newerLowVersion.Key.AccountCredentialID = 9002
+	newerLowVersion.Key.CredentialVersion = 1
+	if _, err := store.UpsertRecord(ctx, olderHighVersion); err != nil {
+		t.Fatalf("写入高版本记录：%v", err)
+	}
+	if _, err := store.UpsertRecord(ctx, newerLowVersion); err != nil {
+		t.Fatalf("写入低版本记录：%v", err)
+	}
+
+	rec, err := svc.LatestByProviderAccount(ctx, base.TenantID, base.ProviderAccountID)
+	if err != nil {
+		t.Fatalf("LatestByProviderAccount: %v", err)
+	}
+	if rec.Key.CredentialVersion != 2 || rec.State != StateManualPaused {
+		t.Fatalf("latest=%+v，期望凭据版本优先选择 v2/manual_paused", rec)
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, 0, base.ProviderAccountID); err == nil {
+		t.Fatal("tenant_id=0 必须拒绝")
+	}
+	if _, err := svc.LatestByProviderAccount(ctx, base.TenantID, 0); err == nil {
+		t.Fatal("provider_account_id=0 必须拒绝")
+	}
+}
+
 func TestChannelHealth_AT002_ErrorRateCooldownAndAudit(t *testing.T) {
 	ctx, svc, store, clock := testService()
 	key := testKey()

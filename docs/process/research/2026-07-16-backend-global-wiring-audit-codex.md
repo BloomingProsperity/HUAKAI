@@ -516,7 +516,7 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 | --- | --- |
 | 严重度 | `S2` |
 | 分类 | W-02 半接线、W-06 恢复断路 |
-| 状态 | **Confirmed；部分动作需要 Owner 决策** |
+| 状态 | **Partially Fixed；只读统一诊断已闭环，真实副作用动作仍待后续** |
 | 用户影响 | 当前可以 rotate/re-acquire credential、清账号限流字段、暂停/恢复 channelhealth，但没有直接 refresh-now、复制账号或统一 reset provider quota。运维处理事故时需要知道每套状态该去哪个入口恢复。 |
 
 **源码证据**
@@ -530,6 +530,16 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 **建议**
 
 先增加只读“可执行恢复动作”诊断，让系统根据当前 credential/health 状态返回允许的 action，不立即改状态。随后分批补 refresh-now 和统一 clear/recover orchestration；复制账号和 quota reset 需要先定义哪些配置可复制、哪些运行态必须清空，不能盲目复制秘密或瞬态限制。
+
+**本批闭环**
+
+1. 新增账号级 `GET /{id}/recovery-actions`，统一读取租户内账号和全部 credential 元数据，再按每个当前 credential 的 ID/version 精确读取 channel-health，避免历史或已删除凭据污染恢复建议；同时将“状态适用”“调用者有权”“系统建议执行”拆成独立字段，见 `backend/internal/provideraccountrecoveryhttp/handler.go`。
+2. 诊断只指向已经存在的启用账号、清冷却、轮换 credential、恢复人工暂停和强制 active 入口；强制 active 永不自动推荐，响应不返回 credential payload、原始上游错误或人工备注。
+3. production composition root 将该端点接入三个既有 provider-account 前缀；OpenAPI 声明两个正式前缀，并用 method parity 测试防止运行时与契约再次漂移，见 `backend/cmd/gateway/routes.go`、`backend/cmd/gateway/openapi_method_parity_test.go`、`docs/openapi/openapi.yaml`。
+4. 同步修正内存 channel-health store 的 latest 排序，使其与 PostgreSQL 一致：优先 credential version，版本相同时再比较更新时间，避免测试环境给出与生产不同的恢复建议，见 `backend/internal/channelhealth/store_memory.go`。
+5. 判别测试覆盖问题状态映射、历史失败计数不误报、可刷新 access token 到期不误报、历史 channel 不参与建议、角色授权差异、跨租户拒绝、缺少 channel 记录、依赖错误脱敏、latest 排序和 OpenAPI/runtime 接线。
+
+剩余 `refresh-now` 会真实访问上游且可能旋转 token；复制账号涉及秘密与瞬态字段边界；统一 quota reset 尚未确定权威状态来源。这三项没有用静态按钮或假 action 冒充完成，继续进入后续独立切片。
 
 ### GW-WIRE-013：bulk-by-tag 会留下部分更新或“已更新但无审计”的状态
 

@@ -10233,6 +10233,43 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/provider-accounts/{id}/recovery-actions:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: Diagnose currently applicable Provider Account recovery actions
+      operationId: diagnoseProviderAccountRecoveryActions
+      description: |
+        Returns a tenant-scoped, read-only recovery view assembled from the provider account,
+        all non-deleted credential metadata rows, and each credential's exact current-version
+        channel-health record. Each
+        action distinguishes whether the current state makes it applicable from whether the
+        current admin role is authorized to execute the already-existing mutation endpoint.
+        The response never includes credential payloads, encrypted material, token fingerprints,
+        raw upstream errors, or operator-entered free text.
+      x-huakai-spec-source:
+        - backend/internal/provideraccountrecoveryhttp/handler.go
+        - docs/process/research/2026-07-16-backend-global-wiring-audit-codex.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current safe recovery diagnosis and links to existing management actions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountRecoveryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/test:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
@@ -10997,6 +11034,34 @@ paths:
                   count: { type: integer }
         "422": { description: Upstream address blocked by SSRF policy or base_url invalid. }
         "502": { description: Upstream models endpoint error or unparseable response. }
+
+  /v1/admin/provider-accounts/{id}/recovery-actions:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    get:
+      tags: [admin-accounts]
+      summary: Diagnose currently applicable Provider Account recovery actions (v1 prefix)
+      operationId: diagnoseProviderAccountRecoveryActionsV1
+      x-huakai-spec-source:
+        - backend/internal/provideraccountrecoveryhttp/handler.go
+        - docs/process/research/2026-07-16-backend-global-wiring-audit-codex.md
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Current safe recovery diagnosis and links to existing management actions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountRecoveryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/provider-accounts/bulk-by-tag:
     post:
@@ -18111,6 +18176,130 @@ components:
           type: boolean
           description: True when health_state is revoked or failure_count is greater than 3.
         updated_at: { type: string, format: date-time }
+
+    ProviderAccountRecoveryResponse:
+      x-huakai-spec-source:
+        - backend/internal/provideraccountrecoveryhttp/handler.go
+        - docs/process/research/2026-07-16-backend-global-wiring-audit-codex.md
+      type: object
+      additionalProperties: false
+      required: [account_id, tenant_id, generated_at, requires_action, account, credentials, channels, actions]
+      properties:
+        account_id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        generated_at: { type: string, format: date-time }
+        requires_action:
+          type: boolean
+          description: True when at least one state-derived action is recommended, even if the current caller lacks that action's required role.
+        account: { $ref: '#/components/schemas/ProviderAccountRecoveryAccount' }
+        credentials:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountRecoveryCredential' }
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountRecoveryChannel' }
+        actions:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountRecoveryAction' }
+
+    ProviderAccountRecoveryAccount:
+      type: object
+      additionalProperties: false
+      required: [enabled, health_state, credential_state]
+      properties:
+        enabled: { type: boolean }
+        health_state: { type: string }
+        credential_state: { type: string }
+        rate_limit_reset_at: { type: string, format: date-time }
+        overload_until: { type: string, format: date-time }
+        temp_unschedulable_until: { type: string, format: date-time }
+
+    ProviderAccountRecoveryCredential:
+      type: object
+      additionalProperties: false
+      required: [id, vendor, auth_mode, state, credential_version, failure_count]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        state: { type: string }
+        credential_version: { type: integer, format: int32, minimum: 1 }
+        access_expires_at: { type: string, format: date-time }
+        last_refresh_outcome: { type: string }
+        failure_class: { type: string }
+        failure_count: { type: integer, format: int32, minimum: 0 }
+
+    ProviderAccountRecoveryChannel:
+      type: object
+      additionalProperties: false
+      required: [state, vendor, credential_id, credential_version, reason_class]
+      properties:
+        state:
+          type: string
+          enum: [active, degraded, cooling_down, ramping, disabled, manual_paused]
+        vendor: { type: string }
+        credential_id: { type: integer, format: int64, minimum: 1 }
+        credential_version: { type: integer, minimum: 1 }
+        reason_class: { type: string }
+        cooldown_until: { type: string, format: date-time }
+
+    ProviderAccountRecoveryAction:
+      type: object
+      additionalProperties: false
+      required:
+        - action
+        - subject_type
+        - subject_id
+        - state_applicable
+        - authorized
+        - available
+        - recommended
+        - reason_code
+        - risk_level
+        - method
+        - path
+        - required_role
+        - required_fields
+      properties:
+        action:
+          type: string
+          enum: [enable_account, clear_account_backoff, rotate_credential, resume_channel, force_channel_active]
+        subject_type: { type: string, enum: [account, credential] }
+        subject_id: { type: integer, format: int64, minimum: 1 }
+        state_applicable: { type: boolean }
+        authorized: { type: boolean }
+        available:
+          type: boolean
+          description: True only when the state is applicable and the current caller is authorized.
+        recommended:
+          type: boolean
+          description: State-derived recommendation. High-risk force-active is never automatically recommended.
+        reason_code:
+          type: string
+          enum:
+            - account_disabled
+            - account_backoff_active
+            - account_backoff_markers_stale
+            - credential_expired
+            - credential_needs_rotation
+            - credential_revoked
+            - credential_operator_attention
+            - credential_access_expired
+            - credential_refresh_failed
+            - channel_manual_paused
+            - channel_disabled
+            - channel_cooling_down
+        risk_level: { type: string, enum: [low, medium, high] }
+        method: { type: string, enum: [PATCH, POST] }
+        path:
+          type: string
+          description: Concrete canonical admin path for an already-existing mutation endpoint.
+        required_role:
+          type: string
+          enum: [platform_admin, platform_admin_or_tenant_operator]
+        required_fields:
+          type: array
+          items: { type: string }
 
     ProviderAccountRecentRequest:
       x-huakai-spec-source:

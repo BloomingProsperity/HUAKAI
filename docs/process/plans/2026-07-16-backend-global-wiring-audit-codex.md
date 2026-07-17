@@ -192,6 +192,20 @@ Owner 已批准把普通请求观测从 `last_probe_at` 迁到独立合同。本
 6. 补普通单测和 `integration_pg` 判别测试：正常提交、审计拒绝回滚、单项失败继续、执行时标签漂移跳过、超过上限拒绝。
 7. 运行格式化、目标测试、OpenAPI 校验和必要的 composition-root 测试。
 8. 暂存后执行只读 Codex review；修完 S0/S1 后提交独立分支并创建 Draft PR，未经 Owner 同意不合并。
+#### Batch 3C：账号恢复动作统一诊断
+
+围绕 `GW-WIRE-012` 先闭环不改变运行态的只读诊断，再决定需要真实副作用的新动作：
+
+1. 新增账号级恢复动作诊断端点，读取 tenant-scoped provider account、该账号全部未删除 credential 元数据，并按每个当前 credential 的 ID/version 精确读取 channel-health 状态。
+2. 响应必须把“状态是否适用”和“当前调用者是否有权”分开，避免 tenant operator 把 platform-admin-only 的 credential/channel-health 动作误认为可直接执行。
+3. 只返回已经存在且可达的管理入口：启用账号、清账号冷却、轮换指定 credential、恢复人工暂停 channel、强制 channel active。每项给稳定 action id、reason code、method、path、required role 和必填字段。
+4. `recommended` 只能由可判别状态产生：账号被停用、存在仍有效的限流/过载/临时不可调度截止时间、credential 过期/撤销/需轮换/需人工处理或刷新失败、channel 被人工暂停。强制 active 是高风险人工覆盖，允许显示但不得自动推荐。
+5. 无 channel-health 记录是合法状态，不得把整个诊断报错；账号或 credential 查询故障必须 fail-closed 返回脱敏 503。
+6. 响应不得包含 credential payload、加密字段、指纹、原始上游错误、人工暂停原因或其它秘密/自由文本。
+7. production composition root 在 `/admin/v1/provider-accounts`、`/v1/admin/provider-accounts` 和兼容 `/v1/admin/pool-accounts` 三个现有子树复用同一 handler 依赖；OpenAPI 至少覆盖两个正式 provider-account 前缀。
+8. 判别测试必须覆盖：健康账号无建议动作；问题状态产生准确动作；tenant operator 对平台专属动作显示未授权；全局 platform admin 缺 tenant 拒绝；跨租户 query 拒绝；无 channel 记录正常；依赖错误脱敏；生产路由和 OpenAPI 接线可识别。
+
+本批不新增 schema，不修改鉴权角色、资金、quota、真实上游调用或 credential 明文处理。`refresh-now` 会触发上游并可能旋转 token，复制账号涉及配置/秘密/瞬态字段边界，provider quota reset 需要先确定权威状态来源；三者继续保留为后续独立切片，不用静态假动作冒充实现。
 
 ### Batch 4：事件、DLQ、恢复和后台闭环
 

@@ -57,6 +57,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingpublichttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecoveryhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/publicrankinghttp"
@@ -1104,6 +1105,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Auth:     d.adminAuth,
 			Accounts: d.adminQueries,
 			Creds:    d.credentialStore,
+		})
+		provideraccountrecoveryhttp.MountRoutes(r, provideraccountrecoveryhttp.Deps{
+			Auth:          d.adminAuth,
+			Accounts:      d.adminQueries,
+			Credentials:   d.credentialStore,
+			ChannelHealth: d.channelHealth,
 		})
 		gatewayhttp.MountAdminCredentialRoutes(r, gatewayhttp.AdminCredentialDeps{
 			Auth:        d.adminAuth,
