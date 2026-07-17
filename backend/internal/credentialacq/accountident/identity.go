@@ -23,6 +23,7 @@ const (
 	SourceManual             = "manual"
 	SourceAnthropicAccountID = "anthropic_account_uuid"
 	SourceChatGPTJWTClaim    = "chatgpt_jwt_claim"
+	SourceOpenAITokenBody    = "openai_token_response"
 	SourceGoogleIDTokenSub   = "google_id_token_sub"
 	SourceImportPayload      = "import_payload"
 )
@@ -110,26 +111,37 @@ func ExtractAnthropic(accountUUID, accountEmail, topEmail string) Identity {
 // 然后是 token-body 值，再然后是标准的 subject claim。Email 取自 email claim。
 // 格式错误/为空的 id_token 不会中止流程：若存在 body 回退值仍会使用它，
 // 否则返回一个 manual 的 Identity。
-func ExtractChatGPT(idToken, bodyAccountID string) Identity {
+func ExtractChatGPT(idToken, bodyAccountID, bodySubjectID string) Identity {
 	bodyAccountID = strings.TrimSpace(bodyAccountID)
+	bodySubjectID = strings.TrimSpace(bodySubjectID)
 	claims, err := ParseJWTClaimsUnverified(idToken)
 	if err != nil {
-		if bodyAccountID != "" {
-			return Identity{AccountID: bodyAccountID, Source: SourceChatGPTJWTClaim}
+		accountID := firstNonEmpty(bodyAccountID, bodySubjectID)
+		if accountID != "" {
+			return Identity{
+				AccountID: accountID,
+				SubjectID: bodySubjectID,
+				Source:    SourceOpenAITokenBody,
+			}
 		}
 		return manualIdentity()
 	}
 	claimAccountID := chatgptAccountIDFromClaims(claims)
-	subject := stringClaim(claims, "sub")
+	claimSubjectID := stringClaim(claims, "sub")
+	subject := firstNonEmpty(claimSubjectID, bodySubjectID)
 	accountID := firstNonEmpty(claimAccountID, bodyAccountID, subject)
 	if accountID == "" {
 		return manualIdentity()
+	}
+	source := SourceChatGPTJWTClaim
+	if claimAccountID == "" && (bodyAccountID != "" || claimSubjectID == "") {
+		source = SourceOpenAITokenBody
 	}
 	return Identity{
 		AccountID: accountID,
 		SubjectID: subject,
 		Email:     stringClaim(claims, "email"),
-		Source:    SourceChatGPTJWTClaim,
+		Source:    source,
 	}
 }
 

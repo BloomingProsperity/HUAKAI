@@ -107,6 +107,9 @@ func TestChatGPTOAuthAdminCallbackEndToEnd(t *testing.T) {
 	if got := stringFieldFromAny(candidate.RedactedContext["chatgpt_plan_type_class"]); got != "Team" {
 		t.Fatalf("redacted plan class=%q want Team", got)
 	}
+	if candidate.ExternalAccountID != "acct-admin" || candidate.ExternalSubjectID != "user-admin" {
+		t.Fatalf("candidate identity=%+v，期望保留账号作用域和个人主体", candidate)
+	}
 	if _, ok := candidate.RedactedContext["chatgpt_user_id"]; ok {
 		t.Fatalf("redacted context leaked chatgpt_user_id: %v", candidate.RedactedContext)
 	}

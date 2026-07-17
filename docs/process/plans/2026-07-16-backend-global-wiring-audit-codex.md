@@ -260,6 +260,28 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 4. `0190` 所在分支堆叠在迁移 `0189` 的 PR #259 之上。由于项目使用 `golang-migrate` 单一版本轴，合并顺序必须为 #259 后本批；不得先部署 `0190` 再补 `0189`。
 5. 本批不扩大租户管理员权限；GW-WIRE-018 完成授权合同前仍只允许 token 来源的 `platform_admin` 使用。
 
+## 账号导入凭证总修复：整合与专用入口
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “做这个啊”；“账号导入凭证模块都修复了吗”。 |
+| Scope | 以已接入生产路由且 CI 全绿的 PR #262 为唯一主干，迁移 PR #258 中仍有价值但漏接的上游个人 subject 身份与判别测试；bulk、恢复动作继续归属既有独立 PR，不重复并入。随后依次建设 Claude Cookie、Setup Token、Codex 专用批量与 Agent Identity、CRS 插件与安全迁移包。前端不在本目标范围。 |
+| Success criteria | #258 不再保有未迁移的独有账号导入能力；普通凭据批量接入可准确保存账号作用域与个人 subject，重复身份不任选第一条。四类专用入口均具备预检、权限、秘密处理、原子落库、审计、失败分类和恢复合同，并分别通过单元、PostgreSQL、OpenAPI、全仓与独立 review。 |
+| Time estimate | 整合切片约 1-2 小时；四类专用能力按独立 PR 连续实施，不用一个巨型提交承载。 |
+| Blast radius | 整合切片只影响 OpenAI/Codex 身份元数据，不改变鉴权、计费、配额或出站。后续 Cookie/Setup/Agent/CRS 会触及高敏感凭据、网络和 schema，必须默认关闭并逐批验证。 |
+| Failure modes | 把个人 subject 误当账号作用域导致错合并；把弱导入声明当可信身份；Cookie/私钥进入日志或审计；Setup Token 能导入但不能刷新；CRS 被用于 SSRF；迁移包明文泄密。分别以双层身份、显式冲突、secret-mask、统一开关、固定上游/双时刻 SSRF 和加密签名恢复包缓解。 |
+| Decision points | Owner 已明确要求直接完成账号导入凭证模块。采用既定安全默认：部署治理主体只授权/撤权，不代租户操作；能力默认未授权；Agent Identity 保持 Experimental；CRS 为插件；迁移包默认不含秘密，含秘密恢复包必须 step-up、加密、签名、短时有效。若源码证明这些默认与现有鉴权/schema 无法兼容，再按“有疑问必须停下”提交具体冲突。 |
+
+### 执行顺序
+
+1. 从 #262 建立整合分支，对照 #258 真码迁移 ChatGPT/Codex subject 身份和被删减的判别测试；不得重新引入 #258 的死代码入口、旧迁移编号或已拆分运营模块。
+2. 跑目标、race、PostgreSQL、全仓和质量门，独立 review 后提交叠放 Draft PR；确认 #258 无独有能力遗留后再处理旧 PR，未经 Owner 同意不合并。
+3. Claude Cookie：单次 Cookie 转换、固定域名、step-up、授权租户自操作、逐项 dry-run/execute、内存清零。
+4. Setup Token：一等 acquisition plan、专用入口、acquisition/refresher 同源开关和启动一致性门。
+5. Codex：专用多行 `auth.json`/access token 接入；Agent Identity 使用独立凭据模式、AES-GCM 信封、签名/任务绑定/恢复/撤销，并保持 Experimental。
+6. CRS 与迁移包：插件化远程源、allowlist 与双时刻 SSRF、逐项差异预览；结构包默认无秘密，恢复包加密签名且短时有效。
+7. 每一项使用独立干净分支、独立 Draft PR 和独立回滚，不跨 PR 合并数据库迁移、鉴权授权和真实上游网络风险。
+
 ## Pre-execution checklist
 
 1. 主审计只使用 `HUAKAI-wt-global-wiring-codex`；已获批 schema 批次使用其堆叠工作树 `HUAKAI-wt-request-observation-codex` 和分支 `fix/request-observation-schema-20260716-codex`，PR 基于主审计分支。
