@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -245,6 +246,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	vendorOAuth := loadVendorOAuthConfigs()
+	if err := vendorOAuth.Validate(); err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		DatabaseURL:                    os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                         envDefault("HUAKAI_ADDR", ":8080"),
@@ -256,7 +261,7 @@ func Load() (*Config, error) {
 		QuotaEnforce:                   quotaEnforce,
 		SettlementIntentEnabled:        settlementIntentEnabled,
 		Budget:                         budgetCfg,
-		VendorOAuth:                    loadVendorOAuthConfigs(),
+		VendorOAuth:                    vendorOAuth,
 		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,
 		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
 		PaymentHMACSecrets:             paymentHMACSecrets,
@@ -329,6 +334,27 @@ func (configs VendorOAuthConfigs) Configured() VendorOAuthConfigs {
 		out[vendor] = cfg
 	}
 	return out
+}
+
+// Validate 拒绝只接上一半的 OAuth 配置，避免账号获取成功后到续期时才暴露缺口。
+func (configs VendorOAuthConfigs) Validate() error {
+	cfg := configs[VendorOAuthOpenAICodex].normalized()
+	if cfg.AuthURL == "" && cfg.TokenURL == "" && cfg.ClientID == "" && cfg.Scope == "" && cfg.ClientSecret == "" {
+		return nil
+	}
+	missing := make([]string, 0, 2)
+	for name, value := range map[string]string{
+		"TOKEN_URL": cfg.TokenURL, "CLIENT_ID": cfg.ClientID,
+	} {
+		if value == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("HUAKAI_OPENAI_CODEX_OAUTH 配置不完整，缺少 %s", strings.Join(missing, ","))
+	}
+	return nil
 }
 
 func (cfg VendorOAuth) normalized() VendorOAuth {

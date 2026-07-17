@@ -11,6 +11,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/codeximport"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
@@ -195,7 +196,7 @@ func ExistingFromIdentityMetadata(rows []credentialstore.CredentialIdentityMetad
 func parseSource(source SourceKind, content, vendor, authMode string) ([]credentialacq.CredentialCandidate, error) {
 	switch source {
 	case SourceCLI:
-		return credentialacq.ParseImportContent(content, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+		return codeximport.Parse(content)
 	case SourceJSON:
 		return credentialacq.ParseImportContent(content,
 			firstNonEmpty(vendor, credentialstore.VendorOpenAI),

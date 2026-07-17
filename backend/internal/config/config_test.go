@@ -406,6 +406,30 @@ func TestVendorOAuthConfigsConfiguredSkipsBlankTokenURL(t *testing.T) {
 	}
 }
 
+func TestVendorOAuthConfigsValidateRejectsPartialCodexConfig(t *testing.T) {
+	if err := (VendorOAuthConfigs{}).Validate(); err != nil {
+		t.Fatalf("空配置应保持关闭：%v", err)
+	}
+	partial := VendorOAuthConfigs{
+		VendorOAuthOpenAICodex: {TokenURL: "https://auth.example.test/token", ClientSecret: "secret-must-not-leak"},
+	}
+	err := partial.Validate()
+	if err == nil {
+		t.Fatal("只有 token URL 的 Codex 配置必须 fail-loud")
+	}
+	if strings.Contains(err.Error(), "secret-must-not-leak") || !strings.Contains(err.Error(), "CLIENT_ID") || strings.Contains(err.Error(), "AUTH_URL") || strings.Contains(err.Error(), "SCOPE") {
+		t.Fatalf("错误信息应列缺项且不泄漏秘密：%v", err)
+	}
+	complete := VendorOAuthConfigs{
+		VendorOAuthOpenAICodex: {
+			TokenURL: "https://auth.example.test/token", ClientID: "client",
+		},
+	}
+	if err := complete.Validate(); err != nil {
+		t.Fatalf("刷新所需的完整 Codex 配置被拒：%v", err)
+	}
+}
+
 func TestLoadIncludesPaymentProviderSecretsWithoutLoggingValues(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_PAYMENT_HMAC_SECRETS", " hmacpay = secret-one , second: secret-two ")

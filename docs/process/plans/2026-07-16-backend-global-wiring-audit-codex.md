@@ -291,6 +291,15 @@ Owner 已授权按源码核实结果直接修复，并明确要求同一上游�
 5. 导入仍走现有账号接入 `plan -> execute`：租户作用域、显式冲突、单向指纹、计划哈希、原子账号/凭据写入、审计和健康初始化全部复用；旧的错误刷新回退删除，不保留兼容暗门。
 6. 数据库只扩展 vendor/auth-mode 约束，不新增秘密列；回滚会恢复原约束，并因存在新模式行而明确失败，禁止静默丢数据。
 
+### Codex 专用批量实施定性（2026-07-17）
+
+1. OpenAI 官方 Codex 当前 `auth.json` 把 OAuth 材料放在 `tokens` 对象中，字段为 `id_token`、`access_token`、`refresh_token` 和可选 `account_id`；外层还可能存在 `OPENAI_API_KEY`、`last_refresh`、`personal_access_token` 与独立 `agent_identity`。源码证据：`openai/codex@315195492c80fdade38e917c18f9584efd599304:codex-rs/login/src/auth/storage.rs:37-60`、`codex-rs/login/src/token_data.rs:10-25`。
+2. `agent_identity` 与 `personal_access_token` 已是官方独立认证材料，不能在普通 token 导入中静默丢弃、当账号备注处理或伪装成可刷新的 OAuth；本切片遇到这两种模式明确拒绝并指向各自专用合同，不擅自保存私钥。源码证据：`openai/codex@315195492c80fdade38e917c18f9584efd599304:codex-rs/protocol/src/auth.rs:8-56`、`codex-rs/login/src/auth/storage.rs:37-112`。
+3. HUAKAI 的 `cli_import` 当前实际调用通用解析器，输入可覆盖 vendor/auth mode，且整包保留未批准字段；`ParseCLIImportContent` 本身在仓库内零调用。专用解析必须强制 `openai/codex_cli_oauth`、只保留运行与身份所需字段，并删除零调用 wrapper。
+4. 定时刷新查询返回 `account_credentials.vendor`，Codex 行因此携带 `openai`；生产配置化刷新器却以 `openai_codex` 注册，只能覆盖部分热路径，定时链会回落到缺配置的默认适配器。修复后 mode registry 与热路径 vendor refresher 共用 `HUAKAI_OPENAI_CODEX_OAUTH_*`；只要配置了任一字段，令牌端点或客户端 ID 缺失就启动失败，scope 保持可选，不允许“能导入、不能续期”。
+5. 新增 `/admin/v1/credentials/account-imports/codex/plan` 与 `/execute` 专用合同，请求不暴露 source/vendor/auth-mode 覆盖；仍复用统一 `plan -> execute`、作用域令牌、计划哈希、逐项事务、双审计、健康初始化和显式冲突。
+6. 普通 Codex token 与 Agent Identity 分批交付：本切片只接 OAuth/access token；Agent Identity 的私钥、任务绑定、恢复和撤销保持下一独立 Experimental PR，避免在低风险批量导入中夹带新认证核心。
+
 ## Pre-execution checklist
 
 1. 主审计只使用 `HUAKAI-wt-global-wiring-codex`；已获批 schema 批次使用其堆叠工作树 `HUAKAI-wt-request-observation-codex` 和分支 `fix/request-observation-schema-20260716-codex`，PR 基于主审计分支。
