@@ -687,12 +687,6 @@ internal/provider/gemini/refresher.go:  unreachable func: WithNow
 internal/provider/gemini/refresher.go:  unreachable func: WithOAuthConfig
 internal/provider/gemini/refresher.go:  unreachable func: WithScope
 internal/provider/gemini/refresher.go:  unreachable func: WithTokenURL
-internal/provider/grok/session.go:  unreachable func: GrokSessionAdapter.AcceptableCredentialTypes
-internal/provider/grok/session.go:  unreachable func: GrokSessionAdapter.BuildRequest
-internal/provider/grok/session.go:  unreachable func: GrokSessionAdapter.Platform
-internal/provider/grok/session.go:  unreachable func: GrokSessionAdapter.acceptsCredential
-internal/provider/grok/session.go:  unreachable func: applyGrokWebHeaders
-internal/provider/grok/session.go:  unreachable func: buildGrokCookie
 internal/provider/kiro/bootstrap.go:  unreachable func: DefaultSSOConfig
 internal/provider/kiro/bootstrap.go:  unreachable func: SSOConfig
 internal/provider/kiro/bootstrap.go:  unreachable func: ValidateSSOConfig

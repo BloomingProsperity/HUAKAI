@@ -18,10 +18,11 @@
 
 Batch 1 没有发现 `cmd/gateway/routes_*.go` 中定义了却未被生产 router 调用的 mount helper。13 个 helper 均有一个生产调用点；模块注册路由额外有一个测试调用点。管理员 provider-account 能力同时挂载在 `/admin/v1/provider-accounts` 和 `/v1/admin/provider-accounts`，账号测试、健康、近期请求、批量操作、凭据和渠道健康控制器均进入两个 alias。
 
-生产依赖图共有 267 个 `internal/*` 包，`cmd/gateway` 可达 261 个。六个不可达包中，`adminsessionauthtest`、`codebudget`、`openapicheck` 是测试或检查工具，`obs` 根包不代表其已被使用的子包，真正需要继续处理的是：
+生产依赖图当前共有 267 个 `internal/*` 包，`cmd/gateway` 可达 262 个。五个不可达包中，`adminsessionauthtest`、`codebudget`、`openapicheck` 是测试或检查工具，`obs` 根包不代表其已被使用的子包，真正需要继续处理的是：
 
 1. `internal/channelprobe`：完整主动探测 scheduler 已建成，但生产网关不构造、不启动、不持有。
-2. `internal/provider/grok`：网页 session adapter 已建成但明确不注册；xAI 官方 API key 与 xAI OAuth 均通过正式 `grok_chat` 路径提供，二者与网页 session 不是同一个能力。
+
+原 `internal/provider/grok` 网页 session adapter 从未进入生产依赖图，并固化了网页 Cookie、WAF 绕过和无法证明 clean-room 来源的静态指纹。本批已按 Owner 的死代码处置决定删除实现及其仅自测代码；xAI 官方 API key 与 xAI OAuth 仍通过正式 `grok_chat` 路径提供。网页 session 用户结果保留为 Mandatory Roadmap，后续只能重新做 clean-room Safe Equivalent 或插件，不能恢复该实现。
 
 本批确认并修复了一个跨 worker 的生命周期错误：原先所有 worker 共用进程信号 context，SIGTERM 到达时 worker 会先于 `http.Server.Shutdown` 排空请求而退出。现在 worker 使用独立 context，HTTP 排空完成后才统一取消；仅依赖 context 的四类 worker 还提供可等待的退出合同，网关确认它们全部退出后才允许关闭数据库。构建失败仍会立即取消并等待清理。
 
@@ -176,7 +177,6 @@ HUAKAI 当前主 chat 链可以还原为：
 | 包 | gateway 可达 | 判定 |
 | --- | --- | --- |
 | `internal/channelprobe` | 否 | Confirmed built-but-unused |
-| `internal/provider/grok` | 否 | Confirmed intentionally parked session path |
 | `internal/adminsessionauthtest` | 否 | 测试支持包，不是生产缺口 |
 | `internal/codebudget` | 否 | 代码预算检查工具，不是生产缺口 |
 | `internal/openapicheck` | 否 | OpenAPI 检查工具，不是生产缺口 |
@@ -299,23 +299,23 @@ HUAKAI 当前主 chat 链可以还原为：
 
 GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存储和 API 语义，没有执行任何真实上游请求，也没有产生费用或健康状态写入。
 
-### GW-WIRE-004：Grok 网页 session adapter 未注册，且存在 clean-room 高风险
+### GW-WIRE-004：删除不可达且存在 clean-room 高风险的 Grok 网页 session 实现
 
 | 项目 | 内容 |
 | --- | --- |
 | 严重度 | `S1`（clean-room/license） |
-| 分类 | W-01 建而未用；功能处置为 Mandatory Roadmap/Owner Decision |
-| 状态 | **Owner Decision Required；禁止直接注册** |
-| 用户影响 | xAI 官方 API key 与 xAI OAuth 能力正常；网页 session 能力当前不可用。直接注册会把浏览器模拟、Cookie、WAF/Cloudflare 处理带入生产出口。 |
+| 分类 | W-01 建而未用已消除；用户结果处置为 Mandatory Roadmap |
+| 状态 | **Fixed；网页 session 用户结果保留为 Mandatory Roadmap** |
+| 用户影响 | xAI 官方 API key 与 xAI OAuth 能力不变；不可达的网页模拟实现已删除，不再让后续维护者误注册一条来源和安全边界均不可信的链。网页 session 能力仍未发布，后续必须以 clean-room Safe Equivalent 或插件重新实现。 |
 
 **源码证据**
 
-1. `backend/internal/provider/grok/session.go:1-13` 明确说明 adapter 已就绪但 serving/cookie 接线未完成，因此不注册。
-2. 该文件包含静态浏览器指纹、Cookie 和绕 WAF 相关实现，见 `session.go:27-38`、`69-129`。
-3. `backend/internal/provider/registrydefault/default.go:249-253` 的生产 Grok 路径是 xAI 官方 API endpoint，使用通用 OpenAI-compatible adapter。
-4. `go list -deps ./cmd/gateway` 不包含 `internal/provider/grok`。
+1. 删除前的 `backend/internal/provider/grok/session.go` 自己声明 serving/cookie 接线未完成；实现固化网页 Cookie、静态浏览器指纹和 WAF 绕过材料，只有同包自测引用。
+2. 当前源码已删除 `backend/internal/provider/grok/session.go` 与 `session_test.go`；仓库内不存在 `GrokSessionAdapter`、`grok_web_session` 或该包的生产引用。
+3. `backend/internal/provider/registrydefault/default.go` 仍把 `grok_chat` 注册到 xAI 官方 API endpoint，并使用通用 OpenAI-compatible adapter。
+4. 当前生产依赖图有 267 个 `internal/*` 包、`cmd/gateway` 可达 262 个；五个不可达包中不再存在 Grok 网页 session 包。
 
-**风险**
+**处置与验证**
 
 - 本收口批已把 `backend/**/*.go` 中直接点名外部实现来源的注释改写为 HUAKAI 自身机制，并在 `internal/codebudget` 增加 Go 词法级注释守卫；该子问题已闭环，没有改变运行行为。
 - 静态指纹值、独特请求形态和绕 WAF 意图需要单独 clean-room/合规复核；收口注释不能自动消除实现来源风险。
@@ -327,6 +327,10 @@ GW-WIRE-002 的真正主动探测仍是独立能力：本批只为它腾清存�
 2. 单独开 clean-room 审计 PR，先判断现有实现能否保留；不能保留时做行为级 Safe Equivalent 或 Plugin。
 3. 由 Owner 决定该能力是否允许进入生产、是否必须插件化、默认是否关闭，以及 WAF/反检测边界。
 4. 注释守卫只扫描 Go AST 注释节点，不扫描字符串；因此既能阻止新的违规注释，也不会误伤协议值、测试数据或运行时错误文本。
+1. 删除不可达实现和仅验证该实现的测试，不保留复制、改名或注释清理后的兼容暗门。
+2. 官方 `grok_chat` 注册、serving capability 与 `grok/xai_oauth` 凭据 handler 针对性测试通过。
+3. `go test ./... -count=1` 与 `scripts/quality-gate.sh` 通过；删除没有影响其它协议、composition root 或 staticcheck，并同步删除 6 条 deadcode 豁免、把硬上限从 882 收紧到 876。
+4. 网页 session 用户结果没有缩水为“永不提供”，而是保持 Mandatory Roadmap；未来实现必须重新定义受控域名、Cookie 边界、风控合规、凭据类型、Feature Flag 和插件隔离，不得复活已删除代码。
 
 ### GW-WIRE-005：运行时凭据兼容门只保护 Claude session
 
@@ -1159,7 +1163,7 @@ Sub2 的 CRS 连接器后端登录 `claude-relay-service`，预览已有/新增�
 ## 非问题与反证
 
 1. `cmd/gateway/routes_*.go` 的 mount helper 本批全部存在生产调用，不支持“很多页面后端路由没挂”的笼统结论。
-2. `provider/grok` 不可达不等于 Grok 全部不可用；官方 xAI API key 与 xAI OAuth 路径均已注册。
+2. 已删除的 `provider/grok` 网页实现不等于 Grok 全部不可用；官方 xAI API key 与 xAI OAuth 路径均已注册。
 3. 某些包级 `MountRoutes` wrapper 没被调用，不代表 handler 没挂；生产 router 可能使用细粒度 mount。
 4. `deps.mediaTaskWorker` 等字段若未被 handler 读取，但实例被 `gatewayRuntime` 保留用于 lifecycle，不属于“构造后丢弃”。
 5. worker 同时由 `shutdownGateway` 和 `runtime.close` 调 Stop，在已核实现中 Stop/cancel 具有幂等语义；本批不把重复调用本身报为 bug。
@@ -1264,7 +1268,7 @@ GW-WIRE-024/025 提交前 review 共三轮。第一轮发现一个 S1：`io.Writ
 2. 普通请求观测迁移到独立 `last_request_observed_at` 合同已获批准，并由迁移 `0189`、管理消费者、OpenAPI 和真 PostgreSQL 往返测试闭环。
 1. **已批准主动探测 Safe Equivalent，待独立实现。** 成本预算采用 **B**：按自然日持久化探测账本，并以请求数、Token、金额三项硬上限共同限额；自动恢复范围采用 **A**：仅探测健康/降级账号及冷却到期且具备恢复资格的账号，成功后进入渐进恢复。人工停用、鉴权失效和凭据失效账号一律禁止自动探测与自动恢复。实现仍须默认关闭、账号级开关、数据库租约、多副本去重和真实 health write，并单独提交 schema/真实费用 Draft PR。
 2. 是否批准把普通请求观测时间从 `last_probe_at` 迁到独立 `last_request_observed_at` 合同；该项涉及 schema/API。
-3. Grok 网页 session 能力是保留为插件、重做 clean-room Safe Equivalent，还是继续 Mandatory Roadmap；当前禁止直接注册。
+3. Grok 网页 session 已决策：删除原不可达实现；用户结果继续作为 Mandatory Roadmap，只能通过新的 clean-room Safe Equivalent 或隔离插件重新建设。
 4. 是否批准把运行时 `ValidateAccountCompatibility` 泛化到全部有 serving contract 的 family；该项会改变异常/遗留账号的凭据放行规则。
 5. 是否批准以 `antigravity/oauth` 为唯一 canonical 身份，并另开数据迁移决策包处置 `gemini/antigravity` legacy 行。
 6. 是否批准建设 Gemini、Antigravity、Kimi 的账号级只读观测合同；第一阶段只展示，不进入强配额、资金或 selector。

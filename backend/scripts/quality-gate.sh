@@ -44,9 +44,10 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
 # env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
 # 2026-07-17 删除零调用 Codex CLI 通用导入包装器，专用解析入口已接入生产账号导入链；
-# deadcode baseline 与上限同步收紧 882->881。
+# 同时删除从未进入生产依赖图且带 clean-room 风险的 Grok 网页 session 实现及其 6 条 deadcode 豁免。
+# deadcode baseline 与上限随两处删除合并后同步收紧 882->875。
 SC_MAX=94
-DC_MAX=881
+DC_MAX=875
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
