@@ -208,7 +208,14 @@ func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg admi
 
 func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	s.updateFull = &arg
+	// 基线优先取 seed(s.get):模拟 UPDATE...RETURNING 在既有行上就地改,
+	// 未提交字段保持原值(高级字段"改一保余"语义要求)。
 	row := adminProviderRow(arg.ID, arg.TenantID)
+	if s.get != nil {
+		row = *s.get
+		row.ID = arg.ID
+		row.TenantID = arg.TenantID
+	}
 	if arg.Enabled != nil {
 		row.Enabled = *arg.Enabled
 	}
@@ -236,6 +243,31 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	if arg.SetCapabilityFlags {
 		row.CapabilityFlags = arg.CapabilityFlags
 	}
+	// 高级字段:指针型非 nil=已提交则改;可空型按 Set-flag 改(含清空)。
+	if arg.RPMLimit != nil {
+		row.RPMLimit = *arg.RPMLimit
+	}
+	if arg.TPMLimit != nil {
+		row.TPMLimit = *arg.TPMLimit
+	}
+	if arg.WindowCostLimitCents != nil {
+		row.WindowCostLimitCents = *arg.WindowCostLimitCents
+	}
+	if arg.MaxSessions != nil {
+		row.MaxSessions = *arg.MaxSessions
+	}
+	if arg.DisableCooling != nil {
+		row.DisableCooling = *arg.DisableCooling
+	}
+	if arg.SetRefreshLeadSeconds {
+		row.RefreshLeadSeconds = arg.RefreshLeadSeconds
+	}
+	if arg.SetExpiresAt {
+		row.ExpiresAt = arg.ExpiresAt
+	}
+	if arg.TLSFingerprintRotate != nil {
+		row.TLSFingerprintRotate = *arg.TLSFingerprintRotate
+	}
 	if arg.CustomErrorCodesEnabled != nil {
 		row.CustomErrorCodesEnabled = *arg.CustomErrorCodesEnabled
 	}
@@ -247,6 +279,15 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	}
 	if arg.TempUnschedulableEnabled != nil {
 		row.TempUnschedulableEnabled = *arg.TempUnschedulableEnabled
+	}
+	if arg.SetTempUnschedulableRules {
+		row.TempUnschedulableRules = arg.TempUnschedulableRulesJSON
+	}
+	if arg.SetProxyID {
+		row.ProxyID = arg.ProxyID
+	}
+	if arg.SetProxyGroupID {
+		row.ProxyGroupID = arg.ProxyGroupID
 	}
 	return row, nil
 }
@@ -882,5 +923,47 @@ func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams
 	row.Extra = in.Extra
 	row.ModelAllowList = in.ModelAllowList
 	row.CapabilityFlags = in.CapabilityFlags
+	// 高级字段 arg→row 往返(模拟真实 INSERT...RETURNING),使 create 回显生效。
+	if in.RPMLimit != nil {
+		row.RPMLimit = *in.RPMLimit
+	}
+	if in.TPMLimit != nil {
+		row.TPMLimit = *in.TPMLimit
+	}
+	if in.WindowCostLimitCents != nil {
+		row.WindowCostLimitCents = *in.WindowCostLimitCents
+	}
+	if in.MaxSessions != nil {
+		row.MaxSessions = *in.MaxSessions
+	}
+	if in.DisableCooling != nil {
+		row.DisableCooling = *in.DisableCooling
+	}
+	if in.RefreshLeadSeconds != nil {
+		row.RefreshLeadSeconds = in.RefreshLeadSeconds
+	}
+	if in.ExpiresAt.Valid {
+		row.ExpiresAt = in.ExpiresAt
+	}
+	if in.TLSFingerprintRotate != nil {
+		row.TLSFingerprintRotate = *in.TLSFingerprintRotate
+	}
+	if in.CustomErrorCodesEnabled != nil {
+		row.CustomErrorCodesEnabled = *in.CustomErrorCodesEnabled
+	}
+	if in.CustomErrorCodes != nil {
+		row.CustomErrorCodes = in.CustomErrorCodes
+	}
+	if in.PoolMode != nil {
+		row.PoolMode = *in.PoolMode
+	}
+	if in.TempUnschedulableEnabled != nil {
+		row.TempUnschedulableEnabled = *in.TempUnschedulableEnabled
+	}
+	if len(in.TempUnschedulableRulesJSON) > 0 {
+		row.TempUnschedulableRules = in.TempUnschedulableRulesJSON
+	}
+	row.ProxyID = in.ProxyID
+	row.ProxyGroupID = in.ProxyGroupID
 	return row
 }

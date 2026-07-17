@@ -71,9 +71,13 @@ func TestATBFCSelectorTypedExhaustionFamilies(t *testing.T) {
 			wantContextOnly: true,
 		},
 		{
-			name:             "纯并发槽耗尽",
-			gates:            DefaultGateChain(),
-			slots:            alwaysNoSlot{},
+			name:  "纯并发槽耗尽",
+			gates: DefaultGateChain(),
+			slots: alwaysNoSlot{},
+			// 必须带 ClaimID:并发槽只对 claim-bearing 请求获取(合并保留的
+			// claimless 快路径让只读/count-tokens 请求跳过槽获取,避免占槽到租约
+			// 回收)。槽耗尽分型因此只在 claim 请求路径上可达。
+			req:              SelectionRequest{ClaimID: 1},
 			wantFamily:       ExhaustionFamilyCapacity,
 			wantReasons:      map[GateFailureReason]int{GateFailureSlotCapacity: 2},
 			wantPureCapacity: true,

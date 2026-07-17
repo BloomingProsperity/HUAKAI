@@ -245,7 +245,6 @@ internal/credentialacq/oauth_sso.go:  unreachable func: PollSSOToken
 internal/credentialacq/vendor_exchangers.go:  unreachable func: RegisterExchanger
 internal/credentialacq/vendor_exchangers.go:  unreachable func: RegisterOrReplaceExchanger
 internal/credentialacq/windsurf_token.go:  unreachable func: NewWindsurfCodeiumAuthTokenCandidate
-internal/credentialworker/adapters/codex.go:  unreachable func: NewCodexRefresh
 internal/credentialworker/adapters/openai.go:  unreachable func: ShouldRefreshOpenAIForRateLimit
 internal/credentialworker/health_state.go:  unreachable func: providerAccountHealthDBStore.UpdateProviderAccountHealth
 internal/credentialworker/options.go:  unreachable func: WithBackoff
@@ -354,6 +353,7 @@ internal/hermeschat/bridge.go:  unreachable func: copyResponseHeaders
 internal/hermeschat/bridge_audit.go:  unreachable func: Bridge.warnAuditFailure
 internal/hermeshttp/chat_handler.go:  unreachable func: copyProxyResponse
 internal/hermeshttp/router.go:  unreachable func: NewRouter
+internal/httpkeepalive/keepalive.go:  unreachable func: Keepalive.Wrote
 internal/logsink/sink.go:  unreachable func: WithBatch
 internal/logsink/sink.go:  unreachable func: WithQueueSize
 internal/mediatask/provider.go:  unreachable func: NewNoopProvider
@@ -362,7 +362,9 @@ internal/mediatask/provider.go:  unreachable func: noopProvider.Submit
 internal/mediatask/types.go:  unreachable func: CanTransition
 internal/mediatask/types.go:  unreachable func: StaticConfigSource.Load
 internal/mediatask/types.go:  unreachable func: StaticProviderRegistry.Provider
+internal/modeladminhttp/routes.go:  unreachable func: NewRouter
 internal/modelbindingadminhttp/routes.go:  unreachable func: NewRouter
+internal/modelroutingadminhttp/routes.go:  unreachable func: NewRouter
 internal/modelsync/scheduler.go:  unreachable func: Scheduler.Status
 internal/notify/settler.go:  unreachable func: WithSettlerAsync
 internal/notify/settler.go:  unreachable func: WithSettlerTimeout

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
@@ -168,33 +170,19 @@ type mutateProviderAccountRequest struct {
 }
 
 type updateProviderAccountRequest struct {
-	TenantID                   *int64           `json:"tenant_id,omitempty"`
-	Enabled                    *bool            `json:"enabled,omitempty"`
-	Priority                   *int32           `json:"priority,omitempty"`
-	StaticWeight               *int32           `json:"static_weight,omitempty"`
-	CapConcurrency             *int32           `json:"cap_concurrency,omitempty"`
-	ProbeModel                 *string          `json:"probe_model,omitempty"`
-	Tags                       *[]string        `json:"tags,omitempty"`
-	Extra                      *json.RawMessage `json:"extra,omitempty"`
-	ModelAllowList             *[]string        `json:"model_allow_list,omitempty"`
-	CapabilityFlags            *[]string        `json:"capability_flags,omitempty"`
-	CustomErrorCodesEnabled    *bool            `json:"custom_error_codes_enabled,omitempty"`
-	CustomErrorCodes           *[]int32         `json:"custom_error_codes,omitempty"`
-	PoolMode                   *bool            `json:"pool_mode,omitempty"`
-	TempUnschedulableEnabled   *bool            `json:"temp_unschedulable_enabled,omitempty"`
-	TempUnschedulableRulesJSON *json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	// ProxyBinding 省略=不动出站代理绑定;present=按 mode 设置(互斥由 handler 构造保证)。
-	ProxyBinding *proxyBindingInput `json:"proxy_binding,omitempty"`
-	Reason       string             `json:"reason,omitempty"`
-}
-
-// proxyBindingInput 表达账号出站代理的目标绑定:mode∈{direct,proxy,group}。
-// direct=直连(清两列);proxy=单绑 ProxyID(清组);group=绑组 ProxyGroupID(清单代理)。
-// 互斥由 handler 在每个 mode 同时写两列保证(配合 0148 DB CHECK 兜底)。
-type proxyBindingInput struct {
-	Mode         string  `json:"mode"`
-	ProxyID      *int64  `json:"proxy_id,omitempty"`
-	ProxyGroupID *string `json:"proxy_group_id,omitempty"`
+	TenantID        *int64           `json:"tenant_id,omitempty"`
+	Enabled         *bool            `json:"enabled,omitempty"`
+	Priority        *int32           `json:"priority,omitempty"`
+	StaticWeight    *int32           `json:"static_weight,omitempty"`
+	CapConcurrency  *int32           `json:"cap_concurrency,omitempty"`
+	ProbeModel      *string          `json:"probe_model,omitempty"`
+	Tags            *[]string        `json:"tags,omitempty"`
+	Extra           *json.RawMessage `json:"extra,omitempty"`
+	ModelAllowList  *[]string        `json:"model_allow_list,omitempty"`
+	CapabilityFlags *[]string        `json:"capability_flags,omitempty"`
+	// 高级字段(rpm/tpm/窗口/会话/冷却/刷新/过期/TLS/自定义错误码/池模式/临时停调/代理绑定)
+	// 不在本结构体解析,统一交给 accountadvanced 从原始 body 解析校验(fields.json 契约)。
+	Reason string `json:"reason,omitempty"`
 }
 
 type providerAccountListResponse struct {
@@ -209,49 +197,57 @@ type providerAccountPage struct {
 }
 
 type providerAccountResponse struct {
-	ID                       int64                                     `json:"id"`
-	TenantID                 int64                                     `json:"tenant_id"`
-	ProviderID               int64                                     `json:"provider_id"`
-	ChannelID                int64                                     `json:"channel_id"`
-	Name                     string                                    `json:"name"`
-	AccountType              string                                    `json:"account_type"`
-	Enabled                  bool                                      `json:"enabled"`
-	ExpiresAt                *time.Time                                `json:"expires_at"`
-	HealthState              string                                    `json:"health_state"`
-	CredentialState          string                                    `json:"credential_state"`
-	CapConcurrency           int32                                     `json:"cap_concurrency"`
-	InFlightCount            int32                                     `json:"in_flight_count"`
-	Priority                 int32                                     `json:"priority"`
-	StaticWeight             int32                                     `json:"static_weight"`
-	ProbeModel               *string                                   `json:"probe_model"`
-	Tags                     []string                                  `json:"tags"`
-	Extra                    json.RawMessage                           `json:"extra"`
-	LastDispatchAt           *time.Time                                `json:"last_dispatch_at"`
-	LastProbeLatencyMS       *int32                                    `json:"last_probe_latency_ms"`
-	LastProbeAt              *time.Time                                `json:"last_probe_at"`
-	LastRequestObservedAt    *time.Time                                `json:"last_request_observed_at"`
-	ObservationSource        string                                    `json:"last_request_observation_source"`
-	ModelAllowList           []string                                  `json:"model_allow_list"`
-	CapabilityFlags          []string                                  `json:"capability_flags"`
-	RateLimitedAt            *time.Time                                `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time                                `json:"rate_limit_reset_at"`
-	RateLimitReason          *string                                   `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time                                `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time                                `json:"temp_unschedulable_until"`
-	TokenVersion             int32                                     `json:"token_version"`
-	LastRefreshAt            *time.Time                                `json:"last_refresh_at"`
-	LastRefreshOutcome       *string                                   `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string                                    `json:"oauth_endpoint_health,omitempty"`
-	CustomErrorCodesEnabled  bool                                      `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32                                   `json:"custom_error_codes"`
-	PoolMode                 bool                                      `json:"pool_mode"`
-	TempUnschedulableEnabled bool                                      `json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules   json.RawMessage                           `json:"temp_unschedulable_rules,omitempty"`
-	ProxyID                  *int64                                    `json:"proxy_id"`
-	ProxyGroupID             *string                                   `json:"proxy_group_id"`
-	CreatedAt                *time.Time                                `json:"created_at"`
-	UpdatedAt                *time.Time                                `json:"updated_at"`
-	RateLimitRecovery        *providerAccountRateLimitRecoveryResponse `json:"rate_limit_recovery,omitempty"`
+	ID                       int64           `json:"id"`
+	TenantID                 int64           `json:"tenant_id"`
+	ProviderID               int64           `json:"provider_id"`
+	ChannelID                int64           `json:"channel_id"`
+	Name                     string          `json:"name"`
+	AccountType              string          `json:"account_type"`
+	Enabled                  bool            `json:"enabled"`
+	ExpiresAt                *time.Time      `json:"expires_at"`
+	HealthState              string          `json:"health_state"`
+	CredentialState          string          `json:"credential_state"`
+	CapConcurrency           int32           `json:"cap_concurrency"`
+	InFlightCount            int32           `json:"in_flight_count"`
+	Priority                 int32           `json:"priority"`
+	StaticWeight             int32           `json:"static_weight"`
+	ProbeModel               *string         `json:"probe_model"`
+	Tags                     []string        `json:"tags"`
+	Extra                    json.RawMessage `json:"extra"`
+	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
+	LastProbeAt              *time.Time      `json:"last_probe_at"`
+	LastRequestObservedAt    *time.Time      `json:"last_request_observed_at"`
+	ObservationSource        string          `json:"last_request_observation_source"`
+	ModelAllowList           []string        `json:"model_allow_list"`
+	CapabilityFlags          []string        `json:"capability_flags"`
+	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
+	RateLimitResetAt         *time.Time      `json:"rate_limit_reset_at"`
+	RateLimitReason          *string         `json:"rate_limit_reason"`
+	OverloadUntil            *time.Time      `json:"overload_until"`
+	TempUnschedulableUntil   *time.Time      `json:"temp_unschedulable_until"`
+	TokenVersion             int32           `json:"token_version"`
+	LastRefreshAt            *time.Time      `json:"last_refresh_at"`
+	LastRefreshOutcome       *string         `json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string          `json:"oauth_endpoint_health,omitempty"`
+	RPMLimit                 int64           `json:"rpm_limit"`
+	TPMLimit                 int64           `json:"tpm_limit"`
+	WindowCostLimitCents     int64           `json:"window_cost_limit_cents"`
+	MaxSessions              int32           `json:"max_sessions"`
+	DisableCooling           bool            `json:"disable_cooling"`
+	RefreshLeadSeconds       *int32          `json:"refresh_lead_seconds"`
+	TLSFingerprintRotate     bool            `json:"tls_fingerprint_rotate"`
+	CustomErrorCodesEnabled  bool            `json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32         `json:"custom_error_codes"`
+	PoolMode                 bool            `json:"pool_mode"`
+	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
+	// ProxyBinding 是出站代理绑定的结构化回显(direct/proxy/group),由 proxy_id/
+	// proxy_group_id 两列派生,与写入侧 accountadvanced 统一契约同形。
+	ProxyBinding      accountadvanced.ProxyBinding              `json:"proxy_binding"`
+	CreatedAt         *time.Time                                `json:"created_at"`
+	UpdatedAt         *time.Time                                `json:"updated_at"`
+	RateLimitRecovery *providerAccountRateLimitRecoveryResponse `json:"rate_limit_recovery,omitempty"`
 }
 
 type providerAccountRateLimitRecoveryResponse struct {
@@ -268,7 +264,12 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		var req createProviderAccountRequest
-		if !decodeAdminPoolJSON(w, r, &req) {
+		rawBody, ok := decodeAdminPoolJSONWithRaw(w, r, &req)
+		if !ok {
+			return
+		}
+		advanced, ok := parseProviderAccountAdvanced(w, rawBody)
+		if !ok {
 			return
 		}
 		if !validateProviderAccountTenant(w, req.TenantID, tenantID) {
@@ -323,6 +324,7 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			Extra:          normalizedProviderAccountExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
+		accountadvanced.ApplyCreate(advanced, &createArg)
 		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, providerFamily, confirmed)
 		if err != nil {
 			if errors.Is(err, errProviderAccountProtocolIncompatible) {
@@ -497,13 +499,18 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		var req updateProviderAccountRequest
-		if !decodeAdminPoolJSON(w, r, &req) {
+		rawBody, ok := decodeAdminPoolJSONWithRaw(w, r, &req)
+		if !ok {
+			return
+		}
+		advanced, ok := parseProviderAccountAdvanced(w, rawBody)
+		if !ok {
 			return
 		}
 		if !validateProviderAccountTenant(w, req.TenantID, tenantID) {
 			return
 		}
-		if err := validateUpdateProviderAccount(req); err != nil {
+		if err := validateUpdateProviderAccount(req, advanced.Any()); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
@@ -511,8 +518,6 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		arg := admindb.UpdateAdminProviderAccountParams{
 			ID: id, TenantID: tenantID, ActorID: &actorID,
 			Enabled: req.Enabled, Priority: req.Priority, StaticWeight: req.StaticWeight, CapConcurrency: req.CapConcurrency,
-			CustomErrorCodesEnabled: req.CustomErrorCodesEnabled,
-			PoolMode:                req.PoolMode, TempUnschedulableEnabled: req.TempUnschedulableEnabled,
 		}
 		if req.ProbeModel != nil {
 			arg.SetProbeModel = true
@@ -534,44 +539,9 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			arg.SetCapabilityFlags = true
 			arg.CapabilityFlags = cleanStringList(*req.CapabilityFlags)
 		}
-		if req.CustomErrorCodes != nil {
-			arg.SetCustomErrorCodes = true
-			arg.CustomErrorCodes = *req.CustomErrorCodes
-		}
-		if req.TempUnschedulableRulesJSON != nil {
-			arg.SetTempUnschedulableRules = true
-			arg.TempUnschedulableRulesJSON = []byte(*req.TempUnschedulableRulesJSON)
-		}
-		// 出站代理绑定:按 mode 构造性写两列,互斥由"每 mode 同时设两列"保证;
-		// proxy_id 跨租户由 0038 DB 触发器兜底(前端代理下拉只给本租户代理为主防线)。
-		if req.ProxyBinding != nil {
-			switch req.ProxyBinding.Mode {
-			case "direct":
-				arg.SetProxyID, arg.ProxyID = true, nil
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil
-			case "proxy":
-				if req.ProxyBinding.ProxyID == nil || *req.ProxyBinding.ProxyID <= 0 {
-					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=proxy 需正整数 proxy_id")
-					return
-				}
-				arg.SetProxyID, arg.ProxyID = true, req.ProxyBinding.ProxyID
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, nil // 互斥:清组
-			case "group":
-				g := ""
-				if req.ProxyBinding.ProxyGroupID != nil {
-					g = strings.TrimSpace(*req.ProxyBinding.ProxyGroupID)
-				}
-				if g == "" {
-					writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode=group 需非空 proxy_group_id")
-					return
-				}
-				arg.SetProxyGroupID, arg.ProxyGroupID = true, &g
-				arg.SetProxyID, arg.ProxyID = true, nil // 互斥:清单代理
-			default:
-				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", "proxy_binding.mode 须为 direct/proxy/group")
-				return
-			}
-		}
+		// 高级字段(含代理绑定的 direct/proxy/group 互斥)由 accountadvanced 统一写入,
+		// 与创建路径同一份 fields.json 契约(代理跨租户仍由 0038 DB 触发器兜底)。
+		accountadvanced.ApplyUpdate(advanced, &arg)
 		account, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_update_failed")
@@ -779,6 +749,32 @@ func decodeAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
+// decodeAdminPoolJSONWithRaw 同 decodeAdminPoolJSON,但把原始 body 一并返回:
+// 高级字段(rpm/tpm/窗口/会话/冷却/代理绑定等)由 accountadvanced 从原始 JSON 统一
+// 解析校验,基础字段仍解进 dst 结构体,二者共用同一份 body。
+func decodeAdminPoolJSONWithRaw(w http.ResponseWriter, r *http.Request, dst any) ([]byte, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return nil, false
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return nil, false
+	}
+	return raw, true
+}
+
+// parseProviderAccountAdvanced 从原始 body 解析并校验高级字段;校验失败统一回 400。
+func parseProviderAccountAdvanced(w http.ResponseWriter, raw []byte) (accountadvanced.Mutation, bool) {
+	adv, err := accountadvanced.Parse(raw)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
+		return accountadvanced.Mutation{}, false
+	}
+	return adv, true
+}
+
 func validateCreateProviderAccount(req createProviderAccountRequest, requireCredentialV2 bool) error {
 	if req.ProviderID <= 0 || req.ChannelID <= 0 || req.Name == "" {
 		return fmt.Errorf("provider_id, channel_id, and name are required")
@@ -860,12 +856,12 @@ func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedch
 	})
 }
 
-func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
-	if req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
+// validateUpdateProviderAccount 校验基础字段;hasAdvanced 表示 accountadvanced 是否
+// 解析到至少一个高级字段(高级字段的类型/范围校验已在 accountadvanced.Parse 完成)。
+func validateUpdateProviderAccount(req updateProviderAccountRequest, hasAdvanced bool) error {
+	if !hasAdvanced && req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
 		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
-		req.CapabilityFlags == nil && req.CustomErrorCodesEnabled == nil && req.CustomErrorCodes == nil &&
-		req.PoolMode == nil && req.TempUnschedulableEnabled == nil && req.TempUnschedulableRulesJSON == nil &&
-		req.ProxyBinding == nil {
+		req.CapabilityFlags == nil {
 		return fmt.Errorf("at least one supported field is required")
 	}
 	if req.CapConcurrency != nil && *req.CapConcurrency <= 0 {
@@ -876,12 +872,6 @@ func validateUpdateProviderAccount(req updateProviderAccountRequest) error {
 	}
 	if req.Extra != nil && !jsonRawObject(*req.Extra) {
 		return fmt.Errorf("extra must be a JSON object")
-	}
-	if req.TempUnschedulableRulesJSON != nil {
-		var rules []map[string]any
-		if len(*req.TempUnschedulableRulesJSON) == 0 || json.Unmarshal(*req.TempUnschedulableRulesJSON, &rules) != nil {
-			return fmt.Errorf("temp_unschedulable_rules must be a JSON array")
-		}
 	}
 	return nil
 }
@@ -1000,10 +990,16 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		OverloadUntil: pgTimePtr(row.OverloadUntil), TempUnschedulableUntil: pgTimePtr(row.TempUnschedulableUntil),
 		TokenVersion: row.TokenVersion, LastRefreshAt: pgTimePtr(row.LastRefreshAt),
 		LastRefreshOutcome: row.LastRefreshOutcome, OAuthEndpointHealth: row.OAuthEndpointHealth,
+		RPMLimit: row.RPMLimit, TPMLimit: row.TPMLimit, WindowCostLimitCents: row.WindowCostLimitCents,
+		MaxSessions: row.MaxSessions, DisableCooling: row.DisableCooling, RefreshLeadSeconds: row.RefreshLeadSeconds,
+		TLSFingerprintRotate:    row.TLSFingerprintRotate,
 		CustomErrorCodesEnabled: row.CustomErrorCodesEnabled, CustomErrorCodes: nonNilInt32Slice(row.CustomErrorCodes),
 		PoolMode: row.PoolMode, TempUnschedulableEnabled: row.TempUnschedulableEnabled,
-		ProxyID: row.ProxyID, ProxyGroupID: row.ProxyGroupID,
-		CreatedAt: pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
+		// 临时停调规则是详情字段:空时置 nil(omitempty 省略),使列表摘要不携带详情规则,
+		// 详情(创建/更新/查询)有规则时才回显。
+		TempUnschedulableRules: detailRulesOrNil(row.TempUnschedulableRules),
+		ProxyBinding:           accountadvanced.BindingFromColumns(row.ProxyID, row.ProxyGroupID),
+		CreatedAt:              pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
 	}
 }
 
@@ -1011,6 +1007,16 @@ func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) providerAccou
 	response := providerAccountDTO(row)
 	response.TempUnschedulableRules = jsonArrayOrEmpty(row.TempUnschedulableRules)
 	return response
+}
+
+// detailRulesOrNil 返回详情用的临时停调规则 JSON;空数组/空/null 一律置 nil,
+// 让 omitempty 在列表摘要中省略该字段(详情有规则时才携带)。
+func detailRulesOrNil(raw []byte) json.RawMessage {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "[]" || s == "null" {
+		return nil
+	}
+	return json.RawMessage(raw)
 }
 
 func jsonArrayOrEmpty(raw []byte) json.RawMessage {
