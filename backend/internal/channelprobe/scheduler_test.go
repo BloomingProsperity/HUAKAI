@@ -166,3 +166,84 @@ func (s *activeProbeStub) channelIDs() []string {
 	defer s.mu.Unlock()
 	return append([]string(nil), s.seen...)
 }
+
+// TestSchedulerAdvancesRampingChannels 守卫「渠道冷却后进 ramping 1% 需被周期推进,否则永久卡死」:
+// 只配 RampAdvancer(不配 ActiveProbe/Health),调度器必须照样对每个活跃渠道调 AdvanceRamp。
+// 变异(任一即转红):① Run 在 activeProbe==nil 时早退 → advance 调用停在 0;
+// ② probeOnce 删掉 rampAdvancer.AdvanceRamp 调用 → 同样停在 0。
+func TestSchedulerAdvancesRampingChannels(t *testing.T) {
+	ticker := newFakeSchedulerTicker()
+	lister := &activeChannelListerStub{channels: []ActiveChannel{
+		activeChannelFixture(7, "openai", 101, 1001, 1),
+		activeChannelFixture(7, "anthropic", 202, 2002, 3),
+	}}
+	advancer := newRampAdvancerStub()
+	scheduler := NewChannelHealthScheduler(SchedulerConfig{
+		Channels:     lister,
+		RampAdvancer: advancer,
+		Interval:     time.Minute,
+		NewTicker:    func(time.Duration) SchedulerTicker { return ticker },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- scheduler.Run(ctx) }()
+
+	ticker.tick()
+	advancer.waitCalls(t, len(lister.channels))
+	cancel()
+	waitSchedulerRunReturned(t, errCh)
+
+	if got := advancer.accountIDs(); !reflect.DeepEqual(got, []int64{101, 202}) {
+		t.Fatalf("advanced provider account IDs=%v want [101 202]", got)
+	}
+}
+
+type rampAdvancerStub struct {
+	mu      sync.Mutex
+	seen    []int64
+	called  chan struct{}
+	closeMu sync.Once
+}
+
+func newRampAdvancerStub() *rampAdvancerStub {
+	return &rampAdvancerStub{called: make(chan struct{})}
+}
+
+func (s *rampAdvancerStub) AdvanceRamp(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
+	s.mu.Lock()
+	s.seen = append(s.seen, key.ProviderAccountID)
+	if len(s.seen) >= 2 {
+		s.closeMu.Do(func() { close(s.called) })
+	}
+	s.mu.Unlock()
+	return channelhealth.Record{}, nil
+}
+
+func (s *rampAdvancerStub) waitCalls(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		s.mu.Lock()
+		got := len(s.seen)
+		s.mu.Unlock()
+		if got >= want {
+			return
+		}
+		select {
+		case <-s.called:
+			return
+		case <-deadline:
+			t.Fatalf("ramp advance calls=%d want %d", got, want)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func (s *rampAdvancerStub) accountIDs() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.seen...)
+}

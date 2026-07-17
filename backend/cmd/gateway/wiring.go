@@ -33,6 +33,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelprobe"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -1336,6 +1337,35 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
 		name: "window cost worker",
 		wait: windowCostWorker.Wait,
+	})
+
+	// CHANNEL-RAMP-DRIVER：渠道渐进放量(ramping)推进驱动。此前 advanceRamp 无生产调用者,
+	// 渠道冷却到期进 ramping 1% 后无人推进 → 永久卡在 1% 准入(整池被压到 1% 流量)。这里用渠道
+	// 已累积的真实流量样本周期推进(够样本 + 失败率低才升 1%→10%→50%→100%→active,失败则回滚),
+	// 只列 state='ramping' 的渠道(避免对全部活跃渠道触发 EnsureDefaultActive 凭空建行)。不发合成
+	// 探测(不烧上游额度);主动探测是后续增强。随 workerCtx 取消停。
+	channelRampScheduler := channelprobe.NewChannelHealthScheduler(channelprobe.SchedulerConfig{
+		Channels:     channelprobe.NewPostgresRampingChannelLister(pgPool, 0),
+		RampAdvancer: channelHealthService,
+		Interval:     channelprobe.DefaultSchedulerInterval,
+	})
+	channelRampDone := make(chan struct{})
+	go func() {
+		defer close(channelRampDone)
+		if err := channelRampScheduler.Run(workerCtx); err != nil {
+			slog.WarnContext(workerCtx, "channel ramp scheduler exited with error", "error", err)
+		}
+	}()
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "channel ramp scheduler",
+		wait: func(ctx context.Context) error {
+			select {
+			case <-channelRampDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
 	})
 
 	// 配额探测只写观测窗口，不接入健康状态、冷却或选号依赖。

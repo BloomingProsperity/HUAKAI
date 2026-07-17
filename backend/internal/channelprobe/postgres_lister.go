@@ -59,6 +59,56 @@ LIMIT $1`, limit)
 	}
 	defer rows.Close()
 
+	return scanActiveChannels(rows)
+}
+
+// PostgresRampingChannelLister 只列当前处于 ramping(渐进放量)状态的渠道,供 ramp 驱动使用。
+// 直接查 channel_health_state 的 state='ramping' 行(寥寥几个),避免对全部活跃渠道调 AdvanceRamp
+// 触发 EnsureDefaultActive 给无记录渠道凭空建行 + 首轮审计噪声。
+type PostgresRampingChannelLister struct {
+	pool  *pgxpool.Pool
+	limit int
+}
+
+func NewPostgresRampingChannelLister(pool *pgxpool.Pool, limit int) *PostgresRampingChannelLister {
+	if limit <= 0 {
+		limit = defaultActiveChannelLimit
+	}
+	return &PostgresRampingChannelLister{pool: pool, limit: limit}
+}
+
+func (l *PostgresRampingChannelLister) ListActiveChannels(ctx context.Context) ([]ActiveChannel, error) {
+	if l == nil || l.pool == nil {
+		return nil, ErrNotConfigured
+	}
+	limit := l.limit
+	if limit <= 0 {
+		limit = defaultActiveChannelLimit
+	}
+	rows, err := l.pool.Query(ctx, `
+SELECT
+    tenant_id,
+    vendor,
+    provider_account_id,
+    account_credential_id,
+    credential_version
+FROM channel_health_state
+WHERE state = 'ramping'
+  AND provider_account_id IS NOT NULL
+ORDER BY tenant_id, provider_account_id
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanActiveChannels(rows)
+}
+
+func scanActiveChannels(rows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}) ([]ActiveChannel, error) {
 	out := make([]ActiveChannel, 0)
 	for rows.Next() {
 		var key channelhealth.ChannelKey
