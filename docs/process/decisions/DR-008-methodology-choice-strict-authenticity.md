@@ -2,19 +2,19 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Decided |
+| Status | 历史决策；具体执行流程已被 2026-07-18 最新 Owner 指令替代 |
 | Date opened | 2026-04-28 |
 | Date decided | 2026-04-28 |
 | Owner | Owner |
-| Affected docs | docs/PROJECT_MASTER_PLAN.md, docs/22_DEEP_MINING_MANDATE.md, docs/16_PHASED_DELIVERY_PLAN.md, docs/15_RELEASE_GATES.md |
+| Affected docs | 旧总纲已删除；当前只影响 truth-first、源码证据和 release gate，不再恢复双计划或固定模型角色。 |
 | Supersedes | — |
-| Superseded by | — |
+| Superseded by | [`AGENTS.md`](../../../AGENTS.md) 的当前单执行者、唯一计划和独立只读 review 合同 |
 
 ## Question
 
 Given Owner's "必须真实，慢无所谓" rule and the honest progress estimate of ~250–500 focused engineering hours to a Model-1-commercializable product, which methodology does HUAKAI execute?
 
-Three candidates were presented to Owner ([PROJECT_MASTER_PLAN.md §12](../../PROJECT_MASTER_PLAN.md)):
+当时旧总纲提出三个候选；旧总纲已删除，原文可从 Git 历史追溯：
 
 - **A — Strict**: every L1/L2 feature passes deep decomposition + mutual review + reviewer-lane sign-off + spec release before implementation. Slow but authentic.
 - **B — Partial strict**: 3–5 Money-grade core algorithms (Quota+Billing claim gate, Pool selection, streaming forwarder) go strict; outer features allow experiential / shorter-cycle decomposition.
@@ -40,14 +40,14 @@ Three candidates were presented to Owner ([PROJECT_MASTER_PLAN.md §12](../../PR
 
 ## Implications That Flow Immediately
 
-- **Phase 1.2 priority queue** is locked: continue the work plan in [PROJECT_MASTER_PLAN.md §10 Mandated Next Dives](../../PROJECT_MASTER_PLAN.md). Top of queue: Quota+Billing claim gate v2 fixes → Pool selection strict spec → streaming forwarder spec → typed failure taxonomy spec.
+- **历史 Phase 1.2 priority queue**：Quota+Billing claim gate v2 fixes → Pool selection strict spec → streaming forwarder spec → typed failure taxonomy spec。该队列不再是当前执行计划；当前目标只服从仓内唯一最新计划。
 - **No Phase 2 architecture documents** (data model field-level lock, API endpoint-level OpenAPI lock, UI screen-level wireframe lock) until Phase 1.2/1.3 are complete on the core.
 - **No Phase 3 skeleton code** even at "scaffolding" level. The temptation to "just write the Go module structure now" is rejected; Phase 3 starts only after Phase 2 contracts are locked.
 - **Reference Tracking Continuous Gate ([15](../../15_RELEASE_GATES.md))** runs in parallel from now on; baseline files for all 8 references must be captured before Phase 2 entry.
 
 ## Propagation Checklist
 
-- [ ] Update [PROJECT_MASTER_PLAN.md](../../PROJECT_MASTER_PLAN.md) — record Owner Decision A in §12 + lock the time expectation.
+- [x] 旧总纲已被删除；本 DR 保留“真实优先”的历史证据，不再承担当前计划入口职责。
 - [ ] Update [22_DEEP_MINING_MANDATE.md](../../22_DEEP_MINING_MANDATE.md) — strict mode is now the project default; remove any "L3/L4 may be shallow" loophole that conflicts with Owner Decision A (note: L3/L4 shallow is still allowed UNTIL the feature is promoted to active scope, at which point it must reach `Released` decomposition).
 - [ ] Update [16_PHASED_DELIVERY_PLAN.md](../../16_PHASED_DELIVERY_PLAN.md) — Phase 2/3 entry criteria gated on Phase 1.2/1.3 completion.
 - [ ] Update [15_RELEASE_GATES.md](../../15_RELEASE_GATES.md) — Strict Authenticity Gate codified.

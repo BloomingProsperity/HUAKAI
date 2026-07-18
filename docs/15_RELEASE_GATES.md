@@ -1,53 +1,32 @@
-This file is agent-facing and authoritative.
+# HUAKAI 发布门
 
-# Release Gates
+发布门用于阻止功能缩水、错误接线、资金/权限漂移、不可恢复故障和许可证污染。它不把职责永久绑定给某个模型，也不授权自动合并或跳过 Owner 的生产批准。
 
-## Purpose
+## 必过门
 
-Release gates prevent shipping an incomplete, unsafe, or license-contaminated platform.
-
-Release gates do not authorize over-blocking. After the Owner starts a phase or task, agents should proceed proactively on low-risk and medium-risk work while preserving release checks for high-risk decisions.
-
-## Required Gates
-
-| Gate | Requirement | Owner |
+| Gate | 可验证要求 | 责任 |
 | --- | --- | --- |
-| Parity Gate | Every reference feature has a valid disposition. | Codex |
-| Clean-Room Gate | No copied non-MIT implementation detail is present. | Codex |
-| Scenario Gate | Material capabilities have real-world scenarios. | Claude |
-| Acceptance Gate | Acceptance tests cover normal, failure, and operator recovery paths. | Codex |
-| Deep Mining Gate | Every L1 MVP feature in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) cites at least one `E-X-DEEP-NNN` source-code-verified evidence row per [22_DEEP_MINING_MANDATE.md](22_DEEP_MINING_MANDATE.md); multi-source rows cover each cited reference. Required at Phase 1 → Phase 2 transition. | Codex |
-| Reference Tracking Continuous Gate | Per [24_REFERENCE_TRACKING_POLICY.md](24_REFERENCE_TRACKING_POLICY.md), the tracking ledger under `docs/tracking/` is current within its cadence windows (per-release within 7 days; monthly sweep last business day; quarterly strategic at quarter end). Every HUAKAI release requires the tracking ledger to be current. **Continuous, never closes.** | Claude PM |
-| Security Gate | Secrets, permissions, audit logs, and abuse controls are reviewed. | Claude |
-| Billing Gate | Usage, quota, and billing behavior is testable and reconciled. | Codex |
-| OpenAPI Drift Gate | `go test ./cmd/gateway -run TestOpenAPI_ImplementationConsistency` passes — declared OpenAPI spec and mounted routes have zero residual drift. | Claude PM |
-| OpenAPI Drift Gate | `go test ./cmd/gateway -run TestOpenAPI_ImplementationConsistency` 通过（spec↔impl 零漂移） | Codex |
-| Trust Ledger Escape Flag Gate | Production startup fails if `HUAKAI_TRUST_LEDGER_ALLOW_MISSING_MONEY_REF=true/on/1`. Release checks still MUST verify the flag is false or unset before production deployment. | Codex |
-| UI Ops Gate | Admin workflows are complete and operable. | Gemini |
-| Release Decision Gate | Open mandatory roadmap items are explicitly accepted or blocked. | Claude |
+| Truth Gate | 完成声明与当前生产源码、迁移、配置、入口/DI/worker 接线和测试一致；无文档冒充实现。 | 当前执行者 + 独立 reviewer |
+| Source Gate | 外部能力、机制、差异和 parity 结论来自当前生产源码，带 `repo@sha:file:line`；无过期引用冒充现状。 | specifier + clean-room reviewer |
+| Clean-Room Gate | 行为合同与实现 lane 分离；无复制或近似翻译外部代码、标识符、结构、schema、UI 或测试。 | 独立 reviewer |
+| Parity Gate | 每项有效能力都有合法 disposition 和独立 status；无静默删除，Merged/Safe Equivalent 保留用户与运营结果。 | 当前执行者 + parity reviewer |
+| Whole-Chain Gate | 入口、身份、规范化、决策、持久化、副作用、异步、重试、健康、账务/配额、审计、DLQ/恢复和运营状态真实闭环。 | 当前执行者 |
+| Scenario Gate | 正常、失败、部分成功、超时、崩溃、重放、多副本竞争、滥用和人工恢复场景已覆盖。 | 当前执行者 + risk reviewer |
+| Acceptance Gate | 测试能在目标缺陷重新出现时变红；fixture、断言、gate 和 SQL 条件具有判别性。 | 独立 reviewer |
+| PostgreSQL Gate | money/auth/schema/并发链在迁移后的 PostgreSQL 上验证事务、锁、唯一约束、幂等、失败与恢复。 | 当前执行者 + 独立 reviewer |
+| Billing Gate | usage、hold、claim、settlement、refund、quota 和 ledger 金额守恒、可重放、可对账、可人工恢复。 | money-path reviewer |
+| Security Gate | 凭据、权限、租户隔离、审计、SSRF、输入上限和滥用控制经过专项检查。 | security reviewer |
+| OpenAPI Gate | 公开路由、请求/响应、鉴权和错误合同与 OpenAPI 一致，现有一致性测试通过。 | 当前执行者 |
+| Ops Gate | 管理员能查询、筛选、诊断、重试、对账、隔离和人工裁决；敏感操作有权限与审计。 | 当前执行者 |
+| Code Budget Gate | `backend/internal/codebudget` 通过；不抬 baseline 掩盖继续膨胀。 | 当前执行者 |
+| Reference Tracking Gate | [持续追踪台账](24_REFERENCE_TRACKING_POLICY.md) 在当前发布周期内有效；已核实与本次变更相关的上游修复。 | 当前执行者 |
+| Review Gate | 每个提交无未结 S0/S1；完整 slice 与 money/auth/schema/跨功能改动完成 full reviewer gate。 | 独立 reviewer |
+| Release Decision Gate | Mandatory Roadmap、未验证项、运行开关、迁移、恢复手册和生产风险已明确，生产部署由 Owner 批准。 | Owner |
 
-## Release Rule
+## 发布判定
 
-No release may claim full parity while any reference feature is unmapped, silently dropped, or hidden behind an undocumented gap.
-
-## Owner Start Gate And Release Work
-
-Agents must not begin implementation work until the Owner explicitly confirms the phase or task may start. Valid start signals include "Start Phase 1", "Start this task", "Begin implementation", "Proceed", "开始", "确认开始", "可以开始写", and "开始执行".
-
-After a valid start signal, agents should not ask for repeated confirmation for every small step. They should make reasonable engineering decisions, record assumptions and risks, update required docs, run available checks when possible, and produce a final Chinese summary for the Owner.
-
-## Proactive Execution Rule
-
-After Owner confirmation, agents should read relevant rules, understand the assigned goal, execute to completion when safe, make reasonable engineering decisions, record assumptions, record risks, update required docs, run available checks when possible, and produce a final Chinese summary for the Owner.
-
-## Risk-Based Confirmation Rule
-
-Low-risk docs, tests, prompts, type fixes, UI copy, small refactors, and non-sensitive config examples may proceed after Owner start.
-
-Medium-risk small implementation changes, helper utilities, UI structure changes, non-breaking API contract updates, mock data, and experimental logic may proceed when needed with recorded reason and risk.
-
-High-risk changes must stop for Owner confirmation before action. High-risk changes include deleting files, changing `LICENSE`, changing database schema, changing auth core, changing billing ledger, changing quota enforcement, adding new runtime dependency, touching real secrets, destructive shell commands, production deployment, payment logic, production secrets, real credentials, deployment scripts, and destructive migration files.
-
-## Feature Preservation Rule
-
-License risk and security risk must not reduce functionality. If a feature is risky, convert it to `Safe Equivalent`, `Plugin`, `Feature Flag`, `Manual First`, `Experimental Module`, or `Mandatory Roadmap`. Do not remove the feature.
+- 任一资金、鉴权、租户隔离、数据损失、许可证污染或 required test 的 S0/S1 未关闭：禁止发布。
+- 任一宣称完成的能力只有代码片段、没有真实接线或恢复面：按未完成处理。
+- 任一参考能力没有 disposition/status，或被页面/API 合并后丢了权限、状态、审计或恢复：不得宣称 full parity。
+- S2/S3 必须进入当前唯一计划或 commit body，不新建零散 review 文档；重复出现时修复或升级严重度。
+- Owner 启动门、决策停门和 merge/部署边界统一见 [`docs/RULES.md`](RULES.md)，本文件不另造风险模型。

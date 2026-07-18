@@ -1,34 +1,39 @@
 ---
 name: feature-merger
-description: Use when combining overlapping reference features into a local merged equivalent without shrinking user outcomes or hiding required capabilities.
+description: 将重叠能力融合为 HUAKAI 自有实现，同时逐项证明用户结果、运营控制、失败恢复和验收没有缩水。
 ---
 
-This file is agent-facing and authoritative.
+# 能力融合
 
-# Feature Merger
+## 何时使用
 
-## Purpose
+- 多个参考项目提供重叠能力；
+- 希望把多个场景收敛到一个页面、API、状态机或后台任务；
+- 计划使用 `Merged Equivalent`。
 
-Merge overlapping reference features only when the merged local capability fully preserves or improves every user outcome.
+## 前置输入
 
-## Workflow
+- 已完成的领域行为合同；
+- HUAKAI 当前源码与边界；
+- parity rows、风险和 acceptance matrix。
 
-1. List all reference features being merged.
-2. Identify each feature's user outcome.
-3. Identify operator controls, API behavior, audit needs, and failure paths.
-4. Define the local merged capability.
-5. Prove that each original user outcome remains covered.
-6. Add acceptance tests for the merged behavior.
-7. Mark parity matrix rows as `Merged Equivalent`.
+## 执行步骤
 
-## Invalid Merge Signs
+1. 列出要融合的每项能力及其 actor、用户结果和运营结果。
+2. 对比输入、状态、权限、API、审计、失败、重放和恢复差异。
+3. 结合 HUAKAI 中转站结构设计一个本地合同，不强塞外部对象模型。
+4. 建立“原能力 -> 本地入口/状态/测试”的逐项映射。
+5. 对不兼容部分选择融合改造或 Safe Equivalent，并说明原因。
+6. 写判别性 acceptance tests，证明删除任一关键分支都会变红。
+7. 只有全部结果覆盖后才标记 `Merged Equivalent`。
 
-- A configuration option disappears without safe replacement.
-- Operator visibility is reduced.
-- Auditability is weaker.
-- A reference workflow can no longer be completed.
-- The merged feature is only a future idea.
+## 输出
 
-## Output
+- 融合映射；
+- HUAKAI 独立合同与升级差量；
+- 测试与运维入口；
+- parity 更新。
 
-A concise merge note suitable for `docs/03_FEATURE_PARITY_MATRIX.md`.
+## 阻断项
+
+配置项消失、运营可见性降低、权限/审计变弱、恢复路径丢失或只是未来想法，均不能算有效融合。

@@ -1,132 +1,90 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，是参考项目持续跟踪的现行专项合同；全局顺序和 clean-room 边界以 `AGENTS.md` 为准。
 
-# Reference Tracking and Continuous Learning Policy
+# 参考项目持续跟踪合同
 
-> **Owner directive 2026-04-28:** "我们后续的维护也主要看借鉴平台的更新，他们更新后我们吸取问题，然后自查，更新我们的产品。"
+## 1. 目的
 
-## Why This Policy Exists
+参考项目会持续新增能力、修复缺陷、改变默认值和调整许可证。HUAKAI 不能把一次性调研当永久事实；每次依赖外部行为作新判断时，都必须确认证据仍处于有效期，并把变化转成 HUAKAI 的自查、测试或强制路线。
 
-Phase 1 mined the 8 reference projects at one point in time. Those projects keep evolving — they ship new features, fix bugs, change algorithms, and respond to security advisories. HUAKAI's competitive position and operational quality depend on **tracking those updates and incorporating their lessons**, not on a one-time mining pass.
+跟踪的目标是吸收真实行为和事故经验，不是同步代码或追着版本号机械更新。
 
-This policy operationalizes that maintenance discipline as a binding rule: every release window of every tracked reference triggers a HUAKAI self-audit cycle.
+## 2. 参考源分层
 
-## Tracked References
+### 2.1 中转站核心基线
 
-The actively-maintained references tracked (one-api retired 2026-05-28 — see Reference Eligibility below):
-
-| Reference | License | GitHub repo | Release feed | Issue feed | Tracking owner |
-| --- | --- | --- | --- | --- | --- |
-| Sub2API | LGPL-3.0 | [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) | `/releases.atom` | `/issues.atom` | Claude PM |
-| New API | AGPL-3.0 | [QuantumNous/new-api](https://github.com/QuantumNous/new-api) | `/releases.atom` | `/issues.atom` | Claude PM |
-| LiteLLM | MIT | [BerriAI/litellm](https://github.com/BerriAI/litellm) | `/releases.atom` | `/issues.atom` | Claude PM |
-| Portkey | MIT | [Portkey-AI/gateway](https://github.com/Portkey-AI/gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
-| Helicone | GPL-3.0 | [Helicone/ai-gateway](https://github.com/Helicone/ai-gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
-| Envoy AI Gateway | Apache-2.0 | [envoyproxy/ai-gateway](https://github.com/envoyproxy/ai-gateway) | `/releases.atom` | `/issues.atom` | Claude PM |
-| All API Hub | AGPL-3.0 | [qixing-jk/all-api-hub](https://github.com/qixing-jk/all-api-hub) | `/releases.atom` | `/issues.atom` | Gemini (UI ops) |
-
-## Reference Eligibility (added 2026-05-28 Owner directive)
-
-Tracked references MUST be actively maintained. A reference that becomes abandoned or is superseded by an active fork is RETIRED from this list (its historical evidence is preserved in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md) as provenance, but it is no longer tracked, cited for new decisions, or used as a clean-room anchor). **Retired:** one-api (last upstream commit 2025-02-21, ~15 months stale; superseded by its active fork New API). Re-examine all references for maintenance status periodically; prune the abandoned ones.
-
-## Cadence
-
-Three review cycles, each with a different scope:
-
-### Per-Release Review (event-driven, within 7 days of release)
-
-When ANY tracked reference cuts a new release (major / minor / patch):
-
-1. Read the release notes / CHANGELOG / closed-issue list since prior version.
-2. For each material change, classify it into one of:
-   - **Bug fix** (upstream fixed a bug) — does HUAKAI have the same bug? Self-audit our corresponding decomposition + spec + code.
-   - **Algorithmic change** (upstream changed an algorithm) — re-read our prose decomposition for that algorithm; update if upstream's new design is better; explicitly reject if HUAKAI's design is already better.
-   - **New feature** (upstream added a feature) — does HUAKAI care? If yes, add as a candidate row to [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) and queue for Mandated Next Dives.
-   - **Security advisory** (CVE or equivalent) — fast-path. Same-day audit of HUAKAI for the same vulnerability shape.
-   - **License change** — re-verify [E-LIC-NNN](07_REFERENCE_EVIDENCE_LEDGER.md) row; update [docs/06](06_REFERENCE_PROJECTS.md) if changed.
-3. Record findings in `docs/tracking/<reference>/YYYY-MM-DD-vXX.md` (one file per reviewed release; format below).
-4. Open follow-up issues / spec updates / matrix promotions as needed.
-
-### Monthly Sweep (calendar-driven, last business day of month)
-
-Every month, regardless of release activity:
-
-1. Walk every tracked reference's commit log since last sweep.
-2. Identify behavioral changes that did not ship as a release (work-in-progress on main).
-3. Identify recurring issue clusters (e.g. multiple users reporting the same problem upstream).
-4. Update [22 §Per-Reference Coverage Tracking](22_DEEP_MINING_MANDATE.md) with any drift between current decomposition state and current upstream behavior.
-5. Record in `docs/tracking/<reference>/YYYY-MM-monthly.md`.
-
-### Quarterly Strategic Review (calendar-driven, end of quarter)
-
-Every quarter:
-
-1. Compare HUAKAI's feature parity matrix against each reference's current feature surface.
-2. Identify features that have appeared upstream but are NOT in HUAKAI's matrix — propose F-* rows.
-3. Identify HUAKAI features that are no longer aligned with the upstream intent (drift).
-4. Update [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md) success criteria 2 (catalog comparison) with current numbers.
-5. Owner review of strategic direction relative to reference movement.
-6. Record in `docs/tracking/_quarterly-YYYYqN.md`.
-
-## Tracking Entry Format
-
-Every per-release / monthly / quarterly review writes a markdown entry. Template:
-
-```markdown
-# <reference> v<version> review (YYYY-MM-DD)
-
-| Field | Value |
-| --- | --- |
-| Reference | <name + license + commit/tag> |
-| Reviewer | <agent + session> |
-| Cadence | per-release / monthly / quarterly |
-| Trigger | <release notes URL or commit range> |
-
-## Material changes
-
-### <change category>: <change summary>
-- **What changed**: <one-paragraph behavior diff in HUAKAI vocabulary>
-- **HUAKAI impact**: <which prose decomposition / spec / matrix row is affected>
-- **Action**: <Promote / Demote / Patch / Ignore (with reason)>
-- **Owner**: <agent assigned to follow-up>
-- **Followup link**: <docs/decompositions/...md or specs/...md or matrix row>
-
-(repeat per material change)
-
-## Self-audit
-
-For each upstream bug fix in this release, the corresponding HUAKAI prose decomposition or spec was checked. Findings:
-
-- <vulnerability shape> — HUAKAI status: VULNERABLE / SAFE-BY-DESIGN / SAFE-BY-CODE / UNKNOWN-NEED-INVESTIGATION
-
-## Open questions for Owner
-- <list>
-```
-
-## Roles
-
-| Cadence | Driver | Reviewer | Approver |
+| 项目 | 仓库 | 当前登记许可证 | 主要证据范围 |
 | --- | --- | --- | --- |
-| Per-release | Claude PM | Codex (parity + clean-room) | Owner (only when action requires Owner-confirm per [docs/00 risk model](00_PM_OPERATING_SYSTEM.md)) |
-| Monthly sweep | Claude PM | Codex | Claude PM (for non-strategic adjustments) |
-| Quarterly strategic | Claude PM | Codex + Gemini (if UI-relevant) | Owner |
+| sub2api | `Wei-Shaw/sub2api` | LGPL-3.0 | 账号池、凭据、选号、健康、重试、网关运营 |
+| CLIProxyAPI | `router-for-me/CLIProxyAPI` | MIT | CLI/OAuth 账号接入、协议与 provider 适配、出口行为 |
+| new-api | `QuantumNous/new-api` | AGPL-3.0 | 协议货架、渠道、模型目录、计费与运营面 |
 
-## Integration With Existing Gates
+中转站核心对比默认覆盖三者；某项目与具体问题无关时可以判定“不适用”，但必须有源码范围和理由，不能静默省略。
 
-This policy is **post-Phase-1**. Integration with the Phase 1 → 2 transition: the Phase 1 baseline tracking entry (`docs/tracking/<reference>/2026-04-28-baseline.md`) MUST exist for every reference before Phase 1 can exit. The baseline freezes "what we mined and when" so the per-release diff has a starting point.
+### 2.2 补充中转站与运营证据
 
-This policy is referenced from [15_RELEASE_GATES.md](15_RELEASE_GATES.md) as a **Continuous Gate** — it never closes, every release of HUAKAI requires the tracking ledger to be current within its cadence windows.
+| 项目 | 仓库 | 当前登记许可证 | 主要证据范围 |
+| --- | --- | --- | --- |
+| All API Hub | `qixing-jk/all-api-hub` | AGPL-3.0 | 多中转站账号管理、客户端运营流程和真实痛点 |
+| LiteLLM | `BerriAI/litellm` | MIT | 通用 gateway、路由、预算、缓存与 provider 生态 |
+| Portkey gateway | `Portkey-AI/gateway` | MIT | gateway middleware、策略、可观测与部署边界 |
+| Helicone AI Gateway | `Helicone/ai-gateway` | GPL-3.0 | Rust gateway、路由和可观测行为 |
+| Envoy AI Gateway | `envoyproxy/ai-gateway` | Apache-2.0 | Kubernetes/Envoy 控制面、策略和生产运维 |
 
-## What "Self-Audit" Means
+表中的许可证是登记值，不代替每次首次采用前直接读取仓库 LICENSE 的复核。one-api 已停止作为新证据源；历史引用仅保留出处，不用于新结论。
 
-When upstream fixes a bug, HUAKAI must answer one of these for each tracked algorithm:
+### 2.3 专业领域项目
 
-1. **VULNERABLE**: HUAKAI has the same bug shape. Action: open follow-up, fix, ship patch.
-2. **SAFE-BY-DESIGN**: HUAKAI's algorithm structurally cannot have this bug because of an explicit design choice. Cite the design choice from the relevant prose decomposition.
-3. **SAFE-BY-CODE**: HUAKAI does not currently have the bug because of the specific code path, but the design does not preclude it. Action: add an invariant or test that prevents future regression.
-4. **UNKNOWN-NEED-INVESTIGATION**: cannot determine without source-reading the relevant HUAKAI module. Action: assign to a specifier-lane agent for review.
+支付、退款、订单、订阅、账本、身份、风控、审计、可观测和前端运维不得把三镜当万能答案。每个工作单元先按问题选维护活跃、源码完整、许可证明确的领域项目，再按 `AGENTS.md` §5.1 形成专业行为合同。
 
-The self-audit verdict is recorded in the tracking entry's `## Self-audit` section.
+## 3. 首次采用与证据新鲜度
 
-## Anti-Pattern: Silent Drift
+首次采用一个项目时必须记录：
 
-The failure mode this policy prevents is **silent drift**: HUAKAI's decomposition reflects upstream's state-at-Phase-1, upstream evolves over months, HUAKAI's behavior eventually diverges in ways no one notices until a customer complains. The cadence + audit format makes the divergence auditable in real time.
+1. 仓库未归档；
+2. 官方仓库 URL 与默认分支；
+3. 当前 HEAD SHA 和最近提交时间；
+4. LICENSE 文件与 SPDX 判断；
+5. 本次实际读取的生产源码区域；
+6. 与当前问题的匹配理由。
+
+本地镜像默认放在 `~/refs/<project>/`，不得放 `/tmp`。引用格式统一为 `owner/repo@sha:file:line-range`。
+
+证据超过 30 天，或项目发生归档、转仓、默认分支、许可证、核心状态机变化时，必须先更新镜像再用于新断言。无法更新时只能标 `Open Question`，不得把旧结论写成当前事实。
+
+## 4. 跟踪触发
+
+不为了填表而定时制造文档。出现以下事件时才更新当前相关合同、矩阵、测试或唯一计划：
+
+- 参考项目发布与 HUAKAI 当前能力相关的新版本；
+- 上游修复与 HUAKAI 同构的资金、鉴权、幂等、租户、恢复或运维缺陷；
+- 上游新增可能影响 parity 的有效能力；
+- 安全公告、许可证或维护状态变化；
+- HUAKAI 正在设计、实现或审查对应模块。
+
+大范围发布审查可做月度/季度汇总，但结果优先更新现有矩阵、风险表和唯一计划；只有确需长期来源证明时才在 `docs/tracking/` 新增一份合并记录，禁止每个小变化堆一份报告。
+
+## 5. 变化分类与 HUAKAI 动作
+
+| 外部变化 | HUAKAI 必须做的事 |
+| --- | --- |
+| 缺陷修复 | 沿 HUAKAI 真码完整链自查同根问题，补判别测试；有问题直接修 |
+| 算法/状态机变化 | 更新行为合同，比较本地不变量；采用、融合或明确拒绝并说明理由 |
+| 新能力 | 进入 parity 处置轴，不能静默忽略 |
+| 安全公告 | 当日核实可达性、影响和缓解；高危进入发布阻断 |
+| 许可证变化 | 立即停止新的实现输入，重新做 clean-room 和依赖风险判断 |
+| 项目停更/被替代 | 退役为历史证据，选择维护活跃替代项 |
+
+自查结论只允许：
+
+- `VULNERABLE`：HUAKAI 有同根问题，进入修复；
+- `SAFE-BY-DESIGN`：本地不变量从结构上排除，引用设计与测试；
+- `SAFE-BY-CODE`：当前代码排除，补回归测试防止退化；
+- `UNKNOWN-NEED-INVESTIGATION`：证据不足，进入源码核实，不能宣称安全。
+
+## 6. Clean-room 与交付门
+
+- 对外部生产行为的读取、合同、review 和实现严格执行 [clean-room 专项合同](05_CLEAN_ROOM_POLICY.md)；
+- 每项采用或拒绝结论必须带外部源码证据和 HUAKAI 真码证据；
+- 外部项目的缺点也要记录，HUAKAI 应做 `Implemented Better`，不能照搬缺陷；
+- 跟踪结果必须落到实现、判别测试、风险处置或 `Mandatory Roadmap`，不能只写“已关注”；
+- 发布前核对本次相关参考证据仍在 30 天有效期内，许可证与依赖清单无漂移。

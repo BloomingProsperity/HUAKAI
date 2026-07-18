@@ -1,32 +1,37 @@
 ---
 name: production-scenario-review
-description: Use when reviewing whether a planned feature, UI, API, or release handles realistic production operations, failures, abuse cases, and recovery workflows.
+description: 验证功能、API、UI 或发布在真实流量、故障、滥用、多副本和人工恢复压力下是否仍可运行和好运维。
 ---
 
-This file is agent-facing and authoritative.
+# 生产场景审查
 
-# Production Scenario Review
+## 何时使用
 
-Full feature parity or better remains mandatory; missing production scenarios are parity risks.
+- 计划从 happy path 进入实现；
+- 跨模块能力或运营 UI 收口；
+- 发布前验证 Day-2 可运维性。
 
-## Purpose
+## 前置输入
 
-Ensure the platform works under real operator pressure, not only happy-path demos.
+- 行为合同和 HUAKAI 运行链；
+- 已知事故/issue；
+- 风险 register 和 acceptance matrix。
 
-## Review Questions
+## 执行步骤
 
-- What happens when a provider is down?
-- What happens when a provider account is disabled, expired, rate-limited, or out of balance?
-- What happens when concurrent requests exhaust quota?
-- Can an operator trace one failed request end to end?
-- Are dangerous actions permissioned, confirmed, and audited?
-- Are secrets redacted?
-- Can the system recover without database surgery?
+1. 枚举正常、边界、上游不可用、账号失效、限流、余额不足、DB/Redis 故障和网络中断。
+2. 加入并发打满、重复回调、跨节点重放、worker 重启和 leader 切换。
+3. 检查 partial success 后钱、状态、审计和 UI 是否一致。
+4. 检查危险操作的权限、确认、原因和审计。
+5. 检查 operator 能否无数据库手术完成查询、重试、隔离、对账和人工补偿。
+6. 将缺失场景转成 bug pattern 与 acceptance test。
 
-## Output
+## 输出
 
-- Missing scenarios.
-- Missing recovery flows.
-- Missing observability.
-- Missing tests.
-- Risks to add to `docs/10_RISK_REGISTER.md`.
+- 生产场景矩阵；
+- 缺失恢复、可观测、权限和测试；
+- 风险与 release blocker。
+
+## 阻断项
+
+仅能 happy path 演示、失败后必须手改数据库、或 operator 看不到真实状态的能力不能宣称完成。

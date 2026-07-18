@@ -6,12 +6,53 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| Owner directive | “需要让你做，这个是当前目标”；“边界不要定太死，一切以能上线、能跑为核心”；“完整报告看下，核实之后再动手修复，并入刚刚给你的需求里面”；“有错误就直接修复”；“并行双计划关闭，全靠你一个人”；过期规则、文档和代码注释可以清理。 |
+| Owner directive | “需要让你做，这个是当前目标”；“边界不要定太死，一切以能上线、能跑为核心”；“完整报告看下，核实之后再动手修复，并入刚刚给你的需求里面”；“有错误就直接修复”；“并行双计划关闭，全靠你一个人”；“发现一个问题时必须沿完整业务链、关联模块、失败恢复和运维面展开；成熟项目已经具备而我们缺失的有效能力，必须进入实现或明确的强制路线”；过期规则、文档和代码注释可以清理。 |
 | 最终目标 | mimicry TLS 唯一由 Rust `tls-sidecar` 执行并可单镜像上线；同时关闭全局 Renew 报告经源码坐实的钱路、鉴权、调度、健康、多实例与恢复缺陷，删除被证伪结论和旧链路。 |
 | 不变边界 | standard API key 继续走 Go 标准 transport；应用层 body mimicry 保持 Go；不复制外部项目实现；未经判别测试证明的报告结论不得驱动架构。 |
 | 工作树 | `/home/ubuntu/HUAKAI-wt-baseline`，沿用 `fix/backend-closure-mvp`，不新建分支。 |
 | 交付 | 小提交、逐提交 review、一个 PR，未经 Owner 同意不合主线。 |
 | 估时 | 10-16 个工程日；真实账号/代理、PostgreSQL、Redis 与容器验证取决于本机可用条件。 |
+
+## 并入切片：全局规则与 Skill 顺序治理
+
+| 项目 | 内容 |
+| --- | --- |
+| Owner directive | “读一下我的规则和 skill，按照逻辑排序”；“涉及钱可以查看发卡网；别的模块可以全网搜索顶尖项目”；“刚刚的也要放进规则，对全局生效”；“必须读源码”。 |
+| 范围 | 整理 `AGENTS.md`、模型适配入口、`docs/RULES.md`、release gate 与 `.agents/skills/*/SKILL.md`；`.claude/skills/` 只同步 canonical mirror。清理仍会被工具读取的过期固定角色、双计划和自动派发入口，不新建规则文档或平行计划。 |
+| 成功标准 | 全局规则按真实执行生命周期排序；删除或明确退役与最新 Owner 指令冲突的并行双计划、固定角色和万能三镜条款；Skill 有唯一 canonical 来源和明确调用顺序；所有领域借鉴都强制读源码、执行 clean-room 前置门。 |
+| 估时 | 2-4 小时整理与校验；不计后续逐领域源码调研时间。 |
+| 爆炸半径 | 规则排序错误会让后续 agent 漏门、重复文档、误读外部源码或在错误领域只看中转站项目。 |
+| 失败模式 | 误删仍有效规则：先做规则映射再重排；mirror 漂移：逐文件 `cmp`；旧引用断裂：检查 Markdown 链接和规则 ID；clean-room 缩水：保留完整 lane guard 与 source-must-read 门。 |
+| 决策点 | 无新增 Owner 决策；按最新指令采用“中转站三镜基线 + 领域头部项目补强”，专业领域候选必须先验许可证、维护活跃度并读源码。 |
+| 执行顺序 | 规则/Skill 全量读取 → 重复与冲突映射 → 整理 canonical 全局执行顺序 → 整理 Skill 调用顺序与职责 → 同步 Claude mirror → diff/check/review → 单独规则提交。 |
+
+治理结果：
+
+- [x] `AGENTS.md` 已按权威/启动门/领域证据/clean-room/行为合同/全链路/计划/实现/测试/review/Skill/PR/完成定义排序。
+- [x] `CLAUDE.md`、`GEMINI.md` 已改为薄适配层，不再赋予固定 PM、前端或“小补丁”角色。
+- [x] 12 个 canonical Skill 已统一为“触发 -> 输入 -> 步骤 -> 输出 -> 阻断项”，Claude mirror 机械同步。
+- [x] 删除纯重复的 `docs/RULES-DIGEST.md`、旧中文 AI 协作/项目经理摘要，以及已经被当前规则完整覆盖的 PM/workflow/round-table/总纲文件；Git 历史承担追溯，不保留回滚占位页。
+- [x] 删除 `.coordination` 自动 dispatcher/worker 文档、loop、旧任务和救援入口；只保留未来明确恢复多执行者时使用的最小文件冲突锁。
+- [x] 删除同主题旧 Rust 出口计划和租户默认出口双计划草稿；已综合完成的独立历史切片只保留最终版本。
+- [x] 发布门已去掉模型绑定并补齐 truth、source、clean-room、whole-chain、PostgreSQL、billing、ops、codebudget 和独立 review 门。
+- [x] Skill validator、mirror `cmp`、Markdown 本地链接、保留脚本语法与 `git diff --check` 已通过。
+- [x] 独立 Codex review 已通过；两项 P1 均来自本提交范围外的未跟踪文档，本批未纳入、未修改。
+
+规则保全映射：
+
+| 原有效规则族 | 当前落点 | 处理 |
+| --- | --- | --- |
+| Truth-first / Observed-Inferred-Open Question / Source Coverage | `AGENTS.md` §0、§1、§5.2 | 保留并前移到证据阶段 |
+| Source-must-read / stale citation / repo@sha:file:line | `AGENTS.md` §5.2、`reference-project-miner` | 保留；三镜从万能规则修正为中转站基线，专业领域补头部项目 |
+| Clean-room lane guard / provenance tail / no-op escalation | `AGENTS.md` §5.3、`clean-room-license-guard` | 保留完整门并新增 specifier 禁读 HUAKAI 实现 |
+| Feature Preservation / disposition-status / merged equivalent | `AGENTS.md` §1、§6、parity/merger Skill | 保留 |
+| Plan-before-execute | `AGENTS.md` §4、§8 | 保留；平行双计划被最新 Owner 指令替换为唯一计划 |
+| 决策项目对照 | `AGENTS.md` §5、§8.2 | 保留；按领域选择证据，不拿无关项目凑数 |
+| Module interplay / concurrency / recovery / Day-2 ops | `AGENTS.md` §6、§7、§10 | 保留并扩为全业务链与细粒度规则 |
+| Codebudget / package-file responsibility | `AGENTS.md` §9、release gate | 保留；旧硬冻结继续退役 |
+| Discriminating tests / mutation / smell library | `AGENTS.md` §10、§11.2 | 保留完整 fixture、SQL `WHERE`、AllowAll、skip、并发等 smell |
+| Per-commit review / S0-S3 / two-round anti-spiral | `AGENTS.md` §11 | 保留；S2/S3 进入唯一计划或 commit body，不再堆 review 文档 |
+| 固定 Claude/Codex/Gemini 角色、平行双稿、自动 dispatcher | 模型适配层与 `.coordination` 最小冲突锁 | 被最新 Owner 指令明确覆盖；旧说明、脚本和草稿直接删除 |
 
 ## 已锁决策
 
@@ -104,6 +145,8 @@ Rust 出口迁移开始时的四个硬缺口：
 - post-delivery poison 达阈值转 `operator_review`，停止自动认领但继续保护 hold；提供带审计、带账务证据检查的人工解决原语，不能自动免费服务。
 - 所有可签发完整 session 的登录方式统一经过登录资格与 2FA 门；门配置读取失败 fail-closed。Passkey 是否作为第二因子必须由显式策略表达，不能靠路径旁路。
 - refund 只能退已 captured 金额并按已退累计封顶；无 hold/未 capture 的 opt-in claim 不得凭空增余额。
+- mismatch 退款从可信签名收据校验、服务端重新派生、差额计算、DLQ 入队、worker 原子执行一直验证到余额、账单、审计收据和 pending 状态；退款额必须等于旧签名收费事实与当前可信收费事实之差，伪签名、跨租户、under-charge 和未实际扣款均不得入队或增余额。
+- 支付订单退款补齐真实原路退款：绑定创建订单的原支付实例与商户快照，使用精确金额，支持部分/累计退款、充值与订阅追回、渠道 `pending/succeeded/failed`、退款单号、查询确认、幂等重放、失败补偿、人工核验和对账。系统内部余额回收不得再冒充渠道已退真钱；不支持自动退款的渠道必须进入明确人工状态。
 - TTS 已发送响应头或字节后失败按部分交付结算；结算意图默认开启并在写入失败时阻止不可恢复交付。
 - 强配额在存储故障时默认 fail-closed；observe/未配置策略保持 no-op，不误伤空部署。
 
@@ -177,19 +220,20 @@ Rust 出口迁移开始时的四个硬缺口：
 1. 单镜像冷构建成功，容器一次启动即 ready，可由普通部署者直接跑。
 2. standard API key 保持 standard；启用的 OAuth/session mimicry 全走 Rust。
 3. builtin、dynamic、轮换、proxy、stream、retry/failover/health/audit无缩水。
-4. sidecar/profile/协议故障 fail-closed且可诊断；无字符串控制流和假健康。
-5. 并发、故障、wire、容器 smoke及全量门通过。
-6. Go uTLS、双栈 fallback、过期规则/注释清理完成；最终树只保留最新合同。
-7. 没有 clean-room 复制风险；不读取外部参考源码。
-8. PR 已创建，主线未合并，等待 Owner批准。
+4. 用量错账退款有签名校验到资金与新收据的全链验收；支付退款区分内部余额回收与渠道原路退款，并具备异步确认和人工恢复。
+5. sidecar/profile/协议故障 fail-closed且可诊断；无字符串控制流和假健康。
+6. 并发、故障、wire、容器 smoke及全量门通过。
+7. Go uTLS、双栈 fallback、过期规则/注释清理完成；最终树只保留最新合同。
+8. 没有 clean-room 复制风险；参考项目只用于行为证据，不复制实现。
+9. PR 已创建，主线未合并，等待 Owner批准。
 
 ## 风险与停点
 
 | 风险 | 处理 |
 | --- | --- |
 | 内部没有某 mode 的实测 profile | 不伪造；该 mode显式阻断并如实报告。若 Owner要求本轮补抓，另开受控采集。 |
-| inline profile 现有 DB 字段表达不足 | 先证明；若需要 schema，立即停下问 Owner。 |
-| Docker 构建引入新 runtime dependency | 默认不用；确需新增时停下问 Owner。 |
+| inline profile 现有 DB 字段表达不足 | 先证明并按当前唯一计划设计；仅同时命中实质分歧、无成熟依据、选错高危时停下请 Owner 决策。 |
+| Docker 构建引入新 runtime dependency | 优先复用现有依赖；确需新增时先做许可证、维护、供应链和镜像影响审计，命中决策停门才询问 Owner。 |
 | 真实账号/代理不可用 | 本地 wire/fixture全部完成，但真实 vendor 状态标“未验证”，不虚报上线门通过。 |
 | auth/billing/quota 修复造成降级或绕过 | 先写反例与 PostgreSQL 集成测试；钱路、鉴权、强配额默认 fail-closed，不能用日志代替约束。 |
 | 报告结论与源码冲突 | 以源码和判别测试为准，直接修报告；不为维护报告面子而新建状态表。 |

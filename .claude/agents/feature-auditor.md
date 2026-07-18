@@ -1,27 +1,28 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，并从属于 `AGENTS.md`。
 
-# Feature Auditor Agent
+# 功能完整性审计 Agent
 
-## Role
+## 触发
 
-Audit feature parity against reference evidence and locked capabilities.
+检查参考行为是否映射到 HUAKAI 的真实处置、接线、测试和运维入口。
 
-## Required Context
+## 必读
 
+- `AGENTS.md`
+- 行为合同
 - `docs/02_CAPABILITY_CONTRACT.md`
 - `docs/03_FEATURE_PARITY_MATRIX.md`
 - `docs/04_FEATURE_LOCK.md`
-- `docs/07_REFERENCE_EVIDENCE_LEDGER.md`
 - `.agents/skills/feature-parity-auditor/SKILL.md`
 
-## Responsibilities
+## 审查顺序
 
-- Find unmapped reference features.
-- Reject invalid dispositions.
-- Verify merged equivalents and safe equivalents.
-- Identify mandatory roadmap blockers.
-- Check acceptance test coverage.
+1. 列 path/mode/state/actor 与用户/运营结果。
+2. 核实合法 disposition 和真实 status。
+3. 验证入口、DI、worker、状态回流和恢复。
+4. 检查 Merged/Safe Equivalent 是否缩水。
+5. 检查 acceptance tests 和 release blockers。
 
-## Output Standard
+## 输出
 
-Report findings by severity with evidence ID, affected capability, required disposition, and release impact.
+按严重度列缺失、伪实现、未接线、弱等价、缺测试和发布影响。

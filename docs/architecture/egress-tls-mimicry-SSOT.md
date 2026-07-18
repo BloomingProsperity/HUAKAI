@@ -9,7 +9,7 @@
 
 ## 0. 一句话现状
 
-**保号骨架(IP 强绑定、凭证安全、救活型调度)硬;指纹层与 sub2 平手;真短板是"行为聚合 + 应用层强伪装没打开 + Gemini 出站还用假 UA"。** 出口默认走 Go uTLS + 强制 HTTP/1.1(正确,对齐真客户端);Rust BoringSSL sidecar 已实现但默认没部署;codex/gemini 的 mimicry 是 Owner 主动**缓做(DEFERRED)**,不是漏做。
+**出口 TLS mimicry 的唯一目标是 Rust BoringSSL sidecar。** IPC v2、四类内置 profile、数据库动态 inline profile、proxy、结构化错误、取消和超时已由 `29cfc50a` 落地；生产容器仍默认没有 sidecar socket，所以迁移尚未完成，当前仍由旧 Go uTLS 承接。完成单镜像生命周期、容器/真实账号 smoke 和 fail-closed 翻转后，删除 Go uTLS，不长期保留双栈。
 
 ---
 
@@ -23,7 +23,7 @@
 | 强制 H1 | **默认关**,按 profile ALPN | `HUAKAI_TRANSPORT_FORCE_H1`,`config.go`,`factory.go` |
 
 **默认出站路径**:
-- **反转/OAuth 号**(被 `transportModeForProvider` 判为 mimicry)→ **Go uTLS native mimicry**(`factory.go:230`),ALPN 锁 http/1.1。
+- **反转/OAuth 号**(被 `transportModeForProvider` 判为 mimicry)→ socket 未配置时暂走旧 Go uTLS native mimicry；配置 socket 后走 Rust sidecar。该双路径只是迁移现场，不是最终合同。
 - **api-key 官方号** → **裸 Go standard transport**(`factory.go:241-282`,`http.DefaultTransport.Clone()` + `Proxy=nil`);指纹层对官方 key 通道本就不敏感,不伪装(安全不变量 I1)。
 
 **vendor→mimicry mode 映射**(`gatewayhttp/chat_completions_dispatch.go:130-153`):claude_code / chatgpt(codex)/ gemini_advanced / antigravity / cursor / copilot / kiro / windsurf 各有 mode;其余一律 standard。
@@ -59,11 +59,13 @@
 
 ---
 
-## 4. codex / gemini mimicry = Owner 主动缓做(DEFERRED,非漏做)
+## 4. 四类内置 profile 与动态 profile
 
-- **D-4=A**(2026-05-27,commit 7a34ae7,`RISK_REGISTER` R-CHG-MIMICRY-001):ChatGPT/codex 本轮只接 OAuth,**不启用 codex_cli mimicry sidecar profile**。阻塞点=Rust 生产 dispatch builder 对 Pending 状态 fail-closed(F-2.3a runtime preflight 未完成)。→ DEFERRED / Mandatory Roadmap。
-- **D-5=A**(2026-05-27,R-GEM-MIMICRY-001):Gemini 本轮只接 OAuth,**不做 Gemini mimicry sidecar**。同款 Rust builder fail-closed 阻塞。→ DEFERRED / Mandatory Roadmap。
-- **解锁条件**:Rust §14b runtime preflight(F-2.3a)接通 + OCAW(Owner 授权)切片。
+- Rust sidecar 已内置并由 Go mode 映射接通 Anthropic、Codex、Gemini、Kiro 四类 profile。
+- `ready` 返回真实 capability 和已加载 profile 清单；Go preflight 不再靠连接假目标或解析错误文本判断可用性。
+- 账号绑定和租户轮换得到的数据库动态 profile 通过 IPC v2 `inline_profile` 下发，由 Rust 严格校验后构建 BoringSSL ClientHello；不再由 Go uTLS 执行。
+- 未有内部实测 profile 的 cursor/copilot/antigravity/windsurf 继续 fail-closed；不得伪造或静默切回 standard。
+- 以上能力由 `29cfc50a` 落地并通过 Go 定向测试、Rust sidecar 66 项测试和独立 review；生产默认切换仍取决于 §6 的容器和真实链路门。
 
 ---
 
@@ -71,10 +73,11 @@
 
 - **代码位置**:`exploratory/rust-core-gateway/merged/crates/tls-sidecar/`(BoringSSL;模块 ja4/boring_ctx/connect/h2_bridge/profile)。vendored boring fork 溯源见该 crate 下 `vendor/boring/MODIFICATIONS.md`(Apache-2.0 attribution;来历=HUAKAI fork boring 5.1 加 `set_extension_order` 等公开 setter 修扩展顺序,Owner 显式授权读 boring 源)。
 - **架构定位**:纯传输层(ja4/boring/connect/h2_settings),**不碰 body**;body 伪装永久留 Go。
-- **未默认部署**:三份 compose 无 sidecar 服务/socket;`SidecarSocketPath` 默认空→走 Go uTLS;`SidecarFallbackEnabled` 默认 false=fail-closed。接线机制:配了 socket 才走 sidecar,否则保持 uTLS(2026-05-24 sidecar-transport-factory 落地)。
+- **未默认部署**:Compose 与单镜像生命周期尚未完成；`SidecarSocketPath` 默认空时仍走旧 Go uTLS。该默认值只用于迁移期间保持当前程序可运行，S7 会改为 mimicry 必须 sidecar、缺失即 fail-closed。
 - **已解决**:R-SIDECAR-001(boring raw sigalgs,commit 8cfc5467)、R-SIDECAR-002(H2 ALPN raw tunnel→Rust 端 own H2 framing + h2_bridge,commits c0fe5231 等)。
-- **残留待补(启用生产 sidecar 前)**:① anthropic profile 的 H2 SETTINGS 值未抓(空 TODO;但因走 H1,非阻塞);② 扩展 13 signature_algorithms 存 26 个真 ID 但 boring 只用 10 项字符串,字节级不精确,且现有 JA3/JA4 wire 测试**不校验扩展 13 内容**(绿测会掩盖此不一致——保留告警,见 2026-06-02 sidecar-sigalgs 落地);③ 模板进镜像 + go↔rust 边界日志/监控。
-- **翻 sidecar 默认开** = 默认行为翻转 + 出口姿态变更,**Owner-gated**,未执行。
+- **IPC v2 已解决**:`ready/capabilities`、builtin/inline profile、proxy、ForceH1、结构化错误、取消与超时已接通；Go 和 Rust 都拒绝未知版本、未知 operation 与缺失 capability。
+- **残留待补(启用生产 sidecar 前)**:单镜像构建与双进程生命周期、UDS 权限/清理、容器 readiness、kill/restart、并发/流式/proxy 故障、四类真实 vendor 小成本 smoke。
+- **翻 sidecar 为唯一默认并删除 Go uTLS** 仍未执行；未通过上述门前不得宣称 Rust-only 已上线。
 
 ---
 
@@ -82,18 +85,12 @@
 
 > **锁死**:出口 TLS 伪装唯一走 Rust sidecar;Go uTLS 已废,**不再补功能/修 bug**,验证后删。
 > 执行序 + 全链路真读证据见 `docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md`。
-> **本路线图漏了一条耦合(该计划已补)**:DB 每账号自定义指纹+轮换池(`tlsfpresolve` 建 Go uTLS RT)
-> 整条建在 Go uTLS 上,而 sidecar 协议(`proto.rs ControlRequest`)只收 `profile_id`、不收 inline profile
-> → 删 Go(下方第 5 步)会废掉该功能,除非扩协议加 `inline_profile`(D1,推荐,保功能)或退役(D2)。
+四类 builtin、真实 preflight 和动态 inline profile 已由 `29cfc50a` 完成。剩余步骤：
 
-现状:出口默认 Go uTLS;Rust sidecar 只内置 anthropic 且未部署。删 Go-native 前必须 Rust 接得住,否则生产打穿。步骤:
-1. **补 codex/gemini/kiro 指纹进 Rust profile**(现只 anthropic;抓包数据已有,是 JSON→TOML profile 格式搬运,非重新抓)+ Go 侧 mode→sidecar-profile 映射补齐四家。
-2. **补完 Rust 生产 dispatch builder 的 runtime preflight(F-2.3a)**——现对非 anthropic profile fail-closed(卡 Pending),这是四家没上生产的直接技术卡点,也是 D-4/D-5 解锁条件。
-3. **sidecar 接进 docker-compose + 设默认出口**(现三份 compose 都没部署)。**[Owner-gated:默认行为翻转]**
-4. **Gemini 出站换回真 UA**(现仍是自编 `HUAKAI-GeminiCLI/1.0`,`provider/gemini/code_assist.go:41`;真 UA `GeminiCLI/0.41.2…` 已在抓包里)。
-5. 全 vendor 出站验证通过后 **删 Go-native uTLS**(`utls_dialer.go`/`template.go`/`db_profile.go`);**保留 sidecar 客户端**(`sidecar_client.go` 等,是走 Rust 的必经路)。**[Owner-gated:删码]**
-
-(H2 SETTINGS 不在路线图——真客户端走 H1,不需要。)
+1. **S5 单镜像可运行交付**：固定 Rust/BoringSSL builder；镜像同时包含 gateway 和 sidecar；入口负责 UDS、ready、SIGTERM 和双进程退出；dev/direct/prod Compose 使用同一合同。
+2. **S6 重测试与容器 smoke**：wire mutation、HTTP/HTTPS/SOCKS5、并发、流式取消、坏帧、socket 权限、kill/restart、standard 不经 sidecar、mimicry 经 Rust；有账号时补四类真实 vendor 小成本 smoke。
+3. **S7 Rust-only 翻转**：mimicry 分支要求 sidecar，缺失/不可用 fail-closed；删除 native Go uTLS、Go 模板转换、DB profile RT、native fallback、旧环境变量和死测试；保留 sidecar client 与 standard transport。
+4. **S8 发布门**：Go/Rust 全量、codebudget、冷构建、三套 Compose、完整独立 review、唯一 PR；未经 Owner 同意不合主线。
 
 ---
 
@@ -113,7 +110,7 @@
 - **代码真相**:`backend/internal/transport/mimicry/{utls_dialer,sidecar_client,registry,template}.go` + `testdata/` + `tools/fingerprint-collector/templates/`;`backend/internal/provider/{anthropic,openai,gemini,antigravity,grok}/`。
 - **规格(实现多为 DEFERRED)**:`docs/specs/{device-fingerprint-binding,request-pacing-mimicry,outbound-ip-pool,active-anti-detection}.md`。
 - **风险台账**:`docs/10_RISK_REGISTER.md` 的 R-TRANSPORT-001 / R-REL-002 / R-SIDECAR-001/002 / R-CHG-MIMICRY-001 / R-GEM-MIMICRY-001 / R-POOL-001。
-- **近期过程文档**:`2026-06-24-mimicry-global-switch`、`2026-07-03-{r7-mimicry-full-activation,egress-relay-quality-observability}`、`2026-07-10-claude-oauth-serving-mimicry-*`、`2026-06-02-sidecar-*`。
+- **当前唯一执行计划**:`docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md`。旧过程计划不再作为状态入口，必要追溯使用 Git 历史。
 
 ---
 
@@ -125,5 +122,5 @@
 3. "Anthropic 路径暂停/留空" → **错**,anthropic 真指纹已抓并 serving。
 4. "gemini 仍是 stub" / "只有 3 家真 mode、ClaudeCode 归 fallback" → **错**,四家均有真指纹。
 5. "core_gateway 已是生产数据面 / 8 vendor 已全闭环 / Go uTLS 是最终出口" → **全错**；当前目标是独立 Rust sidecar 成为唯一 mimicry 出口，未完成的 provider 必须 fail-closed 或补齐 profile。
-6. "codex mimicry 应拒绝 / 需上游书面授权" → **已被推翻**,现为 Owner D-4/D-5 缓做 + R7 默认做。
+6. "Codex/Gemini sidecar profile 仍是 Deferred" → **错**，四类内置 profile、preflight 和 IPC 已由 `29cfc50a` 完成；尚未完成的是容器默认切换与真实 vendor smoke。
 7. "H2 SETTINGS 永远不需要" → **错**；只有明确协商 H1 的 profile 不需要，能够协商 h2 的 profile 必须由 wire 测试证明 bridge 与 settings 合同。

@@ -1,37 +1,39 @@
 ---
 name: clean-room-license-guard
-description: Use when reviewing implementation plans, patches, docs, schemas, UI, or tests for clean-room and license-contamination risk from non-MIT reference projects.
+description: 审查行为合同、计划、补丁、schema、UI 和测试是否违反 lane 隔离或引入外部实现污染，同时保证功能不缩水。
 ---
 
-This file is agent-facing and authoritative.
+# Clean-room 许可证守卫
 
-# Clean-Room License Guard
+## 何时使用
 
-## Purpose
+- 外部源码调研产物交给实现前；
+- 受外部项目启发的计划、代码、schema、UI 或测试提交前；
+- 完整 slice 和发布门。
 
-Keep the project MIT-compatible while preserving full feature parity.
+## 前置输入
 
-## Review Checklist
+- `AGENTS.md` clean-room guard；
+- 行为合同及其 Source Coverage Proof；
+- lane/agent/UTC provenance；
+- 当前 diff 与许可证审计结论。
 
-- No copied non-MIT source code.
-- No copied distinctive file structure.
-- No copied comments.
-- No copied schemas.
-- No copied UI source, unique layout, or styling.
-- No copied internal names.
-- No copied tests.
-- Reference evidence is recorded as behavior or scenario.
-- Local implementation is independently designed.
+## 执行步骤
 
-## Risk Response
+1. 核实 `specifier` 未读取 HUAKAI 实现，implementer 未获得外部源码细节。
+2. 查函数/字段/配置名、注释、schema、目录布局、UI、测试和算法顺序是否过度相似。
+3. 核实外部行为都被改写为中性保证形式，而不是源码摘要。
+4. 核实引用只用于证据，正文未复述独特标识符。
+5. 发现污染时删除/重做污染实现，但保留业务结果并选择独立实现、Safe Equivalent、Plugin、Feature Flag 或 Mandatory Roadmap。
+6. 将风险更新到现有 risk register/唯一计划。
 
-If risk is found:
+## 输出
 
-1. Remove or redesign the contaminated material.
-2. Preserve the feature outcome.
-3. Use safe equivalent, plugin boundary, feature flag, or mandatory roadmap if needed.
-4. Update `docs/10_RISK_REGISTER.md`.
+- 污染风险、证据位置、严重度；
+- 必须重做的范围；
+- 保留功能结果的独立实现路径；
+- `Pass / Block` 结论。
 
-## Rule
+## 阻断项
 
-Clean-room review must never become a reason to delete the capability.
+未经 lane 隔离、存在近似翻译或来源许可证不明时阻止落地；clean-room 不得用于删功能。

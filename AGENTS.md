@@ -1,371 +1,147 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，并且是项目规则的最高权威入口。
 
-# Agent Operating Rules
+# HUAKAI Agent 执行规则
 
-This project builds an MIT clean-room AI Gateway + Account Hub + Admin Ops Platform with full feature parity or better against empirical reference projects.
+HUAKAI 是 MIT clean-room 的 AI Gateway + Account Hub + Admin Ops Platform。目标是能够真实上线、稳定运行，并在有效能力、联动精度和运维体验上达到成熟项目同等或更好。
 
-## Non-Negotiables
+## 0. 权威顺序与必读入口
 
-- Reference projects are evidence, not source-code providers.
-- Do not copy AGPL/GPL/LGPL source code, distinctive file structures, comments, schemas, UI source, or implementation details.
-- License risk may change the implementation method, but must not remove a feature.
-- Security risk may change rollout, gating, or defaults, but must not remove a feature.
-- Every reference feature must be mapped to `Implemented`, `Implemented Better`, `Merged Equivalent`, `Safe Equivalent`, `Plugin`, `Feature Flag`, or `Mandatory Roadmap`.
-- No feature may be silently dropped.
-- Do not modify `LICENSE` without explicit owner instruction.
-- **语言:全中文(Owner 硬规则)。** 代码注释(`.go` 生产代码与测试)、commit message 正文、计划与 `docs/process` 文档、面向 Owner 的汇报、以及派发给其它 agent 的指令与其返回报告,一律用中文;英文技术标识符(函数 / 类型 / 环境变量名、SQL 关键字)保留英文,只是注释与散文用中文。Dispatch subagent 时必须在 prompt 显式要求"代码注释用中文、返回报告用中文"。
-- **代码注释禁止提及借鉴项目(Owner 硬规则 + clean-room)。** `.go` 代码注释里**绝不**出现 sub2api / new-api / CLIProxyAPI 等借鉴项目名,也不写"借鉴 / 参考某项目的做法"。注释只描述 HUAKAI 自身的意图与机制。对借鉴项目的 #16 调研与对照只保留在 `docs/process` 计划文档里,不进代码注释。
+发生冲突时按以下顺序执行：
 
-## Owner Start Gate
+1. Owner 最新明确指令；
+2. 当前分支真实源码、迁移、配置和可判别测试；
+3. 本文件；
+4. `docs/RULES.md` 规则清单；
+5. 当前唯一执行计划；
+6. 历史报告、旧计划、注释和记忆。
 
-See [docs/RULES.md §2 Owner Start Gate](docs/RULES.md#2-owner-start-gate) for the canonical rule (S-001/S-002) and the full list of valid start signals. All agents follow that rule unchanged.
+历史文档只能作为线索，不能证明功能已实现或未实现。被当前源码或 Owner 新指令推翻的规则、文档和注释应删除或合并到最新合同，不保留多份互相冲突的“真相”。
 
-## Proactive Execution Rule
+规则整理只允许三种动作：调整执行顺序、合并完全重复内容、删除被 Owner 最新明确指令覆盖的旧条款。每一条仍有效的细化要求必须能映射到新章节或对应 Skill；不得为了缩短文件而丢失测试 smell、clean-room、引用、风险、运维或验收颗粒度。
 
-After Owner confirmation, agents should:
+开始工作前至少读取：
 
-1. Read the relevant project rules.
-2. Understand the assigned goal.
-3. Execute the task to completion when safe.
-4. Make reasonable engineering decisions.
-5. Record assumptions.
-6. Record risks.
-7. Update required docs.
-8. Run available checks when possible.
-9. Produce a final Chinese summary for the Owner.
+1. `docs/RULES.md`；
+2. 当前唯一执行计划；
+3. 与任务匹配的 `.agents/skills/<name>/SKILL.md`；
+4. 涉及的真实源码和测试。
 
-## Soft Scope Rule
+## 1. 不可违反的底线
 
-Allowed and forbidden file scopes are guidance, not a reason to stop unnecessarily.
+- **真实第一。** 不造假、不猜实现、不以文档、搜索命中、测试文件或记忆代替生产源码。负面结论必须证明入口、DI、运行时调用和状态回流均不存在。
+- **功能不缩水。** 有效能力必须归入 `Implemented`、`Implemented Better`、`Merged Equivalent`、`Safe Equivalent`、`Plugin`、`Feature Flag` 或 `Mandatory Roadmap`；禁止静默删除、`Dropped` 或用 clean-room/安全风险作缩水理由。
+- **独立实现。** 外部项目是行为证据，不是代码提供者。禁止复制或近似翻译源码、函数/字段名、注释、schema、文件结构、UI 源码、测试和独特实现顺序。
+- **语言全中文。** 面向 Owner 的汇报、计划、`docs/process` 文档、代码注释、测试注释、commit message 正文、agent 指令与返回报告一律中文；技术标识符保留英文。
+- 存量英文注释在触及相关包时逐步转中文，但不修改生成码、vendor/`pkg/external`、`//go:`/`//nolint`/build tag、LICENSE/SPDX/版权头；翻译只改散文，不动逻辑和标识符。
+- **代码注释不提借鉴项目。** `.go`、Rust、TS 代码注释只解释 HUAKAI 自身机制，不出现 sub2api、new-api、CLIProxyAPI 等项目名或“参考某项目”。
+- **秘密不泄漏。** 真实密钥、token、cookie、凭据、私钥、原始请求体不得进入日志、审计、响应、提交或规则文档。
+- 未经 Owner 明确要求不得修改 `LICENSE`。
 
-If a task requires touching a file outside the expected scope:
+## 2. Owner Start Gate 与当前所有权
 
-- Low-risk docs or tests: update directly and record it.
-- Low-risk implementation support files: update if needed and explain why.
-- High-risk files: stop and request Owner confirmation.
+`docs/RULES.md` §2 的 S-001/S-002 是启动门唯一清单。Owner 发出“开始、继续、去做、开干、修复、同意、批准”等明确执行信号后，当前被指派 agent 应独立推进到可验证闭环。
 
-High-risk files include:
+当前全局执行约束：
 
-- `LICENSE`
-- production secrets
-- real credentials
-- payment logic
-- authentication core
-- billing ledger
-- quota enforcement
-- database schema
-- deployment scripts
-- destructive migration files
+- 不再强制 Claude/Codex 并行双计划；旧的 `*-claude.md` / `*-codex.md` 平行制度退役。
+- 不按固定模型划分“Claude 设计、Codex 小修、Gemini 前端”。谁被 Owner 指派，谁对该工作单元的调研、设计、实现、测试和收口负责。
+- 同一目标只保留一个最新执行计划、一个干净分支和一个 PR；不得为同一问题继续开分支或堆重复计划。
+- 未经 Owner 同意不得合并主线；不得触碰另一个目标或未授权 worktree。
+- 大型临时文件、构建缓存和抓取产物不得放 `/tmp`，使用当前磁盘上的项目缓存目录。
 
-## Risk-Based Confirmation Rule
+## 3. 决策与风险门
 
-Agents should use this risk model:
+Owner 启动后默认继续执行，不因复杂、跨模块或需要多读源码而自行缩小边界。
 
-### Low Risk
+### 3.1 必须停下询问
 
-Proceed without asking again.
+以下操作始终需要 Owner 明确批准：
 
-Examples:
+- 合并主线、生产部署或操作真实生产数据；
+- 读取、写入或轮换真实秘密/凭据；
+- 修改 `LICENSE`；
+- 不可逆删除、破坏性迁移、销毁分支/记录；
+- 超出当前目标的真实资金转移。
 
-- docs updates
-- tests
-- prompts
-- type fixes
-- UI copy
-- small refactors
-- non-sensitive config examples
+除上述硬边界外，只有一个决策**同时满足**以下三项时才停下：
 
-### Medium Risk
+1. 存在实质性方案分歧；
+2. 官方规范和成熟领域项目均无可用依据；
+3. 选错会造成高危资金、鉴权、数据、合规或不可逆影响。
 
-Proceed if needed, but record the reason and risk.
+需要 Owner 决策时必须同时给出：HUAKAI 真码现状、领域成熟项目源码做法、各方案优缺点、影响半径、实施与回退/恢复计划。能够从源码、官方规范或成熟项目证据消歧的，不把问题甩回 Owner。
 
-Examples:
+### 3.2 可以直接推进
 
-- small implementation changes
-- new helper utilities
-- UI structure changes
-- non-breaking API contract updates
-- mock data
-- experimental logic
+- 已在当前目标中明确授权的钱路、鉴权、schema、配额或部署代码改动，可在有行为证据、计划、判别测试和审查门时直接做；
+- 低风险文档、测试、类型、结构整理直接做；
+- 中风险实现按计划推进并记录风险；
+- 发现同根问题辐射到兄弟模块时一并修复，不以原任务文字作死边界。
 
-### High Risk
+## 4. 强制执行顺序
 
-Stop and ask Owner before acting.
+非平凡工作必须按以下顺序，不得事后补调研装作前置：
 
-Examples:
+1. 判断任务领域与用户/运营结果；
+2. 选择领域成熟项目并核实许可证、维护活跃度和真实源码；
+3. clean-room `specifier` 只产出行为合同；
+4. 再读取 HUAKAI 真码，追完整运行链并做差距分析；
+5. 更新当前唯一计划，列 shape inventory、影响半径、失败模式和验收；
+6. 独立设计并实现；
+7. 跑判别性单元、集成、并发、故障与恢复测试；
+8. stage 精确 diff，执行强制 review；
+9. 小提交、推送到唯一 PR，等待 Owner 批准合并；
+10. 清理被替代规则、死代码、错误注释和重复文档。
 
-- deleting files
-- changing `LICENSE`
-- changing database schema
-- changing auth core
-- changing billing ledger
-- changing quota enforcement
-- adding new runtime dependency
-- touching real secrets
-- destructive shell commands
-- production deployment
+顺序做反时：立即停止继续修改业务代码，补齐缺失的前置行为合同，再倒查并修正当前补丁；未完成不得落地。
 
-## Do Not Over-Block Rule
+## 5. 参考项目选择：中转站基线 + 领域头部项目
 
-Agents must not refuse or stop just because a requirement is complex.
+### 5.1 先分领域，禁止万能镜像
 
-If a rule seems to block a real product requirement, the agent should:
+- **中转站核心**：账号池、凭据、协议转换、选号、路由、重试/failover、上游健康、模型目录、gateway 观测，默认三镜为 sub2api、CLIProxyAPI、new-api。
+- **专业领域**：支付、退款、订单、订阅、账本、身份、风控、审计、可观测、前端运维等，不得只看三镜。必须全网选择该领域维护活跃、真实落地、源码完整的头部项目。
+- **跨领域链路**：既看领域项目的专业行为，也看三镜如何与中转站入口/账号/用量/运营面接线；两边缺一不可。
 
-1. Explain the conflict.
-2. Propose a safe path.
-3. Continue with a safe equivalent if possible.
-4. Mark high-risk parts for Owner confirmation.
-5. Never delete the feature silently.
+钱路按问题颗粒度从以下类别选证据，不把候选名称写成永久定论：
 
-## Feature Preservation Rule
+- 发卡/数字商品：订单、支付回调、库存/卡密交付、下级租户和后台运营；
+- 电商：取消、退货、部分/累计退款、订单状态与人工处理；
+- 支付编排：渠道请求、稳定幂等、异步同步、退款查询和对账；
+- 订阅/用量计费：预付、后付、credit note、账期和额度；
+- 财务账本：双分录、冻结/提交/撤销、冲正、对账和审计。
 
-License risk and security risk must not reduce functionality.
+候选可来自独角数卡、Hyperswitch、Medusa、Spree、Saleor、Kill Bill、OpenMeter、Formance、Blnk、Midaz 等，但每次必须重新核实当前 HEAD、许可证、活跃度和与具体问题的匹配度；名称本身不构成证据。
 
-If a feature is risky, convert it to one of:
+外部行为合同只是设计输入之一，不是 HUAKAI 的自动实现指令。HUAKAI 本身是中转站，发卡、电商、支付编排、账本或身份项目的对象模型与调用边界未必互通；实现 lane 必须结合 HUAKAI 当前源码、不变量、租户模型、账务事实和运维方式，对每项外部能力明确判定 `直接适配 / 融合改造 / Safe Equivalent / 不适用并说明原因`。不得为了“对标”强塞不兼容结构，也不得用“不兼容”跳过其中对 HUAKAI 有效的业务结果。
 
-- `Safe Equivalent`
-- `Plugin`
-- `Feature Flag`
-- `Manual First`
-- `Experimental Module`
-- `Mandatory Roadmap`
+### 5.2 源码必读
 
-Do not remove the feature.
+以下断言一律必须读生产源码：
 
-## Agent Roles
+| 断言类型 | 必须证明 |
+| --- | --- |
+| 能力 | 项目是否真的有该入口、状态和运行时接线 |
+| 机制 | 状态机、算法、幂等、重试、恢复如何工作 |
+| 差异 | HUAKAI 与外部项目具体差在哪一维 |
+| 缺失 | 搜索范围、注册/DI、调用者和状态回流均已核实 |
+| 对比表 | 每个非平凡单元格都有独立源码证据 |
 
-- Claude: PM-Orchestrator and lead architect.
-- Gemini: frontend UI and operations dashboard engineer.
-- Codex: production reviewer, scenario test writer, feature parity auditor, and small safe patch engineer.
+README、宣传页、前端按钮、测试文件、issue 和文档只能提供线索，不能单独证明生产能力。技术标准和供应商 API 以官方规范为第一来源。
 
-Codex must not be the primary large-feature implementer unless explicitly assigned.
+引用格式：`<owner>/<repo>@<commit-sha>:<file>:<line-range>`。首次使用项目时还要记录：未归档、默认分支 HEAD、最近提交时间、许可证；旧于 30 天的引用先更新镜像。每段提到外部项目行为的文字都要有紧邻引用。
 
-## Codex Practicality Rule
+行为断言只允许三类：`Observed`（已读源码直接看到）、`Inferred`（由已观察区域推导并明确标注）、`Open Question`（证据不足）。`Speculative` 不得写成事实。分解产物必须列 `Observed regions / Inferences / Open questions` 和 Source Coverage Proof；字数不是目标，禁止用无证据内容凑篇幅。
 
-Codex should not be over-constrained into doing nothing.
+HUAKAI 内部事实直接引用本地源码/测试；公开协议引用官方规范；已经带完整源码证据且未过期的当前计划可以复用，不要求为同一事实重复读取外部源码。
 
-After Owner confirmation, Codex should:
+### 5.3 Clean-room 前置门
 
-- review from real-world usage
-- write scenario tests
-- identify blockers
-- make small safe fixes
-- explain when a restriction blocks a real product need
-- propose practical safe alternatives
+任何读取外部项目源码的任务都必须使用下面的 guard；字段必须真实填写：
 
-Codex should not be forced to stop for every minor scope mismatch.
+下面代码块是跨工具协议字面量，必须原样放进派发 prompt；它是“全中文”规则中唯一保留英文的兼容模板，周边说明和实际报告仍须中文：
 
-## Gemini Practicality Rule
-
-Gemini may proactively build UI after Owner confirmation, but must not edit backend core logic.
-
-Gemini may update:
-
-- frontend pages
-- components
-- styles
-- UI docs
-- mock UI data
-- API assumptions docs
-
-Gemini must stop before changing:
-
-- provider routing
-- quota
-- billing
-- auth
-- database schema
-- `LICENSE`
-- real secrets
-
-## Where To Work
-
-- Use `docs/` for authoritative planning, contracts, parity, risk, and release gates.
-- Use `.agents/skills/` for complex workflows.
-- Use `.claude/agents/` for Claude sub-agent definitions.
-- Use `.gemini/hooks/` for Gemini guardrails.
-- Do not write business implementation in this initialization pass.
-
-## Owner Summary Rule
-
-After each completed task, agents must output a Chinese summary:
-
-1. 做了什么
-2. 改了哪些文件
-3. 为什么这样做
-4. 有没有功能缩水
-5. 有没有 clean-room 风险
-6. 有没有安全风险
-7. 哪些地方需要 Owner 确认
-8. 下一步建议
-
-## Cross-Review Protocol (added 2026-04-29)
-
-When dispatched as **reviewer-lane** (e.g. `codex exec --sandbox read-only` with `docs/templates/codex-reviewer.md` piped to stdin), you MUST follow these rules — they survive `AGENTS.md` truncation only if you read the full template, so always read the template before producing output.
-
-1. **Read-only physical guarantee**: you cannot edit any file. Output is a written report.
-2. **Quoted evidence required**: every finding cites `file:line` for both the spec and the test code. Findings without citations are invalid.
-3. **Coverage matrix is the spine**: every AT-* ID in the spec must appear in your matrix as one of COVERED / COVERED-WEAK / SKIPPED (with validity check) / MISSING.
-4. **Severity is binding**:
-   - HIGH = blocks Released-spec status. Owner cannot ship unfixed.
-   - MED = must fix before opening the next vertical slice.
-   - LOW = backlog item.
-5. **Smell library** — flag these even if tests pass:
-   - assertions like `res.X != bad` but never `res.X == good`
-   - tests that `t.Skip` when a field is zero — coverage hole disguised as defense
-   - "100 goroutines" in comment but `N=12` in code
-   - test fixtures where winner and loser share the distinguishing feature
-   - stubs not mirroring production SQL `WHERE` clauses
-   - gate chains all `AllowAllGate` in tests, hiding gate-failure paths
-6. **Output ends with Chinese 1-paragraph summary** for Owner: 总体覆盖度、最高优先级补测、是否阻塞下一 slice.
-
-The cross-review template lives at `docs/templates/codex-reviewer.md`. Owner triggers it via `/cross-review` slash command in Claude Code.
-
-## Truth-First Discipline (added 2026-04-29 third Owner directive)
-
-> "保证真实 不造假"
-
-The single most load-bearing rule in this project. It overrides every other rule when in conflict.
-
-### What it means
-
-- **A 4000-word honest file > a 9000-word file with 4000 words of speculation padding.**
-- **Word count and section length are signals, not targets.** If a target says "minimum 6000 words" and you can only honestly cover 4000 from real source reading, write 4000 with a clear note in metadata that the source did not support more depth at this time.
-- Every factual claim about upstream behavior must be traceable to a source region the agent actually read. Add inline citation markers. If a claim cannot be traced, it is speculation — either drop it, or move to "Open Questions".
-- Three explicit categories for any behavior assertion:
-  - **Observed** — agent read the source region and saw this behavior. Default category.
-  - **Inferred** — agent did not directly observe but the claim follows from observed regions; mark explicitly `(inferred from §10 region X)`.
-  - **Speculative** — NOT ALLOWED. Move to Open Questions or drop.
-- HUAKAI-fit risk reasoning is its own category: comparing observed upstream behavior against HUAKAI's design constraints (DR-001 multi-tenant, DR-002 dual editions, DR-006 PostgreSQL). Reasoning is allowed; speculation about upstream is not.
-
-### Why this matters more than depth targets
-
-Pressure to hit a word count creates incentive to fabricate. The project's value depends on every decomposition being a faithful witness to upstream behavior. Synthesis stages combine multiple decompositions; if one is fabricated, downstream specs derived from it inherit the error and the cascade is invisible until production breaks.
-
-### How agents enforce truth-first on themselves
-
-- Before claiming a behavior in writing, ask: "Did I read the region that supports this?" If no, do not write it.
-- After drafting a section, scan for unsupported claims; either cite or remove.
-- In §10 Source Coverage Proof, list **every** region read and **what each contributed**. If §2 makes a claim no §10 region supports, the claim is speculation by definition.
-- When critic-lane reviews, every uncited claim is a defect.
-
-### Owner-facing signals
-
-- Metadata block in every decomposition file MUST include: `Observed regions: N` / `Inferences: M` / `Open questions: K`. Owner reads these three numbers first to gauge depth-vs-honesty tradeoff.
-- 1-paragraph Chinese summary at end of every decomposition must explicitly call out: 哪些是真观察 / 哪些是合理推断 / open question 数量.
-
-## Plan-Before-Execute Discipline (added 2026-04-29 second Owner directive)
-
-> "你自己执行的时候也要plan给我。"
-
-The rule applies to **every agent in this project — not just Codex, not just Claude**. Before any non-trivial action, write a plan artifact to `docs/process/plans/YYYY-MM-DD-<descriptor>.md` and surface it for Owner review BEFORE execution.
-
-### What counts as non-trivial (plan required)
-
-- Codex batch dispatch (any number of parallel jobs)
-- Writing more than ~200 lines of code in one work unit
-- Schema migration / DB structural change
-- Deleting files / branches / records
-- Restructuring multi-file modules
-- Cross-cutting refactors
-- Long-running Codex reasoning tasks (decompositions, source-verified reads)
-- Any task that could leave the repo / DB / running system in an inconsistent state mid-flight
-
-### What counts as trivial (no plan needed)
-
-- Typo / single-character fix
-- Adding a single test case to an existing suite
-- Reading files for understanding (no mutation)
-- Running already-planned tests / linters
-- Replying to a question with text only
-
-### Plan content (minimum)
-
-```
-# YYYY-MM-DD <descriptor>
-| Owner directive | <quote that triggered this work> |
-| Scope | <what is in / out> |
-| Success criteria | <how we know it worked> |
-| Time estimate | <wall clock + agent time> |
-| Blast radius | <what breaks if this fails> |
-| Failure modes | <what could go wrong + mitigation> |
-| Decision points | <what needs Owner sign-off mid-flight> |
-| Pre-execution checklist | <ordered list of dependencies + sanity checks> |
-```
-
-### Discipline-of-discipline
-
-If the temptation to skip planning arises ("this is small enough", "I'll just do it"), that itself is the signal that planning is needed. The agents that keep this codebase healthy plan small, plan often, and surface the plan even when it feels overhead. Skipping the plan is how earlier rounds in this project produced shallow specifier output that wasted Owner's time and required round-2 redo.
-
-## Parallel Plans + Cross-Discuss (added 2026-04-30 Owner directive — corrected)
-
-> "这个计划和 codex 讨论了吗？以后计划也要相互交叉讨论验证。做任何事情都需要"
-> "不是让他对你的计划进行交叉审查，而是他也定计划 你也定，交叉讨论"
-
-The Plan-Before-Execute discipline (above) produces the artifact. This rule says: **for non-trivial work, both Claude and Codex independently produce their own plan, then reconcile through cross-discussion**. It is parallel-draft, NOT sequential review of one plan.
-
-The first interpretation Claude tried — "Codex reviews Claude's plan" — was explicitly rejected by Owner. Sequential review only catches mistakes IN one person's mental model. Independent drafts surface different starting assumptions, different blind spots, different priorities. Same round-table logic as the DR governance protocol.
-
-### Workflow
-
-1. Owner authorizes a non-trivial work unit. Plan-Before-Execute rule says "write a plan."
-2. **Both agents draft independently:**
-   - Claude writes `docs/process/plans/YYYY-MM-DD-<descriptor>-claude.md`
-   - Codex writes `docs/process/plans/YYYY-MM-DD-<descriptor>-codex.md`
-   - Each writes WITHOUT seeing the other's draft. Same brief / Owner directive / scope; fresh independent thinking.
-3. Compare the two plans. Surface to Owner:
-   - **Agreements** — points both plans landed on (likely correct)
-   - **Conflicts** — points where they disagree (Owner picks)
-   - **Gaps** — things one plan caught that the other missed
-4. Owner approves a synthesized plan. Either:
-   - Write `docs/process/plans/YYYY-MM-DD-<descriptor>.md` (no suffix) as the merged authoritative version, OR
-   - Amend one of the two with a "synthesized after diff" header — record which.
-5. Only after the synthesized plan exists does execution begin.
-
-### Codex dispatch prompt template
-
-```
-codex exec --full-auto "Owner has authorized <work unit description>.
-
-Independently write your own plan to docs/process/plans/YYYY-MM-DD-<descriptor>-codex.md.
-Do NOT read any docs/process/plans/YYYY-MM-DD-<descriptor>-claude.md if it exists — the
-point is independent thinking.
-
-Plan content (per AGENTS.md Plan-Before-Execute):
-  - Owner directive (quote that triggered this work)
-  - Scope (in / out)
-  - Success criteria
-  - Time estimate
-  - Blast radius
-  - Failure modes + mitigations
-  - Decision points needing Owner sign-off
-  - Pre-execution checklist
-  - Concrete execution order
-
-Spec context to consider: <list relevant spec paths>
-Code context to consider: <list relevant module paths>
-
-Write the plan and exit. Do NOT execute anything from the plan."
-```
-
-### What parallel-draft catches that single-plan-review misses
-
-- **Different priors** — Claude may default to one architectural pattern; Codex may default to another. Surfacing the divergence early prevents lock-in.
-- **Hidden assumptions** — when one plan assumes table X exists and the other reads migrations and finds X doesn't, the gap is explicit before any code is written.
-- **Dropped requirements** — one plan may quietly defer something the other treats as in-scope; surfaces a real decision instead of an accidental omission.
-- **Sequence disagreements** — one plan may put DI before handler; the other handler before DI. Different starting points often imply different risk models.
-
-### Exemption
-
-Same trivial-action exemption as Plan-Before-Execute: typo fixes, single-line changes, reading-only operations.
-
-## Clean-Room Codex Prompt Template (added 2026-04-30 Owner directive)
-
-> "你给自己的MD和codex提示词要注意禁止违规"
-
-ANY prompt — Claude self-instruction or Codex dispatch — that touches non-MIT reference project source MUST paste this block at the top, fill in the angle-bracket fields, and refuse if any field cannot be filled honestly. The block is normative: copy verbatim, do not paraphrase.
-
-```
+```text
 === CLEAN-ROOM LANE GUARD (DR-000 Option C carve-out + 05_CLEAN_ROOM_POLICY) ===
 
 LANE: <specifier | reviewer>
@@ -411,361 +187,236 @@ a clean-room breach.
 === END CLEAN-ROOM LANE GUARD ===
 ```
 
-After this block the prompt continues with the actual decomposition / question / task. The block itself is the guardrail; if it is missing or partially filled, the dispatch is invalid.
+同一行为合同的 `specifier` 与 clean-room `reviewer` 必须是不同 session。实现 lane 只能在行为合同完成后读取 HUAKAI 真码；不得让刚读过受限源码的同一上下文做贴近源码的实现翻译。
 
-### When to use
+`reviewer` 只验证行为合同的完整性、证据覆盖和 clean-room 风险，不重新读取同一外部源码。引用锚点可以保留上游路径与行号，但周围散文不得复述独特标识符。
 
-- ANY decomposition task (R1/R2/R3/Rn) on the 7 reference projects
-- ANY mechanism question that requires reading reference source
-- ANY compare-and-contrast task spanning multiple references
-- ANY "how does project X handle Y" investigation
+许可证风险改变实现方式，不删除功能。AGPL/GPL/LGPL 只允许行为证据；MIT/Apache/BSD 也默认独立实现。只有官方 SDK 或明确批准的隔离 vendoring 才允许复用，并必须经过 dependency/license audit、保留 LICENSE/NOTICE 和来源 SHA。
 
-### When NOT needed
+## 6. 行为合同与能力闭环
 
-- Reading HUAKAI-internal code (`backend/`, `docs/specs/`, `docs/process/decisions/`)
-- Reading official spec documents (Anthropic Messages API docs, OpenAI Chat Completions docs) — these are public protocols, not reference-project source
-- Reading reference-project README / public docs (which are intentionally published) — but if README contains code blocks they are still upstream source and the guard applies
+行为合同至少覆盖：
 
-### Rationale
+- `path / mode / state / actor` 完整清单；
+- 身份与权限来源；
+- 输入规范化与核心决策；
+- 持久化事实与唯一/并发约束；
+- 外部副作用与稳定幂等标识；
+- 部分成功、超时、崩溃和重放；
+- retry/fallback/compensation/DLQ/reconciliation；
+- 审计、可观测与人工恢复；
+- 默认值、开关、成本预算和 Day-2 运维入口。
 
-DR-000 picked Option C with carve-outs (account-pool routing, auth core, billing ledger). The Option C lane separation is what makes the carve-outs defensible later. Skipping the lane guard turns Option C into Option A by accident, which would re-open R-LIC-001 (LGPL contamination risk) and burn the clean-room defense at trial / acquisition diligence.
+参考项目未实现或实现不完整也必须如实记录。HUAKAI 不以“对标项目也没有”为理由保留明显资金、鉴权、幂等或运维缺陷；成熟项目的缺点进入 `Implemented Better` 的升级差量。
 
-## Source-Must-Read Trigger Matrix (added 2026-05-09 Owner directive)
+差量必须落到以下至少一维：
 
-> "去读源码！讲规则里面改下必须读源码"
+- **架构升级**：边界、数据流、存储事实、合同面；
+- **算法升级**：选号、评分、重试、降级、恢复策略；
+- **生态升级**：运维、可观测、审计、前端与生命周期。
 
-CLAUDE.md #11 governs **how** to read reference source safely. CLAUDE.md #12 governs **when** reading is mandatory. The two rules compose:
+## 7. 全链路闭环与模块联动
 
-- If a claim type below is in scope → reading source is mandatory (#12)
-- Once source is read → lane guard + paraphrase prohibitions kick in (#11)
+当前报错只是调查入口，不是修复边界。必须亲读 HUAKAI 真码，沿下列完整链追踪：
 
-### Triggers — must read source
+`入口 -> 身份/权限 -> 规范化 -> 核心决策 -> 持久化 -> 外部副作用 -> 异步任务 -> retry/fallback -> health -> billing/quota -> audit -> DLQ/recovery -> 用户/管理员状态`
 
-| Claim type | Example | Required citation |
-|------------|---------|-------------------|
-| Capability | "sub2api supports failover loop" | `Wei-Shaw/sub2api@<sha>:<file>:<line>` |
-| Mechanism | "Helicone gateway rate-limits by both cost and request count" | `Helicone/ai-gateway@<sha>:<file>:<line>` |
-| Differentiation | "HUAKAI's PASR is unlike LiteLLM's routing" | `BerriAI/litellm@<sha>:<file>:<line>` for the LiteLLM half |
-| Algorithm | "litellm selects accounts by least-conn weighted" | `BerriAI/litellm@<sha>:<file>:<line>` |
-| Parity verdict | "Project X has feature F" / "X lacks F" | `<owner>/<repo>@<sha>:<file>:<line>` showing presence/absence |
-| Comparative table | Any cell naming a reference project | one citation per non-trivial cell |
+同时横查：
 
-### Source-NOT-required (carve-outs)
+- 同构协议和兄弟模块是否存在同根旁路；
+- 上下游消费者是否仍使用旧合同；
+- DI、registry、route、worker、scheduler、readiness 是否真实接线；
+- 并发/幂等、租户隔离、金额/额度/凭据副作用；
+- 进程崩溃、部分成功、网络超时、重复回调和多副本竞争；
+- 运营是否能看懂、查询、重试、对账、隔离和人工解决。
 
-- HUAKAI-internal claims (cite `backend/`, `docs/specs/`, `docs/process/decisions/` paths)
-- Public protocol contracts (Anthropic Messages, OpenAI Chat Completions, Gemini API spec)
-- Prior `docs/process/plans/*.md` artifacts already source-cited at write time
-- Vendor pricing / TTL / model lists from official docs (cite docs URL + section)
+调查必须由点到面：从一个报错或字段出发，先验证本点，再向调用者、被调用者、同构模块、持久化事实、异步恢复和运营界面扩散；既看系统级闭环，也逐项核对细小状态、默认值、错误分类、条件分支、幂等摘要、锁和 `WHERE` 约束。宏观链路不能掩盖细节缺陷，局部修复也不能替代全局链路判断。
 
-### Where to clone
+代码存在但无入口/DI/worker/状态回流，视为未实现。错误消失但钱、hold、quota、槽位、账号健康或审计未收敛，视为未闭环。
 
-Default location: `~/refs/<project>/`. One-time per evaluator. `git clone --depth=1` is acceptable for behavior-summary work; full clone only when commit history is the subject. Per #11, the clone act itself is fine — the lane guard governs subsequent reading and paraphrase.
+## 8. 计划与决策纪律
 
-Currently relevant repo URLs (Owner-confirmed):
+### 8.1 一个目标只保留一个计划
 
-- Sub2API: `https://github.com/Wei-Shaw/sub2api.git`
-- All-API-Hub: `https://github.com/qixing-jk/all-api-hub.git`
-- New-API: `https://github.com/QuantumNous/new-api.git` (formerly `Calcium-Ion/new-api` — repo transferred; old `Calcium-Ion/new-api@<sha>` citations still resolve via GitHub redirect)
-- One-API: RETIRED 2026-05-28 (abandoned; superseded by New API) — historical evidence only, not for new mining
-- LiteLLM: `https://github.com/BerriAI/litellm.git`
-- Portkey gateway: `https://github.com/Portkey-AI/gateway.git`
-- Helicone: `https://github.com/Helicone/ai-gateway.git` (the project's "Helicone" reference is the GPL-3.0 Rust AI gateway — see E-LIC-007 / docs/06 — not the `Helicone/helicone` platform monorepo)
-- Envoy AI Gateway: `https://github.com/envoyproxy/ai-gateway.git`
+非平凡工作必须更新当前唯一计划，而不是创建 Claude/Codex 双计划或多份补充报告。计划最少包含：
 
-### Stale-citation policy
-
-A citation older than 30 days from current UTC date requires re-fetch of HEAD before being relied upon for new claims. Reference projects move fast; "what sub2api did 3 months ago" is not evidence of "what sub2api does now". Cited commit SHA must be one currently reachable from the default branch — verify with `git log --oneline <sha>..HEAD` before re-use.
-
-### Enforcement
-
-- Codex per-commit review (#8) MUST flag any unsourced reference-project claim as HIGH severity
-- Slice cross-review (#7) MUST reject decomposition / parity / differentiation artifacts that fail the citation rule
-- Self-check before producing output: every paragraph naming a non-HUAKAI project should carry at least one `<repo>@<sha>:<file>:<line>` reference; if none exists, either remove the claim or read source first
-- "I remember" / "in my training data" / "as I recall" are explicit anti-patterns — drop the claim before drawing on memory
-
-## Per-Commit Cross-Review Discipline (added 2026-04-29 by Owner directive)
-
-> "所有的动作和行为都要和 codex 进行交叉处理！包括代码。熟练运行 agent 利用 codex 得 renew 功能"
-
-Effective immediately, **every commit must pass through a Codex review before landing**. The lighter-weight `codex exec review` subcommand is the standard tool — full reviewer-lane audit (`docs/templates/codex-reviewer.md` piped to stdin) is reserved for slice-completion gating.
-
-### Standard workflow for any code change
-
-1. Make the change locally; run unit tests; ensure build is clean.
-2. **Stage** the change (`git add ...`) but DO NOT commit yet.
-3. Run: `codex exec review --uncommitted --full-auto --sandbox read-only`. Read findings.
-4. Normalize findings through "Review Spiral Control And Severity Gate" below:
-   - unresolved S0/S1 → fix before committing, then apply the round budget.
-   - S2/S3 → record and schedule follow-up; they do not block the current commit.
-5. Commit. Reference the review verdict in the commit body.
-6. (Optional but encouraged) Run `codex exec review --commit <SHA> --full-auto` post-commit for an independent retro-check; archive findings if non-trivial.
-
-### Review Spiral Control And Severity Gate
-
-Effective date: 2026-05-24T00:00:00Z. Rule sources: [[feedback_small_closed_increments]] (2026-05-22) requires small, closed increments; [[feedback_ceremony_tiered]] says ceremony is tiered by task difficulty; this subsection narrows only the per-commit review dimension of Rule #8. [[feedback_test_quality_discipline]] / `CLAUDE.md` #14 remains a hard constraint: weak, non-discriminating tests are never "polish".
-
-HUAKAI is a single-PM engineering project. Codex review is mandatory because it catches S0/S1 defects, feature shrinkage, clean-room/license risk, weak tests, package-structure violations, and money/security regressions. It is not a Google-scale multi-round ceremony, and the landing gate is severity-based rather than "zero findings".
-
-#### Severity normalization table
-
-Codex labels (`HIGH` / `MED` / `LOW` / `P2`) are review inputs, not the final gate. Claude/Codex must normalize every finding to HUAKAI severity with one-line rationale.
-
-| HUAKAI severity | Meaning | Examples | Blocks commit? |
-| --- | --- | --- | --- |
-| `S0` | Catastrophic or legally unsafe to land | secret exposure, auth/billing/quota/data-loss bug, clean-room/license contamination, destructive migration, failing required build/test on release path | Yes |
-| `S1` | Product correctness, trust, or rule violation that can break the current slice | feature shrinkage, money/security regression, non-discriminating test, frozen-package new file, schema-risk mistake, unhandled S0/S1 reviewer finding, uncertain severity | Yes |
-| `S2` | Real defect or compliance gap that should be fixed, but does not invalidate this closed increment | provenance-tail cleanup, non-release doc sync, TODO precision, minor schema-comment mismatch, local-tool cleanup after behavior is already guarded | No, record and schedule |
-| `S3` | Style, consistency, or nice-to-have cleanup | wording polish, formatting-only preference, redundant note, low-risk local comment cleanup | No, record if useful |
-
-Severity mapping beats tool wording. A Codex `MED` can be S1 if it affects money/security, clean-room/license, feature preservation, weak-test discipline, package structure, schema safety, or required build/test status. A Codex `HIGH` can be S2 only when concrete evidence shows it is compliance polish with no current-slice correctness or release risk. When classification is unclear, promote to S1 and fix.
-
-#### Round budget
-
-1. Stage only the intended diff, then run Round 1: `codex exec review --uncommitted --full-auto --sandbox read-only`.
-2. Normalize each finding to `S0`/`S1`/`S2`/`S3` with one-line rationale.
-3. If Round 1 has no unresolved S0/S1 and local required checks pass, the commit may land with S2/S3 recorded.
-4. Run Round 2 only when Round 1 found S0/S1, or when the fix materially changed behavior, security, schema, quota/billing/auth, clean-room/licensing posture, or test semantics.
-5. After Round 2, stop. Continue reviewing the same commit only if unresolved S0/S1 remains or Owner explicitly asks for another round.
-
-#### Deferred finding record format
-
-Record deferred S2/S3 in the commit body or `docs/process/reviews/DEFERRED-<topic>.md` using this format:
-
-```markdown
-Deferred review findings:
-- [S2|S3] <short title> — source: Codex review round <N> <finding id/label>; rationale: <why it does not block this commit>; follow-up: <next slice / issue / doc path>; Owner decision: <none | needed by date>
+```text
+Owner 指令
+范围 / 不在范围
+行为合同 / shape 清单
+参考项目与源码证据
+成功标准
+执行顺序
+时间估算
+爆炸半径
+失败模式与缓解
+决策点
+判别测试
+运维恢复
+执行前检查清单
 ```
 
-Deferred means scheduled, not dropped. If the same S2 appears again in the next related slice, either fix it there or promote it with rationale.
+旧计划被新计划覆盖时删除或合并，只保留最新权威版本。单字符修复、单个既有测试和纯只读核实可不改计划。
 
-#### Anti-spiral rule
+计划必须在实施前向 Owner 简要展示范围、顺序、风险和成功标准；Owner 已授权当前目标时，展示不等于重新等待批准，除非命中 §3.1 决策停门。
 
-- Review should not discover the spec drip-by-drip. If review repeatedly reveals new requirements, stop expanding the current commit, close the no-S0/S1 slice, and write a complete next-slice spec.
-- Do not accumulate unrelated compliance polish, provenance cleanup, or style-only edits into a commit whose S0/S1 issues are already closed.
-- Never relabel real defects down to escape the round cap. Security exposure, auth/billing/quota/data loss, clean-room/license contamination, feature shrinkage, non-discriminating tests, frozen-package new files, schema-risk mistakes, and failing required checks remain S0/S1 unless evidence disproves the risk.
-- Post-commit review is a retro-check, not a same-commit loop. `codex exec review --commit <SHA> --full-auto` is optional; S0/S1 from retro-check requires an immediate fix commit or revert/hotfix, while S2/S3 is recorded for follow-up.
-- Complete vertical slices and release gates still use reviewer-lane `/cross-review`; this two-round cap only controls per-commit review iteration.
+### 8.2 决策材料
 
-### CLI flag notes
+需要 Owner 拍板的选项必须包含：
 
-- The canonical Owner command is `codex exec review --uncommitted --full-auto --sandbox read-only`. Run from the repo root; if the CLI rejects `--sandbox`, check `codex exec review --help`, record the CLI mismatch, and run the closest read-only/sandboxed equivalent available.
-- `--uncommitted` and `--commit <SHA>` are mutually exclusive with a positional `[PROMPT]`. To customize the review focus, write notes into `docs/process/reviews/PENDING-<descriptor>.md` first; Codex picks that up via the working tree.
-- Use `--full-auto` for sandboxed automatic execution (recommended for review of working-tree changes).
+- HUAKAI 当前源码事实；
+- 官方规范；
+- 至少一个真正匹配该领域的成熟项目源码做法；
+- 中转站相关决策再补三镜；
+- 每个选项的收益、代价、迁移、故障和运维影响；
+- 推荐项及理由。
 
-### When NOT to skip
+不得只写 HUAKAI 内部 A/B 而让 Owner 再问“成熟项目怎么做”。
 
-The discipline applies even when:
-- The change is a single-file doc edit (catches stale assertions, broken cross-references).
-- The change is "obviously safe" (the reviewer catches what looks safe but isn't, e.g. silent fallback paths).
-- Time pressure (skipping the review is how slice 5's 5 HIGH defects got past the maintainer; do not repeat).
+## 9. 实现纪律
 
-### When to escalate to full reviewer-lane
+### 9.1 责任边界
 
-- Slice completion (vertical slice declared "done")
-- Cross-feature integration commits
-- Money-path changes (any code that writes to `usage_records`, `billing_events`, or quota tables)
-- Schema migrations
-- Authentication / authorization core changes
+- 一个 package/module 对应一个内聚职责；新功能域优先建职责清晰的子包。
+- 一个源文件对应一个内聚职责；非测试源文件超过约 600 行必须拆分或给出下降计划。
+- 一个 Go 包目录默认不超过 6000 非测试行或 20 个非测试文件；存量超标项只允许在 `backend/internal/codebudget/baseline.json` 的既有 +5% 余量内修复。
+- 禁止为了过门抬高 baseline；只有有意拆分使体量下降后才能重生成。
+- 每次触及结构都运行 `backend/internal/codebudget`。
 
-In those cases, run `codex exec --full-auto --sandbox read-only -C <repo> -` with the template at `docs/templates/codex-reviewer.md` piped to stdin.
+### 9.2 变更原则
 
-### Renew / version sync
+- 遵循当前真码和本地合同，使用结构化 API/解析器，不用脆弱字符串拼接。
+- 未上线阶段不为假想回滚长期保留双栈、死代码、旧开关或静默 fallback；Git 历史就是恢复手段。
+- 删除前先证明替代链路、测试和运维入口齐全。
+- 不修改与当前目标无关的用户改动；遇到并发变化先核实归属。
+- 前端若明确要求重构，旧前端只能用于核 API 接口，不能作为设计真相。
 
-If `codex exec review` syntax errors with "unexpected argument" or "cannot be used with [PROMPT]", the Codex CLI was updated. Check `codex exec review --help`; the canonical option list as of this writing is: `--uncommitted`, `--commit <SHA>`, `--base <BRANCH>`, `--full-auto`, `--ignore-rules`, `--ephemeral`, `--json`. Update this section if the CLI changes.
+## 10. 测试质量与验收
 
-## Package & File Structure Discipline (added 2026-05-22 Owner directive)
+每个测试必须回答“它会在什么具体缺陷出现时变红”。
 
-> Owner: "主要是怎么杜绝?你给我们的规则写进 codex 必读的文件里"
-> 触发:`internal/gatewayhttp` 长成 68 文件 / 2 万行的 god-package —— 管理 /
-> 用户 / 计费 / 网关 handler 全挤一包,且在 2026-05-15 结构规则之后仍在增长。
-> 这是**硬规则,不是软纪律**("规则非纪律"),codex 与 Claude 同等适用。
+### 10.1 判别性要求
 
-代码**按职责组织**。此规则同时管 Go 包、Go 文件、Rust module —— 不只是 Rust、
-不只是文件。
+1. 使用会让正确实现与破坏实现产生不同结果的 fixture；
+2. 心智或实际 mutation：删守卫、翻条件、忽略输入、绕接线后测试必须红；
+3. 断言明确好结果，不只断言“不等于坏结果”；
+4. 不用 `nil` stub、`t.Skip` 或宽松 mock 掩盖真实风险；
+5. 测生产 SQL 的真实 `WHERE`、锁、唯一约束和事务边界；
+6. 测入口到最终状态，不把单模块全绿当全链闭环。
 
-### The rule
+可行时让测试自证判别性：同一测试同时跑正确路径和故意缺少关键输入/守卫的基线路径，并断言两者结果不同。实际修改生产码做 mutation 前必须先保存当前补丁且保证可无损恢复，禁止用破坏性 checkout/reset 丢未提交工作。
 
-1. **一个包 = 一个内聚职责。** 新增功能域(新 handler 家族、新子系统)时,
-   **禁止**默认把它丢进已有的大包。建一个职责清晰的新包。
-2. **一个文件 = 一个内聚职责。** 不把无关的东西堆进一个文件。非测试代码
-   超过约 500 行的源文件是拆分信号。
-3. **包体量预算(拆分触发线)。** 一个 Go 包超过 **约 20 个非测试源文件
-   或约 5000 行非测试代码**,必须要么按职责拆分,要么(若拆分被推迟)
-   **冻结、不再加新文件**。
+### 10.2 风险分层
 
-### ~~Frozen packages~~ → 软预算门(2026-06-11 修订,硬冻结退役)
+- 普通逻辑：targeted unit + package tests；
+- 跨模块：真实 handler/DI/worker 集成；
+- 并发/幂等：race、跨节点/多事务重放、冲突和唯一约束；
+- 钱/鉴权/schema：PostgreSQL 集成、失败注入、部分成功、崩溃恢复与审计；
+- 网络/出口：proxy、超时、取消、流式中断、故障分类和资源回收；
+- 发布：全量 test、vet/lint、构建、容器/readiness smoke。
 
-**实测结论:硬冻结失败了。** 「禁新增文件」只挡住了新文件,把新逻辑逼进旧
-文件继续膨胀(gatewayhttp 冻结后仍长到 13k+ 非测试行,0 子包)。替代物是
-**强制软预算门** `backend/internal/codebudget`(随标准 unit 门运行):
+真实上游成本只允许通过最便宜模型、小 `max_tokens` 和受控次数降低，不得删测试场景。无法取得真实账号/DB/容器时如实标注“未验证”，不得宣称上线门通过。
 
-- 非测试 Go 文件 ≤ **600 行**;单目录包非测试 ≤ **6000 行 / 20 文件**;
-- 存量超标项按当前体量入 `baseline.json` 豁免,**只挡继续增长**(基线 +5%
-  余量);超余量 = 门红,出路是**按职责拆子包**(范本:`internal/provider`
-  9 核心 + 13 子包),不是把基线改大;
-- 基线再生成(`HUAKAI_REWRITE_CODE_BUDGET_BASELINE=1`)只允许在有意拆分/
-  重构使体量**下降**之后。
+当前后端全量门以仓库脚本和 CI 为准：普通单元/race 门设置 `HUAKAI_SKIP_PERF_LATENCY_GATE=1`，性能门单独运行；`integration_pg` 使用 `backend/scripts/integration-pg.sh` 为每个包克隆纯净迁移库并串行执行，禁止让多包共享同一数据库产生假阳或因缺少 DSN 静默假绿。
 
-原冻结三包(gatewayhttp/gateway/proto)在门绿的前提下**允许再新增文件**,
-但新功能仍优先落新子包(如 `proto/<family>/`);往超标包里加行会烧掉它
-仅有的增长余量。为修 bug 而改既有文件照旧允许
-(例:W3 错误模型 → `internal/clienterr`,而非 `gatewayhttp/public_error.go`)。
+## 11. Review 与提交门
 
-> **澄清(2026-06-07 Owner「入站协议为什么冻结」纠错):冻结 = 反 god-package 的模块化约束,不是「协议/功能层不可扩展」。** 加新入站协议(Gemini 原生 /v1beta、realtime 等)、新出口能力**正是最高价值的活**——做法 = ClientAdapter/handler 落 **新包**(如 `internal/geminiclient`)+ 对既有 registry/route/capability 文件做 **加性 edit**。**严禁**为绕冻结而搞 hack(request-body 重写 / shim / 把 model、stream 注入 body)。若新包 handler 需要冻结包内部能力 → **导出该能力(既有文件加性 edit)** 供其调用——这才是模块化正道,**不需要任何「冻结例外」**。协议广度是网关 #1 价值轴,冻结规则从不阻止它。
+### 11.1 每个提交
 
-> **全网关范围(2026-06-07):** HUAKAI = Go `gatewayhttp` 大脑 + **Rust 出站强伪装 sidecar**(方向 C)。任何「整个网关」审计/评估 **必须纳入** `exploratory/rust-core-gateway/`(`tls-sidecar`:自维护 BoringSSL fork + JA3/JA4 + H2 SETTINGS wire 指纹 + fail-closed 契约)与 `backend/internal/transport/mimicry/`,**不能只看 `backend/` Go**。反检测/TLS+H2 线级伪装是真实且领先三家的能力轴。
+1. 只 stage 当前提交的预期 diff；
+2. 本地必需检查通过；
+3. 运行 `codex exec review --uncommitted --full-auto --sandbox read-only`；若 CLI 参数变化，先查 `codex exec review --help`；
+4. 将 finding 归一为 S0/S1/S2/S3；
+5. 未解决 S0/S1 阻止提交；S2/S3 记录到 commit body 或当前唯一计划，不新建零散文档；
+6. Round 1 出 S0/S1 或修复实质改变行为/安全/schema/测试语义时跑 Round 2；同一提交默认最多两轮，仍有 S0/S1 则继续修而不是降级；
+7. commit message 正文记录测试与 review 结论。
 
-### Enforcement(这才是"杜绝")
+若当前执行者就是 Codex，review 必须使用独立只读 session，不能把自审当独立审查。
 
-- **机器门**:`internal/codebudget` 在每次 unit 门自动执行,超预算/超基线
-  余量直接红——这是主执法点,不依赖评审记忆。
-- 任何**计划 / spec** 若要新建文件,必须逐个写明目标包,并确认预算门保持绿。
-- **per-commit 评审**(3 镜头对抗评审,2026-06-11 起替代 codex 门)必须把
-  以下情况标为 **HIGH 结构违规、阻断提交**:
-  - 任何 commit 把包推过体量预算或把基线豁免项推过增长余量;
-  - 用调大基线代替拆分(基线只许在体量下降的重构后再生成);
-  - 把无关职责塞进同一个包或文件。
-- **切片交叉评审**(本文件 Cross-Review Protocol)在切片收尾做同样检查。
-- 被派发的任务,若其 spec 会把包推爆预算,必须拒绝并改写(改成新子包)。
+严重度统一如下：
 
-## Test Quality Discipline (added 2026-05-22 Owner directive)
+| 级别 | 含义 | 典型问题 | 阻提交 |
+| --- | --- | --- | --- |
+| `S0` | 灾难性、法律或生产不可接受 | secret 泄漏、跨租户、auth/billing/quota/data-loss、clean-room/许可证污染、破坏性迁移、发布必需门失败 | 是 |
+| `S1` | 会破坏当前切片正确性、信任或硬规则 | 功能缩水、钱/安全回归、非判别测试、codebudget/结构违规、schema 风险、未处理 reviewer 高危、严重度不确定 | 是 |
+| `S2` | 真实缺陷但不否定当前闭环 | 非发布文档同步、来源尾部清理、次要合同精度、已有行为受保护后的工具清理 | 否，必须排期 |
+| `S3` | 样式、一致性或可选优化 | 措辞、格式、冗余说明、低风险局部整理 | 否，按价值记录 |
 
-> Owner: "你每次给的测试啥的是不是都很一般,没有质量?"
-> 触发:W3a 的 GW-02 回归测试用了非判别性 fixture —— 裸 401 本就分类为
-> `invalid_grant`,于是 body 被忽略时测试仍通过,等于没守住它该守的回归。
+不得为逃避轮次上限降低真实严重度。review 若开始逐轮发现与当前提交无关的新需求，应先关闭无 S0/S1 的当前小切片，把完整后续要求并入唯一计划；不得把无关合规润色、出处清理或样式改动无限塞进同一提交。即使只改文档，也不能跳过提交 review。
 
-一个测试存在的意义是:**在它该抓的缺陷出现时变红**。一个无论代码对错都通过
-的测试是**没有价值的 —— 比没有更糟**,因为它给假信心。
+### 11.2 完整 reviewer lane
 
-### The rule —— 每个测试必须
+以下提交还必须运行 `docs/templates/codex-reviewer.md` 的完整只读 reviewer：
 
-1. **说得出它守的是什么缺陷。** 作者必须能一句话说清:这个测试抓的是哪个
-   具体回归 / bug。说不出,这测试就没有存在理由。
-2. **过 mutation 自检。** 宣布测试写完前:在脑里把它该守的缺陷**真的引入**
-   (删掉守卫、翻转条件、stub 掉输入)。测试**必须变红**。若它照样通过,
-   说明 fixture 不判别 —— 重新设计。
-3. **用判别性 fixture。** 输入 Y 的期望输出,必须与**坏掉的代码**会产生的
-   输出不同。若 `Y → X` 在代码正确和损坏时都成立,这 fixture 什么都没证明。
-   (典型陷阱:用「光看 status 就already得到期望 class」的状态码去测
-   「分类读了 body」。)
-4. **测真实风险,不测"能跑"。** (见 risk-based testing:丢钱 / 串租户 /
-   数据损坏 / 信息泄露 —— 注入真实触发,断言风险不存在。)用 `nil` 兜底的
-   stub 把测试弄绿,是在掩盖风险,不是测试风险。
+- money/billing/quota 表写入；
+- schema 迁移；
+- authentication/authorization core；
+- 跨功能集成；
+- 声明一个完整 slice 已完成或准备发布。
 
-### 优先写自证测试
+reviewer 必须逐项覆盖 acceptance ID，引用 spec 与测试 `file:line`，检查弱断言、假 fixture、缺失失败门和运维恢复。REJECT 时不得宣称完成。
 
-可行时,让测试在运行期自己证明判别性:在测试内同时跑「正确路径」和
-「损坏 / 基线路径」,断言两者结果不同。这样的测试在 fixture 哪天不再判别时
-会自己炸。(W3a 修好的 GW-02 测试是范式:它断言
-`class(带 body) != class(只看 status)`。)
-
-### Enforcement
-
-- codex per-commit review + 切片交叉评审**必须**把以下情况标为 finding:
-  任何 fixture 无法在它声称守的缺陷上变红的测试;任何用 `nil` 兜底 stub
-  掩盖被测风险的测试。
-- **spec 若规定一个测试,必须给出判别性的例子,而不只是测试意图。** 一条
-  写「证明 X 驱动 Y」却没给「去掉 X 就改变 Y」的 fixture 的 spec,是不完整的
-  spec —— 这正是 W3a 弱测试的根因(spec 例子用了非判别性的关键字)。
-
-## Reference-Project Comparison On Decisions (added 2026-05-23 Owner directive)
-
-Owner 2026-05-23 quote「需要我做决定的时候要带上借鉴项目功能模块得处理方法。写进规则」。镜像 `CLAUDE.md` #15 给 codex / reviewer lane。
-
-### 规则适用面
-
-- **Claude PM-orchestrator** surface 决策给 Owner(`AskUserQuestion` / plan §D / schema-gate / A/B/C 选项 / sequencing)时,必须每选项附 ≥1 个 `~/refs/<project>/<file>:<line>` 参考项目对照引证 + 1 句概括;若该参考项目无等价问题,需明指 cite("`<repo>@<sha>:<file>:<line>` shows X is single-tenant so concern doesn't apply") 不可空话。
-- **Codex 撰写 plan §D 时**:plan 文件本身就是 Owner 决策的输入,plan §D 表格必须按列含「参考项目对照」或专门 sub-section,引证同上。Claude 转写 surface 时 fill-in。
-- **Codex per-commit review + 切片交叉评审**:必须把以下情况标为 HIGH:
-  - Claude surface 决策给 Owner 时缺参考项目对照
-  - plan §D 表格无参考项目列(或显式 "no equivalent" 注脚)
-  - 引证形如 "sub2api/new-api 都 X" 无 `<repo>@<sha>:<file>:<line>` cite (违 #12 source-must-read + #15 双重违反)
-- **Gemini lane** 同 codex 写 plan 时遵守。
-
-### Why
-
-Owner 不能凭 Claude/Codex 内部 trade-off 拍板决策;参考项目横向对比 = Owner 视角必备。`AskUserQuestion` option 没 ref 对比 = Owner 视线封闭。
-
-### How
-
-- 每 `AskUserQuestion` option description 字段最后 1-2 句加"参考项目对照"
-- 每 synthesis plan §D 表加列 `参考项目对照`
-- 每 schema-gate proposal 加 prestudy §A 链接(prestudy 必含 4 ref 项目逐条 cite)
-
-### Anti-pattern
-
-- "A vs B" 只讲 HUAKAI 内部权衡,Owner 需问"sub2api 怎么做"
-- 写 ref 项目断言但无 file:line cite (违 #12 + #15 双违)
-- 把 "no equivalent" 写成空话不 cite
-
-### Codex reviewer enforcement
-
-`codex exec review --uncommitted` / 切片 cross-review 必须扫:
-- staged diff 内是否有 plan §D 表格无参考项目列
-- staged plan/synthesis 内是否有未 cite 的 ref-project behavior 断言
-- staged docs 决策点是否缺 prestudy 链接
-
-任一标 HIGH 阻 land。
-
-## sub2api + CLIProxyAPI + new-api Default Triple-Mirror (added 2026-05-29 Owner directive)
-
-Owner 2026-05-29 quotes「你做任何功能的时候都要看下 sub2 和 cliproxy 是如何做的」+「刚刚的问题是 这个支付功能你搞错了！他有两套，你以为只有一套! 下次你开始写功能的时候必须调研成熟的项目」+「再加一个 new-api」。镜像 `CLAUDE.md` #16 给 codex / reviewer / 所有 lane。
-
-### 触发的真实故障
-
-支付子系统首版只设计了**一条入账路径**(管理员手动),因为**开写前没调研成熟项目**;成熟架构实际有**两条**(自动支付回调/webhook + 管理员手动)。漏掉整条 feature 路径 = 架构错+不全。本规则强制**开写前的调研步**,与 #15(仅在决策 surface 触发)不同、比 citation 卫生更广:调研是为了**开写前摸清功能完整形态(每条 path/mode/state)**,不是事后补脚注。
-
-### 规则
-
-- **三面默认镜子,每个 feature 开写/计划前都查**:`~/refs/sub2api/`(account-hub / 支付 / billing / topup / 订阅 parity 最全源)+ `~/refs/CLIProxyAPI/`(relay account→API 头号源,`@21fad9db`)+ `~/refs/new-api/`(AI 网关 / channel / topup / 兑换码 / quota-log 最全源,one-api 血统)。读**三者各自怎么组织该 feature——数路径/模式,不只确认存在**。其它领域参考(routing 看 LiteLLM、portkey 等)叠加在三默认之上,不可替代。
-- **设计前先产出 shape inventory**:列出成熟项目对该 feature 暴露的全部 path/mode/state/actor(例:支付 = {自动 webhook 入账, 管理员手动入账, 退款, 幂等重放}),再决定 HUAKAI 当前建哪些 / 哪些进路线图(Feature Preservation Rule)。inventory 必须先存在,杜绝遗漏式缺失。
-- **每个 codex dispatch prompt + 每个 plan artifact 的 `REFERENCE PROJECTS IN SCOPE` 必须同时含 CLIProxyAPI + sub2api + new-api 三者**(+ 领域附加)。支付 P2a 的 codex dispatch 只写了「new-api / sub2api」漏了 CLIProxyAPI —— 这正是本规则要杀的 bug;缺任一默认镜子的 dispatch/plan 无效,必须重拟。
-- **no-equivalent 合法但必须先看**:镜子可能确实没这 feature(已核实:CLIProxyAPI 是纯 relay account→API 代理,**无 payment/order/billing/subscription 模块**——`payment|billing|webhook|recharge` 关键词命中全是 `antigravity_credits` vendor-quota + websocket relay,`~/refs/CLIProxyAPI/internal/` 无 payment 包)。仍要写显式 source-cite 的 "no equivalent" 注脚(per #15),不可静默跳过。
-- **sub2api 默认裁决 (Owner 2026-05-29「有功能模块选择做法的时候,默认按照 sub2api 做。他已经是成熟体了」)**:三镜调研后若做法分歧、工程岔路(数据模型/状态机/重置策略/幂等做法等)需选一个,**默认采 sub2api 同款**(最成熟),再叠 HUAKAI fusion-upgrade delta(非纯 parity)。减少逐 fork 问 Owner、提吞吐。Carve-out:fork 触 money/security/schema 高风险闸、或 sub2api 做法明显劣时仍 surface;Owner 显式选择优先于此默认。
-
-### Codex reviewer enforcement
-
-`codex exec review --uncommitted` / 切片 cross-review 必须把以下标为 HIGH 阻 land:
-- feature 实现/plan/dispatch 未在开写前调研**三面**默认镜子
-- `REFERENCE PROJECTS IN SCOPE` 缺 CLIProxyAPI / sub2api / new-api 三者任一
-- 某镜子无等价物却没写 source-cite 的 "no equivalent" 注脚
-- 复杂 feature 的 plan 缺 shape inventory(path/mode 清单)导致路径遗漏
-
-## Module Interplay & Runtime Logic Review (added 2026-07-02 Owner directive)
-
-Owner 2026-07-02 原话「看模块之间的作用与配合……不单单是这一块，而是我们整个项目的运行逻辑都要经得起推敲。一定要先看三家是怎么做的！再看看我们是怎么做的！」+「还要测试并发！这些都要测！」+「测试要重！模型用最便宜的就行」。镜像 `CLAUDE.md` #17,给 codex / reviewer / 所有 lane。
-
-### 与 #16 的区别
-
-#16 保证「功能完整形态(path/mode/state)不遗漏」;本条更进一层——看**模块之间的作用与配合(运行逻辑)**。功能各模块单独都在、单测都绿,但**模块交界处的协作**可能是断的。实证(2026-07-02 relay 细粒度 E2E):billing 结算 ↔ quota reconciler 配合断裂——reconciler job 卡 queued、reservation 不结算、并发槽只靠 lease 过期释放;而 RPM / 计费 / 停用等**每个单模块测都 PASS**。这类缺陷只有沿「模块协作链」测才抓得到。
-
-### 规则
-
-- **审查对象 = 模块间的数据/状态传递 + 失败协作**:一个请求/操作流过系统时,追每个颗粒度模块从上一环拿什么(identity / hold_id / account_id / attempt 上下文 / reservation)、产出什么、传给下一环什么;失败时(上游 4xx/5xx、流式中途断、余额不足、结算 DB 故障、换号)各模块怎么协作回滚补偿。
-- **范围 = 整个项目运行逻辑,不限 relay**:auth 采集流状态机、billing 预扣↔结算↔abort、quota↔选号↔并发槽释放、pool 选号↔渠道健康回流↔failover、credential 物化↔转发、media 任务生命周期、结算恢复 DLQ,均需经得起推敲。
-- **强制次序:先三镜后自己**。碰某子系统的配合逻辑前,先读 sub2api / new-api / CLIProxyAPI 同款子系统怎么串联模块、失败怎么协作(带 file:line),再对照 HUAKAI,确认不漏钱/冻钱/重复扣/状态不一致/换号失败/槽不释放。
-- **测试要「重」+ 必测并发,不因额度缩水**:配合处测试构造跨模块真实触发,判别断言咬住「配合错的后果」;**并发**(per-key cap / 账号槽 / 用户级)并发打满真实触发排队/拒绝/槽释放,必测。上游额度有限只允许**选最便宜模型 + 压小 max_tokens**,不允许减少测试场景或跳过失败协作。
-- **产出**:`docs/architecture/runtime-logic/<子系统>.md`,记模块协作图 + 关键配合点 + 三镜对照 + 已知配合缺口。
-
-### Codex reviewer enforcement
-
-`codex exec review --uncommitted` / 切片 cross-review 必须把以下标为 HIGH 阻 land:
-- 触及跨模块配合(billing/quota/pool/failover/采集流状态机等)却未先对照三镜运行逻辑
-- 测试只覆盖单模块、未测配合处(模块交界的数据/状态传递 + 失败协作)
-- 涉及并发的路径未做并发触发测试
-- 以「省额度」为由缩水本应充分的功能测试
-
-## Parallel-Edit Coordination (added 2026-05-30 Owner directive)
-
-Owner runs **multiple AIs (Claude / Codex / Gemini) and multiple threads in parallel** on the same working tree. They edit the same files concurrently → silent overwrites. Every agent MUST broadcast what it is editing, which core feature, and why — and check before touching a shared file.
-
-**Mechanism**: `.coordination/` (canonical spec in `.coordination/README.md`). Per-agent lock files `locks/<agent>.json` (each agent writes ONLY its own → the coordination state itself never collides). `activity.log` is an append-only intent broadcast.
-
-**Protocol — before editing ANY shared repo file:**
-1. `bash .coordination/check.sh [<file>]` — see who's editing what (stale locks past `ttl_seconds` ignored).
-2. If a live lock by **another** agent lists your target file → **do NOT edit it** (no overwrite); pick other work / wait for its `done` / coordinate with Owner.
-3. `bash .coordination/claim.sh "<agent>" "<file1,file2>" "<core_feature>" "<purpose>"` — refuses (exit 2) on conflict, else writes your lock + logs intent.
-4. Re-run `claim.sh` periodically to refresh the heartbeat during long edits.
-5. `bash .coordination/release.sh "<agent>"` when done.
-
-Scripts are convenience; hand-writing `locks/<agent>.json` per the README schema is equally valid. This is a **broadcast convention**, not an OS lock — adoption by every AI is mandatory. Codex per-commit / slice review SHOULD flag a diff that edited a file held by another live lock without coordination.
+完整 reviewer 的 coverage matrix 必须让每个 `AT-*` 进入 `COVERED / COVERED-WEAK / SKIPPED（说明合法性）/ MISSING` 之一。以下 smell 即使测试绿也必须报告：
+
+- 只断言 `!= bad`，从不断言 `== good`；
+- 字段为零就 `t.Skip`，把覆盖洞伪装成防御；
+- 注释称 100 并发而代码只跑很小的 N；
+- winner/loser fixture 共享本应区分它们的特征；
+- stub 没有复现生产 SQL 的 `WHERE`、锁或事务条件；
+- 所有 gate 都用 `AllowAll`，从未触发 gate failure；
+- 只测函数返回，不验证余额、hold、quota、审计、DLQ 或 operator 状态。
+
+完整 reviewer 的 HIGH 阻当前 slice，MED 必须在下一 slice 前处理，LOW 才可进入 backlog；映射到 S0/S1/S2/S3 时仍以本文件的资金、安全、功能和测试质量定义为准。
+
+## 12. Skill 调用顺序
+
+`.agents/skills/` 是唯一 canonical；`.claude/skills/` 只是机械镜像，不直接编辑。按任务阶段调用：
+
+| 阶段 | Skill | 作用 |
+| --- | --- | --- |
+| 全程编排 | `pm-orchestrator` | 维护当前唯一计划、能力处置和发布状态 |
+| 候选筛选 | `dependency-license-auditor` | 先验许可证、依赖与可复用边界 |
+| 证据前置 | `reference-project-miner` | 选中转站/领域头部项目并读源码形成行为合同 |
+| 场景补强 | `issue-scenario-extractor` | 把真实 issue 转为失败与恢复场景 |
+| Clean-room 门 | `clean-room-license-guard` | 检查行为合同和补丁没有实现污染 |
+| 能力合并 | `feature-parity-auditor` -> `feature-merger` | 防漏功能并证明合并等价 |
+| 设计风控 | `api-gateway-risk-review` + `production-scenario-review` | 查完整链、失败、滥用、恢复和运维 |
+| 前端运维 | `frontend-ops-ui-review` | 仅在设计/审查运营 UI 时触发 |
+| 验收设计 | `acceptance-test-writer` | 把合同与场景写成正常/失败/恢复测试 |
+| 发布收口 | `release-readiness-gate` | 判定是否可发布，不以文档状态代替测试事实 |
+
+Skill 不得复制本文件的大段规则；只保留本领域触发条件、输入、步骤、输出和阻断项。
+
+权威规划、合同、风险和 release gate 放 `docs/`；复杂可复用流程放 `.agents/skills/`；不要把业务实现写进规则或 Skill。
+
+## 13. 工作区、PR 与协调
+
+- 默认沿用当前工作树与分支；未经 Owner 要求不新建 worktree/branch。
+- 当前目标只开一个 PR；所有后续提交继续推到该 PR。
+- 不自动合并主线，不替 Owner 做最终 merge 决策。
+- 提交前检查 dirty tree，明确哪些是当前改动、哪些是用户或其他目标改动；不回滚他人内容。
+- Owner 当前关闭并行双计划。若未来明确恢复多 agent 并行，才启用 `.coordination/check.sh`、`claim.sh`、`release.sh`；未恢复时不为单 agent 制造协调文档噪音。
+
+## 14. 完成定义与 Owner 汇报
+
+“完成”必须同时满足：
+
+- 真实入口、DI、核心逻辑、存储、worker、状态回流和运维入口已接通；
+- 正常、失败、并发、幂等、崩溃/恢复有判别性证据；
+- 关联模块没有遗留同根旁路；
+- clean-room 和依赖许可证门通过；
+- required build/test/review 通过；
+- 当前计划、规则和代码注释只保留最新合同；
+- PR 已推送但未擅自合并。
+
+最终中文汇报固定说明：
+
+1. 做了什么；
+2. 改了哪些文件；
+3. 为什么这样做；
+4. 全链路和关联模块如何收敛；
+5. 测了什么、哪些未能实测；
+6. 有没有功能缩水；
+7. clean-room、许可证和安全风险；
+8. 仍需 Owner 决策或批准的事项；
+9. 下一步建议。

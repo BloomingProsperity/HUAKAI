@@ -21,7 +21,7 @@
 - HUAKAI comparison files:
   - `docs/03_FEATURE_PARITY_MATRIX.md`
   - `docs/17_FEATURE_LEVEL_MATRIX.md`
-  - `docs/PROJECT_MASTER_PLAN.md`
+  - 旧项目总纲（已删除，原始版本从 Git 历史追溯）
   - `docs/02_HUAKAI_FUSION_ARCHITECTURE.md`
 
 ## Source-confirmed features

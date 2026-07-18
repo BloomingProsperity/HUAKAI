@@ -150,7 +150,7 @@ risk changes implementation method rather than scope.
 | Path | Purpose |
 | --- | --- |
 | [backend/](backend/) | Go backend core: gateway HTTP entrypoint, inbound auth, model registry, router engine, resource pool, protocol translation, streaming forwarder, billing/observability ledger, SQL migrations, and tests. |
-| [frontend/](frontend/) | Frontend workspace. A build scaffold exists, but the operations console UI is not yet implemented; self-hosting today is API-only (bootstrap admin token + admin API). |
+| `frontend/` | No current frontend workspace is authoritative; the operations console will be rebuilt from page specifications and live API contracts. Self-hosting today is API-only. |
 | [docs/deploy/](docs/deploy/) | Production deploy + first-boot bootstrap guide (`docker-compose.prod.yml`, env example, startup gates). |
 | [tools/](tools/) | Operator tools (e.g. `fingerprint-collector` for transport-mimicry preparation). Each tool ships its own README with use-boundary rules. |
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | Per-agent operating charters. |
@@ -208,12 +208,13 @@ Known limitations:
 ## Where to start
 
 1. Read [docs/01_PROJECT_BRIEF.md](docs/01_PROJECT_BRIEF.md) for product scope.
-2. Read [docs/00_PM_OPERATING_SYSTEM.md](docs/00_PM_OPERATING_SYSTEM.md) for the operating loop.
-3. Read [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) before touching anything driven by external references.
-4. Read [docs/16_PHASED_DELIVERY_PLAN.md](docs/16_PHASED_DELIVERY_PLAN.md) to understand phasing.
-5. For backend core work, read [docs/specs/_invariants/cross-module-boundaries.md](docs/specs/_invariants/cross-module-boundaries.md) before editing `backend/internal/{auth,registry,router,pool,gateway,gatewayhttp,billing,obs,proto}`.
-6. For the current request path, start with [backend/cmd/gateway/main.go](backend/cmd/gateway/main.go) and [backend/internal/gatewayhttp/chat_completions_handler.go](backend/internal/gatewayhttp/chat_completions_handler.go).
-7. For UI work, read [docs/14_UI_CONTRACTS.md](docs/14_UI_CONTRACTS.md) and [docs/08_REAL_WORLD_SCENARIOS.md](docs/08_REAL_WORLD_SCENARIOS.md).
+2. Read [AGENTS.md](AGENTS.md) and [docs/RULES.md](docs/RULES.md) for the current operating rules.
+3. Read the one current execution plan for the assigned goal.
+4. Read [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) before touching anything driven by external references.
+5. Read [docs/16_PHASED_DELIVERY_PLAN.md](docs/16_PHASED_DELIVERY_PLAN.md) to understand phasing.
+6. For backend core work, read [docs/specs/_invariants/cross-module-boundaries.md](docs/specs/_invariants/cross-module-boundaries.md) before editing `backend/internal/{auth,registry,router,pool,gateway,gatewayhttp,billing,obs,proto}`.
+7. For the current request path, start with [backend/cmd/gateway/main.go](backend/cmd/gateway/main.go) and [backend/internal/gatewayhttp/chat_completions_handler.go](backend/internal/gatewayhttp/chat_completions_handler.go).
+8. For UI work, read [docs/14_UI_CONTRACTS.md](docs/14_UI_CONTRACTS.md) and [docs/08_REAL_WORLD_SCENARIOS.md](docs/08_REAL_WORLD_SCENARIOS.md).
 
 ## Verification
 
@@ -232,16 +233,15 @@ PostgreSQL database.
 
 Reference projects are evidence sources only, never source-code providers. Their
 license types determine clean-room handling. Verified license status is tracked in
-[docs/06_REFERENCE_PROJECTS.md](docs/06_REFERENCE_PROJECTS.md).
+[docs/24_REFERENCE_TRACKING_POLICY.md](docs/24_REFERENCE_TRACKING_POLICY.md).
 
-## How agents discuss decisions
+## How decisions are made
 
-Routine work follows the Standard Flow defined in [docs/12_AGENT_WORKFLOW.md](docs/12_AGENT_WORKFLOW.md).
-When a decision needs multiple independent views before the Owner picks, agents
-use the Round-Table mode defined in [docs/21_DECISION_PROCESS.md](docs/21_DECISION_PROCESS.md).
-
-Round-Table decisions live under [docs/process/decisions/](docs/process/decisions/). Each agent writes
-only its own section; the Owner writes the final decision in the same file.
+The currently assigned executor owns the work unit end to end. Decisions are based on
+HUAKAI source, official contracts, domain-appropriate source evidence, whole-chain impact,
+and operational recovery. An independent reviewer is a quality gate, not a second planner.
+Only the decision conditions in [docs/RULES.md](docs/RULES.md) require the Owner to stop and pick.
+Historic Decision Records remain under [docs/process/decisions/](docs/process/decisions/).
 
 ## License
 
@@ -249,8 +249,8 @@ only its own section; the Owner writes the final decision in the same file.
 [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md) for what is allowed and
 forbidden when learning from external projects.
 
-Third-party libraries (utls, gopacket, etc.) used by HUAKAI are subject to their own
-licenses. See [docs/licenses/](docs/licenses/) when present.
+Third-party libraries used by HUAKAI are subject to their own licenses and must pass the
+dependency license gate before release.
 
 ## Legal
 
@@ -261,8 +261,7 @@ contact, and data handling rules.
 
 Implementation is active. All changes remain owner-directed and must follow the
 clean-room policy, plan-before-execute discipline, cross-review protocol, and
-cross-module boundary invariants. See [CONTRIBUTING.md](CONTRIBUTING.md) (TBD) for
-contributor terms.
+cross-module boundary invariants. Contributor terms have not yet been published.
 
 ## No warranty
 

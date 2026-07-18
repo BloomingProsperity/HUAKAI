@@ -289,7 +289,7 @@ When Owner confirms direction:
 - Add capability rows for: TLS fingerprint, upstream proxy, 2FA, custom attributes, threshold notify, promo code, affiliate, subscription, refund, announcement, backup, cleanup, error passthrough, privacy/data masking, body retention, request explorer
 - Promote "versioned pricing snapshot" from deferred to L2
 
-**Step 5** — `docs/PROJECT_MASTER_PLAN.md`:
+**Step 5** — 旧项目总纲（已删除，原始版本从 Git 历史追溯）：
 - Add "Phase 2 commercial-must-have L1 upgrades" section: F-AUTH-006 / F-IDEM-001 / F-OBS-005 / F-OPS-006 / F-OPS-007 / F-NET-002 / F-LOG-SAFE-001 / F-REQ-BODY-001
 
 **Step 6** — README "Reference Projects & Usage Acknowledgement":

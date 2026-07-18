@@ -124,7 +124,7 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 | 路径 | 用途 |
 | --- | --- |
 | [backend/](backend/) | Go 后端核心：网关 HTTP 入口、入站鉴权、模型注册表、路由引擎、资源池、协议转换、流式转发器、计费/可观测账本、SQL 迁移、测试 |
-| [frontend/](frontend/) | 前端工作区占位，运营控制台尚未实现 |
+| `frontend/` | 当前没有可信的前端工作区；运营控制台将按逐页规格与真实 API 合同重构，目前自托管只提供 API |
 | [tools/](tools/) | operator 工具（如 `fingerprint-collector`，传输层伪装的前置准备）。每个工具自带 README 写明使用边界 |
 | [CLAUDE.md](CLAUDE.md) / [GEMINI.md](GEMINI.md) / [AGENTS.md](AGENTS.md) | 各 agent 的运营章程 |
 | [docs/](docs/) | 治理、契约、parity 矩阵、风险登记、release gate、spec、plan 的权威源 |
@@ -163,12 +163,13 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 ## 从哪里开始
 
 1. 读 [docs/01_PROJECT_BRIEF.md](docs/01_PROJECT_BRIEF.md) 了解产品范围
-2. 读 [docs/00_PM_OPERATING_SYSTEM.md](docs/00_PM_OPERATING_SYSTEM.md) 了解运营循环
-3. 在动任何受外部参考驱动的代码前读 [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md)
-4. 读 [docs/16_PHASED_DELIVERY_PLAN.md](docs/16_PHASED_DELIVERY_PLAN.md) 了解阶段划分
-5. 后端核心工作前读 [docs/specs/_invariants/cross-module-boundaries.md](docs/specs/_invariants/cross-module-boundaries.md)
-6. 当前请求路径起点：[backend/cmd/gateway/main.go](backend/cmd/gateway/main.go) 与 [backend/internal/gatewayhttp/chat_completions_handler.go](backend/internal/gatewayhttp/chat_completions_handler.go)
-7. 前端工作前读 [docs/14_UI_CONTRACTS.md](docs/14_UI_CONTRACTS.md) 与 [docs/08_REAL_WORLD_SCENARIOS.md](docs/08_REAL_WORLD_SCENARIOS.md)
+2. 读 [AGENTS.md](AGENTS.md) 与 [docs/RULES.md](docs/RULES.md) 了解现行规则
+3. 读当前目标唯一执行计划
+4. 在动任何受外部参考驱动的代码前读 [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md)
+5. 读 [docs/16_PHASED_DELIVERY_PLAN.md](docs/16_PHASED_DELIVERY_PLAN.md) 了解阶段划分
+6. 后端核心工作前读 [docs/specs/_invariants/cross-module-boundaries.md](docs/specs/_invariants/cross-module-boundaries.md)
+7. 当前请求路径起点：[backend/cmd/gateway/main.go](backend/cmd/gateway/main.go) 与 [backend/internal/gatewayhttp/chat_completions_handler.go](backend/internal/gatewayhttp/chat_completions_handler.go)
+8. 前端工作前读 [docs/14_UI_CONTRACTS.md](docs/14_UI_CONTRACTS.md) 与 [docs/08_REAL_WORLD_SCENARIOS.md](docs/08_REAL_WORLD_SCENARIOS.md)
 
 ## 验证
 
@@ -185,13 +186,11 @@ go test -tags smoke ./cmd/gateway
 ## 参考项目
 
 参考项目仅作行为证据来源，不作源代码提供方。许可证类型决定 clean-room 处理方式。
-已核证许可证状态见 [docs/06_REFERENCE_PROJECTS.md](docs/06_REFERENCE_PROJECTS.md)。
+参考项目分层与许可证复核要求见 [docs/24_REFERENCE_TRACKING_POLICY.md](docs/24_REFERENCE_TRACKING_POLICY.md)。
 
-## Agent 如何讨论决策
+## 如何做决策
 
-常规工作走 [docs/12_AGENT_WORKFLOW.md](docs/12_AGENT_WORKFLOW.md) 的 Standard Flow。
-需要多视角独立意见后再由 Owner 拍板的决策走 [docs/21_DECISION_PROCESS.md](docs/21_DECISION_PROCESS.md)
-的 Round-Table 模式。Round-Table 决策落在 [docs/process/decisions/](docs/process/decisions/)。
+当前被 Owner 指派的执行者负责一个工作单元的调研、实现、测试和收口。决策必须建立在 HUAKAI 真码、官方合同、匹配领域的源码证据、完整链路影响和运维恢复上；独立 reviewer 是质量门，不是第二套计划。只有 [docs/RULES.md](docs/RULES.md) 规定的决策停门才需要 Owner 拍板。历史 Decision Record 保留在 [docs/process/decisions/](docs/process/decisions/) 中。
 
 ## License
 
@@ -206,8 +205,8 @@ HUAKAI 使用的第三方库（utls / gopacket 等）按各自许可证。
 
 ## 贡献
 
-实施进行中。所有改动须 owner-directed，遵守 clean-room 政策、plan-before-execute
-纪律、交叉评审协议与跨模块边界不变量。详见 [CONTRIBUTING.md](CONTRIBUTING.md)（待补）。
+实施进行中。所有改动须由 Owner 指派，遵守 clean-room、唯一计划、独立 review
+与跨模块边界不变量。贡献者条款尚未发布。
 
 ## 不附担保
 

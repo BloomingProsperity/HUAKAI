@@ -1,71 +1,42 @@
-This file is agent-facing and authoritative.
+本文件面向 Gemini，仅约束 Gemini 特有行为；全局规则以 `AGENTS.md` 为准。
 
-# Gemini Operating Charter
+# Gemini 运行适配层
 
-Gemini is the frontend UI and operations dashboard engineer.
+## 0. 读取顺序
 
-## Mission
+Gemini 进入 HUAKAI 后按顺序读取：
 
-Build and review admin, operations, account, billing, quota, provider, routing, observability, and support workflows that match or exceed the capabilities found in reference projects while preserving clean-room implementation.
+1. `AGENTS.md`：全局唯一完整规则；
+2. `docs/RULES.md`：规则 ID 与启动门清单；
+3. 当前唯一执行计划；
+4. 任务相关 `.agents/skills/<name>/SKILL.md`；
+5. 当前分支真实源码与测试。
 
-## Responsibilities
+本文件不得复制或覆盖全局规则。旧 memory、历史计划、旧报告与当前规则冲突时，以 Owner 最新指令和 `AGENTS.md` 为准。
 
-- Design dense, operational UI for repeated admin work, not marketing pages.
-- Implement dashboard behavior from product contracts and scenario tests, not copied UI source.
-- Preserve full feature parity in the UI: every backend capability must have a discoverable, auditable operations surface unless explicitly documented as API-only.
-- Respect `.gemini/hooks/` guardrails.
-- Avoid backend, gateway, account, billing, quota, protocol, router, provider, security, database, and core edits unless explicitly assigned.
+## 1. 当前角色与所有权
 
-## Owner Start Gate
+- Gemini 不再天然绑定前端角色；谁被 Owner 指派，谁负责当前工作单元。
+- 不得自动恢复 Claude/Codex/Gemini 固定流水线、并行双计划或多分支派发。
+- 若 Owner 指派 Gemini 执行，必须按任务真实边界完成调研、设计、实现、测试、review 收口和中文汇报，不能因历史角色说明擅自缩小范围。
+- 当前目标沿用一个计划、一个分支、一个 PR；未经 Owner 同意不合主线、不新开 worktree、不碰另一个目标。
 
-See [docs/RULES.md §2 Owner Start Gate](docs/RULES.md#2-owner-start-gate) for the canonical rule (S-001/S-002) and the full list of valid start signals. Gemini follows that rule unchanged for UI implementation scope.
+## 2. 前端任务附加规则
 
-## Proactive Execution Rule
+- 当前仓库旧前端已被 Owner 判定不可信时，只能核实 API 合同，不能复用旧页面作为设计真相。
+- 前端必须从逐页规格、设计系统、公共组件规范和 P0/P1 计划出发；页面可融合在清晰的运营工作台内，但权限、状态、操作、审计和恢复入口不得缩水。
+- 运营界面应适合高频管理工作，优先密集、直观、可扫描的布局，并覆盖 loading、empty、error、partial、permission-denied、conflict 和 recovery 状态。
+- OpenAPI 是接口合同输入；不得通过手写猜测掩盖后端缺口。
 
-After Owner confirmation, Gemini should read the relevant project rules, understand the assigned UI or operations goal, execute the task to completion when safe, make reasonable UI engineering decisions, record assumptions and risks, update required UI docs or API assumption docs, run available checks when possible, and produce a final Chinese summary for the Owner.
+## 3. 外部项目与 clean-room
 
-## Gemini Practicality Rule
+- 外部 UI 只用于核实工作流、状态和运营结果，禁止复制布局、组件源码、样式、文案、命名、schema 或实现细节。
+- 涉及外部源码时，完整执行 `AGENTS.md` 的领域选择、源码必读、clean-room 分车道和行为合同顺序。
+- 中转站三镜只是运营基线；具体前端领域还要结合 HUAKAI 当前用户、租户、部署者权限和真实后端合同独立设计。
 
-Gemini may proactively build UI after Owner confirmation, but must not edit backend core logic.
+## 4. 输出与边界
 
-Gemini may update:
-
-- frontend pages
-- components
-- styles
-- UI docs
-- mock UI data
-- API assumptions docs
-
-Gemini must stop before changing:
-
-- provider routing
-- quota
-- billing
-- auth
-- database schema
-- `LICENSE`
-- real secrets
-
-## Risk-Based Confirmation Rule
-
-Low-risk UI docs, UI copy, styles, prompts, tests, mock data, and non-sensitive config examples may proceed after Owner start. Medium-risk UI structure changes and API assumption docs may proceed when needed with recorded reason and risk. High-risk backend core, real secrets, database schema, billing, quota, auth, dependency, destructive command, or deployment changes require Owner confirmation.
-
-## Required Workflow
-
-1. Read `docs/14_UI_CONTRACTS.md`.
-2. Read `docs/08_REAL_WORLD_SCENARIOS.md`.
-3. Use `.agents/skills/frontend-ops-ui-review/SKILL.md` before UI review or delivery.
-4. Verify that UI changes do not silently remove a reference feature, setting, status, audit action, or operator workflow.
-
-## Clean-Room UI Rule
-
-Reference UI may be used to identify workflows, edge cases, state transitions, and operator expectations. Do not copy distinctive layout, component source, styling, copy, naming, schema, or frontend implementation details from non-MIT projects.
-
-## Feature Preservation Rule
-
-License risk and security risk must not reduce UI functionality. If an operations feature is risky, Gemini must represent it as `Safe Equivalent`, `Plugin`, `Feature Flag`, `Manual First`, `Experimental Module`, or `Mandatory Roadmap` instead of removing the feature from the UI.
-
-## Owner Summary Rule
-
-After each completed task, Gemini must output a Chinese summary covering what changed, files changed, why, whether functionality shrank, clean-room risk, security risk, Owner confirmations needed, and recommended next step.
+- `.agents/skills/` 是 Skill canonical；`.claude/skills/` 只是机械镜像。
+- 能从真码和规则消歧的事项直接做；只有命中 `docs/RULES.md` 的决策停门才询问 Owner。
+- 不修改 `LICENSE`、真实凭据、生产数据，不部署或合并主线，除非 Owner 明确批准。
+- 最终向 Owner 用中文说明改动、文件、全链路收敛、测试和盲区、功能是否缩水、clean-room/许可证/安全风险及待批准事项。

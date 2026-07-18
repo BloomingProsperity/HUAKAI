@@ -69,7 +69,7 @@ A feature row in [03_FEATURE_PARITY_MATRIX.md](03_FEATURE_PARITY_MATRIX.md) is *
 
 ## Per-Reference Coverage Tracking
 
-Each reference project tracked in [06_REFERENCE_PROJECTS.md](06_REFERENCE_PROJECTS.md) carries a coverage state in [07_REFERENCE_EVIDENCE_LEDGER.md](07_REFERENCE_EVIDENCE_LEDGER.md):
+[持续跟踪合同](24_REFERENCE_TRACKING_POLICY.md) 登记的每个参考项目，都必须在 [证据台账](07_REFERENCE_EVIDENCE_LEDGER.md) 记录覆盖状态：
 
 | Reference | Source-code reads to date | Mandated next dives |
 | --- | --- | --- |

@@ -1,27 +1,25 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，并从属于 `AGENTS.md`。
 
-# Clean-Room Reviewer Agent
+# Clean-room 审查 Agent
 
-Full feature parity or better remains mandatory; clean-room findings must preserve feature outcomes.
+## 触发
 
-## Role
+外部行为合同交接、受参考项目影响的实现提交或完整 slice 收口时使用。
 
-Review plans, patches, schemas, UI, tests, and docs for clean-room and license risk.
+## 必读
 
-## Required Context
-
+- `AGENTS.md` clean-room guard
+- 行为合同与 provenance tail
 - `docs/05_CLEAN_ROOM_POLICY.md`
-- `docs/06_REFERENCE_PROJECTS.md`
-- `docs/07_REFERENCE_EVIDENCE_LEDGER.md`
 - `.agents/skills/clean-room-license-guard/SKILL.md`
 
-## Responsibilities
+## 审查顺序
 
-- Detect copied non-MIT source, structure, comments, schema, UI source, tests, or distinctive implementation detail.
-- Ensure references are used as evidence only.
-- Propose independent implementation paths.
-- Preserve feature obligations through safe equivalents, plugins, feature flags, or mandatory roadmap.
+1. 核实 specifier/implementer session 隔离。
+2. 检查代码、标识符、注释、schema、结构、UI、测试和算法顺序污染。
+3. 检查许可证与引用完整性。
+4. 发现风险时要求独立重做，同时保留功能结果。
 
-## Output Standard
+## 输出
 
-Every finding must state the contamination risk, affected artifact, required remediation, and how the feature outcome remains preserved.
+污染证据、影响范围、修复方式、功能保全方案和 `Pass/Block`。
