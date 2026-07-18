@@ -7,60 +7,46 @@ import (
 	"errors"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestSidecarClientDialTLSWritesLittleEndianControlAndReturnsPlaintextConn(t *testing.T) {
+const sidecarTestSocket = "/run/huakai/tls-sidecar.sock"
+
+func TestSidecarClientDialTLSWritesVersionedControlAndReturnsPlaintextConn(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	oldDial := sidecarDialContext
-	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return clientConn, nil
-	}
-	defer func() { sidecarDialContext = oldDial }()
+	restoreSidecarDial(t, &shortWriteConn{Conn: clientConn, max: 3})
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		conn := serverConn
-		var prefix [4]byte
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-			t.Errorf("read prefix: %v", err)
-			return
-		}
-		n := binary.LittleEndian.Uint32(prefix[:])
-		if n == binary.BigEndian.Uint32(prefix[:]) {
-			t.Errorf("fixture must distinguish little endian from big endian")
-			return
-		}
-		body := make([]byte, n)
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		var req sidecarControlRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decode request: %v", err)
+		req := readSidecarTestRequest(t, serverConn)
+		if req.Version != SidecarProtocolVersion || req.Operation != sidecarOperationConnect {
+			t.Errorf("协议头 = version:%d operation:%q", req.Version, req.Operation)
 			return
 		}
 		if req.TargetHost != "api.anthropic.com" || req.Port != 443 || req.ProfileID != SidecarProfileAnthropicCLIMimicryV1 {
-			t.Errorf("control request = %+v", req)
+			t.Errorf("控制请求 = %+v", req)
 			return
 		}
-		// forceH1=false 时控制帧不得携带 force_h1(omitempty),保持旧线缆字节。
+		if req.InlineProfile != nil {
+			t.Errorf("内置 profile 请求不应携带 inline_profile: %+v", req.InlineProfile)
+			return
+		}
 		if req.ForceH1 != nil {
-			t.Errorf("forceH1=false 时 ForceH1 应为 nil(键被省略),got %v", *req.ForceH1)
+			t.Errorf("默认请求不应携带 force_h1: %v", *req.ForceH1)
 			return
 		}
-		writeSidecarTestFrame(t, conn, []byte(`{"ok":true}`))
-		if _, err := conn.Write([]byte("plaintext")); err != nil {
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{Version: SidecarProtocolVersion, OK: true})
+		if _, err := serverConn.Write([]byte("plaintext")); err != nil {
 			t.Errorf("write plaintext: %v", err)
 		}
 	}()
 
-	client := NewSidecarClient("/tmp/tls-sidecar.sock")
-	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
+	client := NewSidecarClient(sidecarTestSocket)
+	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -75,6 +61,30 @@ func TestSidecarClientDialTLSWritesLittleEndianControlAndReturnsPlaintextConn(t 
 	<-serverDone
 }
 
+func TestSidecarClientForceH1CrossesTheVersionedWire(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		req := readSidecarTestRequest(t, serverConn)
+		if req.ForceH1 == nil || !*req.ForceH1 {
+			t.Errorf("显式 ForceH1 必须进入控制帧，request=%+v", req)
+			return
+		}
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{Version: SidecarProtocolVersion, OK: true})
+	}()
+
+	client := NewSidecarClient(sidecarTestSocket)
+	conn, err := client.dialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, nil, true, nil)
+	if err != nil {
+		t.Fatalf("dialTLS: %v", err)
+	}
+	conn.Close()
+	<-serverDone
+}
+
 func TestSidecarClientDialTLSBadSocketFailsClosedWithoutTargetFallback(t *testing.T) {
 	dialCalls := make([]string, 0, 1)
 	oldDial := sidecarDialContext
@@ -82,242 +92,357 @@ func TestSidecarClientDialTLSBadSocketFailsClosedWithoutTargetFallback(t *testin
 		dialCalls = append(dialCalls, network+" "+address)
 		return nil, errors.New("missing sidecar socket")
 	}
-	defer func() { sidecarDialContext = oldDial }()
-	client := NewSidecarClient("/tmp/missing-sidecar.sock")
+	t.Cleanup(func() { sidecarDialContext = oldDial })
+	client := NewSidecarClient("/run/huakai/missing-sidecar.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	conn, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
+	conn, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
 
 	if err == nil {
 		conn.Close()
-		t.Fatal("DialTLS with missing socket returned nil error; must fail closed")
+		t.Fatal("sidecar socket 缺失时必须 fail-closed")
 	}
 	if !strings.Contains(err.Error(), "sidecar") {
-		t.Fatalf("error should identify sidecar failure, got %v", err)
+		t.Fatalf("错误应标识 sidecar 失败，实际 %v", err)
 	}
-	if len(dialCalls) != 1 || dialCalls[0] != "unix /tmp/missing-sidecar.sock" {
-		t.Fatalf("bad sidecar socket should only dial sidecar once, got calls %v", dialCalls)
+	if !reflect.DeepEqual(dialCalls, []string{"unix /run/huakai/missing-sidecar.sock"}) {
+		t.Fatalf("不得回退拨目标，拨号记录=%v", dialCalls)
 	}
 }
 
 func TestSidecarClientDialTLSNoAckTimesOutFailClosed(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	oldDial := sidecarDialContext
-	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return clientConn, nil
-	}
-	defer func() { sidecarDialContext = oldDial }()
+	restoreSidecarDial(t, clientConn)
 	requestRead := make(chan struct{})
 	releaseServer := make(chan struct{})
 	go func() {
-		defer close(requestRead)
-		conn := serverConn
-		var prefix [4]byte
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-			t.Errorf("read prefix: %v", err)
-			return
-		}
-		body := make([]byte, binary.LittleEndian.Uint32(prefix[:]))
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
+		_ = readSidecarTestRequest(t, serverConn)
+		close(requestRead)
 		<-releaseServer
 	}()
-	client := NewSidecarClient("/tmp/no-ack-sidecar.sock")
+	client := NewSidecarClient(sidecarTestSocket)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	conn, err := client.DialTLS(ctx, "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
+	conn, err := client.DialTLS(ctx, "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
 
 	close(releaseServer)
 	if err == nil {
 		conn.Close()
-		t.Fatal("DialTLS with nonresponsive sidecar returned nil error; must fail closed")
+		t.Fatal("sidecar 不响应时必须 fail-closed")
 	}
 	<-requestRead
 	if !strings.Contains(err.Error(), "read ack frame") {
-		t.Fatalf("error should identify missing sidecar ack, got %v", err)
+		t.Fatalf("错误应定位 ACK 阶段，实际 %v", err)
 	}
 }
 
-func TestProbeSidecarForModeClassifiesUnknownProfileAck(t *testing.T) {
+func TestSidecarClientDialTLSCancellationWithoutDeadlineInterruptsAckWait(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	oldDial := sidecarDialContext
-	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return clientConn, nil
-	}
-	defer func() { sidecarDialContext = oldDial }()
-	serverDone := make(chan struct{})
+	restoreSidecarDial(t, clientConn)
+	requestRead := make(chan struct{})
 	go func() {
-		defer close(serverDone)
-		conn := serverConn
-		var prefix [4]byte
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-			t.Errorf("read prefix: %v", err)
+		_ = readSidecarTestRequest(t, serverConn)
+		close(requestRead)
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewSidecarClient(sidecarTestSocket).DialTLS(
+			ctx,
+			"api.anthropic.com",
+			443,
+			SidecarProfileAnthropicCLIMimicryV1,
+			nil,
+			nil,
+		)
+		result <- err
+	}()
+	<-requestRead
+
+	cancel()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消必须返回 context.Canceled，实际 %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("无 deadline 的取消必须立即打断 ACK 等待")
+	}
+}
+
+func TestSidecarInspectUsesReadyAndReturnsCapabilities(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		req := readSidecarTestRequest(t, serverConn)
+		if req.Version != SidecarProtocolVersion || req.Operation != sidecarOperationReady {
+			t.Errorf("ready 请求 = %+v", req)
 			return
 		}
-		body := make([]byte, binary.LittleEndian.Uint32(prefix[:]))
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
+		if req.TargetHost != "" || req.Port != 0 || req.ProfileID != "" || req.InlineProfile != nil {
+			t.Errorf("ready 不应伪造上游请求: %+v", req)
 			return
 		}
-		var req sidecarControlRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decode request: %v", err)
-			return
-		}
-		if req.ProfileID != SidecarProfileAnthropicCLIMimicryV1 || req.TargetHost != sidecarProbeProfileID || req.Port != 1 {
-			t.Errorf("probe request = %+v", req)
-			return
-		}
-		writeSidecarTestFrame(t, conn, []byte(`{"ok":false,"error":"unknown profile"}`))
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version:      SidecarProtocolVersion,
+			OK:           true,
+			Capabilities: []string{SidecarCapabilityBuiltinProfile, SidecarCapabilityInlineProfile},
+			ProfileIDs:   []string{SidecarProfileAnthropicCLIMimicryV1},
+		})
 	}()
 
-	err := ProbeSidecarForMode(context.Background(), "/tmp/probe-sidecar.sock", ModeMimicryClaudeCode)
+	status, err := NewSidecarClient(sidecarTestSocket).Inspect(context.Background())
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if status.Version != SidecarProtocolVersion || !containsString(status.Capabilities, SidecarCapabilityInlineProfile) {
+		t.Fatalf("status = %+v", status)
+	}
+	if !reflect.DeepEqual(status.ProfileIDs, []string{SidecarProfileAnthropicCLIMimicryV1}) {
+		t.Fatalf("profile_ids = %v", status.ProfileIDs)
+	}
+}
+
+func TestProbeSidecarForModeRejectsMissingProfileFromReady(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version:      SidecarProtocolVersion,
+			OK:           true,
+			Capabilities: []string{SidecarCapabilityBuiltinProfile},
+			ProfileIDs:   []string{SidecarProfileGeminiCLIV1},
+		})
+	}()
+
+	err := ProbeSidecarForMode(context.Background(), sidecarTestSocket, ModeMimicryClaudeCode)
 
 	if !errors.Is(err, ErrSidecarProfileUnavailable) {
-		t.Fatalf("profile error ACK must be classified as profile unavailable, got %v", err)
+		t.Fatalf("缺少 profile 必须归类为 profile unavailable，实际 %v", err)
 	}
-	<-serverDone
 }
 
-func TestProbeSidecarForModeAcceptsNonProfileErrorAck(t *testing.T) {
+func TestProbeSidecarForModeRejectsMissingForceH1Capability(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	oldDial := sidecarDialContext
-	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return clientConn, nil
-	}
-	defer func() { sidecarDialContext = oldDial }()
-	serverDone := make(chan struct{})
+	restoreSidecarDial(t, clientConn)
 	go func() {
-		defer close(serverDone)
-		conn := serverConn
-		var prefix [4]byte
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-			t.Errorf("read prefix: %v", err)
-			return
-		}
-		body := make([]byte, binary.LittleEndian.Uint32(prefix[:]))
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
-			return
-		}
-		var req sidecarControlRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decode request: %v", err)
-			return
-		}
-		if req.ProfileID != SidecarProfileAnthropicCLIMimicryV1 || req.TargetHost != sidecarProbeProfileID || req.Port != 1 {
-			t.Errorf("probe request = %+v", req)
-			return
-		}
-		writeSidecarTestFrame(t, conn, []byte(`{"ok":false,"error":"upstream tcp error: failed to lookup address information"}`))
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version:      SidecarProtocolVersion,
+			OK:           true,
+			Capabilities: []string{SidecarCapabilityBuiltinProfile},
+			ProfileIDs:   []string{SidecarProfileAnthropicCLIMimicryV1},
+		})
 	}()
 
-	err := ProbeSidecarForMode(context.Background(), "/tmp/probe-sidecar.sock", ModeMimicryClaudeCode)
+	err := ProbeSidecarForMode(context.Background(), sidecarTestSocket, ModeMimicryClaudeCode)
 
-	if err != nil {
-		t.Fatalf("non-profile error ACK proves sidecar liveness and profile lookup, got %v", err)
-	}
-	<-serverDone
-}
-
-// TestSidecarControlRequestForceH1JSONSerialization 守护 force_h1 的线缆兼容旋钮:
-//   - ForceH1=nil 时 JSON 不得含 force_h1 键(omitempty),否则改变发往老 Rust sidecar 的
-//     字节,破坏向后兼容。变异证伪:去掉 json tag 的 omitempty,nil 会输出 "force_h1":null,
-//     第一段断言转红。
-//   - ForceH1=非 nil 时必须出现 force_h1 键并带正确布尔值,否则 Go 端开启强制 H1 后 sidecar
-//     收不到意图,旋钮失效。
-func TestSidecarControlRequestForceH1JSONSerialization(t *testing.T) {
-	nilReq := sidecarControlRequest{
-		TargetHost: "api.anthropic.com",
-		Port:       443,
-		ProfileID:  SidecarProfileAnthropicCLIMimicryV1,
-		ForceH1:    forceH1Ptr(false),
-	}
-	nilJSON, err := json.Marshal(nilReq)
-	if err != nil {
-		t.Fatalf("marshal nil-forceH1 request: %v", err)
-	}
-	if strings.Contains(string(nilJSON), "force_h1") {
-		t.Fatalf("forceH1=false(nil 指针)时 JSON 不得含 force_h1 键,got %s", nilJSON)
-	}
-
-	trueReq := sidecarControlRequest{
-		TargetHost: "api.anthropic.com",
-		Port:       443,
-		ProfileID:  SidecarProfileAnthropicCLIMimicryV1,
-		ForceH1:    forceH1Ptr(true),
-	}
-	trueJSON, err := json.Marshal(trueReq)
-	if err != nil {
-		t.Fatalf("marshal true-forceH1 request: %v", err)
-	}
-	if !strings.Contains(string(trueJSON), `"force_h1":true`) {
-		t.Fatalf("forceH1=true 时 JSON 必须含 force_h1:true,got %s", trueJSON)
+	if !errors.Is(err, ErrSidecarUnavailable) || !strings.Contains(err.Error(), SidecarCapabilityForceH1) {
+		t.Fatalf("缺少 force_h1 capability 必须 fail-closed，实际 %v", err)
 	}
 }
 
-// TestSidecarRoundTripperForceH1ThreadsThroughDial 守护 forceH1 选项从 RoundTripper
-// 构造一路传到每次拨号的控制帧。变异证伪:把 DialTLSContext 里传给 DialTLS 的 rt.forceH1
-// 改成硬编码 false,则线缆控制帧不再带 force_h1,断言转红。
-func TestSidecarRoundTripperForceH1ThreadsThroughDial(t *testing.T) {
+func TestSidecarInspectRejectsWrongAckVersion(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
-	oldDial := sidecarDialContext
-	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return clientConn, nil
-	}
-	defer func() { sidecarDialContext = oldDial }()
-
-	gotForceH1 := make(chan *bool, 1)
+	restoreSidecarDial(t, clientConn)
 	go func() {
-		conn := serverConn
-		var prefix [4]byte
-		if _, err := io.ReadFull(conn, prefix[:]); err != nil {
-			t.Errorf("read prefix: %v", err)
-			gotForceH1 <- nil
-			return
-		}
-		body := make([]byte, binary.LittleEndian.Uint32(prefix[:]))
-		if _, err := io.ReadFull(conn, body); err != nil {
-			t.Errorf("read body: %v", err)
-			gotForceH1 <- nil
-			return
-		}
-		var req sidecarControlRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			t.Errorf("decode request: %v", err)
-			gotForceH1 <- nil
-			return
-		}
-		gotForceH1 <- req.ForceH1
-		writeSidecarTestFrame(t, conn, []byte(`{"ok":true}`))
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{Version: SidecarProtocolVersion - 1, OK: true})
 	}()
 
-	rt := &sidecarRoundTripper{
-		client:    NewSidecarClient("/tmp/force-h1-thread.sock"),
-		profileID: SidecarProfileAnthropicCLIMimicryV1,
-		forceH1:   true,
+	_, err := NewSidecarClient(sidecarTestSocket).Inspect(context.Background())
+
+	if !errors.Is(err, ErrSidecarUnavailable) {
+		t.Fatalf("协议版本错必须归类为 sidecar unavailable，实际 %v", err)
 	}
-	conn, err := rt.DialTLSContext(context.Background(), "tcp", "api.anthropic.com:443")
+	var sidecarErr *SidecarError
+	if !errors.As(err, &sidecarErr) || sidecarErr.Code != SidecarErrorProtocolUnsupported {
+		t.Fatalf("错误未保留稳定协议码: %v", err)
+	}
+}
+
+func TestSidecarInspectRejectsUnknownAckField(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestFrame(t, serverConn, []byte(`{"version":2,"ok":true,"future_semantics":true}`))
+	}()
+
+	_, err := NewSidecarClient(sidecarTestSocket).Inspect(context.Background())
+
+	if !errors.Is(err, ErrSidecarUnavailable) || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("未知 ACK 字段必须 fail-closed，实际 %v", err)
+	}
+}
+
+func TestSidecarClientPreservesStructuredProfileError(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version: SidecarProtocolVersion,
+			OK:      false,
+			Error: &sidecarControlError{
+				Code:    SidecarErrorProfileUnknown,
+				Message: "profile 不存在",
+			},
+		})
+	}()
+
+	_, err := NewSidecarClient(sidecarTestSocket).DialTLS(
+		context.Background(), "api.example.com", 443, "missing-profile", nil, nil,
+	)
+
+	if !errors.Is(err, ErrSidecarProfileUnavailable) {
+		t.Fatalf("profile 错误分类不正确: %v", err)
+	}
+	var sidecarErr *SidecarError
+	if !errors.As(err, &sidecarErr) || sidecarErr.Code != SidecarErrorProfileUnknown || sidecarErr.Message != "profile 不存在" {
+		t.Fatalf("结构化错误丢失: %#v", sidecarErr)
+	}
+}
+
+func TestSidecarRoundTripperThreadsInlineProfileWithoutBuiltinID(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	profile := validInlineTLSProfile()
+	want := profile.clone()
+	captured := make(chan sidecarControlRequest, 1)
+	go func() {
+		req := readSidecarTestRequest(t, serverConn)
+		captured <- req
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{Version: SidecarProtocolVersion, OK: true})
+	}()
+
+	base := NewSidecarRoundTripper(NewSidecarClient(sidecarTestSocket), SidecarProfileAnthropicCLIMimicryV1)
+	transport := base.(*sidecarTransport)
+	bound, err := transport.WithInlineTLSProfile(profile)
+	if err != nil {
+		t.Fatalf("WithInlineTLSProfile: %v", err)
+	}
+	profile.ID = "mutated-after-bind"
+	profile.CipherSuites[0] = 999
+	conn, err := bound.(*sidecarTransport).boundRT.DialTLSContext(context.Background(), "tcp", "api.example.com:443")
 	if err != nil {
 		t.Fatalf("DialTLSContext: %v", err)
 	}
-	defer conn.Close()
+	conn.Close()
 
-	forceH1 := <-gotForceH1
-	if forceH1 == nil {
-		t.Fatal("forceH1=true 的 RoundTripper 必须让控制帧带 force_h1,got nil(键缺失)")
+	req := <-captured
+	if req.ProfileID != "" || req.InlineProfile == nil {
+		t.Fatalf("动态请求必须只带 inline_profile: %+v", req)
 	}
-	if !*forceH1 {
-		t.Fatalf("force_h1 值应为 true,got %v", *forceH1)
+	if !reflect.DeepEqual(req.InlineProfile, want) {
+		t.Fatalf("inline profile 在线路中丢字段或被绑定后修改\ngot=%+v\nwant=%+v", req.InlineProfile, want)
 	}
+}
+
+func TestSidecarClientRejectsAmbiguousOrInvalidProfileBeforeDial(t *testing.T) {
+	oldDial := sidecarDialContext
+	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("无效 profile 不得拨 sidecar")
+		return nil, nil
+	}
+	t.Cleanup(func() { sidecarDialContext = oldDial })
+	client := NewSidecarClient(sidecarTestSocket)
+
+	for name, tc := range map[string]struct {
+		profileID string
+		inline    *InlineTLSProfile
+	}{
+		"两者都空":   {},
+		"两者都有":   {profileID: SidecarProfileAnthropicCLIMimicryV1, inline: validInlineTLSProfile()},
+		"动态字段非法": {inline: &InlineTLSProfile{ID: "bad"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := client.DialTLS(context.Background(), "api.example.com", 443, tc.profileID, tc.inline, nil)
+			if err == nil {
+				t.Fatal("无效 profile 必须被拒绝")
+			}
+		})
+	}
+}
+
+func validInlineTLSProfile() *InlineTLSProfile {
+	return &InlineTLSProfile{
+		ID:                   "tenant-profile-v1",
+		CipherSuites:         []uint16{4865, 4866, 49195},
+		SupportedGroups:      []uint16{29, 23},
+		ECPointFormats:       []uint8{0},
+		SignatureAlgorithms:  []uint16{1027, 2052},
+		ALPNProtocols:        []string{"http/1.1"},
+		TLSSupportedVersions: []uint16{772, 771},
+		KeyShareGroups:       []uint16{29},
+		PSKModes:             []uint8{1},
+		ExtensionsOrder:      []uint16{0, 10, 11, 13, 16, 43, 45, 51},
+	}
+}
+
+func restoreSidecarDial(t *testing.T, conn net.Conn) {
+	t.Helper()
+	oldDial := sidecarDialContext
+	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) { return conn, nil }
+	t.Cleanup(func() { sidecarDialContext = oldDial })
+}
+
+type shortWriteConn struct {
+	net.Conn
+	max int
+}
+
+func (c *shortWriteConn) Write(p []byte) (int, error) {
+	if len(p) > c.max {
+		p = p[:c.max]
+	}
+	return c.Conn.Write(p)
+}
+
+func readSidecarTestRequest(t *testing.T, conn net.Conn) sidecarControlRequest {
+	t.Helper()
+	var prefix [4]byte
+	if _, err := io.ReadFull(conn, prefix[:]); err != nil {
+		t.Errorf("read prefix: %v", err)
+		return sidecarControlRequest{}
+	}
+	n := binary.LittleEndian.Uint32(prefix[:])
+	if n == binary.BigEndian.Uint32(prefix[:]) {
+		t.Errorf("fixture 必须能区分小端和大端帧长")
+		return sidecarControlRequest{}
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		t.Errorf("read body: %v", err)
+		return sidecarControlRequest{}
+	}
+	var req sidecarControlRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Errorf("decode request: %v", err)
+	}
+	return req
+}
+
+func writeSidecarTestAck(t *testing.T, conn net.Conn, ack sidecarControlAck) {
+	t.Helper()
+	body, err := json.Marshal(ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSidecarTestFrame(t, conn, body)
 }
 
 func writeSidecarTestFrame(t *testing.T, conn net.Conn, body []byte) {

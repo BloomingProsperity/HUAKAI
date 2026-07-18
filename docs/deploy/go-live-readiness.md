@@ -35,7 +35,7 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
 | `HUAKAI_QUOTA_RECONCILER_ENABLED` | **开** | 补偿结算/释放失败、清扫孤儿预留 | 结算/崩溃窗口产生的预留永久卡 reserved,冻结额度→客户被误限流(429) |
 | `HUAKAI_ALERTING_EVAL_ENABLED` | **开** | 告警规则评估循环(无规则时空转 no-op) | 配了告警规则却不评估,静默失效 |
 | `HUAKAI_CONTENT_MODERATION_ENABLED` | **开** | 内容审核执行器(**租户级配置默认 Enabled=false,未配置租户仍放行**) | admin 在面板开了审核也不生效 |
-| `HUAKAI_TRANSPORT_FORCE_H1` | **开** | 出口锁 HTTP/1.1(Go-native uTLS 只广告 h1) | 仅换 BoringSSL sidecar 能自洽 h2 时才关 |
+| `HUAKAI_TRANSPORT_FORCE_H1` | **关** | Rust 出口按 profile 的真实 ALPN 工作 | 仅在上游 H2 兼容故障期间临时设 true；会牺牲对应 profile 的 ALPN 精度 |
 | `HUAKAI_BUDGET_FAIL_CLOSED` | 关(fail-open) | budget 基础设施故障时是否拒绝 | 设 true=额度强一致但故障可能误拒 |
 
 ## 4. 接入上游账号(含国内厂 key 的两种形态)

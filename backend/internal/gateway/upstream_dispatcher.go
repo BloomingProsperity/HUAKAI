@@ -28,6 +28,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // AdapterRegistry 按 ProtocolFamily 取对应的 vendor adapter。
@@ -191,10 +192,8 @@ type UpstreamDispatcher struct {
 	// 未注册 account（ErrAccountNotFound）= 直连，不视为错误。
 	// 仅在 HTTPClient 为 nil 的生产路径生效。
 	ProxyResolver provider.ProxyResolver
-	// TLSProfileResolver 可选:按 accountID 解析账号绑定的 DB TLS-fingerprint
-	// profile -> per-account uTLS RoundTripper。nil 返回 = 保持 builtin per-mode
-	// 指纹(未绑定/非 active/profile 非法)。仅 mimicry mode + HTTPClient 为 nil
-	// 的生产路径生效。
+	// TLSProfileResolver 可选：按 accountID 选择并校验数据库动态 TLS profile。
+	// nil profile 表示使用 mode 的内置 profile。仅生产 transport 路径生效。
 	TLSProfileResolver TLSProfileResolver
 	// Timeouts 仅作用于非流式 buffered dispatch。
 	Timeouts TimeoutConfig
@@ -274,7 +273,10 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	// 4. 发出请求
 	client := d.HTTPClient
 	if client == nil {
-		rt = d.applyTLSProfile(ctx, rt, mode, in.Account.AccountID)
+		rt, err = d.applyTLSProfile(ctx, rt, mode, in.Account.AccountID)
+		if err != nil {
+			return nil, err
+		}
 		rt, err = d.applyProxy(ctx, rt, in.Account.AccountID)
 		if err != nil {
 			return nil, err
@@ -328,35 +330,36 @@ func roundTripperWithResponseHeaderTimeout(rt http.RoundTripper, timeout time.Du
 	return rt
 }
 
-// TLSProfileResolver 按账号解析绑定的 DB TLS-fingerprint profile,返回驱动该
-// profile 指纹的 uTLS RoundTripper;nil = 保持 builtin。结构化接口,实现在
-// internal/tlsfpresolve(gateway 无需反向 import)。
+// TLSProfileResolver 按账号解析数据库动态 TLS profile；nil 表示保持内置 profile。
 type TLSProfileResolver interface {
-	ResolveRoundTripper(ctx context.Context, accountID int64) (http.RoundTripper, error)
+	ResolveProfile(ctx context.Context, accountID int64) (*mimicry.InlineTLSProfile, error)
 }
 
-// applyTLSProfile 在 mimicry mode 下用账号绑定的 DB TLS profile RT 替换 rt;
-// 无绑定/非 mimicry/解析失败一律保持原 rt(builtin)。永不让 dispatch 失败 ——
-// 返回的 profile RT 实现 proxy-aware WithProxy,故 applyProxy 仍能正确叠加代理。
-func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) http.RoundTripper {
-	// 全局伪装关闭时(HUAKAI_TRANSPORT_MIMICRY=false),DB profile 旁路也必须跳过:
-	// 否则绑定了 DB TLS profile 的账号会在 For 已把 mode 降级标准 transport 之后,
-	// 又被这里重新换上 uTLS profile RT,留下伪装死角。复用 transport.MimicryEnabled
-	// 保证与 factory.For 的开关判定完全一致。
+// applyTLSProfile 把 resolver 选出的动态 profile 绑定到当前 Rust sidecar transport。
+// 没有绑定时保留内置 profile；显式绑定的坏数据、数据库故障或非 sidecar transport
+// 都明确失败，避免静默换用另一套 ClientHello。
+func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) (http.RoundTripper, error) {
 	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard || !transport.MimicryEnabled() {
-		return rt
+		return rt, nil
 	}
-	// 收编 DB TLS profile 旁路:若传入的 rt 已经是走 Rust tls-sidecar 的 RT(自带内置
-	// 真指纹),绝不能用 per-account DB uTLS profile 整体替换它——否则绑定 DB profile 的
-	// 账号会让 sidecar 永远轮不到用、退回 Go uTLS 占位指纹。sidecar RT 通过 SidecarProfileID()
-	// 自证(仅 mimicry.sidecarRoundTripper 实现该方法,检测精确,不会误伤非 sidecar RT)。
-	if _, ok := rt.(interface{ SidecarProfileID() string }); ok {
-		return rt
+	profile, err := d.TLSProfileResolver.ResolveProfile(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: 解析账号 TLS profile 失败: %w", err)
 	}
-	if profileRT, err := d.TLSProfileResolver.ResolveRoundTripper(ctx, accountID); err == nil && profileRT != nil {
-		return profileRT
+	if profile == nil {
+		return rt, nil
 	}
-	return rt
+	binder, ok := rt.(interface {
+		WithInlineTLSProfile(*mimicry.InlineTLSProfile) (http.RoundTripper, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("dispatcher: 动态 TLS profile %q 需要 Rust sidecar transport，实际 %T", profile.ID, rt)
+	}
+	bound, err := binder.WithInlineTLSProfile(profile)
+	if err != nil {
+		return nil, fmt.Errorf("dispatcher: 绑定动态 TLS profile %q 失败: %w", profile.ID, err)
+	}
+	return bound, nil
 }
 
 // applyProxy 按 ProxyResolver 决定是否给 rt 包上代理。

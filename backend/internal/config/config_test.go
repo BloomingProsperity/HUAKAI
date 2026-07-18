@@ -747,3 +747,26 @@ func TestLoadDBMaxConnsInvalidIsError(t *testing.T) {
 		t.Fatal("expected error for invalid HUAKAI_DB_MAX_CONNS, got nil")
 	}
 }
+
+func TestLoadTransportForceH1IsOptionalAndStrict(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load unset force h1: %v", err)
+	}
+	if cfg.TransportSidecarForceH1 != nil {
+		t.Fatalf("未配置时应按 profile ALPN，实际 %v", *cfg.TransportSidecarForceH1)
+	}
+
+	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "true")
+	cfg, err = Load()
+	if err != nil || cfg.TransportSidecarForceH1 == nil || !*cfg.TransportSidecarForceH1 {
+		t.Fatalf("显式 true 未生效，cfg=%+v err=%v", cfg, err)
+	}
+
+	t.Setenv("HUAKAI_TRANSPORT_FORCE_H1", "不是布尔值")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HUAKAI_TRANSPORT_FORCE_H1") {
+		t.Fatalf("非法 force h1 必须阻止启动，err=%v", err)
+	}
+}

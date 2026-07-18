@@ -14,6 +14,7 @@ import (
 
 // ProfileFields 镜像 DB 里的 TLS 指纹列(int32 加宽为 int)。
 type ProfileFields struct {
+	ID                   int64
 	Name                 string
 	GreaseEnabled        bool
 	CipherSuites         []int
@@ -26,6 +27,71 @@ type ProfileFields struct {
 	PskModes             []int
 	ExtensionsOrder      []int
 	ExpectedJA3Hash      string
+}
+
+// InlineTLSProfileFromFields 把数据库字段转换为 IPC v2 的动态 profile。
+// `preset:*` 依赖 Go uTLS 的浏览器模板，当前不能无损交给 BoringSSL，因此明确拒绝，
+// 避免运行时把浏览器 preset 偷换成另一套 ClientHello。
+func InlineTLSProfileFromFields(f ProfileFields) (*InlineTLSProfile, error) {
+	if preset, ok := strings.CutPrefix(f.Name, "preset:"); ok && strings.TrimSpace(preset) != "" {
+		return nil, fmt.Errorf("mimicry: preset profile %q 尚无 Rust/BoringSSL 等价实现", strings.TrimSpace(preset))
+	}
+	if len(f.CipherSuites) == 0 || len(f.SupportedCurves) == 0 || len(f.TLSSupportedVersions) == 0 || len(f.ExtensionsOrder) == 0 {
+		return nil, fmt.Errorf("mimicry: incomplete TLS profile (cipher_suites/curves/supported_versions/extensions_order required)")
+	}
+	ciphers, err := toUint16s("cipher_suites", f.CipherSuites)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := toUint16s("supported_curves", f.SupportedCurves)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := toUint16s("tls_supported_versions", f.TLSSupportedVersions)
+	if err != nil {
+		return nil, err
+	}
+	signatures, err := toUint16s("signature_algorithms", f.SignatureAlgorithms)
+	if err != nil {
+		return nil, err
+	}
+	keyShares, err := toUint16s("key_share_groups", f.KeyShareGroups)
+	if err != nil {
+		return nil, err
+	}
+	extensions, err := toUint16s("extensions_order", f.ExtensionsOrder)
+	if err != nil {
+		return nil, err
+	}
+	points, err := toUint8s("ec_point_formats", f.EcPointFormats)
+	if err != nil {
+		return nil, err
+	}
+	pskModes, err := toUint8s("psk_modes", f.PskModes)
+	if err != nil {
+		return nil, err
+	}
+	id := "db-profile:" + strings.TrimSpace(f.Name)
+	if f.ID > 0 {
+		id = fmt.Sprintf("db-profile-%d", f.ID)
+	}
+	profile := &InlineTLSProfile{
+		ID:                   id,
+		GreaseEnabled:        f.GreaseEnabled,
+		CipherSuites:         ciphers,
+		SupportedGroups:      groups,
+		ECPointFormats:       points,
+		SignatureAlgorithms:  signatures,
+		ALPNProtocols:        append([]string(nil), f.AlpnProtocols...),
+		TLSSupportedVersions: versions,
+		KeyShareGroups:       keyShares,
+		PSKModes:             pskModes,
+		ExtensionsOrder:      extensions,
+	}
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
+	return profile, nil
 }
 
 // TemplateFromProfileFields 把 admin 存储的字段转换成 ClientHelloTemplate。遇到

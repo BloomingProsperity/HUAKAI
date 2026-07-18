@@ -48,9 +48,8 @@ type Config struct {
 	// TransportSidecarFallback 是显式的 opt-in。默认 false, 当 Rust sidecar 已配置
 	// 但不可用时, 让生产保持 fail-closed。
 	TransportSidecarFallback bool
-	// TransportSidecarForceH1 控制 Rust sidecar 握手是否只广告 ALPN=http/1.1。
-	// nil(env 未设)时沿用 transport 层默认(默认强制 H1,与 Go uTLS 路一致);
-	// 非 nil 时由运维 HUAKAI_TRANSPORT_FORCE_H1 显式覆盖(仅 "false" 关)。
+	// TransportSidecarForceH1 控制 Rust sidecar 是否只广告 ALPN=http/1.1。
+	// nil 表示按 profile 的 ALPN 工作；仅显式 true 时启用兼容模式。
 	TransportSidecarForceH1 *bool
 
 	// QuotaEnforce 把配额预留/结清路径接入 chat 准入。
@@ -191,6 +190,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	transportSidecarForceH1, err := envOptionalBool("HUAKAI_TRANSPORT_FORCE_H1")
+	if err != nil {
+		return nil, err
+	}
 	// BILL-121/123:既然引擎已被证明安全, 配额强制执行现在默认开启——它在未配置
 	// 任何策略时直接 no-op(跳过评估), 让 observe 模式策略保持非阻塞, 并在基础设施
 	// 错误时 fail OPEN, 所以默认开启不会阻断一个未配置的部署。运维仍可设
@@ -257,7 +260,7 @@ func Load() (*Config, error) {
 		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
 		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
 		TransportSidecarFallback:       transportSidecarFallback,
-		TransportSidecarForceH1:        envOptionalForceH1("HUAKAI_TRANSPORT_FORCE_H1"),
+		TransportSidecarForceH1:        transportSidecarForceH1,
 		QuotaEnforce:                   quotaEnforce,
 		SettlementIntentEnabled:        settlementIntentEnabled,
 		Budget:                         budgetCfg,
@@ -468,17 +471,16 @@ func envBoolDefaultLenient(name string, fallback bool) bool {
 	return v
 }
 
-// envOptionalForceH1 解析 HUAKAI_TRANSPORT_FORCE_H1,语义与 mimicry.forceH1Enabled
-// 完全一致:env 未设时返回 nil(由 transport 层 env 默认决定,默认开),已设时返回
-// 显式 *bool——非 "false" 一律视为开,仅显式 "false" 关。返回指针是为了区分"未配置"
-// 与"显式 false",避免运维想关却被默认开覆盖。
-func envOptionalForceH1(name string) *bool {
+func envOptionalBool(name string) (*bool, error) {
 	raw, ok := os.LookupEnv(name)
-	if !ok {
-		return nil
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, nil
 	}
-	enabled := strings.TrimSpace(raw) != "false"
-	return &enabled
+	enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a boolean, got %q: %w", name, raw, err)
+	}
+	return &enabled, nil
 }
 
 func envOptionalDurationSeconds(name string) (time.Duration, error) {

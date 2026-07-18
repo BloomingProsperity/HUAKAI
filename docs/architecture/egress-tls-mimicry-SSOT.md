@@ -20,7 +20,7 @@
 | mimicry 总开关 | **默认开**(`!="false"` 即开) | `HUAKAI_TRANSPORT_MIMICRY`,`transport/mimicry_switch.go:16-18` |
 | sidecar(是否走 Rust) | **默认空=不走**,走 Go uTLS | `HUAKAI_TRANSPORT_SIDECAR_SOCKET`,`config.go:253`;`factory.go:202,230` |
 | sidecar 回退 | **默认 false**(fail-closed) | `HUAKAI_TRANSPORT_SIDECAR_FALLBACK`,`factory.go:76-78` |
-| 强制 H1 | **默认开**,锁 http/1.1 | `HUAKAI_TRANSPORT_FORCE_H1`,`mimicry/utls_dialer.go:51-52` |
+| 强制 H1 | **默认关**,按 profile ALPN | `HUAKAI_TRANSPORT_FORCE_H1`,`config.go`,`factory.go` |
 
 **默认出站路径**:
 - **反转/OAuth 号**(被 `transportModeForProvider` 判为 mimicry)→ **Go uTLS native mimicry**(`factory.go:230`),ALPN 锁 http/1.1。
@@ -28,23 +28,19 @@
 
 **vendor→mimicry mode 映射**(`gatewayhttp/chat_completions_dispatch.go:130-153`):claude_code / chatgpt(codex)/ gemini_advanced / antigravity / cursor / copilot / kiro / windsurf 各有 mode;其余一律 standard。
 
-**覆盖不对称(关键)**:
+**覆盖状态**:
 - Go 模板认 **4 家**(`tools/fingerprint-collector/templates/`:anthropic/codex/gemini/kiro)。
-- Rust sidecar 内置只认 **1 家**(anthropic,`registry.go:41-48` `SidecarProfileForMode` 只映射 claude_code)。
+- Rust sidecar 已内置并接线 **4 家**：Anthropic、Codex、Gemini、Kiro；ready 协议会逐项报告实际加载情况。
 - cursor/copilot/antigravity/windsurf **无模板** → mimicry mode 下 fail-closed(`factory.go:578-583`,除非 `HUAKAI_TRANSPORT_PHASE_A_FALLBACK=true`)。
 
 ---
 
-## 2. 强制 H1 = 拍板决定,且正确("不做 H2" 不是缺口)
+## 2. ALPN 与强制 H1
 
-- **决策**:`HUAKAI_TRANSPORT_FORCE_H1` 默认开,出口锁 HTTP/1.1;"仅换 BoringSSL sidecar 能自洽 h2 时才关"(`docs/deploy/go-live-readiness.md:38`)。review 文档明写"**已拍板的『不做 H2』出口决策**"。
-- **依据(实测)**:真客户端模型 API 全走 HTTP/1.1——
-  - Gemini CLI:"**48 个 request 全部 HTTP/1.1**",即使 ALPN 广告了 `h2+http/1.1`(`docs/research/2026-05-14-gemini-cli-request-signature.md`)。
-  - Kiro CLI:模型 API HTTP/1.1,"抓包没有显示使用 HTTP/2"(`docs/research/2026-05-14-kiro-cli-request-signature.md`)。
-  - Codex:reqwest 默认协商,未强制 h2(`docs/research/2026-05-14-codex-cli-request-signature-codex.md`)。
-  - Anthropic native 2.1.187:ALPN 仅 http/1.1(见 §3)。
-- **结论**:既然真客户端全走 H1,强制 H1 = 逐字节对齐;`tls-sidecar/src/profile.rs` 的 `[profile.h2_settings]` 空 TODO = **设计如此、留空正确,不是缺口**,走 Rust 也不用补(Rust H2 桥接能力已实现见 §5,属冗余保留)。
-- **唯一细微不完美**:Gemini/老 Node Anthropic 客户端 ClientHello 里 ALPN *广告* h2(虽走 H1);强制 H1 会把 ALPN 收窄成只 http/1.1——对 Claude native 逐字节精确,对 Gemini 是"少广告个 h2"的微小差异(协议本身仍对)。要逐字节就在其 profile 里 ALPN 广告 `h2+http/1.1`、连接仍 H1,与"做 H2"无关。
+- **默认合同**：Rust sidecar 按 profile 的 ALPN 发出 ClientHello；服务端选中 `h2` 时由现有 H2 bridge 承接，选中 `http/1.1` 时走 raw tunnel。
+- **兼容开关**：`HUAKAI_TRANSPORT_FORCE_H1=true` 会通过 IPC v2 显式下发，把本次握手 ALPN 收窄为 `http/1.1`。该开关默认关闭，只用于故障隔离。
+- **失败姿态**：非法布尔配置阻止启动；sidecar 未声明 `force_h1` capability 时 readiness fail-closed；不能再出现 Go 接受配置、Rust 静默忽略的半接线状态。
+- **测试合同**：Go 线缆测试确认字段过 IPC，Rust ClientHello 测试确认只改变 ALPN，不改变 cipher、group、signature algorithm。
 
 ---
 
@@ -124,10 +120,10 @@
 ## 9. 已作废断言黑名单(防后人误引)
 
 以下说法**均已过时/被推翻**,任何文档若仍这么写都不算数:
-1. "Anthropic/真客户端走 HTTP/2、需 fork x/net/http2 做 H2 SETTINGS/HPACK 指纹" → **错**,全走 H1、强制 H1。
+1. "所有 profile 都必须全局强制 H1" → **错**，默认按各 profile 的 ALPN；强制 H1 只是临时兼容开关。
 2. 旧 Anthropic JA3 `de88744b20558d50f03a5f0ea176ee98` → **非真值**(早期 OpenSSL 派生样本;真值见 §3 的 t13d JA4)。
 3. "Anthropic 路径暂停/留空" → **错**,anthropic 真指纹已抓并 serving。
 4. "gemini 仍是 stub" / "只有 3 家真 mode、ClaudeCode 归 fallback" → **错**,四家均有真指纹。
-5. "core_gateway 是生产数据面 / 8 vendor 全闭环 / rquest 集成" → **全错**,core_gateway 已退役(2026-06-02 方向 C)、Rust 降为非默认 sidecar、生产走 Go uTLS、rquest 弃用。
+5. "core_gateway 已是生产数据面 / 8 vendor 已全闭环 / Go uTLS 是最终出口" → **全错**；当前目标是独立 Rust sidecar 成为唯一 mimicry 出口，未完成的 provider 必须 fail-closed 或补齐 profile。
 6. "codex mimicry 应拒绝 / 需上游书面授权" → **已被推翻**,现为 Owner D-4/D-5 缓做 + R7 默认做。
-7. "H2 SETTINGS 空 = 缺口" → **错**,走 H1 故 H2 不需要,留空是设计。
+7. "H2 SETTINGS 永远不需要" → **错**；只有明确协商 H1 的 profile 不需要，能够协商 h2 的 profile 必须由 wire 测试证明 bridge 与 settings 合同。

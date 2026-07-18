@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // TransportErrorClass 是 Go dispatcher 与未来 Rust transport sidecar 共用的
@@ -36,6 +37,8 @@ const (
 	TransportErrorDNSFailure         TransportErrorClass = "dns_failure"
 	TransportErrorNetworkUnreachable TransportErrorClass = "network_unreachable"
 	TransportErrorProxyFailure       TransportErrorClass = "proxy_failure"
+	TransportErrorUpstreamConnect    TransportErrorClass = "upstream_connect_failed"
+	TransportErrorTLSProfileInvalid  TransportErrorClass = "tls_profile_invalid"
 )
 
 // CredentialRefreshIntent 表示 attempt 失败后是否应触发凭据热刷新路径。
@@ -102,6 +105,10 @@ func TransportErrorClassFromError(err error) TransportErrorClass {
 	if errors.Is(err, credentialstore.ErrCredentialExpired) {
 		return TransportErrorCredentialExpired
 	}
+	var coded interface{ TransportErrorCode() string }
+	if errors.As(err, &coded) {
+		return transportErrorClassFromStableCode(coded.TransportErrorCode())
+	}
 
 	lower := strings.ToLower(err.Error())
 	switch {
@@ -144,6 +151,29 @@ func TransportErrorClassFromError(err error) TransportErrorClass {
 		return TransportErrorNetworkTimeout
 	}
 	return TransportErrorLocalDispatch
+}
+
+func transportErrorClassFromStableCode(code string) TransportErrorClass {
+	switch code {
+	case mimicry.SidecarErrorUpstreamDNS:
+		return TransportErrorDNSFailure
+	case mimicry.SidecarErrorConnectionRefused:
+		return TransportErrorConnectionRefused
+	case mimicry.SidecarErrorNetworkUnreachable:
+		return TransportErrorNetworkUnreachable
+	case mimicry.SidecarErrorProxyInvalid, mimicry.SidecarErrorProxyConnect:
+		return TransportErrorProxyFailure
+	case mimicry.SidecarErrorUpstreamTimeout:
+		return TransportErrorConnectTimeout
+	case mimicry.SidecarErrorTLSHandshake:
+		return TransportErrorTLSHandshakeFailed
+	case mimicry.SidecarErrorUpstreamConnect:
+		return TransportErrorUpstreamConnect
+	case mimicry.SidecarErrorProfileInvalid:
+		return TransportErrorTLSProfileInvalid
+	default:
+		return TransportErrorLocalDispatch
+	}
 }
 
 // persistentTransportErrorClass 识别持久型传输错误(DM-06)。proxyconnect
@@ -195,6 +225,10 @@ func ClassifyAttemptTransportError(class TransportErrorClass) AttemptRetryDecisi
 		return retryableTransportDecision(class, http.StatusBadGateway, "transport_network_unreachable")
 	case TransportErrorProxyFailure:
 		return retryableTransportDecision(class, http.StatusBadGateway, "transport_proxy_failure")
+	case TransportErrorUpstreamConnect:
+		return retryableTransportDecision(class, http.StatusBadGateway, "transport_upstream_connect_failed")
+	case TransportErrorTLSProfileInvalid:
+		return retryableTransportDecision(class, http.StatusServiceUnavailable, "transport_tls_profile_invalid")
 	case TransportErrorCredentialExpired:
 		return AttemptRetryDecision{
 			RetryableBeforeDelivery:         true,
@@ -235,7 +269,9 @@ func EndClassFromAttempt(classification Classification, decision AttemptRetryDec
 		TransportErrorConnectionRefused,
 		TransportErrorDNSFailure,
 		TransportErrorNetworkUnreachable,
-		TransportErrorProxyFailure:
+		TransportErrorProxyFailure,
+		TransportErrorUpstreamConnect,
+		TransportErrorTLSProfileInvalid:
 		return UpstreamError5xx
 	}
 	switch decision.AbortReason {
@@ -244,7 +280,8 @@ func EndClassFromAttempt(classification Classification, decision AttemptRetryDec
 		"upstream_dispatch_error", "upstream_empty_response",
 		"local_credential_expired",
 		"transport_connection_refused", "transport_dns_failure",
-		"transport_network_unreachable", "transport_proxy_failure":
+		"transport_network_unreachable", "transport_proxy_failure",
+		"transport_upstream_connect_failed", "transport_tls_profile_invalid":
 		return UpstreamError5xx
 	case "upstream_rate_limited", "queue_wait":
 		return UpstreamRateLimit

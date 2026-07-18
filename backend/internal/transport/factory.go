@@ -76,9 +76,8 @@ type Factory struct {
 	// Go-native mimicry transport。默认 false，生产 fail-closed，防静默丢失
 	// 强伪装能力。
 	SidecarFallbackEnabled bool
-	// SidecarForceH1 控制 Rust sidecar 握手是否只广告 ALPN=http/1.1。nil 时
-	// 沿用 mimicry 既有 env 默认(forceH1Enabled，默认开),与 Go uTLS 路一致；
-	// 非 nil 时由运维 config 显式覆盖。指针是为了区分"未配置"与"显式 false"。
+	// SidecarForceH1 显式收窄 Rust sidecar 的 ALPN 到 http/1.1。nil 时按 profile
+	// 的真实 ALPN 工作；它是部署兼容开关，不是默认指纹策略。
 	SidecarForceH1 *bool
 	// standard 是 standard mode 用的 RoundTripper。nil 时回落到
 	// fallback：http.DefaultTransport.Clone() 并把 Proxy 设为 nil，
@@ -346,10 +345,8 @@ func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, er
 		err error
 	)
 	if f.SidecarForceH1 != nil {
-		// 运维 config 显式覆盖 force_h1。
 		rt, err = mimicry.NewSidecarRoundTripperForModeForceH1(f.SidecarSocketPath, sidecarMode, *f.SidecarForceH1)
 	} else {
-		// 未配置时沿用 mimicry 的 env 默认(forceH1Enabled)。
 		rt, err = mimicry.NewSidecarRoundTripperForMode(f.SidecarSocketPath, sidecarMode)
 	}
 	if err != nil {

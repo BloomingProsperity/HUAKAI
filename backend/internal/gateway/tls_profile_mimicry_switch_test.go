@@ -2,10 +2,10 @@ package gateway
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // TestApplyTLSProfile_MimicryGloballyDisabled 锁定落点 B:全局伪装关闭
@@ -20,19 +20,21 @@ import (
 // 而非 origRT,转红。
 func TestApplyTLSProfile_MimicryGloballyDisabled(t *testing.T) {
 	ctx := context.Background()
-	marker := &tlsProfileMarkerRT{name: "profile"}
-	orig := &tlsProfileMarkerRT{name: "builtin"}
-	var origRT http.RoundTripper = orig
-	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{rt: marker}}
+	profile := validGatewayInlineProfile()
+	orig := mimicry.NewSidecarRoundTripper(mimicry.NewSidecarClient("/run/huakai/tls-sidecar.sock"), mimicry.SidecarProfileAnthropicCLIMimicryV1)
+	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{profile: profile}}
 
-	// 默认开(env 未设):绑定 profile 的 mimicry 账号应换上 profile RT。
-	if got := d.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 7); got != http.RoundTripper(marker) {
-		t.Fatalf("默认开:应换上 DB profile RT,got %#v", got)
+	// 默认开：绑定 profile 的 mimicry 账号应派生 inline sidecar transport。
+	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
+	got, err := d.applyTLSProfile(ctx, orig, transport.TransportModeMimicryClaudeCode, 7)
+	if err != nil || got == orig {
+		t.Fatalf("默认开：应绑定动态 profile，got=%#v err=%v", got, err)
 	}
 
-	// 全局关闭:同样的输入必须保持 builtin rt,不套 profile。
+	// 全局关闭：同样的输入必须保持 builtin transport。
 	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "false")
-	if got := d.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 7); got != origRT {
-		t.Fatalf("全局关闭伪装:必须保持 builtin rt 不套 DB profile,got %#v", got)
+	got, err = d.applyTLSProfile(ctx, orig, transport.TransportModeMimicryClaudeCode, 7)
+	if err != nil || got != orig {
+		t.Fatalf("全局关闭伪装：必须保持 builtin，got=%#v err=%v", got, err)
 	}
 }

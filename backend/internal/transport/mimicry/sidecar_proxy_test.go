@@ -175,7 +175,7 @@ func dialWithProxyAndCaptureRequestJSON(t *testing.T, proxyRaw string) (sidecarC
 		err := json.Unmarshal(body, &req)
 		resultCh <- captured{req: req, raw: string(body), err: err}
 		// 回 ACK 让客户端 DialTLS 顺利返回。
-		writeSidecarTestFrame(t, conn, []byte(`{"ok":true}`))
+		writeSidecarTestFrame(t, conn, []byte(`{"version":2,"ok":true}`))
 	}()
 
 	proxyURL, err := url.Parse(proxyRaw)

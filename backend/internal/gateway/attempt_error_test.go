@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 type timeoutNetError struct{}
@@ -377,6 +378,8 @@ func TestClassifyAttemptTransportError_FutureRustClasses(t *testing.T) {
 		{class: TransportErrorTLSHandshakeFailed, wantRetry: true, wantClient: http.StatusBadGateway, wantAbort: "transport_tls_handshake_failed"},
 		{class: TransportErrorUpstreamHeaderTimeout, wantRetry: true, wantClient: http.StatusServiceUnavailable, wantAbort: "transport_upstream_header_timeout"},
 		{class: TransportErrorUpstreamBodyIdleTimeout, wantRetry: true, wantClient: http.StatusServiceUnavailable, wantAbort: "transport_upstream_body_idle_timeout"},
+		{class: TransportErrorUpstreamConnect, wantRetry: true, wantClient: http.StatusBadGateway, wantAbort: "transport_upstream_connect_failed"},
+		{class: TransportErrorTLSProfileInvalid, wantRetry: true, wantClient: http.StatusServiceUnavailable, wantAbort: "transport_tls_profile_invalid"},
 		{class: TransportErrorLocalDispatch, wantClient: http.StatusInternalServerError, wantAbort: "local_dispatch_error"},
 	}
 
@@ -394,6 +397,35 @@ func TestClassifyAttemptTransportError_FutureRustClasses(t *testing.T) {
 				AbortReason:             tt.wantAbort,
 				TransportClass:          tt.class,
 			})
+		})
+	}
+}
+
+func TestClassifyAttemptDispatchErrorUsesStableSidecarCodes(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		code string
+		want TransportErrorClass
+	}{
+		{code: mimicry.SidecarErrorUpstreamDNS, want: TransportErrorDNSFailure},
+		{code: mimicry.SidecarErrorConnectionRefused, want: TransportErrorConnectionRefused},
+		{code: mimicry.SidecarErrorNetworkUnreachable, want: TransportErrorNetworkUnreachable},
+		{code: mimicry.SidecarErrorProxyConnect, want: TransportErrorProxyFailure},
+		{code: mimicry.SidecarErrorUpstreamTimeout, want: TransportErrorConnectTimeout},
+		{code: mimicry.SidecarErrorTLSHandshake, want: TransportErrorTLSHandshakeFailed},
+		{code: mimicry.SidecarErrorUpstreamConnect, want: TransportErrorUpstreamConnect},
+		{code: mimicry.SidecarErrorProfileInvalid, want: TransportErrorTLSProfileInvalid},
+		{code: mimicry.SidecarErrorProfileUnknown, want: TransportErrorLocalDispatch},
+		{code: mimicry.SidecarErrorInternal, want: TransportErrorLocalDispatch},
+	} {
+		test := test
+		t.Run(test.code, func(t *testing.T) {
+			t.Parallel()
+			error := &mimicry.SidecarError{Code: test.code, Message: "不应参与分类的文本"}
+			if got := TransportErrorClassFromError(error); got != test.want {
+				t.Fatalf("class=%q want=%q", got, test.want)
+			}
 		})
 	}
 }

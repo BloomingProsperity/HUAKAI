@@ -24,8 +24,6 @@ const (
 	ModeMimicryCopilot        TransportMode = "mimicry_copilot"
 	ModeMimicryKiro           TransportMode = "mimicry_kiro"
 	ModeMimicryWindsurf       TransportMode = "mimicry_windsurf"
-
-	sidecarProbeProfileID = "__huakai_probe__"
 )
 
 var (
@@ -42,18 +40,21 @@ func SidecarProfileForMode(mode TransportMode) (string, bool) {
 	switch mode {
 	case ModeMimicryClaudeCode:
 		return SidecarProfileAnthropicCLIMimicryV1, true
+	case ModeMimicryChatGPT:
+		return SidecarProfileOpenAICodexCLIV1, true
+	case ModeMimicryGeminiAdvanced:
+		return SidecarProfileGeminiCLIV1, true
+	case ModeMimicryKiro:
+		return SidecarProfileKiroCLIV1, true
 	default:
 		return "", false
 	}
 }
 
-// NewSidecarRoundTripperForMode 用 env 默认的 forceH1Enabled() 决定是否强制 H1。
-// 保留无 force_h1 形参的旧签名供既有调用方使用,默认值与 uTLS 路一致(默认开)。
 func NewSidecarRoundTripperForMode(socketPath string, mode TransportMode) (http.RoundTripper, error) {
-	return NewSidecarRoundTripperForModeForceH1(socketPath, mode, forceH1Enabled())
+	return NewSidecarRoundTripperForModeForceH1(socketPath, mode, false)
 }
 
-// NewSidecarRoundTripperForModeForceH1 显式透传 forceH1,供 wiring 按运维 config 装配。
 func NewSidecarRoundTripperForModeForceH1(socketPath string, mode TransportMode, forceH1 bool) (http.RoundTripper, error) {
 	profileID, ok := SidecarProfileForMode(mode)
 	if !ok {
@@ -70,50 +71,29 @@ func ProbeSidecarForMode(ctx context.Context, socketPath string, mode TransportM
 	if socketPath == "" {
 		return fmt.Errorf("%w: empty socket path", ErrSidecarUnavailable)
 	}
-	conn, err := sidecarDialContext(ctx, "unix", socketPath)
+	status, err := NewSidecarClient(socketPath).Inspect(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: dial unix socket %s: %w", ErrSidecarUnavailable, socketPath, err)
+		return err
 	}
-	defer conn.Close()
-	if err := setDeadlineFromContext(conn, ctx); err != nil {
-		return fmt.Errorf("%w: %w", ErrSidecarUnavailable, err)
+	if !containsString(status.Capabilities, SidecarCapabilityBuiltinProfile) {
+		return fmt.Errorf("%w: sidecar 缺少 %s capability", ErrSidecarUnavailable, SidecarCapabilityBuiltinProfile)
 	}
-	req := sidecarControlRequest{
-		TargetHost: sidecarProbeProfileID,
-		Port:       1,
-		ProfileID:  profileID,
+	if !containsString(status.ProfileIDs, profileID) {
+		return fmt.Errorf("%w: profile %s 未加载", ErrSidecarProfileUnavailable, profileID)
 	}
-	if _, err := writeSidecarFrame(conn, req); err != nil {
-		return fmt.Errorf("%w: write probe frame: %w", ErrSidecarUnavailable, err)
-	}
-	var ack sidecarControlAck
-	if err := readSidecarFrame(conn, &ack); err != nil {
-		return fmt.Errorf("%w: read probe ack frame: %w", ErrSidecarUnavailable, err)
-	}
-	if !ack.OK {
-		if ack.Error == "" {
-			ack.Error = "sidecar profile probe rejected"
-		}
-		if sidecarAckReportsProfileUnavailable(ack.Error) {
-			return fmt.Errorf("%w: %s", ErrSidecarProfileUnavailable, ack.Error)
-		}
-		// 当前 Rust sidecar 只有完成真实 upstream connect 后才返回 ok。Probe
-		// 使用假 host 时,非 profile 类 error ACK 仍说明 sidecar 活着且 profile
-		// 已被查到,不能把健康 sidecar 误判为不可用。
-		return nil
+	if !containsString(status.Capabilities, SidecarCapabilityForceH1) {
+		return fmt.Errorf("%w: sidecar 缺少 %s capability", ErrSidecarUnavailable, SidecarCapabilityForceH1)
 	}
 	return nil
 }
 
-func sidecarAckReportsProfileUnavailable(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return true
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
 	}
-	return strings.Contains(normalized, "unknown profile") ||
-		strings.Contains(normalized, "profile not found") ||
-		strings.Contains(normalized, "no profile") ||
-		(strings.Contains(normalized, "missing") && strings.Contains(normalized, "profile"))
+	return false
 }
 
 // NewTemplateRegistry 返回空 registry。
