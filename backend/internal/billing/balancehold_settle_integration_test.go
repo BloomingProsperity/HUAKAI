@@ -498,19 +498,14 @@ func TestSettler_RefundCreditsUserBalance(t *testing.T) {
 	pool := openPool(t, ctx)
 	seed := seedSettlerGraph(t, ctx, pool, "refund-credit")
 	set := NewSettler(pool)
-
-	if _, err := pool.Exec(ctx, `INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`, seed.tenantID, seed.userID); err != nil {
-		t.Fatalf("seed user balance: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE billing_ledger_claims SET status='committed', actual_cost=$2 WHERE id=$1`, seed.claimID, decimal.RequireFromString("0.02000000")); err != nil {
-		t.Fatalf("set committed: %v", err)
-	}
+	settleCapturedRefundClaim(t, ctx, pool, set, seed, decimal.RequireFromString("0.02000000"))
 
 	res, err := set.Refund(ctx, RefundRequest{
 		TenantID:       seed.tenantID,
 		ClaimID:        seed.claimID,
 		AmountMicroUSD: 7000,
 		Reason:         "audit_mismatch",
+		IdempotencyKey: uuid.NewString(),
 		AuditRequestID: uuid.NewString(),
 	})
 	if err != nil {
@@ -524,8 +519,8 @@ func TestSettler_RefundCreditsUserBalance(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balance); err != nil {
 		t.Fatalf("read balance: %v", err)
 	}
-	if !balance.Equal(decimal.RequireFromString("10.00700000")) {
-		t.Fatalf("balance=%s want 10.00700000", balance)
+	if !balance.Equal(decimal.RequireFromString("9.98700000")) {
+		t.Fatalf("balance=%s want 9.98700000", balance)
 	}
 }
 

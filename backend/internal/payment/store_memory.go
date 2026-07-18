@@ -18,8 +18,8 @@ type MemoryStore struct {
 	orders        map[int64]*Order
 	byTrade       map[string]int64
 	credits       map[int64]*CreditRecord // key = order id
-	refunds       map[int64]*RefundRecord // key = order id
-	refundsByKey  map[string]int64        // key = tenant|idempotency_key, value = order id
+	refunds       map[int64]*RefundRecord // key = refund id
+	refundsByKey  map[string]int64        // key = tenant|idempotency_key, value = refund id
 	audits        []AuditEvent
 	nextOrderID   int64
 	nextCreditID  int64
@@ -171,61 +171,111 @@ func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundRe
 	if strings.TrimSpace(rec.IdempotencyKey) == "" {
 		return RefundResult{}, ErrInvalidInput
 	}
+	key := stringJoin(rec.TenantID, rec.IdempotencyKey)
+	if existingRefundID, ok := m.refundsByKey[key]; ok {
+		refund := m.refunds[existingRefundID]
+		if refund == nil {
+			return RefundResult{}, ErrRefundFactInvalid
+		}
+		if !paymentRefundMatchesRequest(*refund, rec) {
+			return RefundResult{}, ErrRefundIdempotencyConflict
+		}
+		order := m.orders[refund.OrderID]
+		if order == nil {
+			return RefundResult{}, ErrRefundFactInvalid
+		}
+		credit := m.credits[order.ID]
+		if credit == nil || refund.TenantID != order.TenantID || refund.UserID != order.UserID ||
+			refund.CurrencyCode != order.CurrencyCode {
+			return RefundResult{}, ErrRefundFactInvalid
+		}
+		total := m.refundTotalForOrderLocked(order.TenantID, order.ID)
+		status, remaining, err := paymentRefundProgress(credit.AmountCents, total)
+		if err != nil || order.Status != status || (refund.RequireExact && total < refund.RequestedAmountCents) {
+			return RefundResult{}, ErrRefundFactInvalid
+		}
+		return RefundResult{
+			Order: *order, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, refund.UserID),
+			CumulativeRefundedCents: total, RemainingRefundableCents: remaining, Idempotent: true,
+		}, nil
+	}
 	o := m.orders[rec.OrderID]
 	if o == nil || o.TenantID != rec.TenantID {
 		return RefundResult{}, ErrOrderNotFound
 	}
-	key := stringJoin(rec.TenantID, rec.IdempotencyKey)
-	if existingOrderID, ok := m.refundsByKey[key]; ok {
-		refund := m.refunds[existingOrderID]
-		if refund == nil {
-			return RefundResult{}, ErrOrderNotFound
-		}
-		if refund.OrderID != rec.OrderID {
-			return RefundResult{}, ErrIdempotencyConflict
-		}
-		order := m.orders[refund.OrderID]
-		if order == nil {
-			return RefundResult{}, ErrOrderNotFound
-		}
-		return RefundResult{Order: *order, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, refund.UserID), Idempotent: true}, nil
-	}
 	if o.OrderKind != OrderKindTopup {
 		return RefundResult{}, ErrRefundUnsupportedKind
 	}
-	if o.Status != StatusCompleted {
+	if o.Status != StatusCompleted && o.Status != StatusRefunded {
 		return RefundResult{}, ErrOrderNotRefundable
 	}
 	credit := m.credits[o.ID]
 	if credit == nil {
 		return RefundResult{}, ErrOrderNotRefundable
 	}
-	if rec.AmountCents <= 0 || rec.AmountCents > credit.AmountCents {
-		return RefundResult{}, ErrInvalidAmount
+	totalBefore := m.refundTotalForOrderLocked(o.TenantID, o.ID)
+	currentStatus, currentRemaining, progressErr := paymentRefundProgress(credit.AmountCents, totalBefore)
+	if progressErr != nil || o.Status != currentStatus {
+		return RefundResult{}, ErrRefundFactInvalid
+	}
+	amount, alreadySatisfied, err := paymentRefundAmount(credit.AmountCents, totalBefore, rec.AmountCents, rec.RequireExact)
+	if err != nil {
+		return RefundResult{}, err
+	}
+	if alreadySatisfied {
+		return RefundResult{
+			Order: *o, BalanceCents: m.balanceLocked(rec.TenantID, o.UserID),
+			CumulativeRefundedCents: totalBefore, RemainingRefundableCents: currentRemaining,
+			Idempotent: true, AlreadySatisfied: true,
+		}, nil
+	}
+	if m.balanceLocked(rec.TenantID, o.UserID) < amount {
+		return RefundResult{}, ErrRefundExceedsAvailable
 	}
 
 	m.nextRefundID++
 	m.nextBillingID++
 	refund := &RefundRecord{
-		ID:             m.nextRefundID,
-		TenantID:       rec.TenantID,
-		OrderID:        o.ID,
-		UserID:         o.UserID,
-		AmountCents:    rec.AmountCents,
-		CurrencyCode:   o.CurrencyCode,
-		IdempotencyKey: rec.IdempotencyKey,
-		Reason:         rec.Reason,
-		ActorKind:      actorKindOrDefault(rec.ActorKind),
-		ActorID:        rec.ActorID,
-		BillingEventID: m.nextBillingID,
-		CreatedAt:      rec.Now,
+		ID:                   m.nextRefundID,
+		TenantID:             rec.TenantID,
+		OrderID:              o.ID,
+		UserID:               o.UserID,
+		AmountCents:          amount,
+		RequestedAmountCents: rec.AmountCents,
+		RequireExact:         rec.RequireExact,
+		CurrencyCode:         o.CurrencyCode,
+		IdempotencyKey:       rec.IdempotencyKey,
+		Reason:               rec.Reason,
+		ActorKind:            actorKindOrDefault(rec.ActorKind),
+		ActorID:              rec.ActorID,
+		ActorRef:             strings.TrimSpace(rec.ActorRef),
+		BillingEventID:       m.nextBillingID,
+		CreatedAt:            rec.Now,
 	}
-	m.refunds[o.ID] = refund
-	m.refundsByKey[key] = o.ID
-	o.Status = StatusRefunded
+	m.refunds[refund.ID] = refund
+	m.refundsByKey[key] = refund.ID
+	totalAfter := totalBefore + amount
+	status, remaining, err := paymentRefundProgress(credit.AmountCents, totalAfter)
+	if err != nil {
+		return RefundResult{}, err
+	}
+	o.Status = status
 	o.UpdatedAt = rec.Now
 	m.appendAudit(rec.TenantID, o.ID, AuditOrderRefunded, refund.ActorKind, rec.ActorID, rec.Reason, rec.RequestID)
-	return RefundResult{Order: *o, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, o.UserID), Idempotent: false}, nil
+	return RefundResult{
+		Order: *o, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, o.UserID),
+		CumulativeRefundedCents: totalAfter, RemainingRefundableCents: remaining,
+	}, nil
+}
+
+func (m *MemoryStore) refundTotalForOrderLocked(tenantID, orderID int64) int64 {
+	var total int64
+	for _, refund := range m.refunds {
+		if refund.TenantID == tenantID && refund.OrderID == orderID {
+			total += refund.AmountCents
+		}
+	}
+	return total
 }
 
 func (m *MemoryStore) BeginFulfill(_ context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error) {

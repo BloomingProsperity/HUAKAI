@@ -1,36 +1,28 @@
-# 支付 Provider 状态备注（Payment Providers Status）
+# 支付渠道当前合同
 
-> **Owner 决策 2026-06-04**：真实支付 provider（支付宝 / 微信 wxpay / 易支付 EasyPay / Stripe / Airwallex）
-> **暂不实现** —— Owner 当前不具备 商户号 / SDK 接入 / 沙箱密钥 / 资质实名 条件。
-> **只保留框架。** 等 Owner 取得某家商户号 + 沙箱密钥后，再按本文档接入该 provider。
+本文件只记录当前源码已经证明的事实；执行顺序与强制路线以
+`docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md` 为准。
 
-## 框架现状（已就绪，无需重做）
+## 已接通
 
-HUAKAI 支付框架已完整，**比 sub2api/new-api 更全**（含幂等/审计/隐私/三层防伪造）：
+- `Provider.CreateIntent` 已进入建单编排。
+- `manual`、`taobao`、`hmac`、`test` 是当前内建渠道。
+- 回调验签、订单入账、租户隔离和本地账务幂等已有独立测试。
+- 内部余额冲正支持一单多笔、部分/累计封顶、累计目标补差、租户级幂等、明确剩余金额和真实 PostgreSQL 并发保护；只有累计达到原入账额时订单才进入 `refunded`。
 
-| 组件 | 文件 | 作用 |
-|---|---|---|
-| `Provider` 接口 | `provider.go` | 抽象支付渠道，**不耦合任何真实 SDK 类型** |
-| `CallbackVerifier` 接口 | `provider.go` | webhook 回调验签（密钥重算 + 常量时间比较，通过才解析） |
-| manual provider | `provider.go` | 管理员手动确认，**生产可用**，不碰任何商户密钥 |
-| hmac / test provider | `provider.go` | HTTP HMAC 验签桥 / 测试 |
-| 订单状态机 | `order.go`, `service.go`, `callback.go` | 下单 → 待付 → 已付 → 入账 |
-| 入账 / 幂等 / 审计 / 隐私 | `fulfillment.go`, `idempotency.go`, `audit.go`, `privacy.go` | 防重复入账、可观测、PII 脱敏 |
-| 三层防伪造 | `paymenthttp` | tenant 来自**已验签回调体**（非 URL/query），防越权路由 |
+## 尚未接通
 
-## 将来加一个真实 provider 的步骤（Owner 有商户号 + 密钥后）
+- 内建渠道的 `QueryOrder`、`Refund`、`Cancel` 均明确返回
+  `ErrProviderOperationNotSupported`。
+- `Service.RefundOrder` 当前只回收 HUAKAI 内部余额，不调用外部渠道，也没有
+  `pending/succeeded/failed`、渠道退款单号、查询确认或人工恢复状态机。
+- `payment_orders.provider_snapshot` 虽已存在，但建单返回的渠道快照尚未持久化和回读。
+- 没有已接线的真实 PSP adapter、商户实例、加密商户凭据或自动对账 worker。
 
-参考 sub2api 成熟模式（**clean-room：学方法，不抄码**）：
+## 当前退款边界
 
-1. 在非冻结包实现 `Provider` 接口（`Kind()` / `CreateIntent()` / `QueryOrder()` / `Refund()` / `Cancel()`；不支持的 PSP 操作返回 `ErrProviderOperationNotSupported`）+ `CallbackVerifier`（验签）。
-2. 该 provider 内部：
-   - **CreatePayment / CreateIntent**：调该平台 API（或官方 Go SDK，由 PM 用直连 ssh `go get` 引入——codex 沙箱无网络），返回支付 URL / 二维码 / 跳转参数。
-   - **VerifyNotification**：从 webhook 头取签名，用商户密钥重算并**常量时间比较**，通过才归一化出可信字段。
-   - QueryOrder（查状态对账）、Refund、可选 Cancel。
-3. **配置加密存**（商户号 / 私钥）—— 复用 `credentialstore` AES-GCM envelope，绝不明文。
-4. 注册到 provider 选择（factory/registry 模式）；webhook 路由按 provider 名分发验签。
-5. 安全闸：密钥加密、验签常量时间、tenant 来自已验签体、幂等（已有 `idempotency.go`）、CMB-5 不 log 密钥/原始 payload。
+- 管理员手动入账只允许执行 HUAKAI 内部余额冲正，并保存操作者、原因、幂等和账单证据。
+- 兑换码不对应外部支付渠道；未兑换时处理兑换码状态，已兑换时走独立补偿或余额追回，不能伪装成原路退款。
+- 管理员在线下收款时，外部退钱也在线下完成；HUAKAI 只保存人工凭证和本地账务结果，不声称已自动调用渠道。
 
-## 为何 Owner-gated（高风险，不自主落）
-
-真实密钥 · webhook 验签正确性（验签 bug = 伪造入账）· 退款/撤销语义 · SDK 供应链风险 · 国内支付需企业商户号实名/资质。**每个真实 provider 都 money 高风险 → 设计 → codex 盲实现 → PM 深审（验签安全重点）→ park 给 Owner 最终批，PM 绝不自合。**
+因此，任何界面、API 文案和运维流程都不得把当前内部余额回收显示为“渠道已原路退款”。只有未来接入真实直付渠道时，才允许连同持久状态机、幂等副作用、失败恢复、人工核验和对账一起启用自动原路退款。

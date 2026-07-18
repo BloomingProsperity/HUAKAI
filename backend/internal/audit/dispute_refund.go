@@ -25,15 +25,30 @@ type DisputeRefundExecutor interface {
 
 // CostDisputeResolver 把终态裁决与退款账务效果收在同一个数据库事务内。
 type CostDisputeResolver struct {
-	pool     *pgxpool.Pool
-	refunder DisputeRefundExecutor
+	pool          *pgxpool.Pool
+	refunder      DisputeRefundExecutor
+	quotaReverser QuotaReverserInTx
 }
 
-func NewCostDisputeResolver(pool *pgxpool.Pool, refunder DisputeRefundExecutor) (*CostDisputeResolver, error) {
+type CostDisputeResolverOption func(*CostDisputeResolver)
+
+func WithDisputeQuotaReverser(reverser QuotaReverserInTx) CostDisputeResolverOption {
+	return func(resolver *CostDisputeResolver) {
+		resolver.quotaReverser = reverser
+	}
+}
+
+func NewCostDisputeResolver(pool *pgxpool.Pool, refunder DisputeRefundExecutor, opts ...CostDisputeResolverOption) (*CostDisputeResolver, error) {
 	if pool == nil || refunder == nil {
 		return nil, ErrDisputeResolverRequired
 	}
-	return &CostDisputeResolver{pool: pool, refunder: refunder}, nil
+	resolver := &CostDisputeResolver{pool: pool, refunder: refunder}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(resolver)
+		}
+	}
+	return resolver, nil
 }
 
 func (s *CostDisputeResolver) ResolveDispute(ctx context.Context, in ResolveCostDisputeInput) (ResolveCostDisputeResult, error) {
@@ -92,21 +107,37 @@ func (s *CostDisputeResolver) refundResolvedDisputeInTx(ctx context.Context, tx 
 		claimID    int64
 		actualCost decimal.Decimal
 	)
-	// 正常幂等链应只产生一条 committed claim；若历史异常留下多条，选择最新一条，
-	// 同时仍由退款执行器的 claim 行锁、审计请求幂等键和累计上限阻止多退。
-	err := tx.QueryRow(ctx, `
+	rows, err := tx.Query(ctx, `
 SELECT id, COALESCE(actual_cost, 0)
 FROM billing_ledger_claims
 WHERE tenant_id = $1
-  AND logical_request_id = $2
+  AND user_id = $2
+  AND logical_request_id = $3
   AND status = 'committed'
-ORDER BY id DESC
-LIMIT 1`, dispute.TenantID, dispute.RequestID).Scan(&claimID, &actualCost)
+ORDER BY id ASC
+LIMIT 2
+FOR UPDATE`, dispute.TenantID, dispute.UserID, dispute.RequestID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrDisputeNoCharge
-		}
 		return nil, fmt.Errorf("audit: find committed dispute claim: %w", err)
+	}
+	defer rows.Close()
+	matchCount := 0
+	for rows.Next() {
+		matchCount++
+		if err := rows.Scan(&claimID, &actualCost); err != nil {
+			return nil, fmt.Errorf("audit: scan committed dispute claim: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("audit: iterate committed dispute claims: %w", err)
+	}
+	switch matchCount {
+	case 0:
+		return nil, ErrDisputeNoCharge
+	case 1:
+		// 唯一命中才允许自动退款。
+	default:
+		return nil, ErrDisputeAmbiguousCharge
 	}
 
 	amountMicroUSD, err := disputeCostUSDToMicros(actualCost)
@@ -122,22 +153,35 @@ LIMIT 1`, dispute.TenantID, dispute.RequestID).Scan(&claimID, &actualCost)
 		ClaimID:        claimID,
 		AmountMicroUSD: amountMicroUSD,
 		Reason:         "cost_dispute",
+		IdempotencyKey: disputeRefundIdempotencyKey(dispute.DisputeID),
 		AuditRequestID: disputeRefundAuditRequestID(dispute.DisputeID),
 	})
 	if err != nil {
+		if errors.Is(err, billing.ErrRefundNoCapturedCharge) {
+			return nil, ErrDisputeNoCharge
+		}
 		return nil, fmt.Errorf("audit: refund resolved dispute: %w", err)
 	}
 	if refund == nil {
 		return nil, errors.New("audit: refund resolved dispute returned nil result")
 	}
-	if refund.RefundMicroUSD <= 0 && !refund.Idempotent {
+	if refund.RefundMicroUSD <= 0 && !refund.Idempotent && !refund.AlreadySatisfied {
 		return nil, ErrDisputeNoCharge
+	}
+	if s.quotaReverser != nil && refund.RefundMicroUSD > 0 && !refund.Idempotent {
+		if _, err := s.quotaReverser.ReverseSettledCostInTx(ctx, tx, dispute.TenantID, claimID, refund.RefundMicroUSD); err != nil {
+			return nil, fmt.Errorf("audit: reverse quota for resolved dispute: %w", err)
+		}
 	}
 	return refund, nil
 }
 
 func disputeRefundAuditRequestID(disputeID string) string {
 	return "dispute-" + strings.TrimSpace(disputeID)
+}
+
+func disputeRefundIdempotencyKey(disputeID string) string {
+	return "cost_dispute_refund:" + strings.TrimSpace(disputeID)
 }
 
 // disputeCostUSDToMicros 与计费包私有换算保持相同的舍入、负数和溢出边界。

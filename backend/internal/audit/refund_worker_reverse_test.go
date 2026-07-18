@@ -29,7 +29,7 @@ func (r *recordingQuotaReverser) ReverseSettledCost(_ context.Context, tenantID,
 
 // TestMismatchRefundWorker_ReversesQuotaWithActualRefund 钉死 ③ 接线:退款落库后,worker 用退款的
 // 实际金额(RefundMicroUSD)调用配额冲减器,且租户/claim/金额一致。
-// 判别(§14):若删掉 applyLegacy/applyInTx 里的 w.reverseQuotaAfterRefund 调用,len(calls)=0,转红。
+// 判别：若删掉兼容路径里的配额冲减调用，调用记录会为空。
 func TestMismatchRefundWorker_ReversesQuotaWithActualRefund(t *testing.T) {
 	worker, settler, _, _, payload := refundWorkerFixture(t, nil)
 	rev := &recordingQuotaReverser{}
@@ -61,19 +61,19 @@ func TestReverseQuotaAfterRefund_GuardsZeroNilIdempotentAndAbsent(t *testing.T) 
 	// DeltaMicroUSD=99(请求额)故意区别于后面的实退额,用来判别"跟随实退、非请求 delta"。
 	payload := MismatchRefundPayload{TenantID: 9, ClaimID: 1001, DeltaMicroUSD: 99}
 
-	w.reverseQuotaAfterRefund(context.Background(), payload, nil)                                      // nil 退款
-	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 0}) // 零退款
+	w.reverseQuotaAfterLegacyRefund(context.Background(), payload, nil)                                      // nil 退款
+	w.reverseQuotaAfterLegacyRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 0}) // 零退款
 	// 幂等重放:billing 对同 audit_request_id 重放返回【存储的正退款额 + Idempotent=true】,本轮非新退款,不得再冲。
-	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 40, Idempotent: true})
+	w.reverseQuotaAfterLegacyRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 40, Idempotent: true})
 	if len(rev.calls) != 0 {
 		t.Fatalf("nil/零/幂等重放退款不应触发冲减,calls=%+v", rev.calls)
 	}
 
 	// 未注入冲减器:不 panic、不调用。
-	(&MismatchRefundWorker{}).reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 25})
+	(&MismatchRefundWorker{}).reverseQuotaAfterLegacyRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 25})
 
 	// 本轮新退款:按【实退额 25】冲减一次,而非请求的 DeltaMicroUSD=99。
-	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 25})
+	w.reverseQuotaAfterLegacyRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 25})
 	if len(rev.calls) != 1 || rev.calls[0].micros != 25 {
 		t.Fatalf("本轮新退款应按实退 25 冲减一次(非请求 delta 99),calls=%+v", rev.calls)
 	}
@@ -96,7 +96,7 @@ func TestReverseQuotaAfterRefund_RecordsSkippedResult(t *testing.T) {
 	w := &MismatchRefundWorker{quotaReverser: rev}
 	payload := MismatchRefundPayload{TenantID: 9, ClaimID: 1001, DeltaMicroUSD: 40}
 
-	w.reverseQuotaAfterRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 40})
+	w.reverseQuotaAfterLegacyRefund(context.Background(), payload, &billing.RefundResult{RefundMicroUSD: 40})
 
 	if got := refundQuotaReverseSkippedTotal.Value(); got != 1 {
 		t.Fatalf("refund_quota_reverse_skipped_total=%d want 1", got)

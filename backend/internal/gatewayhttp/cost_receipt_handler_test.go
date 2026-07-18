@@ -567,6 +567,61 @@ func TestAT_AUDIT_001_024_VerifyMismatchEnqueuesRefund(t *testing.T) {
 	}
 }
 
+func TestVerifyMismatchWithoutCapturedChargeDoesNotEnqueue(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-mismatch-unpaid")
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	derived.ClaimID = 911
+	derived.CostUSDMicros = submitted.CostUSDMicros - 50
+	queue := &mismatchRefundQueueStub{err: billing.ErrRefundNoCapturedCharge}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-mismatch-unpaid/verify", payload, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Valid || got.Verdict != audit.ReceiptValidationStateMismatchPending || got.DeltaMicroUSD != 50 ||
+		got.RefundEventID != 0 || got.Reason != "no_refundable_captured_charge" {
+		t.Fatalf("unpaid mismatch response=%+v", got)
+	}
+}
+
+func TestVerifyMismatchBeyondCapturedChargeDoesNotEnqueue(t *testing.T) {
+	signer := mustReceiptSigner(t)
+	submitted := signedGatewayReceipt(t, signer, 7, "req-mismatch-over-cap")
+	payload := mustUserReceipt(t, submitted)
+	derived := *submitted
+	derived.ClaimID = 912
+	derived.CostUSDMicros = submitted.CostUSDMicros - 50
+	queue := &mismatchRefundQueueStub{err: billing.ErrRefundAmountNotCovered}
+
+	rec := doReceiptRequest(t, receiptRouter(CostReceiptHandlerDeps{
+		Signer:          signer,
+		Now:             fixedReceiptNow,
+		DerivedReceipts: &derivedReceiptStub{receipt: &derived},
+		MismatchRefunds: queue,
+	}), http.MethodPost, "/v1/receipts/req-mismatch-over-cap/verify", payload, receiptSession(7))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got receiptVerifyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.RefundEventID != 0 || got.Reason != "refund_exceeds_captured_charge" {
+		t.Fatalf("over-cap mismatch response=%+v", got)
+	}
+}
+
 func TestAT_AUDIT_001_049_UnderChargeNoEnqueue(t *testing.T) {
 	signer := mustReceiptSigner(t)
 	submitted := signedGatewayReceipt(t, signer, 7, "req-undercharge-no-enqueue")
@@ -1093,12 +1148,16 @@ type mismatchRefundQueueStub struct {
 	calls   int
 	receipt *audit.CostReceipt
 	verdict audit.MismatchVerdict
+	err     error
 }
 
 func (s *mismatchRefundQueueStub) EnqueueMismatchRefund(_ context.Context, receipt *audit.CostReceipt, verdict audit.MismatchVerdict) (int64, error) {
 	s.calls++
 	s.receipt = receipt
 	s.verdict = verdict
+	if s.err != nil {
+		return 0, s.err
+	}
 	return 808, nil
 }
 

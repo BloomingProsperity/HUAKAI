@@ -191,8 +191,10 @@ func (s *refundVisibleSettler) CommitCacheHit(context.Context, billing.SettleReq
 
 func (s *refundVisibleSettler) Refund(_ context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{
-		RefundMicroUSD: req.AmountMicroUSD,
-		BillingEventID: 313,
-		AdjustmentRef:  "billing_event:313",
+		RefundMicroUSD:  req.AmountMicroUSD,
+		BillingEventID:  313,
+		AdjustmentRef:   "billing_event:313",
+		CoveredMicroUSD: req.AmountMicroUSD,
+		BalanceCredited: true,
 	}, nil
 }

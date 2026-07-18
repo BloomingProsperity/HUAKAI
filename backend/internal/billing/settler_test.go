@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -67,8 +68,9 @@ func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
 }
 
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
-	// 锁前置后顺序: rows[0]=claim 锁(committed), rows[1]=幂等 SELECT(无既往退款)。
+	// 查询顺序:退款事实未命中、claim 锁、旧事件未命中。
 	tx := newRefundSettlerTestTx(
+		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
 	)
@@ -79,6 +81,7 @@ func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 		ClaimID:        2,
 		AmountMicroUSD: 0,
 		Reason:         "audit_mismatch",
+		IdempotencyKey: "refund-zero",
 		AuditRequestID: "req-zero#audit_refund",
 	})
 	if err != nil {
@@ -97,10 +100,12 @@ func stringPtrForTest(v string) *string {
 }
 
 func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
-	// 锁前置后顺序: rows[0]=claim 锁(committed), rows[1]=幂等 SELECT(无既往退款)。
+	// 查询顺序:退款事实未命中、claim 锁、旧事件未命中、captured hold。
 	tx := newRefundSettlerTestTx(
+		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808"), int64(901)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
+		refundSettlerRow{values: []any{int64(1), int64(901), decimal.RequireFromString("1.00000000"), decimal.RequireFromString("1.00000000"), "captured"}},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
 
@@ -109,10 +114,126 @@ func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
 		ClaimID:        2,
 		AmountMicroUSD: 1,
 		Reason:         "audit_mismatch",
+		IdempotencyKey: "refund-overflow",
 		AuditRequestID: "req-overflow#audit_refund",
 	})
 	if !errors.Is(err, ErrCostOverflow) {
 		t.Fatalf("RefundInTx overflow error=%v want %v", err, ErrCostOverflow)
+	}
+}
+
+func TestRefundWithoutCapturedHoldIsRejected(t *testing.T) {
+	tx := newRefundSettlerTestTx(
+		refundSettlerRow{err: pgx.ErrNoRows},
+		refundSettlerRow{values: []any{"fp-unpaid", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{err: pgx.ErrNoRows},
+		refundSettlerRow{err: pgx.ErrNoRows},
+	)
+	settler := &DefaultSettler{q: dbbilling.New(tx)}
+
+	_, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
+		TenantID:       1,
+		ClaimID:        2,
+		AmountMicroUSD: 20_000,
+		Reason:         "audit_mismatch",
+		IdempotencyKey: "refund-unpaid",
+		AuditRequestID: "req-unpaid#audit_refund",
+	})
+	if !errors.Is(err, ErrRefundNoCapturedCharge) {
+		t.Fatalf("无 captured hold error=%v want ErrRefundNoCapturedCharge", err)
+	}
+}
+
+func TestRefundRejectsHoldIdentityMismatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenantID int64
+		userID   int64
+	}{
+		{name: "tenant", tenantID: 2, userID: 901},
+		{name: "user", tenantID: 1, userID: 902},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := newRefundSettlerTestTx(
+				refundSettlerRow{err: pgx.ErrNoRows},
+				refundSettlerRow{values: []any{"fp-identity", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+				refundSettlerRow{err: pgx.ErrNoRows},
+				refundSettlerRow{values: []any{tt.tenantID, tt.userID, decimal.RequireFromString("0.02000000"), decimal.RequireFromString("0.02000000"), "captured"}},
+			)
+			settler := &DefaultSettler{q: dbbilling.New(tx)}
+
+			_, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
+				TenantID:       1,
+				ClaimID:        2,
+				AmountMicroUSD: 20_000,
+				Reason:         "audit_mismatch",
+				IdempotencyKey: "refund-identity-" + tt.name,
+				AuditRequestID: "req-identity#audit_refund",
+			})
+			if err == nil || !strings.Contains(err.Error(), "refund hold identity mismatch") {
+				t.Fatalf("身份错配 error=%v want identity mismatch", err)
+			}
+		})
+	}
+}
+
+func TestRefundRejectsHoldThatWasNotCaptured(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    string
+		captured decimal.Decimal
+	}{
+		{name: "held", state: "held", captured: decimal.RequireFromString("0.02000000")},
+		{name: "released", state: "released", captured: decimal.RequireFromString("0.02000000")},
+		{name: "zero", state: "captured", captured: decimal.Zero},
+		{name: "negative", state: "captured", captured: decimal.RequireFromString("-0.01000000")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := newRefundSettlerTestTx(
+				refundSettlerRow{err: pgx.ErrNoRows},
+				refundSettlerRow{values: []any{"fp-state", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+				refundSettlerRow{err: pgx.ErrNoRows},
+				refundSettlerRow{values: []any{int64(1), int64(901), decimal.RequireFromString("0.02000000"), tt.captured, tt.state}},
+			)
+			settler := &DefaultSettler{q: dbbilling.New(tx)}
+
+			_, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
+				TenantID:       1,
+				ClaimID:        2,
+				AmountMicroUSD: 20_000,
+				Reason:         "audit_mismatch",
+				IdempotencyKey: "refund-state-" + tt.name,
+				AuditRequestID: "req-state#audit_refund",
+			})
+			if !errors.Is(err, ErrRefundNoCapturedCharge) {
+				t.Fatalf("非 captured hold error=%v want ErrRefundNoCapturedCharge", err)
+			}
+		})
+	}
+}
+
+func TestRefundPropagatesHoldReadFailure(t *testing.T) {
+	boom := errors.New("hold storage unavailable")
+	tx := newRefundSettlerTestTx(
+		refundSettlerRow{err: pgx.ErrNoRows},
+		refundSettlerRow{values: []any{"fp-hold-error", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{err: pgx.ErrNoRows},
+		refundSettlerRow{err: boom},
+	)
+	settler := &DefaultSettler{q: dbbilling.New(tx)}
+
+	_, err := settler.RefundInTx(context.Background(), tx, RefundRequest{
+		TenantID:       1,
+		ClaimID:        2,
+		AmountMicroUSD: 20_000,
+		Reason:         "audit_mismatch",
+		IdempotencyKey: "refund-hold-error",
+		AuditRequestID: "req-hold-error#audit_refund",
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("hold read error=%v want wrapped %v", err, boom)
 	}
 }
 
@@ -152,8 +273,15 @@ func (tx *refundSettlerTestTx) Prepare(context.Context, string, string) (*pgconn
 	return nil, errors.New("unexpected prepare")
 }
 
-func (tx *refundSettlerTestTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("unexpected exec")
+func (tx *refundSettlerTestTx) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	switch {
+	case strings.Contains(query, "pg_advisory_xact_lock"):
+		return pgconn.NewCommandTag("SELECT 1"), nil
+	case strings.Contains(query, "INSERT INTO billing_refund_operations"):
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	default:
+		return pgconn.CommandTag{}, fmt.Errorf("unexpected exec: %s", query)
+	}
 }
 
 func (tx *refundSettlerTestTx) Query(context.Context, string, ...any) (pgx.Rows, error) {

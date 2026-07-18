@@ -166,8 +166,16 @@ func (s *PostgresStore) AdminExportRefunds(ctx context.Context, filter RefundExp
 	limitPos := len(args)
 	where := "WHERE " + strings.Join(clauses, " AND ")
 	rows, err := s.pool.Query(ctx, `
-SELECT pr.id, pr.tenant_id, pr.order_id, pr.user_id, pr.amount_cents, pr.currency_code,
-       pr.idempotency_key, pr.reason, pr.actor_kind, pr.actor_id, pr.billing_event_id, pr.created_at
+SELECT pr.id, pr.tenant_id, pr.order_id, pr.user_id, pr.amount_cents,
+       pr.requested_amount_cents, pr.require_exact, pr.currency,
+       pr.idempotency_key, COALESCE(pr.reason, ''), pr.actor_kind, COALESCE(pr.actor_id, 0),
+       COALESCE((
+           SELECT MIN(event.id)
+           FROM billing_events AS event
+           WHERE event.tenant_id = pr.tenant_id
+             AND event.payment_refund_id = pr.id
+             AND event.event_type = 'payment_refunded'
+       ), 0), pr.created_at
 FROM payment_refunds pr
 `+where+`
 ORDER BY pr.created_at DESC, pr.id DESC LIMIT $`+fmt.Sprint(limitPos), args...)
@@ -179,7 +187,8 @@ ORDER BY pr.created_at DESC, pr.id DESC LIMIT $`+fmt.Sprint(limitPos), args...)
 	for rows.Next() {
 		var r RefundRecord
 		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.OrderID, &r.UserID, &r.AmountCents, &r.CurrencyCode,
+			&r.ID, &r.TenantID, &r.OrderID, &r.UserID, &r.AmountCents,
+			&r.RequestedAmountCents, &r.RequireExact, &r.CurrencyCode,
 			&r.IdempotencyKey, &r.Reason, &r.ActorKind, &r.ActorID, &r.BillingEventID, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("payment: scan refund export row: %w", err)

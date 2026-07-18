@@ -24,6 +24,7 @@ var (
 	ErrDisputeNotFound         = errors.New("audit: dispute not found")
 	ErrDisputeNotResolvable    = errors.New("audit: dispute not found or already terminal")
 	ErrDisputeNoCharge         = errors.New("audit: dispute has no committed refundable charge")
+	ErrDisputeAmbiguousCharge  = errors.New("audit: dispute matches multiple committed charges")
 	ErrDisputeResolverRequired = errors.New("audit: dispute resolver required")
 )
 

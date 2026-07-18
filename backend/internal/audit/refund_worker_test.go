@@ -35,7 +35,10 @@ func TestAT_AUDIT_001_019_MismatchDetectTriggersEnqueue(t *testing.T) {
 		t.Fatalf("fields_mismatch=%+v", verdict.FieldsMismatch)
 	}
 
-	queue := NewMismatchRefundQueue(&recordingMismatchRefundQueue{}, WithRefundNow(fixedRefundNow))
+	verifier := &recordingRefundEligibilityVerifier{}
+	queue := NewMismatchRefundQueue(&recordingMismatchRefundQueue{},
+		WithRefundEligibilityVerifier(verifier),
+		WithRefundNow(fixedRefundNow))
 	eventID, err := queue.EnqueueMismatchRefund(ctx, derived, verdict)
 	if err != nil {
 		t.Fatalf("EnqueueMismatchRefund: %v", err)
@@ -50,6 +53,51 @@ func TestAT_AUDIT_001_019_MismatchDetectTriggersEnqueue(t *testing.T) {
 	if recorder.event.IdempotencyKey != "audit_mismatch_refund:1001" {
 		t.Fatalf("idempotency=%q", recorder.event.IdempotencyKey)
 	}
+	if verifier.calls != 1 || verifier.request.ClaimID != derived.ClaimID || verifier.request.AmountMicroUSD != verdict.DeltaMicroUSD {
+		t.Fatalf("eligibility calls=%d request=%+v", verifier.calls, verifier.request)
+	}
+}
+
+func TestMismatchRefundQueueDoesNotEnqueueWithoutCapturedCharge(t *testing.T) {
+	queueStore := &recordingMismatchRefundQueue{}
+	queue := NewMismatchRefundQueue(queueStore,
+		WithRefundEligibilityVerifier(&recordingRefundEligibilityVerifier{err: billing.ErrRefundNoCapturedCharge}),
+		WithRefundNow(fixedRefundNow))
+	receipt := refundTestReceipt("req-unpaid-no-enqueue", 1002, 200)
+	verdict := MismatchVerdict{State: ReceiptValidationStateMismatchPending, DeltaMicroUSD: 40, MismatchDirection: MismatchDirectionOverCharge}
+
+	_, err := queue.EnqueueMismatchRefund(context.Background(), receipt, verdict)
+	if !errors.Is(err, billing.ErrRefundNoCapturedCharge) {
+		t.Fatalf("enqueue error=%v want ErrRefundNoCapturedCharge", err)
+	}
+	if queueStore.event.EventKind != "" {
+		t.Fatalf("unpaid mismatch must not enqueue event: %+v", queueStore.event)
+	}
+}
+
+func TestMismatchRefundQueueRejectsUnderChargeBeforeEligibilityCheck(t *testing.T) {
+	queueStore := &recordingMismatchRefundQueue{}
+	verifier := &recordingRefundEligibilityVerifier{}
+	queue := NewMismatchRefundQueue(queueStore,
+		WithRefundEligibilityVerifier(verifier),
+		WithRefundNow(fixedRefundNow))
+	receipt := refundTestReceipt("req-under-charge-no-refund", 1003, 240)
+	verdict := MismatchVerdict{
+		State:             ReceiptValidationStateMismatchPending,
+		DeltaMicroUSD:     40,
+		MismatchDirection: MismatchDirectionUnderCharge,
+	}
+
+	_, err := queue.EnqueueMismatchRefund(context.Background(), receipt, verdict)
+	if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+		t.Fatalf("enqueue error=%v want ErrReceiptInvalidDerivedData", err)
+	}
+	if verifier.calls != 0 {
+		t.Fatalf("under-charge reached money eligibility calls=%d", verifier.calls)
+	}
+	if queueStore.event.EventKind != "" {
+		t.Fatalf("under-charge must not enqueue event: %+v", queueStore.event)
+	}
 }
 
 func TestAT_AUDIT_001_020_RefundWorkerCallsBillingRefund(t *testing.T) {
@@ -63,7 +111,10 @@ func TestAT_AUDIT_001_020_RefundWorkerCallsBillingRefund(t *testing.T) {
 		t.Fatalf("refund calls=%d want 1", settler.refundCalls)
 	}
 	if settler.lastRefund.ClaimID != payload.ClaimID || settler.lastRefund.AmountMicroUSD != payload.DeltaMicroUSD ||
-		settler.lastRefund.Reason != AuditMismatchRefundReason {
+		settler.lastRefund.Reason != AuditMismatchRefundReason ||
+		settler.lastRefund.IdempotencyKey != mismatchRefundIdempotencyKey(payload.ClaimID) ||
+		settler.lastRefund.AuditRequestID != refundAuditRequestID(payload.RequestID, payload.ClaimID) ||
+		!settler.lastRefund.RequireExact {
 		t.Fatalf("refund request=%+v payload=%+v", settler.lastRefund, payload)
 	}
 }
@@ -78,8 +129,34 @@ func TestAT_AUDIT_001_021_DuplicateClaimRefundsOnce(t *testing.T) {
 	if err := worker.Apply(ctx, payload); err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
+	if settler.refundCalls != 2 {
+		t.Fatalf("refund calls=%d want 2（第二次必须重新核对账务幂等事实）", settler.refundCalls)
+	}
+	if got := store.Status(payload.ClaimID); got != "completed" {
+		t.Fatalf("pending status=%q want completed", got)
+	}
+}
+
+func TestRefundCompletedStatusWithoutEvidenceRebuildsRefundReceipt(t *testing.T) {
+	ctx := context.Background()
+	worker, settler, store, sink, payload := refundWorkerFixture(t, nil)
+	if _, err := store.EnsurePending(ctx, payload); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	store.mu.Lock()
+	rec := store.rows[payload.ClaimID]
+	rec.Status = "completed"
+	store.rows[payload.ClaimID] = rec
+	store.mu.Unlock()
+
+	if err := worker.Apply(ctx, payload); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
 	if settler.refundCalls != 1 {
 		t.Fatalf("refund calls=%d want 1", settler.refundCalls)
+	}
+	if sink.receipt == nil || sink.receipt.ClaimID != payload.ClaimID {
+		t.Fatalf("refund receipt=%+v", sink.receipt)
 	}
 	if got := store.Status(payload.ClaimID); got != "completed" {
 		t.Fatalf("pending status=%q want completed", got)
@@ -119,6 +196,126 @@ func TestAT_AUDIT_001_023_RefundFailureReturnsErrorForDLQRetry(t *testing.T) {
 	}
 }
 
+func TestRefundNoopCannotCompletePendingOrSignReceipt(t *testing.T) {
+	worker, settler, store, sink, payload := refundWorkerFixture(t, nil)
+	settler.refundResult = &billing.RefundResult{AdjustmentRef: billing.RefundSkippedAmountZeroRef}
+
+	err := worker.Apply(context.Background(), payload)
+	if !errors.Is(err, billing.ErrRefundAmountNotCovered) {
+		t.Fatalf("Apply error=%v want ErrRefundAmountNotCovered", err)
+	}
+	if got := store.Status(payload.ClaimID); got != "failed" {
+		t.Fatalf("pending status=%q want failed", got)
+	}
+	if sink.receipt != nil {
+		t.Fatalf("zero refund must not sign refunded receipt: %+v", sink.receipt)
+	}
+}
+
+func TestRefundAlreadySatisfiedCompletesWithPriorAdjustment(t *testing.T) {
+	worker, settler, store, sink, payload := refundWorkerFixture(t, nil)
+	settler.refundResult = &billing.RefundResult{
+		BillingEventID:   456,
+		AdjustmentRef:    "billing_event:456",
+		CoveredMicroUSD:  payload.DeltaMicroUSD,
+		AlreadySatisfied: true,
+	}
+
+	if err := worker.Apply(context.Background(), payload); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := store.Status(payload.ClaimID); got != "completed" {
+		t.Fatalf("pending status=%q want completed", got)
+	}
+	if sink.receipt == nil || !receiptHasAdjustmentRef(sink.receipt, "billing_event:456") {
+		t.Fatalf("satisfied refund receipt missing prior adjustment: %+v", sink.receipt)
+	}
+}
+
+func TestMismatchRefundHandlerRejectsConflictingDLQMetadata(t *testing.T) {
+	_, _, _, _, payload := refundWorkerFixture(t, nil)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	newRecord := func() dlq.Record {
+		claimID := payload.ClaimID
+		sourceID := payload.ClaimID
+		return dlq.Record{
+			TenantID:       payload.TenantID,
+			ClaimID:        &claimID,
+			Payload:        raw,
+			EventKind:      dlq.EventKindAuditMismatchRefund,
+			IdempotencyKey: mismatchRefundIdempotencyKey(payload.ClaimID),
+			SourceTable:    "audit_refund_pending",
+			SourceID:       &sourceID,
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*dlq.Record)
+	}{
+		{name: "event_kind", mutate: func(rec *dlq.Record) { rec.EventKind = dlq.EventKindMetrics }},
+		{name: "tenant", mutate: func(rec *dlq.Record) { rec.TenantID++ }},
+		{name: "claim", mutate: func(rec *dlq.Record) { *rec.ClaimID++ }},
+		{name: "source_table", mutate: func(rec *dlq.Record) { rec.SourceTable = "other" }},
+		{name: "source_id", mutate: func(rec *dlq.Record) { *rec.SourceID++ }},
+		{name: "idempotency", mutate: func(rec *dlq.Record) { rec.IdempotencyKey = "other" }},
+		{name: "payload", mutate: func(rec *dlq.Record) { rec.Payload = json.RawMessage(`{"tenant_id":`) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			worker, settler, _, _, _ := refundWorkerFixture(t, nil)
+			rec := newRecord()
+			tt.mutate(&rec)
+			err := worker.Handle(context.Background(), rec)
+			if !errors.Is(err, dlq.ErrUnretryable) {
+				t.Fatalf("Handle error=%v want ErrUnretryable", err)
+			}
+			if settler.refundCalls != 0 {
+				t.Fatalf("conflicting metadata reached money path calls=%d", settler.refundCalls)
+			}
+		})
+	}
+}
+
+func TestMismatchRefundHandlerQuarantinesStructuralBillingFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "没有真实扣款", err: billing.ErrRefundNoCapturedCharge},
+		{name: "幂等请求冲突", err: billing.ErrRefundIdempotencyConflict},
+		{name: "退款事实损坏", err: billing.ErrRefundFactInvalid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			worker, _, store, _, payload := refundWorkerFixture(t, tt.err)
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+			claimID := payload.ClaimID
+			sourceID := payload.ClaimID
+			err = worker.Handle(context.Background(), dlq.Record{
+				TenantID:       payload.TenantID,
+				ClaimID:        &claimID,
+				Payload:        raw,
+				EventKind:      dlq.EventKindAuditMismatchRefund,
+				IdempotencyKey: mismatchRefundIdempotencyKey(payload.ClaimID),
+				SourceTable:    "audit_refund_pending",
+				SourceID:       &sourceID,
+			})
+			if !errors.Is(err, dlq.ErrUnretryable) || !errors.Is(err, tt.err) {
+				t.Fatalf("Handle error=%v want unretryable %v", err, tt.err)
+			}
+			if got := store.Status(payload.ClaimID); got != "failed" {
+				t.Fatalf("pending status=%q want failed", got)
+			}
+		})
+	}
+}
+
 func TestAT_AUDIT_001_033_RefundLedgerAppendDuplicateRetryCompletes(t *testing.T) {
 	ctx := context.Background()
 	worker, _, store, sink, payload := refundWorkerFixture(t, nil)
@@ -127,6 +324,12 @@ func TestAT_AUDIT_001_033_RefundLedgerAppendDuplicateRetryCompletes(t *testing.T
 			LedgerID:  "ldg_refund_existing",
 			RequestID: refundAuditRequestID(payload.RequestID, payload.ClaimID),
 			TenantID:  payload.TenantID,
+			ModelChain: &proto.ModelChain{
+				Requested:        "audit_mismatch_refund",
+				RouteDecided:     "audit_mismatch_refund",
+				UpstreamReported: "audit_mismatch_refund",
+				Verdict:          "mismatch",
+			},
 		},
 	}
 
@@ -145,15 +348,48 @@ func TestAT_AUDIT_001_033_RefundLedgerAppendDuplicateRetryCompletes(t *testing.T
 	}
 }
 
+func TestRefundLedgerDuplicateRejectsDifferentTenant(t *testing.T) {
+	ctx := context.Background()
+	worker, _, store, sink, payload := refundWorkerFixture(t, nil)
+	worker.ledger = &duplicateRefundLedger{
+		entry: auditledger.LedgerEntry{
+			LedgerID:  "ldg_refund_wrong_tenant",
+			RequestID: refundAuditRequestID(payload.RequestID, payload.ClaimID),
+			TenantID:  payload.TenantID + 1,
+			ModelChain: &proto.ModelChain{
+				Requested:        "audit_mismatch_refund",
+				RouteDecided:     "audit_mismatch_refund",
+				UpstreamReported: "audit_mismatch_refund",
+				Verdict:          "mismatch",
+			},
+		},
+	}
+
+	err := worker.Apply(ctx, payload)
+	if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+		t.Fatalf("Apply error=%v want ErrReceiptInvalidDerivedData", err)
+	}
+	if got := store.Status(payload.ClaimID); got != "failed" {
+		t.Fatalf("pending status=%q want failed", got)
+	}
+	if sink.receipt != nil {
+		t.Fatalf("conflicting ledger reached receipt append: %+v", sink.receipt)
+	}
+}
+
 func TestAT_AUDIT_001_034_RefundReceiptAppendDuplicateRetryCompletes(t *testing.T) {
 	ctx := context.Background()
-	worker, _, store, _, payload := refundWorkerFixture(t, nil)
+	worker, settler, store, _, payload := refundWorkerFixture(t, nil)
 	existing := refundTestReceipt(payload.RequestID, payload.ClaimID, 240)
 	existing.TenantID = payload.TenantID
 	existing.ReceiptSequence = 1
 	existing.ValidationState = ReceiptValidationStateMismatchRefunded
 	existing.Verdict = ReceiptVerdictMismatchRefundPending
-	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
+	existing.AdjustmentRefs = []string{
+		refundReceiptIdempotencyKey(payload),
+		"billing_event:123",
+		"audit_ledger:ldg_t9_2",
+	}
 	existing.SignerFingerprint = []byte("existing-fingerprint")
 	existing.SignedHash = []byte("existing-signature")
 	sink := &duplicateRefundReceiptSink{existing: existing}
@@ -165,8 +401,72 @@ func TestAT_AUDIT_001_034_RefundReceiptAppendDuplicateRetryCompletes(t *testing.
 	if got := store.Status(payload.ClaimID); got != "completed" {
 		t.Fatalf("pending status=%q want completed", got)
 	}
-	if sink.appendCalls != 0 || sink.lookupCalls != 1 {
+	if settler.refundCalls != 1 {
+		t.Fatalf("existing receipt must still verify billing facts, refund calls=%d want 1", settler.refundCalls)
+	}
+	if sink.appendCalls != 0 || sink.lookupCalls != 2 {
 		t.Fatalf("receipt sink calls append=%d lookup=%d", sink.appendCalls, sink.lookupCalls)
+	}
+}
+
+func TestRefundExistingReceiptRejectsDifferentClaim(t *testing.T) {
+	ctx := context.Background()
+	worker, settler, store, _, payload := refundWorkerFixture(t, nil)
+	existing := refundTestReceipt(payload.RequestID, payload.ClaimID+1, 240)
+	existing.TenantID = payload.TenantID
+	existing.ReceiptSequence = 1
+	existing.ValidationState = ReceiptValidationStateMismatchRefunded
+	existing.Verdict = ReceiptVerdictMismatchRefundPending
+	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
+	existing.SignerFingerprint = []byte("existing-fingerprint")
+	existing.SignedHash = []byte("existing-signature")
+	worker.receiptSink = &duplicateRefundReceiptSink{existing: existing}
+
+	err := worker.Apply(ctx, payload)
+	if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+		t.Fatalf("Apply error=%v want ErrReceiptInvalidDerivedData", err)
+	}
+	if settler.refundCalls != 0 {
+		t.Fatalf("conflicting receipt reached money path calls=%d", settler.refundCalls)
+	}
+	if got := store.Status(payload.ClaimID); got != "failed" {
+		t.Fatalf("pending status=%q want failed", got)
+	}
+}
+
+func TestRefundCompletedReceiptRejectsMissingBillingEvidence(t *testing.T) {
+	ctx := context.Background()
+	worker, settler, store, _, payload := refundWorkerFixture(t, nil)
+	existing := refundTestReceipt(payload.RequestID, payload.ClaimID, 240)
+	existing.ReceiptSequence = 1
+	existing.ValidationState = ReceiptValidationStateMismatchRefunded
+	existing.Verdict = ReceiptVerdictMismatchRefundPending
+	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
+	existing.SignerFingerprint = []byte("existing-fingerprint")
+	existing.SignedHash = []byte("existing-signature")
+	worker.receiptSink = &duplicateRefundReceiptSink{existing: existing}
+
+	err := worker.Apply(ctx, payload)
+	if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+		t.Fatalf("Apply error=%v want ErrReceiptInvalidDerivedData", err)
+	}
+	if settler.refundCalls != 0 {
+		t.Fatalf("incomplete receipt evidence reached money path calls=%d", settler.refundCalls)
+	}
+	if got := store.Status(payload.ClaimID); got != "failed" {
+		t.Fatalf("pending status=%q want failed", got)
+	}
+}
+
+func TestRefundFailureIncludesPendingStateWriteFailure(t *testing.T) {
+	refundErr := errors.New("refund unavailable")
+	markErr := errors.New("pending state unavailable")
+	worker, _, store, _, payload := refundWorkerFixture(t, refundErr)
+	worker.pending = &markFailedErrorRefundPendingStore{RefundPendingStore: store, err: markErr}
+
+	err := worker.Apply(context.Background(), payload)
+	if !errors.Is(err, refundErr) || !errors.Is(err, markErr) {
+		t.Fatalf("Apply error=%v want both failures", err)
 	}
 }
 
@@ -186,8 +486,8 @@ func TestAT_AUDIT_001_065_RefundRetryUsesExistingReceiptIdempotently(t *testing.
 	if err := worker.Apply(ctx, payload); err != nil {
 		t.Fatalf("retry Apply: %v", err)
 	}
-	if settler.refundCalls != 1 {
-		t.Fatalf("refund calls=%d want 1", settler.refundCalls)
+	if settler.refundCalls != 2 {
+		t.Fatalf("refund calls=%d want 2（恢复必须重放账务核验）", settler.refundCalls)
 	}
 	if len(sink.receipts) != 1 {
 		t.Fatalf("receipt count=%d want 1", len(sink.receipts))
@@ -203,7 +503,7 @@ func TestAT_AUDIT_001_065_RefundRetryUsesExistingReceiptIdempotently(t *testing.
 	}
 }
 
-func TestAT_AUDIT_001_refund_dup_retry_idempotent(t *testing.T) {
+func TestRefundExistingReceiptRejectsUnrelatedBillingEvent(t *testing.T) {
 	ctx := context.Background()
 	worker, settler, store, _, payload := refundWorkerFixture(t, nil)
 	existing := refundTestReceipt(payload.RequestID, payload.ClaimID, 240)
@@ -211,22 +511,23 @@ func TestAT_AUDIT_001_refund_dup_retry_idempotent(t *testing.T) {
 	existing.ReceiptSequence = 7
 	existing.ValidationState = ReceiptValidationStateMismatchRefunded
 	existing.Verdict = ReceiptVerdictMismatchRefundPending
-	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload)}
+	existing.AdjustmentRefs = []string{refundReceiptIdempotencyKey(payload), "billing_event:999"}
 	existing.SignerFingerprint = []byte("existing-fingerprint")
 	existing.SignedHash = []byte("existing-signature")
 	sink := &duplicateRefundReceiptSink{existing: existing}
 	worker.receiptSink = sink
 
-	if err := worker.Apply(ctx, payload); err != nil {
-		t.Fatalf("Apply with already-written refunded receipt: %v", err)
+	err := worker.Apply(ctx, payload)
+	if !errors.Is(err, ErrReceiptInvalidDerivedData) {
+		t.Fatalf("Apply error=%v want ErrReceiptInvalidDerivedData", err)
 	}
-	if got := store.Status(payload.ClaimID); got != "completed" {
-		t.Fatalf("pending status=%q want completed", got)
+	if got := store.Status(payload.ClaimID); got != "failed" {
+		t.Fatalf("pending status=%q want failed", got)
 	}
-	if settler.refundCalls != 0 {
-		t.Fatalf("refund calls=%d want 0", settler.refundCalls)
+	if settler.refundCalls != 1 {
+		t.Fatalf("refund calls=%d want 1（必须先取得真实账单引用）", settler.refundCalls)
 	}
-	if sink.appendCalls != 0 || sink.lookupCalls != 1 {
+	if sink.appendCalls != 0 || sink.lookupCalls != 2 {
 		t.Fatalf("receipt sink calls append=%d lookup=%d", sink.appendCalls, sink.lookupCalls)
 	}
 }
@@ -335,10 +636,24 @@ func (q *recordingMismatchRefundQueue) Enqueue(_ context.Context, event dlq.Even
 	return 77, nil
 }
 
+type recordingRefundEligibilityVerifier struct {
+	calls   int
+	request billing.RefundRequest
+	err     error
+}
+
+func (v *recordingRefundEligibilityVerifier) VerifyRefundableCharge(_ context.Context, req billing.RefundRequest) error {
+	v.calls++
+	v.request = req
+	return v.err
+}
+
 type recordingRefundSettler struct {
-	refundCalls int
-	lastRefund  billing.RefundRequest
-	refundErr   error
+	refundCalls  int
+	lastRefund   billing.RefundRequest
+	refundErr    error
+	refundResult *billing.RefundResult
+	refunds      map[string]billing.RefundResult
 }
 
 func (s *recordingRefundSettler) Settle(context.Context, billing.SettleRequest) (*billing.SettleResult, error) {
@@ -359,17 +674,41 @@ func (s *recordingRefundSettler) Refund(_ context.Context, req billing.RefundReq
 	if s.refundErr != nil {
 		return nil, s.refundErr
 	}
-	return &billing.RefundResult{
-		RefundMicroUSD: req.AmountMicroUSD,
-		BillingEventID: 123,
-		AdjustmentRef:  "billing_event:123",
-	}, nil
+	if s.refundResult != nil {
+		return s.refundResult, nil
+	}
+	if stored, ok := s.refunds[req.IdempotencyKey]; ok {
+		stored.Idempotent = true
+		stored.BalanceCredited = false
+		return &stored, nil
+	}
+	result := billing.RefundResult{
+		RefundMicroUSD:  req.AmountMicroUSD,
+		BillingEventID:  123,
+		AdjustmentRef:   "billing_event:123",
+		CoveredMicroUSD: req.AmountMicroUSD,
+		BalanceCredited: true,
+	}
+	if s.refunds == nil {
+		s.refunds = make(map[string]billing.RefundResult)
+	}
+	s.refunds[req.IdempotencyKey] = result
+	return &result, nil
 }
 
 type recordingRefundReceiptSink struct {
 	receipt            *CostReceipt
 	receipts           []*CostReceipt
 	idempotencyLookups int
+}
+
+type markFailedErrorRefundPendingStore struct {
+	RefundPendingStore
+	err error
+}
+
+func (s *markFailedErrorRefundPendingStore) MarkFailed(context.Context, int64) error {
+	return s.err
 }
 
 func (s *recordingRefundReceiptSink) AppendRefundReceipt(_ context.Context, receipt *CostReceipt) error {

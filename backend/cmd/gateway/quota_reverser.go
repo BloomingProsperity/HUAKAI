@@ -3,27 +3,39 @@ package main
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
-// quotaCostReverser 把 audit 退款 worker 的 micro USD 冲减请求适配到 quota.Service.ReverseCost。
-// 它实现 auditreceipt.QuotaReverser:退款落库后,把退款的实际金额(micro USD)转成 USD,从配额
-// settled_value 负向冲减。quota.Service 无状态(仅包一层 PG store),此处独立实例与配额强制层用的是
-// 同一套 quota 表,功能等价。
+// quotaCostReverser 把退款金额适配为配额成本冲减。生产退款链使用事务内接口，让余额、
+// 账单、退款事实、审计收据与配额在同一事务提交；非事务接口仅供兼容调用路径使用。
 type quotaCostReverser struct {
 	svc *quota.Service
 }
 
 var _ auditreceipt.QuotaReverser = quotaCostReverser{}
+var _ auditreceipt.QuotaReverserInTx = quotaCostReverser{}
 
 func (r quotaCostReverser) ReverseSettledCost(ctx context.Context, tenantID, claimID int64, amountMicroUSD int64) (auditreceipt.QuotaReverseResult, error) {
 	if r.svc == nil || amountMicroUSD <= 0 {
 		return auditreceipt.QuotaReverseResult{Skipped: true}, nil
 	}
 	result, err := r.svc.ReverseCost(ctx, quota.ReverseCostRequest{
+		TenantID: tenantID,
+		ClaimID:  claimID,
+		Amount:   decimal.NewFromInt(amountMicroUSD).Div(decimal.NewFromInt(1_000_000)),
+	})
+	return auditreceipt.QuotaReverseResult{Skipped: result.Skipped}, err
+}
+
+func (r quotaCostReverser) ReverseSettledCostInTx(ctx context.Context, tx pgx.Tx, tenantID, claimID int64, amountMicroUSD int64) (auditreceipt.QuotaReverseResult, error) {
+	if r.svc == nil || tx == nil || amountMicroUSD <= 0 {
+		return auditreceipt.QuotaReverseResult{Skipped: true}, nil
+	}
+	result, err := r.svc.ReverseCostInTx(ctx, tx, quota.ReverseCostRequest{
 		TenantID: tenantID,
 		ClaimID:  claimID,
 		Amount:   decimal.NewFromInt(amountMicroUSD).Div(decimal.NewFromInt(1_000_000)),

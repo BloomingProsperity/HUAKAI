@@ -166,8 +166,10 @@ func TestService_RefundOrderSubtractsFromDerivedBalanceAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refund: %v", err)
 	}
-	if refunded.Order.Status != StatusRefunded || refunded.Refund.AmountCents != 400 || refunded.BalanceCents != 1100 || refunded.Idempotent {
-		t.Fatalf("refund result=%+v want status refunded, amount 400, balance 1100, non-idempotent", refunded)
+	if refunded.Order.Status != StatusCompleted || refunded.Refund.AmountCents != 400 ||
+		refunded.BalanceCents != 1100 || refunded.CumulativeRefundedCents != 400 ||
+		refunded.RemainingRefundableCents != 1100 || refunded.Idempotent {
+		t.Fatalf("partial refund result=%+v want completed/amount 400/balance 1100/cumulative 400/remaining 1100", refunded)
 	}
 
 	bal, err := svc.GetBalance(ctx, 1, 2)
@@ -186,9 +188,59 @@ func TestService_RefundOrderSubtractsFromDerivedBalanceAndAudits(t *testing.T) {
 	if !got[AuditOrderRefunded] {
 		t.Fatalf("missing refund audit event (got %v)", got)
 	}
+
+	final, err := svc.RefundOrder(ctx, RefundOrderInput{
+		TenantID: 1, OrderID: r.Order.ID, AmountCents: 1100,
+		IdempotencyKey: "refund-key-2", Reason: "operator refund final",
+		ActorKind: ActorKindAdmin, ActorID: 9, RequestID: "req-refund-2",
+	})
+	if err != nil {
+		t.Fatalf("final refund: %v", err)
+	}
+	if final.Order.Status != StatusRefunded || final.BalanceCents != 0 ||
+		final.CumulativeRefundedCents != 1500 || final.RemainingRefundableCents != 0 {
+		t.Fatalf("final refund result=%+v", final)
+	}
 }
 
-func TestService_RefundOrderIdempotencyKeyDoesNotDoubleDeduct(t *testing.T) {
+func TestService_RefundExactTargetOnlyFillsRemaining(t *testing.T) {
+	svc := newTestService()
+	ctx := context.Background()
+	created, err := svc.CreateOrder(ctx, CreateOrderInput{
+		TenantID: 1, UserID: 2, AmountCents: 1500, OutTradeNo: "trade-refund-exact", ActorAdminID: 9,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: 1, OrderID: created.Order.ID, ActorAdminID: 9}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if _, err := svc.RefundOrder(ctx, RefundOrderInput{
+		TenantID: 1, OrderID: created.Order.ID, AmountCents: 400,
+		IdempotencyKey: "refund-exact-prior", ActorKind: ActorKindAdmin, ActorID: 9,
+	}); err != nil {
+		t.Fatalf("prior refund: %v", err)
+	}
+	exact := RefundOrderInput{
+		TenantID: 1, OrderID: created.Order.ID, AmountCents: 1500, RequireExact: true,
+		IdempotencyKey: "refund-exact-target", ActorKind: ActorKindAdmin, ActorID: 9,
+	}
+	result, err := svc.RefundOrder(ctx, exact)
+	if err != nil {
+		t.Fatalf("exact target: %v", err)
+	}
+	if result.Refund.AmountCents != 1100 || result.Refund.RequestedAmountCents != 1500 ||
+		!result.Refund.RequireExact || result.CumulativeRefundedCents != 1500 ||
+		result.RemainingRefundableCents != 0 || result.Order.Status != StatusRefunded {
+		t.Fatalf("exact result=%+v", result)
+	}
+	replay, err := svc.RefundOrder(ctx, exact)
+	if err != nil || !replay.Idempotent || replay.Refund.ID != result.Refund.ID {
+		t.Fatalf("exact replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestService_RefundOrderIdempotencyRequiresSameBusinessRequest(t *testing.T) {
 	svc := newTestService()
 	ctx := context.Background()
 	r, err := svc.CreateOrder(ctx, CreateOrderInput{TenantID: 1, UserID: 2, AmountCents: 1200, OutTradeNo: "trade-refund-dupe", ActorAdminID: 9})
@@ -198,20 +250,107 @@ func TestService_RefundOrderIdempotencyKeyDoesNotDoubleDeduct(t *testing.T) {
 	if _, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: 1, OrderID: r.Order.ID, ActorAdminID: 9}); err != nil {
 		t.Fatalf("confirm+fulfill: %v", err)
 	}
-	first, err := svc.RefundOrder(ctx, RefundOrderInput{TenantID: 1, OrderID: r.Order.ID, AmountCents: 300, IdempotencyKey: "refund-dupe", ActorKind: ActorKindAdmin, ActorID: 9})
+	request := RefundOrderInput{
+		TenantID:       1,
+		OrderID:        r.Order.ID,
+		AmountCents:    300,
+		IdempotencyKey: "refund-dupe",
+		Reason:         "operator refund",
+		ActorKind:      ActorKindAdmin,
+		ActorID:        9,
+		ActorRef:       "admin_user:9",
+		RequestID:      "refund-request-1",
+	}
+	first, err := svc.RefundOrder(ctx, request)
 	if err != nil || first.Idempotent {
 		t.Fatalf("first refund: res=%+v err=%v", first, err)
 	}
-	second, err := svc.RefundOrder(ctx, RefundOrderInput{TenantID: 1, OrderID: r.Order.ID, AmountCents: 999, IdempotencyKey: "refund-dupe", ActorKind: ActorKindAdmin, ActorID: 9})
+	replayRequest := request
+	replayRequest.RequestID = "refund-request-retry"
+	second, err := svc.RefundOrder(ctx, replayRequest)
 	if err != nil {
 		t.Fatalf("second refund replay: %v", err)
 	}
 	if !second.Idempotent || second.Refund.ID != first.Refund.ID || second.Refund.AmountCents != 300 {
 		t.Fatalf("second refund should replay stored refund, got %+v first=%+v", second, first)
 	}
+	tests := []struct {
+		name   string
+		mutate func(*RefundOrderInput)
+	}{
+		{name: "金额变化", mutate: func(in *RefundOrderInput) { in.AmountCents = 999 }},
+		{name: "累计目标模式变化", mutate: func(in *RefundOrderInput) { in.RequireExact = true }},
+		{name: "原因变化", mutate: func(in *RefundOrderInput) { in.Reason = "different reason" }},
+		{name: "执行角色变化", mutate: func(in *RefundOrderInput) { in.ActorKind = ActorKindSystem }},
+		{name: "执行人变化", mutate: func(in *RefundOrderInput) { in.ActorID = 10 }},
+		{name: "执行身份引用变化", mutate: func(in *RefundOrderInput) { in.ActorRef = "admin_user:10" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conflict := request
+			tt.mutate(&conflict)
+			result, err := svc.RefundOrder(ctx, conflict)
+			if !errors.Is(err, ErrRefundIdempotencyConflict) || result.Refund.ID != 0 {
+				t.Fatalf("conflict result=%+v err=%v", result, err)
+			}
+		})
+	}
 	bal, _ := svc.GetBalance(ctx, 1, 2)
 	if bal.AmountCents != 900 {
 		t.Fatalf("balance after replay=%d want 900 (refund only once)", bal.AmountCents)
+	}
+}
+
+func TestService_RefundOrderRejectsSameKeyAcrossOrders(t *testing.T) {
+	svc := newTestService()
+	ctx := context.Background()
+
+	createCompleted := func(outTradeNo string) Order {
+		t.Helper()
+		created, err := svc.CreateOrder(ctx, CreateOrderInput{
+			TenantID: 1, UserID: 2, AmountCents: 1000, OutTradeNo: outTradeNo, ActorAdminID: 9,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", outTradeNo, err)
+		}
+		confirmed, err := svc.AdminConfirmPaid(ctx, AdminConfirmPaidInput{TenantID: 1, OrderID: created.Order.ID, ActorAdminID: 9})
+		if err != nil {
+			t.Fatalf("confirm %s: %v", outTradeNo, err)
+		}
+		return confirmed.Order
+	}
+
+	firstOrder := createCompleted("trade-refund-key-order-a")
+	secondOrder := createCompleted("trade-refund-key-order-b")
+	key := "refund-shared-order-key"
+	if _, err := svc.RefundOrder(ctx, RefundOrderInput{
+		TenantID: 1, OrderID: firstOrder.ID, AmountCents: 300, IdempotencyKey: key,
+		Reason: "operator refund", ActorKind: ActorKindAdmin, ActorID: 9, ActorRef: "admin_user:9",
+	}); err != nil {
+		t.Fatalf("first refund: %v", err)
+	}
+
+	result, err := svc.RefundOrder(ctx, RefundOrderInput{
+		TenantID: 1, OrderID: secondOrder.ID, AmountCents: 300, IdempotencyKey: key,
+		Reason: "operator refund", ActorKind: ActorKindAdmin, ActorID: 9, ActorRef: "admin_user:9",
+	})
+	if !errors.Is(err, ErrRefundIdempotencyConflict) || result.Refund.ID != 0 {
+		t.Fatalf("cross-order conflict result=%+v err=%v", result, err)
+	}
+	missingOrder := RefundOrderInput{
+		TenantID: 1, OrderID: 999_999, AmountCents: 300, IdempotencyKey: key,
+		Reason: "operator refund", ActorKind: ActorKindAdmin, ActorID: 9, ActorRef: "admin_user:9",
+	}
+	result, err = svc.RefundOrder(ctx, missingOrder)
+	if !errors.Is(err, ErrRefundIdempotencyConflict) || result.Refund.ID != 0 {
+		t.Fatalf("missing-order conflict result=%+v err=%v", result, err)
+	}
+	bal, err := svc.GetBalance(ctx, 1, 2)
+	if err != nil {
+		t.Fatalf("get balance: %v", err)
+	}
+	if bal.AmountCents != 1700 {
+		t.Fatalf("balance=%d want 1700", bal.AmountCents)
 	}
 }
 

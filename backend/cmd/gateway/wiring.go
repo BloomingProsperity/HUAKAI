@@ -292,33 +292,6 @@ func quotaReconcilerEnabledFromEnv() bool {
 	return on
 }
 
-type refundReceiptAppender interface {
-	AppendReceipt(context.Context, *auditreceipt.CostReceipt) error
-}
-
-type refundReceiptSequenceReader interface {
-	GetReceiptBySequence(context.Context, string, int64, int32) (*auditreceipt.CostReceipt, error)
-}
-
-type refundReceiptSink struct {
-	appender refundReceiptAppender
-}
-
-func (s refundReceiptSink) AppendRefundReceipt(ctx context.Context, receipt *auditreceipt.CostReceipt) error {
-	if s.appender == nil {
-		return auditreceipt.ErrReceiptStorageRequired
-	}
-	return s.appender.AppendReceipt(ctx, receipt)
-}
-
-func (s refundReceiptSink) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*auditreceipt.CostReceipt, error) {
-	reader, ok := s.appender.(refundReceiptSequenceReader)
-	if !ok {
-		return nil, auditreceipt.ErrReceiptStorageRequired
-	}
-	return reader.GetReceiptBySequence(ctx, requestID, tenantID, sequence)
-}
-
 type runtimeOptions struct {
 	selector      *runtimeconfig.PoolSelectorConfig
 	obsDLQ        *runtimeconfig.ObsDLQConfig
@@ -1156,9 +1129,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
-	// 退款配额冲减器:启用配额强制时,退款落库后把退款的实际金额从配额 settled_value 负向冲减
-	// (修补"退款只退钱包、配额计数没退→用户提前撞成本上限")。quota.Service 无状态,此处独立实例
-	// 与配额强制层用同一套 quota 表,功能等价;未启用配额强制则传 nil,退款不触发冲减(零行为变化)。
+	// 启用配额强制时，把 mismatch 与成本争议退款的配额冲减加入同一 PostgreSQL 事务。
+	// 未启用配额强制时不创建冲减器，退款不需要触碰 quota 表。
 	var refundQuotaReverser auditreceipt.QuotaReverser
 	if cfg != nil && cfg.QuotaEnforce {
 		refundQuotaReverser = quotaCostReverser{svc: quota.NewService(quota.NewPostgresStore(pgPool))}
@@ -1176,7 +1148,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 争议裁决必须拿到底层可加入现有事务的退款执行器；外层 Settler 接口的
 	// Refund 会自行开事务，无法与状态更新形成同提交/同回滚。
 	disputeRefundSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
-	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler)
+	disputeResolverOpts := []auditreceipt.CostDisputeResolverOption{}
+	if quotaReverser, ok := refundQuotaReverser.(auditreceipt.QuotaReverserInTx); ok {
+		disputeResolverOpts = append(disputeResolverOpts, auditreceipt.WithDisputeQuotaReverser(quotaReverser))
+	}
+	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler, disputeResolverOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build dispute refund resolver: %w", err)
 	}

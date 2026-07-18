@@ -17,18 +17,21 @@ type refundRequest struct {
 }
 
 type refundView struct {
-	ID             int64     `json:"id"`
-	AmountCents    int64     `json:"amount_cents"`
-	CurrencyCode   string    `json:"currency_code"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	Reason         string    `json:"reason,omitempty"`
-	BillingEventID int64     `json:"billing_event_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                   int64     `json:"id"`
+	AmountCents          int64     `json:"amount_cents"`
+	RequestedAmountCents int64     `json:"requested_amount_cents"`
+	RequireExact         bool      `json:"require_exact"`
+	CurrencyCode         string    `json:"currency_code"`
+	IdempotencyKey       string    `json:"idempotency_key"`
+	Reason               string    `json:"reason,omitempty"`
+	BillingEventID       int64     `json:"billing_event_id,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 func toRefundView(r payment.RefundRecord) refundView {
 	return refundView{
-		ID: r.ID, AmountCents: r.AmountCents, CurrencyCode: r.CurrencyCode,
+		ID: r.ID, AmountCents: r.AmountCents, RequestedAmountCents: r.RequestedAmountCents,
+		RequireExact: r.RequireExact, CurrencyCode: r.CurrencyCode,
 		IdempotencyKey: r.IdempotencyKey, Reason: r.Reason,
 		BillingEventID: r.BillingEventID, CreatedAt: r.CreatedAt,
 	}
@@ -65,10 +68,13 @@ func newAdminRefundHandler(d AdminDeps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"order":         toAdminOrderView(res.Order),
-			"refund":        toRefundView(res.Refund),
-			"balance_cents": res.BalanceCents,
-			"idempotent":    res.Idempotent,
+			"order":                      toAdminOrderView(res.Order),
+			"refund":                     toRefundView(res.Refund),
+			"balance_cents":              res.BalanceCents,
+			"cumulative_refunded_cents":  res.CumulativeRefundedCents,
+			"remaining_refundable_cents": res.RemainingRefundableCents,
+			"idempotent":                 res.Idempotent,
+			"already_satisfied":          res.AlreadySatisfied,
 		})
 	}
 }

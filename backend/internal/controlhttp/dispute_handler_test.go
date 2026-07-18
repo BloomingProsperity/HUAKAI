@@ -39,13 +39,13 @@ func TestCreateDisputeRejectsReceiptOwnedByAnotherUser(t *testing.T) {
 }
 
 // 变异:从 JSON 或 query 取 tenant_id/user_id 而非从 session 取。
-// 创建出的 dispute 将被限定到攻击者提供的身份。
+// 合法请求只能使用 session 身份，重复争议保持明确冲突。
 func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
 	receipts := &disputeFakeReceiptReader{receipt: &audit.CostReceipt{TenantID: 7, UserID: 42, RequestID: "req-own"}}
 	store := &disputeFakeStore{createErr: audit.ErrDisputeDuplicate}
 	router := disputeUserRouter(DisputeUserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
 
-	rec := doDisputeJSON(router, http.MethodPost, "/v1/receipts/req-own/disputes", `{"reason":"charged twice","tenant_id":99,"user_id":99}`)
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/receipts/req-own/disputes", `{"reason":"charged twice"}`)
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d want 409 duplicate body=%s", rec.Code, rec.Body.String())
@@ -55,6 +55,21 @@ func TestCreateDisputeUsesSessionScopeAndRejectsDuplicate(t *testing.T) {
 	}
 	if store.createArg.TenantID != 7 || store.createArg.UserID != 42 || store.createArg.RequestID != "req-own" {
 		t.Fatalf("create arg=%+v, want auth-derived tenant/user/request", store.createArg)
+	}
+}
+
+func TestCreateDisputeRejectsUnknownIdentityFields(t *testing.T) {
+	receipts := &disputeFakeReceiptReader{receipt: &audit.CostReceipt{TenantID: 7, UserID: 42, RequestID: "req-own"}}
+	store := &disputeFakeStore{}
+	router := disputeUserRouter(DisputeUserDeps{Receipts: receipts, Store: store}, sessionauth.SessionIdentity{TenantID: 7, UserID: 42})
+
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/receipts/req-own/disputes", `{"reason":"charged twice","tenant_id":99,"user_id":99}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.createCalled {
+		t.Fatal("unknown identity fields must be rejected before CreateDispute")
 	}
 }
 
@@ -127,6 +142,33 @@ func TestAdminResolveDisputeChangesStatusAndNote(t *testing.T) {
 	}
 }
 
+func TestAdminResolveDisputeRejectsUnknownOrTrailingJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "未知字段", body: `{"tenant_id":7,"status":"resolved","operator_note":"checked","actor_id":99}`},
+		{name: "尾随对象", body: `{"tenant_id":7,"status":"resolved","operator_note":"checked"}{"tenant_id":8}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver := &disputeFakeResolver{}
+			router := disputeAdminRouter(DisputeAdminDeps{
+				Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+				Resolver: resolver,
+			})
+
+			rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve", tt.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d want 400 body=%s", rec.Code, rec.Body.String())
+			}
+			if resolver.resolveCalled {
+				t.Fatal("invalid JSON contract must not reach ResolveDispute")
+			}
+		})
+	}
+}
+
 // 变异:在 resolve 之前省略 ident.CanIssueForTenant。
 // tenant 7 的租户运营者将能 resolve tenant 8 的 dispute。
 func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
@@ -174,6 +216,19 @@ func TestAdminResolveWithoutCommittedChargeReturnsBadRequest(t *testing.T) {
 		`{"tenant_id":7,"status":"resolved","operator_note":"support"}`)
 	if rec.Code != http.StatusBadRequest || !bytes.Contains(rec.Body.Bytes(), []byte("dispute_charge_not_committed")) {
 		t.Fatalf("status=%d body=%s, want explicit 400 no committed charge", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminResolveAmbiguousChargeReturnsConflict(t *testing.T) {
+	resolver := &disputeFakeResolver{resolveErr: audit.ErrDisputeAmbiguousCharge}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:     disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver: resolver,
+	})
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+		`{"tenant_id":7,"status":"resolved","operator_note":"support"}`)
+	if rec.Code != http.StatusConflict || !bytes.Contains(rec.Body.Bytes(), []byte("dispute_charge_ambiguous")) {
+		t.Fatalf("status=%d body=%s, want explicit 409 ambiguous charge", rec.Code, rec.Body.String())
 	}
 }
 

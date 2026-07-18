@@ -55,6 +55,70 @@ func TestServiceReverseCost_DecrementsSettledByRefund(t *testing.T) {
 	}
 }
 
+func TestServiceReverseCostInTxFollowsCallerCommitAndRollback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	service := NewService(NewPostgresStore(pool))
+
+	now := time.Date(2026, 6, 27, 12, 30, 0, 0, time.UTC)
+	costPolicy := f.seedPolicyWithMode(now, ScopeUser, fmt.Sprint(f.userID), MetricCostUSD, WindowFixed, 3600, "100", ModeEnforce)
+	reserve := f.reserveForSettlement(ctx, service, now, "rev-in-tx", "8", false)
+	if _, err := service.Settle(ctx, SettleRequest{
+		TenantID: f.tenantID, ClaimID: reserve.Reservation.ClaimID, ReservationID: reserve.Reservation.ID,
+		ActualCost: decimal.RequireFromString("8"), SettledAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	window := f.policyWindow(costPolicy, now)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin rollback tx: %v", err)
+	}
+	res, err := service.ReverseCostInTx(ctx, tx, ReverseCostRequest{
+		TenantID: f.tenantID, ClaimID: reserve.Reservation.ClaimID, Amount: decimal.RequireFromString("3"),
+	})
+	if err != nil || res.Skipped || !res.ReversedValue.Equal(decimal.NewFromInt(3)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("ReverseCostInTx rollback result=%+v err=%v", res, err)
+	}
+	var insideRaw string
+	if err := tx.QueryRow(ctx, `SELECT settled_value::text FROM quota_windows WHERE tenant_id=$1 AND policy_id=$2 AND window_start=$3`,
+		f.tenantID, costPolicy, window.Start).Scan(&insideRaw); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("read inside tx: %v", err)
+	}
+	if !mustDecimal(t, insideRaw).Equal(decimal.NewFromInt(5)) {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("inside settled=%s want 5", insideRaw)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if got := f.windowValues(costPolicy, now).settled; !got.Equal(decimal.NewFromInt(8)) {
+		t.Fatalf("after rollback settled=%s want 8", got)
+	}
+
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin commit tx: %v", err)
+	}
+	if _, err := service.ReverseCostInTx(ctx, tx, ReverseCostRequest{
+		TenantID: f.tenantID, ClaimID: reserve.Reservation.ClaimID, Amount: decimal.RequireFromString("3"),
+	}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("ReverseCostInTx commit: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := f.windowValues(costPolicy, now).settled; !got.Equal(decimal.NewFromInt(5)) {
+		t.Fatalf("after commit settled=%s want 5", got)
+	}
+}
+
 // TestServiceReverseCost_ClampsAtZero 钉死钳制:冲减额超过当前 settled 时只冲到 0、绝不为负。
 // 判别(§14):若去掉 dec>SettledValue 的钳制,负向写会把 settled 推到 -6,被 DB CHECK
 // settled_value>=0 拒绝、ReverseCost 返回错误,下面"settled=0 且无错误"的断言转红。

@@ -432,7 +432,8 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	}
 	refundWorker := auditreceipt.NewMismatchRefundWorker(refundPendingStore, baseSettler, receiptFormatter, refundWorkerOpts...)
 	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
-	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService)
+	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService,
+		auditreceipt.WithRefundEligibilityVerifier(baseSettler))
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
 		auditreceipt.WithReceiptHookTrustSigner(auditSigner),
 		auditreceipt.WithReceiptHookRecoveryEnqueuer(dlqService),

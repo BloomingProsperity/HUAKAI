@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -244,7 +245,13 @@ func disputeResolveSession(w http.ResponseWriter, r *http.Request, store Dispute
 
 func disputeDecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, disputeMaxBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		controlWriteJSONError(w, http.StatusBadRequest, "invalid_dispute_request", "request body is not valid JSON")
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		controlWriteJSONError(w, http.StatusBadRequest, "invalid_dispute_request", "request body is not valid JSON")
 		return false
 	}
@@ -391,6 +398,8 @@ func writeDisputeError(w http.ResponseWriter, err error) {
 		controlWriteJSONError(w, http.StatusConflict, "dispute_not_resolvable", "争议不存在或已终态裁决，不可重复裁决")
 	case errors.Is(err, audit.ErrDisputeNoCharge):
 		controlWriteJSONError(w, http.StatusBadRequest, "dispute_charge_not_committed", "该请求无已结算扣费，无法支持退款")
+	case errors.Is(err, audit.ErrDisputeAmbiguousCharge):
+		controlWriteJSONError(w, http.StatusConflict, "dispute_charge_ambiguous", "该争议命中多条已结算扣费，需要人工核对后处理")
 	case errors.Is(err, audit.ErrDisputeResolverRequired):
 		controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "dispute resolver dependency unset")
 	case errors.Is(err, audit.ErrDisputeStoreRequired):

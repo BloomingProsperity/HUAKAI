@@ -257,6 +257,166 @@ SELECT
 	}
 }
 
+func TestRefundFactMigrationsRefuseDestructiveRollback(t *testing.T) {
+	baseDSN := os.Getenv("HUAKAI_DATABASE_URL")
+	if baseDSN == "" {
+		t.Skip("HUAKAI_DATABASE_URL not set; skipping integration_pg")
+	}
+	ctx := context.Background()
+
+	t.Run("0193 保留退款操作事实", func(t *testing.T) {
+		tmpDSN := createTemporaryMigrationDatabase(t, ctx, baseDSN, "huakai_refund_0193_guard")
+		runner := newEmbeddedMigrationRunner(t, tmpDSN)
+		if err := runner.Migrate(193); err != nil {
+			t.Fatalf("迁移到 0193: %v", err)
+		}
+		conn, err := pgx.Connect(ctx, tmpDSN)
+		if err != nil {
+			t.Fatalf("连接 0193 临时库: %v", err)
+		}
+		defer conn.Close(ctx)
+		seedBillingRefundOperationFact(t, ctx, conn)
+
+		if _, err := conn.Exec(ctx, `UPDATE billing_refund_operations SET reason=reason`); err == nil {
+			t.Fatal("退款操作事实意外允许 UPDATE")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM billing_refund_operations`); err == nil {
+			t.Fatal("退款操作事实意外允许 DELETE")
+		}
+		if err := runner.Steps(-1); err == nil {
+			t.Fatal("0193 在存在退款操作事实时意外允许 down")
+		}
+		var count int64
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM billing_refund_operations`).Scan(&count); err != nil {
+			t.Fatalf("0193 拒绝回滚后读取退款事实: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("0193 拒绝回滚后退款事实数=%d want 1", count)
+		}
+	})
+
+	t.Run("0194 保留支付退款语义", func(t *testing.T) {
+		tmpDSN := createTemporaryMigrationDatabase(t, ctx, baseDSN, "huakai_refund_0194_guard")
+		runner := newEmbeddedMigrationRunner(t, tmpDSN)
+		if err := runner.Migrate(194); err != nil {
+			t.Fatalf("迁移到 0194: %v", err)
+		}
+		conn, err := pgx.Connect(ctx, tmpDSN)
+		if err != nil {
+			t.Fatalf("连接 0194 临时库: %v", err)
+		}
+		defer conn.Close(ctx)
+		orderID := seedPartialPaymentRefundFact(t, ctx, conn)
+
+		if err := runner.Steps(-1); err == nil {
+			t.Fatal("0194 在存在支付退款事实时意外允许 down")
+		}
+		var status string
+		var requestedAmount int64
+		var requireExact bool
+		if err := conn.QueryRow(ctx, `
+SELECT orders.status, refunds.requested_amount_cents, refunds.require_exact
+FROM payment_orders AS orders
+JOIN payment_refunds AS refunds
+  ON refunds.tenant_id = orders.tenant_id AND refunds.order_id = orders.id
+WHERE orders.id=$1`, orderID).Scan(&status, &requestedAmount, &requireExact); err != nil {
+			t.Fatalf("0194 拒绝回滚后读取部分退款: %v", err)
+		}
+		if status != "completed" || requestedAmount != 100 || requireExact {
+			t.Fatalf("0194 拒绝回滚后状态=%q requested=%d exact=%v want completed/100/false", status, requestedAmount, requireExact)
+		}
+		if _, err := conn.Exec(ctx, `UPDATE payment_refunds SET reason=reason WHERE order_id=$1`, orderID); err == nil {
+			t.Fatal("0194 拒绝回滚后 append-only 触发器未恢复")
+		}
+	})
+}
+
+func newEmbeddedMigrationRunner(t *testing.T, dsn string) *migrate.Migrate {
+	t.Helper()
+	src, err := iofs.New(sqlmigrations.Files, "migrations")
+	if err != nil {
+		t.Fatalf("构建迁移源: %v", err)
+	}
+	runner, err := migrate.NewWithSourceInstance("iofs", src, dsn)
+	if err != nil {
+		t.Fatalf("初始化迁移器: %v", err)
+	}
+	t.Cleanup(func() {
+		sourceErr, databaseErr := runner.Close()
+		if sourceErr != nil || databaseErr != nil {
+			t.Logf("关闭迁移器: source=%v database=%v", sourceErr, databaseErr)
+		}
+	})
+	return runner
+}
+
+func seedBillingRefundOperationFact(t *testing.T, ctx context.Context, conn *pgx.Conn) {
+	t.Helper()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	var tenantID, userID, apiKeyID, claimID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ($1) RETURNING id`, "refund-operation-"+suffix).Scan(&tenantID); err != nil {
+		t.Fatalf("插入 0193 租户: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`, tenantID, "refund-user-"+suffix).Scan(&userID); err != nil {
+		t.Fatalf("插入 0193 用户: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `
+INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`, tenantID, userID,
+		"refund-key-"+suffix, "$2a$10$refund-migration-test", "hk_refund_"+suffix).Scan(&apiKeyID); err != nil {
+		t.Fatalf("插入 0193 API key: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `
+INSERT INTO billing_ledger_claims (
+    tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
+    logical_request_id, endpoint_family, requested_model, billing_policy_version,
+    request_class, attempt_seq, predicted_cost, currency_code, lease_expires_at
+) VALUES ($1, $2, $3, $4, $5, $6, 'chat', 'test-model', '1.0', 'standard', 1, 0, 'USD', NOW() + interval '1 minute')
+RETURNING id`, tenantID, "claim-"+suffix, "claim-fingerprint-"+suffix, apiKeyID, userID, "logical-"+suffix).Scan(&claimID); err != nil {
+		t.Fatalf("插入 0193 claim: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO billing_refund_operations (
+    tenant_id, claim_id, idempotency_key, request_fingerprint,
+    requested_amount_micro_usd, reason, require_exact,
+    applied_amount_micro_usd, covered_amount_micro_usd, outcome
+) VALUES ($1, $2, $3, $4, 0, 'migration guard', FALSE, 0, 0, 'skipped_zero')`,
+		tenantID, claimID, "refund-operation-"+suffix, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("插入 0193 退款操作事实: %v", err)
+	}
+}
+
+func seedPartialPaymentRefundFact(t *testing.T, ctx context.Context, conn *pgx.Conn) int64 {
+	t.Helper()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	var tenantID, userID, orderID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ($1) RETURNING id`, "payment-refund-"+suffix).Scan(&tenantID); err != nil {
+		t.Fatalf("插入 0194 租户: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `INSERT INTO users (tenant_id, display_name) VALUES ($1, $2) RETURNING id`, tenantID, "payment-user-"+suffix).Scan(&userID); err != nil {
+		t.Fatalf("插入 0194 用户: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `
+INSERT INTO payment_orders (tenant_id, user_id, out_trade_no, amount_cents, currency_code, status, provider_kind)
+VALUES ($1, $2, $3, 1000, 'USD', 'completed', 'manual') RETURNING id`, tenantID, userID, "payment-order-"+suffix).Scan(&orderID); err != nil {
+		t.Fatalf("插入 0194 订单: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO payment_credits (tenant_id, payment_order_id, user_id, amount_cents, currency_code)
+VALUES ($1, $2, $3, 1000, 'USD')`, tenantID, orderID, userID); err != nil {
+		t.Fatalf("插入 0194 入账事实: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO payment_refunds (
+    tenant_id, order_id, user_id, amount_cents, requested_amount_cents,
+    require_exact, currency, idempotency_key, reason, actor_kind, actor_id
+) VALUES ($1, $2, $3, 100, 100, FALSE, 'USD', $4, 'migration guard', 'admin', 7)`,
+		tenantID, orderID, userID, "payment-refund-"+suffix); err != nil {
+		t.Fatalf("插入 0194 部分退款事实: %v", err)
+	}
+	return orderID
+}
+
 func createTemporaryMigrationDatabase(t *testing.T, ctx context.Context, baseDSN, prefix string) string {
 	t.Helper()
 	tmpDB := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())

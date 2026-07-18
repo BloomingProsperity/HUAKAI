@@ -25,6 +25,6 @@ CREATE INDEX IF NOT EXISTS idx_cost_disputes_user_created
     ON cost_disputes(tenant_id, user_id, created_at DESC);
 
 COMMENT ON TABLE cost_disputes IS
-    'F-AUDIT-001 user-initiated cost dispute records. Pure status workflow; no refund or ledger mutation in this slice.';
+    '用户发起的费用争议记录；处理结果与资金动作由当前争议处理合同决定。';
 
 COMMIT;

@@ -119,7 +119,7 @@ func TestRefundsExportRange(t *testing.T) {
 
 	filteredStub := &filteringRefundsStub{
 		all: []payment.RefundRecord{
-			{ID: 1, TenantID: 7, OrderID: 100, UserID: 70, AmountCents: 500, CurrencyCode: "USD", CreatedAt: inWindow},
+			{ID: 1, TenantID: 7, OrderID: 100, UserID: 70, AmountCents: 500, RequestedAmountCents: 1000, RequireExact: true, CurrencyCode: "USD", BillingEventID: 9001, CreatedAt: inWindow},
 			{ID: 2, TenantID: 7, OrderID: 101, UserID: 71, AmountCents: 200, CurrencyCode: "USD", CreatedAt: outWindow},
 		},
 	}
@@ -143,6 +143,9 @@ func TestRefundsExportRange(t *testing.T) {
 	}
 	if records[1][0] != "1" {
 		t.Errorf("first data row id=%q want 1", records[1][0])
+	}
+	if records[1][8] != "10.00" || records[1][9] != "true" || records[1][10] != "9001" {
+		t.Fatalf("refund operation evidence columns=%v want requested amount/exact mode/billing event", records[1])
 	}
 }
 

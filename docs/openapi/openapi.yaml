@@ -6788,7 +6788,7 @@ paths:
                 reason: { type: string }
       responses:
         '200':
-          description: Order refunded, or existing refund returned on idempotent replay.
+          description: 已记录部分或最终累计退款；幂等重放时返回既有退款事实。
           content:
             application/json:
               schema:
@@ -6797,7 +6797,10 @@ paths:
                   order: { type: object }
                   refund: { type: object }
                   balance_cents: { type: integer, format: int64 }
+                  cumulative_refunded_cents: { type: integer, format: int64, minimum: 0 }
+                  remaining_refundable_cents: { type: integer, format: int64, minimum: 0 }
                   idempotent: { type: boolean }
+                  already_satisfied: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }

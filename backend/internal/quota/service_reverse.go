@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 )
 
@@ -27,8 +28,8 @@ type ReverseCostResult struct {
 }
 
 // ReverseCost 把某已结算 claim 的成本从它命中的成本窗 settled_value 负向冲减 req.Amount。
-//   - 走 quota 自管事务(与 Settle/Release 同构;quota 刻意不接管外部 pgx.Tx,见 pg_store.go 注释)。
-//     因此本调用是 billing 退款提交【之后】的"次级闸 post-commit 补账",失败由调用方 fail-open 处理。
+//   - 本方法走 quota 自管事务，供无法共享事务的兼容调用方使用；正式退款链使用
+//     ReverseCostInTx，把钱包、账单和配额冲减放进同一调用方事务。
 //   - 仅对 ReservationSettled 的预留冲减(未结算的没有 settled_value 可退)。
 //   - 逐个 MetricCostUSD 窗按其当前 settled_value 钳制冲减额:DB 有 CHECK settled_value>=0,绝不冲到
 //     负数;若该窗已滚动重置/被清理,则当前 settled 较小、钳制后少冲或不冲——均无害(旧窗不再 gate
@@ -42,56 +43,73 @@ func (s *Service) ReverseCost(ctx context.Context, req ReverseCostRequest) (Reve
 		return result, nil
 	}
 	err := s.runQuotaFinalizationWithRetry(ctx, "reverse_cost", defaultFinalizationRetryPolicy, func(tx PGStore) error {
-		result = ReverseCostResult{}
-		reservation, err := getFinalizationReservation(ctx, tx, finalizationReservationInput{
-			TenantID:  req.TenantID,
-			ClaimID:   req.ClaimID,
-			Operation: quotaAuditOperationCostReversed,
-			Actor:     req.Actor,
-		})
-		if err != nil {
-			return err
-		}
-		result.Reservation = reservation
-		if reservation.Status != ReservationSettled {
-			// 只对已结算预留冲减;其它状态没有可退的 settled_value。
-			result.Skipped = true
-			return nil
-		}
-		reversed, err := reverseCostSettlementWindows(ctx, tx, reservation, req.Amount)
-		if err != nil {
-			return err
-		}
-		result.ReversedValue = reversed
-		if reversed.Sign() <= 0 {
-			result.Skipped = true
-			return nil
-		}
-		// 复用 settled 事件族(event_type 有 CHECK 约束,无 cost_reversed 取值);具体语义由
-		// decision_code=quota_cost_reversed 与 payload.operation 区分,负 amount_settled 表冲减。
-		// 下游若对 event_type='settled' 的 amount_settled 做 SUM(累加"已结算成本"),须识别本类
-		// decision_code=quota_cost_reversed 的负值条目(它们是冲减、非正向结算),否则会误算。
-		if err := insertQuotaFinalizationAudit(ctx, tx, quotaFinalizationAudit{
-			Reservation:   reservation,
-			Operation:     quotaAuditOperationCostReversed,
-			EventType:     "settled",
-			DecisionCode:  "quota_cost_reversed",
-			Metric:        MetricCostUSD,
-			AmountSettled: reversed.Neg(),
-			Actor:         req.Actor,
-			ExtraPayload: map[string]any{
-				"requested_reverse": req.Amount.String(),
-				"applied_reverse":   reversed.String(),
-			},
-		}); err != nil {
-			return err
-		}
-		return nil
+		next, err := reverseCostWithStore(ctx, tx, req)
+		result = next
+		return err
 	})
 	if err != nil {
 		if errors.Is(err, ErrReservationNotFound) {
 			return ReverseCostResult{Skipped: true}, nil
 		}
+		return result, err
+	}
+	return result, nil
+}
+
+// ReverseCostInTx 把配额成本冲减加入调用方事务；调用方负责提交、回滚和事务冲突重试。
+func (s *Service) ReverseCostInTx(ctx context.Context, tx pgx.Tx, req ReverseCostRequest) (ReverseCostResult, error) {
+	if s == nil || tx == nil {
+		return ReverseCostResult{}, ErrStoreNotConfigured
+	}
+	return reverseCostWithStore(ctx, NewPostgresStore(tx), req)
+}
+
+func reverseCostWithStore(ctx context.Context, store PGStore, req ReverseCostRequest) (ReverseCostResult, error) {
+	result := ReverseCostResult{}
+	if req.TenantID <= 0 || req.ClaimID <= 0 || req.Amount.Sign() <= 0 {
+		result.Skipped = true
+		return result, nil
+	}
+	reservation, err := getFinalizationReservation(ctx, store, finalizationReservationInput{
+		TenantID:  req.TenantID,
+		ClaimID:   req.ClaimID,
+		Operation: quotaAuditOperationCostReversed,
+		Actor:     req.Actor,
+	})
+	if errors.Is(err, ErrReservationNotFound) {
+		return ReverseCostResult{Skipped: true}, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	result.Reservation = reservation
+	if reservation.Status != ReservationSettled {
+		result.Skipped = true
+		return result, nil
+	}
+	reversed, err := reverseCostSettlementWindows(ctx, store, reservation, req.Amount)
+	if err != nil {
+		return result, err
+	}
+	result.ReversedValue = reversed
+	if reversed.Sign() <= 0 {
+		result.Skipped = true
+		return result, nil
+	}
+	// 复用 settled 事件族；负 amount_settled 与专属 decision_code 共同表达冲减。
+	if err := insertQuotaFinalizationAudit(ctx, store, quotaFinalizationAudit{
+		Reservation:   reservation,
+		Operation:     quotaAuditOperationCostReversed,
+		EventType:     "settled",
+		DecisionCode:  "quota_cost_reversed",
+		Metric:        MetricCostUSD,
+		AmountSettled: reversed.Neg(),
+		Actor:         req.Actor,
+		ExtraPayload: map[string]any{
+			"requested_reverse": req.Amount.String(),
+			"applied_reverse":   reversed.String(),
+		},
+	}); err != nil {
 		return result, err
 	}
 	return result, nil
