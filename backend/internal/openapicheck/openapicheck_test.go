@@ -9,7 +9,20 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"go.yaml.in/yaml/v2"
 )
+
+func TestAuthoritativeSpecIsStrictYAML(t *testing.T) {
+	specPath := filepath.Join("..", "..", "..", "docs", "openapi", "openapi.yaml")
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("读取主 OpenAPI 文件: %v", err)
+	}
+	var document map[interface{}]interface{}
+	if err := yaml.UnmarshalStrict(raw, &document); err != nil {
+		t.Fatalf("主 OpenAPI 必须是无重复键的合法 YAML: %v", err)
+	}
+}
 
 func TestParseSpecPaths_BasicYAML(t *testing.T) {
 	spec := `openapi: 3.1.0

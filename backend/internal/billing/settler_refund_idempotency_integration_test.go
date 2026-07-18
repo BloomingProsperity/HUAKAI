@@ -449,10 +449,6 @@ func TestSettler_RefundReplayRejectsFactLinkedToNonRefundEvent(t *testing.T) {
 		TenantID: seed.tenantID, ClaimID: seed.claimID, AmountMicroUSD: 7_000,
 		Reason: "audit_mismatch", IdempotencyKey: "invalid-event-link-" + uuid.NewString(), AuditRequestID: uuid.NewString(),
 	}
-	first, err := set.Refund(ctx, request)
-	if err != nil || first == nil || first.RefundMicroUSD != 7_000 {
-		t.Fatalf("first refund result=%+v err=%v", first, err)
-	}
 	var committedEventID int64
 	if err := pool.QueryRow(ctx, `
 SELECT id FROM billing_events
@@ -461,22 +457,49 @@ ORDER BY id ASC LIMIT 1`, seed.tenantID, seed.claimID).Scan(&committedEventID); 
 		t.Fatalf("find committed event: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-UPDATE billing_refund_operations
-SET billing_event_id=$3
-WHERE tenant_id=$1 AND idempotency_key=$2`, seed.tenantID, request.IdempotencyKey, committedEventID); err != nil {
-		t.Fatalf("corrupt refund operation event link: %v", err)
+		INSERT INTO billing_refund_operations (
+			tenant_id, claim_id, idempotency_key, request_fingerprint,
+			requested_amount_micro_usd, reason, require_exact,
+			applied_amount_micro_usd, covered_amount_micro_usd, outcome, billing_event_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 7000, 7000, 'applied', $8)`,
+		request.TenantID,
+		request.ClaimID,
+		request.IdempotencyKey,
+		refundRequestFingerprint(request),
+		request.AmountMicroUSD,
+		request.Reason,
+		request.RequireExact,
+		committedEventID,
+	); err != nil {
+		t.Fatalf("seed invalid immutable refund fact: %v", err)
+	}
+	var balanceBefore decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balanceBefore); err != nil {
+		t.Fatalf("read balance before invalid replay: %v", err)
 	}
 
 	replay, err := set.Refund(ctx, request)
 	if !errors.Is(err, ErrRefundFactInvalid) || replay != nil {
 		t.Fatalf("invalid fact replay result=%+v err=%v", replay, err)
 	}
-	var balance decimal.Decimal
-	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balance); err != nil {
-		t.Fatalf("read balance: %v", err)
+	var balanceAfter decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balanceAfter); err != nil {
+		t.Fatalf("read balance after invalid replay: %v", err)
 	}
-	if !balance.Equal(decimal.RequireFromString("9.98700000")) {
-		t.Fatalf("balance=%s want 9.98700000", balance)
+	if !balanceAfter.Equal(balanceBefore) {
+		t.Fatalf("invalid replay changed balance before=%s after=%s", balanceBefore, balanceAfter)
+	}
+	var refundEvents int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM billing_events
+		WHERE tenant_id=$1 AND claim_id=$2
+		  AND event_type='reconciliation_appended' AND actual_cost_signed < 0`,
+		seed.tenantID, seed.claimID,
+	).Scan(&refundEvents); err != nil {
+		t.Fatalf("count refund events after invalid replay: %v", err)
+	}
+	if refundEvents != 0 {
+		t.Fatalf("invalid replay appended %d refund events; want 0", refundEvents)
 	}
 }
 

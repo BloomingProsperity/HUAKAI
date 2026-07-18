@@ -85,7 +85,8 @@ db-psql: ## Open a psql shell against dev PG.
 	docker compose -f docker-compose.dev.yml exec postgres psql -U huakai -d huakai
 
 test-integration: ## Run integration tests (requires db-up + db-migrate first).
-	HUAKAI_DATABASE_URL="$(DATABASE_URL)" $(GO) test -tags=integration_pg -race -count=1 ./...
+	# 集成包共享同一数据库，必须串行，避免临时触发器和清理事务跨包互相污染。
+	HUAKAI_DATABASE_URL="$(DATABASE_URL)" $(GO) test -p 1 -tags=integration_pg -race -count=1 ./...
 
 quality-gate: ## Block new staticcheck findings + new deadcode (ratchet vs baseline).
 	bash scripts/quality-gate.sh

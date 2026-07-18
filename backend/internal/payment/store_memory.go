@@ -168,6 +168,15 @@ func (m *MemoryStore) CancelOrder(_ context.Context, rec cancelRecord) (Order, e
 func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	refundTotalForOrder := func(tenantID, orderID int64) int64 {
+		var total int64
+		for _, refund := range m.refunds {
+			if refund.TenantID == tenantID && refund.OrderID == orderID {
+				total += refund.AmountCents
+			}
+		}
+		return total
+	}
 	if strings.TrimSpace(rec.IdempotencyKey) == "" {
 		return RefundResult{}, ErrInvalidInput
 	}
@@ -189,7 +198,7 @@ func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundRe
 			refund.CurrencyCode != order.CurrencyCode {
 			return RefundResult{}, ErrRefundFactInvalid
 		}
-		total := m.refundTotalForOrderLocked(order.TenantID, order.ID)
+		total := refundTotalForOrder(order.TenantID, order.ID)
 		status, remaining, err := paymentRefundProgress(credit.AmountCents, total)
 		if err != nil || order.Status != status || (refund.RequireExact && total < refund.RequestedAmountCents) {
 			return RefundResult{}, ErrRefundFactInvalid
@@ -213,7 +222,7 @@ func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundRe
 	if credit == nil {
 		return RefundResult{}, ErrOrderNotRefundable
 	}
-	totalBefore := m.refundTotalForOrderLocked(o.TenantID, o.ID)
+	totalBefore := refundTotalForOrder(o.TenantID, o.ID)
 	currentStatus, currentRemaining, progressErr := paymentRefundProgress(credit.AmountCents, totalBefore)
 	if progressErr != nil || o.Status != currentStatus {
 		return RefundResult{}, ErrRefundFactInvalid
@@ -266,16 +275,6 @@ func (m *MemoryStore) RefundOrder(_ context.Context, rec refundRecord) (RefundRe
 		Order: *o, Refund: *refund, BalanceCents: m.balanceLocked(rec.TenantID, o.UserID),
 		CumulativeRefundedCents: totalAfter, RemainingRefundableCents: remaining,
 	}, nil
-}
-
-func (m *MemoryStore) refundTotalForOrderLocked(tenantID, orderID int64) int64 {
-	var total int64
-	for _, refund := range m.refunds {
-		if refund.TenantID == tenantID && refund.OrderID == orderID {
-			total += refund.AmountCents
-		}
-	}
-	return total
 }
 
 func (m *MemoryStore) BeginFulfill(_ context.Context, rec fulfillRecord) (Order, beginFulfillOutcome, error) {

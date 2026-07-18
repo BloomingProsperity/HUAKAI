@@ -28,9 +28,9 @@ func openLogsinkIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool
 	return pool
 }
 
-// 真 PG:批量插入 → 过滤/键集分页 → request_id 精确检索 → 清理。
+// 真 PG：批量插入 → 全字段过滤 → 键集分页 → 多关联标识精确检索。
 // 变异:ListRuntimeLogs 丢掉 level/request_id/before_id 任一 WHERE 条件 → 对应断言红。
-// 全程跑在回滚事务里:清理是全表按时刻删除,共享测试库上直跑会误删其他包/在跑网关的数据。
+// 全程跑在回滚事务里，避免共享测试库残留观测数据。
 func TestPostgresStoreRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	pool := openLogsinkIntegrationPool(t, ctx)
@@ -42,10 +42,18 @@ func TestPostgresStoreRoundtrip(t *testing.T) {
 	store := NewPostgresStore(tx)
 	marker := "logsink-it-" + time.Now().UTC().Format("150405.000000000")
 
+	tenantID := int64(7)
 	entries := []Entry{
-		{Time: time.Now().UTC(), Level: "warn", Component: marker, Message: "warn-1", Attrs: map[string]any{"n": 1}},
-		{Time: time.Now().UTC(), Level: "error", Component: marker, Message: "error-1", RequestID: marker + "-req"},
-		{Time: time.Now().UTC(), Level: "warn", Component: marker, Message: "warn-2"},
+		{
+			Time: time.Now().UTC().AddDate(-1, 0, 0), Level: "info", Category: "access",
+			EventType: "http.request_completed", Result: "success", ErrorClass: "none", ErrorCode: "none",
+			Component: marker, Message: "info-1", ActorKind: "api_key", ActorRef: "key-7", TenantID: &tenantID,
+			TargetType: "http_route", TargetRef: "/v1/chat", RequestID: marker + "-req",
+			TraceID: marker + "-trace", UpstreamRequestID: marker + "-upstream",
+			IdempotencyKey: marker + "-idem", RecoveryState: "none", Attrs: map[string]any{"n": 1},
+		},
+		{Time: time.Now().UTC(), Level: "error", Category: "financial", EventType: "billing.refund_failed", Result: "server_failure", ErrorClass: "dependency", ErrorCode: "billing_store_down", Component: marker, Message: "error-1", RequestID: marker + "-error", Retryable: true, RecoveryState: "retrying"},
+		{Time: time.Now().UTC(), Level: "warn", Component: marker, Message: "warn-1"},
 	}
 	if err := store.InsertRuntimeLogs(ctx, entries); err != nil {
 		t.Fatalf("InsertRuntimeLogs: %v", err)
@@ -59,20 +67,34 @@ func TestPostgresStoreRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(rows) != 3 || rows[0].Message != "warn-2" || rows[2].Message != "warn-1" {
+	if len(rows) != 3 || rows[0].Message != "warn-1" || rows[2].Message != "info-1" {
 		t.Fatalf("排序/数量错: %+v", rows)
+	}
+	if rows[2].IngestedAt.IsZero() || !rows[2].IngestedAt.After(rows[2].CreatedAt) {
+		t.Fatalf("可信入库时间应独立于旧事件时间: %+v", rows[2])
 	}
 
 	// level 过滤。
-	rows, err = store.ListRuntimeLogs(ctx, ListParams{Component: marker, Level: "error"})
+	rows, err = store.ListRuntimeLogs(ctx, ListParams{
+		Component: marker, Level: "error", Category: "financial", EventType: "billing.refund_failed",
+		Result: "server_failure", ErrorClass: "dependency", ErrorCode: "billing_store_down",
+		RecoveryState: "retrying",
+	})
 	if err != nil || len(rows) != 1 || rows[0].Message != "error-1" {
 		t.Fatalf("level 过滤错: %v %+v", err, rows)
 	}
 
 	// request_id 精确检索。
-	rows, err = store.ListRuntimeLogs(ctx, ListParams{RequestID: marker + "-req"})
+	rows, err = store.ListRuntimeLogs(ctx, ListParams{
+		RequestID: marker + "-req", TraceID: marker + "-trace", UpstreamRequestID: marker + "-upstream",
+		IdempotencyKey: marker + "-idem", ActorKind: "api_key", TenantID: tenantID,
+	})
 	if err != nil || len(rows) != 1 || rows[0].RequestID == nil || *rows[0].RequestID != marker+"-req" {
 		t.Fatalf("request_id 检索错: %v %+v", err, rows)
+	}
+	if rows[0].TraceID == nil || rows[0].UpstreamRequestID == nil || rows[0].IdempotencyKey == nil ||
+		rows[0].TargetType == nil || rows[0].TargetRef == nil || rows[0].ActorRef == nil {
+		t.Fatalf("结构化关联字段未完整回读: %+v", rows[0])
 	}
 
 	// 键集分页:limit=2 取前两条,再用末行 id 取更旧一页。
@@ -81,7 +103,7 @@ func TestPostgresStoreRoundtrip(t *testing.T) {
 		t.Fatalf("page1: %v %+v", err, page1)
 	}
 	page2, err := store.ListRuntimeLogs(ctx, ListParams{Component: marker, BeforeID: page1[1].ID})
-	if err != nil || len(page2) != 1 || page2[0].Message != "warn-1" {
+	if err != nil || len(page2) != 1 || page2[0].Message != "info-1" {
 		t.Fatalf("page2 键集分页错: %v %+v", err, page2)
 	}
 
@@ -90,13 +112,4 @@ func TestPostgresStoreRoundtrip(t *testing.T) {
 		t.Fatalf("attrs 未落库: %s", page2[0].Attrs)
 	}
 
-	// 清理:删除全部本测试数据(created_at < 未来时刻),行数≥3。
-	deleted, err := store.CleanupRuntimeLogs(ctx, time.Now().UTC().Add(time.Hour))
-	if err != nil || deleted < 3 {
-		t.Fatalf("Cleanup: deleted=%d err=%v", deleted, err)
-	}
-	rows, err = store.ListRuntimeLogs(ctx, ListParams{Component: marker})
-	if err != nil || len(rows) != 0 {
-		t.Fatalf("清理后应为空: %v %+v", err, rows)
-	}
 }

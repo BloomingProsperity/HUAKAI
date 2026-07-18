@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -553,7 +555,7 @@ func TestAT_AUDIT_001_061_MultipleRefundReceiptSequencesIncrement(t *testing.T) 
 	}
 }
 
-func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, *recordingRefundSettler, *MemoryRefundPendingStore, *recordingRefundReceiptSink, MismatchRefundPayload) {
+func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, *recordingRefundSettler, *memoryRefundPendingStore, *recordingRefundReceiptSink, MismatchRefundPayload) {
 	t.Helper()
 	ctx := context.Background()
 	requestID := "req-refund-worker"
@@ -588,7 +590,7 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
-	store := NewMemoryRefundPendingStore()
+	store := newMemoryRefundPendingStore()
 	settler := &recordingRefundSettler{refundErr: refundErr}
 	sink := &recordingRefundReceiptSink{}
 	worker := NewMismatchRefundWorker(store, settler, formatter,
@@ -603,6 +605,66 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 		FieldsMismatch: []string{"cost_total_micro_usd"},
 		CreatedAt:      fixedRefundNow().Format(time.RFC3339Nano),
 	}
+}
+
+type memoryRefundPendingStore struct {
+	mu   sync.Mutex
+	rows map[int64]RefundPendingRecord
+}
+
+func newMemoryRefundPendingStore() *memoryRefundPendingStore {
+	return &memoryRefundPendingStore{rows: map[int64]RefundPendingRecord{}}
+}
+
+func (s *memoryRefundPendingStore) EnsurePending(_ context.Context, payload MismatchRefundPayload) (RefundPendingRecord, error) {
+	if err := validateRefundPayload(payload); err != nil {
+		return RefundPendingRecord{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, exists := s.rows[payload.ClaimID]
+	if !exists {
+		record = RefundPendingRecord{
+			ClaimID:       payload.ClaimID,
+			RequestID:     payload.RequestID,
+			DeltaMicroUSD: payload.DeltaMicroUSD,
+			Status:        "pending",
+		}
+		s.rows[payload.ClaimID] = record
+		return record, nil
+	}
+	if strings.TrimSpace(record.RequestID) != strings.TrimSpace(payload.RequestID) || record.DeltaMicroUSD != payload.DeltaMicroUSD {
+		return RefundPendingRecord{}, fmt.Errorf("%w: conflicting refund pending identity", ErrReceiptInvalidDerivedData)
+	}
+	record.Status = "pending"
+	s.rows[payload.ClaimID] = record
+	return record, nil
+}
+
+func (s *memoryRefundPendingStore) MarkCompleted(_ context.Context, claimID int64, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := s.rows[claimID]
+	record.Status = "completed"
+	s.rows[claimID] = record
+	return nil
+}
+
+func (s *memoryRefundPendingStore) MarkFailed(_ context.Context, claimID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := s.rows[claimID]
+	if record.Status != "completed" {
+		record.Status = "failed"
+		s.rows[claimID] = record
+	}
+	return nil
+}
+
+func (s *memoryRefundPendingStore) Status(claimID int64) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rows[claimID].Status
 }
 
 func refundTestReceipt(requestID string, claimID, cost int64) *CostReceipt {

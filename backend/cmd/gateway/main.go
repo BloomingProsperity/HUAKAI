@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
-	// 运行日志入库 sink:两栈(zap+slog)的 warn+ 旁路采集,DB 就绪后
+	// 运行日志入库 sink：两栈的显式分类 Info 与全部 Warn/Error 旁路采集，DB 就绪后
 	// (buildGatewayRuntime)开始落库;此前先积压在有界队列。
 	sink := logsink.New()
 	logger = logger.WithOptions(zap.WrapCore(func(c zapcore.Core) zapcore.Core {

@@ -14,7 +14,7 @@ func TestPostgresCredentialVaultWithStore_RevokedV2DoesNotFallbackToLegacy(t *te
 	ctx := context.Background()
 	suffix := "v2-revoked-no-legacy"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	legacyKey := "sk-legacy-bypass"
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
@@ -44,7 +44,7 @@ func TestPostgresCredentialVaultWithStore_LegacyFallbackWhenNoV2Rows(t *testing.
 	ctx := context.Background()
 	suffix := "no-v2-legacy"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	legacyKey := "sk-legacy-still-valid"
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
@@ -69,7 +69,7 @@ func TestPostgresCredentialVaultWithStore_ActiveV2OverridesLegacy(t *testing.T) 
 	ctx := context.Background()
 	suffix := "active-v2"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
 		f.tenantID, f.providerID, f.channelID,
@@ -103,7 +103,7 @@ func TestPostgresCredentialVaultWithStore_ExternalAccountIDProjectedToAccountInf
 	ctx := context.Background()
 	suffix := "ext-acct-id-projected"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
 		f.tenantID, f.providerID, f.channelID,
@@ -145,7 +145,7 @@ func TestPostgresCredentialVaultWithStore_NoExternalAccountIDStaysEmpty(t *testi
 	ctx := context.Background()
 	suffix := "no-ext-acct-id"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
 		f.tenantID, f.providerID, f.channelID,

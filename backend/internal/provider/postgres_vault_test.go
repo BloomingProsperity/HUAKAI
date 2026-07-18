@@ -152,25 +152,38 @@ func insertProviderAccount(
 // cleanupFixture 删除测试插入的所有行（顺序：子表先删）。
 func cleanupFixture(ctx context.Context, t *testing.T, db *pgxpool.Pool, f testFixture) {
 	t.Helper()
+	remove := func(name, query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(ctx, query, args...); err != nil {
+			t.Errorf("清理测试夹具 %s 失败: %v", name, err)
+		}
+	}
 	if f.tenantID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM credential_audit_events WHERE tenant_id = $1`, f.tenantID)
-		_, _ = db.Exec(ctx, `DELETE FROM account_credentials WHERE tenant_id = $1`, f.tenantID)
+		remove("credential_audit_events", `DELETE FROM credential_audit_events WHERE tenant_id = $1`, f.tenantID)
+		remove("account_credentials", `DELETE FROM account_credentials WHERE tenant_id = $1`, f.tenantID)
 	}
 	if f.providerAccountID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM provider_accounts WHERE id = $1`, f.providerAccountID)
+		remove("provider_accounts", `DELETE FROM provider_accounts WHERE id = $1`, f.providerAccountID)
 	}
 	if f.channelID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM channels WHERE id = $1`, f.channelID)
+		remove("channels", `DELETE FROM channels WHERE id = $1`, f.channelID)
 	}
 	if f.poolGroupID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM pool_groups WHERE id = $1`, f.poolGroupID)
+		remove("pool_groups", `DELETE FROM pool_groups WHERE id = $1`, f.poolGroupID)
 	}
 	if f.providerID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM providers WHERE id = $1`, f.providerID)
+		remove("providers", `DELETE FROM providers WHERE id = $1`, f.providerID)
 	}
 	if f.tenantID != 0 {
-		_, _ = db.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, f.tenantID)
+		remove("tenants", `DELETE FROM tenants WHERE id = $1`, f.tenantID)
 	}
+}
+
+func registerFixtureCleanup(t *testing.T, f *testFixture) {
+	t.Helper()
+	t.Cleanup(func() {
+		cleanupFixture(context.Background(), t, testDB, *f)
+	})
 }
 
 // setupFixture 创建一个独立的租户+provider+pool_group+channel，供单个测试使用。
@@ -206,7 +219,7 @@ func TestPostgresCredentialVault_AccountDisabled(t *testing.T) {
 	ctx := context.Background()
 	suffix := "disabled"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]string{"api_key": "sk-disabled-test"}
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
@@ -228,7 +241,7 @@ func TestPostgresCredentialVault_APIKeyHappyPath(t *testing.T) {
 	ctx := context.Background()
 	suffix := "apikey-happy"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]interface{}{
 		"api_key": "sk-test-key-12345",
@@ -278,7 +291,7 @@ func TestPostgresCredentialVault_ProviderAccountExtraSupplementsCredentialExtra(
 	ctx := context.Background()
 	suffix := "account-extra"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]interface{}{
 		"api_key": "sk-test-key-extra",
@@ -326,7 +339,7 @@ func TestPostgresCredentialVault_ProviderAccountExtraCodexCLIOnly(t *testing.T) 
 	ctx := context.Background()
 	suffix := "codex-cli-only"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]interface{}{"api_key": "sk-test-codexcli"}
 	f.providerAccountID = insertProviderAccount(ctx, t, testDB,
@@ -362,7 +375,7 @@ func TestPostgresCredentialVault_OAuthHappyPath(t *testing.T) {
 	ctx := context.Background()
 	suffix := "oauth-happy"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]string{
 		"access_token":  "ya29.oauth-access-token",
@@ -401,7 +414,7 @@ func TestPostgresCredentialVault_ServiceAccountPathFailClosed(t *testing.T) {
 	ctx := context.Background()
 	suffix := "svcacct"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]string{
 		"client_email": "sa@project.iam.gserviceaccount.com",
@@ -427,7 +440,7 @@ func TestPostgresCredentialVault_UpstreamStaticPath(t *testing.T) {
 	ctx := context.Background()
 	suffix := "upstream"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	creds := map[string]string{
 		"base_url":          "https://my-proxy.example.com/v1",
@@ -460,7 +473,7 @@ func TestPostgresCredentialVault_MalformedCredentials(t *testing.T) {
 	ctx := context.Background()
 	suffix := "malformed"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	// 故意省略 api_key 字段，只放一个无关字段。
 	creds := map[string]string{

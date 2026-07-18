@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -116,67 +115,4 @@ func nullablePayloadTime(value string) any {
 		return nil
 	}
 	return ts.UTC()
-}
-
-type MemoryRefundPendingStore struct {
-	mu   sync.Mutex
-	rows map[int64]RefundPendingRecord
-}
-
-func NewMemoryRefundPendingStore() *MemoryRefundPendingStore {
-	return &MemoryRefundPendingStore{rows: map[int64]RefundPendingRecord{}}
-}
-
-func (s *MemoryRefundPendingStore) EnsurePending(_ context.Context, payload MismatchRefundPayload) (RefundPendingRecord, error) {
-	if err := validateRefundPayload(payload); err != nil {
-		return RefundPendingRecord{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.rows == nil {
-		s.rows = map[int64]RefundPendingRecord{}
-	}
-	rec, ok := s.rows[payload.ClaimID]
-	if !ok {
-		rec = RefundPendingRecord{
-			ClaimID:       payload.ClaimID,
-			RequestID:     payload.RequestID,
-			DeltaMicroUSD: payload.DeltaMicroUSD,
-			Status:        "pending",
-		}
-		s.rows[payload.ClaimID] = rec
-		return rec, nil
-	}
-	if strings.TrimSpace(rec.RequestID) != strings.TrimSpace(payload.RequestID) || rec.DeltaMicroUSD != payload.DeltaMicroUSD {
-		return RefundPendingRecord{}, fmt.Errorf("%w: conflicting refund pending identity", ErrReceiptInvalidDerivedData)
-	}
-	rec.Status = "pending"
-	s.rows[payload.ClaimID] = rec
-	return rec, nil
-}
-
-func (s *MemoryRefundPendingStore) MarkCompleted(_ context.Context, claimID int64, _ time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec := s.rows[claimID]
-	rec.Status = "completed"
-	s.rows[claimID] = rec
-	return nil
-}
-
-func (s *MemoryRefundPendingStore) MarkFailed(_ context.Context, claimID int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec := s.rows[claimID]
-	if rec.Status != "completed" {
-		rec.Status = "failed"
-		s.rows[claimID] = rec
-	}
-	return nil
-}
-
-func (s *MemoryRefundPendingStore) Status(claimID int64) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.rows[claimID].Status
 }

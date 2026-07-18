@@ -1004,10 +1004,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	// 运行日志查询/清理/采集健康(platform_admin;handler 内部自解析鉴权)。
 	r.Route("/v1/admin/ops", func(r chi.Router) {
 		gatewayhttp.MountAdminRuntimeLogRoutes(r, gatewayhttp.AdminRuntimeLogsDeps{
-			Auth:  d.adminAuth,
-			Store: d.runtimeLogStore,
-			Sink:  d.logSink,
-			Audit: d.adminQueries,
+			Auth:      d.adminAuth,
+			Store:     d.runtimeLogStore,
+			Sink:      d.logSink,
+			Retention: d.logRetention,
+			Audit:     d.adminQueries,
 		})
 	})
 	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)

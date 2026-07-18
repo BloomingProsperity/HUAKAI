@@ -4,7 +4,7 @@
 > 具体起栈步骤见 [production-bootstrap.md](./production-bootstrap.md);本文只讲"上线该知道的全貌"。
 > 涉及 deploy/prod 的实际改动按仓库规则属 Owner-gated——本文是运营对照,不代表已执行部署。
 
-最后更新:2026-07-12(前端全设计+接线波闭环后:用户/运营两面 UI 补齐 + 邮件模板 + 运行日志入库)。
+最后更新:2026-07-18(全局日志分类、自动保留与运维健康闭环)。
 
 ---
 
@@ -83,11 +83,14 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
   主题+HTML 正文租户级自定义,零 schema(存邮件设置 k/v);`{{占位符}}` 渲染,
   **fail-safe 三重回退**(store 读错/覆盖为空/未知占位符→内置默认),模板问题绝不阻断
   auth 邮件送达;管理端 PUT templates + 预览端点(样例值纯渲染);设置中心「邮件」tab 聚合编辑器。
-- **运行日志入库+查询**(§sub2api ops_system_logs 跟法):两栈(zap+slog)warn+ 异步
-  批量入库(表 ops_runtime_logs,迁移 0180),fail-open 铁律(队列满/DB 故障/panic 只
-  丢弃计数,绝不反压业务);admin 键集分页查询(level/component/**request_id** 过滤)+
-  cleanup 保留策略 + sink 健康观测;前端「日志与诊断」页实时轮询(3s 增量合并)面板。
-  三镜均无服务端推送日志流,轮询即业界形态。
+- **全局日志分类、入库与固定保留**：zap/slog 的显式分类 Info 与全部 Warn/Error 进入
+  异常优先双队列，批量写入 `ops_runtime_logs`；队列满、DB 故障和 panic 不反压业务，
+  但分别累计容量、丢弃和失败批次。分类固定为操作/资金/安全/错误/访问/恢复，支持按
+  事件、结果、错误、租户及请求/追踪/上游/幂等关联检索。迁移 0195 给 14 张普通日志表
+  增加可信 `ingested_at`，后台按 PostgreSQL 时钟生成固定 30 天截止线，通过事务租约和 5000 行小批自动清理；
+  手工入口只能显式确认并触发相同策略，不能自定时间或清空全表。资金账本、幂等事实、
+  处罚状态和待恢复任务永久排除。上线前必须检查 `/v1/admin/ops/runtime-logs/health` 的
+  异常队列、最近清理成功、连续失败和积压状态。
 - **DeepSeek 缓存命中计价修复**:命中价=同版本 input 1/10(迁移 0179)。
 
 ## 6. 能力边界与法律免责
@@ -118,8 +121,7 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 - 真支付 provider 接入(手动 admin 充值可替代)。
 - admin 用量列表按 request_id 过滤(触 billing sqlc 生成码漂移面,defer;运行日志表
   自身可按 request_id 查,用户侧 `/v1/generation?id=` 已可单查)。
-- 运行日志自动清理 worker(当前靠 cleanup 端点手动/外部调度);chi access-log 的
-  X-Request-Id 与计费链 logical_request_id 尚无关联(两套 ID,查日志用后者)。
+- chi access-log 的 X-Request-Id 与计费链 logical_request_id 尚无统一关联(两套 ID，运行日志已可分别检索)。
 - S3-4 二级:退款↔sweep 竞态的冲减备忘重试(job_kind 迁移)——一级可观测已上,视数据积累决定是否做。
 - Hermes 提议-确认改动链默认关(`HUAKAI_HERMES_LLM_PROPOSE_ENABLED`);confirmCache 进程内,多副本需 sticky 路由(已加 re-propose 逃生阀)。
 - 存量英文注释逐步转中文(分批工程,不影响功能)。
