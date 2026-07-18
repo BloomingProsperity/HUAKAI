@@ -256,10 +256,11 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		From: bindingfallback.ClassNormal, To: phase.FallbackClass, Trigger: trigger,
 	}
 	outcome := ex.runAttempt(w, attemptInput{
-		Plan:           phase.Attempts[0],
-		AttemptSeq:     attemptsRun + 1,
-		ReplayableBody: true,
-		FinalAttempt:   true,
+		Plan:             phase.Attempts[0],
+		AttemptSeq:       attemptsRun + 1,
+		ExcludedAccounts: failedAccounts,
+		ReplayableBody:   true,
+		FinalAttempt:     true,
 	})
 	if result, done := completedAttemptResult(outcome); done {
 		return result
@@ -276,7 +277,10 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 				return modelRunResult{Failure: outcome.Failure}
 			}
 			authFailoverUsed = true
-			targetFailedAccounts := map[int64]struct{}{}
+			targetFailedAccounts := make(map[int64]struct{}, len(failedAccounts)+1)
+			for accountID := range failedAccounts {
+				targetFailedAccounts[accountID] = struct{}{}
+			}
 			if outcome.AccountID != 0 {
 				targetFailedAccounts[outcome.AccountID] = struct{}{}
 			}

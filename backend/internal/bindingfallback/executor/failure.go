@@ -25,6 +25,9 @@ type Failure struct {
 	// 授权换号子预算(独立于普通 attempt 预算)。该信号对跨类终态门 fail-closed,
 	// 换号与否由各协议 run 循环按子预算裁决。
 	AuthFailoverEligible bool
+	// SideEffectRetrySafe 表示当前 attempt 未留下未确认的上游付费副作用。
+	// false 是硬终态门，任何主池重试或跨类转移都不得继续。
+	SideEffectRetrySafe bool
 }
 
 // PoolFailure 归一化 selector 失败；调用方仍负责先 abort/release。
@@ -117,6 +120,7 @@ func newFailure(signal bindingfallback.Signal, retry bool, status int, code, rea
 	return &Failure{
 		Signal: signal, RetryPermitted: retry, Status: status, Code: code,
 		Message: clienterr.MessageFor(code), AbortReason: reason, RetryAfterSeconds: retryAfter,
+		SideEffectRetrySafe: true,
 	}
 }
 

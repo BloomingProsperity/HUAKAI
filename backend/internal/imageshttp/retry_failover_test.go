@@ -14,6 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -269,7 +270,7 @@ func TestReplicateImages5xxDoesNotDuplicatePaidTask(t *testing.T) {
 		{status: http.StatusInternalServerError, body: `{"id":"pred-5xx","status":"processing","error":"provider failed after submission"}`},
 		{status: http.StatusOK, body: `{"status":"succeeded","output":"https://r.test/out.webp"}`},
 	}}
-	env.deps.Router = imageRetryRouterForModel(replicateTestModel)
+	env.deps.Router = imageRetryRouterWithManualFallback{model: replicateTestModel}
 	env.deps.Selector = selector
 	env.deps.CredentialVault = imageRetryVault(t, "replicate", 44, 45)
 	env.deps.Dispatcher = dispatcher
@@ -437,6 +438,23 @@ func (m imageRetryRouterForModel) Plan(context.Context, router.PlanInput) (route
 		},
 		SnapshotVersion: "registry:7:1;router:image-retry-test",
 	}, nil
+}
+
+type imageRetryRouterWithManualFallback struct{ model string }
+
+func (r imageRetryRouterWithManualFallback) Plan(ctx context.Context, in router.PlanInput) (router.RoutePlan, error) {
+	plan, err := imageRetryRouterForModel(r.model).Plan(ctx, in)
+	if err != nil {
+		return router.RoutePlan{}, err
+	}
+	plan.FallbackPhases = []router.FallbackPhasePlan{{
+		FallbackClass: bindingfallback.ClassManual,
+		Attempts: []router.AttemptPlan{{
+			Index: 0, PoolGroupID: 303, UpstreamModelID: r.model, Reason: "manual_fallback",
+		}},
+		AttemptBudget: 1,
+	}}
+	return plan, nil
 }
 
 type imageSingleAttemptRouter struct{}

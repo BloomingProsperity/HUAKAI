@@ -110,7 +110,7 @@ type Coordinator struct {
 
 // Observe 先聚合失败，再决定继续 normal、跨类或原地终止。
 func (c *Coordinator) Observe(observation FailureObservation) StepDecision {
-	if c == nil || observation.DeliveryStarted || IsTerminal(observation.Signal) {
+	if c == nil || observation.DeliveryStarted || !observation.LocalSafetyPassed || IsTerminal(observation.Signal) {
 		return StepDecision{Action: ActionStop}
 	}
 	_, degradable := c.evidence.Add(observation.Signal, observation.RetryPermitted)

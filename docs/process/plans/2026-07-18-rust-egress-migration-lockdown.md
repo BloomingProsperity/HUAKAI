@@ -6,12 +6,12 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| Owner directive | “需要让你做，这个是当前目标”；“边界不要定太死，一切以能上线、能跑为核心，像 sub2 项目一样”；“目前没上线，一切可以救”；“不要过分保留回滚”；“并行双计划关闭，全靠你一个人”；过期规则、文档和代码注释可以清理。 |
-| 最终目标 | mimicry TLS 唯一由 Rust `tls-sidecar` 执行；单镜像可启动、可健康检查、可实测；验证后删除 Go uTLS 和双栈。 |
-| 不变边界 | standard API key 继续走 Go 标准 transport；不碰应用层 body mimicry；不动 schema/auth/billing/quota。 |
+| Owner directive | “需要让你做，这个是当前目标”；“边界不要定太死，一切以能上线、能跑为核心”；“完整报告看下，核实之后再动手修复，并入刚刚给你的需求里面”；“有错误就直接修复”；“并行双计划关闭，全靠你一个人”；过期规则、文档和代码注释可以清理。 |
+| 最终目标 | mimicry TLS 唯一由 Rust `tls-sidecar` 执行并可单镜像上线；同时关闭全局 Renew 报告经源码坐实的钱路、鉴权、调度、健康、多实例与恢复缺陷，删除被证伪结论和旧链路。 |
+| 不变边界 | standard API key 继续走 Go 标准 transport；应用层 body mimicry 保持 Go；不复制外部项目实现；未经判别测试证明的报告结论不得驱动架构。 |
 | 工作树 | `/home/ubuntu/HUAKAI-wt-baseline`，沿用 `fix/backend-closure-mvp`，不新建分支。 |
 | 交付 | 小提交、逐提交 review、一个 PR，未经 Owner 同意不合主线。 |
-| 估时 | 6-10 个工程日；真实账号/代理验证取决于可用测试条件。 |
+| 估时 | 10-16 个工程日；真实账号/代理、PostgreSQL、Redis 与容器验证取决于本机可用条件。 |
 
 ## 已锁决策
 
@@ -40,12 +40,18 @@
   -> buffered 或 streaming client response
 ```
 
-当前四个硬缺口：
+Rust 出口迁移开始时的四个硬缺口：
 
-- factory 在 socket 为空时仍回 Go uTLS，并保留 native fallback（`backend/internal/transport/factory.go:177`）。
-- Rust mode 映射只有 Anthropic（`backend/internal/transport/mimicry/registry.go:41`）。
-- DB resolver 返回 Go uTLS RT，且 sidecar 路径主动跳过它（`backend/internal/tlsfpresolve/resolver.go:48`；`backend/internal/gateway/upstream_dispatcher.go:349`）。
-- IPC/进程没有版本、capabilities、ready 与联合生命周期（`tls-sidecar/src/proto.rs`、`tls-sidecar/src/main.rs:15`）。
+- [待收尾] factory 在 socket 为空时仍回 Go uTLS，并保留 native fallback。
+- [已关闭，`29cfc50a`] Rust 已接线 Anthropic、Codex、Gemini、Kiro 四个内置 profile。
+- [已关闭，`29cfc50a`] DB 动态 profile 已改为 inline IPC，由 Rust 严格校验和执行。
+- [部分关闭，`29cfc50a`] IPC v2、capabilities、ready、结构化错误、取消与超时已完成；联合容器生命周期仍待 S5。
+
+全局 Renew 报告的核实结论：
+
+- **坐实并实施**：DLQ poison 冻结、Replicate 重复付费重试、非密码登录绕过 2FA、退款未校验 captured、weighted 失效、ramp 低流量/热路径写、degraded 不降权、class 转移丢 exclusion、ramp key 漂移、DLQ 兜底丢弃、TTS 部分交付全退、配额基础设施 fail-open、结算意图默认关闭、诊断凭据轴失真、legacy 内联账号静默掉池、多实例限流/worker/readiness。
+- **证伪并删除**：`channel_health_state` 完全没接生产选号、没有统一恢复原语、chat 裸 401 永远只进软冷却。源码已存在 `ServicePoolGate`、`RecoverAccountState` 和 auth challenge 分类；真实缺陷是状态轴重复、热路径写与诊断口径发散。
+- **另行实现能力**：模型维度买家配额、可配置错误策略、缺失模型发现；不得把“参考项目有”当实现证据，必须从 HUAKAI 现有合同独立设计。
 
 ## Shape inventory
 
@@ -91,6 +97,36 @@
 - Go 映射现有 transport taxonomy；本地 sidecar故障不得误伤账号凭据/health。
 - 关联日志不记录 token、proxy密码、请求体和 inline profile 原值。
 - 覆盖模型请求 401 后 OAuth 热刷新/重试；refresh 端点继续现有 SSRF-protected standard client，除非真码合同另有要求。
+
+### S4A：钱路、鉴权与恢复闭环
+
+- Replicate 已创建付费 prediction 且取消未确认时，任何 class/fallback 分支都不得再发第二次付费请求。
+- post-delivery poison 达阈值转 `operator_review`，停止自动认领但继续保护 hold；提供带审计、带账务证据检查的人工解决原语，不能自动免费服务。
+- 所有可签发完整 session 的登录方式统一经过登录资格与 2FA 门；门配置读取失败 fail-closed。Passkey 是否作为第二因子必须由显式策略表达，不能靠路径旁路。
+- refund 只能退已 captured 金额并按已退累计封顶；无 hold/未 capture 的 opt-in claim 不得凭空增余额。
+- TTS 已发送响应头或字节后失败按部分交付结算；结算意图默认开启并在写入失败时阻止不可恢复交付。
+- 强配额在存储故障时默认 fail-closed；observe/未配置策略保持 no-op，不误伤空部署。
+
+### S4B：调度、健康与诊断闭环
+
+- `priority_weighted` 在同优先级候选带内按权重选，不要求 load/time 微秒完全相同。
+- cooling 到期转 ramp 由后台 worker 持租约推进；请求热路径只读。低流量账号有可达的时间/样本推进条件。
+- 默认 selector 健康优先于 degraded；目标 class 重试继承所有失败账号 exclusion；ramp key 对同请求/会话稳定。
+- 健康诊断读取真实活动 credential，不再依赖冻死镜像列；legacy 内联凭据停止新建并提供明确迁移/启动诊断，不用扩大明文调度面。
+- DLQ 未知兜底和 reconciliation 进入 quarantine，不再落入 metrics discard；恢复入口收敛到现有统一 service。
+
+### S4C：多实例上线闭环
+
+- 公网入站与登录节流使用共享存储；本地内存只允许显式单实例开发模式。
+- 探测、聚合、签到等副作用 worker 统一竞争 leader lease；不得每副本重复打上游。
+- 新增无鉴权 `/readyz`：DB、Rust sidecar、drain 状态可判；`/healthz` 仍仅表示进程存活。
+- 主动探测遵守 Owner 已定成本预算 B、自动恢复范围 A；默认关闭真实付费探测，并具备租约去重。
+
+### S4D：缺失运营能力
+
+- 配额合同增加模型维度并贯穿 reserve/settle/audit/admin，不能只在 handler 做字符串限流。
+- 上游错误策略支持受控匹配、客户端映射和“是否影响健康”，默认仍走安全固定目录。
+- 模型同步产出“上游发现但目录未登记”的待处理清单，不能自动上架或静默忽略。
 
 ### S5：单镜像可运行交付
 
@@ -155,7 +191,8 @@
 | inline profile 现有 DB 字段表达不足 | 先证明；若需要 schema，立即停下问 Owner。 |
 | Docker 构建引入新 runtime dependency | 默认不用；确需新增时停下问 Owner。 |
 | 真实账号/代理不可用 | 本地 wire/fixture全部完成，但真实 vendor 状态标“未验证”，不虚报上线门通过。 |
-| 触及 auth/billing/quota | 本计划不应触及；发现耦合立即停下问 Owner。 |
+| auth/billing/quota 修复造成降级或绕过 | 先写反例与 PostgreSQL 集成测试；钱路、鉴权、强配额默认 fail-closed，不能用日志代替约束。 |
+| 报告结论与源码冲突 | 以源码和判别测试为准，直接修报告；不为维护报告面子而新建状态表。 |
 
 ## 文件预算
 
@@ -165,12 +202,12 @@
 
 ## Pre-execution checklist
 
-- [ ] 协调锁无冲突，dirty 文件逐项归属明确。
-- [ ] S0 基线和 mutation目标已列清。
-- [ ] mode/profile/account矩阵来自真码和内部实测资料。
-- [ ] Rust/Go IPC 字段能从现有 DB数据无损构造。
+- [x] 协调锁无冲突，dirty 文件逐项归属明确。
+- [x] S0 基线和 mutation目标已列清。
+- [x] mode/profile/account矩阵来自真码和内部实测资料。
+- [x] Rust/Go IPC 字段能从现有 DB数据无损构造。
 - [ ] Docker 构建上下文能访问 Rust workspace/vendor。
-- [ ] 本地 TLS capture、proxy、stream fixture 和缓存目录准备好。
+- [x] 本地 TLS capture、proxy、stream fixture 和缓存目录准备好。
 - [ ] 每切片提交范围、测试门、review门明确。
 - [ ] 删除旧文件前替代路径和测试证据齐全。
 

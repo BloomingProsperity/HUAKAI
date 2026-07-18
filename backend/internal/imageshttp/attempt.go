@@ -174,11 +174,13 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 			// 语义回客户端,X-Huakai-Abort-Failed 头已由 abort 助手落下。
 			failure.RetryPermitted = false
 			failure.AuthFailoverEligible = false
+			failure.SideEffectRetrySafe = false
 		} else if !ex.familyRetrySafe(failure, sideEffectRetrySafe) {
 			// family 已产生上游侧付费副作用(如 Replicate prediction 未确认取消),
 			// 换号重试=第二个号再建付费任务(重复扣费),降为终态。
 			failure.RetryPermitted = false
 			failure.AuthFailoverEligible = false
+			failure.SideEffectRetrySafe = false
 		}
 		return ex.failAttempt(w, failure)
 	}
