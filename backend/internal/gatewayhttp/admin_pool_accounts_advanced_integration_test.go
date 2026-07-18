@@ -90,6 +90,23 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("通过生产 Insert 写活跃账号: %v", err)
 	}
+	// 选号以 account_credentials 为凭据真相源。两个账号都补同态可服务凭据，
+	// 让候选差异只由 expires_at 决定，避免把空壳账号安全门误当作高级字段接线失败。
+	for _, accountID := range []int64{expiredID, activeID} {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO account_credentials (
+				tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+				encrypted_payload, key_id, nonce, aad_hash
+			) VALUES ($1, $2, 'anthropic', 'api_key', 'active', 1, $3, 'advanced-test-key', $4, $5)`,
+			tenantID,
+			accountID,
+			[]byte("ciphertext"),
+			[]byte("nonce-12345678"),
+			fmt.Sprintf("advanced-aad-%d", accountID),
+		); err != nil {
+			t.Fatalf("写入账号 %d 的可服务凭据: %v", accountID, err)
+		}
+	}
 
 	readback, err := adminQueries.GetAdminProviderAccount(ctx, admindb.GetAdminProviderAccountParams{ID: activeID, TenantID: tenantID})
 	if err != nil {

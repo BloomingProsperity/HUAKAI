@@ -95,6 +95,7 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		_, _ = pool.Exec(ctx, `DELETE FROM billing_ledger_archive WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(ctx, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
@@ -148,6 +149,7 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 	).Scan(&seed.providerAccountID); err != nil {
 		t.Fatalf("seed provider account: %v", err)
 	}
+	seedAdapterCredential(t, ctx, pool, seed.tenantID, seed.providerAccountID, "openai", "api_key")
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO billing_ledger_claims (
 			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
@@ -166,6 +168,26 @@ func seedAdapterGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		t.Fatalf("seed claim: %v", err)
 	}
 	return seed
+}
+
+func seedAdapterCredential(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, accountID int64, vendor, authMode string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO account_credentials (
+    tenant_id, provider_account_id, vendor, auth_mode, state,
+    credential_version, encrypted_payload, key_id, nonce, aad_hash
+) VALUES ($1, $2, $3, $4, 'active', 1, $5, $6, $7, $8)`,
+		tenantID,
+		accountID,
+		vendor,
+		authMode,
+		[]byte("ciphertext"),
+		"pool-test-key",
+		[]byte("nonce-12345678"),
+		"pool-test-aad-"+uuid.NewString(),
+	); err != nil {
+		t.Fatalf("seed account credential account=%d: %v", accountID, err)
+	}
 }
 
 func TestDBClaimGate_WriteAcquisition_Success(t *testing.T) {
@@ -347,6 +369,7 @@ func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 	).Scan(&secondAccountID); err != nil {
 		t.Fatalf("seed second account: %v", err)
 	}
+	seedAdapterCredential(t, ctx, pgPool, seed.tenantID, secondAccountID, "openai", "api_key")
 
 	src := NewDBAccountSource(dbbilling.New(pgPool))
 	accounts, err := src.ListAccounts(ctx, SelectionRequest{
@@ -396,6 +419,7 @@ func TestStaticWeightSelection(t *testing.T) {
 	).Scan(&heavyAccountID); err != nil {
 		t.Fatalf("seed heavy provider account: %v", err)
 	}
+	seedAdapterCredential(t, ctx, pgPool, seed.tenantID, heavyAccountID, "openai", "api_key")
 
 	selector := NewDefaultSelector(
 		NewDBAccountSource(dbbilling.New(pgPool)),
@@ -452,6 +476,7 @@ func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 	).Scan(&sessionAccountID); err != nil {
 		t.Fatalf("seed session account: %v", err)
 	}
+	seedAdapterCredential(t, ctx, pgPool, seed.tenantID, sessionAccountID, "anthropic", "claude_ai_oauth")
 
 	src := NewDBAccountSource(dbbilling.New(pgPool))
 	accounts, err := src.ListAccounts(ctx, SelectionRequest{
@@ -498,15 +523,17 @@ func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testin
 		).Scan(&channelID); err != nil {
 			t.Fatalf("seed %s channel: %v", tc.name, err)
 		}
-		if _, err := pgPool.Exec(ctx,
+		var accountID int64
+		if err := pgPool.QueryRow(ctx,
 			`INSERT INTO provider_accounts (
 				tenant_id, provider_id, channel_id, name, account_type,
 				cap_concurrency, in_flight_count, priority
-			) VALUES ($1, $2, $3, $4, 'api_key', 4, 0, 1)`,
+			) VALUES ($1, $2, $3, $4, 'api_key', 4, 0, 1) RETURNING id`,
 			seed.tenantID, seed.providerID, channelID, "acct-"+tc.name+"-"+suffix,
-		); err != nil {
+		).Scan(&accountID); err != nil {
 			t.Fatalf("seed %s account: %v", tc.name, err)
 		}
+		seedAdapterCredential(t, ctx, pgPool, seed.tenantID, accountID, "openai", "api_key")
 	}
 
 	src := NewDBAccountSource(dbbilling.New(pgPool))
