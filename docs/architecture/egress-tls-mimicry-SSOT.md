@@ -82,7 +82,13 @@
 
 ---
 
-## 6. "走 Rust、删 Go" 路线图(拍板方向,分步)
+## 6. "走 Rust、删 Go" 路线图(**Owner 2026-07-18 拍板定死为唯一方向**,分步)
+
+> **锁死**:出口 TLS 伪装唯一走 Rust sidecar;Go uTLS 已废,**不再补功能/修 bug**,验证后删。
+> 执行序 + 全链路真读证据见 `docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md`。
+> **本路线图漏了一条耦合(该计划已补)**:DB 每账号自定义指纹+轮换池(`tlsfpresolve` 建 Go uTLS RT)
+> 整条建在 Go uTLS 上,而 sidecar 协议(`proto.rs ControlRequest`)只收 `profile_id`、不收 inline profile
+> → 删 Go(下方第 5 步)会废掉该功能,除非扩协议加 `inline_profile`(D1,推荐,保功能)或退役(D2)。
 
 现状:出口默认 Go uTLS;Rust sidecar 只内置 anthropic 且未部署。删 Go-native 前必须 Rust 接得住,否则生产打穿。步骤:
 1. **补 codex/gemini/kiro 指纹进 Rust profile**(现只 anthropic;抓包数据已有,是 JSON→TOML profile 格式搬运,非重新抓)+ Go 侧 mode→sidecar-profile 映射补齐四家。
