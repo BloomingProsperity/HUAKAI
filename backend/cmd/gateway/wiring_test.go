@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -419,15 +418,12 @@ func TestContentModerationRuntimeEnabledDefaultsOnAndCanDisable(t *testing.T) {
 }
 
 func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
-	cfg := &Config{TransportSidecarSocket: "/tmp/huakai-tls-sidecar.sock", TransportSidecarFallback: true}
+	cfg := &Config{TransportSidecarSocket: "/home/ubuntu/.cache/huakai-codex/huakai-tls-sidecar.sock"}
 
-	factory := buildTransportFactory(cfg, nil)
+	factory := buildTransportFactory(cfg)
 
 	if factory.SidecarSocketPath != cfg.TransportSidecarSocket {
 		t.Fatalf("SidecarSocketPath=%q want cfg.TransportSidecarSocket", factory.SidecarSocketPath)
-	}
-	if !factory.SidecarFallbackEnabled {
-		t.Fatal("SidecarFallbackEnabled=false want cfg.TransportSidecarFallback")
 	}
 }
 
@@ -595,15 +591,15 @@ func TestWiring_InstallAnthropicClaudeAIOAuthMimicryExchangerReplacesDefault(t *
 		t.Fatalf("wiring 自检对已 install 的 registry 必须返 nil, got %v", err)
 	}
 
-	// 防回归: anthropicoauth.DefaultHTTPClient 自身仍必须返 mimicry uTLS
-	// transport (HUAKAI 反封禁核心), 否则 production wiring 即使调对 install
-	// 也会注入退化 transport。
+	// 防回归：兼容入口即使 sidecar 不在线也必须返回显式失败 transport，
+	// 不能退回标准库 TLS。生产 wiring 使用会返回错误的 NewHTTPClient。
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", "/home/ubuntu/.cache/huakai-codex/missing-sidecar.sock")
 	def := anthropicoauth.DefaultHTTPClient()
 	if def == nil || def.Transport == nil {
 		t.Fatal("anthropicoauth.DefaultHTTPClient 必须为生产 wiring 提供非空 client + transport")
 	}
-	if got := fmt.Sprintf("%T", def.Transport); !strings.Contains(got, "mimicry") {
-		t.Fatalf("default transport=%s, want mimicry uTLS roundTripper", got)
+	if def == http.DefaultClient || def.Transport == http.DefaultTransport {
+		t.Fatal("sidecar 不可用时不得静默退回标准库 transport")
 	}
 
 	// install 接 nil client 必拒, 防止 anthropicoauth.DefaultHTTPClient 退化

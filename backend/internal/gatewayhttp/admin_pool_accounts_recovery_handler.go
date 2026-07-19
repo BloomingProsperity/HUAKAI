@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
@@ -53,7 +54,16 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
 			return
 		}
-		response := providerAccountDTO(result.Account)
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		if err != nil {
+			writeProviderAccountReadError(w, err, "provider_account_get_failed")
+			return
+		}
+		response, err := providerAccountDTO(account)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+			return
+		}
 		recovery := &providerAccountRateLimitRecoveryResponse{
 			AccountBackoffCleared: true,
 			ChannelRecordFound:    result.Channel != nil,
@@ -96,7 +106,16 @@ func newRecoverProviderAccountStateHandler(d AdminPoolAccountDeps) http.HandlerF
 			writeProviderAccountReadError(w, err, "provider_account_recover_failed")
 			return
 		}
-		response := providerAccountDTO(result.Account)
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		if err != nil {
+			writeProviderAccountReadError(w, err, "provider_account_get_failed")
+			return
+		}
+		response, err := providerAccountDTO(account)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+			return
+		}
 		recovery := &providerAccountRateLimitRecoveryResponse{
 			AccountBackoffCleared: true,
 			ChannelRecordFound:    result.Channel != nil,

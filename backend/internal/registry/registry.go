@@ -96,3 +96,39 @@ type BindingMetadata struct {
 	ParamOverride                        map[string]json.RawMessage
 	SensitiveWords                       []string // 选择性开启的关键词混淆;空 = 禁用
 }
+
+// BindingForAttempt 按 Router 已选中的 binding 身份取回请求/响应控制元数据。
+// BindingID 优先，旧计划没有 ID 时才回退 pool_group_id；多候选无法唯一确定时明确失败。
+func (r Resolved) BindingForAttempt(bindingID, poolGroupID int64) (BindingMetadata, bool) {
+	if bindingID > 0 {
+		for _, binding := range r.BindingMetadata {
+			if binding.BindingID == bindingID {
+				return binding, true
+			}
+		}
+		return BindingMetadata{}, false
+	}
+	if poolGroupID > 0 {
+		var matched BindingMetadata
+		found := false
+		for _, binding := range r.BindingMetadata {
+			if binding.PoolGroupID != poolGroupID {
+				continue
+			}
+			if found {
+				return BindingMetadata{}, false
+			}
+			matched, found = binding, true
+		}
+		if found {
+			return matched, true
+		}
+		return BindingMetadata{}, false
+	}
+	// 只有完全没有 binding/pool 身份的旧计划，才允许在唯一候选上兼容回退。
+	// 调用方已经给出身份但未命中时必须 fail-closed，不能把别的 binding 控制套上。
+	if len(r.BindingMetadata) == 1 {
+		return r.BindingMetadata[0], true
+	}
+	return BindingMetadata{}, false
+}

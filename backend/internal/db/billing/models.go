@@ -5,7 +5,6 @@
 package billing
 
 import (
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 )
@@ -39,23 +38,6 @@ type PoolGroup struct {
 	CreatedAt                   pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt                   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	DeletedAt                   pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
-}
-
-// F-POOL-001 I2: idempotent slot release via UUID token. Orphan sweep finds status=acquired AND lease_expires_at < now().
-type PoolSlotAcquisition struct {
-	ID                int64              `db:"id" json:"id"`
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderAccountID int64              `db:"provider_account_id" json:"provider_account_id"`
-	BindingID         *int64             `db:"binding_id" json:"binding_id"`
-	AcquisitionToken  uuid.UUID          `db:"acquisition_token" json:"acquisition_token"`
-	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
-	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`
-	HeartbeatAt       pgtype.Timestamptz `db:"heartbeat_at" json:"heartbeat_at"`
-	LeaseExpiresAt    pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	Status            string             `db:"status" json:"status"`
-	ReleasedAt        pgtype.Timestamptz `db:"released_at" json:"released_at"`
-	ReleaseReason     *string            `db:"release_reason" json:"release_reason"`
-	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
 type SettlementIntent struct {

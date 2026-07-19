@@ -99,7 +99,6 @@ func TestDispatchHCSFHappyPathBuildsBodyFromEnvelope(t *testing.T) {
 }
 
 func TestDispatchHCSFAutoTransportModeUsesSessionMimicry(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	standardCalls, mimicryCalls := 0, 0
 	standard := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		standardCalls++
@@ -116,7 +115,7 @@ func TestDispatchHCSFAutoTransportModeUsesSessionMimicry(t *testing.T) {
 	})
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
-	factory.SetMimicry(mimicry)
+	factory.SetSidecarForTesting(mimicry)
 	adapter := &stubAdapter{platform: "copilot"}
 	dispatcher := &UpstreamDispatcher{
 		Adapters:         &stubRegistry{adapter: adapter},

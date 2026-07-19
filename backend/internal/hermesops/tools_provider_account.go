@@ -94,6 +94,7 @@ func providerAccountShape(a admindb.AdminProviderAccountRow) map[string]any {
 		"oauth_endpoint_health":           a.OAuthEndpointHealth,
 		"priority":                        a.Priority,
 		"static_weight":                   a.StaticWeight,
+		"upstream_cost_ratio":             a.UpstreamCostRatio,
 		"cap_concurrency":                 a.CapConcurrency,
 		"in_flight_count":                 a.InFlightCount,
 		"pool_mode":                       a.PoolMode,

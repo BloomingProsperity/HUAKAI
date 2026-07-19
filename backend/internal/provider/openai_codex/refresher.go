@@ -286,6 +286,15 @@ func (a RefreshAdapter) mergeToken(cred map[string]any, token tokenResponse, cli
 	if idToken := strings.TrimSpace(token.IDToken); idToken != "" {
 		cred["id_token"] = idToken
 	}
+	if plan := strings.TrimSpace(token.ChatGPTPlanType); plan != "" {
+		cred["chatgpt_plan_type"] = plan
+	}
+	if userID := strings.TrimSpace(token.ChatGPTUserID); userID != "" {
+		cred["chatgpt_user_id"] = userID
+	}
+	if accountID := strings.TrimSpace(token.ChatGPTAccountID); accountID != "" {
+		cred["chatgpt_account_id"] = accountID
+	}
 	out, err := json.Marshal(cred)
 	return out, expiresAt, err
 }
@@ -343,13 +352,16 @@ func (e *RefreshError) RetryableRefresh() bool {
 }
 
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int64  `json:"expires_in"`
-	ExpiresAt    string `json:"expires_at"`
-	Scope        string `json:"scope"`
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token"`
+	IDToken          string `json:"id_token"`
+	TokenType        string `json:"token_type"`
+	ExpiresIn        int64  `json:"expires_in"`
+	ExpiresAt        string `json:"expires_at"`
+	Scope            string `json:"scope"`
+	ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+	ChatGPTUserID    string `json:"chatgpt_user_id"`
+	ChatGPTAccountID string `json:"chatgpt_account_id"`
 }
 
 func classifyHTTPRefreshError(status int, header http.Header, body []byte, now time.Time) error {

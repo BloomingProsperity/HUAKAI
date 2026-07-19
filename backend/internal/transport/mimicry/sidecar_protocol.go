@@ -12,23 +12,29 @@ import (
 )
 
 const (
-	SidecarProtocolVersion uint16 = 2
+	SidecarProtocolVersion uint16 = 3
 
 	sidecarOperationConnect = "connect"
 	sidecarOperationReady   = "ready"
 
-	SidecarCapabilityBuiltinProfile = "builtin_profile"
-	SidecarCapabilityInlineProfile  = "inline_profile"
-	SidecarCapabilityHTTPProxy      = "http_proxy"
-	SidecarCapabilityHTTPSProxy     = "https_proxy"
-	SidecarCapabilitySOCKS5Proxy    = "socks5_proxy"
-	SidecarCapabilityH2Bridge       = "h2_bridge"
-	SidecarCapabilityForceH1        = "force_h1"
+	SidecarCapabilityBuiltinProfile  = "builtin_profile"
+	SidecarCapabilityInlineProfile   = "inline_profile"
+	SidecarCapabilityHTTPProxy       = "http_proxy"
+	SidecarCapabilityHTTPSProxy      = "https_proxy"
+	SidecarCapabilitySOCKS5Proxy     = "socks5_proxy"
+	SidecarCapabilityH2Bridge        = "h2_bridge"
+	SidecarCapabilityForceH1         = "force_h1"
+	SidecarCapabilityTargetIPPinning = "target_ip_pinning"
 
 	SidecarProfileAnthropicCLIMimicryV1 = "anthropic-cli-mimicry-v1"
 	SidecarProfileOpenAICodexCLIV1      = "openai-codex-cli-v1"
 	SidecarProfileGeminiCLIV1           = "gemini-cli-v1"
 	SidecarProfileKiroCLIV1             = "kiro-cli-v1"
+	SidecarProfileAntigravitySafeV1     = "antigravity-rust-safe-v1"
+	SidecarProfileCursorSafeV1          = "cursor-rust-safe-v1"
+	SidecarProfileCopilotSafeV1         = "copilot-rust-safe-v1"
+	SidecarProfileWindsurfSafeV1        = "windsurf-rust-safe-v1"
+	SidecarProfileOperatorSourceSafeV1  = "operator-source-rust-safe-v1"
 
 	sidecarMaxFrameLen = 1024 * 1024
 )
@@ -39,6 +45,7 @@ const (
 	SidecarErrorProfileUnknown       = "profile_unknown"
 	SidecarErrorProfileInvalid       = "profile_invalid"
 	SidecarErrorTargetInvalid        = "target_invalid"
+	SidecarErrorTargetPolicyDenied   = "target_policy_denied"
 	SidecarErrorProxyInvalid         = "proxy_invalid"
 	SidecarErrorProxyConnect         = "proxy_connect"
 	SidecarErrorUpstreamDNS          = "upstream_dns"
@@ -214,15 +221,16 @@ func sidecarContainsUint16(values []uint16, wanted uint16) bool {
 }
 
 type sidecarControlRequest struct {
-	Version       uint16            `json:"version"`
-	Operation     string            `json:"operation"`
-	TargetHost    string            `json:"target_host,omitempty"`
-	Port          uint16            `json:"port,omitempty"`
-	ProfileID     string            `json:"profile_id,omitempty"`
-	InlineProfile *InlineTLSProfile `json:"inline_profile,omitempty"`
-	CorrelationID string            `json:"correlation_id,omitempty"`
-	ForceH1       *bool             `json:"force_h1,omitempty"`
-	Proxy         *sidecarProxySpec `json:"proxy,omitempty"`
+	Version         uint16            `json:"version"`
+	Operation       string            `json:"operation"`
+	TargetHost      string            `json:"target_host,omitempty"`
+	Port            uint16            `json:"port,omitempty"`
+	ProfileID       string            `json:"profile_id,omitempty"`
+	InlineProfile   *InlineTLSProfile `json:"inline_profile,omitempty"`
+	CorrelationID   string            `json:"correlation_id,omitempty"`
+	ForceH1         *bool             `json:"force_h1,omitempty"`
+	Proxy           *sidecarProxySpec `json:"proxy,omitempty"`
+	PinnedTargetIPs []string          `json:"pinned_target_ips,omitempty"`
 }
 
 type sidecarControlAck struct {

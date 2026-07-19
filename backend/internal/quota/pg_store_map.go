@@ -110,7 +110,8 @@ func policyFromDB(row dbquota.ListActiveQuotaPoliciesForScopesRow) Policy {
 			Kind:     ScopeKind(row.ScopeKind),
 			ID:       row.ScopeID,
 		},
-		Metric: Metric(row.Metric),
+		ModelSelector: normalizeModelSelector(row.ModelSelector),
+		Metric:        Metric(row.Metric),
 		Window: Window{
 			Kind:    WindowKind(row.WindowKind),
 			Seconds: int64(row.WindowSeconds),
@@ -134,6 +135,7 @@ func reservationFromGet(row dbquota.GetQuotaReservationByClaimForUpdateRow) (Res
 		ID:                 row.ID,
 		ClaimID:            row.ClaimID,
 		RequestFingerprint: row.RequestFingerprint,
+		RequestedModel:     normalizeRequestedModel(row.RequestedModel),
 		Scopes:             scopes,
 		PolicySnapshot:     row.PolicySnapshot,
 		PredictedCost:      decimalFromPG(row.PredictedCost),
@@ -153,6 +155,7 @@ func reservationFromInsert(row dbquota.InsertQuotaReservationRow) (Reservation, 
 		ID:                 row.ID,
 		ClaimID:            row.ClaimID,
 		RequestFingerprint: row.RequestFingerprint,
+		RequestedModel:     normalizeRequestedModel(row.RequestedModel),
 		Scopes:             scopes,
 		PolicySnapshot:     row.PolicySnapshot,
 		PredictedCost:      decimalFromPG(row.PredictedCost),
@@ -174,6 +177,7 @@ func reservationFromReactivate(row dbquota.ReactivateQuotaReservationRow) (Reser
 		ID:                 row.ID,
 		ClaimID:            row.ClaimID,
 		RequestFingerprint: row.RequestFingerprint,
+		RequestedModel:     normalizeRequestedModel(row.RequestedModel),
 		Scopes:             scopes,
 		PolicySnapshot:     row.PolicySnapshot,
 		PredictedCost:      decimalFromPG(row.PredictedCost),
@@ -230,7 +234,8 @@ func currentWindowReadFromDB(row dbquota.ListCurrentQuotaWindowsForScopeRow, at 
 			Kind:     ScopeKind(row.ScopeKind),
 			ID:       row.ScopeID,
 		},
-		Metric: Metric(row.Metric),
+		ModelSelector: normalizeModelSelector(row.ModelSelector),
+		Metric:        Metric(row.Metric),
 		Window: Window{
 			Kind:    WindowKind(row.WindowKind),
 			Seconds: int64(row.WindowSeconds),
@@ -244,14 +249,15 @@ func currentWindowReadFromDB(row dbquota.ListCurrentQuotaWindowsForScopeRow, at 
 	}
 	window := resolvePolicyWindow(policy, at)
 	read := CurrentWindowRead{
-		TenantID:   row.TenantID,
-		PolicyID:   row.PolicyID,
-		WindowID:   row.WindowID,
-		Scope:      policy.Scope,
-		Metric:     policy.Metric,
-		Window:     window,
-		LimitValue: policy.LimitValue,
-		Version:    int(row.Version),
+		TenantID:      row.TenantID,
+		PolicyID:      row.PolicyID,
+		WindowID:      row.WindowID,
+		Scope:         policy.Scope,
+		ModelSelector: policy.ModelSelector,
+		Metric:        policy.Metric,
+		Window:        window,
+		LimitValue:    policy.LimitValue,
+		Version:       int(row.Version),
 	}
 	storedStart := pgTime(row.WindowStart)
 	storedEnd := pgTime(row.WindowEnd)

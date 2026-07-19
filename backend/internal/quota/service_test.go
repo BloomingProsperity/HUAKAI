@@ -117,6 +117,41 @@ func TestServiceReserve_ExistingClaimRejectsFingerprintMismatch(t *testing.T) {
 	}
 }
 
+func TestServiceReserve_ExistingClaimRejectsRequestedModelMismatch(t *testing.T) {
+	at := time.Date(2026, 7, 19, 8, 30, 0, 0, time.UTC)
+	scopes := []Scope{{TenantID: 1, Kind: ScopeGlobal, ID: "*"}}
+	store := &claimConflictReplayStore{
+		returnWinnerImmediately: true,
+		winner: Reservation{
+			TenantID:           1,
+			ID:                 101,
+			ClaimID:            12,
+			RequestFingerprint: "fp-same",
+			RequestedModel:     "gpt-4.1",
+			Scopes:             scopes,
+			PredictedCost:      decimal.RequireFromString("1"),
+			Status:             ReservationReserved,
+			LeaseExpiresAt:     at.Add(5 * time.Minute),
+		},
+	}
+	result, err := NewService(store).Reserve(context.Background(), ReserveRequest{
+		TenantID:           1,
+		ClaimID:            12,
+		RequestFingerprint: "fp-same",
+		RequestedModel:     "claude-sonnet-4",
+		Scopes:             scopes,
+		PredictedCost:      decimal.RequireFromString("1"),
+		LeaseExpiresAt:     at.Add(5 * time.Minute),
+		At:                 at,
+	})
+	if !errors.Is(err, ErrReservationReplayConflict) {
+		t.Fatalf("Reserve err=%v want ErrReservationReplayConflict", err)
+	}
+	if result.Allowed || store.insertCalls != 0 || store.requestCountIncrements != 0 || store.reserveIncrements != 0 {
+		t.Fatalf("model replay conflict caused side effects: result=%+v store=%+v", result, store)
+	}
+}
+
 // RequestsMetricUsesModelBReservedAndSettled 守住 requests 准入只看
 // reserved_value + settled_value, request_count 只是观测镜像。Mutation: 若回到
 // request_count 判定或 reserve 阶段只写 request_count, 本测试变红。

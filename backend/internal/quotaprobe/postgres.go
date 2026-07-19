@@ -30,8 +30,12 @@ JOIN account_credentials ac
 WHERE pa.enabled = true
   AND pa.deleted_at IS NULL
   AND ac.deleted_at IS NULL
-  AND ac.vendor = 'anthropic'
-  AND ac.auth_mode = 'claude_ai_oauth'
+	  AND (
+	      (ac.vendor = 'anthropic' AND ac.auth_mode = 'claude_ai_oauth')
+	      OR (ac.vendor = 'antigravity' AND ac.auth_mode = 'oauth')
+	      OR (ac.vendor = 'gemini' AND ac.auth_mode IN ('oauth', 'code_assist', 'google_one', 'antigravity'))
+	      OR (ac.vendor = 'grok' AND ac.auth_mode = 'xai_oauth')
+	  )
   AND (
       ac.state = 'active'
       OR (ac.state = 'refreshing_with_grace' AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))

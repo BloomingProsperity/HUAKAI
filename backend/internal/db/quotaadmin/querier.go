@@ -22,7 +22,7 @@ type Querier interface {
 	// 约束: 所有读写定位都显式带 tenant_id, 防跨租户误读/误改。
 	// 建一条配额策略并回写全列; live unique / valid_range / >=0 CHECK 由库守。
 	InsertQuotaPolicy(ctx context.Context, arg InsertQuotaPolicyParams) (QuotaPolicy, error)
-	// 运营后台列表: 可选 scope_kind/scope_id/metric/enabled 过滤 + 分页。
+	// 运营后台列表: 可选 scope_kind/scope_id/model_selector/metric/enabled 过滤 + 分页。
 	// 故意不过滤 valid_from/valid_until/mode, 运营须看到过期+影子+禁用全集。
 	ListQuotaPoliciesForAdmin(ctx context.Context, arg ListQuotaPoliciesForAdminParams) ([]QuotaPolicy, error)
 	// 整行覆盖一条策略 (含 enabled/mode 开关), 仍按 tenant_id+id 定位防越租户。

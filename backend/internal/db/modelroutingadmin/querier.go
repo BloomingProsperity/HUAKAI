@@ -4,16 +4,19 @@
 
 package modelroutingadmindb
 
-import "context"
+import (
+	"context"
+)
 
 type Querier interface {
-	CreateModelRoutingOverrideAdmin(context.Context, CreateModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
-	DeleteModelRoutingOverrideAdmin(context.Context, DeleteModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
-	GetModelRoutingOverrideAdminForUpdate(context.Context, GetModelRoutingOverrideAdminForUpdateParams) (ModelRoutingOverride, error)
-	ListModelRoutingOverridesAdmin(context.Context, int64) ([]ModelRoutingOverride, error)
-	LockModelRoutingAccountsForPool(context.Context, LockModelRoutingAccountsForPoolParams) ([]int64, error)
-	LockModelRoutingPoolForTenant(context.Context, LockModelRoutingPoolForTenantParams) (int64, error)
-	UpdateModelRoutingOverrideAdmin(context.Context, UpdateModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
+	// 模型路由强制 pin 的租户域管理查询；消费查询仍由 pool_accounts.sql 负责。
+	CreateModelRoutingOverrideAdmin(ctx context.Context, arg CreateModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
+	DeleteModelRoutingOverrideAdmin(ctx context.Context, arg DeleteModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
+	GetModelRoutingOverrideAdminForUpdate(ctx context.Context, arg GetModelRoutingOverrideAdminForUpdateParams) (ModelRoutingOverride, error)
+	ListModelRoutingOverridesAdmin(ctx context.Context, tenantID int64) ([]ModelRoutingOverride, error)
+	LockModelRoutingAccountsForPool(ctx context.Context, arg LockModelRoutingAccountsForPoolParams) ([]int64, error)
+	LockModelRoutingPoolForTenant(ctx context.Context, arg LockModelRoutingPoolForTenantParams) (int64, error)
+	UpdateModelRoutingOverrideAdmin(ctx context.Context, arg UpdateModelRoutingOverrideAdminParams) (ModelRoutingOverride, error)
 }
 
 var _ Querier = (*Queries)(nil)

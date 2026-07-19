@@ -2,9 +2,9 @@ package upstreamfeedback
 
 import (
 	"context"
-	"errors"
+	"log/slog"
 	"net/http"
-	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,10 +13,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
-	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/routingsignal"
 )
 
 const (
@@ -53,9 +54,11 @@ type Dependencies struct {
 	CredentialHotRefresher CredentialHotRefresher
 	AuthCooldown           AuthCooldown
 	RecentRequests         RecentRequests
+	RoutingSignals         routingsignal.Recorder
 	Now                    func() time.Time
 	RefreshTimeout         time.Duration
 	RefreshDedupeWindow    time.Duration
+	Logger                 *slog.Logger
 }
 
 type Observer struct {
@@ -66,17 +69,19 @@ type Observer struct {
 }
 
 type Attempt struct {
-	TenantID       int64
-	Account        provider.AccountInfo
-	ProtocolFamily string
-	ModelKey       string
-	RequestID      string
-	StartedAt      time.Time
+	TenantID          int64
+	Account           provider.AccountInfo
+	ProtocolFamily    string
+	ModelKey          string
+	RequestID         string
+	StartedAt         time.Time
+	StatusCodeMapping map[int]int
 }
 
 type HTTPFailure struct {
-	Decision       gateway.AttemptRetryDecision
-	Classification gateway.Classification
+	Decision              gateway.AttemptRetryDecision
+	Classification        gateway.Classification
+	AccountPolicyDecision rate.Decision
 }
 
 type refreshKey struct {
@@ -94,6 +99,9 @@ func NewObserver(deps Dependencies) *Observer {
 	if deps.RefreshDedupeWindow <= 0 {
 		deps.RefreshDedupeWindow = defaultRefreshDedupeWindow
 	}
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
+	}
 	return &Observer{
 		deps:         deps,
 		refreshUntil: make(map[refreshKey]time.Time),
@@ -101,6 +109,124 @@ func NewObserver(deps Dependencies) *Observer {
 }
 
 func (o *Observer) ObserveHTTPError(ctx context.Context, attempt Attempt, statusCode int, headers http.Header, body []byte) HTTPFailure {
+	failure, err := classifyHTTPError(attempt, statusCode, headers, body)
+	if err != nil {
+		logInternal(ctx, attempt.RequestID, "upstream_error_classification_failed", err)
+	}
+
+	modelScoped, accountDecision, hasAccountDecision := o.applyRateState(ctx, attempt, statusCode, headers, body, failure.Classification)
+	suppressHealth := false
+	if hasAccountDecision {
+		failure.AccountPolicyDecision = accountDecision
+		suppressHealth = ApplyAccountPolicy(ctx, o.deps.Logger, attempt, statusCode, &failure.Decision, failure.Classification, accountDecision)
+	}
+	if !modelScoped && !suppressHealth {
+		o.recordSignal(
+			ctx,
+			attempt,
+			gateway.SignalFromClassification(statusCode, failure.Classification),
+			statusCode,
+			rateLimitReset(failure.Classification, o.now()),
+			gateway.AuthFailureClassFromClassification(failure.Classification),
+		)
+	}
+	if failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
+		o.triggerCredentialRefresh(attempt)
+	}
+	return failure
+}
+
+// ApplyAccountPolicy 是所有协议共用的账号错误策略出口：只改客户端投影，计算健康
+// 信号是否允许抑制，并记录不含上游正文的结构化命中日志。
+func ApplyAccountPolicy(
+	ctx context.Context,
+	logger *slog.Logger,
+	attempt Attempt,
+	upstreamStatus int,
+	decision *gateway.AttemptRetryDecision,
+	classification gateway.Classification,
+	accountDecision rate.Decision,
+) bool {
+	if decision == nil {
+		return false
+	}
+	ApplyClientProjection(decision, accountDecision)
+	healthSignalSuppressed := HealthSuppressionAllowed(accountDecision, classification)
+	logAccountPolicyMatch(ctx, logger, attempt, upstreamStatus, *decision, classification, accountDecision, healthSignalSuppressed)
+	return healthSignalSuppressed
+}
+
+func logAccountPolicyMatch(
+	ctx context.Context,
+	logger *slog.Logger,
+	attempt Attempt,
+	upstreamStatus int,
+	decision gateway.AttemptRetryDecision,
+	classification gateway.Classification,
+	accountDecision rate.Decision,
+	healthSignalSuppressed bool,
+) {
+	if accountDecision.ClientRuleID == "" {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	errorCode := decision.ClientCode
+	if errorCode == "" {
+		errorCode = clienterr.CodeUpstreamDispatchError
+	}
+	logger.InfoContext(ctx, "上游错误命中账号策略",
+		logcontract.FieldCategory, string(logcontract.CategoryError),
+		logcontract.FieldEventType, "upstream_error.account_policy_matched",
+		logcontract.FieldResult, string(logResultForStatus(upstreamStatus)),
+		logcontract.FieldErrorClass, string(logErrorClass(classification)),
+		logcontract.FieldErrorCode, errorCode,
+		logcontract.FieldRetryable, decision.RetryableBeforeDelivery,
+		logcontract.FieldActorKind, string(logcontract.ActorSystem),
+		logcontract.FieldActorRef, "gateway",
+		logcontract.FieldTenantID, attempt.TenantID,
+		logcontract.FieldTargetType, "provider_account",
+		logcontract.FieldTargetRef, strconv.FormatInt(attempt.Account.AccountID, 10),
+		"request_id", strings.TrimSpace(attempt.RequestID),
+		"account_policy_rule_id", accountDecision.ClientRuleID,
+		"static_classifier_rule_id", classification.RuleID,
+		"static_error_class", string(classification.Class),
+		"upstream_status_code", upstreamStatus,
+		"client_status_code", decision.ClientStatus,
+		"affect_health", !accountDecision.SuppressHealthSignal,
+		"health_signal_suppressed", healthSignalSuppressed,
+	)
+}
+
+func logResultForStatus(statusCode int) logcontract.Result {
+	if statusCode >= 400 && statusCode < 500 {
+		return logcontract.ResultClientFailure
+	}
+	return logcontract.ResultServerFailure
+}
+
+func logErrorClass(classification gateway.Classification) logcontract.ErrorClass {
+	switch classification.Class {
+	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked:
+		return logcontract.ErrorAuthentication
+	case gateway.ErrorClassRateLimited:
+		return logcontract.ErrorRateLimit
+	case gateway.ErrorClassNetworkTimeout, gateway.ErrorClassUpstreamTimeout:
+		return logcontract.ErrorTimeout
+	default:
+		return logcontract.ErrorDependency
+	}
+}
+
+// ClassifyHTTPError 提供无健康副作用的统一客户端错误投影。
+// 没有 Observer 的测试或降级接线也必须消费同一静态分类与 binding 状态映射。
+func ClassifyHTTPError(attempt Attempt, statusCode int, headers http.Header, body []byte) HTTPFailure {
+	failure, _ := classifyHTTPError(attempt, statusCode, headers, body)
+	return failure
+}
+
+func classifyHTTPError(attempt Attempt, statusCode int, headers http.Header, body []byte) (HTTPFailure, error) {
 	providerName := classificationProvider(attempt)
 	decision, classification, err := gateway.ClassifyAttemptHTTPError(statusCode, headers, body, providerName)
 	if err != nil {
@@ -109,24 +235,38 @@ func (o *Observer) ObserveHTTPError(ctx context.Context, attempt Attempt, status
 			ClientStatus: http.StatusBadGateway,
 			AbortReason:  "upstream_error",
 		}
-		logInternal(ctx, attempt.RequestID, "upstream_error_classification_failed", err)
 	}
+	if mapped, ok := attempt.StatusCodeMapping[statusCode]; ok && mapped >= 400 && mapped <= 599 {
+		decision.ClientStatus = mapped
+	}
+	return HTTPFailure{Decision: decision, Classification: classification}, err
+}
 
-	modelScoped := o.applyRateState(ctx, attempt, statusCode, headers, body, classification)
-	if !modelScoped {
-		o.recordSignal(
-			ctx,
-			attempt,
-			gateway.SignalFromClassification(statusCode, classification),
-			statusCode,
-			rateLimitReset(classification, o.now()),
-			gateway.AuthFailureClassFromClassification(classification),
-		)
+// ApplyClientProjection 只把账号规则允许覆盖的三个客户端字段写入 attempt 决策。
+func ApplyClientProjection(decision *gateway.AttemptRetryDecision, accountDecision rate.Decision) {
+	if decision == nil {
+		return
 	}
-	if decision.RefreshIntent == gateway.RefreshOAuthHotPath {
-		o.triggerCredentialRefresh(attempt)
+	if accountDecision.ClientStatus >= 400 && accountDecision.ClientStatus <= 599 {
+		decision.ClientStatus = accountDecision.ClientStatus
 	}
-	return HTTPFailure{Decision: decision, Classification: classification}
+	if accountDecision.ClientCode != "" {
+		decision.ClientCode = accountDecision.ClientCode
+	}
+	if accountDecision.ClientMessage != "" {
+		decision.ClientMessage = accountDecision.ClientMessage
+	}
+	decision.ClientRuleID = accountDecision.ClientRuleID
+}
+
+// HealthSuppressionAllowed 保证账号规则不能隐藏铁证禁用或鉴权恢复信号。
+func HealthSuppressionAllowed(decision rate.Decision, classification gateway.Classification) bool {
+	if !decision.SuppressHealthSignal {
+		return false
+	}
+	return classification.Tier != gateway.TierIronClad &&
+		classification.RetryAction != gateway.RetryActionPermanentDisable &&
+		classification.FsmTransition != gateway.FsmTransitionDisabled
 }
 
 func (o *Observer) ObserveDispatchError(ctx context.Context, attempt Attempt, err error) gateway.AttemptRetryDecision {
@@ -167,9 +307,9 @@ func (o *Observer) applyRateState(
 	headers http.Header,
 	body []byte,
 	classification gateway.Classification,
-) bool {
+) (bool, rate.Decision, bool) {
 	if o == nil || attempt.Account.AccountID <= 0 {
-		return false
+		return false, rate.Decision{}, false
 	}
 	var (
 		dec         rate.Decision
@@ -183,19 +323,25 @@ func (o *Observer) applyRateState(
 		} else {
 			hasDecision = true
 			if dec.SuppressLocalState {
-				return true
+				return true, dec, true
 			}
 		}
 	}
 
+	// 账号自定义规则可匹配任意 HTTP 状态。只按状态码白名单写冷却会让 400/403/404
+	// 等规则只改客户端文案、却马上被选号重选，因此规则产生的显式整号冷却优先落地。
+	if hasDecision && dec.StateChange == rate.StateTempUnsched {
+		o.forceAccountCooldown(ctx, attempt, dec)
+		return false, dec, true
+	}
 	if statusCode == http.StatusNotFound {
 		o.recordModelCooldown(ctx, attempt, statusCode, nil, rate.ReasonModelLimitExceeded)
-		return false
+		return false, dec, hasDecision
 	}
 	if statusCode == http.StatusTooManyRequests && classification.Class == gateway.ErrorClassRateLimited {
 		if hasDecision && dec.StateChange != rate.StateNoChange && dec.StateChange != rate.StateRateLimited {
 			o.forceAccountCooldown(ctx, attempt, dec)
-			return false
+			return false, dec, true
 		}
 		resetAt := rateLimitReset(classification, o.now())
 		reason := rate.ReasonRateLimitRPM
@@ -208,12 +354,12 @@ func (o *Observer) applyRateState(
 				reason = dec.Reason
 			}
 		}
-		return o.recordModelCooldown(ctx, attempt, statusCode, resetAt, reason)
+		return o.recordModelCooldown(ctx, attempt, statusCode, resetAt, reason), dec, hasDecision
 	}
 	if hasDecision && accountCooldownCandidate(statusCode) {
 		o.forceAccountCooldown(ctx, attempt, dec)
 	}
-	return false
+	return false, dec, hasDecision
 }
 
 func (o *Observer) forceAccountCooldown(ctx context.Context, attempt Attempt, dec rate.Decision) {
@@ -272,6 +418,21 @@ func (o *Observer) recordSignal(
 	}
 	if o.deps.RecentRequests != nil && attempt.Account.AccountID > 0 && class != channelhealth.SignalAuthChallenge {
 		o.deps.RecentRequests.Record(attempt.Account.AccountID, class == channelhealth.SignalSuccess)
+	}
+	if o.deps.RoutingSignals != nil && attempt.TenantID > 0 && attempt.Account.AccountID > 0 {
+		now := o.now().UTC()
+		latency := now.Sub(attempt.StartedAt)
+		latencyValid := !attempt.StartedAt.IsZero() && latency >= 0
+		if err := o.deps.RoutingSignals.RecordRoutingSignal(ctx, routingsignal.Observation{
+			TenantID:          attempt.TenantID,
+			ProviderAccountID: attempt.Account.AccountID,
+			Success:           class == channelhealth.SignalSuccess,
+			Latency:           latency,
+			LatencyValid:      latencyValid,
+			ObservedAt:        now,
+		}); err != nil {
+			logInternal(ctx, attempt.RequestID, "routing_signal_write_failed", err)
+		}
 	}
 	if o.deps.ChannelHealth == nil {
 		return
@@ -354,91 +515,4 @@ func (o *Observer) now() time.Time {
 		return time.Now()
 	}
 	return o.deps.Now()
-}
-
-func healthKey(attempt Attempt) (channelhealth.ChannelKey, bool) {
-	key := channelhealth.ChannelKey{
-		TenantID:            attempt.TenantID,
-		Vendor:              strings.TrimSpace(attempt.Account.Platform),
-		ProviderAccountID:   attempt.Account.AccountID,
-		AccountCredentialID: attempt.Account.AccountCredentialID,
-		CredentialVersion:   attempt.Account.CredentialVersion,
-	}
-	if err := key.Validate(); err != nil {
-		return channelhealth.ChannelKey{}, false
-	}
-	key.ChannelID = key.StableChannelID()
-	return key, true
-}
-
-func dispatchSignalClass(err error, decision gateway.AttemptRetryDecision, classification gateway.Classification) channelhealth.SignalClass {
-	if err == nil {
-		return ""
-	}
-	switch transport.TransportErrorClassOf(err) {
-	case transport.TransportErrorClassSidecarUnavailable,
-		transport.TransportErrorClassSidecarProfileUnavailable:
-		return ""
-	}
-	switch decision.TransportClass {
-	case gateway.TransportErrorCredentialExpired:
-		return channelhealth.SignalAuthChallenge
-	case gateway.TransportErrorConnectTimeout,
-		gateway.TransportErrorNetworkTimeout,
-		gateway.TransportErrorUpstreamHeaderTimeout,
-		gateway.TransportErrorUpstreamBodyIdleTimeout:
-		return channelhealth.SignalTimeout
-	case gateway.TransportErrorTLSHandshakeFailed,
-		gateway.TransportErrorConnectionRefused,
-		gateway.TransportErrorDNSFailure,
-		gateway.TransportErrorNetworkUnreachable,
-		gateway.TransportErrorProxyFailure:
-		return channelhealth.SignalChannelError
-	case gateway.TransportErrorLocalDispatch:
-		return ""
-	}
-	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-		return channelhealth.SignalTimeout
-	}
-	return gateway.SignalFromClassification(0, classification)
-}
-
-func rateLimitReset(classification gateway.Classification, now time.Time) *time.Time {
-	if classification.RetryAfterMs <= 0 {
-		return nil
-	}
-	reset := now.Add(time.Duration(classification.RetryAfterMs) * time.Millisecond)
-	return &reset
-}
-
-func accountCooldownCandidate(statusCode int) bool {
-	switch statusCode {
-	case http.StatusTooManyRequests, 529,
-		http.StatusRequestTimeout,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-func classificationProvider(attempt Attempt) string {
-	if strings.EqualFold(strings.TrimSpace(attempt.ProtocolFamily), "bedrock_invoke") {
-		return "bedrock"
-	}
-	return strings.TrimSpace(attempt.Account.Platform)
-}
-
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
-func logInternal(ctx context.Context, requestID, code string, err error) {
-	clienterr.LogInternal(ctx, requestID, code, err)
 }

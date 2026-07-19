@@ -9,7 +9,7 @@ import (
 // fixedClockController 构建一个带 scope budget 的 controller, 其时钟取自
 // 解引用的 *clk, 这样测试可以确定性地推进时间。
 func fixedClockController(cfg StormScopeConfig, clk *time.Time) *StormController {
-	c := NewStormControllerWithScopeBudget(nil, cfg)
+	c := NewStormControllerWithSharedScopeBudget(nil, cfg, nil)
 	c.now = func() time.Time { return *clk }
 	return c
 }

@@ -868,7 +868,7 @@ func (s *casForcingStore) SaveRefreshedCredential(ctx context.Context, u Refresh
 
 // TestStormControllerSmoke 校验构造函数不会 panic。
 func TestStormControllerSmoke(t *testing.T) {
-	c := NewStormController(nil)
+	c := NewStormControllerWithSharedScopeBudget(nil, StormScopeConfig{}, nil)
 	if c == nil {
 		t.Fatalf("controller is nil")
 	}
@@ -883,7 +883,7 @@ func TestStormControllerSmoke(t *testing.T) {
 // 变异检查: 让 AcquireProviderEndpoint 在 scope 被禁用时返回一个拒绝 outcome
 // → outcome 断言变红。
 func TestStormControllerUnconfiguredScopesAdmitWithoutPanic(t *testing.T) {
-	c := NewStormController(nil)
+	c := NewStormControllerWithSharedScopeBudget(nil, StormScopeConfig{}, nil)
 	refund, outcome, err := c.AcquireProviderEndpoint(context.Background(), 1, "p", "f")
 	if err != nil || outcome != "" || refund == nil {
 		t.Fatalf("unconfigured endpoint scope: refund!=nil=%v outcome=%q err=%v, want admit", refund != nil, outcome, err)
@@ -900,7 +900,7 @@ func TestStormControllerUnconfiguredScopesAdmitWithoutPanic(t *testing.T) {
 // 消除如下风险: 在 SQL state 缺失或接线为 nil 时, 生产 credentialworker
 // 的 account-scope 路径发生 panic。
 func TestAT_SECURITY_W1_O1_StormControllerAccountScopeMissingStateReturnsError(t *testing.T) {
-	c := NewStormController(nil)
+	c := NewStormControllerWithSharedScopeBudget(nil, StormScopeConfig{}, nil)
 	if _, _, err := c.Acquire(context.Background(), 1, 1); !errors.Is(err, ErrStormControllerUnavailable) {
 		t.Fatalf("Acquire nil queries error=%v, want ErrStormControllerUnavailable", err)
 	}

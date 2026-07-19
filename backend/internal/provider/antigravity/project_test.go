@@ -32,7 +32,11 @@ func TestProjectResolverReturnsLoadedProject(t *testing.T) {
 		if body.Metadata.IDEType != "ANTIGRAVITY" {
 			t.Errorf("metadata.ideType=%q，期望 ANTIGRAVITY", body.Metadata.IDEType)
 		}
-		_, _ = w.Write([]byte(`{"cloudaicompanionProject":"project-loaded"}`))
+		_, _ = w.Write([]byte(`{
+			"cloudaicompanionProject":"project-loaded",
+			"currentTier":{"id":"free-tier"},
+			"paidTier":{"id":"g1-pro-tier"}
+		}`))
 	}))
 	defer loadServer.Close()
 
@@ -49,12 +53,15 @@ func TestProjectResolverReturnsLoadedProject(t *testing.T) {
 		HTTPClient:    loadServer.Client(),
 		PollInterval:  -1,
 	}
-	projectID, err := resolver.ResolveProjectID(context.Background(), "access-for-project")
+	projectID, tier, err := resolver.ResolveProjectMetadata(context.Background(), "access-for-project")
 	if err != nil {
 		t.Fatalf("ResolveProjectID 失败：%v", err)
 	}
 	if projectID != "project-loaded" {
 		t.Fatalf("project_id=%q，期望 project-loaded", projectID)
+	}
+	if tier != "g1-pro-tier" {
+		t.Fatalf("subscription tier=%q，期望付费层级 g1-pro-tier", tier)
 	}
 	if loadCalls.Load() != 1 || onboardCalls.Load() != 0 {
 		t.Fatalf("load/onboard 调用次数=(%d,%d)，期望 (1,0)", loadCalls.Load(), onboardCalls.Load())
@@ -112,12 +119,15 @@ func TestProjectResolverOnboardsAndPolls(t *testing.T) {
 		PollAttempts:  3,
 		PollInterval:  -1,
 	}
-	projectID, err := resolver.ResolveProjectID(context.Background(), "access-for-project")
+	projectID, tier, err := resolver.ResolveProjectMetadata(context.Background(), "access-for-project")
 	if err != nil {
 		t.Fatalf("ResolveProjectID 失败：%v", err)
 	}
 	if projectID != "project-onboarded" {
 		t.Fatalf("project_id=%q，期望 project-onboarded", projectID)
+	}
+	if tier != "g1-pro" {
+		t.Fatalf("onboard 期间必须保留 loadCodeAssist 已观测套餐：%q", tier)
 	}
 	if onboardCalls.Load() != 2 {
 		t.Fatalf("onboardUser 调用次数=%d，期望 2", onboardCalls.Load())

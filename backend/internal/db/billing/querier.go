@@ -14,11 +14,10 @@ type Querier interface {
 	// Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
 	// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 	AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error)
-	AcquireBindingConcurrencyLock(ctx context.Context, bindingID int64) error
-	ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error)
 	// 首次写入时目标行还不存在, FOR UPDATE 无法锁住空行; 先拿事务级顾问锁
 	// 按租户和设置键串行化同一设置的读改写, 提交或回滚后自动释放。
 	AcquireBillingSettingLock(ctx context.Context, arg AcquireBillingSettingLockParams) error
+	AcquireBindingConcurrencyLock(ctx context.Context, bindingID int64) error
 	// Usage analytics: aggregation queries over settled usage_records.
 	// SELECT-only. Self-serve queries carry a non-nullable tenant_id
 	// predicate (cross-tenant prevention). Admin leaderboard queries are
@@ -89,21 +88,17 @@ type Querier interface {
 	ApplyBalanceHoldCapture(ctx context.Context, arg ApplyBalanceHoldCaptureParams) (ApplyBalanceHoldCaptureRow, error)
 	ApplyBalanceHoldRelease(ctx context.Context, arg ApplyBalanceHoldReleaseParams) (ApplyBalanceHoldReleaseRow, error)
 	CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHoldParams) (int64, error)
-	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error)
+	CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error)
 	CountBillingClaims(ctx context.Context, arg CountBillingClaimsParams) (int64, error)
-	// Operator overview: how many claims are in each status for one tenant.
-	CountClaimsByStatus(ctx context.Context, tenantID int64) ([]CountClaimsByStatusRow, error)
 	CountPendingReconciliationUsageRecords(ctx context.Context) (int64, error)
-	// DM-14:告警指标——当前被自动摘除(非 healthy 且仍在生效期)的账号数,按状态分组。
-	// 过期的 cooldown/throttled 已重新可调度(对齐 ListEligibleAccounts 语义),不计入。
 	CountUnhealthyAccountsByTenant(ctx context.Context, tenantID int64) ([]CountUnhealthyAccountsByTenantRow, error)
 	CountUnresolvedSettlementIntentsForClaim(ctx context.Context, arg CountUnresolvedSettlementIntentsForClaimParams) (int64, error)
 	CountUsageRecords(ctx context.Context, arg CountUsageRecordsParams) (int64, error)
 	DecrementInFlightCount(ctx context.Context, id int64) error
-	// 过期清理扫描 (供后台 janitor 周期调用)。
 	DeleteExpiredStickyBindings(ctx context.Context) error
 	DeletePool(ctx context.Context, arg DeletePoolParams) (PoolGroup, error)
+	ExpediteAbortLease(ctx context.Context, arg ExpediteAbortLeaseParams) (int64, error)
 	GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error)
 	GetBalanceHoldForUpdate(ctx context.Context, claimID int64) (GetBalanceHoldForUpdateRow, error)
 	// Case C 计费策略租户级设置的增删改查。表见 migration 0046。
@@ -111,7 +106,7 @@ type Querier interface {
 	GetBillingSetting(ctx context.Context, arg GetBillingSettingParams) (BillingSetting, error)
 	// 事务内按租户和设置键读取并锁住现有计费设置。
 	GetBillingSettingForUpdate(ctx context.Context, arg GetBillingSettingForUpdateParams) (BillingSetting, error)
-	// Single claim lookup, tenant-scoped (refuse cross-tenant reads).
+	// 结算意图追平只读取权威 claim 的终态、尝试序号和实际费用，并强制租户隔离。
 	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
 	// Backed by billing_ledger_claims in docs/schema/observability-billing.sql.
@@ -134,7 +129,6 @@ type Querier interface {
 	// Spec §Tx2 step 9: re-fetch claim row; verify status='reserving' AND
 	// acquisition_token matches.
 	GetClaimForSettle(ctx context.Context, arg GetClaimForSettleParams) (GetClaimForSettleRow, error)
-	// 取未过期的重放记录; 过期记录视为不存在。
 	GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error)
 	GetPool(ctx context.Context, arg GetPoolParams) (PoolGroup, error)
 	GetSettlementIntentByClaimAttempt(ctx context.Context, arg GetSettlementIntentByClaimAttemptParams) (SettlementIntent, error)
@@ -149,10 +143,6 @@ type Querier interface {
 	// GetClaimByIdempotency (which returns 0 rows when no prior claim exists),
 	// so this insert is conflict-free under serializable isolation.
 	InsertClaim(ctx context.Context, arg InsertClaimParams) (InsertClaimRow, error)
-	// Phase E 持久幂等重放记录的 CRUD。 表见 migration 0044。
-	// 请求成功完成后存原始响应体, 供同 Idempotency-Key 重试 (claim 已 committed
-	// → IdempotencyHit) 时路由无关地重放。 ON CONFLICT DO NOTHING: 重放路径本身
-	// 不应再写, 并发亦去重。
 	// Admin Pool Group CRUD (F-POOL-001).
 	InsertPool(ctx context.Context, arg InsertPoolParams) (PoolGroup, error)
 	InsertPoolRoutingAuditEvent(ctx context.Context, arg InsertPoolRoutingAuditEventParams) error
@@ -172,9 +162,6 @@ type Querier interface {
 	ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error)
 	ListAuditEvents(ctx context.Context, arg ListAuditEventsParams) ([]ListAuditEventsRow, error)
 	ListBillingClaims(ctx context.Context, arg ListBillingClaimsParams) ([]ListBillingClaimsRow, error)
-	// Audit-grade event stream for one tenant. event_type filter optional;
-	// pass empty string to disable filter.
-	ListBillingEventsByTenant(ctx context.Context, arg ListBillingEventsByTenantParams) ([]ListBillingEventsByTenantRow, error)
 	// 列出一个租户的全部计费设置。
 	ListBillingSettingsByTenant(ctx context.Context, tenantID int64) ([]BillingSetting, error)
 	ListEligibleAccounts(ctx context.Context, arg ListEligibleAccountsParams) ([]ListEligibleAccountsRow, error)
@@ -194,20 +181,12 @@ type Querier interface {
 	//   - requested_protocol_family 为空 → legacy bypass
 	//   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
-	ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error)
+	ListOrphanedAcquisitions(ctx context.Context) ([]ListOrphanedAcquisitionsRow, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
 	// 账号健康诊断只读取请求结果与时延信号，刻意不选择 actual_cost 等钱字段。
 	// tenant_id 与 provider_account_id 同时下推，避免仅靠处理器作用域保护租户边界。
 	ListProviderAccountRecentRequests(ctx context.Context, arg ListProviderAccountRecentRequestsParams) ([]ListProviderAccountRecentRequestsRow, error)
 	ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error)
-	// F-OBS-001 read-only query surface for the admin/audit lane.
-	// This file contains SELECT-only queries; the Repository wrapper enforces tenant
-	// scope on every call.
-	//
-	// NONE of these SELECTs include the `credentials` column from
-	// provider_accounts (or any synonym). Audit views surface metadata only.
-	// Page through usage_records for one tenant. Most-recent-first.
-	ListUsageByTenant(ctx context.Context, arg ListUsageByTenantParams) ([]ListUsageByTenantRow, error)
 	// F-OBS-001 admin read APIs. SELECT-only: no hot-path, quota, billing,
 	// auth, or trust-chain mutation is allowed here.
 	ListUsageRecords(ctx context.Context, arg ListUsageRecordsParams) ([]ListUsageRecordsRow, error)
@@ -238,13 +217,11 @@ type Querier interface {
 	// this query never accepts tenant_id=0/global mode.
 	RecentUsageRollupByTenant(ctx context.Context, arg RecentUsageRollupByTenantParams) (RecentUsageRollupByTenantRow, error)
 	ReleaseBalanceHold(ctx context.Context, claimID int64) (int64, error)
+	ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
-	// Spec §Tx2 step 14: TRULY IDEMPOTENT in_flight decrement (codex P1 review fix).
-	// Atomic CTE: flip pool_slot_acquisitions.status acquired -> released_success
-	// AND ONLY THEN decrement provider_accounts.in_flight_count. If the token is
-	// replayed (e.g. retry storm), the inner UPDATE returns 0 rows because status
-	// is no longer 'acquired'; the outer UPDATE no-ops; in_flight_count stays correct.
-	// $2 = release_reason text ('settled_committed' / 'settled_aborted' / etc.)
+	// Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
+	// 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
+	// $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
 	ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error)
 	// F-OBS-001 balance hold queries for durable atomic debit.
 	ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHoldParams) (ReserveBalanceHoldRow, error)

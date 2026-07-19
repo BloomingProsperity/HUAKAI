@@ -87,7 +87,8 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 					// 不入幂等指纹),predicted/scopes 是派生的定价/路由态——admin 改组价率或
 					// 池绑定后,同 Idempotency-Key 重试必然携新值,在此严格比对会让重试永久
 					// 429。reactivate 用新值重跑策略评估与窗口判定,强制面不缩。
-					if strings.TrimSpace(existing.RequestFingerprint) != strings.TrimSpace(req.RequestFingerprint) {
+					if strings.TrimSpace(existing.RequestFingerprint) != strings.TrimSpace(req.RequestFingerprint) ||
+						normalizeRequestedModel(existing.RequestedModel) != req.RequestedModel {
 						conflict := reservationReplayConflictError()
 						result = ReserveResult{Decision: conflict.Decision, Reservation: existing}
 						deny = conflict
@@ -114,7 +115,7 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 				return nil
 			}
 
-			resolved, err := ResolvePolicies(ctx, tx, req.TenantID, req.Scopes, reserveMetrics(req), req.At)
+			resolved, err := ResolvePolicies(ctx, tx, req.TenantID, req.Scopes, req.RequestedModel, reserveMetrics(req), req.At)
 			if err != nil {
 				if shouldRetryWholeReserveTransaction(err) {
 					return err
@@ -148,6 +149,7 @@ func (s *Service) Reserve(ctx context.Context, req ReserveRequest) (ReserveResul
 				TenantID:           req.TenantID,
 				ClaimID:            req.ClaimID,
 				RequestFingerprint: req.RequestFingerprint,
+				RequestedModel:     req.RequestedModel,
 				Scopes:             req.Scopes,
 				PolicySnapshot:     marshalReservationPolicySnapshot(resolved.Ordered, evaluated.enforceWindows),
 				PredictedCost:      req.PredictedCost,
@@ -464,6 +466,7 @@ func normalizeReserveRequest(req ReserveRequest) ReserveRequest {
 	if req.Scopes == nil {
 		req.Scopes = []Scope{}
 	}
+	req.RequestedModel = normalizeRequestedModel(req.RequestedModel)
 	req.Scopes = normalizeScopesForResolution(req.TenantID, req.Scopes)
 	return req
 }
@@ -585,6 +588,9 @@ func reservationReplayConflict(req ReserveRequest, existing Reservation) *DenyEr
 	if strings.TrimSpace(existing.RequestFingerprint) != strings.TrimSpace(req.RequestFingerprint) {
 		return reservationReplayConflictError()
 	}
+	if normalizeRequestedModel(existing.RequestedModel) != req.RequestedModel {
+		return reservationReplayConflictError()
+	}
 	if !existing.PredictedCost.Equal(req.PredictedCost) {
 		return reservationReplayConflictError()
 	}
@@ -622,7 +628,7 @@ func canReactivateReservation(status ReservationStatus) bool {
 }
 
 func reactivateExistingReservation(ctx context.Context, store PGStore, req ReserveRequest, existing Reservation) (ReserveResult, *DenyError, error) {
-	resolved, err := ResolvePolicies(ctx, store, req.TenantID, req.Scopes, reserveMetrics(req), req.At)
+	resolved, err := ResolvePolicies(ctx, store, req.TenantID, req.Scopes, req.RequestedModel, reserveMetrics(req), req.At)
 	if err != nil {
 		if shouldRetryWholeReserveTransaction(err) {
 			return ReserveResult{}, nil, err
@@ -658,6 +664,7 @@ func reactivateExistingReservation(ctx context.Context, store PGStore, req Reser
 		ReservationID:      existing.ID,
 		ClaimID:            req.ClaimID,
 		RequestFingerprint: req.RequestFingerprint,
+		RequestedModel:     req.RequestedModel,
 		Scopes:             req.Scopes,
 		PolicySnapshot:     marshalReservationPolicySnapshot(resolved.Ordered, evaluated.enforceWindows),
 		PredictedCost:      req.PredictedCost,

@@ -57,7 +57,12 @@ type AttemptRetryDecision struct {
 	SwitchPool              bool
 	RefreshIntent           CredentialRefreshIntent
 	ClientStatus            int
-	AbortReason             string
+	// ClientCode/ClientMessage/ClientRuleID 是账号显式规则命中后的可选客户端投影。
+	// 它们不参与重试、换号、鉴权刷新、健康分类或计费终态。
+	ClientCode    string
+	ClientMessage string
+	ClientRuleID  string
+	AbortReason   string
 
 	// TransportClass 保留传输层原始分类，便于 PR3 写审计与 channelhealth 信号。
 	TransportClass TransportErrorClass

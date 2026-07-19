@@ -37,6 +37,7 @@ type routingPolicyCacheKey struct {
 type routingPolicyCacheEntry struct {
 	fallbackTimeoutMS  int
 	fallbackMaxWaiting int
+	topKDefault        int
 	expiresAt          time.Time
 }
 
@@ -84,6 +85,10 @@ func (s *bindingRoutingPolicySource) GetRoutingPolicy(ctx context.Context, req p
 		mode = pool.SelectionModePriorityWeighted
 	}
 	policy := &pool.RoutingPolicy{SelectionMode: mode}
+	if mode == pool.SelectionModePriorityWeighted {
+		policy.OperatorScoring = true
+		policy.ScoringPolicyVersion = "adaptive-v1"
+	}
 	if s.q == nil || req.TenantID == 0 || req.PoolGroupID == 0 {
 		return policy, nil
 	}
@@ -132,6 +137,7 @@ func (s *bindingRoutingPolicySource) fallbackPolicy(ctx context.Context, key rou
 		entry = routingPolicyCacheEntry{
 			fallbackMaxWaiting: int(poolGroup.FallbackWaitMaxWaiting),
 			fallbackTimeoutMS:  int(poolGroup.FallbackWaitTimeoutMs),
+			topKDefault:        int(poolGroup.TopKDefault),
 			expiresAt:          s.currentTime().Add(s.effectiveCacheTTL()),
 		}
 	}
@@ -168,4 +174,5 @@ func (s *bindingRoutingPolicySource) effectiveCacheTTL() time.Duration {
 func applyRoutingPolicyFallback(policy *pool.RoutingPolicy, entry routingPolicyCacheEntry) {
 	policy.FallbackMaxWaiting = entry.fallbackMaxWaiting
 	policy.FallbackTimeoutMS = entry.fallbackTimeoutMS
+	policy.TopKDefault = entry.topKDefault
 }

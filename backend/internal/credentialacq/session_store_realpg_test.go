@@ -236,6 +236,104 @@ func TestBeginFinalizeCallbackOAuthGatePG(t *testing.T) {
 	}
 }
 
+func TestDevicePollEncryptedPayloadLeaseAndTerminalCleanupPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{8}, 32))
+	if err != nil {
+		t.Fatalf("keys: %v", err)
+	}
+	now := time.Now().UTC()
+	store := NewPostgresSessionStoreWithKeys(pool, keys).WithNow(func() time.Time { return now })
+	tenantID, accountID := seedCredentialAcqProviderAccount(t, ctx, pool, "device-"+uuid.NewString())
+	flowID := uuid.NewString()
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: accountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Kind: FlowKindOAuth, Status: StatusWaitingForUser,
+		ActorID: "admin-1", ActorRole: "platform_admin", ClientIdentitySource: ClientSourceOperatorConfig,
+		RedactedContext: map[string]any{"auth_type": "device_code"}, ExpiresAt: now.Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.SetAuthPayload(ctx, flowID, AuthTypeDeviceCode, map[string]any{
+		"auth_type": "device_code", "device_code": "device-secret", "user_code": "USER",
+		"verification_uri": "https://auth.example.test/device", "expires_in": 900, "interval": 5,
+		"issued_at": now.Format(time.RFC3339Nano), "token_url": "https://auth.example.test/token", "client_id": "client",
+	}); err != nil {
+		t.Fatalf("SetAuthPayload: %v", err)
+	}
+	assertDevicePollRawColumns(t, ctx, pool, flowID, true)
+	loaded, err := store.Get(ctx, flowID)
+	if err != nil || stringField(loaded.DeviceCodePayload, "device_code") != "device-secret" {
+		t.Fatalf("Get encrypted payload: session=%+v err=%v", loaded, err)
+	}
+
+	ownerA := HashIdempotencyKey("owner-a")
+	claimed, err := store.claimDevicePoll(ctx, flowID, ownerA, DefaultDevicePollLease)
+	if err != nil || claimed.Status != StatusCallbackReceived {
+		t.Fatalf("claim owner A: status=%s err=%v", claimed.Status, err)
+	}
+	if _, err := store.claimDevicePoll(ctx, flowID, HashIdempotencyKey("owner-b"), DefaultDevicePollLease); !errors.Is(err, ErrDevicePollInProgress) {
+		t.Fatalf("concurrent claim err=%v want ErrDevicePollInProgress", err)
+	}
+	if _, err := store.finishDevicePoll(ctx, flowID, ownerA, StatusWaitingForUser, "authorization_pending", "等待用户完成设备授权"); err != nil {
+		t.Fatalf("release pending lease: %v", err)
+	}
+
+	ownerB := HashIdempotencyKey("owner-b")
+	if _, err := store.claimDevicePoll(ctx, flowID, ownerB, DefaultDevicePollLease); err != nil {
+		t.Fatalf("claim owner B: %v", err)
+	}
+	validated, err := store.completeDevicePoll(ctx, flowID, ownerB, CredentialCandidate{
+		TenantID: tenantID, ProviderAccountID: accountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload: []byte(`{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600}`),
+	})
+	if err != nil || validated.Status != StatusValidated || stringField(validated.DeviceCodePayload, "access_token") != "access-secret" {
+		t.Fatalf("complete device poll: status=%s err=%v", validated.Status, err)
+	}
+	assertDevicePollRawColumns(t, ctx, pool, flowID, true)
+
+	consumed, err := store.BeginFinalize(ctx, flowID)
+	if err != nil || consumed.ConsumedAt.IsZero() {
+		t.Fatalf("BeginFinalize: session=%+v err=%v", consumed, err)
+	}
+	assertDevicePollRawColumns(t, ctx, pool, flowID, false)
+	credentialID := seedCredentialAcqAccountCredential(t, ctx, pool, tenantID, accountID)
+	if _, err := store.MarkFinalized(ctx, flowID, credentialID); err != nil {
+		t.Fatalf("MarkFinalized: %v", err)
+	}
+	assertDevicePollRawColumns(t, ctx, pool, flowID, false)
+
+	if _, err := pool.Exec(ctx, `UPDATE credential_acquisition_flow_sessions SET device_code_payload = '{"device_code":"plaintext"}'::jsonb WHERE id = $1::uuid`, flowID); err == nil {
+		t.Fatal("数据库约束允许写入明文设备授权载荷")
+	} else {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+			t.Fatalf("明文约束错误=%T %[1]v want check_violation", err)
+		}
+	}
+}
+
+func assertDevicePollRawColumns(t *testing.T, ctx context.Context, pool *pgxpool.Pool, flowID string, wantEncrypted bool) {
+	t.Helper()
+	var plaintext []byte
+	var ciphertext, metadata []byte
+	if err := pool.QueryRow(ctx, `
+SELECT device_code_payload::text::bytea, encrypted_pkce_verifier, nonce_hash
+FROM credential_acquisition_flow_sessions
+WHERE id = $1::uuid`, flowID).Scan(&plaintext, &ciphertext, &metadata); err != nil {
+		t.Fatalf("读取设备授权原始列: %v", err)
+	}
+	if string(plaintext) != "{}" {
+		t.Fatalf("device_code_payload=%s want {}", plaintext)
+	}
+	if got := len(ciphertext) > 0 && len(metadata) > 0; got != wantEncrypted {
+		t.Fatalf("encrypted=%v want %v (ciphertext=%d metadata=%d)", got, wantEncrypted, len(ciphertext), len(metadata))
+	}
+}
+
 // TestUpdateStatusAndCancelRejectTerminalFlowsPG 针对真实 Postgres 做守护:它证明了
 // fake test double 无法证明的两个 CAS predicate(fake 通过
 // isTerminalStatus 在 Go 里重实现了该规则,因此即便 SQL 被删它也保持绿色):

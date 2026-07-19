@@ -14,11 +14,12 @@ type QuotaPolicy struct {
 	ID        int64  `db:"id" json:"id"`
 	ScopeKind string `db:"scope_kind" json:"scope_kind"`
 	// HUAKAI 中性 scope 编码: global 为 *, 其他 scope 使用本地 id 字符串。
-	ScopeID             string             `db:"scope_id" json:"scope_id"`
-	Metric              string             `db:"metric" json:"metric"`
-	WindowKind          string             `db:"window_kind" json:"window_kind"`
-	WindowSeconds       int32              `db:"window_seconds" json:"window_seconds"`
-	LimitValue          pgtype.Numeric     `db:"limit_value" json:"limit_value"`
+	ScopeID       string         `db:"scope_id" json:"scope_id"`
+	Metric        string         `db:"metric" json:"metric"`
+	WindowKind    string         `db:"window_kind" json:"window_kind"`
+	WindowSeconds int32          `db:"window_seconds" json:"window_seconds"`
+	LimitValue    pgtype.Numeric `db:"limit_value" json:"limit_value"`
+	// 窗口硬上限增量；窗口内实际上限为 limit_value + burst_value，默认 0 时行为不变。
 	BurstValue          pgtype.Numeric     `db:"burst_value" json:"burst_value"`
 	Mode                string             `db:"mode" json:"mode"`
 	Priority            int32              `db:"priority" json:"priority"`
@@ -29,4 +30,6 @@ type QuotaPolicy struct {
 	LastModifiedByActor *string            `db:"last_modified_by_actor" json:"last_modified_by_actor"`
 	CreatedAt           pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	// 公开模型别名选择器。* 表示所有模型，其他值为规范化后的精确别名；通配与精确策略累加生效。
+	ModelSelector string `db:"model_selector" json:"model_selector"`
 }

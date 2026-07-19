@@ -12,14 +12,19 @@ import (
 
 // fakeHealthSource 是供单元测试使用的可控 SystemHealthSource。
 type fakeHealthSource struct {
-	chTotal     int64
-	chUnhealthy int64
-	chErr       error
-	dlqDepth    int64
-	dlqErr      error
-	firingCount int64
-	firingErr   error
-	dbErr       error
+	chTotal         int64
+	chUnhealthy     int64
+	chErr           error
+	dlqDepth        int64
+	dlqErr          error
+	firingCount     int64
+	firingErr       error
+	dbErr           error
+	monitorEnabled  bool
+	monitorTotal    int64
+	monitorOffline  int64
+	monitorDegraded int64
+	monitorErr      error
 }
 
 func (f *fakeHealthSource) ChannelHealthSummary(_ context.Context) (int64, int64, error) {
@@ -33,6 +38,9 @@ func (f *fakeHealthSource) AlertingFiringCount(_ context.Context) (int64, error)
 }
 func (f *fakeHealthSource) DBPing(_ context.Context) error {
 	return f.dbErr
+}
+func (f *fakeHealthSource) ServerMonitorSummary(_ context.Context) (bool, int64, int64, int64, error) {
+	return f.monitorEnabled, f.monitorTotal, f.monitorOffline, f.monitorDegraded, f.monitorErr
 }
 
 // TestSystemHealthAggregate:一个组件不健康 -> 顶层状态反映为 degraded。
@@ -61,9 +69,9 @@ func TestSystemHealthAggregate(t *testing.T) {
 		t.Errorf("top-level status=%q want %q; MUTATION: always-healthy impl hides degraded state",
 			resp.Status, TopLevelStatusDegraded)
 	}
-	// 全部 4 个组件都必须存在。
-	if len(resp.Components) != 4 {
-		t.Fatalf("components=%d want 4 (database, channel_health, dlq, alerting)", len(resp.Components))
+	// 全部 5 个组件都必须存在。
+	if len(resp.Components) != 5 {
+		t.Fatalf("components=%d want 5 (database, channel_health, dlq, alerting, server_monitor)", len(resp.Components))
 	}
 	// channel_health 必须为 degraded。
 	found := false
@@ -82,7 +90,7 @@ func TestSystemHealthAggregate(t *testing.T) {
 
 // TestSystemHealthAllHealthy:所有组件健康 -> 顶层状态 healthy。
 func TestSystemHealthAllHealthy(t *testing.T) {
-	src := &fakeHealthSource{chTotal: 5}
+	src := &fakeHealthSource{chTotal: 5, monitorEnabled: true, monitorTotal: 2}
 	h := NewSystemHealthHandler(src)
 
 	rec := httptest.NewRecorder()
@@ -98,6 +106,33 @@ func TestSystemHealthAllHealthy(t *testing.T) {
 	}
 	if resp.Status != TopLevelStatusHealthy {
 		t.Errorf("status=%q want healthy", resp.Status)
+	}
+}
+
+func TestSystemHealthServerMonitorDegraded(t *testing.T) {
+	src := &fakeHealthSource{monitorEnabled: true, monitorTotal: 3, monitorOffline: 1, monitorDegraded: 1}
+	h := NewSystemHealthHandler(src)
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/v1/admin/system/health", nil))
+	var resp HealthResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Status != TopLevelStatusDegraded {
+		t.Fatalf("status=%q want degraded", resp.Status)
+	}
+	found := false
+	for _, component := range resp.Components {
+		if component.Name != "server_monitor" {
+			continue
+		}
+		found = true
+		if component.Status != ComponentStatusDegraded || !strings.Contains(component.Detail, "offline_nodes=1") {
+			t.Fatalf("server_monitor=%+v", component)
+		}
+	}
+	if !found {
+		t.Fatal("server_monitor component missing")
 	}
 }
 

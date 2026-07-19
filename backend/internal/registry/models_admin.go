@@ -341,7 +341,7 @@ func hasAdminModelUpdate(in UpdateAdminModelInput) bool {
 		in.ModelOwner != nil || in.Status != nil
 }
 
-func mergeAdminModelUpdate(current dbregistry.AdminModel, in UpdateAdminModelInput) (dbregistry.UpdateAdminModelParams, error) {
+func mergeAdminModelUpdate(current dbregistry.LockAdminModelForUpdateRow, in UpdateAdminModelInput) (dbregistry.UpdateAdminModelParams, error) {
 	params := dbregistry.UpdateAdminModelParams{
 		ID: current.ID, Scope: current.Scope, TenantID: current.TenantID,
 		DefaultProviderModelID:  current.DefaultProviderModelID,
@@ -411,7 +411,22 @@ func targetTenantID(target AdminModelTarget) *int64 {
 	return &tenantID
 }
 
-func adminModelFromDB(row dbregistry.AdminModel) (AdminModel, error) {
+type adminModelDBRow dbregistry.GetAdminModelRow
+
+func adminModelFromDB(source any) (AdminModel, error) {
+	var row adminModelDBRow
+	switch value := source.(type) {
+	case dbregistry.ListAdminModelsRow:
+		row = adminModelDBRow(value)
+	case dbregistry.GetAdminModelRow:
+		row = adminModelDBRow(value)
+	case dbregistry.CreateAdminModelRow:
+		row = adminModelDBRow(value)
+	case dbregistry.UpdateAdminModelRow:
+		row = adminModelDBRow(value)
+	default:
+		return AdminModel{}, fmt.Errorf("%w: 未支持的模型主体数据库投影 %T", ErrRegistryBackend, source)
+	}
 	capabilities := make(map[string]bool)
 	if len(row.Capabilities) > 0 {
 		if err := json.Unmarshal(row.Capabilities, &capabilities); err != nil {

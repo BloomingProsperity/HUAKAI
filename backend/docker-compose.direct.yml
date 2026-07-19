@@ -31,11 +31,13 @@ name: huakai-direct
 services:
   gateway:
     build:
-      # context 上移到仓库根:Dockerfile 需把 frontend/ 一并 COPY 进镜像并 go:embed 进二进制。
+      # context 上移到仓库根：Dockerfile 需要同时读取 Go 后端与 Rust sidecar workspace。
       context: ..
       dockerfile: backend/Dockerfile
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -56,6 +58,13 @@ services:
       # production = 对外硬化(强制审计账本持久化 + 持久 ed25519 私钥等启动门,见下方审计段与
       # docs/deploy/production-bootstrap.md)。我们不替你设默认 —— 选项在你手里。
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
+      # 共享限流在 production 下为硬依赖；dev 也默认接同一后端，行为与未来扩容一致。
+      HUAKAI_RATE_LIMIT_REDIS_URL: ${HUAKAI_RATE_LIMIT_REDIS_URL:-redis://redis:6379/0}
+      # Go 网关与同镜像 Rust TLS sidecar 的唯一出口合同；不要改成宿主 /tmp 路径。
+      HUAKAI_TRANSPORT_SIDECAR_SOCKET: /run/huakai/tls-sidecar.sock
+      # CRS 来源默认关闭；部署者只需配置白名单即可开启，内网来源才显式允许私网地址。
+      HUAKAI_CRS_SOURCE_ALLOWED_HOSTS: ${HUAKAI_CRS_SOURCE_ALLOWED_HOSTS:-}
+      HUAKAI_CRS_SOURCE_ALLOW_PRIVATE_HOSTS: ${HUAKAI_CRS_SOURCE_ALLOW_PRIVATE_HOSTS:-false}
       # quota reconciler 默认启用(unset/非法值均按 true):补偿结算/释放失败和孤儿预留。
       # 仅应急停用时显式设 false 或 0。
       HUAKAI_QUOTA_RECONCILER_ENABLED: ${HUAKAI_QUOTA_RECONCILER_ENABLED:-true}
@@ -65,6 +74,13 @@ services:
       # 内容审核执行器默认启用(unset/非法值均按 true):执行器恒接线,但租户级审核配置默认
       # Enabled=false;未在 admin 面显式开启审核的租户仍全量放行。整机应急停用设 false 或 0。
       HUAKAI_CONTENT_MODERATION_ENABLED: ${HUAKAI_CONTENT_MODERATION_ENABLED:-true}
+      # 内置实例监测默认开启。多副本部署必须为每个副本配置唯一、稳定的 opaque 节点 ID；
+      # 留空会使用运行环境摘要并在管理 API 标记为不稳定身份。
+      HUAKAI_SERVER_MONITOR_ENABLED: ${HUAKAI_SERVER_MONITOR_ENABLED:-true}
+      HUAKAI_SERVER_MONITOR_NODE_ID: ${HUAKAI_SERVER_MONITOR_NODE_ID:-}
+      HUAKAI_SERVER_MONITOR_DISPLAY_NAME: ${HUAKAI_SERVER_MONITOR_DISPLAY_NAME:-}
+      HUAKAI_SERVER_MONITOR_INTERVAL: ${HUAKAI_SERVER_MONITOR_INTERVAL:-30s}
+      HUAKAI_SERVER_MONITOR_OFFLINE_AFTER: ${HUAKAI_SERVER_MONITOR_OFFLINE_AFTER:-90s}
       # 信任「反代转发的 X-Forwarded-For」的来源(CSV CIDR),使 per-IP 限流按真实客户端 IP 计算。
       # 默认全部 RFC1918 私网段,对两种接法都正确:
       #   - 直连公网(无反代):公网客户端的 socket 源 IP 非 RFC1918,其伪造的 XFF 被 fail-closed
@@ -88,7 +104,7 @@ services:
     networks:
       - huakai-direct
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -126,6 +142,18 @@ services:
       - huakai-direct
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U huakai -d huakai"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    networks:
+      - huakai-direct
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 30

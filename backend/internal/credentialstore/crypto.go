@@ -231,6 +231,10 @@ func credentialFingerprintMaterial(vendor, authMode string, fields map[string]js
 	}
 	vendor = Normalize(vendor)
 	authMode = Normalize(authMode)
+	if vendor == VendorOpenAI && authMode == AuthModeCodexAgent {
+		return canonicalFingerprintFields(fields,
+			"agent_runtime_id", "agent_private_key", "account_id", "chatgpt_user_id")
+	}
 	if fieldString(fields, "private_key") != "" {
 		return canonicalFingerprintFields(fields, "client_email", "private_key", "project_id", "token_uri")
 	}

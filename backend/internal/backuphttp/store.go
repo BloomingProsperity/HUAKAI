@@ -1,6 +1,6 @@
 // Package backuphttp 暴露一个**只读元数据**端点 GET /v1/admin/backup/manifest:返回"可备份清单"
 // (表名 + 行数估算 + schema/迁移版本 + 脱敏策略声明)。**不导出任何业务数据、零写入、零凭据外泄**——
-// 只点亮"备份能力的地基与边界"。真正的数据导出 bundle / 恢复(写入)是后续 Owner-gated 切片。
+// 该端点只负责数据库级备份元数据；账号级加密迁移由 accountbundle 独立合同负责。
 // platform_admin only(由 cmd/gateway 的 adminGate 强制),全库元数据属平台级信息。
 package backuphttp
 

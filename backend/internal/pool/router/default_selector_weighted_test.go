@@ -44,6 +44,36 @@ func TestRankFreshWeightedReservoirHonorsWeight(t *testing.T) {
 	}
 }
 
+func TestRankFreshWeightedUsesWholeTopPriorityBand(t *testing.T) {
+	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	lowLoad := snap(40, 1, 1, 0.05, now.Add(-time.Hour))
+	highWeight := snap(41, 1, 1, 0.95, now)
+	lowerPriority := snap(42, 1, 2, 0, now.Add(-2*time.Hour))
+	lowLoad.Weight = 1
+	highWeight.Weight = 100
+	lowerPriority.Weight = 10000
+
+	selector := NewDefaultSelector(&stubAccountSource{})
+	selector.rand = rand.New(rand.NewSource(0xBADC0DE))
+	policy := &RoutingPolicy{SelectionMode: SelectionModePriorityWeighted}
+
+	counts := map[int64]int{}
+	const draws = 500
+	for i := 0; i < draws; i++ {
+		ranked := selector.rankFresh([]*AccountSnapshot{lowLoad, highWeight, lowerPriority}, policy)
+		counts[ranked[0].ID]++
+	}
+
+	// 旧逻辑只把负载和最后使用时间也完全相同的账号纳入加权，账号 41 会永远
+	// 失去抽签资格；同时低优先级账号无论权重多大都不能越级。
+	if counts[41] < 450 {
+		t.Fatalf("top-priority weighted account selected %d/%d times, want >=450; counts=%v", counts[41], draws, counts)
+	}
+	if counts[42] != 0 {
+		t.Fatalf("lower-priority account selected %d times; counts=%v", counts[42], counts)
+	}
+}
+
 func TestRankFreshDefaultModeUnchanged(t *testing.T) {
 	now := time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC)
 	accounts := []*AccountSnapshot{
@@ -102,6 +132,29 @@ func TestAccountSnapshotWeightPopulated(t *testing.T) {
 	}
 	if got := capture.weights[31]; got != 1 {
 		t.Fatalf("account 31 Weight = %d, want default 1", got)
+	}
+}
+
+func TestDefaultSelectorPrefersActiveOverDegraded(t *testing.T) {
+	now := time.Date(2026, 7, 19, 0, 0, 0, 0, time.UTC)
+	degraded := snap(50, 1, 1, 0, now.Add(-time.Hour))
+	active := snap(51, 1, 50, 0.9, now)
+	gates := DefaultGateChain()
+	gates.Health = healthStatusGate{
+		degraded.ID: {State: HealthStateDegraded},
+		active.ID:   {State: HealthStateActive},
+	}
+	selector := NewDefaultSelector(
+		&stubAccountSource{accounts: []*AccountSnapshot{degraded, active}},
+		WithGateChain(gates),
+	)
+
+	res, err := selector.Select(context.Background(), SelectionRequest{TenantID: 1, RequestedModel: "m", RequestID: "req-health-rank"})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if res.AccountID != active.ID {
+		t.Fatalf("selected account=%d, want active account %d despite degraded account's better static rank", res.AccountID, active.ID)
 	}
 }
 

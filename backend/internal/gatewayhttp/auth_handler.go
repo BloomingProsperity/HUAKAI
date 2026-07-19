@@ -270,8 +270,20 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		if d.LoginThrottle != nil {
 			ip := d.ClientIPResolver.ClientIP(r)
 			var dec loginthrottle.Decision
-			lease, dec = d.LoginThrottle.Begin(ip)
-			defer lease.Cancel()
+			var throttleErr error
+			lease, dec, throttleErr = d.LoginThrottle.BeginContext(r.Context(), ip)
+			defer func() {
+				if err := commitLoginThrottle(r.Context(), lease, (*loginthrottle.Lease).CancelContext); err != nil {
+					slog.WarnContext(r.Context(), "释放登录共享限流槽失败", "error", err.Error())
+				}
+			}()
+			if throttleErr != nil {
+				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
+					EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: "login_throttle_unavailable", AuthMethod: "password",
+				})
+				writeJSONError(w, http.StatusServiceUnavailable, "login_throttle_unavailable", "login admission is temporarily unavailable")
+				return
+			}
 			if !dec.Allowed {
 				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: "login_rate_limited", AuthMethod: "password",
@@ -287,12 +299,16 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			"user_login_failed",
 			"password",
 		) {
-			lease.Failure()
+			if err := commitLoginThrottle(r.Context(), lease, (*loginthrottle.Lease).FailureContext); err != nil {
+				slog.WarnContext(r.Context(), "记录登录共享限流失败结果失败", "error", err.Error())
+			}
 			return
 		}
 		user, err := d.Auth.Authenticate(r.Context(), userauth.LoginInput{TenantID: req.TenantID, Email: req.Email, Password: req.Password})
 		if err != nil {
-			lease.Failure() // nil-safe: 限流未装配时为 no-op
+			if throttleErr := commitLoginThrottle(r.Context(), lease, (*loginthrottle.Lease).FailureContext); throttleErr != nil {
+				slog.WarnContext(r.Context(), "记录登录共享限流失败结果失败", "error", throttleErr.Error())
+			}
 			// 审计记录真实 reason(操作员可见), 但对外统一 generic, 杜绝状态码/消息枚举(门2)。
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 				EventType: "user_login_failed", TenantID: req.TenantID, Outcome: "failure", ReasonClass: authReasonClass(err), AuthMethod: "password",
@@ -300,7 +316,9 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeLoginFailureGeneric(w, err)
 			return
 		}
-		lease.Success() // 登录凭据通过, 释放在途槽且不计失败(成功不消耗限流配额)
+		if err := commitLoginThrottle(r.Context(), lease, (*loginthrottle.Lease).SuccessContext); err != nil {
+			slog.WarnContext(r.Context(), "释放登录共享限流成功槽失败", "error", err.Error())
+		}
 		required, err := authTwoFactorRequired(r.Context(), d, user.TenantID, user.ID)
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
@@ -351,6 +369,25 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		})
 		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
 	}
+}
+
+const loginThrottleCommitTimeout = 2 * time.Second
+
+func commitLoginThrottle(
+	requestCtx context.Context,
+	lease *loginthrottle.Lease,
+	commit func(*loginthrottle.Lease, context.Context) error,
+) error {
+	if lease == nil || commit == nil {
+		return nil
+	}
+	parent := context.Background()
+	if requestCtx != nil {
+		parent = context.WithoutCancel(requestCtx)
+	}
+	commitCtx, cancel := context.WithTimeout(parent, loginThrottleCommitTimeout)
+	defer cancel()
+	return commit(lease, commitCtx)
 }
 
 func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {

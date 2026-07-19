@@ -12,90 +12,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 const (
 	modelSyncSource         = "vendor_model_sync"
 	modelSyncDisabledReason = "vendor_model_absent"
 )
-
-type vendorAliasState struct {
-	AliasNormalized string
-	Source          string
-	Status          string
-}
-
-type vendorCatalogPlan struct {
-	Upserts           []modelsync.Model
-	DisableAliases    []string
-	ReactivateAliases []string
-}
-
-// planVendorCatalogApply 只规划 auto-sync 管理的 alias。operator alias 不在
-// 禁用范围内，避免上游目录漂移破坏人工别名、绑定或价格。
-func planVendorCatalogApply(catalog modelsync.Catalog, current []vendorAliasState) (vendorCatalogPlan, error) {
-	incoming := make(map[string]modelsync.Model, len(catalog.Models))
-	out := vendorCatalogPlan{Upserts: make([]modelsync.Model, 0, len(catalog.Models))}
-	for _, model := range catalog.Models {
-		model.ID = strings.TrimSpace(model.ID)
-		if model.ID == "" {
-			return vendorCatalogPlan{}, fmt.Errorf("registry model sync: empty model id")
-		}
-		alias := AliasNormalize(model.ID)
-		if alias == "" {
-			return vendorCatalogPlan{}, fmt.Errorf("registry model sync: invalid model id %q", model.ID)
-		}
-		if _, exists := incoming[alias]; exists {
-			return vendorCatalogPlan{}, fmt.Errorf("registry model sync: duplicate model id %q", model.ID)
-		}
-		incoming[alias] = model
-		out.Upserts = append(out.Upserts, model)
-	}
-
-	activeAutoSynced := 0
-	for _, state := range current {
-		if state.Source != modelSyncSource {
-			continue
-		}
-		alias := AliasNormalize(state.AliasNormalized)
-		if alias == "" {
-			continue
-		}
-		if state.Status == "active" {
-			activeAutoSynced++
-		}
-		_, stillPresent := incoming[alias]
-		if stillPresent {
-			if state.Status != "active" {
-				out.ReactivateAliases = append(out.ReactivateAliases, alias)
-			}
-			continue
-		}
-		if state.Status == "active" {
-			out.DisableAliases = append(out.DisableAliases, alias)
-		}
-	}
-
-	// S0 数据丢失护栏:上游空响应或截断(HTTP 200 但 models 为空 / 全被过滤)
-	// 会把现有全部 auto-sync alias 判为"消失"→ 一次性误禁整目录。这里拒绝可疑
-	// 同步(返回 error → 整事务回滚,保留现状),由调用方观测/重试,而非静默禁用。
-	if len(out.DisableAliases) > 0 {
-		// (1) 空目录但已有 active auto-sync alias = 几乎必然是上游异常。
-		if len(catalog.Models) == 0 && activeAutoSynced > 0 {
-			return vendorCatalogPlan{}, fmt.Errorf(
-				"registry model sync: refusing empty %s catalog that would disable %d active alias(es) (likely upstream blip)",
-				catalog.Vendor, len(out.DisableAliases))
-		}
-		// (2) 灾难性收缩:本次将禁用 >50% 的 active alias(且基数足够),疑似部分截断。
-		if activeAutoSynced >= 4 && len(out.DisableAliases)*2 > activeAutoSynced {
-			return vendorCatalogPlan{}, fmt.Errorf(
-				"registry model sync: refusing %s catalog that would disable %d of %d active alias(es) (>50%%, catastrophic shrink; manual confirm required)",
-				catalog.Vendor, len(out.DisableAliases), activeAutoSynced)
-		}
-	}
-	return out, nil
-}
 
 // ApplyVendorCatalog 把某个 vendor 的完整 model-list 快照应用到全局 model
 // catalog。它绝不会改动 tenant alias、pool binding 或定价。
@@ -119,9 +41,15 @@ func (r *PostgresRegistry) ApplyVendorCatalogs(ctx context.Context, catalogs []m
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	return retryModelDiscoveryTx(ctx, func() ([]modelsync.ApplyResult, error) {
+		return r.applyVendorCatalogsOnce(ctx, catalogs, opts)
+	})
+}
+
+func (r *PostgresRegistry) applyVendorCatalogsOnce(ctx context.Context, catalogs []modelsync.Catalog, opts modelsync.ApplyOptions) ([]modelsync.ApplyResult, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		return nil, fmt.Errorf("%w: begin model sync: %v", ErrRegistryBackend, err)
+		return nil, fmt.Errorf("%w: begin model sync: %w", ErrRegistryBackend, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -134,7 +62,7 @@ func (r *PostgresRegistry) ApplyVendorCatalogs(ctx context.Context, catalogs []m
 		results = append(results, result)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("%w: commit model sync: %v", ErrRegistryBackend, err)
+		return nil, fmt.Errorf("%w: commit model sync: %w", ErrRegistryBackend, err)
 	}
 	return results, nil
 }
@@ -144,7 +72,11 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 	if err != nil {
 		return modelsync.ApplyResult{}, err
 	}
-	plan, err := planVendorCatalogApply(catalog, current)
+	discoveries, err := loadVendorDiscoveryStates(ctx, tx, catalog.Vendor)
+	if err != nil {
+		return modelsync.ApplyResult{}, err
+	}
+	plan, err := planVendorCatalogApply(catalog, current, discoveries)
 	if err != nil {
 		return modelsync.ApplyResult{}, fmt.Errorf("%w: plan model sync: %v", ErrRegistryBackend, err)
 	}
@@ -186,7 +118,28 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 			changedModelIDs = append(changedModelIDs, modelID)
 		default:
 			result.Unchanged++
+		}
+		if _, _, err := syncModelDiscoveryTx(ctx, tx, catalog.Vendor, model, false); err != nil {
+			return modelsync.ApplyResult{}, err
+		}
+	}
+
+	for _, model := range plan.Discoveries {
+		outcome, modelRef, err := syncModelDiscoveryTx(ctx, tx, catalog.Vendor, model, true)
+		if err != nil {
+			return modelsync.ApplyResult{}, err
+		}
+		switch outcome {
+		case discoverySyncDiscovered:
+			result.Discovered++
+			result.Detected = append(result.Detected, modelRef)
+		case discoverySyncUpdated:
+			result.DiscoveryUpdated++
+			result.Detected = append(result.Detected, modelRef)
+		case discoverySyncIgnored:
 			result.Ignored = append(result.Ignored, modelRef)
+		case discoverySyncUnchanged:
+			result.Unchanged++
 		}
 	}
 
@@ -199,6 +152,12 @@ func applyVendorCatalogTx(ctx context.Context, tx pgx.Tx, catalog modelsync.Cata
 		result.Removed = append(result.Removed, plan.DisableAliases...)
 	}
 	changedModelIDs = append(changedModelIDs, disabledModelIDs...)
+	absentDiscoveries, err := markModelDiscoveriesAbsentTx(ctx, tx, catalog.Vendor, plan.AbsentDiscoveries)
+	if err != nil {
+		return modelsync.ApplyResult{}, err
+	}
+	result.DiscoveryAbsent = len(absentDiscoveries)
+	result.Removed = append(result.Removed, absentDiscoveries...)
 
 	if len(changedModelIDs) > 0 {
 		bumps, err := bumpAffectedSnapshots(ctx, tx, changedModelIDs, snapshotReason(catalog.Vendor, opts), snapshotActor(opts))
@@ -242,7 +201,7 @@ WHERE p.id = pa.provider_id
   AND pa.deleted_at IS NULL
 `, string(vendor), detected, ignored, removed)
 	if err != nil {
-		return fmt.Errorf("%w: update provider account model sync tracking: %v", ErrRegistryBackend, err)
+		return fmt.Errorf("%w: update provider account model sync tracking: %w", ErrRegistryBackend, err)
 	}
 	return nil
 }
@@ -280,21 +239,21 @@ WHERE a.scope = 'global'
   AND m.tenant_id IS NULL
   AND m.deleted_at IS NULL
   AND m.canonical_id LIKE $1
-`, vendorCanonicalLike(vendor))
+	`, vendorCanonicalLike(vendor))
 	if err != nil {
-		return nil, fmt.Errorf("%w: list vendor aliases: %v", ErrRegistryBackend, err)
+		return nil, fmt.Errorf("%w: list vendor aliases: %w", ErrRegistryBackend, err)
 	}
 	defer rows.Close()
 	var out []vendorAliasState
 	for rows.Next() {
 		var item vendorAliasState
 		if err := rows.Scan(&item.AliasNormalized, &item.Source, &item.Status); err != nil {
-			return nil, fmt.Errorf("%w: scan vendor alias: %v", ErrRegistryBackend, err)
+			return nil, fmt.Errorf("%w: scan vendor alias: %w", ErrRegistryBackend, err)
 		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%w: vendor alias rows: %v", ErrRegistryBackend, err)
+		return nil, fmt.Errorf("%w: vendor alias rows: %w", ErrRegistryBackend, err)
 	}
 	return out, nil
 }
@@ -334,9 +293,9 @@ WHERE m.scope = 'global'
   AND m.deleted_at IS NULL
   AND m.canonical_id = $1
 LIMIT 1
-`, canonicalID, modelSyncSource).Scan(&existingID, &autoManaged)
+	`, canonicalID, modelSyncSource).Scan(&existingID, &autoManaged)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return 0, "", fmt.Errorf("%w: find vendor model: %v", ErrRegistryBackend, err)
+		return 0, "", fmt.Errorf("%w: find vendor model: %w", ErrRegistryBackend, err)
 	}
 	outcome := "unchanged"
 	modelID := existingID
@@ -350,7 +309,10 @@ INSERT INTO models (
 ) RETURNING id
 `, canonicalID, protocol, model.ID, contextWindow, owner, createdAt).Scan(&modelID)
 		if err != nil {
-			return 0, "", fmt.Errorf("%w: insert vendor model: %v", ErrRegistryBackend, err)
+			if isUniqueViolation(err) {
+				return 0, "", ErrModelDiscoveryConflict
+			}
+			return 0, "", fmt.Errorf("%w: insert vendor model: %w", ErrRegistryBackend, err)
 		}
 		outcome = "added"
 	} else if autoManaged {
@@ -374,11 +336,13 @@ WHERE id = $1
   )
 `, modelID, protocol, model.ID, contextWindow, owner, createdAt)
 		if err != nil {
-			return 0, "", fmt.Errorf("%w: update vendor model: %v", ErrRegistryBackend, err)
+			return 0, "", fmt.Errorf("%w: update vendor model: %w", ErrRegistryBackend, err)
 		}
 		if tag.RowsAffected() > 0 {
 			outcome = "updated"
 		}
+	} else {
+		return 0, "", fmt.Errorf("%w: canonical model %q is not managed by model sync", ErrModelDiscoveryConflict, canonicalID)
 	}
 
 	aliasChanged, err := upsertVendorAlias(ctx, tx, modelID, model)
@@ -421,9 +385,31 @@ WHERE model_aliases.source = $4
   )
 `, modelID, alias, display, modelSyncSource)
 	if err != nil {
-		return false, fmt.Errorf("%w: upsert vendor alias: %v", ErrRegistryBackend, err)
+		if isUniqueViolation(err) {
+			return false, ErrModelDiscoveryConflict
+		}
+		return false, fmt.Errorf("%w: upsert vendor alias: %w", ErrRegistryBackend, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() > 0 {
+		return true, nil
+	}
+	var existingModelID int64
+	var existingSource string
+	err = tx.QueryRow(ctx, `
+SELECT model_id, source
+FROM model_aliases
+WHERE scope = 'global'
+  AND tenant_id IS NULL
+  AND deleted_at IS NULL
+  AND public_alias_normalized = $1
+`, alias).Scan(&existingModelID, &existingSource)
+	if err != nil {
+		return false, fmt.Errorf("%w: verify vendor alias: %w", ErrRegistryBackend, err)
+	}
+	if existingModelID != modelID || existingSource != modelSyncSource {
+		return false, fmt.Errorf("%w: global alias %q is owned by another model or source", ErrModelDiscoveryConflict, alias)
+	}
+	return false, nil
 }
 
 func syncVendorCapabilities(ctx context.Context, tx pgx.Tx, modelID int64, capabilities []string) (bool, error) {
@@ -457,7 +443,7 @@ WHERE model_registry_capabilities.source = $3
   AND model_registry_capabilities.enabled IS DISTINCT FROM true
 `, modelID, capability, modelSyncSource)
 		if err != nil {
-			return false, fmt.Errorf("%w: upsert vendor capability: %v", ErrRegistryBackend, err)
+			return false, fmt.Errorf("%w: upsert vendor capability: %w", ErrRegistryBackend, err)
 		}
 		if tag.RowsAffected() > 0 {
 			changed = true
@@ -475,14 +461,14 @@ WHERE model_id = $1
   AND enabled = true
 `, modelID, modelSyncSource)
 	if err != nil {
-		return false, fmt.Errorf("%w: list vendor capabilities: %v", ErrRegistryBackend, err)
+		return false, fmt.Errorf("%w: list vendor capabilities: %w", ErrRegistryBackend, err)
 	}
 	staleCapabilities := make([]string, 0)
 	for rows.Next() {
 		var capability string
 		if err := rows.Scan(&capability); err != nil {
 			rows.Close()
-			return false, fmt.Errorf("%w: scan vendor capability: %v", ErrRegistryBackend, err)
+			return false, fmt.Errorf("%w: scan vendor capability: %w", ErrRegistryBackend, err)
 		}
 		if _, ok := want[capability]; ok {
 			continue
@@ -492,7 +478,7 @@ WHERE model_id = $1
 	rowsErr := rows.Err()
 	rows.Close()
 	if rowsErr != nil {
-		return false, fmt.Errorf("%w: vendor capability rows: %v", ErrRegistryBackend, rowsErr)
+		return false, fmt.Errorf("%w: vendor capability rows: %w", ErrRegistryBackend, rowsErr)
 	}
 	for _, capability := range staleCapabilities {
 		tag, err := tx.Exec(ctx, `
@@ -505,7 +491,7 @@ WHERE model_id = $1
   AND capability = $3
 `, modelID, modelSyncSource, capability)
 		if err != nil {
-			return false, fmt.Errorf("%w: disable vendor capability: %v", ErrRegistryBackend, err)
+			return false, fmt.Errorf("%w: disable vendor capability: %w", ErrRegistryBackend, err)
 		}
 		if tag.RowsAffected() > 0 {
 			changed = true
@@ -541,20 +527,20 @@ WHERE a.model_id = m.id
 RETURNING a.model_id
 `, modelSyncSource, alias, vendorCanonicalLike(vendor), modelSyncDisabledReason)
 		if err != nil {
-			return nil, 0, fmt.Errorf("%w: disable missing vendor alias: %v", ErrRegistryBackend, err)
+			return nil, 0, fmt.Errorf("%w: disable missing vendor alias: %w", ErrRegistryBackend, err)
 		}
 		for rows.Next() {
 			var modelID int64
 			if err := rows.Scan(&modelID); err != nil {
 				rows.Close()
-				return nil, 0, fmt.Errorf("%w: scan disabled vendor alias: %v", ErrRegistryBackend, err)
+				return nil, 0, fmt.Errorf("%w: scan disabled vendor alias: %w", ErrRegistryBackend, err)
 			}
 			modelIDs = append(modelIDs, modelID)
 			disabled++
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return nil, 0, fmt.Errorf("%w: disabled vendor alias rows: %v", ErrRegistryBackend, err)
+			return nil, 0, fmt.Errorf("%w: disabled vendor alias rows: %w", ErrRegistryBackend, err)
 		}
 		rows.Close()
 	}
@@ -586,65 +572,9 @@ ON CONFLICT (tenant_id) DO UPDATE SET
     updated_at = now()
 `, modelIDs, reason, actor)
 	if err != nil {
-		return 0, fmt.Errorf("%w: bump model sync snapshots: %v", ErrRegistryBackend, err)
+		return 0, fmt.Errorf("%w: bump model sync snapshots: %w", ErrRegistryBackend, err)
 	}
 	return int(tag.RowsAffected()), nil
-}
-
-func snapshotReason(vendor modelsync.Vendor, opts modelsync.ApplyOptions) string {
-	base := "model sync " + string(vendor)
-	reason := strings.TrimSpace(opts.Reason)
-	if reason == "" {
-		return base
-	}
-	return base + ": " + reason
-}
-
-func snapshotActor(opts modelsync.ApplyOptions) string {
-	actor := strings.TrimSpace(opts.Actor)
-	if actor == "" {
-		return modelSyncSource
-	}
-	return actor
-}
-
-func vendorCanonicalID(vendor modelsync.Vendor, modelID string) string {
-	return string(vendor) + "/" + strings.TrimSpace(modelID)
-}
-
-func vendorCanonicalLike(vendor modelsync.Vendor) string {
-	return string(vendor) + "/%"
-}
-
-func defaultProtocolForVendor(vendor modelsync.Vendor) string {
-	switch vendor {
-	case modelsync.VendorAnthropic:
-		return registrydefault.ProtocolAnthropicMessages
-	case modelsync.VendorGemini:
-		return registrydefault.ProtocolGeminiMessages
-	default:
-		return registrydefault.ProtocolOpenAIChat
-	}
-}
-
-func normalizeSyncedProtocolFamily(protocol string) string {
-	switch strings.TrimSpace(protocol) {
-	case "gemini":
-		return registrydefault.ProtocolGeminiMessages
-	default:
-		return strings.TrimSpace(protocol)
-	}
-}
-
-func defaultOwnerForVendor(vendor modelsync.Vendor) string {
-	switch vendor {
-	case modelsync.VendorAnthropic:
-		return "anthropic"
-	case modelsync.VendorGemini:
-		return "google"
-	default:
-		return "openai"
-	}
 }
 
 func nullableTime(t time.Time) any {

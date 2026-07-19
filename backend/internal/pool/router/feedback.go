@@ -22,6 +22,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 )
 
+func ShouldDemote(missCount, threshold uint32) bool {
+	return threshold > 0 && missCount >= threshold
+}
+
 // PASRCacheFeedback 是 cachemetrics observer 的封装, 由 selector + 段表
 // 协作产出反馈到段状态。
 type PASRCacheFeedback struct {

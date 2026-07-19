@@ -27,7 +27,7 @@ func TestPG_StormReapStaleSlots(t *testing.T) {
 	ctx := context.Background()
 	pool := openIntegrationPool(t, ctx)
 	queries := dbauth.New(pool)
-	c := NewStormController(queries)
+	c := NewStormControllerWithSharedScopeBudget(queries, StormScopeConfig{}, nil)
 
 	var tenantID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ($1) RETURNING id`,

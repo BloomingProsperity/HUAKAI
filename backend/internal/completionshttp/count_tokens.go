@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 )
 
 func NewCountTokensHandler(d Deps) http.HandlerFunc {
@@ -65,18 +66,36 @@ func NewCountTokensHandler(d Deps) http.HandlerFunc {
 
 func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string) {
 	budget := fallbackexec.NormalBudget(ex.plan)
+	authFailoverUsed := false
 	var coordinator bindingfallback.Coordinator
 	for i := 0; i < budget; i++ {
-		outcome := ex.runCountTokensAttempt(w, ex.plan.Attempts[i], i+1, requestedModel)
+		planIdx := i
+		if planIdx >= len(ex.plan.Attempts) {
+			planIdx = len(ex.plan.Attempts) - 1
+		}
+		outcome := ex.runCountTokensAttempt(w, ex.plan.Attempts[planIdx], i+1, requestedModel)
 		if outcome.done {
 			return
 		}
 		if ex.selRes != nil {
 			ex.excludeAccount(ex.selRes.AccountID)
 		}
+		if failure := outcome.failure; failure != nil && failure.AuthFailoverEligible && failure.RetryPermitted {
+			if !authFailoverUsed && (ex.d.RetryBudget == nil || ex.d.RetryBudget.Allow(ex.ident.TenantID)) {
+				authFailoverUsed = true
+				if i+1 >= budget {
+					budget++
+				}
+				continue
+			}
+		}
 		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, false, true)
 		switch decision.Action {
 		case bindingfallback.ActionContinuePrimary:
+			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
+			}
 			continue
 		case bindingfallback.ActionTransition:
 			ex.classTransition = &decision.Transition
@@ -103,6 +122,10 @@ func (ex *execution) runCountTokensAttempt(w http.ResponseWriter, attempt router
 		ex.releaseCountTokensSelection()
 		return attemptOutcome{done: true}
 	}
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(ex.resolved.ProtocolFamily, ex.cred, ex.accInfo); err != nil {
+		ex.releaseCountTokensSelection()
+		return attemptOutcome{failure: fallbackexec.CredentialCompatibilityFailure()}
+	}
 	outcome := ex.dispatchCountTokens(w)
 	ex.releaseCountTokensSelection()
 	return outcome
@@ -128,22 +151,28 @@ func (ex *execution) dispatchCountTokens(w http.ResponseWriter) attemptOutcome {
 		InboundBetaTokens: provider.ParseInboundBetaTokens(ex.r.Header.Values("Anthropic-Beta")),
 	})
 	if err != nil {
+		ex.observeDispatchError(err)
 		return attemptOutcome{failure: fallbackexec.DispatchFailure(err)}
 	}
 	if res == nil || res.UpstreamReader == nil {
+		ex.observeChannelError(0)
 		return attemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
 	defer closeDispatchResult(res)
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
+		ex.observeChannelError(res.StatusCode)
 		return attemptOutcome{failure: fallbackexec.ReadFailure(readErr)}
 	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		observed := ex.observeHTTPError(res, raw)
+		return attemptOutcome{failure: fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)}
+	}
 	if strings.TrimSpace(string(raw)) == "" {
+		ex.observeChannelError(res.StatusCode)
 		return attemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return attemptOutcome{failure: fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)}
-	}
+	ex.observeSuccess(res)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")

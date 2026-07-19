@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 )
 
 // MessageSender 是 worker 所需的网关通知邮件发送方的窄子集。线上的
@@ -68,6 +69,8 @@ type InspectionWorker struct {
 	tenantID  int64
 	interval  time.Duration
 	log       *zap.Logger
+	lease     workerlease.SessionProvider
+	claim     workerlease.WindowClaimer
 
 	mu      sync.Mutex
 	started bool
@@ -82,13 +85,15 @@ type InspectionWorker struct {
 
 // InspectionWorkerConfig 用于构造 worker。
 type InspectionWorkerConfig struct {
-	Service   *InspectionService
-	Sender    MessageSender
-	Recorder  RunRecorder // nil => 结构化 zap 日志
-	Recipient string
-	TenantID  int64
-	Interval  time.Duration // <=0 => DefaultInterval
-	Logger    *zap.Logger
+	Service     *InspectionService
+	Sender      MessageSender
+	Recorder    RunRecorder // nil => 结构化 zap 日志
+	Recipient   string
+	TenantID    int64
+	Interval    time.Duration // <=0 => DefaultInterval
+	Logger      *zap.Logger
+	LeaderLease workerlease.SessionProvider
+	WindowClaim workerlease.WindowClaimer
 }
 
 // NewInspectionWorker 构建 worker。它不校验收件人——由调用方（接线层）解析并检查
@@ -118,6 +123,8 @@ func NewInspectionWorker(cfg InspectionWorkerConfig) *InspectionWorker {
 		tenantID:  tenantID,
 		interval:  interval,
 		log:       log,
+		lease:     cfg.LeaderLease,
+		claim:     cfg.WindowClaim,
 	}
 }
 
@@ -147,9 +154,52 @@ func (w *InspectionWorker) loop(ctx context.Context) {
 			zap.Uint64("failed_ticks", w.FailedTicks()),
 		)
 	}()
+	if w.lease != nil {
+		w.runWithLeaderLease(ctx)
+		return
+	}
+	w.runAsLeader(ctx, nil)
+}
+
+func (w *InspectionWorker) runWithLeaderLease(ctx context.Context) {
+	for {
+		acquired, session, err := w.lease.TryAcquireSession(ctx)
+		if err != nil {
+			w.failedTicks.Add(1)
+			w.log.Warn("hermes daily inspection leader lease failed", zap.Error(err))
+			if !w.waitForLeaseRetry(ctx) {
+				return
+			}
+			continue
+		}
+		if !acquired || session == nil {
+			if !w.waitForLeaseRetry(ctx) {
+				return
+			}
+			continue
+		}
+		w.runAsLeader(ctx, session)
+		session.Release()
+		if ctx.Err() != nil {
+			return
+		}
+		if !w.waitForLeaseRetry(ctx) {
+			return
+		}
+	}
+}
+
+func (w *InspectionWorker) runAsLeader(ctx context.Context, session workerlease.Session) {
+	if session != nil {
+		if err := session.Healthy(ctx); err != nil {
+			w.failedTicks.Add(1)
+			w.log.Warn("hermes daily inspection leader lease session lost", zap.Error(err))
+			return
+		}
+	}
+	w.runClaimedTick(ctx) // 首个 leader 取得租约后立即尝试运行一次
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
-	w.tick(ctx) // 启动时立即运行一次
 	for {
 		select {
 		case <-ctx.Done():
@@ -157,8 +207,43 @@ func (w *InspectionWorker) loop(ctx context.Context) {
 		case <-w.stop:
 			return
 		case <-t.C:
-			w.tick(ctx)
+			if session != nil {
+				if err := session.Healthy(ctx); err != nil {
+					w.failedTicks.Add(1)
+					w.log.Warn("hermes daily inspection leader lease session lost", zap.Error(err))
+					return
+				}
+			}
+			w.runClaimedTick(ctx)
 		}
+	}
+}
+
+func (w *InspectionWorker) runClaimedTick(ctx context.Context) {
+	if w.claim != nil {
+		acquired, err := w.claim.TryClaim(ctx, w.interval)
+		if err != nil {
+			w.failedTicks.Add(1)
+			w.log.Warn("hermes daily inspection window claim failed", zap.Error(err))
+			return
+		}
+		if !acquired {
+			return
+		}
+	}
+	w.tick(ctx)
+}
+
+func (w *InspectionWorker) waitForLeaseRetry(ctx context.Context) bool {
+	timer := time.NewTimer(w.interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-w.stop:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

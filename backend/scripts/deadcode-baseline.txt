@@ -382,13 +382,6 @@ internal/obs/dlq/store_memory.go:  unreachable func: WithMemoryClock
 internal/obs/dlq/types.go:  unreachable func: OutboxEvent.clone
 internal/obs/dlq/types.go:  unreachable func: priorityRank
 internal/obs/dlq/worker.go:  unreachable func: WithWorkerClock
-internal/obs/repository.go:  unreachable func: NewPgxReader
-internal/obs/repository.go:  unreachable func: PgxReader.CountClaimsByStatus
-internal/obs/repository.go:  unreachable func: PgxReader.GetClaim
-internal/obs/repository.go:  unreachable func: PgxReader.ListBillingEvents
-internal/obs/repository.go:  unreachable func: PgxReader.ListUsage
-internal/obs/repository.go:  unreachable func: normalizePage
-internal/obs/repository.go:  unreachable func: nullableInt64Value
 internal/observability/audit_logger_handler.go:  unreachable func: WithAuditObservationStore
 internal/observability/metrics_aggregator_handler.go:  unreachable func: WithMetricsDelay
 internal/observability/metrics_aggregator_handler.go:  unreachable func: WithMetricsFailure

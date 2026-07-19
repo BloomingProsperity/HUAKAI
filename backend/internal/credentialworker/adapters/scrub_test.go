@@ -25,14 +25,15 @@ func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 		"setup_token":            "attacker-setup",
 		"long_lived_setup_token": "attacker-long-lived",
 		// 合法 metadata, 必须保留:
-		"client_id":         "operator-cid",
-		"scope_metadata":    "user-scope",
-		"keep_this_field":   "yes",
+		"client_id":                       "operator-cid",
+		"scope_metadata":                  "user-scope",
+		"keep_this_field":                 "yes",
 		"cross_client_fallback_attempted": true,
 	}
 	resp := tokenResponse{
 		AccessToken: "new-at", RefreshToken: "new-rt",
 		ExpiresIn: 3600, TokenType: "bearer",
+		ChatGPTPlanType: "Pro", ChatGPTUserID: "user-new", ChatGPTAccountID: "account-new",
 	}
 
 	raw, _, err := mergeTokenResponse(cred, resp)
@@ -75,6 +76,9 @@ func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 	if merged["refresh_token"] != "new-rt" {
 		t.Fatalf("refresh_token=%v want new-rt", merged["refresh_token"])
 	}
+	if merged["chatgpt_plan_type"] != "Pro" || merged["chatgpt_user_id"] != "user-new" || merged["chatgpt_account_id"] != "account-new" {
+		t.Fatalf("刷新响应中的套餐与账号元数据未写回：%v", merged)
+	}
 
 	// 防退化 sanity: marshal output 不含 hostile 字段子串 (额外 belt-and-suspenders)
 	rawStr := string(raw)
@@ -90,4 +94,24 @@ func TestMergeTokenResponseScrubsHostileCredentialFields(t *testing.T) {
 		}
 	}
 	_ = time.Now // 保留 time import（resp.ExpiresIn 间接用到）
+}
+
+func TestMergeTokenResponsePreservesSubscriptionWhenRefreshOmitsEvidence(t *testing.T) {
+	cred := map[string]any{
+		"access_token":      "old-at",
+		"refresh_token":     "old-rt",
+		"id_token":          "old-id-token",
+		"chatgpt_plan_type": "Plus",
+	}
+	raw, _, err := mergeTokenResponse(cred, tokenResponse{AccessToken: "new-at", ExpiresIn: 3600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(raw, &merged); err != nil {
+		t.Fatal(err)
+	}
+	if merged["id_token"] != "old-id-token" || merged["chatgpt_plan_type"] != "Plus" {
+		t.Fatalf("刷新未返回新证据时不得抹掉旧套餐：%v", merged)
+	}
 }

@@ -24,6 +24,7 @@ const (
 	GateFailurePerRequestExclusion GateFailureReason = "per_request_exclusion"
 	GateFailurePinnedAccount       GateFailureReason = "pinned_account"
 	GateFailureScoredBand          GateFailureReason = "scored_band"
+	GateFailureUpstreamQuota       GateFailureReason = "upstream_quota_exhausted"
 	GateFailureSlotCapacity        GateFailureReason = "slot_capacity"
 	GateFailureSlotManager         GateFailureReason = "slot_manager"
 )
@@ -63,6 +64,7 @@ type ExclusionGate interface{ Gate }
 type PinnedAccountGate interface{ Gate }
 type WindowCostGateIface interface{ Gate }
 type SessionCountGateIface interface{ Gate }
+type UpstreamQuotaGateIface interface{ Gate }
 
 type GateChain struct {
 	Tenant        TenantGate
@@ -80,6 +82,7 @@ type GateChain struct {
 	SessionCount  SessionCountGateIface
 	ContextWindow ContextWindowGateIface
 	RatePrecheck  RatePrecheckGateIface
+	UpstreamQuota UpstreamQuotaGateIface
 }
 
 func DefaultGateChain() GateChain {
@@ -96,7 +99,8 @@ func DefaultGateChain() GateChain {
 		ContextWindow: ContextWindowGate{},
 		// RatePrecheck 默认是一个 nil-counter 的 gate(fail-open);由 wiring
 		// 层注入 precheck.Counter 以激活 ROUTE-121。
-		RatePrecheck: RatePrecheckGate{},
+		RatePrecheck:  RatePrecheckGate{},
+		UpstreamQuota: upstreamQuotaGate{},
 	}
 }
 
@@ -140,6 +144,7 @@ func (c GateChain) ForSelection(ctx context.Context, req SelectionRequest) GateC
 	c.SessionCount = prepareGate(ctx, c.SessionCount, req)
 	c.ContextWindow = prepareGate(ctx, c.ContextWindow, req)
 	c.RatePrecheck = prepareGate(ctx, c.RatePrecheck, req)
+	c.UpstreamQuota = prepareGate(ctx, c.UpstreamQuota, req)
 	return c
 }
 
@@ -199,6 +204,9 @@ func (c GateChain) withDefaults() GateChain {
 	if c.RatePrecheck == nil {
 		c.RatePrecheck = d.RatePrecheck
 	}
+	if c.UpstreamQuota == nil {
+		c.UpstreamQuota = d.UpstreamQuota
+	}
 	return c
 }
 
@@ -220,6 +228,7 @@ func (c GateChain) ordered() []namedGate {
 		{c.SessionCount, GateFailureSessionCount},
 		{c.ContextWindow, GateFailureContextWindow},
 		{c.RatePrecheck, GateFailureRatePrecheck},
+		{c.UpstreamQuota, GateFailureUpstreamQuota},
 	}
 }
 
@@ -242,6 +251,21 @@ func (AllowAllGate) Allow(context.Context, *AccountSnapshot, SelectionRequest) (
 }
 
 type protocolFamilyGate struct{}
+
+type upstreamQuotaGate struct {
+	Now func() time.Time
+}
+
+func (g upstreamQuotaGate) Allow(_ context.Context, account *AccountSnapshot, _ SelectionRequest) (bool, GateFailureReason, error) {
+	now := time.Now().UTC()
+	if g.Now != nil {
+		now = g.Now().UTC()
+	}
+	if account != nil && account.UpstreamQuotaState == "exhausted" && freshAt(account.UpstreamQuotaObservedAt, adaptiveQuotaFreshness, now) {
+		return false, GateFailureUpstreamQuota, nil
+	}
+	return true, "", nil
+}
 
 func (protocolFamilyGate) Allow(_ context.Context, account *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error) {
 	if req.ProtocolFamily == "" {
@@ -333,7 +357,7 @@ func (g ProviderAccountHealthGate) now() time.Time {
 // selector 与只读管理诊断共用该函数，避免过期冷却在两个视图中得出相反结论。
 func ProviderAccountHealthEligible(state string, until time.Time, now time.Time) bool {
 	switch state {
-	case "", "healthy":
+	case "", "healthy", HealthStateActive, HealthStateDegraded:
 		return true
 	case "throttled", "revoked", "cooldown":
 		return !until.IsZero() && !until.After(now)

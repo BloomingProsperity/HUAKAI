@@ -98,6 +98,29 @@ func (q *Queries) CaptureBalanceHold(ctx context.Context, arg CaptureBalanceHold
 	return result.RowsAffected(), nil
 }
 
+const expediteAbortLease = `-- name: ExpediteAbortLease :execrows
+UPDATE billing_ledger_claims
+SET lease_expires_at = LEAST(lease_expires_at, NOW())
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+  AND attempt_seq = $3::integer
+  AND status = 'reserving'
+`
+
+type ExpediteAbortLeaseParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ClaimID    int64 `db:"claim_id" json:"claim_id"`
+	AttemptSeq int32 `db:"attempt_seq" json:"attempt_seq"`
+}
+
+func (q *Queries) ExpediteAbortLease(ctx context.Context, arg ExpediteAbortLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, expediteAbortLease, arg.TenantID, arg.ClaimID, arg.AttemptSeq)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getBalanceHoldForUpdate = `-- name: GetBalanceHoldForUpdate :one
 SELECT tenant_id, user_id, amount, captured, state
 FROM balance_holds

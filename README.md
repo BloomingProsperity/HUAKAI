@@ -179,7 +179,7 @@ Implemented:
 - Resource pool selection and claim writeback in `backend/internal/pool`.
 - Streaming forwarder and usage draft extraction in `backend/internal/gateway`.
 - Tx1/Tx2 billing and observability settlement in `backend/internal/billing`.
-- PostgreSQL migrations through `0151_media_task_orphans`.
+- PostgreSQL migrations through `0207_account_bundle_audit_actions`.
 - R7 application-layer mimicry primitives (system rewrite, cache_control breakpoints,
   tool-name obfuscation, metadata user_id rewrite, 6-step composer) in
   `backend/internal/gateway/`.
@@ -190,20 +190,18 @@ Known limitations:
 - Gateway executor logic is still embedded in the chat handler.
 - `attempt_id` and `lease_id` are documented but not yet first-class schema fields.
 - Provider adapters are production-wired: a default registry registers real passthrough
-  adapters (Grok / Kimi / DeepSeek / Mistral and more) in
-  `backend/internal/provider/registrydefault/default.go:177`, and Anthropic egress goes
-  through a real uTLS mimicry exchanger (`backend/cmd/gateway/wiring.go:829`), not mock bytes.
+  adapters (Grok / Kimi / DeepSeek / Mistral and more), while OAuth/session mimicry egress
+  is handled only by the Rust/BoringSSL sidecar. Missing socket, capability, or profile
+  fails closed and never falls back to Go native TLS.
 - Successful requests settle with real micro-USD pricing
   (`backend/internal/billing/public_price_table.go:166`), not a fixed placeholder cost.
 - Admin APIs are implemented and mounted (20+ `/admin/v1/*` route groups in
   `backend/cmd/gateway/routes.go:815` plus `internal/{adminhttp,adminuserhttp,adminquotahttp,
   proxyadminhttp,modelbindingadminhttp}` packages); only the frontend operations console
   is not yet built.
-- R3 transport-layer mimicry is production code: a real uTLS dialer
-  (`backend/internal/transport/mimicry/utls_dialer.go:13`) is injected into the production
-  dispatcher (`backend/cmd/gateway/wiring.go:1178`, consumed at
-  `backend/internal/gateway/upstream_dispatcher.go:196`). It is off by default
-  (operator opt-in), not in plan stage.
+- Transport-layer mimicry is production code: the Go gateway sends a versioned profile,
+  proxy, cancellation, and timeout contract to the Rust sidecar over a Unix socket. The
+  image starts both processes and readiness requires the sidecar contract to be healthy.
 
 ## Where to start
 

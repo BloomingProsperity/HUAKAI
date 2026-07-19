@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 )
 
 // fakeSender 记录每一次发送调用（租户、收件人、主题、正文），并可被配置为失败。
@@ -97,7 +100,7 @@ func TestWorkerSendErrorCountsAndContinues(t *testing.T) {
 // TestWorkerRecorderReceivesSanitizedOutcome：recorder 会以运行结果被调用，
 // 且失败分类是固定的 "send_failed" 枚举，绝不会是底层错误文本。
 // 捕获的回归：若 worker 把 err.Error() 塞进了结果，原始的 "smtp down" 文本
-//（一个潜在的泄露途径）就会出现，而非那个枚举。
+// （一个潜在的泄露途径）就会出现，而非那个枚举。
 func TestWorkerRecorderReceivesSanitizedOutcome(t *testing.T) {
 	var got RunOutcome
 	rec := captureRecorder{out: &got}
@@ -119,7 +122,7 @@ func TestWorkerRecorderReceivesSanitizedOutcome(t *testing.T) {
 }
 
 // TestWorkerNotStartedWhenNoRecipient：在收件人为空时调用 Start 是空操作
-//（循环永不运行），即便 worker 其余部分都已接线。不会 panic。
+// （循环永不运行），即便 worker 其余部分都已接线。不会 panic。
 // 捕获的回归：若 Start 不对收件人做门控，一个已启用但未经配置的部署就会开始
 // tick 并尝试向 "" 发送。
 func TestWorkerNotStartedWhenNoRecipient(t *testing.T) {
@@ -137,7 +140,7 @@ func TestWorkerNotStartedWhenNoRecipient(t *testing.T) {
 }
 
 // TestWorkerNotStartedWhenSenderNil：在 sender 为 nil 时调用 Start 是空操作
-//（故障安全）。捕获的回归：sender 为 nil 时若仍 Start，之后发送时会发生
+// （故障安全）。捕获的回归：sender 为 nil 时若仍 Start，之后发送时会发生
 // nil-panic。
 func TestWorkerNotStartedWhenSenderNil(t *testing.T) {
 	w := NewInspectionWorker(InspectionWorkerConfig{
@@ -168,5 +171,179 @@ func TestWorkerStartStopLifecycle(t *testing.T) {
 	w.Stop()
 	if w.ReportsSent() < 2 {
 		t.Fatalf("expected a restart to tick again, got %d", w.ReportsSent())
+	}
+}
+
+type inspectionLeaseSession struct {
+	healthErr error
+	released  atomic.Bool
+}
+
+func (s *inspectionLeaseSession) Healthy(context.Context) error { return s.healthErr }
+func (s *inspectionLeaseSession) Release()                      { s.released.Store(true) }
+
+type inspectionLeaseProvider struct {
+	acquired bool
+	session  *inspectionLeaseSession
+	err      error
+	called   chan struct{}
+	once     sync.Once
+}
+
+type inspectionWindowClaim struct {
+	acquired bool
+	err      error
+	calls    atomic.Uint64
+}
+
+func (c *inspectionWindowClaim) TryClaim(context.Context, time.Duration) (bool, error) {
+	c.calls.Add(1)
+	return c.acquired, c.err
+}
+
+func TestInspectionWorkerClaimedWindowSendsOnce(t *testing.T) {
+	sender := &fakeSender{}
+	claim := &inspectionWindowClaim{acquired: true}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		WindowClaim: claim,
+	})
+	w.runClaimedTick(context.Background())
+	if got := sender.count(); got != 1 {
+		t.Fatalf("取得时间窗后必须发送一次，got=%d", got)
+	}
+	if got := claim.calls.Load(); got != 1 {
+		t.Fatalf("每轮只能认领一次，got=%d", got)
+	}
+}
+
+func TestInspectionWorkerClaimedByOtherReplicaDoesNotSend(t *testing.T) {
+	sender := &fakeSender{}
+	claim := &inspectionWindowClaim{}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		WindowClaim: claim,
+	})
+	w.runClaimedTick(context.Background())
+	if got := sender.count(); got != 0 {
+		t.Fatalf("时间窗已被其他副本认领时不得发送，got=%d", got)
+	}
+	if w.FailedTicks() != 0 {
+		t.Fatalf("正常未取得认领不应记作故障，got=%d", w.FailedTicks())
+	}
+}
+
+func TestInspectionWorkerWindowClaimFailureIsFailClosed(t *testing.T) {
+	sender := &fakeSender{}
+	claim := &inspectionWindowClaim{err: errors.New("redis unavailable")}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		WindowClaim: claim,
+	})
+	w.runClaimedTick(context.Background())
+	if got := sender.count(); got != 0 {
+		t.Fatalf("时间窗存储故障时必须停止发送，got=%d", got)
+	}
+	if w.FailedTicks() != 1 {
+		t.Fatalf("时间窗存储故障必须进入失败计数，got=%d", w.FailedTicks())
+	}
+}
+
+func (p *inspectionLeaseProvider) TryAcquireSession(context.Context) (bool, workerlease.Session, error) {
+	p.once.Do(func() { close(p.called) })
+	return p.acquired, p.session, p.err
+}
+
+func TestInspectionWorkerFollowerDoesNotSend(t *testing.T) {
+	sender := &fakeSender{}
+	lease := &inspectionLeaseProvider{called: make(chan struct{})}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		LeaderLease: lease,
+	})
+	w.Start(context.Background())
+	select {
+	case <-lease.called:
+	case <-time.After(time.Second):
+		t.Fatal("worker 未尝试取得 leader 租约")
+	}
+	w.Stop()
+	if got := sender.count(); got != 0 {
+		t.Fatalf("未取得租约的副本不得发送巡检邮件，got=%d", got)
+	}
+}
+
+func TestInspectionWorkerLeaderSendsAndReleasesLease(t *testing.T) {
+	sender := &fakeSender{}
+	session := &inspectionLeaseSession{}
+	lease := &inspectionLeaseProvider{acquired: true, session: session, called: make(chan struct{})}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		LeaderLease: lease,
+	})
+	w.Start(context.Background())
+	deadline := time.Now().Add(time.Second)
+	for sender.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := sender.count(); got != 1 {
+		w.Stop()
+		t.Fatalf("leader 应立即发送一次巡检邮件，got=%d", got)
+	}
+	w.Stop()
+	if !session.released.Load() {
+		t.Fatal("worker 停止时必须释放 leader 租约")
+	}
+}
+
+func TestInspectionWorkerLostLeaseDoesNotSend(t *testing.T) {
+	sender := &fakeSender{}
+	session := &inspectionLeaseSession{healthErr: errors.New("连接已失效")}
+	lease := &inspectionLeaseProvider{acquired: true, session: session, called: make(chan struct{})}
+	w := NewInspectionWorker(InspectionWorkerConfig{
+		Service:     NewInspectionService(healthySources(), testTenant, fixedNow),
+		Sender:      sender,
+		Recipient:   "ops@huakai.test",
+		TenantID:    testTenant,
+		Interval:    time.Hour,
+		LeaderLease: lease,
+	})
+	w.Start(context.Background())
+	select {
+	case <-lease.called:
+	case <-time.After(time.Second):
+		w.Stop()
+		t.Fatal("worker 未尝试取得 leader 租约")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !session.released.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	w.Stop()
+	if got := sender.count(); got != 0 {
+		t.Fatalf("租约会话失效后不得发送巡检邮件，got=%d", got)
+	}
+	if !session.released.Load() {
+		t.Fatal("失效租约必须释放后重新参与选主")
 	}
 }

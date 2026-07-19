@@ -34,12 +34,16 @@ type HealthService interface {
 	ApplySignal(context.Context, channelhealth.Signal) (channelhealth.Record, error)
 }
 
-// RampAdvancer 周期推进处于渐进放量(ramping)的渠道:用已累积的真实流量样本按
-// 安全门(够样本 + 失败率低才升,失败则回滚)把放量比例 1%→10%→50%→100%→active。
-// channelhealth.Service.AdvanceRamp 实现之。对非 ramping 渠道是 no-op。
-// 缺此驱动时渠道冷却后进 ramping 1% 便永久卡死(无人推进);这里补上唯一的驱动者。
-type RampAdvancer interface {
+// RampReconciler 负责把已到期的 cooling_down 转成 ramping，并周期推进已有
+// ramping 渠道。两个动作必须由同一个后台协调器执行，请求热路径只读。
+type RampReconciler interface {
+	MaybeStartRamp(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
 	AdvanceRamp(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
+}
+
+// LeaderLease 保证一轮探测与恢复副作用在多副本中只由一个实例执行。
+type LeaderLease interface {
+	TryAcquire(context.Context) (bool, func(), error)
 }
 
 type ProbeResult struct {
@@ -59,7 +63,8 @@ type SchedulerConfig struct {
 	Channels         ActiveChannelLister
 	Health           HealthService
 	ActiveProbe      ActiveProbe
-	RampAdvancer     RampAdvancer
+	Ramp             RampReconciler
+	LeaderLease      LeaderLease
 	ClassifierConfig channelhealth.ClassifierConfig
 	Interval         time.Duration
 	NewTicker        func(time.Duration) SchedulerTicker
@@ -69,7 +74,8 @@ type ChannelHealthScheduler struct {
 	channels         ActiveChannelLister
 	health           HealthService
 	activeProbe      ActiveProbe
-	rampAdvancer     RampAdvancer
+	ramp             RampReconciler
+	leaderLease      LeaderLease
 	classifierConfig channelhealth.ClassifierConfig
 	interval         time.Duration
 	newTicker        func(time.Duration) SchedulerTicker
@@ -88,7 +94,8 @@ func NewChannelHealthScheduler(cfg SchedulerConfig) *ChannelHealthScheduler {
 		channels:         cfg.Channels,
 		health:           cfg.Health,
 		activeProbe:      cfg.ActiveProbe,
-		rampAdvancer:     cfg.RampAdvancer,
+		ramp:             cfg.Ramp,
+		leaderLease:      cfg.LeaderLease,
 		classifierConfig: cfg.ClassifierConfig,
 		interval:         cfg.Interval,
 		newTicker:        cfg.NewTicker,
@@ -97,7 +104,7 @@ func NewChannelHealthScheduler(cfg SchedulerConfig) *ChannelHealthScheduler {
 
 func (s *ChannelHealthScheduler) Run(ctx context.Context) error {
 	// 无合成探测且无 ramp 驱动 = 无事可做,静默退出(保持"未接线即 no-op"语义)。
-	if s == nil || (s.activeProbe == nil && s.rampAdvancer == nil) {
+	if s == nil || (s.activeProbe == nil && s.ramp == nil) {
 		return nil
 	}
 	if s.channels == nil {
@@ -127,6 +134,21 @@ func (s *ChannelHealthScheduler) Run(ctx context.Context) error {
 }
 
 func (s *ChannelHealthScheduler) probeOnce(ctx context.Context) {
+	if s.leaderLease != nil {
+		acquired, release, err := s.leaderLease.TryAcquire(ctx)
+		if err != nil {
+			logIfLive(ctx, "channel recovery leader lease failed", err)
+			return
+		}
+		if !acquired {
+			return
+		}
+		if release == nil {
+			logIfLive(ctx, "channel recovery leader lease returned no release", ErrInvalidInput)
+			return
+		}
+		defer release()
+	}
 	channels, err := s.channels.ListActiveChannels(ctx)
 	if err != nil {
 		logIfLive(ctx, "channel probe list active channels failed", err)
@@ -144,10 +166,14 @@ func (s *ChannelHealthScheduler) probeOnce(ctx context.Context) {
 		if s.activeProbe != nil {
 			s.probeChannel(ctx, channelID, key)
 		}
-		// ramp 推进(配了 RampAdvancer 才跑):用已累积的真实流量样本把 ramping 渠道安全爬升,
-		// 对非 ramping 渠道是 no-op。这是渠道冷却后从 1% 放量恢复的唯一驱动者。
-		if s.rampAdvancer != nil {
-			if _, err := s.rampAdvancer.AdvanceRamp(ctx, key); err != nil {
+		// 恢复协调(配了 Ramp 才跑):先把到期 cooling 转成 ramping，再按真实
+		// 样本或最长观察期推进当前阶段。对其它状态两个动作都是 no-op。
+		if s.ramp != nil {
+			if _, err := s.ramp.MaybeStartRamp(ctx, key); err != nil {
+				logIfLive(ctx, "channel ramp start failed", err, "channel_id", channelID)
+				continue
+			}
+			if _, err := s.ramp.AdvanceRamp(ctx, key); err != nil {
 				logIfLive(ctx, "channel ramp advance failed", err, "channel_id", channelID)
 			}
 		}

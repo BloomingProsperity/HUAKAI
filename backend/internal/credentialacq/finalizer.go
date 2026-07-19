@@ -90,6 +90,7 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 		return FinalizeResult{Session: session}, err
 	}
 	candidate = fillCandidateFromSession(session, candidate)
+	AttachSubscription(&candidate)
 	if err := f.ValidateCandidate(candidate); err != nil {
 		// 补偿写脱钩: BeginFinalize 已置 consumed_at, MarkFailed 若随请求取消而失败,
 		// flow 留在 consumed 非终态卡死。
@@ -107,6 +108,7 @@ func (f *Finalizer) Finalize(ctx context.Context, flowID string, candidate Crede
 		ExternalSubjectID:      candidate.ExternalSubjectID,
 		ExternalAccountEmail:   candidate.ExternalAccountEmail,
 		ExternalIdentitySource: candidate.AccountIDSource,
+		Subscription:           candidate.Subscription,
 	})
 	if err != nil {
 		wctx, cancel := finalizeWriteCtx(ctx)

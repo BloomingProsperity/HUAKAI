@@ -5,9 +5,12 @@
 
 package modelroutingadmindb
 
-import "context"
+import (
+	"context"
+)
 
 const createModelRoutingOverrideAdmin = `-- name: CreateModelRoutingOverrideAdmin :one
+
 INSERT INTO model_routing_overrides (
     tenant_id,
     pool_group_id,

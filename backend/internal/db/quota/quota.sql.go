@@ -11,751 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const acquireQuotaConcurrencySlot = `-- name: AcquireQuotaConcurrencySlot :one
-SELECT
-    acquired_slot.tenant_id::bigint AS tenant_id,
-    acquired_slot.id::bigint AS id,
-    acquired_slot.reservation_id::bigint AS reservation_id,
-    acquired_slot.scope_kind::text AS scope_kind,
-    acquired_slot.scope_id::text AS scope_id,
-    acquired_slot.status::text AS status,
-    acquired_slot.lease_expires_at::timestamptz AS lease_expires_at
-FROM quota_acquire_concurrency_slot(
-    $1::bigint,
-    $2::bigint,
-    $3::bigint,
-    $4::text,
-    $5::text,
-    $6::timestamptz,
-    $7::timestamptz,
-    $8::bigint
-) AS acquired_slot(
-    tenant_id,
-    id,
-    reservation_id,
-    scope_kind,
-    scope_id,
-    status,
-    lease_expires_at
-)
-`
-
-type AcquireQuotaConcurrencySlotParams struct {
-	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
-	ReservationID  int64              `db:"reservation_id" json:"reservation_id"`
-	ClaimID        int64              `db:"claim_id" json:"claim_id"`
-	ScopeKind      string             `db:"scope_kind" json:"scope_kind"`
-	ScopeID        string             `db:"scope_id" json:"scope_id"`
-	AtTime         pgtype.Timestamptz `db:"at_time" json:"at_time"`
-	LeaseExpiresAt pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	SlotLimit      int64              `db:"slot_limit" json:"slot_limit"`
-}
-
-type AcquireQuotaConcurrencySlotRow struct {
-	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
-	ID             int64              `db:"id" json:"id"`
-	ReservationID  int64              `db:"reservation_id" json:"reservation_id"`
-	ScopeKind      string             `db:"scope_kind" json:"scope_kind"`
-	ScopeID        string             `db:"scope_id" json:"scope_id"`
-	Status         string             `db:"status" json:"status"`
-	LeaseExpiresAt pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-}
-
-// 本地 scope 并发槽; DB 函数按 tenant/scope 锁行串行化 COUNT+UPSERT。
-func (q *Queries) AcquireQuotaConcurrencySlot(ctx context.Context, arg AcquireQuotaConcurrencySlotParams) (AcquireQuotaConcurrencySlotRow, error) {
-	row := q.db.QueryRow(ctx, acquireQuotaConcurrencySlot,
-		arg.TenantID,
-		arg.ReservationID,
-		arg.ClaimID,
-		arg.ScopeKind,
-		arg.ScopeID,
-		arg.AtTime,
-		arg.LeaseExpiresAt,
-		arg.SlotLimit,
-	)
-	var i AcquireQuotaConcurrencySlotRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ReservationID,
-		&i.ScopeKind,
-		&i.ScopeID,
-		&i.Status,
-		&i.LeaseExpiresAt,
-	)
-	return i, err
-}
-
-const applyQuotaWindowSettlement = `-- name: ApplyQuotaWindowSettlement :one
-UPDATE quota_windows
-SET reserved_value = GREATEST(
-        0::numeric(20,8),
-        reserved_value - $1::numeric(20,8)
-    ),
-    settled_value = settled_value + $2::numeric(20,8),
-    overage_value = overage_value + $3::numeric(20,8),
-    version = version + 1,
-    updated_at = NOW()
-WHERE tenant_id = $4::bigint
-  AND id = $5::bigint
-RETURNING
-    tenant_id,
-    id,
-    reserved_value,
-    settled_value,
-    overage_value,
-    request_count,
-    version
-`
-
-type ApplyQuotaWindowSettlementParams struct {
-	ReservedReleaseValue pgtype.Numeric `db:"reserved_release_value" json:"reserved_release_value"`
-	SettledAddValue      pgtype.Numeric `db:"settled_add_value" json:"settled_add_value"`
-	OverageAddValue      pgtype.Numeric `db:"overage_add_value" json:"overage_add_value"`
-	TenantID             int64          `db:"tenant_id" json:"tenant_id"`
-	WindowID             int64          `db:"window_id" json:"window_id"`
-}
-
-type ApplyQuotaWindowSettlementRow struct {
-	TenantID      int64          `db:"tenant_id" json:"tenant_id"`
-	ID            int64          `db:"id" json:"id"`
-	ReservedValue pgtype.Numeric `db:"reserved_value" json:"reserved_value"`
-	SettledValue  pgtype.Numeric `db:"settled_value" json:"settled_value"`
-	OverageValue  pgtype.Numeric `db:"overage_value" json:"overage_value"`
-	RequestCount  int64          `db:"request_count" json:"request_count"`
-	Version       int32          `db:"version" json:"version"`
-}
-
-// Settle 阶段把 reserved 转为 settled, actual 超出部分进入 overage 供审计和后续拒绝。
-func (q *Queries) ApplyQuotaWindowSettlement(ctx context.Context, arg ApplyQuotaWindowSettlementParams) (ApplyQuotaWindowSettlementRow, error) {
-	row := q.db.QueryRow(ctx, applyQuotaWindowSettlement,
-		arg.ReservedReleaseValue,
-		arg.SettledAddValue,
-		arg.OverageAddValue,
-		arg.TenantID,
-		arg.WindowID,
-	)
-	var i ApplyQuotaWindowSettlementRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ReservedValue,
-		&i.SettledValue,
-		&i.OverageValue,
-		&i.RequestCount,
-		&i.Version,
-	)
-	return i, err
-}
-
-const completeQuotaReconciliationJob = `-- name: CompleteQuotaReconciliationJob :execrows
-UPDATE quota_reconciliation_jobs
-SET status = 'succeeded',
-    last_error = NULL,
-    updated_at = NOW()
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-  AND status = 'running'
-`
-
-type CompleteQuotaReconciliationJobParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	JobID    int64 `db:"job_id" json:"job_id"`
-}
-
-// 补偿成功后终结 job。
-func (q *Queries) CompleteQuotaReconciliationJob(ctx context.Context, arg CompleteQuotaReconciliationJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, completeQuotaReconciliationJob, arg.TenantID, arg.JobID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const enqueueQuotaReconciliationJob = `-- name: EnqueueQuotaReconciliationJob :one
-INSERT INTO quota_reconciliation_jobs (
-    tenant_id,
-    claim_id,
-    reservation_id,
-    job_kind,
-    status,
-    last_error,
-    next_run_at
-)
-SELECT
-    $1::bigint,
-    $2::bigint,
-    $3::bigint,
-    $4::text,
-    'queued',
-    $5::text,
-    $6::timestamptz
-WHERE EXISTS (
-    SELECT 1
-    FROM billing_ledger_claims blc
-    WHERE blc.tenant_id = $1::bigint
-      AND blc.id = $2::bigint
-)
-ON CONFLICT (tenant_id, claim_id, job_kind)
-    WHERE status IN ('queued', 'running')
-DO UPDATE SET
-    last_error = EXCLUDED.last_error,
-    next_run_at = LEAST(quota_reconciliation_jobs.next_run_at, EXCLUDED.next_run_at),
-    updated_at = NOW()
-WHERE quota_reconciliation_jobs.tenant_id = $1::bigint
-RETURNING
-    tenant_id,
-    id,
-    claim_id,
-    reservation_id,
-    job_kind,
-    status,
-    attempt_count,
-    next_run_at
-`
-
-type EnqueueQuotaReconciliationJobParams struct {
-	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID       int64              `db:"claim_id" json:"claim_id"`
-	ReservationID *int64             `db:"reservation_id" json:"reservation_id"`
-	JobKind       string             `db:"job_kind" json:"job_kind"`
-	LastError     *string            `db:"last_error" json:"last_error"`
-	NextRunAt     pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
-}
-
-type EnqueueQuotaReconciliationJobRow struct {
-	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ID            int64              `db:"id" json:"id"`
-	ClaimID       int64              `db:"claim_id" json:"claim_id"`
-	ReservationID *int64             `db:"reservation_id" json:"reservation_id"`
-	JobKind       string             `db:"job_kind" json:"job_kind"`
-	Status        string             `db:"status" json:"status"`
-	AttemptCount  int32              `db:"attempt_count" json:"attempt_count"`
-	NextRunAt     pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
-}
-
-// B1 wrapper 的补偿队列; 同一 claim/kind 的 queued/running job 幂等合并。
-func (q *Queries) EnqueueQuotaReconciliationJob(ctx context.Context, arg EnqueueQuotaReconciliationJobParams) (EnqueueQuotaReconciliationJobRow, error) {
-	row := q.db.QueryRow(ctx, enqueueQuotaReconciliationJob,
-		arg.TenantID,
-		arg.ClaimID,
-		arg.ReservationID,
-		arg.JobKind,
-		arg.LastError,
-		arg.NextRunAt,
-	)
-	var i EnqueueQuotaReconciliationJobRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ClaimID,
-		&i.ReservationID,
-		&i.JobKind,
-		&i.Status,
-		&i.AttemptCount,
-		&i.NextRunAt,
-	)
-	return i, err
-}
-
-const expireQuotaConcurrencySlots = `-- name: ExpireQuotaConcurrencySlots :execrows
-UPDATE quota_concurrency_slots qcs
-SET status = 'expired',
-    released_at = NOW(),
-    release_reason = 'lease_expired',
-    updated_at = NOW()
-WHERE qcs.tenant_id = $1::bigint
-  AND qcs.status = 'acquired'
-  AND qcs.lease_expires_at <= $2::timestamptz
-  AND NOT EXISTS (
-      SELECT 1
-      FROM usage_record_dlq d
-      WHERE d.tenant_id = qcs.tenant_id
-        AND d.claim_id = qcs.claim_id
-        AND d.event_kind = 'post_delivery_settlement'
-        AND d.status <> 'delivered'
-  )
-`
-
-type ExpireQuotaConcurrencySlotsParams struct {
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
-	AtTime   pgtype.Timestamptz `db:"at_time" json:"at_time"`
-}
-
-// 租户内 lease 过期清理, 不写 provider cooldown。
-func (q *Queries) ExpireQuotaConcurrencySlots(ctx context.Context, arg ExpireQuotaConcurrencySlotsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, expireQuotaConcurrencySlots, arg.TenantID, arg.AtTime)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const failQuotaReconciliationJob = `-- name: FailQuotaReconciliationJob :execrows
-UPDATE quota_reconciliation_jobs
-SET status = CASE
-        WHEN $1::boolean THEN 'failed'
-        ELSE 'queued'
-    END,
-    last_error = $2::text,
-    next_run_at = $3::timestamptz,
-    locked_at = NULL,
-    updated_at = NOW()
-WHERE tenant_id = $4::bigint
-  AND id = $5::bigint
-  AND status = 'running'
-`
-
-type FailQuotaReconciliationJobParams struct {
-	Terminal  bool               `db:"terminal" json:"terminal"`
-	LastError string             `db:"last_error" json:"last_error"`
-	NextRunAt pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
-	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
-	JobID     int64              `db:"job_id" json:"job_id"`
-}
-
-// 普通失败按 next_run_at 重新排队；只有失效或耗尽预算才进入 failed 终停态。
-func (q *Queries) FailQuotaReconciliationJob(ctx context.Context, arg FailQuotaReconciliationJobParams) (int64, error) {
-	result, err := q.db.Exec(ctx, failQuotaReconciliationJob,
-		arg.Terminal,
-		arg.LastError,
-		arg.NextRunAt,
-		arg.TenantID,
-		arg.JobID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const getQuotaReservationByClaimForUpdate = `-- name: GetQuotaReservationByClaimForUpdate :one
-SELECT
-    tenant_id,
-    id,
-    claim_id,
-    request_fingerprint,
-    scope_snapshot,
-    policy_snapshot,
-    predicted_cost,
-    reserved_units,
-    settled_cost,
-    settled_units,
-    overage_units,
-    status,
-    lease_expires_at,
-    settled_at,
-    released_at,
-    release_reason
-FROM quota_reservations
-WHERE tenant_id = $1::bigint
-  AND claim_id = $2::bigint
-FOR UPDATE
-`
-
-type GetQuotaReservationByClaimForUpdateParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	ClaimID  int64 `db:"claim_id" json:"claim_id"`
-}
-
-type GetQuotaReservationByClaimForUpdateRow struct {
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ID                 int64              `db:"id" json:"id"`
-	ClaimID            int64              `db:"claim_id" json:"claim_id"`
-	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
-	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
-	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
-	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
-	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
-	SettledCost        pgtype.Numeric     `db:"settled_cost" json:"settled_cost"`
-	SettledUnits       pgtype.Numeric     `db:"settled_units" json:"settled_units"`
-	OverageUnits       pgtype.Numeric     `db:"overage_units" json:"overage_units"`
-	Status             string             `db:"status" json:"status"`
-	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	SettledAt          pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
-	ReleasedAt         pgtype.Timestamptz `db:"released_at" json:"released_at"`
-	ReleaseReason      *string            `db:"release_reason" json:"release_reason"`
-}
-
-// claim_id + tenant_id 是 reservation 幂等键。
-func (q *Queries) GetQuotaReservationByClaimForUpdate(ctx context.Context, arg GetQuotaReservationByClaimForUpdateParams) (GetQuotaReservationByClaimForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getQuotaReservationByClaimForUpdate, arg.TenantID, arg.ClaimID)
-	var i GetQuotaReservationByClaimForUpdateRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ClaimID,
-		&i.RequestFingerprint,
-		&i.ScopeSnapshot,
-		&i.PolicySnapshot,
-		&i.PredictedCost,
-		&i.ReservedUnits,
-		&i.SettledCost,
-		&i.SettledUnits,
-		&i.OverageUnits,
-		&i.Status,
-		&i.LeaseExpiresAt,
-		&i.SettledAt,
-		&i.ReleasedAt,
-		&i.ReleaseReason,
-	)
-	return i, err
-}
-
-const getQuotaWindowForUpdate = `-- name: GetQuotaWindowForUpdate :one
-SELECT
-    tenant_id,
-    id,
-    policy_id,
-    window_start,
-    window_end,
-    reserved_value,
-    settled_value,
-    overage_value,
-    request_count,
-    version
-FROM quota_windows
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-FOR UPDATE
-`
-
-type GetQuotaWindowForUpdateParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	WindowID int64 `db:"window_id" json:"window_id"`
-}
-
-type GetQuotaWindowForUpdateRow struct {
-	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ID            int64              `db:"id" json:"id"`
-	PolicyID      int64              `db:"policy_id" json:"policy_id"`
-	WindowStart   pgtype.Timestamptz `db:"window_start" json:"window_start"`
-	WindowEnd     pgtype.Timestamptz `db:"window_end" json:"window_end"`
-	ReservedValue pgtype.Numeric     `db:"reserved_value" json:"reserved_value"`
-	SettledValue  pgtype.Numeric     `db:"settled_value" json:"settled_value"`
-	OverageValue  pgtype.Numeric     `db:"overage_value" json:"overage_value"`
-	RequestCount  int64              `db:"request_count" json:"request_count"`
-	Version       int32              `db:"version" json:"version"`
-}
-
-// Reserve/settle 事务内锁住一个租户窗口。
-func (q *Queries) GetQuotaWindowForUpdate(ctx context.Context, arg GetQuotaWindowForUpdateParams) (GetQuotaWindowForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getQuotaWindowForUpdate, arg.TenantID, arg.WindowID)
-	var i GetQuotaWindowForUpdateRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.PolicyID,
-		&i.WindowStart,
-		&i.WindowEnd,
-		&i.ReservedValue,
-		&i.SettledValue,
-		&i.OverageValue,
-		&i.RequestCount,
-		&i.Version,
-	)
-	return i, err
-}
-
-const incrementQuotaWindowRequestCount = `-- name: IncrementQuotaWindowRequestCount :one
-UPDATE quota_windows
-SET request_count = request_count + $1::bigint,
-    version = version + 1,
-    updated_at = NOW()
-WHERE tenant_id = $2::bigint
-  AND id = $3::bigint
-  AND request_count + $1::bigint
-      <= $4::numeric(20,8)
-RETURNING
-    tenant_id,
-    id,
-    reserved_value,
-    settled_value,
-    overage_value,
-    request_count,
-    version
-`
-
-type IncrementQuotaWindowRequestCountParams struct {
-	RequestCountDelta int64          `db:"request_count_delta" json:"request_count_delta"`
-	TenantID          int64          `db:"tenant_id" json:"tenant_id"`
-	WindowID          int64          `db:"window_id" json:"window_id"`
-	LimitValue        pgtype.Numeric `db:"limit_value" json:"limit_value"`
-}
-
-type IncrementQuotaWindowRequestCountRow struct {
-	TenantID      int64          `db:"tenant_id" json:"tenant_id"`
-	ID            int64          `db:"id" json:"id"`
-	ReservedValue pgtype.Numeric `db:"reserved_value" json:"reserved_value"`
-	SettledValue  pgtype.Numeric `db:"settled_value" json:"settled_value"`
-	OverageValue  pgtype.Numeric `db:"overage_value" json:"overage_value"`
-	RequestCount  int64          `db:"request_count" json:"request_count"`
-	Version       int32          `db:"version" json:"version"`
-}
-
-// request_count 镜像辅助; Reserve 准入使用 IncrementQuotaWindowReserved 的 Model B 计数。
-func (q *Queries) IncrementQuotaWindowRequestCount(ctx context.Context, arg IncrementQuotaWindowRequestCountParams) (IncrementQuotaWindowRequestCountRow, error) {
-	row := q.db.QueryRow(ctx, incrementQuotaWindowRequestCount,
-		arg.RequestCountDelta,
-		arg.TenantID,
-		arg.WindowID,
-		arg.LimitValue,
-	)
-	var i IncrementQuotaWindowRequestCountRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ReservedValue,
-		&i.SettledValue,
-		&i.OverageValue,
-		&i.RequestCount,
-		&i.Version,
-	)
-	return i, err
-}
-
-const incrementQuotaWindowReserved = `-- name: IncrementQuotaWindowReserved :one
-UPDATE quota_windows
-SET reserved_value = reserved_value + $1::numeric(20,8),
-    request_count = request_count + $2::bigint,
-    version = version + 1,
-    updated_at = NOW()
-WHERE tenant_id = $3::bigint
-  AND id = $4::bigint
-  AND reserved_value + settled_value + $1::numeric(20,8)
-      <= $5::numeric(20,8)
-RETURNING
-    tenant_id,
-    id,
-    reserved_value,
-    settled_value,
-    overage_value,
-    request_count,
-    version
-`
-
-type IncrementQuotaWindowReservedParams struct {
-	ReserveDelta      pgtype.Numeric `db:"reserve_delta" json:"reserve_delta"`
-	RequestCountDelta int64          `db:"request_count_delta" json:"request_count_delta"`
-	TenantID          int64          `db:"tenant_id" json:"tenant_id"`
-	WindowID          int64          `db:"window_id" json:"window_id"`
-	LimitValue        pgtype.Numeric `db:"limit_value" json:"limit_value"`
-}
-
-type IncrementQuotaWindowReservedRow struct {
-	TenantID      int64          `db:"tenant_id" json:"tenant_id"`
-	ID            int64          `db:"id" json:"id"`
-	ReservedValue pgtype.Numeric `db:"reserved_value" json:"reserved_value"`
-	SettledValue  pgtype.Numeric `db:"settled_value" json:"settled_value"`
-	OverageValue  pgtype.Numeric `db:"overage_value" json:"overage_value"`
-	RequestCount  int64          `db:"request_count" json:"request_count"`
-	Version       int32          `db:"version" json:"version"`
-}
-
-// Cost enforce: reserved + settled + delta 不得超过调用方传入的策略上限。
-func (q *Queries) IncrementQuotaWindowReserved(ctx context.Context, arg IncrementQuotaWindowReservedParams) (IncrementQuotaWindowReservedRow, error) {
-	row := q.db.QueryRow(ctx, incrementQuotaWindowReserved,
-		arg.ReserveDelta,
-		arg.RequestCountDelta,
-		arg.TenantID,
-		arg.WindowID,
-		arg.LimitValue,
-	)
-	var i IncrementQuotaWindowReservedRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ReservedValue,
-		&i.SettledValue,
-		&i.OverageValue,
-		&i.RequestCount,
-		&i.Version,
-	)
-	return i, err
-}
-
-const insertQuotaAuditEvent = `-- name: InsertQuotaAuditEvent :one
-INSERT INTO quota_audit_events (
-    tenant_id,
-    reservation_id,
-    claim_id,
-    event_type,
-    decision_code,
-    scope_kind,
-    scope_id,
-    metric,
-    amount_reserved,
-    amount_settled,
-    retry_after_seconds,
-    payload,
-    actor
-)
-SELECT
-    $1::bigint,
-    $2::bigint,
-    $3::bigint,
-    $4::text,
-    $5::text,
-    $6::text,
-    $7::text,
-    $8::text,
-    $9::numeric(20,8),
-    $10::numeric(20,8),
-    $11::integer,
-    $12::jsonb,
-    $13::text
-WHERE EXISTS (
-    SELECT 1
-    FROM tenants t
-    WHERE t.id = $1::bigint
-)
-RETURNING
-    tenant_id,
-    id,
-    occurred_at
-`
-
-type InsertQuotaAuditEventParams struct {
-	TenantID          int64          `db:"tenant_id" json:"tenant_id"`
-	ReservationID     *int64         `db:"reservation_id" json:"reservation_id"`
-	ClaimID           *int64         `db:"claim_id" json:"claim_id"`
-	EventType         string         `db:"event_type" json:"event_type"`
-	DecisionCode      string         `db:"decision_code" json:"decision_code"`
-	ScopeKind         string         `db:"scope_kind" json:"scope_kind"`
-	ScopeID           string         `db:"scope_id" json:"scope_id"`
-	Metric            string         `db:"metric" json:"metric"`
-	AmountReserved    pgtype.Numeric `db:"amount_reserved" json:"amount_reserved"`
-	AmountSettled     pgtype.Numeric `db:"amount_settled" json:"amount_settled"`
-	RetryAfterSeconds *int32         `db:"retry_after_seconds" json:"retry_after_seconds"`
-	Payload           []byte         `db:"payload" json:"payload"`
-	Actor             *string        `db:"actor" json:"actor"`
-}
-
-type InsertQuotaAuditEventRow struct {
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	ID         int64              `db:"id" json:"id"`
-	OccurredAt pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
-}
-
-// 配额审计事件; deny/overage/reconcile 都只写 quota audit。
-func (q *Queries) InsertQuotaAuditEvent(ctx context.Context, arg InsertQuotaAuditEventParams) (InsertQuotaAuditEventRow, error) {
-	row := q.db.QueryRow(ctx, insertQuotaAuditEvent,
-		arg.TenantID,
-		arg.ReservationID,
-		arg.ClaimID,
-		arg.EventType,
-		arg.DecisionCode,
-		arg.ScopeKind,
-		arg.ScopeID,
-		arg.Metric,
-		arg.AmountReserved,
-		arg.AmountSettled,
-		arg.RetryAfterSeconds,
-		arg.Payload,
-		arg.Actor,
-	)
-	var i InsertQuotaAuditEventRow
-	err := row.Scan(&i.TenantID, &i.ID, &i.OccurredAt)
-	return i, err
-}
-
-const insertQuotaReservation = `-- name: InsertQuotaReservation :one
-INSERT INTO quota_reservations (
-    tenant_id,
-    claim_id,
-    request_fingerprint,
-    scope_snapshot,
-    policy_snapshot,
-    predicted_cost,
-    reserved_units,
-    lease_expires_at
-)
-SELECT
-    $1::bigint,
-    $2::bigint,
-    $3::text,
-    $4::jsonb,
-    $5::jsonb,
-    $6::numeric(20,8),
-    $7::numeric(20,8),
-    $8::timestamptz
-WHERE EXISTS (
-    SELECT 1
-    FROM billing_ledger_claims blc
-    WHERE blc.tenant_id = $1::bigint
-      AND blc.id = $2::bigint
-)
-RETURNING
-    tenant_id,
-    id,
-    claim_id,
-    request_fingerprint,
-    scope_snapshot,
-    policy_snapshot,
-    predicted_cost,
-    reserved_units,
-    status,
-    lease_expires_at,
-    created_at,
-    updated_at
-`
-
-type InsertQuotaReservationParams struct {
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ClaimID            int64              `db:"claim_id" json:"claim_id"`
-	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
-	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
-	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
-	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
-	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
-	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-}
-
-type InsertQuotaReservationRow struct {
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ID                 int64              `db:"id" json:"id"`
-	ClaimID            int64              `db:"claim_id" json:"claim_id"`
-	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
-	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
-	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
-	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
-	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
-	Status             string             `db:"status" json:"status"`
-	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-// 新 claim 的配额预留记录; 幂等冲突由 GetQuotaReservationByClaimForUpdate 先判定。
-func (q *Queries) InsertQuotaReservation(ctx context.Context, arg InsertQuotaReservationParams) (InsertQuotaReservationRow, error) {
-	row := q.db.QueryRow(ctx, insertQuotaReservation,
-		arg.TenantID,
-		arg.ClaimID,
-		arg.RequestFingerprint,
-		arg.ScopeSnapshot,
-		arg.PolicySnapshot,
-		arg.PredictedCost,
-		arg.ReservedUnits,
-		arg.LeaseExpiresAt,
-	)
-	var i InsertQuotaReservationRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ClaimID,
-		&i.RequestFingerprint,
-		&i.ScopeSnapshot,
-		&i.PolicySnapshot,
-		&i.PredictedCost,
-		&i.ReservedUnits,
-		&i.Status,
-		&i.LeaseExpiresAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const listActiveQuotaPoliciesForScopes = `-- name: ListActiveQuotaPoliciesForScopes :many
 
 SELECT
@@ -763,6 +18,7 @@ SELECT
     id,
     scope_kind,
     scope_id,
+    model_selector,
     metric,
     window_kind,
     window_seconds,
@@ -781,18 +37,23 @@ WHERE tenant_id = $1::bigint
       FROM jsonb_to_recordset($2::jsonb)
           AS requested_scope(kind text, id text)
   )
-  AND metric = ANY($3::text[])
-  AND valid_from <= $4::timestamptz
-  AND (valid_until IS NULL OR valid_until > $4::timestamptz)
-ORDER BY priority ASC, id ASC
+  AND (model_selector = '*' OR model_selector = $3::text)
+  AND metric = ANY($4::text[])
+  AND valid_from <= $5::timestamptz
+  AND (valid_until IS NULL OR valid_until > $5::timestamptz)
+ORDER BY
+    CASE WHEN model_selector = '*' THEN 0 ELSE 1 END,
+    priority ASC,
+    id ASC
 FOR UPDATE
 `
 
 type ListActiveQuotaPoliciesForScopesParams struct {
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
-	Scopes   []byte             `db:"scopes" json:"scopes"`
-	Metrics  []string           `db:"metrics" json:"metrics"`
-	AtTime   pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	TenantID       int64              `db:"tenant_id" json:"tenant_id"`
+	Scopes         []byte             `db:"scopes" json:"scopes"`
+	RequestedModel string             `db:"requested_model" json:"requested_model"`
+	Metrics        []string           `db:"metrics" json:"metrics"`
+	AtTime         pgtype.Timestamptz `db:"at_time" json:"at_time"`
 }
 
 type ListActiveQuotaPoliciesForScopesRow struct {
@@ -800,6 +61,7 @@ type ListActiveQuotaPoliciesForScopesRow struct {
 	ID            int64              `db:"id" json:"id"`
 	ScopeKind     string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID       string             `db:"scope_id" json:"scope_id"`
+	ModelSelector string             `db:"model_selector" json:"model_selector"`
 	Metric        string             `db:"metric" json:"metric"`
 	WindowKind    string             `db:"window_kind" json:"window_kind"`
 	WindowSeconds int32              `db:"window_seconds" json:"window_seconds"`
@@ -811,14 +73,13 @@ type ListActiveQuotaPoliciesForScopesRow struct {
 	ValidUntil    pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
 }
 
-// HUAKAI 配额子系统 Slice A sqlc 查询骨架。
-// 本文件先锁定查询边界; sqlc 生成包留到切片 B 接入实现时再加。
-// 约束: 所有读写定位都显式带 tenant_id, 防跨租户误读/误改。
-// Reserve 前按租户、scope、metric 取当前可用策略; scopes 为 [{"kind": "...", "id": "..."}]。
+// HUAKAI 配额策略读取。所有查询都显式携带 tenant_id。
+// Reserve 前按租户、scope、模型与 metric 取当前可用策略。
 func (q *Queries) ListActiveQuotaPoliciesForScopes(ctx context.Context, arg ListActiveQuotaPoliciesForScopesParams) ([]ListActiveQuotaPoliciesForScopesRow, error) {
 	rows, err := q.db.Query(ctx, listActiveQuotaPoliciesForScopes,
 		arg.TenantID,
 		arg.Scopes,
+		arg.RequestedModel,
 		arg.Metrics,
 		arg.AtTime,
 	)
@@ -834,6 +95,7 @@ func (q *Queries) ListActiveQuotaPoliciesForScopes(ctx context.Context, arg List
 			&i.ID,
 			&i.ScopeKind,
 			&i.ScopeID,
+			&i.ModelSelector,
 			&i.Metric,
 			&i.WindowKind,
 			&i.WindowSeconds,
@@ -860,6 +122,7 @@ SELECT
     qp.id AS policy_id,
     qp.scope_kind,
     qp.scope_id,
+    qp.model_selector,
     qp.metric,
     qp.window_kind,
     qp.window_seconds,
@@ -888,10 +151,12 @@ WHERE qp.tenant_id = $2::bigint
   AND qp.mode <> 'disabled'
   AND qp.scope_kind = $3::text
   AND qp.scope_id = $4::text
-  AND qp.metric = ANY($5::text[])
+  AND ($5::text IS NULL OR qp.model_selector = $5::text)
+  AND qp.metric = ANY($6::text[])
   AND qp.valid_from <= $1::timestamptz
   AND (qp.valid_until IS NULL OR qp.valid_until > $1::timestamptz)
 ORDER BY
+    CASE WHEN qp.model_selector = '*' THEN 0 ELSE 1 END,
     CASE qp.window_kind
         WHEN 'calendar_day' THEN 1
         WHEN 'calendar_week' THEN 2
@@ -903,11 +168,12 @@ ORDER BY
 `
 
 type ListCurrentQuotaWindowsForScopeParams struct {
-	AtTime    pgtype.Timestamptz `db:"at_time" json:"at_time"`
-	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
-	ScopeKind string             `db:"scope_kind" json:"scope_kind"`
-	ScopeID   string             `db:"scope_id" json:"scope_id"`
-	Metrics   []string           `db:"metrics" json:"metrics"`
+	AtTime        pgtype.Timestamptz `db:"at_time" json:"at_time"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	ScopeKind     string             `db:"scope_kind" json:"scope_kind"`
+	ScopeID       string             `db:"scope_id" json:"scope_id"`
+	ModelSelector *string            `db:"model_selector" json:"model_selector"`
+	Metrics       []string           `db:"metrics" json:"metrics"`
 }
 
 type ListCurrentQuotaWindowsForScopeRow struct {
@@ -915,6 +181,7 @@ type ListCurrentQuotaWindowsForScopeRow struct {
 	PolicyID      int64              `db:"policy_id" json:"policy_id"`
 	ScopeKind     string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID       string             `db:"scope_id" json:"scope_id"`
+	ModelSelector string             `db:"model_selector" json:"model_selector"`
 	Metric        string             `db:"metric" json:"metric"`
 	WindowKind    string             `db:"window_kind" json:"window_kind"`
 	WindowSeconds int32              `db:"window_seconds" json:"window_seconds"`
@@ -934,16 +201,14 @@ type ListCurrentQuotaWindowsForScopeRow struct {
 	Version       int32              `db:"version" json:"version"`
 }
 
-// Active quota-window read projection: policies for one tenant/scope filtered to the
-// requested metrics, plus the current window counters. Cost-only callers (subscription
-// progress, key-control) pass {cost_usd} to preserve their original behaviour; the
-// self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
+// 返回一个 scope 的当前窗口明细；model_selector 为空时返回全部模型维度。
 func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error) {
 	rows, err := q.db.Query(ctx, listCurrentQuotaWindowsForScope,
 		arg.AtTime,
 		arg.TenantID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.ModelSelector,
 		arg.Metrics,
 	)
 	if err != nil {
@@ -958,6 +223,7 @@ func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListC
 			&i.PolicyID,
 			&i.ScopeKind,
 			&i.ScopeID,
+			&i.ModelSelector,
 			&i.Metric,
 			&i.WindowKind,
 			&i.WindowSeconds,
@@ -984,470 +250,4 @@ func (q *Queries) ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListC
 		return nil, err
 	}
 	return items, nil
-}
-
-const listDueQuotaReconciliationJobs = `-- name: ListDueQuotaReconciliationJobs :many
-SELECT
-    tenant_id,
-    id,
-    claim_id,
-    reservation_id,
-    job_kind,
-    status,
-    attempt_count,
-    last_error,
-    next_run_at
-FROM quota_reconciliation_jobs
-WHERE tenant_id = $1::bigint
-  AND (
-      (status IN ('queued', 'failed')
-       AND next_run_at <= $2::timestamptz)
-      OR (
-          status = 'running'
-          AND (
-              locked_at IS NULL
-              OR locked_at < $2::timestamptz - INTERVAL '15 minutes'
-          )
-      )
-  )
-ORDER BY next_run_at ASC, id ASC
-LIMIT $3::integer
-FOR UPDATE SKIP LOCKED
-`
-
-type ListDueQuotaReconciliationJobsParams struct {
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
-	AtTime   pgtype.Timestamptz `db:"at_time" json:"at_time"`
-	JobLimit int32              `db:"job_limit" json:"job_limit"`
-}
-
-type ListDueQuotaReconciliationJobsRow struct {
-	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ID            int64              `db:"id" json:"id"`
-	ClaimID       int64              `db:"claim_id" json:"claim_id"`
-	ReservationID *int64             `db:"reservation_id" json:"reservation_id"`
-	JobKind       string             `db:"job_kind" json:"job_kind"`
-	Status        string             `db:"status" json:"status"`
-	AttemptCount  int32              `db:"attempt_count" json:"attempt_count"`
-	LastError     *string            `db:"last_error" json:"last_error"`
-	NextRunAt     pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
-}
-
-// 租户内领取到期 job; 后续切片 B 决定 worker 调度粒度。
-func (q *Queries) ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDueQuotaReconciliationJobsParams) ([]ListDueQuotaReconciliationJobsRow, error) {
-	rows, err := q.db.Query(ctx, listDueQuotaReconciliationJobs, arg.TenantID, arg.AtTime, arg.JobLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListDueQuotaReconciliationJobsRow
-	for rows.Next() {
-		var i ListDueQuotaReconciliationJobsRow
-		if err := rows.Scan(
-			&i.TenantID,
-			&i.ID,
-			&i.ClaimID,
-			&i.ReservationID,
-			&i.JobKind,
-			&i.Status,
-			&i.AttemptCount,
-			&i.LastError,
-			&i.NextRunAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTenantsWithDueQuotaReconciliationJobs = `-- name: ListTenantsWithDueQuotaReconciliationJobs :many
-SELECT DISTINCT tenant_id
-FROM quota_reconciliation_jobs
-WHERE (
-    (status IN ('queued', 'failed')
-     AND next_run_at <= $1::timestamptz)
-    OR (
-        status = 'running'
-        AND (
-            locked_at IS NULL
-            OR locked_at < $1::timestamptz - INTERVAL '15 minutes'
-        )
-    )
-)
-ORDER BY tenant_id ASC
-LIMIT $2::integer
-`
-
-type ListTenantsWithDueQuotaReconciliationJobsParams struct {
-	AtTime      pgtype.Timestamptz `db:"at_time" json:"at_time"`
-	TenantLimit int32              `db:"tenant_limit" json:"tenant_limit"`
-}
-
-// 全局 sweep:列出有到期 job 的 distinct 租户,供跨租户 worker 公平轮转。
-func (q *Queries) ListTenantsWithDueQuotaReconciliationJobs(ctx context.Context, arg ListTenantsWithDueQuotaReconciliationJobsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listTenantsWithDueQuotaReconciliationJobs, arg.AtTime, arg.TenantLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int64
-	for rows.Next() {
-		var tenantID int64
-		if err := rows.Scan(&tenantID); err != nil {
-			return nil, err
-		}
-		items = append(items, tenantID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const markQuotaReconciliationJobRunning = `-- name: MarkQuotaReconciliationJobRunning :execrows
-UPDATE quota_reconciliation_jobs
-SET status = 'running',
-    locked_at = NOW(),
-    attempt_count = attempt_count + 1,
-    updated_at = NOW()
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-  AND (
-      status IN ('queued', 'failed')
-      OR (
-          status = 'running'
-          AND (
-              locked_at IS NULL
-              OR locked_at < NOW() - INTERVAL '15 minutes'
-          )
-      )
-  )
-`
-
-type MarkQuotaReconciliationJobRunningParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	JobID    int64 `db:"job_id" json:"job_id"`
-}
-
-// worker 领取 job 后标记 running; 超过 15 分钟的 running 视为可回收 lease。
-func (q *Queries) MarkQuotaReconciliationJobRunning(ctx context.Context, arg MarkQuotaReconciliationJobRunningParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markQuotaReconciliationJobRunning, arg.TenantID, arg.JobID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const markQuotaReservationReconciliationNeeded = `-- name: MarkQuotaReservationReconciliationNeeded :execrows
-UPDATE quota_reservations
-SET status = 'reconciliation_needed',
-    updated_at = NOW()
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-  AND claim_id = $3::bigint
-  AND status = 'reserved'
-`
-
-type MarkQuotaReservationReconciliationNeededParams struct {
-	TenantID      int64 `db:"tenant_id" json:"tenant_id"`
-	ReservationID int64 `db:"reservation_id" json:"reservation_id"`
-	ClaimID       int64 `db:"claim_id" json:"claim_id"`
-}
-
-// 独立 quota settle/release 失败时标记 reservation, 后台 job 幂等重试。
-func (q *Queries) MarkQuotaReservationReconciliationNeeded(ctx context.Context, arg MarkQuotaReservationReconciliationNeededParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markQuotaReservationReconciliationNeeded, arg.TenantID, arg.ReservationID, arg.ClaimID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const reactivateQuotaReservation = `-- name: ReactivateQuotaReservation :one
-UPDATE quota_reservations
-SET status = 'reserved',
-    request_fingerprint = $1::text,
-    scope_snapshot = $2::jsonb,
-    policy_snapshot = $3::jsonb,
-    predicted_cost = $4::numeric(20,8),
-    reserved_units = $5::numeric(20,8),
-    lease_expires_at = $6::timestamptz,
-    settled_at = NULL,
-    released_at = NULL,
-    release_reason = NULL,
-    updated_at = NOW()
-WHERE tenant_id = $7::bigint
-  AND id = $8::bigint
-  AND claim_id = $9::bigint
-  AND status IN ('released', 'expired')
-RETURNING
-    tenant_id,
-    id,
-    claim_id,
-    request_fingerprint,
-    scope_snapshot,
-    policy_snapshot,
-    predicted_cost,
-    reserved_units,
-    status,
-    lease_expires_at,
-    created_at,
-    updated_at
-`
-
-type ReactivateQuotaReservationParams struct {
-	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
-	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
-	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
-	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
-	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
-	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ReservationID      int64              `db:"reservation_id" json:"reservation_id"`
-	ClaimID            int64              `db:"claim_id" json:"claim_id"`
-}
-
-type ReactivateQuotaReservationRow struct {
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ID                 int64              `db:"id" json:"id"`
-	ClaimID            int64              `db:"claim_id" json:"claim_id"`
-	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
-	ScopeSnapshot      []byte             `db:"scope_snapshot" json:"scope_snapshot"`
-	PolicySnapshot     []byte             `db:"policy_snapshot" json:"policy_snapshot"`
-	PredictedCost      pgtype.Numeric     `db:"predicted_cost" json:"predicted_cost"`
-	ReservedUnits      pgtype.Numeric     `db:"reserved_units" json:"reserved_units"`
-	Status             string             `db:"status" json:"status"`
-	LeaseExpiresAt     pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
-	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-// released/expired claim 重试通过重新评估后, 复用原 reservation 行重建持有。
-func (q *Queries) ReactivateQuotaReservation(ctx context.Context, arg ReactivateQuotaReservationParams) (ReactivateQuotaReservationRow, error) {
-	row := q.db.QueryRow(ctx, reactivateQuotaReservation,
-		arg.RequestFingerprint,
-		arg.ScopeSnapshot,
-		arg.PolicySnapshot,
-		arg.PredictedCost,
-		arg.ReservedUnits,
-		arg.LeaseExpiresAt,
-		arg.TenantID,
-		arg.ReservationID,
-		arg.ClaimID,
-	)
-	var i ReactivateQuotaReservationRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.ClaimID,
-		&i.RequestFingerprint,
-		&i.ScopeSnapshot,
-		&i.PolicySnapshot,
-		&i.PredictedCost,
-		&i.ReservedUnits,
-		&i.Status,
-		&i.LeaseExpiresAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const releaseQuotaConcurrencySlotsByReservation = `-- name: ReleaseQuotaConcurrencySlotsByReservation :execrows
-UPDATE quota_concurrency_slots
-SET status = 'released',
-    released_at = NOW(),
-    release_reason = $1::text,
-    updated_at = NOW()
-WHERE tenant_id = $2::bigint
-  AND reservation_id = $3::bigint
-  AND status = 'acquired'
-`
-
-type ReleaseQuotaConcurrencySlotsByReservationParams struct {
-	ReleaseReason string `db:"release_reason" json:"release_reason"`
-	TenantID      int64  `db:"tenant_id" json:"tenant_id"`
-	ReservationID int64  `db:"reservation_id" json:"reservation_id"`
-}
-
-// 按 reservation 幂等释放所有本地并发槽。
-func (q *Queries) ReleaseQuotaConcurrencySlotsByReservation(ctx context.Context, arg ReleaseQuotaConcurrencySlotsByReservationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseQuotaConcurrencySlotsByReservation, arg.ReleaseReason, arg.TenantID, arg.ReservationID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const releaseQuotaReservation = `-- name: ReleaseQuotaReservation :execrows
-UPDATE quota_reservations
-SET status = 'released',
-    released_at = NOW(),
-    release_reason = $1::text,
-    updated_at = NOW()
-WHERE tenant_id = $2::bigint
-  AND id = $3::bigint
-  AND claim_id = $4::bigint
-  AND status IN ('reserved', 'reconciliation_needed')
-`
-
-type ReleaseQuotaReservationParams struct {
-	ReleaseReason string `db:"release_reason" json:"release_reason"`
-	TenantID      int64  `db:"tenant_id" json:"tenant_id"`
-	ReservationID int64  `db:"reservation_id" json:"reservation_id"`
-	ClaimID       int64  `db:"claim_id" json:"claim_id"`
-}
-
-// Abort/cache-hit/retry 放弃路径释放 reservation; 调用方同时释放并发槽。
-func (q *Queries) ReleaseQuotaReservation(ctx context.Context, arg ReleaseQuotaReservationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseQuotaReservation,
-		arg.ReleaseReason,
-		arg.TenantID,
-		arg.ReservationID,
-		arg.ClaimID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const settleQuotaReservation = `-- name: SettleQuotaReservation :execrows
-UPDATE quota_reservations
-SET status = 'settled',
-    settled_cost = $1::numeric(20,8),
-    settled_units = $2::numeric(20,8),
-    overage_units = $3::numeric(20,8),
-    settled_at = NOW(),
-    updated_at = NOW()
-WHERE tenant_id = $4::bigint
-  AND id = $5::bigint
-  AND claim_id = $6::bigint
-  AND status IN ('reserved', 'reconciliation_needed')
-`
-
-type SettleQuotaReservationParams struct {
-	SettledCost   pgtype.Numeric `db:"settled_cost" json:"settled_cost"`
-	SettledUnits  pgtype.Numeric `db:"settled_units" json:"settled_units"`
-	OverageUnits  pgtype.Numeric `db:"overage_units" json:"overage_units"`
-	TenantID      int64          `db:"tenant_id" json:"tenant_id"`
-	ReservationID int64          `db:"reservation_id" json:"reservation_id"`
-	ClaimID       int64          `db:"claim_id" json:"claim_id"`
-}
-
-// Billing commit 后独立事务结算 quota; 失败由 reconciliation job 收敛。
-func (q *Queries) SettleQuotaReservation(ctx context.Context, arg SettleQuotaReservationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, settleQuotaReservation,
-		arg.SettledCost,
-		arg.SettledUnits,
-		arg.OverageUnits,
-		arg.TenantID,
-		arg.ReservationID,
-		arg.ClaimID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const upsertQuotaWindow = `-- name: UpsertQuotaWindow :one
-WITH upserted AS (
-    INSERT INTO quota_windows (
-        tenant_id, policy_id, window_start, window_end
-    )
-    SELECT
-        qp.tenant_id,
-        qp.id,
-        $1::timestamptz,
-        $2::timestamptz
-    FROM quota_policies qp
-    WHERE qp.tenant_id = $3::bigint
-      AND qp.id = $4::bigint
-    ON CONFLICT ON CONSTRAINT uq_quota_windows_policy_start
-    DO UPDATE SET
-        window_end = EXCLUDED.window_end,
-        updated_at = NOW()
-    WHERE quota_windows.tenant_id = $3::bigint
-    RETURNING
-        tenant_id,
-        id,
-        policy_id,
-        window_start,
-        window_end,
-        reserved_value,
-        settled_value,
-        overage_value,
-        request_count,
-        version
-)
-SELECT
-    upserted.tenant_id,
-    upserted.id,
-    upserted.policy_id,
-    upserted.window_start,
-    upserted.window_end,
-    upserted.reserved_value,
-    upserted.settled_value,
-    upserted.overage_value,
-    upserted.request_count,
-    upserted.version,
-    qp.window_kind,
-    qp.window_seconds
-FROM upserted
-JOIN quota_policies qp
-  ON qp.tenant_id = upserted.tenant_id
- AND qp.id = upserted.policy_id
-`
-
-type UpsertQuotaWindowParams struct {
-	WindowStart pgtype.Timestamptz `db:"window_start" json:"window_start"`
-	WindowEnd   pgtype.Timestamptz `db:"window_end" json:"window_end"`
-	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
-	PolicyID    int64              `db:"policy_id" json:"policy_id"`
-}
-
-type UpsertQuotaWindowRow struct {
-	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ID            int64              `db:"id" json:"id"`
-	PolicyID      int64              `db:"policy_id" json:"policy_id"`
-	WindowStart   pgtype.Timestamptz `db:"window_start" json:"window_start"`
-	WindowEnd     pgtype.Timestamptz `db:"window_end" json:"window_end"`
-	ReservedValue pgtype.Numeric     `db:"reserved_value" json:"reserved_value"`
-	SettledValue  pgtype.Numeric     `db:"settled_value" json:"settled_value"`
-	OverageValue  pgtype.Numeric     `db:"overage_value" json:"overage_value"`
-	RequestCount  int64              `db:"request_count" json:"request_count"`
-	Version       int32              `db:"version" json:"version"`
-	WindowKind    string             `db:"window_kind" json:"window_kind"`
-	WindowSeconds int32              `db:"window_seconds" json:"window_seconds"`
-}
-
-// 为 policy/window_start 建立或复用窗口行; 唯一键为 (tenant_id, policy_id, window_start)。
-func (q *Queries) UpsertQuotaWindow(ctx context.Context, arg UpsertQuotaWindowParams) (UpsertQuotaWindowRow, error) {
-	row := q.db.QueryRow(ctx, upsertQuotaWindow,
-		arg.WindowStart,
-		arg.WindowEnd,
-		arg.TenantID,
-		arg.PolicyID,
-	)
-	var i UpsertQuotaWindowRow
-	err := row.Scan(
-		&i.TenantID,
-		&i.ID,
-		&i.PolicyID,
-		&i.WindowStart,
-		&i.WindowEnd,
-		&i.ReservedValue,
-		&i.SettledValue,
-		&i.OverageValue,
-		&i.RequestCount,
-		&i.Version,
-		&i.WindowKind,
-		&i.WindowSeconds,
-	)
-	return i, err
 }

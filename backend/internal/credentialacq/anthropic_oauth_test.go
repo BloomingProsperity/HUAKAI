@@ -134,14 +134,9 @@ func TestValidateClaudeAIRedirectURI(t *testing.T) {
 func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 10, 0, 0, time.UTC)
 	store, _ := newClaudeAIOAuthTestStore(t, now)
-	exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }}
-	registry := NewExchangerRegistry()
-	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
-		t.Fatalf("RegisterExchanger: %v", err)
-	}
 
 	var gotBody map[string]string
-	restore := withClaudeAIOAuthRoundTripper(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() != claudeAIOAuthTokenURL {
 			t.Fatalf("token URL=%s want %s", r.URL.String(), claudeAIOAuthTokenURL)
 		}
@@ -163,8 +158,12 @@ func TestClaudeAIOAuthExchangeUsesJSONBody(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT","refresh_token":"RT","expires_in":3600,"token_type":"Bearer"}`)),
 		}, nil
-	}))
-	defer restore()
+	})}
+	exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }, httpClient: client}
+	registry := NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
 
 	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 103,
@@ -249,19 +248,18 @@ func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 6, 13, 9, 0, 0, 0, time.UTC)
 			store, _ := newClaudeAIOAuthTestStore(t, now)
-			exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }}
-			registry := NewExchangerRegistry()
-			if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
-				t.Fatalf("RegisterExchanger: %v", err)
-			}
-			restore := withClaudeAIOAuthRoundTripper(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Header:     http.Header{"Content-Type": []string{"application/json"}},
 					Body:       io.NopCloser(strings.NewReader(tc.respBody)),
 				}, nil
-			}))
-			defer restore()
+			})}
+			exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }, httpClient: client}
+			registry := NewExchangerRegistry()
+			if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+				t.Fatalf("RegisterExchanger: %v", err)
+			}
 
 			start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
 				TenantID: 1, ProviderAccountID: 104,
@@ -309,19 +307,18 @@ func TestClaudeAIOAuthExchangeCapturesUpstreamAccountIdentity(t *testing.T) {
 func TestClaudeAIOAuthExchangeRejectsInvalidGrant(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 20, 0, 0, time.UTC)
 	store, _ := newClaudeAIOAuthTestStore(t, now)
-	exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }}
-	registry := NewExchangerRegistry()
-	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
-		t.Fatalf("RegisterExchanger: %v", err)
-	}
-	restore := withClaudeAIOAuthRoundTripper(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusUnauthorized,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"expired"}`)),
 		}, nil
-	}))
-	defer restore()
+	})}
+	exchanger := claudeAIOAuthExchanger{now: func() time.Time { return now }, httpClient: client}
+	registry := NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
 	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 104,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
@@ -359,7 +356,7 @@ func TestAdminClaudeAIOAuthDefaultRegistryRejectsFakeJSONCode(t *testing.T) {
 	}
 
 	var tokenEndpointHits int
-	restore := withClaudeAIOAuthRoundTripper(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		tokenEndpointHits++
 		if r.URL.String() != claudeAIOAuthTokenURL {
 			t.Fatalf("token endpoint=%s want %s", r.URL.String(), claudeAIOAuthTokenURL)
@@ -386,10 +383,14 @@ func TestAdminClaudeAIOAuthDefaultRegistryRejectsFakeJSONCode(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant","error_description":"code is not an authorization code"}`)),
 		}, nil
-	}))
-	defer restore()
+	})}
+	exchanger := claudeAIOAuthExchanger{httpClient: client}
+	registry := NewExchangerRegistry()
+	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), exchanger); err != nil {
+		t.Fatalf("RegisterExchanger: %v", err)
+	}
 
-	start, err := newClaudeAIOAuthExchanger().StartOAuthFlow(context.Background(), store, StartInput{
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 555,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
 		ActorID: "owner", ActorRole: "platform_admin",
@@ -398,7 +399,7 @@ func TestAdminClaudeAIOAuthDefaultRegistryRejectsFakeJSONCode(t *testing.T) {
 		t.Fatalf("StartOAuthFlow: %v", err)
 	}
 
-	candidate, session, err := CompleteOAuthCallbackWithRegistry(context.Background(), store, start.Session.ID, start.State, `{"access_token":"FAKE","refresh_token":"FAKE-RT"}`, defaultExchangers)
+	candidate, session, err := CompleteOAuthCallbackWithRegistry(context.Background(), store, start.Session.ID, start.State, `{"access_token":"FAKE","refresh_token":"FAKE-RT"}`, registry)
 	if err == nil {
 		t.Fatalf("fake JSON code accepted by admin entry; candidate=%+v session=%+v", candidate, session)
 	}
@@ -416,10 +417,10 @@ func TestAdminClaudeAIOAuthDefaultRegistryRejectsFakeJSONCode(t *testing.T) {
 	}
 }
 
-// ANT-4 (mimicry transport 注入): NewClaudeAIOAuthExchangerWithClient
+// ANT-4（Rust sidecar transport 注入）：NewClaudeAIOAuthExchangerWithClient
 // 接受 caller 注入的 *http.Client, exchangeAuthorizationCodeJSON 必须用它,
-// 不走全局 http.DefaultClient。生产 wiring 用它接 anthropicoauth.DefaultHTTPClient
-// (mimicry uTLS), test 可用它注入 mock 而不污染 http.DefaultTransport。
+// 不走全局 http.DefaultClient。生产 wiring 注入经过启动探测的 sidecar client，
+// 测试可用它注入 mock 而不污染 http.DefaultTransport。
 // 判别 mutation: 把 e.client() 改回 http.DefaultClient → 注入 client 的
 // hits 计数停在 0, 该 test 立刻变红。
 func TestClaudeAIOAuthExchangerUsesInjectedHTTPClient(t *testing.T) {
@@ -601,13 +602,6 @@ func newClaudeAIOAuthTestStore(t *testing.T, now time.Time) (*PostgresSessionSto
 	}
 	db := newTestSessionDB(now)
 	return NewPostgresSessionStoreWithKeys(db, keys).WithNow(func() time.Time { return now }), db
-}
-
-func withClaudeAIOAuthRoundTripper(t *testing.T, rt http.RoundTripper) func() {
-	t.Helper()
-	old := http.DefaultTransport
-	http.DefaultTransport = rt
-	return func() { http.DefaultTransport = old }
 }
 
 func stringFieldFromAny(value any) string {

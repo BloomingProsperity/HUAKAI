@@ -42,8 +42,8 @@ func (p *pgxStore) List(ctx context.Context) ([]ProxyTarget, error) {
 	return out, rows.Err()
 }
 
-func (p *pgxStore) Touch(ctx context.Context, id int64) error {
-	_, err := p.pool.Exec(ctx, `UPDATE proxies SET last_check_at = NOW() WHERE id = $1`, id)
+func (p *pgxStore) Touch(ctx context.Context, tenantID, id int64) error {
+	_, err := p.pool.Exec(ctx, `UPDATE proxies SET last_check_at = NOW() WHERE id = $1 AND tenant_id = $2`, id, tenantID)
 	return err
 }
 

@@ -11,13 +11,15 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/codexagentimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/codeximport"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 const (
-	ContractVersion = "account-intake-v1"
+	ContractVersion = "account-intake-v2"
 	MaxCandidates   = 500
 )
 
@@ -28,6 +30,8 @@ const (
 	SourceJSON             SourceKind = "json_import"
 	SourceCSV              SourceKind = "csv_import"
 	SourceClaudeSetupToken SourceKind = "claude_setup_token"
+	SourceCodexAgent       SourceKind = "codex_agent_identity"
+	SourceCRSSync          SourceKind = "crs_sync"
 )
 
 type Action string
@@ -94,22 +98,24 @@ type Summary struct {
 }
 
 type Item struct {
-	Index                     int                      `json:"index"`
-	Vendor                    string                   `json:"vendor"`
-	AuthMode                  string                   `json:"auth_mode"`
-	Action                    Action                   `json:"action"`
-	Code                      string                   `json:"code"`
-	Message                   string                   `json:"message"`
-	ExistingAccountID         int64                    `json:"existing_account_id,omitempty"`
-	ExistingAccountName       string                   `json:"existing_account_name,omitempty"`
-	ExistingCredentialID      int64                    `json:"existing_credential_id,omitempty"`
-	ExistingCredentialVersion int32                    `json:"existing_credential_version,omitempty"`
-	Identity                  IdentitySummary          `json:"identity"`
-	Lifecycle                 LifecycleSummary         `json:"lifecycle"`
-	FieldChanges              []string                 `json:"field_changes,omitempty"`
-	Warnings                  []string                 `json:"warnings,omitempty"`
-	RequiredConfirmations     []string                 `json:"required_confirmations,omitempty"`
-	MixedChannelRisk          *mixedchannelrisk.Report `json:"mixed_channel_risk,omitempty"`
+	Index                     int                              `json:"index"`
+	Vendor                    string                           `json:"vendor"`
+	AuthMode                  string                           `json:"auth_mode"`
+	Action                    Action                           `json:"action"`
+	Code                      string                           `json:"code"`
+	Message                   string                           `json:"message"`
+	ExistingAccountID         int64                            `json:"existing_account_id,omitempty"`
+	ExistingAccountName       string                           `json:"existing_account_name,omitempty"`
+	ExistingCredentialID      int64                            `json:"existing_credential_id,omitempty"`
+	ExistingCredentialVersion int32                            `json:"existing_credential_version,omitempty"`
+	Identity                  IdentitySummary                  `json:"identity"`
+	Lifecycle                 LifecycleSummary                 `json:"lifecycle"`
+	Subscription              *subscriptionprofile.Observation `json:"subscription,omitempty"`
+	SystemLabels              []string                         `json:"system_labels,omitempty"`
+	FieldChanges              []string                         `json:"field_changes,omitempty"`
+	Warnings                  []string                         `json:"warnings,omitempty"`
+	RequiredConfirmations     []string                         `json:"required_confirmations,omitempty"`
+	MixedChannelRisk          *mixedchannelrisk.Report         `json:"mixed_channel_risk,omitempty"`
 }
 
 type IdentitySummary struct {
@@ -170,6 +176,7 @@ func BuildCandidates(in BuildInput, candidates []credentialacq.CredentialCandida
 	for index, candidate := range candidates {
 		candidate.Vendor = credentialstore.Normalize(candidate.Vendor)
 		candidate.AuthMode = credentialstore.Normalize(candidate.AuthMode)
+		credentialacq.AttachSubscription(&candidate)
 		candidates[index] = candidate
 		item := planCandidate(index, in.TenantID, candidate, in.Existing, registry, now, seenPayload, seenIdentity, seenUntrusted)
 		plan.Items = append(plan.Items, item)
@@ -197,7 +204,7 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 	switch source {
 	case SourceCLI:
 		return codeximport.Parse(content)
-	case SourceJSON:
+	case SourceJSON, SourceCRSSync:
 		return credentialacq.ParseImportContent(content,
 			firstNonEmpty(vendor, credentialstore.VendorOpenAI),
 			firstNonEmpty(authMode, credentialstore.AuthModeCodexCLIOAuth))
@@ -207,6 +214,8 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 			firstNonEmpty(authMode, credentialstore.AuthModeCodexCLIOAuth))
 	case SourceClaudeSetupToken:
 		return credentialacq.ParseClaudeSetupTokenContent(content)
+	case SourceCodexAgent:
+		return codexagentimport.Parse(content)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrSourceInvalid, source)
 	}
@@ -228,6 +237,13 @@ func planCandidate(
 	item := Item{
 		Index: index, Vendor: candidate.Vendor, AuthMode: candidate.AuthMode,
 		Action: ActionFail, Code: "invalid_credential", Message: "凭据形态不符合该账号模式",
+	}
+	if !candidate.Subscription.Empty() {
+		subscription := subscriptionForPreview(candidate.Subscription)
+		item.Subscription = &subscription
+		if label := candidate.Subscription.Label(); label != "" {
+			item.SystemLabels = []string{label}
+		}
 	}
 	handler, err := registry.MustLookup(candidate.Vendor, candidate.AuthMode)
 	if err != nil {
@@ -295,7 +311,7 @@ func planCandidate(
 		item.ExistingAccountName = match.credential.ProviderAccountName
 		item.ExistingCredentialID = match.credential.CredentialID
 		item.ExistingCredentialVersion = match.credential.CredentialVersion
-		item.FieldChanges = []string{"credential_payload", "credential_version", "credential_lifecycle", "identity_metadata"}
+		item.FieldChanges = []string{"credential_payload", "credential_version", "credential_lifecycle", "identity_metadata", "subscription_profile"}
 		item.Warnings = append(item.Warnings, match.warnings...)
 		item.RequiredConfirmations = append(item.RequiredConfirmations, match.confirmations...)
 		markSeen(seenPayload, seenIdentity, seenUntrusted, payloadKey, identityKey, untrustedKey, index)
@@ -305,13 +321,19 @@ func planCandidate(
 	item.Action = ActionCreate
 	item.Code = "create_account"
 	item.Message = "将创建独立 provider account 并写入加密凭据"
-	item.FieldChanges = []string{"provider_account", "account_credential", "channel_health_default"}
+	item.FieldChanges = []string{"provider_account", "account_credential", "channel_health_default", "subscription_profile"}
 	if identity.Summary.Strength == "weak" || identity.Summary.Strength == "opaque" {
 		item.Warnings = append(item.Warnings, "weak_identity")
 		item.RequiredConfirmations = append(item.RequiredConfirmations, "confirm_weak_identity")
 	}
 	markSeen(seenPayload, seenIdentity, seenUntrusted, payloadKey, identityKey, untrustedKey, index)
 	return item
+}
+
+func subscriptionForPreview(observation subscriptionprofile.Observation) subscriptionprofile.Observation {
+	observation.SubjectRef = ""
+	observation.WorkspaceRef = ""
+	return observation
 }
 
 func extractIdentity(tenantID int64, candidate credentialacq.CredentialCandidate) candidateIdentity {

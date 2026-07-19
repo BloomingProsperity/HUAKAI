@@ -29,6 +29,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,6 +84,8 @@ jobs:
           # 早前只设后者,导致读前者的测试在 CI 里因 env 缺失而静默 t.Skip(假绿)。两个都设消除歧义。
           HUAKAI_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
           HUAKAI_TEST_DATABASE_URL: postgres://huakai:huakai@localhost:5432/huakai_test?sslmode=disable
+          HUAKAI_REDIS_URL: redis://localhost:6379/0
+          HUAKAI_TEST_REDIS_URL: redis://localhost:6379/0
           HUAKAI_SKIP_PERF_LATENCY_GATE: "1"
         run: go test -race -count=1 -timeout 5m ./...
 
@@ -130,6 +141,36 @@ jobs:
           PGPASSWORD: huakai
           HUAKAI_IT_TIMEOUT: 5m
         run: bash scripts/integration-pg.sh
+
+  rust:
+    name: Rust fmt + clippy + tests + pressure/fault
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: exploratory/rust-core-gateway/merged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.96
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+
+      - name: Rust release gate
+        run: |
+          cargo +1.96.0 fmt --all --check
+          cargo +1.96.0 clippy --workspace --all-targets --locked -- -D warnings
+          cargo +1.96.0 test --workspace --locked
+          cargo +1.96.0 test --workspace --locked -- --ignored
+
+  container-smoke:
+    name: Single-image dual-process lifecycle smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and exercise production image
+        run: bash backend/scripts/container-smoke.sh
 
 # 注:首版 CI 跑 test + race + migration round-trip + integration_pg(独立 job)。
 # golangci-lint 后续加(需先有 .golangci.yml 配置避免一次性 N 千警告)。

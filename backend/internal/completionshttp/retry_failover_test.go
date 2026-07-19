@@ -17,6 +17,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -142,17 +144,21 @@ func TestCompletions400DoesNotRetry(t *testing.T) {
 	selector := &retrySelector{accounts: []int64{44, 45}}
 	dispatcher := &retryDispatcher{steps: []upstreamResponse{{
 		status: http.StatusBadRequest,
-		body:   `{"error":"invalid prompt"}`,
+		body:   `{"error":{"message":"policy-match"}}`,
 	}}}
 	env.deps.Router = retryRouter()
 	env.deps.Selector = selector
 	env.deps.CredentialVault = retryVault(t, 44, 45)
 	env.deps.Dispatcher = dispatcher
+	env.deps.Feedback = completionProjectionObserver()
 
 	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"terminal client error"}`)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s want 422", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"code":"account_busy","message":"账号暂不可用"}}` {
+		t.Fatalf("投影错误响应=%s", got)
 	}
 	if len(selector.requests) != 1 || len(dispatcher.accounts) != 1 {
 		t.Fatalf("selector/dispatcher calls=%d/%d want 1/1", len(selector.requests), len(dispatcher.accounts))
@@ -166,6 +172,51 @@ func TestCompletions400DoesNotRetry(t *testing.T) {
 	if len(env.settler.settles) != 0 {
 		t.Fatalf("settle calls=%d want 0", len(env.settler.settles))
 	}
+}
+
+func TestCompletionsBindingStatusProjectionDoesNotChangeStaticRetryClass(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{})
+	selector := &retrySelector{accounts: []int64{44, 45}}
+	dispatcher := &retryDispatcher{steps: []upstreamResponse{{
+		status: http.StatusForbidden,
+		body:   `{"error":{"message":"forbidden"}}`,
+	}}}
+	env.deps.Registry = completionMappedBindingRegistry{}
+	env.deps.Router = completionMappedBindingRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = retryVault(t, 44, 45)
+	env.deps.Dispatcher = dispatcher
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"binding projection"}`)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s want mapped 429", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 1 || len(dispatcher.accounts) != 1 {
+		t.Fatalf("状态投影不得把静态 403 变成可重试 429: selector/dispatcher=%d/%d", len(selector.requests), len(dispatcher.accounts))
+	}
+	if len(env.settler.aborts) != 1 || env.settler.aborts[0].reason != "upstream_forbidden" {
+		t.Fatalf("状态投影改写了静态终态: %+v", env.settler.aborts)
+	}
+}
+
+type completionErrorPolicyProvider struct{}
+
+func (completionErrorPolicyProvider) GetAccountErrorPolicy(int64) rate.AccountErrorPolicy {
+	clientStatus := http.StatusUnprocessableEntity
+	affectHealth := false
+	return rate.AccountErrorPolicy{Rules: []rate.TempUnschedulableRule{{
+		RuleID: "busy-400", ErrorCode: http.StatusBadRequest, Keywords: []string{"policy-match"},
+		DurationMinutes: 5, ClientStatus: &clientStatus, ClientCode: "account_busy",
+		MessageMode: "custom", ClientMessage: "账号暂不可用", AffectHealth: &affectHealth,
+	}}}
+}
+
+func completionProjectionObserver() *upstreamfeedback.Observer {
+	return upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{
+		RateService: rate.NewUpstreamRateService(time.Now, time.Minute,
+			rate.WithAccountErrorRulesProvider(completionErrorPolicyProvider{})),
+	})
 }
 
 func TestCompletionsAbortFailureStopsBeforeRetry(t *testing.T) {
@@ -225,6 +276,63 @@ func TestCountTokens500RetriesWithoutTouchingMoney(t *testing.T) {
 	}
 }
 
+func TestCountTokensAccountPolicyProjectsWithoutChangingTerminalSemantics(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{})
+	selector := &retrySelector{accounts: []int64{44, 45}}
+	dispatcher := &retryDispatcher{steps: []upstreamResponse{{
+		status: http.StatusBadRequest,
+		body:   `{"error":{"message":"policy-match"}}`,
+	}}}
+	env.deps.Router = retryRouter()
+	env.deps.Selector = selector
+	env.deps.CredentialVault = retryVault(t, 44, 45)
+	env.deps.Dispatcher = dispatcher
+	env.deps.Feedback = completionProjectionObserver()
+
+	rec := env.invokeCountTokens(t, `{"model":"claude-public","messages":[{"role":"user","content":"hello"}]}`)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s want 422", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"code":"account_busy","message":"账号暂不可用"}}` {
+		t.Fatalf("投影错误响应=%s", got)
+	}
+	if len(selector.requests) != 1 || len(dispatcher.accounts) != 1 {
+		t.Fatalf("客户端终态不得因投影重试: selector/dispatcher=%d/%d want 1/1", len(selector.requests), len(dispatcher.accounts))
+	}
+	if len(env.claims.reserves) != 0 || len(env.settler.aborts) != 0 || len(env.settler.settles) != 0 {
+		t.Fatalf("count_tokens 触碰资金链: reserves/aborts/settles=%d/%d/%d", len(env.claims.reserves), len(env.settler.aborts), len(env.settler.settles))
+	}
+}
+
+func TestCountTokensEmpty401UsesOneAuthFailoverBeyondSingleAttemptBudget(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{})
+	selector := &retrySelector{accounts: []int64{44, 45}}
+	dispatcher := &retryDispatcher{steps: []upstreamResponse{
+		{status: http.StatusUnauthorized, body: ""},
+		{status: http.StatusOK, body: `{"input_tokens":42}`},
+	}}
+	env.deps.Router = completionSingleAttemptRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = retryVault(t, 44, 45)
+	env.deps.Dispatcher = dispatcher
+
+	rec := env.invokeCountTokens(t, `{"model":"claude-public","messages":[{"role":"user","content":"hello"}]}`)
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"input_tokens":42}` {
+		t.Fatalf("status=%d body=%s want 200 after one auth failover", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 2 || len(dispatcher.accounts) != 2 {
+		t.Fatalf("selector/dispatcher=%d/%d want 2/2", len(selector.requests), len(dispatcher.accounts))
+	}
+	if dispatcher.accounts[0] != 44 || dispatcher.accounts[1] != 45 {
+		t.Fatalf("授权换号账号=%v want [44 45]", dispatcher.accounts)
+	}
+	if len(env.claims.reserves) != 0 || len(env.settler.aborts) != 0 || len(env.settler.settles) != 0 {
+		t.Fatalf("count_tokens 触碰资金链: reserves/aborts/settles=%d/%d/%d", len(env.claims.reserves), len(env.settler.aborts), len(env.settler.settles))
+	}
+}
+
 func TestCompletionsUpstreamSuccessRecordedBeforeLocalPricingFailure(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{
 		status: http.StatusOK,
@@ -256,6 +364,39 @@ type fixedRetryRouter struct{}
 
 func (fixedRetryRouter) Plan(context.Context, router.PlanInput) (router.RoutePlan, error) {
 	return retryRouterPlan(), nil
+}
+
+type completionSingleAttemptRouter struct{}
+
+func (completionSingleAttemptRouter) Plan(context.Context, router.PlanInput) (router.RoutePlan, error) {
+	plan := retryRouterPlan()
+	plan.Attempts = plan.Attempts[:1]
+	plan.AttemptBudget = 1
+	return plan, nil
+}
+
+type completionMappedBindingRouter struct{}
+
+func (completionMappedBindingRouter) Plan(context.Context, router.PlanInput) (router.RoutePlan, error) {
+	plan := retryRouterPlan()
+	for i := range plan.Attempts {
+		plan.Attempts[i].BindingID = 701
+	}
+	return plan, nil
+}
+
+type completionMappedBindingRegistry struct{}
+
+func (completionMappedBindingRegistry) ResolveModel(ctx context.Context, alias string, tenantID int64) (registry.Resolved, error) {
+	resolved, err := (registryStub{}).ResolveModel(ctx, alias, tenantID)
+	if err != nil {
+		return registry.Resolved{}, err
+	}
+	resolved.BindingMetadata = []registry.BindingMetadata{{
+		BindingID: 701, PoolGroupID: 101,
+		StatusCodeMapping: map[int]int{http.StatusForbidden: http.StatusTooManyRequests},
+	}}
+	return resolved, nil
 }
 
 func retryRouter() router.Router {

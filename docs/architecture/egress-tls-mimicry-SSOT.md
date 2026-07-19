@@ -9,7 +9,7 @@
 
 ## 0. 一句话现状
 
-**出口 TLS mimicry 的唯一目标是 Rust BoringSSL sidecar。** IPC v2、四类内置 profile、数据库动态 inline profile、proxy、结构化错误、取消和超时已由 `29cfc50a` 落地；生产容器仍默认没有 sidecar socket，所以迁移尚未完成，当前仍由旧 Go uTLS 承接。完成单镜像生命周期、容器/真实账号 smoke 和 fail-closed 翻转后，删除 Go uTLS，不长期保留双栈。
+**出口 TLS mimicry 已翻转为 Rust BoringSSL sidecar 唯一实现。** IPC v2、八类独立 profile、数据库动态 inline profile、proxy、结构化错误、取消和超时均已接线；Go uTLS、native fallback、旧总开关和运行时依赖已经删除。单镜像双进程、启动 preflight、`/readyz`、进程退出/重启、100/500/1000 并发及故障注入均已通过；只剩受控真实厂商账号验证、独立复审和发布流程，当前不把未执行的真实账号验证写成已通过。
 
 ---
 
@@ -17,21 +17,21 @@
 
 | 项 | 默认值 | env / file:line |
 |---|---|---|
-| mimicry 总开关 | **默认开**(`!="false"` 即开) | `HUAKAI_TRANSPORT_MIMICRY`,`transport/mimicry_switch.go:16-18` |
-| sidecar(是否走 Rust) | **默认空=不走**,走 Go uTLS | `HUAKAI_TRANSPORT_SIDECAR_SOCKET`,`config.go:253`;`factory.go:202,230` |
-| sidecar 回退 | **默认 false**(fail-closed) | `HUAKAI_TRANSPORT_SIDECAR_FALLBACK`,`factory.go:76-78` |
-| 强制 H1 | **默认关**,按 profile ALPN | `HUAKAI_TRANSPORT_FORCE_H1`,`config.go`,`factory.go` |
+| mimicry 出口 | **只允许 Rust sidecar** | `transport/factory.go`;`cmd/gateway/wiring.go` |
+| sidecar socket | **默认 `/run/huakai/tls-sidecar.sock`** | `HUAKAI_TRANSPORT_SIDECAR_SOCKET`;`internal/config/config.go` |
+| sidecar 启动门 | **协议、能力或任一必需 profile 缺失均拒绝启动** | `mimicry/profile_catalog.go`;`cmd/gateway/wiring.go` |
+| 强制 H1 | **默认不覆盖**,按 profile ALPN | `HUAKAI_TRANSPORT_FORCE_H1`;`internal/config/config.go` |
 
 **默认出站路径**:
-- **反转/OAuth 号**(被 `transportModeForProvider` 判为 mimicry)→ socket 未配置时暂走旧 Go uTLS native mimicry；配置 socket 后走 Rust sidecar。该双路径只是迁移现场，不是最终合同。
-- **api-key 官方号** → **裸 Go standard transport**(`factory.go:241-282`,`http.DefaultTransport.Clone()` + `Proxy=nil`);指纹层对官方 key 通道本就不敏感,不伪装(安全不变量 I1)。
+- **反转/OAuth 号**(被 `transportModeForProvider` 判为 mimicry)→ 只走 Rust sidecar；socket、IPC capability 或 profile 不可用时拒绝启动/请求，不允许降级到 standard。
+- **api-key 官方号** → **Go standard transport**(`http.DefaultTransport.Clone()` + `Proxy=nil`)；代理只能由账号绑定解析器显式注入，不经过 sidecar(安全不变量 I1)。
 
 **vendor→mimicry mode 映射**(`gatewayhttp/chat_completions_dispatch.go:130-153`):claude_code / chatgpt(codex)/ gemini_advanced / antigravity / cursor / copilot / kiro / windsurf 各有 mode;其余一律 standard。
 
 **覆盖状态**:
-- Go 模板认 **4 家**(`tools/fingerprint-collector/templates/`:anthropic/codex/gemini/kiro)。
-- Rust sidecar 已内置并接线 **4 家**：Anthropic、Codex、Gemini、Kiro；ready 协议会逐项报告实际加载情况。
-- cursor/copilot/antigravity/windsurf **无模板** → mimicry mode 下 fail-closed(`factory.go:578-583`,除非 `HUAKAI_TRANSPORT_PHASE_A_FALLBACK=true`)。
+- Rust sidecar 已内置并接线 **8 个独立 profile**，ready 协议逐项报告实际加载情况。
+- Anthropic、Codex、Gemini、Kiro 使用已有实测合同；Antigravity、Cursor、Copilot、Windsurf 使用明确标识的 Safe Equivalent，不能冒充真实客户端抓包结论。
+- 每个 mimicry mode 都有独立映射；未知 mode、缺 profile 和过期 sidecar 一律 fail-closed。
 
 ---
 
@@ -61,11 +61,11 @@
 
 ## 4. 四类内置 profile 与动态 profile
 
-- Rust sidecar 已内置并由 Go mode 映射接通 Anthropic、Codex、Gemini、Kiro 四类 profile。
+- Rust sidecar 已内置并由 Go mode 映射接通八类独立 profile；四类来自现有实测合同，四类是明确标识的 Safe Equivalent。
 - `ready` 返回真实 capability 和已加载 profile 清单；Go preflight 不再靠连接假目标或解析错误文本判断可用性。
 - 账号绑定和租户轮换得到的数据库动态 profile 通过 IPC v2 `inline_profile` 下发，由 Rust 严格校验后构建 BoringSSL ClientHello；不再由 Go uTLS 执行。
-- 未有内部实测 profile 的 cursor/copilot/antigravity/windsurf 继续 fail-closed；不得伪造或静默切回 standard。
-- 以上能力由 `29cfc50a` 落地并通过 Go 定向测试、Rust sidecar 66 项测试和独立 review；生产默认切换仍取决于 §6 的容器和真实链路门。
+- 未有内部实测 profile 的 Cursor、Copilot、Antigravity、Windsurf 不得伪造“真实指纹”结论；其 Safe Equivalent 仍由 Rust 执行并接受同一 fail-closed/readiness 合同。
+- 当前实现已通过 Go 全量与真实 PostgreSQL 集成、Rust workspace 常规与 ignored 压力/故障测试、100/500/1000 并发、静态门、单镜像冷构建和双进程生命周期 smoke；真实厂商受控验证与最终独立复审仍取决于 §6 发布门。
 
 ---
 
@@ -73,11 +73,11 @@
 
 - **代码位置**:`exploratory/rust-core-gateway/merged/crates/tls-sidecar/`(BoringSSL;模块 ja4/boring_ctx/connect/h2_bridge/profile)。vendored boring fork 溯源见该 crate 下 `vendor/boring/MODIFICATIONS.md`(Apache-2.0 attribution;来历=HUAKAI fork boring 5.1 加 `set_extension_order` 等公开 setter 修扩展顺序,Owner 显式授权读 boring 源)。
 - **架构定位**:纯传输层(ja4/boring/connect/h2_settings),**不碰 body**;body 伪装永久留 Go。
-- **未默认部署**:Compose 与单镜像生命周期尚未完成；`SidecarSocketPath` 默认空时仍走旧 Go uTLS。该默认值只用于迁移期间保持当前程序可运行，S7 会改为 mimicry 必须 sidecar、缺失即 fail-closed。
+- **已接部署合同**:Dockerfile 同时构建 gateway 与 sidecar；入口先等待 sidecar ready 再启动 gateway，任一子进程退出都会结束容器；direct/prod Compose 使用同一 `/run/huakai` socket 和 `/readyz`。
 - **已解决**:R-SIDECAR-001(boring raw sigalgs,commit 8cfc5467)、R-SIDECAR-002(H2 ALPN raw tunnel→Rust 端 own H2 framing + h2_bridge,commits c0fe5231 等)。
 - **IPC v2 已解决**:`ready/capabilities`、builtin/inline profile、proxy、ForceH1、结构化错误、取消与超时已接通；Go 和 Rust 都拒绝未知版本、未知 operation 与缺失 capability。
-- **残留待补(启用生产 sidecar 前)**:单镜像构建与双进程生命周期、UDS 权限/清理、容器 readiness、kill/restart、并发/流式/proxy 故障、四类真实 vendor 小成本 smoke。
-- **翻 sidecar 为唯一默认并删除 Go uTLS** 仍未执行；未通过上述门前不得宣称 Rust-only 已上线。
+- **已验证**:冷构建、非 root UDS 权限、数据库/Redis/sidecar readiness、sidecar/gateway 任一退出带动容器退出、`unless-stopped` 自动重启恢复。
+- **残留发布门**:四类真实 vendor 小成本 smoke、最终独立复审、唯一 PR 与合并后主线全量复验。本地大并发、长连接取消/回收、proxy 故障矩阵、全量 Go/Rust/静态门和容器生命周期已经通过。
 
 ---
 
@@ -87,10 +87,10 @@
 > 执行序 + 全链路真读证据见 `docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md`。
 四类 builtin、真实 preflight 和动态 inline profile 已由 `29cfc50a` 完成。剩余步骤：
 
-1. **S5 单镜像可运行交付**：固定 Rust/BoringSSL builder；镜像同时包含 gateway 和 sidecar；入口负责 UDS、ready、SIGTERM 和双进程退出；dev/direct/prod Compose 使用同一合同。
-2. **S6 重测试与容器 smoke**：wire mutation、HTTP/HTTPS/SOCKS5、并发、流式取消、坏帧、socket 权限、kill/restart、standard 不经 sidecar、mimicry 经 Rust；有账号时补四类真实 vendor 小成本 smoke。
-3. **S7 Rust-only 翻转**：mimicry 分支要求 sidecar，缺失/不可用 fail-closed；删除 native Go uTLS、Go 模板转换、DB profile RT、native fallback、旧环境变量和死测试；保留 sidecar client 与 standard transport。
-4. **S8 发布门**：Go/Rust 全量、codebudget、冷构建、三套 Compose、完整独立 review、唯一 PR；未经 Owner 同意不合主线。
+1. **S5 单镜像可运行交付（已完成）**：固定 Rust/BoringSSL builder；镜像同时包含 gateway 和 sidecar；入口负责 UDS、ready、SIGTERM 和双进程退出；direct/prod Compose 使用同一合同。
+2. **S6 重测试与容器 smoke（本地门已完成）**：wire mutation、HTTP/HTTPS/SOCKS5、100/500/1000 并发、长连接取消/回收、故障注入和容器生命周期已覆盖；只剩具备受控账号时执行四类真实 vendor 小成本 smoke。
+3. **S7 Rust-only 翻转（已完成）**：mimicry 分支要求 sidecar，缺失/不可用 fail-closed；native Go uTLS、Go 模板执行、native fallback、旧环境变量和死测试已删除；只保留 sidecar client 与 standard transport。
+4. **S8 发布门**：Go/Rust 全量、codebudget、冷构建和三套 Compose 已通过；完成独立 review 后创建唯一 PR。Owner 已授权 PR 测试全绿后合并，并在干净主线执行全量复验。
 
 ---
 
@@ -107,7 +107,7 @@
 ## 8. 原始证据 / 权威源指路(不复制,只指路)
 
 - **真抓包/源码研究**(永久保留,勿删):`docs/research/2026-05-14-{codex-cli,gemini-cli,kiro-cli}-request-signature*.md` + `2026-05-16-vendor-fingerprint-data-sonnet.md`(含四家 OAuth client_id/endpoint)。
-- **代码真相**:`backend/internal/transport/mimicry/{utls_dialer,sidecar_client,registry,template}.go` + `testdata/` + `tools/fingerprint-collector/templates/`;`backend/internal/provider/{anthropic,openai,gemini,antigravity,grok}/`。
+- **代码真相**:`backend/internal/transport/{factory,policy}.go`、`backend/internal/transport/mimicry/{sidecar_client,sidecar_protocol,profile_catalog,db_profile}.go`、`exploratory/rust-core-gateway/merged/crates/tls-sidecar/`；以及 `backend/internal/provider/{anthropic,openai,gemini,antigravity,grok}/`。
 - **规格(实现多为 DEFERRED)**:`docs/specs/{device-fingerprint-binding,request-pacing-mimicry,outbound-ip-pool,active-anti-detection}.md`。
 - **风险台账**:`docs/10_RISK_REGISTER.md` 的 R-TRANSPORT-001 / R-REL-002 / R-SIDECAR-001/002 / R-CHG-MIMICRY-001 / R-GEM-MIMICRY-001 / R-POOL-001。
 - **当前唯一执行计划**:`docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md`。旧过程计划不再作为状态入口，必要追溯使用 Git 历史。

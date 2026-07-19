@@ -21,6 +21,19 @@ SELECT
     COALESCE(current_ac.auth_mode, '')::text AS credential_auth_mode,
     current_ac.project_ref AS credential_project_ref,
     COALESCE(current_ac.serving_credential_candidates, 0)::integer AS serving_credential_candidates,
+    subscription_state.vendor AS subscription_vendor,
+    subscription_state.normalized_plan AS subscription_plan,
+    subscription_state.raw_plan AS subscription_raw_plan,
+    subscription_state.scope_kind AS subscription_scope,
+    subscription_state.source_type AS subscription_source,
+    subscription_state.trust_level AS subscription_trust,
+    subscription_state.verification_status AS subscription_verification,
+    subscription_state.state_status AS subscription_status,
+    subscription_state.mapping_version AS subscription_mapping_version,
+    subscription_state.error_class AS subscription_error_class,
+    subscription_state.first_observed_at AS subscription_first_observed_at,
+    subscription_state.observed_at AS subscription_observed_at,
+    subscription_state.changed_at AS subscription_changed_at,
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
@@ -49,6 +62,10 @@ SELECT
     pa.last_probe_at,
     pa.last_request_observed_at,
     pa.model_sync_last_check_at,
+    pa.quota_snapshot_observed_at,
+    pa.quota_snapshot_source,
+    pa.quota_snapshot_outcome,
+    pa.quota_snapshot_error_class,
     pa.session_window_5h_start,
     pa.session_window_5h_end,
     pa.session_window_5h_status,
@@ -57,6 +74,29 @@ SELECT
     pa.session_window_7d_end,
     pa.session_window_7d_status,
     pa.session_window_7d_utilization,
+    COALESCE((
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'metric_key', q.metric_key,
+                'model_key', q.model_key,
+                'state', q.state,
+                'used_value', q.used_value,
+                'limit_value', q.limit_value,
+                'remaining_value', q.remaining_value,
+                'unit', q.unit,
+                'utilization_percent', q.utilization_percent,
+                'remaining_percent', q.remaining_percent,
+                'resets_at', q.resets_at,
+                'observed_at', q.observed_at,
+                'valid_until', q.valid_until,
+                'source', q.source,
+                'error_class', q.error_class
+            ) ORDER BY q.metric_key, q.model_key
+        )
+        FROM provider_account_quota_facts q
+        WHERE q.tenant_id = pa.tenant_id
+          AND q.provider_account_id = pa.id
+    ), '[]'::jsonb)::text AS quota_facts,
     COALESCE(refresh_ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(refresh_ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     refresh_ac.failure_class,
@@ -66,6 +106,9 @@ FROM provider_accounts pa
 LEFT JOIN providers p
   ON p.id = pa.provider_id
  AND p.tenant_id = pa.tenant_id
+LEFT JOIN provider_account_subscription_states subscription_state
+  ON subscription_state.tenant_id = pa.tenant_id
+ AND subscription_state.provider_account_id = pa.id
 LEFT JOIN LATERAL (
     SELECT
         vendor,
@@ -120,6 +163,19 @@ type GetAdminProviderAccountHealthRow struct {
 	CredentialAuthMode          string             `db:"credential_auth_mode" json:"credential_auth_mode"`
 	CredentialProjectRef        *string            `db:"credential_project_ref" json:"credential_project_ref"`
 	ServingCredentialCandidates int32              `db:"serving_credential_candidates" json:"serving_credential_candidates"`
+	SubscriptionVendor          *string            `db:"subscription_vendor" json:"subscription_vendor"`
+	SubscriptionPlan            *string            `db:"subscription_plan" json:"subscription_plan"`
+	SubscriptionRawPlan         *string            `db:"subscription_raw_plan" json:"subscription_raw_plan"`
+	SubscriptionScope           *string            `db:"subscription_scope" json:"subscription_scope"`
+	SubscriptionSource          *string            `db:"subscription_source" json:"subscription_source"`
+	SubscriptionTrust           *string            `db:"subscription_trust" json:"subscription_trust"`
+	SubscriptionVerification    *string            `db:"subscription_verification" json:"subscription_verification"`
+	SubscriptionStatus          *string            `db:"subscription_status" json:"subscription_status"`
+	SubscriptionMappingVersion  *int32             `db:"subscription_mapping_version" json:"subscription_mapping_version"`
+	SubscriptionErrorClass      *string            `db:"subscription_error_class" json:"subscription_error_class"`
+	SubscriptionFirstObservedAt pgtype.Timestamptz `db:"subscription_first_observed_at" json:"subscription_first_observed_at"`
+	SubscriptionObservedAt      pgtype.Timestamptz `db:"subscription_observed_at" json:"subscription_observed_at"`
+	SubscriptionChangedAt       pgtype.Timestamptz `db:"subscription_changed_at" json:"subscription_changed_at"`
 	HealthState                 string             `db:"health_state" json:"health_state"`
 	HealthStateUntil            pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
 	Enabled                     bool               `db:"enabled" json:"enabled"`
@@ -135,6 +191,10 @@ type GetAdminProviderAccountHealthRow struct {
 	LastProbeAt                 pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
 	LastRequestObservedAt       pgtype.Timestamptz `db:"last_request_observed_at" json:"last_request_observed_at"`
 	ModelSyncLastCheckAt        pgtype.Timestamptz `db:"model_sync_last_check_at" json:"model_sync_last_check_at"`
+	QuotaSnapshotObservedAt     pgtype.Timestamptz `db:"quota_snapshot_observed_at" json:"quota_snapshot_observed_at"`
+	QuotaSnapshotSource         *string            `db:"quota_snapshot_source" json:"quota_snapshot_source"`
+	QuotaSnapshotOutcome        *string            `db:"quota_snapshot_outcome" json:"quota_snapshot_outcome"`
+	QuotaSnapshotErrorClass     *string            `db:"quota_snapshot_error_class" json:"quota_snapshot_error_class"`
 	SessionWindow5hStart        pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
 	SessionWindow5hEnd          pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
 	SessionWindow5hStatus       *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
@@ -143,6 +203,7 @@ type GetAdminProviderAccountHealthRow struct {
 	SessionWindow7dEnd          pgtype.Timestamptz `db:"session_window_7d_end" json:"session_window_7d_end"`
 	SessionWindow7dStatus       *string            `db:"session_window_7d_status" json:"session_window_7d_status"`
 	SessionWindow7dUtilization  pgtype.Numeric     `db:"session_window_7d_utilization" json:"session_window_7d_utilization"`
+	QuotaFacts                  string             `db:"quota_facts" json:"quota_facts"`
 	LastRefreshAt               pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
 	LastRefreshOutcome          *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
 	FailureClass                *string            `db:"failure_class" json:"failure_class"`
@@ -162,6 +223,19 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.CredentialAuthMode,
 		&i.CredentialProjectRef,
 		&i.ServingCredentialCandidates,
+		&i.SubscriptionVendor,
+		&i.SubscriptionPlan,
+		&i.SubscriptionRawPlan,
+		&i.SubscriptionScope,
+		&i.SubscriptionSource,
+		&i.SubscriptionTrust,
+		&i.SubscriptionVerification,
+		&i.SubscriptionStatus,
+		&i.SubscriptionMappingVersion,
+		&i.SubscriptionErrorClass,
+		&i.SubscriptionFirstObservedAt,
+		&i.SubscriptionObservedAt,
+		&i.SubscriptionChangedAt,
 		&i.HealthState,
 		&i.HealthStateUntil,
 		&i.Enabled,
@@ -177,6 +251,10 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.LastProbeAt,
 		&i.LastRequestObservedAt,
 		&i.ModelSyncLastCheckAt,
+		&i.QuotaSnapshotObservedAt,
+		&i.QuotaSnapshotSource,
+		&i.QuotaSnapshotOutcome,
+		&i.QuotaSnapshotErrorClass,
 		&i.SessionWindow5hStart,
 		&i.SessionWindow5hEnd,
 		&i.SessionWindow5hStatus,
@@ -185,6 +263,7 @@ func (q *Queries) GetAdminProviderAccountHealth(ctx context.Context, arg GetAdmi
 		&i.SessionWindow7dEnd,
 		&i.SessionWindow7dStatus,
 		&i.SessionWindow7dUtilization,
+		&i.QuotaFacts,
 		&i.LastRefreshAt,
 		&i.LastRefreshOutcome,
 		&i.FailureClass,

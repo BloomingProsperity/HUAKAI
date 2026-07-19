@@ -185,7 +185,29 @@ pub struct ProfileStore {
 
 impl ProfileStore {
     pub fn built_in() -> Result<Self, ProfileError> {
-        Self::from_toml(BUILTIN_PROFILES_TOML)
+        let mut store = Self::from_toml(BUILTIN_PROFILES_TOML)?;
+        // 尚无内部精确抓包的客户端使用独立 safe profile ID。它们复用已经过
+        // BoringSSL 线缆校验且支持 h2 的形状，只承诺可执行与协议能力，不声称
+        // 精确复刻对应客户端。取得批准数据后可逐个替换，Go 映射无需改动。
+        for (id, target_hosts) in [
+            (
+                "antigravity-rust-safe-v1",
+                vec![
+                    "cloudcode-pa.googleapis.com".to_owned(),
+                    "daily-cloudcode-pa.googleapis.com".to_owned(),
+                ],
+            ),
+            ("cursor-rust-safe-v1", vec!["api2.cursor.sh".to_owned()]),
+            (
+                "copilot-rust-safe-v1",
+                vec!["api.githubcopilot.com".to_owned()],
+            ),
+            ("windsurf-rust-safe-v1", vec!["api.codeium.com".to_owned()]),
+            ("operator-source-rust-safe-v1", Vec::new()),
+        ] {
+            store.insert_safe_profile(id, "gemini-cli-v1", target_hosts)?;
+        }
+        Ok(store)
     }
 
     pub fn from_path(path: &Path) -> Result<Self, ProfileError> {
@@ -257,6 +279,23 @@ impl ProfileStore {
 
     pub fn ids(&self) -> Vec<String> {
         self.profiles.keys().cloned().collect()
+    }
+
+    fn insert_safe_profile(
+        &mut self,
+        id: &str,
+        source_id: &str,
+        target_hosts: Vec<String>,
+    ) -> Result<(), ProfileError> {
+        let mut profile = self.get(source_id)?.clone();
+        profile.id = id.to_owned();
+        profile.target_hosts = target_hosts;
+        if self.profiles.insert(id.to_owned(), profile).is_some() {
+            return Err(ProfileError::Parse(format!(
+                "duplicate safe profile id {id}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -689,6 +728,46 @@ mod tests {
             crate::boring_ctx::connect_config(profile)
                 .unwrap_or_else(|error| panic!("{id} 无法构造 BoringSSL 配置: {error}"));
         }
+    }
+
+    #[test]
+    fn builtin_store_exposes_one_profile_for_every_gateway_mode() {
+        let profiles = super::ProfileStore::built_in().unwrap();
+        assert_eq!(
+            profiles.ids(),
+            [
+                "anthropic-cli-mimicry-v1",
+                "antigravity-rust-safe-v1",
+                "copilot-rust-safe-v1",
+                "cursor-rust-safe-v1",
+                "gemini-cli-v1",
+                "kiro-cli-v1",
+                "openai-codex-cli-v1",
+                "operator-source-rust-safe-v1",
+                "windsurf-rust-safe-v1",
+            ]
+        );
+
+        let source = profiles.get("gemini-cli-v1").unwrap();
+        for (id, target) in [
+            ("antigravity-rust-safe-v1", "cloudcode-pa.googleapis.com"),
+            ("cursor-rust-safe-v1", "api2.cursor.sh"),
+            ("copilot-rust-safe-v1", "api.githubcopilot.com"),
+            ("windsurf-rust-safe-v1", "api.codeium.com"),
+        ] {
+            let profile = profiles.get(id).unwrap();
+            assert!(
+                profile.target_hosts.iter().any(|host| host == target),
+                "{id}"
+            );
+            assert_eq!(profile.expected_ja3, source.expected_ja3, "{id}");
+            assert_eq!(profile.ja4_a, source.ja4_a, "{id}");
+            crate::boring_ctx::connect_config(profile)
+                .unwrap_or_else(|error| panic!("{id} 无法构造 BoringSSL 配置: {error}"));
+        }
+        let operator_source = profiles.get("operator-source-rust-safe-v1").unwrap();
+        assert!(operator_source.target_hosts.is_empty());
+        assert_eq!(operator_source.expected_ja3, source.expected_ja3);
     }
 
     #[test]

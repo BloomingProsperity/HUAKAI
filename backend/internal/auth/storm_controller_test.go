@@ -84,7 +84,7 @@ func (s *stormDBStub) QueryRow(_ context.Context, sql string, _ ...interface{}) 
 // mutation: Acquire 错误分支去掉 releaseSlotWithRetry 调用 → releaseCalls=0 → 红。
 func TestAcquireScanErrorCompensatesRelease(t *testing.T) {
 	stub := &stormDBStub{tryAcquireErr: errors.New("conn reset during scan")}
-	c := NewStormController(dbauth.New(stub))
+	c := NewStormControllerWithSharedScopeBudget(dbauth.New(stub), StormScopeConfig{}, nil)
 	release, _, err := c.Acquire(context.Background(), 1, 42)
 	if err == nil || release != nil {
 		t.Fatalf("acquire err=%v releaseNil=%v, want error + nil release", err, release == nil)
@@ -99,7 +99,7 @@ func TestAcquireScanErrorCompensatesRelease(t *testing.T) {
 // mutation: releaseSlotWithRetry 退回单次尝试吞错 → releaseCalls=1 → 红。
 func TestReleaseRetriesTransientFailure(t *testing.T) {
 	stub := &stormDBStub{releaseErrs: []error{errors.New("blip1"), errors.New("blip2")}}
-	c := NewStormController(dbauth.New(stub))
+	c := NewStormControllerWithSharedScopeBudget(dbauth.New(stub), StormScopeConfig{}, nil)
 	release, outcome, err := c.Acquire(context.Background(), 1, 42)
 	if err != nil || outcome != "" || release == nil {
 		t.Fatalf("acquire: err=%v outcome=%q releaseNil=%v", err, outcome, release == nil)

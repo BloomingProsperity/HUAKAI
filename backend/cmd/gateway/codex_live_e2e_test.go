@@ -884,8 +884,6 @@ func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexL
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
-		// codex 转发不需要 TLS 伪装(手工探测明文即 200);ChatGPT 伪装模板注册表缺失是已知 gap,关掉避开。
-		"HUAKAI_TRANSPORT_MIMICRY=false",
 		"HUAKAI_DISPATCH_HCSF=1",
 	)
 	stderr, _ := cmd.StderrPipe()

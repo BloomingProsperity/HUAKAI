@@ -54,7 +54,7 @@ type Component struct {
 // RuntimeInfo 是 gateway 进程自身资源占用的实时快照,在请求时直接从
 // Go runtime 读取(无后台采集器,无存储)。所有值都是诊断信息 —— heap/goroutine/GC
 // 仪表盘外加 uptime、Go 工具链版本和二进制大小 —— 绝不含机密
-//(二进制的 PATH 不会暴露,只暴露其大小)。
+// (二进制的 PATH 不会暴露,只暴露其大小)。
 type RuntimeInfo struct {
 	GoVersion       string `json:"go_version"`
 	NumGoroutine    int    `json:"num_goroutine"`
@@ -104,6 +104,8 @@ type SystemHealthSource interface {
 	DLQPendingDepth(ctx context.Context) (int64, error)
 	// AlertingFiringCount 返回当前处于 firing 状态的告警事件数。
 	AlertingFiringCount(ctx context.Context) (int64, error)
+	// ServerMonitorSummary 返回实例监测是否启用，以及节点总数、离线数和降级数。
+	ServerMonitorSummary(ctx context.Context) (enabled bool, total int64, offline int64, degraded int64, err error)
 	// DBPing 检查数据库可达性。
 	DBPing(ctx context.Context) error
 }
@@ -171,6 +173,27 @@ func NewSystemHealthHandler(src SystemHealthSource) http.HandlerFunc {
 		}
 		components = append(components, Component{Name: "alerting", Status: alertStatus, Detail: alertDetail})
 
+		// ── 组件:server_monitor ───────────────────────────────────────
+		monitorEnabled, monitorTotal, monitorOffline, monitorDegraded, err := src.ServerMonitorSummary(ctx)
+		monitorStatus, monitorDetail := ComponentStatusHealthy, ""
+		switch {
+		case !monitorEnabled:
+			monitorDetail = "disabled"
+		case err != nil:
+			monitorStatus = ComponentStatusDegraded
+			monitorDetail = "snapshot unavailable"
+			slog.WarnContext(ctx, "system health server monitor snapshot failed", slog.String("error_class", "server_monitor_snapshot_unavailable"))
+		case monitorTotal == 0:
+			monitorStatus = ComponentStatusDegraded
+			monitorDetail = "no active instances"
+		case monitorOffline > 0 || monitorDegraded > 0:
+			monitorStatus = ComponentStatusDegraded
+			monitorDetail = formatInt64Triple("offline_nodes", monitorOffline, "degraded_nodes", monitorDegraded, "total", monitorTotal)
+		default:
+			monitorDetail = formatInt64("total", monitorTotal)
+		}
+		components = append(components, Component{Name: "server_monitor", Status: monitorStatus, Detail: monitorDetail})
+
 		// ── 推导顶层状态 ───────────────────────────────────────────
 		// 变异守护:若把这里替换成永远 healthy,测试就会变红。
 		top := deriveTopLevel(components)
@@ -207,6 +230,10 @@ func formatInt64(key string, v int64) string {
 
 func formatInt64Pair(k1 string, v1 int64, k2 string, v2 int64) string {
 	return k1 + "=" + int64str(v1) + " " + k2 + "=" + int64str(v2)
+}
+
+func formatInt64Triple(k1 string, v1 int64, k2 string, v2 int64, k3 string, v3 int64) string {
+	return k1 + "=" + int64str(v1) + " " + k2 + "=" + int64str(v2) + " " + k3 + "=" + int64str(v3)
 }
 
 func int64str(v int64) string {

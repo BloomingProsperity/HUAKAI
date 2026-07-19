@@ -131,7 +131,8 @@ func (e codexWebOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, 
 	// 从 id_token JWT（sub claim）自动提取上游账户身份，与 chatgpt_oauth 保持一致；
 	// codex web token 与 ChatGPT 的 JWT 形态相同。id_token 为空 -> 空 Identity ->
 	// AttachIdentity 变为 no-op（防御性处理，绝不阻断）。
-	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, "", ""))
+	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, token.ChatGPTAccountID, token.ChatGPTUserID))
+	attachOAuthResponseSubscription(&candidate, token.ChatGPTPlanType)
 	return candidate, nil
 }
 

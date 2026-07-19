@@ -79,9 +79,9 @@ sql:
       - sql/queries/billing_settle.sql
       - sql/queries/balance_holds.sql
       - sql/queries/observability.sql
-      - sql/queries/obs_queries.sql
       - sql/queries/usage_analytics.sql
       - sql/queries/pool_accounts.sql
+      - sql/queries/pool_account_operations.sql
       - sql/queries/pool_audit.sql
       - sql/queries/pool_slot_acquisitions.sql
       - sql/queries/pool_sticky_bindings.sql
@@ -320,6 +320,11 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/quota.sql
+      - sql/queries/quota_window_store.sql
+      - sql/queries/quota_reservations.sql
+      - sql/queries/quota_concurrency.sql
+      - sql/queries/quota_audit.sql
+      - sql/queries/quota_reconciliation.sql
     gen:
       go:
         package: quota

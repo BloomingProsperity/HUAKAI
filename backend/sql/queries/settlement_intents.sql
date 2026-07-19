@@ -128,3 +128,8 @@ WHERE id = @id
   AND version = @version
   AND status IN ('pending', 'delivering', 'settling')
 RETURNING version;
+-- name: GetClaimByID :one
+-- 结算意图追平只读取权威 claim 的终态、尝试序号和实际费用，并强制租户隔离。
+SELECT status, attempt_seq, actual_cost
+FROM billing_ledger_claims
+WHERE id = sqlc.arg(id) AND tenant_id = sqlc.arg(tenant_id);

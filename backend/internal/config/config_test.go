@@ -100,6 +100,28 @@ func TestDefaultBillingPolicyVersionServesFreshDeploymentSeed(t *testing.T) {
 	}
 }
 
+func TestLoadRateLimitRedisURLUsesSpecificThenSharedFallback(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_REDIS_URL", "redis://shared:6379/0")
+	t.Setenv("HUAKAI_RATE_LIMIT_REDIS_URL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load shared fallback: %v", err)
+	}
+	if cfg.RateLimitRedisURL != "redis://shared:6379/0" {
+		t.Fatalf("共享回退=%q", cfg.RateLimitRedisURL)
+	}
+
+	t.Setenv("HUAKAI_RATE_LIMIT_REDIS_URL", "redis://dedicated:6379/1")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load dedicated: %v", err)
+	}
+	if cfg.RateLimitRedisURL != "redis://dedicated:6379/1" {
+		t.Fatalf("专用 URL=%q", cfg.RateLimitRedisURL)
+	}
+}
+
 func extractDollarQuotedJSON(t *testing.T, src, marker string) []byte {
 	t.Helper()
 	start := strings.Index(src, marker)
@@ -116,30 +138,55 @@ func extractDollarQuotedJSON(t *testing.T, src, marker string) []byte {
 
 func TestLoadIncludesTransportSidecarSocket(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
-	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", "/tmp/huakai-tls-sidecar.sock")
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", "/home/ubuntu/.cache/huakai-codex/huakai-tls-sidecar.sock")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.TransportSidecarSocket != "/tmp/huakai-tls-sidecar.sock" {
+	if cfg.TransportSidecarSocket != "/home/ubuntu/.cache/huakai-codex/huakai-tls-sidecar.sock" {
 		t.Fatalf("TransportSidecarSocket=%q want env value", cfg.TransportSidecarSocket)
-	}
-	if cfg.TransportSidecarFallback {
-		t.Fatal("TransportSidecarFallback default must be false for production fail-closed")
 	}
 }
 
-func TestLoadIncludesTransportSidecarFallbackFlag(t *testing.T) {
+func TestLoadDefaultsTransportSidecarSocket(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
-	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "true")
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.TransportSidecarFallback {
-		t.Fatal("TransportSidecarFallback=false want true from HUAKAI_TRANSPORT_SIDECAR_FALLBACK")
+	if cfg.TransportSidecarSocket != "/run/huakai/tls-sidecar.sock" {
+		t.Fatalf("TransportSidecarSocket=%q want Rust sidecar runtime path", cfg.TransportSidecarSocket)
+	}
+}
+
+func TestLoadCRSSourceConfig默认关闭且严格解析(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_CRS_SOURCE_ALLOWED_HOSTS", "")
+	t.Setenv("HUAKAI_CRS_SOURCE_ALLOW_PRIVATE_HOSTS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load 默认配置: %v", err)
+	}
+	if len(cfg.CRSSource.AllowedHosts) != 0 || cfg.CRSSource.AllowPrivateHosts {
+		t.Fatalf("CRS 默认必须关闭，实际 %+v", cfg.CRSSource)
+	}
+
+	t.Setenv("HUAKAI_CRS_SOURCE_ALLOWED_HOSTS", "B.example, a.example,b.example")
+	t.Setenv("HUAKAI_CRS_SOURCE_ALLOW_PRIVATE_HOSTS", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load 显式配置: %v", err)
+	}
+	if got := strings.Join(cfg.CRSSource.AllowedHosts, ","); got != "a.example,b.example" || !cfg.CRSSource.AllowPrivateHosts {
+		t.Fatalf("CRS 配置未规范化：%+v", cfg.CRSSource)
+	}
+
+	t.Setenv("HUAKAI_CRS_SOURCE_ALLOWED_HOSTS", "https://crs.example")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HUAKAI_CRS_SOURCE_ALLOWED_HOSTS") {
+		t.Fatalf("带 scheme 的 CRS 白名单必须拒绝，实际 err=%v", err)
 	}
 }
 
@@ -333,20 +380,6 @@ func TestLoadRejectsInvalidBudgetConfig(t *testing.T) {
 				t.Fatalf("err=%v must name %s", err, tc.env)
 			}
 		})
-	}
-}
-
-func TestLoadRejectsInvalidTransportSidecarFallbackFlag(t *testing.T) {
-	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
-	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_FALLBACK", "sometimes")
-
-	err := loadOnlyError()
-
-	if err == nil {
-		t.Fatal("invalid HUAKAI_TRANSPORT_SIDECAR_FALLBACK was accepted")
-	}
-	if !strings.Contains(err.Error(), "HUAKAI_TRANSPORT_SIDECAR_FALLBACK") {
-		t.Fatalf("err=%v must name HUAKAI_TRANSPORT_SIDECAR_FALLBACK", err)
 	}
 }
 

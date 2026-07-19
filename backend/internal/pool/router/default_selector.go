@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"errors"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -71,6 +72,9 @@ func WithNow(fn func() time.Time) SelectorOption {
 		if _, ok := s.gates.Model.(modelRateLimitGate); ok {
 			s.gates.Model = modelRateLimitGate{Now: fn}
 		}
+		if _, ok := s.gates.UpstreamQuota.(upstreamQuotaGate); ok {
+			s.gates.UpstreamQuota = upstreamQuotaGate{Now: fn}
+		}
 	}
 }
 
@@ -119,6 +123,13 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 			stickyBoundID = id
 		}
 	}
+	stickyAllowed := true
+	if stickyBoundID != 0 {
+		if breakReason := stickyDegradationReason(accountByID(accounts, stickyBoundID), s.currentTime()); breakReason != "" {
+			reason.StickyBreak(breakReason)
+			stickyAllowed = false
+		}
+	}
 	defer func() {
 		if res == nil || res.AccountID == 0 || stickyBoundID == 0 {
 			return
@@ -130,14 +141,15 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 		}
 	}()
 	if len(routed) > 0 {
-		if res, done, err := s.trySticky(ctx, gates, req, routed, RoutingLayerStickyWithinRoute, reason, stickyBoundID); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, routed, RoutingLayerStickyWithinRoute, reason, stickyBoundID, stickyAllowed, policy); done || err != nil {
 			return res, err
 		}
-		if res, done, err := s.tryLayer(ctx, gates, req, routed, RoutingLayerRoutingAffinity, reason); done || err != nil {
+		ranked := deprioritizeBrokenSticky(s.rankFresh(routed, policy), stickyBoundID, stickyAllowed)
+		if res, done, err := s.tryLayer(ctx, gates, req, ranked, RoutingLayerRoutingAffinity, reason, policy); done || err != nil {
 			return res, err
 		}
 	} else if !routeConstrained {
-		if res, done, err := s.trySticky(ctx, gates, req, eligible, RoutingLayerStickyStandalone, reason, stickyBoundID); done || err != nil {
+		if res, done, err := s.trySticky(ctx, gates, req, eligible, RoutingLayerStickyStandalone, reason, stickyBoundID, stickyAllowed, policy); done || err != nil {
 			return res, err
 		}
 	}
@@ -146,8 +158,8 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 	if routeConstrained {
 		freshCandidates = routed
 	}
-	fresh := s.rankFresh(freshCandidates, policy)
-	if res, done, err := s.tryLayer(ctx, gates, req, fresh, RoutingLayerFresh, reason); done || err != nil {
+	fresh := deprioritizeBrokenSticky(s.rankFresh(freshCandidates, policy), stickyBoundID, stickyAllowed)
+	if res, done, err := s.tryLayer(ctx, gates, req, fresh, RoutingLayerFresh, reason, policy); done || err != nil {
 		// Track B 闭环最后一片: fresh 选定后写 sticky_bindings 让后续相同
 		// prompt prefix 命中此账号. 用 type assertion 让 StickyStore 接口
 		// 不被强制扩展（实测 stub 不实现 Upsert 也不破现有测试）。
@@ -172,6 +184,21 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 	}
 }
 
+func deprioritizeBrokenSticky(accounts []*AccountSnapshot, stickyAccountID int64, stickyAllowed bool) []*AccountSnapshot {
+	if stickyAllowed || stickyAccountID == 0 || len(accounts) < 2 {
+		return accounts
+	}
+	for i, account := range accounts {
+		if account == nil || account.ID != stickyAccountID || i == len(accounts)-1 {
+			continue
+		}
+		copy(accounts[i:], accounts[i+1:])
+		accounts[len(accounts)-1] = account
+		break
+	}
+	return accounts
+}
+
 func (s *DefaultSelector) policy(ctx context.Context, req SelectionRequest) (*RoutingPolicy, error) {
 	if s.policies == nil {
 		return nil, nil
@@ -191,24 +218,37 @@ func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts 
 			reason.GateFailure(account.ID, why)
 			continue
 		}
+		if statusGate, ok := gates.Health.(HealthStatusGate); ok {
+			status, statusErr := statusGate.HealthStatus(ctx, account, req)
+			if statusErr != nil {
+				reason.GateFailure(account.ID, GateFailureHealth)
+				continue
+			}
+			if status.State != "" && status.State != account.HealthState {
+				copy := *account
+				copy.HealthState = status.State
+				account = &copy
+			}
+		}
 		out = append(out, account)
 	}
 	return out
 }
 
-func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder, boundID int64) (*SelectionResult, bool, error) {
-	if boundID == 0 {
+func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder, boundID int64, allowed bool, policy *RoutingPolicy) (*SelectionResult, bool, error) {
+	if boundID == 0 || !allowed {
 		return nil, false, nil
 	}
 	for _, candidate := range candidates {
 		if candidate.ID == boundID {
-			return s.tryLayer(ctx, gates, req, []*AccountSnapshot{candidate}, layer, reason)
+			return s.tryLayer(ctx, gates, req, []*AccountSnapshot{candidate}, layer, reason, policy)
 		}
 	}
+	reason.StickyBreak("bound_account_ineligible")
 	return nil, false, nil
 }
 
-func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder) (*SelectionResult, bool, error) {
+func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder, policy *RoutingPolicy) (*SelectionResult, bool, error) {
 	reason.Layer(layer)
 	for _, account := range candidates {
 		ok, why, err := gates.Allow(ctx, account, req)
@@ -217,7 +257,13 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 		}
 		if !ok {
 			reason.GateFailure(account.ID, why)
+			if layer == RoutingLayerStickyStandalone || layer == RoutingLayerStickyWithinRoute {
+				reason.StickyBreak(string(why))
+			}
 			continue
+		}
+		if policy != nil && policy.OperatorScoring {
+			reason.Scoring(policy.ScoringPolicyVersion, adaptiveContributions(account, s.currentTime()))
 		}
 		// 无 billing claim 的只读/辅助请求没有后续 settlement 来释放并发槽，
 		// SelectionResult 也不暴露 Release 闭包。此类请求只完成候选与 gate
@@ -233,6 +279,9 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 		acquired, err := s.slots.Acquire(ctx, account, req)
 		if errors.Is(err, ErrNoSlotAvailable) {
 			reason.GateFailure(account.ID, GateFailureSlotCapacity)
+			if layer == RoutingLayerStickyStandalone || layer == RoutingLayerStickyWithinRoute {
+				reason.StickyBreak(string(GateFailureSlotCapacity))
+			}
 			continue
 		}
 		if errors.Is(err, ErrSlotManagerUnavailable) {
@@ -270,8 +319,17 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 	out := append([]*AccountSnapshot(nil), accounts...)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if accountHealthRank(a) != accountHealthRank(b) {
+			return accountHealthRank(a) < accountHealthRank(b)
+		}
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
+		}
+		if policy != nil && policy.OperatorScoring {
+			aScore, bScore := adaptiveScore(a, s.currentTime()), adaptiveScore(b, s.currentTime())
+			if aScore != bScore {
+				return aScore > bScore
+			}
 		}
 		if a.LoadRate != b.LoadRate {
 			return a.LoadRate < b.LoadRate
@@ -282,7 +340,7 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 	if k > 1 {
 		if policy != nil && policy.SelectionMode == SelectionModePriorityWeighted {
 			s.randMu.Lock()
-			chosen := s.weightedReservoirIndex(out, k)
+			chosen := s.weightedReservoirIndex(out, k, policy)
 			s.randMu.Unlock()
 			if chosen > 0 {
 				out[0], out[chosen] = out[chosen], out[0]
@@ -298,17 +356,29 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 	return out
 }
 
-func (s *DefaultSelector) weightedReservoirIndex(accounts []*AccountSnapshot, k int) int {
+func (s *DefaultSelector) weightedReservoirIndex(accounts []*AccountSnapshot, k int, policy *RoutingPolicy) int {
 	chosen := 0
 	var total int64
 	for i := 0; i < k; i++ {
-		weight := accountWeight(accounts[i])
+		weight := accountSelectionWeight(accounts[i], policy, s.currentTime())
 		total += weight
 		if s.rand.Int63n(total) < weight {
 			chosen = i
 		}
 	}
 	return chosen
+}
+
+func accountSelectionWeight(account *AccountSnapshot, policy *RoutingPolicy, now time.Time) int64 {
+	base := accountWeight(account)
+	if policy == nil || !policy.OperatorScoring {
+		return base
+	}
+	multiplier := int64(math.Round((0.25 + adaptiveScore(account, now)) * 1000))
+	if multiplier < 1 {
+		multiplier = 1
+	}
+	return base * multiplier
 }
 
 func normalizeAccountSnapshotWeight(account *AccountSnapshot) *AccountSnapshot {
@@ -331,15 +401,56 @@ func topK(policy *RoutingPolicy, accounts []*AccountSnapshot) int {
 	if len(accounts) == 0 {
 		return 0
 	}
+	if policy != nil && policy.SelectionMode == SelectionModePriorityWeighted {
+		topPriority := accounts[0].Priority
+		topHealth := accountHealthRank(accounts[0])
+		k := 1
+		for k < len(accounts) && accountHealthRank(accounts[k]) == topHealth && accounts[k].Priority == topPriority {
+			k++
+		}
+		if policy.TopKDefault > 0 && k > policy.TopKDefault {
+			return policy.TopKDefault
+		}
+		return k
+	}
 	if policy != nil && (policy.BroadTopK || policy.OperatorScoring) && policy.TopKDefault > 1 {
-		return min(policy.TopKDefault, len(accounts))
+		healthBand := 1
+		for healthBand < len(accounts) && accountHealthRank(accounts[healthBand]) == accountHealthRank(accounts[0]) {
+			healthBand++
+		}
+		return min(policy.TopKDefault, healthBand)
 	}
 	top := accounts[0]
 	k := 1
-	for k < len(accounts) && accounts[k].Priority == top.Priority && accounts[k].LoadRate == top.LoadRate && accounts[k].LastUsedAt.Equal(top.LastUsedAt) {
+	for k < len(accounts) && accountHealthRank(accounts[k]) == accountHealthRank(top) && accounts[k].Priority == top.Priority && accounts[k].LoadRate == top.LoadRate && accounts[k].LastUsedAt.Equal(top.LastUsedAt) {
 		k++
 	}
 	return k
+}
+
+func accountByID(accounts []*AccountSnapshot, accountID int64) *AccountSnapshot {
+	for _, account := range accounts {
+		if account != nil && account.ID == accountID {
+			return account
+		}
+	}
+	return nil
+}
+
+func accountHealthRank(account *AccountSnapshot) int {
+	if account == nil {
+		return 3
+	}
+	switch account.HealthState {
+	case "", "healthy", HealthStateActive:
+		return 0
+	case HealthStateDegraded:
+		return 1
+	case HealthStateRamping:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func modelRoute(policy *RoutingPolicy, model string, accounts []*AccountSnapshot) []*AccountSnapshot {

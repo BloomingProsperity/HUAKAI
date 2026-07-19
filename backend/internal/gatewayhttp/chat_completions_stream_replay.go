@@ -227,16 +227,23 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
 		}
 		decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
-		modelScopedRateLimit := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
-			StatusCode: dispatchRes.StatusCode,
-			Body:       raw,
-			Header:     dispatchRes.Headers,
-		}, classification, false)
+		agentTaskInvalid := ex.classifyAgentTaskInvalid(dispatchRes.StatusCode, raw, &decision)
+		var policyOutcome upstreamErrorPolicyOutcome
+		suppressHealth := false
+		if !agentTaskInvalid {
+			policyOutcome = ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+				StatusCode: dispatchRes.StatusCode,
+				Body:       raw,
+				Header:     dispatchRes.Headers,
+			}, classification, true)
+			suppressHealth = ex.applyAccountErrorPolicy(&decision, classification, policyOutcome)
+		}
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, nil)
-		if ex.healthKeyOK && !modelScopedRateLimit {
+		if ex.healthKeyOK && !agentTaskInvalid && !policyOutcome.ModelScoped && !suppressHealth {
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 		}
 		failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
+		failure.AgentTaskInvalid = agentTaskInvalid
 		failure.FallbackSignal = bindingFallbackSignalFromUpstream(dispatchRes.StatusCode, raw, classification, decision)
 		return nil, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr), false
 	}

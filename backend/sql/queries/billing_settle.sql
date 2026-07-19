@@ -94,10 +94,10 @@ RETURNING id, created_at;
 -- $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
 WITH released AS (
     UPDATE pool_slot_acquisitions
-    SET status = $2,
+    SET status = sqlc.arg(release_status)::text,
         released_at = NOW(),
-        release_reason = $3
-    WHERE acquisition_token = $1 AND status = 'acquired'
+        release_reason = sqlc.narg(release_reason)::text
+    WHERE acquisition_token = sqlc.arg(acquisition_token)::uuid AND status = 'acquired'
     RETURNING provider_account_id
 )
 UPDATE provider_accounts pa

@@ -137,6 +137,104 @@ func TestServiceReserve_NoPolicyAllows(t *testing.T) {
 	}
 }
 
+func TestServiceReserve_ExactModelPolicyDoesNotAffectOtherModels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	service := NewService(NewPostgresStore(pool))
+
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	policyID := f.seedPolicyForModel(now, ScopeUser, fmt.Sprint(f.userID), "gpt-4.1", MetricRequests, WindowFixed, 3600, "1", ModeEnforce)
+	f.seedWindow(policyID, now, "1", "0", 1)
+
+	modelAClaim := f.seedClaimWithModel("model-a-denied", "gpt-4.1")
+	denied, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:           f.tenantID,
+		ClaimID:            modelAClaim,
+		RequestFingerprint: "model-a-denied-" + uuid.NewString(),
+		RequestedModel:     "gpt-4.1",
+		Scopes:             f.reserveScopes(),
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     now.Add(5 * time.Minute),
+		At:                 now,
+	})
+	if !IsDenied(err) || denied.Decision.Metric != MetricRequests {
+		t.Fatalf("model A result=%+v err=%v; want requests deny", denied, err)
+	}
+
+	modelBClaim := f.seedClaimWithModel("model-b-allowed", "claude-sonnet-4")
+	allowed, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:           f.tenantID,
+		ClaimID:            modelBClaim,
+		RequestFingerprint: "model-b-allowed-" + uuid.NewString(),
+		RequestedModel:     "claude-sonnet-4",
+		Scopes:             f.reserveScopes(),
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     now.Add(5 * time.Minute),
+		At:                 now,
+	})
+	if err != nil || !allowed.Allowed || allowed.Reservation.ID == 0 {
+		t.Fatalf("model B result=%+v err=%v; exact model A policy leaked", allowed, err)
+	}
+}
+
+func TestServiceReserve_WildcardAndExactModelPoliciesAreCumulative(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	service := NewService(NewPostgresStore(pool))
+
+	now := time.Date(2026, 7, 19, 9, 15, 0, 0, time.UTC)
+	wildcardID := f.seedPolicyForModel(now, ScopeUser, fmt.Sprint(f.userID), ModelSelectorAll, MetricRequests, WindowFixed, 3600, "10", ModeEnforce)
+	exactID := f.seedPolicyForModel(now, ScopeUser, fmt.Sprint(f.userID), "gpt-4.1", MetricRequests, WindowFixed, 3600, "10", ModeEnforce)
+	f.seedWindow(wildcardID, now, "0", "0", 0)
+	f.seedWindow(exactID, now, "0", "0", 0)
+
+	claimA := f.seedClaimWithModel("model-cumulative-a", "gpt-4.1")
+	resultA, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:           f.tenantID,
+		ClaimID:            claimA,
+		RequestFingerprint: "model-cumulative-a-" + uuid.NewString(),
+		RequestedModel:     "  GPT-4.1  ",
+		Scopes:             f.reserveScopes(),
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     now.Add(5 * time.Minute),
+		At:                 now,
+	})
+	if err != nil || !resultA.Allowed {
+		t.Fatalf("model A reserve result=%+v err=%v", resultA, err)
+	}
+	if got := f.windowReservedValue(wildcardID, now); !got.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("wildcard reserved=%s; want 1 after model A", got)
+	}
+	if got := f.windowReservedValue(exactID, now); !got.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("exact reserved=%s; want 1 after model A", got)
+	}
+
+	claimB := f.seedClaimWithModel("model-cumulative-b", "claude-sonnet-4")
+	resultB, err := service.Reserve(ctx, ReserveRequest{
+		TenantID:           f.tenantID,
+		ClaimID:            claimB,
+		RequestFingerprint: "model-cumulative-b-" + uuid.NewString(),
+		RequestedModel:     "claude-sonnet-4",
+		Scopes:             f.reserveScopes(),
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		LeaseExpiresAt:     now.Add(5 * time.Minute),
+		At:                 now,
+	})
+	if err != nil || !resultB.Allowed {
+		t.Fatalf("model B reserve result=%+v err=%v", resultB, err)
+	}
+	if got := f.windowReservedValue(wildcardID, now); !got.Equal(decimal.NewFromInt(2)) {
+		t.Fatalf("wildcard reserved=%s; want 2 after model B", got)
+	}
+	if got := f.windowReservedValue(exactID, now); !got.Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("exact reserved=%s; want unchanged 1 after model B", got)
+	}
+}
+
 // ReserveStrictestScopeWins 守住多 scope 同时生效时任一 enforce 超限即整体拒绝。
 func TestServiceReserve_StrictestScopeWins(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -843,24 +941,28 @@ func (f *quotaFixture) reserveScopes() []Scope {
 }
 
 func (f *quotaFixture) seedPolicyWithMode(at time.Time, kind ScopeKind, id string, metric Metric, windowKind WindowKind, windowSeconds int64, limit string, mode Mode) int64 {
+	return f.seedPolicyForModel(at, kind, id, ModelSelectorAll, metric, windowKind, windowSeconds, limit, mode)
+}
+
+func (f *quotaFixture) seedPolicyForModel(at time.Time, kind ScopeKind, id, modelSelector string, metric Metric, windowKind WindowKind, windowSeconds int64, limit string, mode Mode) int64 {
 	f.t.Helper()
 	var policyID int64
 	// valid_from 绑定测试请求时刻，避免墙钟晚于硬编码 at 时策略被过滤。
 	validFrom := at.UTC().Add(-time.Minute)
 	if err := f.pool.QueryRow(f.ctx,
 		`INSERT INTO quota_policies (
-			tenant_id, scope_kind, scope_id, metric, window_kind,
+			tenant_id, scope_kind, scope_id, model_selector, metric, window_kind,
 			window_seconds, limit_value, burst_value, mode, priority,
 			enabled, valid_from
 		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7::numeric(20,8), 0, $8, 10,
-			true, $9
+			$1, $2, $3, $4, $5, $6,
+			$7, $8::numeric(20,8), 0, $9, 10,
+			true, $10
 		) RETURNING id`,
-		f.tenantID, string(kind), id, string(metric), string(windowKind),
+		f.tenantID, string(kind), id, modelSelector, string(metric), string(windowKind),
 		windowSeconds, limit, string(mode), validFrom,
 	).Scan(&policyID); err != nil {
-		f.t.Fatalf("seed policy %s/%s/%s: %v", kind, id, metric, err)
+		f.t.Fatalf("seed policy %s/%s/%s/%s: %v", kind, id, modelSelector, metric, err)
 	}
 	return policyID
 }

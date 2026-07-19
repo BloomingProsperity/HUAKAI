@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -19,8 +18,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/logfacade"
 	"github.com/BloomingProsperity/HUAKAI/internal/loglevel"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // smokeBuildStamp 在 smoke 测试构建期间通过 -ldflags 覆盖,
@@ -87,15 +84,10 @@ func run(logger *zap.Logger, sink *logsink.Sink) error {
 	if err != nil {
 		return err
 	}
-	mimicryRegistry, err := loadMimicryTemplateRegistry(logger)
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	runtime, err := buildGatewayRuntime(ctx, cfg, mimicryRegistry, logger, sink)
+	runtime, err := buildGatewayRuntime(ctx, cfg, logger, sink)
 	if err != nil {
 		return err
 	}
@@ -104,28 +96,4 @@ func run(logger *zap.Logger, sink *logsink.Sink) error {
 	router := newRouter(runtime.deps, logger)
 	srv := newGatewayServer(cfg.Listen, router)
 	return serveGateway(ctx, srv, runtime, cancel, logger)
-}
-
-func loadMimicryTemplateRegistry(logger *zap.Logger) (*mimicry.TemplateRegistry, error) {
-	candidates := []string{
-		"tools/fingerprint-collector/templates",
-		"../tools/fingerprint-collector/templates",
-	}
-	for _, dir := range candidates {
-		registry := mimicry.NewTemplateRegistry()
-		err := registry.LoadFromDirectory(dir)
-		if err == nil {
-			logger.Info("mimicry template registry loaded",
-				zap.String("dir", dir),
-				zap.Int("mode_count", len(registry.Modes())),
-			)
-			return registry, nil
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		return nil, fmt.Errorf("load mimicry template registry from %s: %w", dir, err)
-	}
-	logger.Warn("mimicry template registry not found; using Phase A default template fallback")
-	return nil, nil
 }

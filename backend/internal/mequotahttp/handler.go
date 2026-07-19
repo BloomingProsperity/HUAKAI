@@ -44,15 +44,16 @@ type listResponse struct {
 }
 
 type windowView struct {
-	Metric       string    `json:"metric"`
-	WindowKind   string    `json:"window_kind"`
-	Cap          string    `json:"cap"`
-	Consumed     string    `json:"consumed"`
-	Remaining    string    `json:"remaining"`
-	Overage      string    `json:"overage"`
-	RequestCount int64     `json:"request_count"`
-	WindowStart  time.Time `json:"window_start"`
-	WindowEnd    time.Time `json:"window_end"`
+	ModelSelector string    `json:"model_selector"`
+	Metric        string    `json:"metric"`
+	WindowKind    string    `json:"window_kind"`
+	Cap           string    `json:"cap"`
+	Consumed      string    `json:"consumed"`
+	Remaining     string    `json:"remaining"`
+	Overage       string    `json:"overage"`
+	RequestCount  int64     `json:"request_count"`
+	WindowStart   time.Time `json:"window_start"`
+	WindowEnd     time.Time `json:"window_end"`
 }
 
 func NewHandler(d Deps) http.HandlerFunc {
@@ -107,15 +108,16 @@ func toWindowView(w quota.CurrentWindowRead) windowView {
 		remaining = decimal.Zero
 	}
 	return windowView{
-		Metric:       string(w.Metric),
-		WindowKind:   string(w.Window.Kind),
-		Cap:          w.LimitValue.String(),
-		Consumed:     consumed.String(),
-		Remaining:    remaining.String(),
-		Overage:      w.OverageValue.String(),
-		RequestCount: w.RequestCount,
-		WindowStart:  w.Window.Start,
-		WindowEnd:    w.Window.End,
+		ModelSelector: w.ModelSelector,
+		Metric:        string(w.Metric),
+		WindowKind:    string(w.Window.Kind),
+		Cap:           w.LimitValue.String(),
+		Consumed:      consumed.String(),
+		Remaining:     remaining.String(),
+		Overage:       w.OverageValue.String(),
+		RequestCount:  w.RequestCount,
+		WindowStart:   w.Window.Start,
+		WindowEnd:     w.Window.End,
 	}
 }
 

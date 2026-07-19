@@ -6,6 +6,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const ModelSelectorAll = "*"
+
 // ScopeKind 表示配额作用域类型。provider account 在 Slice A 只作为只读策略输入。
 type ScopeKind string
 
@@ -107,6 +109,7 @@ type Reservation struct {
 	ID                 int64
 	ClaimID            int64
 	RequestFingerprint string
+	RequestedModel     string
 	Scopes             []Scope
 	PolicySnapshot     []byte
 	PredictedCost      decimal.Decimal
@@ -130,17 +133,18 @@ type Settlement struct {
 
 // Policy 是 Slice B store/service 会使用的内存策略视图。
 type Policy struct {
-	TenantID   int64
-	ID         int64
-	Scope      Scope
-	Metric     Metric
-	Window     Window
-	LimitValue decimal.Decimal
-	BurstValue decimal.Decimal
-	Mode       Mode
-	Priority   int
-	ValidFrom  time.Time
-	ValidUntil *time.Time
+	TenantID      int64
+	ID            int64
+	Scope         Scope
+	ModelSelector string
+	Metric        Metric
+	Window        Window
+	LimitValue    decimal.Decimal
+	BurstValue    decimal.Decimal
+	Mode          Mode
+	Priority      int
+	ValidFrom     time.Time
+	ValidUntil    *time.Time
 }
 
 // WindowCounter 是 quota_windows 的计数视图。
@@ -162,6 +166,7 @@ type CurrentWindowRead struct {
 	PolicyID      int64
 	WindowID      int64
 	Scope         Scope
+	ModelSelector string
 	Metric        Metric
 	Window        Window
 	LimitValue    decimal.Decimal

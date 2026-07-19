@@ -73,7 +73,11 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// securityHeaders/corsMiddleware 的行为,只是嵌在
 	// CORS 之后。HUAKAI_RL_DISABLE 可将其关闭。
 	if !rateLimitDisabled() {
-		router.Use(newRateLimiter(d.clientIPResolver, logger).middleware)
+		opts := []rateLimiterOption{}
+		if d.inboundRateLimit != nil {
+			opts = append(opts, withSharedRateLimitStore(d.inboundRateLimit))
+		}
+		router.Use(newRateLimiter(d.clientIPResolver, logger, opts...).middleware)
 	}
 	// /internal/*(Hermes runner 引导/密钥/刷新、只读的
 	// tool-execute 回调、内部 OpenAI 出口)是内部控制

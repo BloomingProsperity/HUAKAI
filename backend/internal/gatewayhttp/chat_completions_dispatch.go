@@ -163,21 +163,10 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 }
 
 func (ex *chatExecution) activeBindingMetadata() (registry.BindingMetadata, bool) {
-	if ex == nil || len(ex.resolved.BindingMetadata) == 0 {
+	if ex == nil {
 		return registry.BindingMetadata{}, false
 	}
-	poolGroupID := ex.attempt.PoolGroupID
-	if poolGroupID != 0 {
-		for _, binding := range ex.resolved.BindingMetadata {
-			if binding.PoolGroupID == poolGroupID {
-				return binding, true
-			}
-		}
-	}
-	if len(ex.resolved.BindingMetadata) == 1 {
-		return ex.resolved.BindingMetadata[0], true
-	}
-	return registry.BindingMetadata{}, false
+	return ex.resolved.BindingForAttempt(ex.attempt.BindingID, ex.attempt.PoolGroupID)
 }
 
 func (ex *chatExecution) activeDispatchBodyControls() gateway.DispatchBodyControls {
@@ -452,6 +441,7 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		ExcludedAccounts: excludedAccounts,
 		CapabilityFlags:  ex.attempt.RequiredCapabilities,
 		SessionHash:      ex.sessionHash,
+		RequestID:        ex.requestID,
 		Vendor:           pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:        ex.ident.UserGroup,
 		// 命中 binding 的 selection_mode 透传给 selector(priority_weighted 才激活加权,否则均匀)。
@@ -683,6 +673,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		var classifyBody []byte
 		var classification gateway.Classification
 		var decision gateway.AttemptRetryDecision
+		agentTaskInvalid := false
 		if errors.As(err, &upstreamErr) {
 			clientStatus = upstreamErr.StatusCode
 			healthStatus = upstreamErr.StatusCode
@@ -700,17 +691,20 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		}
 		if upstreamErr != nil {
 			decision.ClientStatus = ex.remapClientStatusForUpstream(upstreamErr.StatusCode, decision.ClientStatus)
+			agentTaskInvalid = ex.classifyAgentTaskInvalid(upstreamErr.StatusCode, upstreamErr.Body, &decision)
 		}
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
 		}
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
-		modelScopedRateLimit := false
-		if upstreamErr != nil {
-			modelScopedRateLimit = ex.applyUpstreamErrorCooldown(upstreamErr, classification, true)
+		var policyOutcome upstreamErrorPolicyOutcome
+		suppressHealth := false
+		if upstreamErr != nil && !agentTaskInvalid {
+			policyOutcome = ex.applyUpstreamErrorCooldown(upstreamErr, classification, true)
+			suppressHealth = ex.applyAccountErrorPolicy(&decision, classification, policyOutcome)
 		}
 
-		if ex.healthKeyOK && !modelScopedRateLimit {
+		if ex.healthKeyOK && !agentTaskInvalid && !policyOutcome.ModelScoped && !suppressHealth {
 			// canonical 缓冲是默认主路径:必须带真实 iron-clad 分级,否则该路径上的铁证 401
 			// 永远按 ambiguous 处理、strike 硬禁不可达(审查 S2)。
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
@@ -720,6 +714,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 			code = ""
 		}
 		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
+		failure.AgentTaskInvalid = agentTaskInvalid
 		if upstreamErr != nil {
 			failure.FallbackSignal = bindingFallbackSignalFromUpstream(upstreamErr.StatusCode, upstreamErr.Body, classification, decision)
 		}

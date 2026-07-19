@@ -154,12 +154,33 @@ func candidateFromObject(object map[string]any) (credentialacq.CredentialCandida
 		if !ok {
 			return credentialacq.CredentialCandidate{}, invalid("auth.json tokens 必须是对象")
 		}
-		return candidateFromTokenObject(tokens, "auth_json")
+		return candidateFromTokenObject(mergeAuthJSONMetadata(tokens, object), "auth_json")
 	}
 	if firstString(object, "OPENAI_API_KEY", "openai_api_key") != "" && firstString(object, "access_token", "accessToken", "session_token") == "" {
 		return credentialacq.CredentialCandidate{}, invalid("OpenAI API key 不是 Codex OAuth 凭据")
 	}
 	return candidateFromTokenObject(object, "token_object")
+}
+
+func mergeAuthJSONMetadata(tokens, outer map[string]any) map[string]any {
+	merged := make(map[string]any, len(tokens)+8)
+	for key, value := range tokens {
+		merged[key] = value
+	}
+	for _, key := range []string{
+		"account_id", "accountId", "chatgpt_account_id",
+		"chatgpt_user_id", "user_id", "external_subject_id",
+		"email", "external_account_email",
+		"chatgpt_plan_type", "plan_type", "subscription_plan",
+	} {
+		if _, exists := merged[key]; exists {
+			continue
+		}
+		if value, exists := outer[key]; exists {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 func normalizeAuthMode(value string) string {
@@ -203,6 +224,15 @@ func candidateFromTokenObject(fields map[string]any, shape string) (credentialac
 		payload["account_id"] = accountID
 		payload["chatgpt_account_id"] = accountID
 	}
+	if subjectID != "" {
+		payload["chatgpt_user_id"] = subjectID
+	}
+	if email != "" {
+		payload["email"] = email
+	}
+	if plan := firstString(fields, "chatgpt_plan_type", "plan_type", "subscription_plan"); plan != "" {
+		payload["chatgpt_plan_type"] = plan
+	}
 	if tokenType := firstString(fields, "token_type", "tokenType"); tokenType != "" {
 		payload["token_type"] = tokenType
 	}
@@ -231,6 +261,7 @@ func candidateFromTokenObject(fields map[string]any, shape string) (credentialac
 	identity.Email = firstNonEmpty(identity.Email, email)
 	identity.Source = accountident.SourceImportPayload
 	credentialacq.AttachIdentity(&candidate, identity)
+	credentialacq.AttachSubscription(&candidate)
 	return candidate, nil
 }
 

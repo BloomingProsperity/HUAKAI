@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -83,6 +84,69 @@ func TestSidecarClientForceH1CrossesTheVersionedWire(t *testing.T) {
 	}
 	conn.Close()
 	<-serverDone
+}
+
+func TestPinnedSidecarRoundTripperBindsResolvedAddressesIntoControlFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		req := readSidecarTestRequest(t, serverConn)
+		if !reflect.DeepEqual(req.PinnedTargetIPs, []string{"8.8.8.8", "2001:4860:4860::8888"}) {
+			t.Errorf("目标地址绑定=%v", req.PinnedTargetIPs)
+			return
+		}
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{Version: SidecarProtocolVersion, OK: true})
+	}()
+
+	roundTripper, err := NewPinnedSidecarRoundTripper(
+		NewSidecarClient(sidecarTestSocket),
+		SidecarProfileOperatorSourceSafeV1,
+		func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{
+				netip.MustParseAddr("8.8.8.8"),
+				netip.MustParseAddr("::ffff:8.8.8.8"),
+				netip.MustParseAddr("2001:4860:4860::8888"),
+			}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewPinnedSidecarRoundTripper: %v", err)
+	}
+	transport := roundTripper.(*sidecarTransport)
+	conn, err := transport.boundRT.DialTLSContext(context.Background(), "tcp", "operator.example:443")
+	if err != nil {
+		t.Fatalf("DialTLSContext: %v", err)
+	}
+	conn.Close()
+	<-serverDone
+}
+
+func TestPinnedSidecarRoundTripperRejectsEmptyResolutionBeforeSidecarDial(t *testing.T) {
+	oldDial := sidecarDialContext
+	var dialed bool
+	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) {
+		dialed = true
+		return nil, errors.New("unexpected")
+	}
+	t.Cleanup(func() { sidecarDialContext = oldDial })
+	roundTripper, err := NewPinnedSidecarRoundTripper(
+		NewSidecarClient(sidecarTestSocket),
+		SidecarProfileOperatorSourceSafeV1,
+		func(context.Context, string) ([]netip.Addr, error) { return nil, nil },
+	)
+	if err != nil {
+		t.Fatalf("NewPinnedSidecarRoundTripper: %v", err)
+	}
+	transport := roundTripper.(*sidecarTransport)
+	if _, err := transport.boundRT.DialTLSContext(context.Background(), "tcp", "operator.example:443"); err == nil {
+		t.Fatal("空解析结果必须失败")
+	}
+	if dialed {
+		t.Fatal("地址校验失败后不得连接 sidecar")
+	}
 }
 
 func TestSidecarClientDialTLSBadSocketFailsClosedWithoutTargetFallback(t *testing.T) {
@@ -251,6 +315,45 @@ func TestProbeSidecarForModeRejectsMissingForceH1Capability(t *testing.T) {
 	}
 }
 
+func TestProbeSidecarReadinessRequiresAllCapabilitiesAndProfiles(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version:      SidecarProtocolVersion,
+			OK:           true,
+			Capabilities: append([]string(nil), requiredSidecarCapabilities...),
+			ProfileIDs:   append([]string(nil), requiredSidecarProfiles...),
+		})
+	}()
+
+	if err := ProbeSidecarReadiness(context.Background(), sidecarTestSocket); err != nil {
+		t.Fatalf("完整 sidecar 合同应通过 readiness：%v", err)
+	}
+}
+
+func TestProbeSidecarReadinessRejectsIncompleteRuntime(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	restoreSidecarDial(t, clientConn)
+	go func() {
+		_ = readSidecarTestRequest(t, serverConn)
+		writeSidecarTestAck(t, serverConn, sidecarControlAck{
+			Version:      SidecarProtocolVersion,
+			OK:           true,
+			Capabilities: append([]string(nil), requiredSidecarCapabilities...),
+			ProfileIDs:   []string{SidecarProfileAnthropicCLIMimicryV1},
+		})
+	}()
+
+	err := ProbeSidecarReadiness(context.Background(), sidecarTestSocket)
+	if !errors.Is(err, ErrSidecarProfileUnavailable) || !strings.Contains(err.Error(), SidecarProfileOpenAICodexCLIV1) {
+		t.Fatalf("缺少内置 profile 必须失败并点名缺项：%v", err)
+	}
+}
+
 func TestSidecarInspectRejectsWrongAckVersion(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
@@ -277,7 +380,7 @@ func TestSidecarInspectRejectsUnknownAckField(t *testing.T) {
 	restoreSidecarDial(t, clientConn)
 	go func() {
 		_ = readSidecarTestRequest(t, serverConn)
-		writeSidecarTestFrame(t, serverConn, []byte(`{"version":2,"ok":true,"future_semantics":true}`))
+		writeSidecarTestFrame(t, serverConn, []byte(`{"version":3,"ok":true,"future_semantics":true}`))
 	}()
 
 	_, err := NewSidecarClient(sidecarTestSocket).Inspect(context.Background())

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 )
 
 const (
@@ -38,7 +40,7 @@ type Prober interface {
 
 // StatusStore 写代理探测结果。
 type StatusStore interface {
-	Touch(ctx context.Context, id int64) error                              // 仅更新 last_check_at
+	Touch(ctx context.Context, tenantID, id int64) error                    // 仅更新 last_check_at
 	SetStatus(ctx context.Context, tenantID, id int64, status string) error // 翻 status (+last_check_at)
 }
 
@@ -51,19 +53,34 @@ type Worker struct {
 	store    StatusStore
 	interval time.Duration
 	logger   *slog.Logger
+	lease    workerlease.SessionProvider
 	state    map[int64]*counters
 	mu       sync.Mutex
 	done     chan struct{}
 }
 
-func NewWorker(l Lister, p Prober, s StatusStore, interval time.Duration, logger *slog.Logger) *Worker {
+type WorkerOption func(*Worker)
+
+// WithLeaderLease 让多副本只由一个实例持有探测职责。租约会话失效时，当前
+// leader 立即停止探测并重新参与选主，避免数据库重连后多个旧 leader 并存。
+func WithLeaderLease(lease workerlease.SessionProvider) WorkerOption {
+	return func(w *Worker) { w.lease = lease }
+}
+
+func NewWorker(l Lister, p Prober, s StatusStore, interval time.Duration, logger *slog.Logger, opts ...WorkerOption) *Worker {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{lister: l, prober: p, store: s, interval: interval, logger: logger, state: map[int64]*counters{}}
+	w := &Worker{lister: l, prober: p, store: s, interval: interval, logger: logger, state: map[int64]*counters{}}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(w)
+		}
+	}
+	return w
 }
 
 // Start 在后台跑探测循环,直到 ctx 取消。
@@ -84,17 +101,83 @@ func (w *Worker) Start(ctx context.Context) {
 	w.mu.Unlock()
 	go func() {
 		defer close(done)
-		t := time.NewTicker(w.interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				w.tick(ctx)
-			}
-		}
+		w.run(ctx)
 	}()
+}
+
+func (w *Worker) run(ctx context.Context) {
+	if w.lease == nil {
+		w.runWithoutLease(ctx)
+		return
+	}
+	for ctx.Err() == nil {
+		acquired, session, err := w.lease.TryAcquireSession(ctx)
+		if err != nil {
+			w.logger.Warn("proxyhealth: 取得 leader 租约失败", "err", err)
+			if !waitInterval(ctx, w.interval) {
+				return
+			}
+			continue
+		}
+		if !acquired || session == nil {
+			if !waitInterval(ctx, w.interval) {
+				return
+			}
+			continue
+		}
+		w.runAsLeader(ctx, session)
+		session.Release()
+		if ctx.Err() == nil && !waitInterval(ctx, w.interval) {
+			return
+		}
+	}
+}
+
+func (w *Worker) runWithoutLease(ctx context.Context) {
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.tick(ctx)
+		}
+	}
+}
+
+func (w *Worker) runAsLeader(ctx context.Context, session workerlease.Session) {
+	if err := session.Healthy(ctx); err != nil {
+		w.logger.Warn("proxyhealth: leader 租约会话失效", "err", err)
+		return
+	}
+	// leader 取得租约后立即跑一轮，避免新集群必须等待完整探测周期才有状态。
+	w.tick(ctx)
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := session.Healthy(ctx); err != nil {
+				w.logger.Warn("proxyhealth: leader 租约会话失效", "err", err)
+				return
+			}
+			w.tick(ctx)
+		}
+	}
+}
+
+func waitInterval(ctx context.Context, interval time.Duration) bool {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Wait 等待后台循环退出。调用方应先取消传给 Start 的 context。
@@ -134,7 +217,7 @@ func (w *Worker) tick(ctx context.Context) {
 		}
 		newStatus := decideStatus(row.Status, ok, c)
 		if newStatus == "" {
-			if err := w.store.Touch(ctx, row.ID); err != nil {
+			if err := w.store.Touch(ctx, row.TenantID, row.ID); err != nil {
 				w.logger.Warn("proxyhealth: touch 失败", "id", row.ID, "err", err)
 			}
 			continue

@@ -4,16 +4,19 @@ import (
 	"context"
 	"sort"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 type policyListStore interface {
 	ListActivePolicies(ctx context.Context, filter PolicyFilter) ([]Policy, error)
 }
 
-// PolicyGroupKey 按 scope kind + metric 归组, 便于运营面解释 mode 分类。
+// PolicyGroupKey 按 scope kind、模型选择器与 metric 归组,便于运营面解释 mode 分类。
 type PolicyGroupKey struct {
-	ScopeKind ScopeKind
-	Metric    Metric
+	ScopeKind     ScopeKind
+	ModelSelector string
+	Metric        Metric
 }
 
 // PolicyModeGroup 保存同一 scope kind/metric 下的策略模式分类。
@@ -30,16 +33,17 @@ type ResolvedPolicies struct {
 }
 
 // ResolvePolicies 读取当前激活策略, 再做一层精确 scope/metric 防御过滤和模式分类。
-func ResolvePolicies(ctx context.Context, store policyListStore, tenantID int64, scopes []Scope, metrics []Metric, atTime time.Time) (ResolvedPolicies, error) {
+func ResolvePolicies(ctx context.Context, store policyListStore, tenantID int64, scopes []Scope, requestedModel string, metrics []Metric, atTime time.Time) (ResolvedPolicies, error) {
 	if store == nil {
 		return ResolvedPolicies{}, ErrStoreNotConfigured
 	}
 	policies, err := store.ListActivePolicies(ctx, PolicyFilter{
-		TenantID:  tenantID,
-		Scopes:    normalizeScopes(tenantID, scopes),
-		Metrics:   normalizeMetrics(metrics),
-		At:        atTime.UTC(),
-		ForUpdate: true,
+		TenantID:       tenantID,
+		Scopes:         normalizeScopes(tenantID, scopes),
+		RequestedModel: normalizeRequestedModel(requestedModel),
+		Metrics:        normalizeMetrics(metrics),
+		At:             atTime.UTC(),
+		ForUpdate:      true,
 	})
 	if err != nil {
 		return ResolvedPolicies{}, err
@@ -47,6 +51,7 @@ func ResolvePolicies(ctx context.Context, store policyListStore, tenantID int64,
 
 	scopeSet := scopeTupleSet(tenantID, scopes)
 	metricSet := metricSet(metrics)
+	requestedModel = normalizeRequestedModel(requestedModel)
 	resolved := ResolvedPolicies{
 		Groups: make(map[PolicyGroupKey]PolicyModeGroup),
 	}
@@ -60,12 +65,16 @@ func ResolvePolicies(ctx context.Context, store policyListStore, tenantID int64,
 		if !metricSet[policy.Metric] {
 			continue
 		}
+		policy.ModelSelector = normalizeModelSelector(policy.ModelSelector)
+		if policy.ModelSelector != ModelSelectorAll && policy.ModelSelector != requestedModel {
+			continue
+		}
 		policy.Scope.TenantID = tenantID
 		policy.Scope.ID = normalizeScopeID(policy.Scope.Kind, policy.Scope.ID)
 		policy.Window = resolvePolicyWindow(policy, atTime)
 		resolved.Ordered = append(resolved.Ordered, policy)
 
-		key := PolicyGroupKey{ScopeKind: policy.Scope.Kind, Metric: policy.Metric}
+		key := PolicyGroupKey{ScopeKind: policy.Scope.Kind, ModelSelector: policy.ModelSelector, Metric: policy.Metric}
 		group := resolved.Groups[key]
 		switch policy.Mode {
 		case ModeEnforce:
@@ -89,12 +98,32 @@ func ResolvePolicies(ctx context.Context, store policyListStore, tenantID int64,
 		if leftMetric, rightMetric := metricOrder(left.Metric), metricOrder(right.Metric); leftMetric != rightMetric {
 			return leftMetric < rightMetric
 		}
+		if left.ModelSelector != right.ModelSelector {
+			if left.ModelSelector == ModelSelectorAll {
+				return true
+			}
+			if right.ModelSelector == ModelSelectorAll {
+				return false
+			}
+			return left.ModelSelector < right.ModelSelector
+		}
 		if left.Priority != right.Priority {
 			return left.Priority < right.Priority
 		}
 		return left.ID < right.ID
 	})
 	return resolved, nil
+}
+
+func normalizeRequestedModel(model string) string {
+	return registry.AliasNormalize(model)
+}
+
+func normalizeModelSelector(selector string) string {
+	if selector == "" || selector == ModelSelectorAll {
+		return ModelSelectorAll
+	}
+	return registry.AliasNormalize(selector)
 }
 
 type scopeTuple struct {

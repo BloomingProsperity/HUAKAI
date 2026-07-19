@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
@@ -131,36 +131,43 @@ func TestCallbackUsesStoredPKCEVerifierForExchange(t *testing.T) {
 	}
 }
 
-func TestDefaultTokenExchangeClientUsesAnthropicMimicryTransport(t *testing.T) {
+func TestDefaultTokenExchangeClientFailsClosedWithoutRustSidecar(t *testing.T) {
+	t.Setenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET", "/home/ubuntu/.cache/huakai-codex/missing-sidecar.sock")
 	client := (Exchanger{}).httpClient()
 	if client == nil || client.Transport == nil {
-		t.Fatal("default token exchange client must install a mimicry transport")
+		t.Fatal("默认 token exchange client 必须安装显式失败 transport")
 	}
 	if client == http.DefaultClient || client.Transport == http.DefaultTransport {
-		t.Fatal("default token exchange client must not silently use stdlib http")
+		t.Fatal("默认 token exchange client 不得静默使用标准库 HTTP")
 	}
-	if got := fmt.Sprintf("%T", client.Transport); !strings.Contains(got, "mimicry.roundTripper") {
-		t.Fatalf("default token exchange transport = %s, want mimicry uTLS roundTripper", got)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.anthropic.com/v1/oauth/token", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	if _, err = client.Do(req); err == nil || !strings.Contains(err.Error(), "Rust mimicry transport unavailable") {
+		t.Fatalf("client.Do err=%v，期望明确报告 Rust sidecar 不可用", err)
 	}
 }
 
-func TestTokenExchangeMissingMimicryProfileWarnsBeforeAuditOnlyFallback(t *testing.T) {
+func TestTokenExchangeMissingRustSidecarLogsAndFailsClosed(t *testing.T) {
 	var logs bytes.Buffer
 	oldDefault := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(oldDefault)
 
-	exchanger := Exchanger{MimicryRegistry: mimicry.NewTemplateRegistry()}
+	factory := transport.NewFactory()
+	factory.SidecarSocketPath = "/home/ubuntu/.cache/huakai-codex/missing-sidecar.sock"
+	exchanger := Exchanger{TransportFactory: factory}
 	client := exchanger.httpClient()
 	if client == nil {
-		t.Fatal("audit-only fallback must still return a client")
+		t.Fatal("失败关闭入口仍应返回携带确定错误的 client")
 	}
 	if client == http.DefaultClient {
-		t.Fatal("fallback must be explicit, not a silent return of http.DefaultClient")
+		t.Fatal("sidecar 不可用时不得返回 http.DefaultClient")
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"anthropicoauth mimicry transport unavailable",
+		"anthropicoauth Rust transport unavailable",
 		"reason_class=mimicry_transport_unavailable",
 		mimicry.SidecarProfileAnthropicCLIMimicryV1,
 	} {

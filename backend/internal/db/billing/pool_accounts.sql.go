@@ -11,397 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countUnhealthyAccountsByTenant = `-- name: CountUnhealthyAccountsByTenant :many
-SELECT
-    health_state,
-    COUNT(*)::bigint AS account_count
-FROM provider_accounts
-WHERE tenant_id = $1
-  AND deleted_at IS NULL
-  AND enabled
-  AND health_state <> 'healthy'
-  AND (health_state_until IS NULL OR health_state_until > NOW())
-GROUP BY health_state
-`
-
-type CountUnhealthyAccountsByTenantRow struct {
-	HealthState  string `db:"health_state" json:"health_state"`
-	AccountCount int64  `db:"account_count" json:"account_count"`
-}
-
-// DM-14:告警指标——当前被自动摘除(非 healthy 且仍在生效期)的账号数,按状态分组。
-// 过期的 cooldown/throttled 已重新可调度(对齐 ListEligibleAccounts 语义),不计入。
-func (q *Queries) CountUnhealthyAccountsByTenant(ctx context.Context, tenantID int64) ([]CountUnhealthyAccountsByTenantRow, error) {
-	rows, err := q.db.Query(ctx, countUnhealthyAccountsByTenant, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []CountUnhealthyAccountsByTenantRow
-	for rows.Next() {
-		var i CountUnhealthyAccountsByTenantRow
-		if err := rows.Scan(&i.HealthState, &i.AccountCount); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const decrementInFlightCount = `-- name: DecrementInFlightCount :exec
-UPDATE provider_accounts
-SET
-    in_flight_count = GREATEST(in_flight_count - 1, 0),
-    updated_at = NOW()
-WHERE id = $1
-`
-
-func (q *Queries) DecrementInFlightCount(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, decrementInFlightCount, id)
-	return err
-}
-
-const getAccountForRevalidation = `-- name: GetAccountForRevalidation :one
-SELECT
-    id,
-    tenant_id,
-    provider_id,
-    channel_id,
-    name,
-    account_type,
-    enabled,
-    expires_at,
-    health_state,
-    health_state_until,
-    credential_state,
-    credentials,
-    cap_concurrency,
-    in_flight_count,
-    cap_queue_sticky,
-    cap_queue_fallback,
-    queue_depth,
-    priority,
-    last_dispatch_at,
-    model_allow_list,
-    capability_flags,
-    cap_quota_total,
-    quota_used_total,
-    cap_quota_daily,
-    quota_used_daily,
-    quota_window_daily_start,
-    cap_quota_weekly,
-    quota_used_weekly,
-    quota_window_weekly_start,
-    quota_status,
-    created_at,
-    updated_at,
-    deleted_at,
-    created_by_actor,
-    last_modified_by_actor,
-    rate_limited_at,
-    rate_limit_reset_at,
-    rate_limit_reason,
-    overload_until,
-    temp_unschedulable_until,
-    temp_unschedulable_reason,
-    temp_unschedulable_rule_index,
-    session_window_5h_start,
-    session_window_5h_end,
-    session_window_5h_status,
-    openai_403_counter,
-    openai_403_window_start,
-    custom_error_codes_enabled,
-    custom_error_codes,
-    pool_mode,
-    temp_unschedulable_enabled,
-    temp_unschedulable_rules,
-    model_rate_limits,
-    refresh_attempt_count,
-    refresh_attempt_window_start,
-    token_version,
-    refresh_token_fingerprint,
-    last_refresh_at,
-    last_refresh_outcome,
-    oauth_endpoint_health
-FROM provider_accounts
-WHERE id = $1
-  AND tenant_id = $2
-FOR UPDATE
-`
-
-type GetAccountForRevalidationParams struct {
-	ID       int64 `db:"id" json:"id"`
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-type GetAccountForRevalidationRow struct {
-	ID                         int64              `db:"id" json:"id"`
-	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID                 int64              `db:"provider_id" json:"provider_id"`
-	ChannelID                  int64              `db:"channel_id" json:"channel_id"`
-	Name                       string             `db:"name" json:"name"`
-	AccountType                string             `db:"account_type" json:"account_type"`
-	Enabled                    bool               `db:"enabled" json:"enabled"`
-	ExpiresAt                  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	HealthState                string             `db:"health_state" json:"health_state"`
-	HealthStateUntil           pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	CredentialState            string             `db:"credential_state" json:"credential_state"`
-	Credentials                []byte             `db:"credentials" json:"credentials"`
-	CapConcurrency             int32              `db:"cap_concurrency" json:"cap_concurrency"`
-	InFlightCount              int32              `db:"in_flight_count" json:"in_flight_count"`
-	CapQueueSticky             int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
-	CapQueueFallback           int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
-	QueueDepth                 int32              `db:"queue_depth" json:"queue_depth"`
-	Priority                   int32              `db:"priority" json:"priority"`
-	LastDispatchAt             pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
-	ModelAllowList             []string           `db:"model_allow_list" json:"model_allow_list"`
-	CapabilityFlags            []string           `db:"capability_flags" json:"capability_flags"`
-	CapQuotaTotal              pgtype.Numeric     `db:"cap_quota_total" json:"cap_quota_total"`
-	QuotaUsedTotal             pgtype.Numeric     `db:"quota_used_total" json:"quota_used_total"`
-	CapQuotaDaily              pgtype.Numeric     `db:"cap_quota_daily" json:"cap_quota_daily"`
-	QuotaUsedDaily             pgtype.Numeric     `db:"quota_used_daily" json:"quota_used_daily"`
-	QuotaWindowDailyStart      pgtype.Timestamptz `db:"quota_window_daily_start" json:"quota_window_daily_start"`
-	CapQuotaWeekly             pgtype.Numeric     `db:"cap_quota_weekly" json:"cap_quota_weekly"`
-	QuotaUsedWeekly            pgtype.Numeric     `db:"quota_used_weekly" json:"quota_used_weekly"`
-	QuotaWindowWeeklyStart     pgtype.Timestamptz `db:"quota_window_weekly_start" json:"quota_window_weekly_start"`
-	QuotaStatus                string             `db:"quota_status" json:"quota_status"`
-	CreatedAt                  pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt                  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-	DeletedAt                  pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
-	CreatedByActor             *string            `db:"created_by_actor" json:"created_by_actor"`
-	LastModifiedByActor        *string            `db:"last_modified_by_actor" json:"last_modified_by_actor"`
-	RateLimitedAt              pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
-	RateLimitResetAt           pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
-	RateLimitReason            *string            `db:"rate_limit_reason" json:"rate_limit_reason"`
-	OverloadUntil              pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
-	TempUnschedulableUntil     pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
-	TempUnschedulableReason    *string            `db:"temp_unschedulable_reason" json:"temp_unschedulable_reason"`
-	TempUnschedulableRuleIndex *int32             `db:"temp_unschedulable_rule_index" json:"temp_unschedulable_rule_index"`
-	SessionWindow5hStart       pgtype.Timestamptz `db:"session_window_5h_start" json:"session_window_5h_start"`
-	SessionWindow5hEnd         pgtype.Timestamptz `db:"session_window_5h_end" json:"session_window_5h_end"`
-	SessionWindow5hStatus      *string            `db:"session_window_5h_status" json:"session_window_5h_status"`
-	OpenAI403Counter           int32              `db:"openai_403_counter" json:"openai_403_counter"`
-	Openai403WindowStart       pgtype.Timestamptz `db:"openai_403_window_start" json:"openai_403_window_start"`
-	CustomErrorCodesEnabled    bool               `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
-	CustomErrorCodes           []int32            `db:"custom_error_codes" json:"custom_error_codes"`
-	PoolMode                   bool               `db:"pool_mode" json:"pool_mode"`
-	TempUnschedulableEnabled   bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules     []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
-	ModelRateLimits            []byte             `db:"model_rate_limits" json:"model_rate_limits"`
-	RefreshAttemptCount        int32              `db:"refresh_attempt_count" json:"refresh_attempt_count"`
-	RefreshAttemptWindowStart  pgtype.Timestamptz `db:"refresh_attempt_window_start" json:"refresh_attempt_window_start"`
-	TokenVersion               int32              `db:"token_version" json:"token_version"`
-	RefreshTokenFingerprint    *string            `db:"refresh_token_fingerprint" json:"refresh_token_fingerprint"`
-	LastRefreshAt              pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
-	LastRefreshOutcome         *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
-	OAuthEndpointHealth        string             `db:"oauth_endpoint_health" json:"oauth_endpoint_health"`
-}
-
-func (q *Queries) GetAccountForRevalidation(ctx context.Context, arg GetAccountForRevalidationParams) (GetAccountForRevalidationRow, error) {
-	row := q.db.QueryRow(ctx, getAccountForRevalidation, arg.ID, arg.TenantID)
-	var i GetAccountForRevalidationRow
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.ProviderID,
-		&i.ChannelID,
-		&i.Name,
-		&i.AccountType,
-		&i.Enabled,
-		&i.ExpiresAt,
-		&i.HealthState,
-		&i.HealthStateUntil,
-		&i.CredentialState,
-		&i.Credentials,
-		&i.CapConcurrency,
-		&i.InFlightCount,
-		&i.CapQueueSticky,
-		&i.CapQueueFallback,
-		&i.QueueDepth,
-		&i.Priority,
-		&i.LastDispatchAt,
-		&i.ModelAllowList,
-		&i.CapabilityFlags,
-		&i.CapQuotaTotal,
-		&i.QuotaUsedTotal,
-		&i.CapQuotaDaily,
-		&i.QuotaUsedDaily,
-		&i.QuotaWindowDailyStart,
-		&i.CapQuotaWeekly,
-		&i.QuotaUsedWeekly,
-		&i.QuotaWindowWeeklyStart,
-		&i.QuotaStatus,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeletedAt,
-		&i.CreatedByActor,
-		&i.LastModifiedByActor,
-		&i.RateLimitedAt,
-		&i.RateLimitResetAt,
-		&i.RateLimitReason,
-		&i.OverloadUntil,
-		&i.TempUnschedulableUntil,
-		&i.TempUnschedulableReason,
-		&i.TempUnschedulableRuleIndex,
-		&i.SessionWindow5hStart,
-		&i.SessionWindow5hEnd,
-		&i.SessionWindow5hStatus,
-		&i.OpenAI403Counter,
-		&i.Openai403WindowStart,
-		&i.CustomErrorCodesEnabled,
-		&i.CustomErrorCodes,
-		&i.PoolMode,
-		&i.TempUnschedulableEnabled,
-		&i.TempUnschedulableRules,
-		&i.ModelRateLimits,
-		&i.RefreshAttemptCount,
-		&i.RefreshAttemptWindowStart,
-		&i.TokenVersion,
-		&i.RefreshTokenFingerprint,
-		&i.LastRefreshAt,
-		&i.LastRefreshOutcome,
-		&i.OAuthEndpointHealth,
-	)
-	return i, err
-}
-
-const getModelRoutingForGroup = `-- name: GetModelRoutingForGroup :many
-SELECT
-    model,
-    provider_account_ids
-FROM model_routing_overrides
-WHERE tenant_id = $1
-  AND pool_group_id = $2
-  AND model = $3
-  AND enabled = true
-  AND deleted_at IS NULL
-`
-
-type GetModelRoutingForGroupParams struct {
-	TenantID    int64  `db:"tenant_id" json:"tenant_id"`
-	PoolGroupID int64  `db:"pool_group_id" json:"pool_group_id"`
-	Model       string `db:"model" json:"model"`
-}
-
-type GetModelRoutingForGroupRow struct {
-	Model              string  `db:"model" json:"model"`
-	ProviderAccountIds []int64 `db:"provider_account_ids" json:"provider_account_ids"`
-}
-
-func (q *Queries) GetModelRoutingForGroup(ctx context.Context, arg GetModelRoutingForGroupParams) ([]GetModelRoutingForGroupRow, error) {
-	rows, err := q.db.Query(ctx, getModelRoutingForGroup, arg.TenantID, arg.PoolGroupID, arg.Model)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []GetModelRoutingForGroupRow
-	for rows.Next() {
-		var i GetModelRoutingForGroupRow
-		if err := rows.Scan(&i.Model, &i.ProviderAccountIds); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const incrementInFlightCount = `-- name: IncrementInFlightCount :execrows
-UPDATE provider_accounts
-SET
-    in_flight_count = in_flight_count + 1,
-    last_dispatch_at = NOW(),
-    updated_at = NOW()
-WHERE id = $1
-  AND tenant_id = $2
-  AND in_flight_count < cap_concurrency
-`
-
-type IncrementInFlightCountParams struct {
-	ID       int64 `db:"id" json:"id"`
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) IncrementInFlightCount(ctx context.Context, arg IncrementInFlightCountParams) (int64, error) {
-	result, err := q.db.Exec(ctx, incrementInFlightCount, arg.ID, arg.TenantID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const listAccountsForRefresh = `-- name: ListAccountsForRefresh :many
-SELECT
-    pa.id,
-    pa.tenant_id,
-    pa.provider_id,
-    p.code AS vendor_name,
-    pa.expires_at
-FROM provider_accounts pa
-JOIN providers p
-  ON p.id = pa.provider_id
- AND p.tenant_id = pa.tenant_id
- AND p.deleted_at IS NULL
-WHERE pa.deleted_at IS NULL
-  AND pa.enabled
-  AND pa.health_state <> 'revoked'
-  AND (
-      pa.health_state = 'healthy'
-      OR (
-          pa.health_state IN ('throttled', 'cooldown')
-          AND pa.health_state_until IS NOT NULL
-          AND pa.health_state_until <= NOW()
-      )
-  )
-  AND (pa.expires_at IS NULL OR pa.expires_at < $1)
-ORDER BY COALESCE(pa.expires_at, NOW() + interval '1 year') ASC
-LIMIT $2
-`
-
-type ListAccountsForRefreshParams struct {
-	RefreshBefore pgtype.Timestamptz `db:"refresh_before" json:"refresh_before"`
-	LimitCount    int32              `db:"limit_count" json:"limit_count"`
-}
-
-type ListAccountsForRefreshRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID int64              `db:"provider_id" json:"provider_id"`
-	VendorName string             `db:"vendor_name" json:"vendor_name"`
-	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-}
-
-func (q *Queries) ListAccountsForRefresh(ctx context.Context, arg ListAccountsForRefreshParams) ([]ListAccountsForRefreshRow, error) {
-	rows, err := q.db.Query(ctx, listAccountsForRefresh, arg.RefreshBefore, arg.LimitCount)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAccountsForRefreshRow
-	for rows.Next() {
-		var i ListAccountsForRefreshRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.ProviderID,
-			&i.VendorName,
-			&i.ExpiresAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listEligibleAccounts = `-- name: ListEligibleAccounts :many
 WITH normalized_health AS (
     UPDATE provider_accounts pa
@@ -656,8 +265,8 @@ const listEligibleAccountsByPoolGroup = `-- name: ListEligibleAccountsByPoolGrou
 WITH target_channels AS (
     SELECT c.id
     FROM channels c
-    WHERE c.pool_group_id = $2
-      AND c.tenant_id = $1
+    WHERE c.pool_group_id = $3
+      AND c.tenant_id = $2
       AND c.enabled = true
       AND c.deleted_at IS NULL
 ),
@@ -668,7 +277,7 @@ normalized_health AS (
         health_state_until = NULL,
         updated_at = NOW()
     FROM target_channels tc
-    WHERE pa.tenant_id = $1
+    WHERE pa.tenant_id = $2
       AND pa.channel_id = tc.id
       AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
       AND pa.health_state_until IS NOT NULL
@@ -685,6 +294,7 @@ SELECT
     pa.in_flight_count,
     pa.priority,
     pa.static_weight,
+    pa.upstream_cost_ratio,
     pa.last_dispatch_at,
     pa.health_state,
     pa.health_state_until,
@@ -697,7 +307,17 @@ SELECT
     pa.max_sessions,
     pa.disable_cooling,
     pa.rpm_limit,
-    pa.tpm_limit
+    pa.tpm_limit,
+    rs.success_ewma,
+    rs.error_ewma,
+    rs.response_latency_ms_ewma,
+    rs.sample_count AS routing_signal_sample_count,
+    rs.observed_at AS routing_signal_observed_at,
+    quota.state AS upstream_quota_state,
+    CASE WHEN quota.remaining_percent IS NULL THEN false ELSE true END AS upstream_quota_remaining_known,
+    COALESCE(quota.remaining_percent, 0::double precision) AS upstream_quota_remaining_percent,
+    quota.resets_at AS upstream_quota_resets_at,
+    quota.observed_at AS upstream_quota_observed_at
 FROM provider_accounts pa
 INNER JOIN channels c
     ON c.id = pa.channel_id
@@ -707,9 +327,31 @@ INNER JOIN providers p
     ON p.id = pa.provider_id
    AND p.tenant_id = pa.tenant_id
    AND p.deleted_at IS NULL
-WHERE pa.tenant_id = $1
-  AND c.pool_group_id = $2
-  AND c.tenant_id = $1
+LEFT JOIN provider_account_routing_signals rs
+    ON rs.tenant_id = pa.tenant_id
+   AND rs.provider_account_id = pa.id
+LEFT JOIN LATERAL (
+    SELECT
+        CASE
+            WHEN bool_or(q.state = 'exhausted') THEN 'exhausted'
+            WHEN bool_or(q.state = 'available') THEN 'available'
+            WHEN bool_or(q.state = 'error') THEN 'error'
+            ELSE 'unknown'
+        END::text AS state,
+        (min(q.remaining_percent) FILTER (WHERE q.state IN ('available', 'exhausted')))::double precision AS remaining_percent,
+        (min(q.resets_at) FILTER (WHERE q.state IN ('available', 'exhausted')))::timestamptz AS resets_at,
+        max(q.observed_at)::timestamptz AS observed_at
+    FROM provider_account_quota_facts q
+    WHERE q.tenant_id = pa.tenant_id
+      AND q.provider_account_id = pa.id
+      AND q.metric_key <> 'probe_status'
+      AND (q.model_key = '' OR q.model_key = $1::text)
+      AND q.observed_at > NOW() - INTERVAL '2 hours'
+      AND (q.valid_until IS NULL OR q.valid_until > NOW())
+) quota ON true
+WHERE pa.tenant_id = $2
+  AND c.pool_group_id = $3
+  AND c.tenant_id = $2
   AND pa.enabled = true
   AND pa.deleted_at IS NULL
   -- 未设过期时间(NULL)的账号不受影响;已过期账号排除出选号候选。
@@ -719,7 +361,7 @@ WHERE pa.tenant_id = $1
       OR pa.id IN (SELECT id FROM normalized_health)
   )
   AND (cardinality(pa.model_allow_list) = 0
-       OR pa.model_allow_list @> ARRAY[$3::text])
+       OR pa.model_allow_list @> ARRAY[$1::text])
   AND ($4::text = ''
        OR p.upstream_protocol = $4::text)
   AND pa.capability_flags @> $5::text[]
@@ -742,36 +384,47 @@ ORDER BY pa.priority, pa.last_dispatch_at NULLS FIRST
 `
 
 type ListEligibleAccountsByPoolGroupParams struct {
+	RequestedModel          string   `db:"requested_model" json:"requested_model"`
 	TenantID                int64    `db:"tenant_id" json:"tenant_id"`
 	PoolGroupID             int64    `db:"pool_group_id" json:"pool_group_id"`
-	RequestedModel          string   `db:"requested_model" json:"requested_model"`
 	RequestedProtocolFamily string   `db:"requested_protocol_family" json:"requested_protocol_family"`
 	RequiredCapabilities    []string `db:"required_capabilities" json:"required_capabilities"`
 }
 
 type ListEligibleAccountsByPoolGroupRow struct {
-	ID                   int64              `db:"id" json:"id"`
-	TenantID             int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID           int64              `db:"provider_id" json:"provider_id"`
-	UpstreamProtocol     string             `db:"upstream_protocol" json:"upstream_protocol"`
-	ChannelID            int64              `db:"channel_id" json:"channel_id"`
-	CapConcurrency       int32              `db:"cap_concurrency" json:"cap_concurrency"`
-	InFlightCount        int32              `db:"in_flight_count" json:"in_flight_count"`
-	Priority             int32              `db:"priority" json:"priority"`
-	StaticWeight         int32              `db:"static_weight" json:"static_weight"`
-	LastDispatchAt       pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
-	HealthState          string             `db:"health_state" json:"health_state"`
-	HealthStateUntil     pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
-	ModelRateLimits      []byte             `db:"model_rate_limits" json:"model_rate_limits"`
-	ModelAllowList       []string           `db:"model_allow_list" json:"model_allow_list"`
-	CapabilityFlags      []string           `db:"capability_flags" json:"capability_flags"`
-	CapQueueSticky       int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
-	CapQueueFallback     int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
-	WindowCostLimitCents int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
-	MaxSessions          int32              `db:"max_sessions" json:"max_sessions"`
-	DisableCooling       bool               `db:"disable_cooling" json:"disable_cooling"`
-	RpmLimit             int64              `db:"rpm_limit" json:"rpm_limit"`
-	TpmLimit             int64              `db:"tpm_limit" json:"tpm_limit"`
+	ID                            int64              `db:"id" json:"id"`
+	TenantID                      int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID                    int64              `db:"provider_id" json:"provider_id"`
+	UpstreamProtocol              string             `db:"upstream_protocol" json:"upstream_protocol"`
+	ChannelID                     int64              `db:"channel_id" json:"channel_id"`
+	CapConcurrency                int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount                 int32              `db:"in_flight_count" json:"in_flight_count"`
+	Priority                      int32              `db:"priority" json:"priority"`
+	StaticWeight                  int32              `db:"static_weight" json:"static_weight"`
+	UpstreamCostRatio             *float64           `db:"upstream_cost_ratio" json:"upstream_cost_ratio"`
+	LastDispatchAt                pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	HealthState                   string             `db:"health_state" json:"health_state"`
+	HealthStateUntil              pgtype.Timestamptz `db:"health_state_until" json:"health_state_until"`
+	ModelRateLimits               []byte             `db:"model_rate_limits" json:"model_rate_limits"`
+	ModelAllowList                []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags               []string           `db:"capability_flags" json:"capability_flags"`
+	CapQueueSticky                int32              `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback              int32              `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	WindowCostLimitCents          int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions                   int32              `db:"max_sessions" json:"max_sessions"`
+	DisableCooling                bool               `db:"disable_cooling" json:"disable_cooling"`
+	RpmLimit                      int64              `db:"rpm_limit" json:"rpm_limit"`
+	TpmLimit                      int64              `db:"tpm_limit" json:"tpm_limit"`
+	SuccessEwma                   *float64           `db:"success_ewma" json:"success_ewma"`
+	ErrorEwma                     *float64           `db:"error_ewma" json:"error_ewma"`
+	ResponseLatencyMsEwma         *float64           `db:"response_latency_ms_ewma" json:"response_latency_ms_ewma"`
+	RoutingSignalSampleCount      *int64             `db:"routing_signal_sample_count" json:"routing_signal_sample_count"`
+	RoutingSignalObservedAt       pgtype.Timestamptz `db:"routing_signal_observed_at" json:"routing_signal_observed_at"`
+	UpstreamQuotaState            string             `db:"upstream_quota_state" json:"upstream_quota_state"`
+	UpstreamQuotaRemainingKnown   bool               `db:"upstream_quota_remaining_known" json:"upstream_quota_remaining_known"`
+	UpstreamQuotaRemainingPercent float64            `db:"upstream_quota_remaining_percent" json:"upstream_quota_remaining_percent"`
+	UpstreamQuotaResetsAt         pgtype.Timestamptz `db:"upstream_quota_resets_at" json:"upstream_quota_resets_at"`
+	UpstreamQuotaObservedAt       pgtype.Timestamptz `db:"upstream_quota_observed_at" json:"upstream_quota_observed_at"`
 }
 
 // Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
@@ -791,9 +444,9 @@ type ListEligibleAccountsByPoolGroupRow struct {
 //   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error) {
 	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup,
+		arg.RequestedModel,
 		arg.TenantID,
 		arg.PoolGroupID,
-		arg.RequestedModel,
 		arg.RequestedProtocolFamily,
 		arg.RequiredCapabilities,
 	)
@@ -814,6 +467,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.InFlightCount,
 			&i.Priority,
 			&i.StaticWeight,
+			&i.UpstreamCostRatio,
 			&i.LastDispatchAt,
 			&i.HealthState,
 			&i.HealthStateUntil,
@@ -827,6 +481,16 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 			&i.DisableCooling,
 			&i.RpmLimit,
 			&i.TpmLimit,
+			&i.SuccessEwma,
+			&i.ErrorEwma,
+			&i.ResponseLatencyMsEwma,
+			&i.RoutingSignalSampleCount,
+			&i.RoutingSignalObservedAt,
+			&i.UpstreamQuotaState,
+			&i.UpstreamQuotaRemainingKnown,
+			&i.UpstreamQuotaRemainingPercent,
+			&i.UpstreamQuotaResetsAt,
+			&i.UpstreamQuotaObservedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -836,77 +500,4 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 		return nil, err
 	}
 	return items, nil
-}
-
-const setProviderAccountModelRateLimit = `-- name: SetProviderAccountModelRateLimit :exec
-WITH updated AS (
-    UPDATE provider_accounts pa
-    SET
-        model_rate_limits = jsonb_set(
-            COALESCE(pa.model_rate_limits, '{}'::jsonb),
-            ARRAY[$4::text],
-            jsonb_build_object(
-                'rate_limit_reset_at', to_jsonb($5::timestamptz),
-                'reason', $1::text
-            ),
-            true
-        ),
-        updated_at = NOW(),
-        last_modified_by_actor = $7::text
-    WHERE pa.tenant_id = $8
-      AND pa.id = $9
-      AND pa.deleted_at IS NULL
-    RETURNING pa.tenant_id, pa.id
-)
-INSERT INTO rate_limit_audit_events (
-    tenant_id,
-    provider_account_id,
-    event_type,
-    rate_limit_reason,
-    upstream_status_code,
-    upstream_request_id,
-    payload,
-    actor_id
-)
-SELECT
-    tenant_id,
-    id,
-    'model_rate_limit_set',
-    $1::text,
-    $2::integer,
-    NULLIF($3::text, ''),
-    jsonb_build_object(
-        'model_key', $4::text,
-        'reset_at', $5::timestamptz,
-        'source_layer', $6::text
-    ),
-    $7::text
-FROM updated
-`
-
-type SetProviderAccountModelRateLimitParams struct {
-	Reason             string             `db:"reason" json:"reason"`
-	UpstreamStatusCode int32              `db:"upstream_status_code" json:"upstream_status_code"`
-	UpstreamRequestID  string             `db:"upstream_request_id" json:"upstream_request_id"`
-	ModelKey           string             `db:"model_key" json:"model_key"`
-	ResetAt            pgtype.Timestamptz `db:"reset_at" json:"reset_at"`
-	SourceLayer        string             `db:"source_layer" json:"source_layer"`
-	ActorID            string             `db:"actor_id" json:"actor_id"`
-	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderAccountID  int64              `db:"provider_account_id" json:"provider_account_id"`
-}
-
-func (q *Queries) SetProviderAccountModelRateLimit(ctx context.Context, arg SetProviderAccountModelRateLimitParams) error {
-	_, err := q.db.Exec(ctx, setProviderAccountModelRateLimit,
-		arg.Reason,
-		arg.UpstreamStatusCode,
-		arg.UpstreamRequestID,
-		arg.ModelKey,
-		arg.ResetAt,
-		arg.SourceLayer,
-		arg.ActorID,
-		arg.TenantID,
-		arg.ProviderAccountID,
-	)
-	return err
 }

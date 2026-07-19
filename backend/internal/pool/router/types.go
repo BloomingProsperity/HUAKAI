@@ -89,11 +89,14 @@ type SelectionRequest struct {
 	ModelCooldownKey string
 	// ProtocolFamily 是 registry 解析所请求的确切上游协议,
 	// 与 providers.upstream_protocol 对应。
-	ProtocolFamily   string
-	EndpointFamily   string
-	CapabilityFlags  []string
-	SessionHash      string
-	ContinuationKey  string
+	ProtocolFamily  string
+	EndpointFamily  string
+	CapabilityFlags []string
+	SessionHash     string
+	ContinuationKey string
+	// RequestID 是一次入口请求在所有重试之间稳定不变的标识，用于健康恢复放量等
+	// 需要“同一请求始终作出同一决定”的场景；不得填入每次 attempt 的局部标识。
+	RequestID        string
 	ExcludedAccounts map[int64]struct{}
 	PinnedAccountID  int64
 	AttemptSeq       int
@@ -183,15 +186,17 @@ type AccountSnapshot struct {
 	Priority       int
 	// Weight 控制 priority_weighted 同分带的选号。0/未设置会被当作 1,
 	// 使旧的账号来源保持均匀行为。
-	Weight           int32
-	LoadRate         float64
-	LastUsedAt       time.Time
-	MaxConcurrency   int
-	WaitTimeoutMS    int
-	MaxWaiting       int
-	HealthState      string
-	HealthStateUntil time.Time
-	ModelRateLimits  map[string]ModelRateLimit
+	Weight int32
+	// UpstreamCostRatio 是运营者确认的相对上游成本；nil 表示未知且评分中性。
+	UpstreamCostRatio *float64
+	LoadRate          float64
+	LastUsedAt        time.Time
+	MaxConcurrency    int
+	WaitTimeoutMS     int
+	MaxWaiting        int
+	HealthState       string
+	HealthStateUntil  time.Time
+	ModelRateLimits   map[string]ModelRateLimit
 	// WindowCostLimitCents 是运营者配置的 5 小时会话窗口消费上限,单位为分
 	// (1/100 美元)。0 或负数表示不限(选择性开启)。
 	WindowCostLimitCents int64
@@ -207,6 +212,17 @@ type AccountSnapshot struct {
 	// TPMLimit 是运营者为该账号配置的主动 tokens-per-minute 预算(ROUTE-121)。
 	// 0 或负数表示不限(选择性开启)。
 	TPMLimit int64
+	// 路由反馈和额度事实来自 PostgreSQL 共享投影；时间过期或字段未知时评分保持中性。
+	SuccessEWMA                 float64
+	ErrorEWMA                   float64
+	ResponseLatencyMSEWMA       float64
+	RoutingSignalSampleCount    int64
+	RoutingSignalObservedAt     time.Time
+	UpstreamQuotaState          string
+	UpstreamQuotaRemainingKnown bool
+	UpstreamQuotaRemaining      float64
+	UpstreamQuotaResetsAt       time.Time
+	UpstreamQuotaObservedAt     time.Time
 }
 
 type ModelRateLimit struct {

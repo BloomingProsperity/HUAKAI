@@ -54,9 +54,12 @@ func TestOpenAICodexRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 		return openAICodexJSONResponse(http.StatusOK, `{
 			"access_token":"codex-access-new",
 			"refresh_token":"codex-refresh-new",
-			"token_type":"Bearer",
-			"expires_in":1200,
-			"scope":"server scope"
+				"token_type":"Bearer",
+				"expires_in":1200,
+				"scope":"server scope",
+				"chatgpt_plan_type":"Plus",
+				"chatgpt_user_id":"user-new",
+				"chatgpt_account_id":"account-new"
 		}`), nil
 	})}
 
@@ -92,6 +95,9 @@ func TestOpenAICodexRefreshAdapterUsesOnlyOperatorOAuthConfig(t *testing.T) {
 	}
 	if got["scope"] != "server scope" {
 		t.Fatalf("scope=%q, want server returned scope after operator-scoped request", got["scope"])
+	}
+	if got["chatgpt_plan_type"] != "Plus" || got["chatgpt_user_id"] != "user-new" || got["chatgpt_account_id"] != "account-new" {
+		t.Fatalf("刷新响应中的套餐与账号元数据未写回：%v", got)
 	}
 }
 
@@ -280,7 +286,7 @@ type recordingOpenAICodexRefreshTx struct {
 }
 
 func (tx *recordingOpenAICodexRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

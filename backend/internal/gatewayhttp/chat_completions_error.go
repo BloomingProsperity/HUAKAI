@@ -16,12 +16,15 @@ import (
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 const (
@@ -251,6 +254,45 @@ func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 	}()
 }
 
+// classifyAgentTaskInvalid 把明确的任务失效从普通鉴权失败中分离出来。
+// 该错误可在同一账号上修复，因此不触发普通 OAuth 后台刷新，也不消耗鉴权换号预算。
+func (ex *chatExecution) classifyAgentTaskInvalid(statusCode int, body []byte, decision *gateway.AttemptRetryDecision) bool {
+	if ex == nil || decision == nil || ex.accInfo.AccountType != credentialstore.AuthModeCodexAgent ||
+		!codexagent.IsTaskInvalidResponse(statusCode, body) {
+		return false
+	}
+	decision.RetryableBeforeDelivery = true
+	decision.SwitchAccount = true
+	decision.RefreshIntent = gateway.RefreshNone
+	decision.CountsAgainstAuthFailoverBudget = false
+	decision.AbortReason = "agent_task_invalid"
+	return true
+}
+
+func (ex *chatExecution) retryAfterAgentTaskRecovery(w http.ResponseWriter, outcome attemptOutcome, in attemptInput, used *bool, attemptSeq *int) attemptOutcome {
+	if ex == nil || outcome.Failure == nil || !outcome.Failure.AgentTaskInvalid || used == nil || *used ||
+		ex.d.AgentTaskRecoverer == nil || outcome.AccountID == 0 {
+		return outcome
+	}
+	ctx, cancel := context.WithTimeout(ex.ctx, credentialHotRefreshTimeout)
+	err := ex.d.AgentTaskRecoverer.RecoverAgentTask(ctx, ex.ident.TenantID, outcome.AccountID, ex.accInfo.CredentialVersion)
+	cancel()
+	if err != nil {
+		logInternalError(ex.ctx, ex.requestID, "agent_task_recovery_failed", err)
+		return outcome
+	}
+	*used = true
+	clearRetryableAttemptFailureHeaders(w)
+	ex.prepareNextAttemptAfterAbort()
+	if attemptSeq != nil {
+		*attemptSeq = *attemptSeq + 1
+		in.AttemptSeq = *attemptSeq
+	} else {
+		in.AttemptSeq++
+	}
+	return ex.runAttempt(w, in)
+}
+
 func signalFromDispatchError(err error, c gateway.Classification) channelhealth.SignalClass {
 	if dispatchErrorIsInfrastructure(err) {
 		return ""
@@ -295,27 +337,47 @@ func rateLimitResetFromClassification(c gateway.Classification, now time.Time) *
 	return &reset
 }
 
-func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.UpstreamHTTPError, classification gateway.Classification, applyAccountCooldown bool) bool {
+type upstreamErrorPolicyOutcome struct {
+	ModelScoped    bool
+	UpstreamStatus int
+	Decision       rate.Decision
+	HasDecision    bool
+}
+
+func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.UpstreamHTTPError, classification gateway.Classification, applyAccountCooldown bool) upstreamErrorPolicyOutcome {
+	var outcome upstreamErrorPolicyOutcome
 	if ex == nil || upstreamErr == nil {
-		return false
+		return outcome
 	}
+	outcome.UpstreamStatus = upstreamErr.StatusCode
 	dec, hasDecision := ex.upstreamRateDecision(upstreamErr)
+	outcome.Decision = dec
+	outcome.HasDecision = hasDecision
 	if hasDecision && dec.SuppressLocalState {
-		return true
+		outcome.ModelScoped = true
+		return outcome
+	}
+	// 账号规则可以命中任意状态码；规则明确要求整号暂不可调度时，不能受内置
+	// 状态码白名单限制，否则 400/403/404 规则只改响应、不影响下一次选号。
+	if hasDecision && dec.StateChange == rate.StateTempUnsched {
+		if applyAccountCooldown {
+			ex.forceCooldownFromDecision(dec)
+		}
+		return outcome
 	}
 	if upstreamErr.StatusCode == http.StatusNotFound {
 		recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, nil, rate.ReasonModelLimitExceeded)
-		return false
+		return outcome
 	}
 	if upstreamErr.StatusCode == http.StatusTooManyRequests {
 		if classification.Class != gateway.ErrorClassRateLimited {
-			return false
+			return outcome
 		}
 		if hasDecision && dec.StateChange != rate.StateNoChange && dec.StateChange != rate.StateRateLimited {
 			if applyAccountCooldown {
 				ex.forceCooldownFromDecision(dec)
 			}
-			return false
+			return outcome
 		}
 		resetAt := rateLimitResetFromClassification(classification, time.Now())
 		reason := rate.ReasonRateLimitRPM
@@ -331,12 +393,38 @@ func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.Upstrea
 		// 只有模型格确实写成功才抑制整号健康信号;写失败/未接线(ModelCooldowns nil、
 		// modelKey 空、DB 落库报错)时返回 false,让调用方回落 recordChannelHealthSignal——
 		// 否则纯 429 会既没写模型格又跳过账号健康,该账号该模型零冷却、被立刻重选反复挨限速。
-		return recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, resetAt, reason)
+		outcome.ModelScoped = recordModelCooldownFromUpstreamError(ex.ctx, ex.d, ex.ident.TenantID, ex.acquiredAccountID, ex.upstreamModelID, upstreamErr.StatusCode, ex.requestID, resetAt, reason)
+		return outcome
 	}
 	if applyAccountCooldown && hasDecision && upstreamRateCooldownCandidate(upstreamErr.StatusCode) {
 		ex.forceCooldownFromDecision(dec)
 	}
-	return false
+	return outcome
+}
+
+func (ex *chatExecution) applyAccountErrorPolicy(decision *gateway.AttemptRetryDecision, classification gateway.Classification, outcome upstreamErrorPolicyOutcome) bool {
+	if ex == nil || !outcome.HasDecision {
+		return false
+	}
+	account := ex.accInfo
+	if account.AccountID == 0 {
+		account.AccountID = ex.acquiredAccountID
+	}
+	return upstreamfeedback.ApplyAccountPolicy(
+		ex.ctx,
+		nil,
+		upstreamfeedback.Attempt{
+			TenantID:       ex.ident.TenantID,
+			Account:        account,
+			ProtocolFamily: ex.resolved.ProtocolFamily,
+			ModelKey:       ex.upstreamModelID,
+			RequestID:      ex.requestID,
+		},
+		outcome.UpstreamStatus,
+		decision,
+		classification,
+		outcome.Decision,
+	)
 }
 
 func (ex *chatExecution) upstreamRateDecision(upstreamErr *gateway.UpstreamHTTPError) (rate.Decision, bool) {

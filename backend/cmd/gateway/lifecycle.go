@@ -18,12 +18,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
+	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/servermonitor"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageretention"
@@ -39,6 +41,7 @@ type contextWorkerWaiter struct {
 type gatewayRuntime struct {
 	deps                        *deps
 	pgPool                      *pgxpool.Pool
+	readiness                   *healthhttp.Readiness
 	cancelWorkers               context.CancelFunc
 	contextWorkerWaiters        []contextWorkerWaiter
 	selectorCleanup             func()
@@ -64,19 +67,29 @@ type gatewayRuntime struct {
 	subscriptionAutoRenewWorker *subscription.AutoRenewWorker
 	hermesInspectionWorker      *hermesadmin.InspectionWorker
 	mediaTaskWorker             *mediatask.Worker
+	serverMonitorWorker         *servermonitor.Worker
 	obsDLQEnabled               bool
 	outboxRuntime               obsoutbox.RuntimeConfig
 	// logSinkStop 停止运行日志落库 worker 并等 drain;必须在其余 worker 都停完、
 	// 关 DB 之前调用,否则停机窗口产生的 warn/error 会滞留队列丢失。
-	logSinkStop func()
+	logSinkStop           func()
+	closeInboundRateLimit func() error
 }
 
 func (rt *gatewayRuntime) close() {
 	if rt == nil {
 		return
 	}
+	if rt.readiness != nil {
+		rt.readiness.BeginDrain()
+	}
 	if rt.cancelWorkers != nil {
 		rt.cancelWorkers()
+	}
+	if rt.serverMonitorWorker != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = rt.serverMonitorWorker.Stop(stopCtx)
+		cancel()
 	}
 	if rt.closeReplica != nil {
 		rt.closeReplica()
@@ -139,6 +152,9 @@ func (rt *gatewayRuntime) close() {
 	if rt.logSinkStop != nil {
 		rt.logSinkStop()
 	}
+	if rt.closeInboundRateLimit != nil {
+		_ = rt.closeInboundRateLimit()
+	}
 	if rt.pgPool != nil {
 		rt.pgPool.Close()
 	}
@@ -190,11 +206,20 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	// (Settler 写账, CompletionBus 派 event, Outbox 投 DLQ); deps 已停 →
 	// handler 出错 / 静默丢消息。正确顺序: 先 srv.Shutdown 等 in-flight handler
 	// drain 完, 再依次停 dep workers, 最后 close DB pool (defer rt.close)。
+	if rt != nil && rt.readiness != nil {
+		rt.readiness.BeginDrain()
+	}
 	httpShutdownCtx, httpShutdownCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer httpShutdownCancel()
 	httpShutdownErr := srv.Shutdown(httpShutdownCtx)
 	if rt != nil && rt.cancelWorkers != nil {
 		rt.cancelWorkers()
+	}
+	var serverMonitorStopErr error
+	if rt != nil && rt.serverMonitorWorker != nil {
+		monitorCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		serverMonitorStopErr = rt.serverMonitorWorker.Stop(monitorCtx)
+		cancel()
 	}
 
 	// in-flight 已 drain, 现在停 worker 依次按 budget 独立计时, 不串行共享
@@ -269,6 +294,7 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 		wrapIfErr("stop completion eventbus", eventBusStopErr),
 		wrapIfErr("stop observability DLQ worker", dlqStopErr),
 		wrapIfErr("stop async outbox worker", outboxStopErr),
+		wrapIfErr("stop server monitor worker", serverMonitorStopErr),
 		wrapIfErr("wait context workers", contextWorkerWaitErr),
 	)
 }

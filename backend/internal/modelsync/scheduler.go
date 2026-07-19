@@ -2,6 +2,7 @@ package modelsync
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -11,9 +12,15 @@ type Syncer interface {
 	Sync(context.Context, string) (SyncResult, error)
 }
 
+// LeaderLease 保证定时模型同步在多副本部署中每轮只有一个执行者。
+type LeaderLease interface {
+	TryAcquire(context.Context) (bool, func(), error)
+}
+
 type SchedulerConfig struct {
-	Interval   time.Duration
-	RunOnStart bool
+	Interval    time.Duration
+	RunOnStart  bool
+	LeaderLease LeaderLease
 }
 
 type SchedulerStatus struct {
@@ -23,8 +30,9 @@ type SchedulerStatus struct {
 }
 
 type Scheduler struct {
-	service Syncer
-	cfg     SchedulerConfig
+	service     Syncer
+	cfg         SchedulerConfig
+	leaderLease LeaderLease
 
 	statusMu sync.Mutex
 	status   SchedulerStatus
@@ -38,7 +46,7 @@ func NewScheduler(service Syncer, cfg SchedulerConfig) *Scheduler {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 3 * time.Hour
 	}
-	return &Scheduler{service: service, cfg: cfg}
+	return &Scheduler{service: service, cfg: cfg, leaderLease: cfg.LeaderLease}
 }
 
 func (s *Scheduler) Start(ctx context.Context) func() {
@@ -96,6 +104,30 @@ func (s *Scheduler) run(ctx context.Context) {
 }
 
 func (s *Scheduler) runSync(ctx context.Context, reason string) {
+	if s.leaderLease != nil {
+		acquired, release, err := s.leaderLease.TryAcquire(ctx)
+		if err != nil {
+			slog.WarnContext(ctx, "model catalog sync leader lease failed",
+				"component", "model_sync_scheduler",
+				"reason", reason,
+				"error", err.Error())
+			s.recordStatus(err)
+			return
+		}
+		if !acquired {
+			return
+		}
+		if release == nil {
+			err := errors.New("model sync scheduler: leader lease returned no release")
+			slog.WarnContext(ctx, "model catalog sync leader lease invalid",
+				"component", "model_sync_scheduler",
+				"reason", reason,
+				"error", err.Error())
+			s.recordStatus(err)
+			return
+		}
+		defer release()
+	}
 	_, err := s.service.Sync(ctx, reason)
 	if err != nil {
 		slog.WarnContext(ctx, "model catalog sync failed",

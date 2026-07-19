@@ -8,6 +8,19 @@ SELECT
     COALESCE(current_ac.auth_mode, '')::text AS credential_auth_mode,
     current_ac.project_ref AS credential_project_ref,
     COALESCE(current_ac.serving_credential_candidates, 0)::integer AS serving_credential_candidates,
+    subscription_state.vendor AS subscription_vendor,
+    subscription_state.normalized_plan AS subscription_plan,
+    subscription_state.raw_plan AS subscription_raw_plan,
+    subscription_state.scope_kind AS subscription_scope,
+    subscription_state.source_type AS subscription_source,
+    subscription_state.trust_level AS subscription_trust,
+    subscription_state.verification_status AS subscription_verification,
+    subscription_state.state_status AS subscription_status,
+    subscription_state.mapping_version AS subscription_mapping_version,
+    subscription_state.error_class AS subscription_error_class,
+    subscription_state.first_observed_at AS subscription_first_observed_at,
+    subscription_state.observed_at AS subscription_observed_at,
+    subscription_state.changed_at AS subscription_changed_at,
     pa.health_state,
     pa.health_state_until,
     pa.enabled,
@@ -36,6 +49,10 @@ SELECT
     pa.last_probe_at,
     pa.last_request_observed_at,
     pa.model_sync_last_check_at,
+    pa.quota_snapshot_observed_at,
+    pa.quota_snapshot_source,
+    pa.quota_snapshot_outcome,
+    pa.quota_snapshot_error_class,
     pa.session_window_5h_start,
     pa.session_window_5h_end,
     pa.session_window_5h_status,
@@ -44,6 +61,29 @@ SELECT
     pa.session_window_7d_end,
     pa.session_window_7d_status,
     pa.session_window_7d_utilization,
+    COALESCE((
+        SELECT jsonb_agg(
+            jsonb_build_object(
+                'metric_key', q.metric_key,
+                'model_key', q.model_key,
+                'state', q.state,
+                'used_value', q.used_value,
+                'limit_value', q.limit_value,
+                'remaining_value', q.remaining_value,
+                'unit', q.unit,
+                'utilization_percent', q.utilization_percent,
+                'remaining_percent', q.remaining_percent,
+                'resets_at', q.resets_at,
+                'observed_at', q.observed_at,
+                'valid_until', q.valid_until,
+                'source', q.source,
+                'error_class', q.error_class
+            ) ORDER BY q.metric_key, q.model_key
+        )
+        FROM provider_account_quota_facts q
+        WHERE q.tenant_id = pa.tenant_id
+          AND q.provider_account_id = pa.id
+    ), '[]'::jsonb)::text AS quota_facts,
     COALESCE(refresh_ac.last_refresh_at, pa.last_refresh_at) AS last_refresh_at,
     COALESCE(refresh_ac.last_refresh_outcome, pa.last_refresh_outcome) AS last_refresh_outcome,
     refresh_ac.failure_class,
@@ -53,6 +93,9 @@ FROM provider_accounts pa
 LEFT JOIN providers p
   ON p.id = pa.provider_id
  AND p.tenant_id = pa.tenant_id
+LEFT JOIN provider_account_subscription_states subscription_state
+  ON subscription_state.tenant_id = pa.tenant_id
+ AND subscription_state.provider_account_id = pa.id
 LEFT JOIN LATERAL (
     SELECT
         vendor,

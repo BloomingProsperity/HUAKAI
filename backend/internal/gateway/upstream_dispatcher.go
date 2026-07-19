@@ -339,7 +339,7 @@ type TLSProfileResolver interface {
 // 没有绑定时保留内置 profile；显式绑定的坏数据、数据库故障或非 sidecar transport
 // 都明确失败，避免静默换用另一套 ClientHello。
 func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) (http.RoundTripper, error) {
-	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard || !transport.MimicryEnabled() {
+	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard {
 		return rt, nil
 	}
 	profile, err := d.TLSProfileResolver.ResolveProfile(ctx, accountID)

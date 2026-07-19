@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestServiceSyncAddsNewUpstreamModelToRegistry(t *testing.T) {
+func TestServiceSyncReportsNewUpstreamModelWithoutMakingItAvailable(t *testing.T) {
 	ctx := context.Background()
 	store := newMemoryRegistry()
 	svc := NewService(ServiceConfig{
@@ -34,13 +34,13 @@ func TestServiceSyncAddsNewUpstreamModelToRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync returned error: %v", err)
 	}
-	if result.TotalAdded != 1 {
-		t.Fatalf("TotalAdded=%d want 1 result=%+v", result.TotalAdded, result)
+	if result.TotalDiscovered != 1 || result.TotalAdded != 0 {
+		t.Fatalf("result=%+v want one discovery and no automatic add", result)
 	}
-	if !store.available["openai/gpt-new-sync"] {
-		t.Fatalf("new upstream model missing from registry after sync: %+v", store.available)
+	if store.available["openai/gpt-new-sync"] {
+		t.Fatalf("new upstream model became available before promotion: %+v", store.available)
 	}
-	if got := store.models["openai/gpt-new-sync"].ContextWindow; got != 128000 {
+	if got := store.discoveries["openai/gpt-new-sync"].ContextWindow; got != 128000 {
 		t.Fatalf("context window=%d want refreshed upstream value", got)
 	}
 }
@@ -185,8 +185,8 @@ func TestServiceSyncPassesReasonAndActorToBatchStore(t *testing.T) {
 	if store.lastOptions.Reason != "manual reason" || store.lastOptions.Actor != "admin_token:42" {
 		t.Fatalf("options=%+v want reason and actor propagated", store.lastOptions)
 	}
-	if result.TotalAdded != 2 {
-		t.Fatalf("TotalAdded=%d want 2 result=%+v", result.TotalAdded, result)
+	if result.TotalDiscovered != 2 || result.TotalAdded != 0 {
+		t.Fatalf("result=%+v want two discoveries and no automatic add", result)
 	}
 }
 
@@ -216,8 +216,8 @@ func TestServiceSyncIdenticalCatalogDoesNotReportRuntimeRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Sync returned error: %v", err)
 	}
-	if first.TotalAdded != 1 {
-		t.Fatalf("first TotalAdded=%d want 1 result=%+v", first.TotalAdded, first)
+	if first.TotalDiscovered != 1 || first.TotalAdded != 0 {
+		t.Fatalf("first result=%+v want one discovery", first)
 	}
 
 	second, err := svc.Sync(ctx, "unit-test")
@@ -239,17 +239,19 @@ func (f fetcherFunc) FetchCatalog(ctx context.Context) (Catalog, error) {
 }
 
 type memoryRegistry struct {
-	models     map[string]Model
-	available  map[string]bool
-	deleted    map[string]bool
-	applyCalls int
+	models      map[string]Model
+	discoveries map[string]Model
+	available   map[string]bool
+	deleted     map[string]bool
+	applyCalls  int
 }
 
 func newMemoryRegistry() *memoryRegistry {
 	return &memoryRegistry{
-		models:    map[string]Model{},
-		available: map[string]bool{},
-		deleted:   map[string]bool{},
+		models:      map[string]Model{},
+		discoveries: map[string]Model{},
+		available:   map[string]bool{},
+		deleted:     map[string]bool{},
 	}
 }
 
@@ -263,8 +265,16 @@ func (s *memoryRegistry) ApplyVendorCatalog(_ context.Context, catalog Catalog, 
 		incoming[key] = model
 		existing, existed := s.models[key]
 		if !existed {
-			out.Added++
-			s.models[key] = model
+			discovered, seen := s.discoveries[key]
+			s.discoveries[key] = model
+			if !seen {
+				out.Discovered++
+			} else if !reflect.DeepEqual(discovered, model) {
+				out.DiscoveryUpdated++
+			} else {
+				out.Unchanged++
+			}
+			continue
 		} else if !s.available[key] {
 			out.Reactivated++
 			s.models[key] = model

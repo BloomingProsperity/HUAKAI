@@ -151,6 +151,11 @@ func validateOpenAICodexOperatorDeviceCodeConfig(cfg OAuthClientConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: openai codex operator device-code config missing %s", ErrFeatureDisabled, strings.Join(missing, ","))
 	}
+	for _, endpoint := range []struct{ name, raw string }{{"device_authorization_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}} {
+		if err := validateOAuthEndpointURL(endpoint.raw); err != nil {
+			return fmt.Errorf("%w: openai codex %s rejected (%v)", ErrFeatureDisabled, endpoint.name, err)
+		}
+	}
 	return nil
 }
 
@@ -161,14 +166,6 @@ func hasOAuthScope(scopes []string) bool {
 		}
 	}
 	return false
-}
-
-type DeviceCodeOption func(*deviceCodeOptions)
-
-type deviceCodeOptions struct {
-	client *http.Client
-	now    func() time.Time
-	sleep  func(context.Context, time.Duration) error
 }
 
 func WithDeviceCodeHTTPClient(client *http.Client) DeviceCodeOption {
@@ -196,6 +193,9 @@ func WithDeviceCodeSleeper(sleep func(context.Context, time.Duration) error) Dev
 }
 
 func PollDeviceCodeToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {
+	if err := validateDeviceCodePollEndpoints(session, cfg); err != nil {
+		return CredentialCandidate{}, err
+	}
 	if credentialstore.Normalize(session.Vendor) == credentialstore.VendorOpenAI &&
 		credentialstore.Normalize(session.AuthMode) == credentialstore.AuthModeCodexCLIOAuth &&
 		stringFromPayload(session.DeviceCodePayload, "device_auth_id") != "" {
@@ -456,30 +456,35 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 			"grantType":   oauthDeviceCodeGrantType,
 		}, &response)
 		if err != nil {
-			return CredentialCandidate{}, err
+			return CredentialCandidate{}, classifyDevicePollRequestError(err)
 		}
 		if token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken")); token != "" {
 			raw, err := normalizedTokenPayload(response, token)
 			if err != nil {
 				return CredentialCandidate{}, err
 			}
-			return CredentialCandidate{
-				TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
-				Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
-			}, nil
+			return candidateFromDeviceTokenPayload(session, raw), nil
 		}
 		pollErr := strings.TrimSpace(firstNonEmpty(stringField(response, "error"), stringField(response, "errorCode")))
 		switch pollErr {
 		case "authorization_pending", "authorizationPending":
 		case "slow_down", "slowDown":
 			interval += deviceCodeSlowDownStep
+		case "access_denied", "accessDenied":
+			return CredentialCandidate{}, ErrDeviceAccessDenied
 		case "expired_token", "expiredToken":
 			return CredentialCandidate{}, ErrFlowExpired
 		default:
+			if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+				return CredentialCandidate{}, ErrDevicePollTransient
+			}
 			if status < 200 || status >= 300 {
-				return CredentialCandidate{}, fmt.Errorf("credentialacq: token poll returned status %d", status)
+				return CredentialCandidate{}, fmt.Errorf("%w: token poll returned status %d", ErrInvalidTokenShape, status)
 			}
 			return CredentialCandidate{}, fmt.Errorf("%w: token poll response missing access token", ErrInvalidTokenShape)
+		}
+		if options.singleAttempt {
+			return CredentialCandidate{}, &DevicePollPendingError{RetryAfter: interval}
 		}
 		if err := options.sleep(ctx, interval); err != nil {
 			return CredentialCandidate{}, err
@@ -517,23 +522,31 @@ func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Sessio
 			"user_code":      userCode,
 		}, &response)
 		if err != nil {
-			return CredentialCandidate{}, err
+			return CredentialCandidate{}, classifyDevicePollRequestError(err)
 		}
 		pollErr := strings.TrimSpace(firstNonEmpty(stringField(response, "error"), stringField(response, "errorCode")))
 		switch pollErr {
 		case "authorization_pending", "authorizationPending":
+			if options.singleAttempt {
+				return CredentialCandidate{}, &DevicePollPendingError{RetryAfter: interval}
+			}
 			if err := options.sleep(ctx, interval); err != nil {
 				return CredentialCandidate{}, err
 			}
 			continue
 		case "slow_down", "slowDown":
 			interval += deviceCodeSlowDownStep
+			if options.singleAttempt {
+				return CredentialCandidate{}, &DevicePollPendingError{RetryAfter: interval}
+			}
 			if err := options.sleep(ctx, interval); err != nil {
 				return CredentialCandidate{}, err
 			}
 			continue
 		case "expired_token", "expiredToken":
 			return CredentialCandidate{}, ErrFlowExpired
+		case "access_denied", "accessDenied":
+			return CredentialCandidate{}, ErrDeviceAccessDenied
 		}
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			if token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken")); token != "" {
@@ -541,10 +554,7 @@ func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Sessio
 				if err != nil {
 					return CredentialCandidate{}, err
 				}
-				return CredentialCandidate{
-					TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
-					Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
-				}, nil
+				return candidateFromDeviceTokenPayload(session, raw), nil
 			}
 			authCode := stringField(response, "authorization_code")
 			verifier := stringField(response, "code_verifier")
@@ -555,13 +565,16 @@ func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Sessio
 			if err != nil {
 				return CredentialCandidate{}, err
 			}
-			return CredentialCandidate{
-				TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
-				Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
-			}, nil
+			return candidateFromDeviceTokenPayload(session, raw), nil
+		}
+		if status == http.StatusTooManyRequests || status >= http.StatusInternalServerError {
+			return CredentialCandidate{}, ErrDevicePollTransient
 		}
 		if status != http.StatusForbidden && status != http.StatusNotFound {
-			return CredentialCandidate{}, fmt.Errorf("credentialacq: openai codex device token poll returned status %d", status)
+			return CredentialCandidate{}, fmt.Errorf("%w: openai codex device token poll returned status %d", ErrInvalidTokenShape, status)
+		}
+		if options.singleAttempt {
+			return CredentialCandidate{}, &DevicePollPendingError{RetryAfter: interval}
 		}
 		if err := options.sleep(ctx, interval); err != nil {
 			return CredentialCandidate{}, err
@@ -579,7 +592,10 @@ func exchangeOpenAICodexAuthorizationCode(ctx context.Context, client *http.Clie
 	exchangeURL := firstNonEmpty(stringFromPayload(payload, "oauth_token_url"), resolveOpenAICodexOAuthTokenURL(firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))))
 	var response map[string]any
 	if _, err := postFormJSON(ctx, client, exchangeURL, form, &response); err != nil {
-		return nil, err
+		if errors.Is(err, ErrResponseTooLarge) || errors.Is(err, ErrFeatureDisabled) {
+			return nil, err
+		}
+		return nil, ErrDeviceExchangeAmbiguous
 	}
 	token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken"))
 	if token == "" {
@@ -615,9 +631,12 @@ func postJSONStatus(ctx context.Context, client *http.Client, url string, body m
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, oauthFormResponseMaxBytes+1))
 	if err != nil {
 		return resp.StatusCode, err
+	}
+	if len(respBody) > oauthFormResponseMaxBytes {
+		return resp.StatusCode, ErrResponseTooLarge
 	}
 	if len(respBody) > 0 && out != nil {
 		if err := json.Unmarshal(respBody, out); err != nil {
@@ -662,12 +681,30 @@ func postFormJSON(ctx context.Context, client *http.Client, rawURL string, form 
 
 func normalizedTokenPayload(response map[string]any, accessToken string) ([]byte, error) {
 	payload := map[string]any{"access_token": strings.TrimSpace(accessToken)}
-	for _, key := range []string{"refresh_token", "refreshToken", "token_type", "tokenType", "expires_in", "expiresIn"} {
-		if value, ok := response[key]; ok {
-			payload[key] = value
+	copyFirstStringField(payload, response, "refresh_token", "refresh_token", "refreshToken")
+	copyFirstStringField(payload, response, "id_token", "id_token", "idToken")
+	copyFirstStringField(payload, response, "token_type", "token_type", "tokenType")
+	copyFirstStringField(payload, response, "scope", "scope")
+	copyFirstStringField(payload, response, "chatgpt_plan_type", "chatgpt_plan_type", "plan_type", "subscription_plan")
+	copyFirstStringField(payload, response, "chatgpt_account_id", "chatgpt_account_id", "account_id", "accountId")
+	copyFirstStringField(payload, response, "chatgpt_user_id", "chatgpt_user_id", "user_id", "userId")
+	copyFirstStringField(payload, response, "email", "email")
+	for _, key := range []string{"expires_in", "expiresIn"} {
+		if value, ok := response[key]; ok && value != nil {
+			payload["expires_in"] = value
+			break
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func copyFirstStringField(out, in map[string]any, target string, aliases ...string) {
+	for _, alias := range aliases {
+		if value := stringField(in, alias); value != "" {
+			out[target] = value
+			return
+		}
+	}
 }
 
 func mergeRedactedContext(base map[string]any, extra map[string]any) map[string]any {
@@ -757,5 +794,5 @@ func resolveOpenAICodexOAuthTokenURL(deviceTokenURL string) string {
 // (拦截 169.254.169.254 / 内网 / loopback),因为 auth_url/token_url 是运维/admin 提供的,裸
 // http.DefaultClient 会让恶意端点把请求打到内网/元数据服务。与 oauth_authorization_code.go 一致。
 func defaultDeviceCodeHTTPClient() *http.Client {
-	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
+	return auth.NewSSRFProtectedOAuthClient(&http.Client{Timeout: 30 * time.Second})
 }

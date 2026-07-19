@@ -19,7 +19,7 @@ type AccountRepository interface {
 type SlotAcquisitionRepository interface {
 	InsertSlotAcquisition(ctx context.Context, arg dbbilling.InsertSlotAcquisitionParams) (int64, error)
 	ReleaseSlotAcquisition(ctx context.Context, arg dbbilling.ReleaseSlotAcquisitionParams) error
-	ListOrphanedAcquisitions(ctx context.Context) ([]dbbilling.PoolSlotAcquisition, error)
+	ListOrphanedAcquisitions(ctx context.Context) ([]dbbilling.ListOrphanedAcquisitionsRow, error)
 }
 
 // StickyBindingRepository 存储 session 到账号的亲和性(affinity)。
@@ -70,7 +70,7 @@ func (r *DBRepository) ReleaseSlotAcquisition(ctx context.Context, arg dbbilling
 	return r.q.ReleaseSlotAcquisition(ctx, arg)
 }
 
-func (r *DBRepository) ListOrphanedAcquisitions(ctx context.Context) ([]dbbilling.PoolSlotAcquisition, error) {
+func (r *DBRepository) ListOrphanedAcquisitions(ctx context.Context) ([]dbbilling.ListOrphanedAcquisitionsRow, error) {
 	return r.q.ListOrphanedAcquisitions(ctx)
 }
 

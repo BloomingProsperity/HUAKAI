@@ -11,6 +11,7 @@ type policySnapshotRecord struct {
 	ID             int64  `json:"id"`
 	ScopeKind      string `json:"scope_kind"`
 	ScopeID        string `json:"scope_id"`
+	ModelSelector  string `json:"model_selector"`
 	Metric         string `json:"metric"`
 	WindowKind     string `json:"window_kind"`
 	WindowStart    string `json:"window_start,omitempty"`
@@ -25,13 +26,14 @@ func marshalPolicySnapshot(policies []Policy, reservedAmounts map[policyMetricKe
 	records := make([]policySnapshotRecord, 0, len(policies))
 	for _, policy := range policies {
 		record := policySnapshotRecord{
-			ID:         policy.ID,
-			ScopeKind:  string(policy.Scope.Kind),
-			ScopeID:    normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
-			Metric:     string(policy.Metric),
-			WindowKind: string(policy.Window.Kind),
-			LimitValue: policy.LimitValue.String(),
-			Mode:       string(policy.Mode),
+			ID:            policy.ID,
+			ScopeKind:     string(policy.Scope.Kind),
+			ScopeID:       normalizeScopeID(policy.Scope.Kind, policy.Scope.ID),
+			ModelSelector: normalizeModelSelector(policy.ModelSelector),
+			Metric:        string(policy.Metric),
+			WindowKind:    string(policy.Window.Kind),
+			LimitValue:    policy.LimitValue.String(),
+			Mode:          string(policy.Mode),
 		}
 		if amount, ok := reservedAmounts[policyMetricKey{policyID: policy.ID, metric: policy.Metric}]; ok {
 			record.ReservedAmount = amount.String()

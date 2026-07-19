@@ -15,8 +15,8 @@ import (
 //     同时过期也不会把某一家厂商的 OAuth token endpoint 冲垮。
 //   - global: 一个进程级 bucket, 作为最后一道兜底上限。
 //
-// 二者都是进程级 (per-replica)。这是本切片有意的取舍: 它无需改 schema,
-// 而持久化的 account budget 已能防住最坏情况。跨副本的 endpoint/global budget 是后续工作。
+// 本文件只保留单实例开发模式的内存实现。生产接线使用共享存储，使两个 scope
+// 在所有副本间共同消费预算。
 //
 // 这些 bucket 是层内原语, 有意不复用请求路径上的
 // gateway.TokenBucket: credential worker (以及它所依赖的这层 auth)

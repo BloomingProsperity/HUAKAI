@@ -476,7 +476,7 @@ func copilotTransportModeDispatcher(t *testing.T, responseBody string) (*selecti
 	mimicry := &selectiveTransportRoundTripper{responseBody: responseBody}
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
-	factory.SetMimicry(mimicry)
+	factory.SetSidecarForTesting(mimicry)
 
 	adapters := provider.NewStaticRegistry()
 	adapters.MustRegister("copilot_session", &providercopilot.CopilotSessionAdapter{

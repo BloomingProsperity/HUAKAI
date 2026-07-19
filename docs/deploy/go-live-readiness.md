@@ -99,7 +99,7 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 
 - **上游账号合规**:接入的上游账号(官方 key / 第三方中转 key)是否符合该厂商服务条款、是否有转售授权,由运营者自负。HUAKAI 只提供转发与记账,不代表对任何上游的授权背书。
 - **订阅反转车道(experimental,默认关)**:除官方 key / 第三方中转外,HUAKAI 支持把**个人订阅的 OAuth 凭据**反转成可转发上游(如 Antigravity/Gemini Code Assist 走 cloudcode-pa、ChatGPT/Codex session、Claude session 等),逐 family env-gate、**默认全部不注册**,部署方须显式 opt-in 才构造对应 adapter(env 形如 `HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER=true`,cursor/copilot/kiro/windsurf/gemini-advanced 等车道同构;凭据经 CLI 导入解析后由 credentialworker 自动纳入 refresh 健康探测)。这类车道属"给能力非控制":HUAKAI 提供 OAuth 刷新 + 转发的温和实现(仅刷 token、按客户端既有形态转发,**不做**设备指纹/机器码重置/关联封规避等激进 ban-evasion),**个人订阅是否允许这样反转、是否违反该服务的用户协议,由运营者自负**。凭据 AES 信封加密存储,刷新走 SSRF 防护出口。
-- **TLS 出口伪装**:sidecar 的 BoringSSL 指纹伪装**默认关**;Go-native 出口是温和 uTLS(仅 ClientHello 姿态,锁 h1)。HUAKAI **不做**激进 ban-evasion(逐请求指纹轮换/设备码伪造/软限流规避等——见项目"不做清单")。
+- **TLS 出口伪装**:订阅反转账号的 mimicry 出口只走同镜像 Rust/BoringSSL sidecar，启动时校验 IPC 能力和全部 profile，运行时不可用即 fail-closed；官方 API key 继续走 Go standard transport。HUAKAI **不做**激进 ban-evasion(逐请求指纹轮换/设备码伪造/软限流规避等——见项目"不做清单")。
 - **内容审核**:审核执行器默认开但租户配置默认关(§3);是否对客户流量启用审核、按什么标准,由运营者按其合规义务配置。
 - **数据与隐私**:accesslog 只记 URL.Path、绝不记 query/body/headers/credentials;凭据 AES 信封加密(AAD 绑租户);审计链 ed25519 签名。运营者仍需按其司法辖区履行数据保护义务。
 - **转售定价与计费**:计费按 token×价表×倍率;价缺失时 fail-closed 拒绝(不 0 价白吃),ratio 冷启故障 fail-open→1.0+pending 标记待人工补价(§5)。

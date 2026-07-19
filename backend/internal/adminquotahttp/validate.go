@@ -1,6 +1,7 @@
 package adminquotahttp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,12 +17,13 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
+	corequota "github.com/BloomingProsperity/HUAKAI/internal/quota"
 )
 
 // validateRequest 施加完整的并集校验:枚举白名单、scope_id 长度上限、数值 >=0、
 // fixed 窗口必须给 window_seconds,以及 valid_until > valid_from 规则 —— 全部在
 // 写库之前完成,这样非法输入会得到 400,而不是 CHECK 约束触发的 503。
-func validateRequest(w http.ResponseWriter, req quotaPolicyRequest) (validatedPolicy, bool) {
+func validateRequest(w http.ResponseWriter, req quotaPolicyRequest, requireModelSelector bool) (validatedPolicy, bool) {
 	var vp validatedPolicy
 
 	scopeKind := strings.TrimSpace(req.ScopeKind)
@@ -44,6 +46,21 @@ func validateRequest(w http.ResponseWriter, req quotaPolicyRequest) (validatedPo
 		return vp, false
 	}
 	vp.scopeID = scopeID
+
+	modelSelector := corequota.ModelSelectorAll
+	if requireModelSelector && req.ModelSelector == nil {
+		writeError(w, http.StatusBadRequest, "invalid_model_selector",
+			"model_selector is required when replacing a quota policy")
+		return vp, false
+	}
+	if req.ModelSelector != nil {
+		var ok bool
+		modelSelector, ok = validateModelSelector(w, *req.ModelSelector)
+		if !ok {
+			return vp, false
+		}
+	}
+	vp.modelSelector = modelSelector
 
 	metric := strings.TrimSpace(req.Metric)
 	if _, ok := validMetrics[metric]; !ok {
@@ -158,6 +175,7 @@ func buildInsertParams(w http.ResponseWriter, tenantID int64, vp validatedPolicy
 		TenantID:            tenantID,
 		ScopeKind:           vp.scopeKind,
 		ScopeID:             vp.scopeID,
+		ModelSelector:       vp.modelSelector,
 		Metric:              vp.metric,
 		WindowKind:          vp.windowKind,
 		WindowSeconds:       vp.windowSeconds,
@@ -187,6 +205,7 @@ func buildUpdateParams(w http.ResponseWriter, tenantID, id int64, vp validatedPo
 		ID:                  id,
 		ScopeKind:           vp.scopeKind,
 		ScopeID:             vp.scopeID,
+		ModelSelector:       vp.modelSelector,
 		Metric:              vp.metric,
 		WindowKind:          vp.windowKind,
 		WindowSeconds:       vp.windowSeconds,
@@ -206,6 +225,7 @@ func buildAudit(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentit
 		"tenant_id":      tenantID,
 		"scope_kind":     vp.scopeKind,
 		"scope_id":       vp.scopeID,
+		"model_selector": vp.modelSelector,
 		"metric":         vp.metric,
 		"window_kind":    vp.windowKind,
 		"window_seconds": vp.windowSeconds,
@@ -234,7 +254,7 @@ func writeMutationError(w http.ResponseWriter, err error, fallbackCode string) {
 	switch {
 	case errors.Is(err, errQuotaPolicyConflict):
 		writeError(w, http.StatusConflict, "quota_policy_conflict",
-			"a live policy already exists for this scope, metric, window and priority")
+			"a live policy already exists for this scope, model, metric, window and priority")
 	case errors.Is(err, errQuotaPolicyInUse):
 		writeError(w, http.StatusConflict, "quota_policy_in_use",
 			"quota policy has live windows and cannot be deleted")
@@ -331,6 +351,7 @@ func itemFromRow(row dbquota.QuotaPolicy) quotaPolicyItem {
 		TenantID:            row.TenantID,
 		ScopeKind:           row.ScopeKind,
 		ScopeID:             row.ScopeID,
+		ModelSelector:       row.ModelSelector,
 		Metric:              row.Metric,
 		WindowKind:          row.WindowKind,
 		WindowSeconds:       row.WindowSeconds,
@@ -362,8 +383,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		writeError(w, http.StatusBadRequest, "invalid_json", "request body is required")
 		return false
 	}
-	if err := json.Unmarshal(body, dst); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON value")
 		return false
 	}
 	return true
@@ -378,8 +405,14 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if strings.TrimSpace(string(body)) == "" {
 		return true
 	}
-	if err := json.Unmarshal(body, dst); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON value")
 		return false
 	}
 	return true
@@ -392,7 +425,7 @@ func actorID(ident admin.AdminIdentity) string {
 }
 
 // actorAttribution 是 created_by/last_modified_by_actor 列的取值
-//(可空 text);它记录是谁发起了本次变更,用于整体审计追溯。
+// (可空 text);它记录是谁发起了本次变更,用于整体审计追溯。
 func actorAttribution(ident admin.AdminIdentity) *string {
 	s := actorID(ident)
 	return &s

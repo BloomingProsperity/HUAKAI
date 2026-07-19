@@ -11,7 +11,7 @@ func TestGatewayWiringInjectsAndStartsQuotaProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读取 wiring.go: %v", err)
 	}
-	source := string(raw)
+	source := strings.Join(strings.Fields(string(raw)), " ")
 	for _, required := range []string{
 		"quotaprobe.NewWorker(quotaprobe.WorkerConfig{",
 		"Accounts: quotaprobe.NewPostgresAccountLister(pgPool)",
@@ -19,6 +19,7 @@ func TestGatewayWiringInjectsAndStartsQuotaProbe(t *testing.T) {
 		"Fetcher:  quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver)",
 		"Store:    ratelimit.NewPostgresSessionWindowStore(pgPool)",
 		"Settings: platformSettingsService",
+		"LeaderLease: workerlease.NewPostgres(pgPool, quotaProbeLeaderLockKey, \"quota_probe\")",
 		"workerCtx, cancelWorkers := context.WithCancel(context.Background())",
 		"rt.cancelWorkers = cancelWorkers",
 		"name: \"proxy health worker\"",
@@ -31,6 +32,7 @@ func TestGatewayWiringInjectsAndStartsQuotaProbe(t *testing.T) {
 		"name: \"quota probe worker\"",
 		"wait: quotaProbeWorker.Wait",
 	} {
+		required = strings.Join(strings.Fields(required), " ")
 		if !strings.Contains(source, required) {
 			t.Fatalf("quota probe 生产接线缺少 %q", required)
 		}

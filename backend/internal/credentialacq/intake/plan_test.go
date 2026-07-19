@@ -184,6 +184,44 @@ func TestBuildCLIPlanUsesStrictCodexParser(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesExposesSubscriptionLabelWithoutIdentityLeak(t *testing.T) {
+	candidate := oauthCandidate("workspace-secret", "person@example.com", `{
+		"refresh_token":"refresh-secret",
+		"chatgpt_plan_type":"pro",
+		"external_subject_id":"subject-secret"
+	}`)
+	prepared := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON,
+	}, []credentialacq.CredentialCandidate{candidate})
+	item := requireSingleItem(t, prepared.Plan)
+	if prepared.Plan.ContractVersion != "account-intake-v2" {
+		t.Fatalf("contract_version=%s", prepared.Plan.ContractVersion)
+	}
+	if item.Subscription == nil || item.Subscription.Plan != "pro" || item.Subscription.Status != "observed" ||
+		len(item.SystemLabels) != 1 || item.SystemLabels[0] != "openai:pro" {
+		t.Fatalf("套餐预览不完整：%+v", item)
+	}
+	if item.Subscription.SubjectRef != "" || item.Subscription.WorkspaceRef != "" {
+		t.Fatalf("预检响应泄露上游身份：%+v", item.Subscription)
+	}
+	if prepared.Candidates[0].Subscription.SubjectRef != "subject-secret" ||
+		prepared.Candidates[0].Subscription.WorkspaceRef != "" {
+		t.Fatalf("内部候选项没有保留套餐归属证据：%+v", prepared.Candidates[0].Subscription)
+	}
+	if !contains(item.FieldChanges, "subscription_profile") {
+		t.Fatalf("field_changes=%v，缺少套餐投影", item.FieldChanges)
+	}
+	raw, err := json.Marshal(prepared.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"workspace-secret", "subject-secret", "person@example.com", "refresh-secret"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("套餐预检泄漏 %q：%s", secret, raw)
+		}
+	}
+}
+
 func oauthCandidate(accountID, email, payload string) credentialacq.CredentialCandidate {
 	return credentialacq.CredentialCandidate{
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,

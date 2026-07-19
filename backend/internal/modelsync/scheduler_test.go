@@ -81,9 +81,81 @@ func TestSchedulerRecordsFailedAndSuccessfulSyncStatus(t *testing.T) {
 	}
 }
 
+func TestSchedulerSkipsSyncWhenAnotherReplicaHoldsLease(t *testing.T) {
+	svc := &schedulerSyncStub{}
+	lease := &schedulerLeaseStub{acquired: false}
+	scheduler := NewScheduler(svc, SchedulerConfig{
+		Interval:    time.Hour,
+		RunOnStart:  true,
+		LeaderLease: lease,
+	})
+	stop := scheduler.Start(context.Background())
+	waitForLeaseCalls(t, lease, 1)
+	stop()
+	if got := svc.calls(); got != 0 {
+		t.Fatalf("lease not acquired but sync ran %d time(s)", got)
+	}
+	if got := lease.releaseCalls(); got != 0 {
+		t.Fatalf("unacquired lease released %d time(s)", got)
+	}
+}
+
+func TestSchedulerReleasesAcquiredLeaseAfterSync(t *testing.T) {
+	svc := &schedulerSyncStub{}
+	lease := &schedulerLeaseStub{acquired: true}
+	scheduler := NewScheduler(svc, SchedulerConfig{
+		Interval:    time.Hour,
+		RunOnStart:  true,
+		LeaderLease: lease,
+	})
+	stop := scheduler.Start(context.Background())
+	waitForSyncCalls(t, svc, 1)
+	waitForLeaseReleases(t, lease, 1)
+	stop()
+	if got := lease.callsCount(); got != 1 {
+		t.Fatalf("leader lease calls=%d want 1", got)
+	}
+}
+
 type schedulerSyncStub struct {
 	mu sync.Mutex
 	n  int
+}
+
+type schedulerLeaseStub struct {
+	mu       sync.Mutex
+	acquired bool
+	err      error
+	calls    int
+	releases int
+}
+
+func (s *schedulerLeaseStub) TryAcquire(context.Context) (bool, func(), error) {
+	s.mu.Lock()
+	s.calls++
+	acquired := s.acquired
+	err := s.err
+	s.mu.Unlock()
+	if err != nil || !acquired {
+		return acquired, nil, err
+	}
+	return true, func() {
+		s.mu.Lock()
+		s.releases++
+		s.mu.Unlock()
+	}, nil
+}
+
+func (s *schedulerLeaseStub) callsCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *schedulerLeaseStub) releaseCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.releases
 }
 
 func (s *schedulerSyncStub) Sync(context.Context, string) (SyncResult, error) {
@@ -109,6 +181,30 @@ func waitForSyncCalls(t *testing.T, svc *schedulerSyncStub, want int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("sync calls=%d want at least %d", svc.calls(), want)
+}
+
+func waitForLeaseCalls(t *testing.T, lease *schedulerLeaseStub, want int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if lease.callsCount() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("lease calls=%d want at least %d", lease.callsCount(), want)
+}
+
+func waitForLeaseReleases(t *testing.T, lease *schedulerLeaseStub, want int) {
+	t.Helper()
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if lease.releaseCalls() >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("lease releases=%d want at least %d", lease.releaseCalls(), want)
 }
 
 type scheduledSyncResponse struct {

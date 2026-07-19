@@ -81,7 +81,7 @@ func TestMeQuotaProjectionMath(t *testing.T) {
 		t.Fatalf("items len=%d want caller's one quota window; body=%s", len(body.Items), rec.Body.String())
 	}
 	item := body.Items[0]
-	for _, field := range []string{"cap", "consumed", "remaining", "overage", "request_count", "window_kind", "window_start", "window_end"} {
+	for _, field := range []string{"model_selector", "cap", "consumed", "remaining", "overage", "request_count", "window_kind", "window_start", "window_end"} {
 		if _, ok := item[field]; !ok {
 			t.Fatalf("quota item missing %q: %#v", field, item)
 		}
@@ -91,6 +91,7 @@ func TestMeQuotaProjectionMath(t *testing.T) {
 	assertStringField(t, item, "consumed", "5")
 	assertStringField(t, item, "remaining", "5")
 	assertStringField(t, item, "overage", "0.25")
+	assertStringField(t, item, "model_selector", quota.ModelSelectorAll)
 	if got := item["request_count"]; got != float64(12) {
 		t.Fatalf("request_count=%v want 12", got)
 	}
@@ -118,6 +119,33 @@ func TestMeQuotaProjectionMath(t *testing.T) {
 	}
 }
 
+func TestMeQuotaModelSelectorsRemainSeparate(t *testing.T) {
+	user := auth.Identity{TenantID: 7, UserID: 42}
+	scopeID := strconv.FormatInt(user.UserID, 10)
+	wildcard := meQuotaWindowMetric(user.TenantID, user.UserID, quota.MetricRequests, "100", "0", "20", "0", 20)
+	exact := meQuotaWindowMetric(user.TenantID, user.UserID, quota.MetricRequests, "10", "0", "3", "0", 3)
+	exact.ModelSelector = "gpt-4.1"
+	store := &quotaStoreStub{rowsByScope: map[string][]quota.CurrentWindowRead{scopeID: {wildcard, exact}}}
+
+	rec := invokeMeQuota(NewHandler(Deps{Auth: authStub{identity: user}, Store: store}), "/v1/me/quota")
+	assertMeQuotaStatus(t, rec, http.StatusOK)
+	var body struct {
+		Items []windowView `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
+	}
+	if len(body.Items) != 2 {
+		t.Fatalf("items=%d want wildcard and exact rows", len(body.Items))
+	}
+	if body.Items[0].ModelSelector != quota.ModelSelectorAll || body.Items[0].Consumed != "20" {
+		t.Fatalf("wildcard row collapsed or changed: %+v", body.Items[0])
+	}
+	if body.Items[1].ModelSelector != "gpt-4.1" || body.Items[1].Consumed != "3" {
+		t.Fatalf("exact row collapsed or changed: %+v", body.Items[1])
+	}
+}
+
 func TestMeQuotaStoreErrorIsServiceUnavailable(t *testing.T) {
 	store := &quotaStoreStub{err: errors.New("quota read unavailable")}
 	h := NewHandler(Deps{Auth: authStub{identity: auth.Identity{TenantID: 7, UserID: 40}}, Store: store})
@@ -133,7 +161,8 @@ func TestMeQuotaStoreErrorIsServiceUnavailable(t *testing.T) {
 // 响应中。fixture 有区分度 —— 每个 metric 的 consumed 值各不相同,因此
 // 丢弃 metric 投影或塌缩成只剩 cost 都会转红。
 // 变异:从 windowView 去掉 `Metric` -> byMetric 的 key 变成 "" -> 查找失败
-//       -> 转红;向 store 传入错误的 metrics -> metrics 断言 -> 转红。
+//
+//	-> 转红;向 store 传入错误的 metrics -> metrics 断言 -> 转红。
 func TestMeQuotaMultiMetricWindows(t *testing.T) {
 	user := auth.Identity{TenantID: 7, UserID: 40}
 	scopeID := strconv.FormatInt(user.UserID, 10)
@@ -194,9 +223,10 @@ func TestMeQuotaMultiMetricWindows(t *testing.T) {
 func meQuotaWindow(tenantID, userID int64, limit, reserved, settled, overage string, requests int64) quota.CurrentWindowRead {
 	start := time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC)
 	return quota.CurrentWindowRead{
-		TenantID: tenantID,
-		Scope:    quota.Scope{TenantID: tenantID, Kind: quota.ScopeUser, ID: strconv.FormatInt(userID, 10)},
-		Metric:   quota.MetricCostUSD,
+		TenantID:      tenantID,
+		Scope:         quota.Scope{TenantID: tenantID, Kind: quota.ScopeUser, ID: strconv.FormatInt(userID, 10)},
+		ModelSelector: quota.ModelSelectorAll,
+		Metric:        quota.MetricCostUSD,
 		Window: quota.Window{
 			Kind:  quota.WindowCalendarDay,
 			Start: start,

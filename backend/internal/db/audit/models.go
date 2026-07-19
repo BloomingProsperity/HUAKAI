@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// F-AUDIT-001 user-initiated cost dispute records. Pure status workflow; no refund or ledger mutation in this slice.
+// 用户发起的费用争议；批准时在同一事务内写入退款事实、账单调整、余额回补和配额冲减。
 type CostDispute struct {
 	ID           int64              `db:"id" json:"id"`
 	DisputeID    string             `db:"dispute_id" json:"dispute_id"`

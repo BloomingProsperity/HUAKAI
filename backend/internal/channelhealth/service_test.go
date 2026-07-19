@@ -441,6 +441,64 @@ func TestChannelHealth_AT007_AT008_RampRecoveryAndRollback(t *testing.T) {
 	}
 }
 
+func TestChannelHealth_RampAdvancesAfterMaxDurationWithoutTraffic(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	clock := &fixedClock{now: time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC)}
+	policy := DefaultPolicy()
+	policy.RampStageMinDuration = time.Minute
+	policy.RampStageMaxDuration = 10 * time.Minute
+	policy.RampStageMinSamples = 3
+	svc := NewService(store, policy, clock)
+	key := testKey()
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	rec.State = StateRamping
+	rec.RampStagePct = 1
+	started := clock.Now()
+	rec.RampStartedAt = &started
+	rec, _ = store.UpsertRecord(ctx, rec)
+
+	clock.Add(9 * time.Minute)
+	got, err := svc.AdvanceRamp(ctx, key)
+	if err != nil || got.RampStagePct != 1 {
+		t.Fatalf("max duration 前不应推进: state=%s stage=%d err=%v", got.State, got.RampStagePct, err)
+	}
+	clock.Add(time.Minute)
+	got, err = svc.AdvanceRamp(ctx, key)
+	if err != nil || got.State != StateRamping || got.RampStagePct != 10 {
+		t.Fatalf("低流量最长观察期后应推进: state=%s stage=%d err=%v", got.State, got.RampStagePct, err)
+	}
+}
+
+func TestChannelHealth_RampLowSampleFailureRollsBackAfterMaxDuration(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	clock := &fixedClock{now: time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC)}
+	policy := DefaultPolicy()
+	policy.MinSampleCount = 10
+	policy.MinObservation = time.Hour
+	policy.RampStageMinDuration = time.Minute
+	policy.RampStageMaxDuration = 10 * time.Minute
+	policy.RampStageMinSamples = 3
+	svc := NewService(store, policy, clock)
+	key := testKey()
+	rec, _ := svc.EnsureDefaultActive(ctx, key)
+	rec.State = StateRamping
+	rec.RampStagePct = 1
+	started := clock.Now()
+	rec.RampStartedAt = &started
+	rec, _ = store.UpsertRecord(ctx, rec)
+	if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalChannelError, At: clock.Now()}); err != nil {
+		t.Fatalf("写入失败样本: %v", err)
+	}
+
+	clock.Add(10 * time.Minute)
+	got, err := svc.AdvanceRamp(ctx, key)
+	if err != nil || got.State != StateCoolingDown {
+		t.Fatalf("少量失败样本不得被超时恢复绕过: state=%s stage=%d err=%v", got.State, got.RampStagePct, err)
+	}
+}
+
 func TestChannelHealth_AT009_IsolatesVendorAndCredentialVersion(t *testing.T) {
 	ctx, svc, store, _ := testService()
 	key := testKey()

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -54,6 +55,20 @@ func NewSidecarRoundTripperForceH1(client *SidecarClient, profileID string, forc
 	return newSidecarTransportFromRT(rt)
 }
 
+// TargetIPResolver 在真正拨号前返回本次允许连接的目标地址。返回值会随控制帧
+// 交给 Rust，Rust 只连接这些地址，同时仍使用原始域名完成 TLS SNI 和证书校验。
+type TargetIPResolver func(context.Context, string) ([]netip.Addr, error)
+
+// NewPinnedSidecarRoundTripper 构造带目标地址绑定的 Rust transport。它用于
+// 管理员可配置的出站端点，防止安全检查完成后 DNS 再绑定到另一地址。
+func NewPinnedSidecarRoundTripper(client *SidecarClient, profileID string, resolver TargetIPResolver) (http.RoundTripper, error) {
+	if client == nil || strings.TrimSpace(profileID) == "" || resolver == nil {
+		return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定参数不完整")
+	}
+	rt := &sidecarRoundTripper{client: client, profileID: profileID, targetIPResolver: resolver}
+	return newSidecarTransportFromRT(rt), nil
+}
+
 // sidecarTransport 复用 net/http 连接池，并把 profile 与账号代理绑定到 Rust 出口。
 type sidecarTransport struct {
 	*http.Transport
@@ -79,10 +94,11 @@ func (s *sidecarTransport) WithInlineTLSProfile(profile *InlineTLSProfile) (http
 		return nil, err
 	}
 	rt := &sidecarRoundTripper{
-		client:  s.boundRT.client,
-		inline:  profile.clone(),
-		forceH1: s.boundRT.forceH1,
-		proxy:   s.boundRT.proxy,
+		client:           s.boundRT.client,
+		inline:           profile.clone(),
+		forceH1:          s.boundRT.forceH1,
+		proxy:            s.boundRT.proxy,
+		targetIPResolver: s.boundRT.targetIPResolver,
 	}
 	return newSidecarTransportFromRT(rt), nil
 }
@@ -116,11 +132,12 @@ func (s *sidecarTransport) WithProxy(proxyURL *url.URL) (http.RoundTripper, erro
 		return nil, err
 	}
 	rt := &sidecarRoundTripper{
-		client:    s.boundRT.client,
-		profileID: s.profileID,
-		inline:    s.boundRT.inline,
-		forceH1:   s.boundRT.forceH1,
-		proxy:     spec,
+		client:           s.boundRT.client,
+		profileID:        s.profileID,
+		inline:           s.boundRT.inline,
+		forceH1:          s.boundRT.forceH1,
+		proxy:            spec,
+		targetIPResolver: s.boundRT.targetIPResolver,
 	}
 	return newSidecarTransportFromRT(rt), nil
 }
@@ -180,12 +197,16 @@ func validateSidecarAck(ack sidecarControlAck) error {
 
 // DialTLS 拨号 Unix sidecar,发送一帧带帧长的 JSON 控制消息,等待一帧 ACK,
 // 随后在 sidecar 持有的 TLS 连接之上返回一条明文流。sidecar 失败时 fail-closed;
-// 本函数绝不回退到 uTLS 或标准库 transport。
+// 本函数绝不回退到进程内 TLS 或标准库 transport。
 func (c *SidecarClient) DialTLS(ctx context.Context, host string, port int, profileID string, inline *InlineTLSProfile, proxy *sidecarProxySpec) (net.Conn, error) {
 	return c.dialTLS(ctx, host, port, profileID, inline, false, proxy)
 }
 
 func (c *SidecarClient) dialTLS(ctx context.Context, host string, port int, profileID string, inline *InlineTLSProfile, forceH1 bool, proxy *sidecarProxySpec) (net.Conn, error) {
+	return c.dialTLSPinned(ctx, host, port, profileID, inline, forceH1, proxy, nil)
+}
+
+func (c *SidecarClient) dialTLSPinned(ctx context.Context, host string, port int, profileID string, inline *InlineTLSProfile, forceH1 bool, proxy *sidecarProxySpec, pinnedTargetIPs []string) (net.Conn, error) {
 	if c == nil {
 		return nil, fmt.Errorf("mimicry sidecar: nil client")
 	}
@@ -197,6 +218,12 @@ func (c *SidecarClient) dialTLS(ctx context.Context, host string, port int, prof
 	}
 	if (profileID == "") == (inline == nil) {
 		return nil, fmt.Errorf("mimicry sidecar: 必须且只能提供 profile_id 或 inline_profile")
+	}
+	if len(pinnedTargetIPs) > 16 {
+		return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定数量超过 16")
+	}
+	if len(pinnedTargetIPs) > 0 && proxy != nil {
+		return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定不能与代理隧道同时使用")
 	}
 	if inline != nil {
 		if err := inline.Validate(); err != nil {
@@ -225,15 +252,16 @@ func (c *SidecarClient) dialTLS(ctx context.Context, host string, port int, prof
 		return nil, err
 	}
 	req := sidecarControlRequest{
-		Version:       SidecarProtocolVersion,
-		Operation:     sidecarOperationConnect,
-		TargetHost:    host,
-		Port:          uint16(port),
-		ProfileID:     profileID,
-		InlineProfile: inline,
-		CorrelationID: correlationID,
-		ForceH1:       forceH1Ptr(forceH1),
-		Proxy:         proxy,
+		Version:         SidecarProtocolVersion,
+		Operation:       sidecarOperationConnect,
+		TargetHost:      host,
+		Port:            uint16(port),
+		ProfileID:       profileID,
+		InlineProfile:   inline,
+		CorrelationID:   correlationID,
+		ForceH1:         forceH1Ptr(forceH1),
+		Proxy:           proxy,
+		PinnedTargetIPs: append([]string(nil), pinnedTargetIPs...),
 	}
 	frameBytes, err := writeSidecarFrame(conn, req)
 	if err != nil {
@@ -270,11 +298,12 @@ func (c *SidecarClient) dialTLS(ctx context.Context, host string, port int, prof
 }
 
 type sidecarRoundTripper struct {
-	client    *SidecarClient
-	profileID string
-	inline    *InlineTLSProfile
-	forceH1   bool
-	proxy     *sidecarProxySpec
+	client           *SidecarClient
+	profileID        string
+	inline           *InlineTLSProfile
+	forceH1          bool
+	proxy            *sidecarProxySpec
+	targetIPResolver TargetIPResolver
 }
 
 func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -289,7 +318,41 @@ func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr
 	if err != nil {
 		return nil, fmt.Errorf("mimicry sidecar: parse target port %q: %w", portText, err)
 	}
-	return rt.client.dialTLS(ctx, host, port, rt.profileID, rt.inline, rt.forceH1, rt.proxy)
+	var pinnedTargetIPs []string
+	if rt.targetIPResolver != nil {
+		addresses, err := rt.targetIPResolver(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("mimicry sidecar: 目标地址校验失败: %w", err)
+		}
+		pinnedTargetIPs, err = normalizePinnedTargetIPs(addresses)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return rt.client.dialTLSPinned(ctx, host, port, rt.profileID, rt.inline, rt.forceH1, rt.proxy, pinnedTargetIPs)
+}
+
+func normalizePinnedTargetIPs(addresses []netip.Addr) ([]string, error) {
+	if len(addresses) == 0 || len(addresses) > 16 {
+		return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定数量必须为 1..16")
+	}
+	out := make([]string, 0, len(addresses))
+	seen := make(map[netip.Addr]struct{}, len(addresses))
+	for _, address := range addresses {
+		address = address.Unmap()
+		if !address.IsValid() {
+			return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定包含无效地址")
+		}
+		if _, exists := seen[address]; exists {
+			continue
+		}
+		seen[address] = struct{}{}
+		out = append(out, address.String())
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("mimicry sidecar: 目标地址绑定为空")
+	}
+	return out, nil
 }
 
 func forceH1Ptr(forceH1 bool) *bool {

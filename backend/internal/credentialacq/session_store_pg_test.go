@@ -1,6 +1,7 @@
 package credentialacq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 type testSessionDB struct {
@@ -25,28 +28,36 @@ func newTestSessionDB(now time.Time) *testSessionDB {
 	return &testSessionDB{now: now, rows: map[string]Session{}}
 }
 
+func withTestSessionKeys(t *testing.T, store *PostgresSessionStore) *PostgresSessionStore {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("test-v1", []byte(strings.Repeat("k", 32)))
+	if err != nil {
+		t.Fatalf("创建测试凭据密钥: %v", err)
+	}
+	return store.WithKeyProvider(keys)
+}
+
 func (db *testSessionDB) Exec(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.rows == nil {
 		db.rows = map[string]Session{}
 	}
-	if len(args) >= 3 && strings.Contains(sql, "SET auth_type = $2::oauth_acquisition_auth_type") {
+	if len(args) >= 4 && strings.Contains(sql, "SET auth_type = $2::oauth_acquisition_auth_type") {
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
-		if !ok {
-			return pgconn.CommandTag{}, nil
+		if !ok || isTerminalStatus(row.Status) || !row.ConsumedAt.IsZero() || !row.ExpiresAt.After(db.now) {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
 		}
 		row.AuthType = AuthType(stringArg(args[1]))
-		if raw := bytesArg(args[2]); len(raw) > 0 {
-			_ = json.Unmarshal(raw, &row.DeviceCodePayload)
-		} else {
-			row.DeviceCodePayload = map[string]any{}
-		}
+		row.DeviceCodePayload = nil
+		row.EncryptedPKCEVerifier = bytesArg(args[2])
+		row.NonceHash = bytesArg(args[3])
 		row.UpdatedAt = db.now
 		db.rows[id] = row
+		return pgconn.NewCommandTag("UPDATE 1"), nil
 	}
-	return pgconn.CommandTag{}, nil
+	return pgconn.NewCommandTag("UPDATE 0"), nil
 }
 
 func (db *testSessionDB) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
@@ -76,6 +87,54 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "FROM credential_acquisition_flow_sessions") && strings.Contains(sql, "WHERE id = $1::uuid"):
 		return db.rowByID(sql, stringArg(args[0]))
+	case strings.Contains(sql, "SET status = 'callback_received'") && strings.Contains(sql, "state_hash = $2"):
+		id := stringArg(args[0])
+		row, ok := db.rows[id]
+		cutoff := timeArg(args[2])
+		active := row.Status == StatusStarted || row.Status == StatusWaitingForUser
+		stale := row.Status == StatusCallbackReceived && row.UpdatedAt.Before(cutoff)
+		if !ok || (row.AuthType != AuthTypeDeviceCode && row.AuthType != AuthTypeSSO) || !row.ConsumedAt.IsZero() || !row.ExpiresAt.After(db.now) || (!active && !stale) {
+			return testSessionRow{err: pgx.ErrNoRows}
+		}
+		row.Status = StatusCallbackReceived
+		row.StateHash = bytesArg(args[1])
+		row.ErrorClass = ""
+		row.ErrorMessageRedacted = ""
+		row.UpdatedAt = db.now
+		db.rows[id] = row
+		return testSessionRow{session: row, sql: sql}
+	case strings.Contains(sql, "SET status = $3") && strings.Contains(sql, "state_hash = NULL"):
+		id := stringArg(args[0])
+		row, ok := db.rows[id]
+		if !ok || row.Status != StatusCallbackReceived || !bytes.Equal(row.StateHash, bytesArg(args[1])) || !row.ConsumedAt.IsZero() {
+			return testSessionRow{err: pgx.ErrNoRows}
+		}
+		row.Status = FlowStatus(stringArg(args[2]))
+		row.StateHash = nil
+		row.ErrorClass = stringArg(args[3])
+		row.ErrorMessageRedacted = stringArg(args[4])
+		if row.Status == StatusExpired || row.Status == StatusFailed {
+			clearTestSessionTransientAuth(&row)
+		}
+		row.UpdatedAt = db.now
+		db.rows[id] = row
+		return testSessionRow{session: row, sql: sql}
+	case strings.Contains(sql, "SET status = 'validated'") && strings.Contains(sql, "encrypted_pkce_verifier = $3"):
+		id := stringArg(args[0])
+		row, ok := db.rows[id]
+		if !ok || row.Status != StatusCallbackReceived || !bytes.Equal(row.StateHash, bytesArg(args[1])) || !row.ConsumedAt.IsZero() {
+			return testSessionRow{err: pgx.ErrNoRows}
+		}
+		row.Status = StatusValidated
+		row.StateHash = nil
+		row.ErrorClass = ""
+		row.ErrorMessageRedacted = ""
+		row.EncryptedPKCEVerifier = bytesArg(args[2])
+		row.NonceHash = bytesArg(args[3])
+		row.DeviceCodePayload = nil
+		row.UpdatedAt = db.now
+		db.rows[id] = row
+		return testSessionRow{session: row, sql: sql}
 	case strings.Contains(sql, "SET status = $2"):
 		id := stringArg(args[0])
 		row, ok := db.rows[id]
@@ -86,6 +145,9 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 			row.Status = FlowStatus(stringArg(args[1]))
 			row.ErrorClass = stringArg(args[2])
 			row.ErrorMessageRedacted = stringArg(args[3])
+			if isTerminalStatus(row.Status) {
+				clearTestSessionTransientAuth(&row)
+			}
 			row.UpdatedAt = db.now
 			db.rows[id] = row
 			return testSessionRow{session: row, sql: sql}
@@ -99,6 +161,9 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		row.Status = FlowStatus(stringArg(args[1]))
 		row.ErrorClass = stringArg(args[2])
 		row.ErrorMessageRedacted = stringArg(args[3])
+		if isTerminalStatus(row.Status) {
+			clearTestSessionTransientAuth(&row)
+		}
 		row.UpdatedAt = db.now
 		db.rows[id] = row
 		return testSessionRow{session: row, sql: sql}
@@ -111,6 +176,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		}
 		row.Status = StatusCancelled
 		row.CancelledAt = db.now
+		clearTestSessionTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[id] = row
 		return testSessionRow{session: row, sql: sql}
@@ -124,6 +190,7 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 			return testSessionRow{err: pgx.ErrNoRows}
 		}
 		row.ConsumedAt = db.now
+		clearTestSessionTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[id] = row
 		return testSessionRow{session: row, sql: sql}
@@ -140,12 +207,19 @@ func (db *testSessionDB) QueryRow(_ context.Context, sql string, args ...interfa
 		}
 		row.ErrorClass = ""
 		row.ErrorMessageRedacted = ""
+		clearTestSessionTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[id] = row
 		return testSessionRow{session: row, sql: sql}
 	default:
 		return testSessionRow{err: errors.New("test session db: unhandled query")}
 	}
+}
+
+func clearTestSessionTransientAuth(row *Session) {
+	row.EncryptedPKCEVerifier = nil
+	row.NonceHash = nil
+	row.DeviceCodePayload = nil
 }
 
 func (db *testSessionDB) rowByID(sql, id string) pgx.Row {
@@ -223,7 +297,7 @@ func scanTestSession(dest []any, row Session, sql string) error {
 
 func TestPostgresSessionStoreSetAuthPayloadRoundTripReloadsAuthTypeAndDevicePayload(t *testing.T) {
 	now := time.Date(2026, 5, 24, 10, 45, 0, 0, time.UTC)
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 	created, err := store.Create(context.Background(), Session{
 		ID: "flow-device-roundtrip", TenantID: 10, ProviderAccountID: 20,
 		Vendor: "openai", AuthMode: "codex_cli_oauth", Kind: FlowKindOAuth, Status: StatusStarted,
@@ -267,18 +341,24 @@ func TestPostgresSessionStoreSetAuthPayloadRoundTripReloadsAuthTypeAndDevicePayl
 	if err != nil {
 		t.Fatalf("BeginFinalize: %v", err)
 	}
-	assertAuthPayloadRoundTrip(t, begin, AuthTypeDeviceCode, payload)
+	assertAuthPayloadCleared(t, begin, AuthTypeDeviceCode)
 
 	finalized, err := store.MarkFinalized(context.Background(), created.ID, 1234)
 	if err != nil {
 		t.Fatalf("MarkFinalized: %v", err)
 	}
-	assertAuthPayloadRoundTrip(t, finalized, AuthTypeDeviceCode, payload)
+	assertAuthPayloadCleared(t, finalized, AuthTypeDeviceCode)
+
+	reloadedFinalized, err := store.Get(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Get finalized: %v", err)
+	}
+	assertAuthPayloadCleared(t, reloadedFinalized, AuthTypeDeviceCode)
 }
 
 func TestDeviceCodePollUsesReloadedSessionPayload(t *testing.T) {
 	now := time.Date(2026, 5, 24, 10, 50, 0, 0, time.UTC)
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 	created, err := store.Create(context.Background(), Session{
 		ID: "flow-device-poll", TenantID: 11, ProviderAccountID: 21,
 		Vendor: "openai", AuthMode: "codex_cli_oauth", Kind: FlowKindOAuth, Status: StatusWaitingForUser,
@@ -350,6 +430,16 @@ func assertAuthPayloadRoundTrip(t *testing.T, session Session, wantAuthType Auth
 	}
 	if string(gotRaw) != string(wantRaw) {
 		t.Fatalf("DeviceCodePayload=%s want %s", gotRaw, wantRaw)
+	}
+}
+
+func assertAuthPayloadCleared(t *testing.T, session Session, wantAuthType AuthType) {
+	t.Helper()
+	if session.AuthType != wantAuthType {
+		t.Fatalf("AuthType=%q want %q", session.AuthType, wantAuthType)
+	}
+	if len(session.DeviceCodePayload) != 0 || len(session.EncryptedPKCEVerifier) != 0 || len(session.NonceHash) != 0 {
+		t.Fatalf("终态或已消费流程仍保留短期授权材料: payload=%v ciphertext=%d metadata=%d", session.DeviceCodePayload, len(session.EncryptedPKCEVerifier), len(session.NonceHash))
 	}
 }
 
@@ -452,7 +542,7 @@ func timeArg(value any) time.Time {
 // 而 ErrOAuthRequiresCallback 断言随之变红。
 func TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth(t *testing.T) {
 	now := time.Date(2026, 5, 25, 12, 0, 0, 0, time.UTC)
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 	ctx := context.Background()
 	mk := func(id string, status FlowStatus) Session {
 		s, err := store.Create(ctx, Session{

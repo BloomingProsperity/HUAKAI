@@ -163,6 +163,11 @@ func validateCreate(in CreateInput) error {
 	return validateGroupID(in.GroupID)
 }
 
+// ValidateCreateInput 供需要与其他领域写入保持同一事务的受控导入器复用代理校验。
+func ValidateCreateInput(in CreateInput) error {
+	return validateCreate(in)
+}
+
 func validateUpdate(in UpdateInput) error {
 	if err := validateCommon(in.TenantID, in.ID, in.Name, in.Protocol, in.Host, in.Port, "active"); err != nil {
 		return err

@@ -82,7 +82,13 @@ type Querier interface {
 	// attempts (which write a deny audit row with target_id=0/NULL) are
 	// excluded from the cap. Otherwise an actor that hits the cap keeps
 	// refreshing the window with deny rows on every retry and never recovers.
+	//
+	// 双格式分桶(role 制单登录 S3 修):P2b-1 把 actor_id 从裸 TokenID("5")统一成
+	// AuditActor() 串("admin_token:5"),部署边界老行匹配不到会重置限流窗。谓词兼容
+	// 两种键(legacy_actor_id=老格式;无老格式的来源传同一串,OR 无副作用),窗口跨
+	// 格式迁移连续,且不需要新列/回填(数值列方案会再造一次同类边界重置)。
 	CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error)
+	// 渠道目录写操作。三个请求改写字段均在 channels 上维护。
 	// pool_group 必须属于同租户(EXISTS 守卫防跨租户链接);name 唯一冲突由
 	// uq_channels_tenant_pool_name 抛 23505。
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (CreateChannelRow, error)
@@ -96,13 +102,20 @@ type Querier interface {
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
 	DisableBootstrapAdminTokens(ctx context.Context) (int64, error)
+	GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error)
+	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
 	// Fetch a single admin token's metadata (no key_hash) for revoke
 	// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
 	GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error)
-	GetAdminProviderAccountHealth(ctx context.Context, arg GetAdminProviderAccountHealthParams) (GetAdminProviderAccountHealthRow, error)
-	GetAdminChannel(ctx context.Context, arg GetAdminChannelParams) (GetAdminChannelRow, error)
-	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetChannelTestTemplate(ctx context.Context, arg GetChannelTestTemplateParams) (ChannelTestTemplate, error)
+	// P0 provider/channel admin catalog queries.
+	// Read-only directory data for admin UI. These SELECT lists intentionally
+	// exclude tenant_id and every credential-bearing provider_accounts column.
+	// 账号创建事务内读取并锁定 provider 协议。必须用 FOR SHARE 而非 FOR KEY SHARE:
+	// upstream_protocol 是非键列,管理端改它取 FOR NO KEY UPDATE 锁;FOR KEY SHARE 与之
+	// 不冲突,会放过"创建读旧协议→管理端改新协议→创建插入不兼容账号"的 TOCTOU。
+	// FOR SHARE 与 FOR NO KEY UPDATE 冲突,把协议钉到创建事务提交,同时允许并发创建共存。
+	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
 	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)
@@ -117,20 +130,19 @@ type Querier interface {
 	// and the prefix derived from the plaintext (first 16 chars).
 	InsertAdminToken(ctx context.Context, arg InsertAdminTokenParams) (int64, error)
 	InsertProvider(ctx context.Context, arg InsertProviderParams) (InsertProviderRow, error)
-	InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error)
+	InsertProviderAccountRaw(ctx context.Context, arg InsertProviderAccountRawParams) (int64, error)
 	// Phase 3 health check worker 用 (选 active 但 last_check_at 老的 ping)。
 	ListActiveProxiesByTenant(ctx context.Context, tenantID int64) ([]ListActiveProxiesByTenantRow, error)
 	// Drift worker 用; 只取 status='active' 且未软删。
 	ListActiveTLSFingerprintProfilesByTenant(ctx context.Context, tenantID int64) ([]ListActiveTLSFingerprintProfilesByTenantRow, error)
 	ListAdminChannelsByTenant(ctx context.Context, arg ListAdminChannelsByTenantParams) ([]ListAdminChannelsByTenantRow, error)
+	ListAdminProvidersByTenant(ctx context.Context, arg ListAdminProvidersByTenantParams) ([]ListAdminProvidersByTenantRow, error)
 	// Metadata-only listing of admin tokens for the operator console. NEVER
 	// selects key_hash — only key_prefix (insufficient on its own to
 	// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+	// platform_admin scope sees every row; the handler-side RBAC decides who
+	// may call this read.
 	ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error)
-	// P0 provider/channel admin catalog queries.
-	// Read-only directory data for admin UI. These SELECT lists intentionally
-	// exclude tenant_id and every credential-bearing provider_accounts column.
-	ListAdminProvidersByTenant(ctx context.Context, arg ListAdminProvidersByTenantParams) ([]ListAdminProvidersByTenantRow, error)
 	ListChannelTestTemplatesByTenant(ctx context.Context, arg ListChannelTestTemplatesByTenantParams) ([]ChannelTestTemplate, error)
 	// HUAKAI F-FP-POOL Phase 1.3 sqlc queries — 出口代理池 CRUD。
 	//
@@ -174,15 +186,18 @@ type Querier interface {
 	// 软删 (设 deleted_at); provider_accounts.tls_fingerprint_profile_id 引用仍存在
 	// (FK 不级联), 但 resolver 走 GetByID 因 deleted_at IS NULL 过滤掉, 降级到 builtin.
 	SoftDeleteTLSFingerprintProfile(ctx context.Context, arg SoftDeleteTLSFingerprintProfileParams) error
-	// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 跨整个租户池计数。
+	// 账号池健康聚合(B9 运维巡检):按 (health_state, enabled) 计数,跨整个租户池(非分页)。
+	// 只读、不含钱字段;供管理端一眼看清问题账号分布。软删账号排除。
 	SummarizeProviderAccountHealth(ctx context.Context, tenantID int64) ([]SummarizeProviderAccountHealthRow, error)
-	// 由异步请求完成事件调用,单调写入 last_request_observed_at。
+	// 由异步请求完成事件调用,单调记录被动请求观测时间。
 	TouchProviderAccountRequestObservedAt(ctx context.Context, arg TouchProviderAccountRequestObservedAtParams) error
-	UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error)
+	UpdateAdminProviderAccountRaw(ctx context.Context, arg UpdateAdminProviderAccountRawParams) (UpdateAdminProviderAccountRawRow, error)
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (UpdateChannelRow, error)
 	UpdateChannelTestTemplate(ctx context.Context, arg UpdateChannelTestTemplateParams) (ChannelTestTemplate, error)
 	UpdateProvider(ctx context.Context, arg UpdateProviderParams) (UpdateProviderRow, error)
 	UpdateProviderAccountEnabled(ctx context.Context, arg UpdateProviderAccountEnabledParams) error
+	// 绑定/解绑 provider account 的 TLS 指纹 profile。profile_id 为 NULL → 解绑回内置默认;
+	// 非 NULL → 绑定(DB 触发器 0038 校验 profile 属同租户,跨租户绑定被拒)。
 	UpdateProviderAccountFingerprintProfile(ctx context.Context, arg UpdateProviderAccountFingerprintProfileParams) error
 	UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error)
 	// 全字段更新; admin UI 修改时调用。updated_at 自动刷; status 走专用 SetStatus 端点。

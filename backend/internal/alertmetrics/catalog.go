@@ -70,7 +70,6 @@ var bridgedMeta = map[string]bridgedCatalogMeta{
 	"huakai_egress_sidecar_write_fail_total":       {"出口sidecar:控制帧写失败", "次(累计)", "向 sidecar 写控制帧失败的累计次数(sidecar_unavailable 的一种)。"},
 	"huakai_egress_sidecar_read_fail_total":        {"出口sidecar:回执读失败", "次(累计)", "读 sidecar ack 帧失败的累计次数(sidecar_unavailable 的一种)。"},
 	"huakai_egress_sidecar_rejected_total":         {"出口sidecar:拒绝", "次(累计)", "sidecar 明确拒绝(profile 不支持或上游/代理不可达)的累计次数。"},
-	"huakai_egress_sidecar_fallback_total":         {"出口sidecar:回退Go出口", "次(累计)", "回退到 Go 原生伪装出口的累计次数(指纹保真降级,跨原因类汇总);升高=出口指纹链路在劣化。"},
 }
 
 // CatalogEntries 返回告警指标目录的副本:静态用量/健康条目 + 从 otelbridge 桥接规格派生的

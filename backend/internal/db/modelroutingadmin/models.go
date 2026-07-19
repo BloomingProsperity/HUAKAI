@@ -4,9 +4,11 @@
 
 package modelroutingadmindb
 
-import "github.com/jackc/pgx/v5/pgtype"
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
 
-// 模型路由强制 pin 行；账号数组顺序由管理员配置保留。
+// F-POOL-001 Layer 1: Model Routing config. Empty array = no override; selection skips Layer 1 and goes to Layer 1.5b.
 type ModelRoutingOverride struct {
 	ID                 int64              `db:"id" json:"id"`
 	TenantID           int64              `db:"tenant_id" json:"tenant_id"`

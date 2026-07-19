@@ -16,10 +16,10 @@ func TestBodyLimitBytesFromEnv(t *testing.T) {
 		val  string
 		want int64
 	}{
-		{"", def},      // 未设 → 默认
-		{"abc", def},   // 非法 → 默认
-		{"0", def},     // 非正 → 默认
-		{"-5", def},    // 负 → 默认
+		{"", def},    // 未设 → 默认
+		{"abc", def}, // 非法 → 默认
+		{"0", def},   // 非正 → 默认
+		{"-5", def},  // 负 → 默认
 		{"32", 32 << 20},
 		{"128", 128 << 20},
 	}
@@ -56,6 +56,7 @@ func TestPrivacyBodyLimitForRequest(t *testing.T) {
 		{"/v1/auth/login", nonRelayMax},
 		{"/v1/auth/register", nonRelayMax},
 		{"/healthz", nonRelayMax},
+		{"/readyz", nonRelayMax},
 	}
 	for _, c := range cases {
 		c := c

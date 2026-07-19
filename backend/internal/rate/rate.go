@@ -32,6 +32,14 @@ type Decision struct {
 	Reason            Reason
 	ShouldFailover    bool
 	RetryAfterSeconds int
+	// ClientStatus/Code/Message 只覆盖最终客户端投影，不参与重试、扣费、配额或鉴权决策。
+	ClientStatus  int
+	ClientCode    string
+	ClientMessage string
+	ClientRuleID  string
+	// SuppressHealthSignal 只抑制普通渠道健康与近期请求记账；显式冷却仍执行，
+	// 上层还必须保证铁证错误不能借此绕过永久禁用或鉴权恢复。
+	SuppressHealthSignal bool
 	// SuppressLocalState 只由 pool_mode 的未匹配分支设置；请求仍可故障转移，但不得写账号或模型健康状态。
 	SuppressLocalState bool
 }

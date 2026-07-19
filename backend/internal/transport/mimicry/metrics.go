@@ -14,10 +14,8 @@ import "expvar"
 //	read_fail  收 ACK 帧失败        = read_ack 日志,error_class=sidecar_unavailable
 //	rejected   sidecar 显式拒绝     = rejected 日志,error_class=sidecar_profile_unavailable
 //
-// 默认 fail-closed 下(SidecarFallbackEnabled=false),dial_fail/write_fail/read_fail/
-// rejected 即出口拒服务(转不出去);运维据此对出口成功率(ok / 总数)与失败构成告警。
-// fallback 开启后的"降级到 Go-native"是另一条信号,由 transport 包的
-// egress_sidecar_fallback_total 单独计,不与本计数器混淆。
+// dial_fail/write_fail/read_fail/rejected 都表示出口拒绝服务；系统不存在
+// 标准 TLS 或 Go-native 回退，运维可直接据此计算出口成功率与失败构成。
 const (
 	egressDialResultOK        = "ok"
 	egressDialResultDialFail  = "dial_fail"

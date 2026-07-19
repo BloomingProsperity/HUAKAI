@@ -27,17 +27,17 @@ const (
 type SignalClass string
 
 const (
-	SignalNone                            SignalClass = "none"
-	SignalSuccess                         SignalClass = "success"
-	SignalChannelError                    SignalClass = "channel_error"
-	SignalClientMalformed                 SignalClass = "client_malformed"
-	SignalLocalGateway5xx                 SignalClass = "local_gateway_5xx"
-	SignalUpstream5xx                     SignalClass = "upstream_5xx"
-	SignalTimeout                         SignalClass = "timeout"
-	SignalRateLimit                       SignalClass = "rate_limit"
-	SignalForbidden                       SignalClass = "forbidden"
-	SignalLatencyP99                      SignalClass = "latency_p99"
-	SignalAccountSuspended                SignalClass = "account_suspended"
+	SignalNone             SignalClass = "none"
+	SignalSuccess          SignalClass = "success"
+	SignalChannelError     SignalClass = "channel_error"
+	SignalClientMalformed  SignalClass = "client_malformed"
+	SignalLocalGateway5xx  SignalClass = "local_gateway_5xx"
+	SignalUpstream5xx      SignalClass = "upstream_5xx"
+	SignalTimeout          SignalClass = "timeout"
+	SignalRateLimit        SignalClass = "rate_limit"
+	SignalForbidden        SignalClass = "forbidden"
+	SignalLatencyP99       SignalClass = "latency_p99"
+	SignalAccountSuspended SignalClass = "account_suspended"
 	// SignalAuthChallenge:auth 失败(401 / Grok 400-auth)。刻意独立于健康 FSM——applySignal 把它
 	// 单独路由进 auth 降级车道(authcooldown),完全不改 rec.State/Score、不进 error-rate/ban-ramp 窗口。
 	SignalAuthChallenge                   SignalClass = "auth_challenge"
@@ -132,6 +132,7 @@ type Policy struct {
 	BanSignalMinCooldown               time.Duration
 	BanSignalMaxCooldown               time.Duration
 	RampStageMinDuration               time.Duration
+	RampStageMaxDuration               time.Duration
 	RampStageMinSamples                int
 	RampErrorThresholdPct              float64
 	RampBackoffFactor                  float64
@@ -160,6 +161,7 @@ func DefaultPolicy() Policy {
 		BanSignalMinCooldown:               24 * time.Hour,
 		BanSignalMaxCooldown:               72 * time.Hour,
 		RampStageMinDuration:               time.Minute,
+		RampStageMaxDuration:               10 * time.Minute,
 		RampStageMinSamples:                3,
 		RampErrorThresholdPct:              10,
 		RampBackoffFactor:                  2,
@@ -223,6 +225,9 @@ func (p Policy) normalized() Policy {
 	}
 	if p.RampStageMinDuration <= 0 {
 		p.RampStageMinDuration = def.RampStageMinDuration
+	}
+	if p.RampStageMaxDuration <= p.RampStageMinDuration {
+		p.RampStageMaxDuration = def.RampStageMaxDuration
 	}
 	if p.RampStageMinSamples <= 0 {
 		p.RampStageMinSamples = def.RampStageMinSamples

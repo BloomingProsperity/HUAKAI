@@ -2,6 +2,7 @@ package channelprobe
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -167,22 +168,19 @@ func (s *activeProbeStub) channelIDs() []string {
 	return append([]string(nil), s.seen...)
 }
 
-// TestSchedulerAdvancesRampingChannels 守卫「渠道冷却后进 ramping 1% 需被周期推进,否则永久卡死」:
-// 只配 RampAdvancer(不配 ActiveProbe/Health),调度器必须照样对每个活跃渠道调 AdvanceRamp。
-// 变异(任一即转红):① Run 在 activeProbe==nil 时早退 → advance 调用停在 0;
-// ② probeOnce 删掉 rampAdvancer.AdvanceRamp 调用 → 同样停在 0。
-func TestSchedulerAdvancesRampingChannels(t *testing.T) {
+// 调度器对每个待恢复渠道先尝试开始放量，再推进已有放量阶段。
+func TestSchedulerReconcilesCoolingAndRampingChannels(t *testing.T) {
 	ticker := newFakeSchedulerTicker()
 	lister := &activeChannelListerStub{channels: []ActiveChannel{
 		activeChannelFixture(7, "openai", 101, 1001, 1),
 		activeChannelFixture(7, "anthropic", 202, 2002, 3),
 	}}
-	advancer := newRampAdvancerStub()
+	reconciler := newRampReconcilerStub()
 	scheduler := NewChannelHealthScheduler(SchedulerConfig{
-		Channels:     lister,
-		RampAdvancer: advancer,
-		Interval:     time.Minute,
-		NewTicker:    func(time.Duration) SchedulerTicker { return ticker },
+		Channels:  lister,
+		Ramp:      reconciler,
+		Interval:  time.Minute,
+		NewTicker: func(time.Duration) SchedulerTicker { return ticker },
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,27 +189,38 @@ func TestSchedulerAdvancesRampingChannels(t *testing.T) {
 	go func() { errCh <- scheduler.Run(ctx) }()
 
 	ticker.tick()
-	advancer.waitCalls(t, len(lister.channels))
+	reconciler.waitCalls(t, len(lister.channels))
 	cancel()
 	waitSchedulerRunReturned(t, errCh)
 
-	if got := advancer.accountIDs(); !reflect.DeepEqual(got, []int64{101, 202}) {
+	if got := reconciler.accountIDs(); !reflect.DeepEqual(got, []int64{101, 202}) {
 		t.Fatalf("advanced provider account IDs=%v want [101 202]", got)
+	}
+	if got := reconciler.startedAccountIDs(); !reflect.DeepEqual(got, []int64{101, 202}) {
+		t.Fatalf("ramp-start provider account IDs=%v want [101 202]", got)
 	}
 }
 
-type rampAdvancerStub struct {
+type rampReconcilerStub struct {
 	mu      sync.Mutex
+	started []int64
 	seen    []int64
 	called  chan struct{}
 	closeMu sync.Once
 }
 
-func newRampAdvancerStub() *rampAdvancerStub {
-	return &rampAdvancerStub{called: make(chan struct{})}
+func newRampReconcilerStub() *rampReconcilerStub {
+	return &rampReconcilerStub{called: make(chan struct{})}
 }
 
-func (s *rampAdvancerStub) AdvanceRamp(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
+func (s *rampReconcilerStub) MaybeStartRamp(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
+	s.mu.Lock()
+	s.started = append(s.started, key.ProviderAccountID)
+	s.mu.Unlock()
+	return channelhealth.Record{}, nil
+}
+
+func (s *rampReconcilerStub) AdvanceRamp(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
 	s.mu.Lock()
 	s.seen = append(s.seen, key.ProviderAccountID)
 	if len(s.seen) >= 2 {
@@ -221,7 +230,7 @@ func (s *rampAdvancerStub) AdvanceRamp(_ context.Context, key channelhealth.Chan
 	return channelhealth.Record{}, nil
 }
 
-func (s *rampAdvancerStub) waitCalls(t *testing.T, want int) {
+func (s *rampReconcilerStub) waitCalls(t *testing.T, want int) {
 	t.Helper()
 	deadline := time.After(time.Second)
 	for {
@@ -242,8 +251,63 @@ func (s *rampAdvancerStub) waitCalls(t *testing.T, want int) {
 	}
 }
 
-func (s *rampAdvancerStub) accountIDs() []int64 {
+func (s *rampReconcilerStub) accountIDs() []int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]int64(nil), s.seen...)
+}
+
+func (s *rampReconcilerStub) startedAccountIDs() []int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int64(nil), s.started...)
+}
+
+type leaderLeaseStub struct {
+	acquired bool
+	err      error
+	calls    int
+	released bool
+}
+
+func (s *leaderLeaseStub) TryAcquire(context.Context) (bool, func(), error) {
+	s.calls++
+	if s.err != nil {
+		return false, nil, s.err
+	}
+	if !s.acquired {
+		return false, nil, nil
+	}
+	return true, func() { s.released = true }, nil
+}
+
+func TestSchedulerLeaderLeaseAllowsOnlyWinner(t *testing.T) {
+	lister := &activeChannelListerStub{channels: []ActiveChannel{activeChannelFixture(7, "openai", 101, 1001, 1)}}
+	reconciler := newRampReconcilerStub()
+	loser := &leaderLeaseStub{}
+	s := NewChannelHealthScheduler(SchedulerConfig{Channels: lister, Ramp: reconciler, LeaderLease: loser})
+	s.probeOnce(context.Background())
+	if loser.calls != 1 || len(reconciler.accountIDs()) != 0 {
+		t.Fatalf("non-leader executed recovery: lease_calls=%d accounts=%v", loser.calls, reconciler.accountIDs())
+	}
+
+	winner := &leaderLeaseStub{acquired: true}
+	s.leaderLease = winner
+	s.probeOnce(context.Background())
+	if !winner.released || !reflect.DeepEqual(reconciler.accountIDs(), []int64{101}) {
+		t.Fatalf("leader did not execute and release: released=%v accounts=%v", winner.released, reconciler.accountIDs())
+	}
+}
+
+func TestSchedulerLeaderLeaseFailureSkipsSideEffects(t *testing.T) {
+	reconciler := newRampReconcilerStub()
+	s := NewChannelHealthScheduler(SchedulerConfig{
+		Channels:    &activeChannelListerStub{channels: []ActiveChannel{activeChannelFixture(7, "openai", 101, 1001, 1)}},
+		Ramp:        reconciler,
+		LeaderLease: &leaderLeaseStub{err: errors.New("database unavailable")},
+	})
+	s.probeOnce(context.Background())
+	if len(reconciler.accountIDs()) != 0 {
+		t.Fatalf("lease failure must fail closed, got side effects for %v", reconciler.accountIDs())
+	}
 }

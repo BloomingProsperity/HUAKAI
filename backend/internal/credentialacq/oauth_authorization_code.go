@@ -49,6 +49,10 @@ type oauthTokenResponse struct {
 		EmailAddress string `json:"email_address"`
 	} `json:"account"`
 	Email string `json:"email"`
+	// OpenAI 的 OAuth 响应可能直接携带套餐与账号元数据。其他厂商返回时这些字段为空。
+	ChatGPTUserID    string `json:"chatgpt_user_id"`
+	ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+	ChatGPTAccountID string `json:"chatgpt_account_id"`
 }
 
 func newAuthorizationCodeOAuthExchanger(vendor, authMode string, shape TokenShape, defaults ...OAuthClientConfig) authorizationCodeOAuthExchanger {
@@ -134,10 +138,12 @@ func (e authorizationCodeOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.
 	if err := validateTokenShape(fields, e.shape); err != nil {
 		return CredentialCandidate{}, err
 	}
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
-	}, nil
+	}
+	attachOAuthResponseSubscription(&candidate, token.ChatGPTPlanType)
+	return candidate, nil
 }
 
 func (e authorizationCodeOAuthExchanger) exchangeAuthorizationCode(ctx context.Context, payload storedPKCEPayload, code string) (oauthTokenResponse, error) {
@@ -167,9 +173,8 @@ func (e authorizationCodeOAuthExchanger) exchangeAuthorizationCode(ctx context.C
 		// SSRF-protected stdlib client — transport.Proxy=nil + DialContext
 		// 拨号校验目标 IP 非 loopback/private/link-local/metadata + CheckRedirect
 		// 禁 3xx, 关 DNS-rebind 攻击面 (静态层 commit 39c66a3 已落地)。
-		// caller 注入 custom client (test mock RoundTripper) 时, 走 caller
-		// 自带的 client; production wiring 应注入 SSRF-protected client (例 anthropicoauth.DefaultHTTPClient
-		// 的 mimicry uTLS 也实现了 OAuth-grade defense)。
+		// caller 注入 custom client（测试 mock RoundTripper）时走 caller
+		// 自带的 client；生产 wiring 必须注入具备同等级 SSRF 防护的 client。
 		client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 	}
 	resp, err := client.Do(req)
@@ -330,6 +335,15 @@ func tokenCandidatePayload(token oauthTokenResponse, stored storedPKCEPayload, n
 	}
 	if idToken := strings.TrimSpace(token.IDToken); idToken != "" {
 		out["id_token"] = idToken
+	}
+	if userID := strings.TrimSpace(token.ChatGPTUserID); userID != "" {
+		out["chatgpt_user_id"] = userID
+	}
+	if plan := strings.TrimSpace(token.ChatGPTPlanType); plan != "" {
+		out["chatgpt_plan_type"] = plan
+	}
+	if accountID := strings.TrimSpace(token.ChatGPTAccountID); accountID != "" {
+		out["chatgpt_account_id"] = accountID
 	}
 	if seconds := rawExpiresInSeconds(token.ExpiresIn); seconds > 0 {
 		out["expires_in"] = seconds

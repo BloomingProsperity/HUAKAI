@@ -62,9 +62,8 @@ LIMIT $1`, limit)
 	return scanActiveChannels(rows)
 }
 
-// PostgresRampingChannelLister 只列当前处于 ramping(渐进放量)状态的渠道,供 ramp 驱动使用。
-// 直接查 channel_health_state 的 state='ramping' 行(寥寥几个),避免对全部活跃渠道调 AdvanceRamp
-// 触发 EnsureDefaultActive 给无记录渠道凭空建行 + 首轮审计噪声。
+// PostgresRampingChannelLister 列出当前处于 ramping，或 cooling_down 且已到期的渠道，
+// 供后台恢复协调器处理。它不会扫描正常活跃渠道，也不会凭空创建健康记录。
 type PostgresRampingChannelLister struct {
 	pool  *pgxpool.Pool
 	limit int
@@ -93,7 +92,8 @@ SELECT
     account_credential_id,
     credential_version
 FROM channel_health_state
-WHERE state = 'ramping'
+WHERE (state = 'ramping'
+       OR (state = 'cooling_down' AND cooldown_until IS NOT NULL AND cooldown_until <= now()))
   AND provider_account_id IS NOT NULL
 ORDER BY tenant_id, provider_account_id
 LIMIT $1`, limit)

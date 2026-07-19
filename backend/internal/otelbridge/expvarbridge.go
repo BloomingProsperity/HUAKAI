@@ -347,13 +347,6 @@ func bridgeCounters() []bridgeCounter {
 			description: "Egress sidecar dials the sidecar negatively acked (profile rejection or upstream/proxy unreachable).",
 			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "rejected") },
 		},
-		// 出口降级(sidecar 不可用→Go-native mimicry)总数,跨 reason_class 求和。仅在
-		// SidecarFallbackEnabled=true 时非零;非零=出口指纹保真度降级正在发生,应告警。
-		{
-			name:        "huakai_egress_sidecar_fallback_total",
-			description: "Egress sidecar fallbacks to Go-native mimicry (fingerprint-fidelity degraded), summed across reason classes.",
-			read:        func() int64 { return readExpvarMapSum("egress_sidecar_fallback_total") },
-		},
 	}
 }
 

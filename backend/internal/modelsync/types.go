@@ -37,24 +37,30 @@ type ApplyOptions struct {
 
 // ApplyResult 是 registry 应用一个 vendor 快照后的结果。
 type ApplyResult struct {
-	Vendor        Vendor   `json:"vendor"`
-	Added         int      `json:"added"`
-	Updated       int      `json:"updated"`
-	Reactivated   int      `json:"reactivated"`
-	Disabled      int      `json:"disabled"`
-	Unchanged     int      `json:"unchanged"`
-	SnapshotBumps int      `json:"snapshot_bumps"`
-	Detected      []string `json:"detected,omitempty"`
-	Ignored       []string `json:"ignored,omitempty"`
-	Removed       []string `json:"removed,omitempty"`
+	Vendor           Vendor   `json:"vendor"`
+	Added            int      `json:"added"`
+	Updated          int      `json:"updated"`
+	Reactivated      int      `json:"reactivated"`
+	Disabled         int      `json:"disabled"`
+	Discovered       int      `json:"discovered"`
+	DiscoveryUpdated int      `json:"discovery_updated"`
+	DiscoveryAbsent  int      `json:"discovery_absent"`
+	Unchanged        int      `json:"unchanged"`
+	SnapshotBumps    int      `json:"snapshot_bumps"`
+	Detected         []string `json:"detected,omitempty"`
+	Ignored          []string `json:"ignored,omitempty"`
+	Removed          []string `json:"removed,omitempty"`
 }
 
 // SyncResult 汇总一次手动或定时同步。
 type SyncResult struct {
-	StartedAt     time.Time     `json:"started_at"`
-	CompletedAt   time.Time     `json:"completed_at"`
-	Results       []ApplyResult `json:"results"`
-	TotalAdded    int           `json:"total_added"`
-	TotalUpdated  int           `json:"total_updated"`
-	TotalDisabled int           `json:"total_disabled"`
+	StartedAt             time.Time     `json:"started_at"`
+	CompletedAt           time.Time     `json:"completed_at"`
+	Results               []ApplyResult `json:"results"`
+	TotalAdded            int           `json:"total_added"`
+	TotalUpdated          int           `json:"total_updated"`
+	TotalDisabled         int           `json:"total_disabled"`
+	TotalDiscovered       int           `json:"total_discovered"`
+	TotalDiscoveryUpdated int           `json:"total_discovery_updated"`
+	TotalDiscoveryAbsent  int           `json:"total_discovery_absent"`
 }

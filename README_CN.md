@@ -155,10 +155,10 @@ parity，且保持 MIT 兼容。参考项目仅作行为证据来源；任何参
 - 路由仍为 L0：从 `PoolCandidates[0]` 取一次 primary attempt
 - 网关 executor 逻辑仍嵌在 chat handler 内
 - `attempt_id` 与 `lease_id` 已文档化但未成 schema 一等公民
-- provider 适配器已产线化并按真实上游字节走（`backend/internal/provider/registrydefault/default.go:177` 注册 Grok/Kimi/DeepSeek/Mistral 直通；anthropic 出站经 uTLS mimicry `backend/cmd/gateway/wiring.go:807`），非 mock
+- provider 适配器按真实上游字节工作；官方 API key 走隔离环境代理的 Go standard transport，订阅反转账号的 mimicry 出口只走同镜像 Rust/BoringSSL sidecar，sidecar 不可用时启动和请求均 fail-closed
 - 成功请求按真实 micro-USD 定价结算（`backend/internal/billing/public_price_table.go:166` input/output_micro_usd），无固定 placeholder cost
 - admin API 已实现并挂载（`backend/cmd/gateway/routes.go:815` 起 `/admin/v1/*` 路由组）；仅前端控制台尚未实现
-- R3 传输层伪装仍在 plan 阶段，无 production-ready 代码
+- Rust TLS sidecar 已完成 IPC、内置/动态 profile、代理、readiness 和单镜像双进程接线；本机容器生命周期 smoke 已通过，真实厂商账号和完整压测仍是发布门
 
 ## 从哪里开始
 
@@ -197,7 +197,7 @@ go test -tags smoke ./cmd/gateway
 [MIT](LICENSE)。本仓库的贡献必须保持 MIT 兼容。学习外部项目时允许 / 禁止的行为
 见 [docs/05_CLEAN_ROOM_POLICY.md](docs/05_CLEAN_ROOM_POLICY.md)。
 
-HUAKAI 使用的第三方库（utls / gopacket 等）按各自许可证。
+HUAKAI 使用的第三方库（BoringSSL Rust 绑定、gopacket 等）按各自许可证。
 
 ## 法律
 

@@ -24,7 +24,6 @@ func (f fakeTLSProfileResolver) ResolveProfile(context.Context, int64) (*mimicry
 }
 
 func TestApplyTLSProfileBindsDynamicProfileToSidecar(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	profile := validGatewayInlineProfile()
 	base := mimicry.NewSidecarRoundTripper(
 		mimicry.NewSidecarClient("/run/huakai/tls-sidecar.sock"),
@@ -49,7 +48,6 @@ func TestApplyTLSProfileBindsDynamicProfileToSidecar(t *testing.T) {
 }
 
 func TestApplyTLSProfileKeepsBuiltinWhenNoDynamicSelection(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	orig := &tlsProfileMarkerRT{name: "builtin"}
 	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{}}
 
@@ -60,7 +58,6 @@ func TestApplyTLSProfileKeepsBuiltinWhenNoDynamicSelection(t *testing.T) {
 }
 
 func TestApplyTLSProfileSkipsNonMimicryContexts(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	orig := &tlsProfileMarkerRT{name: "builtin"}
 	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{profile: validGatewayInlineProfile()}}
 
@@ -81,7 +78,6 @@ func TestApplyTLSProfileSkipsNonMimicryContexts(t *testing.T) {
 }
 
 func TestApplyTLSProfileFailsClosedOnResolverOrTransportMismatch(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	orig := &tlsProfileMarkerRT{name: "not-sidecar"}
 	sentinel := errors.New("db down")
 

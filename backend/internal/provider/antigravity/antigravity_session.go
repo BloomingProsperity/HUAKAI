@@ -17,6 +17,15 @@ const (
 	antigravityGoogleOneCreditType = "GOOGLE_ONE_AI"
 )
 
+// ApplyCloudCodeHeaders 统一 Antigravity 的公开客户端身份头，避免各条出站链漂移。
+func ApplyCloudCodeHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	header.Set("User-Agent", defaultAntigravityUserAgent)
+	header.Set("X-Goog-Api-Client", defaultAntigravityAPIClient)
+}
+
 // 编译期接口合规断言。
 var _ provider.Adapter = (*AntigravitySessionAdapter)(nil)
 
@@ -54,5 +63,6 @@ func (a *AntigravitySessionAdapter) BuildRequest(ctx context.Context, in provide
 	if err != nil {
 		return nil, fmt.Errorf("antigravity session: %w", err)
 	}
+	ApplyCloudCodeHeaders(req.Header)
 	return req, nil
 }

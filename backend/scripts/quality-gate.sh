@@ -54,7 +54,8 @@ DC_BASE="scripts/deadcode-baseline.txt"
 # 真调用,deadcode 不带 -test 看不到跨测试引用而误命中,与 memoryStore/logsink/adminsessionauthtest
 # 先例同类;生产入口是 MountRoutes),DC_MAX 804->806(Owner 可见可审;非死代码堆积,是测试专用构造器)。
 SC_MAX=92
-DC_MAX=806
+# 2026-07-19 全局接线审计删除零生产入口的旧 obs 平行读模型及其专用 SQL，棘轮同步收紧 806->799。
+DC_MAX=799
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1

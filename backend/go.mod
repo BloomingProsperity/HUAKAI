@@ -13,7 +13,6 @@ require (
 	github.com/klauspost/compress v1.18.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.20.0
-	github.com/refraction-networking/utls v1.8.2
 	github.com/shopspring/decimal v1.4.0
 	github.com/tiktoken-go/tokenizer v0.7.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.65.0

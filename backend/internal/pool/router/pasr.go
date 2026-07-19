@@ -247,12 +247,13 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	//   - 解决 Owner 关切: PASR 不再只看 cache locality, 同时考虑账号
 	//     剩余并发容量, 避免把请求堆到已经爆满的 hot steward 上
 	//   - score 相等时 LastUsedAt 最久未用胜 (round-robin 兜底, 保留之前行为)
+	decisionAt := time.Now().UTC()
 	score := func(c candidate) float64 {
 		return Blend(Candidate{
 			HasCache: c.hasCache,
 			LoadRate: c.snapshot.LoadRate,
 			Degraded: c.health.State == HealthStateDegraded,
-		})
+		}) + adaptiveScore(c.snapshot, decisionAt)
 	}
 	chosen := candidates[0]
 	chosenScore := score(chosen)
@@ -278,6 +279,7 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	// 7. claim 写入 + 返
 	reason.Layer(RoutingLayerRoutingAffinity)
 	reason.Account(chosen.accountID)
+	reason.Scoring("adaptive-v1", adaptiveContributions(chosen.snapshot, decisionAt))
 	return p.acquireAndReturn(ctx, req, chosen.snapshot, reason.JSON())
 }
 

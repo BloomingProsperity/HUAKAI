@@ -7,8 +7,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 var (
@@ -25,20 +28,65 @@ type ChannelHealthInitializer interface {
 	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
 }
 
+type AgentTaskRegistrar interface {
+	EnsureTask(context.Context, []byte) ([]byte, error)
+}
+
+type ProxyMaterial struct {
+	Name         string
+	Protocol     string
+	Host         string
+	Port         int32
+	AuthUsername string
+	AuthSecret   string
+	SourceRef    string
+}
+
+type ProxyResolveInput struct {
+	TenantID  int64
+	Material  ProxyMaterial
+	ActorID   string
+	ActorRole string
+	RequestID string
+	Reason    string
+}
+
+type ProxyResolver interface {
+	ResolveTx(context.Context, pgx.Tx, ProxyResolveInput) (int64, error)
+}
+
 type AccountDefaults struct {
-	ProviderID      int64           `json:"provider_id"`
-	ChannelID       int64           `json:"channel_id"`
-	NamePrefix      string          `json:"name_prefix"`
-	AccountType     string          `json:"account_type"`
-	Enabled         *bool           `json:"enabled,omitempty"`
-	CapConcurrency  *int32          `json:"cap_concurrency,omitempty"`
-	Priority        *int32          `json:"priority,omitempty"`
-	StaticWeight    *int32          `json:"static_weight,omitempty"`
-	ProbeModel      *string         `json:"probe_model,omitempty"`
-	Tags            []string        `json:"tags,omitempty"`
-	Extra           json.RawMessage `json:"extra,omitempty"`
-	ModelAllowList  []string        `json:"model_allow_list,omitempty"`
-	CapabilityFlags []string        `json:"capability_flags,omitempty"`
+	ProviderID               int64           `json:"provider_id"`
+	ChannelID                int64           `json:"channel_id"`
+	NamePrefix               string          `json:"name_prefix"`
+	ExactName                string          `json:"exact_name,omitempty"`
+	AccountType              string          `json:"account_type"`
+	Enabled                  *bool           `json:"enabled,omitempty"`
+	ExpiresAt                *time.Time      `json:"expires_at,omitempty"`
+	CapConcurrency           *int32          `json:"cap_concurrency,omitempty"`
+	CapQueueSticky           *int32          `json:"cap_queue_sticky,omitempty"`
+	CapQueueFallback         *int32          `json:"cap_queue_fallback,omitempty"`
+	Priority                 *int32          `json:"priority,omitempty"`
+	StaticWeight             *int32          `json:"static_weight,omitempty"`
+	UpstreamCostRatio        *float64        `json:"upstream_cost_ratio,omitempty"`
+	ProbeModel               *string         `json:"probe_model,omitempty"`
+	Tags                     []string        `json:"tags,omitempty"`
+	Extra                    json.RawMessage `json:"extra,omitempty"`
+	ModelAllowList           []string        `json:"model_allow_list,omitempty"`
+	CapabilityFlags          []string        `json:"capability_flags,omitempty"`
+	RPMLimit                 *int64          `json:"rpm_limit,omitempty"`
+	TPMLimit                 *int64          `json:"tpm_limit,omitempty"`
+	WindowCostLimitCents     *int64          `json:"window_cost_limit_cents,omitempty"`
+	MaxSessions              *int32          `json:"max_sessions,omitempty"`
+	DisableCooling           *bool           `json:"disable_cooling,omitempty"`
+	RefreshLeadSeconds       *int32          `json:"refresh_lead_seconds,omitempty"`
+	TLSFingerprintRotate     *bool           `json:"tls_fingerprint_rotate,omitempty"`
+	CustomErrorCodesEnabled  *bool           `json:"custom_error_codes_enabled,omitempty"`
+	CustomErrorCodes         []int32         `json:"custom_error_codes,omitempty"`
+	PoolMode                 *bool           `json:"pool_mode,omitempty"`
+	TempUnschedulableEnabled *bool           `json:"temp_unschedulable_enabled,omitempty"`
+	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
+	Proxy                    *ProxyMaterial  `json:"-"`
 }
 
 type PlanInput struct {
@@ -58,12 +106,14 @@ type PlanResult struct {
 
 type ExecuteInput struct {
 	PlanInput
-	PlanHash      string
-	Confirmations []string
-	ActorID       string
-	ActorRole     string
-	RequestID     string
-	Reason        string
+	PlanHash                 string
+	Confirmations            []string
+	ReplaceExistingConfig    bool
+	ExpectedAccountUpdatedAt *time.Time
+	ActorID                  string
+	ActorRole                string
+	RequestID                string
+	Reason                   string
 }
 
 type ExecutionStatus string
@@ -77,16 +127,18 @@ const (
 )
 
 type ExecutionItem struct {
-	Index                    int             `json:"index"`
-	PlannedAction            intake.Action   `json:"planned_action"`
-	Status                   ExecutionStatus `json:"status"`
-	Code                     string          `json:"code"`
-	Message                  string          `json:"message"`
-	ProviderAccountID        int64           `json:"provider_account_id,omitempty"`
-	AccountCredentialID      int64           `json:"account_credential_id,omitempty"`
-	CredentialVersion        int32           `json:"credential_version,omitempty"`
-	ChannelHealthInitialized bool            `json:"channel_health_initialized"`
-	Warnings                 []string        `json:"warnings,omitempty"`
+	Index                    int                              `json:"index"`
+	PlannedAction            intake.Action                    `json:"planned_action"`
+	Status                   ExecutionStatus                  `json:"status"`
+	Code                     string                           `json:"code"`
+	Message                  string                           `json:"message"`
+	ProviderAccountID        int64                            `json:"provider_account_id,omitempty"`
+	AccountCredentialID      int64                            `json:"account_credential_id,omitempty"`
+	CredentialVersion        int32                            `json:"credential_version,omitempty"`
+	ChannelHealthInitialized bool                             `json:"channel_health_initialized"`
+	Subscription             *subscriptionprofile.Observation `json:"subscription,omitempty"`
+	SystemLabels             []string                         `json:"system_labels,omitempty"`
+	Warnings                 []string                         `json:"warnings,omitempty"`
 }
 
 type ExecutionSummary struct {

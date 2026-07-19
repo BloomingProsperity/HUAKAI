@@ -1,9 +1,8 @@
 // 包 transport 提供按 provider 路径选 RoundTripper 的策略层。
 //
 // 核心承诺：
-//   - mimicry transport 只在 Anthropic 池化路径（Pro/Max
-//     OAuth）启用；OpenAI / Vertex / Bedrock / OpenRouter 等公开 API 路径
-//     永远走 standard transport
+//   - mimicry transport 只用于各厂商明确登记的订阅反转模式；公开 API key
+//     路径继续走 standard transport
 //   - provider 路径隔离始终存在，避免跨 provider 配置污染
 //   - 不允许的 (provider, mode) 组合在配置加载阶段直接 reject，不留运行时
 //     fail-open 路径
@@ -77,10 +76,8 @@ const (
 	// provider 默认。
 	TransportModeStandard TransportMode = "standard"
 	// 各 vendor 反转模式下的 mimicry transport 选项。每家伪装目标不同
-	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方按
-	// fingerprint template 配置 utls dialer。
-	//
-	// Anthropic 路径的 mode 常量保留供未来重启用。
+	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方选择 Rust
+	// sidecar 内置或动态 profile；Go 不再持有 TLS 指纹执行器。
 	TransportModeMimicryClaudeCode TransportMode = "mimicry_claude_code"
 	// TransportModeMimicryChatGPT 伪装为 ChatGPT 网页 / Codex CLI 客户端。
 	// 仅 OpenAI provider 允许。
@@ -102,7 +99,7 @@ const (
 	TransportModeMimicryWindsurf TransportMode = "mimicry_windsurf"
 
 	// TransportModeDiagnosticsOnly 仅做出站连通性诊断（不发真请求体）。
-	// Safe Equivalent 路径，供未来回退使用。
+	// Safe Equivalent 路径，仅供运维诊断，不作为请求出口回退。
 	TransportModeDiagnosticsOnly TransportMode = "diagnostics_only"
 )
 

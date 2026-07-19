@@ -26,7 +26,8 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 	secret := "refresh-secret-sentinel"
 	input := `{
 		"auth_mode":"chatgpt",
-		"OPENAI_API_KEY":"stale-api-key",
+			"OPENAI_API_KEY":"stale-api-key",
+			"chatgpt_plan_type":"Pro",
 		"last_refresh":"2099-07-17T11:00:00Z",
 		"tokens":{
 			"id_token":` + quoted(idToken) + `,
@@ -67,6 +68,9 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 	}
 	if got.AccountIDSource != accountident.SourceImportPayload {
 		t.Fatalf("导入文件身份不得冒充实时受信响应：source=%q", got.AccountIDSource)
+	}
+	if payload["chatgpt_plan_type"] != "Pro" || got.Subscription.Label() != "openai:pro" || got.Subscription.Status != "observed" {
+		t.Fatalf("auth.json 外层套餐未进入凭据候选项：payload=%v subscription=%+v", payload, got.Subscription)
 	}
 	redacted, _ := json.Marshal(got.RedactedContext)
 	for _, forbidden := range []string{secret, accessToken, "attacker.test", "attacker-secret", "user-from-token"} {

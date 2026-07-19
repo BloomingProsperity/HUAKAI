@@ -4,18 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp/accounthealthview"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotawindowview"
 )
 
 const secretSentinel = "sk-SECRET-LEAK-SENTINEL-9f3a"
@@ -163,6 +166,14 @@ func TestAccountHealthDiagnoseShape(t *testing.T) {
 	// 回归:工具必须露出 account health 行的 state + 失败分类/计数,以及 channel summary
 	// 的逐状态计数。变异:丢掉 failure_class 会破坏下面断言的 error_class 推导。
 	fc := "rate_limit_exceeded"
+	subscriptionVendor := "openai"
+	subscriptionPlan := "plus"
+	subscriptionScope := "personal"
+	subscriptionSource := "oauth_token_response"
+	subscriptionTrust := "issuer_response"
+	subscriptionVerification := "issuer_response"
+	subscriptionStatus := "observed"
+	subscriptionMappingVersion := int32(1)
 	probeAt := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
 	observedAt := time.Date(2026, 7, 16, 10, 7, 0, 0, time.UTC)
 	deps := AccountHealthDeps{
@@ -173,6 +184,10 @@ func TestAccountHealthDiagnoseShape(t *testing.T) {
 			return admindb.GetAdminProviderAccountHealthRow{
 				ID: 5, TenantID: 7, HealthState: "degraded", Enabled: true,
 				FailureClass: &fc, FailureCount: 2,
+				SubscriptionVendor: &subscriptionVendor, SubscriptionPlan: &subscriptionPlan,
+				SubscriptionScope: &subscriptionScope, SubscriptionSource: &subscriptionSource,
+				SubscriptionTrust: &subscriptionTrust, SubscriptionVerification: &subscriptionVerification,
+				SubscriptionStatus: &subscriptionStatus, SubscriptionMappingVersion: &subscriptionMappingVersion,
 				LastProbeAt:           pgtype.Timestamptz{Time: probeAt, Valid: true},
 				LastRequestObservedAt: pgtype.Timestamptz{Time: observedAt, Valid: true},
 			}, nil
@@ -200,6 +215,14 @@ func TestAccountHealthDiagnoseShape(t *testing.T) {
 	if res.Summary["last_request_observation_source"] != "request_completion_event" {
 		t.Fatalf("last_request_observation_source=%v want request_completion_event", res.Summary["last_request_observation_source"])
 	}
+	subscription, ok := res.Summary["subscription"].(*accounthealthview.SubscriptionAxis)
+	if !ok || subscription.Label != "openai:plus" || subscription.Status != "observed" {
+		t.Fatalf("Hermes 套餐投影=%v，期望复用账号健康投影", res.Summary["subscription"])
+	}
+	labels, ok := res.Summary["system_labels"].([]string)
+	if !ok || len(labels) != 1 || labels[0] != "openai:plus" {
+		t.Fatalf("Hermes 系统标签=%v", res.Summary["system_labels"])
+	}
 	cs, ok := res.Summary["channel_summary"].(map[string]any)
 	if !ok || cs["total"].(int64) != 4 {
 		t.Fatalf("channel_summary=%v want total=4", res.Summary["channel_summary"])
@@ -215,21 +238,24 @@ func TestAccountHealthDiagnoseFailsClosedOnNilDep(t *testing.T) {
 	}
 }
 
-// TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow 守护恢复 ETA
-// (health_state_until)和 5h 会话窗口边界(start/end)的投影。
-// 三个时间戳各不相同,所以丢掉某个 key(nil)或字段被错位都会失败。
-// 变异:从 summary map 里移除这三个 key 中的任意一个 -> 变红。
+// TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow 守护恢复 ETA 与配额矩阵投影。
 func TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow(t *testing.T) {
 	until := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
-	winStart := time.Date(2026, 5, 14, 8, 0, 0, 0, time.UTC)
-	winEnd := time.Date(2026, 5, 14, 13, 0, 0, 0, time.UTC)
+	winStart := time.Date(2099, 5, 14, 8, 0, 0, 0, time.UTC)
+	winEnd := time.Date(2099, 5, 14, 13, 0, 0, 0, time.UTC)
+	weekStart := time.Date(2099, 5, 8, 13, 0, 0, 0, time.UTC)
+	weekEnd := weekStart.Add(7 * 24 * time.Hour)
 	deps := AccountHealthDeps{
 		ProviderAccountHealth: func(_ context.Context, _ admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
 			return admindb.GetAdminProviderAccountHealthRow{
 				ID: 5, TenantID: 7, HealthState: "degraded",
-				HealthStateUntil:     pgtype.Timestamptz{Time: until, Valid: true},
-				SessionWindow5hStart: pgtype.Timestamptz{Time: winStart, Valid: true},
-				SessionWindow5hEnd:   pgtype.Timestamptz{Time: winEnd, Valid: true},
+				HealthStateUntil:           pgtype.Timestamptz{Time: until, Valid: true},
+				SessionWindow5hStart:       pgtype.Timestamptz{Time: winStart, Valid: true},
+				SessionWindow5hEnd:         pgtype.Timestamptz{Time: winEnd, Valid: true},
+				SessionWindow5hUtilization: hermesNumeric(t, 37.5),
+				SessionWindow7dStart:       pgtype.Timestamptz{Time: weekStart, Valid: true},
+				SessionWindow7dEnd:         pgtype.Timestamptz{Time: weekEnd, Valid: true},
+				SessionWindow7dUtilization: hermesNumeric(t, 62.25),
 			}, nil
 		},
 	}
@@ -253,6 +279,20 @@ func TestAccountHealthDiagnoseProjectsRecoveryAndSessionWindow(t *testing.T) {
 			t.Fatalf("%s=%v want %v (projection dropped?)", c.key, res.Summary[c.key], c.want)
 		}
 	}
+	matrix, ok := res.Summary["quota_windows"].(quotawindowview.Matrix)
+	if !ok || matrix.FiveHour.RemainingPercent == nil || *matrix.FiveHour.RemainingPercent != 62.5 ||
+		matrix.SevenDay.RemainingPercent == nil || *matrix.SevenDay.RemainingPercent != 37.75 {
+		t.Fatalf("quota_windows=%+v，期望 Hermes 与管理列表使用同一剩余比例合同", res.Summary["quota_windows"])
+	}
+}
+
+func hermesNumeric(t *testing.T, value float64) pgtype.Numeric {
+	t.Helper()
+	var result pgtype.Numeric
+	if err := result.Scan(strconv.FormatFloat(value, 'f', -1, 64)); err != nil {
+		t.Fatalf("构造 Hermes numeric: %v", err)
+	}
+	return result
 }
 
 // --- request_diagnose -------------------------------------------------------
@@ -436,6 +476,45 @@ func TestDLQInspectFailsClosedOnNilDep(t *testing.T) {
 
 // 确保 pgtype 在需要有效时间戳的 fixture 中保持被引用。
 var _ = pgtype.Timestamptz{Valid: true}
+
+func TestAccountHealthDiagnoseUsesServingCredentialSelection(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidates int32
+		wantState  string
+		wantMeta   bool
+	}{
+		{name: "唯一候选", candidates: 1, wantState: "resolved", wantMeta: true},
+		{name: "多个候选", candidates: 2, wantState: "ambiguous", wantMeta: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := AccountHealthDeps{
+				ProviderAccountHealth: func(_ context.Context, _ admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
+					return admindb.GetAdminProviderAccountHealthRow{
+						ID: 5, TenantID: 7, ProviderCode: "gemini", AccountType: "oauth",
+						CredentialVendor: "gemini", CredentialAuthMode: "code_assist",
+						ServingCredentialCandidates: tc.candidates, CredentialState: "valid",
+					}, nil
+				},
+			}
+			r := req(7)
+			r.Args["account_id"] = float64(5)
+			res, err := AccountHealthDiagnoseSpec(deps).Run(context.Background(), r)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got := res.Summary["credential_selection_state"]; got != tc.wantState {
+				t.Fatalf("credential_selection_state=%v，期望 %q", got, tc.wantState)
+			}
+			_, hasVendor := res.Summary["credential_vendor"]
+			_, hasAuthMode := res.Summary["credential_auth_mode"]
+			if hasVendor != tc.wantMeta || hasAuthMode != tc.wantMeta {
+				t.Fatalf("候选数=%d 时元数据可见性不一致：vendor=%v auth_mode=%v", tc.candidates, hasVendor, hasAuthMode)
+			}
+		})
+	}
+}
 
 // TestAccountHealthDiagnoseFoldsAccountChannels 守增强:account_health_diagnose 折叠**本账号**
 // (account_id 匹配 ProviderAccountID)的逐通道明细 + 只露安全投影字段;别账号通道绝不混入。

@@ -1,4 +1,8 @@
-use std::time::Duration;
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
@@ -116,6 +120,14 @@ where
         .await?;
         return Ok(());
     }
+    let pinned_target_ips =
+        match validate_pinned_target_ips(&request.pinned_target_ips, request.proxy.is_some()) {
+            Ok(addresses) => addresses,
+            Err(message) => {
+                write_rejection(&mut ipc, corr, proto::ERROR_TARGET_POLICY_DENIED, message).await?;
+                return Ok(());
+            }
+        };
 
     let upstream_result = tokio::select! {
         _ = wait_for_ipc_cancel(&mut ipc) => {
@@ -134,6 +146,7 @@ where
             &profile,
             request.force_h1.unwrap_or(false),
             request.proxy.as_ref(),
+            &pinned_target_ips,
         ) => result,
     };
     let upstream = match upstream_result {
@@ -192,6 +205,32 @@ fn valid_host(host: &str) -> bool {
             .any(|value| value.is_control() || value.is_whitespace() || matches!(value, '/' | '\\'))
 }
 
+fn validate_pinned_target_ips(raw: &[String], proxied: bool) -> Result<Vec<IpAddr>, String> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if proxied {
+        return Err("目标地址绑定不能与代理隧道同时使用".to_owned());
+    }
+    if raw.len() > 16 {
+        return Err("目标地址绑定数量超过 16".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    let mut addresses = Vec::with_capacity(raw.len());
+    for value in raw {
+        let address = value
+            .parse::<IpAddr>()
+            .map_err(|_| "目标地址绑定包含无效 IP".to_owned())?;
+        if seen.insert(address) {
+            addresses.push(address);
+        }
+    }
+    if addresses.is_empty() {
+        return Err("目标地址绑定为空".to_owned());
+    }
+    Ok(addresses)
+}
+
 async fn wait_for_ipc_cancel<S>(ipc: &mut S)
 where
     S: AsyncRead + Unpin,
@@ -228,6 +267,7 @@ async fn connect_upstream(
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
 ) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
     connect_upstream_with_timeout(
         target_host,
@@ -235,6 +275,7 @@ async fn connect_upstream(
         profile,
         force_h1,
         proxy,
+        pinned_target_ips,
         upstream_connect_timeout(),
     )
     .await
@@ -246,11 +287,19 @@ async fn connect_upstream_with_timeout(
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
     duration: Duration,
 ) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
     match timeout(
         duration,
-        connect_upstream_without_timeout(target_host, port, profile, force_h1, proxy),
+        connect_upstream_without_timeout(
+            target_host,
+            port,
+            profile,
+            force_h1,
+            proxy,
+            pinned_target_ips,
+        ),
     )
     .await
     {
@@ -265,8 +314,17 @@ async fn connect_upstream_without_timeout(
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
 ) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
-    let tls = connect_tls_upstream(target_host, port, profile, force_h1, proxy).await?;
+    let tls = connect_tls_upstream(
+        target_host,
+        port,
+        profile,
+        force_h1,
+        proxy,
+        pinned_target_ips,
+    )
+    .await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
@@ -280,13 +338,14 @@ async fn connect_tls_upstream(
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
 ) -> Result<UpstreamTlsStream, ConnectError> {
     if !force_h1 {
         boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
     }
     let tunnel = match proxy {
         Some(spec) => crate::proxy_tunnel::connect_through_proxy(spec, target_host, port).await?,
-        None => TunnelStream::new(connect_direct(target_host, port).await?),
+        None => TunnelStream::new(connect_direct(target_host, port, pinned_target_ips).await?),
     };
     let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
     tokio_boring::connect(config, target_host, tunnel)
@@ -294,7 +353,21 @@ async fn connect_tls_upstream(
         .map_err(|error| ConnectError::Handshake(error.to_string()))
 }
 
-async fn connect_direct(target_host: &str, port: u16) -> Result<TcpStream, ConnectError> {
+async fn connect_direct(
+    target_host: &str,
+    port: u16,
+    pinned_target_ips: &[IpAddr],
+) -> Result<TcpStream, ConnectError> {
+    if !pinned_target_ips.is_empty() {
+        let addresses = pinned_target_ips
+            .iter()
+            .copied()
+            .map(|address| SocketAddr::new(address, port))
+            .collect::<Vec<_>>();
+        return TcpStream::connect(addresses.as_slice())
+            .await
+            .map_err(ConnectError::Io);
+    }
     let addresses = tokio::net::lookup_host((target_host, port))
         .await
         .map_err(|error| ConnectError::Dns(error.to_string()))?
@@ -372,7 +445,7 @@ pub(crate) async fn connect_h2_upstream(
     ),
     ConnectError,
 > {
-    let tls = connect_tls_upstream(target_host, port, profile, false, None).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, false, None, &[]).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -471,6 +544,62 @@ mod tests {
     const FRAME_WINDOW_UPDATE: u8 = 0x8;
     const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+    #[test]
+    fn target_ip_binding_rejects_invalid_and_proxy_combinations() {
+        assert!(super::validate_pinned_target_ips(&["not-an-ip".to_owned()], false).is_err());
+        assert!(super::validate_pinned_target_ips(&["127.0.0.1".to_owned()], true).is_err());
+        let addresses = super::validate_pinned_target_ips(
+            &["127.0.0.1".to_owned(), "127.0.0.1".to_owned()],
+            false,
+        )
+        .unwrap();
+        assert_eq!(addresses.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_connect_uses_bound_address_without_resolving_target_name() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = tokio::spawn(async move { listener.accept().await.unwrap() });
+
+        let stream = super::connect_direct(
+            "this-name-must-not-resolve.invalid",
+            port,
+            &["127.0.0.1".parse().unwrap()],
+        )
+        .await
+        .unwrap();
+        drop(stream);
+        let _ = accepted.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn control_request_rejects_address_binding_with_proxy_before_network() {
+        let profiles = crate::profile::ProfileStore::built_in().unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut req = connect_request();
+        req.pinned_target_ips = vec!["127.0.0.1".to_owned()];
+        req.proxy = Some(crate::proto::ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 1,
+            username: None,
+            password: None,
+        });
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+        assert!(!ack.ok);
+        assert_eq!(
+            ack.error.unwrap().code,
+            crate::proto::ERROR_TARGET_POLICY_DENIED
+        );
+        task.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn handle_connection_rejects_unknown_profile_before_upstream_connect() {
         let profiles =
@@ -508,6 +637,7 @@ mod tests {
             correlation_id: Some("ready-check".to_owned()),
             force_h1: None,
             proxy: None,
+            pinned_target_ips: Vec::new(),
         };
 
         crate::proto::write_control_request(&mut client, &req)
@@ -647,6 +777,7 @@ mod tests {
             &profile,
             false,
             Some(&proxy),
+            &[],
         )
         .await;
 
@@ -728,6 +859,7 @@ mod tests {
             profile,
             false,
             Some(&spec),
+            &[],
             Duration::from_millis(100),
         )
         .await
@@ -881,6 +1013,7 @@ mod tests {
             correlation_id: None,
             force_h1: None,
             proxy: None,
+            pinned_target_ips: Vec::new(),
         }
     }
 

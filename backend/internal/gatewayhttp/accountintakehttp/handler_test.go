@@ -211,6 +211,25 @@ func TestAdminAccountIntakeAuthBackendFailure(t *testing.T) {
 	}
 }
 
+func TestAdminAccountIntakeRequiresExplicitTenantCapability(t *testing.T) {
+	service := &accountIntakeServiceStub{}
+	capabilities := accountIntakeCapabilityStub{allowed: false}
+	router := chi.NewRouter()
+	router.Route("/admin/v1/credentials", func(r chi.Router) {
+		Mount(r, Deps{
+			Auth:    accountIntakeAuthStub{identity: tenantTokenIdentity(7)},
+			Service: service, Capabilities: capabilities,
+		})
+	})
+	rec := doAccountIntakeRequest(router, "/admin/v1/credentials/account-imports/plan", `{}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "tenant_capability_not_granted") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if service.planCalls != 0 {
+		t.Fatalf("未授权租户触发 service：%d", service.planCalls)
+	}
+}
+
 func TestAdminAccountIntakeDoesNotExposeBackendError(t *testing.T) {
 	service := &accountIntakeServiceStub{planErr: errors.New("pq: relation internal_secret_table does not exist")}
 	handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
@@ -228,9 +247,24 @@ func TestAdminAccountIntakeDoesNotExposeBackendError(t *testing.T) {
 func accountIntakeTestHandler(auth AdminAuth, service AdminAccountIntakeService) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
-		Mount(r, Deps{Auth: auth, Service: service})
+		Mount(r, Deps{Auth: auth, Service: service, Capabilities: allowAccountIntakeCapability{}})
 	})
 	return r
+}
+
+type allowAccountIntakeCapability struct{}
+
+func (allowAccountIntakeCapability) Allowed(context.Context, int64, string) (bool, error) {
+	return true, nil
+}
+
+type accountIntakeCapabilityStub struct {
+	allowed bool
+	err     error
+}
+
+func (s accountIntakeCapabilityStub) Allowed(context.Context, int64, string) (bool, error) {
+	return s.allowed, s.err
 }
 
 func doAccountIntakeRequest(handler http.Handler, path, body string) *httptest.ResponseRecorder {

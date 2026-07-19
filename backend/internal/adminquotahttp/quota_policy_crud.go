@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
+	corequota "github.com/BloomingProsperity/HUAKAI/internal/quota"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
 // 这些枚举白名单与 quota_policies 的 CHECK 约束保持一致。在此处校验可把非法
@@ -34,8 +37,9 @@ var (
 )
 
 const (
-	maxScopeIDLen = 255
-	defaultMode   = "enforce"
+	maxScopeIDLen      = 255
+	maxModelAliasRunes = 512
+	defaultMode        = "enforce"
 )
 
 // quotaPolicyItem 是响应 DTO。数值上限以十进制字符串渲染
@@ -46,6 +50,7 @@ type quotaPolicyItem struct {
 	TenantID            int64   `json:"tenant_id"`
 	ScopeKind           string  `json:"scope_kind"`
 	ScopeID             string  `json:"scope_id"`
+	ModelSelector       string  `json:"model_selector"`
 	Metric              string  `json:"metric"`
 	WindowKind          string  `json:"window_kind"`
 	WindowSeconds       int32   `json:"window_seconds"`
@@ -76,10 +81,11 @@ type quotaPolicyDeleteResponse struct {
 }
 
 // quotaPolicyRequest 是 create/update 的请求体。指针字段用来区分"省略"
-//(套用默认值)与显式给定的值。limit_value / burst_value 为十进制字符串。
+// (套用默认值)与显式给定的值。limit_value / burst_value 为十进制字符串。
 type quotaPolicyRequest struct {
 	ScopeKind     string  `json:"scope_kind"`
 	ScopeID       string  `json:"scope_id"`
+	ModelSelector *string `json:"model_selector"`
 	Metric        string  `json:"metric"`
 	WindowKind    string  `json:"window_kind"`
 	WindowSeconds *int32  `json:"window_seconds"`
@@ -97,6 +103,7 @@ type quotaPolicyRequest struct {
 type validatedPolicy struct {
 	scopeKind     string
 	scopeID       string
+	modelSelector string
 	metric        string
 	windowKind    string
 	windowSeconds int32
@@ -132,6 +139,13 @@ func newListHandler(d Deps) http.HandlerFunc {
 		if raw := strings.TrimSpace(r.URL.Query().Get("scope_id")); raw != "" {
 			arg.ScopeID = &raw
 		}
+		if raw := strings.TrimSpace(r.URL.Query().Get("model_selector")); raw != "" {
+			selector, ok := validateModelSelector(w, raw)
+			if !ok {
+				return
+			}
+			arg.ModelSelector = &selector
+		}
 		if v, ok := filterValue(w, r, "metric", validMetrics, "invalid_metric"); !ok {
 			return
 		} else {
@@ -159,6 +173,20 @@ func newListHandler(d Deps) http.HandlerFunc {
 			Offset: offset,
 		})
 	}
+}
+
+func validateModelSelector(w http.ResponseWriter, raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == corequota.ModelSelectorAll {
+		return raw, true
+	}
+	normalized := registry.AliasNormalize(raw)
+	if normalized == "" || utf8.RuneCountInString(normalized) > maxModelAliasRunes || strings.Contains(normalized, corequota.ModelSelectorAll) {
+		writeError(w, http.StatusBadRequest, "invalid_model_selector",
+			"model_selector must be '*' or one exact public model alias")
+		return "", false
+	}
+	return normalized, true
 }
 
 func newGetHandler(d Deps) http.HandlerFunc {
@@ -197,7 +225,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		vp, ok := validateRequest(w, req)
+		vp, ok := validateRequest(w, req, false)
 		if !ok {
 			return
 		}
@@ -234,7 +262,7 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		vp, ok := validateRequest(w, req)
+		vp, ok := validateRequest(w, req, true)
 		if !ok {
 			return
 		}

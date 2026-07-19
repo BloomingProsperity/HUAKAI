@@ -394,6 +394,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_inline_profiles_keep_independent_wire_state() {
+        let profile_a = crate::profile::TlsProfile::from_inline(&inline_profile()).unwrap();
+        let mut raw_b = inline_profile();
+        raw_b.id = "inline-wire-test-b".to_owned();
+        raw_b.cipher_suites.swap(0, 1);
+        raw_b.supported_groups.reverse();
+        raw_b.signature_algorithms.reverse();
+        raw_b.alpn_protocols.reverse();
+        raw_b.extensions_order.reverse();
+        let profile_b = crate::profile::TlsProfile::from_inline(&raw_b).unwrap();
+
+        // 两个账号的动态指纹同时构造 ClientHello；若实现退化为进程级可变配置，
+        // 至少一条线缆会被另一条覆盖，下面的精确断言会失败。
+        let (wire_a, wire_b) = tokio::join!(
+            capture_wire_client_hello(&profile_a),
+            capture_wire_client_hello(&profile_b)
+        );
+
+        assert_eq!(wire_a.ciphers, profile_a.cipher_suites);
+        assert_eq!(wire_b.ciphers, profile_b.cipher_suites);
+        assert_eq!(wire_a.supported_groups, profile_a.supported_groups);
+        assert_eq!(wire_b.supported_groups, profile_b.supported_groups);
+        assert_eq!(wire_a.signature_algorithms, profile_a.signature_algorithms);
+        assert_eq!(wire_b.signature_algorithms, profile_b.signature_algorithms);
+        assert_eq!(wire_a.alpn_protocols, profile_a.alpn);
+        assert_eq!(wire_b.alpn_protocols, profile_b.alpn);
+        assert_ne!(wire_a.ciphers, wire_b.ciphers);
+        assert_ne!(wire_a.extensions, wire_b.extensions);
+    }
+
+    #[tokio::test]
     async fn force_h1_only_changes_the_wire_alpn_to_http11() {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();

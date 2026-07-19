@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyns"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
 // Config 是 gateway 启动时所需全部配置的类型化快照。
@@ -42,15 +43,15 @@ type Config struct {
 	// RequestClass 给 claim 打标, 供下游策略路由使用。默认 "standard"。
 	RequestClass string
 
-	// TransportSidecarSocket 让 mimicry 传输模式指向本地 TLS sidecar 的 Unix
-	// socket。为空时沿用现有的 Go uTLS 路径。
+	// TransportSidecarSocket 指向本地 Rust TLS sidecar 的 Unix socket。
+	// mimicry 模式不允许使用其它出口。
 	TransportSidecarSocket string
-	// TransportSidecarFallback 是显式的 opt-in。默认 false, 当 Rust sidecar 已配置
-	// 但不可用时, 让生产保持 fail-closed。
-	TransportSidecarFallback bool
 	// TransportSidecarForceH1 控制 Rust sidecar 是否只广告 ALPN=http/1.1。
 	// nil 表示按 profile 的 ALPN 工作；仅显式 true 时启用兼容模式。
 	TransportSidecarForceH1 *bool
+
+	// CRSSource 控制账号来源同步端点。白名单为空时整条能力保持关闭。
+	CRSSource CRSSourceConfig
 
 	// QuotaEnforce 把配额预留/结清路径接入 chat 准入。
 	// 默认 false, 不改动热路径。
@@ -61,6 +62,10 @@ type Config struct {
 	// Budget 接入每分钟 RPM/TPM 预算跟踪。默认关闭, 不改动热路径;
 	// 启用时失败模式默认为 memory_fallback。
 	Budget BudgetConfig
+
+	// RateLimitRedisURL 为公网入站与登录节流提供跨实例共享状态。
+	// production 必须配置；开发模式为空时允许使用单进程内存实现。
+	RateLimitRedisURL string
 
 	// VendorOAuth 持有运维提供的、供 vendor refresher 使用的 OAuth 刷新配置。
 	// TokenURL 为空表示该 vendor refresher 未接线。
@@ -109,6 +114,11 @@ type BudgetConfig struct {
 	DefaultTPM int64
 }
 
+type CRSSourceConfig struct {
+	AllowedHosts      []string
+	AllowPrivateHosts bool
+}
+
 const (
 	DefaultBillingPolicyVersion         = "1.0"
 	VendorOAuthCursor                   = "cursor"
@@ -120,6 +130,7 @@ const (
 	DefaultPaymentExpireSweepBatchLimit = 200
 	DefaultAPIKeyExpirySweepInterval    = 5 * time.Minute
 	DefaultAPIKeyExpirySweepBatchLimit  = 500
+	DefaultTransportSidecarSocket       = transport.DefaultSidecarSocketPath
 	vendorOAuthAuthURL                  = "AUTH_URL"
 	vendorOAuthTokenURL                 = "TOKEN_URL"
 	vendorOAuthClientID                 = "CLIENT_ID"
@@ -186,10 +197,6 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	transportSidecarFallback, err := envBool("HUAKAI_TRANSPORT_SIDECAR_FALLBACK")
-	if err != nil {
-		return nil, err
-	}
 	transportSidecarForceH1, err := envOptionalBool("HUAKAI_TRANSPORT_FORCE_H1")
 	if err != nil {
 		return nil, err
@@ -253,17 +260,22 @@ func Load() (*Config, error) {
 	if err := vendorOAuth.Validate(); err != nil {
 		return nil, err
 	}
+	crsSource, err := loadCRSSourceConfig()
+	if err != nil {
+		return nil, err
+	}
 	cfg := &Config{
 		DatabaseURL:                    os.Getenv("HUAKAI_DATABASE_URL"),
 		Listen:                         envDefault("HUAKAI_ADDR", ":8080"),
 		BillingPolicyVersion:           envDefault("HUAKAI_BILLING_POLICY_VERSION", DefaultBillingPolicyVersion),
 		RequestClass:                   envDefault("HUAKAI_REQUEST_CLASS", "standard"),
-		TransportSidecarSocket:         os.Getenv("HUAKAI_TRANSPORT_SIDECAR_SOCKET"),
-		TransportSidecarFallback:       transportSidecarFallback,
+		TransportSidecarSocket:         envDefault("HUAKAI_TRANSPORT_SIDECAR_SOCKET", DefaultTransportSidecarSocket),
 		TransportSidecarForceH1:        transportSidecarForceH1,
+		CRSSource:                      crsSource,
 		QuotaEnforce:                   quotaEnforce,
 		SettlementIntentEnabled:        settlementIntentEnabled,
 		Budget:                         budgetCfg,
+		RateLimitRedisURL:              firstNonEmptyEnv("HUAKAI_RATE_LIMIT_REDIS_URL", "HUAKAI_REDIS_URL"),
 		VendorOAuth:                    vendorOAuth,
 		CredentialAcqBootstrapShortTTL: credentialAcqBootstrapShortTTL,
 		CredentialAcqBootstrapLongTTL:  credentialAcqBootstrapLongTTL,
@@ -288,6 +300,31 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("%w: HUAKAI_DATABASE_URL", ErrMissingRequired)
 	}
 	return cfg, nil
+}
+
+func loadCRSSourceConfig() (CRSSourceConfig, error) {
+	allowPrivate, err := envBool("HUAKAI_CRS_SOURCE_ALLOW_PRIVATE_HOSTS")
+	if err != nil {
+		return CRSSourceConfig{}, err
+	}
+	seen := map[string]struct{}{}
+	hosts := make([]string, 0)
+	for _, raw := range strings.Split(os.Getenv("HUAKAI_CRS_SOURCE_ALLOWED_HOSTS"), ",") {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if host == "" {
+			continue
+		}
+		if strings.ContainsAny(host, "/?#@") || strings.Contains(host, ":") {
+			return CRSSourceConfig{}, fmt.Errorf("HUAKAI_CRS_SOURCE_ALLOWED_HOSTS entry %q must be a hostname without scheme, port, or path", raw)
+		}
+		if _, exists := seen[host]; exists {
+			continue
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	return CRSSourceConfig{AllowedHosts: hosts, AllowPrivateHosts: allowPrivate}, nil
 }
 
 func loadBudgetConfig() (BudgetConfig, error) {
@@ -553,37 +590,4 @@ func envNonNegativeInt64(name string) (int64, error) {
 		return 0, fmt.Errorf("%s must be non-negative integer, got %q", name, raw)
 	}
 	return value, nil
-}
-
-func envPositiveIntDefault(name string, fallback int) (int, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback, nil
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		if err != nil {
-			return 0, fmt.Errorf("%s must be positive integer, got %q: %w", name, raw, err)
-		}
-		return 0, fmt.Errorf("%s must be positive integer, got %q", name, raw)
-	}
-	return value, nil
-}
-
-// envOptionalInt32 从 env 解析一个非负的 int32。未设置/为空 -> 0, 让调用方把 0
-// 当作"使用包默认值"。非法或越界 -> 返回类型化错误, 让配置错误在启动时显式失败,
-// 而不是静默降级。
-func envOptionalInt32(name string) (int32, error) {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return 0, nil
-	}
-	v, err := strconv.ParseInt(raw, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer, got %q: %w", name, raw, err)
-	}
-	if v < 0 {
-		return 0, fmt.Errorf("%s must be non-negative, got %d", name, v)
-	}
-	return int32(v), nil
 }

@@ -2,8 +2,12 @@ package proxyhealth
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 )
 
 // PROXY-04: 迟滞机制必须要求连续 N 次失败才标记为 dead、连续 M 次成功才恢复,
@@ -57,7 +61,7 @@ type fakeStore struct {
 	set     []string
 }
 
-func (f *fakeStore) Touch(_ context.Context, id int64) error {
+func (f *fakeStore) Touch(_ context.Context, _ int64, id int64) error {
 	f.touched = append(f.touched, id)
 	return nil
 }
@@ -145,5 +149,94 @@ func TestWorker_WaitBlocksUntilStartContextCanceled(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("context 取消后 worker 未退出")
+	}
+}
+
+type countingLister struct {
+	rows  []ProxyTarget
+	calls atomic.Int64
+}
+
+func (l *countingLister) List(context.Context) ([]ProxyTarget, error) {
+	l.calls.Add(1)
+	return l.rows, nil
+}
+
+type fakeLeaseSession struct {
+	healthErr error
+	released  atomic.Bool
+}
+
+func (s *fakeLeaseSession) Healthy(context.Context) error { return s.healthErr }
+func (s *fakeLeaseSession) Release()                      { s.released.Store(true) }
+
+type fakeSessionProvider struct {
+	acquired bool
+	session  *fakeLeaseSession
+	err      error
+}
+
+func (p fakeSessionProvider) TryAcquireSession(context.Context) (bool, workerlease.Session, error) {
+	return p.acquired, p.session, p.err
+}
+
+func TestWorker_LeaderLeaseAllowsOnlyHolderToProbe(t *testing.T) {
+	lister := &countingLister{rows: []ProxyTarget{{ID: 11, TenantID: 7, Status: "active"}}}
+	session := &fakeLeaseSession{}
+	w := NewWorker(lister, fakeProber{ok: true}, &fakeStore{}, time.Hour, nil,
+		WithLeaderLease(fakeSessionProvider{acquired: true, session: session}))
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+
+	deadline := time.Now().Add(time.Second)
+	for lister.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if lister.calls.Load() != 1 {
+		cancel()
+		t.Fatalf("leader 取得租约后应立即且只探测一轮，calls=%d", lister.calls.Load())
+	}
+	cancel()
+	if err := w.Wait(context.Background()); err != nil {
+		t.Fatalf("等待 worker 退出: %v", err)
+	}
+	if !session.released.Load() {
+		t.Fatal("worker 退出时必须释放 leader 租约")
+	}
+}
+
+func TestWorker_LeaderLeaseFollowerDoesNotProbe(t *testing.T) {
+	lister := &countingLister{}
+	w := NewWorker(lister, fakeProber{ok: true}, &fakeStore{}, time.Hour, nil,
+		WithLeaderLease(fakeSessionProvider{acquired: false}))
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := w.Wait(context.Background()); err != nil {
+		t.Fatalf("等待 worker 退出: %v", err)
+	}
+	if got := lister.calls.Load(); got != 0 {
+		t.Fatalf("未取得租约的副本不得探测，calls=%d", got)
+	}
+}
+
+func TestWorker_LeaderLeaseUnhealthySessionStopsBeforeProbe(t *testing.T) {
+	lister := &countingLister{}
+	session := &fakeLeaseSession{healthErr: errors.New("连接已失效")}
+	w := NewWorker(lister, fakeProber{ok: true}, &fakeStore{}, time.Hour, nil,
+		WithLeaderLease(fakeSessionProvider{acquired: true, session: session}))
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := w.Wait(context.Background()); err != nil {
+		t.Fatalf("等待 worker 退出: %v", err)
+	}
+	if got := lister.calls.Load(); got != 0 {
+		t.Fatalf("租约会话失效后不得继续探测，calls=%d", got)
+	}
+	if !session.released.Load() {
+		t.Fatal("失效租约必须释放后重新参与选主")
 	}
 }

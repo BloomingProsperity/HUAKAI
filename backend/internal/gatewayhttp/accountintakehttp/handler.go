@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -12,11 +13,13 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 const accountIntakeBodyLimit = 2 << 20
@@ -31,8 +34,25 @@ type AdminAuth interface {
 }
 
 type Deps struct {
-	Auth    AdminAuth
-	Service AdminAccountIntakeService
+	Auth          AdminAuth
+	Service       AdminAccountIntakeService
+	CookieService interface {
+		Plan(context.Context, accountintake.CookiePlanInput) (accountintake.CookiePlanResult, error)
+		Execute(context.Context, accountintake.CookieExecuteInput) (accountintake.ExecutionResult, error)
+	}
+	CRSService interface {
+		Plan(context.Context, accountintake.CRSPlanInput) (accountintake.CRSPlanResult, error)
+		Execute(context.Context, accountintake.CRSExecuteInput) (accountintake.CRSExecutionResult, error)
+	}
+	BundleService interface {
+		PlanExport(context.Context, accountbundle.ExportPlanInput) (accountbundle.ExportPlan, error)
+		ExecuteExport(context.Context, accountbundle.ExportExecuteInput) (accountbundle.ExportResult, error)
+		PlanImport(context.Context, accountbundle.ImportPlanInput) (accountbundle.ImportPlan, error)
+		ExecuteImport(context.Context, accountbundle.ImportExecuteInput) (accountbundle.ImportExecutionResult, error)
+	}
+	Capabilities interface {
+		Allowed(context.Context, int64, string) (bool, error)
+	}
 }
 
 type accountIntakePlanRequest struct {
@@ -56,6 +76,18 @@ func Mount(r chi.Router, d Deps) {
 	r.Post("/account-imports/execute", newAdminAccountIntakeExecuteHandler(d))
 	r.Post("/account-imports/codex/plan", newCodexAccountIntakePlanHandler(d))
 	r.Post("/account-imports/codex/execute", newCodexAccountIntakeExecuteHandler(d))
+	r.Post("/account-imports/codex-agent/plan", newCodexAgentPlanHandler(d))
+	r.Post("/account-imports/codex-agent/execute", newCodexAgentExecuteHandler(d))
+	r.Post("/account-imports/claude-setup-token/plan", newClaudeSetupTokenPlanHandler(d))
+	r.Post("/account-imports/claude-setup-token/execute", newClaudeSetupTokenExecuteHandler(d))
+	r.Post("/account-imports/claude-cookie/plan", newClaudeCookiePlanHandler(d))
+	r.Post("/account-imports/claude-cookie/execute", newClaudeCookieExecuteHandler(d))
+	r.Post("/account-imports/crs/plan", newCRSPlanHandler(d))
+	r.Post("/account-imports/crs/execute", newCRSExecuteHandler(d))
+	r.Post("/account-bundles/export/plan", newAccountBundleExportPlanHandler(d))
+	r.Post("/account-bundles/export/execute", newAccountBundleExportExecuteHandler(d))
+	r.Post("/account-bundles/import/plan", newAccountBundleImportPlanHandler(d))
+	r.Post("/account-bundles/import/execute", newAccountBundleImportExecuteHandler(d))
 }
 
 func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
@@ -137,6 +169,19 @@ func resolveAdminAccountIntake(w http.ResponseWriter, r *http.Request, d Deps) (
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "scoped tenant_operator token required")
 		return admin.AdminIdentity{}, false
 	}
+	if d.Capabilities == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
+		return admin.AdminIdentity{}, false
+	}
+	allowed, err := d.Capabilities.Allowed(r.Context(), ident.ScopeTenantID, tenantcapability.AdvancedAccountIntake)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability lookup temporarily unavailable")
+		return admin.AdminIdentity{}, false
+	}
+	if !allowed {
+		writeJSONError(w, http.StatusForbidden, "tenant_capability_not_granted", "advanced account intake is not granted for this tenant")
+		return admin.AdminIdentity{}, false
+	}
 	if d.Service == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "account intake service dependency unset")
 		return admin.AdminIdentity{}, false
@@ -157,13 +202,17 @@ func validateAccountIntakeTenant(w http.ResponseWriter, ident admin.AdminIdentit
 }
 
 func decodeAccountIntakeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, accountIntakeBodyLimit)
+	return decodeAccountIntakeJSONLimit(w, r, dst, accountIntakeBodyLimit)
+}
+
+func decodeAccountIntakeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 2 MiB")
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large", fmt.Sprintf("请求体超过 %d MiB", limit>>20))
 			return false
 		}
 		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -172,7 +221,7 @@ func decodeAccountIntakeJSON(w http.ResponseWriter, r *http.Request, dst any) bo
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 2 MiB")
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large", fmt.Sprintf("请求体超过 %d MiB", limit>>20))
 			return false
 		}
 		if err == nil {

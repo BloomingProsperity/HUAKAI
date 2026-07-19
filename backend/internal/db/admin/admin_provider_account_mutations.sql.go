@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertProviderAccount = `-- name: InsertProviderAccount :one
+const insertProviderAccountRaw = `-- name: InsertProviderAccountRaw :one
 INSERT INTO provider_accounts (
     tenant_id,
     provider_id,
@@ -26,6 +26,7 @@ INSERT INTO provider_accounts (
     cap_queue_fallback,
     priority,
     static_weight,
+    upstream_cost_ratio,
     probe_model,
     tags,
     extra,
@@ -61,69 +62,71 @@ INSERT INTO provider_accounts (
     COALESCE($11::integer, 8),
     COALESCE($12::integer, 100),
     COALESCE($13::integer, 1),
-    NULLIF(BTRIM($14::text), ''),
-    COALESCE($15::text[], ARRAY[]::text[]),
-    COALESCE($16::jsonb, '{}'::jsonb),
-    COALESCE($17::text[], ARRAY[]::text[]),
+    $14::double precision,
+    NULLIF(BTRIM($15::text), ''),
+    COALESCE($16::text[], ARRAY[]::text[]),
+    COALESCE($17::jsonb, '{}'::jsonb),
     COALESCE($18::text[], ARRAY[]::text[]),
-    COALESCE($19::bigint, 0),
+    COALESCE($19::text[], ARRAY[]::text[]),
     COALESCE($20::bigint, 0),
     COALESCE($21::bigint, 0),
-    COALESCE($22::integer, 0),
-    COALESCE($23::boolean, false),
-    $24::integer,
-    COALESCE($25::boolean, false),
+    COALESCE($22::bigint, 0),
+    COALESCE($23::integer, 0),
+    COALESCE($24::boolean, false),
+    $25::integer,
     COALESCE($26::boolean, false),
-    COALESCE($27::integer[], ARRAY[]::integer[]),
-    COALESCE($28::boolean, false),
+    COALESCE($27::boolean, false),
+    COALESCE($28::integer[], ARRAY[]::integer[]),
     COALESCE($29::boolean, false),
-    COALESCE($30::jsonb, '[]'::jsonb),
-    $31::bigint,
-    NULLIF(BTRIM($32::text), ''),
-    $33::text,
-    $33::text
+    COALESCE($30::boolean, false),
+    COALESCE($31::jsonb, '[]'::jsonb),
+    $32::bigint,
+    NULLIF(BTRIM($33::text), ''),
+    $34::text,
+    $34::text
 )
 RETURNING id
 `
 
-type InsertProviderAccountParams struct {
-	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
-	ProviderID                 int64              `db:"provider_id" json:"provider_id"`
-	ChannelID                  int64              `db:"channel_id" json:"channel_id"`
-	Name                       string             `db:"name" json:"name"`
-	AccountType                string             `db:"account_type" json:"account_type"`
-	Enabled                    *bool              `db:"enabled" json:"enabled"`
-	ExpiresAt                  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	Credentials                []byte             `db:"credentials" json:"credentials"`
-	CapConcurrency             *int32             `db:"cap_concurrency" json:"cap_concurrency"`
-	CapQueueSticky             *int32             `db:"cap_queue_sticky" json:"cap_queue_sticky"`
-	CapQueueFallback           *int32             `db:"cap_queue_fallback" json:"cap_queue_fallback"`
-	Priority                   *int32             `db:"priority" json:"priority"`
-	StaticWeight               *int32             `db:"static_weight" json:"static_weight"`
-	ProbeModel                 *string            `db:"probe_model" json:"probe_model"`
-	Tags                       []string           `db:"tags" json:"tags"`
-	Extra                      []byte             `db:"extra" json:"extra"`
-	ModelAllowList             []string           `db:"model_allow_list" json:"model_allow_list"`
-	CapabilityFlags            []string           `db:"capability_flags" json:"capability_flags"`
-	RPMLimit                   *int64             `db:"rpm_limit" json:"rpm_limit"`
-	TPMLimit                   *int64             `db:"tpm_limit" json:"tpm_limit"`
-	WindowCostLimitCents       *int64             `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
-	MaxSessions                *int32             `db:"max_sessions" json:"max_sessions"`
-	DisableCooling             *bool              `db:"disable_cooling" json:"disable_cooling"`
-	RefreshLeadSeconds         *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
-	TLSFingerprintRotate       *bool              `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
-	CustomErrorCodesEnabled    *bool              `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
-	CustomErrorCodes           []int32            `db:"custom_error_codes" json:"custom_error_codes"`
-	PoolMode                   *bool              `db:"pool_mode" json:"pool_mode"`
-	TempUnschedulableEnabled   *bool              `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
-	TempUnschedulableRulesJSON []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
-	ProxyID                    *int64             `db:"proxy_id" json:"proxy_id"`
-	ProxyGroupID               *string            `db:"proxy_group_id" json:"proxy_group_id"`
-	ActorID                    *string            `db:"actor_id" json:"actor_id"`
+type InsertProviderAccountRawParams struct {
+	TenantID                 int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID               int64              `db:"provider_id" json:"provider_id"`
+	ChannelID                int64              `db:"channel_id" json:"channel_id"`
+	Name                     string             `db:"name" json:"name"`
+	AccountType              string             `db:"account_type" json:"account_type"`
+	Enabled                  *bool              `db:"enabled" json:"enabled"`
+	ExpiresAt                pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	Credentials              []byte             `db:"credentials" json:"credentials"`
+	CapConcurrency           *int32             `db:"cap_concurrency" json:"cap_concurrency"`
+	CapQueueSticky           *int32             `db:"cap_queue_sticky" json:"cap_queue_sticky"`
+	CapQueueFallback         *int32             `db:"cap_queue_fallback" json:"cap_queue_fallback"`
+	Priority                 *int32             `db:"priority" json:"priority"`
+	StaticWeight             *int32             `db:"static_weight" json:"static_weight"`
+	UpstreamCostRatio        *float64           `db:"upstream_cost_ratio" json:"upstream_cost_ratio"`
+	ProbeModel               *string            `db:"probe_model" json:"probe_model"`
+	Tags                     []string           `db:"tags" json:"tags"`
+	Extra                    []byte             `db:"extra" json:"extra"`
+	ModelAllowList           []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags          []string           `db:"capability_flags" json:"capability_flags"`
+	RpmLimit                 *int64             `db:"rpm_limit" json:"rpm_limit"`
+	TpmLimit                 *int64             `db:"tpm_limit" json:"tpm_limit"`
+	WindowCostLimitCents     *int64             `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions              *int32             `db:"max_sessions" json:"max_sessions"`
+	DisableCooling           *bool              `db:"disable_cooling" json:"disable_cooling"`
+	RefreshLeadSeconds       *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
+	TlsFingerprintRotate     *bool              `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
+	CustomErrorCodesEnabled  *bool              `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32            `db:"custom_error_codes" json:"custom_error_codes"`
+	PoolMode                 *bool              `db:"pool_mode" json:"pool_mode"`
+	TempUnschedulableEnabled *bool              `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	ProxyID                  *int64             `db:"proxy_id" json:"proxy_id"`
+	ProxyGroupID             *string            `db:"proxy_group_id" json:"proxy_group_id"`
+	ActorID                  *string            `db:"actor_id" json:"actor_id"`
 }
 
-func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderAccountParams) (int64, error) {
-	row := q.db.QueryRow(ctx, insertProviderAccount,
+func (q *Queries) InsertProviderAccountRaw(ctx context.Context, arg InsertProviderAccountRawParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertProviderAccountRaw,
 		arg.TenantID,
 		arg.ProviderID,
 		arg.ChannelID,
@@ -137,23 +140,24 @@ func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderA
 		arg.CapQueueFallback,
 		arg.Priority,
 		arg.StaticWeight,
+		arg.UpstreamCostRatio,
 		arg.ProbeModel,
 		arg.Tags,
 		arg.Extra,
 		arg.ModelAllowList,
 		arg.CapabilityFlags,
-		arg.RPMLimit,
-		arg.TPMLimit,
+		arg.RpmLimit,
+		arg.TpmLimit,
 		arg.WindowCostLimitCents,
 		arg.MaxSessions,
 		arg.DisableCooling,
 		arg.RefreshLeadSeconds,
-		arg.TLSFingerprintRotate,
+		arg.TlsFingerprintRotate,
 		arg.CustomErrorCodesEnabled,
 		arg.CustomErrorCodes,
 		arg.PoolMode,
 		arg.TempUnschedulableEnabled,
-		arg.TempUnschedulableRulesJSON,
+		arg.TempUnschedulableRules,
 		arg.ProxyID,
 		arg.ProxyGroupID,
 		arg.ActorID,
@@ -161,128 +165,6 @@ func (q *Queries) InsertProviderAccount(ctx context.Context, arg InsertProviderA
 	var id int64
 	err := row.Scan(&id)
 	return id, err
-}
-
-const updateAdminProviderAccount = `-- name: UpdateAdminProviderAccount :one
-UPDATE provider_accounts
-SET
-    enabled = COALESCE($1::boolean, enabled),
-    priority = COALESCE($2::integer, priority),
-    cap_concurrency = COALESCE($3::integer, cap_concurrency),
-    static_weight = COALESCE($4::integer, static_weight),
-    rpm_limit = COALESCE($5::bigint, rpm_limit),
-    tpm_limit = COALESCE($6::bigint, tpm_limit),
-    window_cost_limit_cents = COALESCE($7::bigint, window_cost_limit_cents),
-    max_sessions = COALESCE($8::integer, max_sessions),
-    disable_cooling = COALESCE($9::boolean, disable_cooling),
-    refresh_lead_seconds = CASE WHEN $10::boolean THEN $11::integer ELSE refresh_lead_seconds END,
-    expires_at = CASE WHEN $12::boolean THEN $13::timestamptz ELSE expires_at END,
-    tls_fingerprint_rotate = COALESCE($14::boolean, tls_fingerprint_rotate),
-    probe_model = CASE WHEN $15::boolean THEN NULLIF(BTRIM($16::text), '') ELSE probe_model END,
-    tags = CASE WHEN $17::boolean THEN COALESCE($18::text[], ARRAY[]::text[]) ELSE tags END,
-    extra = CASE WHEN $19::boolean THEN COALESCE($20::jsonb, '{}'::jsonb) ELSE extra END,
-    model_allow_list = CASE WHEN $21::boolean THEN COALESCE($22::text[], ARRAY[]::text[]) ELSE model_allow_list END,
-    capability_flags = CASE WHEN $23::boolean THEN COALESCE($24::text[], ARRAY[]::text[]) ELSE capability_flags END,
-    custom_error_codes_enabled = COALESCE($25::boolean, custom_error_codes_enabled),
-    custom_error_codes = CASE WHEN $26::boolean THEN COALESCE($27::integer[], ARRAY[]::integer[]) ELSE custom_error_codes END,
-    pool_mode = COALESCE($28::boolean, pool_mode),
-    temp_unschedulable_enabled = COALESCE($29::boolean, temp_unschedulable_enabled),
-    temp_unschedulable_rules = CASE WHEN $30::boolean THEN COALESCE($31::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
-    proxy_id = CASE WHEN $32::boolean THEN $33::bigint ELSE proxy_id END,
-    proxy_group_id = CASE WHEN $34::boolean THEN NULLIF(BTRIM($35::text), '') ELSE proxy_group_id END,
-    updated_at = NOW(),
-    last_modified_by_actor = $36::text
-WHERE id = $37::bigint
-  AND tenant_id = $38::bigint
-  AND deleted_at IS NULL
-RETURNING` + adminProviderAccountColumns + `
-`
-
-type UpdateAdminProviderAccountParams struct {
-	Enabled                    *bool              `db:"enabled" json:"enabled"`
-	Priority                   *int32             `db:"priority" json:"priority"`
-	CapConcurrency             *int32             `db:"cap_concurrency" json:"cap_concurrency"`
-	StaticWeight               *int32             `db:"static_weight" json:"static_weight"`
-	RPMLimit                   *int64             `db:"rpm_limit" json:"rpm_limit"`
-	TPMLimit                   *int64             `db:"tpm_limit" json:"tpm_limit"`
-	WindowCostLimitCents       *int64             `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
-	MaxSessions                *int32             `db:"max_sessions" json:"max_sessions"`
-	DisableCooling             *bool              `db:"disable_cooling" json:"disable_cooling"`
-	SetRefreshLeadSeconds      bool               `db:"set_refresh_lead_seconds" json:"set_refresh_lead_seconds"`
-	RefreshLeadSeconds         *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
-	SetExpiresAt               bool               `db:"set_expires_at" json:"set_expires_at"`
-	ExpiresAt                  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	TLSFingerprintRotate       *bool              `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
-	SetProbeModel              bool               `db:"set_probe_model" json:"set_probe_model"`
-	ProbeModel                 *string            `db:"probe_model" json:"probe_model"`
-	SetTags                    bool               `db:"set_tags" json:"set_tags"`
-	Tags                       []string           `db:"tags" json:"tags"`
-	SetExtra                   bool               `db:"set_extra" json:"set_extra"`
-	Extra                      []byte             `db:"extra" json:"extra"`
-	SetModelAllowList          bool               `db:"set_model_allow_list" json:"set_model_allow_list"`
-	ModelAllowList             []string           `db:"model_allow_list" json:"model_allow_list"`
-	SetCapabilityFlags         bool               `db:"set_capability_flags" json:"set_capability_flags"`
-	CapabilityFlags            []string           `db:"capability_flags" json:"capability_flags"`
-	CustomErrorCodesEnabled    *bool              `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
-	SetCustomErrorCodes        bool               `db:"set_custom_error_codes" json:"set_custom_error_codes"`
-	CustomErrorCodes           []int32            `db:"custom_error_codes" json:"custom_error_codes"`
-	PoolMode                   *bool              `db:"pool_mode" json:"pool_mode"`
-	TempUnschedulableEnabled   *bool              `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
-	SetTempUnschedulableRules  bool               `db:"set_temp_unschedulable_rules" json:"set_temp_unschedulable_rules"`
-	TempUnschedulableRulesJSON []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
-	SetProxyID                 bool               `db:"set_proxy_id" json:"set_proxy_id"`
-	ProxyID                    *int64             `db:"proxy_id" json:"proxy_id"`
-	SetProxyGroupID            bool               `db:"set_proxy_group_id" json:"set_proxy_group_id"`
-	ProxyGroupID               *string            `db:"proxy_group_id" json:"proxy_group_id"`
-	ActorID                    *string            `db:"actor_id" json:"actor_id"`
-	ID                         int64              `db:"id" json:"id"`
-	TenantID                   int64              `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) UpdateAdminProviderAccount(ctx context.Context, arg UpdateAdminProviderAccountParams) (AdminProviderAccountRow, error) {
-	row := q.db.QueryRow(ctx, updateAdminProviderAccount,
-		arg.Enabled,
-		arg.Priority,
-		arg.CapConcurrency,
-		arg.StaticWeight,
-		arg.RPMLimit,
-		arg.TPMLimit,
-		arg.WindowCostLimitCents,
-		arg.MaxSessions,
-		arg.DisableCooling,
-		arg.SetRefreshLeadSeconds,
-		arg.RefreshLeadSeconds,
-		arg.SetExpiresAt,
-		arg.ExpiresAt,
-		arg.TLSFingerprintRotate,
-		arg.SetProbeModel,
-		arg.ProbeModel,
-		arg.SetTags,
-		arg.Tags,
-		arg.SetExtra,
-		arg.Extra,
-		arg.SetModelAllowList,
-		arg.ModelAllowList,
-		arg.SetCapabilityFlags,
-		arg.CapabilityFlags,
-		arg.CustomErrorCodesEnabled,
-		arg.SetCustomErrorCodes,
-		arg.CustomErrorCodes,
-		arg.PoolMode,
-		arg.TempUnschedulableEnabled,
-		arg.SetTempUnschedulableRules,
-		arg.TempUnschedulableRulesJSON,
-		arg.SetProxyID,
-		arg.ProxyID,
-		arg.SetProxyGroupID,
-		arg.ProxyGroupID,
-		arg.ActorID,
-		arg.ID,
-		arg.TenantID,
-	)
-	var i AdminProviderAccountRow
-	err := scanAdminProviderAccount(row, &i)
-	return i, err
 }
 
 const softDeleteProviderAccount = `-- name: SoftDeleteProviderAccount :exec
@@ -306,6 +188,281 @@ type SoftDeleteProviderAccountParams struct {
 func (q *Queries) SoftDeleteProviderAccount(ctx context.Context, arg SoftDeleteProviderAccountParams) error {
 	_, err := q.db.Exec(ctx, softDeleteProviderAccount, arg.ActorID, arg.ID, arg.TenantID)
 	return err
+}
+
+const updateAdminProviderAccountRaw = `-- name: UpdateAdminProviderAccountRaw :one
+UPDATE provider_accounts
+SET
+    enabled = COALESCE($1::boolean, enabled),
+    priority = COALESCE($2::integer, priority),
+    cap_concurrency = COALESCE($3::integer, cap_concurrency),
+    static_weight = COALESCE($4::integer, static_weight),
+    upstream_cost_ratio = CASE WHEN $5::boolean THEN $6::double precision ELSE upstream_cost_ratio END,
+    rpm_limit = COALESCE($7::bigint, rpm_limit),
+    tpm_limit = COALESCE($8::bigint, tpm_limit),
+    window_cost_limit_cents = COALESCE($9::bigint, window_cost_limit_cents),
+    max_sessions = COALESCE($10::integer, max_sessions),
+    disable_cooling = COALESCE($11::boolean, disable_cooling),
+    refresh_lead_seconds = CASE WHEN $12::boolean THEN $13::integer ELSE refresh_lead_seconds END,
+    expires_at = CASE WHEN $14::boolean THEN $15::timestamptz ELSE expires_at END,
+    tls_fingerprint_rotate = COALESCE($16::boolean, tls_fingerprint_rotate),
+    probe_model = CASE WHEN $17::boolean THEN NULLIF(BTRIM($18::text), '') ELSE probe_model END,
+    tags = CASE WHEN $19::boolean THEN COALESCE($20::text[], ARRAY[]::text[]) ELSE tags END,
+    extra = CASE WHEN $21::boolean THEN COALESCE($22::jsonb, '{}'::jsonb) ELSE extra END,
+    model_allow_list = CASE WHEN $23::boolean THEN COALESCE($24::text[], ARRAY[]::text[]) ELSE model_allow_list END,
+    capability_flags = CASE WHEN $25::boolean THEN COALESCE($26::text[], ARRAY[]::text[]) ELSE capability_flags END,
+    custom_error_codes_enabled = COALESCE($27::boolean, custom_error_codes_enabled),
+    custom_error_codes = CASE WHEN $28::boolean THEN COALESCE($29::integer[], ARRAY[]::integer[]) ELSE custom_error_codes END,
+    pool_mode = COALESCE($30::boolean, pool_mode),
+    temp_unschedulable_enabled = COALESCE($31::boolean, temp_unschedulable_enabled),
+    temp_unschedulable_rules = CASE WHEN $32::boolean THEN COALESCE($33::jsonb, '[]'::jsonb) ELSE temp_unschedulable_rules END,
+    proxy_id = CASE WHEN $34::boolean THEN $35::bigint ELSE proxy_id END,
+    proxy_group_id = CASE WHEN $36::boolean THEN NULLIF(BTRIM($37::text), '') ELSE proxy_group_id END,
+    updated_at = NOW(),
+    last_modified_by_actor = $38::text
+WHERE id = $39::bigint
+  AND tenant_id = $40::bigint
+  AND deleted_at IS NULL
+RETURNING
+    id,
+    tenant_id,
+    provider_id,
+    channel_id,
+    name,
+    account_type,
+    enabled,
+    expires_at,
+    rpm_limit,
+    tpm_limit,
+    window_cost_limit_cents,
+    max_sessions,
+    disable_cooling,
+    refresh_lead_seconds,
+    tls_fingerprint_rotate,
+    health_state,
+    credential_state,
+    cap_concurrency,
+    in_flight_count,
+    priority,
+    static_weight,
+    upstream_cost_ratio,
+    probe_model,
+    tags,
+    extra,
+    last_dispatch_at,
+    last_probe_latency_ms,
+    last_probe_at,
+    model_allow_list,
+    capability_flags,
+    rate_limited_at,
+    rate_limit_reset_at,
+    rate_limit_reason,
+    overload_until,
+    temp_unschedulable_until,
+    token_version,
+    last_refresh_at,
+    last_refresh_outcome,
+    oauth_endpoint_health,
+    custom_error_codes_enabled,
+    custom_error_codes,
+    pool_mode,
+    temp_unschedulable_enabled,
+    temp_unschedulable_rules,
+    proxy_id,
+    proxy_group_id,
+    created_at,
+    updated_at
+`
+
+type UpdateAdminProviderAccountRawParams struct {
+	Enabled                   *bool              `db:"enabled" json:"enabled"`
+	Priority                  *int32             `db:"priority" json:"priority"`
+	CapConcurrency            *int32             `db:"cap_concurrency" json:"cap_concurrency"`
+	StaticWeight              *int32             `db:"static_weight" json:"static_weight"`
+	SetUpstreamCostRatio      bool               `db:"set_upstream_cost_ratio" json:"set_upstream_cost_ratio"`
+	UpstreamCostRatio         *float64           `db:"upstream_cost_ratio" json:"upstream_cost_ratio"`
+	RpmLimit                  *int64             `db:"rpm_limit" json:"rpm_limit"`
+	TpmLimit                  *int64             `db:"tpm_limit" json:"tpm_limit"`
+	WindowCostLimitCents      *int64             `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions               *int32             `db:"max_sessions" json:"max_sessions"`
+	DisableCooling            *bool              `db:"disable_cooling" json:"disable_cooling"`
+	SetRefreshLeadSeconds     bool               `db:"set_refresh_lead_seconds" json:"set_refresh_lead_seconds"`
+	RefreshLeadSeconds        *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
+	SetExpiresAt              bool               `db:"set_expires_at" json:"set_expires_at"`
+	ExpiresAt                 pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	TlsFingerprintRotate      *bool              `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
+	SetProbeModel             bool               `db:"set_probe_model" json:"set_probe_model"`
+	ProbeModel                *string            `db:"probe_model" json:"probe_model"`
+	SetTags                   bool               `db:"set_tags" json:"set_tags"`
+	Tags                      []string           `db:"tags" json:"tags"`
+	SetExtra                  bool               `db:"set_extra" json:"set_extra"`
+	Extra                     []byte             `db:"extra" json:"extra"`
+	SetModelAllowList         bool               `db:"set_model_allow_list" json:"set_model_allow_list"`
+	ModelAllowList            []string           `db:"model_allow_list" json:"model_allow_list"`
+	SetCapabilityFlags        bool               `db:"set_capability_flags" json:"set_capability_flags"`
+	CapabilityFlags           []string           `db:"capability_flags" json:"capability_flags"`
+	CustomErrorCodesEnabled   *bool              `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
+	SetCustomErrorCodes       bool               `db:"set_custom_error_codes" json:"set_custom_error_codes"`
+	CustomErrorCodes          []int32            `db:"custom_error_codes" json:"custom_error_codes"`
+	PoolMode                  *bool              `db:"pool_mode" json:"pool_mode"`
+	TempUnschedulableEnabled  *bool              `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	SetTempUnschedulableRules bool               `db:"set_temp_unschedulable_rules" json:"set_temp_unschedulable_rules"`
+	TempUnschedulableRules    []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	SetProxyID                bool               `db:"set_proxy_id" json:"set_proxy_id"`
+	ProxyID                   *int64             `db:"proxy_id" json:"proxy_id"`
+	SetProxyGroupID           bool               `db:"set_proxy_group_id" json:"set_proxy_group_id"`
+	ProxyGroupID              *string            `db:"proxy_group_id" json:"proxy_group_id"`
+	ActorID                   *string            `db:"actor_id" json:"actor_id"`
+	ID                        int64              `db:"id" json:"id"`
+	TenantID                  int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+type UpdateAdminProviderAccountRawRow struct {
+	ID                       int64              `db:"id" json:"id"`
+	TenantID                 int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderID               int64              `db:"provider_id" json:"provider_id"`
+	ChannelID                int64              `db:"channel_id" json:"channel_id"`
+	Name                     string             `db:"name" json:"name"`
+	AccountType              string             `db:"account_type" json:"account_type"`
+	Enabled                  bool               `db:"enabled" json:"enabled"`
+	ExpiresAt                pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	RpmLimit                 int64              `db:"rpm_limit" json:"rpm_limit"`
+	TpmLimit                 int64              `db:"tpm_limit" json:"tpm_limit"`
+	WindowCostLimitCents     int64              `db:"window_cost_limit_cents" json:"window_cost_limit_cents"`
+	MaxSessions              int32              `db:"max_sessions" json:"max_sessions"`
+	DisableCooling           bool               `db:"disable_cooling" json:"disable_cooling"`
+	RefreshLeadSeconds       *int32             `db:"refresh_lead_seconds" json:"refresh_lead_seconds"`
+	TlsFingerprintRotate     bool               `db:"tls_fingerprint_rotate" json:"tls_fingerprint_rotate"`
+	HealthState              string             `db:"health_state" json:"health_state"`
+	CredentialState          string             `db:"credential_state" json:"credential_state"`
+	CapConcurrency           int32              `db:"cap_concurrency" json:"cap_concurrency"`
+	InFlightCount            int32              `db:"in_flight_count" json:"in_flight_count"`
+	Priority                 int32              `db:"priority" json:"priority"`
+	StaticWeight             int32              `db:"static_weight" json:"static_weight"`
+	UpstreamCostRatio        *float64           `db:"upstream_cost_ratio" json:"upstream_cost_ratio"`
+	ProbeModel               *string            `db:"probe_model" json:"probe_model"`
+	Tags                     []string           `db:"tags" json:"tags"`
+	Extra                    []byte             `db:"extra" json:"extra"`
+	LastDispatchAt           pgtype.Timestamptz `db:"last_dispatch_at" json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
+	LastProbeAt              pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
+	ModelAllowList           []string           `db:"model_allow_list" json:"model_allow_list"`
+	CapabilityFlags          []string           `db:"capability_flags" json:"capability_flags"`
+	RateLimitedAt            pgtype.Timestamptz `db:"rate_limited_at" json:"rate_limited_at"`
+	RateLimitResetAt         pgtype.Timestamptz `db:"rate_limit_reset_at" json:"rate_limit_reset_at"`
+	RateLimitReason          *string            `db:"rate_limit_reason" json:"rate_limit_reason"`
+	OverloadUntil            pgtype.Timestamptz `db:"overload_until" json:"overload_until"`
+	TempUnschedulableUntil   pgtype.Timestamptz `db:"temp_unschedulable_until" json:"temp_unschedulable_until"`
+	TokenVersion             int32              `db:"token_version" json:"token_version"`
+	LastRefreshAt            pgtype.Timestamptz `db:"last_refresh_at" json:"last_refresh_at"`
+	LastRefreshOutcome       *string            `db:"last_refresh_outcome" json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string             `db:"oauth_endpoint_health" json:"oauth_endpoint_health"`
+	CustomErrorCodesEnabled  bool               `db:"custom_error_codes_enabled" json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32            `db:"custom_error_codes" json:"custom_error_codes"`
+	PoolMode                 bool               `db:"pool_mode" json:"pool_mode"`
+	TempUnschedulableEnabled bool               `db:"temp_unschedulable_enabled" json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   []byte             `db:"temp_unschedulable_rules" json:"temp_unschedulable_rules"`
+	ProxyID                  *int64             `db:"proxy_id" json:"proxy_id"`
+	ProxyGroupID             *string            `db:"proxy_group_id" json:"proxy_group_id"`
+	CreatedAt                pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+func (q *Queries) UpdateAdminProviderAccountRaw(ctx context.Context, arg UpdateAdminProviderAccountRawParams) (UpdateAdminProviderAccountRawRow, error) {
+	row := q.db.QueryRow(ctx, updateAdminProviderAccountRaw,
+		arg.Enabled,
+		arg.Priority,
+		arg.CapConcurrency,
+		arg.StaticWeight,
+		arg.SetUpstreamCostRatio,
+		arg.UpstreamCostRatio,
+		arg.RpmLimit,
+		arg.TpmLimit,
+		arg.WindowCostLimitCents,
+		arg.MaxSessions,
+		arg.DisableCooling,
+		arg.SetRefreshLeadSeconds,
+		arg.RefreshLeadSeconds,
+		arg.SetExpiresAt,
+		arg.ExpiresAt,
+		arg.TlsFingerprintRotate,
+		arg.SetProbeModel,
+		arg.ProbeModel,
+		arg.SetTags,
+		arg.Tags,
+		arg.SetExtra,
+		arg.Extra,
+		arg.SetModelAllowList,
+		arg.ModelAllowList,
+		arg.SetCapabilityFlags,
+		arg.CapabilityFlags,
+		arg.CustomErrorCodesEnabled,
+		arg.SetCustomErrorCodes,
+		arg.CustomErrorCodes,
+		arg.PoolMode,
+		arg.TempUnschedulableEnabled,
+		arg.SetTempUnschedulableRules,
+		arg.TempUnschedulableRules,
+		arg.SetProxyID,
+		arg.ProxyID,
+		arg.SetProxyGroupID,
+		arg.ProxyGroupID,
+		arg.ActorID,
+		arg.ID,
+		arg.TenantID,
+	)
+	var i UpdateAdminProviderAccountRawRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.ProviderID,
+		&i.ChannelID,
+		&i.Name,
+		&i.AccountType,
+		&i.Enabled,
+		&i.ExpiresAt,
+		&i.RpmLimit,
+		&i.TpmLimit,
+		&i.WindowCostLimitCents,
+		&i.MaxSessions,
+		&i.DisableCooling,
+		&i.RefreshLeadSeconds,
+		&i.TlsFingerprintRotate,
+		&i.HealthState,
+		&i.CredentialState,
+		&i.CapConcurrency,
+		&i.InFlightCount,
+		&i.Priority,
+		&i.StaticWeight,
+		&i.UpstreamCostRatio,
+		&i.ProbeModel,
+		&i.Tags,
+		&i.Extra,
+		&i.LastDispatchAt,
+		&i.LastProbeLatencyMS,
+		&i.LastProbeAt,
+		&i.ModelAllowList,
+		&i.CapabilityFlags,
+		&i.RateLimitedAt,
+		&i.RateLimitResetAt,
+		&i.RateLimitReason,
+		&i.OverloadUntil,
+		&i.TempUnschedulableUntil,
+		&i.TokenVersion,
+		&i.LastRefreshAt,
+		&i.LastRefreshOutcome,
+		&i.OAuthEndpointHealth,
+		&i.CustomErrorCodesEnabled,
+		&i.CustomErrorCodes,
+		&i.PoolMode,
+		&i.TempUnschedulableEnabled,
+		&i.TempUnschedulableRules,
+		&i.ProxyID,
+		&i.ProxyGroupID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateProviderAccountEnabled = `-- name: UpdateProviderAccountEnabled :exec
@@ -354,9 +511,8 @@ type UpdateProviderAccountFingerprintProfileParams struct {
 	TenantID  int64   `db:"tenant_id" json:"tenant_id"`
 }
 
-// UpdateProviderAccountFingerprintProfile 绑定/解绑 provider account 的 TLS 指纹 profile。
-// ProfileID 为 nil → 解绑回内置默认(SET NULL);非 nil → 绑定该 profile(DB 触发器 0038 会校验
-// profile 属同租户,跨租户绑定会被 RAISE 拒绝)。
+// 绑定/解绑 provider account 的 TLS 指纹 profile。profile_id 为 NULL → 解绑回内置默认;
+// 非 NULL → 绑定(DB 触发器 0038 校验 profile 属同租户,跨租户绑定被拒)。
 func (q *Queries) UpdateProviderAccountFingerprintProfile(ctx context.Context, arg UpdateProviderAccountFingerprintProfileParams) error {
 	_, err := q.db.Exec(ctx, updateProviderAccountFingerprintProfile,
 		arg.ProfileID,

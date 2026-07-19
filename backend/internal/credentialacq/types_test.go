@@ -159,7 +159,7 @@ func TestFlowStatusTransitionContract(t *testing.T) {
 	}
 }
 
-func TestModePlanCoversCredentialStoreModes(t *testing.T) {
+func TestModePlanCoversCredentialStoreModesExceptDedicatedIntake(t *testing.T) {
 	registry := credentialstore.DefaultHandlerRegistry()
 	plans := phaseAModePlans()
 	registryModes := map[string]bool{}
@@ -184,8 +184,17 @@ func TestModePlanCoversCredentialStoreModes(t *testing.T) {
 	}
 	for _, key := range registry.Names() {
 		if !seen[key] {
+			if key == credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgent) {
+				continue
+			}
 			t.Fatalf("F-AUTH-005 registry mode %s missing from Phase A plan", key)
 		}
+	}
+}
+
+func TestCodexAgentIdentityCannotUsePlatformGenericAcquisition(t *testing.T) {
+	if _, ok := LookupModePlan(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgent); ok {
+		t.Fatal("Codex Agent Identity 不得进入部署管理员通用凭据获取入口")
 	}
 }
 

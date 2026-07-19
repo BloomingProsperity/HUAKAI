@@ -40,17 +40,6 @@ const (
 	ineffectiveRefreshBackoff = credentialstore.IneffectiveRefreshBackoff
 )
 
-func providerFailureCooldown(vendor string) time.Duration {
-	switch normalizeProviderName(vendor) {
-	case credentialstore.VendorGemini:
-		return 0
-	case credentialstore.VendorAnthropic, credentialstore.VendorOpenAI:
-		return time.Minute
-	default:
-		return time.Minute
-	}
-}
-
 type ModeRefreshInput struct {
 	CredentialID      int64
 	TenantID          int64
@@ -125,6 +114,7 @@ func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.
 	// 形状一致(access_token + refresh_token + id_token),共享同一 codex refresh adapter,避免 web
 	// 获取的 token 因无 refresh 绑定而静默过期(auth/可用性回退)。
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: codexRefresh})
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgent, newCodexAgentModeAdapter())
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, staticModeAdapter{})
@@ -245,6 +235,51 @@ func (r *AccountCredentialRefresher) Refresh(ctx context.Context, accountID int6
 
 func (r *AccountCredentialRefresher) RefreshForProvider(ctx context.Context, providerID, accountID int64) error {
 	return r.refresh(ctx, providerID, accountID)
+}
+
+// RecoverAgentTask 在跨实例账号锁内比较调用方实际使用过的凭据版本；版本已前进时
+// 复用赢家结果，只有仍是旧版本时才登记新任务。
+func (r *AccountCredentialRefresher) RecoverAgentTask(ctx context.Context, tenantID, accountID int64, expectedCredentialVersion int) error {
+	if r == nil || r.store == nil || tenantID <= 0 || accountID <= 0 || expectedCredentialVersion <= 0 {
+		return errors.New("credentialworker: agent task recovery input invalid")
+	}
+	probe, err := r.store.LoadForRefresh(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	defer privacy.Zeroize(probe.PlaintextPayload)
+	if err := validateAgentTaskRecoveryRecord(probe, tenantID); err != nil {
+		return err
+	}
+	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
+		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
+			rec, err := txStore.LoadForRefresh(ctx, accountID)
+			if err != nil {
+				return err
+			}
+			defer privacy.Zeroize(rec.PlaintextPayload)
+			if rec.ID != probe.ID {
+				return errors.New("credentialworker: agent task credential changed during recovery")
+			}
+			if err := validateAgentTaskRecoveryRecord(rec, tenantID); err != nil {
+				return err
+			}
+			if int(rec.CredentialVersion) > expectedCredentialVersion {
+				return nil
+			}
+			if int(rec.CredentialVersion) < expectedCredentialVersion {
+				return errors.New("credentialworker: agent task credential version regressed")
+			}
+			return r.refreshLockedRecord(ctx, txStore, accountID, rec)
+		})
+	})
+}
+
+func validateAgentTaskRecoveryRecord(rec credentialstore.CredentialRecord, tenantID int64) error {
+	if rec.TenantID != tenantID || rec.Vendor != credentialstore.VendorOpenAI || rec.AuthMode != credentialstore.AuthModeCodexAgent {
+		return errors.New("credentialworker: account is not an agent identity credential")
+	}
+	return nil
 }
 
 func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accountID int64) error {
@@ -832,44 +867,6 @@ func stringField(fields map[string]any, key string) string {
 		return strings.TrimSpace(v)
 	default:
 		return ""
-	}
-}
-
-func ClassifyRefreshErrorClass(err error) string {
-	if err == nil {
-		return ""
-	}
-	return classifyModeRefreshError(err)
-}
-
-func classifyModeRefreshError(err error) string {
-	if errors.Is(err, adapters.ErrCodexOAuthConfigRequired) || errors.Is(err, adapters.ErrGeminiOAuthConfigRequired) ||
-		errors.Is(err, ErrOperatorOAuthConfigMissing) || errors.Is(err, ErrProviderAdapterMissing) {
-		return "operator_config_required"
-	}
-	if errors.Is(err, adapters.ErrInvalidCredentialMaterial) {
-		return "payload_invalid"
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "invalid_grant"):
-		return "invalid_grant"
-	case strings.Contains(msg, "rate_limit_exceeded") || strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "rate_limit") || strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "status 429"):
-		return "rate_limit_exceeded"
-	case strings.Contains(msg, "risk_control_triggered") || strings.Contains(msg, "risk control") ||
-		strings.Contains(msg, "risk_control"):
-		return "risk_control_triggered"
-	case strings.Contains(msg, "account_disabled") || strings.Contains(msg, "account disabled") ||
-		strings.Contains(msg, "disabled account"):
-		return "account_disabled"
-	case strings.Contains(msg, "decrypt"):
-		return "payload_invalid"
-	case strings.Contains(msg, "payload") || strings.Contains(msg, "json"):
-		return "payload_invalid"
-	default:
-		return "temporary"
 	}
 }
 

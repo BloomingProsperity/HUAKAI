@@ -11,7 +11,7 @@ import (
 
 func TestSpecs精确覆盖统一字段集(t *testing.T) {
 	want := []string{
-		"rpm_limit", "tpm_limit", "window_cost_limit_cents", "max_sessions",
+		"upstream_cost_ratio", "rpm_limit", "tpm_limit", "window_cost_limit_cents", "max_sessions",
 		"disable_cooling", "refresh_lead_seconds", "expires_at", "tls_fingerprint_rotate",
 		"custom_error_codes_enabled", "custom_error_codes", "pool_mode",
 		"temp_unschedulable_enabled", "temp_unschedulable_rules", "proxy_binding",
@@ -36,7 +36,7 @@ func Test缺席高级字段不翻转Create默认且Update无写入(t *testing.T)
 	}
 	var create admindb.InsertProviderAccountParams
 	ApplyCreate(mutation, &create)
-	if create.RPMLimit != nil || create.TPMLimit != nil || create.WindowCostLimitCents != nil || create.MaxSessions != nil ||
+	if create.UpstreamCostRatio != nil || create.RPMLimit != nil || create.TPMLimit != nil || create.WindowCostLimitCents != nil || create.MaxSessions != nil ||
 		create.DisableCooling != nil || create.RefreshLeadSeconds != nil || create.ExpiresAt.Valid || create.TLSFingerprintRotate != nil ||
 		create.CustomErrorCodesEnabled != nil || create.CustomErrorCodes != nil || create.PoolMode != nil ||
 		create.TempUnschedulableEnabled != nil || create.TempUnschedulableRulesJSON != nil || create.ProxyID != nil || create.ProxyGroupID != nil {
@@ -44,7 +44,7 @@ func Test缺席高级字段不翻转Create默认且Update无写入(t *testing.T)
 	}
 	var update admindb.UpdateAdminProviderAccountParams
 	ApplyUpdate(mutation, &update)
-	if update.RPMLimit != nil || update.TPMLimit != nil || update.WindowCostLimitCents != nil || update.MaxSessions != nil ||
+	if update.SetUpstreamCostRatio || update.UpstreamCostRatio != nil || update.RPMLimit != nil || update.TPMLimit != nil || update.WindowCostLimitCents != nil || update.MaxSessions != nil ||
 		update.DisableCooling != nil || update.SetRefreshLeadSeconds || update.SetExpiresAt || update.TLSFingerprintRotate != nil ||
 		update.CustomErrorCodesEnabled != nil || update.SetCustomErrorCodes || update.PoolMode != nil ||
 		update.TempUnschedulableEnabled != nil || update.SetTempUnschedulableRules || update.SetProxyID || update.SetProxyGroupID {
@@ -54,6 +54,7 @@ func Test缺席高级字段不翻转Create默认且Update无写入(t *testing.T)
 
 func TestParse与Create映射保留显式零值和完整字段(t *testing.T) {
 	got, err := Parse([]byte(`{
+		"upstream_cost_ratio":0.5,
 		"rpm_limit":0,
 		"tpm_limit":1200,
 		"window_cost_limit_cents":345,
@@ -66,7 +67,7 @@ func TestParse与Create映射保留显式零值和完整字段(t *testing.T) {
 		"custom_error_codes":[429,529],
 		"pool_mode":true,
 		"temp_unschedulable_enabled":true,
-		"temp_unschedulable_rules":[{"error_code":529,"keywords":[" busy ",""],"duration_minutes":5,"description":" 拥塞 "}],
+		"temp_unschedulable_rules":[{"rule_id":"busy-529","error_code":529,"keywords":[" busy "],"duration_minutes":5,"description":" 拥塞 ","client_status":503,"client_code":"upstream_busy","message_mode":"custom","client_message":" 服务繁忙 ","affect_health":false}],
 		"proxy_binding":{"mode":"proxy","proxy_id":77}
 	}`))
 	if err != nil {
@@ -74,6 +75,9 @@ func TestParse与Create映射保留显式零值和完整字段(t *testing.T) {
 	}
 	var arg admindb.InsertProviderAccountParams
 	ApplyCreate(got, &arg)
+	if arg.UpstreamCostRatio == nil || *arg.UpstreamCostRatio != 0.5 {
+		t.Fatalf("上游成本比例映射错误: %+v", arg.UpstreamCostRatio)
+	}
 	if arg.RPMLimit == nil || *arg.RPMLimit != 0 {
 		t.Fatalf("显式 rpm_limit=0 被吞掉: %+v", arg.RPMLimit)
 	}
@@ -92,7 +96,7 @@ func TestParse与Create映射保留显式零值和完整字段(t *testing.T) {
 	if !reflect.DeepEqual(arg.CustomErrorCodes, []int32{429, 529}) || arg.PoolMode == nil || !*arg.PoolMode || arg.TempUnschedulableEnabled == nil || !*arg.TempUnschedulableEnabled {
 		t.Fatalf("错误策略映射错误: %+v", arg)
 	}
-	if string(arg.TempUnschedulableRulesJSON) != `[{"error_code":529,"keywords":["busy"],"duration_minutes":5,"description":"拥塞"}]` {
+	if string(arg.TempUnschedulableRulesJSON) != `[{"rule_id":"busy-529","error_code":529,"keywords":["busy"],"duration_minutes":5,"description":"拥塞","client_status":503,"client_code":"upstream_busy","message_mode":"custom","client_message":"服务繁忙","affect_health":false}]` {
 		t.Fatalf("规则未规范化: %s", arg.TempUnschedulableRulesJSON)
 	}
 	if arg.ProxyID == nil || *arg.ProxyID != 77 || arg.ProxyGroupID != nil {
@@ -101,12 +105,15 @@ func TestParse与Create映射保留显式零值和完整字段(t *testing.T) {
 }
 
 func TestUpdate只设置请求出现的字段(t *testing.T) {
-	got, err := Parse([]byte(`{"rpm_limit":8,"disable_cooling":false,"expires_at":null,"refresh_lead_seconds":null,"custom_error_codes":[],"temp_unschedulable_rules":[],"proxy_binding":{"mode":"direct"}}`))
+	got, err := Parse([]byte(`{"upstream_cost_ratio":null,"rpm_limit":8,"disable_cooling":false,"expires_at":null,"refresh_lead_seconds":null,"custom_error_codes":[],"temp_unschedulable_rules":[],"proxy_binding":{"mode":"direct"}}`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	var arg admindb.UpdateAdminProviderAccountParams
 	ApplyUpdate(got, &arg)
+	if !arg.SetUpstreamCostRatio || arg.UpstreamCostRatio != nil {
+		t.Fatalf("显式 null 成本比例未形成 clear: %+v", arg)
+	}
 	if arg.RPMLimit == nil || *arg.RPMLimit != 8 || arg.TPMLimit != nil || arg.WindowCostLimitCents != nil || arg.MaxSessions != nil {
 		t.Fatalf("部分更新数值字段串扰: %+v", arg)
 	}
@@ -133,6 +140,9 @@ func TestParse拒绝越界和错误形状(t *testing.T) {
 		body string
 	}{
 		{name: "RPM 负数", body: `{"rpm_limit":-1}`},
+		{name: "成本比例为零", body: `{"upstream_cost_ratio":0}`},
+		{name: "成本比例过大", body: `{"upstream_cost_ratio":100.01}`},
+		{name: "成本比例字符串", body: `{"upstream_cost_ratio":"0.5"}`},
 		{name: "RPM 超出 int64", body: `{"rpm_limit":9223372036854775808}`},
 		{name: "TPM 非整数", body: `{"tpm_limit":1.5}`},
 		{name: "会话数超出 int32", body: `{"max_sessions":2147483648}`},
@@ -140,8 +150,16 @@ func TestParse拒绝越界和错误形状(t *testing.T) {
 		{name: "错误时间", body: `{"expires_at":"2026/01/01"}`},
 		{name: "错误码过小", body: `{"custom_error_codes":[99]}`},
 		{name: "错误码过大", body: `{"custom_error_codes":[600]}`},
-		{name: "规则分钟非正", body: `{"temp_unschedulable_rules":[{"error_code":529,"duration_minutes":0}]}`},
-		{name: "规则错误码越界", body: `{"temp_unschedulable_rules":[{"error_code":700,"duration_minutes":5}]}`},
+		{name: "规则缺少稳定 ID", body: `{"temp_unschedulable_rules":[{"error_code":529,"duration_minutes":5}]}`},
+		{name: "规则分钟非正", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":0}]}`},
+		{name: "规则时长过大", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":525601}]}`},
+		{name: "规则错误码越界", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":700,"duration_minutes":5}]}`},
+		{name: "规则空关键词会意外通配", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"keywords":[""],"duration_minutes":5}]}`},
+		{name: "客户端成功码不能伪装错误", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":5,"client_status":200}]}`},
+		{name: "客户端机器码非法", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":5,"client_code":"Bad-Code"}]}`},
+		{name: "自定义消息缺失", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":5,"message_mode":"custom"}]}`},
+		{name: "未知规则字段", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":5,"retry":true}]}`},
+		{name: "规则 ID 重复", body: `{"temp_unschedulable_rules":[{"rule_id":"busy","error_code":529,"duration_minutes":5},{"rule_id":"busy","error_code":503,"duration_minutes":5}]}`},
 		{name: "代理缺 ID", body: `{"proxy_binding":{"mode":"proxy"}}`},
 		{name: "代理组为空", body: `{"proxy_binding":{"mode":"group","proxy_group_id":"  "}}`},
 		{name: "代理模式非法", body: `{"proxy_binding":{"mode":"random"}}`},

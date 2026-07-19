@@ -35,12 +35,18 @@ type ProjectResolver struct {
 	PollInterval time.Duration
 }
 
-// ResolveProjectID 先查询现有 Code Assist 配置；尚未分配 project 时，转到
-// daily 端点执行 onboardUser，并在有限次数内轮询结果。
+// ResolveProjectID 保留只需要项目标识的旧合同。
 func (r *ProjectResolver) ResolveProjectID(ctx context.Context, accessToken string) (string, error) {
+	projectID, _, err := r.ResolveProjectMetadata(ctx, accessToken)
+	return projectID, err
+}
+
+// ResolveProjectMetadata 先查询现有 Code Assist 配置，同时提取套餐层级；尚未分配
+// project 时，转到 daily 端点执行 onboardUser，并在有限次数内轮询结果。
+func (r *ProjectResolver) ResolveProjectMetadata(ctx context.Context, accessToken string) (string, string, error) {
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return "", errors.New("antigravity project: access_token 不能为空")
+		return "", "", errors.New("antigravity project: access_token 不能为空")
 	}
 
 	loadBody := map[string]any{
@@ -48,10 +54,11 @@ func (r *ProjectResolver) ResolveProjectID(ctx context.Context, accessToken stri
 	}
 	raw, err := r.post(ctx, r.primaryEndpoint(), "loadCodeAssist", accessToken, loadBody)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	tier := subscriptionTierFromResponse(raw)
 	if projectID := projectIDFromResponse(raw); projectID != "" {
-		return projectID, nil
+		return projectID, tier, nil
 	}
 	onboardBody := map[string]string{
 		"ide_type":    "ANTIGRAVITY",
@@ -62,18 +69,21 @@ func (r *ProjectResolver) ResolveProjectID(ctx context.Context, accessToken stri
 	for attempt := 0; attempt < attempts; attempt++ {
 		raw, err = r.post(ctx, r.dailyEndpoint(), "onboardUser", accessToken, onboardBody)
 		if err != nil {
-			return "", err
+			return "", tier, err
+		}
+		if observedTier := subscriptionTierFromResponse(raw); observedTier != "" {
+			tier = observedTier
 		}
 		if projectID := projectIDFromResponse(raw); projectID != "" {
-			return projectID, nil
+			return projectID, tier, nil
 		}
 		if attempt+1 < attempts {
 			if err := r.waitForNextPoll(ctx); err != nil {
-				return "", err
+				return "", tier, err
 			}
 		}
 	}
-	return "", fmt.Errorf("%w: onboardUser 已轮询 %d 次", errAntigravityProjectMissing, attempts)
+	return "", tier, fmt.Errorf("%w: onboardUser 已轮询 %d 次", errAntigravityProjectMissing, attempts)
 }
 
 func (r *ProjectResolver) post(ctx context.Context, base, action, accessToken string, payload any) ([]byte, error) {
@@ -89,8 +99,7 @@ func (r *ProjectResolver) post(ctx context.Context, base, action, accessToken st
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", defaultAntigravityUserAgent)
-	req.Header.Set("X-Goog-Api-Client", defaultAntigravityAPIClient)
+	ApplyCloudCodeHeaders(req.Header)
 
 	resp, err := r.httpClient().Do(req)
 	if err != nil {
@@ -189,6 +198,42 @@ func projectIDFromNode(node any) string {
 		for _, item := range value {
 			if projectID := projectIDFromNode(item); projectID != "" {
 				return projectID
+			}
+		}
+	}
+	return ""
+}
+
+func subscriptionTierFromResponse(raw []byte) string {
+	var decoded any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return ""
+	}
+	return subscriptionTierFromNode(decoded)
+}
+
+func subscriptionTierFromNode(node any) string {
+	switch value := node.(type) {
+	case map[string]any:
+		// 付费层级是更明确的订阅事实；没有时才回退当前运行层级。
+		for _, key := range []string{"paidTier", "currentTier"} {
+			if tier, ok := value[key].(map[string]any); ok {
+				if id, ok := tier["id"].(string); ok && strings.TrimSpace(id) != "" {
+					return strings.TrimSpace(id)
+				}
+			}
+		}
+		for _, key := range []string{"response", "result", "operation"} {
+			if nested, ok := value[key]; ok {
+				if tier := subscriptionTierFromNode(nested); tier != "" {
+					return tier
+				}
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if tier := subscriptionTierFromNode(item); tier != "" {
+				return tier
 			}
 		}
 	}

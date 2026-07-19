@@ -63,7 +63,7 @@ func TestChannelHealth_AT006_AT012_PoolGateSkipsCooledAndSurfacesAllUnhealthy(t 
 	}
 }
 
-func TestChannelHealth_PoolGateLazyCooldownExpiryStartsRamp(t *testing.T) {
+func TestChannelHealth_PoolGateExpiredCooldownIsReadOnly(t *testing.T) {
 	ctx, svc, store, clock := testService()
 	key := testKey()
 	rec, _ := svc.EnsureDefaultActive(ctx, key)
@@ -73,17 +73,49 @@ func TestChannelHealth_PoolGateLazyCooldownExpiryStartsRamp(t *testing.T) {
 	_, _ = store.UpsertRecord(ctx, rec)
 
 	gate := NewServicePoolGate(svc, clock)
-	req := rampAdmittedRequest(t, key.ProviderAccountID)
+	req := pool.SelectionRequest{TenantID: key.TenantID, RequestID: "req-read-only"}
 	ok, why, err := gate.Allow(ctx, &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID}, req)
-	if err != nil || !ok {
-		t.Fatalf("Allow ok=%v why=%s err=%v, want lazy ramp admission", ok, why, err)
+	if err != nil || ok || why != pool.GateFailureHealth {
+		t.Fatalf("Allow ok=%v why=%s err=%v, want read-only health rejection", ok, why, err)
 	}
 	rec, _ = store.Get(ctx, key)
-	if rec.State != StateRamping || rec.RampStagePct != 1 || rec.CooldownUntil != nil {
-		t.Fatalf("lazy ramp rec=%+v, want ramping 1%% with cleared cooldown", rec)
+	if rec.State != StateCoolingDown || rec.CooldownUntil == nil {
+		t.Fatalf("request path mutated health record: %+v", rec)
 	}
-	if !hasAudit(auditTypes(store.Audits()), EventRampStarted) {
-		t.Fatalf("ramp-start audit missing: %+v", store.Audits())
+	if hasAudit(auditTypes(store.Audits()), EventRampStarted) {
+		t.Fatalf("request path emitted ramp transition log: %+v", store.Audits())
+	}
+}
+
+func TestRampAdmissionKeyStableAcrossRetriesAndDistinctAcrossRequests(t *testing.T) {
+	base := pool.SelectionRequest{
+		TenantID:       7,
+		RequestedModel: "model-a",
+		RequestID:      "req-1",
+		ClaimID:        91,
+		AttemptSeq:     1,
+	}
+	retry := base
+	retry.AttemptSeq = 9
+	if got, want := RampAdmissionKey(retry, 33), RampAdmissionKey(base, 33); got != want {
+		t.Fatalf("same request changed ramp key across retries: got %q want %q", got, want)
+	}
+
+	other := base
+	other.RequestID = "req-2"
+	other.ClaimID = 92
+	if RampAdmissionKey(other, 33) == RampAdmissionKey(base, 33) {
+		t.Fatal("distinct requests must not share the same ramp admission key")
+	}
+
+	continuation := base
+	continuation.ContinuationKey = "chain-1"
+	continuation.RequestID = "req-3"
+	continuationRetry := continuation
+	continuationRetry.RequestID = "req-4"
+	continuationRetry.AttemptSeq = 5
+	if RampAdmissionKey(continuationRetry, 33) != RampAdmissionKey(continuation, 33) {
+		t.Fatal("continuation affinity must remain stable across HTTP requests and retries")
 	}
 }
 
@@ -99,61 +131,20 @@ func TestChannelHealth_AT012_SampleFloorPreventsSingleFailureCooldown(t *testing
 	}
 }
 
-func rampAdmittedRequest(t *testing.T, accountID int64) pool.SelectionRequest {
-	t.Helper()
-	for i := 0; i < 10000; i++ {
-		req := pool.SelectionRequest{
-			TenantID:       7,
-			RequestedModel: fmt.Sprintf("ramp-%d", i),
-		}
-		if AdmitRamp(RampAdmissionKey(req, accountID), 1) {
-			return req
-		}
-	}
-	t.Fatal("could not find 1% ramp admission key")
-	return pool.SelectionRequest{}
-}
-
-// IsEligible 直测:cooling_down 且冷却已到期必须放行(自动恢复闸门);未到期 / 无截止时间保守拒绝。
-// 变异:把 StateCoolingDown 过期分支改回 return false → "已过期→放行" 断言转红。
-func TestChannelHealth_IsEligibleCooldownExpiryAdmits(t *testing.T) {
+// cooling_down 无论时间是否到期都必须拒绝；只有后台协调器可把它转成 ramping。
+func TestChannelHealth_IsEligibleCoolingAlwaysRejects(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	past := now.Add(-time.Second)
 	future := now.Add(time.Minute)
 
-	if !IsEligible(Record{State: StateCoolingDown, CooldownUntil: &past}, "k", now) {
-		t.Fatal("冷却已到期应放行(自动恢复),实得拒绝——通道将永久卡死")
+	if IsEligible(Record{State: StateCoolingDown, CooldownUntil: &past}, "k", now) {
+		t.Fatal("冷却已到期但后台尚未转成 ramping，不得由请求热路径直接放行")
 	}
 	if IsEligible(Record{State: StateCoolingDown, CooldownUntil: &future}, "k", now) {
 		t.Fatal("冷却未到期应拒绝,实得放行")
 	}
 	if IsEligible(Record{State: StateCoolingDown, CooldownUntil: nil}, "k", now) {
 		t.Fatal("冷却无截止时间应保守拒绝,实得放行")
-	}
-}
-
-// Allow() 在 ramp 未接线(NewPoolGate,g.ramp==nil)时,过期冷却仍须经 IsEligible 放行,
-// 且记录保持 cooling_down——证明恢复来自 IsEligible 闸门而非 ramp 状态转移。这正是
-// TestChannelHealth_PoolGateLazyCooldownExpiryStartsRamp(走 NewServicePoolGate→ramp)
-// 漏覆盖的分支:bug 真正咬人处是 ramp 未接线的 gate。
-func TestChannelHealth_PoolGateRampUnwiredExpiredCooldownAdmits(t *testing.T) {
-	ctx, svc, store, clock := testService()
-	key := testKey()
-	rec, _ := svc.EnsureDefaultActive(ctx, key)
-	expired := clock.Now().Add(-time.Second)
-	rec.State = StateCoolingDown
-	rec.CooldownUntil = &expired
-	_, _ = store.UpsertRecord(ctx, rec)
-
-	gate := NewPoolGate(store, clock) // 关键:无 service → g.ramp == nil,不会发生 ramp 转移
-	ok, why, err := gate.Allow(ctx, &pool.AccountSnapshot{ID: key.ProviderAccountID, TenantID: key.TenantID},
-		pool.SelectionRequest{TenantID: key.TenantID, RequestedModel: "gpt-test"})
-	if err != nil || !ok {
-		t.Fatalf("ramp 未接线时过期冷却应放行 ok=%v why=%s err=%v", ok, why, err)
-	}
-	rec, _ = store.Get(ctx, key)
-	if rec.State != StateCoolingDown {
-		t.Fatalf("ramp 未接线不应转移状态,实得 %s(放行应来自 IsEligible 而非 ramp)", rec.State)
 	}
 }
 
@@ -170,7 +161,7 @@ func TestChannelHealth_DisableCoolingBypassesCooldownNotBan(t *testing.T) {
 	rec.CooldownUntil = &future
 	_, _ = store.UpsertRecord(ctx, rec)
 
-	gate := NewPoolGate(store, clock) // ramp 未接线;未到期冷却本会被 IsEligible 拦
+	gate := NewPoolGate(store, clock)
 	req := pool.SelectionRequest{TenantID: key.TenantID, RequestedModel: "m"}
 
 	// baseline:disable_cooling=false → 未到期冷却被拦(行为不变)。

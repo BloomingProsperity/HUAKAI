@@ -321,6 +321,12 @@ func (d *codexSSEDoer) Do(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+type codexSSERoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f codexSSERoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 type codexForcedStreamingSelector struct{}
 
 func (codexForcedStreamingSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.SelectionResult, error) {
@@ -332,7 +338,6 @@ func (codexForcedStreamingSelector) Select(_ context.Context, _ pool.SelectionRe
 
 func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recordingClaimGate, settler *recordingSettler) ChatHandlerDeps {
 	t.Helper()
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "false")
 	d := responsesClientAdapterDeps(t)
 	d.Registry = stubRegistry{resolved: registry.Resolved{
 		PublicAlias:      "gpt-5.5",
@@ -358,9 +363,11 @@ func codexForcedStreamingDeps(t *testing.T, doer *codexSSEDoer, claimGate *recor
 	providerAdapters.MustRegister("openai_codex", &provideropenai.CodexSessionAdapter{})
 	protoAdapters := gateway.NewStaticProtocolAdapterRegistry()
 	protoAdapters.MustRegister("openai_codex", &protoopenai.ResponsesAdapter{})
+	factory := transport.NewFactory()
+	factory.SetSidecarForTesting(codexSSERoundTripFunc(doer.Do))
 	dispatcher := &gateway.UpstreamDispatcher{
 		Adapters:         providerAdapters,
-		TransportFactory: transport.NewFactory(),
+		TransportFactory: factory,
 		ProtocolAdapters: protoAdapters,
 		HTTPClient:       doer,
 	}

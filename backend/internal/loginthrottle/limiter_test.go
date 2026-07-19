@@ -3,11 +3,45 @@
 package loginthrottle
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type sharedReservationStub struct {
+	success atomic.Int64
+	failure atomic.Int64
+	cancel  atomic.Int64
+}
+
+func (s *sharedReservationStub) Success(context.Context) error { s.success.Add(1); return nil }
+func (s *sharedReservationStub) Failure(context.Context) error { s.failure.Add(1); return nil }
+func (s *sharedReservationStub) Cancel(context.Context) error  { s.cancel.Add(1); return nil }
+
+type sharedStoreStub struct {
+	mu           sync.Mutex
+	reservations int
+	limit        int
+	err          error
+	last         *sharedReservationStub
+}
+
+func (s *sharedStoreStub) Reserve(context.Context, string, Config) (SharedReservation, Decision, error) {
+	if s.err != nil {
+		return nil, Decision{}, s.err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reservations >= s.limit {
+		return nil, Decision{Allowed: false, Reason: ReasonIPInFlight, RetryAfter: time.Second}, nil
+	}
+	s.reservations++
+	s.last = &sharedReservationStub{}
+	return s.last, Decision{Allowed: true, Reason: ReasonAllowed}, nil
+}
 
 // clk 是注入的可推进时钟,避免 wall-clock 抖动(memory: 不拿 time.Now 当测试时间源)。
 type clk struct{ t time.Time }
@@ -72,6 +106,55 @@ func TestLimiter_InFlightCapBlocksConcurrentKDF(t *testing.T) {
 		t.Fatalf("after releasing one in-flight slot, next attempt must pass, got %v", d4.Reason)
 	}
 	le2.Cancel()
+}
+
+func TestLimiter_SharedStoreAggregatesAcrossInstances(t *testing.T) {
+	shared := &sharedStoreStub{limit: 1}
+	first := New(Config{InFlightLimit: 10, WindowLimit: 100, BanAfter: 100}, WithSharedStore(shared))
+	second := New(Config{InFlightLimit: 10, WindowLimit: 100, BanAfter: 100}, WithSharedStore(shared))
+
+	lease, decision, err := first.BeginContext(context.Background(), "198.51.100.30")
+	if err != nil || !decision.Allowed || lease == nil {
+		t.Fatalf("第一个副本预留 allowed=%v lease=%v err=%v", decision.Allowed, lease != nil, err)
+	}
+	denied, decision, err := second.BeginContext(context.Background(), "198.51.100.30")
+	if err != nil || decision.Allowed || decision.Reason != ReasonIPInFlight {
+		t.Fatalf("第二个副本必须命中共享并发上限 decision=%+v err=%v", decision, err)
+	}
+	if denied == nil || second.inFlightCount("198.51.100.30") != 0 {
+		t.Fatal("共享拒绝后必须释放第二个副本的本地 reservation")
+	}
+	lease.Cancel()
+}
+
+func TestLimiter_SharedBackendFailureReleasesLocalAndFailsClosed(t *testing.T) {
+	shared := &sharedStoreStub{limit: 1, err: errors.New("redis unavailable")}
+	limiter := New(Config{InFlightLimit: 1, WindowLimit: 100, BanAfter: 100}, WithSharedStore(shared))
+	lease, decision, err := limiter.BeginContext(context.Background(), "198.51.100.31")
+	if err == nil || decision.Allowed || decision.Reason != ReasonBackendUnavailable {
+		t.Fatalf("共享后端失败必须拒绝 decision=%+v err=%v", decision, err)
+	}
+	if lease == nil || limiter.inFlightCount("198.51.100.31") != 0 {
+		t.Fatal("共享后端失败后不得泄漏本地 reservation")
+	}
+}
+
+func TestLimiter_SharedFailureCommitIsExactlyOnce(t *testing.T) {
+	shared := &sharedStoreStub{limit: 1}
+	limiter := New(Config{InFlightLimit: 2, WindowLimit: 100, BanAfter: 100}, WithSharedStore(shared))
+	lease, decision, err := limiter.BeginContext(context.Background(), "198.51.100.32")
+	if err != nil || !decision.Allowed {
+		t.Fatalf("预留失败 decision=%+v err=%v", decision, err)
+	}
+	if err := lease.FailureContext(context.Background()); err != nil {
+		t.Fatalf("提交失败结果: %v", err)
+	}
+	if err := lease.FailureContext(context.Background()); err != nil {
+		t.Fatalf("重复提交应为 no-op: %v", err)
+	}
+	if got := shared.last.failure.Load(); got != 1 {
+		t.Fatalf("共享失败只应提交一次，got=%d", got)
+	}
 }
 
 // TestLimiter_WindowFailureCap 钉住滑动窗口失败计数:窗口内失败累计达阈即拒,窗口过期后恢复。

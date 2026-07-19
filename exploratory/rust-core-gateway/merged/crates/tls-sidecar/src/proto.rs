@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const OPERATION_CONNECT: &str = "connect";
 pub const OPERATION_READY: &str = "ready";
 
@@ -13,12 +13,14 @@ pub const CAPABILITY_HTTPS_PROXY: &str = "https_proxy";
 pub const CAPABILITY_SOCKS5_PROXY: &str = "socks5_proxy";
 pub const CAPABILITY_H2_BRIDGE: &str = "h2_bridge";
 pub const CAPABILITY_FORCE_H1: &str = "force_h1";
+pub const CAPABILITY_TARGET_IP_PINNING: &str = "target_ip_pinning";
 
 pub const ERROR_PROTOCOL_UNSUPPORTED: &str = "protocol_unsupported";
 pub const ERROR_OPERATION_UNSUPPORTED: &str = "operation_unsupported";
 pub const ERROR_PROFILE_UNKNOWN: &str = "profile_unknown";
 pub const ERROR_PROFILE_INVALID: &str = "profile_invalid";
 pub const ERROR_TARGET_INVALID: &str = "target_invalid";
+pub const ERROR_TARGET_POLICY_DENIED: &str = "target_policy_denied";
 pub const ERROR_PROXY_INVALID: &str = "proxy_invalid";
 pub const ERROR_PROXY_CONNECT: &str = "proxy_connect";
 pub const ERROR_UPSTREAM_DNS: &str = "upstream_dns";
@@ -50,6 +52,8 @@ pub struct ControlRequest {
     pub force_h1: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxySpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_target_ips: Vec<String>,
 }
 
 fn is_zero_u16(value: &u16) -> bool {
@@ -128,6 +132,7 @@ impl ControlAck {
                 CAPABILITY_SOCKS5_PROXY.to_owned(),
                 CAPABILITY_H2_BRIDGE.to_owned(),
                 CAPABILITY_FORCE_H1.to_owned(),
+                CAPABILITY_TARGET_IP_PINNING.to_owned(),
             ],
             profile_ids,
         }
@@ -199,7 +204,6 @@ where
     Ok(serde_json::from_slice(&body)?)
 }
 
-#[cfg(test)]
 pub async fn write_control_request<W>(
     writer: &mut W,
     request: &ControlRequest,
@@ -211,7 +215,6 @@ where
     write_frame(writer, &body).await
 }
 
-#[cfg(test)]
 pub async fn read_control_ack<R>(reader: &mut R) -> Result<ControlAck, ProtoError>
 where
     R: AsyncRead + Unpin,
@@ -243,6 +246,7 @@ mod tests {
             correlation_id: Some("corr-1".to_owned()),
             force_h1: None,
             proxy: None,
+            pinned_target_ips: Vec::new(),
         }
     }
 
@@ -308,6 +312,11 @@ mod tests {
             ack.capabilities
                 .iter()
                 .any(|value| value == super::CAPABILITY_FORCE_H1)
+        );
+        assert!(
+            ack.capabilities
+                .iter()
+                .any(|value| value == super::CAPABILITY_TARGET_IP_PINNING)
         );
         assert_eq!(ack.profile_ids, ["p1", "p2"]);
     }

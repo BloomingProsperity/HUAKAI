@@ -331,6 +331,15 @@ func TestChatGPTOAuthCallbackPersistsChatGPTMetadataInCredAndRedactedContext(t *
 	if candidate.ExternalAccountID != "acct-456" || candidate.ExternalSubjectID != "user-123" {
 		t.Fatalf("candidate identity=%+v，期望保留账号作用域和个人主体", candidate)
 	}
+	if candidate.Subscription.Label() != "openai:plus" ||
+		candidate.Subscription.Status != "observed" ||
+		candidate.Subscription.Source != "oauth_token_response" ||
+		candidate.Subscription.WorkspaceRef != "" {
+		t.Fatalf("套餐识别结果错误：%+v", candidate.Subscription)
+	}
+	if got := stringFieldFromAny(candidate.RedactedContext[RedactedKeySubscriptionLabel]); got != "openai:plus" {
+		t.Fatalf("预览系统标签=%q，期望 openai:plus", got)
+	}
 	if _, ok := candidate.RedactedContext["upstream_subject_id"]; ok {
 		t.Fatalf("个人 subject 不得进入 RedactedContext: %v", candidate.RedactedContext)
 	}

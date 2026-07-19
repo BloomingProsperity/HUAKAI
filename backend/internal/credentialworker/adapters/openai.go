@@ -159,12 +159,15 @@ func ShouldRefreshOpenAIForRateLimit(raw []byte) bool {
 }
 
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int64  `json:"expires_in"`
-	Scope        string `json:"scope"`
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token"`
+	IDToken          string `json:"id_token"`
+	TokenType        string `json:"token_type"`
+	ExpiresIn        int64  `json:"expires_in"`
+	Scope            string `json:"scope"`
+	ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+	ChatGPTUserID    string `json:"chatgpt_user_id"`
+	ChatGPTAccountID string `json:"chatgpt_account_id"`
 }
 
 func parseCredential(raw []byte) (map[string]any, error) {
@@ -296,6 +299,15 @@ func mergeTokenResponse(cred map[string]any, resp tokenResponse) ([]byte, time.T
 	}
 	if strings.TrimSpace(resp.Scope) != "" {
 		cred["scope"] = resp.Scope
+	}
+	if strings.TrimSpace(resp.ChatGPTPlanType) != "" {
+		cred["chatgpt_plan_type"] = resp.ChatGPTPlanType
+	}
+	if strings.TrimSpace(resp.ChatGPTUserID) != "" {
+		cred["chatgpt_user_id"] = resp.ChatGPTUserID
+	}
+	if strings.TrimSpace(resp.ChatGPTAccountID) != "" {
+		cred["chatgpt_account_id"] = resp.ChatGPTAccountID
 	}
 	// R2 S2 defense-in-depth (Owner): 写回 store 前
 	// 主动 scrub hostile credential 字段, 防止 store 残留攻击面被未来代码

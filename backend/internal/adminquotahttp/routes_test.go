@@ -110,20 +110,20 @@ func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 
 	item := f.createPolicy(f.tenantA,
 		`{"scope_kind":"user","scope_id":"42","metric":"cost_usd","window_kind":"calendar_day","limit_value":"10.00000000","mode":"enforce"}`)
-	if item.ID == 0 || item.LimitValue != "10" || item.Metric != "cost_usd" {
+	if item.ID == 0 || item.LimitValue != "10" || item.ModelSelector != "*" || item.Metric != "cost_usd" {
 		t.Fatalf("created item wrong: %+v", item)
 	}
 
-	var sk, sid, metric, wk, mode string
+	var sk, sid, modelSelector, metric, wk, mode string
 	var limit string
 	if err := pool.QueryRow(ctx,
-		`SELECT scope_kind, scope_id, metric, window_kind, mode, limit_value::text
+		`SELECT scope_kind, scope_id, model_selector, metric, window_kind, mode, limit_value::text
 		   FROM quota_policies WHERE tenant_id=$1 AND id=$2`,
-		f.tenantA, item.ID).Scan(&sk, &sid, &metric, &wk, &mode, &limit); err != nil {
+		f.tenantA, item.ID).Scan(&sk, &sid, &modelSelector, &metric, &wk, &mode, &limit); err != nil {
 		t.Fatalf("read created policy: %v", err)
 	}
-	if sk != "user" || sid != "42" || metric != "cost_usd" || wk != "calendar_day" || mode != "enforce" {
-		t.Fatalf("persisted policy state wrong: %s/%s/%s/%s/%s", sk, sid, metric, wk, mode)
+	if sk != "user" || sid != "42" || modelSelector != "*" || metric != "cost_usd" || wk != "calendar_day" || mode != "enforce" {
+		t.Fatalf("persisted policy state wrong: %s/%s/%s/%s/%s/%s", sk, sid, modelSelector, metric, wk, mode)
 	}
 
 	var action, targetType string
@@ -137,6 +137,39 @@ func TestCreatePersistsAndAuditsRealStore(t *testing.T) {
 	}
 	if action != "create_quota_policy" || targetType != "quota_policy" || targetID != item.ID {
 		t.Fatalf("audit row wrong: action=%s type=%s id=%d", action, targetType, targetID)
+	}
+}
+
+func TestModelSelectorUniqueIndexAndAdminFilterRealStore(t *testing.T) {
+	ctx := context.Background()
+	pool := openQuotaPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+
+	wildcard := f.createPolicy(f.tenantA,
+		`{"scope_kind":"user","scope_id":"42","metric":"requests","window_kind":"none","limit_value":"100"}`)
+	exact := f.createPolicy(f.tenantA,
+		`{"scope_kind":"user","scope_id":"42","model_selector":"GPT-4.1","metric":"requests","window_kind":"none","limit_value":"10"}`)
+	if wildcard.ModelSelector != "*" || exact.ModelSelector != "gpt-4.1" || wildcard.ID == exact.ID {
+		t.Fatalf("model policies not persisted independently: wildcard=%+v exact=%+v", wildcard, exact)
+	}
+
+	duplicate := f.invoke(http.MethodPost, "/?tenant_id="+strconv.FormatInt(f.tenantA, 10),
+		`{"scope_kind":"user","scope_id":"42","model_selector":"gpt-4.1","metric":"requests","window_kind":"none","limit_value":"11"}`)
+	if duplicate.Code != http.StatusConflict || errorCode(t, duplicate) != "quota_policy_conflict" {
+		t.Fatalf("duplicate exact policy status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+
+	listed := f.invoke(http.MethodGet,
+		"/?tenant_id="+strconv.FormatInt(f.tenantA, 10)+"&model_selector=GPT-4.1", "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list exact status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	var body quotaPolicyListResponse
+	if err := json.Unmarshal(listed.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode exact list: %v", err)
+	}
+	if len(body.Items) != 1 || body.Items[0].ID != exact.ID || body.Items[0].ModelSelector != "gpt-4.1" {
+		t.Fatalf("exact list leaked or omitted policies: %+v", body.Items)
 	}
 }
 
@@ -248,7 +281,7 @@ func TestUpdateEnabledTogglesReserveVisibility(t *testing.T) {
 	// PUT 设置 enabled=false。
 	idPath := "/" + strconv.FormatInt(item.ID, 10) + "?tenant_id=" + strconv.FormatInt(f.tenantA, 10)
 	rec := f.invoke(http.MethodPut, idPath,
-		`{"scope_kind":"user","scope_id":"123","metric":"cost_usd","window_kind":"calendar_day","limit_value":"3","mode":"enforce","enabled":false}`)
+		`{"scope_kind":"user","scope_id":"123","model_selector":"*","metric":"cost_usd","window_kind":"calendar_day","limit_value":"3","mode":"enforce","enabled":false}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("disable PUT status=%d body=%s", rec.Code, strings.TrimSpace(rec.Body.String()))
 	}
@@ -303,7 +336,7 @@ func TestNoMoneySideEffect(t *testing.T) {
 		`{"scope_kind":"user","scope_id":"500","metric":"cost_usd","window_kind":"calendar_day","limit_value":"25","mode":"enforce"}`)
 	idPath := "/" + strconv.FormatInt(item.ID, 10) + "?tenant_id=" + strconv.FormatInt(f.tenantA, 10)
 	updRec := f.invoke(http.MethodPut, idPath,
-		`{"scope_kind":"user","scope_id":"500","metric":"cost_usd","window_kind":"calendar_day","limit_value":"50","mode":"observe"}`)
+		`{"scope_kind":"user","scope_id":"500","model_selector":"*","metric":"cost_usd","window_kind":"calendar_day","limit_value":"50","mode":"observe"}`)
 	if updRec.Code != http.StatusOK {
 		t.Fatalf("update status=%d", updRec.Code)
 	}
