@@ -25,13 +25,20 @@ const (
 )
 
 var (
-	ErrInvalidInput        = errors.New("usersession: invalid input")
-	ErrStoreNotConfigured  = errors.New("usersession: store not configured")
-	ErrSigningKeyMissing   = errors.New("usersession: signing key missing")
-	ErrFamilyNotFound      = errors.New("usersession: family not found")
-	ErrFamilyRevoked       = errors.New("usersession: family revoked")
-	ErrTokenNotFound       = errors.New("usersession: token not found")
-	ErrTokenExpired        = errors.New("usersession: token expired")
+	ErrInvalidInput       = errors.New("usersession: invalid input")
+	ErrStoreNotConfigured = errors.New("usersession: store not configured")
+	ErrSigningKeyMissing  = errors.New("usersession: signing key missing")
+	ErrFamilyNotFound     = errors.New("usersession: family not found")
+	ErrFamilyRevoked      = errors.New("usersession: family revoked")
+	ErrTokenNotFound      = errors.New("usersession: token not found")
+	ErrTokenExpired       = errors.New("usersession: token expired")
+	// ErrSessionBackend 表示会话校验期间 session-store 发生瞬时后端故障
+	// (PG 连接断、查询中途 ctx 取消/语句超时、连接池耗尽)。它与 ErrTokenNotFound
+	// (凭证权威地不存在, 含 pgx.ErrNoRows 与 token 篡改) 严格区分: SessionMiddleware
+	// 将其映射为 HTTP 503 而非 401, 使基础设施中断期间持有【有效 token】的合法客户端
+	// 不会被误告知凭证无效 (进而丢弃 token / 强制重登 / refresh 风暴)。语义与
+	// auth.ErrAuthBackend (api_key_resolver) 一致 —— fail-closed 但不谎报凭证无效。
+	ErrSessionBackend      = errors.New("usersession: session store backend error")
 	ErrRefreshReplay       = errors.New("usersession: refresh token replay")
 	ErrSessionUserMismatch = errors.New("usersession: session user mismatch")
 	ErrAnomalyRejected     = errors.New("usersession: session anomaly rejected")

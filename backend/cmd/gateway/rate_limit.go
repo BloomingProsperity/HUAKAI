@@ -125,7 +125,7 @@ type rateLimiter struct {
 
 // authStrictTier 把一个按 IP registry 与它的 Retry-After 提示耦合在一起。
 // auth 与 media 的 strict class 复用同一个层原语。该提示由配置的 rate 推导
-//(并非写死),所以一个调过的 override 会给出准确的重试延迟。
+// (并非写死),所以一个调过的 override 会给出准确的重试延迟。
 type authStrictTier struct {
 	registry   *ipBucketRegistry
 	retryAfter int
@@ -141,12 +141,13 @@ type authClass struct {
 	defPerMin float64  // 默认每分钟请求数
 }
 
-// authClasses 是静态策略表。login + 2fa 共用当前存在的那唯一一个 login
-// 端点;verify-email 是「发送验证码」class;reset-password 是「忘记密码」
+// authClasses 是静态策略表。login class 覆盖密码登录、passkey 登录,以及
+// 独立拆出的 TOTP 二因子校验端点 /v1/auth/login/2fa(它们共享一份 login
+// 预算);verify-email 是「发送验证码」class;reset-password 是「忘记密码」
 // class;社交登录路由共用一个 class(一份预算);sessions/refresh 是
-//「刷新令牌」class。
+// 「刷新令牌」class。
 var authClasses = []authClass{
-	{paths: []string{"/v1/auth/login", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
+	{paths: []string{"/v1/auth/login", "/v1/auth/login/2fa", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
 	{paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
 	{paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
 	{paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
@@ -167,7 +168,7 @@ var mediaClasses = []authClass{
 // retryAfterForRatePerSec 把「每秒令牌补充速率」换算成一个整秒的
 // Retry-After 提示:大致是到下一个令牌补充为止的时间(1/ratePerSec),
 // 向上取整并以 1s 为下限。它跟随 env override,因此一个调低的 rate
-//(例如 0.1 req/s)会报告一个真实的 ~10s 延迟,而非陈旧的 1s。
+// (例如 0.1 req/s)会报告一个真实的 ~10s 延迟,而非陈旧的 1s。
 func retryAfterForRatePerSec(ratePerSec float64) int {
 	if ratePerSec <= 0 {
 		return 60
@@ -371,7 +372,7 @@ func (rl *rateLimiter) clientKey(r *http.Request) string {
 
 // envFloat 读取一个正的、有限的 float env override,当变量未设置/为空/非法、
 // 非正、或非有限(NaN/Inf)时回退。一个 NaN/Inf 的 burst 永远不会耗尽桶
-//(从而悄悄禁用始终开启的限流器),所以这类值被拒绝、改用安全默认值。
+// (从而悄悄禁用始终开启的限流器),所以这类值被拒绝、改用安全默认值。
 func envFloat(name string, fallback float64) float64 {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {

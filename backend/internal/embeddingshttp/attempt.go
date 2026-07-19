@@ -145,7 +145,7 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	}
 	sbctx, scancel := ex.billingCtx()
 	defer scancel()
-	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
+	if err := ex.settleDeliveredResponse(sbctx, ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
 		return false
 	}

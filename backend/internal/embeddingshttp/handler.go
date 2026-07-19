@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 const (
@@ -44,17 +45,20 @@ type dispatcher interface {
 }
 
 type Deps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	Selector              pool.Selector
-	CredentialVault       provider.CredentialVault
-	Dispatcher            dispatcher
-	Settler               billing.Settler
+	Auth                 authResolver
+	Registry             registry.Registry
+	Router               router.Router
+	ClaimGate            billing.ClaimGate
+	QuotaReserver        quotaenforce.Reserver
+	RateTables           billing.RateTableSource
+	PricingRatioResolver pricingRatioResolver
+	Selector             pool.Selector
+	CredentialVault      provider.CredentialVault
+	Dispatcher           dispatcher
+	Settler              billing.Settler
+	// SettleRecoveryDLQ 是上游已返 2xx 但交付前 settle 失败时的 durable 兜底队列。
+	// 未注入(nil)时退回原行为(仅返 err、写 500),与 completions/images 同族对齐(S2/B3)。
+	SettleRecoveryDLQ     settlementrecovery.Enqueuer
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string

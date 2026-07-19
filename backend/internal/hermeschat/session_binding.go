@@ -62,18 +62,46 @@ func NewSessionBindings(now func() time.Time) *SessionBindings {
 	return &SessionBindings{now: now, m: make(map[string]SessionOperator)}
 }
 
-// Bind 为一个会话 request_id 记录 operator 身份。它会覆盖同一 request_id 的任何先前绑定
-//(每次聊天开始 request_id 都唯一,因此冲突意味着请求被重新 prepare——后写者胜)。空白的
-// request_id 会被忽略(调用方在上游已校验;这里是纵深防御,使空白键永远无法匹配以空白键
-// 进行的 lookup)。
-func (s *SessionBindings) Bind(requestID string, op SessionOperator) {
+// Bind 为一个会话 request_id 记录 operator 身份,返回是否成功绑定。
+//
+// request_id 受客户端影响(hermeshttp 路由的 requestID(r) 会回退到客户端 X-Request-Id 头),
+// 因此“每次聊天 request_id 唯一”并非代码所能保证的前提。若无条件 last-writer-wins,同租户、
+// 同 as_user_id 的两个 admin operator 用同一 request_id 并发开聊时,后写者会覆盖先写者的绑定;
+// 由于 resolveOperator 的一致性检查只比对 tenant/user,先写者的有效 internal_token 便会解析出
+// 后写者的 Role + AdminActorTokenID —— 跨越 role 下限与 operator 归属(B21 [S3])。
+//
+// 因此 Bind 对同一 request_id 上的【身份冲突】fail-closed:若已存在一条未过期、且属于【不同
+// operator 身份】的绑定,则不覆盖,反而作废(poison)该键并返回 false —— 使任一会话的 token
+// 都无法凭此 request_id 解析出 operator(双方的工具循环都被闸死,回落到无工具的普通聊天)。
+// 同一 operator 身份的重绑(同会话重试 prepare)仍幂等允许,用于刷新过期时间。空白的
+// request_id 会被忽略(调用方在上游已校验;这里是纵深防御)。
+func (s *SessionBindings) Bind(requestID string, op SessionOperator) bool {
 	if s == nil || requestID == "" {
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+	if existing, ok := s.m[requestID]; ok && !sameOperatorIdentity(existing, op) {
+		// 身份冲突:同一 request_id 被不同 operator 抢占。既不能保留先写者(会让后写者的
+		// token 骑在先写者身份上),也不能覆盖(会让先写者的 token 骑在后写者身份上)——
+		// 唯一安全的选择是作废该键,让双方都 fail-closed。
+		delete(s.m, requestID)
+		return false
+	}
 	s.m[requestID] = op
+	return true
+}
+
+// sameOperatorIdentity 判断两条绑定是否属于同一 operator 身份。用于区分“同会话幂等重绑”
+// (允许,刷新过期时间)与“不同 operator 的 request_id 冲突”(fail-closed 作废)。比较承载
+// 越权风险的全部身份字段:tenant 范围、actor 用户、admin actor token id、以及 RBAC role。
+// 不比较 ExpiresAt —— 过期时间随 token 刷新而变,不属于身份。
+func sameOperatorIdentity(a, b SessionOperator) bool {
+	return a.TenantID == b.TenantID &&
+		a.ActorUserID == b.ActorUserID &&
+		a.AdminActorTokenID == b.AdminActorTokenID &&
+		a.Role == b.Role
 }
 
 // Lookup 返回绑定到 requestID 的 operator,以及它是否存在且未过期。已过期的绑定被视为

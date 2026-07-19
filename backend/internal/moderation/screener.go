@@ -346,11 +346,12 @@ func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, re
 	if s.ban == nil {
 		return nil
 	}
-	// DM-16:同一条违规用户消息在 agent 循环里每轮重发,只在用户轮计 ban,
-	// 否则单条消息一个会话内就冲破阈值。拦截判定不受影响。
-	if repeatAgentTurn(req) {
-		return nil
-	}
+	// B4 [S2]:auto-ban 计数不得按 TailRole 短路。TailRole 完全由客户端请求体
+	// 最后一条消息的 role 决定(gatewayhttp 直接解析),滥用者只要给每条违规请求
+	// 追加一条 role 非 user 的尾消息,就能让 CountBlocksInWindow 永不递增、
+	// DisableAPIKey 永不触发——自动封禁被完全绕过。因此 block 判定命中即无条件计
+	// ban;DM-16 的 agent 循环重发去重只对纯噪音的 clean 审计生效(见 Screen),
+	// 拦截与封禁属安全控制,不接受客户端可控字段降级。
 	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)
 	return err
 }

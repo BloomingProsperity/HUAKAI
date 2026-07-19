@@ -114,7 +114,7 @@ func (s *Service) Replay(ctx context.Context, id int64, actorID string) (*Record
 	}
 	if err := s.handle(ctx, *rec); err != nil {
 		decision := s.failureDecision(ctx, rec, err)
-		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
+		if markErr := s.store.MarkFailed(ctx, *rec, redactFailureReason(err.Error()), decision); markErr != nil {
 			// 与 worker 路径(ProcessClaim)一致:MarkFailed 写失败是独立的状态持久化故障,必须上抛。
 			// 否则 handler 失败且状态更新也失败时,行会停在 inflight(带 manual lease、陈旧 retry 计数、
 			// 未转 operator_review/dlq),操作员只看到 handler 错误,而"恢复系统连自身失败状态都没落盘"
@@ -140,7 +140,7 @@ func (s *Service) ProcessClaim(ctx context.Context, lane Lane, workerID string, 
 	}
 	if err := s.handle(ctx, *rec); err != nil {
 		decision := s.failureDecision(ctx, rec, err)
-		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
+		if markErr := s.store.MarkFailed(ctx, *rec, redactFailureReason(err.Error()), decision); markErr != nil {
 			return true, markErr
 		}
 		return true, nil

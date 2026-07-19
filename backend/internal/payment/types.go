@@ -150,6 +150,10 @@ type CreateOrderInput struct {
 	ComplianceAcceptedAt   *time.Time
 	ComplianceAcceptedBy   int64
 	ComplianceAcceptedIP   string
+	// Recharge* 反滥用限额: >0 时由 store 在建单事务内(持 per-user 锁)权威复检, 关闭 OpenRecharge
+	// 的 check-then-act (TOCTOU) 窗口。0 = 不限(admin/订阅等路径不设)。
+	RechargeMaxPending      int
+	RechargeDailyLimitCents int64
 }
 
 // CreateOrderResult 建单结果。Idempotent=true 表示同 out_trade_no 重放命中已有单。

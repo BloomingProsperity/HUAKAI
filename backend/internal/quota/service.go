@@ -571,6 +571,24 @@ func existingReservationResult(req ReserveRequest, existing Reservation) (Reserv
 			},
 			Reservation: existing,
 		}, nil
+	case existing.Status == ReservationReconciliationNeeded:
+		// reconciliation_needed 的 reserved units 仍被 enforce 计数器持有(失败的
+		// release/settle 未递减计数),settle 路径亦把此态等同 reserved 处理。billing
+		// 复活同 claim 的新 attempt 命中同一行(reservation 唯一 tenant+claim)。此处
+		// 复用既有持有作 idempotency 命中放行:reservation 唯一即"每 claim 一份额度",
+		// 新 attempt 继承同一份持有——既不误拒合法复活,也不 reactivate 重跑
+		// applyEnforceReservations 而对仍持有的 units 二次计数。后台 reconciler 与
+		// settle/release 仍按 reconciliation_needed 收敛该行。
+		return ReserveResult{
+			Allowed:        true,
+			IdempotencyHit: true,
+			Decision: Decision{
+				Kind:   DecisionAllow,
+				Code:   decisionCodeReused,
+				Reason: "reservation held pending reconciliation reused for revived claim",
+			},
+			Reservation: existing,
+		}, nil
 	default:
 		decision := inactiveReservationDecision(existing)
 		return ReserveResult{

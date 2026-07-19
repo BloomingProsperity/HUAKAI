@@ -729,9 +729,10 @@ func moderationFailureMetricValue(key string) int64 {
 	return v.Value()
 }
 
-// MUTATION: recordAutoBan/clean 审计忽略 TailRole(去掉 repeatAgentTurn 守卫)
-// → 重发轮断言红(DM-16:agent 循环单条违规消息每轮计 ban,一会话冲破阈值)。
-func TestScreener_RepeatAgentTurnSuppressesBanCountAndCleanAudit(t *testing.T) {
+// MUTATION: clean 审计忽略 TailRole(去掉 repeatAgentTurn 守卫)→ 重发轮 clean
+// 审计断言红。DM-16 的重发去重只对纯噪音的 clean 审计生效;auto-ban 计数是安全
+// 控制,命中拦截即无条件计(见 B4 [S2]:否则非 user 尾可绕过自动封禁)。
+func TestScreener_RepeatAgentTurnSuppressesCleanAudit(t *testing.T) {
 	mk := func() (Screener, *auditSpy, *banCounterSpy) {
 		audit := &auditSpy{}
 		ban := &banCounterSpy{}
@@ -749,7 +750,8 @@ func TestScreener_RepeatAgentTurnSuppressesBanCountAndCleanAudit(t *testing.T) {
 	}
 	blockedBody := []byte(`{"messages":[{"role":"user","content":"contains a forbidden phrase"},{"role":"assistant","content":"x"}]}`)
 
-	// 重发轮(尾=assistant):拦截照旧,审计照写(取证),ban 不计
+	// 重发轮(尾=assistant):拦截照旧,审计照写(取证),ban 照计(B4:安全控制
+	// 不受客户端可控的 TailRole 降级,否则自动封禁可被非 user 尾完全绕过)。
 	s, audit, ban := mk()
 	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r1", Body: blockedBody, TailRole: "assistant"})
 	if err != nil {
@@ -761,8 +763,8 @@ func TestScreener_RepeatAgentTurnSuppressesBanCountAndCleanAudit(t *testing.T) {
 	if len(audit.events) != 1 {
 		t.Fatalf("block 审计必须写: %d", len(audit.events))
 	}
-	if ban.calls != 0 {
-		t.Fatalf("重发轮不得计 ban: calls=%d", ban.calls)
+	if ban.calls != 1 {
+		t.Fatalf("非 user 尾的 block 仍须计 ban(防自动封禁绕过): calls=%d", ban.calls)
 	}
 
 	// 用户轮:ban 照计

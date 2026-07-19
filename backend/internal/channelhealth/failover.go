@@ -7,6 +7,8 @@ import (
 	"hash/fnv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
@@ -117,7 +119,31 @@ func (g *PoolGate) maybeStartExpiredRamp(ctx context.Context, rec Record) (Recor
 	if g.ramp == nil {
 		return rec, nil
 	}
-	return g.ramp.MaybeStartRamp(ctx, rec.Key)
+	ramped, err := g.ramp.MaybeStartRamp(ctx, rec.Key)
+	if err != nil {
+		// 读路径上的机会性 ramp-start 是无 40001 重试的 SERIALIZABLE 写。并发选号同时评估同一
+		// 到期冷却账号时,只有一个能提交 CoolingDown→Ramping,其余竞争落败者收到 40001/40P01。
+		// 这是良性竞争:胜者已把记录翻成 ramping。落败者绝不能因此把正在恢复的账号误判为不可用
+		// ——否则若它是唯一可选账号,调用方拿到 spurious NoCapacity,账号在负载下持续抖动。
+		// 吞掉序列化冲突并返回原(到期冷却)记录,交由 IsEligible 的"到期冷却→放行"闸门恢复。
+		// 非序列化错误(真实 DB 故障)仍上抛,保持既有保守语义。
+		if isRampContentionError(err) {
+			return rec, nil
+		}
+		return Record{}, err
+	}
+	return ramped, nil
+}
+
+// isRampContentionError 判定 err 是否为 PostgreSQL 序列化失败(40001)或死锁(40P01)——
+// 即 Serializable 事务下的良性并发争抢,与业务/连接错误区分。与 internal/billing、
+// internal/mediatask 等处的判定约定一致。
+func isRampContentionError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "40001" || pgErr.Code == "40P01"
 }
 
 func IsEligible(rec Record, admissionKey string, now time.Time) bool {

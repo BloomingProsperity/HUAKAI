@@ -78,8 +78,20 @@ func UpstreamFailure(status int, headers http.Header, body []byte, providerName 
 	if reason == "" {
 		reason = "upstream_error"
 	}
+	// 保留上游派生的客户端状态与 Retry-After,和流式 / buffered chat 路径一致
+	// (internal/gatewayhttp/chat_completions_error.go 用 decision.ClientStatus 与
+	// ceil(classification.RetryAfterMs/1000))。此前一律塌成 502 且丢弃 Retry-After,
+	// 令客户端在上游 429/401 时无法据真实状态与退避提示正确重试。
+	clientStatus := decision.ClientStatus
+	if clientStatus == 0 {
+		clientStatus = http.StatusBadGateway
+	}
+	retryAfterSeconds := 0
+	if classification.RetryAfterMs > 0 {
+		retryAfterSeconds = int((classification.RetryAfterMs + 999) / 1000)
+	}
 	return newFailure(SignalFromUpstream(status, body, classification, decision), decision.RetryableBeforeDelivery,
-		http.StatusBadGateway, clienterr.CodeUpstreamDispatchError, reason, 0)
+		clientStatus, clienterr.CodeUpstreamDispatchError, reason, retryAfterSeconds)
 }
 
 // AbortFailure 阻止 abort/release 失败后继续 reserve 另一个 attempt。

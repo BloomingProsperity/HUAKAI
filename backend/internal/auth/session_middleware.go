@@ -58,6 +58,10 @@ func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) 
 					writeSessionAuthError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session signing key is not configured")
 				case errors.Is(err, usersession.ErrTokenExpired):
 					writeSessionAuthError(w, http.StatusUnauthorized, "session_token_expired", "session token is expired")
+				case errors.Is(err, usersession.ErrSessionBackend):
+					// session-store 瞬时后端故障: 不把有效 token 持有者坍缩成 401。
+					// 与 api_key_resolver 的 ErrAuthBackend->503 约定一致。
+					writeSessionAuthError(w, http.StatusServiceUnavailable, "session_backend_unavailable", "session store temporarily unavailable")
 				default:
 					writeSessionAuthError(w, http.StatusUnauthorized, "session_token_invalid", "session token is invalid")
 				}

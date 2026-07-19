@@ -38,6 +38,12 @@ const (
 	SourceEventbusBillingHandler Source = "eventbus_billing_handler"
 	// SourceImagesDelivered 表示图片业务响应已完整交付后结算未确认。
 	SourceImagesDelivered Source = "images_delivered"
+	// SourceEmbeddingsDelivered 表示 embeddings 上游已返 2xx(平台已付上游成本)后
+	// settle 失败,交付前结算漏计费的 durable 兜底来路。
+	SourceEmbeddingsDelivered Source = "embeddings_delivered"
+	// SourceRerankDelivered 表示 rerank 上游已返 2xx(平台已付上游成本)后
+	// settle 失败,交付前结算漏计费的 durable 兜底来路。
+	SourceRerankDelivered Source = "rerank_delivered"
 )
 
 // Payload 是 post_delivery_settlement DLQ 行的 JSON payload。
@@ -157,7 +163,8 @@ func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) 
 // Validate 在 enqueue 前 + worker decode 后两端调,确保 payload 不破坏 settle 必填条件。
 func (p Payload) Validate() error {
 	switch p.Source {
-	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler, SourceImagesDelivered:
+	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler, SourceImagesDelivered,
+		SourceEmbeddingsDelivered, SourceRerankDelivered:
 	default:
 		return fmt.Errorf("%w: %q", ErrPayloadInvalidSource, p.Source)
 	}

@@ -99,6 +99,19 @@ SET failed_attempts = $3,
 WHERE tenant_id = $1
   AND user_id = $2;
 
+-- name: IncrementTwoFactorFailure :one
+-- 原子自增失败计数,消除"读快照→写绝对值"的读改写竞态:并发的 N 次失败各自 +1 累加到
+-- k+N,而非都读到 k、都写回 k+1。当自增后的计数达到阈值 $3 时,在同一条语句内落
+-- locked_until=$4(否则保持原值),使账号锁定门在真实失败次数下必然触发。
+-- RETURNING 回传自增后的计数与锁定时刻,供调用方判定是否已锁。
+UPDATE two_factor_settings
+SET failed_attempts = failed_attempts + 1,
+    locked_until = CASE WHEN failed_attempts + 1 >= $3 THEN $4 ELSE locked_until END,
+    updated_at = $5
+WHERE tenant_id = $1
+  AND user_id = $2
+RETURNING failed_attempts, locked_until;
+
 -- name: CountUnusedBackupCodes :one
 SELECT count(*)::bigint
 FROM two_factor_backup_codes

@@ -64,6 +64,59 @@ RETURNING`+orderSelectColumns,
 	return scanOrder(row)
 }
 
+// acquireRechargeCapLockTx 取 per-(tenant,user) 事务级 advisory 锁 (commit/rollback 时释放),
+// 序列化同一用户的并发 recharge 建单。仅当设了反滥用限额时才加锁, 其它路径(admin/订阅)零开销。
+func acquireRechargeCapLockTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) error {
+	if rec.RechargeMaxPending <= 0 && rec.RechargeDailyLimitCents <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended(format('payment_recharge:%s:%s', $1::bigint, $2::bigint), 0))`,
+		rec.TenantID, rec.UserID); err != nil {
+		return fmt.Errorf("payment: recharge cap lock: %w", err)
+	}
+	return nil
+}
+
+// recheckRechargeCapsAfterInsertTx 在建单事务内(已插入本单、已持 advisory 锁)权威复检限额。
+// COUNT/SUM 均含刚插入的本单, 故以严格 > 判定: pending 数 > 上限 或 当日累计 > 日限即拒。
+func recheckRechargeCapsAfterInsertTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) error {
+	if rec.RechargeMaxPending <= 0 && rec.RechargeDailyLimitCents <= 0 {
+		return nil
+	}
+	if rec.RechargeMaxPending > 0 {
+		var pending int
+		if err := tx.QueryRow(ctx, `
+SELECT COUNT(*)::int
+FROM payment_orders
+WHERE tenant_id=$1 AND user_id=$2 AND status='pending'
+  AND (expires_at IS NULL OR expires_at > $3)`,
+			rec.TenantID, rec.UserID, rec.Now).Scan(&pending); err != nil {
+			return fmt.Errorf("payment: recharge pending recheck: %w", err)
+		}
+		if pending > rec.RechargeMaxPending {
+			return ErrPendingLimit
+		}
+	}
+	if rec.RechargeDailyLimitCents > 0 {
+		start := time.Date(rec.Now.Year(), rec.Now.Month(), rec.Now.Day(), 0, 0, 0, 0, time.UTC)
+		var used int64
+		if err := tx.QueryRow(ctx, `
+SELECT COALESCE(SUM(amount_cents), 0)::bigint
+FROM payment_orders
+WHERE tenant_id=$1 AND user_id=$2 AND created_at >= $3
+  AND (status IN ('paid', 'recharging', 'completed')
+       OR (status = 'pending' AND (expires_at IS NULL OR expires_at > $4)))`,
+			rec.TenantID, rec.UserID, start, rec.Now).Scan(&used); err != nil {
+			return fmt.Errorf("payment: recharge daily recheck: %w", err)
+		}
+		if used > rec.RechargeDailyLimitCents {
+			return ErrDailyAmountLimit
+		}
+	}
+	return nil
+}
+
 func getOrderByOutTradeNoTx(ctx context.Context, tx pgx.Tx, tenantID int64, outTradeNo string) (Order, error) {
 	row := tx.QueryRow(ctx, `SELECT`+orderSelectColumns+`
 FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`, tenantID, outTradeNo)

@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -79,11 +80,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (IssuedTokens, err
 	if in.TenantID <= 0 || in.UserID <= 0 {
 		return IssuedTokens{}, ErrInvalidInput
 	}
+	// B7: 设备上限的"数活跃 family(enforceDevicePolicy) → 建新 family(CreateFamily)"
+	// 必须原子, 否则同一 (tenant,user) 并发登录都读到 len<max 各自放行, 活跃设备数越限。
+	// 分片锁把这段判定+落库串行化; 上限休眠(MaxActiveFamilies<=0)时锁为 no-op, 零行为变更。
+	release := s.lockDeviceSlot(in.TenantID, in.UserID)
 	if err := s.enforceDevicePolicy(ctx, in); err != nil {
+		release()
 		return IssuedTokens{}, err
 	}
 	now := s.now()
 	family, err := s.Store.CreateFamily(ctx, in, now)
+	release()
 	if err != nil {
 		return IssuedTokens{}, err
 	}
@@ -241,6 +248,30 @@ func (s *Service) issuePair(ctx context.Context, family SessionFamily, refreshRa
 	}, nil
 }
 
+// isSessionDomainError 判定一个 store lookup 返回的 err 是否为权威的领域拒绝
+// (需保留原样, 让 middleware 映射 401 等), 而非瞬时基础设施故障 (需坍缩成
+// ErrSessionBackend -> 503)。凡命中已知领域 sentinel 一律放行; 其余 (裸 pg 错误、
+// context 取消/超时、连接失败、连接池耗尽等) 视为后端故障。白名单不含
+// ErrStoreNotConfigured —— 那是可用性问题, 应当走 503 (与 api_key_resolver 的
+// ErrAuthMisconfigured->503 一致)。
+func isSessionDomainError(err error) bool {
+	switch {
+	case errors.Is(err, ErrTokenNotFound),
+		errors.Is(err, ErrTokenExpired),
+		errors.Is(err, ErrFamilyRevoked),
+		errors.Is(err, ErrFamilyNotFound),
+		errors.Is(err, ErrAnomalyRejected),
+		errors.Is(err, ErrSessionUserMismatch),
+		errors.Is(err, ErrUserIneligible),
+		errors.Is(err, ErrRefreshReplay),
+		errors.Is(err, ErrInvalidInput),
+		errors.Is(err, ErrSigningKeyMissing):
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) Validate(ctx context.Context, token string, ip string, userAgent string) (ValidatedSession, error) {
 	if s == nil || s.Store == nil {
 		return ValidatedSession{}, ErrStoreNotConfigured
@@ -255,7 +286,15 @@ func (s *Service) Validate(ctx context.Context, token string, ip string, userAge
 	}
 	rec, err := s.Store.LookupSessionToken(ctx, HashSessionToken(token))
 	if err != nil {
-		return ValidatedSession{}, err
+		// store lookup 的错误分两类: (a) 权威的领域拒绝 (ErrTokenNotFound —— 含
+		// pgx.ErrNoRows 归一与 token 篡改; ErrFamilyRevoked —— 权威拒绝压过陈旧正缓存;
+		// 等其它领域 sentinel), 原样上抛 -> middleware 映射 401/相应码; (b) 瞬时基础设施
+		// 故障 (裸 pg 错误 / ctx 取消 / 语句超时 / 连接池耗尽), 打包成 ErrSessionBackend
+		// -> middleware 映射 503, 不把 DB 抖动坍缩成"token 无效"。
+		if isSessionDomainError(err) {
+			return ValidatedSession{}, err
+		}
+		return ValidatedSession{}, fmt.Errorf("%w: lookup session token: %v", ErrSessionBackend, err)
 	}
 	if rec.Token.RevokedAt != nil {
 		return ValidatedSession{}, ErrFamilyRevoked

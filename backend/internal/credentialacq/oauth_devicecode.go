@@ -3,6 +3,7 @@ package credentialacq
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,84 @@ import (
 const deviceCodeSlowDownStep = 5 * time.Second
 const oauthFormResponseMaxBytes = 1 << 20
 const oauthDeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+
+// device-code / device-authorization confidential bearer secrets are encrypted at rest inside the
+// device_code_payload jsonb (whoever holds device_code + client_id can poll the token endpoint and,
+// the moment the user approves at verification_uri, mint the upstream access_token/refresh_token =
+// full provider-account takeover). The plaintext key is replaced by <key>_ciphertext + <key>_enc,
+// mirroring how the sibling PKCE code_verifier is put through EncryptTransientPayload (AES-256-GCM).
+const (
+	deviceCodeSecretCiphertextKey = "device_code_ciphertext"
+	deviceCodeSecretNonceKey      = "device_code_enc"
+	deviceAuthIDCiphertextKey     = "device_auth_id_ciphertext"
+	deviceAuthIDNonceKey          = "device_auth_id_enc"
+)
+
+// deviceCodeSecretDecryptor is satisfied by *PostgresSessionStore; injected into the poller so an
+// encrypted device secret can be recovered without widening the exported poll signature to the store.
+type deviceCodeSecretDecryptor interface {
+	DecryptTransientPayload(ctx context.Context, ciphertext, metadata []byte, aad credentialstore.AAD) ([]byte, error)
+}
+
+func deviceCodeSecretAAD(tenantID, accountID int64, vendor, authMode string) credentialstore.AAD {
+	return credentialstore.AAD{TenantID: tenantID, ProviderAccountID: accountID, Vendor: vendor, AuthMode: authMode}
+}
+
+// sealDeviceCodePayloadSecret encrypts payload[plaintextKey] in place, replacing it with
+// payload[ciphertextKey]+payload[nonceKey]. When the store has no transient cipher configured (only
+// happens in tests / tools that never persist a real upstream secret; production wiring always
+// constructs the store WithKeyProvider) it is a no-op, preserving the pre-existing behavior.
+func sealDeviceCodePayloadSecret(ctx context.Context, store *PostgresSessionStore, session Session, payload map[string]any, plaintextKey, ciphertextKey, nonceKey string) error {
+	if store == nil || store.cipher == nil || payload == nil {
+		return nil
+	}
+	secret := strings.TrimSpace(stringFromPayload(payload, plaintextKey))
+	if secret == "" {
+		return nil
+	}
+	ciphertext, metadata, _, err := store.EncryptTransientPayload(ctx, []byte(secret), deviceCodeSecretAAD(session.TenantID, session.ProviderAccountID, session.Vendor, session.AuthMode))
+	if err != nil {
+		return err
+	}
+	delete(payload, plaintextKey)
+	payload[ciphertextKey] = base64.StdEncoding.EncodeToString(ciphertext)
+	payload[nonceKey] = base64.StdEncoding.EncodeToString(metadata)
+	return nil
+}
+
+// resolveDeviceCodePayloadSecret returns the plaintext device secret for polling. It prefers a
+// plaintext value when present (backward compatibility for in-flight flows persisted before this
+// change, and for cipher-less test/tool stores), otherwise decrypts the sealed envelope.
+func resolveDeviceCodePayloadSecret(ctx context.Context, cipher deviceCodeSecretDecryptor, session Session, payload map[string]any, plaintextKey, ciphertextKey, nonceKey string) (string, error) {
+	if plaintext := strings.TrimSpace(stringFromPayload(payload, plaintextKey)); plaintext != "" {
+		return plaintext, nil
+	}
+	ctB64 := strings.TrimSpace(stringFromPayload(payload, ciphertextKey))
+	if ctB64 == "" {
+		return "", nil
+	}
+	if cipher == nil {
+		return "", fmt.Errorf("%w: device secret is sealed but poller has no transient cipher", ErrInvalidTokenShape)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(ctB64)
+	if err != nil {
+		return "", fmt.Errorf("%w: device secret ciphertext invalid", ErrInvalidTokenShape)
+	}
+	metadata, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stringFromPayload(payload, nonceKey)))
+	if err != nil {
+		return "", fmt.Errorf("%w: device secret metadata invalid", ErrInvalidTokenShape)
+	}
+	plain, err := cipher.DecryptTransientPayload(ctx, ciphertext, metadata, deviceCodeSecretAAD(session.TenantID, session.ProviderAccountID, session.Vendor, session.AuthMode))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(plain)), nil
+}
+
+func deviceCodePayloadHasSecret(payload map[string]any, plaintextKey, ciphertextKey string) bool {
+	return strings.TrimSpace(stringFromPayload(payload, plaintextKey)) != "" ||
+		strings.TrimSpace(stringFromPayload(payload, ciphertextKey)) != ""
+}
 
 const (
 	openAICodexDeviceVerificationURI = "https://auth.openai.com/codex/device"
@@ -166,9 +245,21 @@ func hasOAuthScope(scopes []string) bool {
 type DeviceCodeOption func(*deviceCodeOptions)
 
 type deviceCodeOptions struct {
-	client *http.Client
-	now    func() time.Time
-	sleep  func(context.Context, time.Duration) error
+	client       *http.Client
+	now          func() time.Time
+	sleep        func(context.Context, time.Duration) error
+	secretCipher deviceCodeSecretDecryptor
+}
+
+// WithDeviceCodeSecretCipher injects the transient cipher (satisfied by *PostgresSessionStore) used
+// to decrypt a device secret that was sealed at rest. Required whenever the persisted payload holds
+// a sealed (ciphertext) secret rather than a legacy plaintext one.
+func WithDeviceCodeSecretCipher(c deviceCodeSecretDecryptor) DeviceCodeOption {
+	return func(o *deviceCodeOptions) {
+		if c != nil {
+			o.secretCipher = c
+		}
+	}
 }
 
 func WithDeviceCodeHTTPClient(client *http.Client) DeviceCodeOption {
@@ -198,7 +289,7 @@ func WithDeviceCodeSleeper(sleep func(context.Context, time.Duration) error) Dev
 func PollDeviceCodeToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {
 	if credentialstore.Normalize(session.Vendor) == credentialstore.VendorOpenAI &&
 		credentialstore.Normalize(session.AuthMode) == credentialstore.AuthModeCodexCLIOAuth &&
-		stringFromPayload(session.DeviceCodePayload, "device_auth_id") != "" {
+		deviceCodePayloadHasSecret(session.DeviceCodePayload, "device_auth_id", deviceAuthIDCiphertextKey) {
 		return pollOpenAICodexDeviceAuthorizationToken(ctx, session, cfg, opts...)
 	}
 	return pollDeviceAuthorizationToken(ctx, session, cfg, AuthTypeDeviceCode, opts...)
@@ -279,6 +370,9 @@ func startOpenAICodexDeviceAuthorization(ctx context.Context, store *PostgresSes
 		return OAuthStartResult{}, err
 	}
 	waiting.AuthType = AuthTypeDeviceCode
+	if err := sealDeviceCodePayloadSecret(ctx, store, waiting, payload, "device_auth_id", deviceAuthIDCiphertextKey, deviceAuthIDNonceKey); err != nil {
+		return OAuthStartResult{}, err
+	}
 	waiting.DeviceCodePayload = payload
 	if err := store.SetAuthPayload(ctx, waiting.ID, AuthTypeDeviceCode, payload); err != nil {
 		return OAuthStartResult{}, err
@@ -376,6 +470,9 @@ func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, 
 		return OAuthStartResult{}, err
 	}
 	waiting.AuthType = authType
+	if err := sealDeviceCodePayloadSecret(ctx, store, waiting, payload, "device_code", deviceCodeSecretCiphertextKey, deviceCodeSecretNonceKey); err != nil {
+		return OAuthStartResult{}, err
+	}
 	waiting.DeviceCodePayload = payload
 	if err := store.SetAuthPayload(ctx, waiting.ID, authType, payload); err != nil {
 		return OAuthStartResult{}, err
@@ -435,7 +532,10 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 	if payload == nil {
 		return CredentialCandidate{}, fmt.Errorf("%w: device payload missing", ErrInvalidTokenShape)
 	}
-	deviceCode := stringFromPayload(payload, "device_code")
+	deviceCode, err := resolveDeviceCodePayloadSecret(ctx, options.secretCipher, session, payload, "device_code", deviceCodeSecretCiphertextKey, deviceCodeSecretNonceKey)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
 	tokenURL := firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))
 	clientID := firstNonEmpty(cfg.ClientID, stringFromPayload(payload, "client_id"))
 	if deviceCode == "" || tokenURL == "" {
@@ -498,7 +598,10 @@ func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Sessio
 	if payload == nil {
 		return CredentialCandidate{}, fmt.Errorf("%w: openai codex device payload missing", ErrInvalidTokenShape)
 	}
-	deviceAuthID := stringFromPayload(payload, "device_auth_id")
+	deviceAuthID, err := resolveDeviceCodePayloadSecret(ctx, options.secretCipher, session, payload, "device_auth_id", deviceAuthIDCiphertextKey, deviceAuthIDNonceKey)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
 	userCode := stringFromPayload(payload, "user_code")
 	deviceTokenURL := firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))
 	clientID := firstNonEmpty(cfg.ClientID, stringFromPayload(payload, "client_id"))
@@ -615,9 +718,17 @@ func postJSONStatus(ctx context.Context, client *http.Client, url string, body m
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
+	// device-authorization / device-code token endpoints are operator-configured (generic
+	// deviceCodeExchanger token_url) or real upstreams (kimi/openai); a compromised, MITM'd or
+	// misbehaving endpoint returning a multi-GB / slow-drip body would otherwise be buffered
+	// wholesale into memory on every ~5s poll iteration -> unbounded heap growth -> OOM of the
+	// credential worker. Cap identically to the sibling postFormJSON read path.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, oauthFormResponseMaxBytes+1))
 	if err != nil {
 		return resp.StatusCode, err
+	}
+	if len(respBody) > oauthFormResponseMaxBytes {
+		return resp.StatusCode, ErrResponseTooLarge
 	}
 	if len(respBody) > 0 && out != nil {
 		if err := json.Unmarshal(respBody, out); err != nil {

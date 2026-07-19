@@ -86,16 +86,16 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 		// 会话级锁必须先于 SERIALIZABLE 事务获取。若在事务启动后才等待锁，
 		// 等待者可能保留锁前旧快照，看不到前一持有者刚提交的 acquisition。
 		// 锁定后再开事务，事务内 COUNT、账号递增与 acquisition 插入共享新快照。
-		conn, err := m.pool.Acquire(ctx)
+		//
+		// B11: 用非阻塞 try-lock 循环拿这条持锁连接。拿不到锁就立刻把连接还回
+		// 池再退避重试，绝不在等待会话级锁期间占着 pgxpool 连接——否则单个热点
+		// binding 的 N 个并发等待者(N≫池上限)会占满整个进程级连接池，连其它
+		// 租户/binding 都拿不到连接,造成网关级停摆。
+		conn, err := m.acquireBindingLockConn(ctx, req.BindingID)
 		if err != nil {
-			return nil, fmt.Errorf("pool: acquire binding lock connection: %w", err)
+			return nil, err
 		}
-		lockQueries := dbbilling.New(conn)
-		if err := lockQueries.AcquireBindingConcurrencyLock(ctx, req.BindingID); err != nil {
-			discardBindingLockConnection(conn)
-			return nil, fmt.Errorf("pool: lock binding concurrency: %w", err)
-		}
-		defer releaseBindingLockConnection(conn, lockQueries, req.BindingID)
+		defer releaseBindingLockConnection(conn, dbbilling.New(conn), req.BindingID)
 
 		tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 		if err != nil {
@@ -109,6 +109,57 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 		return nil, fmt.Errorf("pool: begin acquire tx: %w", err)
 	}
 	return m.acquireInTransaction(ctx, tx, account, req)
+}
+
+// tryAcquireBindingConcurrencyLockSQL 是 AcquireBindingConcurrencyLock 的非阻塞
+// 版本。键的 hash 表达式必须与 sqlc 的 AcquireBindingConcurrencyLock /
+// ReleaseBindingConcurrencyLock 逐字一致，否则 acquire 与 release 会命中不同锁键。
+const tryAcquireBindingConcurrencyLockSQL = `SELECT pg_try_advisory_lock(hashtextextended('pool_binding_concurrency'::text, $1::bigint))`
+
+const (
+	bindingLockRetryInitialBackoff = 2 * time.Millisecond
+	bindingLockRetryMaxBackoff     = 64 * time.Millisecond
+)
+
+// acquireBindingLockConn 返回一条已持有 binding 会话级 advisory lock 的池化连接。
+//
+// 不变量：只有真正拿到锁时才占住连接；拿不到锁一律先把连接 Release 回池、退避后
+// 再重试。这样杜绝了「等待会话级锁期间还占着 pgxpool 连接」——正是这一点让单个
+// 热点 binding 的并发等待者能占满整个进程级连接池、饿死其它租户/binding (B11)。
+// pg_try_advisory_lock 非阻塞(对标 leader_lock.go)，取代原来阻塞的
+// pg_advisory_lock；语义上仍是同一把会话级锁，release 路径不变。
+func (m *DBSlotManager) acquireBindingLockConn(ctx context.Context, bindingID int64) (*pgxpool.Conn, error) {
+	backoff := bindingLockRetryInitialBackoff
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("pool: acquire binding lock: %w", err)
+		}
+		conn, err := m.pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("pool: acquire binding lock connection: %w", err)
+		}
+		var locked bool
+		if err := conn.QueryRow(ctx, tryAcquireBindingConcurrencyLockSQL, bindingID).Scan(&locked); err != nil {
+			// 出错时无法确认是否已持锁，销毁物理连接而非归还，避免把仍握着会话级
+			// 锁的连接放回池中。
+			discardBindingLockConnection(conn)
+			return nil, fmt.Errorf("pool: lock binding concurrency: %w", err)
+		}
+		if locked {
+			return conn, nil
+		}
+		// 没拿到锁：立刻把连接归还池（绝不占着连接空等），退避后再试。
+		conn.Release()
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("pool: acquire binding lock: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > bindingLockRetryMaxBackoff {
+			backoff = bindingLockRetryMaxBackoff
+		}
+	}
 }
 
 func (m *DBSlotManager) acquireInTransaction(ctx context.Context, tx pgx.Tx, account *AccountSnapshot, req SelectionRequest) (*AcquireResult, error) {

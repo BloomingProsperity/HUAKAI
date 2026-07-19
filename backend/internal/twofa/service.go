@@ -365,17 +365,18 @@ func (s *Service) recordTOTPSuccess(ctx context.Context, settings Settings, step
 
 func (s *Service) recordFailure(ctx context.Context, settings Settings) error {
 	now := s.now().UTC()
-	failed := settings.FailedAttempts + 1
-	var lockedUntil *time.Time
-	if failed >= s.maxFailedAttempts {
-		until := now.Add(s.lockDuration)
-		lockedUntil = &until
-		if err := s.store.MarkFailure(ctx, settings.TenantID, settings.UserID, failed, lockedUntil, now); err != nil {
-			return err
-		}
+	// 失败计数必须原子自增:从 settings.FailedAttempts+1 这个旧快照算绝对值再写回,会被
+	// 并发失败互相覆盖(N 个请求都读到 k、都写 k+1),锁定门永不触发。改由存储层单条
+	// UPDATE ... failed_attempts + 1 自增,并按阈值在同一语句里落 locked_until。
+	until := now.Add(s.lockDuration)
+	_, locked, err := s.store.RecordFailure(ctx, settings.TenantID, settings.UserID, s.maxFailedAttempts, &until, now)
+	if err != nil {
+		return err
+	}
+	if locked {
 		return ErrLocked
 	}
-	return s.store.MarkFailure(ctx, settings.TenantID, settings.UserID, failed, lockedUntil, now)
+	return nil
 }
 
 func (s *Service) ensureUnlocked(ctx context.Context, settings *Settings) error {

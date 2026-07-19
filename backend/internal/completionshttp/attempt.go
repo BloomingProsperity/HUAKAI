@@ -281,8 +281,13 @@ func streamAndCapture(w http.ResponseWriter, r io.Reader, captured *bytes.Buffer
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			if captured.Len()+len(chunk) <= maxUpstreamBodyBytes {
-				_, _ = captured.Write(chunk)
+			// 捕获缓冲保留**流末** maxUpstreamBodyBytes 字节而非流首:OpenAI 兼容 SSE 的权威
+			// usage 帧在最后一个 data: chunk 到达,超大流(>16MiB)下必须留住尾部,否则末尾 usage
+			// 帧被丢 → usageFromSSE found=false → CompletionTokens 记 0 = 欠费(B16)。超限时从
+			// 缓冲**头部**丢弃,内存仍有界(bytes.Buffer 复用底层空间),尾部整帧完好可解析。
+			_, _ = captured.Write(chunk)
+			if excess := captured.Len() - maxUpstreamBodyBytes; excess > 0 {
+				captured.Next(excess)
 			}
 			if _, err := w.Write(chunk); err != nil {
 				return err

@@ -13,8 +13,11 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 var rerankQuotaReserveFailedOpenTotal = expvar.NewInt("rerank_quota_reserve_failed_open_total")
@@ -136,10 +139,39 @@ func (ex *execution) settleRequest(costSnapshot string, attemptSeq int) billing.
 			ConfidenceScore:       &confidence,
 			DrainOutcome:          gateway.DrainNotDrained,
 			PendingReconciliation: ex.pending,
+			ClientTool:            clientid.ToolFromContext(ex.ctx),
 		},
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+// settleDeliveredResponse 在上游已返 2xx(平台已付上游成本)后结算。settle 失败时把
+// SettleRequest 经 settlementrecovery DLQ 持久化,worker 后续重 settle 防收入泄漏;
+// DLQ 重结算靠既有三证 proof(claim/usage_records/billing_events)幂等防重扣。
+// SettleRecoveryDLQ 未注入时退回原行为(仅返 err,caller 写 500)。settle err 始终原样返回。
+func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		if ex.d.SettleRecoveryDLQ == nil {
+			return err
+		}
+		failureClass := privacy.ErrorClassFor(ctx, err)
+		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceRerankDelivered, ex.requestID, req)
+		// EnqueueFailure 内部用 WithoutCancel+独立超时:settle 可能正因传入 ctx 的 deadline 耗尽
+		// (DB 锁等待)失败,复用同一过期 ctx 会让 enqueue 立即失败、recovery intent 落不了盘。
+		_ = settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "rerankhttp.settle_recovery")
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity: privacy.SeverityError, Component: "rerankhttp.settle_recovery",
+			RequestID: ex.requestID, ErrorClass: failureClass, Attrs: map[string]any{
+				"event_class":          "rerank_settlement_deferred",
+				"tenant_id":            req.TenantID,
+				"claim_id":             req.ClaimID,
+				"failure_reason_class": failureClass,
+			},
+		})
+		return err
+	}
+	return nil
 }
 
 // billingCtx 返回脱离请求取消的结算上下文(同 audiohttp/imageshttp):客户端断连

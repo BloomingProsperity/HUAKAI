@@ -18,6 +18,7 @@ type postgresQueries interface {
 	CreateTwoFactorBackupCode(ctx context.Context, arg dbtwofa.CreateTwoFactorBackupCodeParams) error
 	DeleteTwoFactorBackupCodesForUser(ctx context.Context, arg dbtwofa.DeleteTwoFactorBackupCodesForUserParams) error
 	GetTwoFactorSettings(ctx context.Context, arg dbtwofa.GetTwoFactorSettingsParams) (dbtwofa.TwoFactorSetting, error)
+	IncrementTwoFactorFailure(ctx context.Context, arg dbtwofa.IncrementTwoFactorFailureParams) (dbtwofa.IncrementTwoFactorFailureRow, error)
 	MarkTwoFactorSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorSuccessParams) error
 	MarkTwoFactorTOTPSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorTOTPSuccessParams) (int64, error)
 	SetTwoFactorEnabled(ctx context.Context, arg dbtwofa.SetTwoFactorEnabledParams) error
@@ -127,6 +128,24 @@ func (s *PostgresStore) MarkFailure(ctx context.Context, tenantID, userID int64,
 		TenantID: tenantID, UserID: userID, FailedAttempts: int32(failedAttempts),
 		LockedUntil: optionalTimestamptz(lockedUntil), UpdatedAt: timestamptz(now),
 	})
+}
+
+// RecordFailure 原子自增失败计数,把"读→改→写"收进单条 UPDATE ... failed_attempts + 1,
+// 消除并发失败互相覆盖的竞态;并在同一语句里按阈值条件写入 locked_until。
+func (s *PostgresStore) RecordFailure(ctx context.Context, tenantID, userID int64, lockThreshold int, lockedUntil *time.Time, now time.Time) (int, bool, error) {
+	if s == nil || s.q == nil {
+		return 0, false, ErrStoreNotConfigured
+	}
+	row, err := s.q.IncrementTwoFactorFailure(ctx, dbtwofa.IncrementTwoFactorFailureParams{
+		TenantID: tenantID, UserID: userID, Threshold: int32(lockThreshold),
+		LockedUntil: optionalTimestamptz(lockedUntil), UpdatedAt: timestamptz(now),
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	attempts := int(row.FailedAttempts)
+	locked := lockThreshold > 0 && attempts >= lockThreshold
+	return attempts, locked, nil
 }
 
 func (s *PostgresStore) CountUnusedBackupCodes(ctx context.Context, tenantID, userID int64) (int, error) {

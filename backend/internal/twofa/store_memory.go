@@ -138,6 +138,30 @@ func (s *MemoryStore) MarkFailure(_ context.Context, tenantID, userID int64, fai
 	return nil
 }
 
+// RecordFailure 在锁持有期间完成"读当前计数→+1→按阈值写锁定",镜像 Postgres 的
+// 原子 failed_attempts + 1:并发的 N 次失败被串行化,计数累加到 k+N 而非都写回 k+1。
+func (s *MemoryStore) RecordFailure(_ context.Context, tenantID, userID int64, lockThreshold int, lockedUntil *time.Time, now time.Time) (int, bool, error) {
+	if s == nil {
+		return 0, false, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := userKey(tenantID, userID)
+	settings, ok := s.settings[key]
+	if !ok {
+		return 0, false, ErrNotSetup
+	}
+	settings.FailedAttempts++
+	locked := false
+	if lockThreshold > 0 && settings.FailedAttempts >= lockThreshold {
+		settings.LockedUntil = cloneTimePtr(lockedUntil)
+		locked = true
+	}
+	settings.UpdatedAt = now
+	s.settings[key] = settings
+	return settings.FailedAttempts, locked, nil
+}
+
 func (s *MemoryStore) CountUnusedBackupCodes(_ context.Context, tenantID, userID int64) (int, error) {
 	if s == nil {
 		return 0, ErrStoreNotConfigured

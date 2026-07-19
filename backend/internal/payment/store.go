@@ -80,7 +80,10 @@ type createOrderRecord struct {
 	ComplianceAcceptedAt   *time.Time
 	ComplianceAcceptedBy   int64
 	ComplianceAcceptedIP   string
-	Now                    time.Time
+	// Recharge* 反滥用限额, >0 时在建单事务内(持 per-user 锁)权威复检; 0 = 不限。
+	RechargeMaxPending      int
+	RechargeDailyLimitCents int64
+	Now                     time.Time
 }
 
 func sameOptionalInt64(a, b *int64) bool {

@@ -117,6 +117,11 @@ type Store interface {
 	// 调用方据此按重放拒绝。与 MarkSuccess 一样重置失败计数与锁定。
 	MarkTOTPSuccess(ctx context.Context, tenantID, userID int64, consumedStep int64, now time.Time) (stored bool, err error)
 	MarkFailure(ctx context.Context, tenantID, userID int64, failedAttempts int, lockedUntil *time.Time, now time.Time) error
+	// RecordFailure 原子自增失败计数并按阈值决定锁定,消除"读快照→写绝对值"的读改写竞态:
+	// 并发的 N 次失败各自 +1 累加到 k+N,而非都读到 k、都写回 k+1。仅当自增后的计数达到
+	// lockThreshold 时才落 lockedUntil。返回自增后的计数 attempts 与是否已锁定 locked。
+	// 单独保留 MarkFailure 用于锁到期后的重置(写绝对 0),两者语义正交。
+	RecordFailure(ctx context.Context, tenantID, userID int64, lockThreshold int, lockedUntil *time.Time, now time.Time) (attempts int, locked bool, err error)
 	CountUnusedBackupCodes(ctx context.Context, tenantID, userID int64) (int, error)
 	ConsumeBackupCode(ctx context.Context, tenantID, userID int64, hash []byte, now time.Time) (bool, error)
 	ReplaceBackupCodes(ctx context.Context, tenantID, userID int64, hashes [][]byte, now time.Time) error

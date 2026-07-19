@@ -87,6 +87,10 @@ func (s *Service) OpenRecharge(ctx context.Context, input OpenInput) (OpenResult
 		ActorID:            input.UserID,
 		OrderKind:          OrderKindTopup,
 		RequestID:          rechargeRef(input.TenantID, input.UserID, input.ExternalTradeNo),
+		// 把限额下推给建单事务做权威复检(持 per-user 锁), 上面的预检只是快速失败,
+		// 并发下不可作数 —— 真正的关口在 store。
+		RechargeMaxPending:      input.MaxPendingPerUser,
+		RechargeDailyLimitCents: dailyAmountLimitToCents(input.DailyAmountLimit),
 	})
 	if errorsIsIdempotencyConflict(err) {
 		return OpenResult{}, ErrExternalTradeConflict
@@ -158,6 +162,15 @@ func decimalAmountToCents(amount decimal.Decimal) (int64, error) {
 
 func centsToDecimal(cents int64) decimal.Decimal {
 	return decimal.NewFromInt(cents).Div(decimal.NewFromInt(100))
+}
+
+// dailyAmountLimitToCents 把配置的每日限额(货币小数)换算成整分, 供 store 事务内以整分复检。
+// 非正值(未配置)返回 0 = 不限。
+func dailyAmountLimitToCents(limit decimal.Decimal) int64 {
+	if !limit.IsPositive() {
+		return 0
+	}
+	return limit.Mul(decimal.NewFromInt(100)).Round(0).IntPart()
 }
 
 func rechargeRef(tenantID, userID int64, externalTradeNo string) string {

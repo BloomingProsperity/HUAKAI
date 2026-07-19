@@ -53,6 +53,12 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, rec createOrderRecord) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// 反滥用限额: 先取 per-user 事务级 advisory 锁, 序列化同一用户的并发建单,
+	// 使随后的复检能看到并发前序请求已提交的订单 —— 关闭 OpenRecharge 的 TOCTOU 窗口。
+	if err := acquireRechargeCapLockTx(ctx, tx, rec); err != nil {
+		return Order{}, false, err
+	}
+
 	order, err := insertOrderTx(ctx, tx, rec)
 	if isUniqueViolation(err) {
 		_ = tx.Rollback(ctx)
@@ -60,6 +66,11 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, rec createOrderRecord) 
 	}
 	if err != nil {
 		return Order{}, false, fmt.Errorf("payment: insert order: %w", err)
+	}
+	// 建单后在同一事务内复检: COUNT/SUM 已含本单, 超限则整事务回滚(建单撤销)。
+	// 幂等重放(唯一冲突)已在上面走 handleDuplicateOrder, 不会到这里, 故重试不被误限。
+	if err := recheckRechargeCapsAfterInsertTx(ctx, tx, rec); err != nil {
+		return Order{}, false, err
 	}
 	if err := insertAuditTx(ctx, tx, auditInsert{
 		TenantID:  rec.TenantID,

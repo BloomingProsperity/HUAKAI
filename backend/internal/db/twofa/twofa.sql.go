@@ -262,6 +262,42 @@ func (q *Queries) UpdateTwoFactorFailure(ctx context.Context, arg UpdateTwoFacto
 	return err
 }
 
+const incrementTwoFactorFailure = `-- name: IncrementTwoFactorFailure :one
+UPDATE two_factor_settings
+SET failed_attempts = failed_attempts + 1,
+    locked_until = CASE WHEN failed_attempts + 1 >= $3 THEN $4 ELSE locked_until END,
+    updated_at = $5
+WHERE tenant_id = $1
+  AND user_id = $2
+RETURNING failed_attempts, locked_until
+`
+
+type IncrementTwoFactorFailureParams struct {
+	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
+	UserID      int64              `db:"user_id" json:"user_id"`
+	Threshold   int32              `db:"threshold" json:"threshold"`
+	LockedUntil pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+}
+
+type IncrementTwoFactorFailureRow struct {
+	FailedAttempts int32              `db:"failed_attempts" json:"failed_attempts"`
+	LockedUntil    pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+}
+
+func (q *Queries) IncrementTwoFactorFailure(ctx context.Context, arg IncrementTwoFactorFailureParams) (IncrementTwoFactorFailureRow, error) {
+	row := q.db.QueryRow(ctx, incrementTwoFactorFailure,
+		arg.TenantID,
+		arg.UserID,
+		arg.Threshold,
+		arg.LockedUntil,
+		arg.UpdatedAt,
+	)
+	var i IncrementTwoFactorFailureRow
+	err := row.Scan(&i.FailedAttempts, &i.LockedUntil)
+	return i, err
+}
+
 const upsertTwoFactorSettings = `-- name: UpsertTwoFactorSettings :one
 INSERT INTO two_factor_settings (
     tenant_id,

@@ -639,28 +639,6 @@ func (q *Queries) ListEligibleAccounts(ctx context.Context, arg ListEligibleAcco
 }
 
 const listEligibleAccountsByPoolGroup = `-- name: ListEligibleAccountsByPoolGroup :many
-WITH target_channels AS (
-    SELECT c.id
-    FROM channels c
-    WHERE c.pool_group_id = $2
-      AND c.tenant_id = $1
-      AND c.enabled = true
-      AND c.deleted_at IS NULL
-),
-normalized_health AS (
-    UPDATE provider_accounts pa
-    SET
-        health_state = 'healthy',
-        health_state_until = NULL,
-        updated_at = NOW()
-    FROM target_channels tc
-    WHERE pa.tenant_id = $1
-      AND pa.channel_id = tc.id
-      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
-      AND pa.health_state_until IS NOT NULL
-      AND pa.health_state_until <= NOW()
-    RETURNING pa.id
-)
 SELECT
     pa.id,
     pa.tenant_id,
@@ -700,9 +678,18 @@ WHERE pa.tenant_id = $1
   AND pa.deleted_at IS NULL
   -- 未设过期时间(NULL)的账号不受影响;已过期账号排除出选号候选。
   AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
+  -- bug B12 fix: 选号是 chat-completions 热路径的纯读,不能内嵌写 CTE
+  -- self-heal。到期恢复用只读谓词表达(与 gates.providerAccountHealthEligible
+  -- 一致): healthy 或 (throttled/revoked/cooldown 且已过 health_state_until)。
+  -- health_state='healthy' 的落盘交给非热路径,避免选号读被迫走 primary +
+  -- 恢复瞬间同租户并发选号在行锁上串行化 + updated_at 写放大。
   AND (
       pa.health_state = 'healthy'
-      OR pa.id IN (SELECT id FROM normalized_health)
+      OR (
+          pa.health_state IN ('throttled', 'revoked', 'cooldown')
+          AND pa.health_state_until IS NOT NULL
+          AND pa.health_state_until <= NOW()
+      )
   )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[$3::text])

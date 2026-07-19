@@ -67,6 +67,15 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 	defer func() {
 		state.mu.Lock()
 		if !panicked && err == nil && ttl > 0 {
+			// Reclaim every entry whose TTL has elapsed before inserting the new
+			// one. Without this sweep an expired entry is only ever removed when
+			// the identical key recurs, so a client varying the cache key (e.g.
+			// the raw `window` label embedded by the leaderboard/performance
+			// handlers) accumulates entries with no ceiling -> unbounded memory
+			// growth. Sweeping on insert bounds the map to keys that are still
+			// live, at O(n) per miss which is negligible for this admin-gated
+			// snapshot cache.
+			evictExpiredLocked(time.Now())
 			state.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
 		}
 		delete(state.inflight, key)
@@ -85,4 +94,15 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 	panicked = false
 
 	return value, false, err
+}
+
+// evictExpiredLocked removes every entry whose TTL has elapsed relative to now.
+// Callers must hold state.mu. Deleting from a map during range is well-defined
+// in Go, so it is safe to prune in place.
+func evictExpiredLocked(now time.Time) {
+	for k, entry := range state.entries {
+		if !now.Before(entry.expiresAt) {
+			delete(state.entries, k)
+		}
+	}
 }

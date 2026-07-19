@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand"
 	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Service struct {
@@ -462,6 +464,19 @@ func (s *Service) manualTransitionLocked(ctx context.Context, key ChannelKey, ac
 	return rec, nil
 }
 
+// withMutation 的 Serializable 冲突重试预算。健康信号写(applySignal 在同一
+// SERIALIZABLE 事务里 read-then-UpsertRecord channel_health_state)在同账号并发突发
+// (429/5xx 风暴——恰是应触发冷却的场景)下会互撞,败者 Commit 抛 40001;不重试则该样本
+// 被静默丢弃(生产唯一调用方 chat_completions_error.go 丢弃返回),延迟 CoolingDown/Disabled
+// 生效(审查 B9[S3])。PostgreSQL 官方立场:Serializable 下 40001/40P01 是预期的、应由
+// 应用层重试的错误。base 取小(常态无争用),decorrelated jitter 把并发惊群沿时间轴打散
+// 避免重试再撞,cap 封顶长尾;退避 sleep 发生在 WithTx 之外(连接已归还池,不占连接睡眠)。
+const (
+	healthMutationRetryMax    = 5
+	healthMutationBackoffBase = time.Millisecond
+	healthMutationBackoffCap  = 25 * time.Millisecond
+)
+
 func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, error)) (Record, error) {
 	if s == nil || s.store == nil {
 		return Record{}, errors.New("channelhealth: service not configured")
@@ -472,22 +487,74 @@ func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, e
 		return fn(s)
 	}
 	var out Record
-	// 事务内产生的转换日志先攒进 pending;只有 WithTx 返回 nil(即 Commit 成功)后才 flush。
-	var pending []transitionLogRecord
-	err := txs.WithTx(ctx, func(store Store) error {
-		txService := *s
-		txService.store = store
-		txService.pendingTransitionLogs = &pending
-		var err error
-		out, err = fn(&txService)
-		return err
-	})
-	if err == nil {
-		for i := range pending {
-			s.logTransition(ctx, pending[i])
+	backoff := healthMutationBackoffBase
+	for attempt := 0; ; attempt++ {
+		// 每次重试都跑一整个干净事务;转换日志先攒进本轮 pending,只有本轮 WithTx 返回 nil
+		//(Commit 成功)后才 flush——失败/回滚轮次的 pending 丢弃,不留幽灵日志(审查 S2)。
+		var pending []transitionLogRecord
+		err := txs.WithTx(ctx, func(store Store) error {
+			txService := *s
+			txService.store = store
+			txService.pendingTransitionLogs = &pending
+			var innerErr error
+			out, innerErr = fn(&txService)
+			return innerErr
+		})
+		if err == nil {
+			for i := range pending {
+				s.logTransition(ctx, pending[i])
+			}
+			return out, nil
+		}
+		// 只重试瞬时序列化冲突;业务错误/其它错误立即原样返回,不吞不改。
+		if !isHealthSerializationConflict(err) || attempt >= healthMutationRetryMax {
+			return out, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out, ctxErr
+		}
+		backoff = healthMutationNextBackoff(backoff)
+		if !healthMutationSleep(ctx, backoff) {
+			return out, ctx.Err()
 		}
 	}
-	return out, err
+}
+
+// isHealthSerializationConflict 判定错误是否为 Serializable 事务的瞬时冲突
+// (40001 序列化失败 / 40P01 死锁)——可安全重试;业务哨兵是 Go error 值而非
+// *pgconn.PgError,天然不命中,确定性结果立即返回。
+func isHealthSerializationConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01")
+}
+
+// healthMutationNextBackoff 按 decorrelated jitter 计算下一次退避:
+// min(cap, rand[base, prev*3])。相邻重试睡眠去相关,把同账号并发惊群沿时间轴打散。
+func healthMutationNextBackoff(prev time.Duration) time.Duration {
+	hi := prev * 3
+	if hi < healthMutationBackoffBase {
+		hi = healthMutationBackoffBase
+	}
+	d := healthMutationBackoffBase
+	if span := int64(hi - healthMutationBackoffBase); span > 0 {
+		d += time.Duration(rand.Int63n(span))
+	}
+	if d > healthMutationBackoffCap {
+		d = healthMutationBackoffCap
+	}
+	return d
+}
+
+// healthMutationSleep 睡眠 d,或在 ctx 结束时提前返回。true=睡满,false=ctx 已取消。
+func healthMutationSleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 type decision struct {

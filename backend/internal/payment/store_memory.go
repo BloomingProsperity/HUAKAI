@@ -63,6 +63,11 @@ func (m *MemoryStore) CreateOrder(_ context.Context, rec createOrderRecord) (Ord
 		m.appendAudit(rec.TenantID, existing.ID, AuditIdempotentReplay, auditActorKind(rec), auditActorID(rec), "", rec.RequestID)
 		return *existing, true, nil
 	}
+	// 反滥用限额权威复检: 持 m.mu 期间读当前 pending/日额, 与建单同一临界区,
+	// 关闭 OpenRecharge 的 check-then-act (TOCTOU) 窗口 (镜像 PG 的 per-user 建单锁复检)。
+	if err := m.enforceRechargeCapsLocked(rec); err != nil {
+		return Order{}, false, err
+	}
 	m.nextOrderID++
 	o := &Order{
 		ID:                     m.nextOrderID,
@@ -90,6 +95,47 @@ func (m *MemoryStore) CreateOrder(_ context.Context, rec createOrderRecord) (Ord
 	m.byTrade[key] = o.ID
 	m.appendAudit(rec.TenantID, o.ID, AuditOrderCreated, auditActorKind(rec), auditActorID(rec), "", rec.RequestID)
 	return *o, false, nil
+}
+
+// enforceRechargeCapsLocked 在持有 m.mu 时复检反滥用限额 (新单尚未落库)。
+// 调用方必须已持有 m.mu。0 值限额视作不限。
+func (m *MemoryStore) enforceRechargeCapsLocked(rec createOrderRecord) error {
+	if rec.RechargeMaxPending <= 0 && rec.RechargeDailyLimitCents <= 0 {
+		return nil
+	}
+	if rec.RechargeMaxPending > 0 {
+		var pending int
+		for _, o := range m.orders {
+			if o.TenantID == rec.TenantID && o.UserID == rec.UserID &&
+				o.Status == StatusPending && !paymentOrderExpired(o, rec.Now) {
+				pending++
+			}
+		}
+		if pending >= rec.RechargeMaxPending {
+			return ErrPendingLimit
+		}
+	}
+	if rec.RechargeDailyLimitCents > 0 {
+		start := time.Date(rec.Now.Year(), rec.Now.Month(), rec.Now.Day(), 0, 0, 0, 0, time.UTC)
+		var used int64
+		for _, o := range m.orders {
+			if o.TenantID != rec.TenantID || o.UserID != rec.UserID || o.CreatedAt.Before(start) {
+				continue
+			}
+			switch o.Status {
+			case StatusPending:
+				if !paymentOrderExpired(o, rec.Now) {
+					used += o.AmountCents
+				}
+			case StatusPaid, StatusRecharging, StatusCompleted:
+				used += o.AmountCents
+			}
+		}
+		if used+rec.AmountCents > rec.RechargeDailyLimitCents {
+			return ErrDailyAmountLimit
+		}
+	}
+	return nil
 }
 
 func (m *MemoryStore) GetOrder(_ context.Context, tenantID, orderID int64) (Order, error) {

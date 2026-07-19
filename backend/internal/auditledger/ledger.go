@@ -92,6 +92,11 @@ type MemoryLedger struct {
 	mu     sync.RWMutex
 	chain  []LedgerEntry
 	byReq  map[string]int // request_id → index
+	// tenantSeq / tenantHead 让 Merkle 链按 tenant 独立推进，与
+	// PostgresLedger（prev/seq 均按 tenant_id 范围化）保持一致；否则
+	// 单 tenant 的范围化子列表会带着跨 tenant 的 prev-root，VerifyChain 会断链。
+	tenantSeq  map[int64]int      // tenant_id → 已写入条数
+	tenantHead map[int64][32]byte // tenant_id → 该 tenant 链尾 MerkleRoot
 }
 
 // NewMemoryLedger 用给定 signer 构造 MemoryLedger；signer 为 nil 会返回错误。
@@ -101,8 +106,10 @@ func NewMemoryLedger(signer any) (*MemoryLedger, error) {
 		return nil, err
 	}
 	return &MemoryLedger{
-		signer: normalized,
-		byReq:  make(map[string]int),
+		signer:     normalized,
+		byReq:      make(map[string]int),
+		tenantSeq:  make(map[int64]int),
+		tenantHead: make(map[int64][32]byte),
 	}, nil
 }
 
@@ -122,12 +129,12 @@ func (m *MemoryLedger) Append(ctx context.Context, prepared PreparedEntry) (Ledg
 		}
 	}
 	if entry.LedgerID == "" {
-		entry.LedgerID = memoryLedgerID(entry.TenantID, len(m.chain)+1)
+		entry.LedgerID = memoryLedgerID(entry.TenantID, m.tenantSeq[entry.TenantID]+1)
 	}
-	prev := ZeroRoot
-	if len(m.chain) > 0 {
-		prev = m.chain[len(m.chain)-1].MerkleRoot
-	}
+	// prev / seq 按 tenant 范围化，镜像 PostgresLedger.readLatestMerkleRoot 与
+	// nextLedgerID（均带 WHERE tenant_id IS NOT DISTINCT FROM $1）。缺省 map 值
+	// 为 ZeroRoot，故某 tenant 的首条自然从 ZeroRoot 起链。
+	prev := m.tenantHead[entry.TenantID]
 	entry.PrevMerkleRoot = prev
 	fp, err := signerFingerprint(ctx, m.signer)
 	if err != nil {
@@ -164,6 +171,8 @@ func (m *MemoryLedger) Append(ctx context.Context, prepared PreparedEntry) (Ledg
 	if entry.RequestID != "" {
 		m.byReq[entry.RequestID] = idx
 	}
+	m.tenantSeq[entry.TenantID]++
+	m.tenantHead[entry.TenantID] = entry.MerkleRoot
 	return entry, nil
 }
 
