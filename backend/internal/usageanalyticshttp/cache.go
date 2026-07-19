@@ -8,6 +8,9 @@ import (
 
 var errNilLoader = errors.New("snapshotcache: loader is nil")
 
+// errLoaderPanic 在 loader() panic 后交给并发等待同 key 的请求,避免它们把零值当成功。
+var errLoaderPanic = errors.New("snapshotcache: loader panicked")
+
 type cacheEntry struct {
 	value     any
 	expiresAt time.Time
@@ -53,18 +56,33 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 	state.inflight[key] = call
 	state.mu.Unlock()
 
-	value, err := loader()
+	var (
+		value    any
+		err      error
+		panicked = true // 假定 loader panic,直到它正常返回后置 false
+	)
+	// defer 保证即使 loader() panic,也会清理 inflight 并唤醒等待者:否则该 key 的 inflight
+	// 条目永久孤立、WaitGroup 卡在 1,每个后续同 key 请求都会永远阻塞在 call.wg.Wait()
+	// (死锁 + goroutine 泄漏)。net/http 只 recover 触发 panic 的那一个请求。
+	defer func() {
+		state.mu.Lock()
+		if !panicked && err == nil && ttl > 0 {
+			state.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
+		}
+		delete(state.inflight, key)
+		state.mu.Unlock()
 
-	state.mu.Lock()
-	if err == nil && ttl > 0 {
-		state.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
-	}
-	delete(state.inflight, key)
-	state.mu.Unlock()
+		call.value = value
+		call.err = err
+		if panicked && call.err == nil {
+			// 让并发等待同 key 的其它请求收到错误,而不是把零值当成功结果返回。
+			call.err = errLoaderPanic
+		}
+		call.wg.Done()
+	}()
 
-	call.value = value
-	call.err = err
-	call.wg.Done()
+	value, err = loader()
+	panicked = false
 
 	return value, false, err
 }
