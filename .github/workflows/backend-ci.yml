@@ -47,6 +47,7 @@ jobs:
         with:
           go-version: '1.25.12'
           cache: true
+          cache-dependency-path: backend/go.sum
 
       - name: go vet
         working-directory: backend
@@ -124,6 +125,7 @@ jobs:
         with:
           go-version: '1.25.12'
           cache: true
+          cache-dependency-path: backend/go.sum
 
       - name: Install golang-migrate
         run: |
