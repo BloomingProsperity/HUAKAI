@@ -54,12 +54,16 @@ func loginThrottleConfigFromEnv() (loginthrottle.Config, error) {
 }
 
 // loadLoginThrottleFromEnv 构造生产用的登录限流器。装配期调用;非法配置直接让启动失败。
-func loadLoginThrottleFromEnv() (*loginthrottle.Limiter, error) {
+func loadLoginThrottleFromEnv(shared ...loginthrottle.SharedStore) (*loginthrottle.Limiter, error) {
 	cfg, err := loginThrottleConfigFromEnv()
 	if err != nil {
 		return nil, err
 	}
-	return loginthrottle.New(cfg), nil
+	opts := []loginthrottle.Option{}
+	if len(shared) > 0 && shared[0] != nil {
+		opts = append(opts, loginthrottle.WithSharedStore(shared[0]))
+	}
+	return loginthrottle.New(cfg, opts...), nil
 }
 
 func loginThrottlePositiveIntEnv(key string, def int) (int, error) {

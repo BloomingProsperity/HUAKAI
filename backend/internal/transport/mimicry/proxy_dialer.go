@@ -15,16 +15,14 @@ import (
 	"time"
 )
 
-// ProxyDialerFunc 在 uTLS 握手【之下】建立到目标的原始 TCP 连接 —— 即先经代理
-// 拨到 target,再在返回的 conn 上跑自定义 ClientHello。这样出口 IP 是代理的,
-// JA3 仍是伪装指纹,二者得以共存(PROXY-02a)。
+// ProxyDialerFunc 经指定代理建立到目标的 TCP 隧道，供代理健康探测复用。
+// 所有失败均明确返回，不会静默改为直连。
 type ProxyDialerFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // proxyDialerFromURL 按代理 URL 构造 ProxyDialerFunc。
 //
-// 支持 http/https CONNECT 代理(住宅/数据中心代理的主流形态)。socks5 暂不在
-// 伪装路支持 —— 返回 error 让 dispatch【fail-loud】,绝不回退直连(否则真实出口
-// IP 会泄露,破坏账号级 IP 隔离 + 反封禁)。
+// 支持 http/https CONNECT 与 socks5 代理；不支持的协议明确报错，
+// 绝不回退直连，以免泄露真实出口 IP。
 func proxyDialerFromURL(proxyURL *url.URL) (ProxyDialerFunc, error) {
 	if proxyURL == nil {
 		return nil, fmt.Errorf("mimicry proxy: nil proxy url")
@@ -106,7 +104,7 @@ func httpConnectDialer(proxyURL *url.URL) ProxyDialerFunc {
 			proxyConn.Close()
 			return nil, fmt.Errorf("mimicry proxy: CONNECT %s 被拒: %s", addr, resp.Status)
 		}
-		// 清除拨号 deadline,后续 uTLS 握手/读写自管。
+		// 清除拨号 deadline，后续协议握手与读写由调用方管理。
 		_ = proxyConn.SetDeadline(time.Time{})
 		// CONNECT 响应无 body;若 bufio 预读了多余字节(隧道早期数据),用
 		// bufferedConn 兜住,避免丢失。

@@ -18,14 +18,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountsubscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
-	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotawindowview"
 )
 
 const (
@@ -69,10 +71,6 @@ type AdminPoolAccountCredentialWriter interface {
 
 type AdminPoolAccountChannelHealthInitializer interface {
 	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
-}
-
-type AdminPoolAccountRateLimitRecovery interface {
-	ClearRateLimit(context.Context, provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error)
 }
 
 type AdminPoolAccountDeps struct {
@@ -138,6 +136,7 @@ func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
 	r.Patch("/{id}", newUpdateProviderAccountHandler(d))
 	r.Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
 	r.Post("/{id}/clear-rate-limit", newClearProviderAccountRateLimitHandler(d))
+	r.Post("/{id}/recover", newRecoverProviderAccountStateHandler(d))
 	r.Delete("/{id}", newDeleteProviderAccountHandler(d))
 }
 
@@ -180,8 +179,7 @@ type updateProviderAccountRequest struct {
 	Extra           *json.RawMessage `json:"extra,omitempty"`
 	ModelAllowList  *[]string        `json:"model_allow_list,omitempty"`
 	CapabilityFlags *[]string        `json:"capability_flags,omitempty"`
-	// 高级字段(rpm/tpm/窗口/会话/冷却/刷新/过期/TLS/自定义错误码/池模式/临时停调/代理绑定)
-	// 不在本结构体解析,统一交给 accountadvanced 从原始 body 解析校验(fields.json 契约)。
+	// 高级字段由 accountadvanced 从原始 body 统一解析校验。
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -197,64 +195,61 @@ type providerAccountPage struct {
 }
 
 type providerAccountResponse struct {
-	ID                       int64           `json:"id"`
-	TenantID                 int64           `json:"tenant_id"`
-	ProviderID               int64           `json:"provider_id"`
-	ChannelID                int64           `json:"channel_id"`
-	Name                     string          `json:"name"`
-	AccountType              string          `json:"account_type"`
-	Enabled                  bool            `json:"enabled"`
-	ExpiresAt                *time.Time      `json:"expires_at"`
-	HealthState              string          `json:"health_state"`
-	CredentialState          string          `json:"credential_state"`
-	CapConcurrency           int32           `json:"cap_concurrency"`
-	InFlightCount            int32           `json:"in_flight_count"`
-	Priority                 int32           `json:"priority"`
-	StaticWeight             int32           `json:"static_weight"`
-	ProbeModel               *string         `json:"probe_model"`
-	Tags                     []string        `json:"tags"`
-	Extra                    json.RawMessage `json:"extra"`
-	LastDispatchAt           *time.Time      `json:"last_dispatch_at"`
-	LastProbeLatencyMS       *int32          `json:"last_probe_latency_ms"`
-	LastProbeAt              *time.Time      `json:"last_probe_at"`
-	LastRequestObservedAt    *time.Time      `json:"last_request_observed_at"`
-	ObservationSource        string          `json:"last_request_observation_source"`
-	ModelAllowList           []string        `json:"model_allow_list"`
-	CapabilityFlags          []string        `json:"capability_flags"`
-	RateLimitedAt            *time.Time      `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time      `json:"rate_limit_reset_at"`
-	RateLimitReason          *string         `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time      `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time      `json:"temp_unschedulable_until"`
-	TokenVersion             int32           `json:"token_version"`
-	LastRefreshAt            *time.Time      `json:"last_refresh_at"`
-	LastRefreshOutcome       *string         `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string          `json:"oauth_endpoint_health,omitempty"`
-	RPMLimit                 int64           `json:"rpm_limit"`
-	TPMLimit                 int64           `json:"tpm_limit"`
-	WindowCostLimitCents     int64           `json:"window_cost_limit_cents"`
-	MaxSessions              int32           `json:"max_sessions"`
-	DisableCooling           bool            `json:"disable_cooling"`
-	RefreshLeadSeconds       *int32          `json:"refresh_lead_seconds"`
-	TLSFingerprintRotate     bool            `json:"tls_fingerprint_rotate"`
-	CustomErrorCodesEnabled  bool            `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32         `json:"custom_error_codes"`
-	PoolMode                 bool            `json:"pool_mode"`
-	TempUnschedulableEnabled bool            `json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules   json.RawMessage `json:"temp_unschedulable_rules,omitempty"`
-	// ProxyBinding 是出站代理绑定的结构化回显(direct/proxy/group),由 proxy_id/
-	// proxy_group_id 两列派生,与写入侧 accountadvanced 统一契约同形。
+	ID                       int64                     `json:"id"`
+	TenantID                 int64                     `json:"tenant_id"`
+	ProviderID               int64                     `json:"provider_id"`
+	ChannelID                int64                     `json:"channel_id"`
+	Name                     string                    `json:"name"`
+	AccountType              string                    `json:"account_type"`
+	Enabled                  bool                      `json:"enabled"`
+	ExpiresAt                *time.Time                `json:"expires_at"`
+	HealthState              string                    `json:"health_state"`
+	CredentialState          string                    `json:"credential_state"`
+	CapConcurrency           int32                     `json:"cap_concurrency"`
+	InFlightCount            int32                     `json:"in_flight_count"`
+	Priority                 int32                     `json:"priority"`
+	StaticWeight             int32                     `json:"static_weight"`
+	UpstreamCostRatio        *float64                  `json:"upstream_cost_ratio"`
+	ProbeModel               *string                   `json:"probe_model"`
+	Tags                     []string                  `json:"tags"`
+	Subscription             *accountsubscription.View `json:"subscription,omitempty"`
+	SystemLabels             []string                  `json:"system_labels"`
+	Extra                    json.RawMessage           `json:"extra"`
+	LastDispatchAt           *time.Time                `json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32                    `json:"last_probe_latency_ms"`
+	LastProbeAt              *time.Time                `json:"last_probe_at"`
+	LastRequestObservedAt    *time.Time                `json:"last_request_observed_at"`
+	ObservationSource        string                    `json:"last_request_observation_source"`
+	QuotaWindows             quotawindowview.Matrix    `json:"quota_windows"`
+	QuotaFacts               []accountquota.ViewFact   `json:"quota_facts"`
+	ModelAllowList           []string                  `json:"model_allow_list"`
+	CapabilityFlags          []string                  `json:"capability_flags"`
+	RateLimitedAt            *time.Time                `json:"rate_limited_at"`
+	RateLimitResetAt         *time.Time                `json:"rate_limit_reset_at"`
+	RateLimitReason          *string                   `json:"rate_limit_reason"`
+	OverloadUntil            *time.Time                `json:"overload_until"`
+	TempUnschedulableUntil   *time.Time                `json:"temp_unschedulable_until"`
+	TokenVersion             int32                     `json:"token_version"`
+	LastRefreshAt            *time.Time                `json:"last_refresh_at"`
+	LastRefreshOutcome       *string                   `json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string                    `json:"oauth_endpoint_health,omitempty"`
+	RPMLimit                 int64                     `json:"rpm_limit"`
+	TPMLimit                 int64                     `json:"tpm_limit"`
+	WindowCostLimitCents     int64                     `json:"window_cost_limit_cents"`
+	MaxSessions              int32                     `json:"max_sessions"`
+	DisableCooling           bool                      `json:"disable_cooling"`
+	RefreshLeadSeconds       *int32                    `json:"refresh_lead_seconds"`
+	TLSFingerprintRotate     bool                      `json:"tls_fingerprint_rotate"`
+	CustomErrorCodesEnabled  bool                      `json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32                   `json:"custom_error_codes"`
+	PoolMode                 bool                      `json:"pool_mode"`
+	TempUnschedulableEnabled bool                      `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage           `json:"temp_unschedulable_rules,omitempty"`
+	// ProxyBinding 由两个代理列派生，与 accountadvanced 写入契约同形。
 	ProxyBinding      accountadvanced.ProxyBinding              `json:"proxy_binding"`
 	CreatedAt         *time.Time                                `json:"created_at"`
 	UpdatedAt         *time.Time                                `json:"updated_at"`
 	RateLimitRecovery *providerAccountRateLimitRecoveryResponse `json:"rate_limit_recovery,omitempty"`
-}
-
-type providerAccountRateLimitRecoveryResponse struct {
-	AccountBackoffCleared bool                      `json:"account_backoff_cleared"`
-	ChannelRecordFound    bool                      `json:"channel_record_found"`
-	ChannelChanged        bool                      `json:"channel_changed"`
-	ChannelState          channelhealth.HealthState `json:"channel_state,omitempty"`
 }
 
 func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
@@ -283,12 +278,11 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		req.Tags = cleanStringList(req.Tags)
 		req.ModelAllowList = cleanStringList(req.ModelAllowList)
 		req.CapabilityFlags = cleanStringList(req.CapabilityFlags)
-		useCredentialStore := req.Vendor != "" || req.AuthMode != ""
-		if err := validateCreateProviderAccount(req, useCredentialStore && d.Credentials != nil); err != nil {
+		if err := validateCreateProviderAccount(req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
 			return
 		}
-		if useCredentialStore && d.Credentials == nil {
+		if d.Credentials == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "credential store dependency unset")
 			return
 		}
@@ -312,14 +306,10 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		actorID := ident.AuditActor()
-		dbCredentials := []byte(req.Credentials)
-		if useCredentialStore {
-			dbCredentials = []byte(`{}`)
-		}
 		createArg := admindb.InsertProviderAccountParams{
 			TenantID: tenantID, ProviderID: req.ProviderID, ChannelID: req.ChannelID,
 			Name: req.Name, AccountType: req.AccountType, Enabled: req.Enabled,
-			Credentials: dbCredentials, CapConcurrency: req.CapConcurrency, Priority: req.Priority,
+			Credentials: []byte(`{}`), CapConcurrency: req.CapConcurrency, Priority: req.Priority,
 			StaticWeight: req.StaticWeight, ProbeModel: req.ProbeModel, Tags: req.Tags,
 			Extra:          normalizedProviderAccountExtra(req.Extra),
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
@@ -343,33 +333,28 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		var credentialID int64
 		var credentialVersion int
 		channelHealthInitialized := false
-		if useCredentialStore {
-			created, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
-				TenantID: tenantID, ProviderAccountID: id,
-				Vendor: req.Vendor, AuthMode: req.AuthMode,
-				Payload: req.Credentials, ActorID: actorID,
+		created, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
+			TenantID: tenantID, ProviderAccountID: id,
+			Vendor: req.Vendor, AuthMode: req.AuthMode,
+			Payload: req.Credentials, ActorID: actorID,
+		})
+		if err != nil {
+			// 凭据创建失败时软删新账号，避免无可服务凭据的孤儿进入选号池。
+			_ = d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
+				ActorID: &actorID, ID: id, TenantID: tenantID,
 			})
-			if err != nil {
-				// Credentials.Create 失败时, 上面 InsertProviderAccount
-				// 已经写了一个 enabled=req.Enabled + credentials='{}' 的 account 行, 一旦 credential
-				// 创建失败 (加密 / DB IO 等), account 留在池里没可用凭据, 后续 selector 选到它会
-				// 401 / 退回; cleanup: 软删该 account 防 orphan 进 pool。
-				_ = d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
-					ActorID: &actorID, ID: id, TenantID: tenantID,
-				})
-				writeJSONError(w, http.StatusServiceUnavailable, "account_credential_insert_failed", err.Error())
-				return
+			writeJSONError(w, http.StatusServiceUnavailable, "account_credential_insert_failed", err.Error())
+			return
+		}
+		credentialID = created.ID
+		credentialVersion = int(created.Version)
+		if d.ChannelHealth != nil {
+			key := channelhealth.ChannelKey{
+				TenantID: tenantID, Vendor: created.Vendor, ProviderAccountID: id,
+				AccountCredentialID: created.ID, CredentialVersion: int(created.Version),
 			}
-			credentialID = created.ID
-			credentialVersion = int(created.Version)
-			if d.ChannelHealth != nil {
-				key := channelhealth.ChannelKey{
-					TenantID: tenantID, Vendor: created.Vendor, ProviderAccountID: id,
-					AccountCredentialID: created.ID, CredentialVersion: int(created.Version),
-				}
-				if _, err := d.ChannelHealth.EnsureDefaultActive(r.Context(), key); err == nil {
-					channelHealthInitialized = true
-				}
+			if _, err := d.ChannelHealth.EnsureDefaultActive(r.Context(), key); err == nil {
+				channelHealthInitialized = true
 			}
 		}
 		payload, _ := json.Marshal(map[string]any{
@@ -414,7 +399,12 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		}
 		_ = credentialID
 		_ = credentialVersion
-		writeAuditJSON(w, http.StatusCreated, providerAccountDTO(account))
+		response, err := providerAccountDTO(account)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+			return
+		}
+		writeAuditJSON(w, http.StatusCreated, response)
 	}
 }
 
@@ -441,9 +431,19 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			return
 		}
 		tagFilter := parseProviderAccountTagFilter(r)
+		subscriptionFilters, parseErr := accountsubscription.Parse(r.URL.Query())
+		if parseErr != nil {
+			writeJSONError(w, http.StatusBadRequest, parseErr.Code, parseErr.Message)
+			return
+		}
 		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), admindb.ListAdminProviderAccountsParams{
 			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
 			PoolGroupID: poolGroupID, StateFilter: stateFilter, TagFilter: tagFilter,
+			SubscriptionVendorFilter: subscriptionFilters.Vendor,
+			SubscriptionPlanFilter:   subscriptionFilters.Plan,
+			SubscriptionScopeFilter:  subscriptionFilters.Scope,
+			SubscriptionStatusFilter: subscriptionFilters.Status,
+			SubscriptionSourceFilter: subscriptionFilters.Source,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_list_failed", err.Error())
@@ -454,8 +454,14 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			rows = rows[:limit]
 		}
 		items := make([]providerAccountResponse, 0, len(rows))
+		observedAt := time.Now().UTC()
 		for _, row := range rows {
-			items = append(items, providerAccountDTO(row))
+			item, err := providerAccountDTOAt(row, observedAt)
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+				return
+			}
+			items = append(items, item)
 		}
 		var nextCursor *string
 		if hasMore && len(rows) > 0 {
@@ -484,7 +490,12 @@ func newGetProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, providerAccountDetailDTO(account))
+		response, err := providerAccountDetailDTO(account)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -539,10 +550,9 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			arg.SetCapabilityFlags = true
 			arg.CapabilityFlags = cleanStringList(*req.CapabilityFlags)
 		}
-		// 高级字段(含代理绑定的 direct/proxy/group 互斥)由 accountadvanced 统一写入,
-		// 与创建路径同一份 fields.json 契约(代理跨租户仍由 0038 DB 触发器兜底)。
+		// 高级字段与创建路径共用 accountadvanced 写入契约。
 		accountadvanced.ApplyUpdate(advanced, &arg)
-		account, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
+		_, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_update_failed")
 			return
@@ -553,7 +563,17 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, providerAccountDTO(account))
+		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
+		if err != nil {
+			writeProviderAccountReadError(w, err, "provider_account_get_failed")
+			return
+		}
+		response, err := providerAccountDTO(account)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
+			return
+		}
+		writeAuditJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -596,47 +616,6 @@ func newUpdateProviderAccountEnabledHandler(d AdminPoolAccountDeps) http.Handler
 			return
 		}
 		writeAuditJSON(w, http.StatusOK, map[string]any{"id": id, "enabled": *req.Enabled})
-	}
-}
-
-func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, tenantID, ok := resolveProviderAccountAdmin(w, r, d)
-		if !ok {
-			return
-		}
-		if d.RateLimitRecovery == nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "provider account rate-limit recovery dependency unset")
-			return
-		}
-		id, ok := parseAdminPoolID(w, r)
-		if !ok {
-			return
-		}
-		result, err := d.RateLimitRecovery.ClearRateLimit(r.Context(), provideraccountrecovery.ClearRateLimitInput{
-			TenantID: tenantID, AccountID: id,
-			ActorID: ident.AuditActor(), ActorRole: ident.Role,
-			RequestID: middleware.GetReqID(r.Context()),
-		})
-		if err != nil {
-			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
-				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account backoff cleared, but channel rate-limit recovery failed; retry the operation")
-				return
-			}
-			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
-			return
-		}
-		response := providerAccountDTO(result.Account)
-		recovery := &providerAccountRateLimitRecoveryResponse{
-			AccountBackoffCleared: true,
-			ChannelRecordFound:    result.Channel != nil,
-			ChannelChanged:        result.ChannelChanged,
-		}
-		if result.Channel != nil {
-			recovery.ChannelState = result.Channel.State
-		}
-		response.RateLimitRecovery = recovery
-		writeAuditJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -696,11 +675,7 @@ func resolveProviderAccountAdmin(w http.ResponseWriter, r *http.Request, d Admin
 		}
 		return ident, ident.ScopeTenantID, true
 	case admin.RolePlatformAdmin:
-		// 全局 platform_admin 不持有任何隐式 tenant 作用域：它必须通过
-		// ?tenant_id=N 显式指明目标 tenant。静默默认到 tenant 1 既会 (a) 让全局
-		// admin 永远够不到 tenant>1（body 的 tenant_id 守卫会拒绝任何 != 1 的值），
-		// 又会 (b) 冒着误改 tenant 1 账号的风险。这与 provider/channel catalog +
-		// api-keys 中的显式 tenant 作用域要求保持一致。
+		// 全局 platform_admin 没有隐式租户作用域，必须用 ?tenant_id=N 显式指定。
 		if ident.ScopeTenantID > 0 {
 			return ident, ident.ScopeTenantID, true
 		}
@@ -749,9 +724,7 @@ func decodeAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
-// decodeAdminPoolJSONWithRaw 同 decodeAdminPoolJSON,但把原始 body 一并返回:
-// 高级字段(rpm/tpm/窗口/会话/冷却/代理绑定等)由 accountadvanced 从原始 JSON 统一
-// 解析校验,基础字段仍解进 dst 结构体,二者共用同一份 body。
+// decodeAdminPoolJSONWithRaw 同时返回原始 body，供 accountadvanced 解析高级字段。
 func decodeAdminPoolJSONWithRaw(w http.ResponseWriter, r *http.Request, dst any) ([]byte, bool) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
 	if err != nil {
@@ -775,7 +748,7 @@ func parseProviderAccountAdvanced(w http.ResponseWriter, raw []byte) (accountadv
 	return adv, true
 }
 
-func validateCreateProviderAccount(req createProviderAccountRequest, requireCredentialV2 bool) error {
+func validateCreateProviderAccount(req createProviderAccountRequest) error {
 	if req.ProviderID <= 0 || req.ChannelID <= 0 || req.Name == "" {
 		return fmt.Errorf("provider_id, channel_id, and name are required")
 	}
@@ -797,17 +770,15 @@ func validateCreateProviderAccount(req createProviderAccountRequest, requireCred
 	if len(req.Credentials) == 0 || json.Unmarshal(req.Credentials, &obj) != nil || obj == nil {
 		return fmt.Errorf("credentials must be a JSON object")
 	}
-	if requireCredentialV2 {
-		if req.Vendor == "" || req.AuthMode == "" {
-			return fmt.Errorf("vendor and auth_mode are required for account_credentials")
-		}
-		handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(req.Vendor, req.AuthMode)
-		if err != nil {
-			return err
-		}
-		if err := handler.ValidatePayload(req.Credentials); err != nil {
-			return err
-		}
+	if req.Vendor == "" || req.AuthMode == "" {
+		return fmt.Errorf("vendor and auth_mode are required for account_credentials")
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(req.Vendor, req.AuthMode)
+	if err != nil {
+		return err
+	}
+	if err := handler.ValidatePayload(req.Credentials); err != nil {
+		return err
 	}
 	return nil
 }
@@ -856,8 +827,7 @@ func writeProviderAccountMixedRiskRequired(w http.ResponseWriter, report mixedch
 	})
 }
 
-// validateUpdateProviderAccount 校验基础字段;hasAdvanced 表示 accountadvanced 是否
-// 解析到至少一个高级字段(高级字段的类型/范围校验已在 accountadvanced.Parse 完成)。
+// validateUpdateProviderAccount 校验基础字段；高级字段已由 accountadvanced 校验。
 func validateUpdateProviderAccount(req updateProviderAccountRequest, hasAdvanced bool) error {
 	if !hasAdvanced && req.Enabled == nil && req.Priority == nil && req.StaticWeight == nil && req.CapConcurrency == nil &&
 		req.ProbeModel == nil && req.Tags == nil && req.Extra == nil && req.ModelAllowList == nil &&
@@ -972,20 +942,40 @@ func parseProviderAccountTagFilter(r *http.Request) string {
 	return strings.TrimSpace(r.URL.Query().Get("tag"))
 }
 
-func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
+func providerAccountDTO(row admindb.AdminProviderAccountRow) (providerAccountResponse, error) {
+	return providerAccountDTOAt(row, time.Now().UTC())
+}
+
+func providerAccountDTOAt(row admindb.AdminProviderAccountRow, now time.Time) (providerAccountResponse, error) {
+	subscription, systemLabels := accountsubscription.Build(row)
+	quotaFacts, err := accountquota.ParseView(row.QuotaFacts, now)
+	if err != nil {
+		return providerAccountResponse{}, err
+	}
 	return providerAccountResponse{
 		ID: row.ID, TenantID: row.TenantID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
 		Name: row.Name, AccountType: row.AccountType, Enabled: row.Enabled, ExpiresAt: pgTimePtr(row.ExpiresAt),
 		HealthState: row.HealthState, CredentialState: row.CredentialState,
 		CapConcurrency: row.CapConcurrency, InFlightCount: row.InFlightCount, Priority: row.Priority,
-		StaticWeight: row.StaticWeight, ProbeModel: row.ProbeModel, Tags: nonNilStringSlice(row.Tags),
+		StaticWeight: row.StaticWeight, UpstreamCostRatio: row.UpstreamCostRatio,
+		ProbeModel: row.ProbeModel, Tags: nonNilStringSlice(row.Tags),
+		Subscription: subscription, SystemLabels: systemLabels,
 		Extra:          jsonObjectOrEmpty(row.Extra),
 		LastDispatchAt: pgTimePtr(row.LastDispatchAt), LastProbeLatencyMS: row.LastProbeLatencyMS,
 		LastProbeAt:           pgTimePtr(row.LastProbeAt),
 		LastRequestObservedAt: pgTimePtr(row.LastRequestObservedAt),
 		ObservationSource:     "request_completion_event",
-		ModelAllowList:        nonNilStringSlice(row.ModelAllowList),
-		CapabilityFlags:       nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
+		QuotaWindows: quotawindowview.FromPostgres(quotawindowview.PostgresSnapshot{
+			ObservedAt: row.QuotaSnapshotObservedAt, Source: row.QuotaSnapshotSource,
+			Outcome: row.QuotaSnapshotOutcome, ErrorClass: row.QuotaSnapshotErrorClass,
+			FiveHourStart: row.SessionWindow5hStart, FiveHourEnd: row.SessionWindow5hEnd,
+			FiveHourUtilization: row.SessionWindow5hUtilization,
+			SevenDayStart:       row.SessionWindow7dStart, SevenDayEnd: row.SessionWindow7dEnd,
+			SevenDayUtilization: row.SessionWindow7dUtilization,
+		}, now),
+		QuotaFacts:      quotaFacts,
+		ModelAllowList:  nonNilStringSlice(row.ModelAllowList),
+		CapabilityFlags: nonNilStringSlice(row.CapabilityFlags), RateLimitedAt: pgTimePtr(row.RateLimitedAt),
 		RateLimitResetAt: pgTimePtr(row.RateLimitResetAt), RateLimitReason: row.RateLimitReason,
 		OverloadUntil: pgTimePtr(row.OverloadUntil), TempUnschedulableUntil: pgTimePtr(row.TempUnschedulableUntil),
 		TokenVersion: row.TokenVersion, LastRefreshAt: pgTimePtr(row.LastRefreshAt),
@@ -995,22 +985,22 @@ func providerAccountDTO(row admindb.AdminProviderAccountRow) providerAccountResp
 		TLSFingerprintRotate:    row.TLSFingerprintRotate,
 		CustomErrorCodesEnabled: row.CustomErrorCodesEnabled, CustomErrorCodes: nonNilInt32Slice(row.CustomErrorCodes),
 		PoolMode: row.PoolMode, TempUnschedulableEnabled: row.TempUnschedulableEnabled,
-		// 临时停调规则是详情字段:空时置 nil(omitempty 省略),使列表摘要不携带详情规则,
-		// 详情(创建/更新/查询)有规则时才回显。
 		TempUnschedulableRules: detailRulesOrNil(row.TempUnschedulableRules),
 		ProxyBinding:           accountadvanced.BindingFromColumns(row.ProxyID, row.ProxyGroupID),
 		CreatedAt:              pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
+	}, nil
+}
+
+func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) (providerAccountResponse, error) {
+	response, err := providerAccountDTO(row)
+	if err != nil {
+		return providerAccountResponse{}, err
 	}
-}
-
-func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) providerAccountResponse {
-	response := providerAccountDTO(row)
 	response.TempUnschedulableRules = jsonArrayOrEmpty(row.TempUnschedulableRules)
-	return response
+	return response, nil
 }
 
-// detailRulesOrNil 返回详情用的临时停调规则 JSON;空数组/空/null 一律置 nil,
-// 让 omitempty 在列表摘要中省略该字段(详情有规则时才携带)。
+// detailRulesOrNil 把空规则置 nil，让列表摘要省略详情字段。
 func detailRulesOrNil(raw []byte) json.RawMessage {
 	s := strings.TrimSpace(string(raw))
 	if s == "" || s == "[]" || s == "null" {

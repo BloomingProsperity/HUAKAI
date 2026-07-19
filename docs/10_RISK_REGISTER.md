@@ -1,22 +1,24 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，记录仍需发布门持续追踪的项目风险；风险事实必须由当前真码与测试复核。
 
-# Risk Register
+# 风险登记
 
-## Purpose
+## 用途
 
-Track risks that can affect implementation method, rollout, testing, or release readiness. Risks must not be used to silently drop features.
+记录会影响实现方式、上线、测试或发布准备度的风险。风险不得被用来静默删除功能；过期结论应关闭、修正或删除，不能继续冒充当前事实。
 
-## Risk Template
+## 风险模板
 
-| Risk ID | Area | Severity | Risk | Impact | Mitigation | Feature Impact | Owner | Status |
+| 风险 ID | 领域 | 严重度 | 风险 | 影响 | 缓解 | 功能处置 | 责任人 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R-TBD | TBD | TBD | TBD | TBD | TBD | No deletion allowed. | TBD | Open |
+| R-TBD | 待定 | 待定 | 待定 | 待定 | 待定 | 不允许删除功能。 | 待定 | Open |
 
-## Initial Risks
+## 已登记风险
 
-| Risk ID | Area | Severity | Risk | Impact | Mitigation | Feature Impact | Owner | Status |
+`Owner` 列记录具体工作单元的责任归属或历史归属，不创建 Claude、Codex、Gemini 的永久角色。未重新指派的旧值只作追溯信息。
+
+| 风险 ID | 领域 | 严重度 | 风险 | 影响 | 缓解 | 功能处置 | 责任人 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| R-LIC-001 | License | TBD | Two of three primary references (New API, All API Hub) are AGPL-3.0; one (Sub2API) is LGPL-3.0. AGPL is triggered by network distribution. | Copying any protected detail risks forcing the entire platform under AGPL when offered as a service. | Decided in [DR-000](process/decisions/DR-000-clean-room-methodology.md): Option B (two-lane separation) default + Option C carve-out for billing ledger, account-pool routing, provider failover/account-health. Lane definitions in [05_CLEAN_ROOM_POLICY.md](05_CLEAN_ROOM_POLICY.md) and [12_AGENT_WORKFLOW.md](12_AGENT_WORKFLOW.md). Spec-leakage review required before specs leave the specifier lane. MIT anchor reference (one-api) is the safe source-level study target. | Use safe equivalent or independent implementation; no feature deletion. | Claude | Mitigated |
+| R-LIC-001 | License | HIGH | 部分行为参考项目采用 copyleft 许可证；若复制受保护的源码、结构、schema、UI 或实现细节，会破坏 HUAKAI 的 MIT clean-room 边界。 | 商业分发与 SaaS 交付可能面临许可证污染、重写或停止发布风险。 | [DR-000](process/decisions/DR-000-clean-room-methodology.md) 是历史决策证据；现行落地以 [05_CLEAN_ROOM_POLICY.md](05_CLEAN_ROOM_POLICY.md)、[`AGENTS.md`](../AGENTS.md) 和 [RULES.md](RULES.md) 为准：specifier 只产行为合同，分离实现 lane 独立实现，所有引用带当前源码证据。 | 使用独立实现、Safe Equivalent 或经批准的隔离方式；不得删功能。 | 当前执行者 | Mitigated |
 | R-SEC-001 | Security | TBD | Admin operations can expose secrets or dangerous controls. | Credential leak or unauthorized changes. | Redaction, RBAC, audit logs, confirmations. | Gate or stage, do not delete. | Claude | Open |
 | R-BILL-001 | Billing | TBD | Usage and cost accounting can drift. | Revenue loss or incorrect charges. | Acceptance tests and reconciliation views. | Preserve billing feature with stronger checks. | Codex | Open |
 | R-BILL-003 | Billing / durable settlement intent | HIGH | 阶段 1 的 settlement intent 在 Reserve 提交后以独立短事务写入，且写入失败按可用性要求 fail-open；进程若在两者之间崩溃，或 intent 数据库写入持续失败，可能存在已 Reserve/已交付但没有 durable intent 证据的窗口。阶段 1 也尚未提供 sweeper、proof 绑定或运维裁决出口。 | 开启灰度开关本身不能完全消除 B 类恢复歧义；无 intent 的异常请求仍需依赖现有账本与日志人工核对，未结 intent 暂无自动恢复闭环。 | 开关默认关闭；阶段 1 用 `(tenant_id, claim_id, attempt_seq)` 唯一约束、claim 复合外键、非负数据域、账本权威 attempt、乐观锁状态机、真实完整写证据和脱敏 fail-open warning 建立旁路证据。后续 mandatory slice 必须明确 Tx1 原子边界，并补 sweeper、attempt proof 与授权运维裁决出口后才评估默认开启。 | Mandatory Roadmap；不删除结算或恢复能力。 | Codex | Open |
@@ -53,7 +55,7 @@ Track risks that can affect implementation method, rollout, testing, or release 
 | R-TEST-001 | Testing | MED | Local capture PASS does not prove real provider or WAF acceptance. | Release could pass localhost packet checks but fail against the real upstream path because of endpoint, proxy, ALPN, or network variance. | R-D Owner real-upstream gate remains mandatory; local-only evidence cannot release production dispatch. | Preserve local capture as necessary but not sufficient evidence. | Codex | Open |
 | R-MAINT-001 | Maintenance | MED | A HUAKAI-owned crypto or transport patch creates long-term rebase and CVE response burden. | Security updates may require urgent patch rebases; stale patches can block release or weaken transport safety. | Maintain patch ledger, keep scope minimal, verify upstream HEAD before rebases, and rerun capture tests on every rebase. | Preserve exact mimicry through maintained patch discipline rather than dropping the backend. | Codex | Open |
 
-## Rule
+## 约束
 
 Each high or release-blocking risk must map to mitigation, test coverage, and release gate status.
 

@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-// redactedColumns 是"未来导出 bundle 默认脱敏"的敏感列声明(策略边界,非实际数据)。
+// redactedColumns 是数据库级备份默认脱敏的敏感列声明，仅表达策略边界。
 // 基于真实存在的敏感列(sql/migrations 核过):凭据/密码/令牌/2FA 秘密一律默认脱敏;
 // 原文导出(若需)是独立的 Owner-gated 高危开关,绝不默认开。
 var redactedColumns = []string{
@@ -19,7 +19,7 @@ var redactedColumns = []string{
 	"platform_settings.payment_provider_config",
 }
 
-const redactionNote = "本端点仅返回元数据,不含任何业务数据。未来的导出 bundle 默认脱敏上列敏感列;" +
+const redactionNote = "本端点仅返回元数据,不含任何业务数据。数据库级备份默认脱敏上列敏感列;" +
 	"导出上游账号凭据原文 = 等于带走整个账号池,属独立 Owner-gated 高危开关,绝不默认开。恢复(写入)为最高危,后续 Owner-gated 切片。"
 
 type manifestResponse struct {

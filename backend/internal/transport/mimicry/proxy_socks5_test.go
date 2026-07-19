@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// PROXY-06:SOCKS5 dialer 必须完成一次真实的 SOCKS5 握手(method negotiation +
-// user/pass auth + CONNECT)并隧道到目标,使 uTLS 伪装能经住宅 SOCKS5 池出口。
+// SOCKS5 dialer 必须完成真实握手（方法协商、账号密码认证与 CONNECT）
+// 并隧道到目标，验证账号代理的实际连通合同。
 func TestSocks5Dialer_TunnelsThroughProxy(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

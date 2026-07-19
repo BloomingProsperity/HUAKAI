@@ -476,7 +476,6 @@ func startOpenAIImageLiveGateway(t *testing.T, binPath, dsn, addr string, seed *
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
-		"HUAKAI_TRANSPORT_MIMICRY=false",
 		"HUAKAI_DISPATCH_HCSF=1",
 	)
 	stderr, err := cmd.StderrPipe()

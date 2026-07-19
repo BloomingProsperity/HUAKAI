@@ -219,11 +219,18 @@ func (s *Service) advanceRamp(ctx context.Context, key ChannelKey) (Record, erro
 	if rec.State != StateRamping {
 		return rec, nil
 	}
-	if rec.RampStartedAt != nil && now.Sub(*rec.RampStartedAt) < s.policy.RampStageMinDuration {
+	stageAge := time.Duration(0)
+	if rec.RampStartedAt != nil {
+		stageAge = now.Sub(*rec.RampStartedAt)
+	}
+	if rec.RampStartedAt != nil && stageAge < s.policy.RampStageMinDuration {
 		return rec, nil
 	}
 	recent := windowFor(rec.SampleWindow, s.policy.MinObservation, now)
-	if recent.TotalAttempts < s.policy.RampStageMinSamples {
+	// 正常流量按样本门推进；低流量渠道在最长观察期后也必须能逐级恢复，
+	// 否则 1% 放量可能永远凑不齐样本。已有少量失败或 ban 信号仍由下方
+	// 失败门处理，不会因样本不足被忽略。
+	if recent.TotalAttempts < s.policy.RampStageMinSamples && stageAge < s.policy.RampStageMaxDuration {
 		return rec, nil
 	}
 	if rampFailureRate(recent) > s.policy.RampErrorThresholdPct || recent.BanSignals > 0 {
@@ -845,10 +852,6 @@ func newRecord(key ChannelKey, p Policy, now time.Time) Record {
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-}
-
-func rampFailureRate(w WindowSummary) float64 {
-	return rate(w.FailedAttempts, w.TotalAttempts)
 }
 
 func (s *Service) Policy() Policy {

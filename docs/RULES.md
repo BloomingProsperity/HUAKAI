@@ -1,188 +1,141 @@
-# HUAKAI 规则清单（Rules Manifest）
+# HUAKAI 规则清单
 
-> **每次 PM session 开头必读这一份。** 70+ 份规则散文件不可能每次都加载，本文件是浓缩版"宪法"——每条 binding 规则一行 + 来源指针。规则原文以来源文件为权威；本文件是导航。最近刷新：**2026-06-04**。
+> 这是规则 ID 与启动门的唯一清单；完整执行细节以 [`AGENTS.md`](../AGENTS.md) 为准。最后整理：2026-07-18。
 
-## 0. 关于本文件
+## 0. 规则权威与保全
 
-- **目的**：单一入口防漏检。Codex / Claude / Gemini 任一 session 进来先读这一份，再读任务相关的子集。
-- **更新规则**：任何 binding 规则新增 / 修改时，PM 必须同步刷新本文件 + 在 commit message 末尾写 `Rules updated: ...`。
-- **审计**：reviewer-lane 复审时第一步就是对照本清单逐条 self-check。
+| ID | 规则 |
+| --- | --- |
+| A-001 | 冲突顺序：Owner 最新指令 -> 当前真码与判别测试 -> `AGENTS.md` -> 本清单 -> 当前唯一计划 -> 历史资料。 |
+| A-002 | 规则整理只能重排、合并完全重复项、删除被最新指令明确覆盖的旧项；有效颗粒度不得丢失。 |
+| A-003 | 历史报告和注释只作线索；被真码推翻的内容删除或合并，只留最新合同。 |
+| A-004 | 全程中文；技术标识符保留英文；代码注释不得出现借鉴项目名。 |
+| A-005 | 当前目标一个计划、一个分支、一个 PR；不碰另一个目标，未经 Owner 同意不合主线。 |
+| A-006 | 日志合同全局生效：产品层统一称“日志系统”，所有业务域、协议、后台任务和运营入口按操作/资金/安全/错误/访问/恢复分类，并明确事件类型、结果、错误码和严重级别；普通日志统一滚动保留 30 天并自动分批清理，模块不得自行永久保留或缩短周期；账本、充值、退款、争议资金效果和幂等事实属于永久业务真相，不参与日志清理；`audit` 仅作为可保留的技术标识，不另设“审计系统”。 |
+| A-007 | 单线顺序执行：当前工作未完成时，Owner 中途新增需求只进入当前工作之后的队列，不切换实现、不并行开第二套；当前工作完成实现、测试、复审和记录后才开始下一项。只有 Owner 明确要求暂停、替换或调整优先级时才中断当前工作。 |
 
-## 1. Owner-Stated Goal（北极星，绝对约束）
+## 1. Owner 目标
 
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| G-001 | 商业目的：赚钱（成功后开源），不接受降低真实度加速 | [01 §Owner-Stated Goal](01_PROJECT_BRIEF.md) |
-| G-002 | 在 Sub2API 基础上做更全面更好；接入广度是差异化 | [DR-007](process/decisions/DR-007-product-positioning-and-breadth.md) |
-| G-003 | "必须真实"——inventory 不等于理解；spec 不等于实现 | [01 §Owner directives](01_PROJECT_BRIEF.md) |
-| G-004 | 慢无所谓；250-500 工程小时预期；不缩 scope，加并行 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
-| G-005 | 持续维护看上游更新→自审→修 | [24](24_REFERENCE_TRACKING_POLICY.md) |
-| G-006 | 两商业模式平行：Personal Edition 卖 API（模式 1），SaaS Edition 卖给运营方（模式 2） | [DR-002 §Owner Refinement](process/decisions/DR-002-product-editions.md) |
+| ID | 规则 |
+| --- | --- |
+| G-001 | 以真实可上线、能跑、好运维为核心，不用文档状态冒充产品完成。 |
+| G-002 | HUAKAI 是中转站，融合成熟能力并做架构/算法/生态升级，不照搬任何单一项目。 |
+| G-003 | 功能、模块和细节必须联动；发现一点要由点到面追整条链和辐射模块。 |
+| G-004 | 未上线阶段优先清掉双栈、死代码、旧开关和过期规则；Git 历史承担恢复，不为假想回滚长期背债。 |
+| G-005 | 功能可融合到一个清晰运营面，但不能因页面少或接口合并而丢行为、权限、状态和恢复入口。 |
 
 ## 2. Owner Start Gate
 
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| S-001 | Agent 不在 Owner 明确"开始/Proceed/确认开始/开干"等信号前推进实现 | [00](00_PM_OPERATING_SYSTEM.md) |
-| S-002 | Owner 给出 start signal 后，agent 主动跑——低风险直接做，中风险记录原因，高风险停下问 | [00 §Risk-Based Confirmation](00_PM_OPERATING_SYSTEM.md) |
-
-## 3. Clean-Room（Phase 1 起到永远）
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| CR-001 | License 验证先行；非 MIT 参考不记录 license 不写任何行为证据 | [05](05_CLEAN_ROOM_POLICY.md) |
-| CR-002 | Specifier 车道**可读**非 MIT 源；Implementer 车道只读 spec | [05 §Lane Definitions](05_CLEAN_ROOM_POLICY.md), [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
-| CR-003 | Option C carve-out 区域：账号池路由 / 计费对账 / Provider 健康 — implementer 只能读 spec，**连 MIT 源都不读** | [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
-| CR-004 | 同 session 不能同时干两车道工作 | [DR-000](process/decisions/DR-000-clean-room-methodology.md) |
-| CR-005 | 多 session 累积污染（R-LIC-002）：跨 session 也有风险 | [10 §R-LIC-002](10_RISK_REGISTER.md) |
-
-## 4. CL-001..CL-010 Spec Leakage Checklist（强制每条审查）
-
-| ID | 检查 | 来源 |
-| --- | --- | --- |
-| CL-001 | 不带上游函数名 / 方法名 / 配置常量名+值（如 `RUN_MODE=simple`） | [specs/_REVIEW_CHECKLIST.md](specs/_REVIEW_CHECKLIST.md) |
-| CL-001a | 配置常量 name+value pair = upstream 指纹，必须释义 | 同上（2026-04-28 加） |
-| CL-002 | **不抄上游 distinctive 文件结构 / 目录布局**（new-api 已违规过！） | 同上 |
-| CL-003 | 不抄 schema 列名 / 表名 / 迁移文件名 | 同上 |
-| CL-004 | 不抄 UI 源 / 独特组件名 / 独特类名 | 同上 |
-| CL-005 | 不算法逐行翻译为本地词汇——必须重构为"保证形式" | 同上 |
-| CL-006 | 每个 reference 引用对应 docs/07 中有 E-LIC-NNN 行；evidence ID 必须**真实存在** | 同上 |
-| CL-007 | Lane mode 字段必填（Option B / Option C） | 同上 |
-| CL-008 | Capability ID 在 docs/03 矩阵里**真实存在** | 同上 |
-| CL-009 | Open Questions 节诚实记录，不伪装"全懂了" | 同上 |
-| CL-010 | Source URL 不出现在 implementer-reachable 节（Normal Path 等）；只在 Sources 节 | 同上 |
-
-## 5. 功能不缩水 / Disposition
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| F-001 | 每个上游功能必须有 7 种合法处置之一（Implemented / Implemented Better / Merged Equivalent / Safe Equivalent / Plugin / Feature Flag / Mandatory Roadmap）；**不许 Dropped/Ignored/Out of Scope** | [03](03_FEATURE_PARITY_MATRIX.md) |
-| F-002 | Disposition = target plan；Status = current state；两轴独立 | [03 §Disposition vs Status](03_FEATURE_PARITY_MATRIX.md) |
-| F-003 | 锁定能力组（Gateway / Account / Channel / Pool / Edition / Quota / Billing / Admin / Health / Logs / Auth / Plugin / Test）不能静默裁掉 | [04](04_FEATURE_LOCK.md) |
-
-## 6. Deep Mining Mandate（核心，已被 Owner 多次强调）
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| M-001 | 每个 reference 进 Phase 2 前必须有 `_INVENTORY.md`，列尽所有功能 | [22](22_DEEP_MINING_MANDATE.md) |
-| M-002 | 每个 L1/L2 功能必须有 prose decomposition 文件（不只是 ledger 行） | [22 §Owner Sharpening](22_DEEP_MINING_MANDATE.md) |
-| M-003 | prose 文件必须含 7 字段（WHY / WHAT / INPUTS / FAILURES_HANDLED / FAILURES_NOT_HANDLED / KEEP-IMPROVE-AVOID / ATTRIBUTION） | [22](22_DEEP_MINING_MANDATE.md) |
-| M-004 | 多 reference 共担一个功能时——**每个 reference 都要独立 prose 文件** | [22](22_DEEP_MINING_MANDATE.md) |
-| M-005 | Phase 1 → Phase 2 退出门：每个 L1/L2 行有 `Released` 决议 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
-
-## 7. 互审制度（Owner 直接指令）
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| MR-001 | 同样的工作 Claude 和 Codex **各自独立**做一份 | Owner 2026-04-28 |
-| MR-002 | 双方互审对方产出（写到 `docs/process/reviews/`） | 同上 |
-| MR-003 | PM 综合产出最终行动方案 | 同上 |
-| MR-004 | reviewer-lane = **第三个不同 session**，跑 CL-001..010 | [22](22_DEEP_MINING_MANDATE.md) |
-| MR-005 | spec Released 才能进 `docs/specs/` 给 implementer 用 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
-
-## 8. Decision 圆桌制度
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| DR-R-001 | 跨切面架构决策走圆桌（DR），不走 Standard Flow | [21](21_DECISION_PROCESS.md) |
-| DR-R-002 | DR 在 Discussion 状态超 7 天，PM 必须刷新 Context 后再请 Owner 决策 | [21 §Staleness Protocol](21_DECISION_PROCESS.md) |
-| DR-R-003 | DR Decided 后必须执行 Propagation Checklist 才能 Implemented | [21](21_DECISION_PROCESS.md) |
-
-## 9. 持续追踪（运维期约束）
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| T-001 | 每个 reference 发新版 → 7 天内自审 + 写到 `docs/tracking/<ref>/<date>.md` | [24](24_REFERENCE_TRACKING_POLICY.md) |
-| T-002 | 每月走 commit log，每季 Owner 战略复审 | 同上 |
-| T-003 | 每条 upstream bug fix 给 HUAKAI 判定（VULNERABLE / SAFE-BY-DESIGN / SAFE-BY-CODE / UNKNOWN） | 同上 |
-| T-004 | Phase 1 → Phase 2 退出前，**每个 reference 必须有 baseline 文件** | 同上 |
-
-## 10. 技术栈约束（DR-003..006，已锁）
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| TS-001 | 后端 Go (stdlib net/http + chi); 永禁 Fiber/fasthttp | [DR-003](process/decisions/DR-003-technology-stack.md), [DR-005](process/decisions/DR-005-go-http-framework.md) |
-| TS-002 | 前端 TS + React + Next.js App Router + Tailwind | [DR-004](process/decisions/DR-004-frontend-framework.md) |
-| TS-003 | 数据库 PostgreSQL + sqlc + Docker Compose；永禁 SQLite 上生产 | [DR-006](process/decisions/DR-006-database.md) |
-| TS-004 | OpenAPI 是 contract source of truth，前端类型从此 codegen | [DR-003 Constraint 2](process/decisions/DR-003-technology-stack.md) |
-| TS-005 | 命名跟 [18 术语表](18_GLOSSARY.md) 严格对齐；不许同义词 | [DR-003 Constraint 8](process/decisions/DR-003-technology-stack.md) |
-| TS-006 | tenant_id 在每张主表 Day 1 就有 | [DR-001](process/decisions/DR-001-multi-tenancy.md) |
-| TS-007 | Money 用 PostgreSQL `numeric(20, 8)`；永禁 float | [Quota+Billing 综合](decompositions/_cross-cutting/quota-billing-claim-gate-synthesis.md) |
-
-## 11. Phase Gates
-
-| ID | 规则 | 来源 |
-| --- | --- | --- |
-| P-001 | Phase 1 → 2: 每个 L1/L2 row 有 Released spec; baseline 文件齐全; 互审 cycle on 核心算法完成 | [DR-008](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
-| P-002 | Phase 2 → 3: API contracts 锁定 + UI assumptions + 高风险文件识别 | [16](16_PHASED_DELIVERY_PLAN.md) |
-| P-003 | Phase 3 → 4: Go 骨架 + OpenAPI codegen + provider-neutral streaming abstraction; DR-005/006 完成 | [16](16_PHASED_DELIVERY_PLAN.md) |
-| P-004 | Phase 4-9 任何阶段不写未 Released 功能的代码 | [DR-008 §Constraints](process/decisions/DR-008-methodology-choice-strict-authenticity.md) |
-
-## 12. PM Self-Check（每次 commit 之前）
-
-提交前 PM 必须**逐条**对照 self-check，回答 yes/no/N-A：
-
-- [ ] 本次改动触碰的所有 binding 规则我列出来了？
-- [ ] CL-001..010 在我修改的每个文件里都通过？
-- [ ] 引用的所有 evidence ID 在 docs/07 真实存在？
-- [ ] 引用的所有 F-* 在 docs/03 真实存在？
-- [ ] AGPL/LGPL/GPL 项目的目录结构/函数名没出现在公开文件？
-- [ ] 互审制度是否需要触发（多 agent 都做的工作）？
-- [ ] DR 受影响的 propagation checklist 是否同步更新？
-- [ ] 持续追踪 (T-001..T-004) 状态是否需要更新？
-- [ ] commit message 末尾 `Rules touched: <ID list>` 写了？
-
-## 13. 已发生的违规登记
-
-记录已发生的规则违反，避免重复犯：
-
-| 日期 | 规则 | 违反方 | 发现方 | 修复 commit |
-| --- | --- | --- | --- | --- |
-| 2026-04-28 | CL-001a (config name+value 指纹) | Claude (E-S2A-005 写了 RUN_MODE=simple) | Codex Phase 1 audit | a308477 |
-| 2026-04-28 | CL-002 (AGPL 目录结构) | Claude (new-api inventory 抄目录) | Codex symmetric review | faeeb14 |
-| 2026-04-28 | CL-006 (3 个不存在的 evidence ID) | Claude (E-S2A-012 / E-NAI-010 / E-PK-011) | Codex symmetric review | faeeb14 |
-| 2026-04-28 | CL-007 (Lane mode 缺) | Claude (layered-account-selection.md) | Codex symmetric review | faeeb14 |
-| 2026-04-28 | MR-004 (互审 + reviewer 三方) | Claude (Phase 1 前 ~3 周零互审) | Owner 2026-04-28 直接指出 | fba4dcc |
-| 2026-04-28 | M-001 (每个 reference 必须有 inventory) | Claude (Phase 1.1 完了无 inventory) | Owner "整体读完了吗"指出 | 13c0700 |
-| 2026-04-28 | M-002 (prose decomposition not optional) | Claude (~30+ L1/L2 features 还只有 ledger 行) | Owner / Phase 1.2 mandate | 进行中 |
-| 2026-06-04 | CR-002 (implementer 只读 spec，不读源) | Claude (codex prompt 指向 /home/ubuntu/refs 源码) | Owner "牢记clean-room禁止copy" | 杀 codex 重派 clean-room 盲实现 |
-
-## 14. 规则数量审计（每月）
-
-每月 PM 跑一次：本文件规则总数 vs 来源文件中的 binding 规则总数。差异 > 5 条 = 漏检红灯。
-
-## 15. Owner 2026-06-04 固化要求（本轮指令全集，与旧条冲突以本节为准）
-
-> 来源：Owner 2026-06-04 多条直接指令 + /goal。最高优先。
-
-### 模型分配（MA）
 | ID | 规则 |
 | --- | --- |
-| MA-001 | **sonnet 退役**：调研质量太差，**不再派 sonnet 做任何事**。("sonnet调研太差了，还是你和codex来! 多用codex") |
-| MA-002 | **Claude/opus（PM 本人）= 调研 + 设计 + 核验 + 评审 + 接线 + 决策**；每个功能动手前**亲自**读借鉴真源码。`/home/ubuntu/refs/` 有 new-api/one-api/sub2api/CLIProxyAPI 全量真源码 + `wt-notif/docs/decompositions`。 |
-| MA-003 | **codex = 实现**；**多用、尽量多开并行**。 |
+| S-001 | 没有 Owner 明确执行信号时，只读、核实、解释或规划，不擅自改业务代码。 |
+| S-002 | “开始、继续、去做、开干、修复、同意、批准、可以、直接做、当目标做”等均为有效执行信号；信号发出后主动闭环。 |
+| S-003 | Owner 已明确授权当前目标后，不为每个中低风险细节重复确认。 |
+| S-004 | 仅合主线、生产部署/数据、真实秘密、`LICENSE`、不可逆破坏和目标外真实资金转移始终需要明确批准。 |
+| S-005 | 其他决策仅在“有实质分歧 + 无官方/成熟项目依据 + 选错危害大”三项同时命中时停下问。 |
 
-### 融合升级法（FU，核心，强化 §6 Deep Mining）
+## 3. 真相与源码证据
+
 | ID | 规则 |
 | --- | --- |
-| FU-001 | 做**每个**功能前，把四个借鉴项目同功能的**实现方法 / 逻辑 / 代码 / 算法**全部精读吃透——细致入微。 |
-| FU-002 | **融合各家所长 → 做成比他们都强**（parity-or-better+；不是单家照搬）。 |
-| FU-003 | 用融合法**回扫之前已做的功能模块**，逐个评估并升级到"更强"。(/goal 2026-06-04) |
+| T-001 | 内部行为只相信当前生产源码、迁移、配置、入口/DI/worker 接线和可判别测试。 |
+| T-002 | README、文档、前端按钮、搜索命中、测试文件和记忆不能单独证明生产能力。 |
+| T-003 | 外部能力/机制/差异/缺失/对比表必须读生产源码，引用 `repo@sha:file:line`。 |
+| T-004 | 只允许 `Observed`、明确标注的 `Inferred` 和 `Open Question`；禁止把猜测写成事实。 |
+| T-005 | 首次采用外部项目先验归档状态、HEAD、最近提交、许可证；超过 30 天的证据先更新。 |
 
-### Clean-Room 强化（重申 CR-002/003；本轮违规已登记 §13）
+## 4. Clean-room
+
 | ID | 规则 |
 | --- | --- |
-| CR-R-001 | **实现者（codex）盲读**：PM 看过原码后用**自己的话**写 spec/分解，codex **只照 spec + HUAKAI 现有模式从零实现**；**codex prompt 严禁出现 `/home/ubuntu/refs` 路径或"读 XX 源码"指令**。 |
-| CR-R-002 | 评审时**比对 codex 产物 vs 原码**：字段名/函数名/结构/目录/注释雷同即打回重写。 |
+| CR-001 | 外部项目是行为证据，不是源码提供者；禁止复制或近似翻译代码、标识符、注释、schema、结构、UI 和测试。 |
+| CR-002 | `specifier` 读外部源码，只产出行为合同；不得读取 HUAKAI 当前实现、diff、schema、内部标识符或实现文档。 |
+| CR-003 | 行为合同完成后，分离的实现 lane 才读 HUAKAI 真码并独立设计；同一上下文不得做源码贴译。 |
+| CR-004 | 同一合同的 clean-room reviewer 使用不同 session，只审证据覆盖与污染风险，不重新读同一外部源码。 |
+| CR-005 | AGPL/GPL/LGPL 仅作行为证据；MIT/Apache/BSD 也默认独立实现。官方 SDK/隔离 vendoring 需专项许可审计与 Owner 批准。 |
+| CR-006 | clean-room 只改变实现方法，不允许删除有效功能。 |
 
-### 算力 / 执行（CP）
+## 5. 参考源选择
+
 | ID | 规则 |
 | --- | --- |
-| CP-001 | **算力拉满**：codex 多开并行 + PM 持续设计/审/接线，不空转。 |
-| CP-002 | **在服务器（kaifa）上执行**；能在服务器跑的就在服务器跑。 |
+| R-001 | 先判断领域，再选维护活跃、成熟、许可证明确、与问题匹配的头部项目。 |
+| R-002 | 中转站核心默认三镜：sub2api + CLIProxyAPI + new-api；三镜用于账号/协议/路由/健康/目录/网关运营基线。 |
+| R-003 | 支付、退款、订单、订阅、账本、身份、风控、日志系统、前端等专业模块必须补对应领域头部项目，三镜不是万能最佳实践。 |
+| R-004 | 钱路按具体问题补发卡/数字商品、电商退款、支付编排、订阅计费和财务账本源码证据。 |
+| R-005 | 外部合同只是一个设计输入；实现必须结合 HUAKAI 中转站定位与现有不变量，逐项判定直接适配、融合改造、Safe Equivalent 或不适用。 |
+| R-006 | 不兼容不能成为忽略有效业务结果的理由，也不能为了对标强塞不兼容对象模型。 |
 
-### 合规边界（CB，PM 立场 + 待决）
+## 6. 功能保全与融合升级
+
 | ID | 规则 |
 | --- | --- |
-| CB-001 | **反检测/反封号规避工具不做**：冒充第一方客户端、绕过上游检测/访问控制（R7 `ApplyMimicryPlan` 请求体伪装）= **park**。D-R3-A 仍待 Owner 裁决；PM 立场为只走合规版（transport policy + 出站诊断，不做指纹复刻）。 |
+| F-001 | 每项有效能力必须是 `Implemented`、`Implemented Better`、`Merged Equivalent`、`Safe Equivalent`、`Plugin`、`Feature Flag` 或 `Mandatory Roadmap`。 |
+| F-002 | `Disposition` 是目标处置，`Status` 是当前事实，两轴不得混淆。 |
+| F-003 | 合并能力必须证明每个原用户结果、运营控制、权限、日志、失败和恢复路径仍存在。 |
+| F-004 | 升级差量必须明确属于架构、算法、生态至少一维，禁止只说“更好”。 |
+| F-005 | 外部项目有缺陷时如实记录；HUAKAI 应做 `Implemented Better`，不继承明显资金、鉴权、幂等或运维缺陷。 |
 
+## 7. 计划与决策
+
+| ID | 规则 |
+| --- | --- |
+| P-001 | 非平凡工作更新当前唯一执行计划；强制并行双计划制度已退役。 |
+| P-002 | 计划含 Owner 指令、范围、行为合同/shape、引用、顺序、成功标准、估时、爆炸半径、失败模式、决策点、判别测试、恢复和 checklist。 |
+| P-003 | 旧计划被新计划覆盖时删除或合并，不堆补充报告。 |
+| P-004 | 子目标通过源码、判别测试和所需复审后立即同步状态；唯一计划只保留最新结论、必要证据和未完成项，删除已完成项的旧清单、重复目标与过程日志，但不得借清理触碰其他目标。 |
+| D-001 | Owner 决策材料必须带 HUAKAI 真码、官方规范、领域项目源码、方案优缺点、影响、实施与恢复计划。 |
+| D-002 | 中转站决策补三镜；专业决策优先看专业项目，不拿无关三镜凑数。 |
+
+## 8. 全链路与细粒度
+
+| ID | 规则 |
+| --- | --- |
+| C-001 | 追完整链：入口 -> 身份 -> 规范化 -> 决策 -> 持久化 -> 外部副作用 -> 异步 -> retry/fallback -> health -> billing/quota -> log（内部可用 audit 技术标识） -> DLQ/recovery -> 用户/管理员状态。 |
+| C-002 | 由点到面横查同构协议、兄弟模块、上下游消费者、DI/registry/route/worker/scheduler/readiness。 |
+| C-003 | 同时核对细小状态、默认值、错误分类、条件分支、幂等摘要、锁、唯一约束和 SQL `WHERE`。 |
+| C-004 | 代码存在但无真实入口/状态回流视为未实现；局部报错消失但副作用未收敛视为未闭环。 |
+| C-005 | 新增/修复能力与 Day-2 运维一起交付：查询、筛选、重试、对账、隔离、人工解决和分类日志。 |
+
+## 9. 实现与结构
+
+| ID | 规则 |
+| --- | --- |
+| I-001 | 一个 package/module 一个职责，一个文件一个内聚职责；新领域优先新子包。 |
+| I-002 | 非测试文件 600 行、目录 6000 行/20 文件为机器预算；存量基线只允许既有 +5%，不得抬 baseline 逃避拆分。 |
+| I-003 | 只有拆分使体量下降后才可重生成 codebudget baseline。 |
+| I-004 | 删除旧链路前证明替代入口、接线、测试和运维恢复齐全。 |
+| I-005 | 不回滚用户或其他目标改动；不修改当前目标之外的 worktree。 |
+| I-006 | 旧前端若被 Owner 判定不可信，只能核 API，不作为页面设计真相。 |
+
+## 10. 测试
+
+| ID | 规则 |
+| --- | --- |
+| Q-001 | 每个测试必须能在它声称防的具体缺陷出现时变红。 |
+| Q-002 | fixture 必须区分正确与损坏实现；断言 `== good`，不能只写 `!= bad`。 |
+| Q-003 | 禁止用 `nil` stub、零值 `t.Skip`、全 `AllowAll` gate 或不真实 SQL mock 掩盖风险。 |
+| Q-004 | 跨模块必测真实接线；并发必测竞争、幂等和资源释放；钱/鉴权/schema 必测 PostgreSQL、失败、部分成功和恢复。 |
+| Q-005 | 上游成本只能通过便宜模型和小 token 降低，不得减少场景；无法实测必须如实标注。 |
+
+## 11. Review、提交与 PR
+
+| ID | 规则 |
+| --- | --- |
+| V-001 | 每个提交只 stage 预期 diff，先跑本地门，再跑独立只读 Codex review。 |
+| V-002 | S0/S1 阻提交；S2/S3 记录到 commit body 或唯一计划，不新建零散 review 文档。 |
+| V-003 | 默认最多两轮 pre-commit review；不能通过降级 severity 逃避真实缺陷。 |
+| V-004 | money/auth/schema/跨功能/完整 slice 额外跑完整 reviewer coverage matrix。 |
+| V-005 | 当前执行者为 Codex 时，也必须使用另一个独立只读 session review。 |
+| PR-001 | 一个目标一个 PR；后续提交继续推同一 PR。 |
+| PR-002 | 未经 Owner 同意不合主线。 |
+
+## 12. Skill 与发布
+
+| ID | 规则 |
+| --- | --- |
+| K-001 | `.agents/skills/` 是 canonical；`.claude/skills/` 只做机械镜像。 |
+| K-002 | Skill 按证据 -> clean-room -> parity/merge -> 风险/场景 -> 验收 -> release 的生命周期调用。 |
+| K-003 | Skill 只保留触发、输入、步骤、输出、阻断项，不复制全局规则。 |
+| L-001 | 完成声明必须有真实接线、判别测试、并发/恢复、运维入口、许可证/clean-room 和 review 证据。 |
+| L-002 | 最终中文汇报说明改动、文件、原因、全链收敛、测试/盲区、功能缩水、风险、待批准项和下一步。 |

@@ -380,9 +380,11 @@ func TestAdminCancelOrderRouteWiresService(t *testing.T) {
 // 并返回 refund + balance。Mutation: 漏传 key 或 actor → 捕获断言红; 响应漏 balance → 红。
 func TestAdminRefundOrderRouteWiresService(t *testing.T) {
 	svc := &captureService{refundRes: payment.RefundResult{
-		Order:        payment.Order{ID: 7, Status: payment.StatusRefunded},
-		Refund:       payment.RefundRecord{ID: 3, AmountCents: 250, CurrencyCode: "USD", IdempotencyKey: "refund-http"},
-		BalanceCents: 750,
+		Order:                    payment.Order{ID: 7, Status: payment.StatusCompleted},
+		Refund:                   payment.RefundRecord{ID: 3, AmountCents: 250, RequestedAmountCents: 250, CurrencyCode: "USD", IdempotencyKey: "refund-http"},
+		BalanceCents:             750,
+		CumulativeRefundedCents:  250,
+		RemainingRefundableCents: 750,
 	}}
 	router := newAdminTestRouter(svc)
 	body, _ := json.Marshal(refundRequest{TenantID: 5, AmountCents: 250, IdempotencyKey: "refund-http", Reason: "ops refund"})
@@ -408,6 +410,9 @@ func TestAdminRefundOrderRouteWiresService(t *testing.T) {
 	if string(resp["balance_cents"]) != "750" {
 		t.Fatalf("balance_cents=%s want 750; body=%s", resp["balance_cents"], rec.Body.String())
 	}
+	if string(resp["cumulative_refunded_cents"]) != "250" || string(resp["remaining_refundable_cents"]) != "750" {
+		t.Fatalf("refund progress missing or wrong: %s", rec.Body.String())
+	}
 }
 
 // 守 C1 refund 错误映射: 非可退款状态是 409 专属 code, 不支持订单种类是 422 专属 code。
@@ -421,6 +426,9 @@ func TestRefundErrorsMapToDistinctCodes(t *testing.T) {
 	}{
 		{"not refundable", payment.ErrOrderNotRefundable, http.StatusConflict, "order_not_refundable"},
 		{"unsupported kind", payment.ErrRefundUnsupportedKind, http.StatusUnprocessableEntity, "refund_unsupported_kind"},
+		{"idempotency conflict", payment.ErrRefundIdempotencyConflict, http.StatusConflict, "refund_idempotency_conflict"},
+		{"refund fact invalid", payment.ErrRefundFactInvalid, http.StatusConflict, "refund_fact_invalid"},
+		{"refund exceeds credit", payment.ErrRefundExceedsCredit, http.StatusConflict, "refund_exceeds_credit"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -34,7 +34,12 @@ import (
 func buildTestRouter(t *testing.T) chi.Router {
 	t.Helper()
 	r := chi.NewRouter()
-	logger := zap.NewNop()
+	mountTestRoutes(t, r)
+	return r
+}
+
+func mountTestRoutes(t *testing.T, r chi.Router) {
+	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("build Hermes test key: %v", err)
@@ -57,8 +62,7 @@ func buildTestRouter(t *testing.T) chi.Router {
 		hermesService: hermes.NewService(nil),
 		hermesRunner:  hermesRunner,
 	}
-	mountRoutes(r, d, logger)
-	return r
+	mountRoutes(r, d, zap.NewNop())
 }
 
 // 主一致性测试：用 openapicheck.Compare 算 spec ↔ impl 漂移。
@@ -266,6 +270,8 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 	}{
 		{http.MethodGet, "/healthz"},
 		{http.MethodHead, "/healthz"},
+		{http.MethodGet, "/readyz"},
+		{http.MethodHead, "/readyz"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodGet, "/v1/admin/usage/health-score"},
@@ -290,6 +296,8 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 	}{
 		{http.MethodGet, "/healthz"},
 		{http.MethodHead, "/healthz"},
+		{http.MethodGet, "/readyz"},
+		{http.MethodHead, "/readyz"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodGet, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodGet, "/v1/admin/usage/health-score"},
@@ -304,6 +312,7 @@ func TestOpenAPI_ModuleGPerfHealthRoutesMountedAndDocumented(t *testing.T) {
 		path   string
 	}{
 		{http.MethodPost, "/healthz"},
+		{http.MethodPost, "/readyz"},
 		{http.MethodPost, "/v1/admin/usage/perf-metrics/summary"},
 		{http.MethodPatch, "/v1/admin/usage/perf-metrics/by-bucket"},
 		{http.MethodDelete, "/v1/admin/usage/health-score"},

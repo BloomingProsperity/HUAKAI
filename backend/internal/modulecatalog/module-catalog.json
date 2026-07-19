@@ -186,8 +186,8 @@
       "section": "§12 反封禁 / 网络策略",
       "feature_id": "F-ACTIVE-DETECT",
       "title": "TLS / H2 / Header 指纹控制面",
-      "status": "partial",
-      "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)",
+      "status": "tested",
+      "parity": "Rust/BoringSSL sidecar 已成为 mimicry 唯一出口；八类 profile、动态 inline、H1/H2 bridge、proxy、fail-closed 和单镜像生命周期均已接线并通过自动化验收，应用层 header 形态继续由 Go 协议适配器负责",
       "pkgs": [
         "clientshape",
         "transport"
@@ -558,8 +558,8 @@
       "section": "§12 反封禁 / 网络策略",
       "feature_id": "F-ACTIVE-DETECT",
       "title": "TLS / H2 / Header 指纹控制面",
-      "status": "partial",
-      "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)",
+      "status": "tested",
+      "parity": "Rust/BoringSSL sidecar 已成为 mimicry 唯一出口；八类 profile、动态 inline、H1/H2 bridge、proxy、fail-closed 和单镜像生命周期均已接线并通过自动化验收，应用层 header 形态继续由 Go 协议适配器负责",
       "pkgs": [
         "clientshape",
         "transport"

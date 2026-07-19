@@ -11,7 +11,65 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type AdminModel struct {
+const createAdminModel = `-- name: CreateAdminModel :one
+INSERT INTO models (
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    status
+) VALUES (
+    $1::bigint,
+    $2::text,
+    $3::text,
+    $4::text,
+    $5::text,
+    $6::integer,
+    $7::integer,
+    $8::text,
+    $9::text,
+    $10::text
+)
+RETURNING
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
+`
+
+type CreateAdminModelParams struct {
+	TenantID                *int64 `db:"tenant_id" json:"tenant_id"`
+	Scope                   string `db:"scope" json:"scope"`
+	CanonicalID             string `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32  `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32  `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string `db:"model_owner" json:"model_owner"`
+	Status                  string `db:"status" json:"status"`
+}
+
+type CreateAdminModelRow struct {
 	ID                      int64              `db:"id" json:"id"`
 	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
 	Scope                   string             `db:"scope" json:"scope"`
@@ -32,12 +90,101 @@ type AdminModel struct {
 	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
-type adminModelScanner interface {
-	Scan(dest ...any) error
+func (q *Queries) CreateAdminModel(ctx context.Context, arg CreateAdminModelParams) (CreateAdminModelRow, error) {
+	row := q.db.QueryRow(ctx, createAdminModel,
+		arg.TenantID,
+		arg.Scope,
+		arg.CanonicalID,
+		arg.ProtocolFamily,
+		arg.DefaultProviderModelID,
+		arg.DefaultContextWindow,
+		arg.DefaultRequestTimeoutMs,
+		arg.PricingClass,
+		arg.ModelOwner,
+		arg.Status,
+	)
+	var i CreateAdminModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Scope,
+		&i.CanonicalID,
+		&i.ProtocolFamily,
+		&i.DefaultProviderModelID,
+		&i.DefaultContextWindow,
+		&i.DefaultRequestTimeoutMs,
+		&i.PricingClass,
+		&i.ModelOwner,
+		&i.ModelCreatedAt,
+		&i.Capabilities,
+		&i.MaxOutputTokens,
+		&i.ModelMode,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
-func scanAdminModel(row adminModelScanner) (AdminModel, error) {
-	var i AdminModel
+const getAdminModel = `-- name: GetAdminModel :one
+SELECT
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
+FROM models
+WHERE id = $1::bigint
+  AND scope = $2::text
+  AND tenant_id IS NOT DISTINCT FROM $3::bigint
+  AND status <> 'deleted'
+  AND deleted_at IS NULL
+`
+
+type GetAdminModelParams struct {
+	ID       int64  `db:"id" json:"id"`
+	Scope    string `db:"scope" json:"scope"`
+	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+type GetAdminModelRow struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Capabilities            []byte             `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32             `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string            `db:"model_mode" json:"model_mode"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+func (q *Queries) GetAdminModel(ctx context.Context, arg GetAdminModelParams) (GetAdminModelRow, error) {
+	row := q.db.QueryRow(ctx, getAdminModel, arg.ID, arg.Scope, arg.TenantID)
+	var i GetAdminModelRow
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
@@ -62,11 +209,26 @@ func scanAdminModel(row adminModelScanner) (AdminModel, error) {
 }
 
 const listAdminModels = `-- name: ListAdminModels :many
+
 SELECT
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
 FROM models
 WHERE scope = $1::text
   AND tenant_id IS NOT DISTINCT FROM $2::bigint
@@ -80,16 +242,57 @@ type ListAdminModelsParams struct {
 	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
 }
 
-func (q *Queries) ListAdminModels(ctx context.Context, arg ListAdminModelsParams) ([]AdminModel, error) {
+type ListAdminModelsRow struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Capabilities            []byte             `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32             `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string            `db:"model_mode" json:"model_mode"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+// 模型主体运维查询。所有读写都显式携带 scope 与 tenant_id，避免只靠 HTTP 门做归属判断。
+func (q *Queries) ListAdminModels(ctx context.Context, arg ListAdminModelsParams) ([]ListAdminModelsRow, error) {
 	rows, err := q.db.Query(ctx, listAdminModels, arg.Scope, arg.TenantID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := make([]AdminModel, 0)
+	var items []ListAdminModelsRow
 	for rows.Next() {
-		i, err := scanAdminModel(rows)
-		if err != nil {
+		var i ListAdminModelsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Scope,
+			&i.CanonicalID,
+			&i.ProtocolFamily,
+			&i.DefaultProviderModelID,
+			&i.DefaultContextWindow,
+			&i.DefaultRequestTimeoutMs,
+			&i.PricingClass,
+			&i.ModelOwner,
+			&i.ModelCreatedAt,
+			&i.Capabilities,
+			&i.MaxOutputTokens,
+			&i.ModelMode,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -100,36 +303,26 @@ func (q *Queries) ListAdminModels(ctx context.Context, arg ListAdminModelsParams
 	return items, nil
 }
 
-const getAdminModel = `-- name: GetAdminModel :one
-SELECT
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
-FROM models
-WHERE id = $1::bigint
-  AND scope = $2::text
-  AND tenant_id IS NOT DISTINCT FROM $3::bigint
-  AND status <> 'deleted'
-  AND deleted_at IS NULL
-`
-
-type GetAdminModelParams struct {
-	ID       int64  `db:"id" json:"id"`
-	Scope    string `db:"scope" json:"scope"`
-	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) GetAdminModel(ctx context.Context, arg GetAdminModelParams) (AdminModel, error) {
-	return scanAdminModel(q.db.QueryRow(ctx, getAdminModel, arg.ID, arg.Scope, arg.TenantID))
-}
-
 const lockAdminModelForUpdate = `-- name: LockAdminModelForUpdate :one
 SELECT
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
 FROM models
 WHERE id = $1::bigint
   AND scope = $2::text
@@ -145,70 +338,171 @@ type LockAdminModelForUpdateParams struct {
 	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
 }
 
-func (q *Queries) LockAdminModelForUpdate(ctx context.Context, arg LockAdminModelForUpdateParams) (AdminModel, error) {
-	return scanAdminModel(q.db.QueryRow(ctx, lockAdminModelForUpdate, arg.ID, arg.Scope, arg.TenantID))
+type LockAdminModelForUpdateRow struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Capabilities            []byte             `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32             `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string            `db:"model_mode" json:"model_mode"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
 }
 
-const createAdminModel = `-- name: CreateAdminModel :one
-INSERT INTO models (
-    tenant_id, scope, canonical_id, protocol_family, default_provider_model_id,
-    default_context_window, default_request_timeout_ms, pricing_class, model_owner, status
-) VALUES ($1::bigint,$2::text,$3::text,$4::text,$5::text,$6::integer,$7::integer,$8::text,$9::text,$10::text)
+func (q *Queries) LockAdminModelForUpdate(ctx context.Context, arg LockAdminModelForUpdateParams) (LockAdminModelForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, lockAdminModelForUpdate, arg.ID, arg.Scope, arg.TenantID)
+	var i LockAdminModelForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Scope,
+		&i.CanonicalID,
+		&i.ProtocolFamily,
+		&i.DefaultProviderModelID,
+		&i.DefaultContextWindow,
+		&i.DefaultRequestTimeoutMs,
+		&i.PricingClass,
+		&i.ModelOwner,
+		&i.ModelCreatedAt,
+		&i.Capabilities,
+		&i.MaxOutputTokens,
+		&i.ModelMode,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const softDeleteAdminModel = `-- name: SoftDeleteAdminModel :one
+UPDATE models
+SET status = 'deleted',
+    deleted_at = now(),
+    updated_at = now()
+WHERE id = $1::bigint
+  AND scope = $2::text
+  AND tenant_id IS NOT DISTINCT FROM $3::bigint
+  AND status <> 'deleted'
+  AND deleted_at IS NULL
 RETURNING
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
 `
 
-type CreateAdminModelParams struct {
-	TenantID                *int64 `db:"tenant_id" json:"tenant_id"`
-	Scope                   string `db:"scope" json:"scope"`
-	CanonicalID             string `db:"canonical_id" json:"canonical_id"`
-	ProtocolFamily          string `db:"protocol_family" json:"protocol_family"`
-	DefaultProviderModelID  string `db:"default_provider_model_id" json:"default_provider_model_id"`
-	DefaultContextWindow    int32  `db:"default_context_window" json:"default_context_window"`
-	DefaultRequestTimeoutMs int32  `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
-	PricingClass            string `db:"pricing_class" json:"pricing_class"`
-	ModelOwner              string `db:"model_owner" json:"model_owner"`
-	Status                  string `db:"status" json:"status"`
+type SoftDeleteAdminModelParams struct {
+	ID       int64  `db:"id" json:"id"`
+	Scope    string `db:"scope" json:"scope"`
+	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
 }
 
-func (q *Queries) CreateAdminModel(ctx context.Context, arg CreateAdminModelParams) (AdminModel, error) {
-	return scanAdminModel(q.db.QueryRow(ctx, createAdminModel,
-		arg.TenantID,
-		arg.Scope,
-		arg.CanonicalID,
-		arg.ProtocolFamily,
-		arg.DefaultProviderModelID,
-		arg.DefaultContextWindow,
-		arg.DefaultRequestTimeoutMs,
-		arg.PricingClass,
-		arg.ModelOwner,
-		arg.Status,
-	))
+type SoftDeleteAdminModelRow struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Capabilities            []byte             `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32             `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string            `db:"model_mode" json:"model_mode"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+func (q *Queries) SoftDeleteAdminModel(ctx context.Context, arg SoftDeleteAdminModelParams) (SoftDeleteAdminModelRow, error) {
+	row := q.db.QueryRow(ctx, softDeleteAdminModel, arg.ID, arg.Scope, arg.TenantID)
+	var i SoftDeleteAdminModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Scope,
+		&i.CanonicalID,
+		&i.ProtocolFamily,
+		&i.DefaultProviderModelID,
+		&i.DefaultContextWindow,
+		&i.DefaultRequestTimeoutMs,
+		&i.PricingClass,
+		&i.ModelOwner,
+		&i.ModelCreatedAt,
+		&i.Capabilities,
+		&i.MaxOutputTokens,
+		&i.ModelMode,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const updateAdminModel = `-- name: UpdateAdminModel :one
 UPDATE models
 SET default_provider_model_id = $1::text,
-	default_context_window = $2::integer,
-	default_request_timeout_ms = $3::integer,
-	pricing_class = $4::text,
-	protocol_family = $5::text,
-	model_owner = $6::text,
-	status = $7::text,
-	updated_at = now()
+    default_context_window = $2::integer,
+    default_request_timeout_ms = $3::integer,
+    pricing_class = $4::text,
+    protocol_family = $5::text,
+    model_owner = $6::text,
+    status = $7::text,
+    updated_at = now()
 WHERE id = $8::bigint
-	AND scope = $9::text
-	AND tenant_id IS NOT DISTINCT FROM $10::bigint
+  AND scope = $9::text
+  AND tenant_id IS NOT DISTINCT FROM $10::bigint
   AND status <> 'deleted'
   AND deleted_at IS NULL
 RETURNING
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
+    id,
+    tenant_id,
+    scope,
+    canonical_id,
+    protocol_family,
+    default_provider_model_id,
+    default_context_window,
+    default_request_timeout_ms,
+    pricing_class,
+    model_owner,
+    model_created_at,
+    capabilities,
+    max_output_tokens,
+    model_mode,
+    status,
+    created_at,
+    updated_at,
+    deleted_at
 `
 
 type UpdateAdminModelParams struct {
@@ -224,8 +518,29 @@ type UpdateAdminModelParams struct {
 	TenantID                *int64 `db:"tenant_id" json:"tenant_id"`
 }
 
-func (q *Queries) UpdateAdminModel(ctx context.Context, arg UpdateAdminModelParams) (AdminModel, error) {
-	return scanAdminModel(q.db.QueryRow(ctx, updateAdminModel,
+type UpdateAdminModelRow struct {
+	ID                      int64              `db:"id" json:"id"`
+	TenantID                *int64             `db:"tenant_id" json:"tenant_id"`
+	Scope                   string             `db:"scope" json:"scope"`
+	CanonicalID             string             `db:"canonical_id" json:"canonical_id"`
+	ProtocolFamily          string             `db:"protocol_family" json:"protocol_family"`
+	DefaultProviderModelID  string             `db:"default_provider_model_id" json:"default_provider_model_id"`
+	DefaultContextWindow    int32              `db:"default_context_window" json:"default_context_window"`
+	DefaultRequestTimeoutMs int32              `db:"default_request_timeout_ms" json:"default_request_timeout_ms"`
+	PricingClass            string             `db:"pricing_class" json:"pricing_class"`
+	ModelOwner              string             `db:"model_owner" json:"model_owner"`
+	ModelCreatedAt          pgtype.Timestamptz `db:"model_created_at" json:"model_created_at"`
+	Capabilities            []byte             `db:"capabilities" json:"capabilities"`
+	MaxOutputTokens         *int32             `db:"max_output_tokens" json:"max_output_tokens"`
+	ModelMode               *string            `db:"model_mode" json:"model_mode"`
+	Status                  string             `db:"status" json:"status"`
+	CreatedAt               pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	DeletedAt               pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+}
+
+func (q *Queries) UpdateAdminModel(ctx context.Context, arg UpdateAdminModelParams) (UpdateAdminModelRow, error) {
+	row := q.db.QueryRow(ctx, updateAdminModel,
 		arg.DefaultProviderModelID,
 		arg.DefaultContextWindow,
 		arg.DefaultRequestTimeoutMs,
@@ -236,30 +551,27 @@ func (q *Queries) UpdateAdminModel(ctx context.Context, arg UpdateAdminModelPara
 		arg.ID,
 		arg.Scope,
 		arg.TenantID,
-	))
-}
-
-const softDeleteAdminModel = `-- name: SoftDeleteAdminModel :one
-UPDATE models
-SET status = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1::bigint
-  AND scope = $2::text
-  AND tenant_id IS NOT DISTINCT FROM $3::bigint
-  AND status <> 'deleted'
-  AND deleted_at IS NULL
-RETURNING
-    id, tenant_id, scope, canonical_id, protocol_family,
-    default_provider_model_id, default_context_window, default_request_timeout_ms,
-    pricing_class, model_owner, model_created_at, capabilities, max_output_tokens,
-    model_mode, status, created_at, updated_at, deleted_at
-`
-
-type SoftDeleteAdminModelParams struct {
-	ID       int64  `db:"id" json:"id"`
-	Scope    string `db:"scope" json:"scope"`
-	TenantID *int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) SoftDeleteAdminModel(ctx context.Context, arg SoftDeleteAdminModelParams) (AdminModel, error) {
-	return scanAdminModel(q.db.QueryRow(ctx, softDeleteAdminModel, arg.ID, arg.Scope, arg.TenantID))
+	)
+	var i UpdateAdminModelRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Scope,
+		&i.CanonicalID,
+		&i.ProtocolFamily,
+		&i.DefaultProviderModelID,
+		&i.DefaultContextWindow,
+		&i.DefaultRequestTimeoutMs,
+		&i.PricingClass,
+		&i.ModelOwner,
+		&i.ModelCreatedAt,
+		&i.Capabilities,
+		&i.MaxOutputTokens,
+		&i.ModelMode,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
 }

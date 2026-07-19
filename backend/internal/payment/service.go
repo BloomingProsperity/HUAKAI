@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Service 支付外观: 规范化输入 / 校验 / 编排订单状态机 / 解析 provider。
@@ -237,20 +239,45 @@ func (s *Service) CancelOrder(ctx context.Context, in CancelOrderInput) (Order, 
 
 // RefundOrder 管理员退款已入账充值订单。幂等键必填; 重放返回既有退款, 不重复扣减。
 func (s *Service) RefundOrder(ctx context.Context, in RefundOrderInput) (RefundResult, error) {
+	rec, err := s.prepareRefundRecord(in)
+	if err != nil {
+		return RefundResult{}, err
+	}
+	return s.store.RefundOrder(ctx, rec)
+}
+
+// RefundOrderInTx 把退款并入调用方已经持有的 PostgreSQL 事务。调用方负责最终提交，
+// 用于让退款资金事实与上层业务状态在同一提交边界内完成。
+func (s *Service) RefundOrderInTx(ctx context.Context, tx pgx.Tx, in RefundOrderInput) (RefundResult, error) {
+	rec, err := s.prepareRefundRecord(in)
+	if err != nil {
+		return RefundResult{}, err
+	}
+	store, ok := s.store.(interface {
+		refundOrderTx(context.Context, pgx.Tx, refundRecord) (RefundResult, error)
+	})
+	if !ok || tx == nil {
+		return RefundResult{}, ErrStoreNotConfigured
+	}
+	return store.refundOrderTx(ctx, tx, rec)
+}
+
+func (s *Service) prepareRefundRecord(in RefundOrderInput) (refundRecord, error) {
 	if in.TenantID <= 0 || in.OrderID <= 0 {
-		return RefundResult{}, ErrInvalidInput
+		return refundRecord{}, ErrInvalidInput
 	}
 	if in.AmountCents <= 0 || in.AmountCents > maxAmountCents {
-		return RefundResult{}, ErrInvalidAmount
+		return refundRecord{}, ErrInvalidAmount
 	}
 	key := strings.TrimSpace(in.IdempotencyKey)
 	if key == "" {
-		return RefundResult{}, ErrInvalidInput
+		return refundRecord{}, ErrInvalidInput
 	}
-	return s.store.RefundOrder(ctx, refundRecord{
+	return refundRecord{
 		TenantID:       in.TenantID,
 		OrderID:        in.OrderID,
 		AmountCents:    in.AmountCents,
+		RequireExact:   in.RequireExact,
 		IdempotencyKey: key,
 		ActorRef:       strings.TrimSpace(in.ActorRef),
 		Reason:         strings.TrimSpace(in.Reason),
@@ -258,7 +285,7 @@ func (s *Service) RefundOrder(ctx context.Context, in RefundOrderInput) (RefundR
 		ActorID:        in.ActorID,
 		RequestID:      in.RequestID,
 		Now:            s.now(),
-	})
+	}, nil
 }
 
 func (s *Service) AdminConfirmPaid(ctx context.Context, in AdminConfirmPaidInput) (FulfillResult, error) {

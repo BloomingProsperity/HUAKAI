@@ -972,6 +972,9 @@ func TestAT_AUDIT_001_028_RefundQueuesBillingEventReplica(t *testing.T) {
 	pool := openPool(t, ctx)
 	seed := seedSettlerGraph(t, ctx, pool, "refund-replica-intent")
 	settler := NewSettler(pool, WithReplicaTarget("refund-replica-test"))
+	if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.02000000")); err != nil {
+		t.Fatalf("reserve refund hold: %v", err)
+	}
 
 	if _, err := settler.Settle(ctx, settleRequest(seed, decimal.RequireFromString("0.02000000"))); err != nil {
 		t.Fatalf("Settle before refund: %v", err)
@@ -981,13 +984,21 @@ func TestAT_AUDIT_001_028_RefundQueuesBillingEventReplica(t *testing.T) {
 		ClaimID:        seed.claimID,
 		AmountMicroUSD: 7000,
 		Reason:         "audit_mismatch",
+		IdempotencyKey: "req-refund-replica",
 		AuditRequestID: "req-refund-replica#audit_refund",
 	})
 	if err != nil {
 		t.Fatalf("Refund with async replica intent: %v", err)
 	}
-	if refund == nil || refund.BillingEventID == 0 {
+	if refund == nil || refund.BillingEventID == 0 || refund.RefundMicroUSD != 7000 || !refund.BalanceCredited {
 		t.Fatalf("refund result missing billing event id: %+v", refund)
+	}
+	var balance decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balance); err != nil {
+		t.Fatalf("read refunded balance: %v", err)
+	}
+	if !balance.Equal(decimal.RequireFromString("9.98700000")) {
+		t.Fatalf("refund balance=%s want 9.98700000", balance)
 	}
 
 	var replicaRows int
@@ -1004,6 +1015,78 @@ func TestAT_AUDIT_001_028_RefundQueuesBillingEventReplica(t *testing.T) {
 	}
 	if replicaRows != 1 {
 		t.Fatalf("expected one refund replica intent; got %d", replicaRows)
+	}
+}
+
+func TestRefundCannotCreditClaimThatNeverCapturedBalance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "refund-never-captured")
+	settler := NewSettler(pool)
+	if _, err := pool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("remove opt-in balance before settlement: %v", err)
+	}
+
+	if _, err := settler.Settle(ctx, settleRequest(seed, decimal.RequireFromString("0.02000000"))); err != nil {
+		t.Fatalf("settle opt-in claim without hold: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_balances (tenant_id, user_id, balance, held) VALUES ($1, $2, 10, 0)`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("provision balance after settlement: %v", err)
+	}
+
+	refund, err := settler.Refund(ctx, RefundRequest{
+		TenantID:       seed.tenantID,
+		ClaimID:        seed.claimID,
+		AmountMicroUSD: 20_000,
+		Reason:         "audit_mismatch",
+		IdempotencyKey: "req-never-captured",
+		AuditRequestID: "req-never-captured#audit_refund",
+	})
+	if !errors.Is(err, ErrRefundNoCapturedCharge) || refund != nil {
+		t.Fatalf("未扣款 claim refund=%+v err=%v，期望 ErrRefundNoCapturedCharge", refund, err)
+	}
+	var balance decimal.Decimal
+	if err := pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID).Scan(&balance); err != nil {
+		t.Fatalf("read balance: %v", err)
+	}
+	if !balance.Equal(decimal.RequireFromString("10.00000000")) {
+		t.Fatalf("未扣款 claim 退款后 balance=%s want 10", balance)
+	}
+}
+
+func TestRefundRollsBackWhenCapturedChargeBalanceRowIsMissing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	seed := seedSettlerGraph(t, ctx, pool, "refund-balance-row-missing")
+	settler := NewSettler(pool)
+	settleCapturedRefundClaim(t, ctx, pool, settler, seed, decimal.RequireFromString("0.02000000"))
+	if _, err := pool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1 AND user_id=$2`, seed.tenantID, seed.userID); err != nil {
+		t.Fatalf("remove balance after capture: %v", err)
+	}
+
+	refund, err := settler.Refund(ctx, RefundRequest{
+		TenantID:       seed.tenantID,
+		ClaimID:        seed.claimID,
+		AmountMicroUSD: 7_000,
+		Reason:         "audit_mismatch",
+		IdempotencyKey: "req-missing-balance",
+		AuditRequestID: "req-missing-balance#audit_refund",
+	})
+	if !errors.Is(err, ErrRefundBalanceRowMissing) || refund != nil {
+		t.Fatalf("missing balance refund=%+v err=%v，期望 ErrRefundBalanceRowMissing", refund, err)
+	}
+	var count int64
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM billing_events
+		WHERE tenant_id=$1 AND claim_id=$2 AND event_type='reconciliation_appended'`,
+		seed.tenantID, seed.claimID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count rolled-back refund events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("missing balance refund events=%d want 0", count)
 	}
 }
 
@@ -1534,6 +1617,7 @@ func seedSettlerGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suf
 		fingerprint:      "fingerprint-" + unique,
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_refund_operations WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)

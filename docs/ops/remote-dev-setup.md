@@ -204,7 +204,7 @@ psql $HUAKAI_DATABASE_URL -c '\dt' | tail -3  # DB 通
 
 ## 八、相关文档索引
 
-- 项目 brief：`docs/00_PM_OPERATING_SYSTEM.md`
-- 上次工作进展：`docs/process/plans/2026-05-07-bedrock-eventstream-{claude,codex}.md`（Bedrock #2 决策点 R1/R2/R4 等 Owner 回）
-- Memory（持久反馈/规则）：`~/.claude/projects/-home-codex-HUAKAI/memory/MEMORY.md`
-- CLAUDE.md（agent 行为规约）：项目根 `CLAUDE.md`
+- 项目范围：`docs/01_PROJECT_BRIEF.md`
+- 全局规则：项目根 `AGENTS.md` 与 `docs/RULES.md`
+- 当前工作进展：当前目标唯一执行计划
+- 模型适配入口：项目根 `CLAUDE.md` 或 `GEMINI.md`，均不得覆盖 `AGENTS.md`

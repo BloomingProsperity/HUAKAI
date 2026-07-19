@@ -256,7 +256,8 @@ func (ex *execution) run(w http.ResponseWriter) {
 				continue
 			}
 		}
-		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, ex.deliveryStarted, true)
+		localSafetyPassed := outcome.failure == nil || outcome.failure.SideEffectRetrySafe
+		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, ex.plan, i+1 < budget, ex.deliveryStarted, localSafetyPassed)
 		switch decision.Action {
 		case bindingfallback.ActionContinuePrimary:
 			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {

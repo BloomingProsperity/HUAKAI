@@ -49,6 +49,8 @@ type OAuthStartResult struct {
 
 type OAuthExchanger func(context.Context, Session, string) (CredentialCandidate, error)
 
+type DeviceCodePoller func(context.Context, Session) (CredentialCandidate, error)
+
 func StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	return StartOAuthFlowWithRegistry(ctx, store, in, cfg, defaultExchangers)
 }
@@ -61,6 +63,22 @@ func StartOAuthFlowWithRegistry(ctx context.Context, store *PostgresSessionStore
 		return exc.StartOAuthFlow(ctx, store, in, cfg)
 	}
 	return startPKCEOAuthFlow(ctx, store, in, cfg)
+}
+
+func validateDeviceCodePollEndpoints(session Session, cfg OAuthClientConfig) error {
+	payload := session.DeviceCodePayload
+	endpoints := []struct{ name, raw string }{
+		{"token_url", firstNonEmpty(cfg.TokenURL, stringFromPayload(payload, "token_url"))},
+	}
+	if raw := stringFromPayload(payload, "oauth_token_url"); raw != "" {
+		endpoints = append(endpoints, struct{ name, raw string }{"oauth_token_url", raw})
+	}
+	for _, endpoint := range endpoints {
+		if err := validateOAuthEndpointURL(endpoint.raw); err != nil {
+			return fmt.Errorf("%w: device-code %s rejected (%v)", ErrFeatureDisabled, endpoint.name, err)
+		}
+	}
+	return nil
 }
 
 func startPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {

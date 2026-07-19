@@ -38,6 +38,28 @@ func TestCreateAuditFailureRollsBackCredentialWithTransaction(t *testing.T) {
 	}
 }
 
+func TestSubscriptionProjectionRollsBackWithCredentialAndAudit(t *testing.T) {
+	db := newCredentialAuditTxFakeDB()
+	db.failAuditEvent = CredentialEventCreated
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.Create(context.Background(), CreateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		Vendor: VendorAntigravity, AuthMode: AuthModeOAuth,
+		Payload: []byte(`{"access_token":"access","refresh_token":"refresh","project_id":"project","subscription_tier_raw":"g1-pro-tier"}`),
+		ActorID: "owner",
+	})
+	if !errors.Is(err, ErrCredentialAuditWriteFailed) {
+		t.Fatalf("Create err=%v，期望 ErrCredentialAuditWriteFailed", err)
+	}
+	if db.credential != nil || db.subscription != nil {
+		t.Fatalf("日志失败后凭据和套餐投影必须一起回滚：credential=%+v subscription=%+v", db.credential, db.subscription)
+	}
+	if db.rollbackCount != 1 || db.commitCount != 0 {
+		t.Fatalf("事务计数 rollback=%d commit=%d，期望 rollback=1 commit=0", db.rollbackCount, db.commitCount)
+	}
+}
+
 func TestRotateAuditFailureRollsBackVersionWithTransaction(t *testing.T) {
 	db := newCredentialAuditTxFakeDB()
 	db.credential = &credentialAuditTxFakeCredential{
@@ -161,6 +183,27 @@ type credentialAuditTxFakeDB struct {
 	commitCount       int
 	rollbackCount     int
 	refreshProjectRef *string
+	nextObservationID int64
+	subscription      *credentialAuditTxFakeSubscription
+}
+
+type credentialAuditTxFakeSubscription struct {
+	observationID int64
+	vendor        string
+	plan          string
+	rawPlan       string
+	scope         string
+	subjectRef    string
+	workspaceRef  string
+	source        string
+	trust         string
+	verification  string
+	status        string
+	mapping       int
+	errorClass    string
+	firstObserved time.Time
+	observedAt    time.Time
+	changedAt     time.Time
 }
 
 type credentialAuditTxFakeCredential struct {
@@ -188,7 +231,7 @@ type credentialAuditTxFakeCredential struct {
 
 func newCredentialAuditTxFakeDB() *credentialAuditTxFakeDB {
 	return &credentialAuditTxFakeDB{
-		tenantID: 7, providerAccountID: 77, credentialID: 301, nextCredentialID: 301,
+		tenantID: 7, providerAccountID: 77, credentialID: 301, nextCredentialID: 301, nextObservationID: 1,
 	}
 }
 
@@ -200,6 +243,10 @@ func (db *credentialAuditTxFakeDB) BeginTx(context.Context, pgx.TxOptions) (pgx.
 		cp.encryptedPayload = append([]byte(nil), db.credential.encryptedPayload...)
 		cp.nonce = append([]byte(nil), db.credential.nonce...)
 		tx.staged = &cp
+	}
+	if db.subscription != nil {
+		cp := *db.subscription
+		tx.stagedSubscription = &cp
 	}
 	return tx, nil
 }
@@ -258,8 +305,9 @@ func (db *credentialAuditTxFakeDB) queryRow(_ context.Context, sql string, args 
 }
 
 type credentialAuditTxFakeTx struct {
-	parent *credentialAuditTxFakeDB
-	staged *credentialAuditTxFakeCredential
+	parent             *credentialAuditTxFakeDB
+	staged             *credentialAuditTxFakeCredential
+	stagedSubscription *credentialAuditTxFakeSubscription
 }
 
 func (tx *credentialAuditTxFakeTx) Begin(context.Context) (pgx.Tx, error) {
@@ -270,12 +318,18 @@ func (tx *credentialAuditTxFakeTx) Commit(context.Context) error {
 	tx.parent.commitCount++
 	if tx.staged == nil {
 		tx.parent.credential = nil
-		return nil
+	} else {
+		cp := *tx.staged
+		cp.encryptedPayload = append([]byte(nil), tx.staged.encryptedPayload...)
+		cp.nonce = append([]byte(nil), tx.staged.nonce...)
+		tx.parent.credential = &cp
 	}
-	cp := *tx.staged
-	cp.encryptedPayload = append([]byte(nil), tx.staged.encryptedPayload...)
-	cp.nonce = append([]byte(nil), tx.staged.nonce...)
-	tx.parent.credential = &cp
+	if tx.stagedSubscription == nil {
+		tx.parent.subscription = nil
+	} else {
+		cp := *tx.stagedSubscription
+		tx.parent.subscription = &cp
+	}
 	return nil
 }
 
@@ -309,6 +363,20 @@ func (tx *credentialAuditTxFakeTx) Exec(ctx context.Context, sql string, args ..
 		tx.parent.refreshProjectRef = credentialAuditOptionalStringArg(args[11])
 		return pgconn.NewCommandTag("UPDATE 1"), nil
 	}
+	if strings.Contains(sql, "INSERT INTO provider_account_subscription_states") {
+		if tx.stagedSubscription != nil {
+			return pgconn.NewCommandTag("INSERT 0 0"), nil
+		}
+		tx.stagedSubscription = credentialAuditSubscriptionFromArgs(args)
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	}
+	if strings.Contains(sql, "UPDATE provider_account_subscription_states") {
+		if tx.stagedSubscription == nil {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
+		}
+		tx.stagedSubscription = credentialAuditSubscriptionFromUpdateArgs(args)
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}
 	return tx.parent.exec(ctx, sql, args...)
 }
 
@@ -329,6 +397,15 @@ func (tx *credentialAuditTxFakeTx) QueryRow(_ context.Context, sql string, args 
 		}
 		tx.staged.applyRotateArgs(args)
 		return credentialAuditTxScanRow{values: tx.staged.metadataValues()}
+	case strings.Contains(sql, "INSERT INTO provider_account_subscription_observations"):
+		id := tx.parent.nextObservationID
+		tx.parent.nextObservationID++
+		return credentialAuditTxScanRow{values: []any{id, time.Date(2026, 7, 18, 8, int(id), 0, 0, time.UTC)}}
+	case strings.Contains(sql, "FROM provider_account_subscription_states"):
+		if tx.stagedSubscription == nil {
+			return credentialAuditTxScanRow{err: pgx.ErrNoRows}
+		}
+		return credentialAuditTxScanRow{values: tx.stagedSubscription.values()}
 	default:
 		return credentialAuditTxScanRow{err: errors.New("unexpected tx QueryRow")}
 	}
@@ -336,6 +413,58 @@ func (tx *credentialAuditTxFakeTx) QueryRow(_ context.Context, sql string, args 
 
 func (tx *credentialAuditTxFakeTx) Conn() *pgx.Conn {
 	return nil
+}
+
+func credentialAuditSubscriptionFromArgs(args []any) *credentialAuditTxFakeSubscription {
+	return &credentialAuditTxFakeSubscription{
+		observationID: args[2].(int64),
+		vendor:        credentialAuditStringArg(args[3]),
+		plan:          credentialAuditStringArg(args[4]),
+		rawPlan:       credentialAuditStringArg(args[5]),
+		scope:         credentialAuditStringArg(args[6]),
+		subjectRef:    credentialAuditStringArg(args[7]),
+		workspaceRef:  credentialAuditStringArg(args[8]),
+		source:        credentialAuditStringArg(args[9]),
+		trust:         credentialAuditStringArg(args[10]),
+		verification:  credentialAuditStringArg(args[11]),
+		status:        credentialAuditStringArg(args[12]),
+		mapping:       args[13].(int),
+		errorClass:    credentialAuditStringArg(args[14]),
+		firstObserved: args[15].(time.Time),
+		observedAt:    args[15].(time.Time),
+		changedAt:     args[15].(time.Time),
+	}
+}
+
+func credentialAuditSubscriptionFromUpdateArgs(args []any) *credentialAuditTxFakeSubscription {
+	return &credentialAuditTxFakeSubscription{
+		observationID: args[2].(int64),
+		vendor:        credentialAuditStringArg(args[3]),
+		plan:          credentialAuditStringArg(args[4]),
+		rawPlan:       credentialAuditStringArg(args[5]),
+		scope:         credentialAuditStringArg(args[6]),
+		subjectRef:    credentialAuditStringArg(args[7]),
+		workspaceRef:  credentialAuditStringArg(args[8]),
+		source:        credentialAuditStringArg(args[9]),
+		trust:         credentialAuditStringArg(args[10]),
+		verification:  credentialAuditStringArg(args[11]),
+		status:        credentialAuditStringArg(args[12]),
+		mapping:       args[13].(int),
+		errorClass:    credentialAuditStringArg(args[14]),
+		firstObserved: args[15].(time.Time),
+		observedAt:    args[16].(time.Time),
+		changedAt:     args[17].(time.Time),
+	}
+}
+
+func (s credentialAuditTxFakeSubscription) values() []any {
+	return []any{
+		s.observationID, s.vendor, s.plan, s.rawPlan,
+		s.scope, s.subjectRef, s.workspaceRef,
+		s.source, s.trust, s.verification, s.status,
+		s.mapping, s.errorClass,
+		s.firstObserved, s.observedAt, s.changedAt,
+	}
 }
 
 type credentialAuditTxScanRow struct {

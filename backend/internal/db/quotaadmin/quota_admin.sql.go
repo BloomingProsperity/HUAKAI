@@ -34,11 +34,7 @@ func (q *Queries) DeleteQuotaPolicy(ctx context.Context, arg DeleteQuotaPolicyPa
 }
 
 const getQuotaPolicyByID = `-- name: GetQuotaPolicyByID :one
-SELECT
-    tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds,
-    limit_value, burst_value, mode, priority, enabled,
-    valid_from, valid_until, created_by_actor, last_modified_by_actor,
-    created_at, updated_at
+SELECT quota_policies.tenant_id, quota_policies.id, quota_policies.scope_kind, quota_policies.scope_id, quota_policies.metric, quota_policies.window_kind, quota_policies.window_seconds, quota_policies.limit_value, quota_policies.burst_value, quota_policies.mode, quota_policies.priority, quota_policies.enabled, quota_policies.valid_from, quota_policies.valid_until, quota_policies.created_by_actor, quota_policies.last_modified_by_actor, quota_policies.created_at, quota_policies.updated_at, quota_policies.model_selector
 FROM quota_policies
 WHERE tenant_id = $1::bigint
   AND id = $2::bigint
@@ -72,6 +68,7 @@ func (q *Queries) GetQuotaPolicyByID(ctx context.Context, arg GetQuotaPolicyByID
 		&i.LastModifiedByActor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelSelector,
 	)
 	return i, err
 }
@@ -79,7 +76,7 @@ func (q *Queries) GetQuotaPolicyByID(ctx context.Context, arg GetQuotaPolicyByID
 const insertQuotaPolicy = `-- name: InsertQuotaPolicy :one
 
 INSERT INTO quota_policies (
-    tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds,
+    tenant_id, scope_kind, scope_id, model_selector, metric, window_kind, window_seconds,
     limit_value, burst_value, mode, priority, enabled,
     valid_from, valid_until, created_by_actor, last_modified_by_actor
 ) VALUES (
@@ -88,28 +85,26 @@ INSERT INTO quota_policies (
     $3::text,
     $4::text,
     $5::text,
-    $6::integer,
-    $7::numeric(20,8),
+    $6::text,
+    $7::integer,
     $8::numeric(20,8),
-    $9::text,
-    $10::integer,
-    $11::boolean,
-    $12::timestamptz,
+    $9::numeric(20,8),
+    $10::text,
+    $11::integer,
+    $12::boolean,
     $13::timestamptz,
-    $14::text,
-    $15::text
+    $14::timestamptz,
+    $15::text,
+    $16::text
 )
-RETURNING
-    tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds,
-    limit_value, burst_value, mode, priority, enabled,
-    valid_from, valid_until, created_by_actor, last_modified_by_actor,
-    created_at, updated_at
+RETURNING tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds, limit_value, burst_value, mode, priority, enabled, valid_from, valid_until, created_by_actor, last_modified_by_actor, created_at, updated_at, model_selector
 `
 
 type InsertQuotaPolicyParams struct {
 	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
 	ScopeKind           string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID             string             `db:"scope_id" json:"scope_id"`
+	ModelSelector       string             `db:"model_selector" json:"model_selector"`
 	Metric              string             `db:"metric" json:"metric"`
 	WindowKind          string             `db:"window_kind" json:"window_kind"`
 	WindowSeconds       int32              `db:"window_seconds" json:"window_seconds"`
@@ -135,6 +130,7 @@ func (q *Queries) InsertQuotaPolicy(ctx context.Context, arg InsertQuotaPolicyPa
 		arg.TenantID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.ModelSelector,
 		arg.Metric,
 		arg.WindowKind,
 		arg.WindowSeconds,
@@ -168,44 +164,47 @@ func (q *Queries) InsertQuotaPolicy(ctx context.Context, arg InsertQuotaPolicyPa
 		&i.LastModifiedByActor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelSelector,
 	)
 	return i, err
 }
 
 const listQuotaPoliciesForAdmin = `-- name: ListQuotaPoliciesForAdmin :many
-SELECT
-    tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds,
-    limit_value, burst_value, mode, priority, enabled,
-    valid_from, valid_until, created_by_actor, last_modified_by_actor,
-    created_at, updated_at
+SELECT quota_policies.tenant_id, quota_policies.id, quota_policies.scope_kind, quota_policies.scope_id, quota_policies.metric, quota_policies.window_kind, quota_policies.window_seconds, quota_policies.limit_value, quota_policies.burst_value, quota_policies.mode, quota_policies.priority, quota_policies.enabled, quota_policies.valid_from, quota_policies.valid_until, quota_policies.created_by_actor, quota_policies.last_modified_by_actor, quota_policies.created_at, quota_policies.updated_at, quota_policies.model_selector
 FROM quota_policies
 WHERE tenant_id = $1::bigint
   AND ($2::text IS NULL OR scope_kind = $2::text)
   AND ($3::text IS NULL OR scope_id = $3::text)
-  AND ($4::text IS NULL OR metric = $4::text)
-  AND ($5::boolean IS NULL OR enabled = $5::boolean)
-ORDER BY priority ASC, id ASC
-LIMIT $7::integer
-OFFSET $6::integer
+  AND ($4::text IS NULL OR model_selector = $4::text)
+  AND ($5::text IS NULL OR metric = $5::text)
+  AND ($6::boolean IS NULL OR enabled = $6::boolean)
+ORDER BY
+    CASE WHEN model_selector = '*' THEN 0 ELSE 1 END,
+    priority ASC,
+    id ASC
+LIMIT $8::integer
+OFFSET $7::integer
 `
 
 type ListQuotaPoliciesForAdminParams struct {
-	TenantID   int64   `db:"tenant_id" json:"tenant_id"`
-	ScopeKind  *string `db:"scope_kind" json:"scope_kind"`
-	ScopeID    *string `db:"scope_id" json:"scope_id"`
-	Metric     *string `db:"metric" json:"metric"`
-	Enabled    *bool   `db:"enabled" json:"enabled"`
-	PageOffset int32   `db:"page_offset" json:"page_offset"`
-	PageLimit  int32   `db:"page_limit" json:"page_limit"`
+	TenantID      int64   `db:"tenant_id" json:"tenant_id"`
+	ScopeKind     *string `db:"scope_kind" json:"scope_kind"`
+	ScopeID       *string `db:"scope_id" json:"scope_id"`
+	ModelSelector *string `db:"model_selector" json:"model_selector"`
+	Metric        *string `db:"metric" json:"metric"`
+	Enabled       *bool   `db:"enabled" json:"enabled"`
+	PageOffset    int32   `db:"page_offset" json:"page_offset"`
+	PageLimit     int32   `db:"page_limit" json:"page_limit"`
 }
 
-// 运营后台列表: 可选 scope_kind/scope_id/metric/enabled 过滤 + 分页。
+// 运营后台列表: 可选 scope_kind/scope_id/model_selector/metric/enabled 过滤 + 分页。
 // 故意不过滤 valid_from/valid_until/mode, 运营须看到过期+影子+禁用全集。
 func (q *Queries) ListQuotaPoliciesForAdmin(ctx context.Context, arg ListQuotaPoliciesForAdminParams) ([]QuotaPolicy, error) {
 	rows, err := q.db.Query(ctx, listQuotaPoliciesForAdmin,
 		arg.TenantID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.ModelSelector,
 		arg.Metric,
 		arg.Enabled,
 		arg.PageOffset,
@@ -237,6 +236,7 @@ func (q *Queries) ListQuotaPoliciesForAdmin(ctx context.Context, arg ListQuotaPo
 			&i.LastModifiedByActor,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ModelSelector,
 		); err != nil {
 			return nil, err
 		}
@@ -252,30 +252,28 @@ const updateQuotaPolicy = `-- name: UpdateQuotaPolicy :one
 UPDATE quota_policies
 SET scope_kind = $1::text,
     scope_id = $2::text,
-    metric = $3::text,
-    window_kind = $4::text,
-    window_seconds = $5::integer,
-    limit_value = $6::numeric(20,8),
-    burst_value = $7::numeric(20,8),
-    mode = $8::text,
-    priority = $9::integer,
-    enabled = $10::boolean,
-    valid_from = $11::timestamptz,
-    valid_until = $12::timestamptz,
-    last_modified_by_actor = $13::text,
+    model_selector = $3::text,
+    metric = $4::text,
+    window_kind = $5::text,
+    window_seconds = $6::integer,
+    limit_value = $7::numeric(20,8),
+    burst_value = $8::numeric(20,8),
+    mode = $9::text,
+    priority = $10::integer,
+    enabled = $11::boolean,
+    valid_from = $12::timestamptz,
+    valid_until = $13::timestamptz,
+    last_modified_by_actor = $14::text,
     updated_at = NOW()
-WHERE tenant_id = $14::bigint
-  AND id = $15::bigint
-RETURNING
-    tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds,
-    limit_value, burst_value, mode, priority, enabled,
-    valid_from, valid_until, created_by_actor, last_modified_by_actor,
-    created_at, updated_at
+WHERE tenant_id = $15::bigint
+  AND id = $16::bigint
+RETURNING tenant_id, id, scope_kind, scope_id, metric, window_kind, window_seconds, limit_value, burst_value, mode, priority, enabled, valid_from, valid_until, created_by_actor, last_modified_by_actor, created_at, updated_at, model_selector
 `
 
 type UpdateQuotaPolicyParams struct {
 	ScopeKind           string             `db:"scope_kind" json:"scope_kind"`
 	ScopeID             string             `db:"scope_id" json:"scope_id"`
+	ModelSelector       string             `db:"model_selector" json:"model_selector"`
 	Metric              string             `db:"metric" json:"metric"`
 	WindowKind          string             `db:"window_kind" json:"window_kind"`
 	WindowSeconds       int32              `db:"window_seconds" json:"window_seconds"`
@@ -296,6 +294,7 @@ func (q *Queries) UpdateQuotaPolicy(ctx context.Context, arg UpdateQuotaPolicyPa
 	row := q.db.QueryRow(ctx, updateQuotaPolicy,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.ModelSelector,
 		arg.Metric,
 		arg.WindowKind,
 		arg.WindowSeconds,
@@ -330,6 +329,7 @@ func (q *Queries) UpdateQuotaPolicy(ctx context.Context, arg UpdateQuotaPolicyPa
 		&i.LastModifiedByActor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelSelector,
 	)
 	return i, err
 }

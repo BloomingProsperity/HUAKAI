@@ -34,10 +34,10 @@ func TestEgressDialMetricOK(t *testing.T) {
 	oldDial := sidecarDialContext
 	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
 	defer func() { sidecarDialContext = oldDial }()
-	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"ok":true}`), nil)
+	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":3,"ok":true}`), nil)
 
-	client := NewSidecarClient("/tmp/tls-sidecar.sock").WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
+	client := NewSidecarClient(sidecarTestSocket).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
 	if err != nil {
 		t.Fatalf("DialTLS: %v", err)
 	}
@@ -67,10 +67,10 @@ func TestEgressDialMetricRejected(t *testing.T) {
 	oldDial := sidecarDialContext
 	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
 	defer func() { sidecarDialContext = oldDial }()
-	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"ok":false,"error":"unknown profile foo"}`), nil)
+	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":3,"ok":false,"error":{"code":"profile_unknown","message":"unknown profile foo"}}`), nil)
 
-	client := NewSidecarClient("/tmp/tls-sidecar.sock").WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	_, err := client.DialTLS(context.Background(), "api.example.com", 443, "some-profile", false, nil)
+	client := NewSidecarClient(sidecarTestSocket).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := client.DialTLS(context.Background(), "api.example.com", 443, "some-profile", nil, nil)
 	if err == nil {
 		t.Fatal("sidecar 拒绝时 DialTLS 应返回 err")
 	}
@@ -98,10 +98,10 @@ func TestEgressDialMetricDialFail(t *testing.T) {
 	}
 	defer func() { sidecarDialContext = oldDial }()
 
-	client := NewSidecarClient("/tmp/missing.sock").WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client := NewSidecarClient("/run/huakai/missing.sock").WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, false, nil)
+	_, err := client.DialTLS(ctx, "127.0.0.1", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
 	if err == nil {
 		t.Fatal("拨号失败时 DialTLS 应 fail-closed 返回 err")
 	}

@@ -321,6 +321,37 @@ func TestListByAccountExposesProjectRef(t *testing.T) {
 	}
 }
 
+func TestLoadExactForPortableExportLocksTenantAccountCredentialAndVersion(t *testing.T) {
+	db := &credentialStoreDBStub{
+		queryRow: func(_ context.Context, sql string, args ...interface{}) pgx.Row {
+			for _, required := range []string{
+				"ac.id = $1",
+				"ac.tenant_id = $2",
+				"ac.provider_account_id = $3",
+				"ac.credential_version = $4",
+				"pa.tenant_id = ac.tenant_id",
+				"ac.deleted_at IS NULL",
+				"pa.deleted_at IS NULL",
+			} {
+				if !strings.Contains(sql, required) {
+					t.Fatalf("精确迁移凭据 SQL 缺少 %q：\n%s", required, sql)
+				}
+			}
+			want := []interface{}{int64(301), int64(7), int64(42), int32(9)}
+			if !reflect.DeepEqual(args, want) {
+				t.Fatalf("精确迁移凭据参数=%#v，期望 %#v", args, want)
+			}
+			return credentialStoreRowStub{err: pgx.ErrNoRows}
+		},
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+
+	_, err := store.LoadExactForPortableExport(context.Background(), 7, 42, 301, 9)
+	if !errors.Is(err, ErrCredentialVersionConflict) {
+		t.Fatalf("精确版本不存在 err=%v，期望 %v", err, ErrCredentialVersionConflict)
+	}
+}
+
 func mustTestKeyProvider(t *testing.T) KeyProvider {
 	t.Helper()
 	provider, err := NewStaticKeyProvider("test-key", []byte("0123456789abcdef0123456789abcdef"))

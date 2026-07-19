@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
 )
 
 const (
@@ -48,6 +50,7 @@ const (
 	AuthModeChatGPTOAuth     = "chatgpt_oauth"
 	AuthModeCodexCLIOAuth    = "codex_cli_oauth"
 	AuthModeCodexWebOAuth    = "codex_web_oauth"
+	AuthModeCodexAgent       = "codex_agent_identity"
 	AuthModeAzure            = "azure"
 	AuthModeRefreshToken     = "refresh_token"
 	AuthModeAIStudioAPIKey   = "aistudio_api_key"
@@ -289,6 +292,7 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeChatGPTOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexCLIOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeCodexWebOAuth, runtimeKind: RuntimeSessionToken, anyOf: []string{"session_token", "access_token", "refresh_token"}, refreshable: true, allowGrace: true, sessionFirst: true},
+		codexAgentModeHandler{},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeAzure, runtimeKind: RuntimeAPIKey, anyOf: []string{"api_key", "azure_api_key", "access_token", "mock_token_endpoint"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorOpenAI, authMode: AuthModeRefreshToken, runtimeKind: RuntimeUpstreamPassthrough, anyOf: []string{"access_token", "refresh_token"}, refreshable: true, allowGrace: true},
 		handlerSpec{vendor: VendorGemini, authMode: AuthModeAIStudioAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
@@ -319,6 +323,29 @@ func defaultHandlers() []ModeHandler {
 		handlerSpec{vendor: VendorHunyuan, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 		handlerSpec{vendor: VendorStep, authMode: AuthModeAPIKey, runtimeKind: RuntimeAPIKey, required: []string{"api_key"}},
 	}
+}
+
+type codexAgentModeHandler struct{}
+
+func (codexAgentModeHandler) Vendor() string      { return VendorOpenAI }
+func (codexAgentModeHandler) AuthMode() string    { return AuthModeCodexAgent }
+func (codexAgentModeHandler) RuntimeKind() string { return RuntimeUpstreamPassthrough }
+func (codexAgentModeHandler) Refreshable() bool   { return true }
+func (codexAgentModeHandler) AllowGrace() bool    { return false }
+
+func (codexAgentModeHandler) ValidatePayload(raw []byte) error {
+	if err := codexagent.ValidatePayload(raw, false); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	return nil
+}
+
+func (codexAgentModeHandler) RuntimeMaterial(raw []byte) (RuntimeMaterial, error) {
+	value, extra, err := codexagent.BuildAuthorization(raw, time.Now())
+	if err != nil {
+		return RuntimeMaterial{}, fmt.Errorf("%w: %v", ErrRuntimeMaterial, err)
+	}
+	return RuntimeMaterial{Kind: RuntimeUpstreamPassthrough, Value: value, Extra: extra}, nil
 }
 
 func parsePayloadFields(raw []byte) (map[string]json.RawMessage, error) {

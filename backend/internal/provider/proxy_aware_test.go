@@ -9,7 +9,7 @@ import (
 )
 
 // PROXY-02a：WrapTransportWithProxy 必须允许一个 proxy-aware 的 RoundTripper
-// （例如伪装用的 uTLS dialer）在其握手之下注入代理，而不是把它当作不支持的
+// （例如 Rust sidecar transport）在出口侧注入代理，而不是把它当作不支持的
 // transport 直接拒绝。
 
 type fakeProxyAware struct {

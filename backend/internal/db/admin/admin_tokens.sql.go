@@ -19,7 +19,7 @@ WHERE deleted_at IS NULL
 
 // Used by bootstrap: env-var bootstrap MUST only insert when NO
 // admin token row has ever been minted (regardless of current status).
-// an active-only count would let a stale env
+// An active-only count would let a stale env
 // var re-bootstrap after the operator disabled/revoked all tokens, which
 // breaks the "one-shot" guarantee. Counting all non-deleted rows closes
 // that hole; if you want to wipe and re-bootstrap, hard-delete the row.
@@ -45,6 +45,53 @@ func (q *Queries) DisableBootstrapAdminTokens(ctx context.Context) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const getAdminTokenByID = `-- name: GetAdminTokenByID :one
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    created_at
+FROM admin_tokens
+WHERE id = $1::bigint
+  AND deleted_at IS NULL
+`
+
+type GetAdminTokenByIDRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Name          string             `db:"name" json:"name"`
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Role          string             `db:"role" json:"role"`
+	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
+	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Fetch a single admin token's metadata (no key_hash) for revoke
+// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
+func (q *Queries) GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error) {
+	row := q.db.QueryRow(ctx, getAdminTokenByID, id)
+	var i GetAdminTokenByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.KeyPrefix,
+		&i.Role,
+		&i.ScopeTenantID,
+		&i.Bootstrap,
+		&i.Status,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const insertAdminToken = `-- name: InsertAdminToken :one
@@ -89,6 +136,85 @@ func (q *Queries) InsertAdminToken(ctx context.Context, arg InsertAdminTokenPara
 	return id, err
 }
 
+const listAdminTokens = `-- name: ListAdminTokens :many
+SELECT
+    id,
+    name,
+    key_prefix,
+    role,
+    scope_tenant_id,
+    bootstrap,
+    status,
+    expires_at,
+    last_used_at,
+    revoked_at,
+    revoked_reason,
+    created_at
+FROM admin_tokens
+WHERE deleted_at IS NULL
+ORDER BY id DESC
+LIMIT $2::int
+OFFSET $1::int
+`
+
+type ListAdminTokensParams struct {
+	PageOffset int32 `db:"page_offset" json:"page_offset"`
+	PageLimit  int32 `db:"page_limit" json:"page_limit"`
+}
+
+type ListAdminTokensRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Name          string             `db:"name" json:"name"`
+	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
+	Role          string             `db:"role" json:"role"`
+	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
+	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
+	Status        string             `db:"status" json:"status"`
+	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	LastUsedAt    pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
+	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
+	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
+	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+// Metadata-only listing of admin tokens for the operator console. NEVER
+// selects key_hash — only key_prefix (insufficient on its own to
+// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
+// platform_admin scope sees every row; the handler-side RBAC decides who
+// may call this read.
+func (q *Queries) ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error) {
+	rows, err := q.db.Query(ctx, listAdminTokens, arg.PageOffset, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAdminTokensRow
+	for rows.Next() {
+		var i ListAdminTokensRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.KeyPrefix,
+			&i.Role,
+			&i.ScopeTenantID,
+			&i.Bootstrap,
+			&i.Status,
+			&i.ExpiresAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+			&i.RevokedReason,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lookupAdminTokenByPrefix = `-- name: LookupAdminTokenByPrefix :many
 
 SELECT
@@ -126,14 +252,13 @@ type LookupAdminTokenByPrefixRow struct {
 	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 }
 
-// Slice 2 (N+4b2) admin_tokens queries.
-// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
-// this file is consumed only by internal/admin and never by
-// internal/auth (the inbound customer resolver). queries
+// Admin token queries.
+// This file is consumed only by internal/admin and never by
+// internal/auth (the inbound customer resolver). Queries
 // never SELECT key_hash for any purpose other than bcrypt comparison
 // inside the resolver, and never join into log/trace fields.
 // Returns active candidates whose key_prefix matches. Mirrors the
-// LookupAPIKeysByPrefix shape from N+4a (LIMIT 5 caps bcrypt fanout DOS).
+// customer API key lookup shape (LIMIT 5 caps bcrypt fanout DOS).
 // Status is enforced here; deleted_at filters parent rows.
 //
 // tenant_operator tokens MUST be rejected
@@ -187,130 +312,6 @@ type RevokeAdminTokenParams struct {
 // Soft-revoke an admin token. Tenant-bound revocation isn't enforced here
 // because admin_tokens has no tenant ownership for platform_admin rows;
 // the handler-side RBAC check decides whether the caller can revoke.
-const listAdminTokens = `-- name: ListAdminTokens :many
-SELECT
-    id,
-    name,
-    key_prefix,
-    role,
-    scope_tenant_id,
-    bootstrap,
-    status,
-    expires_at,
-    last_used_at,
-    revoked_at,
-    revoked_reason,
-    created_at
-FROM admin_tokens
-WHERE deleted_at IS NULL
-ORDER BY id DESC
-LIMIT $1::int
-OFFSET $2::int
-`
-
-type ListAdminTokensParams struct {
-	PageLimit  int32 `db:"page_limit" json:"page_limit"`
-	PageOffset int32 `db:"page_offset" json:"page_offset"`
-}
-
-// Metadata-only listing of admin tokens for the operator console. NEVER
-// selects key_hash — only key_prefix (insufficient on its own to
-// authenticate) plus lifecycle columns. Soft-deleted rows are excluded.
-type ListAdminTokensRow struct {
-	ID            int64              `db:"id" json:"id"`
-	Name          string             `db:"name" json:"name"`
-	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
-	Role          string             `db:"role" json:"role"`
-	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
-	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
-	Status        string             `db:"status" json:"status"`
-	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	LastUsedAt    pgtype.Timestamptz `db:"last_used_at" json:"last_used_at"`
-	RevokedAt     pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
-	RevokedReason *string            `db:"revoked_reason" json:"revoked_reason"`
-	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-func (q *Queries) ListAdminTokens(ctx context.Context, arg ListAdminTokensParams) ([]ListAdminTokensRow, error) {
-	rows, err := q.db.Query(ctx, listAdminTokens, arg.PageLimit, arg.PageOffset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListAdminTokensRow
-	for rows.Next() {
-		var i ListAdminTokensRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.KeyPrefix,
-			&i.Role,
-			&i.ScopeTenantID,
-			&i.Bootstrap,
-			&i.Status,
-			&i.ExpiresAt,
-			&i.LastUsedAt,
-			&i.RevokedAt,
-			&i.RevokedReason,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getAdminTokenByID = `-- name: GetAdminTokenByID :one
-SELECT
-    id,
-    name,
-    key_prefix,
-    role,
-    scope_tenant_id,
-    bootstrap,
-    status,
-    expires_at,
-    created_at
-FROM admin_tokens
-WHERE id = $1::bigint
-  AND deleted_at IS NULL
-`
-
-type GetAdminTokenByIDRow struct {
-	ID            int64              `db:"id" json:"id"`
-	Name          string             `db:"name" json:"name"`
-	KeyPrefix     string             `db:"key_prefix" json:"key_prefix"`
-	Role          string             `db:"role" json:"role"`
-	ScopeTenantID *int64             `db:"scope_tenant_id" json:"scope_tenant_id"`
-	Bootstrap     bool               `db:"bootstrap" json:"bootstrap"`
-	Status        string             `db:"status" json:"status"`
-	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	CreatedAt     pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-// Fetch a single admin token's metadata (no key_hash) for revoke
-// pre-checks and idempotency decisions. Soft-deleted rows are excluded.
-func (q *Queries) GetAdminTokenByID(ctx context.Context, id int64) (GetAdminTokenByIDRow, error) {
-	row := q.db.QueryRow(ctx, getAdminTokenByID, id)
-	var i GetAdminTokenByIDRow
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.KeyPrefix,
-		&i.Role,
-		&i.ScopeTenantID,
-		&i.Bootstrap,
-		&i.Status,
-		&i.ExpiresAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 func (q *Queries) RevokeAdminToken(ctx context.Context, arg RevokeAdminTokenParams) (int64, error) {
 	result, err := q.db.Exec(ctx, revokeAdminToken, arg.Reason, arg.ID)
 	if err != nil {

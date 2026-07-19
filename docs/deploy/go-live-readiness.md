@@ -4,7 +4,7 @@
 > 具体起栈步骤见 [production-bootstrap.md](./production-bootstrap.md);本文只讲"上线该知道的全貌"。
 > 涉及 deploy/prod 的实际改动按仓库规则属 Owner-gated——本文是运营对照,不代表已执行部署。
 
-最后更新:2026-07-12(前端全设计+接线波闭环后:用户/运营两面 UI 补齐 + 邮件模板 + 运行日志入库)。
+最后更新:2026-07-18(全局日志分类、自动保留与运维健康闭环)。
 
 ---
 
@@ -35,7 +35,7 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
 | `HUAKAI_QUOTA_RECONCILER_ENABLED` | **开** | 补偿结算/释放失败、清扫孤儿预留 | 结算/崩溃窗口产生的预留永久卡 reserved,冻结额度→客户被误限流(429) |
 | `HUAKAI_ALERTING_EVAL_ENABLED` | **开** | 告警规则评估循环(无规则时空转 no-op) | 配了告警规则却不评估,静默失效 |
 | `HUAKAI_CONTENT_MODERATION_ENABLED` | **开** | 内容审核执行器(**租户级配置默认 Enabled=false,未配置租户仍放行**) | admin 在面板开了审核也不生效 |
-| `HUAKAI_TRANSPORT_FORCE_H1` | **开** | 出口锁 HTTP/1.1(Go-native uTLS 只广告 h1) | 仅换 BoringSSL sidecar 能自洽 h2 时才关 |
+| `HUAKAI_TRANSPORT_FORCE_H1` | **关** | Rust 出口按 profile 的真实 ALPN 工作 | 仅在上游 H2 兼容故障期间临时设 true；会牺牲对应 profile 的 ALPN 精度 |
 | `HUAKAI_BUDGET_FAIL_CLOSED` | 关(fail-open) | budget 基础设施故障时是否拒绝 | 设 true=额度强一致但故障可能误拒 |
 
 ## 4. 接入上游账号(含国内厂 key 的两种形态)
@@ -83,11 +83,14 @@ HUAKAI 是一个 **clean-room、MIT 许可的 API 中转站(relay)**:把一批�
   主题+HTML 正文租户级自定义,零 schema(存邮件设置 k/v);`{{占位符}}` 渲染,
   **fail-safe 三重回退**(store 读错/覆盖为空/未知占位符→内置默认),模板问题绝不阻断
   auth 邮件送达;管理端 PUT templates + 预览端点(样例值纯渲染);设置中心「邮件」tab 聚合编辑器。
-- **运行日志入库+查询**(§sub2api ops_system_logs 跟法):两栈(zap+slog)warn+ 异步
-  批量入库(表 ops_runtime_logs,迁移 0180),fail-open 铁律(队列满/DB 故障/panic 只
-  丢弃计数,绝不反压业务);admin 键集分页查询(level/component/**request_id** 过滤)+
-  cleanup 保留策略 + sink 健康观测;前端「日志与诊断」页实时轮询(3s 增量合并)面板。
-  三镜均无服务端推送日志流,轮询即业界形态。
+- **全局日志分类、入库与固定保留**：zap/slog 的显式分类 Info 与全部 Warn/Error 进入
+  异常优先双队列，批量写入 `ops_runtime_logs`；队列满、DB 故障和 panic 不反压业务，
+  但分别累计容量、丢弃和失败批次。分类固定为操作/资金/安全/错误/访问/恢复，支持按
+  事件、结果、错误、租户及请求/追踪/上游/幂等关联检索。迁移 0195 给 14 张普通日志表
+  增加可信 `ingested_at`，后台按 PostgreSQL 时钟生成固定 30 天截止线，通过事务租约和 5000 行小批自动清理；
+  手工入口只能显式确认并触发相同策略，不能自定时间或清空全表。资金账本、幂等事实、
+  处罚状态和待恢复任务永久排除。上线前必须检查 `/v1/admin/ops/runtime-logs/health` 的
+  异常队列、最近清理成功、连续失败和积压状态。
 - **DeepSeek 缓存命中计价修复**:命中价=同版本 input 1/10(迁移 0179)。
 
 ## 6. 能力边界与法律免责
@@ -96,7 +99,7 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 
 - **上游账号合规**:接入的上游账号(官方 key / 第三方中转 key)是否符合该厂商服务条款、是否有转售授权,由运营者自负。HUAKAI 只提供转发与记账,不代表对任何上游的授权背书。
 - **订阅反转车道(experimental,默认关)**:除官方 key / 第三方中转外,HUAKAI 支持把**个人订阅的 OAuth 凭据**反转成可转发上游(如 Antigravity/Gemini Code Assist 走 cloudcode-pa、ChatGPT/Codex session、Claude session 等),逐 family env-gate、**默认全部不注册**,部署方须显式 opt-in 才构造对应 adapter(env 形如 `HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER=true`,cursor/copilot/kiro/windsurf/gemini-advanced 等车道同构;凭据经 CLI 导入解析后由 credentialworker 自动纳入 refresh 健康探测)。这类车道属"给能力非控制":HUAKAI 提供 OAuth 刷新 + 转发的温和实现(仅刷 token、按客户端既有形态转发,**不做**设备指纹/机器码重置/关联封规避等激进 ban-evasion),**个人订阅是否允许这样反转、是否违反该服务的用户协议,由运营者自负**。凭据 AES 信封加密存储,刷新走 SSRF 防护出口。
-- **TLS 出口伪装**:sidecar 的 BoringSSL 指纹伪装**默认关**;Go-native 出口是温和 uTLS(仅 ClientHello 姿态,锁 h1)。HUAKAI **不做**激进 ban-evasion(逐请求指纹轮换/设备码伪造/软限流规避等——见项目"不做清单")。
+- **TLS 出口伪装**:订阅反转账号的 mimicry 出口只走同镜像 Rust/BoringSSL sidecar，启动时校验 IPC 能力和全部 profile，运行时不可用即 fail-closed；官方 API key 继续走 Go standard transport。HUAKAI **不做**激进 ban-evasion(逐请求指纹轮换/设备码伪造/软限流规避等——见项目"不做清单")。
 - **内容审核**:审核执行器默认开但租户配置默认关(§3);是否对客户流量启用审核、按什么标准,由运营者按其合规义务配置。
 - **数据与隐私**:accesslog 只记 URL.Path、绝不记 query/body/headers/credentials;凭据 AES 信封加密(AAD 绑租户);审计链 ed25519 签名。运营者仍需按其司法辖区履行数据保护义务。
 - **转售定价与计费**:计费按 token×价表×倍率;价缺失时 fail-closed 拒绝(不 0 价白吃),ratio 冷启故障 fail-open→1.0+pending 标记待人工补价(§5)。
@@ -118,8 +121,7 @@ HUAKAI 对标成熟中转站给**同等能力**,能力默认全开、控制权�
 - 真支付 provider 接入(手动 admin 充值可替代)。
 - admin 用量列表按 request_id 过滤(触 billing sqlc 生成码漂移面,defer;运行日志表
   自身可按 request_id 查,用户侧 `/v1/generation?id=` 已可单查)。
-- 运行日志自动清理 worker(当前靠 cleanup 端点手动/外部调度);chi access-log 的
-  X-Request-Id 与计费链 logical_request_id 尚无关联(两套 ID,查日志用后者)。
+- chi access-log 的 X-Request-Id 与计费链 logical_request_id 尚无统一关联(两套 ID，运行日志已可分别检索)。
 - S3-4 二级:退款↔sweep 竞态的冲减备忘重试(job_kind 迁移)——一级可观测已上,视数据积累决定是否做。
 - Hermes 提议-确认改动链默认关(`HUAKAI_HERMES_LLM_PROPOSE_ENABLED`);confirmCache 进程内,多副本需 sticky 路由(已加 re-propose 逃生阀)。
 - 存量英文注释逐步转中文(分批工程,不影响功能)。

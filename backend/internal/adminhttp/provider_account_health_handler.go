@@ -12,11 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp/accounthealthview"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotawindowview"
 	"github.com/BloomingProsperity/HUAKAI/internal/recentreq"
 )
 
@@ -49,31 +51,35 @@ type providerAccountSchedulingAuthCooldown interface {
 }
 
 type providerAccountHealthResponseBody struct {
-	ID                         int64                           `json:"id"`
-	HealthState                string                          `json:"health_state"`
-	HealthStateUntil           *string                         `json:"health_state_until,omitempty"`
-	LastProbeLatencyMS         *int32                          `json:"last_probe_latency_ms"`
-	LastProbeAt                *string                         `json:"last_probe_at"`
-	LastObservedAt             *string                         `json:"last_request_observed_at"`
-	ObservationSource          string                          `json:"last_request_observation_source"`
-	ModelSyncLastCheckAt       *string                         `json:"model_sync_last_check_at"`
-	SessionWindow5hStart       *string                         `json:"session_window_5h_start"`
-	SessionWindow5hEnd         *string                         `json:"session_window_5h_end"`
-	SessionWindow5hStatus      *string                         `json:"session_window_5h_status"`
-	SessionWindow5hUtilization *float64                        `json:"session_window_5h_utilization"`
-	SessionWindow7dStart       *string                         `json:"session_window_7d_start"`
-	SessionWindow7dEnd         *string                         `json:"session_window_7d_end"`
-	SessionWindow7dStatus      *string                         `json:"session_window_7d_status"`
-	SessionWindow7dUtilization *float64                        `json:"session_window_7d_utilization"`
-	LastRefreshAt              *string                         `json:"last_refresh_at"`
-	LastRefreshOutcome         *string                         `json:"last_refresh_outcome"`
-	FailureClass               *string                         `json:"failure_class"`
-	FailureCount               int32                           `json:"failure_count"`
-	Enabled                    bool                            `json:"enabled"`
-	RequiresAction             bool                            `json:"requires_action"`
-	UpdatedAt                  string                          `json:"updated_at"`
-	Scheduling                 accounthealthview.Response      `json:"scheduling"`
-	Observability              accounthealthview.Observability `json:"observability"`
+	ID                         int64                               `json:"id"`
+	HealthState                string                              `json:"health_state"`
+	HealthStateUntil           *string                             `json:"health_state_until,omitempty"`
+	LastProbeLatencyMS         *int32                              `json:"last_probe_latency_ms"`
+	LastProbeAt                *string                             `json:"last_probe_at"`
+	LastObservedAt             *string                             `json:"last_request_observed_at"`
+	ObservationSource          string                              `json:"last_request_observation_source"`
+	ModelSyncLastCheckAt       *string                             `json:"model_sync_last_check_at"`
+	SessionWindow5hStart       *string                             `json:"session_window_5h_start"`
+	SessionWindow5hEnd         *string                             `json:"session_window_5h_end"`
+	SessionWindow5hStatus      *string                             `json:"session_window_5h_status"`
+	SessionWindow5hUtilization *float64                            `json:"session_window_5h_utilization"`
+	SessionWindow7dStart       *string                             `json:"session_window_7d_start"`
+	SessionWindow7dEnd         *string                             `json:"session_window_7d_end"`
+	SessionWindow7dStatus      *string                             `json:"session_window_7d_status"`
+	SessionWindow7dUtilization *float64                            `json:"session_window_7d_utilization"`
+	QuotaWindows               quotawindowview.Matrix              `json:"quota_windows"`
+	QuotaFacts                 []accountquota.ViewFact             `json:"quota_facts"`
+	LastRefreshAt              *string                             `json:"last_refresh_at"`
+	LastRefreshOutcome         *string                             `json:"last_refresh_outcome"`
+	FailureClass               *string                             `json:"failure_class"`
+	FailureCount               int32                               `json:"failure_count"`
+	Enabled                    bool                                `json:"enabled"`
+	RequiresAction             bool                                `json:"requires_action"`
+	UpdatedAt                  string                              `json:"updated_at"`
+	Scheduling                 accounthealthview.Response          `json:"scheduling"`
+	Observability              accounthealthview.Observability     `json:"observability"`
+	Subscription               *accounthealthview.SubscriptionAxis `json:"subscription,omitempty"`
+	SystemLabels               []string                            `json:"system_labels"`
 	// 当没有进程内数据可用时(ring 为 nil 或没有记录到请求),
 	// RecentRequests 会被省略。零值不会被输出。
 	RecentRequests *recentRequestsSummary `json:"recent_requests,omitempty"`
@@ -204,14 +210,20 @@ func providerAccountHealthResponseWithSchedulingAt(
 	authSnapshot authcooldown.Snapshot,
 	authConfigured bool,
 ) (providerAccountHealthResponseBody, error) {
-	// requires_action 是确定性 admin 视图规则,不从请求输入或上游响应推断。
-	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3
 	status5h, utilization5h := activeSessionWindowView(row.SessionWindow5hEnd, row.SessionWindow5hStatus, row.SessionWindow5hUtilization, now)
 	status7d, utilization7d := activeSessionWindowView(row.SessionWindow7dEnd, row.SessionWindow7dStatus, row.SessionWindow7dUtilization, now)
+	subscription, systemLabels := accounthealthview.BuildSubscription(row)
 	scheduling, err := accounthealthview.Build(row, channelRecord, channelRecordFound, authSnapshot, authConfigured, now)
 	if err != nil {
 		return providerAccountHealthResponseBody{}, err
 	}
+	quotaFacts, err := accountquota.ParseView([]byte(row.QuotaFacts), now)
+	if err != nil {
+		return providerAccountHealthResponseBody{}, err
+	}
+	// requires_action 只使用持久化的确定性状态：账号已撤销、连续刷新失败，或
+	// 当前不存在唯一可服务凭据。它不从请求内容和上游自由文本推断。
+	requiresAction := row.HealthState == "revoked" || row.FailureCount > 3 || (row.Enabled && !scheduling.Credential.Eligible)
 	return providerAccountHealthResponseBody{
 		ID:                         row.ID,
 		HealthState:                row.HealthState,
@@ -229,16 +241,27 @@ func providerAccountHealthResponseWithSchedulingAt(
 		SessionWindow7dEnd:         formatProviderAccountHealthTime(row.SessionWindow7dEnd),
 		SessionWindow7dStatus:      status7d,
 		SessionWindow7dUtilization: utilization7d,
-		LastRefreshAt:              formatProviderAccountHealthTime(row.LastRefreshAt),
-		LastRefreshOutcome:         row.LastRefreshOutcome,
-		FailureClass:               row.FailureClass,
-		FailureCount:               row.FailureCount,
-		Enabled:                    row.Enabled,
-		RequiresAction:             requiresAction,
-		UpdatedAt:                  requiredProviderAccountHealthTime(row.UpdatedAt),
-		Scheduling:                 scheduling,
-		Observability:              accounthealthview.BuildObservability(row, now),
-		RecentRequests:             recentRequestsSummaryFor(ring, row.ID),
+		QuotaWindows: quotawindowview.FromPostgres(quotawindowview.PostgresSnapshot{
+			ObservedAt: row.QuotaSnapshotObservedAt, Source: row.QuotaSnapshotSource,
+			Outcome: row.QuotaSnapshotOutcome, ErrorClass: row.QuotaSnapshotErrorClass,
+			FiveHourStart: row.SessionWindow5hStart, FiveHourEnd: row.SessionWindow5hEnd,
+			FiveHourUtilization: row.SessionWindow5hUtilization,
+			SevenDayStart:       row.SessionWindow7dStart, SevenDayEnd: row.SessionWindow7dEnd,
+			SevenDayUtilization: row.SessionWindow7dUtilization,
+		}, now),
+		QuotaFacts:         quotaFacts,
+		LastRefreshAt:      formatProviderAccountHealthTime(row.LastRefreshAt),
+		LastRefreshOutcome: row.LastRefreshOutcome,
+		FailureClass:       row.FailureClass,
+		FailureCount:       row.FailureCount,
+		Enabled:            row.Enabled,
+		RequiresAction:     requiresAction,
+		UpdatedAt:          requiredProviderAccountHealthTime(row.UpdatedAt),
+		Scheduling:         scheduling,
+		Observability:      accounthealthview.BuildObservability(row, now),
+		Subscription:       subscription,
+		SystemLabels:       systemLabels,
+		RecentRequests:     recentRequestsSummaryFor(ring, row.ID),
 	}, nil
 }
 

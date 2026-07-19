@@ -62,13 +62,14 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		// 生产快照不投影 provider_accounts.cap_quota_* 历史列；保留状态与启用缺链
 		// 见 docs/architecture/deprecated-schema.md。
 		snap := &AccountSnapshot{
-			ID:             r.ID,
-			TenantID:       r.TenantID,
-			ProtocolFamily: r.UpstreamProtocol,
-			Priority:       int(r.Priority),
-			Weight:         r.StaticWeight,
-			MaxConcurrency: int(r.CapConcurrency),
-			LoadRate:       loadRate(r.InFlightCount, r.CapConcurrency),
+			ID:                r.ID,
+			TenantID:          r.TenantID,
+			ProtocolFamily:    r.UpstreamProtocol,
+			Priority:          int(r.Priority),
+			Weight:            r.StaticWeight,
+			UpstreamCostRatio: r.UpstreamCostRatio,
+			MaxConcurrency:    int(r.CapConcurrency),
+			LoadRate:          loadRate(r.InFlightCount, r.CapConcurrency),
 			// MaxWaiting 供给 selector 的 WaitPlan 回落路径
 			//(selector.go fallbackWaitPlan)。cap_queue_fallback 是
 			// 每账号在回落队列长度上的上限。
@@ -76,13 +77,20 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 			// WaitTimeoutMS 保持 0 —— 当设置了 policy 时,selector 会用
 			// RoutingPolicy.FallbackTimeoutMS 覆盖它。
 			// 每账号的超时 override 是 Phase E 的精化项。
-			HealthState:          r.HealthState,
-			ModelRateLimits:      modelRateLimits,
-			WindowCostLimitCents: r.WindowCostLimitCents,
-			MaxSessions:          int(r.MaxSessions),
-			DisableCooling:       r.DisableCooling,
-			RPMLimit:             r.RpmLimit,
-			TPMLimit:             r.TpmLimit,
+			HealthState:                 r.HealthState,
+			ModelRateLimits:             modelRateLimits,
+			WindowCostLimitCents:        r.WindowCostLimitCents,
+			MaxSessions:                 int(r.MaxSessions),
+			DisableCooling:              r.DisableCooling,
+			RPMLimit:                    r.RpmLimit,
+			TPMLimit:                    r.TpmLimit,
+			SuccessEWMA:                 float64Value(r.SuccessEwma),
+			ErrorEWMA:                   float64Value(r.ErrorEwma),
+			ResponseLatencyMSEWMA:       float64Value(r.ResponseLatencyMsEwma),
+			RoutingSignalSampleCount:    int64Value(r.RoutingSignalSampleCount),
+			UpstreamQuotaState:          r.UpstreamQuotaState,
+			UpstreamQuotaRemainingKnown: r.UpstreamQuotaRemainingKnown,
+			UpstreamQuotaRemaining:      r.UpstreamQuotaRemainingPercent,
 		}
 		if r.LastDispatchAt.Valid {
 			snap.LastUsedAt = r.LastDispatchAt.Time
@@ -90,9 +98,32 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		if r.HealthStateUntil.Valid {
 			snap.HealthStateUntil = r.HealthStateUntil.Time
 		}
+		if r.RoutingSignalObservedAt.Valid {
+			snap.RoutingSignalObservedAt = r.RoutingSignalObservedAt.Time.UTC()
+		}
+		if r.UpstreamQuotaResetsAt.Valid {
+			snap.UpstreamQuotaResetsAt = r.UpstreamQuotaResetsAt.Time.UTC()
+		}
+		if r.UpstreamQuotaObservedAt.Valid {
+			snap.UpstreamQuotaObservedAt = r.UpstreamQuotaObservedAt.Time.UTC()
+		}
 		out = append(out, snap)
 	}
 	return out, nil
+}
+
+func float64Value(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 type modelRateLimitJSON struct {

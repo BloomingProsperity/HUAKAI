@@ -26,6 +26,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -189,18 +190,37 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 		return
 	}
 	budget := fallbackexec.NormalBudget(plan)
+	authFailoverUsed := false
 	var coordinator bindingfallback.Coordinator
+	excludedAccounts := make(map[int64]struct{})
 	for i := 0; i < budget; i++ {
-		outcome := relay.runCountTokensAttempt(w, ctx, ident, model, body, resolved, plan.Attempts[i], i+1, nil)
+		planIdx := i
+		if planIdx >= len(plan.Attempts) {
+			planIdx = len(plan.Attempts) - 1
+		}
+		outcome := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, plan.Attempts[planIdx], i+1, excludedAccounts, nil)
 		if outcome.done {
 			return
+		}
+		if failure := outcome.failure; failure != nil && failure.AuthFailoverEligible && failure.RetryPermitted {
+			if !authFailoverUsed && (relay.retryBudget == nil || relay.retryBudget.Allow(ident.TenantID)) {
+				authFailoverUsed = true
+				if i+1 >= budget {
+					budget++
+				}
+				continue
+			}
 		}
 		decision, phase := fallbackexec.ObserveFailure(&coordinator, outcome.failure, plan, i+1 < budget, false, true)
 		switch decision.Action {
 		case bindingfallback.ActionContinuePrimary:
+			if relay.retryBudget != nil && !relay.retryBudget.Allow(ident.TenantID) {
+				fallbackexec.WriteHTTP(w, outcome.failure)
+				return
+			}
 			continue
 		case bindingfallback.ActionTransition:
-			target := relay.runCountTokensAttempt(w, ctx, ident, model, body, resolved, phase.Attempts[0], i+2, &decision.Transition)
+			target := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, phase.Attempts[0], i+2, excludedAccounts, &decision.Transition)
 			if !target.done {
 				fallbackexec.WriteHTTP(w, target.failure)
 			}
@@ -217,9 +237,9 @@ type countTokensAttemptOutcome struct {
 	done    bool
 }
 
-func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, transition *bindingfallback.Transition) countTokensAttemptOutcome {
+func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, requestID string, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}, transition *bindingfallback.Transition) countTokensAttemptOutcome {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
-	selRes, failure := relay.selectAccount(ctx, ident, model, resolved, attempt, attemptSeq)
+	selRes, failure := relay.selectAccount(ctx, requestID, ident, model, resolved, attempt, attemptSeq, excludedAccounts)
 	if failure != nil {
 		return countTokensAttemptOutcome{failure: failure}
 	}
@@ -231,8 +251,16 @@ func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx 
 		releaseCountTokensSelection(ctx, selRes)
 		return countTokensAttemptOutcome{done: true}
 	}
-	outcome := relay.dispatchCountTokens(w, ctx, resolved.ProtocolFamily, upstreamModelID, body, cred, accInfo)
+	if err := servingcapability.ValidateRuntimeAccountCompatibility(resolved.ProtocolFamily, cred, accInfo); err != nil {
+		releaseCountTokensSelection(ctx, selRes)
+		excludedAccounts[selRes.AccountID] = struct{}{}
+		return countTokensAttemptOutcome{failure: fallbackexec.CredentialCompatibilityFailure()}
+	}
+	outcome := relay.dispatchCountTokens(w, ctx, requestID, ident.TenantID, resolved, attempt, upstreamModelID, body, cred, accInfo)
 	releaseCountTokensSelection(ctx, selRes)
+	if outcome.failure != nil && selRes.AccountID > 0 {
+		excludedAccounts[selRes.AccountID] = struct{}{}
+	}
 	return outcome
 }
 
@@ -302,7 +330,7 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 	return plan, true
 }
 
-func (relay *countTokensRelay) selectAccount(ctx context.Context, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int) (*pool.SelectionResult, *fallbackexec.Failure) {
+func (relay *countTokensRelay) selectAccount(ctx context.Context, requestID string, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}) (*pool.SelectionResult, *fallbackexec.Failure) {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, err := relay.d.Selector.Select(ctx, pool.SelectionRequest{
 		TenantID:            ident.TenantID,
@@ -314,12 +342,14 @@ func (relay *countTokensRelay) selectAccount(ctx context.Context, ident auth.Ide
 		ProtocolFamily:      resolved.ProtocolFamily,
 		EndpointFamily:      "gemini_count_tokens",
 		AttemptSeq:          attemptSeq,
+		RequestID:           requestID,
 		CapabilityFlags:     attempt.RequiredCapabilities,
 		Vendor:              pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
 		UserGroup:           ident.UserGroup,
 		SelectionMode:       attempt.SelectionMode,
 		BindingID:           attempt.BindingID,
 		MaxParallelRequests: attempt.MaxParallelRequests,
+		ExcludedAccounts:    excludedAccounts,
 	})
 	if err != nil || selRes == nil || selRes.AccountID == 0 || selRes.WaitPlan != nil {
 		failureErr := err
@@ -357,9 +387,17 @@ func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx cont
 	return cred, accInfo, true
 }
 
-func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, protocolFamily, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo) countTokensAttemptOutcome {
+func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, requestID string, tenantID int64, resolved registry.Resolved, attempt router.AttemptPlan, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo) countTokensAttemptOutcome {
+	startedAt := time.Now().UTC()
+	feedbackAttempt := upstreamfeedback.Attempt{
+		TenantID: tenantID, Account: accInfo, ProtocolFamily: resolved.ProtocolFamily,
+		ModelKey: upstreamModelID, RequestID: requestID, StartedAt: startedAt,
+	}
+	if binding, ok := resolved.BindingForAttempt(attempt.BindingID, attempt.PoolGroupID); ok {
+		feedbackAttempt.StatusCodeMapping = binding.StatusCodeMapping
+	}
 	res, err := relay.d.Dispatcher.Dispatch(ctx, gateway.DispatchInput{
-		ProtocolFamily:  protocolFamily,
+		ProtocolFamily:  resolved.ProtocolFamily,
 		EndpointPath:    "/v1beta/models/" + url.PathEscape(upstreamModelID) + ":countTokens",
 		UpstreamModelID: upstreamModelID,
 		InboundBody:     body,
@@ -367,9 +405,15 @@ func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx co
 		Credential:      cred,
 	})
 	if err != nil {
+		if relay.feedback != nil {
+			_ = relay.feedback.ObserveDispatchError(ctx, feedbackAttempt, err)
+		}
 		return countTokensAttemptOutcome{failure: fallbackexec.DispatchFailure(err)}
 	}
 	if res == nil || res.UpstreamReader == nil {
+		if relay.feedback != nil {
+			relay.feedback.ObserveChannelError(ctx, feedbackAttempt, 0)
+		}
 		return countTokensAttemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
 	if res.Close != nil {
@@ -377,13 +421,26 @@ func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx co
 	}
 	raw, readErr := readUpstreamBody(res.UpstreamReader)
 	if readErr != nil {
+		if relay.feedback != nil {
+			relay.feedback.ObserveChannelError(ctx, feedbackAttempt, res.StatusCode)
+		}
 		return countTokensAttemptOutcome{failure: fallbackexec.ReadFailure(readErr)}
 	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		observed := upstreamfeedback.ClassifyHTTPError(feedbackAttempt, res.StatusCode, res.Headers, raw)
+		if relay.feedback != nil {
+			observed = relay.feedback.ObserveHTTPError(ctx, feedbackAttempt, res.StatusCode, res.Headers, raw)
+		}
+		return countTokensAttemptOutcome{failure: fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)}
+	}
 	if strings.TrimSpace(string(raw)) == "" {
+		if relay.feedback != nil {
+			relay.feedback.ObserveChannelError(ctx, feedbackAttempt, res.StatusCode)
+		}
 		return countTokensAttemptOutcome{failure: fallbackexec.EmptyResponseFailure()}
 	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return countTokensAttemptOutcome{failure: fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, accInfo.Platform)}
+	if relay.feedback != nil {
+		relay.feedback.ObserveSuccess(ctx, feedbackAttempt, res.StatusCode, res.Headers)
 	}
 	if ct := res.Headers.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)

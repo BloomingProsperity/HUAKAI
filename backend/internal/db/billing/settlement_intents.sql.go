@@ -32,6 +32,31 @@ func (q *Queries) CountUnresolvedSettlementIntentsForClaim(ctx context.Context, 
 	return count, err
 }
 
+const getClaimByID = `-- name: GetClaimByID :one
+SELECT status, attempt_seq, actual_cost
+FROM billing_ledger_claims
+WHERE id = $1 AND tenant_id = $2
+`
+
+type GetClaimByIDParams struct {
+	ID       int64 `db:"id" json:"id"`
+	TenantID int64 `db:"tenant_id" json:"tenant_id"`
+}
+
+type GetClaimByIDRow struct {
+	Status     string              `db:"status" json:"status"`
+	AttemptSeq int32               `db:"attempt_seq" json:"attempt_seq"`
+	ActualCost decimal.NullDecimal `db:"actual_cost" json:"actual_cost"`
+}
+
+// 结算意图追平只读取权威 claim 的终态、尝试序号和实际费用，并强制租户隔离。
+func (q *Queries) GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error) {
+	row := q.db.QueryRow(ctx, getClaimByID, arg.ID, arg.TenantID)
+	var i GetClaimByIDRow
+	err := row.Scan(&i.Status, &i.AttemptSeq, &i.ActualCost)
+	return i, err
+}
+
 const getSettlementIntentByClaimAttempt = `-- name: GetSettlementIntentByClaimAttempt :one
 SELECT id, tenant_id, request_id, logical_request_id, attempt_seq, claim_id, api_key_id, request_fingerprint, status, predicted_cost, actual_cost, hold_id, first_byte_at, retry_count, version, created_at, updated_at, settled_at
 FROM settlement_intents
@@ -126,6 +151,58 @@ func (q *Queries) InsertSettlementIntent(ctx context.Context, arg InsertSettleme
 	return id, err
 }
 
+const listStaleNonTerminalSettlementIntents = `-- name: ListStaleNonTerminalSettlementIntents :many
+SELECT id, tenant_id, claim_id, attempt_seq, version, status
+FROM settlement_intents
+WHERE status IN ('pending', 'delivering', 'settling')
+  AND updated_at < $1
+  AND created_at < $2
+ORDER BY updated_at
+LIMIT $3
+`
+
+type ListStaleNonTerminalSettlementIntentsParams struct {
+	StaleCutoff   pgtype.Timestamptz `db:"stale_cutoff" json:"stale_cutoff"`
+	CreatedBefore pgtype.Timestamptz `db:"created_before" json:"created_before"`
+	Lim           int32              `db:"lim" json:"lim"`
+}
+
+type ListStaleNonTerminalSettlementIntentsRow struct {
+	ID         int64  `db:"id" json:"id"`
+	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
+	ClaimID    int64  `db:"claim_id" json:"claim_id"`
+	AttemptSeq int32  `db:"attempt_seq" json:"attempt_seq"`
+	Version    int32  `db:"version" json:"version"`
+	Status     string `db:"status" json:"status"`
+}
+
+func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleNonTerminalSettlementIntents, arg.StaleCutoff, arg.CreatedBefore, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaleNonTerminalSettlementIntentsRow
+	for rows.Next() {
+		var i ListStaleNonTerminalSettlementIntentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.ClaimID,
+			&i.AttemptSeq,
+			&i.Version,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSettlementIntentAborted = `-- name: MarkSettlementIntentAborted :one
 UPDATE settlement_intents
 SET status = 'aborted',
@@ -143,6 +220,29 @@ type MarkSettlementIntentAbortedParams struct {
 
 func (q *Queries) MarkSettlementIntentAborted(ctx context.Context, arg MarkSettlementIntentAbortedParams) (int32, error) {
 	row := q.db.QueryRow(ctx, markSettlementIntentAborted, arg.ID, arg.Version)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
+const markSettlementIntentAbortedIfStale = `-- name: MarkSettlementIntentAbortedIfStale :one
+UPDATE settlement_intents
+SET status = 'aborted',
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $1
+  AND version = $2
+  AND status IN ('pending', 'delivering', 'settling')
+RETURNING version
+`
+
+type MarkSettlementIntentAbortedIfStaleParams struct {
+	ID      int64 `db:"id" json:"id"`
+	Version int32 `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentAbortedIfStale, arg.ID, arg.Version)
 	var version int32
 	err := row.Scan(&version)
 	return version, err
@@ -227,82 +327,6 @@ func (q *Queries) MarkSettlementIntentSettled(ctx context.Context, arg MarkSettl
 	return version, err
 }
 
-const markSettlementIntentSettling = `-- name: MarkSettlementIntentSettling :one
-UPDATE settlement_intents
-SET status = 'settling',
-    actual_cost = $1,
-    updated_at = NOW(),
-    version = version + 1
-WHERE id = $2
-  AND version = $3
-RETURNING version
-`
-
-type MarkSettlementIntentSettlingParams struct {
-	ActualCost decimal.Decimal `db:"actual_cost" json:"actual_cost"`
-	ID         int64           `db:"id" json:"id"`
-	Version    int32           `db:"version" json:"version"`
-}
-
-func (q *Queries) MarkSettlementIntentSettling(ctx context.Context, arg MarkSettlementIntentSettlingParams) (int32, error) {
-	row := q.db.QueryRow(ctx, markSettlementIntentSettling, arg.ActualCost, arg.ID, arg.Version)
-	var version int32
-	err := row.Scan(&version)
-	return version, err
-}
-
-const listStaleNonTerminalSettlementIntents = `-- name: ListStaleNonTerminalSettlementIntents :many
-SELECT id, tenant_id, claim_id, attempt_seq, version, status
-FROM settlement_intents
-WHERE status IN ('pending', 'delivering', 'settling')
-  AND updated_at < $1
-  AND created_at < $2
-ORDER BY updated_at
-LIMIT $3
-`
-
-type ListStaleNonTerminalSettlementIntentsParams struct {
-	StaleCutoff   pgtype.Timestamptz `db:"stale_cutoff" json:"stale_cutoff"`
-	CreatedBefore pgtype.Timestamptz `db:"created_before" json:"created_before"`
-	Lim           int32              `db:"lim" json:"lim"`
-}
-
-type ListStaleNonTerminalSettlementIntentsRow struct {
-	ID         int64  `db:"id" json:"id"`
-	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
-	ClaimID    int64  `db:"claim_id" json:"claim_id"`
-	AttemptSeq int32  `db:"attempt_seq" json:"attempt_seq"`
-	Version    int32  `db:"version" json:"version"`
-	Status     string `db:"status" json:"status"`
-}
-
-func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error) {
-	rows, err := q.db.Query(ctx, listStaleNonTerminalSettlementIntents, arg.StaleCutoff, arg.CreatedBefore, arg.Lim)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListStaleNonTerminalSettlementIntentsRow
-	for rows.Next() {
-		var i ListStaleNonTerminalSettlementIntentsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.ClaimID,
-			&i.AttemptSeq,
-			&i.Version,
-			&i.Status,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const markSettlementIntentSettledIfStale = `-- name: MarkSettlementIntentSettledIfStale :one
 UPDATE settlement_intents
 SET status = 'settled',
@@ -335,24 +359,25 @@ func (q *Queries) MarkSettlementIntentSettledIfStale(ctx context.Context, arg Ma
 	return version, err
 }
 
-const markSettlementIntentAbortedIfStale = `-- name: MarkSettlementIntentAbortedIfStale :one
+const markSettlementIntentSettling = `-- name: MarkSettlementIntentSettling :one
 UPDATE settlement_intents
-SET status = 'aborted',
+SET status = 'settling',
+    actual_cost = $1,
     updated_at = NOW(),
     version = version + 1
-WHERE id = $1
-  AND version = $2
-  AND status IN ('pending', 'delivering', 'settling')
+WHERE id = $2
+  AND version = $3
 RETURNING version
 `
 
-type MarkSettlementIntentAbortedIfStaleParams struct {
-	ID      int64 `db:"id" json:"id"`
-	Version int32 `db:"version" json:"version"`
+type MarkSettlementIntentSettlingParams struct {
+	ActualCost decimal.Decimal `db:"actual_cost" json:"actual_cost"`
+	ID         int64           `db:"id" json:"id"`
+	Version    int32           `db:"version" json:"version"`
 }
 
-func (q *Queries) MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error) {
-	row := q.db.QueryRow(ctx, markSettlementIntentAbortedIfStale, arg.ID, arg.Version)
+func (q *Queries) MarkSettlementIntentSettling(ctx context.Context, arg MarkSettlementIntentSettlingParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentSettling, arg.ActualCost, arg.ID, arg.Version)
 	var version int32
 	err := row.Scan(&version)
 	return version, err

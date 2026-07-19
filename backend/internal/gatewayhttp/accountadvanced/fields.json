@@ -1,5 +1,17 @@
 [
   {
+    "key": "upstream_cost_ratio",
+    "kind": "number",
+    "format": "double",
+    "nullable": true,
+    "minimum": "0.0001",
+    "maximum": "100",
+    "create": true,
+    "update": true,
+    "label": "上游成本比例",
+    "help": "1 表示基准成本，越小越便宜；留空表示未知，调度不加分也不扣分。"
+  },
+  {
     "key": "rpm_limit",
     "kind": "integer",
     "format": "int64",
@@ -153,7 +165,7 @@
     "create": true,
     "update": true,
     "label": "临时停调规则",
-    "help": "每条规则包含错误码、关键词、正整数分钟数和可选说明；空数组会清空规则。"
+    "help": "按数组顺序首条命中：必须填写稳定规则 ID、100-599 错误码和 1-525600 分钟；关键词空数组表示通配，最多 16 项。可只覆盖最终客户端状态/机器码/安全消息；不会改变重试、回退、鉴权、扣费、配额或永久禁用。affect_health=false 仍会执行显式冷却和铁证安全信号；空数组会清空规则。"
   },
   {
     "key": "proxy_binding",

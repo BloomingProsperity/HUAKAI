@@ -7,13 +7,13 @@
 | Date decided | 2026-04-28 |
 | Date implemented | 2026-04-28 |
 | Owner | Owner |
-| Affected docs | docs/05_CLEAN_ROOM_POLICY.md, docs/06_REFERENCE_PROJECTS.md, docs/10_RISK_REGISTER.md, docs/12_AGENT_WORKFLOW.md, docs/20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md |
+| Affected docs | 历史上涉及 `docs/05`、旧参考项目清单、旧 agent workflow 和旧方法选项；现行入口已收敛到 `AGENTS.md`、`docs/RULES.md`、`docs/05`、`docs/24`。 |
 | Supersedes | — |
 | Superseded by | — |
 
 ## Question
 
-Which clean-room methodology does HUAKAI adopt: **A** (single-agent behavior-only discipline), **B** (two-lane separation: specifier reads references, implementer reads only specs), or **C** (textbook two-team strict)? See full option text in [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](../../20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md).
+本决策当时在 A（单会话自律）、B（specifier 与实现 lane 分离）和 C（最严格双团队）之间选择。旧选项页已被删除；现行方法以 [clean-room 专项合同](../../05_CLEAN_ROOM_POLICY.md) 和 [`AGENTS.md`](../../../AGENTS.md) 为准。
 
 ## Context
 
@@ -77,13 +77,13 @@ Gemini view deferred by Owner (see above) — no UI/Ops dimension to reconcile i
 | Decision | Option B (two-lane separation) as default + Option C carve-out for billing ledger, account-pool routing, and provider failover/account-health heuristics. |
 | Decision date | 2026-04-28 |
 | Reasoning | AGPL exposure (2 of 3 primary references) makes Option A too weak as a defense if a contamination claim ever arises, and is incompatible with the SaaS Distribution Edition planned in [DR-002](DR-002-product-editions.md). Option C across-the-board would block reading even MIT one-api which is wasteful given one-api is the safe anchor. Codex's carve-out + spec-leakage review addresses the "spec becomes contamination vector" failure mode without crippling velocity. |
-| Constraints attached | A spec-leakage review checklist or skill must exist before specs leave the specifier lane and enter implementer-facing work. Lane definitions must be reflected in [12_AGENT_WORKFLOW.md](../../12_AGENT_WORKFLOW.md). |
+| Constraints attached | 行为合同离开 specifier lane 前必须通过泄漏检查；现行 lane 定义收敛在 [`AGENTS.md`](../../../AGENTS.md) 与 [clean-room 专项合同](../../05_CLEAN_ROOM_POLICY.md)。 |
 
 ## Propagation Checklist
 
 - [x] Update [05_CLEAN_ROOM_POLICY.md](../../05_CLEAN_ROOM_POLICY.md) — Methodology section replaced; lane definitions, carve-out list, and spec-leakage review pointer added.
-- [x] Update [12_AGENT_WORKFLOW.md](../../12_AGENT_WORKFLOW.md) — Clean-Room Lanes section added with role-to-lane mapping.
+- [x] 旧 agent workflow 已删除；lane 规则已并入 [`AGENTS.md`](../../../AGENTS.md) 与 [clean-room 专项合同](../../05_CLEAN_ROOM_POLICY.md)。
 - [x] Update [10_RISK_REGISTER.md](../../10_RISK_REGISTER.md) R-LIC-001 — Mitigation sharpened to reference DR-000; status flipped to Mitigated.
-- [x] Update [20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md](../../20_CLEAN_ROOM_METHODOLOGY_OPTIONS.md) — Decided header added at top pointing to DR-000.
+- [x] 旧方法选项页已删除；本 DR 只保留历史决策证据，现行执行合同不再分散。
 - [x] Add `docs/specs/` directory with [README](../../specs/README.md), [_TEMPLATE.md](../../specs/_TEMPLATE.md), and [_REVIEW_CHECKLIST.md](../../specs/_REVIEW_CHECKLIST.md) (10 checks CL-001..010).
 - [x] Mark Status = Implemented (header above).

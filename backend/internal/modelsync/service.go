@@ -127,6 +127,9 @@ func (r *SyncResult) addResult(applied ApplyResult) {
 	r.TotalAdded += applied.Added + applied.Reactivated
 	r.TotalUpdated += applied.Updated
 	r.TotalDisabled += applied.Disabled
+	r.TotalDiscovered += applied.Discovered
+	r.TotalDiscoveryUpdated += applied.DiscoveryUpdated
+	r.TotalDiscoveryAbsent += applied.DiscoveryAbsent
 }
 
 func validateCatalog(c Catalog) error {

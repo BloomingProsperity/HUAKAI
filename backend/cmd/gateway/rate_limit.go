@@ -16,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/inboundlimit"
 )
 
 // 入站限流。
@@ -121,14 +122,18 @@ type rateLimiter struct {
 	logger      *zap.Logger
 	nowFn       func() time.Time
 	retryAfterS int
+	shared      inboundlimit.Store
+	globalLimit inboundlimit.Limit
 }
 
 // authStrictTier 把一个按 IP registry 与它的 Retry-After 提示耦合在一起。
 // auth 与 media 的 strict class 复用同一个层原语。该提示由配置的 rate 推导
-//(并非写死),所以一个调过的 override 会给出准确的重试延迟。
+// (并非写死),所以一个调过的 override 会给出准确的重试延迟。
 type authStrictTier struct {
 	registry   *ipBucketRegistry
 	retryAfter int
+	name       string
+	limit      inboundlimit.Limit
 }
 
 // authClass 描述一个 strict 路径 class:一套桶策略,被一条或多条请求路径共享。
@@ -136,6 +141,7 @@ type authStrictTier struct {
 // 因此它们共享同一个 registry——否则在这些路径之间交替会让该 class
 // 的有效预算成倍放大。
 type authClass struct {
+	name      string
 	paths     []string // 共享本 class 桶的请求路径
 	envPerMin string   // 持有「每分钟请求数」override 的 env 变量
 	defPerMin float64  // 默认每分钟请求数
@@ -144,18 +150,18 @@ type authClass struct {
 // authClasses 是静态策略表。login + 2fa 共用当前存在的那唯一一个 login
 // 端点;verify-email 是「发送验证码」class;reset-password 是「忘记密码」
 // class;社交登录路由共用一个 class(一份预算);sessions/refresh 是
-//「刷新令牌」class。
+// 「刷新令牌」class。
 var authClasses = []authClass{
-	{paths: []string{"/v1/auth/login", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
-	{paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
-	{paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
-	{paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
-	{paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login", "/v1/auth/oauth-pending/send-code", "/v1/auth/oauth-pending/complete"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
-	{paths: []string{"/v1/sessions/refresh"}, envPerMin: "HUAKAI_RL_AUTH_REFRESH_PER_MIN", defPerMin: defaultRefreshPerMin},
+	{name: "auth_login", paths: []string{"/v1/auth/login", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
+	{name: "auth_register", paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
+	{name: "auth_verify", paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
+	{name: "auth_reset", paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
+	{name: "auth_oauth", paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login", "/v1/auth/oauth-pending/send-code", "/v1/auth/oauth-pending/complete"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
+	{name: "auth_refresh", paths: []string{"/v1/sessions/refresh"}, envPerMin: "HUAKAI_RL_AUTH_REFRESH_PER_MIN", defPerMin: defaultRefreshPerMin},
 }
 
 var mediaClasses = []authClass{
-	{paths: []string{
+	{name: "media", paths: []string{
 		"/v1/audio/speech",
 		"/v1/audio/transcriptions",
 		"/v1/audio/translations",
@@ -167,7 +173,7 @@ var mediaClasses = []authClass{
 // retryAfterForRatePerSec 把「每秒令牌补充速率」换算成一个整秒的
 // Retry-After 提示:大致是到下一个令牌补充为止的时间(1/ratePerSec),
 // 向上取整并以 1s 为下限。它跟随 env override,因此一个调低的 rate
-//(例如 0.1 req/s)会报告一个真实的 ~10s 延迟,而非陈旧的 1s。
+// (例如 0.1 req/s)会报告一个真实的 ~10s 延迟,而非陈旧的 1s。
 func retryAfterForRatePerSec(ratePerSec float64) int {
 	if ratePerSec <= 0 {
 		return 60
@@ -189,7 +195,13 @@ func retryAfterForRate(perMin float64) int {
 // HUAKAI_RL_DISABLE,返回的限流器始终开启。resolver 是网关用于桶键的
 // 可信代理 IP 解析器(nil 也安全:此时键回退到 socket 对端)。logger 用于
 // 在每次拒绝时发出运维可见的证据(nil-safe:此时使用一个 no-op logger)。
-func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimiter {
+type rateLimiterOption func(*rateLimiter)
+
+func withSharedRateLimitStore(store inboundlimit.Store) rateLimiterOption {
+	return func(rl *rateLimiter) { rl.shared = store }
+}
+
+func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger, opts ...rateLimiterOption) *rateLimiter {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -211,6 +223,8 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 		tier := &authStrictTier{
 			registry:   newIPBucketRegistry(perMin/60.0, burst),
 			retryAfter: retryAfterForRate(perMin),
+			name:       c.name,
+			limit:      inboundlimit.Limit{RatePerSecond: perMin / 60.0, Burst: burst},
 		}
 		for _, p := range c.paths {
 			authStrict[p] = tier
@@ -229,13 +243,15 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 		tier := &authStrictTier{
 			registry:   newIPBucketRegistry(perMin/60.0, burst),
 			retryAfter: retryAfterForRate(perMin),
+			name:       c.name,
+			limit:      inboundlimit.Limit{RatePerSecond: perMin / 60.0, Burst: burst},
 		}
 		for _, p := range c.paths {
 			mediaStrict[p] = tier
 		}
 	}
 
-	return &rateLimiter{
+	rl := &rateLimiter{
 		global:      newIPBucketRegistry(gRate, gBurst),
 		authStrict:  authStrict,
 		mediaStrict: mediaStrict,
@@ -246,7 +262,14 @@ func newRateLimiter(resolver *clientip.Resolver, logger *zap.Logger) *rateLimite
 		// HUAKAI_RL_GLOBAL_RATE(例如 0.1 req/s)会报告真实的延迟,而非
 		// 陈旧的 1s——后者会让守规矩的客户端过早重试。
 		retryAfterS: retryAfterForRatePerSec(gRate),
+		globalLimit: inboundlimit.Limit{RatePerSecond: gRate, Burst: gBurst},
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(rl)
+		}
+	}
+	return rl
 }
 
 // middleware 返回执行全局层加各已配置 strict 路径层的 chi 中间件。
@@ -263,11 +286,17 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 			rl.reject(w, rl.retryAfterS)
 			return
 		}
+		if !sharedRateLimitProbeExempt(r) && !rl.allowShared(w, r, "global", key, rl.globalLimit, rl.retryAfterS) {
+			return
+		}
 
 		if tier := rl.authStrictFor(r); tier != nil {
 			if !tier.registry.allow(key, now) {
 				rl.denied(r, "auth_strict", key, tier.retryAfter)
 				rl.reject(w, tier.retryAfter)
+				return
+			}
+			if !rl.allowShared(w, r, tier.name, key, tier.limit, tier.retryAfter) {
 				return
 			}
 		}
@@ -278,10 +307,55 @@ func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
 				rl.reject(w, tier.retryAfter)
 				return
 			}
+			if !rl.allowShared(w, r, tier.name, key, tier.limit, tier.retryAfter) {
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sharedRateLimitProbeExempt 仅让存活/就绪探针绕过 Redis 共享桶。
+// 每实例内存桶仍在它之前执行，因此探针没有失去防洪保护；同时 Redis
+// 故障不会把 /healthz 误变成进程死亡，也不会盖住 /readyz 的依赖矩阵。
+func sharedRateLimitProbeExempt(r *http.Request) bool {
+	if r == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		return false
+	}
+	switch r.URL.Path {
+	case "/healthz", "/readyz":
+		return true
+	default:
+		return false
+	}
+}
+
+func (rl *rateLimiter) allowShared(w http.ResponseWriter, r *http.Request, tier, key string, limit inboundlimit.Limit, fallbackRetry int) bool {
+	if rl.shared == nil {
+		return true
+	}
+	decision, err := rl.shared.Allow(r.Context(), tier, key, limit)
+	if err != nil {
+		rl.logger.Error("shared inbound rate limit unavailable",
+			zap.String("tier", tier),
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.Error(err),
+		)
+		rl.rejectUnavailable(w)
+		return false
+	}
+	if decision.Allowed {
+		return true
+	}
+	retryAfter := int(math.Ceil(decision.RetryAfter.Seconds()))
+	if retryAfter <= 0 {
+		retryAfter = fallbackRetry
+	}
+	rl.denied(r, tier+"_shared", key, retryAfter)
+	rl.reject(w, retryAfter)
+	return false
 }
 
 // denied 为一次限流拒绝发出运维可见的证据(AT-SEC-001):哪一层触发、
@@ -348,6 +422,13 @@ func (rl *rateLimiter) reject(w http.ResponseWriter, retryAfterS int) {
 	_, _ = w.Write(body)
 }
 
+func (rl *rateLimiter) rejectUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"error":{"code":"rate_limit_unavailable","message":"request admission is temporarily unavailable"}}`))
+}
+
 // clientKey 推导按 IP 的桶键。它使用网关的可信代理 resolver,因此键是
 // 穿过仅可信转发跳数之后看到的真实客户端——客户端无法通过伪造
 // X-Forwarded-For/X-Real-IP 来铸造新桶。在未配置任何可信代理时,
@@ -371,7 +452,7 @@ func (rl *rateLimiter) clientKey(r *http.Request) string {
 
 // envFloat 读取一个正的、有限的 float env override,当变量未设置/为空/非法、
 // 非正、或非有限(NaN/Inf)时回退。一个 NaN/Inf 的 burst 永远不会耗尽桶
-//(从而悄悄禁用始终开启的限流器),所以这类值被拒绝、改用安全默认值。
+// (从而悄悄禁用始终开启的限流器),所以这类值被拒绝、改用安全默认值。
 func envFloat(name string, fallback float64) float64 {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {

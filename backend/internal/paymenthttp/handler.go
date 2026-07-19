@@ -441,6 +441,10 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "unsupported_currency", "currency not supported (USD only)")
 	case errors.Is(err, payment.ErrOrderNotFound):
 		writeJSONError(w, http.StatusNotFound, "order_not_found", "payment order not found")
+	case errors.Is(err, payment.ErrRefundIdempotencyConflict):
+		writeJSONError(w, http.StatusConflict, "refund_idempotency_conflict", "refund idempotency key conflicts with a different request")
+	case errors.Is(err, payment.ErrRefundFactInvalid):
+		writeJSONError(w, http.StatusConflict, "refund_fact_invalid", "stored refund evidence requires manual reconciliation")
 	case errors.Is(err, payment.ErrIdempotencyConflict):
 		writeJSONError(w, http.StatusConflict, "out_trade_no_conflict", "out_trade_no reused with different order fields")
 	case errors.Is(err, payment.ErrOrderNotConfirmable):
@@ -451,6 +455,8 @@ func writePaymentError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "order_not_refundable", "order is not in a refundable state")
 	case errors.Is(err, payment.ErrRefundExceedsAvailable):
 		writeJSONError(w, http.StatusConflict, "refund_exceeds_available", "refund exceeds available balance")
+	case errors.Is(err, payment.ErrRefundExceedsCredit):
+		writeJSONError(w, http.StatusConflict, "refund_exceeds_credit", "cumulative refund exceeds credited amount")
 	case errors.Is(err, payment.ErrRefundUnsupportedKind):
 		writeJSONError(w, http.StatusUnprocessableEntity, "refund_unsupported_kind", "refund is not supported for this order kind")
 	case errors.Is(err, payment.ErrOrderNotFulfillable):

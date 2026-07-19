@@ -6,7 +6,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 )
 
 //go:embed fields.json
@@ -83,16 +83,9 @@ type ProxyBinding struct {
 	ProxyGroupID *string `json:"proxy_group_id,omitempty"`
 }
 
-// TempRule 是临时停调规则的可写契约。
-type TempRule struct {
-	ErrorCode       int32    `json:"error_code"`
-	Keywords        []string `json:"keywords"`
-	DurationMinutes int32    `json:"duration_minutes"`
-	Description     string   `json:"description,omitempty"`
-}
-
 // Mutation 是 create/update 共用的已校验高级字段集合。
 type Mutation struct {
+	UpstreamCostRatio          Optional[float64]
 	RPMLimit                   Optional[int64]
 	TPMLimit                   Optional[int64]
 	WindowCostLimitCents       Optional[int64]
@@ -111,7 +104,7 @@ type Mutation struct {
 
 // Any 表示请求是否提交了至少一个高级字段。
 func (m Mutation) Any() bool {
-	return m.RPMLimit.Present || m.TPMLimit.Present || m.WindowCostLimitCents.Present ||
+	return m.UpstreamCostRatio.Present || m.RPMLimit.Present || m.TPMLimit.Present || m.WindowCostLimitCents.Present ||
 		m.MaxSessions.Present || m.DisableCooling.Present || m.RefreshLeadSeconds.Present ||
 		m.ExpiresAt.Present || m.TLSFingerprintRotate.Present || m.CustomErrorCodesEnabled.Present ||
 		m.CustomErrorCodes.Present || m.PoolMode.Present || m.TempUnschedulableEnabled.Present ||
@@ -143,6 +136,8 @@ func parseField(out *Mutation, spec FieldSpec, raw json.RawMessage) error {
 		return fmt.Errorf("不允许 null")
 	}
 	switch spec.Key {
+	case "upstream_cost_ratio":
+		return parseFloat64Optional(raw, spec, &out.UpstreamCostRatio)
 	case "rpm_limit":
 		return parseInt64Optional(raw, spec, &out.RPMLimit)
 	case "tpm_limit":
@@ -174,6 +169,29 @@ func parseField(out *Mutation, spec FieldSpec, raw json.RawMessage) error {
 	default:
 		return fmt.Errorf("后端没有该字段的解析器")
 	}
+}
+
+func parseFloat64Optional(raw json.RawMessage, spec FieldSpec, out *Optional[float64]) error {
+	out.Present = true
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		out.Null = true
+		return nil
+	}
+	text := string(bytes.TrimSpace(raw))
+	if text == "" || strings.Contains(text, "\"") {
+		return fmt.Errorf("须为数值")
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return fmt.Errorf("须为可表示的数值")
+	}
+	min, _ := strconv.ParseFloat(spec.Minimum, 64)
+	max, _ := strconv.ParseFloat(spec.Maximum, 64)
+	if value < min || value > max {
+		return fmt.Errorf("须在 %s 到 %s 之间", spec.Minimum, spec.Maximum)
+	}
+	out.Value = value
+	return nil
 }
 
 func parseInt64Optional(raw json.RawMessage, spec FieldSpec, out *Optional[int64]) error {
@@ -270,23 +288,9 @@ func parseErrorCodesOptional(raw json.RawMessage, out *Optional[[]int32]) error 
 
 func parseRulesOptional(raw json.RawMessage, out *Optional[[]byte]) error {
 	out.Present = true
-	var rules []TempRule
-	if err := json.Unmarshal(raw, &rules); err != nil || rules == nil {
-		return fmt.Errorf("须为规则数组")
-	}
-	for i := range rules {
-		if rules[i].ErrorCode < 100 || rules[i].ErrorCode > 599 {
-			return fmt.Errorf("第 %d 条规则的 error_code 须在 100 到 599 之间", i+1)
-		}
-		if rules[i].DurationMinutes <= 0 || int64(rules[i].DurationMinutes) > math.MaxInt32 {
-			return fmt.Errorf("第 %d 条规则的 duration_minutes 须为正整数", i+1)
-		}
-		rules[i].Keywords = cleanStrings(rules[i].Keywords)
-		rules[i].Description = strings.TrimSpace(rules[i].Description)
-	}
-	normalized, err := json.Marshal(rules)
+	normalized, err := rate.NormalizeTempUnschedulableRulesForWrite(raw)
 	if err != nil {
-		return fmt.Errorf("规则无法编码")
+		return err
 	}
 	out.Value = normalized
 	return nil
@@ -323,18 +327,11 @@ func parseProxyOptional(raw json.RawMessage, out *Optional[ProxyBinding]) error 
 	return nil
 }
 
-func cleanStrings(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
 // ApplyCreate 把同一 Mutation 映射到 create 参数；缺席字段保持 SQL 默认语义。
 func ApplyCreate(m Mutation, out *admindb.InsertProviderAccountParams) {
+	if m.UpstreamCostRatio.Present && !m.UpstreamCostRatio.Null {
+		out.UpstreamCostRatio = &m.UpstreamCostRatio.Value
+	}
 	if m.RPMLimit.Present {
 		out.RPMLimit = &m.RPMLimit.Value
 	}
@@ -382,6 +379,12 @@ func ApplyCreate(m Mutation, out *admindb.InsertProviderAccountParams) {
 
 // ApplyUpdate 把同一 Mutation 映射到部分更新参数；只有 Present 字段会设置 Set-flag 或值。
 func ApplyUpdate(m Mutation, out *admindb.UpdateAdminProviderAccountParams) {
+	if m.UpstreamCostRatio.Present {
+		out.SetUpstreamCostRatio = true
+		if !m.UpstreamCostRatio.Null {
+			out.UpstreamCostRatio = &m.UpstreamCostRatio.Value
+		}
+	}
 	if m.RPMLimit.Present {
 		out.RPMLimit = &m.RPMLimit.Value
 	}

@@ -109,21 +109,23 @@ type CreditRecord struct {
 	CreatedAt      time.Time
 }
 
-// RefundRecord 一次订单退款事实。一张订单最多一条; 幂等键 tenant-scoped。
+// RefundRecord 一次订单余额冲正事实。同一订单可累计多笔，每笔幂等键在租户内唯一。
 type RefundRecord struct {
-	ID             int64
-	TenantID       int64
-	OrderID        int64
-	UserID         int64
-	AmountCents    int64
-	CurrencyCode   string
-	IdempotencyKey string
-	Reason         string
-	ActorKind      string
-	ActorID        int64
-	ActorRef       string // 同上
-	BillingEventID int64
-	CreatedAt      time.Time
+	ID                   int64
+	TenantID             int64
+	OrderID              int64
+	UserID               int64
+	AmountCents          int64
+	RequestedAmountCents int64
+	RequireExact         bool
+	CurrencyCode         string
+	IdempotencyKey       string
+	Reason               string
+	ActorKind            string
+	ActorID              int64
+	ActorRef             string // 同上
+	BillingEventID       int64
+	CreatedAt            time.Time
 }
 
 // CreateOrderInput service 层建单输入。
@@ -183,9 +185,12 @@ type CancelOrderInput struct {
 
 // RefundOrderInput 管理员退款输入。IdempotencyKey 必填, 防止重试双扣。
 type RefundOrderInput struct {
-	TenantID       int64
-	OrderID        int64
-	AmountCents    int64
+	TenantID    int64
+	OrderID     int64
+	AmountCents int64
+	// RequireExact=true 时 AmountCents 表示该订单的累计冲正目标，系统只补齐差额。
+	// 用户退款申请审批使用该模式，避免与此前人工部分冲正叠加后超退。
+	RequireExact   bool
 	IdempotencyKey string
 	Reason         string
 	ActorKind      string
@@ -216,10 +221,13 @@ type FulfillResult struct {
 
 // RefundResult 退款结果。Idempotent=true 表示命中既有退款, 未重复扣减。
 type RefundResult struct {
-	Order        Order
-	Refund       RefundRecord
-	BalanceCents int64
-	Idempotent   bool
+	Order                    Order
+	Refund                   RefundRecord
+	BalanceCents             int64
+	CumulativeRefundedCents  int64
+	RemainingRefundableCents int64
+	Idempotent               bool
+	AlreadySatisfied         bool
 }
 
 // Balance 用户支付来源余额 (来自 payment_credits 派生 SUM)。
@@ -242,10 +250,13 @@ var (
 	ErrOrderNotCancelable     = errors.New("payment: order not in a cancelable state")
 	ErrOrderNotRefundable     = errors.New("payment: order not in a refundable state")
 	ErrRefundExceedsAvailable = errors.New("payment: refund exceeds available balance")
+	ErrRefundExceedsCredit    = errors.New("payment: cumulative refund exceeds credited amount")
 	ErrRefundUnsupportedKind  = errors.New("payment: refund unsupported for order kind")
 	// ErrSubscriptionOrderRequiresPG: 订阅单履约依赖真订阅/配额表, 内存 store 不镜像 (P3b-4 计划 §5 D3); 真路径 PG-only。
 	ErrSubscriptionOrderRequiresPG = errors.New("payment: subscription order fulfillment requires postgres store")
 	ErrIdempotencyConflict         = errors.New("payment: out_trade_no reused with different order fields")
+	ErrRefundIdempotencyConflict   = errors.New("payment: refund idempotency key conflicts with a different request")
+	ErrRefundFactInvalid           = errors.New("payment: refund fact is incomplete or inconsistent")
 	ErrProviderUnknown             = errors.New("payment: unknown provider kind")
 	ErrUnsupportedCurrency         = errors.New("payment: unsupported currency (P1 ledger is USD-only)")
 	// P2a 自动回调路径错误。

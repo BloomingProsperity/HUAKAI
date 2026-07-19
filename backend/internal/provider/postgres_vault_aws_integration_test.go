@@ -33,7 +33,7 @@ func TestPostgresCredentialVault_AWSSigV4InsertAndResolve(t *testing.T) {
 	ctx := context.Background()
 	suffix := "aws-sigv4-resolve"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	const (
 		wantAccessKeyID  = "AKIDEXAMPLE"
@@ -91,7 +91,7 @@ func TestProviderAccountsCheck_RejectsUnknownAccountType(t *testing.T) {
 	ctx := context.Background()
 	suffix := "aws-sigv4-mutation-guard"
 	f := setupFixture(ctx, t, suffix)
-	defer cleanupFixture(ctx, t, testDB, f)
+	registerFixtureCleanup(t, &f)
 
 	_, err := testDB.Exec(ctx,
 		`INSERT INTO provider_accounts

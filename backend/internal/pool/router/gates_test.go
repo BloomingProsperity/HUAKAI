@@ -115,3 +115,14 @@ func TestDefaultSelectorModelRateLimitFallsThroughToAnotherAccountForSameModel(t
 		t.Fatalf("selected account=%d want 20; account 10 only blocked for model-x", res.AccountID)
 	}
 }
+
+func TestProviderAccountHealthGateAcceptsUnifiedHealthyStates(t *testing.T) {
+	gate := ProviderAccountHealthGate{}
+	for _, state := range []string{HealthStateActive, HealthStateDegraded} {
+		account := &AccountSnapshot{ID: 10, TenantID: 1, HealthState: state}
+		ok, reason, err := gate.Allow(context.Background(), account, SelectionRequest{TenantID: 1})
+		if err != nil || !ok || reason != "" {
+			t.Fatalf("state=%q Allow=(%v,%q,%v)，期望统一健康状态可进入选号", state, ok, reason, err)
+		}
+	}
+}

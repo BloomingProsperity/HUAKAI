@@ -16,6 +16,21 @@ type resolverStub struct {
 	wait       bool
 }
 
+type metadataResolverStub struct {
+	resolverStub
+	tier string
+}
+
+func (s *metadataResolverStub) ResolveProjectMetadata(ctx context.Context, token string) (string, string, error) {
+	s.calls++
+	s.token = token
+	if s.wait {
+		<-ctx.Done()
+		return "", "", ctx.Err()
+	}
+	return s.projectRef, s.tier, s.err
+}
+
 func (s *resolverStub) ResolveProjectID(ctx context.Context, token string) (string, error) {
 	s.calls++
 	s.token = token
@@ -44,6 +59,76 @@ func TestServiceEnrichesMissingProject(t *testing.T) {
 	}
 	if fields["project_id"] != "project-resolved" || fields["project_metadata_status"] != StatusResolved {
 		t.Fatalf("project 字段未补齐：%s", result.Payload)
+	}
+}
+
+func TestServiceEnrichesProjectAndSubscriptionInOneRequest(t *testing.T) {
+	resolver := &metadataResolverStub{
+		resolverStub: resolverStub{projectRef: "project-resolved"},
+		tier:         "g1-pro-tier",
+	}
+	result, err := New(resolver).Enrich(context.Background(), "antigravity", []byte(`{
+		"access_token":"access-secret",
+		"refresh_token":"refresh-secret"
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Attempted || result.ProjectRef != "project-resolved" || result.SubscriptionTierRaw != "g1-pro-tier" ||
+		!result.SubscriptionVerified || result.SubscriptionConflict || resolver.calls != 1 {
+		t.Fatalf("账号元数据补齐结果错误：result=%+v resolver=%+v", result, resolver)
+	}
+	var fields map[string]string
+	if err := json.Unmarshal(result.Payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["subscription_tier_raw"] != "g1-pro-tier" || fields["subscription_metadata_status"] != StatusResolved {
+		t.Fatalf("套餐字段未写回凭据：%s", result.Payload)
+	}
+}
+
+func TestServiceWithExistingProjectFetchesOnlyMissingSubscription(t *testing.T) {
+	resolver := &metadataResolverStub{
+		resolverStub: resolverStub{projectRef: "project-existing"},
+		tier:         "g1-ultra-tier",
+	}
+	result, err := New(resolver).Enrich(context.Background(), "antigravity", []byte(`{
+		"access_token":"access-secret",
+		"project_id":"project-existing"
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProjectRef != "project-existing" || result.SubscriptionTierRaw != "g1-ultra-tier" || !result.SubscriptionVerified || resolver.calls != 1 {
+		t.Fatalf("已有 project 时的套餐补齐错误：result=%+v resolver=%+v", result, resolver)
+	}
+}
+
+func TestServiceRejectsConflictingProjectMetadata(t *testing.T) {
+	resolver := &metadataResolverStub{
+		resolverStub: resolverStub{projectRef: "project-observed"},
+		tier:         "g1-ultra-tier",
+	}
+	result, err := New(resolver).Enrich(context.Background(), "antigravity", []byte(`{
+		"access_token":"access-secret",
+		"project_id":"project-existing"
+	}`))
+	if err == nil {
+		t.Fatal("上游 project 与已有值冲突时必须显式报错")
+	}
+	if result.ProjectRef != "project-existing" || result.SubscriptionTierRaw != "" || !result.SubscriptionConflict || result.SubscriptionVerified {
+		t.Fatalf("冲突时必须保留已有账号且不得串入套餐：%+v", result)
+	}
+	var fields map[string]string
+	if decodeErr := json.Unmarshal(result.Payload, &fields); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if fields["project_id"] != "project-existing" ||
+		fields["observed_project_id"] != "project-observed" ||
+		fields["project_metadata_status"] != StatusConflict ||
+		fields["subscription_metadata_status"] != StatusConflict ||
+		fields["subscription_tier_raw"] != "" {
+		t.Fatalf("冲突状态没有完整保留：%s", result.Payload)
 	}
 }
 

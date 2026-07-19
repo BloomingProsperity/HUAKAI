@@ -135,11 +135,29 @@ func TestPerKeyRequestMetric(t *testing.T) {
 		t.Fatalf("SetKeyQuota request-count: %v", err)
 	}
 
+	var wildcardPolicies int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM quota_policies
+		WHERE tenant_id = $1
+		  AND scope_kind = 'api_key'
+		  AND scope_id = $2
+		  AND model_selector = '*'
+		  AND enabled = true
+		  AND valid_until IS NULL
+	`, f.tenantID, fmt.Sprint(f.apiKeyID)).Scan(&wildcardPolicies); err != nil {
+		t.Fatalf("查询全模型配额策略: %v", err)
+	}
+	if wildcardPolicies != 2 {
+		t.Fatalf("全模型配额策略数=%d want 2", wildcardPolicies)
+	}
+
 	resolved, err := quota.ResolvePolicies(
 		ctx,
 		quota.NewPostgresStore(pool),
 		f.tenantID,
 		[]quota.Scope{{TenantID: f.tenantID, Kind: quota.ScopeAPIKey, ID: fmt.Sprint(f.apiKeyID)}},
+		"",
 		[]quota.Metric{quota.MetricCostUSD, quota.MetricRequests},
 		time.Now().UTC(),
 	)

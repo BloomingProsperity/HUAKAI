@@ -11,27 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getProviderProtocolForAccountCreate = `-- name: GetProviderProtocolForAccountCreate :one
-SELECT upstream_protocol
-FROM providers
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-  AND deleted_at IS NULL
-FOR SHARE
-`
-
-type GetProviderProtocolForAccountCreateParams struct {
-	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
-	ProviderID int64 `db:"provider_id" json:"provider_id"`
-}
-
-func (q *Queries) GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error) {
-	row := q.db.QueryRow(ctx, getProviderProtocolForAccountCreate, arg.TenantID, arg.ProviderID)
-	var upstreamProtocol string
-	err := row.Scan(&upstreamProtocol)
-	return upstreamProtocol, err
-}
-
 const countActiveProviderAccountsForProvider = `-- name: CountActiveProviderAccountsForProvider :one
 SELECT count(*)::bigint
 FROM provider_accounts pa
@@ -223,6 +202,35 @@ func (q *Queries) GetChannelTestTemplate(ctx context.Context, arg GetChannelTest
 	return i, err
 }
 
+const getProviderProtocolForAccountCreate = `-- name: GetProviderProtocolForAccountCreate :one
+
+SELECT upstream_protocol
+FROM providers
+WHERE tenant_id = $1::bigint
+  AND id = $2::bigint
+  AND deleted_at IS NULL
+FOR SHARE
+`
+
+type GetProviderProtocolForAccountCreateParams struct {
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	ProviderID int64 `db:"provider_id" json:"provider_id"`
+}
+
+// P0 provider/channel admin catalog queries.
+// Read-only directory data for admin UI. These SELECT lists intentionally
+// exclude tenant_id and every credential-bearing provider_accounts column.
+// 账号创建事务内读取并锁定 provider 协议。必须用 FOR SHARE 而非 FOR KEY SHARE:
+// upstream_protocol 是非键列,管理端改它取 FOR NO KEY UPDATE 锁;FOR KEY SHARE 与之
+// 不冲突,会放过"创建读旧协议→管理端改新协议→创建插入不兼容账号"的 TOCTOU。
+// FOR SHARE 与 FOR NO KEY UPDATE 冲突,把协议钉到创建事务提交,同时允许并发创建共存。
+func (q *Queries) GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error) {
+	row := q.db.QueryRow(ctx, getProviderProtocolForAccountCreate, arg.TenantID, arg.ProviderID)
+	var upstream_protocol string
+	err := row.Scan(&upstream_protocol)
+	return upstream_protocol, err
+}
+
 const insertProvider = `-- name: InsertProvider :one
 INSERT INTO providers (
     tenant_id,
@@ -345,7 +353,6 @@ func (q *Queries) ListAdminChannelsByTenant(ctx context.Context, arg ListAdminCh
 }
 
 const listAdminProvidersByTenant = `-- name: ListAdminProvidersByTenant :many
-
 SELECT
     id,
     code,
@@ -376,9 +383,6 @@ type ListAdminProvidersByTenantRow struct {
 	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
-// P0 provider/channel admin catalog queries.
-// Read-only directory data for admin UI. These SELECT lists intentionally
-// exclude tenant_id and every credential-bearing provider_accounts column.
 func (q *Queries) ListAdminProvidersByTenant(ctx context.Context, arg ListAdminProvidersByTenantParams) ([]ListAdminProvidersByTenantRow, error) {
 	rows, err := q.db.Query(ctx, listAdminProvidersByTenant, arg.TenantID, arg.PageOffset, arg.PageLimit)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,13 +98,22 @@ type adminPoolChannelHealthStub struct {
 }
 
 type adminPoolRateLimitRecoveryStub struct {
-	input  *provideraccountrecovery.ClearRateLimitInput
-	result provideraccountrecovery.ClearRateLimitResult
-	err    error
+	input        *provideraccountrecovery.ClearRateLimitInput
+	recoverInput *provideraccountrecovery.RecoverAccountInput
+	result       provideraccountrecovery.ClearRateLimitResult
+	err          error
 }
 
 func (s *adminPoolRateLimitRecoveryStub) ClearRateLimit(_ context.Context, in provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error) {
 	s.input = &in
+	if s.result.Account.ID == 0 {
+		s.result.Account = adminProviderRow(in.AccountID, in.TenantID)
+	}
+	return s.result, s.err
+}
+
+func (s *adminPoolRateLimitRecoveryStub) RecoverAccountState(_ context.Context, in provideraccountrecovery.RecoverAccountInput) (provideraccountrecovery.RecoverAccountResult, error) {
+	s.recoverInput = &in
 	if s.result.Account.ID == 0 {
 		s.result.Account = adminProviderRow(in.AccountID, in.TenantID)
 	}
@@ -225,6 +235,9 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	if arg.StaticWeight != nil {
 		row.StaticWeight = *arg.StaticWeight
 	}
+	if arg.SetUpstreamCostRatio {
+		row.UpstreamCostRatio = arg.UpstreamCostRatio
+	}
 	if arg.CapConcurrency != nil {
 		row.CapConcurrency = *arg.CapConcurrency
 	}
@@ -289,6 +302,7 @@ func (s *adminPoolStoreStub) UpdateAdminProviderAccount(_ context.Context, arg a
 	if arg.SetProxyGroupID {
 		row.ProxyGroupID = arg.ProxyGroupID
 	}
+	s.get = &row
 	return row, nil
 }
 
@@ -319,14 +333,14 @@ func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admind
 func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":" acct ","account_type":"api_key","credentials":{"api_key":"sk-live"},"cap_concurrency":3,"priority":10,"model_allow_list":[" gpt-4o "],"capability_flags":["chat"]}`)
+		`{"provider_id":8,"channel_id":9,"name":" acct ","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"cap_concurrency":3,"priority":10,"model_allow_list":[" gpt-4o "],"capability_flags":["chat"]}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if store.insert == nil || store.insert.TenantID != 7 || store.insert.ProviderID != 8 || store.insert.ChannelID != 9 {
 		t.Fatalf("insert params mismatch: %+v", store.insert)
 	}
-	if store.insert.Name != "acct" || store.insert.AccountType != "api_key" || string(store.insert.Credentials) == "" {
+	if store.insert.Name != "acct" || store.insert.AccountType != "api_key" || string(store.insert.Credentials) != "{}" {
 		t.Fatalf("insert account fields mismatch: %+v", store.insert)
 	}
 	if store.insert.CapConcurrency == nil || *store.insert.CapConcurrency != 3 || store.insert.Priority == nil || *store.insert.Priority != 10 {
@@ -340,7 +354,7 @@ func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
 func TestAdminPoolAccounts_CreateAdditionalProviderAccountFields(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"},"static_weight":4,"probe_model":" gpt-4o-mini-probe ","tags":[" prod ",""],"extra":{"azure_api_version":"2024-08-01","claude_beta_query":"true"}}`)
+		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"static_weight":4,"probe_model":" gpt-4o-mini-probe ","tags":[" prod ",""],"extra":{"azure_api_version":"2024-08-01","claude_beta_query":"true"}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -363,9 +377,9 @@ func TestAdminPoolAccounts_CreateAdditionalProviderAccountFields(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_CreateSessionTypeInsertsAccount(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 88}
+	store := &adminPoolStoreStub{insertID: 88, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"cursor-sub","account_type":"session","credentials":{"session_token":"sess-live"}}`)
+		`{"provider_id":8,"channel_id":9,"name":"claude-session","account_type":"session","vendor":"anthropic","auth_mode":"claude_code","credentials":{"session_token":"sess-live"}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -380,7 +394,7 @@ func TestAdminPoolAccounts_CreateSessionTypeInsertsAccount(t *testing.T) {
 func TestAdminPoolAccounts_CreateWritesAuditEventWithoutCredentialBytes(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"}}`)
+		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -424,6 +438,30 @@ func TestAdminPoolAccounts_CreateWithCredentialV2StoresEmptyLegacyJSON(t *testin
 	}
 	if response.ID != 77 {
 		t.Fatalf("id=%d want 77", response.ID)
+	}
+}
+
+func TestAdminPoolAccounts_CreateRejectsLegacyInlineCredential(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"legacy","account_type":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "vendor and auth_mode are required") {
+		t.Fatalf("status=%d body=%s，期望在落库前拒绝 legacy 内联凭据", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil {
+		t.Fatalf("legacy 内联凭据不得写 provider_accounts：%+v", store.insert)
+	}
+}
+
+func TestAdminPoolAccounts_CreateFailsClosedWithoutCredentialStore(t *testing.T) {
+	store := &adminPoolStoreStub{insertID: 77}
+	rec := invokeAdminPoolWithCredentialStore(t, store, nil, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
+		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "gateway_not_configured") {
+		t.Fatalf("status=%d body=%s，期望凭据存储未接线时 fail closed", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil {
+		t.Fatalf("凭据存储未接线不得先建账号：%+v", store.insert)
 	}
 }
 
@@ -623,19 +661,44 @@ func TestAdminPoolAccounts_DeleteSoftDeletesAndAudits(t *testing.T) {
 func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	probeAt := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC)
 	observedAt := time.Date(2026, 7, 16, 7, 4, 0, 0, time.UTC)
+	window5hStart := time.Date(2099, 7, 19, 3, 0, 0, 0, time.UTC)
+	window5hEnd := window5hStart.Add(5 * time.Hour)
+	window7dStart := time.Date(2099, 7, 13, 8, 0, 0, 0, time.UTC)
+	window7dEnd := window7dStart.Add(7 * 24 * time.Hour)
 	first := adminProviderRow(77, 7)
 	first.LastProbeAt = pgtype.Timestamptz{Time: probeAt, Valid: true}
 	first.LastRequestObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
+	first.SessionWindow5hStart = pgtype.Timestamptz{Time: window5hStart, Valid: true}
+	first.SessionWindow5hEnd = pgtype.Timestamptz{Time: window5hEnd, Valid: true}
+	first.SessionWindow5hUtilization = adminProviderNumeric(t, 37.5)
+	first.SessionWindow7dStart = pgtype.Timestamptz{Time: window7dStart, Valid: true}
+	first.SessionWindow7dEnd = pgtype.Timestamptz{Time: window7dEnd, Valid: true}
+	first.SessionWindow7dUtilization = adminProviderNumeric(t, 62.25)
+	first.SubscriptionVendor = testStringPtr("openai")
+	first.SubscriptionPlan = testStringPtr("pro")
+	first.SubscriptionRawPlan = testStringPtr("pro")
+	first.SubscriptionScope = testStringPtr("personal")
+	first.SubscriptionSource = testStringPtr("id_token_claim")
+	first.SubscriptionTrust = testStringPtr("unverified_token")
+	first.SubscriptionVerification = testStringPtr("unverified")
+	first.SubscriptionStatus = testStringPtr("observed")
+	first.SubscriptionMappingVersion = testInt32Ptr(1)
+	first.SubscriptionFirstObservedAt = pgtype.Timestamptz{Time: observedAt.Add(-time.Hour), Valid: true}
+	first.SubscriptionObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
+	first.SubscriptionChangedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
 	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{
 		first,
 		adminProviderRow(78, 7),
 	}}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts?limit=1&state_filter=active&pool_group_id=9&tag=prod", "")
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts?limit=1&state_filter=active&pool_group_id=9&tag=prod&system_label=OpenAI:Pro&subscription_scope=personal&subscription_status=observed&subscription_source=id_token_claim", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if store.listArg == nil || store.listArg.TenantID != 7 || store.listArg.LimitCount != 2 ||
-		store.listArg.StateFilter != "active" || store.listArg.PoolGroupID != 9 || store.listArg.TagFilter != "prod" {
+		store.listArg.StateFilter != "active" || store.listArg.PoolGroupID != 9 || store.listArg.TagFilter != "prod" ||
+		store.listArg.SubscriptionVendorFilter != "openai" || store.listArg.SubscriptionPlanFilter != "pro" ||
+		store.listArg.SubscriptionScopeFilter != "personal" || store.listArg.SubscriptionStatusFilter != "observed" ||
+		store.listArg.SubscriptionSourceFilter != "id_token_claim" {
 		t.Fatalf("list arg mismatch: %+v", store.listArg)
 	}
 	var response struct {
@@ -660,8 +723,45 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	if response.Items[0].ObservationSource != "request_completion_event" {
 		t.Fatalf("列表 last_request_observation_source=%q want request_completion_event", response.Items[0].ObservationSource)
 	}
+	if response.Items[0].Subscription == nil || response.Items[0].Subscription.Label != "openai:pro" ||
+		response.Items[0].Subscription.Plan != "pro" || response.Items[0].Subscription.Status != "observed" ||
+		len(response.Items[0].SystemLabels) != 1 || response.Items[0].SystemLabels[0] != "openai:pro" {
+		t.Fatalf("列表套餐投影不完整：%+v", response.Items[0])
+	}
+	if strings.Join(response.Items[0].Tags, ",") == "openai:pro" {
+		t.Fatalf("系统标签不应写入人工 tags：%+v", response.Items[0])
+	}
+	if got := response.Items[0].QuotaWindows.FiveHour; got.State != "active" ||
+		got.RemainingPercent == nil || *got.RemainingPercent != 62.5 ||
+		got.ResetsAt == nil || !got.ResetsAt.Equal(window5hEnd) {
+		t.Fatalf("列表 5h 配额进度=%+v，期望一次列表请求即可得到剩余比例和重置时间", got)
+	}
+	if got := response.Items[0].QuotaWindows.SevenDay; got.State != "active" ||
+		got.RemainingPercent == nil || *got.RemainingPercent != 37.75 ||
+		got.ResetsAt == nil || !got.ResetsAt.Equal(window7dEnd) {
+		t.Fatalf("列表 7d 配额进度=%+v，期望一次列表请求即可得到剩余比例和重置时间", got)
+	}
 	if strings.Contains(rec.Body.String(), "temp_unschedulable_rules") {
 		t.Fatalf("列表响应不应携带详情规则：%s", rec.Body.String())
+	}
+}
+
+func TestAdminPoolAccounts_ListRejectsInvalidQuotaProjection(t *testing.T) {
+	row := adminProviderRow(77, 7)
+	row.QuotaFacts = []byte(`{"state":`)
+	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{row}}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts", "")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "provider_account_quota_projection_invalid") {
+		t.Fatalf("损坏额度投影必须明确失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminPoolAccounts_RejectsConflictingSubscriptionFilters(t *testing.T) {
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet,
+		"/admin/v1/provider-accounts?system_label=openai:pro&subscription_plan=plus", "")
+	if rec.Code != http.StatusBadRequest || store.listArg != nil {
+		t.Fatalf("冲突筛选必须在查库前拒绝：status=%d body=%s arg=%+v", rec.Code, rec.Body.String(), store.listArg)
 	}
 }
 
@@ -721,10 +821,20 @@ func TestAdminPoolAccounts_GetProviderAccount(t *testing.T) {
 	}
 }
 
+func TestAdminPoolAccounts_GetRejectsInvalidQuotaProjection(t *testing.T) {
+	row := adminProviderRow(77, 7)
+	row.QuotaFacts = []byte(`[{"metric_key":"model_quota"}`)
+	store := &adminPoolStoreStub{get: &row}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodGet, "/admin/v1/provider-accounts/77", "")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "provider_account_quota_projection_invalid") {
+		t.Fatalf("损坏额度投影必须明确失败：status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPatch, "/admin/v1/provider-accounts/77",
-		`{"enabled":true,"priority":5,"cap_concurrency":9,"static_weight":4,"probe_model":"claude-probe","tags":["prod"],"extra":{"claude_beta_query":"true"},"model_allow_list":[" claude "],"capability_flags":["tool"],"custom_error_codes_enabled":true,"custom_error_codes":[429],"pool_mode":true,"temp_unschedulable_enabled":true,"temp_unschedulable_rules":[{"error_code":529,"keywords":["busy"],"duration_minutes":5}]}`)
+		`{"enabled":true,"priority":5,"cap_concurrency":9,"static_weight":4,"probe_model":"claude-probe","tags":["prod"],"extra":{"claude_beta_query":"true"},"model_allow_list":[" claude "],"capability_flags":["tool"],"custom_error_codes_enabled":true,"custom_error_codes":[429],"pool_mode":true,"temp_unschedulable_enabled":true,"temp_unschedulable_rules":[{"rule_id":"busy-529","error_code":529,"keywords":["busy"],"duration_minutes":5}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -804,7 +914,7 @@ func TestAdminPoolAccounts_ClearRateLimitFailsClosedWhenRecoveryUnset(t *testing
 func TestAdminPoolAccounts_CrossTenantBodyRejected(t *testing.T) {
 	store := &adminPoolStoreStub{}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"tenant_id":8,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"}}`)
+		`{"tenant_id":8,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -847,7 +957,7 @@ func TestAdminPoolAccounts_GlobalAdminCreateScopesToQueryTenant(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost,
 		"/admin/v1/provider-accounts?tenant_id=9",
-		`{"tenant_id":9,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","credentials":{"api_key":"sk-live"}}`)
+		`{"tenant_id":9,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -865,7 +975,7 @@ func providerAccountAdmin() adminPoolAuthStub {
 }
 
 func invokeAdminPool(t *testing.T, store *adminPoolStoreStub, auth AdminPoolAccountAuth, method, target, body string) *httptest.ResponseRecorder {
-	return invokeAdminPoolWithCredentialStore(t, store, nil, auth, method, target, body)
+	return invokeAdminPoolWithCredentialStore(t, store, &adminPoolCredentialWriterStub{}, auth, method, target, body)
 }
 
 func invokeAdminPoolWithCredentialStore(t *testing.T, store *adminPoolStoreStub, credentials AdminPoolAccountCredentialWriter, auth AdminPoolAccountAuth, method, target, body string) *httptest.ResponseRecorder {
@@ -900,6 +1010,23 @@ func adminProviderRow(id, tenantID int64) admindb.AdminProviderAccountRow {
 	}
 }
 
+func adminProviderNumeric(t *testing.T, value float64) pgtype.Numeric {
+	t.Helper()
+	var result pgtype.Numeric
+	if err := result.Scan(strconv.FormatFloat(value, 'f', -1, 64)); err != nil {
+		t.Fatalf("构造 provider account numeric: %v", err)
+	}
+	return result
+}
+
+func testStringPtr(value string) *string {
+	return &value
+}
+
+func testInt32Ptr(value int32) *int32 {
+	return &value
+}
+
 func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams) admindb.AdminProviderAccountRow {
 	row := adminProviderRow(id, in.TenantID)
 	row.ProviderID = in.ProviderID
@@ -918,6 +1045,7 @@ func adminProviderRowFromInsert(id int64, in admindb.InsertProviderAccountParams
 	if in.StaticWeight != nil {
 		row.StaticWeight = *in.StaticWeight
 	}
+	row.UpstreamCostRatio = in.UpstreamCostRatio
 	row.ProbeModel = in.ProbeModel
 	row.Tags = in.Tags
 	row.Extra = in.Extra

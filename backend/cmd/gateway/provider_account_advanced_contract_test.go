@@ -44,6 +44,96 @@ func TestProviderAccountAdvancedOpenAPI三类Schema字段齐全(t *testing.T) {
 	}
 }
 
+func TestProviderAccountTempRuleOpenAPI与严格写合同一致(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	source := string(raw)
+	rule := openAPIComponentSchema(source, "ProviderAccountTempRule")
+	if rule == "" {
+		t.Fatal("OpenAPI 缺 ProviderAccountTempRule")
+	}
+	for _, field := range []string{
+		"rule_id", "error_code", "keywords", "duration_minutes", "description",
+		"client_status", "client_code", "message_mode", "client_message", "affect_health",
+	} {
+		if !schemaHasProperty(rule, field) {
+			t.Errorf("ProviderAccountTempRule 缺字段 %s", field)
+		}
+	}
+	for _, contract := range []string{
+		"required: [rule_id, error_code, keywords, duration_minutes, message_mode, affect_health]",
+		"pattern: '^[a-z][a-z0-9._-]{0,63}$'",
+		"maxItems: 16",
+		"maximum: 525600",
+		"pattern: '^[a-z][a-z0-9_]{0,63}$'",
+		"enum: [fixed, custom, upstream_safe]",
+	} {
+		if !strings.Contains(rule, contract) {
+			t.Errorf("ProviderAccountTempRule 缺严格约束 %q", contract)
+		}
+	}
+	for _, schema := range []string{"ProviderAccount", "ProviderAccountCreate", "ProviderAccountUpdate"} {
+		block := openAPIComponentSchema(source, schema)
+		property := textSection(t, block, "        temp_unschedulable_rules:", "        proxy_binding:")
+		if !strings.Contains(property, "maxItems: 64") {
+			t.Errorf("OpenAPI %s 未限制规则最多 64 条", schema)
+		}
+	}
+	providerAccount := openAPIComponentSchema(source, "ProviderAccount")
+	customCodes := textSection(t, providerAccount, "        custom_error_codes:", "        rate_limit_recovery:")
+	if !strings.Contains(customCodes, "items: { type: integer, format: int32, minimum: 100, maximum: 599 }") {
+		t.Error("ProviderAccount custom_error_codes 响应合同仍不是整数数组")
+	}
+}
+
+func TestProviderAccountSubscriptionOpenAPI合同完整(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	source := string(raw)
+	for schema, fields := range map[string][]string{
+		"ProviderAccountSubscriptionProfile": {
+			"vendor", "plan", "label", "raw_plan", "scope", "source", "trust",
+			"verification", "status", "mapping_version", "first_observed_at", "observed_at", "changed_at",
+		},
+		"ProviderAccount":               {"subscription", "system_labels"},
+		"ProviderAccountHealthSnapshot": {"subscription", "system_labels"},
+		"AccountIntakePlanItem":         {"subscription", "system_labels"},
+		"AccountIntakeExecutionItem":    {"subscription", "system_labels"},
+		"AccountCredentialSubscriptionObservation": {
+			"vendor", "plan", "raw_plan", "scope", "subject_ref", "workspace_ref",
+			"source", "trust", "verification", "status", "mapping_version", "error_class",
+		},
+		"AccountCredentialMetadata": {"external_subject_id", "subscription"},
+	} {
+		block := openAPIComponentSchema(source, schema)
+		if block == "" {
+			t.Fatalf("OpenAPI 缺 schema %s", schema)
+		}
+		for _, field := range fields {
+			if !schemaHasProperty(block, field) {
+				t.Errorf("OpenAPI %s 缺套餐合同字段 %s", schema, field)
+			}
+		}
+	}
+	plan := openAPIComponentSchema(source, "AccountIntakePlan")
+	if !strings.Contains(plan, "enum: [account-intake-v2]") {
+		t.Error("账号导入套餐合同已变更，但 contract_version 未锁定 account-intake-v2")
+	}
+	listRoute := textSection(t, source, "  /admin/v1/provider-accounts:", "    post:")
+	for _, parameter := range []string{
+		"system_label", "subscription_vendor", "subscription_plan", "subscription_scope",
+		"subscription_status", "subscription_source",
+	} {
+		if !strings.Contains(listRoute, "- name: "+parameter) {
+			t.Errorf("账号列表 OpenAPI 缺套餐筛选参数 %s", parameter)
+		}
+	}
+}
+
 func TestProviderAccountAdvancedSQL源覆盖全部存储列(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/queries/admin_provider_account_mutations.sql")
 	if err != nil {
@@ -51,36 +141,43 @@ func TestProviderAccountAdvancedSQL源覆盖全部存储列(t *testing.T) {
 	}
 	generatedRaw, err := os.ReadFile("../../internal/db/admin/admin_provider_account_mutations.sql.go")
 	if err != nil {
-		t.Fatalf("读取手改 sqlc 生成码: %v", err)
+		t.Fatalf("读取 sqlc 生成码: %v", err)
+	}
+	compatRaw, err := os.ReadFile("../../internal/db/admin/admin_provider_account_mutation_compat.go")
+	if err != nil {
+		t.Fatalf("读取账号 mutation 稳定包装层: %v", err)
 	}
 	source := string(raw)
 	generated := string(generatedRaw)
-	insertSource := textSection(t, source, "-- name: InsertProviderAccount :one", "-- name: UpdateAdminProviderAccount :one")
-	updateSource := textSection(t, source, "-- name: UpdateAdminProviderAccount :one", "-- name: UpdateProviderAccountEnabled :exec")
-	insertGeneratedSQL := textSection(t, generated, "const insertProviderAccount =", "type InsertProviderAccountParams struct")
-	insertGeneratedArgs := textSection(t, generated, "func (q *Queries) InsertProviderAccount", "const updateAdminProviderAccount =")
-	updateGeneratedSQL := textSection(t, generated, "const updateAdminProviderAccount =", "type UpdateAdminProviderAccountParams struct")
-	updateGeneratedArgs := textSection(t, generated, "func (q *Queries) UpdateAdminProviderAccount", "const softDeleteProviderAccount =")
+	compat := string(compatRaw)
+	insertSource := textSection(t, source, "-- name: InsertProviderAccountRaw :one", "-- name: UpdateAdminProviderAccountRaw :one")
+	updateSource := textSection(t, source, "-- name: UpdateAdminProviderAccountRaw :one", "-- name: UpdateProviderAccountEnabled :exec")
+	insertGeneratedSQL := textSection(t, generated, "const insertProviderAccountRaw =", "type InsertProviderAccountRawParams struct")
+	insertGeneratedArgs := textSection(t, generated, "func (q *Queries) InsertProviderAccountRaw", "const softDeleteProviderAccount =")
+	updateGeneratedSQL := textSection(t, generated, "const updateAdminProviderAccountRaw =", "type UpdateAdminProviderAccountRawParams struct")
+	updateGeneratedArgs := textSection(t, generated, "func (q *Queries) UpdateAdminProviderAccountRaw", "const updateProviderAccountEnabled =")
 
 	type storageField struct {
-		column string
-		arg    string
-		goArg  string
+		column   string
+		arg      string
+		goArg    string
+		rawGoArg string
 	}
 	fieldsByKey := map[string][]storageField{
-		"rpm_limit":                  {{column: "rpm_limit", arg: "rpm_limit", goArg: "RPMLimit"}},
-		"tpm_limit":                  {{column: "tpm_limit", arg: "tpm_limit", goArg: "TPMLimit"}},
+		"upstream_cost_ratio":        {{column: "upstream_cost_ratio", arg: "upstream_cost_ratio", goArg: "UpstreamCostRatio"}},
+		"rpm_limit":                  {{column: "rpm_limit", arg: "rpm_limit", goArg: "RPMLimit", rawGoArg: "RpmLimit"}},
+		"tpm_limit":                  {{column: "tpm_limit", arg: "tpm_limit", goArg: "TPMLimit", rawGoArg: "TpmLimit"}},
 		"window_cost_limit_cents":    {{column: "window_cost_limit_cents", arg: "window_cost_limit_cents", goArg: "WindowCostLimitCents"}},
 		"max_sessions":               {{column: "max_sessions", arg: "max_sessions", goArg: "MaxSessions"}},
 		"disable_cooling":            {{column: "disable_cooling", arg: "disable_cooling", goArg: "DisableCooling"}},
 		"refresh_lead_seconds":       {{column: "refresh_lead_seconds", arg: "refresh_lead_seconds", goArg: "RefreshLeadSeconds"}},
 		"expires_at":                 {{column: "expires_at", arg: "expires_at", goArg: "ExpiresAt"}},
-		"tls_fingerprint_rotate":     {{column: "tls_fingerprint_rotate", arg: "tls_fingerprint_rotate", goArg: "TLSFingerprintRotate"}},
+		"tls_fingerprint_rotate":     {{column: "tls_fingerprint_rotate", arg: "tls_fingerprint_rotate", goArg: "TLSFingerprintRotate", rawGoArg: "TlsFingerprintRotate"}},
 		"custom_error_codes_enabled": {{column: "custom_error_codes_enabled", arg: "custom_error_codes_enabled", goArg: "CustomErrorCodesEnabled"}},
 		"custom_error_codes":         {{column: "custom_error_codes", arg: "custom_error_codes", goArg: "CustomErrorCodes"}},
 		"pool_mode":                  {{column: "pool_mode", arg: "pool_mode", goArg: "PoolMode"}},
 		"temp_unschedulable_enabled": {{column: "temp_unschedulable_enabled", arg: "temp_unschedulable_enabled", goArg: "TempUnschedulableEnabled"}},
-		"temp_unschedulable_rules":   {{column: "temp_unschedulable_rules", arg: "temp_unschedulable_rules", goArg: "TempUnschedulableRulesJSON"}},
+		"temp_unschedulable_rules":   {{column: "temp_unschedulable_rules", arg: "temp_unschedulable_rules", goArg: "TempUnschedulableRulesJSON", rawGoArg: "TempUnschedulableRules"}},
 		"proxy_binding": {
 			{column: "proxy_id", arg: "proxy_id", goArg: "ProxyID"},
 			{column: "proxy_group_id", arg: "proxy_group_id", goArg: "ProxyGroupID"},
@@ -92,6 +189,10 @@ func TestProviderAccountAdvancedSQL源覆盖全部存储列(t *testing.T) {
 			t.Fatalf("高级字段 %s 缺 SQL 存储映射守卫", key)
 		}
 		for _, field := range fields {
+			rawGoArg := field.rawGoArg
+			if rawGoArg == "" {
+				rawGoArg = field.goArg
+			}
 			if !strings.Contains(insertSource, "\n    "+field.column+",") ||
 				!strings.Contains(insertSource, "sqlc.narg("+field.arg+")") {
 				t.Errorf("SQL 源 INSERT 缺字段或参数映射 %s", field.column)
@@ -101,12 +202,15 @@ func TestProviderAccountAdvancedSQL源覆盖全部存储列(t *testing.T) {
 				t.Errorf("SQL 源 UPDATE 缺字段或参数映射 %s", field.column)
 			}
 			if !strings.Contains(insertGeneratedSQL, "\n    "+field.column+",") ||
-				!strings.Contains(insertGeneratedArgs, "\n\t\targ."+field.goArg+",") {
-				t.Errorf("手改生成码 INSERT 缺列或 Go 参数映射 %s", field.column)
+				!strings.Contains(insertGeneratedArgs, "\n\t\targ."+rawGoArg+",") {
+				t.Errorf("生成码 INSERT 缺列或 Go 参数映射 %s", field.column)
 			}
 			if !strings.Contains(updateGeneratedSQL, "\n    "+field.column+" =") ||
-				!strings.Contains(updateGeneratedArgs, "\n\t\targ."+field.goArg+",") {
-				t.Errorf("手改生成码 UPDATE 缺列或 Go 参数映射 %s", field.column)
+				!strings.Contains(updateGeneratedArgs, "\n\t\targ."+rawGoArg+",") {
+				t.Errorf("生成码 UPDATE 缺列或 Go 参数映射 %s", field.column)
+			}
+			if !strings.Contains(compat, "arg."+field.goArg) || !strings.Contains(compat, rawGoArg+":") {
+				t.Errorf("稳定包装层缺字段映射 %s", field.column)
 			}
 		}
 	}

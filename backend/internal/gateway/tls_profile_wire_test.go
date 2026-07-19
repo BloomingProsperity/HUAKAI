@@ -2,60 +2,107 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
-// 用指针身份做区分的 RT: 空结构体的「值」一旦装箱进 interface 就会比较相等,
-// 这会掩盖「保留 builtin 而非替换」这种回归。用不同的指针让替换变得可观测。
 type tlsProfileMarkerRT struct{ name string }
 
 func (*tlsProfileMarkerRT) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
 
 type fakeTLSProfileResolver struct {
-	rt  http.RoundTripper
-	err error
+	profile *mimicry.InlineTLSProfile
+	err     error
 }
 
-func (f fakeTLSProfileResolver) ResolveRoundTripper(context.Context, int64) (http.RoundTripper, error) {
-	return f.rt, f.err
+func (f fakeTLSProfileResolver) ResolveProfile(context.Context, int64) (*mimicry.InlineTLSProfile, error) {
+	return f.profile, f.err
 }
 
-// UTLS-03 dispatcher 接线: 对 mimicry 模式的账号, applyTLSProfile 必须换入
-// 按账号粒度的 DB profile RoundTripper; 对 standard 模式 / account 0 / nil
-// resolver / resolver 出错, 则保留 builtin(orig rt)。
-func TestApplyTLSProfile_Wiring(t *testing.T) {
-	ctx := context.Background()
-	marker := &tlsProfileMarkerRT{name: "profile"}
+func TestApplyTLSProfileBindsDynamicProfileToSidecar(t *testing.T) {
+	profile := validGatewayInlineProfile()
+	base := mimicry.NewSidecarRoundTripper(
+		mimicry.NewSidecarClient("/run/huakai/tls-sidecar.sock"),
+		mimicry.SidecarProfileAnthropicCLIMimicryV1,
+	)
+	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{profile: profile}}
+
+	got, err := d.applyTLSProfile(context.Background(), base, transport.TransportModeMimicryClaudeCode, 7)
+	if err != nil {
+		t.Fatalf("applyTLSProfile: %v", err)
+	}
+	marked, ok := got.(interface{ SidecarProfileID() string })
+	if !ok {
+		t.Fatalf("动态 profile 返回值没有 sidecar 标记，got=%T", got)
+	}
+	if marked.SidecarProfileID() != "inline:"+profile.ID {
+		t.Fatalf("动态 profile 未绑定到 sidecar，id=%q", marked.SidecarProfileID())
+	}
+	if got == base {
+		t.Fatal("绑定动态 profile 必须派生独立 transport，不能污染共享连接池")
+	}
+}
+
+func TestApplyTLSProfileKeepsBuiltinWhenNoDynamicSelection(t *testing.T) {
 	orig := &tlsProfileMarkerRT{name: "builtin"}
-	var origRT http.RoundTripper = orig
+	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{}}
 
-	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{rt: marker}}
+	got, err := d.applyTLSProfile(context.Background(), orig, transport.TransportModeMimicryClaudeCode, 7)
+	if err != nil || got != http.RoundTripper(orig) {
+		t.Fatalf("无动态 profile 应保持 builtin，got=%#v err=%v", got, err)
+	}
+}
 
-	// 变异:防护。让 applyTLSProfile 返回 rt 而非解析出的 profileRT, 会使
-	// got == orig(!= marker)-> 变红。从而能抓到「按账号粒度的 DB 指纹始终
-	// 未生效」的情况。
-	if got := d.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 7); got != http.RoundTripper(marker) {
-		t.Fatalf("mimicry mode + bound profile: expected profile RT to replace builtin, got %#v", got)
+func TestApplyTLSProfileSkipsNonMimicryContexts(t *testing.T) {
+	orig := &tlsProfileMarkerRT{name: "builtin"}
+	d := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{profile: validGatewayInlineProfile()}}
+
+	for name, tc := range map[string]struct {
+		mode      transport.TransportMode
+		accountID int64
+	}{
+		"standard":  {mode: transport.TransportModeStandard, accountID: 7},
+		"account-0": {mode: transport.TransportModeMimicryClaudeCode},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := d.applyTLSProfile(context.Background(), orig, tc.mode, tc.accountID)
+			if err != nil || got != http.RoundTripper(orig) {
+				t.Fatalf("应保留原 transport，got=%#v err=%v", got, err)
+			}
+		})
 	}
-	// standard 模式绝不能拿到指纹(Owner 为普通路径留的豁免)
-	if got := d.applyTLSProfile(ctx, origRT, transport.TransportModeStandard, 7); got != origRT {
-		t.Fatalf("standard mode must keep builtin RT")
+}
+
+func TestApplyTLSProfileFailsClosedOnResolverOrTransportMismatch(t *testing.T) {
+	orig := &tlsProfileMarkerRT{name: "not-sidecar"}
+	sentinel := errors.New("db down")
+
+	dResolver := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{err: sentinel}}
+	if got, err := dResolver.applyTLSProfile(context.Background(), orig, transport.TransportModeMimicryClaudeCode, 7); got != nil || !errors.Is(err, sentinel) {
+		t.Fatalf("resolver 故障不得回落其他指纹，got=%#v err=%v", got, err)
 	}
-	// 无 account id -> builtin
-	if got := d.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 0); got != origRT {
-		t.Fatalf("account 0 must keep builtin RT")
+
+	dMismatch := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{profile: validGatewayInlineProfile()}}
+	if got, err := dMismatch.applyTLSProfile(context.Background(), orig, transport.TransportModeMimicryClaudeCode, 7); got != nil || err == nil {
+		t.Fatalf("动态 profile 配到非 sidecar transport 必须失败，got=%#v err=%v", got, err)
 	}
-	// resolver 出错 -> builtin(绝不让 dispatch 失败)
-	dErr := &UpstreamDispatcher{TLSProfileResolver: fakeTLSProfileResolver{err: context.DeadlineExceeded}}
-	if got := dErr.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 7); got != origRT {
-		t.Fatalf("resolver error must fall back to builtin RT")
-	}
-	// nil 的 resolver -> builtin
-	dNil := &UpstreamDispatcher{}
-	if got := dNil.applyTLSProfile(ctx, origRT, transport.TransportModeMimicryClaudeCode, 7); got != origRT {
-		t.Fatalf("nil resolver must keep builtin RT")
+}
+
+func validGatewayInlineProfile() *mimicry.InlineTLSProfile {
+	return &mimicry.InlineTLSProfile{
+		ID:                   "db-profile-77",
+		CipherSuites:         []uint16{4865, 49195},
+		SupportedGroups:      []uint16{29, 23},
+		ECPointFormats:       []uint8{0},
+		SignatureAlgorithms:  []uint16{1027, 2052},
+		ALPNProtocols:        []string{"http/1.1"},
+		TLSSupportedVersions: []uint16{772, 771},
+		KeyShareGroups:       []uint16{29},
+		PSKModes:             []uint8{1},
+		ExtensionsOrder:      []uint16{0, 10, 11, 13, 16, 43, 45, 51},
 	}
 }

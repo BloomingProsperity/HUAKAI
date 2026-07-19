@@ -116,6 +116,24 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 	row.ServingCredentialCandidates = 1
 	projectRef := "project-safe-7"
 	row.CredentialProjectRef = &projectRef
+	subscriptionVendor := "antigravity"
+	subscriptionPlan := "ultra"
+	subscriptionRawPlan := "g1-ultra-tier"
+	subscriptionScope := "personal"
+	subscriptionSource := "provider_api"
+	subscriptionTrust := "verified_api"
+	subscriptionVerification := "verified"
+	subscriptionStatus := "observed"
+	subscriptionMappingVersion := int32(1)
+	row.SubscriptionVendor = &subscriptionVendor
+	row.SubscriptionPlan = &subscriptionPlan
+	row.SubscriptionRawPlan = &subscriptionRawPlan
+	row.SubscriptionScope = &subscriptionScope
+	row.SubscriptionSource = &subscriptionSource
+	row.SubscriptionTrust = &subscriptionTrust
+	row.SubscriptionVerification = &subscriptionVerification
+	row.SubscriptionStatus = &subscriptionStatus
+	row.SubscriptionMappingVersion = &subscriptionMappingVersion
 	store.put(row)
 
 	rec := invokeProviderAccountHealth(t, ProviderAccountHealthDeps{
@@ -145,6 +163,8 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"last_refresh_outcome",
 		"model_sync_last_check_at",
 		"observability",
+		"quota_facts",
+		"quota_windows",
 		"requires_action",
 		"session_window_5h_end",
 		"session_window_5h_start",
@@ -155,6 +175,8 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		"session_window_7d_status",
 		"session_window_7d_utilization",
 		"scheduling",
+		"subscription",
+		"system_labels",
 		"updated_at",
 	})
 	forbiddenFragments := []string{"credentials", "encrypted", "payload", "secret", "access_token", "refresh_token", "nonce", "key_id"}
@@ -186,6 +208,21 @@ func TestProviderAccountHealthResponseContainsOnlySafeSnapshotFields(t *testing.
 		observability.Project.State != "resolved" || observability.Project.ProjectRef == nil ||
 		*observability.Project.ProjectRef != projectRef {
 		t.Fatalf("observability 未返回安全来源元数据：%+v", observability)
+	}
+	var subscription struct {
+		Label  string `json:"label"`
+		Plan   string `json:"plan"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body["subscription"], &subscription); err != nil {
+		t.Fatalf("decode subscription: %v", err)
+	}
+	if subscription.Label != "antigravity:ultra" || subscription.Plan != "ultra" || subscription.Status != "observed" {
+		t.Fatalf("健康接口套餐投影错误：%+v", subscription)
+	}
+	var systemLabels []string
+	if err := json.Unmarshal(body["system_labels"], &systemLabels); err != nil || len(systemLabels) != 1 || systemLabels[0] != "antigravity:ultra" {
+		t.Fatalf("健康接口系统标签错误：labels=%v err=%v", systemLabels, err)
 	}
 }
 
@@ -321,6 +358,10 @@ func TestProviderAccountHealthResponseIncludesSyncAndSessionWindowSnapshot(t *te
 		body.SessionWindow7dUtilization == nil || *body.SessionWindow7dUtilization != 62.25 {
 		t.Fatalf("7d 窗口响应不一致：%+v", body)
 	}
+	if body.QuotaWindows.FiveHour.RemainingPercent == nil || *body.QuotaWindows.FiveHour.RemainingPercent != 62.5 ||
+		body.QuotaWindows.SevenDay.RemainingPercent == nil || *body.QuotaWindows.SevenDay.RemainingPercent != 37.75 {
+		t.Fatalf("单账号健康响应没有复用列表矩阵的剩余比例合同：%+v", body.QuotaWindows)
+	}
 }
 
 func TestProviderAccountHealthExpiredWindowHidesUtilization(t *testing.T) {
@@ -345,6 +386,9 @@ func TestProviderAccountHealthExpiredWindowHidesUtilization(t *testing.T) {
 	}
 	if body.SessionWindow5hUtilization != nil {
 		t.Fatalf("过期 5h 利用率不得作为活数据返回：%v", body.SessionWindow5hUtilization)
+	}
+	if body.QuotaWindows.FiveHour.State != "expired" || body.QuotaWindows.FiveHour.RemainingPercent != nil {
+		t.Fatalf("过期 5h 矩阵不得伪造剩余额度：%+v", body.QuotaWindows.FiveHour)
 	}
 	if body.SessionWindow7dStatus == nil || *body.SessionWindow7dStatus != "active" ||
 		body.SessionWindow7dUtilization == nil || *body.SessionWindow7dUtilization != 42.25 {
@@ -387,12 +431,115 @@ func TestProviderAccountSchedulingHealthyDefaultsEligible(t *testing.T) {
 	}
 }
 
+func TestProviderAccountSchedulingUsesUniqueServingCredential(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		prepare     func(*admindb.GetAdminProviderAccountHealthRow)
+		wantVerdict string
+		wantReason  string
+		wantState   string
+		wantAction  bool
+	}{
+		{
+			name: "镜像有效但没有可服务凭据",
+			prepare: func(row *admindb.GetAdminProviderAccountHealthRow) {
+				row.CredentialState = "valid"
+				row.ServingCredentialCandidates = 0
+				row.CredentialVendor = ""
+				row.CredentialAuthMode = ""
+			},
+			wantVerdict: "blocked", wantReason: "credential_unavailable", wantState: "unavailable", wantAction: true,
+		},
+		{
+			name: "镜像失败但存在唯一可服务凭据",
+			prepare: func(row *admindb.GetAdminProviderAccountHealthRow) {
+				row.CredentialState = "refresh_failed"
+			},
+			wantVerdict: "eligible", wantState: "resolved", wantAction: false,
+		},
+		{
+			name: "多个可服务凭据要求人工消歧",
+			prepare: func(row *admindb.GetAdminProviderAccountHealthRow) {
+				row.ServingCredentialCandidates = 2
+			},
+			wantVerdict: "blocked", wantReason: "credential_ambiguous", wantState: "ambiguous", wantAction: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			row := providerAccountHealthRow(7, 115)
+			tc.prepare(&row)
+			body, err := providerAccountHealthResponseWithSchedulingAt(
+				row, nil, now, channelhealth.Record{}, false, authcooldown.Snapshot{Eligible: true}, false,
+			)
+			if err != nil {
+				t.Fatalf("构造健康响应：%v", err)
+			}
+			if body.Scheduling.Verdict != tc.wantVerdict || body.Scheduling.Credential.State != tc.wantState {
+				t.Fatalf("调度凭据结论=%+v，期望 verdict=%q state=%q", body.Scheduling.Credential, tc.wantVerdict, tc.wantState)
+			}
+			if tc.wantReason != "" && !containsString(body.Scheduling.BlockingReasons, tc.wantReason) {
+				t.Fatalf("blocking_reasons=%v，缺少 %q", body.Scheduling.BlockingReasons, tc.wantReason)
+			}
+			if body.RequiresAction != tc.wantAction {
+				t.Fatalf("requires_action=%v，期望 %v", body.RequiresAction, tc.wantAction)
+			}
+			if tc.wantState != "resolved" && (body.Scheduling.Credential.Vendor != "" || body.Scheduling.Credential.AuthMode != "") {
+				t.Fatalf("未消歧凭据不得暴露任一候选元数据：%+v", body.Scheduling.Credential)
+			}
+		})
+	}
+}
+
+func TestProviderAccountSchedulingExpiredCooldownWaitsForWorkerTransition(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	expired := now.Add(-time.Second)
+	body, err := providerAccountHealthResponseWithSchedulingAt(
+		providerAccountHealthRow(7, 116), nil, now,
+		channelhealth.Record{State: channelhealth.StateCoolingDown, CooldownUntil: &expired}, true,
+		authcooldown.Snapshot{Eligible: true}, false,
+	)
+	if err != nil {
+		t.Fatalf("构造健康响应：%v", err)
+	}
+	if body.Scheduling.Verdict != "blocked" || body.Scheduling.ChannelHealth.Eligibility != "blocked" ||
+		!containsString(body.Scheduling.BlockingReasons, "channel_health") ||
+		containsString(body.Scheduling.ConditionalReasons, "channel_ramp_admission") {
+		t.Fatalf("过期 cooling 在后台转态前必须继续阻断：%+v", body.Scheduling)
+	}
+}
+
+func TestProviderAccountSchedulingDisabledAccountDoesNotMisreportCredentialAction(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	row := providerAccountHealthRow(7, 117)
+	row.Enabled = false
+	row.ServingCredentialCandidates = 0
+	row.CredentialVendor = ""
+	row.CredentialAuthMode = ""
+	body, err := providerAccountHealthResponseWithSchedulingAt(
+		row, nil, now, channelhealth.Record{}, false, authcooldown.Snapshot{Eligible: true}, false,
+	)
+	if err != nil {
+		t.Fatalf("构造健康响应：%v", err)
+	}
+	if body.Scheduling.Verdict != "blocked" || !containsString(body.Scheduling.BlockingReasons, "account_disabled") {
+		t.Fatalf("停用账号必须只按启停闸阻断：%+v", body.Scheduling)
+	}
+	if containsString(body.Scheduling.BlockingReasons, "credential_unavailable") || body.RequiresAction {
+		t.Fatalf("停用账号不得把非服务态误报为凭据故障：%+v", body)
+	}
+}
+
 func TestProviderAccountSchedulingAggregatesPersistentAndLocalBlockers(t *testing.T) {
 	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
 	row := providerAccountHealthRow(7, 106)
 	row.HealthState = "cooldown"
 	row.HealthStateUntil = pgTimestamp(now.Add(5 * time.Minute))
 	row.CredentialState = "refresh_failed"
+	row.ServingCredentialCandidates = 0
+	row.CredentialVendor = ""
+	row.CredentialAuthMode = ""
 	row.ChannelEnabled = false
 	row.ProviderAvailable = false
 	store := newProviderAccountHealthStoreStub()
@@ -430,7 +577,7 @@ func TestProviderAccountSchedulingAggregatesPersistentAndLocalBlockers(t *testin
 		"channel_disabled",
 		"provider_unavailable",
 		"provider_health",
-		"credential_state",
+		"credential_unavailable",
 		"channel_health",
 		"auth_cooldown",
 	} {
@@ -756,15 +903,20 @@ func invokeProviderAccountHealthWithRing(t *testing.T, deps ProviderAccountHealt
 
 func providerAccountHealthRow(tenantID, id int64) admindb.GetAdminProviderAccountHealthRow {
 	return admindb.GetAdminProviderAccountHealthRow{
-		ID:                id,
-		TenantID:          tenantID,
-		HealthState:       "healthy",
-		Enabled:           true,
-		ChannelEnabled:    true,
-		ProviderAvailable: true,
-		CredentialState:   "valid",
-		ModelRateLimits:   []byte(`{}`),
-		UpdatedAt:         pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)),
+		ID:                          id,
+		TenantID:                    tenantID,
+		ProviderCode:                credentialstore.VendorOpenAI,
+		AccountType:                 "api_key",
+		CredentialVendor:            credentialstore.VendorOpenAI,
+		CredentialAuthMode:          credentialstore.AuthModeAPIKey,
+		ServingCredentialCandidates: 1,
+		HealthState:                 "healthy",
+		Enabled:                     true,
+		ChannelEnabled:              true,
+		ProviderAvailable:           true,
+		CredentialState:             "valid",
+		ModelRateLimits:             []byte(`{}`),
+		UpdatedAt:                   pgTimestamp(time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)),
 	}
 }
 

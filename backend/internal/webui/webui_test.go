@@ -58,7 +58,7 @@ func TestHandlerNeverShadowsAPIPaths(t *testing.T) {
 	for _, p := range []string{
 		"/v1/chat/completions", "/v1beta/models", "/engines/x/embeddings",
 		"/backend-api/codex/responses", "/admin/v1/users", "/debug/vars",
-		"/metrics", "/internal/x", "/.well-known/huakai-pubkey.json", "/healthz",
+		"/metrics", "/internal/x", "/.well-known/huakai-pubkey.json", "/healthz", "/readyz",
 		"/mj/submit/foo", "/suno/fetch/zzz", "/video/submit",
 	} {
 		rec := get(t, h, p)

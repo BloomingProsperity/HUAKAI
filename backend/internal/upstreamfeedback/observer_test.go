@@ -1,9 +1,13 @@
 package upstreamfeedback
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +142,113 @@ func TestObserveHTTPError401RecordsAuthChallengeAndDeduplicatesRefresh(t *testin
 	}
 }
 
+func TestObserveHTTPErrorAppliesProjectionAndSuppressesOnlyOrdinaryHealth(t *testing.T) {
+	now := time.Date(2026, 7, 19, 8, 0, 0, 0, time.UTC)
+	health := &channelHealthSpy{}
+	recent := &recentRequestsSpy{}
+	rates := &rateServiceSpy{decision: rate.Decision{
+		StateChange: rate.StateTempUnsched, CooldownUntil: now.Add(5 * time.Minute),
+		Reason: rate.ReasonTempUnschedRule, ShouldFailover: true,
+		ClientStatus: 422, ClientCode: "account_busy", ClientMessage: "账号暂不可用",
+		ClientRuleID: "busy-503", SuppressHealthSignal: true,
+	}}
+	var logs bytes.Buffer
+	observer := NewObserver(Dependencies{
+		ChannelHealth: health, RecentRequests: recent, RateService: rates, Now: func() time.Time { return now },
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+
+	const sensitiveBodyMarker = "sk-sensitive-body-must-not-enter-logs"
+	got := observer.ObserveHTTPError(context.Background(), validAttempt("openai"), http.StatusServiceUnavailable, nil, []byte(`{"error":{"message":"busy `+sensitiveBodyMarker+`"}}`))
+	if got.Decision.ClientStatus != 422 || got.Decision.ClientCode != "account_busy" || got.Decision.ClientMessage != "账号暂不可用" || got.Decision.ClientRuleID != "busy-503" {
+		t.Fatalf("账号客户端投影未进入统一决策: %+v", got.Decision)
+	}
+	if len(health.signals) != 0 || len(recent.calls) != 0 {
+		t.Fatalf("普通健康与近期请求应被抑制: signals=%+v recent=%+v", health.signals, recent.calls)
+	}
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("显式冷却不得被 affect_health=false 撤销: %+v", health.forceCooldowns)
+	}
+	if strings.Contains(logs.String(), sensitiveBodyMarker) {
+		t.Fatalf("策略命中日志泄漏上游正文: %s", logs.String())
+	}
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &event); err != nil {
+		t.Fatalf("策略命中日志不是结构化 JSON: %v; log=%s", err, logs.String())
+	}
+	assertLogValue(t, event, "event_type", "upstream_error.account_policy_matched")
+	assertLogValue(t, event, "account_policy_rule_id", "busy-503")
+	assertLogValue(t, event, "static_error_class", string(gateway.ErrorClassServerError))
+	assertLogValue(t, event, "target_ref", "44")
+	assertLogValue(t, event, "error_code", "account_busy")
+	assertLogValue(t, event, "affect_health", false)
+	assertLogValue(t, event, "health_signal_suppressed", true)
+	assertLogValue(t, event, "upstream_status_code", float64(http.StatusServiceUnavailable))
+	assertLogValue(t, event, "client_status_code", float64(422))
+}
+
+func TestObserveHTTPErrorIronCladSignalCannotBeSuppressed(t *testing.T) {
+	health := &channelHealthSpy{}
+	rates := &rateServiceSpy{decision: rate.Decision{
+		StateChange: rate.StateTempUnsched, ClientRuleID: "hide-auth", SuppressHealthSignal: true,
+	}}
+	observer := NewObserver(Dependencies{ChannelHealth: health, RateService: rates})
+
+	got := observer.ObserveHTTPError(context.Background(), validAttempt("openai"), http.StatusUnauthorized, nil, []byte(`{"error":"invalid_grant"}`))
+	if got.Classification.Tier != gateway.TierIronClad {
+		t.Fatalf("测试前提错误，classification=%+v", got.Classification)
+	}
+	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalAuthChallenge {
+		t.Fatalf("铁证鉴权信号不得被账号规则隐藏: %+v", health.signals)
+	}
+}
+
+func TestObserveHTTPErrorArbitrary4xxRuleStillForcesExplicitCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 19, 8, 30, 0, 0, time.UTC)
+	health := &channelHealthSpy{}
+	rates := &rateServiceSpy{decision: rate.Decision{
+		StateChange:    rate.StateTempUnsched,
+		CooldownUntil:  now.Add(7 * time.Minute),
+		Reason:         rate.ReasonTempUnschedRule,
+		ShouldFailover: true,
+		ClientRuleID:   "bad-request-account-rule",
+	}}
+	observer := NewObserver(Dependencies{
+		ChannelHealth: health,
+		RateService:   rates,
+		Now:           func() time.Time { return now },
+		Logger:        slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)),
+	})
+
+	observer.ObserveHTTPError(
+		context.Background(),
+		validAttempt("openai"),
+		http.StatusBadRequest,
+		nil,
+		[]byte(`{"error":{"message":"policy-match"}}`),
+	)
+
+	if len(health.forceCooldowns) != 1 {
+		t.Fatalf("任意 4xx 账号规则必须落显式冷却: %+v", health.forceCooldowns)
+	}
+	if !health.forceCooldowns[0].until.Equal(now.Add(7*time.Minute)) || health.forceCooldowns[0].reason != string(rate.ReasonTempUnschedRule) {
+		t.Fatalf("显式冷却内容错误: %+v", health.forceCooldowns[0])
+	}
+}
+
+func TestClassifyHTTPErrorAppliesBindingStatusMappingWithoutObserver(t *testing.T) {
+	attempt := validAttempt("openai")
+	attempt.StatusCodeMapping = map[int]int{http.StatusForbidden: http.StatusTooManyRequests}
+
+	got := ClassifyHTTPError(attempt, http.StatusForbidden, nil, []byte(`{"error":"forbidden"}`))
+	if got.Decision.ClientStatus != http.StatusTooManyRequests {
+		t.Fatalf("binding 状态映射未进入统一分类: %+v", got.Decision)
+	}
+	if got.Classification.Class != gateway.ErrorClassPlatformPolicy {
+		t.Fatalf("客户端映射不得改写静态分类: %+v", got.Classification)
+	}
+}
+
 func TestObserveDispatchConnectionRefusedRecordsChannelError(t *testing.T) {
 	health := &channelHealthSpy{}
 	observer := NewObserver(Dependencies{ChannelHealth: health})
@@ -266,10 +377,12 @@ func (s authCooldownSpy) OnRefreshResult(_ context.Context, accountID int64, suc
 type rateServiceSpy struct {
 	updateCalls   int
 	lastAccountID int64
+	decision      rate.Decision
+	err           error
 }
 
 func (s *rateServiceSpy) HandleUpstreamError(context.Context, int64, int, http.Header, []byte) (rate.Decision, error) {
-	return rate.Decision{}, nil
+	return s.decision, s.err
 }
 
 func (s *rateServiceSpy) ClearCascade(context.Context, int64, string) error {
@@ -289,6 +402,13 @@ type recentRequestCall struct {
 
 type recentRequestsSpy struct {
 	calls []recentRequestCall
+}
+
+func assertLogValue(t *testing.T, event map[string]any, field string, want any) {
+	t.Helper()
+	if got := event[field]; got != want {
+		t.Fatalf("日志字段 %s=%v want %v; event=%v", field, got, want, event)
+	}
 }
 
 func (s *recentRequestsSpy) Record(accountID int64, success bool) {

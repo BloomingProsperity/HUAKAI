@@ -1,23 +1,65 @@
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite},
     net::TcpStream,
+    time::timeout,
 };
 
 use crate::{
     boring_ctx, h2_settings,
     profile::{ProfileError, ProfileStore},
     proto::{self, ControlAck},
+    proxy_tunnel::TunnelStream,
 };
+
+type UpstreamTlsStream = tokio_boring::SslStream<TunnelStream>;
+
+const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_MS: u64 = 30_000;
 
 pub async fn handle_connection<S>(mut ipc: S, profiles: ProfileStore) -> Result<(), ConnectError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let request = proto::read_control_request(&mut ipc).await?;
-    // corr 与 Go 出口边界日志同一 correlation_id,令 go↔rust 两侧日志可关联(跨边界追一次握手)。
-    // 老 Go 客户端不发本字段时为空串,不影响握手。component/phase 字段与 Go 侧口径一致,便于统一过滤。
     let corr = request.correlation_id.as_deref().unwrap_or("");
+    if request.version != proto::PROTOCOL_VERSION {
+        proto::write_control_ack(
+            &mut ipc,
+            &ControlAck::error(
+                proto::ERROR_PROTOCOL_UNSUPPORTED,
+                format!(
+                    "protocol version {} is unsupported; expected {}",
+                    request.version,
+                    proto::PROTOCOL_VERSION
+                ),
+            ),
+        )
+        .await?;
+        return Ok(());
+    }
+    match request.operation.as_str() {
+        proto::OPERATION_READY => {
+            proto::write_control_ack(&mut ipc, &ControlAck::ready(profiles.ids())).await?;
+            return Ok(());
+        }
+        proto::OPERATION_CONNECT => {}
+        operation => {
+            proto::write_control_ack(
+                &mut ipc,
+                &ControlAck::error(
+                    proto::ERROR_OPERATION_UNSUPPORTED,
+                    format!("operation {operation:?} is unsupported"),
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    }
     tracing::info!(
         component = "egress_sidecar",
         phase = "accepted",
@@ -25,53 +67,89 @@ where
         target_host = %request.target_host,
         target_port = request.port,
         profile_id = %request.profile_id,
+        inline_profile = request.inline_profile.is_some(),
         force_h1 = request.force_h1.unwrap_or(false),
         proxied = request.proxy.is_some(),
         "egress sidecar 收到拨号请求"
     );
-    let profile = match profiles.get(&request.profile_id) {
-        Ok(profile) => profile.clone(),
-        Err(error) => {
-            tracing::warn!(
-                component = "egress_sidecar",
-                phase = "rejected",
-                correlation_id = corr,
-                profile_id = %request.profile_id,
-                error = %error,
-                "egress sidecar profile 不受理,拒绝拨号"
-            );
-            proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
+    let profile = match (&request.profile_id[..], request.inline_profile.as_ref()) {
+        ("", Some(inline)) => match crate::profile::TlsProfile::from_inline(inline) {
+            Ok(profile) => profile,
+            Err(error) => {
+                write_rejection(
+                    &mut ipc,
+                    corr,
+                    proto::ERROR_PROFILE_INVALID,
+                    error.to_string(),
+                )
+                .await?;
+                return Ok(());
+            }
+        },
+        (profile_id, None) if !profile_id.is_empty() => match profiles.get(profile_id) {
+            Ok(profile) => profile.clone(),
+            Err(error) => {
+                write_rejection(
+                    &mut ipc,
+                    corr,
+                    proto::ERROR_PROFILE_UNKNOWN,
+                    error.to_string(),
+                )
+                .await?;
+                return Ok(());
+            }
+        },
+        _ => {
+            write_rejection(
+                &mut ipc,
+                corr,
+                proto::ERROR_PROFILE_INVALID,
+                "connect request must contain exactly one of profile_id or inline_profile",
+            )
+            .await?;
             return Ok(());
         }
     };
-    if request.target_host.trim().is_empty() || request.port == 0 {
-        tracing::warn!(
-            component = "egress_sidecar",
-            phase = "rejected",
-            correlation_id = corr,
-            "egress sidecar target_host/port 非法,拒绝拨号"
-        );
-        proto::write_control_ack(
+    if !valid_host(&request.target_host) || request.port == 0 {
+        write_rejection(
             &mut ipc,
-            &ControlAck::error("target_host and port are required"),
+            corr,
+            proto::ERROR_TARGET_INVALID,
+            "target_host and port are required",
         )
         .await?;
         return Ok(());
     }
+    let pinned_target_ips =
+        match validate_pinned_target_ips(&request.pinned_target_ips, request.proxy.is_some()) {
+            Ok(addresses) => addresses,
+            Err(message) => {
+                write_rejection(&mut ipc, corr, proto::ERROR_TARGET_POLICY_DENIED, message).await?;
+                return Ok(());
+            }
+        };
 
-    // force_h1=Some(true) 收窄 ALPN 为仅 http/1.1,从根消除 h2 升级;缺省(老客户端不发)= None
-    // = 今日行为,由 profile.alpn 决定。
-    let force_h1 = request.force_h1.unwrap_or(false);
-    // proxy=Some 时,先经代理建隧道再在隧道之上握手;None=直连目标(今日行为)。
-    let upstream = match connect_upstream(
-        &request.target_host,
-        request.port,
-        &profile,
-        force_h1,
-        request.proxy.as_ref(),
-    )
-    .await
-    {
+    let upstream_result = tokio::select! {
+        _ = wait_for_ipc_cancel(&mut ipc) => {
+            tracing::info!(
+                component = "egress_sidecar",
+                phase = "cancelled",
+                correlation_id = corr,
+                target_host = %request.target_host,
+                "客户端在上游连接完成前取消请求"
+            );
+            return Ok(());
+        }
+        result = connect_upstream(
+            &request.target_host,
+            request.port,
+            &profile,
+            request.force_h1.unwrap_or(false),
+            request.proxy.as_ref(),
+            &pinned_target_ips,
+        ) => result,
+    };
+    let upstream = match upstream_result {
         Ok(tls) => tls,
         Err(error) => {
             tracing::warn!(
@@ -82,7 +160,11 @@ where
                 error = %error,
                 "egress sidecar 上游连接失败"
             );
-            proto::write_control_ack(&mut ipc, &ControlAck::error(error.to_string())).await?;
+            proto::write_control_ack(
+                &mut ipc,
+                &ControlAck::error(error.code(), error.to_string()),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -114,14 +196,135 @@ where
     Ok(())
 }
 
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.trim() == host
+        && !host
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace() || matches!(value, '/' | '\\'))
+}
+
+fn validate_pinned_target_ips(raw: &[String], proxied: bool) -> Result<Vec<IpAddr>, String> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if proxied {
+        return Err("目标地址绑定不能与代理隧道同时使用".to_owned());
+    }
+    if raw.len() > 16 {
+        return Err("目标地址绑定数量超过 16".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    let mut addresses = Vec::with_capacity(raw.len());
+    for value in raw {
+        let address = value
+            .parse::<IpAddr>()
+            .map_err(|_| "目标地址绑定包含无效 IP".to_owned())?;
+        if seen.insert(address) {
+            addresses.push(address);
+        }
+    }
+    if addresses.is_empty() {
+        return Err("目标地址绑定为空".to_owned());
+    }
+    Ok(addresses)
+}
+
+async fn wait_for_ipc_cancel<S>(ipc: &mut S)
+where
+    S: AsyncRead + Unpin,
+{
+    let mut byte = [0u8; 1];
+    let _ = ipc.read(&mut byte).await;
+}
+
+async fn write_rejection<S>(
+    ipc: &mut S,
+    correlation_id: &str,
+    code: &str,
+    message: impl Into<String>,
+) -> Result<(), ConnectError>
+where
+    S: AsyncWrite + Unpin,
+{
+    let message = message.into();
+    tracing::warn!(
+        component = "egress_sidecar",
+        phase = "rejected",
+        correlation_id,
+        error_code = code,
+        error = %message,
+        "egress sidecar 拒绝控制请求"
+    );
+    proto::write_control_ack(ipc, &ControlAck::error(code, message)).await?;
+    Ok(())
+}
+
 async fn connect_upstream(
     target_host: &str,
     port: u16,
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
-) -> Result<ConnectedUpstream<tokio_boring::SslStream<TcpStream>>, ConnectError> {
-    let tls = connect_tls_upstream(target_host, port, profile, force_h1, proxy).await?;
+    pinned_target_ips: &[IpAddr],
+) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
+    connect_upstream_with_timeout(
+        target_host,
+        port,
+        profile,
+        force_h1,
+        proxy,
+        pinned_target_ips,
+        upstream_connect_timeout(),
+    )
+    .await
+}
+
+async fn connect_upstream_with_timeout(
+    target_host: &str,
+    port: u16,
+    profile: &crate::profile::TlsProfile,
+    force_h1: bool,
+    proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
+    duration: Duration,
+) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
+    match timeout(
+        duration,
+        connect_upstream_without_timeout(
+            target_host,
+            port,
+            profile,
+            force_h1,
+            proxy,
+            pinned_target_ips,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(ConnectError::Timeout(duration)),
+    }
+}
+
+async fn connect_upstream_without_timeout(
+    target_host: &str,
+    port: u16,
+    profile: &crate::profile::TlsProfile,
+    force_h1: bool,
+    proxy: Option<&crate::proto::ProxySpec>,
+    pinned_target_ips: &[IpAddr],
+) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
+    let tls = connect_tls_upstream(
+        target_host,
+        port,
+        profile,
+        force_h1,
+        proxy,
+        pinned_target_ips,
+    )
+    .await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
@@ -135,26 +338,57 @@ async fn connect_tls_upstream(
     profile: &crate::profile::TlsProfile,
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
-) -> Result<tokio_boring::SslStream<TcpStream>, ConnectError> {
-    boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
-    // TCP 底座来源二选一:
-    //   - proxy=Some:经代理建隧道(HTTP CONNECT / SOCKS5),底层仍是一条 TcpStream(穿过代理),
-    //     出口 IP 走代理。隧道建立失败直接 `?` 向上抛错,**绝不**回退直连目标——否则真实出口 IP
-    //     泄露,破坏账号级 IP 隔离。这是本路径唯一的 TCP 建立点,不存在任何直连旁路。
-    //   - proxy=None:直连目标(今日行为)。
-    let tcp = match proxy {
+    pinned_target_ips: &[IpAddr],
+) -> Result<UpstreamTlsStream, ConnectError> {
+    if !force_h1 {
+        boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
+    }
+    let tunnel = match proxy {
         Some(spec) => crate::proxy_tunnel::connect_through_proxy(spec, target_host, port).await?,
-        None => TcpStream::connect((target_host, port)).await?,
+        None => TunnelStream::new(connect_direct(target_host, port, pinned_target_ips).await?),
     };
-    // force_h1 时握手只广告 ALPN=http/1.1,服务端无从选 h2;selected_alpn 因此不可能等于 b"h2",
-    // finish_upstream_connect 必走 Raw 隧道,H2 bridge 从根被绕开。
-    // 关键不变量:无论 tcp 来自直连还是代理隧道,这里的 config 与 target_host(SNI)完全相同,
-    // TLS 握手始终在该 TCP 底座【之上】进行——故指纹(JA3/JA4)与 validate_expected_ja4 逻辑
-    // 不因走代理而改变。
     let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
-    tokio_boring::connect(config, target_host, tcp)
+    tokio_boring::connect(config, target_host, tunnel)
         .await
         .map_err(|error| ConnectError::Handshake(error.to_string()))
+}
+
+async fn connect_direct(
+    target_host: &str,
+    port: u16,
+    pinned_target_ips: &[IpAddr],
+) -> Result<TcpStream, ConnectError> {
+    if !pinned_target_ips.is_empty() {
+        let addresses = pinned_target_ips
+            .iter()
+            .copied()
+            .map(|address| SocketAddr::new(address, port))
+            .collect::<Vec<_>>();
+        return TcpStream::connect(addresses.as_slice())
+            .await
+            .map_err(ConnectError::Io);
+    }
+    let addresses = tokio::net::lookup_host((target_host, port))
+        .await
+        .map_err(|error| ConnectError::Dns(error.to_string()))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err(ConnectError::Dns(
+            "resolver returned no addresses".to_owned(),
+        ));
+    }
+    TcpStream::connect(addresses.as_slice())
+        .await
+        .map_err(ConnectError::Io)
+}
+
+fn upstream_connect_timeout() -> Duration {
+    let milliseconds = std::env::var("HUAKAI_SIDECAR_UPSTREAM_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_UPSTREAM_CONNECT_TIMEOUT_MS);
+    Duration::from_millis(milliseconds)
 }
 
 async fn finish_raw_tunnel_connect<T>(
@@ -207,12 +441,11 @@ pub(crate) async fn connect_h2_upstream(
 ) -> Result<
     (
         h2::client::SendRequest<std::io::Cursor<Vec<u8>>>,
-        h2::client::Connection<tokio_boring::SslStream<TcpStream>, std::io::Cursor<Vec<u8>>>,
+        h2::client::Connection<UpstreamTlsStream, std::io::Cursor<Vec<u8>>>,
     ),
     ConnectError,
 > {
-    // 本 helper 专为 h2 路径,固定 force_h1=false 保持广告 profile.alpn(含 h2);proxy=None 直连。
-    let tls = connect_tls_upstream(target_host, port, profile, false, None).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, false, None, &[]).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -248,6 +481,10 @@ pub enum ConnectError {
     Boring(#[from] boring_ctx::BoringCtxError),
     #[error("upstream tcp error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("upstream DNS error: {0}")]
+    Dns(String),
+    #[error("upstream connect timed out after {0:?}")]
+    Timeout(Duration),
     #[error("upstream TLS handshake error: {0}")]
     Handshake(String),
     #[error(transparent)]
@@ -258,6 +495,31 @@ pub enum ConnectError {
     // 经此向上抛错即 fail-closed:整连失败,绝不回退直连目标。
     #[error(transparent)]
     ProxyTunnel(#[from] crate::proxy_tunnel::ProxyTunnelError),
+}
+
+impl ConnectError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Proto(_) => proto::ERROR_INTERNAL,
+            Self::Profile(_) | Self::Boring(_) => proto::ERROR_PROFILE_INVALID,
+            Self::Io(error) => match error.kind() {
+                std::io::ErrorKind::ConnectionRefused => proto::ERROR_UPSTREAM_CONNECTION_REFUSED,
+                std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable => {
+                    proto::ERROR_UPSTREAM_NETWORK_UNREACHABLE
+                }
+                _ => proto::ERROR_UPSTREAM_CONNECT,
+            },
+            Self::Dns(_) => proto::ERROR_UPSTREAM_DNS,
+            Self::Timeout(_) => proto::ERROR_UPSTREAM_TIMEOUT,
+            Self::Handshake(_) => proto::ERROR_TLS_HANDSHAKE,
+            Self::H2(_) | Self::H2Bridge(_) => proto::ERROR_UPSTREAM_CONNECT,
+            Self::ProxyTunnel(
+                crate::proxy_tunnel::ProxyTunnelError::UnsupportedScheme(_)
+                | crate::proxy_tunnel::ProxyTunnelError::Invalid(_),
+            ) => proto::ERROR_PROXY_INVALID,
+            Self::ProxyTunnel(_) => proto::ERROR_PROXY_CONNECT,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -282,20 +544,70 @@ mod tests {
     const FRAME_WINDOW_UPDATE: u8 = 0x8;
     const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+    #[test]
+    fn target_ip_binding_rejects_invalid_and_proxy_combinations() {
+        assert!(super::validate_pinned_target_ips(&["not-an-ip".to_owned()], false).is_err());
+        assert!(super::validate_pinned_target_ips(&["127.0.0.1".to_owned()], true).is_err());
+        let addresses = super::validate_pinned_target_ips(
+            &["127.0.0.1".to_owned(), "127.0.0.1".to_owned()],
+            false,
+        )
+        .unwrap();
+        assert_eq!(addresses.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_connect_uses_bound_address_without_resolving_target_name() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = tokio::spawn(async move { listener.accept().await.unwrap() });
+
+        let stream = super::connect_direct(
+            "this-name-must-not-resolve.invalid",
+            port,
+            &["127.0.0.1".parse().unwrap()],
+        )
+        .await
+        .unwrap();
+        drop(stream);
+        let _ = accepted.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn control_request_rejects_address_binding_with_proxy_before_network() {
+        let profiles = crate::profile::ProfileStore::built_in().unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut req = connect_request();
+        req.pinned_target_ips = vec!["127.0.0.1".to_owned()];
+        req.proxy = Some(crate::proto::ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 1,
+            username: None,
+            password: None,
+        });
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+        assert!(!ack.ok);
+        assert_eq!(
+            ack.error.unwrap().code,
+            crate::proto::ERROR_TARGET_POLICY_DENIED
+        );
+        task.await.unwrap().unwrap();
+    }
+
     #[tokio::test]
     async fn handle_connection_rejects_unknown_profile_before_upstream_connect() {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
         let (mut client, server) = tokio::io::duplex(1024);
         let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
-        let req = crate::proto::ControlRequest {
-            target_host: "127.0.0.1".to_owned(),
-            port: 443,
-            profile_id: "missing-profile".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: None,
-        };
+        let mut req = connect_request();
+        req.profile_id = "missing-profile".to_owned();
 
         crate::proto::write_control_request(&mut client, &req)
             .await
@@ -303,7 +615,114 @@ mod tests {
         let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
 
         assert!(!ack.ok);
-        assert!(ack.error.unwrap_or_default().contains("unknown profile"));
+        let error = ack.error.expect("拒绝响应必须有结构化错误");
+        assert_eq!(error.code, crate::proto::ERROR_PROFILE_UNKNOWN);
+        assert!(error.message.contains("unknown profile"));
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_reports_real_capabilities_without_connecting_upstream() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let req = crate::proto::ControlRequest {
+            version: crate::proto::PROTOCOL_VERSION,
+            operation: crate::proto::OPERATION_READY.to_owned(),
+            target_host: "127.0.0.1".to_owned(),
+            port: 1,
+            profile_id: "missing-profile".to_owned(),
+            inline_profile: None,
+            correlation_id: Some("ready-check".to_owned()),
+            force_h1: None,
+            proxy: None,
+            pinned_target_ips: Vec::new(),
+        };
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+
+        assert!(ack.ok);
+        assert_eq!(ack.version, crate::proto::PROTOCOL_VERSION);
+        assert!(
+            ack.capabilities
+                .iter()
+                .any(|value| value == crate::proto::CAPABILITY_INLINE_PROFILE)
+        );
+        assert!(
+            ack.profile_ids
+                .iter()
+                .any(|value| value == "anthropic-cli-mimicry-v1")
+        );
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn wrong_protocol_version_is_rejected_before_operation_dispatch() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut req = connect_request();
+        req.version = crate::proto::PROTOCOL_VERSION - 1;
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+
+        assert!(!ack.ok);
+        assert_eq!(
+            ack.error.expect("版本错误必须返回原因").code,
+            crate::proto::ERROR_PROTOCOL_UNSUPPORTED
+        );
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn unknown_operation_is_rejected_without_connecting_upstream() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut req = connect_request();
+        req.operation = "inspect-later".to_owned();
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+
+        assert!(!ack.ok);
+        assert_eq!(
+            ack.error.expect("未知操作必须返回原因").code,
+            crate::proto::ERROR_OPERATION_UNSUPPORTED
+        );
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_both_builtin_and_inline_profile() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut req = connect_request();
+        req.inline_profile = Some(inline_profile());
+
+        crate::proto::write_control_request(&mut client, &req)
+            .await
+            .unwrap();
+        let ack = crate::proto::read_control_ack(&mut client).await.unwrap();
+
+        assert!(!ack.ok);
+        assert_eq!(
+            ack.error.expect("profile 冲突必须返回原因").code,
+            crate::proto::ERROR_PROFILE_INVALID
+        );
         task.await.unwrap().unwrap();
     }
 
@@ -358,6 +777,7 @@ mod tests {
             &profile,
             false,
             Some(&proxy),
+            &[],
         )
         .await;
 
@@ -371,6 +791,101 @@ mod tests {
             !target_reached.load(std::sync::atomic::Ordering::SeqCst),
             "代理失败后绝不允许直连目标(真实出口 IP 泄露,破坏账号级 IP 隔离)"
         );
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_cancels_hung_upstream_connect() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let (mut client, server) = tokio::io::duplex(4096);
+        let mut task =
+            tokio::spawn(async move { super::handle_connection(server, profiles).await });
+        let mut request = connect_request();
+        request.target_host = "api.anthropic.com".to_owned();
+        request.proxy = Some(crate::proto::ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: proxy_port,
+            username: None,
+            password: None,
+        });
+        crate::proto::write_control_request(&mut client, &request)
+            .await
+            .unwrap();
+        let proxy_stream = tokio::select! {
+            accepted = timeout(Duration::from_secs(2), proxy.accept()) => {
+                accepted.expect("测试代理必须收到连接").unwrap().0
+            }
+            result = &mut task => {
+                panic!("Rust 连接任务在代理接收前提前结束: {result:?}")
+            }
+        };
+
+        drop(client);
+
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("客户端断开后 Rust 连接任务必须立即结束")
+            .unwrap()
+            .unwrap();
+        drop(proxy_stream);
+    }
+
+    #[tokio::test]
+    async fn upstream_connect_timeout_has_stable_error_code() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("anthropic-cli-mimicry-v1").unwrap();
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (stream, _) = proxy.accept().await.unwrap();
+            sleep(Duration::from_secs(60)).await;
+            drop(stream);
+        });
+        let spec = crate::proto::ProxySpec {
+            scheme: "http".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: proxy_port,
+            username: None,
+            password: None,
+        };
+
+        let error = match super::connect_upstream_with_timeout(
+            "api.anthropic.com",
+            443,
+            profile,
+            false,
+            Some(&spec),
+            &[],
+            Duration::from_millis(100),
+        )
+        .await
+        {
+            Ok(_) => panic!("挂起的上游连接必须受整体超时约束"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code(), crate::proto::ERROR_UPSTREAM_TIMEOUT);
+    }
+
+    #[test]
+    fn connection_error_kinds_map_to_stable_codes() {
+        let refused = super::ConnectError::Io(std::io::Error::from(ErrorKind::ConnectionRefused));
+        assert_eq!(
+            refused.code(),
+            crate::proto::ERROR_UPSTREAM_CONNECTION_REFUSED
+        );
+        let unreachable =
+            super::ConnectError::Io(std::io::Error::from(ErrorKind::NetworkUnreachable));
+        assert_eq!(
+            unreachable.code(),
+            crate::proto::ERROR_UPSTREAM_NETWORK_UNREACHABLE
+        );
+        let dns = super::ConnectError::Dns("lookup failed".to_owned());
+        assert_eq!(dns.code(), crate::proto::ERROR_UPSTREAM_DNS);
     }
 
     #[tokio::test]
@@ -485,6 +1000,37 @@ mod tests {
             (crate::h2_settings::MAX_FRAME_SIZE, 16_384),
             (crate::h2_settings::MAX_HEADER_LIST_SIZE, 262_144),
         ])
+    }
+
+    fn connect_request() -> crate::proto::ControlRequest {
+        crate::proto::ControlRequest {
+            version: crate::proto::PROTOCOL_VERSION,
+            operation: crate::proto::OPERATION_CONNECT.to_owned(),
+            target_host: "127.0.0.1".to_owned(),
+            port: 443,
+            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            inline_profile: None,
+            correlation_id: None,
+            force_h1: None,
+            proxy: None,
+            pinned_target_ips: Vec::new(),
+        }
+    }
+
+    fn inline_profile() -> crate::proto::InlineTlsProfile {
+        crate::proto::InlineTlsProfile {
+            id: "tenant-profile".to_owned(),
+            grease_enabled: false,
+            cipher_suites: vec![4865, 4866, 49195],
+            supported_groups: vec![29, 23],
+            ec_point_formats: vec![0],
+            signature_algorithms: vec![1027, 2052],
+            alpn_protocols: vec!["http/1.1".to_owned()],
+            tls_supported_versions: vec![772, 771],
+            key_share_groups: vec![29],
+            psk_modes: vec![1],
+            extensions_order: vec![0, 10, 11, 13, 43, 45, 51],
+        }
     }
 
     async fn capture_finish_frames(profile: crate::profile::TlsProfile) -> Vec<CapturedFrame> {

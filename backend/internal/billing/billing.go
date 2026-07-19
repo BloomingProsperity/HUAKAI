@@ -18,7 +18,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-var ErrInsufficientBalance = errors.New("billing: insufficient balance")
+var (
+	ErrInsufficientBalance       = errors.New("billing: insufficient balance")
+	ErrRefundNoCapturedCharge    = errors.New("billing: refund has no captured balance charge")
+	ErrRefundBalanceRowMissing   = errors.New("billing: refund balance row missing")
+	ErrRefundAmountNotCovered    = errors.New("billing: refund amount exceeds captured charge coverage")
+	ErrRefundIdempotencyConflict = errors.New("billing: refund idempotency key conflicts with a different request")
+	ErrRefundFactInvalid         = errors.New("billing: stored refund fact is invalid")
+)
 
 // ClaimGate 按规格 §Tx1 执行 Tx1 预扣事务。
 type ClaimGate interface {
@@ -48,8 +55,8 @@ type Settler interface {
 	// 使 receipt / 用量视图与正常请求一致。 req 复用 SettleRequest。
 	CommitCacheHit(ctx context.Context, req SettleRequest) error
 
-	// Refund 给已提交 claim 追加幂等负向 reconciliation event；
-	// 原 claim / usage 行保持不可变。
+	// Refund 只对已有 captured 余额扣款的已提交 claim 追加幂等负向
+	// reconciliation event，并在同一事务回补余额；原 claim / usage 行保持不可变。
 	Refund(ctx context.Context, req RefundRequest) (*RefundResult, error)
 }
 
@@ -129,7 +136,14 @@ type RefundRequest struct {
 	ClaimID        int64
 	AmountMicroUSD int64
 	Reason         string
+	// IdempotencyKey 标识一次退款业务操作；同租户内重复使用时，claim、金额、
+	// 原因和精确模式必须全部一致。
+	IdempotencyKey string
+	// AuditRequestID 只用于审计追踪，不参与退款幂等身份。
 	AuditRequestID string
+	// RequireExact 把 AmountMicroUSD 解释为该 claim 必须达到的累计补偿目标。
+	// 已有负向调整会抵扣本次新增金额；captured 上限不足时整笔失败。
+	RequireExact bool
 }
 
 // RefundResult 标识不可变 adjustment event。
@@ -138,10 +152,14 @@ type RefundResult struct {
 	BillingEventID int64
 	AdjustmentRef  string
 	Idempotent     bool
-	// BalanceCredited 标识**本次调用**是否实际回补了 user_balances 余额行(per-call
-	// 语义,非"是否曾被回补")。opt-in 余额强制下未 provision 余额行的用户为 false
-	// (无行可补,合法 no-op);幂等重放(Idempotent=true)时也为 false——本次调用未再
-	// 回补(原始调用若回补过,效果已落),与 Idempotent 标志一致。
+	// CoveredMicroUSD 是该 claim 在本次事务后的累计负向调整金额，用于证明
+	// RequireExact 请求已被本次与既有调整共同覆盖。
+	CoveredMicroUSD int64
+	// AlreadySatisfied 表示本次未新增资金效果，但该 claim 的既有负向调整已经
+	// 达到可退款上限；BillingEventID/AdjustmentRef 指向既有调整证据。
+	AlreadySatisfied bool
+	// BalanceCredited 标识本次调用是否实际回补了 user_balances。新退款必须为 true；
+	// 幂等重放或既有调整已覆盖时不重复回补，因此为 false。
 	BalanceCredited bool
 }
 

@@ -6,7 +6,7 @@ This pass reviewed source code in the eight reference repositories and compared 
 
 - `docs/03_FEATURE_PARITY_MATRIX.md`
 - `docs/17_FEATURE_LEVEL_MATRIX.md`
-- `docs/PROJECT_MASTER_PLAN.md`
+- 旧项目总纲（已删除，原始版本从 Git 历史追溯）
 - `docs/02_HUAKAI_FUSION_ARCHITECTURE.md`
 
 No backend, admin, OpenAPI, or main feature-matrix files were edited.

@@ -291,8 +291,16 @@ func NewCostReceiptVerifyHandler(d CostReceiptHandlerDeps) http.HandlerFunc {
 						}
 						refundEventID, err = d.MismatchRefunds.EnqueueMismatchRefund(r.Context(), derived, mismatch)
 						if err != nil {
-							writeJSONError(w, http.StatusServiceUnavailable, "refund_enqueue_failed", "mismatch refund could not be queued")
-							return
+							if errors.Is(err, billing.ErrRefundNoCapturedCharge) {
+								reason = "no_refundable_captured_charge"
+								refundEventID = 0
+							} else if errors.Is(err, billing.ErrRefundAmountNotCovered) {
+								reason = "refund_exceeds_captured_charge"
+								refundEventID = 0
+							} else {
+								writeJSONError(w, http.StatusServiceUnavailable, "refund_enqueue_failed", "mismatch refund could not be queued")
+								return
+							}
 						}
 					}
 				}

@@ -4,12 +4,14 @@
 // 而非登录路径本就会返回的某类状态码。
 // 这里的登录路由是一个始终返回 200 的桩,因此观察到的任何 429 都
 // 只可能由限流器产生——如果移除限流器或放宽其 burst,
-//「请求 burst+1 应为 429」的断言就会变红(即变异检查)。同样地,
+// 「请求 burst+1 应为 429」的断言就会变红(即变异检查)。同样地,
 // 限额之内的另一个来源 IP 必须不会看到 429,以证明桶的 key
 // 是按 IP 而非共享/全局计数器。
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
+	"github.com/BloomingProsperity/HUAKAI/internal/inboundlimit"
 )
 
 // stubOKHandler 代替真实的鉴权处理器:它始终返回 200,因此这些测试中的
@@ -70,6 +73,61 @@ func doLogin(rl *rateLimiter, remoteAddr string) int {
 	rec := httptest.NewRecorder()
 	rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
 	return rec.Code
+}
+
+type countingSharedLimitStore struct {
+	counts map[string]int
+	err    error
+	calls  int
+}
+
+func (s *countingSharedLimitStore) Allow(_ context.Context, tier, subject string, _ inboundlimit.Limit) (inboundlimit.Decision, error) {
+	s.calls++
+	if s.err != nil {
+		return inboundlimit.Decision{}, s.err
+	}
+	if s.counts == nil {
+		s.counts = make(map[string]int)
+	}
+	key := tier + ":" + subject
+	s.counts[key]++
+	if s.counts[key] > 1 {
+		return inboundlimit.Decision{Allowed: false, RetryAfter: 3 * time.Second}, nil
+	}
+	return inboundlimit.Decision{Allowed: true}, nil
+}
+
+func TestRateLimit_SharedStoreAggregatesAcrossInstances(t *testing.T) {
+	clearRateLimitEnv(t)
+	shared := &countingSharedLimitStore{}
+	first := newRateLimiter(nil, nil, withSharedRateLimitStore(shared))
+	second := newRateLimiter(nil, nil, withSharedRateLimitStore(shared))
+	frozen := time.Unix(1_700_000_000, 0)
+	first.nowFn = func() time.Time { return frozen }
+	second.nowFn = func() time.Time { return frozen }
+
+	if got := doLogin(first, "198.51.100.20:1000"); got != http.StatusOK {
+		t.Fatalf("第一个副本首次请求=%d，want 200", got)
+	}
+	if got := doLogin(second, "198.51.100.20:2000"); got != http.StatusTooManyRequests {
+		t.Fatalf("第二个副本必须命中同一共享桶，got=%d want 429", got)
+	}
+}
+
+func TestRateLimit_SharedStoreFailureFailsClosed(t *testing.T) {
+	clearRateLimitEnv(t)
+	shared := &countingSharedLimitStore{err: errors.New("redis unavailable")}
+	rl := newRateLimiter(nil, nil, withSharedRateLimitStore(shared))
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.RemoteAddr = "198.51.100.21:1000"
+	rec := httptest.NewRecorder()
+	rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("共享限流后端失败必须拒绝业务请求，got=%d want 503", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After=%q want 1", got)
+	}
 }
 
 // TestRateLimit_AuthLogin_BurstThen429 从同一个 IP 向登录路径快速发起
@@ -244,9 +302,59 @@ func TestRateLimit_WiredIntoRouter(t *testing.T) {
 	}
 }
 
+func TestRateLimit_ProbeKeepsLocalProtectionButBypassesBrokenSharedStore(t *testing.T) {
+	clearRateLimitEnv(t)
+	shared := &countingSharedLimitStore{err: errors.New("redis unavailable")}
+	rl := newRateLimiter(nil, zap.NewNop(), withSharedRateLimitStore(shared))
+	rl.global = newIPBucketRegistry(1, 1)
+	rl.nowFn = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	handler := rl.middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "203.0.113.11:9000"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusTeapot {
+			t.Fatalf("%s 未抵达健康处理器，status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if shared.calls != 0 {
+			t.Fatalf("%s 错误调用共享桶，calls=%d", path, shared.calls)
+		}
+
+		second := httptest.NewRecorder()
+		handler.ServeHTTP(second, req)
+		if second.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s 未受每实例内存桶保护，status=%d", path, second.Code)
+		}
+
+		// 每个路径使用独立来源，避免上一轮耗尽同一个全局桶影响下一用例。
+		rl.global = newIPBucketRegistry(1, 1)
+	}
+}
+
+func TestRateLimit_BusinessRequestStillFailsClosedWhenSharedStoreUnavailable(t *testing.T) {
+	clearRateLimitEnv(t)
+	shared := &countingSharedLimitStore{err: errors.New("redis unavailable")}
+	rl := newRateLimiter(nil, zap.NewNop(), withSharedRateLimitStore(shared))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.RemoteAddr = "203.0.113.12:9000"
+	rec := httptest.NewRecorder()
+
+	rl.middleware(stubOKHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("业务请求未在共享桶故障时关闭，status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if shared.calls != 1 {
+		t.Fatalf("业务请求共享桶 calls=%d，want 1", shared.calls)
+	}
+}
+
 // TestRateLimit_429CarriesCORSHeadersForAllowlistedOrigin 证明对一个在允许
 // 名单内的浏览器 origin 返回的 429 仍带有 Access-Control-Allow-Origin
-//(前端看到的是 JSON 的 429 + Retry-After,而非一个不透明的 CORS 失败)。
+// (前端看到的是 JSON 的 429 + Retry-After,而非一个不透明的 CORS 失败)。
 // 它守护中间件顺序:corsMiddleware 必须在限流器的提前退出之前运行。
 // 变异:在 newRouter 中把 corsMiddleware 移到限流器之后,针对 429 的
 // ACAO 断言就会变红。
@@ -465,7 +573,7 @@ func TestRateLimit_OAuthClassSharesOneBucket(t *testing.T) {
 // 1/min 会得到约 60s,而非默认值的那个较小值。
 //
 // 变异:把 retryAfterForRate 改回一个常量,针对调整后速率的断言
-//(want 60)就会变红。
+// (want 60)就会变红。
 func TestRateLimit_RetryAfterTracksConfiguredRate(t *testing.T) {
 	clearRateLimitEnv(t)
 	t.Setenv("HUAKAI_RL_AUTH_REGISTER_PER_MIN", "1")
@@ -598,7 +706,7 @@ func TestMediaPerIPLimit(t *testing.T) {
 // TestRateLimit_DenialEmitsOperatorEvidence 证明一次限流拒绝会产出运维可见
 // 的证据(AT-SEC-001):一条携带级别与客户端 IP 的结构化日志,使运维能够
 // 复查突发流量并区分滥用与误报。变异:移除拒绝路径上的 rl.denied(...) 调用,
-//「期望一条拒绝日志」的断言就会变红。
+// 「期望一条拒绝日志」的断言就会变红。
 func TestRateLimit_DenialEmitsOperatorEvidence(t *testing.T) {
 	clearRateLimitEnv(t)
 	core, logs := observer.New(zap.WarnLevel)

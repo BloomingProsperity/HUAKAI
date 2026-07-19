@@ -94,6 +94,97 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 	}
 }
 
+func TestAdminCredentialAcquisitionDeviceStartReturnsOnlyPublicInstructions(t *testing.T) {
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger(
+		credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth),
+		credentialAcqDeviceStartStub{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	fx := newCredentialAcqHTTPFixtureWithRegistry(t, adminPoolAdmin(), registry, nil)
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions",
+		`{"tenant_id":1,"vendor":"openai","auth_mode":"codex_cli_oauth","flow_kind":"oauth"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Flow                    credentialacq.Session  `json:"flow"`
+		AuthType                credentialacq.AuthType `json:"auth_type"`
+		UserCode                string                 `json:"user_code"`
+		VerificationURI         string                 `json:"verification_uri"`
+		VerificationURIComplete string                 `json:"verification_uri_complete"`
+		PollIntervalSeconds     int                    `json:"poll_interval_seconds"`
+		ExpiresInSeconds        int                    `json:"expires_in_seconds"`
+		State                   string                 `json:"state"`
+		CodeChallenge           string                 `json:"code_challenge"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("解析设备授权启动响应: %v", err)
+	}
+	if body.Flow.ID == "" || body.Flow.AuthType != credentialacq.AuthTypeDeviceCode || body.AuthType != credentialacq.AuthTypeDeviceCode ||
+		body.UserCode != "USER-PUBLIC" || body.VerificationURI != "https://auth.example.test/device" ||
+		body.VerificationURIComplete != "https://auth.example.test/device?user_code=USER-PUBLIC" ||
+		body.PollIntervalSeconds != 5 || body.ExpiresInSeconds != 900 {
+		t.Fatalf("公开设备授权字段不完整: %+v", body)
+	}
+	if body.State != "" || body.CodeChallenge != "" || strings.Contains(rec.Body.String(), "device-secret") || strings.Contains(rec.Body.String(), "access-secret") {
+		t.Fatalf("启动响应泄露了内部授权材料: %s", rec.Body.String())
+	}
+}
+
+func TestAdminCredentialAcquisitionDevicePollFinalizesOnceAndReplaysIdempotently(t *testing.T) {
+	var calls int
+	fx := newCredentialAcqHTTPFixtureWithPoller(t, adminPoolAdmin(), func(_ context.Context, session credentialacq.Session) (credentialacq.CredentialCandidate, error) {
+		calls++
+		return credentialacq.CredentialCandidate{
+			TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
+			Vendor: session.Vendor, AuthMode: session.AuthMode,
+			Payload: []byte(`{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600}`),
+		}, nil
+	})
+	flow := fx.seedDeviceFlow(t, 101)
+	path := "/v1/admin/pool-accounts/101/credential-acquisitions/" + flow.ID + "/poll"
+
+	first := fx.do(t, http.MethodPost, path, "")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d want 200 body=%s", first.Code, first.Body.String())
+	}
+	if calls != 1 || len(fx.creator.inputsSnapshot()) != 1 || strings.Contains(first.Body.String(), "access-secret") || strings.Contains(first.Body.String(), "refresh-secret") {
+		t.Fatalf("首次轮询没有单次安全落库: calls=%d creates=%d body=%s", calls, len(fx.creator.inputsSnapshot()), first.Body.String())
+	}
+
+	second := fx.do(t, http.MethodPost, path, "")
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status=%d want 200 body=%s", second.Code, second.Body.String())
+	}
+	if calls != 1 || len(fx.creator.inputsSnapshot()) != 1 || !strings.Contains(second.Body.String(), `"already_finalized":true`) {
+		t.Fatalf("幂等重试重复触碰上游或建凭据: calls=%d creates=%d body=%s", calls, len(fx.creator.inputsSnapshot()), second.Body.String())
+	}
+}
+
+func TestAdminCredentialAcquisitionDevicePollPendingAndGuards(t *testing.T) {
+	var calls int
+	fx := newCredentialAcqHTTPFixtureWithPoller(t, adminPoolAdmin(), func(context.Context, credentialacq.Session) (credentialacq.CredentialCandidate, error) {
+		calls++
+		return credentialacq.CredentialCandidate{}, &credentialacq.DevicePollPendingError{RetryAfter: 7 * time.Second}
+	})
+	device := fx.seedDeviceFlow(t, 101)
+	pending := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+device.ID+"/poll", "")
+	if pending.Code != http.StatusAccepted || !strings.Contains(pending.Body.String(), `"retry_after_seconds":7`) || strings.Contains(pending.Body.String(), "device-secret") {
+		t.Fatalf("pending status=%d body=%s", pending.Code, pending.Body.String())
+	}
+	wrongAccount := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/102/credential-acquisitions/"+device.ID+"/poll", "")
+	if wrongAccount.Code != http.StatusForbidden || calls != 1 {
+		t.Fatalf("wrong account status=%d calls=%d body=%s", wrongAccount.Code, calls, wrongAccount.Body.String())
+	}
+	paste := fx.seedPasteFlow(t, 101)
+	nonDevice := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+paste.ID+"/poll", "")
+	if nonDevice.Code != http.StatusUnprocessableEntity || calls != 1 {
+		t.Fatalf("non-device status=%d calls=%d body=%s", nonDevice.Code, calls, nonDevice.Body.String())
+	}
+}
+
 func TestAdminCredentialAcquisitionCanonicalCallbackUsesRegistryAndFinalizesCredential(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
 	flow := fx.seedOAuthFlow(t, 101)
@@ -264,17 +355,16 @@ func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudi
 }
 
 func TestAdminClaudeAIOAuthStartFailsClosedWithBuiltinProfileMissing(t *testing.T) {
-	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	tokenCalls := 0
-	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	rt := adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		tokenCalls++
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT","refresh_token":"RT"}`)),
 		}, nil
-	}))
-	defer restore()
+	})
+	fx := newCredentialAcqHTTPFixtureWithClaudeClient(t, adminPoolAdmin(), rt)
 
 	rec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
 		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth","oauth_client":{"token_url":"http://attacker.test/token"}}`)
@@ -293,9 +383,8 @@ func TestAdminClaudeAIOAuthStartFailsClosedWithBuiltinProfileMissing(t *testing.
 }
 
 func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
-	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	tokenCalls := 0
-	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	rt := adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		tokenCalls++
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -309,8 +398,8 @@ func TestAdminClaudeAIOAuthFullFlowEncryptsAndSavesCredential(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-admin","refresh_token":"RT-admin","expires_in":3600,"token_type":"Bearer"}`)),
 		}, nil
-	}))
-	defer restore()
+	})
+	fx := newCredentialAcqHTTPFixtureWithClaudeClient(t, adminPoolAdmin(), rt)
 
 	// claude_ai_oauth redirect_uri 现严格校验(loopback / 静态 allowlist 的 HTTPS admin)。
 	// 本全流程测试与 redirect 校验无关,用合法 built-in loopback 即可(回调由测试直接打服务端
@@ -554,10 +643,9 @@ func TestAdminCredentialAcquisitionRejectsTenantScopedSetupTokenMode(t *testing.
 }
 
 func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
-	fx := newCredentialAcqHTTPFixtureWithDefaultExchangers(t, adminPoolAdmin())
 	fakeCode := `{"access_token":"FAKE"}`
 	tokenCalls := 0
-	restore := withAdminClaudeAIOAuthDefaultTransport(t, adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	rt := adminCredentialAcqRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		tokenCalls++
 		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -571,8 +659,8 @@ func TestAdminClaudeAIOAuthRejectsFakeJSONCallback(t *testing.T) {
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"AT-real","refresh_token":"RT-real","expires_in":3600}`)),
 		}, nil
-	}))
-	defer restore()
+	})
+	fx := newCredentialAcqHTTPFixtureWithClaudeClient(t, adminPoolAdmin(), rt)
 
 	startRec := fx.do(t, http.MethodPost, "/admin/v1/credentials/oauth-init",
 		`{"tenant_id":1,"provider_account_id":101,"vendor":"anthropic","auth_mode":"claude_ai_oauth"}`)
@@ -610,9 +698,16 @@ func TestAdminCredentialAcquisitionRequiresAdminAuth(t *testing.T) {
 
 type credentialAcqProjectResolverStub struct {
 	projectRef string
+	tier       string
 	err        error
 	calls      int
 	token      string
+}
+
+func (s *credentialAcqProjectResolverStub) ResolveProjectMetadata(_ context.Context, token string) (string, string, error) {
+	s.calls++
+	s.token = token
+	return s.projectRef, s.tier, s.err
 }
 
 func (s *credentialAcqProjectResolverStub) ResolveProjectID(_ context.Context, token string) (string, error) {
@@ -622,7 +717,7 @@ func (s *credentialAcqProjectResolverStub) ResolveProjectID(_ context.Context, t
 }
 
 func TestAdminCredentialAcquisitionFinalizeEnrichesAntigravityProject(t *testing.T) {
-	resolver := &credentialAcqProjectResolverStub{projectRef: "project-from-finalize"}
+	resolver := &credentialAcqProjectResolverStub{projectRef: "project-from-finalize", tier: "g1-pro-tier"}
 	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
 	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
 
@@ -644,6 +739,10 @@ func TestAdminCredentialAcquisitionFinalizeEnrichesAntigravityProject(t *testing
 	}
 	if payload["project_id"] != "project-from-finalize" || payload["project_metadata_status"] != projectenrich.StatusResolved {
 		t.Fatalf("finalize 未补齐 project：%s", created[0].Payload)
+	}
+	if created[0].Subscription.Label() != "antigravity:pro" ||
+		created[0].Subscription.Source != "provider_api" || created[0].Subscription.Trust != "verified_api" {
+		t.Fatalf("真实元数据解析结果未以已验证套餐证据进入创建链：%+v", created[0].Subscription)
 	}
 	events := fx.audit.eventsSnapshot()
 	if len(events) != 1 || events[0].EventType != credentialacq.EventCompleted || strings.TrimSpace(events[0].RequestID) == "" {
@@ -698,6 +797,8 @@ type seededCredentialAcqFlow struct {
 	State string
 }
 
+type credentialAcqFixtureOption func(*AdminCredentialAcquisitionDeps)
+
 func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *credentialAcqHTTPFixture {
 	t.Helper()
 	exchanger := &credentialAcqExchangerStub{
@@ -710,9 +811,17 @@ func newCredentialAcqHTTPFixture(t *testing.T, auth AdminCredentialAuth) *creden
 	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, registry, exchanger)
 }
 
-func newCredentialAcqHTTPFixtureWithDefaultExchangers(t *testing.T, auth AdminCredentialAuth) *credentialAcqHTTPFixture {
+func newCredentialAcqHTTPFixtureWithClaudeClient(t *testing.T, auth AdminCredentialAuth, rt http.RoundTripper) *credentialAcqHTTPFixture {
 	t.Helper()
-	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, credentialacq.DefaultExchangerRegistry(), nil)
+	registry := credentialacq.DefaultExchangerRegistry()
+	client := &http.Client{Transport: rt}
+	if err := registry.RegisterOrReplaceExchanger(
+		credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth),
+		credentialacq.NewClaudeAIOAuthExchangerWithClient(client),
+	); err != nil {
+		t.Fatalf("注册 Claude OAuth 测试 exchanger：%v", err)
+	}
+	return newCredentialAcqHTTPFixtureWithRegistry(t, auth, registry, nil)
 }
 
 func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub) *credentialAcqHTTPFixture {
@@ -721,7 +830,16 @@ func newCredentialAcqHTTPFixtureWithRegistry(t *testing.T, auth AdminCredentialA
 
 func newCredentialAcqHTTPFixtureWithProjectEnricher(t *testing.T, auth AdminCredentialAuth, enricher projectenrich.Enricher) *credentialAcqHTTPFixture {
 	t.Helper()
-	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, enricher)
+	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, func(deps *AdminCredentialAcquisitionDeps) {
+		deps.ProjectEnricher = enricher
+	})
+}
+
+func newCredentialAcqHTTPFixtureWithPoller(t *testing.T, auth AdminCredentialAuth, poller credentialacq.DeviceCodePoller) *credentialAcqHTTPFixture {
+	t.Helper()
+	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, func(deps *AdminCredentialAcquisitionDeps) {
+		deps.DeviceCodePoller = poller
+	})
 }
 
 func newCredentialAcqHTTPFixtureWithBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, allow bool, shortTTL, longTTL time.Duration) *credentialAcqHTTPFixture {
@@ -740,7 +858,7 @@ func newCredentialAcqHTTPFixtureWithRegistryAndLongLived(t *testing.T, auth Admi
 	return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t, auth, registry, exchanger, allow, 0, 0)
 }
 
-func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool, shortTTL, longTTL time.Duration, projectEnrichers ...projectenrich.Enricher) *credentialAcqHTTPFixture {
+func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth AdminCredentialAuth, registry *credentialacq.ExchangerRegistry, exchanger *credentialAcqExchangerStub, allow bool, shortTTL, longTTL time.Duration, options ...credentialAcqFixtureOption) *credentialAcqHTTPFixture {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC)
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", bytes.Repeat([]byte{9}, 32))
@@ -752,20 +870,20 @@ func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth 
 	creator := &credentialAcqCreatorStub{}
 	audit := &credentialAcqAuditStub{}
 	adminAudit := &adminPoolStoreStub{}
-	var projectEnricher projectenrich.Enricher
-	if len(projectEnrichers) > 0 {
-		projectEnricher = projectEnrichers[0]
-	}
 	deps := AdminCredentialAcquisitionDeps{
 		Auth: auth, Sessions: store,
 		Credentials:              creator,
 		CredentialAudit:          audit,
 		AuditStore:               adminAudit,
 		Exchangers:               registry,
-		ProjectEnricher:          projectEnricher,
 		AllowLongLivedSetupToken: allow,
 		BootstrapShortTTL:        shortTTL,
 		BootstrapLongTTL:         longTTL,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(&deps)
+		}
 	}
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -795,13 +913,6 @@ func decodeAdminClaudeAIOAuthStart(t *testing.T, raw []byte) (string, string, st
 	return body.Flow.ID, body.State, body.AuthorizeURL
 }
 
-func withAdminClaudeAIOAuthDefaultTransport(t *testing.T, rt http.RoundTripper) func() {
-	t.Helper()
-	old := http.DefaultTransport
-	http.DefaultTransport = rt
-	return func() { http.DefaultTransport = old }
-}
-
 type adminCredentialAcqRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f adminCredentialAcqRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -819,6 +930,31 @@ func (fx *credentialAcqHTTPFixture) do(t *testing.T, method, path, body string) 
 func (fx *credentialAcqHTTPFixture) seedPasteFlow(t *testing.T, providerAccountID int64) seededCredentialAcqFlow {
 	t.Helper()
 	return fx.seedPasteFlowFor(t, providerAccountID, credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey)
+}
+
+func (fx *credentialAcqHTTPFixture) seedDeviceFlow(t *testing.T, providerAccountID int64) seededCredentialAcqFlow {
+	t.Helper()
+	session, err := fx.store.CreateFromStart(context.Background(), credentialacq.StartInput{
+		TenantID: 1, ProviderAccountID: providerAccountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Kind: credentialacq.FlowKindOAuth, ActorID: "11", ActorRole: admin.RolePlatformAdmin,
+		ClientIdentitySource: credentialacq.ClientSourceOperatorConfig,
+		RedactedContext:      map[string]any{"auth_type": "device_code"},
+	})
+	if err != nil {
+		t.Fatalf("seed device flow: %v", err)
+	}
+	if _, err := fx.store.UpdateStatus(context.Background(), session.ID, credentialacq.StatusWaitingForUser, "", ""); err != nil {
+		t.Fatalf("seed device waiting status: %v", err)
+	}
+	if err := fx.store.SetAuthPayload(context.Background(), session.ID, credentialacq.AuthTypeDeviceCode, map[string]any{
+		"auth_type": "device_code", "device_code": "device-secret", "user_code": "USER-11",
+		"verification_uri": "https://auth.example.test/device", "expires_in": 900, "interval": 5,
+		"issued_at": fx.db.now.Format(time.RFC3339Nano), "token_url": "https://auth.example.test/token", "client_id": "client-11",
+	}); err != nil {
+		t.Fatalf("seed device payload: %v", err)
+	}
+	return seededCredentialAcqFlow{ID: session.ID}
 }
 
 func (fx *credentialAcqHTTPFixture) seedPasteFlowFor(t *testing.T, providerAccountID int64, vendor, authMode string) seededCredentialAcqFlow {
@@ -953,6 +1089,46 @@ type credentialAcqExchangerStub struct {
 	err     error
 }
 
+type credentialAcqDeviceStartStub struct{}
+
+func (credentialAcqDeviceStartStub) StartOAuthFlow(ctx context.Context, store *credentialacq.PostgresSessionStore, in credentialacq.StartInput, _ credentialacq.OAuthClientConfig) (credentialacq.OAuthStartResult, error) {
+	in.Kind = credentialacq.FlowKindOAuth
+	in.ClientIdentitySource = credentialacq.ClientSourceOperatorConfig
+	in.RedactedContext = map[string]any{"auth_type": "device_code", "verification_uri": "https://auth.example.test/device"}
+	session, err := store.CreateFromStart(ctx, in)
+	if err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	if _, err := store.UpdateStatus(ctx, session.ID, credentialacq.StatusWaitingForUser, "", ""); err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	payload := map[string]any{
+		"auth_type": "device_code", "device_code": "device-secret", "user_code": "USER-PUBLIC",
+		"verification_uri":          "https://auth.example.test/device",
+		"verification_uri_complete": "https://auth.example.test/device?user_code=USER-PUBLIC",
+		"expires_in":                900, "interval": 5, "issued_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"token_url": "https://auth.example.test/token", "client_id": "client-public",
+	}
+	if err := store.SetAuthPayload(ctx, session.ID, credentialacq.AuthTypeDeviceCode, payload); err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	waiting, err := store.Get(ctx, session.ID)
+	if err != nil {
+		return credentialacq.OAuthStartResult{}, err
+	}
+	return credentialacq.OAuthStartResult{
+		Session: waiting, AuthType: credentialacq.AuthTypeDeviceCode,
+		UserCode: "USER-PUBLIC", VerificationURI: "https://auth.example.test/device",
+		VerificationURIComplete: "https://auth.example.test/device?user_code=USER-PUBLIC",
+		PollIntervalSeconds:     5, ExpiresInSeconds: 900,
+		AuthorizeURL: "https://auth.example.test/device?user_code=USER-PUBLIC",
+	}, nil
+}
+
+func (credentialAcqDeviceStartStub) ExchangeOAuthCode(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
+	return credentialacq.CredentialCandidate{}, errors.New("设备授权流程不使用 OAuth callback")
+}
+
 type credentialAcqExchangeCall struct {
 	FlowID string
 	Vendor string
@@ -1043,8 +1219,23 @@ func newCredentialAcqSessionDB(now time.Time) *credentialAcqSessionDB {
 	return &credentialAcqSessionDB{now: now, rows: map[string]credentialacq.Session{}}
 }
 
-func (db *credentialAcqSessionDB) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, nil
+func (db *credentialAcqSessionDB) Exec(_ context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if len(args) < 4 || !strings.Contains(sql, "SET auth_type = $2::oauth_acquisition_auth_type") {
+		return pgconn.NewCommandTag("UPDATE 0"), nil
+	}
+	row, ok := db.rows[argString(args[0])]
+	if !ok || credentialAcqTerminal(row.Status) || !row.ConsumedAt.IsZero() || !row.ExpiresAt.After(db.now) {
+		return pgconn.NewCommandTag("UPDATE 0"), nil
+	}
+	row.AuthType = credentialacq.AuthType(argString(args[1]))
+	row.DeviceCodePayload = nil
+	row.EncryptedPKCEVerifier = argBytes(args[2])
+	row.NonceHash = argBytes(args[3])
+	row.UpdatedAt = db.now
+	db.rows[row.ID] = row
+	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
 
 func (db *credentialAcqSessionDB) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
@@ -1075,24 +1266,73 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		return credentialAcqRow{session: row}
+	case strings.Contains(sql, "SET status = 'callback_received'") && strings.Contains(sql, "state_hash = $2"):
+		row, ok := db.rows[argString(args[0])]
+		cutoff := argTime(args[2])
+		active := row.Status == credentialacq.StatusStarted || row.Status == credentialacq.StatusWaitingForUser
+		stale := row.Status == credentialacq.StatusCallbackReceived && row.UpdatedAt.Before(cutoff)
+		if !ok || (row.AuthType != credentialacq.AuthTypeDeviceCode && row.AuthType != credentialacq.AuthTypeSSO) || !row.ConsumedAt.IsZero() || !row.ExpiresAt.After(db.now) || (!active && !stale) {
+			return credentialAcqRow{err: pgx.ErrNoRows}
+		}
+		row.Status = credentialacq.StatusCallbackReceived
+		row.StateHash = argBytes(args[1])
+		row.ErrorClass = ""
+		row.ErrorMessageRedacted = ""
+		row.UpdatedAt = db.now
+		db.rows[row.ID] = row
+		return credentialAcqRow{session: row}
+	case strings.Contains(sql, "SET status = $3") && strings.Contains(sql, "state_hash = NULL"):
+		row, ok := db.rows[argString(args[0])]
+		if !ok || row.Status != credentialacq.StatusCallbackReceived || !bytes.Equal(row.StateHash, argBytes(args[1])) || !row.ConsumedAt.IsZero() {
+			return credentialAcqRow{err: pgx.ErrNoRows}
+		}
+		row.Status = credentialacq.FlowStatus(argString(args[2]))
+		row.StateHash = nil
+		row.ErrorClass = argString(args[3])
+		row.ErrorMessageRedacted = argString(args[4])
+		if credentialAcqTerminal(row.Status) {
+			clearCredentialAcqTransientAuth(&row)
+		}
+		row.UpdatedAt = db.now
+		db.rows[row.ID] = row
+		return credentialAcqRow{session: row}
+	case strings.Contains(sql, "SET status = 'validated'") && strings.Contains(sql, "encrypted_pkce_verifier = $3"):
+		row, ok := db.rows[argString(args[0])]
+		if !ok || row.Status != credentialacq.StatusCallbackReceived || !bytes.Equal(row.StateHash, argBytes(args[1])) || !row.ConsumedAt.IsZero() {
+			return credentialAcqRow{err: pgx.ErrNoRows}
+		}
+		row.Status = credentialacq.StatusValidated
+		row.StateHash = nil
+		row.ErrorClass = ""
+		row.ErrorMessageRedacted = ""
+		row.EncryptedPKCEVerifier = argBytes(args[2])
+		row.NonceHash = argBytes(args[3])
+		row.DeviceCodePayload = nil
+		row.UpdatedAt = db.now
+		db.rows[row.ID] = row
+		return credentialAcqRow{session: row}
 	case strings.Contains(sql, "SET status = $2"):
 		row, ok := db.rows[argString(args[0])]
-		if !ok {
+		if !ok || credentialAcqTerminal(row.Status) || (len(args) >= 5 && !credentialAcqStatusAllowed(row.Status, args[4])) {
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		row.Status = credentialacq.FlowStatus(argString(args[1]))
 		row.ErrorClass = argString(args[2])
 		row.ErrorMessageRedacted = argString(args[3])
+		if credentialAcqTerminal(row.Status) {
+			clearCredentialAcqTransientAuth(&row)
+		}
 		row.UpdatedAt = db.now
 		db.rows[row.ID] = row
 		return credentialAcqRow{session: row}
 	case strings.Contains(sql, "SET status = 'cancelled'"):
 		row, ok := db.rows[argString(args[0])]
-		if !ok || row.Status == credentialacq.StatusFinalized || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired {
+		if !ok || credentialAcqTerminal(row.Status) || !row.ConsumedAt.IsZero() {
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		row.Status = credentialacq.StatusCancelled
 		row.CancelledAt = db.now
+		clearCredentialAcqTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[row.ID] = row
 		return credentialAcqRow{session: row}
@@ -1101,17 +1341,18 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 		// mirror BeginFinalize 的真 SQL predicate —— callback 式 OAuth(非
 		// device_code/sso)未到 validated 不可 finalize。复用生产导出 helper credentialacq.RequiresCallbackValidation,
 		// 与真 SQL / credentialacq fake 同源,避免 handler 测试 double 漂移、给"started PKCE OAuth 可 finalize"假信心。
-		if !ok || !row.ConsumedAt.IsZero() || row.Status == credentialacq.StatusFinalized || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired || !row.ExpiresAt.After(db.now) ||
+		if !ok || !row.ConsumedAt.IsZero() || credentialAcqTerminal(row.Status) || !row.ExpiresAt.After(db.now) ||
 			(credentialacq.RequiresCallbackValidation(row.Kind, row.AuthType) && row.Status != credentialacq.StatusValidated) {
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		row.ConsumedAt = db.now
+		clearCredentialAcqTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[row.ID] = row
 		return credentialAcqRow{session: row}
 	case strings.Contains(sql, "SET status = 'finalized'"):
 		row, ok := db.rows[argString(args[0])]
-		if !ok {
+		if !ok || !row.CancelledAt.IsZero() || row.Status == credentialacq.StatusCancelled || row.Status == credentialacq.StatusExpired || row.Status == credentialacq.StatusFailed {
 			return credentialAcqRow{err: pgx.ErrNoRows}
 		}
 		row.Status = credentialacq.StatusFinalized
@@ -1119,12 +1360,43 @@ func (db *credentialAcqSessionDB) QueryRow(_ context.Context, sql string, args .
 		if row.ConsumedAt.IsZero() {
 			row.ConsumedAt = db.now
 		}
+		row.ErrorClass = ""
+		row.ErrorMessageRedacted = ""
+		clearCredentialAcqTransientAuth(&row)
 		row.UpdatedAt = db.now
 		db.rows[row.ID] = row
 		return credentialAcqRow{session: row}
 	default:
 		return credentialAcqRow{err: errors.New("credential acquisition test db: unhandled query")}
 	}
+}
+
+func credentialAcqTerminal(status credentialacq.FlowStatus) bool {
+	switch status {
+	case credentialacq.StatusFinalized, credentialacq.StatusCancelled, credentialacq.StatusExpired, credentialacq.StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func credentialAcqStatusAllowed(status credentialacq.FlowStatus, raw any) bool {
+	allowed, ok := raw.([]string)
+	if !ok {
+		return false
+	}
+	for _, candidate := range allowed {
+		if string(status) == strings.TrimSpace(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func clearCredentialAcqTransientAuth(row *credentialacq.Session) {
+	row.EncryptedPKCEVerifier = nil
+	row.NonceHash = nil
+	row.DeviceCodePayload = nil
 }
 
 type credentialAcqRow struct {

@@ -133,6 +133,7 @@ type classifiedAttemptFailure struct {
 	EndClass          gateway.StreamEndClass
 	RetryAfterSeconds int
 	FallbackSignal    bindingfallback.Signal
+	AgentTaskInvalid  bool
 
 	DeliveredToClient bool
 	AbortReason       string
@@ -140,6 +141,14 @@ type classifiedAttemptFailure struct {
 }
 
 func classifiedFailureFromDecision(code, message string, classification gateway.Classification, decision gateway.AttemptRetryDecision, cause error) *classifiedAttemptFailure {
+	if decision.ClientCode != "" {
+		code = decision.ClientCode
+	}
+	if decision.ClientMessage != "" {
+		message = decision.ClientMessage
+	} else if decision.ClientCode != "" {
+		message = clienterr.MessageFor(decision.ClientCode)
+	}
 	return &classifiedAttemptFailure{
 		ClientStatus:   decision.ClientStatus,
 		ClientCode:     code,

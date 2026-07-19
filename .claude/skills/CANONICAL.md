@@ -1,19 +1,11 @@
-# Canonical Skill Source
+# Skill Canonical 来源
 
-The skill definitions in this directory are a **mirror** of [`/.agents/skills/`](../../.agents/skills/) for Claude Code's auto-discovery.
+本目录是 [`.agents/skills/`](../../.agents/skills/) 的机械镜像，只用于 Claude Code 自动发现。
 
-**Do not edit files here.** Edit the canonical version under `.agents/skills/` only.
+## 编辑顺序
 
-## Why a mirror exists
+1. 只编辑 `.agents/skills/<name>/SKILL.md`；
+2. 将 canonical 文件原样同步到 `.claude/skills/<name>/SKILL.md`；
+3. 用逐文件 `cmp` 验证没有漂移。
 
-- `.agents/skills/` is the tool-agnostic canonical location referenced by [`AGENTS.md`](../../AGENTS.md), [`CLAUDE.md`](../../CLAUDE.md), and [`GEMINI.md`](../../GEMINI.md).
-- `.claude/skills/` is where Claude Code natively looks for skill files.
-
-## Drift control
-
-A Phase 1 task is open to either:
-
-1. Replace this directory with a generated mirror (build script / git hook) that fails CI on drift, or
-2. Move the canonical source here once Claude Code becomes the primary execution surface.
-
-Until then, treat this directory as **read-only**. If you make a change here by accident, copy it back to `.agents/skills/` and re-sync.
+不要在本目录独立修改 Skill 内容，也不要在两个位置各维护一套规则。Skill 的全局调用顺序以 [`AGENTS.md` §12](../../AGENTS.md#12-skill-调用顺序) 为准。

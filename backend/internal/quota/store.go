@@ -50,11 +50,12 @@ type ProgressReadStore interface {
 }
 
 type PolicyFilter struct {
-	TenantID  int64
-	Scopes    []Scope
-	Metrics   []Metric
-	At        time.Time
-	ForUpdate bool
+	TenantID       int64
+	Scopes         []Scope
+	RequestedModel string
+	Metrics        []Metric
+	At             time.Time
+	ForUpdate      bool
 }
 
 type WindowUpsert struct {
@@ -90,6 +91,7 @@ type ReservationInsert struct {
 	TenantID           int64
 	ClaimID            int64
 	RequestFingerprint string
+	RequestedModel     string
 	Scopes             []Scope
 	PolicySnapshot     []byte
 	PredictedCost      decimal.Decimal
@@ -102,6 +104,7 @@ type ReservationReactivate struct {
 	ReservationID      int64
 	ClaimID            int64
 	RequestFingerprint string
+	RequestedModel     string
 	Scopes             []Scope
 	PolicySnapshot     []byte
 	PredictedCost      decimal.Decimal

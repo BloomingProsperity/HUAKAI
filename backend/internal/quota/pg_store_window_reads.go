@@ -14,11 +14,12 @@ import (
 
 // ListCurrentWindowsForScope 返回某 scope 仅 COST 维度的当前 quota 窗口。
 // 它把 metric 过滤固定为 cost_usd, 让既有调用方(subscription 进度、
-// key-control)保持完全一致的原始行为——`= ANY({cost_usd})` 与之前的
-// `= 'cost_usd'` 谓词等价。多 metric 自助读取改用
+// key-control)保持完全一致的原始行为——它只读取全模型 `*` 策略，避免把全模型
+// 与精确模型窗口重复求和。多 metric 自助读取改用
 // ListCurrentWindowsForScopeMetrics。
 func (s *PostgresStore) ListCurrentWindowsForScope(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time) ([]CurrentWindowRead, error) {
-	return s.listCurrentWindows(ctx, tenantID, scopeKind, scopeID, at, []string{string(MetricCostUSD)})
+	selector := ModelSelectorAll
+	return s.listCurrentWindows(ctx, tenantID, scopeKind, scopeID, at, []string{string(MetricCostUSD)}, &selector)
 }
 
 // ListCurrentWindowsForScopeMetrics 返回某 scope 在所请求 metric 集合上的当前 quota 窗口
@@ -29,20 +30,21 @@ func (s *PostgresStore) ListCurrentWindowsForScopeMetrics(ctx context.Context, t
 	for i, m := range metrics {
 		metricStrs[i] = string(m)
 	}
-	return s.listCurrentWindows(ctx, tenantID, scopeKind, scopeID, at, metricStrs)
+	return s.listCurrentWindows(ctx, tenantID, scopeKind, scopeID, at, metricStrs, nil)
 }
 
-func (s *PostgresStore) listCurrentWindows(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time, metrics []string) ([]CurrentWindowRead, error) {
+func (s *PostgresStore) listCurrentWindows(ctx context.Context, tenantID int64, scopeKind ScopeKind, scopeID string, at time.Time, metrics []string, modelSelector *string) ([]CurrentWindowRead, error) {
 	q, err := s.queries()
 	if err != nil {
 		return nil, err
 	}
 	rows, err := q.ListCurrentQuotaWindowsForScope(ctx, dbquota.ListCurrentQuotaWindowsForScopeParams{
-		TenantID:  tenantID,
-		ScopeKind: string(scopeKind),
-		ScopeID:   normalizeScopeID(scopeKind, scopeID),
-		AtTime:    pgTimestamptz(at.UTC()),
-		Metrics:   metrics,
+		TenantID:      tenantID,
+		ScopeKind:     string(scopeKind),
+		ScopeID:       normalizeScopeID(scopeKind, scopeID),
+		ModelSelector: modelSelector,
+		AtTime:        pgTimestamptz(at.UTC()),
+		Metrics:       metrics,
 	})
 	if err != nil {
 		return nil, err

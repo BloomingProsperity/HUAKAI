@@ -7,17 +7,7 @@ use tokio::{
 
 use crate::profile::TlsProfile;
 
-// build_connector 是无 ALPN 覆盖的公共构造器,保留以兼容既有调用方;crate 内部统一走
-// build_connector_with_alpn,故这里标注 allow(dead_code) 避免无引用告警。
-#[allow(dead_code)]
-pub fn build_connector(profile: &TlsProfile) -> Result<SslConnector, BoringCtxError> {
-    build_connector_with_alpn(profile, None)
-}
-
-// build_connector_with_alpn 在 build_connector 基础上支持 ALPN 覆盖。
-// alpn_override=Some(list) 时,握手广告的 ALPN 用 list 而非 profile.alpn——force_h1
-// 场景传 ["http/1.1"],从根上不广告 h2。None 时与历史行为完全一致(按 profile.alpn 广告)。
-pub fn build_connector_with_alpn(
+fn build_connector_with_alpn(
     profile: &TlsProfile,
     alpn_override: Option<&[String]>,
 ) -> Result<SslConnector, BoringCtxError> {
@@ -48,9 +38,7 @@ pub fn build_connector_with_alpn(
             .set_client_hello_profile(&ciphers, &profile.client_hello_profile.groups, &ec_points)
             .map_err(BoringCtxError::from)?;
     }
-    // ALPN 来源:override 优先(force_h1 收窄为仅 http/1.1),否则按 profile.alpn 广告。
-    let alpn_protocols = alpn_override.unwrap_or(&profile.alpn);
-    let alpn = serialize_alpn(alpn_protocols)?;
+    let alpn = serialize_alpn(alpn_override.unwrap_or(&profile.alpn))?;
     if !alpn.is_empty() {
         builder
             .set_alpn_protos(&alpn)
@@ -83,15 +71,12 @@ pub fn connect_config(profile: &TlsProfile) -> Result<ConnectConfiguration, Bori
     connect_config_with_alpn(profile, None)
 }
 
-// connect_config_force_h1 构造一个握手只广告 ALPN=http/1.1 的连接配置。
-// force_h1=true 时收窄 ALPN,服务端无从选 h2,connect.rs 的 selected_alpn 不可能等于 b"h2",
-// 必走 Raw 隧道,H2 bridge 分支被从根绕开;force_h1=false 时退回 profile.alpn(=今日行为)。
 pub fn connect_config_force_h1(
     profile: &TlsProfile,
     force_h1: bool,
 ) -> Result<ConnectConfiguration, BoringCtxError> {
     if force_h1 {
-        let http11 = [HTTP_1_1_ALPN.to_owned()];
+        let http11 = ["http/1.1".to_owned()];
         connect_config_with_alpn(profile, Some(&http11))
     } else {
         connect_config_with_alpn(profile, None)
@@ -103,15 +88,17 @@ fn connect_config_with_alpn(
     alpn_override: Option<&[String]>,
 ) -> Result<ConnectConfiguration, BoringCtxError> {
     let connector = build_connector_with_alpn(profile, alpn_override)?;
-    let config = connector.configure().map_err(BoringCtxError::from)?;
+    let mut config = connector.configure().map_err(BoringCtxError::from)?;
+    if !profile.key_share_groups.is_empty() {
+        config
+            .set_client_key_shares(&profile.key_share_groups)
+            .map_err(BoringCtxError::from)?;
+    }
     if profile.extensions.contains(&65037) {
         config.set_enable_ech_grease(true);
     }
     Ok(config)
 }
-
-// 强制 H1 时唯一广告的 ALPN 协议标识。
-const HTTP_1_1_ALPN: &str = "http/1.1";
 
 pub async fn validate_expected_ja4_before_connect(
     profile: &TlsProfile,
@@ -337,6 +324,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_builtin_profile_ja4_matches_its_actual_boringssl_wire() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        for (id, host) in [
+            ("anthropic-cli-mimicry-v1", "api.anthropic.com"),
+            ("openai-codex-cli-v1", "chatgpt.com"),
+            ("gemini-cli-v1", "cloudcode-pa.googleapis.com"),
+            ("kiro-cli-v1", "q.us-east-1.amazonaws.com"),
+        ] {
+            let profile = profiles.get(id).unwrap();
+            super::validate_expected_ja4_before_connect(profile, host)
+                .await
+                .unwrap_or_else(|error| panic!("{id} 的 JA4 存值与实际线缆不符: {error}"));
+
+            let mut mutated = profile.clone();
+            let mut expected = mutated.ja4_a.take().unwrap();
+            expected.pop();
+            expected.push('z');
+            mutated.ja4_a = Some(expected);
+            let error = super::validate_expected_ja4_before_connect(&mutated, host)
+                .await
+                .expect_err("损坏 JA4 期望后必须 fail-closed");
+            assert!(error.to_string().contains("ja4_a"), "{id}: {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn inline_profile_fields_reach_the_actual_client_hello() {
+        let raw = inline_profile();
+        let profile = crate::profile::TlsProfile::from_inline(&raw).unwrap();
+        let wire = capture_wire_client_hello(&profile).await;
+
+        assert_eq!(wire.ciphers, raw.cipher_suites);
+        assert_eq!(wire.supported_groups, raw.supported_groups);
+        assert_eq!(wire.ec_point_formats, raw.ec_point_formats);
+        assert_eq!(wire.signature_algorithms, raw.signature_algorithms);
+        assert_eq!(wire.alpn_protocols, raw.alpn_protocols);
+        assert_eq!(wire.supported_versions, raw.tls_supported_versions);
+        assert_eq!(wire.key_share_groups, raw.key_share_groups);
+        assert_eq!(wire.psk_modes, raw.psk_modes);
+        assert_eq!(
+            wire.extensions_without_grease_or_padding(),
+            raw.extensions_order
+        );
+
+        let mut mutated = raw;
+        mutated.cipher_suites.reverse();
+        mutated.supported_groups.reverse();
+        mutated.signature_algorithms.reverse();
+        mutated.alpn_protocols.reverse();
+        mutated.extensions_order.reverse();
+        let mutated = crate::profile::TlsProfile::from_inline(&mutated).unwrap();
+        let mutated_wire = capture_wire_client_hello(&mutated).await;
+
+        assert_ne!(mutated_wire.ciphers, wire.ciphers);
+        assert_ne!(mutated_wire.supported_groups, wire.supported_groups);
+        assert_ne!(mutated_wire.signature_algorithms, wire.signature_algorithms);
+        assert_ne!(mutated_wire.alpn_protocols, wire.alpn_protocols);
+        assert_ne!(mutated_wire.extensions, wire.extensions);
+
+        let mut key_share_changed = inline_profile();
+        key_share_changed.key_share_groups = vec![23];
+        let key_share_changed =
+            crate::profile::TlsProfile::from_inline(&key_share_changed).unwrap();
+        let key_share_wire = capture_wire_client_hello(&key_share_changed).await;
+        assert_eq!(key_share_wire.key_share_groups, [23]);
+        assert_ne!(key_share_wire.key_share_groups, wire.key_share_groups);
+    }
+
+    #[tokio::test]
+    async fn concurrent_inline_profiles_keep_independent_wire_state() {
+        let profile_a = crate::profile::TlsProfile::from_inline(&inline_profile()).unwrap();
+        let mut raw_b = inline_profile();
+        raw_b.id = "inline-wire-test-b".to_owned();
+        raw_b.cipher_suites.swap(0, 1);
+        raw_b.supported_groups.reverse();
+        raw_b.signature_algorithms.reverse();
+        raw_b.alpn_protocols.reverse();
+        raw_b.extensions_order.reverse();
+        let profile_b = crate::profile::TlsProfile::from_inline(&raw_b).unwrap();
+
+        // 两个账号的动态指纹同时构造 ClientHello；若实现退化为进程级可变配置，
+        // 至少一条线缆会被另一条覆盖，下面的精确断言会失败。
+        let (wire_a, wire_b) = tokio::join!(
+            capture_wire_client_hello(&profile_a),
+            capture_wire_client_hello(&profile_b)
+        );
+
+        assert_eq!(wire_a.ciphers, profile_a.cipher_suites);
+        assert_eq!(wire_b.ciphers, profile_b.cipher_suites);
+        assert_eq!(wire_a.supported_groups, profile_a.supported_groups);
+        assert_eq!(wire_b.supported_groups, profile_b.supported_groups);
+        assert_eq!(wire_a.signature_algorithms, profile_a.signature_algorithms);
+        assert_eq!(wire_b.signature_algorithms, profile_b.signature_algorithms);
+        assert_eq!(wire_a.alpn_protocols, profile_a.alpn);
+        assert_eq!(wire_b.alpn_protocols, profile_b.alpn);
+        assert_ne!(wire_a.ciphers, wire_b.ciphers);
+        assert_ne!(wire_a.extensions, wire_b.extensions);
+    }
+
+    #[tokio::test]
+    async fn force_h1_only_changes_the_wire_alpn_to_http11() {
+        let profiles =
+            crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
+        let profile = profiles.get("gemini-cli-v1").unwrap();
+        let normal = capture_wire_client_hello_force_h1(profile, false).await;
+        let forced = capture_wire_client_hello_force_h1(profile, true).await;
+
+        assert_eq!(normal.alpn_protocols, ["h2", "http/1.1"]);
+        assert_eq!(forced.alpn_protocols, ["http/1.1"]);
+        assert_eq!(forced.ciphers, normal.ciphers);
+        assert_eq!(forced.supported_groups, normal.supported_groups);
+        assert_eq!(forced.signature_algorithms, normal.signature_algorithms);
+    }
+
+    #[tokio::test]
     async fn boring_wire_ja3_matches_profile_and_changes_when_cipher_order_is_damaged() {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
@@ -463,46 +566,6 @@ mod tests {
         assert_ne!(damaged_wire.signature_algorithms, good.signature_algorithms);
     }
 
-    // 抓的缺陷:force_h1=true 必须把线缆 ALPN 收窄为仅 http/1.1(不含 h2),否则服务端仍可能
-    // 选 h2,connect.rs 的 selected_alpn 等于 b"h2" 走 H2 bridge,force_h1 旋钮形同虚设。
-    // 注:生产内置 anthropic profile 本身 alpn=["http/1.1"](真 Claude Code 只走 H1),
-    // 故这里构造一个广告 [h2, http/1.1] 的 fixture profile,才能区分 force_h1 收窄前后,
-    // 同时也覆盖将来若有 h2 档案接入 sidecar 的场景。
-    // 自证:同一 fixture 在 force_h1=false 时线缆 ALPN 含 h2,force_h1=true 时只剩 http/1.1,
-    // 两者必须不同,证明 override 真正落到线缆。
-    #[tokio::test]
-    async fn boring_force_h1_narrows_wire_alpn_to_http11_only() {
-        let mut profile = anthropic_profile();
-        profile.alpn = vec!["h2".to_owned(), "http/1.1".to_owned()];
-        // 前提自检:fixture 确实广告 h2,否则本测试没有区分力。
-        assert!(
-            profile.alpn.iter().any(|p| p == "h2"),
-            "fixture profile 必须广告 h2,才能区分 force_h1 收窄前后"
-        );
-
-        let forced = capture_wire_client_hello_force_h1(&profile, true).await;
-        assert_eq!(
-            forced.alpn_protocols,
-            vec!["http/1.1".to_owned()],
-            "force_h1=true 时线缆 ALPN 必须只含 http/1.1"
-        );
-        assert!(
-            !forced.alpn_protocols.iter().any(|p| p == "h2"),
-            "force_h1=true 时线缆 ALPN 不得包含 h2"
-        );
-
-        let unforced = capture_wire_client_hello_force_h1(&profile, false).await;
-        assert!(
-            unforced.alpn_protocols.iter().any(|p| p == "h2"),
-            "force_h1=false 时必须保持 profile.alpn 含 h2(今日行为),实际={:?}",
-            unforced.alpn_protocols
-        );
-        assert_ne!(
-            forced.alpn_protocols, unforced.alpn_protocols,
-            "force_h1 开关前后线缆 ALPN 必须不同,证明 override 真正落到线缆"
-        );
-    }
-
     #[tokio::test]
     async fn empty_boring_setter_fields_keep_boring_default_extension_path() {
         let mut profile = anthropic_profile();
@@ -563,7 +626,6 @@ mod tests {
         parse_wire_client_hello(&raw).unwrap()
     }
 
-    // 用 force_h1 开关构造连接配置并抓取线缆 ClientHello,供 force_h1 ALPN 断言用。
     async fn capture_wire_client_hello_force_h1(
         profile: &crate::profile::TlsProfile,
         force_h1: bool,
@@ -584,6 +646,22 @@ mod tests {
         let profiles =
             crate::profile::ProfileStore::from_toml(crate::profile::BUILTIN_PROFILES_TOML).unwrap();
         profiles.get("anthropic-cli-mimicry-v1").unwrap().clone()
+    }
+
+    fn inline_profile() -> crate::proto::InlineTlsProfile {
+        crate::proto::InlineTlsProfile {
+            id: "inline-wire-test".to_owned(),
+            grease_enabled: false,
+            cipher_suites: vec![4865, 4866, 49195],
+            supported_groups: vec![29, 23],
+            ec_point_formats: vec![0],
+            signature_algorithms: vec![1027, 2052],
+            alpn_protocols: vec!["h2".to_owned(), "http/1.1".to_owned()],
+            tls_supported_versions: vec![772, 771],
+            key_share_groups: vec![29],
+            psk_modes: vec![1],
+            extensions_order: vec![0, 10, 11, 13, 16, 43, 45, 51],
+        }
     }
 
     fn u16_values_as_u8(values: &[u16]) -> Vec<u8> {
@@ -670,6 +748,8 @@ mod tests {
         let mut signature_algorithms = Vec::new();
         let mut supported_versions = Vec::new();
         let mut alpn_protocols = Vec::new();
+        let mut key_share_groups = Vec::new();
+        let mut psk_modes = Vec::new();
         if reader.remaining() > 0 {
             let extensions_len = reader.read_u16()? as usize;
             let extensions_end = reader.position() + extensions_len;
@@ -684,6 +764,8 @@ mod tests {
                     13 => signature_algorithms = parse_u16_vector(data)?,
                     16 => alpn_protocols = parse_alpn_protocols(data)?,
                     43 => supported_versions = parse_supported_versions(data)?,
+                    45 => psk_modes = parse_u8_vector(data)?,
+                    51 => key_share_groups = parse_key_share_groups(data)?,
                     _ => {}
                 }
             }
@@ -697,6 +779,8 @@ mod tests {
             signature_algorithms,
             supported_versions,
             alpn_protocols,
+            key_share_groups,
+            psk_modes,
         })
     }
 
@@ -710,6 +794,8 @@ mod tests {
         signature_algorithms: Vec<u16>,
         supported_versions: Vec<u16>,
         alpn_protocols: Vec<String>,
+        key_share_groups: Vec<u16>,
+        psk_modes: Vec<u8>,
     }
 
     impl WireClientHello {
@@ -784,6 +870,25 @@ mod tests {
             out.push(reader.read_u16()?);
         }
         Ok(out)
+    }
+
+    fn parse_key_share_groups(data: &[u8]) -> Result<Vec<u16>, &'static str> {
+        let mut reader = WireReader::new(data);
+        let len = reader.read_u16()? as usize;
+        if reader.remaining() < len {
+            return Err("invalid key_share list");
+        }
+        let end = reader.position() + len;
+        let mut groups = Vec::new();
+        while reader.position() < end {
+            groups.push(reader.read_u16()?);
+            let key_exchange_len = reader.read_u16()? as usize;
+            reader.skip(key_exchange_len)?;
+        }
+        if reader.position() != end {
+            return Err("invalid key_share entry");
+        }
+        Ok(groups)
     }
 
     struct WireReader<'a> {

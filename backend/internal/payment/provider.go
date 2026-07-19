@@ -31,9 +31,8 @@ type ProviderRefundResult struct {
 }
 
 // Provider 抽象支付渠道行为, 不耦合任何真实 SDK 类型。
-// 当前内置 manual/test/HMAC provider；真实 Stripe/支付宝/微信/epay provider
-// 需要真实密钥、webhook 验签、退款撤销语义与 SDK 供应链审查。
-// 未注册真实 provider 时只保留框架; 接入指南见 PROVIDERS.md。
+// 当前内置 manual/test/HMAC provider；它们不支持的渠道操作必须返回明确错误，
+// 调用链不得把本地余额变化冒充为外部渠道已经完成退款或撤销。
 type Provider interface {
 	Kind() ProviderKind
 	CreateIntent(ctx context.Context, order Order) (PaymentIntent, error)

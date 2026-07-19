@@ -72,6 +72,23 @@ func (b *RoutingReasonBuilder) Account(id int64) {
 	b.reason.ProviderAccountID = id
 }
 
+func (b *RoutingReasonBuilder) Scoring(version string, contributions map[string]float64) {
+	if version != "" {
+		b.reason.ScoringPolicyVersion = version
+	}
+	b.reason.SignalContributions = make(map[string]float64, len(contributions))
+	for key, value := range contributions {
+		b.reason.SignalContributions[key] = value
+	}
+}
+
+func (b *RoutingReasonBuilder) StickyBreak(code string) {
+	if code == "" || b.reason.StickyBreakReason != nil {
+		return
+	}
+	b.reason.StickyBreakReason = &code
+}
+
 func (b *RoutingReasonBuilder) GateFailure(accountID int64, reason GateFailureReason) {
 	if reason == "" {
 		return
@@ -141,7 +158,7 @@ func exhaustionFamily(reasons map[GateFailureReason]int) ExhaustionFamily {
 		switch reason {
 		case GateFailureHealth, GateFailureAuthCooldown, GateFailureModelCooldown,
 			GateFailureWindowCost, GateFailureSessionCount, GateFailureRatePrecheck,
-			GateFailureSlotCapacity, GateFailureScoredBand:
+			GateFailureSlotCapacity, GateFailureScoredBand, GateFailureUpstreamQuota:
 			capacity = true
 		case GateFailureContextWindow:
 			contextWindow = true

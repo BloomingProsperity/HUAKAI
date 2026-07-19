@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
@@ -29,10 +30,12 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingmaint"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelprobe"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkin"
 	"github.com/BloomingProsperity/HUAKAI/internal/circuitbreaker"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -40,6 +43,7 @@ import (
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentiallegacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -55,12 +59,17 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
+	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
+	"github.com/BloomingProsperity/HUAKAI/internal/inboundlimit"
+	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
+	"github.com/BloomingProsperity/HUAKAI/internal/logretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
@@ -97,6 +106,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/retrybudget"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/routingsignal"
+	"github.com/BloomingProsperity/HUAKAI/internal/servermonitor"
 	"github.com/BloomingProsperity/HUAKAI/internal/sessioncap"
 	"github.com/BloomingProsperity/HUAKAI/internal/settingscipher"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
@@ -119,16 +130,30 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 	"github.com/BloomingProsperity/HUAKAI/internal/windowcost"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
+)
+
+const (
+	channelRecoveryLeaderLockKey  int64 = 0x48554B434852414D
+	quotaProbeLeaderLockKey       int64 = 0x48554B51554F5441
+	modelSyncLeaderLockKey        int64 = 0x48554B4D4F44454C
+	proxyHealthLeaderLockKey      int64 = 0x48554B505258484C
+	tlsProfileHealthLeaderLockKey int64 = 0x48554B544C534650
+	hermesInspectLeaderLockKey    int64 = 0x48554B4845524D49
+	stagedCleanupLeaderLockKey    int64 = 0x48554B535447434C
 )
 
 // deps 是 run() 启动后 handler 收到的 live 依赖树。
 type deps struct {
 	cfg                   *Config
+	readiness             *healthhttp.Readiness
 	clientIPResolver      *clientip.Resolver
+	inboundRateLimit      inboundlimit.Store
 	pgPool                *pgxpool.Pool
 	logSink               *logsink.Sink
 	runtimeLogStore       *logsink.PostgresStore
+	logRetention          *logretention.Manager
 	adminQueries          *admindb.Queries
 	billingQueries        *dbbilling.Queries
 	billingPolicyStore    billing.PolicyStore
@@ -152,6 +177,7 @@ type deps struct {
 	credentialKeys        credentialstore.KeyProvider
 	credentialAcqStore    *credentialacq.PostgresSessionStore
 	credentialExchangers  *credentialacq.ExchangerRegistry
+	anthropicOAuthClient  *http.Client
 	projectEnricher       projectenrich.Enricher
 	credentialScheduler   *credentialworker.Scheduler
 	emailSettings         *mailinfra.PostgresSettingsStore
@@ -229,6 +255,10 @@ type deps struct {
 	usageRetentionWorker *usageretention.Worker
 	sessionCapRegistry   *sessioncap.Registry
 	recentReqRing        *recentreq.Ring
+	alertingService      *alerting.Service
+	serverMonitorStore   *servermonitor.PostgresStore
+	serverMonitorEnabled bool
+	serverMonitorOffline time.Duration
 	// toolPriceSource 提供工具调用附加费价表来源(NAPI-BILLING-01)。按运维开关
 	// HUAKAI_TOOL_SURCHARGE_ENABLED 构建:启用 → 带平台默认价的 platformSource;
 	// 关闭 → nil(退回旧 $0 行为)。接入 chatHandlerDeps 的 ToolPricingTable。
@@ -290,33 +320,6 @@ func quotaReconcilerEnabledFromEnv() bool {
 	return on
 }
 
-type refundReceiptAppender interface {
-	AppendReceipt(context.Context, *auditreceipt.CostReceipt) error
-}
-
-type refundReceiptSequenceReader interface {
-	GetReceiptBySequence(context.Context, string, int64, int32) (*auditreceipt.CostReceipt, error)
-}
-
-type refundReceiptSink struct {
-	appender refundReceiptAppender
-}
-
-func (s refundReceiptSink) AppendRefundReceipt(ctx context.Context, receipt *auditreceipt.CostReceipt) error {
-	if s.appender == nil {
-		return auditreceipt.ErrReceiptStorageRequired
-	}
-	return s.appender.AppendReceipt(ctx, receipt)
-}
-
-func (s refundReceiptSink) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*auditreceipt.CostReceipt, error) {
-	reader, ok := s.appender.(refundReceiptSequenceReader)
-	if !ok {
-		return nil, auditreceipt.ErrReceiptStorageRequired
-	}
-	return reader.GetReceiptBySequence(ctx, requestID, tenantID, sequence)
-}
-
 type runtimeOptions struct {
 	selector      *runtimeconfig.PoolSelectorConfig
 	obsDLQ        *runtimeconfig.ObsDLQConfig
@@ -339,12 +342,11 @@ func newClaimGateWithLease(pool *pgxpool.Pool) billing.ClaimGate {
 	return cg
 }
 
-func buildTransportFactory(cfg *Config, mimicryRegistry *mimicry.TemplateRegistry) *transport.Factory {
-	factory := transport.NewFactory(mimicryRegistry)
+func buildTransportFactory(cfg *Config) *transport.Factory {
+	factory := transport.NewFactory()
 	if cfg != nil {
 		factory.SidecarSocketPath = cfg.TransportSidecarSocket
-		factory.SidecarFallbackEnabled = cfg.TransportSidecarFallback
-		// nil 时保持 factory 默认(沿用 mimicry env 默认强制 H1);非 nil 时运维显式覆盖。
+		// nil 时按 profile 的 ALPN 工作；非 nil 时由部署者显式覆盖。
 		factory.SidecarForceH1 = cfg.TransportSidecarForceH1
 	}
 	return factory
@@ -836,24 +838,10 @@ func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *set
 	)
 }
 
-func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimicry.TemplateRegistry, logger *zap.Logger, sink *logsink.Sink) (*gatewayRuntime, error) {
+func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, sink *logsink.Sink) (*gatewayRuntime, error) {
 	pgPool, err := db.Open(ctx, dbPoolConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
-	}
-	// DB 就绪即启动运行日志落库 worker;进程更早的 warn+ 已积压在 sink 队列,启动后一并刷出。
-	// 刻意不用信号 ctx:它在 HTTP drain(最长 60s)开始前就取消,期间产生的 warn/error 会
-	// 进入无人消费的队列丢失。sink 用独立生命周期,由 runtime.close() 在各 worker 停完、
-	// 关 DB 之前显式停止并等 drain。sink 为 nil(测试直构 runtime)时跳过。
-	runtimeLogStore := logsink.NewPostgresStore(pgPool)
-	var logSinkStop func()
-	if sink != nil {
-		sinkCtx, sinkCancel := context.WithCancel(context.Background())
-		sink.Start(sinkCtx, runtimeLogStore)
-		logSinkStop = func() {
-			sinkCancel()
-			sink.WaitDone(3 * time.Second)
-		}
 	}
 	// 可选进程内自迁移(HUAKAI_AUTO_MIGRATE=true,默认关):在任何代码用表之前把 schema 升到最新,
 	// 供裸二进制单实例部署省去"先手动跑迁移再起 gateway"那一步。默认关时迁移仍外置(compose
@@ -861,10 +849,24 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if autoMigrateEnabled() {
 		logger.Info("HUAKAI_AUTO_MIGRATE=true:启动时进程内自迁移到最新")
 		if err := dbmigrate.Up(sqlmigrations.Files, cfg.DatabaseURL); err != nil {
+			pgPool.Close()
 			return nil, fmt.Errorf("auto-migrate: %w", err)
 		}
 	}
-	rt := &gatewayRuntime{pgPool: pgPool, logSinkStop: logSinkStop}
+	serverMonitorConfig, err := servermonitor.LoadConfigFromEnv()
+	if err != nil {
+		pgPool.Close()
+		return nil, fmt.Errorf("load server monitor config: %w", err)
+	}
+	serverMonitorStore := servermonitor.NewPostgresStore(pgPool)
+	sharedRateLimits, err := buildSharedRateLimits(ctx, cfg)
+	if err != nil {
+		pgPool.Close()
+		return nil, err
+	}
+
+	runtimeLogStore := logsink.NewPostgresStore(pgPool)
+	rt := &gatewayRuntime{pgPool: pgPool, closeInboundRateLimit: sharedRateLimits.close}
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	rt.cancelWorkers = cancelWorkers
 	ready := false
@@ -873,6 +875,19 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			rt.close()
 		}
 	}()
+	// 迁移完成后再启动日志落库，避免新表尚不存在时把启动期日志整批丢弃。sink 独立于
+	// 信号 ctx，必须等其他 worker 全停后排空，最后才关闭数据库。
+	if sink != nil {
+		sinkCtx, sinkCancel := context.WithCancel(context.Background())
+		sink.Start(sinkCtx, runtimeLogStore)
+		rt.logSinkStop = func() {
+			sinkCancel()
+			sink.WaitDone(3 * time.Second)
+		}
+	}
+	logRetention := logretention.New(pgPool)
+	logRetention.Start(workerCtx)
+	rt.logRetention = logRetention
 
 	adminQueries := admindb.New(pgPool)
 	authQueries := dbauth.New(pgPool)
@@ -882,6 +897,15 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err != nil {
 		return nil, fmt.Errorf("load credential encryption key: %w", err)
 	}
+	stagedCleanupWorker := accountintake.NewStagedCleanupWorker(accountintake.StagedCleanupWorkerConfig{
+		Store: accountintake.NewStagedStore(pgPool, credentialKeys),
+		Lease: workerlease.NewPostgres(pgPool, stagedCleanupLeaderLockKey, "account_intake_staged_cleanup"),
+	})
+	stagedCleanupWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "account intake staged cleanup worker",
+		wait: stagedCleanupWorker.Wait,
+	})
 	settingsOpts := []platformsettings.Option{}
 	if settingsSecretCipher := settingscipher.New(credentialstore.NewCipher(credentialKeys)); settingsSecretCipher != nil {
 		settingsOpts = append(settingsOpts, platformsettings.WithSecretCipher(settingsSecretCipher))
@@ -994,9 +1018,41 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	if err := credentialStore.VerifyKeySelfCheck(ctx); err != nil {
 		return nil, err
 	}
+	legacyCredentialCount, err := credentiallegacy.Count(ctx, pgPool)
+	if err != nil {
+		return nil, err
+	}
+	if legacyCredentialCount > 0 {
+		logger.Warn("检测到仍使用旧内联凭据的账号；新建入口已禁止该形态，请逐账号重新导入到加密凭据存储",
+			zap.Int64("account_count", legacyCredentialCount),
+			zap.String(logcontract.FieldCategory, string(logcontract.CategorySecurity)),
+			zap.String(logcontract.FieldEventType, "credential.legacy_inline_detected"),
+			zap.String(logcontract.FieldResult, string(logcontract.ResultPartial)),
+			zap.String(logcontract.FieldErrorClass, string(logcontract.ErrorManualRecovery)),
+			zap.Bool(logcontract.FieldRetryable, false),
+			zap.String(logcontract.FieldRecoveryState, string(logcontract.RecoveryOperatorRequired)))
+	}
 	credentialAcqStore := credentialacq.NewPostgresSessionStoreWithKeys(pgPool, credentialKeys)
+	transportFactory := buildTransportFactory(cfg)
+	if err := mimicry.ProbeSidecarReadiness(ctx, cfg.TransportSidecarSocket); err != nil {
+		return nil, fmt.Errorf("probe Rust sidecar readiness: %w", err)
+	}
+	readinessChecks := []healthhttp.ReadinessCheck{
+		healthhttp.ReadinessCheck{Name: "database", Run: pgPool.Ping},
+		healthhttp.ReadinessCheck{Name: "tls_sidecar", Run: func(checkCtx context.Context) error {
+			return mimicry.ProbeSidecarReadiness(checkCtx, cfg.TransportSidecarSocket)
+		}},
+	}
+	if sharedRateLimits.ping != nil {
+		readinessChecks = append(readinessChecks, healthhttp.ReadinessCheck{Name: "rate_limit_store", Run: sharedRateLimits.ping})
+	}
+	readiness := healthhttp.NewReadiness(readinessChecks...)
+	rt.readiness = readiness
 	credentialExchangers := credentialacq.DefaultExchangerRegistry()
-	anthropicOAuthHTTPClient := anthropicoauth.DefaultHTTPClient()
+	anthropicOAuthHTTPClient, err := anthropicoauth.NewHTTPClient(transportFactory)
+	if err != nil {
+		return nil, fmt.Errorf("build anthropic Rust transport: %w", err)
+	}
 	if err := installAnthropicClaudeAIOAuthMimicryExchanger(credentialExchangers, anthropicOAuthHTTPClient); err != nil {
 		return nil, fmt.Errorf("register anthropic claude_ai_oauth exchanger with mimicry: %w", err)
 	}
@@ -1154,9 +1210,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
-	// 退款配额冲减器:启用配额强制时,退款落库后把退款的实际金额从配额 settled_value 负向冲减
-	// (修补"退款只退钱包、配额计数没退→用户提前撞成本上限")。quota.Service 无状态,此处独立实例
-	// 与配额强制层用同一套 quota 表,功能等价;未启用配额强制则传 nil,退款不触发冲减(零行为变化)。
+	// 启用配额强制时，把 mismatch 与成本争议退款的配额冲减加入同一 PostgreSQL 事务。
+	// 未启用配额强制时不创建冲减器，退款不需要触碰 quota 表。
 	var refundQuotaReverser auditreceipt.QuotaReverser
 	if cfg != nil && cfg.QuotaEnforce {
 		refundQuotaReverser = quotaCostReverser{svc: quota.NewService(quota.NewPostgresStore(pgPool))}
@@ -1174,7 +1229,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	// 争议裁决必须拿到底层可加入现有事务的退款执行器；外层 Settler 接口的
 	// Refund 会自行开事务，无法与状态更新形成同提交/同回滚。
 	disputeRefundSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
-	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler)
+	disputeResolverOpts := []auditreceipt.CostDisputeResolverOption{}
+	if quotaReverser, ok := refundQuotaReverser.(auditreceipt.QuotaReverserInTx); ok {
+		disputeResolverOpts = append(disputeResolverOpts, auditreceipt.WithDisputeQuotaReverser(quotaReverser))
+	}
+	disputeResolver, err := auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler, disputeResolverOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build dispute refund resolver: %w", err)
 	}
@@ -1264,6 +1323,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	replayJanitor := billing.NewReplayJanitor(replayStore, 0)
 	replayJanitor.Start(workerCtx)
 	rt.replayJanitorStop = replayJanitor.Stop
+	// scheduler_outbox 修剪 janitor:每笔成功结算写一行 outbox,无修剪会无界增长。
+	outboxJanitor := billingmaint.NewSchedulerOutboxJanitor(billingmaint.NewOutboxPruneStore(pgPool), 0, 0)
+	outboxJanitor.Start(workerCtx)
+	rt.outboxJanitorStop = outboxJanitor.Stop
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(workerCtx)
 	rt.leaseSweepStop = leaseSweeper.Stop
@@ -1303,6 +1366,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		proxyhealth.NewPostgresStatusStore(pgPool),
 		proxyhealth.DefaultInterval,
 		nil,
+		proxyhealth.WithLeaderLease(workerlease.NewPostgres(pgPool, proxyHealthLeaderLockKey, "proxy_health")),
 	)
 	proxyHealthWorker.Start(workerCtx)
 	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
@@ -1310,13 +1374,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		wait: proxyHealthWorker.Wait,
 	})
 
-	// UTLS-06: TLS 指纹 profile 漂移/健康 worker。周期校验 active 自定义 profile
-	// 还能否构建可用 uTLS ClientHello, 坏的标 drift_detected (无 JA3 计算, 无误杀)。
+	// TLS 指纹 profile 漂移/健康 worker。周期校验 active 自定义 profile
+	// 能否转换为 Rust IPC 合同，坏的标 drift_detected（不伪造线上握手结果）。
 	tlsProfileHealthWorker := tlsfphealth.NewWorker(
 		tlsfphealth.NewPostgresLister(pgPool),
 		tlsfphealth.NewPostgresDriftMarker(pgPool),
 		tlsfphealth.DefaultInterval,
 		nil,
+		tlsfphealth.WithLeaderLease(workerlease.NewPostgres(pgPool, tlsProfileHealthLeaderLockKey, "tls_profile_health")),
 	)
 	tlsProfileHealthWorker.Start(workerCtx)
 	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
@@ -1338,13 +1403,49 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		wait: windowCostWorker.Wait,
 	})
 
-	// 配额探测只写观测窗口，不接入健康状态、冷却或选号依赖。
+	// 渠道恢复协调器只扫描已到期冷却与渐进放量记录；请求热路径不再改健康状态。
+	// PostgreSQL 会话级租约保证多副本同一轮只有一个执行者。当前不发付费探测，
+	// 仅按真实流量样本或最长观察期推进恢复阶段。
+	channelRampScheduler := channelprobe.NewChannelHealthScheduler(channelprobe.SchedulerConfig{
+		Channels:    channelprobe.NewPostgresRampingChannelLister(pgPool, 0),
+		Ramp:        channelHealthService,
+		LeaderLease: workerlease.NewPostgres(pgPool, channelRecoveryLeaderLockKey, "channel_recovery"),
+		Interval:    channelprobe.DefaultSchedulerInterval,
+	})
+	channelRampDone := make(chan struct{})
+	go func() {
+		defer close(channelRampDone)
+		if err := channelRampScheduler.Run(workerCtx); err != nil {
+			slog.WarnContext(workerCtx, "channel ramp scheduler exited with error", "error", err)
+		}
+	}()
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "channel ramp scheduler",
+		wait: func(ctx context.Context) error {
+			select {
+			case <-channelRampDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
+
+	// 厂商额度统一写入规范化投影；只有新鲜且明确耗尽的事实参与硬 gate。
+	quotaVendorHTTPClient := auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 	quotaProbeWorker := quotaprobe.NewWorker(quotaprobe.WorkerConfig{
-		Accounts: quotaprobe.NewPostgresAccountLister(pgPool),
-		Vault:    credentialVault,
-		Fetcher:  quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
-		Store:    ratelimit.NewPostgresSessionWindowStore(pgPool),
-		Settings: platformSettingsService,
+		Accounts:  quotaprobe.NewPostgresAccountLister(pgPool),
+		Vault:     credentialVault,
+		Fetcher:   quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
+		Store:     ratelimit.NewPostgresSessionWindowStore(pgPool),
+		FactStore: accountquota.NewPostgresStore(pgPool),
+		Adapters: []quotaprobe.VendorAdapter{
+			quotaprobe.NewAntigravityAdapter(quotaVendorHTTPClient, accountProxyResolver),
+			quotaprobe.GeminiUnknownAdapter{},
+			quotaprobe.NewGrokBillingAdapter(quotaVendorHTTPClient, accountProxyResolver),
+		},
+		Settings:    platformSettingsService,
+		LeaderLease: workerlease.NewPostgres(pgPool, quotaProbeLeaderLockKey, "quota_probe"),
 	})
 	quotaProbeWorker.Start(workerCtx)
 	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
@@ -1378,7 +1479,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		logger.Warn("payment provider runtime config prewarm failed", zap.Error(err))
 	}
 
-	loginThrottle, err := loadLoginThrottleFromEnv()
+	loginThrottle, err := loadLoginThrottleFromEnv(sharedRateLimits.login)
 	if err != nil {
 		return nil, fmt.Errorf("load login throttle config: %w", err)
 	}
@@ -1418,9 +1519,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 
 	d := &deps{
 		cfg:                   cfg,
+		readiness:             readiness,
 		clientIPResolver:      clientIPResolver,
+		inboundRateLimit:      sharedRateLimits.inbound,
 		logSink:               sink,
 		runtimeLogStore:       runtimeLogStore,
+		logRetention:          logRetention,
 		adminQueries:          adminQueries,
 		billingQueries:        billingQueries,
 		billingPolicyStore:    billingPolicyStore,
@@ -1446,12 +1550,16 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialKeys:        credentialKeys,
 		credentialAcqStore:    credentialAcqStore,
 		credentialExchangers:  credentialExchangers,
+		anthropicOAuthClient:  anthropicOAuthHTTPClient,
 		projectEnricher:       credentialProjectEnricher,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		emailSendLimit:        emailSendLimit,
 		userAuth:              userAuthService,
 		pgPool:                pgPool,
+		serverMonitorStore:    serverMonitorStore,
+		serverMonitorEnabled:  serverMonitorConfig.Enabled,
+		serverMonitorOffline:  serverMonitorConfig.OfflineAfter,
 		userSessions:          userSessionService,
 		passkeys:              passkeyService,
 		twoFactor:             twoFactorService,
@@ -1481,7 +1589,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		auditRefPolicy:        auditRefPolicy,
 		dispatcher: &gateway.UpstreamDispatcher{
 			Adapters:                 registrydefault.Build(),
-			TransportFactory:         buildTransportFactory(cfg, mimicryRegistry),
+			TransportFactory:         transportFactory,
 			ProxyResolver:            accountProxyResolver,
 			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
 			Timeouts:                 gatewayTimeouts,
@@ -1583,6 +1691,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 			)
 		}),
 	)
+	d.alertingService = alertingService
 	alertingScheduler := alerting.NewScheduler(alerting.SchedulerConfig{
 		Evaluator: alertingService,
 		Store:     alertingStore,
@@ -1598,6 +1707,42 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		LeaderLock: alerting.NewPostgresLeaderLock(pgPool),
 	})
 	rt.alertingEvalStop = startAlertingEvaluator(ctx, cfg, alertingScheduler, logger)
+	if serverMonitorConfig.Enabled {
+		identity, err := servermonitor.ResolveIdentity(serverMonitorConfig)
+		if err != nil {
+			return nil, fmt.Errorf("resolve server monitor identity: %w", err)
+		}
+		session, err := servermonitor.NewSession(time.Now())
+		if err != nil {
+			return nil, errors.New("create server monitor session failed")
+		}
+		monitorWorker, err := servermonitor.NewWorker(servermonitor.WorkerConfig{
+			Identity:        identity,
+			Session:         session,
+			Collector:       servermonitor.NewCollector(),
+			Store:           serverMonitorStore,
+			NodeLease:       workerlease.NewPostgres(pgPool, servermonitor.NodeLeaseKey(identity.NodeID), "server_monitor_node"),
+			CleanupLease:    workerlease.NewPostgres(pgPool, servermonitor.CleanupLeaseKey(), "server_monitor_cleanup"),
+			Interval:        serverMonitorConfig.Interval,
+			Retention:       serverMonitorConfig.Retention,
+			CleanupInterval: serverMonitorConfig.CleanupInterval,
+			CleanupBatch:    serverMonitorConfig.CleanupBatch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("build server monitor worker: %w", err)
+		}
+		if err := monitorWorker.Start(workerCtx); err != nil {
+			return nil, fmt.Errorf("start server monitor worker: %w", err)
+		}
+		rt.serverMonitorWorker = monitorWorker
+		logger.Info("服务器实例监测已启动",
+			zap.String("node_id", identity.NodeID),
+			zap.String("identity_source", string(identity.Source)),
+			zap.Bool("identity_stable", identity.Stable),
+			zap.Duration("interval", serverMonitorConfig.Interval),
+			zap.Duration("offline_after", serverMonitorConfig.OfflineAfter),
+		)
+	}
 
 	if err := admin.MaybeBootstrap(ctx, pgPool, logger); err != nil {
 		return nil, fmt.Errorf("admin bootstrap: %w", err)
@@ -1639,6 +1784,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		credentialworker.WithVendorRefresher("anthropic", anthropicoauth.NewRefresher(
 			credentialStore,
 			anthropicoauth.WithFallbackRefresher(credentialRefresher),
+			anthropicoauth.WithHTTPClient(anthropicOAuthHTTPClient),
 		)),
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
 			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
@@ -1669,7 +1815,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	)
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
-		auth.NewStormControllerWithScopeBudget(authQueries, stormScopeCfg),
+		auth.NewStormControllerWithSharedScopeBudget(authQueries, stormScopeCfg, sharedRateLimits.storm),
 		auditSigner,
 		credentialRefresher,
 		credentialSchedulerOptions...,
@@ -1685,6 +1831,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		CredentialHotRefresher: credentialScheduler,
 		AuthCooldown:           d.authCooldown,
 		RecentRequests:         d.recentReqRing,
+		RoutingSignals:         routingsignal.NewPostgresRecorder(pgPool),
 	})
 	if opts.obsDLQ.Enabled {
 		dlqWorker.Start(workerCtx)
@@ -1692,8 +1839,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 	outboxWorker.Start(workerCtx)
 	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
 		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{
-			Interval:   opts.modelSync.Interval,
-			RunOnStart: true,
+			Interval:    opts.modelSync.Interval,
+			RunOnStart:  true,
+			LeaderLease: workerlease.NewPostgres(pgPool, modelSyncLeaderLockKey, "model_sync"),
 		})
 		rt.modelSyncStop = scheduler.Start(workerCtx)
 	}
@@ -1767,10 +1915,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, mimicryRegistry *mimi
 		obsDLQStore:    outboxStore,
 		billingQueries: billingQueries,
 		logger:         logger,
+		leaderLease:    workerlease.NewPostgres(pgPool, hermesInspectLeaderLockKey, "hermes_inspection"),
+		windowClaims:   sharedRateLimits.windows,
 	}); inspectionWorker != nil {
 		inspectionWorker.Start(workerCtx)
 		rt.hermesInspectionWorker = inspectionWorker
 	}
+	readiness.MarkReady()
 	ready = true
 	return rt, nil
 }
@@ -2003,8 +2154,7 @@ func hermesBoolEnabledDefaultTrue(envName string) (bool, error) {
 
 // installAnthropicClaudeAIOAuthMimicryExchanger 把 default ExchangerRegistry
 // 中 anthropic/claude_ai_oauth 条目替换成带显式 HTTP client 的版本。生产
-// wiring 传 anthropicoauth.DefaultHTTPClient() 接 mimicry uTLS sidecar
-// (profile anthropic_cli_mimicry_v1); 测试可注入 mock client 验证替换
+// wiring 传经过启动探测的 Rust sidecar client；测试可注入 mock client验证替换
 // 真正生效, 防止"忘调用该函数"的回归。
 func installAnthropicClaudeAIOAuthMimicryExchanger(registry *credentialacq.ExchangerRegistry, client *http.Client) error {
 	if registry == nil {
@@ -2032,7 +2182,7 @@ func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.
 		return fmt.Errorf("anthropic/claude_ai_oauth exchanger missing from registry after install")
 	}
 	if !credentialacq.IsClaudeAIOAuthExchangerWithExplicitClient(exc) {
-		return fmt.Errorf("anthropic/claude_ai_oauth exchanger has nil httpClient — install 未生效, 生产将退化为 http.DefaultClient 失去 mimicry uTLS")
+		return fmt.Errorf("anthropic/claude_ai_oauth exchanger has nil httpClient，安装未生效，生产启动必须拒绝")
 	}
 	return nil
 }

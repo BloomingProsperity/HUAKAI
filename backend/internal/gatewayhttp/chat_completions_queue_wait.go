@@ -174,6 +174,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	}
 	failedAccounts := make(map[int64]struct{})
 	authFailoverUsed := false
+	agentTaskRecoveryUsed := false
 	budget := effectiveAttemptBudget(ex.plan)
 	maxAttempts := len(ex.plan.Attempts)
 	// auth-failover 落在普通预算最后一格时，可获得至多一个额外同类 attempt。
@@ -182,18 +183,23 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	var lastFailure *classifiedAttemptFailure
 	attemptsRun := 0
 	for i := 0; i < attemptCap; i++ {
-		attemptsRun = i + 1
+		attemptsRun++
 		planIdx := i
 		if planIdx >= maxAttempts {
 			planIdx = maxAttempts - 1
 		}
-		outcome := ex.runAttempt(w, attemptInput{
+		attempt := attemptInput{
 			Plan:             ex.plan.Attempts[planIdx],
-			AttemptSeq:       i + 1,
+			AttemptSeq:       attemptsRun,
 			ExcludedAccounts: failedAccounts,
 			ReplayableBody:   true,
 			FinalAttempt:     i+1 >= attemptCap,
-		})
+		}
+		outcome := ex.runAttempt(w, attempt)
+		if result, done := completedAttemptResult(outcome); done {
+			return result
+		}
+		outcome = ex.retryAfterAgentTaskRecovery(w, outcome, attempt, &agentTaskRecoveryUsed, &attemptsRun)
 		if result, done := completedAttemptResult(outcome); done {
 			return result
 		}
@@ -255,12 +261,19 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	ex.classTransition = &bindingClassTransition{
 		From: bindingfallback.ClassNormal, To: phase.FallbackClass, Trigger: trigger,
 	}
-	outcome := ex.runAttempt(w, attemptInput{
-		Plan:           phase.Attempts[0],
-		AttemptSeq:     attemptsRun + 1,
-		ReplayableBody: true,
-		FinalAttempt:   true,
-	})
+	attemptsRun++
+	targetAttempt := attemptInput{
+		Plan:             phase.Attempts[0],
+		AttemptSeq:       attemptsRun,
+		ExcludedAccounts: failedAccounts,
+		ReplayableBody:   true,
+		FinalAttempt:     true,
+	}
+	outcome := ex.runAttempt(w, targetAttempt)
+	if result, done := completedAttemptResult(outcome); done {
+		return result
+	}
+	outcome = ex.retryAfterAgentTaskRecovery(w, outcome, targetAttempt, &agentTaskRecoveryUsed, &attemptsRun)
 	if result, done := completedAttemptResult(outcome); done {
 		return result
 	}
@@ -276,19 +289,28 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 				return modelRunResult{Failure: outcome.Failure}
 			}
 			authFailoverUsed = true
-			targetFailedAccounts := map[int64]struct{}{}
+			targetFailedAccounts := make(map[int64]struct{}, len(failedAccounts)+1)
+			for accountID := range failedAccounts {
+				targetFailedAccounts[accountID] = struct{}{}
+			}
 			if outcome.AccountID != 0 {
 				targetFailedAccounts[outcome.AccountID] = struct{}{}
 			}
 			clearRetryableAttemptFailureHeaders(w)
 			ex.prepareNextAttemptAfterAbort()
-			outcome = ex.runAttempt(w, attemptInput{
+			attemptsRun++
+			authAttempt := attemptInput{
 				Plan:             phase.Attempts[0],
-				AttemptSeq:       attemptsRun + 2,
+				AttemptSeq:       attemptsRun,
 				ExcludedAccounts: targetFailedAccounts,
 				ReplayableBody:   true,
 				FinalAttempt:     true,
-			})
+			}
+			outcome = ex.runAttempt(w, authAttempt)
+			if result, done := completedAttemptResult(outcome); done {
+				return result
+			}
+			outcome = ex.retryAfterAgentTaskRecovery(w, outcome, authAttempt, &agentTaskRecoveryUsed, &attemptsRun)
 			if result, done := completedAttemptResult(outcome); done {
 				return result
 			}

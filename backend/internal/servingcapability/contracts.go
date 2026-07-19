@@ -159,7 +159,7 @@ func DefaultContracts() []ServingCapabilityContract {
 			[]string{credentialstore.RuntimeAPIKey, credentialstore.RuntimeUpstreamPassthrough},
 			registrydefault.ProtocolOpenAIResponses, registrydefault.ProtocolOpenAIResponses, streamFramingSSE, ModelDiscoveryGlobal),
 		releasedContract(registrydefault.ProtocolOpenAICodex, credentialstore.VendorOpenAI,
-			[]string{credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth},
+			[]string{credentialstore.AuthModeChatGPTOAuth, credentialstore.AuthModeCodexCLIOAuth, credentialstore.AuthModeCodexWebOAuth, credentialstore.AuthModeCodexAgent},
 			[]string{credentialstore.RuntimeSessionToken, credentialstore.RuntimeUpstreamPassthrough},
 			registrydefault.ProtocolOpenAIResponses, registrydefault.ProtocolOpenAIResponses, streamFramingSSE, ModelDiscoveryAccountScoped),
 		releasedContract(registrydefault.ProtocolAnthropicMessages, credentialstore.VendorAnthropic,

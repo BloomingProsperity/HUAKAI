@@ -90,6 +90,16 @@ func (s *Service) Register(kind EventKind, h Handler) {
 	s.handlers[kind] = h
 }
 
+// HasHandler 报告某 kind 是否已注册 handler。未注册的 kind 在处理时走 ErrNoHandler
+// 直接隔离,接线完备性测试据此校验声明的 kind 都有归宿。
+func (s *Service) HasHandler(kind EventKind) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.handlers[kind]
+	return ok
+}
+
 func (s *Service) Enqueue(ctx context.Context, e Event) (int64, error) {
 	if s == nil || s.store == nil {
 		return 0, ErrStoreNotConfigured

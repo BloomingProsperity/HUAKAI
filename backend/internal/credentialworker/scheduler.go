@@ -3,6 +3,7 @@ package credentialworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
@@ -233,6 +235,40 @@ func (s *Scheduler) RefreshHotPath(ctx context.Context, tenantID, accountID int6
 	})
 }
 
+// RecoverAgentTask 同步重建当前账号的短期任务材料，供请求内的一次性恢复使用。
+func (s *Scheduler) RecoverAgentTask(ctx context.Context, tenantID, accountID int64, expectedCredentialVersion int) error {
+	if s == nil || s.acquirer == nil || s.Refresher == nil {
+		return errors.New("credentialworker: agent task recoverer not configured")
+	}
+	recoverer, ok := s.Refresher.(interface {
+		RecoverAgentTask(context.Context, int64, int64, int) error
+	})
+	if !ok {
+		return errors.New("credentialworker: agent task recoverer unavailable")
+	}
+	account := dbbilling.ListAccountsForRefreshRow{ID: accountID, TenantID: tenantID, VendorName: credentialstore.VendorOpenAI}
+	endpointRefund, outcome, err := s.acquirer.AcquireProviderEndpoint(ctx, tenantID, credentialstore.VendorOpenAI, "agent_task")
+	if err != nil {
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "provider_endpoint", err))
+	}
+	if outcome != "" {
+		return errors.Join(fmt.Errorf("credentialworker: agent task recovery deferred: %s", outcome), s.recordAudit(ctx, account, outcome, "provider_endpoint", nil))
+	}
+	_, outcome, err = s.acquirer.AcquireGlobal(ctx, tenantID)
+	if err != nil {
+		endpointRefund()
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "global", err))
+	}
+	if outcome != "" {
+		endpointRefund()
+		return errors.Join(fmt.Errorf("credentialworker: agent task recovery deferred: %s", outcome), s.recordAudit(ctx, account, outcome, "global", nil))
+	}
+	if err := recoverer.RecoverAgentTask(ctx, tenantID, accountID, expectedCredentialVersion); err != nil {
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomePermanentDisable, "agent_task", err))
+	}
+	return s.recordAudit(ctx, account, auth.OutcomeRefreshSucceeded, "agent_task", nil)
+}
+
 func (s *Scheduler) validate() error {
 	switch {
 	case s.queryer == nil:
@@ -261,7 +297,8 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 	}
 	defer release()
 
-	// Scope 2(provider-endpoint):内存中的 per-vendor-endpoint 速率预算。
+	// Scope 2(provider-endpoint):按厂商端点共享的速率预算。生产接线跨副本共享，
+	// 单实例开发接线可退化为进程内预算。
 	// vendor 名作为共享 OAuth token endpoint 的 key,因此同一 vendor 的大量账号同时
 	// 过期时不会对它形成踩踏。
 	endpointKey := normalizeProviderName(account.VendorName)
@@ -273,7 +310,7 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 		return s.recordAudit(ctx, account, outcome, "provider_endpoint", nil)
 	}
 
-	// Scope 3(global):内存中进程范围的速率预算,作为最后兜底上限。
+	// Scope 3(global):生产接线跨副本共享的全局速率预算，作为最后兜底上限。
 	_, outcome, err = s.acquirer.AcquireGlobal(ctx, account.TenantID)
 	if err != nil {
 		endpointRefund()

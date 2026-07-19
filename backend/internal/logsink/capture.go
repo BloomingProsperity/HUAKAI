@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"go.uber.org/zap/zapcore"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
@@ -16,21 +19,27 @@ import (
 
 const redactedMarker = "[REDACTED]"
 
-// SlogTap 返回可挂到 logfacade Options.Tap 的回调:warn+ 记录转 Entry 入队。
+// SlogTap 返回可挂到 logfacade Options.Tap 的回调。显式分类 Info 与全部 Warn/Error
+// 转成统一 Entry；是否最终入队由 Sink 的合同校验决定。
 func SlogTap(s *Sink) func(context.Context, slog.Record) {
 	return func(_ context.Context, record slog.Record) {
-		if record.Level < slog.LevelWarn {
+		if record.Level < slog.LevelInfo {
+			return
+		}
+		if record.Level < slog.LevelWarn && !slogRecordHasContract(record) {
 			return
 		}
 		e := Entry{
 			Time:      record.Time,
-			Level:     "warn",
+			Level:     "info",
 			Component: "slog",
-			Message:   record.Message,
+			Message:   scrubText(record.Message),
 			Attrs:     make(map[string]any, record.NumAttrs()),
 		}
 		if record.Level >= slog.LevelError {
 			e.Level = "error"
+		} else if record.Level >= slog.LevelWarn {
+			e.Level = "warn"
 		}
 		record.Attrs(func(attr slog.Attr) bool {
 			captureAttr(&e, attr.Key, attr.Value.Resolve())
@@ -40,25 +49,32 @@ func SlogTap(s *Sink) func(context.Context, slog.Record) {
 	}
 }
 
+func slogRecordHasContract(record slog.Record) bool {
+	hasCategory := false
+	hasEventType := false
+	record.Attrs(func(attr slog.Attr) bool {
+		switch attr.Key {
+		case logcontract.FieldCategory:
+			hasCategory = true
+		case logcontract.FieldEventType:
+			hasEventType = true
+		}
+		return !(hasCategory && hasEventType)
+	})
+	return hasCategory && hasEventType
+}
+
 func captureAttr(e *Entry, key string, value slog.Value) {
-	switch key {
-	case "component":
-		e.Component = value.String()
-		return
-	case "request_id", "logical_request_id":
-		e.RequestID = value.String()
-		return
-	}
 	if value.Kind() == slog.KindGroup {
 		members := value.Group()
 		group := make(map[string]any, len(members))
 		for _, m := range members {
-			group[m.Key] = attrAny(m.Value.Resolve())
+			group[m.Key] = scrubValue(attrAny(m.Value.Resolve()))
 		}
 		e.Attrs[key] = group
 		return
 	}
-	e.Attrs[key] = attrAny(value)
+	captureAny(e, key, attrAny(value))
 }
 
 // attrAny 把 slog 值转成 JSON 可编码形态;不可编码值降级为 String() 文本。
@@ -70,7 +86,7 @@ func attrAny(value slog.Value) any {
 	return v
 }
 
-// NewZapCore 包装 zap Core:主输出照旧,warn+ 记录旁路转 Entry 入队。
+// NewZapCore 包装 zap Core：主输出照旧，显式分类 Info 与全部 Warn/Error 旁路入队。
 // 用法:logger.WithOptions(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
 // return logsink.NewZapCore(c, sink) }))。
 func NewZapCore(inner zapcore.Core, s *Sink) zapcore.Core {
@@ -98,10 +114,30 @@ func (c *sinkCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.C
 }
 
 func (c *sinkCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
-	if ent.Level >= zapcore.WarnLevel {
+	if ent.Level >= zapcore.WarnLevel ||
+		(ent.Level >= zapcore.InfoLevel && zapFieldsHaveContract(c.fields, fields)) {
 		c.capture(ent, fields)
 	}
 	return c.Core.Write(ent, fields)
+}
+
+func zapFieldsHaveContract(base, fields []zapcore.Field) bool {
+	hasCategory := false
+	hasEventType := false
+	for _, collection := range [][]zapcore.Field{base, fields} {
+		for _, field := range collection {
+			switch field.Key {
+			case logcontract.FieldCategory:
+				hasCategory = true
+			case logcontract.FieldEventType:
+				hasEventType = true
+			}
+			if hasCategory && hasEventType {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // capture 把 zap 记录转 Entry。panic 隔离:旁路任何异常不影响主输出。
@@ -116,7 +152,7 @@ func (c *sinkCore) capture(ent zapcore.Entry, fields []zapcore.Field) {
 	}
 	e := Entry{
 		Time:      ent.Time,
-		Level:     "warn",
+		Level:     "info",
 		Component: ent.LoggerName,
 		Message:   scrubText(ent.Message),
 		Attrs:     make(map[string]any, len(enc.Fields)),
@@ -126,18 +162,99 @@ func (c *sinkCore) capture(ent zapcore.Entry, fields []zapcore.Field) {
 	}
 	if ent.Level >= zapcore.ErrorLevel {
 		e.Level = "error"
+	} else if ent.Level >= zapcore.WarnLevel {
+		e.Level = "warn"
 	}
 	for k, v := range enc.Fields {
-		switch k {
-		case "request_id", "logical_request_id":
-			// request_id 同样过禁写扫描:客户端可控的 X-Request-ID 可能携带凭据特征,
-			// 提升为可查询列前必须与其他字段同等消毒。
-			e.RequestID = scrubText(fmt.Sprint(v))
-		default:
-			e.Attrs[k] = scrubValue(v)
-		}
+		captureAny(&e, k, v)
 	}
 	c.sink.Enqueue(e)
+}
+
+func captureAny(e *Entry, key string, value any) {
+	text := func() string { return scrubText(strings.TrimSpace(fmt.Sprint(value))) }
+	switch key {
+	case "component":
+		e.Component = text()
+	case "request_id", "logical_request_id":
+		e.RequestID = text()
+	case logcontract.FieldCategory:
+		e.Category = text()
+	case logcontract.FieldEventType:
+		e.EventType = text()
+	case logcontract.FieldResult:
+		e.Result = text()
+	case logcontract.FieldErrorClass:
+		e.ErrorClass = text()
+	case logcontract.FieldErrorCode:
+		e.ErrorCode = text()
+	case logcontract.FieldRetryable:
+		e.Retryable = boolValue(value)
+	case logcontract.FieldActorKind:
+		e.ActorKind = text()
+	case logcontract.FieldActorRef:
+		e.ActorRef = text()
+	case logcontract.FieldTenantID:
+		if tenantID, ok := int64Value(value); ok && tenantID > 0 {
+			e.TenantID = &tenantID
+		}
+	case logcontract.FieldTargetType:
+		e.TargetType = text()
+	case logcontract.FieldTargetRef:
+		e.TargetRef = text()
+	case logcontract.FieldTraceID:
+		e.TraceID = text()
+	case logcontract.FieldUpstreamRequestID:
+		e.UpstreamRequestID = text()
+	case logcontract.FieldIdempotencyKey:
+		e.IdempotencyKey = text()
+	case logcontract.FieldRecoveryState:
+		e.RecoveryState = text()
+	default:
+		e.Attrs[key] = scrubValue(value)
+	}
+}
+
+func boolValue(value any) bool {
+	if v, ok := value.(bool); ok {
+		return v
+	}
+	v, _ := strconv.ParseBool(strings.TrimSpace(fmt.Sprint(value)))
+	return v
+}
+
+func int64Value(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		return int64(v), uint64(v) <= uint64(^uint64(0)>>1)
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(v), true
+	case json.Number:
+		parsed, err := v.Int64()
+		return parsed, err == nil
+	default:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 64)
+		return parsed, err == nil
+	}
 }
 
 // scrubValue 对字段值做 privacy 禁写扫描(zap 侧没有 logfacade 那层脱敏)。

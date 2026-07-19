@@ -166,7 +166,10 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	}
 	client := d.HTTPClient
 	if client == nil {
-		rt = d.applyTLSProfile(ctx, rt, mode, account.AccountID)
+		rt, err = d.applyTLSProfile(ctx, rt, mode, account.AccountID)
+		if err != nil {
+			return nil, err
+		}
 		rt, err = d.applyProxy(ctx, rt, account.AccountID)
 		if err != nil {
 			return nil, err

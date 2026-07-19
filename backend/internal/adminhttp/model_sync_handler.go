@@ -33,22 +33,28 @@ type modelSyncRequestBody struct {
 }
 
 type modelSyncResponseBody struct {
-	Object        string                    `json:"object"`
-	CompletedAt   string                    `json:"completed_at"`
-	TotalAdded    int                       `json:"total_added"`
-	TotalUpdated  int                       `json:"total_updated"`
-	TotalDisabled int                       `json:"total_disabled"`
-	Results       []modelSyncResultItemBody `json:"results"`
+	Object                string                    `json:"object"`
+	CompletedAt           string                    `json:"completed_at"`
+	TotalAdded            int                       `json:"total_added"`
+	TotalUpdated          int                       `json:"total_updated"`
+	TotalDisabled         int                       `json:"total_disabled"`
+	TotalDiscovered       int                       `json:"total_discovered"`
+	TotalDiscoveryUpdated int                       `json:"total_discovery_updated"`
+	TotalDiscoveryAbsent  int                       `json:"total_discovery_absent"`
+	Results               []modelSyncResultItemBody `json:"results"`
 }
 
 type modelSyncResultItemBody struct {
-	Vendor        string `json:"vendor"`
-	Added         int    `json:"added"`
-	Updated       int    `json:"updated"`
-	Reactivated   int    `json:"reactivated"`
-	Disabled      int    `json:"disabled"`
-	Unchanged     int    `json:"unchanged"`
-	SnapshotBumps int    `json:"snapshot_bumps"`
+	Vendor           string `json:"vendor"`
+	Added            int    `json:"added"`
+	Updated          int    `json:"updated"`
+	Reactivated      int    `json:"reactivated"`
+	Disabled         int    `json:"disabled"`
+	Discovered       int    `json:"discovered"`
+	DiscoveryUpdated int    `json:"discovery_updated"`
+	DiscoveryAbsent  int    `json:"discovery_absent"`
+	Unchanged        int    `json:"unchanged"`
+	SnapshotBumps    int    `json:"snapshot_bumps"`
 }
 
 func MountModelSyncRoutes(r chi.Router, d AdminModelSyncDeps) {
@@ -108,13 +114,16 @@ func modelSyncResponse(result modelsync.SyncResult) modelSyncResponseBody {
 	items := make([]modelSyncResultItemBody, 0, len(result.Results))
 	for _, item := range result.Results {
 		items = append(items, modelSyncResultItemBody{
-			Vendor:        string(item.Vendor),
-			Added:         item.Added,
-			Updated:       item.Updated,
-			Reactivated:   item.Reactivated,
-			Disabled:      item.Disabled,
-			Unchanged:     item.Unchanged,
-			SnapshotBumps: item.SnapshotBumps,
+			Vendor:           string(item.Vendor),
+			Added:            item.Added,
+			Updated:          item.Updated,
+			Reactivated:      item.Reactivated,
+			Disabled:         item.Disabled,
+			Discovered:       item.Discovered,
+			DiscoveryUpdated: item.DiscoveryUpdated,
+			DiscoveryAbsent:  item.DiscoveryAbsent,
+			Unchanged:        item.Unchanged,
+			SnapshotBumps:    item.SnapshotBumps,
 		})
 	}
 	completedAt := result.CompletedAt
@@ -122,11 +131,14 @@ func modelSyncResponse(result modelsync.SyncResult) modelSyncResponseBody {
 		completedAt = time.Now().UTC()
 	}
 	return modelSyncResponseBody{
-		Object:        "admin_model_sync_result",
-		CompletedAt:   completedAt.UTC().Format(time.RFC3339),
-		TotalAdded:    result.TotalAdded,
-		TotalUpdated:  result.TotalUpdated,
-		TotalDisabled: result.TotalDisabled,
-		Results:       items,
+		Object:                "admin_model_sync_result",
+		CompletedAt:           completedAt.UTC().Format(time.RFC3339),
+		TotalAdded:            result.TotalAdded,
+		TotalUpdated:          result.TotalUpdated,
+		TotalDisabled:         result.TotalDisabled,
+		TotalDiscovered:       result.TotalDiscovered,
+		TotalDiscoveryUpdated: result.TotalDiscoveryUpdated,
+		TotalDiscoveryAbsent:  result.TotalDiscoveryAbsent,
+		Results:               items,
 	}
 }

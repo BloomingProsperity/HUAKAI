@@ -27,7 +27,7 @@ Pick one technology stack for Phase 2-9 Personal Edition implementation, with th
 
 ## Staleness Refresh
 
-- **2026-04-28** — Context numbers refreshed from 35 features / 4 references / 10 L1 tests to 56 features / 8 references / 13 L1 tests. Relay-station product identity acknowledged; no change to recommendation. Per [docs/21 Staleness Protocol](../../21_DECISION_PROCESS.md).
+- **2026-04-28** — Context numbers refreshed from 35 features / 4 references / 10 L1 tests to 56 features / 8 references / 13 L1 tests. Relay-station product identity acknowledged; no change to recommendation. 旧 staleness 文档已删除；现行证据新鲜度规则见 [`docs/RULES.md`](../../RULES.md) 与 [持续跟踪合同](../../24_REFERENCE_TRACKING_POLICY.md)。
 
 ## Candidate Stacks
 

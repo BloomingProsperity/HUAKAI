@@ -24,6 +24,15 @@ type Service struct {
 	pool        *pgxpool.Pool
 	credentials *credentialstore.Store
 	health      ChannelHealthInitializer
+	agentTasks  AgentTaskRegistrar
+	proxies     ProxyResolver
+}
+
+func (s *Service) WithProxyResolver(resolver ProxyResolver) *Service {
+	if s != nil {
+		s.proxies = resolver
+	}
+	return s
 }
 
 type preparedPlan struct {
@@ -35,6 +44,14 @@ type preparedPlan struct {
 
 func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store, health ChannelHealthInitializer) *Service {
 	return &Service{pool: pool, credentials: credentials, health: health}
+}
+
+// WithAgentTaskRegistrar 接入 Agent Identity 执行期任务登记；预检阶段保持纯本地。
+func (s *Service) WithAgentTaskRegistrar(registrar AgentTaskRegistrar) *Service {
+	if s != nil {
+		s.agentTasks = registrar
+	}
+	return s
 }
 
 func (s *Service) Plan(ctx context.Context, in PlanInput) (PlanResult, error) {
@@ -99,6 +116,7 @@ func normalizeInput(in PlanInput) PlanInput {
 	in.DefaultVendor = credentialstore.Normalize(in.DefaultVendor)
 	in.DefaultAuthMode = credentialstore.Normalize(in.DefaultAuthMode)
 	in.Account.NamePrefix = strings.TrimSpace(in.Account.NamePrefix)
+	in.Account.ExactName = strings.TrimSpace(in.Account.ExactName)
 	in.Account.AccountType = strings.TrimSpace(in.Account.AccountType)
 	in.Account.ProbeModel = cleanOptionalString(in.Account.ProbeModel)
 	in.Account.Tags = cleanList(in.Account.Tags)
@@ -107,6 +125,13 @@ func normalizeInput(in PlanInput) PlanInput {
 	if len(in.Account.Extra) > 0 {
 		in.Account.Extra = append(json.RawMessage(nil), in.Account.Extra...)
 	}
+	if len(in.Account.TempUnschedulableRules) > 0 {
+		in.Account.TempUnschedulableRules = append(json.RawMessage(nil), in.Account.TempUnschedulableRules...)
+	}
+	if in.Account.Proxy != nil {
+		copy := *in.Account.Proxy
+		in.Account.Proxy = &copy
+	}
 	return in
 }
 
@@ -114,11 +139,11 @@ func validateInput(in PlanInput) error {
 	if in.TenantID <= 0 {
 		return fmt.Errorf("%w: tenant_id must be positive", ErrInvalidInput)
 	}
-	if in.Account.ProviderID <= 0 || in.Account.ChannelID <= 0 || in.Account.NamePrefix == "" {
-		return fmt.Errorf("%w: provider_id, channel_id, and name_prefix are required", ErrInvalidInput)
+	if in.Account.ProviderID <= 0 || in.Account.ChannelID <= 0 || (in.Account.NamePrefix == "" && in.Account.ExactName == "") {
+		return fmt.Errorf("%w: provider_id, channel_id, and account name are required", ErrInvalidInput)
 	}
-	if len(in.Account.NamePrefix) > 200 {
-		return fmt.Errorf("%w: name_prefix exceeds 200 bytes", ErrInvalidInput)
+	if len(in.Account.NamePrefix) > 200 || len(in.Account.ExactName) > 200 {
+		return fmt.Errorf("%w: account name exceeds 200 bytes", ErrInvalidInput)
 	}
 	switch in.Account.AccountType {
 	case "oauth", "api_key", "service_account", "upstream_static", "session", "aws_sigv4":
@@ -128,8 +153,32 @@ func validateInput(in PlanInput) error {
 	if in.Account.CapConcurrency != nil && *in.Account.CapConcurrency <= 0 {
 		return fmt.Errorf("%w: cap_concurrency must be positive", ErrInvalidInput)
 	}
+	if in.Account.CapQueueSticky != nil && *in.Account.CapQueueSticky < 0 {
+		return fmt.Errorf("%w: cap_queue_sticky must not be negative", ErrInvalidInput)
+	}
+	if in.Account.CapQueueFallback != nil && *in.Account.CapQueueFallback < 0 {
+		return fmt.Errorf("%w: cap_queue_fallback must not be negative", ErrInvalidInput)
+	}
 	if in.Account.StaticWeight != nil && *in.Account.StaticWeight <= 0 {
 		return fmt.Errorf("%w: static_weight must be positive", ErrInvalidInput)
+	}
+	if in.Account.UpstreamCostRatio != nil && *in.Account.UpstreamCostRatio <= 0 {
+		return fmt.Errorf("%w: upstream_cost_ratio must be positive", ErrInvalidInput)
+	}
+	for name, value := range map[string]*int64{
+		"rpm_limit":               in.Account.RPMLimit,
+		"tpm_limit":               in.Account.TPMLimit,
+		"window_cost_limit_cents": in.Account.WindowCostLimitCents,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%w: %s must not be negative", ErrInvalidInput, name)
+		}
+	}
+	if in.Account.MaxSessions != nil && *in.Account.MaxSessions < 0 {
+		return fmt.Errorf("%w: max_sessions must not be negative", ErrInvalidInput)
+	}
+	if in.Account.RefreshLeadSeconds != nil && *in.Account.RefreshLeadSeconds <= 0 {
+		return fmt.Errorf("%w: refresh_lead_seconds must be positive", ErrInvalidInput)
 	}
 	if len(in.Account.Extra) > 0 {
 		if len(in.Account.Extra) > 64<<10 {
@@ -139,6 +188,28 @@ func validateInput(in PlanInput) error {
 		if json.Unmarshal(in.Account.Extra, &object) != nil || object == nil {
 			return fmt.Errorf("%w: extra must be a JSON object", ErrInvalidInput)
 		}
+	}
+	if len(in.Account.TempUnschedulableRules) > 0 {
+		if len(in.Account.TempUnschedulableRules) > 64<<10 {
+			return fmt.Errorf("%w: temp_unschedulable_rules exceeds 64 KiB", ErrInvalidInput)
+		}
+		var rules []json.RawMessage
+		if json.Unmarshal(in.Account.TempUnschedulableRules, &rules) != nil {
+			return fmt.Errorf("%w: temp_unschedulable_rules must be a JSON array", ErrInvalidInput)
+		}
+	}
+	if len(in.Account.CustomErrorCodes) > 100 {
+		return fmt.Errorf("%w: custom_error_codes exceeds 100 items", ErrInvalidInput)
+	}
+	seenErrorCodes := make(map[int32]struct{}, len(in.Account.CustomErrorCodes))
+	for _, code := range in.Account.CustomErrorCodes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("%w: custom_error_codes must contain HTTP status codes", ErrInvalidInput)
+		}
+		if _, exists := seenErrorCodes[code]; exists {
+			return fmt.Errorf("%w: custom_error_codes contains duplicates", ErrInvalidInput)
+		}
+		seenErrorCodes[code] = struct{}{}
 	}
 	if strings.TrimSpace(in.Content) == "" {
 		return fmt.Errorf("%w: content is required", ErrInvalidInput)
@@ -227,6 +298,10 @@ func recountPlan(plan *intake.Plan) {
 
 func planHash(in PlanInput, plan intake.Plan) (string, error) {
 	contentSum := sha256.Sum256([]byte(in.Content))
+	proxyHash, err := proxyPlanHash(in.Account.Proxy)
+	if err != nil {
+		return "", err
+	}
 	payload := struct {
 		ContractVersion string            `json:"contract_version"`
 		TenantID        int64             `json:"tenant_id"`
@@ -234,18 +309,48 @@ func planHash(in PlanInput, plan intake.Plan) (string, error) {
 		DefaultVendor   string            `json:"default_vendor"`
 		DefaultAuthMode string            `json:"default_auth_mode"`
 		ContentSHA256   string            `json:"content_sha256"`
+		ProxySHA256     string            `json:"proxy_sha256,omitempty"`
 		Account         AccountDefaults   `json:"account"`
 		Plan            intake.Plan       `json:"plan"`
 	}{
 		ContractVersion: intake.ContractVersion,
 		TenantID:        in.TenantID, SourceKind: in.SourceKind,
 		DefaultVendor: in.DefaultVendor, DefaultAuthMode: in.DefaultAuthMode,
-		ContentSHA256: hex.EncodeToString(contentSum[:]), Account: in.Account, Plan: plan,
+		ContentSHA256: hex.EncodeToString(contentSum[:]), ProxySHA256: proxyHash,
+		Account: in.Account, Plan: plan,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func proxyPlanHash(proxy *ProxyMaterial) (string, error) {
+	if proxy == nil {
+		return "", nil
+	}
+	secretSum := sha256.Sum256([]byte(proxy.AuthSecret))
+	value := struct {
+		Name             string `json:"name"`
+		Protocol         string `json:"protocol"`
+		Host             string `json:"host"`
+		Port             int32  `json:"port"`
+		AuthUsername     string `json:"auth_username"`
+		AuthSecretSHA256 string `json:"auth_secret_sha256"`
+		SourceRef        string `json:"source_ref"`
+	}{
+		Name: strings.TrimSpace(proxy.Name), Protocol: strings.ToLower(strings.TrimSpace(proxy.Protocol)),
+		Host: strings.ToLower(strings.TrimSpace(proxy.Host)), Port: proxy.Port,
+		AuthUsername: strings.TrimSpace(proxy.AuthUsername), AuthSecretSHA256: hex.EncodeToString(secretSum[:]),
+		SourceRef: strings.ToLower(strings.TrimSpace(proxy.SourceRef)),
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	defer privacy.Zeroize(raw)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }

@@ -194,6 +194,16 @@ func buildResponse(
 			"platform_admin_or_tenant_operator", []string{},
 		))
 	}
+	// recover_account:完整恢复账号(health_state 复位 + 清限流 + 渠道满血)。终态 revoked 是唯一
+	// 恢复路径(clear-rate-limit 不碰 health_state,revoked 否则永久不可选),故 revoked 时强烈推荐。
+	if applicable, recommended, reason := accountRecoverableState(account); applicable {
+		resp.Actions = append(resp.Actions, newAction(
+			"recover_account", "account", account.ID, accountAuthorized, recommended,
+			reason, "high", http.MethodPost,
+			accountPath+"/recover?tenant_id="+strconv.FormatInt(account.TenantID, 10),
+			"platform_admin_or_tenant_operator", []string{},
+		))
+	}
 
 	for _, credential := range credentials {
 		resp.Credentials = append(resp.Credentials, credentialSnapshot(credential))
@@ -316,6 +326,19 @@ func accountBackoffState(account admindb.AdminProviderAccountRow, now time.Time)
 		return true, true, "account_backoff_active"
 	}
 	return true, false, "account_backoff_markers_stale"
+}
+
+// accountRecoverableState 判断账号 health_state 是否需要完整恢复。revoked 是终态、其余恢复口都
+// 不碰它 → 强烈推荐(recommended=true);throttled/cooldown 会随冷却自愈,故提供但不推荐。
+func accountRecoverableState(account admindb.AdminProviderAccountRow) (bool, bool, string) {
+	switch account.HealthState {
+	case "revoked":
+		return true, true, "account_health_revoked"
+	case "throttled", "cooldown":
+		return true, false, "account_health_" + account.HealthState
+	default:
+		return false, false, ""
+	}
 }
 
 func credentialRotationState(credential credentialstore.CredentialMetadata, now time.Time) (bool, string) {

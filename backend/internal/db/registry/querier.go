@@ -9,12 +9,12 @@ import (
 )
 
 type Querier interface {
-	CreateAdminModel(ctx context.Context, arg CreateAdminModelParams) (AdminModel, error)
+	CreateAdminModel(ctx context.Context, arg CreateAdminModelParams) (CreateAdminModelRow, error)
 	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
 	// F-PROTO-002 protocol policy version registry queries.
 	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
 	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
-	GetAdminModel(ctx context.Context, arg GetAdminModelParams) (AdminModel, error)
+	GetAdminModel(ctx context.Context, arg GetAdminModelParams) (GetAdminModelRow, error)
 	// Resolves the canonical model row, constrained to the requesting tenant
 	// (scope='tenant' AND tenant_id=$tenant) OR scope='global'. This blocks
 	// a misconfigured tenant alias from reaching another tenant's model row
@@ -28,7 +28,8 @@ type Querier interface {
 	// tenant has no admin writes yet; resolver treats as version 1.
 	GetTenantSnapshotVersion(ctx context.Context, tenantID int64) (int64, error)
 	InsertProtocolPolicyVersion(ctx context.Context, arg InsertProtocolPolicyVersionParams) (InsertProtocolPolicyVersionRow, error)
-	ListAdminModels(ctx context.Context, arg ListAdminModelsParams) ([]AdminModel, error)
+	// 模型主体运维查询。所有读写都显式携带 scope 与 tenant_id，避免只靠 HTTP 门做归属判断。
+	ListAdminModels(ctx context.Context, arg ListAdminModelsParams) ([]ListAdminModelsRow, error)
 	// F-PROTO-002 protocol capability matrix queries.
 	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
@@ -44,7 +45,7 @@ type Querier interface {
 	// The resolver emits all candidates; Router selects index 0 only at L0
 	// (AttemptBudget=1).
 	ListModelPoolBindings(ctx context.Context, arg ListModelPoolBindingsParams) ([]ListModelPoolBindingsRow, error)
-	LockAdminModelForUpdate(ctx context.Context, arg LockAdminModelForUpdateParams) (AdminModel, error)
+	LockAdminModelForUpdate(ctx context.Context, arg LockAdminModelForUpdateParams) (LockAdminModelForUpdateRow, error)
 	// Step 2 of resolve. Only called when tenant lookup misses AND the tenant
 	// policy permits global inheritance.
 	LookupGlobalAlias(ctx context.Context, aliasLower string) (LookupGlobalAliasRow, error)
@@ -58,8 +59,8 @@ type Querier interface {
 	// status: tenant disabled is an EXPLICIT DENY that blocks global fallback
 	// per D3 invariant (integration test #5).
 	LookupTenantAlias(ctx context.Context, arg LookupTenantAliasParams) (LookupTenantAliasRow, error)
-	SoftDeleteAdminModel(ctx context.Context, arg SoftDeleteAdminModelParams) (AdminModel, error)
-	UpdateAdminModel(ctx context.Context, arg UpdateAdminModelParams) (AdminModel, error)
+	SoftDeleteAdminModel(ctx context.Context, arg SoftDeleteAdminModelParams) (SoftDeleteAdminModelRow, error)
+	UpdateAdminModel(ctx context.Context, arg UpdateAdminModelParams) (UpdateAdminModelRow, error)
 	UpsertCapabilityCell(ctx context.Context, arg UpsertCapabilityCellParams) error
 }
 

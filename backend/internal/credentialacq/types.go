@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 type FlowKind string
@@ -89,19 +90,44 @@ const (
 )
 
 var (
-	ErrFlowNotFound          = errors.New("credentialacq: flow not found")
-	ErrFlowExpired           = errors.New("credentialacq: flow expired")
-	ErrFlowReplay            = errors.New("credentialacq: flow replay")
-	ErrStateMismatch         = errors.New("credentialacq: oauth state mismatch")
-	ErrUnknownMode           = errors.New("credentialacq: unknown mode")
-	ErrInvalidImportBody     = errors.New("credentialacq: invalid import body")
-	ErrFeatureDisabled       = errors.New("credentialacq: feature disabled")
-	ErrSecretInContext       = errors.New("credentialacq: redacted context contains secret-shaped material")
-	ErrInvalidTokenShape     = errors.New("credentialacq: invalid token shape")
-	ErrResponseTooLarge      = errors.New("credentialacq: response too large")
-	ErrOAuthExchangerMissing = errors.New("credentialacq: oauth exchanger missing")
-	ErrOAuthRequiresCallback = errors.New("credentialacq: oauth flow requires callback validation before finalize")
+	ErrFlowNotFound            = errors.New("credentialacq: flow not found")
+	ErrFlowExpired             = errors.New("credentialacq: flow expired")
+	ErrFlowReplay              = errors.New("credentialacq: flow replay")
+	ErrStateMismatch           = errors.New("credentialacq: oauth state mismatch")
+	ErrUnknownMode             = errors.New("credentialacq: unknown mode")
+	ErrInvalidImportBody       = errors.New("credentialacq: invalid import body")
+	ErrFeatureDisabled         = errors.New("credentialacq: feature disabled")
+	ErrSecretInContext         = errors.New("credentialacq: redacted context contains secret-shaped material")
+	ErrInvalidTokenShape       = errors.New("credentialacq: invalid token shape")
+	ErrResponseTooLarge        = errors.New("credentialacq: response too large")
+	ErrOAuthExchangerMissing   = errors.New("credentialacq: oauth exchanger missing")
+	ErrOAuthRequiresCallback   = errors.New("credentialacq: oauth flow requires callback validation before finalize")
+	ErrDevicePollPending       = errors.New("credentialacq: device authorization pending")
+	ErrDevicePollInProgress    = errors.New("credentialacq: device poll in progress")
+	ErrDevicePollTransient     = errors.New("credentialacq: device poll transient failure")
+	ErrDeviceAccessDenied      = errors.New("credentialacq: device authorization denied")
+	ErrDeviceExchangeAmbiguous = errors.New("credentialacq: device token exchange outcome ambiguous")
 )
+
+type DevicePollPendingError struct {
+	RetryAfter time.Duration
+}
+
+func (e *DevicePollPendingError) Error() string {
+	return ErrDevicePollPending.Error()
+}
+
+func (e *DevicePollPendingError) Unwrap() error {
+	return ErrDevicePollPending
+}
+
+func DevicePollRetryAfter(err error) time.Duration {
+	var pending *DevicePollPendingError
+	if errors.As(err, &pending) && pending.RetryAfter > 0 {
+		return pending.RetryAfter
+	}
+	return 5 * time.Second
+}
 
 type ModePlan struct {
 	Vendor               string      `json:"vendor"`
@@ -173,6 +199,7 @@ type CredentialCandidate struct {
 	ExternalSubjectID    string
 	ExternalAccountEmail string
 	AccountIDSource      string
+	Subscription         subscriptionprofile.Observation
 }
 
 type Session struct {

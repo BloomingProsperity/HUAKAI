@@ -92,6 +92,11 @@ func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context
 	if s == nil || s.pool == nil || s.refund == nil {
 		return RefundRequest{}, ErrRefundRequestUnavailable
 	}
+	refundInTx, ok := s.refund.(refundRequestMoneyServiceInTx)
+	if !ok {
+		return RefundRequest{}, ErrRefundRequestUnavailable
+	}
+	actorRef = strings.TrimSpace(actorRef)
 	// session-admin 的 TokenID=0:有 actorRef 即有已认证 admin 身份,不再用 int>0 硬拒(role 制单登录)。
 	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
@@ -112,21 +117,40 @@ func (s *PostgresRefundRequestRecorder) ApproveRefundRequest(ctx context.Context
 		}
 		return req, nil
 	}
-	order, err := s.refund.GetOrder(ctx, tenantID, req.OrderID)
+	amountCents, err := refundRequestOrderAmountTx(ctx, tx, req)
 	if err != nil {
 		return RefundRequest{}, err
 	}
-	if _, err := s.refund.RefundOrder(ctx, payment.RefundOrderInput{
+	requestedAmountCents := amountCents
+	requireExact := true
+	moneyActorKind := payment.ActorKindAdmin
+	moneyActorID := adminActorID
+	moneyActorRef := actorRef
+	if replay, found, err := refundRequestReplayTx(ctx, tx, req); err != nil {
+		return RefundRequest{}, err
+	} else if found {
+		requestedAmountCents = replay.RequestedAmountCents
+		requireExact = replay.RequireExact
+		moneyActorKind = replay.Actor.Kind
+		moneyActorID = replay.Actor.ID
+		moneyActorRef = replay.Actor.Ref
+	}
+	result, err := refundInTx.RefundOrderInTx(ctx, tx, payment.RefundOrderInput{
 		TenantID:       tenantID,
 		OrderID:        req.OrderID,
-		AmountCents:    order.AmountCents,
+		AmountCents:    requestedAmountCents,
+		RequireExact:   requireExact,
 		IdempotencyKey: refundRequestIdempotencyKey(req.ID),
 		Reason:         req.Reason,
-		ActorKind:      payment.ActorKindAdmin,
-		ActorID:        adminActorID,
-		ActorRef:       actorRef,
-	}); err != nil {
+		ActorKind:      moneyActorKind,
+		ActorID:        moneyActorID,
+		ActorRef:       moneyActorRef,
+	})
+	if err != nil {
 		return RefundRequest{}, err
+	}
+	if result.Order.Status != payment.StatusRefunded || result.RemainingRefundableCents != 0 {
+		return RefundRequest{}, payment.ErrRefundFactInvalid
 	}
 	decidedAt := s.now()
 	req, err = updateRefundRequestDecisionTx(ctx, tx, tenantID, requestID, RefundRequestApproved, req.Reason, decidedAt, adminActorID, actorRef)
@@ -143,6 +167,7 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 	if s == nil || s.pool == nil {
 		return RefundRequest{}, ErrRefundRequestUnavailable
 	}
+	actorRef = strings.TrimSpace(actorRef)
 	// session-admin 的 TokenID=0:有 actorRef 即有已认证 admin 身份,不再用 int>0 硬拒(role 制单登录)。
 	if tenantID <= 0 || requestID <= 0 || (adminActorID <= 0 && actorRef == "") {
 		return RefundRequest{}, ErrRefundRequestInvalidInput
@@ -163,9 +188,8 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 		}
 		return req, nil
 	}
-	// 关闭可见的拆分事务审批窗口:如果钱已经动了,一个仍处于 pending 的
-	// 申请绝不能被重新标记为 rejected。完整的审批原子性需要将来对
-	// RefundOrder 做外部事务重构。
+	// 兼容历史拆分事务遗留：如果资金事实已存在，pending 申请不能被改标为 rejected。
+	// 管理员应通过批准路径做完整幂等复核并收敛状态。
 	alreadyRefunded, err := refundRequestHasRefundFactTx(ctx, tx, req)
 	if err != nil {
 		return RefundRequest{}, err
@@ -186,6 +210,64 @@ func (s *PostgresRefundRequestRecorder) RejectRefundRequest(ctx context.Context,
 	return req, nil
 }
 
+type refundRequestMoneyActor struct {
+	Kind string
+	ID   int64
+	Ref  string
+}
+
+type refundRequestMoneyReplay struct {
+	Actor                refundRequestMoneyActor
+	RequestedAmountCents int64
+	RequireExact         bool
+}
+
+func refundRequestOrderAmountTx(ctx context.Context, tx pgx.Tx, req RefundRequest) (int64, error) {
+	var amountCents int64
+	err := tx.QueryRow(ctx, `
+SELECT amount_cents
+FROM payment_orders
+WHERE tenant_id=$1
+  AND id=$2
+  AND user_id=$3
+  AND order_kind='topup'`, req.TenantID, req.OrderID, req.UserID).Scan(&amountCents)
+	if err == pgx.ErrNoRows {
+		return 0, payment.ErrOrderNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("paymenthttp: read refund request order amount: %w", err)
+	}
+	return amountCents, nil
+}
+
+// refundRequestReplayTx 只在恢复“资金已提交、申请仍 pending”的历史窗口时使用。
+// 它保留原请求语义和原资金操作者，当前接管管理员只记录为申请决策者。
+func refundRequestReplayTx(ctx context.Context, tx pgx.Tx, req RefundRequest) (refundRequestMoneyReplay, bool, error) {
+	var replay refundRequestMoneyReplay
+	err := tx.QueryRow(ctx, `
+SELECT requested_amount_cents, require_exact,
+       actor_kind, COALESCE(actor_id, 0), COALESCE(actor_ref, '')
+FROM payment_refunds
+WHERE tenant_id=$1 AND idempotency_key=$2`, req.TenantID, refundRequestIdempotencyKey(req.ID)).Scan(
+		&replay.RequestedAmountCents, &replay.RequireExact,
+		&replay.Actor.Kind, &replay.Actor.ID, &replay.Actor.Ref,
+	)
+	if err == pgx.ErrNoRows {
+		return refundRequestMoneyReplay{}, false, nil
+	}
+	if err != nil {
+		return refundRequestMoneyReplay{}, false, fmt.Errorf("paymenthttp: read refund request replay fact: %w", err)
+	}
+	replay.Actor.Kind = strings.TrimSpace(replay.Actor.Kind)
+	replay.Actor.Ref = strings.TrimSpace(replay.Actor.Ref)
+	if replay.RequestedAmountCents <= 0 ||
+		replay.Actor.Kind != payment.ActorKindAdmin ||
+		(replay.Actor.ID <= 0 && replay.Actor.Ref == "") {
+		return refundRequestMoneyReplay{}, false, payment.ErrRefundFactInvalid
+	}
+	return replay, true, nil
+}
+
 func refundRequestHasRefundFactTx(ctx context.Context, tx pgx.Tx, req RefundRequest) (bool, error) {
 	key := refundRequestIdempotencyKey(req.ID)
 	var exists bool
@@ -194,7 +276,7 @@ SELECT EXISTS (
 	SELECT 1
 	FROM payment_refunds
 	WHERE tenant_id=$1
-	  AND (idempotency_key=$2 OR order_id=$3)
+	  AND idempotency_key=$2
 ) OR EXISTS (
 	SELECT 1
 	FROM payment_orders

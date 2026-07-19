@@ -34,12 +34,7 @@ type chatgptOAuthExchanger struct {
 	httpsAdminCallbackAllowlist []string
 }
 
-type chatgptOAuthTokenResponse struct {
-	oauthTokenResponse
-	ChatGPTUserID    string `json:"chatgpt_user_id"`
-	ChatGPTPlanType  string `json:"chatgpt_plan_type"`
-	ChatGPTAccountID string `json:"chatgpt_account_id"`
-}
+type chatgptOAuthTokenResponse = oauthTokenResponse
 
 func newChatGPTOAuthExchanger() chatgptOAuthExchanger {
 	return chatgptOAuthExchanger{}
@@ -149,6 +144,7 @@ func (e chatgptOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, s
 	// 上游账户身份从 id_token 的 chatgpt 账户声明提取(claim > body > sub),
 	// 仅作账户管理元数据;解析失败回退空/manual,不阻断凭据获取。
 	AttachIdentity(&candidate, accountident.ExtractChatGPT(token.IDToken, token.ChatGPTAccountID, token.ChatGPTUserID))
+	attachOAuthResponseSubscription(&candidate, token.ChatGPTPlanType)
 	return candidate, nil
 }
 
@@ -369,7 +365,7 @@ func parseTokenResponseWithChatGPTMetadata(raw []byte) (chatgptOAuthTokenRespons
 }
 
 func (e chatgptOAuthExchanger) chatgptOAuthTokenPayload(token chatgptOAuthTokenResponse, stored storedPKCEPayload) ([]byte, error) {
-	raw, err := tokenCandidatePayload(token.oauthTokenResponse, stored, e.nowTime())
+	raw, err := tokenCandidatePayload(token, stored, e.nowTime())
 	if err != nil {
 		return nil, err
 	}

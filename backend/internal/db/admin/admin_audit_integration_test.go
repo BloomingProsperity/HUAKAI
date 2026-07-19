@@ -122,6 +122,25 @@ func TestListAdminProviderAccounts_StateFilterMatchesPost0056Enum(t *testing.T) 
 
 	healthyID := insertAdminStateFilterProviderAccount(t, ctx, pool, tenantID, providerID, channelID, suffix, "healthy", true)
 	revokedID := insertAdminStateFilterProviderAccount(t, ctx, pool, tenantID, providerID, channelID, suffix, "revoked", true)
+	window5hEnd := time.Now().UTC().Add(4 * time.Hour).Truncate(time.Microsecond)
+	window7dEnd := time.Now().UTC().Add(6 * 24 * time.Hour).Truncate(time.Microsecond)
+	if _, err := pool.Exec(ctx, `
+UPDATE provider_accounts
+SET session_window_5h_start = $1,
+    session_window_5h_end = $2,
+    session_window_5h_status = 'active',
+    session_window_5h_utilization = 37.50,
+    session_window_7d_start = $3,
+    session_window_7d_end = $4,
+    session_window_7d_status = 'active',
+    session_window_7d_utilization = 62.25
+WHERE tenant_id = $5 AND id = $6`,
+		window5hEnd.Add(-5*time.Hour), window5hEnd,
+		window7dEnd.Add(-7*24*time.Hour), window7dEnd,
+		tenantID, healthyID,
+	); err != nil {
+		t.Fatalf("seed provider account quota windows: %v", err)
+	}
 
 	activeRows, err := q.ListAdminProviderAccounts(ctx, ListAdminProviderAccountsParams{
 		TenantID:    tenantID,
@@ -133,6 +152,16 @@ func TestListAdminProviderAccounts_StateFilterMatchesPost0056Enum(t *testing.T) 
 	}
 	if got := providerAccountIDs(activeRows); len(got) != 1 || got[0] != healthyID {
 		t.Fatalf("active ids=%v want only healthy provider account %d; revoked id %d must not match", got, healthyID, revokedID)
+	}
+	usage5h, err := activeRows[0].SessionWindow5hUtilization.Float64Value()
+	if err != nil || !usage5h.Valid || usage5h.Float64 != 37.5 ||
+		!activeRows[0].SessionWindow5hEnd.Valid || !activeRows[0].SessionWindow5hEnd.Time.Equal(window5hEnd) {
+		t.Fatalf("list 5h quota snapshot=%+v/%+v err=%v", activeRows[0].SessionWindow5hEnd, usage5h, err)
+	}
+	usage7d, err := activeRows[0].SessionWindow7dUtilization.Float64Value()
+	if err != nil || !usage7d.Valid || usage7d.Float64 != 62.25 ||
+		!activeRows[0].SessionWindow7dEnd.Valid || !activeRows[0].SessionWindow7dEnd.Time.Equal(window7dEnd) {
+		t.Fatalf("list 7d quota snapshot=%+v/%+v err=%v", activeRows[0].SessionWindow7dEnd, usage7d, err)
 	}
 
 	errorRows, err := q.ListAdminProviderAccounts(ctx, ListAdminProviderAccountsParams{

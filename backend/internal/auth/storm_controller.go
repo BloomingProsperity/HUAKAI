@@ -20,33 +20,29 @@ var (
 //
 //   - account:           DB 持久化的并发 budget (Postgres), 重启后仍存活,
 //     并在各副本间协调。始终生效。
-//   - provider-endpoint: 内存版 per-(provider, endpoint) token bucket。
-//   - global:            内存版进程级 token bucket。
+//   - provider-endpoint: per-(provider, endpoint) token bucket。
+//   - global:            全局 token bucket。
 //
 // endpoint/global 两个 scope 是可选叠加式限流 (通过
 // StormScopeConfig 配置); 未配置时它们一律 admit, 让始终在线的 account
-// budget 成为唯一 guard —— 行为上与此前 account-only 的切片完全一致。
-// 它们是进程级的; 跨副本的 endpoint/global budget 是后续工作。
+// budget 成为唯一 guard。接入共享存储时两个 scope 跨副本协调；未接入时仅用于
+// 单实例开发模式的进程内保护。
 type StormController struct {
 	queries *dbauth.Queries
 	scope   *stormScopeLimiter // nil = 关闭 endpoint/global scope (admit-all)
+	shared  StormScopeStore
+	cfg     StormScopeConfig
 	now     func() time.Time
 }
 
-// NewStormController 构建一个 account-scope-only 的 controller。endpoint 和 global
-// 两个 scope 一律 admit (叠加式限流关闭)。要启用它们请用
-// NewStormControllerWithScopeBudget。
-func NewStormController(queries *dbauth.Queries) *StormController {
-	return NewStormControllerWithScopeBudget(queries, StormScopeConfig{})
-}
-
-// NewStormControllerWithScopeBudget 构建一个 controller, 其 endpoint/global
-// 两个 scope 强制使用所给的 token budget。零值/部分配置会让这些 scope
-// 处于关闭状态 (admit-all) —— account scope 始终被强制。
-func NewStormControllerWithScopeBudget(queries *dbauth.Queries, cfg StormScopeConfig) *StormController {
+// NewStormControllerWithSharedScopeBudget 在配置端点或全局预算时优先使用共享存储，
+// 让定时刷新与请求热刷新共同消费跨副本预算。shared 为空时保留单实例内存语义。
+func NewStormControllerWithSharedScopeBudget(queries *dbauth.Queries, cfg StormScopeConfig, shared StormScopeStore) *StormController {
 	return &StormController{
 		queries: queries,
 		scope:   newStormScopeLimiter(cfg),
+		shared:  shared,
+		cfg:     cfg,
 		now:     time.Now,
 	}
 }
@@ -129,9 +125,27 @@ func (c *StormController) ReapStaleSlots(ctx context.Context, staleBefore time.T
 // acquire 级联中后续某个 scope 拒绝时, 调用方才调用它 —— 这样级联拒绝
 // 不会浪费本 scope 的 budget。scope 被禁用时该 refund 是 no-op。拒绝时返回
 // OutcomeStormBudgetExhausted, refund 为 nil 且无 error。
-func (c *StormController) AcquireProviderEndpoint(_ context.Context, _ int64, providerCode, endpointFingerprint string) (func(), Outcome, error) {
-	if c == nil || c.scope == nil || !c.scope.cfg.endpointEnabled() {
+func (c *StormController) AcquireProviderEndpoint(ctx context.Context, _ int64, providerCode, endpointFingerprint string) (func(), Outcome, error) {
+	if c == nil || !c.cfg.endpointEnabled() {
 		return func() {}, "", nil
+	}
+	if c.shared != nil {
+		key := "provider_endpoint:" + providerCode + "|" + endpointFingerprint
+		acquired, err := c.shared.TryAcquire(ctx, key, c.cfg.PerEndpointRate, c.cfg.PerEndpointBurst)
+		if err != nil {
+			return nil, "", err
+		}
+		if !acquired {
+			return nil, OutcomeStormBudgetExhausted, nil
+		}
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				if err := c.shared.Refund(ctx, key, c.cfg.PerEndpointRate, c.cfg.PerEndpointBurst); err != nil {
+					slog.WarnContext(ctx, "auth: shared provider endpoint storm token refund failed", "err", err)
+				}
+			})
+		}, "", nil
 	}
 	bucket := c.scope.endpointBucket(providerCode + "|" + endpointFingerprint)
 	if !bucket.tryAcquire(c.clock()) {
@@ -140,11 +154,22 @@ func (c *StormController) AcquireProviderEndpoint(_ context.Context, _ int64, pr
 	return func() { bucket.refund(c.clock()) }, "", nil
 }
 
-// AcquireGlobal 从进程级 bucket 消费一个 token。scope 未配置时一律 admit。
+// AcquireGlobal 从全局 bucket 消费一个 token。生产接线使用共享存储，单实例开发
+// 接线使用进程内 bucket；scope 未配置时一律 admit。
 // 返回的函数是 no-op (global 是级联中的最后一个 scope, 因此从不需要级联
 // refund)。拒绝时返回 OutcomeStormBudgetExhausted, 函数为 nil 且无 error。
-func (c *StormController) AcquireGlobal(_ context.Context, _ int64) (func(), Outcome, error) {
-	if c == nil || c.scope == nil || c.scope.globalBucket == nil {
+func (c *StormController) AcquireGlobal(ctx context.Context, _ int64) (func(), Outcome, error) {
+	if c == nil || !c.cfg.globalEnabled() {
+		return func() {}, "", nil
+	}
+	if c.shared != nil {
+		acquired, err := c.shared.TryAcquire(ctx, "global", c.cfg.GlobalRate, c.cfg.GlobalBurst)
+		if err != nil {
+			return nil, "", err
+		}
+		if !acquired {
+			return nil, OutcomeStormBudgetExhausted, nil
+		}
 		return func() {}, "", nil
 	}
 	if !c.scope.globalBucket.tryAcquire(c.clock()) {

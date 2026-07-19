@@ -25,12 +25,14 @@ func WithSecretCipher(cipher SecretCipher) Option {
 }
 
 // encryptSecretValue 在写入前加密 secret-key 的非空值(打上版本前缀)。非 secret key / 未注入 cipher /
-// 空值 / 已带前缀(幂等)一律原样返回。
+// 未配置哨兵值 / 已带前缀(幂等)一律原样返回。
 func (s *Service) encryptSecretValue(ctx context.Context, key SettingKey, value string) (string, error) {
 	if s == nil || s.secretCipher == nil || !IsSecretKey(key) {
 		return value, nil
 	}
-	if strings.TrimSpace(value) == "" || strings.HasPrefix(value, secretEncPrefix) {
+	// 未配置哨兵(""/"[]"/"{}",复用 HasConfiguredSecretValue 口径)不加密:空容器无密可保,
+	// 加密后 List 路径(不解密)会把「已清空」误判为「已配置」。
+	if !HasConfiguredSecretValue(key, value) || strings.HasPrefix(value, secretEncPrefix) {
 		return value, nil
 	}
 	enc, err := s.secretCipher.EncryptString(ctx, value, string(key))

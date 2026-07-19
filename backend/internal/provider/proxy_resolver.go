@@ -108,8 +108,7 @@ type simpleError string
 
 func (e simpleError) Error() string { return string(e) }
 
-// proxyAwareRoundTripper 是能自行在【握手之下】注入代理的 RoundTripper(如
-// mimicry uTLS dialer:经代理拨原始 TCP,再在其上跑自定义 ClientHello)。
+// proxyAwareRoundTripper 是能把账号代理结构化下发到自身出口实现的 RoundTripper。
 // 结构化接口 —— 实现方(transport/mimicry)无需被本包 import,避免循环依赖。
 type proxyAwareRoundTripper interface {
 	WithProxy(*url.URL) (http.RoundTripper, error)
@@ -119,7 +118,7 @@ type proxyAwareRoundTripper interface {
 //   - proxyURL == nil → 返回原 rt 不变（零开销直连）
 //   - rt 是 *http.Transport → Clone() 浅拷贝并设 Proxy func（保留连接池
 //     参数，不影响原实例）
-//   - 其它 rt（utls dialer / 测试 mock 等） → wrap 为 fail-loud
+//   - 其它 rt（Rust sidecar transport / 测试 mock 等） → wrap 为 fail-loud
 //     proxyWrappedRoundTripper，避免静默直连绕过账号级代理隔离。
 func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundTripper {
 	if proxyURL == nil {

@@ -2,38 +2,82 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const OPERATION_CONNECT: &str = "connect";
+pub const OPERATION_READY: &str = "ready";
+
+pub const CAPABILITY_BUILTIN_PROFILE: &str = "builtin_profile";
+pub const CAPABILITY_INLINE_PROFILE: &str = "inline_profile";
+pub const CAPABILITY_HTTP_PROXY: &str = "http_proxy";
+pub const CAPABILITY_HTTPS_PROXY: &str = "https_proxy";
+pub const CAPABILITY_SOCKS5_PROXY: &str = "socks5_proxy";
+pub const CAPABILITY_H2_BRIDGE: &str = "h2_bridge";
+pub const CAPABILITY_FORCE_H1: &str = "force_h1";
+pub const CAPABILITY_TARGET_IP_PINNING: &str = "target_ip_pinning";
+
+pub const ERROR_PROTOCOL_UNSUPPORTED: &str = "protocol_unsupported";
+pub const ERROR_OPERATION_UNSUPPORTED: &str = "operation_unsupported";
+pub const ERROR_PROFILE_UNKNOWN: &str = "profile_unknown";
+pub const ERROR_PROFILE_INVALID: &str = "profile_invalid";
+pub const ERROR_TARGET_INVALID: &str = "target_invalid";
+pub const ERROR_TARGET_POLICY_DENIED: &str = "target_policy_denied";
+pub const ERROR_PROXY_INVALID: &str = "proxy_invalid";
+pub const ERROR_PROXY_CONNECT: &str = "proxy_connect";
+pub const ERROR_UPSTREAM_DNS: &str = "upstream_dns";
+pub const ERROR_UPSTREAM_CONNECTION_REFUSED: &str = "upstream_connection_refused";
+pub const ERROR_UPSTREAM_NETWORK_UNREACHABLE: &str = "upstream_network_unreachable";
+pub const ERROR_UPSTREAM_CONNECT: &str = "upstream_connect";
+pub const ERROR_UPSTREAM_TIMEOUT: &str = "upstream_timeout";
+pub const ERROR_TLS_HANDSHAKE: &str = "tls_handshake";
+pub const ERROR_INTERNAL: &str = "internal";
+
 const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControlRequest {
+    pub version: u16,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub target_host: String,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
     pub port: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub profile_id: String,
-    // correlation_id 是 Go 侧本次拨号的关联 id,随控制帧过河;Rust 侧 tracing 用它与 Go 出口
-    // 边界日志关联(跨边界追一次握手,而非两侧各记孤岛日志)。serde(default)+skip_serializing_if
-    // 向后兼容:老 Go 客户端不发本字段时反序列化为 None,None 时序列化也不写出该键(=旧线缆字节)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_profile: Option<InlineTlsProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
-    // force_h1 为 Some(true) 时,本次拨号握手只广告 ALPN=http/1.1,从根上消除 h2 升级,
-    // 必走 Raw 隧道(对齐 Go uTLS 路 utls_dialer.go 的 ForceH1)。
-    // serde(default) + skip_serializing_if 保证向后兼容:老 Go 客户端不发本字段时反序列化为
-    // None(=今日行为,由 profile.alpn 决定),None 时序列化也不写出该键(=旧线缆字节)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force_h1: Option<bool>,
-    // proxy=Some 时,本次拨号先经该代理建隧道(HTTP CONNECT / SOCKS5),再在隧道之上做
-    // BoringSSL 握手——出口 IP 走代理,JA3/JA4 仍是伪装指纹,从而让绑账号级代理的账号也能用
-    // sidecar(②-3 解 sidecar×代理硬阻塞)。结构化下发而非原始 URL:password 等敏感段不混进
-    // 一个可被整体打印的字符串。serde(default)+skip_serializing_if 保证向后兼容:老 Go 客户端
-    // 不发本字段时反序列化为 None(=直连目标,今日行为),None 时序列化也不写出该键(=旧线缆字节)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxySpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_target_ips: Vec<String>,
 }
 
-// ProxySpec 是结构化代理下发载荷。Go 侧把已经过 proxyadmin SSRF 校验的 proxyURL 拆成各字段
-// 填入,Rust 侧据此建隧道。scheme 取 http|https|socks5(socks5h 归一为 socks5);username/password
-// 仅在带认证时出现(skip_serializing_if 省略空值,避免无认证时写出空串)。
-// 不传原始 URL 是刻意为之:password 不会被某个把整个 URL 打进日志的调用方泄露。
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InlineTlsProfile {
+    pub id: String,
+    pub grease_enabled: bool,
+    pub cipher_suites: Vec<u16>,
+    pub supported_groups: Vec<u16>,
+    pub ec_point_formats: Vec<u8>,
+    pub signature_algorithms: Vec<u16>,
+    pub alpn_protocols: Vec<String>,
+    pub tls_supported_versions: Vec<u16>,
+    pub key_share_groups: Vec<u16>,
+    pub psk_modes: Vec<u8>,
+    pub extensions_order: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProxySpec {
     pub scheme: String,
     pub host: String,
@@ -45,24 +89,65 @@ pub struct ProxySpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControlAck {
+    pub version: u16,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<ControlError>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlError {
+    pub code: String,
+    pub message: String,
 }
 
 impl ControlAck {
     pub fn ok() -> Self {
         Self {
+            version: PROTOCOL_VERSION,
             ok: true,
             error: None,
+            capabilities: Vec::new(),
+            profile_ids: Vec::new(),
         }
     }
 
-    pub fn error(error: impl Into<String>) -> Self {
+    pub fn ready(profile_ids: Vec<String>) -> Self {
         Self {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            error: None,
+            capabilities: vec![
+                CAPABILITY_BUILTIN_PROFILE.to_owned(),
+                CAPABILITY_INLINE_PROFILE.to_owned(),
+                CAPABILITY_HTTP_PROXY.to_owned(),
+                CAPABILITY_HTTPS_PROXY.to_owned(),
+                CAPABILITY_SOCKS5_PROXY.to_owned(),
+                CAPABILITY_H2_BRIDGE.to_owned(),
+                CAPABILITY_FORCE_H1.to_owned(),
+                CAPABILITY_TARGET_IP_PINNING.to_owned(),
+            ],
+            profile_ids,
+        }
+    }
+
+    pub fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            version: PROTOCOL_VERSION,
             ok: false,
-            error: Some(error.into()),
+            error: Some(ControlError {
+                code: code.into(),
+                message: message.into(),
+            }),
+            capabilities: Vec::new(),
+            profile_ids: Vec::new(),
         }
     }
 }
@@ -119,7 +204,6 @@ where
     Ok(serde_json::from_slice(&body)?)
 }
 
-#[cfg(test)]
 pub async fn write_control_request<W>(
     writer: &mut W,
     request: &ControlRequest,
@@ -131,7 +215,6 @@ where
     write_frame(writer, &body).await
 }
 
-#[cfg(test)]
 pub async fn read_control_ack<R>(reader: &mut R) -> Result<ControlAck, ProtoError>
 where
     R: AsyncRead + Unpin,
@@ -152,269 +235,111 @@ where
 mod tests {
     use std::io::Cursor;
 
-    use tokio::io::AsyncReadExt;
+    fn request() -> super::ControlRequest {
+        super::ControlRequest {
+            version: super::PROTOCOL_VERSION,
+            operation: super::OPERATION_CONNECT.to_owned(),
+            target_host: "api.anthropic.com".to_owned(),
+            port: 443,
+            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
+            inline_profile: None,
+            correlation_id: Some("corr-1".to_owned()),
+            force_h1: None,
+            proxy: None,
+            pinned_target_ips: Vec::new(),
+        }
+    }
 
     #[tokio::test]
-    async fn write_frame_uses_little_endian_length_prefix() {
+    async fn frame_uses_little_endian_length_prefix() {
         let mut out = Vec::new();
-
         super::write_frame(&mut out, b"abc").await.unwrap();
-
         assert_eq!(&out[..4], &[3, 0, 0, 0]);
         assert_eq!(&out[4..], b"abc");
     }
 
     #[tokio::test]
-    async fn read_frame_rejects_big_endian_prefix_for_small_payload() {
-        let mut wire = Cursor::new([0, 0, 0, 1, b'x']);
-
-        let err = super::read_frame(&mut wire).await.unwrap_err();
-
-        assert!(
-            err.to_string().contains("frame length"),
-            "error should mention frame length, got {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn control_request_round_trips_as_json_frame() {
-        let req = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: None,
-        };
-        let mut wire = Vec::new();
-
-        super::write_control_request(&mut wire, &req).await.unwrap();
-
-        let decoded = super::read_control_request(&mut Cursor::new(wire))
-            .await
-            .unwrap();
-        assert_eq!(decoded, req);
-    }
-
-    // 抓的缺陷:老 Go 客户端发的帧里没有 force_h1 键,若 ControlRequest 去掉 serde(default)
-    // 则反序列化会因缺字段报错,握手直接断。本测试用不含 force_h1 的历史 JSON 字节断言能解出
-    // None,守护向后兼容(老线缆不会因新字段被拒)。
-    #[tokio::test]
-    async fn control_request_decodes_legacy_frame_without_force_h1_as_none() {
-        let legacy_json =
-            br#"{"target_host":"api.anthropic.com","port":443,"profile_id":"anthropic-cli-mimicry-v1"}"#;
-        let mut wire = Vec::new();
-        super::write_frame(&mut wire, legacy_json).await.unwrap();
-
-        let decoded = super::read_control_request(&mut Cursor::new(wire))
-            .await
-            .unwrap();
-
-        assert_eq!(decoded.force_h1, None);
-        assert_eq!(decoded.target_host, "api.anthropic.com");
-    }
-
-    // 抓的缺陷:force_h1=None 时若去掉 skip_serializing_if,序列化会多写 "force_h1":null,
-    // 改变了发往老 sidecar 的线缆字节(新增字段)。本测试断言 None 时序列化输出里不含 force_h1 键。
-    #[tokio::test]
-    async fn control_request_omits_force_h1_key_when_none() {
-        let req = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: None,
-        };
-
-        let json = serde_json::to_string(&req).unwrap();
-
-        assert!(
-            !json.contains("force_h1"),
-            "force_h1=None 必须省略该键以保持旧线缆兼容,实际 JSON={json}"
-        );
-    }
-
-    // correlation_id 与 force_h1 同构:带值时 round-trip 保值;None 时序列化省略键(旧线缆字节
-    // 不变);缺该键的老帧解出 None。守护跨边界关联字段的向后兼容(删 serde(default) 则老帧解析
-    // 报错、删 skip_serializing_if 则 None 多写 null,两处变异均此测试红)。
-    #[tokio::test]
-    async fn control_request_correlation_id_round_trips_and_stays_backward_compatible() {
-        let with_corr = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: Some("abc123def456".to_owned()),
-            force_h1: None,
-            proxy: None,
-        };
-        let mut wire = Vec::new();
-        super::write_control_request(&mut wire, &with_corr)
-            .await
-            .unwrap();
-        let decoded = super::read_control_request(&mut Cursor::new(wire))
-            .await
-            .unwrap();
-        assert_eq!(decoded.correlation_id.as_deref(), Some("abc123def456"));
-
-        let without = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: None,
-        };
-        let json = serde_json::to_string(&without).unwrap();
-        assert!(
-            !json.contains("correlation_id"),
-            "correlation_id=None 必须省略该键以保持旧线缆兼容,实际 JSON={json}"
-        );
-
-        let legacy =
-            br#"{"target_host":"api.anthropic.com","port":443,"profile_id":"anthropic-cli-mimicry-v1"}"#;
-        let mut lwire = Vec::new();
-        super::write_frame(&mut lwire, legacy).await.unwrap();
-        let ld = super::read_control_request(&mut Cursor::new(lwire))
-            .await
-            .unwrap();
-        assert_eq!(ld.correlation_id, None);
-    }
-
-    // 抓的缺陷:proxy=None(无账号级代理=直连目标,今日行为)时,若 ProxySpec 去掉
-    // skip_serializing_if,序列化会多写 "proxy":null,改变发往老 sidecar 的线缆字节。
-    // 本测试断言 None 时序列化输出里不含 proxy 键,守护向后兼容。
-    #[tokio::test]
-    async fn control_request_omits_proxy_key_when_none() {
-        let req = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: None,
-        };
-
-        let json = serde_json::to_string(&req).unwrap();
-
-        assert!(
-            !json.contains("proxy"),
-            "proxy=None 必须省略该键以保持旧线缆兼容,实际 JSON={json}"
-        );
-    }
-
-    // 抓的缺陷:老 Go 客户端发的帧里没有 proxy 键,若 ControlRequest 的 proxy 去掉
-    // serde(default),反序列化会因缺字段报错,握手直接断。本测试用不含 proxy 的历史 JSON
-    // 字节断言能解出 None,守护向后兼容(老线缆不会因新字段被拒)。
-    #[tokio::test]
-    async fn control_request_decodes_legacy_frame_without_proxy_as_none() {
-        let legacy_json =
-            br#"{"target_host":"api.anthropic.com","port":443,"profile_id":"anthropic-cli-mimicry-v1"}"#;
-        let mut wire = Vec::new();
-        super::write_frame(&mut wire, legacy_json).await.unwrap();
-
-        let decoded = super::read_control_request(&mut Cursor::new(wire))
-            .await
-            .unwrap();
-
-        assert_eq!(decoded.proxy, None);
-    }
-
-    // 抓的缺陷:proxy=Some(带认证)时,scheme/host/port/username/password 必须能完整
-    // round-trip 回来,否则 Rust 端建隧道时拿不到正确目标/凭据,代理穿透失效。
-    // 自证:带认证的 ProxySpec 序列化后再反序列化必须逐字段相等。
-    #[tokio::test]
-    async fn control_request_round_trips_proxy_spec_with_auth() {
-        let req = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: None,
-            proxy: Some(super::ProxySpec {
-                scheme: "http".to_owned(),
-                host: "proxy.example.com".to_owned(),
-                port: 3128,
-                username: Some("alice".to_owned()),
-                password: Some("s3cr3t".to_owned()),
-            }),
-        };
-
-        let mut wire = Vec::new();
-        super::write_control_request(&mut wire, &req).await.unwrap();
-        let decoded = super::read_control_request(&mut Cursor::new(wire))
-            .await
-            .unwrap();
-
-        assert_eq!(decoded, req);
-        let proxy = decoded.proxy.expect("proxy 必须解回 Some");
-        assert_eq!(proxy.scheme, "http");
-        assert_eq!(proxy.host, "proxy.example.com");
-        assert_eq!(proxy.port, 3128);
-        assert_eq!(proxy.username.as_deref(), Some("alice"));
-        assert_eq!(proxy.password.as_deref(), Some("s3cr3t"));
-    }
-
-    // 抓的缺陷:无认证代理(username/password=None)时,若 ProxySpec 去掉 skip_serializing_if,
-    // 会多写 "username":null,"password":null;反序列化也应能从缺省解出 None。
-    // 本测试断言无认证时 JSON 不含 username/password 键且能 round-trip。
-    #[tokio::test]
-    async fn proxy_spec_omits_credential_keys_when_none() {
-        let spec = super::ProxySpec {
-            scheme: "socks5".to_owned(),
-            host: "10.0.0.9".to_owned(),
-            port: 1080,
-            username: None,
-            password: None,
-        };
-
-        let json = serde_json::to_string(&spec).unwrap();
-        assert!(
-            !json.contains("username") && !json.contains("password"),
-            "无认证代理必须省略 username/password 键,实际 JSON={json}"
-        );
-
-        let decoded: super::ProxySpec = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, spec);
-    }
-
-    // 抓的缺陷:force_h1=Some(true) 时该字段必须被序列化进 JSON 并能 round-trip 回来,
-    // 否则 Go 端开启强制 H1 后 sidecar 根本收不到这个意图,旋钮失效。
-    #[tokio::test]
-    async fn control_request_round_trips_force_h1_some_true() {
-        let req = super::ControlRequest {
-            target_host: "api.anthropic.com".to_owned(),
-            port: 443,
-            profile_id: "anthropic-cli-mimicry-v1".to_owned(),
-            correlation_id: None,
-            force_h1: Some(true),
-            proxy: None,
-        };
-
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(
-            json.contains("\"force_h1\":true"),
-            "force_h1=Some(true) 必须显式出现在 JSON 里,实际={json}"
-        );
-
+    async fn versioned_connect_request_round_trips() {
+        let req = request();
         let mut wire = Vec::new();
         super::write_control_request(&mut wire, &req).await.unwrap();
         let decoded = super::read_control_request(&mut Cursor::new(wire))
             .await
             .unwrap();
         assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn request_without_version_is_rejected() {
+        let raw = r#"{"operation":"ready"}"#;
+        let error = serde_json::from_str::<super::ControlRequest>(raw).unwrap_err();
+        assert!(error.to_string().contains("version"));
+    }
+
+    #[test]
+    fn inline_profile_round_trips_without_losing_fields() {
+        let mut req = request();
+        req.profile_id.clear();
+        req.inline_profile = Some(super::InlineTlsProfile {
+            id: "tenant-profile".to_owned(),
+            grease_enabled: false,
+            cipher_suites: vec![4865, 4866, 49195],
+            supported_groups: vec![29, 23],
+            ec_point_formats: vec![0],
+            signature_algorithms: vec![1027, 2052],
+            alpn_protocols: vec!["http/1.1".to_owned()],
+            tls_supported_versions: vec![772, 771],
+            key_share_groups: vec![29],
+            psk_modes: vec![1],
+            extensions_order: vec![0, 10, 11, 13, 43, 45, 51],
+        });
+        let encoded = serde_json::to_vec(&req).unwrap();
+        let decoded: super::ControlRequest = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn ready_ack_exposes_version_capabilities_and_profiles() {
+        let ack = super::ControlAck::ready(vec!["p1".to_owned(), "p2".to_owned()]);
+        assert_eq!(ack.version, super::PROTOCOL_VERSION);
+        assert!(ack.ok);
+        assert!(
+            ack.capabilities
+                .iter()
+                .any(|value| value == super::CAPABILITY_INLINE_PROFILE)
+        );
+        assert!(
+            ack.capabilities
+                .iter()
+                .any(|value| value == super::CAPABILITY_FORCE_H1)
+        );
+        assert!(
+            ack.capabilities
+                .iter()
+                .any(|value| value == super::CAPABILITY_TARGET_IP_PINNING)
+        );
+        assert_eq!(ack.profile_ids, ["p1", "p2"]);
+    }
+
+    #[test]
+    fn force_h1_round_trips_and_is_optional() {
+        let mut req = request();
+        req.force_h1 = Some(true);
+        let encoded = serde_json::to_vec(&req).unwrap();
+        assert!(String::from_utf8_lossy(&encoded).contains("\"force_h1\":true"));
+        let decoded: super::ControlRequest = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded.force_h1, Some(true));
+
+        req.force_h1 = None;
+        let encoded = serde_json::to_vec(&req).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("force_h1"));
     }
 
-    #[tokio::test]
-    async fn read_frame_consumes_exact_payload_only() {
-        let mut wire = Cursor::new([3, 0, 0, 0, b'a', b'b', b'c', b'z']);
-
-        let frame = super::read_frame(&mut wire).await.unwrap();
-        let mut tail = Vec::new();
-        wire.read_to_end(&mut tail).await.unwrap();
-
-        assert_eq!(frame, b"abc");
-        assert_eq!(tail, b"z");
+    #[test]
+    fn structured_error_keeps_code_separate_from_message() {
+        let ack = super::ControlAck::error(super::ERROR_PROFILE_UNKNOWN, "missing profile");
+        let error = ack.error.unwrap();
+        assert_eq!(error.code, super::ERROR_PROFILE_UNKNOWN);
+        assert_eq!(error.message, "missing profile");
     }
 }

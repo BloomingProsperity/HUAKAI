@@ -88,6 +88,7 @@ func TestUserKey_Issue_SeedsDefaultQuotaPolicies(t *testing.T) {
 	store := quota.NewPostgresStore(pool)
 	resolved, err := quota.ResolvePolicies(ctx, store, f.tenantID,
 		[]quota.Scope{{TenantID: f.tenantID, Kind: quota.ScopeAPIKey, ID: scopeID}},
+		"",
 		[]quota.Metric{quota.MetricRequests, quota.MetricConcurrency}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ResolvePolicies: %v", err)
@@ -124,7 +125,7 @@ func TestUserKey_Issue_SeedsDefaultQuotaPolicies(t *testing.T) {
 }
 
 // TestUserKey_Issue_DefaultQuotaSkipsNonPositiveDimension 守:limit<=0 的维度不种
-//(运维把某维度关掉=该 env 设 0),另一维度仍正常种。
+// (运维把某维度关掉=该 env 设 0),另一维度仍正常种。
 // MUTATION:若 seed 不判 limit<=0 跳过,会种出 limit=0 的 enforce 策略(等于全拒),本断言 RED。
 func TestUserKey_Issue_DefaultQuotaSkipsNonPositiveDimension(t *testing.T) {
 	ctx := context.Background()

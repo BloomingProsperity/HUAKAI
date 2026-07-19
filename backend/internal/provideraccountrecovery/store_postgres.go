@@ -41,3 +41,27 @@ func (s *PostgresStore) ClearRateLimitWithAudit(ctx context.Context, mutation Ac
 	}
 	return out, nil
 }
+
+func (s *PostgresStore) RecoverAccountStateWithAudit(ctx context.Context, mutation AccountRecoverMutation) (admindb.AdminProviderAccountRow, error) {
+	if s == nil || s.pool == nil {
+		return admindb.AdminProviderAccountRow{}, errors.New("provider account recovery postgres store is not configured")
+	}
+	var out admindb.AdminProviderAccountRow
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := admindb.New(tx)
+		account, err := q.RecoverProviderAccountState(ctx, mutation.Recover)
+		if err != nil {
+			return err
+		}
+		mutation.Audit.TargetID = &account.ID
+		if _, err := q.InsertAdminAuditEvent(ctx, mutation.Audit); err != nil {
+			return err
+		}
+		out = account
+		return nil
+	})
+	if err != nil {
+		return admindb.AdminProviderAccountRow{}, err
+	}
+	return out, nil
+}

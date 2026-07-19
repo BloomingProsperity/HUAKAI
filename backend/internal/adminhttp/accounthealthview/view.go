@@ -10,6 +10,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	poolrouter "github.com/BloomingProsperity/HUAKAI/internal/pool/router"
 )
@@ -40,9 +41,13 @@ type ProviderAxis struct {
 }
 
 type CredentialAxis struct {
-	State       string `json:"state"`
-	Eligible    bool   `json:"eligible"`
-	Persistence string `json:"persistence"`
+	State                       string `json:"state"`
+	Eligible                    bool   `json:"eligible"`
+	ServingCredentialCandidates int32  `json:"serving_credential_candidates"`
+	Vendor                      string `json:"vendor,omitempty"`
+	AuthMode                    string `json:"auth_mode,omitempty"`
+	LegacyMirrorState           string `json:"legacy_mirror_state"`
+	Persistence                 string `json:"persistence"`
 }
 
 type ChannelAxis struct {
@@ -97,7 +102,7 @@ func Build(
 		row.HealthState, pgTime(row.HealthStateUntil), now,
 	)
 	providerEligible := row.Enabled && row.ChannelEnabled && row.ProviderAvailable && providerHealthEligible
-	credentialEligible := row.CredentialState == "valid" || row.CredentialState == "refreshing_with_grace"
+	credential := buildCredentialAxis(row)
 	channelAxis := buildChannelAxis(row.DisableCooling, channelRecord, channelRecordFound, now)
 	authAxis := buildAuthAxis(row.DisableCooling, authSnapshot, authConfigured)
 
@@ -120,8 +125,13 @@ func Build(
 	if row.Enabled && !providerHealthEligible {
 		blocking = append(blocking, "provider_health")
 	}
-	if !credentialEligible {
-		blocking = append(blocking, "credential_state")
+	if row.Enabled {
+		switch credential.State {
+		case "ambiguous":
+			blocking = append(blocking, "credential_ambiguous")
+		case "unavailable":
+			blocking = append(blocking, "credential_unavailable")
+		}
 	}
 	if channelAxis.Eligibility == "blocked" {
 		blocking = append(blocking, "channel_health")
@@ -159,11 +169,7 @@ func Build(
 			Eligible:          providerEligible,
 			Persistence:       "postgres",
 		},
-		Credential: CredentialAxis{
-			State:       row.CredentialState,
-			Eligible:    credentialEligible,
-			Persistence: "postgres",
-		},
+		Credential:          credential,
 		ChannelHealth:       channelAxis,
 		AuthCooldown:        authAxis,
 		ModelCooldowns:      modelCooldowns,
@@ -212,13 +218,12 @@ func buildChannelAxis(disableCooling bool, rec channelhealth.Record, found bool,
 			axis.Eligibility = "request_dependent"
 		}
 	case channelhealth.StateCoolingDown:
-		switch {
-		case disableCooling:
+		if disableCooling {
 			axis.Eligibility = "eligible"
 			axis.BypassedByDisableCooling = true
-		case rec.CooldownUntil != nil && !rec.CooldownUntil.After(now):
-			axis.Eligibility = "request_dependent"
-		default:
+		} else {
+			// 冷却到期只代表后台恢复协调器可以转态；在持租约写成 ramping
+			// 之前，请求热路径仍会拒绝，因此诊断也必须继续显示阻断。
 			axis.Eligibility = "blocked"
 		}
 	default:
@@ -227,6 +232,25 @@ func buildChannelAxis(disableCooling bool, rec channelhealth.Record, found bool,
 		}
 	}
 	return axis
+}
+
+func buildCredentialAxis(row admindb.GetAdminProviderAccountHealthRow) CredentialAxis {
+	vendor := credentialstore.Normalize(row.CredentialVendor)
+	authMode := credentialstore.Normalize(row.CredentialAuthMode)
+	state := credentialSelectionState(row.ServingCredentialCandidates, vendor, authMode)
+	if state != "resolved" {
+		vendor = ""
+		authMode = ""
+	}
+	return CredentialAxis{
+		State:                       state,
+		Eligible:                    state == "resolved",
+		ServingCredentialCandidates: row.ServingCredentialCandidates,
+		Vendor:                      vendor,
+		AuthMode:                    authMode,
+		LegacyMirrorState:           row.CredentialState,
+		Persistence:                 "postgres",
+	}
 }
 
 func buildAuthAxis(disableCooling bool, snap authcooldown.Snapshot, configured bool) AuthCooldownAxis {

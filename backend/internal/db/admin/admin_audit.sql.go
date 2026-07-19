@@ -15,7 +15,7 @@ const acquireAdminBootstrapLock = `-- name: AcquireAdminBootstrapLock :exec
 SELECT pg_advisory_xact_lock(hashtextextended('admin_bootstrap'::text, 0))
 `
 
-// serialize MaybeBootstrap across concurrently
+// Serialize MaybeBootstrap across concurrently
 // starting gateway instances. Without this lock, two pods that both see
 // empty admin_tokens can each insert a fresh bootstrap row. The lock is
 // a constant key so all instances contend on the same one. Released
@@ -29,7 +29,7 @@ const acquireAdminIssuanceLock = `-- name: AcquireAdminIssuanceLock :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
 
-// serialize per-actor issuance under a
+// Serialize per-actor issuance under a
 // transaction-scoped advisory lock so concurrent POST /admin/v1/api-keys
 // from the same admin token cannot race past the 30/hour cap. The lock
 // is keyed on hash(actor_id) and released automatically on TX
@@ -43,30 +43,33 @@ func (q *Queries) AcquireAdminIssuanceLock(ctx context.Context, actorID string) 
 const countIssuanceInWindow = `-- name: CountIssuanceInWindow :one
 SELECT count(*)::bigint
 FROM admin_audit_events
-WHERE (actor_id = $1::text OR actor_id = $3::text)
+WHERE (actor_id = $1::text OR actor_id = $2::text)
   AND action = 'issue_api_key'
   AND target_id IS NOT NULL
-  AND occurred_at > now() - make_interval(secs => $2::integer)
+  AND occurred_at > now() - make_interval(secs => $3::integer)
 `
 
 type CountIssuanceInWindowParams struct {
 	ActorID       string `db:"actor_id" json:"actor_id"`
-	WindowSeconds int32  `db:"window_seconds" json:"window_seconds"`
-	// LegacyActorID 老格式键(裸 TokenID 串),跨 P2b-1 格式迁移保持限流窗连续;
-	// 无老格式的来源传 ActorID 同串(OR 无副作用)。手改生成码(见 sqlc-out-of-sync 记忆)。
 	LegacyActorID string `db:"legacy_actor_id" json:"legacy_actor_id"`
+	WindowSeconds int32  `db:"window_seconds" json:"window_seconds"`
 }
 
 // D4 rate-limit window: how many SUCCESSFUL 'issue_api_key' actions has
 // this actor performed in the last `window_seconds`? Default cap = 30/hour
 // per token, enforced by the issuer service.
 //
-// filter on target_id IS NOT NULL so denied
+// Filter on target_id IS NOT NULL so denied
 // attempts (which write a deny audit row with target_id=0/NULL) are
 // excluded from the cap. Otherwise an actor that hits the cap keeps
 // refreshing the window with deny rows on every retry and never recovers.
+//
+// 双格式分桶(role 制单登录 S3 修):P2b-1 把 actor_id 从裸 TokenID("5")统一成
+// AuditActor() 串("admin_token:5"),部署边界老行匹配不到会重置限流窗。谓词兼容
+// 两种键(legacy_actor_id=老格式;无老格式的来源传同一串,OR 无副作用),窗口跨
+// 格式迁移连续,且不需要新列/回填(数值列方案会再造一次同类边界重置)。
 func (q *Queries) CountIssuanceInWindow(ctx context.Context, arg CountIssuanceInWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssuanceInWindow, arg.ActorID, arg.WindowSeconds, arg.LegacyActorID)
+	row := q.db.QueryRow(ctx, countIssuanceInWindow, arg.ActorID, arg.LegacyActorID, arg.WindowSeconds)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -108,8 +111,8 @@ type InsertAdminAuditEventRow struct {
 	OccurredAt pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
 }
 
-// Slice 2 (N+4b2) admin_audit_events queries.
-// these queries are append-only writes. NEVER store
+// Admin audit event queries.
+// These queries are append-only writes. NEVER store
 // plaintext bearer or key_hash inside the payload jsonb.
 // Append a single admin action audit row. Called inside the same TX as
 // the corresponding api_keys / admin_tokens write so the audit trail is

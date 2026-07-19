@@ -178,7 +178,7 @@
       "summary": "🟡/📋 大量仅 spec,不能按已实现承诺。出口 IP 池/设备指纹/请求节奏 多停在 spec。",
       "leaves": [
         {"name": "Proxy / 出口 IP 池 / IP 绑定", "fid": "F-OUTBOUND-IP-001", "pkgs": ["transport"], "stage": "spec", "pct": 20, "verified": false, "fix": {"open": []}, "parity": "❗Proxy 有基础,出口 IP 池/账号稳定 IP 绑定仅 spec;sub2api 部分代理/CLIProxyAPI 代理工具(HIGH)"},
-        {"name": "TLS / H2 / Header 指纹控制面", "fid": "F-ACTIVE-DETECT", "pkgs": ["clientshape","transport"], "stage": "partial", "pct": 30, "verified": false, "fix": {"open": []}, "parity": "❗Go uTLS 有真实现,H2/header 控制面不完整;依赖 Rust 上线;CLIProxyAPI uTLS 库(HIGH)"},
+        {"name": "TLS / H2 / Header 指纹控制面", "fid": "F-ACTIVE-DETECT", "pkgs": ["clientshape","transport"], "stage": "tested", "pct": 85, "verified": true, "fix": {"open": []}, "parity": "Rust/BoringSSL sidecar 已成为 mimicry 唯一出口；八类 profile、动态 inline、H1/H2 bridge、proxy、fail-closed 和单镜像生命周期均已接线并通过自动化验收，应用层 header 形态继续由 Go 协议适配器负责"},
         {"name": "设备指纹 / 请求节奏 / 风险探测", "fid": "F-DEVICE-001/F-REQUEST-PACING", "pkgs": [], "stage": "spec", "pct": 8, "verified": false, "fix": {"open": []}, "parity": "❗大多停在 spec,生产实现缺失;三参照均无(HUAKAI 自研方向,HIGH 大工程)"}
       ]
     },
@@ -244,7 +244,7 @@
   },
   "codex_diff": {
     "supersedes": "codex 2026-05-21-full-audit-tree.md",
-    "added_subsystems_codex_missed": ["HCSF canonical 中间层(§5)","L2 响应缓存+幂等重放(§7)","PASR cache-locality routing(§7)","channel health 状态机细节(§7)","DLQ↔billing 集成(§10)","Settlement Recovery(§10)","Event Bus/Hermes 编排(§10)","Email(§16)","clientip anti-spoof(§11)","transport 错误 taxonomy(§5)","clientshape/uTLS(§12)","userauth 拆分(§1)","community(§14)"],
+    "added_subsystems_codex_missed": ["HCSF canonical 中间层(§5)","L2 响应缓存+幂等重放(§7)","PASR cache-locality routing(§7)","channel health 状态机细节(§7)","DLQ↔billing 集成(§10)","Settlement Recovery(§10)","Event Bus/Hermes 编排(§10)","Email(§16)","clientip anti-spoof(§11)","transport 错误 taxonomy(§5)","clientshape/Rust sidecar(§12)","userauth 拆分(§1)","community(§14)"],
     "corrected": "加了【修复轴】——codex 树 2026-05-21 早于整个审计修复战役;本树叠加 195 条 finding 状态(16 landed/2 deferred/13 not-fix/164 open),并对战役亲历的 ~12 个节点打 verified✓(真实代码核实,非仅文档声称)。",
     "verified_nodes": ["§3 凭证续期+storm(S2-045)","§3 OAuth 安全(S1-008/010/012/014)","§3 SSRF 加固(S1-011/S2-054)","§8 Voucher(S2-091)","§9 Receipt verify(S1-031/032)","§10 DLQ(S2-096)","§11 clientip(S2-109)","§11 SSRF 刷新链路","§16 release-mode(S1-019)","§16 JSON error(S2-148)","§16 email(S2-079)"],
     "unverified_note": "其余节点为 codex 2026-05-21 审计 + 文档综合(声称);可后续逐簇深核打 ✓。"

@@ -2,6 +2,7 @@ package credentialacq
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +15,54 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
+
+func TestNormalizedTokenPayloadPreservesSubscriptionEvidence(t *testing.T) {
+	claims := base64.RawURLEncoding.EncodeToString([]byte(`{
+		"sub":"user-1",
+		"email":"user@example.test",
+		"https://api.openai.com/auth":{
+			"chatgpt_plan_type":"Plus",
+			"chatgpt_account_id":"account-1"
+		}
+	}`))
+	idToken := "e30." + claims + ".signature"
+	raw, err := normalizedTokenPayload(map[string]any{
+		"refreshToken": "refresh-1",
+		"idToken":      idToken,
+		"tokenType":    "Bearer",
+		"plan_type":    "Free",
+		"accountId":    "stale-account",
+		"expiresIn":    3600,
+	}, "access-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"refresh_token":      "refresh-1",
+		"id_token":           idToken,
+		"token_type":         "Bearer",
+		"chatgpt_plan_type":  "Free",
+		"chatgpt_account_id": "stale-account",
+	} {
+		if got := stringField(payload, key); got != want {
+			t.Fatalf("payload[%s]=%q，期望 %q；payload=%v", key, got, want, payload)
+		}
+	}
+	candidate := candidateFromDeviceTokenPayload(Session{
+		TenantID: 1, ProviderAccountID: 2,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+	}, raw)
+	if candidate.Subscription.Label() != "openai:plus" || candidate.Subscription.Source != "id_token_claim" {
+		t.Fatalf("令牌声明必须胜过响应体旧套餐：%+v", candidate.Subscription)
+	}
+	if candidate.ExternalAccountID != "account-1" || candidate.ExternalSubjectID != "user-1" || candidate.ExternalAccountEmail != "user@example.test" {
+		t.Fatalf("device-code 身份提取错误：%+v", candidate)
+	}
+}
 
 func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 	now := time.Date(2026, 5, 24, 9, 10, 0, 0, time.UTC)
@@ -46,7 +95,7 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 		}
 	})}
 
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 2,
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
@@ -94,6 +143,65 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 	}
 }
 
+func TestDeviceCodeSingleAttemptReturnsPendingWithoutSleeping(t *testing.T) {
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		session  Session
+		response *http.Response
+	}{
+		{
+			name: "标准设备码",
+			session: Session{
+				TenantID: 1, ProviderAccountID: 2, Vendor: credentialstore.VendorKimi,
+				AuthMode: credentialstore.AuthModeKimiOAuth, AuthType: AuthTypeDeviceCode,
+				DeviceCodePayload: map[string]any{
+					"device_code": "dev", "token_url": "https://auth.example.test/token", "client_id": "client",
+					"issued_at": now.Format(time.RFC3339Nano), "expires_in": 900, "interval": 5,
+				},
+			},
+			response: jsonHTTPResponse(t, map[string]any{"error": "authorization_pending"}),
+		},
+		{
+			name: "Codex 设备码",
+			session: Session{
+				TenantID: 1, ProviderAccountID: 3, Vendor: credentialstore.VendorOpenAI,
+				AuthMode: credentialstore.AuthModeCodexCLIOAuth, AuthType: AuthTypeDeviceCode,
+				DeviceCodePayload: map[string]any{
+					"device_auth_id": "device-auth", "user_code": "USER", "token_url": "https://auth.example.test/device-token",
+					"oauth_token_url": "https://auth.example.test/oauth-token", "client_id": "client",
+					"issued_at": now.Format(time.RFC3339Nano), "expires_in": 900, "interval": 5,
+				},
+			},
+			response: &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls, sleeps atomic.Int32
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return tc.response, nil
+			})}
+			_, err := PollDeviceCodeToken(context.Background(), tc.session, OAuthClientConfig{},
+				WithDeviceCodeHTTPClient(client),
+				WithDeviceCodeNow(func() time.Time { return now }),
+				WithDeviceCodeSingleAttempt(),
+				WithDeviceCodeSleeper(func(context.Context, time.Duration) error {
+					sleeps.Add(1)
+					return nil
+				}),
+			)
+			if !errors.Is(err, ErrDevicePollPending) || DevicePollRetryAfter(err) != 5*time.Second {
+				t.Fatalf("err=%v retry=%s", err, DevicePollRetryAfter(err))
+			}
+			if calls.Load() != 1 || sleeps.Load() != 0 {
+				t.Fatalf("calls=%d sleeps=%d want 1/0", calls.Load(), sleeps.Load())
+			}
+		})
+	}
+}
+
 func TestSSOPollGivesUpAtExpiresInBoundary(t *testing.T) {
 	startTime := time.Date(2026, 5, 24, 9, 20, 0, 0, time.UTC)
 	now := startTime
@@ -115,7 +223,7 @@ func TestSSOPollGivesUpAtExpiresInBoundary(t *testing.T) {
 		}
 	})}
 
-	store := NewPostgresSessionStore(newTestSessionDB(startTime)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(startTime)).WithNow(func() time.Time { return now }))
 	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 3,
 		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeBedrock,
@@ -239,7 +347,7 @@ func TestKimiDeviceConfigConstants(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
 		}
 	})}
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 
 	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 8,
@@ -293,7 +401,7 @@ func TestKimiSSRFHost(t *testing.T) {
 			"verification_uri": "https://attacker.example.com/device",
 		}), nil
 	})}
-	store := NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 6, 7, 9, 10, 0, 0, time.UTC)))
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 6, 7, 9, 10, 0, 0, time.UTC))))
 
 	_, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 9,
@@ -321,7 +429,7 @@ func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
 		called = true
 		return jsonHTTPResponse(t, map[string]any{}), nil
 	})}
-	store := NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC)))
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC))))
 
 	_, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 5,
@@ -364,7 +472,7 @@ func TestOpenAICodexDeviceCodeAliasCanonicalizesCredentialMode(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
 		}
 	})}
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 
 	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 6,
@@ -436,7 +544,7 @@ func TestOpenAICodexDeviceFlowPollsOpenAIDeviceAuthThenExchangesAuthorizationCod
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
 		}
 	})}
-	store := NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now })
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
 
 	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 7,

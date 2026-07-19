@@ -240,16 +240,23 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 		}
 	}
 	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
-	modelScopedRateLimit := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
-		StatusCode: dispatchRes.StatusCode,
-		Header:     dispatchRes.Headers,
-		Body:       errBody,
-	}, classification, true)
+	agentTaskInvalid := ex.classifyAgentTaskInvalid(dispatchRes.StatusCode, errBody, &decision)
+	var policyOutcome upstreamErrorPolicyOutcome
+	suppressHealth := false
+	if !agentTaskInvalid {
+		policyOutcome = ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+			StatusCode: dispatchRes.StatusCode,
+			Header:     dispatchRes.Headers,
+			Body:       errBody,
+		}, classification, true)
+		suppressHealth = ex.applyAccountErrorPolicy(&decision, classification, policyOutcome)
+	}
 	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
-	if ex.healthKeyOK && !modelScopedRateLimit {
+	if ex.healthKeyOK && !agentTaskInvalid && !policyOutcome.ModelScoped && !suppressHealth {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 	}
 	failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
+	failure.AgentTaskInvalid = agentTaskInvalid
 	failure.FallbackSignal = bindingFallbackSignalFromUpstream(dispatchRes.StatusCode, errBody, classification, decision)
 	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }

@@ -1,9 +1,7 @@
-// 包 tlsfphealth — UTLS-06:TLS 指纹 profile 漂移/健康 worker。
+// 包 tlsfphealth 提供 TLS 指纹 profile 漂移与健康检查。
 //
-// 周期校验每个 active 自定义 profile 还能不能构建出可用 uTLS ClientHello
-// (复用 mimicry.ValidateProfileFields:转换 + UTLSSpec,不算 JA3 故无误杀)。
-// 坏 profile(如 uTLS 升级后 cipher id 不再有效 / preset 名被改错)标记
-// status='drift_detected',让运营看见并修,而非账号静默回落 builtin。
+// 周期校验每个 active 自定义 profile 是否仍能转换成 Rust IPC 动态 profile。
+// 坏 profile 会标记为 drift_detected，避免账号运行时才发现出口不可执行。
 package tlsfphealth
 
 import (
@@ -38,24 +36,42 @@ type DriftMarker interface {
 	MarkDrift(ctx context.Context, tenantID, id int64) error
 }
 
-// Worker 周期校验 TLS profile 池,把不再可用的标 drift_detected。
-type Worker struct {
-	lister   Lister
-	marker   DriftMarker
-	interval time.Duration
-	logger   *slog.Logger
-	mu       sync.Mutex
-	done     chan struct{}
+// LeaderLease 保证多副本部署中每轮只有一个实例写漂移状态。
+type LeaderLease interface {
+	TryAcquire(context.Context) (bool, func(), error)
 }
 
-func NewWorker(l Lister, m DriftMarker, interval time.Duration, logger *slog.Logger) *Worker {
+type Option func(*Worker)
+
+func WithLeaderLease(lease LeaderLease) Option {
+	return func(w *Worker) { w.leaderLease = lease }
+}
+
+// Worker 周期校验 TLS profile 池,把不再可用的标 drift_detected。
+type Worker struct {
+	lister      Lister
+	marker      DriftMarker
+	interval    time.Duration
+	logger      *slog.Logger
+	leaderLease LeaderLease
+	mu          sync.Mutex
+	done        chan struct{}
+}
+
+func NewWorker(l Lister, m DriftMarker, interval time.Duration, logger *slog.Logger, opts ...Option) *Worker {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Worker{lister: l, marker: m, interval: interval, logger: logger}
+	w := &Worker{lister: l, marker: m, interval: interval, logger: logger}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(w)
+		}
+	}
+	return w
 }
 
 // Start 在后台跑校验循环,直到 ctx 取消。
@@ -76,6 +92,7 @@ func (w *Worker) Start(ctx context.Context) {
 	w.mu.Unlock()
 	go func() {
 		defer close(done)
+		w.tick(ctx)
 		t := time.NewTicker(w.interval)
 		defer t.Stop()
 		for {
@@ -112,9 +129,27 @@ func (w *Worker) Wait(ctx context.Context) error {
 }
 
 func (w *Worker) tick(ctx context.Context) {
+	if w == nil || w.lister == nil || w.marker == nil {
+		return
+	}
+	if w.leaderLease != nil {
+		acquired, release, err := w.leaderLease.TryAcquire(ctx)
+		if err != nil {
+			w.logger.WarnContext(ctx, "tlsfphealth: 获取多副本租约失败", "error_class", "coordination_dependency_unavailable")
+			return
+		}
+		if !acquired {
+			return
+		}
+		if release == nil {
+			w.logger.WarnContext(ctx, "tlsfphealth: 多副本租约返回无效释放函数", "error_class", "coordination_contract_invalid")
+			return
+		}
+		defer release()
+	}
 	recs, err := w.lister.ListActive(ctx)
 	if err != nil {
-		w.logger.Warn("tlsfphealth: 列 active profile 失败", "err", err)
+		w.logger.WarnContext(ctx, "tlsfphealth: 列 active profile 失败", "error_class", "database_read_failed")
 		return
 	}
 	for _, r := range recs {
@@ -123,9 +158,9 @@ func (w *Worker) tick(ctx context.Context) {
 			continue
 		}
 		if err := w.marker.MarkDrift(ctx, r.TenantID, r.ID); err != nil {
-			w.logger.Warn("tlsfphealth: 标 drift 失败", "id", r.ID, "err", err)
+			w.logger.WarnContext(ctx, "tlsfphealth: 标 drift 失败", "id", r.ID, "error_class", "database_write_failed")
 			continue
 		}
-		w.logger.Warn("tlsfphealth: TLS profile 校验失败已标 drift_detected", "id", r.ID, "name", r.Name, "reason", verr.Error())
+		w.logger.WarnContext(ctx, "tlsfphealth: TLS profile 校验失败已标 drift_detected", "id", r.ID, "name", r.Name, "error_class", "profile_contract_invalid")
 	}
 }

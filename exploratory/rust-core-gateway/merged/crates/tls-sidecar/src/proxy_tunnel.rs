@@ -1,32 +1,23 @@
-// proxy_tunnel.rs — 在 BoringSSL 握手【之下】建立到目标的代理隧道。
-//
-// ②-3 代理穿透:绑账号级代理的账号也要能用 sidecar。本模块负责"先经代理建一条到目标
-// (host:port)的 TCP 隧道",connect.rs 拿到隧道流后在其上做 tokio_boring 握手——出口 IP
-// 走代理,JA3/JA4 仍是伪装指纹。
-//
-// 【安全红线 fail-closed】:隧道建立的任何一步失败(拨号代理失败 / CONNECT 非 200 /
-// SOCKS5 握手拒绝),都向上抛 ProxyTunnelError,connect.rs 据此整连失败,**绝不**回退直连
-// 目标。直连=真实出口 IP 泄露,破坏账号级 IP 隔离;故本模块没有任何"失败后 TcpStream::connect
-// (target)"的旁路。
-//
-// 凭据安全:错误信息只暴露 scheme://host:port,绝不打印 username/password;ProxySpec 的
-// password 字段只在握手字节里使用,不进任何日志/错误串。
+// 代理隧道失败时直接终止请求，禁止绕过代理直连目标。凭据只进入握手字节，不进入日志。
 
-use std::time::Duration;
+use std::{
+    fmt,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
+use boring::ssl::{SslConnector, SslMethod};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::TcpStream,
 };
 
 use crate::proto::ProxySpec;
 
-// DEFAULT_PROXY_TIMEOUT_MS 是代理整连(拨号代理 + CONNECT/SOCKS5 握手全程)的默认超时上限。
-// env HUAKAI_SIDECAR_PROXY_TIMEOUT_MS 可覆盖(>0 的毫秒数)。
 const DEFAULT_PROXY_TIMEOUT_MS: u64 = 30_000;
 
-// proxy_timeout 读 env 决定代理整连超时;缺省/非法/<=0 一律退回默认 30s。
 fn proxy_timeout() -> Duration {
     let ms = std::env::var("HUAKAI_SIDECAR_PROXY_TIMEOUT_MS")
         .ok()
@@ -42,33 +33,140 @@ pub enum ProxyTunnelError {
     Io(#[from] std::io::Error),
     #[error("unsupported proxy scheme: {0}")]
     UnsupportedScheme(String),
-    // CONNECT/SOCKS5 协议层错误。刻意只携带不含凭据的描述,避免 password 泄进日志。
+    #[error("invalid proxy configuration: {0}")]
+    Invalid(String),
+    #[error("proxy TLS error: {0}")]
+    Tls(String),
     #[error("proxy tunnel rejected: {0}")]
     Rejected(String),
 }
 
-// connect_through_proxy 按 ProxySpec 建一条到 target_host:target_port 的隧道并返回底层
-// TcpStream(已穿过代理,后续读写即与目标对话)。scheme 归一化后分派到 HTTP CONNECT 或
-// SOCKS5 握手。任何失败都 fail-closed 向上抛错,绝不直连目标。
+trait TunnelIo: AsyncRead + AsyncWrite + Send {}
+
+impl<T> TunnelIo for T where T: AsyncRead + AsyncWrite + Send {}
+
+pub struct TunnelStream {
+    inner: Pin<Box<dyn TunnelIo>>,
+}
+
+impl TunnelStream {
+    pub fn new<T>(stream: T) -> Self
+    where
+        T: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
+    }
+}
+
+impl fmt::Debug for TunnelStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TunnelStream")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsyncRead for TunnelStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.inner.as_mut().poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for TunnelStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        self.inner.as_mut().poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        self.inner.as_mut().poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        self.inner.as_mut().poll_shutdown(context)
+    }
+}
+
+// HTTPS 先校验证书并与代理建立 TLS，三种代理最终都返回统一的异步隧道流。
 pub async fn connect_through_proxy(
     proxy: &ProxySpec,
     target_host: &str,
     target_port: u16,
-) -> Result<TcpStream, ProxyTunnelError> {
+) -> Result<TunnelStream, ProxyTunnelError> {
+    validate_proxy(proxy)?;
     connect_through_proxy_with_timeout(proxy, target_host, target_port, proxy_timeout()).await
 }
 
-// connect_through_proxy_with_timeout 用显式超时整体包裹隧道建立(修 S2):拨号代理 +
-// CONNECT/SOCKS5 握手全程任一步挂死(恶意/慢/无响应代理),都被有界地变成 Rejected 错误
-// 向上抛,fail-closed(connect.rs 据此整连失败,绝不回退直连目标),不再永久 await 占住
-// sidecar 连接 + tokio 任务而被并发请求逐步耗尽。超时入参显式传入便于测试用短值。
+fn validate_proxy(proxy: &ProxySpec) -> Result<(), ProxyTunnelError> {
+    if !matches!(
+        proxy.scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "socks5" | "socks5h"
+    ) {
+        return Err(ProxyTunnelError::UnsupportedScheme(proxy.scheme.clone()));
+    }
+    if proxy.host.is_empty()
+        || proxy.host.len() > 253
+        || proxy.host.trim() != proxy.host
+        || proxy
+            .host
+            .chars()
+            .any(|value| value.is_control() || value.is_whitespace() || matches!(value, '/' | '\\'))
+    {
+        return Err(ProxyTunnelError::Invalid("host 非法".to_owned()));
+    }
+    if proxy.port == 0 {
+        return Err(ProxyTunnelError::Invalid("port 必须大于 0".to_owned()));
+    }
+    let username = proxy.username.as_deref().unwrap_or("");
+    let password = proxy.password.as_deref().unwrap_or("");
+    if username.is_empty() && !password.is_empty() {
+        return Err(ProxyTunnelError::Invalid(
+            "password 不能在 username 为空时单独出现".to_owned(),
+        ));
+    }
+    if username.len() > 1024 || password.len() > 1024 {
+        return Err(ProxyTunnelError::Invalid("代理凭据长度超过上限".to_owned()));
+    }
+    if matches!(
+        proxy.scheme.to_ascii_lowercase().as_str(),
+        "socks5" | "socks5h"
+    ) && (username.len() > u8::MAX as usize || password.len() > u8::MAX as usize)
+    {
+        return Err(ProxyTunnelError::Invalid(
+            "SOCKS5 凭据长度必须小于 256 字节".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+// 整体超时覆盖代理拨号和隧道握手，避免无响应代理长期占用任务。
 async fn connect_through_proxy_with_timeout(
     proxy: &ProxySpec,
     target_host: &str,
     target_port: u16,
     dur: Duration,
-) -> Result<TcpStream, ProxyTunnelError> {
-    match tokio::time::timeout(dur, connect_through_proxy_inner(proxy, target_host, target_port)).await {
+) -> Result<TunnelStream, ProxyTunnelError> {
+    match tokio::time::timeout(
+        dur,
+        connect_through_proxy_inner(proxy, target_host, target_port),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_elapsed) => Err(ProxyTunnelError::Rejected(format!(
             "代理拨号/握手超时({}ms),fail-closed 绝不直连目标",
@@ -81,34 +179,80 @@ async fn connect_through_proxy_inner(
     proxy: &ProxySpec,
     target_host: &str,
     target_port: u16,
-) -> Result<TcpStream, ProxyTunnelError> {
+) -> Result<TunnelStream, ProxyTunnelError> {
     match proxy.scheme.to_ascii_lowercase().as_str() {
-        // https 代理与 http 代理在 CONNECT 字节序上一致;与代理本身的 TLS(若为 https 代理)
-        // 留待后续增强,本切片对齐 Go 伪装路最常见的明文 CONNECT/SOCKS5 形态。
-        "http" | "https" => http_connect_tunnel(proxy, target_host, target_port).await,
-        // socks5h 与 socks5 在我们的用法下等价(均用 domain atyp 让代理端解析目标主机)。
-        "socks5" | "socks5h" => socks5_tunnel(proxy, target_host, target_port).await,
+        "http" => http_connect_tunnel(proxy, target_host, target_port)
+            .await
+            .map(TunnelStream::new),
+        "https" => https_connect_tunnel(proxy, target_host, target_port)
+            .await
+            .map(TunnelStream::new),
+        // 两种 SOCKS5 scheme 都把目标域名交给代理解析。
+        "socks5" | "socks5h" => socks5_tunnel(proxy, target_host, target_port)
+            .await
+            .map(TunnelStream::new),
         other => Err(ProxyTunnelError::UnsupportedScheme(other.to_owned())),
     }
 }
 
-// proxy_endpoint 返回 (host, port) 供拨号;不参与凭据。
 fn proxy_endpoint(proxy: &ProxySpec) -> (String, u16) {
     (proxy.host.clone(), proxy.port)
 }
 
-// http_connect_tunnel 经 HTTP CONNECT 代理建隧道:
-//   1. TCP 拨号代理
-//   2. 发 "CONNECT host:port HTTP/1.1" 请求行 + Host 头 + (带凭据时)Proxy-Authorization
-//   3. 读响应,仅当状态码为 200 才视为隧道建立;否则 fail-closed
 async fn http_connect_tunnel(
     proxy: &ProxySpec,
     target_host: &str,
     target_port: u16,
 ) -> Result<TcpStream, ProxyTunnelError> {
     let (phost, pport) = proxy_endpoint(proxy);
-    let mut stream = TcpStream::connect((phost.as_str(), pport)).await?;
+    let stream = TcpStream::connect((phost.as_str(), pport)).await?;
+    establish_http_connect(stream, proxy, target_host, target_port).await
+}
 
+async fn https_connect_tunnel(
+    proxy: &ProxySpec,
+    target_host: &str,
+    target_port: u16,
+) -> Result<tokio_boring::SslStream<TcpStream>, ProxyTunnelError> {
+    let connector = https_proxy_connector()?;
+    https_connect_tunnel_with_connector(proxy, target_host, target_port, connector).await
+}
+
+fn https_proxy_connector() -> Result<SslConnector, ProxyTunnelError> {
+    let mut builder = SslConnector::builder(SslMethod::tls())
+        .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
+    builder
+        .set_alpn_protos(b"\x08http/1.1")
+        .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
+    Ok(builder.build())
+}
+
+async fn https_connect_tunnel_with_connector(
+    proxy: &ProxySpec,
+    target_host: &str,
+    target_port: u16,
+    connector: SslConnector,
+) -> Result<tokio_boring::SslStream<TcpStream>, ProxyTunnelError> {
+    let (phost, pport) = proxy_endpoint(proxy);
+    let tcp = TcpStream::connect((phost.as_str(), pport)).await?;
+    let config = connector
+        .configure()
+        .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
+    let tls = tokio_boring::connect(config, phost.as_str(), tcp)
+        .await
+        .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
+    establish_http_connect(tls, proxy, target_host, target_port).await
+}
+
+async fn establish_http_connect<S>(
+    mut stream: S,
+    proxy: &ProxySpec,
+    target_host: &str,
+    target_port: u16,
+) -> Result<S, ProxyTunnelError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let authority = format!("{target_host}:{target_port}");
     let mut request = String::new();
     request.push_str(&format!("CONNECT {authority} HTTP/1.1\r\n"));
@@ -122,7 +266,6 @@ async fn http_connect_tunnel(
 
     let status = read_connect_status_line(&mut stream).await?;
     if status != 200 {
-        // fail-closed:非 200 = 代理拒绝隧道,绝不直连目标。错误只含状态码与目标,无凭据。
         return Err(ProxyTunnelError::Rejected(format!(
             "CONNECT {authority} returned status {status}"
         )));
@@ -130,8 +273,6 @@ async fn http_connect_tunnel(
     Ok(stream)
 }
 
-// basic_proxy_authorization 在带 username 时生成 "Proxy-Authorization: Basic <base64>\r\n"。
-// 无 username 返回 None(无认证代理)。password 仅进 base64 字节,绝不进日志。
 fn basic_proxy_authorization(proxy: &ProxySpec) -> Option<String> {
     let username = proxy.username.as_deref().filter(|u| !u.is_empty())?;
     let password = proxy.password.as_deref().unwrap_or("");
@@ -139,12 +280,11 @@ fn basic_proxy_authorization(proxy: &ProxySpec) -> Option<String> {
     Some(format!("Proxy-Authorization: Basic {token}\r\n"))
 }
 
-// read_connect_status_line 读 CONNECT 响应直到首个 CRLF(状态行),解出状态码。
-// 只读到状态行结束即停(逐字节,避免越过 \r\n 吞掉隧道首批数据);随后的响应头一并被忽略
-// 到空行——CONNECT 成功响应在状态行后是若干头 + 空行,正文为空,后续字节即隧道数据。
-async fn read_connect_status_line(stream: &mut TcpStream) -> Result<u16, ProxyTunnelError> {
-    // 读到响应头结束(\r\n\r\n)。CONNECT 200 响应无 body,头结束后即隧道数据;逐字节读
-    // 确保不越界吞掉隧道首批字节。设上限防止恶意代理无限拖。
+async fn read_connect_status_line<S>(stream: &mut S) -> Result<u16, ProxyTunnelError>
+where
+    S: AsyncRead + Unpin,
+{
+    // 逐字节读到响应头结尾，避免吞掉紧随其后的隧道数据。
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     const MAX_HEAD: usize = 16 * 1024;
@@ -168,23 +308,19 @@ async fn read_connect_status_line(stream: &mut TcpStream) -> Result<u16, ProxyTu
     parse_http_status_code(&head)
 }
 
-// parse_http_status_code 从 "HTTP/1.1 200 Connection established\r\n..." 状态行解出三位状态码。
 fn parse_http_status_code(head: &[u8]) -> Result<u16, ProxyTunnelError> {
     let line_end = head
         .windows(2)
         .position(|w| w == b"\r\n")
         .unwrap_or(head.len());
     let line = &head[..line_end];
-    // 状态行形如 "HTTP/1.1 200 reason";状态码是第二段。
     let text = String::from_utf8_lossy(line);
     let mut parts = text.split_whitespace();
     let _version = parts.next();
     let code = parts
         .next()
         .and_then(|c| c.parse::<u16>().ok())
-        .ok_or_else(|| {
-            ProxyTunnelError::Rejected("malformed CONNECT status line".to_owned())
-        })?;
+        .ok_or_else(|| ProxyTunnelError::Rejected("malformed CONNECT status line".to_owned()))?;
     Ok(code)
 }
 
@@ -342,6 +478,18 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boring::{
+        asn1::Asn1Time,
+        bn::{BigNum, MsbOption},
+        hash::MessageDigest,
+        pkey::{PKey, Private},
+        rsa::Rsa,
+        ssl::{SslAcceptor, SslVerifyMode},
+        x509::{
+            X509, X509Builder, X509NameBuilder,
+            extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName},
+        },
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -391,10 +539,60 @@ mod tests {
             password: Some("s3cr3t".to_owned()),
         };
         let header = super::basic_proxy_authorization(&with_auth).unwrap();
-        assert_eq!(
-            header,
-            "Proxy-Authorization: Basic YWxpY2U6czNjcjN0\r\n"
-        );
+        assert_eq!(header, "Proxy-Authorization: Basic YWxpY2U6czNjcjN0\r\n");
+    }
+
+    // 抓的缺陷:无效代理字段若拖到拨号/握手阶段才失败,会把配置错误伪装成网络故障,
+    // 还可能让控制字符进入 CONNECT 头。校验必须在任何网络 I/O 前稳定拒绝。
+    #[test]
+    fn proxy_configuration_validation_rejects_unsafe_or_unrepresentable_fields() {
+        let valid = ProxySpec {
+            scheme: "http".to_owned(),
+            host: "proxy.example.test".to_owned(),
+            port: 8080,
+            username: Some("alice".to_owned()),
+            password: Some("secret".to_owned()),
+        };
+        assert!(super::validate_proxy(&valid).is_ok());
+
+        let cases = [
+            ProxySpec {
+                host: "".to_owned(),
+                ..valid.clone()
+            },
+            ProxySpec {
+                host: "proxy.example.test\r\nInjected: yes".to_owned(),
+                ..valid.clone()
+            },
+            ProxySpec {
+                port: 0,
+                ..valid.clone()
+            },
+            ProxySpec {
+                username: None,
+                password: Some("orphan-password".to_owned()),
+                ..valid.clone()
+            },
+            ProxySpec {
+                username: Some("u".repeat(1025)),
+                ..valid.clone()
+            },
+            ProxySpec {
+                scheme: "socks5".to_owned(),
+                username: Some("u".repeat(256)),
+                ..valid
+            },
+        ];
+
+        for spec in cases {
+            assert!(
+                matches!(
+                    super::validate_proxy(&spec),
+                    Err(ProxyTunnelError::Invalid(_))
+                ),
+                "无效代理配置必须在拨号前返回 Invalid: {spec:?}"
+            );
+        }
     }
 
     // 起一个假 HTTP CONNECT 代理:可配置返回 200 或非 200。返回它监听的端口 + 一个记录
@@ -451,6 +649,151 @@ mod tests {
             got_connect,
             got_auth,
         }
+    }
+
+    #[test]
+    fn production_https_proxy_connector_verifies_peer_certificates() {
+        let connector = super::https_proxy_connector().expect("HTTPS 代理 TLS 配置必须可创建");
+
+        assert!(
+            connector
+                .context()
+                .verify_mode()
+                .contains(SslVerifyMode::PEER),
+            "HTTPS 代理连接必须校验证书"
+        );
+    }
+
+    #[tokio::test]
+    async fn https_proxy_uses_tls_before_connect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (acceptor, connector) = test_https_proxy_tls();
+        let saw_connect = Arc::new(AtomicBool::new(false));
+        let server_saw_connect = Arc::clone(&saw_connect);
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut tls = tokio_boring::accept(&acceptor, tcp).await.unwrap();
+            let head = read_http_head(&mut tls).await;
+            server_saw_connect.store(head.starts_with(b"CONNECT "), Ordering::SeqCst);
+            tls.write_all(b"HTTP/1.1 200 Connection established\r\n\r\nTUNNEL_OPEN")
+                .await
+                .unwrap();
+            tls.flush().await.unwrap();
+        });
+        let spec = ProxySpec {
+            scheme: "https".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port,
+            username: None,
+            password: None,
+        };
+
+        let mut tunnel =
+            super::https_connect_tunnel_with_connector(&spec, "api.example.test", 443, connector)
+                .await
+                .expect("受信 HTTPS 代理必须先完成 TLS 再建立 CONNECT 隧道");
+        let mut marker = [0u8; 11];
+        tunnel.read_exact(&mut marker).await.unwrap();
+
+        assert!(saw_connect.load(Ordering::SeqCst));
+        assert_eq!(&marker, b"TUNNEL_OPEN");
+        server.await.unwrap();
+    }
+
+    async fn read_http_head<S>(stream: &mut S) -> Vec<u8>
+    where
+        S: AsyncRead + Unpin,
+    {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while head.len() <= 8192 {
+            if stream.read_exact(&mut byte).await.is_err() {
+                break;
+            }
+            head.push(byte[0]);
+            if head.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        head
+    }
+
+    fn test_https_proxy_tls() -> (SslAcceptor, SslConnector) {
+        let (ca_key, ca_cert) = test_ca();
+        let (server_key, server_cert) = test_server_cert(&ca_key, &ca_cert);
+
+        let mut acceptor = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+        acceptor.set_private_key(&server_key).unwrap();
+        acceptor.set_certificate(&server_cert).unwrap();
+        acceptor.check_private_key().unwrap();
+
+        let mut connector = SslConnector::builder(SslMethod::tls()).unwrap();
+        connector.cert_store_mut().add_cert(ca_cert).unwrap();
+        connector.set_alpn_protos(b"\x08http/1.1").unwrap();
+        (acceptor.build(), connector.build())
+    }
+
+    fn test_ca() -> (PKey<Private>, X509) {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let name = test_name("HUAKAI HTTPS proxy test CA");
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        set_test_serial_and_validity(&mut cert);
+        cert.set_subject_name(&name).unwrap();
+        cert.set_issuer_name(&name).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        let constraints = BasicConstraints::new().critical().ca().build().unwrap();
+        cert.append_extension(&constraints).unwrap();
+        let usage = KeyUsage::new().key_cert_sign().crl_sign().build().unwrap();
+        cert.append_extension(&usage).unwrap();
+        cert.sign(&key, MessageDigest::sha256()).unwrap();
+        (key, cert.build())
+    }
+
+    fn test_server_cert(ca_key: &PKey<Private>, ca_cert: &X509) -> (PKey<Private>, X509) {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let name = test_name("127.0.0.1");
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        set_test_serial_and_validity(&mut cert);
+        cert.set_subject_name(&name).unwrap();
+        cert.set_issuer_name(ca_cert.subject_name()).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        let constraints = BasicConstraints::new().build().unwrap();
+        cert.append_extension(&constraints).unwrap();
+        let usage = KeyUsage::new()
+            .digital_signature()
+            .key_encipherment()
+            .build()
+            .unwrap();
+        cert.append_extension(&usage).unwrap();
+        let extended = ExtendedKeyUsage::new().server_auth().build().unwrap();
+        cert.append_extension(&extended).unwrap();
+        let subject_alt_name = SubjectAlternativeName::new()
+            .ip("127.0.0.1")
+            .build(&cert.x509v3_context(Some(ca_cert), None))
+            .unwrap();
+        cert.append_extension(&subject_alt_name).unwrap();
+        cert.sign(ca_key, MessageDigest::sha256()).unwrap();
+        (key, cert.build())
+    }
+
+    fn test_name(common_name: &str) -> boring::x509::X509Name {
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", common_name).unwrap();
+        name.build()
+    }
+
+    fn set_test_serial_and_validity(cert: &mut X509Builder) {
+        let mut serial = BigNum::new().unwrap();
+        serial.rand(128, MsbOption::MAYBE_ZERO, false).unwrap();
+        cert.set_serial_number(&serial.to_asn1_integer().unwrap())
+            .unwrap();
+        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
     }
 
     // 抓的缺陷:CONNECT 200 后,connect_through_proxy 必须返回一条【在隧道之上】可继续读写的
@@ -543,12 +886,9 @@ mod tests {
             password: None,
         };
 
-        let result = super::connect_through_proxy(
-            &spec,
-            &target_addr.ip().to_string(),
-            target_addr.port(),
-        )
-        .await;
+        let result =
+            super::connect_through_proxy(&spec, &target_addr.ip().to_string(), target_addr.port())
+                .await;
 
         assert!(
             result.is_err(),
@@ -721,7 +1061,8 @@ mod tests {
 
         let inner =
             outcome.expect("代理挂死必须被 300ms 生产超时拦住,不得永久 await 触发 5s 测试守护");
-        let err = inner.expect_err("挂死代理隧道建立必须 fail-closed 返回 error,绝不返回可用流/直连");
+        let err =
+            inner.expect_err("挂死代理隧道建立必须 fail-closed 返回 error,绝不返回可用流/直连");
         assert!(
             err.to_string().contains("超时"),
             "fail-closed 错误应表明是超时,实际 {err}"

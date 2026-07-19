@@ -89,17 +89,21 @@ func (f *meQuotaFixture) seedQuotaWindowMetric(tenantID, userID int64, metric st
 }
 
 func (f *meQuotaFixture) seedScopeQuotaWindowMetric(tenantID int64, scopeKind, scopeID, metric string, at time.Time, limit, reserved, settled string) {
+	f.seedScopeQuotaWindowForModel(tenantID, scopeKind, scopeID, quota.ModelSelectorAll, metric, at, limit, reserved, settled)
+}
+
+func (f *meQuotaFixture) seedScopeQuotaWindowForModel(tenantID int64, scopeKind, scopeID, modelSelector, metric string, at time.Time, limit, reserved, settled string) {
 	f.t.Helper()
 	var policyID int64
 	if err := f.pool.QueryRow(f.ctx, `
 INSERT INTO quota_policies (
-	tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds,
+	tenant_id, scope_kind, scope_id, model_selector, metric, window_kind, window_seconds,
 	limit_value, burst_value, mode, priority, enabled, valid_from, valid_until
 ) VALUES (
-	$1, $2, $3, $4, 'calendar_day', 0,
-	$5::numeric(20,8), 0, 'enforce', 10, true, $6, $7
-) RETURNING id`, tenantID, scopeKind, scopeID, metric, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
-		f.t.Fatalf("seed quota policy (%s/%s): %v", scopeKind, metric, err)
+	$1, $2, $3, $4, $5, 'calendar_day', 0,
+	$6::numeric(20,8), 0, 'enforce', 10, true, $7, $8
+) RETURNING id`, tenantID, scopeKind, scopeID, modelSelector, metric, limit, at.Add(-time.Hour), at.Add(24*time.Hour)).Scan(&policyID); err != nil {
+		f.t.Fatalf("seed quota policy (%s/%s/%s): %v", scopeKind, modelSelector, metric, err)
 	}
 	start, end, ok := quota.ComputeWindow(quota.WindowCalendarDay, 0, at)
 	if !ok {
@@ -114,6 +118,34 @@ INSERT INTO quota_windows (
 	$6::numeric(20,8), 0, 9
 )`, tenantID, policyID, start, end, reserved, settled); err != nil {
 		f.t.Fatalf("seed quota window (%s/%s): %v", scopeKind, metric, err)
+	}
+}
+
+func TestQuotaModelWindowProjectionAndLegacyAggregationIsolation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openMeQuotaPool(t, ctx)
+	f := newMeQuotaFixture(t, ctx, pool)
+	at := time.Now().UTC()
+	scopeID := strconv.FormatInt(f.userA, 10)
+	f.seedScopeQuotaWindowForModel(f.tenantA, "user", scopeID, quota.ModelSelectorAll, "cost_usd", at, "10", "0", "3.5")
+	f.seedScopeQuotaWindowForModel(f.tenantA, "user", scopeID, "gpt-4.1", "cost_usd", at, "2", "0", "1")
+
+	store := quota.NewPostgresStore(pool)
+	legacy, err := store.ListCurrentWindowsForScope(ctx, f.tenantA, quota.ScopeUser, scopeID, at)
+	if err != nil {
+		t.Fatalf("legacy cost read: %v", err)
+	}
+	if len(legacy) != 1 || legacy[0].ModelSelector != quota.ModelSelectorAll || legacy[0].SettledValue.String() != "3.5" {
+		t.Fatalf("legacy windows=%+v; want wildcard cost row only", legacy)
+	}
+
+	detailed, err := store.ListCurrentWindowsForScopeMetrics(ctx, f.tenantA, quota.ScopeUser, scopeID, at, []quota.Metric{quota.MetricCostUSD})
+	if err != nil {
+		t.Fatalf("detailed model read: %v", err)
+	}
+	if len(detailed) != 2 || detailed[0].ModelSelector != quota.ModelSelectorAll || detailed[1].ModelSelector != "gpt-4.1" {
+		t.Fatalf("detailed windows=%+v; want wildcard then exact", detailed)
 	}
 }
 
@@ -172,7 +204,8 @@ func TestMeQuotaSelfScope(t *testing.T) {
 // 三个窗口、各按 metric 标记。它还守护「不能偏移」:订阅/key-control 所依赖的
 // cost-only store 方法,在其它策略也存在时仍只返回 cost_usd。
 // 变异:把查询过滤回退为单个 metric -> 多 metric 读取返回 <3 -> 转红;
-//   放宽 cost-only 方法的 metric 集合 -> 它返回 >1 -> 转红。
+//
+//	放宽 cost-only 方法的 metric 集合 -> 它返回 >1 -> 转红。
 func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -233,13 +266,14 @@ func TestMeQuotaMultiMetricWindows_Integration(t *testing.T) {
 
 // TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly 在涉及金钱的 api_key scope 上
 // 钉住「不能偏移」不变量。key-control 的 UsedUSD
-//(userkeycontrols/key_control_service.go)以 ScopeAPIKey 调用
+// (userkeycontrols/key_control_service.go)以 ScopeAPIKey 调用
 // ListCurrentWindowsForScope,并对返回的每个窗口求 settled+reserved 之和,
 // 且 Go 侧没有 metric 过滤 —— 因此一旦 cost-only 方法放宽到非 cost 的 metric,
 // UsedUSD 就会被污染(一个 request 计数 + 一个 token 计数被加进 USD)。
 // 上面多 metric 测试里的 ScopeUser 守卫覆盖不到这个 scope。
 // 变异:在 pg_store_window_reads.go 中把 cost-only 的 metric 集合放宽到包含
-//   requests/tokens -> 在 api_key scope 这里会返回 3 个窗口 -> 转红。
+//
+//	requests/tokens -> 在 api_key scope 这里会返回 3 个窗口 -> 转红。
 func TestQuotaCostOnlyMethod_APIKeyScopeStaysCostOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

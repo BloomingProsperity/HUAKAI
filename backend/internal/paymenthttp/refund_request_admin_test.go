@@ -23,6 +23,12 @@ func TestAdminRefundRequestApproveRefundsOnce(t *testing.T) {
 	ctx := context.Background()
 	svc := payment.NewService(payment.NewMemoryStore())
 	order := createCompletedTopupForRefundRequest(t, ctx, svc, 5, 7, 1200, "approve-once")
+	if _, err := svc.RefundOrder(ctx, payment.RefundOrderInput{
+		TenantID: 5, OrderID: order.ID, AmountCents: 200,
+		IdempotencyKey: "approve-once-prior", ActorKind: payment.ActorKindAdmin, ActorID: 99,
+	}); err != nil {
+		t.Fatalf("prior partial refund: %v", err)
+	}
 	recorder := NewMemoryRefundRequestRecorderWithRefunds(svc)
 	req := createRefundRequestForAdminTest(t, ctx, recorder, 5, 7, order.ID, "user asked")
 	router := newRefundRequestAdminRouter(svc, recorder)
@@ -37,7 +43,7 @@ func TestAdminRefundRequestApproveRefundsOnce(t *testing.T) {
 		t.Fatalf("balance after first approve: %v", err)
 	}
 	if balance.AmountCents != 0 {
-		t.Fatalf("balance after first approve=%d want 0 (full refund)", balance.AmountCents)
+		t.Fatalf("balance after first approve=%d want 0（审批只补齐此前部分冲正的剩余金额）", balance.AmountCents)
 	}
 
 	second := postRefundRequestAdminJSON(router, "/payments/refund-requests/"+itoa(req.ID)+"/approve", `{"tenant_id":5}`)

@@ -23,19 +23,6 @@ func (q *Queries) AcquireBindingConcurrencyLock(ctx context.Context, bindingID i
 	return err
 }
 
-const releaseBindingConcurrencyLock = `-- name: ReleaseBindingConcurrencyLock :one
-SELECT pg_advisory_unlock(
-    hashtextextended('pool_binding_concurrency'::text, $1::bigint)
-)::boolean
-`
-
-func (q *Queries) ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error) {
-	row := q.db.QueryRow(ctx, releaseBindingConcurrencyLock, bindingID)
-	var pg_advisory_unlock bool
-	err := row.Scan(&pg_advisory_unlock)
-	return pg_advisory_unlock, err
-}
-
 const countActiveBindingAcquisitions = `-- name: CountActiveBindingAcquisitions :one
 SELECT COUNT(*)::bigint
 FROM pool_slot_acquisitions
@@ -45,9 +32,9 @@ WHERE binding_id = $1::bigint
 
 func (q *Queries) CountActiveBindingAcquisitions(ctx context.Context, bindingID int64) (int64, error) {
 	row := q.db.QueryRow(ctx, countActiveBindingAcquisitions, bindingID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const insertSlotAcquisition = `-- name: InsertSlotAcquisition :one
@@ -118,15 +105,31 @@ ORDER BY lease_expires_at
 LIMIT 100
 `
 
-func (q *Queries) ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcquisition, error) {
+type ListOrphanedAcquisitionsRow struct {
+	ID                int64              `db:"id" json:"id"`
+	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
+	ProviderAccountID int64              `db:"provider_account_id" json:"provider_account_id"`
+	BindingID         *int64             `db:"binding_id" json:"binding_id"`
+	AcquisitionToken  uuid.UUID          `db:"acquisition_token" json:"acquisition_token"`
+	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
+	AttemptSeq        int32              `db:"attempt_seq" json:"attempt_seq"`
+	HeartbeatAt       pgtype.Timestamptz `db:"heartbeat_at" json:"heartbeat_at"`
+	LeaseExpiresAt    pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	Status            string             `db:"status" json:"status"`
+	ReleasedAt        pgtype.Timestamptz `db:"released_at" json:"released_at"`
+	ReleaseReason     *string            `db:"release_reason" json:"release_reason"`
+	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+}
+
+func (q *Queries) ListOrphanedAcquisitions(ctx context.Context) ([]ListOrphanedAcquisitionsRow, error) {
 	rows, err := q.db.Query(ctx, listOrphanedAcquisitions)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []PoolSlotAcquisition
+	var items []ListOrphanedAcquisitionsRow
 	for rows.Next() {
-		var i PoolSlotAcquisition
+		var i ListOrphanedAcquisitionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
@@ -150,6 +153,19 @@ func (q *Queries) ListOrphanedAcquisitions(ctx context.Context) ([]PoolSlotAcqui
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseBindingConcurrencyLock = `-- name: ReleaseBindingConcurrencyLock :one
+SELECT pg_advisory_unlock(
+    hashtextextended('pool_binding_concurrency'::text, $1::bigint)
+)::boolean
+`
+
+func (q *Queries) ReleaseBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, releaseBindingConcurrencyLock, bindingID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const releaseSlotAcquisition = `-- name: ReleaseSlotAcquisition :exec

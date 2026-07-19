@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -115,7 +116,7 @@ func TestEmbeddings400DoesNotRetry(t *testing.T) {
 	selector := &embeddingRetrySelector{accounts: []int64{44, 45}}
 	dispatcher := &embeddingRetryDispatcher{steps: []upstreamResponse{{
 		status: http.StatusBadRequest,
-		body:   `{"error":"invalid input"}`,
+		body:   `{"error":{"message":"policy-match"}}`,
 	}}}
 	env.deps.Router = embeddingRetryRouter{}
 	env.deps.Selector = selector
@@ -123,15 +124,41 @@ func TestEmbeddings400DoesNotRetry(t *testing.T) {
 	env.deps.Dispatcher = dispatcher
 	env.deps.ClaimGate = claims
 	env.deps.Settler = claims
+	env.deps.Feedback = embeddingProjectionObserver()
 
 	rec := env.invoke(t, `{"model":"embed-public","input":"terminal client error"}`)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s want 422", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"code":"account_busy","message":"账号暂不可用"}}` {
+		t.Fatalf("投影错误响应=%s", got)
 	}
 	if len(selector.requests) != 1 || len(dispatcher.accounts) != 1 || len(claims.reserves) != 1 {
 		t.Fatalf("selector/dispatcher/reserve calls=%d/%d/%d want 1/1/1", len(selector.requests), len(dispatcher.accounts), len(claims.reserves))
 	}
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_client_4xx" {
+		t.Fatalf("客户端投影不得改写终态分类: %+v", claims.aborts)
+	}
+}
+
+type embeddingErrorPolicyProvider struct{}
+
+func (embeddingErrorPolicyProvider) GetAccountErrorPolicy(int64) rate.AccountErrorPolicy {
+	clientStatus := http.StatusUnprocessableEntity
+	affectHealth := false
+	return rate.AccountErrorPolicy{Rules: []rate.TempUnschedulableRule{{
+		RuleID: "busy-400", ErrorCode: http.StatusBadRequest, Keywords: []string{"policy-match"},
+		DurationMinutes: 5, ClientStatus: &clientStatus, ClientCode: "account_busy",
+		MessageMode: "custom", ClientMessage: "账号暂不可用", AffectHealth: &affectHealth,
+	}}}
+}
+
+func embeddingProjectionObserver() *upstreamfeedback.Observer {
+	return upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{
+		RateService: rate.NewUpstreamRateService(time.Now, time.Minute,
+			rate.WithAccountErrorRulesProvider(embeddingErrorPolicyProvider{})),
+	})
 }
 
 func TestEmbeddingsAbortFailureStopsBeforeRetry(t *testing.T) {

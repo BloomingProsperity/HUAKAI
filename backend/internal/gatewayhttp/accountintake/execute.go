@@ -20,6 +20,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult, error) {
@@ -53,6 +54,8 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 			ProviderAccountID:   item.ExistingAccountID,
 			AccountCredentialID: item.ExistingCredentialID,
 			CredentialVersion:   item.ExistingCredentialVersion,
+			Subscription:        item.Subscription,
+			SystemLabels:        append([]string(nil), item.SystemLabels...),
 		}
 		switch item.Action {
 		case intake.ActionSkip:
@@ -76,6 +79,17 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 				break
 			}
 			candidate := prepared.candidates[item.Index]
+			candidate, err = s.prepareExecutionCandidate(ctx, candidate)
+			if err != nil {
+				result.Status = StatusFailed
+				result.Code = "agent_task_registration_failed"
+				result.Message = "Agent Identity 任务登记失败，账号未写入"
+				break
+			}
+			if candidate.AuthMode == credentialstore.AuthModeCodexAgent {
+				privacy.Zeroize(prepared.candidates[item.Index].Payload)
+				prepared.candidates[item.Index] = candidate
+			}
 			if item.Action == intake.ActionCreate {
 				result = s.executeCreate(ctx, prepared, in, item, candidate)
 			} else {
@@ -90,6 +104,22 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 		out.Items = append(out.Items, result)
 	}
 	return out, nil
+}
+
+func (s *Service) prepareExecutionCandidate(ctx context.Context, candidate credentialacq.CredentialCandidate) (credentialacq.CredentialCandidate, error) {
+	if credentialstore.Normalize(candidate.Vendor) != credentialstore.VendorOpenAI ||
+		credentialstore.Normalize(candidate.AuthMode) != credentialstore.AuthModeCodexAgent {
+		return candidate, nil
+	}
+	if s == nil || s.agentTasks == nil {
+		return credentialacq.CredentialCandidate{}, ErrNotConfigured
+	}
+	payload, err := s.agentTasks.EnsureTask(ctx, candidate.Payload)
+	if err != nil {
+		return credentialacq.CredentialCandidate{}, err
+	}
+	candidate.Payload = payload
+	return candidate, nil
 }
 
 func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {
@@ -107,25 +137,46 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
 			return err
 		}
+		proxyID, err := s.resolveProxy(ctx, tx, prepared.input, in)
+		if err != nil {
+			return err
+		}
 		actorID := strings.TrimSpace(in.ActorID)
 		accountResult, err := accountcreate.InsertTx(ctx, tx, accountcreate.Params{
 			Insert: admindb.InsertProviderAccountParams{
-				TenantID:        prepared.input.TenantID,
-				ProviderID:      prepared.input.Account.ProviderID,
-				ChannelID:       prepared.input.Account.ChannelID,
-				Name:            accountName(prepared.input.Account.NamePrefix, expected.Index),
-				AccountType:     prepared.input.Account.AccountType,
-				Enabled:         prepared.input.Account.Enabled,
-				Credentials:     []byte(`{}`),
-				CapConcurrency:  prepared.input.Account.CapConcurrency,
-				Priority:        prepared.input.Account.Priority,
-				StaticWeight:    prepared.input.Account.StaticWeight,
-				ProbeModel:      prepared.input.Account.ProbeModel,
-				Tags:            prepared.input.Account.Tags,
-				Extra:           normalizedExtra(prepared.input.Account.Extra),
-				ModelAllowList:  prepared.input.Account.ModelAllowList,
-				CapabilityFlags: prepared.input.Account.CapabilityFlags,
-				ActorID:         optionalString(actorID),
+				TenantID:                   prepared.input.TenantID,
+				ProviderID:                 prepared.input.Account.ProviderID,
+				ChannelID:                  prepared.input.Account.ChannelID,
+				Name:                       accountName(prepared.input.Account, expected.Index),
+				AccountType:                prepared.input.Account.AccountType,
+				Enabled:                    prepared.input.Account.Enabled,
+				ExpiresAt:                  nullableTimestamp(prepared.input.Account.ExpiresAt),
+				Credentials:                []byte(`{}`),
+				CapConcurrency:             prepared.input.Account.CapConcurrency,
+				CapQueueSticky:             prepared.input.Account.CapQueueSticky,
+				CapQueueFallback:           prepared.input.Account.CapQueueFallback,
+				Priority:                   prepared.input.Account.Priority,
+				StaticWeight:               prepared.input.Account.StaticWeight,
+				UpstreamCostRatio:          prepared.input.Account.UpstreamCostRatio,
+				ProbeModel:                 prepared.input.Account.ProbeModel,
+				Tags:                       prepared.input.Account.Tags,
+				Extra:                      normalizedExtra(prepared.input.Account.Extra),
+				ModelAllowList:             prepared.input.Account.ModelAllowList,
+				CapabilityFlags:            prepared.input.Account.CapabilityFlags,
+				RPMLimit:                   prepared.input.Account.RPMLimit,
+				TPMLimit:                   prepared.input.Account.TPMLimit,
+				WindowCostLimitCents:       prepared.input.Account.WindowCostLimitCents,
+				MaxSessions:                prepared.input.Account.MaxSessions,
+				DisableCooling:             prepared.input.Account.DisableCooling,
+				RefreshLeadSeconds:         prepared.input.Account.RefreshLeadSeconds,
+				TLSFingerprintRotate:       prepared.input.Account.TLSFingerprintRotate,
+				CustomErrorCodesEnabled:    prepared.input.Account.CustomErrorCodesEnabled,
+				CustomErrorCodes:           prepared.input.Account.CustomErrorCodes,
+				PoolMode:                   prepared.input.Account.PoolMode,
+				TempUnschedulableEnabled:   prepared.input.Account.TempUnschedulableEnabled,
+				TempUnschedulableRulesJSON: normalizedRules(prepared.input.Account.TempUnschedulableRules),
+				ProxyID:                    proxyID,
+				ActorID:                    optionalString(actorID),
 			},
 			Candidate: mixedchannelrisk.Account{
 				ProviderID:  prepared.input.Account.ProviderID,
@@ -148,6 +199,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 			ExternalSubjectID:      candidate.ExternalSubjectID,
 			ExternalAccountEmail:   candidate.ExternalAccountEmail,
 			ExternalIdentitySource: candidate.AccountIDSource,
+			Subscription:           candidate.Subscription,
 		})
 		if err != nil {
 			return err
@@ -160,7 +212,10 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 			"credential_id":                metadata.ID,
 			"credential_version":           metadata.Version,
 			"batch_intake":                 true,
+			"subscription_label":           candidate.Subscription.Label(),
+			"subscription_status":          candidate.Subscription.Status,
 			"mixed_channel_risk_confirmed": expected.MixedChannelRisk != nil && expected.MixedChannelRisk.HighRisk,
+			"proxy_id":                     proxyID,
 		})
 	})
 	if err != nil {
@@ -193,8 +248,26 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
 			return err
 		}
+		proxyID, err := s.resolveProxy(ctx, tx, prepared.input, in)
+		if err != nil {
+			return err
+		}
 		version := expected.ExistingCredentialVersion
-		var err error
+		if in.ReplaceExistingConfig {
+			if err := replaceAccountConfiguration(ctx, tx, prepared.input, in, expected.ExistingAccountID, proxyID); err != nil {
+				return err
+			}
+		} else if proxyID != nil {
+			tag, err := tx.Exec(ctx, `UPDATE provider_accounts
+SET proxy_id=$1, updated_at=clock_timestamp()
+WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.input.TenantID)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return ErrExecutionStale
+			}
+		}
 		metadata, err = txStore.Rotate(ctx, credentialstore.RotateCredentialInput{
 			TenantID:               prepared.input.TenantID,
 			ProviderAccountID:      expected.ExistingAccountID,
@@ -206,6 +279,7 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 			ExternalSubjectID:      candidate.ExternalSubjectID,
 			ExternalAccountEmail:   candidate.ExternalAccountEmail,
 			ExternalIdentitySource: candidate.AccountIDSource,
+			Subscription:           candidate.Subscription,
 		})
 		if err != nil {
 			return err
@@ -216,6 +290,9 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 			"auth_mode":           candidate.AuthMode,
 			"credential_version":  metadata.Version,
 			"batch_intake":        true,
+			"subscription_label":  candidate.Subscription.Label(),
+			"subscription_status": candidate.Subscription.Status,
+			"proxy_id":            proxyID,
 		})
 	})
 	if err != nil {
@@ -232,6 +309,24 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 	result.CredentialVersion = metadata.Version
 	s.initializeHealth(ctx, &result, prepared.input.TenantID, expected.ExistingAccountID, metadata)
 	return result
+}
+
+func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, plan PlanInput, execution ExecuteInput) (*int64, error) {
+	if plan.Account.Proxy == nil {
+		return nil, nil
+	}
+	if s == nil || s.proxies == nil {
+		return nil, ErrNotConfigured
+	}
+	id, err := s.proxies.ResolveTx(ctx, tx, ProxyResolveInput{
+		TenantID: plan.TenantID, Material: *plan.Account.Proxy,
+		ActorID: strings.TrimSpace(execution.ActorID), ActorRole: execution.ActorRole,
+		RequestID: strings.TrimSpace(execution.RequestID), Reason: strings.TrimSpace(execution.Reason),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
 }
 
 func ensureStableItem(ctx context.Context, store *credentialstore.Store, in PlanInput, candidate credentialacq.CredentialCandidate, expected intake.Item) error {
@@ -313,18 +408,16 @@ func baseExecutionItem(item intake.Item) ExecutionItem {
 		ProviderAccountID:   item.ExistingAccountID,
 		AccountCredentialID: item.ExistingCredentialID,
 		CredentialVersion:   item.ExistingCredentialVersion,
+		Subscription:        item.Subscription,
+		SystemLabels:        append([]string(nil), item.SystemLabels...),
 	}
 }
 
-func accountName(prefix string, index int) string {
-	return fmt.Sprintf("%s-%03d", strings.TrimSpace(prefix), index+1)
-}
-
-func normalizedExtra(raw json.RawMessage) []byte {
-	if len(raw) == 0 {
-		return []byte(`{}`)
+func accountName(account AccountDefaults, index int) string {
+	if account.ExactName != "" {
+		return account.ExactName
 	}
-	return append([]byte(nil), raw...)
+	return fmt.Sprintf("%s-%03d", strings.TrimSpace(account.NamePrefix), index+1)
 }
 
 func confirmationSet(values []string) map[string]struct{} {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
+	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -24,6 +25,10 @@ var (
 type refundRequestMoneyService interface {
 	GetOrder(context.Context, int64, int64) (payment.Order, error)
 	RefundOrder(context.Context, payment.RefundOrderInput) (payment.RefundResult, error)
+}
+
+type refundRequestMoneyServiceInTx interface {
+	RefundOrderInTx(context.Context, pgx.Tx, payment.RefundOrderInput) (payment.RefundResult, error)
 }
 
 type refundRequestDecisionRequest struct {
@@ -151,6 +156,7 @@ func (m *memoryRefundRequestRecorder) ApproveRefundRequest(ctx context.Context, 
 		TenantID:       tenantID,
 		OrderID:        req.OrderID,
 		AmountCents:    order.AmountCents,
+		RequireExact:   true,
 		IdempotencyKey: refundRequestIdempotencyKey(req.ID),
 		Reason:         req.Reason,
 		ActorKind:      payment.ActorKindAdmin,

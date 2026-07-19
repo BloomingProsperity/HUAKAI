@@ -57,7 +57,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 	}
 	pending := refundVisibleReceipt(t, formatter, ctx, requestID, audit.ReceiptValidationStateMismatchPending)
 	store := newRefundVisibleReceiptStore(pending)
-	worker := audit.NewMismatchRefundWorker(audit.NewMemoryRefundPendingStore(), &refundVisibleSettler{}, formatter,
+	worker := audit.NewMismatchRefundWorker(&refundVisiblePendingStore{}, &refundVisibleSettler{}, formatter,
 		audit.WithRefundLedger(ledger),
 		audit.WithRefundReceiptSink(store),
 		audit.WithRefundNow(func() time.Time { return now }))
@@ -177,6 +177,19 @@ func cloneRefundVisibleReceipt(receipt *audit.CostReceipt) *audit.CostReceipt {
 
 type refundVisibleSettler struct{}
 
+type refundVisiblePendingStore struct{}
+
+func (*refundVisiblePendingStore) EnsurePending(_ context.Context, payload audit.MismatchRefundPayload) (audit.RefundPendingRecord, error) {
+	return audit.RefundPendingRecord{
+		ClaimID: payload.ClaimID, RequestID: payload.RequestID,
+		DeltaMicroUSD: payload.DeltaMicroUSD, Status: "pending",
+	}, nil
+}
+
+func (*refundVisiblePendingStore) MarkCompleted(context.Context, int64, time.Time) error { return nil }
+
+func (*refundVisiblePendingStore) MarkFailed(context.Context, int64) error { return nil }
+
 func (s *refundVisibleSettler) Settle(context.Context, billing.SettleRequest) (*billing.SettleResult, error) {
 	return &billing.SettleResult{}, nil
 }
@@ -191,8 +204,10 @@ func (s *refundVisibleSettler) CommitCacheHit(context.Context, billing.SettleReq
 
 func (s *refundVisibleSettler) Refund(_ context.Context, req billing.RefundRequest) (*billing.RefundResult, error) {
 	return &billing.RefundResult{
-		RefundMicroUSD: req.AmountMicroUSD,
-		BillingEventID: 313,
-		AdjustmentRef:  "billing_event:313",
+		RefundMicroUSD:  req.AmountMicroUSD,
+		BillingEventID:  313,
+		AdjustmentRef:   "billing_event:313",
+		CoveredMicroUSD: req.AmountMicroUSD,
+		BalanceCredited: true,
 	}, nil
 }

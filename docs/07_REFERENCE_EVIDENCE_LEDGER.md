@@ -424,4 +424,4 @@ UTC timestamp: 2026-07-14
 - Link or cite public evidence when possible.
 - Each parity matrix row should point to at least one evidence ID.
 - Every behavior evidence row must reference the license tier of its source via the corresponding E-LIC-XXX row.
-- New references added to [06_REFERENCE_PROJECTS.md](06_REFERENCE_PROJECTS.md) must first receive a license verification row here before any behavior evidence is captured.
+- 新参考项目进入 [持续跟踪合同](24_REFERENCE_TRACKING_POLICY.md) 前，必须先在本台账登记许可证证据，之后才能采集行为证据。

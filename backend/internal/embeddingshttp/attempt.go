@@ -27,6 +27,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallb
 		AttemptSeq:          attemptSeq,
 		CapabilityFlags:     ex.attempt.RequiredCapabilities,
 		SessionHash:         ex.payloadHash,
+		RequestID:           ex.requestID,
 		Vendor:              pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily),
 		UserGroup:           ex.ident.UserGroup,
 		SelectionMode:       ex.attempt.SelectionMode,
@@ -135,8 +136,8 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 	// 非 2xx 必须先于空 body 判定:400/401 常带空 body,先判空会把终态客户端错误
 	// 伪装成可重试的 empty_response。
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		ex.observeHTTPError(res, raw)
-		failure := fallbackexec.UpstreamFailure(res.StatusCode, res.Headers, raw, ex.accInfo.Platform)
+		observed := ex.observeHTTPError(res, raw)
+		failure := fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)
 		if ex.abortWithError(w, failure.AbortReason, 0) != nil {
 			// abort 失败=预留状态不明,终态不再换号(防双份扣费);仍按上游语义回
 			// 客户端,X-Huakai-Abort-Failed 头已由 abort 助手落下。
@@ -189,7 +190,7 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 
 // feedbackAttempt 组装喂给账号健康 FSM 的一次尝试上下文。
 func (ex *execution) feedbackAttempt() upstreamfeedback.Attempt {
-	return upstreamfeedback.Attempt{
+	attempt := upstreamfeedback.Attempt{
 		TenantID:       ex.ident.TenantID,
 		Account:        ex.accInfo,
 		ProtocolFamily: ex.resolved.ProtocolFamily,
@@ -197,11 +198,15 @@ func (ex *execution) feedbackAttempt() upstreamfeedback.Attempt {
 		RequestID:      ex.requestID,
 		StartedAt:      ex.startedAt,
 	}
+	if binding, ok := ex.resolved.BindingForAttempt(ex.attempt.BindingID, ex.attempt.PoolGroupID); ok {
+		attempt.StatusCodeMapping = binding.StatusCodeMapping
+	}
+	return attempt
 }
 
 // observeDispatchError/observeChannelError/observeHTTPError/observeSuccess 把上游结果喂账号健康
 // FSM(upstreamfeedback→channelhealth.ApplySignal),坏号据此冷却→下次选号自动跳过(自动换号)。
-// 决策/路由归 fallbackexec,此处只取健康副作用,有返回值一律丢弃;nil Feedback 时 no-op。
+// 决策/路由归 fallbackexec；Observer 追加账号客户端投影与健康副作用，nil 时仍用同一静态分类。
 func (ex *execution) observeDispatchError(err error) {
 	if ex.d.Feedback != nil {
 		_ = ex.d.Feedback.ObserveDispatchError(ex.ctx, ex.feedbackAttempt(), err)
@@ -214,10 +219,12 @@ func (ex *execution) observeChannelError(statusCode int) {
 	}
 }
 
-func (ex *execution) observeHTTPError(res *gateway.DispatchResult, raw []byte) {
+func (ex *execution) observeHTTPError(res *gateway.DispatchResult, raw []byte) upstreamfeedback.HTTPFailure {
+	attempt := ex.feedbackAttempt()
 	if ex.d.Feedback != nil {
-		_ = ex.d.Feedback.ObserveHTTPError(ex.ctx, ex.feedbackAttempt(), res.StatusCode, res.Headers, raw)
+		return ex.d.Feedback.ObserveHTTPError(ex.ctx, attempt, res.StatusCode, res.Headers, raw)
 	}
+	return upstreamfeedback.ClassifyHTTPError(attempt, res.StatusCode, res.Headers, raw)
 }
 
 func (ex *execution) observeSuccess(res *gateway.DispatchResult) {

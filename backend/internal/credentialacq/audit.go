@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	EventStarted   = "credential_acquisition_started"
-	EventCompleted = "credential_acquisition_completed"
-	EventFailed    = "credential_acquisition_failed"
-	EventCancelled = "credential_acquisition_cancelled"
+	EventStarted     = "credential_acquisition_started"
+	EventCompleted   = "credential_acquisition_completed"
+	EventFailed      = "credential_acquisition_failed"
+	EventCancelled   = "credential_acquisition_cancelled"
+	EventPollWaiting = "credential_acquisition_poll_waiting"
 )
 
 var acqSecretKeyPattern = regexp.MustCompile(`(?i)(access[_-]?token|refresh[_-]?token|session[_-]?token|api[_-]?key|private[_-]?key|authorization|cookie|secret|pkce|code|verifier)`)

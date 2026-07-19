@@ -286,6 +286,15 @@ func normalizeStoredSetting(row StoredSetting, source string) (StoredSetting, er
 	if err != nil {
 		return StoredSetting{}, err
 	}
+	// 带版本前缀的 secret 值是 at-rest 密文,值校验只能对明文跑:JSON 结构的 secret(审核 keys /
+	// OAuth secrets)按密文解析必挂,会让原子写路径存不进、List 遇密文行整页报错。明文在加密前
+	// 已校验、解密读路径还会再 normalize,密文这里只归一元数据。
+	if IsSecretKey(key) && strings.HasPrefix(row.Value, secretEncPrefix) {
+		row.Scope = GlobalScope
+		row.Key = key
+		row.Source = source
+		return row, nil
+	}
 	value, err := ValidateValue(key, row.Value)
 	if err != nil {
 		return StoredSetting{}, err

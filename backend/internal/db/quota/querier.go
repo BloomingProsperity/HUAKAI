@@ -9,55 +9,49 @@ import (
 )
 
 type Querier interface {
-	// 本地 scope 并发槽; DB 函数按 tenant/scope 锁行串行化 COUNT+UPSERT。
+	// HUAKAI 本地 scope 并发槽。
+	// 数据库函数按 tenant/scope 锁行，串行化 COUNT 与写入。
 	AcquireQuotaConcurrencySlot(ctx context.Context, arg AcquireQuotaConcurrencySlotParams) (AcquireQuotaConcurrencySlotRow, error)
-	// Settle 阶段把 reserved 转为 settled, actual 超出部分进入 overage 供审计和后续拒绝。
+	// 结算阶段把 reserved 转为 settled，实际超出部分进入 overage。
 	ApplyQuotaWindowSettlement(ctx context.Context, arg ApplyQuotaWindowSettlementParams) (ApplyQuotaWindowSettlementRow, error)
-	// 补偿成功后终结 job。
 	CompleteQuotaReconciliationJob(ctx context.Context, arg CompleteQuotaReconciliationJobParams) (int64, error)
-	// B1 wrapper 的补偿队列; 同一 claim/kind 的 queued/running job 幂等合并。
+	// HUAKAI 配额补偿队列、跨租户清扫与 claim 终态复核。
+	// 同一 claim/kind 的 queued/running job 幂等合并。
 	EnqueueQuotaReconciliationJob(ctx context.Context, arg EnqueueQuotaReconciliationJobParams) (EnqueueQuotaReconciliationJobRow, error)
-	// 租户内 lease 过期清理, 不写 provider cooldown。
 	ExpireQuotaConcurrencySlots(ctx context.Context, arg ExpireQuotaConcurrencySlotsParams) (int64, error)
-	// 补偿失败后按调用方给出的 next_run_at 重新排队。
 	FailQuotaReconciliationJob(ctx context.Context, arg FailQuotaReconciliationJobParams) (int64, error)
-	// claim_id + tenant_id 是 reservation 幂等键。
+	GetBillingClaimTerminalState(ctx context.Context, arg GetBillingClaimTerminalStateParams) (GetBillingClaimTerminalStateRow, error)
+	// HUAKAI claim 级配额预留账本。所有读写都显式携带 tenant_id。
 	GetQuotaReservationByClaimForUpdate(ctx context.Context, arg GetQuotaReservationByClaimForUpdateParams) (GetQuotaReservationByClaimForUpdateRow, error)
-	// Reserve/settle 事务内锁住一个租户窗口。
 	GetQuotaWindowForUpdate(ctx context.Context, arg GetQuotaWindowForUpdateParams) (GetQuotaWindowForUpdateRow, error)
-	// request_count 镜像辅助; Reserve 准入使用 IncrementQuotaWindowReserved 的 Model B 计数。
+	// request_count 只作为镜像，准入使用 reserved_value + settled_value。
 	IncrementQuotaWindowRequestCount(ctx context.Context, arg IncrementQuotaWindowRequestCountParams) (IncrementQuotaWindowRequestCountRow, error)
-	// Cost enforce: reserved + settled + delta 不得超过调用方传入的策略上限。
+	// reserved + settled + delta 不得超过调用方传入的策略上限。
 	IncrementQuotaWindowReserved(ctx context.Context, arg IncrementQuotaWindowReservedParams) (IncrementQuotaWindowReservedRow, error)
-	// 配额审计事件; deny/overage/reconcile 都只写 quota audit。
+	// HUAKAI 配额日志写入。
 	InsertQuotaAuditEvent(ctx context.Context, arg InsertQuotaAuditEventParams) (InsertQuotaAuditEventRow, error)
-	// 新 claim 的配额预留记录; 幂等冲突由 GetQuotaReservationByClaimForUpdate 先判定。
 	InsertQuotaReservation(ctx context.Context, arg InsertQuotaReservationParams) (InsertQuotaReservationRow, error)
-	// HUAKAI 配额子系统 Slice A sqlc 查询骨架。
-	// 本文件先锁定查询边界; sqlc 生成包留到切片 B 接入实现时再加。
-	// 约束: 所有读写定位都显式带 tenant_id, 防跨租户误读/误改。
-	// Reserve 前按租户、scope、metric 取当前可用策略; scopes 为 [{"kind": "...", "id": "..."}]。
+	// HUAKAI 配额策略读取。所有查询都显式携带 tenant_id。
+	// Reserve 前按租户、scope、模型与 metric 取当前可用策略。
 	ListActiveQuotaPoliciesForScopes(ctx context.Context, arg ListActiveQuotaPoliciesForScopesParams) ([]ListActiveQuotaPoliciesForScopesRow, error)
-	// Active quota-window read projection: policies for one tenant/scope filtered to the
-	// requested metrics, plus the current window counters. Cost-only callers (subscription
-	// progress, key-control) pass {cost_usd} to preserve their original behaviour; the
-	// self-service /quota read passes the window-shaped metrics (requests/cost_usd/tokens).
+	// 返回一个 scope 的当前窗口明细；model_selector 为空时返回全部模型维度。
 	ListCurrentQuotaWindowsForScope(ctx context.Context, arg ListCurrentQuotaWindowsForScopeParams) ([]ListCurrentQuotaWindowsForScopeRow, error)
-	// 租户内领取到期 job; 后续切片 B 决定 worker 调度粒度。
 	ListDueQuotaReconciliationJobs(ctx context.Context, arg ListDueQuotaReconciliationJobsParams) ([]ListDueQuotaReconciliationJobsRow, error)
-	// worker 领取 job 后标记 running; 超过 15 分钟的 running 视为可回收 lease。
+	// 找出 lease 过期、claim 已终态且无补偿任务或未投递结算事件的孤儿预留。
+	ListStaleReservedQuotaReservations(ctx context.Context, arg ListStaleReservedQuotaReservationsParams) ([]ListStaleReservedQuotaReservationsRow, error)
+	// due 条件与单租户领取保持一致，供全局 worker 公平轮转。
+	ListTenantsWithDueQuotaReconciliationJobs(ctx context.Context, arg ListTenantsWithDueQuotaReconciliationJobsParams) ([]int64, error)
 	MarkQuotaReconciliationJobRunning(ctx context.Context, arg MarkQuotaReconciliationJobRunningParams) (int64, error)
-	// 独立 quota settle/release 失败时标记 reservation, 后台 job 幂等重试。
 	MarkQuotaReservationReconciliationNeeded(ctx context.Context, arg MarkQuotaReservationReconciliationNeededParams) (int64, error)
-	// released/expired claim 重试通过重新评估后, 复用原 reservation 行重建持有。
+	// 仅为仍处于 aborted 终态的 claim 建立释放恢复资格。
+	PrepareQuotaReleaseRecovery(ctx context.Context, arg PrepareQuotaReleaseRecoveryParams) (int64, error)
+	// released/expired claim 重试通过重新评估后复用原预留行。
 	ReactivateQuotaReservation(ctx context.Context, arg ReactivateQuotaReservationParams) (ReactivateQuotaReservationRow, error)
-	// 按 reservation 幂等释放所有本地并发槽。
 	ReleaseQuotaConcurrencySlotsByReservation(ctx context.Context, arg ReleaseQuotaConcurrencySlotsByReservationParams) (int64, error)
-	// Abort/cache-hit/retry 放弃路径释放 reservation; 调用方同时释放并发槽。
 	ReleaseQuotaReservation(ctx context.Context, arg ReleaseQuotaReservationParams) (int64, error)
-	// Billing commit 后独立事务结算 quota; 失败由 reconciliation job 收敛。
 	SettleQuotaReservation(ctx context.Context, arg SettleQuotaReservationParams) (int64, error)
-	// 为 policy/window_start 建立或复用窗口行; 唯一键为 (tenant_id, policy_id, window_start)。
+	// HUAKAI 配额窗口写入。所有读写都由 tenant_id 与窗口主键共同定位。
+	// 为 policy/window_start 建立或复用窗口行。
 	UpsertQuotaWindow(ctx context.Context, arg UpsertQuotaWindowParams) (UpsertQuotaWindowRow, error)
 }
 

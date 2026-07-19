@@ -46,7 +46,7 @@ security:
 
 tags:
   - name: health
-    description: Process-local liveness probes.
+    description: 进程存活与运行依赖就绪探测。
   - name: gateway
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
   - name: hermes
@@ -127,6 +127,8 @@ tags:
     description: Platform-admin public model discovery metadata controls.
   - name: admin-model-sync
     description: Platform-admin trigger for dynamic vendor model catalog synchronization.
+  - name: admin-model-discovery
+    description: 平台管理员查看、上架或忽略上游发现的新模型。
   - name: admin-dlq
     description: Usage Record DLQ replay. F-OBS-001.
 
@@ -163,6 +165,45 @@ paths:
       responses:
         '200':
           description: Gateway process is alive; response body is empty.
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: 网关运行依赖就绪探测
+      operationId: getReadyz
+      security: []
+      x-huakai-spec-source:
+        - backend/internal/healthhttp/readiness.go
+        - backend/cmd/gateway/routes.go
+      description: |
+        仅当完整启动已完成、PostgreSQL 可用、Rust TLS sidecar 的协议、能力与
+        必需内置 profile 全部可用，并且进程未进入优雅关停时返回 200。
+      responses:
+        '200':
+          description: 网关可接收新流量。
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  checks:
+                    type: object
+                    additionalProperties: { type: string, enum: [ok] }
+        '503':
+          description: 网关尚未就绪、依赖失败或正在优雅关停。
+    head:
+      tags: [health]
+      summary: 无响应体的网关就绪探测
+      operationId: headReadyz
+      security: []
+      x-huakai-spec-source:
+        - backend/internal/healthhttp/readiness.go
+        - backend/cmd/gateway/routes.go
+      responses:
+        '200': { description: 网关可接收新流量，响应体为空。 }
+        '503': { description: 网关当前不可接收新流量，响应体为空。 }
 
   # ==========================================================================
   # Gateway endpoints (client-facing relay)
@@ -1263,6 +1304,24 @@ paths:
         - backend/internal/sunoclient/translate.go
       security:
         - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SunoTaskRequest' }
+      responses:
+        '202':
+          description: Suno task accepted for async provider submission and polling.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /video/submit:
     post:
       tags: [video]
@@ -1282,10 +1341,6 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/SunoTaskRequest' }
-      responses:
-        '202':
-          description: Suno task accepted for async provider submission and polling.
             schema: { $ref: '#/components/schemas/VideoTaskRequest' }
       responses:
         '202':
@@ -1344,13 +1399,6 @@ paths:
       operationId: fetchSunoTaskByQuery
       x-huakai-spec-source:
         - backend/internal/sunoclient/router.go
-  /video/fetch:
-    get:
-      tags: [video]
-      summary: Fetch or list video generation tasks
-      operationId: fetchVideoTask
-      x-huakai-spec-source:
-        - backend/internal/videoclient/router.go
       security:
         - sessionBearerAuth: []
       parameters:
@@ -1370,6 +1418,24 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /video/fetch:
+    get:
+      tags: [video]
+      summary: Fetch or list video generation tasks
+      operationId: fetchVideoTask
+      x-huakai-spec-source:
+        - backend/internal/videoclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: false
           description: Optional task id. When omitted, the route lists caller-owned video tasks.
           schema: { type: integer, format: int64, minimum: 1 }
         - name: task_id
@@ -1407,6 +1473,21 @@ paths:
       operationId: fetchSunoTask
       x-huakai-spec-source:
         - backend/internal/sunoclient/router.go
+      security:
+        - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
+      responses:
+        '200':
+          description: Caller-owned Suno task status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /video/fetch/{id}:
     get:
       tags: [video]
@@ -1420,7 +1501,6 @@ paths:
         - $ref: '#/components/parameters/ResourceId'
       responses:
         '200':
-          description: Caller-owned Suno task status.
           description: Caller-owned video task status.
           content:
             application/json:
@@ -2011,12 +2091,12 @@ paths:
     get:
       summary: System health aggregation
       description: >
-        ADMIN-042. Read-only aggregated system health snapshot for operators.
-        Aggregates channelhealth summary, DLQ pending depth, alerting firing
-        event count, and DB ping. No upstream paid calls; zero billing side effects.
-        Requires platform-admin or tenant-operator credential.
+        ADMIN-042。部署级只读系统健康快照，聚合数据库、渠道、DLQ、告警、
+        服务器实例监测和当前 Go 进程状态。不发起上游调用，没有计费副作用。
+        仅 platform_admin 可读，tenant operator 与普通用户不可见。
       operationId: getAdminSystemHealth
       tags: [admin, observability]
+      x-huakai-required-role: platform_admin
       responses:
         '200':
           description: Health aggregation response.
@@ -2027,27 +2107,144 @@ paths:
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
 
+  /v1/admin/system/nodes:
+    get:
+      summary: 列出网关服务器实例
+      description: >
+        返回内置 gateway 实例的当前投影。online 由最近活动时间和服务端离线窗口计算；
+        指标失败时对应值为 null，并在 metric_states 与 active_error_classes 中明确标记。
+        不返回真实主机名、IP、硬件序列或进程命令行。仅 platform_admin 可读。
+      operationId: listAdminSystemNodes
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 }
+      responses:
+        '200':
+          description: 当前服务器实例列表。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorNodeListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/system/nodes/{node_id}:
+    get:
+      summary: 读取单个网关服务器实例
+      description: 返回一个内置 gateway 实例的当前资源状态、采集状态与最近恢复信息。
+      operationId: getAdminSystemNode
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/ServerMonitorNodeID'
+      responses:
+        '200':
+          description: 服务器实例当前详情。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorNodeDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '404': { description: 节点不存在或已超过保留期。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/system/nodes/{node_id}/history:
+    get:
+      summary: 读取网关服务器实例历史
+      description: >
+        原始历史分辨率为一分钟，空时间桶保持缺失，不补零。minute 最多查询 7 天；
+        15m 最多查询 30 天，并取每个 15 分钟桶内最后一份真实样本。
+      operationId: getAdminSystemNodeHistory
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/ServerMonitorNodeID'
+        - name: from
+          in: query
+          description: RFC3339 起点；缺省为 to 前 24 小时。
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: RFC3339 终点；缺省为当前时间。
+          schema: { type: string, format: date-time }
+        - name: bucket
+          in: query
+          schema: { type: string, enum: [minute, 15m], default: minute }
+      responses:
+        '200':
+          description: 服务器实例历史；gap_semantics 固定为 missing。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorHistoryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '404': { description: 节点不存在或已超过保留期。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/admin/ops/runtime-logs:
     get:
-      summary: Query captured runtime logs (warn and above)
+      summary: Query classified runtime logs
       description: >
-        分页查询运行日志(异步 sink 只采集 warn+ 级别,批量入库;stderr 输出照旧)。
+        分页查询统一运行日志。显式分类的 Info 与全部 Warn/Error 由异常优先双队列异步入库；
+        每条记录带稳定分类、事件、结果、错误和关联字段，stderr 输出照旧。
         键集分页 id 降序(新→旧):用响应的 next_before_id 作为下一页 before_id;
-        前端以短间隔轮询无 before_id 的首页即得"实时"视图。platform_admin only
-        (运行日志是进程级平台数据,无租户列)。
+        前端以短间隔轮询无 before_id 的首页即得"实时"视图。platform_admin only。
+        本端点不汇总其他权限域的领域日志。
       operationId: listAdminRuntimeLogs
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
       parameters:
         - name: level
           in: query
-          schema: { type: string, enum: [warn, error] }
+          schema: { type: string, enum: [info, warn, error] }
+        - name: category
+          in: query
+          schema: { type: string, enum: [operation, financial, security, error, access, recovery] }
+        - name: event_type
+          in: query
+          schema: { type: string, pattern: '^[a-z][a-z0-9_.-]{0,127}$' }
+        - name: result
+          in: query
+          schema: { type: string, enum: [success, denied, client_failure, server_failure, canceled, partial, timeout, unknown] }
+        - name: error_class
+          in: query
+          schema: { $ref: '#/components/schemas/RuntimeLogErrorClass' }
+        - name: error_code
+          in: query
+          schema: { type: string, pattern: '^[a-z][a-z0-9_.-]{0,127}$' }
         - name: component
           in: query
           schema: { type: string }
+        - name: actor_kind
+          in: query
+          schema: { type: string, enum: [system, platform_admin, tenant_admin, user, api_key, unknown] }
+        - name: tenant_id
+          in: query
+          schema: { type: integer, format: int64, minimum: 1 }
         - name: request_id
           in: query
           schema: { type: string }
+        - name: trace_id
+          in: query
+          schema: { type: string }
+        - name: upstream_request_id
+          in: query
+          schema: { type: string }
+        - name: idempotency_key
+          in: query
+          schema: { type: string }
+        - name: recovery_state
+          in: query
+          schema: { type: string, enum: [none, pending, retrying, recovered, quarantined, operator_required, failed] }
         - name: before_id
           in: query
           schema: { type: integer, format: int64, minimum: 1 }
@@ -2067,8 +2264,11 @@ paths:
 
   /v1/admin/ops/runtime-logs/cleanup:
     post:
-      summary: Delete runtime logs older than a timestamp
-      description: 保留策略由运营者掌控:删除 before 之前的运行日志,返回删除行数。platform_admin only。
+      summary: Trigger fixed global 30-day log retention
+      description: >
+        手工触发与后台任务完全相同的全局 30 天日志保留策略。调用方不能提供截止时间、
+        不能清空全表，也不能删除 30 天内日志；需要显式 confirm=true，且管理操作日志写入失败时拒绝执行。
+        资金账本、幂等事实、处罚状态和待恢复任务不在普通日志白名单内。platform_admin only。
       operationId: cleanupAdminRuntimeLogs
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
@@ -2079,7 +2279,7 @@ paths:
             schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupRequest' }
       responses:
         '200':
-          description: Number of deleted rows.
+          description: Fixed-policy cleanup result and per-table/category counts.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminRuntimeLogsCleanupResponse' }
@@ -2091,7 +2291,9 @@ paths:
   /v1/admin/ops/runtime-logs/health:
     get:
       summary: Runtime log sink health
-      description: 采集 sink 观测:队列积压、累计入库、累计丢弃(超载/DB 故障)、最后成功落库时刻。platform_admin only。
+      description: >
+        同时返回异常优先/Info 队列容量、入库与丢弃计数，以及固定 30 天保留器的最近尝试、
+        成功、积压、租约冲突和失败分类。platform_admin only。
       operationId: getAdminRuntimeLogSinkHealth
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
@@ -2100,7 +2302,7 @@ paths:
           description: Sink health counters.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AdminRuntimeLogSinkHealth' }
+              schema: { $ref: '#/components/schemas/AdminRuntimeLogHealthResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
@@ -2196,9 +2398,10 @@ paths:
   /admin/v1/system/health:
     get:
       summary: System health aggregation (alias)
-      description: Alias for /v1/admin/system/health for UI compatibility.
+      description: /v1/admin/system/health 的兼容别名，仅 platform_admin 可读。
       operationId: getAdminSystemHealthAlias
       tags: [admin, observability]
+      x-huakai-required-role: platform_admin
       responses:
         '200':
           description: Health aggregation response.
@@ -2208,6 +2411,82 @@ paths:
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role. }
         '503': { description: Health source not configured. }
+
+  /admin/v1/system/nodes:
+    get:
+      summary: 列出网关服务器实例（兼容别名）
+      description: 与 /v1/admin/system/nodes 完全相同，仅 platform_admin 可读。
+      operationId: listAdminSystemNodesAlias
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 }
+      responses:
+        '200':
+          description: 当前服务器实例列表。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorNodeListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/system/nodes/{node_id}:
+    get:
+      summary: 读取单个网关服务器实例（兼容别名）
+      description: 与 /v1/admin/system/nodes/{node_id} 完全相同，仅 platform_admin 可读。
+      operationId: getAdminSystemNodeAlias
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/ServerMonitorNodeID'
+      responses:
+        '200':
+          description: 服务器实例当前详情。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorNodeDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '404': { description: 节点不存在或已超过保留期。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/system/nodes/{node_id}/history:
+    get:
+      summary: 读取网关服务器实例历史（兼容别名）
+      description: 与 /v1/admin/system/nodes/{node_id}/history 完全相同，仅 platform_admin 可读。
+      operationId: getAdminSystemNodeHistoryAlias
+      tags: [admin, observability]
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/ServerMonitorNodeID'
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: bucket
+          in: query
+          schema: { type: string, enum: [minute, 15m], default: minute }
+      responses:
+        '200':
+          description: 服务器实例历史。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerMonitorHistoryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: 仅 platform_admin 可访问。 }
+        '404': { description: 节点不存在或已超过保留期。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/modules:
     get:
@@ -6788,7 +7067,7 @@ paths:
                 reason: { type: string }
       responses:
         '200':
-          description: Order refunded, or existing refund returned on idempotent replay.
+          description: 已记录部分或最终累计退款；幂等重放时返回既有退款事实。
           content:
             application/json:
               schema:
@@ -6797,7 +7076,10 @@ paths:
                   order: { type: object }
                   refund: { type: object }
                   balance_cents: { type: integer, format: int64 }
+                  cumulative_refunded_cents: { type: integer, format: int64, minimum: 0 }
+                  remaining_refundable_cents: { type: integer, format: int64, minimum: 0 }
                   idempotent: { type: boolean }
+                  already_satisfied: { type: boolean }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -9600,7 +9882,7 @@ paths:
         Returns the tenant's quota policies for the operations console. Unlike
         the reserve-path read, this admin view does NOT filter on enabled,
         mode, or the validity window — operators must see disabled, shadow, and
-        expired policies too. Optional filters: scope_kind, scope_id, metric,
+        expired policies too. Optional filters: scope_kind, scope_id, model_selector, metric,
         enabled. platform_admin callers must pass tenant_id; tenant_operator
         callers may omit it and are scoped to their admin token tenant. This is
         operational anti-abuse config: no balance or billing-ledger side effects.
@@ -9617,6 +9899,10 @@ paths:
         - in: query
           name: scope_id
           schema: { type: string }
+        - in: query
+          name: model_selector
+          description: "* 表示全模型策略，其他值为规范化后的精确公开模型别名。"
+          schema: { type: string, minLength: 1, maxLength: 255 }
         - in: query
           name: metric
           schema: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
@@ -9644,9 +9930,9 @@ paths:
       summary: Create a tenant-scoped quota policy
       operationId: createAdminQuotaPolicy
       description: |
-        Creates a quota policy (scope + metric + window + mode) for the selected
+        Creates a quota policy (scope + model + metric + window + mode) for the selected
         tenant. limit_value 0 means unlimited. Enum values are validated server
-        side before the write. A duplicate live (scope, metric, window, priority)
+        side before the write. A duplicate live (scope, model, metric, window, priority)
         policy returns 409 quota_policy_conflict. Successful mutations write an
         admin audit event (action=create_quota_policy).
       x-huakai-required-role: tenant_operator
@@ -10247,6 +10533,29 @@ paths:
           in: query
           description: One of active / error / disabled / rate_limited / overloaded / temp_unschedulable.
           schema: { type: string }
+        - name: tag
+          in: query
+          description: 精确匹配一枚人工维护的账号标签；系统套餐标签不写入该字段。
+          schema: { type: string }
+        - name: system_label
+          in: query
+          description: 按只读套餐系统标签筛选，格式为 vendor:plan，例如 openai:pro。
+          schema: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$' }
+        - name: subscription_vendor
+          in: query
+          schema: { type: string, pattern: '^[a-z0-9_]+$' }
+        - name: subscription_plan
+          in: query
+          schema: { type: string, pattern: '^[a-z0-9_]+$' }
+        - name: subscription_scope
+          in: query
+          schema: { type: string, enum: [unknown, personal, workspace] }
+        - name: subscription_status
+          in: query
+          schema: { type: string, enum: [observed, unknown_value, missing, stale, parse_failed, conflict] }
+        - name: subscription_source
+          in: query
+          schema: { type: string, enum: [provider_api, oauth_token_response, id_token_claim, access_token_claim, import_payload, operator, credential_refresh] }
       responses:
         '200':
           description: Paginated list.
@@ -10374,6 +10683,34 @@ paths:
       responses:
         '200':
           description: 已清理账号退避；返回账号和渠道限流恢复结果（不包含凭据）。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/recover:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-accounts]
+      summary: Fully recover Account state
+      operationId: recoverProviderAccountState
+      description: |
+        运维完整恢复账号原语。在同一数据库事务中把 health_state 复位为 healthy、
+        清空 health_state_until，并清除 rate_limit_reset_at、overload_until、
+        temp_unschedulable_until、model_rate_limits、openai_403_counter 等退避状态，
+        写入管理员审计（审计失败回滚）。随后把账号当前凭据版本的 channel-health 直接
+        force-active（满流量，非 1% ramp）。与 clear-rate-limit（窄口、只清限流冷却、
+        渠道走 ramp 渐进）互补：终态 revoked 账号只有本端点能恢复。若账号事务已提交而
+        渠道 force-active 失败，返回 provider_account_recovery_partial，调用方可安全重试。
+      x-huakai-spec-source: [docs/specs/rate-limiting.md]
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: 已完整恢复账号;返回账号和渠道恢复结果（不包含凭据）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderAccount' }
@@ -11035,6 +11372,41 @@ paths:
               schema: { $ref: '#/components/schemas/CredentialAcquisitionStatusResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}/poll:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64 }
+      - name: flow_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 单次探测设备授权并在成功后创建加密凭据
+      operationId: pollCredentialAcquisition
+      x-huakai-spec-source: [docs/specs/credential-acquisition.md]
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: 授权成功并完成凭据创建，或返回已完成的幂等结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionFinalizeResponse' }
+        '202':
+          description: 用户尚未完成授权，调用方应按返回间隔再次探测。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionPollPendingResponse' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { description: 设备授权流程已经过期。 }
+        '422': { description: 上游授权响应未通过安全校验。 }
+        '502': { description: 授权码换取 token 的结果不确定，需要重新发起流程。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/provider-accounts/{id}/credential-acquisitions/{flow_id}/callback:
     parameters:
       - name: id
@@ -11288,6 +11660,64 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/tenant-capabilities:
+    get:
+      tags: [admin-credential-acquisition]
+      summary: 查询某租户的管理员能力授权
+      operationId: listTenantAdminCapabilities
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅部署管理员可读；返回授权状态，不返回该租户的账号、凭据或用户数据。缺失授权按关闭展示。
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 租户能力授权列表。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantCapabilityListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenant-capabilities/{tenantID}/{capability}:
+    put:
+      tags: [admin-credential-acquisition]
+      summary: 授予或撤销某租户的管理员能力
+      operationId: setTenantAdminCapability
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅部署管理员可写。该接口只改变租户管理员能力，部署管理员仍不能代替租户执行账号导入。
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: tenantID
+          in: path
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - name: capability
+          in: path
+          required: true
+          schema: { type: string, enum: [advanced_account_intake] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TenantCapabilitySetRequest' }
+      responses:
+        '200':
+          description: 当前授权事实以及本次是否发生状态变化。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TenantCapabilitySetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/account-imports/execute:
     post:
       tags: [admin-credential-acquisition]
@@ -11363,6 +11793,324 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/codex-agent/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 预检 Codex Agent Identity 账号，不写入数据库也不访问上游
+      operationId: planCodexAgentIdentityImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅接受同租户 tenant_operator 程序令牌。服务端固定使用 openai/codex_agent_identity 与 session 账号类型，拒绝调用方覆盖厂商、鉴权模式或上游地址。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAgentIntakePlanRequest' }
+      responses:
+        '200':
+          description: 脱敏的逐项预检结果和绑定当前状态的计划哈希。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/codex-agent/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 执行重新核算后的 Codex Agent Identity 导入计划
+      operationId: executeCodexAgentIdentityImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 执行前重新核算计划并核对哈希；缺少任务标识时才访问固定任务服务。任务登记失败的项目不会创建或更新账号。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CodexAgentIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: 逐项执行结果；单项失败不会隐藏其他项目结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/claude-setup-token/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 预检 Claude Setup Token 账号导入，不写入数据库
+      operationId: planClaudeSetupTokenAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅接受同租户 tenant_operator 程序令牌。服务端固定使用 Anthropic、Claude Setup Token 鉴权模式与 OAuth 账号类型，不接受调用方覆盖这些字段。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeSetupTokenIntakePlanRequest' }
+      responses:
+        '200':
+          description: 脱敏的逐项预检结果和绑定当前状态的计划哈希。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/claude-setup-token/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 执行重新核算后的 Claude Setup Token 导入计划
+      operationId: executeClaudeSetupTokenAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 执行前重新解析输入并核对计划哈希；原始 Setup Token 只参与加密凭据写入，不进入响应或日志。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeSetupTokenIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: 逐项执行结果；单项失败不会隐藏其他项目结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/claude-cookie/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 使用 Claude Cookie 转换凭据并生成账号导入预检
+      operationId: planClaudeCookieAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅接受同租户 tenant_operator 程序令牌。Cookie 只在固定官方端点间转换，转换结果加密暂存 15 分钟；多组织会话必须由操作者明确选择，不自动猜测。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeCookiePlanRequest' }
+      responses:
+        '200':
+          description: 一次性短期流程、过期时间、组织、鉴权模式和脱敏预检结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaudeCookiePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 会话包含多个组织，响应只返回可选择的组织元数据，不返回 Cookie 或已转换凭据。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClaudeCookieOrganizationChoiceResponse' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/ServiceBusy' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/claude-cookie/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 领取一次性 Claude Cookie 转换结果并执行账号导入
+      operationId: executeClaudeCookieAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 短期流程绑定租户、操作者和计划哈希且只能领取一次；领取后立即清除暂存密文，再执行统一账号冲突、凭据加密、套餐标签和健康初始化链路。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClaudeCookieExecuteRequest' }
+      responses:
+        '200':
+          description: 逐项执行结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/crs/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 从受控 CRS 来源预览账号迁移并生成一次性执行流程
+      operationId: planCRSAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 仅接受同租户 tenant_operator 程序令牌。来源主机必须由部署者加入白名单；请求经 Rust sidecar 固定目标地址，来源凭据和代理秘密只进入短期加密暂存，不进入响应。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CRSAccountIntakePlanRequest' }
+      responses:
+        '200':
+          description: 逐账号脱敏预检结果、冲突和一次性执行流程。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CRSAccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '502': { $ref: '#/components/responses/ServiceBusy' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/crs/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 领取 CRS 一次性流程并执行账号与代理迁移
+      operationId: executeCRSAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
+      description: 执行请求只携带流程标识、计划哈希和必要确认，不再携带 CRS 密码。每个流程绑定租户与操作者且只能领取一次；代理与账号在同一数据库事务写入。
+      x-huakai-required-role: tenant_operator_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CRSAccountIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: 逐流程执行结果；单项失败不会隐藏其他项目结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CRSAccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/export/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 预检账号加密迁移包导出
+      operationId: planAccountBundleExport
+      x-huakai-spec-source: [backend/internal/accountbundle/export.go]
+      x-huakai-required-role: tenant_operator_token
+      description: 只返回账号、凭据版本和代理映射的脱敏可导出状态；不解密或返回任何秘密。多条可迁移凭据、缺失代理和跨租户账号均显式冲突。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleExportPlanRequest' }
+      responses:
+        '200':
+          description: 导出计划和二次确认短语。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountBundleExportPlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/export/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 二次确认后生成账号加密迁移包
+      operationId: executeAccountBundleExport
+      x-huakai-spec-source: [backend/internal/accountbundle/export.go]
+      x-huakai-required-role: tenant_operator_token
+      description: 重新核对账号、凭据版本和代理后，以 Argon2id 派生密钥并使用 AES-256-GCM 加密。包中不包含用户、余额、日志、额度快照或运行时健康历史。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleExportExecuteRequest' }
+      responses:
+        '200':
+          description: 可移植的加密迁移包。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountBundleExportResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/import/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 解密并预检账号迁移包
+      operationId: planAccountBundleImport
+      x-huakai-spec-source: [backend/internal/accountbundle/import.go]
+      x-huakai-required-role: tenant_operator_token
+      description: 在内存中校验密文和包内摘要，按来源 provider/channel 显式映射目标，再复用统一身份冲突、协议兼容和混用风险预检；密码和凭据不进入响应。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleImportPlanRequest' }
+      responses:
+        '200':
+          description: 逐账号创建、更新、跳过、冲突或失败计划。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountBundleImportPlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-bundles/import/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 执行已确认的账号迁移计划
+      operationId: executeAccountBundleImport
+      x-huakai-spec-source: [backend/internal/accountbundle/import.go]
+      x-huakai-required-role: tenant_operator_token
+      description: 再次解密并重算整包与逐账号计划；创建时原子写入账号、凭据和代理，更新时按账号 updated_at 与凭据版本锁原子替换稳定配置并轮换凭据。成功执行后旧计划不可重放。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountBundleImportExecuteRequest' }
+      responses:
+        '200':
+          description: 逐账号执行结果和汇总。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountBundleImportExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '422': { $ref: '#/components/responses/BadRequest' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/credentials/renew-status:
@@ -11849,10 +12597,9 @@ paths:
       summary: Trigger dynamic vendor model catalog synchronization
       operationId: postAdminModelSync
       description: |
-        Platform-admin only manual trigger for configured vendor model-list APIs.
-        The sync updates HUAKAI's global model registry without changing tenant
-        aliases, pool bindings, or pricing classes. Models that disappear from
-        an upstream auto-sync source are marked unavailable rather than deleted.
+        仅平台管理员可触发。已上架且由同步管理的模型会刷新公开元数据；未知模型
+        只进入发现箱，绝不会自动进入全局目录。已上架模型从上游消失时只禁用同步
+        管理的全局别名，不删除模型、租户绑定或价格。
       x-huakai-spec-source:
         - docs/process/plans/2026-06-02-model-auto-sync-codex.md
       x-huakai-required-role: platform_admin
@@ -11874,29 +12621,138 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [object, completed_at, total_added, total_updated, total_disabled, results]
+                required: [object, completed_at, total_added, total_updated, total_disabled, total_discovered, total_discovery_updated, total_discovery_absent, results]
                 properties:
                   object: { type: string, enum: [admin_model_sync_result] }
                   completed_at: { type: string, format: date-time }
                   total_added: { type: integer, minimum: 0 }
                   total_updated: { type: integer, minimum: 0 }
                   total_disabled: { type: integer, minimum: 0 }
+                  total_discovered: { type: integer, minimum: 0 }
+                  total_discovery_updated: { type: integer, minimum: 0 }
+                  total_discovery_absent: { type: integer, minimum: 0 }
                   results:
                     type: array
                     items:
                       type: object
-                      required: [vendor, added, updated, reactivated, disabled, unchanged, snapshot_bumps]
+                      required: [vendor, added, updated, reactivated, disabled, discovered, discovery_updated, discovery_absent, unchanged, snapshot_bumps]
                       properties:
                         vendor: { type: string, enum: [anthropic, openai, gemini] }
                         added: { type: integer, minimum: 0 }
                         updated: { type: integer, minimum: 0 }
                         reactivated: { type: integer, minimum: 0 }
                         disabled: { type: integer, minimum: 0 }
+                        discovered: { type: integer, minimum: 0 }
+                        discovery_updated: { type: integer, minimum: 0 }
+                        discovery_absent: { type: integer, minimum: 0 }
                         unchanged: { type: integer, minimum: 0 }
                         snapshot_bumps: { type: integer, minimum: 0 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-discoveries:
+    get:
+      tags: [admin-model-discovery]
+      summary: 分页查看模型发现箱
+      operationId: listAdminModelDiscoveries
+      description: |
+        仅平台管理员可用。返回上游目录中尚未自动进入全局 registry 的公开模型
+        元数据，可按供应商、状态和模型名称筛选。响应不包含账号凭据或上游原始响应。
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md
+        - backend/internal/modeldiscoveryhttp/routes.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: vendor
+          schema: { type: string, enum: [anthropic, openai, gemini] }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, promoted, ignored, absent] }
+        - in: query
+          name: search
+          schema: { type: string, maxLength: 200 }
+        - in: query
+          name: before_id
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: 发现箱分页结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelDiscoveryPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-discoveries/{id}/promote:
+    post:
+      tags: [admin-model-discovery]
+      summary: 显式上架一个待审模型
+      operationId: promoteAdminModelDiscovery
+      description: |
+        仅平台管理员可用。模型、全局别名、能力、发现状态、受影响租户快照和管理员
+        日志在同一事务提交。重复上架幂等；已忽略、已消失或身份占用返回 409。
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md
+        - backend/internal/modeldiscoveryhttp/routes.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelDiscoveryDecisionRequest' }
+      responses:
+        '200':
+          description: 已上架，或该项此前已上架。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelDiscoveryItemResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/model-discoveries/{id}/ignore:
+    post:
+      tags: [admin-model-discovery]
+      summary: 忽略一个待审或已消失模型
+      operationId: ignoreAdminModelDiscovery
+      description: |
+        仅平台管理员可用。忽略决定与管理员日志同事务提交；周期同步只刷新公开
+        元数据，不会擅自上架已忽略项。重复忽略幂等，已上架项返回 409。
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md
+        - backend/internal/modeldiscoveryhttp/routes.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelDiscoveryDecisionRequest' }
+      responses:
+        '200':
+          description: 已忽略，或该项此前已忽略。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelDiscoveryItemResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/models:
@@ -13456,6 +14312,15 @@ components:
       in: path
       required: true
       schema: { type: integer, format: int64 }
+
+    ServerMonitorNodeID:
+      name: node_id
+      in: path
+      required: true
+      description: 3 到 64 字符的小写不透明节点标识，不是真实主机名。
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9._-]{2,63}$'
 
   responses:
     BadRequest:
@@ -16012,11 +16877,6 @@ components:
       additionalProperties: true
       x-huakai-spec-source:
         - backend/internal/sunoclient/translate.go
-    VideoTaskRequest:
-      type: object
-      additionalProperties: true
-      x-huakai-spec-source:
-        - backend/internal/videoclient/translate.go
       properties:
         request_id:
           type: string
@@ -16036,6 +16896,19 @@ components:
         custom_mode: { type: boolean }
         input: { type: string }
         notify_hook: { type: string, format: uri }
+
+    VideoTaskRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source:
+        - backend/internal/videoclient/translate.go
+      properties:
+        request_id:
+          type: string
+          description: Optional stable idempotency key. If omitted, the server generates one.
+        requestId:
+          type: string
+          description: Camel-case alias for request_id.
         model: { type: string }
         prompt: { type: string }
         image:
@@ -16095,6 +16968,79 @@ components:
         mode:
           type: string
           description: Public model mode, for example chat or embedding.
+
+    ModelDiscovery:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md
+        - backend/internal/registry/model_discovery.go
+      required:
+        - id
+        - vendor
+        - model_id_normalized
+        - provider_model_id
+        - display_name
+        - owned_by
+        - protocol_family
+        - context_window
+        - capabilities
+        - status
+        - first_seen_at
+        - last_seen_at
+        - created_at
+        - updated_at
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        vendor: { type: string, enum: [anthropic, openai, gemini] }
+        model_id_normalized: { type: string, minLength: 1, maxLength: 512 }
+        provider_model_id: { type: string, minLength: 1, maxLength: 512 }
+        display_name: { type: string, minLength: 1, maxLength: 512 }
+        owned_by: { type: string, minLength: 1, maxLength: 128 }
+        protocol_family: { type: string, enum: [anthropic_messages, openai_chat, openai_responses, gemini_messages] }
+        context_window: { type: integer, format: int32, minimum: 0 }
+        model_created_at: { type: string, format: date-time }
+        capabilities:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+        status: { type: string, enum: [pending, promoted, ignored, absent] }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        last_absent_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time }
+        decided_by_actor: { type: string }
+        decision_reason: { type: string, minLength: 1, maxLength: 200 }
+        promoted_model_id: { type: integer, format: int64, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ModelDiscoveryPage:
+      type: object
+      additionalProperties: false
+      required: [object, items, next_before_id]
+      properties:
+        object: { type: string, enum: [model_discovery_page] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ModelDiscovery' }
+        next_before_id: { type: [integer, 'null'], format: int64, minimum: 1 }
+
+    ModelDiscoveryItemResponse:
+      type: object
+      additionalProperties: false
+      required: [object, discovery]
+      properties:
+        object: { type: string, enum: [model_discovery] }
+        discovery: { $ref: '#/components/schemas/ModelDiscovery' }
+
+    ModelDiscoveryDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 200 }
 
     AdminModel:
       type: object
@@ -16886,10 +17832,10 @@ components:
           maxLength: 128
           description: Required public tenant scope; absent returns 400, mismatched returns 404 without confirming row existence.
 
-	    AuditVerifyResponse:
-	      type: object
-	      additionalProperties: false
-	      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+    AuditVerifyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
       required: [ledger_entry, chain_proof]
       properties:
         ledger_entry:
@@ -16944,59 +17890,59 @@ components:
             merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
             signature: { type: string, description: Base64 ed25519 signature over the canonical audit entry hash. }
             pubkey_fingerprint: { type: string }
-	            signature_valid: { type: boolean }
-	            key_status: { type: string, enum: [active, rotated, revoked, unknown] }
-	            reason: { type: string }
+            signature_valid: { type: boolean }
+            key_status: { type: string, enum: [active, rotated, revoked, unknown] }
+            reason: { type: string }
 
-	    AuditExportBundle:
-	      type: object
-	      additionalProperties: false
-	      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-	      required: [entries, chain_entries, latest_merkle_root, pubkeys, self_attestation, request]
-	      properties:
-	        entries:
-	          type: array
-	          description: Tenant-scoped proof entries matching the requested range or request ids.
-	          items: { $ref: '#/components/schemas/AuditVerifyResponse' }
-	        chain_entries:
-	          type: array
-	          description: Included tenant-scoped chain material verified by `auditledger.VerifyChain` before download.
-	          items: { $ref: '#/components/schemas/AuditVerifyResponse' }
-	        latest_merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
-	        pubkeys:
-	          type: array
-	          items: { $ref: '#/components/schemas/AuditPubkeyResponse' }
-	        self_attestation: { $ref: '#/components/schemas/AuditExportSelfAttestation' }
-	        request: { $ref: '#/components/schemas/AuditExportRequest' }
+    AuditExportBundle:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [entries, chain_entries, latest_merkle_root, pubkeys, self_attestation, request]
+      properties:
+        entries:
+          type: array
+          description: Tenant-scoped proof entries matching the requested range or request ids.
+          items: { $ref: '#/components/schemas/AuditVerifyResponse' }
+        chain_entries:
+          type: array
+          description: Included tenant-scoped chain material verified by `auditledger.VerifyChain` before download.
+          items: { $ref: '#/components/schemas/AuditVerifyResponse' }
+        latest_merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
+        pubkeys:
+          type: array
+          items: { $ref: '#/components/schemas/AuditPubkeyResponse' }
+        self_attestation: { $ref: '#/components/schemas/AuditExportSelfAttestation' }
+        request: { $ref: '#/components/schemas/AuditExportRequest' }
 
-	    AuditExportSelfAttestation:
-	      type: object
-	      additionalProperties: false
-	      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-	      required: [chain_valid, verified_entry_count, selected_entry_count, method]
-	      properties:
-	        chain_valid: { type: boolean }
-	        verified_entry_count: { type: integer, minimum: 0 }
-	        selected_entry_count: { type: integer, minimum: 0 }
-	        method: { type: string, enum: [auditledger.VerifyChain] }
+    AuditExportSelfAttestation:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [chain_valid, verified_entry_count, selected_entry_count, method]
+      properties:
+        chain_valid: { type: boolean }
+        verified_entry_count: { type: integer, minimum: 0 }
+        selected_entry_count: { type: integer, minimum: 0 }
+        method: { type: string, enum: [auditledger.VerifyChain] }
 
-	    AuditExportRequest:
-	      type: object
-	      additionalProperties: false
-	      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
-	      required: [tenant_scope_ref]
-	      properties:
-	        tenant_scope_ref: { type: string, minLength: 1, maxLength: 128 }
-	        from: { type: string, format: date-time }
-	        to: { type: string, format: date-time }
-	        request_ids:
-	          type: array
-	          items: { type: string, minLength: 1, maxLength: 256 }
+    AuditExportRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+      required: [tenant_scope_ref]
+      properties:
+        tenant_scope_ref: { type: string, minLength: 1, maxLength: 128 }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        request_ids:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 256 }
 
-	    AuditMerkleTree:
-	      type: object
-	      additionalProperties: false
-	      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
+    AuditMerkleTree:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [docs/specs/trust-chain-user-verifiable-ledger.md, docs/specs/user-consumption-transparency.md]
       required: [latest_merkle_root, size]
       properties:
         latest_merkle_root: { type: string, pattern: '^[0-9a-f]{64}$' }
@@ -17247,15 +18193,42 @@ components:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [backend/internal/logsink/store_postgres.go]
-      required: [id, created_at, level, component, message, attrs]
+      required:
+        [id, created_at, ingested_at, level, category, event_type, result, error_class,
+         error_code, retryable, component, message, actor_kind, recovery_state, attrs]
       properties:
         id: { type: integer, format: int64 }
         created_at: { type: string, format: date-time }
-        level: { type: string, enum: [warn, error] }
+        ingested_at:
+          type: string
+          format: date-time
+          description: 数据库可信入库时间，固定 30 天保留只使用此字段。
+        level: { type: string, enum: [info, warn, error] }
+        category: { type: string, enum: [operation, financial, security, error, access, recovery] }
+        event_type: { type: string, pattern: '^[a-z][a-z0-9_.-]{0,127}$' }
+        result: { type: string, enum: [success, denied, client_failure, server_failure, canceled, partial, timeout, unknown] }
+        error_class: { $ref: '#/components/schemas/RuntimeLogErrorClass' }
+        error_code: { type: string, pattern: '^[a-z][a-z0-9_.-]{0,127}$' }
+        retryable: { type: boolean }
         component: { type: string }
         message: { type: string }
+        actor_kind: { type: string, enum: [system, platform_admin, tenant_admin, user, api_key, unknown] }
+        actor_ref: { type: string, nullable: true }
+        tenant_id: { type: integer, format: int64, nullable: true }
+        target_type: { type: string, nullable: true }
+        target_ref: { type: string, nullable: true }
         request_id: { type: string, nullable: true }
+        trace_id: { type: string, nullable: true }
+        upstream_request_id: { type: string, nullable: true }
+        idempotency_key: { type: string, nullable: true }
+        recovery_state: { type: string, enum: [none, pending, retrying, recovered, quarantined, operator_required, failed] }
         attrs: { type: object }
+
+    RuntimeLogErrorClass:
+      type: string
+      enum:
+        [none, validation, authentication, authorization, conflict, insufficient_balance,
+         rate_limit, timeout, canceled, dependency, data_integrity, manual_recovery, unknown]
 
     AdminRuntimeLogsResponse:
       type: object
@@ -17275,28 +18248,92 @@ components:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
-      required: [before]
+      required: [confirm]
       properties:
-        before: { type: string, format: date-time }
+        confirm:
+          type: boolean
+          enum: [true]
 
     AdminRuntimeLogsCleanupResponse:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
-      required: [deleted]
+      required:
+        [retention_days, cutoff, started_at, finished_at, deleted, batches, by_table,
+         by_category, has_more, lease_conflicts, failed_tables]
       properties:
+        retention_days: { type: integer, enum: [30] }
+        cutoff: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
         deleted: { type: integer, format: int64 }
+        batches: { type: integer }
+        by_table:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        by_category:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+        has_more: { type: boolean }
+        lease_conflicts:
+          type: array
+          items: { type: string }
+        failed_tables:
+          type: array
+          items: { type: string }
 
     AdminRuntimeLogSinkHealth:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
-      required: [queue_len, inserted, dropped]
+      required:
+        [queue_len, queue_capacity, priority_queue_len, priority_capacity, info_queue_len,
+         info_capacity, inserted, dropped, priority_dropped, info_dropped, failed_batches]
       properties:
         queue_len: { type: integer }
+        queue_capacity: { type: integer }
+        priority_queue_len: { type: integer }
+        priority_capacity: { type: integer }
+        info_queue_len: { type: integer }
+        info_capacity: { type: integer }
         inserted: { type: integer, format: int64 }
         dropped: { type: integer, format: int64 }
+        priority_dropped: { type: integer, format: int64 }
+        info_dropped: { type: integer, format: int64 }
+        failed_batches: { type: integer, format: int64 }
         last_flush_at: { type: string, format: date-time }
+
+    AdminRuntimeLogRetentionHealth:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/logretention/retention.go]
+      required:
+        [retention_days, running, last_duration_ms, last_deleted, total_deleted, last_batches,
+         has_more, lease_conflict_count, consecutive_failures]
+      properties:
+        retention_days: { type: integer, enum: [30] }
+        running: { type: boolean }
+        last_attempt_at: { type: string, format: date-time }
+        last_success_at: { type: string, format: date-time }
+        current_cutoff: { type: string, format: date-time }
+        last_duration_ms: { type: integer, format: int64 }
+        last_deleted: { type: integer, format: int64 }
+        total_deleted: { type: integer, format: int64 }
+        last_batches: { type: integer }
+        has_more: { type: boolean }
+        lease_conflict_count: { type: integer, format: int64 }
+        consecutive_failures: { type: integer, format: int64 }
+        last_error_class: { type: string }
+        last_error_table: { type: string }
+
+    AdminRuntimeLogHealthResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source: [backend/internal/gatewayhttp/admin_runtime_logs_handler.go]
+      required: [sink, retention]
+      properties:
+        sink: { $ref: '#/components/schemas/AdminRuntimeLogSinkHealth' }
+        retention: { $ref: '#/components/schemas/AdminRuntimeLogRetentionHealth' }
 
     AdminEmailSettingsUpdateResponse:
       type: object
@@ -18022,12 +19059,13 @@ components:
     AdminQuotaPolicyItem:
       type: object
       additionalProperties: false
-      required: [id, tenant_id, scope_kind, scope_id, metric, window_kind, window_seconds, limit_value, burst_value, mode, priority, enabled, valid_from, created_at, updated_at]
+      required: [id, tenant_id, scope_kind, scope_id, model_selector, metric, window_kind, window_seconds, limit_value, burst_value, mode, priority, enabled, valid_from, created_at, updated_at]
       properties:
         id: { type: integer, format: int64 }
         tenant_id: { type: integer, format: int64 }
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, description: "Neutral scope encoding: '*' for global, local id string otherwise." }
+        model_selector: { type: string, description: "* 表示所有模型；其他值仅精确匹配规范化后的公开模型别名。" }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
         window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0 }
@@ -18050,6 +19088,7 @@ components:
       properties:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
+        model_selector: { type: string, minLength: 1, maxLength: 255, default: '*', description: "省略时创建全模型策略；只接受 * 或精确公开模型别名。" }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
         window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
@@ -18065,10 +19104,11 @@ components:
     AdminQuotaPolicyUpdateRequest:
       type: object
       additionalProperties: false
-      required: [scope_kind, scope_id, metric, window_kind, limit_value]
+      required: [scope_kind, scope_id, model_selector, metric, window_kind, limit_value]
       properties:
         scope_kind: { type: string, enum: [global, user, api_key, channel, pool_group, provider_account] }
         scope_id: { type: string, minLength: 1, maxLength: 255 }
+        model_selector: { type: string, minLength: 1, maxLength: 255, description: "替换更新时必须显式回传；只接受 * 或精确公开模型别名。" }
         metric: { type: string, enum: [requests, tokens_estimated, cost_usd, concurrency] }
         window_kind: { type: string, enum: [none, fixed, calendar_day, calendar_week, calendar_month, manual] }
         window_seconds: { type: integer, minimum: 0, description: "Required (>0) when window_kind=fixed." }
@@ -18639,12 +19679,51 @@ components:
     ProviderAccountTempRule:
       type: object
       additionalProperties: false
-      required: [error_code, keywords, duration_minutes]
+      description: |
+        按数组顺序首条命中的账号错误策略。命中后可临时停调账号并覆盖最终客户端
+        状态码、机器码和安全消息，但不得改变静态错误分类、重试/回退、鉴权刷新、
+        扣费、配额或永久禁用结论。keywords 为空数组表示匹配该状态码的任意正文。
+      required: [rule_id, error_code, keywords, duration_minutes, message_mode, affect_health]
       properties:
+        rule_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9._-]{0,63}$'
+          description: 稳定规则 ID；同一账号的规则数组内不得重复。
         error_code: { type: integer, format: int32, minimum: 100, maximum: 599 }
-        keywords: { type: array, items: { type: string } }
-        duration_minutes: { type: integer, format: int32, minimum: 1, maximum: 2147483647 }
-        description: { type: string }
+        keywords:
+          type: array
+          maxItems: 16
+          description: 不区分大小写的正文子串，成员不得为空或重复；空数组表示通配。
+          items: { type: string, minLength: 1, maxLength: 128 }
+        duration_minutes: { type: integer, format: int32, minimum: 1, maximum: 525600 }
+        description: { type: string, maxLength: 256 }
+        client_status:
+          type: integer
+          format: int32
+          minimum: 400
+          maximum: 599
+          description: 仅覆盖最终客户端状态；省略时保留静态分类结果。
+        client_code:
+          type: string
+          maxLength: 64
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+          description: 仅覆盖最终客户端机器码。
+        message_mode:
+          type: string
+          enum: [fixed, custom, upstream_safe]
+          default: fixed
+          description: fixed 使用安全目录消息；custom 使用 client_message；upstream_safe 仅从受限 JSON 消息字段提取并清洗，失败时回退安全目录消息。
+        client_message:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: 仅 message_mode=custom 时允许且必须提供；不得包含凭据、令牌或其他秘密。
+        affect_health:
+          type: boolean
+          default: true
+          description: false 只抑制普通渠道健康与近期请求记账；显式冷却、铁证永久禁用和鉴权恢复信号仍执行。
 
     ProviderAccountProxyBinding:
       type: object
@@ -18657,6 +19736,29 @@ components:
           description: direct 清除代理列；proxy 使用 proxy_id；group 使用 proxy_group_id。
         proxy_id: { type: integer, format: int64, minimum: 1 }
         proxy_group_id: { type: string, minLength: 1 }
+
+    ProviderAccountSubscriptionProfile:
+      type: object
+      additionalProperties: false
+      description: 只读上游套餐事实投影；不参与 HUAKAI 授权、计费或配额判断，也不写入人工 tags。
+      required: [vendor, plan, label, scope, source, trust, verification, status, mapping_version, first_observed_at, observed_at, changed_at]
+      properties:
+        vendor: { type: string, pattern: '^[a-z0-9_]+$' }
+        plan: { type: string, pattern: '^[a-z0-9_]+$' }
+        label: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$', readOnly: true }
+        raw_plan: { type: string }
+        scope: { type: string, enum: [unknown, personal, workspace] }
+        subject_ref: { type: string }
+        workspace_ref: { type: string }
+        source: { type: string, enum: [provider_api, oauth_token_response, id_token_claim, access_token_claim, import_payload, operator, credential_refresh] }
+        trust: { type: string, enum: [verified_api, issuer_response, verified_token, unverified_token, imported, manual] }
+        verification: { type: string, enum: [verified, issuer_response, unverified, operator] }
+        status: { type: string, enum: [observed, unknown_value, missing, stale, parse_failed, conflict] }
+        mapping_version: { type: integer, format: int32, minimum: 1 }
+        error_class: { type: string }
+        first_observed_at: { type: [string, 'null'], format: date-time }
+        observed_at: { type: [string, 'null'], format: date-time }
+        changed_at: { type: [string, 'null'], format: date-time }
 
     ProviderAccount:
       type: object
@@ -18686,10 +19788,14 @@ components:
         - cap_concurrency
         - in_flight_count
         - priority
+        - upstream_cost_ratio
+        - system_labels
         - last_probe_latency_ms
         - last_probe_at
         - last_request_observed_at
         - last_request_observation_source
+        - quota_windows
+        - quota_facts
         - token_version
         - last_refresh_at
         - last_refresh_outcome
@@ -18708,6 +19814,7 @@ components:
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules:
           type: array
+          maxItems: 64
           items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
         proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         id: { type: integer, format: int64 }
@@ -18737,8 +19844,19 @@ components:
         in_flight_count: { type: integer, minimum: 0 }
         priority: { type: integer }
         static_weight: { type: integer, minimum: 1 }
+        upstream_cost_ratio:
+          type: [number, 'null']
+          format: double
+          minimum: 0.0001
+          maximum: 100
+          description: 账号相对上游成本比例；1 为基准，越小越便宜，null 表示未知且调度保持中性。
         probe_model: { type: [string, 'null'] }
         tags: { type: array, items: { type: string } }
+        subscription: { $ref: '#/components/schemas/ProviderAccountSubscriptionProfile' }
+        system_labels:
+          type: array
+          readOnly: true
+          items: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$' }
         extra: { type: object, additionalProperties: true }
         last_dispatch_at: { type: [string, 'null'], format: date-time }
         last_probe_latency_ms:
@@ -18758,6 +19876,11 @@ components:
           type: string
           enum: [request_completion_event]
           description: last_request_observed_at 的生产事件来源。
+        quota_windows:
+          $ref: '#/components/schemas/ProviderAccountQuotaWindowMatrix'
+        quota_facts:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountQuotaFact' }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
         rate_limited_at: { type: [string, 'null'], format: date-time }
@@ -18774,20 +19897,67 @@ components:
         custom_error_codes_enabled: { type: boolean }
         custom_error_codes:
           type: array
-          items:
-            type: object
-            additionalProperties: false
-            required: [error_code, keywords, duration_minutes]
-            properties:
-              error_code: { type: integer }
-              keywords: { type: array, items: { type: string } }
-              duration_minutes: { type: integer }
-              description: { type: string }
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
         rate_limit_recovery:
           description: 仅 clear-rate-limit 成功响应返回。
           $ref: '#/components/schemas/ProviderAccountRateLimitRecovery'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ProviderAccountQuotaWindowMatrix:
+      type: object
+      additionalProperties: false
+      description: 账号列表直接返回的 5h/7d 配额进度，前端无需逐账号追加请求。
+      required: [five_hour, seven_day]
+      properties:
+        five_hour: { $ref: '#/components/schemas/ProviderAccountQuotaWindowProgress' }
+        seven_day: { $ref: '#/components/schemas/ProviderAccountQuotaWindowProgress' }
+
+    ProviderAccountQuotaFact:
+      type: object
+      additionalProperties: false
+      description: 厂商只读额度接口的统一事实；unknown 不携带数值，fresh=false 时只供历史展示、不得参与调度。
+      required: [metric_key, state, observed_at, source, fresh]
+      properties:
+        metric_key: { type: string, minLength: 1 }
+        model_key: { type: string }
+        state: { type: string, enum: [available, exhausted, unknown, error] }
+        used_value: { type: number, minimum: 0 }
+        limit_value: { type: number, minimum: 0 }
+        remaining_value: { type: number, minimum: 0 }
+        unit: { type: string }
+        utilization_percent: { type: number, minimum: 0, maximum: 100 }
+        remaining_percent: { type: number, minimum: 0, maximum: 100 }
+        resets_at: { type: string, format: date-time }
+        observed_at: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        source:
+          type: string
+          enum: [upstream_usage, upstream_billing, upstream_model_catalog, response_headers, capability_contract]
+        error_class: { type: string }
+        fresh: { type: boolean }
+
+    ProviderAccountQuotaWindowProgress:
+      type: object
+      additionalProperties: false
+      required: [state, starts_at, resets_at, utilization_percent, remaining_percent]
+      properties:
+        state:
+          type: string
+          enum: [active, expired, unavailable]
+          description: active 表示窗口仍有效且百分比可信；expired 表示已过重置点；unavailable 表示尚无完整快照。
+        starts_at: { type: [string, 'null'], format: date-time }
+        resets_at: { type: [string, 'null'], format: date-time }
+        utilization_percent:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅 active 返回；过期或未知时为 null。
+        remaining_percent:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 100
+          description: 仅 active 返回，等于 100 减 utilization_percent；不得用 0 或 100 冒充未知值。
 
     ProviderAccountRateLimitRecovery:
       type: object
@@ -18816,12 +19986,13 @@ components:
         - docs/specs/upstream-credential-management.md
       type: object
       additionalProperties: false
-      required: [provider_id, channel_id, name, account_type, credentials]
+      required: [provider_id, channel_id, name, account_type, vendor, auth_mode, credentials]
       properties:
         pool_mode: { type: boolean }
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules:
           type: array
+          maxItems: 64
           items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
         proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         tenant_id: { type: integer, format: int64, minimum: 1 }
@@ -18833,10 +20004,12 @@ components:
           enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         vendor:
           type: string
-          description: Optional credential-v2 vendor. If omitted, credentials are stored in the legacy account field.
+          minLength: 1
+          description: 凭据厂商；与 auth_mode 一起决定结构化校验和加密存储合同。
         auth_mode:
           type: string
-          description: Optional credential-v2 auth mode. Must be supplied together with vendor.
+          minLength: 1
+          description: 凭据认证模式；账号创建不再接受 legacy 内联凭据。
         confirm:
           type: boolean
           default: false
@@ -18852,6 +20025,12 @@ components:
         cap_concurrency: { type: integer, minimum: 1, default: 4 }
         priority: { type: integer, default: 100 }
         static_weight: { type: integer, minimum: 1, default: 1 }
+        upstream_cost_ratio:
+          type: [number, 'null']
+          format: double
+          minimum: 0.0001
+          maximum: 100
+          description: 账号相对上游成本比例；null 或省略表示未知。
         probe_model: { type: string }
         tags: { type: array, items: { type: string } }
         extra: { type: object, additionalProperties: true }
@@ -18897,12 +20076,6 @@ components:
         custom_error_codes:
           type: array
           items: { type: integer, format: int32, minimum: 100, maximum: 599 }
-        pool_mode: { type: boolean }
-        temp_unschedulable_enabled: { type: boolean }
-        temp_unschedulable_rules:
-          type: array
-          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
-        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         reason: { type: string }
 
     MixedChannelRiskRequired:
@@ -18952,12 +20125,19 @@ components:
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules:
           type: array
+          maxItems: 64
           items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
         proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         enabled: { type: boolean }
         priority: { type: integer }
         static_weight: { type: integer, minimum: 1 }
+        upstream_cost_ratio:
+          type: [number, 'null']
+          format: double
+          minimum: 0.0001
+          maximum: 100
+          description: 账号相对上游成本比例；null 清除人工成本信号，省略保持当前值。
         cap_concurrency: { type: integer, minimum: 1 }
         probe_model: { type: string }
         tags: { type: array, items: { type: string } }
@@ -19004,12 +20184,6 @@ components:
         custom_error_codes:
           type: array
           items: { type: integer, format: int32, minimum: 100, maximum: 599 }
-        pool_mode: { type: boolean }
-        temp_unschedulable_enabled: { type: boolean }
-        temp_unschedulable_rules:
-          type: array
-          items: { $ref: '#/components/schemas/ProviderAccountTempRule' }
-        proxy_binding: { $ref: '#/components/schemas/ProviderAccountProxyBinding' }
         reason: { type: string }
 
     ProviderAccountEnabledUpdate:
@@ -19082,6 +20256,8 @@ components:
         - session_window_7d_end
         - session_window_7d_status
         - session_window_7d_utilization
+        - quota_windows
+        - quota_facts
         - last_refresh_at
         - last_refresh_outcome
         - failure_class
@@ -19091,6 +20267,7 @@ components:
         - updated_at
         - scheduling
         - observability
+        - system_labels
       properties:
         id: { type: integer, format: int64 }
         health_state:
@@ -19138,6 +20315,11 @@ components:
           minimum: 0
           maximum: 100
           description: 仅活动窗口返回；过期或无法判活时为 null。
+        quota_windows:
+          $ref: '#/components/schemas/ProviderAccountQuotaWindowMatrix'
+        quota_facts:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderAccountQuotaFact' }
         last_refresh_at: { type: [string, 'null'], format: date-time }
         last_refresh_outcome: { type: [string, 'null'] }
         failure_class: { type: [string, 'null'] }
@@ -19149,6 +20331,11 @@ components:
         updated_at: { type: string, format: date-time }
         scheduling: { $ref: '#/components/schemas/ProviderAccountSchedulingSnapshot' }
         observability: { $ref: '#/components/schemas/ProviderAccountObservabilitySnapshot' }
+        subscription: { $ref: '#/components/schemas/ProviderAccountSubscriptionProfile' }
+        system_labels:
+          type: array
+          readOnly: true
+          items: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$' }
         recent_requests:
           type: object
           additionalProperties: false
@@ -19277,7 +20464,8 @@ components:
               - channel_disabled
               - provider_unavailable
               - provider_health
-              - credential_state
+              - credential_unavailable
+              - credential_ambiguous
               - channel_health
               - auth_cooldown
         conditional_reasons:
@@ -19309,10 +20497,21 @@ components:
         credential:
           type: object
           additionalProperties: false
-          required: [state, eligible, persistence]
+          required:
+            - state
+            - eligible
+            - serving_credential_candidates
+            - legacy_mirror_state
+            - persistence
           properties:
-            state: { type: string }
+            state: { type: string, enum: [resolved, unavailable, ambiguous] }
             eligible: { type: boolean }
+            serving_credential_candidates: { type: integer, format: int32, minimum: 0 }
+            vendor: { type: string }
+            auth_mode: { type: string }
+            legacy_mirror_state:
+              type: string
+              description: 仅用于迁移诊断的旧镜像状态，不参与当前调度资格判断。
             persistence: { type: string, enum: [postgres] }
         channel_health:
           type: object
@@ -19620,6 +20819,25 @@ components:
         message: { type: string }
         retryable: { type: boolean }
 
+    AccountCredentialSubscriptionObservation:
+      type: object
+      additionalProperties: false
+      description: 凭据创建或换新当次得到的套餐投影；只供运维展示，不是授权、计费或配额依据。
+      required: [vendor, plan, scope, source, trust, verification, status, mapping_version]
+      properties:
+        vendor: { type: string, pattern: '^[a-z0-9_]+$' }
+        plan: { type: string, pattern: '^[a-z0-9_]+$' }
+        raw_plan: { type: string }
+        scope: { type: string, enum: [unknown, personal, workspace] }
+        subject_ref: { type: string }
+        workspace_ref: { type: string }
+        source: { type: string, enum: [provider_api, oauth_token_response, id_token_claim, access_token_claim, import_payload, operator, credential_refresh] }
+        trust: { type: string, enum: [verified_api, issuer_response, verified_token, unverified_token, imported, manual] }
+        verification: { type: string, enum: [verified, issuer_response, unverified, operator] }
+        status: { type: string, enum: [observed, unknown_value, missing, stale, parse_failed, conflict] }
+        mapping_version: { type: integer, format: int32, minimum: 1 }
+        error_class: { type: string }
+
     AccountCredentialMetadata:
       x-huakai-spec-source: [docs/specs/upstream-credential-management.md]
       type: object
@@ -19653,6 +20871,11 @@ components:
         external_account_email:
           type: string
           description: Upstream provider account email captured alongside external_account_id. Omitted when not captured.
+        external_subject_id:
+          type: string
+          description: 上游个人主体标识；只用于账号归属与冲突检测，不是授权输入。
+        subscription:
+          $ref: '#/components/schemas/AccountCredentialSubscriptionObservation'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -19905,23 +21128,89 @@ components:
     AccountIntakeAccountDefaults:
       type: object
       additionalProperties: false
-      required: [provider_id, channel_id, name_prefix, account_type]
+      required: [provider_id, channel_id, account_type]
+      anyOf:
+        - required: [name_prefix]
+        - required: [exact_name]
       properties:
         provider_id: { type: integer, format: int64, minimum: 1 }
         channel_id: { type: integer, format: int64, minimum: 1 }
         name_prefix: { type: string, minLength: 1 }
+        exact_name: { type: string, minLength: 1, description: 迁移包使用的精确账号名；普通批量导入使用 name_prefix。 }
         account_type:
           type: string
           enum: [oauth, api_key, service_account, upstream_static, session, aws_sigv4]
         enabled: { type: boolean, default: true }
+        expires_at: { type: string, format: date-time }
         cap_concurrency: { type: integer, format: int32, minimum: 1 }
+        cap_queue_sticky: { type: integer, format: int32, minimum: 0 }
+        cap_queue_fallback: { type: integer, format: int32, minimum: 0 }
         priority: { type: integer, format: int32 }
         static_weight: { type: integer, format: int32, minimum: 1 }
+        upstream_cost_ratio: { type: number, format: double, exclusiveMinimum: 0 }
         probe_model: { type: string }
         tags: { type: array, items: { type: string } }
         extra: { type: object, additionalProperties: true }
         model_allow_list: { type: array, items: { type: string } }
         capability_flags: { type: array, items: { type: string } }
+        rpm_limit: { type: integer, format: int64, minimum: 0 }
+        tpm_limit: { type: integer, format: int64, minimum: 0 }
+        window_cost_limit_cents: { type: integer, format: int64, minimum: 0 }
+        max_sessions: { type: integer, format: int32, minimum: 0 }
+        disable_cooling: { type: boolean }
+        refresh_lead_seconds: { type: integer, format: int32, minimum: 1 }
+        tls_fingerprint_rotate: { type: boolean }
+        custom_error_codes_enabled: { type: boolean }
+        custom_error_codes:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: integer, format: int32, minimum: 100, maximum: 599 }
+        pool_mode: { type: boolean }
+        temp_unschedulable_enabled: { type: boolean }
+        temp_unschedulable_rules: { type: array, items: { type: object, additionalProperties: true } }
+
+    TenantCapabilityGrant:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, capability, enabled, configured]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        capability: { type: string, enum: [advanced_account_intake] }
+        enabled: { type: boolean }
+        configured:
+          type: boolean
+          description: false 表示数据库尚无授权记录，此时能力按默认关闭处理。
+        updated_by: { type: string }
+        reason: { type: string }
+        granted_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TenantCapabilityListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TenantCapabilityGrant' }
+
+    TenantCapabilitySetRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled, reason]
+      properties:
+        enabled: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    TenantCapabilitySetResponse:
+      type: object
+      additionalProperties: false
+      required: [grant, changed]
+      properties:
+        grant: { $ref: '#/components/schemas/TenantCapabilityGrant' }
+        changed: { type: boolean }
 
     AccountIntakePlanRequest:
       type: object
@@ -19935,7 +21224,7 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync]
           description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
         default_vendor: { type: string }
         default_auth_mode: { type: string }
@@ -19958,7 +21247,7 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync]
           description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
         default_vendor: { type: string }
         default_auth_mode: { type: string }
@@ -20030,6 +21319,562 @@ components:
               - confirm_credential_recovery
         reason: { type: string }
 
+    CodexAgentIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: 单个对象、对象数组、连续 JSON 对象或 JSONL；每项必须含运行实例、PKCS#8 Ed25519 私钥、账号和用户标识，任务标识可选。裸 token 与调用方目标地址均被拒绝。
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    CodexAgentIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: 必须与预检使用的 Agent Identity 材料一致；服务端重新核算计划且永不回显原文。
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    ClaudeSetupTokenIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: Claude Setup Token 原文、JSON 字符串、对象、数组或 JSONL；服务端不回显原文。
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+
+    ClaudeSetupTokenIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, content, account, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        content:
+          type: string
+          writeOnly: true
+          maxLength: 2097152
+          description: 必须与预检使用的 Setup Token 材料一致；服务端重新核算计划且永不回显原文。
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    ClaudeCookiePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, session_key, account]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        session_key:
+          type: string
+          writeOnly: true
+          minLength: 1
+          maxLength: 16384
+          description: 仅用于本次固定官方端点转换；不会写入账号凭据、响应或日志。
+        organization_id:
+          type: string
+          description: 会话包含多个组织时必填，值必须来自冲突响应中的组织列表。
+        setup_token:
+          type: boolean
+          default: false
+          description: true 时转换为仅推理用途的 Claude Setup Token；false 时转换为可刷新的 Claude OAuth 凭据。
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        reason: { type: string }
+
+    ClaudeCookieExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, flow_id, plan_hash]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        flow_id:
+          type: string
+          format: uuid
+          description: 预检响应返回的短期一次性流程标识。
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    ClaudeCookieOrganization:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string }
+
+    ClaudeCookieOrganizationChoiceResponse:
+      type: object
+      additionalProperties: false
+      required: [error, organizations]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, enum: [claude_organization_choice_required] }
+            message: { type: string }
+        organizations:
+          type: array
+          minItems: 2
+          items: { $ref: '#/components/schemas/ClaudeCookieOrganization' }
+
+    ClaudeCookiePlanResponse:
+      type: object
+      additionalProperties: false
+      required: [flow_id, expires_at, organization_id, auth_mode, plan_hash, plan]
+      properties:
+        flow_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        organization_id: { type: string }
+        auth_mode: { type: string, enum: [claude_ai_oauth, claude_setup_token] }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        plan: { $ref: '#/components/schemas/AccountIntakePlan' }
+
+    CRSAccountIntakePlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, base_url, username, password, destinations]
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 必须等于 tenant_operator 程序令牌的租户作用域。
+        base_url:
+          type: string
+          format: uri
+          description: 必须为部署者白名单中的 HTTPS 根地址，不得含用户信息、查询参数或片段。
+        username: { type: string, writeOnly: true, minLength: 1, maxLength: 1024 }
+        password: { type: string, writeOnly: true, minLength: 1, maxLength: 16384 }
+        destinations:
+          type: object
+          minProperties: 1
+          additionalProperties: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+          description: 按 CRS 来源类型映射到本租户的目标 provider 与 channel。
+        sync_proxies:
+          type: boolean
+          default: true
+          description: true 时把来源账号代理与账号放在同一事务迁移；代理冲突会显式失败。
+        reason: { type: string }
+
+    CRSAccountIntakeExecuteEntry:
+      type: object
+      additionalProperties: false
+      required: [flow_id, plan_hash]
+      properties:
+        flow_id: { type: string, format: uuid }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+
+    CRSAccountIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, entries]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CRSAccountIntakeExecuteEntry' }
+        reason: { type: string }
+
+    CRSAccountIntakePlanItem:
+      type: object
+      additionalProperties: false
+      required: [source_type, source_id_hint, name, status, code, message]
+      properties:
+        flow_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+        source_type: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$' }
+        source_id_hint: { type: string, description: 不可逆来源账号提示，不是上游账号原值。 }
+        name: { type: string }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        status: { type: string, enum: [ready, skipped, conflict, failed] }
+        code: { type: string }
+        message: { type: string }
+        warnings: { type: array, items: { type: string } }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        plan: { $ref: '#/components/schemas/AccountIntakePlan' }
+
+    CRSAccountIntakePlanSummary:
+      type: object
+      additionalProperties: false
+      required: [ready, skipped, conflict, failed]
+      properties:
+        ready: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+
+    CRSAccountIntakePlanResponse:
+      type: object
+      additionalProperties: false
+      required: [source_ref, items, summary]
+      properties:
+        source_ref: { type: string, description: 来源地址的不可逆短引用。 }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CRSAccountIntakePlanItem' }
+        summary: { $ref: '#/components/schemas/CRSAccountIntakePlanSummary' }
+
+    CRSAccountIntakeExecutionItem:
+      type: object
+      additionalProperties: false
+      required: [flow_id, status, code, message]
+      properties:
+        flow_id: { type: string, format: uuid }
+        status: { type: string, enum: [completed, conflict, failed] }
+        code: { type: string }
+        message: { type: string }
+        result: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+
+    CRSAccountIntakeExecutionSummary:
+      type: object
+      additionalProperties: false
+      required: [completed, conflict, failed]
+      properties:
+        completed: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+
+    CRSAccountIntakeExecutionResponse:
+      type: object
+      additionalProperties: false
+      required: [items, summary]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/CRSAccountIntakeExecutionItem' }
+        summary: { $ref: '#/components/schemas/CRSAccountIntakeExecutionSummary' }
+
+    AccountBundleKDF:
+      type: object
+      additionalProperties: false
+      required: [name, salt, time, memory_kib, threads]
+      properties:
+        name: { type: string, enum: [argon2id] }
+        salt: { type: string, format: byte }
+        time: { type: integer, format: int32, enum: [3] }
+        memory_kib: { type: integer, format: int32, enum: [65536] }
+        threads: { type: integer, format: int32, enum: [2] }
+
+    AccountBundleCipher:
+      type: object
+      additionalProperties: false
+      required: [name, nonce, ciphertext]
+      properties:
+        name: { type: string, enum: [aes-256-gcm] }
+        nonce: { type: string, format: byte }
+        ciphertext: { type: string, format: byte }
+
+    AccountBundleEnvelope:
+      type: object
+      additionalProperties: false
+      required: [format, version, kdf, cipher, ciphertext_sha256]
+      properties:
+        format: { type: string, enum: [huakai-account-bundle] }
+        version: { type: integer, format: int32, enum: [1] }
+        kdf: { $ref: '#/components/schemas/AccountBundleKDF' }
+        cipher: { $ref: '#/components/schemas/AccountBundleCipher' }
+        ciphertext_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+
+    AccountBundleExportPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, account_ids]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        account_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          uniqueItems: true
+          items: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, maxLength: 1000 }
+
+    AccountBundleExportPlanItem:
+      type: object
+      additionalProperties: false
+      required: [account_id, status, code, message, includes_proxy]
+      properties:
+        account_id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string }
+        status: { type: string, enum: [ready, conflict] }
+        code: { type: string }
+        message: { type: string }
+        credential_mode: { type: string }
+        includes_proxy: { type: boolean }
+
+    AccountBundleExportPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, plan_hash, items, ready, conflict, required_confirmation]
+      properties:
+        contract_version: { type: string, enum: [account-bundle-v1] }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountBundleExportPlanItem' }
+        ready: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        required_confirmation: { type: string, enum: [EXPORT_ENCRYPTED_ACCOUNT_BUNDLE] }
+
+    AccountBundleExportExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, account_ids, plan_hash, password, confirmation]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        account_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          uniqueItems: true
+          items: { type: integer, format: int64, minimum: 1 }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        password: { type: string, writeOnly: true, minLength: 12, maxLength: 1024 }
+        confirmation: { type: string, enum: [EXPORT_ENCRYPTED_ACCOUNT_BUNDLE] }
+        reason: { type: string, maxLength: 1000 }
+
+    AccountBundleExportResponse:
+      type: object
+      additionalProperties: false
+      required: [envelope, account_count, proxy_count, exported_at]
+      properties:
+        envelope: { $ref: '#/components/schemas/AccountBundleEnvelope' }
+        account_count: { type: integer, minimum: 1, maximum: 500 }
+        proxy_count: { type: integer, minimum: 0, maximum: 500 }
+        exported_at: { type: string, format: date-time }
+
+    AccountBundleDestination:
+      type: object
+      additionalProperties: false
+      required: [provider_id, channel_id]
+      properties:
+        provider_id: { type: integer, format: int64, minimum: 1 }
+        channel_id: { type: integer, format: int64, minimum: 1 }
+
+    AccountBundleImportPlanRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, envelope, password, destinations]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        envelope: { $ref: '#/components/schemas/AccountBundleEnvelope' }
+        password: { type: string, writeOnly: true, minLength: 12, maxLength: 1024 }
+        destinations:
+          type: object
+          minProperties: 1
+          additionalProperties: { $ref: '#/components/schemas/AccountBundleDestination' }
+          description: 键格式为 provider:<来源ID>/channel:<来源ID>，值为当前租户目标 provider/channel。
+        reason: { type: string, maxLength: 1000 }
+
+    AccountBundleImportPlanItem:
+      type: object
+      additionalProperties: false
+      required: [index, account_ref, name, destination_key, status, code, message]
+      properties:
+        index: { type: integer, minimum: 0, maximum: 499 }
+        account_ref: { type: string }
+        name: { type: string }
+        destination_key: { type: string }
+        status: { type: string, enum: [ready, skipped, conflict, failed] }
+        code: { type: string }
+        message: { type: string }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        plan: { $ref: '#/components/schemas/AccountIntakePlan' }
+        existing_account_updated_at: { type: string, format: date-time }
+        required_confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+              - confirm_account_config_replace
+
+    AccountBundleImportPlanResponse:
+      type: object
+      additionalProperties: false
+      required: [contract_version, bundle_hash, items, ready, skipped, conflict, failed]
+      properties:
+        contract_version: { type: string, enum: [account-bundle-v1] }
+        bundle_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountBundleImportPlanItem' }
+        ready: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+
+    AccountBundleImportExecuteEntry:
+      type: object
+      additionalProperties: false
+      required: [account_ref, plan_hash]
+      properties:
+        account_ref: { type: string }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+              - confirm_account_config_replace
+
+    AccountBundleImportExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, envelope, password, destinations, bundle_hash, entries]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        envelope: { $ref: '#/components/schemas/AccountBundleEnvelope' }
+        password: { type: string, writeOnly: true, minLength: 12, maxLength: 1024 }
+        destinations:
+          type: object
+          minProperties: 1
+          additionalProperties: { $ref: '#/components/schemas/AccountBundleDestination' }
+        bundle_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountBundleImportExecuteEntry' }
+        reason: { type: string, maxLength: 1000 }
+
+    AccountBundleImportExecutionItem:
+      type: object
+      additionalProperties: false
+      required: [account_ref, status, code, message]
+      properties:
+        account_ref: { type: string }
+        status: { type: string, enum: [completed, skipped, conflict, failed] }
+        code: { type: string }
+        message: { type: string }
+        result: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+
+    AccountBundleImportExecutionResponse:
+      type: object
+      additionalProperties: false
+      required: [bundle_hash, items, completed, skipped, conflict, failed]
+      properties:
+        bundle_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/AccountBundleImportExecutionItem' }
+        completed: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0 }
+        conflict: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+
     AccountIntakeIdentitySummary:
       type: object
       additionalProperties: false
@@ -20055,6 +21900,23 @@ components:
         has_refresh_material: { type: boolean }
         access_expires_at: { type: string, format: date-time }
         expired: { type: boolean }
+
+    AccountIntakeSubscriptionObservation:
+      type: object
+      additionalProperties: false
+      description: 导入预检识别出的只读套餐观测；上游 subject/workspace 原值不会进入预检响应。
+      required: [vendor, plan, scope, source, trust, verification, status, mapping_version]
+      properties:
+        vendor: { type: string }
+        plan: { type: string }
+        raw_plan: { type: string }
+        scope: { type: string, enum: [unknown, personal, workspace] }
+        source: { type: string, enum: [provider_api, oauth_token_response, id_token_claim, access_token_claim, import_payload, operator, credential_refresh] }
+        trust: { type: string, enum: [verified_api, issuer_response, verified_token, unverified_token, imported, manual] }
+        verification: { type: string, enum: [verified, issuer_response, unverified, operator] }
+        status: { type: string, enum: [observed, unknown_value, missing, stale, parse_failed, conflict] }
+        mapping_version: { type: integer, minimum: 1 }
+        error_class: { type: string }
 
     AccountIntakeMixedRiskItem:
       type: object
@@ -20096,6 +21958,8 @@ components:
         existing_credential_version: { type: integer, format: int32 }
         identity: { $ref: '#/components/schemas/AccountIntakeIdentitySummary' }
         lifecycle: { $ref: '#/components/schemas/AccountIntakeLifecycleSummary' }
+        subscription: { $ref: '#/components/schemas/AccountIntakeSubscriptionObservation' }
+        system_labels: { type: array, items: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$' } }
         field_changes: { type: array, items: { type: string } }
         warnings: { type: array, items: { type: string } }
         required_confirmations: { type: array, items: { type: string } }
@@ -20117,8 +21981,8 @@ components:
       additionalProperties: false
       required: [contract_version, source_kind, input_count, items, summary]
       properties:
-        contract_version: { type: string, enum: [account-intake-v1] }
-        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token] }
+        contract_version: { type: string, enum: [account-intake-v2] }
+        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync] }
         input_count: { type: integer, minimum: 0, maximum: 500 }
         items:
           type: array
@@ -20148,6 +22012,8 @@ components:
         account_credential_id: { type: integer, format: int64 }
         credential_version: { type: integer, format: int32 }
         channel_health_initialized: { type: boolean }
+        subscription: { $ref: '#/components/schemas/AccountIntakeSubscriptionObservation' }
+        system_labels: { type: array, items: { type: string, pattern: '^[a-z0-9_]+:[a-z0-9_]+$' } }
         warnings: { type: array, items: { type: string } }
 
     AccountIntakeExecutionSummary:
@@ -20190,6 +22056,9 @@ components:
           enum: [started, waiting_for_user, callback_received, validated, finalized, cancelled, expired, failed]
         actor_id: { type: string }
         actor_role: { type: string }
+        auth_type:
+          type: string
+          enum: [pkce, device_code, sso]
         client_identity_source:
           type: string
           enum: [none, public_cli_client, operator_config, per_account_override, disabled_missing_config]
@@ -20215,6 +22084,14 @@ components:
         authorize_url: { type: string }
         state: { type: string }
         code_challenge: { type: string }
+        auth_type:
+          type: string
+          enum: [device_code, sso]
+        user_code: { type: string }
+        verification_uri: { type: string, format: uri }
+        verification_uri_complete: { type: string, format: uri }
+        poll_interval_seconds: { type: integer, minimum: 1 }
+        expires_in_seconds: { type: integer, minimum: 1 }
 
     CredentialAcquisitionStatusResponse:
       type: object
@@ -20222,6 +22099,14 @@ components:
       required: [flow]
       properties:
         flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+
+    CredentialAcquisitionPollPendingResponse:
+      type: object
+      additionalProperties: false
+      required: [flow, retry_after_seconds]
+      properties:
+        flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+        retry_after_seconds: { type: integer, minimum: 1 }
 
     CredentialAcquisitionFinalizeResponse:
       type: object
@@ -20534,6 +22419,7 @@ components:
         - backend/internal/quota/pg_store_window_reads.go
         - backend/internal/quota/pg_store_map.go
       required:
+        - model_selector
         - metric
         - window_kind
         - cap
@@ -20544,6 +22430,9 @@ components:
         - window_start
         - window_end
       properties:
+        model_selector:
+          type: string
+          description: "* 表示所有模型；其他值只统计该精确公开模型别名。"
         metric:
           type: string
           description: >-
@@ -21156,6 +23045,217 @@ components:
         currency_code: { type: string, enum: [USD] }
         recharge_order_id: { type: integer, format: int64, minimum: 1 }
 
+    ServerMonitorIdentity:
+      type: object
+      additionalProperties: false
+      required: [node_id, display_name, identity_source, identity_stable]
+      properties:
+        node_id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9._-]{2,63}$'
+          description: 不透明节点标识；不会返回原始主机名。
+        display_name: { type: string, minLength: 1, maxLength: 128 }
+        identity_source: { type: string, enum: [configured, runtime_identity_hash] }
+        identity_stable:
+          type: boolean
+          description: false 表示编排环境重建后标识可能变化，运维应显式配置 node_id。
+
+    ServerMonitorMetricStates:
+      type: object
+      additionalProperties: false
+      required: [cpu, memory, swap, load, filesystem, disk_io, network, uptime, process]
+      properties:
+        cpu: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        memory: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        swap: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        load: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        filesystem: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        disk_io: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        network: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        uptime: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+        process: { $ref: '#/components/schemas/ServerMonitorMetricState' }
+
+    ServerMonitorMetricState:
+      type: string
+      enum: [fresh, warming, unavailable, error]
+
+    ServerMonitorMetrics:
+      type: object
+      additionalProperties: false
+      required: [cpu, memory, swap, load, filesystem, disk_io, network, uptime, process]
+      properties:
+        cpu:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [usage_percent, capacity]
+          properties:
+            usage_percent: { type: number, format: double, minimum: 0, maximum: 100 }
+            capacity: { type: number, format: double, exclusiveMinimum: 0 }
+        memory:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [total_bytes, used_bytes, available_bytes, usage_percent]
+          properties:
+            total_bytes: { type: [integer, 'null'], format: int64, minimum: 0 }
+            used_bytes: { type: integer, format: int64, minimum: 0 }
+            available_bytes: { type: [integer, 'null'], format: int64, minimum: 0 }
+            usage_percent: { type: [number, 'null'], format: double, minimum: 0, maximum: 100 }
+        swap:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [total_bytes, used_bytes, usage_percent]
+          properties:
+            total_bytes: { type: integer, format: int64, minimum: 0 }
+            used_bytes: { type: integer, format: int64, minimum: 0 }
+            usage_percent: { type: number, format: double, minimum: 0, maximum: 100 }
+        load:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [one_minute, five_minutes, fifteen_minutes]
+          properties:
+            one_minute: { type: number, format: double, minimum: 0 }
+            five_minutes: { type: number, format: double, minimum: 0 }
+            fifteen_minutes: { type: number, format: double, minimum: 0 }
+        filesystem:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [total_bytes, used_bytes, available_bytes, usage_percent]
+          properties:
+            total_bytes: { type: integer, format: int64, minimum: 0 }
+            used_bytes: { type: integer, format: int64, minimum: 0 }
+            available_bytes: { type: integer, format: int64, minimum: 0 }
+            usage_percent: { type: number, format: double, minimum: 0, maximum: 100 }
+        disk_io:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [read_bytes_per_second, write_bytes_per_second, read_ops_per_second, write_ops_per_second]
+          properties:
+            read_bytes_per_second: { type: number, format: double, minimum: 0 }
+            write_bytes_per_second: { type: number, format: double, minimum: 0 }
+            read_ops_per_second: { type: number, format: double, minimum: 0 }
+            write_ops_per_second: { type: number, format: double, minimum: 0 }
+        network:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [receive_bytes_per_second, transmit_bytes_per_second]
+          properties:
+            receive_bytes_per_second: { type: number, format: double, minimum: 0 }
+            transmit_bytes_per_second: { type: number, format: double, minimum: 0 }
+        uptime:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [seconds]
+          properties:
+            seconds: { type: integer, format: int64, minimum: 0 }
+        process:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [uptime_seconds, rss_bytes, heap_alloc_bytes, heap_sys_bytes, goroutines, gc_count]
+          properties:
+            uptime_seconds: { type: integer, format: int64, minimum: 0 }
+            rss_bytes: { type: [integer, 'null'], format: int64, minimum: 0 }
+            heap_alloc_bytes: { type: integer, format: int64, minimum: 0 }
+            heap_sys_bytes: { type: integer, format: int64, minimum: 0 }
+            goroutines: { type: integer, minimum: 0 }
+            gc_count: { type: integer, format: int64, minimum: 0 }
+
+    ServerMonitorNode:
+      type: object
+      additionalProperties: false
+      required:
+        - identity
+        - source_kind
+        - view_scope
+        - session_id
+        - session_started_at
+        - last_sequence
+        - last_activity_at
+        - last_success_at
+        - last_error_at
+        - last_recovered_at
+        - online
+        - collection_status
+        - active_error_classes
+        - os_name
+        - os_arch
+        - metrics
+        - metric_states
+      properties:
+        identity: { $ref: '#/components/schemas/ServerMonitorIdentity' }
+        source_kind: { type: string, enum: [builtin] }
+        view_scope: { type: string, enum: [host, container, process_only] }
+        session_id: { type: string, format: uuid }
+        session_started_at: { type: string, format: date-time }
+        last_sequence: { type: integer, format: int64, minimum: 1 }
+        last_activity_at: { type: string, format: date-time }
+        last_success_at: { type: [string, 'null'], format: date-time }
+        last_error_at: { type: [string, 'null'], format: date-time }
+        last_recovered_at: { type: [string, 'null'], format: date-time }
+        online: { type: boolean }
+        collection_status: { type: string, enum: [success, partial, failed] }
+        active_error_classes:
+          type: array
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        os_name: { type: string, minLength: 1, maxLength: 32 }
+        os_arch: { type: string, minLength: 1, maxLength: 32 }
+        metrics: { $ref: '#/components/schemas/ServerMonitorMetrics' }
+        metric_states: { $ref: '#/components/schemas/ServerMonitorMetricStates' }
+
+    ServerMonitorNodeListResponse:
+      type: object
+      additionalProperties: false
+      required: [nodes, limit, offset, offline_after_seconds]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/ServerMonitorNode' }
+        limit: { type: integer, minimum: 1, maximum: 500 }
+        offset: { type: integer, minimum: 0 }
+        offline_after_seconds: { type: integer, format: int64, minimum: 1 }
+
+    ServerMonitorNodeDetailResponse:
+      type: object
+      additionalProperties: false
+      required: [node, offline_after_seconds]
+      properties:
+        node: { $ref: '#/components/schemas/ServerMonitorNode' }
+        offline_after_seconds: { type: integer, format: int64, minimum: 1 }
+
+    ServerMonitorHistoryPoint:
+      type: object
+      additionalProperties: false
+      required: [bucket_at, collected_at, session_id, sequence, view_scope, collection_status, active_error_classes, metrics, metric_states]
+      properties:
+        bucket_at: { type: string, format: date-time }
+        collected_at: { type: string, format: date-time }
+        session_id: { type: string, format: uuid }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        view_scope: { type: string, enum: [host, container, process_only] }
+        collection_status: { type: string, enum: [success, partial, failed] }
+        active_error_classes:
+          type: array
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9_]{2,63}$' }
+        metrics: { $ref: '#/components/schemas/ServerMonitorMetrics' }
+        metric_states: { $ref: '#/components/schemas/ServerMonitorMetricStates' }
+
+    ServerMonitorHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [node_id, from, to, bucket, source_resolution_seconds, bucket_seconds, gap_semantics, points]
+      properties:
+        node_id: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{2,63}$' }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        bucket: { type: string, enum: [minute, 15m] }
+        source_resolution_seconds: { type: integer, format: int64, enum: [60] }
+        bucket_seconds: { type: integer, format: int64, enum: [60, 900] }
+        gap_semantics: { type: string, enum: [missing] }
+        points:
+          type: array
+          items: { $ref: '#/components/schemas/ServerMonitorHistoryPoint' }
+
     SystemHealthResponse:
       type: object
       additionalProperties: false
@@ -21179,7 +23279,7 @@ components:
       properties:
         name:
           type: string
-          description: Component name (database, channel_health, dlq, alerting).
+          description: Component name (database, channel_health, dlq, alerting, server_monitor).
         status:
           type: string
           enum: [healthy, degraded, unhealthy]

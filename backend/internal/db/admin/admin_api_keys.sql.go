@@ -38,7 +38,7 @@ type AdminCheckIssuanceTargetRow struct {
 	UserOk   bool `db:"user_ok" json:"user_ok"`
 }
 
-// validate the target (tenant, user) is active
+// Codex N+4b2 pass-5 P2: validate the target (tenant, user) is active
 // and not soft-deleted BEFORE we mint a bearer + bcrypt-hash. Returning
 // false → handler responds 400 (or 404), avoiding "the key was minted but
 // the customer resolver immediately rejects it" + the unhelpful 503 that
@@ -58,7 +58,7 @@ SELECT EXISTS (
 )
 `
 
-// list endpoint must verify the tenant exists
+// Codex N+4b2 pass-8 P2: list endpoint must verify the tenant exists
 // before writing the audit row, otherwise the admin_audit_events.tenant_id
 // FK turns "tenant_id=<bogus>" into a 503 audit-write failure instead
 // of a clean 404. Active OR disabled is fine — we just need a valid FK
@@ -171,7 +171,7 @@ type AdminInsertAPIKeyRow struct {
 // distinct from internal/auth's customer-facing LookupAPIKeysByPrefix:
 // admin tooling MUST NOT use the prefix-only lookup that the customer
 // hot path optimizes for (it's a different security surface).
-// insert is conditioned on tenant + user being
+// Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being
 // active and not soft-deleted at the moment of write. INSERT ... SELECT
 // WHERE EXISTS makes "target validity" atomic with the row creation, so
 // a tenant/user that flips disabled between an external preflight and
@@ -280,7 +280,7 @@ type AdminRevokeAPIKeyParams struct {
 	TenantID int64  `db:"tenant_id" json:"tenant_id"`
 }
 
-// Soft-revokes a tenant's api_keys row. revoke
+// Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
 // collapses ANY non-revoked status (active / disabled / expired) into
 // 'revoked' — only an already-revoked row is the idempotent path.
 // Returning 0 rows means "was already revoked".

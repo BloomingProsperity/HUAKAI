@@ -177,6 +177,9 @@ func (s *PostgresSessionStore) Create(ctx context.Context, row Session) (Session
 	if row.RedactedContext == nil {
 		row.RedactedContext = map[string]any{}
 	}
+	if row.RequestedScopes == nil {
+		row.RequestedScopes = []string{}
+	}
 	cleanContext, err := ValidateRedactedContext(row.RedactedContext)
 	if err != nil {
 		return Session{}, err
@@ -217,30 +220,6 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
 	))
 }
 
-func (s *PostgresSessionStore) SetAuthPayload(ctx context.Context, id string, authType AuthType, payload map[string]any) error {
-	if s == nil || s.db == nil {
-		return errors.New("credentialacq: session store not configured")
-	}
-	if authType == "" {
-		authType = AuthTypePKCE
-	}
-	if payload == nil {
-		payload = map[string]any{}
-	}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	const q = `
-UPDATE credential_acquisition_flow_sessions
-SET auth_type = $2::oauth_acquisition_auth_type,
-    device_code_payload = $3::jsonb,
-    updated_at = NOW()
-WHERE id = $1::uuid`
-	_, err = s.db.Exec(ctx, q, strings.TrimSpace(id), string(authType), raw)
-	return err
-}
-
 func (s *PostgresSessionStore) Get(ctx context.Context, id string) (Session, error) {
 	if s == nil || s.db == nil {
 		return Session{}, errors.New("credentialacq: session store not configured")
@@ -259,7 +238,10 @@ WHERE id = $1::uuid`
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrFlowNotFound
 	}
-	return row, err
+	if err != nil {
+		return Session{}, err
+	}
+	return s.hydrateAuthPayload(ctx, row)
 }
 
 func (s *PostgresSessionStore) UpdateStatus(ctx context.Context, id string, status FlowStatus, errorClass, redactedMessage string) (Session, error) {
@@ -279,6 +261,9 @@ UPDATE credential_acquisition_flow_sessions
 SET status = $2,
     error_class = NULLIF($3, ''),
     error_message_redacted = NULLIF($4, ''),
+	encrypted_pkce_verifier = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN NULL ELSE encrypted_pkce_verifier END,
+	nonce_hash = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN NULL ELSE nonce_hash END,
+	device_code_payload = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN '{}'::jsonb ELSE device_code_payload END,
     updated_at = NOW()
 WHERE id = $1::uuid
   AND status NOT IN ('finalized', 'cancelled', 'expired', 'failed')
@@ -291,7 +276,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           created_at, updated_at`
 	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage)))
 	if err == nil {
-		return row, nil
+		return s.hydrateAuthPayload(ctx, row)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, err
@@ -325,6 +310,9 @@ UPDATE credential_acquisition_flow_sessions
 SET status = $2,
     error_class = NULLIF($3, ''),
     error_message_redacted = NULLIF($4, ''),
+	encrypted_pkce_verifier = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN NULL ELSE encrypted_pkce_verifier END,
+	nonce_hash = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN NULL ELSE nonce_hash END,
+	device_code_payload = CASE WHEN $2::text IN ('finalized', 'cancelled', 'expired', 'failed') THEN '{}'::jsonb ELSE device_code_payload END,
     updated_at = NOW()
 WHERE id = $1::uuid
   AND status = ANY($5::text[])
@@ -337,7 +325,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           created_at, updated_at`
 	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage), allowedText))
 	if err == nil {
-		return row, nil
+		return s.hydrateAuthPayload(ctx, row)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, err
@@ -357,6 +345,9 @@ func (s *PostgresSessionStore) Cancel(ctx context.Context, id string) (Session, 
 UPDATE credential_acquisition_flow_sessions
 SET status = 'cancelled',
     cancelled_at = NOW(),
+	encrypted_pkce_verifier = NULL,
+	nonce_hash = NULL,
+	device_code_payload = '{}'::jsonb,
     updated_at = NOW()
 WHERE id = $1::uuid
   AND status NOT IN ('finalized', 'cancelled', 'expired', 'failed')
@@ -392,6 +383,9 @@ func (s *PostgresSessionStore) BeginFinalize(ctx context.Context, id string) (Se
 	const q = `
 UPDATE credential_acquisition_flow_sessions
 SET consumed_at = NOW(),
+	encrypted_pkce_verifier = NULL,
+	nonce_hash = NULL,
+	device_code_payload = '{}'::jsonb,
     updated_at = NOW()
 WHERE id = $1::uuid
   AND consumed_at IS NULL
@@ -445,6 +439,9 @@ SET status = 'finalized',
     consumed_at = COALESCE(consumed_at, NOW()),
     error_class = NULL,
     error_message_redacted = NULL,
+	encrypted_pkce_verifier = NULL,
+	nonce_hash = NULL,
+	device_code_payload = '{}'::jsonb,
     updated_at = NOW()
 WHERE id = $1::uuid
   AND cancelled_at IS NULL

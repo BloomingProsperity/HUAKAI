@@ -118,6 +118,7 @@ func claudeSetupTokenCandidate(token string, identityFields map[string]any, shap
 			Source:    accountident.SourceImportPayload,
 		})
 	}
+	AttachSubscription(&candidate)
 	return candidate, nil
 }
 
@@ -236,6 +237,7 @@ func importCandidateFromMap(fields map[string]any, defaultVendor, defaultAuthMod
 		Email:     firstImportString(flattened, "external_account_email", "email"),
 		Source:    accountident.SourceImportPayload,
 	})
+	AttachSubscription(&candidate)
 	return candidate
 }
 
@@ -243,7 +245,7 @@ func importCandidateFromMap(fields map[string]any, defaultVendor, defaultAuthMod
 // 需要的 token 字段扁平化；expiry 是 RFC3339 时间，存储层统一读取
 // expires_at。普通扁平 JSON 不经过特殊改写。
 func flattenCLITokenObject(fields map[string]any) map[string]any {
-	out := make(map[string]any, len(fields)+3)
+	out := make(map[string]any, len(fields)+8)
 	for key, value := range fields {
 		out[key] = value
 	}
@@ -252,23 +254,37 @@ func flattenCLITokenObject(fields map[string]any) map[string]any {
 		return out
 	}
 	delete(out, "token")
-	for _, key := range []string{"access_token", "token_type", "refresh_token"} {
-		if value, exists := token[key]; exists {
-			out[key] = value
-		}
-	}
+	copyImportAlias(out, token, "access_token", "access_token", "accessToken")
+	copyImportAlias(out, token, "token_type", "token_type", "tokenType")
+	copyImportAlias(out, token, "refresh_token", "refresh_token", "refreshToken")
+	copyImportAlias(out, token, "id_token", "id_token", "idToken")
+	copyImportAlias(out, token, "chatgpt_plan_type", "chatgpt_plan_type", "plan_type", "subscription_plan")
+	copyImportAlias(out, token, "chatgpt_account_id", "chatgpt_account_id", "account_id", "accountId")
+	copyImportAlias(out, token, "chatgpt_user_id", "chatgpt_user_id", "user_id", "userId")
+	copyImportAlias(out, token, "email", "email")
 	if expiry, ok := token["expiry"].(string); ok && strings.TrimSpace(expiry) != "" {
 		out["expires_at"] = strings.TrimSpace(expiry)
 	}
 	return out
 }
 
+func copyImportAlias(out, source map[string]any, target string, aliases ...string) {
+	for _, alias := range aliases {
+		if value, exists := source[alias]; exists && value != nil {
+			out[target] = value
+			return
+		}
+	}
+}
+
 func importTokenCandidate(token, defaultVendor, defaultAuthMode string) CredentialCandidate {
 	payload, _ := json.Marshal(map[string]string{"session_token": strings.TrimSpace(token)})
-	return CredentialCandidate{
+	candidate := CredentialCandidate{
 		Vendor: credentialstore.Normalize(defaultVendor), AuthMode: credentialstore.Normalize(defaultAuthMode), Payload: payload,
 		RedactedContext: map[string]any{"shape": "single_token"},
 	}
+	AttachSubscription(&candidate)
+	return candidate
 }
 
 func importStringField(fields map[string]any, key, fallback string) string {

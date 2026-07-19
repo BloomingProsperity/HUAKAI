@@ -23,6 +23,24 @@ type bridgeCounter struct {
 	gauge       bool
 }
 
+// BridgedCounterInfo 是对外暴露的桥接指标元数据(名字+语义+是否瞬时值),供告警指标目录
+// 从同一份规格派生条目——目录名与真实桥接名共用真相源,新增桥接指标自动进目录不漂移。
+type BridgedCounterInfo struct {
+	Name        string
+	Description string
+	Gauge       bool
+}
+
+// BridgedCounterCatalog 返回全部桥接指标的元数据副本(顺序与注册顺序一致)。
+func BridgedCounterCatalog() []BridgedCounterInfo {
+	specs := bridgeCounters()
+	out := make([]BridgedCounterInfo, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, BridgedCounterInfo{Name: spec.name, Description: spec.description, Gauge: spec.gauge})
+	}
+	return out
+}
+
 // RegisterBridge 将选定的一组 expvar 计数器导出为 OTel observable counter。
 // 计数值在 scrape 回调内部读取,因此不会引入后台 goroutine,
 // 也不会产生重复的计数器状态。
@@ -328,13 +346,6 @@ func bridgeCounters() []bridgeCounter {
 			name:        "huakai_egress_sidecar_rejected_total",
 			description: "Egress sidecar dials the sidecar negatively acked (profile rejection or upstream/proxy unreachable).",
 			read:        func() int64 { return readExpvarMapInt("egress_sidecar_dial_total", "rejected") },
-		},
-		// 出口降级(sidecar 不可用→Go-native mimicry)总数,跨 reason_class 求和。仅在
-		// SidecarFallbackEnabled=true 时非零;非零=出口指纹保真度降级正在发生,应告警。
-		{
-			name:        "huakai_egress_sidecar_fallback_total",
-			description: "Egress sidecar fallbacks to Go-native mimicry (fingerprint-fidelity degraded), summed across reason classes.",
-			read:        func() int64 { return readExpvarMapSum("egress_sidecar_fallback_total") },
 		},
 	}
 }

@@ -1,40 +1,41 @@
 ---
 name: pm-orchestrator
-description: Use when orchestrating project planning, feature parity, roadmap control, agent assignments, and release readiness for the AI Gateway + Account Hub + Admin Ops Platform.
+description: 在 Owner 指派当前 agent 统筹时，维护唯一计划、能力处置、风险、执行顺序、审查和发布状态，不启动旧的并行双计划。
 ---
 
-This file is agent-facing and authoritative.
+# 单计划编排
 
-# PM Orchestrator
+## 何时使用
 
-## Use This Skill To
+- 非平凡目标需要跨模块调研、设计、实现和发布收口；
+- 多个能力、风险和依赖需要统一排序；
+- Owner 要求一个 agent 全权负责当前目标。
 
-- Turn reference evidence into product requirements.
-- Maintain full feature parity or better.
-- Assign Claude, Gemini, and Codex responsibilities.
-- Prevent silent feature deletion.
-- Drive release gate decisions.
+## 前置输入
 
-## Workflow
+- `AGENTS.md`、`docs/RULES.md`；
+- Owner 最新指令；
+- 当前唯一计划、branch/PR 状态；
+- parity、risk、acceptance 和 release gate。
 
-1. Read `docs/01_PROJECT_BRIEF.md`.
-2. Check `docs/03_FEATURE_PARITY_MATRIX.md` for unmapped or mandatory roadmap items.
-3. Check `docs/10_RISK_REGISTER.md` for release-impacting risks.
-4. Assign work using the role split in `docs/12_AGENT_WORKFLOW.md`.
-5. Require evidence, scenario, acceptance test, and disposition for each material feature.
-6. Before release, apply `docs/15_RELEASE_GATES.md`.
+## 执行步骤
 
-## Decision Rules
+1. 确认目标、worktree、分支、唯一计划和唯一 PR，不碰其他目标。
+2. 按领域调用许可证审计与源码调研，先形成行为合同。
+3. 读取 HUAKAI 真码，建立 shape、全链、依赖、爆炸半径和失败模式。
+4. 把能力分为实现、融合、Safe Equivalent、Plugin/Flag 或 Mandatory Roadmap。
+5. 更新一个计划，排执行切片、判别测试、恢复和 Owner 决策点。
+6. 推动实现、测试、独立 review 和小提交；不为同一目标创建平行计划。
+7. 每个 slice 收口真实状态，删除被覆盖的旧规则、计划和错误注释。
+8. 发布前调用 `release-readiness-gate`，不擅自 merge。
 
-- License risk changes implementation method, not product scope.
-- Security risk changes rollout, permissioning, defaults, or gating, not product scope.
-- A merged feature is valid only if all user outcomes remain covered.
-- A feature flag is valid only if the feature exists and has a documented enablement path.
-- A mandatory roadmap item blocks parity closure.
+## 输出
 
-## Outputs
+- 当前唯一计划和状态；
+- 清晰执行顺序、依赖、验收和风险；
+- Owner 决策材料；
+- PR/release 状态。
 
-- Updated parity matrix entries.
-- Updated risk register entries.
-- Agent assignments with clear acceptance criteria.
-- Release gate status.
+## 阻断项
+
+计划缺前置源码证据、存在两个互相竞争的权威计划、S0/S1 未关或 Owner 尚未批准 merge 时，不得宣称目标完成。

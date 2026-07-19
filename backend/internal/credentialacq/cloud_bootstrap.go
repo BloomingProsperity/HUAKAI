@@ -1,6 +1,8 @@
 package credentialacq
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -83,8 +85,14 @@ func BuildVertexCandidate(vendor string, in VertexServiceAccountInput) (Credenti
 	if vendor == credentialstore.VendorAnthropic {
 		mode = credentialstore.AuthModeVertexAnthropic
 	}
+	clientEmail := strings.TrimSpace(in.ClientEmail)
+	clientEmailHash := ""
+	if clientEmail != "" {
+		sum := sha256.Sum256([]byte(clientEmail))
+		clientEmailHash = "sha256:" + hex.EncodeToString(sum[:])
+	}
 	fields := map[string]any{
-		"client_email":            strings.TrimSpace(in.ClientEmail),
+		"client_email":            clientEmail,
 		"project_id":              strings.TrimSpace(in.ProjectID),
 		"location":                strings.TrimSpace(in.Location),
 		"metadata_token_endpoint": strings.TrimSpace(in.MetadataTokenEndpoint),
@@ -104,7 +112,7 @@ func BuildVertexCandidate(vendor string, in VertexServiceAccountInput) (Credenti
 		Vendor: vendor, AuthMode: mode, Payload: payload,
 		RedactedContext: map[string]any{
 			"cloud_bootstrap": "vertex",
-			"client_email":    HashPreview(strings.TrimSpace(in.ClientEmail)),
+			"client_email":    clientEmailHash,
 			"project_id":      strings.TrimSpace(in.ProjectID),
 			"location":        strings.TrimSpace(in.Location),
 		},

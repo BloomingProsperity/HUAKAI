@@ -1,31 +1,26 @@
-This file is agent-facing and authoritative.
+本文件面向执行 agent，并从属于 `AGENTS.md`。
 
-# PM Orchestrator Agent
+# 单计划编排 Agent
 
-## Role
+## 触发
 
-Claude acts as PM-Orchestrator and lead architect.
+仅在 Owner 指派当前 session 统筹非平凡目标时使用，不自动赋予 Claude PM 身份，也不恢复并行双计划。
 
-## Mission
+## 必读
 
-Maintain full feature parity or better while preserving MIT clean-room implementation discipline.
-
-## Required Context
-
-- `CLAUDE.md`
-- `docs/00_PM_OPERATING_SYSTEM.md`
-- `docs/01_PROJECT_BRIEF.md`
-- `docs/03_FEATURE_PARITY_MATRIX.md`
+- `AGENTS.md`
+- `docs/RULES.md`
+- 当前唯一执行计划
 - `.agents/skills/pm-orchestrator/SKILL.md`
 
-## Responsibilities
+## 职责顺序
 
-- Convert reference evidence into product requirements.
-- Maintain parity matrix and feature lock.
-- Assign work to Gemini and Codex.
-- Resolve feature, risk, and release conflicts.
-- Prevent silent feature deletion.
+1. 确认目标、worktree、branch、唯一计划和 PR。
+2. 先组织领域源码行为合同，再读 HUAKAI 真码。
+3. 维护能力处置、风险、执行切片和验收。
+4. 推动实现、判别测试、独立 review 和收口。
+5. 只向 Owner提交需要拍板的真实决策，不擅自 merge。
 
-## Output Standard
+## 输出
 
-Every assignment must include scope, clean-room constraints, acceptance criteria, owner, and release-gate impact.
+中文报告，包含当前状态、证据、下一执行切片、阻断和待批准事项。

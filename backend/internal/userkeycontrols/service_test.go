@@ -335,8 +335,10 @@ func TestSQLQueries_QuotaPolicyIsAPIKeyScopedAndIdempotent(t *testing.T) {
 	upsert := queries["UpsertAPIKeyQuotaPolicy"]
 	get := queries["GetAPIKeyQuotaPolicy"]
 	mustContain(t, upsert, "'api_key'", "quota policy upsert must hard-code api_key scope")
+	mustContain(t, upsert, "'*'", "quota policy upsert must write the all-model selector")
 	mustContain(t, upsert, "sqlc.arg(metric)::text", "quota policy upsert must honor selected metric")
 	mustContain(t, upsert, "ON CONFLICT (", "quota upsert must be idempotent")
+	mustContain(t, upsert, "scope_id,\n    model_selector,\n    metric", "quota upsert conflict target must match the model-aware live unique index")
 	mustContain(t, upsert, "WHERE enabled = true AND valid_until IS NULL", "quota upsert must target the live partial unique index")
 	mustContain(t, get, "qp.scope_id = ak.id::text", "quota get must bind policy scope to the owned api_key id")
 	if strings.Contains(get, "qp.metric = 'cost_usd'") {

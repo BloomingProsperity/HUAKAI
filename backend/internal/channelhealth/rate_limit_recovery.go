@@ -68,3 +68,35 @@ func isRateLimitReason(reason SignalClass) bool {
 	value := string(normalizeSignalClass(reason))
 	return value == string(SignalRateLimit) || strings.HasPrefix(value, string(SignalRateLimit)+"_")
 }
+
+// ForceActiveByProviderAccount 把某账号最新渠道记录直接强制回 active(满流量),供运维"完整
+// 恢复账号"原语调用:与 ClearRateLimitByProviderAccount 只清限流冷却(且会落入 ramping 1%)不同,
+// 这里直接跳到 active 立即满血,对应运维显式恢复语义。
+// 无渠道记录 → (false, nil) 视为无需恢复;已是 active → (false, nil) 无变化。
+func (s *Service) ForceActiveByProviderAccount(ctx context.Context, tenantID, providerAccountID int64, actorID, reason string) (Record, bool, error) {
+	if tenantID <= 0 {
+		return Record{}, false, errors.New("tenant_id must be positive")
+	}
+	if providerAccountID <= 0 {
+		return Record{}, false, errors.New("provider_account_id must be positive")
+	}
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return Record{}, false, errors.New("actor_id is required")
+	}
+	current, err := s.LatestByProviderAccount(ctx, tenantID, providerAccountID)
+	if errors.Is(err, ErrNotFound) {
+		return Record{}, false, nil
+	}
+	if err != nil {
+		return Record{}, false, err
+	}
+	if current.State == StateActive {
+		return current, false, nil
+	}
+	rec, err := s.ForceActive(ctx, current.Key, actorID, reason)
+	if err != nil {
+		return Record{}, false, err
+	}
+	return rec, true, nil
+}

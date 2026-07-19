@@ -530,7 +530,6 @@ func TestResolveDispatchTransportMatrix(t *testing.T) {
 }
 
 func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	standardCalls, mimicryCalls := 0, 0
 	standard := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		standardCalls++
@@ -547,7 +546,7 @@ func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
 	})
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
-	factory.SetMimicry(mimicry)
+	factory.SetSidecarForTesting(mimicry)
 	adapter := &stubAdapter{platform: "copilot"}
 	dispatcher := &UpstreamDispatcher{
 		Adapters:         &stubRegistry{adapter: adapter},
@@ -574,7 +573,6 @@ func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
 }
 
 func TestDispatcher_ExplicitStandardOverridesSessionAutoSelection(t *testing.T) {
-	t.Setenv("HUAKAI_TRANSPORT_MIMICRY", "true")
 	standardCalls, mimicryCalls := 0, 0
 	standard := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		standardCalls++
@@ -591,7 +589,7 @@ func TestDispatcher_ExplicitStandardOverridesSessionAutoSelection(t *testing.T) 
 	})
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
-	factory.SetMimicry(mimicry)
+	factory.SetSidecarForTesting(mimicry)
 	adapter := &stubAdapter{platform: "openai_codex"}
 	dispatcher := &UpstreamDispatcher{
 		Adapters:         &stubRegistry{adapter: adapter},

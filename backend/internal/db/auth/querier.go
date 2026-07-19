@@ -6,6 +6,8 @@ package auth
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -35,6 +37,10 @@ type Querier interface {
 	// candidate row at all.
 	LookupAPIKeysByPrefix(ctx context.Context, keyPrefix string) ([]LookupAPIKeysByPrefixRow, error)
 	MarkAccountTempUnschedulable(ctx context.Context, arg MarkAccountTempUnschedulableParams) error
+	// current_in_flight 是持久计数器: release 失败/进程崩溃会留下永久 +1(cap=1 时该账号
+	// 永久无法刷新)。每次 acquire/release 都会刷新 last_updated_at, 正常刷新分钟级完成;
+	// 凡 in_flight>0 且该列早于陈旧阈值的行 = 泄漏, 直接归零自愈。
+	ReapStaleAccountStormSlots(ctx context.Context, staleBefore pgtype.Timestamptz) (int64, error)
 	ReleaseAccountStormSlot(ctx context.Context, id int64) error
 	// Best-effort auth telemetry update after successful bearer verification.
 	// The resolver logs and continues if this write fails.

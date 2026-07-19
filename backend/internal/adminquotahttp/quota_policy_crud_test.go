@@ -155,7 +155,7 @@ const validCreateBody = `{"scope_kind":"user","scope_id":"42","metric":"cost_usd
 // 审计";至于该行是否真的落库,由集成测试断言。
 func TestCreateHappyPathPersistsAndAudits(t *testing.T) {
 	store := &quotaStoreStub{createRow: dbquota.QuotaPolicy{
-		ID: 901, TenantID: 7, ScopeKind: "user", ScopeID: "42", Metric: "cost_usd",
+		ID: 901, TenantID: 7, ScopeKind: "user", ScopeID: "42", ModelSelector: "*", Metric: "cost_usd",
 		WindowKind: "calendar_day", WindowSeconds: 0, LimitValue: numericFromString(t, "10.00000000"),
 		BurstValue: numericFromString(t, "0"), Mode: "enforce", Priority: 100, Enabled: true,
 		ValidFrom: pgtype.Timestamptz{Valid: true}, CreatedAt: pgtype.Timestamptz{Valid: true},
@@ -168,7 +168,7 @@ func TestCreateHappyPathPersistsAndAudits(t *testing.T) {
 		t.Fatalf("create calls=%d want 1", store.createCalls)
 	}
 	if store.lastCreate.insert.TenantID != 7 || store.lastCreate.insert.ScopeKind != "user" ||
-		store.lastCreate.insert.Metric != "cost_usd" || store.lastCreate.insert.Mode != "enforce" {
+		store.lastCreate.insert.ModelSelector != "*" || store.lastCreate.insert.Metric != "cost_usd" || store.lastCreate.insert.Mode != "enforce" {
 		t.Fatalf("create insert params wrong: %+v", store.lastCreate.insert)
 	}
 	if store.lastAudit.Action != "create_quota_policy" || store.lastAudit.TenantID != 7 {
@@ -178,7 +178,7 @@ func TestCreateHappyPathPersistsAndAudits(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
 		t.Fatalf("decode item: %v", err)
 	}
-	if item.ID != 901 || item.LimitValue != "10" || item.ScopeKind != "user" {
+	if item.ID != 901 || item.LimitValue != "10" || item.ScopeKind != "user" || item.ModelSelector != "*" {
 		t.Fatalf("response item wrong: %+v", item)
 	}
 }
@@ -210,6 +210,8 @@ func TestCreateValidationMatrix(t *testing.T) {
 	}{
 		"bad scope_kind":         {`{"scope_kind":"nope","scope_id":"1","metric":"requests","window_kind":"none","limit_value":"1"}`, "invalid_scope_kind"},
 		"empty scope_id":         {`{"scope_kind":"user","scope_id":"","metric":"requests","window_kind":"none","limit_value":"1"}`, "invalid_scope_id"},
+		"empty model selector":   {`{"scope_kind":"user","scope_id":"1","model_selector":"","metric":"requests","window_kind":"none","limit_value":"1"}`, "invalid_model_selector"},
+		"partial model wildcard": {`{"scope_kind":"user","scope_id":"1","model_selector":"gpt-*","metric":"requests","window_kind":"none","limit_value":"1"}`, "invalid_model_selector"},
 		"bad window_kind":        {`{"scope_kind":"user","scope_id":"1","metric":"requests","window_kind":"weird","limit_value":"1"}`, "invalid_window_kind"},
 		"fixed needs seconds":    {`{"scope_kind":"user","scope_id":"1","metric":"requests","window_kind":"fixed","window_seconds":0,"limit_value":"1"}`, "invalid_window_seconds"},
 		"negative limit":         {`{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"-1"}`, "invalid_limit_value"},
@@ -217,6 +219,7 @@ func TestCreateValidationMatrix(t *testing.T) {
 		"bad mode":               {`{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"1","mode":"halt"}`, "invalid_mode"},
 		"validity inverted":      {`{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"1","valid_from":"2026-06-13T00:00:00Z","valid_until":"2026-06-12T00:00:00Z"}`, "invalid_validity_range"},
 		"missing limit required": {`{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none"}`, "invalid_limit_value"},
+		"unknown field":          {`{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"1","surprise":true}`, "invalid_json"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -259,6 +262,7 @@ func TestCreateAcceptsFullUnion(t *testing.T) {
 							sk, m, wk, mode, rec.Code, strings.TrimSpace(rec.Body.String()))
 					}
 					if store.lastCreate.insert.ScopeKind != sk || store.lastCreate.insert.Metric != m ||
+						store.lastCreate.insert.ModelSelector != "*" ||
 						store.lastCreate.insert.WindowKind != wk || store.lastCreate.insert.Mode != mode ||
 						store.lastCreate.insert.Priority != 3 {
 						t.Fatalf("union combo not passed through: %+v", store.lastCreate.insert)
@@ -266,6 +270,46 @@ func TestCreateAcceptsFullUnion(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestCreateExactModelSelectorNormalizesAndAudits(t *testing.T) {
+	store := &quotaStoreStub{createRow: dbquota.QuotaPolicy{
+		ID: 902, TenantID: 7, ScopeKind: "user", ScopeID: "42", ModelSelector: "gpt-4.1",
+		Metric: "requests", WindowKind: "none", LimitValue: numericFromString(t, "5"),
+		BurstValue: numericFromString(t, "0"), Mode: "enforce", Enabled: true,
+	}}
+	body := `{"scope_kind":"user","scope_id":"42","model_selector":"  GPT-4.1  ","metric":"requests","window_kind":"none","limit_value":"5"}`
+	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store}, http.MethodPost, "/", body)
+	assertStatus(t, rec, http.StatusCreated)
+	if store.lastCreate.insert.ModelSelector != "gpt-4.1" {
+		t.Fatalf("model selector=%q; want normalized gpt-4.1", store.lastCreate.insert.ModelSelector)
+	}
+	if !strings.Contains(string(store.lastAudit.Payload), `"model_selector":"gpt-4.1"`) {
+		t.Fatalf("audit payload lacks normalized selector: %s", store.lastAudit.Payload)
+	}
+}
+
+func TestCreateModelSelectorUsesRegistryLengthContract(t *testing.T) {
+	valid := strings.Repeat("m", maxModelAliasRunes)
+	store := &quotaStoreStub{createRow: dbquota.QuotaPolicy{
+		ID: 903, TenantID: 7, ScopeKind: "user", ScopeID: "42", ModelSelector: valid,
+		Metric: "requests", WindowKind: "none", LimitValue: numericFromString(t, "5"),
+		BurstValue: numericFromString(t, "0"), Mode: "enforce", Enabled: true,
+	}}
+	body := `{"scope_kind":"user","scope_id":"42","model_selector":"` + valid + `","metric":"requests","window_kind":"none","limit_value":"5"}`
+	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store}, http.MethodPost, "/", body)
+	assertStatus(t, rec, http.StatusCreated)
+	if store.lastCreate.insert.ModelSelector != valid {
+		t.Fatalf("512 字符模型选择器未完整进入存储层: got=%d want=%d", len(store.lastCreate.insert.ModelSelector), len(valid))
+	}
+
+	tooLong := strings.Repeat("m", maxModelAliasRunes+1)
+	body = `{"scope_kind":"user","scope_id":"42","model_selector":"` + tooLong + `","metric":"requests","window_kind":"none","limit_value":"5"}`
+	rec = invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store}, http.MethodPost, "/", body)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if code := errorCode(t, rec); code != "invalid_model_selector" {
+		t.Fatalf("超长模型选择器 code=%q want invalid_model_selector", code)
 	}
 }
 
@@ -398,12 +442,12 @@ func TestCreateConflictMapsTo409(t *testing.T) {
 }
 
 // TestUpdateEnabledToggle 证明 PUT 会把 enabled=false 流入 update params
-//(reserve 路径的过滤依赖这一列)。
+// (reserve 路径的过滤依赖这一列)。
 func TestUpdateEnabledToggle(t *testing.T) {
 	store := &quotaStoreStub{updateRow: dbquota.QuotaPolicy{ID: 55, TenantID: 7, Enabled: false,
 		LimitValue: numericFromString(t, "1"), BurstValue: numericFromString(t, "0"),
 		ScopeKind: "user", ScopeID: "1", Metric: "cost_usd", WindowKind: "none", Mode: "enforce"}}
-	body := `{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"1","enabled":false}`
+	body := `{"scope_kind":"user","scope_id":"1","model_selector":"*","metric":"cost_usd","window_kind":"none","limit_value":"1","enabled":false}`
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
 		http.MethodPut, "/55", body)
 	assertStatus(t, rec, http.StatusOK)
@@ -415,19 +459,35 @@ func TestUpdateEnabledToggle(t *testing.T) {
 	}
 }
 
+func TestUpdateRequiresExplicitModelSelector(t *testing.T) {
+	store := &quotaStoreStub{}
+	body := `{"scope_kind":"user","scope_id":"1","metric":"cost_usd","window_kind":"none","limit_value":"1"}`
+	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store}, http.MethodPut, "/55", body)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if code := errorCode(t, rec); code != "invalid_model_selector" {
+		t.Fatalf("code=%q want invalid_model_selector", code)
+	}
+	if store.updateCalls != 0 {
+		t.Fatalf("omitted model selector reached store")
+	}
+}
+
 // TestListAdminIgnoresValidityAndModeFilters 证明 admin list 只传递显式的过滤
-//(scope/metric/enabled),绝不注入 mode 或 valid_until 过滤 —— 运维必须能看到
+// (scope/metric/enabled),绝不注入 mode 或 valid_until 过滤 —— 运维必须能看到
 // disabled+过期+shadow 的行。
 func TestListAdminFiltersPassThrough(t *testing.T) {
 	store := &quotaStoreStub{}
 	rec := invoke(t, Deps{Auth: quotaAuthStub{ident: tenantOperator(7)}, Store: store},
-		http.MethodGet, "/?scope_kind=user&metric=cost_usd&enabled=false&limit=999&offset=5", "")
+		http.MethodGet, "/?scope_kind=user&model_selector=GPT-4.1&metric=cost_usd&enabled=false&limit=999&offset=5", "")
 	assertStatus(t, rec, http.StatusOK)
 	if store.listArg.ScopeKind == nil || *store.listArg.ScopeKind != "user" {
 		t.Fatalf("scope_kind filter not passed: %+v", store.listArg.ScopeKind)
 	}
 	if store.listArg.Metric == nil || *store.listArg.Metric != "cost_usd" {
 		t.Fatalf("metric filter not passed: %+v", store.listArg.Metric)
+	}
+	if store.listArg.ModelSelector == nil || *store.listArg.ModelSelector != "gpt-4.1" {
+		t.Fatalf("model_selector filter not normalized: %+v", store.listArg.ModelSelector)
 	}
 	if store.listArg.Enabled == nil || *store.listArg.Enabled {
 		t.Fatalf("enabled=false filter not passed: %+v", store.listArg.Enabled)

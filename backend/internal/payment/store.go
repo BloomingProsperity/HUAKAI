@@ -117,6 +117,7 @@ type refundRecord struct {
 	TenantID       int64
 	OrderID        int64
 	AmountCents    int64
+	RequireExact   bool
 	IdempotencyKey string
 	Reason         string
 	ActorKind      string
@@ -124,6 +125,40 @@ type refundRecord struct {
 	ActorRef       string // 双身份归属串(AuditActor() 形态),空则列落 NULL
 	RequestID      string
 	Now            time.Time
+}
+
+func paymentRefundProgress(creditedCents, refundedCents int64) (OrderStatus, int64, error) {
+	if creditedCents <= 0 || refundedCents < 0 || refundedCents > creditedCents {
+		return "", 0, ErrRefundFactInvalid
+	}
+	remaining := creditedCents - refundedCents
+	if remaining == 0 {
+		return StatusRefunded, 0, nil
+	}
+	return StatusCompleted, remaining, nil
+}
+
+func paymentRefundAmount(creditedCents, refundedCents, requestedCents int64, requireExact bool) (int64, bool, error) {
+	_, remaining, err := paymentRefundProgress(creditedCents, refundedCents)
+	if err != nil {
+		return 0, false, err
+	}
+	if requestedCents <= 0 {
+		return 0, false, ErrInvalidAmount
+	}
+	if requireExact {
+		if requestedCents > creditedCents {
+			return 0, false, ErrRefundExceedsCredit
+		}
+		if requestedCents <= refundedCents {
+			return 0, true, nil
+		}
+		return requestedCents - refundedCents, false, nil
+	}
+	if requestedCents > remaining {
+		return 0, false, ErrRefundExceedsCredit
+	}
+	return requestedCents, false, nil
 }
 
 type fulfillRecord struct {

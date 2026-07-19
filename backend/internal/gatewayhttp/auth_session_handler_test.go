@@ -2081,6 +2081,85 @@ func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
 	}
 }
 
+type failingLoginSharedStore struct{}
+
+func (failingLoginSharedStore) Reserve(context.Context, string, loginthrottle.Config) (loginthrottle.SharedReservation, loginthrottle.Decision, error) {
+	return nil, loginthrottle.Decision{}, errors.New("redis unavailable")
+}
+
+type canceledLoginReservation struct {
+	failureCalls int
+	failureErr   error
+}
+
+func (r *canceledLoginReservation) Success(context.Context) error { return nil }
+func (r *canceledLoginReservation) Cancel(context.Context) error  { return nil }
+func (r *canceledLoginReservation) Failure(ctx context.Context) error {
+	r.failureCalls++
+	r.failureErr = ctx.Err()
+	return r.failureErr
+}
+
+type canceledLoginSharedStore struct {
+	reservation *canceledLoginReservation
+}
+
+func (s canceledLoginSharedStore) Reserve(context.Context, string, loginthrottle.Config) (loginthrottle.SharedReservation, loginthrottle.Decision, error) {
+	return s.reservation, loginthrottle.Decision{Allowed: true, Reason: loginthrottle.ReasonAllowed}, nil
+}
+
+func TestLogin_CanceledRequestStillCommitsSharedFailure(t *testing.T) {
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	store := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, store, "cancel-shared@example.test", "secret", userauth.UserStatusActive, true)
+	reservation := &canceledLoginReservation{}
+	limiter := loginthrottle.New(
+		loginthrottle.Config{WindowLimit: 10, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }},
+		loginthrottle.WithSharedStore(canceledLoginSharedStore{reservation: reservation}),
+	)
+	router, _ := newLoginTestHandler(t, now, store, limiter, false)
+	body, err := json.Marshal(map[string]any{
+		"tenant_id": 1, "email": "cancel-shared@example.test", "password": "wrong",
+	})
+	if err != nil {
+		t.Fatalf("编码登录请求: %v", err)
+	}
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(body)).WithContext(requestCtx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if reservation.failureCalls != 1 || reservation.failureErr != nil {
+		t.Fatalf("断连后的共享失败提交 calls=%d contextErr=%v", reservation.failureCalls, reservation.failureErr)
+	}
+}
+
+func TestLogin_SharedThrottleFailureBlocksBeforeKDF(t *testing.T) {
+	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	base := newGatewayMemoryAuthStore(now)
+	seedLoginUser(t, base, "shared-limit@example.test", "secret", userauth.UserStatusActive, true)
+	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
+	limiter := loginthrottle.New(
+		loginthrottle.Config{WindowLimit: 10, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }},
+		loginthrottle.WithSharedStore(failingLoginSharedStore{}),
+	)
+	router, events := newLoginTestHandler(t, now, counting, limiter, false)
+	rec := serveJSON(t, router, http.MethodPost, "/v1/auth/login", map[string]any{
+		"tenant_id": 1, "email": "shared-limit@example.test", "password": "secret",
+	})
+	assertHTTPStatus(t, rec, http.StatusServiceUnavailable)
+	if code := loginErrorCode(t, rec); code != "login_throttle_unavailable" {
+		t.Fatalf("错误码=%q", code)
+	}
+	if got := counting.calls(); got != 0 {
+		t.Fatalf("共享限流失败不得进入查用户或 Argon2，calls=%d", got)
+	}
+	if reason := lastLoginFailedReason(t, events); reason != "login_throttle_unavailable" {
+		t.Fatalf("日志原因=%q", reason)
+	}
+}
+
 // TestLogin_AccountStateFailuresAreGeneric 是 门2 的判别测: 所有「账号存在性/状态」相关的
 // 登录失败对外必须是同一个 generic 401 invalid_credentials(消状态码枚举 oracle), 但审计事件仍保留
 // 真实 reason_class(操作员可见)。

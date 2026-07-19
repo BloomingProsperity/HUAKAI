@@ -1,4 +1,4 @@
--- name: InsertProviderAccount :one
+-- name: InsertProviderAccountRaw :one
 INSERT INTO provider_accounts (
     tenant_id,
     provider_id,
@@ -13,6 +13,7 @@ INSERT INTO provider_accounts (
     cap_queue_fallback,
     priority,
     static_weight,
+    upstream_cost_ratio,
     probe_model,
     tags,
     extra,
@@ -48,6 +49,7 @@ INSERT INTO provider_accounts (
     COALESCE(sqlc.narg(cap_queue_fallback)::integer, 8),
     COALESCE(sqlc.narg(priority)::integer, 100),
     COALESCE(sqlc.narg(static_weight)::integer, 1),
+    sqlc.narg(upstream_cost_ratio)::double precision,
     NULLIF(BTRIM(sqlc.narg(probe_model)::text), ''),
     COALESCE(sqlc.narg(tags)::text[], ARRAY[]::text[]),
     COALESCE(sqlc.narg(extra)::jsonb, '{}'::jsonb),
@@ -72,13 +74,14 @@ INSERT INTO provider_accounts (
 )
 RETURNING id;
 
--- name: UpdateAdminProviderAccount :one
+-- name: UpdateAdminProviderAccountRaw :one
 UPDATE provider_accounts
 SET
     enabled = COALESCE(sqlc.narg(enabled)::boolean, enabled),
     priority = COALESCE(sqlc.narg(priority)::integer, priority),
     cap_concurrency = COALESCE(sqlc.narg(cap_concurrency)::integer, cap_concurrency),
     static_weight = COALESCE(sqlc.narg(static_weight)::integer, static_weight),
+    upstream_cost_ratio = CASE WHEN sqlc.arg(set_upstream_cost_ratio)::boolean THEN sqlc.narg(upstream_cost_ratio)::double precision ELSE upstream_cost_ratio END,
     rpm_limit = COALESCE(sqlc.narg(rpm_limit)::bigint, rpm_limit),
     tpm_limit = COALESCE(sqlc.narg(tpm_limit)::bigint, tpm_limit),
     window_cost_limit_cents = COALESCE(sqlc.narg(window_cost_limit_cents)::bigint, window_cost_limit_cents),
@@ -126,6 +129,7 @@ RETURNING
     in_flight_count,
     priority,
     static_weight,
+    upstream_cost_ratio,
     probe_model,
     tags,
     extra,

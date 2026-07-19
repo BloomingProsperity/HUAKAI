@@ -48,6 +48,32 @@ func TestCoordinatorMixedOrDeliveredFailureStops(t *testing.T) {
 	}
 }
 
+func TestCoordinatorNeverRetriesAfterLocalSideEffectSafetyFails(t *testing.T) {
+	var c Coordinator
+	got := c.Observe(FailureObservation{
+		Signal:            SignalUpstreamServerError,
+		RetryPermitted:    false,
+		MorePrimary:       true,
+		TargetConfigured:  true,
+		LocalSafetyPassed: false,
+	})
+	if got.Action != ActionStop {
+		t.Fatalf("付费副作用未确认撤销时动作=%d，期望终止", got.Action)
+	}
+
+	var capacity Coordinator
+	got = capacity.Observe(FailureObservation{
+		Signal:            SignalPoolCapacityExhausted,
+		RetryPermitted:    false,
+		MorePrimary:       true,
+		TargetConfigured:  true,
+		LocalSafetyPassed: true,
+	})
+	if got.Action != ActionContinuePrimary {
+		t.Fatalf("无付费副作用的容量失败动作=%d，期望继续主池", got.Action)
+	}
+}
+
 func TestAnnotateRoutingReasonRecordsStableEnums(t *testing.T) {
 	raw := AnnotateRoutingReason([]byte(`{"reason":"test"}`), Transition{
 		From: ClassNormal, To: ClassManual, Trigger: SignalConnectTimeout,

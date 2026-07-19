@@ -1,5 +1,5 @@
-# 仓库根 .dockerignore。backend/Dockerfile 现以仓库根为 build context(需把 frontend/ 一起
-# 纳入,以便在镜像内构建并 go:embed 进单二进制)。这里排除不参与构建或会拖慢/撑大 context 的东西。
+# 仓库根 .dockerignore。backend/Dockerfile 以仓库根为 build context，同时编译 Go 网关与
+# Rust TLS sidecar；这里排除不参与后端镜像构建或会拖慢、撑大 context 的内容。
 
 # 版本控制与本地状态
 .git
@@ -11,11 +11,12 @@
 **/*.pem
 **/*.key
 
-# 依赖与构建产物(镜像内会重新 npm ci / vite build / go build)
+# 依赖与构建产物（镜像内会重新执行 Go 与 Rust 构建）
 **/node_modules
 **/dist
 **/bin
 **/out
+**/target
 **/tmp
 **/temp
 **/.cache
@@ -38,9 +39,18 @@ reference/
 references/
 refs/
 reference_deep_dive/
-exploratory/
 third_party/
 vendor/
+
+# Rust TLS sidecar 是生产镜像的一部分，仅放行其 workspace 与已审计的 BoringSSL vendor。
+exploratory/*
+!exploratory/rust-core-gateway/
+exploratory/rust-core-gateway/*
+!exploratory/rust-core-gateway/merged/
+!exploratory/rust-core-gateway/merged/**
+!exploratory/rust-core-gateway/vendor/
+!exploratory/rust-core-gateway/vendor/**
+exploratory/rust-core-gateway/merged/target/
 
 # 文档(运行时不需要)
 docs/

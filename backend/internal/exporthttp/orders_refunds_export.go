@@ -21,6 +21,7 @@ var ordersCSVHeader = []string{
 var refundsCSVHeader = []string{
 	"refund_id", "order_id", "user_id",
 	"amount", "currency", "reason", "actor_kind", "created_at",
+	"requested_amount", "require_exact", "billing_event_id",
 }
 
 // OrdersExporterDep 是只读的订单导出数据源。
@@ -192,5 +193,8 @@ func refundExportRecord(ref payment.RefundRecord) []string {
 		SafeCSVCell(ref.Reason),
 		SafeCSVCell(ref.ActorKind),
 		formatTime(ref.CreatedAt),
+		centsToAmount(ref.RequestedAmountCents),
+		strconv.FormatBool(ref.RequireExact),
+		strconv.FormatInt(ref.BillingEventID, 10),
 	}
 }

@@ -206,6 +206,7 @@ func seedDispatcherHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.
 	t.Cleanup(func() {
 		c := context.Background()
 		_, _ = pool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id = $1`, seed.tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id = $1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id = $1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM channels WHERE tenant_id = $1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id = $1`, seed.tenantID)
@@ -258,6 +259,20 @@ func insertDispatcherHealthAccount(
 		seed.tenantID, seed.providerID, seed.channelID, "disp-health-"+label+"-"+uuid.NewString(), state, untilArg, priority,
 	).Scan(&id); err != nil {
 		t.Fatalf("seed provider_account state=%s: %v", state, err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO account_credentials (
+    tenant_id, provider_account_id, vendor, auth_mode, state,
+    credential_version, encrypted_payload, key_id, nonce, aad_hash
+) VALUES ($1, $2, 'openai', 'api_key', 'active', 1, $3, $4, $5, $6)`,
+		seed.tenantID,
+		id,
+		[]byte("ciphertext"),
+		"dispatcher-health-test-key",
+		[]byte("nonce-12345678"),
+		"dispatcher-health-aad-"+uuid.NewString(),
+	); err != nil {
+		t.Fatalf("seed provider_account credential state=%s: %v", state, err)
 	}
 	return id
 }

@@ -25,6 +25,9 @@ type Failure struct {
 	// 授权换号子预算(独立于普通 attempt 预算)。该信号对跨类终态门 fail-closed,
 	// 换号与否由各协议 run 循环按子预算裁决。
 	AuthFailoverEligible bool
+	// SideEffectRetrySafe 表示当前 attempt 未留下未确认的上游付费副作用。
+	// false 是硬终态门，任何主池重试或跨类转移都不得继续。
+	SideEffectRetrySafe bool
 }
 
 // PoolFailure 归一化 selector 失败；调用方仍负责先 abort/release。
@@ -73,15 +76,9 @@ func ReadFailure(err error) *Failure {
 		http.StatusBadGateway, clienterr.CodeUpstreamReadError, "upstream_read_error", 0)
 }
 
-// UpstreamFailure 归一化非 2xx 响应，并保留窄机器码触发边界。
-// 客户端状态用分类器 ClientStatus:客户端错误(400/403 等)原样透传而非折叠成 502,
-// 5xx→502、限流/过载→503、401→401,与流式主路对齐。
-func UpstreamFailure(status int, headers http.Header, body []byte, providerName string) *Failure {
-	decision, classification, err := gateway.ClassifyAttemptHTTPError(status, headers, body, providerName)
-	if err != nil {
-		return newFailure(bindingfallback.SignalLocalConfigurationFailure, false, http.StatusBadGateway,
-			clienterr.CodeUpstreamDispatchError, "upstream_error", 0)
-	}
+// UpstreamFailureFromDecision 消费已经经过账号策略与 binding 映射的统一决策。
+// retry/fallback 信号仍只从静态 classification 生成，客户端投影不能扩大重试权限。
+func UpstreamFailureFromDecision(status int, body []byte, decision gateway.AttemptRetryDecision, classification gateway.Classification) *Failure {
 	reason := decision.AbortReason
 	if reason == "" {
 		reason = "upstream_error"
@@ -90,8 +87,17 @@ func UpstreamFailure(status int, headers http.Header, body []byte, providerName 
 	if clientStatus <= 0 {
 		clientStatus = http.StatusBadGateway
 	}
+	code := decision.ClientCode
+	if code == "" {
+		code = clienterr.CodeUpstreamDispatchError
+	}
+	message := decision.ClientMessage
+	if message == "" {
+		message = clienterr.MessageFor(code)
+	}
 	failure := newFailure(SignalFromUpstream(status, body, classification, decision), decision.RetryableBeforeDelivery,
-		clientStatus, clienterr.CodeUpstreamDispatchError, reason, 0)
+		clientStatus, code, reason, 0)
+	failure.Message = message
 	failure.AuthFailoverEligible = decision.CountsAgainstAuthFailoverBudget
 	return failure
 }
@@ -117,6 +123,7 @@ func newFailure(signal bindingfallback.Signal, retry bool, status int, code, rea
 	return &Failure{
 		Signal: signal, RetryPermitted: retry, Status: status, Code: code,
 		Message: clienterr.MessageFor(code), AbortReason: reason, RetryAfterSeconds: retryAfter,
+		SideEffectRetrySafe: true,
 	}
 }
 

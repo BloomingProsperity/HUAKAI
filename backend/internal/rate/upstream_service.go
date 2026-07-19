@@ -2,6 +2,7 @@ package rate
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,6 +16,14 @@ import (
 const defaultUpstreamCooldown = 5 * time.Minute
 const sessionWindow5hDuration = 5 * time.Hour
 const sessionWindow7dDuration = 7 * 24 * time.Hour
+
+const (
+	QuotaSnapshotSourceUsageEndpoint   = "usage_endpoint"
+	QuotaSnapshotSourceResponseHeaders = "response_headers"
+	QuotaSnapshotOutcomeSuccess        = "success"
+	QuotaSnapshotOutcomePartial        = "partial"
+	QuotaSnapshotOutcomeFailed         = "failed"
+)
 
 var sessionWindow5hStatusHeaders = []string{
 	sessionWindow5hPrefix + "-status",
@@ -54,15 +63,19 @@ var sessionWindow7dUtilizationHeaders = []string{
 }
 
 type SessionWindowUpdate struct {
-	ProviderAccountID   int64
-	Window5hStart       *time.Time
-	Window5hEnd         *time.Time
-	Window5hStatus      *string
-	Window5hUtilization *float64
-	Window7dStart       *time.Time
-	Window7dEnd         *time.Time
-	Window7dStatus      *string
-	Window7dUtilization *float64
+	ProviderAccountID     int64
+	Window5hStart         *time.Time
+	Window5hEnd           *time.Time
+	Window5hStatus        *string
+	Window5hUtilization   *float64
+	Window7dStart         *time.Time
+	Window7dEnd           *time.Time
+	Window7dStatus        *string
+	Window7dUtilization   *float64
+	ObservedAt            *time.Time
+	ObservationSource     string
+	ObservationOutcome    string
+	ObservationErrorClass string
 }
 
 type SessionWindowStore interface {
@@ -172,6 +185,9 @@ func (s *PostgresSessionWindowStore) UpdateProviderAccountSessionWindows(ctx con
 	if s == nil || s.db == nil || update.ProviderAccountID <= 0 {
 		return nil
 	}
+	if err := update.validateObservation(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(ctx, `
 UPDATE provider_accounts
 SET session_window_5h_start = COALESCE($2::timestamptz, session_window_5h_start),
@@ -182,12 +198,17 @@ SET session_window_5h_start = COALESCE($2::timestamptz, session_window_5h_start)
     session_window_7d_end = COALESCE($7::timestamptz, session_window_7d_end),
     session_window_7d_status = COALESCE($8::text, session_window_7d_status),
     session_window_7d_utilization = COALESCE($9::numeric, session_window_7d_utilization),
+    quota_snapshot_observed_at = COALESCE($10::timestamptz, quota_snapshot_observed_at),
+    quota_snapshot_source = CASE WHEN $10::timestamptz IS NULL THEN quota_snapshot_source ELSE $11::text END,
+    quota_snapshot_outcome = CASE WHEN $10::timestamptz IS NULL THEN quota_snapshot_outcome ELSE $12::text END,
+    quota_snapshot_error_class = CASE WHEN $10::timestamptz IS NULL THEN quota_snapshot_error_class ELSE NULLIF($13::text, '') END,
     updated_at = now()
 WHERE id = $1
   AND deleted_at IS NULL
 `, update.ProviderAccountID,
 		utcTimePointer(update.Window5hStart), utcTimePointer(update.Window5hEnd), update.Window5hStatus, update.Window5hUtilization,
 		utcTimePointer(update.Window7dStart), utcTimePointer(update.Window7dEnd), update.Window7dStatus, update.Window7dUtilization,
+		utcTimePointer(update.ObservedAt), update.ObservationSource, update.ObservationOutcome, update.ObservationErrorClass,
 	)
 	return err
 }
@@ -355,6 +376,10 @@ func (s *upstreamRateService) UpdateSessionWindow(ctx context.Context, accountID
 	if !update.hasValues() {
 		return nil
 	}
+	observedAt := now
+	update.ObservedAt = &observedAt
+	update.ObservationSource = QuotaSnapshotSourceResponseHeaders
+	update.ObservationOutcome = update.observationOutcome()
 	return s.sessionWindows.UpdateProviderAccountSessionWindows(ctx, update)
 }
 
@@ -445,6 +470,48 @@ func sessionWindowUtilization(headers http.Header, names []string) *float64 {
 func (u SessionWindowUpdate) hasValues() bool {
 	return u.Window5hStart != nil || u.Window5hEnd != nil || u.Window5hStatus != nil || u.Window5hUtilization != nil ||
 		u.Window7dStart != nil || u.Window7dEnd != nil || u.Window7dStatus != nil || u.Window7dUtilization != nil
+}
+
+func (u SessionWindowUpdate) observationOutcome() string {
+	complete := 0
+	if u.Window5hEnd != nil && u.Window5hUtilization != nil {
+		complete++
+	}
+	if u.Window7dEnd != nil && u.Window7dUtilization != nil {
+		complete++
+	}
+	if complete == 2 {
+		return QuotaSnapshotOutcomeSuccess
+	}
+	return QuotaSnapshotOutcomePartial
+}
+
+func (u SessionWindowUpdate) validateObservation() error {
+	if u.ObservedAt == nil {
+		if u.ObservationSource != "" || u.ObservationOutcome != "" || u.ObservationErrorClass != "" {
+			return fmt.Errorf("quota snapshot observation timestamp is required")
+		}
+		return nil
+	}
+	if u.ObservedAt.IsZero() {
+		return fmt.Errorf("quota snapshot observation timestamp is invalid")
+	}
+	if u.ObservationSource != QuotaSnapshotSourceUsageEndpoint && u.ObservationSource != QuotaSnapshotSourceResponseHeaders {
+		return fmt.Errorf("quota snapshot observation source is invalid")
+	}
+	switch u.ObservationOutcome {
+	case QuotaSnapshotOutcomeSuccess, QuotaSnapshotOutcomePartial:
+		if u.ObservationErrorClass != "" {
+			return fmt.Errorf("successful quota snapshot observation cannot carry an error class")
+		}
+	case QuotaSnapshotOutcomeFailed:
+		if strings.TrimSpace(u.ObservationErrorClass) == "" {
+			return fmt.Errorf("failed quota snapshot observation requires an error class")
+		}
+	default:
+		return fmt.Errorf("quota snapshot observation outcome is invalid")
+	}
+	return nil
 }
 
 func utcTimePointer(value *time.Time) *time.Time {

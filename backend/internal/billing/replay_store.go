@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	dbbillingmaint "github.com/BloomingProsperity/HUAKAI/internal/db/billingmaint"
 )
 
 // defaultReplayTTL 是持久幂等重放记录默认存活时长。
@@ -50,7 +50,7 @@ func normalizeReplayInputs(contentType string, ttl time.Duration) (string, time.
 
 // DefaultReplayStore 是 ReplayStore 的 Postgres 实现。
 type DefaultReplayStore struct {
-	q *dbbilling.Queries
+	q *dbbillingmaint.Queries
 }
 
 // NewReplayStore 构造 Postgres 持久重放存储; pool 为 nil 时返回未配置实例。
@@ -58,7 +58,7 @@ func NewReplayStore(pool *pgxpool.Pool) *DefaultReplayStore {
 	if pool == nil {
 		return &DefaultReplayStore{}
 	}
-	return &DefaultReplayStore{q: dbbilling.New(pool)}
+	return &DefaultReplayStore{q: dbbillingmaint.New(pool)}
 }
 
 func (s *DefaultReplayStore) Record(ctx context.Context, tenantID, claimID int64, status int, contentType string, body []byte, ttl time.Duration) error {
@@ -66,7 +66,7 @@ func (s *DefaultReplayStore) Record(ctx context.Context, tenantID, claimID int64
 		return ErrPoolNotConfigured
 	}
 	contentType, ttl = normalizeReplayInputs(contentType, ttl)
-	return s.q.InsertIdempotencyReplayRecord(ctx, dbbilling.InsertIdempotencyReplayRecordParams{
+	return s.q.InsertIdempotencyReplayRecord(ctx, dbbillingmaint.InsertIdempotencyReplayRecordParams{
 		TenantID:       tenantID,
 		ClaimID:        claimID,
 		ResponseStatus: int32(status),
@@ -80,7 +80,7 @@ func (s *DefaultReplayStore) Lookup(ctx context.Context, tenantID, claimID int64
 	if s == nil || s.q == nil {
 		return nil, false, ErrPoolNotConfigured
 	}
-	row, err := s.q.GetIdempotencyReplayRecord(ctx, dbbilling.GetIdempotencyReplayRecordParams{
+	row, err := s.q.GetIdempotencyReplayRecord(ctx, dbbillingmaint.GetIdempotencyReplayRecordParams{
 		TenantID: tenantID,
 		ClaimID:  claimID,
 	})

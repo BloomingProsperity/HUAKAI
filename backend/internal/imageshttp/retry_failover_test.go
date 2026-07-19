@@ -14,10 +14,12 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -124,7 +126,7 @@ func TestImagesEmpty400DoesNotRetry(t *testing.T) {
 	selector := &imageRetrySelector{accounts: []int64{44, 45}}
 	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{{
 		status: http.StatusBadRequest,
-		body:   "",
+		body:   `{"error":{"message":"policy-match"}}`,
 	}}}
 	env.deps.Router = imageRetryRouter{}
 	env.deps.Selector = selector
@@ -132,16 +134,42 @@ func TestImagesEmpty400DoesNotRetry(t *testing.T) {
 	env.deps.Dispatcher = dispatcher
 	env.deps.ClaimGate = claims
 	env.deps.Settler = claims
+	env.deps.Feedback = imageProjectionObserver()
 
 	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"terminal client error","size":"1024x1024"}`)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s want 422", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"code":"account_busy","message":"账号暂不可用"}}` {
+		t.Fatalf("投影错误响应=%s", got)
 	}
 	if len(selector.requests) != 1 || len(dispatcher.accounts) != 1 || len(claims.reserves) != 1 {
 		t.Fatalf("selector/dispatcher/reserve calls=%d/%d/%d want 1/1/1",
 			len(selector.requests), len(dispatcher.accounts), len(claims.reserves))
 	}
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_client_4xx" {
+		t.Fatalf("客户端投影不得改写终态分类: %+v", claims.aborts)
+	}
+}
+
+type imageErrorPolicyProvider struct{}
+
+func (imageErrorPolicyProvider) GetAccountErrorPolicy(int64) rate.AccountErrorPolicy {
+	clientStatus := http.StatusUnprocessableEntity
+	affectHealth := false
+	return rate.AccountErrorPolicy{Rules: []rate.TempUnschedulableRule{{
+		RuleID: "busy-400", ErrorCode: http.StatusBadRequest, Keywords: []string{"policy-match"},
+		DurationMinutes: 5, ClientStatus: &clientStatus, ClientCode: "account_busy",
+		MessageMode: "custom", ClientMessage: "账号暂不可用", AffectHealth: &affectHealth,
+	}}}
+}
+
+func imageProjectionObserver() *upstreamfeedback.Observer {
+	return upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{
+		RateService: rate.NewUpstreamRateService(time.Now, time.Minute,
+			rate.WithAccountErrorRulesProvider(imageErrorPolicyProvider{})),
+	})
 }
 
 func TestImagesAbortFailureStopsBeforeRetry(t *testing.T) {
@@ -269,7 +297,7 @@ func TestReplicateImages5xxDoesNotDuplicatePaidTask(t *testing.T) {
 		{status: http.StatusInternalServerError, body: `{"id":"pred-5xx","status":"processing","error":"provider failed after submission"}`},
 		{status: http.StatusOK, body: `{"status":"succeeded","output":"https://r.test/out.webp"}`},
 	}}
-	env.deps.Router = imageRetryRouterForModel(replicateTestModel)
+	env.deps.Router = imageRetryRouterWithManualFallback{model: replicateTestModel}
 	env.deps.Selector = selector
 	env.deps.CredentialVault = imageRetryVault(t, "replicate", 44, 45)
 	env.deps.Dispatcher = dispatcher
@@ -437,6 +465,23 @@ func (m imageRetryRouterForModel) Plan(context.Context, router.PlanInput) (route
 		},
 		SnapshotVersion: "registry:7:1;router:image-retry-test",
 	}, nil
+}
+
+type imageRetryRouterWithManualFallback struct{ model string }
+
+func (r imageRetryRouterWithManualFallback) Plan(ctx context.Context, in router.PlanInput) (router.RoutePlan, error) {
+	plan, err := imageRetryRouterForModel(r.model).Plan(ctx, in)
+	if err != nil {
+		return router.RoutePlan{}, err
+	}
+	plan.FallbackPhases = []router.FallbackPhasePlan{{
+		FallbackClass: bindingfallback.ClassManual,
+		Attempts: []router.AttemptPlan{{
+			Index: 0, PoolGroupID: 303, UpstreamModelID: r.model, Reason: "manual_fallback",
+		}},
+		AttemptBudget: 1,
+	}}
+	return plan, nil
 }
 
 type imageSingleAttemptRouter struct{}

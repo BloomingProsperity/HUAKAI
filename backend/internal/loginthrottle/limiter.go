@@ -11,6 +11,8 @@
 package loginthrottle
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -20,11 +22,12 @@ import (
 type Reason int
 
 const (
-	ReasonAllowed     Reason = iota // 放行
-	ReasonIPInFlight                // 该 IP 并发 in-flight 已达上限
-	ReasonIPWindow                  // 该 IP 窗口内(失败+in-flight)压力已达上限
-	ReasonIPBanned                  // 该 IP 处于失败封禁期
-	ReasonKeyPressure               // 限流器自身 key 数到顶,fail-closed 保护内存
+	ReasonAllowed            Reason = iota // 放行
+	ReasonIPInFlight                       // 该 IP 并发 in-flight 已达上限
+	ReasonIPWindow                         // 该 IP 窗口内(失败+in-flight)压力已达上限
+	ReasonIPBanned                         // 该 IP 处于失败封禁期
+	ReasonKeyPressure                      // 限流器自身 key 数到顶,fail-closed 保护内存
+	ReasonBackendUnavailable               // 共享后端不可用，拒绝进入密码计算
 )
 
 func (r Reason) String() string {
@@ -39,6 +42,8 @@ func (r Reason) String() string {
 		return "ip_banned"
 	case ReasonKeyPressure:
 		return "key_pressure"
+	case ReasonBackendUnavailable:
+		return "backend_unavailable"
 	default:
 		return "unknown"
 	}
@@ -88,16 +93,23 @@ type bucket struct {
 	lastSeen     time.Time
 }
 
-// Limiter 是并发安全的内存限流器。单进程语义:多副本部署需集中式(Redis)版本(follow-up)。
+// Limiter 先做每副本内存闸，再在配置后端时取得跨副本共享 reservation。
 type Limiter struct {
 	mu      sync.Mutex
 	cfg     Config
 	now     func() time.Time
 	buckets map[string]*bucket
+	shared  SharedStore
+}
+
+type Option func(*Limiter)
+
+func WithSharedStore(store SharedStore) Option {
+	return func(l *Limiter) { l.shared = store }
 }
 
 // New 用 cfg 构造 Limiter,零值字段回落到 DefaultConfig。
-func New(cfg Config) *Limiter {
+func New(cfg Config, opts ...Option) *Limiter {
 	d := DefaultConfig()
 	if cfg.InFlightLimit <= 0 {
 		cfg.InFlightLimit = d.InFlightLimit
@@ -126,7 +138,13 @@ func New(cfg Config) *Limiter {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Limiter{cfg: cfg, now: cfg.Now, buckets: make(map[string]*bucket)}
+	l := &Limiter{cfg: cfg, now: cfg.Now, buckets: make(map[string]*bucket)}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(l)
+		}
+	}
+	return l
 }
 
 // Lease 代表一次被放行的尝试持有的 in-flight reservation。处理结束后必须恰好 commit 一次:
@@ -139,11 +157,41 @@ type Lease struct {
 	id        uint64
 	reserved  bool // 该 Lease 是否真持有一个 reservation(被拒的 Begin 为 false)
 	committed bool
+	shared    SharedReservation
 }
 
 // Begin 在「跑 argon2 之前」调用。放行则返回 Decision{Allowed:true} 与一个持有 in-flight
 // 槽的 Lease;被拒则 Allowed=false 且 Lease 为 no-op。调用方应 `defer lease.Cancel()`。
 func (l *Limiter) Begin(key string) (*Lease, Decision) {
+	lease, decision, _ := l.BeginContext(context.Background(), key)
+	return lease, decision
+}
+
+// BeginContext 在本地并发闸之后再取得共享 reservation。共享后端失败时
+// 释放本地槽并明确报错，调用方必须返回 503，不能继续进入 Argon2。
+func (l *Limiter) BeginContext(ctx context.Context, key string) (*Lease, Decision, error) {
+	lease, decision := l.beginLocal(key)
+	if !decision.Allowed || l.shared == nil {
+		return lease, decision, nil
+	}
+	shared, sharedDecision, err := l.shared.Reserve(ctx, key, l.cfg)
+	if err != nil {
+		lease.Cancel()
+		return l.deniedLease(), Decision{Allowed: false, Reason: ReasonBackendUnavailable, RetryAfter: time.Second}, err
+	}
+	if !sharedDecision.Allowed {
+		lease.Cancel()
+		return l.deniedLease(), sharedDecision, nil
+	}
+	if shared == nil {
+		lease.Cancel()
+		return l.deniedLease(), Decision{Allowed: false, Reason: ReasonBackendUnavailable, RetryAfter: time.Second}, errors.New("loginthrottle: shared store returned no reservation")
+	}
+	lease.shared = shared
+	return lease, decision, nil
+}
+
+func (l *Limiter) beginLocal(key string) (*Lease, Decision) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -183,36 +231,55 @@ func (l *Limiter) deniedLease() *Lease {
 
 // Success 释放 in-flight 槽,且不记失败(成功登录不消耗失败窗口/不触发封禁)。
 func (le *Lease) Success() {
+	_ = le.SuccessContext(context.Background())
+}
+
+func (le *Lease) SuccessContext(ctx context.Context) error {
 	if le == nil || le.l == nil {
-		return
+		return nil
 	}
 	le.l.mu.Lock()
-	defer le.l.mu.Unlock()
 	if le.committed || !le.reserved {
 		le.committed = true
-		return
+		le.l.mu.Unlock()
+		return nil
 	}
 	le.committed = true
 	if b := le.l.buckets[le.key]; b != nil {
 		delete(b.inFlight, le.id)
 	}
+	shared := le.shared
+	le.l.mu.Unlock()
+	if shared != nil {
+		return shared.Success(ctx)
+	}
+	return nil
 }
 
 // Failure 释放 in-flight 槽,记一次失败,并在 BanWindow 内失败达阈时设置封禁。
 func (le *Lease) Failure() {
+	_ = le.FailureContext(context.Background())
+}
+
+func (le *Lease) FailureContext(ctx context.Context) error {
 	if le == nil || le.l == nil {
-		return
+		return nil
 	}
 	le.l.mu.Lock()
-	defer le.l.mu.Unlock()
 	if le.committed || !le.reserved {
 		le.committed = true
-		return
+		le.l.mu.Unlock()
+		return nil
 	}
 	le.committed = true
 	b := le.l.buckets[le.key]
 	if b == nil {
-		return
+		shared := le.shared
+		le.l.mu.Unlock()
+		if shared != nil {
+			return shared.Failure(ctx)
+		}
+		return nil
 	}
 	delete(b.inFlight, le.id)
 	now := le.l.now()
@@ -221,23 +288,39 @@ func (le *Lease) Failure() {
 	if le.l.failuresWithinLocked(b, now, le.l.cfg.BanWindow) >= le.l.cfg.BanAfter {
 		b.blockedUntil = now.Add(le.l.cfg.BanDuration)
 	}
+	shared := le.shared
+	le.l.mu.Unlock()
+	if shared != nil {
+		return shared.Failure(ctx)
+	}
+	return nil
 }
 
 // Cancel 仅释放 in-flight 槽(不计失败);已 commit 后 no-op。用于 defer 兜底。
 func (le *Lease) Cancel() {
+	_ = le.CancelContext(context.Background())
+}
+
+func (le *Lease) CancelContext(ctx context.Context) error {
 	if le == nil || le.l == nil {
-		return
+		return nil
 	}
 	le.l.mu.Lock()
-	defer le.l.mu.Unlock()
 	if le.committed || !le.reserved {
 		le.committed = true
-		return
+		le.l.mu.Unlock()
+		return nil
 	}
 	le.committed = true
 	if b := le.l.buckets[le.key]; b != nil {
 		delete(b.inFlight, le.id)
 	}
+	shared := le.shared
+	le.l.mu.Unlock()
+	if shared != nil {
+		return shared.Cancel(ctx)
+	}
+	return nil
 }
 
 // pruneBucketLocked 丢弃超出统计窗口的失败时间戳与超龄(泄漏)的 in-flight 槽。

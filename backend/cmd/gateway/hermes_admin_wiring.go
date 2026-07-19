@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strconv"
 
 	"go.uber.org/zap"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
+	"github.com/BloomingProsperity/HUAKAI/internal/workerlease"
 )
 
 // hermesAdminDeps 打包 WAVE H5 每日巡检复用的「现有」只读 store + email sender。
@@ -30,6 +32,8 @@ type hermesAdminDeps struct {
 	obsDLQStore    *obsoutbox.PostgresOutbox
 	billingQueries *dbbilling.Queries
 	logger         *zap.Logger
+	leaderLease    workerlease.SessionProvider
+	windowClaims   workerlease.WindowClaimFactory
 }
 
 // buildHermesInspectionWorker 解析每日巡检配置,且仅当该功能被显式启用(opt-in)
@@ -83,16 +87,25 @@ func buildHermesInspectionWorker(ctx context.Context, d hermesAdminDeps) *hermes
 
 	svc := hermesadmin.NewInspectionService(sources, cfg.TenantID, nil)
 	worker := hermesadmin.NewInspectionWorker(hermesadmin.InspectionWorkerConfig{
-		Service:   svc,
-		Sender:    d.emailSender,
-		Recipient: cfg.Recipient,
-		TenantID:  cfg.TenantID,
-		Interval:  cfg.Interval,
-		Logger:    log,
+		Service:     svc,
+		Sender:      d.emailSender,
+		Recipient:   cfg.Recipient,
+		TenantID:    cfg.TenantID,
+		Interval:    cfg.Interval,
+		Logger:      log,
+		LeaderLease: d.leaderLease,
+		WindowClaim: buildHermesWindowClaim(d.windowClaims, cfg.TenantID),
 	})
 	log.Info("hermes daily inspection enabled; worker starting",
 		zap.String("recipient_source", cfg.RecipientSource),
 		zap.Duration("interval", cfg.Interval),
 		zap.Int64("tenant_id", cfg.TenantID))
 	return worker
+}
+
+func buildHermesWindowClaim(factory workerlease.WindowClaimFactory, tenantID int64) workerlease.WindowClaimer {
+	if factory == nil {
+		return nil
+	}
+	return factory.For("hermes_inspection", strconv.FormatInt(tenantID, 10))
 }

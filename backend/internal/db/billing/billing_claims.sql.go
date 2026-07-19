@@ -26,7 +26,7 @@ type AbortClaimParams struct {
 }
 
 // Tx2 abort path: terminal upstream failure or AMBIGUOUS_USAGE end class.
-// tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
+// codex chunk7 P1#4: tenant_id 必须显式预先 caller 提供, 防全局 id 跨租户误改。
 func (q *Queries) AbortClaim(ctx context.Context, arg AbortClaimParams) (int64, error) {
 	result, err := q.db.Exec(ctx, abortClaim, arg.ID, arg.AbortedReason, arg.TenantID)
 	if err != nil {

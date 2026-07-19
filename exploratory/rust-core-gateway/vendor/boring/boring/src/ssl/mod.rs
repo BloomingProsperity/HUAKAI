@@ -1997,9 +1997,12 @@ impl SslContextBuilder {
 
     /// 设置 HUAKAI profile ClientHello raw 字段 (HUAKAI patch).
     #[corresponds(SSL_CTX_set_client_hello_profile)]
-    pub fn set_client_hello_profile(&mut self, ciphers: &[u16], groups: &[u16], ec_points: &[u8])
-        -> Result<(), ErrorStack>
-    {
+    pub fn set_client_hello_profile(
+        &mut self,
+        ciphers: &[u16],
+        groups: &[u16],
+        ec_points: &[u8],
+    ) -> Result<(), ErrorStack> {
         unsafe {
             cvt(ffi::SSL_CTX_set_client_hello_profile(
                 self.as_ptr(),
@@ -2969,6 +2972,19 @@ impl SslRef {
     pub fn set_curves_list(&mut self, curves: &str) -> Result<(), ErrorStack> {
         let curves = CString::new(curves).map_err(ErrorStack::internal_error)?;
         unsafe { cvt_0i(ffi::SSL_set1_curves_list(self.as_ptr(), curves.as_ptr())).map(|_| ()) }
+    }
+
+    /// 设置客户端在本次握手中发送的 TLS 1.3 key share 组及顺序。
+    #[corresponds(SSL_set1_client_key_shares)]
+    pub fn set_client_key_shares(&mut self, groups: &[u16]) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::SSL_set1_client_key_shares(
+                self.as_ptr(),
+                groups.as_ptr(),
+                groups.len(),
+            ))
+            .map(|_| ())
+        }
     }
 
     /// Returns the curve ID (aka group ID) used for this `SslRef`.

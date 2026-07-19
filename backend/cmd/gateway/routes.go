@@ -13,7 +13,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/accountproxyimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
@@ -26,8 +28,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billingreconhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/controlhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/crssource"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
@@ -51,6 +56,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mjclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/modeladminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelbindingadminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/modeldiscoveryhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelroutingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/obsdlqhttp"
@@ -74,6 +80,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapabilityhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
@@ -138,6 +146,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	liveness := healthhttp.NewLivenessHandler()
 	r.Method(http.MethodGet, "/healthz", liveness)
 	r.Method(http.MethodHead, "/healthz", liveness)
+	readiness := healthhttp.NewReadinessHandler(d.readiness)
+	r.Method(http.MethodGet, "/readyz", readiness)
+	r.Method(http.MethodHead, "/readyz", readiness)
 
 	r.Post("/v1/chat/completions", gatewayhttp.NewChatCompletionsHandler(chatHandlerDeps(d)))
 	r.Post("/v1/completions", completionshttp.NewCompletionsHandler(completionsHandlerDeps(d)))
@@ -812,6 +823,7 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 		RateService:             d.upstreamRate,
 		RetryBudget:             d.retryBudget,
 		CredentialHotRefresher:  d.credentialScheduler,
+		AgentTaskRecoverer:      d.credentialScheduler,
 		AuthCooldown:            d.authCooldown,
 		ModelFallbackSettings:   d.platformSettings,
 		// 非流式 keepalive 间隔:默认 0=关(不改现有行为)。反代(Cloudflare)前建议设
@@ -1004,10 +1016,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	// 运行日志查询/清理/采集健康(platform_admin;handler 内部自解析鉴权)。
 	r.Route("/v1/admin/ops", func(r chi.Router) {
 		gatewayhttp.MountAdminRuntimeLogRoutes(r, gatewayhttp.AdminRuntimeLogsDeps{
-			Auth:  d.adminAuth,
-			Store: d.runtimeLogStore,
-			Sink:  d.logSink,
-			Audit: d.adminQueries,
+			Auth:      d.adminAuth,
+			Store:     d.runtimeLogStore,
+			Sink:      d.logSink,
+			Retention: d.logRetention,
+			Audit:     d.adminQueries,
 		})
 	})
 	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
@@ -1205,9 +1218,38 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
+		stagedStore := accountintake.NewStagedStore(d.pgPool, d.credentialKeys)
+		intakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth).
+			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
+			WithProxyResolver(accountproxyimport.New(d.credentialKeys))
+		var crsService *accountintake.CRSService
+		if d.cfg != nil && len(d.cfg.CRSSource.AllowedHosts) > 0 {
+			crsClient, err := crssource.NewRustClient(d.cfg.TransportSidecarSocket, crssource.Policy{
+				AllowedHosts: d.cfg.CRSSource.AllowedHosts, AllowPrivateHosts: d.cfg.CRSSource.AllowPrivateHosts,
+			})
+			if err != nil {
+				panic("CRS 账号来源配置无法构造安全出口: " + err.Error())
+			}
+			crsService = accountintake.NewCRSService(intakeService, stagedStore, crsClient)
+		}
 		accountintakehttp.Mount(r, accountintakehttp.Deps{
-			Auth:    d.adminAuth,
-			Service: accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth),
+			Auth:         d.adminAuth,
+			Capabilities: tenantcapability.NewStore(d.pgPool),
+			Service:      intakeService,
+			CookieService: accountintake.NewCookieService(
+				intakeService,
+				stagedStore,
+				claudecookie.New(d.anthropicOAuthClient),
+			),
+			CRSService: crsService,
+			BundleService: accountbundle.NewService(
+				d.pgPool, d.credentialStore, d.credentialKeys, intakeService,
+			),
+		})
+	})
+	r.Route("/admin/v1/tenant-capabilities", func(r chi.Router) {
+		tenantcapabilityhttp.Mount(r, tenantcapabilityhttp.Deps{
+			Auth: d.adminAuth, Store: tenantcapability.NewStore(d.pgPool),
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
@@ -1240,6 +1282,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountModelSyncRoutes(r, adminhttp.AdminModelSyncDeps{
 			Auth:    d.adminAuth,
 			Service: d.modelSync,
+		})
+	})
+	r.Route("/admin/v1/model-discoveries", func(r chi.Router) {
+		modeldiscoveryhttp.MountRoutes(r, modeldiscoveryhttp.Deps{
+			Auth:  d.adminAuth,
+			Store: d.modelRegistry,
 		})
 	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {

@@ -15,7 +15,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
-	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 type Exchanger struct {
@@ -23,7 +22,6 @@ type Exchanger struct {
 	HTTPClient       *http.Client
 	Now              func() time.Time
 	TransportFactory *transport.Factory
-	MimicryRegistry  *mimicry.TemplateRegistry
 }
 
 func NewExchanger() Exchanger {
@@ -148,7 +146,10 @@ func (e Exchanger) httpClient() *http.Client {
 	if e.Config.HTTPClient != nil {
 		return e.Config.HTTPClient
 	}
-	return mimicryHTTPClient(e.TransportFactory, e.MimicryRegistry, "token_exchange")
+	if e.TransportFactory != nil {
+		return HTTPClient(e.TransportFactory)
+	}
+	return DefaultHTTPClient()
 }
 
 func (e Exchanger) now() time.Time {

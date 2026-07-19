@@ -82,10 +82,11 @@ func (s *PostgresStore) ListActivePolicies(ctx context.Context, filter PolicyFil
 		metrics = append(metrics, string(metric))
 	}
 	rows, err := q.ListActiveQuotaPoliciesForScopes(ctx, dbquota.ListActiveQuotaPoliciesForScopesParams{
-		TenantID: filter.TenantID,
-		Scopes:   scopes,
-		Metrics:  metrics,
-		AtTime:   pgTimestamptz(filter.At),
+		TenantID:       filter.TenantID,
+		Scopes:         scopes,
+		RequestedModel: normalizeRequestedModel(filter.RequestedModel),
+		Metrics:        metrics,
+		AtTime:         pgTimestamptz(filter.At),
 	})
 	if err != nil {
 		return nil, err
@@ -246,6 +247,7 @@ func (s *PostgresStore) InsertReservation(ctx context.Context, input Reservation
 		TenantID:           input.TenantID,
 		ClaimID:            input.ClaimID,
 		RequestFingerprint: input.RequestFingerprint,
+		RequestedModel:     normalizeRequestedModel(input.RequestedModel),
 		ScopeSnapshot:      scopeSnapshot,
 		PolicySnapshot:     policySnapshot,
 		PredictedCost:      predictedCost,
@@ -281,6 +283,7 @@ func (s *PostgresStore) ReactivateReservation(ctx context.Context, input Reserva
 	}
 	row, err := q.ReactivateQuotaReservation(ctx, dbquota.ReactivateQuotaReservationParams{
 		RequestFingerprint: input.RequestFingerprint,
+		RequestedModel:     normalizeRequestedModel(input.RequestedModel),
 		ScopeSnapshot:      scopeSnapshot,
 		PolicySnapshot:     policySnapshot,
 		PredictedCost:      predictedCost,

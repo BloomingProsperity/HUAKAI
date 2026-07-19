@@ -35,15 +35,15 @@ func NewHTTPUsageFetcher(client *http.Client, proxyResolver provider.ProxyResolv
 
 func (f *HTTPUsageFetcher) FetchUsage(ctx context.Context, accountID int64, accessToken string) (UsageSnapshot, error) {
 	if f == nil || f.client == nil || strings.TrimSpace(f.endpoint) == "" {
-		return UsageSnapshot{}, ErrNotConfigured
+		return UsageSnapshot{}, withErrorClass(ErrorClassConfigurationInvalid, ErrNotConfigured)
 	}
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return UsageSnapshot{}, errors.New("quota probe 缺少 access token")
+		return UsageSnapshot{}, withErrorClass(ErrorClassCredentialUnavailable, errors.New("quota probe 缺少 access token"))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.endpoint, nil)
 	if err != nil {
-		return UsageSnapshot{}, err
+		return UsageSnapshot{}, withErrorClass(ErrorClassConfigurationInvalid, err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -52,37 +52,37 @@ func (f *HTTPUsageFetcher) FetchUsage(ctx context.Context, accountID int64, acce
 
 	client, err := f.clientForAccount(ctx, accountID)
 	if err != nil {
-		return UsageSnapshot{}, err
+		return UsageSnapshot{}, withErrorClass(ErrorClassProxyResolutionFailed, err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return UsageSnapshot{}, err
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return UsageSnapshot{}, fmt.Errorf("quota probe usage endpoint status %d", resp.StatusCode)
+		return UsageSnapshot{}, upstreamStatusError(resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxUsageResponseSize+1))
 	if err != nil {
-		return UsageSnapshot{}, err
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamResponseInvalid, err)
 	}
 	if len(body) > maxUsageResponseSize {
-		return UsageSnapshot{}, errors.New("quota probe usage 响应过大")
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamResponseInvalid, errors.New("quota probe usage 响应过大"))
 	}
 	var decoded struct {
 		FiveHour usageWindowJSON `json:"five_hour"`
 		SevenDay usageWindowJSON `json:"seven_day"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return UsageSnapshot{}, fmt.Errorf("quota probe usage 响应格式无效: %w", err)
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamResponseInvalid, fmt.Errorf("quota probe usage 响应格式无效: %w", err))
 	}
 	fiveHour, err := decoded.FiveHour.window()
 	if err != nil {
-		return UsageSnapshot{}, fmt.Errorf("quota probe 5h 窗口无效: %w", err)
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamResponseInvalid, fmt.Errorf("quota probe 5h 窗口无效: %w", err))
 	}
 	sevenDay, err := decoded.SevenDay.window()
 	if err != nil {
-		return UsageSnapshot{}, fmt.Errorf("quota probe 7d 窗口无效: %w", err)
+		return UsageSnapshot{}, withErrorClass(ErrorClassUpstreamResponseInvalid, fmt.Errorf("quota probe 7d 窗口无效: %w", err))
 	}
 	return UsageSnapshot{FiveHour: fiveHour, SevenDay: sevenDay}, nil
 }
@@ -117,7 +117,7 @@ func (f *HTTPUsageFetcher) clientForAccount(ctx context.Context, accountID int64
 		return &client, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("quota probe 解析账号代理失败: %w", err)
+		return nil, withErrorClass(ErrorClassProxyResolutionFailed, fmt.Errorf("quota probe 解析账号代理失败: %w", err))
 	}
 	transport := f.client.Transport
 	if transport == nil {

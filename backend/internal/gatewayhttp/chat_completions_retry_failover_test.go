@@ -241,6 +241,43 @@ func TestPR5RawNonStreamHeaderTimeoutRetriesSecondAccount(t *testing.T) {
 	}
 }
 
+func TestPR5RawNonStreamCustomErrorPolicyForcesAccountCooldown(t *testing.T) {
+	t.Setenv("HUAKAI_DISPATCH_HCSF", "0")
+	tf := transport.NewFactory()
+	tf.SetStandard(pr5RoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"policy-match"}}`)),
+			Request:    req,
+		}, nil
+	}))
+	adapters := provider.NewStaticRegistry()
+	adapters.MustRegister("openai_chat", &provideropenai.PassthroughAdapter{Endpoint: "http://upstream.test/v1/chat/completions"})
+	selector := newPR5Selector(t, 333)
+	settler := &recordingSettler{}
+	health := &recordingChannelHealth{}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88333}, settler, nil)
+	deps.Dispatcher = &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf}
+	deps.ChannelHealth = health
+	deps.RateService = rate.NewUpstreamRateService(time.Now, time.Minute,
+		rate.WithAccountErrorRulesProvider(chatErrorPolicyProvider{}))
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s，期望自定义投影 422", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 1 || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+		t.Fatalf("selector/settle/abort=%d/%d/%d，期望单次失败且不结算", selector.calls, len(settler.calls), len(settler.aborts))
+	}
+	if len(health.forceCooldowns) != 1 || health.forceCooldowns[0].key.ProviderAccountID != 333 {
+		t.Fatalf("raw-buffered 路径未执行账号显式冷却: %+v", health.forceCooldowns)
+	}
+	if len(health.signals) != 0 {
+		t.Fatalf("affect_health=false 只能抑制普通健康信号，得到 %+v", health.signals)
+	}
+}
+
 func TestPR5NonStream401ConsumesOneAuthFailoverOnlyAndDoesNotRecordHealth(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	selector := newPR5Selector(t, 301, 302, 303)
@@ -376,6 +413,81 @@ func TestPR5NonStream401HotRefreshDedupesSameAccountWithinWindow(t *testing.T) {
 	}
 }
 
+func TestCodexAgentInvalidTaskRecoversSameRequestOnceWithoutHealthPenalty(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 341)
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusUnauthorized, body: `{"error":{"code":"invalid_task_id"}}`},
+		{successText: "recovered agent task"},
+	}}
+	recoverer := &recordingAgentTaskRecoverer{}
+	hotRefresher := newRecordingHotRefreshSpy()
+	health := &recordingChannelHealth{}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88341}, settler, dispatcher)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "gpt-4o", CanonicalModelID: "openai/gpt-4o", ProviderModelID: "gpt-4o",
+		ProtocolFamily: "openai_codex", PoolCandidates: []int64{42},
+	}}
+	deps.CredentialVault = codexAgentTestVault(t, 341)
+	deps.AgentTaskRecoverer = recoverer
+	deps.CredentialHotRefresher = hotRefresher
+	deps.ChannelHealth = health
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if dispatcher.calls != 2 || selector.calls != 2 || len(dispatcher.accounts) != 2 ||
+		dispatcher.accounts[0] != 341 || dispatcher.accounts[1] != 341 {
+		t.Fatalf("dispatcher=%d selector=%d accounts=%v，期望同账号请求内重试一次", dispatcher.calls, selector.calls, dispatcher.accounts)
+	}
+	if recoverer.calls != 1 || recoverer.accountID != 341 || recoverer.tenantID != 7 || recoverer.version != 1 {
+		t.Fatalf("recoverer=%+v", recoverer)
+	}
+	if len(health.forceCooldowns) != 0 {
+		t.Fatalf("可恢复任务失效不应写账号冷却：%v", health.forceCooldowns)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("任务失效本身不应写健康惩罚，恢复后只允许成功信号：%v", health.signals)
+		}
+	}
+	select {
+	case call := <-hotRefresher.called:
+		t.Fatalf("任务恢复不应触发普通 OAuth 后台刷新：%+v", call)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if len(settler.aborts) != 1 || len(settler.calls) != 1 {
+		t.Fatalf("aborts=%v settles=%v，期望首尝试释放、恢复尝试结算", settler.aborts, settler.calls)
+	}
+}
+
+func TestCodexAgentInvalidTaskDoesNotRecoverMoreThanOncePerRequest(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 351)
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusUnauthorized, body: `{"error":{"code":"task_expired"}}`},
+		{status: http.StatusUnauthorized, body: `{"error":{"code":"task_expired"}}`},
+	}}
+	recoverer := &recordingAgentTaskRecoverer{}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88351}, &recordingSettler{}, dispatcher)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "gpt-4o", CanonicalModelID: "openai/gpt-4o", ProviderModelID: "gpt-4o",
+		ProtocolFamily: "openai_codex", PoolCandidates: []int64{42},
+	}}
+	deps.CredentialVault = codexAgentTestVault(t, 351)
+	deps.AgentTaskRecoverer = recoverer
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s，二次失效应终止", rec.Code, rec.Body.String())
+	}
+	if recoverer.calls != 1 || dispatcher.calls != 2 {
+		t.Fatalf("recovery=%d dispatch=%d，必须严格一次恢复", recoverer.calls, dispatcher.calls)
+	}
+}
+
 type claudeSessionSuccessDoer struct {
 	calls         int
 	urls          []string
@@ -500,7 +612,7 @@ func TestClaudeSessionLocalExpiryReleasesARefreshesAndSettlesBOnce(t *testing.T)
 		Now: func() time.Time { return time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC) },
 	})
 	tf := transport.NewFactory()
-	tf.SetMimicry(http.DefaultTransport)
+	tf.SetSidecarForTesting(http.DefaultTransport)
 
 	vault := provider.NewStaticVault()
 	for _, account := range []struct {
@@ -610,7 +722,7 @@ func TestClaudeSessionMissingAdapterReleasesWithoutHTTP(t *testing.T) {
 	quotaFinalizer := &claudeSessionQuotaFinalizer{}
 	doer := &claudeSessionSuccessDoer{}
 	tf := transport.NewFactory()
-	tf.SetMimicry(http.DefaultTransport)
+	tf.SetSidecarForTesting(http.DefaultTransport)
 	vault := provider.NewStaticVault()
 	if err := vault.Set(7201, provider.Credential{
 		Type: provider.CredentialTypeOAuthAccessToken, Value: "fresh",
@@ -653,7 +765,7 @@ func TestClaudeSessionRuntimeCompatibilityRejectsWrongAAndUsesB(t *testing.T) {
 	quotaFinalizer := &claudeSessionQuotaFinalizer{}
 	doer := &claudeSessionSuccessDoer{}
 	tf := transport.NewFactory()
-	tf.SetMimicry(http.DefaultTransport)
+	tf.SetSidecarForTesting(http.DefaultTransport)
 	adapters := provider.NewStaticRegistry()
 	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
 	vault := provider.NewStaticVault()
@@ -703,7 +815,7 @@ func TestClaudeSessionStreamingUsesAnthropicScannerAndSettlesOnce(t *testing.T) 
 	settler := &recordingSettler{}
 	doer := &claudeSessionStreamingDoer{}
 	tf := transport.NewFactory()
-	tf.SetMimicry(http.DefaultTransport)
+	tf.SetSidecarForTesting(http.DefaultTransport)
 	adapters := provider.NewStaticRegistry()
 	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
 	vault := provider.NewStaticVault()
@@ -751,7 +863,7 @@ func TestClaudeSessionHCSFMarshalAndResponseSettleOnce(t *testing.T) {
 	settler := &recordingSettler{}
 	doer := &claudeSessionSuccessDoer{}
 	tf := transport.NewFactory()
-	tf.SetMimicry(http.DefaultTransport)
+	tf.SetSidecarForTesting(http.DefaultTransport)
 	adapters := provider.NewStaticRegistry()
 	adapters.MustRegister("anthropic_claude_session", &provideranthropic.OAuthSessionAdapter{})
 	vault := provider.NewStaticVault()
@@ -1356,16 +1468,21 @@ func TestModelFallback_NonRetryableClientErrorDoesNotFallback(t *testing.T) {
 	claimGate := &modelFallbackClaimGate{nextClaimID: 93001}
 	settler := &recordingSettler{}
 	dispatcher := &pr5CanonicalSequenceDispatcher{
-		steps: []pr5CanonicalStep{{status: http.StatusBadRequest, body: `{"error":"invalid request"}`}, {successText: "must not fallback"}},
+		steps: []pr5CanonicalStep{{status: http.StatusBadRequest, body: `{"error":{"message":"policy-match"}}`}, {successText: "must not fallback"}},
 	}
 	deps := modelFallbackDeps(t, selector, claimGate, settler, dispatcher, `{
 		"enabled": true,
 		"general": {"gpt-4o":["gpt-4o-mini"]}
 	}`)
+	deps.RateService = rate.NewUpstreamRateService(time.Now, time.Minute,
+		rate.WithAccountErrorRulesProvider(chatErrorPolicyProvider{}))
 
 	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s; want original 400 without fallback", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s; want projected 422 without fallback", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":{"code":"account_busy","message":"账号暂不可用"}}` {
+		t.Fatalf("投影错误响应=%s", got)
 	}
 	if len(claimGate.requests) != 1 || dispatcher.calls != 1 {
 		t.Fatalf("reserves/dispatches=%d/%d want one primary attempt only", len(claimGate.requests), dispatcher.calls)
@@ -1373,6 +1490,21 @@ func TestModelFallback_NonRetryableClientErrorDoesNotFallback(t *testing.T) {
 	if len(settler.calls) != 0 || len(settler.aborts) != 1 {
 		t.Fatalf("settles/aborts=%+v/%+v want one abort and no settle", settler.calls, settler.aborts)
 	}
+	if settler.aborts[0].reason != "upstream_client_4xx" {
+		t.Fatalf("客户端投影不得改写终态分类: %+v", settler.aborts)
+	}
+}
+
+type chatErrorPolicyProvider struct{}
+
+func (chatErrorPolicyProvider) GetAccountErrorPolicy(int64) rate.AccountErrorPolicy {
+	clientStatus := http.StatusUnprocessableEntity
+	affectHealth := false
+	return rate.AccountErrorPolicy{Rules: []rate.TempUnschedulableRule{{
+		RuleID: "busy-400", ErrorCode: http.StatusBadRequest, Keywords: []string{"policy-match"},
+		DurationMinutes: 5, ClientStatus: &clientStatus, ClientCode: "account_busy",
+		MessageMode: "custom", ClientMessage: "账号暂不可用", AffectHealth: &affectHealth,
+	}}}
 }
 
 func TestModelFallback_PostDeliveryStreamErrorDoesNotFallback(t *testing.T) {
@@ -1825,6 +1957,36 @@ type hotRefreshCall struct {
 	vendor    string
 }
 
+type recordingAgentTaskRecoverer struct {
+	calls     int
+	tenantID  int64
+	accountID int64
+	version   int
+	err       error
+}
+
+func (r *recordingAgentTaskRecoverer) RecoverAgentTask(_ context.Context, tenantID, accountID int64, version int) error {
+	r.calls++
+	r.tenantID = tenantID
+	r.accountID = accountID
+	r.version = version
+	return r.err
+}
+
+func codexAgentTestVault(t *testing.T, accountID int64) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	if err := vault.Set(accountID, provider.Credential{
+		Type: provider.CredentialTypeUpstreamPassthrough, Value: "AgentAssertion test",
+	}, provider.AccountInfo{
+		AccountID: accountID, Platform: "openai", AccountType: credentialstore.AuthModeCodexAgent,
+		AccountCredentialID: 9000 + accountID, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set(%d): %v", accountID, err)
+	}
+	return vault
+}
+
 type blockingHotRefreshSpy struct {
 	called  chan hotRefreshCall
 	release chan struct{}
@@ -1897,6 +2059,12 @@ func pr5SequencedHeaderTransport(delays []time.Duration, bodies []string) *http.
 		go pr5WritePipeHTTPResponse(server, delay, body)
 		return client, nil
 	}}
+}
+
+type pr5RoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f pr5RoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func indexedDelay(delays []time.Duration, idx int) time.Duration {

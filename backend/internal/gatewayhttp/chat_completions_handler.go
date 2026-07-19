@@ -100,6 +100,7 @@ type ChatHandlerDeps struct {
 	RateService            rate.Service
 	RetryBudget            retryBudgetGate
 	CredentialHotRefresher CredentialHotRefresher
+	AgentTaskRecoverer     AgentTaskRecoverer
 	ModelFallbackSettings  modelfallback.SettingsReader
 	// NonStreamKeepAliveInterval:非流式 buffered 长响应期间每隔此时长写裸换行保活,避开反代空闲超时;0=关。
 	NonStreamKeepAliveInterval time.Duration
@@ -145,6 +146,10 @@ type retryBudgetGate interface {
 
 type CredentialHotRefresher interface {
 	RefreshHotPath(ctx context.Context, tenantID, accountID int64, vendorName string) error
+}
+
+type AgentTaskRecoverer interface {
+	RecoverAgentTask(ctx context.Context, tenantID, accountID int64, expectedCredentialVersion int) error
 }
 
 // HCSFDispatcher 是 non-streaming HCSF 主链路；默认开启，可由 env 开关关闭。

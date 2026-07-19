@@ -10,6 +10,7 @@ import (
 
 func validFields() mimicry.ProfileFields {
 	return mimicry.ProfileFields{
+		ID:                   41,
 		Name:                 "tenant-chrome",
 		GreaseEnabled:        true,
 		CipherSuites:         []int{0x1301, 0x1302},
@@ -20,7 +21,7 @@ func validFields() mimicry.ProfileFields {
 		TLSSupportedVersions: []int{0x0304},
 		KeyShareGroups:       []int{29},
 		PskModes:             []int{1},
-		ExtensionsOrder:      []int{0, 23},
+		ExtensionsOrder:      []int{0, 23, 10, 11, 13, 16, 43, 45, 51},
 		ExpectedJA3Hash:      "abc",
 	}
 }
@@ -40,64 +41,79 @@ func (f fakeFetcher) fetch(context.Context, int64) (accountState, error) { retur
 
 func ptr(f mimicry.ProfileFields) *mimicry.ProfileFields { return &f }
 
-// ---- ResolveRoundTripper(经 fake fetcher 端到端)----
+// ---- ResolveProfile（经 fake fetcher 端到端）----
 
-func TestResolver_BoundActive_BuildsRT(t *testing.T) {
+func TestResolver_BoundActive_ReturnsInlineProfile(t *testing.T) {
 	r := newResolver(fakeFetcher{st: accountState{bound: ptr(validFields())}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 7)
-	if err != nil || rt == nil {
-		t.Fatalf("bound active profile should build a uTLS RT, got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 7)
+	if err != nil || profile == nil {
+		t.Fatalf("bound active profile 应返回 inline profile，profile=%v err=%v", profile, err)
+	}
+	if profile.ID != "db-profile-41" || profile.CipherSuites[0] != 0x1301 || profile.ALPNProtocols[0] != "h2" {
+		t.Fatalf("inline profile 字段错误: %+v", profile)
 	}
 }
 
 func TestResolver_NoProfile_Builtin(t *testing.T) {
 	r := newResolver(fakeFetcher{st: accountState{}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 7)
-	if err != nil || rt != nil {
-		t.Fatalf("no profile must fall back to builtin (nil RT), got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 7)
+	if err != nil || profile != nil {
+		t.Fatalf("无绑定应保持 builtin，profile=%v err=%v", profile, err)
 	}
 }
 
-func TestResolver_InvalidBound_FallsBackBuiltin(t *testing.T) {
+func TestResolver_InvalidBound_FailsClosed(t *testing.T) {
 	bad := validFields()
 	bad.CipherSuites = []int{0x10000}
 	r := newResolver(fakeFetcher{st: accountState{bound: ptr(bad)}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 7)
-	if err != nil || rt != nil {
-		t.Fatalf("invalid profile must fall back to builtin (nil RT, no error), got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 7)
+	if err == nil || profile != nil {
+		t.Fatalf("显式绑定的坏 profile 必须 fail-closed，profile=%v err=%v", profile, err)
 	}
 }
 
-func TestResolver_Rotate_PicksFromPool_BuildsRT(t *testing.T) {
+func TestResolver_Rotate_PicksFromPool(t *testing.T) {
 	pool := []mimicry.ProfileFields{fieldsWithJA3("a"), fieldsWithJA3("b"), fieldsWithJA3("c")}
+	pool[0].ID, pool[1].ID, pool[2].ID = 101, 102, 103
 	r := newResolver(fakeFetcher{st: accountState{rotate: true, pool: pool}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 7)
-	if err != nil || rt == nil {
-		t.Fatalf("rotate + non-empty pool should build a uTLS RT, got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 7)
+	if err != nil || profile == nil {
+		t.Fatalf("轮换池非空应返回 inline profile，profile=%v err=%v", profile, err)
 	}
 }
 
 func TestResolver_Rotate_EmptyPool_Builtin(t *testing.T) {
 	r := newResolver(fakeFetcher{st: accountState{rotate: true}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 7)
-	if err != nil || rt != nil {
-		t.Fatalf("rotate + empty pool must fall back to builtin (nil RT), got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 7)
+	if err != nil || profile != nil {
+		t.Fatalf("轮换池为空应保持 builtin，profile=%v err=%v", profile, err)
 	}
 }
 
 func TestResolver_FetchError_Propagates(t *testing.T) {
 	sentinel := errors.New("db down")
 	r := newResolver(fakeFetcher{err: sentinel})
-	if _, err := r.ResolveRoundTripper(context.Background(), 7); !errors.Is(err, sentinel) {
+	if _, err := r.ResolveProfile(context.Background(), 7); !errors.Is(err, sentinel) {
 		t.Fatalf("infra fetch error should propagate, got %v", err)
 	}
 }
 
 func TestResolver_ZeroAccount_Builtin(t *testing.T) {
 	r := newResolver(fakeFetcher{st: accountState{bound: ptr(validFields())}})
-	rt, err := r.ResolveRoundTripper(context.Background(), 0)
-	if err != nil || rt != nil {
-		t.Fatalf("accountID 0 -> builtin (nil RT), got rt=%v err=%v", rt, err)
+	profile, err := r.ResolveProfile(context.Background(), 0)
+	if err != nil || profile != nil {
+		t.Fatalf("accountID 0 应保持 builtin，profile=%v err=%v", profile, err)
+	}
+}
+
+func TestResolver_PresetProfileFailsExplicitly(t *testing.T) {
+	preset := mimicry.ProfileFields{ID: 44, Name: "preset:chrome"}
+	r := newResolver(fakeFetcher{st: accountState{bound: &preset}})
+
+	profile, err := r.ResolveProfile(context.Background(), 7)
+
+	if err == nil || profile != nil {
+		t.Fatalf("没有 Rust 等价物的 preset 不得静默回落，profile=%v err=%v", profile, err)
 	}
 }
 

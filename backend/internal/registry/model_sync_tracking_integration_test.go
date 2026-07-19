@@ -112,6 +112,7 @@ RETURNING id
 
 func cleanupModelSyncTracking(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, suffix string) {
 	t.Helper()
+	_, _ = pool.Exec(ctx, `DELETE FROM model_discovery_inbox WHERE provider_model_id LIKE '%' || $1 || '%'`, suffix)
 	_, _ = pool.Exec(ctx, `DELETE FROM model_registry_capabilities WHERE scope = 'global' AND model_id IN (SELECT id FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%')`, suffix)
 	_, _ = pool.Exec(ctx, `DELETE FROM model_aliases WHERE scope = 'global' AND model_id IN (SELECT id FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%')`, suffix)
 	_, _ = pool.Exec(ctx, `DELETE FROM models WHERE scope = 'global' AND canonical_id LIKE '%' || $1 || '%'`, suffix)

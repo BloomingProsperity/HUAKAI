@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 const RefreshWindow = 15 * time.Minute
@@ -71,6 +72,7 @@ type CreateCredentialInput struct {
 	ExternalSubjectID      string
 	ExternalAccountEmail   string
 	ExternalIdentitySource string
+	Subscription           subscriptionprofile.Observation
 }
 
 type RotateCredentialInput struct {
@@ -84,6 +86,7 @@ type RotateCredentialInput struct {
 	ExternalSubjectID      string
 	ExternalAccountEmail   string
 	ExternalIdentitySource string
+	Subscription           subscriptionprofile.Observation
 }
 
 type CredentialRecord struct {
@@ -138,11 +141,12 @@ type CredentialMetadata struct {
 	ProjectRef         *string    `json:"project_ref,omitempty"`
 	// ExternalAccountID/ExternalAccountEmail 向 admin API/UI 暴露自动提取的上游 provider
 	// 账号标识。未捕获到时为 nil。
-	ExternalAccountID    *string   `json:"external_account_id,omitempty"`
-	ExternalSubjectID    *string   `json:"external_subject_id,omitempty"`
-	ExternalAccountEmail *string   `json:"external_account_email,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ExternalAccountID    *string                          `json:"external_account_id,omitempty"`
+	ExternalSubjectID    *string                          `json:"external_subject_id,omitempty"`
+	ExternalAccountEmail *string                          `json:"external_account_email,omitempty"`
+	Subscription         *subscriptionprofile.Observation `json:"subscription,omitempty"`
+	CreatedAt            time.Time                        `json:"created_at"`
+	UpdatedAt            time.Time                        `json:"updated_at"`
 }
 
 const (
@@ -356,11 +360,18 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
 		meta = rec.metadata()
+		meta.Subscription, err = txStore.persistSubscriptionProjection(
+			ctx, in.TenantID, in.ProviderAccountID, meta.ID, meta.Version,
+			in.Vendor, in.AuthMode, payload, in.Subscription,
+		)
+		if err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
 		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
 			TenantID: in.TenantID, ProviderAccountID: in.ProviderAccountID, CredentialID: meta.ID,
 			EventType: CredentialEventCreated, Vendor: in.Vendor, AuthMode: in.AuthMode,
 			CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
-			Payload: map[string]any{"credentials_present": true},
+			Payload: credentialSubscriptionAuditPayload(meta.Subscription),
 		}); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
 		}
@@ -457,11 +468,18 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
 		meta = rec.metadata()
+		meta.Subscription, err = txStore.persistSubscriptionProjection(
+			ctx, current.TenantID, current.ProviderAccountID, current.ID, meta.Version,
+			current.Vendor, current.AuthMode, payload, in.Subscription,
+		)
+		if err != nil {
+			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+		}
 		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
 			TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, CredentialID: current.ID,
 			EventType: CredentialEventRotated, Vendor: current.Vendor, AuthMode: current.AuthMode,
 			CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
-			Payload: map[string]any{"credentials_present": true},
+			Payload: credentialSubscriptionAuditPayload(meta.Subscription),
 		}); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
 		}
@@ -1011,6 +1029,11 @@ WHERE id = $14
 		}
 		if tag.RowsAffected() != 1 {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, errors.New("credentialstore: refresh credential cas lost"))
+		}
+		if observation, ok := freshSubscriptionRefreshObservation(rec.Vendor, rec.AuthMode, rec.PlaintextPayload, payload); ok {
+			if _, err := txStore.recordSubscriptionObservation(ctx, rec.TenantID, rec.ProviderAccountID, rec.ID, version, observation); err != nil {
+				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+			}
 		}
 		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
 			TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,

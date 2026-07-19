@@ -12,9 +12,6 @@ import (
 
 type PoolGate struct {
 	store GateStore
-	ramp  interface {
-		MaybeStartRamp(context.Context, ChannelKey) (Record, error)
-	}
 	clock Clock
 	// authLane 是独立于健康 FSM 的 auth 降级车道(nil=未接线,auth 检查短路,行为不变)。
 	authLane AuthCooldownLane
@@ -37,7 +34,6 @@ func NewServicePoolGate(service *Service, clock Clock) *PoolGate {
 	}
 	store, _ := service.Store().(GateStore)
 	gate := NewPoolGate(store, clock)
-	gate.ramp = service
 	// auth 车道与 Service 共享同一实例:applySignal 写(Suspend/Clear)、PoolGate 读(Eligible),
 	// 二者必须看同一份内存态。
 	gate.authLane = service.authLane
@@ -70,10 +66,6 @@ func (g *PoolGate) Allow(ctx context.Context, account *pool.AccountSnapshot, req
 	if err != nil {
 		return false, pool.GateFailureHealth, err
 	}
-	rec, err = g.maybeStartExpiredRamp(ctx, rec)
-	if err != nil {
-		return false, pool.GateFailureHealth, err
-	}
 	// disable_cooling 运维逃生阀(TOKLIFE-02):被 flag 的账号豁免"冷却/渐进放量"这类**流量抑制**,
 	// 直接满流量放行。生产门链的 Health gate 被覆盖成本 channelhealth PoolGate(selector_wiring),
 	// 而原本唯一读 DisableCooling 的 ProviderAccountHealthGate 在生产不跑——故该开关在生产此前是死的;
@@ -103,38 +95,18 @@ func (g *PoolGate) HealthStatus(ctx context.Context, account *pool.AccountSnapsh
 	if err != nil {
 		return pool.HealthStatus{}, err
 	}
-	rec, err = g.maybeStartExpiredRamp(ctx, rec)
-	if err != nil {
-		return pool.HealthStatus{}, err
-	}
 	return pool.HealthStatus{State: string(rec.State), RampStagePct: rec.RampStagePct}, nil
 }
 
-func (g *PoolGate) maybeStartExpiredRamp(ctx context.Context, rec Record) (Record, error) {
-	if rec.State != StateCoolingDown || rec.CooldownUntil == nil || rec.CooldownUntil.After(g.clock.Now()) {
-		return rec, nil
-	}
-	if g.ramp == nil {
-		return rec, nil
-	}
-	return g.ramp.MaybeStartRamp(ctx, rec.Key)
-}
-
-func IsEligible(rec Record, admissionKey string, now time.Time) bool {
+func IsEligible(rec Record, admissionKey string, _ time.Time) bool {
 	switch rec.State {
 	case StateActive, StateDegraded:
 		return true
 	case StateRamping:
 		return AdmitRamp(admissionKey, rec.RampStagePct)
 	case StateCoolingDown:
-		// 冷却已到期 → 放行,让通道在冷却结束后自动恢复(否则一旦进 cooling_down 即永久卡死)。
-		// 主流 Allow()/HealthStatus 会先由 maybeStartExpiredRamp 把"非 nil 且已过期"的记录转成
-		// ramping;但当 ramp 未接线(NewPoolGate,g.ramp==nil)或本函数被其它路径直达时,这里是
-		// 唯一的恢复闸门——必须放行已到期冷却。与 maybeStartExpiredRamp 的 guard(同样只对"非 nil
-		// 且已过期"动作)语义对齐:未到期 → 拒绝;无截止时间(nil)→ 保守拒绝(行为不变)。
-		if rec.CooldownUntil != nil && !rec.CooldownUntil.After(now) {
-			return true
-		}
+		// 冷却状态由后台恢复协调器转成 ramping；请求热路径只读，因此即使
+		// 截止时间已到，也要等状态转换完成后再按放量比例准入。
 		return false
 	case StateDisabled, StateManualPaused:
 		return false
@@ -155,15 +127,25 @@ func AdmitRamp(key string, pct int) bool {
 	return int(h.Sum32()%100) < pct
 }
 
+func rampFailureRate(window WindowSummary) float64 {
+	return rate(window.FailedAttempts, window.TotalAttempts)
+}
+
 func RampAdmissionKey(req pool.SelectionRequest, accountID int64) string {
-	basis := req.SessionHash
-	if basis == "" {
-		basis = req.ContinuationKey
+	basis := "session:" + req.SessionHash
+	if req.SessionHash == "" {
+		basis = "continuation:" + req.ContinuationKey
 	}
-	if basis == "" {
-		basis = req.RequestedModel
+	if req.SessionHash == "" && req.ContinuationKey == "" {
+		basis = "request:" + req.RequestID
 	}
-	return fmt.Sprintf("%d:%d:%s:%d", req.TenantID, accountID, basis, req.AttemptSeq)
+	if req.SessionHash == "" && req.ContinuationKey == "" && req.RequestID == "" && req.ClaimID > 0 {
+		basis = fmt.Sprintf("claim:%d", req.ClaimID)
+	}
+	if req.SessionHash == "" && req.ContinuationKey == "" && req.RequestID == "" && req.ClaimID <= 0 {
+		basis = "model:" + req.RequestedModel
+	}
+	return fmt.Sprintf("%d:%d:%s", req.TenantID, accountID, basis)
 }
 
 var _ pool.HealthGate = (*PoolGate)(nil)

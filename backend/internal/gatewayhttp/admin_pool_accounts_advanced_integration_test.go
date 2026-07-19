@@ -16,6 +16,7 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/router"
+	ratelimit "github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate/precheck"
 )
 
@@ -67,6 +68,7 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	windowCost := int64(700)
 	maxSessions := int32(3)
 	refreshLead := int32(90)
+	upstreamCostRatio := 0.5
 	expiredID, err := adminQueries.InsertProviderAccount(ctx, admindb.InsertProviderAccountParams{
 		TenantID: tenantID, ProviderID: providerID, ChannelID: channelID,
 		Name: "expired-" + suffix, AccountType: "api_key", Credentials: []byte(`{}`), Extra: []byte(`{}`),
@@ -80,15 +82,32 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	activeID, err := adminQueries.InsertProviderAccount(ctx, admindb.InsertProviderAccountParams{
 		TenantID: tenantID, ProviderID: providerID, ChannelID: channelID,
 		Name: "active-" + suffix, AccountType: "api_key", Credentials: []byte(`{}`), Extra: []byte(`{}`),
-		Priority: &activePriority,
+		Priority: &activePriority, UpstreamCostRatio: &upstreamCostRatio,
 		RPMLimit: &rpm, TPMLimit: &tpm, WindowCostLimitCents: &windowCost, MaxSessions: &maxSessions,
 		DisableCooling: &trueValue, RefreshLeadSeconds: &refreshLead, TLSFingerprintRotate: &trueValue,
 		CustomErrorCodesEnabled: &trueValue, CustomErrorCodes: []int32{429}, PoolMode: &trueValue,
 		TempUnschedulableEnabled:   &trueValue,
-		TempUnschedulableRulesJSON: []byte(`[{"error_code":529,"keywords":["busy"],"duration_minutes":5}]`),
+		TempUnschedulableRulesJSON: []byte(`[{"rule_id":"busy-529","error_code":529,"keywords":["busy"],"duration_minutes":5,"client_status":422,"client_code":"account_busy","message_mode":"custom","client_message":"账号暂不可用","affect_health":false}]`),
 	})
 	if err != nil {
 		t.Fatalf("通过生产 Insert 写活跃账号: %v", err)
+	}
+	// 选号以 account_credentials 为凭据真相源。两个账号都补同态可服务凭据，
+	// 让候选差异只由 expires_at 决定，避免把空壳账号安全门误当作高级字段接线失败。
+	for _, accountID := range []int64{expiredID, activeID} {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO account_credentials (
+				tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+				encrypted_payload, key_id, nonce, aad_hash
+			) VALUES ($1, $2, 'anthropic', 'api_key', 'active', 1, $3, 'advanced-test-key', $4, $5)`,
+			tenantID,
+			accountID,
+			[]byte("ciphertext"),
+			[]byte("nonce-12345678"),
+			fmt.Sprintf("advanced-aad-%d", accountID),
+		); err != nil {
+			t.Fatalf("写入账号 %d 的可服务凭据: %v", accountID, err)
+		}
 	}
 
 	readback, err := adminQueries.GetAdminProviderAccount(ctx, admindb.GetAdminProviderAccountParams{ID: activeID, TenantID: tenantID})
@@ -98,8 +117,45 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	if readback.RPMLimit != 1 || readback.TPMLimit != 5000 || readback.WindowCostLimitCents != 700 || readback.MaxSessions != 3 {
 		t.Fatalf("生产 Insert 数值字段未原样读回: %+v", readback)
 	}
+	if readback.UpstreamCostRatio == nil || *readback.UpstreamCostRatio != upstreamCostRatio {
+		t.Fatalf("生产 Insert 成本比例未原样读回: %+v", readback)
+	}
+	invalidCostTx, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开启成本约束保存点: %v", err)
+	}
+	if _, err := invalidCostTx.Exec(ctx, `UPDATE provider_accounts SET upstream_cost_ratio = 0 WHERE id = $1`, activeID); err == nil {
+		t.Fatal("数据库必须拒绝 upstream_cost_ratio=0")
+	}
+	if err := invalidCostTx.Rollback(ctx); err != nil {
+		t.Fatalf("回滚成本约束保存点: %v", err)
+	}
 	if !readback.DisableCooling || readback.RefreshLeadSeconds == nil || *readback.RefreshLeadSeconds != 90 || !readback.TLSFingerprintRotate {
 		t.Fatalf("生产 Insert 开关/刷新字段未原样读回: %+v", readback)
+	}
+	rules := ratelimit.ParseTempUnschedulableRules(readback.TempUnschedulableRules)
+	if len(rules) != 1 || rules[0].RuleID != "busy-529" || rules[0].ClientStatus == nil || *rules[0].ClientStatus != 422 ||
+		rules[0].ClientCode != "account_busy" || rules[0].MessageMode != "custom" || rules[0].ClientMessage != "账号暂不可用" ||
+		rules[0].AffectHealth == nil || *rules[0].AffectHealth {
+		t.Fatalf("生产 Insert 的错误投影规则未完整读回: %+v", rules)
+	}
+	policyProvider := ratelimit.NewPostgresAccountErrorRulesProvider(tx)
+	policy := policyProvider.GetAccountErrorPolicy(activeID)
+	if len(policy.Rules) != 1 || len(policy.CustomErrorCodes) != 1 || policy.CustomErrorCodes[0] != 429 || !policy.PoolMode {
+		t.Fatalf("生产规则提供器未读取完整账号策略: %+v", policy)
+	}
+	decisionNow := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
+	rateService := ratelimit.NewUpstreamRateService(func() time.Time { return decisionNow }, time.Minute,
+		ratelimit.WithAccountErrorRulesProvider(policyProvider))
+	decision, err := rateService.HandleUpstreamError(ctx, activeID, 529, nil, []byte(`{"error":{"message":"BUSY"}}`))
+	if err != nil {
+		t.Fatalf("生产错误策略决策: %v", err)
+	}
+	if decision.StateChange != ratelimit.StateTempUnsched || decision.ClientStatus != 422 ||
+		decision.ClientCode != "account_busy" || decision.ClientMessage != "账号暂不可用" ||
+		decision.ClientRuleID != "busy-529" || !decision.SuppressHealthSignal ||
+		!decision.CooldownUntil.Equal(decisionNow.Add(5*time.Minute)) {
+		t.Fatalf("数据库规则未形成完整运行时决策: %+v", decision)
 	}
 
 	source := dispatcher.NewDBAccountSource(dbbilling.New(tx))
@@ -125,6 +181,9 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	if active.RPMLimit != 1 || active.TPMLimit != 5000 || active.WindowCostLimitCents != 700 || active.MaxSessions != 3 || !active.DisableCooling {
 		t.Fatalf("高级字段未进入生产快照: %+v", active)
 	}
+	if active.UpstreamCostRatio == nil || *active.UpstreamCostRatio != upstreamCostRatio {
+		t.Fatalf("成本比例未进入生产快照: %+v", active)
+	}
 
 	fixedNow := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	counter := precheck.New(time.Minute, func() time.Time { return fixedNow })
@@ -142,7 +201,8 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	updatedWindow := int64(999)
 	updated, err := adminQueries.UpdateAdminProviderAccount(ctx, admindb.UpdateAdminProviderAccountParams{
 		ID: activeID, TenantID: tenantID,
-		WindowCostLimitCents:  &updatedWindow,
+		WindowCostLimitCents: &updatedWindow,
+		SetUpstreamCostRatio: true, UpstreamCostRatio: nil,
 		SetRefreshLeadSeconds: true, RefreshLeadSeconds: nil,
 	})
 	if err != nil {
@@ -150,6 +210,9 @@ func TestProviderAccountAdvancedWriteToSelectionAndRPMGate(t *testing.T) {
 	}
 	if updated.WindowCostLimitCents != 999 || updated.RefreshLeadSeconds != nil {
 		t.Fatalf("生产 Update 目标字段未生效: %+v", updated)
+	}
+	if updated.UpstreamCostRatio != nil {
+		t.Fatalf("生产 Update 未清除成本比例: %+v", updated)
 	}
 	if updated.RPMLimit != 1 || updated.TPMLimit != 5000 || updated.MaxSessions != 3 || !updated.DisableCooling || !updated.TLSFingerprintRotate {
 		t.Fatalf("生产 Update 误清其他高级字段: %+v", updated)

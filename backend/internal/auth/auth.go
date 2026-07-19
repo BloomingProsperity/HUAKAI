@@ -52,5 +52,5 @@ const (
 	OutcomeMimicryApplied            Outcome = "mimicry_applied"
 )
 
-// OpenAI/Gemini/Anthropic adapter、完整的 provider-endpoint/global storm
-// scope, 以及 mimicry policy 强制的接线。
+// 厂商 adapter、跨副本 provider-endpoint/global storm scope 与请求变换策略
+// 均由各自运行时接线负责。

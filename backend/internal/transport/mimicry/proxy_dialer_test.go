@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-// PROXY-02a:每账号代理必须在 uTLS 握手【之下】拨号,从而出口 IP 是代理的,
-// 而 JA3 仍是伪装指纹。
+// 每账号代理健康探测必须经代理建立隧道，不能失败后静默改为直连。
 
 // TestHTTPConnectDialer_TunnelsThroughProxy 是有区分力的测试:它起一个最小的
 // HTTP CONNECT 代理桩,断言 dialer 经代理向目标发出 CONNECT(带
@@ -64,29 +63,6 @@ func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
 	}
 	if gotAuth == "" {
 		t.Fatalf("Proxy-Authorization missing (proxy creds not forwarded)")
-	}
-}
-
-// TestUtlsDialer_DialRawUsesProxyDialer 守护这道接缝:设置了 ProxyDialer 时,
-// dialRaw 必须经它路由。变异:让 dialRaw 忽略 ProxyDialer(回退到 NetDialer)->
-// called 保持 false -> 转红,即真实出口 IP 会越过代理泄露。
-func TestUtlsDialer_DialRawUsesProxyDialer(t *testing.T) {
-	srv, cli := net.Pipe()
-	defer srv.Close()
-	called := false
-	d := &UtlsDialer{
-		ProxyDialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			called = true
-			return cli, nil
-		},
-	}
-	conn, err := d.dialRaw(context.Background(), "tcp", "origin.test:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = conn.Close()
-	if !called {
-		t.Fatal("dialRaw bypassed ProxyDialer -> real egress IP would leak past the proxy")
 	}
 }
 

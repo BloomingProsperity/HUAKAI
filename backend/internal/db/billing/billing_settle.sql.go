@@ -342,7 +342,9 @@ type ReleaseSlotAndDecrementInFlightParams struct {
 	ReleaseReason    *string   `db:"release_reason" json:"release_reason"`
 }
 
-// 只有 acquisition 从 acquired 翻到指定终态后才递减账号在途数；重放 token 不会重复递减。
+// Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
+// 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
+// $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
 func (q *Queries) ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error) {
 	result, err := q.db.Exec(ctx, releaseSlotAndDecrementInFlight, arg.AcquisitionToken, arg.ReleaseStatus, arg.ReleaseReason)
 	if err != nil {
@@ -387,7 +389,7 @@ type UpdateClaimCommittedParams struct {
 }
 
 // Spec §Tx2 step 15: claim status reserving → committed.
-// tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
+// codex chunk7 P1#4: tenant_id 显式 caller 提供, 防全局 id 跨租户误 commit。
 func (q *Queries) UpdateClaimCommitted(ctx context.Context, arg UpdateClaimCommittedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateClaimCommitted, arg.ID, arg.ActualCost, arg.TenantID)
 	if err != nil {

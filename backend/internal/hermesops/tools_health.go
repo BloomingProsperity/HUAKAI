@@ -6,8 +6,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp/accounthealthview"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotawindowview"
 )
 
 // AccountHealthDeps 是 account_health_diagnose 工具包装的只读依赖。全部是已有的 SELECT-only 读取:
@@ -56,6 +59,21 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
+			now := time.Now().UTC()
+			identity := accounthealthview.BuildObservability(row, now).Identity
+			subscription, systemLabels := accounthealthview.BuildSubscription(row)
+			quotaWindows := quotawindowview.FromPostgres(quotawindowview.PostgresSnapshot{
+				ObservedAt: row.QuotaSnapshotObservedAt, Source: row.QuotaSnapshotSource,
+				Outcome: row.QuotaSnapshotOutcome, ErrorClass: row.QuotaSnapshotErrorClass,
+				FiveHourStart: row.SessionWindow5hStart, FiveHourEnd: row.SessionWindow5hEnd,
+				FiveHourUtilization: row.SessionWindow5hUtilization,
+				SevenDayStart:       row.SessionWindow7dStart, SevenDayEnd: row.SessionWindow7dEnd,
+				SevenDayUtilization: row.SessionWindow7dUtilization,
+			}, now)
+			quotaFacts, err := accountquota.ParseView([]byte(row.QuotaFacts), now)
+			if err != nil {
+				return ToolResult{}, err
+			}
 
 			summary := map[string]any{
 				"account_id":                      row.ID,
@@ -66,6 +84,8 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 				"session_window_5h_start":         tsAny(row.SessionWindow5hStart),
 				"session_window_5h_end":           tsAny(row.SessionWindow5hEnd),
 				"session_window_5h_status":        deref(row.SessionWindow5hStatus),
+				"quota_windows":                   quotaWindows,
+				"quota_facts":                     quotaFacts,
 				"last_refresh_outcome":            deref(row.LastRefreshOutcome),
 				"failure_class":                   deref(row.FailureClass),
 				"failure_count":                   row.FailureCount,
@@ -73,6 +93,20 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 				"last_request_observed_at":        tsAny(row.LastRequestObservedAt),
 				"last_request_observation_source": "request_completion_event",
 				"last_refresh_at":                 tsAny(row.LastRefreshAt),
+				"provider_code":                   identity.ProviderCode,
+				"account_type":                    identity.AccountType,
+				"credential_selection_state":      identity.CredentialSelectionState,
+				"serving_credential_candidates":   identity.ServingCredentialCandidates,
+				"credential_legacy_mirror_state":  row.CredentialState,
+				"credential_metadata_persistence": "postgres",
+				"system_labels":                   systemLabels,
+			}
+			if subscription != nil {
+				summary["subscription"] = subscription
+			}
+			if identity.CredentialSelectionState == "resolved" {
+				summary["credential_vendor"] = identity.CredentialVendor
+				summary["credential_auth_mode"] = identity.CredentialAuthMode
 			}
 
 			errorClass := ""

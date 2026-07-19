@@ -38,11 +38,9 @@ func newClaudeAIOAuthExchanger() claudeAIOAuthExchanger {
 	return claudeAIOAuthExchanger{}
 }
 
-// NewClaudeAIOAuthExchangerWithClient 返回带显式 HTTP client 的 exchanger,
-// 用于 wiring 时注入 anthropicoauth mimicry uTLS transport (HUAKAI 反封禁
-// 核心差异化 [[project_core_trust_chain_differentiator]] +
-// [[project_huakai_codex_mimicry_verified]])。client=nil 时退到
-// http.DefaultClient — 仅用于测试 / 静态分析路径, 不应进生产 wiring。
+// NewClaudeAIOAuthExchangerWithClient 返回带显式 HTTP client 的 exchanger。
+// 生产 wiring 注入经过启动探测的 Rust sidecar client；nil 只表示尚未接线，
+// 实际换码时会明确失败，不会退回标准库 TLS。
 func NewClaudeAIOAuthExchangerWithClient(client *http.Client) Exchanger {
 	return claudeAIOAuthExchanger{httpClient: client}
 }
@@ -249,7 +247,11 @@ func (e claudeAIOAuthExchanger) exchangeAuthorizationCodeJSON(ctx context.Contex
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := e.client().Do(req)
+	client := e.client()
+	if client == nil {
+		return oauthTokenResponse{}, errors.New("credentialacq: Anthropic OAuth Rust sidecar client 未接线")
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return oauthTokenResponse{}, err
 	}
@@ -289,10 +291,7 @@ func (e claudeAIOAuthExchanger) claudeAIOAuthTokenPayload(token oauthTokenRespon
 }
 
 func (e claudeAIOAuthExchanger) client() *http.Client {
-	if e.httpClient != nil {
-		return e.httpClient
-	}
-	return http.DefaultClient
+	return e.httpClient
 }
 
 func (e claudeAIOAuthExchanger) nowTime() time.Time {

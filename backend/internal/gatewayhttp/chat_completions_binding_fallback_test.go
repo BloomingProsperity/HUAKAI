@@ -369,6 +369,11 @@ func TestATBFC007FourSignalsSelectOnlyMatchingClass(t *testing.T) {
 			if got := selector.poolIDs(); !equalInt64s(got, []int64{42, tc.wantPoolID}) {
 				t.Fatalf("selector pools=%v，期望 [42 %d]", got, tc.wantPoolID)
 			}
+			if tc.name == "quota" || tc.name == "manual" {
+				if _, excluded := selector.requests[1].ExcludedAccounts[101]; !excluded {
+					t.Fatalf("目标 class exclusions=%v，必须继承 normal 失败账号 101", selector.requests[1].ExcludedAccounts)
+				}
+			}
 			if len(settler.aborts) != 1 || len(settler.calls) != 1 {
 				t.Fatalf("abort/settle=%d/%d，期望 1/1", len(settler.aborts), len(settler.calls))
 			}

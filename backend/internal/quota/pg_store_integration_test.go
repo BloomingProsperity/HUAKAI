@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -125,10 +126,20 @@ func (f *quotaFixture) cleanup() {
 
 func (f *quotaFixture) seedClaim(label string) int64 {
 	f.t.Helper()
-	return f.seedClaimForTenant(f.tenantID, f.userID, f.apiKeyID, label)
+	return f.seedClaimWithModel(label, "gpt-4.1-mini")
 }
 
 func (f *quotaFixture) seedClaimForTenant(tenantID, userID, apiKeyID int64, label string) int64 {
+	f.t.Helper()
+	return f.seedClaimForTenantWithModel(tenantID, userID, apiKeyID, label, "gpt-4.1-mini")
+}
+
+func (f *quotaFixture) seedClaimWithModel(label, model string) int64 {
+	f.t.Helper()
+	return f.seedClaimForTenantWithModel(f.tenantID, f.userID, f.apiKeyID, label, model)
+}
+
+func (f *quotaFixture) seedClaimForTenantWithModel(tenantID, userID, apiKeyID int64, label, model string) int64 {
 	f.t.Helper()
 	unique := label + "-" + uuid.NewString()
 	var claimID int64
@@ -141,11 +152,11 @@ func (f *quotaFixture) seedClaimForTenant(tenantID, userID, apiKeyID int64, labe
 		) VALUES (
 			$1, $2, $3,
 			$4, $5, $6, 'chat',
-			'gpt-4.1-mini', 'quota-test', 'standard',
+			$8, 'quota-test', 'standard',
 			0.01, 'USD', $7
 		) RETURNING id`,
 		tenantID, "idem-"+unique, "fp-"+unique,
-		apiKeyID, userID, "logical-"+unique, time.Now().UTC().Add(10*time.Minute),
+		apiKeyID, userID, "logical-"+unique, time.Now().UTC().Add(10*time.Minute), model,
 	).Scan(&claimID); err != nil {
 		f.t.Fatalf("seed claim %s: %v", label, err)
 	}
@@ -221,6 +232,7 @@ func TestPostgresStore_InsertReservation_ReturnsDBCanonicalValues(t *testing.T) 
 		TenantID:           f.tenantID,
 		ClaimID:            claimID,
 		RequestFingerprint: "quota-canonical-" + uuid.NewString(),
+		RequestedModel:     "  GPT-4.1-MINI  ",
 		Scopes:             []Scope{{TenantID: f.tenantID, Kind: ScopeGlobal, ID: ""}},
 		PredictedCost:      predictedCost,
 		ReservedUnits:      reservedUnits,
@@ -232,17 +244,24 @@ func TestPostgresStore_InsertReservation_ReturnsDBCanonicalValues(t *testing.T) 
 	if len(reservation.Scopes) != 1 || reservation.Scopes[0].Kind != ScopeGlobal || reservation.Scopes[0].ID != "*" {
 		t.Fatalf("InsertReservation returned non-canonical scopes: %+v; want global/*", reservation.Scopes)
 	}
+	if reservation.RequestedModel != "gpt-4.1-mini" {
+		t.Fatalf("RequestedModel=%q; want normalized gpt-4.1-mini", reservation.RequestedModel)
+	}
 
 	var scopeSnapshot string
+	var requestedModel string
 	var dbPredictedCost string
 	var dbReservedUnits string
 	if err := pool.QueryRow(ctx,
-		`SELECT scope_snapshot::text, predicted_cost::text, reserved_units::text
+		`SELECT scope_snapshot::text, requested_model, predicted_cost::text, reserved_units::text
 		 FROM quota_reservations
 		 WHERE tenant_id=$1 AND id=$2`,
 		f.tenantID, reservation.ID,
-	).Scan(&scopeSnapshot, &dbPredictedCost, &dbReservedUnits); err != nil {
+	).Scan(&scopeSnapshot, &requestedModel, &dbPredictedCost, &dbReservedUnits); err != nil {
 		t.Fatalf("read inserted reservation: %v", err)
+	}
+	if requestedModel != "gpt-4.1-mini" {
+		t.Fatalf("DB requested_model=%q; want gpt-4.1-mini", requestedModel)
 	}
 	dbScopes, err := parseScopes(f.tenantID, []byte(scopeSnapshot))
 	if err != nil {
@@ -264,6 +283,41 @@ func TestPostgresStore_InsertReservation_ReturnsDBCanonicalValues(t *testing.T) 
 	}
 	if !reservation.ReservedUnits.Equal(wantReservedUnits) {
 		t.Fatalf("ReservedUnits=%s; want DB canonical %s", reservation.ReservedUnits, wantReservedUnits)
+	}
+}
+
+func TestPostgresStore_ModelDimensionAcceptsFullRegistryLength(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openQuotaIntegrationPool(t, ctx)
+	f := newQuotaFixture(t, ctx, pool)
+	store := NewPostgresStore(pool)
+
+	model := strings.Repeat("m", 512)
+	claimID := f.seedClaimWithModel("long-model", model)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO quota_policies (
+    tenant_id, scope_kind, scope_id, model_selector, metric, window_kind,
+    window_seconds, limit_value, burst_value, mode, priority, enabled, valid_from
+) VALUES ($1, 'user', $2, $3, 'requests', 'none', 0, 10, 0, 'enforce', 10, true, now())`,
+		f.tenantID, fmt.Sprint(f.userID), model); err != nil {
+		t.Fatalf("写入 512 字符模型策略: %v", err)
+	}
+	reservation, err := store.InsertReservation(ctx, ReservationInsert{
+		TenantID:           f.tenantID,
+		ClaimID:            claimID,
+		RequestFingerprint: "quota-long-model-" + uuid.NewString(),
+		RequestedModel:     model,
+		Scopes:             []Scope{{TenantID: f.tenantID, Kind: ScopeUser, ID: fmt.Sprint(f.userID)}},
+		PredictedCost:      decimal.RequireFromString("0.01"),
+		ReservedUnits:      decimal.NewFromInt(1),
+		LeaseExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("写入 512 字符模型预留: %v", err)
+	}
+	if reservation.RequestedModel != model {
+		t.Fatalf("模型名被截断: got=%d want=%d", len(reservation.RequestedModel), len(model))
 	}
 }
 

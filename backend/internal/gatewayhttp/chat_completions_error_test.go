@@ -226,12 +226,12 @@ func TestApplyUpstreamErrorCooldown_ModelScoped429DoesNotForceAccountCooldown(t 
 	}
 	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute))
 
-	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+	outcome := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
 		StatusCode: http.StatusTooManyRequests,
 		Header:     http.Header{"Retry-After": []string{"3600"}},
 		Body:       []byte(`{"error":"rate limited"}`),
 	}, classification, true)
-	if !modelScoped {
+	if !outcome.ModelScoped {
 		t.Fatal("纯 429 限速应下沉到模型格,返回 modelScoped=true")
 	}
 	if rec.calls != 1 {
@@ -268,8 +268,8 @@ func TestApplyUpstreamErrorCooldown_Quota429StaysAccountSignal(t *testing.T) {
 		return time.Date(2026, 7, 7, 9, 0, 0, 0, time.UTC)
 	}, time.Minute))
 
-	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{StatusCode: http.StatusTooManyRequests, Body: body}, classification, true)
-	if modelScoped {
+	outcome := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{StatusCode: http.StatusTooManyRequests, Body: body}, classification, true)
+	if outcome.ModelScoped {
 		t.Fatal("配额耗尽 429 不得写模型格")
 	}
 	if rec.calls != 0 {
@@ -350,7 +350,7 @@ func TestApplyUpstreamErrorCooldown_Concurrent429WritesSameModelScope(t *testing
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			if !ex.applyUpstreamErrorCooldown(upstreamErr, classification, true) {
+			if !ex.applyUpstreamErrorCooldown(upstreamErr, classification, true).ModelScoped {
 				t.Errorf("并发 429 应全部返回 modelScoped=true")
 			}
 		}()
@@ -389,12 +389,12 @@ func TestApplyUpstreamErrorCooldown_ModelWriteFailFallsBackToAccountHealth(t *te
 	}
 	ex := modelCooldownTestExecution(rec, health, rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute))
 
-	modelScoped := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+	outcome := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
 		StatusCode: http.StatusTooManyRequests,
 		Header:     header,
 		Body:       []byte(`{"error":"rate limited"}`),
 	}, classification, true)
-	if modelScoped {
+	if outcome.ModelScoped {
 		t.Fatal("模型格写失败必须返回 false 以回落账号健康,不能吞掉冷却")
 	}
 	if rec.calls != 1 {
@@ -413,11 +413,11 @@ func TestApplyUpstreamErrorCooldown_PoolModeSuppressesEveryLocalWrite(t *testing
 		t.Fatalf("Classify: %v", err)
 	}
 
-	handled := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
+	outcome := ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
 		StatusCode: http.StatusTooManyRequests,
 		Body:       []byte(`{"error":"rate limited"}`),
 	}, classification, true)
-	if !handled {
+	if !outcome.ModelScoped {
 		t.Fatal("pool_mode 抑制信号必须阻止调用方继续写账号健康状态")
 	}
 	if recorder.calls != 0 || len(health.forceCooldowns) != 0 || len(health.signals) != 0 {

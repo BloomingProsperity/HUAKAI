@@ -31,7 +31,8 @@ func TestGatewayRuntimeBuildsAndStoresDisputeRefundResolver(t *testing.T) {
 	}
 	source := string(raw)
 	for _, required := range []string{
-		"auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler)",
+		"auditreceipt.WithDisputeQuotaReverser(quotaReverser)",
+		"auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler, disputeResolverOpts...)",
 		"disputeResolver:      disputeResolver",
 	} {
 		if !strings.Contains(source, required) {
