@@ -178,7 +178,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		if chosen == nil {
 			return nil, proxyGroupUnavailable(ctx, row.tenantID, accountID, row.proxyGroupID)
 		}
-		grow := proxyRow{protocol: chosen.protocol, host: chosen.host, port: chosen.port, username: chosen.username, secret: chosen.secret}
+		grow := proxyRow{tenantID: row.tenantID, protocol: chosen.protocol, host: chosen.host, port: chosen.port, username: chosen.username, secret: chosen.secret}
 		if err := r.decryptRowAuthSecret(ctx, &grow); err != nil {
 			return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
 		}
@@ -195,7 +195,7 @@ func (r *PostgresProxyResolver) Resolve(ctx context.Context, accountID int64) (*
 		return nil, nil
 	}
 
-	chosen := proxyRow{protocol: fields.protocol, host: fields.host, port: fields.port, username: fields.username, secret: fields.secret}
+	chosen := proxyRow{tenantID: row.tenantID, protocol: fields.protocol, host: fields.host, port: fields.port, username: fields.username, secret: fields.secret}
 	if err := r.decryptRowAuthSecret(ctx, &chosen); err != nil {
 		return nil, fmt.Errorf("provider proxy resolver: decrypt auth secret: %w", err)
 	}

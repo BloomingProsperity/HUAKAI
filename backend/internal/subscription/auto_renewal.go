@@ -118,6 +118,12 @@ func (w *AutoRenewWorker) tick(ctx context.Context) {
 		if res.Scanned < w.batchSize {
 			return // 已 drain 完
 		}
+		if res.Renewed == 0 {
+			// 无进展保护:本批扫满 batchSize 却一条都没续成(全部余额不足/套餐停用等),
+			// 这些行不会离开 due 集合,继续循环会拿到同一批 → 无限循环、worker 卡死空转。
+			// 停止本轮,交下个 tick 重试(此时状态可能已变)。
+			return
+		}
 	}
 }
 

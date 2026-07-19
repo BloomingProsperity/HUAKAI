@@ -161,15 +161,19 @@ func canonicalizeURI(u *url.URL) string {
 	if path == "" {
 		return "/"
 	}
-	// 分段重新编码（AWS 规范：路径段内 unreserved 字符不编码，其余编码）
+	// 分段重新编码（AWS 规范：路径段内 unreserved 字符不编码，其余编码）。
+	// 必须用 awsURIEncode（与 buildEndpoint 出站 URL 同一编码），而非 url.PathEscape：
+	// PathEscape 不编码 ':'，会把出站 path 里的 %3A 还原成 ':'，导致签名的 canonical
+	// URI 与线缆实发 path 不一致 → SigV4 SignatureDoesNotMatch(403)。含冒号的 Bedrock
+	// model id（如 ...-v2:0）全部受影响。
 	segments := strings.Split(path, "/")
 	for i, seg := range segments {
-		// url.PathUnescape 先解码，再用 url.PathEscape 重新编码（确保规范形态）
+		// 先 PathUnescape 拿到原始字节，再用 awsURIEncode 严格重编码（: → %3A）。
 		decoded, err := url.PathUnescape(seg)
 		if err != nil {
 			decoded = seg
 		}
-		segments[i] = url.PathEscape(decoded)
+		segments[i] = awsURIEncode(decoded)
 	}
 	return strings.Join(segments, "/")
 }
