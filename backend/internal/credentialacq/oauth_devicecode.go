@@ -151,6 +151,14 @@ func validateOpenAICodexOperatorDeviceCodeConfig(cfg OAuthClientConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: openai codex operator device-code config missing %s", ErrFeatureDisabled, strings.Join(missing, ","))
 	}
+	// admin/operator 提供的端点必须走静态闸门(https + 非私网/元数据/loopback),
+	// 与 authorization_code 路径一致,避免 PKCE code 走明文 http / SSRF 纵深缺口。
+	if err := validateOAuthEndpointURL(cfg.AuthURL); err != nil {
+		return fmt.Errorf("%w: openai codex device_authorization_url rejected (%v)", ErrFeatureDisabled, err)
+	}
+	if err := validateOAuthEndpointURL(cfg.TokenURL); err != nil {
+		return fmt.Errorf("%w: openai codex token_url rejected (%v)", ErrFeatureDisabled, err)
+	}
 	return nil
 }
 
@@ -326,13 +334,22 @@ func normalizeOpenAICodexDeviceStartResponse(resp deviceAuthorizationStartRespon
 }
 
 func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig, authType AuthType) (OAuthStartResult, error) {
-	if store == nil {
-		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
-	}
 	deviceURL := strings.TrimSpace(cfg.AuthURL)
 	tokenURL := strings.TrimSpace(cfg.TokenURL)
 	if deviceURL == "" || tokenURL == "" {
 		return OAuthStartResult{}, fmt.Errorf("%w: fake %s endpoints required", ErrFeatureDisabled, authType)
+	}
+	// device_code/copilot/SSO 通用路径:admin/operator 提供的端点必须走静态闸门
+	// (https + 非私网/元数据/loopback),与 authorization_code 路径一致。此校验必须
+	// 在任何存储/网络访问之前发生,避免明文 http 泄露 + SSRF 纵深缺口。
+	if err := validateOAuthEndpointURL(deviceURL); err != nil {
+		return OAuthStartResult{}, fmt.Errorf("%w: %s auth_url rejected (%v)", ErrFeatureDisabled, authType, err)
+	}
+	if err := validateOAuthEndpointURL(tokenURL); err != nil {
+		return OAuthStartResult{}, fmt.Errorf("%w: %s token_url rejected (%v)", ErrFeatureDisabled, authType, err)
+	}
+	if store == nil {
+		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
 	}
 	client := defaultDeviceCodeHTTPClient()
 	if cfg.HTTPClient != nil {

@@ -553,9 +553,68 @@ func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
 	if err := refresher.Refresh(context.Background(), 101); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:credential_refresh:44", "reread", "adapter:44", "save:44"}
+	// 出站兑换(adapter:44)现在在事务/lock 之外先行完成;advisory-lock 仍先于 reread 与
+	// save(本测试的原始不变量)。
+	want := []string{"probe", "adapter:44", "tx_begin", "lock:credential_refresh:44", "reread", "save:44"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
+	}
+}
+
+// TestRefreshExchangeRunsOutsideDBTransaction 守卫账号转 API 的双 S2 缺陷:出站 OAuth
+// 兑换(RT0→RT1 上游轮换,一次慢速 HTTP 往返)绝不能在持有 DB 事务/advisory-lock 连接
+// 的情况下进行。
+//   - 若兑换在事务内:整段 HTTP 期间独占一条池化连接 → 高并发下连接池饿死(S2)。
+//   - 若兑换在事务内:兑换成功后 commit/审计瞬时失败会丢失轮换后的 RT1,重试用作废的
+//     RT0 盲打上游 → invalid_grant → 账号 fail-closed 报废(S2)。
+//
+// 断言方式:调用序列里 "adapter:X"(HTTP 兑换)必须早于 "tx_begin"(事务/池连接开启),
+// 从而证明兑换发生在任何 DB 连接被持有之前;持久化则由其后的短事务原子完成。
+//
+// Mutation check:把 adapter.RefreshCredential 移回事务/lock 内(reread 与 save 之间),
+// "adapter:X" 就落到 "tx_begin" 之后 → 本测试转红。
+func TestRefreshExchangeRunsOutsideDBTransaction(t *testing.T) {
+	calls := []string{}
+	store := &recordingRefreshStore{
+		calls: &calls,
+		rec: credentialstore.CredentialRecord{
+			ID: 77, TenantID: 1, ProviderAccountID: 177,
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeRefreshToken,
+			CredentialVersion: 5, PlaintextPayload: []byte(`{"refresh_token":"rt-old"}`),
+		},
+	}
+	registry := NewModeAdapterRegistry()
+	if err := registry.Register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, recordingModeAdapter{calls: &calls}); err != nil {
+		t.Fatal(err)
+	}
+	refresher := &AccountCredentialRefresher{store: store, registry: registry, now: func() time.Time {
+		return time.Date(2026, 7, 20, 5, 0, 0, 0, time.UTC)
+	}}
+	if err := refresher.Refresh(context.Background(), 177); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	idxOf := func(want string) int {
+		for i, c := range calls {
+			if c == want {
+				return i
+			}
+		}
+		return -1
+	}
+	adapterIdx := idxOf("adapter:77")
+	txIdx := idxOf("tx_begin")
+	saveIdx := idxOf("save:77")
+	if adapterIdx < 0 || txIdx < 0 || saveIdx < 0 {
+		t.Fatalf("missing expected calls; got %v", calls)
+	}
+	// 兑换必须在事务开启之前(不持池连接)。
+	if adapterIdx > txIdx {
+		t.Fatalf("OAuth exchange must run before the DB transaction/lock is held; got calls=%v (adapter idx=%d, tx_begin idx=%d)", calls, adapterIdx, txIdx)
+	}
+	// 兑换成功后仍必须落库(短事务原子持久化 RT1)。
+	if saveIdx < txIdx {
+		t.Fatalf("rotated credential must still be persisted inside the short transaction; got calls=%v", calls)
 	}
 }
 
@@ -583,7 +642,7 @@ func TestGeminiFallbackAuditWrittenInRefreshTransaction(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	want := []string{
-		"probe", "tx_begin", "lock:credential_refresh:55", "reread", "adapter:55",
+		"probe", "adapter:55", "tx_begin", "lock:credential_refresh:55", "reread",
 		"audit:gemini_cross_client_fallback:code_assist:ai_studio:true", "save:55",
 	}
 	if !reflect.DeepEqual(calls, want) {
@@ -615,12 +674,12 @@ func jsonResponse(body string) *http.Response {
 }
 
 // TestRefreshLockedRecordSurfacesSaveFailureError 守卫:当持久化 refresh-failure
-// 状态本身失败时,refreshLockedRecord 必须把该错误暴露出来(与起因 join),而不是
-// 用 `_ =` 丢弃。否则凭据的失败状态(冷却 / 重试计数 / 原因)会被悄悄丢失,scheduler
-// 会按陈旧状态反复重试。
+// 状态本身失败时,持久化阶段(persistRefreshOutcome)必须把该错误暴露出来(与起因
+// join),而不是用 `_ =` 丢弃。否则凭据的失败状态(冷却 / 重试计数 / 原因)会被悄悄
+// 丢失,scheduler 会按陈旧状态反复重试。
 //
 // Mutation check:还原 `_ = txStore.SaveRefreshFailure(...)`,返回的错误就不再 wrap
-// 持久化 sentinel → 转红。使用 adapter-missing 分支(无需活的 adapter)。
+// 持久化 sentinel → 转红。使用 adapter-missing 分支(adapterOK=false,无需活的 adapter)。
 func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
 	saveErr := errors.New("save refresh failure write failed")
 	calls := []string{}
@@ -628,9 +687,9 @@ func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
 	refresher := &AccountCredentialRefresher{registry: DefaultModeAdapterRegistry(), now: func() time.Time { return time.Unix(0, 0).UTC() }}
 	rec := credentialstore.CredentialRecord{ID: 7, Vendor: "nonexistent-vendor", AuthMode: "oauth"}
 
-	err := refresher.refreshLockedRecord(context.Background(), tx, 7, rec)
+	err := refresher.persistRefreshOutcome(context.Background(), tx, 7, rec, refreshExchange{adapterOK: false})
 	if !errors.Is(err, saveErr) {
-		t.Fatalf("refreshLockedRecord must surface the SaveRefreshFailure persistence error; got %v", err)
+		t.Fatalf("persistRefreshOutcome must surface the SaveRefreshFailure persistence error; got %v", err)
 	}
 	if !errors.Is(err, ErrProviderAdapterMissing) {
 		t.Fatalf("should also preserve the adapter-missing cause; got %v", err)

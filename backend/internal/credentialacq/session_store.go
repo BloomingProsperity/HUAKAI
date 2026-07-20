@@ -21,6 +21,69 @@ import (
 const DefaultFlowTTL = 10 * time.Minute
 const transientPayloadMetadataPrefix = "huakai-transient-payload-v1:"
 
+// device_code_payload 内含 device_code / device_auth_id —— RFC 8628 可换 token 的 bearer
+// secret。历史实现把整个 payload 以明文 JSONB 落库(S3)。落库前用凭证对称加密(与
+// EncryptedPKCEVerifier 同一 credentialstore.Cipher 通道)加密整块 payload,读取(轮询)
+// 路径再透明解密。envelope 自描述 scheme,遗留明文行仍可被识别并回退读取,避免破坏兼容。
+const deviceCodePayloadEnvelopeScheme = "huakai-devicecode-payload-v1"
+
+type encryptedDeviceCodePayloadEnvelope struct {
+	Scheme     string `json:"__huakai_devicecode_enc"`
+	Ciphertext []byte `json:"ciphertext"`
+	Metadata   []byte `json:"metadata"`
+}
+
+// deviceCodePayloadAAD 在加密/解密两端必须一致。SetAuthPayload 只持有 flow id,拿不到
+// tenant/vendor 等字段,故此处用空 AAD:机密性由 AES-256-GCM 密钥保证,完整性由 GCM tag
+// 保证;不做 per-tenant AAD 绑定(相较明文落库,此权衡可接受)。
+func deviceCodePayloadAAD() credentialstore.AAD { return credentialstore.AAD{} }
+
+// encodeDeviceCodePayload 序列化并(在配置了 cipher 时)加密 device_code_payload。未配置
+// cipher 时保持明文(仅测试/无密钥环境),生产始终经 NewPostgresSessionStoreWithKeys 注入密钥。
+func (s *PostgresSessionStore) encodeDeviceCodePayload(ctx context.Context, payload map[string]any) ([]byte, error) {
+	plain, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.cipher == nil {
+		return plain, nil
+	}
+	ciphertext, metadata, _, err := s.EncryptTransientPayload(ctx, plain, deviceCodePayloadAAD())
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(encryptedDeviceCodePayloadEnvelope{
+		Scheme:     deviceCodePayloadEnvelopeScheme,
+		Ciphertext: ciphertext,
+		Metadata:   metadata,
+	})
+}
+
+// decodeDeviceCodePayload 还原 device_code_payload。识别到加密 envelope 则解密,否则按遗留
+// 明文 JSON 解析(向后兼容旧行)。
+func (s *PostgresSessionStore) decodeDeviceCodePayload(ctx context.Context, raw []byte) (map[string]any, error) {
+	var env encryptedDeviceCodePayloadEnvelope
+	if err := json.Unmarshal(raw, &env); err == nil && env.Scheme == deviceCodePayloadEnvelopeScheme && len(env.Ciphertext) > 0 {
+		if s == nil || s.cipher == nil {
+			return nil, fmt.Errorf("%w: encrypted device_code_payload but cipher not configured", credentialstore.ErrKeyUnavailable)
+		}
+		plain, err := s.DecryptTransientPayload(ctx, env.Ciphertext, env.Metadata, deviceCodePayloadAAD())
+		if err != nil {
+			return nil, err
+		}
+		var out map[string]any
+		if err := json.Unmarshal(plain, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type PostgresSessionStore struct {
 	db     db.DBTX
 	cipher *credentialstore.Cipher
@@ -209,7 +272,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	return scanSession(s.db.QueryRow(ctx, q,
+	return s.scanSession(ctx, s.db.QueryRow(ctx, q,
 		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
 		row.ClientIdentitySource, row.RedirectURI, scopes, redacted,
@@ -227,7 +290,7 @@ func (s *PostgresSessionStore) SetAuthPayload(ctx context.Context, id string, au
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	raw, err := json.Marshal(payload)
+	raw, err := s.encodeDeviceCodePayload(ctx, payload)
 	if err != nil {
 		return err
 	}
@@ -255,7 +318,7 @@ SELECT id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, s
        created_at, updated_at
 FROM credential_acquisition_flow_sessions
 WHERE id = $1::uuid`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrFlowNotFound
 	}
@@ -289,7 +352,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage)))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage)))
 	if err == nil {
 		return row, nil
 	}
@@ -335,7 +398,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage), allowedText))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id), status, strings.TrimSpace(errorClass), strings.TrimSpace(redactedMessage), allowedText))
 	if err == nil {
 		return row, nil
 	}
@@ -368,7 +431,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, getErr := s.Get(ctx, id)
 		if getErr != nil {
@@ -405,7 +468,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id)))
 	if err == nil {
 		return row, nil
 	}
@@ -456,7 +519,7 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), credentialID))
+	row, err := s.scanSession(ctx, s.db.QueryRow(ctx, q, strings.TrimSpace(id), credentialID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, getErr := s.Get(ctx, id)
 		if getErr != nil {
@@ -474,7 +537,7 @@ func (s *PostgresSessionStore) MarkFailed(ctx context.Context, id, errorClass, r
 	return s.UpdateStatus(ctx, id, StatusFailed, errorClass, redactedMessage)
 }
 
-func scanSession(row pgx.Row) (Session, error) {
+func (s *PostgresSessionStore) scanSession(ctx context.Context, row pgx.Row) (Session, error) {
 	var out Session
 	var authType, redirectURI, errorClass, errorMessage pgtype.Text
 	var resultCredential pgtype.Int8
@@ -518,7 +581,11 @@ func scanSession(row pgx.Row) (Session, error) {
 		_ = json.Unmarshal(redactedContext, &out.RedactedContext)
 	}
 	if len(deviceCodePayload) > 0 {
-		_ = json.Unmarshal(deviceCodePayload, &out.DeviceCodePayload)
+		decoded, decErr := s.decodeDeviceCodePayload(ctx, deviceCodePayload)
+		if decErr != nil {
+			return Session{}, decErr
+		}
+		out.DeviceCodePayload = decoded
 	}
 	if out.RedactedContext == nil {
 		out.RedactedContext = map[string]any{}

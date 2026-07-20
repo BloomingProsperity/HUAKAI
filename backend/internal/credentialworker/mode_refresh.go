@@ -232,6 +232,15 @@ func (r *AccountCredentialRefresher) RefreshForProvider(ctx context.Context, pro
 	return r.refresh(ctx, providerID, accountID)
 }
 
+// refreshExchange 是"出站 OAuth 兑换"这一步的结果快照,在任何 DB 事务/连接之外算得,
+// 随后交给持久化短事务原子落库。adapterOK 区分"registry 无对应 adapter"(→ adapter_missing)
+// 与"adapter 执行返回错误"(→ classifyModeRefreshError),以精确保留原有失败分类语义。
+type refreshExchange struct {
+	adapterOK bool
+	result    ModeRefreshResult
+	err       error
+}
+
 func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accountID int64) error {
 	if r == nil || r.store == nil {
 		return errors.New("credentialworker: account credential store missing")
@@ -241,6 +250,16 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 		return err
 	}
 	defer privacy.Zeroize(probe.PlaintextPayload)
+
+	// 出站 OAuth 兑换(RT0→RT1 上游轮换)必须在任何 DB 事务/advisory-lock 之外进行:
+	//   1) 连接池:兑换持有一次慢速上游 HTTP 往返,若在事务内则整段期间独占一条池化连接,
+	//      高并发下同一批账号同时到期会耗尽连接池(账号转 API 号池饿死)。
+	//   2) 原子性:兑换成功后上游已作废 RT0、发放 RT1;若把兑换放进事务、待其后 commit/审计
+	//      瞬时失败,则轮换后的 RT1 丢失,重试会用作废的 RT0 盲打上游 → invalid_grant →
+	//      账号被 fail-closed 报废。此处先在不持池连接的前提下完成兑换,再用一个只做本地
+	//      读写的短事务把结果原子持久化,把"兑换成功却未落库"的时间窗压到最小。
+	ex := r.exchange(ctx, probe)
+
 	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
 		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
 			rec, err := txStore.LoadForRefresh(ctx, accountID)
@@ -248,23 +267,35 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 				return err
 			}
 			if rec.ID != probe.ID {
-				return credentialacq.WithRefreshLock(ctx, tx, rec.ID, func(db.DBTX) error {
-					lockedRec, err := txStore.LoadForRefresh(ctx, accountID)
-					if err != nil {
-						return err
-					}
-					return r.refreshLockedRecord(ctx, txStore, accountID, lockedRec)
-				})
+				// 凭据行在探测与加锁之间被轮换:phase-1 的兑换结果基于陈旧行,不能落库。
+				// 保守跳过本次,交由下一轮调度按新行重新刷新(fail-safe,绝不损号)。
+				return nil
 			}
-			return r.refreshLockedRecord(ctx, txStore, accountID, rec)
+			return r.persistRefreshOutcome(ctx, txStore, accountID, rec, ex)
 		})
 	})
 }
 
-func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, txStore accountCredentialRefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) error {
-	defer privacy.Zeroize(rec.PlaintextPayload)
+// exchange 在任何 DB 事务/连接之外执行出站兑换。registry 查找失败不进行任何 HTTP,
+// 只标记 adapterOK=false 交由持久化阶段落 adapter_missing 失败态。
+func (r *AccountCredentialRefresher) exchange(ctx context.Context, rec credentialstore.CredentialRecord) refreshExchange {
 	adapter, ok := r.registry.Lookup(rec.Vendor, rec.AuthMode)
 	if !ok {
+		return refreshExchange{adapterOK: false}
+	}
+	result, err := adapter.RefreshCredential(ctx, ModeRefreshInput{
+		CredentialID: rec.ID, TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID,
+		Vendor: rec.Vendor, AuthMode: rec.AuthMode, Payload: rec.PlaintextPayload, Now: r.now().UTC(),
+	})
+	return refreshExchange{adapterOK: true, result: result, err: err}
+}
+
+// persistRefreshOutcome 只做本地 DB 读写,在 advisory-lock 短事务内把 phase-1 的兑换
+// 结果原子落库。语义与原实现逐条对齐(adapter_missing / ErrNoRefreshRequired throttle /
+// 失败分类 / 成功保存),差别仅在于兑换本身已在事务之外完成。
+func (r *AccountCredentialRefresher) persistRefreshOutcome(ctx context.Context, txStore accountCredentialRefreshTxStore, accountID int64, rec credentialstore.CredentialRecord, ex refreshExchange) error {
+	defer privacy.Zeroize(rec.PlaintextPayload)
+	if !ex.adapterOK {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrProviderAdapterMissing, rec.Vendor, rec.AuthMode, accountID)
 		// 不得吞掉失败状态持久化错误。若 SaveRefreshFailure 写失败,凭据的 refresh-failure 状态
 		// (冷却/重试计数/失败原因)未落库,调度器会按陈旧状态反复重试或漏报;用 errors.Join 同时上抛
@@ -274,11 +305,7 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 		}
 		return err
 	}
-	result, err := adapter.RefreshCredential(ctx, ModeRefreshInput{
-		CredentialID: rec.ID, TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID,
-		Vendor: rec.Vendor, AuthMode: rec.AuthMode, Payload: rec.PlaintextPayload, Now: r.now().UTC(),
-	})
-	if err != nil {
+	if err := ex.err; err != nil {
 		if errors.Is(err, ErrNoRefreshRequired) {
 			// 不需要刷新,但我们仍然限流下一次尝试,以避免紧密的重试循环。
 			// 我们只设置 next_attempt_at,不改动 state、failure_class 或 failure_count。
@@ -294,12 +321,12 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 		}
 		return err
 	}
-	outcome := result.Outcome
+	outcome := ex.result.Outcome
 	if outcome == "" {
 		outcome = "refresh_succeeded"
 	}
-	emitGeminiFallbackAuditFromPayload(ctx, txStore, rec, result.Payload, true)
-	return txStore.SaveRefreshSuccess(ctx, rec, result.Payload, result.AccessExpiresAt, outcome)
+	emitGeminiFallbackAuditFromPayload(ctx, txStore, rec, ex.result.Payload, true)
+	return txStore.SaveRefreshSuccess(ctx, rec, ex.result.Payload, ex.result.AccessExpiresAt, outcome)
 }
 
 type accountCredentialRefreshTxStore interface {

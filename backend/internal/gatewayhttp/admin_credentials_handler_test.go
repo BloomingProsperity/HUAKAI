@@ -500,6 +500,29 @@ func adminCredentialRenewRow(id, tenantID int64, tenantName string, accountID in
 	}
 }
 
+// TestCreateAccountCredentialGuardUsesRealTenant 咬住 tenant_id=0 丢租户导致守卫哑火的漏洞
+// (S3, account→api)。newCreateAccountCredentialHandler 里协议兼容性守卫必须用请求携带的真实
+// tenant_id 去查账号/协议;若传 0,真实 DB 查询(GetAdminProviderAccount WHERE tenant_id=0)
+// 查不到行 → 守卫 fail-open → 跨厂错配凭据能挂到 live 账号。
+// 断言:守卫查询账号时用的 tenant_id 必须等于请求体里的真实 tenant(7),而非 0。
+// 当前有缺陷代码传 0 → getArg.TenantID==0 → 本测试 RED。修复(传 req.TenantID)→ 7 → GREEN。
+func TestCreateAccountCredentialGuardUsesRealTenant(t *testing.T) {
+	acctRow := &admindb.AdminProviderAccountRow{ID: 77, TenantID: 7, ProviderID: 8, AccountType: "api_key"}
+	store := &adminCredentialStoreStub{}
+	audit := &adminPoolStoreStub{get: acctRow, providerFamilies: map[int64]string{8: "anthropic_messages"}}
+	rec := invokeAdminCredentials(t, AdminCredentialDeps{
+		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
+		`{"tenant_id":7,"vendor":"anthropic","auth_mode":"api_key","credentials":{"api_key":"sk-ant"}}`)
+	assertStatus(t, rec, http.StatusCreated)
+	if audit.getArg == nil {
+		t.Fatal("守卫应查询 provider account 以做兼容性校验")
+	}
+	if audit.getArg.TenantID != 7 {
+		t.Fatalf("守卫必须用真实 tenant_id=7 查询账号,实得 tenant_id=%d(=0 时真实 DB 查询哑火 → 守卫失效)", audit.getArg.TenantID)
+	}
+}
+
 // TestCreateAccountCredentialProtocolGuard 咬住 credential-create 守卫(收敛 G1 account-first
 // + R1A):给一个 anthropic_messages family 的账号加 openai/api_key 凭据(跨厂错配)必须被拒;
 // 正配(anthropic/api_key)放行。变异:去掉 handler 里 ValidateProtocolCompatibility 调用 →

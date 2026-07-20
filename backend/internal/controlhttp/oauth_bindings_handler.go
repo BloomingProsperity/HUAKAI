@@ -43,8 +43,23 @@ type OAuthBindingsDeps struct {
 	// 后台设置(settings-first,空回退 env),与登录端点同源。
 	TelegramBotToken         string
 	TelegramBotTokenResolver func(context.Context) string
-	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期;<=0 时由 verifier 取默认 24h。
+	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期;<=0 时 handler 施加安全默认 24h
+	// (见 telegramWidgetMaxAge),绝不把 0 直传 verifier —— 否则年龄门 `if maxAge>0` 永不触发,
+	// 已签名载荷可无限期重放。
 	TelegramWidgetMaxAge time.Duration
+}
+
+// defaultTelegramWidgetMaxAge 是 widget auth_date 的兜底有效期:装配方未显式配置(<=0)时启用,
+// 与登录端点(gatewayhttp.telegramWidgetMaxAge)同值,防止已签名 widget 无限重放。
+const defaultTelegramWidgetMaxAge = 24 * time.Hour
+
+// telegramWidgetMaxAge 返回实际生效的 widget 时效:显式正值优先,否则回退安全默认。
+// 由此保证即便装配处漏配 TelegramWidgetMaxAge,verifier 也会收到 >0 的门限并拒绝过期载荷。
+func (d OAuthBindingsDeps) telegramWidgetMaxAge() time.Duration {
+	if d.TelegramWidgetMaxAge > 0 {
+		return d.TelegramWidgetMaxAge
+	}
+	return defaultTelegramWidgetMaxAge
 }
 
 // resolveTelegramBotToken 请求期解析 bot token:优先 resolver(后台设置),否则静态字段。
@@ -98,7 +113,7 @@ func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
 			return
 		}
 		// 服务端用 bot token HMAC 校验 widget 数据;客户端传来的任何字段都不被信任(信任靠签名)。
-		identity, err := telegramauth.VerifyWidget(req.Params, botToken, time.Now(), d.TelegramWidgetMaxAge)
+		identity, err := telegramauth.VerifyWidget(req.Params, botToken, time.Now(), d.telegramWidgetMaxAge())
 		if err != nil {
 			// 校验失败统一按 social_identity_verification_failed(401)处理,不回显细节。
 			writeAuthSocialLinkError(w, userauth.ErrSocialLoginRejected)
