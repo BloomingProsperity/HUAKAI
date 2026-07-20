@@ -40,7 +40,7 @@
 - 模型同步定时状态已接入部署管理员 `GET /admin/v1/model-sync` 运维入口；旧 placeholder 总开关已从生产代码移除。
 - Gemini `countTokens` 已补齐绑定 RPM/TPM、输入 token 估算、模型上下文窗口和绑定并发槽位；Default/PASR 两套选号器对无 claim 的受限辅助请求采用同一占槽与释放合同。
 - 分组路由策略库未注入或读取失败时已从 fail-open 收紧为终态 `503 group_policy_unavailable`；Default/PASR、canary dispatcher、chat 和共享协议失败分类均禁止换号、换池或绕到另一选号器，旧 fail-open 指标与误导测试已删除；成功读取到 `Configured=false` 才保留未配置租户兼容放行。
-- Copilot 正式获取入口已接到固定公开设备码流程；请求方不能替换客户端身份、端点或 scope。GitHub 长期授权材料单独存为 `github_access_token`，刷新器换得 Copilot `session_token` 与动态 endpoint 前运行时保持拒绝；仅有引导材料的凭据即使带未来到期时间也会立即进入刷新队列。孤立且无生产调用的旧 Copilot 引导实现已删除。
+- Copilot 固定公开设备码、长期授权材料隔离和运行令牌刷新能力继续保留并由底层单元测试覆盖，但按 Owner 最新顺序不作为本次上线能力。Copilot 与 Windsurf 的模式计划已明确标为“首次上线后封存”，默认账号目录不展示；标准流程、兼容 helper、批量导入预检、OAuth 回调、设备轮询和最终落库均由服务端发布闸拒绝，历史流程只允许查询与取消。每次拒绝记录操作者、租户、账号、模式、入口、结果、稳定失败原因和严重级别，不记录秘密，也不把封存拒绝伪造成上游失败。Cursor 未进入正式模式表，同样不能借历史回调绕过封存。
 - 套餐字典补齐 Claude Max 5x/20x、Gemini Plus、Grok Lite/Business/Enterprise、Copilot Free/Student/Pro/Pro+/Max/Business/Enterprise、Kimi 五档会员和 Windsurf Free/Pro/Max/Teams/Enterprise；个人与工作区作用域分开，未知值继续保留原文。旧 `huakai_codex_*` 测试库已在确认零连接后删除 22 个，只保留本目标的最新可用测试库，避免旧迁移制造假红。
 - Antigravity 导入、刷新和出站统一要求真实 project 身份；缺失或冲突时明确拒绝，403 project 拒绝只允许一次同步刷新并重试。Google 429 的结构化退避信息已进入统一错误分类，避免无节制重打。
 - 账号额度采集启动即运行，并以 PostgreSQL 会话租约保证多副本只有一个采集者；列表、单账号健康和诊断入口复用同一 5h/7d 投影，过期、未知和失败快照不伪造成满额。
@@ -64,10 +64,11 @@
 - Codex、Grok、OpenAI 图片三条合成凭据判别测试及通用账号正式导入测试均在 `-race` 下通过；ChatGPT session 使用本地假上游完成“正式导入 → 选号 → Rust sidecar → 出站 → 响应 → claim/用量/余额”全链闭环。测试库残留为 0，`usage_records`、`billing_events` 和订阅观测三类 append-only 触发器均为启用状态。
 - 提交前独立审查发现的运行时路径硬编码、`CARGO_TARGET_DIR` 不一致、身份断言过弱、冷构建占用业务超时和凭据日志脱敏不全均已修复；嵌套 camelCase、`setup_token`、通用 `token`、服务账号私钥与 AWS 密钥均有可判别泄漏断言，聚焦竞态测试通过。
 - 前端目录零改动；Copilot、Windsurf、Cursor 未被公共链改动解封。
+- 封存闸相关 `credentialacq`、账号导入、模式目录和 `gatewayhttp` 全包测试及竞态测试通过；最终全仓 `go test -race -count=1 -timeout 8m ./...` 与质量门通过。两轮独立只读审查首轮发现拒绝日志缺口并已修复，第二轮未发现明确缺陷。判别测试确认即使底层 exchanger/adapter 仍注册，也不能从生产入口新建或推进封存流程。
 
 ## 剩余顺序
 
-1. 提交前对抗审查的 S0/S1 已清零；提交中文 commit、更新唯一 PR #286 并等待 CI 全绿，不合并主线。
+1. 提交中文 commit，更新唯一 PR #286 并等待 CI 全绿，不合并主线。
 2. Owner 明确授权读取本机受保护的 Claude、Gemini、Antigravity、Codex 会话凭据，并提供 Kimi、Grok 安全加载方式后，从正式 API 鉴权入口补跑活体端到端验收；仅一个真实账号时，用可控账号替身验证多账号轮询、并发、故障切换与隔离，真实账号只承担单账号活体证明。
 3. Copilot、Windsurf、Cursor 保持封存。首次正式上线后另立目标并经 Owner 明确解封，届时分别闭环导入、运行凭据、协议适配、调度、出站、错误回流和恢复合同。
 

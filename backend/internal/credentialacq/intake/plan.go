@@ -251,6 +251,12 @@ func planCandidate(
 		item.Message = "未识别的 vendor/auth_mode"
 		return item
 	}
+	if candidate.AuthMode != credentialstore.AuthModeCodexAgent &&
+		!credentialacq.ModeAcquisitionReleased(candidate.Vendor, candidate.AuthMode) {
+		item.Code = "credential_mode_sealed"
+		item.Message = "该账号模式当前处于封存状态，不能新建或更新凭据"
+		return item
+	}
 	if err := handler.ValidatePayload(candidate.Payload); err != nil {
 		return item
 	}

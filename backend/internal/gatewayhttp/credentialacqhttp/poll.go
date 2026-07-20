@@ -28,6 +28,11 @@ func newCredentialAcqPollHandler(deps AdminCredentialAcquisitionDeps) http.Handl
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
 			return
 		}
+		if !credentialacq.ModeAcquisitionReleased(session.Vendor, session.AuthMode) {
+			writeCredentialAcqSealedAdminAudit(r, deps, ident.AuditActor(), ident.Role, session, "poll")
+			writeCredentialAcqError(w, credentialacq.ErrFeatureDisabled)
+			return
+		}
 		if session.Status == credentialacq.StatusFinalized && session.ResultAccountCredentialID > 0 {
 			writeAuditJSON(w, http.StatusOK, credentialacq.FinalizeResult{Session: session, Credential: credentialstore.CredentialMetadata{ID: session.ResultAccountCredentialID}, AlreadyFinalized: true})
 			return

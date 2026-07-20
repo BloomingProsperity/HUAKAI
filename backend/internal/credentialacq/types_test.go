@@ -243,3 +243,28 @@ func TestDefaultModePlansPreserveManualFirstContract(t *testing.T) {
 		}
 	}
 }
+
+func TestPostLaunchIDEAccountModesRemainSealed(t *testing.T) {
+	sealed := []struct {
+		vendor   string
+		authMode string
+	}{
+		{vendor: credentialstore.VendorCopilot, authMode: credentialstore.AuthModeCopilotOAuth},
+		{vendor: credentialstore.VendorWindsurf, authMode: credentialstore.AuthModeOAuth},
+	}
+	for _, mode := range sealed {
+		plan, ok := LookupModePlan(mode.vendor, mode.authMode)
+		if !ok {
+			t.Fatalf("缺少封存模式 %s/%s", mode.vendor, mode.authMode)
+		}
+		if plan.IsEnabled || !plan.IsExperimental || plan.FeatureFlag != "account_modes.post_launch_ide_sessions" {
+			t.Fatalf("%s/%s 未保持上线后封存：%+v", mode.vendor, mode.authMode, plan)
+		}
+		if ModeAcquisitionReleased(mode.vendor, mode.authMode) {
+			t.Fatalf("%s/%s 不得通过生产凭据获取发布闸", mode.vendor, mode.authMode)
+		}
+	}
+	if !ModeAcquisitionReleased(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth) {
+		t.Fatal("已发布的 openai/chatgpt_oauth 被封存闸误伤")
+	}
+}

@@ -222,6 +222,19 @@ func TestBuildCandidatesExposesSubscriptionLabelWithoutIdentityLeak(t *testing.T
 	}
 }
 
+func TestBuildCandidatesRejectsPostLaunchSealedModes(t *testing.T) {
+	for _, candidate := range []credentialacq.CredentialCandidate{
+		{Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, Payload: []byte(`{"access_token":"copilot-secret"}`)},
+		{Vendor: credentialstore.VendorWindsurf, AuthMode: credentialstore.AuthModeOAuth, Payload: []byte(`{"session_token":"windsurf-secret"}`)},
+	} {
+		plan := BuildCandidates(BuildInput{TenantID: 7, SourceKind: SourceJSON}, []credentialacq.CredentialCandidate{candidate}).Plan
+		item := requireSingleItem(t, plan)
+		if item.Action != ActionFail || item.Code != "credential_mode_sealed" {
+			t.Fatalf("%s/%s item=%+v，期望封存模式拒绝", candidate.Vendor, candidate.AuthMode, item)
+		}
+	}
+}
+
 func oauthCandidate(accountID, email, payload string) credentialacq.CredentialCandidate {
 	return credentialacq.CredentialCandidate{
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,

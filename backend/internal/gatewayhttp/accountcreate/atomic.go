@@ -35,7 +35,6 @@ type Result struct {
 	RiskReport mixedchannelrisk.Report
 }
 
-// ValidateProtocolCompatibility 只给 Claude session 族加硬约束，既有协议族保持原行为。
 // ValidateProtocolCompatibility 校验 account 的 vendor/auth_mode/runtime 与 provider
 // family 契约一致(G1):防特权误配把 A 厂 key 绑到 B 厂 family,导致错投密钥、错误
 // transport/health 标签、计价归因分裂。无契约的 family 保守跳过(不误拒 R0 未覆盖族)。
