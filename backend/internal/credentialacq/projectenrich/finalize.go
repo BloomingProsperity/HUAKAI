@@ -2,6 +2,7 @@ package projectenrich
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 
@@ -22,8 +23,9 @@ func Finalize(
 	requestID string,
 ) (credentialacq.FinalizeResult, error) {
 	vendor := firstNonEmpty(candidate.Vendor, session.Vendor)
-	if enricher != nil && credentialstore.Normalize(vendor) == credentialstore.VendorAntigravity {
-		enriched, err := enricher.Enrich(ctx, vendor, candidate.Payload)
+	authMode := firstNonEmpty(candidate.AuthMode, session.AuthMode)
+	if enricher != nil && IsAntigravityMode(vendor, authMode) {
+		enriched, err := enricher.Enrich(ctx, credentialstore.VendorAntigravity, candidate.Payload)
 		if len(enriched.Payload) > 0 {
 			candidate.Payload = enriched.Payload
 		}
@@ -51,6 +53,9 @@ func Finalize(
 			candidate.Subscription.Status = subscriptionprofile.StatusConflict
 			candidate.Subscription.ErrorClass = "subscription_metadata_conflict"
 		}
+		if err != nil && !errors.Is(err, ErrSubscriptionMetadataDeferred) {
+			return credentialacq.FinalizeResult{}, err
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "Antigravity 账号元数据补齐失败，凭据按待处理状态继续创建",
 				"tenant_id", session.TenantID,
@@ -64,6 +69,14 @@ func Finalize(
 
 	finalizer := credentialacq.NewFinalizer(sessions, credentialstore.DefaultHandlerRegistry(), credentials, audit)
 	return finalizer.Finalize(ctx, session.ID, candidate, actorID, requestID)
+}
+
+// IsAntigravityMode 统一原生与兼容存储形态，避免同一账号因导入入口不同而跳过元数据补齐。
+func IsAntigravityMode(vendor, authMode string) bool {
+	vendor = credentialstore.Normalize(vendor)
+	authMode = credentialstore.Normalize(authMode)
+	return (vendor == credentialstore.VendorAntigravity && authMode == credentialstore.AuthModeOAuth) ||
+		(vendor == credentialstore.VendorGemini && authMode == credentialstore.AuthModeAntigravity)
 }
 
 func firstNonEmpty(values ...string) string {

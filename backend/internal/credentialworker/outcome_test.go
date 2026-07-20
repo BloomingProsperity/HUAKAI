@@ -8,8 +8,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 )
+
+type RefreshOutcome = auth.RefreshOutcome
+
+const (
+	OutcomeSuccess         RefreshOutcome = auth.OutcomeSuccess
+	OutcomeAuthExpired     RefreshOutcome = auth.OutcomeAuthExpired
+	OutcomeRateLimit       RefreshOutcome = auth.OutcomeRateLimit
+	OutcomeRiskControl     RefreshOutcome = auth.OutcomeRiskControl
+	OutcomeAccountDisabled RefreshOutcome = auth.OutcomeAccountDisabled
+	OutcomeTransientError  RefreshOutcome = auth.OutcomeTransientError
+	OutcomeUnknown         RefreshOutcome = auth.OutcomeUnknown
+)
+
+func ClassifyRefreshError(err error, vendor string, statusCode int) RefreshOutcome {
+	return auth.ClassifyRefreshError(err, vendor, statusCode)
+}
 
 func TestClassifyRefreshErrorAnthropic401InvalidGrantAuthExpired(t *testing.T) {
 	err := errors.New(`anthropic refresh failed: {"error":"invalid_grant"}`)

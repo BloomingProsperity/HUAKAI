@@ -19,6 +19,7 @@ const (
 	RedactedKeySubscriptionLabel    = "subscription_label"
 	RedactedKeySubscriptionStatus   = "subscription_status"
 	RedactedKeySubscriptionSource   = "subscription_source"
+	RedactedKeyClientIdentitySource = "client_identity_source"
 )
 
 // AttachIdentity 把自动提取出的上游账户身份挂接到一个 credential candidate 上：
@@ -112,6 +113,21 @@ func candidateFromDeviceTokenPayload(session Session, raw []byte) CredentialCand
 	if json.Unmarshal(raw, &fields) != nil {
 		return candidate
 	}
+	attachClientIdentitySource(&candidate, fields, session.ClientIdentitySource)
+	if credentialstore.Normalize(candidate.Vendor) == credentialstore.VendorCopilot &&
+		credentialstore.Normalize(candidate.AuthMode) == credentialstore.AuthModeCopilotOAuth {
+		// 设备码端点签发的是 GitHub 授权材料，不是可直接调用 Copilot 的短期
+		// 会话令牌。换名后 RuntimeMaterial 会保持拒绝，凭据存储层会立即排入
+		// 刷新队列，由唯一刷新器换取 session_token 与动态 endpoint。
+		if stringField(fields, "github_access_token") == "" {
+			fields["github_access_token"] = stringField(fields, "access_token")
+		}
+		delete(fields, "access_token")
+		delete(fields, "session_token")
+		if normalized, err := json.Marshal(fields); err == nil {
+			candidate.Payload = normalized
+		}
+	}
 	if credentialstore.Normalize(candidate.Vendor) == credentialstore.VendorOpenAI {
 		identity := accountident.ExtractChatGPT(
 			stringField(fields, "id_token"),
@@ -125,6 +141,23 @@ func candidateFromDeviceTokenPayload(session Session, raw []byte) CredentialCand
 	}
 	attachOAuthResponseSubscription(&candidate, stringField(fields, "chatgpt_plan_type"))
 	return candidate
+}
+
+// attachClientIdentitySource 将授权时选定的客户端身份写入最终凭据材料，确保后续
+// 刷新继续使用同一套客户端合同；预览上下文只保存来源枚举，不保存客户端密钥。
+func attachClientIdentitySource(candidate *CredentialCandidate, fields map[string]any, source string) {
+	if candidate == nil || fields == nil {
+		return
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return
+	}
+	fields["client_id_source"] = source
+	if normalized, err := json.Marshal(fields); err == nil {
+		candidate.Payload = normalized
+	}
+	candidate.RedactedContext = setRedactedKey(candidate.RedactedContext, RedactedKeyClientIdentitySource, source)
 }
 
 func setRedactedKey(ctx map[string]any, key, value string) map[string]any {

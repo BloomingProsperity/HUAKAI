@@ -10,31 +10,6 @@ import (
 	"testing"
 )
 
-func TestPrometheusExporterEnabledBridgesGroupPolicyFailOpen(t *testing.T) {
-	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
-
-	mp, handler, shutdown, err := Setup(context.Background())
-	if err != nil {
-		t.Fatalf("Setup() error = %v", err)
-	}
-	defer func() {
-		if err := shutdown(context.Background()); err != nil {
-			t.Fatalf("shutdown() error = %v", err)
-		}
-	}()
-	if handler == nil {
-		t.Fatalf("Setup() with HUAKAI_METRICS_PROMETHEUS=true returned nil handler")
-	}
-	if err := RegisterBridge(context.Background(), mp); err != nil {
-		t.Fatalf("RegisterBridge() error = %v", err)
-	}
-
-	setExpvarInt(t, "group_policy_fail_open_total", 3)
-
-	body := scrapeMetrics(t, handler)
-	assertPromMetricValue(t, body, "huakai_group_policy_failopen_total", "3")
-}
-
 func TestPrometheusExporterEnabledBridgesGroupPolicyFailClosed(t *testing.T) {
 	t.Setenv("HUAKAI_METRICS_PROMETHEUS", "true")
 
@@ -139,7 +114,7 @@ func TestBillingMetricBridgeInOutput(t *testing.T) {
 func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	// 变异:用陈旧的硬编码 map 或错误的 key 名构造告警快照;规则永远看不到实时桥接的指标值。
 	setExpvarMapInt(t, "billing_settings", "resolver_db_read_fail_total", 11)
-	setExpvarInt(t, "group_policy_fail_open_total", 4)
+	setExpvarInt(t, "group_policy_fail_closed_total", 4)
 	setExpvarInt(t, "budget_fail_open_total", 6)
 	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_count", 3)
 	setExpvarMapInt(t, "dlq_depth", "delivered_unsettled_age_seconds", 901)
@@ -152,8 +127,8 @@ func TestExpvarMetricSourceSnapshotsBridgeMetrics(t *testing.T) {
 	if got := snapshot["huakai_billing_resolver_db_fail_total"]; got != 11 {
 		t.Fatalf("huakai_billing_resolver_db_fail_total=%v want 11", got)
 	}
-	if got := snapshot["huakai_group_policy_failopen_total"]; got != 4 {
-		t.Fatalf("huakai_group_policy_failopen_total=%v want 4", got)
+	if got := snapshot["huakai_group_policy_failclosed_total"]; got != 4 {
+		t.Fatalf("huakai_group_policy_failclosed_total=%v want 4", got)
 	}
 	// 告警路径:budget fail-open 计数器必须能到达规则求值快照。
 	// 变异:移除 budget 桥接条目 -> key 缺失 -> got==0 != 6 -> 变红。
@@ -202,7 +177,7 @@ func TestDeliveredUnsettledMetricsExportAsGauges(t *testing.T) {
 	assertPromMetricValue(t, second, "huakai_delivered_unsettled_age_seconds", "12")
 
 	// 控制组：其它既有 counter 不能被本轮误改成 gauge。
-	assertPromMetricType(t, second, "huakai_group_policy_failopen_total", "counter")
+	assertPromMetricType(t, second, "huakai_group_policy_failclosed_total", "counter")
 }
 
 // TestL2CacheMetricsBridgedToPrometheusAndAlertSnapshot 守护按 (vendor,model) 打标签的

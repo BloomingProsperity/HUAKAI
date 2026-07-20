@@ -67,7 +67,13 @@ func newAuthorizationCodeOAuthExchanger(vendor, authMode string, shape TokenShap
 }
 
 func (e authorizationCodeOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
-	cfg = mergeOAuthClientConfig(e.config, cfg)
+	if isAntigravityOAuthMode(e.vendor, e.authMode) {
+		// 公开客户端身份必须在授权和后续刷新期间保持一致。请求体不能改写端点、
+		// client、回调或 scope；测试可通过 exchanger.client 注入传输层。
+		cfg = cloneOAuthClientConfig(e.config)
+	} else {
+		cfg = mergeOAuthClientConfig(e.config, cfg)
+	}
 	if err := validateOperatorPKCEConfig(e.vendor, e.authMode, cfg); err != nil {
 		return OAuthStartResult{}, err
 	}
@@ -111,8 +117,7 @@ func mergeOAuthClientConfig(base, override OAuthClientConfig) OAuthClientConfig 
 }
 
 func (e authorizationCodeOAuthExchanger) ExchangeOAuthCode(_ context.Context, session Session, code string) (CredentialCandidate, error) {
-	// 单测和手工恢复仍允许 JSON token 直填；真实 callback 走带 store 的解密交换路径。
-	return NewPKCEFakeExchanger(e.shape).ExchangeOAuthCode(context.Background(), session, code)
+	return CredentialCandidate{}, fmt.Errorf("%w: %s/%s 需要持久化 PKCE 会话", ErrOAuthRequiresCallback, session.Vendor, session.AuthMode)
 }
 
 func (e authorizationCodeOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Context, store *PostgresSessionStore, session Session, _ string, code string) (CredentialCandidate, error) {
@@ -142,6 +147,7 @@ func (e authorizationCodeOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 	}
+	attachClientIdentitySource(&candidate, fields, session.ClientIdentitySource)
 	attachOAuthResponseSubscription(&candidate, token.ChatGPTPlanType)
 	return candidate, nil
 }
@@ -272,6 +278,9 @@ func decryptStoredPKCEPayload(ctx context.Context, store *PostgresSessionStore, 
 }
 
 func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) error {
+	if isAntigravityOAuthMode(vendor, authMode) {
+		return validateAntigravityPublicCLIConfig(cfg)
+	}
 	var missing []string
 	if strings.TrimSpace(cfg.Source) != ClientSourceOperatorConfig {
 		missing = append(missing, "source=operator_config")
@@ -308,6 +317,47 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 	if credentialstore.ModeKey(vendor, authMode) == credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth) {
 		if err := validateXAIOAuthConfig(cfg); err != nil {
 			return fmt.Errorf("%w: %s/%s xAI OAuth config 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, err)
+		}
+	}
+	return nil
+}
+
+func isAntigravityOAuthMode(vendor, authMode string) bool {
+	key := credentialstore.ModeKey(vendor, authMode)
+	return key == credentialstore.ModeKey(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth) ||
+		key == credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+}
+
+func validateAntigravityPublicCLIConfig(cfg OAuthClientConfig) error {
+	want := AntigravityPublicCLIConfig()
+	var mismatches []string
+	if strings.TrimSpace(cfg.Source) != ClientSourcePublicCLI {
+		mismatches = append(mismatches, "source")
+	}
+	if strings.TrimSpace(cfg.AuthURL) != want.AuthURL {
+		mismatches = append(mismatches, "auth_url")
+	}
+	if strings.TrimSpace(cfg.TokenURL) != want.TokenURL {
+		mismatches = append(mismatches, "token_url")
+	}
+	if strings.TrimSpace(cfg.ClientID) != want.ClientID {
+		mismatches = append(mismatches, "client_id")
+	}
+	if strings.TrimSpace(cfg.ClientSecret) != want.ClientSecret {
+		mismatches = append(mismatches, "client_secret")
+	}
+	if strings.TrimSpace(cfg.RedirectURI) != want.RedirectURI {
+		mismatches = append(mismatches, "redirect_uri")
+	}
+	if normalizedOAuthScope(cfg.Scopes) != AntigravityPublicCLIScope {
+		mismatches = append(mismatches, "scope")
+	}
+	if len(mismatches) > 0 {
+		return fmt.Errorf("%w: antigravity/oauth 公开客户端配置被改写: %s", ErrFeatureDisabled, strings.Join(mismatches, ","))
+	}
+	for _, raw := range []string{cfg.AuthURL, cfg.TokenURL} {
+		if err := validateOAuthEndpointURL(raw); err != nil {
+			return fmt.Errorf("%w: antigravity/oauth 端点无效: %v", ErrFeatureDisabled, err)
 		}
 	}
 	return nil

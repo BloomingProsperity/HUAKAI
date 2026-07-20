@@ -463,6 +463,46 @@ func TestCodexAgentInvalidTaskRecoversSameRequestOnceWithoutHealthPenalty(t *tes
 	}
 }
 
+func TestAntigravityProjectPermissionRecoversSameRequestOnceWithoutPermanentDisable(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 345)
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusForbidden, body: `{"error":{"message":"Permission denied on resource project","status":"PERMISSION_DENIED"}}`},
+		{successText: "recovered antigravity project"},
+	}}
+	refresher := newRecordingHotRefreshSpy()
+	health := &recordingChannelHealth{}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88345}, settler, dispatcher)
+	deps.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias: "gemini-pro", CanonicalModelID: "gemini/gemini-pro", ProviderModelID: "gemini-pro",
+		ProtocolFamily: "antigravity_session", PoolCandidates: []int64{42},
+	}}
+	deps.CredentialVault = antigravityProjectTestVault(t, 345)
+	deps.CredentialHotRefresher = refresher
+	deps.ChannelHealth = health
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s selector=%d dispatcher=%d refresh=%+v aborts=%+v", rec.Code, rec.Body.String(), selector.calls, dispatcher.calls, refresher.snapshot(), settler.aborts)
+	}
+	if dispatcher.calls != 2 || selector.calls != 2 || len(dispatcher.accounts) != 2 ||
+		dispatcher.accounts[0] != 345 || dispatcher.accounts[1] != 345 {
+		t.Fatalf("dispatcher=%d selector=%d accounts=%v，期望同账号请求内只恢复一次", dispatcher.calls, selector.calls, dispatcher.accounts)
+	}
+	if calls := refresher.snapshot(); len(calls) != 1 || calls[0].tenantID != 7 || calls[0].accountID != 345 || calls[0].vendor != credentialstore.VendorAntigravity {
+		t.Fatalf("project refresh calls=%+v", calls)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("项目恢复成功前不得误记永久或降级健康信号：%v", health.signals)
+		}
+	}
+	if len(settler.aborts) != 1 || len(settler.calls) != 1 {
+		t.Fatalf("aborts=%v settles=%v，期望首尝试释放、恢复尝试结算", settler.aborts, settler.calls)
+	}
+}
+
 func TestCodexAgentInvalidTaskDoesNotRecoverMoreThanOncePerRequest(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	selector := newPR5Selector(t, 351)
@@ -1980,6 +2020,21 @@ func codexAgentTestVault(t *testing.T, accountID int64) provider.CredentialVault
 		Type: provider.CredentialTypeUpstreamPassthrough, Value: "AgentAssertion test",
 	}, provider.AccountInfo{
 		AccountID: accountID, Platform: "openai", AccountType: credentialstore.AuthModeCodexAgent,
+		AccountCredentialID: 9000 + accountID, CredentialVersion: 1,
+	}); err != nil {
+		t.Fatalf("vault.Set(%d): %v", accountID, err)
+	}
+	return vault
+}
+
+func antigravityProjectTestVault(t *testing.T, accountID int64) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	if err := vault.Set(accountID, provider.Credential{
+		Type: provider.CredentialTypeSessionToken, Value: "antigravity-access",
+		Extra: map[string]string{"project_id": "stale-project"},
+	}, provider.AccountInfo{
+		AccountID: accountID, Platform: credentialstore.VendorAntigravity, AccountType: credentialstore.AuthModeOAuth,
 		AccountCredentialID: 9000 + accountID, CredentialVersion: 1,
 	}); err != nil {
 		t.Fatalf("vault.Set(%d): %v", accountID, err)

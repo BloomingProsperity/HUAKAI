@@ -281,7 +281,7 @@ func DefaultModePlans() []ModePlan {
 		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
 		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
 		oauthPlan(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
-		manualOAuthPlan(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
+		manualOAuthPlan(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
 		manualUpstreamTokenPlan(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, FlowKindTokenExchange, ClientSourceOperatorConfig, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, sessionTokenFields()),
 		oauthPlan(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorOpenRouter),

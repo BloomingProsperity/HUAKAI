@@ -41,7 +41,7 @@ func TestAudioBindingFallbackClass(t *testing.T) {
 		}
 		assertAudioFallbackMoney(t, env, 3, 2, 1)
 		target := env.selector.requests[2]
-		if target.PoolGroupID != 201 || target.BindingID != 4201 || target.MaxParallelRequests != 6 || target.SelectionMode != "priority_weighted" {
+		if target.PoolGroupID != 201 || target.BindingID != 4201 || target.BindingRPMLimit != 75 || target.BindingTPMLimit != 750 || target.MaxParallelRequests != 6 || target.SelectionMode != "priority_weighted" || target.EstimatedInputTokens <= 0 {
 			t.Fatalf("目标 request=%+v，未使用自身元数据", target)
 		}
 		for i, call := range env.dispatcher.calls {
@@ -122,6 +122,8 @@ type audioFallbackRegistry struct{}
 
 func (audioFallbackRegistry) ResolveModel(_ context.Context, model string, _ int64) (registry.Resolved, error) {
 	targetMax := int32(6)
+	targetRPM := int32(75)
+	targetTPM := int32(750)
 	normalModel := model
 	targetModel := model
 	if model == "tts-1" {
@@ -134,7 +136,7 @@ func (audioFallbackRegistry) ResolveModel(_ context.Context, model string, _ int
 		ProtocolFamily: "openai_chat", Capabilities: []string{"audio"}, PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 4101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", ProviderModelIDOverride: &normalModel, FallbackClass: string(bindingfallback.ClassNormal)},
-			{PoolGroupID: 201, BindingID: 4201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
+			{PoolGroupID: 201, BindingID: 4201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
 		},
 		SnapshotVersion: "registry:7:1",
 	}, nil

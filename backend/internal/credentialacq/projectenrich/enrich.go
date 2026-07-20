@@ -17,6 +17,12 @@ const (
 	StatusConflict          = "conflict"
 )
 
+var (
+	ErrProjectMetadataConflict      = errors.New("projectenrich: project 元数据冲突")
+	ErrProjectMetadataUnavailable   = errors.New("projectenrich: project 元数据不可用")
+	ErrSubscriptionMetadataDeferred = errors.New("projectenrich: 套餐元数据暂时不可用")
+)
+
 type Resolver interface {
 	ResolveProjectID(context.Context, string) (string, error)
 }
@@ -67,9 +73,9 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 	result.SubscriptionTierRaw = existingTier
 	if s == nil || s.resolver == nil {
 		if existingProjectRef != "" {
-			return markSubscriptionAttention(fields, result, errors.New("projectenrich: resolver 未配置"))
+			return markSubscriptionAttention(fields, result, fmt.Errorf("%w: resolver 未配置", ErrSubscriptionMetadataDeferred))
 		}
-		return markAttention(fields, result, errors.New("projectenrich: resolver 未配置"))
+		return markAttention(fields, result, fmt.Errorf("%w: resolver 未配置", ErrProjectMetadataUnavailable))
 	}
 	_, hasMetadataResolver := s.resolver.(MetadataResolver)
 	if existingProjectRef != "" && (existingTier != "" || !hasMetadataResolver) {
@@ -80,9 +86,9 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 	accessToken := stringField(fields, "access_token")
 	if accessToken == "" {
 		if existingProjectRef != "" {
-			return markSubscriptionAttention(fields, result, errors.New("projectenrich: access_token 缺失"))
+			return markSubscriptionAttention(fields, result, fmt.Errorf("%w: access_token 缺失", ErrSubscriptionMetadataDeferred))
 		}
-		return markAttention(fields, result, errors.New("projectenrich: access_token 缺失"))
+		return markAttention(fields, result, fmt.Errorf("%w: access_token 缺失", ErrProjectMetadataUnavailable))
 	}
 
 	limit := s.timeout
@@ -96,22 +102,22 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 	tier = strings.TrimSpace(tier)
 	if err != nil {
 		if existingProjectRef != "" {
-			return markSubscriptionAttention(fields, result, fmt.Errorf("projectenrich: 解析套餐层级失败: %w", err))
+			return markSubscriptionAttention(fields, result, errors.Join(ErrSubscriptionMetadataDeferred, fmt.Errorf("projectenrich: 解析套餐层级失败: %w", err)))
 		}
-		return markAttention(fields, result, fmt.Errorf("projectenrich: 解析 project 标识失败: %w", err))
+		return markAttention(fields, result, errors.Join(ErrProjectMetadataUnavailable, fmt.Errorf("projectenrich: 解析 project 标识失败: %w", err)))
 	}
 	if projectRef == "" {
 		projectRef = existingProjectRef
 	}
 	if projectRef == "" {
-		return markAttention(fields, result, errors.New("projectenrich: resolver 返回空 project 标识"))
+		return markAttention(fields, result, fmt.Errorf("%w: resolver 返回空 project 标识", ErrProjectMetadataUnavailable))
 	}
 	if existingProjectRef != "" && projectRef != existingProjectRef {
 		fields["project_metadata_status"] = mustJSON(StatusConflict)
 		fields["subscription_metadata_status"] = mustJSON(StatusConflict)
 		fields["observed_project_id"] = mustJSON(projectRef)
 		payload, marshalErr := json.Marshal(fields)
-		cause := fmt.Errorf("projectenrich: 已有 project 标识 %q 与上游识别结果 %q 冲突", existingProjectRef, projectRef)
+		cause := fmt.Errorf("%w: 已有项目身份与上游识别结果不一致", ErrProjectMetadataConflict)
 		if marshalErr != nil {
 			return Result{}, errors.Join(cause, fmt.Errorf("projectenrich: 编码冲突状态失败: %w", marshalErr))
 		}

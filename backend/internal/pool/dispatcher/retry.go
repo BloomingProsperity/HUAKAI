@@ -13,7 +13,9 @@ func canFallbackAfterPASRError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return !errors.Is(err, ErrPASRPostMutationFail) && !errors.Is(err, ErrBindingConcurrencyLimited)
+	return !errors.Is(err, ErrPASRPostMutationFail) &&
+		!errors.Is(err, ErrBindingConcurrencyLimited) &&
+		!errors.Is(err, ErrGroupPolicyUnavailable)
 }
 
 func retrySerializableSlotAcquire(ctx context.Context, fn func(context.Context) (*AcquireResult, error)) (*AcquireResult, error) {

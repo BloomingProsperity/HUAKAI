@@ -175,6 +175,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	failedAccounts := make(map[int64]struct{})
 	authFailoverUsed := false
 	agentTaskRecoveryUsed := false
+	projectContextRecoveryUsed := false
 	budget := effectiveAttemptBudget(ex.plan)
 	maxAttempts := len(ex.plan.Attempts)
 	// auth-failover 落在普通预算最后一格时，可获得至多一个额外同类 attempt。
@@ -200,6 +201,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 			return result
 		}
 		outcome = ex.retryAfterAgentTaskRecovery(w, outcome, attempt, &agentTaskRecoveryUsed, &attemptsRun)
+		outcome = ex.retryAfterProjectContextRecovery(w, outcome, attempt, &projectContextRecoveryUsed, &attemptsRun)
 		if result, done := completedAttemptResult(outcome); done {
 			return result
 		}
@@ -274,6 +276,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		return result
 	}
 	outcome = ex.retryAfterAgentTaskRecovery(w, outcome, targetAttempt, &agentTaskRecoveryUsed, &attemptsRun)
+	outcome = ex.retryAfterProjectContextRecovery(w, outcome, targetAttempt, &projectContextRecoveryUsed, &attemptsRun)
 	if result, done := completedAttemptResult(outcome); done {
 		return result
 	}
@@ -311,6 +314,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 				return result
 			}
 			outcome = ex.retryAfterAgentTaskRecovery(w, outcome, authAttempt, &agentTaskRecoveryUsed, &attemptsRun)
+			outcome = ex.retryAfterProjectContextRecovery(w, outcome, authAttempt, &projectContextRecoveryUsed, &attemptsRun)
 			if result, done := completedAttemptResult(outcome); done {
 				return result
 			}

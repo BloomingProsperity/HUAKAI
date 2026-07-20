@@ -18,6 +18,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
+const placeholderSessionAdaptersEnv = "HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS"
+
 func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	clearPlaceholderSessionAdapterEnvs(t)

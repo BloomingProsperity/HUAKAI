@@ -13,6 +13,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 func TestWorkerMockUpstreamUpdatesBothWindows(t *testing.T) {
@@ -196,6 +197,33 @@ func TestWorkerVendorProbeDoesNotRequireClaudeDependencies(t *testing.T) {
 	}
 }
 
+func TestWorkerCanonicalizesLegacyAntigravityQuotaVendor(t *testing.T) {
+	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	vault := provider.NewStaticVault()
+	if err := vault.Set(206,
+		provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "token"},
+		provider.AccountInfo{AccountID: 206, TenantID: 7, Platform: "gemini", AccountType: "antigravity"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	facts := &factStoreStub{}
+	worker := NewWorker(WorkerConfig{
+		Accounts: &accountListerStub{accounts: []Account{{TenantID: 7, ProviderAccountID: 206}}},
+		Vault:    vault, FactStore: facts,
+		Adapters: []VendorAdapter{vendorAdapterStub{platform: "gemini", result: VendorResult{
+			Source: accountquota.SourceUpstreamModelCatalog, Complete: true,
+			Facts: []accountquota.Fact{{MetricKey: "model_quota", ModelKey: "model-a", State: accountquota.StateAvailable}},
+		}}},
+		Settings: settingsStub{enabled: "true", interval: "30"}, Now: func() time.Time { return now },
+		Jitter: func(Account, time.Time) time.Duration { return 0 },
+	})
+
+	worker.RunOnce(context.Background())
+	if facts.replaceCalls != 1 || facts.snapshot.Vendor != "antigravity" {
+		t.Fatalf("兼容形态没有归一到 Antigravity 额度事实：%+v", facts.snapshot)
+	}
+}
+
 func TestWorkerPartialVendorResultMergesAndMarksFailure(t *testing.T) {
 	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
 	vault := provider.NewStaticVault()
@@ -216,6 +244,81 @@ func TestWorkerPartialVendorResultMergesAndMarksFailure(t *testing.T) {
 	worker.RunOnce(context.Background())
 	if facts.replaceCalls != 1 || facts.snapshot.Complete || facts.failureCalls != 1 || facts.errorClass != ErrorClassUpstreamPartialResponse {
 		t.Fatalf("部分结果未按合并并留错处理：%+v", facts)
+	}
+}
+
+func TestWorkerBindsVendorSubscriptionToResolvedCredentialVersion(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	vault := provider.NewStaticVault()
+	if err := vault.Set(204,
+		provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token"},
+		provider.AccountInfo{
+			AccountID: 204, TenantID: 7, Platform: "partial", AccountType: "oauth",
+			AccountCredentialID: 901, CredentialVersion: 4,
+		},
+	); err != nil {
+		t.Fatalf("准备凭据: %v", err)
+	}
+	facts := &factStoreStub{}
+	subscriptions := &subscriptionRecorderStub{}
+	worker := NewWorker(WorkerConfig{
+		Accounts: &accountListerStub{accounts: []Account{{TenantID: 7, ProviderAccountID: 204}}},
+		Vault:    vault, FactStore: facts, Subscriptions: subscriptions,
+		Adapters: []VendorAdapter{vendorAdapterStub{result: VendorResult{
+			Source: accountquota.SourceUpstreamBilling, Complete: true,
+			Facts: []accountquota.Fact{{MetricKey: "monthly_spend", State: accountquota.StateAvailable}},
+			Subscription: subscriptionprofile.FromRaw(
+				subscriptionprofile.VendorGrok, "SuperGrok",
+				subscriptionprofile.SourceProviderAPI, subscriptionprofile.TrustVerifiedAPI,
+				subscriptionprofile.VerificationVerified, "", "",
+			),
+		}}},
+		Settings: settingsStub{enabled: "true", interval: "30"}, Now: func() time.Time { return now },
+		Jitter: func(Account, time.Time) time.Duration { return 0 },
+	})
+
+	worker.RunOnce(context.Background())
+	if facts.replaceCalls != 1 || subscriptions.calls != 1 || subscriptions.tenantID != 7 ||
+		subscriptions.accountID != 204 || subscriptions.credentialID != 901 || subscriptions.version != 4 ||
+		subscriptions.observation.Label() != "grok:supergrok" {
+		t.Fatalf("套餐没有绑定到实际探测凭据：facts=%+v subscription=%+v", facts, subscriptions)
+	}
+}
+
+func TestWorkerVendorSessionProjectionUpdatesOperationalWindows(t *testing.T) {
+	now := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	reset5h := now.Add(3 * time.Hour)
+	reset7d := now.Add(5 * 24 * time.Hour)
+	used5h, used7d := 35.0, 68.0
+	vault := provider.NewStaticVault()
+	if err := vault.Set(205,
+		provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "token"},
+		provider.AccountInfo{AccountID: 205, TenantID: 7, Platform: "partial", AccountCredentialID: 902, CredentialVersion: 2},
+	); err != nil {
+		t.Fatal(err)
+	}
+	facts := &factStoreStub{}
+	windows := &windowStoreStub{}
+	worker := NewWorker(WorkerConfig{
+		Accounts: &accountListerStub{accounts: []Account{{TenantID: 7, ProviderAccountID: 205}}},
+		Vault:    vault, FactStore: facts, Store: windows,
+		Adapters: []VendorAdapter{vendorAdapterStub{result: VendorResult{
+			Source: accountquota.SourceUpstreamUsage, Complete: true,
+			Facts: []accountquota.Fact{{MetricKey: "five_hour", State: accountquota.StateAvailable}},
+			Session: &UsageSnapshot{
+				FiveHour: UsageWindow{Utilization: &used5h, ResetsAt: &reset5h},
+				SevenDay: UsageWindow{Utilization: &used7d, ResetsAt: &reset7d},
+			},
+		}}},
+		Settings: settingsStub{enabled: "true", interval: "30"}, Now: func() time.Time { return now },
+		Jitter: func(Account, time.Time) time.Duration { return 0 },
+	})
+
+	worker.RunOnce(context.Background())
+	if facts.replaceCalls != 1 || windows.calls != 1 || windows.update.Window5hUtilization == nil ||
+		*windows.update.Window5hUtilization != 35 || windows.update.Window7dUtilization == nil ||
+		*windows.update.Window7dUtilization != 68 || windows.update.ObservationOutcome != rate.QuotaSnapshotOutcomeSuccess {
+		t.Fatalf("厂商额度没有同步到运维窗口：facts=%+v windows=%+v", facts, windows)
 	}
 }
 
@@ -411,6 +514,30 @@ type factStoreStub struct {
 	errorClass   string
 }
 
+type subscriptionRecorderStub struct {
+	calls        int
+	tenantID     int64
+	accountID    int64
+	credentialID int64
+	version      int32
+	observation  subscriptionprofile.Observation
+}
+
+func (s *subscriptionRecorderStub) RecordSubscriptionObservation(
+	_ context.Context,
+	tenantID, accountID, credentialID int64,
+	version int32,
+	observation subscriptionprofile.Observation,
+) (subscriptionprofile.Observation, error) {
+	s.calls++
+	s.tenantID = tenantID
+	s.accountID = accountID
+	s.credentialID = credentialID
+	s.version = version
+	s.observation = observation
+	return observation, nil
+}
+
 func (s *factStoreStub) ReplaceSnapshot(_ context.Context, snapshot accountquota.Snapshot) error {
 	s.replaceCalls++
 	s.snapshot = snapshot
@@ -425,12 +552,17 @@ func (s *factStoreStub) RecordFailure(_ context.Context, snapshot accountquota.S
 }
 
 type vendorAdapterStub struct {
-	result VendorResult
-	err    error
+	platform string
+	result   VendorResult
+	err      error
 }
 
 func (s vendorAdapterStub) Supports(_ provider.Credential, info provider.AccountInfo) bool {
-	return info.Platform == "partial"
+	platform := s.platform
+	if platform == "" {
+		platform = "partial"
+	}
+	return info.Platform == platform
 }
 
 func (s vendorAdapterStub) Source() accountquota.Source { return accountquota.SourceUpstreamBilling }

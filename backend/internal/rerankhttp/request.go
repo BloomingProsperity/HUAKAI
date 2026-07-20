@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
 
 type rerankRequest struct {
@@ -50,6 +53,18 @@ func searchUnitsForDocuments(n int) int {
 		return 0
 	}
 	return (n + 99) / 100
+}
+
+func estimateRerankInputTokens(req rerankRequest) int {
+	blocks := make([]proto.CanonicalContentBlock, 0, len(req.Documents)+1)
+	blocks = append(blocks, proto.CanonicalContentBlock{Type: "text", Text: req.Query})
+	for _, document := range req.Documents {
+		blocks = append(blocks, proto.CanonicalContentBlock{Type: "text", Text: string(document)})
+	}
+	if n := (tokencheck.HeuristicEstimator{}).Estimate(blocks); n > 0 {
+		return n
+	}
+	return 1
 }
 
 func readUpstreamBody(r io.Reader) ([]byte, error) {

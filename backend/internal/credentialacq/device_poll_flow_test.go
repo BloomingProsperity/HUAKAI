@@ -76,13 +76,14 @@ func TestPollDeviceCodeFlowPendingReleasesLeaseAndKeepsEncryptedPayload(t *testi
 func TestPollDeviceCodeFlowSuccessStagesCandidateAndRecoversWithoutRepoll(t *testing.T) {
 	now := time.Date(2026, 7, 19, 8, 10, 0, 0, time.UTC)
 	store, database, session := seedDevicePollFlow(t, func() time.Time { return now }, "flow-poll-success")
-	wantPayload := []byte(`{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600}`)
+	pollPayload := []byte(`{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600}`)
+	wantPayload := []byte(`{"access_token":"access-secret","refresh_token":"refresh-secret","expires_in":3600,"client_id_source":"operator_config"}`)
 	var calls atomic.Int32
 
 	candidate, validated, err := PollDeviceCodeFlow(context.Background(), store, session,
 		func(_ context.Context, current Session) (CredentialCandidate, error) {
 			calls.Add(1)
-			return CredentialCandidate{TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, Vendor: current.Vendor, AuthMode: current.AuthMode, Payload: wantPayload}, nil
+			return CredentialCandidate{TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, Vendor: current.Vendor, AuthMode: current.AuthMode, Payload: pollPayload}, nil
 		}, nil, "admin-7", "req-success")
 	if err != nil {
 		t.Fatalf("首次轮询: %v", err)

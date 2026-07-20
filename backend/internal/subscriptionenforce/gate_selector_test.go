@@ -74,3 +74,27 @@ func TestGroupPolicyGate_RestrictsTierThroughDefaultSelector(t *testing.T) {
 		t.Fatalf("default into premium pool: err=%v, want ErrNoEligibleAccount (gate must deny)", err)
 	}
 }
+
+func TestGroupPolicyGate_RepoErrorPropagatesThroughPASRSelector(t *testing.T) {
+	chain := poolrouter.DefaultGateChain()
+	chain.GroupPolicy = NewGroupPolicyGate(&fakeRoutesRepo{err: errors.New("routes read failed")})
+	ring := poolrouter.NewAccountRing([]int64{1}, 17)
+	sel, err := poolrouter.NewPASRSelector(poolrouter.PASRSelectorConfig{
+		Accounts: oneAccountSource{},
+		Gates:    chain,
+		Segments: poolrouter.NewSegmentTable(poolrouter.SegmentTableConfig{}),
+		RingProvider: func() *poolrouter.AccountRing {
+			return ring
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewPASRSelector: %v", err)
+	}
+
+	res, err := sel.Select(context.Background(), poolrouter.SelectionRequest{
+		TenantID: 1, UserGroup: "premium", RequestedModel: "claude-3-5-sonnet", PoolGroupID: 5,
+	})
+	if res != nil || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("PASR result=%+v err=%v want nil+ErrGroupPolicyUnavailable", res, err)
+	}
+}

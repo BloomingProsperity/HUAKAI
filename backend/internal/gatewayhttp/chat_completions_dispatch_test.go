@@ -1843,6 +1843,32 @@ func TestClassifyPoolSelectFailureBindingConcurrencyUsesDedicated429AndAbortReas
 	}
 }
 
+func TestClassifyPoolSelectFailureGroupPolicyUnavailableIsTerminal503(t *testing.T) {
+	settler := &recordingSettler{}
+	ex := &chatExecution{
+		ctx:        context.Background(),
+		ident:      auth.Identity{TenantID: 7},
+		d:          ChatHandlerDeps{Settler: settler},
+		requestID:  "group-policy-unavailable",
+		reserveRes: &billing.ReserveResult{ClaimID: 92},
+	}
+	failure := ex.classifyPoolSelectFailure(
+		httptest.NewRecorder(),
+		fmt.Errorf("wrapped: %w", pool.ErrGroupPolicyUnavailable),
+	)
+	if failure == nil || failure.ClientStatus != http.StatusServiceUnavailable ||
+		failure.ClientCode != clienterr.CodeGroupPolicyUnavailable ||
+		failure.AbortReason != "group_policy_unavailable" {
+		t.Fatalf("failure=%+v want dedicated terminal 503", failure)
+	}
+	if failure.Decision.RetryableBeforeDelivery || failure.Decision.SwitchAccount || failure.Decision.SwitchPool {
+		t.Fatalf("策略真相未知不得切换账号或池: %+v", failure.Decision)
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "group_policy_unavailable" {
+		t.Fatalf("aborts=%+v want one group_policy_unavailable abort", settler.aborts)
+	}
+}
+
 func TestBuildPoolSelectionRequestKeepsBindingConcurrencyPairFromAttempt(t *testing.T) {
 	ex := &chatExecution{
 		ctx:        context.Background(),

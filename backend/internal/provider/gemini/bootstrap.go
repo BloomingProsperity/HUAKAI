@@ -89,19 +89,6 @@ func BuildOAuthAuthorizeURL(cfg credentialacq.OAuthClientConfig, state, codeChal
 	return raw, nil
 }
 
-func RefreshAdapterFromOAuthConfig(cfg credentialacq.OAuthClientConfig) (RefreshAdapter, error) {
-	if err := ValidateOAuthConfig(cfg); err != nil {
-		return RefreshAdapter{}, err
-	}
-	return RefreshAdapter{
-		TokenURL:     strings.TrimSpace(cfg.TokenURL),
-		ClientID:     strings.TrimSpace(cfg.ClientID),
-		ClientSecret: strings.TrimSpace(cfg.ClientSecret),
-		Scope:        scopeString(cfg),
-		HTTPClient:   cfg.HTTPClient,
-	}, nil
-}
-
 func scopeString(cfg credentialacq.OAuthClientConfig) string {
 	scopes := make([]string, 0, len(cfg.Scopes))
 	for _, scope := range cfg.Scopes {

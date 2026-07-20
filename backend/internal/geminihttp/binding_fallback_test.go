@@ -53,8 +53,11 @@ func TestGeminiCountTokensBindingFallbackClass(t *testing.T) {
 			t.Fatalf("selector/dispatch/release=%d/%d/%d，期望 3/3/3", len(env.selector.requests), len(env.transport.keys), env.selector.releases)
 		}
 		target := env.selector.requests[2]
-		if target.PoolGroupID != 201 || target.BindingID != 6201 || target.MaxParallelRequests != 4 || target.SelectionMode != "priority_weighted" {
+		if target.PoolGroupID != 201 || target.BindingID != 6201 || target.BindingRPMLimit != 72 || target.BindingTPMLimit != 720 || target.MaxParallelRequests != 4 || target.SelectionMode != "priority_weighted" {
 			t.Fatalf("目标 request=%+v，未使用自身元数据", target)
+		}
+		if target.EstimatedInputTokens <= 0 || target.ModelContextWindow != 1_048_576 {
+			t.Fatalf("目标请求未携带输入估算或模型窗口: %+v", target)
 		}
 		if env.transport.keys[2] != "key-201" {
 			t.Fatalf("目标凭据=%q，期望 key-201", env.transport.keys[2])
@@ -189,15 +192,17 @@ type geminiFallbackRegistry struct{}
 
 func (geminiFallbackRegistry) ResolveModel(context.Context, string, int64) (registry.Resolved, error) {
 	targetMax := int32(4)
+	targetRPM := int32(72)
+	targetTPM := int32(720)
 	normalModel := "gemini-normal-a"
 	targetModel := "gemini-manual"
 	return registry.Resolved{
 		PublicAlias: "gemini-pro", CanonicalModelID: "gemini/canonical",
 		DefaultProviderModelID: "gemini-normal-a", ProviderModelID: "gemini-normal-a",
-		ProtocolFamily: "gemini_messages", PoolCandidates: []int64{101, 201},
+		ProtocolFamily: "gemini_messages", ContextWindow: 1_048_576, PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 6101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", ProviderModelIDOverride: &normalModel, FallbackClass: string(bindingfallback.ClassNormal)},
-			{PoolGroupID: 201, BindingID: 6201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
+			{PoolGroupID: 201, BindingID: 6201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
 		},
 		SnapshotVersion: "registry:7:1",
 	}, nil

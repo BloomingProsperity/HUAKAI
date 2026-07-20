@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
@@ -27,6 +28,15 @@ type Service struct {
 	health      ChannelHealthInitializer
 	agentTasks  AgentTaskRegistrar
 	proxies     ProxyResolver
+	projects    projectenrich.Enricher
+}
+
+// WithProjectEnricher 让批量导入与单账号获取共用同一套项目和套餐补齐。
+func (s *Service) WithProjectEnricher(enricher projectenrich.Enricher) *Service {
+	if s != nil {
+		s.projects = enricher
+	}
+	return s
 }
 
 func (s *Service) WithProxyResolver(resolver ProxyResolver) *Service {

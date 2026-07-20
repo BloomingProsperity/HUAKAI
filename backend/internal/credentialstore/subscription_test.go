@@ -161,6 +161,28 @@ func TestFreshSubscriptionRefreshObservationRequiresChangedEvidence(t *testing.T
 	}
 }
 
+func TestFreshAntigravitySubscriptionKeepsProviderVerification(t *testing.T) {
+	for _, tc := range []struct {
+		vendor, authMode string
+	}{
+		{VendorAntigravity, AuthModeOAuth},
+		{VendorGemini, AuthModeAntigravity},
+	} {
+		observation, ok := freshSubscriptionRefreshObservation(
+			tc.vendor,
+			tc.authMode,
+			[]byte(`{"subscription_tier_raw":"g1-pro-tier","subscription_metadata_status":"resolved"}`),
+			[]byte(`{"subscription_tier_raw":"g1-ultra-tier","subscription_metadata_status":"resolved"}`),
+		)
+		if !ok || observation.Label() != "antigravity:ultra" ||
+			observation.Source != subscriptionprofile.SourceProviderAPI ||
+			observation.Trust != subscriptionprofile.TrustVerifiedAPI ||
+			observation.Verification != subscriptionprofile.VerificationVerified {
+			t.Fatalf("%s/%s 刷新套餐证据被降级：ok=%v observation=%+v", tc.vendor, tc.authMode, ok, observation)
+		}
+	}
+}
+
 func TestCredentialMetadataOmitsEmptySubscription(t *testing.T) {
 	raw, err := json.Marshal(CredentialMetadata{ID: 1})
 	if err != nil {

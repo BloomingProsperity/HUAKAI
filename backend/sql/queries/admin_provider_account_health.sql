@@ -43,6 +43,7 @@ SELECT
         FROM providers p
         WHERE p.id = pa.provider_id
           AND p.tenant_id = pa.tenant_id
+          AND p.enabled = true
           AND p.deleted_at IS NULL
     ) AS provider_available,
     pa.last_probe_latency_ms,

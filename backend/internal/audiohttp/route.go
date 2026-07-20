@@ -49,6 +49,8 @@ func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 			PoolGroupID:         binding.PoolGroupID,
 			ProviderModelID:     providerModelID,
 			BindingID:           binding.BindingID,
+			BindingRPMLimit:     bindingMaxParallelRequests(binding.RPMLimit),
+			BindingTPMLimit:     bindingMaxParallelRequests(binding.TPMLimit),
 			MaxParallelRequests: bindingMaxParallelRequests(binding.MaxParallelRequests),
 			Priority:            binding.Priority,
 			Weight:              binding.Weight,

@@ -39,7 +39,7 @@ func TestRerankBindingFallbackClass(t *testing.T) {
 		}
 		assertRerankFallbackMoney(t, env, 3, 2, 1)
 		target := env.selector.requests[2]
-		if target.PoolGroupID != 201 || target.BindingID != 3201 || target.MaxParallelRequests != 8 || target.SelectionMode != "priority_weighted" {
+		if target.PoolGroupID != 201 || target.BindingID != 3201 || target.BindingRPMLimit != 73 || target.BindingTPMLimit != 730 || target.MaxParallelRequests != 8 || target.SelectionMode != "priority_weighted" || target.EstimatedInputTokens <= 0 {
 			t.Fatalf("目标 request=%+v，未使用自身元数据", target)
 		}
 		if got := string(env.base.settler.settles[0].Draft.RoutingReason); !strings.Contains(got, `"to":"manual"`) {
@@ -93,13 +93,15 @@ type rerankFallbackRegistry struct{}
 
 func (rerankFallbackRegistry) ResolveModel(context.Context, string, int64) (registry.Resolved, error) {
 	targetMax := int32(8)
+	targetRPM := int32(73)
+	targetTPM := int32(730)
 	return registry.Resolved{
 		PublicAlias: "rerank-public", CanonicalModelID: "rerank/canonical",
 		DefaultProviderModelID: "rerank-upstream", ProviderModelID: "rerank-upstream",
 		ProtocolFamily: "openai_chat", Capabilities: []string{"rerank"}, PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 3101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", FallbackClass: string(bindingfallback.ClassNormal)},
-			{PoolGroupID: 201, BindingID: 3201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", MaxParallelRequests: &targetMax, FallbackClass: string(bindingfallback.ClassManual)},
+			{PoolGroupID: 201, BindingID: 3201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, FallbackClass: string(bindingfallback.ClassManual)},
 		},
 		SnapshotVersion: "registry:7:1",
 	}, nil

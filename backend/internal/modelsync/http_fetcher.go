@@ -260,7 +260,7 @@ func (f *HTTPFetcher) fetchGemini(ctx context.Context) (Catalog, error) {
 				OwnedBy:        "google",
 				ProtocolFamily: "gemini",
 				ContextWindow:  item.InputTokenLimit,
-				Capabilities:   compactStrings(item.SupportedGenerationMethods),
+				Capabilities:   normalizeGeminiCapabilities(item.SupportedGenerationMethods),
 			})
 		}
 		token := strings.TrimSpace(payload.NextPageToken)
@@ -418,12 +418,18 @@ func parseRFC3339UTC(raw string) time.Time {
 	return t.UTC()
 }
 
-func compactStrings(values []string) []string {
+func normalizeGeminiCapabilities(values []string) []string {
+	known := map[string]struct{}{
+		"generateContent":    {},
+		"countTokens":        {},
+		"embedContent":       {},
+		"batchEmbedContents": {},
+	}
 	out := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value == "" {
+		if _, ok := known[value]; !ok {
 			continue
 		}
 		if _, ok := seen[value]; ok {

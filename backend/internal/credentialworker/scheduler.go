@@ -25,6 +25,16 @@ const (
 	DefaultMaxAttempts   = 3
 )
 
+// Refresher 是凭据调度器依赖的统一刷新入口。
+type Refresher interface {
+	Refresh(ctx context.Context, accountID int64) error
+}
+
+// ProviderAwareRefresher 可校验调度扫描时读取的 provider_id。
+type ProviderAwareRefresher interface {
+	RefreshForProvider(ctx context.Context, providerID, accountID int64) error
+}
+
 // Scheduler 主动扫描快过期的 provider account，并通过 storm controller 限流刷新。
 type Scheduler struct {
 	Queries         *dbbilling.Queries
@@ -34,22 +44,20 @@ type Scheduler struct {
 	Refresher   Refresher
 	AuditLedger auditledger.Ledger
 
-	interval         time.Duration
-	warningWindow    time.Duration
-	limit            int32
-	maxAttempts      int
-	refreshTimeout   time.Duration
-	backoff          func(attempt int) time.Duration
-	sleep            func(context.Context, time.Duration) error
-	now              func() time.Time
-	ticks            <-chan time.Time
-	vendorRefreshers map[string]Refresher
-
-	queryer      refreshQueries
-	acquirer     stormAcquirer
-	auditWriter  auth.AuditWriter
-	healthPolicy ProviderAccountHealthPolicy
-	healthStore  providerAccountHealthStore
+	interval       time.Duration
+	warningWindow  time.Duration
+	limit          int32
+	maxAttempts    int
+	refreshTimeout time.Duration
+	backoff        func(attempt int) time.Duration
+	sleep          func(context.Context, time.Duration) error
+	now            func() time.Time
+	ticks          <-chan time.Time
+	queryer        refreshQueries
+	acquirer       stormAcquirer
+	auditWriter    auth.AuditWriter
+	healthPolicy   ProviderAccountHealthPolicy
+	healthStore    providerAccountHealthStore
 
 	// alertDeliverer 在一次 health 转换升起 Alert 标志时触发 operator 告警
 	// (CRED-293)。nil-safe:nil 表示告警仅记录日志。alertAsync 包装脱离式发送,
@@ -82,9 +90,6 @@ type Scheduler struct {
 }
 
 func NewScheduler(queries *dbbilling.Queries, storm *auth.StormController, signer Signer, refresher Refresher, opts ...Option) *Scheduler {
-	if refresher == nil {
-		refresher = NewRegistryRefresher(NewAdapterRegistry(), nil)
-	}
 	s := &Scheduler{
 		Queries:         queries,
 		StormController: storm,
@@ -350,16 +355,15 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.ListAccountsForRefreshRow) error {
 	var last error
 	for attempt := 1; attempt <= s.maxAttempts; attempt++ {
-		refresher := s.refresherForAccount(account)
 		attemptCtx := ctx
 		var cancel context.CancelFunc
 		if s.refreshTimeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, s.refreshTimeout)
 		}
-		if aware, ok := refresher.(ProviderAwareRefresher); ok {
+		if aware, ok := s.Refresher.(ProviderAwareRefresher); ok {
 			last = aware.RefreshForProvider(attemptCtx, account.ProviderID, account.ID)
 		} else {
-			last = refresher.Refresh(attemptCtx, account.ID)
+			last = s.Refresher.Refresh(attemptCtx, account.ID)
 		}
 		if cancel != nil {
 			cancel()
@@ -375,16 +379,6 @@ func (s *Scheduler) refreshWithBackoff(ctx context.Context, account dbbilling.Li
 		}
 	}
 	return last
-}
-
-func (s *Scheduler) refresherForAccount(account dbbilling.ListAccountsForRefreshRow) Refresher {
-	vendor := normalizeProviderName(account.VendorName)
-	if vendor != "" && s.vendorRefreshers != nil {
-		if refresher := s.vendorRefreshers[vendor]; refresher != nil {
-			return refresher
-		}
-	}
-	return s.Refresher
 }
 
 func defaultBackoff(attempt int) time.Duration {

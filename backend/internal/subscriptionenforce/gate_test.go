@@ -110,74 +110,46 @@ func TestGroupPolicyGate_UnconfiguredGroupAllows(t *testing.T) {
 	}
 }
 
-// 守付费可用性: premium 等非默认订阅档遇到 routes repo 瞬时错误时必须 fail-open 放行,
-// 但必须打 fail-open observer, 让运维看到"库抖动期间可能临时蹭池"而不是静默放行。
-// mutation: 把 repo 错改成 fail-closed → ok/reason/observer 断言红 (付费用户被误拒)。
-func TestGroupPolicyGate_PremiumRepoErrorFailsOpenAndObserves(t *testing.T) {
+// 策略真相读取失败时所有非空分组都必须停止选号，不能以可用性为由扩大账号池。
+func TestGroupPolicyGate_RepoErrorFailsClosedAndObserves(t *testing.T) {
 	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
-	var failOpenObserved int
 	var failClosedObserved int
 	var gotErr error
 	g := NewGroupPolicyGate(repo,
-		WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
-			failOpenObserved++
-			gotErr = err
-		}),
-		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+		WithFailClosedObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
 			failClosedObserved++
+			gotErr = err
 		}),
 	)
 
 	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
-	if err != nil {
-		t.Fatalf("repo error: unexpected err %v", err)
+	if !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("err=%v want ErrGroupPolicyUnavailable", err)
 	}
-	if !ok {
-		t.Fatal("premium repo transient error must fail-open to protect paid-user availability, got deny")
+	if ok || reason != poolrouter.GateFailureGroupPolicy {
+		t.Fatalf("repo error: ok=%v reason=%q want deny+group_policy", ok, reason)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty on fail-open", reason)
+	if failClosedObserved != 1 {
+		t.Fatalf("fail-closed observer called %d times, want 1", failClosedObserved)
 	}
-	if failOpenObserved != 1 {
-		t.Fatalf("fail-open observer called %d times for premium repo error, want 1", failOpenObserved)
-	}
-	if failClosedObserved != 0 {
-		t.Fatalf("fail-closed observer called %d times for premium repo error, want 0", failClosedObserved)
-	}
-	if gotErr == nil {
-		t.Fatal("fail-open observer must receive the underlying repo error")
+	if !errors.Is(gotErr, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("observer err=%v want ErrGroupPolicyUnavailable", gotErr)
 	}
 }
 
-// 守免费/默认组兼容: default 组是 HUAKAI 当前低档机制, repo 瞬时错误不能扩大成免费流量停服。
-// mutation: 把全部 repo 错一律 fail-closed → default 放行断言红。
-func TestGroupPolicyGate_DefaultRepoErrorFailsOpenForFreeTraffic(t *testing.T) {
+// default 也是受控分组；策略库故障时同样不能借机进入更高等级账号池。
+func TestGroupPolicyGate_DefaultRepoErrorAlsoFailsClosed(t *testing.T) {
 	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
-	var failOpenObserved int
-	var failClosedObserved int
-	g := NewGroupPolicyGate(repo,
-		WithFailOpenObserver(func(context.Context, poolrouter.SelectionRequest, error) {
-			failOpenObserved++
-		}),
-		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
-			failClosedObserved++
-		}),
-	)
+	g := NewGroupPolicyGate(repo)
 
-	if ok, _, err := g.Allow(context.Background(), nil, req("default", 9)); err != nil || !ok {
-		t.Fatalf("default repo error: ok=%v err=%v, want compatibility fail-open allow", ok, err)
-	}
-	if failOpenObserved != 1 {
-		t.Fatalf("fail-open observer called %d times, want 1", failOpenObserved)
-	}
-	if failClosedObserved != 0 {
-		t.Fatalf("fail-closed observer called %d times for default repo error, want 0", failClosedObserved)
+	ok, reason, err := g.Allow(context.Background(), nil, req("default", 9))
+	if ok || reason != poolrouter.GateFailureGroupPolicy || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("default repo error: ok=%v reason=%q err=%v want fail-closed", ok, reason, err)
 	}
 }
 
-// 守 selector 真实后果: premium repo 瞬时错误经 DefaultSelector 时也必须保可用性放行,
-// 不能把库抖动扩大成 ErrNoEligibleAccount。mutation: gate fail-closed → Select 报无账号, 本测试红。
-func TestGroupPolicyGate_PremiumRepoErrorAllowsDefaultSelectorDuringTransientRepoError(t *testing.T) {
+// DefaultSelector 必须保留策略不可用的根因，不能吞成普通无容量后继续尝试其它池。
+func TestGroupPolicyGate_RepoErrorPropagatesThroughDefaultSelector(t *testing.T) {
 	repo := &fakeRoutesRepo{err: errors.New("transient db error")}
 	chain := poolrouter.DefaultGateChain()
 	chain.GroupPolicy = NewGroupPolicyGate(repo)
@@ -190,56 +162,37 @@ func TestGroupPolicyGate_PremiumRepoErrorAllowsDefaultSelectorDuringTransientRep
 	res, err := sel.Select(context.Background(), poolrouter.SelectionRequest{
 		TenantID: 1, UserGroup: "premium", RequestedModel: "claude-3-5-sonnet", PoolGroupID: 5,
 	})
-	if err != nil {
-		t.Fatalf("premium repo transient error should fail-open through selector, got err=%v", err)
-	}
-	if res == nil || res.AccountID != 1 {
-		t.Fatalf("premium repo transient error selector result=%+v, want account 1", res)
+	if res != nil || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("selector result=%+v err=%v want nil+ErrGroupPolicyUnavailable", res, err)
 	}
 }
 
-// 守 repo 未注入/暂缺时的付费可用性: 非默认档无法校验 routes 时默认 fail-open,
-// 但必须触发 observer 告警, 避免静默扩大高级池风险。
-// mutation: nil repo fail-closed → ok/reason/observer 断言红。
-func TestGroupPolicyGate_PremiumNilRepoFailsOpenAndObserves(t *testing.T) {
-	var failOpenObserved int
+// repo 未注入属于接线错误，所有非空分组均须拒绝并留下观测。
+func TestGroupPolicyGate_NilRepoFailsClosedAndObserves(t *testing.T) {
 	var failClosedObserved int
 	var gotErr error
 	g := NewGroupPolicyGate(nil,
-		WithFailOpenObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
-			failOpenObserved++
-			gotErr = err
-		}),
-		WithFailClosedObserver(func(context.Context, poolrouter.SelectionRequest, error) {
+		WithFailClosedObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
 			failClosedObserved++
+			gotErr = err
 		}),
 	)
 	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
-	if err != nil {
-		t.Fatalf("nil repo premium: unexpected err %v", err)
+	if ok || reason != poolrouter.GateFailureGroupPolicy || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("nil repo: ok=%v reason=%q err=%v want fail-closed", ok, reason, err)
 	}
-	if !ok {
-		t.Fatal("nil repo premium must fail-open with alert, got deny")
+	if failClosedObserved != 1 {
+		t.Fatalf("fail-closed observer called %d times, want 1", failClosedObserved)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty on fail-open", reason)
-	}
-	if failOpenObserved != 1 {
-		t.Fatalf("fail-open observer called %d times, want 1", failOpenObserved)
-	}
-	if failClosedObserved != 0 {
-		t.Fatalf("fail-closed observer called %d times for nil repo premium, want 0", failClosedObserved)
-	}
-	if gotErr == nil {
-		t.Fatal("fail-open observer must receive repo unavailable error")
+	if !errors.Is(gotErr, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("observer err=%v want ErrGroupPolicyUnavailable", gotErr)
 	}
 }
 
-// 守 default 休眠兼容: 低档/default 流量在 repo 未注入时仍放行, 避免免费流量被误停。
-func TestGroupPolicyGate_DefaultNilRepoAllows(t *testing.T) {
+func TestGroupPolicyGate_DefaultNilRepoFailsClosed(t *testing.T) {
 	g := NewGroupPolicyGate(nil)
-	if ok, _, err := g.Allow(context.Background(), nil, req("default", 9)); err != nil || !ok {
-		t.Fatalf("nil repo default: ok=%v err=%v, want allow", ok, err)
+	if ok, _, err := g.Allow(context.Background(), nil, req("default", 9)); ok || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("nil repo default: ok=%v err=%v want fail-closed", ok, err)
 	}
 }
 

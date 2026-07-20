@@ -19,21 +19,12 @@ func TestDefaultExchangerRegistryIncludesAntigravityOAuthAlias(t *testing.T) {
 	// vendor 原生的 antigravity/oauth 键到达,而不只是旧的
 	// gemini/antigravity credentialstore mode。
 	registry := DefaultExchangerRegistry()
-	candidate, err := registry.Exchange(context.Background(), Session{
-		TenantID: 1, ProviderAccountID: 42, Vendor: "antigravity", AuthMode: "oauth", ActorID: "owner",
-	}, `{"session_token":"ag-session"}`)
-	if err != nil {
-		t.Fatalf("Exchange antigravity/oauth: %v", err)
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth))
+	if !ok {
+		t.Fatal("default registry missing antigravity/oauth exchanger")
 	}
-	if candidate.Vendor != "antigravity" || candidate.AuthMode != "oauth" {
-		t.Fatalf("candidate mode=%s/%s, want antigravity/oauth", candidate.Vendor, candidate.AuthMode)
-	}
-	var payload map[string]string
-	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
-		t.Fatalf("unmarshal payload: %v", err)
-	}
-	if payload["session_token"] != "ag-session" {
-		t.Fatalf("session_token=%q, want ag-session", payload["session_token"])
+	if _, ok := exc.(authorizationCodeOAuthExchanger); !ok {
+		t.Fatalf("antigravity/oauth exchanger type=%T", exc)
 	}
 }
 
@@ -143,7 +134,7 @@ func TestXAIOAuthSSRFHost(t *testing.T) {
 	}
 }
 
-func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint(t *testing.T) {
+func TestAntigravityOAuthCallbackUsesPinnedPublicCLIProfile(t *testing.T) {
 	now := time.Date(2026, 5, 25, 8, 0, 0, 0, time.UTC)
 	var gotForm url.Values
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -165,7 +156,8 @@ func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint
 	})}
 	exchanger := authorizationCodeOAuthExchanger{
 		vendor: credentialstore.VendorAntigravity, authMode: credentialstore.AuthModeOAuth,
-		shape: TokenShapeAnySessionOrAccess, client: client, now: func() time.Time { return now },
+		shape: TokenShapeAnySessionOrAccess, config: AntigravityPublicCLIConfig(),
+		client: client, now: func() time.Time { return now },
 	}
 	registry := NewExchangerRegistry()
 	if err := registry.RegisterExchanger("antigravity/oauth", exchanger); err != nil {
@@ -182,9 +174,10 @@ func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint
 		Vendor: "antigravity", AuthMode: "oauth",
 		ActorID: "owner", ActorRole: "platform_admin",
 	}, OAuthClientConfig{
-		AuthURL: "https://antigravity.example.test/authorize", TokenURL: "https://antigravity.example.test/token",
-		ClientID: "ag-client", RedirectURI: "http://127.0.0.1:1455/auth/callback",
-		Scopes: []string{"scope-a", "scope-b"}, Source: ClientSourceOperatorConfig,
+		AuthURL: "https://attacker.example.test/authorize", TokenURL: "https://attacker.example.test/token",
+		ClientID: "attacker-client", ClientSecret: "attacker-secret",
+		RedirectURI: "https://attacker.example.test/callback", Scopes: []string{"attacker-scope"},
+		Source: ClientSourceOperatorConfig,
 	})
 	if err != nil {
 		t.Fatalf("StartOAuthFlow: %v", err)
@@ -200,13 +193,17 @@ func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint
 	for key, want := range map[string]string{
 		"grant_type":    "authorization_code",
 		"code":          "ag-auth-code",
-		"client_id":     "ag-client",
-		"redirect_uri":  "http://127.0.0.1:1455/auth/callback",
+		"client_id":     AntigravityPublicCLIConfig().ClientID,
+		"client_secret": AntigravityPublicCLIConfig().ClientSecret,
+		"redirect_uri":  AntigravityOAuthRedirectURI,
 		"code_verifier": start.CodeVerifier,
 	} {
 		if got := gotForm.Get(key); got != want {
 			t.Fatalf("form[%s]=%q want %q; full form=%v", key, got, want, gotForm)
 		}
+	}
+	if !strings.HasPrefix(start.AuthorizeURL, AntigravityOAuthAuthURL+"?") || strings.Contains(start.AuthorizeURL, "attacker") {
+		t.Fatalf("授权地址未锁定公开客户端合同：%s", start.AuthorizeURL)
 	}
 	if candidate.Vendor != "antigravity" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 501 {
 		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
@@ -220,6 +217,12 @@ func TestAntigravityOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpoint
 	}
 	if payload["session_token"] != "ag-access" || payload["refresh_token"] != "ag-refresh" {
 		t.Fatalf("payload=%v, want access copied to session_token and refresh preserved", payload)
+	}
+	if payload["client_id_source"] != ClientSourcePublicCLI {
+		t.Fatalf("client_id_source=%v, want %s", payload["client_id_source"], ClientSourcePublicCLI)
+	}
+	if candidate.RedactedContext[RedactedKeyClientIdentitySource] != ClientSourcePublicCLI {
+		t.Fatalf("redacted client source=%v, want %s", candidate.RedactedContext[RedactedKeyClientIdentitySource], ClientSourcePublicCLI)
 	}
 }
 
@@ -280,9 +283,18 @@ func TestGeminiOperatorOAuthCallbackPostsAuthorizationCodeToConfiguredTokenEndpo
 	if err := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), nil, nil).ValidateCandidate(candidate); err != nil {
 		t.Fatalf("ValidateCandidate: %v", err)
 	}
-	payload := string(candidate.Payload)
-	if !strings.Contains(payload, "gem-access") || !strings.Contains(payload, "gem-refresh") {
-		t.Fatalf("payload=%s, want exchanged Google token material", payload)
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatalf("payload JSON: %v", err)
+	}
+	if payload["access_token"] != "gem-access" || payload["refresh_token"] != "gem-refresh" {
+		t.Fatalf("payload=%v, want exchanged Google token material", payload)
+	}
+	if payload["client_id_source"] != ClientSourceOperatorConfig {
+		t.Fatalf("client_id_source=%v, want %s", payload["client_id_source"], ClientSourceOperatorConfig)
+	}
+	if candidate.RedactedContext[RedactedKeyClientIdentitySource] != ClientSourceOperatorConfig {
+		t.Fatalf("redacted client source=%v, want %s", candidate.RedactedContext[RedactedKeyClientIdentitySource], ClientSourceOperatorConfig)
 	}
 }
 
@@ -323,38 +335,52 @@ func TestValidateOAuthModeConsistencyRejectsMissingExchanger(t *testing.T) {
 	}
 }
 
-// TestGeminiAntigravityAcquisitionFailsClosedNotFake 守护核心的信任边界修复:
-// gemini/antigravity 获取绝不能再把 JSON-token 形状的回调码当作真实
-// 凭据接受;在授权页地址尚未确认时必须以 ErrFeatureDisabled fail-closed。
-// CLI token 导入后的 refresh 是独立且已激活的路径，不受此边界影响。
-// 变异:为此 mode 还原 NewPKCEFakeExchanger,伪造的 blob 就会被接受(err==nil)——
-// 本测试随之变红,证明它守护的是真实的伪造凭据接受,而非一个装样子的错误。
-func TestGeminiAntigravityAcquisitionFailsClosedNotFake(t *testing.T) {
+func TestGeminiAntigravityUsesPinnedOAuthAndRejectsStorelessExchange(t *testing.T) {
 	registry := DefaultExchangerRegistry()
+	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity))
+	if !ok {
+		t.Fatal("default registry missing gemini/antigravity exchanger")
+	}
+	authCode, ok := exc.(authorizationCodeOAuthExchanger)
+	if !ok {
+		t.Fatalf("gemini/antigravity exchanger type=%T", exc)
+	}
+	if err := validateAntigravityPublicCLIConfig(authCode.config); err != nil {
+		t.Fatalf("gemini/antigravity 未使用固定公开客户端：%v", err)
+	}
 	_, err := registry.Exchange(context.Background(), Session{
 		TenantID: 1, ProviderAccountID: 7, Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity, ActorID: "op",
 	}, `{"session_token":"attacker-forged"}`)
-	if !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("gemini/antigravity acquisition must fail-closed with ErrFeatureDisabled, got %v", err)
+	if !errors.Is(err, ErrOAuthRequiresCallback) {
+		t.Fatalf("无 PKCE 会话的直接交换必须拒绝，got %v", err)
 	}
 }
 
-// TestCopilotOAuthAcquisitionFailsClosed 守护:copilot/copilot_oauth 被宣告为一个
-// OAuth mode,但其回调获取尚未实现;它必须以明确的
-// ErrFeatureDisabled fail-closed,而非此前模糊的 ErrOAuthExchangerMissing。
-func TestCopilotOAuthAcquisitionFailsClosed(t *testing.T) {
+func TestCopilotOAuthModeUsesDeviceCodeExchanger(t *testing.T) {
 	registry := DefaultExchangerRegistry()
-	_, err := registry.Exchange(context.Background(), Session{
-		TenantID: 1, ProviderAccountID: 8, Vendor: credentialstore.VendorCopilot, AuthMode: credentialstore.AuthModeCopilotOAuth, ActorID: "op",
-	}, `{"access_token":"x"}`)
-	if !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("copilot/copilot_oauth acquisition must fail-closed with ErrFeatureDisabled, got %v", err)
+	exchanger, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth))
+	if !ok {
+		t.Fatal("默认注册表缺少 copilot/copilot_oauth")
+	}
+	if _, ok := exchanger.(copilotDeviceCodeExchanger); !ok {
+		t.Fatalf("copilot/copilot_oauth exchanger=%T，期望设备码实现", exchanger)
+	}
+}
+
+func TestValidateOAuthModeConsistencyRejectsDisabledExchanger(t *testing.T) {
+	registry := DefaultExchangerRegistry()
+	key := credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth)
+	if err := registry.RegisterOrReplaceExchanger(key, newFailClosedExchanger("测试停用")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOAuthModeConsistency(DefaultModePlans(), registry); err == nil || !strings.Contains(err.Error(), key) {
+		t.Fatalf("启动闸必须拒绝稳定失败的 OAuth 入口：%v", err)
 	}
 }
 
 // TestNoFakeExchangerRemainsInDefaultRegistry 守护:生产环境默认 registry 中不得再有
 // 任何可达的 pkceFakeExchanger(孤儿 cursor/windsurf fake 已移除,
-// gemini/antigravity 已迁移为 fail-closed)。变异:还原任意 NewPKCEFakeExchanger
+// gemini/antigravity 已迁移为真实 PKCE 获取器)。变异:还原任意 NewPKCEFakeExchanger
 // 注册,此扫描就会发现它 → 变红。
 func TestNoFakeExchangerRemainsInDefaultRegistry(t *testing.T) {
 	registry := DefaultExchangerRegistry()

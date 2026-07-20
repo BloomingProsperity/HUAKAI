@@ -11,9 +11,6 @@ import (
 const (
 	KiroVendor         = "kiro"
 	KiroAuthModeAWSSSO = "aws-sso"
-
-	kiroAuthModeSSOAlias = "sso"
-	kiroCredentialMode   = "kiro_session"
 )
 
 var ErrKiroSSOConfigRequired = errors.New("kiro sso: operator-verified AWS SSO config required")

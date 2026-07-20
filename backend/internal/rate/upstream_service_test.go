@@ -242,6 +242,71 @@ func TestSessionWindowParseBothWindowsAndUtilization(t *testing.T) {
 	}
 }
 
+func TestSessionWindowNormalizesCodexWindowsByReportedDuration(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	store := &fakeSessionWindowStore{}
+	svc := NewUpstreamRateServiceWithSessionWindowStore(func() time.Time { return now }, time.Minute, store)
+	headers := http.Header{}
+	// 上游的 primary/secondary 不是固定的 7d/5h 名称，必须看实际窗口时长。
+	headers.Set("x-codex-primary-used-percent", "42")
+	headers.Set("x-codex-primary-reset-after-seconds", "7200")
+	headers.Set("x-codex-primary-window-minutes", "300")
+	headers.Set("x-codex-secondary-used-percent", "88")
+	headers.Set("x-codex-secondary-reset-after-seconds", "500000")
+	headers.Set("x-codex-secondary-window-minutes", "10080")
+
+	if err := svc.UpdateSessionWindow(context.Background(), 202, headers); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.update.ObservationOutcome != QuotaSnapshotOutcomeSuccess {
+		t.Fatalf("写入=%d outcome=%q", store.calls, store.update.ObservationOutcome)
+	}
+	if store.update.Window5hUtilization == nil || *store.update.Window5hUtilization != 42 ||
+		store.update.Window5hEnd == nil || !store.update.Window5hEnd.Equal(now.Add(2*time.Hour)) {
+		t.Fatalf("5h 窗口归一错误：%+v", store.update)
+	}
+	if store.update.Window7dUtilization == nil || *store.update.Window7dUtilization != 88 ||
+		store.update.Window7dEnd == nil || !store.update.Window7dEnd.Equal(now.Add(500000*time.Second)) {
+		t.Fatalf("7d 窗口归一错误：%+v", store.update)
+	}
+}
+
+func TestSessionWindowCodexMissingDurationKeepsPrimaryAsShortWindow(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	store := &fakeSessionWindowStore{}
+	svc := NewUpstreamRateServiceWithSessionWindowStore(func() time.Time { return now }, time.Minute, store)
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "21")
+	headers.Set("x-codex-primary-reset-after-seconds", "3600")
+	headers.Set("x-codex-secondary-used-percent", "73")
+	headers.Set("x-codex-secondary-reset-after-seconds", "500000")
+
+	if err := svc.UpdateSessionWindow(context.Background(), 204, headers); err != nil {
+		t.Fatal(err)
+	}
+	if store.update.Window5hUtilization == nil || *store.update.Window5hUtilization != 21 ||
+		store.update.Window7dUtilization == nil || *store.update.Window7dUtilization != 73 {
+		t.Fatalf("缺少窗口时长时不得颠倒主次窗口：%+v", store.update)
+	}
+}
+
+func TestSessionWindowCodexHeadersRejectInvalidValues(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	store := &fakeSessionWindowStore{}
+	svc := NewUpstreamRateServiceWithSessionWindowStore(func() time.Time { return now }, time.Minute, store)
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100.01")
+	headers.Set("x-codex-primary-reset-after-seconds", "999999999")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+
+	if err := svc.UpdateSessionWindow(context.Background(), 203, headers); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 0 {
+		t.Fatalf("非法 Codex 窗口不得写库：calls=%d update=%+v", store.calls, store.update)
+	}
+}
+
 func TestSessionWindowInvalidUtilizationIsNotPersisted(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 0, 0, 0, time.UTC)
 	resetAt := strconv.FormatInt(now.Add(time.Hour).Unix(), 10)

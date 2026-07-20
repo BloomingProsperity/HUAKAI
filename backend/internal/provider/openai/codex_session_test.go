@@ -457,6 +457,29 @@ func TestCodexSessionAdapter_BuildRequest_DefaultUA(t *testing.T) {
 	}
 }
 
+func TestCodexSessionAdapter_BuildRequest_VersionBuildsMatchingCLIUserAgent(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-5.4-mini",
+		InboundBody:     []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-tok",
+			Extra: map[string]string{"codex_version": "0.99.0"},
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.99.0" {
+		t.Fatalf("User-Agent=%q，期望由真实版本构造匹配的 CLI UA", got)
+	}
+	if got := req.Header.Get("version"); got != "0.99.0" {
+		t.Fatalf("version=%q，期望 0.99.0", got)
+	}
+}
+
 // ── BuildRequest 必填校验：空 session token ──────────────────────────────
 
 func TestCodexSessionAdapter_BuildRequest_RejectEmptySessionToken(t *testing.T) {

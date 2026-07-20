@@ -89,13 +89,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
-	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
-	providercursor "github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
-	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
-	providerkiro "github.com/BloomingProsperity/HUAKAI/internal/provider/kiro"
-	provideropenaicodex "github.com/BloomingProsperity/HUAKAI/internal/provider/openai_codex"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
-	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
@@ -232,6 +226,7 @@ type deps struct {
 	pricingRatioResolver     *pricingcatalog.RatioResolver
 	modelRegistry            *registry.PostgresRegistry
 	modelSync                *modelsync.Service
+	modelSyncScheduler       *modelsync.Scheduler
 	routePlanner             *router.DefaultRouter
 	adminAuth                *adminsessionauth.Resolver
 	adminIssuer              *admin.KeyIssuer
@@ -436,11 +431,6 @@ func startAlertingEvaluator(ctx context.Context, cfg *Config, runner alertingEva
 			<-done
 		})
 	}
-}
-
-type vendorRefresherBinding struct {
-	name      string
-	refresher credentialworker.Refresher
 }
 
 const (
@@ -744,71 +734,6 @@ func buildRotationScanOptions(cfg credentialRotationScanConfig, store credential
 // (fail loud),而非默默降级 burst-limit / anomaly / voucher 的来源。
 func loadClientIPResolverFromEnv() (*clientip.Resolver, error) {
 	return clientip.NewResolver(parseCSVAllowlistEnv(trustedProxyCIDRsEnv))
-}
-
-func buildVendorRefresherBindings(configs runtimeconfig.VendorOAuthConfigs, store *credentialstore.Store) []vendorRefresherBinding {
-	configured := configs.Configured()
-	bindings := make([]vendorRefresherBinding, 0, 5)
-	if cfg, ok := configured[runtimeconfig.VendorOAuthCursor]; ok {
-		bindings = append(bindings, vendorRefresherBinding{
-			name: runtimeconfig.VendorOAuthCursor,
-			refresher: providercursor.NewRefresher(store, providercursor.WithRefreshAdapter(providercursor.RefreshAdapter{
-				TokenURL: cfg.TokenURL,
-				ClientID: cfg.ClientID,
-				Scope:    cfg.Scope,
-			})),
-		})
-	}
-	if cfg, ok := configured[runtimeconfig.VendorOAuthWindsurf]; ok {
-		bindings = append(bindings, vendorRefresherBinding{
-			name: runtimeconfig.VendorOAuthWindsurf,
-			refresher: providerwindsurf.NewRefresher(store, providerwindsurf.WithRefreshAdapter(providerwindsurf.RefreshAdapter{
-				TokenURL: cfg.TokenURL,
-				ClientID: cfg.ClientID,
-				Scope:    cfg.Scope,
-			})),
-		})
-	}
-	if cfg, ok := configured[runtimeconfig.VendorOAuthOpenAICodex]; ok {
-		bindings = append(bindings, vendorRefresherBinding{
-			name: runtimeconfig.VendorOAuthOpenAICodex,
-			refresher: provideropenaicodex.NewRefresher(store, provideropenaicodex.WithRefreshAdapter(provideropenaicodex.RefreshAdapter{
-				TokenURL: cfg.TokenURL,
-				ClientID: cfg.ClientID,
-				Scope:    cfg.Scope,
-			})),
-		})
-	}
-	if cfg, ok := configured[runtimeconfig.VendorOAuthKiro]; ok {
-		bindings = append(bindings, vendorRefresherBinding{
-			name: runtimeconfig.VendorOAuthKiro,
-			refresher: providerkiro.NewRefresher(store, providerkiro.WithRefreshAdapter(providerkiro.RefreshAdapter{
-				TokenURL:     cfg.TokenURL,
-				ClientID:     cfg.ClientID,
-				ClientSecret: cfg.ClientSecret,
-			})),
-		})
-	}
-	if cfg, ok := configured[runtimeconfig.VendorOAuthGemini]; ok {
-		bindings = append(bindings, vendorRefresherBinding{
-			name: runtimeconfig.VendorOAuthGemini,
-			refresher: providergemini.NewRefresher(store, providergemini.WithRefreshAdapter(providergemini.RefreshAdapter{
-				TokenURL:     cfg.TokenURL,
-				ClientID:     cfg.ClientID,
-				ClientSecret: cfg.ClientSecret,
-				Scope:        cfg.Scope,
-			})),
-		})
-	}
-	return bindings
-}
-
-func buildVendorRefresherOptions(bindings []vendorRefresherBinding) []credentialworker.Option {
-	opts := make([]credentialworker.Option, 0, len(bindings))
-	for _, binding := range bindings {
-		opts = append(opts, credentialworker.WithVendorRefresher(binding.name, binding.refresher))
-	}
-	return opts
 }
 
 // buildAuthCooldownStore 按 HUAKAI_AUTH_COOLDOWN_ENABLED 决定是否接线 auth 降级车道(缺口① S1)。
@@ -1434,12 +1359,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	// 厂商额度统一写入规范化投影；只有新鲜且明确耗尽的事实参与硬 gate。
 	quotaVendorHTTPClient := auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 	quotaProbeWorker := quotaprobe.NewWorker(quotaprobe.WorkerConfig{
-		Accounts:  quotaprobe.NewPostgresAccountLister(pgPool),
-		Vault:     credentialVault,
-		Fetcher:   quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
-		Store:     ratelimit.NewPostgresSessionWindowStore(pgPool),
-		FactStore: accountquota.NewPostgresStore(pgPool),
+		Accounts:      quotaprobe.NewPostgresAccountLister(pgPool),
+		Vault:         credentialVault,
+		Fetcher:       quotaprobe.NewHTTPUsageFetcher(anthropicOAuthHTTPClient, accountProxyResolver),
+		Store:         ratelimit.NewPostgresSessionWindowStore(pgPool),
+		FactStore:     accountquota.NewPostgresStore(pgPool),
+		Subscriptions: credentialStore,
 		Adapters: []quotaprobe.VendorAdapter{
+			quotaprobe.NewCodexUsageAdapter(quotaVendorHTTPClient, accountProxyResolver),
 			quotaprobe.NewAntigravityAdapter(quotaVendorHTTPClient, accountProxyResolver),
 			quotaprobe.GeminiUnknownAdapter{},
 			quotaprobe.NewGrokBillingAdapter(quotaVendorHTTPClient, accountProxyResolver),
@@ -1773,7 +1700,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
-	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth(antigravityProjectResolver, cfg.VendorOAuth))
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithRuntimeDependencies(antigravityProjectResolver, cfg.VendorOAuth, anthropicOAuthHTTPClient))
 	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
@@ -1781,15 +1708,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		// 启用同事务路径 (RR-W5-002 步骤 1):audit insert + ledger append 同 tx。
 		credentialworker.WithTxPool(pgPool),
 		credentialworker.WithAuditLedgerSigner(auditSigner),
-		credentialworker.WithVendorRefresher("anthropic", anthropicoauth.NewRefresher(
-			credentialStore,
-			anthropicoauth.WithFallbackRefresher(credentialRefresher),
-			anthropicoauth.WithHTTPClient(anthropicOAuthHTTPClient),
-		)),
-		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
-			Store:               providercopilot.NewCredentialStoreAdapter(credentialStore),
-			RequireAccountLease: true,
-		}),
 		// CRED-293:当一次 refresh 把某账号推入终态/不健康状态(Alert 标志)时,
 		// 经 notify 管线触发一次运维告警。
 		credentialworker.WithProviderAccountDownDeliverer(providerAccountDownDeliverer{notifier: notifier}),
@@ -1810,10 +1728,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			zap.Int("limit", rotationScanCfg.Limit),
 		)
 	}
-	credentialSchedulerOptions = append(
-		credentialSchedulerOptions,
-		buildVendorRefresherOptions(buildVendorRefresherBindings(cfg.VendorOAuth, credentialStore))...,
-	)
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
 		auth.NewStormControllerWithSharedScopeBudget(authQueries, stormScopeCfg, sharedRateLimits.storm,
@@ -1845,6 +1759,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			RunOnStart:  true,
 			LeaderLease: workerlease.NewPostgres(pgPool, modelSyncLeaderLockKey, "model_sync"),
 		})
+		d.modelSyncScheduler = scheduler
 		rt.modelSyncStop = scheduler.Start(workerCtx)
 	}
 

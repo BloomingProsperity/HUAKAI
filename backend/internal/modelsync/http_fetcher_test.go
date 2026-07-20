@@ -274,7 +274,7 @@ func TestHTTPFetcherParsesGeminiModelListAndSendsAPIKey(t *testing.T) {
 				"description":"test model",
 				"inputTokenLimit":1048576,
 				"outputTokenLimit":65536,
-				"supportedGenerationMethods":["generateContent","countTokens"]
+				"supportedGenerationMethods":["generateContent","predictLongRunning","countTokens","generateContent"," "]
 			}]
 		}`))
 	}))
@@ -307,7 +307,7 @@ func TestHTTPFetcherParsesGeminiModelListAndSendsAPIKey(t *testing.T) {
 		t.Fatalf("ContextWindow=%d want Gemini input token limit", model.ContextWindow)
 	}
 	if len(model.Capabilities) != 2 || model.Capabilities[0] != "generateContent" || model.Capabilities[1] != "countTokens" {
-		t.Fatalf("Capabilities=%v want supported generation methods", model.Capabilities)
+		t.Fatalf("Capabilities=%v want only normalized registry capabilities", model.Capabilities)
 	}
 }
 

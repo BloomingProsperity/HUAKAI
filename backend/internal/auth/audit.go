@@ -78,15 +78,6 @@ func ClassifyRefreshError(err error, vendor string, statusCode int) RefreshOutco
 	return OutcomeUnknown
 }
 
-func RefreshFailureAuditOutcome(classified RefreshOutcome, fallback string) string {
-	switch classified {
-	case OutcomeAuthExpired, OutcomeRateLimit, OutcomeRiskControl, OutcomeAccountDisabled:
-		return string(classified)
-	default:
-		return strings.TrimSpace(fallback)
-	}
-}
-
 func WithRefreshAuditOutcome(err error, outcome string) error {
 	if err == nil {
 		return nil
@@ -129,11 +120,13 @@ func IsRefreshAuditOutcome(outcome string) bool {
 		string(OutcomeTokenMalformed),
 		string(OutcomeOAuth401ForceRefresh),
 		string(OutcomePermanentDisable),
+		string(OutcomeOperatorAttention),
 		string(OutcomeMimicryApplied),
 		string(OutcomeAuthExpired),
 		string(OutcomeRateLimit),
 		string(OutcomeRiskControl),
-		string(OutcomeAccountDisabled):
+		string(OutcomeAccountDisabled),
+		string(OutcomeTransientError):
 		return true
 	default:
 		return false

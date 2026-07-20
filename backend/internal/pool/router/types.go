@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrNoEligibleAccount   = errors.New("pool has no eligible provider account")
-	ErrAllChannelsDegraded = errors.New("pool has no eligible provider account: all_channels_degraded")
-	ErrClaimRace           = errors.New("pool claim writeback race")
+	ErrNoEligibleAccount      = errors.New("pool has no eligible provider account")
+	ErrAllChannelsDegraded    = errors.New("pool has no eligible provider account: all_channels_degraded")
+	ErrClaimRace              = errors.New("pool claim writeback race")
+	ErrGroupPolicyUnavailable = errors.New("pool group policy unavailable")
 )
 
 // NoCapacityError 包裹"池内无可用容量"哨兵错误,并携带池内账号最早恢复时刻——即所有被健康冷却

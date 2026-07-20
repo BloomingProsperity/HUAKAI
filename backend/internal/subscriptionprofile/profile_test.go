@@ -95,6 +95,58 @@ func TestAntigravityPayloadCannotSelfAssertProviderTrust(t *testing.T) {
 	}
 }
 
+func TestPersonalAccountModesProduceHonestSubscriptionLabels(t *testing.T) {
+	tests := []struct {
+		vendor, mode, payload, label, status string
+	}{
+		{VendorGemini, "code_assist", `{"tier_id":"gcp_enterprise"}`, "gemini:enterprise", StatusObserved},
+		{VendorGemini, "google_one", `{"subscription_tier":"google_ai_pro"}`, "gemini:pro", StatusObserved},
+		{VendorGrok, "xai_oauth", `{"subscription_tier":"SuperGrok Heavy"}`, "grok:supergrok_heavy", StatusObserved},
+		{VendorKimi, "kimi_oauth", `{"access_token":"token","subscription_tier":"Allegretto"}`, "kimi:allegretto", StatusObserved},
+		{VendorCopilot, "copilot_oauth", `{"github_access_token":"token","subscription_tier":"Pro+"}`, "copilot:pro_plus", StatusObserved},
+		{VendorWindsurf, "oauth", `{"session_token":"token","subscription_tier":"Teams"}`, "windsurf:teams", StatusObserved},
+	}
+	for _, test := range tests {
+		got := DetectPayload(test.vendor, test.mode, []byte(test.payload))
+		if got.Label() != test.label || got.Status != test.status {
+			t.Fatalf("%s/%s 得到 %+v，期望 label=%s status=%s", test.vendor, test.mode, got, test.label, test.status)
+		}
+	}
+}
+
+func TestCurrentVendorPlanTaxonomyKeepsPersonalAndWorkspaceScopes(t *testing.T) {
+	tests := []struct {
+		vendor, raw, plan, scope string
+	}{
+		{VendorAnthropic, "Max 5x", "max_5x", ScopePersonal},
+		{VendorAnthropic, "Max 20x", "max_20x", ScopePersonal},
+		{VendorGemini, "Google AI Plus", "plus", ScopePersonal},
+		{VendorGrok, "SuperGrok Lite", "supergrok_lite", ScopePersonal},
+		{VendorGrok, "Business", "business", ScopeWorkspace},
+		{VendorCopilot, "Pro+", "pro_plus", ScopePersonal},
+		{VendorCopilot, "Enterprise", "enterprise", ScopeWorkspace},
+		{VendorKimi, "Vivace", "vivace", ScopePersonal},
+		{VendorWindsurf, "Teams", "teams", ScopeWorkspace},
+	}
+	for _, test := range tests {
+		got := FromRaw(test.vendor, test.raw, SourceProviderAPI, TrustVerifiedAPI, VerificationVerified, "subject", "workspace")
+		if got.Plan != test.plan || got.Scope != test.scope || got.Status != StatusObserved || got.MappingVersion != MappingVersion {
+			t.Fatalf("%s/%s 归一错误：%+v", test.vendor, test.raw, got)
+		}
+		if test.scope == ScopePersonal && got.WorkspaceRef != "" {
+			t.Fatalf("个人套餐不得保留工作区引用：%+v", got)
+		}
+	}
+}
+
+func TestOfficialAPIKeysDoNotClaimSubscription(t *testing.T) {
+	for _, vendor := range []string{VendorAnthropic, VendorOpenAI, VendorGemini, VendorGrok, VendorKimi} {
+		if got := DetectPayload(vendor, "api_key", []byte(`{"api_key":"secret"}`)); !got.Empty() {
+			t.Fatalf("%s 官方 API Key 不应生成订阅标签：%+v", vendor, got)
+		}
+	}
+}
+
 func jwt(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(claims)

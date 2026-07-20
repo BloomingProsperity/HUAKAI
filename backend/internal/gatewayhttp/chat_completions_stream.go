@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
@@ -223,6 +224,10 @@ func (ex *chatExecution) errorClassProvider() string {
 	if ex.resolved.ProtocolFamily == "bedrock_invoke" {
 		return "bedrock"
 	}
+	if ex.resolved.ProtocolFamily == "antigravity_session" ||
+		(ex.accInfo.Platform == credentialstore.VendorGemini && ex.accInfo.AccountType == credentialstore.AuthModeAntigravity) {
+		return credentialstore.VendorAntigravity
+	}
 	return ex.accInfo.Platform
 }
 
@@ -241,9 +246,10 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 	}
 	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 	agentTaskInvalid := ex.classifyAgentTaskInvalid(dispatchRes.StatusCode, errBody, &decision)
+	projectContextRejected := ex.classifyProjectContextRejected(classification, &decision)
 	var policyOutcome upstreamErrorPolicyOutcome
 	suppressHealth := false
-	if !agentTaskInvalid {
+	if !agentTaskInvalid && !projectContextRejected {
 		policyOutcome = ex.applyUpstreamErrorCooldown(&gateway.UpstreamHTTPError{
 			StatusCode: dispatchRes.StatusCode,
 			Header:     dispatchRes.Headers,
@@ -252,11 +258,12 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 		suppressHealth = ex.applyAccountErrorPolicy(&decision, classification, policyOutcome)
 	}
 	abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
-	if ex.healthKeyOK && !agentTaskInvalid && !policyOutcome.ModelScoped && !suppressHealth {
+	if ex.healthKeyOK && !agentTaskInvalid && !projectContextRejected && !policyOutcome.ModelScoped && !suppressHealth {
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, gateway.SignalFromClassification(dispatchRes.StatusCode, classification), dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
 	}
 	failure := classifiedFailureFromDecision("", clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, nil)
 	failure.AgentTaskInvalid = agentTaskInvalid
+	failure.ProjectContextRejected = projectContextRejected
 	failure.FallbackSignal = bindingFallbackSignalFromUpstream(dispatchRes.StatusCode, errBody, classification, decision)
 	return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, abortErr)
 }

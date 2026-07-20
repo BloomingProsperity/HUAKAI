@@ -61,9 +61,12 @@ func TestRerankSearchUnitsBilling(t *testing.T) {
 			if env.claims.reserves[0].req.EndpointFamily != "rerank" {
 				t.Fatalf("reserve EndpointFamily=%q want rerank", env.claims.reserves[0].req.EndpointFamily)
 			}
-			if env.settler.settles[0].Draft.TokensInput != 0 || env.settler.settles[0].Draft.TokensOutput != 0 {
-				t.Fatalf("Draft token counters input/output=%d/%d want 0/0 for search-unit billing",
+			if env.settler.settles[0].Draft.TokensInput <= 0 || env.settler.settles[0].Draft.TokensOutput != 0 {
+				t.Fatalf("Draft token counters input/output=%d/%d，期望保留输入估算且输出为 0",
 					env.settler.settles[0].Draft.TokensInput, env.settler.settles[0].Draft.TokensOutput)
+			}
+			if env.settler.settles[0].Draft.UsageSource != gateway.UsageSourceInferred || env.settler.settles[0].Draft.ConfidenceScore == nil || *env.settler.settles[0].Draft.ConfidenceScore != 0.5 {
+				t.Fatalf("usage source/confidence=%s/%v，期望 inferred/0.5", env.settler.settles[0].Draft.UsageSource, env.settler.settles[0].Draft.ConfidenceScore)
 			}
 			if len(env.settler.aborts) != 0 {
 				t.Fatalf("abort calls=%d want 0", len(env.settler.aborts))

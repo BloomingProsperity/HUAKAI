@@ -19,6 +19,7 @@ type ReleaseFunc = router.ReleaseFunc
 
 var (
 	ErrNoEligibleAccount         = router.ErrNoEligibleAccount
+	ErrGroupPolicyUnavailable    = router.ErrGroupPolicyUnavailable
 	ErrNoSlotAvailable           = router.ErrNoSlotAvailable
 	ErrBindingConcurrencyLimited = router.ErrBindingConcurrencyLimited
 	ErrSlotManagerUnavailable    = router.ErrSlotManagerUnavailable

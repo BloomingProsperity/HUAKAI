@@ -750,26 +750,43 @@ func TestAdminCredentialAcquisitionFinalizeEnrichesAntigravityProject(t *testing
 	}
 }
 
-func TestAdminCredentialAcquisitionFinalizeKeepsCredentialWhenProjectResolutionFails(t *testing.T) {
+func TestAdminCredentialAcquisitionFinalizeRejectsUnresolvedProjectWithoutWritingCredential(t *testing.T) {
 	resolver := &credentialAcqProjectResolverStub{err: errors.New("上游 project 暂不可用")}
 	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
 	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
 
 	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
 		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize"}}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("project 解析失败不得阻断创建：status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d，期望 503，body=%s", rec.Code, rec.Body.String())
 	}
 	created := fx.creator.inputsSnapshot()
-	if len(created) != 1 {
-		t.Fatalf("创建凭证数=%d，期望 1", len(created))
+	if len(created) != 0 {
+		t.Fatalf("项目身份未确认时不得写入凭据，实际创建数=%d", len(created))
 	}
-	var payload map[string]string
-	if err := json.Unmarshal(created[0].Payload, &payload); err != nil {
-		t.Fatalf("解析待处理载荷失败：%v", err)
+	if resolver.calls != 1 {
+		t.Fatalf("resolver 调用次数=%d，期望 1", resolver.calls)
 	}
-	if resolver.calls != 1 || payload["project_id"] != "" || payload["project_metadata_status"] != projectenrich.StatusOperatorAttention {
-		t.Fatalf("解析失败未保留待处理凭证：resolver=%+v payload=%s", resolver, created[0].Payload)
+	if !strings.Contains(rec.Body.String(), `"code":"project_metadata_unavailable"`) {
+		t.Fatalf("缺少稳定错误码：%s", rec.Body.String())
+	}
+}
+
+func TestAdminCredentialAcquisitionFinalizeRejectsProjectConflictWithoutWritingCredential(t *testing.T) {
+	resolver := &credentialAcqProjectResolverStub{projectRef: "upstream-project", tier: "g1-pro-tier"}
+	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
+	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
+		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize","project_id":"stored-project"}}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d，期望 409，body=%s", rec.Code, rec.Body.String())
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 0 {
+		t.Fatalf("项目身份冲突时不得写入凭据，实际创建数=%d", len(created))
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"project_metadata_conflict"`) {
+		t.Fatalf("缺少稳定错误码：%s", rec.Body.String())
 	}
 }
 

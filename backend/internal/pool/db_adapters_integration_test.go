@@ -615,6 +615,33 @@ func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testin
 	}
 }
 
+func TestDBAccountSourceListByPoolGroupSkipsDisabledProvider(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "src-provider-lifecycle")
+
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE providers SET enabled = false WHERE tenant_id = $1 AND id = $2`,
+		seed.tenantID, seed.providerID,
+	); err != nil {
+		t.Fatalf("停用供应商：%v", err)
+	}
+
+	accounts, err := NewDBAccountSource(dbbilling.New(pgPool)).ListAccounts(ctx, SelectionRequest{
+		TenantID:       seed.tenantID,
+		PoolGroupID:    seed.poolGroupID,
+		RequestedModel: "gpt-4.1-mini",
+		ProtocolFamily: "openai_chat",
+	})
+	if err != nil {
+		t.Fatalf("ListAccounts：%v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("停用供应商后仍返回候选账号：%+v", accounts)
+	}
+}
+
 func TestDBSlotManager_BindingConcurrencyHardCapAndLifecycle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()

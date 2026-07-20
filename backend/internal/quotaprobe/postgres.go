@@ -34,6 +34,7 @@ WHERE pa.enabled = true
 	      (ac.vendor = 'anthropic' AND ac.auth_mode = 'claude_ai_oauth')
 	      OR (ac.vendor = 'antigravity' AND ac.auth_mode = 'oauth')
 	      OR (ac.vendor = 'gemini' AND ac.auth_mode IN ('oauth', 'code_assist', 'google_one', 'antigravity'))
+	      OR (ac.vendor = 'openai' AND ac.auth_mode IN ('chatgpt_oauth', 'codex_cli_oauth', 'codex_web_oauth'))
 	      OR (ac.vendor = 'grok' AND ac.auth_mode = 'xai_oauth')
 	  )
   AND (

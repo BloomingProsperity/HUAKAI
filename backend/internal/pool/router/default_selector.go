@@ -95,7 +95,10 @@ func (s *DefaultSelector) Select(ctx context.Context, req SelectionRequest) (res
 	// 查库一次, 后续逐候选 Allow 复用其缓存, 避免 K 候选 ×2 循环重复查库。
 	// scoped 是局部副本, 不改 s.gates, 并发 Select 各自独立。
 	gates := s.gates.ForSelection(ctx, req)
-	eligible := s.filter(ctx, gates, accounts, req, reason)
+	eligible, err := s.filter(ctx, gates, accounts, req, reason)
+	if err != nil {
+		return nil, err
+	}
 	if len(eligible) == 0 {
 		// 池内无可用账号:估算最早恢复时刻并包进错误,供 HTTP 层算精确 Retry-After。
 		// 仅丰富错误内容,不改"返回哪个哨兵"的既有语义(Unwrap 保 errors.Is 成立)。
@@ -206,7 +209,7 @@ func (s *DefaultSelector) policy(ctx context.Context, req SelectionRequest) (*Ro
 	return s.policies.GetRoutingPolicy(ctx, req)
 }
 
-func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts []*AccountSnapshot, req SelectionRequest, reason *RoutingReasonBuilder) []*AccountSnapshot {
+func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts []*AccountSnapshot, req SelectionRequest, reason *RoutingReasonBuilder) ([]*AccountSnapshot, error) {
 	out := make([]*AccountSnapshot, 0, len(accounts))
 	for _, account := range accounts {
 		if account == nil {
@@ -214,7 +217,10 @@ func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts 
 		}
 		account = normalizeAccountSnapshotWeight(account)
 		ok, why, err := gates.Allow(ctx, account, req)
-		if err != nil || !ok {
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			reason.GateFailure(account.ID, why)
 			continue
 		}
@@ -232,7 +238,7 @@ func (s *DefaultSelector) filter(ctx context.Context, gates GateChain, accounts 
 		}
 		out = append(out, account)
 	}
-	return out
+	return out, nil
 }
 
 func (s *DefaultSelector) trySticky(ctx context.Context, gates GateChain, req SelectionRequest, candidates []*AccountSnapshot, layer RoutingLayer, reason *RoutingReasonBuilder, boundID int64, allowed bool, policy *RoutingPolicy) (*SelectionResult, bool, error) {
@@ -265,10 +271,10 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 		if policy != nil && policy.OperatorScoring {
 			reason.Scoring(policy.ScoringPolicyVersion, adaptiveContributions(account, s.currentTime()))
 		}
-		// 无 billing claim 的只读/辅助请求没有后续 settlement 来释放并发槽，
-		// SelectionResult 也不暴露 Release 闭包。此类请求只完成候选与 gate
-		// 判定，返回临时 token，避免 count-tokens 等入口把槽占到租约回收。
-		if req.ClaimID == 0 {
+		// 无 billing claim 且绑定未设置并发上限时无需制造槽位。绑定设置了
+		// 正上限的辅助请求仍须真实占槽，并由调用方通过返回的 Release 归还，
+		// 否则并发预检与实际占用之间存在竞态，多个请求可同时越过上限。
+		if req.ClaimID == 0 && req.MaxParallelRequests <= 0 {
 			reason.Account(account.ID)
 			return &SelectionResult{
 				AccountID:         account.ID,

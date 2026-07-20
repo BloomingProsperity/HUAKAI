@@ -1,18 +1,15 @@
 package credentialacq
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -21,9 +18,18 @@ const oauthFormResponseMaxBytes = 1 << 20
 const oauthDeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
 const (
-	openAICodexDeviceVerificationURI = "https://auth.openai.com/codex/device"
-	openAICodexDeviceRedirectURI     = "https://auth.openai.com/deviceauth/callback"
-	openAICodexOAuthTokenURL         = "https://auth.openai.com/oauth/token"
+	openAICodexDeviceAuthorizationURL = "https://auth.openai.com/api/accounts/deviceauth/usercode"
+	openAICodexDeviceTokenURL         = "https://auth.openai.com/api/accounts/deviceauth/token"
+	openAICodexDeviceVerificationURI  = "https://auth.openai.com/codex/device"
+	openAICodexDeviceRedirectURI      = "https://auth.openai.com/deviceauth/callback"
+	openAICodexOAuthTokenURL          = "https://auth.openai.com/oauth/token"
+)
+
+// 导出给定时刷新链复用，避免账号获取与续期使用不同的公开客户端身份。
+const (
+	OpenAICodexOAuthTokenURL     = openAICodexOAuthTokenURL
+	OpenAICodexOAuthClientID     = chatgptOAuthClientID
+	OpenAICodexOAuthRefreshScope = "openid profile email"
 )
 
 const (
@@ -32,24 +38,47 @@ const (
 	kimiOAuthTokenURL               = "https://auth.kimi.com/api/oauth/token"
 )
 
+const (
+	copilotOAuthClientID               = "Iv1.b507a08c87ecfe98"
+	copilotOAuthDeviceAuthorizationURL = "https://github.com/login/device/code"
+	copilotOAuthTokenURL               = "https://github.com/login/oauth/access_token"
+	copilotOAuthScope                  = "read:user"
+)
+
 // 导出供 credentialworker 做 token 刷新复用(单一事实来源)。
 const (
 	KimiOAuthTokenURL = kimiOAuthTokenURL
 	KimiOAuthClientID = kimiOAuthClientID
 )
 
-type deviceCodeExchanger struct{}
+type copilotDeviceCodeExchanger struct{}
 
-func NewDeviceCodeExchanger() Exchanger {
-	return deviceCodeExchanger{}
+func newCopilotDeviceCodeExchanger() Exchanger {
+	return copilotDeviceCodeExchanger{}
 }
 
-func (deviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+func (copilotDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, override OAuthClientConfig) (OAuthStartResult, error) {
+	cfg := OAuthClientConfig{
+		ClientID:   copilotOAuthClientID,
+		AuthURL:    copilotOAuthDeviceAuthorizationURL,
+		TokenURL:   copilotOAuthTokenURL,
+		Scopes:     []string{copilotOAuthScope},
+		Source:     ClientSourcePublicCLI,
+		HTTPClient: defaultDeviceCodeHTTPClient(),
+	}
+	// 公开客户端身份属于服务端合同。请求方只能注入测试/部署传输，不能替换
+	// client_id、授权端点或 scope，把管理员凭据引向任意 OAuth 服务。
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
+	in.Vendor = credentialstore.VendorCopilot
+	in.AuthMode = credentialstore.AuthModeCopilotOAuth
+	in.ClientIdentitySource = ClientSourcePublicCLI
 	return startDeviceAuthorization(ctx, store, in, cfg, AuthTypeDeviceCode)
 }
 
-func (deviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
-	return CredentialCandidate{}, errors.New("credentialacq: device-code flow does not use oauth callback exchange")
+func (copilotDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, errors.New("credentialacq: copilot device-code flow does not use oauth callback exchange")
 }
 
 type kimiDeviceCodeExchanger struct{}
@@ -118,17 +147,48 @@ func validateKimiOAuthEndpointURL(raw string) error {
 type openAICodexDeviceCodeExchanger struct{}
 
 func (openAICodexDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
-	if err := validateOpenAICodexOperatorDeviceCodeConfig(cfg); err != nil {
+	var err error
+	cfg, err = openAICodexDeviceCodeOAuthConfig(cfg)
+	if err != nil {
 		return OAuthStartResult{}, err
 	}
 	in.Vendor = credentialstore.VendorOpenAI
 	in.AuthMode = credentialstore.AuthModeCodexCLIOAuth
-	in.ClientIdentitySource = ClientSourceOperatorConfig
+	in.ClientIdentitySource = cfg.Source
 	return startOpenAICodexDeviceAuthorization(ctx, store, in, cfg)
 }
 
 func (openAICodexDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
 	return CredentialCandidate{}, errors.New("credentialacq: openai codex device-code flow does not use oauth callback exchange")
+}
+
+func openAICodexDeviceCodeOAuthConfig(override OAuthClientConfig) (OAuthClientConfig, error) {
+	if !hasOpenAICodexOperatorOverride(override) {
+		cfg := OAuthClientConfig{
+			AuthURL:     openAICodexDeviceAuthorizationURL,
+			TokenURL:    openAICodexDeviceTokenURL,
+			ClientID:    chatgptOAuthClientID,
+			RedirectURI: openAICodexDeviceRedirectURI,
+			Scopes:      strings.Fields(chatgptOAuthScope),
+			Source:      ClientSourcePublicCLI,
+			HTTPClient:  defaultDeviceCodeHTTPClient(),
+		}
+		if override.HTTPClient != nil {
+			cfg.HTTPClient = override.HTTPClient
+		}
+		return cfg, nil
+	}
+	if err := validateOpenAICodexOperatorDeviceCodeConfig(override); err != nil {
+		return OAuthClientConfig{}, err
+	}
+	return override, nil
+}
+
+func hasOpenAICodexOperatorOverride(cfg OAuthClientConfig) bool {
+	return strings.TrimSpace(cfg.AuthURL) != "" || strings.TrimSpace(cfg.TokenURL) != "" ||
+		strings.TrimSpace(cfg.ClientID) != "" || strings.TrimSpace(cfg.ClientSecret) != "" ||
+		strings.TrimSpace(cfg.RedirectURI) != "" || len(trimmedFields(cfg.Scopes)) > 0 ||
+		(strings.TrimSpace(cfg.Source) != "" && strings.TrimSpace(cfg.Source) != ClientSourcePublicCLI)
 }
 
 func validateOpenAICodexOperatorDeviceCodeConfig(cfg OAuthClientConfig) error {
@@ -602,197 +662,4 @@ func exchangeOpenAICodexAuthorizationCode(ctx context.Context, client *http.Clie
 		return nil, fmt.Errorf("%w: openai codex oauth exchange missing access token", ErrInvalidTokenShape)
 	}
 	return normalizedTokenPayload(response, token)
-}
-
-func postJSON(ctx context.Context, client *http.Client, url string, body map[string]any, out any) error {
-	status, err := postJSONStatus(ctx, client, url, body, out)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("credentialacq: endpoint returned status %d", status)
-	}
-	return nil
-}
-
-func postJSONStatus(ctx context.Context, client *http.Client, url string, body map[string]any, out any) (int, error) {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return 0, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, oauthFormResponseMaxBytes+1))
-	if err != nil {
-		return resp.StatusCode, err
-	}
-	if len(respBody) > oauthFormResponseMaxBytes {
-		return resp.StatusCode, ErrResponseTooLarge
-	}
-	if len(respBody) > 0 && out != nil {
-		if err := json.Unmarshal(respBody, out); err != nil {
-			return resp.StatusCode, err
-		}
-	}
-	return resp.StatusCode, nil
-}
-
-func postFormJSON(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
-	if client == nil {
-		client = defaultDeviceCodeHTTPClient()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, oauthFormResponseMaxBytes+1))
-	if err != nil {
-		return resp.StatusCode, err
-	}
-	if len(respBody) > oauthFormResponseMaxBytes {
-		return resp.StatusCode, ErrResponseTooLarge
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return resp.StatusCode, fmt.Errorf("credentialacq: endpoint returned status %d", resp.StatusCode)
-	}
-	if len(respBody) > 0 && out != nil {
-		if err := json.Unmarshal(respBody, out); err != nil {
-			return resp.StatusCode, err
-		}
-	}
-	return resp.StatusCode, nil
-}
-
-func normalizedTokenPayload(response map[string]any, accessToken string) ([]byte, error) {
-	payload := map[string]any{"access_token": strings.TrimSpace(accessToken)}
-	copyFirstStringField(payload, response, "refresh_token", "refresh_token", "refreshToken")
-	copyFirstStringField(payload, response, "id_token", "id_token", "idToken")
-	copyFirstStringField(payload, response, "token_type", "token_type", "tokenType")
-	copyFirstStringField(payload, response, "scope", "scope")
-	copyFirstStringField(payload, response, "chatgpt_plan_type", "chatgpt_plan_type", "plan_type", "subscription_plan")
-	copyFirstStringField(payload, response, "chatgpt_account_id", "chatgpt_account_id", "account_id", "accountId")
-	copyFirstStringField(payload, response, "chatgpt_user_id", "chatgpt_user_id", "user_id", "userId")
-	copyFirstStringField(payload, response, "email", "email")
-	for _, key := range []string{"expires_in", "expiresIn"} {
-		if value, ok := response[key]; ok && value != nil {
-			payload["expires_in"] = value
-			break
-		}
-	}
-	return json.Marshal(payload)
-}
-
-func copyFirstStringField(out, in map[string]any, target string, aliases ...string) {
-	for _, alias := range aliases {
-		if value := stringField(in, alias); value != "" {
-			out[target] = value
-			return
-		}
-	}
-}
-
-func mergeRedactedContext(base map[string]any, extra map[string]any) map[string]any {
-	out := map[string]any{}
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range extra {
-		if strings.TrimSpace(k) != "" && v != nil {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func issuedAtFromPayload(payload map[string]any, fallback time.Time) time.Time {
-	if raw := stringFromPayload(payload, "issued_at"); raw != "" {
-		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-			return parsed
-		}
-	}
-	return fallback
-}
-
-func stringFromPayload(payload map[string]any, key string) string {
-	return stringField(payload, key)
-}
-
-func intFromPayload(payload map[string]any, key string) int {
-	if payload == nil {
-		return 0
-	}
-	switch value := payload[key].(type) {
-	case int:
-		return value
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	case json.Number:
-		n, _ := value.Int64()
-		return int(n)
-	case string:
-		var n int
-		_, _ = fmt.Sscanf(strings.TrimSpace(value), "%d", &n)
-		return n
-	default:
-		return 0
-	}
-}
-
-func firstPositive(values ...int) int {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func sleepDeviceContext(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func resolveOpenAICodexOAuthTokenURL(deviceTokenURL string) string {
-	u, err := url.Parse(strings.TrimSpace(deviceTokenURL))
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return openAICodexOAuthTokenURL
-	}
-	u.Path = "/oauth/token"
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String()
-}
-
-// defaultDeviceCodeHTTPClient 返回 device-code OAuth 默认 HTTP client。必须是 SSRF-protected
-// (拦截 169.254.169.254 / 内网 / loopback),因为 auth_url/token_url 是运维/admin 提供的,裸
-// http.DefaultClient 会让恶意端点把请求打到内网/元数据服务。与 oauth_authorization_code.go 一致。
-func defaultDeviceCodeHTTPClient() *http.Client {
-	return auth.NewSSRFProtectedOAuthClient(&http.Client{Timeout: 30 * time.Second})
 }

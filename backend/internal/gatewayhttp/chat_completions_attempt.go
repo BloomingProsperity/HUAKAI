@@ -67,6 +67,8 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			PoolGroupID:         binding.PoolGroupID,
 			ProviderModelID:     providerModelID,
 			BindingID:           binding.BindingID,
+			BindingRPMLimit:     deref32OrZero(binding.RPMLimit),
+			BindingTPMLimit:     deref32OrZero(binding.TPMLimit),
 			MaxParallelRequests: deref32OrZero(binding.MaxParallelRequests),
 			Priority:            binding.Priority,
 			Weight:              binding.Weight,
@@ -129,11 +131,12 @@ type classifiedAttemptFailure struct {
 	// override-1: 401 的 upstream_auth_failure 不在
 	// RoutePlan.RetryableEndClasses 中，executor 必须同时检查
 	// Decision.CountsAgainstAuthFailoverBudget。
-	Decision          gateway.AttemptRetryDecision
-	EndClass          gateway.StreamEndClass
-	RetryAfterSeconds int
-	FallbackSignal    bindingfallback.Signal
-	AgentTaskInvalid  bool
+	Decision               gateway.AttemptRetryDecision
+	EndClass               gateway.StreamEndClass
+	RetryAfterSeconds      int
+	FallbackSignal         bindingfallback.Signal
+	AgentTaskInvalid       bool
+	ProjectContextRejected bool
 
 	DeliveredToClient bool
 	AbortReason       string

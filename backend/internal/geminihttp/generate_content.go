@@ -27,6 +27,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
+	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -239,7 +240,7 @@ type countTokensAttemptOutcome struct {
 
 func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, requestID string, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}, transition *bindingfallback.Transition) countTokensAttemptOutcome {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
-	selRes, failure := relay.selectAccount(ctx, requestID, ident, model, resolved, attempt, attemptSeq, excludedAccounts)
+	selRes, failure := relay.selectAccount(ctx, requestID, ident, model, body, resolved, attempt, attemptSeq, excludedAccounts)
 	if failure != nil {
 		return countTokensAttemptOutcome{failure: failure}
 	}
@@ -330,26 +331,30 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 	return plan, true
 }
 
-func (relay *countTokensRelay) selectAccount(ctx context.Context, requestID string, ident auth.Identity, model string, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}) (*pool.SelectionResult, *fallbackexec.Failure) {
+func (relay *countTokensRelay) selectAccount(ctx context.Context, requestID string, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}) (*pool.SelectionResult, *fallbackexec.Failure) {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, err := relay.d.Selector.Select(ctx, pool.SelectionRequest{
-		TenantID:            ident.TenantID,
-		UserID:              ident.UserID,
-		APIKeyID:            ident.APIKeyID,
-		PoolGroupID:         attempt.PoolGroupID,
-		RequestedModel:      model,
-		ModelCooldownKey:    upstreamModelID,
-		ProtocolFamily:      resolved.ProtocolFamily,
-		EndpointFamily:      "gemini_count_tokens",
-		AttemptSeq:          attemptSeq,
-		RequestID:           requestID,
-		CapabilityFlags:     attempt.RequiredCapabilities,
-		Vendor:              pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
-		UserGroup:           ident.UserGroup,
-		SelectionMode:       attempt.SelectionMode,
-		BindingID:           attempt.BindingID,
-		MaxParallelRequests: attempt.MaxParallelRequests,
-		ExcludedAccounts:    excludedAccounts,
+		TenantID:             ident.TenantID,
+		UserID:               ident.UserID,
+		APIKeyID:             ident.APIKeyID,
+		PoolGroupID:          attempt.PoolGroupID,
+		RequestedModel:       model,
+		ModelCooldownKey:     upstreamModelID,
+		ProtocolFamily:       resolved.ProtocolFamily,
+		EndpointFamily:       "gemini_count_tokens",
+		AttemptSeq:           attemptSeq,
+		RequestID:            requestID,
+		CapabilityFlags:      attempt.RequiredCapabilities,
+		Vendor:               pool.VendorFromProtocolFamily(resolved.ProtocolFamily),
+		UserGroup:            ident.UserGroup,
+		SelectionMode:        attempt.SelectionMode,
+		BindingID:            attempt.BindingID,
+		BindingRPMLimit:      attempt.BindingRPMLimit,
+		BindingTPMLimit:      attempt.BindingTPMLimit,
+		MaxParallelRequests:  attempt.MaxParallelRequests,
+		EstimatedInputTokens: tokenestimate.Estimate(body, resolved.ProtocolFamily),
+		ModelContextWindow:   resolved.ContextWindow,
+		ExcludedAccounts:     excludedAccounts,
 	})
 	if err != nil || selRes == nil || selRes.AccountID == 0 || selRes.WaitPlan != nil {
 		failureErr := err
@@ -519,6 +524,8 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 			PoolGroupID:         binding.PoolGroupID,
 			ProviderModelID:     providerModelID,
 			BindingID:           binding.BindingID,
+			BindingRPMLimit:     geminiBindingLimit(binding.RPMLimit),
+			BindingTPMLimit:     geminiBindingLimit(binding.TPMLimit),
 			MaxParallelRequests: geminiBindingMaxParallelRequests(binding.MaxParallelRequests),
 			Priority:            binding.Priority,
 			Weight:              binding.Weight,
@@ -527,6 +534,13 @@ func routerPoolMetadataFromRegistry(resolved registry.Resolved) []router.PoolCan
 		})
 	}
 	return out
+}
+
+func geminiBindingLimit(v *int32) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
 }
 
 func geminiBindingMaxParallelRequests(v *int32) int64 {

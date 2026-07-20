@@ -15,8 +15,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
-	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const (
@@ -24,116 +22,13 @@ const (
 	defaultRetryAfter     = time.Minute
 	defaultMaxRetryAfter  = time.Hour
 	defaultAccessTokenTTL = time.Hour
-	refreshSucceeded      = "refresh_succeeded"
-	failurePayloadInvalid = "payload_invalid"
-	failureUnknown        = "unknown"
-	failureVendorMismatch = "provider_mismatch"
-	windsurfSessionMode   = "windsurf_session"
-	windsurfOAuthMode     = "windsurf_oauth"
 )
 
 var (
-	ErrWindsurfAuthExpired    = errors.New("windsurf refresh: authorization expired")
-	ErrWindsurfRateLimited    = errors.New("windsurf refresh: rate limit exceeded")
-	ErrWindsurfTransient      = errors.New("windsurf refresh: transient upstream failure")
-	ErrWindsurfRecordMismatch = errors.New("windsurf refresh: credential record is not windsurf oauth")
+	ErrWindsurfAuthExpired = errors.New("windsurf refresh: authorization expired")
+	ErrWindsurfRateLimited = errors.New("windsurf refresh: rate limit exceeded")
+	ErrWindsurfTransient   = errors.New("windsurf refresh: transient upstream failure")
 )
-
-type RefreshStore interface {
-	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
-	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
-	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
-}
-
-type Refresher struct {
-	Store               RefreshStore
-	Adapter             RefreshAdapter
-	Now                 func() time.Time
-	requireAccountLease bool
-}
-
-type Option func(*Refresher)
-
-func WithRefreshAdapter(adapter RefreshAdapter) Option {
-	return func(r *Refresher) { r.Adapter = adapter }
-}
-
-func WithHTTPClient(client *http.Client) Option {
-	return func(r *Refresher) { r.Adapter.HTTPClient = client }
-}
-
-func WithTokenURL(tokenURL string) Option {
-	return func(r *Refresher) { r.Adapter.TokenURL = tokenURL }
-}
-
-func WithClientID(clientID string) Option {
-	return func(r *Refresher) { r.Adapter.ClientID = clientID }
-}
-
-func WithNow(now func() time.Time) Option {
-	return func(r *Refresher) {
-		r.Now = now
-		r.Adapter.Now = now
-	}
-}
-
-func (r *Refresher) Refresh(ctx context.Context, accountID int64) error {
-	return r.refresh(ctx, 0, accountID)
-}
-
-func (r *Refresher) RefreshForProvider(ctx context.Context, _ int64, accountID int64) error {
-	return r.refresh(ctx, 0, accountID)
-}
-
-func (r *Refresher) refresh(ctx context.Context, _ int64, accountID int64) error {
-	if r == nil || r.Store == nil {
-		return errors.New("windsurf refresh: credential refresh store missing")
-	}
-	rec, err := r.Store.LoadForRefresh(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	if r.requireAccountLease {
-		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
-			return err
-		}
-	}
-	defer privacy.Zeroize(rec.PlaintextPayload)
-	if !isWindsurfOAuthRecord(rec) {
-		return fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrWindsurfRecordMismatch, rec.Vendor, rec.AuthMode, accountID)
-	}
-	refreshErr, persistErr := r.refreshLockedRecord(ctx, r.Store, accountID, rec)
-	return errors.Join(refreshErr, persistErr)
-}
-
-func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshStore, accountID int64, rec credentialstore.CredentialRecord) (error, error) {
-	if !isWindsurfOAuthRecord(rec) {
-		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrWindsurfRecordMismatch, rec.Vendor, rec.AuthMode, accountID)
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureVendorMismatch, r.now().Add(defaultRetryAfter)); saveErr != nil {
-			return nil, saveErr
-		}
-		return err, nil
-	}
-	payload, expiresAt, err := r.Adapter.RefreshForProvider(ctx, accountID, WindsurfVendor, rec.PlaintextPayload)
-	if err != nil {
-		failureClass := classifyRefreshFailure(err)
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureClass, nextAttemptForRefreshError(err, r.now())); saveErr != nil {
-			return nil, saveErr
-		}
-		return auth.WithRefreshAuditOutcome(err, failureClass), nil
-	}
-	if err := txStore.SaveRefreshSuccess(ctx, rec, payload, expiresAt, refreshSucceeded); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-func (r *Refresher) now() time.Time {
-	if r != nil && r.Now != nil {
-		return r.Now().UTC()
-	}
-	return time.Now().UTC()
-}
 
 type RefreshAdapter struct {
 	TokenURL   string
@@ -193,12 +88,12 @@ func (a RefreshAdapter) postRefresh(ctx context.Context, tokenURL string, form u
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.httpClient().Do(req)
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return tokenResponse{}, &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), Retryable: true, Cause: err}
+		return tokenResponse{}, &RefreshError{Outcome: string(auth.OutcomeTransientError), Retryable: true, Cause: err}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return tokenResponse{}, classifyHTTPRefreshError(resp.StatusCode, resp.Header, body, a.now())
@@ -301,44 +196,19 @@ func classifyHTTPRefreshError(status int, header http.Header, body []byte, now t
 	switch {
 	case status == http.StatusTooManyRequests:
 		return &RefreshError{
-			Outcome:    string(credentialworker.OutcomeRateLimit),
+			Outcome:    string(auth.OutcomeRateLimit),
 			StatusCode: status,
 			Retryable:  false,
 			RetryAfter: now.Add(parseRetryAfter(header, now)),
 			Cause:      ErrWindsurfRateLimited,
 		}
 	case status >= http.StatusInternalServerError && status <= 599:
-		return &RefreshError{Outcome: string(credentialworker.OutcomeTransientError), StatusCode: status, Retryable: true, Cause: ErrWindsurfTransient}
+		return &RefreshError{Outcome: string(auth.OutcomeTransientError), StatusCode: status, Retryable: true, Cause: ErrWindsurfTransient}
 	case status == http.StatusUnauthorized || code == "invalid_grant":
-		return &RefreshError{Outcome: string(credentialworker.OutcomeAuthExpired), StatusCode: status, Retryable: false, Cause: ErrWindsurfAuthExpired}
+		return &RefreshError{Outcome: string(auth.OutcomeAuthExpired), StatusCode: status, Retryable: false, Cause: ErrWindsurfAuthExpired}
 	default:
-		return &RefreshError{Outcome: string(credentialworker.ClassifyRefreshError(errors.New(string(body)), WindsurfVendor, status)), StatusCode: status, Retryable: false}
+		return &RefreshError{Outcome: string(auth.ClassifyRefreshError(errors.New(string(body)), WindsurfVendor, status)), StatusCode: status, Retryable: false}
 	}
-}
-
-func classifyRefreshFailure(err error) string {
-	var refreshErr *RefreshError
-	if errors.As(err, &refreshErr) && refreshErr.Outcome != "" {
-		return refreshErr.Outcome
-	}
-	if errors.Is(err, credentialstore.ErrInvalidPayload) {
-		return failurePayloadInvalid
-	}
-	if errors.Is(err, ErrWindsurfRecordMismatch) {
-		return failureVendorMismatch
-	}
-	if outcome := credentialworker.ClassifyRefreshError(err, WindsurfVendor, 0); outcome != credentialworker.OutcomeUnknown {
-		return string(outcome)
-	}
-	return failureUnknown
-}
-
-func nextAttemptForRefreshError(err error, now time.Time) time.Time {
-	var refreshErr *RefreshError
-	if errors.As(err, &refreshErr) && refreshErr.RetryAfter.After(now) {
-		return refreshErr.RetryAfter.UTC()
-	}
-	return now.Add(defaultRetryAfter).UTC()
 }
 
 func oauthErrorCode(body []byte) string {
@@ -421,26 +291,5 @@ func credentialString(cred map[string]any, key string) string {
 		return strings.TrimSpace(strconv.FormatFloat(v, 'f', -1, 64))
 	default:
 		return ""
-	}
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if trimmed := strings.TrimSpace(v); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func isWindsurfOAuthRecord(rec credentialstore.CredentialRecord) bool {
-	if credentialstore.Normalize(rec.Vendor) != WindsurfVendor {
-		return false
-	}
-	switch credentialstore.Normalize(rec.AuthMode) {
-	case WindsurfAuthModeOAuth, windsurfOAuthMode, windsurfSessionMode:
-		return true
-	default:
-		return false
 	}
 }

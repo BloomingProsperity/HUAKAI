@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,15 @@ const (
 	xaiOAuthTokenURL = "https://auth.x.ai/oauth2/token"
 	xaiOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
+
+	AntigravityOAuthAuthURL         = "https://accounts.google.com/o/oauth2/v2/auth"
+	AntigravityOAuthTokenURL        = "https://oauth2.googleapis.com/token"
+	AntigravityOAuthRedirectURI     = "http://127.0.0.1:1455/auth/callback"
+	AntigravityOAuthClientIDEnv     = "HUAKAI_ANTIGRAVITY_OAUTH_CLIENT_ID"
+	AntigravityOAuthClientSecretEnv = "HUAKAI_ANTIGRAVITY_OAUTH_CLIENT_SECRET"
+	AntigravityPublicCLIScope       = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs"
+	antigravityBuiltinClientID      = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+	antigravityBuiltinClientSecret  = "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"
 )
 
 // 导出供 credentialworker 做 token 刷新复用(单一事实来源)。
@@ -52,11 +62,13 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth), newClaudeAIOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeCodeAssist))
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne), newGeminiPublicCLIOAuthExchanger(credentialstore.AuthModeGoogleOne))
-	// gemini/antigravity 的导入凭据已经可以用内置公开客户端刷新；交互式
-	// acquisition 因本切片没有确认授权页地址，继续明确 fail-closed，绝不把
-	// JSON-token 形状的回调码当作授权码交换结果。
 	register(credentialstore.ModeKey(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity),
-		newFailClosedExchanger("gemini/antigravity 交互式 OAuth acquisition 尚缺已确认的授权页地址；请先使用 CLI token 导入"))
+		newAuthorizationCodeOAuthExchanger(
+			credentialstore.VendorGemini,
+			credentialstore.AuthModeAntigravity,
+			TokenShapeAnySessionOrAccess,
+			AntigravityPublicCLIConfig(),
+		))
 	register("gemini/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), newChatGPTOAuthExchanger())
 	register(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth), openAICodexDeviceCode)
@@ -66,18 +78,19 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	register("openai_codex/device-code", openAICodexDeviceCode)
 	register("openai_codex/device_code", openAICodexDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock), NewSSOExchanger())
-	register("antigravity/oauth", newAuthorizationCodeOAuthExchanger(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, TokenShapeAnySessionOrAccess))
+	register("antigravity/oauth", newAuthorizationCodeOAuthExchanger(
+		credentialstore.VendorAntigravity,
+		credentialstore.AuthModeOAuth,
+		TokenShapeAnySessionOrAccess,
+		AntigravityPublicCLIConfig(),
+	))
 	register(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth),
 		newAuthorizationCodeOAuthExchanger(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, TokenShapeAccessRefresh, xaiOAuthConfig()))
-	register("copilot/device_code", NewDeviceCodeExchanger())
+	copilotDeviceCode := newCopilotDeviceCodeExchanger()
+	register(credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth), copilotDeviceCode)
+	register("copilot/device_code", copilotDeviceCode)
 	register(credentialstore.ModeKey(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth), newKimiDeviceCodeExchanger())
 	register("kiro/sso", NewSSOExchanger())
-	// copilot/copilot_oauth 的 ModePlan 暴露为 FlowKindOAuth(types.go),但此前没有为该 mode key
-	// 注册任何 acquisition exchanger —— 回调会走到 vendor 级 fallback miss 后才返回 ErrOAuthExchangerMissing
-	// (模糊、且只在回调期才暴露)。callback acquisition 尚未实现,这里显式 fail-closed(明确 ErrFeatureDisabled),
-	// 并让 copilot 凭据仍可经 device_code / JSON import 获取。完整 copilot_oauth callback acquisition 记 roadmap。
-	register(credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth),
-		newFailClosedExchanger("copilot/copilot_oauth callback acquisition 未实现;请用 device_code 或 JSON import"))
 	// cursor/oauth 无对应 ModePlan、windsurf/oauth 的 ModePlan 实为 FlowKindTokenExchange(types.go),
 	// 两个 fake exchanger 注册已成孤儿(orphaned dead/dangerous wiring)。移除,确保默认 registry 不残留任何
 	// 会把回调码当 JSON 凭据吞下的 fake exchanger。
@@ -89,6 +102,26 @@ func xaiOAuthConfig() OAuthClientConfig {
 		AuthURL: xaiOAuthAuthURL, TokenURL: xaiOAuthTokenURL,
 		ClientID: xaiOAuthClientID, Scopes: strings.Fields(xaiOAuthScope),
 		Source: ClientSourceOperatorConfig,
+	}
+}
+
+// AntigravityPublicCLIConfig 是导入、授权码交换和刷新共同使用的公开客户端身份。
+// 环境变量只允许部署者替换整套公开客户端凭据，不允许单次请求注入不同身份。
+func AntigravityPublicCLIConfig() OAuthClientConfig {
+	clientID := strings.TrimSpace(os.Getenv(AntigravityOAuthClientIDEnv))
+	if clientID == "" {
+		clientID = antigravityBuiltinClientID
+	}
+	clientSecret := strings.TrimSpace(os.Getenv(AntigravityOAuthClientSecretEnv))
+	if clientSecret == "" {
+		clientSecret = antigravityBuiltinClientSecret
+	}
+	return OAuthClientConfig{
+		AuthURL: AntigravityOAuthAuthURL, TokenURL: AntigravityOAuthTokenURL,
+		ClientID: clientID, ClientSecret: clientSecret,
+		RedirectURI: AntigravityOAuthRedirectURI,
+		Scopes:      strings.Fields(AntigravityPublicCLIScope),
+		Source:      ClientSourcePublicCLI,
 	}
 }
 
@@ -232,6 +265,9 @@ func ValidateOAuthModeConsistency(plans []ModePlan, registry *ExchangerRegistry)
 		}
 		if _, isFake := exc.(pkceFakeExchanger); isFake {
 			problems = append(problems, fmt.Sprintf("%s: 注册的是 fake exchanger(会把回调码当 JSON 凭据接受)", key))
+		}
+		if _, disabled := exc.(failClosedExchanger); disabled {
+			problems = append(problems, fmt.Sprintf("%s: 注册的是停用 exchanger(入口会稳定失败)", key))
 		}
 	}
 	if len(problems) > 0 {

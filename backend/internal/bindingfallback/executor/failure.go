@@ -42,6 +42,9 @@ func PoolFailure(err error) *Failure {
 	case errors.Is(err, pool.ErrKeyRateLimited):
 		return newFailure(bindingfallback.SignalKeyRateLimit, false, http.StatusTooManyRequests,
 			clienterr.CodeKeyRateLimited, "key_rate_limited", 1)
+	case errors.Is(err, pool.ErrGroupPolicyUnavailable):
+		return newFailure(bindingfallback.SignalLocalConfigurationFailure, false, http.StatusServiceUnavailable,
+			clienterr.CodeGroupPolicyUnavailable, "group_policy_unavailable", 0)
 	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
 		return newFailure(SignalFromPoolError(err), true, http.StatusServiceUnavailable,
 			clienterr.CodeNoCapacity, "pool_no_capacity", 0)

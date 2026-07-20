@@ -56,6 +56,16 @@ func TestObserveFailureReturnsOnlyExactConfiguredPhase(t *testing.T) {
 	}
 }
 
+func TestPoolFailureGroupPolicyUnavailableIsTerminal503(t *testing.T) {
+	failure := PoolFailure(errors.Join(errors.New("db unavailable"), pool.ErrGroupPolicyUnavailable))
+	if failure.Status != http.StatusServiceUnavailable || failure.Code != "group_policy_unavailable" {
+		t.Fatalf("failure=%+v want dedicated 503 group_policy_unavailable", failure)
+	}
+	if failure.RetryPermitted || !bindingfallback.IsTerminal(failure.Signal) {
+		t.Fatalf("策略真相未知不得重试到其它池: %+v", failure)
+	}
+}
+
 func TestDispatchFailureDistinguishesTransientAndLocal(t *testing.T) {
 	transient := DispatchFailure(errors.New("dial tcp: connection refused"))
 	if transient.Signal != bindingfallback.SignalTransientConnectionFailure || !transient.RetryPermitted {
