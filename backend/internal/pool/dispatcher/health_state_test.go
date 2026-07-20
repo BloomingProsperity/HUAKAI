@@ -148,8 +148,8 @@ func TestDBAccountSourceReactivatesExpiredHealthState(t *testing.T) {
 	).Scan(&state, &until); err != nil {
 		t.Fatalf("read recovered health state: %v", err)
 	}
-	if state != "healthy" || until != nil {
-		t.Fatalf("expired account health=(%q,%v), want healthy with NULL until", state, until)
+	if state != "revoked" || until == nil {
+		t.Fatalf("expired account persisted health=(%q,%v), want original state retained by read-only selection", state, until)
 	}
 }
 

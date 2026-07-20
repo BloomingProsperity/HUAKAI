@@ -345,6 +345,72 @@ func TestDBSlotManager_Release_Idempotent(t *testing.T) {
 	}
 }
 
+func TestDBSlotManagerBindingWaiterDoesNotStarvePool(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	seedPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, seedPool, "slot-lock-pool")
+
+	cfg := seedPool.Config().Copy()
+	cfg.MaxConns = 2
+	cfg.MinConns = 0
+	limitedPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建双连接测试池: %v", err)
+	}
+	t.Cleanup(limitedPool.Close)
+
+	holder, err := limitedPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("获取锁持有连接: %v", err)
+	}
+	holderQueries := dbbilling.New(holder)
+	if err := holderQueries.AcquireBindingConcurrencyLock(ctx, seed.bindingID); err != nil {
+		holder.Release()
+		t.Fatalf("持有绑定锁: %v", err)
+	}
+
+	mgr := NewDBSlotManager(limitedPool)
+	resultCh := make(chan *AcquireResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, acquireErr := mgr.Acquire(ctx,
+			&AccountSnapshot{ID: seed.providerAccountID, TenantID: seed.tenantID, MaxConcurrency: 2},
+			SelectionRequest{TenantID: seed.tenantID, ClaimID: seed.claimID, AttemptSeq: 1,
+				BindingID: seed.bindingID, MaxParallelRequests: 3})
+		resultCh <- result
+		errCh <- acquireErr
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	probeCtx, probeCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	probe, err := limitedPool.Acquire(probeCtx)
+	probeCancel()
+	if err != nil {
+		_, _ = holderQueries.ReleaseBindingConcurrencyLock(context.Background(), seed.bindingID)
+		holder.Release()
+		t.Fatalf("等待绑定锁的请求占满连接池: %v", err)
+	}
+	probe.Release()
+
+	if unlocked, err := holderQueries.ReleaseBindingConcurrencyLock(ctx, seed.bindingID); err != nil || !unlocked {
+		holder.Release()
+		t.Fatalf("释放测试绑定锁: unlocked=%v err=%v", unlocked, err)
+	}
+	holder.Release()
+
+	result := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("锁释放后 Acquire 应成功: %v", err)
+	}
+	if result == nil || result.Release == nil {
+		t.Fatal("Acquire 未返回可释放的 slot")
+	}
+	if err := result.Release(ctx); err != nil {
+		t.Fatalf("释放 slot: %v", err)
+	}
+}
+
 func TestDBAccountSource_ListByPoolGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

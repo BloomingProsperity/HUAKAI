@@ -35,17 +35,20 @@ func NextMerkleRoot(prev [32]byte, entryHash [32]byte) [32]byte {
 	return out
 }
 
-// VerifyChain 校验给定 entries 列表的 Merkle 链完整性：
-//   - 第一条 PrevMerkleRoot 必须等于 ZeroRoot
+// VerifyChain 校验给定 entries 列表中每个租户的 Merkle 链完整性：
+//   - 每个租户第一条 PrevMerkleRoot 必须等于 ZeroRoot
 //   - 每条 MerkleRoot 必须等于 NextMerkleRoot(PrevMerkleRoot, EntryHash(self))
-//   - 每条的 PrevMerkleRoot 必须等于前一条的 MerkleRoot
+//   - 每条的 PrevMerkleRoot 必须等于同租户前一条的 MerkleRoot
+//
+// entries 可以是多个租户按写入时间交错排列的全局快照。
 func VerifyChain(entries []LedgerEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	prev := ZeroRoot
+	previousByTenant := make(map[int64][32]byte)
 	for i := range entries {
 		e := &entries[i]
+		prev := previousByTenant[e.TenantID]
 		if e.PrevMerkleRoot != prev {
 			return &ChainError{Index: i, Reason: "prev_merkle_root_mismatch"}
 		}
@@ -57,7 +60,7 @@ func VerifyChain(entries []LedgerEntry) error {
 		if e.MerkleRoot != expected {
 			return &ChainError{Index: i, Reason: "merkle_root_mismatch"}
 		}
-		prev = e.MerkleRoot
+		previousByTenant[e.TenantID] = e.MerkleRoot
 	}
 	return nil
 }

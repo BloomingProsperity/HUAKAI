@@ -22,6 +22,12 @@ func TestAIAwareTimeout_ExemptsRelayPathsFromTotalTimeout(t *testing.T) {
 	if hasDeadline("POST", "/v1/chat/completions") {
 		t.Fatal("/v1/chat/completions must NOT carry a total-timeout deadline (would cut long streams/reasoning)")
 	}
+	if hasDeadline("POST", "/v1/completions") {
+		t.Fatal("/v1/completions must NOT carry a total-timeout deadline")
+	}
+	if hasDeadline("POST", "/v1/messages/count_tokens") {
+		t.Fatal("/v1/messages/count_tokens must NOT carry a total-timeout deadline")
+	}
 	if hasDeadline("POST", "/v1/messages") {
 		t.Fatal("/v1/messages must NOT carry a total-timeout deadline")
 	}

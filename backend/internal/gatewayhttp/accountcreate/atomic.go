@@ -73,16 +73,19 @@ type CredentialCompatLookup interface {
 }
 
 // ValidateCredentialCompatibility 校验将写入 account 的新凭据 vendor/auth 与账号 provider
-// family 兼容(收敛 G1 account-first + R1A credential-写入守卫)。查不到账号/协议时返回 nil
-// (fail-open,交调用方 Create / 运行时兼容检查兜底)。
+// family 兼容。账号或协议查询失败时必须阻止写入，避免数据库故障或错误租户让兼容性守卫
+// 静默失效。
 func ValidateCredentialCompatibility(ctx context.Context, lookup CredentialCompatLookup, tenantID, accountID int64, vendor, authMode string) error {
+	if lookup == nil || tenantID <= 0 || accountID <= 0 {
+		return errors.New("provider account credential compatibility lookup input invalid")
+	}
 	acct, err := lookup.GetAdminProviderAccount(ctx, admindb.GetAdminProviderAccountParams{ID: accountID, TenantID: tenantID})
 	if err != nil {
-		return nil
+		return fmt.Errorf("load provider account for credential compatibility: %w", err)
 	}
 	family, err := lookup.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{TenantID: tenantID, ProviderID: acct.ProviderID})
 	if err != nil {
-		return nil
+		return fmt.Errorf("load provider protocol for credential compatibility: %w", err)
 	}
 	return ValidateProtocolCompatibility(family, acct.AccountType, vendor, authMode)
 }

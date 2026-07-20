@@ -1,41 +1,13 @@
 package antigravity
 
-import (
-	"context"
-
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
-)
+import "github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 
 func NewRefresher(store *credentialstore.Store, opts ...Option) *Refresher {
-	r := &Refresher{Store: credentialStoreRefreshAdapter{store: store}}
+	r := &Refresher{Store: store, requireAccountLease: true}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(r)
 		}
 	}
 	return r
-}
-
-type credentialStoreRefreshAdapter struct {
-	store *credentialstore.Store
-}
-
-func (s credentialStoreRefreshAdapter) LoadForRefresh(ctx context.Context, accountID int64) (credentialstore.CredentialRecord, error) {
-	if s.store == nil {
-		return credentialstore.CredentialRecord{}, ErrAntigravityStoreMissing
-	}
-	return s.store.LoadForRefresh(ctx, accountID)
-}
-
-func (s credentialStoreRefreshAdapter) WithRefreshTransaction(ctx context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
-	if s.store == nil {
-		return ErrAntigravityStoreMissing
-	}
-	return s.store.WithTransaction(ctx, func(txStore *credentialstore.Store, tx db.DBTX) error {
-		if fn == nil {
-			return nil
-		}
-		return fn(txStore, tx)
-	})
 }

@@ -23,6 +23,7 @@ const (
 
 type Service struct {
 	store             Store
+	failureStore      atomicFailureStore
 	keys              credentialstore.KeyProvider
 	now               func() time.Time
 	maxFailedAttempts int
@@ -42,6 +43,9 @@ func NewService(store Store, keys credentialstore.KeyProvider, opts ...Option) *
 		lockDuration:      DefaultLockDuration,
 		challengeTTL:      DefaultChallengeTTL,
 		issuer:            defaultIssuer,
+	}
+	if failureStore, ok := store.(atomicFailureStore); ok {
+		s.failureStore = failureStore
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -365,17 +369,37 @@ func (s *Service) recordTOTPSuccess(ctx context.Context, settings Settings, step
 
 func (s *Service) recordFailure(ctx context.Context, settings Settings) error {
 	now := s.now().UTC()
+	if s.failureStore != nil {
+		_, locked, err := s.failureStore.RecordFailure(
+			ctx,
+			settings.TenantID,
+			settings.UserID,
+			s.maxFailedAttempts,
+			now.Add(s.lockDuration),
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		if locked {
+			return ErrLocked
+		}
+		return nil
+	}
+
 	failed := settings.FailedAttempts + 1
 	var lockedUntil *time.Time
 	if failed >= s.maxFailedAttempts {
 		until := now.Add(s.lockDuration)
 		lockedUntil = &until
-		if err := s.store.MarkFailure(ctx, settings.TenantID, settings.UserID, failed, lockedUntil, now); err != nil {
-			return err
-		}
+	}
+	if err := s.store.MarkFailure(ctx, settings.TenantID, settings.UserID, failed, lockedUntil, now); err != nil {
+		return err
+	}
+	if lockedUntil != nil {
 		return ErrLocked
 	}
-	return s.store.MarkFailure(ctx, settings.TenantID, settings.UserID, failed, lockedUntil, now)
+	return nil
 }
 
 func (s *Service) ensureUnlocked(ctx context.Context, settings *Settings) error {

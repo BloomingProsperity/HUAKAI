@@ -5,11 +5,37 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
+
+type atomicMemoryStore struct {
+	*MemoryStore
+}
+
+func (s *atomicMemoryStore) RecordFailure(_ context.Context, tenantID, userID int64, maxFailedAttempts int, lockUntil, now time.Time) (int, bool, error) {
+	if s == nil {
+		return 0, false, ErrStoreNotConfigured
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := userKey(tenantID, userID)
+	settings, ok := s.settings[key]
+	if !ok {
+		return 0, false, ErrNotSetup
+	}
+	settings.FailedAttempts++
+	locked := settings.FailedAttempts >= maxFailedAttempts
+	if locked {
+		settings.LockedUntil = cloneTimePtr(&lockUntil)
+	}
+	settings.UpdatedAt = now
+	s.settings[key] = settings
+	return settings.FailedAttempts, locked, nil
+}
 
 func TestSetupEncryptsSecretAndEnableRequiresCurrentTOTP(t *testing.T) {
 	ctx := context.Background()
@@ -250,6 +276,44 @@ func TestMarkTOTPSuccessConditionalGuard(t *testing.T) {
 	mustStored(100, false) // 同步重放 → 拒
 	mustStored(99, false)  // 更早步 → 拒
 	mustStored(101, true)  // 更大步 → 纳
+}
+
+func TestRecordFailureCountsConcurrentAttemptsAtomically(t *testing.T) {
+	ctx := context.Background()
+	store := &atomicMemoryStore{MemoryStore: NewMemoryStore()}
+	now := time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC)
+	if err := store.SaveSetup(ctx, Settings{TenantID: 1, UserID: 1001, SecretEnc: []byte("x"), CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := store.RecordFailure(ctx, 1, 1001, 5, now.Add(15*time.Minute), now)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("RecordFailure: %v", err)
+		}
+	}
+	settings, found, err := store.GetSettings(ctx, 1, 1001)
+	if err != nil || !found {
+		t.Fatalf("GetSettings found=%v err=%v", found, err)
+	}
+	if settings.FailedAttempts != attempts {
+		t.Fatalf("failed attempts=%d，期望并发请求全部计入 %d", settings.FailedAttempts, attempts)
+	}
+	if settings.LockedUntil == nil {
+		t.Fatal("达到阈值后必须进入锁定")
+	}
 }
 
 // TestVerifyTOTPStepReturnsMatchedCounter 守 VerifyTOTPStep 返回的就是匹配到的时间步计数器

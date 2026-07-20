@@ -2,11 +2,15 @@ package usageanalyticshttp
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
 
 var errNilLoader = errors.New("snapshotcache: loader is nil")
+var errLoaderPanic = errors.New("snapshotcache: loader panic")
+
+const maxSnapshotCacheEntries = 1024
 
 type cacheEntry struct {
 	value     any
@@ -38,10 +42,13 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 
 	now := time.Now()
 	state.mu.Lock()
-	if entry, ok := state.entries[key]; ok && now.Before(entry.expiresAt) {
-		value := entry.value
-		state.mu.Unlock()
-		return value, true, nil
+	if entry, ok := state.entries[key]; ok {
+		if now.Before(entry.expiresAt) {
+			value := entry.value
+			state.mu.Unlock()
+			return value, true, nil
+		}
+		delete(state.entries, key)
 	}
 	if call, ok := state.inflight[key]; ok {
 		state.mu.Unlock()
@@ -53,11 +60,13 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 	state.inflight[key] = call
 	state.mu.Unlock()
 
-	value, err := loader()
+	value, err := runLoader(loader)
 
 	state.mu.Lock()
 	if err == nil && ttl > 0 {
-		state.entries[key] = cacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
+		now := time.Now()
+		evictSnapshotEntriesLocked(now, key)
+		state.entries[key] = cacheEntry{value: value, expiresAt: now.Add(ttl)}
 	}
 	delete(state.inflight, key)
 	state.mu.Unlock()
@@ -67,4 +76,35 @@ func GetOrLoad(key string, ttl time.Duration, loader func() (any, error)) (any, 
 	call.wg.Done()
 
 	return value, false, err
+}
+
+func evictSnapshotEntriesLocked(now time.Time, incomingKey string) {
+	for key, entry := range state.entries {
+		if !now.Before(entry.expiresAt) {
+			delete(state.entries, key)
+		}
+	}
+	if _, replacing := state.entries[incomingKey]; replacing || len(state.entries) < maxSnapshotCacheEntries {
+		return
+	}
+	var oldestKey string
+	var oldestExpiry time.Time
+	for key, entry := range state.entries {
+		if oldestKey == "" || entry.expiresAt.Before(oldestExpiry) {
+			oldestKey, oldestExpiry = key, entry.expiresAt
+		}
+	}
+	if oldestKey != "" {
+		delete(state.entries, oldestKey)
+	}
+}
+
+func runLoader(loader func() (any, error)) (value any, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			value = nil
+			err = fmt.Errorf("%w: %T", errLoaderPanic, recovered)
+		}
+	}()
+	return loader()
 }

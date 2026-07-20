@@ -580,7 +580,7 @@ func (m *memoryStore) ListDueExpiry(_ context.Context, now time.Time, limit int)
 // ListAutoRenewDue 内存实现: 过滤 active + auto_renew=true + expires_at<=dueCutoff (含提前窗口)。
 // 与 PG 同语义的过滤逻辑可在此被单测覆盖 (mutation: 去掉 auto_renew 过滤 → 含 false 行 → 红;
 // 把 dueCutoff 退回 now → 提前窗口内的行不返回 → 红)。
-func (m *memoryStore) ListAutoRenewDue(_ context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error) {
+func (m *memoryStore) ListAutoRenewDue(_ context.Context, dueCutoff time.Time, after AutoRenewCursor, limit int) ([]UserSubscription, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if limit <= 0 || limit > 1000 {
@@ -588,7 +588,9 @@ func (m *memoryStore) ListAutoRenewDue(_ context.Context, dueCutoff time.Time, l
 	}
 	var out []UserSubscription
 	for _, sub := range m.subs {
-		if sub.Status == StatusActive && sub.AutoRenew && !sub.ExpiresAt.After(dueCutoff) {
+		pastCursor := after.ID == 0 || sub.ExpiresAt.After(after.ExpiresAt) ||
+			(sub.ExpiresAt.Equal(after.ExpiresAt) && sub.ID > after.ID)
+		if sub.Status == StatusActive && sub.AutoRenew && !sub.ExpiresAt.After(dueCutoff) && pastCursor {
 			out = append(out, sub)
 		}
 	}

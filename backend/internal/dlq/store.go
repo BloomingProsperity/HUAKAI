@@ -242,6 +242,7 @@ func (s *Store) MarkFailed(ctx context.Context, rec Record, reason string, decis
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured
 	}
+	reason = safeFailureReason(reason)
 	leaseOwner, leaseUntil, err := requiredLeaseFence(rec)
 	if err != nil {
 		return err
@@ -303,6 +304,7 @@ func normalizeEvent(e Event) Event {
 	if e.FailureReason == "" {
 		e.FailureReason = "queued"
 	}
+	e.FailureReason = safeFailureReason(e.FailureReason)
 	if e.ReplicaTarget == "" {
 		e.ReplicaTarget = "primary"
 	}

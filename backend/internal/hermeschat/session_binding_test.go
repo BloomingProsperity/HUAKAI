@@ -48,3 +48,20 @@ func TestSessionBindingBlankRequestIDNeverMatches(t *testing.T) {
 		t.Fatalf("blank request_id matched a binding")
 	}
 }
+
+func TestSessionBindingInvalidatesCrossOperatorCollision(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	bindings := NewSessionBindings(func() time.Time { return now })
+	first := SessionOperator{TenantID: 7, ActorUserID: 42, AdminActorTokenID: 9, Role: "tenant_operator", ExpiresAt: now.Add(time.Minute)}
+	second := SessionOperator{TenantID: 7, ActorUserID: 42, AdminActorTokenID: 10, Role: "platform_admin", ExpiresAt: now.Add(time.Minute)}
+
+	if !bindings.Bind("client-request-id", first) {
+		t.Fatal("首次绑定应成功")
+	}
+	if bindings.Bind("client-request-id", second) {
+		t.Fatal("不同管理员不得覆盖同一 request_id")
+	}
+	if _, ok := bindings.Lookup("client-request-id"); ok {
+		t.Fatal("身份冲突后必须作废绑定，不能保留任一方身份")
+	}
+}

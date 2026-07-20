@@ -62,18 +62,28 @@ func NewSessionBindings(now func() time.Time) *SessionBindings {
 	return &SessionBindings{now: now, m: make(map[string]SessionOperator)}
 }
 
-// Bind 为一个会话 request_id 记录 operator 身份。它会覆盖同一 request_id 的任何先前绑定
-//(每次聊天开始 request_id 都唯一,因此冲突意味着请求被重新 prepare——后写者胜)。空白的
-// request_id 会被忽略(调用方在上游已校验;这里是纵深防御,使空白键永远无法匹配以空白键
-// 进行的 lookup)。
-func (s *SessionBindings) Bind(requestID string, op SessionOperator) {
+// Bind 为一个会话 request_id 记录 operator 身份。相同身份重绑是幂等的；不同身份争用
+// 同一 request_id 时作废该键，避免任一会话借到另一位管理员的角色与日志归属。
+func (s *SessionBindings) Bind(requestID string, op SessionOperator) bool {
 	if s == nil || requestID == "" {
-		return
+		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
+	if existing, ok := s.m[requestID]; ok && !sameSessionOperator(existing, op) {
+		delete(s.m, requestID)
+		return false
+	}
 	s.m[requestID] = op
+	return true
+}
+
+func sameSessionOperator(left, right SessionOperator) bool {
+	return left.TenantID == right.TenantID &&
+		left.ActorUserID == right.ActorUserID &&
+		left.AdminActorTokenID == right.AdminActorTokenID &&
+		left.Role == right.Role
 }
 
 // Lookup 返回绑定到 requestID 的 operator,以及它是否存在且未过期。已过期的绑定被视为

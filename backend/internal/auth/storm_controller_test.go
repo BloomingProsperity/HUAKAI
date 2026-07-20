@@ -114,3 +114,16 @@ func TestReleaseRetriesTransientFailure(t *testing.T) {
 		t.Fatalf("release 非幂等: %d", stub.releaseCalls)
 	}
 }
+
+func TestRefreshAccountLeaseRequiresExactAccount(t *testing.T) {
+	ctx := WithRefreshAccountLease(context.Background(), 7, 42)
+	if err := RequireRefreshAccountLease(ctx, 42); err != nil {
+		t.Fatalf("匹配账号的刷新租约被拒绝：%v", err)
+	}
+	if err := RequireRefreshAccountLease(ctx, 43); !errors.Is(err, ErrRefreshAccountLeaseMissing) {
+		t.Fatalf("错账号复用租约 err=%v，期望 %v", err, ErrRefreshAccountLeaseMissing)
+	}
+	if err := RequireRefreshAccountLease(context.Background(), 42); !errors.Is(err, ErrRefreshAccountLeaseMissing) {
+		t.Fatalf("无租约刷新 err=%v，期望 %v", err, ErrRefreshAccountLeaseMissing)
+	}
+}

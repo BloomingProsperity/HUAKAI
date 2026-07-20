@@ -193,6 +193,28 @@ func TestCompletionsStreaming(t *testing.T) {
 	}
 }
 
+func TestCompletionsLargeStreamRetainsTrailingUsage(t *testing.T) {
+	prefix := "data: {\"choices\":[{\"text\":\"" + strings.Repeat("x", maxUpstreamBodyBytes) + "\"}]}\n\n"
+	usageFrame := `data: {"usage":{"prompt_tokens":2,"completion_tokens":4,"total_tokens":6},"choices":[]}` + "\n\n"
+	streamBody := prefix + usageFrame + "data: [DONE]\n\n"
+	env := newCompletionsTestEnv(upstreamResponse{
+		status: http.StatusOK, body: streamBody, contentType: "text/event-stream",
+	})
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
+
+	if rec.Code != http.StatusOK || rec.Body.Len() != len(streamBody) {
+		t.Fatalf("流响应未完整透传: status=%d got=%d want=%d", rec.Code, rec.Body.Len(), len(streamBody))
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle 调用=%d want 1", got)
+	}
+	settle := env.settler.settles[0]
+	if settle.Draft.PendingReconciliation || !settle.ActualCost.Equal(decimal.RequireFromString("0.010")) {
+		t.Fatalf("尾部 usage 未用于真实结算: pending=%v cost=%s", settle.Draft.PendingReconciliation, settle.ActualCost)
+	}
+}
+
 func TestCountTokensPassthroughNoBilling(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{
 		status: http.StatusOK,

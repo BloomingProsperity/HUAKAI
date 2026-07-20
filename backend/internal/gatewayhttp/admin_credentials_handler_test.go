@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,6 +56,9 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 		if store.createInput == nil || store.createInput.TenantID != 7 || store.createInput.ProviderAccountID != 77 ||
 			store.createInput.Vendor != credentialstore.VendorOpenAI || store.createInput.AuthMode != credentialstore.AuthModeAPIKey {
 			t.Fatalf("create input mismatch: %+v", store.createInput)
+		}
+		if audit.getArg == nil || audit.getArg.TenantID != 7 || audit.getArg.ID != 77 {
+			t.Fatalf("兼容性检查未使用请求中的真实租户与账号: %+v", audit.getArg)
 		}
 		if len(audit.audits) != 1 || audit.audits[0].Action != "create_account_credential" {
 			t.Fatalf("create audit mismatch: %+v", audit.audits)
@@ -116,6 +120,19 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			t.Fatalf("delete audit mismatch: %+v", audit.audits)
 		}
 	})
+}
+
+func TestCreateAccountCredentialFailsClosedWhenCompatibilityLookupFails(t *testing.T) {
+	store := &adminCredentialStoreStub{}
+	audit := &adminPoolStoreStub{getErr: errors.New("database unavailable")}
+	rec := invokeAdminCredentials(t, AdminCredentialDeps{
+		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
+		`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
+	assertStatus(t, rec, http.StatusServiceUnavailable)
+	if store.createInput != nil {
+		t.Fatal("兼容性查询失败时不应写入凭据")
+	}
 }
 
 func TestAdminCredentialsHandlersUnauthorized(t *testing.T) {

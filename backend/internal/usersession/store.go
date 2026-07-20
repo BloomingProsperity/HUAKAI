@@ -18,6 +18,7 @@ import (
 )
 
 type Store interface {
+	CreateSession(context.Context, SessionBundle, SessionCreatePolicy, time.Time) (SessionFamily, error)
 	CreateFamily(context.Context, CreateInput, time.Time) (SessionFamily, error)
 	InsertSessionToken(context.Context, SessionToken) error
 	LookupSessionToken(context.Context, []byte) (SessionRecord, error)
@@ -55,17 +56,7 @@ func (s *PostgresStore) CreateFamily(ctx context.Context, in CreateInput, now ti
 	if s == nil || s.db == nil {
 		return SessionFamily{}, ErrStoreNotConfigured
 	}
-	family := SessionFamily{
-		ID:           uuid.NewString(),
-		TenantID:     in.TenantID,
-		UserID:       in.UserID,
-		Status:       FamilyStatusActive,
-		Generation:   1,
-		CreatedAt:    now.UTC(),
-		LastActiveAt: now.UTC(),
-		DeviceInfo:   normalizeDeviceInfo(in.DeviceInfo, in.UserAgent),
-		IPBaseline:   IPClass(in.IP),
-	}
+	family := newSessionFamily(in, now)
 	deviceInfo, err := json.Marshal(family.DeviceInfo)
 	if err != nil {
 		return SessionFamily{}, err
@@ -464,17 +455,7 @@ func (s *MemoryStore) CreateFamily(_ context.Context, in CreateInput, now time.T
 	if in.TenantID <= 0 || in.UserID <= 0 {
 		return SessionFamily{}, ErrInvalidInput
 	}
-	family := SessionFamily{
-		ID:           uuid.NewString(),
-		TenantID:     in.TenantID,
-		UserID:       in.UserID,
-		Status:       FamilyStatusActive,
-		Generation:   1,
-		CreatedAt:    now.UTC(),
-		LastActiveAt: now.UTC(),
-		DeviceInfo:   normalizeDeviceInfo(in.DeviceInfo, in.UserAgent),
-		IPBaseline:   IPClass(in.IP),
-	}
+	family := newSessionFamily(in, now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.families[family.ID] = family

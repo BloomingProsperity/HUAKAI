@@ -108,12 +108,11 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		op.TenantID = req.TenantID
 		op.ActorUserID = req.UserID
 		op.ExpiresAt = claims.ExpiresAt
-		b.sessionBindings.Bind(requestID, op)
-		boundOperator = true
+		boundOperator = b.sessionBindings.Bind(requestID, op)
 		// 仅为已绑定的(admin)会话注入目录——不应让 LLM 知道它无法调用的工具。KNOB B:
 		// 当会话式工具循环在运行时被禁用时,完全跳过注入,使 LLM 被告知没有任何工具
 		//(内部 tool-execute 端点同样被闸门关闭)。
-		if b.toolLoopEnabled && b.toolCatalog != nil {
+		if boundOperator && b.toolLoopEnabled && b.toolCatalog != nil {
 			catalog := b.toolCatalog.ToolCatalog()
 			if catalog != nil {
 				if err := setJSONField(body, "tool_catalog", catalog); err != nil {

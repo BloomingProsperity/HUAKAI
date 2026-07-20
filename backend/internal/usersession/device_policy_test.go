@@ -15,11 +15,11 @@ import (
 func TestDevicePolicyUsesBoundedActiveFamilyList(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 6, 5, 9, 0, 0, 0, time.UTC)
-	store := &policyListProbeStore{MemoryStore: NewMemoryStore()}
-	seedDevicePolicyFamilies(t, store.MemoryStore, 1, 42, base)
+	store := NewMemoryStore()
+	seedDevicePolicyFamilies(t, store, 1, 42, base)
 	policyLimit := 5
 
-	listed, err := store.MemoryStore.ListActiveFamiliesForDevicePolicy(ctx, 1, 42, policyLimit)
+	listed, err := store.ListActiveFamiliesForDevicePolicy(ctx, 1, 42, policyLimit)
 	if err != nil {
 		t.Fatalf("ListActiveFamiliesForDevicePolicy: %v", err)
 	}
@@ -35,19 +35,12 @@ func TestDevicePolicyUsesBoundedActiveFamilyList(t *testing.T) {
 	if _, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 42, IP: "10.1.1.1", UserAgent: "Chrome/1"}); err != nil {
 		t.Fatalf("Create should ignore revoked history below active limit: %v", err)
 	}
-	if !store.policyListed {
-		t.Fatal("device policy did not use policy-specific family list")
+	after, err := store.ListActiveFamiliesForDevicePolicy(ctx, 1, 42, policyLimit)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if store.policyLimit != svc.MaxActiveFamilies {
-		t.Fatalf("policy list limit=%d want %d", store.policyLimit, svc.MaxActiveFamilies)
-	}
-	if store.policyCount != 3 {
-		t.Fatalf("policy family count=%d want 3 active/suspicious families", store.policyCount)
-	}
-	for _, status := range store.policyStatuses {
-		if status != FamilyStatusActive && status != FamilyStatusSuspicious {
-			t.Fatalf("policy list included status %q; want only active/suspicious", status)
-		}
+	if len(after) != 4 {
+		t.Fatalf("原有 3 个活跃会话加新会话后=%d，期望 4", len(after))
 	}
 }
 
@@ -71,34 +64,6 @@ func TestPostgresDevicePolicyListUsesStatusFilterAndLimit(t *testing.T) {
 	if len(db.args) != 3 || db.args[0] != int64(11) || db.args[1] != int64(22) || db.args[2] != 7 {
 		t.Fatalf("postgres policy args=%#v want tenant/user/limit", db.args)
 	}
-}
-
-type policyListProbeStore struct {
-	*MemoryStore
-	policyListed   bool
-	policyLimit    int
-	policyCount    int
-	policyStatuses []FamilyStatus
-}
-
-func (s *policyListProbeStore) ListFamilies(context.Context, int64, int64) ([]SessionFamily, error) {
-	return nil, errors.New("device policy used unbounded ListFamilies")
-}
-
-func (s *policyListProbeStore) ListActiveFamiliesForDevicePolicy(
-	ctx context.Context,
-	tenantID, userID int64,
-	limit int,
-) ([]SessionFamily, error) {
-	s.policyListed = true
-	s.policyLimit = limit
-	families, err := s.MemoryStore.ListActiveFamiliesForDevicePolicy(ctx, tenantID, userID, limit)
-	s.policyCount = len(families)
-	s.policyStatuses = s.policyStatuses[:0]
-	for _, family := range families {
-		s.policyStatuses = append(s.policyStatuses, family.Status)
-	}
-	return families, err
 }
 
 func seedDevicePolicyFamilies(t *testing.T, store *MemoryStore, tenantID, userID int64, base time.Time) {

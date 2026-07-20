@@ -8,13 +8,37 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
 )
 
 var (
 	ErrStormControllerUnavailable = errors.New("auth: storm controller unavailable")
+	ErrRefreshAccountLeaseMissing = errors.New("auth: refresh account lease missing")
 )
+
+type refreshAccountLeaseKey struct{}
+
+type refreshAccountLease struct {
+	tenantID  int64
+	accountID int64
+}
+
+// WithRefreshAccountLease 标记当前调用已经取得账号级刷新槽。该标记只证明
+// 调度链完成了跨副本准入，不能替代数据库槽本身。
+func WithRefreshAccountLease(ctx context.Context, tenantID, accountID int64) context.Context {
+	return context.WithValue(ctx, refreshAccountLeaseKey{}, refreshAccountLease{tenantID: tenantID, accountID: accountID})
+}
+
+// RequireRefreshAccountLease 阻止刷新器绕过统一调度直接调用远端凭据端点。
+func RequireRefreshAccountLease(ctx context.Context, accountID int64) error {
+	lease, ok := ctx.Value(refreshAccountLeaseKey{}).(refreshAccountLease)
+	if !ok || lease.tenantID <= 0 || lease.accountID != accountID {
+		return ErrRefreshAccountLeaseMissing
+	}
+	return nil
+}
 
 // StormController 在三个 scope 上强制 refresh storm budget:
 //
@@ -33,18 +57,26 @@ type StormController struct {
 	shared  StormScopeStore
 	cfg     StormScopeConfig
 	now     func() time.Time
+
+	refreshLockPool *pgxpool.Pool
 }
 
 // NewStormControllerWithSharedScopeBudget 在配置端点或全局预算时优先使用共享存储，
 // 让定时刷新与请求热刷新共同消费跨副本预算。shared 为空时保留单实例内存语义。
-func NewStormControllerWithSharedScopeBudget(queries *dbauth.Queries, cfg StormScopeConfig, shared StormScopeStore) *StormController {
-	return &StormController{
+func NewStormControllerWithSharedScopeBudget(queries *dbauth.Queries, cfg StormScopeConfig, shared StormScopeStore, opts ...StormControllerOption) *StormController {
+	c := &StormController{
 		queries: queries,
 		scope:   newStormScopeLimiter(cfg),
 		shared:  shared,
 		cfg:     cfg,
 		now:     time.Now,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 func (c *StormController) clock() time.Time {
@@ -80,10 +112,20 @@ func (c *StormController) Acquire(ctx context.Context, tenantID, accountID int64
 	if currentInFlight <= 0 {
 		return nil, OutcomeStormBudgetExhausted, nil
 	}
+	lockRelease, locked, err := c.acquireRefreshAccountLock(ctx, tenantID, accountID)
+	if err != nil {
+		c.releaseSlotWithRetry(budget.ID)
+		return nil, "", err
+	}
+	if !locked {
+		c.releaseSlotWithRetry(budget.ID)
+		return nil, OutcomeStormBudgetExhausted, nil
+	}
 
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
+			lockRelease()
 			c.releaseSlotWithRetry(budget.ID)
 		})
 	}

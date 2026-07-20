@@ -548,8 +548,10 @@ func aiAwareTimeout(timeout time.Duration) func(http.Handler) http.Handler {
 func isAIRelayPath(p string) bool {
 	switch p {
 	case "/v1/chat/completions",
+		"/v1/completions",
 		"/v1/responses",
 		"/v1/messages",
+		"/v1/messages/count_tokens",
 		"/v1/embeddings",
 		"/v1/rerank",
 		"/v1/images/generations",

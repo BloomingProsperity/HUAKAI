@@ -16,7 +16,7 @@ import (
 // dueCutoff = now + 提前续费窗口: 扫「已到点」与「即将到点」两类, 让续费抢在到期 worker 收割前完成。
 // 比 ListDueExpiry 多 auto_renew=true 过滤 —— 只对用户 opt-in 的订阅尝试续费; 与 ListDueExpiry 保持
 // 无 auto_renew 排除对偶, 续费失败(余额不足)的订阅仍在 expires_at 到点被 ExpiryWorker 收割, 不留白嫖窗口。
-func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error) {
+func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, after AutoRenewCursor, limit int) ([]UserSubscription, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
 	}
@@ -26,7 +26,12 @@ func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, dueCutoff time.Tim
 	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumns+`
 FROM user_subscriptions
 WHERE status='active' AND auto_renew=true AND expires_at <= $1
-ORDER BY expires_at, id LIMIT $2`, dueCutoff, limit)
+  AND (
+    $2::bigint = 0
+    OR expires_at > $3
+    OR (expires_at = $3 AND id > $2)
+  )
+ORDER BY expires_at, id LIMIT $4`, dueCutoff, after.ID, after.ExpiresAt, limit)
 	if err != nil {
 		return nil, fmt.Errorf("subscription: list auto renew due: %w", err)
 	}

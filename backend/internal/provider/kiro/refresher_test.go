@@ -170,7 +170,7 @@ func TestKiroRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
-func TestKiroRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
+func TestKiroRefresherRecordsFailureOutcomeInShortPersistenceTransaction(t *testing.T) {
 	// 锁定回归：provider 专属 refresher 必须在凭据事务中记录精确的失败类别，
 	// 不能保存陈旧凭据，也不能把所有失败都坍缩成通用的 transient 状态。
 	calls := []string{}
@@ -204,7 +204,7 @@ func TestKiroRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 	if got := auth.RefreshAuditOutcomeFromError(err); got != "auth_expired" {
 		t.Fatalf("refresh audit outcome=%q, want auth_expired", got)
 	}
-	wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:91", "reread", "failure:91:auth_expired"}
+	wantCalls := []string{"probe", "tx_begin", "failure:91:auth_expired"}
 	if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 		t.Fatalf("calls=%v, want %v", calls, wantCalls)
 	}
@@ -245,10 +245,22 @@ func (s *recordingKiroRefreshStore) LoadForRefresh(context.Context, int64) (cred
 	return s.rec, nil
 }
 
-func (s *recordingKiroRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *recordingKiroRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	*s.calls = append(*s.calls, "tx_begin")
 	tx := &recordingKiroRefreshTx{calls: s.calls, rec: s.rec, saved: &s.saved}
 	return fn(tx, tx)
+}
+
+func (s *recordingKiroRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *recordingKiroRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type recordingKiroRefreshTx struct {
@@ -258,7 +270,7 @@ type recordingKiroRefreshTx struct {
 }
 
 func (tx *recordingKiroRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

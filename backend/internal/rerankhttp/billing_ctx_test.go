@@ -8,6 +8,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
 // ctxCaptureSettler 记录 Settle/Abort 收到的 ctx 取消态(同 embeddingshttp 的判别测试)。
@@ -71,5 +73,17 @@ func TestRerankBillingCtx_DetachedWithDeadline(t *testing.T) {
 	}
 	if _, ok := bctx.Deadline(); !ok {
 		t.Fatal("billingCtx 必须带超时上界防挂起")
+	}
+}
+
+func TestRerankSettleRequestPersistsClientTool(t *testing.T) {
+	ctx := clientid.WithIdentity(context.Background(), clientid.IdentityClaudeCode, 1)
+	ex := &execution{
+		ctx:        ctx,
+		reserveRes: &billing.ReserveResult{ClaimID: 7},
+		selRes:     &pool.SelectionResult{AccountID: 9},
+	}
+	if got := ex.settleRequest("snapshot", 1).Draft.ClientTool; got != string(clientid.IdentityClaudeCode) {
+		t.Fatalf("client tool=%q，期望 %q", got, clientid.IdentityClaudeCode)
 	}
 }

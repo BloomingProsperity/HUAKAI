@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,68 @@ func openDCIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	}
 	t.Cleanup(p.Close)
 	return p
+}
+
+func TestCreateSessionDeviceLimitAcrossConcurrentServicesPG(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openDCIntegrationPool(t, ctx)
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	tenantID, userID := seedDCTenantUser(t, ctx, pool)
+
+	const workers = 24
+	const limit = 3
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			svc := NewService(NewPostgresStore(pool))
+			svc.SigningKey = testSigningKey()
+			svc.Now = func() time.Time { return now }
+			svc.MaxActiveFamilies = limit
+			svc.DevicePolicy = "deny"
+			<-start
+			_, err := svc.Create(ctx, CreateInput{
+				TenantID: tenantID, UserID: userID,
+				IP: "198.51.100.10", UserAgent: "concurrent-client",
+			})
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	succeeded := 0
+	denied := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrDeviceLimitExceeded):
+			denied++
+		default:
+			t.Fatalf("并发创建返回意外错误: %v", err)
+		}
+	}
+	if succeeded != limit || denied != workers-limit {
+		t.Fatalf("成功=%d 拒绝=%d，期望成功=%d 拒绝=%d", succeeded, denied, limit, workers-limit)
+	}
+	if got := countActiveFamiliesPG(t, ctx, pool, tenantID, userID); got != limit {
+		t.Fatalf("活跃会话族=%d，期望严格等于 %d", got, limit)
+	}
+	for table := range map[string]struct{}{"refresh_tokens": {}, "session_tokens": {}} {
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE tenant_id=$1", tenantID).Scan(&count); err != nil {
+			t.Fatalf("统计 %s: %v", table, err)
+		}
+		if count != limit {
+			t.Fatalf("%s 行数=%d，期望 %d；拒绝路径不得留下半成品", table, count, limit)
+		}
+	}
 }
 
 // seedDCTenantUser 建一个租户 + 用户, 返回 (tenantID, userID); 登记 cleanup。

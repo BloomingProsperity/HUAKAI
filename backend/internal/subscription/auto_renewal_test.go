@@ -47,6 +47,41 @@ func TestAutoRenewWorker_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestAutoRenewWorkerAdvancesPastFullSkippedPage(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	svc, store := newTestService(&now)
+	ctx := context.Background()
+	store.seedUser(1, 10, "default")
+	store.seedUser(1, 11, "default")
+	plan, err := svc.CreatePlan(ctx, CreatePlanInput{TenantID: 1, Name: "p", ValidityDays: 1, GrantedGroup: "premium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: 1, UserID: 10, PlanID: plan.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: 1, UserID: 11, PlanID: plan.ID}); err != nil {
+		t.Fatal(err)
+	}
+	now = first.Subscription.ExpiresAt.Add(-10 * time.Minute)
+
+	w := NewAutoRenewWorker(AutoRenewWorkerConfig{Service: svc, BatchSize: 1})
+	done := make(chan struct{})
+	go func() {
+		w.TickOnce(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("满批候选全部跳过后 worker 未完成稳定翻页")
+	}
+	if got := w.SkippedTotal(); got != 2 {
+		t.Fatalf("skipped total=%d，期望跨两页处理全部 2 条", got)
+	}
+}
+
 // TestListAutoRenewDue_GraceWindowIncludesSoonToExpire 守提前续费窗口(renew-ahead grace):
 // 未到期但落在 [now, cutoff] 窗口的订阅, 用 cutoff=now+lead 扫得到、用 cutoff=now 扫不到。
 // 这是 B1 修复的核心——续费须抢在 ExpiryWorker(1min 节拍)把订阅置 expired 前完成。
@@ -67,11 +102,11 @@ func TestListAutoRenewDue_GraceWindowIncludesSoonToExpire(t *testing.T) {
 	soon := expires.Add(-10 * time.Minute)
 
 	// cutoff=now(=soon): 订阅尚未到点 → 不返回 (旧语义, 正是竞态成因)。
-	if got, _ := store.ListAutoRenewDue(ctx, soon, 100); len(got) != 0 {
+	if got, _ := store.ListAutoRenewDue(ctx, soon, AutoRenewCursor{}, 100); len(got) != 0 {
 		t.Fatalf("cutoff=now 时提前窗口内订阅返回了 %d 条, want 0", len(got))
 	}
 	// cutoff=now+lead: 订阅落入提前窗口 → 应返回, 供续费抢在到期前完成。
-	got, err := store.ListAutoRenewDue(ctx, soon.Add(DefaultAutoRenewLeadWindow), 100)
+	got, err := store.ListAutoRenewDue(ctx, soon.Add(DefaultAutoRenewLeadWindow), AutoRenewCursor{}, 100)
 	if err != nil {
 		t.Fatalf("list auto renew due (grace): %v", err)
 	}
@@ -157,12 +192,12 @@ func TestListAutoRenewDue_FiltersAutoRenewAndDue(t *testing.T) {
 	}
 
 	// 未到点 (now 未推进): 守 expires_at<=now 闸, 谁都不该进。
-	if got, _ := store.ListAutoRenewDue(ctx, now, 100); len(got) != 0 {
+	if got, _ := store.ListAutoRenewDue(ctx, now, AutoRenewCursor{}, 100); len(got) != 0 {
 		t.Fatalf("到期前 due count = %d, want 0 (expires_at<=now 闸失效会让未到点订阅被自动续费)", len(got))
 	}
 
 	now = now.AddDate(0, 0, 31) // 两者都到点。
-	got, err := store.ListAutoRenewDue(ctx, now, 100)
+	got, err := store.ListAutoRenewDue(ctx, now, AutoRenewCursor{}, 100)
 	if err != nil {
 		t.Fatalf("list auto renew due: %v", err)
 	}

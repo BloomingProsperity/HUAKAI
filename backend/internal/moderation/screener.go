@@ -346,11 +346,8 @@ func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, re
 	if s.ban == nil {
 		return nil
 	}
-	// DM-16:同一条违规用户消息在 agent 循环里每轮重发,只在用户轮计 ban,
-	// 否则单条消息一个会话内就冲破阈值。拦截判定不受影响。
-	if repeatAgentTurn(req) {
-		return nil
-	}
+	// TailRole 来自客户端请求体，只能用于压缩干净请求的日志噪音，不能作为
+	// 免计违规的授权信号；否则攻击者把尾角色写成 assistant 即可绕过封禁。
 	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)
 	return err
 }

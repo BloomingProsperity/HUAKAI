@@ -16,7 +16,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
@@ -43,21 +42,17 @@ var (
 	ErrAntigravityRecordMismatch = errors.New("antigravity refresh: credential record is not antigravity oauth")
 )
 
-type RefreshTxStore interface {
+type RefreshStore interface {
 	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
 	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
 	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
 }
 
-type RefreshStore interface {
-	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
-	WithRefreshTransaction(context.Context, func(RefreshTxStore, db.DBTX) error) error
-}
-
 type Refresher struct {
-	Store   RefreshStore
-	Adapter RefreshAdapter
-	Now     func() time.Time
+	Store               RefreshStore
+	Adapter             RefreshAdapter
+	Now                 func() time.Time
+	requireAccountLease bool
 }
 
 type VendorRefresher = Refresher
@@ -127,42 +122,24 @@ func (r *Refresher) refresh(ctx context.Context, accountID int64) error {
 	if r == nil || r.Store == nil {
 		return ErrAntigravityStoreMissing
 	}
-	probe, err := r.Store.LoadForRefresh(ctx, accountID)
+	rec, err := r.Store.LoadForRefresh(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	defer privacy.Zeroize(probe.PlaintextPayload)
-	if !isAntigravityOAuthRecord(probe) {
-		return fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrAntigravityRecordMismatch, probe.Vendor, probe.AuthMode, accountID)
-	}
-
-	var refreshErr error
-	txErr := r.Store.WithRefreshTransaction(ctx, func(txStore RefreshTxStore, tx db.DBTX) error {
-		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
-			rec, err := txStore.LoadForRefresh(ctx, accountID)
-			if err != nil {
-				return err
-			}
-			defer privacy.Zeroize(rec.PlaintextPayload)
-			if rec.ID != probe.ID {
-				return credentialacq.WithRefreshLock(ctx, tx, rec.ID, func(db.DBTX) error {
-					lockedRec, err := txStore.LoadForRefresh(ctx, accountID)
-					if err != nil {
-						return err
-					}
-					defer privacy.Zeroize(lockedRec.PlaintextPayload)
-					refreshErr, err = r.refreshLockedRecord(ctx, txStore, accountID, lockedRec)
-					return err
-				})
-			}
-			refreshErr, err = r.refreshLockedRecord(ctx, txStore, accountID, rec)
+	if r.requireAccountLease {
+		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
 			return err
-		})
-	})
-	return errors.Join(refreshErr, txErr)
+		}
+	}
+	defer privacy.Zeroize(rec.PlaintextPayload)
+	if !isAntigravityOAuthRecord(rec) {
+		return fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrAntigravityRecordMismatch, rec.Vendor, rec.AuthMode, accountID)
+	}
+	refreshErr, persistErr := r.refreshLockedRecord(ctx, r.Store, accountID, rec)
+	return errors.Join(refreshErr, persistErr)
 }
 
-func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) (error, error) {
+func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshStore, accountID int64, rec credentialstore.CredentialRecord) (error, error) {
 	if !isAntigravityOAuthRecord(rec) {
 		err := fmt.Errorf("%w: vendor=%s auth_mode=%s account_id=%d", ErrAntigravityRecordMismatch, rec.Vendor, rec.AuthMode, accountID)
 		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureVendorMismatch, r.now().Add(defaultRetryAfter)); saveErr != nil {

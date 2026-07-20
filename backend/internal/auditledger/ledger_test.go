@@ -114,6 +114,34 @@ func TestMemoryLedger_ChainContinuity(t *testing.T) {
 	}
 }
 
+func TestMemoryLedgerMaintainsIndependentTenantChains(t *testing.T) {
+	signer, _ := sign.GenerateKey()
+	ledger, _ := NewMemoryLedger(signer)
+	ctx := context.Background()
+
+	tenantA1, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "tenant-a-1", TenantID: 11}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantB1, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "tenant-b-1", TenantID: 22}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenantA2, err := ledger.Append(ctx, mustPrepareForAppend(t, ctx, LedgerEntry{RequestID: "tenant-a-2", TenantID: 11}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenantB1.PrevMerkleRoot != ZeroRoot {
+		t.Fatal("租户 B 的首条记录不得继承租户 A 的链尾")
+	}
+	if tenantA2.PrevMerkleRoot != tenantA1.MerkleRoot {
+		t.Fatal("租户 A 的后续记录必须接回租户 A 自己的链尾")
+	}
+	if err := VerifyChain(ledger.Snapshot()); err != nil {
+		t.Fatalf("交错租户快照应按租户独立验链: %v", err)
+	}
+}
+
 func TestMemoryLedger_GetByRequestID(t *testing.T) {
 	signer, _ := sign.GenerateKey()
 	l, _ := NewMemoryLedger(signer)

@@ -3,6 +3,7 @@ package usersession
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,54 @@ func TestSessionRefreshRotationAndReplayRevokesFamily(t *testing.T) {
 	}
 	if len(families) != 1 || families[0].Status != FamilyStatusRevoked {
 		t.Fatalf("family not revoked after replay: %+v", families)
+	}
+}
+
+func TestCreateEnforcesDeviceLimitAtomically(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	svc := NewService(store)
+	svc.SigningKey = testSigningKey()
+	svc.MaxActiveFamilies = 3
+	svc.DevicePolicy = "deny"
+
+	const requests = 24
+	var wg sync.WaitGroup
+	results := make(chan error, requests)
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.Create(ctx, CreateInput{TenantID: 1, UserID: 88, IP: "10.1.1.1", UserAgent: "Chrome/1"})
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	succeeded := 0
+	limited := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrDeviceLimitExceeded):
+			limited++
+		default:
+			t.Fatalf("unexpected create error: %v", err)
+		}
+	}
+	if succeeded != 3 || limited != requests-3 {
+		t.Fatalf("succeeded=%d limited=%d，期望 3/%d", succeeded, limited, requests-3)
+	}
+	families, err := store.ListActiveFamiliesForDevicePolicy(ctx, 1, 88, requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(families) != 3 {
+		t.Fatalf("active families=%d，期望严格等于上限 3", len(families))
+	}
+	if len(store.tokens) != 3 || len(store.sessionTokens) != 3 {
+		t.Fatalf("refresh/session tokens=%d/%d，不能留下半截会话", len(store.tokens), len(store.sessionTokens))
 	}
 }
 

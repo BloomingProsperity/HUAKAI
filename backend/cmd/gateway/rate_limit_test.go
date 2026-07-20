@@ -630,6 +630,18 @@ func TestRateLimit_InviteValidateSharesRegisterBucket(t *testing.T) {
 	}
 }
 
+func TestRateLimit_TwoFactorLoginSharesLoginBucket(t *testing.T) {
+	rl := fixedClockLimiter(t)
+	loginTier := rl.authStrict["/v1/auth/login"]
+	twoFactorTier := rl.authStrict["/v1/auth/login/2fa"]
+	if loginTier == nil || twoFactorTier == nil {
+		t.Fatalf("login tier=%v 2fa tier=%v；二次验证必须受登录严格限流保护", loginTier, twoFactorTier)
+	}
+	if loginTier != twoFactorTier {
+		t.Fatal("密码登录和二次验证必须共享同一 IP 预算，不能通过交替路径放大次数")
+	}
+}
+
 // TestRateLimit_GlobalRetryAfterTracksConfiguredRate 证明 global 级 429 的
 // Retry-After 来自 HUAKAI_RL_GLOBAL_RATE,而非硬编码的 1s:在 0.1 req/s 时,
 // 下一个令牌大约还有 10s。

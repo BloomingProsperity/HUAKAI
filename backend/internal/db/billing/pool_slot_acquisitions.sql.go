@@ -254,3 +254,16 @@ func (q *Queries) SweepOrphanedSlotAcquisitions(ctx context.Context, arg SweepOr
 	err := row.Scan(&swept_count)
 	return swept_count, err
 }
+
+const tryAcquireBindingConcurrencyLock = `-- name: TryAcquireBindingConcurrencyLock :one
+SELECT pg_try_advisory_lock(
+    hashtextextended('pool_binding_concurrency'::text, $1::bigint)
+)::boolean
+`
+
+func (q *Queries) TryAcquireBindingConcurrencyLock(ctx context.Context, bindingID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, tryAcquireBindingConcurrencyLock, bindingID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}

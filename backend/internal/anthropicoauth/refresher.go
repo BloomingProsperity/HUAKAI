@@ -13,9 +13,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
@@ -44,15 +42,10 @@ var (
 	ErrAnthropicNonRetryable = errors.New("anthropicoauth: non-retryable refresh failure")
 )
 
-type RefreshTxStore interface {
+type RefreshStore interface {
 	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
 	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
 	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
-}
-
-type RefreshStore interface {
-	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
-	WithRefreshTransaction(context.Context, func(RefreshTxStore, db.DBTX) error) error
 }
 
 type RefreshFallback interface {
@@ -64,20 +57,21 @@ type ProviderAwareRefreshFallback interface {
 }
 
 type Refresher struct {
-	Store           RefreshStore
-	Fallback        RefreshFallback
-	Endpoint        string
-	ClientID        string
-	HTTPClient      *http.Client
-	Now             func() time.Time
-	ExpirySkewGrace time.Duration
-	RetryAfterMax   time.Duration
+	Store               RefreshStore
+	Fallback            RefreshFallback
+	Endpoint            string
+	ClientID            string
+	HTTPClient          *http.Client
+	Now                 func() time.Time
+	ExpirySkewGrace     time.Duration
+	RetryAfterMax       time.Duration
+	requireAccountLease bool
 }
 
 type Option func(*Refresher)
 
 func NewRefresher(store *credentialstore.Store, opts ...Option) *Refresher {
-	r := &Refresher{Store: credentialStoreRefreshAdapter{store: store}}
+	r := &Refresher{Store: credentialStoreRefreshAdapter{store: store}, requireAccountLease: true}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(r)
@@ -120,39 +114,21 @@ func (r *Refresher) refresh(ctx context.Context, providerID, accountID int64) er
 		}
 		return errors.New("anthropicoauth: credential refresh store missing")
 	}
-	probe, err := r.Store.LoadForRefresh(ctx, accountID)
+	rec, err := r.Store.LoadForRefresh(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	defer privacy.Zeroize(probe.PlaintextPayload)
-	if !isAnthropicOAuthRecord(probe) {
+	if r.requireAccountLease {
+		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
+			return err
+		}
+	}
+	defer privacy.Zeroize(rec.PlaintextPayload)
+	if !isAnthropicOAuthRecord(rec) {
 		return r.refreshFallback(ctx, providerID, accountID)
 	}
-
-	var refreshErr error
-	txErr := r.Store.WithRefreshTransaction(ctx, func(txStore RefreshTxStore, tx db.DBTX) error {
-		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
-			rec, err := txStore.LoadForRefresh(ctx, accountID)
-			if err != nil {
-				return err
-			}
-			defer privacy.Zeroize(rec.PlaintextPayload)
-			if rec.ID != probe.ID {
-				return credentialacq.WithRefreshLock(ctx, tx, rec.ID, func(db.DBTX) error {
-					lockedRec, err := txStore.LoadForRefresh(ctx, accountID)
-					if err != nil {
-						return err
-					}
-					defer privacy.Zeroize(lockedRec.PlaintextPayload)
-					refreshErr, err = r.refreshLockedRecord(ctx, txStore, accountID, lockedRec)
-					return err
-				})
-			}
-			refreshErr, err = r.refreshLockedRecord(ctx, txStore, accountID, rec)
-			return err
-		})
-	})
-	return errors.Join(refreshErr, txErr)
+	refreshErr, persistErr := r.refreshLockedRecord(ctx, r.Store, accountID, rec)
+	return errors.Join(refreshErr, persistErr)
 }
 
 func (r *Refresher) refreshFallback(ctx context.Context, providerID, accountID int64) error {
@@ -165,7 +141,7 @@ func (r *Refresher) refreshFallback(ctx context.Context, providerID, accountID i
 	return r.Fallback.Refresh(ctx, accountID)
 }
 
-func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) (error, error) {
+func (r *Refresher) refreshLockedRecord(ctx context.Context, txStore RefreshStore, accountID int64, rec credentialstore.CredentialRecord) (error, error) {
 	if !isAnthropicOAuthRecord(rec) {
 		return nil, nil
 	}
@@ -517,14 +493,16 @@ func (s credentialStoreRefreshAdapter) LoadForRefresh(ctx context.Context, accou
 	return s.store.LoadForRefresh(ctx, accountID)
 }
 
-func (s credentialStoreRefreshAdapter) WithRefreshTransaction(ctx context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s credentialStoreRefreshAdapter) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
 	if s.store == nil {
 		return errors.New("anthropicoauth: credential store missing")
 	}
-	return s.store.WithTransaction(ctx, func(txStore *credentialstore.Store, tx db.DBTX) error {
-		if fn == nil {
-			return nil
-		}
-		return fn(txStore, tx)
-	})
+	return s.store.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+}
+
+func (s credentialStoreRefreshAdapter) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	if s.store == nil {
+		return errors.New("anthropicoauth: credential store missing")
+	}
+	return s.store.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
 }

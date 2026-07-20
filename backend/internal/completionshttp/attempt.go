@@ -319,9 +319,7 @@ func streamAndCapture(w http.ResponseWriter, r io.Reader, captured *bytes.Buffer
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			if captured.Len()+len(chunk) <= maxUpstreamBodyBytes {
-				_, _ = captured.Write(chunk)
-			}
+			appendBoundedStreamTail(captured, chunk, maxUpstreamBodyBytes)
 			if _, err := w.Write(chunk); err != nil {
 				return err
 			}
@@ -334,6 +332,24 @@ func streamAndCapture(w http.ResponseWriter, r io.Reader, captured *bytes.Buffer
 			return readErr
 		}
 	}
+}
+
+// appendBoundedStreamTail 只保留流末尾的有界窗口。上游通常在终止帧报告 usage，
+// 因此前缀超过窗口时不能停止采集，否则大响应会稳定丢失真实计费数据。
+func appendBoundedStreamTail(dst *bytes.Buffer, chunk []byte, limit int) {
+	if dst == nil || limit <= 0 || len(chunk) == 0 {
+		return
+	}
+	if len(chunk) >= limit {
+		dst.Reset()
+		_, _ = dst.Write(chunk[len(chunk)-limit:])
+		return
+	}
+	overflow := dst.Len() + len(chunk) - limit
+	if overflow > 0 {
+		dst.Next(overflow)
+	}
+	_, _ = dst.Write(chunk)
 }
 
 func closeDispatchResult(res *gateway.DispatchResult) {

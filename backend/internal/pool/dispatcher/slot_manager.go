@@ -86,14 +86,9 @@ func (m *DBSlotManager) acquireOnce(ctx context.Context, account *AccountSnapsho
 		// 会话级锁必须先于 SERIALIZABLE 事务获取。若在事务启动后才等待锁，
 		// 等待者可能保留锁前旧快照，看不到前一持有者刚提交的 acquisition。
 		// 锁定后再开事务，事务内 COUNT、账号递增与 acquisition 插入共享新快照。
-		conn, err := m.pool.Acquire(ctx)
+		conn, lockQueries, err := m.acquireBindingLockConnection(ctx, req.BindingID)
 		if err != nil {
-			return nil, fmt.Errorf("pool: acquire binding lock connection: %w", err)
-		}
-		lockQueries := dbbilling.New(conn)
-		if err := lockQueries.AcquireBindingConcurrencyLock(ctx, req.BindingID); err != nil {
-			discardBindingLockConnection(conn)
-			return nil, fmt.Errorf("pool: lock binding concurrency: %w", err)
+			return nil, err
 		}
 		defer releaseBindingLockConnection(conn, lockQueries, req.BindingID)
 
@@ -175,6 +170,44 @@ func (m *DBSlotManager) acquireInTransaction(ctx context.Context, tx pgx.Tx, acc
 }
 
 const bindingLockCleanupTimeout = 2 * time.Second
+const bindingLockRetryMin = 5 * time.Millisecond
+const bindingLockRetryMax = 100 * time.Millisecond
+
+func (m *DBSlotManager) acquireBindingLockConnection(ctx context.Context, bindingID int64) (*pgxpool.Conn, *dbbilling.Queries, error) {
+	delay := bindingLockRetryMin
+	for {
+		conn, err := m.pool.Acquire(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pool: acquire binding lock connection: %w", err)
+		}
+		queries := dbbilling.New(conn)
+		locked, err := queries.TryAcquireBindingConcurrencyLock(ctx, bindingID)
+		if err != nil {
+			discardBindingLockConnection(conn)
+			return nil, nil, fmt.Errorf("pool: try lock binding concurrency: %w", err)
+		}
+		if locked {
+			return conn, queries, nil
+		}
+		conn.Release()
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, nil, fmt.Errorf("pool: wait binding concurrency lock: %w", ctx.Err())
+		case <-timer.C:
+		}
+		if delay < bindingLockRetryMax {
+			delay *= 2
+			if delay > bindingLockRetryMax {
+				delay = bindingLockRetryMax
+			}
+		}
+	}
+}
 
 // releaseBindingLockConnection 用脱钩上下文解锁；若无法确认锁已释放，就销毁
 // 该物理连接，绝不把仍持有会话级锁的连接放回池中。

@@ -18,6 +18,7 @@ type postgresQueries interface {
 	CreateTwoFactorBackupCode(ctx context.Context, arg dbtwofa.CreateTwoFactorBackupCodeParams) error
 	DeleteTwoFactorBackupCodesForUser(ctx context.Context, arg dbtwofa.DeleteTwoFactorBackupCodesForUserParams) error
 	GetTwoFactorSettings(ctx context.Context, arg dbtwofa.GetTwoFactorSettingsParams) (dbtwofa.TwoFactorSetting, error)
+	IncrementTwoFactorFailure(ctx context.Context, arg dbtwofa.IncrementTwoFactorFailureParams) (dbtwofa.IncrementTwoFactorFailureRow, error)
 	MarkTwoFactorSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorSuccessParams) error
 	MarkTwoFactorTOTPSuccess(ctx context.Context, arg dbtwofa.MarkTwoFactorTOTPSuccessParams) (int64, error)
 	SetTwoFactorEnabled(ctx context.Context, arg dbtwofa.SetTwoFactorEnabledParams) error
@@ -29,6 +30,8 @@ type PostgresStore struct {
 	pool *pgxpool.Pool
 	q    postgresQueries
 }
+
+var _ atomicFailureStore = (*PostgresStore)(nil)
 
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	if pool == nil {
@@ -117,6 +120,26 @@ func (s *PostgresStore) MarkTOTPSuccess(ctx context.Context, tenantID, userID in
 		return false, err
 	}
 	return rows > 0, nil
+}
+
+func (s *PostgresStore) RecordFailure(ctx context.Context, tenantID, userID int64, maxFailedAttempts int, lockUntil, now time.Time) (int, bool, error) {
+	if s == nil || s.q == nil {
+		return 0, false, ErrStoreNotConfigured
+	}
+	row, err := s.q.IncrementTwoFactorFailure(ctx, dbtwofa.IncrementTwoFactorFailureParams{
+		TenantID:          tenantID,
+		UserID:            userID,
+		MaxFailedAttempts: int32(maxFailedAttempts),
+		LockUntil:         timestamptz(lockUntil),
+		UpdatedAt:         timestamptz(now),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, ErrNotSetup
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return int(row.FailedAttempts), row.LockedUntil.Valid && now.Before(row.LockedUntil.Time), nil
 }
 
 func (s *PostgresStore) MarkFailure(ctx context.Context, tenantID, userID int64, failedAttempts int, lockedUntil *time.Time, now time.Time) error {

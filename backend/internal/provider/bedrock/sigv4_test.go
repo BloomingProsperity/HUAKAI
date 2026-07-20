@@ -192,6 +192,17 @@ func TestAWSURIEncode(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeURIUsesSameEncodingAsEndpoint(t *testing.T) {
+	u, err := url.Parse("https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-v2%3A0/invoke")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/model/anthropic.claude-v2%3A0/invoke"
+	if got := canonicalizeURI(u); got != want {
+		t.Fatalf("canonical URI = %q，期望与实际 endpoint 编码一致 %q", got, want)
+	}
+}
+
 // TestCanonicalizeQueryString 验证 query string 规范化：排序、编码。
 func TestCanonicalizeQueryString(t *testing.T) {
 	// 多参数乱序

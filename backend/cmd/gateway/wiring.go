@@ -1787,7 +1787,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			anthropicoauth.WithHTTPClient(anthropicOAuthHTTPClient),
 		)),
 		credentialworker.WithVendorRefresher("copilot", &providercopilot.CopilotRefresher{
-			Store: providercopilot.NewCredentialStoreAdapter(credentialStore),
+			Store:               providercopilot.NewCredentialStoreAdapter(credentialStore),
+			RequireAccountLease: true,
 		}),
 		// CRED-293:当一次 refresh 把某账号推入终态/不健康状态(Alert 标志)时,
 		// 经 notify 管线触发一次运维告警。
@@ -1815,7 +1816,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	)
 	credentialScheduler := credentialworker.NewScheduler(
 		billingQueries,
-		auth.NewStormControllerWithSharedScopeBudget(authQueries, stormScopeCfg, sharedRateLimits.storm),
+		auth.NewStormControllerWithSharedScopeBudget(authQueries, stormScopeCfg, sharedRateLimits.storm,
+			auth.WithRefreshAccountLockPool(pgPool)),
 		auditSigner,
 		credentialRefresher,
 		credentialSchedulerOptions...,

@@ -212,7 +212,7 @@ func TestGeminiRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
-func TestGeminiRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
+func TestGeminiRefresherRecordsAuditOutcomeInShortPersistenceTransaction(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
@@ -258,7 +258,7 @@ func TestGeminiRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:111", "reread", "failure:111:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "failure:111:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -288,10 +288,22 @@ func (s *recordingGeminiRefreshStore) LoadForRefresh(context.Context, int64) (cr
 	return s.rec, nil
 }
 
-func (s *recordingGeminiRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *recordingGeminiRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	*s.calls = append(*s.calls, "tx_begin")
 	tx := &recordingGeminiRefreshTx{calls: s.calls, rec: s.rec, saved: &s.saved}
 	return fn(tx, tx)
+}
+
+func (s *recordingGeminiRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *recordingGeminiRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type recordingGeminiRefreshTx struct {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakeReplayStore 是注入用的 recordStore 实现:ClaimByID 返回预置 record,MarkFailed 返回预置错误,
@@ -14,6 +16,7 @@ type fakeReplayStore struct {
 	rec           *Record
 	markFailedErr error
 	markFailedHit int
+	lastReason    string
 	lastDecision  RetryDecision
 }
 
@@ -26,10 +29,38 @@ func (f *fakeReplayStore) Claim(context.Context, Lane, string, time.Duration) (*
 func (f *fakeReplayStore) ClaimByID(context.Context, int64, string, time.Duration) (*Record, error) {
 	return f.rec, nil
 }
-func (f *fakeReplayStore) MarkFailed(_ context.Context, _ Record, _ string, decision RetryDecision) error {
+func (f *fakeReplayStore) MarkFailed(_ context.Context, _ Record, reason string, decision RetryDecision) error {
 	f.markFailedHit++
+	f.lastReason = reason
 	f.lastDecision = decision
 	return f.markFailedErr
+}
+
+func TestServiceReplayRedactsSecretFromPersistedFailureReason(t *testing.T) {
+	store := &fakeReplayStore{rec: &Record{EventKind: "k"}}
+	secretErr := errors.New("upstream failed with Authorization: Bearer sk-secret-material")
+	s := newReplayService(store, func(context.Context, Record) error { return secretErr })
+
+	if _, err := s.Replay(context.Background(), 1, "operator-1"); !errors.Is(err, secretErr) {
+		t.Fatalf("调用方仍应收到原始错误链: %v", err)
+	}
+	if store.lastReason != "[REDACTED]" {
+		t.Fatalf("持久化失败原因=%q，期望脱敏占位", store.lastReason)
+	}
+}
+
+func TestSafeFailureReasonTruncatesAtUTF8Boundary(t *testing.T) {
+	reason := strings.Repeat("中", 342)
+	got := safeFailureReason(reason)
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断结果不是合法 UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, " [TRUNCATED]") {
+		t.Fatalf("截断结果缺少标记: %q", got)
+	}
+	if strings.TrimSuffix(got, " [TRUNCATED]") != strings.Repeat("中", 341) {
+		t.Fatalf("截断位置错误: %q", got)
+	}
 }
 
 var (

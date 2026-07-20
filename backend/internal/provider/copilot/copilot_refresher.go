@@ -37,8 +37,9 @@ type CopilotFailureRecorder interface {
 }
 
 type CopilotRefresher struct {
-	Store   CopilotCredentialStore
-	Adapter CopilotRefreshAdapter
+	Store               CopilotCredentialStore
+	Adapter             CopilotRefreshAdapter
+	RequireAccountLease bool
 }
 
 type CopilotRefreshAdapter struct {
@@ -50,6 +51,11 @@ type CopilotRefreshAdapter struct {
 func (r *CopilotRefresher) Refresh(ctx context.Context, accountID int64) error {
 	if r == nil || r.Store == nil {
 		return errors.New("copilot refresh: credential store missing")
+	}
+	if r.RequireAccountLease {
+		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
+			return err
+		}
 	}
 	current, err := r.Store.LoadCopilotCredential(ctx, accountID)
 	if err != nil {

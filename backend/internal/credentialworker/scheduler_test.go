@@ -538,6 +538,38 @@ func TestSchedulerStopsBackoffLoopForNonRetryableRefreshError(t *testing.T) {
 	}
 }
 
+func TestSchedulerPersistenceUncertaintyOverridesRetryableRemoteError(t *testing.T) {
+	ref := &refresherSpy{errs: []error{errors.Join(retryableRefreshErr{}, remoteRetrySuppressedErr{})}}
+	delays := []time.Duration{}
+	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccount(31)}, &stormSpy{}, ref,
+		WithMaxAttempts(3), WithBackoff(func(attempt int) time.Duration { return time.Duration(attempt) }),
+		withSleep(func(_ context.Context, d time.Duration) error {
+			delays = append(delays, d)
+			return nil
+		}),
+	)
+	if err := s.RunOnce(context.Background()); err == nil {
+		t.Fatal("持久化结果不确定必须向上返回错误")
+	}
+	if len(ref.calls) != 1 || len(delays) != 0 {
+		t.Fatalf("持久化结果不确定后仍重试远端：calls=%v delays=%v", ref.calls, delays)
+	}
+}
+
+func TestRecoverAgentTaskAcquiresAccountLeaseBeforeRecovery(t *testing.T) {
+	storm := &stormSpy{}
+	recoverer := &leaseAwareAgentRecoverer{}
+	s := NewScheduler(nil, nil, nil, recoverer,
+		withStormAcquirer(storm), withAuditWriter(&auditSpy{}), WithAuditLedger(&ledgerSpy{}),
+	)
+	if err := s.RecoverAgentTask(context.Background(), 7, 42, 3); err != nil {
+		t.Fatalf("RecoverAgentTask: %v", err)
+	}
+	if !recoverer.called || storm.calls != 1 || storm.released != 1 || storm.endpointCalls != 1 || storm.globalCalls != 1 {
+		t.Fatalf("恢复链路未完整经过账号租约：called=%v storm=%+v", recoverer.called, storm)
+	}
+}
+
 func TestSchedulerStopGracefully(t *testing.T) {
 	ticks := make(chan time.Time)
 	s := newTestScheduler(nil, &stormSpy{}, &refresherSpy{}, WithTickChannel(ticks))
@@ -691,9 +723,21 @@ func (s *schedulerCursorStore) LoadForRefresh(context.Context, int64) (credentia
 	return cloneSchedulerCursorRecord(s.rec), nil
 }
 
-func (s *schedulerCursorStore) WithRefreshTransaction(_ context.Context, fn func(cursor.RefreshTxStore, db.DBTX) error) error {
+func (s *schedulerCursorStore) WithRefreshTransaction(_ context.Context, fn func(cursor.RefreshStore, db.DBTX) error) error {
 	tx := &schedulerCursorTx{store: s}
 	return fn(tx, tx)
+}
+
+func (s *schedulerCursorStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx cursor.RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *schedulerCursorStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx cursor.RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type schedulerCursorTx struct {
@@ -743,6 +787,31 @@ type nonRetryableRefreshErr struct{}
 func (nonRetryableRefreshErr) Error() string { return "rate_limit_exceeded" }
 
 func (nonRetryableRefreshErr) RetryableRefresh() bool { return false }
+
+type retryableRefreshErr struct{}
+
+func (retryableRefreshErr) Error() string          { return "remote temporary failure" }
+func (retryableRefreshErr) RetryableRefresh() bool { return true }
+
+type remoteRetrySuppressedErr struct{}
+
+func (remoteRetrySuppressedErr) Error() string             { return "refresh persistence uncertain" }
+func (remoteRetrySuppressedErr) SuppressRemoteRetry() bool { return true }
+func (remoteRetrySuppressedErr) RetryableRefresh() bool    { return false }
+
+type leaseAwareAgentRecoverer struct {
+	called bool
+}
+
+func (r *leaseAwareAgentRecoverer) Refresh(context.Context, int64) error { return nil }
+
+func (r *leaseAwareAgentRecoverer) RecoverAgentTask(ctx context.Context, _ int64, accountID int64, _ int) error {
+	if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
+		return err
+	}
+	r.called = true
+	return nil
+}
 
 type auditSpy struct {
 	entries []auth.RefreshAuditEntry

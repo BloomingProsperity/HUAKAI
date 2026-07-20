@@ -956,6 +956,11 @@ func effectiveRefreshLead(perAccount *int32, global time.Duration) time.Duration
 }
 
 func (s *Store) SaveRefreshSuccess(ctx context.Context, rec CredentialRecord, payload []byte, accessExpiresAt time.Time, outcome string) error {
+	return s.SaveRefreshSuccessWithAudit(ctx, rec, payload, accessExpiresAt, outcome, nil)
+}
+
+// SaveRefreshSuccessWithAudit 将刷新结果和调用链产生的附加日志放进同一短事务。
+func (s *Store) SaveRefreshSuccessWithAudit(ctx context.Context, rec CredentialRecord, payload []byte, accessExpiresAt time.Time, outcome string, extraAudits []AuditEvent) error {
 	if err := s.validateReady(); err != nil {
 		return err
 	}
@@ -1017,85 +1022,54 @@ WHERE id = $14
 	if !prepared.refreshBeforeAt.IsZero() {
 		nextAttemptAt = ineffectiveRefreshNextAttempt(prepared.refreshBeforeAt, now, time.Time{})
 	}
-	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
-		tag, err := txStore.db.Exec(ctx, q,
-			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
-			prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
-			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			prepared.projectRef, outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
-		)
-		if err != nil {
-			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
-		}
-		if tag.RowsAffected() != 1 {
-			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, errors.New("credentialstore: refresh credential cas lost"))
-		}
-		if observation, ok := freshSubscriptionRefreshObservation(rec.Vendor, rec.AuthMode, rec.PlaintextPayload, payload); ok {
-			if _, err := txStore.recordSubscriptionObservation(ctx, rec.TenantID, rec.ProviderAccountID, rec.ID, version, observation); err != nil {
+	save := func() error {
+		return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
+			tag, err := txStore.db.Exec(ctx, q,
+				prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
+				prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
+				nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
+				prepared.projectRef, outcome, rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion, nullableTime(nextAttemptAt),
+			)
+			if err != nil {
 				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 			}
-		}
-		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
-			TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
-			EventType: CredentialEventRefreshSucceeded, Vendor: rec.Vendor, AuthMode: rec.AuthMode,
-			CredentialVersion: version, Payload: map[string]any{"outcome": outcome},
-		}); err != nil {
-			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
-		}
-		return nil
-	})
-}
-
-func (s *Store) SaveRefreshFailure(ctx context.Context, rec CredentialRecord, failureClass string, nextAttemptAt time.Time) error {
-	if err := s.validateReady(); err != nil {
-		return err
+			if tag.RowsAffected() != 1 {
+				return credentialAuditPhaseError(credentialAuditTxPhaseMutation, errors.New("credentialstore: refresh credential cas lost"))
+			}
+			if observation, ok := freshSubscriptionRefreshObservation(rec.Vendor, rec.AuthMode, rec.PlaintextPayload, payload); ok {
+				if _, err := txStore.recordSubscriptionObservation(ctx, rec.TenantID, rec.ProviderAccountID, rec.ID, version, observation); err != nil {
+					return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
+				}
+			}
+			for _, event := range extraAudits {
+				if err := txStore.insertAuditEventStrict(ctx, event); err != nil {
+					return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+				}
+			}
+			if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
+				TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
+				EventType: CredentialEventRefreshSucceeded, Vendor: rec.Vendor, AuthMode: rec.AuthMode,
+				CredentialVersion: version, Payload: map[string]any{"outcome": outcome},
+			}); err != nil {
+				return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
+			}
+			return nil
+		})
 	}
-	if err := s.ensureProviderAccountTenant(ctx, rec.TenantID, rec.ProviderAccountID); err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		lastErr = save()
+		if lastErr == nil {
+			return nil
+		}
+		if s.refreshSuccessAlreadyCommitted(ctx, rec, version, prepared.payloadFingerprint, outcome) {
+			return nil
+		}
+		if !retryableRefreshPersistence(lastErr) {
+			break
+		}
 	}
-	state := refreshFailureState(failureClass)
-	const q = `
-UPDATE account_credentials
-SET state = $1,
-    failure_class = $2,
-    failure_count = failure_count + 1,
-    next_attempt_at = $3,
-    last_refresh_at = NOW(),
-    last_refresh_outcome = 'refresh_failed',
-    updated_at = NOW()
-WHERE id = $4
-  AND tenant_id = $5
-  AND provider_account_id = $6
-  AND deleted_at IS NULL
-  AND credential_version = $7`
-	return s.withCredentialMutationAuditTx(ctx, func(txStore *Store) error {
-		tag, err := txStore.db.Exec(ctx, q, state, failureClass, nullableTime(nextAttemptAt), rec.ID, rec.TenantID, rec.ProviderAccountID, rec.CredentialVersion)
-		if err != nil {
-			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
-		}
-		if tag.RowsAffected() != 1 {
-			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, ErrCredentialNotFound)
-		}
-		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
-			TenantID: rec.TenantID, ProviderAccountID: rec.ProviderAccountID, CredentialID: rec.ID,
-			EventType: CredentialEventRefreshFailed, Vendor: rec.Vendor, AuthMode: rec.AuthMode,
-			CredentialVersion: rec.CredentialVersion, Payload: map[string]any{"failure_class": failureClass, "state": state},
-		}); err != nil {
-			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
-		}
-		return nil
-	})
-}
-
-func refreshFailureState(failureClass string) string {
-	switch failureClass {
-	case "invalid_grant", "auth_expired":
-		return StateRevoked
-	case "decrypt_failed", "payload_invalid", "operator_config_required":
-		return StateOperatorAttention
-	default:
-		return StateTempUnschedulable
-	}
+	return refreshPersistenceError(lastErr)
 }
 
 func (s *Store) decryptRecord(ctx context.Context, rec CredentialRecord) ([]byte, error) {
