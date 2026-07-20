@@ -244,6 +244,28 @@ func TestAdminAccountIntakeDoesNotExposeBackendError(t *testing.T) {
 	}
 }
 
+func TestAdminAccountIntakeMapsCodexLaneConfigurationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "没有可运行车道", err: accountintake.ErrCodexLaneAbsent, code: "codex_lane_not_configured"},
+		{name: "存在多条车道", err: accountintake.ErrCodexLaneMany, code: "codex_lane_ambiguous"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &accountIntakeServiceStub{planErr: tc.err}
+			handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
+			rec := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/codex/plan",
+				`{"tenant_id":7,"content":"access-token"}`)
+			if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), tc.code) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func accountIntakeTestHandler(auth AdminAuth, service AdminAccountIntakeService) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/admin/v1/credentials", func(r chi.Router) {

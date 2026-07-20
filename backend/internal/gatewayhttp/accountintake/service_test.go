@@ -1,6 +1,7 @@
 package accountintake
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -8,8 +9,30 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
+
+type intakeCompatibilityLookup struct {
+	account admindb.AdminProviderAccountRow
+	family  string
+	err     error
+}
+
+func (s intakeCompatibilityLookup) GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
+	if s.err != nil {
+		return admindb.AdminProviderAccountRow{}, s.err
+	}
+	return s.account, nil
+}
+
+func (s intakeCompatibilityLookup) GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.family, nil
+}
 
 func TestEnrichPlanRequiresMixedChannelConfirmation(t *testing.T) {
 	plan := intake.Plan{
@@ -57,6 +80,69 @@ func TestEnrichPlanFailsProtocolMismatch(t *testing.T) {
 	if item.Action != intake.ActionFail || item.Code != "provider_protocol_incompatible" ||
 		plan.Summary.Fail != 1 || plan.Summary.Create != 0 {
 		t.Fatalf("item=%+v summary=%+v，期望协议不兼容 fail", item, plan.Summary)
+	}
+}
+
+func TestEnrichUpdateCompatibilityRejectsWrongExistingAccount(t *testing.T) {
+	plan := intake.Plan{
+		ContractVersion: intake.ContractVersion,
+		Items: []intake.Item{{
+			Index: 0, Action: intake.ActionUpdate, ExistingAccountID: 77,
+			FieldChanges: []string{"credential"}, RequiredConfirmations: []string{"confirm_credential_rotation"},
+		}},
+	}
+	candidates := []credentialacq.CredentialCandidate{{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+	}}
+	err := enrichUpdateCompatibility(context.Background(), intakeCompatibilityLookup{
+		account: admindb.AdminProviderAccountRow{ProviderID: 12, AccountType: "api_key"},
+		family:  "anthropic_messages",
+	}, 7, &plan, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := plan.Items[0]
+	if item.Action != intake.ActionFail || item.Code != "provider_protocol_incompatible" ||
+		len(item.FieldChanges) != 0 || len(item.RequiredConfirmations) != 0 ||
+		plan.Summary.Fail != 1 || plan.Summary.Update != 0 {
+		t.Fatalf("item=%+v summary=%+v，期望不兼容更新明确失败", item, plan.Summary)
+	}
+}
+
+func TestEnrichUpdateCompatibilityFailsClosedOnLookupError(t *testing.T) {
+	plan := intake.Plan{Items: []intake.Item{{Index: 0, Action: intake.ActionUpdate, ExistingAccountID: 77}}}
+	candidates := []credentialacq.CredentialCandidate{{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+	}}
+	want := errors.New("数据库不可用")
+	err := enrichUpdateCompatibility(context.Background(), intakeCompatibilityLookup{err: want}, 7, &plan, candidates)
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v，期望保留查询失败并阻止预检", err)
+	}
+	if plan.Items[0].Action != intake.ActionUpdate {
+		t.Fatalf("查询失败时不应伪造业务结论：%+v", plan.Items[0])
+	}
+}
+
+func TestEnrichUpdateCompatibilityKeepsCompatibleAccount(t *testing.T) {
+	plan := intake.Plan{Items: []intake.Item{{Index: 0, Action: intake.ActionUpdate, ExistingAccountID: 77}}}
+	candidates := []credentialacq.CredentialCandidate{{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+	}}
+	err := enrichUpdateCompatibility(context.Background(), intakeCompatibilityLookup{
+		account: admindb.AdminProviderAccountRow{ProviderID: 12, AccountType: "oauth"},
+		family:  "openai_codex",
+	}, 7, &plan, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Items[0].Action != intake.ActionUpdate || plan.Summary.Update != 1 {
+		t.Fatalf("兼容账号应保持更新：item=%+v summary=%+v", plan.Items[0], plan.Summary)
+	}
+	if err := accountcreate.ValidateProtocolCompatibility(
+		"openai_codex", "oauth", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth,
+	); err != nil {
+		t.Fatalf("测试前提失效：%v", err)
 	}
 }
 

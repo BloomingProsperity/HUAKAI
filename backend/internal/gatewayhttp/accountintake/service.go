@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -68,6 +69,14 @@ func (s *Service) prepare(ctx context.Context, in PlanInput) (preparedPlan, erro
 		return preparedPlan{}, ErrNotConfigured
 	}
 	in = normalizeInput(in)
+	if isCodexIntake(in) {
+		in = applyCodexAccountDefaults(in)
+		var err error
+		in.Account, err = s.resolveCodexLane(ctx, in.TenantID, in.Account)
+		if err != nil {
+			return preparedPlan{}, err
+		}
+	}
 	if err := validateInput(in); err != nil {
 		return preparedPlan{}, err
 	}
@@ -98,6 +107,16 @@ func (s *Service) prepare(ctx context.Context, in PlanInput) (preparedPlan, erro
 		return preparedPlan{}, err
 	}
 	enrichPlan(&built.Plan, built.Candidates, family, in.Account, riskPeers(peers))
+	if err := enrichUpdateCompatibility(ctx, q, in.TenantID, &built.Plan, built.Candidates); err != nil {
+		zeroizeCandidates(built.Candidates)
+		return preparedPlan{}, err
+	}
+	if isCodexIntake(in) {
+		if err := s.rejectUnrunnableCodexUpdates(ctx, q, in.TenantID, &built.Plan); err != nil {
+			zeroizeCandidates(built.Candidates)
+			return preparedPlan{}, err
+		}
+	}
 	hash, err := planHash(in, built.Plan)
 	if err != nil {
 		zeroizeCandidates(built.Candidates)
@@ -107,6 +126,35 @@ func (s *Service) prepare(ctx context.Context, in PlanInput) (preparedPlan, erro
 		result: PlanResult{PlanHash: hash, Plan: built.Plan},
 		input:  in, candidates: built.Candidates, providerFamily: family,
 	}, nil
+}
+
+func enrichUpdateCompatibility(ctx context.Context, lookup accountcreate.CredentialCompatLookup, tenantID int64, plan *intake.Plan, candidates []credentialacq.CredentialCandidate) error {
+	if plan == nil {
+		return nil
+	}
+	for index := range plan.Items {
+		item := &plan.Items[index]
+		if item.Action != intake.ActionUpdate || index >= len(candidates) {
+			continue
+		}
+		candidate := candidates[index]
+		err := accountcreate.ValidateCredentialCompatibility(
+			ctx, lookup, tenantID, item.ExistingAccountID, candidate.Vendor, candidate.AuthMode,
+		)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, accountcreate.ErrProtocolIncompatible) {
+			return err
+		}
+		item.Action = intake.ActionFail
+		item.Code = "provider_protocol_incompatible"
+		item.Message = "已有账号的类型或 provider 协议与待导入凭据不兼容"
+		item.FieldChanges = nil
+		item.RequiredConfirmations = nil
+	}
+	recountPlan(plan)
+	return nil
 }
 
 func normalizeInput(in PlanInput) PlanInput {

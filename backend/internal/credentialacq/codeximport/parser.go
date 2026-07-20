@@ -172,6 +172,8 @@ func mergeAuthJSONMetadata(tokens, outer map[string]any) map[string]any {
 		"chatgpt_user_id", "user_id", "external_subject_id",
 		"email", "external_account_email",
 		"chatgpt_plan_type", "plan_type", "subscription_plan",
+		"user_agent", "userAgent", "codex_version", "codexVersion",
+		"originator", "oai_device_id", "oaiDeviceId",
 	} {
 		if _, exists := merged[key]; exists {
 			continue
@@ -238,6 +240,24 @@ func candidateFromTokenObject(fields map[string]any, shape string) (credentialac
 	}
 	if scope := firstString(fields, "scope"); scope != "" {
 		payload["scope"] = scope
+	}
+	for _, metadata := range []struct {
+		target  string
+		aliases []string
+	}{
+		{target: "user_agent", aliases: []string{"user_agent", "userAgent"}},
+		{target: "codex_version", aliases: []string{"codex_version", "codexVersion"}},
+		{target: "originator", aliases: []string{"originator"}},
+		{target: "oai_device_id", aliases: []string{"oai_device_id", "oaiDeviceId"}},
+	} {
+		value := firstString(fields, metadata.aliases...)
+		if value == "" {
+			continue
+		}
+		if err := credentialacq.ValidateHTTPHeaderMetadata(value); err != nil {
+			return credentialacq.CredentialCandidate{}, invalid(metadata.target + " 不是安全的 HTTP 头元数据")
+		}
+		payload[metadata.target] = value
 	}
 	expiresAt, err := tokenExpiry(fields, access)
 	if err != nil {

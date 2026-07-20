@@ -113,8 +113,45 @@ func TestCodexSessionAdapter_BuildRequest_SessionToken(t *testing.T) {
 	if _, ok := gotBody["max_output_tokens"]; ok {
 		t.Fatalf("max_output_tokens 未剥离: body=%s", body)
 	}
-	if gotBody["input"] != "hi" {
-		t.Fatalf("input=%v want hi; body=%s", gotBody["input"], body)
+	assertCodexTextInput(t, gotBody["input"], "hi")
+}
+
+func TestCodexSessionAdapter_BuildRequest_PreservesStructuredInput(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	in := provider.BuildInput{
+		UpstreamModelID: "gpt-5.5",
+		InboundBody:     []byte(`{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "sb-session-token-fake",
+		},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(req.Body)
+	body := decodeJSONBody(t, raw)
+	assertCodexTextInput(t, body["input"], "hi")
+}
+
+func assertCodexTextInput(t *testing.T, raw any, want string) {
+	t.Helper()
+	items, ok := raw.([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("input=%v，期望单项消息列表", raw)
+	}
+	message, ok := items[0].(map[string]any)
+	if !ok || message["type"] != "message" || message["role"] != "user" {
+		t.Fatalf("message=%v，期望用户消息", items[0])
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content=%v，期望单项文本内容", message["content"])
+	}
+	part, ok := content[0].(map[string]any)
+	if !ok || part["type"] != "input_text" || part["text"] != want {
+		t.Fatalf("part=%v，期望 input_text=%q", content[0], want)
 	}
 }
 
