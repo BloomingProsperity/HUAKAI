@@ -61,4 +61,4 @@
 - [x] 完成判别性单元、并发、故障和 PostgreSQL 测试。
 - [x] 通过 `go test ./...`、全仓 `-race -count=1`、`go vet ./...`、`quality-gate`、`govulncheck`、性能门及 78 包独立 PostgreSQL 集成测试。
 - [x] 精确暂存并由独立只读 Codex session 复审；所有 S0/S1 已关闭，收口 S2 也已修复并回归验证。
-- [ ] 提交、推送并创建一个新的干净 PR，等待 Owner 批准合并。
+- [x] 已提交并推送至唯一干净 PR `#283`，等待 Owner 批准合并。
