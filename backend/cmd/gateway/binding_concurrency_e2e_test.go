@@ -33,23 +33,26 @@ func TestBindingConcurrencyE2E(t *testing.T) {
 	defer os.Remove(binPath)
 
 	t.Run("同一绑定重并发恰好放行K个且拒绝完整回滚", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer setupCancel()
+		pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 		if err != nil {
 			t.Fatalf("Open dev pool: %v", err)
 		}
-		defer pgPool.Close()
+		t.Cleanup(pgPool.Close)
 
-		seed := seedSmokeGraph(t, ctx, pgPool)
+		seed := seedSmokeGraph(t, setupCtx, pgPool)
 		pricingVersion := "binding-cap-" + uuid.NewString()
 		cleanupAccountSlotE2E(t, pgPool, seed.tenantID, pricingVersion)
-		bindingID := seedBindingConcurrencyE2E(t, ctx, pgPool, seed, pricingVersion, bindingConcurrencyE2ECap)
+		bindingID := seedBindingConcurrencyE2E(t, setupCtx, pgPool, seed, pricingVersion, bindingConcurrencyE2ECap)
 
 		addr := reserveLocalPort(t)
 		cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
 		t.Cleanup(func() { stopGateway(cmd) })
 		waitForGateway(t, addr)
+		setupCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
 
 		client := &http.Client{Timeout: 20 * time.Second}
 		resultsCh := make(chan []accountSlotHTTPResult, 1)
@@ -163,23 +166,26 @@ func TestBindingConcurrencyE2E(t *testing.T) {
 	})
 
 	t.Run("normal绑定满后quota目标用独立闸接管且钱账收敛", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer setupCancel()
+		pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 		if err != nil {
 			t.Fatalf("Open dev pool: %v", err)
 		}
-		defer pgPool.Close()
+		t.Cleanup(pgPool.Close)
 
-		seed := seedSmokeGraph(t, ctx, pgPool)
+		seed := seedSmokeGraph(t, setupCtx, pgPool)
 		pricingVersion := "binding-fallback-" + uuid.NewString()
 		cleanupAccountSlotE2E(t, pgPool, seed.tenantID, pricingVersion)
-		fixture := seedBindingFallbackE2E(t, ctx, pgPool, seed, pricingVersion)
+		fixture := seedBindingFallbackE2E(t, setupCtx, pgPool, seed, pricingVersion)
 
 		addr := reserveLocalPort(t)
 		cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
 		t.Cleanup(func() { stopGateway(cmd) })
 		waitForGateway(t, addr)
+		setupCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
 
 		client := &http.Client{Timeout: 20 * time.Second}
 		holderID := "binding-fallback-holder-" + uuid.NewString()
@@ -253,23 +259,26 @@ func TestBindingConcurrencyE2E(t *testing.T) {
 	})
 
 	t.Run("客户端断连后脱钩中止仍释放槽与钱账", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancel()
-		pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer setupCancel()
+		pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 		if err != nil {
 			t.Fatalf("Open dev pool: %v", err)
 		}
-		defer pgPool.Close()
+		t.Cleanup(pgPool.Close)
 
-		seed := seedSmokeGraph(t, ctx, pgPool)
+		seed := seedSmokeGraph(t, setupCtx, pgPool)
 		pricingVersion := "binding-cancel-" + uuid.NewString()
 		cleanupAccountSlotE2E(t, pgPool, seed.tenantID, pricingVersion)
-		bindingID := seedBindingConcurrencyE2E(t, ctx, pgPool, seed, pricingVersion, 1)
+		bindingID := seedBindingConcurrencyE2E(t, setupCtx, pgPool, seed, pricingVersion, 1)
 
 		addr := reserveLocalPort(t)
 		cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
 		t.Cleanup(func() { stopGateway(cmd) })
 		waitForGateway(t, addr)
+		setupCancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
 
 		logicalID := "binding-cancel-" + uuid.NewString()
 		requestCtx, cancelRequest := context.WithCancel(ctx)

@@ -62,6 +62,11 @@
 - `GOTOOLCHAIN=go1.25.12 govulncheck ./...`：生产可达漏洞为 0；本地默认 Go 1.25.0 的标准库告警不作为源码缺陷冒充修复结果。
 - 真实账号测试入口可编译，凭据处理与脱敏矩阵通过；在真实 PostgreSQL、真实 Go 网关和真实 Rust sidecar 上，正式管理员鉴权、租户能力授权、导入预检、原子建号与加密凭据、渠道健康初始化和选号查询已通过，且测试后账号、令牌和租户残留均为 0。Claude、Gemini、Antigravity、Kimi、Codex、Grok 的真实厂商调用仍因未获准读取本机会话凭据而未执行，尚不能宣称真实上游已验收。
 - Codex、Grok、OpenAI 图片三条合成凭据判别测试及通用账号正式导入测试均在 `-race` 下通过；ChatGPT session 使用本地假上游完成“正式导入 → 选号 → Rust sidecar → 出站 → 响应 → claim/用量/余额”全链闭环。测试库残留为 0，`usage_records`、`billing_events` 和订阅观测三类 append-only 触发器均为启用状态。
+- ChatGPT session 全链测试已改用生产形态 PostgreSQL 日志账本，并强制断言 claim 对应的签名费用凭证已落库，覆盖配额预占与结算、余额占用捕获、计费 claim、费用凭证和账号槽释放；费用凭证缺失不再只留警告后放过测试。
+- `smoke` 与 `e2e_concurrency` 已接入当前源码构建的 Rust sidecar，修复 Go 出口退役后测试仍假设 Go 可独立出站的问题；账号容量、等待队列、快速溢出、超时中止、绑定并发、断连恢复、钱账和槽位最终收敛均通过。
+- Rust sidecar 冷构建和网关启动使用独立的五分钟准备时间窗，正式 HTTP/数据库断言才启动原有业务超时；冒烟、前端接线后端测试、账号槽并发和绑定并发不再因干净 CI 的首次 Rust 编译提前耗尽请求预算。
+- 活体清理顺序已修正为“先清业务数据、后关闭连接池”，并覆盖配额事实、调度恢复、DLQ、签名费用凭证和 PostgreSQL 日志账本。此前清理 SQL 因连接池先关闭而静默失败、继而污染后续恢复测试的问题已修复；清理错误现在直接使测试失败，不再忽略。
+- 在迁移 207 的全新 PostgreSQL 16 数据库上，`smoke`、`e2e_concurrency`、`dlq`、`settlementrecovery` 均通过；随后执行 `go test -p 1 -tags=integration_pg -race -count=1 -timeout 12m ./...`，全仓通过。测试后仅保留启动流程按合同创建的空 `default` 系统租户，无业务账号、claim、费用凭证、日志或配额残留。
 - 提交前独立审查发现的运行时路径硬编码、`CARGO_TARGET_DIR` 不一致、身份断言过弱、冷构建占用业务超时和凭据日志脱敏不全均已修复；嵌套 camelCase、`setup_token`、通用 `token`、服务账号私钥与 AWS 密钥均有可判别泄漏断言，聚焦竞态测试通过。
 - 前端目录零改动；Copilot、Windsurf、Cursor 未被公共链改动解封。
 - 封存闸相关 `credentialacq`、账号导入、模式目录和 `gatewayhttp` 全包测试及竞态测试通过；最终全仓 `go test -race -count=1 -timeout 8m ./...` 与质量门通过。两轮独立只读审查首轮发现拒绝日志缺口并已修复，第二轮未发现明确缺陷。判别测试确认即使底层 exchanger/adapter 仍注册，也不能从生产入口新建或推进封存流程。

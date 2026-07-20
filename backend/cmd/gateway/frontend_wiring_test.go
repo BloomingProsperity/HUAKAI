@@ -35,16 +35,16 @@ func TestFrontendWiring(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping frontend wiring test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer setupCancel()
 
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open dev pool: %v", err)
 	}
-	defer pgPool.Close()
+	t.Cleanup(pgPool.Close)
 
-	seed := seedSmokeGraph(t, ctx, pgPool)
+	seed := seedSmokeGraph(t, setupCtx, pgPool)
 
 	// session/verification 这几张表不在 seedSmokeGraph 的租户清理范围内。
 	t.Cleanup(func() {
@@ -66,7 +66,7 @@ func TestFrontendWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash admin token: %v", err)
 	}
-	if _, err := pgPool.Exec(ctx,
+	if _, err := pgPool.Exec(setupCtx,
 		`INSERT INTO admin_tokens (name, key_hash, key_prefix, role, scope_tenant_id, status)
 		 VALUES ($1,$2,$3,'tenant_operator',$4,'active')`,
 		"wire-admin-"+uuid.NewString()[:8], string(adminHash), adminPrefix, seed.tenantID); err != nil {
@@ -84,7 +84,7 @@ func TestFrontendWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash platform admin token: %v", err)
 	}
-	if _, err := pgPool.Exec(ctx,
+	if _, err := pgPool.Exec(setupCtx,
 		`INSERT INTO admin_tokens (name, key_hash, key_prefix, role, status)
 		 VALUES ($1,$2,$3,'platform_admin','active')`,
 		"wire-admin-plat-"+uuid.NewString()[:8], string(platHash), adminPlatPrefix); err != nil {
@@ -102,7 +102,7 @@ func TestFrontendWiring(t *testing.T) {
 		"two_factor_enabled":   "false",
 		"captcha_enabled":      "false",
 	} {
-		if _, err := pgPool.Exec(ctx,
+		if _, err := pgPool.Exec(setupCtx,
 			`INSERT INTO platform_settings (scope, setting_key, setting_value, updated_by, updated_at)
 			 VALUES ('global',$1,$2,'frontend-wiring-test', now())
 			 ON CONFLICT (scope, setting_key) DO UPDATE SET setting_value=$2, updated_by='frontend-wiring-test', updated_at=now()`, k, v); err != nil {
@@ -114,9 +114,12 @@ func TestFrontendWiring(t *testing.T) {
 	defer os.Remove(binPath)
 
 	addr := reserveLocalPort(t)
-	cmd := startGateway(t, ctx, binPath, dsn, addr, seed)
+	cmd := startGateway(t, setupCtx, binPath, dsn, addr, seed)
 	t.Cleanup(func() { stopGateway(cmd) })
 	waitForGateway(t, addr)
+	setupCancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 	base := "http://" + addr
 
 	unique := uuid.NewString()[:8]
@@ -439,8 +442,8 @@ func TestFrontendWiring(t *testing.T) {
 				t.Fatalf("receipt get bad-id: expected structured {error} (route wired); got %d body=%s", st, body)
 			}
 		}
-		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)        // 列表可达(200,形状不固定)
-		assertReachable(t, ctx, base+"/v1/audit/pubkey", "")       // public;200 或结构化 503(signer)
+		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)  // 列表可达(200,形状不固定)
+		assertReachable(t, ctx, base+"/v1/audit/pubkey", "") // public;200 或结构化 503(signer)
 	})
 
 	// ============ 批次 3:管理控制台核心(admin-token 轨道)============
@@ -520,7 +523,7 @@ func TestFrontendWiring(t *testing.T) {
 }
 
 // doJSON 发送一个可选的 JSON body 并附带可选的 Bearer token,返回
-//(status、rawBody、parsedObject)。对于非 object 的响应,parsedObject 为 nil。
+// (status、rawBody、parsedObject)。对于非 object 的响应,parsedObject 为 nil。
 func doJSON(t *testing.T, ctx context.Context, method, url, bearer string, body any) (int, []byte, map[string]any) {
 	t.Helper()
 	var reader io.Reader

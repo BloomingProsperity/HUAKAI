@@ -1,4 +1,4 @@
-//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live
+//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live || e2e_concurrency || smoke
 
 package main
 
@@ -310,6 +310,23 @@ func cleanupSpecializedLiveMoneyRows(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	for _, statement := range []string{
+		`DELETE FROM quota_audit_events WHERE tenant_id=$1`,
+		`DELETE FROM quota_concurrency_slots WHERE tenant_id=$1`,
+		`DELETE FROM quota_concurrency_scope_locks WHERE tenant_id=$1`,
+		`DELETE FROM quota_reconciliation_jobs WHERE tenant_id=$1`,
+		`DELETE FROM quota_reservations WHERE tenant_id=$1`,
+		`DELETE FROM quota_windows WHERE tenant_id=$1`,
+		`DELETE FROM quota_policies WHERE tenant_id=$1`,
+		`DELETE FROM idempotency_replay_records WHERE tenant_id=$1`,
+		`ALTER TABLE user_cost_receipt_owners DISABLE TRIGGER enforce_user_cost_receipt_owners_append_only_delete`,
+		`DELETE FROM user_cost_receipt_owners WHERE tenant_id=$1`,
+		`ALTER TABLE user_cost_receipt_owners ENABLE TRIGGER enforce_user_cost_receipt_owners_append_only_delete`,
+		`ALTER TABLE user_cost_receipts DISABLE TRIGGER enforce_user_cost_receipts_append_only_delete`,
+		`DELETE FROM user_cost_receipts WHERE tenant_id=$1`,
+		`ALTER TABLE user_cost_receipts ENABLE TRIGGER enforce_user_cost_receipts_append_only_delete`,
+		`ALTER TABLE audit_ledger_entries DISABLE TRIGGER ledger_append_only_delete`,
+		`DELETE FROM audit_ledger_entries WHERE tenant_id=$1`,
+		`ALTER TABLE audit_ledger_entries ENABLE TRIGGER ledger_append_only_delete`,
 		`DELETE FROM scheduler_outbox WHERE tenant_id=$1`,
 		`DELETE FROM usage_record_dlq WHERE tenant_id=$1`,
 		`ALTER TABLE usage_records DISABLE TRIGGER usage_records_append_only_delete`,

@@ -615,6 +615,7 @@ func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed
 		"HUAKAI_RELEASE_MODE=dev",
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_DEV_MOCK_UPSTREAM=false",
 		"HUAKAI_BILLING_POLICY_VERSION="+seed.pricingVersion,
 		"HUAKAI_QUOTA_ENFORCE=true",
@@ -786,9 +787,32 @@ func assertChatGPTSessionE2ESuccessPG(t *testing.T, ctx context.Context, pgPool 
 		t.Fatalf("claim %d actual_cost=%v want >0", claimID, actualCost)
 	}
 	assertChatGPTSessionE2EUsageRecord(t, ctx, pgPool, claimID, result.usage)
+	assertChatGPTSessionE2ECostReceipt(t, ctx, pgPool, seed.tenantID, claimID)
 	assertChatGPTSessionE2EQuotaReservation(t, ctx, pgPool, seed.tenantID, claimID)
 	assertChatGPTSessionE2ECostQuotaWindow(t, ctx, pgPool, seed, 0)
 	return claimID
+}
+
+func assertChatGPTSessionE2ECostReceipt(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tenantID, claimID int64) {
+	t.Helper()
+	var count int
+	if err := pgPool.QueryRow(ctx, `
+SELECT count(*)
+FROM user_cost_receipts r
+JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.tenant_id=$1
+  AND o.claim_id=$2
+  AND octet_length(r.signed_hash) > 0`,
+		tenantID, claimID,
+	).Scan(&count); err != nil {
+		t.Fatalf("读取 claim %d 的用户成本凭证: %v", claimID, err)
+	}
+	if count != 1 {
+		t.Fatalf("claim %d 成本凭证数量=%d，期望 1", claimID, count)
+	}
 }
 
 func readChatGPTSessionE2ECommittedClaim(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *chatgptSessionE2ESeed, logicalID string) (int64, float64) {
