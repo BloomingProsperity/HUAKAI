@@ -2,13 +2,13 @@ package openai_codex
 
 import (
 	"context"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
 func NewRefresher(store *credentialstore.Store, opts ...Option) *Refresher {
-	r := &Refresher{Store: credentialStoreRefreshAdapter{store: store}}
+	r := &Refresher{Store: credentialStoreRefreshAdapter{store: store}, requireAccountLease: true}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(r)
@@ -28,14 +28,16 @@ func (s credentialStoreRefreshAdapter) LoadForRefresh(ctx context.Context, accou
 	return s.store.LoadForRefresh(ctx, accountID)
 }
 
-func (s credentialStoreRefreshAdapter) WithRefreshTransaction(ctx context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s credentialStoreRefreshAdapter) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
 	if s.store == nil {
 		return ErrOpenAICodexStoreMissing
 	}
-	return s.store.WithTransaction(ctx, func(txStore *credentialstore.Store, tx db.DBTX) error {
-		if fn == nil {
-			return nil
-		}
-		return fn(txStore, tx)
-	})
+	return s.store.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+}
+
+func (s credentialStoreRefreshAdapter) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	if s.store == nil {
+		return ErrOpenAICodexStoreMissing
+	}
+	return s.store.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
 }

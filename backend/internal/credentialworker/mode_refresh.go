@@ -217,16 +217,17 @@ func (r *ModeAdapterRegistry) Names() []string {
 }
 
 type AccountCredentialRefresher struct {
-	store    accountCredentialRefreshStore
-	registry *ModeAdapterRegistry
-	now      func() time.Time
+	store               accountCredentialRefreshStore
+	registry            *ModeAdapterRegistry
+	now                 func() time.Time
+	requireAccountLease bool
 }
 
 func NewAccountCredentialRefresher(store *credentialstore.Store, registry *ModeAdapterRegistry) *AccountCredentialRefresher {
 	if registry == nil {
 		registry = DefaultModeAdapterRegistry()
 	}
-	return &AccountCredentialRefresher{store: postgresAccountCredentialRefreshStore{store: store}, registry: registry, now: time.Now}
+	return &AccountCredentialRefresher{store: postgresAccountCredentialRefreshStore{store: store}, registry: registry, now: time.Now, requireAccountLease: true}
 }
 
 func (r *AccountCredentialRefresher) Refresh(ctx context.Context, accountID int64) error {
@@ -237,8 +238,8 @@ func (r *AccountCredentialRefresher) RefreshForProvider(ctx context.Context, pro
 	return r.refresh(ctx, providerID, accountID)
 }
 
-// RecoverAgentTask 在跨实例账号锁内比较调用方实际使用过的凭据版本；版本已前进时
-// 复用赢家结果，只有仍是旧版本时才登记新任务。
+// RecoverAgentTask 在调度器持有的跨实例账号槽内比较调用方实际使用过的凭据版本；
+// 版本已前进时复用赢家结果，只有仍是旧版本时才登记新任务。
 func (r *AccountCredentialRefresher) RecoverAgentTask(ctx context.Context, tenantID, accountID int64, expectedCredentialVersion int) error {
 	if r == nil || r.store == nil || tenantID <= 0 || accountID <= 0 || expectedCredentialVersion <= 0 {
 		return errors.New("credentialworker: agent task recovery input invalid")
@@ -251,28 +252,18 @@ func (r *AccountCredentialRefresher) RecoverAgentTask(ctx context.Context, tenan
 	if err := validateAgentTaskRecoveryRecord(probe, tenantID); err != nil {
 		return err
 	}
-	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
-		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
-			rec, err := txStore.LoadForRefresh(ctx, accountID)
-			if err != nil {
-				return err
-			}
-			defer privacy.Zeroize(rec.PlaintextPayload)
-			if rec.ID != probe.ID {
-				return errors.New("credentialworker: agent task credential changed during recovery")
-			}
-			if err := validateAgentTaskRecoveryRecord(rec, tenantID); err != nil {
-				return err
-			}
-			if int(rec.CredentialVersion) > expectedCredentialVersion {
-				return nil
-			}
-			if int(rec.CredentialVersion) < expectedCredentialVersion {
-				return errors.New("credentialworker: agent task credential version regressed")
-			}
-			return r.refreshLockedRecord(ctx, txStore, accountID, rec)
-		})
-	})
+	if r.requireAccountLease {
+		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
+			return err
+		}
+	}
+	if int(probe.CredentialVersion) > expectedCredentialVersion {
+		return nil
+	}
+	if int(probe.CredentialVersion) < expectedCredentialVersion {
+		return errors.New("credentialworker: agent task credential version regressed")
+	}
+	return r.refreshLockedRecord(ctx, &shortAccountRefreshStore{store: r.store}, accountID, probe)
 }
 
 func validateAgentTaskRecoveryRecord(rec credentialstore.CredentialRecord, tenantID int64) error {
@@ -286,29 +277,16 @@ func (r *AccountCredentialRefresher) refresh(ctx context.Context, _ int64, accou
 	if r == nil || r.store == nil {
 		return errors.New("credentialworker: account credential store missing")
 	}
-	probe, err := r.store.LoadForRefresh(ctx, accountID)
+	rec, err := r.store.LoadForRefresh(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	defer privacy.Zeroize(probe.PlaintextPayload)
-	return r.store.WithRefreshTransaction(ctx, func(txStore accountCredentialRefreshTxStore, tx db.DBTX) error {
-		return credentialacq.WithRefreshLock(ctx, tx, probe.ID, func(db.DBTX) error {
-			rec, err := txStore.LoadForRefresh(ctx, accountID)
-			if err != nil {
-				return err
-			}
-			if rec.ID != probe.ID {
-				return credentialacq.WithRefreshLock(ctx, tx, rec.ID, func(db.DBTX) error {
-					lockedRec, err := txStore.LoadForRefresh(ctx, accountID)
-					if err != nil {
-						return err
-					}
-					return r.refreshLockedRecord(ctx, txStore, accountID, lockedRec)
-				})
-			}
-			return r.refreshLockedRecord(ctx, txStore, accountID, rec)
-		})
-	})
+	if r.requireAccountLease {
+		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
+			return err
+		}
+	}
+	return r.refreshLockedRecord(ctx, &shortAccountRefreshStore{store: r.store}, accountID, rec)
 }
 
 func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, txStore accountCredentialRefreshTxStore, accountID int64, rec credentialstore.CredentialRecord) error {
@@ -350,42 +328,6 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 	}
 	emitGeminiFallbackAuditFromPayload(ctx, txStore, rec, result.Payload, true)
 	return txStore.SaveRefreshSuccess(ctx, rec, result.Payload, result.AccessExpiresAt, outcome)
-}
-
-type accountCredentialRefreshTxStore interface {
-	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
-	SaveRefreshSuccess(context.Context, credentialstore.CredentialRecord, []byte, time.Time, string) error
-	SaveRefreshFailure(context.Context, credentialstore.CredentialRecord, string, time.Time) error
-	SetNextAttemptThrottle(context.Context, credentialstore.CredentialRecord, time.Time) error
-	InsertAuditEvent(context.Context, credentialstore.AuditEvent) error
-}
-
-type accountCredentialRefreshStore interface {
-	LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error)
-	WithRefreshTransaction(context.Context, func(accountCredentialRefreshTxStore, db.DBTX) error) error
-}
-
-type postgresAccountCredentialRefreshStore struct {
-	store *credentialstore.Store
-}
-
-func (s postgresAccountCredentialRefreshStore) WithRefreshTransaction(ctx context.Context, fn func(accountCredentialRefreshTxStore, db.DBTX) error) error {
-	if s.store == nil {
-		return errors.New("credentialworker: account credential store missing")
-	}
-	return s.store.WithTransaction(ctx, func(txStore *credentialstore.Store, tx db.DBTX) error {
-		if fn == nil {
-			return nil
-		}
-		return fn(txStore, tx)
-	})
-}
-
-func (s postgresAccountCredentialRefreshStore) LoadForRefresh(ctx context.Context, accountID int64) (credentialstore.CredentialRecord, error) {
-	if s.store == nil {
-		return credentialstore.CredentialRecord{}, errors.New("credentialworker: account credential store missing")
-	}
-	return s.store.LoadForRefresh(ctx, accountID)
 }
 
 func emitGeminiFallbackAuditFromPayload(ctx context.Context, store accountCredentialRefreshTxStore, rec credentialstore.CredentialRecord, payload []byte, success bool) {

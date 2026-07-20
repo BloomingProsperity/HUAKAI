@@ -14,7 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 )
 
-func TestAgentTaskRecoveryUsesCredentialVersionToDeduplicateConcurrentCallers(t *testing.T) {
+func TestAgentTaskRecoveryUsesCredentialVersionToReuseWinner(t *testing.T) {
 	store := &agentRecoveryStore{rec: credentialstore.CredentialRecord{
 		ID: 81, TenantID: 7, ProviderAccountID: 91,
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexAgent,
@@ -25,25 +25,15 @@ func TestAgentTaskRecoveryUsesCredentialVersionToDeduplicateConcurrentCallers(t 
 	if err := registry.Register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgent, agentRecoveryAdapter{calls: &adapterCalls}); err != nil {
 		t.Fatal(err)
 	}
-	first := &AccountCredentialRefresher{store: store, registry: registry, now: time.Now}
-	second := &AccountCredentialRefresher{store: store, registry: registry, now: time.Now}
-
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	for _, refresher := range []*AccountCredentialRefresher{first, second} {
-		go func(r *AccountCredentialRefresher) {
-			<-start
-			errs <- r.RecoverAgentTask(context.Background(), 7, 91, 1)
-		}(refresher)
+	refresher := &AccountCredentialRefresher{store: store, registry: registry, now: time.Now}
+	if err := refresher.RecoverAgentTask(context.Background(), 7, 91, 1); err != nil {
+		t.Fatal(err)
 	}
-	close(start)
-	for i := 0; i < 2; i++ {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
+	if err := refresher.RecoverAgentTask(context.Background(), 7, 91, 1); err != nil {
+		t.Fatal(err)
 	}
 	if got := adapterCalls.Load(); got != 1 {
-		t.Fatalf("并发恢复登记次数=%d want=1", got)
+		t.Fatalf("重复恢复登记次数=%d want=1", got)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()

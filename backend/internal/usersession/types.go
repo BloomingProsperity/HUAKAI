@@ -175,6 +175,17 @@ type IssuedTokens struct {
 	Generation    int           `json:"generation"`
 }
 
+type SessionBundle struct {
+	Family       SessionFamily
+	RefreshToken RefreshToken
+	SessionToken SessionToken
+}
+
+type SessionCreatePolicy struct {
+	MaxActiveFamilies int
+	Mode              string
+}
+
 type RefreshRecord struct {
 	Token  RefreshToken
 	Family SessionFamily

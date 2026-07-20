@@ -3,6 +3,11 @@ SELECT pg_advisory_lock(
     hashtextextended('pool_binding_concurrency'::text, sqlc.arg(binding_id)::bigint)
 );
 
+-- name: TryAcquireBindingConcurrencyLock :one
+SELECT pg_try_advisory_lock(
+    hashtextextended('pool_binding_concurrency'::text, sqlc.arg(binding_id)::bigint)
+)::boolean;
+
 -- name: ReleaseBindingConcurrencyLock :one
 SELECT pg_advisory_unlock(
     hashtextextended('pool_binding_concurrency'::text, sqlc.arg(binding_id)::bigint)

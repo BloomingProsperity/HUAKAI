@@ -95,9 +95,23 @@ func candidateFromObject(outer map[string]any) (credentialacq.CredentialCandidat
 	copyOptionalString(payload, fields, "task_id", "task_id", "taskId")
 	copyOptionalString(payload, fields, "email", "email", "external_account_email")
 	copyOptionalString(payload, fields, "chatgpt_plan_type", "chatgpt_plan_type", "plan_type", "planType", "subscription_plan")
-	copyOptionalString(payload, fields, "user_agent", "user_agent", "userAgent")
-	copyOptionalString(payload, fields, "originator", "originator")
-	copyOptionalString(payload, fields, "oai_device_id", "oai_device_id", "oaiDeviceId")
+	for _, metadata := range []struct {
+		target  string
+		aliases []string
+	}{
+		{target: "user_agent", aliases: []string{"user_agent", "userAgent"}},
+		{target: "originator", aliases: []string{"originator"}},
+		{target: "oai_device_id", aliases: []string{"oai_device_id", "oaiDeviceId"}},
+	} {
+		value := firstString(fields, metadata.aliases...)
+		if value == "" {
+			continue
+		}
+		if err := credentialacq.ValidateHTTPHeaderMetadata(value); err != nil {
+			return credentialacq.CredentialCandidate{}, invalid(metadata.target + " 不是安全的 HTTP 头元数据")
+		}
+		payload[metadata.target] = value
+	}
 	if value, ok := firstBool(fields, "chatgpt_account_is_fedramp", "chatgptAccountIsFedramp"); ok {
 		payload["chatgpt_account_is_fedramp"] = value
 	}
@@ -134,6 +148,7 @@ func mergeMetadata(inner, outer map[string]any) map[string]any {
 		"account_id", "accountId", "chatgpt_account_id",
 		"chatgpt_user_id", "chatgptUserId", "user_id", "userId",
 		"email", "external_account_email", "chatgpt_plan_type", "plan_type", "planType", "subscription_plan",
+		"user_agent", "userAgent", "originator", "oai_device_id", "oaiDeviceId",
 	} {
 		if _, exists := merged[key]; !exists {
 			if value, ok := outer[key]; ok {

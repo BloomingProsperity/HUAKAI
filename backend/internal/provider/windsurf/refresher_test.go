@@ -200,7 +200,7 @@ func TestWindsurfRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
-func TestWindsurfRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
+func TestWindsurfRefresherRecordsFailureOutcomeInShortPersistenceTransaction(t *testing.T) {
 	// 守住的回归：provider 专用的 refresher 必须在 credential 事务中记录精确的
 	// failure class，而不是保存一份过期 credential、或把每种失败都坍缩成笼统的
 	// transient 状态。
@@ -234,7 +234,7 @@ func TestWindsurfRefresherRecordsFailureOutcomeInsideRefreshLock(t *testing.T) {
 	if got := auth.RefreshAuditOutcomeFromError(err); got != "auth_expired" {
 		t.Fatalf("refresh audit outcome=%q, want auth_expired", got)
 	}
-	wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:81", "reread", "failure:81:auth_expired"}
+	wantCalls := []string{"probe", "tx_begin", "failure:81:auth_expired"}
 	if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 		t.Fatalf("calls=%v, want %v", calls, wantCalls)
 	}
@@ -262,10 +262,22 @@ func (s *recordingWindsurfRefreshStore) LoadForRefresh(context.Context, int64) (
 	return s.rec, nil
 }
 
-func (s *recordingWindsurfRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *recordingWindsurfRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	*s.calls = append(*s.calls, "tx_begin")
 	tx := &recordingWindsurfRefreshTx{calls: s.calls, rec: s.rec, saved: &s.saved}
 	return fn(tx, tx)
+}
+
+func (s *recordingWindsurfRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *recordingWindsurfRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type recordingWindsurfRefreshTx struct {
@@ -275,7 +287,7 @@ type recordingWindsurfRefreshTx struct {
 }
 
 func (tx *recordingWindsurfRefreshTx) Exec(_ context.Context, _ string, args ...interface{}) (pgconn.CommandTag, error) {
-	*tx.calls = append(*tx.calls, "lock:" + args[0].(string))
+	*tx.calls = append(*tx.calls, "lock:"+args[0].(string))
 	return pgconn.CommandTag{}, nil
 }
 

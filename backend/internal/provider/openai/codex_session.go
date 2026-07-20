@@ -218,6 +218,9 @@ func normalizeCodexResponsesBody(raw []byte) ([]byte, error) {
 	}
 	body["stream"] = json.RawMessage("true")
 	body["store"] = json.RawMessage("false")
+	if err := normalizeCodexResponsesInput(body); err != nil {
+		return nil, err
+	}
 	for _, field := range codexResponsesLiveUnsupportedFields {
 		delete(body, field)
 	}
@@ -225,6 +228,30 @@ func normalizeCodexResponsesBody(raw []byte) ([]byte, error) {
 		delete(body, field)
 	}
 	return json.Marshal(body)
+}
+
+func normalizeCodexResponsesInput(body map[string]json.RawMessage) error {
+	raw, exists := body["input"]
+	if !exists {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return nil
+	}
+	normalized, err := json.Marshal([]any{map[string]any{
+		"type": "message",
+		"role": "user",
+		"content": []any{map[string]any{
+			"type": "input_text",
+			"text": text,
+		}},
+	}})
+	if err != nil {
+		return err
+	}
+	body["input"] = normalized
+	return nil
 }
 
 func firstNonEmptyCodexExtra(extra map[string]string, keys ...string) string {

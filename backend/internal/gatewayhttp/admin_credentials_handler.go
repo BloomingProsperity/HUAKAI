@@ -151,7 +151,7 @@ func newListAccountCredentialsHandler(d AdminCredentialDeps) http.HandlerFunc {
 
 func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, accountID, tenantID, ok := resolveCredentialAdminRequest(w, r, d, false)
+		ident, accountID, _, ok := resolveCredentialAdminRequest(w, r, d, false)
 		if !ok {
 			return
 		}
@@ -162,8 +162,12 @@ func newCreateAccountCredentialHandler(d AdminCredentialDeps) http.HandlerFunc {
 		// credential-create 守卫(收敛 G1 account-first + R1A):新凭据 vendor/auth 须与账号所属
 		// provider family 兼容,防给 live 账号加错配凭据。并发 TOCTOU 由运行时兼容门兜底。
 		if d.AuditStore != nil {
-			if err := accountcreate.ValidateCredentialCompatibility(r.Context(), d.AuditStore, tenantID, accountID, req.Vendor, req.AuthMode); err != nil {
-				writeJSONError(w, http.StatusBadRequest, "credential_protocol_incompatible", err.Error())
+			if err := accountcreate.ValidateCredentialCompatibility(r.Context(), d.AuditStore, req.TenantID, accountID, req.Vendor, req.AuthMode); err != nil {
+				if errors.Is(err, accountcreate.ErrProtocolIncompatible) {
+					writeJSONError(w, http.StatusBadRequest, "credential_protocol_incompatible", err.Error())
+				} else {
+					writeJSONError(w, http.StatusServiceUnavailable, "credential_compatibility_check_failed", "provider account compatibility check unavailable")
+				}
 				return
 			}
 		}

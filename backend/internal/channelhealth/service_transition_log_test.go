@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // capturedLog 收集一条 slog 记录的级别、消息与属性(键→值字符串),供判别性断言。
@@ -54,7 +56,7 @@ func (h *collectingHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *collectingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *collectingHandler) WithGroup(string) slog.Handler       { return h }
+func (h *collectingHandler) WithGroup(string) slog.Handler      { return h }
 
 // TestChannelHealth_TransitionLogEmitsStructuredSlog 守卫缺口③观测盲区的补丁:
 // 每次真实健康状态转换恰打一条 stdout 结构化 slog,级别按目标状态分级(禁用/冷却=Warn、恢复=Info),
@@ -143,8 +145,22 @@ type commitFailStore struct {
 	Store
 }
 
+type serializationRetryStore struct {
+	Store
+	failures int
+	calls    int
+}
+
+func (s *serializationRetryStore) WithTx(ctx context.Context, fn func(Store) error) error {
+	s.calls++
+	if s.calls <= s.failures {
+		return &pgconn.PgError{Code: "40001", Message: "serialization failure"}
+	}
+	return fn(s.Store)
+}
+
 func (s commitFailStore) WithTx(ctx context.Context, fn func(Store) error) error {
-	_ = fn(s.Store)                                           // 让转换/审计/pending 登记全部发生
+	_ = fn(s.Store)                                            // 让转换/审计/pending 登记全部发生
 	return errors.New("simulated serialization_failure 40001") // 但提交失败
 }
 
@@ -184,6 +200,24 @@ func TestChannelHealth_TransitionLogNotEmittedOnCommitRollback(t *testing.T) {
 	}
 	if recs := snapshot(); len(recs) != 0 {
 		t.Fatalf("事务回滚时不得留幽灵运维日志,实得 %d 条:%+v", len(recs), recs)
+	}
+}
+
+func TestChannelHealthMutationRetriesSerializationConflict(t *testing.T) {
+	ctx := context.Background()
+	clock := &fixedClock{now: time.Date(2026, 7, 3, 8, 0, 0, 0, time.UTC)}
+	handler, snapshot := newCollectingHandler()
+	store := &serializationRetryStore{Store: NewMemoryStore(), failures: 2}
+	svc := NewService(store, testPolicy(), clock, WithLogger(slog.New(handler)))
+
+	if _, err := svc.ForceCooldown(ctx, testKey(), clock.now.Add(time.Hour), "test"); err != nil {
+		t.Fatalf("瞬时序列化冲突应重试成功: %v", err)
+	}
+	if store.calls != 3 {
+		t.Fatalf("事务尝试次数=%d want 3", store.calls)
+	}
+	if got := len(snapshot()); got != 1 {
+		t.Fatalf("仅成功事务应产生一条日志，得到 %d", got)
 	}
 }
 

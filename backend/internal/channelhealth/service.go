@@ -493,34 +493,6 @@ func (s *Service) manualTransitionLocked(ctx context.Context, key ChannelKey, ac
 	return rec, nil
 }
 
-func (s *Service) withMutation(ctx context.Context, fn func(*Service) (Record, error)) (Record, error) {
-	if s == nil || s.store == nil {
-		return Record{}, errors.New("channelhealth: service not configured")
-	}
-	txs, ok := s.store.(transactionalStore)
-	if !ok {
-		// 无事务边界的 store:无回滚风险,emitTransitionEvents 里 pending 为 nil 走立即打(行为不变)。
-		return fn(s)
-	}
-	var out Record
-	// 事务内产生的转换日志先攒进 pending;只有 WithTx 返回 nil(即 Commit 成功)后才 flush。
-	var pending []transitionLogRecord
-	err := txs.WithTx(ctx, func(store Store) error {
-		txService := *s
-		txService.store = store
-		txService.pendingTransitionLogs = &pending
-		var err error
-		out, err = fn(&txService)
-		return err
-	})
-	if err == nil {
-		for i := range pending {
-			s.logTransition(ctx, pending[i])
-		}
-	}
-	return out, err
-}
-
 type decision struct {
 	state                       HealthState
 	reason                      SignalClass

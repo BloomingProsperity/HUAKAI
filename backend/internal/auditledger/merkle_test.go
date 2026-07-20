@@ -64,6 +64,7 @@ func TestVerifyChain_HappyPath(t *testing.T) {
 	e1.MerkleRoot = NextMerkleRoot(ZeroRoot, h1)
 
 	e2 := sampleEntry(2)
+	e2.TenantID = e1.TenantID
 	e2.PrevMerkleRoot = e1.MerkleRoot
 	h2, _ := EntryHash(&e2)
 	e2.MerkleRoot = NextMerkleRoot(e1.MerkleRoot, h2)
@@ -93,6 +94,7 @@ func TestVerifyChain_DetectTamperedMiddleRoot(t *testing.T) {
 	e1.MerkleRoot = NextMerkleRoot(ZeroRoot, h1)
 
 	e2 := sampleEntry(2)
+	e2.TenantID = e1.TenantID
 	e2.PrevMerkleRoot = e1.MerkleRoot
 	// 故意篡改 e2.MerkleRoot
 	e2.MerkleRoot[15] ^= 0xff
@@ -110,5 +112,27 @@ func TestVerifyChain_DetectTamperedMiddleRoot(t *testing.T) {
 func TestVerifyChain_EmptyOK(t *testing.T) {
 	if err := VerifyChain(nil); err != nil {
 		t.Errorf("empty chain must verify, got %v", err)
+	}
+}
+
+func TestVerifyChain_AcceptsInterleavedTenantChains(t *testing.T) {
+	a1 := sampleEntry(1)
+	a1.TenantID = 11
+	a1Hash, _ := EntryHash(&a1)
+	a1.MerkleRoot = NextMerkleRoot(ZeroRoot, a1Hash)
+
+	b1 := sampleEntry(2)
+	b1.TenantID = 22
+	b1Hash, _ := EntryHash(&b1)
+	b1.MerkleRoot = NextMerkleRoot(ZeroRoot, b1Hash)
+
+	a2 := sampleEntry(3)
+	a2.TenantID = 11
+	a2.PrevMerkleRoot = a1.MerkleRoot
+	a2Hash, _ := EntryHash(&a2)
+	a2.MerkleRoot = NextMerkleRoot(a1.MerkleRoot, a2Hash)
+
+	if err := VerifyChain([]LedgerEntry{a1, b1, a2}); err != nil {
+		t.Fatalf("交错租户合法链验证失败: %v", err)
 	}
 }

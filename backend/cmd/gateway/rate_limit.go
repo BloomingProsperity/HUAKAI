@@ -152,7 +152,7 @@ type authClass struct {
 // class;社交登录路由共用一个 class(一份预算);sessions/refresh 是
 // 「刷新令牌」class。
 var authClasses = []authClass{
-	{name: "auth_login", paths: []string{"/v1/auth/login", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
+	{name: "auth_login", paths: []string{"/v1/auth/login", "/v1/auth/login/2fa", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
 	{name: "auth_register", paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
 	{name: "auth_verify", paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
 	{name: "auth_reset", paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},

@@ -48,10 +48,11 @@ type Store interface {
 	ExpireSubscription(ctx context.Context, rec lifecycleRecord) (UserSubscription, error)
 
 	// --- 自动续费 worker (P-AUTORENEW) ---
-	// ListAutoRenewDue: 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅, 限量批处理。
+	// ListAutoRenewDue: 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅,
+	// 按 (expires_at, id) 稳定翻页，避免前一批跳过项长期挡住后续订阅。
 	// dueCutoff = now + 提前续费窗口(renew-ahead grace),让续费抢在到期 worker 收割前完成,
 	// 且续费失败(余额不足)的订阅照常在 expires_at 到点被 ExpiryWorker 收割, 不留白嫖窗口。
-	ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, limit int) ([]UserSubscription, error)
+	ListAutoRenewDue(ctx context.Context, dueCutoff time.Time, after AutoRenewCursor, limit int) ([]UserSubscription, error)
 	// TryAutoRenewSubscription: 单事务尝试"扣钱包余额 → 续期"。
 	//   - 锁订阅行重查仍 active+auto_renew+due (并发/重复防护), 否则零副作用跳过。
 	//   - 幂等锚: 同 (订阅, 续费周期) 已扣过 → 跳过, 不重复扣 (worker 重跑安全)。

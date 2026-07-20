@@ -28,6 +28,10 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 		"auth_mode":"chatgpt",
 			"OPENAI_API_KEY":"stale-api-key",
 			"chatgpt_plan_type":"Pro",
+		"user_agent":"codex_cli_rs/0.144.1 (Linux; x86_64)",
+		"codex_version":"0.144.1",
+		"originator":"codex_cli_rs",
+		"oai_device_id":"device-test-1",
 		"last_refresh":"2099-07-17T11:00:00Z",
 		"tokens":{
 			"id_token":` + quoted(idToken) + `,
@@ -71,6 +75,11 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 	}
 	if payload["chatgpt_plan_type"] != "Pro" || got.Subscription.Label() != "openai:pro" || got.Subscription.Status != "observed" {
 		t.Fatalf("auth.json 外层套餐未进入凭据候选项：payload=%v subscription=%+v", payload, got.Subscription)
+	}
+	if payload["user_agent"] != "codex_cli_rs/0.144.1 (Linux; x86_64)" ||
+		payload["codex_version"] != "0.144.1" || payload["originator"] != "codex_cli_rs" ||
+		payload["oai_device_id"] != "device-test-1" {
+		t.Fatalf("明确提供的 Codex 客户端元数据未保留：%v", payload)
 	}
 	redacted, _ := json.Marshal(got.RedactedContext)
 	for _, forbidden := range []string{secret, accessToken, "attacker.test", "attacker-secret", "user-from-token"} {
@@ -127,6 +136,8 @@ func TestParseRejectsAgentIdentityAPIKeyMalformedAndOversizedMaterial(t *testing
 		`{"tokens":{"access_token":"broken"}`,
 		`123`,
 		"access token with spaces",
+		`{"access_token":"access","user_agent":"safe\r\ninjected"}`,
+		`{"access_token":"access","originator":"safe\u007finvalid"}`,
 		strings.Repeat("x", maxTokenBytes+1),
 	}
 	for _, input := range cases {

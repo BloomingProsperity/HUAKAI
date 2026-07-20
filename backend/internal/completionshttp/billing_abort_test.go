@@ -8,6 +8,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
 // completionsAbortCtxSpy 捕获 Abort 收到的 ctx 状态。
@@ -57,5 +59,17 @@ func TestCompletionsAbortUsesDetachedCtx(t *testing.T) {
 	}
 	if spy.lastCtxErr != nil {
 		t.Fatalf("abort 在已取消 ctx 上执行(err=%v)—— 未用脱离 ctx(C-1 槽/hold 泄漏)", spy.lastCtxErr)
+	}
+}
+
+func TestCompletionsSettleRequestPersistsClientTool(t *testing.T) {
+	ctx := clientid.WithIdentity(context.Background(), clientid.IdentityCodexCLI, 1)
+	ex := &execution{
+		ctx:        ctx,
+		reserveRes: &billing.ReserveResult{ClaimID: 7},
+		selRes:     &pool.SelectionResult{AccountID: 9},
+	}
+	if got := ex.settleRequest(completionUsage{}, completionCostBreakdown{}, 1, false).Draft.ClientTool; got != string(clientid.IdentityCodexCLI) {
+		t.Fatalf("client tool=%q，期望 %q", got, clientid.IdentityCodexCLI)
 	}
 }

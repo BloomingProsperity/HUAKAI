@@ -218,7 +218,7 @@ func TestAntigravityRefreshAdapterClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
-func TestAntigravityRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
+func TestAntigravityRefresherRecordsAuditOutcomeInShortPersistenceTransaction(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
@@ -264,7 +264,7 @@ func TestAntigravityRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) 
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:151", "reread", "failure:151:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "failure:151:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -342,10 +342,22 @@ func (s *recordingAntigravityRefreshStore) LoadForRefresh(context.Context, int64
 	return s.rec, nil
 }
 
-func (s *recordingAntigravityRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *recordingAntigravityRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	*s.calls = append(*s.calls, "tx_begin")
 	tx := &recordingAntigravityRefreshTx{calls: s.calls, rec: s.rec, saved: &s.saved}
 	return fn(tx, tx)
+}
+
+func (s *recordingAntigravityRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *recordingAntigravityRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type recordingAntigravityRefreshTx struct {

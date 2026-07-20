@@ -114,3 +114,71 @@ WHERE tenant_id=$1 AND provider_account_id=$2`, tenantID, staleAcct); err != nil
 		release()
 	}
 }
+
+// TestPG_RefreshAccountAdvisoryLockOverridesRaisedStormCap 证明账号槽即使被误配为允许并发，
+// 数据库会话锁仍只允许一个副本进入远端刷新；被拒尝试必须补偿自己的计数，首个释放后可恢复。
+func TestPG_RefreshAccountAdvisoryLockOverridesRaisedStormCap(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	queries := dbauth.New(pool)
+	c := NewStormControllerWithSharedScopeBudget(queries, StormScopeConfig{}, nil, WithRefreshAccountLockPool(pool))
+
+	unique := uuid.NewString()
+	var tenantID, providerID, poolGroupID, channelID, accountID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO tenants (name) VALUES ($1) RETURNING id`, "storm-lock-"+unique).Scan(&tenantID); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+VALUES ($1, $2, $3, 'openai_chat') RETURNING id`, tenantID, "p-"+unique, "P "+unique).Scan(&providerID); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`, tenantID, "pg-"+unique).Scan(&poolGroupID); err != nil {
+		t.Fatalf("seed pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1, $2, $3) RETURNING id`, tenantID, poolGroupID, "ch-"+unique).Scan(&channelID); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type)
+VALUES ($1, $2, $3, $4, 'oauth') RETURNING id`, tenantID, providerID, channelID, "acct-"+unique).Scan(&accountID); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM oauth_storm_budget WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM provider_accounts WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM channels WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM pool_groups WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM providers WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, tenantID)
+	})
+
+	firstRelease, outcome, err := c.Acquire(ctx, tenantID, accountID)
+	if err != nil || outcome != "" || firstRelease == nil {
+		t.Fatalf("first acquire: err=%v outcome=%q releaseNil=%v", err, outcome, firstRelease == nil)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE oauth_storm_budget SET cap_concurrent_refreshes=5 WHERE tenant_id=$1 AND provider_account_id=$2`, tenantID, accountID); err != nil {
+		firstRelease()
+		t.Fatalf("raise cap: %v", err)
+	}
+
+	secondRelease, outcome, err := c.Acquire(ctx, tenantID, accountID)
+	if err != nil || outcome != OutcomeStormBudgetExhausted || secondRelease != nil {
+		firstRelease()
+		t.Fatalf("second acquire: err=%v outcome=%q releaseNil=%v", err, outcome, secondRelease == nil)
+	}
+	var inFlight int32
+	if err := pool.QueryRow(ctx, `SELECT current_in_flight FROM oauth_storm_budget WHERE tenant_id=$1 AND provider_account_id=$2`, tenantID, accountID).Scan(&inFlight); err != nil {
+		firstRelease()
+		t.Fatalf("read in flight: %v", err)
+	}
+	if inFlight != 1 {
+		firstRelease()
+		t.Fatalf("in_flight=%d, want 1 (被 advisory lock 拒绝的尝试未补偿)", inFlight)
+	}
+
+	firstRelease()
+	thirdRelease, outcome, err := c.Acquire(ctx, tenantID, accountID)
+	if err != nil || outcome != "" || thirdRelease == nil {
+		t.Fatalf("third acquire after release: err=%v outcome=%q releaseNil=%v", err, outcome, thirdRelease == nil)
+	}
+	thirdRelease()
+}

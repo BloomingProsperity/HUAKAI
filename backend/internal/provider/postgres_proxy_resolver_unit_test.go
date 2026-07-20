@@ -193,6 +193,18 @@ func TestPostgresProxyResolverDecryptsStoredAuthSecretBeforeURLBuild(t *testing.
 	}
 }
 
+func TestProxyRowFromFieldsPreservesTenantForSecretAAD(t *testing.T) {
+	secret := "encrypted-envelope"
+	fields := proxyFields{protocol: "http", host: "proxy.example.com", port: 3128, secret: &secret}
+	row := proxyRowFromFields(77, fields)
+	if row.tenantID != 77 {
+		t.Fatalf("tenantID=%d，期望 77；丢失租户会导致代理密文 AAD 解密失败", row.tenantID)
+	}
+	if row.secret == nil || *row.secret != secret {
+		t.Fatalf("代理字段复制不完整: %+v", row)
+	}
+}
+
 func TestMigration0038RejectsMalformedProxyURLBeforeDroppingLegacyColumn(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/migrations/0038_proxies_pool_and_account_links.up.sql")
 	if err != nil {

@@ -54,12 +54,14 @@ func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) 
 			validated, err := validator.Validate(r.Context(), token, resolver.ClientIP(r), r.UserAgent())
 			if err != nil {
 				switch {
-				case errors.Is(err, usersession.ErrSigningKeyMissing):
+				case errors.Is(err, usersession.ErrSigningKeyMissing), errors.Is(err, usersession.ErrStoreNotConfigured):
 					writeSessionAuthError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session signing key is not configured")
 				case errors.Is(err, usersession.ErrTokenExpired):
 					writeSessionAuthError(w, http.StatusUnauthorized, "session_token_expired", "session token is expired")
-				default:
+				case isSessionRejection(err):
 					writeSessionAuthError(w, http.StatusUnauthorized, "session_token_invalid", "session token is invalid")
+				default:
+					writeSessionAuthError(w, http.StatusServiceUnavailable, "session_auth_unavailable", "session auth backend is unavailable")
 				}
 				return
 			}
@@ -70,6 +72,17 @@ func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func isSessionRejection(err error) bool {
+	return errors.Is(err, usersession.ErrInvalidInput) ||
+		errors.Is(err, usersession.ErrFamilyNotFound) ||
+		errors.Is(err, usersession.ErrFamilyRevoked) ||
+		errors.Is(err, usersession.ErrTokenNotFound) ||
+		errors.Is(err, usersession.ErrRefreshReplay) ||
+		errors.Is(err, usersession.ErrSessionUserMismatch) ||
+		errors.Is(err, usersession.ErrAnomalyRejected) ||
+		errors.Is(err, usersession.ErrUserIneligible)
 }
 
 func parseSessionBearer(header string) (string, bool) {

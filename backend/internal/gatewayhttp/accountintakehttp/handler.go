@@ -248,6 +248,10 @@ func writeAdminAccountIntakeError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "plan_hash_required", err.Error())
 	case errors.Is(err, accountintake.ErrPlanChanged):
 		writeJSONError(w, http.StatusConflict, "account_intake_plan_changed", "账号或凭据状态已经变化，请重新预检")
+	case errors.Is(err, accountintake.ErrCodexLaneAbsent):
+		writeJSONError(w, http.StatusConflict, "codex_lane_not_configured", "当前租户没有唯一可运行的 Codex 路由车道，请先配置对应 provider、channel、模型与池绑定")
+	case errors.Is(err, accountintake.ErrCodexLaneMany):
+		writeJSONError(w, http.StatusConflict, "codex_lane_ambiguous", "当前租户存在多条可运行的 Codex 路由车道，请明确指定 provider_id 与 channel_id")
 	case errors.Is(err, pgx.ErrNoRows):
 		writeJSONError(w, http.StatusBadRequest, "provider_not_found", "provider does not exist")
 	case errors.Is(err, accountintake.ErrNotConfigured):

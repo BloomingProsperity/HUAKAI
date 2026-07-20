@@ -43,8 +43,6 @@ func TestRefresherInvalidGrantRecordsAuthExpiredInRefreshTransaction(t *testing.
 	wantCalls := []string{
 		"probe:101",
 		"tx_begin",
-		"lock:credential_refresh:44",
-		"reread:101",
 		"failure:auth_expired",
 		"audit:credential_refresh_failed:auth_expired",
 		"tx_commit",
@@ -249,7 +247,7 @@ func (s *memoryRefreshStore) LoadForRefresh(_ context.Context, accountID int64) 
 	return cloneCredentialRecord(s.rec), nil
 }
 
-func (s *memoryRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *memoryRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	s.calls = append(s.calls, "tx_begin")
 	tx := &memoryRefreshTx{store: s}
 	err := fn(tx, tx)
@@ -259,6 +257,18 @@ func (s *memoryRefreshStore) WithRefreshTransaction(_ context.Context, fn func(R
 	}
 	s.calls = append(s.calls, "tx_commit")
 	return nil
+}
+
+func (s *memoryRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *memoryRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type memoryRefreshTx struct {

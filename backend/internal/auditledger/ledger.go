@@ -88,10 +88,11 @@ func (NoopLedger) Size(ctx context.Context) int { return 0 }
 // MemoryLedger 是 append-only in-memory ledger，用于 dev / test。
 // 并发安全。
 type MemoryLedger struct {
-	signer Signer
-	mu     sync.RWMutex
-	chain  []LedgerEntry
-	byReq  map[string]int // request_id → index
+	signer         Signer
+	mu             sync.RWMutex
+	chain          []LedgerEntry
+	byReq          map[string]int // request_id → index
+	latestByTenant map[int64][32]byte
 }
 
 // NewMemoryLedger 用给定 signer 构造 MemoryLedger；signer 为 nil 会返回错误。
@@ -101,8 +102,9 @@ func NewMemoryLedger(signer any) (*MemoryLedger, error) {
 		return nil, err
 	}
 	return &MemoryLedger{
-		signer: normalized,
-		byReq:  make(map[string]int),
+		signer:         normalized,
+		byReq:          make(map[string]int),
+		latestByTenant: make(map[int64][32]byte),
 	}, nil
 }
 
@@ -125,8 +127,8 @@ func (m *MemoryLedger) Append(ctx context.Context, prepared PreparedEntry) (Ledg
 		entry.LedgerID = memoryLedgerID(entry.TenantID, len(m.chain)+1)
 	}
 	prev := ZeroRoot
-	if len(m.chain) > 0 {
-		prev = m.chain[len(m.chain)-1].MerkleRoot
+	if latest, ok := m.latestByTenant[entry.TenantID]; ok {
+		prev = latest
 	}
 	entry.PrevMerkleRoot = prev
 	fp, err := signerFingerprint(ctx, m.signer)
@@ -161,6 +163,7 @@ func (m *MemoryLedger) Append(ctx context.Context, prepared PreparedEntry) (Ledg
 
 	idx := len(m.chain)
 	m.chain = append(m.chain, entry)
+	m.latestByTenant[entry.TenantID] = entry.MerkleRoot
 	if entry.RequestID != "" {
 		m.byReq[entry.RequestID] = idx
 	}

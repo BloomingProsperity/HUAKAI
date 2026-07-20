@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -15,6 +17,12 @@ type ipCapturingValidator struct{ gotIP string }
 func (v *ipCapturingValidator) Validate(_ context.Context, _ string, ip string, _ string) (usersession.ValidatedSession, error) {
 	v.gotIP = ip
 	return usersession.ValidatedSession{TenantID: 1, UserID: 42, FamilyID: "fam", TokenID: "tok", Generation: 1}, nil
+}
+
+type failingSessionValidator struct{ err error }
+
+func (v failingSessionValidator) Validate(context.Context, string, string, string) (usersession.ValidatedSession, error) {
+	return usersession.ValidatedSession{}, v.err
 }
 
 // TestSessionMiddlewareUsesTrustedProxyClientIP 证明 session 校验路径
@@ -65,5 +73,35 @@ func TestSessionMiddlewareNilResolverFallsBackToRemoteAddr(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if v.gotIP != "203.0.113.7" {
 		t.Fatalf("nil resolver Validate IP=%q want socket peer 203.0.113.7", v.gotIP)
+	}
+}
+
+func TestSessionMiddlewareDistinguishesRejectionFromBackendFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "令牌无效", err: usersession.ErrTokenNotFound, status: http.StatusUnauthorized, code: "session_token_invalid"},
+		{name: "存储未配置", err: usersession.ErrStoreNotConfigured, status: http.StatusServiceUnavailable, code: "session_auth_not_configured"},
+		{name: "数据库故障", err: errors.New("database unavailable"), status: http.StatusServiceUnavailable, code: "session_auth_unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := SessionMiddleware(failingSessionValidator{err: tc.err}, nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("校验失败时不应进入业务 handler")
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+			req.Header.Set("Authorization", "Bearer token")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status=%d，期望 %d，body=%s", rec.Code, tc.status, rec.Body.String())
+			}
+			if body := rec.Body.String(); !strings.Contains(body, tc.code) {
+				t.Fatalf("body=%q，期望包含 %q", body, tc.code)
+			}
+		})
 	}
 }

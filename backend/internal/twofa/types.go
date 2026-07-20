@@ -121,3 +121,7 @@ type Store interface {
 	ConsumeBackupCode(ctx context.Context, tenantID, userID int64, hash []byte, now time.Time) (bool, error)
 	ReplaceBackupCodes(ctx context.Context, tenantID, userID int64, hashes [][]byte, now time.Time) error
 }
+
+type atomicFailureStore interface {
+	RecordFailure(ctx context.Context, tenantID, userID int64, maxFailedAttempts int, lockUntil, now time.Time) (failedAttempts int, locked bool, err error)
+}

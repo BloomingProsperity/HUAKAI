@@ -79,14 +79,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (IssuedTokens, err
 	if in.TenantID <= 0 || in.UserID <= 0 {
 		return IssuedTokens{}, ErrInvalidInput
 	}
-	if err := s.enforceDevicePolicy(ctx, in); err != nil {
-		return IssuedTokens{}, err
-	}
 	now := s.now()
-	family, err := s.Store.CreateFamily(ctx, in, now)
-	if err != nil {
-		return IssuedTokens{}, err
-	}
+	family := newSessionFamily(in, now)
 	refreshRaw, refreshHash, err := GenerateRefreshToken()
 	if err != nil {
 		return IssuedTokens{}, err
@@ -102,10 +96,41 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (IssuedTokens, err
 		ExpiresAt:  now.Add(refreshTTL),
 		CreatedAt:  now,
 	}
-	if err := s.Store.InsertRefreshToken(ctx, token); err != nil {
+	sessionTTL := firstDuration(in.SessionTTL, s.SessionTTL, DefaultSessionTTL)
+	sessionExpiry := now.Add(sessionTTL)
+	sessionID := uuid.NewString()
+	sessionRaw, err := s.signPayload(signedSessionPayload{
+		ID: sessionID, TenantID: family.TenantID, UserID: family.UserID,
+		FamilyID: family.ID, Generation: family.Generation, ExpiresAt: sessionExpiry.Unix(),
+	})
+	if err != nil {
 		return IssuedTokens{}, err
 	}
-	return s.issuePair(ctx, family, refreshRaw, token.ExpiresAt, firstDuration(in.SessionTTL, s.SessionTTL, DefaultSessionTTL))
+	sessionToken := SessionToken{
+		ID: sessionID, TenantID: family.TenantID, FamilyID: family.ID,
+		TokenHash: HashSessionToken(sessionRaw), Generation: family.Generation,
+		ExpiresAt: sessionExpiry, CreatedAt: now,
+	}
+	storedFamily, err := s.Store.CreateSession(ctx, SessionBundle{
+		Family: family, RefreshToken: token, SessionToken: sessionToken,
+	}, SessionCreatePolicy{
+		MaxActiveFamilies: s.MaxActiveFamilies,
+		Mode:              strings.TrimSpace(s.DevicePolicy),
+	}, now)
+	if errors.Is(err, ErrDeviceConfirmationRequired) {
+		return IssuedTokens{}, s.requireDeviceConfirmation(ctx, in)
+	}
+	if err != nil {
+		return IssuedTokens{}, err
+	}
+	return IssuedTokens{
+		SessionToken:  sessionRaw,
+		RefreshToken:  refreshRaw,
+		SessionExpiry: sessionExpiry,
+		RefreshExpiry: token.ExpiresAt,
+		Family:        storedFamily,
+		Generation:    storedFamily.Generation,
+	}, nil
 }
 
 func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, error) {
@@ -343,32 +368,6 @@ func (s *Service) verifyPayload(token string) (signedSessionPayload, error) {
 		return signedSessionPayload{}, ErrTokenNotFound
 	}
 	return payload, nil
-}
-
-func (s *Service) enforceDevicePolicy(ctx context.Context, in CreateInput) error {
-	// MaxActiveFamilies<=0 = 设备策略整体休眠 (默认), 直接放行, 零生产行为变更。
-	if s.MaxActiveFamilies <= 0 {
-		return nil
-	}
-	families, err := s.Store.ListActiveFamiliesForDevicePolicy(ctx, in.TenantID, in.UserID, s.MaxActiveFamilies)
-	if err != nil {
-		return err
-	}
-	if len(families) < s.MaxActiveFamilies {
-		return nil
-	}
-	switch strings.TrimSpace(s.DevicePolicy) {
-	case "revoke_oldest":
-		oldest := families[0]
-		_, err := s.Store.RevokeFamily(ctx, in.TenantID, oldest.ID, "device_limit_revoke_oldest", s.now())
-		return err
-	case "confirm":
-		// 不再裸返回错误: 落一条 pending 确认记录并返回携带原文 token 的类型化错误,
-		// 让 handler 据此发确认邮件; errors.Is(err, ErrDeviceConfirmationRequired) 仍为真 (Unwrap)。
-		return s.requireDeviceConfirmation(ctx, in)
-	default:
-		return ErrDeviceLimitExceeded
-	}
 }
 
 // requireDeviceConfirmation 生成一次性确认 token、落 pending 记录, 返回带原文 token 的类型化错误。

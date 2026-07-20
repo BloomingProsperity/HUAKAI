@@ -137,6 +137,13 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
 			return err
 		}
+		if isCodexIntake(prepared.input) {
+			if err := lockRunnableCodexLane(
+				ctx, tx, prepared.input.TenantID, prepared.input.Account.ProviderID, prepared.input.Account.ChannelID,
+			); err != nil {
+				return err
+			}
+		}
 		proxyID, err := s.resolveProxy(ctx, tx, prepared.input, in)
 		if err != nil {
 			return err
@@ -248,6 +255,22 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
 			return err
 		}
+		if err := accountcreate.ValidateCredentialCompatibility(
+			ctx, admindb.New(tx), prepared.input.TenantID, expected.ExistingAccountID, candidate.Vendor, candidate.AuthMode,
+		); err != nil {
+			return err
+		}
+		if isCodexIntake(prepared.input) {
+			account, err := admindb.New(tx).GetAdminProviderAccount(ctx, admindb.GetAdminProviderAccountParams{
+				ID: expected.ExistingAccountID, TenantID: prepared.input.TenantID,
+			})
+			if err != nil {
+				return err
+			}
+			if err := lockRunnableCodexLane(ctx, tx, prepared.input.TenantID, account.ProviderID, account.ChannelID); err != nil {
+				return err
+			}
+		}
 		proxyID, err := s.resolveProxy(ctx, tx, prepared.input, in)
 		if err != nil {
 			return err
@@ -266,6 +289,11 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 			}
 			if tag.RowsAffected() != 1 {
 				return ErrExecutionStale
+			}
+		}
+		if isCodexIntake(prepared.input) && !in.ReplaceExistingConfig {
+			if err := ensureCodexCapabilities(ctx, tx, prepared.input.TenantID, expected.ExistingAccountID); err != nil {
+				return err
 			}
 		}
 		metadata, err = txStore.Rotate(ctx, credentialstore.RotateCredentialInput{
@@ -293,6 +321,8 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 			"subscription_label":  candidate.Subscription.Label(),
 			"subscription_status": candidate.Subscription.Status,
 			"proxy_id":            proxyID,
+			"codex_capabilities_present": isCodexIntake(prepared.input) &&
+				containsAllStrings(prepared.input.Account.CapabilityFlags, codexDefaultCapabilities),
 		})
 	})
 	if err != nil {
@@ -309,6 +339,22 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 	result.CredentialVersion = metadata.Version
 	s.initializeHealth(ctx, &result, prepared.input.TenantID, expected.ExistingAccountID, metadata)
 	return result
+}
+
+func containsAllStrings(values, required []string) bool {
+	for _, requiredValue := range required {
+		found := false
+		for _, value := range values {
+			if value == requiredValue {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, plan PlanInput, execution ExecuteInput) (*int64, error) {
@@ -490,6 +536,8 @@ func executionErrorCode(err error) string {
 		return "mixed_channel_risk_confirmation_required"
 	case errors.Is(err, accountcreate.ErrProtocolIncompatible):
 		return "provider_protocol_incompatible"
+	case errors.Is(err, ErrCodexLaneAbsent):
+		return "codex_lane_not_configured"
 	default:
 		return "execution_failed"
 	}
@@ -503,6 +551,8 @@ func executionErrorMessage(err error) string {
 		return "执行时发现新的渠道混用风险，请重新预检并明确确认"
 	case errors.Is(err, accountcreate.ErrProtocolIncompatible):
 		return "执行时 provider 协议或账号配置已不兼容，请重新预检"
+	case errors.Is(err, ErrCodexLaneAbsent):
+		return "执行时 Codex 路由车道已不可运行，请重新预检"
 	default:
 		return "该项写入失败，事务已回滚且未留下部分数据"
 	}

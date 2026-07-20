@@ -20,6 +20,8 @@ var (
 	ErrPlanHashMissing = errors.New("account intake plan hash required")
 	ErrPlanChanged     = errors.New("account intake plan changed")
 	ErrExecutionStale  = errors.New("account intake item became stale")
+	ErrCodexLaneAbsent = errors.New("codex routing lane is not configured")
+	ErrCodexLaneMany   = errors.New("multiple codex routing lanes require explicit selection")
 )
 
 const accountIntakeContentLimit = 2 << 20

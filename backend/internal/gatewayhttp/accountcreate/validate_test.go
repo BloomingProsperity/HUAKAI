@@ -1,8 +1,13 @@
 package accountcreate
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // TestValidateProtocolCompatibilityG1 咬住 G1:account 的 vendor/auth 必须与 family 契约
@@ -40,6 +45,35 @@ func TestValidateProtocolCompatibilityG1(t *testing.T) {
 			}
 			if !c.wantErr && err != nil {
 				t.Fatalf("合法组合不应拒,得 %v", err)
+			}
+		})
+	}
+}
+
+type credentialCompatLookupStub struct {
+	accountErr  error
+	protocolErr error
+}
+
+func (s credentialCompatLookupStub) GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
+	return admindb.AdminProviderAccountRow{ProviderID: 9, AccountType: "api_key"}, s.accountErr
+}
+
+func (s credentialCompatLookupStub) GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
+	return "openai_chat", s.protocolErr
+}
+
+func TestValidateCredentialCompatibilityFailsClosedWhenLookupFails(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lookup credentialCompatLookupStub
+	}{
+		{name: "账号不存在", lookup: credentialCompatLookupStub{accountErr: pgx.ErrNoRows}},
+		{name: "协议查询失败", lookup: credentialCompatLookupStub{protocolErr: errors.New("database unavailable")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateCredentialCompatibility(context.Background(), tc.lookup, 7, 77, "openai", "api_key"); err == nil {
+				t.Fatal("兼容性查询失败时不应放行凭据写入")
 			}
 		})
 	}

@@ -99,7 +99,7 @@ func TestModeRefreshWorkerFindsWindsurfOAuthAdapter(t *testing.T) {
 	}
 	// TOKLIFE-04:ErrNoRefreshRequired 现在通过 SetNextAttemptThrottle 设置
 	// next_attempt_at,以防止紧密的重试循环;调用序列中预期出现 throttle:88。
-	want := []string{"probe", "tx_begin", "lock:credential_refresh:88", "reread", "throttle:88"}
+	want := []string{"probe", "tx_begin", "throttle:88"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -539,7 +539,7 @@ func TestModeRefreshCodexOperatorConfigFailureRecordsOperatorClass(t *testing.T)
 	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
 		t.Fatalf("Refresh err=%v, want ErrCodexOAuthConfigRequired", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:credential_refresh:45", "reread", "failure:45:operator_config_required"}
+	want := []string{"probe", "tx_begin", "failure:45:operator_config_required"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -637,7 +637,7 @@ func TestMetadataTokenAdapterFallbackBlocksInternalEndpoint(t *testing.T) {
 	})
 }
 
-func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
+func TestRefreshRemoteExchangePrecedesShortPersistenceTransaction(t *testing.T) {
 	calls := []string{}
 	store := &recordingRefreshStore{
 		calls: &calls,
@@ -657,7 +657,7 @@ func TestRefreshAdvisoryLockPrecedesRereadAndSave(t *testing.T) {
 	if err := refresher.Refresh(context.Background(), 101); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	want := []string{"probe", "tx_begin", "lock:credential_refresh:44", "reread", "adapter:44", "save:44"}
+	want := []string{"probe", "adapter:44", "tx_begin", "save:44"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%v want %v", calls, want)
 	}
@@ -687,7 +687,7 @@ func TestGeminiFallbackAuditWrittenInRefreshTransaction(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	want := []string{
-		"probe", "tx_begin", "lock:credential_refresh:55", "reread", "adapter:55",
+		"probe", "adapter:55", "tx_begin",
 		"audit:gemini_cross_client_fallback:code_assist:ai_studio:true", "save:55",
 	}
 	if !reflect.DeepEqual(calls, want) {

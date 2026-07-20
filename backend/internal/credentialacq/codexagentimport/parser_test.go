@@ -14,7 +14,7 @@ import (
 
 func TestParseBatchNormalizesNestedAndFlatDocuments(t *testing.T) {
 	key := importPrivateKey(t)
-	input := `[{"auth_mode":"agentIdentity","agent_identity":{"agentRuntimeId":"runtime-a","agentPrivateKey":"` + key + `","taskId":"task-a"},"accountId":"account-a","chatgptUserId":"user-a","email":"a@example.test","planType":"plus"},` +
+	input := `[{"auth_mode":"agentIdentity","agent_identity":{"agentRuntimeId":"runtime-a","agentPrivateKey":"` + key + `","taskId":"task-a"},"accountId":"account-a","chatgptUserId":"user-a","email":"a@example.test","planType":"plus","userAgent":"codex-agent/1.0","originator":"codex_cli_rs","oaiDeviceId":"device-a"},` +
 		`{"agent_runtime_id":"runtime-b","agent_private_key":"` + key + `","account_id":"account-b","chatgpt_user_id":"user-b","chatgpt_plan_type":"pro"}]`
 	candidates, err := Parse(input)
 	if err != nil {
@@ -36,7 +36,9 @@ func TestParseBatchNormalizesNestedAndFlatDocuments(t *testing.T) {
 	}
 	var payload map[string]any
 	_ = json.Unmarshal(candidates[0].Payload, &payload)
-	if payload["agent_runtime_id"] != "runtime-a" || payload["task_id"] != "task-a" {
+	if payload["agent_runtime_id"] != "runtime-a" || payload["task_id"] != "task-a" ||
+		payload["user_agent"] != "codex-agent/1.0" || payload["originator"] != "codex_cli_rs" ||
+		payload["oai_device_id"] != "device-a" {
 		t.Fatalf("payload=%v", payload)
 	}
 }
@@ -57,6 +59,20 @@ func TestParseRejectsRawTokenWrongModeAndInjectedEndpoint(t *testing.T) {
 	}
 	if strings.Contains(string(candidates[0].Payload), "attacker.test") {
 		t.Fatalf("租户输入的目标地址进入凭据：%s", candidates[0].Payload)
+	}
+}
+
+func TestParseRejectsUnsafeHTTPHeaderMetadata(t *testing.T) {
+	key := importPrivateKey(t)
+	for _, metadata := range []string{
+		`"user_agent":"safe\r\ninjected"`,
+		`"originator":"safe\u007finvalid"`,
+		`"oai_device_id":"` + strings.Repeat("x", 1025) + `"`,
+	} {
+		input := `{"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u",` + metadata + `}`
+		if _, err := Parse(input); err == nil {
+			t.Fatalf("不安全头元数据未被拒绝：%s", metadata)
+		}
 	}
 }
 

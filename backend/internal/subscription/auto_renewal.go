@@ -96,15 +96,18 @@ func (w *AutoRenewWorker) loop(ctx context.Context) {
 	}
 }
 
-// tick 单次续费扫描: 批量 drain 直到无到点订阅或出错 (出错下个 tick 重试)。
+// tick 单次续费扫描：用稳定游标 drain 当前窗口。单条失败计入失败 tick，
+// 但不会挡住后续页；查询失败或游标不前进时立即停止，留待下个 tick 重试。
 func (w *AutoRenewWorker) tick(ctx context.Context) {
 	if !w.running.CompareAndSwap(false, true) {
 		return
 	}
 	defer w.running.Store(false)
 	w.tickCount.Add(1)
+	cursor := AutoRenewCursor{}
+	hadError := false
 	for {
-		res, err := w.svc.ProcessAutoRenewal(ctx, w.batchSize)
+		res, next, err := w.svc.processAutoRenewalPage(ctx, w.batchSize, cursor)
 		if res.Renewed > 0 {
 			w.renewedTotal.Add(uint64(res.Renewed))
 		}
@@ -112,12 +115,25 @@ func (w *AutoRenewWorker) tick(ctx context.Context) {
 			w.skippedTotal.Add(uint64(res.Skipped))
 		}
 		if err != nil {
-			w.failedTicks.Add(1)
-			return // 下个 tick 重试剩余
+			hadError = true
+		}
+		if res.Scanned == 0 {
+			if hadError {
+				w.failedTicks.Add(1)
+			}
+			return
 		}
 		if res.Scanned < w.batchSize {
+			if hadError {
+				w.failedTicks.Add(1)
+			}
 			return // 已 drain 完
 		}
+		if !next.After(cursor) {
+			w.failedTicks.Add(1)
+			return // 存储返回顺序违约时停止，防止同页无限循环
+		}
+		cursor = next
 	}
 }
 
@@ -161,21 +177,48 @@ type AutoRenewBatchResult struct {
 	Skipped int // 跳过的条数 (余额不足 / 已续过 / 重查不再 due)
 }
 
+// AutoRenewCursor 是单次 worker 扫描内的稳定翻页位置。
+// 零值表示从头开始；有效游标按 (ExpiresAt, ID) 严格递增。
+type AutoRenewCursor struct {
+	ExpiresAt time.Time
+	ID        int64
+}
+
+func (c AutoRenewCursor) After(previous AutoRenewCursor) bool {
+	if c.ID == 0 {
+		return false
+	}
+	if previous.ID == 0 || c.ExpiresAt.After(previous.ExpiresAt) {
+		return true
+	}
+	return c.ExpiresAt.Equal(previous.ExpiresAt) && c.ID > previous.ID
+}
+
 // ProcessAutoRenewal 扫一批"到点且 auto_renew=true"的订阅 (system 触发), 逐条尝试
 // "扣钱包余额 → 续期"。单条失败不阻断其余 (记 lastErr 返回), 由 worker 下个 tick 重试。
 //
 // 每条续费的原子性/幂等性/余额不足跳过逻辑全在 store.TryAutoRenewSubscription 的单事务里
 // (扣钱与续期不可分裂; 幂等锚防双扣; 余额不足绝不扣只跳过)。本方法只做批编排与计数。
 func (s *Service) ProcessAutoRenewal(ctx context.Context, limit int) (AutoRenewBatchResult, error) {
+	res, _, err := s.processAutoRenewalPage(ctx, limit, AutoRenewCursor{})
+	return res, err
+}
+
+func (s *Service) processAutoRenewalPage(ctx context.Context, limit int, after AutoRenewCursor) (AutoRenewBatchResult, AutoRenewCursor, error) {
 	now := s.now()
 	// cutoff = now + 提前续费窗口: 扫「已到点 + 即将到点」两类。批扫与逐条锁行复查同用此 cutoff,
 	// 保证提前扫出的行在锁内不被按 now 判定误跳过 (见 store.ListAutoRenewDue 与 tryAutoRenewOnce)。
 	cutoff := now.Add(DefaultAutoRenewLeadWindow)
-	due, err := s.store.ListAutoRenewDue(ctx, cutoff, limit)
+	due, err := s.store.ListAutoRenewDue(ctx, cutoff, after, limit)
 	if err != nil {
-		return AutoRenewBatchResult{}, err
+		return AutoRenewBatchResult{}, AutoRenewCursor{}, err
 	}
 	out := AutoRenewBatchResult{Scanned: len(due)}
+	next := AutoRenewCursor{}
+	if len(due) > 0 {
+		last := due[len(due)-1]
+		next = AutoRenewCursor{ExpiresAt: last.ExpiresAt, ID: last.ID}
+	}
 	var lastErr error
 	for _, sub := range due {
 		res, err := s.store.TryAutoRenewSubscription(ctx, autoRenewRecord{
@@ -194,5 +237,5 @@ func (s *Service) ProcessAutoRenewal(ctx context.Context, limit int) (AutoRenewB
 			out.Skipped++
 		}
 	}
-	return out, lastErr
+	return out, next, lastErr
 }

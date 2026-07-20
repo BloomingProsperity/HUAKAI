@@ -99,6 +99,19 @@ SET failed_attempts = $3,
 WHERE tenant_id = $1
   AND user_id = $2;
 
+-- name: IncrementTwoFactorFailure :one
+UPDATE two_factor_settings
+SET failed_attempts = failed_attempts + 1,
+    locked_until = CASE
+        WHEN failed_attempts + 1 >= sqlc.arg(max_failed_attempts)::integer
+            THEN sqlc.arg(lock_until)::timestamptz
+        ELSE locked_until
+    END,
+    updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND user_id = sqlc.arg(user_id)::bigint
+RETURNING failed_attempts, locked_until;
+
 -- name: CountUnusedBackupCodes :one
 SELECT count(*)::bigint
 FROM two_factor_backup_codes

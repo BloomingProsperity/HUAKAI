@@ -247,6 +247,18 @@ func (s *Scheduler) RecoverAgentTask(ctx context.Context, tenantID, accountID in
 		return errors.New("credentialworker: agent task recoverer unavailable")
 	}
 	account := dbbilling.ListAccountsForRefreshRow{ID: accountID, TenantID: tenantID, VendorName: credentialstore.VendorOpenAI}
+	release, outcome, err := s.acquirer.Acquire(ctx, tenantID, accountID)
+	if err != nil {
+		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "account", err))
+	}
+	if outcome != "" || release == nil {
+		if outcome == "" {
+			outcome = auth.OutcomeStormBudgetExhausted
+		}
+		return errors.Join(fmt.Errorf("credentialworker: agent task recovery deferred: %s", outcome), s.recordAudit(ctx, account, outcome, "account", nil))
+	}
+	defer release()
+	ctx = auth.WithRefreshAccountLease(ctx, tenantID, accountID)
 	endpointRefund, outcome, err := s.acquirer.AcquireProviderEndpoint(ctx, tenantID, credentialstore.VendorOpenAI, "agent_task")
 	if err != nil {
 		return errors.Join(err, s.recordAudit(ctx, account, auth.OutcomeStormBudgetExhausted, "provider_endpoint", err))
@@ -296,6 +308,7 @@ func (s *Scheduler) processAccount(ctx context.Context, account dbbilling.ListAc
 		return s.recordAudit(ctx, account, outcome, "account", nil)
 	}
 	defer release()
+	ctx = auth.WithRefreshAccountLease(ctx, account.TenantID, account.ID)
 
 	// Scope 2(provider-endpoint):按厂商端点共享的速率预算。生产接线跨副本共享，
 	// 单实例开发接线可退化为进程内预算。
@@ -388,8 +401,16 @@ type refreshRetryClassifier interface {
 	RetryableRefresh() bool
 }
 
+type remoteRetrySuppressor interface {
+	SuppressRemoteRetry() bool
+}
+
 func refreshErrorRetryable(err error) bool {
 	if err == nil {
+		return false
+	}
+	var suppressor remoteRetrySuppressor
+	if errors.As(err, &suppressor) && suppressor.SuppressRemoteRetry() {
 		return false
 	}
 	var classified refreshRetryClassifier

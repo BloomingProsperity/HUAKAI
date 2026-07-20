@@ -65,6 +65,7 @@ type adminPoolStoreStub struct {
 	list             []admindb.AdminProviderAccountRow
 	getArg           *admindb.GetAdminProviderAccountParams
 	get              *admindb.AdminProviderAccountRow
+	getErr           error
 	updateFull       *admindb.UpdateAdminProviderAccountParams
 	update           *admindb.UpdateProviderAccountEnabledParams
 	delete           *admindb.SoftDeleteProviderAccountParams
@@ -200,6 +201,9 @@ func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg ad
 
 func (s *adminPoolStoreStub) GetAdminProviderAccount(_ context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
 	s.getArg = &arg
+	if s.getErr != nil {
+		return admindb.AdminProviderAccountRow{}, s.getErr
+	}
 	if s.get != nil {
 		return *s.get, nil
 	}

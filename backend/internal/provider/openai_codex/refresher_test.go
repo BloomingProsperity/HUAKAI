@@ -191,7 +191,7 @@ func TestOpenAICodexRefreshErrorBodyIsCapped(t *testing.T) {
 	}
 }
 
-func TestOpenAICodexRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) {
+func TestOpenAICodexRefresherRecordsAuditOutcomeInShortPersistenceTransaction(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
@@ -236,7 +236,7 @@ func TestOpenAICodexRefresherRecordsAuditOutcomeInsideRefreshLock(t *testing.T) 
 			if got := auth.RefreshAuditOutcomeFromError(err); got != tt.want {
 				t.Fatalf("refresh audit outcome=%q, want %q", got, tt.want)
 			}
-			wantCalls := []string{"probe", "tx_begin", "lock:credential_refresh:101", "reread", "failure:101:" + tt.want}
+			wantCalls := []string{"probe", "tx_begin", "failure:101:" + tt.want}
 			if strings.Join(calls, "|") != strings.Join(wantCalls, "|") {
 				t.Fatalf("calls=%v, want %v", calls, wantCalls)
 			}
@@ -273,10 +273,22 @@ func (s *recordingOpenAICodexRefreshStore) LoadForRefresh(context.Context, int64
 	return s.rec, nil
 }
 
-func (s *recordingOpenAICodexRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshTxStore, db.DBTX) error) error {
+func (s *recordingOpenAICodexRefreshStore) WithRefreshTransaction(_ context.Context, fn func(RefreshStore, db.DBTX) error) error {
 	*s.calls = append(*s.calls, "tx_begin")
 	tx := &recordingOpenAICodexRefreshTx{calls: s.calls, rec: s.rec, saved: &s.saved}
 	return fn(tx, tx)
+}
+
+func (s *recordingOpenAICodexRefreshStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
+	})
+}
+
+func (s *recordingOpenAICodexRefreshStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
+	return s.WithRefreshTransaction(ctx, func(tx RefreshStore, _ db.DBTX) error {
+		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
+	})
 }
 
 type recordingOpenAICodexRefreshTx struct {

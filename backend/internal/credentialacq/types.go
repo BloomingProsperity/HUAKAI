@@ -109,6 +109,19 @@ var (
 	ErrDeviceExchangeAmbiguous = errors.New("credentialacq: device token exchange outcome ambiguous")
 )
 
+// ValidateHTTPHeaderMetadata 只接受可直接进入 Go HTTP 头值的短 ASCII 文本。
+func ValidateHTTPHeaderMetadata(value string) error {
+	if len(value) > 1024 {
+		return ErrInvalidImportBody
+	}
+	for _, char := range value {
+		if char < 0x20 || char > 0x7e {
+			return ErrInvalidImportBody
+		}
+	}
+	return nil
+}
+
 type DevicePollPendingError struct {
 	RetryAfter time.Duration
 }

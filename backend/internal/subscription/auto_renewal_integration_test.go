@@ -145,6 +145,58 @@ func TestPG_AutoRenew_InsufficientFundSkips(t *testing.T) {
 	}
 }
 
+// A2-2: 第一页余额不足时仍须继续翻页，不能让后面的可续费订阅永久饿死。
+// 两条订阅到期时间相同且 A 先创建，批量设为 1，确保第一页只有 A、第二页只有 B。
+// mutation: worker 在 Renewed==0 时直接返回，或查询不带 (expires_at,id) 游标，都会让 B 不续费。
+func TestPG_AutoRenewWorker_SkippedFirstPageDoesNotStarveNextPage(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+
+	planA := createPaidPlan(t, ctx, svc, f.tenantA, 500)
+	planB := createPaidPlan(t, ctx, svc, f.tenantB, 500)
+	f.seedBalance(f.tenantA, f.userA, "3")
+	f.seedBalance(f.tenantB, f.userB, "20")
+
+	first, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantA, UserID: f.userA, PlanID: planA.ID})
+	if err != nil {
+		t.Fatalf("assign first: %v", err)
+	}
+	second, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{TenantID: f.tenantB, UserID: f.userB, PlanID: planB.ID})
+	if err != nil {
+		t.Fatalf("assign second: %v", err)
+	}
+	if !first.Subscription.ExpiresAt.Equal(second.Subscription.ExpiresAt) || first.Subscription.ID >= second.Subscription.ID {
+		t.Fatalf("fixture 顺序不成立: first=(%v,%d) second=(%v,%d)",
+			first.Subscription.ExpiresAt, first.Subscription.ID, second.Subscription.ExpiresAt, second.Subscription.ID)
+	}
+
+	clk.set(first.Subscription.ExpiresAt.Add(time.Hour))
+	w := NewAutoRenewWorker(AutoRenewWorkerConfig{Service: svc, BatchSize: 1})
+	w.TickOnce(ctx)
+
+	if got := w.SkippedTotal(); got != 1 {
+		t.Fatalf("skipped total=%d, want 1", got)
+	}
+	if got := w.RenewedTotal(); got != 1 {
+		t.Fatalf("renewed total=%d, want 1 (第一页跳过项挡住了后续可续费订阅)", got)
+	}
+	if got := f.balanceOf(f.tenantA, f.userA); !got.Equal(decimal.RequireFromString("3")) {
+		t.Fatalf("first balance=%s, want 3 unchanged", got.String())
+	}
+	if got := f.balanceOf(f.tenantB, f.userB); !got.Equal(decimal.RequireFromString("15")) {
+		t.Fatalf("second balance=%s, want 15", got.String())
+	}
+	if got := f.userSubExpires(f.tenantA, f.userA); !got.Equal(first.Subscription.ExpiresAt) {
+		t.Fatalf("first expires=%v, want %v unchanged", got, first.Subscription.ExpiresAt)
+	}
+	if got := f.userSubExpires(f.tenantB, f.userB); !got.Equal(clk.now().AddDate(0, 0, 30)) {
+		t.Fatalf("second expires=%v, want %v", got, clk.now().AddDate(0, 0, 30))
+	}
+}
+
 // A3: 幂等 → 同周期跑两次只扣一次只续一次。
 // mutation: tryAutoRenewOnce 去掉 autoRenewalChargeExistsTx 预查 + 唯一索引 → 第二次又扣一次 → 红。
 func TestPG_AutoRenew_IdempotentNoDoubleCharge(t *testing.T) {

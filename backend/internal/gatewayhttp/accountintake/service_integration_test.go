@@ -239,9 +239,7 @@ func TestServiceImportsOfficialCodexAuthJSONEndToEnd(t *testing.T) {
 	defer cancel()
 	pool := openAccountIntakePool(t, ctx)
 	seed := seedAccountIntake(t, ctx, pool)
-	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
-		t.Fatal(err)
-	}
+	enableCodexLane(t, ctx, pool, seed)
 	service := newAccountIntakeService(t, pool)
 	accessToken := "codex-access-" + seed.suffix
 	refreshToken := "codex-refresh-" + seed.suffix
@@ -263,7 +261,6 @@ func TestServiceImportsOfficialCodexAuthJSONEndToEnd(t *testing.T) {
 		}`, accessToken, refreshToken, seed.suffix),
 		Account: AccountDefaults{
 			ProviderID: seed.providerID, ChannelID: seed.channelID,
-			NamePrefix: "codex-" + seed.suffix, AccountType: "session",
 		},
 		Now: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
 	}
@@ -309,6 +306,25 @@ func TestServiceImportsOfficialCodexAuthJSONEndToEnd(t *testing.T) {
 	defer privacy.Zeroize(record.PlaintextPayload)
 	if record.Vendor != credentialstore.VendorOpenAI || record.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
 		t.Fatalf("record vendor/mode=%s/%s", record.Vendor, record.AuthMode)
+	}
+	var accountType string
+	var concurrency, priority int32
+	var capabilities []string
+	if err := pool.QueryRow(ctx, `
+SELECT account_type, cap_concurrency, priority, capability_flags
+FROM provider_accounts
+WHERE tenant_id=$1 AND id=$2`, seed.tenantID, executed.Items[0].ProviderAccountID).Scan(
+		&accountType, &concurrency, &priority, &capabilities,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if accountType != "oauth" || concurrency != 3 || priority != 50 {
+		t.Fatalf("Codex 建号默认值 type=%s concurrency=%d priority=%d", accountType, concurrency, priority)
+	}
+	for _, capability := range codexDefaultCapabilities {
+		if !containsString(capabilities, capability) {
+			t.Fatalf("Codex 新账号能力=%v，缺少 %s", capabilities, capability)
+		}
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(record.PlaintextPayload, &payload); err != nil {
@@ -373,7 +389,7 @@ FROM (SELECT * FROM credential_audit_events WHERE tenant_id=$1 AND provider_acco
 	}
 }
 
-func TestServiceRejectsAmbiguousCodexUpstreamIdentityWithoutWriting(t *testing.T) {
+func TestCodexIntakeResolvesUniqueRunnableLaneAndRejectsAmbiguity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openAccountIntakePool(t, ctx)
@@ -381,6 +397,274 @@ func TestServiceRejectsAmbiguousCodexUpstreamIdentityWithoutWriting(t *testing.T
 	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
 		t.Fatal(err)
 	}
+	service := newAccountIntakeService(t, pool)
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		DefaultVendor: credentialstore.VendorOpenAI, DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content: fmt.Sprintf(`{"access_token":"access-%s","account_id":"workspace-%s"}`, seed.suffix, seed.suffix),
+		Now:     time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+	}
+	if _, err := service.Plan(ctx, input); !errors.Is(err, ErrCodexLaneAbsent) {
+		t.Fatalf("没有模型绑定时 err=%v，期望 ErrCodexLaneAbsent", err)
+	}
+	explicit := input
+	explicit.Account = AccountDefaults{ProviderID: seed.providerID, ChannelID: seed.channelID}
+	if _, err := service.Plan(ctx, explicit); !errors.Is(err, ErrCodexLaneAbsent) {
+		t.Fatalf("显式选择不可运行车道时 err=%v，期望 ErrCodexLaneAbsent", err)
+	}
+
+	modelID := bindCodexModel(t, ctx, pool, seed.tenantID, seed.poolGroupID, seed.suffix)
+
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatalf("唯一可运行车道预检失败：%v", err)
+	}
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-codex-auto-lane", Reason: "Codex 凭证直接建号",
+	})
+	if err != nil || executed.Summary.Created != 1 {
+		t.Fatalf("导入建号 result=%+v err=%v", executed, err)
+	}
+	var providerID, channelID int64
+	if err := pool.QueryRow(ctx, `SELECT provider_id, channel_id FROM provider_accounts WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, executed.Items[0].ProviderAccountID).Scan(&providerID, &channelID); err != nil {
+		t.Fatal(err)
+	}
+	if providerID != seed.providerID || channelID != seed.channelID {
+		t.Fatalf("自动车道 provider=%d channel=%d，期望 %d/%d", providerID, channelID, seed.providerID, seed.channelID)
+	}
+
+	var secondPoolID, secondChannelID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1,$2) RETURNING id`,
+		seed.tenantID, "second-pool-"+seed.suffix).Scan(&secondPoolID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1,$2,$3) RETURNING id`,
+		seed.tenantID, secondPoolID, "second-channel-"+seed.suffix).Scan(&secondChannelID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO model_pool_bindings (tenant_id, model_id, pool_group_id) VALUES ($1,$2,$3)`,
+		seed.tenantID, modelID, secondPoolID); err != nil {
+		t.Fatal(err)
+	}
+	input.Content = fmt.Sprintf(`{"access_token":"access-other-%s","account_id":"workspace-other-%s"}`, seed.suffix, seed.suffix)
+	if _, err := service.Plan(ctx, input); !errors.Is(err, ErrCodexLaneMany) {
+		t.Fatalf("多车道 err=%v，期望 ErrCodexLaneMany", err)
+	}
+}
+
+func TestCodexCreateRejectsLaneDisabledAfterPrepareWithoutPartialWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
+	service := newAccountIntakeService(t, pool)
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		DefaultVendor: credentialstore.VendorOpenAI, DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content: fmt.Sprintf(`{"access_token":"race-access-%s","account_id":"race-workspace-%s"}`, seed.suffix, seed.suffix),
+		Now:     time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if err := lockTenantIntake(ctx, blocker, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	var waitersBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_locks WHERE locktype='advisory' AND granted=false`).Scan(&waitersBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	type executeOutcome struct {
+		result ExecutionResult
+		err    error
+	}
+	outcome := make(chan executeOutcome, 1)
+	go func() {
+		result, executeErr := service.Execute(ctx, ExecuteInput{
+			PlanInput: input, PlanHash: planned.PlanHash,
+			Confirmations: []string{"confirm_weak_identity"},
+			ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+			RequestID: "req-codex-lane-race", Reason: "验证车道锁",
+		})
+		outcome <- executeOutcome{result: result, err: executeErr}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiters int
+		if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_locks WHERE locktype='advisory' AND granted=false`).Scan(&waiters); err != nil {
+			t.Fatal(err)
+		}
+		if waiters > waitersBefore {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("执行事务没有进入账号接入锁等待")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE channels SET enabled=false WHERE tenant_id=$1 AND id=$2`, seed.tenantID, seed.channelID); err != nil {
+		t.Fatal(err)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got := <-outcome
+	if got.err != nil {
+		t.Fatalf("执行应返回逐项失败而不是丢失结果：%v", got.err)
+	}
+	if got.result.Summary.Failed != 1 || len(got.result.Items) != 1 ||
+		got.result.Items[0].Code != "codex_lane_not_configured" {
+		t.Fatalf("result=%+v，期望车道失效后事务回滚并给出可操作错误", got.result)
+	}
+	var accounts, credentials int
+	if err := pool.QueryRow(ctx, `SELECT
+    (SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1),
+    (SELECT count(*)::int FROM account_credentials WHERE tenant_id=$1)`, seed.tenantID).Scan(&accounts, &credentials); err != nil {
+		t.Fatal(err)
+	}
+	if accounts != 0 || credentials != 0 {
+		t.Fatalf("车道竞态后 accounts=%d credentials=%d，禁止留下部分写入", accounts, credentials)
+	}
+}
+
+func TestCodexUpdateRejectsExistingAccountOnUnrunnableLane(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
+	service := newAccountIntakeService(t, pool)
+
+	var accountID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, credentials, extra)
+VALUES ($1,$2,$3,$4,'oauth','{}','{}')
+RETURNING id`, seed.tenantID, seed.providerID, seed.channelID, "stopped-lane-"+seed.suffix).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.credentials.Create(ctx, credentialstore.CreateCredentialInput{
+		TenantID: seed.tenantID, ProviderAccountID: accountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload:                []byte(`{"refresh_token":"old-refresh"}`),
+		ExternalAccountID:      "stopped-workspace-" + seed.suffix,
+		ExternalIdentitySource: "import_payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var activePoolID, activeChannelID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1,$2) RETURNING id`,
+		seed.tenantID, "active-pool-"+seed.suffix).Scan(&activePoolID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1,$2,$3) RETURNING id`,
+		seed.tenantID, activePoolID, "active-channel-"+seed.suffix).Scan(&activeChannelID); err != nil {
+		t.Fatal(err)
+	}
+	bindCodexModel(t, ctx, pool, seed.tenantID, activePoolID, "active-"+seed.suffix)
+	if _, err := pool.Exec(ctx, `UPDATE channels SET enabled=false WHERE tenant_id=$1 AND id=$2`, seed.tenantID, seed.channelID); err != nil {
+		t.Fatal(err)
+	}
+
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		DefaultVendor: credentialstore.VendorOpenAI, DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content: fmt.Sprintf(`{"access_token":"new-access","refresh_token":"new-refresh","account_id":"stopped-workspace-%s"}`, seed.suffix),
+		Now:     time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Plan.Summary.Fail != 1 || planned.Plan.Summary.Update != 0 ||
+		planned.Plan.Items[0].Code != "existing_codex_lane_not_runnable" {
+		t.Fatalf("plan=%+v，禁止用另一条健康车道掩盖旧账号自身车道失效", planned)
+	}
+	var version int32
+	if err := pool.QueryRow(ctx, `SELECT credential_version FROM account_credentials WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, created.ID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != created.Version {
+		t.Fatalf("预检失败后 credential_version=%d，期望保持 %d", version, created.Version)
+	}
+}
+
+func TestRunnableCodexLaneLockBlocksConcurrentConfigurationChange(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := lockRunnableCodexLane(ctx, tx, seed.tenantID, seed.providerID, seed.channelID); err != nil {
+		t.Fatal(err)
+	}
+	var waitersBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_locks WHERE granted=false`).Scan(&waitersBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := make(chan error, 1)
+	go func() {
+		_, updateErr := pool.Exec(ctx, `UPDATE channels SET enabled=false WHERE tenant_id=$1 AND id=$2`, seed.tenantID, seed.channelID)
+		updated <- updateErr
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiters int
+		if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM pg_locks WHERE granted=false`).Scan(&waiters); err != nil {
+			t.Fatal(err)
+		}
+		if waiters > waitersBefore {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("车道配置更新没有被事务内行锁阻塞")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-updated; err != nil {
+		t.Fatalf("账号事务提交后配置更新应继续完成：%v", err)
+	}
+	var enabled bool
+	if err := pool.QueryRow(ctx, `SELECT enabled FROM channels WHERE tenant_id=$1 AND id=$2`, seed.tenantID, seed.channelID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("等待中的配置更新没有在车道锁释放后生效")
+	}
+}
+
+func TestServiceRejectsAmbiguousCodexUpstreamIdentityWithoutWriting(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
 	service := newAccountIntakeService(t, pool)
 
 	const upstreamAccountID = "workspace-ambiguous"
@@ -509,6 +793,7 @@ func TestServiceRotatesExactCredentialWithVersionGuard(t *testing.T) {
 	defer cancel()
 	pool := openAccountIntakePool(t, ctx)
 	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
 	service := newAccountIntakeService(t, pool)
 	var accountID int64
 	if err := pool.QueryRow(ctx, `
@@ -581,6 +866,16 @@ RETURNING id`,
 	if accounts != 1 || credentials != 1 {
 		t.Fatalf("轮换后 accounts=%d credentials=%d，期望仍为 1/1", accounts, credentials)
 	}
+	var capabilities []string
+	if err := pool.QueryRow(ctx, `SELECT capability_flags FROM provider_accounts WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, accountID).Scan(&capabilities); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range codexDefaultCapabilities {
+		if !containsString(capabilities, capability) {
+			t.Fatalf("轮换后的 Codex 账号能力=%v，缺少 %s", capabilities, capability)
+		}
+	}
 	_, err = service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
@@ -588,6 +883,68 @@ RETURNING id`,
 	})
 	if !errors.Is(err, ErrPlanChanged) {
 		t.Fatalf("旧版本计划重放 err=%v，期望 ErrPlanChanged", err)
+	}
+}
+
+func TestServiceRejectsUpdatingCredentialIntoIncompatibleExistingAccount(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	service := newAccountIntakeService(t, pool)
+	var codexProviderID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+VALUES ($1,$2,$3,'openai_codex')
+RETURNING id`, seed.tenantID, "codex-provider-"+seed.suffix, "Codex Provider "+seed.suffix).Scan(&codexProviderID); err != nil {
+		t.Fatal(err)
+	}
+	bindCodexModel(t, ctx, pool, seed.tenantID, seed.poolGroupID, seed.suffix)
+
+	var accountID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO provider_accounts (
+    tenant_id, provider_id, channel_id, name, account_type, credentials, extra
+) VALUES ($1,$2,$3,$4,'session','{}','{}')
+RETURNING id`, seed.tenantID, seed.providerID, seed.channelID, "wrong-family-"+seed.suffix).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.credentials.Create(ctx, credentialstore.CreateCredentialInput{
+		TenantID: seed.tenantID, ProviderAccountID: accountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload:                []byte(`{"refresh_token":"refresh-old"}`),
+		ExternalAccountID:      "workspace-wrong-family",
+		ExternalIdentitySource: "import_payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceJSON,
+		DefaultVendor: credentialstore.VendorOpenAI, DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content: `{"refresh_token":"refresh-new","external_account_id":"workspace-wrong-family"}`,
+		Account: AccountDefaults{
+			ProviderID: codexProviderID, ChannelID: seed.channelID,
+			NamePrefix: "must-not-create-" + seed.suffix, AccountType: "session",
+		},
+		Now: time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Plan.Summary.Fail != 1 || planned.Plan.Summary.Update != 0 ||
+		planned.Plan.Items[0].Action != intake.ActionFail ||
+		planned.Plan.Items[0].Code != "provider_protocol_incompatible" {
+		t.Fatalf("plan=%+v，期望拒绝把 Codex 凭据写入普通 OpenAI 账号", planned)
+	}
+	var version int32
+	if err := pool.QueryRow(ctx, `SELECT credential_version FROM account_credentials WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, created.ID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != created.Version {
+		t.Fatalf("不兼容预检后 credential_version=%d，期望保持 %d", version, created.Version)
 	}
 }
 
@@ -645,10 +1002,11 @@ func TestClaudeSetupTokenMigrationRoundTripWithoutRows(t *testing.T) {
 }
 
 type accountIntakeSeed struct {
-	tenantID   int64
-	providerID int64
-	channelID  int64
-	suffix     string
+	tenantID    int64
+	providerID  int64
+	poolGroupID int64
+	channelID   int64
+	suffix      string
 }
 
 func accountIntakeInput(seed accountIntakeSeed, identity string) PlanInput {
@@ -688,6 +1046,9 @@ func seedAccountIntake(t *testing.T, ctx context.Context, pool *pgxpool.Pool) ac
 		_, _ = pool.Exec(bg, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID)
@@ -700,20 +1061,44 @@ func seedAccountIntake(t *testing.T, ctx context.Context, pool *pgxpool.Pool) ac
 	).Scan(&seed.providerID); err != nil {
 		t.Fatal(err)
 	}
-	var poolGroupID int64
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1,$2) RETURNING id`,
 		seed.tenantID, "pool-"+seed.suffix,
-	).Scan(&poolGroupID); err != nil {
+	).Scan(&seed.poolGroupID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1,$2,$3) RETURNING id`,
-		seed.tenantID, poolGroupID, "channel-"+seed.suffix,
+		seed.tenantID, seed.poolGroupID, "channel-"+seed.suffix,
 	).Scan(&seed.channelID); err != nil {
 		t.Fatal(err)
 	}
 	return seed
+}
+
+func enableCodexLane(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seed accountIntakeSeed) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='openai_codex' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	bindCodexModel(t, ctx, pool, seed.tenantID, seed.poolGroupID, seed.suffix)
+}
+
+func bindCodexModel(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, poolGroupID int64, suffix string) int64 {
+	t.Helper()
+	var modelID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO models (tenant_id, scope, canonical_id, protocol_family, default_provider_model_id)
+VALUES ($1,'tenant',$2,'openai_codex',$2)
+RETURNING id`, tenantID, "codex-model-"+suffix).Scan(&modelID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO model_pool_bindings (tenant_id, model_id, pool_group_id)
+VALUES ($1,$2,$3)`, tenantID, modelID, poolGroupID); err != nil {
+		t.Fatal(err)
+	}
+	return modelID
 }
 
 func openAccountIntakePool(t *testing.T, ctx context.Context) *pgxpool.Pool {

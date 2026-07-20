@@ -150,6 +150,46 @@ func (q *Queries) GetTwoFactorSettings(ctx context.Context, arg GetTwoFactorSett
 	return i, err
 }
 
+const incrementTwoFactorFailure = `-- name: IncrementTwoFactorFailure :one
+UPDATE two_factor_settings
+SET failed_attempts = failed_attempts + 1,
+    locked_until = CASE
+        WHEN failed_attempts + 1 >= $1::integer
+            THEN $2::timestamptz
+        ELSE locked_until
+    END,
+    updated_at = $3::timestamptz
+WHERE tenant_id = $4::bigint
+  AND user_id = $5::bigint
+RETURNING failed_attempts, locked_until
+`
+
+type IncrementTwoFactorFailureParams struct {
+	MaxFailedAttempts int32              `db:"max_failed_attempts" json:"max_failed_attempts"`
+	LockUntil         pgtype.Timestamptz `db:"lock_until" json:"lock_until"`
+	UpdatedAt         pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
+	UserID            int64              `db:"user_id" json:"user_id"`
+}
+
+type IncrementTwoFactorFailureRow struct {
+	FailedAttempts int32              `db:"failed_attempts" json:"failed_attempts"`
+	LockedUntil    pgtype.Timestamptz `db:"locked_until" json:"locked_until"`
+}
+
+func (q *Queries) IncrementTwoFactorFailure(ctx context.Context, arg IncrementTwoFactorFailureParams) (IncrementTwoFactorFailureRow, error) {
+	row := q.db.QueryRow(ctx, incrementTwoFactorFailure,
+		arg.MaxFailedAttempts,
+		arg.LockUntil,
+		arg.UpdatedAt,
+		arg.TenantID,
+		arg.UserID,
+	)
+	var i IncrementTwoFactorFailureRow
+	err := row.Scan(&i.FailedAttempts, &i.LockedUntil)
+	return i, err
+}
+
 const markTwoFactorSuccess = `-- name: MarkTwoFactorSuccess :exec
 UPDATE two_factor_settings
 SET failed_attempts = 0,

@@ -1,17 +1,4 @@
 -- name: ListEligibleAccounts :many
-WITH normalized_health AS (
-    UPDATE provider_accounts pa
-    SET
-        health_state = 'healthy',
-        health_state_until = NULL,
-        updated_at = NOW()
-    WHERE pa.tenant_id = sqlc.arg(tenant_id)
-      AND pa.channel_id = sqlc.arg(channel_id)
-      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
-      AND pa.health_state_until IS NOT NULL
-      AND pa.health_state_until <= NOW()
-    RETURNING pa.id
-)
 SELECT
     id,
     tenant_id,
@@ -80,7 +67,11 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND pa.deleted_at IS NULL
   AND (
       pa.health_state = 'healthy'
-      OR pa.id IN (SELECT id FROM normalized_health)
+      OR (
+          pa.health_state IN ('throttled', 'revoked', 'cooldown')
+          AND pa.health_state_until IS NOT NULL
+          AND pa.health_state_until <= NOW()
+      )
   )
   -- 凭据真相门:只放至少有一条可服务凭据的账号。真相在 account_credentials.state
   -- (credentialstore 写生命周期),不是冻死的 provider_accounts.credential_state
@@ -106,20 +97,6 @@ WITH target_channels AS (
       AND c.tenant_id = sqlc.arg(tenant_id)
       AND c.enabled = true
       AND c.deleted_at IS NULL
-),
-normalized_health AS (
-    UPDATE provider_accounts pa
-    SET
-        health_state = 'healthy',
-        health_state_until = NULL,
-        updated_at = NOW()
-    FROM target_channels tc
-    WHERE pa.tenant_id = sqlc.arg(tenant_id)
-      AND pa.channel_id = tc.id
-      AND pa.health_state IN ('throttled', 'revoked', 'cooldown')
-      AND pa.health_state_until IS NOT NULL
-      AND pa.health_state_until <= NOW()
-    RETURNING pa.id
 )
 -- Phase C.2: pool-group-keyed eligibility lookup for the gateway selector.
 -- Joins channels → provider_accounts so a SelectionRequest with PoolGroupID
@@ -210,7 +187,11 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
   AND (
       pa.health_state = 'healthy'
-      OR pa.id IN (SELECT id FROM normalized_health)
+      OR (
+          pa.health_state IN ('throttled', 'revoked', 'cooldown')
+          AND pa.health_state_until IS NOT NULL
+          AND pa.health_state_until <= NOW()
+      )
   )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[sqlc.arg(requested_model)::text])

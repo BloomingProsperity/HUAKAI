@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
@@ -104,6 +105,7 @@ func (s *Service) Enqueue(ctx context.Context, e Event) (int64, error) {
 	if s == nil || s.store == nil {
 		return 0, ErrStoreNotConfigured
 	}
+	e.FailureReason = safeFailureReason(e.FailureReason)
 	return s.store.Enqueue(ctx, e)
 }
 
@@ -124,7 +126,7 @@ func (s *Service) Replay(ctx context.Context, id int64, actorID string) (*Record
 	}
 	if err := s.handle(ctx, *rec); err != nil {
 		decision := s.failureDecision(ctx, rec, err)
-		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
+		if markErr := s.store.MarkFailed(ctx, *rec, safeFailureReason(err.Error()), decision); markErr != nil {
 			// 与 worker 路径(ProcessClaim)一致:MarkFailed 写失败是独立的状态持久化故障,必须上抛。
 			// 否则 handler 失败且状态更新也失败时,行会停在 inflight(带 manual lease、陈旧 retry 计数、
 			// 未转 operator_review/dlq),操作员只看到 handler 错误,而"恢复系统连自身失败状态都没落盘"
@@ -150,7 +152,7 @@ func (s *Service) ProcessClaim(ctx context.Context, lane Lane, workerID string, 
 	}
 	if err := s.handle(ctx, *rec); err != nil {
 		decision := s.failureDecision(ctx, rec, err)
-		if markErr := s.store.MarkFailed(ctx, *rec, err.Error(), decision); markErr != nil {
+		if markErr := s.store.MarkFailed(ctx, *rec, safeFailureReason(err.Error()), decision); markErr != nil {
 			return true, markErr
 		}
 		return true, nil
@@ -167,6 +169,25 @@ func (s *Service) handle(ctx context.Context, rec Record) error {
 		return fmt.Errorf("%w: %s", ErrNoHandler, rec.EventKind)
 	}
 	return h(ctx, rec)
+}
+
+func safeFailureReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "internal_error"
+	}
+	if privacy.ContainsForbiddenRawData([]byte(reason)) {
+		return "[REDACTED]"
+	}
+	const maxFailureReasonBytes = 1024
+	if len(reason) > maxFailureReasonBytes {
+		cut := maxFailureReasonBytes
+		for cut > 0 && !utf8.ValidString(reason[:cut]) {
+			cut--
+		}
+		return reason[:cut] + " [TRUNCATED]"
+	}
+	return reason
 }
 
 // failureDecision 选择一次 handler 失败后的下一步状态。交付后结算始终持续重试；其它事件默认启用结构性失败隔离:用

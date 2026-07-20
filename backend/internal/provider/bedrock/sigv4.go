@@ -164,12 +164,13 @@ func canonicalizeURI(u *url.URL) string {
 	// 分段重新编码（AWS 规范：路径段内 unreserved 字符不编码，其余编码）
 	segments := strings.Split(path, "/")
 	for i, seg := range segments {
-		// url.PathUnescape 先解码，再用 url.PathEscape 重新编码（确保规范形态）
+		// 先解码已有转义，再按签名规范逐字节编码，确保实际请求路径与
+		// canonical URI 对冒号等保留字符使用同一编码规则。
 		decoded, err := url.PathUnescape(seg)
 		if err != nil {
 			decoded = seg
 		}
-		segments[i] = url.PathEscape(decoded)
+		segments[i] = awsURIEncode(decoded)
 	}
 	return strings.Join(segments, "/")
 }

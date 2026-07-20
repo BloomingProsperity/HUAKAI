@@ -14,6 +14,7 @@ type Querier interface {
 	CreateTwoFactorBackupCode(ctx context.Context, arg CreateTwoFactorBackupCodeParams) error
 	DeleteTwoFactorBackupCodesForUser(ctx context.Context, arg DeleteTwoFactorBackupCodesForUserParams) error
 	GetTwoFactorSettings(ctx context.Context, arg GetTwoFactorSettingsParams) (TwoFactorSetting, error)
+	IncrementTwoFactorFailure(ctx context.Context, arg IncrementTwoFactorFailureParams) (IncrementTwoFactorFailureRow, error)
 	MarkTwoFactorSuccess(ctx context.Context, arg MarkTwoFactorSuccessParams) error
 	// 记录一次成功的 TOTP 校验并落已消费时间步,做防重放的原子守卫:仅当 $4 严格大于
 	// 已存 last_used_step(或其为 NULL)时才更新。受影响行数为 0 表示该(或更早)时间步
