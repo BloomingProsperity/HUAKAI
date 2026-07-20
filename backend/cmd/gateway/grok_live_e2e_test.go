@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -28,9 +27,11 @@ import (
 	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -72,6 +73,8 @@ type grokLiveSeed struct {
 	costQuotaPolicyID int64
 	pricingVersion    string
 	bearer            string
+	adminBearer       string
+	adminTokenID      int64
 }
 
 type grokLiveHTTPResult struct {
@@ -110,27 +113,7 @@ func TestGrokOAuthLiveRelayChain(t *testing.T) {
 		t.Skip("未提供 Grok OAuth 凭据")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
-	if err != nil {
-		t.Fatalf("打开 Grok live e2e 数据库连接池: %v", err)
-	}
-	// 连接池先注册清理，后注册的数据清理按 LIFO 在关池前执行。
-	t.Cleanup(pgPool.Close)
-
-	seed := seedGrokLiveGraph(t, ctx, pgPool, auth)
-	materialized := assertGrokLiveSeedSelectableAndMaterializable(t, ctx, pgPool, seed, auth)
-	assertGrokLiveDefaultAdapter(t, materialized)
-
-	binPath := buildGrokLiveGateway(t)
-	addr := reserveGrokLiveLocalPort(t)
-	cmd := startGrokLiveGateway(t, binPath, dsn, addr, seed, auth)
-	t.Cleanup(func() { stopGrokLiveGateway(cmd) })
-	waitForGrokLiveGateway(t, addr)
-
-	client := &http.Client{Timeout: 60 * time.Second}
+	ctx, pgPool, seed, addr, client := setupGrokLiveE2E(t, dsn, auth)
 
 	t.Run("单请求整条链路", func(t *testing.T) {
 		beforeBalance := readGrokLiveBalance(t, ctx, pgPool, seed)
@@ -257,7 +240,52 @@ func TestGrokOAuthLiveRelayChain(t *testing.T) {
 	})
 }
 
-func seedGrokLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, auth grokLiveAuth) *grokLiveSeed {
+func TestGrokLiveFormalImportWiring(t *testing.T) {
+	dsn := firstGrokLiveNonEmpty(os.Getenv("HUAKAI_DATABASE_URL"), os.Getenv("HUAKAI_E2E_DATABASE_URL"))
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 Grok 正式导入接线测试")
+	}
+	auth := grokLiveAuth{
+		accessToken:  "synthetic-grok-live-access-token",
+		refreshToken: "synthetic-grok-live-refresh-token",
+	}
+	ctx, pgPool, seed, _, _ := setupGrokLiveE2E(t, dsn, auth)
+	waitForGrokLiveInFlight(t, ctx, pgPool, seed.providerAccountID, 0)
+}
+
+func setupGrokLiveE2E(
+	t *testing.T,
+	dsn string,
+	auth grokLiveAuth,
+) (context.Context, *pgxpool.Pool, *grokLiveSeed, string, *http.Client) {
+	t.Helper()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
+	if err != nil {
+		setupCancel()
+		t.Fatalf("打开 Grok live e2e 数据库连接池: %v", err)
+	}
+	// 连接池先注册清理，后注册的数据清理按 LIFO 在关池前执行。
+	t.Cleanup(pgPool.Close)
+	seed := seedGrokLiveGraph(t, setupCtx, pgPool)
+	setupCancel()
+
+	binPath := buildGrokLiveGateway(t)
+	addr := reserveGrokLiveLocalPort(t)
+	processes := startGrokLiveGateway(t, binPath, dsn, addr, seed, auth)
+	t.Cleanup(func() { stopSpecializedLiveProcesses(processes) })
+	waitForGrokLiveGateway(t, addr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(cancel)
+	client := &http.Client{Timeout: 60 * time.Second}
+	seed.providerAccountID = importGrokLiveAccount(t, ctx, client, addr, seed, auth).AccountID
+	materialized := assertGrokLiveSeedSelectableAndMaterializable(t, ctx, pgPool, seed, auth)
+	assertGrokLiveDefaultAdapter(t, materialized)
+	return ctx, pgPool, seed, addr, client
+}
+
+func seedGrokLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *grokLiveSeed {
 	t.Helper()
 	unique := uuid.NewString()
 	seed := &grokLiveSeed{pricingVersion: "e2e-grok-live-" + unique}
@@ -345,7 +373,9 @@ func seedGrokLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, 
 	).Scan(&seed.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	seed.providerAccountID = seedGrokLiveProviderAccount(t, ctx, pgPool, seed, auth, unique)
+	seed.adminBearer, seed.adminTokenID = seedSpecializedLiveImportAuthorization(
+		t, ctx, pgPool, seed.tenantID, "grok-live-e2e-admin-"+unique,
+	)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -395,7 +425,14 @@ func seedGrokLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, 
 	return seed
 }
 
-func seedGrokLiveProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *grokLiveSeed, auth grokLiveAuth, unique string) int64 {
+func importGrokLiveAccount(
+	t *testing.T,
+	ctx context.Context,
+	client *http.Client,
+	addr string,
+	seed *grokLiveSeed,
+	auth grokLiveAuth,
+) specializedLiveImportResult {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"access_token":  auth.accessToken,
@@ -404,49 +441,30 @@ func seedGrokLiveProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxp
 	if err != nil {
 		t.Fatalf("序列化 Grok OAuth 凭据: %v", err)
 	}
-
-	var accountID int64
-	if err := pgPool.QueryRow(ctx,
-		`INSERT INTO provider_accounts (
-			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count, priority, health_state, credential_state,
-			model_allow_list, capability_flags, credentials, extra
-		) VALUES ($1, $2, $3, $4, $5,
-			3, 0, 100, 'healthy', 'valid',
-			ARRAY[$6]::text[], ARRAY['json']::text[], $7::jsonb, '{}'::jsonb) RETURNING id`,
-		seed.tenantID, seed.providerID, seed.channelID, "grok-live-e2e-acct-"+unique,
-		// provider_accounts 只记录通用账号形态；Grok 特化 auth_mode 写在 v2 加密凭据行。
-		grokLiveProviderAccountType, grokLiveModel, string(payload),
-	).Scan(&accountID); err != nil {
-		t.Fatalf("seed provider account: %v", err)
+	capConcurrency := int32(3)
+	priority := int32(100)
+	request := specializedLiveAccountImportRequest{
+		TenantID:        seed.tenantID,
+		SourceKind:      intake.SourceJSON,
+		DefaultVendor:   grokLiveVendor,
+		DefaultAuthMode: grokLiveAuthMode,
+		Content:         string(payload),
+		Account: accountintake.AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			ExactName:       "grok-live-e2e-正式导入-" + uuid.NewString(),
+			AccountType:     grokLiveProviderAccountType,
+			CapConcurrency:  &capConcurrency,
+			Priority:        &priority,
+			ModelAllowList:  []string{grokLiveModel},
+			CapabilityFlags: []string{"json"},
+		},
 	}
-
-	keyProvider, err := grokLiveCredentialKeyProvider()
-	if err != nil {
-		t.Fatalf("创建 Grok live 凭据密钥提供器: %v", err)
-	}
-	credentialEnvelope, err := credentialstore.NewCipher(keyProvider).Encrypt(ctx,
-		payload,
-		credentialstore.AAD{
-			TenantID:          seed.tenantID,
-			ProviderAccountID: accountID,
-			Vendor:            grokLiveVendor,
-			AuthMode:          grokLiveAuthMode,
-			Version:           1,
-		})
-	if err != nil {
-		t.Fatalf("加密 provider account %d 的 Grok OAuth 凭据: %v", accountID, err)
-	}
-	if _, err := pgPool.Exec(ctx,
-		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
-		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
-		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, grokLiveVendor, grokLiveAuthMode,
-		credentialEnvelope.Ciphertext, credentialEnvelope.KeyID, credentialEnvelope.Nonce, credentialEnvelope.AADHash,
-	); err != nil {
-		t.Fatalf("seed Grok account credential: %v", err)
-	}
-	return accountID
+	return executeSpecializedLiveAccountImport(
+		t, ctx, client, addr,
+		"/admin/v1/credentials/account-imports/plan",
+		"/admin/v1/credentials/account-imports/execute",
+		seed.adminBearer, request, auth.accessToken, auth.refreshToken,
+	)
 }
 
 func registerGrokLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *grokLiveSeed) {
@@ -455,21 +473,17 @@ func registerGrokLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *grokLiveS
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// append-only 账务记录可能阻止完整删除；无论后续清理是否受阻，先抹掉 legacy 明文凭据。
-		if _, err := pgPool.Exec(ctx,
-			`UPDATE provider_accounts SET credentials='{}'::jsonb WHERE tenant_id=$1`,
-			seed.tenantID,
-		); err != nil {
-			t.Errorf("清除 Grok live e2e legacy 明文凭据: %v", err)
-		}
-
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_admin_alerts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM credential_acquisition_flow_sessions WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM oauth_refresh_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM oauth_storm_budget WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveSubscriptionObservations(ctx, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 Grok 活体测试套餐观测: %v", err)
+		}
 		if _, err := pgPool.Exec(ctx, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID); err != nil {
 			t.Errorf("删除 Grok live e2e 加密凭据: %v", err)
 		}
@@ -481,14 +495,12 @@ func registerGrokLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *grokLiveS
 		_, _ = pgPool.Exec(ctx, `DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM balance_holds WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 Grok 活体测试钱路记录: %v", err)
+		}
 		_, _ = pgPool.Exec(ctx, `DELETE FROM sticky_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM pool_routing_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM rate_limit_audit_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
@@ -502,6 +514,8 @@ func registerGrokLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *grokLiveS
 		_, _ = pgPool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM tenants WHERE id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion)
 	})
@@ -934,7 +948,8 @@ func waitForGrokLiveInFlight(t *testing.T, ctx context.Context, pgPool *pgxpool.
 func buildGrokLiveGateway(t *testing.T) string {
 	t.Helper()
 	moduleRoot := goModuleRootForGrokLive(t)
-	binPath := filepath.Join(t.TempDir(), grokLiveBinaryName)
+	binPath := specializedLiveArtifactPath(t, grokLiveBinaryName)
+	t.Cleanup(func() { _ = os.Remove(binPath) })
 	stamp := fmt.Sprintf("grok-live-e2e-%d", time.Now().UnixNano())
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.smokeBuildStamp="+stamp,
@@ -974,10 +989,15 @@ func reserveGrokLiveLocalPort(t *testing.T) string {
 	return addr
 }
 
-func startGrokLiveGateway(t *testing.T, binPath, dsn, addr string, seed *grokLiveSeed, auth grokLiveAuth) *exec.Cmd {
+func startGrokLiveGateway(t *testing.T, binPath, dsn, addr string, seed *grokLiveSeed, auth grokLiveAuth) *specializedLiveProcesses {
 	t.Helper()
+	blockedEnvNames := []string{
+		"HUAKAI_E2E_GROK_ACCESS_TOKEN",
+		"HUAKAI_E2E_GROK_REFRESH_TOKEN",
+	}
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRootForGrokLive(t), blockedEnvNames...)
 	cmd := exec.Command(binPath)
-	cmd.Env = append(grokLiveChildEnv(),
+	cmd.Env = append(specializedLiveChildEnv(blockedEnvNames...),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
@@ -990,6 +1010,7 @@ func startGrokLiveGateway(t *testing.T, binPath, dsn, addr string, seed *grokLiv
 		"HUAKAI_EVENTBUS_ENABLED=0",
 		"HUAKAI_RATE_PRECHECK_ENABLED=false",
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 		"HUAKAI_DISPATCH_HCSF=1",
@@ -997,32 +1018,13 @@ func startGrokLiveGateway(t *testing.T, binPath, dsn, addr string, seed *grokLiv
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("启动 Grok live gateway: %v", err)
 	}
 	go drainGrokLivePipe("gateway-stderr", stderr, auth)
 	go drainGrokLivePipe("gateway-stdout", stdout, auth)
-	return cmd
-}
-
-func grokLiveChildEnv() []string {
-	blocked := []string{
-		"HUAKAI_E2E_GROK_ACCESS_TOKEN=",
-		"HUAKAI_E2E_GROK_REFRESH_TOKEN=",
-	}
-	env := make([]string, 0, len(os.Environ()))
-	for _, item := range os.Environ() {
-		skip := false
-		for _, prefix := range blocked {
-			if strings.HasPrefix(item, prefix) {
-				skip = true
-				break
-			}
-		}
-		if !skip {
-			env = append(env, item)
-		}
-	}
-	return env
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func drainGrokLivePipe(label string, pipe io.ReadCloser, auth grokLiveAuth) {
@@ -1034,20 +1036,6 @@ func drainGrokLivePipe(label string, pipe io.ReadCloser, auth grokLiveAuth) {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		fmt.Printf("[%s] %s\n", label, redactGrokLiveSecrets(scanner.Text(), auth))
-	}
-}
-
-func stopGrokLiveGateway(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
 	}
 }
 

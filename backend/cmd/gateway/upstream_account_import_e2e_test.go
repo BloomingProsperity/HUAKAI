@@ -45,7 +45,7 @@ func TestUpstreamE2E_FormalAccountImport(t *testing.T) {
 		slug: "formal-account-import", vendor: credentialstore.VendorAnthropic,
 		protocolFamily: registrydefault.ProtocolAnthropicMessages,
 		model:          "claude-formal-import-e2e", authMode: credentialstore.AuthModeAPIKey,
-		accountType: upstreamE2EAccountTypeAPIKey, formalImport: true,
+		accountType:          upstreamE2EAccountTypeAPIKey,
 		expectImportIdentity: true, skipConcurrency: true,
 	}
 	credential := upstreamE2ECredential{payload: []byte(`{"api_key":"synthetic-import-e2e-key","external_account_id":"synthetic-upstream-account"}`)}

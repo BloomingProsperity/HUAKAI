@@ -47,18 +47,15 @@ const (
 	upstreamE2EBootRetries   = 30
 	upstreamE2EBootRetryWait = 200 * time.Millisecond
 
-	upstreamE2EAccountTypeAPIKey         = "api_key"
-	upstreamE2EAccountTypeUpstreamStatic = "upstream_static"
+	upstreamE2EAccountTypeAPIKey = "api_key"
 
 	upstreamE2EDoubaoProtocol = "doubao_chat"
 	upstreamE2EDoubaoModel    = "doubao-1-5-lite-32k-250115"
 	upstreamE2EARKKeyEnv      = "HUAKAI_E2E_ARK_KEY"
 
-	upstreamE2EHunyuanProtocol               = "hunyuan_chat"
-	upstreamE2EHunyuanModel                  = "hy3-preview"
-	upstreamE2EHunyuanKeyEnv                 = "HUAKAI_E2E_HUNYUAN_KEY"
-	upstreamE2EHunyuanBaseURLEnv             = "HUAKAI_E2E_HUNYUAN_BASE_URL"
-	upstreamE2EHunyuanTokenHubDefaultBaseURL = "https://tokenhub-intl.tencentmaas.com"
+	upstreamE2EHunyuanProtocol = "hunyuan_chat"
+	upstreamE2EHunyuanModel    = "hy3-preview"
+	upstreamE2EHunyuanKeyEnv   = "HUAKAI_E2E_HUNYUAN_KEY"
 
 	// 并发 e2e 验证主备账号槽释放，不做配额高压测试。
 	upstreamE2EDefaultAccountConcurrencyCap = 1
@@ -77,9 +74,7 @@ type upstreamE2ECase struct {
 	credentialJSONEnv     string
 	authMode              string
 	accountType           string
-	baseURL               string
 	gatewayEnv            []string
-	formalImport          bool
 	expectImportIdentity  bool
 	skipConcurrency       bool
 	accountConcurrencyCap int
@@ -87,8 +82,7 @@ type upstreamE2ECase struct {
 }
 
 type upstreamE2ECredential struct {
-	legacySecret string
-	payload      []byte
+	payload []byte
 }
 
 type upstreamE2EClientShape string
@@ -112,23 +106,20 @@ func TestUpstreamE2E_DoubaoChatCompletions(t *testing.T) {
 		protocolFamily: upstreamE2EDoubaoProtocol,
 		model:          upstreamE2EDoubaoModel,
 		keyEnv:         upstreamE2EARKKeyEnv,
+		authMode:       credentialstore.AuthModeAPIKey,
 		accountType:    upstreamE2EAccountTypeAPIKey,
 	})
 }
 
-func TestUpstreamE2E_HunyuanTokenHub(t *testing.T) {
-	baseURL := strings.TrimSpace(os.Getenv(upstreamE2EHunyuanBaseURLEnv))
-	if baseURL == "" {
-		baseURL = upstreamE2EHunyuanTokenHubDefaultBaseURL
-	}
+func TestUpstreamE2E_HunyuanOfficialAPI(t *testing.T) {
 	runUpstreamE2E(t, upstreamE2ECase{
 		slug:           "hunyuan-tokenhub",
 		vendor:         credentialstore.VendorHunyuan,
 		protocolFamily: upstreamE2EHunyuanProtocol,
 		model:          upstreamE2EHunyuanModel,
 		keyEnv:         upstreamE2EHunyuanKeyEnv,
-		accountType:    upstreamE2EAccountTypeUpstreamStatic,
-		baseURL:        baseURL,
+		authMode:       credentialstore.AuthModeAPIKey,
+		accountType:    upstreamE2EAccountTypeAPIKey,
 	})
 }
 
@@ -174,9 +165,7 @@ func runUpstreamE2E(t *testing.T, tc upstreamE2ECase) {
 
 	waitForUpstreamE2EGateway(t, addr)
 	client := &http.Client{Timeout: 90 * time.Second}
-	if tc.formalImport {
-		seed.providerAccountID = importUpstreamE2EAccount(t, ctx, client, addr, pgPool, seed, credential)
-	}
+	seed.providerAccountID = importUpstreamE2EAccount(t, ctx, client, addr, pgPool, seed, credential)
 	assertUpstreamE2ESeedSelectable(t, ctx, pgPool, seed)
 
 	t.Run("single_request", func(t *testing.T) {
@@ -349,12 +338,7 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	).Scan(&s.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	if tc.formalImport {
-		seedUpstreamE2EImportAuthorization(t, ctx, pgPool, s, unique)
-	} else {
-		s.providerAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, credential, "primary-"+unique, 100)
-		s.failoverProviderAccountID = seedUpstreamE2EProviderAccount(t, ctx, pgPool, s, credential, "failover-"+unique, 200)
-	}
+	seedUpstreamE2EImportAuthorization(t, ctx, pgPool, s, unique)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -418,68 +402,6 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	return s
 }
 
-func seedUpstreamE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed, credential upstreamE2ECredential, nameSuffix string, priority int) int64 {
-	t.Helper()
-
-	credentialsJSON := upstreamE2EProviderAccountCredentials(t, seed.testCase, credential.legacySecret)
-	var accountID int64
-	if err := pgPool.QueryRow(ctx,
-		`INSERT INTO provider_accounts (
-			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count, priority, health_state, credential_state,
-			model_allow_list, capability_flags, credentials, extra
-		) VALUES ($1, $2, $3, $4, $5,
-			$6, 0, $7, 'healthy', 'valid',
-			ARRAY[$8]::text[], ARRAY['stream','tools','vision','json','audio','file'], $9::jsonb, '{}'::jsonb) RETURNING id`,
-		seed.tenantID, seed.providerID, seed.channelID, seed.testCase.slug+"-e2e-acct-"+nameSuffix,
-		seed.testCase.accountType, seed.testCase.accountCap(), priority, seed.testCase.model, credentialsJSON,
-	).Scan(&accountID); err != nil {
-		t.Fatalf("seed provider account %s: %v", nameSuffix, err)
-	}
-
-	if len(credential.payload) == 0 {
-		return accountID
-	}
-
-	authMode := strings.TrimSpace(seed.testCase.authMode)
-	if authMode == "" {
-		authMode = credentialstore.AuthModeAPIKey
-	}
-	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(seed.testCase.vendor, authMode)
-	if err != nil {
-		t.Fatalf("lookup credential handler %s/%s: %v", seed.testCase.vendor, authMode, err)
-	}
-	if err := handler.ValidatePayload(credential.payload); err != nil {
-		t.Fatalf("validate credential payload %s/%s: %v", seed.testCase.vendor, authMode, err)
-	}
-	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
-	if err != nil {
-		t.Fatalf("cred key provider: %v", err)
-	}
-	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
-		credential.payload,
-		credentialstore.AAD{
-			TenantID:          seed.tenantID,
-			ProviderAccountID: accountID,
-			Vendor:            seed.testCase.vendor,
-			AuthMode:          authMode,
-			Version:           1,
-		})
-	if err != nil {
-		t.Fatalf("encrypt credential for account %d: %v", accountID, err)
-	}
-	if _, err := pgPool.Exec(ctx,
-		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
-		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
-		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, seed.testCase.vendor, authMode,
-		credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
-	); err != nil {
-		t.Fatalf("seed credential for account %d: %v", accountID, err)
-	}
-	return accountID
-}
-
 func loadUpstreamE2ECredential(t *testing.T, tc upstreamE2ECase) upstreamE2ECredential {
 	t.Helper()
 	switch {
@@ -497,46 +419,15 @@ func loadUpstreamE2ECredential(t *testing.T, tc upstreamE2ECase) upstreamE2ECred
 		if secret == "" {
 			t.Skip(tc.keyEnv + " 未设")
 		}
-		if tc.accountType == upstreamE2EAccountTypeUpstreamStatic {
-			return upstreamE2ECredential{legacySecret: secret}
-		}
 		payload, err := json.Marshal(map[string]string{"api_key": secret})
 		if err != nil {
 			t.Fatalf("marshal credential payload: %v", err)
 		}
-		return upstreamE2ECredential{legacySecret: secret, payload: payload}
+		return upstreamE2ECredential{payload: payload}
 	default:
 		t.Fatalf("e2e case %q 没有 credential env", tc.slug)
 		return upstreamE2ECredential{}
 	}
-}
-
-func upstreamE2EProviderAccountCredentials(t *testing.T, tc upstreamE2ECase, legacySecret string) string {
-	t.Helper()
-	switch tc.accountType {
-	case upstreamE2EAccountTypeAPIKey, upstreamE2EAccountTypeOAuth:
-		return `{}`
-	case upstreamE2EAccountTypeUpstreamStatic:
-		payload, err := json.Marshal(map[string]string{
-			"base_url":          tc.baseURL,
-			"auth_header_value": upstreamE2EBearerValue(legacySecret),
-		})
-		if err != nil {
-			t.Fatalf("marshal upstream_static credential payload: %v", err)
-		}
-		return string(payload)
-	default:
-		t.Fatalf("不支持的 e2e account_type=%q", tc.accountType)
-		return ""
-	}
-}
-
-func upstreamE2EBearerValue(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
-		return raw
-	}
-	return "Bearer " + raw
 }
 
 func assertUpstreamE2ESeedSelectable(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed) {
@@ -660,6 +551,7 @@ func startUpstreamE2EGateway(t *testing.T, binPath, dsn, addr string, seed *upst
 	}
 	socketPath := filepath.Join(socketRoot, "huakai-tls-e2e-"+uuid.NewString()+".sock")
 	sidecar := exec.Command(sidecarPath, socketPath)
+	sidecar.Env = upstreamE2EChildEnv()
 	sidecarStderr, _ := sidecar.StderrPipe()
 	sidecarStdout, _ := sidecar.StdoutPipe()
 	if err := sidecar.Start(); err != nil {
@@ -674,7 +566,7 @@ func startUpstreamE2EGateway(t *testing.T, binPath, dsn, addr string, seed *upst
 	}
 
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(upstreamE2EChildEnv(),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
@@ -715,7 +607,7 @@ func buildUpstreamE2ESidecar(t *testing.T) string {
 	}
 	cmd := exec.Command("cargo", "build", "-p", "tls-sidecar")
 	cmd.Dir = rustRoot
-	cmd.Env = append(os.Environ(), "CARGO_TARGET_DIR="+targetRoot)
+	cmd.Env = append(upstreamE2EChildEnv(), "CARGO_TARGET_DIR="+targetRoot)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -734,6 +626,24 @@ func upstreamE2ERuntimeDir(t *testing.T) string {
 		t.Fatalf("定位当前用户缓存目录: %v", err)
 	}
 	return filepath.Join(cacheRoot, "huakai-e2e")
+}
+
+func upstreamE2EChildEnv() []string {
+	blocked := make(map[string]struct{}, len(upstreamE2ESecretEnvNames))
+	for _, name := range upstreamE2ESecretEnvNames {
+		blocked[name] = struct{}{}
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, item := range os.Environ() {
+		name, _, ok := strings.Cut(item, "=")
+		if ok {
+			if _, denied := blocked[name]; denied {
+				continue
+			}
+		}
+		env = append(env, item)
+	}
+	return env
 }
 
 func waitForUpstreamE2ESidecar(binaryPath, socketPath string) error {

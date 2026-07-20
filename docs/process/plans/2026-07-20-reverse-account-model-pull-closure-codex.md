@@ -47,8 +47,9 @@
 - 原生 function/tool calling 的请求、流式工具事件和终止原因已有生产形态测试；MCP 细粒度授权在本轮外部源码中未观察到可靠现成合同，保留为强制路线，不用“模型支持工具”冒充“MCP 已上线”。
 - 生产刷新链已收敛到 `credentialworker` 唯一注册表，Anthropic、Codex、Gemini、Antigravity、Grok、Kimi 继续保留实际所需能力；删除了无生产入口的旧 provider 刷新包装、凭据存储适配层和重复测试支架，静态检查基线从 92/787 降至 77/697，没有放宽预算。
 - 五个超预算文件已按职责拆分，外部 API、schema 和运行语义不变；全仓代码预算门恢复通过。
-- Claude API Key、Claude AI OAuth、Claude Code、Gemini AI Studio、Gemini Code Assist、Antigravity、Kimi API Key、Kimi OAuth 的活体脚手架已改为先经过限定租户管理员令牌、显式能力授权和 `plan/execute` 正式导入 API 原子建号，再进入选号、出站、计费和恢复断言；不再用测试 SQL 直接伪造账号与凭据。豆包和混元仍保留双账号并发与故障切换基线。
+- Claude API Key、Claude AI OAuth、Claude Code、Gemini AI Studio、Gemini Code Assist、Antigravity、Kimi API Key、Kimi OAuth、豆包 API Key、混元官方 API Key、Codex、Grok、ChatGPT session 和 OpenAI 图片账号的活体脚手架，均先经过限定租户管理员令牌、显式能力授权和 `plan/execute` 正式导入 API 原子建号，再进入选号、出站、计费和恢复断言；账号专用活体测试已无直接写 `provider_accounts` 或 `account_credentials` 的旁路。多账号并发、轮询和故障切换由专门的调度夹具验证，不再用数据库直写冒充账号导入成功。
 - 活体脚手架已纳入当前源码构建的 Rust `tls-sidecar` 生命周期和 readiness，Go 网关显式使用本次测试唯一 Unix socket；此前只启动 Go 进程、在 Rust 唯一出口启动门前假失败的问题已修复。测试连接池改为最后关闭，正式导入产生的健康、日志、凭据和授权数据会先清理，重复运行不再污染共享测试库。
+- 专用活体清理已覆盖 `scheduler_outbox`、`usage_record_dlq`、append-only `usage_records`/`billing_events`、余额占用、账号槽和 claim；删除触发器只在测试事务内临时关闭，失败自动回滚，成功后恢复。四类专用活体测试重复运行后测试租户残留为 0，相关 append-only 触发器均保持启用。
 
 ## 验证结果
 
@@ -60,6 +61,7 @@
 - Rust `tls-sidecar`：74 项测试全部通过。
 - `GOTOOLCHAIN=go1.25.12 govulncheck ./...`：生产可达漏洞为 0；本地默认 Go 1.25.0 的标准库告警不作为源码缺陷冒充修复结果。
 - 真实账号测试入口可编译，凭据处理与脱敏矩阵通过；在真实 PostgreSQL、真实 Go 网关和真实 Rust sidecar 上，正式管理员鉴权、租户能力授权、导入预检、原子建号与加密凭据、渠道健康初始化和选号查询已通过，且测试后账号、令牌和租户残留均为 0。Claude、Gemini、Antigravity、Kimi、Codex、Grok 的真实厂商调用仍因未获准读取本机会话凭据而未执行，尚不能宣称真实上游已验收。
+- Codex、Grok、OpenAI 图片三条合成凭据判别测试及通用账号正式导入测试均在 `-race` 下通过；ChatGPT session 使用本地假上游完成“正式导入 → 选号 → Rust sidecar → 出站 → 响应 → claim/用量/余额”全链闭环。测试库残留为 0，`usage_records`、`billing_events` 和订阅观测三类 append-only 触发器均为启用状态。
 - 提交前独立审查发现的运行时路径硬编码、`CARGO_TARGET_DIR` 不一致、身份断言过弱、冷构建占用业务超时和凭据日志脱敏不全均已修复；嵌套 camelCase、`setup_token`、通用 `token`、服务账号私钥与 AWS 密钥均有可判别泄漏断言，聚焦竞态测试通过。
 - 前端目录零改动；Copilot、Windsurf、Cursor 未被公共链改动解封。
 

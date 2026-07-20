@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -25,9 +24,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
@@ -46,6 +47,39 @@ const (
 
 	openAIImageLivePricingData = `{"providers":{"openai":{"models":{"gpt-image-1":{"pricing_scheme":"token_image","input_micro_usd":"5","output_micro_usd":"40","image_output_token_upper_bound":{"1024x1024":4160,"1024x1536":6240,"1536x1024":6208,"auto":6240},"image_size_multipliers":{"1024x1024":"1","1024x1536":"1","1536x1024":"1","auto":"1"},"image_amount_range":{"min":1,"max":10},"image_prompt_max_chars":32000}}}}}`
 )
+
+func TestOpenAIImageLiveFormalImportWiring(t *testing.T) {
+	dsn := firstOpenAIImageLiveNonEmpty(
+		os.Getenv("HUAKAI_E2E_DATABASE_URL"),
+		os.Getenv("HUAKAI_DATABASE_URL"),
+	)
+	if dsn == "" {
+		t.Skip("HUAKAI_E2E_DATABASE_URL/HUAKAI_DATABASE_URL 未设置，跳过 OpenAI 图片正式导入接线测试")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
+	if err != nil {
+		setupCancel()
+		t.Fatalf("打开 OpenAI 图片正式导入测试数据库: %v", err)
+	}
+	t.Cleanup(pgPool.Close)
+	seed := seedOpenAIImageLiveGraph(t, setupCtx, pgPool)
+	setupCancel()
+	binPath := buildOpenAIImageLiveGateway(t)
+	addr := reserveOpenAIImageLiveLocalPort(t)
+	const syntheticKey = "synthetic-openai-image-live-key"
+	processes := startOpenAIImageLiveGateway(t, binPath, dsn, addr, seed, syntheticKey)
+	t.Cleanup(func() { stopSpecializedLiveProcesses(processes) })
+	waitForOpenAIImageLiveGateway(t, addr)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(cancel)
+	seed.providerAccountID = importOpenAIImageLiveAccount(
+		t, ctx, &http.Client{Timeout: 30 * time.Second}, addr, seed, syntheticKey,
+	)
+	assertOpenAIImageLiveImportedAccount(t, ctx, pgPool, seed)
+	assertOpenAIImageLiveSeedSelectable(t, ctx, pgPool, seed)
+}
 
 func TestOpenAIImageLiveGenerations(t *testing.T) {
 	dsn := firstOpenAIImageLiveNonEmpty(
@@ -70,16 +104,16 @@ func TestOpenAIImageLiveGenerations(t *testing.T) {
 	// 先注册关池，后注册的数据清理会按 LIFO 在连接池关闭前执行。
 	t.Cleanup(pgPool.Close)
 
-	seed := seedOpenAIImageLiveGraph(t, ctx, pgPool, upstreamKey)
-	assertOpenAIImageLiveSeedSelectable(t, ctx, pgPool, seed)
+	seed := seedOpenAIImageLiveGraph(t, ctx, pgPool)
 
 	binPath := buildOpenAIImageLiveGateway(t)
-	t.Cleanup(func() { _ = os.Remove(binPath) })
 
 	addr := reserveOpenAIImageLiveLocalPort(t)
-	cmd := startOpenAIImageLiveGateway(t, binPath, dsn, addr, seed, upstreamKey)
-	t.Cleanup(func() { stopOpenAIImageLiveGateway(cmd) })
+	processes := startOpenAIImageLiveGateway(t, binPath, dsn, addr, seed, upstreamKey)
+	t.Cleanup(func() { stopSpecializedLiveProcesses(processes) })
 	waitForOpenAIImageLiveGateway(t, addr)
+	seed.providerAccountID = importOpenAIImageLiveAccount(t, ctx, &http.Client{Timeout: 30 * time.Second}, addr, seed, upstreamKey)
+	assertOpenAIImageLiveSeedSelectable(t, ctx, pgPool, seed)
 
 	requestBody := []byte(`{"model":"gpt-image-1","prompt":"a tiny solid red circle centered on a white background","size":"1024x1024","n":1}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -146,9 +180,11 @@ type openAIImageLiveSeed struct {
 	costQuotaPolicyID int64
 	pricingVersion    string
 	bearer            string
+	adminBearer       string
+	adminTokenID      int64
 }
 
-func seedOpenAIImageLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, upstreamKey string) *openAIImageLiveSeed {
+func seedOpenAIImageLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *openAIImageLiveSeed {
 	t.Helper()
 	unique := uuid.NewString()
 	seed := &openAIImageLiveSeed{pricingVersion: "e2e-openai-image-live-" + unique}
@@ -232,7 +268,9 @@ func seedOpenAIImageLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool
 	).Scan(&seed.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	seed.providerAccountID = seedOpenAIImageLiveProviderAccount(t, ctx, pgPool, seed, upstreamKey, unique)
+	seed.adminBearer, seed.adminTokenID = seedSpecializedLiveImportAuthorization(
+		t, ctx, pgPool, seed.tenantID, "openai-image-live-import-"+unique,
+	)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -282,54 +320,46 @@ func seedOpenAIImageLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool
 	return seed
 }
 
-func seedOpenAIImageLiveProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *openAIImageLiveSeed, upstreamKey, unique string) int64 {
+func importOpenAIImageLiveAccount(
+	t *testing.T,
+	ctx context.Context,
+	client *http.Client,
+	addr string,
+	seed *openAIImageLiveSeed,
+	upstreamKey string,
+) int64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{"api_key": upstreamKey})
 	if err != nil {
 		t.Fatalf("序列化 OpenAI API key 凭据: %v", err)
 	}
-
-	var accountID int64
-	if err := pgPool.QueryRow(ctx,
-		`INSERT INTO provider_accounts (
-			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count, priority, health_state, credential_state,
-			model_allow_list, capability_flags, credentials, extra
-		) VALUES ($1, $2, $3, $4, $5,
-			1, 0, 100, 'healthy', 'valid',
-			ARRAY[$6]::text[], ARRAY['image_output']::text[], $7::jsonb, '{}'::jsonb) RETURNING id`,
-		seed.tenantID, seed.providerID, seed.channelID, "openai-image-live-e2e-acct-"+unique,
-		openAIImageLiveAuthMode, openAIImageLiveModel, string(payload),
-	).Scan(&accountID); err != nil {
-		t.Fatalf("seed provider account: %v", err)
-	}
-
-	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
-	if err != nil {
-		t.Fatalf("创建凭据密钥提供器: %v", err)
-	}
-	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
-		payload,
-		credentialstore.AAD{
-			TenantID:          seed.tenantID,
-			ProviderAccountID: accountID,
-			Vendor:            openAIImageLiveVendor,
-			AuthMode:          openAIImageLiveAuthMode,
-			Version:           1,
-		})
-	if err != nil {
-		t.Fatalf("加密 provider account %d 的凭据: %v", accountID, err)
-	}
-	if _, err := pgPool.Exec(ctx,
-		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
-		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
-		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, openAIImageLiveVendor, openAIImageLiveAuthMode,
-		credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
-	); err != nil {
-		t.Fatalf("seed account credential: %v", err)
-	}
-	return accountID
+	capConcurrency := int32(1)
+	priority := int32(100)
+	result := executeSpecializedLiveAccountImport(
+		t, ctx, client, addr,
+		"/admin/v1/credentials/account-imports/plan",
+		"/admin/v1/credentials/account-imports/execute",
+		seed.adminBearer,
+		specializedLiveAccountImportRequest{
+			TenantID:        seed.tenantID,
+			SourceKind:      intake.SourceJSON,
+			DefaultVendor:   openAIImageLiveVendor,
+			DefaultAuthMode: openAIImageLiveAuthMode,
+			Content:         string(payload),
+			Account: accountintake.AccountDefaults{
+				ProviderID:      seed.providerID,
+				ChannelID:       seed.channelID,
+				ExactName:       "openai-image-live-e2e-正式导入-" + uuid.NewString(),
+				AccountType:     openAIImageLiveAuthMode,
+				CapConcurrency:  &capConcurrency,
+				Priority:        &priority,
+				ModelAllowList:  []string{openAIImageLiveModel},
+				CapabilityFlags: []string{"image_output"},
+			},
+		},
+		upstreamKey,
+	)
+	return result.AccountID
 }
 
 func registerOpenAIImageLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *openAIImageLiveSeed) {
@@ -338,19 +368,15 @@ func registerOpenAIImageLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *op
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// 成功请求的账务记录是 append-only，可能阻止删除账号；先清除 legacy 明文 key。
-		if _, err := pgPool.Exec(ctx,
-			`UPDATE provider_accounts SET credentials='{}'::jsonb WHERE tenant_id=$1`,
-			seed.tenantID,
-		); err != nil {
-			t.Errorf("清除 OpenAI 图片 live e2e legacy 明文凭据: %v", err)
-		}
-
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_admin_alerts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM credential_acquisition_flow_sessions WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveSubscriptionObservations(ctx, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 OpenAI 图片 live e2e 套餐观测: %v", err)
+		}
 		if _, err := pgPool.Exec(ctx, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID); err != nil {
 			t.Errorf("删除 OpenAI 图片 live e2e 加密凭据: %v", err)
 		}
@@ -362,11 +388,9 @@ func registerOpenAIImageLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *op
 		_, _ = pgPool.Exec(ctx, `DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM balance_holds WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 OpenAI 图片 live e2e 钱路记录: %v", err)
+		}
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
@@ -377,6 +401,8 @@ func registerOpenAIImageLiveCleanup(t *testing.T, pgPool *pgxpool.Pool, seed *op
 		_, _ = pgPool.Exec(ctx, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(ctx, `DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
@@ -415,10 +441,39 @@ func assertOpenAIImageLiveSeedSelectable(t *testing.T, ctx context.Context, pgPo
 	t.Fatalf("selector eligibility 未返回 provider_account_id=%d; rows=%v", seed.providerAccountID, rows)
 }
 
+func assertOpenAIImageLiveImportedAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *openAIImageLiveSeed) {
+	t.Helper()
+	var enabled bool
+	var credentialState, healthState string
+	var activeCredentials int
+	var legacyCredentialBytes int
+	if err := pgPool.QueryRow(ctx, `
+SELECT pa.enabled, pa.credential_state, pa.health_state,
+       count(ac.id) FILTER (WHERE ac.state='active')::int,
+       octet_length(COALESCE(pa.credentials, '{}'::jsonb)::text)
+FROM provider_accounts pa
+LEFT JOIN account_credentials ac
+  ON ac.tenant_id=pa.tenant_id AND ac.provider_account_id=pa.id
+WHERE pa.tenant_id=$1 AND pa.id=$2
+GROUP BY pa.id`, seed.tenantID, seed.providerAccountID).Scan(
+		&enabled, &credentialState, &healthState, &activeCredentials, &legacyCredentialBytes,
+	); err != nil {
+		t.Fatalf("读取 OpenAI 图片正式导入账号投影: %v", err)
+	}
+	if !enabled || credentialState != "valid" || healthState != "healthy" || activeCredentials != 1 {
+		t.Fatalf("OpenAI 图片正式导入账号不可运行: enabled=%t credential=%s health=%s active_credentials=%d",
+			enabled, credentialState, healthState, activeCredentials)
+	}
+	if legacyCredentialBytes > len(`{}`) {
+		t.Fatalf("OpenAI 图片正式导入仍写入 legacy 明文凭据列: bytes=%d", legacyCredentialBytes)
+	}
+}
+
 func buildOpenAIImageLiveGateway(t *testing.T) string {
 	t.Helper()
 	moduleRoot := goModuleRootForOpenAIImageLive(t)
-	binPath := filepath.Join(moduleRoot, openAIImageLiveBinaryName)
+	binPath := specializedLiveArtifactPath(t, openAIImageLiveBinaryName)
+	t.Cleanup(func() { _ = os.Remove(binPath) })
 	stamp := fmt.Sprintf("openai-image-live-e2e-%d", time.Now().UnixNano())
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.smokeBuildStamp="+stamp,
@@ -458,10 +513,12 @@ func reserveOpenAIImageLiveLocalPort(t *testing.T) string {
 	return addr
 }
 
-func startOpenAIImageLiveGateway(t *testing.T, binPath, dsn, addr string, seed *openAIImageLiveSeed, upstreamKey string) *exec.Cmd {
+func startOpenAIImageLiveGateway(t *testing.T, binPath, dsn, addr string, seed *openAIImageLiveSeed, upstreamKey string) *specializedLiveProcesses {
 	t.Helper()
+	blockedEnvNames := []string{"HUAKAI_E2E_OPENAI_IMAGE_KEY"}
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRootForOpenAIImageLive(t), blockedEnvNames...)
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(specializedLiveChildEnv(blockedEnvNames...),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
@@ -474,6 +531,7 @@ func startOpenAIImageLiveGateway(t *testing.T, binPath, dsn, addr string, seed *
 		"HUAKAI_EVENTBUS_ENABLED=0",
 		"HUAKAI_RATE_PRECHECK_ENABLED=false",
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 		"HUAKAI_DISPATCH_HCSF=1",
@@ -487,11 +545,13 @@ func startOpenAIImageLiveGateway(t *testing.T, binPath, dsn, addr string, seed *
 		t.Fatalf("连接 gateway stdout: %v", err)
 	}
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("启动 gateway: %v", err)
 	}
 	go drainOpenAIImageLivePipe("gateway-stderr", stderr, upstreamKey, seed.bearer)
 	go drainOpenAIImageLivePipe("gateway-stdout", stdout, upstreamKey, seed.bearer)
-	return cmd
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func drainOpenAIImageLivePipe(label string, reader io.ReadCloser, secrets ...string) {
@@ -513,20 +573,6 @@ func redactOpenAIImageLiveSecrets(value string, secrets ...string) string {
 		}
 	}
 	return value
-}
-
-func stopOpenAIImageLiveGateway(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-	}
 }
 
 func waitForOpenAIImageLiveGateway(t *testing.T, addr string) {
