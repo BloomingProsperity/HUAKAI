@@ -57,6 +57,7 @@ func TestAccountFamilyLive_AnthropicAPIKey(t *testing.T) {
 		keyEnv:          upstreamE2EAnthropicKeyEnv,
 		authMode:        credentialstore.AuthModeAPIKey,
 		accountType:     upstreamE2EAccountTypeAPIKey,
+		formalImport:    true,
 		skipConcurrency: true,
 	})
 }
@@ -72,6 +73,7 @@ func TestAccountFamilyLive_ClaudeAIOAuth(t *testing.T) {
 		credentialJSONEnv:    upstreamE2EClaudeAICredentialJSONEnv,
 		authMode:             credentialstore.AuthModeClaudeAIOAuth,
 		accountType:          upstreamE2EAccountTypeOAuth,
+		formalImport:         true,
 		skipConcurrency:      true,
 	})
 }
@@ -87,6 +89,7 @@ func TestAccountFamilyLive_ClaudeCode(t *testing.T) {
 		credentialJSONEnv:    upstreamE2EClaudeCodeCredentialEnv,
 		authMode:             credentialstore.AuthModeClaudeCode,
 		accountType:          upstreamE2EAccountTypeOAuth,
+		formalImport:         true,
 		skipConcurrency:      true,
 	})
 }
@@ -100,6 +103,7 @@ func TestAccountFamilyLive_GeminiAIStudio(t *testing.T) {
 		keyEnv:          upstreamE2EGeminiKeyEnv,
 		authMode:        credentialstore.AuthModeAIStudioAPIKey,
 		accountType:     upstreamE2EAccountTypeAPIKey,
+		formalImport:    true,
 		skipConcurrency: true,
 	})
 }
@@ -113,6 +117,7 @@ func TestAccountFamilyLive_GeminiCodeAssist(t *testing.T) {
 		credentialJSONEnv: upstreamE2EGeminiCodeCredentialEnv,
 		authMode:          credentialstore.AuthModeCodeAssist,
 		accountType:       upstreamE2EAccountTypeOAuth,
+		formalImport:      true,
 		gatewayEnv:        []string{upstreamE2EGeminiCodeAssistAdapterEnv},
 		skipConcurrency:   true,
 	})
@@ -127,6 +132,7 @@ func TestAccountFamilyLive_Antigravity(t *testing.T) {
 		credentialJSONEnv: upstreamE2EAntigravityCredentialEnv,
 		authMode:          credentialstore.AuthModeOAuth,
 		accountType:       upstreamE2EAccountTypeOAuth,
+		formalImport:      true,
 		gatewayEnv:        []string{upstreamE2EAntigravityAdapterEnv},
 		skipConcurrency:   true,
 	})
@@ -141,6 +147,7 @@ func TestAccountFamilyLive_KimiAPIKey(t *testing.T) {
 		keyEnv:          upstreamE2EKimiKeyEnv,
 		authMode:        credentialstore.AuthModeAPIKey,
 		accountType:     upstreamE2EAccountTypeAPIKey,
+		formalImport:    true,
 		skipConcurrency: true,
 	})
 }
@@ -154,6 +161,7 @@ func TestAccountFamilyLive_KimiOAuth(t *testing.T) {
 		credentialJSONEnv: upstreamE2EKimiCredentialJSONEnv,
 		authMode:          credentialstore.AuthModeKimiOAuth,
 		accountType:       upstreamE2EAccountTypeOAuth,
+		formalImport:      true,
 		skipConcurrency:   true,
 	})
 }
@@ -350,4 +358,18 @@ func TestAccountFamilyLive_CredentialHandlersAndRedaction(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("嵌套 camelCase 凭据脱敏", func(t *testing.T) {
+		raw := `{"oauth":{"accessToken":"camel-access-secret","refreshToken":"camel-refresh-secret","clientSecret":"camel-client-secret","token":"generic-token-secret","setupToken":"setup-token-secret"},"service_account":{"private_key":"private-key-secret","awsSecretAccessKey":"aws-secret"}}`
+		t.Setenv(upstreamE2EAntigravityCredentialEnv, raw)
+		redacted := redactUpstreamE2ESecrets("payload=" + raw)
+		for _, secret := range []string{
+			"camel-access-secret", "camel-refresh-secret", "camel-client-secret",
+			"generic-token-secret", "setup-token-secret", "private-key-secret", "aws-secret",
+		} {
+			if strings.Contains(redacted, secret) {
+				t.Fatalf("嵌套 camelCase 凭据脱敏泄漏 %q: %q", secret, redacted)
+			}
+		}
+	})
 }

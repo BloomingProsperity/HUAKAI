@@ -47,6 +47,8 @@
 - 原生 function/tool calling 的请求、流式工具事件和终止原因已有生产形态测试；MCP 细粒度授权在本轮外部源码中未观察到可靠现成合同，保留为强制路线，不用“模型支持工具”冒充“MCP 已上线”。
 - 生产刷新链已收敛到 `credentialworker` 唯一注册表，Anthropic、Codex、Gemini、Antigravity、Grok、Kimi 继续保留实际所需能力；删除了无生产入口的旧 provider 刷新包装、凭据存储适配层和重复测试支架，静态检查基线从 92/787 降至 77/697，没有放宽预算。
 - 五个超预算文件已按职责拆分，外部 API、schema 和运行语义不变；全仓代码预算门恢复通过。
+- Claude API Key、Claude AI OAuth、Claude Code、Gemini AI Studio、Gemini Code Assist、Antigravity、Kimi API Key、Kimi OAuth 的活体脚手架已改为先经过限定租户管理员令牌、显式能力授权和 `plan/execute` 正式导入 API 原子建号，再进入选号、出站、计费和恢复断言；不再用测试 SQL 直接伪造账号与凭据。豆包和混元仍保留双账号并发与故障切换基线。
+- 活体脚手架已纳入当前源码构建的 Rust `tls-sidecar` 生命周期和 readiness，Go 网关显式使用本次测试唯一 Unix socket；此前只启动 Go 进程、在 Rust 唯一出口启动门前假失败的问题已修复。测试连接池改为最后关闭，正式导入产生的健康、日志、凭据和授权数据会先清理，重复运行不再污染共享测试库。
 
 ## 验证结果
 
@@ -57,13 +59,14 @@
 - 性能门：6400 请求、32 并发的混合负载通过，p95 约 6.0ms、p99 约 8.1ms。
 - Rust `tls-sidecar`：74 项测试全部通过。
 - `GOTOOLCHAIN=go1.25.12 govulncheck ./...`：生产可达漏洞为 0；本地默认 Go 1.25.0 的标准库告警不作为源码缺陷冒充修复结果。
-- 真实账号测试入口可编译，凭据处理与脱敏矩阵通过；Claude、Gemini、Antigravity、Kimi、Codex、Grok 的活体调用因当前会话未加载模型、数据库和账号凭据而明确跳过，尚不能宣称真实上游已验收。
+- 真实账号测试入口可编译，凭据处理与脱敏矩阵通过；在真实 PostgreSQL、真实 Go 网关和真实 Rust sidecar 上，正式管理员鉴权、租户能力授权、导入预检、原子建号与加密凭据、渠道健康初始化和选号查询已通过，且测试后账号、令牌和租户残留均为 0。Claude、Gemini、Antigravity、Kimi、Codex、Grok 的真实厂商调用仍因未获准读取本机会话凭据而未执行，尚不能宣称真实上游已验收。
+- 提交前独立审查发现的运行时路径硬编码、`CARGO_TARGET_DIR` 不一致、身份断言过弱、冷构建占用业务超时和凭据日志脱敏不全均已修复；嵌套 camelCase、`setup_token`、通用 `token`、服务账号私钥与 AWS 密钥均有可判别泄漏断言，聚焦竞态测试通过。
 - 前端目录零改动；Copilot、Windsurf、Cursor 未被公共链改动解封。
 
 ## 剩余顺序
 
-1. 暂存精确 diff，执行最多两轮提交前对抗审查；清零 S0/S1 后提交中文 commit 并创建唯一 PR，不合并主线。
-2. Owner 最后提供真实账号测试文档路径或安全加载方式后，从正式 API 鉴权入口补跑活体端到端验收；仅一个真实账号时，用可控账号替身验证多账号轮询、并发、故障切换与隔离，真实账号只承担单账号活体证明。
+1. 提交前对抗审查的 S0/S1 已清零；提交中文 commit、更新唯一 PR #286 并等待 CI 全绿，不合并主线。
+2. Owner 明确授权读取本机受保护的 Claude、Gemini、Antigravity、Codex 会话凭据，并提供 Kimi、Grok 安全加载方式后，从正式 API 鉴权入口补跑活体端到端验收；仅一个真实账号时，用可控账号替身验证多账号轮询、并发、故障切换与隔离，真实账号只承担单账号活体证明。
 3. Copilot、Windsurf、Cursor 保持封存。首次正式上线后另立目标并经 Owner 明确解封，届时分别闭环导入、运行凭据、协议适配、调度、出站、错误回流和恢复合同。
 
 ## 后续需求队列
