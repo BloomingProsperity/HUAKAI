@@ -113,7 +113,7 @@ func TestUpstreamE2E_DoubaoChatCompletions(t *testing.T) {
 
 func TestUpstreamE2E_HunyuanOfficialAPI(t *testing.T) {
 	runUpstreamE2E(t, upstreamE2ECase{
-		slug:           "hunyuan-tokenhub",
+		slug:           "hunyuan-official-api",
 		vendor:         credentialstore.VendorHunyuan,
 		protocolFamily: upstreamE2EHunyuanProtocol,
 		model:          upstreamE2EHunyuanModel,
