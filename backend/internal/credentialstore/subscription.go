@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
@@ -79,13 +80,19 @@ func freshSubscriptionRefreshObservation(vendor, authMode string, previousPayloa
 			return observation, true
 		}
 	}
-	explicitNames := []string{"chatgpt_plan_type", "plan_type", "subscription_plan", "subscription_tier", "subscription_tier_raw"}
+	explicitNames := []string{"chatgpt_plan_type", "plan_type", "subscription_plan", "subscription_tier", "subscription_tier_raw", "tier_id"}
 	if rawPlan := changedStringField(previous, next, explicitNames...); rawPlan != "" {
 		observation := subscriptionObservationFromFields(vendor, authMode, next, "subscription_plan", rawPlan)
 		if !observation.Empty() {
-			observation.Source = subscriptionprofile.SourceCredentialRefresh
-			observation.Trust = subscriptionprofile.TrustIssuerResponse
-			observation.Verification = subscriptionprofile.VerificationIssuerResponse
+			if antigravityRefreshMetadataVerified(vendor, authMode, next) {
+				observation.Source = subscriptionprofile.SourceProviderAPI
+				observation.Trust = subscriptionprofile.TrustVerifiedAPI
+				observation.Verification = subscriptionprofile.VerificationVerified
+			} else {
+				observation.Source = subscriptionprofile.SourceCredentialRefresh
+				observation.Trust = subscriptionprofile.TrustIssuerResponse
+				observation.Verification = subscriptionprofile.VerificationIssuerResponse
+			}
 			return observation, true
 		}
 	}
@@ -96,6 +103,14 @@ func freshSubscriptionRefreshObservation(vendor, authMode string, previousPayloa
 		}
 	}
 	return subscriptionprofile.Observation{}, false
+}
+
+func antigravityRefreshMetadataVerified(vendor, authMode string, fields map[string]any) bool {
+	vendor = Normalize(vendor)
+	authMode = Normalize(authMode)
+	isAntigravity := vendor == VendorAntigravity && authMode == AuthModeOAuth
+	isCompatibilityMode := vendor == VendorGemini && authMode == AuthModeAntigravity
+	return (isAntigravity || isCompatibilityMode) && firstMapString(fields, "subscription_metadata_status") == "resolved"
 }
 
 func changedStringField(previous, next map[string]any, names ...string) string {
@@ -196,6 +211,43 @@ RETURNING id, observed_at`
 		return subscriptionprofile.Observation{}, err
 	}
 	return next, nil
+}
+
+// RecordSubscriptionObservation 把后台只读探测得到的套餐事实绑定到探测时实际使用的凭据版本。
+func (s *Store) RecordSubscriptionObservation(
+	ctx context.Context,
+	tenantID, providerAccountID, credentialID int64,
+	credentialVersion int32,
+	observation subscriptionprofile.Observation,
+) (subscriptionprofile.Observation, error) {
+	if tenantID <= 0 || providerAccountID <= 0 || credentialID <= 0 || credentialVersion <= 0 || observation.Empty() {
+		return subscriptionprofile.Observation{}, ErrInvalidPayload
+	}
+	var projected subscriptionprofile.Observation
+	err := s.WithTransaction(ctx, func(txStore *Store, _ db.DBTX) error {
+		const lockCredential = `
+SELECT 1
+FROM account_credentials
+WHERE id = $1
+  AND tenant_id = $2
+  AND provider_account_id = $3
+  AND credential_version = $4
+  AND deleted_at IS NULL
+FOR SHARE`
+		var marker int
+		if err := txStore.db.QueryRow(ctx, lockCredential, credentialID, tenantID, providerAccountID, credentialVersion).Scan(&marker); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrCredentialVersionConflict
+			}
+			return err
+		}
+		var err error
+		projected, err = txStore.recordSubscriptionObservation(
+			ctx, tenantID, providerAccountID, credentialID, credentialVersion, observation,
+		)
+		return err
+	})
+	return projected, err
 }
 
 func (s *Store) loadSubscriptionStateForUpdate(ctx context.Context, tenantID, providerAccountID int64) (subscriptionStateRow, error) {

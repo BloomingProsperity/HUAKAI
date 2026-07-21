@@ -20,6 +20,9 @@ func TestCanFallbackAfterPASRError(t *testing.T) {
 	if canFallbackAfterPASRError(fmt.Errorf("wrapped: %w", ErrBindingConcurrencyLimited)) {
 		t.Fatal("binding 并发饱和是终态，禁止 fallback 绕过或重复选号")
 	}
+	if canFallbackAfterPASRError(fmt.Errorf("wrapped: %w", ErrGroupPolicyUnavailable)) {
+		t.Fatal("分组策略真相未知是终态，禁止 fallback 到其它选号器或账号池")
+	}
 	if !canFallbackAfterPASRError(errors.New("list accounts failed")) {
 		t.Fatal("non-mutating generic error should allow fallback")
 	}

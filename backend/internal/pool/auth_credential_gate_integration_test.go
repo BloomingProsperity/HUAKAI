@@ -1,14 +1,16 @@
 // 跨功能集成测试：pool selector + auth.TokenProvider，经由
 // AuthCredentialGate。验证 slice-1+2 评审者标记为未测的边界 ——
-//「pool selector 调用 auth.TokenProvider」此前两侧都被打桩。
+// 「pool selector 调用 auth.TokenProvider」此前两侧都被打桩。
 package pool
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
-	"strings"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,15 +21,28 @@ import (
 // pool selector 故障转移到下一个凭证有效的合格账号。验证 CredentialGate ↔
 // GetAccessToken 契约。
 func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
-	refreshClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		// 返回 malformed token, 触发 auth.ErrTokenMalformed, 但不在测试里监听本地端口。
-		body := `{"access_token":"not a token","refresh_token":"rt","expires_in":3600}`
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-		}, nil
-	})}
+	refreshServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// 返回畸形 token，证明凭据 gate 只淘汰当前账号，仍在同一池内继续选号。
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"not a token","refresh_token":"rt","expires_in":3600}`)
+	}))
+	defer refreshServer.Close()
+
+	serverAddr := refreshServer.Listener.Addr().String()
+	refreshClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 测试服务使用临时自签证书。
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, serverAddr)
+			if err != nil {
+				return nil, err
+			}
+			return publicRemoteAddrConn{Conn: conn, remote: &net.TCPAddr{IP: net.ParseIP("93.184.216.34"), Port: 443}}, nil
+		},
+	}}
+	restoreLookup := auth.SwapOAuthIPLookupForTesting(func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	})
+	defer restoreLookup()
 
 	authStore := newAuthMemStore()
 	authCache := newAuthMemCache()
@@ -37,7 +52,7 @@ func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	provider := auth.NewAntigravityTokenProvider(authStore, authAudit, authCache, authLock, authMarker, refreshClient, nil)
 
 	expired := time.Now().Add(-1 * time.Minute)
-	authStore.put(authCredFor(t, 1, 100, "old-access-token-but-malformed-after-refresh", "rt", "https://auth.invalid/token", expired))
+	authStore.put(authCredFor(t, 1, 100, "old-access-token-but-malformed-after-refresh", "rt", "https://oauth.example.test/token", expired))
 	authStore.put(authCredFor(t, 1, 200, "valid-static-token-32chars-abcdef0123", "", "", time.Time{}))
 
 	src := &stubAccountSource{accounts: []*AccountSnapshot{
@@ -75,11 +90,12 @@ func TestATXFEAT_001_CredentialGateRejectsMalformedTokenAccount(t *testing.T) {
 	}
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
+type publicRemoteAddrConn struct {
+	net.Conn
+	remote net.Addr
 }
+
+func (c publicRemoteAddrConn) RemoteAddr() net.Addr { return c.remote }
 
 // =====================================================================
 // auth 包的内存桩（为跨包访问而复制一份）

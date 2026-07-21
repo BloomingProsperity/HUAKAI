@@ -214,8 +214,7 @@ fn build_h2_request(inbound: &Http11Request) -> Result<Request<()>, H2BridgeErro
     let mut builder = Request::builder()
         .version(Version::HTTP_2)
         .method(inbound.method.clone())
-        .uri(uri)
-        .header("host", inbound.authority.as_str());
+        .uri(uri);
     for (name, value) in &inbound.headers {
         builder = builder.header(name, value);
     }
@@ -716,11 +715,13 @@ mod tests {
                 expected.path_and_query
             );
             assert_eq!(
-                request
-                    .headers()
-                    .get("host")
-                    .and_then(|value| value.to_str().ok()),
+                request.uri().authority().map(|value| value.as_str()),
                 Some(expected.host)
+            );
+            assert_eq!(
+                request.headers().get("host"),
+                None,
+                "HTTP/2 使用 :authority，不能再发送重复的普通 Host 头"
             );
             assert_eq!(
                 request

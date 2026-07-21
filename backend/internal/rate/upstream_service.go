@@ -2,9 +2,7 @@ package rate
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -373,6 +371,7 @@ func (s *upstreamRateService) UpdateSessionWindow(ctx context.Context, accountID
 		sessionWindow7dUtilizationHeaders, sessionWindow7dDuration,
 		&update.Window7dStart, &update.Window7dEnd, &update.Window7dStatus, &update.Window7dUtilization,
 	)
+	applyCodexWindowHeaders(headers, now, &update)
 	if !update.hasValues() {
 		return nil
 	}
@@ -381,145 +380,6 @@ func (s *upstreamRateService) UpdateSessionWindow(ctx context.Context, accountID
 	update.ObservationSource = QuotaSnapshotSourceResponseHeaders
 	update.ObservationOutcome = update.observationOutcome()
 	return s.sessionWindows.UpdateProviderAccountSessionWindows(ctx, update)
-}
-
-func setSessionWindowFromHeaders(
-	headers http.Header,
-	now time.Time,
-	statusHeaders, resetHeaders, utilizationHeaders []string,
-	duration time.Duration,
-	start, end **time.Time,
-	status **string,
-	utilization **float64,
-) {
-	parsedStatus := sessionWindowStatus(headers, statusHeaders)
-	if windowEnd, ok := sessionWindowReset(headers, resetHeaders, now, duration); ok && parsedStatus != "" {
-		windowStart := windowEnd.Add(-duration).UTC()
-		windowEnd = windowEnd.UTC()
-		*start = &windowStart
-		*end = &windowEnd
-		*status = &parsedStatus
-	}
-	*utilization = sessionWindowUtilization(headers, utilizationHeaders)
-}
-
-func sessionWindowStatus(headers http.Header, names []string) string {
-	if headers == nil {
-		return ""
-	}
-	for _, name := range names {
-		status := strings.TrimSpace(headers.Get(name))
-		if status == "" {
-			continue
-		}
-		if len(status) > 64 {
-			status = status[:64]
-		}
-		return status
-	}
-	return ""
-}
-
-func sessionWindowReset(headers http.Header, names []string, now time.Time, duration time.Duration) (time.Time, bool) {
-	if headers == nil {
-		return time.Time{}, false
-	}
-	var raw string
-	for _, name := range names {
-		raw = strings.TrimSpace(headers.Get(name))
-		if raw != "" {
-			break
-		}
-	}
-	if raw == "" {
-		return time.Time{}, false
-	}
-	resetUnix, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || resetUnix <= 0 {
-		return time.Time{}, false
-	}
-	if resetUnix > 100_000_000_000 {
-		resetUnix = resetUnix / 1000
-	}
-	resetAt := time.Unix(resetUnix, 0).UTC()
-	if resetAt.Before(now.Add(-duration)) || resetAt.After(now.Add(sessionWindow7dDuration)) {
-		return time.Time{}, false
-	}
-	return resetAt, true
-}
-
-func sessionWindowUtilization(headers http.Header, names []string) *float64 {
-	if headers == nil {
-		return nil
-	}
-	for _, name := range names {
-		raw := strings.TrimSpace(headers.Get(name))
-		if raw == "" {
-			continue
-		}
-		raw = strings.TrimSpace(strings.TrimSuffix(raw, "%"))
-		value, err := strconv.ParseFloat(raw, 64)
-		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
-			return nil
-		}
-		return &value
-	}
-	return nil
-}
-
-func (u SessionWindowUpdate) hasValues() bool {
-	return u.Window5hStart != nil || u.Window5hEnd != nil || u.Window5hStatus != nil || u.Window5hUtilization != nil ||
-		u.Window7dStart != nil || u.Window7dEnd != nil || u.Window7dStatus != nil || u.Window7dUtilization != nil
-}
-
-func (u SessionWindowUpdate) observationOutcome() string {
-	complete := 0
-	if u.Window5hEnd != nil && u.Window5hUtilization != nil {
-		complete++
-	}
-	if u.Window7dEnd != nil && u.Window7dUtilization != nil {
-		complete++
-	}
-	if complete == 2 {
-		return QuotaSnapshotOutcomeSuccess
-	}
-	return QuotaSnapshotOutcomePartial
-}
-
-func (u SessionWindowUpdate) validateObservation() error {
-	if u.ObservedAt == nil {
-		if u.ObservationSource != "" || u.ObservationOutcome != "" || u.ObservationErrorClass != "" {
-			return fmt.Errorf("quota snapshot observation timestamp is required")
-		}
-		return nil
-	}
-	if u.ObservedAt.IsZero() {
-		return fmt.Errorf("quota snapshot observation timestamp is invalid")
-	}
-	if u.ObservationSource != QuotaSnapshotSourceUsageEndpoint && u.ObservationSource != QuotaSnapshotSourceResponseHeaders {
-		return fmt.Errorf("quota snapshot observation source is invalid")
-	}
-	switch u.ObservationOutcome {
-	case QuotaSnapshotOutcomeSuccess, QuotaSnapshotOutcomePartial:
-		if u.ObservationErrorClass != "" {
-			return fmt.Errorf("successful quota snapshot observation cannot carry an error class")
-		}
-	case QuotaSnapshotOutcomeFailed:
-		if strings.TrimSpace(u.ObservationErrorClass) == "" {
-			return fmt.Errorf("failed quota snapshot observation requires an error class")
-		}
-	default:
-		return fmt.Errorf("quota snapshot observation outcome is invalid")
-	}
-	return nil
-}
-
-func utcTimePointer(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	utc := value.UTC()
-	return &utc
 }
 
 func retryAfterCooldown(headers http.Header, now time.Time) (time.Time, int, bool) {

@@ -27,53 +27,10 @@ var (
 	copilotGitHubPATPattern        = regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]+\b`)
 )
 
-type CopilotCredentialStore interface {
-	LoadCopilotCredential(ctx context.Context, accountID int64) ([]byte, error)
-	SaveCopilotCredential(ctx context.Context, accountID int64, credential []byte, expiresAt time.Time) error
-}
-
-type CopilotFailureRecorder interface {
-	RecordCopilotRefreshFailure(ctx context.Context, accountID int64, outcome string, cause error) error
-}
-
-type CopilotRefresher struct {
-	Store               CopilotCredentialStore
-	Adapter             CopilotRefreshAdapter
-	RequireAccountLease bool
-}
-
 type CopilotRefreshAdapter struct {
 	TokenURL   string
 	HTTPClient *http.Client
 	Now        func() time.Time
-}
-
-func (r *CopilotRefresher) Refresh(ctx context.Context, accountID int64) error {
-	if r == nil || r.Store == nil {
-		return errors.New("copilot refresh: credential store missing")
-	}
-	if r.RequireAccountLease {
-		if err := auth.RequireRefreshAccountLease(ctx, accountID); err != nil {
-			return err
-		}
-	}
-	current, err := r.Store.LoadCopilotCredential(ctx, accountID)
-	if err != nil {
-		return err
-	}
-	newCredential, expiresAt, err := r.Adapter.RefreshForProvider(ctx, accountID, "copilot", current)
-	if err != nil {
-		if recorder, ok := r.Store.(CopilotFailureRecorder); ok {
-			outcome := auth.RefreshFailureAuditOutcome(
-				auth.ClassifyRefreshError(err, "copilot", copilotRefreshStatusCode(err)),
-				copilotRefreshFailureOutcome(err),
-			)
-			classifiedErr := auth.WithRefreshAuditOutcome(err, outcome)
-			return errors.Join(classifiedErr, recorder.RecordCopilotRefreshFailure(ctx, accountID, outcome, classifiedErr))
-		}
-		return err
-	}
-	return r.Store.SaveCopilotCredential(ctx, accountID, newCredential, expiresAt)
 }
 
 func (r CopilotRefreshAdapter) RefreshForProvider(ctx context.Context, accountID int64, providerName string, currentCredential []byte) ([]byte, time.Time, error) {
@@ -277,21 +234,6 @@ func extractCopilotEndpointAPI(root map[string]any) string {
 		nestedMapString(root, "token", "endpoint", "api"),
 		nestedMapString(root, "token", "endpoints", "api"),
 	)
-}
-
-func copilotRefreshFailureOutcome(err error) string {
-	if errors.Is(err, ErrCopilotAuthExpired) {
-		return "auth_expired"
-	}
-	return "refresh_failed"
-}
-
-func copilotRefreshStatusCode(err error) int {
-	var refreshErr *CopilotRefreshError
-	if errors.As(err, &refreshErr) {
-		return refreshErr.StatusCode
-	}
-	return 0
 }
 
 func copilotChatEndpointFromAPIBase(apiBase string) string {

@@ -149,19 +149,16 @@ func cleanupAccountSlotE2E(t *testing.T, pgPool *pgxpool.Pool, tenantID int64, p
 		_, _ = pgPool.Exec(ctx, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM audit_refund_pending WHERE tenant_id=$1`, tenantID)
 		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_ledger_adjustments WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM usage_record_dlq WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM user_cost_receipt_owners WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM usage_records WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM balance_holds WHERE tenant_id=$1`, tenantID)
-		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, tenantID)
+		if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, tenantID); err != nil {
+			t.Errorf("清理账号并发端到端测试钱路记录: %v", err)
+		}
 		_, _ = pgPool.Exec(ctx, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, pricingVersion)
 	})
 }
 
-func startAccountSlotE2EGateway(t *testing.T, binPath, dsn, addr, pricingVersion string) *exec.Cmd {
+func startAccountSlotE2EGateway(t *testing.T, binPath, dsn, addr, pricingVersion string) *specializedLiveProcesses {
 	t.Helper()
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRoot(t))
 	cmd := exec.Command(binPath)
 	cmd.Env = append(os.Environ(),
 		"HUAKAI_DATABASE_URL="+dsn,
@@ -169,6 +166,7 @@ func startAccountSlotE2EGateway(t *testing.T, binPath, dsn, addr, pricingVersion
 		"HUAKAI_RELEASE_MODE=dev",
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_DEV_MOCK_UPSTREAM=true",
 		fmt.Sprintf("%s=%d", DevMockUpstreamDelayMSEnv, accountSlotE2EMockDelayMS),
 		"HUAKAI_BILLING_POLICY_VERSION="+pricingVersion,
@@ -178,17 +176,20 @@ func startAccountSlotE2EGateway(t *testing.T, binPath, dsn, addr, pricingVersion
 		"HUAKAI_EVENTBUS_ENABLED=0",
 		"HUAKAI_RATE_PRECHECK_ENABLED=false",
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 	)
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("start gateway: %v", err)
 	}
 	go drainPipe("gateway-stderr", stderr)
 	go drainPipe("gateway-stdout", stdout)
-	return cmd
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func postAccountSlotBatch(ctx context.Context, client *http.Client, addr, bearer, prefix string, n int) []accountSlotHTTPResult {

@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 // VendorAdapter 把厂商只读额度接口转换为统一事实，不负责写数据库。
@@ -19,10 +21,12 @@ type VendorAdapter interface {
 }
 
 type VendorResult struct {
-	Source     accountquota.Source
-	Facts      []accountquota.Fact
-	Complete   bool
-	ErrorClass string
+	Source       accountquota.Source
+	Facts        []accountquota.Fact
+	Complete     bool
+	ErrorClass   string
+	Session      *UsageSnapshot
+	Subscription subscriptionprofile.Observation
 }
 
 type adapterHTTP struct {
@@ -78,7 +82,8 @@ func validUntil(observedAt time.Time) *time.Time {
 type GeminiUnknownAdapter struct{}
 
 func (GeminiUnknownAdapter) Supports(_ provider.Credential, info provider.AccountInfo) bool {
-	return strings.EqualFold(strings.TrimSpace(info.Platform), "gemini")
+	return strings.EqualFold(strings.TrimSpace(info.Platform), credentialstore.VendorGemini) &&
+		!isAntigravityAccount(info)
 }
 
 func (GeminiUnknownAdapter) Source() accountquota.Source {
@@ -89,4 +94,18 @@ func (GeminiUnknownAdapter) Fetch(_ context.Context, _ int64, _ provider.Credent
 	return VendorResult{Source: accountquota.SourceCapabilityContract, Complete: true, Facts: []accountquota.Fact{{
 		MetricKey: "model_quota", State: accountquota.StateUnknown, ValidUntil: validUntil(observedAt),
 	}}}, nil
+}
+
+func isAntigravityAccount(info provider.AccountInfo) bool {
+	vendor := credentialstore.Normalize(info.Platform)
+	authMode := credentialstore.Normalize(info.AccountType)
+	return (vendor == credentialstore.VendorAntigravity && authMode == credentialstore.AuthModeOAuth) ||
+		(vendor == credentialstore.VendorGemini && authMode == credentialstore.AuthModeAntigravity)
+}
+
+func quotaFactVendor(info provider.AccountInfo) string {
+	if isAntigravityAccount(info) {
+		return credentialstore.VendorAntigravity
+	}
+	return credentialstore.Normalize(info.Platform)
 }

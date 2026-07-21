@@ -232,8 +232,20 @@ func postTokenWithRetry(ctx context.Context, client *http.Client, endpoint, cont
 }
 
 type tokenHTTPError struct {
-	status int
-	body   string
+	status     int
+	body       string
+	retryAfter time.Duration
+}
+
+func (e tokenHTTPError) RetryableRefresh() bool {
+	return e.status >= http.StatusInternalServerError && e.status <= 599
+}
+
+func (e tokenHTTPError) NextRefreshAttempt(now time.Time) time.Time {
+	if e.retryAfter <= 0 {
+		return time.Time{}
+	}
+	return now.Add(e.retryAfter)
 }
 
 func (e tokenHTTPError) Error() string {
@@ -260,7 +272,11 @@ func postTokenOnce(ctx context.Context, client *http.Client, endpoint, contentTy
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return tokenResponse{}, tokenHTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(body))}
+		return tokenResponse{}, tokenHTTPError{
+			status:     resp.StatusCode,
+			body:       strings.TrimSpace(string(body)),
+			retryAfter: oauthRetryAfter(resp.StatusCode, resp.Header, time.Now().UTC()),
+		}
 	}
 	var out tokenResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
@@ -272,9 +288,30 @@ func postTokenOnce(ctx context.Context, client *http.Client, endpoint, contentTy
 func isRetryableTokenError(err error) bool {
 	var httpErr tokenHTTPError
 	if errors.As(err, &httpErr) {
-		return httpErr.status == http.StatusTooManyRequests || httpErr.status >= 500
+		return httpErr.status >= http.StatusInternalServerError && httpErr.status <= 599
 	}
 	return true
+}
+
+func oauthRetryAfter(status int, header http.Header, now time.Time) time.Duration {
+	if status != http.StatusTooManyRequests {
+		return 0
+	}
+	delay := time.Minute
+	if raw := strings.TrimSpace(header.Get("Retry-After")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			delay = time.Duration(seconds) * time.Second
+		} else if when, err := http.ParseTime(raw); err == nil {
+			delay = when.Sub(now)
+		}
+	}
+	if delay <= 0 {
+		delay = time.Minute
+	}
+	if delay > time.Hour {
+		delay = time.Hour
+	}
+	return delay
 }
 
 func mergeTokenResponse(cred map[string]any, resp tokenResponse) ([]byte, time.Time, error) {

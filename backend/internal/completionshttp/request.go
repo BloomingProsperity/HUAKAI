@@ -124,6 +124,13 @@ func estimateInputTokens(texts []string) int {
 	return 1
 }
 
+func requestedMaxTokens(req completionRequest) int {
+	if req.MaxTokens == nil || *req.MaxTokens <= 0 {
+		return 0
+	}
+	return *req.MaxTokens
+}
+
 func usageFromJSON(raw []byte) (completionUsage, bool) {
 	var body struct {
 		Usage struct {

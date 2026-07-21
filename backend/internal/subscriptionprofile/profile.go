@@ -9,11 +9,16 @@ import (
 )
 
 const (
-	MappingVersion = 1
+	MappingVersion = 2
 
 	VendorAnthropic   = "anthropic"
 	VendorOpenAI      = "openai"
+	VendorGemini      = "gemini"
 	VendorAntigravity = "antigravity"
+	VendorGrok        = "grok"
+	VendorKimi        = "kimi"
+	VendorCopilot     = "copilot"
+	VendorWindsurf    = "windsurf"
 
 	PlanUnknown = "unknown"
 
@@ -186,8 +191,16 @@ func Supported(vendor, authMode string) bool {
 		return mode == "claude_ai_oauth" || mode == "claude_code" || mode == "claude_setup_token"
 	case VendorAntigravity:
 		return mode == "oauth"
-	case "gemini":
-		return mode == "antigravity"
+	case VendorGemini:
+		return mode == "code_assist" || mode == "google_one" || mode == "oauth" || mode == "antigravity"
+	case VendorGrok:
+		return mode == "xai_oauth"
+	case VendorKimi:
+		return mode == "kimi_oauth"
+	case VendorCopilot:
+		return mode == "copilot_oauth"
+	case VendorWindsurf:
+		return mode == "oauth"
 	default:
 		return false
 	}
@@ -246,8 +259,12 @@ func canonicalPlan(vendor, raw string) (string, string) {
 		}
 	case VendorAnthropic:
 		switch value {
-		case "pro", "max":
+		case "free", "pro", "max":
 			return value, ScopePersonal
+		case "max_5x", "max5x", "max_5":
+			return "max_5x", ScopePersonal
+		case "max_20x", "max20x", "max_20":
+			return "max_20x", ScopePersonal
 		case "team", "business", "enterprise":
 			return value, ScopeWorkspace
 		}
@@ -259,6 +276,63 @@ func canonicalPlan(vendor, raw string) (string, string) {
 			return "pro", ScopePersonal
 		case "ultra", "g1_ultra", "g1_ultra_tier":
 			return "ultra", ScopePersonal
+		}
+	case VendorGemini:
+		switch value {
+		case "google_one_free", "free", "free_tier":
+			return "free", ScopePersonal
+		case "google_ai_plus", "ai_plus", "plus":
+			return "plus", ScopePersonal
+		case "google_ai_pro", "pro":
+			return "pro", ScopePersonal
+		case "google_ai_ultra", "ultra":
+			return "ultra", ScopePersonal
+		case "gcp_standard", "standard":
+			return "standard", ScopeWorkspace
+		case "gcp_enterprise", "enterprise":
+			return "enterprise", ScopeWorkspace
+		case "aistudio_free":
+			return "aistudio_free", ScopePersonal
+		case "aistudio_paid":
+			return "aistudio_paid", ScopeUnknown
+		}
+	case VendorGrok:
+		switch value {
+		case "free":
+			return "free", ScopePersonal
+		case "supergrok_lite", "super_grok_lite":
+			return "supergrok_lite", ScopePersonal
+		case "supergrok":
+			return "supergrok", ScopePersonal
+		case "supergrok_heavy", "super_grok_heavy":
+			return "supergrok_heavy", ScopePersonal
+		case "business", "enterprise":
+			return value, ScopeWorkspace
+		}
+	case VendorCopilot:
+		switch value {
+		case "free", "student", "pro", "max":
+			return value, ScopePersonal
+		case "pro_plus", "pro+":
+			return "pro_plus", ScopePersonal
+		case "business", "enterprise":
+			return value, ScopeWorkspace
+		}
+	case VendorKimi:
+		switch value {
+		case "free", "adagio":
+			return "adagio", ScopePersonal
+		case "moderato", "allegretto", "allegro", "vivace":
+			return value, ScopePersonal
+		}
+	case VendorWindsurf:
+		switch value {
+		case "free", "pro", "max":
+			return value, ScopePersonal
+		case "team", "teams":
+			return "teams", ScopeWorkspace
+		case "enterprise":
+			return "enterprise", ScopeWorkspace
 		}
 	}
 	return PlanUnknown, ScopeUnknown
@@ -308,7 +382,7 @@ func parseJWTClaims(token string) (map[string]any, error) {
 }
 
 func explicitPlan(fields map[string]any) string {
-	return firstString(fields, "chatgpt_plan_type", "plan_type", "subscription_plan", "subscription_tier", "subscription_tier_raw")
+	return firstString(fields, "chatgpt_plan_type", "plan_type", "subscription_plan", "subscription_tier", "subscription_tier_raw", "tier_id")
 }
 
 func fillRefs(observation Observation, subjectRef, workspaceRef string) Observation {

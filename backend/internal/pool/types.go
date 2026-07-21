@@ -126,6 +126,7 @@ var (
 	ErrBindingRateLimited        = router.ErrBindingRateLimited
 	ErrBindingConcurrencyLimited = router.ErrBindingConcurrencyLimited
 	ErrAllChannelsDegraded       = router.ErrAllChannelsDegraded
+	ErrGroupPolicyUnavailable    = router.ErrGroupPolicyUnavailable
 	ErrClaimRace                 = router.ErrClaimRace
 	ErrSlotManagerUnavailable    = router.ErrSlotManagerUnavailable
 	ErrNoSlotAvailable           = router.ErrNoSlotAvailable

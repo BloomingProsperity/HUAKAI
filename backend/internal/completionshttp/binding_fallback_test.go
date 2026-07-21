@@ -43,7 +43,7 @@ func TestCompletionsBindingFallbackClass(t *testing.T) {
 		}
 		assertCompletionsFallbackCounts(t, env, 3, 2, 1)
 		target := env.selector.requests[2]
-		if target.PoolGroupID != 201 || target.BindingID != 2001 || target.MaxParallelRequests != 9 || target.SelectionMode != "priority_weighted" {
+		if target.PoolGroupID != 201 || target.BindingID != 2001 || target.BindingRPMLimit != 72 || target.BindingTPMLimit != 720 || target.MaxParallelRequests != 9 || target.SelectionMode != "priority_weighted" || target.EstimatedInputTokens <= 0 || target.MaxOutputTokens != 8 {
 			t.Fatalf("目标 request=%+v，未使用自身 binding/K/selection_mode", target)
 		}
 		if got := string(env.settler.settles[0].Draft.RoutingReason); !strings.Contains(got, `"to":"manual"`) {
@@ -137,6 +137,8 @@ type completionsFallbackRegistry struct{}
 func (completionsFallbackRegistry) ResolveModel(context.Context, string, int64) (registry.Resolved, error) {
 	normalMax := int32(2)
 	targetMax := int32(9)
+	targetRPM := int32(72)
+	targetTPM := int32(720)
 	normalModel := "normal-a"
 	targetModel := "manual-target"
 	return registry.Resolved{
@@ -145,7 +147,7 @@ func (completionsFallbackRegistry) ResolveModel(context.Context, string, int64) 
 		ProtocolFamily: "openai_chat", PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 1001, Priority: 10, Weight: 1, SelectionMode: "strict_priority", MaxParallelRequests: &normalMax, ProviderModelIDOverride: &normalModel, FallbackClass: string(bindingfallback.ClassNormal)},
-			{PoolGroupID: 201, BindingID: 2001, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
+			{PoolGroupID: 201, BindingID: 2001, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},
 		},
 		SnapshotVersion: "registry:7:1",
 	}, nil

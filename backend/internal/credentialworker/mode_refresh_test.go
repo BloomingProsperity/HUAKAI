@@ -18,7 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	appconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -62,7 +64,7 @@ func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
 		assert   func(*testing.T, ModeRefreshAdapter)
 	}{
 		{credentialstore.VendorGemini, credentialstore.AuthModeOAuth, "gemini/oauth", assertOperatorBoundOAuthModeAdapter},
-		{credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, "antigravity/oauth", assertOperatorBoundOAuthModeAdapter},
+		{credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, "antigravity/oauth", assertLegacyOAuthModeAdapter},
 		{credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, "windsurf/oauth", assertWindsurfManualModeAdapter},
 	}
 	for _, tc := range cases {
@@ -73,6 +75,13 @@ func TestDefaultModeAdapterRegistryRoutesSlice26OAuthModes(t *testing.T) {
 			}
 			tc.assert(t, adapter)
 		})
+	}
+}
+
+func assertLegacyOAuthModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
+	t.Helper()
+	if _, ok := adapter.(legacyOAuthModeAdapter); !ok {
+		t.Fatalf("adapter type=%T，期望 legacyOAuthModeAdapter", adapter)
 	}
 }
 
@@ -112,7 +121,7 @@ func TestProviderFailureCooldown(t *testing.T) {
 	}{
 		{vendor: "anthropic", want: time.Minute},
 		{vendor: "openai", want: time.Minute},
-		{vendor: "gemini", want: 0},
+		{vendor: "gemini", want: time.Minute},
 		{vendor: "unknown", want: time.Minute},
 	}
 	for _, tc := range cases {
@@ -141,14 +150,28 @@ func assertWindsurfManualModeAdapter(t *testing.T, adapter ModeRefreshAdapter) {
 	}
 }
 
-func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *testing.T) {
-	// 修掉的回归:默认的定时 Codex refresh 路径绝不能回退到嵌在 credential JSON
-	// 里的 endpoint/client/scope。
-	adapter, ok := DefaultModeAdapterRegistry().Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+func TestDefaultModeAdapterRegistryRefreshesCodexWithBuiltinPublicProfile(t *testing.T) {
+	// 官方 auth.json 与公开 CLI 登录不需要额外运维配置，同时凭据 payload 中伪造的
+	// endpoint/client/scope 不能改变续期身份。
+	var gotURL string
+	var gotForm url.Values
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(`{"access_token":"access-new","refresh_token":"refresh-new","expires_in":1800}`), nil
+	})}
+	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(client, nil, nil).Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
 	if !ok {
 		t.Fatal("Codex CLI OAuth mode adapter missing")
 	}
-	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
 		ProviderAccountID: 42,
 		Vendor:            credentialstore.VendorOpenAI,
 		AuthMode:          credentialstore.AuthModeCodexCLIOAuth,
@@ -159,8 +182,47 @@ func TestDefaultModeAdapterRegistryCodexFailsClosedWithoutOperatorConfig(t *test
 			"oauth_token_endpoint":"http://evil.attacker.test/token"
 		}`),
 	})
-	if !errors.Is(err, adapters.ErrCodexOAuthConfigRequired) {
-		t.Fatalf("RefreshCredential err=%v, want ErrCodexOAuthConfigRequired", err)
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if gotURL != credentialacq.OpenAICodexOAuthTokenURL || gotForm.Get("client_id") != credentialacq.OpenAICodexOAuthClientID || gotForm.Get("scope") != credentialacq.OpenAICodexOAuthRefreshScope {
+		t.Fatalf("refresh request url=%q form=%v", gotURL, gotForm)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["access_token"] != "access-new" || payload["session_token"] != "access-new" || payload["refresh_token"] != "refresh-new" {
+		t.Fatalf("刷新后运行材料未同步：%v", payload)
+	}
+	if _, exists := payload["oauth_token_endpoint"]; exists {
+		t.Fatalf("输入 endpoint 未被清除：%v", payload)
+	}
+}
+
+func TestConfiguredModeAdapterRegistryDoesNotOverridePublicCodexIdentity(t *testing.T) {
+	var gotURL string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		return jsonResponse(`{"access_token":"access-new","expires_in":1800}`), nil
+	})}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, nil, appconfig.VendorOAuthConfigs{
+		appconfig.VendorOAuthOpenAICodex: {TokenURL: "https://operator.example.test/token", ClientID: "operator-client"},
+	})
+	adapter, ok := registry.Lookup(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth)
+	if !ok {
+		t.Fatal("Codex CLI OAuth mode adapter missing")
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 45, Vendor: credentialstore.VendorOpenAI,
+		AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload:  []byte(`{"access_token":"old","refresh_token":"refresh-old","client_id_source":"public_cli_client"}`),
+	})
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if gotURL != credentialacq.OpenAICodexOAuthTokenURL {
+		t.Fatalf("公开 Codex 身份被运维配置覆盖，url=%q", gotURL)
 	}
 }
 
@@ -253,6 +315,76 @@ func TestConfiguredModeAdapterRegistryAllowsCodexRefreshWithoutScope(t *testing.
 	}
 }
 
+func TestConfiguredModeAdapterRegistryRefreshesWindsurfThroughExactMode(t *testing.T) {
+	var gotURL string
+	var gotForm url.Values
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotURL = req.URL.String()
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotForm, err = url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return jsonResponse(`{"access_token":"windsurf-new","refresh_token":"windsurf-refresh-new","expires_in":1800}`), nil
+	})}
+	registry := newDefaultModeAdapterRegistryWithProjectResolver(client, nil, appconfig.VendorOAuthConfigs{
+		appconfig.VendorOAuthWindsurf: {
+			TokenURL: "https://windsurf.example.test/token",
+			ClientID: "windsurf-client",
+			Scope:    "openid offline_access",
+		},
+	})
+	adapter, ok := registry.Lookup(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth)
+	if !ok {
+		t.Fatal("缺少 windsurf/oauth 刷新适配器")
+	}
+	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 45,
+		Vendor:            credentialstore.VendorWindsurf,
+		AuthMode:          credentialstore.AuthModeOAuth,
+		Payload:           []byte(`{"access_token":"windsurf-old","refresh_token":"windsurf-refresh-old"}`),
+	})
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if gotURL != "https://windsurf.example.test/token" {
+		t.Fatalf("refresh URL=%q", gotURL)
+	}
+	if gotForm.Get("client_id") != "windsurf-client" || gotForm.Get("scope") != "openid offline_access" || gotForm.Get("refresh_token") != "windsurf-refresh-old" {
+		t.Fatalf("refresh form=%v", gotForm)
+	}
+	if !bytes.Contains(result.Payload, []byte(`"access_token":"windsurf-new"`)) {
+		t.Fatalf("刷新结果未保存新 token：%s", result.Payload)
+	}
+}
+
+func TestModeRegistryInjectsAnthropicTransportIntoExactModes(t *testing.T) {
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called = true
+		return jsonResponse(`{"access_token":"claude-new","refresh_token":"claude-refresh-new","expires_in":1800}`), nil
+	})}
+	registry := newDefaultModeAdapterRegistryWithRuntimeDependencies(nil, nil, nil, client)
+	adapter, ok := registry.Lookup(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode)
+	if !ok {
+		t.Fatal("缺少 anthropic/claude_code 刷新适配器")
+	}
+	if _, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 46,
+		Vendor:            credentialstore.VendorAnthropic,
+		AuthMode:          credentialstore.AuthModeClaudeCode,
+		Payload:           []byte(`{"access_token":"claude-old","refresh_token":"claude-refresh-old"}`),
+	}); err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if !called {
+		t.Fatal("Claude 精确模式没有使用注入的出站客户端")
+	}
+}
+
 // TestGeminiAntigravityRefreshUsesBuiltinProfile 守住重激活路径：canonical 的
 // gemini/antigravity mode 必须调用既有 Antigravity 刷新核，并且只把内置公开
 // endpoint/client/secret/scope 发给 Google。退回暂停 adapter 或改用 Gemini
@@ -273,7 +405,12 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 		return jsonResponse(`{"access_token":"ag-access-new","refresh_token":"ag-refresh-new","expires_in":1800,"token_type":"Bearer"}`), nil
 	})}
 
-	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil, nil).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
+	adapter, ok := newDefaultModeAdapterRegistryWithProjectResolver(mockClient, nil, appconfig.VendorOAuthConfigs{
+		appconfig.VendorOAuthGemini: {
+			TokenURL: "https://generic-gemini.example.test/token",
+			ClientID: "generic-gemini-client",
+		},
+	}).Lookup(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity)
 	if !ok {
 		t.Fatal("缺少 gemini/antigravity refresh adapter")
 	}
@@ -281,12 +418,13 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("adapter type=%T，期望 legacyOAuthModeAdapter 复用刷新契约", adapter)
 	}
-	wire, ok := legacy.adapter.(providerantigravity.RefreshAdapter)
+	wire, ok := legacy.adapter.(adapters.AntigravityRefresh)
 	if !ok {
-		t.Fatalf("底层 adapter type=%T，期望 antigravity.RefreshAdapter", legacy.adapter)
+		t.Fatalf("底层 adapter type=%T，期望 adapters.AntigravityRefresh", legacy.adapter)
 	}
-	if wire.TokenURL != providerantigravity.AntigravityOAuthTokenEndpoint || wire.ClientID != providerantigravity.AntigravityOAuthClientID() {
-		t.Fatalf("底层 endpoint/client=(%q,%q)", wire.TokenURL, wire.ClientID)
+	approved := providerantigravity.DefaultOAuthConfig()
+	if wire.Gemini.Endpoint != providerantigravity.AntigravityOAuthTokenEndpoint || wire.Gemini.ClientID != approved.ClientID {
+		t.Fatalf("底层 endpoint/client=(%q,%q)", wire.Gemini.Endpoint, wire.Gemini.ClientID)
 	}
 
 	result, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
@@ -313,9 +451,8 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 	wantForm := map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": "ag-refresh-old",
-		"client_id":     providerantigravity.AntigravityOAuthClientID(),
-		"client_secret": providerantigravity.AntigravityOAuthClientSecret(),
-		"scope":         strings.Join(providerantigravity.DefaultOAuthConfig().Scopes, " "),
+		"client_id":     approved.ClientID,
+		"client_secret": approved.ClientSecret,
 	}
 	for key, want := range wantForm {
 		if got := gotForm.Get(key); got != want {
@@ -334,26 +471,14 @@ func TestGeminiAntigravityRefreshUsesBuiltinProfile(t *testing.T) {
 	}
 }
 
-func TestDefaultModeAdapterRegistryGeminiAntigravityOAuthUsesExistingConfigAndRefreshesSessionToken(t *testing.T) {
-	// 修掉的回归:gemini/oauth 与 antigravity/oauth 的定时 refresh 必须使用现有的
-	// HUAKAI_GEMINI_OAUTH_* operator 配置,并且必须用刚刷新得到的 access_token 替换
-	// 陈旧的 session_token。Mutation 自检:只读取较新的 HERMES 专属 env 名会在请求前
-	// 失败;删掉 session_token 同步会让保存的 payload 残留 old-session,使本测试转红。
+func TestDefaultModeAdapterRegistryGeminiOAuthUsesOperatorConfigAndRefreshesSessionToken(t *testing.T) {
+	// Gemini 通用 OAuth 继续使用部署者配置，并用新 access_token 替换陈旧 session_token。
 	cases := []struct {
 		name     string
 		vendor   string
 		authMode string
 	}{
-		{
-			name:     "gemini",
-			vendor:   credentialstore.VendorGemini,
-			authMode: credentialstore.AuthModeOAuth,
-		},
-		{
-			name:     "antigravity",
-			vendor:   credentialstore.VendorAntigravity,
-			authMode: credentialstore.AuthModeOAuth,
-		},
+		{name: "gemini", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeOAuth},
 	}
 
 	for _, tc := range cases {
@@ -528,7 +653,7 @@ func TestModeRefreshCodexOperatorConfigFailureRecordsOperatorClass(t *testing.T)
 		rec: credentialstore.CredentialRecord{
 			ID: 45, TenantID: 1, ProviderAccountID: 102,
 			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
-			CredentialVersion: 3, PlaintextPayload: []byte(`{"refresh_token":"rt-old"}`),
+			CredentialVersion: 3, PlaintextPayload: []byte(`{"refresh_token":"rt-old","client_id_source":"operator_config"}`),
 		},
 	}
 	refresher := &AccountCredentialRefresher{store: store, registry: DefaultModeAdapterRegistry(), now: func() time.Time {
@@ -741,6 +866,25 @@ func TestRefreshLockedRecordSurfacesSaveFailureError(t *testing.T) {
 	}
 }
 
+func TestRefreshLockedRecordPropagatesFailureClassToSchedulerLog(t *testing.T) {
+	registry := NewModeAdapterRegistry()
+	if err := registry.Register("testvendor", "oauth", failingModeAdapter{err: errors.New("oauth token endpoint returned status 401: invalid_grant")}); err != nil {
+		t.Fatal(err)
+	}
+	calls := []string{}
+	tx := &recordingRefreshTx{calls: &calls}
+	refresher := &AccountCredentialRefresher{registry: registry, now: func() time.Time { return time.Unix(0, 0).UTC() }}
+	rec := credentialstore.CredentialRecord{ID: 8, Vendor: "testvendor", AuthMode: "oauth"}
+
+	err := refresher.refreshLockedRecord(context.Background(), tx, 8, rec)
+	if got := auth.RefreshAuditOutcomeFromError(err); got != string(auth.OutcomeAuthExpired) {
+		t.Fatalf("日志结果=%q，期望 auth_expired；err=%v", got, err)
+	}
+	if got := strings.Join(calls, ","); !strings.Contains(got, "failure:8:invalid_grant") {
+		t.Fatalf("刷新失败状态未按同一分类落库：%s", got)
+	}
+}
+
 type recordingRefreshStore struct {
 	calls *[]string
 	rec   credentialstore.CredentialRecord
@@ -822,6 +966,14 @@ func auditPayloadBool(payload map[string]any, key string) bool {
 type recordingModeAdapter struct {
 	calls   *[]string
 	payload []byte
+}
+
+type failingModeAdapter struct {
+	err error
+}
+
+func (a failingModeAdapter) RefreshCredential(context.Context, ModeRefreshInput) (ModeRefreshResult, error) {
+	return ModeRefreshResult{}, a.err
 }
 
 func (a recordingModeAdapter) RefreshCredential(_ context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {

@@ -328,16 +328,9 @@ func TestDefaultExchangerRegistryIncludesGeminiOAuth(t *testing.T) {
 		AuthMode:          "oauth",
 		ActorID:           "operator-1",
 	}
-	candidate, err := registry.Exchange(context.Background(), session, `{"session_token":"gemini-session-token","refresh_token":"gemini-refresh-token"}`)
-	if err != nil {
-		t.Fatalf("Exchange gemini/oauth: %v", err)
-	}
-	if candidate.Vendor != "gemini" || candidate.AuthMode != "oauth" || candidate.ProviderAccountID != 42 {
-		t.Fatalf("candidate target=%s/%s account=%d", candidate.Vendor, candidate.AuthMode, candidate.ProviderAccountID)
-	}
-	payload := string(candidate.Payload)
-	if !strings.Contains(payload, "gemini-session-token") || !strings.Contains(payload, "gemini-refresh-token") {
-		t.Fatalf("candidate payload=%s, want captured session and refresh token material", payload)
+	_, err := registry.Exchange(context.Background(), session, `{"session_token":"gemini-session-token","refresh_token":"gemini-refresh-token"}`)
+	if !errors.Is(err, ErrOAuthRequiresCallback) {
+		t.Fatalf("无持久化 PKCE 会话的通用 Gemini OAuth 必须拒绝，got %v", err)
 	}
 }
 

@@ -16,8 +16,9 @@ import (
 )
 
 type AdminModelSyncDeps struct {
-	Auth    adminModelSyncAuth
-	Service adminModelSyncService
+	Auth      adminModelSyncAuth
+	Service   adminModelSyncService
+	Scheduler adminModelSyncScheduler
 }
 
 type adminModelSyncAuth interface {
@@ -26,6 +27,10 @@ type adminModelSyncAuth interface {
 
 type adminModelSyncService interface {
 	SyncWithActor(context.Context, string, string) (modelsync.SyncResult, error)
+}
+
+type adminModelSyncScheduler interface {
+	Status() modelsync.SchedulerStatus
 }
 
 type modelSyncRequestBody struct {
@@ -57,9 +62,52 @@ type modelSyncResultItemBody struct {
 	SnapshotBumps    int    `json:"snapshot_bumps"`
 }
 
+type modelSyncStatusBody struct {
+	Object        string  `json:"object"`
+	Enabled       bool    `json:"enabled"`
+	LastRunAt     *string `json:"last_run_at"`
+	LastSuccessAt *string `json:"last_success_at"`
+	LastError     string  `json:"last_error,omitempty"`
+}
+
 func MountModelSyncRoutes(r chi.Router, d AdminModelSyncDeps) {
+	r.Get("/", newModelSyncStatusHandler(d))
 	// SessionSafe:触发全局模型目录同步(从上游拉取,可重跑),登录 admin(session)可直接写;前端确认弹窗防误触发。
 	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/", newModelSyncHandler(d))
+}
+
+func newModelSyncStatusHandler(d AdminModelSyncDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil {
+			writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "model sync dependency unset")
+			return
+		}
+		ident, err := d.Auth.Resolve(r.Context(), r)
+		if err != nil {
+			writeAdminAuthError(w, err)
+			return
+		}
+		if ident.Role != admin.RolePlatformAdmin {
+			writeAdminError(w, admin.ErrAdminForbidden)
+			return
+		}
+		body := modelSyncStatusBody{Object: "admin_model_sync_status", Enabled: d.Scheduler != nil}
+		if d.Scheduler != nil {
+			status := d.Scheduler.Status()
+			body.LastRunAt = formatModelSyncStatusTime(status.LastRunAt)
+			body.LastSuccessAt = formatModelSyncStatusTime(status.LastSuccessAt)
+			body.LastError = status.LastErr
+		}
+		writeAdminCatalogJSON(w, http.StatusOK, body)
+	}
+}
+
+func formatModelSyncStatusTime(value time.Time) *string {
+	if value.IsZero() {
+		return nil
+	}
+	formatted := value.UTC().Format(time.RFC3339)
+	return &formatted
 }
 
 func newModelSyncHandler(d AdminModelSyncDeps) http.HandlerFunc {

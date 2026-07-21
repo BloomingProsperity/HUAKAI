@@ -191,18 +191,13 @@ func bridgeCounters() []bridgeCounter {
 			read:        func() int64 { return readExpvarMapInt("cache_token_count", "read_total") },
 		},
 		{
-			name:        "huakai_group_policy_failopen_total",
-			description: "Subscription group policy fail-open decisions.",
-			read:        func() int64 { return readExpvarInt("group_policy_fail_open_total") },
-		},
-		{
 			name:        "huakai_group_policy_failclosed_total",
-			description: "Subscription group policy fail-closed decisions.",
+			description: "Requests rejected because subscription group policy truth was unavailable.",
 			read:        func() int64 { return readExpvarInt("group_policy_fail_closed_total") },
 		},
 		// 预算/限流强制执行的 fail-open:当 budget store 在
 		// reserve/settle/release 上出错时,gateway 会放行该请求而非
-		// 拒绝它。把这个计数器(与上面 group_policy_fail_open 同列)桥接出来,
+		// 拒绝它。把这个计数器桥接出来,
 		// 让运维能在强制执行被后端故障静默绕过时告警。
 		{
 			name:        "huakai_budget_failopen_total",

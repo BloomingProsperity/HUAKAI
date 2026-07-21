@@ -10,8 +10,51 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
+
+type CopilotCredentialStore interface {
+	LoadCopilotCredential(context.Context, int64) ([]byte, error)
+	SaveCopilotCredential(context.Context, int64, []byte, time.Time) error
+}
+
+type CopilotFailureRecorder interface {
+	RecordCopilotRefreshFailure(context.Context, int64, string, error) error
+}
+
+type CopilotRefresher struct {
+	Store   CopilotCredentialStore
+	Adapter CopilotRefreshAdapter
+}
+
+func (r *CopilotRefresher) Refresh(ctx context.Context, accountID int64) error {
+	current, err := r.Store.LoadCopilotCredential(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	updated, expiresAt, err := r.Adapter.RefreshForProvider(ctx, accountID, "copilot", current)
+	if err == nil {
+		return r.Store.SaveCopilotCredential(ctx, accountID, updated, expiresAt)
+	}
+	outcome := "refresh_failed"
+	if classified := auth.ClassifyRefreshError(err, "copilot", copilotRefreshStatusCodeForTest(err)); classified != auth.OutcomeUnknown {
+		outcome = string(classified)
+	}
+	classifiedErr := auth.WithRefreshAuditOutcome(err, outcome)
+	if recorder, ok := r.Store.(CopilotFailureRecorder); ok {
+		return errors.Join(classifiedErr, recorder.RecordCopilotRefreshFailure(ctx, accountID, outcome, classifiedErr))
+	}
+	return classifiedErr
+}
+
+func copilotRefreshStatusCodeForTest(err error) int {
+	var refreshErr *CopilotRefreshError
+	if errors.As(err, &refreshErr) {
+		return refreshErr.StatusCode
+	}
+	return 0
+}
 
 func TestCopilotRefreshParsesEndpointAPIAndRoutesSessionAdapter(t *testing.T) {
 	// 消除的回归:service-token 响应里的 endpoint.api 必须被保留,并在后续

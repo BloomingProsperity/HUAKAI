@@ -155,6 +155,7 @@ INNER JOIN channels c
 INNER JOIN providers p
     ON p.id = pa.provider_id
    AND p.tenant_id = pa.tenant_id
+   AND p.enabled = true
    AND p.deleted_at IS NULL
 LEFT JOIN provider_account_routing_signals rs
     ON rs.tenant_id = pa.tenant_id

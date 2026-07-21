@@ -154,8 +154,13 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	// User-Agent：caller 可通过 Extra["user_agent"] 覆盖；空时用默认 Codex CLI 风格 UA
-	ua := in.Credential.Extra["user_agent"]
+	// User-Agent：优先使用导入时保存的完整值；只有真实版本时按同一份版本
+	// 构造 CLI UA，避免 version 头已更新但 UA 仍停在旧兜底。
+	ua := strings.TrimSpace(in.Credential.Extra["user_agent"])
+	version := strings.TrimSpace(in.Credential.Extra["codex_version"])
+	if ua == "" && version != "" {
+		ua = "codex_cli_rs/" + version
+	}
 	if ua == "" {
 		ua = defaultCodexUserAgent
 	}
@@ -183,7 +188,7 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if accountID := firstNonEmptyCodexExtra(in.Credential.Extra, "chatgpt_account_id", "account_id"); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
-	if version := strings.TrimSpace(in.Credential.Extra["codex_version"]); version != "" {
+	if version != "" {
 		req.Header.Set("version", version)
 	}
 

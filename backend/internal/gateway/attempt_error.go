@@ -321,6 +321,15 @@ func decisionFromHTTPClassification(httpStatus int, c Classification) AttemptRet
 			AbortReason:                     "upstream_auth_failure",
 			CountsAgainstAuthFailoverBudget: true,
 		}
+	case ErrorClassProjectContextRejected:
+		return AttemptRetryDecision{
+			RetryableBeforeDelivery: true,
+			SwitchAccount:           true,
+			SwitchPool:              true,
+			RefreshIntent:           RefreshOAuthHotPath,
+			ClientStatus:            http.StatusServiceUnavailable,
+			AbortReason:             "project_context_rejected",
+		}
 	case ErrorClassPlatformPolicy:
 		return AttemptRetryDecision{
 			ClientStatus: http.StatusForbidden,

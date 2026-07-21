@@ -102,6 +102,22 @@ func TestCatalogDefaultFailClosedForExperimentalAndFlaggedModes(t *testing.T) {
 	}
 }
 
+func TestDefaultCatalogHidesPostLaunchIDEAccountModes(t *testing.T) {
+	catalog := DefaultCatalog()
+	for _, mode := range []struct {
+		vendor   string
+		authMode string
+	}{
+		{vendor: credentialstore.VendorCopilot, authMode: credentialstore.AuthModeCopilotOAuth},
+		{vendor: credentialstore.VendorWindsurf, authMode: credentialstore.AuthModeOAuth},
+		{vendor: "cursor", authMode: credentialstore.AuthModeOAuth},
+	} {
+		if hasMode(catalog, mode.vendor, mode.authMode) {
+			t.Fatalf("上线后封存模式 %s/%s 不得出现在默认账号目录", mode.vendor, mode.authMode)
+		}
+	}
+}
+
 func TestVisibleModesExposeTypedRequiredFields(t *testing.T) {
 	catalog := DefaultCatalog()
 	if len(catalog.Modes) < 19 {

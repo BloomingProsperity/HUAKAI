@@ -41,6 +41,7 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 			"vendor":"anthropic",
 			"auth_mode":"api_key",
 			"oauth_token_endpoint":"https://attacker.test/token",
+			"client_id_source":"operator_config",
 			"client_secret":"attacker-secret"
 		}
 	}`
@@ -58,6 +59,9 @@ func TestParseOfficialAuthJSONForcesModeAndStripsUntrustedOverrides(t *testing.T
 	}
 	if payload["access_token"] != accessToken || payload["session_token"] != accessToken || payload["refresh_token"] != secret {
 		t.Fatalf("token payload 未归一：%v", payload)
+	}
+	if payload["client_id_source"] != credentialacq.ClientSourcePublicCLI {
+		t.Fatalf("官方 Codex 导入未固定公开客户端身份：%v", payload["client_id_source"])
 	}
 	if payload["expires_at"] != expiresAt.Format(time.RFC3339) {
 		t.Fatalf("expires_at=%v want %s", payload["expires_at"], expiresAt.Format(time.RFC3339))

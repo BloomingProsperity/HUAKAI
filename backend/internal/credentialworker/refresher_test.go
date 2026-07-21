@@ -15,49 +15,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 )
 
-func TestAdapterRegistryRegistersRealAndMockOnlyVendors(t *testing.T) {
-	registry := NewAdapterRegistry()
-	real := map[string]RefreshAdapter{
-		"anthropic": adapters.AnthropicRefresh{},
-		"openai":    adapters.OpenAIRefresh{},
-		"gemini":    adapters.GeminiRefresh{},
-		"codex":     adapters.CodexRefresh{},
-	}
-	for name, adapter := range real {
-		if err := registry.Register(name, adapter); err != nil {
-			t.Fatalf("Register(%s): %v", name, err)
-		}
-	}
-	for _, name := range MockOnlyProviders {
-		if err := registry.Register(name, MockOnlyAdapter{}); err != nil {
-			t.Fatalf("Register mock-only %s: %v", name, err)
-		}
-	}
-	for name := range real {
-		if _, ok := registry.Lookup(name); !ok {
-			t.Fatalf("Lookup(%s) missing", name)
-		}
-	}
-	for _, name := range MockOnlyProviders {
-		if _, ok := registry.Lookup(name); !ok {
-			t.Fatalf("Lookup mock-only %s missing", name)
-		}
-	}
-	if got, want := len(registry.Names()), 4+len(MockOnlyProviders); got != want {
-		t.Fatalf("registered names=%d, want %d", got, want)
-	}
-}
-
-func TestAdapterRegistryDuplicateRegisterRejected(t *testing.T) {
-	registry := NewAdapterRegistry()
-	if err := registry.Register("openai", adapters.OpenAIRefresh{}); err != nil {
-		t.Fatalf("first register: %v", err)
-	}
-	if err := registry.Register(" OPENAI ", adapters.OpenAIRefresh{}); err == nil {
-		t.Fatal("duplicate register must be rejected")
-	}
-}
-
 func TestOpenAIRefreshHTTPRoundTripRetriesOnce(t *testing.T) {
 	var attempts int32
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -77,6 +34,34 @@ func TestOpenAIRefreshHTTPRoundTripRetriesOnce(t *testing.T) {
 	assertRefreshResult(t, newCredential, expiresAt, err, "openai-new", "openai-rt")
 	if got := atomic.LoadInt32(&attempts); got != 2 {
 		t.Fatalf("attempts=%d, want 2", got)
+	}
+}
+
+func TestOAuthRateLimitPreservesRetryAfterWithoutImmediateRetry(t *testing.T) {
+	var attempts int32
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&attempts, 1)
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"120"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"rate_limit_exceeded"}`)),
+		}, nil
+	})}
+
+	_, _, err := (adapters.OpenAIRefresh{Endpoint: "http://mock.local/openai", HTTPClient: client}).RefreshForProvider(context.Background(), 2, "openai", testCredential())
+	if err == nil {
+		t.Fatal("RefreshForProvider error=nil，期望限流错误")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("限流请求次数=%d，期望 1", got)
+	}
+	var scheduler interface{ NextRefreshAttempt(time.Time) time.Time }
+	if !errors.As(err, &scheduler) {
+		t.Fatalf("限流错误没有携带下次重试时间：%v", err)
+	}
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	if got, want := scheduler.NextRefreshAttempt(now), now.Add(2*time.Minute); !got.Equal(want) {
+		t.Fatalf("下次重试=%s，期望 %s", got, want)
 	}
 }
 
@@ -165,29 +150,6 @@ func TestCodexRefreshRejectsCredentialSuppliedOAuthConfig(t *testing.T) {
 	}
 }
 
-func TestRegistryRefresherMockOnlyProviderReturnsErrMockOnly(t *testing.T) {
-	registry := NewAdapterRegistry()
-	if err := registry.Register("cursor", MockOnlyAdapter{}); err != nil {
-		t.Fatalf("register cursor: %v", err)
-	}
-	store := &memoryRefreshStore{account: RefreshAccount{AccountID: 5, ProviderID: 50, ProviderName: "cursor", CurrentCredential: testCredential()}}
-	err := NewRegistryRefresher(registry, store).RefreshForProvider(context.Background(), 50, 5)
-	if !errors.Is(err, ErrMockOnly) {
-		t.Fatalf("err=%v, want ErrMockOnly", err)
-	}
-	if len(store.saved) != 0 {
-		t.Fatalf("mock-only path must not save credential: %s", string(store.saved))
-	}
-}
-
-func TestRegistryRefresherMissingNonMockProviderReturnsMissing(t *testing.T) {
-	store := &memoryRefreshStore{account: RefreshAccount{AccountID: 6, ProviderID: 60, ProviderName: "unknown-real", CurrentCredential: testCredential()}}
-	err := NewRegistryRefresher(NewAdapterRegistry(), store).RefreshForProvider(context.Background(), 60, 6)
-	if !errors.Is(err, ErrProviderAdapterMissing) {
-		t.Fatalf("err=%v, want ErrProviderAdapterMissing", err)
-	}
-}
-
 func testCredential() []byte {
 	return []byte(`{"access_token":"old","refresh_token":"rt-old","client_id":"cid","client_secret":"secret","keep":"yes"}`)
 }
@@ -239,21 +201,4 @@ func assertRefreshResult(t *testing.T, raw []byte, expiresAt time.Time, err erro
 	if got["access_token"] != accessToken || got["refresh_token"] != refreshToken || got["keep"] != "yes" {
 		t.Fatalf("new credential=%v", got)
 	}
-}
-
-type memoryRefreshStore struct {
-	account      RefreshAccount
-	saved        []byte
-	savedExpires time.Time
-}
-
-func (s *memoryRefreshStore) LoadRefreshAccount(context.Context, int64) (RefreshAccount, error) {
-	return s.account, nil
-}
-
-func (s *memoryRefreshStore) SaveRefreshCredential(_ context.Context, account RefreshAccount, newCredential []byte, expiresAt time.Time) error {
-	s.account = account
-	s.saved = append([]byte(nil), newCredential...)
-	s.savedExpires = expiresAt
-	return nil
 }

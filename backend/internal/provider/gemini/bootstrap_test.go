@@ -3,7 +3,6 @@ package gemini
 import (
 	"errors"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
@@ -83,37 +82,9 @@ func TestGeminiOAuthConfigRejectsNonOperatorSource(t *testing.T) {
 	}
 }
 
-func TestGeminiRefreshAdapterFromOAuthConfigUsesOperatorConfig(t *testing.T) {
-	cfg := OAuthConfig(credentialacq.OAuthClientConfig{
-		AuthURL:     "https://operator.google.example.test/oauth/authorize",
-		TokenURL:    "https://operator.google.example.test/oauth/token",
-		ClientID:    "gemini-client-id",
-		RedirectURI: "http://127.0.0.1:1455/auth/callback",
-		Scopes:      []string{"openid", "email", "offline_access"},
-	})
-
-	adapter, err := RefreshAdapterFromOAuthConfig(cfg)
-	if err != nil {
-		t.Fatalf("RefreshAdapterFromOAuthConfig: %v", err)
-	}
-	if adapter.TokenURL != "https://operator.google.example.test/oauth/token" || adapter.ClientID != "gemini-client-id" {
-		t.Fatalf("adapter endpoint/client=(%q,%q), want operator values", adapter.TokenURL, adapter.ClientID)
-	}
-	if got := adapter.Scope; got != "openid email offline_access" {
-		t.Fatalf("scope=%q, want operator scopes", got)
-	}
-}
-
 func assertGeminiQueryValue(t *testing.T, q url.Values, key, want string) {
 	t.Helper()
 	if got := q.Get(key); got != want {
 		t.Fatalf("query %s=%q, want %q; all=%v", key, got, want, q)
-	}
-}
-
-func assertNoGeminiScopeFromCredential(t *testing.T, form url.Values) {
-	t.Helper()
-	if got := strings.TrimSpace(form.Get("scope")); got == "credential-controlled-scope" {
-		t.Fatalf("credential-controlled scope was sent: %q", got)
 	}
 }

@@ -83,3 +83,18 @@ func TestRerankQuotaDenyEmitsRetryAfter(t *testing.T) {
 		t.Fatalf("dispatcher calls=%d want 0 on quota deny", len(env.dispatcher.calls))
 	}
 }
+
+func TestRerankQuotaReserveCarriesEstimatedInputTokens(t *testing.T) {
+	env := newRerankTestEnv(t)
+	spy := &rerankQuotaReserverSpy{result: quota.ReserveResult{Allowed: true, Decision: quota.Decision{Kind: quota.DecisionAllow}}}
+	env.deps.QuotaReserver = spy
+
+	rec := env.invoke(t, rerankBody(2))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s，期望 200", rec.Code, rec.Body.String())
+	}
+	if spy.calls != 1 || spy.last.ReservedTokens <= 0 {
+		t.Fatalf("quota calls=%d reserved_tokens=%d，期望携带正数输入估算", spy.calls, spy.last.ReservedTokens)
+	}
+}

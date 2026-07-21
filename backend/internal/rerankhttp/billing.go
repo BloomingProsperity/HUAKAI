@@ -84,6 +84,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 		PoolGroupID:        ex.attempt.PoolGroupID,
 		RequestFingerprint: ex.payloadHash,
 		RequestedModel:     ex.req.Model,
+		ReservedTokens:     int64(ex.inputEstimate),
 		PredictedCost:      ex.predictedCost,
 		At:                 time.Now().UTC(),
 	}))
@@ -107,7 +108,7 @@ func (ex *execution) reserveQuota(w http.ResponseWriter) bool {
 }
 
 func (ex *execution) settleRequest(costSnapshot string, attemptSeq int) billing.SettleRequest {
-	confidence := 1.0
+	confidence := 0.5
 	return billing.SettleRequest{
 		ClaimID:           ex.reserveRes.ClaimID,
 		AccountID:         ex.selRes.AccountID,
@@ -126,7 +127,7 @@ func (ex *execution) settleRequest(costSnapshot string, attemptSeq int) billing.
 		Fingerprint:       ex.payloadHash,
 		AuditRequestID:    ex.requestID,
 		Draft: gateway.UsageRecordDraft{
-			TokensInput:           0,
+			TokensInput:           ex.inputEstimate,
 			TokensOutput:          0,
 			DeliveredTokenCount:   0,
 			ActualCost:            ex.predictedCost,

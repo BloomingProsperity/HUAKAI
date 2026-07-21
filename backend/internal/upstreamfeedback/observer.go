@@ -12,6 +12,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -290,14 +291,30 @@ func (o *Observer) ObserveSuccess(ctx context.Context, attempt Attempt, statusCo
 	if o == nil {
 		return
 	}
-	if o.deps.RateService != nil &&
-		attempt.Account.AccountID > 0 &&
-		strings.EqualFold(strings.TrimSpace(attempt.Account.Platform), "anthropic") {
+	if o.deps.RateService != nil && attempt.Account.AccountID > 0 && sessionWindowFeedbackSupported(attempt.Account) {
 		if err := o.deps.RateService.UpdateSessionWindow(ctx, attempt.Account.AccountID, headers); err != nil {
 			logInternal(ctx, attempt.RequestID, "session_window_update_failed", err)
 		}
 	}
 	o.recordSignal(ctx, attempt, channelhealth.SignalSuccess, statusCode, nil, authcooldown.ClassAmbiguous)
+}
+
+func sessionWindowFeedbackSupported(account provider.AccountInfo) bool {
+	vendor := strings.ToLower(strings.TrimSpace(account.Platform))
+	mode := strings.ToLower(strings.TrimSpace(account.AccountType))
+	switch vendor {
+	case credentialstore.VendorAnthropic:
+		return mode == credentialstore.AuthModeClaudeAIOAuth
+	case credentialstore.VendorOpenAI:
+		switch mode {
+		case credentialstore.AuthModeChatGPTOAuth,
+			credentialstore.AuthModeCodexCLIOAuth,
+			credentialstore.AuthModeCodexWebOAuth,
+			credentialstore.AuthModeCodexAgent:
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Observer) applyRateState(

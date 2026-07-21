@@ -213,8 +213,9 @@ func candidateFromTokenObject(fields map[string]any, shape string) (credentialac
 	subjectID := firstString(fields, "chatgpt_user_id", "user_id", "external_subject_id")
 	email := firstString(fields, "email", "external_account_email")
 	payload := map[string]any{
-		"access_token":  access,
-		"session_token": access,
+		"access_token":     access,
+		"session_token":    access,
+		"client_id_source": credentialacq.ClientSourcePublicCLI,
 	}
 	if refresh != "" {
 		payload["refresh_token"] = refresh

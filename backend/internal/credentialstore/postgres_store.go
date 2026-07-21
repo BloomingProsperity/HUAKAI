@@ -1224,11 +1224,14 @@ func (s *Store) prepareEnvelope(ctx context.Context, tenantID, providerAccountID
 	refreshExp := parseNamedTime(fields, "refresh_expires_at")
 	var refreshBefore time.Time
 	if handler.Refreshable() {
-		if accessExp.IsZero() {
-			// 无初始 access token 的可刷新凭据(如 vertex SA 仅有 client_email+private_key
-			// 私钥材料):排入即时刷新,让 refresher 铸出首个 token;否则永不进刷新扫描=
-			// 无法物化 fail-closed(M1 bootstrap)。铸不出的凭据经 refresher 的 backoff 限频。
-			refreshBefore = time.Now().UTC()
+		if _, materialErr := handler.RuntimeMaterial(payload); materialErr != nil {
+			// 引导凭据即使携带的是长期授权材料及其到期时间，只要尚不能生成
+			// 可出站的运行令牌，就必须立即进入刷新队列。否则账号会在授权材料
+			// 到期前一直处于 active 但不可调用的假健康状态。
+			refreshBefore = s.now().UTC()
+		} else if accessExp.IsZero() {
+			// 已带可调用材料但上游没有提供到期时间时先供流量使用；后续由明确
+			// 到期、热路径鉴权失败或人工轮换推进生命周期。
 		} else {
 			refreshBefore = accessExp.Add(-RefreshWindow)
 		}

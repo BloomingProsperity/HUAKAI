@@ -1221,6 +1221,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		stagedStore := accountintake.NewStagedStore(d.pgPool, d.credentialKeys)
 		intakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth).
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
+			WithProjectEnricher(d.projectEnricher).
 			WithProxyResolver(accountproxyimport.New(d.credentialKeys))
 		var crsService *accountintake.CRSService
 		if d.cfg != nil && len(d.cfg.CRSSource.AllowedHosts) > 0 {
@@ -1280,8 +1281,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/admin/v1/model-sync", func(r chi.Router) {
 		adminhttp.MountModelSyncRoutes(r, adminhttp.AdminModelSyncDeps{
-			Auth:    d.adminAuth,
-			Service: d.modelSync,
+			Auth:      d.adminAuth,
+			Service:   d.modelSync,
+			Scheduler: d.modelSyncScheduler,
 		})
 	})
 	r.Route("/admin/v1/model-discoveries", func(r chi.Router) {

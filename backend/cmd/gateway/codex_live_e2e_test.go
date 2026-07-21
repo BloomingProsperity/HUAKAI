@@ -18,11 +18,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -33,6 +31,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -43,7 +42,6 @@ const (
 	codexLiveBinaryName   = "gateway-codex-live-e2e.exe"
 	codexLiveProtocol     = "openai_codex"
 	codexLiveVendor       = credentialstore.VendorOpenAI
-	codexLiveAuthMode     = credentialstore.AuthModeCodexCLIOAuth
 	codexLiveDefaultModel = "gpt-5.5"
 	// chatgpt.com 按模型强制最低 Codex 版本;旧版(如 0.99.0)对 gpt-5.5 返回
 	// "requires a newer version of Codex" 400。须与已安装 codex CLI 版本一致。
@@ -57,15 +55,42 @@ const (
 )
 
 type codexLiveAuth struct {
-	AccessToken string
-	AccountID   string
+	AccessToken  string
+	RefreshToken string
+	IDToken      string
+	AccountID    string
+	PlanType     string
 }
 
 type codexLiveAuthFile struct {
 	Tokens struct {
-		AccessToken string `json:"access_token"`
-		AccountID   string `json:"account_id"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		AccountID    string `json:"account_id"`
 	} `json:"tokens"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	IDToken      string `json:"id_token"`
+	AccountID    string `json:"account_id"`
+	PlanType     string `json:"chatgpt_plan_type"`
+}
+
+func TestCodexLiveFormalImportWiring(t *testing.T) {
+	dsn := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_DATABASE_URL"), os.Getenv("HUAKAI_E2E_DATABASE_URL"))
+	if strings.TrimSpace(dsn) == "" {
+		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 Codex 正式导入接线测试")
+	}
+	auth := codexLiveAuth{
+		AccessToken:  "synthetic-codex-live-access-token",
+		RefreshToken: "synthetic-codex-live-refresh-token",
+		AccountID:    "synthetic-codex-live-account",
+		PlanType:     "pro",
+	}
+	ctx, pgPool, seed, _, _ := setupCodexLiveE2E(
+		t, dsn, auth, "gpt-codex-formal-import-e2e", codexLiveDefaultVersion,
+	)
+	waitForCodexLiveInFlight(t, ctx, pgPool, seed.providerAccountID, 0)
 }
 
 func TestCodexLiveResponsesMatrix(t *testing.T) {
@@ -83,27 +108,7 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 	model := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_MODEL"), codexLiveDefaultModel)
 	version := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_VERSION"), codexLiveDefaultVersion)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
-	if err != nil {
-		t.Fatalf("打开 codex live e2e 数据库连接池: %v", err)
-	}
-	defer pgPool.Close()
-
-	seed := seedCodexLiveGraph(t, ctx, pgPool, auth, model, version)
-	assertCodexLiveSeedSelectable(t, ctx, pgPool, seed)
-
-	binPath := buildCodexLiveGateway(t)
-	defer os.Remove(binPath)
-
-	addr := reserveCodexLiveLocalPort(t)
-	cmd := startCodexLiveGateway(t, binPath, dsn, addr, seed, auth)
-	t.Cleanup(func() { stopCodexLiveGateway(cmd) })
-	waitForCodexLiveGateway(t, addr)
-
-	client := &http.Client{Timeout: 180 * time.Second}
+	ctx, pgPool, seed, addr, client := setupCodexLiveE2E(t, dsn, auth, model, version)
 	cases := []struct {
 		name       string
 		body       map[string]any
@@ -265,29 +270,9 @@ func TestChatToCodexLiveMatrix(t *testing.T) {
 	model := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_MODEL"), codexLiveDefaultModel)
 	version := firstCodexLiveNonEmpty(os.Getenv("HUAKAI_E2E_CODEX_VERSION"), codexLiveDefaultVersion)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
-	if err != nil {
-		t.Fatalf("打开 chat/messages→codex live e2e 数据库连接池: %v", err)
-	}
-	defer pgPool.Close()
-
-	seed := seedCodexLiveGraph(t, ctx, pgPool, auth, model, version)
-	assertCodexLiveSeedSelectable(t, ctx, pgPool, seed)
-
-	binPath := buildCodexLiveGateway(t)
-	defer os.Remove(binPath)
-
-	addr := reserveCodexLiveLocalPort(t)
-	cmd := startCodexLiveGateway(t, binPath, dsn, addr, seed, auth)
-	t.Cleanup(func() { stopCodexLiveGateway(cmd) })
-	waitForCodexLiveGateway(t, addr)
-
+	ctx, pgPool, seed, addr, client := setupCodexLiveE2E(t, dsn, auth, model, version)
 	streamTrue := true
 	streamFalse := false
-	client := &http.Client{Timeout: 180 * time.Second}
 	cases := []struct {
 		name       string
 		path       string
@@ -492,30 +477,189 @@ func TestChatToCodexLiveMatrix(t *testing.T) {
 	}
 }
 
-func loadCodexLiveAuth(t *testing.T) codexLiveAuth {
+func setupCodexLiveE2E(
+	t *testing.T,
+	dsn string,
+	auth codexLiveAuth,
+	model, version string,
+) (context.Context, *pgxpool.Pool, *codexLiveSeed, string, *http.Client) {
 	t.Helper()
-	if token := strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ACCESS_TOKEN")); token != "" {
-		return codexLiveAuth{
-			AccessToken: token,
-			AccountID:   strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ACCOUNT_ID")),
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
+	if err != nil {
+		setupCancel()
+		t.Fatalf("打开 Codex 活体测试数据库连接池: %v", err)
+	}
+	t.Cleanup(pgPool.Close)
+	seed := seedCodexLiveGraph(t, setupCtx, pgPool, model, version)
+	setupCancel()
+
+	binPath := buildCodexLiveGateway(t)
+	t.Cleanup(func() { _ = os.Remove(binPath) })
+	addr := reserveCodexLiveLocalPort(t)
+	processes := startCodexLiveGateway(t, binPath, dsn, addr, seed, auth)
+	t.Cleanup(func() { stopSpecializedLiveProcesses(processes) })
+	waitForCodexLiveGateway(t, addr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	t.Cleanup(cancel)
+	client := &http.Client{Timeout: 180 * time.Second}
+	imported := importCodexLiveAccount(t, ctx, client, addr, seed, auth)
+	seed.providerAccountID = imported.AccountID
+	assertCodexLiveImportedIdentityAndSubscription(t, ctx, pgPool, seed, auth, imported.Item)
+	assertCodexLiveSeedSelectable(t, ctx, pgPool, seed)
+	return ctx, pgPool, seed, addr, client
+}
+
+func importCodexLiveAccount(
+	t *testing.T,
+	ctx context.Context,
+	client *http.Client,
+	addr string,
+	seed *codexLiveSeed,
+	auth codexLiveAuth,
+) specializedLiveImportResult {
+	t.Helper()
+	tokens := map[string]any{
+		"access_token": auth.AccessToken,
+		"account_id":   auth.AccountID,
+	}
+	if auth.RefreshToken != "" {
+		tokens["refresh_token"] = auth.RefreshToken
+	}
+	if auth.IDToken != "" {
+		tokens["id_token"] = auth.IDToken
+	}
+	content := map[string]any{
+		"tokens":        tokens,
+		"account_id":    auth.AccountID,
+		"codex_version": seed.version,
+		"originator":    "codex_cli_rs",
+		"oai_device_id": "huakai-codex-live-e2e",
+		"user_agent":    "codex_cli_rs/" + seed.version + " (linux; x86_64)",
+	}
+	if auth.PlanType != "" {
+		content["chatgpt_plan_type"] = auth.PlanType
+	}
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("编码 Codex 活体导入载荷: %v", err)
+	}
+	extra := json.RawMessage(`{}`)
+	if captureURL := strings.TrimSpace(os.Getenv("HUAKAI_E2E_CODEX_CAPTURE_URL")); captureURL != "" {
+		extra, err = json.Marshal(map[string]string{"base_url": captureURL})
+		if err != nil {
+			t.Fatalf("编码 Codex 活体诊断出站地址: %v", err)
 		}
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("无法定位 HOME 读取 ~/.codex/auth.json: %v", err)
+	capConcurrency := int32(1)
+	priority := int32(100)
+	request := specializedLiveAccountImportRequest{
+		TenantID: seed.tenantID,
+		Content:  string(contentJSON),
+		Account: accountintake.AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			ExactName:       "codex-live-e2e-正式导入-" + uuid.NewString(),
+			AccountType:     "session",
+			CapConcurrency:  &capConcurrency,
+			Priority:        &priority,
+			Extra:           extra,
+			ModelAllowList:  []string{seed.model},
+			CapabilityFlags: []string{"stream", "tools", "vision", "json"},
+		},
 	}
-	raw, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
-	if err != nil {
-		t.Skipf("读取 ~/.codex/auth.json 失败: %v", err)
+	return executeSpecializedLiveAccountImport(
+		t, ctx, client, addr,
+		"/admin/v1/credentials/account-imports/codex/plan",
+		"/admin/v1/credentials/account-imports/codex/execute",
+		seed.adminBearer, request,
+		auth.AccessToken, auth.RefreshToken, auth.IDToken,
+	)
+}
+
+func assertCodexLiveImportedIdentityAndSubscription(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	seed *codexLiveSeed,
+	auth codexLiveAuth,
+	item accountintake.ExecutionItem,
+) {
+	t.Helper()
+	var (
+		enabled         bool
+		credentialState string
+		externalAccount string
+		identitySource  string
+		activeCount     int
+		tags            []string
+	)
+	if err := pool.QueryRow(ctx, `
+SELECT pa.enabled, pa.credential_state, pa.tags,
+       COALESCE(max(ac.external_account_id), ''),
+       COALESCE(max(ac.external_identity_source), ''), count(ac.id)::int
+FROM provider_accounts pa
+LEFT JOIN account_credentials ac
+  ON ac.tenant_id=pa.tenant_id AND ac.provider_account_id=pa.id AND ac.state='active'
+WHERE pa.tenant_id=$1 AND pa.id=$2
+GROUP BY pa.id`, seed.tenantID, item.ProviderAccountID).Scan(
+		&enabled, &credentialState, &tags, &externalAccount, &identitySource, &activeCount,
+	); err != nil {
+		t.Fatalf("读取 Codex 正式导入账号投影: %v", err)
 	}
-	var parsed codexLiveAuthFile
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		t.Fatalf("解析 ~/.codex/auth.json: %v", err)
+	if !enabled || credentialState != "valid" || activeCount != 1 {
+		t.Fatalf("Codex 正式导入账号不可运行: enabled=%t credential_state=%s credentials=%d",
+			enabled, credentialState, activeCount)
 	}
-	return codexLiveAuth{
-		AccessToken: strings.TrimSpace(parsed.Tokens.AccessToken),
-		AccountID:   strings.TrimSpace(parsed.Tokens.AccountID),
+	if externalAccount != auth.AccountID || identitySource != "import_payload" {
+		t.Fatalf("Codex 导入身份投影=%q/%q，期望 %q/import_payload",
+			externalAccount, identitySource, auth.AccountID)
 	}
+	for _, label := range item.SystemLabels {
+		for _, tag := range tags {
+			if tag == label {
+				t.Fatalf("Codex 系统套餐标签 %q 不得混入人工标签", label)
+			}
+		}
+		var storedLabel string
+		if err := pool.QueryRow(ctx, `
+SELECT vendor || ':' || normalized_plan
+FROM provider_account_subscription_states
+WHERE tenant_id=$1 AND provider_account_id=$2`, seed.tenantID, item.ProviderAccountID).Scan(&storedLabel); err != nil {
+			t.Fatalf("Codex 套餐标签 %q 未持久化到独立投影: %v", label, err)
+		}
+		if storedLabel != label {
+			t.Fatalf("Codex 套餐投影=%q，导入响应=%q", storedLabel, label)
+		}
+	}
+}
+
+func loadCodexLiveAuth(t *testing.T) codexLiveAuth {
+	t.Helper()
+	if raw := strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_CREDENTIAL_JSON")); raw != "" {
+		var parsed codexLiveAuthFile
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			t.Fatalf("HUAKAI_CODEX_LIVE_CREDENTIAL_JSON 不是合法 JSON: %v", err)
+		}
+		return codexLiveAuth{
+			AccessToken:  firstCodexLiveNonEmpty(parsed.Tokens.AccessToken, parsed.AccessToken),
+			RefreshToken: firstCodexLiveNonEmpty(parsed.Tokens.RefreshToken, parsed.RefreshToken),
+			IDToken:      firstCodexLiveNonEmpty(parsed.Tokens.IDToken, parsed.IDToken),
+			AccountID:    firstCodexLiveNonEmpty(parsed.Tokens.AccountID, parsed.AccountID),
+			PlanType:     strings.TrimSpace(parsed.PlanType),
+		}
+	}
+	if token := strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ACCESS_TOKEN")); token != "" {
+		return codexLiveAuth{
+			AccessToken:  token,
+			RefreshToken: strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_REFRESH_TOKEN")),
+			IDToken:      strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ID_TOKEN")),
+			AccountID:    strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_ACCOUNT_ID")),
+			PlanType:     strings.TrimSpace(os.Getenv("HUAKAI_CODEX_LIVE_PLAN_TYPE")),
+		}
+	}
+	t.Skip("未通过环境变量显式提供 Codex 活体凭据；测试不会自动读取本机受保护文件")
+	return codexLiveAuth{}
 }
 
 type codexLiveSeed struct {
@@ -531,11 +675,13 @@ type codexLiveSeed struct {
 	costQuotaPolicyID int64
 	pricingVersion    string
 	bearer            string
+	adminBearer       string
+	adminTokenID      int64
 	model             string
 	version           string
 }
 
-func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, auth codexLiveAuth, model, version string) *codexLiveSeed {
+func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, model, version string) *codexLiveSeed {
 	t.Helper()
 	unique := uuid.NewString()
 	seed := &codexLiveSeed{
@@ -590,17 +736,22 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 		_, _ = pgPool.Exec(c, `DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM balance_holds WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveMoneyRows(c, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 Codex 活体测试钱路记录: %v", err)
+		}
 		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveSubscriptionObservations(c, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 Codex 活体测试套餐观测: %v", err)
+		}
+		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
@@ -609,6 +760,8 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID)
 		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion)
 	})
@@ -658,7 +811,9 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 	).Scan(&seed.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	seed.providerAccountID = seedCodexLiveProviderAccount(t, ctx, pgPool, seed, auth, unique)
+	seed.adminBearer, seed.adminTokenID = seedSpecializedLiveImportAuthorization(
+		t, ctx, pgPool, seed.tenantID, "codex-live-e2e-admin-"+unique,
+	)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -706,89 +861,6 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 		t.Fatalf("seed cost quota policy: %v", err)
 	}
 	return seed
-}
-
-func seedCodexLiveProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *codexLiveSeed, auth codexLiveAuth, unique string) int64 {
-	t.Helper()
-	extra := map[string]string{
-		"account_id":    auth.AccountID,
-		"codex_version": seed.version,
-		"originator":    "codex_cli_rs",
-		"oai_device_id": "huakai-codex-live-e2e",
-		"user_agent":    "codex_cli_rs/" + seed.version + " (linux; x86_64)",
-		"oai_country":   "US",
-	}
-	// 诊断钩子:设了 HUAKAI_E2E_CODEX_CAPTURE_URL 则把出站指向本地捕获服务器,看 HUAKAI 实发请求。
-	if cap := strings.TrimSpace(os.Getenv("HUAKAI_E2E_CODEX_CAPTURE_URL")); cap != "" {
-		extra["base_url"] = cap
-	}
-	legacyCredentials, err := json.Marshal(map[string]any{
-		"access_token": auth.AccessToken,
-		"account_id":   auth.AccountID,
-		"extra":        extra,
-	})
-	if err != nil {
-		t.Fatalf("marshal legacy codex credential: %v", err)
-	}
-	extraJSON, err := json.Marshal(extra)
-	if err != nil {
-		t.Fatalf("marshal provider account extra: %v", err)
-	}
-
-	var accountID int64
-	if err := pgPool.QueryRow(ctx,
-		`INSERT INTO provider_accounts (
-			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count, priority, health_state, credential_state,
-			model_allow_list, capability_flags, credentials, extra
-		) VALUES ($1, $2, $3, $4, $5,
-			1, 0, 100, 'healthy', 'valid',
-			ARRAY[$6]::text[], ARRAY['stream','tools','vision','json'], $7::jsonb, $8::jsonb) RETURNING id`,
-		seed.tenantID, seed.providerID, seed.channelID, "codex-live-e2e-acct-"+unique,
-		// account_type 是账号类型(oauth/session/...),非 auth_mode;codex session 用 'session'。
-		"session", seed.model, string(legacyCredentials), string(extraJSON),
-	).Scan(&accountID); err != nil {
-		t.Fatalf("seed provider account: %v", err)
-	}
-
-	payload, err := json.Marshal(map[string]any{
-		"access_token":  auth.AccessToken,
-		"account_id":    auth.AccountID,
-		"codex_version": seed.version,
-		"originator":    "codex_cli_rs",
-		"oai_device_id": "huakai-codex-live-e2e",
-		"user_agent":    "codex_cli_rs/" + seed.version + " (linux; x86_64)",
-		"extra":         extra,
-	})
-	if err != nil {
-		t.Fatalf("marshal account credential payload: %v", err)
-	}
-	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
-	if err != nil {
-		t.Fatalf("cred key provider: %v", err)
-	}
-	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
-		payload,
-		credentialstore.AAD{
-			TenantID:          seed.tenantID,
-			ProviderAccountID: accountID,
-			Vendor:            codexLiveVendor,
-			AuthMode:          codexLiveAuthMode,
-			Version:           1,
-		})
-	if err != nil {
-		t.Fatalf("encrypt credential for account %d: %v", accountID, err)
-	}
-	if _, err := pgPool.Exec(ctx,
-		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
-		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
-		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, codexLiveVendor, codexLiveAuthMode,
-		credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
-	); err != nil {
-		t.Fatalf("seed account credential: %v", err)
-	}
-	return accountID
 }
 
 func assertCodexLiveSeedSelectable(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *codexLiveSeed) {
@@ -866,10 +938,19 @@ func reserveCodexLiveLocalPort(t *testing.T) string {
 	return addr
 }
 
-func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexLiveSeed, auth codexLiveAuth) *exec.Cmd {
+func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexLiveSeed, auth codexLiveAuth) *specializedLiveProcesses {
 	t.Helper()
+	blockedEnvNames := []string{
+		"HUAKAI_CODEX_LIVE_CREDENTIAL_JSON",
+		"HUAKAI_CODEX_LIVE_ACCESS_TOKEN",
+		"HUAKAI_CODEX_LIVE_REFRESH_TOKEN",
+		"HUAKAI_CODEX_LIVE_ID_TOKEN",
+		"HUAKAI_CODEX_LIVE_ACCOUNT_ID",
+		"HUAKAI_CODEX_LIVE_PLAN_TYPE",
+	}
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRootForCodexLive(t), blockedEnvNames...)
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(specializedLiveChildEnv(blockedEnvNames...),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
@@ -882,6 +963,7 @@ func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexL
 		"HUAKAI_EVENTBUS_ENABLED=0",
 		"HUAKAI_RATE_PRECHECK_ENABLED=false",
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 		"HUAKAI_DISPATCH_HCSF=1",
@@ -889,11 +971,13 @@ func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexL
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("start gateway: %v", err)
 	}
 	go drainCodexLivePipe("gateway-stderr", stderr, auth.AccessToken)
 	go drainCodexLivePipe("gateway-stdout", stdout, auth.AccessToken)
-	return cmd
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func drainCodexLivePipe(label string, r io.ReadCloser, token string) {
@@ -904,20 +988,6 @@ func drainCodexLivePipe(label string, r io.ReadCloser, token string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fmt.Printf("[%s] %s\n", label, redactCodexLiveSecrets(scanner.Text(), token))
-	}
-}
-
-func stopCodexLiveGateway(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
 	}
 }
 

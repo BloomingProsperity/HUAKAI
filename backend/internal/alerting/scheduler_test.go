@@ -55,8 +55,8 @@ func TestScheduler_SkipsTenantsWithoutEnabledRules(t *testing.T) {
 	ticker := newFakeSchedulerTicker()
 	lister := &schedulerTenantListerStub{tenants: []int64{303}}
 	source := &schedulerMetricSourceStub{snapshots: map[int64]map[string]float64{
-		303: {"huakai_group_policy_failopen_total": 1},
-		404: {"huakai_group_policy_failopen_total": 99},
+		303: {"huakai_group_policy_failclosed_total": 1},
+		404: {"huakai_group_policy_failclosed_total": 99},
 	}}
 	evaluator := newSchedulerEvaluatorStub()
 	scheduler := NewScheduler(SchedulerConfig{
@@ -154,7 +154,7 @@ func TestMemoryStore_ListTenantsWithEnabledRulesSkipsDisabledAndSorts(t *testing
 	mustCreateRule(t, svc, CreateRuleInput{
 		TenantID:      8,
 		Name:          "enabled tenant eight",
-		Metric:        "huakai_group_policy_failopen_total",
+		Metric:        "huakai_group_policy_failclosed_total",
 		Comparator:    ComparatorGTE,
 		Threshold:     1,
 		Severity:      SeverityWarning,
@@ -163,7 +163,7 @@ func TestMemoryStore_ListTenantsWithEnabledRulesSkipsDisabledAndSorts(t *testing
 	mustCreateRule(t, svc, CreateRuleInput{
 		TenantID:      7,
 		Name:          "disabled tenant seven",
-		Metric:        "huakai_group_policy_failopen_total",
+		Metric:        "huakai_group_policy_failclosed_total",
 		Comparator:    ComparatorGTE,
 		Threshold:     1,
 		Severity:      SeverityWarning,

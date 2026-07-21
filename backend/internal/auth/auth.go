@@ -49,6 +49,7 @@ const (
 	OutcomeTokenMalformed            Outcome = "token_malformed"
 	OutcomeOAuth401ForceRefresh      Outcome = "oauth_401_force_refresh"
 	OutcomePermanentDisable          Outcome = "permanent_disable"
+	OutcomeOperatorAttention         Outcome = "operator_attention"
 	OutcomeMimicryApplied            Outcome = "mimicry_applied"
 )
 

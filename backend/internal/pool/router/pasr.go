@@ -214,7 +214,10 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 			failures.other++
 			continue
 		}
-		ok, why := p.allowAccount(ctx, scoped, snap, req)
+		ok, why, gateErr := p.allowAccount(ctx, scoped, snap, req)
+		if gateErr != nil {
+			return nil, gateErr
+		}
 		if !ok {
 			reason.GateFailure(accID, why)
 			failures.add(why)
@@ -347,7 +350,10 @@ func (p *PASRSelector) scheduleHRWFullRing(
 			failures.other++
 			continue
 		}
-		ok, why := p.allowAccount(ctx, gates, snap, req)
+		ok, why, gateErr := p.allowAccount(ctx, gates, snap, req)
+		if gateErr != nil {
+			return nil, gateErr
+		}
 		if !ok {
 			reason.GateFailure(accID, why)
 			failures.add(why)
@@ -389,15 +395,11 @@ func (f selectionFailures) onlyHealth() bool {
 	return f.health > 0 && f.other == 0
 }
 
-func (p *PASRSelector) allowAccount(ctx context.Context, gates GateChain, snap *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason) {
+func (p *PASRSelector) allowAccount(ctx context.Context, gates GateChain, snap *AccountSnapshot, req SelectionRequest) (bool, GateFailureReason, error) {
 	if p == nil {
-		return false, ""
+		return false, "", nil
 	}
-	ok, why, err := gates.Allow(ctx, snap, req)
-	if err != nil {
-		return false, why
-	}
-	return ok, why
+	return gates.Allow(ctx, snap, req)
 }
 
 func (p *PASRSelector) healthStatus(ctx context.Context, snap *AccountSnapshot, req SelectionRequest) HealthStatus {

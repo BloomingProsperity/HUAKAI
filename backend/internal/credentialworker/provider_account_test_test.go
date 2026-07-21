@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker/adapters"
 )
@@ -206,7 +207,7 @@ func TestDryRunProviderAccountCredentialNoRefreshRequiredFailsClosed(t *testing.
 	}
 }
 
-func TestClassifyRefreshErrorClassUsesSafeSevenClasses(t *testing.T) {
+func TestClassifyRefreshErrorClassUsesSafeContractClasses(t *testing.T) {
 	// 分类只能暴露契约内安全类,不能冒出 raw/decrypt_failed 等内部实现细节。
 	cases := []struct {
 		name string
@@ -219,6 +220,8 @@ func TestClassifyRefreshErrorClassUsesSafeSevenClasses(t *testing.T) {
 		{name: "account_disabled", err: errors.New("account_disabled by upstream"), want: "account_disabled"},
 		{name: "payload_invalid", err: adapters.ErrInvalidCredentialMaterial, want: "payload_invalid"},
 		{name: "operator_config", err: ErrOperatorOAuthConfigMissing, want: "operator_config_required"},
+		{name: "project_conflict", err: projectenrich.ErrProjectMetadataConflict, want: "project_metadata_conflict"},
+		{name: "project_unavailable", err: projectenrich.ErrProjectMetadataUnavailable, want: "project_metadata_unavailable"},
 		{name: "temporary", err: errors.New("temporary token service outage"), want: "temporary"},
 		{name: "decrypt_collapses_to_payload_invalid", err: errors.New("decrypt failed"), want: "payload_invalid"},
 	}

@@ -24,6 +24,7 @@ func TestMessageForKnownCodesAndFallback(t *testing.T) {
 		{CodeCanonicalResponseError, "upstream response could not be converted"},
 		{CodeQueueWait, "request is queued; retry later"},
 		{CodeBindingConcurrencyLimited, "binding concurrency limit exceeded; retry later"},
+		{CodeGroupPolicyUnavailable, "group routing policy is temporarily unavailable"},
 		{CodeAuditRefMissing, "Audit reference missing for money-path operation."},
 		{CodeStreamForwardError, "upstream stream failed before delivery"},
 		{CodeContentPolicyViolation, "request violates content policy"},

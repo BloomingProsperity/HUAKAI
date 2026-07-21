@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	providerantigravity "github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"
 	providercopilot "github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
+	providerwindsurf "github.com/BloomingProsperity/HUAKAI/internal/provider/windsurf"
 )
 
 var (
@@ -87,33 +88,52 @@ func DefaultModeAdapterRegistryWithRuntimeOAuth(configs appconfig.VendorOAuthCon
 	return newDefaultModeAdapterRegistryWithProjectResolver(nil, &providerantigravity.ProjectResolver{}, configs)
 }
 
-// DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth 同时注入项目解析器与生产 OAuth 配置。
-func DefaultModeAdapterRegistryWithProjectResolverAndRuntimeOAuth(resolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs) *ModeAdapterRegistry {
-	return newDefaultModeAdapterRegistryWithProjectResolver(nil, resolver, configs)
+// DefaultModeAdapterRegistryWithRuntimeDependencies 注入生产刷新所需的模式级依赖。
+func DefaultModeAdapterRegistryWithRuntimeDependencies(resolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs, anthropicOAuthClient *http.Client) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithRuntimeDependencies(nil, resolver, configs, anthropicOAuthClient)
 }
 
 func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs) *ModeAdapterRegistry {
+	return newDefaultModeAdapterRegistryWithRuntimeDependencies(operatorOAuthClient, projectResolver, configs, nil)
+}
+
+func newDefaultModeAdapterRegistryWithRuntimeDependencies(operatorOAuthClient *http.Client, projectResolver adapters.ProjectIDResolver, configs appconfig.VendorOAuthConfigs, anthropicOAuthClient *http.Client) *ModeAdapterRegistry {
 	r := NewModeAdapterRegistry()
 	register := func(vendor, authMode string, adapter ModeRefreshAdapter) {
 		_ = r.Register(vendor, authMode, adapter)
 	}
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeAPIKey, staticModeAdapter{})
-	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
-	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{}})
+	anthropicRefresh := legacyOAuthModeAdapter{providerName: "anthropic", adapter: adapters.AnthropicRefresh{HTTPClient: anthropicOAuthClient}}
+	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, anthropicRefresh)
+	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeCode, anthropicRefresh)
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeBedrock, staticModeAdapter{})
 	register(credentialstore.VendorAnthropic, credentialstore.AuthModeVertexAnthropic, vertexSAModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, staticModeAdapter{})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, newOpenAIChatGPTBuiltinOAuthModeAdapter())
-	codexRefresh := adapters.CodexRefresh{OpenAI: adapters.OpenAIRefresh{}}
-	if cfg, ok := configs.Configured()[appconfig.VendorOAuthOpenAICodex]; ok {
-		codexRefresh = adapters.NewCodexRefresh(cfg.TokenURL, cfg.ClientID, cfg.Scope, operatorOAuthClient)
+	codexBuiltinRefresh := legacyOAuthModeAdapter{
+		providerName: "codex",
+		adapter: adapters.NewCodexRefresh(
+			credentialacq.OpenAICodexOAuthTokenURL,
+			credentialacq.OpenAICodexOAuthClientID,
+			credentialacq.OpenAICodexOAuthRefreshScope,
+			operatorOAuthClient,
+		),
 	}
-	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: codexRefresh})
+	var codexOperatorRefresh ModeRefreshAdapter
+	if cfg, ok := configs.Configured()[appconfig.VendorOAuthOpenAICodex]; ok {
+		codexOperatorRefresh = legacyOAuthModeAdapter{
+			providerName: "codex",
+			adapter:      adapters.NewCodexRefresh(cfg.TokenURL, cfg.ClientID, cfg.Scope, operatorOAuthClient),
+		}
+	}
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, codexOAuthModeAdapter{
+		builtin: codexBuiltinRefresh, operator: codexOperatorRefresh,
+	})
 	// codex_web_oauth(authorization-code/PKCE 浏览器获取)与 codex_cli_oauth(device-code)凭据
 	// 形状一致(access_token + refresh_token + id_token),共享同一 codex refresh adapter,避免 web
 	// 获取的 token 因无 refresh 绑定而静默过期(auth/可用性回退)。
-	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, legacyOAuthModeAdapter{providerName: "codex", adapter: codexRefresh})
+	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexWebOAuth, codexBuiltinRefresh)
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeCodexAgent, newCodexAgentModeAdapter())
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeAzure, mockTokenExchangeAdapter{providerName: "azure"})
 	register(credentialstore.VendorOpenAI, credentialstore.AuthModeRefreshToken, legacyOAuthModeAdapter{providerName: "openai", adapter: adapters.OpenAIRefresh{}})
@@ -121,17 +141,21 @@ func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.
 	register(credentialstore.VendorGemini, credentialstore.AuthModeVertexSA, vertexSAModeAdapter{})
 	register(credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, newGeminiBuiltinClientOAuthModeAdapter("code_assist"))
 	register(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, newGeminiBuiltinClientOAuthModeAdapter("google_one"))
-	// gemini/antigravity 使用内置公开 OAuth profile 与既有 Antigravity 刷新核；
-	// endpoint/client/scope 不从凭据 payload 取值。
+	// 两种 Antigravity 存储形态共享内置公开 OAuth profile；endpoint/client/scope
+	// 不从凭据 payload 取值，项目标识由统一解析器补全。
 	antigravityOAuth := providerantigravity.DefaultOAuthConfig()
-	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, legacyOAuthModeAdapter{
+	antigravityRefresh := legacyOAuthModeAdapter{
 		providerName: "antigravity",
-		adapter: providerantigravity.RefreshAdapter{
-			TokenURL: antigravityOAuth.TokenURL, ClientID: antigravityOAuth.ClientID,
-			ClientSecret: antigravityOAuth.ClientSecret, Scope: strings.Join(antigravityOAuth.Scopes, " "),
-			HTTPClient: operatorOAuthClient,
+		adapter: adapters.AntigravityRefresh{
+			Gemini: adapters.GeminiRefresh{
+				Endpoint: antigravityOAuth.TokenURL, ClientID: antigravityOAuth.ClientID,
+				ClientSecret: antigravityOAuth.ClientSecret, HTTPClient: operatorOAuthClient,
+				TierCacheTTL: 24 * time.Hour,
+			},
+			ProjectResolver: projectResolver,
 		},
-	})
+	}
+	register(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, antigravityRefresh)
 	register(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
 		providerName: "gemini",
 		configVendor: appconfig.VendorOAuthGemini,
@@ -146,20 +170,17 @@ func newDefaultModeAdapterRegistryWithProjectResolver(operatorOAuthClient *http.
 		},
 	})
 	register(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, copilotOAuthModeAdapter{})
-	register(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, operatorOAuthModeAdapter{
-		providerName: "antigravity",
-		configVendor: appconfig.VendorOAuthGemini,
-		tokenURLName: geminiOAuthTokenURLEnv,
-		clientIDName: geminiOAuthClientIDEnv,
-		client:       operatorOAuthClient,
-		newAdapter: func(cfg operatorOAuthConfig) RefreshAdapter {
-			return adapters.AntigravityRefresh{Gemini: adapters.GeminiRefresh{
-				Endpoint: cfg.TokenEndpoint, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
-				HTTPClient: cfg.HTTPClient, TierCacheTTL: 24 * time.Hour,
-			}, ProjectResolver: projectResolver}
-		},
-	})
-	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}})
+	register(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, antigravityRefresh)
+	var windsurfRefresh ModeRefreshAdapter = windsurfManualModeAdapter{adapter: adapters.WindsurfManualTokenRefresh{}}
+	if cfg, ok := configs.Configured()[appconfig.VendorOAuthWindsurf]; ok {
+		windsurfRefresh = legacyOAuthModeAdapter{
+			providerName: credentialstore.VendorWindsurf,
+			adapter: providerwindsurf.RefreshAdapter{
+				TokenURL: cfg.TokenURL, ClientID: cfg.ClientID, Scope: cfg.Scope, HTTPClient: operatorOAuthClient,
+			},
+		}
+	}
+	register(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, windsurfRefresh)
 	register(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, builtinRefreshTokenModeAdapter{
 		providerName: "grok", tokenURL: credentialacq.XAIOAuthTokenURL, clientID: credentialacq.XAIOAuthClientID,
 	})
@@ -316,11 +337,12 @@ func (r *AccountCredentialRefresher) refreshLockedRecord(ctx context.Context, tx
 			return nil
 		}
 		emitGeminiFallbackAudit(ctx, txStore, rec, err, false)
+		failureClass := classifyModeRefreshError(err)
 		// 见上,刷新失败时的状态持久化错误必须上抛,不能静默吞掉。
-		if saveErr := txStore.SaveRefreshFailure(ctx, rec, classifyModeRefreshError(err), r.now().Add(providerFailureCooldown(rec.Vendor))); saveErr != nil {
-			return errors.Join(err, saveErr)
+		if saveErr := txStore.SaveRefreshFailure(ctx, rec, failureClass, nextModeRefreshAttempt(err, rec.Vendor, r.now())); saveErr != nil {
+			return withModeRefreshAuditOutcome(errors.Join(err, saveErr), failureClass)
 		}
-		return err
+		return withModeRefreshAuditOutcome(err, failureClass)
 	}
 	outcome := result.Outcome
 	if outcome == "" {
@@ -432,6 +454,48 @@ func (a legacyOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRe
 		return ModeRefreshResult{}, err
 	}
 	return ModeRefreshResult{Payload: payload, AccessExpiresAt: expiresAt, Outcome: "refresh_succeeded"}, nil
+}
+
+// codexOAuthModeAdapter 根据账号获取时落下的客户端身份来源选择续期身份。
+// 新的公开 CLI 账号固定使用内置公开身份；自定义账号必须使用运维配置。
+// 旧账号没有来源标记时优先保持已配置的旧行为，否则回落公开身份。
+type codexOAuthModeAdapter struct {
+	builtin  ModeRefreshAdapter
+	operator ModeRefreshAdapter
+}
+
+func (a codexOAuthModeAdapter) RefreshCredential(ctx context.Context, in ModeRefreshInput) (ModeRefreshResult, error) {
+	fields, err := payloadMap(in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	source := stringField(fields, "client_id_source")
+	if source == "" {
+		source = stringField(fields, "client_identity_source")
+	}
+	var selected ModeRefreshAdapter
+	switch {
+	case source == credentialacq.ClientSourceOperatorConfig:
+		selected = a.operator
+	case source == credentialacq.ClientSourcePublicCLI || strings.HasPrefix(source, "approved_builtin_profile_"):
+		selected = a.builtin
+	case source == "":
+		selected = a.operator
+		if selected == nil {
+			selected = a.builtin
+		}
+	default:
+		return ModeRefreshResult{}, fmt.Errorf("codex refresh: unknown client identity source %q", source)
+	}
+	if selected == nil {
+		return ModeRefreshResult{}, adapters.ErrCodexOAuthConfigRequired
+	}
+	sanitized, err := sanitizeOperatorOAuthPayload(in.Payload)
+	if err != nil {
+		return ModeRefreshResult{}, err
+	}
+	in.Payload = sanitized
+	return selected.RefreshCredential(ctx, in)
 }
 
 type openAIChatGPTBuiltinOAuthModeAdapter struct {

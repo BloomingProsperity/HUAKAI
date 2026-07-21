@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
 )
 
@@ -312,7 +313,7 @@ func TestOAuthBrowserCallbackAuditsStartingAdmin(t *testing.T) {
 	}
 }
 
-func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudits(t *testing.T) {
+func TestAdminCredentialAcquisitionSealedCallbackFailsBeforeExchange(t *testing.T) {
 	registry := credentialacq.NewExchangerRegistry()
 	openAI := &credentialAcqExchangerStub{}
 	if err := registry.RegisterExchanger(credentialstore.ModeKey(credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth), openAI); err != nil {
@@ -323,11 +324,8 @@ func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudi
 
 	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/callback",
 		`{"state":"`+flow.State+`","code":"cursor-auth-code"}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status=%d want 422 body=%s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "not configured") {
-		t.Fatalf("missing registry path must not use legacy not-configured fallback: %s", rec.Body.String())
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential_acquisition_feature_disabled") {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
 	}
 	if got := openAI.callCount(); got != 0 {
 		t.Fatalf("openai exchanger calls=%d want 0 for cursor flow", got)
@@ -336,21 +334,106 @@ func TestAdminCredentialAcquisitionCallbackMissingRegistryEntryReturns422AndAudi
 		t.Fatalf("created credentials=%d want 0 on missing exchanger", len(created))
 	}
 	events := fx.audit.eventsSnapshot()
-	if len(events) != 1 {
-		t.Fatalf("audit events=%d want 1", len(events))
-	}
-	if events[0].EventType != credentialacq.EventFailed {
-		t.Fatalf("event type=%s want %s", events[0].EventType, credentialacq.EventFailed)
-	}
-	if events[0].Payload["error_class"] != "callback_failed" {
-		t.Fatalf("event payload=%v want callback_failed", events[0].Payload)
+	if len(events) != 0 {
+		t.Fatalf("封存闸应在换码前拒绝，不应伪造上游失败事件：%+v", events)
 	}
 	session, err := fx.store.Get(context.Background(), flow.ID)
 	if err != nil {
 		t.Fatalf("get failed flow: %v", err)
 	}
-	if session.Status != credentialacq.StatusFailed || session.ErrorClass != "exchange_failed" {
-		t.Fatalf("flow status=%s error_class=%s want failed/exchange_failed", session.Status, session.ErrorClass)
+	if session.Status != credentialacq.StatusStarted || session.ErrorClass != "" {
+		t.Fatalf("封存流程不得被误记为上游失败：status=%s error_class=%s", session.Status, session.ErrorClass)
+	}
+	requireCredentialAcqSealedAudit(t, fx.adminAudit.audits, 1, "oauth_callback")
+}
+
+func TestAdminCredentialAcquisitionRejectsPostLaunchSealedStarts(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
+	before := len(fx.db.rows)
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "Copilot 标准入口",
+			path: "/v1/admin/pool-accounts/101/credential-acquisitions",
+			body: `{"tenant_id":1,"vendor":"copilot","auth_mode":"copilot_oauth","flow_kind":"oauth"}`,
+		},
+		{
+			name: "Windsurf helper 入口",
+			path: "/admin/v1/credentials/paste",
+			body: `{"tenant_id":1,"provider_account_id":101,"vendor":"windsurf","auth_mode":"oauth","credentials":{"session_token":"sealed-secret"}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := fx.do(t, http.MethodPost, tc.path, tc.body)
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential_acquisition_feature_disabled") {
+				t.Fatalf("status=%d body=%s，期望封存入口被拒绝", rec.Code, rec.Body.String())
+			}
+			if len(fx.db.rows) != before {
+				t.Fatalf("封存请求写入了 flow：got=%d want=%d", len(fx.db.rows), before)
+			}
+		})
+	}
+	requireCredentialAcqSealedAudit(t, fx.adminAudit.audits, 2, "start", "import_helper")
+}
+
+func TestAdminCredentialAcquisitionSealedHistoryCanInspectAndCancelButCannotAdvance(t *testing.T) {
+	fx := newCredentialAcqHTTPFixture(t, adminPoolAdmin())
+	statusFlow := fx.seedRawOAuthFlow(t, 101, credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth)
+	status := fx.do(t, http.MethodGet, "/v1/admin/pool-accounts/101/credential-acquisitions/"+statusFlow.ID, "")
+	if status.Code != http.StatusOK {
+		t.Fatalf("历史封存流程查询 status=%d body=%s", status.Code, status.Body.String())
+	}
+	cancel := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+statusFlow.ID+"/cancel", `{}`)
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("历史封存流程取消 status=%d body=%s", cancel.Code, cancel.Body.String())
+	}
+
+	for _, suffix := range []string{"/finalize", "/poll"} {
+		flow := fx.seedRawOAuthFlow(t, 101, credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth)
+		body := ""
+		if suffix == "/finalize" {
+			body = `{"credentials":{"access_token":"sealed-secret"}}`
+		}
+		rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+suffix, body)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential_acquisition_feature_disabled") {
+			t.Fatalf("历史封存流程 %s status=%d body=%s", suffix, rec.Code, rec.Body.String())
+		}
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 0 {
+		t.Fatalf("历史封存流程推进后写入凭据：%d", len(created))
+	}
+	requireCredentialAcqSealedAudit(t, fx.adminAudit.audits, 3, "finalize", "poll")
+}
+
+func requireCredentialAcqSealedAudit(t *testing.T, audits []admindb.InsertAdminAuditEventParams, total int, entrypoints ...string) {
+	t.Helper()
+	if len(audits) != total {
+		t.Fatalf("操作日志数=%d want=%d：%+v", len(audits), total, audits)
+	}
+	seen := make(map[string]bool, len(entrypoints))
+	for _, event := range audits {
+		if event.Action != credentialacq.EventFailed {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("解析封存操作日志：%v", err)
+		}
+		if payload["result"] != "denied" || payload["error_class"] != "credential_mode_sealed" ||
+			payload["failure_reason"] != "credential_acquisition_feature_disabled" || payload["severity"] != "warning" {
+			t.Fatalf("封存操作日志分类不完整：%v", payload)
+		}
+		if entrypoint, _ := payload["entrypoint"].(string); entrypoint != "" {
+			seen[entrypoint] = true
+		}
+	}
+	for _, entrypoint := range entrypoints {
+		if !seen[entrypoint] {
+			t.Fatalf("封存操作日志缺少入口 %q：%+v", entrypoint, audits)
+		}
 	}
 }
 
@@ -750,26 +833,43 @@ func TestAdminCredentialAcquisitionFinalizeEnrichesAntigravityProject(t *testing
 	}
 }
 
-func TestAdminCredentialAcquisitionFinalizeKeepsCredentialWhenProjectResolutionFails(t *testing.T) {
+func TestAdminCredentialAcquisitionFinalizeRejectsUnresolvedProjectWithoutWritingCredential(t *testing.T) {
 	resolver := &credentialAcqProjectResolverStub{err: errors.New("上游 project 暂不可用")}
 	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
 	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
 
 	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
 		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize"}}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("project 解析失败不得阻断创建：status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d，期望 503，body=%s", rec.Code, rec.Body.String())
 	}
 	created := fx.creator.inputsSnapshot()
-	if len(created) != 1 {
-		t.Fatalf("创建凭证数=%d，期望 1", len(created))
+	if len(created) != 0 {
+		t.Fatalf("项目身份未确认时不得写入凭据，实际创建数=%d", len(created))
 	}
-	var payload map[string]string
-	if err := json.Unmarshal(created[0].Payload, &payload); err != nil {
-		t.Fatalf("解析待处理载荷失败：%v", err)
+	if resolver.calls != 1 {
+		t.Fatalf("resolver 调用次数=%d，期望 1", resolver.calls)
 	}
-	if resolver.calls != 1 || payload["project_id"] != "" || payload["project_metadata_status"] != projectenrich.StatusOperatorAttention {
-		t.Fatalf("解析失败未保留待处理凭证：resolver=%+v payload=%s", resolver, created[0].Payload)
+	if !strings.Contains(rec.Body.String(), `"code":"project_metadata_unavailable"`) {
+		t.Fatalf("缺少稳定错误码：%s", rec.Body.String())
+	}
+}
+
+func TestAdminCredentialAcquisitionFinalizeRejectsProjectConflictWithoutWritingCredential(t *testing.T) {
+	resolver := &credentialAcqProjectResolverStub{projectRef: "upstream-project", tier: "g1-pro-tier"}
+	fx := newCredentialAcqHTTPFixtureWithProjectEnricher(t, adminPoolAdmin(), projectenrich.New(resolver))
+	flow := fx.seedPasteFlowFor(t, 101, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth)
+
+	rec := fx.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID+"/finalize",
+		`{"credentials":{"access_token":"access-finalize","refresh_token":"refresh-finalize","project_id":"stored-project"}}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d，期望 409，body=%s", rec.Code, rec.Body.String())
+	}
+	if created := fx.creator.inputsSnapshot(); len(created) != 0 {
+		t.Fatalf("项目身份冲突时不得写入凭据，实际创建数=%d", len(created))
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"project_metadata_conflict"`) {
+		t.Fatalf("缺少稳定错误码：%s", rec.Body.String())
 	}
 }
 

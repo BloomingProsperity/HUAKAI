@@ -674,6 +674,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		var classification gateway.Classification
 		var decision gateway.AttemptRetryDecision
 		agentTaskInvalid := false
+		projectContextRejected := false
 		if errors.As(err, &upstreamErr) {
 			clientStatus = upstreamErr.StatusCode
 			healthStatus = upstreamErr.StatusCode
@@ -692,6 +693,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		if upstreamErr != nil {
 			decision.ClientStatus = ex.remapClientStatusForUpstream(upstreamErr.StatusCode, decision.ClientStatus)
 			agentTaskInvalid = ex.classifyAgentTaskInvalid(upstreamErr.StatusCode, upstreamErr.Body, &decision)
+			projectContextRejected = ex.classifyProjectContextRejected(classification, &decision)
 		}
 		if decision.AbortReason == "" {
 			decision.AbortReason = "upstream_dispatch_error"
@@ -699,12 +701,12 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, decision.AbortReason, 0, ex.protocolLoss)
 		var policyOutcome upstreamErrorPolicyOutcome
 		suppressHealth := false
-		if upstreamErr != nil && !agentTaskInvalid {
+		if upstreamErr != nil && !agentTaskInvalid && !projectContextRejected {
 			policyOutcome = ex.applyUpstreamErrorCooldown(upstreamErr, classification, true)
 			suppressHealth = ex.applyAccountErrorPolicy(&decision, classification, policyOutcome)
 		}
 
-		if ex.healthKeyOK && !agentTaskInvalid && !policyOutcome.ModelScoped && !suppressHealth {
+		if ex.healthKeyOK && !agentTaskInvalid && !projectContextRejected && !policyOutcome.ModelScoped && !suppressHealth {
 			// canonical 缓冲是默认主路径:必须带真实 iron-clad 分级,否则该路径上的铁证 401
 			// 永远按 ambiguous 处理、strike 硬禁不可达(审查 S2)。
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, signalFromDispatchError(err, classification), healthStatus, time.Since(startedAt), ex.requestID, rateLimitResetFromClassification(classification, time.Now()), gateway.AuthFailureClassFromClassification(classification))
@@ -715,6 +717,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		}
 		failure := classifiedFailureFromDecision(code, clienterr.MessageFor(clienterr.CodeUpstreamDispatchError), classification, decision, err)
 		failure.AgentTaskInvalid = agentTaskInvalid
+		failure.ProjectContextRejected = projectContextRejected
 		if upstreamErr != nil {
 			failure.FallbackSignal = bindingFallbackSignalFromUpstream(upstreamErr.StatusCode, upstreamErr.Body, classification, decision)
 		}

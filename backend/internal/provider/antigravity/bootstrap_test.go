@@ -16,9 +16,6 @@ func TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile(t *testing.T) {
 	if strings.TrimSpace(cfg.ClientID) == "" || strings.TrimSpace(cfg.ClientSecret) == "" {
 		t.Fatalf("内置 OAuth client 不得为空：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
 	}
-	if cfg.ClientID != AntigravityOAuthClientID() || cfg.ClientSecret != AntigravityOAuthClientSecret() {
-		t.Fatalf("内置 OAuth client 不匹配：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
-	}
 	if cfg.TokenURL != AntigravityOAuthTokenEndpoint {
 		t.Fatalf("token endpoint=%q", cfg.TokenURL)
 	}
@@ -28,11 +25,11 @@ func TestAntigravityDefaultOAuthConfigPinsPublicCLIProfile(t *testing.T) {
 	if cfg.Source != credentialacq.ClientSourcePublicCLI {
 		t.Fatalf("source=%q，期望 public_cli_client", cfg.Source)
 	}
-	if _, err := RefreshAdapterFromOAuthConfig(cfg); err != nil {
-		t.Fatalf("默认配置应可直接构造 refresh adapter：%v", err)
+	if cfg.AuthURL != credentialacq.AntigravityOAuthAuthURL {
+		t.Fatalf("auth_url=%q，期望 %q", cfg.AuthURL, credentialacq.AntigravityOAuthAuthURL)
 	}
-	if err := ValidateOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) || !strings.Contains(err.Error(), "auth_url") {
-		t.Fatalf("未提供授权页时完整 PKCE 校验应 fail-closed，err=%v", err)
+	if err := ValidateOAuthConfig(cfg); err != nil {
+		t.Fatalf("完整公开客户端配置应通过校验，err=%v", err)
 	}
 }
 
@@ -43,13 +40,6 @@ func TestAntigravityOAuthClientEnvOverride(t *testing.T) {
 	cfg := DefaultOAuthConfig()
 	if cfg.ClientID != "operator-client-id" || cfg.ClientSecret != "operator-client-secret" {
 		t.Fatalf("env override 未生效：id=%q secret=%q", cfg.ClientID, cfg.ClientSecret)
-	}
-	adapter, err := RefreshAdapterFromOAuthConfig(cfg)
-	if err != nil {
-		t.Fatalf("override 后应可构造 refresh adapter：%v", err)
-	}
-	if adapter.ClientID != "operator-client-id" || adapter.ClientSecret != "operator-client-secret" {
-		t.Fatalf("refresh adapter 未用 override 值：id=%q secret=%q", adapter.ClientID, adapter.ClientSecret)
 	}
 }
 
@@ -63,7 +53,8 @@ func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 		Scopes:       []string{"attacker-scope"},
 		Source:       credentialacq.ClientSourceOperatorConfig,
 	})
-	if cfg.TokenURL != AntigravityOAuthTokenEndpoint || cfg.ClientID != AntigravityOAuthClientID() || cfg.ClientSecret != AntigravityOAuthClientSecret() {
+	approved := DefaultOAuthConfig()
+	if cfg.TokenURL != AntigravityOAuthTokenEndpoint || cfg.ClientID != approved.ClientID || cfg.ClientSecret != approved.ClientSecret {
 		t.Fatalf("OAuth 固定身份被 override 改写：%+v", cfg)
 	}
 	if got := strings.Join(cfg.Scopes, " "); got != antigravityOAuthScope {
@@ -82,7 +73,7 @@ func TestAntigravityOAuthConfigPinsIdentityAgainstOverrides(t *testing.T) {
 		t.Fatalf("解析 authorize URL 失败：%v", err)
 	}
 	query := parsed.Query()
-	assertAntigravityQueryValue(t, query, "client_id", AntigravityOAuthClientID())
+	assertAntigravityQueryValue(t, query, "client_id", approved.ClientID)
 	assertAntigravityQueryValue(t, query, "scope", antigravityOAuthScope)
 	assertAntigravityQueryValue(t, query, "state", "state-value")
 	assertAntigravityQueryValue(t, query, "code_challenge", "challenge-value")
@@ -99,22 +90,9 @@ func TestAntigravityRefreshConfigRejectsTamperedProfile(t *testing.T) {
 	} {
 		cfg := DefaultOAuthConfig()
 		mutate(&cfg)
-		if _, err := RefreshAdapterFromOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) {
+		if err := validateRefreshOAuthConfig(cfg); !errors.Is(err, ErrAntigravityOAuthConfigRequired) {
 			t.Fatalf("被改写的公开 profile 应被拒绝，cfg=%+v err=%v", cfg, err)
 		}
-	}
-}
-
-func TestAntigravityRefreshAdapterUsesBuiltinProfile(t *testing.T) {
-	adapter, err := RefreshAdapterFromOAuthConfig(DefaultOAuthConfig())
-	if err != nil {
-		t.Fatalf("RefreshAdapterFromOAuthConfig 失败：%v", err)
-	}
-	if adapter.TokenURL != AntigravityOAuthTokenEndpoint || adapter.ClientID != AntigravityOAuthClientID() {
-		t.Fatalf("adapter endpoint/client=(%q,%q)", adapter.TokenURL, adapter.ClientID)
-	}
-	if adapter.ClientSecret != AntigravityOAuthClientSecret() || adapter.Scope != antigravityOAuthScope {
-		t.Fatalf("adapter secret/scope 未使用内置 profile")
 	}
 }
 

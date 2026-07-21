@@ -17,7 +17,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -66,6 +65,8 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 		return channelhealth.SignalTimeout
 	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant:
 		return channelhealth.SignalAuthChallenge
+	case ErrorClassProjectContextRejected:
+		return channelhealth.SignalAuthChallenge
 	case ErrorClassRequestTooLarge:
 		return channelhealth.SignalClientMalformed
 	case ErrorClassKYCRequired, ErrorClassOrgDisabled,
@@ -101,18 +102,19 @@ func clientMalformedStatus(statusCode int) bool {
 type ErrorClass string
 
 const (
-	ErrorClassOAuthInvalidGrant    ErrorClass = "oauth_invalid_grant"
-	ErrorClassTokenRevoked         ErrorClass = "token_revoked"
-	ErrorClassKYCRequired          ErrorClass = "kyc_required"
-	ErrorClassOrgDisabled          ErrorClass = "org_disabled"
-	ErrorClassWorkspaceDeactivated ErrorClass = "workspace_deactivated"
-	ErrorClassCreditExhausted      ErrorClass = "credit_exhausted"
-	ErrorClassPlatformPolicy       ErrorClass = "platform_policy"
-	ErrorClassRateLimited          ErrorClass = "upstream_rate_limited"
-	ErrorClassOverloaded           ErrorClass = "upstream_overloaded"
-	ErrorClassServerError          ErrorClass = "upstream_5xx"
-	ErrorClassNetworkTimeout       ErrorClass = "network_timeout"
-	ErrorClassUnknown              ErrorClass = "unknown_upstream"
+	ErrorClassOAuthInvalidGrant      ErrorClass = "oauth_invalid_grant"
+	ErrorClassTokenRevoked           ErrorClass = "token_revoked"
+	ErrorClassKYCRequired            ErrorClass = "kyc_required"
+	ErrorClassOrgDisabled            ErrorClass = "org_disabled"
+	ErrorClassWorkspaceDeactivated   ErrorClass = "workspace_deactivated"
+	ErrorClassCreditExhausted        ErrorClass = "credit_exhausted"
+	ErrorClassPlatformPolicy         ErrorClass = "platform_policy"
+	ErrorClassRateLimited            ErrorClass = "upstream_rate_limited"
+	ErrorClassOverloaded             ErrorClass = "upstream_overloaded"
+	ErrorClassServerError            ErrorClass = "upstream_5xx"
+	ErrorClassNetworkTimeout         ErrorClass = "network_timeout"
+	ErrorClassUnknown                ErrorClass = "unknown_upstream"
+	ErrorClassProjectContextRejected ErrorClass = "project_context_rejected"
 
 	// D8 新增 —— Anthropic 新的类型化 error class(2026-05-06)。
 	// ErrorClassUpstreamTimeout 区分 upstream 自身的 gateway 超时(504)
@@ -300,6 +302,12 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-017", Version: 1, Priority: 35, Provider: "gemini", HTTPStatus: "403",
 		BodyKeyword: keywordPermissionDenied, Class: ErrorClassPlatformPolicy,
 		Action: RetryActionCountedDisable, Tier: TierAmbiguous},
+	{RuleID: "R-030", Version: 1, Priority: 34, Provider: "antigravity", HTTPStatus: "403",
+		BodyKeyword: keywordPermissionDenied, Class: ErrorClassProjectContextRejected,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+	{RuleID: "R-031", Version: 1, Priority: 34, Provider: "antigravity", HTTPStatus: "403",
+		BodyKeyword: "permission_denied", Class: ErrorClassProjectContextRejected,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
 	// 优先级 40 - 403 平台专用
 	{RuleID: "R-010", Version: 1, Priority: 40, Provider: "openai", HTTPStatus: "403",
@@ -541,57 +549,4 @@ func transitionFor(action RetryAction, tier DisableTier) FsmTransition {
 	default:
 		return FsmTransitionNoChange
 	}
-}
-
-// retryAfterMillis 解析 RFC 7231 Retry-After(delta-seconds 或 HTTP-date)。
-func retryAfterMillis(headers http.Header) int64 {
-	if headers == nil {
-		return 0
-	}
-	raw := strings.TrimSpace(headers.Get("Retry-After"))
-	if raw == "" {
-		return 0
-	}
-	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		return int64(seconds * 1000)
-	}
-	if when, err := http.ParseTime(raw); err == nil {
-		delta := time.Until(when)
-		if delta <= 0 {
-			return 0
-		}
-		return delta.Milliseconds()
-	}
-	return 0
-}
-
-// retryAfterFromBody 在没有提供 Retry-After header 时(RR-02), 从 provider 的
-// 错误 body 中提取冷却时长。Codex 的 usage_limit_reached 只在 body 里携带
-// error.resets_at(unix 秒)/ error.resets_in_seconds, 因此只解析 header 的
-// 解析器会用错误的(默认)时长把账号停用。
-func retryAfterFromBody(body []byte, now time.Time) int64 {
-	if len(body) == 0 {
-		return 0
-	}
-	var parsed struct {
-		Error struct {
-			ResetsAt        *int64   `json:"resets_at"`
-			ResetsInSeconds *float64 `json:"resets_in_seconds"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return 0
-	}
-	if parsed.Error.ResetsInSeconds != nil && *parsed.Error.ResetsInSeconds > 0 {
-		return int64(*parsed.Error.ResetsInSeconds * 1000)
-	}
-	if parsed.Error.ResetsAt != nil && *parsed.Error.ResetsAt > 0 {
-		if delta := time.Unix(*parsed.Error.ResetsAt, 0).Sub(now); delta > 0 {
-			return delta.Milliseconds()
-		}
-	}
-	return 0
 }

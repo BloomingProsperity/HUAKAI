@@ -20,6 +20,11 @@ func TestRefreshFailureStateOperatorConfigRequiresAttention(t *testing.T) {
 	if got := refreshFailureState("temporary"); got != StateTempUnschedulable {
 		t.Fatalf("temporary state=%q, want %q", got, StateTempUnschedulable)
 	}
+	for _, failureClass := range []string{"project_metadata_conflict", "project_metadata_unavailable"} {
+		if got := refreshFailureState(failureClass); got != StateOperatorAttention {
+			t.Fatalf("failure_class=%q state=%q, want %q", failureClass, got, StateOperatorAttention)
+		}
+	}
 }
 
 func TestResolveActiveRejectsAmbiguousActiveCredentialModes(t *testing.T) {

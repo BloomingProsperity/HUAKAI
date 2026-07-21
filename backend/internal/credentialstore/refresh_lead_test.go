@@ -1,6 +1,7 @@
 package credentialstore
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -62,5 +63,53 @@ func TestEffectiveRefreshLead_PerAccountRefreshBeforeAt(t *testing.T) {
 	globalResult := expiry.Add(-RefreshWindow)
 	if got.Equal(globalResult) {
 		t.Fatalf("per-account result should differ from global result when N != RefreshWindow")
+	}
+}
+
+func TestPrepareEnvelopeLeavesUnknownExpiryUsableCredentialUnscheduled(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	store := NewStore(nil, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	store.now = func() time.Time { return now }
+
+	for _, tc := range []struct {
+		name     string
+		vendor   string
+		authMode string
+		payload  string
+	}{
+		{name: "Codex 导入访问令牌", vendor: VendorOpenAI, authMode: AuthModeCodexCLIOAuth, payload: `{"access_token":"codex-access","refresh_token":"codex-refresh"}`},
+		{name: "Antigravity 导入会话令牌", vendor: VendorAntigravity, authMode: AuthModeOAuth, payload: `{"session_token":"ag-access","refresh_token":"ag-refresh"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := store.registry.MustLookup(tc.vendor, tc.authMode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := store.prepareEnvelope(context.Background(), 1, 2, tc.vendor, tc.authMode, 1, []byte(tc.payload), handler)
+			if err != nil {
+				t.Fatalf("prepareEnvelope 失败：%v", err)
+			}
+			if !prepared.refreshBeforeAt.IsZero() {
+				t.Fatalf("未知到期但可调用的凭证被安排立即刷新：%s", prepared.refreshBeforeAt)
+			}
+		})
+	}
+}
+
+func TestPrepareEnvelopeSchedulesUnusableBootstrapCredentialImmediately(t *testing.T) {
+	now := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	store := NewStore(nil, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	store.now = func() time.Time { return now }
+	handler, err := store.registry.MustLookup(VendorGemini, AuthModeVertexSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := store.prepareEnvelope(context.Background(), 1, 2, VendorGemini, AuthModeVertexSA, 1,
+		[]byte(`{"client_email":"svc@example.test","private_key":"private-key","project_id":"project"}`), handler)
+	if err != nil {
+		t.Fatalf("prepareEnvelope 失败：%v", err)
+	}
+	if !prepared.refreshBeforeAt.Equal(now) {
+		t.Fatalf("尚不可调用的引导凭证刷新时间=%s，期望 %s", prepared.refreshBeforeAt, now)
 	}
 }

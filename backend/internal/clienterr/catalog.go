@@ -11,6 +11,7 @@ package clienterr
 // no_capacity | 503 | 当前无可用容量 | TestMessageForKnownCodesAndFallback
 // claim_race | 409 | 请求预留已变化;请重试请求 | TestPR5ClaimRaceAbortFailureSurfacesSafeHeader
 // pool_select_error | 500 | 账号选择失败 | TestMessageForKnownCodesAndFallback
+// group_policy_unavailable | 503 | 分组路由策略暂不可用 | TestMessageForKnownCodesAndFallback
 // credential_resolve_error | 500/503 | 上游凭据不可用 | TestMessageForKnownCodesAndFallback
 // queue_wait | 429 | 请求已排队;请稍后重试 | TestHandler_WaitPlanReturnsQueueWait
 // invalid_request_body | 400 | 请求体无效 | TestMessageForKnownCodesAndFallback
@@ -47,6 +48,7 @@ const (
 	CodeNoCapacity                      = "no_capacity"
 	CodeClaimRace                       = "claim_race"
 	CodePoolSelectError                 = "pool_select_error"
+	CodeGroupPolicyUnavailable          = "group_policy_unavailable"
 	CodeCredentialResolveError          = "credential_resolve_error"
 	CodeQueueWait                       = "queue_wait"
 	CodeKeyRateLimited                  = "rate_limit_exceeded"
@@ -87,6 +89,7 @@ var messages = map[string]string{
 	CodeNoCapacity:                      "no capacity is currently available",
 	CodeClaimRace:                       "request reservation changed; retry the request",
 	CodePoolSelectError:                 "account selection failed",
+	CodeGroupPolicyUnavailable:          "group routing policy is temporarily unavailable",
 	CodeCredentialResolveError:          "upstream credential unavailable",
 	CodeQueueWait:                       "request is queued; retry later",
 	CodeKeyRateLimited:                  "API key rate limit exceeded; retry later",

@@ -3,10 +3,9 @@
 //
 // 边界（Owner 2026-05-06 directive）：
 //
-//	仅默认注册已验证 adapter。未验证的 session placeholder adapter 仅在
-//	HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS=true 时 opt-in 注册。运行期
-//	访问未注册 family 会得到 provider.ErrAdapterNotRegistered，由配置层
-//	reject 阻止误用。
+//	仅默认注册已验证 adapter。实验 session adapter 必须逐 family 显式开启。
+//	运行期访问未注册 family 会得到 provider.ErrAdapterNotRegistered，由配置层
+//	拒绝误用。
 //
 // Protocol family 字符串约定（与 router.ResolvedModel.ProtocolFamily 对齐）：
 //   - openai_chat              OpenAI Chat Completions 兼容
@@ -200,8 +199,6 @@ const (
 )
 
 const (
-	placeholderSessionAdaptersEnv = "HUAKAI_ENABLE_PLACEHOLDER_SESSION_ADAPTERS"
-
 	cursorSessionAdapterEnv         = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
 	copilotSessionAdapterEnv        = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
 	geminiCodeAssistAdapterEnv      = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"

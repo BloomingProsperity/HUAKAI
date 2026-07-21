@@ -24,6 +24,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -312,6 +313,27 @@ func TestDispatcher_CanaryMode_PostMutationFail_FailClosed(t *testing.T) {
 	}
 	if SnapshotPASRDispatchMetrics().CanaryPostMutationRelease-prePost != 1 {
 		t.Errorf("CanaryPostMutationRelease 应+1")
+	}
+}
+
+func TestDispatcher_CanaryMode_GroupPolicyUnavailableDoesNotFallbackDefault(t *testing.T) {
+	def := &stubSelector{result: newStubResult(11)}
+	pasr := &stubSelector{err: fmt.Errorf("策略读取失败: %w", ErrGroupPolicyUnavailable)}
+	d, err := NewSelectorDispatcher(SelectorDispatcherConfig{
+		Mode: DispatchModeCanary, CanaryPercent: 100, SamplingSalt: "group-policy",
+		Default: def, PASR: pasr,
+	})
+	if err != nil {
+		t.Fatalf("NewSelectorDispatcher: %v", err)
+	}
+	defer d.Stop()
+
+	res, err := d.Select(context.Background(), SelectionRequest{TenantID: 1, ClaimID: 1, SessionHash: "policy"})
+	if res != nil || !errors.Is(err, ErrGroupPolicyUnavailable) {
+		t.Fatalf("res=%+v err=%v want nil+ErrGroupPolicyUnavailable", res, err)
+	}
+	if pasr.calls.Load() != 1 || def.calls.Load() != 0 {
+		t.Fatalf("策略失败不得换选号器: pasr=%d default=%d", pasr.calls.Load(), def.calls.Load())
 	}
 }
 

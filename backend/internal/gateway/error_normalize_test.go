@@ -288,6 +288,38 @@ func TestAnthropic403Validation_R011(t *testing.T) {
 	}
 }
 
+func TestAntigravityProjectPermissionDeniedIsRecoverable(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"message":"Permission denied on resource project","status":"PERMISSION_DENIED"}}`,
+		`{"error":{"status":"PERMISSION_DENIED"}}`,
+	} {
+		classification, err := Classify(http.StatusForbidden, nil, []byte(body), "antigravity")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if classification.Class != ErrorClassProjectContextRejected || classification.Tier != TierAmbiguous || classification.FsmTransition == FsmTransitionDisabled {
+			t.Fatalf("classification=%+v，项目权限拒绝不得永久禁用账号", classification)
+		}
+		decision, _, err := ClassifyAttemptHTTPError(http.StatusForbidden, nil, []byte(body), "antigravity")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !decision.RetryableBeforeDelivery || !decision.SwitchAccount || decision.RefreshIntent != RefreshOAuthHotPath || decision.ClientStatus != http.StatusServiceUnavailable {
+			t.Fatalf("decision=%+v，期望刷新并有界换号", decision)
+		}
+	}
+}
+
+func TestAntigravityUnstructuredForbiddenRemainsTerminal(t *testing.T) {
+	classification, err := Classify(http.StatusForbidden, nil, []byte(`{"error":"account blocked"}`), "antigravity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if classification.RuleID != "R-012" || classification.Class != ErrorClassPlatformPolicy {
+		t.Fatalf("classification=%+v，非项目权限错误不得伪装成可恢复项目失配", classification)
+	}
+}
+
 // Provider 别名:"anthropic_messages" 归一化为 "anthropic"。
 func TestProviderAlias_AnthropicMessages(t *testing.T) {
 	c, _ := Classify(403, nil, []byte("validation failed"), "anthropic_messages")

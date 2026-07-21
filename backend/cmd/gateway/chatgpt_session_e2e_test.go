@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -27,9 +26,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -57,30 +58,33 @@ func TestChatGPTSessionRelayE2E_CodexEndpointBaseURL(t *testing.T) {
 		t.Skip("HUAKAI_DATABASE_URL 未设置，跳过 chatgpt session e2e")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
 	upstream := newChatGPTSessionE2EFakeUpstream(t)
 	defer upstream.Close()
 
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 	if err != nil {
+		setupCancel()
 		t.Fatalf("打开 e2e 数据库连接池: %v", err)
 	}
-	defer pgPool.Close()
+	t.Cleanup(pgPool.Close)
 
-	seed := seedChatGPTSessionE2EGraph(t, ctx, pgPool, upstream.endpoint())
-	assertChatGPTSessionE2ESeedSelectable(t, ctx, pgPool, seed)
+	seed := seedChatGPTSessionE2EGraph(t, setupCtx, pgPool, upstream.endpoint())
+	setupCancel()
 
 	binPath := buildChatGPTSessionE2EGateway(t)
 	defer os.Remove(binPath)
 
 	addr := reserveChatGPTSessionE2ELocalPort(t)
-	cmd := startChatGPTSessionE2EGateway(t, binPath, dsn, addr, seed)
-	t.Cleanup(func() { stopChatGPTSessionE2EGateway(cmd) })
+	processes := startChatGPTSessionE2EGateway(t, binPath, dsn, addr, seed)
+	t.Cleanup(func() { stopSpecializedLiveProcesses(processes) })
 	waitForChatGPTSessionE2EGateway(t, addr)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 	client := &http.Client{Timeout: 90 * time.Second}
+	seed.providerAccountID = importChatGPTSessionE2EAccount(t, ctx, client, addr, seed).AccountID
+	assertChatGPTSessionE2ESeedSelectable(t, ctx, pgPool, seed)
 	logicalID := "chatgpt-session-" + uuid.NewString()
 	result := postChatGPTSessionE2EChat(t, ctx, client, addr, seed, logicalID)
 	assertChatGPTSessionE2ESuccessResponse(t, result)
@@ -275,6 +279,8 @@ type chatgptSessionE2ESeed struct {
 	costQuotaPolicyID int64
 	pricingVersion    string
 	bearer            string
+	adminBearer       string
+	adminTokenID      int64
 	upstreamEndpoint  string
 }
 
@@ -333,17 +339,22 @@ func seedChatGPTSessionE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpo
 		_, _ = pgPool.Exec(c, `DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM balance_holds WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveMoneyRows(c, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 ChatGPT session 端到端测试钱路记录: %v", err)
+		}
 		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, seed.tenantID)
+		if err := cleanupSpecializedLiveSubscriptionObservations(c, pgPool, seed.tenantID); err != nil {
+			t.Errorf("清理 ChatGPT session 端到端测试套餐观测: %v", err)
+		}
+		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
@@ -352,7 +363,13 @@ func seedChatGPTSessionE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpo
 		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID)
+		if result, err := pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, seed.tenantID); err != nil {
+			t.Errorf("删除 ChatGPT session 端到端测试租户: %v", err)
+		} else if result.RowsAffected() != 1 {
+			t.Errorf("删除 ChatGPT session 端到端测试租户影响行数=%d，期望 1", result.RowsAffected())
+		}
 		_, _ = pgPool.Exec(c, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion)
 	})
 
@@ -401,7 +418,9 @@ func seedChatGPTSessionE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpo
 	).Scan(&seed.channelID); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	seed.providerAccountID = seedChatGPTSessionE2EProviderAccount(t, ctx, pgPool, seed, unique)
+	seed.adminBearer, seed.adminTokenID = seedSpecializedLiveImportAuthorization(
+		t, ctx, pgPool, seed.tenantID, "chatgpt-session-e2e-admin-"+unique,
+	)
 
 	if err := pgPool.QueryRow(ctx,
 		`INSERT INTO models (tenant_id, scope, canonical_id, protocol_family,
@@ -451,7 +470,13 @@ func seedChatGPTSessionE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpo
 	return seed
 }
 
-func seedChatGPTSessionE2EProviderAccount(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *chatgptSessionE2ESeed, unique string) int64 {
+func importChatGPTSessionE2EAccount(
+	t *testing.T,
+	ctx context.Context,
+	client *http.Client,
+	addr string,
+	seed *chatgptSessionE2ESeed,
+) specializedLiveImportResult {
 	t.Helper()
 	extra := map[string]string{
 		"base_url":      seed.upstreamEndpoint,
@@ -462,66 +487,42 @@ func seedChatGPTSessionE2EProviderAccount(t *testing.T, ctx context.Context, pgP
 		"originator":    "codex_cli_rs",
 		"oai_country":   "US",
 	}
-	legacyCredentials, err := json.Marshal(map[string]any{
-		"session_token": chatgptSessionE2EToken,
-		"extra":         extra,
-	})
-	if err != nil {
-		t.Fatalf("marshal legacy session credential: %v", err)
-	}
 	extraJSON, err := json.Marshal(extra)
 	if err != nil {
-		t.Fatalf("marshal provider account extra: %v", err)
+		t.Fatalf("编码 ChatGPT session 账号运行元数据: %v", err)
 	}
-
-	var accountID int64
-	if err := pgPool.QueryRow(ctx,
-		`INSERT INTO provider_accounts (
-			tenant_id, provider_id, channel_id, name, account_type,
-			cap_concurrency, in_flight_count, priority, health_state, credential_state,
-			model_allow_list, capability_flags, credentials, extra
-		) VALUES ($1, $2, $3, $4, 'session',
-			1, 0, 100, 'healthy', 'valid',
-			ARRAY[$5]::text[], ARRAY['stream','tools','vision','json','audio','file'], $6::jsonb, $7::jsonb) RETURNING id`,
-		seed.tenantID, seed.providerID, seed.channelID, "chatgpt-session-e2e-acct-"+unique,
-		chatgptSessionE2EModel, string(legacyCredentials), string(extraJSON),
-	).Scan(&accountID); err != nil {
-		t.Fatalf("seed provider account: %v", err)
-	}
-
 	payload, err := json.Marshal(map[string]any{
 		"session_token": chatgptSessionE2EToken,
-		"extra":         extra,
+		"account_id":    chatgptSessionE2EAccountID,
 	})
 	if err != nil {
-		t.Fatalf("marshal account credential payload: %v", err)
+		t.Fatalf("编码 ChatGPT session 正式导入凭据: %v", err)
 	}
-	credKP, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
-	if err != nil {
-		t.Fatalf("cred key provider: %v", err)
+	capConcurrency := int32(1)
+	priority := int32(100)
+	request := specializedLiveAccountImportRequest{
+		TenantID:        seed.tenantID,
+		SourceKind:      intake.SourceJSON,
+		DefaultVendor:   chatgptSessionE2EVendor,
+		DefaultAuthMode: chatgptSessionE2EAuthMode,
+		Content:         string(payload),
+		Account: accountintake.AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			ExactName:       "chatgpt-session-e2e-正式导入-" + uuid.NewString(),
+			AccountType:     "session",
+			CapConcurrency:  &capConcurrency,
+			Priority:        &priority,
+			Extra:           extraJSON,
+			ModelAllowList:  []string{chatgptSessionE2EModel},
+			CapabilityFlags: []string{"stream", "tools", "vision", "json", "audio", "file"},
+		},
 	}
-	credEnv, err := credentialstore.NewCipher(credKP).Encrypt(ctx,
-		payload,
-		credentialstore.AAD{
-			TenantID:          seed.tenantID,
-			ProviderAccountID: accountID,
-			Vendor:            chatgptSessionE2EVendor,
-			AuthMode:          chatgptSessionE2EAuthMode,
-			Version:           1,
-		})
-	if err != nil {
-		t.Fatalf("encrypt credential for account %d: %v", accountID, err)
-	}
-	if _, err := pgPool.Exec(ctx,
-		`INSERT INTO account_credentials (tenant_id, provider_account_id, vendor, auth_mode, state,
-		   credential_version, encrypted_payload, encryption_scheme, key_id, nonce, aad_hash)
-		 VALUES ($1, $2, $3, $4, 'active', 1, $5, 'aes-256-gcm', $6, $7, $8)`,
-		seed.tenantID, accountID, chatgptSessionE2EVendor, chatgptSessionE2EAuthMode,
-		credEnv.Ciphertext, credEnv.KeyID, credEnv.Nonce, credEnv.AADHash,
-	); err != nil {
-		t.Fatalf("seed account credential: %v", err)
-	}
-	return accountID
+	return executeSpecializedLiveAccountImport(
+		t, ctx, client, addr,
+		"/admin/v1/credentials/account-imports/plan",
+		"/admin/v1/credentials/account-imports/execute",
+		seed.adminBearer, request, chatgptSessionE2EToken,
+	)
 }
 
 func assertChatGPTSessionE2ESeedSelectable(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *chatgptSessionE2ESeed) {
@@ -604,15 +605,17 @@ func reserveChatGPTSessionE2ELocalPort(t *testing.T) string {
 	return addr
 }
 
-func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed *chatgptSessionE2ESeed) *exec.Cmd {
+func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed *chatgptSessionE2ESeed) *specializedLiveProcesses {
 	t.Helper()
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRootForChatGPTSessionE2E(t))
 	cmd := exec.Command(binPath)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(specializedLiveChildEnv(),
 		"HUAKAI_DATABASE_URL="+dsn,
 		"HUAKAI_ADDR="+addr,
 		"HUAKAI_RELEASE_MODE=dev",
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_DEV_MOCK_UPSTREAM=false",
 		"HUAKAI_BILLING_POLICY_VERSION="+seed.pricingVersion,
 		"HUAKAI_QUOTA_ENFORCE=true",
@@ -620,6 +623,7 @@ func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed
 		"HUAKAI_EVENTBUS_ENABLED=0",
 		"HUAKAI_RATE_PRECHECK_ENABLED=false",
 		"HUAKAI_BINDING_RATE_LIMIT_ENABLED=false",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		"HUAKAI_KEY_RPM_LIMIT=0",
 		"HUAKAI_KEY_TPM_LIMIT=0",
 		"HUAKAI_DISPATCH_HCSF=1",
@@ -627,11 +631,13 @@ func startChatGPTSessionE2EGateway(t *testing.T, binPath, dsn, addr string, seed
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("start gateway: %v", err)
 	}
 	go drainChatGPTSessionE2EPipe("gateway-stderr", stderr)
 	go drainChatGPTSessionE2EPipe("gateway-stdout", stdout)
-	return cmd
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func drainChatGPTSessionE2EPipe(label string, r io.ReadCloser) {
@@ -642,20 +648,6 @@ func drainChatGPTSessionE2EPipe(label string, r io.ReadCloser) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fmt.Printf("[%s] %s\n", label, redactChatGPTSessionE2ESecrets(scanner.Text()))
-	}
-}
-
-func stopChatGPTSessionE2EGateway(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
 	}
 }
 
@@ -795,9 +787,32 @@ func assertChatGPTSessionE2ESuccessPG(t *testing.T, ctx context.Context, pgPool 
 		t.Fatalf("claim %d actual_cost=%v want >0", claimID, actualCost)
 	}
 	assertChatGPTSessionE2EUsageRecord(t, ctx, pgPool, claimID, result.usage)
+	assertChatGPTSessionE2ECostReceipt(t, ctx, pgPool, seed.tenantID, claimID)
 	assertChatGPTSessionE2EQuotaReservation(t, ctx, pgPool, seed.tenantID, claimID)
 	assertChatGPTSessionE2ECostQuotaWindow(t, ctx, pgPool, seed, 0)
 	return claimID
+}
+
+func assertChatGPTSessionE2ECostReceipt(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tenantID, claimID int64) {
+	t.Helper()
+	var count int
+	if err := pgPool.QueryRow(ctx, `
+SELECT count(*)
+FROM user_cost_receipts r
+JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.tenant_id=$1
+  AND o.claim_id=$2
+  AND octet_length(r.signed_hash) > 0`,
+		tenantID, claimID,
+	).Scan(&count); err != nil {
+		t.Fatalf("读取 claim %d 的用户成本凭证: %v", claimID, err)
+	}
+	if count != 1 {
+		t.Fatalf("claim %d 成本凭证数量=%d，期望 1", claimID, count)
+	}
 }
 
 func readChatGPTSessionE2ECommittedClaim(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *chatgptSessionE2ESeed, logicalID string) (int64, float64) {

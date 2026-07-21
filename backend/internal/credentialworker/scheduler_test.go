@@ -3,22 +3,13 @@ package credentialworker
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/copilot"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/cursor"
 )
 
 func TestSchedulerTickTriggersRefresh(t *testing.T) {
@@ -62,6 +53,16 @@ func TestSchedulerNoCandidatesNoop(t *testing.T) {
 	}
 	if storm.calls != 0 || len(ref.calls) != 0 {
 		t.Fatalf("noop scan must not acquire/refresh: storm=%d refresh=%d", storm.calls, len(ref.calls))
+	}
+}
+
+func TestSchedulerRejectsMissingCanonicalRefresher(t *testing.T) {
+	s := NewScheduler(nil, nil, nil, nil,
+		withRefreshQueries(&listSpy{}),
+		withStormAcquirer(&stormSpy{}),
+	)
+	if err := s.RunOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "refresher required") {
+		t.Fatalf("RunOnce err=%v，期望缺少统一刷新入口时启动失败", err)
 	}
 }
 
@@ -173,16 +174,13 @@ func TestSchedulerAllScopesAdmitConsultEachOnceThenRefresh(t *testing.T) {
 	}
 }
 
-func TestSchedulerHotPathUsesStormScopesAndVendorRefresher(t *testing.T) {
-	// Mutation:把 gateway hot path 直接接到 Refresher.Refresh 会跳过
-	// account/endpoint/global 的 storm 准入,并路由到错误的 refresher。
+func TestSchedulerHotPathUsesStormScopesAndCanonicalRefresher(t *testing.T) {
+	// gateway 热路径必须经过 storm 准入，再交给统一刷新入口按凭据模式分派。
 	storm := &stormSpy{}
-	defaultRef := &refresherSpy{}
-	anthropicRef := &refresherSpy{}
+	canonicalRef := &refresherSpy{}
 	audit := &auditSpy{}
 	lister := &listSpy{}
-	s := newTestSchedulerWith(lister, storm, defaultRef,
-		WithVendorRefresher("anthropic", anthropicRef),
+	s := newTestSchedulerWith(lister, storm, canonicalRef,
 		withAuditWriter(audit),
 		WithAuditLedger(&ledgerSpy{}),
 	)
@@ -196,11 +194,8 @@ func TestSchedulerHotPathUsesStormScopesAndVendorRefresher(t *testing.T) {
 	if storm.calls != 1 || storm.endpointCalls != 1 || storm.globalCalls != 1 {
 		t.Fatalf("storm scopes account/endpoint/global=%d/%d/%d want 1/1/1", storm.calls, storm.endpointCalls, storm.globalCalls)
 	}
-	if len(anthropicRef.calls) != 1 || anthropicRef.calls[0] != 44 {
-		t.Fatalf("anthropic refresher calls=%v want [44]", anthropicRef.calls)
-	}
-	if len(defaultRef.calls) != 0 {
-		t.Fatalf("default refresher calls=%v want none for vendor-specific hot refresh", defaultRef.calls)
+	if len(canonicalRef.calls) != 1 || canonicalRef.calls[0] != 44 {
+		t.Fatalf("canonical refresher calls=%v want [44]", canonicalRef.calls)
 	}
 	if storm.released != 1 {
 		t.Fatalf("account storm release calls=%d want 1", storm.released)
@@ -227,202 +222,6 @@ func TestSchedulerRefreshSuccessWritesAudit(t *testing.T) {
 	}
 	if ledger.Size(context.Background()) != 1 {
 		t.Fatalf("ledger entries=%d, want 1", ledger.Size(context.Background()))
-	}
-}
-
-func TestSchedulerVendorRefresherRoutesOnlyMatchingVendor(t *testing.T) {
-	// 修掉的回归:vendor 专属的 refresher 必须按扫描到的 vendor 名分发,而不是按
-	// "第一个注册的 refresher"。Mutation 自检:把 anthropic 行路由到 copilot
-	// refresher 会让 default refresher 拿不到 account 22,使本测试转红。
-	copilotRef := &refresherSpy{}
-	defaultRef := &refresherSpy{}
-	audit := &auditSpy{}
-	rows := []dbbilling.ListAccountsForRefreshRow{
-		testAccountWithVendor(21, "copilot"),
-		testAccountWithVendor(22, "anthropic"),
-	}
-	s := newTestScheduler(rows, &stormSpy{}, defaultRef,
-		WithVendorRefresher("copilot", copilotRef),
-		withAuditWriter(audit),
-		WithAuditLedger(&ledgerSpy{}),
-	)
-
-	if err := s.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if len(copilotRef.calls) != 1 || copilotRef.calls[0] != 21 {
-		t.Fatalf("copilot refresher calls=%v, want [21]", copilotRef.calls)
-	}
-	if len(defaultRef.calls) != 1 || defaultRef.calls[0] != 22 {
-		t.Fatalf("default refresher calls=%v, want fallback [22]", defaultRef.calls)
-	}
-	if len(audit.entries) != 2 {
-		t.Fatalf("audit entries=%d, want 2 success rows", len(audit.entries))
-	}
-	for _, entry := range audit.entries {
-		if entry.Outcome != auth.OutcomeRefreshSucceeded {
-			t.Fatalf("audit outcome for account %d=%q, want refresh_succeeded", entry.ProviderAccountID, entry.Outcome)
-		}
-	}
-}
-
-func TestSchedulerWithVendorRefresherRoutesCursorByVendorName(t *testing.T) {
-	// 修掉的回归:cursor 必须经由通过 WithVendorRefresher("cursor", ...) 注册的
-	// cursor 专属 refresher 路由。Mutation 自检:把注册 key 或 scheduler 查找改成
-	// 另一个 vendor 会让 cursorRef 闲置不用,使本测试转红。
-	cursorRef := &refresherSpy{}
-	windsurfRef := &refresherSpy{errs: []error{errors.New("cursor routed to windsurf")}}
-	defaultRef := &refresherSpy{errs: []error{errors.New("cursor routed to default")}}
-	audit := &auditSpy{}
-	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(26, "cursor")}, &stormSpy{}, defaultRef,
-		WithVendorRefresher("cursor", cursorRef),
-		WithVendorRefresher("windsurf", windsurfRef),
-		withAuditWriter(audit),
-		WithAuditLedger(&ledgerSpy{}),
-	)
-
-	if err := s.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if len(cursorRef.calls) != 1 || cursorRef.calls[0] != 26 {
-		t.Fatalf("cursor refresher calls=%v, want [26]", cursorRef.calls)
-	}
-	if len(windsurfRef.calls) != 0 {
-		t.Fatalf("windsurf refresher must not receive cursor account: %v", windsurfRef.calls)
-	}
-	if len(defaultRef.calls) != 0 {
-		t.Fatalf("default refresher must not receive configured cursor account: %v", defaultRef.calls)
-	}
-	if got := audit.lastOutcome(); got != auth.OutcomeRefreshSucceeded {
-		t.Fatalf("audit outcome=%q, want refresh_succeeded", got)
-	}
-}
-
-func TestSchedulerFallsBackToDefaultRefresherAndWritesAuditWhenVendorRefresherMissing(t *testing.T) {
-	// 修掉的回归:一个没有专属 refresher 的 vendor 必须保留 legacy 刷新路径,并且
-	// 仍然写入 refresh audit 行。Mutation 自检:把这个 anthropic 行发给已注册的
-	// copilot refresher 会返回 crossVendorErr,而不是下方的成功 audit 证据。
-	crossVendorErr := errors.New("copilot refresher received non-copilot account")
-	copilotRef := &refresherSpy{errs: []error{crossVendorErr}}
-	defaultRef := &refresherSpy{}
-	audit := &auditSpy{}
-	ledger := &ledgerSpy{}
-	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(23, "anthropic")}, &stormSpy{}, defaultRef,
-		WithVendorRefresher("copilot", copilotRef),
-		withAuditWriter(audit),
-		WithAuditLedger(ledger),
-	)
-
-	if err := s.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if len(copilotRef.calls) != 0 {
-		t.Fatalf("copilot refresher must not receive anthropic account: %v", copilotRef.calls)
-	}
-	if len(defaultRef.calls) != 1 || defaultRef.calls[0] != 23 {
-		t.Fatalf("default refresher calls=%v, want [23]", defaultRef.calls)
-	}
-	if len(audit.entries) != 1 {
-		t.Fatalf("audit entries=%d, want fallback success row", len(audit.entries))
-	}
-	entry := audit.entries[0]
-	if entry.ProviderAccountID != 23 || entry.Outcome != auth.OutcomeRefreshSucceeded {
-		t.Fatalf("audit entry=(account=%d outcome=%q), want account 23 refresh_succeeded", entry.ProviderAccountID, entry.Outcome)
-	}
-	if ledger.Size(context.Background()) != 1 {
-		t.Fatalf("ledger entries=%d, want 1", ledger.Size(context.Background()))
-	}
-}
-
-func TestSchedulerCopilotVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
-	// 修掉的回归:Scheduler 的 vendor 路由必须真正执行 CopilotRefresher,保留其
-	// 401 -> auth_expired 的分类。Mutation 自检:回退到 default refresher 或吞掉
-	// Copilot 错误会让 auth_expired 的旁路证据缺失。
-	store := &schedulerCopilotStore{raw: []byte(`{"github_access_token":"expired-github-token"}`)}
-	client := &http.Client{Transport: schedulerRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusUnauthorized,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"message":"bad credentials"}`)),
-		}, nil
-	})}
-	audit := &auditSpy{}
-	refresher := &copilot.CopilotRefresher{
-		Store: store,
-		Adapter: copilot.CopilotRefreshAdapter{
-			TokenURL:   "https://api.github.test/copilot_internal/v2/token",
-			HTTPClient: client,
-			Now:        func() time.Time { return time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC) },
-		},
-	}
-	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(24, "copilot")}, &stormSpy{}, &refresherSpy{},
-		WithMaxAttempts(1),
-		WithVendorRefresher("copilot", refresher),
-		withAuditWriter(audit),
-		WithAuditLedger(&ledgerSpy{}),
-	)
-
-	err := s.RunOnce(context.Background())
-	if !errors.Is(err, copilot.ErrCopilotAuthExpired) {
-		t.Fatalf("RunOnce err=%v, want ErrCopilotAuthExpired", err)
-	}
-	if store.failureAccountID != 24 || store.failureOutcome != "auth_expired" {
-		t.Fatalf("copilot failure hook=(account=%d outcome=%q), want account 24 auth_expired", store.failureAccountID, store.failureOutcome)
-	}
-	if len(store.saved) != 0 {
-		t.Fatalf("expired Copilot auth must not save credential: %s", string(store.saved))
-	}
-	if got := audit.lastOutcome(); got != auth.RefreshAuditOutcome("auth_expired") {
-		t.Fatalf("scheduler audit outcome=%q, want auth_expired", got)
-	}
-}
-
-func TestSchedulerCursorVendorRefresherRecordsAuthExpiredOn401(t *testing.T) {
-	// 修掉的回归:CursorRefresher 必须把它的 401 分类带到 scheduler audit。
-	// Mutation 自检:返回裸 Cursor 错误会让 auth_expired 旁路缺失,于是 scheduler
-	// 写入 permanent_disable。
-	store := &schedulerCursorStore{rec: credentialstore.CredentialRecord{
-		ID: 91, TenantID: 7, ProviderAccountID: 25,
-		Vendor: "cursor", AuthMode: "oauth", CredentialVersion: 2,
-		PlaintextPayload: []byte(`{"refresh_token":"expired-cursor-refresh"}`),
-	}}
-	client := &http.Client{Transport: schedulerRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusUnauthorized,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"error":"bad_credentials"}`)),
-		}, nil
-	})}
-	audit := &auditSpy{}
-	refresher := &cursor.Refresher{
-		Store: store,
-		Adapter: cursor.RefreshAdapter{
-			TokenURL:   "https://cursor-oauth.example.test/token",
-			ClientID:   "cursor-client",
-			HTTPClient: client,
-			Now:        func() time.Time { return time.Date(2026, 5, 24, 10, 30, 0, 0, time.UTC) },
-		},
-		Now: func() time.Time { return time.Date(2026, 5, 24, 10, 30, 0, 0, time.UTC) },
-	}
-	s := newTestScheduler([]dbbilling.ListAccountsForRefreshRow{testAccountWithVendor(25, "cursor")}, &stormSpy{}, &refresherSpy{},
-		WithMaxAttempts(1),
-		WithVendorRefresher("cursor", refresher),
-		withAuditWriter(audit),
-		WithAuditLedger(&ledgerSpy{}),
-	)
-
-	err := s.RunOnce(context.Background())
-	if !errors.Is(err, cursor.ErrCursorAuthExpired) {
-		t.Fatalf("RunOnce err=%v, want ErrCursorAuthExpired", err)
-	}
-	if store.failureAccountID != 25 || store.failureOutcome != "auth_expired" {
-		t.Fatalf("cursor failure hook=(account=%d outcome=%q), want account 25 auth_expired", store.failureAccountID, store.failureOutcome)
-	}
-	if len(store.saved) != 0 {
-		t.Fatalf("expired Cursor auth must not save credential: %s", string(store.saved))
-	}
-	if got := audit.lastOutcome(); got != auth.RefreshAuditOutcome("auth_expired") {
-		t.Fatalf("scheduler audit outcome=%q, want auth_expired", got)
 	}
 }
 
@@ -688,98 +487,6 @@ type deadlineProbeRefresher struct {
 func (r *deadlineProbeRefresher) Refresh(ctx context.Context, accountID int64) error {
 	_, r.hadDeadline = ctx.Deadline()
 	return nil
-}
-
-type schedulerCopilotStore struct {
-	raw              []byte
-	saved            []byte
-	failureAccountID int64
-	failureOutcome   string
-}
-
-func (s *schedulerCopilotStore) LoadCopilotCredential(context.Context, int64) ([]byte, error) {
-	return append([]byte(nil), s.raw...), nil
-}
-
-func (s *schedulerCopilotStore) SaveCopilotCredential(_ context.Context, _ int64, credential []byte, _ time.Time) error {
-	s.saved = append([]byte(nil), credential...)
-	return nil
-}
-
-func (s *schedulerCopilotStore) RecordCopilotRefreshFailure(_ context.Context, accountID int64, outcome string, _ error) error {
-	s.failureAccountID = accountID
-	s.failureOutcome = outcome
-	return nil
-}
-
-type schedulerCursorStore struct {
-	rec              credentialstore.CredentialRecord
-	saved            []byte
-	failureAccountID int64
-	failureOutcome   string
-}
-
-func (s *schedulerCursorStore) LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error) {
-	return cloneSchedulerCursorRecord(s.rec), nil
-}
-
-func (s *schedulerCursorStore) WithRefreshTransaction(_ context.Context, fn func(cursor.RefreshStore, db.DBTX) error) error {
-	tx := &schedulerCursorTx{store: s}
-	return fn(tx, tx)
-}
-
-func (s *schedulerCursorStore) SaveRefreshSuccess(ctx context.Context, rec credentialstore.CredentialRecord, payload []byte, expiresAt time.Time, outcome string) error {
-	return s.WithRefreshTransaction(ctx, func(tx cursor.RefreshStore, _ db.DBTX) error {
-		return tx.SaveRefreshSuccess(ctx, rec, payload, expiresAt, outcome)
-	})
-}
-
-func (s *schedulerCursorStore) SaveRefreshFailure(ctx context.Context, rec credentialstore.CredentialRecord, failureClass string, nextAttempt time.Time) error {
-	return s.WithRefreshTransaction(ctx, func(tx cursor.RefreshStore, _ db.DBTX) error {
-		return tx.SaveRefreshFailure(ctx, rec, failureClass, nextAttempt)
-	})
-}
-
-type schedulerCursorTx struct {
-	store *schedulerCursorStore
-}
-
-func (tx *schedulerCursorTx) Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, nil
-}
-
-func (tx *schedulerCursorTx) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
-	return nil, nil
-}
-
-func (tx *schedulerCursorTx) QueryRow(context.Context, string, ...interface{}) pgx.Row {
-	return nil
-}
-
-func (tx *schedulerCursorTx) LoadForRefresh(context.Context, int64) (credentialstore.CredentialRecord, error) {
-	return cloneSchedulerCursorRecord(tx.store.rec), nil
-}
-
-func (tx *schedulerCursorTx) SaveRefreshSuccess(_ context.Context, rec credentialstore.CredentialRecord, credential []byte, _ time.Time, _ string) error {
-	tx.store.saved = append([]byte(nil), credential...)
-	return nil
-}
-
-func (tx *schedulerCursorTx) SaveRefreshFailure(_ context.Context, rec credentialstore.CredentialRecord, failureClass string, _ time.Time) error {
-	tx.store.failureAccountID = rec.ProviderAccountID
-	tx.store.failureOutcome = failureClass
-	return nil
-}
-
-func cloneSchedulerCursorRecord(rec credentialstore.CredentialRecord) credentialstore.CredentialRecord {
-	rec.PlaintextPayload = append([]byte(nil), rec.PlaintextPayload...)
-	return rec
-}
-
-type schedulerRoundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f schedulerRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
 }
 
 type nonRetryableRefreshErr struct{}

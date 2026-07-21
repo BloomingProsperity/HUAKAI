@@ -88,41 +88,32 @@ func TestBuildGroupRoutingGates_WiresRatePrecheckCounter(t *testing.T) {
 	}
 }
 
-// TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts 守生产激活点的故障语义:
-// buildSelector 接入的真实 GroupPolicy gate 在 routes repo 瞬时错误时, 对 premium 付费档
-// fail-open 保可用性, 同时累计 error metric 并 WARN; default 组仍保留兼容放行。
-// mutation: GroupPolicy 漏接告警 observer → metric/log 断言红; fail-closed → premium 放行断言红。
-func TestBuildGroupRoutingGates_PremiumRepoErrorFailsOpenAndAlerts(t *testing.T) {
+// 生产接线必须在策略真相读取失败时停止选号、记录指标与 WARN。
+func TestBuildGroupRoutingGates_RepoErrorFailsClosedAndAlerts(t *testing.T) {
 	core, logs := observer.New(zap.WarnLevel)
 	gates := buildGroupRoutingGates(errGroupRepo{}, nil, nil, nil, nil, zap.New(core))
-	before := groupPolicyFailOpenTotal.Value()
+	before := groupPolicyFailClosedTotal.Value()
 
 	ok, reason, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{
 		TenantID: 1, UserGroup: "premium", RequestedModel: "m", PoolGroupID: 5,
 	})
-	if err != nil {
-		t.Fatalf("premium repo error: unexpected err %v", err)
+	if ok || reason != poolrouter.GateFailureGroupPolicy || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("premium repo error: ok=%v reason=%q err=%v want fail-closed", ok, reason, err)
 	}
-	if !ok {
-		t.Fatal("premium repo transient error must fail-open in production gate wiring, got deny")
-	}
-	if reason != "" {
-		t.Fatalf("reason=%q want empty on fail-open", reason)
-	}
-	if got := groupPolicyFailOpenTotal.Value(); got != before+1 {
-		t.Fatalf("group_policy_fail_open_total=%d want %d after premium repo error", got, before+1)
+	if got := groupPolicyFailClosedTotal.Value(); got != before+1 {
+		t.Fatalf("group_policy_fail_closed_total=%d want %d", got, before+1)
 	}
 	if logs.Len() != 1 {
 		t.Fatalf("WARN log count=%d want 1", logs.Len())
 	}
-	if msg := logs.All()[0].Message; !strings.Contains(msg, "fail-open") {
-		t.Fatalf("WARN log message %q should mention fail-open", msg)
+	if msg := logs.All()[0].Message; !strings.Contains(msg, "停止选号") {
+		t.Fatalf("WARN log message %q should mention 停止选号", msg)
 	}
 
 	if ok, _, err := gates.GroupPolicy.Allow(context.Background(), nil, poolrouter.SelectionRequest{
 		TenantID: 1, UserGroup: "default", RequestedModel: "m", PoolGroupID: 5,
-	}); err != nil || !ok {
-		t.Fatalf("default repo error: ok=%v err=%v, want compatibility allow", ok, err)
+	}); ok || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("default repo error: ok=%v err=%v want fail-closed", ok, err)
 	}
 }
 

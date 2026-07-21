@@ -120,7 +120,7 @@ func refreshFailureState(failureClass string) string {
 	switch failureClass {
 	case "invalid_grant", "auth_expired":
 		return StateRevoked
-	case "decrypt_failed", "payload_invalid", "operator_config_required":
+	case "decrypt_failed", "payload_invalid", "operator_config_required", "project_metadata_conflict", "project_metadata_unavailable":
 		return StateOperatorAttention
 	default:
 		return StateTempUnschedulable

@@ -35,7 +35,7 @@ func NewAntigravityAdapter(client *http.Client, proxyResolver provider.ProxyReso
 }
 
 func (a *AntigravityAdapter) Supports(credential provider.Credential, info provider.AccountInfo) bool {
-	return a != nil && strings.EqualFold(strings.TrimSpace(info.Platform), "antigravity") && accessToken(credential) != ""
+	return a != nil && isAntigravityAccount(info) && accessToken(credential) != ""
 }
 
 func (a *AntigravityAdapter) Source() accountquota.Source {

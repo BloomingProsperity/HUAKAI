@@ -33,10 +33,10 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping e2e concurrency test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer setupCancel()
 
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open dev pool: %v", err)
 	}
@@ -54,6 +54,9 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 	cmd := startAccountSlotE2EGateway(t, binPath, dsn, addr, pricingVersion)
 	t.Cleanup(func() { stopGateway(cmd) })
 	waitForGateway(t, addr)
+	setupCancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 
 	client := &http.Client{Timeout: 15 * time.Second}
 

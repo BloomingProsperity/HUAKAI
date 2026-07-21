@@ -143,6 +143,88 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 	}
 }
 
+func TestCopilotDeviceCodeUsesPinnedPublicIdentityAndStagesGitHubToken(t *testing.T) {
+	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
+	var starts, polls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("解析请求体：%v", err)
+		}
+		switch r.URL.String() {
+		case copilotOAuthDeviceAuthorizationURL:
+			starts.Add(1)
+			if body["client_id"] != copilotOAuthClientID || body["scope"] != copilotOAuthScope {
+				t.Fatalf("设备码公开客户端合同被覆盖：%v", body)
+			}
+			return jsonHTTPResponse(t, map[string]any{
+				"device_code": "copilot-device", "user_code": "CP-1234",
+				"verification_uri": "https://github.com/login/device", "expires_in": 900, "interval": 5,
+			}), nil
+		case copilotOAuthTokenURL:
+			polls.Add(1)
+			if body["client_id"] != copilotOAuthClientID || body["device_code"] != "copilot-device" {
+				t.Fatalf("设备码轮询合同错误：%v", body)
+			}
+			return jsonHTTPResponse(t, map[string]any{
+				"access_token": "github-long-lived", "token_type": "bearer", "expires_in": 3600,
+			}), nil
+		default:
+			t.Fatalf("请求了非固定 Copilot OAuth 端点：%s", r.URL)
+			return nil, errors.New("不可达")
+		}
+	})}
+
+	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(now)).WithNow(func() time.Time { return now }))
+	exchanger := newCopilotDeviceCodeExchanger()
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 9, ProviderAccountID: 42, Vendor: "attacker", AuthMode: "attacker",
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{
+		ClientID: "attacker-client", AuthURL: "https://attacker.invalid/device",
+		TokenURL: "https://attacker.invalid/token", Scopes: []string{"repo"},
+		Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatalf("启动 Copilot 设备码：%v", err)
+	}
+	if starts.Load() != 1 || start.Session.Vendor != credentialstore.VendorCopilot || start.Session.AuthMode != credentialstore.AuthModeCopilotOAuth {
+		t.Fatalf("启动结果未归一到 Copilot：starts=%d session=%+v", starts.Load(), start.Session)
+	}
+	if start.Session.ClientIdentitySource != ClientSourcePublicCLI {
+		t.Fatalf("client identity source=%q，期望 %q", start.Session.ClientIdentitySource, ClientSourcePublicCLI)
+	}
+
+	candidate, err := PollDeviceCodeToken(context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt())
+	if err != nil {
+		t.Fatalf("轮询 Copilot 设备码：%v", err)
+	}
+	if polls.Load() != 1 {
+		t.Fatalf("polls=%d，期望 1", polls.Load())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatalf("解析候选凭据：%v", err)
+	}
+	if payload["github_access_token"] != "github-long-lived" {
+		t.Fatalf("GitHub 授权材料未单独标记：%v", payload)
+	}
+	if payload["access_token"] != nil || payload["session_token"] != nil {
+		t.Fatalf("GitHub 授权材料不得伪装成 Copilot 运行令牌：%v", payload)
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(candidate.Vendor, candidate.AuthMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.ValidatePayload(candidate.Payload); err != nil {
+		t.Fatalf("引导凭据应允许进入加密存储：%v", err)
+	}
+	if material, err := handler.RuntimeMaterial(candidate.Payload); err == nil {
+		t.Fatalf("尚未换取服务令牌时必须拒绝出站，material=%+v", material)
+	}
+}
+
 func TestDeviceCodeSingleAttemptReturnsPendingWithoutSleeping(t *testing.T) {
 	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -419,32 +501,39 @@ func TestKimiSSRFHost(t *testing.T) {
 	}
 }
 
-func TestOpenAICodexDeviceCodeStartRequiresOperatorConfig(t *testing.T) {
-	// 回归保护:已注册的 OpenAI Codex device-code exchanger
-	// 必须在任何 HTTP 调用前强制 operator_config。变异自检:
-	// 若直接委派给通用 device-code exchanger,就会调用此
-	// client 并接受 public_cli_client。
-	called := false
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		called = true
-		return jsonHTTPResponse(t, map[string]any{}), nil
+func TestOpenAICodexDeviceCodeStartUsesBuiltinPublicProfile(t *testing.T) {
+	// 公开 CLI 身份必须成为无配置默认值；改回强制 operator_config、改错端点或
+	// client_id 都会使请求断言转红。
+	var gotURL, gotClientID string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		gotClientID = stringField(body, "client_id")
+		return jsonHTTPResponse(t, map[string]any{
+			"device_auth_id": "codex-device-id",
+			"user_code":      "CODEX-CODE",
+			"expires_in":     900,
+			"interval":       5,
+		}), nil
 	})}
 	store := withTestSessionKeys(t, NewPostgresSessionStore(newTestSessionDB(time.Date(2026, 5, 24, 14, 0, 0, 0, time.UTC))))
 
-	_, err := StartOAuthFlow(context.Background(), store, StartInput{
+	start, err := StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 5,
 		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
 		ActorID: "admin-1", ActorRole: "platform_admin",
-	}, OAuthClientConfig{
-		AuthURL: "https://operator.openai.example.test/device", TokenURL: "https://operator.openai.example.test/token",
-		ClientID: "operator-client", Scopes: []string{"openid", "offline_access"},
-		Source: ClientSourcePublicCLI, HTTPClient: client,
-	})
-	if !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("StartOAuthFlow err=%v, want ErrFeatureDisabled", err)
+	}, OAuthClientConfig{HTTPClient: client})
+	if err != nil {
+		t.Fatalf("StartOAuthFlow: %v", err)
 	}
-	if called {
-		t.Fatal("OpenAI Codex device-code start called HTTP before operator_config validation")
+	if gotURL != openAICodexDeviceAuthorizationURL || gotClientID != chatgptOAuthClientID {
+		t.Fatalf("device start url=%q client_id=%q", gotURL, gotClientID)
+	}
+	if start.Session.ClientIdentitySource != ClientSourcePublicCLI || start.UserCode != "CODEX-CODE" {
+		t.Fatalf("session source=%q user_code=%q", start.Session.ClientIdentitySource, start.UserCode)
 	}
 }
 
@@ -500,6 +589,13 @@ func TestOpenAICodexDeviceCodeAliasCanonicalizesCredentialMode(t *testing.T) {
 	}
 	if candidate.Vendor != credentialstore.VendorOpenAI || candidate.AuthMode != credentialstore.AuthModeCodexCLIOAuth {
 		t.Fatalf("candidate mode=%s/%s, want openai/codex_cli_oauth", candidate.Vendor, candidate.AuthMode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["client_id_source"] != ClientSourceOperatorConfig {
+		t.Fatalf("candidate client_id_source=%v, want operator_config", payload["client_id_source"])
 	}
 	if err := NewFinalizer(nil, credentialstore.DefaultHandlerRegistry(), nil, nil).ValidateCandidate(candidate); err != nil {
 		t.Fatalf("ValidateCandidate: %v", err)

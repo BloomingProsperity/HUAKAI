@@ -15,9 +15,14 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
-const grokBillingBase = "https://cli-chat-proxy.grok.com/v1"
+const (
+	grokBillingBase            = "https://cli-chat-proxy.grok.com/v1"
+	grokStandardMonthlyCredits = 15_000
+	grokExpandedMonthlyCredits = 150_000
+)
 
 type GrokBillingAdapter struct {
 	http adapterHTTP
@@ -39,7 +44,7 @@ func (a *GrokBillingAdapter) Fetch(ctx context.Context, accountID int64, credent
 	if err != nil {
 		return VendorResult{}, err
 	}
-	var weekly, monthly []accountquota.Fact
+	var weekly, monthly grokFetchResult
 	var weeklyErr, monthlyErr error
 	var group sync.WaitGroup
 	group.Add(2)
@@ -52,7 +57,7 @@ func (a *GrokBillingAdapter) Fetch(ctx context.Context, accountID int64, credent
 		monthly, monthlyErr = a.fetch(ctx, client, credential, false, observedAt)
 	}()
 	group.Wait()
-	facts := append(weekly, monthly...)
+	facts := append(weekly.Facts, monthly.Facts...)
 	if len(facts) == 0 {
 		if weeklyErr != nil {
 			return VendorResult{}, weeklyErr
@@ -60,10 +65,26 @@ func (a *GrokBillingAdapter) Fetch(ctx context.Context, accountID int64, credent
 		return VendorResult{}, monthlyErr
 	}
 	result := VendorResult{Source: accountquota.SourceUpstreamBilling, Facts: facts, Complete: weeklyErr == nil && monthlyErr == nil}
+	if monthlyErr == nil && monthly.RawPlan != "" {
+		result.Subscription = subscriptionprofile.FromRaw(
+			subscriptionprofile.VendorGrok,
+			monthly.RawPlan,
+			subscriptionprofile.SourceProviderAPI,
+			subscriptionprofile.TrustVerifiedAPI,
+			subscriptionprofile.VerificationVerified,
+			"",
+			"",
+		)
+	}
 	if !result.Complete {
 		result.ErrorClass = ErrorClassUpstreamPartialResponse
 	}
 	return result, nil
+}
+
+type grokFetchResult struct {
+	Facts   []accountquota.Fact
+	RawPlan string
 }
 
 type grokBillingPayload struct {
@@ -82,14 +103,14 @@ type grokBillingPayload struct {
 	} `json:"config"`
 }
 
-func (a *GrokBillingAdapter) fetch(ctx context.Context, client *http.Client, credential provider.Credential, weekly bool, observedAt time.Time) ([]accountquota.Fact, error) {
+func (a *GrokBillingAdapter) fetch(ctx context.Context, client *http.Client, credential provider.Credential, weekly bool, observedAt time.Time) (grokFetchResult, error) {
 	path := "/billing"
 	if weekly {
 		path += "?format=credits"
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(a.base, "/")+path, nil)
 	if err != nil {
-		return nil, withErrorClass(ErrorClassConfigurationInvalid, err)
+		return grokFetchResult{}, withErrorClass(ErrorClassConfigurationInvalid, err)
 	}
 	version := strings.TrimSpace(credential.Extra["client_version"])
 	if version == "" {
@@ -102,27 +123,33 @@ func (a *GrokBillingAdapter) fetch(ctx context.Context, client *http.Client, cre
 	req.Header.Set("User-Agent", "HUAKAI-GrokCLI/"+version)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, withErrorClass(ErrorClassUpstreamUnreachable, err)
+		return grokFetchResult{}, withErrorClass(ErrorClassUpstreamUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, upstreamStatusError(resp.StatusCode)
+		return grokFetchResult{}, upstreamStatusError(resp.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUsageResponseSize+1))
 	if err != nil {
-		return nil, withErrorClass(ErrorClassUpstreamResponseInvalid, err)
+		return grokFetchResult{}, withErrorClass(ErrorClassUpstreamResponseInvalid, err)
 	}
 	if len(raw) > maxUsageResponseSize {
-		return nil, withErrorClass(ErrorClassUpstreamResponseInvalid, errors.New("grok billing 响应过大"))
+		return grokFetchResult{}, withErrorClass(ErrorClassUpstreamResponseInvalid, errors.New("grok billing 响应过大"))
 	}
 	var payload grokBillingPayload
 	if err := json.Unmarshal(raw, &payload); err != nil || payload.Config == nil {
-		return nil, withErrorClass(ErrorClassUpstreamResponseInvalid, errors.New("grok billing 响应格式无效"))
+		return grokFetchResult{}, withErrorClass(ErrorClassUpstreamResponseInvalid, errors.New("grok billing 响应格式无效"))
 	}
 	if weekly {
-		return weeklyGrokFacts(payload, observedAt)
+		facts, err := weeklyGrokFacts(payload, observedAt)
+		return grokFetchResult{Facts: facts}, err
 	}
-	return monthlyGrokFacts(payload, observedAt)
+	facts, err := monthlyGrokFacts(payload, observedAt)
+	if err != nil {
+		return grokFetchResult{}, err
+	}
+	limit, _ := jsonNumber(payload.Config.MonthlyLimit)
+	return grokFetchResult{Facts: facts, RawPlan: grokPlanFromMonthlyLimit(limit)}, nil
 }
 
 func weeklyGrokFacts(payload grokBillingPayload, observedAt time.Time) ([]accountquota.Fact, error) {
@@ -201,12 +228,29 @@ func optionalTime(period *struct {
 }
 
 func jsonNumber(raw json.RawMessage) (float64, bool) {
+	var wrapped struct {
+		Value json.RawMessage `json:"val"`
+	}
+	if len(raw) > 0 && raw[0] == '{' && json.Unmarshal(raw, &wrapped) == nil && len(wrapped.Value) > 0 {
+		return jsonNumber(wrapped.Value)
+	}
 	text := strings.Trim(strings.TrimSpace(string(raw)), `"`)
 	if text == "" || text == "null" {
 		return 0, false
 	}
 	value, err := strconv.ParseFloat(text, 64)
 	return value, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
+}
+
+func grokPlanFromMonthlyLimit(limit float64) string {
+	switch math.Round(limit) {
+	case grokStandardMonthlyCredits:
+		return "SuperGrok"
+	case grokExpandedMonthlyCredits:
+		return "SuperGrok Heavy"
+	default:
+		return ""
+	}
 }
 
 var _ VendorAdapter = (*GrokBillingAdapter)(nil)

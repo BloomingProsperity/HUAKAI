@@ -91,19 +91,6 @@ func WithRefreshQueries(q refreshQueries) Option {
 	return func(s *Scheduler) { s.queryer = q }
 }
 
-func WithVendorRefresher(name string, r Refresher) Option {
-	return func(s *Scheduler) {
-		name = normalizeProviderName(name)
-		if name == "" || r == nil {
-			return
-		}
-		if s.vendorRefreshers == nil {
-			s.vendorRefreshers = make(map[string]Refresher)
-		}
-		s.vendorRefreshers[name] = r
-	}
-}
-
 func WithAuditQueries(q *dbauth.Queries) Option {
 	return func(s *Scheduler) {
 		if q != nil {

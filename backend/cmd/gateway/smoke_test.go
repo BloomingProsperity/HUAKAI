@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"syscall"
 	"testing"
 	"time"
 
@@ -48,25 +47,28 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping smoke test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer setupCancel()
 
-	pgPool, err := db.Open(ctx, db.PoolConfig{DSN: dsn})
+	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 	if err != nil {
 		t.Fatalf("Open dev pool: %v", err)
 	}
-	defer pgPool.Close()
+	t.Cleanup(pgPool.Close)
 
-	seed := seedSmokeGraph(t, ctx, pgPool)
+	seed := seedSmokeGraph(t, setupCtx, pgPool)
 
 	binPath := buildGateway(t)
 	defer os.Remove(binPath)
 
 	addr := reserveLocalPort(t)
-	cmd := startGateway(t, ctx, binPath, dsn, addr, seed)
+	cmd := startGateway(t, setupCtx, binPath, dsn, addr, seed)
 	t.Cleanup(func() { stopGateway(cmd) })
 
 	waitForGateway(t, addr)
+	setupCancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// POST 请求。Slice 2:网关不再接受请求体中的 pool_group_id ——
 	// Registry 会根据下方 seedSmokeGraph 种入的 model 别名来解析出
@@ -177,30 +179,9 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 
 	t.Cleanup(func() {
 		c := context.Background()
-		// 清理顺序遵循外键约束。Slice 2 把 registry 行排在
-		// pool_groups 之前删除(model_pool_bindings 有一个复合外键
-		// (tenant_id, pool_group_id) → pool_groups)。model_aliases 和
-		// model_registry_capabilities 引用 models(id),因此 models
-		// 在所有 registry 表中放在最后删除。
-		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, s.tenantID)
+		if err := cleanupSmokeGraph(c, pgPool, s.tenantID); err != nil {
+			t.Errorf("清理冒烟测试账号图: %v", err)
+		}
 	})
 
 	if err := pgPool.QueryRow(ctx,
@@ -294,6 +275,43 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 	return s
 }
 
+func cleanupSmokeGraph(ctx context.Context, pgPool *pgxpool.Pool, tenantID int64) error {
+	if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, tenantID); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`DELETE FROM sticky_bindings WHERE tenant_id=$1`,
+		`DELETE FROM provider_account_routing_signals WHERE tenant_id=$1`,
+		`DELETE FROM provider_account_quota_facts WHERE tenant_id=$1`,
+		`DELETE FROM provider_account_subscription_states WHERE tenant_id=$1`,
+		`DELETE FROM channel_health_audit_events WHERE tenant_id=$1`,
+		`DELETE FROM channel_health_state WHERE tenant_id=$1`,
+		`DELETE FROM credential_audit_events WHERE tenant_id=$1`,
+		`DELETE FROM model_pool_bindings WHERE tenant_id=$1`,
+		`DELETE FROM model_registry_capabilities WHERE tenant_id=$1`,
+		`DELETE FROM model_aliases WHERE tenant_id=$1`,
+		`DELETE FROM models WHERE tenant_id=$1`,
+		`DELETE FROM model_registry_snapshots WHERE tenant_id=$1`,
+		`DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`,
+		`DELETE FROM account_credentials WHERE tenant_id=$1`,
+		`DELETE FROM provider_accounts WHERE tenant_id=$1`,
+		`DELETE FROM channels WHERE tenant_id=$1`,
+		`DELETE FROM pool_groups WHERE tenant_id=$1`,
+		`DELETE FROM providers WHERE tenant_id=$1`,
+		`DELETE FROM invitations WHERE tenant_id=$1`,
+		`DELETE FROM user_audit_events WHERE tenant_id=$1`,
+		`DELETE FROM user_balances WHERE tenant_id=$1`,
+		`DELETE FROM api_keys WHERE tenant_id=$1`,
+		`DELETE FROM users WHERE tenant_id=$1`,
+		`DELETE FROM tenants WHERE id=$1`,
+	} {
+		if _, err := pgPool.Exec(ctx, statement, tenantID); err != nil {
+			return fmt.Errorf("执行 %q: %w", statement, err)
+		}
+	}
+	return nil
+}
+
 func buildGateway(t *testing.T) string {
 	t.Helper()
 	moduleRoot := goModuleRoot(t)
@@ -363,8 +381,9 @@ func reserveLocalPort(t *testing.T) string {
 	return addr
 }
 
-func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, seed *smokeSeed) *exec.Cmd {
+func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, seed *smokeSeed) *specializedLiveProcesses {
 	t.Helper()
+	sidecar, socketPath := startSpecializedLiveSidecar(t, goModuleRoot(t))
 	cmd := exec.Command(binPath)
 	cmd.Env = append(os.Environ(),
 		"HUAKAI_DATABASE_URL="+dsn,
@@ -374,6 +393,8 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 		// 强制密钥后即为必需;仅供开发使用的固定值。
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
+		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
 		// 开发用 mock 上游:伪造上游的 SSE,使整个循环无需真实的
 		// 上游/网络即可运行(替代 Phase E 之前内置的 mock)。
 		"HUAKAI_DEV_MOCK_UPSTREAM=true",
@@ -383,11 +404,13 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 	stderr, _ := cmd.StderrPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
+		stopSpecializedLiveProcess(sidecar)
+		_ = os.Remove(socketPath)
 		t.Fatalf("start gateway: %v", err)
 	}
 	go drainPipe("gateway-stderr", stderr)
 	go drainPipe("gateway-stdout", stdout)
-	return cmd
+	return &specializedLiveProcesses{gateway: cmd, sidecar: sidecar, socketPath: socketPath}
 }
 
 func drainPipe(label string, r io.ReadCloser) {
@@ -401,18 +424,8 @@ func drainPipe(label string, r io.ReadCloser) {
 	}
 }
 
-func stopGateway(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-	}
+func stopGateway(processes *specializedLiveProcesses) {
+	stopSpecializedLiveProcesses(processes)
 }
 
 func waitForGateway(t *testing.T, addr string) {

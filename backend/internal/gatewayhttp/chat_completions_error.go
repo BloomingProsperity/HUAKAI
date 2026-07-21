@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
@@ -269,6 +270,45 @@ func (ex *chatExecution) classifyAgentTaskInvalid(statusCode int, body []byte, d
 	return true
 }
 
+func (ex *chatExecution) classifyProjectContextRejected(classification gateway.Classification, decision *gateway.AttemptRetryDecision) bool {
+	if ex == nil || decision == nil || classification.Class != gateway.ErrorClassProjectContextRejected ||
+		strings.TrimSpace(ex.cred.Extra["project_id"]) == "" {
+		return false
+	}
+	canonical := ex.accInfo.Platform == credentialstore.VendorAntigravity && ex.accInfo.AccountType == credentialstore.AuthModeOAuth
+	compatibility := ex.accInfo.Platform == credentialstore.VendorGemini && ex.accInfo.AccountType == credentialstore.AuthModeAntigravity
+	if !canonical && !compatibility {
+		return false
+	}
+	// 请求内同步恢复是该类错误的唯一刷新入口，避免随后再启动一份后台刷新。
+	decision.RefreshIntent = gateway.RefreshNone
+	return true
+}
+
+func (ex *chatExecution) retryAfterProjectContextRecovery(w http.ResponseWriter, outcome attemptOutcome, in attemptInput, used *bool, attemptSeq *int) attemptOutcome {
+	if ex == nil || outcome.Failure == nil || !outcome.Failure.ProjectContextRejected || used == nil || *used ||
+		ex.d.CredentialHotRefresher == nil || outcome.AccountID == 0 {
+		return outcome
+	}
+	*used = true
+	ctx, cancel := context.WithTimeout(ex.ctx, credentialHotRefreshTimeout)
+	err := ex.d.CredentialHotRefresher.RefreshHotPath(ctx, ex.ident.TenantID, outcome.AccountID, credentialstore.VendorAntigravity)
+	cancel()
+	if err != nil {
+		logInternalError(ex.ctx, ex.requestID, "project_context_recovery_failed", err)
+		return outcome
+	}
+	clearRetryableAttemptFailureHeaders(w)
+	ex.prepareNextAttemptAfterAbort()
+	if attemptSeq != nil {
+		*attemptSeq = *attemptSeq + 1
+		in.AttemptSeq = *attemptSeq
+	} else {
+		in.AttemptSeq++
+	}
+	return ex.runAttempt(w, in)
+}
+
 func (ex *chatExecution) retryAfterAgentTaskRecovery(w http.ResponseWriter, outcome attemptOutcome, in attemptInput, used *bool, attemptSeq *int) attemptOutcome {
 	if ex == nil || outcome.Failure == nil || !outcome.Failure.AgentTaskInvalid || used == nil || *used ||
 		ex.d.AgentTaskRecoverer == nil || outcome.AccountID == 0 {
@@ -510,6 +550,10 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 		f.FallbackSignal = bindingfallback.SignalKeyRateLimit
 		f.RetryAfterSeconds = 1
 		return f
+	case errors.Is(err, pool.ErrGroupPolicyUnavailable):
+		f := terminalLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeGroupPolicyUnavailable, clienterr.MessageFor(clienterr.CodeGroupPolicyUnavailable), "group_policy_unavailable", err)
+		f.FallbackSignal = bindingfallback.SignalLocalConfigurationFailure
+		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("group_policy_unavailable"))
 	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
 		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
 		f.FallbackSignal = poolExhaustionFallbackSignal(err)

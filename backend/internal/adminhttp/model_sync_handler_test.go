@@ -90,6 +90,38 @@ func TestModelSyncHandlerRejectsOverlongReason(t *testing.T) {
 	}
 }
 
+func TestModelSyncStatusReturnsSchedulerStateForPlatformAdmin(t *testing.T) {
+	lastRun := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	lastSuccess := lastRun.Add(-time.Hour)
+	rec := invokeModelSyncRequest(t, http.MethodGet, AdminModelSyncDeps{
+		Auth: apiKeyAuthStub{ident: platformAdmin()},
+		Scheduler: modelSyncSchedulerStub{status: modelsync.SchedulerStatus{
+			LastRunAt: lastRun, LastSuccessAt: lastSuccess, LastErr: "upstream unavailable",
+		}},
+	}, "")
+
+	assertModelSyncStatus(t, rec, http.StatusOK)
+	for _, want := range []string{
+		`"object":"admin_model_sync_status"`,
+		`"enabled":true`,
+		`"last_run_at":"2026-07-20T12:00:00Z"`,
+		`"last_success_at":"2026-07-20T11:00:00Z"`,
+		`"last_error":"upstream unavailable"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("状态响应缺少 %s：%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestModelSyncStatusRejectsTenantOperator(t *testing.T) {
+	rec := invokeModelSyncRequest(t, http.MethodGet, AdminModelSyncDeps{
+		Auth:      apiKeyAuthStub{ident: tenantOperator(7)},
+		Scheduler: modelSyncSchedulerStub{},
+	}, "")
+	assertModelSyncStatus(t, rec, http.StatusForbidden)
+}
+
 type modelSyncServiceStub struct {
 	result     modelsync.SyncResult
 	err        error
@@ -97,6 +129,12 @@ type modelSyncServiceStub struct {
 	lastReason string
 	lastActor  string
 }
+
+type modelSyncSchedulerStub struct {
+	status modelsync.SchedulerStatus
+}
+
+func (s modelSyncSchedulerStub) Status() modelsync.SchedulerStatus { return s.status }
 
 func (s *modelSyncServiceStub) SyncWithActor(ctx context.Context, reason, actor string) (modelsync.SyncResult, error) {
 	s.calls++
@@ -109,12 +147,16 @@ func (s *modelSyncServiceStub) SyncWithActor(ctx context.Context, reason, actor 
 }
 
 func invokeModelSync(t *testing.T, deps AdminModelSyncDeps, body string) *httptest.ResponseRecorder {
+	return invokeModelSyncRequest(t, http.MethodPost, deps, body)
+}
+
+func invokeModelSyncRequest(t *testing.T, method string, deps AdminModelSyncDeps, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
 	r.Route("/admin/v1/model-sync", func(r chi.Router) {
 		MountModelSyncRoutes(r, deps)
 	})
-	req := httptest.NewRequest(http.MethodPost, "/admin/v1/model-sync", strings.NewReader(body))
+	req := httptest.NewRequest(method, "/admin/v1/model-sync", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec

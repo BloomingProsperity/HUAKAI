@@ -116,6 +116,9 @@ func TestServiceRejectsConflictingProjectMetadata(t *testing.T) {
 	if err == nil {
 		t.Fatal("上游 project 与已有值冲突时必须显式报错")
 	}
+	if !errors.Is(err, ErrProjectMetadataConflict) {
+		t.Fatalf("冲突错误类型不符：%v", err)
+	}
 	if result.ProjectRef != "project-existing" || result.SubscriptionTierRaw != "" || !result.SubscriptionConflict || result.SubscriptionVerified {
 		t.Fatalf("冲突时必须保留已有账号且不得串入套餐：%+v", result)
 	}
@@ -138,12 +141,33 @@ func TestServiceFailureMarksOperatorAttention(t *testing.T) {
 	if err == nil {
 		t.Fatal("resolver 失败时必须返回错误供调用方记录")
 	}
+	if !errors.Is(err, ErrProjectMetadataUnavailable) {
+		t.Fatalf("缺少 project 时错误类型不符：%v", err)
+	}
 	var fields map[string]string
 	if decodeErr := json.Unmarshal(result.Payload, &fields); decodeErr != nil {
 		t.Fatalf("解析待处理载荷失败：%v", decodeErr)
 	}
 	if fields["project_id"] != "" || fields["project_metadata_status"] != StatusOperatorAttention {
 		t.Fatalf("失败状态不符：%s", result.Payload)
+	}
+}
+
+func TestServiceExistingProjectDefersSubscriptionFailure(t *testing.T) {
+	resolver := &metadataResolverStub{resolverStub: resolverStub{err: errors.New("上游暂时不可用")}}
+	result, err := New(resolver).Enrich(context.Background(), "antigravity", []byte(`{
+		"access_token":"access-secret",
+		"project_id":"project-existing"
+	}`))
+	if !errors.Is(err, ErrSubscriptionMetadataDeferred) {
+		t.Fatalf("已有 project 时应仅延后套餐更新：%v", err)
+	}
+	var fields map[string]string
+	if decodeErr := json.Unmarshal(result.Payload, &fields); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if fields["project_id"] != "project-existing" || fields["subscription_metadata_status"] != StatusOperatorAttention {
+		t.Fatalf("已有项目事实未保留：%s", result.Payload)
 	}
 }
 

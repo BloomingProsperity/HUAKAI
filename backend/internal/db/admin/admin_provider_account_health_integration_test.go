@@ -95,6 +95,28 @@ WHERE tenant_id = $4 AND id = $5`,
 		t.Fatalf("selector/legacy 状态快照未完整回读：%+v", row)
 	}
 
+	if _, err := pool.Exec(ctx, `
+UPDATE providers
+SET enabled = false
+WHERE tenant_id = $1
+  AND id = (SELECT provider_id FROM provider_accounts WHERE tenant_id = $1 AND id = $2)`, tenantID, accountID); err != nil {
+		t.Fatalf("停用供应商：%v", err)
+	}
+	providerDisabled, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{TenantID: tenantID, ID: accountID})
+	if err != nil {
+		t.Fatalf("GetAdminProviderAccountHealth provider disabled: %v", err)
+	}
+	if providerDisabled.ProviderAvailable {
+		t.Fatalf("停用供应商仍被报告为可用：%+v", providerDisabled)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE providers
+SET enabled = true
+WHERE tenant_id = $1
+  AND id = (SELECT provider_id FROM provider_accounts WHERE tenant_id = $1 AND id = $2)`, tenantID, accountID); err != nil {
+		t.Fatalf("恢复供应商：%v", err)
+	}
+
 	insertAdminProviderAccountHealthCredential(t, ctx, pool, tenantID, accountID, "codex_cli_oauth", "active", 2, nil, "second_current", "", 0)
 	ambiguous, err := q.GetAdminProviderAccountHealth(ctx, GetAdminProviderAccountHealthParams{TenantID: tenantID, ID: accountID})
 	if err != nil {

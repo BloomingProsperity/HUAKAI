@@ -280,9 +280,9 @@ func DefaultModePlans() []ModePlan {
 		oauthPlan(credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeAntigravity, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
 		manualOAuthPlan(credentialstore.VendorGemini, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
-		oauthPlan(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
-		manualOAuthPlan(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
-		manualUpstreamTokenPlan(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, FlowKindTokenExchange, ClientSourceOperatorConfig, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, sessionTokenFields()),
+		postLaunchSealedPlan(oauthPlan(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium)),
+		manualOAuthPlan(credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindTokenExchange}),
+		postLaunchSealedPlan(manualUpstreamTokenPlan(credentialstore.VendorWindsurf, credentialstore.AuthModeOAuth, FlowKindTokenExchange, ClientSourceOperatorConfig, []FlowKind{FlowKindTokenExchange, FlowKindPaste}, sessionTokenFields())),
 		oauthPlan(credentialstore.VendorKimi, credentialstore.AuthModeKimiOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth, FlowKindJSONImport}, RiskLevelMedium),
 		hiddenOpenAICompatiblePlan(credentialstore.VendorOpenRouter),
 		// 官 key 厂商(2026-07-02 Owner 指派接入):存储约束已由迁移 0169 放行,
@@ -397,6 +397,14 @@ func manualUpstreamTokenPlan(vendor, authMode string, kind FlowKind, clientSourc
 	return plan
 }
 
+func postLaunchSealedPlan(plan ModePlan) ModePlan {
+	plan.IsEnabled = false
+	plan.IsExperimental = true
+	plan.FeatureFlag = "account_modes.post_launch_ide_sessions"
+	plan.RiskReasons = append(plan.RiskReasons, "首次正式上线后需经部署者明确解封")
+	return plan
+}
+
 func apiKeyFields() []FieldSpec {
 	return []FieldSpec{secretField("api_key", true)}
 }
@@ -452,6 +460,13 @@ func LookupModePlan(vendor, authMode string) (ModePlan, bool) {
 		}
 	}
 	return ModePlan{}, false
+}
+
+// ModeAcquisitionReleased 判断某个模式是否允许从生产凭据获取入口新建流程。
+// 已封存和实验模式仍保留底层实现与测试，但不能仅凭已注册 exchanger 绕过发布闸。
+func ModeAcquisitionReleased(vendor, authMode string) bool {
+	plan, ok := LookupModePlan(vendor, authMode)
+	return ok && plan.IsEnabled && !plan.IsExperimental && plan.RiskLevel != RiskLevelBlocked
 }
 
 func NormalizeFlowKind(kind FlowKind) FlowKind {

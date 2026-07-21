@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 const (
@@ -58,36 +59,42 @@ type LeaderLease interface {
 	TryAcquire(context.Context) (bool, func(), error)
 }
 
+type SubscriptionRecorder interface {
+	RecordSubscriptionObservation(context.Context, int64, int64, int64, int32, subscriptionprofile.Observation) (subscriptionprofile.Observation, error)
+}
+
 type WorkerConfig struct {
-	Accounts    AccountLister
-	Vault       CredentialVault
-	Fetcher     UsageFetcher
-	Store       rate.SessionWindowStore
-	FactStore   accountquota.Store
-	Adapters    []VendorAdapter
-	Settings    SettingsReader
-	LeaderLease LeaderLease
-	Logger      *slog.Logger
-	Now         func() time.Time
-	Jitter      func(Account, time.Time) time.Duration
-	Wait        func(context.Context, time.Duration) bool
+	Accounts      AccountLister
+	Vault         CredentialVault
+	Fetcher       UsageFetcher
+	Store         rate.SessionWindowStore
+	FactStore     accountquota.Store
+	Subscriptions SubscriptionRecorder
+	Adapters      []VendorAdapter
+	Settings      SettingsReader
+	LeaderLease   LeaderLease
+	Logger        *slog.Logger
+	Now           func() time.Time
+	Jitter        func(Account, time.Time) time.Duration
+	Wait          func(context.Context, time.Duration) bool
 }
 
 type Worker struct {
-	accounts    AccountLister
-	vault       CredentialVault
-	fetcher     UsageFetcher
-	store       rate.SessionWindowStore
-	factStore   accountquota.Store
-	adapters    []VendorAdapter
-	settings    SettingsReader
-	leaderLease LeaderLease
-	logger      *slog.Logger
-	now         func() time.Time
-	jitter      func(Account, time.Time) time.Duration
-	wait        func(context.Context, time.Duration) bool
-	mu          sync.Mutex
-	done        chan struct{}
+	accounts      AccountLister
+	vault         CredentialVault
+	fetcher       UsageFetcher
+	store         rate.SessionWindowStore
+	factStore     accountquota.Store
+	subscriptions SubscriptionRecorder
+	adapters      []VendorAdapter
+	settings      SettingsReader
+	leaderLease   LeaderLease
+	logger        *slog.Logger
+	now           func() time.Time
+	jitter        func(Account, time.Time) time.Duration
+	wait          func(context.Context, time.Duration) bool
+	mu            sync.Mutex
+	done          chan struct{}
 }
 
 func NewWorker(cfg WorkerConfig) *Worker {
@@ -104,18 +111,19 @@ func NewWorker(cfg WorkerConfig) *Worker {
 		cfg.Wait = waitContext
 	}
 	return &Worker{
-		accounts:    cfg.Accounts,
-		vault:       cfg.Vault,
-		fetcher:     cfg.Fetcher,
-		store:       cfg.Store,
-		factStore:   cfg.FactStore,
-		adapters:    append([]VendorAdapter(nil), cfg.Adapters...),
-		settings:    cfg.Settings,
-		leaderLease: cfg.LeaderLease,
-		logger:      cfg.Logger,
-		now:         cfg.Now,
-		jitter:      cfg.Jitter,
-		wait:        cfg.Wait,
+		accounts:      cfg.Accounts,
+		vault:         cfg.Vault,
+		fetcher:       cfg.Fetcher,
+		store:         cfg.Store,
+		factStore:     cfg.FactStore,
+		subscriptions: cfg.Subscriptions,
+		adapters:      append([]VendorAdapter(nil), cfg.Adapters...),
+		settings:      cfg.Settings,
+		leaderLease:   cfg.LeaderLease,
+		logger:        cfg.Logger,
+		now:           cfg.Now,
+		jitter:        cfg.Jitter,
+		wait:          cfg.Wait,
 	}
 }
 
@@ -294,7 +302,7 @@ func (w *Worker) probeVendorAccount(ctx context.Context, account Account, creden
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	result, err := adapter.Fetch(probeCtx, account.ProviderAccountID, credential, info, observedAt)
 	cancel()
-	snapshot := accountquota.Snapshot{TenantID: account.TenantID, ProviderAccountID: account.ProviderAccountID, Vendor: info.Platform, Source: result.Source, ObservedAt: observedAt, Complete: result.Complete, Facts: result.Facts}
+	snapshot := accountquota.Snapshot{TenantID: account.TenantID, ProviderAccountID: account.ProviderAccountID, Vendor: quotaFactVendor(info), Source: result.Source, ObservedAt: observedAt, Complete: result.Complete, Facts: result.Facts}
 	if err != nil {
 		snapshot.Source = adapter.Source()
 		if writeErr := w.factStore.RecordFailure(ctx, snapshot, usageErrorClass(err)); writeErr != nil {
@@ -310,6 +318,29 @@ func (w *Worker) probeVendorAccount(ctx context.Context, account Account, creden
 	if result.ErrorClass != "" {
 		if err := w.factStore.RecordFailure(ctx, snapshot, result.ErrorClass); err != nil {
 			w.logger.WarnContext(ctx, "quota probe 写厂商部分失败观测失败", "provider_account_id", account.ProviderAccountID, "error_class", ErrorClassDatabaseWriteFailed)
+		}
+	}
+	if result.Session != nil && w.store != nil {
+		update := sessionWindowUpdate(account.ProviderAccountID, *result.Session, observedAt)
+		if sessionWindowUpdateHasValues(update) {
+			update.ObservedAt = &observedAt
+			update.ObservationSource = rate.QuotaSnapshotSourceUsageEndpoint
+			update.ObservationOutcome = quotaObservationOutcome(update)
+			if err := w.store.UpdateProviderAccountSessionWindows(ctx, update); err != nil {
+				w.logger.WarnContext(ctx, "quota probe 写会话额度窗口失败", "provider_account_id", account.ProviderAccountID, "error_class", ErrorClassDatabaseWriteFailed)
+			}
+		}
+	}
+	if !result.Subscription.Empty() && w.subscriptions != nil {
+		if info.AccountCredentialID <= 0 || info.CredentialVersion <= 0 {
+			w.logger.WarnContext(ctx, "quota probe 缺少套餐观测的凭据版本", "provider_account_id", account.ProviderAccountID, "error_class", ErrorClassCredentialResolutionFailed)
+			return
+		}
+		if _, err := w.subscriptions.RecordSubscriptionObservation(
+			ctx, account.TenantID, account.ProviderAccountID, info.AccountCredentialID,
+			int32(info.CredentialVersion), result.Subscription,
+		); err != nil {
+			w.logger.WarnContext(ctx, "quota probe 写套餐观测失败", "provider_account_id", account.ProviderAccountID, "error_class", ErrorClassDatabaseWriteFailed)
 		}
 	}
 }

@@ -873,8 +873,16 @@ func TestMarshalCompatFamiliesProjectToOpenAIChat(t *testing.T) {
 // Gemini contents/parts，而不是旧占位的 OpenAI messages。回退到 openai_chat
 // 映射时，与 Gemini 基线不同且会被本测试识别。
 func TestMarshalAntigravityProjectsToGeminiMessages(t *testing.T) {
-	env := graphEnv(textNode("n1", "user", "hello"))
-	want, err := MarshalToProviderRequest(env, "gemini_messages")
+	env := graphEnv(
+		textNode("n1", "user", "hello"),
+		textNode("n2", "assistant", "checking"),
+		toolUseNode(),
+		toolResultNode(),
+	)
+	env.RequestControls.Tools = []proto.CanonicalTool{{
+		Name: "lookup", Description: "查询状态", InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
+	}}
+	want, err := hcsfRequestBody(env, "gemini_messages")
 	if err != nil {
 		t.Fatalf("Gemini 基线 marshal 失败：%v", err)
 	}
@@ -885,12 +893,30 @@ func TestMarshalAntigravityProjectsToGeminiMessages(t *testing.T) {
 	if bytes.Equal(openAI, want) {
 		t.Fatal("测试夹具失去判别性：OpenAI 与 Gemini 投影意外相同")
 	}
-	got, err := MarshalToProviderRequest(env, "antigravity_session")
+	got, err := hcsfRequestBody(env, "antigravity_session")
 	if err != nil {
 		t.Fatalf("Antigravity marshal 失败：%v", err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("Antigravity 投影 != gemini_messages 投影\ngot:  %s\nwant: %s", got, want)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got, &body); err != nil {
+		t.Fatalf("解析 Antigravity 内层请求失败：%v", err)
+	}
+	tools := body["tools"].([]any)
+	declarations := tools[0].(map[string]any)["functionDeclarations"].([]any)
+	if declarations[0].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("工具声明丢失：%+v", body)
+	}
+	contents := body["contents"].([]any)
+	modelParts := contents[1].(map[string]any)["parts"].([]any)
+	if modelParts[1].(map[string]any)["functionCall"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("functionCall 丢失：%+v", body)
+	}
+	resultParts := contents[2].(map[string]any)["parts"].([]any)
+	if resultParts[0].(map[string]any)["functionResponse"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("functionResponse 丢失：%+v", body)
 	}
 }
 

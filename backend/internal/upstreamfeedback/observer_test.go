@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
@@ -294,13 +295,41 @@ func TestObserveSuccessUpdatesAnthropicSessionAndSelfHeals(t *testing.T) {
 	}
 }
 
+func TestObserveSuccessUpdatesCodexSessionButSkipsOpenAIAPIKey(t *testing.T) {
+	rates := &rateServiceSpy{}
+	observer := NewObserver(Dependencies{RateService: rates})
+
+	codex := validAttempt("openai")
+	codex.Account.AccountType = credentialstore.AuthModeCodexCLIOAuth
+	observer.ObserveSuccess(context.Background(), codex, http.StatusOK, http.Header{
+		"X-Codex-Primary-Used-Percent": []string{"31"},
+	})
+	if rates.updateCalls != 1 || rates.lastAccountID != 44 {
+		t.Fatalf("Codex 成功反馈没有进入额度窗口：calls/account=%d/%d", rates.updateCalls, rates.lastAccountID)
+	}
+
+	apiKey := validAttempt("openai")
+	apiKey.Account.AccountType = credentialstore.AuthModeAPIKey
+	observer.ObserveSuccess(context.Background(), apiKey, http.StatusOK, http.Header{
+		"X-Codex-Primary-Used-Percent": []string{"99"},
+	})
+	if rates.updateCalls != 1 {
+		t.Fatalf("普通 API Key 不得进入个人会话额度窗口：calls=%d", rates.updateCalls)
+	}
+}
+
 func validAttempt(platform string) Attempt {
+	accountType := credentialstore.AuthModeAPIKey
+	if platform == credentialstore.VendorAnthropic {
+		accountType = credentialstore.AuthModeClaudeAIOAuth
+	}
 	return Attempt{
 		TenantID: 7,
 		Account: provider.AccountInfo{
 			AccountID:           44,
 			TenantID:            7,
 			Platform:            platform,
+			AccountType:         accountType,
 			AccountCredentialID: 4044,
 			CredentialVersion:   3,
 		},

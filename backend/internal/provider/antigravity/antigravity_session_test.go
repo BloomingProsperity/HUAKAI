@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -45,7 +44,7 @@ func TestAntigravitySessionAdapterPlatformAndCredentialTypes(t *testing.T) {
 // X-Goog-Api-Client、Cloud Code envelope 与 GOOGLE_ONE_AI 注入。
 // 退回 api.antigravity.ai、删除 credits 或绕过共享 adapter 均会变红。
 func TestAntigravitySessionRequestUsesCloudCodeProfile(t *testing.T) {
-	inner := []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]}]}`)
+	inner := []byte(`{"contents":[{"role":"user","parts":[{"text":"ping"}]},{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"q":"x"}}}]},{"role":"user","parts":[{"functionResponse":{"id":"call_1","name":"lookup","response":{"content":"ok"}}}]}],"tools":[{"functionDeclarations":[{"name":"lookup","parameters":{"type":"object"}}]}]}`)
 	req, err := (&AntigravitySessionAdapter{}).BuildRequest(context.Background(), antigravityInput(inner, map[string]string{
 		"project_id": "ag-project",
 	}))
@@ -141,10 +140,4 @@ func jsonBytesEqual(a, b []byte) bool {
 	leftJSON, _ := json.Marshal(left)
 	rightJSON, _ := json.Marshal(right)
 	return string(leftJSON) == string(rightJSON)
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
 }

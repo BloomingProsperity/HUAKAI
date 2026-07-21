@@ -84,6 +84,7 @@ type execution struct {
 	logicalRequestID string
 	idempotencyKey   string
 	searchUnits      int
+	inputEstimate    int
 	predictedCost    decimal.Decimal
 	costSnapshot     string
 	pending          bool
@@ -143,6 +144,7 @@ func NewRerankHandler(d Deps) http.HandlerFunc {
 			requestID:     requestID,
 			payloadHash:   bodyHash(body),
 			searchUnits:   searchUnitsForDocuments(len(req.Documents)),
+			inputEstimate: estimateRerankInputTokens(req),
 			predictedCost: decimal.Zero,
 		}
 		if !ex.prepareRoute(w) {
