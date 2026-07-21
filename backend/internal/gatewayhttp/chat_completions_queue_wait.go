@@ -2,6 +2,7 @@ package gatewayhttp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -174,6 +175,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	}
 	failedAccounts := make(map[int64]struct{})
 	authFailoverUsed := false
+	var lastReroutableFailure *classifiedAttemptFailure
 	agentTaskRecoveryUsed := false
 	projectContextRecoveryUsed := false
 	budget := effectiveAttemptBudget(ex.plan)
@@ -205,12 +207,20 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		if result, done := completedAttemptResult(outcome); done {
 			return result
 		}
+		logAccountAttemptFailure(ex, outcome)
+		if lastReroutableFailure != nil && outcome.AccountID == 0 && failureOnlyExcludedPreviousAccount(outcome.Failure) {
+			return modelRunResult{
+				Failure:       lastReroutableFailure,
+				AllowFallback: allowModelFallbackAfterClass(lastReroutableFailure),
+			}
+		}
 		if outcome.AccountID != 0 && outcome.Failure != nil {
 			if outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
 				ex.triggerCredentialHotRefresh(outcome.AccountID)
 			}
 			if outcome.Failure.Decision.SwitchAccount {
 				failedAccounts[outcome.AccountID] = struct{}{}
+				lastReroutableFailure = outcome.Failure
 			}
 		}
 		if outcome.Failure == nil {
@@ -288,6 +298,7 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 	if outcome.Failure != nil {
 		retry, consumeAuthBudget := shouldRetryAttemptFailure(outcome.Failure, ex.plan, true, true, authFailoverUsed)
 		if retry && consumeAuthBudget {
+			originalTargetFailure := outcome.Failure
 			if ex.d.RetryBudget != nil && !ex.d.RetryBudget.Allow(ex.ident.TenantID) {
 				return modelRunResult{Failure: outcome.Failure}
 			}
@@ -318,6 +329,13 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 			if result, done := completedAttemptResult(outcome); done {
 				return result
 			}
+			logAccountAttemptFailure(ex, outcome)
+			if outcome.AccountID == 0 && failureOnlyExcludedPreviousAccount(outcome.Failure) {
+				return modelRunResult{
+					Failure:       originalTargetFailure,
+					AllowFallback: allowModelFallbackAfterClass(originalTargetFailure),
+				}
+			}
 			if outcome.AccountID != 0 && outcome.Failure != nil && outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
 				ex.triggerCredentialHotRefresh(outcome.AccountID)
 			}
@@ -327,6 +345,44 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 		return modelRunResult{}
 	}
 	return modelRunResult{Failure: outcome.Failure, AllowFallback: allowModelFallbackAfterClass(outcome.Failure)}
+}
+
+func logAccountAttemptFailure(ex *chatExecution, outcome attemptOutcome) {
+	if ex == nil || outcome.Failure == nil {
+		return
+	}
+	var claimID int64
+	if ex.reserveRes != nil {
+		claimID = ex.reserveRes.ClaimID
+	}
+	slog.WarnContext(ex.ctx, "账号转 API 尝试失败",
+		slog.String("request_id", ex.requestID),
+		slog.Int64("tenant_id", ex.ident.TenantID),
+		slog.Int64("claim_id", claimID),
+		slog.Int("attempt_seq", outcome.AttemptSeq),
+		slog.Int64("provider_account_id", outcome.AccountID),
+		slog.Int64("pool_group_id", outcome.Attempt.PoolGroupID),
+		slog.Int64("binding_id", outcome.Attempt.BindingID),
+		slog.String("requested_model", ex.req.Model),
+		slog.String("protocol_family", ex.resolved.ProtocolFamily),
+		slog.Int("client_status", outcome.Failure.ClientStatus),
+		slog.String("client_code", outcome.Failure.ClientCode),
+		slog.String("abort_reason", outcome.Failure.AbortReason),
+		slog.String("error_class", string(outcome.Failure.Classification.Class)),
+		slog.String("fallback_signal", string(outcome.Failure.FallbackSignal)),
+		slog.Bool("switch_account", outcome.Failure.Decision.SwitchAccount),
+	)
+}
+
+func failureOnlyExcludedPreviousAccount(failure *classifiedAttemptFailure) bool {
+	if failure == nil {
+		return false
+	}
+	var exhausted *pool.NoCapacityError
+	if !errors.As(failure.Cause, &exhausted) || exhausted == nil || len(exhausted.Exhaustion.Reasons) != 1 {
+		return false
+	}
+	return exhausted.Exhaustion.Reasons[pool.GateFailurePerRequestExclusion] > 0
 }
 
 func allowModelFallbackAfterClass(failure *classifiedAttemptFailure) bool {

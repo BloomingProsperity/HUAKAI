@@ -14,6 +14,8 @@ const (
 	imageEndpointVariations  imageEndpoint = "variations"
 )
 
+const imageOutputCapability = "image_output"
+
 func (e imageEndpoint) Path() string {
 	switch e {
 	case imageEndpointEdits:
@@ -66,4 +68,41 @@ func bindingMaxParallelRequests(v *int32) int64 {
 		return 0
 	}
 	return int64(*v)
+}
+
+func hasImageOutputCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		switch capability {
+		case imageOutputCapability, "images":
+			return true
+		}
+	}
+	return false
+}
+
+func requireImageOutputCapability(plan *router.RoutePlan) {
+	if plan == nil {
+		return
+	}
+	for index := range plan.Attempts {
+		plan.Attempts[index].RequiredCapabilities = appendCapability(
+			plan.Attempts[index].RequiredCapabilities,
+			imageOutputCapability,
+		)
+	}
+	for phaseIndex := range plan.FallbackPhases {
+		for attemptIndex := range plan.FallbackPhases[phaseIndex].Attempts {
+			attempt := &plan.FallbackPhases[phaseIndex].Attempts[attemptIndex]
+			attempt.RequiredCapabilities = appendCapability(attempt.RequiredCapabilities, imageOutputCapability)
+		}
+	}
+}
+
+func appendCapability(capabilities []string, required string) []string {
+	for _, capability := range capabilities {
+		if capability == required {
+			return capabilities
+		}
+	}
+	return append(capabilities, required)
 }

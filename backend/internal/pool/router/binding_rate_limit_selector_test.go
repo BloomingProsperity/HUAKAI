@@ -83,6 +83,18 @@ func TestBindingRateLimitSelector_WaitPlanNotRecorded(t *testing.T) {
 	}
 }
 
+func TestBindingRateLimitSelector_AccountCallDoesNotRepeatLogicalBudget(t *testing.T) {
+	c := recCounter()
+	c.Record(19, 0)
+	selector := NewBindingRateLimitSelector(fakeRecSelector{res: &SelectionResult{AccountID: 9}}, c)
+	result, err := selector.Select(context.Background(), SelectionRequest{
+		BindingID: 19, BindingRPMLimit: 1, RateAccountingScope: RateAccountingAccountOnly,
+	})
+	if err != nil || result == nil || result.AccountID != 9 {
+		t.Fatalf("后台上游调用不得重复消费绑定逻辑预算: result=%v err=%v", result, err)
+	}
+}
+
 type stubBindingConcurrencyReader struct {
 	active int64
 	err    error

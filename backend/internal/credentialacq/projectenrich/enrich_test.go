@@ -21,6 +21,28 @@ type metadataResolverStub struct {
 	tier string
 }
 
+type profileMetadataResolverStub struct {
+	resolverStub
+	profile string
+	project string
+	tier    string
+}
+
+func (s *profileMetadataResolverStub) ResolveProjectMetadataForProfile(_ context.Context, profile, token string) (string, string, error) {
+	s.calls++
+	s.profile = profile
+	s.token = token
+	return s.projectRef, s.tier, s.err
+}
+
+func (s *profileMetadataResolverStub) ResolveProjectMetadataForProfileAndProject(_ context.Context, profile, token, project string) (string, string, error) {
+	s.calls++
+	s.profile = profile
+	s.token = token
+	s.project = project
+	return s.projectRef, s.tier, s.err
+}
+
 func (s *metadataResolverStub) ResolveProjectMetadata(ctx context.Context, token string) (string, string, error) {
 	s.calls++
 	s.token = token
@@ -84,6 +106,36 @@ func TestServiceEnrichesProjectAndSubscriptionInOneRequest(t *testing.T) {
 	}
 	if fields["subscription_tier_raw"] != "g1-pro-tier" || fields["subscription_metadata_status"] != StatusResolved {
 		t.Fatalf("套餐字段未写回凭据：%s", result.Payload)
+	}
+}
+
+func TestServiceUsesGeminiCodeAssistProfile(t *testing.T) {
+	resolver := &profileMetadataResolverStub{
+		resolverStub: resolverStub{projectRef: "gemini-project"}, tier: "free-tier",
+	}
+	result, err := New(resolver).Enrich(context.Background(), ProfileGeminiCodeAssist,
+		[]byte(`{"access_token":"access-secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.profile != ProfileGeminiCodeAssist || resolver.token != "access-secret" ||
+		result.ProjectRef != "gemini-project" || result.SubscriptionTierRaw != "free-tier" {
+		t.Fatalf("resolver=%+v result=%+v", resolver, result)
+	}
+}
+
+func TestServicePassesExistingProjectToProfileValidation(t *testing.T) {
+	resolver := &profileMetadataResolverStub{
+		resolverStub: resolverStub{projectRef: "operator-project"}, tier: "standard-tier",
+	}
+	result, err := New(resolver).Enrich(context.Background(), ProfileGeminiCodeAssist,
+		[]byte(`{"access_token":"access-secret","project_id":"operator-project"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver.project != "operator-project" || result.ProjectRef != "operator-project" ||
+		result.SubscriptionTierRaw != "standard-tier" || !result.SubscriptionVerified {
+		t.Fatalf("resolver=%+v result=%+v", resolver, result)
 	}
 }
 

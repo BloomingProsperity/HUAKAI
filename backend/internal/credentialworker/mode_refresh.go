@@ -33,7 +33,7 @@ var (
 const (
 	geminiOAuthTokenURLEnv     = "HUAKAI_GEMINI_OAUTH_TOKEN_URL"
 	geminiOAuthClientIDEnv     = "HUAKAI_GEMINI_OAUTH_CLIENT_ID"
-	geminiOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+	geminiOAuthClientSecretEnv = credentialacq.GeminiPublicCLISecretEnv
 
 	// ineffectiveRefreshBackoff 在以下情形施加:刷新"成功"但得到的 token 仍然立即
 	// 又到了需要刷新的时刻(上游返回了一个接近过期的 token),或者根本不需要刷新。
@@ -572,6 +572,9 @@ func (a builtinClientOAuthModeAdapter) loadClientSecret() (string, error) {
 		return "", err
 	}
 	clientSecret := strings.TrimSpace(runtimeConfig.VendorOAuth[a.configVendor].ClientSecret)
+	if clientSecret == "" {
+		clientSecret = strings.TrimSpace(credentialacq.GeminiPublicCLIConfig().ClientSecret)
+	}
 	if clientSecret == "" {
 		return "", fmt.Errorf("%s builtin oauth refresh: %w: missing %s: %w", a.providerName, credentialacq.ErrFeatureDisabled, a.clientSecretName, ErrOperatorOAuthConfigMissing)
 	}

@@ -63,6 +63,38 @@ func (m *MemoryStore) CreateOrder(_ context.Context, rec createOrderRecord) (Ord
 		m.appendAudit(rec.TenantID, existing.ID, AuditIdempotentReplay, auditActorKind(rec), auditActorID(rec), "", rec.RequestID)
 		return *existing, true, nil
 	}
+	if rec.RechargeMaxPending > 0 {
+		pending := 0
+		for _, order := range m.orders {
+			if order.TenantID == rec.TenantID && order.UserID == rec.UserID &&
+				order.Status == StatusPending && !paymentOrderExpired(order, rec.Now) {
+				pending++
+			}
+		}
+		if pending >= rec.RechargeMaxPending {
+			return Order{}, false, ErrPendingLimit
+		}
+	}
+	if rec.RechargeDailyLimitCents > 0 {
+		start := time.Date(rec.Now.Year(), rec.Now.Month(), rec.Now.Day(), 0, 0, 0, 0, time.UTC)
+		used := int64(0)
+		for _, order := range m.orders {
+			if order.TenantID != rec.TenantID || order.UserID != rec.UserID || order.CreatedAt.Before(start) {
+				continue
+			}
+			switch order.Status {
+			case StatusPending:
+				if !paymentOrderExpired(order, rec.Now) {
+					used += order.AmountCents
+				}
+			case StatusPaid, StatusRecharging, StatusCompleted:
+				used += order.AmountCents
+			}
+		}
+		if used+rec.AmountCents > rec.RechargeDailyLimitCents {
+			return Order{}, false, ErrDailyAmountLimit
+		}
+	}
 	m.nextOrderID++
 	o := &Order{
 		ID:                     m.nextOrderID,

@@ -36,6 +36,22 @@ func TestRetryModelDiscoveryTxDoesNotRetryBusinessConflict(t *testing.T) {
 	}
 }
 
+func TestValidModelDiscoveryVendorCoversEverySyncVendor(t *testing.T) {
+	for _, vendor := range []modelsync.Vendor{
+		modelsync.VendorAnthropic,
+		modelsync.VendorOpenAI,
+		modelsync.VendorGemini,
+		modelsync.VendorGrok,
+	} {
+		if !validModelDiscoveryVendor(vendor) {
+			t.Fatalf("模型同步厂商 %q 写入后无法从发现箱读取", vendor)
+		}
+	}
+	if validModelDiscoveryVendor(modelsync.Vendor("unknown")) {
+		t.Fatal("未知厂商不得通过模型发现枚举校验")
+	}
+}
+
 func TestPlanVendorCatalogDisablesOnlyAutoSyncedMissingAliases(t *testing.T) {
 	plan, err := planVendorCatalogApply(modelsync.Catalog{
 		Vendor: modelsync.VendorAnthropic,

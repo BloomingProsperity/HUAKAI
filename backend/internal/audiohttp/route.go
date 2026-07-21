@@ -14,6 +14,11 @@ const (
 	audioEndpointTranslations   audioEndpoint = "translations"
 )
 
+const (
+	audioSpeechCapability        = "audio_speech"
+	audioTranscriptionCapability = "audio_transcription"
+)
+
 func (e audioEndpoint) Path() string {
 	switch e {
 	case audioEndpointTranscriptions:
@@ -23,6 +28,51 @@ func (e audioEndpoint) Path() string {
 	default:
 		return "/v1/audio/speech"
 	}
+}
+
+func (e audioEndpoint) RequiredCapability() string {
+	if e == audioEndpointSpeech {
+		return audioSpeechCapability
+	}
+	return audioTranscriptionCapability
+}
+
+func hasAudioEndpointCapability(capabilities []string, endpoint audioEndpoint) bool {
+	required := endpoint.RequiredCapability()
+	for _, capability := range capabilities {
+		if capability == required {
+			return true
+		}
+	}
+	return false
+}
+
+func requireAudioEndpointCapability(plan *router.RoutePlan, endpoint audioEndpoint) {
+	if plan == nil {
+		return
+	}
+	required := endpoint.RequiredCapability()
+	for index := range plan.Attempts {
+		plan.Attempts[index].RequiredCapabilities = appendAudioCapability(
+			plan.Attempts[index].RequiredCapabilities,
+			required,
+		)
+	}
+	for phaseIndex := range plan.FallbackPhases {
+		for attemptIndex := range plan.FallbackPhases[phaseIndex].Attempts {
+			attempt := &plan.FallbackPhases[phaseIndex].Attempts[attemptIndex]
+			attempt.RequiredCapabilities = appendAudioCapability(attempt.RequiredCapabilities, required)
+		}
+	}
+}
+
+func appendAudioCapability(capabilities []string, required string) []string {
+	for _, capability := range capabilities {
+		if capability == required {
+			return capabilities
+		}
+	}
+	return append(capabilities, required)
 }
 
 func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -105,17 +106,32 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 }
 
 func (s *Service) prepareExecutionCandidate(ctx context.Context, candidate credentialacq.CredentialCandidate) (credentialacq.CredentialCandidate, error) {
-	if projectenrich.IsAntigravityMode(candidate.Vendor, candidate.AuthMode) {
+	if importCredentialNeedsRefresh(candidate.Payload, time.Now().UTC()) {
+		if s == nil || s.refresher == nil {
+			return candidate, ErrImportCredentialRefreshUnavailable
+		}
+		refreshed, err := s.refresher.RefreshImportCredential(ctx, candidate, time.Now().UTC())
+		if err != nil {
+			return candidate, errors.Join(ErrImportCredentialRefreshFailed, err)
+		}
+		candidate = refreshed
+	}
+	projectProfile := projectenrich.ProfileForMode(candidate.Vendor, candidate.AuthMode)
+	if projectProfile != "" {
 		if s == nil || s.projects == nil {
 			return candidate, fmt.Errorf("%w: 项目解析器未配置", projectenrich.ErrProjectMetadataUnavailable)
 		}
-		enriched, enrichErr := s.projects.Enrich(ctx, credentialstore.VendorAntigravity, candidate.Payload)
+		enriched, enrichErr := s.projects.Enrich(ctx, projectProfile, candidate.Payload)
 		if len(enriched.Payload) > 0 {
 			candidate.Payload = enriched.Payload
 		}
 		if enriched.SubscriptionVerified {
+			subscriptionVendor := subscriptionprofile.VendorAntigravity
+			if projectProfile == projectenrich.ProfileGeminiCodeAssist {
+				subscriptionVendor = subscriptionprofile.VendorGemini
+			}
 			candidate.Subscription = subscriptionprofile.FromRaw(
-				subscriptionprofile.VendorAntigravity,
+				subscriptionVendor,
 				enriched.SubscriptionTierRaw,
 				subscriptionprofile.SourceProviderAPI,
 				subscriptionprofile.TrustVerifiedAPI,
@@ -125,7 +141,11 @@ func (s *Service) prepareExecutionCandidate(ctx context.Context, candidate crede
 			)
 		}
 		if enriched.SubscriptionConflict {
-			candidate.Subscription = subscriptionprofile.Missing(subscriptionprofile.VendorAntigravity, subscriptionprofile.SourceProviderAPI)
+			subscriptionVendor := subscriptionprofile.VendorAntigravity
+			if projectProfile == projectenrich.ProfileGeminiCodeAssist {
+				subscriptionVendor = subscriptionprofile.VendorGemini
+			}
+			candidate.Subscription = subscriptionprofile.Missing(subscriptionVendor, subscriptionprofile.SourceProviderAPI)
 			candidate.Subscription.Trust = subscriptionprofile.TrustVerifiedAPI
 			candidate.Subscription.Verification = subscriptionprofile.VerificationVerified
 			candidate.Subscription.Status = subscriptionprofile.StatusConflict
@@ -152,8 +172,14 @@ func (s *Service) prepareExecutionCandidate(ctx context.Context, candidate crede
 
 func preparationFailure(candidate credentialacq.CredentialCandidate, err error) (ExecutionStatus, string, string) {
 	switch {
+	case errors.Is(err, ErrImportCredentialRefreshUnavailable):
+		return StatusFailed, "credential_refresh_unavailable", "账号凭据已经过期，但导入刷新器不可用，账号未写入"
+	case errors.Is(err, ErrImportCredentialRefreshFailed):
+		return StatusFailed, "credential_refresh_failed", "账号凭据已经过期且刷新失败，账号未写入"
 	case errors.Is(err, projectenrich.ErrProjectMetadataConflict):
 		return StatusConflict, "project_metadata_conflict", "账号项目身份与上游识别结果冲突，需要人工消歧"
+	case errors.Is(err, projectenrich.ErrProjectInputRequired):
+		return StatusFailed, "project_id_required", "当前套餐要求部署者提供 Google Cloud project_id，账号未写入"
 	case errors.Is(err, projectenrich.ErrProjectMetadataUnavailable):
 		return StatusFailed, "project_metadata_unavailable", "账号项目身份无法确认，账号未写入"
 	case credentialstore.Normalize(candidate.Vendor) == credentialstore.VendorOpenAI &&
@@ -162,6 +188,19 @@ func preparationFailure(candidate credentialacq.CredentialCandidate, err error) 
 	default:
 		return StatusFailed, "account_metadata_preparation_failed", "账号元数据准备失败，账号未写入"
 	}
+}
+
+func importCredentialNeedsRefresh(payload []byte, now time.Time) bool {
+	var fields map[string]any
+	if json.Unmarshal(payload, &fields) != nil {
+		return false
+	}
+	raw, _ := fields["expires_at"].(string)
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return !expiresAt.After(now.Add(2 * time.Minute))
 }
 
 func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {

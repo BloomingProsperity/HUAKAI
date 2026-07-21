@@ -40,6 +40,10 @@ const (
 	SourceImagesDelivered Source = "images_delivered"
 	// SourceAudioDelivered 表示音频业务响应已完整交付后结算未确认。
 	SourceAudioDelivered Source = "audio_delivered"
+	// SourceEmbeddingsDelivered 表示嵌入业务响应已完整交付后结算未确认。
+	SourceEmbeddingsDelivered Source = "embeddings_delivered"
+	// SourceRerankDelivered 表示重排业务响应已完整交付后结算未确认。
+	SourceRerankDelivered Source = "rerank_delivered"
 )
 
 // Payload 是 post_delivery_settlement DLQ 行的 JSON payload。
@@ -80,12 +84,15 @@ type settleRequestPersisted struct {
 	Draft               gateway.UsageRecordDraft `json:"draft"`
 	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);
 	// 之前缺此字段 → settle 失败 DLQ replay 重放时 usage_records.protocol_loss 退化成 "[]"。
-	ProtocolLoss        json.RawMessage  `json:"protocol_loss,omitempty"`
-	StreamAttempt       *billing.Attempt `json:"stream_attempt,omitempty"`
-	Fingerprint         string           `json:"fingerprint"`
-	AuditRequestID      string           `json:"audit_request_id"`
-	EmitSchedulerOutbox bool             `json:"emit_scheduler_outbox"`
-	SnapshotVersion     string           `json:"snapshot_version"`
+	ProtocolLoss          json.RawMessage  `json:"protocol_loss,omitempty"`
+	StreamAttempt         *billing.Attempt `json:"stream_attempt,omitempty"`
+	Fingerprint           string           `json:"fingerprint"`
+	AuditRequestID        string           `json:"audit_request_id"`
+	AuditRouteID          string           `json:"audit_route_id,omitempty"`
+	AuditPoolGroupID      int64            `json:"audit_pool_group_id,omitempty"`
+	AuditProviderEndpoint string           `json:"audit_provider_endpoint,omitempty"`
+	EmitSchedulerOutbox   bool             `json:"emit_scheduler_outbox"`
+	SnapshotVersion       string           `json:"snapshot_version"`
 }
 
 // Validate 失败原因 — worker 用这些判断"该 quarantine 还是默默重试"。
@@ -129,29 +136,32 @@ func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) 
 		Source:    src,
 		RequestID: requestID,
 		Settle: settleRequestPersisted{
-			ClaimID:             req.ClaimID,
-			AccountID:           req.AccountID,
-			AcquisitionToken:    req.AcquisitionToken,
-			UsageRecordPayload:  json.RawMessage(req.UsageRecordPayload),
-			BillingEventPayload: json.RawMessage(req.BillingEventPayload),
-			ActualCost:          req.ActualCost,
-			TenantID:            req.TenantID,
-			APIKeyID:            req.APIKeyID,
-			UserID:              req.UserID,
-			ProviderAccountID:   req.ProviderAccountID,
-			AttemptSeq:          req.AttemptSeq,
-			RequestedModel:      req.RequestedModel,
-			RequestedAt:         req.RequestedAt,
-			UpstreamModel:       req.UpstreamModel,
-			Provider:            req.Provider,
-			Stream:              req.Stream,
-			Draft:               req.Draft,
-			ProtocolLoss:        req.ProtocolLoss,
-			StreamAttempt:       req.StreamAttempt,
-			Fingerprint:         req.Fingerprint,
-			AuditRequestID:      auditRequestID,
-			EmitSchedulerOutbox: req.EmitSchedulerOutbox,
-			SnapshotVersion:     req.SnapshotVersion,
+			ClaimID:               req.ClaimID,
+			AccountID:             req.AccountID,
+			AcquisitionToken:      req.AcquisitionToken,
+			UsageRecordPayload:    json.RawMessage(req.UsageRecordPayload),
+			BillingEventPayload:   json.RawMessage(req.BillingEventPayload),
+			ActualCost:            req.ActualCost,
+			TenantID:              req.TenantID,
+			APIKeyID:              req.APIKeyID,
+			UserID:                req.UserID,
+			ProviderAccountID:     req.ProviderAccountID,
+			AttemptSeq:            req.AttemptSeq,
+			RequestedModel:        req.RequestedModel,
+			RequestedAt:           req.RequestedAt,
+			UpstreamModel:         req.UpstreamModel,
+			Provider:              req.Provider,
+			Stream:                req.Stream,
+			Draft:                 req.Draft,
+			ProtocolLoss:          req.ProtocolLoss,
+			StreamAttempt:         req.StreamAttempt,
+			Fingerprint:           req.Fingerprint,
+			AuditRequestID:        auditRequestID,
+			AuditRouteID:          req.AuditRouteID,
+			AuditPoolGroupID:      req.AuditPoolGroupID,
+			AuditProviderEndpoint: req.AuditProviderEndpoint,
+			EmitSchedulerOutbox:   req.EmitSchedulerOutbox,
+			SnapshotVersion:       req.SnapshotVersion,
 		},
 	}
 }
@@ -159,7 +169,8 @@ func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) 
 // Validate 在 enqueue 前 + worker decode 后两端调,确保 payload 不破坏 settle 必填条件。
 func (p Payload) Validate() error {
 	switch p.Source {
-	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler, SourceImagesDelivered, SourceAudioDelivered:
+	case SourceStream, SourceDirectSettle, SourceEventbusBillingHandler, SourceImagesDelivered, SourceAudioDelivered,
+		SourceEmbeddingsDelivered, SourceRerankDelivered:
 	default:
 		return fmt.Errorf("%w: %q", ErrPayloadInvalidSource, p.Source)
 	}
@@ -201,29 +212,32 @@ func (p Payload) ValidateAuditRef(policy *eventbus.AuditRefPolicy) error {
 // Tx2 与正常 Tx2 写同等 scheduler outbox 证据。
 func (p Payload) ToSettleRequest() billing.SettleRequest {
 	return billing.SettleRequest{
-		ClaimID:             p.Settle.ClaimID,
-		AccountID:           p.Settle.AccountID,
-		AcquisitionToken:    p.Settle.AcquisitionToken,
-		UsageRecordPayload:  []byte(p.Settle.UsageRecordPayload),
-		BillingEventPayload: []byte(p.Settle.BillingEventPayload),
-		ActualCost:          p.Settle.ActualCost,
-		TenantID:            p.Settle.TenantID,
-		APIKeyID:            p.Settle.APIKeyID,
-		UserID:              p.Settle.UserID,
-		ProviderAccountID:   p.Settle.ProviderAccountID,
-		AttemptSeq:          p.Settle.AttemptSeq,
-		RequestedModel:      p.Settle.RequestedModel,
-		RequestedAt:         p.Settle.RequestedAt,
-		UpstreamModel:       p.Settle.UpstreamModel,
-		Provider:            p.Settle.Provider,
-		Stream:              p.Settle.Stream,
-		Draft:               p.Settle.Draft,
-		ProtocolLoss:        p.Settle.ProtocolLoss,
-		StreamAttempt:       p.Settle.StreamAttempt,
-		Fingerprint:         p.Settle.Fingerprint,
-		AuditRequestID:      p.Settle.AuditRequestID,
-		EmitSchedulerOutbox: p.Settle.EmitSchedulerOutbox,
-		SnapshotVersion:     p.Settle.SnapshotVersion,
+		ClaimID:               p.Settle.ClaimID,
+		AccountID:             p.Settle.AccountID,
+		AcquisitionToken:      p.Settle.AcquisitionToken,
+		UsageRecordPayload:    []byte(p.Settle.UsageRecordPayload),
+		BillingEventPayload:   []byte(p.Settle.BillingEventPayload),
+		ActualCost:            p.Settle.ActualCost,
+		TenantID:              p.Settle.TenantID,
+		APIKeyID:              p.Settle.APIKeyID,
+		UserID:                p.Settle.UserID,
+		ProviderAccountID:     p.Settle.ProviderAccountID,
+		AttemptSeq:            p.Settle.AttemptSeq,
+		RequestedModel:        p.Settle.RequestedModel,
+		RequestedAt:           p.Settle.RequestedAt,
+		UpstreamModel:         p.Settle.UpstreamModel,
+		Provider:              p.Settle.Provider,
+		Stream:                p.Settle.Stream,
+		Draft:                 p.Settle.Draft,
+		ProtocolLoss:          p.Settle.ProtocolLoss,
+		StreamAttempt:         p.Settle.StreamAttempt,
+		Fingerprint:           p.Settle.Fingerprint,
+		AuditRequestID:        p.Settle.AuditRequestID,
+		AuditRouteID:          p.Settle.AuditRouteID,
+		AuditPoolGroupID:      p.Settle.AuditPoolGroupID,
+		AuditProviderEndpoint: p.Settle.AuditProviderEndpoint,
+		EmitSchedulerOutbox:   p.Settle.EmitSchedulerOutbox,
+		SnapshotVersion:       p.Settle.SnapshotVersion,
 	}
 }
 

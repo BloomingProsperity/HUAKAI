@@ -99,10 +99,25 @@ func UpstreamFailureFromDecision(status int, body []byte, decision gateway.Attem
 		message = clienterr.MessageFor(code)
 	}
 	failure := newFailure(SignalFromUpstream(status, body, classification, decision), decision.RetryableBeforeDelivery,
-		clientStatus, code, reason, 0)
+		clientStatus, code, reason, retryAfterSeconds(classification.RetryAfterMs))
 	failure.Message = message
 	failure.AuthFailoverEligible = decision.CountsAgainstAuthFailoverBudget
 	return failure
+}
+
+func retryAfterSeconds(milliseconds int64) int {
+	if milliseconds <= 0 {
+		return 0
+	}
+	seconds := milliseconds / 1000
+	if milliseconds%1000 != 0 {
+		seconds++
+	}
+	maxInt := int64(^uint(0) >> 1)
+	if seconds > maxInt {
+		return int(maxInt)
+	}
+	return int(seconds)
 }
 
 // CredentialCompatibilityFailure 表示发网前凭据形态与协议族静态不匹配(如反转号

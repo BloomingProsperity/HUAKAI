@@ -20,6 +20,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
+const defaultTelegramWidgetMaxAge = 24 * time.Hour
+
 // OAuthBindingLister 读取已认证用户自己的社交登录绑定(只读),由 *userauth.Service 实现。
 type OAuthBindingLister interface {
 	ListSocialIdentityLinks(ctx context.Context, tenantID, userID int64) ([]userauth.SocialIdentityLink, error)
@@ -43,7 +45,7 @@ type OAuthBindingsDeps struct {
 	// 后台设置(settings-first,空回退 env),与登录端点同源。
 	TelegramBotToken         string
 	TelegramBotTokenResolver func(context.Context) string
-	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期;<=0 时由 verifier 取默认 24h。
+	// TelegramWidgetMaxAge 是 widget auth_date 的最大有效期；<=0 时使用 24 小时。
 	TelegramWidgetMaxAge time.Duration
 }
 
@@ -55,6 +57,13 @@ func (d OAuthBindingsDeps) resolveTelegramBotToken(ctx context.Context) string {
 		}
 	}
 	return d.TelegramBotToken
+}
+
+func (d OAuthBindingsDeps) telegramWidgetMaxAge() time.Duration {
+	if d.TelegramWidgetMaxAge > 0 {
+		return d.TelegramWidgetMaxAge
+	}
+	return defaultTelegramWidgetMaxAge
 }
 
 // oauthBindingResponse 是单条绑定的出网 DTO。subject 已在 service 层脱敏;不含上游 OAuth token。
@@ -98,7 +107,7 @@ func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
 			return
 		}
 		// 服务端用 bot token HMAC 校验 widget 数据;客户端传来的任何字段都不被信任(信任靠签名)。
-		identity, err := telegramauth.VerifyWidget(req.Params, botToken, time.Now(), d.TelegramWidgetMaxAge)
+		identity, err := telegramauth.VerifyWidget(req.Params, botToken, time.Now(), d.telegramWidgetMaxAge())
 		if err != nil {
 			// 校验失败统一按 social_identity_verification_failed(401)处理,不回显细节。
 			writeAuthSocialLinkError(w, userauth.ErrSocialLoginRejected)

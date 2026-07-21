@@ -9,6 +9,7 @@ const (
 	VendorAnthropic Vendor = "anthropic"
 	VendorOpenAI    Vendor = "openai"
 	VendorGemini    Vendor = "gemini"
+	VendorGrok      Vendor = "grok"
 )
 
 // Model 是 vendor model-list API 归一化后的最小目录项。

@@ -20,7 +20,7 @@ func (r remapAudioRegistry) ResolveModel(_ context.Context, model string, _ int6
 		CanonicalModelID: "audio/" + model,
 		ProviderModelID:  r.upstream,
 		ProtocolFamily:   "openai_chat",
-		Capabilities:     []string{"audio"},
+		Capabilities:     []string{"audio", audioTranscriptionCapability},
 		PoolCandidates:   []int64{101},
 		SnapshotVersion:  "registry:7:1",
 	}, nil

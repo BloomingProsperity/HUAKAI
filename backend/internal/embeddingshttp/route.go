@@ -6,6 +6,50 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
+const embeddingsCapability = "embeddings"
+
+func hasEmbeddingsModelCapability(capabilities []string) bool {
+	// 空集合表示目录尚未完成能力探测，继续兼容既有人工模型；一旦目录给出
+	// 明确集合，就必须证明它属于 embeddings 能力族。
+	if len(capabilities) == 0 {
+		return true
+	}
+	for _, capability := range capabilities {
+		switch capability {
+		case embeddingsCapability, "embedContent", "batchEmbedContents":
+			return true
+		}
+	}
+	return false
+}
+
+func requireEmbeddingsCapability(plan *router.RoutePlan) {
+	if plan == nil {
+		return
+	}
+	for index := range plan.Attempts {
+		plan.Attempts[index].RequiredCapabilities = appendEmbeddingsCapability(
+			plan.Attempts[index].RequiredCapabilities,
+			embeddingsCapability,
+		)
+	}
+	for phaseIndex := range plan.FallbackPhases {
+		for attemptIndex := range plan.FallbackPhases[phaseIndex].Attempts {
+			attempt := &plan.FallbackPhases[phaseIndex].Attempts[attemptIndex]
+			attempt.RequiredCapabilities = appendEmbeddingsCapability(attempt.RequiredCapabilities, embeddingsCapability)
+		}
+	}
+}
+
+func appendEmbeddingsCapability(capabilities []string, required string) []string {
+	for _, capability := range capabilities {
+		if capability == required {
+			return capabilities
+		}
+	}
+	return append(capabilities, required)
+}
+
 func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 	out := router.ResolvedModel{
 		PublicAlias:     resolved.PublicAlias,

@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountmodeldiscovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
@@ -29,6 +30,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/balanceledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/billingmaint"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
@@ -140,64 +142,67 @@ const (
 
 // deps 是 run() 启动后 handler 收到的 live 依赖树。
 type deps struct {
-	cfg                   *Config
-	readiness             *healthhttp.Readiness
-	clientIPResolver      *clientip.Resolver
-	inboundRateLimit      inboundlimit.Store
-	pgPool                *pgxpool.Pool
-	logSink               *logsink.Sink
-	runtimeLogStore       *logsink.PostgresStore
-	logRetention          *logretention.Manager
-	adminQueries          *admindb.Queries
-	billingQueries        *dbbilling.Queries
-	billingPolicyStore    billing.PolicyStore
-	billingPolicyResolver *billing.PolicyResolver
-	selector              pool.Selector
-	queueWaiter           *queuewait.Executor
-	channelHealth         *channelhealth.Service
-	authCooldown          *authcooldown.Store
-	modelCooldowns        *ratelimit.ModelCooldownService
-	upstreamRate          ratelimit.Service
-	upstreamFeedback      *upstreamfeedback.Observer
-	retryBudget           *retrybudget.Budget
-	claimGate             billing.ClaimGate
-	settler               billing.Settler
-	settlementIntents     settlementintent.Store
-	quotaReserver         quotaenforce.Reserver
-	replayStore           billing.ReplayStore
-	forwarder             *gateway.StreamForwarder
-	credentialVault       provider.CredentialVault
-	credentialStore       *credentialstore.Store
-	credentialKeys        credentialstore.KeyProvider
-	credentialAcqStore    *credentialacq.PostgresSessionStore
-	credentialExchangers  *credentialacq.ExchangerRegistry
-	anthropicOAuthClient  *http.Client
-	projectEnricher       projectenrich.Enricher
-	credentialScheduler   *credentialworker.Scheduler
-	emailSettings         *mailinfra.PostgresSettingsStore
-	authEmailSender       gatewayhttp.AuthEmailSender
-	emailSendLimit        *emailsendlimit.Limiter
-	userAuth              *userauth.Service
-	userSessions          *usersession.Service
-	passkeys              *passkey.Service
-	twoFactor             *twofa.Service
-	loginThrottle         *loginthrottle.Limiter
-	userKeyService        *userkey.Service
-	userAuditStore        *userauditlog.PostgresStore
-	paymentService        *payment.Service
-	checkinService        *checkin.Service
-	paymentProviders      map[string]paymenthttp.ProviderBinding
-	paymentRefundRequests paymenthttp.RefundRequestRecorder
-	voucherService        *voucher.Service
-	subscriptionService   *subscription.Service
-	subExpiryWorker       *subscription.ExpiryWorker
-	subReminderWorker     *subscription.ReminderWorker
-	subAutoRenewWorker    *subscription.AutoRenewWorker
-	notificationSettings  *notify.Service
-	announcementService   *announcement.Service
-	userNoticeService     *usernotice.Service
-	mediaTaskService      *mediatask.Service
-	mediaTaskWorker       *mediatask.Worker
+	cfg                       *Config
+	readiness                 *healthhttp.Readiness
+	clientIPResolver          *clientip.Resolver
+	inboundRateLimit          inboundlimit.Store
+	pgPool                    *pgxpool.Pool
+	logSink                   *logsink.Sink
+	runtimeLogStore           *logsink.PostgresStore
+	logRetention              *logretention.Manager
+	adminQueries              *admindb.Queries
+	billingQueries            *dbbilling.Queries
+	billingPolicyStore        billing.PolicyStore
+	billingPolicyResolver     *billing.PolicyResolver
+	selector                  pool.Selector
+	selectorConfig            *runtimeconfig.PoolSelectorConfig
+	queueWaiter               *queuewait.Executor
+	channelHealth             *channelhealth.Service
+	authCooldown              *authcooldown.Store
+	modelCooldowns            *ratelimit.ModelCooldownService
+	upstreamRate              ratelimit.Service
+	upstreamFeedback          *upstreamfeedback.Observer
+	retryBudget               *retrybudget.Budget
+	claimGate                 billing.ClaimGate
+	settler                   billing.Settler
+	settlementIntents         settlementintent.Store
+	quotaReserver             quotaenforce.Reserver
+	replayStore               billing.ReplayStore
+	forwarder                 *gateway.StreamForwarder
+	credentialVault           provider.CredentialVault
+	credentialStore           *credentialstore.Store
+	credentialKeys            credentialstore.KeyProvider
+	credentialAcqStore        *credentialacq.PostgresSessionStore
+	credentialExchangers      *credentialacq.ExchangerRegistry
+	anthropicOAuthClient      *http.Client
+	projectEnricher           projectenrich.Enricher
+	importCredentialRefresher accountintake.ImportCredentialRefresher
+	credentialScheduler       *credentialworker.Scheduler
+	emailSettings             *mailinfra.PostgresSettingsStore
+	authEmailSender           gatewayhttp.AuthEmailSender
+	emailSendLimit            *emailsendlimit.Limiter
+	userAuth                  *userauth.Service
+	userSessions              *usersession.Service
+	passkeys                  *passkey.Service
+	twoFactor                 *twofa.Service
+	loginThrottle             *loginthrottle.Limiter
+	userKeyService            *userkey.Service
+	userAuditStore            *userauditlog.PostgresStore
+	balanceService            *balanceledger.Service
+	paymentService            *payment.Service
+	checkinService            *checkin.Service
+	paymentProviders          map[string]paymenthttp.ProviderBinding
+	paymentRefundRequests     paymenthttp.RefundRequestRecorder
+	voucherService            *voucher.Service
+	subscriptionService       *subscription.Service
+	subExpiryWorker           *subscription.ExpiryWorker
+	subReminderWorker         *subscription.ReminderWorker
+	subAutoRenewWorker        *subscription.AutoRenewWorker
+	notificationSettings      *notify.Service
+	announcementService       *announcement.Service
+	userNoticeService         *usernotice.Service
+	mediaTaskService          *mediatask.Service
+	mediaTaskWorker           *mediatask.Worker
 	// mediaTaskStore 既供 worker/service 用,也供孤儿对账 admin 面(orphanreconcilehttp)
 	// 复用其只读列表 + 单一动钱入口 ReconcileOrphan(Manual-First,复用既有 billing settle)。
 	mediaTaskStore           *mediatask.PostgresStore
@@ -205,6 +210,7 @@ type deps struct {
 	panelAuthResolver        *panelauth.Resolver
 	invitationService        *communityinvitation.Service
 	dispatcher               *gateway.UpstreamDispatcher
+	accountModelDiscovery    *accountmodeldiscovery.Service
 	responseCache            l2cache.Store
 	cacheScope               string
 	dlqService               *legacydlq.Service
@@ -434,7 +440,7 @@ func startAlertingEvaluator(ctx context.Context, cfg *Config, runner alertingEva
 }
 
 const (
-	geminiPublicCLIOAuthClientSecretEnv = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
+	geminiPublicCLIOAuthClientSecretEnv = credentialacq.GeminiPublicCLISecretEnv
 	adminOAuthCallbackAllowlistEnv      = "HUAKAI_ADMIN_OAUTH_CALLBACK_ALLOWLIST"
 	userOAuthRedirectAllowlistEnv       = "HUAKAI_USER_OAUTH_REDIRECT_ALLOWLIST"
 	// trustedProxyCIDRsEnv 列出反向代理 / CDN 的 CIDR,这些来源的 X-Forwarded-For
@@ -778,6 +784,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			return nil, fmt.Errorf("auto-migrate: %w", err)
 		}
 	}
+	platformTenantID, err := tenancy.WorkingTenantIDFromEnv()
+	if err != nil {
+		pgPool.Close()
+		return nil, fmt.Errorf("resolve working tenant: %w", err)
+	}
 	serverMonitorConfig, err := servermonitor.LoadConfigFromEnv()
 	if err != nil {
 		pgPool.Close()
@@ -1100,7 +1111,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	// ACCOUNT-SESSION-CAP：按账号的最大并发会话封顶 registry。
 	sessionCapRegistry := sessioncap.NewRegistry(0)
 	recentReqRing := recentreq.NewRing()
-	selector, selectorCleanup, err := buildSelector(workerCtx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
+	selector, accountRateCounter, selectorCleanup, err := buildSelector(workerCtx, billingQueries, pgPool, opts.selector, channelHealthService, windowCostCache, sessionCapRegistry, logger)
 	if err != nil {
 		return nil, fmt.Errorf("build selector: %w", err)
 	}
@@ -1121,6 +1132,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		Store:       notificationStore,
 		EmailSender: notificationEmailSender,
 	})
+	balanceService := balanceledger.NewService(balanceledger.NewPostgresStore(pgPool, platformTenantID))
 	paymentStore := payment.NewPostgresStore(pgPool)
 	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
 	// NAPI-DIST-SIGNUP-03 + INVITEE-04:接线注册时的钱包入账签发器
@@ -1166,6 +1178,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	settler = notify.NewSettler(settler, notifier, notify.WithSettlerDeliveryErrorRecorder(func(err error) {
 		logger.Warn("low balance notification delivery failed", zap.Error(err))
 	}))
+	claimGate := newClaimGateWithLease(pgPool)
 	// completion 事件总线在 settler 全装饰(quota/budget/notify)完成后再构造,使异步成功结算走完整的
 	// billing→quota→budget→notify 结算链——否则总线持中间层 settler,成功请求漏释放配额预留/并发槽与
 	// 预算预留(默认 eventbus+quota 均开即触发)。abort 走同步装饰后 settler 本就正确,唯成功异步路径漏。
@@ -1421,28 +1434,53 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 
 	billingPolicyStore := billing.NewPolicyStore(pgPool)
 	billingPolicyResolver := billing.NewPolicyResolver(billingPolicyStore, 0)
+	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
+	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
+	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
+	gatewayDispatcher := &gateway.UpstreamDispatcher{
+		Adapters:                 registrydefault.Build(),
+		TransportFactory:         transportFactory,
+		ProxyResolver:            accountProxyResolver,
+		TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
+		Timeouts:                 gatewayTimeouts,
+		AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
+		AnthropicTTLSettings:     platformSettingsService,
+		HTTPClient:               devMockUpstreamDoer(),
+	}
+	accountModelDiscovery := accountmodeldiscovery.NewService(credentialVault, gatewayDispatcher, pgPool)
 	mediaTaskConfig := mediatask.NewPlatformConfigSource(platformSettingsService, cfg.BillingPolicyVersion, cfg.RequestClass)
 	mediaTaskStore := mediatask.NewPostgresStore(pgPool, mediatask.PostgresStoreConfig{
 		BillingPolicyVersion: cfg.BillingPolicyVersion,
 		RequestClass:         cfg.RequestClass,
 		BalanceModeResolver:  billingPolicyResolver,
+		ClaimGate:            claimGate,
+		QuotaReserver:        quotaReserver,
+		Settler:              settler,
 	})
 	// 媒体 provider 出站客户端必须带 Timeout(与同文件 modelsync fetcher 一致):裸 http.DefaultClient
 	// 无超时,慢上游/半开连接会让串行媒体 worker 永久挂起。worker 侧已对每次 Submit/Poll 加 context 硬超时
 	// 为主防线,此处 client.Timeout 作外层兜底(防 provider 实现忽略 ctx)。
-	mediaTaskProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, &http.Client{Timeout: 60 * time.Second})
+	legacyMediaProviders := mediatask.NewHTTPProviderRegistry(mediaTaskConfig, &http.Client{Timeout: 60 * time.Second})
+	mediaAccountAdmitter := mediatask.NewPostgresAccountRequestAdmitter(pgPool, accountRateCounter)
+	grokVideoProvider := mediatask.NewGrokVideoProvider(mediatask.GrokVideoProviderDeps{
+		Selector: selector, AccountAdmitter: mediaAccountAdmitter,
+		CredentialVault: credentialVault, Dispatcher: gatewayDispatcher,
+	})
+	geminiVideoProvider := mediatask.NewGeminiVideoProvider(mediatask.GrokVideoProviderDeps{
+		Selector: selector, AccountAdmitter: mediaAccountAdmitter,
+		CredentialVault: credentialVault, Dispatcher: gatewayDispatcher,
+	})
+	mediaTaskProviders := mediatask.NewOverlayProviderRegistry(legacyMediaProviders, map[string]mediatask.AsyncMediaProvider{
+		"grok_video": grokVideoProvider, "gemini_video": geminiVideoProvider,
+	})
 	mediaTaskService := mediatask.NewService(mediaTaskStore, mediaTaskConfig, mediaTaskProviders)
 	// OrphanReporter 把"租约丢失致 providerTaskID 未落库"的孤儿上游任务持久化到 media_task_orphans,
 	// 供对账消费者/运维查处(此前仅日志,易随轮转丢失)。logger 传 nil → 与 worker 同走 slog 默认实例。
 	mediaTaskWorker := mediatask.NewWorker(mediaTaskStore, mediaTaskConfig, mediaTaskProviders, mediatask.WorkerOptions{
 		OrphanReporter: mediatask.NewPersistingOrphanReporter(mediaTaskStore, nil),
 	})
-	mediaTaskWorker.Start(workerCtx)
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
-	// TotalStreamTimeout 的现实默认来自 defaultGatewayTotalStreamTimeout（600 秒）。
-	// 仅 source=db 的显式平台设置覆盖原有 env；source=default 时保留接线前 env 行为。
-	gatewayTimeouts := buildGatewayTimeoutConfig(ctx, platformSettingsService)
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1457,6 +1495,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		billingPolicyStore:    billingPolicyStore,
 		billingPolicyResolver: billingPolicyResolver,
 		selector:              selector,
+		selectorConfig:        opts.selector,
 		queueWaiter:           queuewait.NewExecutor(),
 		sessionCapRegistry:    sessionCapRegistry,
 		recentReqRing:         recentReqRing,
@@ -1466,7 +1505,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		modelCooldowns:        ratelimit.NewModelCooldownService(billingQueries),
 		upstreamRate:          ratelimit.NewUpstreamRateServiceWithSessionWindowStore(nil, channelHealthService.Policy().DefaultRateLimitCooldown, ratelimit.NewPostgresSessionWindowStore(pgPool), ratelimit.WithAccountErrorRulesProvider(ratelimit.NewPostgresAccountErrorRulesProvider(pgPool)), ratelimit.WithCooldownStateStore(ratelimit.NewPostgresCooldownStateStore(pgPool)), ratelimit.WithCooldownSource(platformCooldownSource{settings: platformSettingsService})),
 		retryBudget:           tenantRetryBudget,
-		claimGate:             newClaimGateWithLease(pgPool),
+		claimGate:             claimGate,
 		settler:               settler,
 		settlementIntents:     buildSettlementIntentStore(billingQueries, cfg.SettlementIntentEnabled),
 		quotaReserver:         quotaReserver,
@@ -1493,6 +1532,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		loginThrottle:         loginThrottle,
 		userKeyService:        userkey.NewService(pgPool, nil, userkey.WithAuditSink(userAuditStore), userkey.WithDefaultKeyQuota(runtimeconfig.LoadDefaultKeyQuota())),
 		userAuditStore:        userAuditStore,
+		balanceService:        balanceService,
 		paymentService:        paymentService,
 		checkinService:        checkinService,
 		paymentProviders:      paymentProviders,
@@ -1514,41 +1554,30 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		obsDLQAdminStore:      outboxStore,
 		completionBus:         completionBus,
 		auditRefPolicy:        auditRefPolicy,
-		dispatcher: &gateway.UpstreamDispatcher{
-			Adapters:                 registrydefault.Build(),
-			TransportFactory:         transportFactory,
-			ProxyResolver:            accountProxyResolver,
-			TLSProfileResolver:       tlsfpresolve.NewPostgresResolver(pgPool),
-			Timeouts:                 gatewayTimeouts,
-			AnthropicAutoBreakpoints: cfg.CacheAnthropicAutoBreakpoints,
-			AnthropicTTLSettings:     platformSettingsService,
-			// 仅 dev/demo:当设置了 HUAKAI_DEV_MOCK_UPSTREAM 且网关不在
-			// production 模式时,一个伪造的 doer 会捏造上游 SSE,使本地 MVP
-			// 循环无需真实 provider 即可运行。在 production / 未设置时为 nil →
-			// 真实的 transport 路径不受影响。
-			HTTPClient: devMockUpstreamDoer(),
-		},
-		inboundAuth:          auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
-		auditLedger:          auditLedger,
-		auditSigner:          auditSigner,
-		cacheOverrideStore:   billing.NewCacheOverrideStore(auditSigner, nil),
-		auditPubkeyRegistry:  auditPubkeyRegistry,
-		receiptStore:         receiptStore,
-		receiptFormatter:     receiptFormatter,
-		disputeStore:         disputeStore,
-		disputeResolver:      disputeResolver,
-		refundQueue:          refundQueue,
-		rateTableSource:      rateTableSource,
-		pricingRatioStore:    pricingRatioStore,
-		pricingRatioResolver: pricingRatioResolver,
-		modelRegistry:        modelRegistry,
-		modelSync:            modelSyncService,
-		routePlanner:         router.NewDefaultRouter(),
+		dispatcher:            gatewayDispatcher,
+		accountModelDiscovery: accountModelDiscovery,
+		inboundAuth:           auth.NewAPIKeyResolverWithClientIPResolver(authQueries, clientIPResolver),
+		auditLedger:           auditLedger,
+		auditSigner:           auditSigner,
+		cacheOverrideStore:    billing.NewCacheOverrideStore(auditSigner, nil),
+		auditPubkeyRegistry:   auditPubkeyRegistry,
+		receiptStore:          receiptStore,
+		receiptFormatter:      receiptFormatter,
+		disputeStore:          disputeStore,
+		disputeResolver:       disputeResolver,
+		refundQueue:           refundQueue,
+		rateTableSource:       rateTableSource,
+		pricingRatioStore:     pricingRatioStore,
+		pricingRatioResolver:  pricingRatioResolver,
+		modelRegistry:         modelRegistry,
+		modelSync:             modelSyncService,
+		routePlanner:          router.NewDefaultRouter(),
 		adminAuth: adminsessionauth.New(
 			admin.NewAdminResolver(adminQueries),   // 令牌通道(hk_admin_,行为不变)
 			userSessionService,                     // session 校验器
 			panelauth.NewPostgresRoleStore(pgPool), // users.role 只读查询
 			clientIPResolver,
+			platformTenantID,
 		),
 		adminIssuer:              admin.NewKeyIssuer(pgPool),
 		adminRevoker:             admin.NewKeyRevoker(pgPool),
@@ -1682,9 +1711,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	}
 	// role 制单登录 bootstrap:把 HUAKAI_ADMIN_BOOTSTRAP_EMAIL 指定的已注册账号提升为
 	// role=admin(env 未设 = no-op)。租户走与种默认租户同一真相源,尊重 env 覆盖。
-	if workingTenantID, err := tenancy.WorkingTenantIDFromEnv(); err != nil {
-		return nil, fmt.Errorf("resolve working tenant: %w", err)
-	} else if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, workingTenantID, logger); err != nil {
+	if err := panelauth.MaybeBootstrapAdminUser(ctx, pgPool, platformTenantID, logger); err != nil {
 		return nil, fmt.Errorf("admin user bootstrap: %w", err)
 	}
 	// Production-required gate: credentialScheduler 必须装
@@ -1700,7 +1727,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if auditSigner == nil {
 		return nil, fmt.Errorf("credentialworker: production auditSigner unset (audit fail-closed gate)")
 	}
-	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, credentialworker.DefaultModeAdapterRegistryWithRuntimeDependencies(antigravityProjectResolver, cfg.VendorOAuth, anthropicOAuthHTTPClient))
+	modeAdapterRegistry := credentialworker.DefaultModeAdapterRegistryWithRuntimeDependencies(
+		antigravityProjectResolver, cfg.VendorOAuth, anthropicOAuthHTTPClient,
+	)
+	d.importCredentialRefresher = accountintake.NewModeRegistryImportRefresher(modeAdapterRegistry)
+	credentialRefresher := credentialworker.NewAccountCredentialRefresher(credentialStore, modeAdapterRegistry)
 	credentialSchedulerOptions := []credentialworker.Option{
 		credentialworker.WithAuditQueries(authQueries),
 		credentialworker.WithAuditLedger(auditLedger),
@@ -1749,6 +1780,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		RecentRequests:         d.recentReqRing,
 		RoutingSignals:         routingsignal.NewPostgresRecorder(pgPool),
 	})
+	grokVideoProvider.SetFeedback(d.upstreamFeedback)
+	geminiVideoProvider.SetFeedback(d.upstreamFeedback)
+	mediaTaskWorker.Start(workerCtx)
 	if opts.obsDLQ.Enabled {
 		dlqWorker.Start(workerCtx)
 	}
@@ -1855,7 +1889,7 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	if cfg == nil || store == nil {
 		return nil
 	}
-	fetchers := make([]modelsync.Fetcher, 0, 3)
+	fetchers := make([]modelsync.Fetcher, 0, 4)
 	if cfg.OpenAI.Configured() {
 		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
 			Vendor:         modelsync.VendorOpenAI,
@@ -1881,6 +1915,16 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 			Vendor:         modelsync.VendorGemini,
 			URL:            cfg.Gemini.URL,
 			APIKey:         cfg.Gemini.APIKey,
+			Timeout:        cfg.Timeout,
+			AllowedHosts:   cfg.AllowedHosts,
+			AllowUnsafeURL: cfg.AllowUnsafeURLs,
+		}))
+	}
+	if cfg.Grok.Configured() {
+		fetchers = append(fetchers, modelsync.NewHTTPFetcher(modelsync.HTTPFetcherConfig{
+			Vendor:         modelsync.VendorGrok,
+			URL:            cfg.Grok.URL,
+			APIKey:         cfg.Grok.APIKey,
 			Timeout:        cfg.Timeout,
 			AllowedHosts:   cfg.AllowedHosts,
 			AllowUnsafeURL: cfg.AllowUnsafeURLs,
@@ -2105,7 +2149,7 @@ func assertAnthropicClaudeAIOAuthExchangerHasHTTPClient(registry *credentialacq.
 }
 
 func loadGeminiPublicCLIOAuthClientSecretFromEnv() (string, error) {
-	return strings.TrimSpace(os.Getenv(geminiPublicCLIOAuthClientSecretEnv)), nil
+	return strings.TrimSpace(credentialacq.GeminiPublicCLIConfig().ClientSecret), nil
 }
 
 func loadAdminOAuthCallbackAllowlistFromEnv() []string {

@@ -104,8 +104,8 @@ func TestHandler_HCSFUpstreamHTTPErrorDoesNotLeakBody(t *testing.T) {
 	if strings.Contains(rec.Body.String(), marker) {
 		t.Fatalf("response leaked upstream marker: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "upstream_oauth_invalid_grant") {
-		t.Fatalf("body=%s want oauth invalid grant classification code", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "upstream_credential_rejected") {
+		t.Fatalf("body=%s want static credential rejection classification code", rec.Body.String())
 	}
 }
 

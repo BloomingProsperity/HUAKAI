@@ -15,6 +15,8 @@ const providerSuno = "suno"
 type Request struct {
 	RequestID            string          `json:"request_id,omitempty"`
 	RequestIDAlias       string          `json:"requestId,omitempty"`
+	APIKeyID             int64           `json:"api_key_id,omitempty"`
+	APIKeyIDAlias        int64           `json:"apiKeyId,omitempty"`
 	GPTDescriptionPrompt string          `json:"gpt_description_prompt,omitempty"`
 	Prompt               string          `json:"prompt,omitempty"`
 	MV                   string          `json:"mv,omitempty"`
@@ -49,11 +51,16 @@ func translateSubmit(action string, raw json.RawMessage) (mediatask.SubmitInput,
 	if requestID == "" {
 		requestID = "suno-" + uuid.NewString()
 	}
+	apiKeyID, err := mediatask.ResolveAPIKeySelection(req.APIKeyID, req.APIKeyIDAlias)
+	if err != nil {
+		return mediatask.SubmitInput{}, err
+	}
 	return mediatask.SubmitInput{
 		RequestID:   requestID,
 		TaskType:    taskType,
 		Provider:    providerSuno,
 		InputParams: raw,
+		APIKeyID:    apiKeyID,
 	}, nil
 }
 

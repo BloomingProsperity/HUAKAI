@@ -3,9 +3,68 @@ package main
 import (
 	"context"
 
+	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
+	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulecatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 )
+
+type moduleEndpointState struct {
+	name     string
+	injected bool
+	active   bool
+}
+
+func moduleBool(value bool) *bool { return &value }
+
+func moduleInt(value int) *int { return &value }
+
+func moduleEndpoint(name string, available bool) moduleEndpointState {
+	return moduleEndpointState{name: name, injected: available, active: available}
+}
+
+func moduleActivation(constructed bool, backend string, sharedSafe bool, endpoints ...moduleEndpointState) *moduleregistry.ActivationSnapshot {
+	injected := false
+	active := false
+	projected := make([]moduleregistry.ActivationEndpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		injected = injected || endpoint.injected
+		active = active || endpoint.active
+		projected = append(projected, moduleregistry.ActivationEndpoint{
+			Name: endpoint.name, Injected: moduleBool(endpoint.injected), Active: moduleBool(endpoint.active),
+		})
+	}
+	return &moduleregistry.ActivationSnapshot{
+		Declared: moduleBool(true), Constructed: moduleBool(constructed), Injected: moduleBool(injected),
+		Active: moduleBool(active), SharedSafe: moduleBool(sharedSafe), Observable: moduleBool(true),
+		Backend: backend, Endpoints: projected,
+	}
+}
+
+func sharedGatewayEndpoints(active bool) []moduleEndpointState {
+	return []moduleEndpointState{
+		moduleEndpoint("chat", active), moduleEndpoint("completions", active),
+		moduleEndpoint("embeddings", active), moduleEndpoint("rerank", active),
+		moduleEndpoint("images", active), moduleEndpoint("audio", active),
+		moduleEndpoint("gemini", active), moduleEndpoint("video", active),
+	}
+}
+
+func selectorActivation(d *deps) *moduleregistry.ActivationSnapshot {
+	available := d.selector != nil
+	snapshot := moduleActivation(available, "postgresql", true, sharedGatewayEndpoints(available)...)
+	if d.selectorConfig == nil {
+		return snapshot
+	}
+	snapshot.Mode = string(d.selectorConfig.Mode)
+	switch d.selectorConfig.Mode {
+	case runtimeconfig.PoolSelectorModeCanary:
+		snapshot.TrafficPercent = moduleInt(d.selectorConfig.CanaryPercent)
+	case runtimeconfig.PoolSelectorModeShadow:
+		snapshot.TrafficPercent = moduleInt(d.selectorConfig.ShadowPercent)
+	}
+	return snapshot
+}
 
 // buildModuleRegistry 构建运行时的模块知识脊柱,并用 WAVE H2 的三个高价值域
 // 给它播种:billing/money-path 服务、routing selector,以及
@@ -44,6 +103,8 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"pre-flight claim gate (Tx1)",
 			"quota reservation",
 		},
+		Activation: moduleActivation(settler != nil && claimGate != nil && reserver != nil, "postgresql", true,
+			sharedGatewayEndpoints(settler != nil && claimGate != nil && reserver != nil)...),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if settler == nil || claimGate == nil || reserver == nil {
 				return moduleregistry.ProbeResult{
@@ -65,6 +126,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"score-based account selection",
 			"locality + headroom blending",
 		},
+		Activation: selectorActivation(d),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if selector == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "selector unwired"}
@@ -109,6 +171,16 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"adaptive cooldown + lazy ramp recovery",
 			"pool gate flow admission",
 		},
+		Activation: func() *moduleregistry.ActivationSnapshot {
+			available := channelHealth != nil && selector != nil
+			backend := "postgresql"
+			sharedSafe := true
+			if d.authCooldown != nil {
+				backend = "mixed"
+				sharedSafe = false
+			}
+			return moduleActivation(channelHealth != nil, backend, sharedSafe, sharedGatewayEndpoints(available)...)
+		}(),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if channelHealth == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "channel-health service unwired"}
@@ -117,9 +189,28 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	queueWaiter := d.queueWaiter
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID: "queue.wait", Category: "routing", Title: "Queue wait admission",
+		Capabilities: []string{"request queue waiting before dispatch", "chat admission smoothing"},
+		Activation: moduleActivation(true, "local", false,
+			moduleEndpointState{name: "chat", injected: queueWaiter != nil, active: true},
+			moduleEndpoint("completions", false), moduleEndpoint("embeddings", false),
+			moduleEndpoint("rerank", false), moduleEndpoint("images", false),
+			moduleEndpoint("audio", false), moduleEndpoint("gemini", false),
+			moduleEndpoint("video", false)),
+		HealthProbe: func(context.Context) moduleregistry.ProbeResult {
+			if queueWaiter == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "handler default"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	// ── reliability: 死信队列 / 重放 ──────────────────────────────────────────
 	// Probe: dlq 重放服务接线即 wired。只报 wired/degraded,不含任何队列内容。
 	dlqService := d.dlqService
+	settlementRecoveryReady := dlqService != nil && dlqService.HasHandler(legacydlq.EventKindPostDeliverySettlement)
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID:       "dlq.service",
 		Category: "reliability",
@@ -137,6 +228,25 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 		},
 	})
 
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID: "settlement.recovery", Category: "reliability", Title: "Post-delivery settlement recovery",
+		Capabilities: []string{"durable settlement intent", "idempotent operator-visible replay"},
+		Activation: moduleActivation(settlementRecoveryReady, "postgresql", true,
+			moduleEndpoint("chat", settlementRecoveryReady),
+			moduleEndpoint("completions", settlementRecoveryReady),
+			moduleEndpoint("embeddings", settlementRecoveryReady),
+			moduleEndpoint("rerank", settlementRecoveryReady),
+			moduleEndpoint("images", settlementRecoveryReady),
+			moduleEndpoint("audio", settlementRecoveryReady),
+			moduleEndpoint("gemini", settlementRecoveryReady)),
+		HealthProbe: func(context.Context) moduleregistry.ProbeResult {
+			if !settlementRecoveryReady {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "settlement recovery handler unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
 	// ── registry: 模型注册表 / 模型→池绑定解析(路由栈第 1 层)──────────────────
 	// Probe: 注册表接线即 wired。只报 wired/degraded,不含任何模型/租户配置明细。
 	modelRegistry := d.modelRegistry
@@ -149,9 +259,29 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			"model → pool-group binding resolution",
 			"capability graph projection",
 		},
+		Activation: moduleActivation(modelRegistry != nil, "postgresql", true,
+			sharedGatewayEndpoints(modelRegistry != nil)...),
 		HealthProbe: func(ctx context.Context) moduleregistry.ProbeResult {
 			if modelRegistry == nil {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "model registry unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	responseCache := d.responseCache
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID: "response.cache", Category: "performance", Title: "Non-stream response cache",
+		Capabilities: []string{"non-stream response reuse", "tenant-scoped cache control"},
+		Activation: moduleActivation(responseCache != nil, "local", false,
+			moduleEndpoint("chat", responseCache != nil),
+			moduleEndpoint("completions", false), moduleEndpoint("embeddings", false),
+			moduleEndpoint("rerank", false), moduleEndpoint("images", false),
+			moduleEndpoint("audio", false), moduleEndpoint("gemini", false),
+			moduleEndpoint("video", false)),
+		HealthProbe: func(context.Context) moduleregistry.ProbeResult {
+			if responseCache == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "response cache disabled"}
 			}
 			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
 		},
@@ -339,7 +469,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 
 // seedCatalogJoin 把每个已播种的 live-module ID 映射到它应被补充的
 // feature-tree catalog 包短名。不在此 map 中的 ID 被视为 live-only
-//(无静态叠加层),因此脊柱绝不会为未映射的模块凭空捏造一条 catalog 记录。
+// (无静态叠加层),因此脊柱绝不会为未映射的模块凭空捏造一条 catalog 记录。
 var seedCatalogJoin = map[string]string{
 	"billing.service":       "billing",
 	"routing.selector":      "pool",

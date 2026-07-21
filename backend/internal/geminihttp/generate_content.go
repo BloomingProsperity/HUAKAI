@@ -186,6 +186,10 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
+	if !hasCountTokensModelCapability(resolved.Capabilities) {
+		writeJSONError(w, http.StatusNotFound, "model_not_available", "model does not support countTokens")
+		return
+	}
 	plan, ok := relay.planRoute(w, ctx, requestID, model, ident, resolved)
 	if !ok {
 		return
@@ -327,6 +331,7 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return router.RoutePlan{}, false
 	}
+	requireCountTokensCapability(&plan)
 	_ = model
 	return plan, true
 }
@@ -339,6 +344,7 @@ func (relay *countTokensRelay) selectAccount(ctx context.Context, requestID stri
 		APIKeyID:             ident.APIKeyID,
 		PoolGroupID:          attempt.PoolGroupID,
 		RequestedModel:       model,
+		ProviderModelID:      upstreamModelID,
 		ModelCooldownKey:     upstreamModelID,
 		ProtocolFamily:       resolved.ProtocolFamily,
 		EndpointFamily:       "gemini_count_tokens",

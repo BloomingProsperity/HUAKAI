@@ -17,7 +17,7 @@ import (
 
 func TestSunoSubmitTranslate(t *testing.T) {
 	// 变异:翻译请求时把 mv 丢掉;下面的保留性断言必然变红,因为 VPARM-004 的调用方依赖它。
-	body := `{"prompt":"write a synthpop chorus","mv":"chirp-v4","title":"Night Relay"}`
+	body := `{"api_key_id":82,"prompt":"write a synthpop chorus","mv":"chirp-v4","title":"Night Relay"}`
 	service := &serviceStub{submitResult: taskFixture(501, "suno_generate", json.RawMessage(body))}
 	mux := mountWithSession(service)
 	rec := httptest.NewRecorder()
@@ -38,6 +38,9 @@ func TestSunoSubmitTranslate(t *testing.T) {
 	}
 	if call.input.Provider != "suno" || call.input.TaskType != "suno_generate" {
 		t.Fatalf("submit provider/task=%q/%q want suno/suno_generate", call.input.Provider, call.input.TaskType)
+	}
+	if call.input.APIKeyID != 82 {
+		t.Fatalf("submit api_key_id=%d want 82", call.input.APIKeyID)
 	}
 	params := decodeParams(t, call.input.InputParams)
 	if params["prompt"] != "write a synthpop chorus" || params["mv"] != "chirp-v4" || params["title"] != "Night Relay" {

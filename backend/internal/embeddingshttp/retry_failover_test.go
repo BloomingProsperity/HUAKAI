@@ -212,8 +212,8 @@ func TestEmbeddings401UsesSingleAuthFailoverBeyondAttemptBudget(t *testing.T) {
 	if len(selector.requests) != 2 || len(dispatcher.accounts) != 2 || len(claims.reserves) != 2 {
 		t.Fatalf("selector/dispatcher/reserve calls=%d/%d/%d want 2/2/2", len(selector.requests), len(dispatcher.accounts), len(claims.reserves))
 	}
-	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_auth_failure" {
-		t.Fatalf("aborts=%+v want one upstream_auth_failure", claims.aborts)
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_credential_rejected" {
+		t.Fatalf("aborts=%+v，期望一次 upstream_credential_rejected", claims.aborts)
 	}
 }
 

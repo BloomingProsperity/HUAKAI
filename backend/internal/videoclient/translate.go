@@ -18,6 +18,8 @@ const (
 type Request struct {
 	RequestID      string          `json:"request_id,omitempty"`
 	RequestIDAlias string          `json:"requestId,omitempty"`
+	APIKeyID       int64           `json:"api_key_id,omitempty"`
+	APIKeyIDAlias  int64           `json:"apiKeyId,omitempty"`
 	Model          string          `json:"model,omitempty"`
 	Prompt         string          `json:"prompt,omitempty"`
 	Image          json.RawMessage `json:"image,omitempty"`
@@ -46,11 +48,16 @@ func translateSubmit(raw json.RawMessage) (mediatask.SubmitInput, error) {
 	if requestID == "" {
 		requestID = "video-" + uuid.NewString()
 	}
+	apiKeyID, err := mediatask.ResolveAPIKeySelection(req.APIKeyID, req.APIKeyIDAlias)
+	if err != nil {
+		return mediatask.SubmitInput{}, err
+	}
 	return mediatask.SubmitInput{
 		RequestID:   requestID,
 		TaskType:    taskTypeVideo,
 		Provider:    providerVideo,
 		InputParams: raw,
+		APIKeyID:    apiKeyID,
 	}, nil
 }
 

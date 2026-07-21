@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -47,6 +48,7 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping smoke test")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer setupCancel()
 
@@ -109,6 +111,7 @@ func TestPhaseC_Smoke_ChatCompletions(t *testing.T) {
 
 	// 断言 PG 状态。必须查出种入租户的 claim 行。
 	checkPGState(t, ctx, pgPool, seed)
+	checkMixedProviderPool(t, ctx, pgPool, addr, seed)
 }
 
 type smokeSeed struct {
@@ -125,7 +128,19 @@ type smokeSeed struct {
 	aliasID int64
 	// Phase L0 最小集:在种数据时生成的明文 bearer;
 	// 与存储在 api_keys.key_hash 中的 bcrypt 哈希进行匹配。
-	bearer string
+	bearer         string
+	mixed          []smokeMixedFamily
+	pricingVersion string
+}
+
+type smokeMixedFamily struct {
+	name          string
+	alias         string
+	providerModel string
+	protocol      string
+	vendor        string
+	authMode      string
+	accountID     int64
 }
 
 func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *smokeSeed {
@@ -181,6 +196,14 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 		c := context.Background()
 		if err := cleanupSmokeGraph(c, pgPool, s.tenantID); err != nil {
 			t.Errorf("清理冒烟测试账号图: %v", err)
+		}
+		if s.pricingVersion != "" {
+			if _, err := pgPool.Exec(c,
+				`DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`,
+				s.pricingVersion,
+			); err != nil {
+				t.Errorf("清理冒烟测试价格版本: %v", err)
+			}
 		}
 	})
 
@@ -272,7 +295,125 @@ func seedSmokeGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool) *sm
 	); err != nil {
 		t.Fatalf("seed model_registry_snapshots: %v", err)
 	}
+	s.mixed = append(s.mixed, smokeMixedFamily{
+		name: "GPT", alias: "gpt-4.1-mini", providerModel: "gpt-4.1-mini",
+		protocol: "openai_chat", vendor: "openai", authMode: "api_key", accountID: s.providerAccountID,
+	})
+	for _, family := range []smokeMixedFamily{
+		{name: "Claude", alias: "mixed-claude", providerModel: "claude-mock", protocol: "anthropic_messages", vendor: "anthropic", authMode: "api_key"},
+		{name: "Gemini", alias: "mixed-gemini", providerModel: "gemini-mock", protocol: "gemini_messages", vendor: "gemini", authMode: "aistudio_api_key"},
+		{name: "Kimi", alias: "mixed-kimi", providerModel: "kimi-mock", protocol: "kimi_chat", vendor: "kimi", authMode: "api_key"},
+		{name: "Grok", alias: "mixed-grok", providerModel: "grok-mock", protocol: "grok_chat", vendor: "grok", authMode: "api_key"},
+	} {
+		family.accountID = seedSmokeMixedFamily(t, ctx, pgPool, s, unique, family)
+		s.mixed = append(s.mixed, family)
+	}
+	seedSmokePricing(t, ctx, pgPool, s, unique)
 	return s
+}
+
+func seedSmokePricing(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *smokeSeed, unique string) {
+	t.Helper()
+	providers := make(map[string]any, len(seed.mixed))
+	for _, family := range seed.mixed {
+		models := map[string]any{
+			family.alias: map[string]string{
+				"input_micro_usd": "1", "output_micro_usd": "2", "cache_read_micro_usd": "1",
+			},
+		}
+		if family.providerModel != family.alias {
+			models[family.providerModel] = map[string]string{
+				"input_micro_usd": "1", "output_micro_usd": "2", "cache_read_micro_usd": "1",
+			}
+		}
+		providers[family.vendor] = map[string]any{"models": models}
+	}
+	pricingData, err := json.Marshal(map[string]any{"providers": providers})
+	if err != nil {
+		t.Fatalf("编码混合池价格快照: %v", err)
+	}
+	seed.pricingVersion = "smoke-mixed-" + unique
+	if _, err := pgPool.Exec(ctx, `
+INSERT INTO tenants (id, name, status, created_at, updated_at)
+VALUES (0, 'public-pricing', 'active', now(), now())
+ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("种入公共价格租户: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx, `
+INSERT INTO billing_pricing_versions (
+    tenant_id, version, pricing_data, effective_from, created_by_actor, is_public
+) VALUES (0,$1,$2::jsonb,now(),'smoke:mixed-provider-pool',true)`,
+		seed.pricingVersion, string(pricingData),
+	); err != nil {
+		t.Fatalf("种入混合池价格版本: %v", err)
+	}
+}
+
+func seedSmokeMixedFamily(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *smokeSeed, unique string, family smokeMixedFamily) int64 {
+	t.Helper()
+	var providerID, channelID, accountID, modelID int64
+	if err := pgPool.QueryRow(ctx, `
+INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+VALUES ($1,$2,$3,$4) RETURNING id`,
+		seed.tenantID, "smoke-"+family.vendor+"-"+unique, family.name+" smoke", family.protocol,
+	).Scan(&providerID); err != nil {
+		t.Fatalf("种入 %s provider: %v", family.name, err)
+	}
+	if err := pgPool.QueryRow(ctx, `
+INSERT INTO channels (tenant_id, pool_group_id, name)
+VALUES ($1,$2,$3) RETURNING id`,
+		seed.tenantID, seed.poolGroupID, "smoke-"+family.vendor+"-"+unique,
+	).Scan(&channelID); err != nil {
+		t.Fatalf("种入 %s channel: %v", family.name, err)
+	}
+	if err := pgPool.QueryRow(ctx, `
+INSERT INTO provider_accounts (
+    tenant_id, provider_id, channel_id, name, account_type, cap_concurrency,
+    in_flight_count, health_state, credential_state, capability_flags, model_allow_list
+) VALUES ($1,$2,$3,$4,'api_key',4,0,'healthy','valid',ARRAY['stream'],ARRAY[$5])
+RETURNING id`, seed.tenantID, providerID, channelID, "smoke-"+family.vendor+"-account-"+unique, family.providerModel,
+	).Scan(&accountID); err != nil {
+		t.Fatalf("种入 %s account: %v", family.name, err)
+	}
+	keyProvider, err := credentialstore.NewStaticKeyProvider("local-v1", make([]byte, 32))
+	if err != nil {
+		t.Fatalf("创建 %s 测试密钥提供器: %v", family.name, err)
+	}
+	payload := []byte(fmt.Sprintf(`{"api_key":"%s-test-secret"}`, family.vendor))
+	envelope, err := credentialstore.NewCipher(keyProvider).Encrypt(ctx, payload, credentialstore.AAD{
+		TenantID: seed.tenantID, ProviderAccountID: accountID, Vendor: family.vendor, AuthMode: family.authMode, Version: 1,
+	})
+	if err != nil {
+		t.Fatalf("加密 %s credential: %v", family.name, err)
+	}
+	if _, err := pgPool.Exec(ctx, `
+INSERT INTO account_credentials (
+    tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
+    encrypted_payload, encryption_scheme, key_id, nonce, aad_hash
+) VALUES ($1,$2,$3,$4,'active',1,$5,'aes-256-gcm',$6,$7,$8)`,
+		seed.tenantID, accountID, family.vendor, family.authMode,
+		envelope.Ciphertext, envelope.KeyID, envelope.Nonce, envelope.AADHash,
+	); err != nil {
+		t.Fatalf("种入 %s credential: %v", family.name, err)
+	}
+	if err := pgPool.QueryRow(ctx, `
+INSERT INTO models (tenant_id, scope, canonical_id, protocol_family, default_provider_model_id, default_context_window, status)
+VALUES ($1,'tenant',$2,$3,$4,128000,'active') RETURNING id`,
+		seed.tenantID, "smoke-"+family.vendor+"-canonical-"+unique, family.protocol, family.providerModel,
+	).Scan(&modelID); err != nil {
+		t.Fatalf("种入 %s model: %v", family.name, err)
+	}
+	if _, err := pgPool.Exec(ctx, `
+INSERT INTO model_aliases (tenant_id, scope, model_id, public_alias_normalized, public_alias_display, status)
+VALUES ($1,'tenant',$2,$3,$3,'active')`, seed.tenantID, modelID, family.alias); err != nil {
+		t.Fatalf("种入 %s alias: %v", family.name, err)
+	}
+	if _, err := pgPool.Exec(ctx, `
+INSERT INTO model_pool_bindings (tenant_id, model_id, pool_group_id, priority, weight, enabled)
+VALUES ($1,$2,$3,100,1,true)`, seed.tenantID, modelID, seed.poolGroupID); err != nil {
+		t.Fatalf("种入 %s binding: %v", family.name, err)
+	}
+	return accountID
 }
 
 func cleanupSmokeGraph(ctx context.Context, pgPool *pgxpool.Pool, tenantID int64) error {
@@ -395,6 +536,7 @@ func startGateway(t *testing.T, _ context.Context, binPath, dsn, addr string, se
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_TRANSPORT_SIDECAR_SOCKET="+socketPath,
+		"HUAKAI_BILLING_POLICY_VERSION="+seed.pricingVersion,
 		// 开发用 mock 上游:伪造上游的 SSE,使整个循环无需真实的
 		// 上游/网络即可运行(替代 Phase E 之前内置的 mock)。
 		"HUAKAI_DEV_MOCK_UPSTREAM=true",
@@ -517,5 +659,77 @@ func checkPGState(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed 
 	}
 	if !bytes.Contains([]byte(*snapshot), []byte(";router:")) {
 		t.Fatalf("PG check 6: snapshot_version = %q; want concatenated router stamp", *snapshot)
+	}
+}
+
+func checkMixedProviderPool(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, addr string, seed *smokeSeed) {
+	t.Helper()
+	for _, family := range seed.mixed {
+		family := family
+		t.Run("同池-"+family.name, func(t *testing.T) {
+			logicalID := "smoke-mixed-" + family.vendor + "-" + uuid.NewString()
+			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"stream":true}`, family.alias)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				"http://"+addr+"/v1/chat/completions", bytes.NewBufferString(body))
+			if err != nil {
+				t.Fatalf("构造 %s 请求: %v", family.name, err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+seed.bearer)
+			req.Header.Set("Idempotency-Key", logicalID)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("调用 %s: %v", family.name, err)
+			}
+			raw, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("读取 %s 响应: %v", family.name, readErr)
+			}
+			if resp.StatusCode != http.StatusOK || !bytes.Contains(raw, []byte("data:")) {
+				t.Fatalf("%s status=%d body=%s want 200 SSE", family.name, resp.StatusCode, raw)
+			}
+
+			var claimID, gotAPIKeyID, gotUserID, gotAccountID, gotPoolGroupID int64
+			var claimStatus, gotRequestedModel string
+			if err := pgPool.QueryRow(ctx, `
+SELECT id, status, api_key_id, user_id, provider_account_id, pooling_group_id, requested_model
+FROM billing_ledger_claims
+WHERE tenant_id=$1 AND logical_request_id=$2`, seed.tenantID, logicalID,
+			).Scan(&claimID, &claimStatus, &gotAPIKeyID, &gotUserID, &gotAccountID, &gotPoolGroupID, &gotRequestedModel); err != nil {
+				t.Fatalf("读取 %s claim: %v", family.name, err)
+			}
+			if claimStatus != "committed" || gotAPIKeyID != seed.apiKeyID || gotUserID != seed.userID ||
+				gotAccountID != family.accountID || gotPoolGroupID != seed.poolGroupID || gotRequestedModel != family.alias {
+				t.Fatalf("%s claim 归属错误: status=%s key=%d user=%d account=%d pool=%d model=%q",
+					family.name, claimStatus, gotAPIKeyID, gotUserID, gotAccountID, gotPoolGroupID, gotRequestedModel)
+			}
+
+			var usageAccountID, usageAPIKeyID, usageUserID int64
+			var usageRequestedModel, usageUpstreamModel string
+			if err := pgPool.QueryRow(ctx, `
+SELECT provider_account_id, api_key_id, user_id, requested_model, upstream_model
+FROM usage_records
+WHERE tenant_id=$1 AND claim_id=$2`, seed.tenantID, claimID,
+			).Scan(&usageAccountID, &usageAPIKeyID, &usageUserID, &usageRequestedModel, &usageUpstreamModel); err != nil {
+				t.Fatalf("读取 %s usage: %v", family.name, err)
+			}
+			if usageAccountID != family.accountID || usageAPIKeyID != seed.apiKeyID || usageUserID != seed.userID ||
+				usageRequestedModel != family.alias || usageUpstreamModel != family.providerModel {
+				t.Fatalf("%s usage 归属错误: account=%d key=%d user=%d requested=%q upstream=%q",
+					family.name, usageAccountID, usageAPIKeyID, usageUserID, usageRequestedModel, usageUpstreamModel)
+			}
+			var released int
+			if err := pgPool.QueryRow(ctx, `
+SELECT count(*) FROM pool_slot_acquisitions
+WHERE tenant_id=$1 AND claim_id=$2 AND provider_account_id=$3 AND status='released_success'`,
+				seed.tenantID, claimID, family.accountID,
+			).Scan(&released); err != nil {
+				t.Fatalf("读取 %s 槽位: %v", family.name, err)
+			}
+			if released != 1 {
+				t.Fatalf("%s released_success=%d want 1", family.name, released)
+			}
+		})
 	}
 }

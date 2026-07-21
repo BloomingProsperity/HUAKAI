@@ -48,6 +48,13 @@ func AuthFailureClassFromClassification(c Classification) authcooldown.FailureCl
 		if c.RuleID == "R-001" {
 			return authcooldown.ClassIronClad
 		}
+	case ErrorClassCredentialRejected:
+		// 静态凭据没有刷新动作。只有明确撤销或坏 Key 机器证据才允许硬禁；
+		// 裸 401 仍按歧义信号短暂移出选号。
+		switch c.RuleID {
+		case "R-001", "R-004", "R-006", "R-024", "R-025":
+			return authcooldown.ClassIronClad
+		}
 	}
 	return authcooldown.ClassAmbiguous
 }
@@ -63,7 +70,7 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 		return channelhealth.SignalUpstream5xx
 	case ErrorClassNetworkTimeout, ErrorClassUpstreamTimeout:
 		return channelhealth.SignalTimeout
-	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant:
+	case ErrorClassTokenRevoked, ErrorClassOAuthInvalidGrant, ErrorClassCredentialRejected:
 		return channelhealth.SignalAuthChallenge
 	case ErrorClassProjectContextRejected:
 		return channelhealth.SignalAuthChallenge
@@ -104,6 +111,7 @@ type ErrorClass string
 const (
 	ErrorClassOAuthInvalidGrant      ErrorClass = "oauth_invalid_grant"
 	ErrorClassTokenRevoked           ErrorClass = "token_revoked"
+	ErrorClassCredentialRejected     ErrorClass = "credential_rejected"
 	ErrorClassKYCRequired            ErrorClass = "kyc_required"
 	ErrorClassOrgDisabled            ErrorClass = "org_disabled"
 	ErrorClassWorkspaceDeactivated   ErrorClass = "workspace_deactivated"

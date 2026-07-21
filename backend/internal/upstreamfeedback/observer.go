@@ -209,7 +209,7 @@ func logResultForStatus(statusCode int) logcontract.Result {
 
 func logErrorClass(classification gateway.Classification) logcontract.ErrorClass {
 	switch classification.Class {
-	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked:
+	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked, gateway.ErrorClassCredentialRejected:
 		return logcontract.ErrorAuthentication
 	case gateway.ErrorClassRateLimited:
 		return logcontract.ErrorRateLimit
@@ -237,10 +237,30 @@ func classifyHTTPError(attempt Attempt, statusCode int, headers http.Header, bod
 			AbortReason:  "upstream_error",
 		}
 	}
+	applyCredentialAuthSemantics(attempt.Account, &decision, &classification)
 	if mapped, ok := attempt.StatusCodeMapping[statusCode]; ok && mapped >= 400 && mapped <= 599 {
 		decision.ClientStatus = mapped
 	}
 	return HTTPFailure{Decision: decision, Classification: classification}, err
+}
+
+// applyCredentialAuthSemantics 把状态码分类和实际账号凭据合同合并。静态 Key、
+// 长效 Token 与签名凭据被上游拒绝时仍须换号和进入鉴权降级车道，但绝不能
+// 伪装成 OAuth invalid_grant，也不能启动无意义的 OAuth 热刷新。
+func applyCredentialAuthSemantics(account provider.AccountInfo, decision *gateway.AttemptRetryDecision, classification *gateway.Classification) {
+	if decision == nil || classification == nil || decision.RefreshIntent != gateway.RefreshOAuthHotPath {
+		return
+	}
+	handler, ok := credentialstore.DefaultHandlerRegistry().Lookup(account.Platform, account.AccountType)
+	if !ok || handler.Refreshable() {
+		return
+	}
+	switch classification.Class {
+	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked:
+		classification.Class = gateway.ErrorClassCredentialRejected
+		decision.RefreshIntent = gateway.RefreshNone
+		decision.AbortReason = "upstream_credential_rejected"
+	}
 }
 
 // ApplyClientProjection 只把账号规则允许覆盖的三个客户端字段写入 attempt 决策。

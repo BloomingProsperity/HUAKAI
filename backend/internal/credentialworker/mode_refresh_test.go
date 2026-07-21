@@ -557,6 +557,43 @@ func TestDefaultModeAdapterRegistryGeminiOAuthUsesOperatorConfigAndRefreshesSess
 	}
 }
 
+func TestGeminiBuiltinModeRefreshUsesPublicProfileWhenOperatorConfigIsEmpty(t *testing.T) {
+	t.Setenv(credentialacq.GeminiPublicCLISecretEnv, " ")
+	approved := credentialacq.GeminiPublicCLIConfig()
+	var gotClientID, gotClientSecret string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("读取刷新请求：%v", err)
+		}
+		form, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("解析刷新请求：%v", err)
+		}
+		gotClientID = form.Get("client_id")
+		gotClientSecret = form.Get("client_secret")
+		return jsonResponse(`{"access_token":"new-access","expires_in":3600,"token_type":"Bearer"}`), nil
+	})}
+
+	adapter := newGeminiBuiltinClientOAuthModeAdapter("code_assist")
+	adapter.adapter.HTTPClient = client
+	adapter.loadConfig = func() (*appconfig.Config, error) {
+		return &appconfig.Config{VendorOAuth: appconfig.VendorOAuthConfigs{}}, nil
+	}
+	_, err := adapter.RefreshCredential(context.Background(), ModeRefreshInput{
+		ProviderAccountID: 96,
+		Vendor:            credentialstore.VendorGemini,
+		AuthMode:          credentialstore.AuthModeCodeAssist,
+		Payload:           []byte(`{"access_token":"old","refresh_token":"refresh-old"}`),
+	})
+	if err != nil {
+		t.Fatalf("使用内置公开 profile 刷新失败：%v", err)
+	}
+	if gotClientID != approved.ClientID || gotClientSecret != approved.ClientSecret {
+		t.Fatal("刷新请求未使用完整的固定公开 profile")
+	}
+}
+
 type modeProjectResolverStub struct {
 	projectID string
 	calls     int

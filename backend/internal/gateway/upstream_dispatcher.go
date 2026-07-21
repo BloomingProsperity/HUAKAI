@@ -43,12 +43,17 @@ type AdapterRegistry interface {
 
 // DispatchInput 是 Dispatch 的入参。
 type DispatchInput struct {
+	// HTTPMethod 可选覆盖支持该能力的 adapter 默认方法；空值保持默认 POST。
+	HTTPMethod string
 	// ProtocolFamily 决定选哪个 adapter。
 	ProtocolFamily string
 	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持既有
 	// protocol family 默认 endpoint；/v1/embeddings 等 OpenAI-compatible
 	// passthrough 端点可在不新增 protocol family 的情况下指定。
 	EndpointPath string
+	// EndpointQuery 是内部生成的结构化查询串，不接受客户端原始 query。
+	// 账号级目录分页等控制面请求用它保持 path 与 query 的边界。
+	EndpointQuery string
 	// UpstreamModelID 上游真实 model id（registry 解析后）。
 	UpstreamModelID string
 	// InboundBody 客户原始请求 body 字节。
@@ -59,6 +64,9 @@ type DispatchInput struct {
 	// InboundContentType 是入口请求 Content-Type。空值保持 adapter 默认；
 	// multipart audio 透传时必须带原 boundary。
 	InboundContentType string
+	// IdempotencyKey 是网关自身为可重试的上游创建操作生成的稳定幂等键。
+	// 它不是客户端任意请求头透传；只有明确需要的内部调用方才能设置。
+	IdempotencyKey string
 	// InboundBetaTokens 客户端 anthropic-beta 请求头解析出的 token 列表
 	// (provider.ParseInboundBetaTokens 产出),原样穿给 provider.BuildInput;
 	// 仅 anthropic 族 adapter 消费,其余族忽略。
@@ -169,7 +177,8 @@ func dispatchTransportMode(providerCode transport.ProviderCode, accountType stri
 		return transport.TransportModeMimicryWindsurf
 	case transport.ProviderAnthropic:
 		switch strings.ToLower(strings.TrimSpace(accountType)) {
-		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode:
+		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode,
+			credentialstore.AuthModeClaudeSetupToken:
 			return transport.TransportModeMimicryClaudeCode
 		}
 	}
@@ -245,12 +254,14 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 
 	// 2. 构造出站请求
 	req, err := adapter.BuildRequest(ctx, provider.BuildInput{
+		HTTPMethod:         in.HTTPMethod,
 		UpstreamModelID:    in.UpstreamModelID,
 		InboundBody:        in.InboundBody,
 		InboundContentType: in.InboundContentType,
 		Credential:         in.Credential,
 		Account:            in.Account,
 		EndpointPath:       in.EndpointPath,
+		EndpointQuery:      in.EndpointQuery,
 		InboundBetaTokens:  in.InboundBetaTokens,
 		ClientStreamIntent: in.ClientStreamIntent,
 	})
@@ -259,6 +270,12 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
 		return nil, err
+	}
+	if key := strings.TrimSpace(in.IdempotencyKey); key != "" {
+		if err := validateOutboundIdempotencyKey(key); err != nil {
+			return nil, err
+		}
+		req.Header.Set("Idempotency-Key", key)
 	}
 	headerfirewall.StripHopByHopRequestHeaders(req.Header)
 	headerfirewall.NormalizeEgressRequestHeaders(req.Header)
@@ -301,6 +318,18 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		Headers:        resp.Header,
 		Close:          resp.Body.Close,
 	}, nil
+}
+
+func validateOutboundIdempotencyKey(key string) error {
+	if len(key) > 256 {
+		return errors.New("dispatcher: Idempotency-Key 超过 256 字节")
+	}
+	for index := 0; index < len(key); index++ {
+		if key[index] < 0x21 || key[index] > 0x7e {
+			return errors.New("dispatcher: Idempotency-Key 含非法字符")
+		}
+	}
+	return nil
 }
 
 func (d *UpstreamDispatcher) httpClientForRoundTripper(rt http.RoundTripper, nonStreaming bool) *http.Client {

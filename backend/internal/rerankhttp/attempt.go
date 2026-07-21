@@ -20,6 +20,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallb
 		APIKeyID:             ex.ident.APIKeyID,
 		PoolGroupID:          ex.attempt.PoolGroupID,
 		RequestedModel:       ex.req.Model,
+		ProviderModelID:      ex.upstreamModelID,
 		ModelCooldownKey:     ex.upstreamModelID,
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		EndpointFamily:       endpointFamilyRerank,
@@ -163,18 +164,20 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	// 上游 2xx 已交付即记健康成功(本函数只在 2xx 调用),独立于下方结算成败——
 	// 结算是计费关注点,不应决定账号健康信号(与 codex 语义一致)。
 	ex.observeSuccess(res)
-	sbctx, scancel := ex.billingCtx()
-	defer scancel()
-	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(ex.costSnapshot, attemptSeq)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
-		return false
-	}
+	settleReq := ex.settleRequest(ex.costSnapshot, attemptSeq)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	if writeErr != nil || written < len(raw) {
+		_ = ex.abortWithError(w, "client_response_write_error", int64(ex.inputEstimate))
+		return false
+	}
+	_ = http.NewResponseController(w).Flush()
+	sbctx, scancel := ex.billingCtx()
+	defer scancel()
+	_ = ex.settleDeliveredResponse(sbctx, settleReq)
 	return true
 }
 

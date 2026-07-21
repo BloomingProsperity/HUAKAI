@@ -26,3 +26,32 @@ func TestRouterResolvedModelPassesBindingFallbackMetadata(t *testing.T) {
 		t.Fatalf("PoolMetadata=%+v，期望 [%+v]", got.PoolMetadata, want)
 	}
 }
+
+func TestRequireEmbeddingsCapabilityCoversPrimaryAndFallbackAttempts(t *testing.T) {
+	plan := router.RoutePlan{
+		Attempts: []router.AttemptPlan{{RequiredCapabilities: []string{"json"}}},
+		FallbackPhases: []router.FallbackPhasePlan{{
+			Attempts: []router.AttemptPlan{{RequiredCapabilities: []string{embeddingsCapability}}},
+		}},
+	}
+
+	requireEmbeddingsCapability(&plan)
+
+	if got := plan.Attempts[0].RequiredCapabilities; len(got) != 2 || got[0] != "json" || got[1] != embeddingsCapability {
+		t.Fatalf("主路能力=%v，期望保留 json 并追加 %s", got, embeddingsCapability)
+	}
+	if got := plan.FallbackPhases[0].Attempts[0].RequiredCapabilities; len(got) != 1 || got[0] != embeddingsCapability {
+		t.Fatalf("降级路能力=%v，期望去重后的 [%s]", got, embeddingsCapability)
+	}
+}
+
+func TestEmbeddingsModelCapabilityAcceptsNativeGeminiMethods(t *testing.T) {
+	for _, capabilities := range [][]string{nil, {embeddingsCapability}, {"embedContent"}, {"batchEmbedContents"}} {
+		if !hasEmbeddingsModelCapability(capabilities) {
+			t.Fatalf("能力=%v 应允许进入 embeddings 链路", capabilities)
+		}
+	}
+	if hasEmbeddingsModelCapability([]string{"chat", "tools"}) {
+		t.Fatal("明确只有聊天能力的模型不得进入 embeddings 链路")
+	}
+}

@@ -36,9 +36,12 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 	if s == nil || s.q == nil {
 		return nil, fmt.Errorf("pool: DBAccountSource not configured")
 	}
-	// 必须把 req.RequestedModel + req.CapabilityFlags
-	// 透传到 SQL 端做 model_allow_list / capability_flags 过滤, 否则 production
-	// gate AllowAll 全过, 出现 "选到明确不支持该 model 的 account" 误派发。
+	// 账号白名单和额度事实描述的是最终发往上游的模型名，不能拿客户端公开别名
+	// 过滤；公开别名仍由 RequestedModel 承担 sticky 与租户路由策略语义。
+	providerModelID := strings.TrimSpace(req.ProviderModelID)
+	if providerModelID == "" {
+		providerModelID = req.RequestedModel
+	}
 	required := req.CapabilityFlags
 	if required == nil {
 		required = []string{}
@@ -46,7 +49,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 	rows, err := s.q.ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
 		TenantID:                req.TenantID,
 		PoolGroupID:             req.PoolGroupID,
-		RequestedModel:          req.RequestedModel,
+		RequestedModel:          providerModelID,
 		RequestedProtocolFamily: req.ProtocolFamily,
 		RequiredCapabilities:    required,
 	})

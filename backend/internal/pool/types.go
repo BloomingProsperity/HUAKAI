@@ -7,6 +7,13 @@ import (
 type Selector = router.Selector
 type SelectionRequest = router.SelectionRequest
 type SelectionResult = router.SelectionResult
+type RateAccountingScope = router.RateAccountingScope
+
+const (
+	RateAccountingAll         = router.RateAccountingAll
+	RateAccountingLogicalOnly = router.RateAccountingLogicalOnly
+	RateAccountingAccountOnly = router.RateAccountingAccountOnly
+)
 
 // StickyState 别名(DM-07):让 gatewayhttp 等消费方不必直接 import pool/router。
 type StickyState = router.StickyState

@@ -29,6 +29,8 @@ var submitTaskTypes = map[string]string{
 type Request struct {
 	RequestID      string          `json:"request_id,omitempty"`
 	RequestIDAlias string          `json:"requestId,omitempty"`
+	APIKeyID       int64           `json:"api_key_id,omitempty"`
+	APIKeyIDAlias  int64           `json:"apiKeyId,omitempty"`
 	Prompt         string          `json:"prompt,omitempty"`
 	CustomID       string          `json:"customId,omitempty"`
 	BotType        string          `json:"botType,omitempty"`
@@ -71,11 +73,16 @@ func translateTask(taskType string, raw json.RawMessage) (mediatask.SubmitInput,
 	if requestID == "" {
 		requestID = "mj-" + uuid.NewString()
 	}
+	apiKeyID, err := mediatask.ResolveAPIKeySelection(req.APIKeyID, req.APIKeyIDAlias)
+	if err != nil {
+		return mediatask.SubmitInput{}, err
+	}
 	return mediatask.SubmitInput{
 		RequestID:   requestID,
 		TaskType:    taskType,
 		Provider:    providerMidjourney,
 		InputParams: raw,
+		APIKeyID:    apiKeyID,
 	}, nil
 }
 

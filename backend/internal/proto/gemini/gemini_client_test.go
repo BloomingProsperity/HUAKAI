@@ -97,6 +97,42 @@ func TestGeminiRequestToCanonicalAndResponseShape(t *testing.T) {
 	}
 }
 
+func TestGeminiRequestPreservesNativeMediaGenerationControls(t *testing.T) {
+	client := &GeminiClient{}
+	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{
+		RequestID: "req-gemini-media", ClientProtocol: proto.ClientProtocolGemini,
+		ProtocolFamily: "gemini_messages", IngressPath: "/v1beta/models/gemini-3.1-flash-image:generateContent",
+		Model: "gemini-3.1-flash-image",
+	})
+	raw := []byte(`{
+		"contents":[{"parts":[{"text":"生成一张图"}]}],
+		"generationConfig":{
+			"temperature":0.2,
+			"responseModalities":["TEXT","IMAGE"],
+			"responseFormat":{"image":{"aspectRatio":"16:9","imageSize":"2K"}},
+			"thinkingConfig":{"thinkingLevel":"HIGH"},
+			"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}
+		}
+	}`)
+	env, _, err := client.RequestToCanonical(ctx, raw)
+	if err != nil {
+		t.Fatalf("RequestToCanonical: %v", err)
+	}
+	native := env.RequestControls.NativeOptions["gemini_messages"]
+	var config map[string]json.RawMessage
+	if json.Unmarshal(native, &config) != nil {
+		t.Fatalf("原生生成配置没有保留: %s", native)
+	}
+	for _, key := range []string{"responseModalities", "responseFormat", "thinkingConfig", "speechConfig"} {
+		if len(config[key]) == 0 {
+			t.Fatalf("原生生成配置缺少 %s: %s", key, native)
+		}
+	}
+	if _, exists := config["temperature"]; exists {
+		t.Fatalf("已规范化字段不应重复进入原生配置: %s", native)
+	}
+}
+
 func TestGeminiPartVideoMetadataPassthrough(t *testing.T) {
 	client := &GeminiClient{}
 	ctx := proto.ContextWithRequestMetaSeed(context.Background(), proto.RequestMetaSeed{

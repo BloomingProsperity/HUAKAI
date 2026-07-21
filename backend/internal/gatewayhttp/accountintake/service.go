@@ -29,12 +29,25 @@ type Service struct {
 	agentTasks  AgentTaskRegistrar
 	proxies     ProxyResolver
 	projects    projectenrich.Enricher
+	refresher   ImportCredentialRefresher
+}
+
+type ImportCredentialRefresher interface {
+	RefreshImportCredential(context.Context, credentialacq.CredentialCandidate, time.Time) (credentialacq.CredentialCandidate, error)
 }
 
 // WithProjectEnricher 让批量导入与单账号获取共用同一套项目和套餐补齐。
 func (s *Service) WithProjectEnricher(enricher projectenrich.Enricher) *Service {
 	if s != nil {
 		s.projects = enricher
+	}
+	return s
+}
+
+// WithImportCredentialRefresher 让正式导入在账号落库前复用生产模式刷新器。
+func (s *Service) WithImportCredentialRefresher(refresher ImportCredentialRefresher) *Service {
+	if s != nil {
+		s.refresher = refresher
 	}
 	return s
 }

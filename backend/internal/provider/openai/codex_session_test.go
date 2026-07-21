@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -114,6 +115,34 @@ func TestCodexSessionAdapter_BuildRequest_SessionToken(t *testing.T) {
 		t.Fatalf("max_output_tokens 未剥离: body=%s", body)
 	}
 	assertCodexTextInput(t, gotBody["input"], "hi")
+}
+
+func TestCodexSessionAdapter_BuildRequest_ModelsDiscoveryUsesDedicatedGET(t *testing.T) {
+	a := &CodexSessionAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		HTTPMethod:    "GET",
+		EndpointPath:  "/backend-api/codex/models",
+		EndpointQuery: "client_version=1.2.3",
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "session-token-fake",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != "GET" {
+		t.Fatalf("Method=%q，期望 GET", req.Method)
+	}
+	if got := req.URL.String(); got != "https://chatgpt.com/backend-api/codex/models?client_version=1.2.3" {
+		t.Fatalf("URL=%q，模型发现端点或查询参数错误", got)
+	}
+	if req.Body != nil && req.Body != http.NoBody {
+		t.Fatal("模型发现 GET 不应携带请求体")
+	}
+	if got := req.Header.Get("Accept"); got != "application/json" {
+		t.Fatalf("Accept=%q，期望 application/json", got)
+	}
 }
 
 func TestCodexSessionAdapter_BuildRequest_PreservesStructuredInput(t *testing.T) {

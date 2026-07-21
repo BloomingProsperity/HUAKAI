@@ -67,12 +67,12 @@ func buildSelector(
 	windowCostReader windowcost.CostReader,
 	sessionCapRegistry *sessioncap.Registry,
 	logger *zap.Logger,
-) (pool.Selector, func(), error) {
+) (pool.Selector, *precheck.Counter, func(), error) {
 	if selectorCfg == nil {
-		return nil, nil, errors.New("buildSelector: PoolSelectorConfig 必填")
+		return nil, nil, nil, errors.New("buildSelector: PoolSelectorConfig 必填")
 	}
 	if err := selectorCfg.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
+		return nil, nil, nil, fmt.Errorf("buildSelector: invalid config: %w", err)
 	}
 
 	// ROUTE-121:opt-in 的主动 RPM/TPM 限流器。默认关闭 → counter 为 nil
@@ -151,7 +151,7 @@ func buildSelector(
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
 	if !selectorCfg.IsPASR() {
 		logger.Info("selector mode=default — PASR 基础设施未启动")
-		return wrapRecording(defaultSel), func() {}, nil
+		return wrapRecording(defaultSel), ratePrecheckCounter, func() {}, nil
 	}
 
 	// 3. PASR 基础设施: SegmentTable + AgingWorker + cache feedback observer
@@ -187,7 +187,7 @@ func buildSelector(
 		})
 		if err != nil {
 			agingWorker.Stop()
-			return nil, nil, fmt.Errorf("buildSelector: actual PASR: %w", err)
+			return nil, nil, nil, fmt.Errorf("buildSelector: actual PASR: %w", err)
 		}
 		dispatcherCfg.PASR = actual
 	}
@@ -203,7 +203,7 @@ func buildSelector(
 		})
 		if err != nil {
 			agingWorker.Stop()
-			return nil, nil, fmt.Errorf("buildSelector: shadow PASR: %w", err)
+			return nil, nil, nil, fmt.Errorf("buildSelector: shadow PASR: %w", err)
 		}
 		dispatcherCfg.Shadow = shadow
 	}
@@ -211,14 +211,14 @@ func buildSelector(
 	dispatcher, err := pool.NewSelectorDispatcher(dispatcherCfg)
 	if err != nil {
 		agingWorker.Stop()
-		return nil, nil, fmt.Errorf("buildSelector: dispatcher: %w", err)
+		return nil, nil, nil, fmt.Errorf("buildSelector: dispatcher: %w", err)
 	}
 
 	cleanup := func() {
 		dispatcher.Stop()
 		agingWorker.Stop()
 	}
-	return wrapRecording(dispatcher), cleanup, nil
+	return wrapRecording(dispatcher), ratePrecheckCounter, cleanup, nil
 }
 
 // buildGroupRoutingGates 构造 selector 用的 gate 链 (R-SUB-WIRE-1 生产激活点)。在

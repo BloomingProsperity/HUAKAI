@@ -89,6 +89,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditloghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userkeyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/videoclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/videohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucherhttp"
 )
 
@@ -161,6 +162,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Post("/v1/audio/speech", audiohttp.NewSpeechHandler(audioHandlerDeps(d)))
 	r.Post("/v1/audio/transcriptions", audiohttp.NewTranscriptionHandler(audioHandlerDeps(d)))
 	r.Post("/v1/audio/translations", audiohttp.NewTranslationHandler(audioHandlerDeps(d)))
+	videohttp.MountRoutes(r, videoHandlerDeps(d))
 	r.Post("/v1/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
 	r.Post("/v1/responses/compact", responsescompacthttp.NewCompactHandler(gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)), "/v1/responses"))
 	r.Post("/backend-api/codex/responses", gatewayhttp.NewResponsesHandler(chatHandlerDeps(d)))
@@ -858,6 +860,7 @@ func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 		CredentialVault:       d.credentialVault,
 		Dispatcher:            d.dispatcher,
 		Settler:               d.settler,
+		SettleRecoveryDLQ:     d.dlqService,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
@@ -902,6 +905,7 @@ func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 		CredentialVault:       d.credentialVault,
 		Dispatcher:            d.dispatcher,
 		Settler:               d.settler,
+		SettleRecoveryDLQ:     d.dlqService,
 		BillingPolicyResolver: d.billingPolicyResolver,
 		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
 		RequestClass:          d.cfg.RequestClass,
@@ -954,6 +958,13 @@ func audioHandlerDeps(d *deps) audiohttp.Deps {
 		RequestClass:          d.cfg.RequestClass,
 		Feedback:              d.upstreamFeedback,
 		RetryBudget:           d.retryBudget,
+	}
+}
+
+func videoHandlerDeps(d *deps) videohttp.Deps {
+	return videohttp.Deps{
+		Auth: d.inboundAuth, Registry: d.modelRegistry, Router: d.routePlanner,
+		Selector: d.selector, CredentialVault: d.credentialVault, Service: d.mediaTaskService,
 	}
 }
 
@@ -1171,9 +1182,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Store: adminhttp.NewProviderAccountBulkStoreAdapter(d.adminQueries, d.pgPool),
 		})
 		adminhttp.MountProviderAccountUpstreamModelsRoutes(r, adminhttp.UpstreamModelsDeps{
-			Auth:     d.adminAuth,
-			Accounts: d.adminQueries,
-			Creds:    d.credentialStore,
+			Auth:      d.adminAuth,
+			Accounts:  d.adminQueries,
+			Discovery: d.accountModelDiscovery,
 		})
 		provideraccountrecoveryhttp.MountRoutes(r, provideraccountrecoveryhttp.Deps{
 			Auth:          d.adminAuth,
@@ -1222,6 +1233,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		intakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth).
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
 			WithProjectEnricher(d.projectEnricher).
+			WithImportCredentialRefresher(d.importCredentialRefresher).
 			WithProxyResolver(accountproxyimport.New(d.credentialKeys))
 		var crsService *accountintake.CRSService
 		if d.cfg != nil && len(d.cfg.CRSSource.AllowedHosts) > 0 {
@@ -1276,7 +1288,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/admin/v1/balances", func(r chi.Router) {
 		adminhttp.MountBalanceCreditRoutes(r, adminhttp.AdminBalanceCreditDeps{
 			Auth:    d.adminAuth,
-			Service: d.paymentService,
+			Service: d.balanceService,
 		})
 	})
 	r.Route("/admin/v1/model-sync", func(r chi.Router) {

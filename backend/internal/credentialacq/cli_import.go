@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -249,6 +250,21 @@ func flattenCLITokenObject(fields map[string]any) map[string]any {
 	for key, value := range fields {
 		out[key] = value
 	}
+	if _, exists := fields["expiry_date"]; exists {
+		copyImportUnixMillis(out, fields, "expires_at", "expiry_date")
+		delete(out, "expiry_date")
+	}
+	if claudeOAuth, ok := fields["claudeAiOauth"].(map[string]any); ok {
+		delete(out, "claudeAiOauth")
+		copyImportAlias(out, claudeOAuth, "access_token", "access_token", "accessToken")
+		copyImportAlias(out, claudeOAuth, "refresh_token", "refresh_token", "refreshToken")
+		copyImportAlias(out, claudeOAuth, "scopes", "scopes")
+		copyImportAlias(out, claudeOAuth, "subscription_tier", "subscription_type", "subscriptionType")
+		copyImportAlias(out, claudeOAuth, "rate_limit_tier", "rate_limit_tier", "rateLimitTier")
+		copyImportUnixMillis(out, claudeOAuth, "expires_at", "expiresAt")
+		copyImportUnixMillis(out, claudeOAuth, "refresh_expires_at", "refreshTokenExpiresAt")
+		return out
+	}
 	token, ok := fields["token"].(map[string]any)
 	if !ok {
 		return out
@@ -266,6 +282,24 @@ func flattenCLITokenObject(fields map[string]any) map[string]any {
 		out["expires_at"] = strings.TrimSpace(expiry)
 	}
 	return out
+}
+
+func copyImportUnixMillis(out, source map[string]any, target, sourceKey string) {
+	value, exists := source[sourceKey]
+	if !exists {
+		return
+	}
+	switch typed := value.(type) {
+	case float64:
+		millis := int64(typed)
+		if millis > 0 {
+			out[target] = time.UnixMilli(millis).UTC().Format(time.RFC3339)
+		}
+	case string:
+		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(typed)); err == nil {
+			out[target] = parsed.UTC().Format(time.RFC3339)
+		}
+	}
 }
 
 func copyImportAlias(out, source map[string]any, target string, aliases ...string) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // OpenAICompatPassthroughAdapter 把 OpenAI Chat Completions 形态的请求转发到
@@ -40,7 +41,20 @@ func (a *OpenAICompatPassthroughAdapter) BuildRequest(ctx context.Context, in Bu
 		return nil, fmt.Errorf("%s passthrough: endpoint rejected: %w", a.PlatformName, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
+	if method == "" {
+		method = http.MethodPost
+	}
+	if method != http.MethodPost && method != http.MethodGet {
+		return nil, fmt.Errorf("%s passthrough: 不支持的 HTTP 方法 %q", a.PlatformName, method)
+	}
+	var body *bytes.Reader
+	if method == http.MethodGet {
+		body = bytes.NewReader(nil)
+	} else {
+		body = bytes.NewReader(in.InboundBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("%s passthrough: 构造请求失败: %w", a.PlatformName, err)
 	}
@@ -53,7 +67,9 @@ func (a *OpenAICompatPassthroughAdapter) BuildRequest(ctx context.Context, in Bu
 	case CredentialTypeUpstreamPassthrough:
 		req.Header.Set("Authorization", in.Credential.Value)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 
 	return req, nil

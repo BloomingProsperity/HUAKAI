@@ -24,6 +24,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallb
 		APIKeyID:             ex.ident.APIKeyID,
 		PoolGroupID:          ex.attempt.PoolGroupID,
 		RequestedModel:       ex.req.Model,
+		ProviderModelID:      ex.upstreamModelID,
 		ModelCooldownKey:     ex.upstreamModelID,
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		EndpointFamily:       endpointFamilyImages,
@@ -201,6 +202,9 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 	raw, ok := ex.translateUpstreamResponseForFamily(w, raw)
 	if !ok {
 		return attemptOutcome{done: true}
+	}
+	if ex.resolved.ProtocolFamily == openAICodexFamily {
+		res.Headers.Set("Content-Type", "application/json")
 	}
 	_ = ex.settleSuccessfulResponse(w, res, raw, attemptSeq)
 	return attemptOutcome{done: true}

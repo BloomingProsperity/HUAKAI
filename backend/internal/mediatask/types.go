@@ -4,9 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Status string
@@ -25,11 +30,14 @@ var (
 	ErrRequestIDConflict     = errors.New("mediatask: request id conflict")
 	ErrNotFound              = errors.New("mediatask: not found")
 	ErrNoActiveAPIKey        = errors.New("mediatask: no active api key for user")
+	ErrAPIKeyAmbiguous       = errors.New("mediatask: multiple active api keys require explicit selection")
+	ErrQuotaDenied           = errors.New("mediatask: quota denied")
 	ErrProviderUnavailable   = errors.New("mediatask: provider unavailable")
 	ErrNoRunnableTask        = errors.New("mediatask: no runnable task")
 	ErrLeaseLost             = errors.New("mediatask: lease lost")
 	ErrActualExceedsEstimate = errors.New("mediatask: actual cost exceeds estimate")
 	ErrStoreNotConfigured    = errors.New("mediatask: store not configured")
+	ErrContentUnavailable    = errors.New("mediatask: content unavailable")
 	ErrInvalidOrphanStatus   = errors.New("mediatask: invalid orphan reconcile status")
 )
 
@@ -60,10 +68,33 @@ func (s StaticConfigSource) Load(context.Context) (Config, error) {
 }
 
 type SubmitInput struct {
-	RequestID   string          `json:"request_id"`
-	TaskType    string          `json:"task_type"`
-	Provider    string          `json:"provider"`
-	InputParams json.RawMessage `json:"input_params"`
+	RequestID                  string          `json:"request_id"`
+	TaskType                   string          `json:"task_type"`
+	Provider                   string          `json:"provider"`
+	InputParams                json.RawMessage `json:"input_params"`
+	APIKeyID                   int64           `json:"api_key_id,omitempty"`
+	ProviderAccountID          int64           `json:"-"`
+	PoolGroupID                int64           `json:"-"`
+	ProtocolFamily             string          `json:"-"`
+	RequestedModel             string          `json:"-"`
+	ProviderModelID            string          `json:"-"`
+	RouteID                    string          `json:"-"`
+	BindingID                  int64           `json:"-"`
+	BindingRPMLimit            int64           `json:"-"`
+	BindingTPMLimit            int64           `json:"-"`
+	BindingMaxParallelRequests int64           `json:"-"`
+}
+
+// ResolveAPIKeySelection 合并兼容入口的 snake_case 与 camelCase 字段。
+// 两个字段同时出现时必须一致，避免调用方看到一个值、服务端却按另一个值扣费。
+func ResolveAPIKeySelection(primary, alias int64) (int64, error) {
+	if primary < 0 || alias < 0 || (primary > 0 && alias > 0 && primary != alias) {
+		return 0, fmt.Errorf("%w: api_key_id", ErrInvalidInput)
+	}
+	if primary > 0 {
+		return primary, nil
+	}
+	return alias, nil
 }
 
 type CreateTaskInput struct {
@@ -80,30 +111,54 @@ type CreateTaskInput struct {
 	// 生命周期(TaskTimeout)。否则跑得久的合法任务的 claim 会被 billing LeaseSweeper
 	// 提前误 abort、预扣费释放,任务完成时无法 commit 计费致亏钱。<=0 时 store 回退到
 	// defaultMediaClaimLeaseWindow。见 resolveClaimLeaseWindow。
-	ClaimLeaseWindow time.Duration
+	ClaimLeaseWindow           time.Duration
+	APIKeyID                   int64
+	ProviderAccountID          int64
+	PoolGroupID                int64
+	ProtocolFamily             string
+	RequestedModel             string
+	ProviderModelID            string
+	RouteID                    string
+	BindingID                  int64
+	BindingRPMLimit            int64
+	BindingTPMLimit            int64
+	BindingMaxParallelRequests int64
 }
 
 type Task struct {
-	ID             int64           `json:"id"`
-	TenantID       int64           `json:"tenant_id"`
-	UserID         int64           `json:"user_id"`
-	TaskType       string          `json:"task_type"`
-	Status         Status          `json:"status"`
-	Provider       string          `json:"provider"`
-	ProviderTaskID string          `json:"provider_task_id,omitempty"`
-	RequestID      string          `json:"request_id"`
-	InputParams    json.RawMessage `json:"input_params,omitempty"`
-	Result         json.RawMessage `json:"result,omitempty"`
-	EstimatedCents int64           `json:"estimated_cents"`
-	ActualCents    *int64          `json:"actual_cents,omitempty"`
-	HoldRef        string          `json:"hold_ref,omitempty"`
-	ErrorClass     string          `json:"error_class,omitempty"`
-	Progress       int             `json:"progress"`
-	LeaseOwner     string          `json:"-"`
-	LeaseExpiresAt *time.Time      `json:"-"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
-	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
+	ID                         int64           `json:"id"`
+	TenantID                   int64           `json:"tenant_id"`
+	UserID                     int64           `json:"user_id"`
+	APIKeyID                   int64           `json:"-"`
+	TaskType                   string          `json:"task_type"`
+	Status                     Status          `json:"status"`
+	Provider                   string          `json:"provider"`
+	ProviderTaskID             string          `json:"provider_task_id,omitempty"`
+	ProviderAccountID          int64           `json:"-"`
+	PoolGroupID                int64           `json:"pool_group_id,omitempty"`
+	ProtocolFamily             string          `json:"protocol_family,omitempty"`
+	RequestedModel             string          `json:"requested_model,omitempty"`
+	ProviderModelID            string          `json:"provider_model_id,omitempty"`
+	RouteID                    string          `json:"route_id,omitempty"`
+	BindingID                  int64           `json:"-"`
+	BindingRPMLimit            int64           `json:"-"`
+	BindingTPMLimit            int64           `json:"-"`
+	BindingMaxParallelRequests int64           `json:"-"`
+	RequestID                  string          `json:"request_id"`
+	InputParams                json.RawMessage `json:"input_params,omitempty"`
+	Result                     json.RawMessage `json:"result,omitempty"`
+	EstimatedCents             int64           `json:"estimated_cents"`
+	// ActualCents 保存上游明确报告的成本；客户最终收费以计费 claim 为准，
+	// 在缺少上游成本或收费被预估上限截断时两者可以有意不同。
+	ActualCents    *int64     `json:"actual_cents,omitempty"`
+	HoldRef        string     `json:"hold_ref,omitempty"`
+	ErrorClass     string     `json:"error_class,omitempty"`
+	Progress       int        `json:"progress"`
+	LeaseOwner     string     `json:"-"`
+	LeaseExpiresAt *time.Time `json:"-"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 }
 
 type SubmitReq struct {
@@ -129,16 +184,42 @@ func DeriveIdempotencyKey(taskID int64, requestID string) string {
 }
 
 type PollResult struct {
-	Status      Status          `json:"status"`
-	Progress    int             `json:"progress"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	ActualCents int64           `json:"actual_cents,omitempty"`
-	ErrorClass  string          `json:"error_class,omitempty"`
+	Status   Status          `json:"status"`
+	Progress int             `json:"progress"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	// ActualCents 是上游报告成本，不是客户最终收费金额。
+	ActualCents int64  `json:"actual_cents,omitempty"`
+	ErrorClass  string `json:"error_class,omitempty"`
+	// AcquisitionToken 与 RoutingReason 只在进程内传递，绝不暴露给客户端。
+	// 统一结算器以 claim 中持久化的 acquisition token 为准，不能信任轮询临时值。
+	AcquisitionToken uuid.UUID       `json:"-"`
+	RoutingReason    json.RawMessage `json:"-"`
 }
 
 type AsyncMediaProvider interface {
 	Submit(context.Context, SubmitReq) (providerTaskID string, err error)
 	Poll(context.Context, string) (PollResult, error)
+}
+
+// BoundAsyncMediaProvider 在每次出站时接收任务的耐久账号绑定。
+// 普通通用 provider 继续实现 AsyncMediaProvider；需要固定原账号的 provider
+// 实现本接口，worker 会优先调用它。
+type BoundAsyncMediaProvider interface {
+	SubmitBound(context.Context, Task, SubmitReq) (providerTaskID string, err error)
+	PollBound(context.Context, Task, string) (PollResult, error)
+}
+
+// ContentResult 是异步媒体完成后由网关代取的受保护产物流。
+type ContentResult struct {
+	Body       io.Reader
+	Headers    http.Header
+	StatusCode int
+	Close      func() error
+}
+
+// BoundMediaContentProvider 使用任务持久化的账号绑定读取受保护产物。
+type BoundMediaContentProvider interface {
+	DownloadBound(context.Context, Task) (ContentResult, error)
 }
 
 type ProviderRegistry interface {

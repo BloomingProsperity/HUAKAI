@@ -28,6 +28,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallb
 		APIKeyID:             ex.ident.APIKeyID,
 		PoolGroupID:          ex.attempt.PoolGroupID,
 		RequestedModel:       ex.req.Model,
+		ProviderModelID:      ex.upstreamModelID,
 		ModelCooldownKey:     ex.upstreamModelID,
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		EndpointFamily:       endpointFamilyAudio,

@@ -438,18 +438,20 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 	dlqService.Register(legacydlq.EventKindAuditMismatchRefund, refundWorker.Handler())
 	refundQueue := auditreceipt.NewMismatchRefundQueue(dlqService,
 		auditreceipt.WithRefundEligibilityVerifier(baseSettler))
+	settlementAuditError := func(_ context.Context, requestID string, err error) {
+		logger.Warn("settlement audit warning",
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
+	}
 	receiptHook := auditreceipt.NewReceiptHookHandler(receiptFormatter, receiptStore,
 		auditreceipt.WithReceiptHookTrustSigner(auditSigner),
 		auditreceipt.WithReceiptHookRecoveryEnqueuer(dlqService),
-		auditreceipt.WithReceiptHookErrorHandler(func(_ context.Context, requestID string, err error) {
-			logger.Warn("cost receipt hook warning after settle",
-				zap.String("request_id", requestID),
-				zap.Error(err),
-			)
-		}))
+		auditreceipt.WithReceiptHookErrorHandler(settlementAuditError))
 	dlqService.Register(legacydlq.EventKindCostReceiptAppend, receiptHook.HandleReceiptRecovery)
 	referralQualifier := communityinvitation.NewService(communityinvitation.NewPostgresStore(pgPool))
-	settler := auditreceipt.NewReceiptHookSettler(baseSettler, receiptHook,
+	ledgerSettler := auditreceipt.NewSettlementLedgerSettler(baseSettler, auditLedger, dlqService, settlementAuditError)
+	settler := auditreceipt.NewReceiptHookSettler(ledgerSettler, receiptHook,
 		auditreceipt.WithReceiptHookReferralQualifier(referralQualifier),
 		auditreceipt.WithReceiptHookReferralRewardIssuer(referralRewardIssuer),
 		auditreceipt.WithReceiptHookReferralRewardSettings(referralRewardSettings))

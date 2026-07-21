@@ -29,6 +29,7 @@ func TestBindingConcurrencyE2E(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping binding concurrency e2e")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	binPath := buildGateway(t)
 	defer os.Remove(binPath)
 

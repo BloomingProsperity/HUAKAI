@@ -223,10 +223,7 @@ func (ex *chatExecution) remapClientStatusForUpstream(upstreamStatus int, curren
 
 func (ex *chatExecution) activateRouteAttempt(attempt router.AttemptPlan) {
 	ex.attempt = attempt
-	ex.routeID = ex.plan.SnapshotVersion
-	if attempt.Reason != "" {
-		ex.routeID = fmt.Sprintf("%s:%s", ex.routeID, attempt.Reason)
-	}
+	ex.routeID = router.TraceRouteID(ex.plan, attempt)
 	ex.upstreamModelID = attempt.UpstreamModelID
 	if ex.upstreamModelID == "" {
 		ex.upstreamModelID = ex.resolved.ProviderModelID
@@ -433,6 +430,7 @@ func (ex *chatExecution) buildPoolSelectionRequest(in attemptInput) pool.Selecti
 		APIKeyID:         ex.ident.APIKeyID,
 		PoolGroupID:      ex.attempt.PoolGroupID,
 		RequestedModel:   ex.req.Model,
+		ProviderModelID:  ex.upstreamModelID,
 		ModelCooldownKey: ex.upstreamModelID,
 		ProtocolFamily:   ex.resolved.ProtocolFamily,
 		EndpointFamily:   ex.d.effectiveEndpointFamily(),
@@ -678,7 +676,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		if errors.As(err, &upstreamErr) {
 			clientStatus = upstreamErr.StatusCode
 			healthStatus = upstreamErr.StatusCode
-			decision, classification, _ = gateway.ClassifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body, ex.errorClassProvider())
+			decision, classification = ex.classifyAttemptHTTPError(upstreamErr.StatusCode, upstreamErr.Header, upstreamErr.Body)
 		} else {
 			classifyBody = []byte(err.Error())
 			classification, _ = gateway.Classify(0, nil, classifyBody, ex.errorClassProvider())

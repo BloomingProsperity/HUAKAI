@@ -169,3 +169,12 @@ type AttemptPlan struct {
 	// 同一 public alias 跨 pool failover 时可能不同。
 	UpstreamModelID string
 }
+
+// TraceRouteID 返回日志链使用的实际路由标识；同一配置快照内的主路和
+// 定向回退通过 attempt reason 区分。
+func TraceRouteID(plan RoutePlan, attempt AttemptPlan) string {
+	if attempt.Reason == "" {
+		return plan.SnapshotVersion
+	}
+	return plan.SnapshotVersion + ":" + attempt.Reason
+}

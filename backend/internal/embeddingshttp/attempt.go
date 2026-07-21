@@ -20,6 +20,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int) *fallb
 		APIKeyID:             ex.ident.APIKeyID,
 		PoolGroupID:          ex.attempt.PoolGroupID,
 		RequestedModel:       ex.req.Model,
+		ProviderModelID:      ex.upstreamModelID,
 		ModelCooldownKey:     ex.upstreamModelID,
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		EndpointFamily:       endpointFamilyEmbeddings,
@@ -177,18 +178,20 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return false
 	}
-	sbctx, scancel := ex.billingCtx()
-	defer scancel()
-	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
-		return false
-	}
+	settleReq := ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	if writeErr != nil || written < len(raw) {
+		_ = ex.abortWithError(w, "client_response_write_error", int64(promptTokens))
+		return false
+	}
+	_ = http.NewResponseController(w).Flush()
+	sbctx, scancel := ex.billingCtx()
+	defer scancel()
+	_ = ex.settleDeliveredResponse(sbctx, settleReq)
 	return true
 }
 

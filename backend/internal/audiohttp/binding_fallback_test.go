@@ -133,7 +133,7 @@ func (audioFallbackRegistry) ResolveModel(_ context.Context, model string, _ int
 	return registry.Resolved{
 		PublicAlias: model, CanonicalModelID: "audio/" + model,
 		DefaultProviderModelID: normalModel, ProviderModelID: normalModel,
-		ProtocolFamily: "openai_chat", Capabilities: []string{"audio"}, PoolCandidates: []int64{101, 201},
+		ProtocolFamily: "openai_chat", Capabilities: []string{"audio", audioSpeechCapability, audioTranscriptionCapability}, PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 4101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", ProviderModelIDOverride: &normalModel, FallbackClass: string(bindingfallback.ClassNormal)},
 			{PoolGroupID: 201, BindingID: 4201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},

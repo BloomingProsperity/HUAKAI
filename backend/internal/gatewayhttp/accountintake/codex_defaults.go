@@ -12,7 +12,7 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-var codexDefaultCapabilities = []string{"stream", "tools", "json", "vision"}
+var codexDefaultCapabilities = []string{"stream", "tools", "json", "vision", "image_output"}
 
 func isCodexIntake(in PlanInput) bool {
 	if in.SourceKind == intake.SourceCLI || in.SourceKind == intake.SourceCodexAgent {

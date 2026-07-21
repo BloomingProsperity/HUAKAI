@@ -18,12 +18,14 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
 
@@ -43,6 +45,9 @@ func TestEmbeddingsHandler_SuccessSettlesPromptTokensAndForwardsPassthrough(t *t
 	}
 	if got := env.transport.auth; got != "Bearer sk-test" {
 		t.Fatalf("Authorization=%q want provider credential", got)
+	}
+	if got := env.selector.req.CapabilityFlags; len(got) != 1 || got[0] != embeddingsCapability {
+		t.Fatalf("选号能力=%v，期望 [%s]", got, embeddingsCapability)
 	}
 	if !strings.Contains(env.transport.body, `"encoding_format":"float"`) {
 		t.Fatalf("passthrough body lost client option: %s", env.transport.body)
@@ -160,6 +165,7 @@ type embeddingsTestEnv struct {
 	deps      Deps
 	claims    *recordingClaimGate
 	settler   *recordingSettler
+	selector  *selectorStub
 	transport *recordingRoundTripper
 }
 
@@ -172,6 +178,7 @@ func newEmbeddingsTestEnv(t *testing.T, resp upstreamResponse) *embeddingsTestEn
 	t.Helper()
 	claims := &recordingClaimGate{nextClaimID: 9001}
 	settler := &recordingSettler{}
+	selector := &selectorStub{}
 	rt := &recordingRoundTripper{resp: resp}
 	adapters := provider.NewStaticRegistry()
 	adapters.MustRegister("openai_chat", &openai.PassthroughAdapter{})
@@ -180,6 +187,7 @@ func newEmbeddingsTestEnv(t *testing.T, resp upstreamResponse) *embeddingsTestEn
 	return &embeddingsTestEnv{
 		claims:    claims,
 		settler:   settler,
+		selector:  selector,
 		transport: rt,
 		deps: Deps{
 			Auth:                  authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13, UserGroup: "pro"}},
@@ -187,7 +195,7 @@ func newEmbeddingsTestEnv(t *testing.T, resp upstreamResponse) *embeddingsTestEn
 			Router:                routerStub{},
 			ClaimGate:             claims,
 			RateTables:            rateTableStub{},
-			Selector:              selectorStub{},
+			Selector:              selector,
 			CredentialVault:       vaultStub{},
 			Dispatcher:            &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf},
 			Settler:               settler,
@@ -297,9 +305,12 @@ func (rateTableStub) ListRateTableSnapshots(context.Context) ([]billing.RateTabl
 	return nil, nil
 }
 
-type selectorStub struct{}
+type selectorStub struct {
+	req pool.SelectionRequest
+}
 
-func (selectorStub) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+func (s *selectorStub) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.req = req
 	return &pool.SelectionResult{
 		AccountID:         44,
 		AcquisitionToken:  uuid.MustParse("11111111-1111-1111-1111-111111111111"),
@@ -322,6 +333,17 @@ type recordingSettler struct {
 	settles   []billing.SettleRequest
 	aborts    []abortCall
 	settleErr error
+}
+
+type embeddingsRecoveryEnqueuer struct {
+	calls int
+	event dlq.Event
+}
+
+func (q *embeddingsRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	q.calls++
+	q.event = event
+	return 1, nil
 }
 
 type abortCall struct {
@@ -398,17 +420,19 @@ func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 	}, nil
 }
 
-func TestEmbeddingsHandler_SettleErrorReturns500WithoutDoubleClose(t *testing.T) {
+func TestEmbeddingsHandler_SettleErrorKeepsDeliveredResponseAndEnqueuesRecovery(t *testing.T) {
 	env := newEmbeddingsTestEnv(t, upstreamResponse{
 		status: http.StatusOK,
 		body:   `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`,
 	})
 	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &embeddingsRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
 
 	rec := env.invoke(t, `{"model":"embed-public","input":"settle fails after upstream success"}`)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d body=%s want 500 on settle error", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s，完整业务响应已交付，期望 200", rec.Code, rec.Body.String())
 	}
 	if got := len(env.settler.settles); got != 1 {
 		t.Fatalf("settle attempts=%d want 1", got)
@@ -419,6 +443,16 @@ func TestEmbeddingsHandler_SettleErrorReturns500WithoutDoubleClose(t *testing.T)
 	// 会让本测试变红。
 	if got := len(env.settler.aborts); got != 0 {
 		t.Fatalf("abort calls=%d want 0 -- settle-error must not double-close", got)
+	}
+	if recovery.calls != 1 || recovery.event.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q，期望 1/%q", recovery.calls, recovery.event.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	payload, err := settlementrecovery.Decode(recovery.event.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceEmbeddingsDelivered {
+		t.Fatalf("recovery source=%q，期望 %q", payload.Source, settlementrecovery.SourceEmbeddingsDelivered)
 	}
 }
 
@@ -474,7 +508,7 @@ func TestEmbeddings_AttemptBudgetRetriesAfterDispatchFailure(t *testing.T) {
 		Router:                twoAttemptRouter{},
 		ClaimGate:             claims,
 		RateTables:            rateTableStub{},
-		Selector:              selectorStub{},
+		Selector:              &selectorStub{},
 		CredentialVault:       vaultStub{},
 		Dispatcher:            &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf},
 		Settler:               settler,

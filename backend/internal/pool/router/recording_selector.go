@@ -27,7 +27,7 @@ func NewRecordingSelector(inner Selector, counter *precheck.Counter) *RecordingS
 
 func (s *RecordingSelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {
 	res, err := s.inner.Select(ctx, req)
-	if err == nil && res != nil && res.AccountID != 0 && res.WaitPlan == nil {
+	if err == nil && res != nil && res.AccountID != 0 && res.WaitPlan == nil && req.RateAccountingScope != RateAccountingLogicalOnly {
 		est := int64(req.EstimatedInputTokens)
 		if est < 0 {
 			est = 0

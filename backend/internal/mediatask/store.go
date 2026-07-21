@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
 
 type BalanceModeResolver interface {
@@ -25,6 +27,9 @@ type PostgresStoreConfig struct {
 	BillingPolicyVersion string
 	RequestClass         string
 	BalanceModeResolver  BalanceModeResolver
+	ClaimGate            billing.ClaimGate
+	QuotaReserver        quotaenforce.Reserver
+	Settler              billing.Settler
 }
 
 type PostgresStore struct {
@@ -32,6 +37,9 @@ type PostgresStore struct {
 	billingVersion   string
 	requestClass     string
 	balanceResolver  BalanceModeResolver
+	claimGate        billing.ClaimGate
+	quotaReserver    quotaenforce.Reserver
+	settler          billing.Settler
 	beforeInsertTask func() error
 }
 
@@ -44,12 +52,24 @@ func NewPostgresStore(pool *pgxpool.Pool, cfg PostgresStoreConfig) *PostgresStor
 		billingVersion:  strings.TrimSpace(cfg.BillingPolicyVersion),
 		requestClass:    strings.TrimSpace(cfg.RequestClass),
 		balanceResolver: cfg.BalanceModeResolver,
+		claimGate:       cfg.ClaimGate,
+		quotaReserver:   cfg.QuotaReserver,
+		settler:         cfg.Settler,
 	}
 }
 
 func (s *PostgresStore) CreateTask(ctx context.Context, input CreateTaskInput) (Task, bool, error) {
 	if s == nil || s.pool == nil {
 		return Task{}, false, ErrStoreNotConfigured
+	}
+	if isDurablyBoundVideoProvider(input.Provider) {
+		if !hasUnifiedMoneyBinding(input) {
+			return Task{}, false, fmt.Errorf("%w: durable video provider requires exact request, key, pool, account, protocol, model and route binding", ErrInvalidInput)
+		}
+		if s.claimGate == nil || s.settler == nil {
+			return Task{}, false, ErrStoreNotConfigured
+		}
+		return s.createTaskWithUnifiedMoney(ctx, input)
 	}
 	var out Task
 	var hit bool
@@ -75,11 +95,40 @@ func (s *PostgresStore) CreateTask(ctx context.Context, input CreateTaskInput) (
 	return out, hit, err
 }
 
+func hasUnifiedMoneyBinding(input CreateTaskInput) bool {
+	return input.APIKeyID > 0 &&
+		input.PoolGroupID > 0 &&
+		input.ProviderAccountID > 0 &&
+		strings.TrimSpace(input.RequestID) != "" &&
+		strings.TrimSpace(input.ProtocolFamily) != "" &&
+		strings.TrimSpace(input.RequestedModel) != "" &&
+		strings.TrimSpace(input.ProviderModelID) != "" &&
+		strings.TrimSpace(input.RouteID) != "" &&
+		input.BindingID > 0 && input.BindingRPMLimit >= 0 && input.BindingTPMLimit >= 0 &&
+		input.BindingMaxParallelRequests >= 0
+}
+
 func (s *PostgresStore) GetTask(ctx context.Context, tenantID, userID, id int64) (Task, error) {
 	if s == nil || s.pool == nil {
 		return Task{}, ErrStoreNotConfigured
 	}
 	task, err := scanTask(s.pool.QueryRow(ctx, selectTaskSQL+` WHERE id=$1 AND tenant_id=$2 AND user_id=$3`, id, tenantID, userID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, ErrNotFound
+	}
+	return task, err
+}
+
+func (s *PostgresStore) GetTaskForAPIKey(ctx context.Context, tenantID, userID, apiKeyID int64, requestID string) (Task, error) {
+	if s == nil || s.pool == nil {
+		return Task{}, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 || apiKeyID <= 0 || strings.TrimSpace(requestID) == "" {
+		return Task{}, ErrNotFound
+	}
+	task, err := scanTask(s.pool.QueryRow(ctx, selectTaskSQL+`
+WHERE tenant_id=$1 AND user_id=$2 AND api_key_id=$3 AND request_id=$4`,
+		tenantID, userID, apiKeyID, strings.TrimSpace(requestID)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
@@ -160,6 +209,47 @@ WHERE id=$1 AND lease_owner=$2 AND status='in_progress'`,
 	return nil
 }
 
+// ReleaseLease 仅释放当前 worker 的任务租约，不改变任务状态或计费状态。
+// 临时容量不足和可重试查询错误用它快速让任务回到队列，避免空等整个租约周期。
+func (s *PostgresStore) ReleaseLease(ctx context.Context, task Task, owner string, now time.Time) error {
+	if s == nil || s.pool == nil {
+		return ErrStoreNotConfigured
+	}
+	tag, err := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET lease_owner=NULL, lease_expires_at=NULL, updated_at=$3
+WHERE id=$1 AND lease_owner=$2 AND status IN ('queued','in_progress')`, task.ID, owner, now.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+// DeferLease 释放当前 worker 的租约，并把任务推迟到 retryAt 后再进入可运行队列。
+func (s *PostgresStore) DeferLease(ctx context.Context, task Task, owner string, now, retryAt time.Time) error {
+	if s == nil || s.pool == nil {
+		return ErrStoreNotConfigured
+	}
+	if !retryAt.After(now) {
+		retryAt = now.Add(5 * time.Second)
+	}
+	tag, err := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET lease_owner=NULL, lease_expires_at=$3, updated_at=$4
+WHERE id=$1 AND lease_owner=$2 AND status IN ('queued','in_progress')`,
+		task.ID, owner, retryAt.UTC(), now.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
 func (s *PostgresStore) withSerializableRetry(ctx context.Context, fn func(pgx.Tx) error) error {
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -189,8 +279,19 @@ func selectTaskByRequestForUpdate(ctx context.Context, tx pgx.Tx, tenantID int64
 
 func sameIdempotentTask(existing Task, input CreateTaskInput) bool {
 	return existing.UserID == input.UserID &&
+		(input.APIKeyID <= 0 || existing.APIKeyID == input.APIKeyID) &&
 		existing.TaskType == input.TaskType &&
 		existing.Provider == input.Provider &&
+		(input.ProviderAccountID <= 0 || existing.ProviderAccountID == input.ProviderAccountID) &&
+		(input.PoolGroupID <= 0 || existing.PoolGroupID == input.PoolGroupID) &&
+		(input.ProtocolFamily == "" || existing.ProtocolFamily == input.ProtocolFamily) &&
+		(input.RequestedModel == "" || existing.RequestedModel == input.RequestedModel) &&
+		(input.ProviderModelID == "" || existing.ProviderModelID == input.ProviderModelID) &&
+		(input.RouteID == "" || existing.RouteID == input.RouteID) &&
+		(input.BindingID <= 0 || existing.BindingID == input.BindingID) &&
+		existing.BindingRPMLimit == input.BindingRPMLimit &&
+		existing.BindingTPMLimit == input.BindingTPMLimit &&
+		existing.BindingMaxParallelRequests == input.BindingMaxParallelRequests &&
 		jsonCanonicalEqual(existing.InputParams, input.InputParams)
 }
 
@@ -216,18 +317,34 @@ func jsonCanonicalEqual(a, b []byte) bool {
 func scanTask(row pgx.Row) (Task, error) {
 	var task Task
 	var providerTaskID, holdRef, errorClass, leaseOwner sql.NullString
-	var actual sql.NullInt64
+	var protocolFamily, requestedModel, providerModelID, routeID sql.NullString
+	var actual, apiKeyID, providerAccountID, poolGroupID sql.NullInt64
+	var bindingID, bindingRPM, bindingTPM, bindingMaxParallel sql.NullInt64
 	var leaseExpires, finished pgtype.Timestamptz
 	err := row.Scan(
-		&task.ID, &task.TenantID, &task.UserID, &task.TaskType, &task.Status, &task.Provider,
+		&task.ID, &task.TenantID, &task.UserID, &apiKeyID, &task.TaskType, &task.Status, &task.Provider,
 		&providerTaskID, &task.RequestID, &task.InputParams, &task.Result, &task.EstimatedCents,
-		&actual, &holdRef, &errorClass, &task.Progress, &leaseOwner, &leaseExpires,
+		&actual, &holdRef, &errorClass, &task.Progress, &providerAccountID, &poolGroupID,
+		&protocolFamily, &requestedModel, &providerModelID, &routeID,
+		&bindingID, &bindingRPM, &bindingTPM, &bindingMaxParallel,
+		&leaseOwner, &leaseExpires,
 		&task.CreatedAt, &task.UpdatedAt, &finished,
 	)
 	if err != nil {
 		return Task{}, err
 	}
 	task.ProviderTaskID = providerTaskID.String
+	task.APIKeyID = apiKeyID.Int64
+	task.ProviderAccountID = providerAccountID.Int64
+	task.PoolGroupID = poolGroupID.Int64
+	task.ProtocolFamily = protocolFamily.String
+	task.RequestedModel = requestedModel.String
+	task.ProviderModelID = providerModelID.String
+	task.RouteID = routeID.String
+	task.BindingID = bindingID.Int64
+	task.BindingRPMLimit = bindingRPM.Int64
+	task.BindingTPMLimit = bindingTPM.Int64
+	task.BindingMaxParallelRequests = bindingMaxParallel.Int64
 	task.HoldRef = holdRef.String
 	task.ErrorClass = errorClass.String
 	if actual.Valid {
@@ -284,19 +401,27 @@ func jsonOrNull(raw []byte) any {
 }
 
 const selectTaskSQL = `
-SELECT id, tenant_id, user_id, task_type, status, provider, provider_task_id,
+SELECT id, tenant_id, user_id, api_key_id, task_type, status, provider, provider_task_id,
        request_id, input_params, result, estimated_cents, actual_cents, hold_ref,
-       error_class, progress, lease_owner, lease_expires_at, created_at, updated_at, finished_at
+       error_class, progress, provider_account_id, pool_group_id, protocol_family,
+       requested_model, provider_model_id, route_id, binding_id, binding_rpm_limit,
+       binding_tpm_limit, binding_max_parallel_requests, lease_owner, lease_expires_at,
+       created_at, updated_at, finished_at
 FROM media_tasks`
 
 const insertTaskSQL = `
 INSERT INTO media_tasks (
-	tenant_id, user_id, task_type, status, provider, request_id, input_params,
-	estimated_cents, hold_ref
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-RETURNING id, tenant_id, user_id, task_type, status, provider, provider_task_id,
+	tenant_id, user_id, api_key_id, task_type, status, provider, request_id, input_params,
+	estimated_cents, hold_ref, provider_account_id, pool_group_id, protocol_family,
+	requested_model, provider_model_id, route_id, binding_id, binding_rpm_limit,
+	binding_tpm_limit, binding_max_parallel_requests
+) VALUES ($1,$2,NULLIF($3,0),$4,$5,$6,$7,$8,$9,$10,NULLIF($11,0),NULLIF($12,0),NULLIF($13,''),NULLIF($14,''),NULLIF($15,''),NULLIF($16,''),NULLIF($17,0),$18,$19,$20)
+RETURNING id, tenant_id, user_id, api_key_id, task_type, status, provider, provider_task_id,
        request_id, input_params, result, estimated_cents, actual_cents, hold_ref,
-       error_class, progress, lease_owner, lease_expires_at, created_at, updated_at, finished_at`
+       error_class, progress, provider_account_id, pool_group_id, protocol_family,
+       requested_model, provider_model_id, route_id, binding_id, binding_rpm_limit,
+       binding_tpm_limit, binding_max_parallel_requests, lease_owner, lease_expires_at,
+       created_at, updated_at, finished_at`
 
 const acquireLeaseSQL = `
 WITH candidate AS (
@@ -312,15 +437,21 @@ UPDATE media_tasks mt
 SET lease_owner=$1, lease_expires_at=$2, updated_at=$3
 FROM candidate c
 WHERE mt.id=c.id
-RETURNING mt.id, mt.tenant_id, mt.user_id, mt.task_type, mt.status, mt.provider, mt.provider_task_id,
+RETURNING mt.id, mt.tenant_id, mt.user_id, mt.api_key_id, mt.task_type, mt.status, mt.provider, mt.provider_task_id,
        mt.request_id, mt.input_params, mt.result, mt.estimated_cents, mt.actual_cents, mt.hold_ref,
-       mt.error_class, mt.progress, mt.lease_owner, mt.lease_expires_at, mt.created_at, mt.updated_at, mt.finished_at`
+       mt.error_class, mt.progress, mt.provider_account_id, mt.pool_group_id, mt.protocol_family,
+       mt.requested_model, mt.provider_model_id, mt.route_id, mt.binding_id, mt.binding_rpm_limit,
+       mt.binding_tpm_limit, mt.binding_max_parallel_requests, mt.lease_owner, mt.lease_expires_at,
+       mt.created_at, mt.updated_at, mt.finished_at`
 
 const markSubmittedSQL = `
 UPDATE media_tasks
 SET status='in_progress', provider_task_id=$3, progress=GREATEST(progress, 1),
     lease_owner=NULL, lease_expires_at=NULL, updated_at=$4
 WHERE id=$1 AND lease_owner=$2 AND status='queued'
-RETURNING id, tenant_id, user_id, task_type, status, provider, provider_task_id,
+RETURNING id, tenant_id, user_id, api_key_id, task_type, status, provider, provider_task_id,
        request_id, input_params, result, estimated_cents, actual_cents, hold_ref,
-       error_class, progress, lease_owner, lease_expires_at, created_at, updated_at, finished_at`
+       error_class, progress, provider_account_id, pool_group_id, protocol_family,
+       requested_model, provider_model_id, route_id, binding_id, binding_rpm_limit,
+       binding_tpm_limit, binding_max_parallel_requests, lease_owner, lease_expires_at,
+       created_at, updated_at, finished_at`

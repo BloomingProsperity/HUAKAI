@@ -2,8 +2,14 @@ package controlhttp
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +19,15 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
+
+type telegramBindingStub struct {
+	calls int
+}
+
+func (s *telegramBindingStub) LinkVerifiedSocialIdentity(_ context.Context, _, _ int64, _ userauth.VerifiedIdentity) (userauth.User, error) {
+	s.calls++
+	return userauth.User{}, nil
+}
 
 // oauthBindingListerStub 记录列表查询收到的 tenant/user,并按 (tenant,user) 返回不同集合,
 // 让「越权读到他人绑定」与「正确按 session 过滤」产生可区分的输出。
@@ -147,4 +162,46 @@ func TestOAuthBindingsListRequiresSession(t *testing.T) {
 	if lister.calls != 0 {
 		t.Fatalf("list calls=%d want 0 without session", lister.calls)
 	}
+}
+
+func TestOAuthBindingsTelegramDefaultRejectsStaleWidget(t *testing.T) {
+	const token = "123456:bot-secret"
+	binder := &telegramBindingStub{}
+	params := signedControlTelegramParams(token, map[string]string{
+		"id":        "424242",
+		"auth_date": strconv.FormatInt(time.Now().Add(-25*time.Hour).Unix(), 10),
+	})
+	raw, err := json.Marshal(oauthBindingsTelegramRequest{Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := serveOAuthBindings(t, OAuthBindingsDeps{TelegramBinder: binder, TelegramBotToken: token},
+		sessionauth.SessionIdentity{TenantID: 7, UserID: 42, FamilyID: "family-1"},
+		http.MethodPost, "/v1/users/me/oauth-bindings/telegram", string(raw))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d，期望过期 widget 返回 401，body=%s", rec.Code, rec.Body.String())
+	}
+	if binder.calls != 0 {
+		t.Fatalf("binder calls=%d，过期 widget 不得进入绑定服务", binder.calls)
+	}
+}
+
+func signedControlTelegramParams(botToken string, params map[string]string) map[string]string {
+	out := make(map[string]string, len(params)+1)
+	keys := make([]string, 0, len(params))
+	for key, value := range params {
+		out[key] = value
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		lines = append(lines, key+"="+out[key])
+	}
+	secret := sha256.Sum256([]byte(botToken))
+	mac := hmac.New(sha256.New, secret[:])
+	_, _ = mac.Write([]byte(strings.Join(lines, "\n")))
+	out["hash"] = hex.EncodeToString(mac.Sum(nil))
+	return out
 }

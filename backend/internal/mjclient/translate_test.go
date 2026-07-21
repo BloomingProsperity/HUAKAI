@@ -3,6 +3,7 @@ package mjclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,13 +28,13 @@ func TestMJSubmitImagineTranslate(t *testing.T) {
 		{
 			name:     "imagine",
 			path:     "/mj/submit/imagine",
-			body:     `{"prompt":"draw a quiet control room","botType":"MID_JOURNEY","notifyHook":"https://hook.example/mj"}`,
+			body:     `{"api_key_id":81,"prompt":"draw a quiet control room","botType":"MID_JOURNEY","notifyHook":"https://hook.example/mj"}`,
 			taskType: "mj_imagine",
 		},
 		{
 			name:     "describe",
 			path:     "/mj/submit/describe",
-			body:     `{"base64Array":["data:image/png;base64,abc"],"botType":"NIJI_JOURNEY","notifyHook":"https://hook.example/describe"}`,
+			body:     `{"apiKeyId":81,"base64Array":["data:image/png;base64,abc"],"botType":"NIJI_JOURNEY","notifyHook":"https://hook.example/describe"}`,
 			taskType: "mj_describe",
 		},
 	}
@@ -60,11 +61,21 @@ func TestMJSubmitImagineTranslate(t *testing.T) {
 			if call.input.Provider != "midjourney" || call.input.TaskType != tc.taskType {
 				t.Fatalf("submit provider/task=%q/%q want midjourney/%s", call.input.Provider, call.input.TaskType, tc.taskType)
 			}
+			if call.input.APIKeyID != 81 {
+				t.Fatalf("submit api_key_id=%d want 81", call.input.APIKeyID)
+			}
 			params := decodeParams(t, call.input.InputParams)
 			if params["notifyHook"] == "" || params["botType"] == "" {
 				t.Fatalf("InputParams lost notifyHook/botType: %s", string(call.input.InputParams))
 			}
 		})
+	}
+}
+
+func TestMJRejectsConflictingAPIKeyAliases(t *testing.T) {
+	_, err := translateSubmit("imagine", json.RawMessage(`{"api_key_id":81,"apiKeyId":82}`))
+	if !errors.Is(err, mediatask.ErrInvalidInput) {
+		t.Fatalf("translate err=%v want ErrInvalidInput", err)
 	}
 }
 

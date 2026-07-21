@@ -41,6 +41,9 @@ func TestGeminiCountTokensBindingFallbackClass(t *testing.T) {
 		if env.selector.requests[0].PoolGroupID != 101 {
 			t.Fatalf("首个 pool=%d，期望 normal 101", env.selector.requests[0].PoolGroupID)
 		}
+		if got := env.selector.requests[0].CapabilityFlags; len(got) != 1 || got[0] != countTokensCapability {
+			t.Fatalf("选号能力=%v，期望 [%s]", got, countTokensCapability)
+		}
 	})
 
 	t.Run("normal 耗尽恰一次转移 manual", func(t *testing.T) {

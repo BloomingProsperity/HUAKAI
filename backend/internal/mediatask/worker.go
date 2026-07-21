@@ -182,6 +182,9 @@ func (w *Worker) runOnceRecovered(ctx context.Context) {
 }
 
 func mediaTaskWorkerErrorClass(err error) string {
+	if class, _, recognized := providerErrorDetails(err); recognized {
+		return class
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "operation_timeout"
@@ -201,6 +204,13 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		_, err := w.store.ExpireTask(ctx, task, w.owner, now)
 		return err
 	}
+	// 上轮已拿到终态结果但在统一结算或任务终态写入前中断时，只续结算，绝不再次轮询或提交上游。
+	if isDurablyBoundVideoProvider(task.Provider) && len(task.Result) > 0 && task.ActualCents != nil {
+		_, err := w.store.CompleteSuccess(ctx, task, w.owner, PollResult{
+			Status: StatusSucceeded, Progress: 100, Result: task.Result, ActualCents: *task.ActualCents,
+		}, now)
+		return err
+	}
 	provider, ok, err := w.registry.Provider(ctx, task.Provider)
 	if err != nil {
 		return err
@@ -213,12 +223,24 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		// 单次 Submit 加硬超时:慢上游/半开连接不会让串行 worker 永久挂起、整子系统停摆、预扣久冻。
 		// 超时 < LeaseTTL,保证单次调用绝不跨过租约。
 		submitCtx, cancelSubmit := context.WithTimeout(ctx, cfg.providerCallTimeout())
-		providerTaskID, err := provider.Submit(submitCtx, SubmitReq{
+		submitReq := SubmitReq{
 			TaskID: task.ID, RequestID: task.RequestID, TaskType: task.TaskType, InputParams: task.InputParams,
 			IdempotencyKey: DeriveIdempotencyKey(task.ID, task.RequestID),
-		})
+		}
+		var providerTaskID string
+		if bound, ok := provider.(BoundAsyncMediaProvider); ok {
+			providerTaskID, err = bound.SubmitBound(submitCtx, task, submitReq)
+		} else {
+			providerTaskID, err = provider.Submit(submitCtx, submitReq)
+		}
 		cancelSubmit()
 		if err != nil {
+			if class, retryable, recognized := providerErrorDetails(err); recognized && retryable {
+				return errors.Join(err, w.deferTaskLease(ctx, task, now, providerRetryDelay(err)))
+			} else if recognized {
+				_, ferr := w.store.CompleteFailure(ctx, task, w.owner, class, now)
+				return errors.Join(err, ferr)
+			}
 			_, ferr := w.store.CompleteFailure(ctx, task, w.owner, "provider_submit_failed", now)
 			return errors.Join(err, ferr)
 		}
@@ -235,9 +257,21 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 	}
 	// 单次 Poll 同样加硬超时(理由同 Submit)。
 	pollCtx, cancelPoll := context.WithTimeout(ctx, cfg.providerCallTimeout())
-	result, err := provider.Poll(pollCtx, task.ProviderTaskID)
+	var result PollResult
+	if bound, ok := provider.(BoundAsyncMediaProvider); ok {
+		result, err = bound.PollBound(pollCtx, task, task.ProviderTaskID)
+	} else {
+		result, err = provider.Poll(pollCtx, task.ProviderTaskID)
+	}
 	cancelPoll()
 	if err != nil {
+		if class, retryable, recognized := providerErrorDetails(err); recognized {
+			if retryable {
+				return errors.Join(err, w.deferTaskLease(ctx, task, now, providerRetryDelay(err)))
+			}
+			_, ferr := w.store.CompleteFailure(ctx, task, w.owner, class, now)
+			return errors.Join(err, ferr)
+		}
 		return err
 	}
 	result = result.Normalized()
@@ -252,6 +286,28 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		err = w.store.UpdateProgress(ctx, task, w.owner, result.Progress, now)
 	}
 	return err
+}
+
+func (w *Worker) releaseTaskLease(ctx context.Context, task Task, now time.Time) error {
+	releaser, ok := w.store.(interface {
+		ReleaseLease(context.Context, Task, string, time.Time) error
+	})
+	if !ok {
+		return nil
+	}
+	return releaser.ReleaseLease(ctx, task, w.owner, now)
+}
+
+func (w *Worker) deferTaskLease(ctx context.Context, task Task, now time.Time, delay time.Duration) error {
+	if delay <= 0 {
+		delay = 5 * time.Second
+	}
+	if deferrer, ok := w.store.(interface {
+		DeferLease(context.Context, Task, string, time.Time, time.Time) error
+	}); ok {
+		return deferrer.DeferLease(ctx, task, w.owner, now, now.Add(delay))
+	}
+	return w.releaseTaskLease(ctx, task, now)
 }
 
 // reportOrphan 记录一条潜在孤儿上游任务:上游已创建 providerTaskID,但本 worker

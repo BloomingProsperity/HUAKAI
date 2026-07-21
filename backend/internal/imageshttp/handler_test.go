@@ -121,6 +121,52 @@ func TestImagesHandler_TokenImageSettlesReportedUsageNotReserveEstimate(t *testi
 	}
 }
 
+func TestImagesHandler_GPTImageRetiredB64ResponseFormatIsStrippedBeforeDispatch(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"b64_json":"abc"}],"usage":{"input_tokens":7,"output_tokens":11}}`,
+	})
+
+	rec := env.invoke(t, `{"model":"gpt-image-1","prompt":"legacy client","size":"1024x1024","response_format":"b64_json"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	env.assertNoHangingClaims(t)
+	var upstream map[string]any
+	if err := json.Unmarshal([]byte(env.transport.body), &upstream); err != nil {
+		t.Fatalf("解析上游请求: %v body=%s", err, env.transport.body)
+	}
+	if _, exists := upstream["response_format"]; exists {
+		t.Fatalf("退役字段仍被发送到上游：%s", env.transport.body)
+	}
+	if upstream["model"] != "gpt-image-1" || upstream["prompt"] != "legacy client" || upstream["size"] != "1024x1024" {
+		t.Fatalf("兼容投影破坏有效字段：%s", env.transport.body)
+	}
+}
+
+func TestImagesHandler_GPTImageURLResponseFormatRejectedBeforeReserve(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/should-not-run.png"}]}`,
+	})
+
+	rec := env.invoke(t, `{"model":"gpt-image-1","prompt":"unsupported output","size":"1024x1024","response_format":"url"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	}
+	if got := len(env.claims.reserves); got != 0 {
+		t.Fatalf("reserve calls=%d want 0", got)
+	}
+	if env.transport.called {
+		t.Fatal("不兼容输出格式被拒绝前不应调用上游")
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"response_format_not_supported"`) {
+		t.Fatalf("body=%s want stable response_format_not_supported", rec.Body.String())
+	}
+}
+
 func TestImagesHandler_TokenImageMissingUsageAbortsWithoutZeroSettle(t *testing.T) {
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,

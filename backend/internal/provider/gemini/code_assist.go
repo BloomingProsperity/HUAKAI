@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -36,9 +37,10 @@ const codeAssistBase = "https://cloudcode-pa.googleapis.com"
 // codeAssistVersion 是 Code Assist 内部 API 版本段。
 const codeAssistVersion = "v1internal"
 
-// codeAssistUserAgent 是让请求看起来像 Gemini CLI 客户端的 User-Agent。
-// 本仓自己的格式串（parity 非逐字），仅功能必需，不加额外伪装。
-const codeAssistUserAgent = "HUAKAI-GeminiCLI/1.0"
+const (
+	codeAssistClientVersion = "0.51.0"
+	codeAssistDefaultModel  = "gemini-2.5-pro"
+)
 
 // codeAssistAPIClient 是 X-Goog-Api-Client 的 genai-sdk 形 wire 值（事实
 // wire 值，非可版权表达）。Code Assist 后端按此识别 SDK 客户端。
@@ -46,6 +48,29 @@ const codeAssistAPIClient = "google-genai-sdk/1.0 gl-go/1.0"
 
 // 编译期接口合规断言。
 var _ provider.Adapter = (*CodeAssistAdapter)(nil)
+
+// ApplyCodeAssistHeaders 统一生成请求与项目初始化请求使用的客户端身份头。
+func ApplyCodeAssistHeaders(header http.Header) {
+	if header == nil {
+		return
+	}
+	header.Set("User-Agent", defaultCodeAssistUserAgent(codeAssistDefaultModel))
+	header.Set("X-Goog-Api-Client", codeAssistAPIClient)
+}
+
+func defaultCodeAssistUserAgent(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = codeAssistDefaultModel
+	}
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x64"
+	} else if arch == "386" {
+		arch = "ia32"
+	}
+	return fmt.Sprintf("GeminiCLI/%s/%s (%s; %s; terminal)", codeAssistClientVersion, model, runtime.GOOS, arch)
+}
 
 // CodeAssistAdapter 将客户 Gemini 形请求出站到 cloudcode-pa Code Assist 后端。
 type CodeAssistAdapter struct {
@@ -106,10 +131,11 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	if strings.TrimSpace(in.Credential.Value) == "" {
 		return nil, errors.New("gemini code assist: 凭据 Value 为空（需 OAuth access token）")
 	}
-	if strings.TrimSpace(in.UpstreamModelID) == "" {
+	discoveryRequest := isCodeAssistModelDiscovery(in)
+	if !discoveryRequest && strings.TrimSpace(in.UpstreamModelID) == "" {
 		return nil, errors.New("gemini code assist: UpstreamModelID 不能为空（envelope 需要 model 名）")
 	}
-	if len(bytes.TrimSpace(in.InboundBody)) == 0 {
+	if !discoveryRequest && len(bytes.TrimSpace(in.InboundBody)) == 0 {
 		return nil, errors.New("gemini code assist: InboundBody 为空（envelope 内层 request 不能空）")
 	}
 
@@ -125,9 +151,9 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	// body 用 URL action 表达流式、无顶层 stream 字段,body 探测对它恒 false;
 	// Extra 已带显式值时不取 intent)| body 探测(直灌带顶层 stream 的 body
 	// 的兜底;显式 Extra="false" 压 intent 但不压 body 探测,既有契约)。
-	stream := in.Credential.Extra["stream"] == "true" ||
+	stream := !discoveryRequest && (in.Credential.Extra["stream"] == "true" ||
 		(in.Credential.Extra["stream"] == "" && in.ClientStreamIntent) ||
-		inboundGeminiBodyRequestsStream(in.InboundBody)
+		inboundGeminiBodyRequestsStream(in.InboundBody))
 
 	action := "generateContent"
 	if stream {
@@ -155,12 +181,17 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	}
 
 	// body envelope：inner gemini body 原样作 RawMessage 嵌入 "request"。
-	outBody, err := json.Marshal(codeAssistEnvelope{
-		Model:              in.UpstreamModelID,
-		Project:            projectID,
-		Request:            json.RawMessage(in.InboundBody),
-		EnabledCreditTypes: a.EnabledCreditTypes,
-	})
+	var outBody []byte
+	if discoveryRequest {
+		outBody, err = json.Marshal(map[string]string{"project": projectID})
+	} else {
+		outBody, err = json.Marshal(codeAssistEnvelope{
+			Model:              in.UpstreamModelID,
+			Project:            projectID,
+			Request:            json.RawMessage(in.InboundBody),
+			EnabledCreditTypes: a.EnabledCreditTypes,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gemini code assist: envelope marshal 失败: %w", err)
 	}
@@ -193,7 +224,7 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	// 最小必需 header（反封禁姿态：仅功能必需，不加额外 mimicry）。
 	userAgent := strings.TrimSpace(a.UserAgent)
 	if userAgent == "" {
-		userAgent = codeAssistUserAgent
+		userAgent = defaultCodeAssistUserAgent(in.UpstreamModelID)
 	}
 	apiClient := strings.TrimSpace(a.APIClient)
 	if apiClient == "" {
@@ -203,6 +234,13 @@ func (a *CodeAssistAdapter) BuildRequest(ctx context.Context, in provider.BuildI
 	req.Header.Set("X-Goog-Api-Client", apiClient)
 
 	return req, nil
+}
+
+func isCodeAssistModelDiscovery(in provider.BuildInput) bool {
+	if method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod)); method != "" && method != http.MethodPost {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(in.EndpointPath), "/v1internal:fetchAvailableModels")
 }
 
 // inboundGeminiBodyRequestsStream 探测内层 gemini body 顶层 "stream":true。

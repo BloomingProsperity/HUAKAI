@@ -56,9 +56,23 @@ func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	var body []byte
-	if req != nil && req.URL != nil && strings.Contains(req.URL.Path, "/messages") {
-		body = gatewayhttp.MockAnthropicUpstreamBytes("msg_devmock", "dev-mock-model", inTok, outTok)
-	} else {
+	if req != nil && req.URL != nil {
+		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/models") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewReader(mockModelCatalog())),
+				Request:    req,
+			}, nil
+		}
+		switch {
+		case strings.Contains(req.URL.Path, "/messages"):
+			body = gatewayhttp.MockAnthropicUpstreamBytes("msg_devmock", "dev-mock-model", inTok, outTok)
+		case strings.Contains(req.URL.Path, "streamGenerateContent"):
+			body = mockGeminiSSE(inTok, outTok)
+		}
+	}
+	if len(body) == 0 {
 		body = mockOpenAIChatSSE(inTok, outTok)
 	}
 	return &http.Response{
@@ -88,6 +102,13 @@ func devMockUpstreamDelay() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// mockModelCatalog 按 OpenAI 兼容形状返回确定性的上游模型目录,供账号级模型
+// 发现/同步链在无真实上游时端到端跑通。目录 ID 刻意不等于任何公开别名,以便
+// 冒烟测试能证明同步落库值与选号用的 ProviderModelID 完全一致。
+func mockModelCatalog() []byte {
+	return []byte(`{"object":"list","data":[{"id":"dev-mock-model"},{"id":"dev-mock-model-secondary"}]}`)
+}
+
 // mockOpenAIChatSSE 输出一段「2 个 chunk + [DONE]」的 OpenAI chat.completion.chunk 流,
 // 其最后一个 chunk 携带 usage 块,模拟真实的流式响应。
 func mockOpenAIChatSSE(inTok, outTok int) []byte {
@@ -111,4 +132,18 @@ func mockOpenAIChatSSE(inTok, outTok int) []byte {
 	fmt.Fprintf(&b, "data: %s\n\n", rawF)
 	fmt.Fprint(&b, "data: [DONE]\n\n")
 	return b.Bytes()
+}
+
+func mockGeminiSSE(inTok, outTok int) []byte {
+	payload := map[string]any{
+		"candidates": []any{map[string]any{
+			"index": 0, "finishReason": "STOP",
+			"content": map[string]any{"role": "model", "parts": []any{map[string]any{"text": "ok"}}},
+		}},
+		"usageMetadata": map[string]any{
+			"promptTokenCount": inTok, "candidatesTokenCount": outTok, "totalTokenCount": inTok + outTok,
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	return append(append([]byte("data: "), raw...), []byte("\n\n")...)
 }

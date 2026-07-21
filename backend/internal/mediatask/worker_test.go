@@ -3,6 +3,7 @@ package mediatask
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +75,64 @@ func TestWorkerFailureRefundsTerminally(t *testing.T) {
 	}
 	if store.failureCalls != 1 || store.task.Status != StatusFailed {
 		t.Fatalf("failureCalls=%d task=%+v", store.failureCalls, store.task)
+	}
+}
+
+func TestWorkerBoundProviderRetryableSubmitRequeuesWithoutRefund(t *testing.T) {
+	now := time.Date(2026, 7, 21, 2, 0, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 31, TenantID: 7, UserID: 42, APIKeyID: 13, RequestID: "video-31",
+		TaskType: "video_generate", Provider: "grok_video", Status: StatusQueued, CreatedAt: now,
+	})
+	provider := &boundWorkerProvider{submitErr: retryableProviderError("provider_account_temporarily_unavailable", ErrProviderUnavailable)}
+	worker := NewWorker(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"grok_video": provider},
+		WorkerOptions{Owner: "w-video", Now: func() time.Time { return now }})
+
+	processed, err := worker.RunOnce(context.Background())
+	if !processed || err == nil {
+		t.Fatalf("processed=%v err=%v", processed, err)
+	}
+	if provider.boundSubmitCalls != 1 || provider.legacySubmitCalls != 0 {
+		t.Fatalf("bound/legacy submit=%d/%d", provider.boundSubmitCalls, provider.legacySubmitCalls)
+	}
+	if store.failureCalls != 0 || store.task.Status != StatusQueued || store.task.LeaseOwner != "" {
+		t.Fatalf("retryable submit changed terminal state: %+v", store.task)
+	}
+	if store.deferCalls != 1 || store.task.LeaseExpiresAt == nil || !store.task.LeaseExpiresAt.Equal(now.Add(5*time.Second)) {
+		t.Fatalf("可重试提交没有延后重新入队: calls=%d task=%+v", store.deferCalls, store.task)
+	}
+	if _, err := store.AcquireLease(context.Background(), "too-early", time.Second, now.Add(time.Second)); !errors.Is(err, ErrNoRunnableTask) {
+		t.Fatalf("退避窗口内不应重新拿到任务: %v", err)
+	}
+}
+
+func TestMediaTaskWorkerLogsNormalizedProviderClass(t *testing.T) {
+	err := retryableProviderErrorAfter("upstream_rate_limited", time.Minute, ErrProviderUnavailable)
+	if got := mediaTaskWorkerErrorClass(err); got != "upstream_rate_limited" {
+		t.Fatalf("error_class=%q want upstream_rate_limited", got)
+	}
+}
+
+func TestWorkerBoundProviderTerminalPollFailsAndRefunds(t *testing.T) {
+	now := time.Date(2026, 7, 21, 2, 5, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 32, TenantID: 7, UserID: 42, APIKeyID: 13, RequestID: "video-32",
+		TaskType: "video_generate", Provider: "grok_video", ProviderTaskID: "up-32",
+		Status: StatusInProgress, CreatedAt: now,
+	})
+	provider := &boundWorkerProvider{pollErr: terminalProviderError("provider_task_not_found", ErrProviderUnavailable)}
+	worker := NewWorker(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"grok_video": provider},
+		WorkerOptions{Owner: "w-video", Now: func() time.Time { return now }})
+
+	processed, err := worker.RunOnce(context.Background())
+	if !processed || err == nil {
+		t.Fatalf("processed=%v err=%v", processed, err)
+	}
+	if provider.boundPollCalls != 1 || provider.legacyPollCalls != 0 {
+		t.Fatalf("bound/legacy poll=%d/%d", provider.boundPollCalls, provider.legacyPollCalls)
+	}
+	if store.failureCalls != 1 || store.task.Status != StatusFailed || store.task.ErrorClass != "provider_task_not_found" {
+		t.Fatalf("terminal poll did not refund/fail: %+v", store.task)
 	}
 }
 
@@ -195,6 +254,35 @@ type workerProvider struct {
 	pollCalls   int
 }
 
+type boundWorkerProvider struct {
+	submitErr         error
+	pollErr           error
+	boundSubmitCalls  int
+	boundPollCalls    int
+	legacySubmitCalls int
+	legacyPollCalls   int
+}
+
+func (p *boundWorkerProvider) Submit(context.Context, SubmitReq) (string, error) {
+	p.legacySubmitCalls++
+	return "", nil
+}
+
+func (p *boundWorkerProvider) Poll(context.Context, string) (PollResult, error) {
+	p.legacyPollCalls++
+	return PollResult{}, nil
+}
+
+func (p *boundWorkerProvider) SubmitBound(context.Context, Task, SubmitReq) (string, error) {
+	p.boundSubmitCalls++
+	return "", p.submitErr
+}
+
+func (p *boundWorkerProvider) PollBound(context.Context, Task, string) (PollResult, error) {
+	p.boundPollCalls++
+	return PollResult{}, p.pollErr
+}
+
 func (p *workerProvider) Submit(context.Context, SubmitReq) (string, error) {
 	p.submitCalls++
 	if p.submitID == "" {
@@ -214,6 +302,7 @@ type workerStore struct {
 	completeCalls int
 	failureCalls  int
 	expireCalls   int
+	deferCalls    int
 }
 
 func newWorkerStore(task Task) *workerStore {
@@ -235,13 +324,27 @@ func (s *workerStore) ListTasks(context.Context, int64, int64, int) ([]Task, err
 func (s *workerStore) AcquireLease(_ context.Context, owner string, ttl time.Duration, now time.Time) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if IsTerminal(s.task.Status) || s.task.LeaseOwner != "" {
+	if IsTerminal(s.task.Status) || s.task.LeaseOwner != "" ||
+		(s.task.LeaseExpiresAt != nil && s.task.LeaseExpiresAt.After(now)) {
 		return Task{}, ErrNoRunnableTask
 	}
 	s.task.LeaseOwner = owner
 	expires := now.Add(ttl)
 	s.task.LeaseExpiresAt = &expires
 	return s.task, nil
+}
+
+func (s *workerStore) DeferLease(_ context.Context, task Task, owner string, now, retryAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner || IsTerminal(s.task.Status) {
+		return ErrLeaseLost
+	}
+	s.deferCalls++
+	s.task.LeaseOwner = ""
+	s.task.LeaseExpiresAt = &retryAt
+	s.task.UpdatedAt = now
+	return nil
 }
 
 func (s *workerStore) MarkProviderSubmitted(_ context.Context, task Task, owner, providerTaskID string, now time.Time) (Task, error) {
@@ -268,6 +371,18 @@ func (s *workerStore) UpdateProgress(_ context.Context, task Task, owner string,
 		s.task.LeaseExpiresAt = nil
 		s.task.UpdatedAt = now
 	}
+	return nil
+}
+
+func (s *workerStore) ReleaseLease(_ context.Context, task Task, owner string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner || IsTerminal(s.task.Status) {
+		return ErrLeaseLost
+	}
+	s.task.LeaseOwner = ""
+	s.task.LeaseExpiresAt = nil
+	s.task.UpdatedAt = now
 	return nil
 }
 

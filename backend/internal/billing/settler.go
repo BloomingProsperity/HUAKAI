@@ -937,6 +937,11 @@ func normalizeEndClass(v gateway.StreamEndClass, stream bool) string {
 			return "unknown_termination"
 		}
 		return "non_streaming"
+	case gateway.StreamEndGraceful:
+		if !stream {
+			return "non_streaming"
+		}
+		return string(v)
 	case gateway.UpstreamEOFNoTerminal:
 		return "stream_end_no_terminal_marker"
 	case gateway.ResponseEventTooLarge:

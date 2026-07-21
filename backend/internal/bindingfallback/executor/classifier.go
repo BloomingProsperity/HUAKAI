@@ -24,7 +24,7 @@ func SignalFromDecision(classification gateway.Classification, decision gateway.
 		return bindingfallback.SignalTransientConnectionFailure
 	case gateway.ErrorClassUpstreamTimeout:
 		return bindingfallback.SignalUpstreamTimeout
-	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked,
+	case gateway.ErrorClassOAuthInvalidGrant, gateway.ErrorClassTokenRevoked, gateway.ErrorClassCredentialRejected,
 		gateway.ErrorClassKYCRequired, gateway.ErrorClassOrgDisabled,
 		gateway.ErrorClassWorkspaceDeactivated, gateway.ErrorClassCreditExhausted:
 		return bindingfallback.SignalUpstreamAuthFailure
@@ -73,7 +73,7 @@ func SignalFromDecision(classification gateway.Classification, decision gateway.
 		return bindingfallback.SignalUpstreamTimeout
 	case "upstream_empty_response":
 		return bindingfallback.SignalEmptyResponse
-	case "upstream_auth_failure", "local_credential_expired", "credential_protocol_incompatible":
+	case "upstream_auth_failure", "upstream_credential_rejected", "local_credential_expired", "credential_protocol_incompatible":
 		return bindingfallback.SignalUpstreamAuthFailure
 	case "credential_resolve_error":
 		return bindingfallback.SignalCredentialResolutionFailure

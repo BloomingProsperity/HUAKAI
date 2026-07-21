@@ -148,10 +148,12 @@ type CreateOrderInput struct {
 	OrderKind          string
 	SubscriptionPlanID *int64
 	// Compliance* 可选记录用户确认的条款版本 / 时间 / 用户 / IP; 空值按 NULL 持久化。
-	ComplianceTermsVersion string
-	ComplianceAcceptedAt   *time.Time
-	ComplianceAcceptedBy   int64
-	ComplianceAcceptedIP   string
+	ComplianceTermsVersion  string
+	ComplianceAcceptedAt    *time.Time
+	ComplianceAcceptedBy    int64
+	ComplianceAcceptedIP    string
+	RechargeMaxPending      int
+	RechargeDailyLimitCents int64
 }
 
 // CreateOrderResult 建单结果。Idempotent=true 表示同 out_trade_no 重放命中已有单。
@@ -267,7 +269,6 @@ var (
 	ErrExternalTradeConflict   = ErrIdempotencyConflict
 	ErrPendingLimit            = errors.New("payment: pending order limit reached")
 	ErrDailyAmountLimit        = errors.New("payment: daily amount limit reached")
-	ErrAdminDebitNotSupported  = errors.New("payment: admin debit not supported")
 	ErrUserNotFound            = errors.New("payment: user not found")
 	ErrAccountInactive         = errors.New("payment: account inactive")
 	ErrPaymentAmountMismatch   = ErrCallbackRejected

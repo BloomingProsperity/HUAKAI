@@ -111,6 +111,10 @@ type RequestControls struct {
 	// ToolNameHashAlgorithm 可选；D4 推迟决策点 schema 留位（默认空 = sha8 隐含约定）。
 	// P-2/P-3 时再具体选 sha8/sha12，并在此处显式写入。
 	ToolNameHashAlgorithm string `json:"tool_name_hash_algorithm,omitempty"`
+
+	// NativeOptions 保存只有原生供应商协议能够表达的请求控制。
+	// key 必须是协议族，投影器只能读取自己的条目，避免原生字段跨协议泄漏。
+	NativeOptions map[string]json.RawMessage `json:"native_options,omitempty"`
 }
 
 // ResponseFormat 是结构化输出/JSON mode 的载体；用 RawMessage 容纳各 vendor dialect。

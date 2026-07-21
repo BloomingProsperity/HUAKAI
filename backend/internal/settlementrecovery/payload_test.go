@@ -254,6 +254,15 @@ func TestValidate_AcceptsAudioDeliveredSource(t *testing.T) {
 	}
 }
 
+func TestValidate_AcceptsEmbeddingsAndRerankDeliveredSources(t *testing.T) {
+	for _, source := range []Source{SourceEmbeddingsDelivered, SourceRerankDelivered} {
+		p := Payload{Source: source, Settle: settleRequestPersisted{ClaimID: 1, TenantID: 1}}
+		if err := p.Validate(); err != nil {
+			t.Fatalf("Validate source %q: %v", source, err)
+		}
+	}
+}
+
 // TestValidate_RejectsMissingClaimID 变异: 删 ClaimID==0 check → 红。
 func TestValidate_RejectsMissingClaimID(t *testing.T) {
 	p := Payload{Source: SourceStream, Settle: settleRequestPersisted{ClaimID: 0, TenantID: 1}}

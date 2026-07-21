@@ -10,6 +10,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
 )
@@ -86,6 +87,11 @@ func accountCooldownCandidate(statusCode int) bool {
 func classificationProvider(attempt Attempt) string {
 	if strings.EqualFold(strings.TrimSpace(attempt.ProtocolFamily), "bedrock_invoke") {
 		return "bedrock"
+	}
+	if strings.EqualFold(strings.TrimSpace(attempt.ProtocolFamily), "antigravity_session") ||
+		(strings.EqualFold(strings.TrimSpace(attempt.Account.Platform), credentialstore.VendorGemini) &&
+			strings.EqualFold(strings.TrimSpace(attempt.Account.AccountType), credentialstore.AuthModeAntigravity)) {
+		return credentialstore.VendorAntigravity
 	}
 	return strings.TrimSpace(attempt.Account.Platform)
 }

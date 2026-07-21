@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 )
 
 func TestSunoFetchRoutesUseMediaTaskStatus(t *testing.T) {
@@ -30,5 +33,13 @@ func TestSunoFetchRoutesUseMediaTaskStatus(t *testing.T) {
 	}
 	if service.statusID != 604 {
 		t.Fatalf("query fetch service id=%d want 604", service.statusID)
+	}
+}
+
+func TestSunoMultipleKeysRequireExplicitSelection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeServiceError(rec, mediatask.ErrAPIKeyAmbiguous)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"media_task_api_key_ambiguous"`) {
+		t.Fatalf("status=%d body=%s want 409 media_task_api_key_ambiguous", rec.Code, rec.Body.String())
 	}
 }

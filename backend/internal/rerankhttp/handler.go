@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -57,6 +58,7 @@ type Deps struct {
 	CredentialVault       provider.CredentialVault
 	Dispatcher            dispatcher
 	Settler               billing.Settler
+	SettleRecoveryDLQ     settlementrecovery.Enqueuer
 	BillingPolicyResolver *billing.PolicyResolver
 	BillingPolicyVersion  string
 	RequestClass          string
@@ -174,6 +176,10 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRegistryUnknownError, clienterr.MessageFor(clienterr.CodeRegistryUnknownError))
 		return false
 	}
+	if !hasRerankModelCapability(resolved.Capabilities) {
+		writeJSONError(w, http.StatusNotFound, "model_not_available", "model does not support rerank")
+		return false
+	}
 	ex.resolved = resolved
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{TenantID: ex.ident.TenantID, UserID: ex.ident.UserID, APIKeyID: ex.ident.APIKeyID, RequestID: ex.requestID},
@@ -187,6 +193,7 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return false
 	}
+	requireRerankCapability(&plan)
 	ex.plan = plan
 	return true
 }

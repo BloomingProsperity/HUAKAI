@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 const upstreamE2EAccountImportCapability = "advanced_account_intake"
@@ -33,6 +34,7 @@ func TestUpstreamE2E_FormalAccountImport(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_E2E_DATABASE_URL 未设")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	pgPool, err := db.Open(setupCtx, db.PoolConfig{DSN: dsn})
 	if err != nil {
@@ -130,11 +132,12 @@ func importUpstreamE2EAccount(
 		Content: content,
 		Account: accountintake.AccountDefaults{
 			ProviderID: seed.providerID, ChannelID: seed.channelID,
-			ExactName:       seed.testCase.slug + "-正式导入-" + uuid.NewString(),
-			AccountType:     seed.testCase.accountType,
-			CapConcurrency:  int32Pointer(seed.testCase.accountCap()),
-			Priority:        int32Pointer(100),
-			ModelAllowList:  []string{seed.testCase.model},
+			ExactName:      seed.testCase.slug + "-正式导入-" + uuid.NewString(),
+			AccountType:    seed.testCase.accountType,
+			CapConcurrency: int32Pointer(seed.testCase.accountCap()),
+			Priority:       int32Pointer(100),
+			// 账号白名单描述真实上游模型，客户端别名只参与模型注册表解析。
+			ModelAllowList:  []string{seed.testCase.routedModel()},
 			CapabilityFlags: []string{"stream", "tools", "vision", "json", "audio", "file"},
 		},
 	}
@@ -304,8 +307,8 @@ GROUP BY pa.id`, seed.tenantID, accountID).Scan(
 		t.Fatalf("正式导入账号不可运行: enabled=%t credential_state=%s credentials=%d",
 			enabled, credentialState, credentialCount)
 	}
-	if !stringSliceContains(modelAllowList, seed.testCase.model) {
-		t.Fatalf("正式导入账号缺少模型白名单 %q: %v", seed.testCase.model, modelAllowList)
+	if !stringSliceContains(modelAllowList, seed.testCase.routedModel()) {
+		t.Fatalf("正式导入账号缺少上游模型白名单 %q: %v", seed.testCase.routedModel(), modelAllowList)
 	}
 	for _, required := range []string{"stream", "tools", "vision", "json", "audio", "file"} {
 		if !stringSliceContains(capabilityFlags, required) {
@@ -317,6 +320,21 @@ GROUP BY pa.id`, seed.tenantID, accountID).Scan(
 	}
 	if !seed.testCase.expectImportIdentity && identitySource != "" && identitySource != "import_payload" {
 		t.Fatalf("正式导入身份来源异常: %q", identitySource)
+	}
+	if seed.testCase.expectSubscription {
+		if item.Subscription == nil {
+			t.Fatal("正式导入没有返回套餐观测")
+		}
+		if item.Subscription.Source != subscriptionprofile.SourceProviderAPI ||
+			item.Subscription.Trust != subscriptionprofile.TrustVerifiedAPI ||
+			item.Subscription.Verification != subscriptionprofile.VerificationVerified ||
+			item.Subscription.Status != subscriptionprofile.StatusObserved ||
+			item.Subscription.Plan == subscriptionprofile.PlanUnknown {
+			t.Fatalf("正式导入套餐不是上游已验证事实: %+v", *item.Subscription)
+		}
+		if len(item.SystemLabels) != 1 || item.SystemLabels[0] != item.Subscription.Label() {
+			t.Fatalf("正式导入套餐标签=%v，套餐观测=%+v", item.SystemLabels, *item.Subscription)
+		}
 	}
 	for _, label := range item.SystemLabels {
 		if stringSliceContains(tags, label) {
@@ -333,6 +351,59 @@ WHERE tenant_id=$1 AND provider_account_id=$2`, seed.tenantID, accountID).Scan(&
 			t.Fatalf("套餐投影标签=%q，执行响应标签=%q", storedLabel, label)
 		}
 	}
+}
+
+func cleanupUpstreamE2EGraph(ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed) error {
+	if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, seed.tenantID); err != nil {
+		return fmt.Errorf("清理钱账与额度行: %w", err)
+	}
+	if err := cleanupSpecializedLiveSubscriptionObservations(ctx, pgPool, seed.tenantID); err != nil {
+		return fmt.Errorf("清理套餐观测: %w", err)
+	}
+	statements := []struct {
+		query string
+		arg   any
+	}{
+		{`DELETE FROM sticky_bindings WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_account_routing_signals WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_account_quota_facts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM credential_acquisition_flow_sessions WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM oauth_refresh_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM oauth_storm_budget WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM rate_limit_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_admin_alerts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM pool_routing_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM ops_runtime_logs WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM account_intake_staged_credentials WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM models WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM users WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID},
+		{`DELETE FROM tenants WHERE id=$1`, seed.tenantID},
+		{`DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion},
+	}
+	for _, statement := range statements {
+		if _, err := pgPool.Exec(ctx, statement.query, statement.arg); err != nil {
+			return fmt.Errorf("执行 %q: %w", statement.query, err)
+		}
+	}
+	return nil
 }
 
 func int32Pointer(value int) *int32 {

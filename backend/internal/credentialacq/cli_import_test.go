@@ -127,6 +127,83 @@ func TestCLIImportFlattensAntigravityConsumerToken(t *testing.T) {
 	}
 }
 
+func TestCLIImportFlattensClaudeCredentialFile(t *testing.T) {
+	input := `{
+		"claudeAiOauth": {
+			"accessToken": "claude-access",
+			"refreshToken": "claude-refresh",
+			"expiresAt": 4070908800000,
+			"refreshTokenExpiresAt": 4102444800000,
+			"subscriptionType": "max_20x",
+			"rateLimitTier": "default_claude_max_20x",
+			"scopes": ["user:inference", "user:profile"]
+		}
+	}`
+	candidates, err := ParseImportContent(input, credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth)
+	if err != nil {
+		t.Fatalf("解析 Claude 凭据文件失败: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("候选数=%d want 1", len(candidates))
+	}
+	candidate := candidates[0]
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatalf("解析归一载荷失败: %v", err)
+	}
+	if payload["access_token"] != "claude-access" || payload["refresh_token"] != "claude-refresh" {
+		t.Fatalf("Claude token 未归一: %s", candidate.Payload)
+	}
+	if payload["expires_at"] != "2099-01-01T00:00:00Z" || payload["refresh_expires_at"] != "2100-01-01T00:00:00Z" {
+		t.Fatalf("Claude 到期时间未归一: %s", candidate.Payload)
+	}
+	if payload["subscription_tier"] != "max_20x" || payload["rate_limit_tier"] != "default_claude_max_20x" {
+		t.Fatalf("Claude 套餐元数据未归一: %s", candidate.Payload)
+	}
+	if _, exists := payload["claudeAiOauth"]; exists {
+		t.Fatalf("归一载荷残留嵌套秘密副本: %s", candidate.Payload)
+	}
+	if candidate.Subscription.Label() != "anthropic:max_20x" {
+		t.Fatalf("套餐标签=%q want anthropic:max_20x", candidate.Subscription.Label())
+	}
+	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(candidate.Vendor, candidate.AuthMode)
+	if err != nil {
+		t.Fatalf("查找 Claude handler: %v", err)
+	}
+	if err := handler.ValidatePayload(candidate.Payload); err != nil {
+		t.Fatalf("归一载荷不能进入凭据仓: %v", err)
+	}
+	material, err := handler.RuntimeMaterial(candidate.Payload)
+	if err != nil {
+		t.Fatalf("归一载荷不能物化: %v", err)
+	}
+	if material.Kind != credentialstore.RuntimeOAuthAccessToken || material.Value != "claude-access" {
+		t.Fatalf("运行材料=(%q,%q)", material.Kind, material.Value)
+	}
+}
+
+func TestCLIImportNormalizesGeminiTopLevelExpiryDate(t *testing.T) {
+	candidates, err := ParseImportContent(`{
+		"access_token":"gemini-access",
+		"refresh_token":"gemini-refresh",
+		"expiry_date":4070908800000,
+		"token_type":"Bearer"
+	}`, credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("解析 Gemini 凭据失败: candidates=%d err=%v", len(candidates), err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidates[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["expires_at"] != "2099-01-01T00:00:00Z" {
+		t.Fatalf("Gemini expires_at=%v", payload["expires_at"])
+	}
+	if _, exists := payload["expiry_date"]; exists {
+		t.Fatalf("归一载荷残留 expiry_date: %s", candidates[0].Payload)
+	}
+}
+
 func TestCLIImportRejectsEmptyInput(t *testing.T) {
 	if _, err := ParseImportContent(" \n\t ", credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth); err != ErrInvalidImportBody {
 		t.Fatalf("err=%v want %v", err, ErrInvalidImportBody)

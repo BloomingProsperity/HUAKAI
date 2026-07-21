@@ -70,6 +70,48 @@ func TestPassthroughAdapter_BuildRequest_APIKey(t *testing.T) {
 	}
 }
 
+func TestPassthroughAdapter_BuildRequest_GetModelDiscovery(t *testing.T) {
+	a := &PassthroughAdapter{}
+	in := provider.BuildInput{
+		HTTPMethod:   "GET",
+		EndpointPath: "/v1/models",
+		InboundBody:  []byte(`{}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "sk-test-fake-key-not-real",
+		},
+		Account: provider.AccountInfo{AccountID: 42, Platform: "openai", AccountType: "api_key"},
+	}
+	req, err := a.BuildRequest(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != "GET" {
+		t.Errorf("Method=%q,模型发现必须按 HTTPMethod 发 GET", req.Method)
+	}
+	if req.URL.String() != "https://api.openai.com/v1/models" {
+		t.Errorf("URL=%q want /v1/models", req.URL.String())
+	}
+	if got := req.Header.Get("Content-Type"); got != "" {
+		t.Errorf("GET 不应携带 Content-Type,got %q", got)
+	}
+	body, _ := io.ReadAll(req.Body)
+	if len(body) != 0 {
+		t.Errorf("GET 不应携带请求体:%s", body)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_RejectUnknownMethod(t *testing.T) {
+	a := &PassthroughAdapter{}
+	_, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		HTTPMethod: "DELETE",
+		Credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-test-fake-key-not-real"},
+	})
+	if err == nil {
+		t.Fatal("不支持的方法必须拒绝")
+	}
+}
+
 func TestPassthroughAdapter_BuildRequest_UsesInboundContentType(t *testing.T) {
 	a := &PassthroughAdapter{}
 	in := provider.BuildInput{

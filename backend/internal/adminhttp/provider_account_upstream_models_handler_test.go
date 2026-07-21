@@ -3,358 +3,234 @@ package adminhttp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountmodeldiscovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
-
-// ---------------------------------------------------------------------------
-// 桩件(Stubs)
-// ---------------------------------------------------------------------------
 
 type stubUpstreamModelsAuth struct {
 	ident admin.AdminIdentity
 	err   error
 }
 
-func (s *stubUpstreamModelsAuth) Resolve(_ context.Context, _ *http.Request) (admin.AdminIdentity, error) {
+func (s stubUpstreamModelsAuth) Resolve(context.Context, *http.Request) (admin.AdminIdentity, error) {
 	return s.ident, s.err
 }
 
-type stubUpstreamModelsAccountStore struct {
-	row admindb.AdminProviderAccountRow
-	err error
+type stubUpstreamModelsAccountStore struct{ err error }
+
+func (s stubUpstreamModelsAccountStore) GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
+	return admindb.AdminProviderAccountRow{ID: 7, TenantID: 42}, s.err
 }
 
-func (s *stubUpstreamModelsAccountStore) GetAdminProviderAccount(_ context.Context, _ admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	return s.row, s.err
+type stubUpstreamModelsDiscovery struct {
+	result     accountmodeldiscovery.Result
+	syncResult accountmodeldiscovery.SyncResult
+	err        error
+	syncInput  accountmodeldiscovery.SyncInput
 }
 
-type stubUpstreamModelsCredStore struct {
-	rec credentialstore.CredentialRecord
-	err error
+func (s *stubUpstreamModelsDiscovery) Discover(context.Context, int64, int64) (accountmodeldiscovery.Result, error) {
+	return s.result, s.err
 }
 
-func (s *stubUpstreamModelsCredStore) LoadForProviderAccountTest(_ context.Context, _, _ int64) (credentialstore.CredentialRecord, error) {
-	return s.rec, s.err
+func (s *stubUpstreamModelsDiscovery) Sync(_ context.Context, in accountmodeldiscovery.SyncInput) (accountmodeldiscovery.SyncResult, error) {
+	s.syncInput = in
+	return s.syncResult, s.err
 }
 
-// allowAllTransportWrapper 原样返回基础传输层(不做 IP 守卫),
-// 以便测试中能访问到 httptest.Server(127.0.0.1)。
-func allowAllTransportWrapper(rt http.RoundTripper) (http.RoundTripper, error) {
-	return rt, nil
+func modelsRouter(d UpstreamModelsDeps) *chi.Mux {
+	router := chi.NewRouter()
+	MountProviderAccountUpstreamModelsRoutes(router, d)
+	return router
 }
 
-func platformAdminIdent() admin.AdminIdentity {
-	return admin.AdminIdentity{Role: admin.RolePlatformAdmin, ScopeTenantID: 42, TokenID: 1}
+func scopedPlatformAdmin() admin.AdminIdentity {
+	return admin.AdminIdentity{Role: admin.RolePlatformAdmin, ScopeTenantID: 42, TokenID: 8}
 }
 
-func upstreamStaticPayload(baseURL, authHeader string) []byte {
-	b, _ := json.Marshal(map[string]string{
-		"base_url":          baseURL,
-		"auth_header_value": authHeader,
+func TestUpstreamModelsSyncAllowsSessionAdminWrite(t *testing.T) {
+	router := modelsRouter(UpstreamModelsDeps{
+		Auth: adminsessionauthtest.Resolver(), Accounts: stubUpstreamModelsAccountStore{},
+		Discovery: &stubUpstreamModelsDiscovery{},
 	})
-	return b
-}
-
-// buildModelsRouter 把处理器挂载到 /{id}/upstream-models。
-func buildModelsRouter(d UpstreamModelsDeps) *chi.Mux {
-	r := chi.NewRouter()
-	MountProviderAccountUpstreamModelsRoutes(r, d)
-	return r
-}
-
-// ---------------------------------------------------------------------------
-// 测试:使用桩上游的正常路径
-// ---------------------------------------------------------------------------
-
-func TestUpstreamModelsHandler_HappyPath(t *testing.T) {
-	// 桩上游返回两个 model。
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"data":[{"id":"gpt-4"},{"id":"gpt-3.5-turbo"}]}`)
-	}))
-	defer upstream.Close()
-
-	// 账号的 base_url 是 https(生产 scheme);本测试注入了一个
-	// transport wrapper,把每次上游调用都代理到 http 的 httptest
-	// 服务器,因此真实的 SSRF 守卫会在守卫测试中单独验证。
-	proxyRT := &proxyToTestServerRT{target: upstream.URL}
-	d := UpstreamModelsDeps{
-		Auth: &stubUpstreamModelsAuth{ident: platformAdminIdent()},
-		Accounts: &stubUpstreamModelsAccountStore{
-			row: admindb.AdminProviderAccountRow{ID: 7, TenantID: 42},
-		},
-		Creds: &stubUpstreamModelsCredStore{
-			rec: credentialstore.CredentialRecord{
-				AuthMode:         "upstream_static",
-				PlaintextPayload: upstreamStaticPayload("https://api.example.com", "Bearer sk-test"),
-			},
-		},
-		TransportWrapper: func(_ http.RoundTripper) (http.RoundTripper, error) {
-			return proxyRT, nil
-		},
-	}
-
-	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp upstreamModelsListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Count != 2 {
-		t.Errorf("expected 2 models, got %d", resp.Count)
-	}
-	if len(resp.Models) != 2 || resp.Models[0] != "gpt-4" || resp.Models[1] != "gpt-3.5-turbo" {
-		t.Errorf("unexpected models: %v", resp.Models)
+	if status := adminsessionauthtest.Status(
+		router, http.MethodPost, "/7/upstream-models/sync", adminsessionauthtest.SessionBearer,
+	); status == http.StatusUnauthorized {
+		t.Fatalf("租户管理员 session 调用账号模型同步不应在 handler 前被 401 拒绝")
 	}
 }
 
-// proxyToTestServerRT 把所有请求重定向到指定的 target URL
-//(用于需要访问 httptest.Server 的处理器测试)。
-type proxyToTestServerRT struct {
-	target string
-	base   http.RoundTripper
-}
-
-func (p *proxyToTestServerRT) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	targetURL, _ := http.NewRequest(http.MethodGet, p.target+req.URL.Path, nil)
-	clone.URL = targetURL.URL
-	clone.Host = targetURL.Host
-	if p.base == nil {
-		p.base = http.DefaultTransport
+func TestUpstreamModelsHandlerDiscoversAllAccountFamiliesThroughService(t *testing.T) {
+	discovery := &stubUpstreamModelsDiscovery{result: accountmodeldiscovery.Result{
+		AccountID: 7, AccountCredentialID: 9, CredentialVersion: 3, Vendor: "anthropic", AuthMode: "api_key",
+		ProtocolFamily: "anthropic_messages", DiscoveredAt: time.Unix(123, 0).UTC(),
+		Models: []accountmodeldiscovery.Model{{ID: "claude-a", DisplayName: "Claude A", Capabilities: []string{"messages"}}},
+	}}
+	router := modelsRouter(UpstreamModelsDeps{Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{}, Discovery: discovery})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	return p.base.RoundTrip(clone)
-}
-
-// ---------------------------------------------------------------------------
-// 测试:被守卫拦截的上游返回 422
-// ---------------------------------------------------------------------------
-
-func TestUpstreamModelsHandler_GuardBlocked(t *testing.T) {
-	// 模拟 SSRF 守卫拒绝连接的 transport wrapper。
-	d := UpstreamModelsDeps{
-		Auth: &stubUpstreamModelsAuth{ident: platformAdminIdent()},
-		Accounts: &stubUpstreamModelsAccountStore{
-			row: admindb.AdminProviderAccountRow{ID: 7, TenantID: 42},
-		},
-		Creds: &stubUpstreamModelsCredStore{
-			rec: credentialstore.CredentialRecord{
-				AuthMode:         "upstream_static",
-				PlaintextPayload: upstreamStaticPayload("https://api.example.com", "Bearer sk-test"),
-			},
-		},
-		TransportWrapper: func(_ http.RoundTripper) (http.RoundTripper, error) {
-			return &blockedRT{}, nil
-		},
+	var response upstreamModelsResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
 	}
-
-	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var body map[string]map[string]string
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode error body: %v", err)
-	}
-	if body["error"]["code"] != "upstream_blocked" {
-		t.Errorf("expected upstream_blocked error code, got: %s", body["error"]["code"])
+	if response.Count != 1 || len(response.Models) != 1 || response.Models[0] != "claude-a" || response.Items[0].DisplayName != "Claude A" {
+		t.Fatalf("响应未同时保留兼容 ID 与模型详情: %+v", response)
 	}
 }
 
-// blockedRT 模拟一个返回 ErrUnsafePassthroughEndpoint 的传输层。
-type blockedRT struct{}
-
-func (b *blockedRT) RoundTrip(_ *http.Request) (*http.Response, error) {
-	return nil, fmt.Errorf("%w: loopback address blocked in test", provider.ErrUnsafePassthroughEndpoint)
-}
-
-// ---------------------------------------------------------------------------
-// 测试:账号未找到返回 404
-// ---------------------------------------------------------------------------
-
-func TestUpstreamModelsHandler_AccountNotFound(t *testing.T) {
-	d := UpstreamModelsDeps{
-		Auth:             &stubUpstreamModelsAuth{ident: platformAdminIdent()},
-		Accounts:         &stubUpstreamModelsAccountStore{err: pgx.ErrNoRows},
-		Creds:            &stubUpstreamModelsCredStore{},
-		TransportWrapper: allowAllTransportWrapper,
+func TestUpstreamModelsSyncUsesAuthenticatedActor(t *testing.T) {
+	discovery := &stubUpstreamModelsDiscovery{syncResult: accountmodeldiscovery.SyncResult{
+		Result:  accountmodeldiscovery.Result{AccountID: 7, Vendor: "openai", AuthMode: "api_key", Models: []accountmodeldiscovery.Model{{ID: "gpt-4o"}}, DiscoveredAt: time.Now().UTC()},
+		Changed: true, PreviousCount: 2,
+	}}
+	router := modelsRouter(UpstreamModelsDeps{Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{}, Discovery: discovery})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/7/upstream-models/sync", strings.NewReader(`{"reason":"人工刷新"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rec.Code)
+	if discovery.syncInput.TenantID != 42 || discovery.syncInput.AccountID != 7 || discovery.syncInput.ActorID != "admin_token:8" || discovery.syncInput.ActorRole != admin.RolePlatformAdmin || discovery.syncInput.Reason != "人工刷新" {
+		t.Fatalf("同步没有使用认证身份和服务端租户: %+v", discovery.syncInput)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// 测试:缺少 base_url 返回 422
-// ---------------------------------------------------------------------------
-
-func TestUpstreamModelsHandler_MissingBaseURL(t *testing.T) {
-	d := UpstreamModelsDeps{
-		Auth: &stubUpstreamModelsAuth{ident: platformAdminIdent()},
-		Accounts: &stubUpstreamModelsAccountStore{
-			row: admindb.AdminProviderAccountRow{ID: 7, TenantID: 42},
-		},
-		Creds: &stubUpstreamModelsCredStore{
-			rec: credentialstore.CredentialRecord{
-				AuthMode:         "upstream_static",
-				PlaintextPayload: upstreamStaticPayload("", "Bearer sk-test"),
-			},
-		},
-		TransportWrapper: allowAllTransportWrapper,
-	}
-	r := buildModelsRouter(d)
-	req := httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+func TestUpstreamModelsHandlerMapsCredentialRotationConflict(t *testing.T) {
+	discovery := &stubUpstreamModelsDiscovery{err: &accountmodeldiscovery.DiscoveryError{Kind: accountmodeldiscovery.ErrorCredentialChanged}}
+	router := modelsRouter(UpstreamModelsDeps{Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{}, Discovery: discovery})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/7/upstream-models/sync", nil))
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "credential_changed") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
-// ---------------------------------------------------------------------------
-// buildModelsURL 的单元测试
-// ---------------------------------------------------------------------------
-
-func TestBuildModelsURL(t *testing.T) {
-	cases := []struct {
-		base string
-		want string
-		ok   bool
+func TestUpstreamModelsFailureEmitsDiscriminatingLog(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		method     string
+		path       string
+		err        error
+		eventClass string
+		errorClass string
+		authMode   string
 	}{
-		{"https://api.openai.com", "https://api.openai.com/v1/models", true},
-		{"https://api.openai.com/", "https://api.openai.com/v1/models", true},
-		{"https://proxy.example.com/v1", "https://proxy.example.com/v1/models", true},
-		{"https://proxy.example.com/api/v2", "https://proxy.example.com/api/v2/models", true},
-		{"http://insecure.example.com", "", false},
-		{"not-a-url", "", false},
+		{
+			name: "发现被上游拒绝", method: http.MethodGet, path: "/7/upstream-models",
+			err: &accountmodeldiscovery.DiscoveryError{
+				Kind: accountmodeldiscovery.ErrorCredentialRejected, StatusCode: http.StatusUnauthorized,
+				Vendor: "anthropic", AuthMode: "claude_code",
+			},
+			eventClass: "upstream_models_discover_failed", errorClass: "upstream_auth_rejected", authMode: "claude_code",
+		},
+		{
+			name: "同步撞凭据轮换", method: http.MethodPost, path: "/7/upstream-models/sync",
+			err: &accountmodeldiscovery.DiscoveryError{
+				Kind: accountmodeldiscovery.ErrorCredentialChanged, Vendor: "openai", AuthMode: "codex_cli_oauth",
+			},
+			eventClass: "upstream_models_sync_failed", errorClass: "auth_rotation_conflict", authMode: "codex_cli_oauth",
+		},
+		{
+			// refresh_token 词根撞 privacy 值位禁写,必须以等义分类落日志。
+			name: "刷新凭据模式换等义分类", method: http.MethodGet, path: "/7/upstream-models",
+			err: &accountmodeldiscovery.DiscoveryError{
+				Kind: accountmodeldiscovery.ErrorRateLimited, StatusCode: http.StatusTooManyRequests,
+				Vendor: "openai", AuthMode: "refresh_token",
+			},
+			eventClass: "upstream_models_discover_failed", errorClass: "rate_limited", authMode: "oauth_refresh",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs strings.Builder
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			router := modelsRouter(UpstreamModelsDeps{
+				Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{},
+				Discovery: &stubUpstreamModelsDiscovery{err: test.err},
+			})
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(test.method, test.path, nil))
+
+			var discoveryErr *accountmodeldiscovery.DiscoveryError
+			errors.As(test.err, &discoveryErr)
+			logged := logs.String()
+			if strings.Contains(logged, "privacy_guard_hit") || strings.Contains(logged, `"redaction_result":"blocked"`) {
+				t.Fatalf("失败日志被 privacy 禁写拦截,可辨识字段全丢: %s", logged)
+			}
+			for field, want := range map[string]string{
+				"component":   "adminhttp.provider_account_upstream_models",
+				"error_class": test.errorClass,
+				"event_class": test.eventClass,
+				"outcome":     "failed",
+				"vendor":      discoveryErr.Vendor,
+				"auth_mode":   test.authMode,
+			} {
+				if !strings.Contains(logged, `"`+field+`":"`+want+`"`) {
+					t.Fatalf("失败日志缺可辨识字段 %s=%s: %s", field, want, logged)
+				}
+			}
+			if !strings.Contains(logged, `"tenant_id":42`) || !strings.Contains(logged, `"provider_account_id":7`) {
+				t.Fatalf("失败日志缺 tenant/account 关键 ID: %s", logged)
+			}
+			if !strings.Contains(logged, `"upstream_status":`+strconv.Itoa(discoveryErr.StatusCode)) {
+				t.Fatalf("失败日志缺上游状态码: %s", logged)
+			}
+		})
 	}
-	for _, tc := range cases {
-		got, err := buildModelsURL(tc.base)
-		if tc.ok && err != nil {
-			t.Errorf("buildModelsURL(%q): unexpected error: %v", tc.base, err)
+}
+
+func TestUpstreamModelsSuccessDoesNotEmitFailureLog(t *testing.T) {
+	var logs strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	discovery := &stubUpstreamModelsDiscovery{result: accountmodeldiscovery.Result{
+		AccountID: 7, Vendor: "openai", AuthMode: "api_key",
+		Models: []accountmodeldiscovery.Model{{ID: "gpt-4o"}}, DiscoveredAt: time.Now().UTC(),
+	}}
+	router := modelsRouter(UpstreamModelsDeps{Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{}, Discovery: discovery})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(logs.String(), `"result":"failed"`) {
+		t.Fatalf("成功路径不应产生失败日志: %s", logs.String())
+	}
+}
+
+func TestUpstreamModelsHandlerDoesNotHideAccountLookupFailure(t *testing.T) {
+	for _, test := range []struct {
+		err    error
+		status int
+	}{
+		{pgx.ErrNoRows, http.StatusNotFound},
+		{errors.New("数据库不可用"), http.StatusServiceUnavailable},
+	} {
+		router := modelsRouter(UpstreamModelsDeps{Auth: stubUpstreamModelsAuth{ident: scopedPlatformAdmin()}, Accounts: stubUpstreamModelsAccountStore{err: test.err}, Discovery: &stubUpstreamModelsDiscovery{}})
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/7/upstream-models", nil))
+		if recorder.Code != test.status {
+			t.Fatalf("err=%v status=%d，期望 %d", test.err, recorder.Code, test.status)
 		}
-		if !tc.ok && err == nil {
-			t.Errorf("buildModelsURL(%q): expected error, got %q", tc.base, got)
-		}
-		if tc.ok && got != tc.want {
-			t.Errorf("buildModelsURL(%q): got %q, want %q", tc.base, got, tc.want)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// parseModelsResponse 的单元测试
-// ---------------------------------------------------------------------------
-
-func TestParseModelsResponse(t *testing.T) {
-	body := []byte(`{"data":[{"id":"gpt-4"},{"id":"gpt-3.5-turbo"},{"id":"gpt-4"}]}`)
-	models, err := parseModelsResponse(body)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// 已去重:gpt-4 虽出现两次,结果中只出现一次。
-	if len(models) != 2 {
-		t.Errorf("expected 2 unique models, got %d: %v", len(models), models)
-	}
-}
-
-func TestParseModelsResponse_InvalidJSON(t *testing.T) {
-	_, err := parseModelsResponse([]byte(`not json`))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// SSRF 守卫 IP 判定逻辑的单元测试(使用真实的 provider 包逻辑)
-// ---------------------------------------------------------------------------
-
-// TestSSRFGuard_IPPredicate 通过导出的 ErrUnsafePassthroughEndpoint 哨兵错误,
-// 直接验证 publicPassthroughIP / passthroughIPAllowedForHost。
-// 我们使用 WrapPassthroughEndpointTransport:它必须拒绝 127.0.0.1 和
-// 私有 IP,并且必须接受公网 IP。
-func TestSSRFGuard_RealTransportWrapperRejectsPrivateIP(t *testing.T) {
-	// 经守卫的传输层必须拒绝对 127.0.0.1 的拨号。
-	base := http.DefaultTransport.(*http.Transport).Clone()
-	base.Proxy = nil
-	rt, err := provider.WrapPassthroughEndpointTransport(base)
-	if err != nil {
-		t.Fatalf("WrapPassthroughEndpointTransport: %v", err)
-	}
-	client := &http.Client{Transport: rt}
-	_, dialErr := client.Get("https://127.0.0.1/")
-	if dialErr == nil {
-		t.Fatal("expected error dialing loopback, got nil")
-	}
-	if !isBlockedErr(dialErr) {
-		t.Errorf("expected ErrUnsafePassthroughEndpoint, got: %v", dialErr)
-	}
-}
-
-// TestSSRFGuard_PrivateIPBlocked 验证针对 10.0.0.1(私有)的 IP 判定逻辑。
-func TestSSRFGuard_PrivateIPTransportBlocked(t *testing.T) {
-	base := http.DefaultTransport.(*http.Transport).Clone()
-	base.Proxy = nil
-	rt, err := provider.WrapPassthroughEndpointTransport(base)
-	if err != nil {
-		t.Fatalf("WrapPassthroughEndpointTransport: %v", err)
-	}
-	client := &http.Client{Transport: rt}
-	_, dialErr := client.Get("https://10.0.0.1/")
-	if dialErr == nil {
-		t.Fatal("expected error dialing private IP, got nil")
-	}
-	if !isBlockedErr(dialErr) {
-		t.Errorf("expected ErrUnsafePassthroughEndpoint wrapping, got: %v", dialErr)
-	}
-}
-
-// TestSSRFGuard_MutationVerification 记录了变异测试。
-// 变异方式:将 WrapPassthroughEndpointTransport 改为允许私有 IP ??// 此测试就会变红。本测试记录了守卫的预期行为,
-// 但不会修改生产代码(变异是在外部进行的)。
-func TestSSRFGuard_MutationVerification(t *testing.T) {
-	// 如果守卫正确地拦截了私有 IP,那么对 192.168.1.1 的拨号
-	// 必须返回 ErrUnsafePassthroughEndpoint。
-	base := http.DefaultTransport.(*http.Transport).Clone()
-	base.Proxy = nil
-	rt, err := provider.WrapPassthroughEndpointTransport(base)
-	if err != nil {
-		t.Fatalf("WrapPassthroughEndpointTransport: %v", err)
-	}
-	client := &http.Client{Transport: rt}
-	_, dialErr := client.Get("https://192.168.1.1/")
-	if dialErr == nil {
-		t.Fatal("MUTATION EXPOSED: guard allowed private 192.168.1.1; real guard should block it")
-	}
-	if !isBlockedErr(dialErr) {
-		t.Logf("got non-guard error: %v (may be DNS, still acceptable as block)", dialErr)
 	}
 }

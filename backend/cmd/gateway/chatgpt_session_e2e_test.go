@@ -57,6 +57,7 @@ func TestChatGPTSessionRelayE2E_CodexEndpointBaseURL(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL 未设置，跳过 chatgpt session e2e")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 
 	upstream := newChatGPTSessionE2EFakeUpstream(t)
 	defer upstream.Close()

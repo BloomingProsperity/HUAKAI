@@ -372,6 +372,7 @@ var knownModelCapabilityBindings = map[string]struct{}{
 	"images":              {},
 	"audio_speech":        {},
 	"audio_transcription": {},
+	"moderation":          {},
 	"generateContent":     {},
 	"countTokens":         {},
 	"embedContent":        {},

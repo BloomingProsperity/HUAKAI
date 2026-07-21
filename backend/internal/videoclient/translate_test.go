@@ -18,7 +18,7 @@ import (
 func TestVideoSubmitTranslate(t *testing.T) {
 	// 变异:translate 丢掉 duration 或把 Provider 改成非 video;
 	// 下面捕获的 mediatask input 将不再符合契约。
-	body := `{"model":"kling-v1","prompt":"wide cinematic skyline","duration":5}`
+	body := `{"apiKeyId":83,"model":"kling-v1","prompt":"wide cinematic skyline","duration":5}`
 	service := &serviceStub{submitResult: taskFixture(501, json.RawMessage(body))}
 	mux := mountWithSession(service)
 	rec := httptest.NewRecorder()
@@ -43,6 +43,9 @@ func TestVideoSubmitTranslate(t *testing.T) {
 	if strings.TrimSpace(call.input.RequestID) == "" {
 		t.Fatal("request_id must be generated when the video client omits one")
 	}
+	if call.input.APIKeyID != 83 {
+		t.Fatalf("submit api_key_id=%d want 83", call.input.APIKeyID)
+	}
 	params := decodeParams(t, call.input.InputParams)
 	if params["model"] != "kling-v1" || params["prompt"] != "wide cinematic skyline" {
 		t.Fatalf("InputParams lost model/prompt: %s", string(call.input.InputParams))
@@ -66,6 +69,14 @@ func TestVideoFetchQueryUsesMediaTaskID(t *testing.T) {
 	}
 	if service.statusTenant != 7 || service.statusUser != 42 || service.statusID != 777 {
 		t.Fatalf("fetch service scope tenant/user/id=%d/%d/%d want 7/42/777", service.statusTenant, service.statusUser, service.statusID)
+	}
+}
+
+func TestVideoMultipleKeysRequireExplicitSelection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeServiceError(rec, mediatask.ErrAPIKeyAmbiguous)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"media_task_api_key_ambiguous"`) {
+		t.Fatalf("status=%d body=%s want 409 media_task_api_key_ambiguous", rec.Code, rec.Body.String())
 	}
 }
 
@@ -140,4 +151,30 @@ func (s *serviceStub) List(_ context.Context, tenantID, userID int64, limit int)
 		return nil, s.listErr
 	}
 	return append([]mediatask.Task(nil), s.listResult...), nil
+}
+
+// 变异刀:删掉 sanitizeTask(状态或列表任一处)→ 对应断言抓到上游受凭据地址泄露转红。
+func TestVideoSessionSurfacesHideCredentialGatedUpstreamURI(t *testing.T) {
+	gated := taskFixture(888, json.RawMessage(`{"prompt":"x"}`))
+	gated.Provider = "gemini_video"
+	gated.Status = mediatask.StatusSucceeded
+	gated.RequestID = "video_g1"
+	gated.Result = json.RawMessage(`{"upstream_content":{"uri":"https://generativelanguage.googleapis.com/v1beta/files/out-1:download?alt=media"}}`)
+	service := &serviceStub{statusResult: gated, listResult: []mediatask.Task{gated}}
+	mux := mountWithSession(service)
+
+	for _, path := range []string{"/video/fetch?id=888", "/video/fetch"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "generativelanguage.googleapis.com") {
+			t.Fatalf("%s 泄露上游受凭据地址: %s", path, body)
+		}
+		if !strings.Contains(body, "/v1/videos/video_g1/content") {
+			t.Fatalf("%s 缺网关代理下载地址: %s", path, body)
+		}
+	}
 }

@@ -14,11 +14,13 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
@@ -206,8 +208,8 @@ func TestRerank401UsesSingleAuthFailoverBeyondAttemptBudget(t *testing.T) {
 	if len(selector.requests) != 2 || len(dispatcher.accounts) != 2 || len(claims.reserves) != 2 {
 		t.Fatalf("selector/dispatcher/reserve calls=%d/%d/%d want 2/2/2", len(selector.requests), len(dispatcher.accounts), len(claims.reserves))
 	}
-	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_auth_failure" {
-		t.Fatalf("aborts=%+v want one upstream_auth_failure", claims.aborts)
+	if len(claims.aborts) != 1 || claims.aborts[0].reason != "upstream_credential_rejected" {
+		t.Fatalf("aborts=%+v，期望一次 upstream_credential_rejected", claims.aborts)
 	}
 }
 
@@ -272,16 +274,28 @@ func TestRerankUpstreamSuccessRecordedBeforeSettleFailure(t *testing.T) {
 	env := newRerankTestEnv(t)
 	health := &rerankHealthSpy{}
 	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &rerankRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
 	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
 	env.deps.CredentialVault = rerankRetryVault(t, 44)
 
 	rec := env.invoke(t, rerankBody(2))
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d body=%s want 500", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s，完整业务响应已交付，期望 200", rec.Code, rec.Body.String())
 	}
 	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalSuccess {
 		t.Fatalf("health signals=%+v want one upstream success", health.signals)
+	}
+	if recovery.calls != 1 || recovery.event.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q，期望 1/%q", recovery.calls, recovery.event.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+	payload, err := settlementrecovery.Decode(recovery.event.Payload)
+	if err != nil {
+		t.Fatalf("decode recovery payload: %v", err)
+	}
+	if payload.Source != settlementrecovery.SourceRerankDelivered {
+		t.Fatalf("recovery source=%q，期望 %q", payload.Source, settlementrecovery.SourceRerankDelivered)
 	}
 }
 

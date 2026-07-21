@@ -93,6 +93,7 @@ func TestObserveHTTPError401RecordsAuthChallengeAndDeduplicatesRefresh(t *testin
 		RefreshDedupeWindow:    time.Minute,
 	})
 	attempt := validAttempt("openai")
+	attempt.Account.AccountType = credentialstore.AuthModeChatGPTOAuth
 
 	first := observer.ObserveHTTPError(
 		context.Background(),
@@ -140,6 +141,42 @@ func TestObserveHTTPError401RecordsAuthChallengeAndDeduplicatesRefresh(t *testin
 		}
 	case <-time.After(time.Second):
 		t.Fatal("refresh result did not reach auth cooldown lane")
+	}
+}
+
+func TestObserveHTTPErrorStaticKey401DoesNotStartOAuthRefresh(t *testing.T) {
+	health := &channelHealthSpy{}
+	refreshCalls := make(chan refreshCall, 1)
+	observer := NewObserver(Dependencies{
+		ChannelHealth:          health,
+		CredentialHotRefresher: refreshSpy{calls: refreshCalls},
+	})
+	attempt := validAttempt(credentialstore.VendorKimi)
+	attempt.Account.AccountType = credentialstore.AuthModeAPIKey
+
+	got := observer.ObserveHTTPError(
+		context.Background(),
+		attempt,
+		http.StatusUnauthorized,
+		nil,
+		[]byte(`{"error":{"type":"invalid_authentication_error"}}`),
+	)
+
+	if got.Classification.Class != gateway.ErrorClassCredentialRejected {
+		t.Fatalf("classification=%s，期望静态凭据拒绝", got.Classification.Class)
+	}
+	if got.Decision.RefreshIntent != gateway.RefreshNone || !got.Decision.SwitchAccount ||
+		!got.Decision.CountsAgainstAuthFailoverBudget || got.Decision.AbortReason != "upstream_credential_rejected" {
+		t.Fatalf("decision=%+v，期望换号但不触发 OAuth 刷新", got.Decision)
+	}
+	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalAuthChallenge ||
+		health.signals[0].AuthFailureClass != authcooldown.ClassAmbiguous {
+		t.Fatalf("health=%+v，期望歧义鉴权降级信号", health.signals)
+	}
+	select {
+	case call := <-refreshCalls:
+		t.Fatalf("静态 Key 401 不得触发 OAuth 刷新：%+v", call)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
