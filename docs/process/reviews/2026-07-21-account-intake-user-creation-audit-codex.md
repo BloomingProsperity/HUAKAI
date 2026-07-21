@@ -107,7 +107,7 @@ go test -tags=integration_pg -count=1 \
 
 ## 八、尚未冒充完成的事项
 
-唯一剩余的是外部系统活体验证，不是已知本地代码缺口：真实 Claude 浏览器 OAuth 与 Cookie 凭据分别跑“授权、换码、身份、刷新、一次模型请求”。刷新可能旋转或作废现有 refresh token，因此必须使用允许消耗的专用测试账号；在此之前不擅自拿日常账号试，也不把 mock/真 PostgreSQL 测试说成厂商 E2E。
+唯一剩余的是外部系统活体验证，不是已知本地代码缺口：真实 Claude 浏览器 OAuth 与 Cookie 凭据分别跑“授权、换码、身份、刷新、一次模型请求”。还要用 Claude 订阅 OAuth 反转号验证 `opus-4-8`、`fable-5` 是否与 Sonnet 一样返回 429；现有官方 `sk-ant-api03` key 不覆盖这条非官方账号路径。刷新可能旋转或作废现有 refresh token，因此必须使用允许消耗的专用测试账号；在此之前不擅自拿日常账号试，也不把 mock/真 PostgreSQL 测试说成厂商 E2E。
 
 ## 九、风险与功能完整性
 
