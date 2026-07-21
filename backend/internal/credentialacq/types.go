@@ -52,6 +52,8 @@ const (
 	ClientSourceDisabledMissingConfig = "disabled_missing_config"
 )
 
+const SessionPurposeAccountIntake = "account_intake"
+
 type FieldKind string
 
 const (
@@ -188,6 +190,14 @@ type StartInput struct {
 	LongLivedRequested    bool
 	IdempotencyKey        string
 	ExpiresAt             time.Time
+	Purpose               string
+}
+
+// IsAccountIntakeSession 识别由服务端创建的账号创建型 OAuth 导入会话。
+// 执行完成后会绑定真实账号，但 purpose 仍用于恢复、日志和重放判断。
+func IsAccountIntakeSession(session Session) bool {
+	purpose, _ := session.RedactedContext["purpose"].(string)
+	return session.Kind == FlowKindOAuth && purpose == SessionPurposeAccountIntake
 }
 
 type CallbackInput struct {
@@ -218,7 +228,7 @@ type CredentialCandidate struct {
 type Session struct {
 	ID                        string         `json:"id"`
 	TenantID                  int64          `json:"tenant_id"`
-	ProviderAccountID         int64          `json:"provider_account_id"`
+	ProviderAccountID         int64          `json:"provider_account_id,omitempty"`
 	Vendor                    string         `json:"vendor"`
 	AuthMode                  string         `json:"auth_mode"`
 	Kind                      FlowKind       `json:"flow_kind"`
@@ -486,6 +496,39 @@ func flowKindAllowed(allowed []FlowKind, candidate FlowKind) bool {
 	candidate = NormalizeFlowKind(candidate)
 	for _, k := range allowed {
 		if NormalizeFlowKind(k) == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// SourceAllowedForMode 判断某来源(flow_kind)是否被该 vendor/auth_mode 的 ModePlan 允许,
+// 与 CreateFromStart 的 AllowedHelpers 强制同一真相源:OAuth-only 模式(如 claude_ai_oauth)
+// 拒绝粘贴/JSON/CSV 导入这类来源。供批量导入预检在写库前做来源回校,堵住"通用导入自声明
+// auth_mode 绕过 OAuth-only 合同"。未知模式返回 true(交由 MustLookup 兜底,不在此误拒)。
+func SourceAllowedForMode(vendor, authMode string, kind FlowKind) bool {
+	plan, ok := LookupModePlan(vendor, authMode)
+	if !ok {
+		return true
+	}
+	if len(plan.AllowedHelpers) == 0 {
+		return true
+	}
+	return flowKindAllowed(plan.AllowedHelpers, kind)
+}
+
+// DirectCredentialInputAllowed 判断旧的“账号与凭据一起创建”入口能否接收该模式。
+// 该入口只能表达粘贴或导入已有材料，不能证明 OAuth 回调、Setup Token 换取、
+// 云端引导或令牌交换已经完成。只要模式允许任一种本地导入来源即可使用；纯交互式
+// 模式必须走专用获取流程，由服务端写入来源事实。
+func DirectCredentialInputAllowed(vendor, authMode string) bool {
+	plan, ok := LookupModePlan(vendor, authMode)
+	if !ok || !plan.IsEnabled || plan.IsExperimental || plan.RiskLevel == RiskLevelBlocked {
+		return false
+	}
+	for _, kind := range plan.AllowedHelpers {
+		switch NormalizeFlowKind(kind) {
+		case FlowKindPaste, FlowKindCLIImport, FlowKindCSVImport, FlowKindJSONImport:
 			return true
 		}
 	}

@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const setupTestToken = "setup-test-token-0123456789-abcdef"
+
 // 共享测试库上不能包事务(install 自管事务),用"每测一个全新租户"做隔离:
 // 新租户天然无 admin → needs_setup=true;测毕删该租户的用户与租户行。
 func openSetupPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -52,7 +54,7 @@ func newIsolatedTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool) in
 
 func newSetupServer(pool *pgxpool.Pool, tenantID int64) *httptest.Server {
 	r := chi.NewRouter()
-	Mount(r, Deps{Pool: pool, TenantID: tenantID})
+	Mount(r, Deps{Pool: pool, TenantID: tenantID, SetupToken: setupTestToken})
 	return httptest.NewServer(r)
 }
 
@@ -77,7 +79,13 @@ func getStatus(t *testing.T, srv *httptest.Server) bool {
 
 func postInstall(t *testing.T, srv *httptest.Server, payload string) *http.Response {
 	t.Helper()
-	resp, err := http.Post(srv.URL+"/setup/install", "application/json", strings.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/setup/install", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build POST install: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(SetupTokenHeader, setupTestToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST install: %v", err)
 	}
@@ -152,13 +160,21 @@ func TestSetupInstallConcurrentSingleWinner(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			payload := fmt.Sprintf(`{"email":"race%d@example.com","password":"Str0ngPass!"}`, i)
-			resp, err := http.Post(srv.URL+"/setup/install", "application/json", strings.NewReader(payload))
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/setup/install", strings.NewReader(payload))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set(SetupTokenHeader, setupTestToken)
+				resp, err := http.DefaultClient.Do(req)
+				if err == nil {
+					resp.Body.Close()
+					codes[i] = resp.StatusCode
+					return
+				}
+			}
 			if err != nil {
 				codes[i] = -1
 				return
 			}
-			resp.Body.Close()
-			codes[i] = resp.StatusCode
 		}(i)
 	}
 	wg.Wait()

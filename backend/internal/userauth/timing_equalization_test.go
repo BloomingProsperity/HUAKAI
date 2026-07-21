@@ -26,7 +26,7 @@ func TestAuthenticate_EqualWorkOnUserMiss(t *testing.T) {
 	svc.Now = func() time.Time { return now }
 
 	// 注册一个真实用户, 作为「存在但口令错」的对照组。
-	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "real@example.test", Password: "secret"}); err != nil {
+	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "real@example.test", Password: "secret12"}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestAuthenticate_EqualWorkOnAccountStateBranches(t *testing.T) {
 			svc.RequireVerified = true // 让 unverified 分支可触发;有口令的 active 用户需先验证
 			svc.Now = func() time.Time { return now }
 
-			hash, err := HashPassword("secret", cheap)
+			hash, err := HashPassword("secret12", cheap)
 			if err != nil {
 				t.Fatalf("hash: %v", err)
 			}

@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,8 +18,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
@@ -60,7 +61,6 @@ type adminPoolStoreStub struct {
 	insertID         int64
 	insert           *admindb.InsertProviderAccountParams
 	providerFamilies map[int64]string
-	riskPeers        []providerAccountRiskPeerForTest
 	listArg          *admindb.ListAdminProviderAccountsParams
 	list             []admindb.AdminProviderAccountRow
 	getArg           *admindb.GetAdminProviderAccountParams
@@ -79,23 +79,9 @@ func (s *adminPoolStoreStub) GetProviderProtocolForAccountCreate(_ context.Conte
 	return "openai_chat", nil
 }
 
-type providerAccountRiskPeerForTest struct {
-	ID       int64
-	TenantID int64
-	Provider int64
-	Channel  int64
-	Type     string
-	Vendor   string
-	AuthMode string
-}
-
 type adminPoolCredentialWriterStub struct {
 	input *credentialstore.CreateCredentialInput
 	id    int64
-}
-
-type adminPoolChannelHealthStub struct {
-	key *channelhealth.ChannelKey
 }
 
 type adminPoolRateLimitRecoveryStub struct {
@@ -103,6 +89,21 @@ type adminPoolRateLimitRecoveryStub struct {
 	recoverInput *provideraccountrecovery.RecoverAccountInput
 	result       provideraccountrecovery.ClearRateLimitResult
 	err          error
+}
+
+type allowAdminPoolCapability struct{}
+
+func (allowAdminPoolCapability) Allowed(context.Context, int64, string) (bool, error) {
+	return true, nil
+}
+
+type adminPoolCapabilityStub struct {
+	allowed bool
+	err     error
+}
+
+func (s adminPoolCapabilityStub) Allowed(context.Context, int64, string) (bool, error) {
+	return s.allowed, s.err
 }
 
 func (s *adminPoolRateLimitRecoveryStub) ClearRateLimit(_ context.Context, in provideraccountrecovery.ClearRateLimitInput) (provideraccountrecovery.ClearRateLimitResult, error) {
@@ -121,11 +122,6 @@ func (s *adminPoolRateLimitRecoveryStub) RecoverAccountState(_ context.Context, 
 	return s.result, s.err
 }
 
-func (s *adminPoolChannelHealthStub) EnsureDefaultActive(_ context.Context, key channelhealth.ChannelKey) (channelhealth.Record, error) {
-	s.key = &key
-	return channelhealth.Record{Key: key, State: channelhealth.StateActive}, nil
-}
-
 func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error) {
 	s.input = &in
 	id := s.id
@@ -139,59 +135,18 @@ func (s *adminPoolCredentialWriterStub) Create(_ context.Context, in credentials
 	}, nil
 }
 
+// WithTransaction 仅供满足接口；单元桩不驱动真事务，原子建号（账号+凭据+审计单事务回滚）
+// 由 admin_pool_accounts_create_atomic_integration_test.go 用真 PG 覆盖。
+func (s *adminPoolCredentialWriterStub) WithTransaction(context.Context, func(*credentialstore.Store, db.DBTX) error) error {
+	return errors.New("adminPoolCredentialWriterStub 不支持事务建号")
+}
+
 func (s *adminPoolStoreStub) InsertProviderAccount(_ context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
 	s.insert = &arg
 	if s.insertID == 0 {
 		return 101, nil
 	}
 	return s.insertID, nil
-}
-
-func (s *adminPoolStoreStub) ListProviderAccountRiskPeers(_ context.Context, arg admindb.ListProviderAccountRiskPeersParams) ([]admindb.ProviderAccountRiskPeerRow, error) {
-	out := make([]admindb.ProviderAccountRiskPeerRow, 0, len(s.riskPeers))
-	for _, peer := range s.riskPeers {
-		if peer.TenantID != arg.TenantID || peer.Channel != arg.ChannelID {
-			continue
-		}
-		out = append(out, admindb.ProviderAccountRiskPeerRow{
-			ID: peer.ID, TenantID: peer.TenantID, ProviderID: peer.Provider, ChannelID: peer.Channel,
-			AccountType: peer.Type, CredentialVendor: peer.Vendor, CredentialAuthMode: peer.AuthMode,
-		})
-	}
-	return out, nil
-}
-
-func (s *adminPoolStoreStub) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	if err := validateProviderAccountProtocolCompatibility(arg.ProviderFamily, arg.Candidate.AccountType, arg.Candidate.Vendor, arg.Candidate.AuthMode); err != nil {
-		return adminPoolAccountCreateWithMixedRiskResult{}, err
-	}
-	peers, err := s.ListProviderAccountRiskPeers(ctx, admindb.ListProviderAccountRiskPeersParams{
-		TenantID:  arg.Insert.TenantID,
-		ChannelID: arg.Insert.ChannelID,
-	})
-	if err != nil {
-		return adminPoolAccountCreateWithMixedRiskResult{}, err
-	}
-	report := mixedchannelrisk.Evaluate(arg.Candidate, mixedRiskPeerAccounts(peers))
-	if report.HighRisk && !arg.Confirmed {
-		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, errProviderAccountMixedRiskConfirmationRequired
-	}
-	id, err := s.InsertProviderAccount(ctx, arg.Insert)
-	if err != nil {
-		return adminPoolAccountCreateWithMixedRiskResult{RiskReport: report}, err
-	}
-	return adminPoolAccountCreateWithMixedRiskResult{ID: id, RiskReport: report}, nil
-}
-
-func mixedRiskPeerAccounts(rows []admindb.ProviderAccountRiskPeerRow) []mixedchannelrisk.Account {
-	out := make([]mixedchannelrisk.Account, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, mixedchannelrisk.Account{
-			ID: row.ID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
-			AccountType: row.AccountType, Vendor: row.CredentialVendor, AuthMode: row.CredentialAuthMode,
-		})
-	}
-	return out
 }
 
 func (s *adminPoolStoreStub) ListAdminProviderAccounts(_ context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
@@ -334,117 +289,6 @@ func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admind
 	return admindb.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
 }
 
-func TestAdminPoolAccounts_CreateHappyPathInsertsAccount(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":" acct ","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"cap_concurrency":3,"priority":10,"model_allow_list":[" gpt-4o "],"capability_flags":["chat"]}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil || store.insert.TenantID != 7 || store.insert.ProviderID != 8 || store.insert.ChannelID != 9 {
-		t.Fatalf("insert params mismatch: %+v", store.insert)
-	}
-	if store.insert.Name != "acct" || store.insert.AccountType != "api_key" || string(store.insert.Credentials) != "{}" {
-		t.Fatalf("insert account fields mismatch: %+v", store.insert)
-	}
-	if store.insert.CapConcurrency == nil || *store.insert.CapConcurrency != 3 || store.insert.Priority == nil || *store.insert.Priority != 10 {
-		t.Fatalf("insert capacity fields mismatch: %+v", store.insert)
-	}
-	if got := store.insert.ModelAllowList; len(got) != 1 || got[0] != "gpt-4o" {
-		t.Fatalf("model_allow_list=%v", got)
-	}
-}
-
-func TestAdminPoolAccounts_CreateAdditionalProviderAccountFields(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"static_weight":4,"probe_model":" gpt-4o-mini-probe ","tags":[" prod ",""],"extra":{"azure_api_version":"2024-08-01","claude_beta_query":"true"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil {
-		t.Fatal("InsertProviderAccount was not called")
-	}
-	if store.insert.StaticWeight == nil || *store.insert.StaticWeight != 4 {
-		t.Fatalf("static_weight insert=%v want 4", store.insert.StaticWeight)
-	}
-	if store.insert.ProbeModel == nil || *store.insert.ProbeModel != "gpt-4o-mini-probe" {
-		t.Fatalf("probe_model insert=%v want gpt-4o-mini-probe", store.insert.ProbeModel)
-	}
-	if got := strings.Join(store.insert.Tags, ","); got != "prod" {
-		t.Fatalf("tags insert=%v want [prod]", store.insert.Tags)
-	}
-	if !strings.Contains(string(store.insert.Extra), `"azure_api_version":"2024-08-01"`) ||
-		!strings.Contains(string(store.insert.Extra), `"claude_beta_query":"true"`) {
-		t.Fatalf("extra insert=%s", string(store.insert.Extra))
-	}
-}
-
-func TestAdminPoolAccounts_CreateSessionTypeInsertsAccount(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 88, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"claude-session","account_type":"session","vendor":"anthropic","auth_mode":"claude_code","credentials":{"session_token":"sess-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil {
-		t.Fatal("InsertProviderAccount was not called")
-	}
-	if store.insert.AccountType != "session" {
-		t.Fatalf("AccountType=%q want session", store.insert.AccountType)
-	}
-}
-
-func TestAdminPoolAccounts_CreateWritesAuditEventWithoutCredentialBytes(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77}
-	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if len(store.audits) != 1 {
-		t.Fatalf("audit count=%d want 1", len(store.audits))
-	}
-	a := store.audits[0]
-	if a.Action != "create_provider_account" || a.TargetType != "provider_account" || *a.TargetID != 77 {
-		t.Fatalf("audit target mismatch: %+v", a)
-	}
-	if a.Reason == nil || *a.Reason != "创建 provider account" {
-		t.Fatalf("audit reason=%v", a.Reason)
-	}
-	if strings.Contains(string(a.Payload), "sk-live") {
-		t.Fatalf("audit payload leaked credential: %s", string(a.Payload))
-	}
-}
-
-func TestAdminPoolAccounts_CreateWithCredentialV2StoresEmptyLegacyJSON(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if string(store.insert.Credentials) != "{}" {
-		t.Fatalf("legacy credentials=%s want empty object", string(store.insert.Credentials))
-	}
-	if credentials.input == nil || credentials.input.ProviderAccountID != 77 || credentials.input.AuthMode != "api_key" {
-		t.Fatalf("credential input mismatch: %+v", credentials.input)
-	}
-	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
-		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
-	}
-	var response struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("response json: %v", err)
-	}
-	if response.ID != 77 {
-		t.Fatalf("id=%d want 77", response.ID)
-	}
-}
-
 func TestAdminPoolAccounts_CreateRejectsLegacyInlineCredential(t *testing.T) {
 	store := &adminPoolStoreStub{insertID: 77}
 	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
@@ -454,6 +298,47 @@ func TestAdminPoolAccounts_CreateRejectsLegacyInlineCredential(t *testing.T) {
 	}
 	if store.insert != nil {
 		t.Fatalf("legacy 内联凭据不得写 provider_accounts：%+v", store.insert)
+	}
+}
+
+func TestAdminPoolAccounts_CreateRejectsOAuthOnlyModeBeforeTransaction(t *testing.T) {
+	req := createProviderAccountRequest{
+		ProviderID: 8, ChannelID: 9, Name: "claude-oauth", AccountType: "oauth",
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		Credentials: json.RawMessage(`{"access_token":"forged","refresh_token":"forged"}`),
+	}
+	if err := validateCreateProviderAccount(req); err == nil || !strings.Contains(err.Error(), "dedicated acquisition flow") {
+		t.Fatalf("纯 OAuth 模式必须拒绝通用直建,err=%v", err)
+	}
+	req.AccountType = "api_key"
+	req.Vendor = credentialstore.VendorOpenAI
+	req.AuthMode = credentialstore.AuthModeAPIKey
+	req.Credentials = json.RawMessage(`{"api_key":"sk-test"}`)
+	if err := validateCreateProviderAccount(req); err != nil {
+		t.Fatalf("可证明为粘贴来源的官钥应通过直建校验: %v", err)
+	}
+}
+
+func TestAdminPoolAccounts_CreateRequiresTenantGrantAndPlatformOwnership(t *testing.T) {
+	body := `{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, Credentials: &adminPoolCredentialWriterStub{},
+		Capabilities: adminPoolCapabilityStub{allowed: false},
+	}, http.MethodPost, "/admin/v1/provider-accounts", body)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "tenant_capability_not_granted") {
+		t.Fatalf("未授权租户 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil {
+		t.Fatalf("未授权租户不得开始建号:%+v", store.insert)
+	}
+
+	rec = invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: adminPoolAdmin(), Store: store, Credentials: &adminPoolCredentialWriterStub{},
+		PlatformTenantID: 7,
+	}, http.MethodPost, "/admin/v1/provider-accounts?tenant_id=8", body)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "cross_tenant_account_admin_forbidden") {
+		t.Fatalf("部署者代下级租户建号 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -481,128 +366,6 @@ func TestAdminPoolAccounts_ClaudeSessionRejectsAPIKeyBeforeInsert(t *testing.T) 
 	}
 	if store.insert != nil || credentials.input != nil {
 		t.Fatalf("不兼容账号不得落库或写凭据: insert=%+v credential=%+v", store.insert, credentials.input)
-	}
-}
-
-// TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth 证明正向模式仍可创建，
-// 并精确把 claude_ai_oauth 凭据交给 credential store。
-func TestAdminPoolAccounts_ClaudeSessionAcceptsOAuth(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77, providerFamilies: map[int64]string{8: "anthropic_claude_session"}}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"claude-oauth","account_type":"oauth","vendor":"anthropic","auth_mode":"claude_ai_oauth","credentials":{"access_token":"oauth-access","refresh_token":"oauth-refresh"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil || credentials.input == nil || credentials.input.AuthMode != credentialstore.AuthModeClaudeAIOAuth {
-		t.Fatalf("session OAuth 正向创建未闭合: insert=%+v credential=%+v", store.insert, credentials.input)
-	}
-}
-
-func TestAdminPoolAccounts_CreateWithCredentialInitializesChannelHealth(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	health := &adminPoolChannelHealthStub{}
-	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
-		Auth: providerAccountAdmin(), Store: store, Credentials: credentials, ChannelHealth: health,
-	}, http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if health.key == nil || health.key.TenantID != 7 || health.key.ProviderAccountID != 77 ||
-		health.key.AccountCredentialID != 88 || health.key.CredentialVersion != 1 || health.key.Vendor != "openai" {
-		t.Fatalf("channel health init key mismatch: %+v", health.key)
-	}
-	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
-		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
-	}
-}
-
-func TestAdminPoolAccounts_CreateMixedChannelRiskRequiresConfirm(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
-		ID: 61, TenantID: 7, Provider: 8, Channel: 9, Type: "oauth", Vendor: "anthropic", AuthMode: "claude_ai_oauth",
-	}}}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert != nil {
-		t.Fatalf("InsertProviderAccount called despite unconfirmed mixed risk: %+v", store.insert)
-	}
-	var response struct {
-		Error           string `json:"error"`
-		ConfirmRequired bool   `json:"confirm_required"`
-		Risks           []struct {
-			Dimension         string `json:"dimension"`
-			ExistingAccountID int64  `json:"existing_account_id"`
-		} `json:"risks"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("response json: %v", err)
-	}
-	if response.Error != "mixed_channel_risk_confirmation_required" || !response.ConfirmRequired {
-		t.Fatalf("response risk gate mismatch: %+v body=%s", response, rec.Body.String())
-	}
-	if len(response.Risks) < 3 {
-		t.Fatalf("risks=%+v want source/vendor/credential_type items", response.Risks)
-	}
-	seen := map[string]bool{}
-	for _, item := range response.Risks {
-		seen[item.Dimension] = true
-		if item.ExistingAccountID != 61 {
-			t.Fatalf("risk item existing account=%d want 61", item.ExistingAccountID)
-		}
-	}
-	for _, dim := range []string{"source", "vendor", "credential_type"} {
-		if !seen[dim] {
-			t.Fatalf("missing risk dimension %s in %+v", dim, response.Risks)
-		}
-	}
-}
-
-func TestAdminPoolAccounts_CreateMixedChannelRiskConfirmAllowsAndAudits(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
-		ID: 61, TenantID: 7, Provider: 8, Channel: 9, Type: "oauth", Vendor: "anthropic", AuthMode: "claude_ai_oauth",
-	}}}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts?confirm=true",
-		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil || store.insert.ProviderID != 11 || store.insert.ChannelID != 9 {
-		t.Fatalf("insert params mismatch: %+v", store.insert)
-	}
-	if len(store.audits) != 1 || store.audits[0].Action != "create_provider_account" {
-		t.Fatalf("audit mismatch: %+v", store.audits)
-	}
-	if !strings.Contains(string(store.audits[0].Payload), `"mixed_channel_risk_confirmed":true`) ||
-		!strings.Contains(string(store.audits[0].Payload), `"dimension":"vendor"`) {
-		t.Fatalf("audit payload missing mixed-risk confirmation: %s", string(store.audits[0].Payload))
-	}
-	if strings.Contains(string(store.audits[0].Payload), "sk-live") {
-		t.Fatalf("audit leaked credential: %s", string(store.audits[0].Payload))
-	}
-}
-
-func TestAdminPoolAccounts_CreateSameSourceNoMixedChannelRisk(t *testing.T) {
-	store := &adminPoolStoreStub{insertID: 77, riskPeers: []providerAccountRiskPeerForTest{{
-		ID: 61, TenantID: 7, Provider: 11, Channel: 9, Type: "api_key", Vendor: "openai", AuthMode: "api_key",
-	}}}
-	credentials := &adminPoolCredentialWriterStub{id: 88}
-	rec := invokeAdminPoolWithCredentialStore(t, store, credentials, providerAccountAdmin(), http.MethodPost, "/admin/v1/provider-accounts",
-		`{"provider_id":11,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil {
-		t.Fatal("InsertProviderAccount was not called for same-source account")
-	}
-	if strings.Contains(string(store.audits[0].Payload), `"mixed_channel_risk_confirmed":true`) {
-		t.Fatalf("same-source audit should not mark risk confirmation: %s", string(store.audits[0].Payload))
 	}
 }
 
@@ -955,21 +718,6 @@ func TestAdminPoolAccounts_GlobalAdminWithoutTenantQueryRejected(t *testing.T) {
 	}
 }
 
-func TestAdminPoolAccounts_GlobalAdminCreateScopesToQueryTenant(t *testing.T) {
-	// 全局 platform_admin 创建到 ?tenant_id=9 指名的 tenant(body 的 tenant_id
-	// 必须一致);insert 必须落在 tenant 9 而非 1。
-	store := &adminPoolStoreStub{insertID: 77}
-	rec := invokeAdminPool(t, store, adminPoolAdmin(), http.MethodPost,
-		"/admin/v1/provider-accounts?tenant_id=9",
-		`{"tenant_id":9,"provider_id":8,"channel_id":9,"name":"acct","account_type":"api_key","vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if store.insert == nil || store.insert.TenantID != 9 {
-		t.Fatalf("global admin create must insert into tenant 9, got %+v", store.insert)
-	}
-}
-
 func adminPoolAdmin() adminPoolAuthStub {
 	return adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 11, Role: admin.RolePlatformAdmin}}
 }
@@ -986,7 +734,8 @@ func invokeAdminPoolWithCredentialStore(t *testing.T, store *adminPoolStoreStub,
 	t.Helper()
 	return invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
 		Auth: auth, Store: store, Credentials: credentials,
-		RateLimitRecovery: &adminPoolRateLimitRecoveryStub{},
+		RateLimitRecovery: &adminPoolRateLimitRecoveryStub{}, Capabilities: allowAdminPoolCapability{},
+		PlatformTenantID: 7,
 	}, method, target, body)
 }
 

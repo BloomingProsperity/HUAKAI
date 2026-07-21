@@ -108,6 +108,9 @@ func (s *PostgresSessionStore) CreateFromStart(ctx context.Context, in StartInpu
 	}
 	in.Vendor = credentialstore.Normalize(in.Vendor)
 	in.AuthMode = credentialstore.Normalize(in.AuthMode)
+	if in.TenantID <= 0 {
+		return Session{}, ErrInvalidImportBody
+	}
 	plan, ok := LookupModePlan(in.Vendor, in.AuthMode)
 	if !ok {
 		return Session{}, ErrUnknownMode
@@ -117,6 +120,17 @@ func (s *PostgresSessionStore) CreateFromStart(ctx context.Context, in StartInpu
 	}
 	in.Kind = NormalizeFlowKind(in.Kind)
 	if in.Kind == "" {
+		return Session{}, ErrInvalidImportBody
+	}
+	if strings.TrimSpace(in.Purpose) == SessionPurposeAccountIntake {
+		if in.ProviderAccountID != 0 || in.Kind != FlowKindOAuth {
+			return Session{}, ErrInvalidImportBody
+		}
+		if in.RedactedContext == nil {
+			in.RedactedContext = map[string]any{}
+		}
+		in.RedactedContext["purpose"] = SessionPurposeAccountIntake
+	} else if in.ProviderAccountID <= 0 {
 		return Session{}, ErrInvalidImportBody
 	}
 	// 闸门: 不能让 caller 用任意 flow_kind 绕开
@@ -177,6 +191,9 @@ func (s *PostgresSessionStore) Create(ctx context.Context, row Session) (Session
 	if row.RedactedContext == nil {
 		row.RedactedContext = map[string]any{}
 	}
+	if row.TenantID <= 0 || (row.ProviderAccountID <= 0 && !IsAccountIntakeSession(row)) {
+		return Session{}, ErrInvalidImportBody
+	}
 	if row.RequestedScopes == nil {
 		row.RequestedScopes = []string{}
 	}
@@ -212,8 +229,12 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
+	var providerAccountID any = row.ProviderAccountID
+	if row.ProviderAccountID == 0 {
+		providerAccountID = nil
+	}
 	return scanSession(s.db.QueryRow(ctx, q,
-		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
+		row.ID, row.TenantID, providerAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
 		row.ClientIdentitySource, row.RedirectURI, scopes, redacted,
 		row.LongLivedRequested, row.IdempotencyKeyHash, row.ExpiresAt.UTC(),
@@ -436,6 +457,11 @@ func (s *PostgresSessionStore) MarkFinalized(ctx context.Context, id string, cre
 UPDATE credential_acquisition_flow_sessions
 SET status = 'finalized',
     result_account_credential_id = $2,
+    provider_account_id = COALESCE(
+        provider_account_id,
+        (SELECT provider_account_id FROM account_credentials
+         WHERE id = $2 AND tenant_id = credential_acquisition_flow_sessions.tenant_id)
+    ),
     consumed_at = COALESCE(consumed_at, NOW()),
     error_class = NULL,
     error_message_redacted = NULL,
@@ -446,6 +472,10 @@ SET status = 'finalized',
 WHERE id = $1::uuid
   AND cancelled_at IS NULL
   AND status NOT IN ('cancelled', 'expired', 'failed')
+  AND (provider_account_id IS NOT NULL OR EXISTS (
+      SELECT 1 FROM account_credentials
+      WHERE id = $2 AND tenant_id = credential_acquisition_flow_sessions.tenant_id
+  ))
 RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status,
           actor_id, actor_role, state_hash, nonce_hash, encrypted_pkce_verifier,
           client_identity_source, auth_type, device_code_payload,
@@ -474,11 +504,11 @@ func (s *PostgresSessionStore) MarkFailed(ctx context.Context, id, errorClass, r
 func scanSession(row pgx.Row) (Session, error) {
 	var out Session
 	var authType, redirectURI, errorClass, errorMessage pgtype.Text
-	var resultCredential pgtype.Int8
+	var providerAccount, resultCredential pgtype.Int8
 	var consumedAt, cancelledAt pgtype.Timestamptz
 	var requestedScopes, redactedContext, deviceCodePayload []byte
 	if err := row.Scan(
-		&out.ID, &out.TenantID, &out.ProviderAccountID, &out.Vendor, &out.AuthMode, &out.Kind, &out.Status,
+		&out.ID, &out.TenantID, &providerAccount, &out.Vendor, &out.AuthMode, &out.Kind, &out.Status,
 		&out.ActorID, &out.ActorRole, &out.StateHash, &out.NonceHash, &out.EncryptedPKCEVerifier,
 		&out.ClientIdentitySource, &authType, &deviceCodePayload, &redirectURI, &requestedScopes, &redactedContext,
 		&out.LongLivedRequested, &out.IdempotencyKeyHash, &resultCredential,
@@ -486,6 +516,9 @@ func scanSession(row pgx.Row) (Session, error) {
 		&out.CreatedAt, &out.UpdatedAt,
 	); err != nil {
 		return Session{}, err
+	}
+	if providerAccount.Valid {
+		out.ProviderAccountID = providerAccount.Int64
 	}
 	if authType.Valid {
 		out.AuthType = AuthType(authType.String)

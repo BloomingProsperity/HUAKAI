@@ -293,6 +293,9 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err != nil {
 			return err
 		}
+		if err := initializeHealthTx(ctx, tx, prepared.input.TenantID, accountID, metadata); err != nil {
+			return err
+		}
 		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "create_provider_account", "provider_account", accountID, map[string]any{
 			"provider_id":                  prepared.input.Account.ProviderID,
 			"channel_id":                   prepared.input.Account.ChannelID,
@@ -319,7 +322,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 	result.ProviderAccountID = accountID
 	result.AccountCredentialID = metadata.ID
 	result.CredentialVersion = metadata.Version
-	s.initializeHealth(ctx, &result, prepared.input.TenantID, accountID, metadata)
+	result.ChannelHealthInitialized = true
 	return result
 }
 
@@ -395,6 +398,9 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 		if err != nil {
 			return err
 		}
+		if err := initializeHealthTx(ctx, tx, prepared.input.TenantID, expected.ExistingAccountID, metadata); err != nil {
+			return err
+		}
 		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "rotate_account_credential", "account_credential", metadata.ID, map[string]any{
 			"provider_account_id": expected.ExistingAccountID,
 			"vendor":              candidate.Vendor,
@@ -420,7 +426,7 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 	result.ProviderAccountID = expected.ExistingAccountID
 	result.AccountCredentialID = metadata.ID
 	result.CredentialVersion = metadata.Version
-	s.initializeHealth(ctx, &result, prepared.input.TenantID, expected.ExistingAccountID, metadata)
+	result.ChannelHealthInitialized = true
 	return result
 }
 
@@ -513,21 +519,18 @@ func insertAdminAudit(ctx context.Context, tx pgx.Tx, in ExecuteInput, tenantID 
 	return err
 }
 
-func (s *Service) initializeHealth(ctx context.Context, result *ExecutionItem, tenantID, accountID int64, metadata credentialstore.CredentialMetadata) {
-	if s.health == nil {
-		result.Warnings = appendUnique(result.Warnings, "channel_health_dependency_unset")
-		return
-	}
-	_, err := s.health.EnsureDefaultActive(ctx, channelhealth.ChannelKey{
+func initializeHealthTx(ctx context.Context, tx pgx.Tx, tenantID, accountID int64, metadata credentialstore.CredentialMetadata) error {
+	health := channelhealth.NewService(
+		channelhealth.NewPostgresStore(tx),
+		channelhealth.DefaultPolicy(),
+		nil,
+	)
+	_, err := health.EnsureDefaultActive(ctx, channelhealth.ChannelKey{
 		TenantID: tenantID, Vendor: metadata.Vendor,
 		ProviderAccountID: accountID, AccountCredentialID: metadata.ID,
 		CredentialVersion: int(metadata.Version),
 	})
-	if err != nil {
-		result.Warnings = appendUnique(result.Warnings, "channel_health_initialization_failed")
-		return
-	}
-	result.ChannelHealthInitialized = true
+	return err
 }
 
 func baseExecutionItem(item intake.Item) ExecutionItem {

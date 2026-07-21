@@ -25,7 +25,6 @@ import (
 type Service struct {
 	pool        *pgxpool.Pool
 	credentials *credentialstore.Store
-	health      ChannelHealthInitializer
 	agentTasks  AgentTaskRegistrar
 	proxies     ProxyResolver
 	projects    projectenrich.Enricher
@@ -66,8 +65,8 @@ type preparedPlan struct {
 	providerFamily string
 }
 
-func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store, health ChannelHealthInitializer) *Service {
-	return &Service{pool: pool, credentials: credentials, health: health}
+func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store) *Service {
+	return &Service{pool: pool, credentials: credentials}
 }
 
 // WithAgentTaskRegistrar 接入 Agent Identity 执行期任务登记；预检阶段保持纯本地。

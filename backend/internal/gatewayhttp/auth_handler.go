@@ -190,6 +190,7 @@ func MountAuthRoutes(r chi.Router, d AuthHandlerDeps) {
 	r.Post("/login", newAuthLoginHandler(d))
 	r.Post("/login/2fa", newAuthTwoFactorLoginHandler(d))
 	r.Post("/verify-email", newAuthVerifyEmailHandler(d))
+	r.Post("/resend-verification", newAuthResendVerificationHandler(d))
 	r.Post("/confirm-device", newAuthConfirmDeviceHandler(d))
 	r.Post("/reset-password", newAuthResetPasswordHandler(d))
 	r.Post("/oauth-init", newAuthOAuthInitHandler(d))

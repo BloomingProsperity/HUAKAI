@@ -16,18 +16,21 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountquota"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountcreate"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountsubscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotawindowview"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
 const (
@@ -37,7 +40,6 @@ const (
 )
 
 var (
-	errAdminPoolAccountTxPoolUnset                  = accountcreate.ErrPoolUnset
 	errProviderAccountMixedRiskConfirmationRequired = accountcreate.ErrMixedRiskConfirmRequired
 	errProviderAccountProtocolIncompatible          = accountcreate.ErrProtocolIncompatible
 )
@@ -61,12 +63,10 @@ type AdminPoolAccountRiskStore interface {
 	ListProviderAccountRiskPeers(context.Context, admindb.ListProviderAccountRiskPeersParams) ([]admindb.ProviderAccountRiskPeerRow, error)
 }
 
-type AdminPoolAccountAtomicCreateStore interface {
-	InsertProviderAccountWithMixedRiskCheck(context.Context, adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error)
-}
-
 type AdminPoolAccountCredentialWriter interface {
 	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
+	// WithTransaction 让建号把账号插入、凭据写入、管理审计合入单事务，任一失败整体回滚。
+	WithTransaction(context.Context, func(*credentialstore.Store, db.DBTX) error) error
 }
 
 type AdminPoolAccountChannelHealthInitializer interface {
@@ -79,59 +79,15 @@ type AdminPoolAccountDeps struct {
 	Credentials       AdminPoolAccountCredentialWriter
 	ChannelHealth     AdminPoolAccountChannelHealthInitializer
 	RateLimitRecovery AdminPoolAccountRateLimitRecovery
-}
-
-type adminPoolAccountStoreAdapter struct {
-	base AdminPoolAccountStore
-	pool *pgxpool.Pool
-}
-
-type adminPoolAccountCreateWithMixedRiskParams = accountcreate.Params
-type adminPoolAccountCreateWithMixedRiskResult = accountcreate.Result
-
-func NewAdminPoolAccountStoreAdapter(base AdminPoolAccountStore, pool *pgxpool.Pool) AdminPoolAccountStore {
-	return adminPoolAccountStoreAdapter{base: base, pool: pool}
-}
-
-func (s adminPoolAccountStoreAdapter) InsertProviderAccount(ctx context.Context, arg admindb.InsertProviderAccountParams) (int64, error) {
-	return s.base.InsertProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) GetProviderProtocolForAccountCreate(ctx context.Context, arg admindb.GetProviderProtocolForAccountCreateParams) (string, error) {
-	return s.base.GetProviderProtocolForAccountCreate(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) ListAdminProviderAccounts(ctx context.Context, arg admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error) {
-	return s.base.ListAdminProviderAccounts(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) GetAdminProviderAccount(ctx context.Context, arg admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.GetAdminProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) UpdateAdminProviderAccount(ctx context.Context, arg admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error) {
-	return s.base.UpdateAdminProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) UpdateProviderAccountEnabled(ctx context.Context, arg admindb.UpdateProviderAccountEnabledParams) error {
-	return s.base.UpdateProviderAccountEnabled(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) SoftDeleteProviderAccount(ctx context.Context, arg admindb.SoftDeleteProviderAccountParams) error {
-	return s.base.SoftDeleteProviderAccount(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) InsertAdminAuditEvent(ctx context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
-	return s.base.InsertAdminAuditEvent(ctx, arg)
-}
-
-func (s adminPoolAccountStoreAdapter) InsertProviderAccountWithMixedRiskCheck(ctx context.Context, arg adminPoolAccountCreateWithMixedRiskParams) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	return accountcreate.Insert(ctx, s.pool, arg)
+	Capabilities      interface {
+		Allowed(context.Context, int64, string) (bool, error)
+	}
+	PlatformTenantID int64
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
 	r.Get("/", newListProviderAccountsHandler(d))
-	r.Post("/", newCreateProviderAccountHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/", newCreateProviderAccountHandler(d))
 	r.Get("/{id}", newGetProviderAccountHandler(d))
 	r.Patch("/{id}", newUpdateProviderAccountHandler(d))
 	r.Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
@@ -258,6 +214,9 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !authorizeProviderAccountCreate(w, r, d, ident, tenantID) {
+			return
+		}
 		var req createProviderAccountRequest
 		rawBody, ok := decodeAdminPoolJSONWithRaw(w, r, &req)
 		if !ok {
@@ -315,81 +274,72 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			ModelAllowList: req.ModelAllowList, CapabilityFlags: req.CapabilityFlags, ActorID: &actorID,
 		}
 		accountadvanced.ApplyCreate(advanced, &createArg)
-		createResult, err := insertProviderAccountWithMixedRiskCheck(r.Context(), d.Store, createArg, req, providerFamily, confirmed)
-		if err != nil {
-			if errors.Is(err, errProviderAccountProtocolIncompatible) {
-				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", err.Error())
-				return
-			}
-			if errors.Is(err, errProviderAccountMixedRiskConfirmationRequired) {
-				writeProviderAccountMixedRiskRequired(w, createResult.RiskReport)
-				return
-			}
-			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_insert_failed", err.Error())
-			return
+		candidate := mixedchannelrisk.Account{
+			ProviderID: req.ProviderID, ChannelID: req.ChannelID,
+			AccountType: req.AccountType, Vendor: req.Vendor, AuthMode: req.AuthMode,
 		}
-		id := createResult.ID
-		riskReport := createResult.RiskReport
-		var credentialID int64
-		var credentialVersion int
-		channelHealthInitialized := false
-		created, err := d.Credentials.Create(r.Context(), credentialstore.CreateCredentialInput{
-			TenantID: tenantID, ProviderAccountID: id,
-			Vendor: req.Vendor, AuthMode: req.AuthMode,
-			Payload: req.Credentials, ActorID: actorID,
-		})
-		if err != nil {
-			// 凭据创建失败时软删新账号，避免无可服务凭据的孤儿进入选号池。
-			_ = d.Store.SoftDeleteProviderAccount(r.Context(), admindb.SoftDeleteProviderAccountParams{
-				ActorID: &actorID, ID: id, TenantID: tenantID,
+		var (
+			id         int64
+			created    credentialstore.CredentialMetadata
+			riskReport mixedchannelrisk.Report
+			failCode   string
+		)
+		// 账号插入、凭据写入、管理审计合入单事务：任一失败整体回滚，杜绝审计失败后残留
+		// 悬空账号占用唯一名，导致同名重试撞 uq_provider_accounts_tenant_name。
+		txErr := d.Credentials.WithTransaction(r.Context(), func(txStore *credentialstore.Store, database db.DBTX) error {
+			tx, ok := database.(pgx.Tx)
+			if !ok {
+				return errors.New("provider account create transaction is not pgx.Tx")
+			}
+			insertResult, err := accountcreate.InsertTx(r.Context(), tx, accountcreate.Params{
+				Insert: createArg, Candidate: candidate, ProviderFamily: providerFamily, Confirmed: confirmed,
 			})
-			writeJSONError(w, http.StatusServiceUnavailable, "account_credential_insert_failed", err.Error())
-			return
-		}
-		credentialID = created.ID
-		credentialVersion = int(created.Version)
-		if d.ChannelHealth != nil {
-			key := channelhealth.ChannelKey{
+			// 缺确认失败时也要带出风险报告，供 mixed-risk 确认响应复用。
+			riskReport = insertResult.RiskReport
+			if err != nil {
+				failCode = "provider_account_insert_failed"
+				return err
+			}
+			id = insertResult.ID
+			created, err = txStore.Create(r.Context(), credentialstore.CreateCredentialInput{
+				TenantID: tenantID, ProviderAccountID: id,
+				Vendor: req.Vendor, AuthMode: req.AuthMode,
+				Payload: req.Credentials, ActorID: actorID,
+			})
+			if err != nil {
+				failCode = "account_credential_insert_failed"
+				return err
+			}
+			healthService := channelhealth.NewService(
+				channelhealth.NewPostgresStore(tx), channelhealth.DefaultPolicy(), nil,
+			)
+			if _, err := healthService.EnsureDefaultActive(r.Context(), channelhealth.ChannelKey{
 				TenantID: tenantID, Vendor: created.Vendor, ProviderAccountID: id,
 				AccountCredentialID: created.ID, CredentialVersion: int(created.Version),
+			}); err != nil {
+				failCode = "channel_health_initialize_failed"
+				return err
 			}
-			if _, err := d.ChannelHealth.EnsureDefaultActive(r.Context(), key); err == nil {
-				channelHealthInitialized = true
+			if err := writeProviderAccountAuditTx(r.Context(), tx, r, ident, tenantID,
+				"create_provider_account", id, chineseReason(req.Reason, "创建 provider account"),
+				providerAccountCreateAuditPayload(tenantID, req, created, riskReport)); err != nil {
+				failCode = "audit_write_failed"
+				return err
 			}
-		}
-		payload, _ := json.Marshal(map[string]any{
-			"tenant_id":                  tenantID,
-			"provider_id":                req.ProviderID,
-			"channel_id":                 req.ChannelID,
-			"name":                       req.Name,
-			"account_type":               req.AccountType,
-			"vendor":                     req.Vendor,
-			"auth_mode":                  req.AuthMode,
-			"credential_id":              credentialID,
-			"credential_version":         credentialVersion,
-			"channel_health_initialized": channelHealthInitialized,
-			"credentials_present":        true,
+			return nil
 		})
-		if riskReport.HighRisk {
-			payload, _ = json.Marshal(map[string]any{
-				"tenant_id":                    tenantID,
-				"provider_id":                  req.ProviderID,
-				"channel_id":                   req.ChannelID,
-				"name":                         req.Name,
-				"account_type":                 req.AccountType,
-				"vendor":                       req.Vendor,
-				"auth_mode":                    req.AuthMode,
-				"credential_id":                credentialID,
-				"credential_version":           credentialVersion,
-				"channel_health_initialized":   channelHealthInitialized,
-				"credentials_present":          true,
-				"mixed_channel_risk_confirmed": true,
-				"mixed_channel_risks":          riskReport.Items,
-			})
-		}
-		if err := writeProviderAccountAudit(r.Context(), r, d.Store, ident, tenantID,
-			"create_provider_account", id, chineseReason(req.Reason, "创建 provider account"), payload); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
+		if txErr != nil {
+			switch {
+			case errors.Is(txErr, errProviderAccountProtocolIncompatible):
+				writeJSONError(w, http.StatusBadRequest, "admin_bad_request", txErr.Error())
+			case errors.Is(txErr, errProviderAccountMixedRiskConfirmationRequired):
+				writeProviderAccountMixedRiskRequired(w, riskReport)
+			default:
+				if failCode == "" {
+					failCode = "provider_account_insert_failed"
+				}
+				writeJSONError(w, http.StatusServiceUnavailable, failCode, txErr.Error())
+			}
 			return
 		}
 		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
@@ -397,14 +347,45 @@ func newCreateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
-		_ = credentialID
-		_ = credentialVersion
 		response, err := providerAccountDTO(account)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
 			return
 		}
 		writeAuditJSON(w, http.StatusCreated, response)
+	}
+}
+
+func authorizeProviderAccountCreate(w http.ResponseWriter, r *http.Request, d AdminPoolAccountDeps, ident admin.AdminIdentity, tenantID int64) bool {
+	switch ident.Role {
+	case admin.RolePlatformAdmin:
+		if d.PlatformTenantID <= 0 {
+			writeJSONError(w, http.StatusServiceUnavailable, "platform_tenant_not_configured", "platform tenant scope is not configured")
+			return false
+		}
+		if tenantID != d.PlatformTenantID {
+			writeJSONError(w, http.StatusForbidden, "cross_tenant_account_admin_forbidden", "platform_admin can only create accounts for the platform tenant")
+			return false
+		}
+		return true
+	case admin.RoleTenantOperator:
+		if d.Capabilities == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
+			return false
+		}
+		allowed, err := d.Capabilities.Allowed(r.Context(), tenantID, tenantcapability.AdvancedAccountIntake)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability lookup temporarily unavailable")
+			return false
+		}
+		if !allowed {
+			writeJSONError(w, http.StatusForbidden, "tenant_capability_not_granted", "advanced account intake is not granted for this tenant")
+			return false
+		}
+		return true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return false
 	}
 }
 
@@ -773,6 +754,9 @@ func validateCreateProviderAccount(req createProviderAccountRequest) error {
 	if req.Vendor == "" || req.AuthMode == "" {
 		return fmt.Errorf("vendor and auth_mode are required for account_credentials")
 	}
+	if !credentialacq.DirectCredentialInputAllowed(req.Vendor, req.AuthMode) {
+		return fmt.Errorf("credential mode requires its dedicated acquisition flow")
+	}
 	handler, err := credentialstore.DefaultHandlerRegistry().MustLookup(req.Vendor, req.AuthMode)
 	if err != nil {
 		return err
@@ -797,20 +781,6 @@ func parseProviderAccountMixedRiskConfirm(w http.ResponseWriter, r *http.Request
 		return *req.Confirm, true
 	}
 	return false, true
-}
-
-func insertProviderAccountWithMixedRiskCheck(ctx context.Context, store AdminPoolAccountStore, createArg admindb.InsertProviderAccountParams, req createProviderAccountRequest, providerFamily string, confirmed bool) (adminPoolAccountCreateWithMixedRiskResult, error) {
-	atomicStore, ok := store.(AdminPoolAccountAtomicCreateStore)
-	if !ok {
-		return adminPoolAccountCreateWithMixedRiskResult{}, errAdminPoolAccountTxPoolUnset
-	}
-	candidate := mixedchannelrisk.Account{
-		ProviderID: req.ProviderID, ChannelID: req.ChannelID,
-		AccountType: req.AccountType, Vendor: req.Vendor, AuthMode: req.AuthMode,
-	}
-	return atomicStore.InsertProviderAccountWithMixedRiskCheck(ctx, adminPoolAccountCreateWithMixedRiskParams{
-		Insert: createArg, Candidate: candidate, ProviderFamily: providerFamily, Confirmed: confirmed,
-	})
 }
 
 func validateProviderAccountProtocolCompatibility(family, accountType, vendor, authMode string) error {
@@ -1100,4 +1070,39 @@ func writeProviderAccountAudit(ctx context.Context, r *http.Request, store Admin
 		RequestID: &reqID, Reason: reason, Payload: payload,
 	})
 	return err
+}
+
+// writeProviderAccountAuditTx 在调用方事务内写管理审计，使建号的账号、凭据、审计同成同败。
+func writeProviderAccountAuditTx(ctx context.Context, tx pgx.Tx, r *http.Request, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
+	actorID := ident.AuditActor()
+	reqID := middleware.GetReqID(r.Context())
+	_, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+		TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
+		Action: action, TargetType: "provider_account", TargetID: &targetID,
+		RequestID: &reqID, Reason: reason, Payload: payload,
+	})
+	return err
+}
+
+// providerAccountCreateAuditPayload 生成建号审计负载：credential_id/version 取自同事务凭据、
+// 不含明文凭据；高风险确认路径附带风险维度。渠道健康是提交后投影、不在审计事务内，故不记其状态。
+func providerAccountCreateAuditPayload(tenantID int64, req createProviderAccountRequest, cred credentialstore.CredentialMetadata, riskReport mixedchannelrisk.Report) []byte {
+	fields := map[string]any{
+		"tenant_id":           tenantID,
+		"provider_id":         req.ProviderID,
+		"channel_id":          req.ChannelID,
+		"name":                req.Name,
+		"account_type":        req.AccountType,
+		"vendor":              req.Vendor,
+		"auth_mode":           req.AuthMode,
+		"credential_id":       cred.ID,
+		"credential_version":  int(cred.Version),
+		"credentials_present": true,
+	}
+	if riskReport.HighRisk {
+		fields["mixed_channel_risk_confirmed"] = true
+		fields["mixed_channel_risks"] = riskReport.Items
+	}
+	payload, _ := json.Marshal(fields)
+	return payload
 }

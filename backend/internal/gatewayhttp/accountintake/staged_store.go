@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -27,6 +28,7 @@ var (
 	ErrStagedCredentialNotFound = errors.New("account intake staged credential not found")
 	ErrStagedCredentialExpired  = errors.New("account intake staged credential expired")
 	ErrStagedCredentialReplay   = errors.New("account intake staged credential replay")
+	ErrOAuthCandidateNotReady   = errors.New("account intake oauth candidate not ready")
 )
 
 type stagedPlanInput struct {
@@ -100,7 +102,7 @@ func (s *StagedStore) Stage(ctx context.Context, in StageInput) (StagedCredentia
 	if s == nil || s.pool == nil || s.cipher == nil {
 		return StagedCredential{}, ErrNotConfigured
 	}
-	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || in.ActorRole != "tenant_operator" ||
+	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || !validIntakeActorRole(in.ActorRole) ||
 		strings.TrimSpace(in.Content) == "" || len(in.Auxiliary) > maxStagedAuxiliaryBytes || !validPlanHash(in.PlanHash) {
 		return StagedCredential{}, ErrInvalidInput
 	}
@@ -252,6 +254,9 @@ func validStagedSource(sourceKind, vendor, authMode string) bool {
 		}
 		_, ok := credentialstore.DefaultHandlerRegistry().Lookup(vendor, authMode)
 		return ok
+	case "oauth":
+		return credentialacq.ModeAcquisitionReleased(vendor, authMode) &&
+			credentialacq.SourceAllowedForMode(vendor, authMode, credentialacq.FlowKindOAuth)
 	default:
 		return false
 	}
@@ -317,7 +322,7 @@ func cleanupStagedCredentials(ctx context.Context, tx pgx.Tx, now time.Time) err
 	_, err := tx.Exec(ctx, `UPDATE account_intake_staged_credentials
 SET status='expired', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
     nonce=NULL, aad_hash=NULL, finished_at=$1, updated_at=$1
-WHERE status='staged' AND expires_at <= $1`, now)
+WHERE status IN ('oauth_pending','oauth_exchanged','staged') AND expires_at <= $1`, now)
 	if err != nil {
 		return err
 	}

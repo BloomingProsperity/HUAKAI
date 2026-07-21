@@ -3954,9 +3954,18 @@ paths:
         - backend/internal/setuphttp/setuphttp.go
       security: []
       description: |
-        仅当工作租户尚无管理员时可用;一旦存在 admin 一律 403(安装通道永久关死)。
+        仅当请求携带部署者配置的高熵首装令牌、且工作租户尚无管理员时可用;
+        一旦存在 admin 一律 403(安装通道永久关死)。服务端未配置有效首装令牌时返回 503。
         并发安装由事务内 advisory lock 串行化,仅一个胜者。邮箱撞已有普通用户返回
         409,绝不静默提升既有账号。
+      parameters:
+        - in: header
+          name: X-HUAKAI-Setup-Token
+          required: true
+          schema:
+            type: string
+            minLength: 32
+          description: 部署者通过 HUAKAI_SETUP_TOKEN 配置的首装令牌
       requestBody:
         required: true
         content:
@@ -3974,7 +3983,7 @@ paths:
                   maxLength: 128
                 display_name:
                   type: string
-                  maxLength: 64
+                  maxLength: 100
       responses:
         '201':
           description: 管理员创建成功
@@ -3988,6 +3997,8 @@ paths:
                     type: string
         '400':
           description: 入参非法(邮箱/口令强度/JSON)
+        '401':
+          description: 首装令牌缺失或错误
         '403':
           description: 已安装,通道关死
         '409':
@@ -4618,6 +4629,32 @@ paths:
               schema: { $ref: '#/components/schemas/AuthUserResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/auth/resend-verification:
+    post:
+      tags: [auth]
+      summary: Resend the email verification message for a pending user
+      operationId: authResendVerification
+      x-huakai-spec-source: [docs/specs/user-authentication.md]
+      security: []
+      description: |
+        Issues a fresh verification token and re-sends the verification email when the address
+        belongs to a pending-verification user. Anti-enumeration: unknown, already-verified and
+        non-pending addresses all return the same 202 envelope without sending anything.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthResendVerificationRequest' }
+      responses:
+        '202':
+          description: Accepted. Same envelope whether or not the address matches a pending user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResendVerificationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/auth/confirm-device:
@@ -11827,8 +11864,8 @@ paths:
       summary: Preflight account-level credential imports without writing data
       operationId: planAccountCredentialImport
       x-huakai-spec-source: [docs/process/plans/2026-07-16-backend-global-wiring-audit-codex.md]
-      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. Platform and session administrators cannot execute this tenant operation.
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员只能处理平台自有租户；获得 advanced_account_intake 授权的租户管理员只能处理其作用域租户。两者都可使用受控管理会话或程序令牌。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -11910,8 +11947,8 @@ paths:
       summary: Execute a freshly recomputed account-level credential import plan
       operationId: executeAccountCredentialImport
       x-huakai-spec-source: [docs/process/plans/2026-07-16-backend-global-wiring-audit-codex.md]
-      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. Platform and session administrators cannot execute this tenant operation.
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员只能处理平台自有租户；获得 advanced_account_intake 授权的租户管理员只能处理其作用域租户。执行前重新核算计划并校验哈希。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -11930,14 +11967,181 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/credentials/account-imports/oauth/start:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 启动 OAuth 授权并暂存账号创建配置
+      operationId: startOAuthAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      description: 部署管理员只能为平台自有租户启动；获得 advanced_account_intake 授权的租户管理员只能为其作用域租户启动。授权完成前不创建占位账号。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthAccountIntakeStartRequest' }
+      responses:
+        '201':
+          description: OAuth 授权地址或设备码，以及尚未绑定账号的短期流程。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/oauth/callback:
+    get:
+      tags: [admin-credential-acquisition]
+      summary: 接收上游浏览器 OAuth 回调并生成账号导入预检
+      operationId: callbackOAuthAccountImportFromBrowser
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      description: 浏览器回调以不可猜测的 flow_id 与 state 绑定原始操作者；错误 state 只拒绝本次请求，不销毁仍可用流程。授权码与换得凭据不会进入响应或日志。
+      security: []
+      parameters:
+        - name: flow_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, writeOnly: true }
+      responses:
+        '200':
+          description: 已换码、加密暂存并重新核算的账号导入计划。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthAccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 由已认证管理会话提交 OAuth 回调并生成账号导入预检
+      operationId: callbackOAuthAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      description: 在消费授权码前校验流程租户、操作者和角色，不能由其他管理员代为完成。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthAccountIntakeCallbackRequest' }
+      responses:
+        '200':
+          description: 已换码、加密暂存并重新核算的账号导入计划。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthAccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/oauth/poll:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 轮询设备码 OAuth 并在授权完成后生成账号导入预检
+      operationId: pollOAuthAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthAccountIntakeFlowRequest' }
+      responses:
+        '200':
+          description: 设备授权已完成并生成预检。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthAccountIntakePlanResponse' }
+        '202':
+          description: 授权仍待用户完成，按返回时间再次轮询。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CredentialAcquisitionPollPendingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/oauth/plan:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 从已加密暂存的 OAuth 候选恢复账号导入预检
+      operationId: planOAuthAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthAccountIntakeFlowRequest' }
+      responses:
+        '200':
+          description: 当前数据库状态重新核算后的计划与哈希。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthAccountIntakePlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/credentials/account-imports/oauth/execute:
+    post:
+      tags: [admin-credential-acquisition]
+      summary: 执行 OAuth 授权产生的账号创建或凭据更新计划
+      operationId: executeOAuthAccountImport
+      x-huakai-spec-source: [docs/process/plans/2026-07-21-account-intake-sub2-parity-audit-codex.md]
+      description: 领取一次性加密候选，重新核算计划并在事务内写入账号、凭据、套餐投影、健康状态和日志；流程不能重放。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthAccountIntakeExecuteRequest' }
+      responses:
+        '200':
+          description: 单账号执行结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountIntakeExecutionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/credentials/account-imports/codex/plan:
     post:
       tags: [admin-credential-acquisition]
       summary: Preflight Codex OAuth account imports without writing data
       operationId: planCodexAccountCredentialImport
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
-      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. The server forces openai/codex_cli_oauth and ignores no caller-selectable vendor, auth mode, or OAuth endpoint because those fields are not accepted.
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。服务端固定 openai/codex_cli_oauth，不接受厂商、鉴权模式或 OAuth 端点覆盖。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -11961,8 +12165,8 @@ paths:
       summary: Execute a freshly recomputed Codex OAuth account import plan
       operationId: executeCodexAccountCredentialImport
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
-      description: Requires a programmatic tenant_operator token scoped to the same tenant_id. PAT and Agent Identity payloads are rejected because they require separate authentication contracts.
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。PAT 与 Agent Identity 使用各自独立入口，不在本接口混用。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -11987,8 +12191,8 @@ paths:
       summary: 预检 Codex Agent Identity 账号，不写入数据库也不访问上游
       operationId: planCodexAgentIdentityImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
-      description: 仅接受同租户 tenant_operator 程序令牌。服务端固定使用 openai/codex_agent_identity 与 session 账号类型，拒绝调用方覆盖厂商、鉴权模式或上游地址。
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。服务端固定使用 openai/codex_agent_identity 与 session 账号类型，拒绝覆盖厂商、鉴权模式或上游地址。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12013,7 +12217,7 @@ paths:
       operationId: executeCodexAgentIdentityImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
       description: 执行前重新核算计划并核对哈希；缺少任务标识时才访问固定任务服务。任务登记失败的项目不会创建或更新账号。
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12038,8 +12242,8 @@ paths:
       summary: 预检 Claude Setup Token 账号导入，不写入数据库
       operationId: planClaudeSetupTokenAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
-      description: 仅接受同租户 tenant_operator 程序令牌。服务端固定使用 Anthropic、Claude Setup Token 鉴权模式与 OAuth 账号类型，不接受调用方覆盖这些字段。
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。服务端固定使用 Anthropic、Claude Setup Token 鉴权模式与 OAuth 账号类型，不接受调用方覆盖这些字段。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12064,7 +12268,7 @@ paths:
       operationId: executeClaudeSetupTokenAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
       description: 执行前重新解析输入并核对计划哈希；原始 Setup Token 只参与加密凭据写入，不进入响应或日志。
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12089,8 +12293,8 @@ paths:
       summary: 使用 Claude Cookie 转换凭据并生成账号导入预检
       operationId: planClaudeCookieAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
-      description: 仅接受同租户 tenant_operator 程序令牌。Cookie 只在固定官方端点间转换，转换结果加密暂存 15 分钟；多组织会话必须由操作者明确选择，不自动猜测。
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。Cookie 只在固定官方端点间转换，转换结果加密暂存 15 分钟；多组织会话必须由操作者明确选择。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12122,7 +12326,7 @@ paths:
       operationId: executeClaudeCookieAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
       description: 短期流程绑定租户、操作者和计划哈希且只能领取一次；领取后立即清除暂存密文，再执行统一账号冲突、凭据加密、套餐标签和健康初始化链路。
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12148,8 +12352,8 @@ paths:
       summary: 从受控 CRS 来源预览账号迁移并生成一次性执行流程
       operationId: planCRSAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
-      description: 仅接受同租户 tenant_operator 程序令牌。来源主机必须由部署者加入白名单；请求经 Rust sidecar 固定目标地址，来源凭据和代理秘密只进入短期加密暂存，不进入响应。
-      x-huakai-required-role: tenant_operator_token
+      description: 部署管理员仅限平台自有租户，获授权租户管理员仅限其作用域租户。来源主机必须由部署者加入白名单；请求经 Rust sidecar 固定目标地址，来源凭据和代理秘密只进入短期加密暂存。
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12176,7 +12380,7 @@ paths:
       operationId: executeCRSAccountImport
       x-huakai-spec-source: [docs/process/plans/2026-07-18-rust-egress-migration-lockdown.md]
       description: 执行请求只携带流程标识、计划哈希和必要确认，不再携带 CRS 密码。每个流程绑定租户与操作者且只能领取一次；代理与账号在同一数据库事务写入。
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       requestBody:
         required: true
         content:
@@ -12203,7 +12407,7 @@ paths:
       summary: 预检账号加密迁移包导出
       operationId: planAccountBundleExport
       x-huakai-spec-source: [backend/internal/accountbundle/export.go]
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       description: 只返回账号、凭据版本和代理映射的脱敏可导出状态；不解密或返回任何秘密。多条可迁移凭据、缺失代理和跨租户账号均显式冲突。
       requestBody:
         required: true
@@ -12227,7 +12431,7 @@ paths:
       summary: 二次确认后生成账号加密迁移包
       operationId: executeAccountBundleExport
       x-huakai-spec-source: [backend/internal/accountbundle/export.go]
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       description: 重新核对账号、凭据版本和代理后，以 Argon2id 派生密钥并使用 AES-256-GCM 加密。包中不包含用户、余额、日志、额度快照或运行时健康历史。
       requestBody:
         required: true
@@ -12252,7 +12456,7 @@ paths:
       summary: 解密并预检账号迁移包
       operationId: planAccountBundleImport
       x-huakai-spec-source: [backend/internal/accountbundle/import.go]
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       description: 在内存中校验密文和包内摘要，按来源 provider/channel 显式映射目标，再复用统一身份冲突、协议兼容和混用风险预检；密码和凭据不进入响应。
       requestBody:
         required: true
@@ -12278,7 +12482,7 @@ paths:
       summary: 执行已确认的账号迁移计划
       operationId: executeAccountBundleImport
       x-huakai-spec-source: [backend/internal/accountbundle/import.go]
-      x-huakai-required-role: tenant_operator_token
+      x-huakai-required-role: platform_admin_or_granted_tenant_operator
       description: 再次解密并重算整包与逐账号计划；创建时原子写入账号、凭据和代理，更新时按账号 updated_at 与凭据版本锁原子替换稳定配置并轮换凭据。成功执行后旧计划不可重放。
       requestBody:
         required: true
@@ -14937,6 +15141,21 @@ components:
       properties:
         tenant_id: { type: integer, format: int64 }
         token: { type: string }
+
+    AuthResendVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, email]
+      properties:
+        tenant_id: { type: integer, format: int64 }
+        email: { type: string }
+
+    AuthResendVerificationResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [accepted] }
 
     AuthConfirmDeviceRequest:
       type: object
@@ -21685,6 +21904,86 @@ components:
               - confirm_credential_recovery
         reason: { type: string }
 
+    OAuthAccountIntakeClient:
+      type: object
+      additionalProperties: false
+      properties:
+        client_id: { type: string }
+        client_secret:
+          type: string
+          writeOnly: true
+          description: 仅部署者自配 OAuth 使用；不得进入响应或日志。
+        auth_url: { type: string, format: uri }
+        token_url: { type: string, format: uri }
+        redirect_uri: { type: string, format: uri }
+        scopes: { type: array, items: { type: string } }
+        source:
+          type: string
+          enum: [public_cli_client, operator_config, per_account_override, disabled_missing_config]
+
+    OAuthAccountIntakeStartRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, vendor, auth_mode, account]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        account: { $ref: '#/components/schemas/AccountIntakeAccountDefaults' }
+        redirect_uri: { type: string, format: uri }
+        requested_scopes: { type: array, items: { type: string } }
+        oauth_client: { $ref: '#/components/schemas/OAuthAccountIntakeClient' }
+        reason: { type: string }
+
+    OAuthAccountIntakeCallbackRequest:
+      type: object
+      additionalProperties: false
+      required: [flow_id, state, code]
+      properties:
+        flow_id: { type: string, format: uuid }
+        state: { type: string, minLength: 1 }
+        code: { type: string, minLength: 1, writeOnly: true }
+
+    OAuthAccountIntakeFlowRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, flow_id]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        flow_id: { type: string, format: uuid }
+
+    OAuthAccountIntakeExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, flow_id, plan_hash]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        flow_id: { type: string, format: uuid }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        confirmations:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - confirm_weak_identity
+              - confirm_mixed_channel_risk
+              - confirm_unverified_account_match
+              - confirm_weak_identity_match
+              - confirm_credential_rotation
+              - confirm_credential_recovery
+        reason: { type: string }
+
+    OAuthAccountIntakePlanResponse:
+      type: object
+      additionalProperties: false
+      required: [flow, plan_hash, plan, expires_at]
+      properties:
+        flow: { $ref: '#/components/schemas/CredentialAcquisitionFlow' }
+        plan_hash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        plan: { $ref: '#/components/schemas/AccountIntakePlan' }
+        expires_at: { type: string, format: date-time }
+
     CodexAccountIntakePlanRequest:
       type: object
       additionalProperties: false
@@ -22396,7 +22695,7 @@ components:
       required: [contract_version, source_kind, input_count, items, summary]
       properties:
         contract_version: { type: string, enum: [account-intake-v2] }
-        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync] }
+        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync, oauth] }
         input_count: { type: integer, minimum: 0, maximum: 500 }
         items:
           type: array
@@ -22457,11 +22756,15 @@ components:
       x-huakai-spec-source: [docs/specs/credential-acquisition.md]
       type: object
       additionalProperties: false
-      required: [id, tenant_id, provider_account_id, vendor, auth_mode, flow_kind, status, client_identity_source, redacted_context, expires_at, created_at, updated_at]
+      required: [id, tenant_id, vendor, auth_mode, flow_kind, status, client_identity_source, redacted_context, expires_at, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: integer, format: int64 }
-        provider_account_id: { type: integer, format: int64 }
+        provider_account_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 已绑定账号的凭据获取流程才返回；账号创建型 OAuth 在执行成功前省略。
         vendor: { type: string }
         auth_mode: { type: string }
         flow_kind: { type: string }
@@ -22500,7 +22803,7 @@ components:
         code_challenge: { type: string }
         auth_type:
           type: string
-          enum: [device_code, sso]
+          enum: [pkce, device_code, sso]
         user_code: { type: string }
         verification_uri: { type: string, format: uri }
         verification_uri_complete: { type: string, format: uri }

@@ -25,6 +25,9 @@ func newCredentialAcqPollHandler(deps AdminCredentialAcquisitionDeps) http.Handl
 			writeCredentialAcqError(w, err)
 			return
 		}
+		if !authorizeCredentialAcqTarget(w, r, deps, ident, session.TenantID, session.ProviderAccountID) {
+			return
+		}
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
 			return
 		}

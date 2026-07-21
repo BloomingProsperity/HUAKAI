@@ -617,3 +617,88 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 		t.Fatalf("reloaded flow=(status=%q error_class=%q), want validated/no error", reloaded.Status, reloaded.ErrorClass)
 	}
 }
+
+func TestCompleteOAuthCallbackPersistenceFailureReturnsFlowToStartedPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	flowID := uuid.NewString()
+	state := "persist-retry-state"
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: paID,
+		Vendor: "openai", AuthMode: "chatgpt_oauth", Kind: FlowKindOAuth,
+		Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI, StateHash: HashOAuthState(state),
+		RequestedScopes: []string{"openid"}, RedactedContext: map[string]any{"case": "persist_retry"},
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create flow: %v", err)
+	}
+
+	persistErr := errors.New("staged store unavailable")
+	exchange := func(context.Context, Session, string) (CredentialCandidate, error) {
+		return CredentialCandidate{
+			TenantID: tenantID, ProviderAccountID: paID,
+			Vendor: "openai", AuthMode: "chatgpt_oauth",
+			Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+		}, nil
+	}
+	_, reset, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "consumed-code", exchange,
+		func(context.Context, Session, CredentialCandidate) error { return persistErr })
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("持久化失败 err=%v，期望原始错误", err)
+	}
+	if reset.Status != StatusStarted || reset.ErrorClass != "candidate_persist_failed" {
+		t.Fatalf("重置状态=%q error_class=%q，期望 started/candidate_persist_failed", reset.Status, reset.ErrorClass)
+	}
+
+	_, validated, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "new-code", exchange,
+		func(context.Context, Session, CredentialCandidate) error { return nil })
+	if err != nil {
+		t.Fatalf("重新授权回调: %v", err)
+	}
+	if validated.Status != StatusValidated {
+		t.Fatalf("重新授权状态=%q，期望 validated", validated.Status)
+	}
+}
+
+func TestCompleteOAuthCallbackReclaimsStaleCallbackLeasePG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	flowID := uuid.NewString()
+	state := "stale-callback-state"
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: paID,
+		Vendor: "openai", AuthMode: "chatgpt_oauth", Kind: FlowKindOAuth,
+		Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI, StateHash: HashOAuthState(state),
+		RequestedScopes: []string{"openid"}, RedactedContext: map[string]any{"case": "stale_callback"},
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create flow: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credential_acquisition_flow_sessions
+SET status='callback_received', updated_at=$2 WHERE id=$1::uuid`, flowID, now.Add(-DefaultOAuthCallbackLease-time.Second)); err != nil {
+		t.Fatalf("制造过期回调租约: %v", err)
+	}
+
+	_, validated, err := CompleteOAuthCallback(ctx, store, flowID, state, "new-code",
+		func(context.Context, Session, string) (CredentialCandidate, error) {
+			return CredentialCandidate{
+				TenantID: tenantID, ProviderAccountID: paID,
+				Vendor: "openai", AuthMode: "chatgpt_oauth",
+				Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+			}, nil
+		})
+	if err != nil {
+		t.Fatalf("回收过期回调租约: %v", err)
+	}
+	if validated.Status != StatusValidated {
+		t.Fatalf("回收后状态=%q，期望 validated", validated.Status)
+	}
+}

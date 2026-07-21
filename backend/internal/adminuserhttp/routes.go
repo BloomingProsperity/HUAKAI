@@ -43,6 +43,9 @@ type Deps struct {
 	UserCreator      userCreateService
 	UserSoftDeleter  userSoftDeleteService
 	SessionRevoker   userSessionRevoker
+	// PlatformTenantID 是平台自有租户(tenancy 工作租户)。platform_admin 经本包
+	// 只能管理该租户的终端用户;下级租户用户只归其租户管理员。0=未接线并拒绝请求。
+	PlatformTenantID int64
 }
 
 type adminAuth interface {
@@ -412,7 +415,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 			return admin.AdminIdentity{}, 0, false
 		}
 		// tenant_operator 可省略 ?tenant_id,用自身 scope;若显式带,只能是自己的。
-		if tenantID, ok := tenantFromQueryOrScope(w, r, ident); ok {
+		if tenantID, ok := tenantFromQueryOrScope(w, r, d, ident); ok {
 			return ident, tenantID, true
 		}
 		return admin.AdminIdentity{}, 0, false
@@ -421,7 +424,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 		// provider_catalog 的 parseAdminCatalogTenant 模式——必须显式带
 		// ?tenant_id,经 CanIssueForTenant 放行(单租户部署即默认租户 id)。
 		// RBAC 语义不变:platform_admin 跨租户但须指名,越权由 CanIssueForTenant 挡。
-		if tenantID, ok := tenantFromQueryOrScope(w, r, ident); ok {
+		if tenantID, ok := tenantFromQueryOrScope(w, r, d, ident); ok {
 			return ident, tenantID, true
 		}
 		return admin.AdminIdentity{}, 0, false

@@ -142,7 +142,10 @@ const (
 
 // deps 是 run() 启动后 handler 收到的 live 依赖树。
 type deps struct {
-	cfg                       *Config
+	cfg *Config
+	// platformTenantID 是平台自有租户(tenancy 工作租户),与 adminsessionauth /
+	// balanceledger / panelauth bootstrap 同一真相源,供按租户归属裁决的 handler 注入。
+	platformTenantID          int64
 	readiness                 *healthhttp.Readiness
 	clientIPResolver          *clientip.Resolver
 	inboundRateLimit          inboundlimit.Store
@@ -1147,6 +1150,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
+	userAuthService.SignupRewardRecoveryFn = func(ctx context.Context, tenantID, userID int64, rewardKind string) error {
+		return payment.EnqueueSignupRewardRecovery(ctx, outboxStore, tenantID, userID, rewardKind)
+	}
+	outboxWorker.Register(obsoutbox.EventTypeSignupReward,
+		payment.NewSignupRewardRecoveryHandler(paymentService, signupInviteeCfg))
 	// 启用配额强制时，把 mismatch 与成本争议退款的配额冲减加入同一 PostgreSQL 事务。
 	// 未启用配额强制时不创建冲减器，退款不需要触碰 quota 表。
 	var refundQuotaReverser auditreceipt.QuotaReverser
@@ -1484,6 +1492,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 
 	d := &deps{
 		cfg:                   cfg,
+		platformTenantID:      platformTenantID,
 		readiness:             readiness,
 		clientIPResolver:      clientIPResolver,
 		inboundRateLimit:      sharedRateLimits.inbound,

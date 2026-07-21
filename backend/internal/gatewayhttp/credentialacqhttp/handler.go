@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -38,6 +39,13 @@ type AdminCredentialAcquisitionDeps struct {
 	AllowLongLivedSetupToken bool
 	BootstrapShortTTL        time.Duration
 	BootstrapLongTTL         time.Duration
+	Accounts                 interface {
+		GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
+	}
+	Capabilities interface {
+		Allowed(context.Context, int64, string) (bool, error)
+	}
+	PlatformTenantID int64
 }
 
 type credentialAcqStartRequest struct {
@@ -89,20 +97,22 @@ type credentialAcqHelperRequest struct {
 }
 
 func MountAdminCredentialAcquisitionRoutes(r chi.Router, d AdminCredentialAcquisitionDeps) {
-	r.Post("/{id}/credential-acquisitions", newCredentialAcqStartHandler(d))
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/{id}/credential-acquisitions", newCredentialAcqStartHandler(d))
 	r.Get("/{id}/credential-acquisitions/{flowID}", newCredentialAcqStatusHandler(d))
-	r.Post("/{id}/credential-acquisitions/{flowID}/poll", newCredentialAcqPollHandler(d))
-	r.Post("/{id}/credential-acquisitions/{flowID}/callback", newCredentialAcqCallbackHandler(d))
-	r.Post("/{id}/credential-acquisitions/{flowID}/cancel", newCredentialAcqCancelHandler(d))
-	r.Post("/{id}/credential-acquisitions/{flowID}/finalize", newCredentialAcqFinalizeHandler(d))
+	r.With(safe).Post("/{id}/credential-acquisitions/{flowID}/poll", newCredentialAcqPollHandler(d))
+	r.With(safe).Post("/{id}/credential-acquisitions/{flowID}/callback", newCredentialAcqCallbackHandler(d))
+	r.With(safe).Post("/{id}/credential-acquisitions/{flowID}/cancel", newCredentialAcqCancelHandler(d))
+	r.With(safe).Post("/{id}/credential-acquisitions/{flowID}/finalize", newCredentialAcqFinalizeHandler(d))
 }
 
 func MountAdminCredentialAcquisitionHelperRoutes(r chi.Router, d AdminCredentialAcquisitionDeps) {
-	r.Post("/paste", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindPaste))
-	r.Post("/cli-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindCLIImport))
-	r.Post("/csv-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindCSVImport))
-	r.Post("/json-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindJSONImport))
-	r.Post("/oauth-init", newCredentialAcqOAuthInitHelperHandler(d))
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/paste", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindPaste))
+	r.With(safe).Post("/cli-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindCLIImport))
+	r.With(safe).Post("/csv-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindCSVImport))
+	r.With(safe).Post("/json-import", newCredentialAcqImportHelperHandler(d, credentialacq.FlowKindJSONImport))
+	r.With(safe).Post("/oauth-init", newCredentialAcqOAuthInitHelperHandler(d))
 	r.Get("/oauth-callback", newCredentialAcqOAuthCallbackHelperHandler(d))
 }
 
@@ -121,18 +131,25 @@ func newCredentialAcqStartHandler(d AdminCredentialAcquisitionDeps) http.Handler
 			return
 		}
 		req.ProviderAccountID = accountID
+		if !authorizeCredentialAcqTarget(w, r, d, ident, req.TenantID, req.ProviderAccountID) {
+			return
+		}
 		startCredentialAcqFlow(w, r, d, ident, req)
 	}
 }
 
 func newCredentialAcqStatusHandler(d AdminCredentialAcquisitionDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveCredentialAcqAdmin(w, r, d); !ok {
+		ident, ok := resolveCredentialAcqAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		session, err := d.Sessions.Get(r.Context(), chi.URLParam(r, "flowID"))
 		if err != nil {
 			writeCredentialAcqError(w, err)
+			return
+		}
+		if !authorizeCredentialAcqTarget(w, r, d, ident, session.TenantID, session.ProviderAccountID) {
 			return
 		}
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
@@ -158,6 +175,9 @@ func newCredentialAcqCallbackHandler(d AdminCredentialAcquisitionDeps) http.Hand
 			writeCredentialAcqError(w, err)
 			return
 		}
+		if !authorizeCredentialAcqTarget(w, r, d, ident, existing.TenantID, existing.ProviderAccountID) {
+			return
+		}
 		if !credentialAcqFlowMatchesPathAccount(w, r, existing) {
 			return
 		}
@@ -181,6 +201,9 @@ func newCredentialAcqCancelHandler(d AdminCredentialAcquisitionDeps) http.Handle
 		existing, err := d.Sessions.Get(r.Context(), flowID)
 		if err != nil {
 			writeCredentialAcqError(w, err)
+			return
+		}
+		if !authorizeCredentialAcqTarget(w, r, d, ident, existing.TenantID, existing.ProviderAccountID) {
 			return
 		}
 		if !credentialAcqFlowMatchesPathAccount(w, r, existing) {
@@ -218,6 +241,9 @@ func newCredentialAcqFinalizeHandler(d AdminCredentialAcquisitionDeps) http.Hand
 			writeCredentialAcqError(w, err)
 			return
 		}
+		if !authorizeCredentialAcqTarget(w, r, d, ident, session.TenantID, session.ProviderAccountID) {
+			return
+		}
 		if !credentialAcqFlowMatchesPathAccount(w, r, session) {
 			return
 		}
@@ -251,6 +277,9 @@ func newCredentialAcqImportHelperHandler(d AdminCredentialAcquisitionDeps, kind 
 			return
 		}
 		req.FlowKind = kind
+		if !authorizeCredentialAcqTarget(w, r, d, ident, req.TenantID, req.ProviderAccountID) {
+			return
+		}
 		candidates, err := helperCandidates(req)
 		if err != nil {
 			writeCredentialAcqError(w, err)
@@ -307,6 +336,9 @@ func newCredentialAcqOAuthInitHelperHandler(d AdminCredentialAcquisitionDeps) ht
 			return
 		}
 		req.FlowKind = credentialacq.FlowKindOAuth
+		if !authorizeCredentialAcqTarget(w, r, d, ident, req.TenantID, req.ProviderAccountID) {
+			return
+		}
 		startCredentialAcqFlow(w, r, d, ident, req)
 	}
 }
@@ -475,75 +507,4 @@ func helperCandidates(req credentialAcqHelperRequest) ([]credentialacq.Credentia
 	default:
 		return nil, credentialacq.ErrInvalidImportBody
 	}
-}
-
-func resolveCredentialAcqAdmin(w http.ResponseWriter, r *http.Request, d AdminCredentialAcquisitionDeps) (admin.AdminIdentity, bool) {
-	if d.Auth == nil || d.Sessions == nil || d.Credentials == nil || d.AuditStore == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin credential acquisition dependency unset")
-		return admin.AdminIdentity{}, false
-	}
-	ident, err := d.Auth.Resolve(r.Context(), r)
-	if err != nil {
-		if errors.Is(err, admin.ErrAdminBackend) {
-			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
-		} else {
-			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
-		}
-		return admin.AdminIdentity{}, false
-	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
-		return admin.AdminIdentity{}, false
-	}
-	return ident, true
-}
-
-func writeCredentialAcqAdminAudit(r *http.Request, d AdminCredentialAcquisitionDeps, actorID, actorRole string, session credentialacq.Session, action, reason string) {
-	if d.AuditStore == nil {
-		return
-	}
-	payload, _ := json.Marshal(credentialacq.AuditSanitizePayload(map[string]any{
-		"tenant_id": session.TenantID, "flow_id": session.ID, "vendor": session.Vendor,
-		"auth_mode": session.AuthMode, "flow_kind": string(session.Kind), "status": string(session.Status),
-	}))
-	tenantID := session.TenantID
-	targetID := session.ProviderAccountID
-	reqID := middleware.GetReqID(r.Context())
-	_, _ = d.AuditStore.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: actorID, ActorRole: actorRole,
-		Action: action, TargetType: "provider_account", TargetID: &targetID,
-		RequestID: &reqID, Reason: chineseReason(reason, reason), Payload: payload,
-	})
-}
-
-func writeCredentialAcqSealedAdminAudit(r *http.Request, d AdminCredentialAcquisitionDeps, actorID, actorRole string, session credentialacq.Session, entrypoint string) {
-	if d.AuditStore == nil {
-		return
-	}
-	payload, _ := json.Marshal(credentialacq.AuditSanitizePayload(map[string]any{
-		"tenant_id": session.TenantID, "flow_id": session.ID, "vendor": session.Vendor,
-		"auth_mode": session.AuthMode, "flow_kind": string(session.Kind), "status": string(session.Status),
-		"entrypoint": entrypoint, "result": "denied", "error_class": "credential_mode_sealed",
-		"failure_reason": "credential_acquisition_feature_disabled", "severity": "warning",
-	}))
-	tenantID := session.TenantID
-	targetID := session.ProviderAccountID
-	reqID := middleware.GetReqID(r.Context())
-	_, _ = d.AuditStore.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
-		TenantID: &tenantID, ActorID: actorID, ActorRole: actorRole,
-		Action: credentialacq.EventFailed, TargetType: "provider_account", TargetID: &targetID,
-		RequestID: &reqID, Reason: chineseReason("拒绝推进封存的账号凭据模式", "拒绝推进封存的账号凭据模式"), Payload: payload,
-	})
-}
-
-func credentialAcqFlowMatchesPathAccount(w http.ResponseWriter, r *http.Request, session credentialacq.Session) bool {
-	accountID, ok := parseAdminPoolID(w, r)
-	if !ok {
-		return false
-	}
-	if session.ProviderAccountID != accountID {
-		writeJSONError(w, http.StatusForbidden, "credential_acquisition_account_mismatch", "credential acquisition flow does not belong to provider account")
-		return false
-	}
-	return true
 }

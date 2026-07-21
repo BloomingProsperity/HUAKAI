@@ -53,7 +53,7 @@ func TestAuthAndSessionHandlersRegisterVerifyLoginRefreshList(t *testing.T) {
 	})
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "user@example.test", "password": "secret",
+		"tenant_id": 1, "email": "user@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusCreated)
 	if email.verification == "" {
@@ -66,7 +66,7 @@ func TestAuthAndSessionHandlersRegisterVerifyLoginRefreshList(t *testing.T) {
 	assertHTTPStatus(t, rec, http.StatusOK)
 
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "user@example.test", "password": "secret",
+		"tenant_id": 1, "email": "user@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusOK)
 	var loginResp struct {
@@ -113,7 +113,7 @@ func TestAuthRegister_CaptchaFailureRejectsBeforeUserCreate(t *testing.T) {
 	})
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "bot@example.test", "password": "secret",
+		"tenant_id": 1, "email": "bot@example.test", "password": "secret12",
 	})
 
 	assertHTTPStatus(t, rec, http.StatusForbidden)
@@ -148,7 +148,7 @@ func TestAuthRegister_CaptchaSuccessAllowsUserCreate(t *testing.T) {
 	})
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "human@example.test", "password": "secret",
+		"tenant_id": 1, "email": "human@example.test", "password": "secret12",
 		"captcha_token": "valid-token",
 	})
 
@@ -169,7 +169,7 @@ func TestAuthLogin_CaptchaFailureRejectsBeforeAuthenticate(t *testing.T) {
 	now := time.Date(2026, 6, 3, 9, 10, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
 	seedLoginUser(
-		t, base, "login@example.test", "secret",
+		t, base, "login@example.test", "secret12",
 		userauth.UserStatusActive, true,
 	)
 	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
@@ -179,7 +179,7 @@ func TestAuthLogin_CaptchaFailureRejectsBeforeAuthenticate(t *testing.T) {
 	)
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "login@example.test", "password": "secret",
+		"tenant_id": 1, "email": "login@example.test", "password": "secret12",
 	})
 
 	assertHTTPStatus(t, rec, http.StatusForbidden)
@@ -195,14 +195,14 @@ func TestAuthLogin_CaptchaSuccessAllowsSessionCreate(t *testing.T) {
 	now := time.Date(2026, 6, 3, 9, 15, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
 	seedLoginUser(
-		t, base, "login-ok@example.test", "secret",
+		t, base, "login-ok@example.test", "secret12",
 		userauth.UserStatusActive, true,
 	)
 	gate := &authCaptchaStub{}
 	r := newAuthCaptchaLoginRouter(t, now, base, gate)
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "login-ok@example.test", "password": "secret",
+		"tenant_id": 1, "email": "login-ok@example.test", "password": "secret12",
 		"captcha_token": "valid-token",
 	})
 
@@ -220,7 +220,7 @@ func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T)
 
 	t.Run("unbound user keeps password login unchanged", func(t *testing.T) {
 		base := newGatewayMemoryAuthStore(now)
-		seedLoginUser(t, base, "default-unbound@example.test", "secret", userauth.UserStatusActive, true)
+		seedLoginUser(t, base, "default-unbound@example.test", "secret12", userauth.UserStatusActive, true)
 		user := mustGatewayUserByEmail(t, base, "default-unbound@example.test")
 		sessionSvc := newGatewayTestSessionService(now)
 		settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
@@ -229,7 +229,7 @@ func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T)
 		r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
 
 		rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-			"tenant_id": 1, "email": "default-unbound@example.test", "password": "secret",
+			"tenant_id": 1, "email": "default-unbound@example.test", "password": "secret12",
 		})
 		assertHTTPStatus(t, rec, http.StatusOK)
 		body := rec.Body.String()
@@ -250,7 +250,7 @@ func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T)
 
 	t.Run("bound user gets challenge before session", func(t *testing.T) {
 		base := newGatewayMemoryAuthStore(now)
-		seedLoginUser(t, base, "default-bound@example.test", "secret", userauth.UserStatusActive, true)
+		seedLoginUser(t, base, "default-bound@example.test", "secret12", userauth.UserStatusActive, true)
 		user := mustGatewayUserByEmail(t, base, "default-bound@example.test")
 		sessionSvc := newGatewayTestSessionService(now)
 		settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
@@ -260,7 +260,7 @@ func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T)
 		r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
 
 		rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-			"tenant_id": 1, "email": "default-bound@example.test", "password": "secret",
+			"tenant_id": 1, "email": "default-bound@example.test", "password": "secret12",
 		})
 		assertHTTPStatus(t, rec, http.StatusAccepted)
 		challenge := decodeGatewayTwoFAChallenge(t, rec)
@@ -277,7 +277,7 @@ func TestAuthLogin_DefaultTwoFactorSettingRequiresOptedInUsersOnly(t *testing.T)
 func TestAuthLogin_TwoFactorKillSwitchLetsBoundUserLoginWithoutChallenge(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 5, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "kill-switch@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "kill-switch@example.test", "secret12", userauth.UserStatusActive, true)
 	user := mustGatewayUserByEmail(t, base, "kill-switch@example.test")
 	sessionSvc := newGatewayTestSessionService(now)
 	settings := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
@@ -292,7 +292,7 @@ func TestAuthLogin_TwoFactorKillSwitchLetsBoundUserLoginWithoutChallenge(t *test
 	r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "kill-switch@example.test", "password": "secret",
+		"tenant_id": 1, "email": "kill-switch@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusOK)
 	body := rec.Body.String()
@@ -314,7 +314,7 @@ func TestAuthLogin_TwoFactorKillSwitchLetsBoundUserLoginWithoutChallenge(t *test
 func TestAuthLogin_TwoFactorEnabledRequiresChallengeBeforeSession(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 15, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "mfa@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "mfa@example.test", "secret12", userauth.UserStatusActive, true)
 	user := mustGatewayUserByEmail(t, base, "mfa@example.test")
 	sessionSvc := newGatewayTestSessionService(now)
 	settings := enabledTwoFAPlatformSettings(t)
@@ -324,7 +324,7 @@ func TestAuthLogin_TwoFactorEnabledRequiresChallengeBeforeSession(t *testing.T) 
 	r := newTwoFALoginTestRouter(t, now, base, sessionSvc, twoFA, settings, events)
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "mfa@example.test", "password": "secret",
+		"tenant_id": 1, "email": "mfa@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusAccepted)
 	firstChallenge := decodeGatewayTwoFAChallenge(t, rec)
@@ -363,7 +363,7 @@ func TestAuthLogin_TwoFactorEnabledRequiresChallengeBeforeSession(t *testing.T) 
 	assertGatewaySessionCount(t, sessionSvc, user.TenantID, user.ID, 1)
 
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "mfa@example.test", "password": "secret",
+		"tenant_id": 1, "email": "mfa@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusAccepted)
 	secondChallenge := decodeGatewayTwoFAChallenge(t, rec)
@@ -385,7 +385,7 @@ func TestAuthLogin_TwoFactorEnabledRequiresChallengeBeforeSession(t *testing.T) 
 func TestAuthLogin_TwoFactorMaterialsAreNotLoggedOrReturned(t *testing.T) {
 	now := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "no-leak@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "no-leak@example.test", "secret12", userauth.UserStatusActive, true)
 	user := mustGatewayUserByEmail(t, base, "no-leak@example.test")
 	sessionSvc := newGatewayTestSessionService(now)
 	settings := enabledTwoFAPlatformSettings(t)
@@ -401,7 +401,7 @@ func TestAuthLogin_TwoFactorMaterialsAreNotLoggedOrReturned(t *testing.T) {
 
 	scannedResponses := map[string]any{}
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "no-leak@example.test", "password": "secret",
+		"tenant_id": 1, "email": "no-leak@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusAccepted)
 	scannedResponses["password_login_challenge"] = rec.Body.String()
@@ -1988,7 +1988,7 @@ func TestRecordAuthEventPreservesExplicitSourceMetadata(t *testing.T) {
 func TestLogin_AuditEventsCarrySourceMetadata(t *testing.T) {
 	now := time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC)
 	store := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, store, "audit-source@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, store, "audit-source@example.test", "secret12", userauth.UserStatusActive, true)
 	user := mustGatewayUserByEmail(t, store, "audit-source@example.test")
 	router, events := newLoginTestHandler(t, now, store, nil, false)
 
@@ -2030,7 +2030,7 @@ func TestLogin_AuditEventsCarrySourceMetadata(t *testing.T) {
 		t.Fatalf("失败登录审计 User-Agent=%q，期望 %q", failure.UserAgent, userAgent)
 	}
 
-	successResponse := doLogin("secret")
+	successResponse := doLogin("secret12")
 	assertHTTPStatus(t, successResponse, http.StatusOK)
 	success := lastAuthEvent(t, events, "user_login_succeeded")
 	if success.TenantID != 1 || success.UserID != user.ID || success.Outcome != "success" ||
@@ -2054,7 +2054,7 @@ func TestLogin_AuditEventsCarrySourceMetadata(t *testing.T) {
 func TestLogin_ThrottleBlocksBeforeKDF(t *testing.T) {
 	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "u@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "u@example.test", "secret12", userauth.UserStatusActive, true)
 	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
 	// WindowLimit=1: 第一次失败后, 同 IP 第二次在限流闸即被拒(不进 Authenticate)。
 	limiter := loginthrottle.New(loginthrottle.Config{WindowLimit: 1, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }})
@@ -2111,7 +2111,7 @@ func (s canceledLoginSharedStore) Reserve(context.Context, string, loginthrottle
 func TestLogin_CanceledRequestStillCommitsSharedFailure(t *testing.T) {
 	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
 	store := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, store, "cancel-shared@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, store, "cancel-shared@example.test", "secret12", userauth.UserStatusActive, true)
 	reservation := &canceledLoginReservation{}
 	limiter := loginthrottle.New(
 		loginthrottle.Config{WindowLimit: 10, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }},
@@ -2138,7 +2138,7 @@ func TestLogin_CanceledRequestStillCommitsSharedFailure(t *testing.T) {
 func TestLogin_SharedThrottleFailureBlocksBeforeKDF(t *testing.T) {
 	now := time.Date(2026, 7, 19, 9, 0, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "shared-limit@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "shared-limit@example.test", "secret12", userauth.UserStatusActive, true)
 	counting := &gatewayCountingAuthStore{gatewayMemoryAuthStore: base}
 	limiter := loginthrottle.New(
 		loginthrottle.Config{WindowLimit: 10, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }},
@@ -2146,7 +2146,7 @@ func TestLogin_SharedThrottleFailureBlocksBeforeKDF(t *testing.T) {
 	)
 	router, events := newLoginTestHandler(t, now, counting, limiter, false)
 	rec := serveJSON(t, router, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "shared-limit@example.test", "password": "secret",
+		"tenant_id": 1, "email": "shared-limit@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusServiceUnavailable)
 	if code := loginErrorCode(t, rec); code != "login_throttle_unavailable" {
@@ -2175,16 +2175,16 @@ func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 		password      string
 		wantReason    string
 	}{
-		{"disabled", userauth.UserStatusDisabled, true, "secret", "user_disabled"},
-		{"locked", userauth.UserStatusLocked, true, "secret", "user_locked"},
-		{"reset_required", userauth.UserStatusResetRequired, true, "secret", "password_reset_required"},
-		{"unverified", userauth.UserStatusActive, false, "secret", "email_unverified"},
+		{"disabled", userauth.UserStatusDisabled, true, "secret12", "user_disabled"},
+		{"locked", userauth.UserStatusLocked, true, "secret12", "user_locked"},
+		{"reset_required", userauth.UserStatusResetRequired, true, "secret12", "password_reset_required"},
+		{"unverified", userauth.UserStatusActive, false, "secret12", "email_unverified"},
 		{"wrong_password", userauth.UserStatusActive, true, "wrong", "invalid_credentials"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			base := newGatewayMemoryAuthStore(now)
-			seedLoginUser(t, base, "u@example.test", "secret", tc.status, tc.emailVerified)
+			seedLoginUser(t, base, "u@example.test", "secret12", tc.status, tc.emailVerified)
 			r, events := newLoginTestHandler(t, now, base, nil, true) // RequireVerified=true; 无限流隔离本测
 
 			rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
@@ -2211,7 +2211,7 @@ func TestLogin_AccountStateFailuresAreGeneric(t *testing.T) {
 func TestLogin_ThrottleKeyedByIPNotTenant(t *testing.T) {
 	now := time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC)
 	base := newGatewayMemoryAuthStore(now)
-	seedLoginUser(t, base, "u@example.test", "secret", userauth.UserStatusActive, true)
+	seedLoginUser(t, base, "u@example.test", "secret12", userauth.UserStatusActive, true)
 	// WindowLimit=1: 同 IP 第一次失败后第二次即在限流闸被拒。
 	limiter := loginthrottle.New(loginthrottle.Config{WindowLimit: 1, InFlightLimit: 10, BanAfter: 100, Now: func() time.Time { return now }})
 	r, _ := newLoginTestHandler(t, now, base, limiter, false)

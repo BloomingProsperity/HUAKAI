@@ -198,6 +198,33 @@ func TestCodexAgentIdentityCannotUsePlatformGenericAcquisition(t *testing.T) {
 	}
 }
 
+func TestDirectCredentialInputAllowedRequiresImportableSource(t *testing.T) {
+	tests := []struct {
+		name     string
+		vendor   string
+		authMode string
+		want     bool
+	}{
+		{name: "OpenAI 官钥可粘贴", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeAPIKey, want: true},
+		{name: "Claude Code 可导入", vendor: credentialstore.VendorAnthropic, authMode: credentialstore.AuthModeClaudeCode, want: true},
+		{name: "Kimi OAuth 凭据包可导入", vendor: credentialstore.VendorKimi, authMode: credentialstore.AuthModeKimiOAuth, want: true},
+		{name: "Claude 浏览器 OAuth 必须走回调", vendor: credentialstore.VendorAnthropic, authMode: credentialstore.AuthModeClaudeAIOAuth, want: false},
+		{name: "Claude Setup Token 必须走兑换", vendor: credentialstore.VendorAnthropic, authMode: credentialstore.AuthModeClaudeSetupToken, want: false},
+		{name: "ChatGPT OAuth 必须走回调", vendor: credentialstore.VendorOpenAI, authMode: credentialstore.AuthModeChatGPTOAuth, want: false},
+		{name: "Gemini Code Assist 必须走回调", vendor: credentialstore.VendorGemini, authMode: credentialstore.AuthModeCodeAssist, want: false},
+		{name: "Antigravity 原始令牌必须走交换", vendor: credentialstore.VendorAntigravity, authMode: credentialstore.AuthModeOAuth, want: false},
+		{name: "封存的 Copilot 不得直接创建", vendor: credentialstore.VendorCopilot, authMode: credentialstore.AuthModeCopilotOAuth, want: false},
+		{name: "未知模式拒绝", vendor: "unknown", authMode: "unknown", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DirectCredentialInputAllowed(tc.vendor, tc.authMode); got != tc.want {
+				t.Fatalf("DirectCredentialInputAllowed(%q, %q)=%v want %v", tc.vendor, tc.authMode, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestXAIOAuthModePlan(t *testing.T) {
 	// 变异:移除 grok/xai_oauth 的 ModePlan 播种,或把它暴露为 paste
 	// helper,本测试就必须变红。

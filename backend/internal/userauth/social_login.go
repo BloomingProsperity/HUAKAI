@@ -223,9 +223,8 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		return User{}, ErrStoreNotConfigured
 	}
 	provider := normalizeSocialProvider(identity.Provider)
-	email := NormalizeEmail(identity.Email)
 	subject := strings.TrimSpace(identity.Subject)
-	if tenantID <= 0 || provider == "" || subject == "" || email == "" {
+	if tenantID <= 0 || provider == "" || subject == "" {
 		return User{}, ErrInvalidInput
 	}
 	// 既有绑定优先:一个已建立的社交身份是受信凭证,直接登录——不受本次身份是否带已验证邮箱影响。
@@ -245,6 +244,11 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	if !identity.EmailVerified {
 		return User{}, ErrOAuthPendingEmailRequired
 	}
+	email, err := ValidateNewUserEmail(identity.Email)
+	if err != nil {
+		return User{}, err
+	}
+	displayName := socialDisplayName(identity.DisplayName)
 	existing, err := s.Store.GetUserByEmail(ctx, tenantID, email)
 	if err == nil {
 		user, err := s.Store.LinkSocialIdentity(ctx, existing.TenantID, existing.ID, provider, subject)
@@ -275,21 +279,27 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 	case RegistrationModeInviteRequired:
 		return User{}, ErrInviteRequired
 	}
-	user, err := s.Store.CreateUser(ctx, CreateUserParams{
-		TenantID:            tenantID,
-		Email:               email,
-		DisplayName:         identity.DisplayName,
-		EmailVerified:       true,
-		SocialLoginProvider: provider,
-		Status:              UserStatusActive,
+	// 建用户 + 绑社交身份必须同一事务:中途失败要整体回滚,否则留孤儿用户 + 占住邮箱。
+	var linkedUser User
+	err = s.withStoreTx(ctx, func(store Store) error {
+		user, err := store.CreateUser(ctx, CreateUserParams{
+			TenantID:            tenantID,
+			Email:               email,
+			DisplayName:         displayName,
+			EmailVerified:       true,
+			SocialLoginProvider: provider,
+			Status:              UserStatusActive,
+		})
+		if err != nil {
+			return err
+		}
+		linkedUser, err = store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+		return err
 	})
 	if err != nil {
 		return User{}, err
 	}
-	linkedUser, err := s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
-	if err != nil {
-		return User{}, err
-	}
+	// 动钱/额度留在事务提交成功之后,发放失败绝不回滚注册。
 	s.issueSignupCredits(ctx, linkedUser.TenantID, linkedUser.ID, false)
 	return linkedUser, nil
 }
@@ -311,10 +321,15 @@ func (s *Service) CompleteSocialSignupWithVerifiedEmail(ctx context.Context, ten
 	}
 	provider := normalizeSocialProvider(identity.Provider)
 	subject := strings.TrimSpace(identity.Subject)
-	email = NormalizeEmail(email)
-	if tenantID <= 0 || provider == "" || subject == "" || email == "" {
+	if tenantID <= 0 || provider == "" || subject == "" {
 		return User{}, ErrInvalidInput
 	}
+	var err error
+	email, err = ValidateNewUserEmail(email)
+	if err != nil {
+		return User{}, err
+	}
+	displayName := socialDisplayName(identity.DisplayName)
 	// 既有绑定优先:身份已绑某用户 → 直接登录到那个用户(幂等),不重复建号。
 	if user, err := s.Store.GetUserBySocialIdentity(ctx, tenantID, provider, subject); err == nil {
 		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
@@ -347,23 +362,39 @@ func (s *Service) CompleteSocialSignupWithVerifiedEmail(ctx context.Context, ten
 	case RegistrationModeInviteRequired:
 		return User{}, ErrInviteRequired
 	}
-	user, err := s.Store.CreateUser(ctx, CreateUserParams{
-		TenantID:            tenantID,
-		Email:               email,
-		DisplayName:         identity.DisplayName,
-		EmailVerified:       true, // 调用方已通过发码验码证明邮箱所有权
-		SocialLoginProvider: provider,
-		Status:              UserStatusActive,
+	// 建用户 + 绑社交身份必须同一事务:中途失败要整体回滚,否则留孤儿用户 + 占住邮箱。
+	var linkedUser User
+	err = s.withStoreTx(ctx, func(store Store) error {
+		user, err := store.CreateUser(ctx, CreateUserParams{
+			TenantID:            tenantID,
+			Email:               email,
+			DisplayName:         displayName,
+			EmailVerified:       true, // 调用方已通过发码验码证明邮箱所有权
+			SocialLoginProvider: provider,
+			Status:              UserStatusActive,
+		})
+		if err != nil {
+			return err
+		}
+		linkedUser, err = store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+		return err
 	})
 	if err != nil {
 		return User{}, err
 	}
-	linkedUser, err := s.Store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
-	if err != nil {
-		return User{}, err
-	}
+	// 动钱/额度留在事务提交成功之后,发放失败绝不回滚注册。
 	s.issueSignupCredits(ctx, linkedUser.TenantID, linkedUser.ID, false)
 	return linkedUser, nil
+}
+
+// socialDisplayName 校验上游提供的可选名称。名称不是身份依据，非法值不得落库；
+// 同时也不能因第三方名称异常阻断已验证邮箱建号，因此异常名称降为空值。
+func socialDisplayName(raw string) string {
+	name, err := ValidateOptionalDisplayName(raw)
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 // LinkVerifiedSocialIdentity 把一个已校验的社交身份(provider+subject)绑定到指定的已登录用户。

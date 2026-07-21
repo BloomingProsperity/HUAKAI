@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -81,7 +82,8 @@ func normalizeAccountIDs(values []int64) ([]int64, error) {
 }
 
 func validateOperator(tenantID int64, actorID, actorRole string) error {
-	if tenantID <= 0 || strings.TrimSpace(actorID) == "" || actorRole != "tenant_operator" {
+	if tenantID <= 0 || strings.TrimSpace(actorID) == "" ||
+		(actorRole != admin.RolePlatformAdmin && actorRole != admin.RoleTenantOperator) {
 		return ErrInvalidInput
 	}
 	return nil

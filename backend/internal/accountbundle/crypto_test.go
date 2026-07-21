@@ -81,7 +81,7 @@ func TestEnvelopeRejectsWeakPassword(t *testing.T) {
 	}
 }
 
-func TestValidateOperatorRejectsPlatformAndCrossRoleExecution(t *testing.T) {
+func TestValidateOperatorAcceptsBothAdminRolesAndRejectsInvalidIdentity(t *testing.T) {
 	for _, input := range []struct {
 		tenantID int64
 		actorID  string
@@ -89,7 +89,7 @@ func TestValidateOperatorRejectsPlatformAndCrossRoleExecution(t *testing.T) {
 	}{
 		{tenantID: 0, actorID: "admin_token:9", role: "tenant_operator"},
 		{tenantID: 7, actorID: "", role: "tenant_operator"},
-		{tenantID: 7, actorID: "admin_token:9", role: "platform_admin"},
+		{tenantID: 7, actorID: "admin_token:9", role: "end_user"},
 	} {
 		if err := validateOperator(input.tenantID, input.actorID, input.role); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("输入=%+v err=%v，期望拒绝", input, err)
@@ -97,5 +97,8 @@ func TestValidateOperatorRejectsPlatformAndCrossRoleExecution(t *testing.T) {
 	}
 	if err := validateOperator(7, "admin_token:9", "tenant_operator"); err != nil {
 		t.Fatalf("租户操作者被误拒绝：%v", err)
+	}
+	if err := validateOperator(7, "admin_token:9", "platform_admin"); err != nil {
+		t.Fatalf("部署者处理平台自有租户迁移包被误拒绝：%v", err)
 	}
 }

@@ -117,6 +117,9 @@ func credentialAcquisitionRouteDeps(d *deps) gatewayhttp.AdminCredentialAcquisit
 		ProjectEnricher:   d.projectEnricher,
 		BootstrapShortTTL: d.cfg.CredentialAcqBootstrapShortTTL,
 		BootstrapLongTTL:  d.cfg.CredentialAcqBootstrapLongTTL,
+		Accounts:          d.adminQueries,
+		Capabilities:      tenantcapability.NewStore(d.pgPool),
+		PlatformTenantID:  d.platformTenantID,
 	}
 }
 
@@ -294,13 +297,16 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Service: d.voucherService,
 		}))
 	})
-	// 首装向导:status 公开只读;install 由"无管理员才放行"守卫自保护(fail-closed)。
+	// 首装向导:status 公开只读;install 需要部署者首装令牌，并由数据库守卫永久关口。
 	// env 非法时回退默认工作租户(非法 env 由启动门另行拦截),nil pool 由 handler 回 503。
 	setupTenantID, setupTenantErr := tenancy.WorkingTenantIDFromEnv()
 	if setupTenantErr != nil {
 		setupTenantID = tenancy.DefaultWorkingTenantID
 	}
-	setuphttp.Mount(r, setuphttp.Deps{Pool: d.pgPool, TenantID: setupTenantID})
+	setuphttp.Mount(r, setuphttp.Deps{
+		Pool: d.pgPool, TenantID: setupTenantID,
+		SetupToken: strings.TrimSpace(os.Getenv(setuphttp.SetupTokenEnv)),
+	})
 	r.Get("/v1/pricing/rate-table", gatewayhttp.NewPricingRateTableHandler(receiptDeps))
 	r.Get("/v1/pricing/page", pricingpublichttp.NewHandler(pricingpublichttp.Deps{
 		Catalog: d.modelRegistry,
@@ -985,6 +991,7 @@ func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
 		SessionRevoker:   d.userSessions,
 		Unlocker:         d.userAuth,
 		Audit:            d.adminQueries,
+		PlatformTenantID: d.platformTenantID,
 	}
 }
 
@@ -1153,10 +1160,12 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
 			Auth:              d.adminAuth,
-			Store:             gatewayhttp.NewAdminPoolAccountStoreAdapter(d.adminQueries, d.pgPool),
+			Store:             d.adminQueries,
 			Credentials:       d.credentialStore,
 			ChannelHealth:     d.channelHealth,
 			RateLimitRecovery: provideraccountrecovery.NewService(provideraccountrecovery.NewPostgresStore(d.pgPool), d.channelHealth),
+			Capabilities:      tenantcapability.NewStore(d.pgPool),
+			PlatformTenantID:  d.platformTenantID,
 		})
 		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
 			Auth:     d.adminAuth,
@@ -1230,7 +1239,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
 		stagedStore := accountintake.NewStagedStore(d.pgPool, d.credentialKeys)
-		intakeService := accountintake.NewService(d.pgPool, d.credentialStore, d.channelHealth).
+		intakeService := accountintake.NewService(d.pgPool, d.credentialStore).
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
 			WithProjectEnricher(d.projectEnricher).
 			WithImportCredentialRefresher(d.importCredentialRefresher).
@@ -1246,9 +1255,17 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			crsService = accountintake.NewCRSService(intakeService, stagedStore, crsClient)
 		}
 		accountintakehttp.Mount(r, accountintakehttp.Deps{
-			Auth:         d.adminAuth,
-			Capabilities: tenantcapability.NewStore(d.pgPool),
-			Service:      intakeService,
+			Auth:             d.adminAuth,
+			PlatformTenantID: d.platformTenantID,
+			Capabilities:     tenantcapability.NewStore(d.pgPool),
+			Service:          intakeService,
+			OAuthService: accountintake.NewOAuthService(
+				intakeService,
+				stagedStore,
+				d.credentialAcqStore,
+				d.credentialExchangers,
+				nil,
+			),
 			CookieService: accountintake.NewCookieService(
 				intakeService,
 				stagedStore,

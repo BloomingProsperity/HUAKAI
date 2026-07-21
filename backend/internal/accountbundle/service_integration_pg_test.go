@@ -38,7 +38,7 @@ func TestEncryptedAccountBundleRoundTripAndReplayGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	credentials := credentialstore.NewStore(pool, keys, credentialstore.DefaultHandlerRegistry())
-	intakeService := accountintake.NewService(pool, credentials, nil).WithProxyResolver(accountproxyimport.New(keys))
+	intakeService := accountintake.NewService(pool, credentials).WithProxyResolver(accountproxyimport.New(keys))
 	service := NewService(pool, credentials, keys, intakeService)
 	source := seedAccountBundleTenant(t, ctx, pool, "source")
 	destination := seedAccountBundleTenant(t, ctx, pool, "destination")

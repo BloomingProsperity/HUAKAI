@@ -582,6 +582,7 @@ func TestPGAdminSetUserStatusBansBothAxes(t *testing.T) {
 		Store:            admindb.New(pool),
 		UserStatusSetter: NewPostgresUserStatusStore(pool),
 		Audit:            admindb.New(pool),
+		PlatformTenantID: f.tenantID,
 	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"disabled","reason":"abuse"}`)
 	assertStatus(t, rec, http.StatusOK)
 
@@ -614,6 +615,7 @@ func TestPGAdminSetUserStatusBansBothAxes(t *testing.T) {
 		Store:            admindb.New(pool),
 		UserStatusSetter: NewPostgresUserStatusStore(pool),
 		Audit:            admindb.New(pool),
+		PlatformTenantID: f.tenantID,
 	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"active"}`)
 	assertStatus(t, rec, http.StatusOK)
 	if _, err := authSvc.Authenticate(ctx, userauth.LoginInput{TenantID: f.tenantID, Email: email, Password: "correct-secret"}); err != nil {

@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
@@ -27,10 +26,6 @@ var (
 )
 
 const accountIntakeContentLimit = 2 << 20
-
-type ChannelHealthInitializer interface {
-	EnsureDefaultActive(context.Context, channelhealth.ChannelKey) (channelhealth.Record, error)
-}
 
 type AgentTaskRegistrar interface {
 	EnsureTask(context.Context, []byte) ([]byte, error)

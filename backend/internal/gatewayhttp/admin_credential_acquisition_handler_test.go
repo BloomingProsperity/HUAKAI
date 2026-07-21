@@ -95,6 +95,37 @@ func TestAdminCredentialAcquisitionRoutesIntegration(t *testing.T) {
 	}
 }
 
+func TestAdminCredentialAcquisitionEnforcesThreeIdentityBoundary(t *testing.T) {
+	newFixture := func(auth AdminCredentialAuth, option credentialAcqFixtureOption) *credentialAcqHTTPFixture {
+		return newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(
+			t, auth, credentialacq.NewExchangerRegistry(), nil, false, 0, 0, option,
+		)
+	}
+	body := `{"tenant_id":2,"vendor":"openai","auth_mode":"api_key","flow_kind":"paste"}`
+	platform := newFixture(adminPoolAdmin(), nil)
+	rec := platform.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions", body)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "cross_tenant_account_admin_forbidden") {
+		t.Fatalf("部署者代下级租户采集 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	tenant := newFixture(providerAccountAdmin(), func(deps *AdminCredentialAcquisitionDeps) {
+		deps.Capabilities = adminPoolCapabilityStub{allowed: false}
+	})
+	rec = tenant.do(t, http.MethodPost, "/v1/admin/pool-accounts/101/credential-acquisitions",
+		`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","flow_kind":"paste"}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "tenant_capability_not_granted") {
+		t.Fatalf("未获授权租户采集 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	foreignTenant := newFixture(providerAccountAdmin(), nil)
+	flow := foreignTenant.seedPasteFlow(t, 101)
+	// flow 属于租户 1，而操作者作用域是租户 7；查询、轮询、完成等后续动作必须同样拒绝。
+	rec = foreignTenant.do(t, http.MethodGet, "/v1/admin/pool-accounts/101/credential-acquisitions/"+flow.ID, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("跨租户 flow 查询 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminCredentialAcquisitionDeviceStartReturnsOnlyPublicInstructions(t *testing.T) {
 	registry := credentialacq.NewExchangerRegistry()
 	if err := registry.RegisterExchanger(
@@ -979,6 +1010,9 @@ func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth 
 		AllowLongLivedSetupToken: allow,
 		BootstrapShortTTL:        shortTTL,
 		BootstrapLongTTL:         longTTL,
+		Accounts:                 adminAudit,
+		Capabilities:             allowAdminPoolCapability{},
+		PlatformTenantID:         1,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -992,7 +1026,7 @@ func newCredentialAcqHTTPFixtureWithRegistryAndBootstrapTTLs(t *testing.T, auth 
 	})
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
 		MountAdminCredentialAcquisitionHelperRoutes(r, deps)
-		accountintakehttp.Mount(r, accountintakehttp.Deps{Auth: auth})
+		accountintakehttp.Mount(r, accountintakehttp.Deps{Auth: auth, PlatformTenantID: 1})
 	})
 	return &credentialAcqHTTPFixture{handler: r, store: store, db: db, creator: creator, audit: audit, adminAudit: adminAudit, exchanger: exchanger}
 }
@@ -1519,7 +1553,7 @@ func scanCredentialAcqSession(dest []any, row credentialacq.Session) error {
 		devicePayload = nil
 	}
 	values := []any{
-		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
+		row.ID, row.TenantID, pgInt8(row.ProviderAccountID), row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
 		row.ClientIdentitySource, pgText(string(row.AuthType)), devicePayload, pgText(row.RedirectURI), scopes, redacted,
 		row.LongLivedRequested, row.IdempotencyKeyHash, pgInt8(row.ResultAccountCredentialID),

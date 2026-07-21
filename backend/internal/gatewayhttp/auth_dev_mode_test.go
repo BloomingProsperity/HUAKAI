@@ -25,7 +25,7 @@ func TestAuthRegisterDevModeReturnsVerificationToken(t *testing.T) {
 	})
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "dev@example.test", "password": "secret",
+		"tenant_id": 1, "email": "dev@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusCreated)
 	var resp map[string]any
@@ -44,7 +44,7 @@ func TestAuthPasswordResetDevModeReturnsResetToken(t *testing.T) {
 	authSvc := userauth.NewService(authStore)
 	authSvc.PasswordPolicy = userauth.PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 	authSvc.Now = func() time.Time { return now }
-	registered, err := authSvc.Register(t.Context(), userauth.RegisterInput{TenantID: 1, Email: "reset@example.test", Password: "secret"})
+	registered, err := authSvc.Register(t.Context(), userauth.RegisterInput{TenantID: 1, Email: "reset@example.test", Password: "secret12"})
 	if err != nil || registered.User.ID == 0 {
 		t.Fatalf("Register: user=%+v err=%v", registered.User, err)
 	}
@@ -91,7 +91,7 @@ func TestAuthRegisterDevTokenSuppressedInProduction(t *testing.T) {
 	})
 
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "prod@example.test", "password": "secret",
+		"tenant_id": 1, "email": "prod@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusCreated)
 	var resp map[string]any

@@ -273,7 +273,7 @@ func scanTestSession(dest []any, row Session, sql string) error {
 	redactedContext, _ := json.Marshal(row.RedactedContext)
 	deviceCodePayload, _ := json.Marshal(row.DeviceCodePayload)
 	values := []any{
-		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
+		row.ID, row.TenantID, int8Value(row.ProviderAccountID), row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
 		row.ClientIdentitySource,
 	}
