@@ -48,7 +48,7 @@ func TestVerifyOIDCES256IdentityRejectsClaimAndSignatureDrift(t *testing.T) {
 	valid := sign(key, "https://issuer.example", "client-1", "nonce-1", now.Add(time.Hour))
 	identity, err := VerifyOIDCES256Identity(context.Background(), OIDCVerificationInput{
 		RawIDToken: valid, Issuer: "https://issuer.example", Audience: "client-1", Nonce: "nonce-1",
-		JWKSURL: server.URL, Source: SourceXAIOIDCSubject, RequireAccountScope: true,
+		RequireNonce: true, JWKSURL: server.URL, Source: SourceXAIOIDCSubject, RequireAccountScope: true,
 		HTTPClient: server.Client(), Now: now,
 	})
 	if err != nil {
@@ -79,7 +79,7 @@ func TestVerifyOIDCES256IdentityRejectsClaimAndSignatureDrift(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, verifyErr := VerifyOIDCES256Identity(context.Background(), OIDCVerificationInput{
 				RawIDToken: test.raw, Issuer: "https://issuer.example", Audience: test.audience, Nonce: test.nonce,
-				JWKSURL: server.URL, Source: SourceXAIOIDCSubject, HTTPClient: server.Client(), Now: now,
+				RequireNonce: true, JWKSURL: server.URL, Source: SourceXAIOIDCSubject, HTTPClient: server.Client(), Now: now,
 			})
 			if verifyErr == nil {
 				t.Fatal("被篡改的 OIDC 身份不应通过")
@@ -101,7 +101,7 @@ func TestVerifyOIDCES256IdentityRejectsClaimAndSignatureDrift(t *testing.T) {
 	}
 	if _, err := VerifyOIDCES256Identity(context.Background(), OIDCVerificationInput{
 		RawIDToken: rawWithoutScope, Issuer: "https://issuer.example", Audience: "client-1", Nonce: "nonce-1",
-		JWKSURL: server.URL, Source: SourceXAIOIDCSubject, RequireAccountScope: true,
+		RequireNonce: true, JWKSURL: server.URL, Source: SourceXAIOIDCSubject, RequireAccountScope: true,
 		HTTPClient: server.Client(), Now: now,
 	}); err == nil {
 		t.Fatal("缺少账号范围的 OIDC 身份不应通过共享账号导入")

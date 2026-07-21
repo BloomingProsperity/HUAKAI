@@ -145,6 +145,28 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 	}
 }
 
+func TestDeviceCodePollRejectsTokenFromErrorStatus(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 30, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		response := jsonHTTPResponse(t, map[string]any{"access_token": "must-not-be-accepted"})
+		response.StatusCode = http.StatusBadRequest
+		return response, nil
+	})}
+	session := Session{
+		TenantID: 1, ProviderAccountID: 2, Vendor: credentialstore.VendorKimi,
+		AuthMode: credentialstore.AuthModeKimiOAuth, AuthType: AuthTypeDeviceCode,
+		DeviceCodePayload: map[string]any{
+			"device_code": "device", "token_url": "https://auth.kimi.com/token", "client_id": "client",
+			"issued_at": now.Format(time.RFC3339Nano), "expires_in": 900, "interval": 5,
+		},
+	}
+	if _, err := PollDeviceCodeToken(context.Background(), session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("错误状态携带 token 时 err=%v，期望 ErrInvalidTokenShape", err)
+	}
+}
+
 func TestCopilotDeviceCodeUsesPinnedPublicIdentityAndStagesGitHubToken(t *testing.T) {
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	var starts, polls atomic.Int32

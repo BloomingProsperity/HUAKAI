@@ -27,11 +27,23 @@ type OIDCVerificationInput struct {
 	Issuer              string
 	Audience            string
 	Nonce               string
+	RequireNonce        bool
 	JWKSURL             string
 	Source              string
 	RequireAccountScope bool
 	HTTPClient          *http.Client
 	Now                 time.Time
+}
+
+type AccessTokenScopeVerificationInput struct {
+	RawAccessToken  string
+	Issuer          string
+	Audience        string
+	ExpectedSubject string
+	JWKSURL         string
+	Source          string
+	HTTPClient      *http.Client
+	Now             time.Time
 }
 
 type oidcClaims struct {
@@ -59,9 +71,12 @@ type oidcJWK struct {
 // 任一签名或声明条件不满足都会失败，不能降级为未经验证的自动账号匹配。
 func VerifyOIDCES256Identity(ctx context.Context, in OIDCVerificationInput) (Identity, error) {
 	if strings.TrimSpace(in.RawIDToken) == "" || strings.TrimSpace(in.Issuer) == "" ||
-		strings.TrimSpace(in.Audience) == "" || strings.TrimSpace(in.Nonce) == "" ||
+		strings.TrimSpace(in.Audience) == "" ||
 		strings.TrimSpace(in.JWKSURL) == "" || in.HTTPClient == nil {
 		return Identity{}, errors.New("OIDC 身份校验参数不完整")
+	}
+	if in.RequireNonce && strings.TrimSpace(in.Nonce) == "" {
+		return Identity{}, errors.New("OIDC 身份校验缺少必须的 nonce")
 	}
 	now := in.Now.UTC()
 	if now.IsZero() {
@@ -94,11 +109,57 @@ func VerifyOIDCES256Identity(ctx context.Context, in OIDCVerificationInput) (Ide
 	if strings.TrimSpace(claims.Subject) == "" {
 		return Identity{}, errors.New("OIDC ID Token 缺少主体")
 	}
-	if !hmac.Equal([]byte(strings.TrimSpace(claims.Nonce)), []byte(strings.TrimSpace(in.Nonce))) {
+	if in.RequireNonce && !hmac.Equal([]byte(strings.TrimSpace(claims.Nonce)), []byte(strings.TrimSpace(in.Nonce))) {
 		return Identity{}, errors.New("OIDC nonce 不匹配")
 	}
 	if in.RequireAccountScope && strings.TrimSpace(claims.TeamID) == "" {
 		return Identity{}, errors.New("OIDC ID Token 缺少可验证账号范围")
+	}
+	return FromVerifiedOIDCClaims(claims.TeamID, claims.Subject, claims.Email, in.Source), nil
+}
+
+// VerifyES256AccessTokenScope 验证同一发行方签发的访问令牌，并把账号范围绑定到
+// 已经由 ID Token 验证过的个人主体。访问令牌来自固定 token 端点，但仍必须验签、
+// 校验发行方、时效和主体一致性，不能直接信任未验证的 team_id。
+func VerifyES256AccessTokenScope(ctx context.Context, in AccessTokenScopeVerificationInput) (Identity, error) {
+	if strings.TrimSpace(in.RawAccessToken) == "" || strings.TrimSpace(in.Issuer) == "" ||
+		strings.TrimSpace(in.Audience) == "" || strings.TrimSpace(in.ExpectedSubject) == "" ||
+		strings.TrimSpace(in.JWKSURL) == "" || in.HTTPClient == nil {
+		return Identity{}, errors.New("访问令牌账号范围校验参数不完整")
+	}
+	now := in.Now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	claims := &oidcClaims{}
+	token, err := jwt.ParseWithClaims(
+		in.RawAccessToken,
+		claims,
+		func(token *jwt.Token) (any, error) {
+			if token.Method != jwt.SigningMethodES256 {
+				return nil, errors.New("访问令牌签名算法不是 ES256")
+			}
+			kid, _ := token.Header["kid"].(string)
+			if strings.TrimSpace(kid) == "" {
+				return nil, errors.New("访问令牌缺少 kid")
+			}
+			return fetchOIDCES256Key(ctx, in.HTTPClient, in.JWKSURL, kid)
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodES256.Alg()}),
+		jwt.WithIssuer(strings.TrimSpace(in.Issuer)),
+		jwt.WithAudience(strings.TrimSpace(in.Audience)),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(30*time.Second),
+		jwt.WithTimeFunc(func() time.Time { return now }),
+	)
+	if err != nil || token == nil || !token.Valid {
+		return Identity{}, fmt.Errorf("访问令牌校验失败: %w", err)
+	}
+	if !hmac.Equal([]byte(strings.TrimSpace(claims.Subject)), []byte(strings.TrimSpace(in.ExpectedSubject))) {
+		return Identity{}, errors.New("访问令牌主体与 ID Token 不一致")
+	}
+	if strings.TrimSpace(claims.TeamID) == "" {
+		return Identity{}, errors.New("访问令牌缺少可验证账号范围")
 	}
 	return FromVerifiedOIDCClaims(claims.TeamID, claims.Subject, claims.Email, in.Source), nil
 }

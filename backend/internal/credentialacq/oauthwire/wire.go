@@ -46,6 +46,17 @@ func PostJSONStatus(ctx context.Context, client *http.Client, rawURL string, bod
 }
 
 func PostFormJSON(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
+	status, err := PostFormJSONStatus(ctx, client, rawURL, form, out)
+	if err != nil {
+		return status, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return status, fmt.Errorf("credentialacq: endpoint returned status %d", status)
+	}
+	return status, nil
+}
+
+func PostFormJSONStatus(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
 	if client == nil {
 		client = DefaultHTTPClient()
 	}
@@ -55,7 +66,7 @@ func PostFormJSON(ctx context.Context, client *http.Client, rawURL string, form 
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return executeJSONRequest(client, req, out, true)
+	return executeJSONRequest(client, req, out, false)
 }
 
 func executeJSONRequest(client *http.Client, req *http.Request, out any, requireSuccess bool) (int, error) {

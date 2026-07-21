@@ -235,8 +235,8 @@ func TestXAIOAuthModePlan(t *testing.T) {
 	if plan.Kind != FlowKindOAuth {
 		t.Fatalf("kind=%s want %s", plan.Kind, FlowKindOAuth)
 	}
-	if plan.ClientIdentitySource != ClientSourceOperatorConfig {
-		t.Fatalf("client source=%q want %q", plan.ClientIdentitySource, ClientSourceOperatorConfig)
+	if plan.ClientIdentitySource != ClientSourcePublicCLI {
+		t.Fatalf("client source=%q want %q", plan.ClientIdentitySource, ClientSourcePublicCLI)
 	}
 	if len(plan.AllowedHelpers) != 1 || plan.AllowedHelpers[0] != FlowKindOAuth {
 		t.Fatalf("allowed helpers=%v want [oauth]", plan.AllowedHelpers)

@@ -21,6 +21,10 @@ func postFormJSON(ctx context.Context, client *http.Client, rawURL string, form 
 	return oauthwire.PostFormJSON(ctx, client, rawURL, form, out)
 }
 
+func postFormJSONStatus(ctx context.Context, client *http.Client, rawURL string, form url.Values, out any) (int, error) {
+	return oauthwire.PostFormJSONStatus(ctx, client, rawURL, form, out)
+}
+
 func normalizedTokenPayload(response map[string]any, accessToken string) ([]byte, error) {
 	return oauthwire.NormalizeTokenPayload(response, accessToken)
 }

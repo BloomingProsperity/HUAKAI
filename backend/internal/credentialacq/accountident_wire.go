@@ -136,6 +136,16 @@ func candidateFromDeviceTokenPayload(session Session, raw []byte) CredentialCand
 		}
 		AttachIdentity(&candidate, identity)
 	}
+	if credentialstore.Normalize(candidate.Vendor) == credentialstore.VendorGrok &&
+		credentialstore.Normalize(candidate.AuthMode) == credentialstore.AuthModeXAIOAuth {
+		verified, _ := fields["oidc_identity_verified"].(bool)
+		if verified {
+			AttachIdentity(&candidate, accountident.FromVerifiedOIDCClaims(
+				stringField(fields, "team_id"), stringField(fields, "sub"),
+				stringField(fields, "email"), accountident.SourceXAIOIDCSubject,
+			))
+		}
+	}
 	attachOAuthResponseSubscription(&candidate, firstNonEmpty(
 		stringField(fields, "chatgpt_plan_type"),
 		stringField(fields, "subscription_tier"),

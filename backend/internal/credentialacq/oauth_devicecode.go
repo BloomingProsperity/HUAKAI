@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -99,6 +100,31 @@ func (kimiDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *Postgr
 
 func (kimiDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
 	return CredentialCandidate{}, errors.New("credentialacq: kimi device-code flow does not use oauth callback exchange")
+}
+
+type xaiDeviceCodeExchanger struct{}
+
+func newXAIDeviceCodeExchanger() Exchanger {
+	return xaiDeviceCodeExchanger{}
+}
+
+func (xaiDeviceCodeExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, override OAuthClientConfig) (OAuthStartResult, error) {
+	cfg := OAuthClientConfig{
+		ClientID: xaiOAuthClientID, AuthURL: xaiOAuthDeviceURL, TokenURL: xaiOAuthTokenURL,
+		Scopes: strings.Fields(xaiOAuthScope), Source: ClientSourcePublicCLI,
+		HTTPClient: defaultDeviceCodeHTTPClient(),
+	}
+	if override.HTTPClient != nil {
+		cfg.HTTPClient = override.HTTPClient
+	}
+	in.Vendor = credentialstore.VendorGrok
+	in.AuthMode = credentialstore.AuthModeXAIOAuth
+	in.ClientIdentitySource = ClientSourcePublicCLI
+	return startFormDeviceAuthorization(ctx, store, in, cfg)
+}
+
+func (xaiDeviceCodeExchanger) ExchangeOAuthCode(context.Context, Session, string) (CredentialCandidate, error) {
+	return CredentialCandidate{}, errors.New("credentialacq: xAI device-code flow does not use oauth callback exchange")
 }
 
 func kimiDeviceCodeOAuthConfig(override OAuthClientConfig) (OAuthClientConfig, error) {
@@ -405,7 +431,30 @@ func startDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, 
 	if err := postJSON(ctx, client, deviceURL, reqBody, &response); err != nil {
 		return OAuthStartResult{}, err
 	}
-	payload, err := normalizeDeviceStartResponse(response, tokenURL, cfg.ClientID, store.now().UTC(), authType)
+	return persistDeviceAuthorization(ctx, store, in, cfg, response, authType)
+}
+
+func startFormDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
+	if store == nil {
+		return OAuthStartResult{}, errors.New("credentialacq: session store not configured")
+	}
+	client := cfg.HTTPClient
+	if client == nil {
+		client = defaultDeviceCodeHTTPClient()
+	}
+	form := url.Values{"client_id": {strings.TrimSpace(cfg.ClientID)}}
+	if len(cfg.Scopes) > 0 {
+		form.Set("scope", strings.Join(cfg.Scopes, " "))
+	}
+	var response deviceAuthorizationStartResponse
+	if _, err := postFormJSON(ctx, client, strings.TrimSpace(cfg.AuthURL), form, &response); err != nil {
+		return OAuthStartResult{}, err
+	}
+	return persistDeviceAuthorization(ctx, store, in, cfg, response, AuthTypeDeviceCode)
+}
+
+func persistDeviceAuthorization(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig, response deviceAuthorizationStartResponse, authType AuthType) (OAuthStartResult, error) {
+	payload, err := normalizeDeviceStartResponse(response, cfg.TokenURL, cfg.ClientID, store.now().UTC(), authType)
 	if err != nil {
 		return OAuthStartResult{}, err
 	}
@@ -507,22 +556,21 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 			return CredentialCandidate{}, ErrFlowExpired
 		}
 		var response map[string]any
-		status, err := postJSONStatus(ctx, options.client, tokenURL, map[string]any{
+		requestBody := map[string]any{
 			"client_id":   clientID,
 			"device_code": deviceCode,
 			"deviceCode":  deviceCode,
 			"grant_type":  oauthDeviceCodeGrantType,
 			"grantType":   oauthDeviceCodeGrantType,
-		}, &response)
+		}
+		status, err := postDeviceToken(ctx, options.client, session, tokenURL, requestBody, &response)
 		if err != nil {
 			return CredentialCandidate{}, classifyDevicePollRequestError(err)
 		}
-		if token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken")); token != "" {
-			raw, err := normalizedTokenPayload(response, token)
-			if err != nil {
-				return CredentialCandidate{}, err
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			if token := firstNonEmpty(stringField(response, "access_token"), stringField(response, "accessToken")); token != "" {
+				return verifiedDeviceTokenCandidate(ctx, options.client, options.now(), session, response, token)
 			}
-			return candidateFromDeviceTokenPayload(session, raw), nil
 		}
 		pollErr := strings.TrimSpace(firstNonEmpty(stringField(response, "error"), stringField(response, "errorCode")))
 		switch pollErr {
@@ -549,6 +597,68 @@ func pollDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAut
 			return CredentialCandidate{}, err
 		}
 	}
+}
+
+func postDeviceToken(ctx context.Context, client *http.Client, session Session, tokenURL string, body map[string]any, out any) (int, error) {
+	if !isXAIOAuthMode(session.Vendor, session.AuthMode) {
+		return postJSONStatus(ctx, client, tokenURL, body, out)
+	}
+	form := url.Values{}
+	form.Set("client_id", stringField(body, "client_id"))
+	form.Set("device_code", stringField(body, "device_code"))
+	form.Set("grant_type", oauthDeviceCodeGrantType)
+	return postFormJSONStatus(ctx, client, tokenURL, form, out)
+}
+
+func verifiedDeviceTokenCandidate(ctx context.Context, client *http.Client, now time.Time, session Session, response map[string]any, accessToken string) (CredentialCandidate, error) {
+	raw, err := normalizedTokenPayload(response, accessToken)
+	if err != nil {
+		return CredentialCandidate{}, err
+	}
+	candidate := candidateFromDeviceTokenPayload(session, raw)
+	if !isXAIOAuthMode(session.Vendor, session.AuthMode) {
+		return candidate, nil
+	}
+	if stringField(response, "refresh_token") == "" {
+		return CredentialCandidate{}, fmt.Errorf("%w: xAI device token response missing refresh token", ErrInvalidTokenShape)
+	}
+	identity, err := accountident.VerifyOIDCES256Identity(ctx, accountident.OIDCVerificationInput{
+		RawIDToken: stringField(response, "id_token"), Issuer: xaiOIDCIssuer, Audience: xaiOAuthClientID,
+		RequireNonce: false, JWKSURL: xaiOIDCJWKSURL,
+		Source: accountident.SourceXAIOIDCSubject, RequireAccountScope: false,
+		HTTPClient: client, Now: now,
+	})
+	if err != nil {
+		return CredentialCandidate{}, fmt.Errorf("%w: xAI OIDC 身份校验失败: %v", ErrInvalidTokenShape, err)
+	}
+	scopeIdentity, err := accountident.VerifyES256AccessTokenScope(ctx, accountident.AccessTokenScopeVerificationInput{
+		RawAccessToken: accessToken, Issuer: xaiOIDCIssuer, Audience: xaiOAuthClientID,
+		ExpectedSubject: identity.SubjectID,
+		JWKSURL:         xaiOIDCJWKSURL, Source: accountident.SourceXAIOIDCSubject,
+		HTTPClient: client, Now: now,
+	})
+	if err != nil {
+		return CredentialCandidate{}, fmt.Errorf("%w: xAI 账号范围校验失败: %v", ErrInvalidTokenShape, err)
+	}
+	if scopeIdentity.Email == "" {
+		scopeIdentity.Email = identity.Email
+	}
+	identity = scopeIdentity
+	AttachIdentity(&candidate, identity)
+	var fields map[string]any
+	if err := json.Unmarshal(candidate.Payload, &fields); err != nil {
+		return CredentialCandidate{}, fmt.Errorf("%w: xAI 凭据归一化失败", ErrInvalidTokenShape)
+	}
+	fields["oidc_identity_verified"] = true
+	fields["team_id"] = identity.AccountID
+	fields["sub"] = identity.SubjectID
+	fields["email"] = identity.Email
+	fields["account_id_source"] = identity.Source
+	candidate.Payload, err = json.Marshal(fields)
+	if err != nil {
+		return CredentialCandidate{}, fmt.Errorf("%w: xAI 身份投影失败", ErrInvalidTokenShape)
+	}
+	return candidate, nil
 }
 
 func pollOpenAICodexDeviceAuthorizationToken(ctx context.Context, session Session, cfg OAuthClientConfig, opts ...DeviceCodeOption) (CredentialCandidate, error) {

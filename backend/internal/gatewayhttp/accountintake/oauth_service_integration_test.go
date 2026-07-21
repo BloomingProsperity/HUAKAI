@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -20,6 +22,12 @@ import (
 
 type oauthIntakeTestExchanger struct {
 	candidate credentialacq.CredentialCandidate
+}
+
+type oauthIntakeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn oauthIntakeRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 type accountActivationRecorder struct {
@@ -36,7 +44,9 @@ func (e oauthIntakeTestExchanger) StartOAuthFlow(
 	in credentialacq.StartInput,
 	cfg credentialacq.OAuthClientConfig,
 ) (credentialacq.OAuthStartResult, error) {
-	return credentialacq.StartOAuthFlow(ctx, store, in, cfg)
+	// 该夹具只验证授权码完成后的账号事务，不得回落到生产默认注册表，
+	// 否则厂商默认登录方式变化会把测试悄悄改成另一种授权协议。
+	return credentialacq.StartOAuthFlowWithRegistry(ctx, store, in, cfg, credentialacq.NewExchangerRegistry())
 }
 
 func (e oauthIntakeTestExchanger) ExchangeOAuthCode(context.Context, credentialacq.Session, string) (credentialacq.CredentialCandidate, error) {
@@ -278,6 +288,73 @@ WHERE tenant_id=$1 AND action='credential_acquisition_completed'`, seed.tenantID
 	}
 	if len(activation.accounts) != 2 || activation.accounts[1] != accountID {
 		t.Fatalf("轮换提交后的即时探测事件=%v，期望同一账号触发两次", activation.accounts)
+	}
+}
+
+func TestXAIAccountIntakeUsesDeviceCodeAndPollsIntoCreatePlan(t *testing.T) {
+	ctx := context.Background()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='grok_chat' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := credentialstore.NewStaticKeyProvider("xai-device-intake-test", bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpClient := &http.Client{Transport: oauthIntakeRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() != "https://auth.x.ai/oauth2/device/code" {
+			t.Fatalf("xAI 启动请求端点=%s", req.URL)
+		}
+		if err := req.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if req.PostForm.Get("client_id") == "" || req.PostForm.Get("scope") == "" {
+			t.Fatalf("xAI 设备码缺少固定客户端合同：%v", req.PostForm)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(
+			`{"device_code":"device-1","user_code":"XAI-1234","verification_uri":"https://auth.x.ai/activate","expires_in":900,"interval":5}`,
+		))}, nil
+	})}
+	poller := func(_ context.Context, session credentialacq.Session) (credentialacq.CredentialCandidate, error) {
+		return credentialacq.CredentialCandidate{
+			TenantID: session.TenantID, Vendor: session.Vendor, AuthMode: session.AuthMode, ActorID: session.ActorID,
+			Payload:           []byte(`{"access_token":"xai-access","refresh_token":"xai-refresh","oidc_identity_verified":true,"team_id":"team-device","sub":"subject-device","email":"device@example.test","client_id_source":"public_cli_client"}`),
+			ExternalAccountID: "team-device", ExternalSubjectID: "subject-device",
+			ExternalAccountEmail: "device@example.test", AccountIDSource: accountident.SourceXAIOIDCSubject,
+		}, nil
+	}
+	sessions := credentialacq.NewPostgresSessionStoreWithKeys(pool, keys)
+	service := NewOAuthService(
+		newAccountIntakeService(t, pool), NewStagedStore(pool, keys), sessions,
+		credentialacq.DefaultExchangerRegistry(), poller,
+	)
+	start, err := service.Start(ctx, OAuthStartInput{
+		TenantID: seed.tenantID, Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "platform-owner", ActorRole: "platform_admin", Client: credentialacq.OAuthClientConfig{HTTPClient: httpClient},
+		Account: AccountDefaults{ProviderID: seed.providerID, ChannelID: seed.channelID, NamePrefix: "xai-device-" + seed.suffix, AccountType: "oauth"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.AuthType != credentialacq.AuthTypeDeviceCode || start.UserCode != "XAI-1234" || start.State != "" || start.Session.Status != credentialacq.StatusWaitingForUser {
+		t.Fatalf("xAI 账号导入未进入设备码等待态：%+v", start)
+	}
+	planned, retryAfter, err := service.Poll(ctx, seed.tenantID, "platform-owner", start.Session.ID, "req-xai-device")
+	if err != nil || retryAfter != 0 {
+		t.Fatalf("xAI 设备码轮询：retry=%s err=%v", retryAfter, err)
+	}
+	if len(planned.Plan.Items) != 1 || planned.Plan.Items[0].Action != "create" ||
+		!strings.HasPrefix(planned.Plan.Items[0].Identity.ExternalAccountID, "account_") ||
+		!planned.Plan.Items[0].Identity.SubjectIdentityPresent || !planned.Plan.Items[0].Identity.SubjectIdentityTrusted {
+		t.Fatalf("xAI 设备码未进入带复合身份的创建预检：%+v", planned.Plan.Items)
+	}
+	var accounts int
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID).Scan(&accounts); err != nil {
+		t.Fatal(err)
+	}
+	if accounts != 0 {
+		t.Fatalf("预检阶段不应提前创建账号，实际=%d", accounts)
 	}
 }
 

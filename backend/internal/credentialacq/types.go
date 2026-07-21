@@ -300,7 +300,7 @@ func DefaultModePlans() []ModePlan {
 		// grok/deepseek 从 hidden 提升为正式 api_key 粘贴计划,kimi + 国内大厂新增同构计划。
 		apiKeyPlan(credentialstore.VendorDeepSeek),
 		apiKeyPlan(credentialstore.VendorGrok),
-		oauthPlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, ClientSourceOperatorConfig, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
+		oauthPlan(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, ClientSourcePublicCLI, []FlowKind{FlowKindOAuth}, RiskLevelMedium),
 		apiKeyPlan(credentialstore.VendorKimi),
 		apiKeyPlan(credentialstore.VendorQwen),
 		apiKeyPlan(credentialstore.VendorGLM),

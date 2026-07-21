@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	xaiOAuthAuthURL  = "https://auth.x.ai/oauth2/authorize"
-	xaiOAuthTokenURL = "https://auth.x.ai/oauth2/token"
-	xaiOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
-	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
-	xaiOIDCIssuer    = "https://auth.x.ai"
-	xaiOIDCJWKSURL   = "https://auth.x.ai/.well-known/jwks.json"
+	xaiOAuthDeviceURL = "https://auth.x.ai/oauth2/device/code"
+	xaiOAuthTokenURL  = "https://auth.x.ai/oauth2/token"
+	xaiOAuthClientID  = "b1a00492-073a-47ea-816f-4c329264a828"
+	xaiOAuthScope     = "openid profile email offline_access grok-cli:access api:access"
+	xaiOIDCIssuer     = "https://auth.x.ai"
+	xaiOIDCJWKSURL    = "https://auth.x.ai/.well-known/jwks.json"
 
 	AntigravityOAuthAuthURL         = "https://accounts.google.com/o/oauth2/v2/auth"
 	AntigravityOAuthTokenURL        = "https://oauth2.googleapis.com/token"
@@ -86,8 +86,7 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 		TokenShapeAnySessionOrAccess,
 		AntigravityPublicCLIConfig(),
 	))
-	register(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth),
-		newAuthorizationCodeOAuthExchanger(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, TokenShapeAccessRefresh, xaiOAuthConfig()))
+	register(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth), newXAIDeviceCodeExchanger())
 	copilotDeviceCode := newCopilotDeviceCodeExchanger()
 	register(credentialstore.ModeKey(credentialstore.VendorCopilot, credentialstore.AuthModeCopilotOAuth), copilotDeviceCode)
 	register("copilot/device_code", copilotDeviceCode)
@@ -97,14 +96,6 @@ func DefaultExchangerRegistry() *ExchangerRegistry {
 	// 两个 fake exchanger 注册已成孤儿(orphaned dead/dangerous wiring)。移除,确保默认 registry 不残留任何
 	// 会把回调码当 JSON 凭据吞下的 fake exchanger。
 	return r
-}
-
-func xaiOAuthConfig() OAuthClientConfig {
-	return OAuthClientConfig{
-		AuthURL: xaiOAuthAuthURL, TokenURL: xaiOAuthTokenURL,
-		ClientID: xaiOAuthClientID, Scopes: strings.Fields(xaiOAuthScope),
-		Source: ClientSourceOperatorConfig,
-	}
 }
 
 func isXAIOAuthMode(vendor, authMode string) bool {

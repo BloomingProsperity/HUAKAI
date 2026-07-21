@@ -3,6 +3,7 @@ package accountintakehttp
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,16 @@ import (
 )
 
 type oauthAccountIntakeServiceStub struct {
-	startInput      accountintake.OAuthStartInput
-	callbackActorID string
-	callbackRole    string
-	callbackTenant  int64
-	startCalls      int
-	callbackCalls   int
+	startInput       accountintake.OAuthStartInput
+	callbackActorID  string
+	callbackRole     string
+	callbackTenant   int64
+	callbackFlowID   string
+	callbackState    string
+	callbackCode     string
+	startCalls       int
+	callbackCalls    int
+	browserCallbacks int
 }
 
 func (s *oauthAccountIntakeServiceStub) Start(_ context.Context, in accountintake.OAuthStartInput) (credentialacq.OAuthStartResult, error) {
@@ -29,7 +34,11 @@ func (s *oauthAccountIntakeServiceStub) Start(_ context.Context, in accountintak
 	return credentialacq.OAuthStartResult{Session: credentialacq.Session{ID: "flow-1", TenantID: in.TenantID}}, nil
 }
 
-func (s *oauthAccountIntakeServiceStub) Callback(context.Context, string, string, string) (accountintake.OAuthPlanResult, error) {
+func (s *oauthAccountIntakeServiceStub) Callback(_ context.Context, flowID, state, code string) (accountintake.OAuthPlanResult, error) {
+	s.browserCallbacks++
+	s.callbackFlowID = flowID
+	s.callbackState = state
+	s.callbackCode = code
 	return accountintake.OAuthPlanResult{}, nil
 }
 
@@ -98,5 +107,26 @@ func TestOAuthAccountIntakeHTTPRejectsCrossTenantBeforeService(t *testing.T) {
 		`{"tenant_id":7,"vendor":"grok","auth_mode":"xai_oauth","account":{"provider_id":2,"channel_id":3,"name_prefix":"grok","account_type":"oauth"}}`)
 	if rec.Code != http.StatusForbidden || oauth.startCalls != 0 || !strings.Contains(rec.Body.String(), "tenant scope mismatch") {
 		t.Fatalf("status=%d calls=%d body=%s", rec.Code, oauth.startCalls, rec.Body.String())
+	}
+}
+
+func TestOAuthAccountIntakeHTTPBrowserCallbackForwardsBoundQuery(t *testing.T) {
+	oauth := &oauthAccountIntakeServiceStub{}
+	router := chi.NewRouter()
+	router.Route("/admin/v1/credentials", func(r chi.Router) {
+		Mount(r, Deps{Service: &accountIntakeServiceStub{}, OAuthService: oauth})
+	})
+	req, err := http.NewRequest(http.MethodGet,
+		"/admin/v1/credentials/account-imports/oauth/callback?flow_id=flow-browser&state=state-browser&code=code-browser", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || oauth.browserCallbacks != 1 {
+		t.Fatalf("status=%d callbacks=%d body=%s", rec.Code, oauth.browserCallbacks, rec.Body.String())
+	}
+	if oauth.callbackFlowID != "flow-browser" || oauth.callbackState != "state-browser" || oauth.callbackCode != "code-browser" {
+		t.Fatalf("浏览器回调参数未完整转发：%q/%q/%q", oauth.callbackFlowID, oauth.callbackState, oauth.callbackCode)
 	}
 }
