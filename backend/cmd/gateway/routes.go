@@ -1243,7 +1243,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
 			WithProjectEnricher(d.projectEnricher).
 			WithImportCredentialRefresher(d.importCredentialRefresher).
-			WithProxyResolver(accountproxyimport.New(d.credentialKeys))
+			WithProxyResolver(accountproxyimport.New(d.credentialKeys)).
+			WithAccountActivationNotifier(d.quotaProbeWorker)
 		var crsService *accountintake.CRSService
 		if d.cfg != nil && len(d.cfg.CRSSource.AllowedHosts) > 0 {
 			crsClient, err := crssource.NewRustClient(d.cfg.TransportSidecarSocket, crssource.Policy{

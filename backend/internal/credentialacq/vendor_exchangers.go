@@ -18,6 +18,8 @@ const (
 	xaiOAuthTokenURL = "https://auth.x.ai/oauth2/token"
 	xaiOAuthClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	xaiOAuthScope    = "openid profile email offline_access grok-cli:access api:access"
+	xaiOIDCIssuer    = "https://auth.x.ai"
+	xaiOIDCJWKSURL   = "https://auth.x.ai/.well-known/jwks.json"
 
 	AntigravityOAuthAuthURL         = "https://accounts.google.com/o/oauth2/v2/auth"
 	AntigravityOAuthTokenURL        = "https://oauth2.googleapis.com/token"
@@ -103,6 +105,11 @@ func xaiOAuthConfig() OAuthClientConfig {
 		ClientID: xaiOAuthClientID, Scopes: strings.Fields(xaiOAuthScope),
 		Source: ClientSourceOperatorConfig,
 	}
+}
+
+func isXAIOAuthMode(vendor, authMode string) bool {
+	return credentialstore.ModeKey(vendor, authMode) ==
+		credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth)
 }
 
 // AntigravityPublicCLIConfig 是导入、授权码交换和刷新共同使用的公开客户端身份。

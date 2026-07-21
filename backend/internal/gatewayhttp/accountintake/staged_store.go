@@ -266,17 +266,28 @@ func (s *StagedStore) Finish(ctx context.Context, tenantID int64, actorID, actor
 	if s == nil || s.pool == nil {
 		return ErrNotConfigured
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.FinishTx(ctx, tx, tenantID, actorID, actorRole, id, requestID, reason, success, summary); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// FinishTx 把暂存终态与完成日志加入调用方事务，避免账号已生效但流程仍悬空。
+func (s *StagedStore) FinishTx(ctx context.Context, tx pgx.Tx, tenantID int64, actorID, actorRole, id, requestID, reason string, success bool, summary ExecutionSummary) error {
+	if s == nil || tx == nil {
+		return ErrNotConfigured
+	}
 	status := "failed"
 	action := "credential_acquisition_failed"
 	if success {
 		status = "completed"
 		action = "credential_acquisition_completed"
 	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	tag, err := tx.Exec(ctx, `UPDATE account_intake_staged_credentials
 SET status=$1, finished_at=clock_timestamp(), updated_at=clock_timestamp()
 WHERE id=$2::uuid AND tenant_id=$3 AND actor_id=$4 AND status='claimed'`,
@@ -299,7 +310,7 @@ WHERE id=$2::uuid AND tenant_id=$3 AND actor_id=$4 AND status='claimed'`,
 	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // Cleanup 独立执行短期凭据生命周期清理，不依赖新的导入请求触发。

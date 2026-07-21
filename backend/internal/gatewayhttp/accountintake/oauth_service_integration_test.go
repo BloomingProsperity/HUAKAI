@@ -6,15 +6,28 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
 
 type oauthIntakeTestExchanger struct {
 	candidate credentialacq.CredentialCandidate
+}
+
+type accountActivationRecorder struct {
+	accounts []int64
+}
+
+func (r *accountActivationRecorder) NotifyAccountActivated(_ int64, providerAccountID int64) {
+	r.accounts = append(r.accounts, providerAccountID)
 }
 
 func (e oauthIntakeTestExchanger) StartOAuthFlow(
@@ -60,7 +73,7 @@ func TestOAuthAccountIntakeCreatesAccountAfterAuthorization(t *testing.T) {
 		ExternalAccountID:    "grok-account-" + seed.suffix,
 		ExternalSubjectID:    "subject-" + seed.suffix,
 		ExternalAccountEmail: "owner-" + seed.suffix + "@example.com",
-		AccountIDSource:      "oauth_token_response",
+		AccountIDSource:      accountident.SourceXAIOIDCSubject,
 		Subscription:         observation,
 	}}); err != nil {
 		t.Fatal(err)
@@ -68,7 +81,9 @@ func TestOAuthAccountIntakeCreatesAccountAfterAuthorization(t *testing.T) {
 
 	sessions := credentialacq.NewPostgresSessionStoreWithKeys(pool, keys)
 	staged := NewStagedStore(pool, keys)
-	service := NewOAuthService(newAccountIntakeService(t, pool), staged, sessions, registry, nil)
+	activation := &accountActivationRecorder{}
+	intakeService := newAccountIntakeService(t, pool).WithAccountActivationNotifier(activation)
+	service := NewOAuthService(intakeService, staged, sessions, registry, nil)
 	start, err := service.Start(ctx, OAuthStartInput{
 		TenantID: seed.tenantID, Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
 		ActorID: "platform-owner", ActorRole: "platform_admin", Reason: "集成测试 OAuth 导入",
@@ -143,6 +158,9 @@ func TestOAuthAccountIntakeCreatesAccountAfterAuthorization(t *testing.T) {
 	if accountID <= 0 || credentialID <= 0 || !result.Items[0].ChannelHealthInitialized {
 		t.Fatalf("账号、凭据或健康状态未闭环：%+v", result.Items[0])
 	}
+	if len(activation.accounts) != 1 || activation.accounts[0] != accountID {
+		t.Fatalf("创建提交后的即时探测事件=%v，期望 [%d]", activation.accounts, accountID)
+	}
 
 	var credentialCount, healthCount, completedLogs int
 	var externalAccountID, externalSubjectID string
@@ -201,5 +219,195 @@ WHERE tenant_id=$1 AND action='credential_acquisition_completed'`, seed.tenantID
 		ActorID: "platform-owner", ActorRole: "platform_admin",
 	}); !errors.Is(err, credentialacq.ErrFlowReplay) && !errors.Is(err, ErrStagedCredentialReplay) {
 		t.Fatalf("重复执行应被拒绝：%v", err)
+	}
+
+	secondStart, err := service.Start(ctx, OAuthStartInput{
+		TenantID: seed.tenantID, Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "platform-owner", ActorRole: "platform_admin", Reason: "重复账号 OAuth 导入",
+		RedirectURI: "http://127.0.0.1:3000/admin/v1/account-imports/oauth/callback",
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "oauth-" + seed.suffix, AccountType: "oauth",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPlan, err := service.CallbackForActor(
+		ctx, secondStart.Session.ID, secondStart.State, "second-authorization-code",
+		seed.tenantID, "platform-owner", "platform_admin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondPlan.Plan.Items) != 1 || secondPlan.Plan.Items[0].Action != "update" {
+		t.Fatalf("相同账号再次授权的预检=%+v，期望 update", secondPlan.Plan.Items)
+	}
+	secondConfirmations := append([]string(nil), secondPlan.Plan.Items[0].RequiredConfirmations...)
+	if secondPlan.Plan.Items[0].MixedChannelRisk != nil && secondPlan.Plan.Items[0].MixedChannelRisk.HighRisk {
+		secondConfirmations = append(secondConfirmations, "confirm_mixed_channel_risk")
+	}
+	secondResult, err := service.Execute(ctx, OAuthExecuteInput{
+		TenantID: seed.tenantID, FlowID: secondStart.Session.ID, PlanHash: secondPlan.PlanHash,
+		Confirmations: secondConfirmations,
+		ActorID:       "platform-owner", ActorRole: "platform_admin", Reason: "确认同一账号凭据轮换",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondResult.Summary.Updated != 1 || secondResult.Summary.Failed != 0 ||
+		secondResult.Items[0].ProviderAccountID != accountID || secondResult.Items[0].AccountCredentialID != credentialID {
+		t.Fatalf("相同账号轮换结果=%+v", secondResult)
+	}
+	var secondFlowStatus, secondStagedStatus string
+	var secondFlowCredentialID int64
+	if err := pool.QueryRow(ctx, `SELECT status, result_account_credential_id FROM credential_acquisition_flow_sessions WHERE id=$1::uuid`, secondStart.Session.ID).Scan(&secondFlowStatus, &secondFlowCredentialID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM account_intake_staged_credentials WHERE id=$1::uuid`, secondStart.Session.ID).Scan(&secondStagedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if secondFlowStatus != string(credentialacq.StatusFinalized) || secondFlowCredentialID != credentialID || secondStagedStatus != "completed" {
+		t.Fatalf("轮换流程未闭环：flow=%s credential=%d staged=%s", secondFlowStatus, secondFlowCredentialID, secondStagedStatus)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID).Scan(&accountCount); err != nil {
+		t.Fatal(err)
+	}
+	if accountCount != 1 {
+		t.Fatalf("相同账号轮换后账号数=%d，期望仍为 1", accountCount)
+	}
+	if len(activation.accounts) != 2 || activation.accounts[1] != accountID {
+		t.Fatalf("轮换提交后的即时探测事件=%v，期望同一账号触发两次", activation.accounts)
+	}
+}
+
+// TestOAuthAccountIntakeCompletionLogFailureRollsBackBusinessState 守护 OAuth 导入的最终
+// 原子边界：账号、凭据、健康、OAuth 会话绑定、暂存完成态和完成日志必须同成同败。
+// 变异：把会话终态与暂存完成写移回账号事务之后，完成日志被拒时账号仍会落库，本测试转红。
+func TestOAuthAccountIntakeCompletionLogFailureRollsBackBusinessState(t *testing.T) {
+	ctx := context.Background()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `UPDATE providers SET upstream_protocol='grok_chat' WHERE id=$1 AND tenant_id=$2`, seed.providerID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := credentialstore.NewStaticKeyProvider("oauth-intake-rollback-test", bytes.Repeat([]byte{8}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := credentialacq.NewExchangerRegistry()
+	if err := registry.RegisterExchanger("grok/xai_oauth", oauthIntakeTestExchanger{candidate: credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		Payload:           []byte(`{"access_token":"rollback-access","refresh_token":"rollback-refresh"}`),
+		ExternalAccountID: "rollback-account-" + seed.suffix,
+		ExternalSubjectID: "rollback-subject-" + seed.suffix,
+		AccountIDSource:   "oauth_token_response",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions := credentialacq.NewPostgresSessionStoreWithKeys(pool, keys)
+	staged := NewStagedStore(pool, keys)
+	activation := &accountActivationRecorder{}
+	intakeService := newAccountIntakeService(t, pool).WithAccountActivationNotifier(activation)
+	service := NewOAuthService(intakeService, staged, sessions, registry, nil)
+	start, err := service.Start(ctx, OAuthStartInput{
+		TenantID: seed.tenantID, Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "platform-owner", ActorRole: "platform_admin", Reason: "验证完成日志失败回滚",
+		RedirectURI: "http://127.0.0.1:3000/admin/v1/account-imports/oauth/callback",
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "oauth-rollback-" + seed.suffix, AccountType: "oauth",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned, err := service.CallbackForActor(
+		ctx, start.Session.ID, start.State, "authorization-code",
+		seed.tenantID, "platform-owner", "platform_admin",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installOAuthCompletionLogRejectTrigger(t, ctx, pool, seed.suffix)
+
+	result, err := service.Execute(ctx, OAuthExecuteInput{
+		TenantID: seed.tenantID, FlowID: start.Session.ID, PlanHash: planned.PlanHash,
+		ActorID: "platform-owner", ActorRole: "platform_admin", Reason: "触发完成日志失败",
+	})
+	if err != nil {
+		t.Fatalf("执行应返回可观察的失败项而不是丢失结果：%v", err)
+	}
+	if result.Summary.Failed != 1 || result.Summary.Created != 0 || len(result.Items) != 1 || result.Items[0].Status != StatusFailed {
+		t.Fatalf("执行结果=%+v，期望单项失败且无创建", result)
+	}
+	if len(activation.accounts) != 0 {
+		t.Fatalf("回滚事务不得触发账号探测：%v", activation.accounts)
+	}
+
+	for label, query := range map[string]string{
+		"账号": `SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1`,
+		"凭据": `SELECT count(*)::int FROM account_credentials WHERE tenant_id=$1`,
+		"健康": `SELECT count(*)::int FROM channel_health_state WHERE tenant_id=$1`,
+	} {
+		var count int
+		if err := pool.QueryRow(ctx, query, seed.tenantID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("完成日志失败后残留%s=%d，期望整体回滚", label, count)
+		}
+	}
+
+	var flowStatus, stagedStatus string
+	var flowAccountID, flowCredentialID *int64
+	if err := pool.QueryRow(ctx, `
+SELECT status, provider_account_id, result_account_credential_id
+FROM credential_acquisition_flow_sessions WHERE id=$1::uuid`, start.Session.ID).Scan(
+		&flowStatus, &flowAccountID, &flowCredentialID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if flowStatus != string(credentialacq.StatusValidated) || flowAccountID != nil || flowCredentialID != nil {
+		t.Fatalf("OAuth 会话被错误完成：status=%s account=%v credential=%v", flowStatus, flowAccountID, flowCredentialID)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM account_intake_staged_credentials WHERE id=$1::uuid`, start.Session.ID).Scan(&stagedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if stagedStatus != "failed" {
+		t.Fatalf("暂存流程状态=%s，期望 failed", stagedStatus)
+	}
+	var completedLogs, failedLogs int
+	if err := pool.QueryRow(ctx, `SELECT
+		count(*) FILTER (WHERE action='credential_acquisition_completed')::int,
+		count(*) FILTER (WHERE action='credential_acquisition_failed')::int
+	FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID).Scan(&completedLogs, &failedLogs); err != nil {
+		t.Fatal(err)
+	}
+	if completedLogs != 0 || failedLogs != 1 {
+		t.Fatalf("流程日志 completed=%d failed=%d，期望 0/1", completedLogs, failedLogs)
+	}
+}
+
+func installOAuthCompletionLogRejectTrigger(t *testing.T, ctx context.Context, pool interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, suffix string) {
+	t.Helper()
+	identifier := "reject_oauth_completed_" + strings.ReplaceAll(suffix, "-", "_")
+	functionSQL := fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.action = 'credential_acquisition_completed' THEN
+    RAISE EXCEPTION 'reject oauth completion log';
+  END IF;
+  RETURN NEW;
+END $$`, identifier)
+	if _, err := pool.Exec(ctx, functionSQL); err != nil {
+		t.Fatal(err)
+	}
+	triggerSQL := fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW EXECUTE FUNCTION %s()`, identifier, identifier)
+	if _, err := pool.Exec(ctx, triggerSQL); err != nil {
+		t.Fatal(err)
 	}
 }

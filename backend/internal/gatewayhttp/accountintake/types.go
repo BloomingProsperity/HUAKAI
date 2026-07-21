@@ -113,7 +113,17 @@ type ExecuteInput struct {
 	ActorRole                string
 	RequestID                string
 	Reason                   string
+	CommitHook               ExecutionCommitHook
 }
+
+type ExecutionCommit struct {
+	Status              ExecutionStatus
+	ProviderAccountID   int64
+	AccountCredentialID int64
+	CredentialVersion   int32
+}
+
+type ExecutionCommitHook func(context.Context, pgx.Tx, ExecutionCommit) error
 
 type ExecutionStatus string
 

@@ -453,6 +453,18 @@ func (s *PostgresSessionStore) MarkFinalized(ctx context.Context, id string, cre
 	if s == nil || s.db == nil {
 		return Session{}, errors.New("credentialacq: session store not configured")
 	}
+	return s.markFinalized(ctx, s.db, id, credentialID)
+}
+
+// MarkFinalizedTx 把会话终态绑定加入调用方事务，确保凭据与流程状态同成同败。
+func (s *PostgresSessionStore) MarkFinalizedTx(ctx context.Context, tx pgx.Tx, id string, credentialID int64) (Session, error) {
+	if s == nil || tx == nil {
+		return Session{}, errors.New("credentialacq: session transaction not configured")
+	}
+	return s.markFinalized(ctx, tx, id, credentialID)
+}
+
+func (s *PostgresSessionStore) markFinalized(ctx context.Context, database db.DBTX, id string, credentialID int64) (Session, error) {
 	const q = `
 UPDATE credential_acquisition_flow_sessions
 SET status = 'finalized',
@@ -483,9 +495,11 @@ RETURNING id::text, tenant_id, provider_account_id, vendor, auth_mode, flow_kind
           long_lived_requested, idempotency_key_hash, result_account_credential_id,
           error_class, error_message_redacted, expires_at, consumed_at, cancelled_at,
           created_at, updated_at`
-	row, err := scanSession(s.db.QueryRow(ctx, q, strings.TrimSpace(id), credentialID))
+	row, err := scanSession(database.QueryRow(ctx, q, strings.TrimSpace(id), credentialID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		existing, getErr := s.Get(ctx, id)
+		transactional := *s
+		transactional.db = database
+		existing, getErr := transactional.Get(ctx, id)
 		if getErr != nil {
 			return Session{}, getErr
 		}

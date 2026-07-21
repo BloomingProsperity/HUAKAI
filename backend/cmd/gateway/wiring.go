@@ -180,6 +180,7 @@ type deps struct {
 	anthropicOAuthClient      *http.Client
 	projectEnricher           projectenrich.Enricher
 	importCredentialRefresher accountintake.ImportCredentialRefresher
+	quotaProbeWorker          *quotaprobe.Worker
 	credentialScheduler       *credentialworker.Scheduler
 	emailSettings             *mailinfra.PostgresSettingsStore
 	authEmailSender           gatewayhttp.AuthEmailSender
@@ -1527,6 +1528,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		credentialExchangers:  credentialExchangers,
 		anthropicOAuthClient:  anthropicOAuthHTTPClient,
 		projectEnricher:       credentialProjectEnricher,
+		quotaProbeWorker:      quotaProbeWorker,
 		emailSettings:         emailSettingsStore,
 		authEmailSender:       authEmailSender,
 		emailSendLimit:        emailSendLimit,

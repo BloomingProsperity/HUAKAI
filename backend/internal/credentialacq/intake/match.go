@@ -39,6 +39,47 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 		return resolveExistingMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
 	}
 
+	if identity.SharedAccountScope && identity.SubjectID != "" {
+		if identity.AccountID == "" {
+			matches := filterExisting(available, func(current *ExistingCredential) bool {
+				return sameIdentity(current.ExternalSubjectID, identity.SubjectID)
+			})
+			if len(matches) > 0 {
+				return nil, conflictFromExisting("account_scope_missing", "导入项缺少账号范围，不能仅按个人身份选择共享账号", matches[0])
+			}
+			return nil, nil
+		}
+		matches := filterExisting(available, func(current *ExistingCredential) bool {
+			return sameIdentity(current.ExternalAccountID, identity.AccountID) &&
+				sameIdentity(current.ExternalSubjectID, identity.SubjectID)
+		})
+		if len(matches) > 0 && !identity.SubjectTrusted {
+			return nil, conflictFromExisting("subject_identity_unverified", "导入声明的复合成员身份不能自动选择已有账号", matches[0])
+		}
+		if identity.SubjectTrusted {
+			match, conflict := selectExistingModeMatch(matches, candidate, "account_member_identity_ambiguous", "同一账号范围与个人主体命中多个已有账号")
+			if conflict != nil {
+				return nil, conflict
+			}
+			if match != nil {
+				return guardedExistingMatch(match, "rotate_existing_credential", "将轮换同一账号成员的同模式凭据", "confirm_credential_rotation")
+			}
+		}
+		missingSubject := filterExisting(available, func(current *ExistingCredential) bool {
+			return sameIdentity(current.ExternalAccountID, identity.AccountID) && strings.TrimSpace(current.ExternalSubjectID) == ""
+		})
+		if len(missingSubject) > 0 {
+			return nil, conflictFromExisting("existing_member_identity_missing", "已有共享账号缺少个人主体，必须先人工补全身份", missingSubject[0])
+		}
+		missingScope := filterExisting(available, func(current *ExistingCredential) bool {
+			return sameIdentity(current.ExternalSubjectID, identity.SubjectID) && strings.TrimSpace(current.ExternalAccountID) == ""
+		})
+		if len(missingScope) > 0 {
+			return nil, conflictFromExisting("existing_account_scope_missing", "已有个人主体缺少账号范围，必须先人工补全身份", missingScope[0])
+		}
+		return nil, nil
+	}
+
 	if identity.SubjectID != "" {
 		matches := filterExisting(available, func(current *ExistingCredential) bool {
 			return sameIdentity(current.ExternalSubjectID, identity.SubjectID)

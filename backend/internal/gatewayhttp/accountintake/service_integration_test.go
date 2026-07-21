@@ -849,11 +849,20 @@ RETURNING id`,
 		planned.Plan.Items[0].ExistingCredentialVersion != created.Version {
 		t.Fatalf("plan=%+v，期望精确命中已有账号与凭据版本", planned)
 	}
+	commitHookCalled := false
 	executed, err := service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
 		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
 		RequestID: "req-rotate",
+		CommitHook: func(_ context.Context, tx pgx.Tx, commit ExecutionCommit) error {
+			commitHookCalled = true
+			if tx == nil || commit.Status != StatusUpdated || commit.ProviderAccountID != accountID ||
+				commit.AccountCredentialID != created.ID || commit.CredentialVersion != created.Version+1 {
+				t.Fatalf("更新事务提交钩子参数异常：%+v", commit)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -864,6 +873,9 @@ RETURNING id`,
 		executed.Items[0].CredentialVersion != created.Version+1 ||
 		!executed.Items[0].ChannelHealthInitialized {
 		t.Fatalf("execution=%+v，期望原 credential 精确轮换并版本递增", executed)
+	}
+	if !commitHookCalled {
+		t.Fatal("更新事务未调用提交钩子")
 	}
 	var accounts, credentials, healthRecords int
 	if err := pool.QueryRow(ctx,
@@ -900,6 +912,44 @@ WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND c
 		if !containsString(capabilities, capability) {
 			t.Fatalf("轮换后的 Codex 账号能力=%v，缺少 %s", capabilities, capability)
 		}
+	}
+	rollbackInput := input
+	rollbackInput.Content = `{"refresh_token":"refresh-must-rollback","external_account_id":"workspace-existing"}`
+	rollbackPlan, err := service.Plan(ctx, rollbackInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackResult, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: rollbackInput, PlanHash: rollbackPlan.PlanHash,
+		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		CommitHook: func(context.Context, pgx.Tx, ExecutionCommit) error {
+			return errors.New("拒绝更新事务提交")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollbackResult.Summary.Failed != 1 || rollbackResult.Summary.Updated != 0 {
+		t.Fatalf("提交钩子失败结果=%+v，期望更新整体失败", rollbackResult)
+	}
+	var versionAfterRollback int32
+	if err := pool.QueryRow(ctx, `SELECT credential_version FROM account_credentials WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, created.ID).Scan(&versionAfterRollback); err != nil {
+		t.Fatal(err)
+	}
+	if versionAfterRollback != created.Version+1 {
+		t.Fatalf("提交钩子失败后 credential_version=%d，期望保持 %d", versionAfterRollback, created.Version+1)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int FROM channel_health_state
+WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND credential_version=$4`,
+		seed.tenantID, accountID, created.ID, created.Version+2,
+	).Scan(&healthRecords); err != nil {
+		t.Fatal(err)
+	}
+	if healthRecords != 0 {
+		t.Fatalf("提交钩子失败后残留新版本健康记录=%d", healthRecords)
 	}
 	_, err = service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,

@@ -40,4 +40,12 @@ func TestGatewayWiringInjectsAndStartsQuotaProbe(t *testing.T) {
 	if strings.Contains(source, "quotaProbeWorker.Start(ctx)") {
 		t.Fatal("quota probe 不得继续绑定进程信号 ctx，否则会在 HTTP 排空前停止")
 	}
+	routesRaw, err := os.ReadFile("routes.go")
+	if err != nil {
+		t.Fatalf("读取 routes.go: %v", err)
+	}
+	routesSource := strings.Join(strings.Fields(string(routesRaw)), " ")
+	if !strings.Contains(routesSource, "WithAccountActivationNotifier(d.quotaProbeWorker)") {
+		t.Fatal("账号导入服务没有注入 quota probe 即时触发器")
+	}
 }

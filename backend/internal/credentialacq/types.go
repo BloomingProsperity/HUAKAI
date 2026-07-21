@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/oauthwire"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionprofile"
 )
@@ -101,7 +102,7 @@ var (
 	ErrFeatureDisabled         = errors.New("credentialacq: feature disabled")
 	ErrSecretInContext         = errors.New("credentialacq: redacted context contains secret-shaped material")
 	ErrInvalidTokenShape       = errors.New("credentialacq: invalid token shape")
-	ErrResponseTooLarge        = errors.New("credentialacq: response too large")
+	ErrResponseTooLarge        = oauthwire.ErrResponseTooLarge
 	ErrOAuthExchangerMissing   = errors.New("credentialacq: oauth exchanger missing")
 	ErrOAuthRequiresCallback   = errors.New("credentialacq: oauth flow requires callback validation before finalize")
 	ErrDevicePollPending       = errors.New("credentialacq: device authorization pending")

@@ -2,12 +2,10 @@
 // 提取上游 provider 的账户身份（account id + email）。它作为一个职责独立的包存在，
 // 以免让更大的 credentialacq 包吸收掉这部分逻辑。
 //
-// 这里捕获的身份是账户管理元数据，不是授权决策。它是在 provider 自己的 auth
-// server 通过 HUAKAI 发起的 exchange 颁发 token 之后，从 provider 响应中读取的，
-// 因此 id_token claim 的解析有意不做验证 —— 该值绝不可喂给任何访问控制、
-// 计费或配额路径。每个提取器都是 fail-open 的：解析错误返回一个空的、
-// source 为 manual 的 Identity，且永不返回 error，因此身份捕获绝不会阻断
-// 凭据获取。
+// 这里捕获的身份是账户管理元数据，不是 HUAKAI 登录授权依据。未验签提取器只用于
+// 端点和客户端身份均由服务端固定、且令牌刚由上游 TLS 换码返回的流程；普通文件导入
+// 会被重新标记为不可信来源，不能借这里的来源名自动选择已有账号。要求强身份保证的
+// 厂商使用独立验签入口。解析失败返回 manual 身份，不阻断凭据获取。
 package accountident
 
 import (
@@ -25,8 +23,25 @@ const (
 	SourceChatGPTJWTClaim    = "chatgpt_jwt_claim"
 	SourceOpenAITokenBody    = "openai_token_response"
 	SourceGoogleIDTokenSub   = "google_id_token_sub"
+	SourceXAIOIDCSubject     = "xai_oidc_verified_sub"
 	SourceImportPayload      = "import_payload"
 )
+
+// FromVerifiedOIDCClaims 只接收已经完成签名、发行方、受众、时效和 nonce 校验的
+// OIDC claims。主体是账号消歧的稳定依据；邮箱只作为运营展示元数据。
+func FromVerifiedOIDCClaims(accountID, subject, email, source string) Identity {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return manualIdentity()
+	}
+	accountID = firstNonEmpty(accountID, subject)
+	return Identity{
+		AccountID: accountID,
+		SubjectID: subject,
+		Email:     strings.TrimSpace(email),
+		Source:    strings.TrimSpace(source),
+	}
+}
 
 // openAIAuthClaimKey 是 ChatGPT/Codex id_token 中带命名空间的自定义 claim，
 // 携带 chatgpt 账户标识。它是一个 provider 定义的 claim 名（属于公开协议事实，

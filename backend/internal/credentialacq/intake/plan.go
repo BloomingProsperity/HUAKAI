@@ -405,10 +405,11 @@ func extractIdentity(tenantID int64, candidate credentialacq.CredentialCandidate
 		},
 		AccountID: accountID, SubjectID: subjectID, Email: email, SubjectTrusted: trusted,
 		CredentialFingerprint: credentialstore.CredentialMaterialFingerprint(tenantID, candidate.Vendor, candidate.AuthMode, candidate.Payload),
-		SharedAccountScope: candidate.Vendor == credentialstore.VendorOpenAI &&
+		SharedAccountScope: (candidate.Vendor == credentialstore.VendorOpenAI &&
 			(candidate.AuthMode == credentialstore.AuthModeChatGPTOAuth ||
 				candidate.AuthMode == credentialstore.AuthModeCodexCLIOAuth ||
-				candidate.AuthMode == credentialstore.AuthModeCodexWebOAuth),
+				candidate.AuthMode == credentialstore.AuthModeCodexWebOAuth)) ||
+			(candidate.Vendor == credentialstore.VendorGrok && candidate.AuthMode == credentialstore.AuthModeXAIOAuth),
 	}
 }
 
@@ -450,7 +451,8 @@ func trustedIdentitySource(source string) bool {
 	case accountident.SourceAnthropicAccountID,
 		accountident.SourceChatGPTJWTClaim,
 		accountident.SourceOpenAITokenBody,
-		accountident.SourceGoogleIDTokenSub:
+		accountident.SourceGoogleIDTokenSub,
+		accountident.SourceXAIOIDCSubject:
 		return true
 	default:
 		return false
@@ -461,6 +463,9 @@ func identityMatchKey(identity candidateIdentity, vendor string, hasRefreshMater
 	prefix := credentialstore.Normalize(vendor)
 	if !hasRefreshMaterial && identity.CredentialFingerprint != "" {
 		return prefix + "/fingerprint/" + identity.CredentialFingerprint
+	}
+	if identity.SharedAccountScope && identity.AccountID != "" && identity.SubjectID != "" && identity.SubjectTrusted {
+		return compositeIdentityKey(prefix, identity.AccountID, identity.SubjectID)
 	}
 	if identity.SubjectID != "" && identity.SubjectTrusted {
 		return prefix + "/subject/" + identity.SubjectID
@@ -482,6 +487,9 @@ func untrustedIdentityKey(identity candidateIdentity, vendor string) string {
 		return ""
 	}
 	prefix := credentialstore.Normalize(vendor)
+	if identity.SharedAccountScope && identity.AccountID != "" && identity.SubjectID != "" {
+		return compositeIdentityKey(prefix, identity.AccountID, identity.SubjectID)
+	}
 	if identity.SubjectID != "" {
 		return prefix + "/subject/" + identity.SubjectID
 	}
@@ -489,6 +497,11 @@ func untrustedIdentityKey(identity candidateIdentity, vendor string) string {
 		return prefix + "/account/" + identity.AccountID
 	}
 	return ""
+}
+
+func compositeIdentityKey(prefix, accountID, subjectID string) string {
+	sum := sha256.Sum256([]byte(accountID + "\x00" + subjectID))
+	return fmt.Sprintf("%s/account-subject/%x", prefix, sum[:])
 }
 
 func redactedIdentityHint(kind, value string) string {

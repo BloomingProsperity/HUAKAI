@@ -14,7 +14,6 @@ import (
 )
 
 const deviceCodeSlowDownStep = 5 * time.Second
-const oauthFormResponseMaxBytes = 1 << 20
 const oauthDeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
 const (

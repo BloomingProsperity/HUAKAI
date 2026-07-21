@@ -387,6 +387,45 @@ func TestWorkerStartImmediatelyCollectsBeforeFirstInterval(t *testing.T) {
 	}
 }
 
+func TestWorkerActivationTriggerCollectsSingleAccountImmediately(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	reset5h := now.Add(4 * time.Hour)
+	reset7d := now.Add(6 * 24 * time.Hour)
+	utilization := 10.0
+	vault := provider.NewStaticVault()
+	if err := vault.Set(202,
+		provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "oauth-access"},
+		provider.AccountInfo{AccountID: 202, TenantID: 8, OAuthScope: "user:profile", Platform: "anthropic", AccountType: "claude_ai_oauth"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan struct{}, 1)
+	worker := NewWorker(WorkerConfig{
+		Accounts: &accountListerStub{}, Vault: vault,
+		Fetcher: &usageFetcherStub{called: called, snapshot: UsageSnapshot{
+			FiveHour: UsageWindow{Utilization: &utilization, ResetsAt: &reset5h},
+			SevenDay: UsageWindow{Utilization: &utilization, ResetsAt: &reset7d},
+		}},
+		Store: &windowStoreStub{}, Settings: settingsStub{enabled: "true", interval: "30"},
+		Now: func() time.Time { return now }, Jitter: func(Account, time.Time) time.Duration { return 0 },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	worker.Start(ctx)
+	worker.NotifyAccountActivated(8, 202)
+	select {
+	case <-called:
+		cancel()
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("账号激活后没有立即触发单账号额度采集")
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if err := worker.Wait(waitCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkerMissingProfileScopeSkipsWithReason(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -28,6 +29,7 @@ type authorizationCodeOAuthExchanger struct {
 
 type storedPKCEPayload struct {
 	CodeVerifier string   `json:"code_verifier"`
+	Nonce        string   `json:"nonce,omitempty"`
 	TokenURL     string   `json:"token_url"`
 	ClientID     string   `json:"client_id"`
 	ClientSecret string   `json:"client_secret,omitempty"`
@@ -147,6 +149,22 @@ func (e authorizationCodeOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.
 		TenantID: session.TenantID, ProviderAccountID: session.ProviderAccountID,
 		Vendor: session.Vendor, AuthMode: session.AuthMode, Payload: raw, ActorID: session.ActorID,
 	}
+	if isXAIOAuthMode(e.vendor, e.authMode) {
+		client := e.client
+		if client == nil {
+			client = auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
+		}
+		identity, verifyErr := accountident.VerifyOIDCES256Identity(ctx, accountident.OIDCVerificationInput{
+			RawIDToken: token.IDToken, Issuer: xaiOIDCIssuer, Audience: payload.ClientID,
+			Nonce: payload.Nonce, JWKSURL: xaiOIDCJWKSURL,
+			Source: accountident.SourceXAIOIDCSubject, RequireAccountScope: true,
+			HTTPClient: client, Now: e.nowTime(),
+		})
+		if verifyErr != nil {
+			return CredentialCandidate{}, fmt.Errorf("%w: xAI OIDC 身份校验失败: %v", ErrInvalidTokenShape, verifyErr)
+		}
+		AttachIdentity(&candidate, identity)
+	}
 	attachClientIdentitySource(&candidate, fields, session.ClientIdentitySource)
 	attachOAuthResponseSubscription(&candidate, token.ChatGPTPlanType)
 	return candidate, nil
@@ -218,6 +236,13 @@ func startStoredPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, 
 		return OAuthStartResult{}, err
 	}
 	challenge := pkceChallenge(verifier)
+	nonce := ""
+	if isXAIOAuthMode(in.Vendor, in.AuthMode) {
+		nonce, err = randomURLToken(32)
+		if err != nil {
+			return OAuthStartResult{}, err
+		}
+	}
 	in.Kind = FlowKindOAuth
 	in.StateHash = HashOAuthState(state)
 	if cfg.Source != "" {
@@ -234,6 +259,7 @@ func startStoredPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, 
 	}
 	stored := storedPKCEPayload{
 		CodeVerifier: verifier,
+		Nonce:        nonce,
 		TokenURL:     strings.TrimSpace(cfg.TokenURL),
 		ClientID:     strings.TrimSpace(cfg.ClientID),
 		ClientSecret: strings.TrimSpace(cfg.ClientSecret),
@@ -255,10 +281,25 @@ func startStoredPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, 
 		return OAuthStartResult{}, err
 	}
 	session.AuthType = AuthTypePKCE
+	authorizeURL := BuildAuthorizeURL(cfg, state, challenge)
+	if nonce != "" {
+		authorizeURL = addAuthorizeParameter(authorizeURL, "nonce", nonce)
+	}
 	return OAuthStartResult{
 		Session: session, AuthType: AuthTypePKCE, State: state, CodeVerifier: verifier, CodeChallenge: challenge,
-		AuthorizeURL: BuildAuthorizeURL(cfg, state, challenge),
+		AuthorizeURL: authorizeURL,
 	}, nil
+}
+
+func addAuthorizeParameter(rawURL, name, value string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || strings.TrimSpace(value) == "" {
+		return rawURL
+	}
+	query := u.Query()
+	query.Set(name, value)
+	u.RawQuery = query.Encode()
+	return u.String()
 }
 
 func decryptStoredPKCEPayload(ctx context.Context, store *PostgresSessionStore, session Session) (storedPKCEPayload, error) {
@@ -314,7 +355,7 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 			return fmt.Errorf("%w: %s/%s %s 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, item.name, err)
 		}
 	}
-	if credentialstore.ModeKey(vendor, authMode) == credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth) {
+	if isXAIOAuthMode(vendor, authMode) {
 		if err := validateXAIOAuthConfig(cfg); err != nil {
 			return fmt.Errorf("%w: %s/%s xAI OAuth config 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, err)
 		}

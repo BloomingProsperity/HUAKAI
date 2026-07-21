@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -238,36 +240,75 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 	}
 	defer func() { claimed.PlanInput.Content = "" }()
 	if err := restoreOAuthProxy(&claimed); err != nil {
-		_ = s.staged.Finish(ctx, in.TenantID, in.ActorID, in.ActorRole, in.FlowID, in.RequestID, in.Reason, false, ExecutionSummary{Failed: 1})
+		if finishErr := s.finishOAuthFailure(ctx, in, ExecutionSummary{Failed: 1}); finishErr != nil {
+			return ExecutionResult{}, errors.Join(err, finishErr)
+		}
 		return ExecutionResult{}, err
 	}
 	defer clearProxyMaterial(claimed.PlanInput.Account.Proxy)
 	result, executeErr := s.intake.Execute(ctx, ExecuteInput{
 		PlanInput: claimed.PlanInput, PlanHash: in.PlanHash, Confirmations: in.Confirmations,
 		ActorID: in.ActorID, ActorRole: in.ActorRole, RequestID: in.RequestID, Reason: in.Reason,
-	})
-	success := executeErr == nil && result.Summary.Failed == 0 && result.Summary.Conflict == 0
-	if success {
-		credentialID := executionCredentialID(result)
-		if credentialID <= 0 {
-			success = false
-			executeErr = ErrExecutionStale
-		} else if _, err := s.sessions.MarkFinalized(context.WithoutCancel(ctx), session.ID, credentialID); err != nil {
-			for index := range result.Items {
-				result.Items[index].Warnings = appendUnique(result.Items[index].Warnings, "oauth_flow_finalize_failed")
+		CommitHook: func(commitCtx context.Context, tx pgx.Tx, commit ExecutionCommit) error {
+			if commit.ProviderAccountID <= 0 || commit.AccountCredentialID <= 0 {
+				return ErrExecutionStale
 			}
-		}
-	}
-	finishErr := s.staged.Finish(ctx, in.TenantID, in.ActorID, in.ActorRole, in.FlowID, in.RequestID, in.Reason, success, result.Summary)
+			if _, err := s.sessions.MarkFinalizedTx(commitCtx, tx, session.ID, commit.AccountCredentialID); err != nil {
+				return err
+			}
+			summary := ExecutionSummary{}
+			switch commit.Status {
+			case StatusCreated:
+				summary.Created = 1
+			case StatusUpdated:
+				summary.Updated = 1
+			default:
+				return ErrExecutionStale
+			}
+			return s.staged.FinishTx(
+				commitCtx, tx, in.TenantID, in.ActorID, in.ActorRole,
+				in.FlowID, in.RequestID, in.Reason, true, summary,
+			)
+		},
+	})
+	committed := result.Summary.Created + result.Summary.Updated
+	success := executeErr == nil && committed == 1 && result.Summary.Skipped == 0 &&
+		result.Summary.Failed == 0 && result.Summary.Conflict == 0
 	if executeErr != nil {
+		summary := result.Summary
+		if summary.Created+summary.Updated+summary.Skipped+summary.Conflict+summary.Failed == 0 {
+			summary.Failed = 1
+		}
+		if finishErr := s.finishOAuthFailure(ctx, in, summary); finishErr != nil {
+			return ExecutionResult{}, errors.Join(executeErr, finishErr)
+		}
 		return ExecutionResult{}, executeErr
 	}
-	if finishErr != nil {
+	if success {
+		return result, nil
+	}
+	if executeErr == nil && (result.Summary.Skipped > 0 ||
+		(result.Summary.Failed == 0 && result.Summary.Conflict == 0 && committed != 1)) {
+		executeErr = ErrExecutionStale
+	}
+	if finishErr := s.finishOAuthFailure(ctx, in, result.Summary); finishErr != nil {
 		for index := range result.Items {
 			result.Items[index].Warnings = appendUnique(result.Items[index].Warnings, "credential_flow_finish_log_failed")
 		}
 	}
+	if executeErr != nil {
+		return ExecutionResult{}, executeErr
+	}
 	return result, nil
+}
+
+func (s *OAuthService) finishOAuthFailure(ctx context.Context, in OAuthExecuteInput, summary ExecutionSummary) error {
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.staged.Finish(
+		finishCtx, in.TenantID, in.ActorID, in.ActorRole,
+		in.FlowID, in.RequestID, in.Reason, false, summary,
+	)
 }
 
 func (s *OAuthService) storeAndPlanCandidate(ctx context.Context, session credentialacq.Session, candidate credentialacq.CredentialCandidate) (OAuthPlanResult, error) {
@@ -347,15 +388,6 @@ func restoreOAuthProxy(claimed *ClaimedCredential) error {
 		claimed.PlanInput.Account.Proxy = &copy
 	}
 	return nil
-}
-
-func executionCredentialID(result ExecutionResult) int64 {
-	for _, item := range result.Items {
-		if item.AccountCredentialID > 0 {
-			return item.AccountCredentialID
-		}
-	}
-	return 0
 }
 
 func (s *OAuthService) nowTime() time.Time {

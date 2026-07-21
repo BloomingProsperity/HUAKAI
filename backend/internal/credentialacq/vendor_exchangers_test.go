@@ -2,6 +2,10 @@ package credentialacq
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -105,6 +112,114 @@ func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
 	}
 	if query.Get("redirect_uri") != "https://huakai.example.test/admin/v1/credentials/oauth-callback" {
 		t.Fatalf("redirect_uri=%q", query.Get("redirect_uri"))
+	}
+	if query.Get("nonce") == "" {
+		t.Fatal("xAI OIDC authorize URL 缺少 nonce")
+	}
+}
+
+// TestXAIOAuthExchangeVerifiesOIDCIdentity 守护生产换码器的稳定账号身份来源。
+// 变异：删除 OIDC 验签、nonce 校验或身份挂接后，候选项不能再携带受信主体。
+func TestXAIOAuthExchangeVerifiesOIDCIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawIDToken string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/oauth2/token":
+			body, _ := json.Marshal(map[string]any{
+				"access_token": "xai-access", "refresh_token": "xai-refresh",
+				"id_token": rawIDToken, "expires_in": 3600,
+			})
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		case "/.well-known/jwks.json":
+			body, _ := json.Marshal(map[string]any{"keys": []map[string]any{{
+				"kid": "xai-key", "kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig",
+				"x": base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, 32))),
+				"y": base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, 32))),
+			}}})
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		default:
+			return nil, errors.New("unexpected OAuth request path: " + r.URL.Path)
+		}
+	})}
+	exchanger := newAuthorizationCodeOAuthExchanger(
+		credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth,
+		TokenShapeAccessRefresh, xaiOAuthConfig(),
+	)
+	exchanger.client = client
+	exchanger.now = func() time.Time { return now }
+	registry := NewExchangerRegistry()
+	if err := registry.RegisterExchanger("grok/xai_oauth", exchanger); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := credentialstore.NewStaticKeyProvider("xai-oidc-test", []byte(strings.Repeat("z", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+	start, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 702,
+		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := decryptStoredPKCEPayload(context.Background(), store, start.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "xai-subject-1",
+		"email": "xai-owner@example.test", "team_id": "xai-team-1", "nonce": stored.Nonce,
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	token.Header["kid"] = "xai-key"
+	rawIDToken, err = token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, _, err := CompleteOAuthCallbackWithRegistry(
+		context.Background(), store, start.Session.ID, start.State, "authorization-code", registry,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.ExternalSubjectID != "xai-subject-1" || candidate.ExternalAccountID != "xai-team-1" ||
+		candidate.ExternalAccountEmail != "xai-owner@example.test" || candidate.AccountIDSource != accountident.SourceXAIOIDCSubject {
+		t.Fatalf("xAI OIDC 身份未接入候选项：%+v", candidate)
+	}
+
+	missingScopeStart, err := exchanger.StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 703,
+		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingScopeStored, err := decryptStoredPKCEPayload(context.Background(), store, missingScopeStart.Session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingScopeToken := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "xai-subject-1",
+		"email": "xai-owner@example.test", "nonce": missingScopeStored.Nonce,
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	missingScopeToken.Header["kid"] = "xai-key"
+	rawIDToken, err = missingScopeToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := CompleteOAuthCallbackWithRegistry(
+		context.Background(), store, missingScopeStart.Session.ID, missingScopeStart.State, "authorization-code", registry,
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("缺少账号范围的 xAI OAuth err=%v，期望 ErrInvalidTokenShape", err)
 	}
 }
 

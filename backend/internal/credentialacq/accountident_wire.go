@@ -86,16 +86,13 @@ func attachOAuthResponseSubscription(candidate *CredentialCandidate, rawPlan str
 		return
 	}
 	AttachSubscription(candidate)
-	if strings.ToLower(strings.TrimSpace(candidate.Vendor)) != subscriptionprofile.VendorOpenAI {
-		return
-	}
 	rawPlan = strings.TrimSpace(rawPlan)
 	if rawPlan == "" || candidate.Subscription.Source == subscriptionprofile.SourceIDTokenClaim ||
 		candidate.Subscription.Source == subscriptionprofile.SourceAccessTokenClaim {
 		return
 	}
 	candidate.Subscription = subscriptionprofile.FromRaw(
-		subscriptionprofile.VendorOpenAI, rawPlan,
+		strings.ToLower(strings.TrimSpace(candidate.Vendor)), rawPlan,
 		subscriptionprofile.SourceOAuthResponse,
 		subscriptionprofile.TrustIssuerResponse,
 		subscriptionprofile.VerificationIssuerResponse,
@@ -139,7 +136,10 @@ func candidateFromDeviceTokenPayload(session Session, raw []byte) CredentialCand
 		}
 		AttachIdentity(&candidate, identity)
 	}
-	attachOAuthResponseSubscription(&candidate, stringField(fields, "chatgpt_plan_type"))
+	attachOAuthResponseSubscription(&candidate, firstNonEmpty(
+		stringField(fields, "chatgpt_plan_type"),
+		stringField(fields, "subscription_tier"),
+	))
 	return candidate
 }
 
