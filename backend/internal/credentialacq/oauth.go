@@ -157,10 +157,6 @@ func CompleteOAuthCallbackWithRegistryAndPersist(ctx context.Context, store *Pos
 		}, persist)
 }
 
-func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, exchange OAuthExchanger) (CredentialCandidate, Session, error) {
-	return completeOAuthCallbackWithPersistence(ctx, store, flowID, state, code, exchange, nil)
-}
-
 func completeOAuthCallbackWithPersistence(
 	ctx context.Context,
 	store *PostgresSessionStore,

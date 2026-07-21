@@ -105,6 +105,8 @@ go test -tags=integration_pg -count=1 \
 
 第二轮只读复审结论：**无未解决 S0/S1，两个旧 S1 均已闭环**。复审同时核对了回调并发租约、state 校验顺序、暂存恢复、候选密文边界和奖励业务幂等，没有发现新增真实问题。
 
+PR 首轮远端质量门又发现两个重构遗留死入口：无生产调用的旧 OAuth 回调包装和账号创建自开事务包装。生产路径分别已经统一为“注册表解析、候选先持久化”的回调入口，以及由上层业务事务调用 `InsertTx`。本次删除两个旧包装，单元测试直接验证 OAuth 核心状态机，并把 PostgreSQL 并发测试的开事务动作收回测试辅助函数；目标测试、真实 PostgreSQL 测试和死代码质量门重新通过，没有通过抬高基线掩盖问题。
+
 ## 八、尚未冒充完成的事项
 
 唯一剩余的是外部系统活体验证，不是已知本地代码缺口：真实 Claude 浏览器 OAuth 与 Cookie 凭据分别跑“授权、换码、身份、刷新、一次模型请求”。还要用 Claude 订阅 OAuth 反转号验证 `opus-4-8`、`fable-5` 是否与 Sonnet 一样返回 429；现有官方 `sk-ant-api03` key 不覆盖这条非官方账号路径。刷新可能旋转或作废现有 refresh token，因此必须使用允许消耗的专用测试账号；在此之前不擅自拿日常账号试，也不把 mock/真 PostgreSQL 测试说成厂商 E2E。
@@ -122,4 +124,4 @@ Lane: implementation verification
 
 Agent: Codex GPT-5
 
-UTC timestamp: 2026-07-21T16:30:00Z
+UTC timestamp: 2026-07-21T16:58:00Z

@@ -110,11 +110,11 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 
 	exchangeCalled := false
-	_, session, err := CompleteOAuthCallback(context.Background(), store, attacker.Session.ID, victim.State, "attacker-code",
+	_, session, err := completeOAuthCallbackWithPersistence(context.Background(), store, attacker.Session.ID, victim.State, "attacker-code",
 		func(context.Context, Session, string) (CredentialCandidate, error) {
 			exchangeCalled = true
 			return CredentialCandidate{Payload: []byte(`{"session_token":"should-not-run"}`)}, nil
-		})
+		}, nil)
 	if !errors.Is(err, ErrStateMismatch) {
 		t.Fatalf("err=%v want %v", err, ErrStateMismatch)
 	}
@@ -126,13 +126,12 @@ func TestCompleteOAuthCallbackRejectsCrossFlowStateReplay(t *testing.T) {
 	}
 }
 
-// TestCompleteOAuthCallbackRejectsTerminalFlows 守护:生产环境的 CompleteOAuthCallback 必须
+// TestCompleteOAuthCallbackRejectsTerminalFlows 守护:生产环境的 OAuth 回调必须
 // 在执行 state/expiry/PKCE 检查之前,把落在终态 flow(cancelled/failed/expired-by-status)上的回调
 // 当作 ErrFlowReplay 拒绝 —— 死 flow 不能通过重放原始 state+code 被复活回
 // callback_received→validated。
 //
-// 它驱动的是*生产*版 CompleteOAuthCallback(而非本文件内的内存版 completeOAuthCallback helper,
-// 后者是并行重实现,并不能证明生产守卫)。区分性设计:每个终态 flow 都用一个不匹配的 state 去打。
+// 它驱动的是生产版 OAuth 回调核心状态机。区分性设计:每个终态 flow 都用一个不匹配的 state 去打。
 // 有终态守卫时,调用返回 ErrFlowReplay(守卫先触发);而 `started` 对照组(非终态)则继续走到 state
 // 检查并返回 ErrStateMismatch —— 证明守卫是按状态精确判定的,而非一刀切拒绝。
 //
@@ -178,11 +177,11 @@ func TestCompleteOAuthCallbackRejectsTerminalFlows(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			id := seed(tc.name, tc.status)
 			exchangeCalled := false
-			_, _, err := CompleteOAuthCallback(context.Background(), store, id, "wrong-state", "code",
+			_, _, err := completeOAuthCallbackWithPersistence(context.Background(), store, id, "wrong-state", "code",
 				func(context.Context, Session, string) (CredentialCandidate, error) {
 					exchangeCalled = true
 					return CredentialCandidate{Payload: []byte(`{"session_token":"should-not-run"}`)}, nil
-				})
+				}, nil)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("status=%s: err=%v want %v", tc.status, err, tc.wantErr)
 			}

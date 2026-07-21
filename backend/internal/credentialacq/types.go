@@ -536,7 +536,7 @@ func DirectCredentialInputAllowed(vendor, authMode string) bool {
 }
 
 // RequiresCallbackValidation 报告某 acquisition flow 是否必须先经 OAuth 回调校验(status=validated)
-// 才能 finalize。callback 式 OAuth(PKCE,经 CompleteOAuthCallback 校验 state 并交换授权码)的 finalize
+// 才能 finalize。callback 式 OAuth 经 PKCE 回调校验 state 并交换授权码后的 finalize
 // 不能仅凭 caller 手写 credentials body 完成,否则越权/恶意 admin 可绕过回调直接注入任意凭据。
 // 但 device_code / sso 式 flow 的凭据来自轮询(PollDeviceCodeToken / PollSSOToken),其生命周期【不经】
 // validated 状态 —— 必须豁免,否则会永久阻断 device-code/sso 凭据获取(copilot/openai-codex/kiro)。
@@ -547,11 +547,11 @@ func RequiresCallbackValidation(kind FlowKind, authType AuthType) bool {
 }
 
 // isTerminalStatus 报告某 acquisition flow 是否已处终态(finalized/cancelled/expired/failed)。终态 flow 的
-// 状态机已结束:既不能再被 OAuth 回调重新驱动(CompleteOAuthCallback replay),也不能被 UpdateStatus 前推
+// 状态机已结束:既不能再被 OAuth 回调重放，也不能被 UpdateStatus 前推
 // 或被 Cancel。任何对终态行的状态写入都应作为 ErrFlowReplay 拒绝,迫使调用方开新 flow —— 否则攻击者/重放
 // 可把已 cancelled/failed/expired 的 flow 拉回 callback_received→validated 复活后注入凭据。
 // 此前 finalized 单独被守(consumed_at + StatusFinalized),cancelled/expired/failed 三态无人守:既是
-// CompleteOAuthCallback 的提前 replay 闸,也是 UpdateStatus/Cancel SQL CAS predicate 的 Go 侧真相源,
+// OAuth 回调的提前 replay 闸，也是 UpdateStatus/Cancel SQL CAS predicate 的 Go 侧真相源，
 // 三处共用避免漂移(同 RequiresCallbackValidation 在 的 fake-vs-真 SQL 教训)。
 func isTerminalStatus(status FlowStatus) bool {
 	switch status {

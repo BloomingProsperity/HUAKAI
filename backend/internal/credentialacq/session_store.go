@@ -273,8 +273,8 @@ func (s *PostgresSessionStore) UpdateStatus(ctx context.Context, id string, stat
 		return Session{}, ErrInvalidImportBody
 	}
 	// terminal flow(finalized/cancelled/expired/failed)不可再被状态推进。无此 CAS predicate 时,
-	// Get 与状态写之间的并发 Cancel/expire 会被 TOCTOU 绕过 —— CompleteOAuthCallback 的 UpdateStatus(
-	// callback_received/validated)仍会落到一个已 cancelled 的 flow 上把它复活。terminal 行被排除后
+	// Get 与状态写之间的并发 Cancel/expire 会被 TOCTOU 绕过，OAuth 回调对
+	// callback_received/validated 的推进仍会落到已 cancelled 的 flow 上把它复活。terminal 行被排除后
 	// RETURNING 无行 → 下面 re-fetch 区分"终态(replay)"与"真不存在(not found)"。validated 不在终态集,
 	// 仍可被 oauth.go:176 由 callback_received 推进 / 失败回退为 failed。
 	const q = `

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
@@ -18,14 +19,27 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/mixedchannelrisk"
 )
 
+func insertInOwnTransactionForTest(ctx context.Context, pool *pgxpool.Pool, arg Params) (Result, error) {
+	var out Result
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		out, err = InsertTx(ctx, tx, arg)
+		return err
+	})
+	if err != nil {
+		return Result{RiskReport: out.RiskReport}, err
+	}
+	return out, nil
+}
+
 // TestInsertBlocksOnAdvisoryLockHeldExternally 咬住 §17 并发关键路径,且是**确定性**
 // 判别(不依赖 goroutine 调度巧合):在测试内用一条独立连接、按生产同款 key 抢占
 // 同一 tenant/channel 的 pg_advisory_xact_lock 并保持事务不提交;此时对同一 channel
-// 调用生产 Insert,它进入自身事务后必然阻塞在同款 advisory lock 上,拿不到锁 →
-// 无法读 peers/评估/插入。释放外部锁后 Insert 才推进完成。
+// 测试事务调用生产 InsertTx 后必然阻塞在同款 advisory lock 上,拿不到锁 →
+// 无法读 peers/评估/插入。释放外部锁后创建才推进完成。
 //
 // 判别契约(有锁,确定性):外部持锁期间 Insert 不返回;释放后返回。
-// 变异:删掉 atomic.go 的 pg_advisory_xact_lock 行 → Insert 不再抢该锁 → 外部持锁
+// 变异:删掉 atomic.go 的 pg_advisory_xact_lock 行 → InsertTx 不再抢该锁 → 外部持锁
 // 期间就直接跑完返回 → “持锁期间不返回”断言变红。这是确定性红,不靠竞态。
 func TestInsertBlocksOnAdvisoryLockHeldExternally(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -67,7 +81,7 @@ func TestInsertBlocksOnAdvisoryLockHeldExternally(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Insert(ctx, pool, params)
+		_, err := insertInOwnTransactionForTest(ctx, pool, params)
 		done <- err
 	}()
 
@@ -95,7 +109,7 @@ func TestInsertBlocksOnAdvisoryLockHeldExternally(t *testing.T) {
 
 // TestInsertLockPrecedesPeersRead 咬住**锁序不变量**:advisory lock 必须在读 peers
 // 之前获取,否则两个并发创建会各自先读到空 peers 再抢锁,绕过混合风险门。
-// 上面的阻塞测试只证"Insert 会等锁",证不了"锁在读 peers 之前";本测试补上。
+// 上面的阻塞测试只证"InsertTx 会等锁",证不了"锁在读 peers 之前";本测试补上。
 //
 // 构造:外部先持锁 → 启动 Insert(A) → 等一小段(正确态 A 被锁死在读 peers 前;若
 // 锁被挪到读 peers 之后,A 会先读到空 peers)→ 直插一个不同 provider 的冲突对端并
@@ -139,7 +153,7 @@ func TestInsertLockPrecedesPeersRead(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := Insert(ctx, pool, insertA)
+		_, err := insertInOwnTransactionForTest(ctx, pool, insertA)
 		done <- err
 	}()
 
@@ -222,7 +236,7 @@ func TestInsertBlocksAndRejectsWhenProtocolChangesConcurrently(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Insert(ctx, pool, params)
+		_, err := insertInOwnTransactionForTest(ctx, pool, params)
 		done <- err
 	}()
 
