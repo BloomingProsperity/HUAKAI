@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
@@ -342,6 +343,8 @@ func TestPR5NonStream401TriggersNonBlockingHotRefreshAndStillReturnsSecondAccoun
 	}
 	refresher := newBlockingHotRefreshSpy()
 	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88311}, settler, dispatcher)
+	deps.Registry = stubRegistry{resolved: pr5OAuthResolved()}
+	deps.CredentialVault = pr5OAuthCredentialVault(t, 311, 312)
 	deps.CredentialHotRefresher = refresher
 
 	done := make(chan *httptestResponse, 1)
@@ -376,6 +379,50 @@ func TestPR5NonStream401TriggersNonBlockingHotRefreshAndStillReturnsSecondAccoun
 	}
 }
 
+func TestPR5SingleAccountAuthFailureIsNotMaskedByRetryExclusion(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &singleAccountExclusionSelector{accountID: 313}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`}},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88313}, settler, dispatcher)
+	deps.CredentialVault = pr5CredentialVault(t, 313)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "upstream_credential_rejected") {
+		t.Fatalf("status=%d body=%s，期望保留首个真实认证失败", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 || dispatcher.calls != 1 {
+		t.Fatalf("selector/dispatcher=%d/%d，期望第二次只确认没有备用账号", selector.calls, dispatcher.calls)
+	}
+	if len(settler.aborts) != 2 || settler.aborts[0].reason != "upstream_credential_rejected" || settler.aborts[1].reason != "pool_no_capacity" {
+		t.Fatalf("aborts=%+v，期望两次预扣均闭环释放", settler.aborts)
+	}
+}
+
+func TestPR5SingleAccountServerFailureIsNotMaskedByRetryExclusion(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &singleAccountExclusionSelector{accountID: 314}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{{status: http.StatusInternalServerError, body: `{"error":"upstream unavailable"}`}},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88314}, settler, dispatcher)
+	deps.CredentialVault = pr5CredentialVault(t, 314)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusBadGateway || strings.Contains(rec.Body.String(), clienterr.CodeNoCapacity) {
+		t.Fatalf("status=%d body=%s，期望保留首个真实上游服务失败", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 || dispatcher.calls != 1 {
+		t.Fatalf("selector/dispatcher=%d/%d，期望第二次只确认没有备用账号", selector.calls, dispatcher.calls)
+	}
+	if len(settler.aborts) != 2 || settler.aborts[0].reason != "upstream_5xx" || settler.aborts[1].reason != "pool_no_capacity" {
+		t.Fatalf("aborts=%+v，期望两次预扣均闭环释放", settler.aborts)
+	}
+}
+
 func TestPR5NonStream401HotRefreshDedupesSameAccountWithinWindow(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	selector := newPR5Selector(t, 321, 322)
@@ -389,6 +436,8 @@ func TestPR5NonStream401HotRefreshDedupesSameAccountWithinWindow(t *testing.T) {
 	}
 	refresher := newRecordingHotRefreshSpy()
 	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88321}, &recordingSettler{}, dispatcher)
+	deps.Registry = stubRegistry{resolved: pr5OAuthResolved()}
+	deps.CredentialVault = pr5OAuthCredentialVault(t, 321, 322)
 	deps.CredentialHotRefresher = refresher
 	handler := NewChatCompletionsHandler(deps)
 
@@ -962,7 +1011,7 @@ func TestPR5NonStreamAllAttemptsFailReturnsLastClassifiedError(t *testing.T) {
 	if got := rec.Header().Get("Retry-After"); got != "11" {
 		t.Fatalf("Retry-After=%q want 11 from last failure", got)
 	}
-	if !strings.Contains(rec.Body.String(), "upstream_upstream_rate_limited") {
+	if !strings.Contains(rec.Body.String(), "upstream_rate_limited") {
 		t.Fatalf("body=%s want last classified rate-limit error", rec.Body.String())
 	}
 }
@@ -1086,7 +1135,7 @@ func TestAT_GW_002_04_PreStreamFinalErrorSanitizesUpstreamBody(t *testing.T) {
 	if strings.Contains(rec.Body.String(), marker) {
 		t.Fatalf("response leaked upstream marker: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "upstream_upstream_5xx") {
+	if !strings.Contains(rec.Body.String(), "upstream_5xx") {
 		t.Fatalf("body=%s want typed upstream_5xx code", rec.Body.String())
 	}
 	if selector.calls != 1 || dispatcher.calls != 1 {
@@ -1704,6 +1753,28 @@ type pr5Selector struct {
 	requests []pool.SelectionRequest
 }
 
+type singleAccountExclusionSelector struct {
+	accountID int64
+	calls     int
+}
+
+func (s *singleAccountExclusionSelector) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.calls++
+	if _, excluded := req.ExcludedAccounts[s.accountID]; !excluded {
+		return &pool.SelectionResult{
+			AccountID: s.accountID, AcquisitionToken: uuid.New(),
+			RoutingReasonJSON: []byte(`{"test":"single-account"}`),
+		}, nil
+	}
+	return nil, &pool.NoCapacityError{
+		Cause: pool.ErrNoEligibleAccount,
+		Exhaustion: pool.Exhaustion{
+			Family:  pool.ExhaustionFamilyStaticMismatch,
+			Reasons: map[pool.GateFailureReason]int{pool.GateFailurePerRequestExclusion: 1},
+		},
+	}
+}
+
 func newPR5Selector(t *testing.T, accounts ...int64) *pr5Selector {
 	t.Helper()
 	vaultAccounts := append([]int64(nil), accounts...)
@@ -1753,6 +1824,33 @@ func pr5CredentialVault(t *testing.T, accountIDs ...int64) provider.CredentialVa
 		}
 	}
 	return vault
+}
+
+func pr5OAuthCredentialVault(t *testing.T, accountIDs ...int64) provider.CredentialVault {
+	t.Helper()
+	vault := provider.NewStaticVault()
+	for _, accountID := range accountIDs {
+		if err := vault.Set(accountID, provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "oauth-pr5-test",
+		}, provider.AccountInfo{
+			AccountID:           accountID,
+			Platform:            credentialstore.VendorOpenAI,
+			AccountType:         credentialstore.AuthModeChatGPTOAuth,
+			AccountCredentialID: 9000 + accountID,
+			CredentialVersion:   1,
+		}); err != nil {
+			t.Fatalf("vault.Set(%d): %v", accountID, err)
+		}
+	}
+	return vault
+}
+
+func pr5OAuthResolved() registry.Resolved {
+	return registry.Resolved{
+		PublicAlias: "gpt-4o", CanonicalModelID: "openai/gpt-4o", ProviderModelID: "gpt-4o",
+		ProtocolFamily: "openai_codex", PoolCandidates: []int64{42},
+	}
 }
 
 func modelFallbackDeps(t *testing.T, selector *modelFallbackSelector, claimGate *modelFallbackClaimGate, settler *recordingSettler, dispatcher HCSFDispatcher, settingsJSON string) ChatHandlerDeps {

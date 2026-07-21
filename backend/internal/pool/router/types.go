@@ -80,11 +80,15 @@ type Selector interface {
 
 // SelectionRequest 承载 Phase A 候选意图输入。
 type SelectionRequest struct {
-	TenantID       int64
-	UserID         int64
-	APIKeyID       int64
-	PoolGroupID    int64
+	TenantID    int64
+	UserID      int64
+	APIKeyID    int64
+	PoolGroupID int64
+	// RequestedModel 是客户端看到的公开模型名，用于 sticky 与租户路由策略。
 	RequestedModel string
+	// ProviderModelID 是当前 binding 最终发往上游的模型名，用于账号模型白名单
+	// 与账号级额度事实过滤。为空时兼容回退到 RequestedModel。
+	ProviderModelID string
 	// ModelCooldownKey 是 provider_accounts.model_rate_limits 使用的
 	// upstream/provider 模型键。为空时回退到 RequestedModel。
 	ModelCooldownKey string
@@ -143,7 +147,20 @@ type SelectionRequest struct {
 	// MaxParallelRequests 是命中 binding 的全局在途上限。正数启用；0 或负数表示不限。
 	// 外层 selector 只用它快速拒绝，真正抗并发的裁定仍在 DBSlotManager 的事务内完成。
 	MaxParallelRequests int64
+
+	// RateAccountingScope 只用于把异步任务的一次逻辑请求与后续真实上游调用拆开计数。
+	// 空值保持同步链现状：key、binding、account 都计；logical 只计用户 key 与
+	// binding；account 只计真实上游账号请求。
+	RateAccountingScope RateAccountingScope
 }
+
+type RateAccountingScope string
+
+const (
+	RateAccountingAll         RateAccountingScope = ""
+	RateAccountingLogicalOnly RateAccountingScope = "logical"
+	RateAccountingAccountOnly RateAccountingScope = "account"
+)
 
 // StickyState 标记一次 Select 相对 sticky binding 的结果(DM-07)。
 type StickyState string

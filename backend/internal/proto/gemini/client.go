@@ -109,6 +109,7 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 	var losses []proto.ProtocolLossEntry
 	losses = append(losses, geminiRequestExtrasLosses(extras)...)
 	applyGeminiGenerationConfig(env, req.GenerationConfig, &losses)
+	preserveGeminiGenerationConfig(raw, env)
 	if req.SystemInstruction != nil {
 		env.RequestControls.SystemPrompt = geminiSystemText(*req.SystemInstruction, &losses)
 	}

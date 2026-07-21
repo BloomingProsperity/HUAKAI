@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -48,9 +49,7 @@ func writeInsufficientQuotaError(w http.ResponseWriter) {
 	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, 0, "")
 }
 
-// writeInsufficientQuotaErrorRetryable 在 token-per-window 等窗口配额拒绝时,把引擎算好的窗口信息
-// 吐给客户端:Retry-After 头(秒)+ body 的 window_resets_at(RFC3339);windowKind 非空时再加 body 的
-// quota_window(如 calendar_month),让 SDK 既能按窗口边界退避,又能区分是日额还是月额超了。
+// writeInsufficientQuotaErrorRetryable 返回窗口重置时间和类型，让客户端按真实边界退避并区分配额拒绝。
 func writeInsufficientQuotaErrorRetryable(w http.ResponseWriter, retryAfter time.Duration, windowKind string) {
 	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, retryAfter, windowKind)
 }
@@ -112,27 +111,33 @@ func setAbortFailedHeader(w http.ResponseWriter, ctx context.Context, requestID 
 }
 
 func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCode string, c gateway.Classification) {
-	code := fallbackCode
-	if c.Class != "" {
-		code = "upstream_" + string(c.Class)
-	}
+	code := normalizedUpstreamErrorCode(fallbackCode, c.Class)
 	if c.RetryAfterMs > 0 {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", (c.RetryAfterMs+999)/1000))
 	}
 	writeJSONError(w, status, code, "upstream request failed")
 }
 
-func clientStatusForUpstreamError(upstreamStatus int, class gateway.ErrorClass) int {
-	switch class {
-	case gateway.ErrorClassRequestTooLarge:
-		return http.StatusBadRequest
-	case gateway.ErrorClassRateLimited, gateway.ErrorClassOverloaded, gateway.ErrorClassUpstreamTimeout:
-		return http.StatusServiceUnavailable
+func normalizedUpstreamErrorCode(fallbackCode string, class gateway.ErrorClass) string {
+	if class == "" {
+		return fallbackCode
 	}
-	if upstreamStatus == http.StatusTooManyRequests {
-		return http.StatusServiceUnavailable
+	code := string(class)
+	if strings.HasPrefix(code, "upstream_") {
+		return code
 	}
-	return http.StatusBadGateway
+	return "upstream_" + code
+}
+
+func (ex *chatExecution) classifyAttemptHTTPError(statusCode int, headers http.Header, body []byte) (gateway.AttemptRetryDecision, gateway.Classification) {
+	failure := upstreamfeedback.ClassifyHTTPError(upstreamfeedback.Attempt{
+		TenantID:       ex.ident.TenantID,
+		Account:        ex.accInfo,
+		ProtocolFamily: ex.resolved.ProtocolFamily,
+		ModelKey:       ex.upstreamModelID,
+		RequestID:      ex.requestID,
+	}, statusCode, headers, body)
+	return failure.Decision, failure.Classification
 }
 
 func bindingFallbackSignalFromDecision(classification gateway.Classification, decision gateway.AttemptRetryDecision) bindingfallback.Signal {
@@ -555,6 +560,20 @@ func (ex *chatExecution) classifyPoolSelectFailure(w http.ResponseWriter, err er
 		f.FallbackSignal = bindingfallback.SignalLocalConfigurationFailure
 		return degradeFailureIfAbortFailed(ex.ctx, ex.requestID, f, abort("group_policy_unavailable"))
 	case errors.Is(err, pool.ErrNoEligibleAccount), errors.Is(err, pool.ErrNoSlotAvailable), errors.Is(err, pool.ErrAllChannelsDegraded):
+		var exhausted *pool.NoCapacityError
+		if errors.As(err, &exhausted) {
+			slog.WarnContext(ex.ctx, "账号池无可用容量",
+				slog.String("request_id", ex.requestID),
+				slog.Int64("tenant_id", ex.ident.TenantID),
+				slog.Int64("claim_id", ex.reserveRes.ClaimID),
+				slog.Int64("pool_group_id", ex.attempt.PoolGroupID),
+				slog.Int64("binding_id", ex.attempt.BindingID),
+				slog.String("requested_model", ex.req.Model),
+				slog.String("protocol_family", ex.resolved.ProtocolFamily),
+				slog.String("exhaustion_family", string(exhausted.Exhaustion.Family)),
+				slog.Any("exclusion_counts", exhausted.Exhaustion.Reasons),
+			)
+		}
 		f := retryableLocalAttemptFailure(http.StatusServiceUnavailable, clienterr.CodeNoCapacity, clienterr.MessageFor(clienterr.CodeNoCapacity), "pool_no_capacity", gateway.UpstreamError5xx, err)
 		f.FallbackSignal = poolExhaustionFallbackSignal(err)
 		// 用池最早恢复时刻算精确 Retry-After,替代硬编码;无可估时刻则回退默认值。

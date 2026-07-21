@@ -48,3 +48,11 @@ func TestMJFetchImageSeedAndListUseMediaTaskQueries(t *testing.T) {
 		t.Fatalf("list service scope/limit=%d/%d/%d want 7/42/5", service.listTenant, service.listUser, service.listLimit)
 	}
 }
+
+func TestMJMultipleKeysRequireExplicitSelection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeServiceError(rec, mediatask.ErrAPIKeyAmbiguous)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"media_task_api_key_ambiguous"`) {
+		t.Fatalf("status=%d body=%s want 409 media_task_api_key_ambiguous", rec.Code, rec.Body.String())
+	}
+}

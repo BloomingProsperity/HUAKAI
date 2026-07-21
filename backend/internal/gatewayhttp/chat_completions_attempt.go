@@ -488,7 +488,7 @@ func writeAttemptFailure(w http.ResponseWriter, failure *classifiedAttemptFailur
 	}
 	code := failure.ClientCode
 	if code == "" && failure.Classification.Class != "" {
-		code = "upstream_" + string(failure.Classification.Class)
+		code = normalizedUpstreamErrorCode("", failure.Classification.Class)
 	}
 	if code == "" {
 		code = clienterr.CodeAttemptFailed

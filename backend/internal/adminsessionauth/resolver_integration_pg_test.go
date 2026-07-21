@@ -80,10 +80,12 @@ func getReq() *http.Request {
 
 // TestPG_SessionRoleGrantsAdminOverRealStore 守跨层不变量:真库 role 列驱动 admin 判定。
 // 判别:
-//   - role='admin' 真行 → 授平台级 admin(Source=session/UserID 取自会话/ScopeTenantID=0)。
+//   - 平台租户 role='admin' 真行 → 授平台级 admin(Source=session/UserID 取自会话/ScopeTenantID=0)。
+//   - 下级租户 role='admin' 真行 → 授该租户 tenant_operator，ScopeTenantID=该租户。
 //   - role='user' / 列默认(不给 role)真行 → 统一反枚举 ErrAdminUnauthorized(deny-by-default)。
 //   - 软删 admin 真行(deleted_at 非空)→ RoleStore 返 ErrUserNotFound → 拒(注销账号不得授权)。
 //   - 跨租户:tenantA 会话读 tenantB 的 admin 用户 → RoleStore tenant 谓词过滤 → 拒(串租户越权防线)。
+//
 // mutation(生产码):
 //   - panelauth store_postgres UserRole 去掉 `AND deleted_at IS NULL` → 软删 admin 被授权 → 该断言红。
 //   - store_postgres 去掉 tenant 谓词 → 跨租户读到他租户 admin role → 跨租户断言红。
@@ -110,7 +112,7 @@ func TestPG_SessionRoleGrantsAdminOverRealStore(t *testing.T) {
 
 	// 真 admin 行 → 授平台级 admin,归属取自会话。
 	{
-		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: adminUser}}, roles, nil)
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: adminUser}}, roles, nil, tenantA)
 		id, err := r.Resolve(ctx, getReq())
 		if err != nil {
 			t.Fatalf("真 admin 行经 session 通道应放行,得 err=%v", err)
@@ -125,7 +127,7 @@ func TestPG_SessionRoleGrantsAdminOverRealStore(t *testing.T) {
 
 	// role='user' 真行 → 拒。
 	{
-		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: normalUser}}, roles, nil)
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: normalUser}}, roles, nil, tenantA)
 		if _, err := r.Resolve(ctx, getReq()); err != admin.ErrAdminUnauthorized {
 			t.Fatalf("真 user 行应 deny-by-default,得 err=%v", err)
 		}
@@ -133,7 +135,7 @@ func TestPG_SessionRoleGrantsAdminOverRealStore(t *testing.T) {
 
 	// 列默认(未显式给 role)真行 → 拒(证明默认 'user' 不误授)。
 	{
-		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: defaultUser}}, roles, nil)
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: defaultUser}}, roles, nil, tenantA)
 		if _, err := r.Resolve(ctx, getReq()); err != admin.ErrAdminUnauthorized {
 			t.Fatalf("列默认 role 行应 deny,得 err=%v", err)
 		}
@@ -145,15 +147,27 @@ func TestPG_SessionRoleGrantsAdminOverRealStore(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, softAdmin); err != nil {
 			t.Fatalf("soft-delete: %v", err)
 		}
-		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: softAdmin}}, roles, nil)
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: softAdmin}}, roles, nil, tenantA)
 		if _, err := r.Resolve(ctx, getReq()); err != admin.ErrAdminUnauthorized {
 			t.Fatalf("软删 admin 应拒,得 err=%v", err)
 		}
 	}
 
+	// 下级租户自己的 admin 行 → tenant_operator，且作用域锁在 tenantB。
+	{
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantB, UserID: bAdmin}}, roles, nil, tenantA)
+		id, err := r.Resolve(ctx, getReq())
+		if err != nil {
+			t.Fatalf("下级租户真 admin 行应放行,得 err=%v", err)
+		}
+		if id.Role != admin.RoleTenantOperator || id.ScopeTenantID != tenantB || id.UserID != bAdmin {
+			t.Fatalf("下级租户真 admin 行应授本租户 tenant_operator,得 %+v", id)
+		}
+	}
+
 	// 跨租户:tenantA 会话拿去查 tenantB 的 admin 用户 → tenant 谓词过滤 → not found → 拒。
 	{
-		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: bAdmin}}, roles, nil)
+		r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenantA, UserID: bAdmin}}, roles, nil, tenantA)
 		if _, err := r.Resolve(ctx, getReq()); err != admin.ErrAdminUnauthorized {
 			t.Fatalf("跨租户读他租户 admin 应拒(tenant 隔离),得 err=%v", err)
 		}
@@ -176,7 +190,7 @@ func TestPG_SessionAdminWriteMethodStillDeniedOverRealStore(t *testing.T) {
 	adminUser := seedUser(t, ctx, pool, tenant, panelauth.RoleAdmin)
 	roles := panelauth.NewPostgresRoleStore(pool)
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenant, UserID: adminUser}}, roles, nil)
+	r := New(tok, fixedSession{sess: usersession.ValidatedSession{TenantID: tenant, UserID: adminUser}}, roles, nil, tenant)
 
 	// 先证真 admin 的 GET 放行(基线,排除是 role 判定拒的干扰)。
 	if _, err := r.Resolve(ctx, getReq()); err != nil {

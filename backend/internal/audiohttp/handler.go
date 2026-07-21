@@ -204,6 +204,10 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRegistryUnknownError, clienterr.MessageFor(clienterr.CodeRegistryUnknownError))
 		return false
 	}
+	if !hasAudioEndpointCapability(resolved.Capabilities, ex.endpoint) {
+		writeJSONError(w, http.StatusNotFound, "model_not_available", "model does not support this audio operation")
+		return false
+	}
 	ex.resolved = resolved
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{TenantID: ex.ident.TenantID, UserID: ex.ident.UserID, APIKeyID: ex.ident.APIKeyID, RequestID: ex.requestID},
@@ -217,6 +221,7 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return false
 	}
+	requireAudioEndpointCapability(&plan, ex.endpoint)
 	ex.plan = plan
 	ex.activateAttempt(plan.Attempts[0])
 	return true

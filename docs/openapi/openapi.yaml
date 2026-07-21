@@ -1355,6 +1355,152 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1/videos/generations:
+    post:
+      tags: [video]
+      summary: Create a Grok video generation task through an assigned upstream account
+      operationId: createGrokVideo
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrokVideoRequest' }
+      responses:
+        '202':
+          description: Video task accepted and durably bound to the selected account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GrokVideoSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/videos/edits:
+    post:
+      tags: [video]
+      summary: Create a Grok video edit task through an assigned upstream account
+      operationId: editGrokVideo
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrokVideoRequest' }
+      responses:
+        '202':
+          description: Video edit task accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GrokVideoSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/videos/extensions:
+    post:
+      tags: [video]
+      summary: Create a Grok video extension task through an assigned upstream account
+      operationId: extendGrokVideo
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GrokVideoRequest' }
+      responses:
+        '202':
+          description: Video extension task accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GrokVideoSubmitResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/videos/{request_id}:
+    get:
+      tags: [video]
+      summary: Get a Grok video task owned by the current API key
+      operationId: getGrokVideo
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 96 }
+      responses:
+        '200':
+          description: Current normalized upstream video task state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GrokVideoStatusResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/videos/{request_id}/content:
+    get:
+      tags: [video]
+      summary: Download a finished video through the gateway content proxy
+      description: >-
+        上游产物地址需要生成任务时绑定账号的凭据才能访问，网关校验任务归属后用
+        该账号凭据代取并流式返回，用户侧无需任何上游凭据。
+      operationId: getVideoContent
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 96 }
+      responses:
+        '200':
+          description: Video bytes streamed via the task's bound upstream account.
+          content:
+            video/mp4:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502': { description: 上游产物暂不可取，稍后重试。 }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /suno/submit/{action}:
     post:
       tags: [suno]
@@ -2496,7 +2642,9 @@ paths:
         admin-gated Hermes ops assistant: per HUAKAI subsystem it returns
         identity (id, category, title, capabilities), the static feature-tree
         catalog overlay (section, feature id, parity status, owning packages),
-        and a live read-only health probe result. Probe details are
+        a structured activation snapshot (construction, injection, endpoint
+        coverage, replica safety, backend and verification), and a live
+        read-only health probe result. Probe details and activation fields are
         system-diagnostic enums/counts only — never secrets or user data. No
         upstream paid calls; zero billing side effects. Requires platform-admin.
       operationId: getAdminModules
@@ -2512,12 +2660,7 @@ paths:
           description: Merged module-knowledge view.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  modules:
-                    type: array
-                    items: { type: object }
+              schema: { $ref: '#/components/schemas/ModulesResponse' }
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role (platform-admin required). }
         '503': { description: Module registry not configured. }
@@ -2538,12 +2681,7 @@ paths:
           description: Merged module-knowledge view.
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  modules:
-                    type: array
-                    items: { type: object }
+              schema: { $ref: '#/components/schemas/ModulesResponse' }
         '401': { description: Missing or invalid admin credential. }
         '403': { description: Insufficient role (platform-admin required). }
         '503': { description: Module registry not configured. }
@@ -2946,15 +3084,15 @@ paths:
       operationId: getHermesContext
       description: >-
         Returns the merged module-knowledge view (module identity, capabilities,
-        live probe state, static catalog overlay) the Hermes ops assistant uses to
-        ground root-cause diagnostics. Module identity + enum statuses only; never
-        secrets or user data. Admin-gated.
+        structured activation state, live probe state, static catalog overlay)
+        the Hermes ops assistant uses to ground root-cause diagnostics. Module
+        identity + enum statuses only; never secrets or user data. Admin-gated.
       responses:
         '200':
           description: Merged module-knowledge view.
           content:
             application/json:
-              schema: { type: object }
+              schema: { $ref: '#/components/schemas/ModulesResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -11496,7 +11634,7 @@ paths:
   /admin/v1/provider-accounts/{id}/upstream-models:
     get:
       tags: [admin-accounts]
-      summary: List the live model ids a provider account upstream serves (SSRF-guarded, on-demand)
+      summary: 按账号真实凭据发现上游模型
       operationId: listProviderAccountUpstreamModels
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
@@ -11504,16 +11642,40 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
       responses:
         "200":
-          description: Live upstream model list.
+          description: 实时上游模型目录，保留模型 ID 兼容字段并返回能力详情。
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  models: { type: array, items: { type: string } }
-                  count: { type: integer }
-        "422": { description: Upstream address blocked by SSRF policy or base_url invalid. }
-        "502": { description: Upstream models endpoint error or unparseable response. }
+              schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsResponse' }
+        "422": { description: 该账号认证模式没有可验证的账号级模型发现合同。 }
+        "429": { description: 上游模型目录接口限流。 }
+        "502": { description: 上游拒绝凭据，或模型目录响应无效。 }
+        "503": { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/provider-accounts/{id}/upstream-models/sync:
+    post:
+      tags: [admin-accounts]
+      summary: 发现并原子同步账号模型白名单
+      operationId: syncProviderAccountUpstreamModels
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsSyncRequest' }
+      responses:
+        "200":
+          description: 同步完成；凭据版本在事务内复核，轮换冲突不会写回旧目录。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsResponse' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "422": { description: 该账号认证模式不支持账号级模型发现。 }
+        "429": { description: 上游模型目录接口限流。 }
+        "502": { description: 上游模型目录失败或响应无效。 }
+        "503": { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/provider-accounts/bulk-by-tag:
     post:
@@ -11545,7 +11707,7 @@ paths:
   /v1/admin/provider-accounts/{id}/upstream-models:
     get:
       tags: [admin-accounts]
-      summary: List the live model ids a provider account upstream serves (SSRF-guarded, on-demand)
+      summary: 按账号真实凭据发现上游模型（兼容前缀）
       operationId: listProviderAccountUpstreamModelsV1
       x-huakai-spec-source: [docs/specs/pool-routing.md]
       x-huakai-required-role: tenant_operator
@@ -11553,16 +11715,40 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
       responses:
         "200":
-          description: Live upstream model list.
+          description: 实时上游模型目录。
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  models: { type: array, items: { type: string } }
-                  count: { type: integer }
-        "422": { description: Upstream address blocked by SSRF policy or base_url invalid. }
-        "502": { description: Upstream models endpoint error or unparseable response. }
+              schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsResponse' }
+        "422": { description: 该账号认证模式没有可验证的账号级模型发现合同。 }
+        "429": { description: 上游模型目录接口限流。 }
+        "502": { description: 上游拒绝凭据，或模型目录响应无效。 }
+        "503": { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1/admin/provider-accounts/{id}/upstream-models/sync:
+    post:
+      tags: [admin-accounts]
+      summary: 发现并原子同步账号模型白名单（兼容前缀）
+      operationId: syncProviderAccountUpstreamModelsV1
+      x-huakai-spec-source: [docs/specs/pool-routing.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsSyncRequest' }
+      responses:
+        "200":
+          description: 同步完成。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderAccountUpstreamModelsResponse' }
+        "409": { $ref: '#/components/responses/Conflict' }
+        "422": { description: 该账号认证模式不支持账号级模型发现。 }
+        "429": { description: 上游模型目录接口限流。 }
+        "502": { description: 上游模型目录失败或响应无效。 }
+        "503": { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/admin/provider-accounts/{id}/recovery-actions:
     parameters:
@@ -12562,17 +12748,16 @@ paths:
   /admin/v1/balances/adjustments:
     post:
       tags: [admin-billing]
-      summary: Apply an admin manual balance adjustment
+      summary: 执行管理员人工额度调整
       operationId: adminAdjustBalance
       description: |
-        Platform-admin only manual balance adjustment path. Positive amounts create
-        a completed recharge correlation row, append a balance_recharged billing
-        event, and write a redacted payment_audit_log entry. Negative amounts are
-        currently rejected with admin_debit_not_yet_supported until an approved
-        durable debit billing event schema lands.
+        部署者可下发或收回下级租户钱包额度，也可调整平台直属用户；下级租户管理员
+        只能在自身租户内把租户钱包额度分发给普通用户或收回。部署者不能越级调整
+        下级租户用户。每次成功操作在同一事务内更新余额并写入两条守恒的永久分录；
+        同幂等键同事实返回首次结果，同键不同事实返回冲突。
       x-huakai-spec-source:
         - docs/process/plans/2026-06-02-money-5-fix-codex.md
-      x-huakai-required-role: platform_admin
+      x-huakai-required-role: platform_admin_or_tenant_operator
       requestBody:
         required: true
         content:
@@ -12580,7 +12765,7 @@ paths:
             schema: { $ref: '#/components/schemas/AdminBalanceAdjustmentRequest' }
       responses:
         '200':
-          description: Adjustment applied and net balance returned.
+          description: 调整成功，返回被调整对象的最新余额。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminBalanceAdjustmentResponse' }
@@ -12589,6 +12774,63 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/balances/tenant-wallet:
+    get:
+      tags: [admin-billing]
+      summary: 查询下级租户经营钱包
+      operationId: getAdminTenantWallet
+      description: 部署者可查询下级租户；下级租户管理员只能查询自身租户。
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 租户钱包当前投影。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantWallet' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/balances/transactions:
+    get:
+      tags: [admin-billing]
+      summary: 查询人工额度交易日志
+      operationId: listAdminBalanceTransactions
+      description: 返回不可变双边账本的交易事实；部署者可按租户查询，下级租户管理员只能查询自身租户。
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: offset
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: 按时间倒序的人工额度交易日志。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBalanceTransactionList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/model-sync:
@@ -14401,6 +14643,127 @@ components:
           schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperResponse' }
 
   schemas:
+    ModuleActivationEndpoint:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: 稳定的协议入口或处理器族名称。
+        injected:
+          type: boolean
+          description: 组合根是否向该入口注入了模块依赖。
+        active:
+          type: boolean
+          description: 该模块能力是否真实覆盖此入口。
+
+    ModuleActivationSnapshot:
+      type: object
+      additionalProperties: false
+      description: 仅供运维使用的隐私安全激活快照，不包含原始配置、密钥或租户数据。
+      properties:
+        declared: { type: boolean }
+        constructed: { type: boolean }
+        injected: { type: boolean }
+        active: { type: boolean }
+        shared_safe:
+          type: boolean
+          description: 模块完整运行时状态是否在多副本间一致且安全。
+        observable: { type: boolean }
+        verified:
+          type: boolean
+          description: 探针成功时为 true，确定降级或失败时为 false，未知时省略。
+        backend:
+          type: string
+          enum: [local, postgresql, mixed]
+        mode: { type: string }
+        traffic_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/ModuleActivationEndpoint' }
+
+    ModuleProbeResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [unknown, ok, degraded, error]
+        detail: { type: string }
+
+    ModuleCatalogOverlay:
+      type: object
+      additionalProperties: false
+      properties:
+        section: { type: string }
+        feature_id: { type: string }
+        status: { type: string }
+        parity: { type: string }
+        pkgs:
+          type: array
+          items: { type: string }
+
+    ModuleView:
+      type: object
+      additionalProperties: false
+      required: [id, category, title, live_probe]
+      properties:
+        id: { type: string }
+        category: { type: string }
+        title: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }
+        activation: { $ref: '#/components/schemas/ModuleActivationSnapshot' }
+        catalog: { $ref: '#/components/schemas/ModuleCatalogOverlay' }
+        live_probe: { $ref: '#/components/schemas/ModuleProbeResult' }
+
+    ModulesResponse:
+      type: object
+      additionalProperties: false
+      required: [modules]
+      properties:
+        modules:
+          type: array
+          items: { $ref: '#/components/schemas/ModuleView' }
+
+    ProviderAccountUpstreamModel:
+      type: object
+      required: [id, display_name, protocol_family]
+      properties:
+        id: { type: string }
+        display_name: { type: string }
+        protocol_family: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        context_window: { type: integer }
+
+    ProviderAccountUpstreamModelsResponse:
+      type: object
+      required: [models, items, count, vendor, auth_mode, protocol_family, discovered_at]
+      properties:
+        models: { type: array, items: { type: string } }
+        items: { type: array, items: { $ref: '#/components/schemas/ProviderAccountUpstreamModel' } }
+        count: { type: integer }
+        vendor: { type: string }
+        auth_mode: { type: string }
+        protocol_family: { type: string }
+        discovered_at: { type: string, format: date-time }
+        changed: { type: boolean }
+        previous_count: { type: integer }
+        credential_version: { type: integer }
+        account_credential_id: { type: integer, format: int64 }
+
+    ProviderAccountUpstreamModelsSyncRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { type: string }
+
     AuthUser:
       type: object
       additionalProperties: false
@@ -16766,6 +17129,56 @@ components:
           additionalProperties: true
           description: Provider-neutral media generation input JSON for slice-1.
 
+    GrokVideoRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [backend/internal/videohttp/handler.go]
+      required: [model, prompt]
+      properties:
+        model: { type: string, minLength: 1 }
+        prompt: { type: string, minLength: 1 }
+        duration: { type: integer, minimum: 1 }
+        aspect_ratio: { type: string }
+        resolution: { type: string }
+        image:
+          type: object
+          additionalProperties: true
+        reference_images:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        video:
+          type: object
+          additionalProperties: true
+        storage_options:
+          type: object
+          additionalProperties: true
+
+    GrokVideoSubmitResponse:
+      type: object
+      additionalProperties: false
+      required: [request_id]
+      properties:
+        request_id: { type: string, minLength: 1, maxLength: 96 }
+
+    GrokVideoStatusResponse:
+      type: object
+      additionalProperties: true
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [pending, done, failed, expired]
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        model: { type: string }
+        video:
+          type: object
+          additionalProperties: true
+        usage:
+          type: object
+          additionalProperties: true
+
     MediaTaskSubmitResponse:
       type: object
       additionalProperties: false
@@ -16815,6 +17228,7 @@ components:
           type: [integer, 'null']
           format: int64
           minimum: 0
+          description: 上游报告的成本（分）。客户最终收费记录在计费 claim 中；上游未报告成本或收费受预估上限约束时，两者可以不同。
         error_class:
           type: [string, 'null']
         progress: { type: integer, minimum: 0, maximum: 100 }
@@ -23009,14 +23423,18 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - docs/process/plans/2026-06-02-money-5-fix-codex.md
-      required: [tenant_id, user_id, amount, reason, idempotency_key]
+      required: [tenant_id, amount, reason, idempotency_key]
       properties:
         tenant_id: { type: integer, format: int64, minimum: 1 }
-        user_id: { type: integer, format: int64, minimum: 1 }
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: 调整用户时必填；部署者调整下级租户钱包时必须省略。
         amount:
           type: string
           pattern: '^-?[0-9]+(\.[0-9]{1,8})?$'
-          description: Positive values recharge; negative values currently return admin_debit_not_yet_supported until durable debit billing events are added.
+          description: 正数下发，负数收回；收回不得超过来源账户的可用余额。
         currency_code:
           type: string
           enum: [USD]
@@ -23028,22 +23446,68 @@ components:
           type: string
           minLength: 1
           maxLength: 128
-          description: Stable operator-supplied key; retries with the same body and key are no-ops.
+          description: 操作者提供的稳定幂等键；相同经济事实重试只返回首次结果。
 
     AdminBalanceAdjustmentResponse:
       type: object
       additionalProperties: false
       x-huakai-spec-source:
         - docs/process/plans/2026-06-02-money-5-fix-codex.md
-      required: [tenant_id, user_id, net_balance, currency_code]
+      required: [transaction_id, tenant_id, target_kind, net_balance, currency_code, idempotent]
       properties:
+        transaction_id: { type: integer, format: int64, minimum: 1 }
         tenant_id: { type: integer, format: int64, minimum: 1 }
-        user_id: { type: integer, format: int64, minimum: 1 }
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: target_kind=user 时返回；租户钱包调整不返回该字段。
+        target_kind: { type: string, enum: [tenant, user] }
         net_balance:
           type: string
           pattern: '^[0-9]+(\.[0-9]{1,8})?$'
         currency_code: { type: string, enum: [USD] }
-        recharge_order_id: { type: integer, format: int64, minimum: 1 }
+        idempotent: { type: boolean }
+
+    AdminTenantWallet:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, balance, currency_code, updated_at]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        balance: { type: string, pattern: '^[0-9]+(\.[0-9]{1,8})?$' }
+        currency_code: { type: string, enum: [USD] }
+        updated_at: { type: string, format: date-time }
+
+    AdminBalanceTransaction:
+      type: object
+      additionalProperties: false
+      required: [id, tenant_id, operation, signed_amount, currency_code, actor_role, actor_ref, reason, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        operation:
+          type: string
+          enum: [platform_tenant_credit, platform_tenant_debit, platform_user_credit, platform_user_debit, tenant_user_credit, tenant_user_debit]
+        target_user_id: { type: integer, format: int64, minimum: 1 }
+        signed_amount: { type: string, pattern: '^-?[0-9]+(\.[0-9]{1,8})?$' }
+        currency_code: { type: string, enum: [USD] }
+        actor_role: { type: string, enum: [platform_admin, tenant_operator] }
+        actor_ref: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1 }
+        request_id: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AdminBalanceTransactionList:
+      type: object
+      additionalProperties: false
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminBalanceTransaction' }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+        offset: { type: integer, minimum: 0 }
 
     ServerMonitorIdentity:
       type: object

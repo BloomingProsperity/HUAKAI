@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +21,10 @@ import (
 
 const (
 	GeminiPublicCLIClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+	GeminiPublicCLISecretEnv    = "HUAKAI_GEMINI_OAUTH_CLIENT_SECRET"
 	DefaultGeminiTokenEndpoint  = "https://oauth2.googleapis.com/token"
 	geminiPublicCLIClientID     = GeminiPublicCLIClientID
+	geminiPublicCLIClientSecret = "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"
 	geminiOAuthAuthURL          = "https://accounts.google.com/o/oauth2/v2/auth"
 	geminiOAuthTokenURL         = DefaultGeminiTokenEndpoint
 	geminiOAuthScope            = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
@@ -93,9 +96,11 @@ func IsGeminiPublicCLIOAuthExchangerWithExplicitClient(exc Exchanger) bool {
 
 func (e geminiPublicCLIOAuthExchanger) StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	cfg = geminiBuiltinProfileConfig(cfg)
-	// Gemini public CLI client_secret 只来自生产 wiring
-	// 注入的 HUAKAI_GEMINI_OAUTH_CLIENT_SECRET，忽略 caller/request body。
-	cfg.ClientSecret = strings.TrimSpace(e.clientSecret)
+	// 请求体不能覆盖固定客户端身份；wiring 只能用部署者配置
+	// 整体替换公开 profile 的 secret。
+	if secret := strings.TrimSpace(e.clientSecret); secret != "" {
+		cfg.ClientSecret = secret
+	}
 	if err := e.validateBuiltinProfile(cfg); err != nil {
 		return OAuthStartResult{}, err
 	}
@@ -173,12 +178,13 @@ func (e geminiPublicCLIOAuthExchanger) ExchangeOAuthCodeWithStore(ctx context.Co
 
 func geminiBuiltinProfileConfig(override OAuthClientConfig) OAuthClientConfig {
 	cfg := OAuthClientConfig{
-		ClientID:    geminiPublicCLIClientID,
-		AuthURL:     geminiOAuthAuthURL,
-		TokenURL:    geminiOAuthTokenURL,
-		RedirectURI: geminiOAuthLoopbackRedirect,
-		Scopes:      strings.Fields(geminiOAuthScope),
-		Source:      ClientSourcePublicCLI,
+		ClientID:     geminiPublicCLIClientID,
+		ClientSecret: geminiPublicCLIClientSecret,
+		AuthURL:      geminiOAuthAuthURL,
+		TokenURL:     geminiOAuthTokenURL,
+		RedirectURI:  geminiOAuthLoopbackRedirect,
+		Scopes:       strings.Fields(geminiOAuthScope),
+		Source:       ClientSourcePublicCLI,
 	}
 	if strings.TrimSpace(override.ClientSecret) != "" {
 		cfg.ClientSecret = strings.TrimSpace(override.ClientSecret)
@@ -188,6 +194,16 @@ func geminiBuiltinProfileConfig(override OAuthClientConfig) OAuthClientConfig {
 	}
 	if override.HTTPClient != nil {
 		cfg.HTTPClient = override.HTTPClient
+	}
+	return cfg
+}
+
+// GeminiPublicCLIConfig 返回授权、导入刷新和定时刷新共用的公开客户端身份。
+// 部署者可通过环境变量应对上游 profile 轮换，单次导入不能提供替换值。
+func GeminiPublicCLIConfig() OAuthClientConfig {
+	cfg := geminiBuiltinProfileConfig(OAuthClientConfig{})
+	if secret := strings.TrimSpace(os.Getenv(GeminiPublicCLISecretEnv)); secret != "" {
+		cfg.ClientSecret = secret
 	}
 	return cfg
 }

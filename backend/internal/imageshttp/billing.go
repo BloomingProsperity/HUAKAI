@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
@@ -128,22 +129,25 @@ func (ex *execution) settleRequest(tokens tokenImageUsage, cost decimal.Decimal,
 	imageCount := int32(ex.billableImageCount())
 	imageSize := auditStringPtr(ex.size, 0)
 	return billing.SettleRequest{
-		ClaimID:           ex.reserveRes.ClaimID,
-		AccountID:         ex.selRes.AccountID,
-		AcquisitionToken:  ex.selRes.AcquisitionToken,
-		TenantID:          ex.ident.TenantID,
-		APIKeyID:          ex.ident.APIKeyID,
-		UserID:            ex.ident.UserID,
-		ProviderAccountID: ex.selRes.AccountID,
-		AttemptSeq:        int32(attemptSeq),
-		RequestedModel:    ex.req.Model,
-		RequestedAt:       ex.startedAt,
-		UpstreamModel:     ex.upstreamModelID,
-		Provider:          ex.accInfo.Platform,
-		Stream:            false,
-		ActualCost:        cost,
-		Fingerprint:       ex.payloadHash,
-		AuditRequestID:    ex.requestID,
+		ClaimID:               ex.reserveRes.ClaimID,
+		AccountID:             ex.selRes.AccountID,
+		AcquisitionToken:      ex.selRes.AcquisitionToken,
+		TenantID:              ex.ident.TenantID,
+		APIKeyID:              ex.ident.APIKeyID,
+		UserID:                ex.ident.UserID,
+		ProviderAccountID:     ex.selRes.AccountID,
+		AttemptSeq:            int32(attemptSeq),
+		RequestedModel:        ex.req.Model,
+		RequestedAt:           ex.startedAt,
+		UpstreamModel:         ex.upstreamModelID,
+		Provider:              ex.accInfo.Platform,
+		Stream:                false,
+		ActualCost:            cost,
+		Fingerprint:           ex.payloadHash,
+		AuditRequestID:        ex.requestID,
+		AuditRouteID:          router.TraceRouteID(ex.plan, ex.attempt),
+		AuditPoolGroupID:      ex.attempt.PoolGroupID,
+		AuditProviderEndpoint: ex.endpoint.Path(),
 		Draft: gateway.UsageRecordDraft{
 			TokensInput:           tokens.InputTokens,
 			TokensOutput:          tokens.OutputTokens,

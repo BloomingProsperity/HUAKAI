@@ -22,6 +22,7 @@ type ModelSyncConfig struct {
 	OpenAI          ModelSyncVendorConfig
 	Anthropic       ModelSyncVendorConfig
 	Gemini          ModelSyncVendorConfig
+	Grok            ModelSyncVendorConfig
 }
 
 func LoadModelSync() (*ModelSyncConfig, error) {
@@ -60,8 +61,12 @@ func LoadModelSync() (*ModelSyncConfig, error) {
 			APIKey: envTrim("HUAKAI_MODEL_SYNC_GEMINI_API_KEY"),
 			URL:    envDefault("HUAKAI_MODEL_SYNC_GEMINI_URL", modelsync.DefaultGeminiModelsURL),
 		},
+		Grok: ModelSyncVendorConfig{
+			APIKey: envTrim("HUAKAI_MODEL_SYNC_GROK_API_KEY"),
+			URL:    envDefault("HUAKAI_MODEL_SYNC_GROK_URL", modelsync.DefaultGrokModelsURL),
+		},
 	}
-	if cfg.Enabled && !cfg.OpenAI.Configured() && !cfg.Anthropic.Configured() && !cfg.Gemini.Configured() {
+	if cfg.Enabled && !cfg.OpenAI.Configured() && !cfg.Anthropic.Configured() && !cfg.Gemini.Configured() && !cfg.Grok.Configured() {
 		return nil, fmt.Errorf("HUAKAI_MODEL_SYNC_ENABLED=true requires at least one vendor API key")
 	}
 	if err := validateModelSyncURLs(cfg); err != nil {
@@ -90,6 +95,7 @@ func validateModelSyncURLs(cfg *ModelSyncConfig) error {
 		{name: "openai", vendor: modelsync.VendorOpenAI, cfg: cfg.OpenAI},
 		{name: "anthropic", vendor: modelsync.VendorAnthropic, cfg: cfg.Anthropic},
 		{name: "gemini", vendor: modelsync.VendorGemini, cfg: cfg.Gemini},
+		{name: "grok", vendor: modelsync.VendorGrok, cfg: cfg.Grok},
 	} {
 		if !item.cfg.Configured() {
 			continue

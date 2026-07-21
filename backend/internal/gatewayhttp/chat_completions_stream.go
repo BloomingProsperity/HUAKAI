@@ -236,14 +236,7 @@ func (ex *chatExecution) classifyStreamingUpstreamFailure(dispatchRes *gateway.D
 	if readErr != nil {
 		errBody = []byte(readErr.Error())
 	}
-	decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.errorClassProvider())
-	if classifyErr != nil {
-		classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, errBody, ex.errorClassProvider())
-		decision = gateway.AttemptRetryDecision{
-			ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class),
-			AbortReason:  "upstream_error",
-		}
-	}
+	decision, classification := ex.classifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, errBody)
 	decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 	agentTaskInvalid := ex.classifyAgentTaskInvalid(dispatchRes.StatusCode, errBody, &decision)
 	projectContextRejected := ex.classifyProjectContextRejected(classification, &decision)

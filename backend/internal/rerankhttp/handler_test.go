@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -225,6 +226,9 @@ func TestRerankTenantScoped(t *testing.T) {
 	if env.selector.req.TenantID != 7 || env.selector.req.UserID != 13 || env.selector.req.APIKeyID != 11 {
 		t.Fatalf("selector request=%+v want tenant/user/api key 7/13/11", env.selector.req)
 	}
+	if got := env.selector.req.CapabilityFlags; len(got) != 1 || got[0] != rerankCapability {
+		t.Fatalf("选号能力=%v，期望 [%s]", got, rerankCapability)
+	}
 	if env.vault.tenantID != 7 {
 		t.Fatalf("vault tenantID=%d want 7", env.vault.tenantID)
 	}
@@ -416,11 +420,10 @@ func (s *rerankRouterStub) Plan(_ context.Context, in router.PlanInput) (router.
 	}
 	return router.RoutePlan{
 		Attempts: []router.AttemptPlan{{
-			Index:                0,
-			PoolGroupID:          101,
-			RequiredCapabilities: []string{"rerank"},
-			Reason:               "primary",
-			UpstreamModelID:      "rerank-upstream",
+			Index:           0,
+			PoolGroupID:     101,
+			Reason:          "primary",
+			UpstreamModelID: "rerank-upstream",
 		}},
 		AttemptBudget:   1,
 		SnapshotVersion: "registry:7:1;router:test",
@@ -535,6 +538,17 @@ type rerankSettler struct {
 	settles   []billing.SettleRequest
 	aborts    []rerankAbortCall
 	settleErr error
+}
+
+type rerankRecoveryEnqueuer struct {
+	calls int
+	event dlq.Event
+}
+
+func (q *rerankRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
+	q.calls++
+	q.event = event
+	return 1, nil
 }
 
 type rerankAbortCall struct {

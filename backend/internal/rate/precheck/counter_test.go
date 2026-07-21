@@ -15,6 +15,29 @@ func fixedClock(base time.Time) (func() time.Time, *time.Time) {
 
 var windowBase = time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
 
+func TestTryRecordConcurrentRPMNeverExceedsLimit(t *testing.T) {
+	counter := New(time.Minute, time.Now)
+	const limit = 7
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	allowed := 0
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if counter.TryRecord(41, Limits{RPM: limit}, 0).Allowed {
+				mu.Lock()
+				allowed++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if allowed != limit {
+		t.Fatalf("并发准入=%d want %d", allowed, limit)
+	}
+}
+
 // AC1:在 RPM 预算之内时账号被放行。
 func TestCheck_UnderRPM_Allows(t *testing.T) {
 	clock, _ := fixedClock(windowBase)

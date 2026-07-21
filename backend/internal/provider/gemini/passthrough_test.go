@@ -3,6 +3,7 @@ package gemini
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -12,6 +13,21 @@ import (
 func TestPassthroughAdapter_Platform(t *testing.T) {
 	if got := (&PassthroughAdapter{}).Platform(); got != "gemini" {
 		t.Errorf("Platform()=%q", got)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_LongRunningOperationGET(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		HTTPMethod: http.MethodGet, UpstreamModelID: "veo-3.1-generate-preview",
+		EndpointPath: "/v1beta/models/veo-3.1-generate-preview/operations/op-1",
+		Credential:   provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "k"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Method != http.MethodGet || req.URL.Path != "/v1beta/models/veo-3.1-generate-preview/operations/op-1" {
+		t.Fatalf("长任务查询请求=%s %s", req.Method, req.URL.String())
 	}
 }
 
@@ -79,6 +95,31 @@ func TestPassthroughAdapter_BuildRequest_StreamEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(req.URL.String(), ":streamGenerateContent") {
 		t.Errorf("stream=true 应走 streamGenerateContent: URL=%q", req.URL.String())
+	}
+	if got := req.URL.Query().Get("alt"); got != "sse" {
+		t.Fatalf("alt=%q，期望 sse", got)
+	}
+}
+
+func TestPassthroughAdapter_BuildRequest_StreamQueryAuthPreservesKeyAndSSE(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID: "gemini-2.5-flash",
+		InboundBody:     []byte(`{"contents":[]}`),
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeAPIKey,
+			Value: "key-with+reserved/value",
+			Extra: map[string]string{"stream": "true", "auth_in_query": "true"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest: %v", err)
+	}
+	if got := req.URL.Query().Get("alt"); got != "sse" {
+		t.Fatalf("alt=%q，期望 sse", got)
+	}
+	if got := req.URL.Query().Get("key"); got != "key-with+reserved/value" {
+		t.Fatalf("key=%q，查询鉴权值丢失", got)
 	}
 }
 

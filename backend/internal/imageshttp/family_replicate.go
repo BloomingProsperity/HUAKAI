@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/replicate"
 )
 
@@ -31,11 +32,26 @@ import (
 // pool.VendorFromProtocolFamily 的字面量 switch)。一致性由
 // TestReplicateImagesHandler_FamilyConstantMatchesRegistry 钉住。
 const replicateImageFamily = "replicate_image"
+const openAICodexFamily = "openai_codex"
 
 // validateFamilyConstraints 在 prepareRoute 之后(family 已知)、reserve 之前
 // (零成本拒绝,不开 claim)执行 family 专属校验。对齐 stream:true 的
 // 入口显式拒绝先例(request.go)。
 func (ex *execution) validateFamilyConstraints(w http.ResponseWriter) bool {
+	if isGPTImageModel(ex.upstreamModelID) && strings.TrimSpace(ex.req.ResponseFormat) != "" {
+		normalized, err := normalizeGPTImageRequest(ex.body, ex.upstreamModelID, ex.req.ResponseFormat)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "response_format_not_supported",
+				"GPT Image models return b64_json directly; response_format url is not supported")
+			return false
+		}
+		ex.body = normalized
+	}
+	if ex.resolved.ProtocolFamily == openAICodexFamily && ex.endpoint == imageEndpointVariations {
+		writeJSONError(w, http.StatusBadRequest, "endpoint_not_supported_for_model",
+			"Codex image accounts support generations and edits only")
+		return false
+	}
 	if ex.resolved.ProtocolFamily != replicateImageFamily {
 		return true
 	}
@@ -62,6 +78,16 @@ func (ex *execution) validateFamilyConstraints(w http.ResponseWriter) bool {
 // images 形;翻译失败(status 非 succeeded / error 非空 / output 为空)按
 // 上游错误处理——abort 退预留、绝不 settle 计费(误计费守卫)。
 func (ex *execution) translateUpstreamResponseForFamily(w http.ResponseWriter, raw []byte) ([]byte, bool) {
+	if ex.resolved.ProtocolFamily == openAICodexFamily {
+		translated, err := provideropenai.TranslateCodexImagesResponse(raw, ex.req.ResponseFormat)
+		if err != nil {
+			ex.abort(w, "codex_image_response_invalid", 0)
+			writeJSONError(w, http.StatusBadGateway, clienterr.CodeCanonicalResponseError, clienterr.MessageFor(clienterr.CodeCanonicalResponseError))
+			return nil, false
+		}
+		ex.deliveredImageCount = countDeliveredImages(translated)
+		return translated, true
+	}
 	if ex.resolved.ProtocolFamily != replicateImageFamily {
 		return raw, true
 	}

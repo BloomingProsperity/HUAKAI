@@ -77,3 +77,14 @@ func TestRecordingSelector_NilCounter_PassThrough(t *testing.T) {
 		t.Fatalf("nil counter must pass through inner result, got=%v err=%v", got, err)
 	}
 }
+
+func TestRecordingSelector_LogicalAdmissionDoesNotConsumeAccountBudget(t *testing.T) {
+	c := recCounter()
+	selector := NewRecordingSelector(fakeRecSelector{res: &SelectionResult{AccountID: 5}}, c)
+	if _, err := selector.Select(context.Background(), SelectionRequest{RateAccountingScope: RateAccountingLogicalOnly}); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.Check(5, precheck.Limits{RPM: 1}, 0); !d.Allowed {
+		t.Fatalf("逻辑入口预选不应提前消费账号上游预算: %+v", d)
+	}
+}

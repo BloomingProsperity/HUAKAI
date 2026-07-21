@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,7 +137,7 @@ func TestHTTPFetcherRejectsUnsafeURLBeforeSendingKey(t *testing.T) {
 	}
 }
 
-func TestHTTPFetcherFiltersOpenAINonChatModels(t *testing.T) {
+func TestHTTPFetcherClassifiesOpenAIModelsByOperation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -161,8 +162,87 @@ func TestHTTPFetcherFiltersOpenAINonChatModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchCatalog: %v", err)
 	}
-	if len(catalog.Models) != 1 || catalog.Models[0].ID != "gpt-4.1-mini" {
-		t.Fatalf("models=%+v want only chat-capable OpenAI id", catalog.Models)
+	if len(catalog.Models) != 4 {
+		t.Fatalf("models=%+v，期望四种操作模型全部保留", catalog.Models)
+	}
+	want := map[string][]string{
+		"gpt-4.1-mini":           {"chat", "responses"},
+		"text-embedding-3-small": {"embeddings"},
+		"tts-1":                  {"audio", "audio_speech"},
+		"gpt-image-1":            {"image_output", "images"},
+	}
+	for _, model := range catalog.Models {
+		if got, ok := want[model.ID]; !ok || !reflect.DeepEqual(model.Capabilities, got) {
+			t.Fatalf("模型 %q 能力=%v，期望 %v", model.ID, model.Capabilities, got)
+		}
+	}
+}
+
+func TestHTTPFetcherClassifiesGrokImagesVideosAndResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer grok-key" {
+			t.Fatalf("Authorization=%q，期望 Grok Bearer", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"grok-4.20-multi-agent-0309","owned_by":"xai"},
+			{"id":"grok-imagine-image-quality","owned_by":"xai"},
+			{"id":"grok-imagine-video","owned_by":"xai"}
+		]}`))
+	}))
+	defer server.Close()
+
+	fetcher := NewHTTPFetcher(HTTPFetcherConfig{
+		Vendor: VendorGrok, URL: server.URL, APIKey: "grok-key",
+		Client: server.Client(), Timeout: time.Second, AllowUnsafeURL: true,
+	})
+	catalog, err := fetcher.FetchCatalog(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCatalog: %v", err)
+	}
+	if catalog.Vendor != VendorGrok || len(catalog.Models) != 3 {
+		t.Fatalf("Grok catalog=%+v", catalog)
+	}
+	want := map[string][]string{
+		"grok-4.20-multi-agent-0309": {"responses", "tools"},
+		"grok-imagine-image-quality": {"image_output", "images"},
+		"grok-imagine-video":         {"video"},
+	}
+	for _, model := range catalog.Models {
+		if model.ProtocolFamily != "grok_chat" || !reflect.DeepEqual(model.Capabilities, want[model.ID]) {
+			t.Fatalf("Grok 模型分类错误: %+v", model)
+		}
+	}
+}
+
+func TestHTTPFetcherClassifiesGeminiMediaModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[
+			{"name":"models/gemini-3.1-flash-image","supportedGenerationMethods":["generateContent","countTokens"]},
+			{"name":"models/gemini-3.1-flash-tts-preview","supportedGenerationMethods":["generateContent"]},
+			{"name":"models/veo-3.1-generate-preview","supportedGenerationMethods":["predictLongRunning"]}
+		]}`))
+	}))
+	defer server.Close()
+
+	fetcher := NewHTTPFetcher(HTTPFetcherConfig{
+		Vendor: VendorGemini, URL: server.URL, Client: server.Client(),
+		Timeout: time.Second, AllowUnsafeURL: true,
+	})
+	catalog, err := fetcher.FetchCatalog(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCatalog: %v", err)
+	}
+	want := map[string][]string{
+		"gemini-3.1-flash-image":       {"generateContent", "countTokens", "image_output", "images"},
+		"gemini-3.1-flash-tts-preview": {"generateContent", "audio", "audio_speech"},
+		"veo-3.1-generate-preview":     {"video"},
+	}
+	for _, model := range catalog.Models {
+		if !reflect.DeepEqual(model.Capabilities, want[model.ID]) {
+			t.Fatalf("Gemini 模型 %q 能力=%v，期望 %v", model.ID, model.Capabilities, want[model.ID])
+		}
 	}
 }
 

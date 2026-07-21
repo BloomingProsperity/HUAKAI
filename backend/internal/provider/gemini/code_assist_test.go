@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -170,18 +171,20 @@ func TestCodeAssistGuards(t *testing.T) {
 	}
 }
 
-// TestCodeAssistMimicryHeadersPresent 守卫最小必需 header(UA + X-Goog-Api-Client)
-// 存在且非空——让调用能在 Code Assist 后端工作的最小集。
-// Mutation:删 UA 或 X-Goog-Api-Client set → 红。
-func TestCodeAssistMimicryHeadersPresent(t *testing.T) {
+// TestCodeAssistIdentityHeadersUseActualModelWithoutProductLeak 守住实际模型身份和产品脱敏。
+func TestCodeAssistIdentityHeadersUseActualModelWithoutProductLeak(t *testing.T) {
 	a := &CodeAssistAdapter{}
 	req, err := a.BuildRequest(context.Background(), codeAssistInput(t,
 		sessionCred(map[string]string{"project_id": "p"}), "gemini-2.5-pro", []byte(`{}`)))
 	if err != nil {
 		t.Fatalf("BuildRequest err=%v", err)
 	}
-	if req.Header.Get("User-Agent") == "" {
-		t.Errorf("User-Agent 缺失")
+	userAgent := req.Header.Get("User-Agent")
+	if !strings.Contains(userAgent, "/gemini-2.5-pro (") {
+		t.Errorf("User-Agent=%q，缺少实际模型", userAgent)
+	}
+	if strings.Contains(strings.ToLower(userAgent), "huakai") {
+		t.Errorf("User-Agent=%q，不得泄露中转产品标识", userAgent)
 	}
 	if req.Header.Get("X-Goog-Api-Client") == "" {
 		t.Errorf("X-Goog-Api-Client 缺失")

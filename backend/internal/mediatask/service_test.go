@@ -34,6 +34,58 @@ func TestServiceSubmitValidatesAndPassesEstimateToStore(t *testing.T) {
 	}
 }
 
+func TestServiceSubmitRejectsNegativeAPIKeyID(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"http": NewNoopProvider()})
+
+	_, err := svc.Submit(context.Background(), 7, 42, SubmitInput{
+		RequestID: "req-negative-key", TaskType: "image_generation", Provider: "http",
+		InputParams: json.RawMessage(`{"prompt":"x"}`), APIKeyID: -1,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Submit err=%v want ErrInvalidInput", err)
+	}
+	if len(store.submitCalls) != 0 {
+		t.Fatalf("非法 api_key_id 到达 store: %+v", store.submitCalls)
+	}
+}
+
+func TestServiceSubmitRejectsDurableVideoWithoutBindingBeforeStore(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{
+		grokVideoProviderName: NewNoopProvider(),
+	})
+
+	_, err := svc.Submit(context.Background(), 7, 42, SubmitInput{
+		RequestID: "req-unbound-video", TaskType: "video_generate", Provider: grokVideoProviderName,
+		InputParams: json.RawMessage(`{"prompt":"x"}`), APIKeyID: 81,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Submit err=%v want ErrInvalidInput", err)
+	}
+	if len(store.submitCalls) != 0 {
+		t.Fatalf("缺少耐久绑定的视频任务到达 store: %+v", store.submitCalls)
+	}
+}
+
+func TestServiceSubmitRejectsUnsupportedProviderOperationBeforeStore(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{
+		geminiVideoProviderName: NewNoopProvider(),
+	})
+
+	_, err := svc.Submit(context.Background(), 7, 42, SubmitInput{
+		RequestID: "req-gemini-edit", TaskType: "video_edit", Provider: geminiVideoProviderName,
+		InputParams: json.RawMessage(`{"prompt":"x"}`),
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Submit err=%v want ErrInvalidInput", err)
+	}
+	if len(store.submitCalls) != 0 {
+		t.Fatalf("不支持的厂商操作到达 store: %+v", store.submitCalls)
+	}
+}
+
 func TestServiceDisabledDoesNotTouchStoreOrProvider(t *testing.T) {
 	// 变异:在检查 enabled 之前就做校验或创建任务;
 	// disabled 模式必须让 DB 与 provider 两侧都保持不被触碰。

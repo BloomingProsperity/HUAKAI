@@ -33,6 +33,7 @@ func runAccountSlotQueueWaitE2E(t *testing.T) {
 	if dsn == "" {
 		t.Skip("HUAKAI_DATABASE_URL not set; skipping e2e concurrency test")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer setupCancel()
 

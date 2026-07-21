@@ -95,7 +95,8 @@ func (q *Queries) AdminGetUserForTenant(ctx context.Context, arg AdminGetUserFor
 }
 
 const adminListUserBalanceHistoryForTenant = `-- name: AdminListUserBalanceHistoryForTenant :many
-SELECT
+WITH balance_history AS (
+    SELECT
     be.id,
     be.event_type,
     be.actual_cost_signed::numeric(20,8)::text AS amount,
@@ -118,29 +119,43 @@ SELECT
         be.claim_id,
         be.id
     )::bigint AS source_id,
-    be.occurred_at
-FROM billing_events be
-LEFT JOIN billing_ledger_claims blc
-  ON blc.tenant_id = be.tenant_id
- AND blc.id = be.claim_id
-LEFT JOIN voucher_redemption vr
-  ON vr.tenant_id = be.tenant_id
- AND vr.id = be.voucher_redemption_id
-LEFT JOIN payment_credits pc
-  ON pc.tenant_id = be.tenant_id
- AND pc.id = be.payment_credit_id
-LEFT JOIN payment_refunds pr
-  ON pr.tenant_id = be.tenant_id
- AND pr.id = be.payment_refund_id
-LEFT JOIN recharge_orders ro
-  ON ro.tenant_id = be.tenant_id
- AND ro.id = be.recharge_order_id
-LEFT JOIN subscription_auto_renewal_charges sarc
-  ON sarc.tenant_id = be.tenant_id
- AND sarc.id = be.subscription_auto_renewal_charge_id
-WHERE be.tenant_id = $1::bigint
-  AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id, sarc.user_id) = $2::bigint
-ORDER BY be.occurred_at DESC, be.id DESC
+        be.occurred_at
+    FROM billing_events be
+    LEFT JOIN billing_ledger_claims blc
+      ON blc.tenant_id = be.tenant_id AND blc.id = be.claim_id
+    LEFT JOIN voucher_redemption vr
+      ON vr.tenant_id = be.tenant_id AND vr.id = be.voucher_redemption_id
+    LEFT JOIN payment_credits pc
+      ON pc.tenant_id = be.tenant_id AND pc.id = be.payment_credit_id
+    LEFT JOIN payment_refunds pr
+      ON pr.tenant_id = be.tenant_id AND pr.id = be.payment_refund_id
+    LEFT JOIN recharge_orders ro
+      ON ro.tenant_id = be.tenant_id AND ro.id = be.recharge_order_id
+    LEFT JOIN subscription_auto_renewal_charges sarc
+      ON sarc.tenant_id = be.tenant_id AND sarc.id = be.subscription_auto_renewal_charge_id
+    WHERE be.tenant_id = $1::bigint
+      AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id, sarc.user_id) = $2::bigint
+
+    UNION ALL
+
+    SELECT
+        entry.id,
+        tx_record.operation AS event_type,
+        entry.delta::numeric(20,8)::text AS amount,
+        tx_record.request_fingerprint AS fingerprint,
+        'balance_ledger_transaction'::text AS source_type,
+        tx_record.id AS source_id,
+        entry.created_at AS occurred_at
+    FROM balance_ledger_entries entry
+    JOIN balance_ledger_transactions tx_record
+      ON tx_record.tenant_id=entry.tenant_id AND tx_record.id=entry.transaction_id
+    WHERE entry.account_kind='user'
+      AND entry.account_tenant_id=$1::bigint
+      AND entry.account_user_id=$2::bigint
+)
+SELECT id, event_type, amount, fingerprint, source_type, source_id, occurred_at
+FROM balance_history
+ORDER BY occurred_at DESC, id DESC
 LIMIT $4::integer
 OFFSET $3::integer
 `

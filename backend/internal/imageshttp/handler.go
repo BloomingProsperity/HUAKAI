@@ -211,6 +211,10 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.resolved = resolved
+	if !hasImageOutputCapability(resolved.Capabilities) {
+		writeJSONError(w, http.StatusBadRequest, "model_not_image_capable", "model is not enabled for image output")
+		return false
+	}
 	plan, err := ex.d.Router.Plan(ex.ctx, router.PlanInput{
 		Context: router.RequestContext{TenantID: ex.ident.TenantID, UserID: ex.ident.UserID, APIKeyID: ex.ident.APIKeyID, RequestID: ex.requestID},
 		Model:   routerResolvedModel(resolved),
@@ -223,6 +227,7 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return false
 	}
+	requireImageOutputCapability(&plan)
 	ex.plan = plan
 	ex.activateAttempt(plan.Attempts[0])
 	return true

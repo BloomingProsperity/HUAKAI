@@ -15,11 +15,14 @@ const (
 	StatusOperatorAttention = "operator_attention"
 	StatusMissing           = "missing"
 	StatusConflict          = "conflict"
+	ProfileAntigravity      = "antigravity"
+	ProfileGeminiCodeAssist = "gemini_code_assist"
 )
 
 var (
 	ErrProjectMetadataConflict      = errors.New("projectenrich: project 元数据冲突")
 	ErrProjectMetadataUnavailable   = errors.New("projectenrich: project 元数据不可用")
+	ErrProjectInputRequired         = errors.New("projectenrich: 需要部署者提供 project_id")
 	ErrSubscriptionMetadataDeferred = errors.New("projectenrich: 套餐元数据暂时不可用")
 )
 
@@ -29,6 +32,14 @@ type Resolver interface {
 
 type MetadataResolver interface {
 	ResolveProjectMetadata(context.Context, string) (string, string, error)
+}
+
+type ProfileMetadataResolver interface {
+	ResolveProjectMetadataForProfile(context.Context, string, string) (string, string, error)
+}
+
+type ProfileProjectMetadataResolver interface {
+	ResolveProjectMetadataForProfileAndProject(context.Context, string, string, string) (string, string, error)
 }
 
 type Enricher interface {
@@ -57,9 +68,10 @@ func New(resolver Resolver, timeout ...time.Duration) *Service {
 	return &Service{resolver: resolver, timeout: limit}
 }
 
-func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Result, error) {
+func (s *Service) Enrich(ctx context.Context, profile string, payload []byte) (Result, error) {
 	result := Result{Payload: append([]byte(nil), payload...)}
-	if !strings.EqualFold(strings.TrimSpace(vendor), "antigravity") {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile != ProfileAntigravity && profile != ProfileGeminiCodeAssist {
 		return result, nil
 	}
 
@@ -78,6 +90,12 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 		return markAttention(fields, result, fmt.Errorf("%w: resolver 未配置", ErrProjectMetadataUnavailable))
 	}
 	_, hasMetadataResolver := s.resolver.(MetadataResolver)
+	if _, ok := s.resolver.(ProfileMetadataResolver); ok {
+		hasMetadataResolver = true
+	}
+	if _, ok := s.resolver.(ProfileProjectMetadataResolver); ok {
+		hasMetadataResolver = true
+	}
 	if existingProjectRef != "" && (existingTier != "" || !hasMetadataResolver) {
 		return result, nil
 	}
@@ -96,7 +114,7 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 		limit = DefaultTimeout
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, limit)
-	projectRef, tier, err := s.resolveMetadata(resolveCtx, accessToken)
+	projectRef, tier, err := s.resolveMetadata(resolveCtx, profile, accessToken, existingProjectRef)
 	cancel()
 	projectRef = strings.TrimSpace(projectRef)
 	tier = strings.TrimSpace(tier)
@@ -144,7 +162,16 @@ func (s *Service) Enrich(ctx context.Context, vendor string, payload []byte) (Re
 	return result, nil
 }
 
-func (s *Service) resolveMetadata(ctx context.Context, token string) (string, string, error) {
+func (s *Service) resolveMetadata(ctx context.Context, profile, token, projectRef string) (string, string, error) {
+	if resolver, ok := s.resolver.(ProfileProjectMetadataResolver); ok {
+		return resolver.ResolveProjectMetadataForProfileAndProject(ctx, profile, token, projectRef)
+	}
+	if resolver, ok := s.resolver.(ProfileMetadataResolver); ok {
+		return resolver.ResolveProjectMetadataForProfile(ctx, profile, token)
+	}
+	if profile != ProfileAntigravity {
+		return "", "", fmt.Errorf("projectenrich: 解析器不支持账号模式 %q", profile)
+	}
 	if resolver, ok := s.resolver.(MetadataResolver); ok {
 		return resolver.ResolveProjectMetadata(ctx, token)
 	}

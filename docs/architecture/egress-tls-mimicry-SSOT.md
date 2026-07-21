@@ -1,6 +1,8 @@
 # 出口 / TLS 指纹 / mimicry —— 唯一权威文档(SSOT)
 
 > **本文是出口传输、TLS 指纹、客户端 mimicry 领域的唯一真相源。**
+
+> **适用边界：本文只约束账号转 API 链路中需要客户端指纹的认证模式。** 官方 API Key 及其他不要求客户端 mimicry 的外部调用继续使用各自的 Go standard transport 合同，不因本文改走 Rust。
 > 历史上这块散在 40+ 份计划/风险台账/研究/代码 TODO 里,大量过期且互相打架,导致反复把"故意缓做"误当"缺失"。**以后只看本文。** 其余散计划已删(git history 可查)或降为历史;仍权威的只有:本文 + 代码 + 4 份研究抓包文档 + `docs/specs/` + 风险台账 R-* 条目。
 >
 > 建档:2026-07-15,基于 4 路只读通读全部文档 + 核代码现场交叉判定。所有事实带 file:line 或研究文档出处。
@@ -9,7 +11,7 @@
 
 ## 0. 一句话现状
 
-**出口 TLS mimicry 已翻转为 Rust BoringSSL sidecar 唯一实现。** IPC v2、八类独立 profile、数据库动态 inline profile、proxy、结构化错误、取消和超时均已接线；Go uTLS、native fallback、旧总开关和运行时依赖已经删除。单镜像双进程、启动 preflight、`/readyz`、进程退出/重启、100/500/1000 并发及故障注入均已通过；只剩受控真实厂商账号验证、独立复审和发布流程，当前不把未执行的真实账号验证写成已通过。
+**账号转 API 的 TLS mimicry 已翻转为 Rust BoringSSL sidecar 唯一实现。** IPC v2、八类独立 profile、数据库动态 inline profile、proxy、结构化错误、取消和超时均已接线；Go uTLS、native fallback、旧总开关和运行时依赖已经删除。单镜像双进程、启动 preflight、`/readyz`、进程退出/重启、100/500/1000 并发及故障注入均已通过。Codex 与 Antigravity 已有真实成功证据；Claude 会话账号已抵达上游但遇 overloaded。仍需独立复审和新 PR 远端检查，不把外部过载写成本地成功或失败。
 
 ---
 
@@ -77,7 +79,7 @@
 - **已解决**:R-SIDECAR-001(boring raw sigalgs,commit 8cfc5467)、R-SIDECAR-002(H2 ALPN raw tunnel→Rust 端 own H2 framing + h2_bridge,commits c0fe5231 等)。
 - **IPC v2 已解决**:`ready/capabilities`、builtin/inline profile、proxy、ForceH1、结构化错误、取消与超时已接通；Go 和 Rust 都拒绝未知版本、未知 operation 与缺失 capability。
 - **已验证**:冷构建、非 root UDS 权限、数据库/Redis/sidecar readiness、sidecar/gateway 任一退出带动容器退出、`unless-stopped` 自动重启恢复。
-- **残留发布门**:四类真实 vendor 小成本 smoke、最终独立复审、唯一 PR 与合并后主线全量复验。本地大并发、长连接取消/回收、proxy 故障矩阵、全量 Go/Rust/静态门和容器生命周期已经通过。
+- **残留发布门**：最终独立复审、唯一新 PR 和远端检查。本地大并发、长连接取消/回收、proxy 故障矩阵、全量 Go/Rust/静态门、容器生命周期及现有可用凭据的真实验证已经完成；外部过载或缺少部署者材料的账号模式单独记录，条件恢复后复验。
 
 ---
 
@@ -90,7 +92,7 @@
 1. **S5 单镜像可运行交付（已完成）**：固定 Rust/BoringSSL builder；镜像同时包含 gateway 和 sidecar；入口负责 UDS、ready、SIGTERM 和双进程退出；direct/prod Compose 使用同一合同。
 2. **S6 重测试与容器 smoke（本地门已完成）**：wire mutation、HTTP/HTTPS/SOCKS5、100/500/1000 并发、长连接取消/回收、故障注入和容器生命周期已覆盖；只剩具备受控账号时执行四类真实 vendor 小成本 smoke。
 3. **S7 Rust-only 翻转（已完成）**：mimicry 分支要求 sidecar，缺失/不可用 fail-closed；native Go uTLS、Go 模板执行、native fallback、旧环境变量和死测试已删除；只保留 sidecar client 与 standard transport。
-4. **S8 发布门**：Go/Rust 全量、codebudget、冷构建和三套 Compose 已通过；完成独立 review 后创建唯一 PR。Owner 已授权 PR 测试全绿后合并，并在干净主线执行全量复验。
+4. **S8 发布门**：Go/Rust 全量、codebudget、冷构建和三套 Compose 已通过；完成独立 review 后创建唯一新 PR。是否合并由 Owner 另行决定，当前不得自行合并。
 
 ---
 

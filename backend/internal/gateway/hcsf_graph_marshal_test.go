@@ -740,6 +740,48 @@ func TestInjectGeminiResponseFormatNativePassthrough(t *testing.T) {
 	}
 }
 
+func TestInjectGeminiNativeMediaControlsStayInsideGeminiProjection(t *testing.T) {
+	temperature := 0.3
+	env := &proto.HCSF{RequestControls: proto.RequestControls{
+		Temperature: &temperature,
+		NativeOptions: map[string]json.RawMessage{
+			"gemini_messages": json.RawMessage(`{
+				"responseModalities":["AUDIO"],
+				"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}},
+				"thinkingConfig":{"thinkingBudget":256},
+				"temperature":9
+			}`),
+		},
+	}}
+	out, err := injectRequestControls([]byte(`{}`), env, "gemini_messages")
+	if err != nil {
+		t.Fatalf("Gemini 控制注入失败: %v", err)
+	}
+	var body map[string]any
+	if json.Unmarshal(out, &body) != nil {
+		t.Fatalf("Gemini 出站体不是 JSON: %s", out)
+	}
+	config := body["generationConfig"].(map[string]any)
+	if config["temperature"] != 0.3 {
+		t.Fatalf("规范化控制必须覆盖原生重复值: %+v", config)
+	}
+	if _, ok := config["speechConfig"].(map[string]any); !ok {
+		t.Fatalf("speechConfig 被丢失: %+v", config)
+	}
+	modalities := config["responseModalities"].([]any)
+	if len(modalities) != 1 || modalities[0] != "AUDIO" {
+		t.Fatalf("responseModalities 被丢失: %+v", config)
+	}
+
+	other, err := injectRequestControls([]byte(`{}`), env, "openai_chat")
+	if err != nil {
+		t.Fatalf("OpenAI 控制注入失败: %v", err)
+	}
+	if bytes.Contains(other, []byte("speechConfig")) || bytes.Contains(other, []byte("responseModalities")) {
+		t.Fatalf("Gemini 原生字段泄漏到 OpenAI: %s", other)
+	}
+}
+
 // TestInjectGeminiResponseFormatJSONSchemaNoSchema:边界——json_schema 但缺 schema 字段时,
 // 退化为 Gemini JSON 模式(只设 responseMimeType,不注入坏/空 responseSchema → 不会让 Gemini 4xx)。
 func TestInjectGeminiResponseFormatJSONSchemaNoSchema(t *testing.T) {

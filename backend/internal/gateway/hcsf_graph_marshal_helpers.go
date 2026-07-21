@@ -303,6 +303,14 @@ func mergeRequestPassthrough(body map[string]any, env *proto.HCSF) {
 func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, error) {
 	c := env.RequestControls
 	generation := map[string]any{}
+	if raw := c.NativeOptions["gemini_messages"]; len(raw) > 0 {
+		var native map[string]any
+		if json.Unmarshal(raw, &native) == nil {
+			for key, value := range native {
+				generation[key] = value
+			}
+		}
+	}
 	if existing, ok := body["generationConfig"].(map[string]any); ok {
 		for k, v := range existing {
 			generation[k] = v
@@ -353,6 +361,7 @@ func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, 
 	if len(c.Tools) > 0 {
 		body["tools"] = renderGeminiControlTools(c.Tools)
 	}
+	mergeRequestPassthrough(body, env)
 	return json.Marshal(body)
 }
 

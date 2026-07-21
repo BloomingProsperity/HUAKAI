@@ -18,6 +18,8 @@ const (
 
 	upstreamE2EAnthropicKeyEnv            = "HUAKAI_E2E_ANTHROPIC_KEY"
 	upstreamE2EAnthropicModelEnv          = "HUAKAI_E2E_ANTHROPIC_MODEL"
+	upstreamE2EOpenAIKeyEnv               = "HUAKAI_E2E_OPENAI_KEY"
+	upstreamE2EOpenAIModelEnv             = "HUAKAI_E2E_OPENAI_MODEL"
 	upstreamE2EClaudeAICredentialJSONEnv  = "HUAKAI_E2E_CLAUDE_AI_OAUTH_CREDENTIAL_JSON"
 	upstreamE2EClaudeCodeCredentialEnv    = "HUAKAI_E2E_CLAUDE_CODE_CREDENTIAL_JSON"
 	upstreamE2EClaudeModelEnv             = "HUAKAI_E2E_CLAUDE_MODEL"
@@ -27,9 +29,14 @@ const (
 	upstreamE2EGeminiCodeModelEnv         = "HUAKAI_E2E_GEMINI_CODE_ASSIST_MODEL"
 	upstreamE2EAntigravityCredentialEnv   = "HUAKAI_E2E_ANTIGRAVITY_CREDENTIAL_JSON"
 	upstreamE2EAntigravityModelEnv        = "HUAKAI_E2E_ANTIGRAVITY_MODEL"
+	upstreamE2EGrokKeyEnv                 = "HUAKAI_E2E_GROK_KEY"
+	upstreamE2EGrokModelEnv               = "HUAKAI_E2E_GROK_MODEL"
 	upstreamE2EKimiKeyEnv                 = "HUAKAI_E2E_KIMI_KEY"
 	upstreamE2EKimiCredentialJSONEnv      = "HUAKAI_E2E_KIMI_CREDENTIAL_JSON"
 	upstreamE2EKimiModelEnv               = "HUAKAI_E2E_KIMI_MODEL"
+	upstreamE2EKimiCodingModelEnv         = "HUAKAI_E2E_KIMI_CODING_MODEL"
+	upstreamE2EMoonshotCredentialEnv      = "HUAKAI_E2E_MOONSHOT_CREDENTIAL_JSON"
+	upstreamE2EMoonshotModelEnv           = "HUAKAI_E2E_MOONSHOT_MODEL"
 	upstreamE2EGeminiCodeAssistAdapterEnv = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER=true"
 	upstreamE2EAntigravityAdapterEnv      = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER=true"
 )
@@ -38,13 +45,16 @@ var upstreamE2ESecretEnvNames = []string{
 	upstreamE2EARKKeyEnv,
 	upstreamE2EHunyuanKeyEnv,
 	upstreamE2EAnthropicKeyEnv,
+	upstreamE2EOpenAIKeyEnv,
 	upstreamE2EClaudeAICredentialJSONEnv,
 	upstreamE2EClaudeCodeCredentialEnv,
 	upstreamE2EGeminiKeyEnv,
 	upstreamE2EGeminiCodeCredentialEnv,
 	upstreamE2EAntigravityCredentialEnv,
+	upstreamE2EGrokKeyEnv,
 	upstreamE2EKimiKeyEnv,
 	upstreamE2EKimiCredentialJSONEnv,
+	upstreamE2EMoonshotCredentialEnv,
 }
 
 func TestAccountFamilyLive_AnthropicAPIKey(t *testing.T) {
@@ -55,6 +65,19 @@ func TestAccountFamilyLive_AnthropicAPIKey(t *testing.T) {
 		model:           requiredUpstreamE2EModel(t, upstreamE2EAnthropicModelEnv),
 		clientShape:     upstreamE2EClientAnthropic,
 		keyEnv:          upstreamE2EAnthropicKeyEnv,
+		authMode:        credentialstore.AuthModeAPIKey,
+		accountType:     upstreamE2EAccountTypeAPIKey,
+		skipConcurrency: true,
+	})
+}
+
+func TestAccountFamilyLive_OpenAIAPIKey(t *testing.T) {
+	runUpstreamE2E(t, upstreamE2ECase{
+		slug:            "openai-api-key",
+		vendor:          credentialstore.VendorOpenAI,
+		protocolFamily:  registrydefault.ProtocolOpenAIChat,
+		model:           requiredUpstreamE2EModel(t, upstreamE2EOpenAIModelEnv),
+		keyEnv:          upstreamE2EOpenAIKeyEnv,
 		authMode:        credentialstore.AuthModeAPIKey,
 		accountType:     upstreamE2EAccountTypeAPIKey,
 		skipConcurrency: true,
@@ -119,26 +142,36 @@ func TestAccountFamilyLive_GeminiCodeAssist(t *testing.T) {
 }
 
 func TestAccountFamilyLive_Antigravity(t *testing.T) {
+	model := requiredUpstreamE2EModel(t, upstreamE2EAntigravityModelEnv)
 	runUpstreamE2E(t, upstreamE2ECase{
-		slug:              "antigravity",
-		vendor:            credentialstore.VendorAntigravity,
-		protocolFamily:    registrydefault.ProtocolAntigravitySession,
-		model:             requiredUpstreamE2EModel(t, upstreamE2EAntigravityModelEnv),
-		credentialJSONEnv: upstreamE2EAntigravityCredentialEnv,
-		authMode:          credentialstore.AuthModeOAuth,
-		accountType:       upstreamE2EAccountTypeOAuth,
-		gatewayEnv:        []string{upstreamE2EAntigravityAdapterEnv},
-		skipConcurrency:   true,
+		slug:               "antigravity",
+		vendor:             credentialstore.VendorAntigravity,
+		protocolFamily:     registrydefault.ProtocolAntigravitySession,
+		model:              model,
+		upstreamModel:      antigravityLiveUpstreamModel(model),
+		credentialJSONEnv:  upstreamE2EAntigravityCredentialEnv,
+		authMode:           credentialstore.AuthModeOAuth,
+		accountType:        upstreamE2EAccountTypeOAuth,
+		gatewayEnv:         []string{upstreamE2EAntigravityAdapterEnv},
+		expectSubscription: true,
+		skipConcurrency:    true,
 	})
 }
 
-func TestAccountFamilyLive_KimiAPIKey(t *testing.T) {
+func antigravityLiveUpstreamModel(model string) string {
+	if strings.TrimSpace(model) == "gemini-3.1-pro-high" {
+		return "gemini-pro-agent"
+	}
+	return model
+}
+
+func TestAccountFamilyLive_GrokAPIKey(t *testing.T) {
 	runUpstreamE2E(t, upstreamE2ECase{
-		slug:            "kimi-api-key",
-		vendor:          credentialstore.VendorKimi,
-		protocolFamily:  registrydefault.ProtocolKimiChat,
-		model:           requiredUpstreamE2EModel(t, upstreamE2EKimiModelEnv),
-		keyEnv:          upstreamE2EKimiKeyEnv,
+		slug:            "grok-api-key",
+		vendor:          credentialstore.VendorGrok,
+		protocolFamily:  registrydefault.ProtocolGrokChat,
+		model:           requiredUpstreamE2EModel(t, upstreamE2EGrokModelEnv),
+		keyEnv:          upstreamE2EGrokKeyEnv,
 		authMode:        credentialstore.AuthModeAPIKey,
 		accountType:     upstreamE2EAccountTypeAPIKey,
 		skipConcurrency: true,
@@ -154,6 +187,32 @@ func TestAccountFamilyLive_KimiOAuth(t *testing.T) {
 		credentialJSONEnv: upstreamE2EKimiCredentialJSONEnv,
 		authMode:          credentialstore.AuthModeKimiOAuth,
 		accountType:       upstreamE2EAccountTypeOAuth,
+		skipConcurrency:   true,
+	})
+}
+
+func TestAccountFamilyLive_KimiCodingAPIKey(t *testing.T) {
+	runUpstreamE2E(t, upstreamE2ECase{
+		slug:            "kimi-coding-api-key",
+		vendor:          credentialstore.VendorKimi,
+		protocolFamily:  registrydefault.ProtocolKimiChat,
+		model:           requiredUpstreamE2EModel(t, upstreamE2EKimiCodingModelEnv),
+		keyEnv:          upstreamE2EKimiKeyEnv,
+		authMode:        credentialstore.AuthModeAPIKey,
+		accountType:     upstreamE2EAccountTypeAPIKey,
+		skipConcurrency: true,
+	})
+}
+
+func TestAccountFamilyLive_MoonshotAPIKey(t *testing.T) {
+	runUpstreamE2E(t, upstreamE2ECase{
+		slug:              "moonshot-api-key",
+		vendor:            credentialstore.VendorKimi,
+		protocolFamily:    registrydefault.ProtocolKimiChat,
+		model:             requiredUpstreamE2EModel(t, upstreamE2EMoonshotModelEnv),
+		credentialJSONEnv: upstreamE2EMoonshotCredentialEnv,
+		authMode:          credentialstore.AuthModeAPIKey,
+		accountType:       upstreamE2EAccountTypeAPIKey,
 		skipConcurrency:   true,
 	})
 }
@@ -212,7 +271,7 @@ func TestAccountFamilyLive_ClaudeSessionsUseOfficialMessagesIngress(t *testing.T
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode body: %v body=%s", err, body)
 	}
-	if payload.Model != "claude-live-test" || payload.MaxTokens != 16 ||
+	if payload.Model != "claude-live-test" || payload.MaxTokens != 256 ||
 		len(payload.Messages) != 1 || payload.Messages[0].Role != "user" ||
 		strings.TrimSpace(payload.Messages[0].Content) == "" {
 		t.Fatalf("official messages body=%s", body)
@@ -238,6 +297,17 @@ func TestAccountFamilyLive_CredentialHandlersAndRedaction(t *testing.T) {
 			secrets: []string{
 				"anthropic-live-test-secret",
 			},
+			wantKind: credentialstore.RuntimeAPIKey,
+		},
+		{
+			name: "openai api key",
+			tc: upstreamE2ECase{
+				slug: "openai-api-key", vendor: credentialstore.VendorOpenAI,
+				authMode: credentialstore.AuthModeAPIKey, accountType: upstreamE2EAccountTypeAPIKey,
+				keyEnv: upstreamE2EOpenAIKeyEnv,
+			},
+			raw:      `openai-live-test-secret`,
+			secrets:  []string{"openai-live-test-secret"},
 			wantKind: credentialstore.RuntimeAPIKey,
 		},
 		{
@@ -317,6 +387,28 @@ func TestAccountFamilyLive_CredentialHandlersAndRedaction(t *testing.T) {
 				"kimi-access-secret", "kimi-refresh-secret",
 			},
 			wantKind: credentialstore.RuntimeUpstreamPassthrough,
+		},
+		{
+			name: "kimi coding api key",
+			tc: upstreamE2ECase{
+				slug: "kimi-coding-api-key", vendor: credentialstore.VendorKimi,
+				authMode: credentialstore.AuthModeAPIKey, accountType: upstreamE2EAccountTypeAPIKey,
+				keyEnv: upstreamE2EKimiKeyEnv,
+			},
+			raw:      `kimi-coding-live-test-secret`,
+			secrets:  []string{"kimi-coding-live-test-secret"},
+			wantKind: credentialstore.RuntimeAPIKey,
+		},
+		{
+			name: "moonshot api key",
+			tc: upstreamE2ECase{
+				slug: "moonshot-api-key", vendor: credentialstore.VendorKimi,
+				authMode: credentialstore.AuthModeAPIKey, accountType: upstreamE2EAccountTypeAPIKey,
+				credentialJSONEnv: upstreamE2EMoonshotCredentialEnv,
+			},
+			raw:      `{"api_key":"moonshot-live-test-secret","base_url":"https://api.moonshot.cn/v1"}`,
+			secrets:  []string{"moonshot-live-test-secret"},
+			wantKind: credentialstore.RuntimeAPIKey,
 		},
 	}
 

@@ -128,6 +128,31 @@ func (c *Counter) Record(accountID int64, tokens int64) {
 	c.live(c.toks, accountID, now).count += tokens
 }
 
+// TryRecord 原子地完成预算检查与消费，供无法经过 selector 两阶段流程的固定账号
+// 后台请求使用。它避免并发轮询同时通过 Check 后再一起 Record 而突破 RPM 上限。
+func (c *Counter) TryRecord(accountID int64, lim Limits, tokens int64) Decision {
+	if c == nil || accountID <= 0 || (!lim.rpmLimited() && !lim.tpmLimited()) {
+		return Decision{Allowed: true, Dimension: DimensionNone}
+	}
+	if tokens < 0 {
+		tokens = 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	requests := c.live(c.reqs, accountID, now)
+	tokenCount := c.live(c.toks, accountID, now)
+	if lim.rpmLimited() && requests.count+1 > lim.RPM {
+		return Decision{Allowed: false, Dimension: DimensionRPM}
+	}
+	if lim.tpmLimited() && tokenCount.count+tokens > lim.TPM {
+		return Decision{Allowed: false, Dimension: DimensionTPM}
+	}
+	requests.count++
+	tokenCount.count += tokens
+	return Decision{Allowed: true, Dimension: DimensionNone}
+}
+
 // live 返回 accountID 的当前窗口桶,并在时钟跨入一个新的固定窗口时重置它。
 // 调用方必须持有 c.mu。
 func (c *Counter) live(m map[int64]*windowCount, accountID int64, now time.Time) *windowCount {

@@ -1,5 +1,5 @@
 // Package modulehttp 提供合并后的模块知识视图:它把实时的 moduleregistry
-//(运行时 descriptor + 健康探针)与静态的 modulecatalog(从 feature-tree 派生的
+// (运行时 descriptor + 健康探针)与静态的 modulecatalog(从 feature-tree 派生的
 // 身份:section、feature id、parity 状态、所属包)连接起来,并暴露:
 //
 //   - GET /admin/v1/modules (+ ?category=) —— 管理员门控、只读,供 Hermes
@@ -21,10 +21,11 @@ import (
 
 // ModuleView 是一个模块的合并身份 + 运行时状态。
 type ModuleView struct {
-	ID           string   `json:"id"`
-	Category     string   `json:"category"`
-	Title        string   `json:"title"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	ID           string                             `json:"id"`
+	Category     string                             `json:"category"`
+	Title        string                             `json:"title"`
+	Capabilities []string                           `json:"capabilities,omitempty"`
+	Activation   *moduleregistry.ActivationSnapshot `json:"activation,omitempty"`
 	// 静态覆盖层(来自 feature-tree catalog),无 catalog 匹配时为 nil。
 	Catalog *CatalogOverlay `json:"catalog,omitempty"`
 	// 来自 registry Snapshot 的实时探针结果。
@@ -55,7 +56,7 @@ type Source interface {
 
 // ContextSummary 是 Hermes 运维助手所消费的只读模块知识视图(H3 波次 ——
 // 其消费者是 GET /v1/hermes/context)。它是跨所有 category 的合并模块身份 +
-// 能力 + 实时状态,与运维人员看到的形状相同,这样助手就能把根因回答建立在
+// 能力 + 激活快照 + 实时状态,与运维人员看到的形状相同,这样助手就能把根因回答建立在
 // 「什么已接线、健康程度如何」之上。
 //
 // 此访问器在 H2 落地时被刻意排除(当时尚无消费者);现在它与调用它的 hermes
@@ -87,6 +88,7 @@ func Merge(ctx context.Context, src Source, category string) []ModuleView {
 			Category:     d.Category,
 			Title:        d.Title,
 			Capabilities: d.Capabilities,
+			Activation:   activationWithProbe(d.Activation, s.Probe.Status),
 			LiveProbe:    s.Probe,
 		}
 		if pkg, ok := src.CatalogPkgFor(d.ID); ok {
@@ -103,4 +105,22 @@ func Merge(ctx context.Context, src Source, category string) []ModuleView {
 		views = append(views, v)
 	}
 	return views
+}
+
+func activationWithProbe(src *moduleregistry.ActivationSnapshot, status moduleregistry.ProbeStatus) *moduleregistry.ActivationSnapshot {
+	if src == nil {
+		return nil
+	}
+	out := *src
+	switch status {
+	case moduleregistry.StatusOK:
+		verified := true
+		out.Verified = &verified
+	case moduleregistry.StatusDegraded, moduleregistry.StatusError:
+		verified := false
+		out.Verified = &verified
+	default:
+		out.Verified = nil
+	}
+	return &out
 }

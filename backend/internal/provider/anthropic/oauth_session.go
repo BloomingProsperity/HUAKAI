@@ -48,15 +48,30 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	if endpoint == "" {
 		endpoint = defaultMessagesEndpoint
 	}
-	endpoint, err := provider.EndpointForCredential(endpoint, in.Credential)
+	endpoint, err := provider.EndpointForBuildInput(endpoint, in)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
 	}
-	endpoint, err = oauthMessagesEndpointWithBeta(endpoint, in.Credential.Extra["claude_beta_query"], customEndpoint)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
+	method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
+	if method == "" {
+		method = http.MethodPost
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	if method != http.MethodPost && method != http.MethodGet {
+		return nil, fmt.Errorf("anthropic oauth session: unsupported method %q", method)
+	}
+	if method == http.MethodPost {
+		endpoint, err = oauthMessagesEndpointWithBeta(endpoint, in.Credential.Extra["claude_beta_query"], customEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("anthropic oauth session: endpoint rejected: %w", err)
+		}
+	}
+	var body *bytes.Reader
+	if method == http.MethodGet {
+		body = bytes.NewReader(nil)
+	} else {
+		body = bytes.NewReader(in.InboundBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic oauth session: build request: %w", err)
 	}
@@ -75,7 +90,9 @@ func (a *OAuthSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		version = defaultAnthropicVersion
 	}
 	req.Header.Set("Anthropic-Version", version)
-	req.Header.Set("Content-Type", "application/json")
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	// DM-03:客户端 beta token 只放行白名单——OAuth/session 池账号带
 	// Claude Code 设备指纹,透传任意 token=指纹异常(反封禁);凭据配置

@@ -35,12 +35,17 @@ func newFakeSource() *fakeSource {
 				Descriptor: moduleregistry.ModuleDescriptor{
 					ID: "billing.service", Category: "money-path", Title: "Billing",
 					Capabilities: []string{"settle", "reserve"},
+					Activation: &moduleregistry.ActivationSnapshot{
+						Declared: boolPointer(true), Active: boolPointer(true),
+						Endpoints: []moduleregistry.ActivationEndpoint{{Name: "chat", Active: boolPointer(true)}},
+					},
 				},
 				Probe: moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"},
 			},
 			{
 				Descriptor: moduleregistry.ModuleDescriptor{
 					ID: "routing.selector", Category: "routing", Title: "Selector",
+					Activation: &moduleregistry.ActivationSnapshot{Declared: boolPointer(true)},
 				},
 				Probe: moduleregistry.ProbeResult{Status: moduleregistry.StatusUnknown},
 			},
@@ -80,13 +85,34 @@ func TestMergeJoinsLiveAndCatalog(t *testing.T) {
 	if billing.LiveProbe.Status != moduleregistry.StatusOK {
 		t.Fatalf("billing live probe=%q want ok (probe not carried through)", billing.LiveProbe.Status)
 	}
+	if billing.Activation == nil || billing.Activation.Verified == nil || !*billing.Activation.Verified {
+		t.Fatalf("billing activation verification not projected: %+v", billing.Activation)
+	}
 	// routing.selector 未映射:它必须以纯实时形式出现,且无覆盖层。
 	for _, v := range views {
 		if v.ID == "routing.selector" && v.Catalog != nil {
 			t.Fatalf("unmapped module got a spurious catalog overlay: %+v", v.Catalog)
 		}
+		if v.ID == "routing.selector" && v.Activation != nil && v.Activation.Verified != nil {
+			t.Fatalf("未知探针不能冒充已验证状态: %+v", v.Activation)
+		}
 	}
 }
+
+func TestActivationWithFailedProbeMarksUnverified(t *testing.T) {
+	activation := &moduleregistry.ActivationSnapshot{Declared: boolPointer(true), Active: boolPointer(true)}
+	for _, status := range []moduleregistry.ProbeStatus{moduleregistry.StatusDegraded, moduleregistry.StatusError} {
+		got := activationWithProbe(activation, status)
+		if got == nil || got.Verified == nil || *got.Verified {
+			t.Fatalf("status=%q activation=%+v，应明确标记未验证", status, got)
+		}
+		if activation.Verified != nil {
+			t.Fatalf("投影不得修改注册表原始快照: %+v", activation)
+		}
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 // TestHandlerReturnsSeededModules —— 端点返回实时模块。
 // 回归:若 handler 在有效 source 上返回空 body 或 500,计数断言或状态断言

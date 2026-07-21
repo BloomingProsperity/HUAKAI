@@ -9,6 +9,7 @@
 //   T5 recharging 断点续跑只入账一次
 //   T6 履约要求 paid/recharging 状态 (pending 越权履约被拒)
 //   T7 操作审计轨迹落库
+//   T8 同用户待支付订单上限在并发事务下不可绕过
 
 package payment
 
@@ -132,6 +133,58 @@ func TestPaymentPostgres_ConcurrentFulfillOnlyOneCASSucceeds(t *testing.T) {
 	bal, err := svc.GetBalance(ctx, f.tenantA, f.userA)
 	if err != nil || bal.AmountCents != amount {
 		t.Fatalf("balance = %d (err=%v), want %d", bal.AmountCents, err, amount)
+	}
+}
+
+// T8: 同一用户并发创建六张、上限为一张的待支付订单，数据库只能提交一张。
+// 这里直接并发调用建单底座，绕过 HTTP 层的提前统计，专门证明事务锁与事务内复核
+// 能挡住两个请求同时读到旧统计值的竞态。
+func TestPaymentPostgres_ConcurrentPendingLimitCannotBeBypassed(t *testing.T) {
+	ctx := context.Background()
+	pool := openPaymentIntegrationPool(t, ctx)
+	f := newPaymentFixture(t, ctx, pool)
+	svc := NewService(NewPostgresStore(pool), WithTestProvider())
+
+	const workers = 6
+	barrier := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	success := 0
+	rejected := 0
+	var unexpected []error
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-barrier
+			_, err := svc.CreateOrder(ctx, CreateOrderInput{
+				TenantID: f.tenantA, UserID: f.userA, AmountCents: 100,
+				OutTradeNo:   "pay-pending-cap-" + f.suffix + "-" + stringID(i),
+				ProviderKind: ProviderTest, RechargeMaxPending: 1,
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				success++
+			case errors.Is(err, ErrPendingLimit):
+				rejected++
+			default:
+				unexpected = append(unexpected, err)
+			}
+		}(i)
+	}
+	close(barrier)
+	wg.Wait()
+
+	if len(unexpected) != 0 {
+		t.Fatalf("出现非预期建单错误: %v", unexpected[0])
+	}
+	if success != 1 || rejected != workers-1 {
+		t.Fatalf("success/rejected=%d/%d，期望 1/%d", success, rejected, workers-1)
+	}
+	if count := f.countInt(`SELECT count(*) FROM payment_orders WHERE tenant_id=$1 AND user_id=$2 AND status='pending'`, f.tenantA, f.userA); count != 1 {
+		t.Fatalf("数据库待支付订单=%d，期望 1", count)
 	}
 }
 

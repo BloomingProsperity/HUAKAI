@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
@@ -114,22 +115,25 @@ func (ex *execution) quotaReservedTokens() int64 {
 func (ex *execution) settleRequest(usage audioTokenUsage, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {
 	confidence := 1.0
 	return billing.SettleRequest{
-		ClaimID:           ex.reserveRes.ClaimID,
-		AccountID:         ex.selRes.AccountID,
-		AcquisitionToken:  ex.selRes.AcquisitionToken,
-		TenantID:          ex.ident.TenantID,
-		APIKeyID:          ex.ident.APIKeyID,
-		UserID:            ex.ident.UserID,
-		ProviderAccountID: ex.selRes.AccountID,
-		AttemptSeq:        int32(attemptSeq),
-		RequestedModel:    ex.req.Model,
-		RequestedAt:       ex.startedAt,
-		UpstreamModel:     ex.upstreamModelID,
-		Provider:          ex.accInfo.Platform,
-		Stream:            false,
-		ActualCost:        cost,
-		Fingerprint:       ex.payloadHash,
-		AuditRequestID:    ex.requestID,
+		ClaimID:               ex.reserveRes.ClaimID,
+		AccountID:             ex.selRes.AccountID,
+		AcquisitionToken:      ex.selRes.AcquisitionToken,
+		TenantID:              ex.ident.TenantID,
+		APIKeyID:              ex.ident.APIKeyID,
+		UserID:                ex.ident.UserID,
+		ProviderAccountID:     ex.selRes.AccountID,
+		AttemptSeq:            int32(attemptSeq),
+		RequestedModel:        ex.req.Model,
+		RequestedAt:           ex.startedAt,
+		UpstreamModel:         ex.upstreamModelID,
+		Provider:              ex.accInfo.Platform,
+		Stream:                false,
+		ActualCost:            cost,
+		Fingerprint:           ex.payloadHash,
+		AuditRequestID:        ex.requestID,
+		AuditRouteID:          router.TraceRouteID(ex.plan, ex.attempt),
+		AuditPoolGroupID:      ex.attempt.PoolGroupID,
+		AuditProviderEndpoint: ex.endpoint.Path(),
 		Draft: gateway.UsageRecordDraft{
 			TokensInput:           usage.InputTokens,
 			TokensOutput:          usage.OutputTokens,

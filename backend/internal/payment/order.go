@@ -76,17 +76,19 @@ func (s *Service) OpenRecharge(ctx context.Context, input OpenInput) (OpenResult
 		}
 	}
 	res, err := s.CreateOrder(ctx, CreateOrderInput{
-		TenantID:           input.TenantID,
-		UserID:             input.UserID,
-		AmountCents:        amountCents,
-		CurrencyCode:       input.CurrencyCode,
-		OutTradeNo:         input.ExternalTradeNo,
-		ProviderKind:       providerKindFromHTTP(input.Provider),
-		RequestFingerprint: "http_provider:" + normalizeProvider(input.Provider),
-		ActorKind:          ActorKindUser,
-		ActorID:            input.UserID,
-		OrderKind:          OrderKindTopup,
-		RequestID:          rechargeRef(input.TenantID, input.UserID, input.ExternalTradeNo),
+		TenantID:                input.TenantID,
+		UserID:                  input.UserID,
+		AmountCents:             amountCents,
+		CurrencyCode:            input.CurrencyCode,
+		OutTradeNo:              input.ExternalTradeNo,
+		ProviderKind:            providerKindFromHTTP(input.Provider),
+		RequestFingerprint:      "http_provider:" + normalizeProvider(input.Provider),
+		ActorKind:               ActorKindUser,
+		ActorID:                 input.UserID,
+		OrderKind:               OrderKindTopup,
+		RequestID:               rechargeRef(input.TenantID, input.UserID, input.ExternalTradeNo),
+		RechargeMaxPending:      input.MaxPendingPerUser,
+		RechargeDailyLimitCents: dailyAmountLimitToCents(input.DailyAmountLimit),
 	})
 	if errorsIsIdempotencyConflict(err) {
 		return OpenResult{}, ErrExternalTradeConflict
@@ -158,6 +160,13 @@ func decimalAmountToCents(amount decimal.Decimal) (int64, error) {
 
 func centsToDecimal(cents int64) decimal.Decimal {
 	return decimal.NewFromInt(cents).Div(decimal.NewFromInt(100))
+}
+
+func dailyAmountLimitToCents(limit decimal.Decimal) int64 {
+	if !limit.IsPositive() {
+		return 0
+	}
+	return limit.Mul(decimal.NewFromInt(100)).Round(0).IntPart()
 }
 
 func rechargeRef(tenantID, userID int64, externalTradeNo string) string {

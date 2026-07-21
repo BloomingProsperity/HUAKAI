@@ -81,6 +81,7 @@ func TestCodexLiveFormalImportWiring(t *testing.T) {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 Codex 正式导入接线测试")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	auth := codexLiveAuth{
 		AccessToken:  "synthetic-codex-live-access-token",
 		RefreshToken: "synthetic-codex-live-refresh-token",
@@ -98,6 +99,7 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 codex live e2e")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	auth := loadCodexLiveAuth(t)
 	if strings.TrimSpace(auth.AccessToken) == "" {
 		t.Skip("未找到 Codex live access_token，跳过 codex live e2e")
@@ -250,6 +252,7 @@ func TestCodexLiveResponsesMatrix(t *testing.T) {
 			tc.assert(t, res)
 			claimID := assertCodexLivePG(t, ctx, pgPool, seed, logicalID)
 			assertCodexLiveUsageRecord(t, ctx, pgPool, claimID)
+			assertCodexLiveCostReceipt(t, ctx, pgPool, seed.tenantID, claimID)
 			waitForCodexLiveInFlight(t, ctx, pgPool, seed.providerAccountID, 0)
 		})
 	}
@@ -260,6 +263,7 @@ func TestChatToCodexLiveMatrix(t *testing.T) {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 chat/messages→codex live e2e")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	auth := loadCodexLiveAuth(t)
 	if strings.TrimSpace(auth.AccessToken) == "" {
 		t.Skip("未找到 Codex live access_token，跳过 chat/messages→codex live e2e")
@@ -469,6 +473,7 @@ func TestChatToCodexLiveMatrix(t *testing.T) {
 			tc.assert(t, res)
 			claimID := assertCodexLivePG(t, ctx, pgPool, seed, logicalID)
 			assertCodexLiveUsageRecord(t, ctx, pgPool, claimID)
+			assertCodexLiveCostReceipt(t, ctx, pgPool, seed.tenantID, claimID)
 			if tc.wantStream != nil {
 				assertCodexLiveUsageRecordStream(t, ctx, pgPool, claimID, *tc.wantStream)
 			}
@@ -727,43 +732,9 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 	}
 
 	t.Cleanup(func() {
-		c := context.Background()
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_audit_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_concurrency_slots WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_concurrency_scope_locks WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_reconciliation_jobs WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_reservations WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID)
-		if err := cleanupSpecializedLiveMoneyRows(c, pgPool, seed.tenantID); err != nil {
-			t.Errorf("清理 Codex 活体测试钱路记录: %v", err)
+		if err := cleanupCodexLiveGraph(context.Background(), pgPool, seed); err != nil {
+			t.Errorf("清理 Codex 活体测试图: %v", err)
 		}
-		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, seed.tenantID)
-		if err := cleanupSpecializedLiveSubscriptionObservations(c, pgPool, seed.tenantID); err != nil {
-			t.Errorf("清理 Codex 活体测试套餐观测: %v", err)
-		}
-		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, seed.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion)
 	})
 
 	if _, err := pgPool.Exec(ctx,
@@ -863,6 +834,67 @@ func seedCodexLiveGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool,
 	return seed
 }
 
+func cleanupCodexLiveGraph(ctx context.Context, pgPool *pgxpool.Pool, seed *codexLiveSeed) error {
+	if err := cleanupSpecializedLiveMoneyRows(ctx, pgPool, seed.tenantID); err != nil {
+		return fmt.Errorf("清理钱账与额度行: %w", err)
+	}
+	if err := cleanupSpecializedLiveSubscriptionObservations(ctx, pgPool, seed.tenantID); err != nil {
+		return fmt.Errorf("清理套餐观测: %w", err)
+	}
+	statements := []struct {
+		query string
+		arg   any
+	}{
+		{`DELETE FROM sticky_bindings WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_account_routing_signals WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_account_quota_facts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM credential_acquisition_flow_sessions WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM oauth_refresh_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM oauth_storm_budget WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM rate_limit_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_admin_alerts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM pool_routing_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM ops_runtime_logs WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM account_intake_staged_credentials WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_audit_events WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_concurrency_slots WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_concurrency_scope_locks WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_reconciliation_jobs WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_reservations WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_windows WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM quota_policies WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_pool_bindings WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_aliases WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM models WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM provider_accounts WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM channels WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM pool_groups WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM providers WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM user_balances WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM api_keys WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM users WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, seed.tenantID},
+		{`DELETE FROM admin_tokens WHERE id=$1`, seed.adminTokenID},
+		{`DELETE FROM tenants WHERE id=$1`, seed.tenantID},
+		{`DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, seed.pricingVersion},
+	}
+	for _, statement := range statements {
+		if _, err := pgPool.Exec(ctx, statement.query, statement.arg); err != nil {
+			return fmt.Errorf("执行 %q: %w", statement.query, err)
+		}
+	}
+	return nil
+}
+
 func assertCodexLiveSeedSelectable(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *codexLiveSeed) {
 	t.Helper()
 	resolved, err := registry.NewPostgresRegistry(pgPool, nil).ResolveModel(ctx, seed.model, seed.tenantID)
@@ -956,6 +988,7 @@ func startCodexLiveGateway(t *testing.T, binPath, dsn, addr string, seed *codexL
 		"HUAKAI_RELEASE_MODE=dev",
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_DEV_MOCK_UPSTREAM=false",
 		"HUAKAI_BILLING_POLICY_VERSION="+seed.pricingVersion,
 		"HUAKAI_QUOTA_ENFORCE=true",
@@ -1532,6 +1565,28 @@ func assertCodexLiveUsageRecord(t *testing.T, ctx context.Context, pgPool *pgxpo
 	}
 	if tokensInput+tokensOutput < 0 {
 		t.Fatalf("claim %d token sum=%d want >=0", claimID, tokensInput+tokensOutput)
+	}
+}
+
+func assertCodexLiveCostReceipt(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tenantID, claimID int64) {
+	t.Helper()
+	var count int
+	if err := pgPool.QueryRow(ctx, `
+SELECT count(*)
+FROM user_cost_receipts r
+JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.tenant_id=$1
+  AND o.claim_id=$2
+  AND octet_length(r.signed_hash) > 0`,
+		tenantID, claimID,
+	).Scan(&count); err != nil {
+		t.Fatalf("读取 Codex claim %d 的用户成本回执: %v", claimID, err)
+	}
+	if count != 1 {
+		t.Fatalf("Codex claim %d 成本回执数量=%d，期望 1", claimID, count)
 	}
 }
 

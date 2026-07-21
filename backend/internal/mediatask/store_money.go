@@ -2,25 +2,165 @@ package mediatask
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 )
+
+func (s *PostgresStore) createTaskWithUnifiedMoney(ctx context.Context, input CreateTaskInput) (Task, bool, error) {
+	if existing, err := scanTask(s.pool.QueryRow(ctx, selectTaskSQL+` WHERE tenant_id=$1 AND request_id=$2`, input.TenantID, input.RequestID)); err == nil {
+		if !sameIdempotentTask(existing, input) {
+			return Task{}, false, ErrRequestIDConflict
+		}
+		return existing, true, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, false, err
+	}
+
+	apiKeyID, err := s.resolveTaskAPIKeyID(ctx, input)
+	if err != nil {
+		return Task{}, false, err
+	}
+	version := firstNonEmpty(input.BillingPolicyVersion, s.billingVersion, "mediatask-v1")
+	requestClass := firstNonEmpty(input.RequestClass, s.requestClass, "standard")
+	fingerprint := payloadHash(input.InputParams)
+	predicted := centsToUSD(input.EstimatedCents)
+	balanceMode := billing.DefaultBalanceEnforcementMode
+	if s.balanceResolver != nil {
+		balanceMode = s.balanceResolver.ResolveBalanceEnforcementMode(ctx, input.TenantID)
+	}
+	reserve, err := s.claimGate.Reserve(ctx, billing.ReserveRequest{
+		TenantID: input.TenantID, APIKeyID: apiKeyID, UserID: input.UserID,
+		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks",
+		NormalizedPayloadHash: fingerprint, RequestedModel: firstNonEmpty(input.RequestedModel, input.TaskType),
+		PoolingGroupID: input.PoolGroupID, BillingPolicyVersion: version,
+		RequestClass: requestClass, PredictedCost: predicted,
+		BalanceEnforcementMode: balanceMode,
+	})
+	if errors.Is(err, billing.ErrFingerprintConflict) {
+		return Task{}, false, ErrRequestIDConflict
+	}
+	if err != nil {
+		return Task{}, false, err
+	}
+	if reserve == nil || reserve.ClaimID <= 0 {
+		return Task{}, false, ErrStoreNotConfigured
+	}
+	if reserve.IdempotencyHit {
+		existing, lookupErr := scanTask(s.pool.QueryRow(ctx, selectTaskSQL+` WHERE tenant_id=$1 AND request_id=$2`, input.TenantID, input.RequestID))
+		if lookupErr != nil {
+			return Task{}, false, fmt.Errorf("mediatask: committed claim has no durable task: %w", lookupErr)
+		}
+		if !sameIdempotentTask(existing, input) {
+			return Task{}, false, ErrRequestIDConflict
+		}
+		return existing, true, nil
+	}
+
+	if s.quotaReserver != nil {
+		quotaResult, quotaErr := s.quotaReserver.Reserve(ctx, quotaenforce.BuildReserveRequest(quotaenforce.ReserveInput{
+			TenantID: input.TenantID, UserID: input.UserID, APIKeyID: apiKeyID,
+			ClaimID: reserve.ClaimID, PoolGroupID: input.PoolGroupID,
+			RequestFingerprint: fingerprint, RequestedModel: firstNonEmpty(input.RequestedModel, input.TaskType),
+			PredictedCost: predicted, At: time.Now().UTC(),
+			LeaseExpiresAt: time.Now().UTC().Add(resolveClaimLeaseWindow(input.ClaimLeaseWindow)),
+		}))
+		if quotaenforce.IsDenied(quotaErr) || (quotaErr == nil && !quotaResult.Allowed) {
+			abortErr := s.settler.Abort(ctx, input.TenantID, reserve.ClaimID, "quota_denied", input.RequestID, 0, nil)
+			return Task{}, false, errors.Join(ErrQuotaDenied, quotaErr, abortErr)
+		}
+		// 配额后端基础设施错误沿用同步链的 fail-open 策略；最终结算仍会保留账务事实。
+	}
+
+	if s.beforeInsertTask != nil {
+		if err := s.beforeInsertTask(); err != nil {
+			abortErr := s.settler.Abort(ctx, input.TenantID, reserve.ClaimID, "media_task_insert_failed", input.RequestID, 0, nil)
+			return Task{}, false, errors.Join(err, abortErr)
+		}
+	}
+	input.APIKeyID = apiKeyID
+	var created Task
+	err = s.withSerializableRetry(ctx, func(tx pgx.Tx) error {
+		existing, err := selectTaskByRequestForUpdate(ctx, tx, input.TenantID, input.RequestID)
+		if err == nil {
+			if !sameIdempotentTask(existing, input) {
+				return ErrRequestIDConflict
+			}
+			created = existing
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		created, err = scanTask(tx.QueryRow(ctx, insertTaskSQL,
+			input.TenantID, input.UserID, apiKeyID, input.TaskType, StatusQueued, input.Provider,
+			input.RequestID, input.InputParams, input.EstimatedCents, holdRef(reserve.ClaimID),
+			input.ProviderAccountID, input.PoolGroupID, input.ProtocolFamily,
+			input.RequestedModel, input.ProviderModelID, input.RouteID,
+			input.BindingID, input.BindingRPMLimit, input.BindingTPMLimit, input.BindingMaxParallelRequests,
+		))
+		return err
+	})
+	if err != nil {
+		abortErr := s.settler.Abort(ctx, input.TenantID, reserve.ClaimID, "media_task_insert_failed", input.RequestID, 0, nil)
+		return Task{}, false, errors.Join(err, abortErr)
+	}
+	return created, false, nil
+}
+
+func (s *PostgresStore) resolveTaskAPIKeyID(ctx context.Context, input CreateTaskInput) (int64, error) {
+	query := `
+	SELECT id
+	FROM api_keys
+	WHERE tenant_id=$1 AND user_id=$2 AND status='active' AND deleted_at IS NULL
+	  AND (expires_at IS NULL OR expires_at > $3)`
+	args := []any{input.TenantID, input.UserID, time.Now().UTC()}
+	if input.APIKeyID > 0 {
+		query += ` AND id=$4`
+		args = append(args, input.APIKeyID)
+	}
+	query += ` ORDER BY id ASC LIMIT 2`
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, ErrNoActiveAPIKey
+	}
+	if input.APIKeyID <= 0 && len(ids) > 1 {
+		return 0, ErrAPIKeyAmbiguous
+	}
+	return ids[0], nil
+}
 
 func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner string, result PollResult, now time.Time) (bool, error) {
 	if s == nil || s.pool == nil {
 		return false, ErrStoreNotConfigured
+	}
+	if s.settler != nil && isDurablyBoundVideoProvider(task.Provider) {
+		return s.completeSuccessWithUnifiedMoney(ctx, task, owner, result, now)
 	}
 	var settled bool
 	err := s.withSerializableRetry(ctx, func(tx pgx.Tx) error {
@@ -90,18 +230,178 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 	return settled, err
 }
 
+func (s *PostgresStore) completeSuccessWithUnifiedMoney(ctx context.Context, task Task, owner string, result PollResult, now time.Time) (bool, error) {
+	if result.ActualCents < 0 {
+		return false, fmt.Errorf("%w: actual_cents", ErrInvalidInput)
+	}
+	if err := s.persistPendingSuccess(ctx, task, owner, result, now); err != nil {
+		return false, err
+	}
+	claimID, err := claimIDFromHoldRef(task.HoldRef)
+	if err != nil {
+		return false, err
+	}
+	status, acquisitionToken, err := s.claimSettlementState(ctx, task.TenantID, claimID)
+	if err != nil {
+		return false, err
+	}
+	if status == "committed" {
+		return s.markTaskSucceeded(ctx, task.ID, result, now)
+	}
+	if status == "aborted" {
+		return s.finishSuccessAfterSweptClaim(ctx, task, owner, result, now)
+	}
+	if status != "reserving" || acquisitionToken == uuid.Nil {
+		return false, billing.ErrClaimNotReserving
+	}
+
+	billedCents := result.ActualCents
+	if billedCents <= 0 {
+		billedCents = task.EstimatedCents
+	}
+	if billedCents > task.EstimatedCents {
+		billedCents = task.EstimatedCents
+	}
+	actual := centsToUSD(billedCents)
+	endpoint := durableVideoSubmitEndpoint(task)
+	_, err = s.settler.Settle(ctx, billing.SettleRequest{
+		ClaimID: claimID, TenantID: task.TenantID, APIKeyID: task.APIKeyID, UserID: task.UserID,
+		AccountID: task.ProviderAccountID, ProviderAccountID: task.ProviderAccountID,
+		AcquisitionToken: acquisitionToken, ActualCost: actual,
+		RequestedModel: task.RequestedModel, UpstreamModel: task.ProviderModelID,
+		Provider: task.Provider, RequestedAt: task.CreatedAt, Stream: false,
+		Fingerprint: payloadHash(task.InputParams), AuditRequestID: task.RequestID,
+		AuditRouteID: task.RouteID, AuditPoolGroupID: task.PoolGroupID,
+		AuditProviderEndpoint: endpoint,
+		Draft: gateway.UsageRecordDraft{
+			ActualCost: actual, RoutingReason: append([]byte(nil), result.RoutingReason...),
+			EndClass: gateway.StreamEndGraceful, UsageSource: gateway.UsageSourceReported,
+		},
+	})
+	if err != nil {
+		if errors.Is(err, billing.ErrClaimNotReserving) {
+			status, _, stateErr := s.claimSettlementState(ctx, task.TenantID, claimID)
+			if stateErr == nil && status == "committed" {
+				return s.markTaskSucceeded(ctx, task.ID, result, now)
+			}
+		}
+		return false, err
+	}
+	return s.markTaskSucceeded(ctx, task.ID, result, now)
+}
+
+func (s *PostgresStore) persistPendingSuccess(ctx context.Context, task Task, owner string, result PollResult, now time.Time) error {
+	actualCents := result.ActualCents
+	tag, err := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET result=$3, actual_cents=$4, progress=99, updated_at=$5
+WHERE id=$1 AND lease_owner=$2 AND status='in_progress'`,
+		task.ID, owner, jsonOrNull(result.Result), actualCents, now.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+func (s *PostgresStore) claimSettlementState(ctx context.Context, tenantID, claimID int64) (string, uuid.UUID, error) {
+	var status string
+	var token pgtype.UUID
+	if err := s.pool.QueryRow(ctx, `
+SELECT status, acquisition_token
+FROM billing_ledger_claims
+WHERE tenant_id=$1 AND id=$2`, tenantID, claimID).Scan(&status, &token); err != nil {
+		return "", uuid.Nil, err
+	}
+	if !token.Valid {
+		return status, uuid.Nil, nil
+	}
+	return status, uuid.UUID(token.Bytes), nil
+}
+
+func (s *PostgresStore) markTaskSucceeded(ctx context.Context, taskID int64, result PollResult, now time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET status='succeeded', result=$2, actual_cents=$3, progress=100,
+    lease_owner=NULL, lease_expires_at=NULL, updated_at=$4, finished_at=$4
+WHERE id=$1 AND status IN ('queued','in_progress')`,
+		taskID, jsonOrNull(result.Result), result.ActualCents, now.UTC())
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *PostgresStore) finishSuccessAfterSweptClaim(ctx context.Context, task Task, owner string, result PollResult, now time.Time) (bool, error) {
+	var completed bool
+	err := s.withSerializableRetry(ctx, func(tx pgx.Tx) error {
+		if err := updateTaskSuccess(ctx, tx, task.ID, result, now); err != nil {
+			return err
+		}
+		if err := persistOrphanTx(ctx, tx, task, owner, now); err != nil {
+			return err
+		}
+		completed = true
+		return nil
+	})
+	return completed, err
+}
+
 func (s *PostgresStore) CompleteFailure(ctx context.Context, task Task, owner, errorClass string, now time.Time) (bool, error) {
+	if s != nil && s.settler != nil && isDurablyBoundVideoProvider(task.Provider) {
+		return s.abortTaskWithUnifiedMoney(ctx, task, owner, StatusFailed, firstNonEmpty(errorClass, "provider_failed"), now)
+	}
 	return s.abortTask(ctx, task.ID, owner, StatusFailed, firstNonEmpty(errorClass, "provider_failed"), now)
 }
 
 func (s *PostgresStore) ExpireTask(ctx context.Context, task Task, owner string, now time.Time) (bool, error) {
+	if s != nil && s.settler != nil && isDurablyBoundVideoProvider(task.Provider) {
+		return s.abortTaskWithUnifiedMoney(ctx, task, owner, StatusExpired, "timeout", now)
+	}
 	return s.abortTask(ctx, task.ID, owner, StatusExpired, "timeout", now)
 }
 
-func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input CreateTaskInput) (Task, error) {
-	apiKeyID, err := activeAPIKeyID(ctx, tx, input.TenantID, input.UserID, time.Now().UTC())
+func (s *PostgresStore) abortTaskWithUnifiedMoney(ctx context.Context, task Task, owner string, status Status, errorClass string, now time.Time) (bool, error) {
+	claimID, err := claimIDFromHoldRef(task.HoldRef)
 	if err != nil {
-		return Task{}, err
+		return false, err
+	}
+	err = s.settler.Abort(ctx, task.TenantID, claimID, errorClass, task.RequestID, 0, nil)
+	if err != nil && !errors.Is(err, billing.ErrClaimNotReserving) {
+		return false, err
+	}
+	claimStatus, _, stateErr := s.claimSettlementState(ctx, task.TenantID, claimID)
+	if stateErr != nil {
+		return false, stateErr
+	}
+	if claimStatus == "committed" {
+		return false, billing.ErrClaimNotReserving
+	}
+	tag, updateErr := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
+    updated_at=$4, finished_at=$4
+WHERE id=$1 AND status IN ('queued','in_progress')`, task.ID, status, errorClass, now.UTC())
+	if updateErr != nil {
+		return false, updateErr
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input CreateTaskInput) (Task, error) {
+	apiKeyID := input.APIKeyID
+	if apiKeyID > 0 {
+		if err := requireActiveAPIKey(ctx, tx, input.TenantID, input.UserID, apiKeyID, time.Now().UTC()); err != nil {
+			return Task{}, err
+		}
+	} else {
+		var err error
+		apiKeyID, err = activeAPIKeyID(ctx, tx, input.TenantID, input.UserID, time.Now().UTC())
+		if err != nil {
+			return Task{}, err
+		}
 	}
 	version := firstNonEmpty(input.BillingPolicyVersion, s.billingVersion)
 	if version == "" {
@@ -113,7 +413,8 @@ func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input
 	claim, err := qtx.InsertClaim(ctx, dbbilling.InsertClaimParams{
 		TenantID: input.TenantID, IdempotencyKey: mediaClaimKey(input, apiKeyID, version, requestClass),
 		RequestFingerprint: fingerprint, APIKeyID: apiKeyID, UserID: input.UserID,
-		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks", RequestedModel: input.TaskType,
+		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks", RequestedModel: firstNonEmpty(input.RequestedModel, input.TaskType),
+		PoolingGroupID:       nullablePositiveInt64(input.PoolGroupID),
 		BillingPolicyVersion: version, RequestClass: requestClass, PredictedCost: centsToUSD(input.EstimatedCents),
 		// claim 孤儿回收租约必须 > 媒体任务最大生命周期(TaskTimeout)。原硬编码 90s 远
 		// 短于 TaskTimeout(默认 15min),会让跑得久的合法任务 claim 被 billing LeaseSweeper
@@ -138,9 +439,33 @@ func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input
 		}
 	}
 	return scanTask(tx.QueryRow(ctx, insertTaskSQL,
-		input.TenantID, input.UserID, input.TaskType, StatusQueued, input.Provider,
+		input.TenantID, input.UserID, apiKeyID, input.TaskType, StatusQueued, input.Provider,
 		input.RequestID, input.InputParams, input.EstimatedCents, holdRef(claim.ID),
+		input.ProviderAccountID, input.PoolGroupID, input.ProtocolFamily,
+		input.RequestedModel, input.ProviderModelID, input.RouteID,
+		input.BindingID, input.BindingRPMLimit, input.BindingTPMLimit, input.BindingMaxParallelRequests,
 	))
+}
+
+func requireActiveAPIKey(ctx context.Context, tx pgx.Tx, tenantID, userID, apiKeyID int64, now time.Time) error {
+	var found int64
+	err := tx.QueryRow(ctx, `
+	SELECT id
+	FROM api_keys
+	WHERE id=$1 AND tenant_id=$2 AND user_id=$3 AND status='active' AND deleted_at IS NULL
+	  AND (expires_at IS NULL OR expires_at > $4)
+	FOR KEY SHARE`, apiKeyID, tenantID, userID, now.UTC()).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoActiveAPIKey
+	}
+	return err
+}
+
+func nullablePositiveInt64(value int64) *int64 {
+	if value <= 0 {
+		return nil
+	}
+	return &value
 }
 
 func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner string, status Status, errorClass string, now time.Time) (bool, error) {
@@ -218,95 +543,34 @@ func (s *PostgresStore) holdMode(ctx context.Context, tenantID int64) billing.En
 }
 
 func activeAPIKeyID(ctx context.Context, tx pgx.Tx, tenantID, userID int64, now time.Time) (int64, error) {
-	var id int64
-	err := tx.QueryRow(ctx, `
+	rows, err := tx.Query(ctx, `
 	SELECT id
 	FROM api_keys
 	WHERE tenant_id=$1 AND user_id=$2 AND status='active' AND deleted_at IS NULL
 	  AND (expires_at IS NULL OR expires_at > $3)
 	ORDER BY id ASC
-	LIMIT 1
-	FOR KEY SHARE`, tenantID, userID, now.UTC()).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
+	LIMIT 2
+	FOR KEY SHARE`, tenantID, userID, now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
 		return 0, ErrNoActiveAPIKey
 	}
-	return id, err
-}
-
-// persistOrphanTx 在调用方事务内幂等落一条孤儿对账线索 (无上游任务 ID 时无对账价值, 跳过)。
-func persistOrphanTx(ctx context.Context, tx pgx.Tx, task Task, owner string, now time.Time) error {
-	providerTaskID := strings.TrimSpace(task.ProviderTaskID)
-	if providerTaskID == "" {
-		return nil
+	if len(ids) > 1 {
+		return 0, ErrAPIKeyAmbiguous
 	}
-	_, err := tx.Exec(ctx, insertOrphanSQL,
-		task.ID, task.TenantID, task.UserID, task.Provider,
-		providerTaskID, owner, now.UTC())
-	return err
-}
-
-func lockTerminalCandidate(ctx context.Context, tx pgx.Tx, id int64, owner string) (Task, bool, error) {
-	task, err := scanTask(tx.QueryRow(ctx, selectTaskSQL+` WHERE id=$1 FOR UPDATE`, id))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Task{}, false, ErrNotFound
-	}
-	if err != nil {
-		return Task{}, false, err
-	}
-	if task.LeaseOwner != owner || IsTerminal(task.Status) {
-		return task, false, nil
-	}
-	return task, true, nil
-}
-
-func updateTaskSuccess(ctx context.Context, tx pgx.Tx, id int64, result PollResult, now time.Time) error {
-	_, err := tx.Exec(ctx, `
-	UPDATE media_tasks
-	SET status='succeeded', result=$2, actual_cents=$3, progress=100,
-	    lease_owner=NULL, lease_expires_at=NULL, updated_at=$4, finished_at=$4
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
-		id, jsonOrNull(result.Result), result.ActualCents, now.UTC(),
-	)
-	return err
-}
-
-func insertBillingEvent(ctx context.Context, q *dbbilling.Queries, task Task, claimID int64, eventType string, cost decimal.Decimal, endClass string, streamState billing.StreamState) error {
-	_, err := q.InsertBillingEvent(ctx, dbbilling.InsertBillingEventParams{
-		TenantID: task.TenantID, ClaimID: &claimID, EventType: eventType,
-		ActualCost: cost, ActualCostSigned: cost,
-		EndClass: &endClass, UsageSource: stringPtr("reported"), StreamState: streamState.DBValue(),
-		DeliveredTokenCount: 0, Fingerprint: payloadHash(task.InputParams), AuditRequestID: &task.RequestID,
-	})
-	return err
-}
-
-func mediaClaimKey(input CreateTaskInput, apiKeyID int64, version, requestClass string) string {
-	return billing.ComputeIdempotencyFingerprint(billing.ReserveRequest{
-		TenantID: input.TenantID, APIKeyID: apiKeyID, UserID: input.UserID,
-		LogicalRequestID: input.RequestID, EndpointFamily: "media_tasks",
-		NormalizedPayloadHash: payloadHash(input.InputParams), RequestedModel: input.TaskType,
-		BillingPolicyVersion: version, RequestClass: requestClass,
-	})
-}
-
-func payloadHash(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
-}
-
-func holdRef(claimID int64) string {
-	return "claim:" + strconv.FormatInt(claimID, 10)
-}
-
-func claimIDFromHoldRef(ref string) (int64, error) {
-	raw := strings.TrimPrefix(strings.TrimSpace(ref), "claim:")
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("%w: hold_ref", ErrInvalidInput)
-	}
-	return id, nil
-}
-
-func stringPtr(v string) *string {
-	return &v
+	return ids[0], nil
 }

@@ -64,6 +64,54 @@ RETURNING`+orderSelectColumns,
 	return scanOrder(row)
 }
 
+func acquireRechargeCapLockTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) error {
+	if rec.RechargeMaxPending <= 0 && rec.RechargeDailyLimitCents <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::bigint::text || ':' || $2::bigint::text, 0))`,
+		rec.TenantID, rec.UserID); err != nil {
+		return fmt.Errorf("payment: recharge cap lock: %w", err)
+	}
+	return nil
+}
+
+func recheckRechargeCapsAfterInsertTx(ctx context.Context, tx pgx.Tx, rec createOrderRecord) error {
+	if rec.RechargeMaxPending <= 0 && rec.RechargeDailyLimitCents <= 0 {
+		return nil
+	}
+	if rec.RechargeMaxPending > 0 {
+		var pending int
+		if err := tx.QueryRow(ctx, `
+SELECT COUNT(*)::int
+FROM payment_orders
+WHERE tenant_id=$1 AND user_id=$2 AND status='pending'
+  AND (expires_at IS NULL OR expires_at > $3)`, rec.TenantID, rec.UserID, rec.Now).Scan(&pending); err != nil {
+			return fmt.Errorf("payment: recharge pending recheck: %w", err)
+		}
+		if pending > rec.RechargeMaxPending {
+			return ErrPendingLimit
+		}
+	}
+	if rec.RechargeDailyLimitCents > 0 {
+		start := time.Date(rec.Now.Year(), rec.Now.Month(), rec.Now.Day(), 0, 0, 0, 0, time.UTC)
+		var used int64
+		if err := tx.QueryRow(ctx, `
+SELECT COALESCE(SUM(amount_cents), 0)::bigint
+FROM payment_orders
+WHERE tenant_id=$1 AND user_id=$2 AND created_at >= $3
+  AND (status IN ('paid', 'recharging', 'completed')
+       OR (status = 'pending' AND (expires_at IS NULL OR expires_at > $4)))`,
+			rec.TenantID, rec.UserID, start, rec.Now).Scan(&used); err != nil {
+			return fmt.Errorf("payment: recharge daily recheck: %w", err)
+		}
+		if used > rec.RechargeDailyLimitCents {
+			return ErrDailyAmountLimit
+		}
+	}
+	return nil
+}
+
 func getOrderByOutTradeNoTx(ctx context.Context, tx pgx.Tx, tenantID int64, outTradeNo string) (Order, error) {
 	row := tx.QueryRow(ctx, `SELECT`+orderSelectColumns+`
 FROM payment_orders WHERE tenant_id=$1 AND out_trade_no=$2`, tenantID, outTradeNo)
@@ -169,6 +217,18 @@ FROM credits, refunds`, tenantID, userID).Scan(&balance); err != nil {
 		return 0, fmt.Errorf("payment: read balance: %w", err)
 	}
 	return balance, nil
+}
+
+func lockPaymentUserTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) error {
+	var one int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, userID).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUserNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("payment: lock user: %w", err)
+	}
+	return nil
 }
 
 func syncLegacyUserBalanceTx(ctx context.Context, tx pgx.Tx, tenantID, userID, amountCents int64, now time.Time) error {

@@ -26,6 +26,7 @@ func TestSubmitUsesSessionIdentityAndReturns202(t *testing.T) {
 		"tenant_id":999,
 		"user_id":666,
 		"request_id":"req-11",
+		"api_key_id":81,
 		"task_type":"image_generation",
 		"provider":"http",
 		"input_params":{"prompt":"x"}
@@ -42,6 +43,9 @@ func TestSubmitUsesSessionIdentityAndReturns202(t *testing.T) {
 	call := service.submitCalls[0]
 	if call.tenantID != 7 || call.userID != 42 || call.input.RequestID != "req-11" {
 		t.Fatalf("submit call=%+v", call)
+	}
+	if call.input.APIKeyID != 81 {
+		t.Fatalf("submit api_key_id=%d want 81", call.input.APIKeyID)
 	}
 	var body submitResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -199,6 +203,7 @@ func TestServiceErrorsMapToHTTP(t *testing.T) {
 		{name: "not_found", err: mediatask.ErrNotFound, want: http.StatusNotFound},
 		{name: "provider_unavailable", err: mediatask.ErrProviderUnavailable, want: http.StatusBadRequest},
 		{name: "no_active_key", err: mediatask.ErrNoActiveAPIKey, want: http.StatusConflict},
+		{name: "ambiguous_key", err: mediatask.ErrAPIKeyAmbiguous, want: http.StatusConflict},
 		{name: "request_conflict", err: mediatask.ErrRequestIDConflict, want: http.StatusConflict},
 		{name: "backend", err: errors.New("db down"), want: http.StatusServiceUnavailable},
 	}
@@ -212,5 +217,13 @@ func TestServiceErrorsMapToHTTP(t *testing.T) {
 				t.Fatalf("status=%d body=%s want %d", rec.Code, rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestMultipleKeysReturnStableConflictCode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeServiceError(rec, mediatask.ErrAPIKeyAmbiguous)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"media_task_api_key_ambiguous"`) {
+		t.Fatalf("status=%d body=%s want 409 media_task_api_key_ambiguous", rec.Code, rec.Body.String())
 	}
 }

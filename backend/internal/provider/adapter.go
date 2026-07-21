@@ -162,7 +162,31 @@ func EndpointForBuildInput(adapterDefault string, in BuildInput) (string, error)
 		u.RawPath = ""
 		defaultEndpoint = u.String()
 	}
-	return EndpointForCredential(defaultEndpoint, in.Credential)
+	endpoint, err := EndpointForCredential(defaultEndpoint, in.Credential)
+	if err != nil {
+		return "", err
+	}
+	query := strings.TrimSpace(in.EndpointQuery)
+	if query == "" {
+		return endpoint, nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("%w: invalid resolved endpoint", ErrUnsafePassthroughEndpoint)
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return "", fmt.Errorf("%w: invalid endpoint query", ErrUnsafePassthroughEndpoint)
+	}
+	merged := parsed.Query()
+	for key, entries := range values {
+		merged.Del(key)
+		for _, value := range entries {
+			merged.Add(key, value)
+		}
+	}
+	parsed.RawQuery = merged.Encode()
+	return parsed.String(), nil
 }
 
 func EndpointWithQueryParamIfMissing(endpoint, key, value string) (string, error) {
@@ -226,6 +250,9 @@ func apiEndpointSuffix(path string) string {
 
 // BuildInput 是 BuildRequest 的入参。
 type BuildInput struct {
+	// HTTPMethod 可选覆盖适配器默认请求方法。只有明确支持该字段的适配器
+	// 才会消费；空值保持原行为。
+	HTTPMethod string
 	// UpstreamModelID 上游真实 model id（registry 已解析；如 binding 重写
 	// 后的 "gpt-4o-2024-08-06"）。Adapter 把它写入出站 body 或 query。
 	UpstreamModelID string
@@ -238,6 +265,10 @@ type BuildInput struct {
 	// EndpointPath 可选覆盖 adapter 默认 endpoint path。空值保持 adapter
 	// 默认；OpenAI-compatible embeddings passthrough 使用 "/v1/embeddings"。
 	EndpointPath string
+	// EndpointQuery 携带内部生成并完成结构化编码的查询参数。它与
+	// EndpointPath 分离，避免把问号和参数误写进 URL path；客户端原始查询串
+	// 不得直接传入本字段。
+	EndpointQuery string
 	// Credential 凭据。
 	Credential Credential
 	// Account 池中选中的 account。

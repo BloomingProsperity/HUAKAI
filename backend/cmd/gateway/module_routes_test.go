@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
+	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
@@ -22,6 +26,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
@@ -40,7 +45,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 	d := &deps{
 		// queries 为 nil -> Resolve 返回 ErrAdminBackend(fail-closed 503),
 		// 与 Hermes admin-gate 测试所依赖的行为完全一致。
-		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil),
+		adminAuth:      adminsessionauth.New(admin.NewAdminResolver(nil), nil, nil, nil, tenancy.DefaultWorkingTenantID),
 		moduleRegistry: moduleregistry.New(),
 	}
 	r := chi.NewRouter()
@@ -62,7 +67,7 @@ func TestModulesEndpointIsAdminGated(t *testing.T) {
 }
 
 // TestModulesEndpointReturnsSeededModulesForAdmin —— 在 gate 被满足时
-//(注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
+// (注入了一个 platform-admin 身份),合并后的 handler 返回 live 播种项。
 // 这用一个由 buildModuleRegistry 播种的真实 registry(而非 fake)来检验
 // handler+source 的接线,因此播种注册中的回归(例如漏了一次 Register 调用)
 // 会在这里变红。
@@ -98,6 +103,9 @@ func TestModulesEndpointReturnsSeededModulesForAdmin(t *testing.T) {
 	for _, m := range resp.Modules {
 		if m.ID == "billing.service" && m.Catalog != nil && m.Catalog.FeatureID != "" {
 			sawBillingOverlay = true
+			if m.Activation == nil || len(m.Activation.Endpoints) != len(sharedGatewayEndpoints(false)) {
+				t.Fatalf("billing activation=%+v，逐入口接线事实缺失", m.Activation)
+			}
 		}
 	}
 	if !sawBillingOverlay {
@@ -386,4 +394,103 @@ func TestModulesRegistryWiresSyncAndMedia(t *testing.T) {
 			t.Fatalf("%s 未接线时探针应 StatusDegraded,got %v", id, m.LiveProbe.Status)
 		}
 	}
+}
+
+func TestModulesRegistryActivationDoesNotOverstateEndpointCoverage(t *testing.T) {
+	cache := l2cache.NewMemoryStore(1<<20, time.Minute)
+	views := moduleViewsForTest(t, &deps{responseCache: cache})
+
+	queue := views["queue.wait"]
+	if queue.LiveProbe.Status != moduleregistry.StatusOK {
+		t.Fatalf("handler 默认等待器应保持可用，probe=%+v", queue.LiveProbe)
+	}
+	assertModuleEndpoint(t, queue, "chat", false, true)
+	assertModuleEndpoint(t, queue, "gemini", false, false)
+
+	responseCache := views["response.cache"]
+	assertModuleEndpoint(t, responseCache, "chat", true, true)
+	assertModuleEndpoint(t, responseCache, "gemini", false, false)
+}
+
+func TestModulesRegistrySettlementRecoveryRequiresRegisteredHandler(t *testing.T) {
+	service := legacydlq.NewService(nil)
+	before := moduleViewsForTest(t, &deps{dlqService: service})["settlement.recovery"]
+	if before.Activation == nil || before.Activation.Active == nil || *before.Activation.Active {
+		t.Fatalf("未注册恢复处理器时不得宣称激活: %+v", before.Activation)
+	}
+
+	service.Register(legacydlq.EventKindPostDeliverySettlement, func(context.Context, legacydlq.Record) error { return nil })
+	after := moduleViewsForTest(t, &deps{dlqService: service})["settlement.recovery"]
+	if after.Activation == nil || after.Activation.Active == nil || !*after.Activation.Active {
+		t.Fatalf("注册恢复处理器后应报告激活: %+v", after.Activation)
+	}
+	assertModuleEndpoint(t, after, "embeddings", true, true)
+	assertModuleEndpoint(t, after, "rerank", true, true)
+}
+
+func moduleViewsForTest(t *testing.T, d *deps) map[string]modulehttp.ModuleView {
+	t.Helper()
+	h := modulehttp.NewModulesHandler(newModuleSource(buildModuleRegistry(d)))
+	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/modules", nil))
+	var resp modulehttp.ModulesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析模块响应: %v", err)
+	}
+	views := make(map[string]modulehttp.ModuleView, len(resp.Modules))
+	for _, module := range resp.Modules {
+		views[module.ID] = module
+	}
+	return views
+}
+
+func assertModuleEndpoint(t *testing.T, module modulehttp.ModuleView, name string, injected, active bool) {
+	t.Helper()
+	if module.Activation == nil {
+		t.Fatalf("module=%s 缺少激活快照", module.ID)
+	}
+	for _, endpoint := range module.Activation.Endpoints {
+		if endpoint.Name != name {
+			continue
+		}
+		if endpoint.Injected == nil || *endpoint.Injected != injected || endpoint.Active == nil || *endpoint.Active != active {
+			t.Fatalf("module=%s endpoint=%s activation=%+v want injected=%v active=%v", module.ID, name, endpoint, injected, active)
+		}
+		return
+	}
+	t.Fatalf("module=%s 缺少 endpoint=%s", module.ID, name)
+}
+
+func TestModuleActivationOpenAPIContract(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	spec := string(raw)
+	for _, path := range []string{"/admin/v1/modules", "/v1/admin/modules", "/v1/hermes/context"} {
+		block := openAPIBlock(spec, "  "+path+":", "\n  /")
+		if !strings.Contains(block, "$ref: '#/components/schemas/ModulesResponse'") {
+			t.Fatalf("OpenAPI %s 未引用 ModulesResponse", path)
+		}
+	}
+	for _, schema := range []string{
+		"ModuleActivationEndpoint", "ModuleActivationSnapshot", "ModuleProbeResult",
+		"ModuleCatalogOverlay", "ModuleView", "ModulesResponse",
+	} {
+		if !strings.Contains(spec, "\n    "+schema+":\n") {
+			t.Fatalf("OpenAPI 缺少 schema %s", schema)
+		}
+	}
+}
+
+func openAPIBlock(spec, startMarker, nextMarker string) string {
+	start := strings.Index(spec, "\n"+startMarker+"\n")
+	if start < 0 {
+		return ""
+	}
+	block := spec[start+1:]
+	if end := strings.Index(block[len(startMarker)+1:], nextMarker); end >= 0 {
+		return block[:len(startMarker)+1+end]
+	}
+	return block
 }

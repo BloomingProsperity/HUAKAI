@@ -109,6 +109,13 @@ type SettleRequest struct {
 	StreamAttempt       *Attempt
 	Fingerprint         string
 	AuditRequestID      string
+	// AuditRouteID 与 AuditPoolGroupID 保存本次实际路由事实，供结算后的
+	// 六跳日志链和失败恢复重建使用；它们不参与价格计算或账号选择。
+	AuditRouteID     string
+	AuditPoolGroupID int64
+	// AuditProviderEndpoint 只允许保存协议端点路径或不含凭据的固定地址，
+	// 禁止写入 query、Authorization 或任何账号秘密。
+	AuditProviderEndpoint string
 	// EmitSchedulerOutbox 请求在 Tx2 内写一条 account_quota_changed 的
 	// scheduler_outbox 行。它是一个 serializable 意图而非回调,因此投递后的
 	// 结算恢复可以重放同样的 outbox 效果。

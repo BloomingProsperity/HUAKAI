@@ -12,9 +12,14 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
+	providergemini "github.com/BloomingProsperity/HUAKAI/internal/provider/gemini"
 )
 
 const (
+	ProjectProfileAntigravity      = "antigravity"
+	ProjectProfileGeminiCodeAssist = "gemini_code_assist"
+
 	defaultAntigravityCloudCodeEndpoint = "https://cloudcode-pa.googleapis.com"
 	defaultAntigravityDailyEndpoint     = "https://daily-cloudcode-pa.googleapis.com"
 	defaultProjectPollAttempts          = 5
@@ -23,6 +28,8 @@ const (
 )
 
 var errAntigravityProjectMissing = errors.New("antigravity project: 上游未返回 project_id")
+
+var errGeminiCodeAssistProjectMissing = errors.New("gemini code assist project: 上游未返回 project_id")
 
 // ProjectResolver 通过 Cloud Code 初始化接口取得生成请求必需的 project_id。
 // Endpoint 字段只供受控 wiring 与测试覆盖，不从凭据 payload 读取。
@@ -44,11 +51,33 @@ func (r *ProjectResolver) ResolveProjectID(ctx context.Context, accessToken stri
 // ResolveProjectMetadata 先查询现有 Code Assist 配置，同时提取套餐层级；尚未分配
 // project 时，转到 daily 端点执行 onboardUser，并在有限次数内轮询结果。
 func (r *ProjectResolver) ResolveProjectMetadata(ctx context.Context, accessToken string) (string, string, error) {
-	accessToken = strings.TrimSpace(accessToken)
-	if accessToken == "" {
-		return "", "", errors.New("antigravity project: access_token 不能为空")
-	}
+	return r.ResolveProjectMetadataForProfile(ctx, ProjectProfileAntigravity, accessToken)
+}
 
+// ResolveProjectMetadataForProfile 按账号模式使用对应的 Cloud Code 初始化合同。
+func (r *ProjectResolver) ResolveProjectMetadataForProfile(ctx context.Context, profile, accessToken string) (string, string, error) {
+	return r.ResolveProjectMetadataForProfileAndProject(ctx, profile, accessToken, "")
+}
+
+// ResolveProjectMetadataForProfileAndProject 把部署者提供的项目标识纳入
+// 上游验证与初始化，不会用其他账号或其他模式的项目代替。
+func (r *ProjectResolver) ResolveProjectMetadataForProfileAndProject(ctx context.Context, profile, accessToken, projectRef string) (string, string, error) {
+	accessToken = strings.TrimSpace(accessToken)
+	projectRef = strings.TrimSpace(projectRef)
+	if accessToken == "" {
+		return "", "", errors.New("cloud code project: access_token 不能为空")
+	}
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case ProjectProfileAntigravity:
+		return r.resolveAntigravityProjectMetadata(ctx, accessToken)
+	case ProjectProfileGeminiCodeAssist:
+		return r.resolveGeminiCodeAssistProjectMetadata(ctx, accessToken, projectRef)
+	default:
+		return "", "", fmt.Errorf("cloud code project: 不支持的账号模式 %q", profile)
+	}
+}
+
+func (r *ProjectResolver) resolveAntigravityProjectMetadata(ctx context.Context, accessToken string) (string, string, error) {
 	loadBody := map[string]any{
 		"metadata": map[string]string{"ideType": "ANTIGRAVITY"},
 	}
@@ -86,7 +115,87 @@ func (r *ProjectResolver) ResolveProjectMetadata(ctx context.Context, accessToke
 	return "", tier, fmt.Errorf("%w: onboardUser 已轮询 %d 次", errAntigravityProjectMissing, attempts)
 }
 
+func (r *ProjectResolver) resolveGeminiCodeAssistProjectMetadata(ctx context.Context, accessToken, projectRef string) (string, string, error) {
+	metadata := map[string]string{
+		"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI",
+	}
+	loadBody := map[string]any{"metadata": metadata}
+	if projectRef != "" {
+		metadata["duetProject"] = projectRef
+		loadBody["cloudaicompanionProject"] = projectRef
+	}
+	raw, err := r.postForProfile(ctx, r.primaryEndpoint(), "loadCodeAssist", accessToken,
+		loadBody, ProjectProfileGeminiCodeAssist)
+	if err != nil {
+		return "", "", err
+	}
+	tier := subscriptionTierFromResponse(raw)
+	if projectID := projectIDFromResponse(raw); projectID != "" {
+		return projectID, tier, nil
+	}
+	if currentTierPresent(raw) && projectRef != "" {
+		return projectRef, tier, nil
+	}
+	onboardTier, requiresProject := onboardingTierContractFromResponse(raw)
+	if onboardTier == "" {
+		if projectRef == "" {
+			return "", tier, fmt.Errorf("%w: 当前账号没有托管项目", projectenrich.ErrProjectInputRequired)
+		}
+		return "", tier, fmt.Errorf("%w: 当前账号需要明确的 Google Cloud 项目或没有可用套餐", errGeminiCodeAssistProjectMissing)
+	}
+	if requiresProject && projectRef == "" {
+		return "", tier, fmt.Errorf("%w: 套餐 %s 要求自带 Google Cloud 项目", projectenrich.ErrProjectInputRequired, onboardTier)
+	}
+	if tier == "" {
+		tier = onboardTier
+	}
+	onboardBody := map[string]any{"tierId": onboardTier, "metadata": metadata}
+	if requiresProject {
+		onboardBody["cloudaicompanionProject"] = projectRef
+	}
+	raw, err = r.postForProfile(ctx, r.primaryEndpoint(), "onboardUser", accessToken, onboardBody, ProjectProfileGeminiCodeAssist)
+	if err != nil {
+		return "", tier, err
+	}
+	if projectID := projectIDFromResponse(raw); projectID != "" {
+		return projectID, tier, nil
+	}
+	if operationDone(raw) && projectRef != "" {
+		return projectRef, tier, nil
+	}
+	operationName := operationNameFromResponse(raw)
+	if operationName == "" {
+		return "", tier, fmt.Errorf("%w: 初始化响应既没有项目也没有异步任务", errGeminiCodeAssistProjectMissing)
+	}
+	for attempt := 0; attempt < r.pollAttempts(); attempt++ {
+		if err := r.waitForNextPoll(ctx); err != nil {
+			return "", tier, err
+		}
+		raw, err = r.getOperation(ctx, r.primaryEndpoint(), operationName, accessToken, ProjectProfileGeminiCodeAssist)
+		if err != nil {
+			return "", tier, err
+		}
+		if observedTier := subscriptionTierFromResponse(raw); observedTier != "" {
+			tier = observedTier
+		}
+		if projectID := projectIDFromResponse(raw); projectID != "" {
+			return projectID, tier, nil
+		}
+		if operationDone(raw) {
+			if projectRef != "" {
+				return projectRef, tier, nil
+			}
+			break
+		}
+	}
+	return "", tier, fmt.Errorf("%w: 异步初始化未返回项目", errGeminiCodeAssistProjectMissing)
+}
+
 func (r *ProjectResolver) post(ctx context.Context, base, action, accessToken string, payload any) ([]byte, error) {
+	return r.postForProfile(ctx, base, action, accessToken, payload, ProjectProfileAntigravity)
+}
+
+func (r *ProjectResolver) postForProfile(ctx context.Context, base, action, accessToken string, payload any, profile string) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("antigravity project: %s 请求编码失败: %w", action, err)
@@ -99,8 +208,31 @@ func (r *ProjectResolver) post(ctx context.Context, base, action, accessToken st
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	ApplyCloudCodeHeaders(req.Header)
+	applyProjectHeaders(req.Header, profile)
+	return r.do(req, action)
+}
 
+func (r *ProjectResolver) getOperation(ctx context.Context, base, name, accessToken, profile string) ([]byte, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(base), "/") + "/v1internal/" + strings.TrimLeft(strings.TrimSpace(name), "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("cloud code project: 构造异步任务查询失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	applyProjectHeaders(req.Header, profile)
+	return r.do(req, "getOperation")
+}
+
+func applyProjectHeaders(header http.Header, profile string) {
+	if profile == ProjectProfileGeminiCodeAssist {
+		providergemini.ApplyCodeAssistHeaders(header)
+		return
+	}
+	ApplyCloudCodeHeaders(header)
+}
+
+func (r *ProjectResolver) do(req *http.Request, action string) ([]byte, error) {
 	resp, err := r.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("antigravity project: %s 请求失败: %w", action, err)
@@ -181,8 +313,15 @@ func projectIDFromNode(node any) string {
 	switch value := node.(type) {
 	case map[string]any:
 		for _, key := range []string{"cloudaicompanionProject", "project_id", "projectId"} {
-			if projectID, ok := value[key].(string); ok && strings.TrimSpace(projectID) != "" {
-				return strings.TrimSpace(projectID)
+			switch project := value[key].(type) {
+			case string:
+				if strings.TrimSpace(project) != "" {
+					return strings.TrimSpace(project)
+				}
+			case map[string]any:
+				if id, ok := project["id"].(string); ok && strings.TrimSpace(id) != "" {
+					return strings.TrimSpace(id)
+				}
 			}
 		}
 		// onboardUser 可能把最终载荷置于异步操作 envelope 中，只沿已知
@@ -238,4 +377,49 @@ func subscriptionTierFromNode(node any) string {
 		}
 	}
 	return ""
+}
+
+func onboardingTierContractFromResponse(raw []byte) (string, bool) {
+	var decoded map[string]any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return "", false
+	}
+	tiers, _ := decoded["allowedTiers"].([]any)
+	for _, item := range tiers {
+		tier, _ := item.(map[string]any)
+		isDefault, _ := tier["isDefault"].(bool)
+		id, _ := tier["id"].(string)
+		if isDefault && strings.TrimSpace(id) != "" {
+			requiresProject, _ := tier["userDefinedCloudaicompanionProject"].(bool)
+			return strings.TrimSpace(id), requiresProject
+		}
+	}
+	return "", false
+}
+
+func currentTierPresent(raw []byte) bool {
+	var decoded map[string]any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return false
+	}
+	_, ok := decoded["currentTier"].(map[string]any)
+	return ok
+}
+
+func operationNameFromResponse(raw []byte) string {
+	var decoded map[string]any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return ""
+	}
+	name, _ := decoded["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func operationDone(raw []byte) bool {
+	var decoded map[string]any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return false
+	}
+	done, _ := decoded["done"].(bool)
+	return done
 }

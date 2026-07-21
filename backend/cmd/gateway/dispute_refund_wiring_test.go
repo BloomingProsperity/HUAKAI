@@ -30,12 +30,13 @@ func TestGatewayRuntimeBuildsAndStoresDisputeRefundResolver(t *testing.T) {
 		t.Fatalf("读取 wiring.go: %v", err)
 	}
 	source := string(raw)
+	normalized := strings.Join(strings.Fields(source), " ")
 	for _, required := range []string{
 		"auditreceipt.WithDisputeQuotaReverser(quotaReverser)",
 		"auditreceipt.NewCostDisputeResolver(pgPool, disputeRefundSettler, disputeResolverOpts...)",
-		"disputeResolver:      disputeResolver",
+		"disputeResolver: disputeResolver",
 	} {
-		if !strings.Contains(source, required) {
+		if !strings.Contains(normalized, required) {
 			t.Fatalf("生产 runtime 缺少争议退款接线 %q", required)
 		}
 	}

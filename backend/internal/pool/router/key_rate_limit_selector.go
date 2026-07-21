@@ -32,7 +32,8 @@ func NewKeyRateLimitSelector(inner Selector, counter *precheck.Counter, rpm, tpm
 }
 
 func (s *KeyRateLimitSelector) active(req SelectionRequest) bool {
-	return s.counter != nil && req.APIKeyID > 0 && (s.limits.RPM > 0 || s.limits.TPM > 0)
+	return req.RateAccountingScope != RateAccountingAccountOnly &&
+		s.counter != nil && req.APIKeyID > 0 && (s.limits.RPM > 0 || s.limits.TPM > 0)
 }
 
 func estTokens(req SelectionRequest) int64 {
@@ -89,7 +90,8 @@ func (s *BindingRateLimitSelector) limits(req SelectionRequest) precheck.Limits 
 // 至少一个维度设了正限额。任一不满足即 pass-through。
 func (s *BindingRateLimitSelector) active(req SelectionRequest) bool {
 	lim := s.limits(req)
-	return s.counter != nil && req.BindingID > 0 && (lim.RPM > 0 || lim.TPM > 0)
+	return req.RateAccountingScope != RateAccountingAccountOnly &&
+		s.counter != nil && req.BindingID > 0 && (lim.RPM > 0 || lim.TPM > 0)
 }
 
 func (s *BindingRateLimitSelector) Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error) {

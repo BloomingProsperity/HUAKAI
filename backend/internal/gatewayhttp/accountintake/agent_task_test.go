@@ -3,7 +3,9 @@ package accountintake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/projectenrich"
@@ -68,6 +70,68 @@ func TestPrepareExecutionCandidateEnrichesBothAntigravityStorageModes(t *testing
 	}
 }
 
+func TestPrepareExecutionCandidateEnrichesGeminiCodeAssist(t *testing.T) {
+	enricher := &projectEnricherStub{result: projectenrich.Result{
+		Payload:             []byte(`{"access_token":"new","project_id":"project-1","subscription_tier_raw":"free-tier"}`),
+		SubscriptionTierRaw: "free-tier", SubscriptionVerified: true,
+	}}
+	candidate, err := (&Service{}).WithProjectEnricher(enricher).prepareExecutionCandidate(context.Background(), credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+		Payload: []byte(`{"access_token":"old"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enricher.calls != 1 || enricher.vendor != projectenrich.ProfileGeminiCodeAssist {
+		t.Fatalf("补齐调用=%d profile=%q", enricher.calls, enricher.vendor)
+	}
+	if candidate.Subscription.Vendor != subscriptionprofile.VendorGemini ||
+		candidate.Subscription.Source != subscriptionprofile.SourceProviderAPI {
+		t.Fatalf("Code Assist 套餐投影=%+v", candidate.Subscription)
+	}
+}
+
+func TestPrepareExecutionCandidateRefreshesExpiredCredentialBeforeProjectLookup(t *testing.T) {
+	refresher := &importCredentialRefresherStub{payload: []byte(`{
+		"access_token":"fresh","refresh_token":"refresh","expires_at":"2099-01-01T00:00:00Z"
+	}`)}
+	enricher := &projectEnricherStub{result: projectenrich.Result{
+		Payload: []byte(`{"access_token":"fresh","project_id":"project-1"}`),
+	}}
+	candidate, err := (&Service{}).
+		WithImportCredentialRefresher(refresher).
+		WithProjectEnricher(enricher).
+		prepareExecutionCandidate(context.Background(), credentialacq.CredentialCandidate{
+			Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+			Payload: []byte(`{"access_token":"expired","refresh_token":"refresh","expires_at":"2020-01-01T00:00:00Z"}`),
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refresher.calls != 1 || !strings.Contains(string(enricher.payload), `"access_token":"fresh"`) {
+		t.Fatalf("刷新/项目补齐顺序错误: refresh_calls=%d enrich_payload=%s", refresher.calls, enricher.payload)
+	}
+	if !strings.Contains(string(candidate.Payload), `"project_id":"project-1"`) {
+		t.Fatalf("最终候选未保留项目身份: %s", candidate.Payload)
+	}
+}
+
+func TestPrepareExecutionCandidateRejectsExpiredCredentialWhenRefreshFails(t *testing.T) {
+	input := credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+		Payload: []byte(`{"access_token":"expired","refresh_token":"refresh","expires_at":"2020-01-01T00:00:00Z"}`),
+	}
+	_, err := (&Service{}).WithImportCredentialRefresher(&importCredentialRefresherStub{err: errors.New("refresh denied")}).
+		prepareExecutionCandidate(context.Background(), input)
+	if !errors.Is(err, ErrImportCredentialRefreshFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	status, code, _ := preparationFailure(input, err)
+	if status != StatusFailed || code != "credential_refresh_failed" {
+		t.Fatalf("status/code=%q/%q", status, code)
+	}
+}
+
 func TestPrepareExecutionCandidateRejectsAntigravityProjectConflict(t *testing.T) {
 	enricher := &projectEnricherStub{
 		result: projectenrich.Result{Payload: []byte(`{"project_metadata_status":"conflict"}`), SubscriptionConflict: true},
@@ -98,6 +162,22 @@ func TestPrepareExecutionCandidateFailsClosedWithoutAntigravityProjectEnricher(t
 	status, code, _ := preparationFailure(candidate, err)
 	if status != StatusFailed || code != "project_metadata_unavailable" {
 		t.Fatalf("status=%q code=%q", status, code)
+	}
+}
+
+func TestPreparationFailureReportsRequiredGoogleCloudProject(t *testing.T) {
+	candidate := credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
+	}
+	status, code, message := preparationFailure(candidate, errors.Join(
+		projectenrich.ErrProjectMetadataUnavailable,
+		projectenrich.ErrProjectInputRequired,
+	))
+	if status != StatusFailed || code != "project_id_required" {
+		t.Fatalf("status/code=%q/%q", status, code)
+	}
+	if !strings.Contains(message, "project_id") {
+		t.Fatalf("message=%q，必须给出可操作的项目字段", message)
 	}
 }
 
@@ -147,16 +227,35 @@ type agentTaskRegistrarStub struct {
 }
 
 type projectEnricherStub struct {
-	result projectenrich.Result
-	err    error
-	calls  int
-	vendor string
+	result  projectenrich.Result
+	err     error
+	calls   int
+	vendor  string
+	payload []byte
 }
 
-func (s *projectEnricherStub) Enrich(_ context.Context, vendor string, _ []byte) (projectenrich.Result, error) {
+func (s *projectEnricherStub) Enrich(_ context.Context, vendor string, payload []byte) (projectenrich.Result, error) {
 	s.calls++
 	s.vendor = vendor
+	s.payload = append([]byte(nil), payload...)
 	return s.result, s.err
+}
+
+type importCredentialRefresherStub struct {
+	payload []byte
+	err     error
+	calls   int
+}
+
+func (s *importCredentialRefresherStub) RefreshImportCredential(
+	_ context.Context, candidate credentialacq.CredentialCandidate, _ time.Time,
+) (credentialacq.CredentialCandidate, error) {
+	s.calls++
+	if s.err != nil {
+		return candidate, s.err
+	}
+	candidate.Payload = append([]byte(nil), s.payload...)
+	return candidate, nil
 }
 
 func (s *agentTaskRegistrarStub) EnsureTask(context.Context, []byte) ([]byte, error) {

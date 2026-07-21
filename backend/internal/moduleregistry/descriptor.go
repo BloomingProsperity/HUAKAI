@@ -16,7 +16,7 @@ package moduleregistry
 import "context"
 
 // ProbeStatus 是 HealthProbe 可上报的封闭枚举。它刻意做得很小,以便运维人员
-//(或助手)无需解析自由文本即可对其进行推理。探针无法确定的任何情况都归为
+// (或助手)无需解析自由文本即可对其进行推理。探针无法确定的任何情况都归为
 // "unknown",这与一个正在失败的 "error" 截然不同。
 type ProbeStatus string
 
@@ -45,6 +45,26 @@ type ProbeResult struct {
 // 转为 StatusError 结果,这样一个坏探针就无法拖垮运维视图。
 type HealthProbe func(ctx context.Context) ProbeResult
 
+type ActivationEndpoint struct {
+	Name     string `json:"name"`
+	Injected *bool  `json:"injected,omitempty"`
+	Active   *bool  `json:"active,omitempty"`
+}
+
+type ActivationSnapshot struct {
+	Declared       *bool                `json:"declared,omitempty"`
+	Constructed    *bool                `json:"constructed,omitempty"`
+	Injected       *bool                `json:"injected,omitempty"`
+	Active         *bool                `json:"active,omitempty"`
+	SharedSafe     *bool                `json:"shared_safe,omitempty"`
+	Observable     *bool                `json:"observable,omitempty"`
+	Verified       *bool                `json:"verified,omitempty"`
+	Backend        string               `json:"backend,omitempty"`
+	Mode           string               `json:"mode,omitempty"`
+	TrafficPercent *int                 `json:"traffic_percent,omitempty"`
+	Endpoints      []ActivationEndpoint `json:"endpoints,omitempty"`
+}
+
 // ModuleDescriptor 是一个 HUAKAI 子系统的静态身份,外加一个可选的实时探针。
 // ID 是稳定的点分字符串(例如 "billing.service"),因此能在重构中存活,并能
 // 从文档、静态 catalog 和助手的上下文中被引用。
@@ -58,6 +78,8 @@ type ModuleDescriptor struct {
 	Title string `json:"title"`
 	// Capabilities 用运维人员的术语简短列出该模块做什么。
 	Capabilities []string `json:"capabilities,omitempty"`
+	// Activation 只描述当前进程真实接线；nil 表示尚未提供结构化激活事实。
+	Activation *ActivationSnapshot `json:"activation,omitempty"`
 	// HealthProbe 是可选的。为 nil 时,Snapshot 对该模块报告 StatusUnknown
 	//(没有探针不算错误)。
 	HealthProbe HealthProbe `json:"-"`

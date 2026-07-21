@@ -38,6 +38,7 @@ func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, reques
 		APIKeyID:             ex.ident.APIKeyID,
 		PoolGroupID:          ex.attempt.PoolGroupID,
 		RequestedModel:       requestedModel,
+		ProviderModelID:      ex.upstreamModelID,
 		ModelCooldownKey:     ex.upstreamModelID,
 		ProtocolFamily:       ex.resolved.ProtocolFamily,
 		EndpointFamily:       ex.endpointFamily,

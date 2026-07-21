@@ -145,6 +145,30 @@ func TestDispatcher_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDispatcher_SetsOnlyValidatedInternalIdempotencyKey(t *testing.T) {
+	doer := &stubDoer{respStatus: 200, respBody: `{}`}
+	d := newDispatcherForTest(&stubAdapter{platform: "openai"}, doer)
+	input := DispatchInput{
+		ProtocolFamily: "openai_chat", UpstreamModelID: "gpt-4o",
+		InboundBody: []byte(`{"model":"gpt-4o"}`), IdempotencyKey: "huakai-task-123",
+		Account:    provider.AccountInfo{AccountID: 7, Platform: "openai", AccountType: "apikey"},
+		Credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
+	}
+	result, err := d.Dispatch(context.Background(), input)
+	if err != nil {
+		t.Fatalf("发送带内部幂等键的请求: %v", err)
+	}
+	_ = result.Close()
+	if got := doer.got.Header.Get("Idempotency-Key"); got != input.IdempotencyKey {
+		t.Fatalf("Idempotency-Key=%q，期望 %q", got, input.IdempotencyKey)
+	}
+
+	input.IdempotencyKey = "bad\r\nvalue"
+	if _, err := d.Dispatch(context.Background(), input); err == nil {
+		t.Fatal("包含换行的内部幂等键必须在发网前被拒绝")
+	}
+}
+
 func TestDispatcher_PassesInboundContentTypeToAdapter(t *testing.T) {
 	doer := &stubDoer{respStatus: 200, respBody: "{}"}
 	adapter := &stubAdapter{platform: "openai"}
@@ -502,6 +526,7 @@ func TestResolveDispatchTransportMatrix(t *testing.T) {
 	}{
 		{"Claude AI", "anthropic", credentialstore.AuthModeClaudeAIOAuth, "anthropic_claude_session", transport.ProviderAnthropic, transport.TransportModeMimicryClaudeCode},
 		{"Claude Code", "anthropic", credentialstore.AuthModeClaudeCode, "anthropic_claude_session", transport.ProviderAnthropic, transport.TransportModeMimicryClaudeCode},
+		{"Claude Setup Token", "anthropic", credentialstore.AuthModeClaudeSetupToken, "anthropic_claude_session", transport.ProviderAnthropic, transport.TransportModeMimicryClaudeCode},
 		{"Codex", "openai", credentialstore.AuthModeCodexCLIOAuth, "openai_codex", transport.ProviderOpenAICodex, transport.TransportModeMimicryChatGPT},
 		{"Gemini Advanced", "gemini", credentialstore.AuthModeGoogleOne, "gemini_advanced_session", transport.ProviderGeminiAdvanced, transport.TransportModeMimicryGeminiAdvanced},
 		{"Gemini Code Assist", "gemini", credentialstore.AuthModeCodeAssist, "gemini_code_assist", transport.ProviderGeminiCodeAssist, transport.TransportModeStandard},
@@ -511,6 +536,7 @@ func TestResolveDispatchTransportMatrix(t *testing.T) {
 		{"Kiro", "kiro", "session", "kiro_session", transport.ProviderKiro, transport.TransportModeMimicryKiro},
 		{"Windsurf", "windsurf", "session", "windsurf_session", transport.ProviderWindsurf, transport.TransportModeMimicryWindsurf},
 		{"OpenAI API key", "openai", credentialstore.AuthModeAPIKey, "openai_chat", transport.ProviderOpenAI, transport.TransportModeStandard},
+		{"Anthropic API key", "anthropic", credentialstore.AuthModeAPIKey, "anthropic_messages", transport.ProviderAnthropic, transport.TransportModeStandard},
 		{"Gemini API key", "gemini", credentialstore.AuthModeAIStudioAPIKey, "gemini_messages", transport.ProviderGemini, transport.TransportModeStandard},
 		{"Kimi API key", "kimi", credentialstore.AuthModeAPIKey, "kimi_chat", transport.ProviderKimi, transport.TransportModeStandard},
 	}

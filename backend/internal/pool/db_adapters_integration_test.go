@@ -563,6 +563,51 @@ func TestDBAccountSource_ListByPoolGroupFiltersProtocolFamily(t *testing.T) {
 	}
 }
 
+func TestDBAccountSourceUsesProviderModelForAccountAllowList(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pgPool := openIntegrationPool(t, ctx)
+	seed := seedAdapterGraph(t, ctx, pgPool, "src-provider-model")
+
+	var providerModelID string
+	if err := pgPool.QueryRow(ctx,
+		`SELECT default_provider_model_id FROM models WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, seed.modelID,
+	).Scan(&providerModelID); err != nil {
+		t.Fatalf("读取上游模型名: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx,
+		`UPDATE provider_accounts SET model_allow_list=$1 WHERE tenant_id=$2 AND id=$3`,
+		[]string{providerModelID}, seed.tenantID, seed.providerAccountID,
+	); err != nil {
+		t.Fatalf("设置账号上游模型白名单: %v", err)
+	}
+
+	source := NewDBAccountSource(dbbilling.New(pgPool))
+	request := SelectionRequest{
+		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID,
+		RequestedModel: "public-alias", ProviderModelID: providerModelID,
+		ProtocolFamily: "openai_chat",
+	}
+	accounts, err := source.ListAccounts(ctx, request)
+	if err != nil {
+		t.Fatalf("按上游模型筛选账号: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].ID != seed.providerAccountID {
+		t.Fatalf("accounts=%+v，期望命中上游模型白名单账号 %d", accounts, seed.providerAccountID)
+	}
+
+	// 判别性守卫：若账号源误用公开别名过滤，同一请求将没有候选。
+	request.ProviderModelID = ""
+	accounts, err = source.ListAccounts(ctx, request)
+	if err != nil {
+		t.Fatalf("兼容回退公开模型名: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("公开别名不应绕过上游模型白名单: %+v", accounts)
+	}
+}
+
 func TestDBAccountSource_ListByPoolGroupSkipsDisabledOrDeletedChannels(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

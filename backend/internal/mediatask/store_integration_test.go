@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	poolruntime "github.com/BloomingProsperity/HUAKAI/internal/pool"
 )
 
 func TestMediaTaskSubmitReservesOnce(t *testing.T) {
@@ -35,6 +39,73 @@ func TestMediaTaskSubmitReservesOnce(t *testing.T) {
 	balance, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
 	if !balance.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.RequireFromString("1.23")) {
 		t.Fatalf("balance/held=%s/%s want 10.00/1.23", balance, held)
+	}
+}
+
+func TestPostgresAccountRequestAdmitterUsesPersistedAccountRPM(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pg := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pg, "account-rate-admission")
+	_, accountID, _ := seedMediaProviderAccount(t, ctx, pg, seed.tenantID, "account-rate-admission")
+	if _, err := pg.Exec(ctx, `UPDATE provider_accounts SET rpm_limit=1, tpm_limit=0 WHERE id=$1 AND tenant_id=$2`, accountID, seed.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	admitter := NewPostgresAccountRequestAdmitter(pg, poolruntime.NewRatePrecheckCounter())
+	if err := admitter.Admit(ctx, seed.tenantID, accountID); err != nil {
+		t.Fatalf("第一次账号请求应放行: %v", err)
+	}
+	if err := admitter.Admit(ctx, seed.tenantID, accountID); !errors.Is(err, errAccountRequestRateLimited) {
+		t.Fatalf("第二次账号请求应命中 RPM: %v", err)
+	}
+}
+
+func TestMediaTaskSubmitRequiresExplicitKeyWhenUserHasMultipleActiveKeys(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pool, "multi-key")
+	var secondKeyID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+VALUES ($1,$2,$3,$4,$5,'active') RETURNING id`,
+		seed.tenantID, seed.userID, "key-multi-second", "$2a$10$media-placeholder",
+		fmt.Sprintf("hk_test_media_second_%d", time.Now().UnixNano()),
+	).Scan(&secondKeyID); err != nil {
+		t.Fatalf("seed second api key: %v", err)
+	}
+	svc := newIntegrationService(pool)
+
+	_, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-key-ambiguous"))
+	if !errors.Is(err, ErrAPIKeyAmbiguous) {
+		t.Fatalf("未指定 Key 的 Submit err=%v want ErrAPIKeyAmbiguous", err)
+	}
+	var taskCount, claimCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_tasks WHERE tenant_id=$1 AND request_id=$2`, seed.tenantID, "req-key-ambiguous").Scan(&taskCount); err != nil {
+		t.Fatalf("count ambiguous tasks: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM billing_ledger_claims WHERE tenant_id=$1 AND logical_request_id=$2`, seed.tenantID, "req-key-ambiguous").Scan(&claimCount); err != nil {
+		t.Fatalf("count ambiguous claims: %v", err)
+	}
+	if taskCount != 0 || claimCount != 0 {
+		t.Fatalf("冲突请求产生 task/claim=%d/%d want 0/0", taskCount, claimCount)
+	}
+
+	explicit := submitInput("req-key-explicit")
+	explicit.APIKeyID = secondKeyID
+	task, err := svc.Submit(ctx, seed.tenantID, seed.userID, explicit)
+	if err != nil {
+		t.Fatalf("显式 Key Submit: %v", err)
+	}
+	if task.APIKeyID != secondKeyID {
+		t.Fatalf("task api_key_id=%d want %d", task.APIKeyID, secondKeyID)
+	}
+
+	other := seedMediaUserInTenant(t, ctx, pool, seed.tenantID, "multi-key-other-user")
+	foreign := submitInput("req-key-foreign")
+	foreign.APIKeyID = other.apiKeyID
+	if _, err := svc.Submit(ctx, seed.tenantID, seed.userID, foreign); !errors.Is(err, ErrNoActiveAPIKey) {
+		t.Fatalf("跨用户 Key Submit err=%v want ErrNoActiveAPIKey", err)
 	}
 }
 
@@ -129,6 +200,13 @@ func TestMediaTaskSuccessZeroActualAnchorsToEstimate(t *testing.T) {
 	}
 	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("1.23"))
+	var actualCents int64
+	if err := pool.QueryRow(ctx, `SELECT actual_cents FROM media_tasks WHERE id=$1`, task.ID).Scan(&actualCents); err != nil {
+		t.Fatalf("读取媒体任务上游报告成本: %v", err)
+	}
+	if actualCents != 0 {
+		t.Fatalf("media_tasks.actual_cents=%d，期望保留上游未报告成本的 0；客户收费应从 claim 读取", actualCents)
+	}
 }
 
 // TestMediaTaskSuccessOverEstimateClampsToEstimate 锁住"成功任务的实际成本超过预估"
@@ -310,6 +388,180 @@ func TestMediaTaskWorkerFencing_NoDoubleSettle(t *testing.T) {
 	}
 }
 
+func TestDurablyBoundVideoUnifiedMoneySettlesExactAccountAndReleasesSlot(t *testing.T) {
+	tests := []struct {
+		name             string
+		provider         string
+		protocolFamily   string
+		requestedModel   string
+		providerModel    string
+		expectedEndpoint string
+	}{
+		{name: "Grok", provider: grokVideoProviderName, protocolFamily: "grok_chat", requestedModel: "grok-video", providerModel: "grok-imagine-video", expectedEndpoint: "/v1/videos/generations"},
+		{name: "Gemini", provider: geminiVideoProviderName, protocolFamily: "gemini_messages", requestedModel: "veo-video", providerModel: "veo-3.1-generate-preview", expectedEndpoint: "/v1beta/models/veo-3.1-generate-preview:predictLongRunning"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testDurablyBoundVideoUnifiedMoney(t, tt.provider, tt.protocolFamily, tt.requestedModel, tt.providerModel, tt.expectedEndpoint)
+		})
+	}
+}
+
+func TestMediaTaskDeferredLeaseIsNotRunnableBeforeRetryAt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pg := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pg, "deferred-lease")
+	store := newIntegrationService(pg).store.(*PostgresStore)
+	task, err := newIntegrationService(pg).Submit(ctx, seed.tenantID, seed.userID, submitInput("req-deferred-lease"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	now := time.Now().UTC()
+	leased, err := store.AcquireLease(ctx, "defer-worker", time.Minute, now)
+	if err != nil || leased.ID != task.ID {
+		t.Fatalf("AcquireLease: task=%d err=%v", leased.ID, err)
+	}
+	retryAt := now.Add(time.Minute)
+	if err := store.DeferLease(ctx, leased, "defer-worker", now, retryAt); err != nil {
+		t.Fatalf("DeferLease: %v", err)
+	}
+	if _, err := store.AcquireLease(ctx, "too-early", time.Minute, now.Add(30*time.Second)); !errors.Is(err, ErrNoRunnableTask) {
+		t.Fatalf("退避窗口内应无可运行任务: %v", err)
+	}
+	retried, err := store.AcquireLease(ctx, "retry-worker", time.Minute, retryAt)
+	if err != nil || retried.ID != task.ID {
+		t.Fatalf("到期后任务没有重新可运行: task=%d err=%v", retried.ID, err)
+	}
+}
+
+func testDurablyBoundVideoUnifiedMoney(t *testing.T, providerName, protocolFamily, requestedModel, providerModel, expectedEndpoint string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pg := openMediaPool(t, ctx)
+	seed := seedMediaUser(t, ctx, pg, providerName+"-unified-money")
+	poolGroupID, accountID, bindingID := seedMediaProviderAccount(t, ctx, pg, seed.tenantID, providerName+"-unified-money")
+	store := NewPostgresStore(pg, PostgresStoreConfig{
+		BillingPolicyVersion: "test-policy",
+		RequestClass:         "standard",
+		ClaimGate:            billing.NewClaimGate(pg),
+		Settler:              billing.NewSettler(pg),
+	})
+
+	task, hit, err := store.CreateTask(ctx, CreateTaskInput{
+		TenantID: seed.tenantID, UserID: seed.userID, APIKeyID: seed.apiKeyID,
+		RequestID: "req-" + providerName + "-unified-money", TaskType: "video_generate",
+		Provider: providerName, InputParams: []byte(fmt.Sprintf(`{"model":%q,"prompt":"x"}`, providerModel)),
+		EstimatedCents: 123, BillingPolicyVersion: "test-policy", RequestClass: "standard",
+		ProviderAccountID: accountID, PoolGroupID: poolGroupID, ProtocolFamily: protocolFamily,
+		RequestedModel: requestedModel, ProviderModelID: providerModel, RouteID: "route-" + providerName,
+		BindingID: bindingID, BindingRPMLimit: 9, BindingTPMLimit: 900, BindingMaxParallelRequests: 1,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if hit {
+		t.Fatal("首次创建不应命中幂等任务")
+	}
+	if task.BindingID != bindingID || task.BindingRPMLimit != 9 || task.BindingTPMLimit != 900 || task.BindingMaxParallelRequests != 1 {
+		t.Fatalf("任务没有持久化原绑定合同: %+v", task)
+	}
+	claimID := mustClaimID(t, task.HoldRef)
+	_, held := readBalance(t, ctx, pg, seed.tenantID, seed.userID)
+	if !held.Equal(decimal.RequireFromString("1.23")) {
+		t.Fatalf("预留后 held=%s want 1.23", held)
+	}
+
+	acquired, err := poolruntime.NewDBSlotManager(pg).Acquire(ctx, &poolruntime.AccountSnapshot{
+		ID: accountID, TenantID: seed.tenantID,
+	}, poolruntime.SelectionRequest{
+		TenantID: seed.tenantID, UserID: seed.userID, APIKeyID: seed.apiKeyID,
+		PoolGroupID: poolGroupID, ClaimID: claimID, AttemptSeq: 1,
+		BindingID: bindingID, BindingRPMLimit: 9, BindingTPMLimit: 900, MaxParallelRequests: 1,
+		RequestedModel: requestedModel, EndpointFamily: "media_tasks",
+	})
+	if err != nil {
+		t.Fatalf("Acquire slot: %v", err)
+	}
+	var storedBindingID int64
+	if err := pg.QueryRow(ctx, `
+SELECT binding_id FROM pool_slot_acquisitions WHERE acquisition_token=$1`, acquired.AcquisitionToken).Scan(&storedBindingID); err != nil {
+		t.Fatalf("读取绑定槽: %v", err)
+	}
+	if storedBindingID != bindingID {
+		t.Fatalf("槽位绑定=%d want %d", storedBindingID, bindingID)
+	}
+	if _, err := poolruntime.NewDBSlotManager(pg).Acquire(ctx, &poolruntime.AccountSnapshot{
+		ID: accountID, TenantID: seed.tenantID,
+	}, poolruntime.SelectionRequest{
+		TenantID: seed.tenantID, PoolGroupID: poolGroupID,
+		BindingID: bindingID, MaxParallelRequests: 1,
+	}); !errors.Is(err, poolruntime.ErrBindingConcurrencyLimited) {
+		t.Fatalf("同一绑定第二个并发槽必须拒绝: %v", err)
+	}
+	if err := poolruntime.NewDBClaimGate(dbbilling.New(pg)).WriteAcquisition(
+		ctx, seed.tenantID, claimID, accountID, acquired.AcquisitionToken,
+	); err != nil {
+		t.Fatalf("WriteAcquisition: %v", err)
+	}
+
+	leased := leaseTaskForTest(t, ctx, pg, task.ID, providerName+"-submit-worker")
+	if _, err := store.MarkProviderSubmitted(ctx, leased, providerName+"-submit-worker", "video-upstream-1", time.Now().UTC()); err != nil {
+		t.Fatalf("MarkProviderSubmitted: %v", err)
+	}
+	leased = leaseTaskForTest(t, ctx, pg, task.ID, providerName+"-poll-worker")
+	settled, err := store.CompleteSuccess(ctx, leased, providerName+"-poll-worker", PollResult{
+		Status: StatusSucceeded, Progress: 100, ActualCents: 77,
+		Result:           []byte(`{"url":"https://media.invalid/video.mp4"}`),
+		AcquisitionToken: acquired.AcquisitionToken,
+		RoutingReason:    []byte(`{"selected_account_id":1,"reason":"test"}`),
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("CompleteSuccess: %v", err)
+	}
+	if !settled {
+		t.Fatal("CompleteSuccess settled=false")
+	}
+
+	balance, held := readBalance(t, ctx, pg, seed.tenantID, seed.userID)
+	if !balance.Equal(decimal.RequireFromString("9.23")) || !held.Equal(decimal.Zero) {
+		t.Fatalf("balance/held=%s/%s want 9.23/0", balance, held)
+	}
+	assertTaskStatus(t, ctx, pg, task.ID, StatusSucceeded)
+	assertClaimStatusCost(t, ctx, pg, task.HoldRef, "committed", decimal.RequireFromString("0.77"))
+
+	var gotAPIKeyID, gotUserID, gotAccountID int64
+	var gotRequestedModel, gotUpstreamModel string
+	var gotCost decimal.Decimal
+	if err := pg.QueryRow(ctx, `
+SELECT api_key_id, user_id, provider_account_id, requested_model, upstream_model, actual_cost
+FROM usage_records
+WHERE tenant_id=$1 AND claim_id=$2`, seed.tenantID, claimID,
+	).Scan(&gotAPIKeyID, &gotUserID, &gotAccountID, &gotRequestedModel, &gotUpstreamModel, &gotCost); err != nil {
+		t.Fatalf("read usage record: %v", err)
+	}
+	if gotAPIKeyID != seed.apiKeyID || gotUserID != seed.userID || gotAccountID != accountID ||
+		gotRequestedModel != requestedModel || gotUpstreamModel != providerModel ||
+		!gotCost.Equal(decimal.RequireFromString("0.77")) {
+		t.Fatalf("usage 归属/模型/成本不一致: key=%d user=%d account=%d requested=%q upstream=%q cost=%s",
+			gotAPIKeyID, gotUserID, gotAccountID, gotRequestedModel, gotUpstreamModel, gotCost)
+	}
+	var inFlight int
+	var released int
+	if err := pg.QueryRow(ctx, `SELECT in_flight_count FROM provider_accounts WHERE tenant_id=$1 AND id=$2`, seed.tenantID, accountID).Scan(&inFlight); err != nil {
+		t.Fatalf("read account in_flight_count: %v", err)
+	}
+	if err := pg.QueryRow(ctx, `SELECT count(*) FROM pool_slot_acquisitions WHERE tenant_id=$1 AND claim_id=$2 AND status='released_success'`, seed.tenantID, claimID).Scan(&released); err != nil {
+		t.Fatalf("read released slot: %v", err)
+	}
+	if inFlight != 0 || released != 1 {
+		t.Fatalf("账号槽未收敛: in_flight=%d released_success=%d", inFlight, released)
+	}
+	if got := durableVideoSubmitEndpoint(task); got != expectedEndpoint {
+		t.Fatalf("结算日志端点=%q want %q", got, expectedEndpoint)
+	}
+}
+
 func TestMediaTaskSubmitAtomic_ReserveAndRowTogether(t *testing.T) {
 	// 变异：在媒体任务 insert 事务之外做 reserve；注入 insert 失败后 held 会停在 1.23。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -467,6 +719,92 @@ func seedMediaUserInTenant(t *testing.T, ctx context.Context, pool *pgxpool.Pool
 		t.Fatalf("seed balance: %v", err)
 	}
 	return seed
+}
+
+func seedMediaProviderAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID int64, suffix string) (int64, int64, int64) {
+	t.Helper()
+	unique := fmt.Sprintf("%s-%d", suffix, time.Now().UnixNano())
+	var providerID, poolGroupID, channelID, accountID, modelID, bindingID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO providers (tenant_id, code, display_name, upstream_protocol)
+VALUES ($1,$2,$3,'grok_chat') RETURNING id`, tenantID, "provider-"+unique, "Provider "+unique).Scan(&providerID); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO pool_groups (tenant_id, name) VALUES ($1,$2) RETURNING id`, tenantID, "pool-"+unique).Scan(&poolGroupID); err != nil {
+		t.Fatalf("seed pool group: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO channels (tenant_id, pool_group_id, name) VALUES ($1,$2,$3) RETURNING id`, tenantID, poolGroupID, "channel-"+unique).Scan(&channelID); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO provider_accounts (tenant_id, provider_id, channel_id, name, account_type, cap_concurrency, in_flight_count)
+VALUES ($1,$2,$3,$4,'api_key',5,0) RETURNING id`, tenantID, providerID, channelID, "account-"+unique).Scan(&accountID); err != nil {
+		t.Fatalf("seed provider account: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO models (tenant_id, scope, canonical_id, protocol_family, default_provider_model_id, default_context_window, status)
+VALUES ($1,'tenant',$2,'grok_chat',$2,128000,'active') RETURNING id`, tenantID, "model-"+unique).Scan(&modelID); err != nil {
+		t.Fatalf("seed model: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO model_pool_bindings (tenant_id, model_id, pool_group_id, priority, weight, enabled, rpm_limit, tpm_limit, max_parallel_requests)
+VALUES ($1,$2,$3,100,1,true,9,900,2) RETURNING id`, tenantID, modelID, poolGroupID).Scan(&bindingID); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		if err := cleanupUnifiedMediaMoneyRows(cleanupCtx, pool, tenantID); err != nil {
+			t.Errorf("清理统一媒体钱账数据: %v", err)
+			return
+		}
+		for _, item := range []struct {
+			name      string
+			statement string
+			id        int64
+		}{
+			{name: "模型绑定", statement: `DELETE FROM model_pool_bindings WHERE tenant_id=$1 AND id=$2`, id: bindingID},
+			{name: "模型", statement: `DELETE FROM models WHERE tenant_id=$1 AND id=$2`, id: modelID},
+			{name: "上游账号", statement: `DELETE FROM provider_accounts WHERE tenant_id=$1 AND id=$2`, id: accountID},
+			{name: "渠道", statement: `DELETE FROM channels WHERE tenant_id=$1 AND id=$2`, id: channelID},
+			{name: "池组", statement: `DELETE FROM pool_groups WHERE tenant_id=$1 AND id=$2`, id: poolGroupID},
+			{name: "上游", statement: `DELETE FROM providers WHERE tenant_id=$1 AND id=$2`, id: providerID},
+		} {
+			if _, err := pool.Exec(cleanupCtx, item.statement, tenantID, item.id); err != nil {
+				t.Errorf("清理%s: %v", item.name, err)
+				return
+			}
+		}
+	})
+	return poolGroupID, accountID, bindingID
+}
+
+func cleanupUnifiedMediaMoneyRows(ctx context.Context, pool *pgxpool.Pool, tenantID int64) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, statement := range []string{
+		`ALTER TABLE usage_records DISABLE TRIGGER usage_records_append_only_delete`,
+		`DELETE FROM usage_records WHERE tenant_id=$1`,
+		`ALTER TABLE usage_records ENABLE TRIGGER usage_records_append_only_delete`,
+		`ALTER TABLE billing_events DISABLE TRIGGER billing_events_append_only_delete`,
+		`DELETE FROM billing_events WHERE tenant_id=$1`,
+		`ALTER TABLE billing_events ENABLE TRIGGER billing_events_append_only_delete`,
+		`DELETE FROM balance_holds WHERE tenant_id=$1`,
+		`DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`,
+		`DELETE FROM billing_ledger_claims WHERE tenant_id=$1`,
+	} {
+		if strings.Contains(statement, "$1") {
+			_, err = tx.Exec(ctx, statement, tenantID)
+		} else {
+			_, err = tx.Exec(ctx, statement)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func newIntegrationService(pool *pgxpool.Pool) *Service {

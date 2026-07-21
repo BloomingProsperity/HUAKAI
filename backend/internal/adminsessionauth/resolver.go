@@ -32,15 +32,23 @@ type RoleStore interface {
 
 // Resolver 组合令牌通道 + session 通道。
 type Resolver struct {
-	token    TokenResolver
-	session  SessionValidator
-	roles    RoleStore
-	clientIP *clientip.Resolver
+	token            TokenResolver
+	session          SessionValidator
+	roles            RoleStore
+	clientIP         *clientip.Resolver
+	platformTenantID int64
 }
 
-// New 组装组合解析器。
-func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver) *Resolver {
-	return &Resolver{token: token, session: session, roles: roles, clientIP: clientIP}
+// New 组装组合解析器。platformTenantID 必须是平台部署者所属租户的正整数 ID；
+// 非法配置只会关闭 session 通道，既有 admin token 通道保持原合同。
+func New(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver, platformTenantID int64) *Resolver {
+	return &Resolver{
+		token:            token,
+		session:          session,
+		roles:            roles,
+		clientIP:         clientIP,
+		platformTenantID: platformTenantID,
+	}
 }
 
 // Resolve 先令牌通道(hk_admin_ 前缀恒走),再 session 通道。
@@ -59,6 +67,9 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	// 依赖缺失/无 bearer:回退令牌通道(它对非 hk_admin bearer 统一返 ErrAdminUnauthorized)。
 	if r.session == nil || r.roles == nil || !hasBearer {
 		return r.token.Resolve(ctx, req)
+	}
+	if r.platformTenantID <= 0 {
+		return admin.AdminIdentity{}, admin.ErrAdminBackend
 	}
 	var ip string
 	if r.clientIP != nil {
@@ -82,13 +93,19 @@ func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (admin.AdminI
 	if !isReadOnlyMethod(req.Method) && writeClassFromContext(req.Context()) != SessionSafe {
 		return admin.AdminIdentity{}, admin.ErrAdminUnauthorized
 	}
-	// admin-role session → 平台级全权 admin(D3:全租户)。ScopeTenantID 留 0 即平台级。
-	// Source=session + UserID 供审计归属(AuditActor)与后续写端点接线区分来源。
-	return admin.AdminIdentity{
+	// 平台租户的 admin 会话拥有平台角色；下级租户的 admin 会话只能操作其租户。
+	// Source=session + UserID 供日志归属与后续写端点接线区分来源。
+	identity := admin.AdminIdentity{
 		Source: admin.AdminSourceSession,
 		UserID: validated.UserID,
-		Role:   admin.RolePlatformAdmin,
-	}, nil
+	}
+	if validated.TenantID == r.platformTenantID {
+		identity.Role = admin.RolePlatformAdmin
+		return identity, nil
+	}
+	identity.Role = admin.RoleTenantOperator
+	identity.ScopeTenantID = validated.TenantID
+	return identity, nil
 }
 
 // isReadOnlyMethod 判定请求是否为只读方法。session 通道灰度期只放行这些。

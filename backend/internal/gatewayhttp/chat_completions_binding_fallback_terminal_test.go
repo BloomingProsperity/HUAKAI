@@ -199,6 +199,41 @@ func TestATBFC010TargetAuthSubBudgetStaysInTargetClass(t *testing.T) {
 	assertNoHangingModelFallbackClaims(t, claims, settler)
 }
 
+func TestATBFC010TargetSingleAccountAuthFailureIsNotMaskedByRetryExclusion(t *testing.T) {
+	selector := &bfcScriptedSelector{t: t, steps: []bfcSelectorStep{
+		{poolID: 42, err: pool.ErrBindingConcurrencyLimited},
+		{poolID: 52, accountID: 154},
+		{poolID: 52, err: &pool.NoCapacityError{
+			Cause: pool.ErrNoEligibleAccount,
+			Exhaustion: pool.Exhaustion{
+				Family:  pool.ExhaustionFamilyStaticMismatch,
+				Reasons: map[pool.GateFailureReason]int{pool.GateFailurePerRequestExclusion: 1},
+			},
+		}},
+	}}
+	claims := &modelFallbackClaimGate{nextClaimID: 97961}
+	settler := &recordingSettler{}
+	deps := bfcDeps(t, selector, claims, settler, &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{
+		{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`},
+	}}, bfcRoutePlan(
+		[]router.AttemptPlan{bfcAttempt(42, 420, 1, bindingfallback.ClassNormal)},
+		bfcPhase(bindingfallback.ClassQuota, 52, 520, 1),
+	))
+	deps.CredentialVault = pr5CredentialVault(t, 154)
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "upstream_credential_rejected") {
+		t.Fatalf("status=%d body=%s，期望保留目标池首个真实认证失败", rec.Code, rec.Body.String())
+	}
+	if !equalInt64s(selector.poolIDs(), []int64{42, 52, 52}) {
+		t.Fatalf("pools=%v，目标认证子预算只能留在 quota 池", selector.poolIDs())
+	}
+	if len(settler.aborts) != 3 || len(settler.calls) != 0 {
+		t.Fatalf("abort/settle=%d/%d，期望三次预扣均闭环且零结算", len(settler.aborts), len(settler.calls))
+	}
+	assertNoHangingModelFallbackClaims(t, claims, settler)
+}
+
 func TestATBFC010TerminalAuthCannotEscapeThroughModelFallback(t *testing.T) {
 	tests := []struct {
 		name   string

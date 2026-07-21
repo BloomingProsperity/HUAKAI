@@ -16,7 +16,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
+	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 var embeddingsQuotaReserveFailedOpenTotal = expvar.NewInt("embeddings_quota_reserve_failed_open_total")
@@ -109,22 +112,25 @@ func (ex *execution) reserveQuota(w http.ResponseWriter, predictedCost decimal.D
 func (ex *execution) settleRequest(promptTokens int, cost decimal.Decimal, snapshot string, attemptSeq int, pending bool) billing.SettleRequest {
 	confidence := 1.0
 	return billing.SettleRequest{
-		ClaimID:           ex.reserveRes.ClaimID,
-		AccountID:         ex.selRes.AccountID,
-		AcquisitionToken:  ex.selRes.AcquisitionToken,
-		TenantID:          ex.ident.TenantID,
-		APIKeyID:          ex.ident.APIKeyID,
-		UserID:            ex.ident.UserID,
-		ProviderAccountID: ex.selRes.AccountID,
-		AttemptSeq:        int32(attemptSeq),
-		RequestedModel:    ex.req.Model,
-		RequestedAt:       ex.startedAt,
-		UpstreamModel:     ex.upstreamModelID,
-		Provider:          ex.accInfo.Platform,
-		Stream:            false,
-		ActualCost:        cost,
-		Fingerprint:       ex.payloadHash,
-		AuditRequestID:    ex.requestID,
+		ClaimID:               ex.reserveRes.ClaimID,
+		AccountID:             ex.selRes.AccountID,
+		AcquisitionToken:      ex.selRes.AcquisitionToken,
+		TenantID:              ex.ident.TenantID,
+		APIKeyID:              ex.ident.APIKeyID,
+		UserID:                ex.ident.UserID,
+		ProviderAccountID:     ex.selRes.AccountID,
+		AttemptSeq:            int32(attemptSeq),
+		RequestedModel:        ex.req.Model,
+		RequestedAt:           ex.startedAt,
+		UpstreamModel:         ex.upstreamModelID,
+		Provider:              ex.accInfo.Platform,
+		Stream:                false,
+		ActualCost:            cost,
+		Fingerprint:           ex.payloadHash,
+		AuditRequestID:        ex.requestID,
+		AuditRouteID:          router.TraceRouteID(ex.plan, ex.attempt),
+		AuditPoolGroupID:      ex.attempt.PoolGroupID,
+		AuditProviderEndpoint: upstreamEmbeddingsPath,
 		Draft: gateway.UsageRecordDraft{
 			TokensInput:           promptTokens,
 			TokensOutput:          0,
@@ -142,6 +148,23 @@ func (ex *execution) settleRequest(promptTokens int, cost decimal.Decimal, snaps
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
 	}
+}
+
+func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.SettleRequest) error {
+	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
+		failureClass := privacy.ErrorClassFor(ctx, err)
+		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceEmbeddingsDelivered, ex.requestID, req)
+		_ = settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "embeddingshttp.settle_recovery")
+		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+			Severity: privacy.SeverityError, Component: "embeddingshttp.settle_recovery",
+			RequestID: ex.requestID, ErrorClass: failureClass, Attrs: map[string]any{
+				"event_class": "embeddings_settlement_deferred", "tenant_id": req.TenantID,
+				"claim_id": req.ClaimID, "failure_reason_class": failureClass,
+			},
+		})
+		return err
+	}
+	return nil
 }
 
 // billingCtx 返回脱离请求取消的结算上下文(同 audiohttp/imageshttp):客户端断连

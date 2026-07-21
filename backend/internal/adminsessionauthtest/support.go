@@ -45,7 +45,7 @@ func (roleAdmin) ActiveUserRole(context.Context, int64, int64) (string, error) {
 
 // Resolver 返回组合解析器:非 hk_admin bearer 走 session→admin(登录即管理员,无开关)。
 func Resolver() *adminsessionauth.Resolver {
-	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, roleAdmin{}, nil)
+	return adminsessionauth.New(tokenReject{}, sessionAdmin{}, roleAdmin{}, nil, 1)
 }
 
 // Status 发一个带 bearer 的请求(body="{}" 满足多数 handler 的 JSON 解码),返回响应码。

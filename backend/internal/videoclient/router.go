@@ -98,6 +98,9 @@ func newFetchHandler(svc Service) http.HandlerFunc {
 			writeServiceError(w, err)
 			return
 		}
+		for i := range tasks {
+			tasks[i] = sanitizeTask(tasks[i])
+		}
 		writeJSON(w, http.StatusOK, listResponse{Items: tasks})
 	}
 }
@@ -126,7 +129,16 @@ func writeTaskStatus(w http.ResponseWriter, r *http.Request, svc Service, ident 
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	writeJSON(w, http.StatusOK, sanitizeTask(task))
+}
+
+// sanitizeTask 把受凭据保护的上游产物地址替换成网关代理下载地址:上游地址
+// 必须用生成账号凭据才能取,原样返回会让用户拿着打不开的链接当成功结果。
+func sanitizeTask(task mediatask.Task) mediatask.Task {
+	if mediatask.RequiresContentProxy(task) {
+		task.Result = mediatask.ContentProxyResult(task)
+	}
+	return task
 }
 
 func fetchQueryID(r *http.Request) string {
@@ -195,6 +207,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "media_task_provider_unavailable", "media task provider is unavailable")
 	case errors.Is(err, mediatask.ErrNoActiveAPIKey):
 		writeError(w, http.StatusConflict, "media_task_api_key_required", "create an active API key before submitting media tasks")
+	case errors.Is(err, mediatask.ErrAPIKeyAmbiguous):
+		writeError(w, http.StatusConflict, "media_task_api_key_ambiguous", "select which active API key should be charged")
 	case errors.Is(err, mediatask.ErrRequestIDConflict):
 		writeError(w, http.StatusConflict, "media_task_request_conflict", "request_id belongs to a different media task")
 	case errors.Is(err, billing.ErrInsufficientBalance):

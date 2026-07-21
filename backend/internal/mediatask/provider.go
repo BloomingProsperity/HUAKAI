@@ -134,6 +134,34 @@ type HTTPProviderRegistry struct {
 	client *http.Client
 }
 
+type OverlayProviderRegistry struct {
+	providers map[string]AsyncMediaProvider
+	fallback  ProviderRegistry
+}
+
+func NewOverlayProviderRegistry(fallback ProviderRegistry, providers map[string]AsyncMediaProvider) *OverlayProviderRegistry {
+	normalized := make(map[string]AsyncMediaProvider, len(providers))
+	for name, mediaProvider := range providers {
+		if key := strings.ToLower(strings.TrimSpace(name)); key != "" && mediaProvider != nil {
+			normalized[key] = mediaProvider
+		}
+	}
+	return &OverlayProviderRegistry{providers: normalized, fallback: fallback}
+}
+
+func (r *OverlayProviderRegistry) Provider(ctx context.Context, name string) (AsyncMediaProvider, bool, error) {
+	if r == nil {
+		return nil, false, nil
+	}
+	if mediaProvider := r.providers[strings.ToLower(strings.TrimSpace(name))]; mediaProvider != nil {
+		return mediaProvider, true, nil
+	}
+	if r.fallback == nil {
+		return nil, false, nil
+	}
+	return r.fallback.Provider(ctx, name)
+}
+
 func NewHTTPProviderRegistry(source ConfigSource, client *http.Client) *HTTPProviderRegistry {
 	return &HTTPProviderRegistry{source: source, client: client}
 }

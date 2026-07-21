@@ -221,11 +221,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		return nil, nil, false
 	}
 	if dispatchRes.StatusCode < 200 || dispatchRes.StatusCode >= 300 {
-		decision, classification, classifyErr := gateway.ClassifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
-		if classifyErr != nil {
-			classification, _ = gateway.Classify(dispatchRes.StatusCode, dispatchRes.Headers, raw, ex.errorClassProvider())
-			decision = gateway.AttemptRetryDecision{ClientStatus: clientStatusForUpstreamError(dispatchRes.StatusCode, classification.Class), AbortReason: "upstream_error"}
-		}
+		decision, classification := ex.classifyAttemptHTTPError(dispatchRes.StatusCode, dispatchRes.Headers, raw)
 		decision.ClientStatus = ex.remapClientStatusForUpstream(dispatchRes.StatusCode, decision.ClientStatus)
 		agentTaskInvalid := ex.classifyAgentTaskInvalid(dispatchRes.StatusCode, raw, &decision)
 		projectContextRejected := ex.classifyProjectContextRejected(classification, &decision)

@@ -791,25 +791,24 @@ func TestWiring_InstallChatGPTThreadsAdminCallbackAllowlist(t *testing.T) {
 	}
 }
 
-func TestWiring_GeminiPublicCLIOAuthMissingSecretIsLazyFeatureGate(t *testing.T) {
-	// 消灭的回归:非 Gemini 的部署必须在没有 Gemini public CLI client secret 时
-	// 也能启动,同时 Gemini public CLI OAuth 在特性边界上保持禁用。变异检查:
-	// 把 loader 或 installer 任一改回拒绝空 secret,都会让本测试在 StartOAuthFlow 之前变红。
+func TestWiring_GeminiPublicCLIOAuthUsesBuiltinProfileAndAllowsOperatorRotation(t *testing.T) {
+	// 回归：未配环境变量时仍须能导入并刷新现有 CLI 凭据；
+	// 部署者显式配置时则用于上游 profile 轮换。
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " ")
 	secret, err := loadGeminiPublicCLIOAuthClientSecretFromEnv()
 	if err != nil {
-		t.Fatalf("missing Gemini secret must be a lazy feature gate, not a boot error: %v", err)
+		t.Fatalf("读取 Gemini 公开 profile：%v", err)
 	}
-	if secret != "" {
-		t.Fatalf("secret=%q want empty value for missing/blank env", secret)
+	if secret == "" {
+		t.Fatal("空环境变量必须回退到内置公开 profile")
 	}
 
 	registry := credentialacq.DefaultExchangerRegistry()
 	mockClient := &http.Client{Transport: wiringRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("Gemini OAuth should fail before token exchange when secret is missing")
+		return nil, errors.New("OAuth 启动阶段不应请求 token endpoint")
 	})}
 	if err := installGeminiPublicCLIOAuthExchangers(registry, mockClient, secret, nil); err != nil {
-		t.Fatalf("installGeminiPublicCLIOAuthExchangers must allow missing secret at boot: %v", err)
+		t.Fatalf("安装 Gemini exchanger：%v", err)
 	}
 	if err := assertGeminiPublicCLIOAuthExchangersHaveHTTPClient(registry); err != nil {
 		t.Fatalf("Gemini exchangers must still get controlled HTTP client even when secret is absent: %v", err)
@@ -823,8 +822,8 @@ func TestWiring_GeminiPublicCLIOAuthMissingSecretIsLazyFeatureGate(t *testing.T)
 		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeCodeAssist,
 		ActorID: "owner", ActorRole: "platform_admin",
 	}, credentialacq.OAuthClientConfig{})
-	if !errors.Is(err, credentialacq.ErrFeatureDisabled) {
-		t.Fatalf("missing Gemini secret must disable only Gemini public CLI OAuth, got err=%v", err)
+	if err == nil || errors.Is(err, credentialacq.ErrFeatureDisabled) {
+		t.Fatalf("内置 profile 应通过特性校验并在 nil store 处停止，err=%v", err)
 	}
 
 	t.Setenv("HUAKAI_GEMINI_OAUTH_CLIENT_SECRET", " from-env ")

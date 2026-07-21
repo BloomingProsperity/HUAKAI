@@ -105,6 +105,7 @@ func TestGrokOAuthLiveRelayChain(t *testing.T) {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 Grok live e2e")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	auth := grokLiveAuth{
 		accessToken:  strings.TrimSpace(os.Getenv("HUAKAI_E2E_GROK_ACCESS_TOKEN")),
 		refreshToken: strings.TrimSpace(os.Getenv("HUAKAI_E2E_GROK_REFRESH_TOKEN")),
@@ -245,6 +246,7 @@ func TestGrokLiveFormalImportWiring(t *testing.T) {
 	if strings.TrimSpace(dsn) == "" {
 		t.Skip("HUAKAI_DATABASE_URL/HUAKAI_E2E_DATABASE_URL 未设置，跳过 Grok 正式导入接线测试")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	auth := grokLiveAuth{
 		accessToken:  "synthetic-grok-live-access-token",
 		refreshToken: "synthetic-grok-live-refresh-token",

@@ -39,6 +39,15 @@ func TestOutputTokensForAttemptIgnoresDeliveredFrames(t *testing.T) {
 	}
 }
 
+func TestNormalizeEndClassSeparatesStreamingAndNonStreamingSuccess(t *testing.T) {
+	if got := normalizeEndClass(gateway.StreamEndGraceful, false); got != "non_streaming" {
+		t.Fatalf("非流式成功终态=%q，期望 non_streaming", got)
+	}
+	if got := normalizeEndClass(gateway.StreamEndGraceful, true); got != string(gateway.StreamEndGraceful) {
+		t.Fatalf("流式成功终态=%q，期望 %q", got, gateway.StreamEndGraceful)
+	}
+}
+
 func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
 	payload, err := marshalUsageRecordPayload(dbbilling.InsertUsageRecordParams{
 		TenantID:         1,

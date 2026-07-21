@@ -113,8 +113,17 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		return nil, errors.New("openai codex session: 凭据 Value 为空或仅含空白（session token 必填）")
 	}
 
-	// UpstreamModelID 对应 chatgpt.com 的 default_model_slug，不能为空（含纯空白）
-	if strings.TrimSpace(in.UpstreamModelID) == "" {
+	method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
+	if method == "" {
+		method = http.MethodPost
+	}
+	if method != http.MethodPost && method != http.MethodGet {
+		return nil, fmt.Errorf("openai codex session: 不支持的请求方法 %q", method)
+	}
+	discoveryRequest := method == http.MethodGet && strings.TrimSpace(in.EndpointPath) != ""
+
+	// 生成请求必须有真实模型；账号目录请求没有模型字段。
+	if !discoveryRequest && strings.TrimSpace(in.UpstreamModelID) == "" {
 		return nil, errors.New("openai codex session: UpstreamModelID 为空（对应 chatgpt.com default_model_slug，必填）")
 	}
 
@@ -129,13 +138,30 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 		}
 		endpoint = validatedEndpoint
 	}
+	var err error
+	// EndpointPath 只允许账号目录 GET 覆盖。图片公开入口虽然也携带
+	// /v1/images/* 路径，但必须转换后发往 Codex Responses，不能把公开路径
+	// 误当成真实上游地址。
+	if discoveryRequest {
+		endpoint, err = provider.EndpointForBuildInput(endpoint, in)
+		if err != nil {
+			return nil, fmt.Errorf("openai codex session: endpoint 非法: %w", err)
+		}
+	}
 
-	body, err := normalizeCodexResponsesBody(in.InboundBody)
+	var body []byte
+	if discoveryRequest {
+		body = nil
+	} else if isCodexImagesEndpoint(in.EndpointPath) {
+		body, err = buildCodexImagesResponsesBody(in)
+	} else {
+		body, err = normalizeCodexResponsesBody(in.InboundBody)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("openai codex session: 请求体规整失败: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("openai codex session: 构造请求失败: %w", err)
 	}
@@ -151,8 +177,12 @@ func (a *CodexSessionAdapter) BuildRequest(ctx context.Context, in provider.Buil
 	}
 
 	// Content-Type / Accept 标准头。Codex Responses 只接受流式响应。
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	if discoveryRequest {
+		req.Header.Set("Accept", "application/json")
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+	}
 
 	// User-Agent：优先使用导入时保存的完整值；只有真实版本时按同一份版本
 	// 构造 CLI UA，避免 version 头已更新但 UA 仍停在旧兜底。

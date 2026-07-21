@@ -558,7 +558,7 @@ func (registryStub) ResolveModel(_ context.Context, model string, _ int64) (regi
 		CanonicalModelID: "audio/" + model,
 		ProviderModelID:  model,
 		ProtocolFamily:   "openai_chat",
-		Capabilities:     []string{"audio"},
+		Capabilities:     []string{"audio", audioSpeechCapability, audioTranscriptionCapability},
 		PoolCandidates:   []int64{101},
 		SnapshotVersion:  "registry:7:1",
 	}, nil

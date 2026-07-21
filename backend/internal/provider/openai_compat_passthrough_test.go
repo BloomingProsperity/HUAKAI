@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -196,5 +197,32 @@ func TestOpenAICompatPassthroughAdapter_RejectsUnsafeUpstreamBaseURL(t *testing.
 	}
 	if err == nil || !strings.Contains(err.Error(), "deepseek passthrough: endpoint rejected") {
 		t.Fatalf("unsafe endpoint err=%v", err)
+	}
+}
+
+func TestOpenAICompatPassthroughAdapter_GetEndpointOverride(t *testing.T) {
+	adapter := &OpenAICompatPassthroughAdapter{
+		PlatformName: "grok",
+		Endpoint:     "https://api.x.ai/v1/chat/completions",
+	}
+	request, err := adapter.BuildRequest(context.Background(), BuildInput{
+		HTTPMethod: http.MethodGet, EndpointPath: "/v1/videos/request-1",
+		InboundBody: []byte(`{"must_not_be_sent":true}`),
+		Credential: Credential{Type: CredentialTypeAPIKey, Value: "xai-test"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRequest GET: %v", err)
+	}
+	if request.Method != http.MethodGet || request.URL.String() != "https://api.x.ai/v1/videos/request-1" {
+		t.Fatalf("method/url=%s %s", request.Method, request.URL)
+	}
+	if request.Header.Get("Content-Type") != "" || request.Header.Get("Authorization") != "Bearer xai-test" {
+		t.Fatalf("headers=%v", request.Header)
+	}
+	if _, err := adapter.BuildRequest(context.Background(), BuildInput{
+		HTTPMethod: http.MethodDelete,
+		Credential: Credential{Type: CredentialTypeAPIKey, Value: "xai-test"},
+	}); err == nil {
+		t.Fatal("unsupported method must fail closed")
 	}
 }

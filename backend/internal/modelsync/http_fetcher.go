@@ -19,6 +19,7 @@ const (
 	DefaultOpenAIModelsURL    = "https://api.openai.com/v1/models"
 	DefaultAnthropicModelsURL = "https://api.anthropic.com/v1/models"
 	DefaultGeminiModelsURL    = "https://generativelanguage.googleapis.com/v1beta/models"
+	DefaultGrokModelsURL      = "https://api.x.ai/v1/models"
 
 	defaultAnthropicVersion = "2023-06-01"
 	defaultFetchTimeout     = 30 * time.Second
@@ -35,6 +36,7 @@ var defaultAllowedHostsByVendor = map[Vendor][]string{
 	VendorOpenAI:    {"api.openai.com"},
 	VendorAnthropic: {"api.anthropic.com"},
 	VendorGemini:    {"generativelanguage.googleapis.com"},
+	VendorGrok:      {"api.x.ai"},
 }
 
 type URLPolicy struct {
@@ -113,6 +115,8 @@ func DefaultURLForVendor(v Vendor) string {
 		return DefaultAnthropicModelsURL
 	case VendorGemini:
 		return DefaultGeminiModelsURL
+	case VendorGrok:
+		return DefaultGrokModelsURL
 	default:
 		return ""
 	}
@@ -129,6 +133,8 @@ func (f *HTTPFetcher) FetchCatalog(ctx context.Context) (Catalog, error) {
 		return f.fetchAnthropic(ctx)
 	case VendorGemini:
 		return f.fetchGemini(ctx)
+	case VendorGrok:
+		return f.fetchOpenAICompatible(ctx, VendorGrok, "grok_chat", classifyGrokModel)
 	default:
 		return Catalog{}, fmt.Errorf("modelsync: unsupported vendor %q", f.vendor)
 	}
@@ -155,9 +161,7 @@ func (f *HTTPFetcher) fetchOpenAI(ctx context.Context) (Catalog, error) {
 		if id == "" {
 			continue
 		}
-		if !isOpenAIChatModelID(id) {
-			continue
-		}
+		capabilities := classifyOpenAIModel(id)
 		created := time.Time{}
 		if item.Created > 0 {
 			created = time.Unix(item.Created, 0).UTC()
@@ -172,10 +176,47 @@ func (f *HTTPFetcher) fetchOpenAI(ctx context.Context) (Catalog, error) {
 			OwnedBy:        owner,
 			ProtocolFamily: "openai_chat",
 			CreatedAt:      created,
-			Capabilities:   []string{"chat"},
+			Capabilities:   capabilities,
 		})
 	}
 	return Catalog{Vendor: VendorOpenAI, Models: models}, nil
+}
+
+func (f *HTTPFetcher) fetchOpenAICompatible(ctx context.Context, vendor Vendor, protocolFamily string, classify func(string) []string) (Catalog, error) {
+	var payload struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := f.getJSON(ctx, f.rawURL, func(req *http.Request) {
+		if f.apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+f.apiKey)
+		}
+	}, &payload); err != nil {
+		return Catalog{}, err
+	}
+	models := make([]Model, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		created := time.Time{}
+		if item.Created > 0 {
+			created = time.Unix(item.Created, 0).UTC()
+		}
+		owner := strings.TrimSpace(item.OwnedBy)
+		if owner == "" {
+			owner = string(vendor)
+		}
+		models = append(models, Model{
+			ID: id, DisplayName: id, OwnedBy: owner, ProtocolFamily: protocolFamily,
+			CreatedAt: created, Capabilities: classify(id),
+		})
+	}
+	return Catalog{Vendor: vendor, Models: models}, nil
 }
 
 func (f *HTTPFetcher) fetchAnthropic(ctx context.Context) (Catalog, error) {
@@ -260,7 +301,7 @@ func (f *HTTPFetcher) fetchGemini(ctx context.Context) (Catalog, error) {
 				OwnedBy:        "google",
 				ProtocolFamily: "gemini",
 				ContextWindow:  item.InputTokenLimit,
-				Capabilities:   normalizeGeminiCapabilities(item.SupportedGenerationMethods),
+				Capabilities:   normalizeGeminiCapabilities(id, item.SupportedGenerationMethods),
 			})
 		}
 		token := strings.TrimSpace(payload.NextPageToken)
@@ -418,7 +459,7 @@ func parseRFC3339UTC(raw string) time.Time {
 	return t.UTC()
 }
 
-func normalizeGeminiCapabilities(values []string) []string {
+func normalizeGeminiCapabilities(modelID string, values []string) []string {
 	known := map[string]struct{}{
 		"generateContent":    {},
 		"countTokens":        {},
@@ -438,29 +479,29 @@ func normalizeGeminiCapabilities(values []string) []string {
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
+	lower := strings.ToLower(strings.TrimSpace(modelID))
+	switch {
+	case strings.HasPrefix(lower, "veo-"), strings.Contains(lower, "omni") && strings.Contains(lower, "video"):
+		out = appendUniqueCapability(out, seen, "video")
+	case strings.Contains(lower, "tts"):
+		out = appendUniqueCapability(out, seen, "audio")
+		out = appendUniqueCapability(out, seen, "audio_speech")
+	case strings.Contains(lower, "image"):
+		out = appendUniqueCapability(out, seen, "image_output")
+		out = appendUniqueCapability(out, seen, "images")
+	}
 	return out
 }
 
-func isOpenAIChatModelID(id string) bool {
-	lower := strings.ToLower(strings.TrimSpace(id))
-	if lower == "" {
-		return false
+// NormalizeGeminiCapabilities 统一 Gemini 全局目录与账号级目录的能力投影。
+func NormalizeGeminiCapabilities(modelID string, values []string) []string {
+	return append([]string(nil), normalizeGeminiCapabilities(modelID, values)...)
+}
+
+func appendUniqueCapability(values []string, seen map[string]struct{}, value string) []string {
+	if _, ok := seen[value]; ok {
+		return values
 	}
-	for _, marker := range []string{
-		"embedding", "audio", "whisper", "tts", "dall-e", "image",
-		"moderation", "realtime", "transcribe", "speech",
-	} {
-		if strings.Contains(lower, marker) {
-			return false
-		}
-	}
-	if strings.HasPrefix(lower, "ft:gpt-") {
-		return true
-	}
-	for _, prefix := range []string{"gpt-", "o1", "o3", "o4", "chatgpt-"} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
-		}
-	}
-	return false
+	seen[value] = struct{}{}
+	return append(values, value)
 }

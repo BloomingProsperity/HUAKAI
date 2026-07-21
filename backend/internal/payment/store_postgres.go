@@ -52,6 +52,9 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, rec createOrderRecord) 
 		return Order{}, false, fmt.Errorf("payment: begin create order: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := acquireRechargeCapLockTx(ctx, tx, rec); err != nil {
+		return Order{}, false, err
+	}
 
 	order, err := insertOrderTx(ctx, tx, rec)
 	if isUniqueViolation(err) {
@@ -60,6 +63,9 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, rec createOrderRecord) 
 	}
 	if err != nil {
 		return Order{}, false, fmt.Errorf("payment: insert order: %w", err)
+	}
+	if err := recheckRechargeCapsAfterInsertTx(ctx, tx, rec); err != nil {
+		return Order{}, false, err
 	}
 	if err := insertAuditTx(ctx, tx, auditInsert{
 		TenantID:  rec.TenantID,

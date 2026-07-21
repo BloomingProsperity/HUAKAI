@@ -41,14 +41,28 @@ func TestAllowSessionWriteSetsContext(t *testing.T) {
 // 变异:把 resolver 的 `writeClassFromContext(...) != SessionSafe` 判定改错 → RED。
 func TestSessionSafeAllowsWrite(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	r := New(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil)
 	req := withClass(reqM(http.MethodPost, "valid-session"), SessionSafe)
 	id, err := r.Resolve(req.Context(), req)
 	if err != nil {
 		t.Fatalf("SessionSafe 写应放行,得 err=%v", err)
 	}
-	if id.Role != admin.RolePlatformAdmin || id.Source != admin.AdminSourceSession || id.UserID != 9 {
-		t.Fatalf("SessionSafe 写应授平台级 session-admin,得 %+v", id)
+	if id.Role != admin.RoleTenantOperator || id.ScopeTenantID != 3 || id.Source != admin.AdminSourceSession || id.UserID != 9 {
+		t.Fatalf("下级租户 SessionSafe 写应授本租户 tenant_operator,得 %+v", id)
+	}
+}
+
+// 平台租户的 SessionSafe 写仍映射为 platform_admin，且作用域保持 0。
+func TestSessionSafeAllowsPlatformWrite(t *testing.T) {
+	tok := &stubToken{err: admin.ErrAdminUnauthorized}
+	r := newResolver(tok, adminSession(testPlatformTenantID, 10), stubRoles{role: "admin"}, nil)
+	req := withClass(reqM(http.MethodPost, "valid-session"), SessionSafe)
+	id, err := r.Resolve(req.Context(), req)
+	if err != nil {
+		t.Fatalf("平台租户 SessionSafe 写应放行,得 err=%v", err)
+	}
+	if id.Role != admin.RolePlatformAdmin || id.ScopeTenantID != 0 || id.UserID != 10 {
+		t.Fatalf("平台租户 SessionSafe 写应授 platform_admin,得 %+v", id)
 	}
 }
 
@@ -58,7 +72,7 @@ func TestSessionSafeAllowsWrite(t *testing.T) {
 func TestUnclassifiedWriteDeniedFailClosed(t *testing.T) {
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
-		r := New(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil)
+		r := newResolver(tok, adminSession(3, 9), stubRoles{role: "admin"}, nil)
 		// 不挂 AllowSessionWrite 中间件 → writeClassNone。
 		_, err := r.Resolve(context.Background(), reqM(m, "valid-session"))
 		if !errors.Is(err, admin.ErrAdminUnauthorized) {
@@ -72,7 +86,7 @@ func TestUnclassifiedWriteDeniedFailClosed(t *testing.T) {
 // 变异:若把 hk_admin_ 前缀判定挪到写分级之后 → 令牌写会被 writeClassNone 拒 → RED。
 func TestTokenChannelExemptFromWriteClass(t *testing.T) {
 	tok := &stubToken{id: admin.AdminIdentity{TokenID: 8, Role: admin.RolePlatformAdmin, Source: admin.AdminSourceToken}}
-	r := New(tok, &stubSession{}, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, &stubSession{}, stubRoles{role: "admin"}, nil)
 	// 未标注写分级的写请求,但带 hk_admin 令牌。
 	req := reqM(http.MethodPost, "hk_admin_TOKENTOKENTOKENTOKEN0009")
 	id, err := r.Resolve(req.Context(), req)
@@ -85,7 +99,7 @@ func TestTokenChannelExemptFromWriteClass(t *testing.T) {
 // 变异:若把写分级判定的 `!isReadOnlyMethod` 前置删掉(对所有方法都判分级)→ 未标注 GET 会被拒 → RED。
 func TestReadMethodIgnoresWriteClass(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	r := New(tok, adminSession(1, 2), stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, adminSession(testPlatformTenantID, 2), stubRoles{role: "admin"}, nil)
 	req := reqM(http.MethodGet, "valid-session") // 未挂写分级
 	id, err := r.Resolve(req.Context(), req)
 	if err != nil {

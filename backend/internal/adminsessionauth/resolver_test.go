@@ -3,6 +3,7 @@ package adminsessionauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,12 +48,22 @@ func (s *stubSession) Validate(_ context.Context, token, ip, ua string) (userses
 }
 
 type stubRoles struct {
-	role string
-	err  error
+	role     string
+	err      error
+	onLookup func(tenantID, userID int64)
 }
 
-func (s stubRoles) ActiveUserRole(context.Context, int64, int64) (string, error) {
+func (s stubRoles) ActiveUserRole(_ context.Context, tenantID, userID int64) (string, error) {
+	if s.onLookup != nil {
+		s.onLookup(tenantID, userID)
+	}
 	return s.role, s.err
+}
+
+const testPlatformTenantID int64 = 1
+
+func newResolver(token TokenResolver, session SessionValidator, roles RoleStore, clientIP *clientip.Resolver) *Resolver {
+	return New(token, session, roles, clientIP, testPlatformTenantID)
 }
 
 func req(bearer string) *http.Request {
@@ -71,7 +82,7 @@ func reqM(method, bearer string) *http.Request {
 func TestAdminTokenAlwaysUsesTokenPath(t *testing.T) {
 	tok := &stubToken{id: admin.AdminIdentity{TokenID: 7, Role: admin.RolePlatformAdmin}}
 	sess := &stubSession{}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	id, err := r.Resolve(context.Background(), req("hk_admin_ABCDEFGHIJKLMNOPQRSTUVWX"))
 	if err != nil || id.TokenID != 7 {
 		t.Fatalf("hk_admin 令牌应走令牌通道,得 id=%+v err=%v", id, err)
@@ -81,11 +92,11 @@ func TestAdminTokenAlwaysUsesTokenPath(t *testing.T) {
 	}
 }
 
-// session + role=admin → 平台级全权 admin。
+// 平台租户的 session + role=admin → 平台级全权 admin。
 func TestSessionAdminGrantsPlatformAdmin(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	sess := &stubSession{out: usersession.ValidatedSession{TenantID: testPlatformTenantID, UserID: 9}}
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	id, err := r.Resolve(context.Background(), req("valid-session"))
 	if err != nil {
 		t.Fatalf("admin-role session 应放行,得 err=%v", err)
@@ -109,6 +120,23 @@ func TestSessionAdminGrantsPlatformAdmin(t *testing.T) {
 	}
 }
 
+// 下级租户的 session + role=admin → 仅授予该租户范围内的 tenant_operator。
+func TestSessionAdminGrantsTenantOperator(t *testing.T) {
+	tok := &stubToken{err: admin.ErrAdminUnauthorized}
+	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
+	id, err := r.Resolve(context.Background(), req("valid-session"))
+	if err != nil {
+		t.Fatalf("下级租户 admin-role session 应放行,得 err=%v", err)
+	}
+	if id.Role != admin.RoleTenantOperator || id.ScopeTenantID != 3 {
+		t.Fatalf("下级租户 admin-role session 应映射 tenant_operator 且 ScopeTenantID=3,得 %+v", id)
+	}
+	if id.Source != admin.AdminSourceSession || id.UserID != 9 {
+		t.Fatalf("下级租户 session 身份归属错误,得 %+v", id)
+	}
+}
+
 // role=admin 的写方法(POST/PUT/PATCH/DELETE)未标注 SessionSafe 时经 session 通道
 // 一律拒(fail-closed)——P1 的写端点隐患(审计误归 + Hermes 外键崩)
 // 在灰度期物理上无法触发。
@@ -117,7 +145,7 @@ func TestSessionWriteMethodDeniedReadOnlyGate(t *testing.T) {
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
 		sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
-		r := New(tok, sess, stubRoles{role: "admin"}, nil)
+		r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 		_, err := r.Resolve(context.Background(), reqM(m, "valid-session"))
 		if !errors.Is(err, admin.ErrAdminUnauthorized) {
 			t.Fatalf("method=%s 经 session 通道写应被只读 gate 拒,得 err=%v", m, err)
@@ -126,7 +154,7 @@ func TestSessionWriteMethodDeniedReadOnlyGate(t *testing.T) {
 	// 反向对照:同样 session 走 GET(只读)→ 放行,证明拒的是"写方法"而非"session 通道整体"。
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	if _, err := r.Resolve(context.Background(), reqM(http.MethodGet, "valid-session")); err != nil {
 		t.Fatalf("GET(只读)经 session 通道应放行,得 err=%v", err)
 	}
@@ -139,7 +167,7 @@ func TestSessionNonAdminRoleDeniedDenyByDefault(t *testing.T) {
 	for _, role := range []string{"user", "", "administrator", "Admin", "ADMIN", "root", "superadmin", "  admin  "} {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
 		sess := &stubSession{out: usersession.ValidatedSession{TenantID: 1, UserID: 1}}
-		r := New(tok, sess, stubRoles{role: role}, nil)
+		r := newResolver(tok, sess, stubRoles{role: role}, nil)
 		_, err := r.Resolve(context.Background(), req("valid-session"))
 		if !errors.Is(err, admin.ErrAdminUnauthorized) {
 			t.Fatalf("role=%q 非精确 admin,必须 deny-by-default 拒,得 err=%v", role, err)
@@ -154,7 +182,7 @@ func TestNilReceiverFailsClosed(t *testing.T) {
 	if _, err := r.Resolve(context.Background(), req("hk_admin_x")); !errors.Is(err, admin.ErrAdminBackend) {
 		t.Fatalf("nil 接收者应 fail-closed 返 ErrAdminBackend,得 %v", err)
 	}
-	r2 := New(nil, nil, nil, nil) // nil 令牌通道
+	r2 := newResolver(nil, nil, nil, nil) // nil 令牌通道
 	if _, err := r2.Resolve(context.Background(), req("hk_admin_x")); !errors.Is(err, admin.ErrAdminBackend) {
 		t.Fatalf("nil 令牌通道应 fail-closed 返 ErrAdminBackend,得 %v", err)
 	}
@@ -164,7 +192,7 @@ func TestNilReceiverFailsClosed(t *testing.T) {
 func TestInvalidSessionAntiEnumeration(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{err: usersession.ErrTokenExpired}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	_, err := r.Resolve(context.Background(), req("expired-session"))
 	if !errors.Is(err, admin.ErrAdminUnauthorized) {
 		t.Fatalf("无效 session 应统一返 ErrAdminUnauthorized(反枚举),得 %v", err)
@@ -175,10 +203,61 @@ func TestInvalidSessionAntiEnumeration(t *testing.T) {
 func TestRoleStoreErrorDenied(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 1, UserID: 1}}
-	r := New(tok, sess, stubRoles{err: errors.New("db down")}, nil)
+	r := newResolver(tok, sess, stubRoles{err: errors.New("db down")}, nil)
 	_, err := r.Resolve(context.Background(), req("valid-session"))
 	if !errors.Is(err, admin.ErrAdminUnauthorized) {
 		t.Fatalf("查角色失败应 deny,得 %v", err)
+	}
+}
+
+// 角色查询必须同时使用已验证会话里的租户和用户，不能拿平台租户代替会话租户。
+func TestRoleLookupUsesValidatedTenantAndUser(t *testing.T) {
+	var gotTenantID, gotUserID int64
+	roles := stubRoles{
+		role: "admin",
+		onLookup: func(tenantID, userID int64) {
+			gotTenantID = tenantID
+			gotUserID = userID
+		},
+	}
+	r := newResolver(
+		&stubToken{err: admin.ErrAdminUnauthorized},
+		&stubSession{out: usersession.ValidatedSession{TenantID: 7, UserID: 19}},
+		roles,
+		nil,
+	)
+	id, err := r.Resolve(context.Background(), req("valid-session"))
+	if err != nil {
+		t.Fatalf("下级租户 admin session 应放行,得 %v", err)
+	}
+	if gotTenantID != 7 || gotUserID != 19 {
+		t.Fatalf("角色查询必须使用会话归属 tenant=7 user=19,得 tenant=%d user=%d", gotTenantID, gotUserID)
+	}
+	if id.Role != admin.RoleTenantOperator || id.ScopeTenantID != 7 {
+		t.Fatalf("角色查询成功后仍须映射到会话所属租户,得 %+v", id)
+	}
+}
+
+// 非法平台租户配置只关闭 session 通道，hk_admin_ 令牌仍按原合同委托令牌解析器。
+func TestInvalidPlatformTenantConfigurationFailsSessionClosed(t *testing.T) {
+	for _, platformTenantID := range []int64{0, -1} {
+		t.Run(fmt.Sprintf("平台租户_%d", platformTenantID), func(t *testing.T) {
+			tok := &stubToken{id: admin.AdminIdentity{TokenID: 23, Role: admin.RolePlatformAdmin}}
+			sess := &stubSession{out: usersession.ValidatedSession{TenantID: 1, UserID: 9}}
+			r := New(tok, sess, stubRoles{role: "admin"}, nil, platformTenantID)
+
+			if _, err := r.Resolve(context.Background(), req("valid-session")); !errors.Is(err, admin.ErrAdminBackend) {
+				t.Fatalf("非法平台租户配置的 session 路径应 fail-closed 返回 ErrAdminBackend,得 %v", err)
+			}
+			if sess.called {
+				t.Fatal("非法平台租户配置不得继续校验 session")
+			}
+
+			id, err := r.Resolve(context.Background(), req("hk_admin_TOKENTOKENTOKENTOKEN0010"))
+			if err != nil || id.TokenID != 23 {
+				t.Fatalf("非法平台租户配置不得改变 admin token 合同,得 id=%+v err=%v", id, err)
+			}
+		})
 	}
 }
 
@@ -192,7 +271,7 @@ func TestAdminTokenPrefixPrecedesSession(t *testing.T) {
 	{
 		tok := &stubToken{id: admin.AdminIdentity{TokenID: 42, Role: admin.RolePlatformAdmin}}
 		sess := &stubSession{out: usersession.ValidatedSession{UserID: 99}}
-		r := New(tok, sess, stubRoles{role: "admin"}, nil)
+		r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 		id, err := r.Resolve(context.Background(), req("hk_admin_TOKENTOKENTOKENTOKEN0001"))
 		if err != nil || id.TokenID != 42 {
 			t.Fatalf("hk_admin 令牌应恒走令牌通道,得 id=%+v err=%v", id, err)
@@ -211,7 +290,7 @@ func TestAdminTokenPrefixPrecedesSession(t *testing.T) {
 func TestAdminTokenErrorPropagatesVerbatim(t *testing.T) {
 	sentinel := errors.New("token backend blew up")
 	tok := &stubToken{err: sentinel}
-	r := New(tok, &stubSession{}, stubRoles{}, nil)
+	r := newResolver(tok, &stubSession{}, stubRoles{}, nil)
 	if _, err := r.Resolve(context.Background(), req("hk_admin_TOKENTOKENTOKENTOKEN0002")); !errors.Is(err, sentinel) {
 		t.Fatalf("hk_admin 路径应逐字透传令牌通道错误,得 %v", err)
 	}
@@ -223,7 +302,7 @@ func TestAdminTokenErrorPropagatesVerbatim(t *testing.T) {
 func TestKnobOnMissingDepsFallBackToToken(t *testing.T) {
 	// session == nil
 	tok1 := &stubToken{err: admin.ErrAdminUnauthorized}
-	r1 := New(tok1, nil, stubRoles{role: "admin"}, nil)
+	r1 := newResolver(tok1, nil, stubRoles{role: "admin"}, nil)
 	if _, err := r1.Resolve(context.Background(), req("s")); !errors.Is(err, admin.ErrAdminUnauthorized) {
 		t.Fatalf("session==nil 应回退令牌通道,得 %v", err)
 	}
@@ -233,7 +312,7 @@ func TestKnobOnMissingDepsFallBackToToken(t *testing.T) {
 	// roles == nil(session 非 nil,单独证 roles 缺失子句)
 	tok2 := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess2 := &stubSession{out: usersession.ValidatedSession{UserID: 1}}
-	r2 := New(tok2, sess2, nil, nil)
+	r2 := newResolver(tok2, sess2, nil, nil)
 	if _, err := r2.Resolve(context.Background(), req("s")); !errors.Is(err, admin.ErrAdminUnauthorized) {
 		t.Fatalf("roles==nil 应回退令牌通道,得 %v", err)
 	}
@@ -250,7 +329,7 @@ func TestKnobOnMissingDepsFallBackToToken(t *testing.T) {
 func TestKnobOnNoBearerFallsBackToToken(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{out: usersession.ValidatedSession{UserID: 1}}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	_, err := r.Resolve(context.Background(), req("")) // 无 Authorization header
 	if !errors.Is(err, admin.ErrAdminUnauthorized) {
 		t.Fatalf("无 bearer 应回退令牌通道,得 %v", err)
@@ -276,19 +355,19 @@ func TestReadOnlyGateMethodMatrix(t *testing.T) {
 	for _, m := range allow {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
 		sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
-		r := New(tok, sess, stubRoles{role: "admin"}, nil)
+		r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 		id, err := r.Resolve(context.Background(), reqM(m, "valid-session"))
 		if err != nil {
 			t.Fatalf("只读方法 %q 经 session 通道应放行,得 err=%v", m, err)
 		}
-		if id.Role != admin.RolePlatformAdmin {
-			t.Fatalf("只读方法 %q 应授平台级 admin,得 role=%q", m, id.Role)
+		if id.Role != admin.RoleTenantOperator || id.ScopeTenantID != 3 {
+			t.Fatalf("下级租户只读方法 %q 应授本租户 tenant_operator,得 %+v", m, id)
 		}
 	}
 	for _, m := range deny {
 		tok := &stubToken{err: admin.ErrAdminUnauthorized}
 		sess := &stubSession{out: usersession.ValidatedSession{TenantID: 3, UserID: 9}}
-		r := New(tok, sess, stubRoles{role: "admin"}, nil)
+		r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 		if _, err := r.Resolve(context.Background(), reqM(m, "valid-session")); !errors.Is(err, admin.ErrAdminUnauthorized) {
 			t.Fatalf("非只读方法 %q 经 session 通道应被 gate 拒,得 err=%v", m, err)
 		}
@@ -306,7 +385,7 @@ func TestClientIPAndUAForwardedToSession(t *testing.T) {
 	}
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{out: usersession.ValidatedSession{TenantID: 1, UserID: 1}}
-	r := New(tok, sess, stubRoles{role: "admin"}, cip)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, cip)
 
 	httpReq := httptest.NewRequest(http.MethodGet, "/admin/v1/api-keys", nil)
 	httpReq.Header.Set("Authorization", "Bearer sess-abc")
@@ -333,8 +412,8 @@ func TestClientIPAndUAForwardedToSession(t *testing.T) {
 // 此用例证明 nil clientIP 路径不 panic 且 gotIP 为空。
 func TestNilClientIPYieldsEmptyIP(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
-	sess := &stubSession{out: usersession.ValidatedSession{UserID: 1}}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil) // clientIP 传 nil
+	sess := &stubSession{out: usersession.ValidatedSession{TenantID: testPlatformTenantID, UserID: 1}}
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil) // clientIP 传 nil
 	if _, err := r.Resolve(context.Background(), req("sess-x")); err != nil {
 		t.Fatalf("clientIP==nil 的 admin session 应放行,得 %v", err)
 	}
@@ -348,14 +427,16 @@ func TestNilClientIPYieldsEmptyIP(t *testing.T) {
 
 // parseBearer 边界矩阵:直接对内部解析器做判别性断言(hasBearer 是否为真决定 session 分支是否可达)。
 // 变异一:把 `!strings.HasPrefix(header, "Bearer ")` 判定放宽(如去掉尾空格/改 HasPrefix 为 Contains)
-//         → "xBearer y" / "bearer x"(小写)会被误判有 bearer → RED。
+//
+//	→ "xBearer y" / "bearer x"(小写)会被误判有 bearer → RED。
+//
 // 变异二:把 return 的 `tok != ""` 改成 `true` → "Bearer "(仅前缀无 token)会返回 hasBearer=true → RED。
 func TestParseBearerBoundaries(t *testing.T) {
 	cases := []struct {
-		name       string
-		header     string
-		wantTok    string
-		wantHas    bool
+		name    string
+		header  string
+		wantTok string
+		wantHas bool
 	}{
 		{"空 header", "", "", false},
 		{"无 Bearer 前缀", "sometoken", "", false},
@@ -383,7 +464,7 @@ func TestParseBearerBoundaries(t *testing.T) {
 func TestEmptyBearerTokenTreatedAsNoBearer(t *testing.T) {
 	tok := &stubToken{err: admin.ErrAdminUnauthorized}
 	sess := &stubSession{out: usersession.ValidatedSession{UserID: 1}}
-	r := New(tok, sess, stubRoles{role: "admin"}, nil)
+	r := newResolver(tok, sess, stubRoles{role: "admin"}, nil)
 	httpReq := httptest.NewRequest(http.MethodGet, "/admin/v1/api-keys", nil)
 	httpReq.Header.Set("Authorization", "Bearer ") // 仅前缀,空 token
 	if _, err := r.Resolve(context.Background(), httpReq); !errors.Is(err, admin.ErrAdminUnauthorized) {

@@ -80,3 +80,15 @@ func TestKeyRateLimitSelector_WaitPlanNotRecorded(t *testing.T) {
 		t.Fatalf("wait-plan must not consume budget, got %v", err)
 	}
 }
+
+func TestKeyRateLimitSelector_AccountCallDoesNotRepeatLogicalBudget(t *testing.T) {
+	c := recCounter()
+	c.Record(7, 0)
+	selector := NewKeyRateLimitSelector(fakeRecSelector{res: &SelectionResult{AccountID: 9}}, c, 1, 0)
+	result, err := selector.Select(context.Background(), SelectionRequest{
+		APIKeyID: 7, RateAccountingScope: RateAccountingAccountOnly,
+	})
+	if err != nil || result == nil || result.AccountID != 9 {
+		t.Fatalf("后台上游调用不得重复消耗用户 Key 预算: result=%v err=%v", result, err)
+	}
+}

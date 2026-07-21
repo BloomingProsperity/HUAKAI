@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
@@ -74,7 +75,20 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
+	if method == "" {
+		method = http.MethodPost
+	}
+	if method != http.MethodPost && method != http.MethodGet {
+		return nil, fmt.Errorf("openai passthrough: 不支持的请求方法 %q", method)
+	}
+	var body *bytes.Reader
+	if method == http.MethodGet {
+		body = bytes.NewReader(nil)
+	} else {
+		body = bytes.NewReader(in.InboundBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, fmt.Errorf("openai passthrough: 构造请求失败: %w", err)
 	}
@@ -87,11 +101,13 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		// upstream 模式下 Value 即是已格式化的 Authorization header 完整值
 		req.Header.Set("Authorization", in.Credential.Value)
 	}
-	contentType := in.InboundContentType
-	if contentType == "" {
-		contentType = "application/json"
+	if method != http.MethodGet {
+		contentType := in.InboundContentType
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		req.Header.Set("Content-Type", contentType)
 	}
-	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", "application/json")
 
 	// 可选 vendor-specific header

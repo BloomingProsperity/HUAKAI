@@ -92,9 +92,17 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 	// model ID 用 path escape 防 URL 保留字符断 routing。
 	substituted := strings.ReplaceAll(defaultEndpoint, "{model}", url.PathEscape(in.UpstreamModelID))
 	// API key 或 upstream_passthrough 凭据自带 base_url 时优先使用。
-	endpoint, err := provider.EndpointForCredential(substituted, in.Credential)
+	resolvedInput := in
+	resolvedInput.EndpointPath = ""
+	endpoint, err := provider.EndpointForBuildInput(substituted, resolvedInput)
 	if err != nil {
 		return nil, fmt.Errorf("gemini passthrough: endpoint rejected: %w", err)
+	}
+	if streamSignal {
+		endpoint, err = provider.EndpointWithQueryParamIfMissing(endpoint, "alt", "sse")
+		if err != nil {
+			return nil, fmt.Errorf("gemini passthrough: 追加 alt=sse 失败: %w", err)
+		}
 	}
 
 	// API key 在 query 还是 header
@@ -107,7 +115,14 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 		endpoint = endpoint + sep + "key=" + url.QueryEscape(in.Credential.Value)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(in.InboundBody))
+	method := strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
+	if method == "" {
+		method = http.MethodPost
+	}
+	if method != http.MethodPost && method != http.MethodGet {
+		return nil, fmt.Errorf("gemini passthrough: 不支持的 HTTP 方法 %q", method)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(in.InboundBody))
 	if err != nil {
 		return nil, fmt.Errorf("gemini passthrough: 构造请求失败: %w", err)
 	}

@@ -42,7 +42,7 @@ func TestCredentialProjectProductionWiringKeepsResolverInjection(t *testing.T) {
 	}
 	for name, pattern := range map[string]string{
 		"采集与手动动作": `projectEnricher:\s+credentialProjectEnricher`,
-		"刷新链":     `DefaultModeAdapterRegistryWithRuntimeDependencies\(antigravityProjectResolver, cfg\.VendorOAuth, anthropicOAuthHTTPClient\)`,
+		"刷新链":     `(?s)DefaultModeAdapterRegistryWithRuntimeDependencies\(\s*antigravityProjectResolver,\s*cfg\.VendorOAuth,\s*anthropicOAuthHTTPClient,?\s*\)`,
 	} {
 		matched, matchErr := regexp.Match(pattern, raw)
 		if matchErr != nil {

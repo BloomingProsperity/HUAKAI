@@ -35,12 +35,14 @@ func TestLoadModelSyncParsesKeysURLsAndDurations(t *testing.T) {
 	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_API_KEY", "openai-key")
 	t.Setenv("HUAKAI_MODEL_SYNC_ANTHROPIC_API_KEY", "anthropic-key")
 	t.Setenv("HUAKAI_MODEL_SYNC_GEMINI_API_KEY", "gemini-key")
+	t.Setenv("HUAKAI_MODEL_SYNC_GROK_API_KEY", "grok-key")
 	t.Setenv("HUAKAI_MODEL_SYNC_INTERVAL_SECONDS", "120")
 	t.Setenv("HUAKAI_MODEL_SYNC_TIMEOUT_SECONDS", "7")
-	t.Setenv("HUAKAI_MODEL_SYNC_ALLOWED_HOSTS", "openai.example,anthropic.example,gemini.example")
+	t.Setenv("HUAKAI_MODEL_SYNC_ALLOWED_HOSTS", "openai.example,anthropic.example,gemini.example,grok.example")
 	t.Setenv("HUAKAI_MODEL_SYNC_OPENAI_URL", "https://openai.example/models")
 	t.Setenv("HUAKAI_MODEL_SYNC_ANTHROPIC_URL", "https://anthropic.example/models")
 	t.Setenv("HUAKAI_MODEL_SYNC_GEMINI_URL", "https://gemini.example/models")
+	t.Setenv("HUAKAI_MODEL_SYNC_GROK_URL", "https://grok.example/models")
 
 	cfg, err := LoadModelSync()
 	if err != nil {
@@ -58,7 +60,10 @@ func TestLoadModelSyncParsesKeysURLsAndDurations(t *testing.T) {
 	if cfg.Gemini.APIKey != "gemini-key" || cfg.Gemini.URL != "https://gemini.example/models" {
 		t.Fatalf("Gemini config mismatch: %+v", cfg.Gemini)
 	}
-	if len(cfg.AllowedHosts) != 3 || cfg.AllowUnsafeURLs {
+	if cfg.Grok.APIKey != "grok-key" || cfg.Grok.URL != "https://grok.example/models" {
+		t.Fatalf("Grok config mismatch: %+v", cfg.Grok)
+	}
+	if len(cfg.AllowedHosts) != 4 || cfg.AllowUnsafeURLs {
 		t.Fatalf("model-sync URL policy mismatch: hosts=%v unsafe=%v", cfg.AllowedHosts, cfg.AllowUnsafeURLs)
 	}
 }
@@ -104,9 +109,11 @@ func clearModelSyncEnv(t *testing.T) {
 		"HUAKAI_MODEL_SYNC_OPENAI_API_KEY",
 		"HUAKAI_MODEL_SYNC_ANTHROPIC_API_KEY",
 		"HUAKAI_MODEL_SYNC_GEMINI_API_KEY",
+		"HUAKAI_MODEL_SYNC_GROK_API_KEY",
 		"HUAKAI_MODEL_SYNC_OPENAI_URL",
 		"HUAKAI_MODEL_SYNC_ANTHROPIC_URL",
 		"HUAKAI_MODEL_SYNC_GEMINI_URL",
+		"HUAKAI_MODEL_SYNC_GROK_URL",
 		"HUAKAI_MODEL_SYNC_ALLOWED_HOSTS",
 		"HUAKAI_MODEL_SYNC_UNSAFE_ALLOW_URLS",
 	} {

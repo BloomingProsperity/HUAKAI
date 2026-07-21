@@ -15,17 +15,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// 缺陷：Gemini public CLI profile 若不强制 operator 填 client_secret，会退回不符合 D-1=A 的 PKCE-only。
-// 判别 mutation：删除 client_secret 校验时，本测试必须变红。
-func TestGeminiBuiltinProfileRejectsMissingClientSecret(t *testing.T) {
+// 回归：现有 CLI 凭据文件不携带 client_secret，固定公开 profile
+// 必须自包含完整刷新身份，否则导入过期 token 后必然无法转 API。
+func TestGeminiBuiltinProfileIncludesRefreshClientIdentity(t *testing.T) {
 	cfg := geminiBuiltinProfileConfig(OAuthClientConfig{})
-
-	err := validateGeminiBuiltinProfile(cfg)
-	if !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("err=%v want ErrFeatureDisabled", err)
+	if strings.TrimSpace(cfg.ClientID) == "" || strings.TrimSpace(cfg.ClientSecret) == "" {
+		t.Fatal("Gemini 公开 profile 必须同时包含 client_id 和 client_secret")
 	}
-	if !strings.Contains(err.Error(), "client_secret") {
-		t.Fatalf("err=%v want client_secret mismatch", err)
+	if err := validateGeminiBuiltinProfile(cfg); err != nil {
+		t.Fatalf("内置 profile 校验失败：%v", err)
 	}
 }
 

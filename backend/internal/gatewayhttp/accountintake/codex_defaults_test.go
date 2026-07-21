@@ -42,7 +42,8 @@ func TestApplyCodexAccountDefaultsPreservesExplicitOperationsSettings(t *testing
 		*in.Account.CapConcurrency != 9 || *in.Account.Priority != 7 {
 		t.Fatalf("显式配置被覆盖：%+v", in.Account)
 	}
-	if len(in.Account.CapabilityFlags) != 5 || in.Account.CapabilityFlags[0] != "custom" {
+	if len(in.Account.CapabilityFlags) != 6 || in.Account.CapabilityFlags[0] != "custom" ||
+		!containsString(in.Account.CapabilityFlags, "image_output") {
 		t.Fatalf("能力合并错误：%v", in.Account.CapabilityFlags)
 	}
 }

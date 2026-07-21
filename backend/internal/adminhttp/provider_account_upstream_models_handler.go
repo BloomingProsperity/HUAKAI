@@ -1,48 +1,32 @@
-﻿package adminhttp
+package adminhttp
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/accountmodeldiscovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
-const (
-	upstreamModelsRequestTimeout          = 15 * time.Second
-	upstreamModelsMaxBodyBytes            = 1 << 20 // 1 MiB
-)
+const upstreamModelsMutationBodyLimit = 4 << 10
 
-// upstreamModelsTransportWrapper 控制在拨号时哪些已解析的 IP 会被拦截。
-// 默认值(nil)使用真实的 provider.WrapPassthroughEndpointTransport 守卫。
-// 测试会注入一个全放行的判定函数,以便能访问到 httptest 服务器。
-//
-// 它表现为一个 DialContext 包装器工厂,而非一个 IP 判定函数,
-// 这样在生产环境中我们就能复用现有的、已经过测试的传输层包装器。
-type upstreamModelsTransportWrapper func(rt http.RoundTripper) (http.RoundTripper, error)
-
-// UpstreamModelsDeps 持有 upstream-models 处理器的全部依赖。
 type UpstreamModelsDeps struct {
 	Auth      upstreamModelsAuth
 	Accounts  upstreamModelsAccountStore
-	Creds     upstreamModelsCredentialStore
-	// TransportWrapper 在测试中覆盖经过 SSRF 守卫的传输层。
-	// 生产代码必须保持其为 nil,以便使用真实的守卫。
-	TransportWrapper upstreamModelsTransportWrapper
+	Discovery upstreamModelsDiscovery
 }
 
 type upstreamModelsAuth interface {
@@ -53,119 +37,77 @@ type upstreamModelsAccountStore interface {
 	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
 }
 
-type upstreamModelsCredentialStore interface {
-	LoadForProviderAccountTest(context.Context, int64, int64) (credentialstore.CredentialRecord, error)
+type upstreamModelsDiscovery interface {
+	Discover(context.Context, int64, int64) (accountmodeldiscovery.Result, error)
+	Sync(context.Context, accountmodeldiscovery.SyncInput) (accountmodeldiscovery.SyncResult, error)
 }
 
-// upstreamModelsListResponse 是 JSON 响应体。
-type upstreamModelsListResponse struct {
-	Models []string `json:"models"`
-	Count  int      `json:"count"`
+type upstreamModelsResponse struct {
+	Models              []string                      `json:"models"`
+	Items               []accountmodeldiscovery.Model `json:"items"`
+	Count               int                           `json:"count"`
+	Vendor              string                        `json:"vendor"`
+	AuthMode            string                        `json:"auth_mode"`
+	ProtocolFamily      string                        `json:"protocol_family"`
+	DiscoveredAt        string                        `json:"discovered_at"`
+	Changed             bool                          `json:"changed,omitempty"`
+	PreviousCount       int                           `json:"previous_count,omitempty"`
+	CredentialVersion   int                           `json:"credential_version,omitempty"`
+	AccountCredentialID int64                         `json:"account_credential_id,omitempty"`
 }
 
-// MountProviderAccountUpstreamModelsRoutes 注册 GET /{id}/upstream-models。
+type upstreamModelsSyncRequest struct {
+	Reason string `json:"reason"`
+}
+
 func MountProviderAccountUpstreamModelsRoutes(r chi.Router, d UpstreamModelsDeps) {
-	r.Get("/{id}/upstream-models", newProviderAccountUpstreamModelsHandler(d))
+	r.Get("/{id}/upstream-models", newProviderAccountUpstreamModelsHandler(d, false))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post(
+		"/{id}/upstream-models/sync", newProviderAccountUpstreamModelsHandler(d, true),
+	)
 }
 
-func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps) http.HandlerFunc {
+func newProviderAccountUpstreamModelsHandler(d UpstreamModelsDeps, persist bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, tenantID, ok := resolveUpstreamModelsTenant(w, r, d)
+		ident, tenantID, ok := resolveUpstreamModelsTenant(w, r, d)
 		if !ok {
 			return
 		}
-
-		id, ok := parseUpstreamModelsAccountID(w, r)
-		if !ok {
+		accountID, ok := parseUpstreamModelsAccountID(w, r)
+		if !ok || !requireUpstreamModelsAccount(w, r, d, tenantID, accountID) {
 			return
 		}
 
-		// 拉取 provider account 行(权威的租户范围校验)。
-		_, err := d.Accounts.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{
-			ID: id, TenantID: tenantID,
+		if !persist {
+			result, err := d.Discovery.Discover(r.Context(), tenantID, accountID)
+			if err != nil {
+				logUpstreamModelsFailure(r.Context(), "discover", tenantID, accountID, err)
+				writeUpstreamModelsError(w, err)
+				return
+			}
+			writeUpstreamModelsJSON(w, result, false, 0)
+			return
+		}
+
+		reason, ok := decodeUpstreamModelsSyncRequest(w, r)
+		if !ok {
+			return
+		}
+		result, err := d.Discovery.Sync(r.Context(), accountmodeldiscovery.SyncInput{
+			TenantID: tenantID, AccountID: accountID, ActorID: ident.AuditActor(), ActorRole: ident.Role,
+			RequestID: chimiddleware.GetReqID(r.Context()), Reason: reason,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				writeError(w, http.StatusNotFound, "provider_account_not_found", "provider account not found")
-				return
-			}
-			writeError(w, http.StatusServiceUnavailable, "provider_account_get_failed", "provider account lookup is unavailable")
+			logUpstreamModelsFailure(r.Context(), "sync", tenantID, accountID, err)
+			writeUpstreamModelsError(w, err)
 			return
 		}
-
-		// 加载并解密凭证。
-		rec, err := d.Creds.LoadForProviderAccountTest(r.Context(), tenantID, id)
-		if err != nil {
-			if errors.Is(err, credentialstore.ErrCredentialNotFound) {
-				writeError(w, http.StatusNotFound, "credential_not_found", "no active credential found for this provider account")
-				return
-			}
-			writeError(w, http.StatusServiceUnavailable, "credential_load_failed", "credential load unavailable")
-			return
-		}
-		defer privacy.Zeroize(rec.PlaintextPayload)
-
-		// 根据账号的认证模式,把明文字节映射为 provider.Credential。
-		// upstream_static 账号携带 base_url + auth_header_value。
-		cred, err := mapProviderCredential(rec)
-		if err != nil {
-			writeError(w, http.StatusUnprocessableEntity, "credential_format_invalid", "stored credential payload cannot be decoded")
-			return
-		}
-
-		if cred.Type != provider.CredentialTypeUpstreamPassthrough {
-			writeError(w, http.StatusUnprocessableEntity, "unsupported_credential_type",
-				"upstream model listing is only supported for upstream_passthrough credentials")
-			return
-		}
-
-		baseURL := strings.TrimSpace(cred.Extra["base_url"])
-		if baseURL == "" {
-			writeError(w, http.StatusUnprocessableEntity, "base_url_missing",
-				"provider account credential does not carry a base_url; cannot discover upstream models")
-			return
-		}
-
-		modelsURL, err := buildModelsURL(baseURL)
-		if err != nil {
-			writeError(w, http.StatusUnprocessableEntity, "upstream_url_invalid",
-				"provider account base_url is malformed or unsafe")
-			return
-		}
-
-		// 构建经过 SSRF 守卫的 HTTP 客户端。
-		client, err := buildUpstreamModelsClient(d.TransportWrapper)
-		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "upstream_blocked",
-				"upstream transport guard could not be initialised")
-			return
-		}
-
-		models, err := fetchUpstreamModels(r.Context(), client, modelsURL, cred.Value)
-		if err != nil {
-			if errors.Is(err, errUpstreamBlocked) {
-				writeError(w, http.StatusUnprocessableEntity, "upstream_blocked",
-					"upstream address is blocked by SSRF policy")
-				return
-			}
-			writeError(w, http.StatusBadGateway, "upstream_error",
-				"upstream models endpoint returned an error or an unparseable response")
-			return
-		}
-
-		resp := upstreamModelsListResponse{Models: models, Count: len(models)}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+		writeUpstreamModelsJSON(w, result.Result, result.Changed, result.PreviousCount)
 	}
 }
 
-// errUpstreamBlocked 在 SSRF 守卫拒绝拨号时返回。
-var errUpstreamBlocked = errors.New("upstream_blocked")
-
-// resolveUpstreamModelsTenant 与 resolveProviderAccountTestTenant 对应一致。
 func resolveUpstreamModelsTenant(w http.ResponseWriter, r *http.Request, d UpstreamModelsDeps) (admin.AdminIdentity, int64, bool) {
-	if d.Auth == nil || d.Accounts == nil || d.Creds == nil {
+	if d.Auth == nil || d.Accounts == nil || d.Discovery == nil {
 		writeError(w, http.StatusServiceUnavailable, "gateway_not_configured", "upstream models dependency unset")
 		return admin.AdminIdentity{}, 0, false
 	}
@@ -205,150 +147,121 @@ func parseUpstreamModelsAccountID(w http.ResponseWriter, r *http.Request) (int64
 	return id, true
 }
 
-// mapProviderCredential 把 CredentialRecord 的 PlaintextPayload 转换成
-// provider.Credential,使用账号的 AuthMode 作为 account_type 选择器。
-// 这与 postgres_vault.go / credentialworker 映射凭证的方式保持一致。
-func mapProviderCredential(rec credentialstore.CredentialRecord) (provider.Credential, error) {
-	// credentialstore 中的 AuthMode 对应 postgres_vault 中的 account_type。
-	// 对 upstream_static 账号而言,AuthMode == "upstream_static"。
-	switch rec.AuthMode {
-	case "upstream_static":
-		return mapUpstreamStaticCredential(rec.PlaintextPayload)
+func requireUpstreamModelsAccount(w http.ResponseWriter, r *http.Request, d UpstreamModelsDeps, tenantID, accountID int64) bool {
+	_, err := d.Accounts.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: accountID, TenantID: tenantID})
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "provider_account_not_found", "provider account not found")
+		return false
+	}
+	writeError(w, http.StatusServiceUnavailable, "provider_account_get_failed", "provider account lookup is unavailable")
+	return false
+}
+
+func decodeUpstreamModelsSyncRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.Body == nil || r.ContentLength == 0 {
+		return "", true
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, upstreamModelsMutationBodyLimit)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var input upstreamModelsSyncRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body must be a valid JSON object")
+		return "", false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body must contain one JSON object")
+		return "", false
+	}
+	return strings.TrimSpace(input.Reason), true
+}
+
+// logUpstreamModelsFailure 给模型发现/同步失败留可辨识运维轨迹:成功与未变化
+// 走管理审计日志,失败在此按 error_class 分类落系统日志。日志写入失败不掩盖
+// 原始业务错误;字段全部取自 privacy 允许清单,原始上游正文/token 一概不落。
+func logUpstreamModelsFailure(ctx context.Context, operation string, tenantID, accountID int64, err error) {
+	var discoveryErr *accountmodeldiscovery.DiscoveryError
+	vendor, authMode := "", ""
+	upstreamStatus := 0
+	if errors.As(err, &discoveryErr) {
+		vendor, authMode = discoveryErr.Vendor, discoveryErr.AuthMode
+		upstreamStatus = discoveryErr.StatusCode
+	}
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityError,
+		Component:  "adminhttp.provider_account_upstream_models",
+		RequestID:  chimiddleware.GetReqID(ctx),
+		ErrorClass: logSafeUpstreamModelsClass(accountmodeldiscovery.KindOf(err)),
+		Attrs: map[string]any{
+			"event_class": "upstream_models_" + operation + "_failed",
+			"outcome":     "failed",
+			"tenant_id":   tenantID, "provider_account_id": accountID,
+			"vendor": vendor, "auth_mode": logSafeAuthMode(authMode),
+			"upstream_status": upstreamStatus,
+		},
+	})
+}
+
+// privacy 值位禁写扫描不放行含 credential/refresh_token 词根的值(整包会被
+// fail-closed 拦成 privacy_guard_hit),日志侧换等义分类,辨识度不变。
+func logSafeUpstreamModelsClass(kind accountmodeldiscovery.ErrorKind) string {
+	switch kind {
+	case accountmodeldiscovery.ErrorCredentialRejected:
+		return "upstream_auth_rejected"
+	case accountmodeldiscovery.ErrorCredentialChanged:
+		return "auth_rotation_conflict"
 	default:
-		return provider.Credential{}, fmt.Errorf("unsupported auth mode: %s", rec.AuthMode)
+		return string(kind)
 	}
 }
 
-type rawUpstreamStaticForModels struct {
-	BaseURL         string `json:"base_url"`
-	AuthHeaderValue string `json:"auth_header_value"`
+func logSafeAuthMode(mode string) string {
+	if mode == credentialstore.AuthModeRefreshToken {
+		return "oauth_refresh"
+	}
+	return mode
 }
 
-func mapUpstreamStaticCredential(payload []byte) (provider.Credential, error) {
-	var r rawUpstreamStaticForModels
-	if err := json.Unmarshal(payload, &r); err != nil {
-		return provider.Credential{}, fmt.Errorf("upstream_static unmarshal: %w", err)
-	}
-	if r.AuthHeaderValue == "" {
-		return provider.Credential{}, fmt.Errorf("upstream_static auth_header_value is empty")
-	}
-	extra := map[string]string{}
-	if r.BaseURL != "" {
-		extra["base_url"] = r.BaseURL
-	}
-	return provider.Credential{
-		Type:  provider.CredentialTypeUpstreamPassthrough,
-		Value: r.AuthHeaderValue,
-		Extra: extra,
-	}, nil
-}
-
-// buildModelsURL 在 base URL 后追加 /v1/models,并考虑 base 是否已经带有路径。
-// 采用与 adapter.go 相同的 base-URL 逻辑:
-// 如果 base 仅为 scheme+host(或以 / 结尾),则直接追加 /v1/models;
-// 否则信任运维设置的自定义路径,并追加 /models。
-func buildModelsURL(base string) (string, error) {
-	u, err := url.Parse(strings.TrimRight(base, "/"))
-	if err != nil || u.Host == "" || u.Scheme != "https" {
-		return "", fmt.Errorf("invalid base_url: %s", base)
-	}
-	path := u.Path
-	switch {
-	case path == "" || path == "/":
-		u.Path = "/v1/models"
-	case strings.HasSuffix(path, "/v1"):
-		u.Path = path + "/models"
-	default:
-		// 自定义 base 路径:由运维管理完整路径;追加 /models。
-		u.Path = strings.TrimRight(path, "/") + "/models"
-	}
-	return u.String(), nil
-}
-
-// buildUpstreamModelsClient 构造一个带有 SSRF 守卫传输层的 *http.Client。
-// 在生产环境中,wrapper 为 nil,使用 provider.WrapPassthroughEndpointTransport。
-// 测试会注入一个全放行的 wrapper。
-func buildUpstreamModelsClient(wrapper upstreamModelsTransportWrapper) (*http.Client, error) {
-	if wrapper == nil {
-		wrapper = provider.WrapPassthroughEndpointTransport
-	}
-	base := http.DefaultTransport.(*http.Transport).Clone()
-	base.Proxy = nil
-	rt, err := wrapper(base)
-	if err != nil {
-		return nil, err
-	}
-	return &http.Client{
-		Transport: rt,
-		Timeout:   upstreamModelsRequestTimeout,
-	}, nil
-}
-
-// openAIModelsResponse 是 OpenAI 兼容的 /v1/models 返回的结构。
-type openAIModelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
-}
-
-// fetchUpstreamModels 以 GET 请求访问 models 端点,解析响应,
-// 并返回一个已去重的 model ID 列表。
-// 它绝不会记录 Authorization header 的值或原始响应体(CMB-5)。
-func fetchUpstreamModels(ctx context.Context, client *http.Client, modelsURL, authHeader string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		if isBlockedErr(err) {
-			return nil, errUpstreamBlocked
+func writeUpstreamModelsError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	code := "upstream_models_failed"
+	switch accountmodeldiscovery.KindOf(err) {
+	case accountmodeldiscovery.ErrorNotConfigured:
+		status, code = http.StatusServiceUnavailable, "gateway_not_configured"
+	case accountmodeldiscovery.ErrorAccountUnavailable:
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, credentialstore.ErrCredentialNotFound) {
+			status, code = http.StatusNotFound, "provider_account_not_found"
+		} else {
+			status, code = http.StatusServiceUnavailable, "provider_account_unavailable"
 		}
-		return nil, fmt.Errorf("upstream request failed")
+	case accountmodeldiscovery.ErrorUnsupported:
+		status, code = http.StatusUnprocessableEntity, "upstream_models_unsupported"
+	case accountmodeldiscovery.ErrorCredentialRejected:
+		status, code = http.StatusBadGateway, "upstream_credential_rejected"
+	case accountmodeldiscovery.ErrorRateLimited:
+		status, code = http.StatusTooManyRequests, "upstream_rate_limited"
+	case accountmodeldiscovery.ErrorResponseInvalid, accountmodeldiscovery.ErrorEmptyCatalog,
+		accountmodeldiscovery.ErrorCatalogTooLarge:
+		status, code = http.StatusBadGateway, "upstream_models_invalid"
+	case accountmodeldiscovery.ErrorCredentialChanged:
+		status, code = http.StatusConflict, "credential_changed"
+	case accountmodeldiscovery.ErrorPersistence:
+		status, code = http.StatusServiceUnavailable, "upstream_models_persist_failed"
 	}
-	defer resp.Body.Close()
-
-	// 限制读取大小,防止恶意上游导致内存耗尽。
-	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamModelsMaxBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("read upstream response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
-	}
-
-	return parseModelsResponse(body)
+	writeError(w, status, code, "provider account model discovery failed")
 }
 
-// isBlockedErr 报告 err 是否来自 SSRF passthrough 守卫。
-func isBlockedErr(err error) bool {
-	return errors.Is(err, provider.ErrUnsafePassthroughEndpoint)
-}
-
-// parseModelsResponse 解析 OpenAI 兼容的 {data:[{id}]} 响应。
-func parseModelsResponse(body []byte) ([]string, error) {
-	var r openAIModelsResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("parse models response: %w", err)
+func writeUpstreamModelsJSON(w http.ResponseWriter, result accountmodeldiscovery.Result, changed bool, previousCount int) {
+	response := upstreamModelsResponse{
+		Models: result.ModelIDs(), Items: result.Models, Count: len(result.Models), Vendor: result.Vendor,
+		AuthMode: result.AuthMode, ProtocolFamily: result.ProtocolFamily, DiscoveredAt: result.DiscoveredAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		Changed: changed, PreviousCount: previousCount, CredentialVersion: result.CredentialVersion,
+		AccountCredentialID: result.AccountCredentialID,
 	}
-	seen := make(map[string]struct{}, len(r.Data))
-	models := make([]string, 0, len(r.Data))
-	for _, entry := range r.Data {
-		id := strings.TrimSpace(entry.ID)
-		if id == "" {
-			continue
-		}
-		if _, dup := seen[id]; dup {
-			continue
-		}
-		seen[id] = struct{}{}
-		models = append(models, id)
-	}
-	return models, nil
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(response)
 }

@@ -15,13 +15,15 @@ import (
 )
 
 var (
-	ErrNotConfigured   = errors.New("account intake service not configured")
-	ErrInvalidInput    = errors.New("account intake input invalid")
-	ErrPlanHashMissing = errors.New("account intake plan hash required")
-	ErrPlanChanged     = errors.New("account intake plan changed")
-	ErrExecutionStale  = errors.New("account intake item became stale")
-	ErrCodexLaneAbsent = errors.New("codex routing lane is not configured")
-	ErrCodexLaneMany   = errors.New("multiple codex routing lanes require explicit selection")
+	ErrNotConfigured                      = errors.New("account intake service not configured")
+	ErrInvalidInput                       = errors.New("account intake input invalid")
+	ErrPlanHashMissing                    = errors.New("account intake plan hash required")
+	ErrPlanChanged                        = errors.New("account intake plan changed")
+	ErrExecutionStale                     = errors.New("account intake item became stale")
+	ErrCodexLaneAbsent                    = errors.New("codex routing lane is not configured")
+	ErrCodexLaneMany                      = errors.New("multiple codex routing lanes require explicit selection")
+	ErrImportCredentialRefreshUnavailable = errors.New("account intake credential refresher unavailable")
+	ErrImportCredentialRefreshFailed      = errors.New("account intake credential refresh failed")
 )
 
 const accountIntakeContentLimit = 2 << 20

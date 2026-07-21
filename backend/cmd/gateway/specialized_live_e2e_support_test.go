@@ -1,4 +1,4 @@
-//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live || e2e_concurrency || smoke
+//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live || e2e_grok_image_live || e2e_grok_video_live || e2e_gemini_video_live || e2e_concurrency || e2e_upstream || smoke
 
 package main
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,8 +24,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
+	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
+	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
 const specializedLiveImportCapability = "advanced_account_intake"
@@ -50,6 +53,104 @@ type specializedLiveProcesses struct {
 	gateway    *exec.Cmd
 	sidecar    *exec.Cmd
 	socketPath string
+}
+
+// useDisposableSpecializedLiveDatabase 为每个顶层活体测试创建一座全新数据库，
+// 迁移到当前源码的最新版本，并在所有连接与进程退出后删除整库。调用方提供的
+// DSN 只用于取得同一 PostgreSQL 实例的管理连接，不再承载测试业务数据。
+func useDisposableSpecializedLiveDatabase(t *testing.T, baseDSN string) string {
+	t.Helper()
+	baseConfig, err := pgx.ParseConfig(strings.TrimSpace(baseDSN))
+	if err != nil {
+		t.Fatalf("解析活体测试 PostgreSQL DSN: %v", err)
+	}
+	databaseName := "huakai_e2e_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	maintenanceDSN, err := specializedLiveDatabaseDSN(baseConfig.ConnString(), "postgres")
+	if err != nil {
+		t.Fatalf("构造活体测试 PostgreSQL 管理 DSN: %v", err)
+	}
+	targetDSN, err := specializedLiveDatabaseDSN(baseConfig.ConnString(), databaseName)
+	if err != nil {
+		t.Fatalf("构造一次性活体测试库 DSN: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, maintenanceDSN)
+	if err != nil {
+		t.Fatalf("连接活体测试 PostgreSQL 管理库: %v", err)
+	}
+	identifier := pgx.Identifier{databaseName}.Sanitize()
+	// 固定从系统只读模板创建，避免本机 template1 被历史测试污染后把旧表、
+	// 所有者和权限复制进一次性数据库，导致迁移结果依赖服务器遗留状态。
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier+" TEMPLATE template0"); err != nil {
+		_ = admin.Close(ctx)
+		t.Fatalf("创建一次性活体测试数据库: %v", err)
+	}
+	if err := admin.Close(ctx); err != nil {
+		t.Fatalf("关闭活体测试 PostgreSQL 管理连接: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		cleanupAdmin, connectErr := pgx.Connect(cleanupCtx, maintenanceDSN)
+		if connectErr != nil {
+			t.Errorf("连接管理库以删除一次性活体测试数据库: %v", connectErr)
+			return
+		}
+		defer cleanupAdmin.Close(cleanupCtx)
+		if _, terminateErr := cleanupAdmin.Exec(cleanupCtx, `
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname=$1 AND pid<>pg_backend_pid()`, databaseName); terminateErr != nil {
+			t.Errorf("终止一次性活体测试数据库残余连接: %v", terminateErr)
+			return
+		}
+		if _, dropErr := cleanupAdmin.Exec(cleanupCtx, "DROP DATABASE IF EXISTS "+identifier); dropErr != nil {
+			t.Errorf("删除一次性活体测试数据库: %v", dropErr)
+		}
+	})
+
+	if err := dbmigrate.Up(sqlmigrations.Files, targetDSN); err != nil {
+		t.Fatalf("迁移一次性活体测试数据库到最新版本: %v", err)
+	}
+	return targetDSN
+}
+
+func specializedLiveDatabaseDSN(baseDSN, databaseName string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseDSN))
+	if err != nil {
+		return "", err
+	}
+	if (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Host == "" {
+		return "", fmt.Errorf("只支持 postgres:// 或 postgresql:// URL")
+	}
+	if strings.TrimSpace(databaseName) == "" || strings.Contains(databaseName, "/") {
+		return "", fmt.Errorf("数据库名不合法")
+	}
+	parsed.Path = "/" + databaseName
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func TestSpecializedLiveDatabaseDSNReplacesDatabaseAndPreservesOptions(t *testing.T) {
+	t.Parallel()
+	got, err := specializedLiveDatabaseDSN(
+		"postgres://user:secret@db.example:5432/old_database?sslmode=require&application_name=e2e",
+		"huakai_e2e_new",
+	)
+	if err != nil {
+		t.Fatalf("重写数据库 DSN: %v", err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("解析重写后 DSN: %v", err)
+	}
+	if parsed.Path != "/huakai_e2e_new" || parsed.Query().Get("sslmode") != "require" ||
+		parsed.Query().Get("application_name") != "e2e" || parsed.User.Username() != "user" {
+		t.Fatalf("重写后 DSN 丢失连接信息: %s", got)
+	}
 }
 
 func seedSpecializedLiveImportAuthorization(

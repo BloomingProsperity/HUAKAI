@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,12 +33,19 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/pool/dispatcher"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 )
 
 const (
@@ -68,6 +76,7 @@ type upstreamE2ECase struct {
 	vendor                string
 	protocolFamily        string
 	model                 string
+	upstreamModel         string
 	clientShape           upstreamE2EClientShape
 	officialClaudeClient  bool
 	keyEnv                string
@@ -76,6 +85,7 @@ type upstreamE2ECase struct {
 	accountType           string
 	gatewayEnv            []string
 	expectImportIdentity  bool
+	expectSubscription    bool
 	skipConcurrency       bool
 	accountConcurrencyCap int
 	concurrentRequests    int
@@ -97,6 +107,13 @@ func (tc upstreamE2ECase) normalizedClientShape() upstreamE2EClientShape {
 		return upstreamE2EClientOpenAI
 	}
 	return tc.clientShape
+}
+
+func (tc upstreamE2ECase) routedModel() string {
+	if model := strings.TrimSpace(tc.upstreamModel); model != "" {
+		return model
+	}
+	return tc.model
 }
 
 func TestUpstreamE2E_DoubaoChatCompletions(t *testing.T) {
@@ -143,6 +160,7 @@ func runUpstreamE2E(t *testing.T, tc upstreamE2ECase) {
 	if dsn == "" {
 		t.Skip("HUAKAI_E2E_DATABASE_URL 未设")
 	}
+	dsn = useDisposableSpecializedLiveDatabase(t, dsn)
 	credential := loadUpstreamE2ECredential(t, tc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -253,46 +271,9 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	}
 
 	t.Cleanup(func() {
-		c := context.Background()
-		// 清理顺序遵循外键约束；append-only 审计快照若被触发器拒绝删除，
-		// 仍保留为本次 e2e 的审计证据，不影响后续唯一租户重跑。
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_audit_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_concurrency_slots WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_concurrency_scope_locks WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_reconciliation_jobs WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_reservations WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_windows WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM quota_policies WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM idempotency_replay_records WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM usage_records WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM balance_holds WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_capabilities WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_aliases WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM models WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_snapshots WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM model_registry_tenant_policies WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM provider_account_subscription_states WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM provider_account_subscription_observations WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channel_health_state WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM account_credentials WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM provider_accounts WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM channels WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM providers WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM user_balances WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenant_admin_capability_grants WHERE tenant_id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM admin_tokens WHERE id=$1`, s.adminTokenID)
-		_, _ = pgPool.Exec(c, `DELETE FROM tenants WHERE id=$1`, s.tenantID)
-		_, _ = pgPool.Exec(c, `DELETE FROM billing_pricing_versions WHERE tenant_id=0 AND version=$1`, s.pricingVersion)
+		if err := cleanupUpstreamE2EGraph(context.Background(), pgPool, s); err != nil {
+			t.Errorf("清理真实上游测试图失败: %v", err)
+		}
 	})
 
 	if _, err := pgPool.Exec(ctx,
@@ -302,8 +283,27 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 	); err != nil {
 		t.Fatalf("seed public pricing tenant: %v", err)
 	}
-	pricingData := fmt.Sprintf(`{"providers":{"%s":{"models":{"%s":{"input_micro_usd":"1","output_micro_usd":"2","cache_read_micro_usd":"1"}}}}}`,
-		tc.vendor, tc.model)
+	pricingModels := map[string]map[string]string{
+		tc.model: {
+			"input_micro_usd": "1", "output_micro_usd": "2", "cache_read_micro_usd": "1",
+		},
+	}
+	if tc.routedModel() != tc.model {
+		pricingModels[tc.routedModel()] = map[string]string{
+			"input_micro_usd": "1", "output_micro_usd": "2", "cache_read_micro_usd": "1",
+		}
+	}
+	pricingProvider := pool.VendorFromProtocolFamily(tc.protocolFamily)
+	if pricingProvider == "" {
+		pricingProvider = tc.vendor
+	}
+	pricingDataBytes, err := json.Marshal(map[string]any{
+		"providers": map[string]any{pricingProvider: map[string]any{"models": pricingModels}},
+	})
+	if err != nil {
+		t.Fatalf("编码 e2e 定价快照: %v", err)
+	}
+	pricingData := string(pricingDataBytes)
 	if _, err := pgPool.Exec(ctx,
 		`INSERT INTO billing_pricing_versions (
 		    tenant_id, version, pricing_data, effective_from, created_by_actor, is_public
@@ -345,7 +345,7 @@ func seedUpstreamE2EGraph(t *testing.T, ctx context.Context, pgPool *pgxpool.Poo
 		                     default_provider_model_id, default_context_window, status)
 		 VALUES ($1, 'tenant', $2, $3, $4, 128000, 'active')
 		 RETURNING id`,
-		s.tenantID, tc.model, tc.protocolFamily, tc.model,
+		s.tenantID, tc.routedModel(), tc.protocolFamily, tc.routedModel(),
 	).Scan(&s.modelID); err != nil {
 		t.Fatalf("seed model: %v", err)
 	}
@@ -440,6 +440,9 @@ func assertUpstreamE2ESeedSelectable(t *testing.T, ctx context.Context, pgPool *
 	if resolved.ProtocolFamily != seed.testCase.protocolFamily {
 		t.Fatalf("resolved protocol_family=%q want %q", resolved.ProtocolFamily, seed.testCase.protocolFamily)
 	}
+	if resolved.ProviderModelID != seed.testCase.routedModel() {
+		t.Fatalf("resolved provider_model_id=%q want %q", resolved.ProviderModelID, seed.testCase.routedModel())
+	}
 	if len(resolved.PoolCandidates) != 1 || resolved.PoolCandidates[0] != seed.poolGroupID {
 		t.Fatalf("resolved pool candidates=%v want [%d]", resolved.PoolCandidates, seed.poolGroupID)
 	}
@@ -447,7 +450,7 @@ func assertUpstreamE2ESeedSelectable(t *testing.T, ctx context.Context, pgPool *
 	rows, err := dbbilling.New(pgPool).ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
 		TenantID:                seed.tenantID,
 		PoolGroupID:             seed.poolGroupID,
-		RequestedModel:          seed.testCase.model,
+		RequestedModel:          seed.testCase.routedModel(),
 		RequestedProtocolFamily: resolved.ProtocolFamily,
 		RequiredCapabilities:    []string{},
 	})
@@ -463,6 +466,118 @@ func assertUpstreamE2ESeedSelectable(t *testing.T, ctx context.Context, pgPool *
 			continue
 		}
 		t.Fatalf("seed selector eligibility returned accounts %v, want provider_account_id=%d", got, want)
+	}
+
+	// 静态 SQL 命中并不等于生产可调度。这里继续跑默认 gate 与真实数据库槽位，
+	// 让健康、协议、额度或容量拒绝在发真实请求前给出可判别原因。
+	source := dispatcher.NewDBAccountSource(dbbilling.New(pgPool))
+	selectionRequest := pool.SelectionRequest{
+		TenantID: seed.tenantID, UserID: seed.userID, APIKeyID: seed.apiKeyID,
+		PoolGroupID: seed.poolGroupID, RequestedModel: seed.testCase.model,
+		ProviderModelID: seed.testCase.routedModel(), ProtocolFamily: resolved.ProtocolFamily,
+		RequestID: "e2e-preflight-" + uuid.NewString(),
+	}
+	accounts, err := source.ListAccounts(ctx, selectionRequest)
+	if err != nil {
+		t.Fatalf("生产账号源预检失败: %v", err)
+	}
+	var userGroup string
+	if err := pgPool.QueryRow(ctx, `SELECT COALESCE(user_group, '') FROM users WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, seed.userID).Scan(&userGroup); err != nil {
+		t.Fatalf("读取生产用户分组预检输入: %v", err)
+	}
+	selectionRequest.UserGroup = userGroup
+	healthService := channelhealth.NewService(
+		channelhealth.NewPostgresStore(pgPool), channelhealth.DefaultPolicy(), nil,
+	)
+	gates := buildGroupRoutingGates(
+		subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, nil, nil, nil, zap.NewNop(),
+	)
+	var bindingID int64
+	var maxParallelRequests int64
+	var selectionMode string
+	if err := pgPool.QueryRow(ctx, `
+SELECT id, COALESCE(max_parallel_requests, 0), COALESCE(selection_mode, '')
+FROM model_pool_bindings
+WHERE tenant_id=$1 AND model_id=$2 AND pool_group_id=$3 AND enabled=true`,
+		seed.tenantID, seed.modelID, seed.poolGroupID,
+	).Scan(&bindingID, &maxParallelRequests, &selectionMode); err != nil {
+		t.Fatalf("读取生产 binding 预检输入: %v", err)
+	}
+	selectionRequest.BindingID = bindingID
+	selectionRequest.MaxParallelRequests = maxParallelRequests
+	selectionRequest.SelectionMode = selectionMode
+
+	claimGate := billing.NewClaimGate(pgPool)
+	reserved, err := claimGate.Reserve(ctx, billing.ReserveRequest{
+		TenantID: seed.tenantID, APIKeyID: seed.apiKeyID, UserID: seed.userID,
+		LogicalRequestID: "e2e-selector-preflight-" + uuid.NewString(),
+		EndpointFamily:   "chat", NormalizedPayloadHash: "e2e-selector-preflight",
+		RequestedModel: seed.testCase.model, PoolingGroupID: seed.poolGroupID,
+		BillingPolicyVersion: seed.pricingVersion, RequestClass: "interactive",
+		PredictedCost:          decimal.RequireFromString("0.000001"),
+		BalanceEnforcementMode: billing.BalanceEnforcementModeMandatory,
+	})
+	if err != nil {
+		t.Fatalf("生产 ClaimGate 预检失败: %v", err)
+	}
+	selectionRequest.ClaimID = reserved.ClaimID
+	selectionRequest.AttemptSeq = int(reserved.AttemptSeq)
+	slotManager := dispatcher.NewDBSlotManager(pgPool)
+	selector := pool.NewDefaultSelector(source,
+		pool.WithGateChain(gates),
+		pool.WithSlotManager(slotManager),
+		pool.WithClaimGate(pool.NewDBClaimGate(dbbilling.New(pgPool))),
+		pool.WithRoutingPolicySource(newBindingRoutingPolicySource(dbbilling.New(pgPool))),
+	)
+	selected, err := selector.Select(ctx, selectionRequest)
+	if err != nil {
+		var noCapacity *pool.NoCapacityError
+		if errors.As(err, &noCapacity) {
+			t.Fatalf("生产默认 gate 预检拒绝账号: family=%s reasons=%v", noCapacity.Exhaustion.Family, noCapacity.Exhaustion.Reasons)
+		}
+		t.Fatalf("生产默认 gate 预检失败: %v", err)
+	}
+	if selected == nil || selected.AccountID != seed.providerAccountID {
+		t.Fatalf("生产默认 gate 预检选中账号=%v，期望 %d", selected, seed.providerAccountID)
+	}
+	if selected.Release == nil {
+		t.Fatal("生产 claim 选号预检未返回槽位释放函数")
+	}
+	if err := selected.Release(ctx); err != nil {
+		t.Fatalf("生产 claim 选号预检释放失败: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx, `DELETE FROM balance_holds WHERE tenant_id=$1 AND claim_id=$2`, seed.tenantID, reserved.ClaimID); err != nil {
+		t.Fatalf("清理生产 claim 预检余额占用: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx, `DELETE FROM pool_slot_acquisitions WHERE tenant_id=$1 AND claim_id=$2`, seed.tenantID, reserved.ClaimID); err != nil {
+		t.Fatalf("清理生产 claim 预检槽位: %v", err)
+	}
+	if _, err := pgPool.Exec(ctx, `DELETE FROM billing_ledger_claims WHERE tenant_id=$1 AND id=$2`, seed.tenantID, reserved.ClaimID); err != nil {
+		t.Fatalf("清理生产 claim 预检: %v", err)
+	}
+	var target *pool.AccountSnapshot
+	for _, account := range accounts {
+		if account != nil && account.ID == seed.providerAccountID {
+			target = account
+			break
+		}
+	}
+	if target == nil {
+		t.Fatalf("生产账号源缺少 provider_account_id=%d", seed.providerAccountID)
+	}
+	selectionRequest.ClaimID = 0
+	selectionRequest.AttemptSeq = 0
+	selectionRequest.MaxParallelRequests = 0
+	acquired, err := slotManager.Acquire(ctx, target, selectionRequest)
+	if err != nil {
+		t.Fatalf("生产数据库槽位预检失败: account=%d cap=%d load=%v err=%v", target.ID, target.MaxConcurrency, target.LoadRate, err)
+	}
+	if acquired == nil || acquired.Release == nil {
+		t.Fatal("生产数据库槽位预检未返回释放函数")
+	}
+	if err := acquired.Release(ctx); err != nil {
+		t.Fatalf("生产数据库槽位预检释放失败: %v", err)
 	}
 }
 
@@ -572,6 +687,7 @@ func startUpstreamE2EGateway(t *testing.T, binPath, dsn, addr string, seed *upst
 		"HUAKAI_RELEASE_MODE=dev",
 		"HUAKAI_CREDENTIAL_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 		"HUAKAI_SESSION_SIGNING_KEY_B64=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"HUAKAI_AUDIT_LEDGER_BACKEND=postgres",
 		"HUAKAI_DEV_MOCK_UPSTREAM=false",
 		"HUAKAI_BILLING_POLICY_VERSION="+seed.pricingVersion,
 		"HUAKAI_QUOTA_ENFORCE=true",
@@ -753,7 +869,7 @@ func newUpstreamE2ERequest(ctx context.Context, addr string, seed *upstreamE2ESe
 		"messages": []map[string]string{
 			{"role": "user", "content": "ping"},
 		},
-		"max_tokens": 16,
+		"max_tokens": 256,
 		"stream":     false,
 	}
 	if shape == upstreamE2EClientAnthropic {
@@ -854,9 +970,32 @@ func assertUpstreamE2ESuccessPG(t *testing.T, ctx context.Context, pgPool *pgxpo
 		t.Fatalf("claim %d actual_cost=%v want >0", claimID, actualCost)
 	}
 	assertUpstreamE2EUsageRecord(t, ctx, pgPool, claimID, result.usage)
+	assertUpstreamE2ECostReceipt(t, ctx, pgPool, seed.tenantID, claimID)
 	assertUpstreamE2EQuotaReservation(t, ctx, pgPool, seed.tenantID, claimID)
 	assertUpstreamE2ECostQuotaWindow(t, ctx, pgPool, seed, 0)
 	return claimID
+}
+
+func assertUpstreamE2ECostReceipt(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, tenantID, claimID int64) {
+	t.Helper()
+	var count int
+	if err := pgPool.QueryRow(ctx, `
+SELECT count(*)
+FROM user_cost_receipts r
+JOIN user_cost_receipt_owners o
+  ON o.tenant_id = r.tenant_id
+ AND o.request_id = r.request_id
+ AND o.receipt_sequence = r.receipt_sequence
+WHERE r.tenant_id=$1
+  AND o.claim_id=$2
+  AND octet_length(r.signed_hash) > 0`,
+		tenantID, claimID,
+	).Scan(&count); err != nil {
+		t.Fatalf("读取 claim %d 的用户成本回执: %v", claimID, err)
+	}
+	if count != 1 {
+		t.Fatalf("claim %d 成本回执数量=%d，期望 1", claimID, count)
+	}
 }
 
 func readCommittedClaimForLogicalID(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, seed *upstreamE2ESeed, logicalID string) (int64, float64) {
