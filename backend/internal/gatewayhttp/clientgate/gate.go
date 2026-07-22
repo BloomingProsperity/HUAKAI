@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/claudecodecloak"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/codexclientaccess"
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
@@ -19,7 +20,7 @@ import (
 const ReasonOfficialClientRequired = "official_client_required"
 
 // Decision 是 clientgate 对调用方的封闭结果。S1 不定义 RewriteRequired：
-// Anthropic 反转账号只能 OfficialDirect 或 Reject；其它既有账号可保持 Allow。
+// Anthropic 反转账号:真 Claude Code→OfficialDirect；body 伪装开时第三方→Allow；伪装关时 Reject。其它账号可 Allow。
 type Decision string
 
 const (
@@ -66,12 +67,19 @@ func Decide(ctx context.Context, getter SettingsGetter, accountType, platform st
 }
 
 // DecideWithBody 在既有策略之前为 Anthropic 反转账号启用严格官方直发。
-// 自报 UA/X-Client 命中但缺少路径、SDK 头或 body 结构时只能 Reject。
+// 真 Claude Code 形态 → OfficialDirect(跳过 body 伪装)。
+// 非官方客户端:
+//   - HUAKAI_CLAUDE_OAUTH_BODY_CLOAK 默认开 → Allow,由出站 claudecodecloak 伪装 body
+//   - 显式 false → 保持 Reject(仅官方客户端,历史严格门)
 func DecideWithBody(ctx context.Context, getter SettingsGetter, accountType, platform string, codexCLIOnly bool, r *http.Request, body []byte) Result {
 	if officialclient.RequiresStrictAnthropicDirect(accountType, platform, codexCLIOnly) {
 		strict := officialclient.DecideAnthropicOfficialDirect(r, body)
 		if strict.Decision == officialclient.DirectDecisionOfficialDirect {
 			return Result{Decision: DecisionOfficialDirect, Body: strict.Body}
+		}
+		// 兼容伪装模式:放行第三方,body 在 identityRewrite 中改成 CLI 形态。
+		if claudecodecloak.Enabled() {
+			return Result{Decision: DecisionAllow, Reason: "claude_oauth_body_cloak"}
 		}
 		return Result{Decision: DecisionReject, Reason: ReasonOfficialClientRequired}
 	}

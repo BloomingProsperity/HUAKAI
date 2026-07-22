@@ -180,6 +180,7 @@ func TestIdentityRewrite_闭环点亮_用上游id改写(t *testing.T) {
 func TestIdentityRewrite_failopen_空上游id_不改写(t *testing.T) {
 	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "true")
 	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "false")
 
 	body := identityRewriteFixtureBody(t)
 	ex := newIdentityRewriteExec("") // 账号无上游 id
@@ -198,6 +199,7 @@ func TestIdentityRewrite_显式关_零变更(t *testing.T) {
 	// 显式关:开关设为 false。
 	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "false")
 	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "false")
 
 	body := identityRewriteFixtureBody(t)
 	ex := newIdentityRewriteExec("acc-xyz")
@@ -250,5 +252,27 @@ func TestIdentityRewrite_HCSF三路一致_marshal后body被注入身份(t *testi
 	// 三路一致:两种入参形态最终 account 组件都落到同一上游 id。
 	if rawUUID != externalID || hcsfUUID != rawUUID {
 		t.Fatalf("三路应一致改写到同一上游 id %q:HCSF=%q raw=%q", externalID, hcsfUUID, rawUUID)
+	}
+}
+
+// TestIdentityRewrite_BodyCloak_反转号注入system三块 验证第三方/非 OfficialDirect
+// 反转号在 anthropic 族上会得到 system 三块伪装(billing+身份+扩充)。
+func TestIdentityRewrite_BodyCloak_反转号注入system三块(t *testing.T) {
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "false") // 只测 body cloak
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "")
+
+	body := []byte(`{"model":"claude-3-5-sonnet","system":"你是助手","messages":[{"role":"user","content":"hi"}]}`)
+	ex := newIdentityRewriteExec("acc-uuid-1")
+	ex.officialDirect = false
+	out := ex.identityRewrite(body)
+	if !bytes.Contains(out, []byte("x-anthropic-billing-header:")) {
+		t.Fatalf("want billing block in system, got %s", out)
+	}
+	if !bytes.Contains(out, []byte("You are Claude Code, Anthropic's official CLI for Claude.")) {
+		t.Fatalf("want identity prompt, got %s", out)
+	}
+	if !bytes.Contains(out, []byte("你是助手")) {
+		t.Fatalf("original system must sink to messages, got %s", out)
 	}
 }
