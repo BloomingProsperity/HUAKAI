@@ -81,10 +81,16 @@ func normalizeAccountIDs(values []int64) ([]int64, error) {
 	return out, nil
 }
 
-func validateOperator(tenantID int64, actorID, actorRole string) error {
+func validateOperator(tenantID, actorScopeTenantID int64, actorID, actorRole string) error {
 	if tenantID <= 0 || strings.TrimSpace(actorID) == "" ||
 		(actorRole != admin.RolePlatformAdmin && actorRole != admin.RoleTenantOperator) {
 		return ErrInvalidInput
+	}
+	// 纵深第二锁(与 balanceledger.classifyAdminBalanceAdjustment 同构):调用者自有租户
+	// 必须与目标租户一致。platform_admin 的 scope 已由 HTTP 层重绑为平台租户,故两类身份
+	// 统一断言 actorScopeTenantID == tenantID;不符即越权,整体拒绝,不落任何账号材料。
+	if actorScopeTenantID <= 0 || actorScopeTenantID != tenantID {
+		return ErrForbidden
 	}
 	return nil
 }

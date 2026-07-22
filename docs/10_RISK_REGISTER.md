@@ -20,6 +20,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | R-LIC-001 | License | HIGH | 部分行为参考项目采用 copyleft 许可证；若复制受保护的源码、结构、schema、UI 或实现细节，会破坏 HUAKAI 的 MIT clean-room 边界。 | 商业分发与 SaaS 交付可能面临许可证污染、重写或停止发布风险。 | [DR-000](process/decisions/DR-000-clean-room-methodology.md) 是历史决策证据；现行落地以 [05_CLEAN_ROOM_POLICY.md](05_CLEAN_ROOM_POLICY.md)、[`AGENTS.md`](../AGENTS.md) 和 [RULES.md](RULES.md) 为准：specifier 只产行为合同，分离实现 lane 独立实现，所有引用带当前源码证据。 | 使用独立实现、Safe Equivalent 或经批准的隔离方式；不得删功能。 | 当前执行者 | Mitigated |
 | R-SEC-001 | Security | TBD | Admin operations can expose secrets or dangerous controls. | Credential leak or unauthorized changes. | Redaction, RBAC, audit logs, confirmations. | Gate or stage, do not delete. | Claude | Open |
+| R-AUTHZ-001 | Authz / 三身份边界 | MED | 「部署者只能碰平台租户、租户管理员只能碰自己租户」这条严边界当前由 4 个 HTTP 入口各自手写(adminuserhttp/tenant_scope.go、gatewayhttp/admin_pool_accounts_handler.go、credentialacqhttp/authorization.go、accountintakehttp/handler.go),非单一裁决口;新增第 5 个租户私有资源入口时若漏抄守卫即产生跨租户越权。 | 当前 4 处语义一致且各有跨租户 403 判别测试,无活体漏洞;风险是维护性——将来漏配。 | ①accountbundle 服务层已补与 balanceledger 同构的 `ActorScopeTenantID` 纵深第二锁(2026-07-22,变异验证);②B 计划:抽单一 `CanActOnTenant(身份, 目标租户)` 裁决函数,4 入口 + 两个服务层统一委派,作为分销树首个切片(auth-core 改动,Owner-gated,单独立项单独审,不夹入本 PR)。详见文末 2026-07-22 笔记。 | 保留三身份 RBAC,收敛为单一真相源,不删能力。 | 当前执行者 | Open |
 | R-BILL-001 | Billing | TBD | Usage and cost accounting can drift. | Revenue loss or incorrect charges. | Acceptance tests and reconciliation views. | Preserve billing feature with stronger checks. | Codex | Open |
 | R-BILL-003 | Billing / durable settlement intent | HIGH | 阶段 1 的 settlement intent 在 Reserve 提交后以独立短事务写入，且写入失败按可用性要求 fail-open；进程若在两者之间崩溃，或 intent 数据库写入持续失败，可能存在已 Reserve/已交付但没有 durable intent 证据的窗口。阶段 1 也尚未提供 sweeper、proof 绑定或运维裁决出口。 | 开启灰度开关本身不能完全消除 B 类恢复歧义；无 intent 的异常请求仍需依赖现有账本与日志人工核对，未结 intent 暂无自动恢复闭环。 | 开关默认关闭；阶段 1 用 `(tenant_id, claim_id, attempt_seq)` 唯一约束、claim 复合外键、非负数据域、账本权威 attempt、乐观锁状态机、真实完整写证据和脱敏 fail-open warning 建立旁路证据。后续 mandatory slice 必须明确 Tx1 原子边界，并补 sweeper、attempt proof 与授权运维裁决出口后才评估默认开启。 | Mandatory Roadmap；不删除结算或恢复能力。 | Codex | Open |
 | R-OPS-001 | Operations | TBD | UI hides important provider/account state. | Operators cannot resolve incidents. | Scenario-driven dashboard contracts. | Improve UI parity. | Gemini | Open |
@@ -144,3 +145,21 @@ OCAW 重启 Gemini 路径 (Owner 后续切片) 必须:
 1. 决定 antigravity 是否启用 (R-GEM-ANTIGRAVITY-PAUSED-001 解锁)
 2. 决定 mimicry sidecar 是否本切片做 (R-GEM-MIMICRY-001 解锁)
 3. 决定是否启用 HTTPS admin callback (GEM-1+2 默认 allowlist 空, 仅 loopback 接 — 后续 wiring 需要静态注入 admin URL allowlist)
+
+## 2026-07-22 三身份授权边界摸底与纵深加固(R-AUTHZ-001)
+
+账号导入闭环(PR #288)收口时全仓摸清三身份(部署者 platform_admin / 租户管理员 tenant_operator / 终端用户)授权逻辑,结论如下。
+
+**身份真相源**:管理身份两条通道(`admin/operator_auth.go` token 通道 + `adminsessionauth/resolver.go` session 通道)统一得出——部署者 `ScopeTenantID=0`(身份不携带自有租户),其自有租户 = env 配的平台租户(`tenancy.WorkingTenantIDFromEnv`);租户管理员 `ScopeTenantID=自己租户`。终端用户租户取自服务端 session(`session_handler.go`),不信请求体,跨租户不可达。
+
+**授权按资源敏感度分两级(刻意设计,非缺陷)**:
+- 松级(几十个管理端点):`admin.AdminIdentity.CanIssueForTenant` 对部署者放行任意租户——用于平台级基建(签发 key、目录、定价、告警、审核、风控、模型路由)。
+- 严级(仅触碰租户私有资源):在松检查之上再断言 `tenantID == 平台租户`,把部署者挡在经销商私有数据(终端用户、账号凭据、迁移包、余额)之外。
+
+**严级成熟度不齐(R-AUTHZ-001 本体)**:严级判断在 4 个 HTTP 入口各手写一遍(`adminuserhttp/tenant_scope.go`、`gatewayhttp/admin_pool_accounts_handler.go`、`credentialacqhttp/authorization.go`、`accountintakehttp/handler.go`),而 `balanceledger` 已经把同一条严规则做进服务层(`classifyAdminBalanceAdjustment` 用 `ActorScopeTenantID` 深锁)。`accountbundle` 此前只有 HTTP 手抄、缺服务层深锁,是唯一掉队者。
+
+**已加固(2026-07-22,本 PR)**:`accountbundle` 服务层照 `balanceledger` 现成模式补 `ActorScopeTenantID` 纵深第二锁(`validateOperator` 断言 `ActorScopeTenantID == TenantID`,不符返 `ErrForbidden`→403),4 个 HTTP 构造点透传 `ident.ScopeTenantID`。三处判别测试:服务层越权拒绝(`accountbundle/crypto_test.go`,变异删锁转红)、handler 透传合同(`accountintakehttp/account_bundle_handler_test.go`,变异删透传转红)、既有 4 入口跨租户 403 测试全在。
+
+**B(未做,Owner-gated,分销树首个切片)**:把严级那条("解析身份自有租户 → 断言目标 == 它")抽成单一 `CanActOnTenant(身份, 目标租户)` 裁决函数,4 个 HTTP 入口 + `balanceledger` + `accountbundle` 统一委派。因租户不能再生租户(固定两层 平台→租户→用户),模型是封闭平规则集,一个小函数即可覆盖,**不需要 Cerbos/OPA 策略引擎**。这是 auth-core 跨包改动(所有管理面路由 + 几十个测试),必须单独立项、单独计划、独立审,不夹入本 PR。分销树上线前另加 Postgres 行级安全作数据库兜底(参考 AWS SaaS 授权指引 PAP/PDP/PEP + 纵深多层执行)。
+
+**回调授权模型(非缺陷,记录澄清)**:`GET /admin/v1/credentials/oauth-callback`(`credentialacqhttp/handler.go` helper)不经统一身份裁决口,而靠 `flow_id + state + code` 保密性推进——这是标准 OAuth 回调形态(上游浏览器重定向天然无管理员令牌,授权在 oauth-init 时已做,state 不符即 `state_mismatch` 作废)。属预期设计,B 统一裁决时豁免此口。

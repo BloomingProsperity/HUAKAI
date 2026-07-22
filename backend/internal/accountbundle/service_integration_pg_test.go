@@ -92,7 +92,7 @@ func TestEncryptedAccountBundleRoundTripAndReplayGuard(t *testing.T) {
 
 	exportPlan, err := service.PlanExport(ctx, ExportPlanInput{
 		TenantID: source.tenantID, AccountIDs: []int64{sourceAccountID},
-		ActorID: "admin_token:source", ActorRole: admin.RoleTenantOperator, Reason: "跨部署迁移",
+		ActorID: "admin_token:source", ActorRole: admin.RoleTenantOperator, ActorScopeTenantID: source.tenantID, Reason: "跨部署迁移",
 	})
 	if err != nil || exportPlan.Ready != 1 || exportPlan.Conflict != 0 {
 		t.Fatalf("导出预检=%+v err=%v", exportPlan, err)
@@ -101,7 +101,7 @@ func TestEncryptedAccountBundleRoundTripAndReplayGuard(t *testing.T) {
 	exported, err := service.ExecuteExport(ctx, ExportExecuteInput{
 		ExportPlanInput: ExportPlanInput{
 			TenantID: source.tenantID, AccountIDs: []int64{sourceAccountID},
-			ActorID: "admin_token:source", ActorRole: admin.RoleTenantOperator,
+			ActorID: "admin_token:source", ActorRole: admin.RoleTenantOperator, ActorScopeTenantID: source.tenantID,
 			RequestID: "req-bundle-export", Reason: "跨部署迁移",
 		},
 		PlanHash: exportPlan.PlanHash, Password: password, Confirmation: exportConfirmation,
@@ -125,7 +125,7 @@ func TestEncryptedAccountBundleRoundTripAndReplayGuard(t *testing.T) {
 	importInput := ImportPlanInput{
 		TenantID: destination.tenantID, Envelope: exported.Envelope, Password: password,
 		Destinations: destinations, ActorID: "admin_token:destination", ActorRole: admin.RoleTenantOperator,
-		Reason: "恢复账号迁移包",
+		ActorScopeTenantID: destination.tenantID, Reason: "恢复账号迁移包",
 	}
 	importPlan, err := service.PlanImport(ctx, importInput)
 	if err != nil || importPlan.Ready != 1 || importPlan.Conflict != 0 || len(importPlan.Items) != 1 {

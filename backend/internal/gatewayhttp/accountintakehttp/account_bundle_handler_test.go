@@ -71,6 +71,22 @@ func TestAccountBundleRoutesRejectCrossTenantAndMissingService(t *testing.T) {
 	}
 }
 
+// TestAccountBundleHandlerForwardsActorScopeTenantID 咬住 handler 把认证解析出的自有租户
+// (ident.ScopeTenantID)透传进服务层输入——服务层纵深第二锁据此判越权。变异:删掉
+// account_bundle_handler.go 构造里的 ActorScopeTenantID: ident.ScopeTenantID,本测试转红
+// (scope 变 0,合法导出会被服务层 ErrForbidden 误拒,透传断言先失败)。
+func TestAccountBundleHandlerForwardsActorScopeTenantID(t *testing.T) {
+	service := &accountBundleServiceStub{}
+	router := accountBundleTestRouter(7, service)
+	rec := doAccountIntakeRequest(router, "/admin/v1/credentials/account-bundles/export/plan", `{"tenant_id":7,"account_ids":[11]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("合法同租户导出预检 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if service.exportPlanInput.ActorScopeTenantID != 7 {
+		t.Fatalf("handler 未透传自有租户到服务层:ActorScopeTenantID=%d，期望 7", service.exportPlanInput.ActorScopeTenantID)
+	}
+}
+
 func accountBundleTestRouter(tenantID int64, service *accountBundleServiceStub) http.Handler {
 	router := chi.NewRouter()
 	router.Route("/admin/v1/credentials", func(r chi.Router) {
