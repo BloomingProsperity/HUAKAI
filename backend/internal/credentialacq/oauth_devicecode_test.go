@@ -27,12 +27,13 @@ func TestNormalizedTokenPayloadPreservesSubscriptionEvidence(t *testing.T) {
 	}`))
 	idToken := "e30." + claims + ".signature"
 	raw, err := normalizedTokenPayload(map[string]any{
-		"refreshToken": "refresh-1",
-		"idToken":      idToken,
-		"tokenType":    "Bearer",
-		"plan_type":    "Free",
-		"accountId":    "stale-account",
-		"expiresIn":    3600,
+		"refreshToken":     "refresh-1",
+		"idToken":          idToken,
+		"tokenType":        "Bearer",
+		"plan_type":        "Free",
+		"subscriptionTier": "Allegretto",
+		"accountId":        "stale-account",
+		"expiresIn":        3600,
 	}, "access-1")
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,7 @@ func TestNormalizedTokenPayloadPreservesSubscriptionEvidence(t *testing.T) {
 		"id_token":           idToken,
 		"token_type":         "Bearer",
 		"chatgpt_plan_type":  "Free",
+		"subscription_tier":  "Allegretto",
 		"chatgpt_account_id": "stale-account",
 	} {
 		if got := stringField(payload, key); got != want {
@@ -140,6 +142,28 @@ func TestDeviceCodePollHonorsSlowDown(t *testing.T) {
 	}
 	if !json.Valid(candidate.Payload) {
 		t.Fatalf("candidate payload is not JSON: %s", string(candidate.Payload))
+	}
+}
+
+func TestDeviceCodePollRejectsTokenFromErrorStatus(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 30, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		response := jsonHTTPResponse(t, map[string]any{"access_token": "must-not-be-accepted"})
+		response.StatusCode = http.StatusBadRequest
+		return response, nil
+	})}
+	session := Session{
+		TenantID: 1, ProviderAccountID: 2, Vendor: credentialstore.VendorKimi,
+		AuthMode: credentialstore.AuthModeKimiOAuth, AuthType: AuthTypeDeviceCode,
+		DeviceCodePayload: map[string]any{
+			"device_code": "device", "token_url": "https://auth.kimi.com/token", "client_id": "client",
+			"issued_at": now.Format(time.RFC3339Nano), "expires_in": 900, "interval": 5,
+		},
+	}
+	if _, err := PollDeviceCodeToken(context.Background(), session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("错误状态携带 token 时 err=%v，期望 ErrInvalidTokenShape", err)
 	}
 }
 
@@ -421,9 +445,10 @@ func TestKimiDeviceConfigConstants(t *testing.T) {
 			pollClientID = stringField(body, "client_id")
 			pollGrantType = stringField(body, "grant_type")
 			return jsonHTTPResponse(t, map[string]any{
-				"access_token":  "kimi-access",
-				"refresh_token": "kimi-refresh",
-				"expires_in":    3600,
+				"access_token":      "kimi-access",
+				"refresh_token":     "kimi-refresh",
+				"expires_in":        3600,
+				"subscription_tier": "Allegretto",
 			}), nil
 		default:
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
@@ -468,6 +493,9 @@ func TestKimiDeviceConfigConstants(t *testing.T) {
 	}
 	if candidate.Vendor != credentialstore.VendorKimi || candidate.AuthMode != credentialstore.AuthModeKimiOAuth {
 		t.Fatalf("candidate mode=%s/%s", candidate.Vendor, candidate.AuthMode)
+	}
+	if candidate.Subscription.Label() != "kimi:allegretto" || candidate.Subscription.Source != "oauth_token_response" {
+		t.Fatalf("Kimi OAuth 明确套餐字段未进入系统标签：%+v", candidate.Subscription)
 	}
 }
 

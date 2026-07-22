@@ -79,7 +79,7 @@ func TestAuthRegisterCanSkipEmailVerificationByPolicy(t *testing.T) {
 	svc.Now = func() time.Time { return now }
 	svc.Verification = staticVerificationPolicy(false)
 
-	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "skip@example.test", Password: "secret"})
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "skip@example.test", Password: "secret12"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestAuthRegisterCanSkipEmailVerificationByPolicy(t *testing.T) {
 	if !registered.User.EmailVerified || registered.User.Status != UserStatusActive {
 		t.Fatalf("registered state = verified:%v status:%s", registered.User.EmailVerified, registered.User.Status)
 	}
-	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "skip@example.test", Password: "secret"}); err != nil {
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "skip@example.test", Password: "secret12"}); err != nil {
 		t.Fatalf("Authenticate with verification disabled: %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestPasswordRegisterToggle(t *testing.T) {
 			svc.Now = func() time.Time { return now }
 			svc.RegistrationGate = tc.gate
 
-			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret"})
+			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret12"})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Register err=%v want %v; MUTATION: reversing the false gate into allow makes the reject case persist a user", err, tc.wantErr)
 			}
@@ -191,7 +191,7 @@ func TestPasswordLoginToggle(t *testing.T) {
 	svc.Now = func() time.Time { return now }
 	svc.RegistrationGate = gate
 
-	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "login@example.test", Password: "secret"}); err != nil {
+	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "login@example.test", Password: "secret12"}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	gate.loginAllowed = false
@@ -206,7 +206,7 @@ func TestPasswordLoginToggle(t *testing.T) {
 		return orig(encoded, password)
 	}
 
-	_, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "login@example.test", Password: "secret"})
+	_, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "login@example.test", Password: "secret12"})
 	if !errors.Is(err, ErrPasswordLoginDisabled) {
 		t.Fatalf("Authenticate with password login disabled err=%v want ErrPasswordLoginDisabled; MUTATION: checking only after successful credentials and allowing valid credentials turns this red", err)
 	}
@@ -240,7 +240,7 @@ func TestRegisterEmailPolicyWiring(t *testing.T) {
 			svc.Now = func() time.Time { return now }
 			svc.EmailPolicy = tc.policy
 
-			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: tc.email, Password: "secret"})
+			_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: tc.email, Password: "secret12"})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Register err=%v want %v", err, tc.wantErr)
 			}
@@ -403,7 +403,7 @@ func TestAT_AUTH_007_005_LockoutAndResetRequired(t *testing.T) {
 	svc.LockoutThreshold = 2
 	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 	svc.Now = func() time.Time { return now }
-	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "lock@example.test", Password: "secret"})
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "lock@example.test", Password: "secret12"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -413,14 +413,14 @@ func TestAT_AUTH_007_005_LockoutAndResetRequired(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "lock@example.test", Password: "bad"}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("second bad password = %v, want ErrInvalidCredentials", err)
 	}
-	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "lock@example.test", Password: "secret"}); !errors.Is(err, ErrUserLocked) {
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "lock@example.test", Password: "secret12"}); !errors.Is(err, ErrUserLocked) {
 		t.Fatalf("locked correct password = %v, want ErrUserLocked", err)
 	}
 	user := store.users[registered.User.ID]
 	user.Status = UserStatusResetRequired
 	user.FailedLoginCount = 0
 	store.users[user.ID] = user
-	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "lock@example.test", Password: "secret"}); !errors.Is(err, ErrPasswordResetRequired) {
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 1, Email: "lock@example.test", Password: "secret12"}); !errors.Is(err, ErrPasswordResetRequired) {
 		t.Fatalf("reset required login = %v, want ErrPasswordResetRequired", err)
 	}
 	reset, err := svc.RequestPasswordReset(ctx, PasswordResetRequest{TenantID: 1, Email: "lock@example.test"})
@@ -445,7 +445,7 @@ func TestUnlockUserClearsLockout(t *testing.T) {
 	svc.PasswordPolicy = cheapPasswordPolicy()
 	svc.Now = func() time.Time { return now }
 
-	registered, err := svc.Register(ctx, RegisterInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"})
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 7, Email: "unlock@example.test", Password: "secret12"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestUnlockUserClearsLockout(t *testing.T) {
 	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "bad"}); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("second bad password = %v, want ErrInvalidCredentials", err)
 	}
-	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"}); !errors.Is(err, ErrUserLocked) {
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret12"}); !errors.Is(err, ErrUserLocked) {
 		t.Fatalf("locked login = %v, want ErrUserLocked", err)
 	}
 
@@ -467,7 +467,7 @@ func TestUnlockUserClearsLockout(t *testing.T) {
 		t.Fatalf("unlocked state = status:%s failed:%d locked_until:%v, want active/0/nil",
 			unlocked.Status, unlocked.FailedLoginCount, unlocked.LockedUntil)
 	}
-	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret"}); err != nil {
+	if _, err := svc.Authenticate(ctx, LoginInput{TenantID: 7, Email: "unlock@example.test", Password: "secret12"}); err != nil {
 		t.Fatalf("login after admin unlock: %v", err)
 	}
 	if _, err := svc.UnlockUser(ctx, 8, registered.User.ID); !errors.Is(err, ErrUserNotFound) {
@@ -494,7 +494,7 @@ func TestAT_AUTH_007_006_007_OAuthFlowUsesVerifiedProviderClaims(t *testing.T) {
 	}
 	svc.OAuth = NewOAuthService(provider)
 	svc.AllowedRedirectURIs = []string{"https://huakai.example.test/callback"} // 显式允许该 caller redirect
-	existing, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret"})
+	existing, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "user@example.test", Password: "secret12"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -772,7 +772,7 @@ func TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn(t *testing.T) {
 	got, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
 		Provider:      SocialProviderTelegram,
 		Subject:       "tg-bound-1",
-		Email:         SyntheticOAuthEmail(SocialProviderTelegram, "tg-bound-1"),
+		Email:         "",
 		EmailVerified: false,
 	})
 	if err != nil {
@@ -788,6 +788,40 @@ func TestApplyVerifiedSocialIdentityBoundEmaillessLogsIn(t *testing.T) {
 		Email: SyntheticOAuthEmail(SocialProviderTelegram, "tg-unbound-9"), EmailVerified: false,
 	}); !errors.Is(err, ErrOAuthPendingEmailRequired) {
 		t.Fatalf("未绑定 telegram 身份 err=%v,应 ErrOAuthPendingEmailRequired", err)
+	}
+}
+
+func TestApplyVerifiedSocialIdentityValidatesNewAccountFields(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.Now = func() time.Time { return now }
+
+	if _, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderGitHub, Subject: "bad-email", Email: "not-an-email", EmailVerified: true,
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("已验证但非法的上游邮箱 err=%v want ErrInvalidInput", err)
+	}
+	if len(store.users) != 0 {
+		t.Fatalf("非法邮箱不得落用户,users=%+v", store.users)
+	}
+
+	user, err := svc.ApplyVerifiedSocialIdentity(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderGitHub, Subject: "bad-name", Email: "valid@example.test",
+		DisplayName: "bad\x01name", EmailVerified: true,
+	})
+	if err != nil {
+		t.Fatalf("上游可选名称异常不应阻断已验证身份建号: %v", err)
+	}
+	if user.DisplayName != "" {
+		t.Fatalf("异常上游名称不得落库,display_name=%q", user.DisplayName)
+	}
+
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 1, VerifiedIdentity{
+		Provider: SocialProviderQQ, Subject: "bad-completion-email",
+	}, "still-not-an-email"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("补邮箱建号非法邮箱 err=%v want ErrInvalidInput", err)
 	}
 }
 
@@ -926,7 +960,7 @@ func TestAuthVerifiedSocialLinkPreservesPasswordRecovery(t *testing.T) {
 	svc := NewService(store)
 	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 	svc.Now = func() time.Time { return now }
-	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "link@example.test", Password: "secret"})
+	registered, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "link@example.test", Password: "secret12"})
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1030,7 +1064,7 @@ func TestInviteRedemptionRollsBackWhenUserCreateFails(t *testing.T) {
 	svc.InviteRequired = true
 	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 	svc.Now = func() time.Time { return now }
-	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "rollback@example.test", Password: "secret", InviteCode: rawInvite}); err == nil {
+	if _, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "rollback@example.test", Password: "secret12", InviteCode: rawInvite}); err == nil {
 		t.Fatal("Register should fail when CreateUser fails")
 	}
 	if invite := store.invites[inviteHash]; invite.UsedCount != 0 || invite.Status != "active" {
@@ -1051,7 +1085,7 @@ func TestRegisterDisabledPolicyRejectsPublicSignup(t *testing.T) {
 	svc.PasswordPolicy = PasswordPolicy{MemoryKiB: 64, Iterations: 1, Parallelism: 1, SaltBytes: 8, KeyBytes: 16}
 	svc.Now = func() time.Time { return now }
 
-	_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "blocked@example.test", Password: "secret"})
+	_, err := svc.Register(ctx, RegisterInput{TenantID: 1, Email: "blocked@example.test", Password: "secret12"})
 	if !errors.Is(err, ErrRegistrationDisabled) {
 		t.Fatalf("Register under disabled registration mode = %v, want ErrRegistrationDisabled", err)
 	}
@@ -1086,7 +1120,7 @@ func TestRegisterCommunityInvitationCreatesPendingReferral(t *testing.T) {
 	svc.Now = func() time.Time { return now }
 
 	registered, err := svc.Register(ctx, RegisterInput{
-		TenantID: 1, Email: "referred@example.test", Password: "secret", InviteCode: rawInvite,
+		TenantID: 1, Email: "referred@example.test", Password: "secret12", InviteCode: rawInvite,
 	})
 	if err != nil {
 		t.Fatalf("Register with community invitation: %v", err)
@@ -1120,6 +1154,7 @@ type memoryAuthStore struct {
 	bindings           []InviteBinding
 	communityReferrals []communityReferralRecord
 	failCreate         bool
+	failLink           bool
 }
 
 type communityReferralRecord struct {
@@ -1319,6 +1354,10 @@ func (s *memoryAuthStore) GetUserBySocialIdentity(_ context.Context, tenantID in
 func (s *memoryAuthStore) LinkSocialIdentity(_ context.Context, tenantID, userID int64, provider, subject string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// failLink:注入「建用户成功、绑身份失败」以验证注册事务的回滚原子性。
+	if s.failLink {
+		return User{}, errors.New("forced link social identity failure")
+	}
 	provider = normalizeSocialProvider(provider)
 	user, ok := s.users[userID]
 	if !ok || user.TenantID != tenantID || provider == "" || strings.TrimSpace(subject) == "" {

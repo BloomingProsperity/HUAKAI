@@ -13,15 +13,17 @@ import (
 )
 
 type userCreateStub struct {
-	calls int
-	in    userCreateInput
-	out   userCreated
-	err   error
+	calls    int
+	in       userCreateInput
+	gotAudit unlockAuditInput
+	out      userCreated
+	err      error
 }
 
-func (s *userCreateStub) CreateUser(_ context.Context, in userCreateInput) (userCreated, error) {
+func (s *userCreateStub) CreateUserWithAudit(_ context.Context, in userCreateInput, audit unlockAuditInput) (userCreated, error) {
 	s.calls++
 	s.in = in
+	s.gotAudit = audit
 	if s.err != nil {
 		return userCreated{}, s.err
 	}
@@ -75,7 +77,8 @@ func createDeps(creator *userCreateStub, audit *adminAuditStub) Deps {
 }
 
 // TestCreateUser_HappyPath:合法创建会持久化一个 role=user 账号,绝不存储
-// 明文口令(CMB-5),并写入一条 create_user 审计。
+// 明文口令(CMB-5),并把 create_user 审计与建用户交给 store 的同一事务
+// (审计记录的真实落库由 user_crud_integration_test 的真 PG 用例断言)。
 func TestCreateUser_HappyPath(t *testing.T) {
 	creator := &userCreateStub{}
 	audit := &adminAuditStub{}
@@ -92,8 +95,9 @@ func TestCreateUser_HappyPath(t *testing.T) {
 	if creator.in.PasswordHash == "longenough1" || !strings.HasPrefix(creator.in.PasswordHash, "$argon2") {
 		t.Fatalf("password not hashed: %q", creator.in.PasswordHash)
 	}
-	if audit.calls != 1 || audit.arg.Action != "create_user" {
-		t.Fatalf("audit calls=%d action=%q want 1/create_user", audit.calls, audit.arg.Action)
+	// 审计已随建用户进同事务:handler 必须把审计 actor(操作者身份)透传给 store。
+	if creator.gotAudit.ActorRole == "" || creator.gotAudit.ActorID == "" {
+		t.Fatalf("create audit actor not passed to store: %+v", creator.gotAudit)
 	}
 }
 

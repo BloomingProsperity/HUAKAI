@@ -154,7 +154,7 @@ type authClass struct {
 var authClasses = []authClass{
 	{name: "auth_login", paths: []string{"/v1/auth/login", "/v1/auth/login/2fa", "/v1/auth/passkey/login/begin", "/v1/auth/passkey/login/finish"}, envPerMin: "HUAKAI_RL_AUTH_LOGIN_PER_MIN", defPerMin: defaultAuthLoginPerMin},
 	{name: "auth_register", paths: []string{"/v1/auth/register", "/v1/auth/validate-invitation-code"}, envPerMin: "HUAKAI_RL_AUTH_REGISTER_PER_MIN", defPerMin: defaultAuthRegisterPerMin},
-	{name: "auth_verify", paths: []string{"/v1/auth/verify-email"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
+	{name: "auth_verify", paths: []string{"/v1/auth/verify-email", "/v1/auth/resend-verification"}, envPerMin: "HUAKAI_RL_AUTH_VERIFY_PER_MIN", defPerMin: defaultAuthVerifyPerMin},
 	{name: "auth_reset", paths: []string{"/v1/auth/reset-password"}, envPerMin: "HUAKAI_RL_AUTH_RESET_PER_MIN", defPerMin: defaultAuthResetPerMin},
 	{name: "auth_oauth", paths: []string{"/v1/auth/oauth-init", "/v1/auth/oauth-callback", "/v1/auth/telegram-login", "/v1/auth/oauth-pending/send-code", "/v1/auth/oauth-pending/complete"}, envPerMin: "HUAKAI_RL_AUTH_OAUTH_PER_MIN", defPerMin: defaultAuthOAuthPerMin},
 	{name: "auth_refresh", paths: []string{"/v1/sessions/refresh"}, envPerMin: "HUAKAI_RL_AUTH_REFRESH_PER_MIN", defPerMin: defaultRefreshPerMin},

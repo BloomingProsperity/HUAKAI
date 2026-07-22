@@ -4,12 +4,11 @@ package setuphttp
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/mail"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -18,25 +17,25 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 )
 
+const (
+	SetupTokenEnv       = "HUAKAI_SETUP_TOKEN"
+	SetupTokenHeader    = "X-HUAKAI-Setup-Token"
+	MinSetupTokenLength = 32
+)
+
 // Deps 注入 DB 池与工作租户;密码策略用 userauth 默认(与注册同源,避免两套成本参数)。
 type Deps struct {
-	Pool     *pgxpool.Pool
-	TenantID int64
+	Pool       *pgxpool.Pool
+	TenantID   int64
+	SetupToken string
 }
-
-const (
-	minPasswordLen = 8
-	maxPasswordLen = 128
-	maxEmailLen    = 254
-	maxNameLen     = 64
-)
 
 // installGate 限制同时在算 argon2id 的安装请求数:该端点匿名可达,未安装窗口内
 // 若不设闸,并发请求每个 64MiB 内存足以把全新部署打 OOM;超出直接 429。
 var installGate = make(chan struct{}, 2)
 
-// Mount 挂载 /setup/status 与 /setup/install。两端点均无会话鉴权:status 只读;
-// install 由"无管理员才放行"的守卫自保护,且在事务 advisory lock 内二次判定防并发双装。
+// Mount 挂载 /setup/status 与 /setup/install。status 只读公开；install 需要部署者
+// 持有的首装令牌，并在事务 advisory lock 内二次判定防并发双装。
 func Mount(r chi.Router, d Deps) {
 	r.Get("/setup/status", d.handleStatus)
 	r.Post("/setup/install", d.handleInstall)
@@ -86,32 +85,30 @@ type installResponse struct {
 }
 
 func (d Deps) handleInstall(w http.ResponseWriter, r *http.Request) {
+	if len(d.SetupToken) < MinSetupTokenLength {
+		writeError(w, http.StatusServiceUnavailable, "setup_token_not_configured")
+		return
+	}
+	if !setupTokenEqual(r.Header.Get(SetupTokenHeader), d.SetupToken) {
+		writeError(w, http.StatusUnauthorized, "invalid_setup_token")
+		return
+	}
 	var req installRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return
 	}
-	email := strings.TrimSpace(req.Email)
-	if email == "" || len(email) > maxEmailLen {
+	email, err := userauth.ValidateNewUserEmail(req.Email)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_email")
 		return
 	}
-	// 只接受裸地址:带显示名形态("X <a@b.c>")整串存库会造成建出的账号无法用
-	// 裸邮箱登录;解析结果必须与输入逐字一致,并统一小写规范化存储。
-	addr, err := mail.ParseAddress(email)
-	if err != nil || addr.Address != email {
-		writeError(w, http.StatusBadRequest, "invalid_email")
-		return
-	}
-	email = strings.ToLower(email)
-	// 长度一律按字符数(rune)计,与前端 maxLength 及 OpenAPI 契约同口径,
-	// 避免中文等多字节输入前端放行、后端按字节拒绝的漂移。
-	if pw := utf8.RuneCountInString(req.Password); pw < minPasswordLen || pw > maxPasswordLen {
+	if err := userauth.ValidateNewUserPassword(req.Password); err != nil {
 		writeError(w, http.StatusBadRequest, "weak_password")
 		return
 	}
-	name := strings.TrimSpace(req.DisplayName)
-	if utf8.RuneCountInString(name) > maxNameLen {
+	name, err := userauth.ValidateOptionalDisplayName(req.DisplayName)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_display_name")
 		return
 	}
@@ -157,6 +154,12 @@ func (d Deps) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, installResponse{Email: email})
+}
+
+func setupTokenEqual(got, want string) bool {
+	gotDigest := sha256.Sum256([]byte(got))
+	wantDigest := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotDigest[:], wantDigest[:]) == 1
 }
 
 // install 在单事务内:advisory lock 串行化 → 锁内重查守卫(TOCTOU)→ 建 admin。

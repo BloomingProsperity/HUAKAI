@@ -792,15 +792,16 @@ func invokeAdminUsersBody(t *testing.T, deps Deps, method, target, body string) 
 	return rec
 }
 
-// TestAdminUsersPlatformAdminAllowedWithTenantID 单租户开箱即用放行守卫:
-// platform_admin 带 ?tenant_id 现可达用户管理面(此前一律 403)。
+// TestAdminUsersPlatformAdminAllowedWithTenantID 平台租户归属守卫:
+// platform_admin 仅可管理配置明确的平台自有租户。
 // MUTATION: 把 resolveTenantIdentity 的 platform_admin 分支改回硬 403 →
 // 本测试拿 403 → 红。
 func TestAdminUsersPlatformAdminAllowedWithTenantID(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	rec := invokeAdminUsersBody(t, Deps{
-		Auth:  usersAuthStub{ident: platformAdmin()},
-		Store: store,
+		Auth:             usersAuthStub{ident: platformAdmin()},
+		Store:            store,
+		PlatformTenantID: 1,
 	}, http.MethodGet, "/admin/v1/users/101?tenant_id=1", "")
 	assertStatus(t, rec, http.StatusOK)
 	if store.getArg.TenantID != 1 {
@@ -813,8 +814,9 @@ func TestAdminUsersPlatformAdminAllowedWithTenantID(t *testing.T) {
 func TestAdminUsersPlatformAdminRequiresTenantID(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	rec := invokeAdminUsersBody(t, Deps{
-		Auth:  usersAuthStub{ident: platformAdmin()},
-		Store: store,
+		Auth:             usersAuthStub{ident: platformAdmin()},
+		Store:            store,
+		PlatformTenantID: 1,
 	}, http.MethodGet, "/admin/v1/users/101", "")
 	assertStatus(t, rec, http.StatusBadRequest)
 	if store.getCalls != 0 {

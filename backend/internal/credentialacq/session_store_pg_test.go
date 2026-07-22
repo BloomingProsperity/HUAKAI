@@ -273,7 +273,7 @@ func scanTestSession(dest []any, row Session, sql string) error {
 	redactedContext, _ := json.Marshal(row.RedactedContext)
 	deviceCodePayload, _ := json.Marshal(row.DeviceCodePayload)
 	values := []any{
-		row.ID, row.TenantID, row.ProviderAccountID, row.Vendor, row.AuthMode, row.Kind, row.Status,
+		row.ID, row.TenantID, int8Value(row.ProviderAccountID), row.Vendor, row.AuthMode, row.Kind, row.Status,
 		row.ActorID, row.ActorRole, row.StateHash, row.NonceHash, row.EncryptedPKCEVerifier,
 		row.ClientIdentitySource,
 	}
@@ -529,7 +529,7 @@ func timeArg(value any) time.Time {
 
 // TestBeginFinalizeRequiresCallbackValidationForCallbackOAuth 守护:callback 式的 OAuth
 // flow(PKCE)在 status 为 started/waiting_for_user 时绝不可被 finalize —— 它必须先通过
-// CompleteOAuthCallback(state 检查 + code 交换)到达 validated。否则一个越权的
+// OAuth 回调完成 state 检查和 code 交换后到达 validated。否则一个越权的
 // admin 就能跳过 callback,用手写的 credentials 体来 finalize,注入任意
 // 上游 bearer 材料。fake DB 复用了生产版 RequiresCallbackValidation helper,因此它
 // 跟踪的是真实的 BeginFinalize SQL predicate。

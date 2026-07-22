@@ -34,7 +34,10 @@ func (s *Service) prepareImport(ctx context.Context, in ImportPlanInput) (prepar
 	if err := s.ready(); err != nil {
 		return preparedImport{}, err
 	}
-	if err := validateOperator(in.TenantID, in.ActorID, in.ActorRole); err != nil || len(in.Destinations) == 0 {
+	if err := validateOperator(in.TenantID, in.ActorScopeTenantID, in.ActorID, in.ActorRole); err != nil {
+		return preparedImport{}, err
+	}
+	if len(in.Destinations) == 0 {
 		return preparedImport{}, ErrInvalidInput
 	}
 	content, err := open(in.Envelope, in.Password)

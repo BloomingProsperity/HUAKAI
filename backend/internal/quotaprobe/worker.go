@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	DefaultInterval = 30 * time.Minute
-	probeTimeout    = 20 * time.Second
-	maxJitter       = 750 * time.Millisecond
+	DefaultInterval  = 30 * time.Minute
+	probeTimeout     = 20 * time.Second
+	maxJitter        = 750 * time.Millisecond
+	triggerQueueSize = 128
 )
 
 type Account struct {
@@ -95,6 +96,7 @@ type Worker struct {
 	wait          func(context.Context, time.Duration) bool
 	mu            sync.Mutex
 	done          chan struct{}
+	triggers      chan Account
 }
 
 func NewWorker(cfg WorkerConfig) *Worker {
@@ -124,6 +126,7 @@ func NewWorker(cfg WorkerConfig) *Worker {
 		now:           cfg.Now,
 		jitter:        cfg.Jitter,
 		wait:          cfg.Wait,
+		triggers:      make(chan Account, triggerQueueSize),
 	}
 }
 
@@ -144,8 +147,59 @@ func (w *Worker) Start(ctx context.Context) {
 	w.mu.Unlock()
 	go func() {
 		defer close(done)
-		w.loop(ctx)
+		var group sync.WaitGroup
+		group.Add(2)
+		go func() {
+			defer group.Done()
+			w.loop(ctx)
+		}()
+		go func() {
+			defer group.Done()
+			w.triggerLoop(ctx)
+		}()
+		group.Wait()
 	}()
+}
+
+// NotifyAccountActivated 把新建或刚轮换的账号放入即时探测队列。队列满时不阻塞
+// 导入请求，原有周期扫描仍会补做该账号。
+func (w *Worker) NotifyAccountActivated(tenantID, providerAccountID int64) {
+	if w == nil || w.triggers == nil || tenantID <= 0 || providerAccountID <= 0 {
+		return
+	}
+	select {
+	case w.triggers <- Account{TenantID: tenantID, ProviderAccountID: providerAccountID}:
+	default:
+		logger := w.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("quota probe 即时队列已满，等待周期扫描", "provider_account_id", providerAccountID)
+	}
+}
+
+func (w *Worker) triggerLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case account := <-w.triggers:
+			w.runTriggeredAccount(ctx, account)
+		}
+	}
+}
+
+func (w *Worker) runTriggeredAccount(ctx context.Context, account Account) {
+	enabled, _ := w.runtimeConfig(ctx)
+	if !enabled || w.accounts == nil || w.vault == nil {
+		return
+	}
+	release, ok := w.acquireLease(ctx)
+	if !ok {
+		return
+	}
+	defer release()
+	w.probeAccount(ctx, account)
 }
 
 // Wait 等待后台循环退出。调用方应先取消传给 Start 的 context。
@@ -191,25 +245,11 @@ func (w *Worker) RunOnce(ctx context.Context) {
 	if !enabled {
 		return
 	}
-	if w.leaderLease != nil {
-		acquired, release, err := w.leaderLease.TryAcquire(ctx)
-		if err != nil {
-			w.logger.WarnContext(ctx, "quota probe 获取多副本租约失败",
-				"error_class", ErrorClassCoordinationDependencyFailed,
-			)
-			return
-		}
-		if !acquired {
-			return
-		}
-		if release == nil {
-			w.logger.WarnContext(ctx, "quota probe 多副本租约返回无效释放函数",
-				"error_class", ErrorClassCoordinationContractInvalid,
-			)
-			return
-		}
-		defer release()
+	release, ok := w.acquireLease(ctx)
+	if !ok {
+		return
 	}
+	defer release()
 	if w.accounts == nil || w.vault == nil {
 		w.logger.WarnContext(ctx, "quota probe 依赖未完整注入", "error_class", ErrorClassDependencyNotConfigured)
 		return
@@ -225,6 +265,25 @@ func (w *Worker) RunOnce(ctx context.Context) {
 		}
 		w.probeAccount(ctx, account)
 	}
+}
+
+func (w *Worker) acquireLease(ctx context.Context) (func(), bool) {
+	if w.leaderLease == nil {
+		return func() {}, true
+	}
+	acquired, release, err := w.leaderLease.TryAcquire(ctx)
+	if err != nil {
+		w.logger.WarnContext(ctx, "quota probe 获取多副本租约失败", "error_class", ErrorClassCoordinationDependencyFailed)
+		return nil, false
+	}
+	if !acquired {
+		return nil, false
+	}
+	if release == nil {
+		w.logger.WarnContext(ctx, "quota probe 多副本租约返回无效释放函数", "error_class", ErrorClassCoordinationContractInvalid)
+		return nil, false
+	}
+	return release, true
 }
 
 func (w *Worker) probeAccount(ctx context.Context, account Account) {

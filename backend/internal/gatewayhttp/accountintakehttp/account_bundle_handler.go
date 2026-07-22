@@ -52,7 +52,7 @@ func newAccountBundleExportPlanHandler(d Deps) http.HandlerFunc {
 		}
 		result, err := d.BundleService.PlanExport(r.Context(), accountbundle.ExportPlanInput{
 			TenantID: req.TenantID, AccountIDs: req.AccountIDs,
-			ActorID: ident.AuditActor(), ActorRole: ident.Role,
+			ActorID: ident.AuditActor(), ActorRole: ident.Role, ActorScopeTenantID: ident.ScopeTenantID,
 			RequestID: middleware.GetReqID(r.Context()), Reason: req.Reason,
 		})
 		if err != nil {
@@ -80,7 +80,7 @@ func newAccountBundleExportExecuteHandler(d Deps) http.HandlerFunc {
 		result, err := d.BundleService.ExecuteExport(r.Context(), accountbundle.ExportExecuteInput{
 			ExportPlanInput: accountbundle.ExportPlanInput{
 				TenantID: req.TenantID, AccountIDs: req.AccountIDs,
-				ActorID: ident.AuditActor(), ActorRole: ident.Role,
+				ActorID: ident.AuditActor(), ActorRole: ident.Role, ActorScopeTenantID: ident.ScopeTenantID,
 				RequestID: middleware.GetReqID(r.Context()), Reason: req.Reason,
 			},
 			PlanHash: req.PlanHash, Password: req.Password, Confirmation: req.Confirmation,
@@ -109,7 +109,7 @@ func newAccountBundleImportPlanHandler(d Deps) http.HandlerFunc {
 		}
 		result, err := d.BundleService.PlanImport(r.Context(), accountbundle.ImportPlanInput{
 			TenantID: req.TenantID, Envelope: req.Envelope, Password: req.Password,
-			Destinations: req.Destinations, ActorID: ident.AuditActor(), ActorRole: ident.Role,
+			Destinations: req.Destinations, ActorID: ident.AuditActor(), ActorRole: ident.Role, ActorScopeTenantID: ident.ScopeTenantID,
 			RequestID: middleware.GetReqID(r.Context()), Reason: req.Reason,
 		})
 		if err != nil {
@@ -137,7 +137,7 @@ func newAccountBundleImportExecuteHandler(d Deps) http.HandlerFunc {
 		result, err := d.BundleService.ExecuteImport(r.Context(), accountbundle.ImportExecuteInput{
 			ImportPlanInput: accountbundle.ImportPlanInput{
 				TenantID: req.TenantID, Envelope: req.Envelope, Password: req.Password,
-				Destinations: req.Destinations, ActorID: ident.AuditActor(), ActorRole: ident.Role,
+				Destinations: req.Destinations, ActorID: ident.AuditActor(), ActorRole: ident.Role, ActorScopeTenantID: ident.ScopeTenantID,
 				RequestID: middleware.GetReqID(r.Context()), Reason: req.Reason,
 			},
 			BundleHash: req.BundleHash, Entries: req.Entries,
@@ -179,6 +179,8 @@ func writeAccountBundleError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, accountbundle.ErrInvalidInput):
 		writeJSONError(w, http.StatusBadRequest, "account_bundle_invalid", "账号迁移包参数无效")
+	case errors.Is(err, accountbundle.ErrForbidden):
+		writeJSONError(w, http.StatusForbidden, "account_bundle_forbidden", "调用者无权操作该租户的账号迁移包")
 	case errors.Is(err, accountbundle.ErrPassword):
 		writeJSONError(w, http.StatusUnauthorized, "account_bundle_password_invalid", "迁移包密码错误")
 	case errors.Is(err, accountbundle.ErrIntegrity):

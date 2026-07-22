@@ -55,10 +55,11 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	if executed.Summary.Created != 1 || len(executed.Items) != 1 ||
 		executed.Items[0].Status != StatusCreated ||
 		executed.Items[0].ProviderAccountID <= 0 ||
-		executed.Items[0].AccountCredentialID <= 0 {
+		executed.Items[0].AccountCredentialID <= 0 ||
+		!executed.Items[0].ChannelHealthInitialized {
 		t.Fatalf("execution=%+v，期望账号与凭据创建成功", executed)
 	}
-	var accountCount, credentialCount, adminAuditCount, credentialAuditCount int
+	var accountCount, credentialCount, healthCount, adminAuditCount, credentialAuditCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND name=$2 AND deleted_at IS NULL`,
 		seed.tenantID, accountName(input.Account, 0),
@@ -69,6 +70,14 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 		`SELECT count(*)::int FROM account_credentials WHERE tenant_id=$1 AND provider_account_id=$2 AND deleted_at IS NULL`,
 		seed.tenantID, executed.Items[0].ProviderAccountID,
 	).Scan(&credentialCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM channel_health_state
+		 WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND credential_version=$4`,
+		seed.tenantID, executed.Items[0].ProviderAccountID,
+		executed.Items[0].AccountCredentialID, executed.Items[0].CredentialVersion,
+	).Scan(&healthCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx,
@@ -83,9 +92,9 @@ func TestServiceCreatesAtomicallyAndRejectsStalePlan(t *testing.T) {
 	).Scan(&credentialAuditCount); err != nil {
 		t.Fatal(err)
 	}
-	if accountCount != 1 || credentialCount != 1 || adminAuditCount != 1 || credentialAuditCount != 1 {
-		t.Fatalf("counts account=%d credential=%d admin_audit=%d credential_audit=%d，期望全为 1",
-			accountCount, credentialCount, adminAuditCount, credentialAuditCount)
+	if accountCount != 1 || credentialCount != 1 || healthCount != 1 || adminAuditCount != 1 || credentialAuditCount != 1 {
+		t.Fatalf("counts account=%d credential=%d health=%d admin_audit=%d credential_audit=%d，期望全为 1",
+			accountCount, credentialCount, healthCount, adminAuditCount, credentialAuditCount)
 	}
 
 	_, err = service.Execute(ctx, ExecuteInput{
@@ -770,7 +779,7 @@ func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {
 	if executed.Summary.Failed != 1 || executed.Items[0].Status != StatusFailed {
 		t.Fatalf("execution=%+v，期望审计失败项标记 failed", executed)
 	}
-	var accountCount, credentialCount int
+	var accountCount, credentialCount, healthCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND name=$2`,
 		seed.tenantID, accountName(input.Account, 0),
@@ -783,8 +792,13 @@ func TestServiceRollsBackAccountAndCredentialWhenAdminAuditFails(t *testing.T) {
 	).Scan(&credentialCount); err != nil {
 		t.Fatal(err)
 	}
-	if accountCount != 0 || credentialCount != 0 {
-		t.Fatalf("审计失败后留下孤儿 account=%d credential=%d", accountCount, credentialCount)
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID,
+	).Scan(&healthCount); err != nil {
+		t.Fatal(err)
+	}
+	if accountCount != 0 || credentialCount != 0 || healthCount != 0 {
+		t.Fatalf("日志失败后留下孤儿 account=%d credential=%d health=%d", accountCount, credentialCount, healthCount)
 	}
 }
 
@@ -835,11 +849,20 @@ RETURNING id`,
 		planned.Plan.Items[0].ExistingCredentialVersion != created.Version {
 		t.Fatalf("plan=%+v，期望精确命中已有账号与凭据版本", planned)
 	}
+	commitHookCalled := false
 	executed, err := service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
 		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
 		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
 		RequestID: "req-rotate",
+		CommitHook: func(_ context.Context, tx pgx.Tx, commit ExecutionCommit) error {
+			commitHookCalled = true
+			if tx == nil || commit.Status != StatusUpdated || commit.ProviderAccountID != accountID ||
+				commit.AccountCredentialID != created.ID || commit.CredentialVersion != created.Version+1 {
+				t.Fatalf("更新事务提交钩子参数异常：%+v", commit)
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -847,10 +870,14 @@ RETURNING id`,
 	if executed.Summary.Updated != 1 || executed.Items[0].Status != StatusUpdated ||
 		executed.Items[0].ProviderAccountID != accountID ||
 		executed.Items[0].AccountCredentialID != created.ID ||
-		executed.Items[0].CredentialVersion != created.Version+1 {
+		executed.Items[0].CredentialVersion != created.Version+1 ||
+		!executed.Items[0].ChannelHealthInitialized {
 		t.Fatalf("execution=%+v，期望原 credential 精确轮换并版本递增", executed)
 	}
-	var accounts, credentials int
+	if !commitHookCalled {
+		t.Fatal("更新事务未调用提交钩子")
+	}
+	var accounts, credentials, healthRecords int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*)::int FROM provider_accounts WHERE tenant_id=$1 AND deleted_at IS NULL`,
 		seed.tenantID,
@@ -866,6 +893,16 @@ RETURNING id`,
 	if accounts != 1 || credentials != 1 {
 		t.Fatalf("轮换后 accounts=%d credentials=%d，期望仍为 1/1", accounts, credentials)
 	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int FROM channel_health_state
+WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND credential_version=$4`,
+		seed.tenantID, accountID, created.ID, created.Version+1,
+	).Scan(&healthRecords); err != nil {
+		t.Fatal(err)
+	}
+	if healthRecords != 1 {
+		t.Fatalf("轮换后新凭据版本的健康记录=%d，期望 1", healthRecords)
+	}
 	var capabilities []string
 	if err := pool.QueryRow(ctx, `SELECT capability_flags FROM provider_accounts WHERE tenant_id=$1 AND id=$2`,
 		seed.tenantID, accountID).Scan(&capabilities); err != nil {
@@ -875,6 +912,44 @@ RETURNING id`,
 		if !containsString(capabilities, capability) {
 			t.Fatalf("轮换后的 Codex 账号能力=%v，缺少 %s", capabilities, capability)
 		}
+	}
+	rollbackInput := input
+	rollbackInput.Content = `{"refresh_token":"refresh-must-rollback","external_account_id":"workspace-existing"}`
+	rollbackPlan, err := service.Plan(ctx, rollbackInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackResult, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: rollbackInput, PlanHash: rollbackPlan.PlanHash,
+		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		CommitHook: func(context.Context, pgx.Tx, ExecutionCommit) error {
+			return errors.New("拒绝更新事务提交")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rollbackResult.Summary.Failed != 1 || rollbackResult.Summary.Updated != 0 {
+		t.Fatalf("提交钩子失败结果=%+v，期望更新整体失败", rollbackResult)
+	}
+	var versionAfterRollback int32
+	if err := pool.QueryRow(ctx, `SELECT credential_version FROM account_credentials WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, created.ID).Scan(&versionAfterRollback); err != nil {
+		t.Fatal(err)
+	}
+	if versionAfterRollback != created.Version+1 {
+		t.Fatalf("提交钩子失败后 credential_version=%d，期望保持 %d", versionAfterRollback, created.Version+1)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int FROM channel_health_state
+WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND credential_version=$4`,
+		seed.tenantID, accountID, created.ID, created.Version+2,
+	).Scan(&healthRecords); err != nil {
+		t.Fatal(err)
+	}
+	if healthRecords != 0 {
+		t.Fatalf("提交钩子失败后残留新版本健康记录=%d", healthRecords)
 	}
 	_, err = service.Execute(ctx, ExecuteInput{
 		PlanInput: input, PlanHash: planned.PlanHash,
@@ -1029,7 +1104,7 @@ func newAccountIntakeService(t *testing.T, pool *pgxpool.Pool) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewService(pool, credentialstore.NewStore(pool, keys, credentialstore.DefaultHandlerRegistry()), nil)
+	return NewService(pool, credentialstore.NewStore(pool, keys, credentialstore.DefaultHandlerRegistry()))
 }
 
 func seedAccountIntake(t *testing.T, ctx context.Context, pool *pgxpool.Pool) accountIntakeSeed {
@@ -1040,8 +1115,9 @@ func seedAccountIntake(t *testing.T, ctx context.Context, pool *pgxpool.Pool) ac
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
-		_, _ = pool.Exec(bg, `DELETE FROM channel_health_audit WHERE tenant_id=$1`, seed.tenantID)
-		_, _ = pool.Exec(bg, `DELETE FROM channel_health_records WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM channel_health_admin_alerts WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM channel_health_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(bg, `DELETE FROM channel_health_state WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM credential_audit_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(bg, `DELETE FROM account_credentials WHERE tenant_id=$1`, seed.tenantID)

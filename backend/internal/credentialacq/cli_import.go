@@ -275,6 +275,7 @@ func flattenCLITokenObject(fields map[string]any) map[string]any {
 	copyImportAlias(out, token, "refresh_token", "refresh_token", "refreshToken")
 	copyImportAlias(out, token, "id_token", "id_token", "idToken")
 	copyImportAlias(out, token, "chatgpt_plan_type", "chatgpt_plan_type", "plan_type", "subscription_plan")
+	copyImportAlias(out, token, "subscription_tier", "subscription_tier", "subscriptionTier", "tier_id")
 	copyImportAlias(out, token, "chatgpt_account_id", "chatgpt_account_id", "account_id", "accountId")
 	copyImportAlias(out, token, "chatgpt_user_id", "chatgpt_user_id", "user_id", "userId")
 	copyImportAlias(out, token, "email", "email")

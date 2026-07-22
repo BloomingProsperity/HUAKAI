@@ -25,15 +25,28 @@ import (
 type Service struct {
 	pool        *pgxpool.Pool
 	credentials *credentialstore.Store
-	health      ChannelHealthInitializer
 	agentTasks  AgentTaskRegistrar
 	proxies     ProxyResolver
 	projects    projectenrich.Enricher
 	refresher   ImportCredentialRefresher
+	activation  AccountActivationNotifier
 }
 
 type ImportCredentialRefresher interface {
 	RefreshImportCredential(context.Context, credentialacq.CredentialCandidate, time.Time) (credentialacq.CredentialCandidate, error)
+}
+
+// AccountActivationNotifier 在账号事务提交后触发异步运维采集。实现必须快速返回，
+// 不得把上游网络依赖带回账号创建或轮换事务。
+type AccountActivationNotifier interface {
+	NotifyAccountActivated(tenantID, providerAccountID int64)
+}
+
+func (s *Service) WithAccountActivationNotifier(notifier AccountActivationNotifier) *Service {
+	if s != nil {
+		s.activation = notifier
+	}
+	return s
 }
 
 // WithProjectEnricher 让批量导入与单账号获取共用同一套项目和套餐补齐。
@@ -66,8 +79,8 @@ type preparedPlan struct {
 	providerFamily string
 }
 
-func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store, health ChannelHealthInitializer) *Service {
-	return &Service{pool: pool, credentials: credentials, health: health}
+func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store) *Service {
+	return &Service{pool: pool, credentials: credentials}
 }
 
 // WithAgentTaskRegistrar 接入 Agent Identity 执行期任务登记；预检阶段保持纯本地。

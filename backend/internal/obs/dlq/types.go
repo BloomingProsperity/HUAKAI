@@ -29,6 +29,7 @@ const (
 	EventTypeEmailRetry   = "email.retry"
 	EventTypeChannelAlert = "channel.alert"
 	EventTypeAdminAlert   = "admin.alert"
+	EventTypeSignupReward = "payment.signup_reward"
 )
 
 var (

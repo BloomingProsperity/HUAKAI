@@ -32,6 +32,7 @@ const (
 	SourceClaudeSetupToken SourceKind = "claude_setup_token"
 	SourceCodexAgent       SourceKind = "codex_agent_identity"
 	SourceCRSSync          SourceKind = "crs_sync"
+	SourceOAuth            SourceKind = "oauth"
 )
 
 type Action string
@@ -178,7 +179,7 @@ func BuildCandidates(in BuildInput, candidates []credentialacq.CredentialCandida
 		candidate.AuthMode = credentialstore.Normalize(candidate.AuthMode)
 		credentialacq.AttachSubscription(&candidate)
 		candidates[index] = candidate
-		item := planCandidate(index, in.TenantID, candidate, in.Existing, registry, now, seenPayload, seenIdentity, seenUntrusted)
+		item := planCandidate(index, in.TenantID, in.SourceKind, candidate, in.Existing, registry, now, seenPayload, seenIdentity, seenUntrusted)
 		plan.Items = append(plan.Items, item)
 		addSummary(&plan.Summary, item.Action)
 	}
@@ -200,6 +201,26 @@ func ExistingFromIdentityMetadata(rows []credentialstore.CredentialIdentityMetad
 	return out
 }
 
+// sourceFlowKind 把批量导入来源映射成 flow_kind,用于对 ModePlan.AllowedHelpers 做来源回校
+// (与 CreateFromStart 同一合同)。第二返回值 false 表示该来源由专用解析器固定身份、不做通用
+// 来源回校(如 codex agent identity),避免误拒。
+func sourceFlowKind(s SourceKind) (credentialacq.FlowKind, bool) {
+	switch s {
+	case SourceCLI:
+		return credentialacq.FlowKindCLIImport, true
+	case SourceJSON, SourceCRSSync:
+		return credentialacq.FlowKindJSONImport, true
+	case SourceCSV:
+		return credentialacq.FlowKindCSVImport, true
+	case SourceClaudeSetupToken:
+		return credentialacq.FlowKindSetupToken, true
+	case SourceOAuth:
+		return credentialacq.FlowKindOAuth, true
+	default:
+		return "", false
+	}
+}
+
 func parseSource(source SourceKind, content, vendor, authMode string) ([]credentialacq.CredentialCandidate, error) {
 	switch source {
 	case SourceCLI:
@@ -216,6 +237,12 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 		return credentialacq.ParseClaudeSetupTokenContent(content)
 	case SourceCodexAgent:
 		return codexagentimport.Parse(content)
+	case SourceOAuth:
+		candidate, err := ParseOAuthCandidate(content)
+		if err != nil {
+			return nil, err
+		}
+		return []credentialacq.CredentialCandidate{candidate}, nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrSourceInvalid, source)
 	}
@@ -224,6 +251,7 @@ func parseSource(source SourceKind, content, vendor, authMode string) ([]credent
 func planCandidate(
 	index int,
 	tenantID int64,
+	sourceKind SourceKind,
 	candidate credentialacq.CredentialCandidate,
 	existing []ExistingCredential,
 	registry *credentialstore.HandlerRegistry,
@@ -255,6 +283,16 @@ func planCandidate(
 		!credentialacq.ModeAcquisitionReleased(candidate.Vendor, candidate.AuthMode) {
 		item.Code = "credential_mode_sealed"
 		item.Message = "该账号模式当前处于封存状态，不能新建或更新凭据"
+		return item
+	}
+	// 来源回校:OAuth-only 模式(如 claude_ai_oauth,AllowedHelpers 仅含 oauth)不能被通用
+	// JSON/CSV/CLI 导入自声明 auth_mode 绕过——手写/窃取的 token 不得被标成"官方 OAuth 获取"。
+	// 与 CreateFromStart 的 AllowedHelpers 强制同一真相源;粘贴既有 token 应走 claude_code 等
+	// AllowedHelpers 含导入类来源的模式。
+	if flowKind, enforce := sourceFlowKind(sourceKind); enforce &&
+		!credentialacq.SourceAllowedForMode(candidate.Vendor, candidate.AuthMode, flowKind) {
+		item.Code = "source_not_allowed_for_mode"
+		item.Message = "该来源不被账号模式允许:OAuth-only 模式不能通过粘贴/导入建立凭据"
 		return item
 	}
 	if err := handler.ValidatePayload(candidate.Payload); err != nil {
@@ -367,10 +405,11 @@ func extractIdentity(tenantID int64, candidate credentialacq.CredentialCandidate
 		},
 		AccountID: accountID, SubjectID: subjectID, Email: email, SubjectTrusted: trusted,
 		CredentialFingerprint: credentialstore.CredentialMaterialFingerprint(tenantID, candidate.Vendor, candidate.AuthMode, candidate.Payload),
-		SharedAccountScope: candidate.Vendor == credentialstore.VendorOpenAI &&
+		SharedAccountScope: (candidate.Vendor == credentialstore.VendorOpenAI &&
 			(candidate.AuthMode == credentialstore.AuthModeChatGPTOAuth ||
 				candidate.AuthMode == credentialstore.AuthModeCodexCLIOAuth ||
-				candidate.AuthMode == credentialstore.AuthModeCodexWebOAuth),
+				candidate.AuthMode == credentialstore.AuthModeCodexWebOAuth)) ||
+			(candidate.Vendor == credentialstore.VendorGrok && candidate.AuthMode == credentialstore.AuthModeXAIOAuth),
 	}
 }
 
@@ -412,7 +451,8 @@ func trustedIdentitySource(source string) bool {
 	case accountident.SourceAnthropicAccountID,
 		accountident.SourceChatGPTJWTClaim,
 		accountident.SourceOpenAITokenBody,
-		accountident.SourceGoogleIDTokenSub:
+		accountident.SourceGoogleIDTokenSub,
+		accountident.SourceXAIOIDCSubject:
 		return true
 	default:
 		return false
@@ -423,6 +463,9 @@ func identityMatchKey(identity candidateIdentity, vendor string, hasRefreshMater
 	prefix := credentialstore.Normalize(vendor)
 	if !hasRefreshMaterial && identity.CredentialFingerprint != "" {
 		return prefix + "/fingerprint/" + identity.CredentialFingerprint
+	}
+	if identity.SharedAccountScope && identity.AccountID != "" && identity.SubjectID != "" && identity.SubjectTrusted {
+		return compositeIdentityKey(prefix, identity.AccountID, identity.SubjectID)
 	}
 	if identity.SubjectID != "" && identity.SubjectTrusted {
 		return prefix + "/subject/" + identity.SubjectID
@@ -444,6 +487,9 @@ func untrustedIdentityKey(identity candidateIdentity, vendor string) string {
 		return ""
 	}
 	prefix := credentialstore.Normalize(vendor)
+	if identity.SharedAccountScope && identity.AccountID != "" && identity.SubjectID != "" {
+		return compositeIdentityKey(prefix, identity.AccountID, identity.SubjectID)
+	}
 	if identity.SubjectID != "" {
 		return prefix + "/subject/" + identity.SubjectID
 	}
@@ -451,6 +497,11 @@ func untrustedIdentityKey(identity candidateIdentity, vendor string) string {
 		return prefix + "/account/" + identity.AccountID
 	}
 	return ""
+}
+
+func compositeIdentityKey(prefix, accountID, subjectID string) string {
+	sum := sha256.Sum256([]byte(accountID + "\x00" + subjectID))
+	return fmt.Sprintf("%s/account-subject/%x", prefix, sum[:])
 }
 
 func redactedIdentityHint(kind, value string) string {

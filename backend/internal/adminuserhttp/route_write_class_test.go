@@ -56,7 +56,7 @@ func (fakeBackend) SetUserRemarkForTenant(context.Context, int64, int64, string)
 func (fakeBackend) SetUserStatusForTenant(context.Context, int64, int64, string) (int64, error) {
 	return 0, nil
 }
-func (fakeBackend) CreateUser(context.Context, userCreateInput) (userCreated, error) {
+func (fakeBackend) CreateUserWithAudit(context.Context, userCreateInput, unlockAuditInput) (userCreated, error) {
 	return userCreated{}, nil
 }
 func (fakeBackend) SoftDeleteForTenant(context.Context, int64, int64) (int64, error) { return 0, nil }
@@ -75,7 +75,8 @@ func mountForTest() http.Handler {
 
 // SessionSafe 写端点:knob 开 + session-admin → 过鉴权(≠401);未挂 safe 的写端点 → fail-closed 401。
 // 变异:把某 SessionSafe 路由的 .With(safe) 删掉 → 该路由 writeClassNone → session 写 401 → 首断言 RED;
-//       把 safe 误挂到 token-only 路由 → 该路由不再 401 → 次断言 RED。
+//
+//	把 safe 误挂到 token-only 路由 → 该路由不再 401 → 次断言 RED。
 func TestSessionSafeRoutesOpenTokenOnlyRoutesClosed(t *testing.T) {
 	h := mountForTest()
 	sess := adminsessionauthtest.SessionBearer

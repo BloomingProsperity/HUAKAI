@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -40,6 +42,14 @@ type Deps struct {
 		Plan(context.Context, accountintake.CookiePlanInput) (accountintake.CookiePlanResult, error)
 		Execute(context.Context, accountintake.CookieExecuteInput) (accountintake.ExecutionResult, error)
 	}
+	OAuthService interface {
+		Start(context.Context, accountintake.OAuthStartInput) (credentialacq.OAuthStartResult, error)
+		Callback(context.Context, string, string, string) (accountintake.OAuthPlanResult, error)
+		CallbackForActor(context.Context, string, string, string, int64, string, string) (accountintake.OAuthPlanResult, error)
+		Poll(context.Context, int64, string, string, string) (accountintake.OAuthPlanResult, time.Duration, error)
+		Plan(context.Context, int64, string, string) (accountintake.OAuthPlanResult, error)
+		Execute(context.Context, accountintake.OAuthExecuteInput) (accountintake.ExecutionResult, error)
+	}
 	CRSService interface {
 		Plan(context.Context, accountintake.CRSPlanInput) (accountintake.CRSPlanResult, error)
 		Execute(context.Context, accountintake.CRSExecuteInput) (accountintake.CRSExecutionResult, error)
@@ -53,6 +63,7 @@ type Deps struct {
 	Capabilities interface {
 		Allowed(context.Context, int64, string) (bool, error)
 	}
+	PlatformTenantID int64
 }
 
 type accountIntakePlanRequest struct {
@@ -72,22 +83,29 @@ type accountIntakeExecuteRequest struct {
 }
 
 func Mount(r chi.Router, d Deps) {
-	r.Post("/account-imports/plan", newAdminAccountIntakePlanHandler(d))
-	r.Post("/account-imports/execute", newAdminAccountIntakeExecuteHandler(d))
-	r.Post("/account-imports/codex/plan", newCodexAccountIntakePlanHandler(d))
-	r.Post("/account-imports/codex/execute", newCodexAccountIntakeExecuteHandler(d))
-	r.Post("/account-imports/codex-agent/plan", newCodexAgentPlanHandler(d))
-	r.Post("/account-imports/codex-agent/execute", newCodexAgentExecuteHandler(d))
-	r.Post("/account-imports/claude-setup-token/plan", newClaudeSetupTokenPlanHandler(d))
-	r.Post("/account-imports/claude-setup-token/execute", newClaudeSetupTokenExecuteHandler(d))
-	r.Post("/account-imports/claude-cookie/plan", newClaudeCookiePlanHandler(d))
-	r.Post("/account-imports/claude-cookie/execute", newClaudeCookieExecuteHandler(d))
-	r.Post("/account-imports/crs/plan", newCRSPlanHandler(d))
-	r.Post("/account-imports/crs/execute", newCRSExecuteHandler(d))
-	r.Post("/account-bundles/export/plan", newAccountBundleExportPlanHandler(d))
-	r.Post("/account-bundles/export/execute", newAccountBundleExportExecuteHandler(d))
-	r.Post("/account-bundles/import/plan", newAccountBundleImportPlanHandler(d))
-	r.Post("/account-bundles/import/execute", newAccountBundleImportExecuteHandler(d))
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/account-imports/plan", newAdminAccountIntakePlanHandler(d))
+	r.With(safe).Post("/account-imports/execute", newAdminAccountIntakeExecuteHandler(d))
+	r.With(safe).Post("/account-imports/codex/plan", newCodexAccountIntakePlanHandler(d))
+	r.With(safe).Post("/account-imports/codex/execute", newCodexAccountIntakeExecuteHandler(d))
+	r.With(safe).Post("/account-imports/codex-agent/plan", newCodexAgentPlanHandler(d))
+	r.With(safe).Post("/account-imports/codex-agent/execute", newCodexAgentExecuteHandler(d))
+	r.With(safe).Post("/account-imports/claude-setup-token/plan", newClaudeSetupTokenPlanHandler(d))
+	r.With(safe).Post("/account-imports/claude-setup-token/execute", newClaudeSetupTokenExecuteHandler(d))
+	r.With(safe).Post("/account-imports/claude-cookie/plan", newClaudeCookiePlanHandler(d))
+	r.With(safe).Post("/account-imports/claude-cookie/execute", newClaudeCookieExecuteHandler(d))
+	r.With(safe).Post("/account-imports/oauth/start", newOAuthAccountIntakeStartHandler(d))
+	r.With(safe).Post("/account-imports/oauth/callback", newOAuthAccountIntakeCallbackHandler(d, true))
+	r.Get("/account-imports/oauth/callback", newOAuthAccountIntakeCallbackHandler(d, false))
+	r.With(safe).Post("/account-imports/oauth/poll", newOAuthAccountIntakePollHandler(d))
+	r.With(safe).Post("/account-imports/oauth/plan", newOAuthAccountIntakePlanHandler(d))
+	r.With(safe).Post("/account-imports/oauth/execute", newOAuthAccountIntakeExecuteHandler(d))
+	r.With(safe).Post("/account-imports/crs/plan", newCRSPlanHandler(d))
+	r.With(safe).Post("/account-imports/crs/execute", newCRSExecuteHandler(d))
+	r.With(safe).Post("/account-bundles/export/plan", newAccountBundleExportPlanHandler(d))
+	r.With(safe).Post("/account-bundles/export/execute", newAccountBundleExportExecuteHandler(d))
+	r.With(safe).Post("/account-bundles/import/plan", newAccountBundleImportPlanHandler(d))
+	r.With(safe).Post("/account-bundles/import/execute", newAccountBundleImportExecuteHandler(d))
 }
 
 func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
@@ -165,21 +183,34 @@ func resolveAdminAccountIntake(w http.ResponseWriter, r *http.Request, d Deps) (
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Source == admin.AdminSourceSession || ident.Role != admin.RoleTenantOperator || ident.ScopeTenantID <= 0 {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "scoped tenant_operator token required")
-		return admin.AdminIdentity{}, false
-	}
-	if d.Capabilities == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
-		return admin.AdminIdentity{}, false
-	}
-	allowed, err := d.Capabilities.Allowed(r.Context(), ident.ScopeTenantID, tenantcapability.AdvancedAccountIntake)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability lookup temporarily unavailable")
-		return admin.AdminIdentity{}, false
-	}
-	if !allowed {
-		writeJSONError(w, http.StatusForbidden, "tenant_capability_not_granted", "advanced account intake is not granted for this tenant")
+	switch ident.Role {
+	case admin.RolePlatformAdmin:
+		if d.PlatformTenantID <= 0 {
+			writeJSONError(w, http.StatusServiceUnavailable, "platform_tenant_not_configured", "platform tenant scope is not configured")
+			return admin.AdminIdentity{}, false
+		}
+		// 仅在本次请求内给部署者绑定平台自有租户，后续所有入口继续复用统一租户匹配守卫。
+		ident.ScopeTenantID = d.PlatformTenantID
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant_operator scope_tenant_id required")
+			return admin.AdminIdentity{}, false
+		}
+		if d.Capabilities == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "tenant capability dependency unset")
+			return admin.AdminIdentity{}, false
+		}
+		allowed, err := d.Capabilities.Allowed(r.Context(), ident.ScopeTenantID, tenantcapability.AdvancedAccountIntake)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "tenant_capability_failed", "tenant capability lookup temporarily unavailable")
+			return admin.AdminIdentity{}, false
+		}
+		if !allowed {
+			writeJSONError(w, http.StatusForbidden, "tenant_capability_not_granted", "advanced account intake is not granted for this tenant")
+			return admin.AdminIdentity{}, false
+		}
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, false
 	}
 	if d.Service == nil {
@@ -238,6 +269,8 @@ func writeAdminAccountIntakeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, accountintake.ErrInvalidInput),
 		errors.Is(err, credentialacq.ErrInvalidImportBody),
+		errors.Is(err, credentialacq.ErrInvalidTokenShape),
+		errors.Is(err, credentialacq.ErrStateMismatch),
 		errors.Is(err, credentialstore.ErrInvalidPayload),
 		errors.Is(err, credentialstore.ErrUnknownMode),
 		errors.Is(err, intake.ErrTenantRequired),
@@ -248,6 +281,16 @@ func writeAdminAccountIntakeError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "plan_hash_required", err.Error())
 	case errors.Is(err, accountintake.ErrPlanChanged):
 		writeJSONError(w, http.StatusConflict, "account_intake_plan_changed", "账号或凭据状态已经变化，请重新预检")
+	case errors.Is(err, credentialacq.ErrFeatureDisabled):
+		writeJSONError(w, http.StatusConflict, "account_intake_mode_disabled", err.Error())
+	case errors.Is(err, credentialacq.ErrFlowNotFound), errors.Is(err, accountintake.ErrStagedCredentialNotFound):
+		writeJSONError(w, http.StatusNotFound, "account_intake_flow_not_found", "账号导入流程不存在")
+	case errors.Is(err, credentialacq.ErrFlowExpired), errors.Is(err, accountintake.ErrStagedCredentialExpired):
+		writeJSONError(w, http.StatusGone, "account_intake_flow_expired", "账号导入流程已经过期，请重新授权")
+	case errors.Is(err, credentialacq.ErrFlowReplay), errors.Is(err, accountintake.ErrStagedCredentialReplay):
+		writeJSONError(w, http.StatusConflict, "account_intake_flow_replayed", "账号导入流程已经处理，不能重复执行")
+	case errors.Is(err, accountintake.ErrOAuthCandidateNotReady):
+		writeJSONError(w, http.StatusConflict, "oauth_candidate_not_ready", "OAuth 授权尚未换取可导入凭据")
 	case errors.Is(err, accountintake.ErrCodexLaneAbsent):
 		writeJSONError(w, http.StatusConflict, "codex_lane_not_configured", "当前租户没有唯一可运行的 Codex 路由车道，请先配置对应 provider、channel、模型与池绑定")
 	case errors.Is(err, accountintake.ErrCodexLaneMany):

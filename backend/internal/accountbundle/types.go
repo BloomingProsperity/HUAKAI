@@ -18,6 +18,7 @@ const (
 
 var (
 	ErrInvalidInput         = errors.New("account bundle input invalid")
+	ErrForbidden            = errors.New("account bundle actor not authorized for tenant")
 	ErrNotConfigured        = errors.New("account bundle service not configured")
 	ErrPlanChanged          = errors.New("account bundle plan changed")
 	ErrConfirmationRequired = errors.New("account bundle confirmation required")
@@ -125,8 +126,12 @@ type ExportPlanInput struct {
 	AccountIDs []int64
 	ActorID    string
 	ActorRole  string
-	RequestID  string
-	Reason     string
+	// ActorScopeTenantID 是调用者经认证解析出的自有租户(platform_admin 已由 HTTP 层
+	// 重绑为平台租户,tenant_operator 为其 scope)。服务层据此做与 balanceledger 同构的
+	// 纵深第二锁:即使未来有调用方绕过 HTTP 裁决,目标租户与自有租户不符也整体拒绝。
+	ActorScopeTenantID int64
+	RequestID          string
+	Reason             string
 }
 
 type ExportPlanItem struct {
@@ -174,8 +179,10 @@ type ImportPlanInput struct {
 	Destinations map[string]Destination
 	ActorID      string
 	ActorRole    string
-	RequestID    string
-	Reason       string
+	// ActorScopeTenantID 语义同 ExportPlanInput:调用者自有租户,供服务层纵深第二锁断言。
+	ActorScopeTenantID int64
+	RequestID          string
+	Reason             string
 }
 
 type ImportPlanItem struct {

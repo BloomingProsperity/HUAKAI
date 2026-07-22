@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -61,7 +62,7 @@ func (s *CookieService) Plan(ctx context.Context, in CookiePlanInput) (CookiePla
 	if s == nil || s.intake == nil || s.staged == nil || s.exchanger == nil {
 		return CookiePlanResult{}, ErrNotConfigured
 	}
-	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || in.ActorRole != "tenant_operator" {
+	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || !validIntakeActorRole(in.ActorRole) {
 		return CookiePlanResult{}, ErrInvalidInput
 	}
 	converted, err := s.exchanger.Exchange(ctx, claudecookie.Input{
@@ -97,6 +98,10 @@ func (s *CookieService) Plan(ctx context.Context, in CookiePlanInput) (CookiePla
 		OrganizationID: converted.OrganizationID, AuthMode: converted.AuthMode,
 		PlanHash: plan.PlanHash, Plan: plan.Plan,
 	}, nil
+}
+
+func validIntakeActorRole(role string) bool {
+	return role == admin.RolePlatformAdmin || role == admin.RoleTenantOperator
 }
 
 func (s *CookieService) Execute(ctx context.Context, in CookieExecuteInput) (ExecutionResult, error) {

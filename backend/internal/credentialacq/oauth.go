@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
@@ -49,7 +50,11 @@ type OAuthStartResult struct {
 
 type OAuthExchanger func(context.Context, Session, string) (CredentialCandidate, error)
 
+type OAuthCandidatePersister func(context.Context, Session, CredentialCandidate) error
+
 type DeviceCodePoller func(context.Context, Session) (CredentialCandidate, error)
+
+const DefaultOAuthCallbackLease = 2 * time.Minute
 
 func StartOAuthFlow(ctx context.Context, store *PostgresSessionStore, in StartInput, cfg OAuthClientConfig) (OAuthStartResult, error) {
 	return StartOAuthFlowWithRegistry(ctx, store, in, cfg, defaultExchangers)
@@ -129,10 +134,14 @@ func startPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, in Sta
 }
 
 func CompleteOAuthCallbackWithRegistry(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, registry *ExchangerRegistry) (CredentialCandidate, Session, error) {
+	return CompleteOAuthCallbackWithRegistryAndPersist(ctx, store, flowID, state, code, registry, nil)
+}
+
+func CompleteOAuthCallbackWithRegistryAndPersist(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, registry *ExchangerRegistry, persist OAuthCandidatePersister) (CredentialCandidate, Session, error) {
 	if registry == nil {
 		registry = defaultExchangers
 	}
-	return CompleteOAuthCallback(ctx, store, flowID, state, code,
+	return completeOAuthCallbackWithPersistence(ctx, store, flowID, state, code,
 		func(ctx context.Context, session Session, code string) (CredentialCandidate, error) {
 			exc, ok := registry.Lookup(exchangerKey(session.Vendor, session.AuthMode))
 			if !ok {
@@ -145,10 +154,16 @@ func CompleteOAuthCallbackWithRegistry(ctx context.Context, store *PostgresSessi
 				return storeAware.ExchangeOAuthCodeWithStore(ctx, store, session, state, code)
 			}
 			return exc.ExchangeOAuthCode(ctx, session, code)
-		})
+		}, persist)
 }
 
-func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flowID, state, code string, exchange OAuthExchanger) (CredentialCandidate, Session, error) {
+func completeOAuthCallbackWithPersistence(
+	ctx context.Context,
+	store *PostgresSessionStore,
+	flowID, state, code string,
+	exchange OAuthExchanger,
+	persist OAuthCandidatePersister,
+) (CredentialCandidate, Session, error) {
 	if store == nil {
 		return CredentialCandidate{}, Session{}, errors.New("credentialacq: session store not configured")
 	}
@@ -156,22 +171,32 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 	if err != nil {
 		return CredentialCandidate{}, Session{}, err
 	}
-	// 终态 flow(finalized/cancelled/expired/failed)不得再被回调驱动。此前只守 finalized +
-	// consumed_at,致使 cancelled/failed/expired 的 flow 仍可被同 state+code 的回调重新拉回
-	// callback_received→validated 复活。terminal 校验置于 state/expiry/PKCE 之前,死 flow 直接 replay。
+	// 终态或已消费流程不得被回调复活，必须在 state/PKCE 校验前直接拒绝。
 	if !session.ConsumedAt.IsZero() || isTerminalStatus(session.Status) {
-		return CredentialCandidate{}, session, ErrFlowReplay
-	}
-	if session.Status != StatusStarted && session.Status != StatusWaitingForUser {
 		return CredentialCandidate{}, session, ErrFlowReplay
 	}
 	now := store.now().UTC()
 	if now.After(session.ExpiresAt) {
-		expired, markErr := store.UpdateStatusFrom(ctx, flowID, StatusExpired, "expired", "acquisition flow expired", StatusStarted, StatusWaitingForUser)
+		expired, markErr := store.UpdateStatusFrom(ctx, flowID, StatusExpired, "expired", "acquisition flow expired", StatusStarted, StatusWaitingForUser, StatusCallbackReceived)
 		if markErr != nil {
 			return CredentialCandidate{}, expired, markErr
 		}
 		return CredentialCandidate{}, expired, ErrFlowExpired
+	}
+	if session.Status == StatusCallbackReceived && !session.UpdatedAt.IsZero() && now.Sub(session.UpdatedAt) >= DefaultOAuthCallbackLease {
+		// 过期租约退回 started 并保留 PKCE/state，允许重新授权；租约内仍拒绝并发换码。
+		reset, resetErr := store.UpdateStatusFrom(
+			ctx, flowID, StatusStarted,
+			"callback_lease_expired", "oauth callback lease expired before durable completion",
+			StatusCallbackReceived,
+		)
+		if resetErr != nil {
+			return CredentialCandidate{}, reset, resetErr
+		}
+		session = reset
+	}
+	if session.Status != StatusStarted && session.Status != StatusWaitingForUser {
+		return CredentialCandidate{}, session, ErrFlowReplay
 	}
 	if !OAuthStateMatches(session.StateHash, state) {
 		failed, markErr := store.UpdateStatusFrom(ctx, flowID, StatusFailed, "state_mismatch", "oauth state mismatch", StatusStarted, StatusWaitingForUser)
@@ -207,6 +232,22 @@ func CompleteOAuthCallback(ctx context.Context, store *PostgresSessionStore, flo
 	}
 	if candidate.AuthMode == "" {
 		candidate.AuthMode = callbackSession.AuthMode
+	}
+	if persist != nil {
+		if persistErr := persist(ctx, callbackSession, candidate); persistErr != nil {
+			// 候选未可靠落地时退回可重新授权状态，避免 validated 无候选的永久死锁。
+			resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			reset, resetErr := store.UpdateStatusFrom(
+				resetCtx, flowID, StatusStarted,
+				"candidate_persist_failed", "oauth candidate persistence failed",
+				StatusCallbackReceived,
+			)
+			cancel()
+			if resetErr != nil {
+				return CredentialCandidate{}, reset, errors.Join(persistErr, resetErr)
+			}
+			return CredentialCandidate{}, reset, persistErr
+		}
 	}
 	validated, err := store.UpdateStatusFrom(ctx, flowID, StatusValidated, "", "", StatusCallbackReceived)
 	return candidate, validated, err

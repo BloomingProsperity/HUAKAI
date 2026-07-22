@@ -47,7 +47,6 @@ import (
 	"os"
 	"sort"
 
-	_ "github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/antigravity"

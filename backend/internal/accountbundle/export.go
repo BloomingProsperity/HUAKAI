@@ -16,7 +16,7 @@ func (s *Service) PlanExport(ctx context.Context, in ExportPlanInput) (ExportPla
 	if err := s.ready(); err != nil {
 		return ExportPlan{}, err
 	}
-	if err := validateOperator(in.TenantID, in.ActorID, in.ActorRole); err != nil {
+	if err := validateOperator(in.TenantID, in.ActorScopeTenantID, in.ActorID, in.ActorRole); err != nil {
 		return ExportPlan{}, err
 	}
 	snapshots, err := s.readSnapshots(ctx, in.TenantID, in.AccountIDs)
@@ -80,7 +80,7 @@ func (s *Service) ExecuteExport(ctx context.Context, in ExportExecuteInput) (Exp
 	if err := s.ready(); err != nil {
 		return ExportResult{}, err
 	}
-	if err := validateOperator(in.TenantID, in.ActorID, in.ActorRole); err != nil {
+	if err := validateOperator(in.TenantID, in.ActorScopeTenantID, in.ActorID, in.ActorRole); err != nil {
 		return ExportResult{}, err
 	}
 	if strings.TrimSpace(in.Confirmation) != exportConfirmation {

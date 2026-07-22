@@ -19,8 +19,12 @@ import (
 )
 
 const (
-	claudeAIOAuthAuthURL          = "https://claude.ai/oauth/authorize"
-	claudeAIOAuthTokenURL         = "https://api.anthropic.com/v1/oauth/token"
+	claudeAIOAuthAuthURL = "https://claude.ai/oauth/authorize"
+	// 换码端点随官方 Claude Code 2.1.211 从 api.anthropic.com 迁至 platform.claude.com
+	// (二进制 yol.TOKEN_URL 实证);authorize 仍走 claude.ai,与已工作的 claudecookie 流程
+	// 同一配对(authorize=claude.ai / token=platform.claude.com)。api.anthropic.com 仅继续
+	// 承载推理转发,不是 OAuth 端点。
+	claudeAIOAuthTokenURL         = "https://platform.claude.com/v1/oauth/token"
 	claudeAIOAuthPublicClientID   = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	claudeAIOAuthScope            = "org:create_api_key user:profile user:inference"
 	claudeAIOAuthLoopbackRedirect = "http://localhost:54545/callback"

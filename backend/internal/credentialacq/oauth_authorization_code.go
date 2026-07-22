@@ -255,9 +255,10 @@ func startStoredPKCEOAuthFlow(ctx context.Context, store *PostgresSessionStore, 
 		return OAuthStartResult{}, err
 	}
 	session.AuthType = AuthTypePKCE
+	authorizeURL := BuildAuthorizeURL(cfg, state, challenge)
 	return OAuthStartResult{
 		Session: session, AuthType: AuthTypePKCE, State: state, CodeVerifier: verifier, CodeChallenge: challenge,
-		AuthorizeURL: BuildAuthorizeURL(cfg, state, challenge),
+		AuthorizeURL: authorizeURL,
 	}, nil
 }
 
@@ -312,11 +313,6 @@ func validateOperatorPKCEConfig(vendor, authMode string, cfg OAuthClientConfig) 
 	}{{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}} {
 		if err := validateOAuthEndpointURL(item.raw); err != nil {
 			return fmt.Errorf("%w: %s/%s %s 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, item.name, err)
-		}
-	}
-	if credentialstore.ModeKey(vendor, authMode) == credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth) {
-		if err := validateXAIOAuthConfig(cfg); err != nil {
-			return fmt.Errorf("%w: %s/%s xAI OAuth config 拒绝 (%v)", ErrFeatureDisabled, vendor, authMode, err)
 		}
 	}
 	return nil
@@ -449,32 +445,6 @@ func validateOAuthEndpointURL(raw string) error {
 		}
 	}
 	return nil
-}
-
-func validateXAIOAuthConfig(cfg OAuthClientConfig) error {
-	if strings.TrimSpace(cfg.ClientID) != xaiOAuthClientID {
-		return fmt.Errorf("client_id mismatch")
-	}
-	if normalizedOAuthScope(cfg.Scopes) != xaiOAuthScope {
-		return fmt.Errorf("scope mismatch")
-	}
-	for _, item := range []struct {
-		name, raw string
-	}{{"auth_url", cfg.AuthURL}, {"token_url", cfg.TokenURL}} {
-		parsed, err := url.Parse(strings.TrimSpace(item.raw))
-		if err != nil {
-			return fmt.Errorf("%s invalid url: %v", item.name, err)
-		}
-		if !isXAIOAuthHost(parsed.Hostname()) {
-			return fmt.Errorf("%s host=%s is outside x.ai", item.name, parsed.Hostname())
-		}
-	}
-	return nil
-}
-
-func isXAIOAuthHost(host string) bool {
-	lower := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-	return lower == "x.ai" || strings.HasSuffix(lower, ".x.ai")
 }
 
 func normalizedOAuthScope(scopes []string) string {

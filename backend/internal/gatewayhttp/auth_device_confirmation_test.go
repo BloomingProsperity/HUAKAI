@@ -47,7 +47,7 @@ func TestDeviceConfirmationEndToEnd_LoginBlockedSendsEmailThenConfirmFreesSlot(t
 
 	// 注册 + 验证邮箱。
 	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/register", map[string]any{
-		"tenant_id": 1, "email": "dev@example.test", "password": "secret",
+		"tenant_id": 1, "email": "dev@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusCreated)
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/verify-email", map[string]any{
@@ -65,7 +65,7 @@ func TestDeviceConfirmationEndToEnd_LoginBlockedSendsEmailThenConfirmFreesSlot(t
 
 	// 第二台设备登录: 应被确认流拦截。
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "dev@example.test", "password": "secret",
+		"tenant_id": 1, "email": "dev@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusForbidden)
 	var errBody struct {
@@ -98,7 +98,7 @@ func TestDeviceConfirmationEndToEnd_LoginBlockedSendsEmailThenConfirmFreesSlot(t
 
 	// 腾位后重新登录: 应成功 (最老 family 被撤, 名额空出 1)。
 	rec = serveJSON(t, r, http.MethodPost, "/v1/auth/login", map[string]any{
-		"tenant_id": 1, "email": "dev@example.test", "password": "secret",
+		"tenant_id": 1, "email": "dev@example.test", "password": "secret12",
 	})
 	assertHTTPStatus(t, rec, http.StatusOK)
 }

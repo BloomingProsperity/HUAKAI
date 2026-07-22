@@ -343,7 +343,7 @@ WHERE id = $1::uuid`, flowID).Scan(&plaintext, &ciphertext, &metadata); err != n
 // Cancel: WHERE... AND status NOT IN ('finalized','cancelled','expired','failed') // 后续补入了 'failed'
 //
 // 没有它们,Get→write 的 TOCTOU 会让并发的 Cancel/expire 被覆盖 —— 例如
-// CompleteOAuthCallback 的 UpdateStatus(callback_received/validated)会复活一个已 cancelled 的
+// OAuth 回调推进 callback_received/validated 时会复活一个已 cancelled 的
 // flow,而一个 failed 的 flow 也可能被翻成 cancelled。
 //
 // 变异检查:
@@ -508,7 +508,7 @@ func TestCancelFinalizeRaceGuardsPG(t *testing.T) {
 // 第二个并发/迟到回调必须在 exchange 前得到 ErrFlowReplay,不能把 callback_received 或
 // validated 覆写成 failed。
 //
-// §14 变异:把 CompleteOAuthCallback 的 UpdateStatusFrom 改回 UpdateStatus,并删除入口处
+// §14 变异:把 OAuth 回调状态推进的 UpdateStatusFrom 改回 UpdateStatus,并删除入口处
 // callback_received/validated replay 守卫。第二个回调会进入 exchange,随后把 flow 标成 failed
 // 或让第一个回调的 validated 写失败,本测试的 exchange 次数/最终状态断言会变红。
 func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
@@ -542,7 +542,7 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 	var exchangeCalls int32
 
 	go func() {
-		candidate, session, err := CompleteOAuthCallback(ctx, store, flowID, state, "first-code",
+		candidate, session, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "first-code",
 			func(context.Context, Session, string) (CredentialCandidate, error) {
 				if atomic.AddInt32(&exchangeCalls, 1) == 1 {
 					close(enteredExchange)
@@ -553,7 +553,7 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 					Vendor: "openai", AuthMode: "chatgpt_oauth",
 					Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
 				}, nil
-			})
+			}, nil)
 		firstDone <- callbackResult{candidate: candidate, session: session, err: err}
 	}()
 
@@ -564,11 +564,11 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 	}
 
 	lateExchangeCalled := false
-	_, lateSession, lateErr := CompleteOAuthCallback(ctx, store, flowID, state, "late-code",
+	_, lateSession, lateErr := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "late-code",
 		func(context.Context, Session, string) (CredentialCandidate, error) {
 			lateExchangeCalled = true
 			return CredentialCandidate{}, errors.New("late callback must not exchange")
-		})
+		}, nil)
 	if !errors.Is(lateErr, ErrFlowReplay) {
 		t.Fatalf("late callback while first in-flight: err=%v want ErrFlowReplay", lateErr)
 	}
@@ -595,11 +595,11 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 	}
 
 	afterValidatedCalled := false
-	_, afterValidated, err := CompleteOAuthCallback(ctx, store, flowID, state, "after-validated-code",
+	_, afterValidated, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "after-validated-code",
 		func(context.Context, Session, string) (CredentialCandidate, error) {
 			afterValidatedCalled = true
 			return CredentialCandidate{}, errors.New("validated callback must not exchange")
-		})
+		}, nil)
 	if !errors.Is(err, ErrFlowReplay) {
 		t.Fatalf("callback after validated: err=%v want ErrFlowReplay", err)
 	}
@@ -615,5 +615,90 @@ func TestCompleteOAuthCallbackSerializesFlowPG(t *testing.T) {
 	}
 	if reloaded.Status != StatusValidated || reloaded.ErrorClass != "" {
 		t.Fatalf("reloaded flow=(status=%q error_class=%q), want validated/no error", reloaded.Status, reloaded.ErrorClass)
+	}
+}
+
+func TestCompleteOAuthCallbackPersistenceFailureReturnsFlowToStartedPG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	flowID := uuid.NewString()
+	state := "persist-retry-state"
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: paID,
+		Vendor: "openai", AuthMode: "chatgpt_oauth", Kind: FlowKindOAuth,
+		Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI, StateHash: HashOAuthState(state),
+		RequestedScopes: []string{"openid"}, RedactedContext: map[string]any{"case": "persist_retry"},
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create flow: %v", err)
+	}
+
+	persistErr := errors.New("staged store unavailable")
+	exchange := func(context.Context, Session, string) (CredentialCandidate, error) {
+		return CredentialCandidate{
+			TenantID: tenantID, ProviderAccountID: paID,
+			Vendor: "openai", AuthMode: "chatgpt_oauth",
+			Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+		}, nil
+	}
+	_, reset, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "consumed-code", exchange,
+		func(context.Context, Session, CredentialCandidate) error { return persistErr })
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("持久化失败 err=%v，期望原始错误", err)
+	}
+	if reset.Status != StatusStarted || reset.ErrorClass != "candidate_persist_failed" {
+		t.Fatalf("重置状态=%q error_class=%q，期望 started/candidate_persist_failed", reset.Status, reset.ErrorClass)
+	}
+
+	_, validated, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "new-code", exchange,
+		func(context.Context, Session, CredentialCandidate) error { return nil })
+	if err != nil {
+		t.Fatalf("重新授权回调: %v", err)
+	}
+	if validated.Status != StatusValidated {
+		t.Fatalf("重新授权状态=%q，期望 validated", validated.Status)
+	}
+}
+
+func TestCompleteOAuthCallbackReclaimsStaleCallbackLeasePG(t *testing.T) {
+	ctx := context.Background()
+	pool := openCredentialAcqTestPool(t, ctx)
+	now := time.Now().UTC()
+	store := NewPostgresSessionStore(pool).WithNow(func() time.Time { return now })
+	tenantID, paID := seedCredentialAcqProviderAccount(t, ctx, pool, uuid.NewString())
+	flowID := uuid.NewString()
+	state := "stale-callback-state"
+	if _, err := store.Create(ctx, Session{
+		ID: flowID, TenantID: tenantID, ProviderAccountID: paID,
+		Vendor: "openai", AuthMode: "chatgpt_oauth", Kind: FlowKindOAuth,
+		Status: StatusStarted, ActorID: "admin-1", ActorRole: "platform_admin",
+		ClientIdentitySource: ClientSourcePublicCLI, StateHash: HashOAuthState(state),
+		RequestedScopes: []string{"openid"}, RedactedContext: map[string]any{"case": "stale_callback"},
+		ExpiresAt: now.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("Create flow: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credential_acquisition_flow_sessions
+SET status='callback_received', updated_at=$2 WHERE id=$1::uuid`, flowID, now.Add(-DefaultOAuthCallbackLease-time.Second)); err != nil {
+		t.Fatalf("制造过期回调租约: %v", err)
+	}
+
+	_, validated, err := completeOAuthCallbackWithPersistence(ctx, store, flowID, state, "new-code",
+		func(context.Context, Session, string) (CredentialCandidate, error) {
+			return CredentialCandidate{
+				TenantID: tenantID, ProviderAccountID: paID,
+				Vendor: "openai", AuthMode: "chatgpt_oauth",
+				Payload: samplePayloadForMode("openai", "chatgpt_oauth"),
+			}, nil
+		}, nil)
+	if err != nil {
+		t.Fatalf("回收过期回调租约: %v", err)
+	}
+	if validated.Status != StatusValidated {
+		t.Fatalf("回收后状态=%q，期望 validated", validated.Status)
 	}
 }

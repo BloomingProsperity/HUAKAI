@@ -81,21 +81,40 @@ func TestEnvelopeRejectsWeakPassword(t *testing.T) {
 	}
 }
 
-func TestValidateOperatorRejectsPlatformAndCrossRoleExecution(t *testing.T) {
+func TestValidateOperatorAcceptsBothAdminRolesAndRejectsInvalidIdentity(t *testing.T) {
 	for _, input := range []struct {
 		tenantID int64
+		scope    int64
 		actorID  string
 		role     string
 	}{
-		{tenantID: 0, actorID: "admin_token:9", role: "tenant_operator"},
-		{tenantID: 7, actorID: "", role: "tenant_operator"},
-		{tenantID: 7, actorID: "admin_token:9", role: "platform_admin"},
+		{tenantID: 0, scope: 0, actorID: "admin_token:9", role: "tenant_operator"},
+		{tenantID: 7, scope: 7, actorID: "", role: "tenant_operator"},
+		{tenantID: 7, scope: 7, actorID: "admin_token:9", role: "end_user"},
 	} {
-		if err := validateOperator(input.tenantID, input.actorID, input.role); !errors.Is(err, ErrInvalidInput) {
-			t.Fatalf("输入=%+v err=%v，期望拒绝", input, err)
+		if err := validateOperator(input.tenantID, input.scope, input.actorID, input.role); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("输入=%+v err=%v，期望拒绝(输入无效)", input, err)
 		}
 	}
-	if err := validateOperator(7, "admin_token:9", "tenant_operator"); err != nil {
-		t.Fatalf("租户操作者被误拒绝：%v", err)
+	// 纵深第二锁的判别性用例:身份合法但自有租户与目标租户不符 → 必须 ErrForbidden。
+	// 变异:删掉 validateOperator 里 actorScopeTenantID 断言,以下三例转红。
+	for _, input := range []struct {
+		tenantID int64
+		scope    int64
+		role     string
+	}{
+		{tenantID: 7, scope: 8, role: "tenant_operator"}, // 租户管理员越权碰别的租户
+		{tenantID: 7, scope: 0, role: "tenant_operator"}, // 自有租户缺失
+		{tenantID: 7, scope: 9, role: "platform_admin"},  // 部署者 scope(已重绑)与目标不符
+	} {
+		if err := validateOperator(input.tenantID, input.scope, "admin_token:9", input.role); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("输入=%+v err=%v，期望 ErrForbidden(跨租户越权)", input, err)
+		}
+	}
+	if err := validateOperator(7, 7, "admin_token:9", "tenant_operator"); err != nil {
+		t.Fatalf("租户操作者处理自有租户被误拒绝：%v", err)
+	}
+	if err := validateOperator(7, 7, "admin_token:9", "platform_admin"); err != nil {
+		t.Fatalf("部署者处理平台自有租户迁移包被误拒绝：%v", err)
 	}
 }

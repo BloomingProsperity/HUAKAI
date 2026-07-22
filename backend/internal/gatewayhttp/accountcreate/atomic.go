@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -18,7 +17,7 @@ import (
 )
 
 var (
-	ErrPoolUnset                = errors.New("gatewayhttp: admin pool account adapter pgxpool unset")
+	ErrTxUnset                  = errors.New("gatewayhttp: admin account create transaction unset")
 	ErrMixedRiskConfirmRequired = errors.New("provider account mixed channel risk confirmation required")
 	ErrProtocolIncompatible     = errors.New("provider account protocol and credential are incompatible")
 )
@@ -89,27 +88,10 @@ func ValidateCredentialCompatibility(ctx context.Context, lookup CredentialCompa
 	return ValidateProtocolCompatibility(family, acct.AccountType, vendor, authMode)
 }
 
-// Insert 在同一事务内锁定 provider 协议、串行化渠道风险检查并插入账号。
-func Insert(ctx context.Context, pool *pgxpool.Pool, arg Params) (Result, error) {
-	if pool == nil {
-		return Result{}, ErrPoolUnset
-	}
-	var out Result
-	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		var err error
-		out, err = InsertTx(ctx, tx, arg)
-		return err
-	})
-	if err != nil {
-		return Result{RiskReport: out.RiskReport}, err
-	}
-	return out, nil
-}
-
 // InsertTx 在调用方事务内完成协议复核、渠道风险串行化和账号插入。
 func InsertTx(ctx context.Context, tx pgx.Tx, arg Params) (Result, error) {
 	if tx == nil {
-		return Result{}, ErrPoolUnset
+		return Result{}, ErrTxUnset
 	}
 	q := admindb.New(tx)
 	family, err := q.GetProviderProtocolForAccountCreate(ctx, admindb.GetProviderProtocolForAccountCreateParams{

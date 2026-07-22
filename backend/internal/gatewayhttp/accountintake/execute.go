@@ -40,6 +40,9 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 		return ExecutionResult{}, err
 	}
 	defer zeroizeCandidates(prepared.candidates)
+	if in.CommitHook != nil && len(prepared.result.Plan.Items) != 1 {
+		return ExecutionResult{}, ErrInvalidInput
+	}
 	if subtle.ConstantTimeCompare([]byte(in.PlanHash), []byte(prepared.result.PlanHash)) != 1 {
 		return ExecutionResult{}, ErrPlanChanged
 	}
@@ -98,6 +101,9 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 			result.Status = StatusFailed
 			result.Code = "planned_action_invalid"
 			result.Message = "预检动作无效"
+		}
+		if s.activation != nil && (result.Status == StatusCreated || result.Status == StatusUpdated) && result.ProviderAccountID > 0 {
+			s.activation.NotifyAccountActivated(prepared.input.TenantID, result.ProviderAccountID)
 		}
 		addExecutionSummary(&out.Summary, result.Status)
 		out.Items = append(out.Items, result)
@@ -293,7 +299,10 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err != nil {
 			return err
 		}
-		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "create_provider_account", "provider_account", accountID, map[string]any{
+		if err := initializeHealthTx(ctx, tx, prepared.input.TenantID, accountID, metadata); err != nil {
+			return err
+		}
+		if err := insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "create_provider_account", "provider_account", accountID, map[string]any{
 			"provider_id":                  prepared.input.Account.ProviderID,
 			"channel_id":                   prepared.input.Account.ChannelID,
 			"vendor":                       candidate.Vendor,
@@ -305,6 +314,12 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 			"subscription_status":          candidate.Subscription.Status,
 			"mixed_channel_risk_confirmed": expected.MixedChannelRisk != nil && expected.MixedChannelRisk.HighRisk,
 			"proxy_id":                     proxyID,
+		}); err != nil {
+			return err
+		}
+		return runExecutionCommitHook(ctx, tx, in, ExecutionCommit{
+			Status: StatusCreated, ProviderAccountID: accountID,
+			AccountCredentialID: metadata.ID, CredentialVersion: metadata.Version,
 		})
 	})
 	if err != nil {
@@ -319,7 +334,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 	result.ProviderAccountID = accountID
 	result.AccountCredentialID = metadata.ID
 	result.CredentialVersion = metadata.Version
-	s.initializeHealth(ctx, &result, prepared.input.TenantID, accountID, metadata)
+	result.ChannelHealthInitialized = true
 	return result
 }
 
@@ -395,7 +410,10 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 		if err != nil {
 			return err
 		}
-		return insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "rotate_account_credential", "account_credential", metadata.ID, map[string]any{
+		if err := initializeHealthTx(ctx, tx, prepared.input.TenantID, expected.ExistingAccountID, metadata); err != nil {
+			return err
+		}
+		if err := insertAdminAudit(ctx, tx, in, prepared.input.TenantID, "rotate_account_credential", "account_credential", metadata.ID, map[string]any{
 			"provider_account_id": expected.ExistingAccountID,
 			"vendor":              candidate.Vendor,
 			"auth_mode":           candidate.AuthMode,
@@ -406,6 +424,12 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 			"proxy_id":            proxyID,
 			"codex_capabilities_present": isCodexIntake(prepared.input) &&
 				containsAllStrings(prepared.input.Account.CapabilityFlags, codexDefaultCapabilities),
+		}); err != nil {
+			return err
+		}
+		return runExecutionCommitHook(ctx, tx, in, ExecutionCommit{
+			Status: StatusUpdated, ProviderAccountID: expected.ExistingAccountID,
+			AccountCredentialID: metadata.ID, CredentialVersion: metadata.Version,
 		})
 	})
 	if err != nil {
@@ -420,8 +444,15 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 	result.ProviderAccountID = expected.ExistingAccountID
 	result.AccountCredentialID = metadata.ID
 	result.CredentialVersion = metadata.Version
-	s.initializeHealth(ctx, &result, prepared.input.TenantID, expected.ExistingAccountID, metadata)
+	result.ChannelHealthInitialized = true
 	return result
+}
+
+func runExecutionCommitHook(ctx context.Context, tx pgx.Tx, in ExecuteInput, commit ExecutionCommit) error {
+	if in.CommitHook == nil {
+		return nil
+	}
+	return in.CommitHook(ctx, tx, commit)
 }
 
 func containsAllStrings(values, required []string) bool {
@@ -513,21 +544,18 @@ func insertAdminAudit(ctx context.Context, tx pgx.Tx, in ExecuteInput, tenantID 
 	return err
 }
 
-func (s *Service) initializeHealth(ctx context.Context, result *ExecutionItem, tenantID, accountID int64, metadata credentialstore.CredentialMetadata) {
-	if s.health == nil {
-		result.Warnings = appendUnique(result.Warnings, "channel_health_dependency_unset")
-		return
-	}
-	_, err := s.health.EnsureDefaultActive(ctx, channelhealth.ChannelKey{
+func initializeHealthTx(ctx context.Context, tx pgx.Tx, tenantID, accountID int64, metadata credentialstore.CredentialMetadata) error {
+	health := channelhealth.NewService(
+		channelhealth.NewPostgresStore(tx),
+		channelhealth.DefaultPolicy(),
+		nil,
+	)
+	_, err := health.EnsureDefaultActive(ctx, channelhealth.ChannelKey{
 		TenantID: tenantID, Vendor: metadata.Vendor,
 		ProviderAccountID: accountID, AccountCredentialID: metadata.ID,
 		CredentialVersion: int(metadata.Version),
 	})
-	if err != nil {
-		result.Warnings = appendUnique(result.Warnings, "channel_health_initialization_failed")
-		return
-	}
-	result.ChannelHealthInitialized = true
+	return err
 }
 
 func baseExecutionItem(item intake.Item) ExecutionItem {

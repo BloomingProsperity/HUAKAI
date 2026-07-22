@@ -41,6 +41,65 @@ func TestBuildCandidatesRejectsDuplicateModeInsideOneAccount(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesMatchesSharedAccountsByScopeAndSubject(t *testing.T) {
+	existing := ExistingCredential{
+		CredentialID: 11, CredentialVersion: 2,
+		ProviderAccountID: 101, ProviderAccountName: "workspace-a-member",
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		State:             credentialstore.StateActive,
+		ExternalAccountID: "workspace-a", ExternalSubjectID: "person-1",
+		AccountIDSource: accountident.SourceChatGPTJWTClaim,
+	}
+	candidate := func(accountID, subjectID string) credentialacq.CredentialCandidate {
+		return credentialacq.CredentialCandidate{
+			Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+			Payload:           []byte(`{"refresh_token":"refresh-new"}`),
+			ExternalAccountID: accountID, ExternalSubjectID: subjectID,
+			AccountIDSource: accountident.SourceChatGPTJWTClaim,
+		}
+	}
+
+	sameMember := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{existing},
+	}, []credentialacq.CredentialCandidate{candidate("workspace-a", "person-1")}).Plan
+	matched := requireSingleItem(t, sameMember)
+	if matched.Action != ActionUpdate || matched.ExistingAccountID != existing.ProviderAccountID {
+		t.Fatalf("同一工作区成员=%+v，期望轮换原账号", matched)
+	}
+
+	otherWorkspace := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{existing},
+	}, []credentialacq.CredentialCandidate{candidate("workspace-b", "person-1")}).Plan
+	if item := requireSingleItem(t, otherWorkspace); item.Action != ActionCreate {
+		t.Fatalf("同一人在不同工作区=%+v，不能误轮换旧工作区", item)
+	}
+
+	otherMember := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{existing},
+	}, []credentialacq.CredentialCandidate{candidate("workspace-a", "person-2")}).Plan
+	if item := requireSingleItem(t, otherMember); item.Action != ActionCreate {
+		t.Fatalf("同一工作区不同成员=%+v，不能误轮换其他成员", item)
+	}
+
+	legacyMissingSubject := existing
+	legacyMissingSubject.ExternalSubjectID = ""
+	missingSubjectPlan := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{legacyMissingSubject},
+	}, []credentialacq.CredentialCandidate{candidate("workspace-a", "person-1")}).Plan
+	if item := requireSingleItem(t, missingSubjectPlan); item.Action != ActionConflict || item.Code != "existing_member_identity_missing" {
+		t.Fatalf("旧记录缺成员主体=%+v，期望人工消歧", item)
+	}
+
+	legacyMissingScope := existing
+	legacyMissingScope.ExternalAccountID = ""
+	missingScopePlan := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{legacyMissingScope},
+	}, []credentialacq.CredentialCandidate{candidate("workspace-a", "person-1")}).Plan
+	if item := requireSingleItem(t, missingScopePlan); item.Action != ActionConflict || item.Code != "existing_account_scope_missing" {
+		t.Fatalf("旧记录缺账号范围=%+v，期望人工消歧", item)
+	}
+}
+
 func TestBuildCandidatesDeduplicatesBatchAndRedactsIdentity(t *testing.T) {
 	candidate := oauthCandidate("workspace-secret", "person@example.com", `{"refresh_token":"refresh-secret"}`)
 	plan := BuildCandidates(BuildInput{

@@ -34,6 +34,11 @@ type sessionRevokeRequest struct {
 
 type sessionListRequest struct{}
 
+type authResendVerificationRequest struct {
+	TenantID int64  `json:"tenant_id"`
+	Email    string `json:"email"`
+}
+
 func MountSessionRoutes(r chi.Router, d SessionHandlerDeps) {
 	MountSessionRefreshRoute(r, d)
 	MountSessionProtectedRoutes(r, d)
@@ -46,6 +51,43 @@ func MountSessionRefreshRoute(r chi.Router, d SessionHandlerDeps) {
 func MountSessionProtectedRoutes(r chi.Router, d SessionHandlerDeps) {
 	r.Post("/revoke", newSessionRevokeHandler(d))
 	r.Post("/list", newSessionListHandler(d))
+}
+
+// newAuthResendVerificationHandler 为待验证用户重发验证邮件。无论邮箱是否存在或已经验证，
+// 成功路径都返回同一个 202 响应；只有待验证用户会触发发信。
+func newAuthResendVerificationHandler(d AuthHandlerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.Auth == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "auth dependency unset")
+			return
+		}
+		var req authResendVerificationRequest
+		if !decodeAdminPoolJSON(w, r, &req) {
+			return
+		}
+		accepted := map[string]any{"status": "accepted"}
+		user, token, found, err := d.Auth.ResendEmailVerification(r.Context(), req.TenantID, req.Email)
+		if err != nil {
+			// 只有非法租户或空邮箱这类请求错误对外返回，账号存在性差异不经过此分支暴露。
+			writeAuthError(w, err)
+			return
+		}
+		if !found {
+			writeAuditJSON(w, http.StatusAccepted, accepted)
+			return
+		}
+		if !allowAuthEmailSend(w, r, d, user.TenantID, user.ID) {
+			return
+		}
+		if err := authEmailSender(d).SendVerification(r.Context(), user, token); err != nil {
+			// 发信失败只进入分类日志，避免响应差异泄露邮箱存在性。
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
+				EventType: "user_verification_resend_failed", TenantID: user.TenantID, UserID: user.ID,
+				Outcome: "failure", ReasonClass: authReasonClass(err),
+			})
+		}
+		writeAuditJSON(w, http.StatusAccepted, accepted)
+	}
 }
 
 func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {

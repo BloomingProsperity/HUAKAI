@@ -2,6 +2,10 @@ package credentialacq
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
@@ -29,108 +36,214 @@ func TestDefaultExchangerRegistryIncludesAntigravityOAuthAlias(t *testing.T) {
 }
 
 func TestXAIOAuthExchangerRegistered(t *testing.T) {
-	// 变异:去掉 grok/xai_oauth 的注册行,此 lookup 就必须变红。
 	registry := DefaultExchangerRegistry()
 	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth))
 	if !ok {
 		t.Fatal("default registry missing grok/xai_oauth exchanger")
 	}
-	authCode, ok := exc.(authorizationCodeOAuthExchanger)
-	if !ok {
-		t.Fatalf("grok/xai_oauth exchanger type=%T, want authorizationCodeOAuthExchanger", exc)
-	}
-	if authCode.vendor != credentialstore.VendorGrok || authCode.authMode != credentialstore.AuthModeXAIOAuth {
-		t.Fatalf("exchanger target=%s/%s, want grok/xai_oauth", authCode.vendor, authCode.authMode)
-	}
-	if authCode.shape != TokenShapeAccessRefresh {
-		t.Fatalf("token shape=%s, want %s", authCode.shape, TokenShapeAccessRefresh)
+	if _, ok := exc.(xaiDeviceCodeExchanger); !ok {
+		t.Fatalf("grok/xai_oauth exchanger type=%T，期望 xaiDeviceCodeExchanger", exc)
 	}
 }
 
 func TestXAIOAuthConfigEndpointsAndClient(t *testing.T) {
-	// 变异:改动 xAI 的 client_id、scope、auth host、token host,或在 StartOAuthFlow 期间
-	// 停止套用已注册的默认值,本测试就必须变红。
 	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	const wantScope = "openid profile email offline_access grok-cli:access api:access"
-	registry := DefaultExchangerRegistry()
-	exc, ok := registry.Lookup(credentialstore.ModeKey(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth))
-	if !ok {
-		t.Fatal("default registry missing grok/xai_oauth exchanger")
-	}
-	authCode, ok := exc.(authorizationCodeOAuthExchanger)
-	if !ok {
-		t.Fatalf("grok/xai_oauth exchanger type=%T, want authorizationCodeOAuthExchanger", exc)
-	}
-	cfg := authCode.config
-	if cfg.ClientID != wantClientID {
-		t.Fatalf("client_id=%q want %q", cfg.ClientID, wantClientID)
-	}
-	if got := strings.Join(cfg.Scopes, " "); got != wantScope {
-		t.Fatalf("scope=%q want %q", got, wantScope)
-	}
-	if cfg.AuthURL != "https://auth.x.ai/oauth2/authorize" {
-		t.Fatalf("auth_url=%q", cfg.AuthURL)
-	}
-	if cfg.TokenURL != "https://auth.x.ai/oauth2/token" {
-		t.Fatalf("token_url=%q", cfg.TokenURL)
-	}
-	if cfg.Source != ClientSourceOperatorConfig {
-		t.Fatalf("source=%q want %q", cfg.Source, ClientSourceOperatorConfig)
-	}
-
 	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != xaiOAuthDeviceURL {
+			t.Fatalf("请求了非固定 xAI 设备端点：%s", r.URL)
+		}
+		if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/x-www-form-urlencoded") {
+			t.Fatalf("content-type=%q，期望表单", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.PostForm.Get("client_id") != wantClientID || r.PostForm.Get("scope") != wantScope {
+			t.Fatalf("xAI 公共客户端合同被改写：%v", r.PostForm)
+		}
+		return jsonHTTPResponse(t, map[string]any{
+			"device_code": "xai-device", "user_code": "XAI-1234",
+			"verification_uri": "https://auth.x.ai/activate", "expires_in": 900, "interval": 5,
+		}), nil
+	})}
 	keys, err := credentialstore.NewStaticKeyProvider("test-v1", []byte(strings.Repeat("x", 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
-	start, err := authCode.StartOAuthFlow(context.Background(), store, StartInput{
+	start, err := newXAIDeviceCodeExchanger().StartOAuthFlow(context.Background(), store, StartInput{
 		TenantID: 1, ProviderAccountID: 701,
-		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		Vendor: "attacker", AuthMode: "attacker",
 		ActorID: "owner", ActorRole: "platform_admin",
-	}, OAuthClientConfig{RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback"})
+	}, OAuthClientConfig{
+		ClientID: "attacker", AuthURL: "https://attacker.example/device", TokenURL: "https://attacker.example/token",
+		Scopes: []string{"attacker"}, Source: ClientSourceOperatorConfig, HTTPClient: client,
+	})
 	if err != nil {
-		t.Fatalf("StartOAuthFlow with xAI registered defaults: %v", err)
+		t.Fatalf("启动 xAI 设备码：%v", err)
 	}
-	authorize, err := url.Parse(start.AuthorizeURL)
-	if err != nil {
-		t.Fatalf("parse authorize URL: %v", err)
+	if start.AuthType != AuthTypeDeviceCode || start.UserCode != "XAI-1234" || start.AuthorizeURL != "https://auth.x.ai/activate" {
+		t.Fatalf("设备码启动结果错误：%+v", start)
 	}
-	if authorize.Scheme != "https" || authorize.Hostname() != "auth.x.ai" {
-		t.Fatalf("authorize endpoint=%s, want https://auth.x.ai", start.AuthorizeURL)
-	}
-	query := authorize.Query()
-	if query.Get("client_id") != wantClientID || query.Get("scope") != wantScope {
-		t.Fatalf("authorize query client_id=%q scope=%q", query.Get("client_id"), query.Get("scope"))
-	}
-	if query.Get("redirect_uri") != "https://huakai.example.test/admin/v1/credentials/oauth-callback" {
-		t.Fatalf("redirect_uri=%q", query.Get("redirect_uri"))
+	if start.Session.Vendor != credentialstore.VendorGrok || start.Session.AuthMode != credentialstore.AuthModeXAIOAuth ||
+		start.Session.ClientIdentitySource != ClientSourcePublicCLI {
+		t.Fatalf("xAI 会话未锁定公共客户端身份：%+v", start.Session)
 	}
 }
 
-func TestXAIOAuthSSRFHost(t *testing.T) {
-	// 变异:为 grok/xai_oauth 放行任意非 x.ai 的 OAuth host,本
-	// 测试就会因接受攻击者端点而变红。
-	const wantClientID = "b1a00492-073a-47ea-816f-4c329264a828"
-	wantScopes := strings.Fields("openid profile email offline_access grok-cli:access api:access")
-	base := OAuthClientConfig{
-		Source: ClientSourceOperatorConfig, ClientID: wantClientID,
-		AuthURL: "https://auth.x.ai/oauth2/authorize", TokenURL: "https://auth.x.ai/oauth2/token",
-		RedirectURI: "https://huakai.example.test/admin/v1/credentials/oauth-callback",
-		Scopes:      wantScopes,
+// TestXAIDevicePollVerifiesOIDCIdentity 守护设备码换令牌后的稳定账号身份来源。
+func TestXAIOAuthExchangeVerifiesOIDCIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, base); err != nil {
-		t.Fatalf("valid xAI OAuth config rejected: %v", err)
+	var rawIDToken, rawAccessToken string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/oauth2/device/code":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.PostForm.Get("client_id") != xaiOAuthClientID || r.PostForm.Get("scope") != xaiOAuthScope {
+				t.Fatalf("设备码启动表单错误：%v", r.PostForm)
+			}
+			return jsonHTTPResponse(t, map[string]any{
+				"device_code": "xai-device", "user_code": "XAI-CODE",
+				"verification_uri": "https://auth.x.ai/activate", "expires_in": 900, "interval": 5,
+			}), nil
+		case "/oauth2/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.PostForm.Get("grant_type") != oauthDeviceCodeGrantType || r.PostForm.Get("device_code") != "xai-device" {
+				t.Fatalf("设备码轮询表单错误：%v", r.PostForm)
+			}
+			body, _ := json.Marshal(map[string]any{
+				"access_token": rawAccessToken, "refresh_token": "xai-refresh",
+				"id_token": rawIDToken, "expires_in": 3600,
+			})
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		case "/.well-known/jwks.json":
+			body, _ := json.Marshal(map[string]any{"keys": []map[string]any{{
+				"kid": "xai-key", "kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig",
+				"x": base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, 32))),
+				"y": base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, 32))),
+			}}})
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		default:
+			return nil, errors.New("unexpected OAuth request path: " + r.URL.Path)
+		}
+	})}
+	keys, err := credentialstore.NewStaticKeyProvider("xai-oidc-test", []byte(strings.Repeat("z", 32)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	badAuth := base
-	badAuth.AuthURL = "https://auth.x.ai.attacker.example/oauth/authorize"
-	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, badAuth); !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("err=%v want ErrFeatureDisabled for non-x.ai auth host", err)
+	store := NewPostgresSessionStoreWithKeys(newTestSessionDB(now), keys).WithNow(func() time.Time { return now })
+	start, err := newXAIDeviceCodeExchanger().StartOAuthFlow(context.Background(), store, StartInput{
+		TenantID: 1, ProviderAccountID: 702,
+		Vendor: credentialstore.VendorGrok, AuthMode: credentialstore.AuthModeXAIOAuth,
+		ActorID: "owner", ActorRole: "platform_admin",
+	}, OAuthClientConfig{HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
 	}
-	badToken := base
-	badToken.TokenURL = "https://attacker.example/oauth/token"
-	if err := validateOperatorPKCEConfig(credentialstore.VendorGrok, credentialstore.AuthModeXAIOAuth, badToken); !errors.Is(err, ErrFeatureDisabled) {
-		t.Fatalf("err=%v want ErrFeatureDisabled for non-x.ai token host", err)
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "xai-subject-1",
+		"email": "xai-owner@example.test",
+		"iat":   now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	token.Header["kid"] = "xai-key"
+	rawIDToken, err = token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "xai-subject-1", "team_id": "xai-team-1",
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	accessToken.Header["kid"] = "xai-key"
+	rawAccessToken, err = accessToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validAccessToken := rawAccessToken
+	candidate, err := PollDeviceCodeToken(
+		context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.ExternalSubjectID != "xai-subject-1" || candidate.ExternalAccountID != "xai-team-1" ||
+		candidate.ExternalAccountEmail != "xai-owner@example.test" || candidate.AccountIDSource != accountident.SourceXAIOIDCSubject {
+		t.Fatalf("xAI OIDC 身份未接入候选项：%+v", candidate)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(candidate.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["refresh_token"] != "xai-refresh" || payload["client_id_source"] != ClientSourcePublicCLI {
+		t.Fatalf("xAI 刷新材料或客户端来源丢失：%v", payload)
+	}
+	missingScopeToken := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "xai-subject-1",
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	missingScopeToken.Header["kid"] = "xai-key"
+	rawAccessToken, err = missingScopeToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PollDeviceCodeToken(
+		context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("缺少账号范围的 xAI OAuth err=%v，期望 ErrInvalidTokenShape", err)
+	}
+	mismatchedSubjectToken := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": xaiOAuthClientID, "sub": "other-subject", "team_id": "xai-team-1",
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	mismatchedSubjectToken.Header["kid"] = "xai-key"
+	rawAccessToken, err = mismatchedSubjectToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PollDeviceCodeToken(
+		context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("跨主体 xAI token err=%v，期望 ErrInvalidTokenShape", err)
+	}
+	wrongAudienceToken := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": xaiOIDCIssuer, "aud": "other-client", "sub": "xai-subject-1", "team_id": "xai-team-1",
+		"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(time.Hour).Unix(),
+	})
+	wrongAudienceToken.Header["kid"] = "xai-key"
+	rawAccessToken, err = wrongAudienceToken.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PollDeviceCodeToken(
+		context.Background(), start.Session, OAuthClientConfig{},
+		WithDeviceCodeHTTPClient(client), WithDeviceCodeNow(func() time.Time { return now }), WithDeviceCodeSingleAttempt(),
+	); !errors.Is(err, ErrInvalidTokenShape) {
+		t.Fatalf("错误 audience 的 xAI token err=%v，期望 ErrInvalidTokenShape", err)
+	}
+	rawAccessToken = validAccessToken
+	recovered, validated, err := PollDeviceCodeFlow(
+		context.Background(), store, start.Session,
+		func(context.Context, Session) (CredentialCandidate, error) { return candidate, nil },
+		nil, "owner", "req-xai-recovery",
+	)
+	if err != nil {
+		t.Fatalf("设备码候选加密暂存与恢复：%v", err)
+	}
+	if validated.Status != StatusValidated || recovered.ExternalAccountID != "xai-team-1" || recovered.ExternalSubjectID != "xai-subject-1" {
+		t.Fatalf("加密恢复后丢失已验签身份：flow=%+v candidate=%+v", validated, recovered)
 	}
 }
 

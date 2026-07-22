@@ -11,8 +11,8 @@ import (
 )
 
 // 凭证日常增改放开给登录 admin(Owner 批)。复用同包 stub + 共享 Resolver。
-// 对照组:OAuth 采集流(acquisition)未挂 SessionSafe,session 写必须仍 401(采集流留 token-only)。
-// 变异:摘任一 .With(safe) → 对应 session 写 401 → RED;给 acquisition 挂 safe → 对照断言 RED。
+// 对照组:旧的 OAuth 采集流(acquisition)尚未挂 SessionSafe,session 写必须仍 401。
+// 账号批量导入已按三身份能力授权合同开放给登录管理员。
 func TestAdminCredentialSessionSafeWriteGate(t *testing.T) {
 	mount := func() http.Handler {
 		r := chi.NewRouter()
@@ -45,13 +45,10 @@ func TestAdminCredentialSessionSafeWriteGate(t *testing.T) {
 	}
 }
 
-// 采集流对照:acquisition 写路由(未挂 SessionSafe)session 仍 401。
-// 这是「日常改动放开、采集流(含 mutating-GET callback 债)不放」的边界锁。
-// 用既有 fixture(全依赖 stub)确保打到鉴权层而非依赖判空的 503。
-func TestAdminCredentialAcquisitionStaysTokenOnly(t *testing.T) {
+// 账号采集写路由在三身份范围与 capability 守卫下允许管理会话操作。
+// 浏览器 GET callback 不依赖会话，它只推进已授权创建且带固定 actor/tenant/account 的 flow。
+func TestAdminCredentialAcquisitionAllowsAuthorizedSession(t *testing.T) {
 	fx := newCredentialAcqHTTPFixture(t, adminsessionauthtest.Resolver())
-	// canonical 流 4 条写 + import-helper 5 条(paste/cli/csv/json/oauth-init)全部锁死:
-	// helper 是「录入凭证」的另一条完整通路(且支持批量),错误放开任意一条都要红。
 	for _, p := range []string{
 		"/v1/admin/pool-accounts/101/credential-acquisitions",
 		"/v1/admin/pool-accounts/101/credential-acquisitions/9/callback",
@@ -65,8 +62,8 @@ func TestAdminCredentialAcquisitionStaysTokenOnly(t *testing.T) {
 		"/admin/v1/credentials/account-imports/plan",
 		"/admin/v1/credentials/account-imports/execute",
 	} {
-		if code := adminsessionauthtest.Status(fx.handler, http.MethodPost, p, adminsessionauthtest.SessionBearer); code != http.StatusUnauthorized {
-			t.Fatalf("采集流 POST %s 应仍 token-only(session 401),得 %d", p, code)
+		if code := adminsessionauthtest.Status(fx.handler, http.MethodPost, p, adminsessionauthtest.SessionBearer); code == http.StatusUnauthorized {
+			t.Fatalf("能力授权后的账号采集 POST %s 应过 session 鉴权,得 401", p)
 		}
 	}
 	// token 通道照常(过鉴权层;后续 400 等属业务校验,非鉴权拒)。

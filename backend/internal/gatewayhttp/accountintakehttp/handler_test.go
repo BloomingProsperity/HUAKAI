@@ -131,25 +131,26 @@ func TestAdminAccountIntakeExecuteMapsPlanChangeAndAuditIdentity(t *testing.T) {
 	}
 }
 
-func TestAdminAccountIntakeRejectsSessionAndOversizedBody(t *testing.T) {
-	service := &accountIntakeServiceStub{}
+func TestAdminAccountIntakeAcceptsAuthorizedSessionAndRejectsOversizedBody(t *testing.T) {
+	service := &accountIntakeServiceStub{planResult: accountintake.PlanResult{PlanHash: strings.Repeat("a", 64)}}
 	sessionHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: admin.AdminIdentity{
 		Source: admin.AdminSourceSession, UserID: 5, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
 	}}, service)
-	rec := doAccountIntakeRequest(sessionHandler, "/admin/v1/credentials/account-imports/plan", `{}`)
-	if rec.Code != http.StatusForbidden || service.planCalls != 0 {
+	body := `{"tenant_id":7,"source_kind":"json_import","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"}}`
+	rec := doAccountIntakeRequest(sessionHandler, "/admin/v1/credentials/account-imports/plan", body)
+	if rec.Code != http.StatusOK || service.planCalls != 1 {
 		t.Fatalf("session status=%d calls=%d body=%s", rec.Code, service.planCalls, rec.Body.String())
 	}
 
 	tokenHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
 	oversized := `{"content":"` + strings.Repeat("x", accountIntakeBodyLimit) + `"}`
 	rec = doAccountIntakeRequest(tokenHandler, "/admin/v1/credentials/account-imports/plan", oversized)
-	if rec.Code != http.StatusRequestEntityTooLarge || service.planCalls != 0 {
+	if rec.Code != http.StatusRequestEntityTooLarge || service.planCalls != 1 {
 		t.Fatalf("oversized status=%d calls=%d body=%s", rec.Code, service.planCalls, rec.Body.String())
 	}
 }
 
-func TestAdminAccountIntakeRejectsPlatformUnscopedAndCrossTenant(t *testing.T) {
+func TestAdminAccountIntakePlatformOnlyOwnTenantAndTenantOperatorOnlyScopedTenant(t *testing.T) {
 	service := &accountIntakeServiceStub{}
 	body := `{"tenant_id":7,"source_kind":"json_import","content":"{}","account":{"provider_id":2,"channel_id":3,"name_prefix":"codex","account_type":"api_key"}}`
 	tests := []struct {
@@ -158,14 +159,6 @@ func TestAdminAccountIntakeRejectsPlatformUnscopedAndCrossTenant(t *testing.T) {
 		path     string
 		body     string
 	}{
-		{
-			name: "平台管理员不得代租户执行",
-			identity: admin.AdminIdentity{
-				Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RolePlatformAdmin,
-			},
-			path: "/admin/v1/credentials/account-imports/plan",
-			body: body,
-		},
 		{
 			name: "租户令牌必须有正数作用域",
 			identity: admin.AdminIdentity{
@@ -197,8 +190,20 @@ func TestAdminAccountIntakeRejectsPlatformUnscopedAndCrossTenant(t *testing.T) {
 			}
 		})
 	}
-	if service.planCalls != 0 || service.executeCalls != 0 {
-		t.Fatalf("拒绝请求不得触发 service：plan=%d execute=%d", service.planCalls, service.executeCalls)
+	platformHandler := accountIntakeTestHandler(accountIntakeAuthStub{identity: admin.AdminIdentity{
+		Source: admin.AdminSourceToken, TokenID: 9, Role: admin.RolePlatformAdmin,
+	}}, service)
+	rec := doAccountIntakeRequest(platformHandler, "/admin/v1/credentials/account-imports/plan", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("部署者导入平台自有租户 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	crossBody := strings.Replace(body, `"tenant_id":7`, `"tenant_id":8`, 1)
+	rec = doAccountIntakeRequest(platformHandler, "/admin/v1/credentials/account-imports/plan", crossBody)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("部署者不得代下级租户导入,status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if service.planCalls != 1 || service.executeCalls != 0 {
+		t.Fatalf("仅平台自有租户请求应触发 service：plan=%d execute=%d", service.planCalls, service.executeCalls)
 	}
 }
 
@@ -269,7 +274,7 @@ func TestAdminAccountIntakeMapsCodexLaneConfigurationErrors(t *testing.T) {
 func accountIntakeTestHandler(auth AdminAuth, service AdminAccountIntakeService) http.Handler {
 	r := chi.NewRouter()
 	r.Route("/admin/v1/credentials", func(r chi.Router) {
-		Mount(r, Deps{Auth: auth, Service: service, Capabilities: allowAccountIntakeCapability{}})
+		Mount(r, Deps{Auth: auth, Service: service, Capabilities: allowAccountIntakeCapability{}, PlatformTenantID: 7})
 	})
 	return r
 }

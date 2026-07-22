@@ -119,7 +119,7 @@ func (s *CRSService) Plan(ctx context.Context, in CRSPlanInput) (CRSPlanResult, 
 	if s == nil || s.intake == nil || s.staged == nil || s.source == nil {
 		return CRSPlanResult{}, ErrNotConfigured
 	}
-	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || in.ActorRole != "tenant_operator" || len(in.Destinations) == 0 {
+	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || !validIntakeActorRole(in.ActorRole) || len(in.Destinations) == 0 {
 		return CRSPlanResult{}, ErrInvalidInput
 	}
 	exported, err := s.source.Fetch(ctx, crssource.Input{BaseURL: in.BaseURL, Username: in.Username, Password: in.Password})
@@ -228,7 +228,7 @@ func (s *CRSService) Execute(ctx context.Context, in CRSExecuteInput) (CRSExecut
 	if s == nil || s.intake == nil || s.staged == nil {
 		return CRSExecutionResult{}, ErrNotConfigured
 	}
-	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || in.ActorRole != "tenant_operator" || len(in.Entries) == 0 || len(in.Entries) > intake.MaxCandidates {
+	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || !validIntakeActorRole(in.ActorRole) || len(in.Entries) == 0 || len(in.Entries) > intake.MaxCandidates {
 		return CRSExecutionResult{}, ErrInvalidInput
 	}
 	out := CRSExecutionResult{Items: make([]CRSExecutionItem, 0, len(in.Entries))}
