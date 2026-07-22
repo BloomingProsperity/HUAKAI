@@ -110,8 +110,7 @@ async def _connect_public_target(
             continue
         peer = writer.get_extra_info("peername")
         if not peer or not _is_public_ip(str(peer[0])):
-            writer.close()
-            await writer.wait_closed()
+            await _close_writer(writer)
             raise ProxyRejected("private_peer")
         return reader, writer
     raise ProxyRejected("connect_failed") from last_error
@@ -124,6 +123,16 @@ async def _copy_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
     try:
         writer.write_eof()
     except (AttributeError, OSError):
+        pass
+
+
+async def _close_writer(writer: asyncio.StreamWriter | None) -> None:
+    if writer is None:
+        return
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except (ConnectionError, OSError):
         pass
 
 
@@ -158,11 +167,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         except (ConnectionError, OSError):
             pass
     finally:
-        if upstream_writer is not None:
-            upstream_writer.close()
-            await upstream_writer.wait_closed()
-        writer.close()
-        await writer.wait_closed()
+        await _close_writer(upstream_writer)
+        await _close_writer(writer)
 
 
 async def serve() -> None:

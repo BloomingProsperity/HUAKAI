@@ -67,6 +67,21 @@ class EgressProxyTests(unittest.TestCase):
         )
         self.assertEqual(captured, [(socket.AF_INET, "8.8.8.8", 443)])
 
+    def test连接已被对端重置时关闭操作保持幂等(self):
+        class ResetWriter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+            async def wait_closed(self):
+                raise ConnectionResetError("peer reset")
+
+        writer = ResetWriter()
+        asyncio.run(egress_proxy._close_writer(writer))
+        self.assertTrue(writer.closed)
+
 
 if __name__ == "__main__":
     unittest.main()
