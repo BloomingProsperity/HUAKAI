@@ -9,6 +9,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/codexclientaccess"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 )
 
 func reqWithUA(ua string) *http.Request {
@@ -32,22 +33,34 @@ func strictAnthropicGateFixture() (*http.Request, []byte) {
 	return r, body
 }
 
-// TestDecideWithBodyAnthropicIsClosedTwoState 守住 S1 的封闭状态机：严格 fixture
-// 只能 OfficialDirect；只保留 UA/X-Client 的伪造请求只能 Reject，不存在 raw allow。
-func TestDecideWithBodyAnthropicIsClosedTwoState(t *testing.T) {
+// TestDecideWithBodyAnthropicOfficialDirect 真 Claude Code 形态 → OfficialDirect。
+func TestDecideWithBodyAnthropicOfficialDirect(t *testing.T) {
 	r, body := strictAnthropicGateFixture()
 	got := DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, r, body)
 	if got.Decision != DecisionOfficialDirect || !bytes.Equal(got.Body, body) {
 		t.Fatalf("官方 fixture result=%+v want official_direct + byte equivalent", got)
 	}
+}
 
+// TestDecideWithBodyAnthropicThirdPartyBodyCloak 默认 body 伪装开 → 非官方 Allow(出站伪装)。
+// 显式 HUAKAI_CLAUDE_OAUTH_BODY_CLOAK=false → 回退 Reject 严格门。
+func TestDecideWithBodyAnthropicThirdPartyBodyCloak(t *testing.T) {
+	r, body := strictAnthropicGateFixture()
 	spoof := r.Clone(r.Context())
 	spoof.Header = make(http.Header)
 	spoof.Header.Set("User-Agent", "claude-cli/2.1.78 (external, cli)")
 	spoof.Header.Set("X-Client-Name", "Claude Code")
+
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "")
+	got := DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, body)
+	if got.Decision != DecisionAllow || got.Reason != outboundbody.ReasonAllowBodyCloak {
+		t.Fatalf("body cloak on: result=%+v want allow+claude_oauth_body_cloak", got)
+	}
+
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "false")
 	got = DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, body)
-	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired || len(got.Body) != 0 {
-		t.Fatalf("伪造 fixture result=%+v want reject without raw body", got)
+	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired {
+		t.Fatalf("body cloak off: result=%+v want reject", got)
 	}
 }
 

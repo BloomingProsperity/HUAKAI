@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
+	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -125,23 +126,26 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	}
 }
 
-// identityRewrite 对 dispatch 专用 body 施加默认关闭且 fail-open 的身份改写。
+// identityRewrite 是出站 body 改写的薄委托：策略与变换集中在 outboundbody。
+// OfficialDirect 时 BuildPlan.SkipAll；否则按需 system 三块 + user_id。
 func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	if ex == nil || ex.r == nil {
 		return dispatchBody
 	}
-	// metadata.user_id 只适用于 Anthropic Messages；其它形态保持原 body。
-	if ex.resolved.ProtocolFamily != "anthropic_messages" {
-		return dispatchBody
+	family := ""
+	if ex.resolved.ProtocolFamily != "" {
+		family = ex.resolved.ProtocolFamily
 	}
-	return mimicryidentity.RewriteForDispatch(
-		dispatchBody,
-		ex.accInfo.AccountID,
-		ex.accInfo.ExternalAccountID, // 空 → fail-open 不改写
-		ex.accInfo.AccountType,       // scope 硬守卫:仅 oauth/session 反转号伪装,apikey/bedrock 永不
-		ex.clientSessionID,           // 参与 session 派生,避免同账号跨会话共用 upstream session
-		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
-	)
+	plan := outboundbody.BuildPlan(outboundbody.Input{
+		OfficialDirect:    ex.officialDirect,
+		ProtocolFamily:    family,
+		AccountType:       ex.accInfo.AccountType,
+		AccountID:         ex.accInfo.AccountID,
+		ExternalAccountID: ex.accInfo.ExternalAccountID,
+		ClientSessionID:   ex.clientSessionID,
+		CLIVersion:        mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
+	})
+	return outboundbody.Apply(dispatchBody, plan)
 }
 
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {
