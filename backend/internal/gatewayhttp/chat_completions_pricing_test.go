@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -37,6 +38,23 @@ func TestSettleCompletion_RateTableMiss_FailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "pricing_unavailable") {
 		t.Fatalf("body=%s want pricing_unavailable", rec.Body.String())
+	}
+}
+
+func TestCompletionPricingFailureClassUsesSafeStableReasons(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{pricingUnavailable("rate table missing model \"deepseek-chat\""), "rate_table_model_missing"},
+		{pricingUnavailable("pricingeval: cache_read rate missing"), "cache_read_rate_missing"},
+		{context.Canceled, "context_canceled"},
+		{errors.New("opaque failure containing sk-secret"), "pricing_unavailable_unknown"},
+	}
+	for _, test := range tests {
+		if got := completionPricingFailureClass(test.err); got != test.want {
+			t.Fatalf("completionPricingFailureClass(%v)=%q want %q", test.err, got, test.want)
+		}
 	}
 }
 
@@ -665,6 +683,88 @@ func TestStreamingCompletionEvent_ReportedUsageNeverReplacedByEstimate(t *testin
 	}
 	if strings.Contains(event.SettleRequest.Draft.CostSnapshot, "usage_basis=") {
 		t.Fatalf("CostSnapshot=%q must not carry estimated marker for reported usage", event.SettleRequest.Draft.CostSnapshot)
+	}
+}
+
+func TestStreamingCompletionEvent_DeepSeekCacheUsageChargesReportedTokens(t *testing.T) {
+	ex := estimatedFallbackChatExecution(t, &rateTableSourceStub{table: billing.RateTable{
+		Version: "test-policy",
+		PricingData: json.RawMessage(`{"models":{"deepseek-chat":{
+			"input_micro_usd":0.28,
+			"output_micro_usd":0.42,
+			"cache_read_micro_usd":0.028
+		}}}`),
+	}})
+	ex.req.Model = "deepseek-chat"
+	ex.upstreamModelID = "deepseek-chat"
+	ex.resolved.CanonicalModelID = "deepseek-chat"
+	ex.resolved.ProviderModelID = "deepseek-chat"
+	ex.resolved.ProtocolFamily = "deepseek_chat"
+	ex.cacheVendor = "deepseek"
+	draft := gateway.UsageRecordDraft{
+		TokensInput:         4297,
+		TokensOutput:        10,
+		CacheReadTokens:     768,
+		DeliveredTokenCount: 10,
+		EndClass:            gateway.StreamEndGraceful,
+		UsageSource:         gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEvent(draft, billing.Attempt{
+		State:               billing.StreamStatePartial,
+		DeliveredTokenCount: 10,
+	}, auditledger.AuditLedgerResult{})
+
+	wantInputCost := decimal.NewFromInt(4297 - 768).Mul(decimal.RequireFromString("0.28")).Div(decimal.NewFromInt(1_000_000))
+	wantOutputCost := decimal.NewFromInt(10).Mul(decimal.RequireFromString("0.42")).Div(decimal.NewFromInt(1_000_000))
+	wantCacheCost := decimal.NewFromInt(768).Mul(decimal.RequireFromString("0.028")).Div(decimal.NewFromInt(1_000_000))
+	wantTotal := wantInputCost.Add(wantOutputCost).Add(wantCacheCost)
+	assertDecimalEqual(t, "SettleRequest.ActualCost", event.SettleRequest.ActualCost, wantTotal)
+	assertDecimalEqual(t, "Draft.CacheReadCost", event.SettleRequest.Draft.CacheReadCost, wantCacheCost)
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("真实 DeepSeek 流式 usage 不应进入待对账")
+	}
+	if event.SettleRequest.Draft.CostSnapshot != "flat" {
+		t.Fatalf("CostSnapshot=%q want flat", event.SettleRequest.Draft.CostSnapshot)
+	}
+}
+
+func TestStreamingCompletionEvent_UsesDetachedPricingContextAfterClientCancel(t *testing.T) {
+	rateTables := &rateTableSourceStub{
+		table: billing.RateTable{
+			Version:     "test-policy",
+			PricingData: json.RawMessage(`{"models":{"deepseek-chat":{"input_micro_usd":0.28,"output_micro_usd":0.42,"cache_read_micro_usd":0.028}}}`),
+		},
+		requireActiveContext: true,
+	}
+	ex := estimatedFallbackChatExecution(t, rateTables)
+	ex.req.Model = "deepseek-chat"
+	ex.upstreamModelID = "deepseek-chat"
+	ex.resolved.CanonicalModelID = "deepseek-chat"
+	ex.resolved.ProviderModelID = "deepseek-chat"
+	ex.resolved.ProtocolFamily = "deepseek_chat"
+	ex.cacheVendor = "deepseek"
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ex.ctx = canceledCtx
+	draft := gateway.UsageRecordDraft{
+		TokensInput: 4297, TokensOutput: 10, CacheReadTokens: 768,
+		DeliveredTokenCount: 10, EndClass: gateway.StreamEndGraceful,
+		UsageSource: gateway.UsageSourceReported,
+	}
+
+	event := ex.streamingCompletionEventWithContext(context.Background(), draft, billing.Attempt{
+		State: billing.StreamStatePartial, DeliveredTokenCount: 10,
+	}, auditledger.AuditLedgerResult{})
+
+	if !event.SettleRequest.ActualCost.IsPositive() {
+		t.Fatalf("ActualCost=%s want positive", event.SettleRequest.ActualCost)
+	}
+	if event.SettleRequest.Draft.PendingReconciliation {
+		t.Fatal("客户端取消后使用脱离上下文计价，不应进入待对账")
+	}
+	if rateTables.seenContextErr != nil {
+		t.Fatalf("费率表收到已取消上下文：%v", rateTables.seenContextErr)
 	}
 }
 

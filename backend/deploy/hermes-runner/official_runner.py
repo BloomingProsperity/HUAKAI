@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import tempfile
@@ -133,6 +134,13 @@ class AgentResult:
     total_tokens: int
 
 
+@dataclass(frozen=True)
+class UsageReport:
+    total_tokens: int
+    completed: bool | None
+    failed: bool
+
+
 ProcessExecutor = Callable[[CommandSpec], Awaitable[ProcessResult]]
 
 
@@ -222,9 +230,12 @@ class OfficialHermesRunner:
             if result.returncode != 0:
                 raise RunnerFailure("agent_failed")
             text = result.stdout.decode("utf-8", errors="replace").strip()
+            usage = _read_usage_report(usage_path)
+            if _looks_like_model_failure(text, usage):
+                raise RunnerFailure(_model_failure_code(text))
             if not text:
                 raise RunnerFailure("empty_agent_response")
-            return AgentResult(text=text, total_tokens=_read_total_tokens(usage_path))
+            return AgentResult(text=text, total_tokens=usage.total_tokens)
         finally:
             shutil.rmtree(run_root, ignore_errors=True)
 
@@ -515,15 +526,40 @@ def _write_private_json(path: Path, value: dict[str, Any]) -> None:
     os.chmod(path, 0o600)
 
 
-def _read_total_tokens(path: Path) -> int:
+def _read_usage_report(path: Path) -> UsageReport:
     try:
         if path.stat().st_size > 65_536:
-            return 0
+            return UsageReport(total_tokens=0, completed=None, failed=False)
         value = json.loads(path.read_text(encoding="utf-8"))
         total = int(value.get("total_tokens", 0))
     except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
-        return 0
-    return max(total, 0)
+        return UsageReport(total_tokens=0, completed=None, failed=False)
+    completed_value = value.get("completed")
+    return UsageReport(
+        total_tokens=max(total, 0),
+        completed=completed_value if isinstance(completed_value, bool) else None,
+        failed=value.get("failed") is True,
+    )
+
+
+def _model_failure_code(text: str) -> str:
+    normalized = text.strip().lower()
+    status_match = re.search(r"\bhttp\s+(401|402|403|429)\b", normalized)
+    status = status_match.group(1) if status_match else ""
+    if status in {"401", "403"}:
+        return "model_auth_failed"
+    if status == "402" or "billing or credits exhausted" in normalized:
+        return "model_billing_failed"
+    if status == "429" or "rate limit" in normalized:
+        return "model_rate_limited"
+    if "tls certificate" in normalized or "certificate verify failed" in normalized:
+        return "model_tls_failed"
+    return "model_upstream_failed"
+
+
+def _looks_like_model_failure(text: str, usage: UsageReport) -> bool:
+    del text
+    return usage.failed or usage.completed is False
 
 
 async def _read_json(request: Request) -> Any:

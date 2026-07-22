@@ -296,18 +296,15 @@ SELECT
     ur.id::bigint,
     COALESCE(be.occurred_at, ur.settled_at) AS created_at,
     ur.settlement_source
-FROM audit_ledger_entries ale
-JOIN billing_events be
-  ON be.tenant_id = ale.tenant_id
- AND be.audit_request_id = ale.request_id
+FROM billing_events be
 JOIN billing_ledger_claims blc
   ON blc.tenant_id = be.tenant_id
  AND blc.id = be.claim_id
 LEFT JOIN usage_records ur
   ON ur.tenant_id = blc.tenant_id
  AND ur.claim_id = blc.id
-WHERE ale.request_id = $1
-  AND ale.tenant_id = $2
+WHERE be.audit_request_id = $1
+  AND be.tenant_id = $2
   AND be.event_type IN ('claim_committed', 'claim_aborted')
 ORDER BY be.occurred_at DESC, ur.settled_at DESC NULLS LAST, ur.id DESC NULLS LAST
 LIMIT 1`

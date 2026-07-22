@@ -300,6 +300,105 @@ class OfficialRunnerTests(unittest.TestCase):
         self.assertNotIn("sk-external-test", body)
         self.assertNotIn("event: done", body)
 
+    def test_official_usage_failure_is_not_persisted_as_successful_answer(self):
+        async def executor(spec):
+            usage_path = Path(spec.argv[spec.argv.index("--usage-file") + 1])
+            usage_path.write_text(
+                '{"total_tokens":0,"completed":false,"failed":false}',
+                encoding="utf-8",
+            )
+            return official_runner.ProcessResult(
+                returncode=0,
+                stdout=b"HTTP 401: rejected sk-private-upstream-key",
+                stderr=b"",
+            )
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as root:
+            runner = official_runner.OfficialHermesRunner(
+                _config(Path(root) / "runner"),
+                executor=executor,
+                clock=lambda: 1_700_000_000.0,
+            )
+            frames = asyncio.run(_collect_events(_payload(), runner))
+
+        body = b"".join(frames).decode("utf-8")
+        self.assertIn('"code":"model_auth_failed"', body)
+        self.assertNotIn("private-upstream-key", body)
+        self.assertNotIn("event: token", body)
+        self.assertNotIn("event: done", body)
+
+    def test_tls_failure_is_not_persisted_as_successful_answer(self):
+        async def executor(spec):
+            usage_path = Path(spec.argv[spec.argv.index("--usage-file") + 1])
+            usage_path.write_text(
+                '{"total_tokens":0,"completed":false,"failed":false}',
+                encoding="utf-8",
+            )
+            return official_runner.ProcessResult(
+                returncode=0,
+                stdout=b"TLS certificate verification failed for private-upstream.example",
+                stderr=b"",
+            )
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as root:
+            runner = official_runner.OfficialHermesRunner(
+                _config(Path(root) / "runner"),
+                executor=executor,
+                clock=lambda: 1_700_000_000.0,
+            )
+            frames = asyncio.run(_collect_events(_payload(), runner))
+
+        body = b"".join(frames).decode("utf-8")
+        self.assertIn('"code":"model_tls_failed"', body)
+        self.assertNotIn("private-upstream.example", body)
+        self.assertNotIn("event: token", body)
+        self.assertNotIn("event: done", body)
+
+    def test_model_failure_codes_are_stable_and_safe(self):
+        cases = {
+            "HTTP 403: forbidden": "model_auth_failed",
+            "HTTP 402: balance exhausted": "model_billing_failed",
+            "HTTP 429: rate limit": "model_rate_limited",
+            "TLS certificate verification failed": "model_tls_failed",
+            "API call failed after 3 retries: connection error": "model_upstream_failed",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(official_runner._model_failure_code(text), expected)
+
+        usage = official_runner.UsageReport(
+            total_tokens=0, completed=True, failed=False
+        )
+        self.assertFalse(
+            official_runner._looks_like_model_failure(
+                "HTTP 401: 这是需要解释的正常回答正文", usage
+            )
+        )
+        for text in (
+            "HTTP 401: rejected",
+            "API call failed after 3 retries: connection error",
+            "Rate limit exceeded for this model",
+            "TLS certificate verification failed for upstream",
+            "Certificate verify failed while connecting",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(official_runner._looks_like_model_failure(text, usage))
+
+        incomplete = official_runner.UsageReport(
+            total_tokens=0, completed=False, failed=False
+        )
+        self.assertTrue(
+            official_runner._looks_like_model_failure(
+                "API call failed after 3 retries: connection error", incomplete
+            )
+        )
+        failed = official_runner.UsageReport(
+            total_tokens=0, completed=True, failed=True
+        )
+        self.assertTrue(
+            official_runner._looks_like_model_failure("任意正文", failed)
+        )
+
     def test_sse_preserves_conversation_and_publishes_final_response(self):
         async def executor(spec):
             usage_path = Path(spec.argv[spec.argv.index("--usage-file") + 1])

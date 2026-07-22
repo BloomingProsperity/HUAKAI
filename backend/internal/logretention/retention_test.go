@@ -212,8 +212,13 @@ func TestOrdinaryLogAllowlistExcludesDurableBusinessFacts(t *testing.T) {
 			if table.requiredNotNullColumn != "audit_committed_at" {
 				t.Fatalf("Hermes 恢复事实只能清理已补齐日志的记录: %+v", table)
 			}
+			if table.orderColumn != "operation_id" {
+				t.Fatalf("Hermes 恢复表必须按真实主键稳定分页: %+v", table)
+			}
 		} else if table.requiredNotNullColumn != "" {
 			t.Fatalf("普通日志表出现未经核实的清理前置列: %+v", table)
+		} else if table.orderColumn != "" {
+			t.Fatalf("普通日志表出现未经核实的排序列: %+v", table)
 		}
 		delete(want, table.name)
 	}

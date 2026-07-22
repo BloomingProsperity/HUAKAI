@@ -32,6 +32,10 @@ import (
 // 高于启发式估算器自身的噪声底线; 低于该底线的 delta 以误报为主。
 const crossCheckMinAbsTokenDelta = 50
 
+func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
+	return ex.streamingCompletionEventWithContext(ex.ctx, draft, streamAttempt, ledgerResult)
+}
+
 // crossCheckAudit 计算 token 交叉校验的审计信号(confidence_score / pending_reconciliation)。
 // reportedOutput = 上游报告 OutputTokens;reasoningTokens = 其中隐藏推理 token(o1/o3,
 // 客户端不可见、估算器数不到),先扣除得可见输出再与 estimated(可见内容估算)比对。

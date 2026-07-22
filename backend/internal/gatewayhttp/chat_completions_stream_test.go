@@ -1338,6 +1338,34 @@ func TestStreamingIdempotencyReplaySettlesAmbiguousUsageWithDeliveredContent(t *
 }
 
 func TestStreamingForwardSettleAndAbortErrorsAreLoggedNotHeaders(t *testing.T) {
+	t.Run("编排取消不伪装成上游错误", func(t *testing.T) {
+		logs := captureSlogForTest(t)
+		settler := &recordingSettler{}
+		deps := streamingReplayDeps(t, 77900, false, "", nil)
+		deps.Settler = settler
+		scanners := gateway.NewStaticStreamScannerRegistry()
+		scanners.MustRegister("openai_chat", scannerThenError{
+			event: partialOpenAIStreamingEventBeforeReadError(),
+			err:   context.Canceled,
+		})
+		deps.Forwarder.Scanners = scanners
+
+		rec := invokeHandler(t, deps, openAIStreamingRequestBody())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		assertLogOmits(t, logs, "forward_failed")
+		if len(settler.calls) != 1 {
+			t.Fatalf("settle calls=%d want 1", len(settler.calls))
+		}
+		if got := settler.calls[0].Draft.EndClass; got != gateway.OrchestratorCancel {
+			t.Fatalf("EndClass=%q want %q", got, gateway.OrchestratorCancel)
+		}
+		if got := settler.calls[0].Draft.StreamTerminatedReason; got != "orchestrator_cancelled" {
+			t.Fatalf("StreamTerminatedReason=%q want orchestrator_cancelled", got)
+		}
+	})
+
 	t.Run("forward error after delivery", func(t *testing.T) {
 		const marker = "SENSITIVE_STREAM_FORWARD_MARKER"
 		logs := captureSlogForTest(t)

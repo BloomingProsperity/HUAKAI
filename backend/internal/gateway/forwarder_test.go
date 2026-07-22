@@ -1488,6 +1488,14 @@ func TestNewUpstreamStateOllamaNative(t *testing.T) {
 	}
 }
 
+func TestStreamTerminatedReason_编排取消不归咎上游(t *testing.T) {
+	for _, delivered := range []int64{0, 9} {
+		if got := streamTerminatedReason(OrchestratorCancel, delivered); got != "orchestrator_cancelled" {
+			t.Fatalf("delivered=%d reason=%q want orchestrator_cancelled", delivered, got)
+		}
+	}
+}
+
 // slowReader 在 delay 内不产生任何数据，之后返回 EOF — 用于触发超时。
 type slowReader struct {
 	delay time.Duration

@@ -26,6 +26,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      hermes-key-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     # gateway 不再对宿主暴露明文端口:外部流量经下方 caddy 反代终结 TLS 后转发,gateway 仅
     # 在 compose 内网可达(防绕过 TLS 直连明文 + 防外部伪造 X-Forwarded-For)。
@@ -79,14 +81,14 @@ services:
       HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-compose-hermes}
       HUAKAI_HERMES_INTERNAL_TOKEN_SECRET: ${HUAKAI_HERMES_INTERNAL_TOKEN_SECRET:-}
       HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED: ${HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED:-true}
-      HUAKAI_HERMES_LLM_PROPOSE_ENABLED: ${HUAKAI_HERMES_LLM_PROPOSE_ENABLED:-false}
+      HUAKAI_HERMES_LLM_PROPOSE_ENABLED: ${HUAKAI_HERMES_LLM_PROPOSE_ENABLED:-true}
       HUAKAI_HERMES_MUTATING_ENABLED: ${HUAKAI_HERMES_MUTATING_ENABLED:-true}
     volumes:
       # 运维在宿主生成 ed25519 私钥并经 HUAKAI_AUDIT_PRIVATE_KEY_HOST 指向它
       # (默认 ./secrets/audit_key.pem);只读挂载,容器内路径与上面 env 对应。
       - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
-      # 目录可在 Hermes 关闭时为空；启用前用 generate-keypair.sh 生成密钥。
-      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}:/run/secrets/hermes:ro
+      # 初始化容器把严格权限的宿主私钥复制到仅 gateway 可读的 Docker 卷。
+      - huakai-hermes-private-key:/run/secrets/hermes:ro
     networks:
       - huakai-prod
       - huakai-hermes
@@ -109,6 +111,8 @@ services:
         condition: service_healthy
       hermes-egress:
         condition: service_healthy
+      hermes-key-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     expose:
       - "8801"
@@ -122,7 +126,7 @@ services:
       HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS: ${HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS:-10}
       HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS: ${HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS:-240}
     volumes:
-      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}/public.pem:/run/secrets/hermes/public.pem:ro
+      - huakai-hermes-public-key:/run/secrets/hermes:ro
     read_only: true
     tmpfs:
       - /run/huakai-hermes:rw,noexec,nosuid,nodev,size=128m,uid=10101,gid=10101,mode=0700
@@ -162,6 +166,34 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  # 宿主密钥保持 0700/0400；一次性初始化器分别复制并改属主，避免非 root
+  # gateway/runner 因绑定挂载继承宿主 UID 而无法读取，也不把私钥放宽为全机可读。
+  hermes-key-init:
+    image: postgres:16-alpine
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        rm -f /gateway/private.pem /gateway/private.pem.new /runner/public.pem /runner/public.pem.new
+        if [ ! -f /source/private.pem ] || [ ! -f /source/public.pem ]; then
+          exit 0
+        fi
+        umask 077
+        cp /source/private.pem /gateway/private.pem.new
+        chown 10001:10001 /gateway/private.pem.new
+        chmod 0400 /gateway/private.pem.new
+        mv /gateway/private.pem.new /gateway/private.pem
+        cp /source/public.pem /runner/public.pem.new
+        chown 10101:10101 /runner/public.pem.new
+        chmod 0400 /runner/public.pem.new
+        mv /runner/public.pem.new /runner/public.pem
+    volumes:
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}:/source:ro
+      - huakai-hermes-private-key:/gateway
+      - huakai-hermes-public-key:/runner
+    networks:
+      - huakai-prod
 
   # 反向代理 + 自动 HTTPS(一键上线的 TLS 终结层)。Caddy 对 HUAKAI_PUBLIC_DOMAIN 自动签发/
   # 续期 Let's Encrypt 证书(需 80/443 对公网可达 + 域名解析到本机),并反代到内网 gateway:8080。
@@ -251,3 +283,5 @@ volumes:
   huakai-prod-pgdata:
   huakai-prod-caddy-data:
   huakai-prod-caddy-config:
+  huakai-hermes-private-key:
+  huakai-hermes-public-key:

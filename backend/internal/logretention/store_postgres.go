@@ -14,6 +14,7 @@ import (
 type tableSpec struct {
 	name                  string
 	timeColumn            string
+	orderColumn           string
 	fixedCategory         string
 	requiredNotNullColumn string
 }
@@ -26,7 +27,7 @@ var ordinaryLogTables = []tableSpec{
 	{name: "credential_audit_events", timeColumn: "ingested_at", fixedCategory: "security"},
 	{name: "hermes_audit_events", timeColumn: "ingested_at", fixedCategory: "operation"},
 	{name: "hermes_tool_calls", timeColumn: "ingested_at"},
-	{name: "hermes_mutation_recovery", timeColumn: "ingested_at", fixedCategory: "recovery", requiredNotNullColumn: "audit_committed_at"},
+	{name: "hermes_mutation_recovery", timeColumn: "ingested_at", orderColumn: "operation_id", fixedCategory: "recovery", requiredNotNullColumn: "audit_committed_at"},
 	{name: "oauth_refresh_audit_events", timeColumn: "ingested_at", fixedCategory: "security"},
 	{name: "pool_routing_audit_events", timeColumn: "ingested_at", fixedCategory: "operation"},
 	{name: "rate_limit_audit_events", timeColumn: "ingested_at", fixedCategory: "recovery"},
@@ -69,6 +70,11 @@ func (s *postgresStore) deleteExpiredBatch(ctx context.Context, spec tableSpec, 
 	}
 	tableName := pgx.Identifier{spec.name}.Sanitize()
 	timeColumn := pgx.Identifier{spec.timeColumn}.Sanitize()
+	orderColumnName := spec.orderColumn
+	if orderColumnName == "" {
+		orderColumnName = "id"
+	}
+	orderColumn := pgx.Identifier{orderColumnName}.Sanitize()
 	categoryExpression := "target." + pgx.Identifier{"log_category"}.Sanitize()
 	retentionGuard := ""
 	if spec.requiredNotNullColumn != "" {
@@ -87,7 +93,7 @@ WITH lease AS MATERIALIZED (
     FROM %s AS target
     CROSS JOIN lease
 	    WHERE lease.acquired AND target.%s < $2%s
-    ORDER BY target.%s, target.id
+	ORDER BY target.%s, target.%s
     LIMIT $3
     FOR UPDATE OF target SKIP LOCKED
 ), deleted AS (
@@ -109,7 +115,7 @@ SELECT lease.acquired,
        )
 FROM lease
 LEFT JOIN counts ON true
-	GROUP BY lease.acquired`, tableName, timeColumn, retentionGuard, timeColumn, tableName, categoryExpression)
+	GROUP BY lease.acquired`, tableName, timeColumn, retentionGuard, timeColumn, orderColumn, tableName, categoryExpression)
 
 	var result batchResult
 	var categoryJSON []byte

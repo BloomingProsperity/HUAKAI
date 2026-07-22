@@ -187,8 +187,11 @@ func TestAT_AUDIT_001_004_DeriveReceiptCrossesAuditBilling(t *testing.T) {
 	if len(query.args) != 2 || query.args[0] != requestID || query.args[1] != int64(42) {
 		t.Fatalf("source args mismatch: %#v", query.args)
 	}
-	if !strings.Contains(query.sql, "be.audit_request_id = ale.request_id") {
-		t.Fatalf("receipt SQL must join billing_events.audit_request_id to audit ledger request_id:\n%s", query.sql)
+	if !strings.Contains(query.sql, "be.audit_request_id = $1") || !strings.Contains(query.sql, "be.tenant_id = $2") {
+		t.Fatalf("回执输入必须按日志请求号和租户同时收窄账务事实:\n%s", query.sql)
+	}
+	if strings.Contains(query.sql, "audit_ledger_entries") {
+		t.Fatalf("输入源不得重复依赖 PostgreSQL 日志表，开发态内存日志也必须能生成回执:\n%s", query.sql)
 	}
 	if strings.Contains(query.sql, "logical_request_id") || strings.Contains(query.sql, "request_fingerprint = ale.request_id") {
 		t.Fatalf("receipt SQL must not join audit request_id to idempotency/fingerprint fields:\n%s", query.sql)
@@ -278,8 +281,8 @@ func TestAT_AUDIT_001_006_AbortReceiptZeroCost(t *testing.T) {
 		receipt.CachedTokens != 0 || receipt.RateTableSnapshotID != 9 {
 		t.Fatalf("abort receipt must be zero-cost with stable snapshot: %+v", receipt)
 	}
-	if !strings.Contains(query.sql, "claim_aborted") || !strings.Contains(query.sql, "be.audit_request_id = ale.request_id") {
-		t.Fatalf("abort receipt SQL must use billing audit_request_id and include claim_aborted:\n%s", query.sql)
+	if !strings.Contains(query.sql, "claim_aborted") || !strings.Contains(query.sql, "be.audit_request_id = $1") || !strings.Contains(query.sql, "be.tenant_id = $2") {
+		t.Fatalf("中止回执必须按日志请求号与租户读取中止账务事件:\n%s", query.sql)
 	}
 }
 

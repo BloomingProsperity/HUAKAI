@@ -242,13 +242,14 @@ func ObjectSchema(properties map[string]any, required ...string) map[string]any 
 	if properties == nil {
 		properties = map[string]any{}
 	}
-	requiredCopy := append([]string(nil), required...)
-	return map[string]any{
+	schema := map[string]any{
 		"type":                 "object",
 		"properties":           properties,
-		"required":             requiredCopy,
 		"additionalProperties": false,
+		"required":             append([]string{}, required...),
 	}
+	// 始终输出数组，避免中间层把缺省值序列化为 null 后导致严格上游拒绝整次请求。
+	return schema
 }
 
 // StringSchema 构造字符串参数合同。

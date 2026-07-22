@@ -729,6 +729,8 @@ func streamTerminatedReason(endClass StreamEndClass, delivered int64) string {
 	switch endClass {
 	case ClientDisconnect:
 		return "client_gone"
+	case OrchestratorCancel:
+		return "orchestrator_cancelled"
 	case FirstTokenTimeout, InterEventTimeout, TotalStreamTimeout:
 		return "upstream_timeout"
 	case UpstreamError5xx:

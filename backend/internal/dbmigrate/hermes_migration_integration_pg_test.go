@@ -20,8 +20,8 @@ func TestHermes服务主体日志迁移可往返(t *testing.T) {
 	ctx := context.Background()
 	dsn := createTemporaryMigrationDatabase(t, ctx, baseDSN, "huakai_hermes_principal_roundtrip")
 	runner := newEmbeddedMigrationRunner(t, dsn)
-	if err := runner.Migrate(217); err != nil {
-		t.Fatalf("迁移到 0217：%v", err)
+	if err := runner.Migrate(218); err != nil {
+		t.Fatalf("迁移到 0218：%v", err)
 	}
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
@@ -58,6 +58,11 @@ INSERT INTO hermes_tool_calls (tenant_id, actor_source, actor_id, actor_role, to
 VALUES ($1, 'session', 9001, 'platform_admin', 'log_analyze', 'ok')`, tenantID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := conn.Exec(ctx, `
+INSERT INTO hermes_settings (tenant_id, user_id, enabled, api_source, model_key)
+VALUES ($1, $2, FALSE, 'external_openai_compatible', '')`, tenantID, userID); err != nil {
+		t.Fatalf("0218 应允许写入外部 OpenAI 兼容来源：%v", err)
+	}
 
 	if err := runner.Migrate(211); err != nil {
 		t.Fatalf("带 Hermes 日志回退到 0211：%v", err)
@@ -75,7 +80,7 @@ VALUES ($1, 'session', 9001, 'platform_admin', 'log_analyze', 'ok')`, tenantID);
 	if users != 0 || audits != 0 || tools != 0 {
 		t.Fatalf("回退残留：users=%d audits=%d tools=%d", users, audits, tools)
 	}
-	if err := runner.Migrate(217); err != nil {
-		t.Fatalf("回退后重升到 0217：%v", err)
+	if err := runner.Migrate(218); err != nil {
+		t.Fatalf("回退后重升到 0218：%v", err)
 	}
 }

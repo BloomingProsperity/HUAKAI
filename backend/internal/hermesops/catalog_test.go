@@ -79,6 +79,19 @@ func TestCatalog复制JSONSchema(t *testing.T) {
 	}
 }
 
+func TestCatalog复制后保留空Required数组(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register(okSpec("empty_required", RoleTenantOperator)); err != nil {
+		t.Fatalf("注册失败：%v", err)
+	}
+
+	catalog := reg.CatalogForRole(RoleTenantOperator, false)
+	required, ok := catalog[0].InputSchema["required"].([]string)
+	if !ok || required == nil || len(required) != 0 {
+		t.Fatalf("目录深拷贝后 required 必须保持非 nil 空数组：%+v", catalog[0].InputSchema)
+	}
+}
+
 func TestRegistry拒绝重复名和坏Schema(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.Register(okSpec("same", RoleTenantOperator)); err != nil {

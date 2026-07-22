@@ -23,6 +23,37 @@ import (
 
 var errCompletionPricingUnavailable = errors.New("gatewayhttp: pricing unavailable")
 
+func completionPricingFailureClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(err.Error())
+	for _, candidate := range []struct {
+		contains string
+		class    string
+	}{
+		{"context canceled", "context_canceled"},
+		{"deadline exceeded", "context_deadline"},
+		{"rate table source not configured", "rate_table_source_unconfigured"},
+		{"billing policy version empty", "billing_policy_version_empty"},
+		{"rate table version", "rate_table_read_failed"},
+		{"rate table missing model", "rate_table_model_missing"},
+		{"cache_creation_5m rate missing", "cache_creation_5m_rate_missing"},
+		{"cache_creation_1h rate missing", "cache_creation_1h_rate_missing"},
+		{"cache_creation rate missing", "cache_creation_rate_missing"},
+		{"cache_read rate missing", "cache_read_rate_missing"},
+		{"output rate missing", "output_rate_missing"},
+		{"input rate missing", "input_rate_missing"},
+		{"group_ratio must be positive", "group_ratio_invalid"},
+		{"model_multiplier must be positive", "model_multiplier_invalid"},
+	} {
+		if strings.Contains(text, candidate.contains) {
+			return candidate.class
+		}
+	}
+	return "pricing_unavailable_unknown"
+}
+
 type completionUsageForCost struct {
 	InputTokens           int
 	OutputTokens          int

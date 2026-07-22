@@ -872,8 +872,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if err != nil {
 		return nil, err
 	}
-	// 模型提议开关默认关闭；部署者显式启用前，模型不能提议任何改动型工具。
-	hermesProposeEnabled, err := hermesBoolEnabledDefaultFalse(hermesLLMProposeEnabledEnv)
+	// 模型只生成待确认提议，默认开启；真正执行仍受独立管理员确认与变更总开关约束。
+	hermesProposeEnabled, err := hermesBoolEnabledDefaultTrue(hermesLLMProposeEnabledEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -887,7 +887,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			zap.String("knob", hermesLLMToolLoopEnabledEnv+"=false"))
 	}
 	if hermesProposeEnabled {
-		// 默认关的特权面:LLM-提议路径被激活时大声记日志,使激活可审计。LLM 现在可以提议可逆的
+		// LLM 提议路径激活时明确记日志，使激活可观测。LLM 只能提议可逆的
 		// B 级 mutating 工具(仅 dry-run);执行仍需一个独立的 OPERATOR 确认——提议本身从不 mutate。
 		logger.Warn("Hermes LLM-propose path ENABLED at runtime — the assistant may now propose Proposable mutating tools (dry-run + operator confirm required to execute)",
 			zap.String("knob", hermesLLMProposeEnabledEnv+"=true"))
@@ -1953,9 +1953,8 @@ const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
 // 工具循环,同时普通的 /v1/hermes/chat 仍持续流式。
 const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
 
-// hermesLLMProposeEnabledEnv 是默认关闭的模型提议开关。未设置或为 false 时，内部处理器
-// 在空跑解析前拒绝 mode=propose 请求，模型不能提议改动型工具。设为 true 后，助手只能提议
-// 标记为 Proposable 的可逆工具，真正执行仍需运营者独立确认，并继续受工具循环总开关约束。
+// hermesLLMProposeEnabledEnv 控制模型提议能力。默认开启时，助手只能提议标记为
+// Proposable 的可逆工具，真正执行仍需运营者独立确认，并继续受工具循环和变更总开关约束。
 const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
 
 // subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的启用开关。默认 FALSE:
@@ -1978,25 +1977,11 @@ func subscriptionAutoRenewEnabledFromEnv(envName string) (bool, error) {
 	return enabled, nil
 }
 
-// hermesBoolEnabledDefaultFalse 解析默认关闭的运行时布尔开关。未设置或为空时返回 false，
-// 合法布尔值按配置生效；格式错误会阻止启动，避免静默启用部署者未授权的特权能力。
-func hermesBoolEnabledDefaultFalse(envName string) (bool, error) {
-	raw := strings.TrimSpace(os.Getenv(envName))
-	if raw == "" {
-		return false, nil
-	}
-	enabled, err := strconv.ParseBool(raw)
-	if err != nil {
-		return false, fmt.Errorf("%s must be a boolean, got %q: %w", envName, raw, err)
-	}
-	return enabled, nil
-}
-
 // hermesBoolEnabledDefaultTrue 解析一个默认 TRUE 的运行时布尔 knob,
 // 镜像 hermesAdminOnlyFromEnv 的解析风格:unset/空 => 默认(true、启用);
 // 任何可解析的 bool 被采纳;格式错误的值是一个 fail-loud 启动错误
 // (绝不静默回退而禁用强制,或更糟地悄悄重新启用一个 operator 本想关掉的
-// 特权面)。用于 Hermes 的两个运行时总开关。
+// 特权面)。用于 Hermes 的运行时开关。
 func hermesBoolEnabledDefaultTrue(envName string) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(envName))
 	if raw == "" {

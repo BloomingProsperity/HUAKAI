@@ -88,6 +88,9 @@ func TestMCP目录只暴露当前角色可用能力(t *testing.T) {
 	if !strings.Contains(body, `"name":"tenant_read"`) || strings.Contains(body, "platform_read") || strings.Contains(body, "platform_proposal") {
 		t.Fatalf("租户管理员目录越权或缺项：%s", body)
 	}
+	if !strings.Contains(body, `"required":[]`) || strings.Contains(body, `"required":null`) {
+		t.Fatalf("MCP 目录必须把无必填字段编码为空数组：%s", body)
+	}
 }
 
 func TestMCP只读调用钉死租户和管理员并写日志(t *testing.T) {

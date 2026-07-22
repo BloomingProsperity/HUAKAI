@@ -52,9 +52,9 @@ func cloneJSONMap(in map[string]any) map[string]any {
 		case map[string]any:
 			out[key] = cloneJSONMap(typed)
 		case []string:
-			out[key] = append([]string(nil), typed...)
+			out[key] = append([]string{}, typed...)
 		case []any:
-			out[key] = append([]any(nil), typed...)
+			out[key] = append([]any{}, typed...)
 		default:
 			out[key] = typed
 		}

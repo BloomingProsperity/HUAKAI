@@ -1,12 +1,36 @@
 package main
 
 import (
+	"os"
 	"testing"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 )
+
+func TestHermesProposeKnobDefaultsOnAndCanBeDisabled(t *testing.T) {
+	const envName = hermesLLMProposeEnabledEnv
+	old, existed := os.LookupEnv(envName)
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(envName, old)
+		} else {
+			_ = os.Unsetenv(envName)
+		}
+	})
+
+	_ = os.Unsetenv(envName)
+	enabled, err := hermesBoolEnabledDefaultTrue(envName)
+	if err != nil || !enabled {
+		t.Fatalf("未配置时提议能力应默认开启: enabled=%v err=%v", enabled, err)
+	}
+	_ = os.Setenv(envName, "false")
+	enabled, err = hermesBoolEnabledDefaultTrue(envName)
+	if err != nil || enabled {
+		t.Fatalf("部署者显式关闭必须生效: enabled=%v err=%v", enabled, err)
+	}
+}
 
 func TestEffectiveHermesProposeDisabledWhenMutatingDisabled(t *testing.T) {
 	// HERMES-IP-01:PROPOSE=true + MUTATING=false 不能让 LLM 继续看到可提议 mutating

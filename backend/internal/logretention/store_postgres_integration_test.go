@@ -142,11 +142,15 @@ func createIsolatedLogTables(t *testing.T, ctx context.Context, tx pgx.Tx) {
 		if table.requiredNotNullColumn != "" {
 			extraColumn = ", " + pgx.Identifier{table.requiredNotNullColumn}.Sanitize() + " TIMESTAMPTZ"
 		}
+		primaryKey := "id BIGSERIAL PRIMARY KEY"
+		if table.orderColumn != "" {
+			primaryKey = pgx.Identifier{table.orderColumn}.Sanitize() + " UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+		}
 		query := fmt.Sprintf(`CREATE TEMP TABLE %s (
-	    id BIGSERIAL PRIMARY KEY,
+	    %s,
 	    ingested_at TIMESTAMPTZ NOT NULL,
 	    log_category TEXT NOT NULL%s
-	) ON COMMIT DROP`, pgx.Identifier{table.name}.Sanitize(), extraColumn)
+	) ON COMMIT DROP`, pgx.Identifier{table.name}.Sanitize(), primaryKey, extraColumn)
 		if _, err := tx.Exec(ctx, query); err != nil {
 			t.Fatalf("创建隔离日志表 %s: %v", table.name, err)
 		}

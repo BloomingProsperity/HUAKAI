@@ -43,6 +43,8 @@ services:
     depends_on:
       hermes-egress:
         condition: service_healthy
+      hermes-key-init:
+        condition: service_completed_successfully
     environment:
       HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/public.pem
       HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-dev-local}
@@ -55,7 +57,7 @@ services:
     ports:
       - "8801:8801"
     volumes:
-      - ./deploy/hermes-runner/dev-keys/public.pem:/run/secrets/hermes/public.pem:ro
+      - huakai-hermes-public-key:/run/secrets/hermes:ro
     read_only: true
     tmpfs:
       - /run/huakai-hermes:rw,noexec,nosuid,nodev,size=128m,uid=10101,gid=10101,mode=0700
@@ -101,6 +103,29 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # runner 固定使用非 root UID；先把宿主公钥复制到对应属主的受控卷，宿主密钥
+  # 目录继续保持严格权限。
+  hermes-key-init:
+    image: postgres:16-alpine
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        rm -f /runner/public.pem /runner/public.pem.new
+        if [ ! -f /source/public.pem ]; then
+          exit 0
+        fi
+        umask 077
+        cp /source/public.pem /runner/public.pem.new
+        chown 10101:10101 /runner/public.pem.new
+        chmod 0400 /runner/public.pem.new
+        mv /runner/public.pem.new /runner/public.pem
+    volumes:
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./deploy/hermes-runner/dev-keys}:/source:ro
+      - huakai-hermes-public-key:/runner
+    networks:
+      - huakai-dev
+
 # Explicit network name avoids the `<project-name>_default` fragility
 # when COMPOSE_PROJECT_NAME / `-p` differs from the default 'backend'.
 networks:
@@ -109,3 +134,4 @@ networks:
 
 volumes:
   huakai-pgdata:
+  huakai-hermes-public-key:

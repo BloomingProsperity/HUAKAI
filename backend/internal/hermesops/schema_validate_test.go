@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestObjectSchema无必填字段时输出空Required数组(t *testing.T) {
+	schema := ObjectSchema(nil)
+	required, ok := schema["required"].([]string)
+	if !ok || required == nil || len(required) != 0 {
+		t.Fatalf("无必填字段时 required 必须是非 nil 空数组：%+v", schema)
+	}
+	if err := ValidateInputSchema(schema); err != nil {
+		t.Fatalf("空 required 数组的对象合同应保持有效：%v", err)
+	}
+}
+
 func TestValidateToolArguments严格执行合同(t *testing.T) {
 	schema := ObjectSchema(map[string]any{
 		"account_id": PositiveIntegerSchema("账号 ID"),
