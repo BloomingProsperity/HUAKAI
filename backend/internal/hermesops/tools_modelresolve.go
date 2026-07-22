@@ -35,9 +35,9 @@ func ModelResolveDiagnoseSpec(deps ModelResolveDiagnoseDeps) ToolSpec {
 		Description:  "Diagnose how a public model alias resolves & routes within the caller's tenant: target canonical/provider model, which upstream pool groups it binds to, each binding's priority/weight/selection_mode/rpm-tpm limits/fallback, plus capabilities/context_window/protocol_family. READ ONLY. Never returns system prompts, sensitive-word lists, or param-override values.",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"model": "public model alias to diagnose (e.g. claude-3-5-sonnet, required)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"model": NonEmptyStringSchema("要诊断的公开模型名或别名"),
+		}, "model"),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.Resolve == nil {
 				return ToolResult{}, ErrDependencyUnwired

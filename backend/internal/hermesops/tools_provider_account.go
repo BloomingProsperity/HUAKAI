@@ -13,9 +13,6 @@ type ProviderAccountListDeps struct {
 	List func(ctx context.Context, params admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
 }
 
-// providerAccountListLimit 是单次列出账号上限(防超大读;账号多的租户可后续加分页参数)。
-const providerAccountListLimit = 200
-
 // ProviderAccountListSpec 构建只读 provider_account_list 工具:列出**整租户**的上游 provider account
 // 清册及其状态/路由配置,补 account_health_diagnose(单账号)缺的"我有哪些账号、各自什么状态"。可选 state
 // 过滤(active/disabled/rate_limited/overloaded/temp_unschedulable/error)。租户 scope 取自已鉴权
@@ -32,12 +29,14 @@ func ProviderAccountListSpec(deps ProviderAccountListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolProviderAccountList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's upstream provider accounts (inventory) with per-account enabled/health/credential/rate-limit state, routing priority/weight/concurrency, probe + refresh signals. Optionally filter by state (active/disabled/rate_limited/overloaded/temp_unschedulable/error). Tenant-wide complement to per-account account_health_diagnose. READ ONLY. Never returns credentials/tokens.",
+		Description:  "按账号 ID 游标分页列出当前租户的上游账号，可按状态筛选；只读且不返回凭据。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"state": "filter by account state (active/disabled/rate_limited/overloaded/temp_unschedulable/error, optional)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"state":    StringSchema("按上游账号状态筛选", "active", "disabled", "rate_limited", "overloaded", "temp_unschedulable", "error"),
+			"after_id": BoundedIntegerSchema("上一页最后一个账号 ID，首页传 0 或省略", 0, maxToolCursorID),
+			"limit":    BoundedIntegerSchema("本页最多返回的账号数", 1, maxToolPageLimit),
+		}),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
@@ -45,16 +44,36 @@ func ProviderAccountListSpec(deps ProviderAccountListDeps) ToolSpec {
 			// 未知/缺失 state → "":SQL 把 '' 当 no-filter;任意非法值只会匹配不到任何 OR 分支返回空,
 			// 不构成注入(参数已绑定)。
 			state, _ := ArgString(req.Args, "state")
+			limit := defaultToolPageLimit
+			if raw, ok := req.Args["limit"]; ok {
+				value, valid := integerValue(raw)
+				if !valid || value < 1 || value > maxToolPageLimit {
+					return ToolResult{}, ErrInvalidArgs
+				}
+				limit = int(value)
+			}
+			var afterID int64
+			if raw, ok := req.Args["after_id"]; ok {
+				value, valid := integerValue(raw)
+				if !valid || value < 0 {
+					return ToolResult{}, ErrInvalidArgs
+				}
+				afterID = value
+			}
 			rows, err := deps.List(ctx, admindb.ListAdminProviderAccountsParams{
 				TenantID:    req.TenantID,
-				AfterID:     0,
-				LimitCount:  providerAccountListLimit,
+				AfterID:     afterID,
+				LimitCount:  int32(limit + 1),
 				PoolGroupID: 0,
 				StateFilter: state,
 				TagFilter:   "",
 			})
 			if err != nil {
 				return ToolResult{}, err
+			}
+			hasMore := len(rows) > limit
+			if hasMore {
+				rows = rows[:limit]
 			}
 			items := make([]map[string]any, 0, len(rows))
 			byHealthState := map[string]int{}
@@ -66,11 +85,19 @@ func ProviderAccountListSpec(deps ProviderAccountListDeps) ToolSpec {
 				}
 				items = append(items, providerAccountShape(a))
 			}
+			var nextAfterID any
+			if hasMore && len(rows) > 0 {
+				nextAfterID = rows[len(rows)-1].ID
+			}
 			return ToolResult{Summary: map[string]any{
 				"account_count":   len(rows),
 				"enabled_count":   enabledCount,
 				"by_health_state": intCountMap(byHealthState),
 				"items":           items,
+				"page": map[string]any{
+					"limit": limit, "after_id": afterID, "returned": len(rows),
+					"has_more": hasMore, "next_after_id": nextAfterID,
+				},
 			}}, nil
 		},
 	}

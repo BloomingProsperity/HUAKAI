@@ -48,7 +48,7 @@ func TestAutoInject_StringSystemAboveThreshold_GetsWrappedWithCC(t *testing.T) {
 func TestAutoInject_StringSystemBelowThreshold_Untouched(t *testing.T) {
 	short := "You are helpful."
 	body, _ := json.Marshal(map[string]any{
-		"system": short,
+		"system":   short,
 		"messages": []any{},
 	})
 	out := AutoInjectSystemCacheControl(body, 0)
@@ -217,7 +217,7 @@ func TestAutoInject_ArrayLastBlockNonObject_NoPanic(t *testing.T) {
 		}
 	}()
 	out := AutoInjectSystemCacheControl(body, 0)
-	if out == nil || len(out) == 0 {
+	if len(out) == 0 {
 		t.Errorf("应返回 body")
 	}
 }

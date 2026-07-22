@@ -2,7 +2,9 @@ package hermesops
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 )
 
 // roleRank 把 admin 角色从最低到最高权威排序。调用方的 rank >= 工具要求角色的 rank 时
@@ -28,7 +30,8 @@ func RoleAllowed(actorRole, requiredRole string) bool {
 // Registry 持有已注册的诊断工具,并执行 RBAC + dispatch。它在接线时构造一次,之后只读
 // (无并发注册),所以请求路径上无需加锁。
 type Registry struct {
-	tools map[string]ToolSpec
+	tools           map[string]ToolSpec
+	registrationErr error
 }
 
 // NewRegistry 构造一个空 registry。
@@ -38,11 +41,36 @@ func NewRegistry() *Registry {
 
 // Register 加入一个 spec。重名会覆盖(后写者胜),与模块 registry 约定一致;接线时每个工具
 // 恰好注册一次。
-func (r *Registry) Register(spec ToolSpec) {
-	if r == nil || spec.Name == "" {
-		return
+func (r *Registry) Register(spec ToolSpec) error {
+	if r == nil {
+		return fmt.Errorf("%w: 注册表为空", ErrInvalidToolSpec)
+	}
+	spec.Name = strings.TrimSpace(spec.Name)
+	if err := ValidateToolSpec(spec); err != nil {
+		r.rememberRegistrationError(err)
+		return err
+	}
+	if _, exists := r.tools[spec.Name]; exists {
+		err := fmt.Errorf("%w: %s", ErrDuplicateTool, spec.Name)
+		r.rememberRegistrationError(err)
+		return err
 	}
 	r.tools[spec.Name] = spec
+	return nil
+}
+
+func (r *Registry) rememberRegistrationError(err error) {
+	if r.registrationErr == nil {
+		r.registrationErr = err
+	}
+}
+
+// Validate 把注册阶段捕获的首个错误交给组合根，使网关在监听端口前失败。
+func (r *Registry) Validate() error {
+	if r == nil {
+		return fmt.Errorf("%w: 注册表为空", ErrInvalidToolSpec)
+	}
+	return r.registrationErr
 }
 
 // Get 返回一个已注册的 spec。
@@ -81,10 +109,9 @@ func (r *Registry) Authorize(name, actorRole string) (ToolSpec, error) {
 	return spec, nil
 }
 
-// Run 先授权,再 dispatch 一个 READ-ONLY(只读)工具。它是唯一的只读 dispatch 入口;
-// 永不绕过角色下限,并且会 REFUSE(拒绝)一个 mutating 工具(ErrNotMutating),从而让状态
-// 改动永远无法从只读路径偷溜进来。租户作用域授权是调用方的责任(在 Run 之前经
-// CanIssueForTenant 强制执行)——Run 信任 req.TenantID 已经过作用域校验。
+// Run 先授权，再派发一个只读工具。它是唯一的只读派发入口，不绕过角色下限，
+// 并拒绝改动型工具，防止状态变更进入只读路径。调用方必须先用 CanIssueForTenant
+// 校验租户作用域，Run 信任 req.TenantID 已完成该校验。
 func (r *Registry) Run(ctx context.Context, name string, req ToolRequest) (ToolResult, error) {
 	spec, err := r.Authorize(name, req.Role)
 	if err != nil {
@@ -101,9 +128,8 @@ func (r *Registry) Run(ctx context.Context, name string, req ToolRequest) (ToolR
 	return spec.Run(ctx, req)
 }
 
-// AuthorizeMutating 在 NOT(不)运行的前提下授权一个 MUTATING 工具的角色下限,并拒绝只读
-// 工具(ErrNotMutating),从而让 confirm 路径无法被指向某个诊断工具。租户作用域由调用方
-// 单独强制执行(H1 中间件 + 每工具 Resolve 对目标行租户的再次校验)。
+// AuthorizeMutating 只校验改动型工具的角色下限，不执行工具，并拒绝只读工具，
+// 防止确认路径误指向诊断工具。调用方先校验身份租户作用域，各工具的 Resolve 再复核目标行租户。
 func (r *Registry) AuthorizeMutating(name, actorRole string) (ToolSpec, error) {
 	spec, err := r.Authorize(name, actorRole)
 	if err != nil {
@@ -118,12 +144,9 @@ func (r *Registry) AuthorizeMutating(name, actorRole string) (ToolSpec, error) {
 	return spec, nil
 }
 
-// ResolveProposal 为 LLM-propose(LLM 提议)路径授权 + 以 DRY-RUN(空跑)方式 resolve 一个
-// MUTATING 工具,并且 ONLY(只)返回只读的 MutationPlan。它故意既不返回 ToolSpec、也不返回任何
-// 指向 Mutate 的句柄,所以调用方(对话式 internal tool handler)没有任何通往状态改动的路径——
-// LLM-propose 路径在 STRUCTURALLY(结构上)就是只读的(门控来自缺少 Mutate 句柄,而非某个调用方
-// 可跳过的运行时检查)。真正的 mutation 仅在之后、当 OPERATOR(运营者)经独立的、需运营者认证的
-// H1 confirm 路径确认时才运行。
+// ResolveProposal 为模型提议路径授权，并以空跑方式解析改动型工具，只返回只读的 MutationPlan。
+// 它不暴露 ToolSpec 或 Mutate 句柄，因此调用方在结构上无法改动状态。真正的变更只能由运营者
+// 通过独立认证的确认入口触发。
 //
 // 它会 fail-closed 拒绝:
 //   - 只读工具(ErrNotMutating,经 AuthorizeMutating);
@@ -141,7 +164,7 @@ func (r *Registry) ResolveProposal(ctx context.Context, name, actorRole string, 
 	if !spec.Proposable {
 		return MutationPlan{}, ErrNotProposable
 	}
-	// 仅做 READ-ONLY 的 dry-run。本路径绝不引用 spec.Mutate;状态改动只在运营者确认时、
+	// 仅做只读空跑。本路径不引用 spec.Mutate，状态改动只在运营者确认时、
 	// 经另一个入口发生。
 	return spec.Resolve(ctx, req)
 }

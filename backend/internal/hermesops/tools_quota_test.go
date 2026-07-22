@@ -44,8 +44,8 @@ func TestQuotaPolicyListSpec(t *testing.T) {
 			if params.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7", params.TenantID)
 			}
-			if params.PageLimit != quotaPolicyListLimit {
-				t.Fatalf("PageLimit 应为 quotaPolicyListLimit=%d, got %d", quotaPolicyListLimit, params.PageLimit)
+			if params.PageLimit != defaultToolPageLimit+1 || params.PageOffset != 0 {
+				t.Fatalf("配额分页参数=%+v，期望 limit=%d offset=0", params, defaultToolPageLimit+1)
 			}
 			return fakeQuotaPolicies(), nil
 		},

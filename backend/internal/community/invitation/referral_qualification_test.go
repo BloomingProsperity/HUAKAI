@@ -117,10 +117,8 @@ func TestReferralRewardMigrationContracts(t *testing.T) {
 }
 
 type qualificationReferral struct {
-	id                  int64
 	tenantID            int64
 	refereeUserID       int64
-	referrerUserID      int64
 	status              string
 	firstBillingEventID int64
 	qualifiedAt         time.Time

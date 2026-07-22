@@ -74,6 +74,34 @@ func (s *MemoryStore) ListChannelHealth(_ context.Context, tenantID int64, limit
 	return append([]ChannelHealthState(nil), out...), nil
 }
 
+func (s *MemoryStore) ListChannelHealthByProviderAccount(_ context.Context, tenantID, providerAccountID int64, limit, offset int) ([]ChannelHealthState, error) {
+	if s == nil {
+		return nil, ErrNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ChannelHealthState, 0)
+	for _, rec := range s.records {
+		if rec.Key.TenantID == tenantID && rec.Key.ProviderAccountID == providerAccountID {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].Key.StableChannelID() < out[j].Key.StableChannelID()
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	if offset >= len(out) {
+		return []ChannelHealthState{}, nil
+	}
+	out = out[offset:]
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return append([]ChannelHealthState(nil), out...), nil
+}
+
 func (s *MemoryStore) GetChannelHealth(_ context.Context, tenantID int64, channelID string) (ChannelHealthState, []AuditEvent, error) {
 	if s == nil {
 		return ChannelHealthState{}, nil, ErrNotFound

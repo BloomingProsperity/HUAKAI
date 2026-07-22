@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 )
 
 func TestForwarderClientAdapterFinalizeCalledAndChunksWritten(t *testing.T) {
@@ -254,6 +255,12 @@ func TestForwarderClientStateInitializedByAdapterType(t *testing.T) {
 		t.Fatalf("openai_responses client state type=%T", got)
 	}
 
+	if got := (&StreamForwarder{ClientAdapter: &protogemini.GeminiClient{}}).newClientState(); got == nil {
+		t.Fatal("gemini client state is nil")
+	} else if _, ok := got.(*protogemini.GeminiClientStreamState); !ok {
+		t.Fatalf("gemini client state type=%T", got)
+	}
+
 	if got := (&StreamForwarder{}).newClientState(); got != nil {
 		t.Fatalf("nil ClientAdapter client state=%T want nil", got)
 	}
@@ -402,6 +409,8 @@ func (a *recordingForwarderClientAdapter) CanonicalToClientResponse(_ context.Co
 	a.bufferedCanonical = canonical
 	return a.bufferedBody, nil, nil
 }
+
+func (*recordingForwarderClientAdapter) NewClientStreamState() any { return nil }
 
 func (a *recordingForwarderClientAdapter) CanonicalEventToClientChunk(_ context.Context, _ any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	a.eventCalls++

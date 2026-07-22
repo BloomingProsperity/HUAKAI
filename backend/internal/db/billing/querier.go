@@ -221,7 +221,7 @@ type Querier interface {
 	ReleaseSlotAcquisition(ctx context.Context, arg ReleaseSlotAcquisitionParams) error
 	// Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
 	// 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
-	// $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
+	// 参数使用具名绑定；acquisition_token 由目标列推导 UUID 类型并套用统一类型覆盖。
 	ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error)
 	// F-OBS-001 balance hold queries for durable atomic debit.
 	ReserveBalanceHold(ctx context.Context, arg ReserveBalanceHoldParams) (ReserveBalanceHoldRow, error)

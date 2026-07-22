@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -253,3 +254,109 @@ func NewClientLossEntry(severity ProtocolLossSeverity, reason, code string, capa
 		Direction:  string(DirectionClientToCanonical),
 	}, nil
 }
+
+var (
+	defaultClientAdapterRegistryOnce sync.Once
+	defaultClientAdapterRegistry     *ClientAdapterRegistry
+	defaultClientAdapterFactoriesMu  sync.Mutex
+	defaultClientAdapterFactories    []defaultClientAdapterFactory
+)
+
+type defaultClientAdapterFactory struct {
+	protocol ClientProtocol
+	factory  func() ClientAdapter
+}
+
+// RegisterDefaultClientAdapterFactory 注册协议子包提供的默认客户端适配器。
+// 必须在 DefaultClientAdapterRegistry 第一次使用前调用。
+func RegisterDefaultClientAdapterFactory(protocol ClientProtocol, factory func() ClientAdapter) {
+	if protocol == "" || factory == nil {
+		panic("proto: invalid default client adapter factory")
+	}
+	defaultClientAdapterFactoriesMu.Lock()
+	defer defaultClientAdapterFactoriesMu.Unlock()
+	defaultClientAdapterFactories = append(defaultClientAdapterFactories, defaultClientAdapterFactory{
+		protocol: protocol,
+		factory:  factory,
+	})
+}
+
+// DefaultClientAdapterRegistry 返回只读复用的默认适配器注册表。
+func DefaultClientAdapterRegistry() *ClientAdapterRegistry {
+	defaultClientAdapterRegistryOnce.Do(func() {
+		reg := NewClientAdapterRegistry()
+		mustRegister(reg, ClientProtocolAnthropicMessages, &AnthropicMessagesClient{})
+		mustRegister(reg, ClientProtocolOpenAIChat, &OpenAIChatClient{})
+		mustRegister(reg, ClientProtocolOpenAIResponses, &OpenAIResponsesClient{})
+		defaultClientAdapterFactoriesMu.Lock()
+		factories := append([]defaultClientAdapterFactory(nil), defaultClientAdapterFactories...)
+		defaultClientAdapterFactoriesMu.Unlock()
+		for _, f := range factories {
+			mustRegister(reg, f.protocol, f.factory())
+		}
+		defaultClientAdapterRegistry = reg
+	})
+	return defaultClientAdapterRegistry
+}
+
+func mustRegister(reg *ClientAdapterRegistry, protocol ClientProtocol, adapter ClientAdapter) {
+	if err := reg.Register(protocol, adapter); err != nil {
+		panic("proto: DefaultClientAdapterRegistry register " + string(protocol) + ": " + err.Error())
+	}
+}
+
+// ClientProtocolByIngressPath 根据入口路径确定客户端协议，未知路径不做默认回退。
+func ClientProtocolByIngressPath(path string) (ClientProtocol, bool) {
+	switch path {
+	case "/v1/chat/completions":
+		return ClientProtocolOpenAIChat, true
+	case "/v1/responses", "/v1/native/openai/responses", "/backend-api/codex/responses":
+		return ClientProtocolOpenAIResponses, true
+	case "/v1/messages":
+		return ClientProtocolAnthropicMessages, true
+	default:
+		if path == "/v1beta/models" || strings.HasPrefix(path, "/v1beta/models/") {
+			return ClientProtocolGemini, true
+		}
+		return "", false
+	}
+}
+
+// HCSF 是 HCSFEnvelope 的兼容别名，供适配器接口保持稳定。
+type HCSF = HCSFEnvelope
+
+// ClientAdapter 负责客户端协议与规范信封之间的转换。
+type ClientAdapter interface {
+	RequestToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error)
+	CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error)
+	NewClientStreamState() any
+	CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []ProtocolLossEntry, error)
+	FinalizeClientStream(ctx context.Context, state any) ([][]byte, error)
+}
+
+// UpstreamAdapter 负责规范信封与上游协议之间的转换。
+type UpstreamAdapter interface {
+	CanonicalToProviderRequest(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error)
+	ProviderResponseToCanonical(ctx context.Context, raw []byte) (*HCSF, []ProtocolLossEntry, error)
+	ProviderEventToCanonicalEvents(ctx context.Context, providerEvt any, state any) ([]any, []ProtocolLossEntry, error)
+	FinalizeUpstreamStream(ctx context.Context, state any) ([]any, error)
+}
+
+// Verdict 表示能力转换的结果等级。
+type Verdict string
+
+const (
+	VerdictPreserved   Verdict = "PRESERVED"
+	VerdictLossy       Verdict = "LOSSY"
+	VerdictUnsupported Verdict = "UNSUPPORTED"
+)
+
+// Direction 表示协议损失条目的转换方向。
+type Direction string
+
+const (
+	DirectionClientToCanonical   Direction = "client_to_canonical"
+	DirectionCanonicalToUpstream Direction = "canonical_to_upstream"
+	DirectionUpstreamToCanonical Direction = "upstream_to_canonical"
+	DirectionCanonicalToClient   Direction = "canonical_to_client"
+)

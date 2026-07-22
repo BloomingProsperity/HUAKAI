@@ -28,7 +28,8 @@ SELECT
     billing_policy_version,
     requested_model,
     request_fingerprint,
-    status
+    status,
+    billing_effect
 FROM billing_ledger_claims
 WHERE id = $1 AND tenant_id = $2 AND acquisition_token = $3 AND status = 'reserving'
 FOR UPDATE
@@ -54,6 +55,7 @@ type GetClaimForSettleRow struct {
 	RequestedModel       string          `db:"requested_model" json:"requested_model"`
 	RequestFingerprint   string          `db:"request_fingerprint" json:"request_fingerprint"`
 	Status               string          `db:"status" json:"status"`
+	BillingEffect        string          `db:"billing_effect" json:"billing_effect"`
 }
 
 // F-OBS-001 Tx2 Settler queries.
@@ -80,6 +82,7 @@ func (q *Queries) GetClaimForSettle(ctx context.Context, arg GetClaimForSettlePa
 		&i.RequestedModel,
 		&i.RequestFingerprint,
 		&i.Status,
+		&i.BillingEffect,
 	)
 	return i, err
 }
@@ -90,9 +93,10 @@ INSERT INTO billing_events (
     actual_cost, actual_cost_signed,
     end_class, usage_source,
     stream_state, delivered_token_count, stream_terminated_reason,
-    fingerprint, audit_request_id
+    fingerprint, audit_request_id, billing_effect
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    COALESCE(NULLIF($13::text, ''), 'user_charge')
 )
 RETURNING id, occurred_at
 `
@@ -110,6 +114,7 @@ type InsertBillingEventParams struct {
 	StreamTerminatedReason *string         `db:"stream_terminated_reason" json:"stream_terminated_reason"`
 	Fingerprint            string          `db:"fingerprint" json:"fingerprint"`
 	AuditRequestID         *string         `db:"audit_request_id" json:"audit_request_id"`
+	BillingEffect          string          `db:"billing_effect" json:"billing_effect"`
 }
 
 type InsertBillingEventRow struct {
@@ -133,6 +138,7 @@ func (q *Queries) InsertBillingEvent(ctx context.Context, arg InsertBillingEvent
 		arg.StreamTerminatedReason,
 		arg.Fingerprint,
 		arg.AuditRequestID,
+		arg.BillingEffect,
 	)
 	var i InsertBillingEventRow
 	err := row.Scan(&i.ID, &i.OccurredAt)
@@ -193,7 +199,7 @@ INSERT INTO usage_records (
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
     requested_model, upstream_model, stream, snapshot_version, settlement_source,
     image_count, image_size, image_size_breakdown, ip_address, user_agent,
-    client_tool
+    client_tool, billing_effect
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -208,7 +214,7 @@ INSERT INTO usage_records (
     $32, $33, $34, $35, $36,
     $37, $38, $39, $40, $41,
     $42, $43, $44, $45, $46,
-    $47
+    $47, COALESCE(NULLIF($48::text, ''), 'user_charge')
 )
 RETURNING id
 `
@@ -261,6 +267,7 @@ type InsertUsageRecordParams struct {
 	IPAddress              *string            `db:"ip_address" json:"ip_address"`
 	UserAgent              *string            `db:"user_agent" json:"user_agent"`
 	ClientTool             *string            `db:"client_tool" json:"client_tool"`
+	BillingEffect          string             `db:"billing_effect" json:"billing_effect"`
 }
 
 // Spec §Tx2 step 12: write Usage Record into the same Tx as everything else.
@@ -315,6 +322,7 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 		arg.IPAddress,
 		arg.UserAgent,
 		arg.ClientTool,
+		arg.BillingEffect,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -324,10 +332,10 @@ func (q *Queries) InsertUsageRecord(ctx context.Context, arg InsertUsageRecordPa
 const releaseSlotAndDecrementInFlight = `-- name: ReleaseSlotAndDecrementInFlight :execrows
 WITH released AS (
     UPDATE pool_slot_acquisitions
-    SET status = $2,
+    SET status = $1::text,
         released_at = NOW(),
-        release_reason = $3
-    WHERE acquisition_token = $1 AND status = 'acquired'
+        release_reason = $2::text
+    WHERE acquisition_token = $3 AND status = 'acquired'
     RETURNING provider_account_id
 )
 UPDATE provider_accounts pa
@@ -337,16 +345,16 @@ WHERE r.provider_account_id = pa.id AND pa.in_flight_count > 0
 `
 
 type ReleaseSlotAndDecrementInFlightParams struct {
-	AcquisitionToken uuid.UUID `db:"acquisition_token" json:"acquisition_token"`
 	ReleaseStatus    string    `db:"release_status" json:"release_status"`
 	ReleaseReason    *string   `db:"release_reason" json:"release_reason"`
+	AcquisitionToken uuid.UUID `db:"acquisition_token" json:"acquisition_token"`
 }
 
 // Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
 // 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
-// $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
+// 参数使用具名绑定；acquisition_token 由目标列推导 UUID 类型并套用统一类型覆盖。
 func (q *Queries) ReleaseSlotAndDecrementInFlight(ctx context.Context, arg ReleaseSlotAndDecrementInFlightParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseSlotAndDecrementInFlight, arg.AcquisitionToken, arg.ReleaseStatus, arg.ReleaseReason)
+	result, err := q.db.Exec(ctx, releaseSlotAndDecrementInFlight, arg.ReleaseStatus, arg.ReleaseReason, arg.AcquisitionToken)
 	if err != nil {
 		return 0, err
 	}

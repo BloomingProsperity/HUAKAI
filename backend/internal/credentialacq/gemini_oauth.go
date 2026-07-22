@@ -46,12 +46,6 @@ func newGeminiPublicCLIOAuthExchanger(authMode string) geminiPublicCLIOAuthExcha
 	return geminiPublicCLIOAuthExchanger{authMode: strings.TrimSpace(authMode)}
 }
 
-// NewGeminiPublicCLIOAuthExchangerWithClient 返回已注入 HTTP client 的 Gemini exchanger。
-// 兼容旧测试/调用点；未注入 env secret 时 StartOAuthFlow 会 fail-closed。
-func NewGeminiPublicCLIOAuthExchangerWithClient(authMode string, client *http.Client) Exchanger {
-	return geminiPublicCLIOAuthExchanger{authMode: strings.TrimSpace(authMode), httpClient: client}
-}
-
 // NewGeminiPublicCLIOAuthExchangerWithClientAndSecret 返回已注入 HTTP client
 // 和 operator env secret 的 Gemini exchanger。生产 wiring 只允许走该入口。
 func NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(authMode string, client *http.Client, secret string) Exchanger {
@@ -59,17 +53,6 @@ func NewGeminiPublicCLIOAuthExchangerWithClientAndSecret(authMode string, client
 		authMode:     strings.TrimSpace(authMode),
 		httpClient:   client,
 		clientSecret: strings.TrimSpace(secret),
-	}
-}
-
-// NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist 返回带
-// 静态 admin callback allowlist 的 Gemini exchanger。allowlist 必须来自
-// operator 配置或测试注入，不能来自 OAuth 启动请求体。
-func NewGeminiPublicCLIOAuthExchangerWithClientAndAdminCallbackAllowlist(authMode string, client *http.Client, allowlist []string) Exchanger {
-	return geminiPublicCLIOAuthExchanger{
-		authMode:                    strings.TrimSpace(authMode),
-		httpClient:                  client,
-		httpsAdminCallbackAllowlist: cloneTrimmedStrings(allowlist),
 	}
 }
 

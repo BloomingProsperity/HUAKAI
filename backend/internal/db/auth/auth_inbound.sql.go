@@ -16,6 +16,7 @@ SELECT id, tenant_id, email, display_name, status
 FROM users
 WHERE id = $1
   AND tenant_id = $2
+  AND principal_kind = 'human'
   AND deleted_at IS NULL
 `
 
@@ -67,12 +68,14 @@ INNER JOIN users u
     ON u.tenant_id = ak.tenant_id
     AND u.id = ak.user_id
     AND u.deleted_at IS NULL
+    AND u.principal_kind = 'human'
 INNER JOIN tenants t
     ON t.id = ak.tenant_id
     AND t.deleted_at IS NULL
 WHERE ak.key_prefix = $1
   AND ak.deleted_at IS NULL
   AND ak.status = 'active'
+  AND ak.purpose = 'user'
 ORDER BY ak.id
 LIMIT 5
 `

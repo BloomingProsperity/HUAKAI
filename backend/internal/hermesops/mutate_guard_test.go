@@ -216,7 +216,7 @@ func TestS2_TxDeadlineAbortsStuckMutationAndRollsBack(t *testing.T) {
 	if rec.rollbackCount != 1 {
 		t.Fatalf("rollbackCount=%d want 1 (deadline must roll back to release conn + advisory lock)", rec.rollbackCount)
 	}
-	// 回滚 MUST(必须)在一个独立的(未被取消的)ctx 上运行——这才是"关键所在":如果它从那个
+	// 回滚必须使用独立且未取消的上下文；如果沿用已超时的业务上下文，
 	// 已死的截止 ctx 派生,它自己就会被取消,连接池连接 + advisory lock 就会泄漏。变异:把已死的
 	// mutCtx 穿进回滚 defer,而非那个独立的 5s ctx -> 这里 rollbackLiveCtx==0 -> 变红。(review S2 收口)
 	if rec.rollbackLiveCtx != 1 {
@@ -243,11 +243,11 @@ func TestS2_DeadlineDoesNotCutLegitSlowReplay(t *testing.T) {
 	const replayDuration = lease * 4 / 3 // ~1.33 倍 lease(代表一个 40s 的 replay)
 
 	rec := &txRecorder{}
-	o := NewMutateOrchestrator(&fakeBeginner{rec: rec}, WithTxDeadline(deadline))
+	recovery := &fakeMutationRecovery{}
+	o := NewMutateOrchestrator(&fakeBeginner{rec: rec}, WithTxDeadline(deadline), WithMutationRecoveryJournal(recovery))
 
 	dlqReplayRec := baseRecord()
 	dlqReplayRec.ToolName = ToolDLQReplay
-	dlqReplayRec.OwnTx = true // dlq_replay 是 own-tx
 
 	_, err := o.Execute(context.Background(), "lock", dlqReplayRec, func(ctx context.Context, _ pgx.Tx) (ToolResult, error) {
 		select {
@@ -260,60 +260,27 @@ func TestS2_DeadlineDoesNotCutLegitSlowReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legit slow replay (%v, under %v deadline) was cut: err=%v — 90s headroom not load-bearing", replayDuration, deadline, err)
 	}
-	if rec.commitCount != 1 {
-		t.Fatalf("commitCount=%d want 1 (a legit slow replay under the deadline must commit)", rec.commitCount)
+	if rec.commitCount != 0 || recovery.finalizeCount != 1 {
+		t.Fatalf("外层提交=%d 恢复日志提交=%d，期望 0/1", rec.commitCount, recovery.finalizeCount)
 	}
 }
 
-// --- 测试 5:own-tx 超时被分类为 UNCERTAIN,而非被错误地报告为已回滚 ----
+// --- 测试 5:独立事务超时结果进入持久日志，不能被报告为外层回滚 ----
 
-func TestS2_OwnTxDeadlineClassifiedUncertainNotRolledBack(t *testing.T) {
-	// 回归(S2 b 正确性、有区分度):一个 dlq_replay(OWN-TX),其内层 own-tx 在 tx 截止触发某个后续
-	// 步骤之前 ALREADY(已经)提交,MUST(必须)呈现 ErrMutateTimeoutUncertain(-> error_class
-	// mutate_timeout_uncertain,需要对账),NEVER(绝不)呈现干净的、已回滚的 mutation_failed。一个
-	// IN-TX 工具的截止会把 mutation 原子地回滚,仍是一个普通的截止(mutation_failed/mutate_timeout)。
-	// 它防范的危险:在 replay 实际上已持久化时,错误地告诉运营者它"没有发生"。
-	//
-	// 变异检查(已运行 + 确认变红,随后还原):在 classifyMutateErr 中移除 `!rec.OwnTx` 短路,这样
-	// EVERY(每一个)截止 error 都被包裹(或彻底去掉包裹,这样一个都不被包裹)——无论哪种,own 与 in-tx
-	// 都会一致,`ownWrapped != inWrapped` 这个自证断言就会变红。
-	run := func(ownTx bool) error {
-		rec := &txRecorder{}
-		o := NewMutateOrchestrator(&fakeBeginner{rec: rec}, WithTxDeadline(time.Hour))
-		audit := baseRecord()
-		audit.OwnTx = ownTx
-		if ownTx {
-			audit.ToolName = ToolDLQReplay
-		}
-		// 模拟内层 own-tx 已提交、随后某个后续步骤触发截止:mutate() 直接返回
-		// context.DeadlineExceeded(这里 tx 截止设得很大,所以只有这个注入的 error 驱动该路径)。
-		_, err := o.Execute(context.Background(), "lock", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
-			return ToolResult{}, context.DeadlineExceeded
-		})
-		if err == nil {
-			t.Fatalf("ownTx=%v: deadline mutate returned nil err", ownTx)
-		}
-		return err
+func TestS2_RecoverableDeadlineIsAuditedWithoutRollbackClaim(t *testing.T) {
+	recovery := &fakeMutationRecovery{}
+	orchestrator := NewMutateOrchestrator(&fakeBeginner{rec: &txRecorder{}},
+		WithTxDeadline(time.Hour), WithMutationRecoveryJournal(recovery))
+	record := baseRecord()
+	record.ToolName = ToolDLQReplay
+	_, err := orchestrator.Execute(context.Background(), "unused", record, func(context.Context, pgx.Tx) (ToolResult, error) {
+		return ToolResult{}, context.DeadlineExceeded
+	})
+	if !errors.Is(err, ErrMutationOutcomeAudited) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("独立事务超时=%v，期望已记日志且保留超时原因", err)
 	}
-
-	ownErr := run(true)
-	inErr := run(false)
-
-	ownUncertain := errors.Is(ownErr, ErrMutateTimeoutUncertain)
-	inUncertain := errors.Is(inErr, ErrMutateTimeoutUncertain)
-
-	if !ownUncertain {
-		t.Fatalf("own-tx deadline did NOT classify UNCERTAIN: %v — a persisted replay would be falsely reported rolled back", ownErr)
-	}
-	if inUncertain {
-		t.Fatalf("in-tx deadline WRONGLY classified UNCERTAIN: %v — in-tx rolls back atomically, must stay mutation_failed", inErr)
-	}
-	if ownUncertain == inUncertain {
-		t.Fatalf("tx-mode did not change the classification (own=%v in=%v) — rec.OwnTx not threaded into the deadline path", ownUncertain, inUncertain)
-	}
-	// in-tx 截止仍必须是一个普通的截止 error(handler 把它映射到一个干净的 timeout,而非 uncertain)。
-	if !errors.Is(inErr, context.DeadlineExceeded) {
-		t.Fatalf("in-tx deadline err=%v want context.DeadlineExceeded", inErr)
+	if recovery.status != ResultError || recovery.errorClass != "mutate_timeout" || recovery.finalizeCount != 1 {
+		t.Fatalf("超时恢复记录=%s/%s/%d，期望 error/mutate_timeout/1", recovery.status, recovery.errorClass, recovery.finalizeCount)
 	}
 }
 

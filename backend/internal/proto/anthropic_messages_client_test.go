@@ -472,8 +472,10 @@ func TestAnthropicMessagesClient_D2_StopReasonMappings(t *testing.T) {
 				t.Fatalf("err: %v", err)
 			}
 			var out map[string]any
-			_ = jsonUnmarshal(body, &out)
-			got, _ := out["stop_reason"]
+			if err := jsonUnmarshal(body, &out); err != nil {
+				t.Fatalf("解码响应：%v", err)
+			}
+			got := out["stop_reason"]
 			if tc.expected == "" {
 				if got != nil {
 					t.Errorf("expected stop_reason null, got %v", got)

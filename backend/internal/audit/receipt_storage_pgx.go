@@ -13,20 +13,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGXReceiptStorage 让 gateway 直接复用 pgxpool 读取 receipt snapshot。
+// PGXReceiptStorage 通过共享连接池原子写入并读取消费回执。
 type PGXReceiptStorage struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	query pgxReceiptQueryer
 }
 
-// NewPGXReceiptStorage 构造 pgxpool 版本的 receipt reader。
+// NewPGXReceiptStorage 构造唯一的消费回执存储实现。
 func NewPGXReceiptStorage(pool *pgxpool.Pool) (*PGXReceiptStorage, error) {
 	if pool == nil {
 		return nil, errors.New("audit: pgx pool required")
 	}
-	return &PGXReceiptStorage{pool: pool}, nil
+	return &PGXReceiptStorage{pool: pool, query: pool}, nil
 }
 
-// AppendReceipt 只在 settlement 成功后写入 signed receipt snapshot。
+// AppendReceipt 只在结算成功后写入已签名回执快照。
 func (rs *PGXReceiptStorage) AppendReceipt(ctx context.Context, receipt *CostReceipt) error {
 	if rs == nil || rs.pool == nil {
 		return ErrReceiptStorageRequired
@@ -140,9 +141,10 @@ INSERT INTO user_cost_receipt_owners (
 	return nil
 }
 
-// GetReceiptForUser 按 tenant + request_id + user_id 读取已签名 snapshot。
+// GetReceiptForUser 按租户、请求和用户读取已签名回执。
 func (rs *PGXReceiptStorage) GetReceiptForUser(ctx context.Context, requestID string, tenantID, userID int64) (*CostReceipt, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return nil, ErrReceiptStorageRequired
 	}
 	if err := validateReceiptRequestID(requestID); err != nil {
@@ -151,7 +153,7 @@ func (rs *PGXReceiptStorage) GetReceiptForUser(ctx context.Context, requestID st
 	if userID <= 0 {
 		return nil, ErrReceiptNotFound
 	}
-	row := rs.pool.QueryRow(ctx, `
+	row := query.QueryRow(ctx, `
 SELECT `+receiptSelectColumns+`
 FROM user_cost_receipts r
 INNER JOIN user_cost_receipt_owners o
@@ -175,15 +177,16 @@ LIMIT 1`,
 	return receipt, nil
 }
 
-// GetReceiptForAdmin 按 tenant + request_id 读取已签名 snapshot，不做 user owner 过滤。
+// GetReceiptForAdmin 按租户和请求读取已签名回执，不做用户归属过滤。
 func (rs *PGXReceiptStorage) GetReceiptForAdmin(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return nil, ErrReceiptStorageRequired
 	}
 	if err := validateReceiptRequestID(requestID); err != nil {
 		return nil, err
 	}
-	row := rs.pool.QueryRow(ctx, `
+	row := query.QueryRow(ctx, `
 SELECT `+receiptSelectColumns+`
 FROM user_cost_receipts r
 LEFT JOIN user_cost_receipt_owners o
@@ -206,14 +209,15 @@ LIMIT 1`,
 	return receipt, nil
 }
 
-// GetReceipt 在调用方拆分前，保留仅限 admin 的历史存储语义。
+// GetReceipt 保留仅限管理端调用的历史读取语义。
 func (rs *PGXReceiptStorage) GetReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
 	return rs.GetReceiptForAdmin(ctx, requestID, tenantID)
 }
 
-// GetReceiptBySequence 按 tenant + request_id + receipt_sequence 读取指定 snapshot。
+// GetReceiptBySequence 按租户、请求和序号读取指定回执。
 func (rs *PGXReceiptStorage) GetReceiptBySequence(ctx context.Context, requestID string, tenantID int64, sequence int32) (*CostReceipt, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return nil, ErrReceiptStorageRequired
 	}
 	if err := validateReceiptRequestID(requestID); err != nil {
@@ -222,7 +226,7 @@ func (rs *PGXReceiptStorage) GetReceiptBySequence(ctx context.Context, requestID
 	if sequence < 0 {
 		return nil, fmt.Errorf("%w: receipt_sequence must be non-negative", ErrReceiptInvalidDerivedData)
 	}
-	row := rs.pool.QueryRow(ctx, `
+	row := query.QueryRow(ctx, `
 SELECT `+receiptSelectColumns+`
 FROM user_cost_receipts r
 LEFT JOIN user_cost_receipt_owners o
@@ -292,18 +296,20 @@ ORDER BY r.created_at DESC, r.receipt_sequence DESC`,
 }
 
 func (rs *PGXReceiptStorage) GetByRefundIdempotency(ctx context.Context, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return nil, ErrReceiptStorageRequired
 	}
-	return getReceiptByRefundIdempotencyPGX(ctx, rs.pool, requestID, tenantID, idempotencyKey)
+	return getReceiptByRefundIdempotencyPGX(ctx, query, requestID, tenantID, idempotencyKey)
 }
 
-// GetRefundedReceipt 按 tenant + request_id 读取任意序号的已退款 snapshot。
+// GetRefundedReceipt 按租户和请求读取最新的已退款回执。
 func (rs *PGXReceiptStorage) GetRefundedReceipt(ctx context.Context, requestID string, tenantID int64) (*CostReceipt, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return nil, ErrReceiptStorageRequired
 	}
-	return getRefundedReceiptPGX(ctx, rs.pool, requestID, tenantID)
+	return getRefundedReceiptPGX(ctx, query, requestID, tenantID)
 }
 
 func (rs *PGXReceiptStorage) GetRefundedReceiptInTx(ctx context.Context, tx pgx.Tx, requestID string, tenantID int64) (*CostReceipt, error) {
@@ -314,10 +320,11 @@ func (rs *PGXReceiptStorage) GetRefundedReceiptInTx(ctx context.Context, tx pgx.
 }
 
 func (rs *PGXReceiptStorage) MaxReceiptSequence(ctx context.Context, requestID string, tenantID int64) (int32, error) {
-	if rs == nil || rs.pool == nil {
+	query := rs.readQueryer()
+	if query == nil {
 		return 0, ErrReceiptStorageRequired
 	}
-	return maxReceiptSequencePGX(ctx, rs.pool, requestID, tenantID)
+	return maxReceiptSequencePGX(ctx, query, requestID, tenantID)
 }
 
 func (rs *PGXReceiptStorage) MaxReceiptSequenceInTx(ctx context.Context, tx pgx.Tx, requestID string, tenantID int64) (int32, error) {
@@ -329,6 +336,19 @@ func (rs *PGXReceiptStorage) MaxReceiptSequenceInTx(ctx context.Context, tx pgx.
 
 type pgxReceiptQueryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (rs *PGXReceiptStorage) readQueryer() pgxReceiptQueryer {
+	if rs == nil {
+		return nil
+	}
+	if rs.query != nil {
+		return rs.query
+	}
+	if rs.pool != nil {
+		return rs.pool
+	}
+	return nil
 }
 
 func getReceiptByRefundIdempotencyPGX(ctx context.Context, queryer pgxReceiptQueryer, requestID string, tenantID int64, idempotencyKey string) (*CostReceipt, error) {
@@ -421,20 +441,28 @@ WHERE request_id = $1 AND tenant_id = $2`,
 	return maxSequence, nil
 }
 
-// PGXReceiptSource 用 pgxpool 读取 receipt 派生输入，供 gateway main 直接接线。
+// PGXReceiptSource 从既有账务事实读取回执派生输入。
 type PGXReceiptSource struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	query pgxReceiptQueryer
 }
 
 func NewPGXReceiptSource(pool *pgxpool.Pool) (*PGXReceiptSource, error) {
 	if pool == nil {
 		return nil, errors.New("audit: pgx pool required")
 	}
-	return &PGXReceiptSource{pool: pool}, nil
+	return &PGXReceiptSource{pool: pool, query: pool}, nil
 }
 
 func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID string, tenantID int64) (ReceiptInputs, error) {
-	if s == nil || s.pool == nil {
+	if s == nil {
+		return ReceiptInputs{}, ErrReceiptSourceRequired
+	}
+	query := s.query
+	if query == nil && s.pool != nil {
+		query = s.pool
+	}
+	if query == nil {
 		return ReceiptInputs{}, ErrReceiptSourceRequired
 	}
 	if err := validateReceiptRequestID(requestID); err != nil {
@@ -454,7 +482,7 @@ func (s *PGXReceiptSource) LookupReceiptInputs(ctx context.Context, requestID st
 		cacheReadToken sql.NullInt64
 		ownerSource    sql.NullString
 	)
-	err := s.pool.QueryRow(ctx, receiptInputsSQL, requestID, tenantID).Scan(
+	err := query.QueryRow(ctx, receiptInputsSQL, requestID, tenantID).Scan(
 		&inputs.TenantID,
 		&claimID,
 		&userID,

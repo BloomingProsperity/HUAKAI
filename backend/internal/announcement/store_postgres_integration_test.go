@@ -152,6 +152,10 @@ func mustCreatePGAnnouncement(t *testing.T, ctx context.Context, svc *Service, i
 	return created
 }
 
+func ptrBool(v bool) *bool {
+	return &v
+}
+
 func readAnnouncementMigration(t *testing.T, name string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("..", "..", "sql", "migrations", name))

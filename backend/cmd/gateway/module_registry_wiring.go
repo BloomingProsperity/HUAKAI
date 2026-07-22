@@ -66,11 +66,9 @@ func selectorActivation(d *deps) *moduleregistry.ActivationSnapshot {
 	return snapshot
 }
 
-// buildModuleRegistry 构建运行时的模块知识脊柱,并用 WAVE H2 的三个高价值域
-// 给它播种:billing/money-path 服务、routing selector,以及
-// credentials/credentialworker 子系统。
+// buildModuleRegistry 构建运行时模块知识总表，并接入计费、路由选号和凭据子系统。
 //
-// 注册约定(churn 最小,为 H2 选定):
+// 注册约定：
 // 模块在这里集中注册,源自 buildGatewayRuntime 中已组装好的 live deps——
 // 每个模块一次 Register 调用,各自带一个稳定的点分 ID、一个 category、一个
 // title、capabilities,以及一个可选的、廉价的只读 HealthProbe。这避免了

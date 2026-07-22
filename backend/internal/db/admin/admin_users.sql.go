@@ -22,6 +22,7 @@ total_users AS (
     SELECT COUNT(*)::bigint AS total_user_count
     FROM users
     WHERE tenant_id = $1::bigint
+      AND principal_kind = 'human'
       AND deleted_at IS NULL
 )
 SELECT
@@ -59,6 +60,7 @@ LEFT JOIN user_balances ub
  AND ub.user_id = u.id
 WHERE u.tenant_id = $1::bigint
   AND u.id = $2::bigint
+  AND u.principal_kind = 'human'
   AND u.deleted_at IS NULL
 `
 
@@ -97,28 +99,28 @@ func (q *Queries) AdminGetUserForTenant(ctx context.Context, arg AdminGetUserFor
 const adminListUserBalanceHistoryForTenant = `-- name: AdminListUserBalanceHistoryForTenant :many
 WITH balance_history AS (
     SELECT
-    be.id,
-    be.event_type,
-    be.actual_cost_signed::numeric(20,8)::text AS amount,
-    be.fingerprint,
-    CASE
-        WHEN be.payment_credit_id IS NOT NULL THEN 'payment_credit'
-        WHEN be.payment_refund_id IS NOT NULL THEN 'payment_refund'
-        WHEN be.voucher_redemption_id IS NOT NULL THEN 'voucher_redemption'
-        WHEN be.recharge_order_id IS NOT NULL THEN 'recharge_order'
-        WHEN be.subscription_auto_renewal_charge_id IS NOT NULL THEN 'subscription_auto_renewal'
-        WHEN be.claim_id IS NOT NULL THEN 'billing_claim'
-        ELSE 'billing_event'
-    END::text AS source_type,
-    COALESCE(
-        be.payment_credit_id,
-        be.payment_refund_id,
-        be.voucher_redemption_id,
-        be.recharge_order_id,
-        be.subscription_auto_renewal_charge_id,
-        be.claim_id,
-        be.id
-    )::bigint AS source_id,
+        be.id,
+        be.event_type,
+        be.actual_cost_signed::numeric(20,8)::text AS amount,
+        be.fingerprint,
+        CASE
+            WHEN be.payment_credit_id IS NOT NULL THEN 'payment_credit'
+            WHEN be.payment_refund_id IS NOT NULL THEN 'payment_refund'
+            WHEN be.voucher_redemption_id IS NOT NULL THEN 'voucher_redemption'
+            WHEN be.recharge_order_id IS NOT NULL THEN 'recharge_order'
+            WHEN be.subscription_auto_renewal_charge_id IS NOT NULL THEN 'subscription_auto_renewal'
+            WHEN be.claim_id IS NOT NULL THEN 'billing_claim'
+            ELSE 'billing_event'
+        END::text AS source_type,
+        COALESCE(
+            be.payment_credit_id,
+            be.payment_refund_id,
+            be.voucher_redemption_id,
+            be.recharge_order_id,
+            be.subscription_auto_renewal_charge_id,
+            be.claim_id,
+            be.id
+        )::bigint AS source_id,
         be.occurred_at
     FROM billing_events be
     LEFT JOIN billing_ledger_claims blc
@@ -133,8 +135,8 @@ WITH balance_history AS (
       ON ro.tenant_id = be.tenant_id AND ro.id = be.recharge_order_id
     LEFT JOIN subscription_auto_renewal_charges sarc
       ON sarc.tenant_id = be.tenant_id AND sarc.id = be.subscription_auto_renewal_charge_id
-    WHERE be.tenant_id = $1::bigint
-      AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id, sarc.user_id) = $2::bigint
+    WHERE be.tenant_id = $3::bigint
+      AND COALESCE(blc.user_id, vr.user_id, pc.user_id, pr.user_id, ro.user_id, sarc.user_id) = $4::bigint
 
     UNION ALL
 
@@ -150,21 +152,21 @@ WITH balance_history AS (
     JOIN balance_ledger_transactions tx_record
       ON tx_record.tenant_id=entry.tenant_id AND tx_record.id=entry.transaction_id
     WHERE entry.account_kind='user'
-      AND entry.account_tenant_id=$1::bigint
-      AND entry.account_user_id=$2::bigint
+      AND entry.account_tenant_id=$3::bigint
+      AND entry.account_user_id=$4::bigint
 )
 SELECT id, event_type, amount, fingerprint, source_type, source_id, occurred_at
 FROM balance_history
 ORDER BY occurred_at DESC, id DESC
-LIMIT $4::integer
-OFFSET $3::integer
+LIMIT $2::integer
+OFFSET $1::integer
 `
 
 type AdminListUserBalanceHistoryForTenantParams struct {
-	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
-	UserID     int64 `db:"user_id" json:"user_id"`
 	PageOffset int32 `db:"page_offset" json:"page_offset"`
 	PageLimit  int32 `db:"page_limit" json:"page_limit"`
+	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	UserID     int64 `db:"user_id" json:"user_id"`
 }
 
 type AdminListUserBalanceHistoryForTenantRow struct {
@@ -179,10 +181,10 @@ type AdminListUserBalanceHistoryForTenantRow struct {
 
 func (q *Queries) AdminListUserBalanceHistoryForTenant(ctx context.Context, arg AdminListUserBalanceHistoryForTenantParams) ([]AdminListUserBalanceHistoryForTenantRow, error) {
 	rows, err := q.db.Query(ctx, adminListUserBalanceHistoryForTenant,
-		arg.TenantID,
-		arg.UserID,
 		arg.PageOffset,
 		arg.PageLimit,
+		arg.TenantID,
+		arg.UserID,
 	)
 	if err != nil {
 		return nil, err
@@ -226,6 +228,7 @@ LEFT JOIN user_balances ub
   ON ub.tenant_id = u.tenant_id
  AND ub.user_id = u.id
 WHERE u.tenant_id = $1::bigint
+  AND u.principal_kind = 'human'
   AND u.deleted_at IS NULL
   AND (
     $2::text = ''

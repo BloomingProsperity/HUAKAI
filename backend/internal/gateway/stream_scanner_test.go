@@ -312,19 +312,19 @@ func lastScanError(seq func(yield func(SSEEvent, error) bool)) error {
 // 变异守卫: 删 stream_scanner.go 任一 SSE family,或 protocol_selector.go
 // 任一 MustRegister → 两集不等,对应方向子断言红。
 func TestStreamScannerAndProtocolAdapterRegistriesAreSymmetric(t *testing.T) {
-	scanners := BuildDefaultStreamScannerRegistry().scanners
+	scanners := BuildDefaultStreamScannerRegistry()
 	adapters := BuildDefaultProtocolAdapterRegistry().adapters
 	for fam := range adapters {
-		if _, ok := scanners[fam]; !ok {
+		if _, err := scanners.For(fam); err != nil {
 			t.Errorf("family %q 有 protocol adapter 但缺 stream scanner（流式请求会在 forwarder Scanners.For 失败）", fam)
 		}
 	}
-	for fam := range scanners {
+	for _, fam := range scanners.Families() {
 		if _, ok := adapters[fam]; !ok {
 			t.Errorf("family %q 有 stream scanner 但缺 protocol adapter", fam)
 		}
 	}
-	if len(scanners) != len(adapters) {
-		t.Errorf("注册表族数不等: scanners=%d adapters=%d", len(scanners), len(adapters))
+	if got := len(scanners.Families()); got != len(adapters) {
+		t.Errorf("注册表族数不等: scanners=%d adapters=%d", got, len(adapters))
 	}
 }

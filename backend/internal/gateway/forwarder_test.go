@@ -148,7 +148,7 @@ func newForwarder() *StreamForwarder {
 			FirstTokenTimeout:  500 * time.Millisecond,
 			InterEventTimeout:  500 * time.Millisecond,
 			TotalStreamTimeout: 5 * time.Second,
-			DrainMaxSeconds:    100 * time.Millisecond,
+			DrainMax:           100 * time.Millisecond,
 		},
 		ScannerBufferCap: 1 << 20,
 	}
@@ -310,7 +310,7 @@ func TestAT_GW_002_09_DrainConsumesEventsAndExtractsUsage(t *testing.T) {
 	rec := &disconnectingWriter{after: 1}
 	writesBeforeDrain := rec.writes
 	f := newForwarder()
-	f.DrainBudgets = DrainBudgets{MaxSeconds: 200 * time.Millisecond, MaxBytes: 100}
+	f.DrainBudgets = DrainBudgets{MaxDuration: 200 * time.Millisecond, MaxBytes: 100}
 	draft, _ := f.Forward(context.Background(), bytes.NewReader(upstream), rec, anthropicForwardRequest(1, 100))
 
 	if draft.EndClass != ClientDisconnect {
@@ -344,7 +344,7 @@ func TestAT_GW_002_10_DrainCostCapTriggers(t *testing.T) {
 	rec := &disconnectingWriter{after: 1}
 	f := newForwarder()
 	f.DrainBudgets = DrainBudgets{
-		MaxSeconds:       1 * time.Second,
+		MaxDuration:      1 * time.Second,
 		MaxBytes:         1 << 20,
 		MaxEstimatedCost: decimal.NewFromFloat(0.10),
 	}
@@ -1485,6 +1485,14 @@ func TestNewUpstreamStateOllamaNative(t *testing.T) {
 	}
 	if st.TenantID != 3 || st.AccountID != 17 || st.PrefixHash != "prefix-o" {
 		t.Fatalf("forwarder 注入字段不齐: %+v", st)
+	}
+}
+
+func TestStreamTerminatedReason_编排取消不归咎上游(t *testing.T) {
+	for _, delivered := range []int64{0, 9} {
+		if got := streamTerminatedReason(OrchestratorCancel, delivered); got != "orchestrator_cancelled" {
+			t.Fatalf("delivered=%d reason=%q want orchestrator_cancelled", delivered, got)
+		}
 	}
 }
 

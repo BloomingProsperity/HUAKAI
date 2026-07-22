@@ -429,6 +429,7 @@ func TestAT_SECURITY_W1_C01_OAuthClientClearsLegacyDialTLS(t *testing.T) {
 	if !ok {
 		t.Fatalf("oauth client transport type=%T, want *http.Transport", client.Transport)
 	}
+	//lint:ignore SA1019 此断言确保旧钩子不能绕过受保护的 DialContext。
 	if transport.DialTLS != nil {
 		t.Fatal("oauth refresh client must clear legacy DialTLS hook")
 	}

@@ -21,19 +21,23 @@ func DLQInspectSpec(deps DLQInspectDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolDLQInspect,
 		Category:     CategoryDiagnostic,
-		Description:  "List dead-lettered events for the tenant (kind, lane, status, replay attempts) — raw payload dropped. READ ONLY (no replay).",
+		Description:  "分页列出当前租户的死信事件、通道、状态和重放次数；只读且不返回原始载荷。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"event_kind": "filter by DLQ event kind (string, optional)",
-			"status":     "filter by DLQ status (string, optional)",
-		},
+		InputSchema: ObjectSchema(paginationProperties(map[string]any{
+			"event_kind": StringSchema("按死信事件类型筛选"),
+			"status":     StringSchema("按死信状态筛选"),
+		})),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
+			limit, offset, err := pageArgs(req.Args)
+			if err != nil {
+				return ToolResult{}, err
+			}
 			tenant := req.TenantID
-			filter := dlq.ListFilter{TenantID: &tenant, Limit: obsReadLimit}
+			filter := dlq.ListFilter{TenantID: &tenant, Limit: limit + 1, Offset: offset}
 			if ek, ok := ArgString(req.Args, "event_kind"); ok {
 				filter.EventKind = dlq.EventKind(ek)
 			}
@@ -45,6 +49,7 @@ func DLQInspectSpec(deps DLQInspectDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			byStatus := map[string]int{}
 			byKind := map[string]int{}
@@ -58,6 +63,7 @@ func DLQInspectSpec(deps DLQInspectDeps) ToolSpec {
 				"by_status": intCountMap(byStatus),
 				"by_kind":   intCountMap(byKind),
 				"items":     items,
+				"page":      page,
 			}}, nil
 		},
 	}

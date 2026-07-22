@@ -349,22 +349,7 @@ func quotaPolicyFromUpsert(row dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow) (qu
 }
 
 func quotaPolicyFromGet(row dbuserkeycontrols.GetAPIKeyQuotaPolicyRow) (quotaPolicyRow, error) {
-	policy, err := quotaPolicyFromUpsert(dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow{
-		APIKeyID:      row.APIKeyID,
-		TenantID:      row.TenantID,
-		ID:            row.ID,
-		ScopeKind:     row.ScopeKind,
-		ScopeID:       row.ScopeID,
-		Metric:        row.Metric,
-		WindowKind:    row.WindowKind,
-		WindowSeconds: row.WindowSeconds,
-		LimitValue:    row.LimitValue,
-		Mode:          row.Mode,
-		Priority:      row.Priority,
-		Enabled:       row.Enabled,
-		ValidFrom:     row.ValidFrom,
-		ValidUntil:    row.ValidUntil,
-	})
+	policy, err := quotaPolicyFromUpsert(dbuserkeycontrols.UpsertAPIKeyQuotaPolicyRow(row))
 	if err != nil {
 		return quotaPolicyRow{}, err
 	}
@@ -409,10 +394,11 @@ func (s *PostgresStore) SetAPIKeyIPBlacklist(ctx context.Context, arg ipBlacklis
 	result, err := s.db.Exec(ctx,
 		`UPDATE api_keys
 		    SET ip_blacklist = $1::text, updated_at = NOW()
-		  WHERE id = $2
-		    AND tenant_id = $3
-		    AND user_id = $4
-		    AND deleted_at IS NULL`,
+			  WHERE id = $2
+			    AND tenant_id = $3
+			    AND user_id = $4
+			    AND purpose = 'user'
+			    AND deleted_at IS NULL`,
 		arg.IPBlacklist, arg.APIKeyID, arg.TenantID, arg.UserID,
 	)
 	if err != nil {
@@ -428,10 +414,11 @@ func (s *PostgresStore) GetAPIKeyIPBlacklist(ctx context.Context, tenantID, user
 	row := s.db.QueryRow(ctx,
 		`SELECT id, ip_blacklist
 		   FROM api_keys
-		  WHERE id = $1
-		    AND tenant_id = $2
-		    AND user_id = $3
-		    AND deleted_at IS NULL`,
+			  WHERE id = $1
+			    AND tenant_id = $2
+			    AND user_id = $3
+			    AND purpose = 'user'
+			    AND deleted_at IS NULL`,
 		apiKeyID, tenantID, userID,
 	)
 	var out keyIPBlacklistRow

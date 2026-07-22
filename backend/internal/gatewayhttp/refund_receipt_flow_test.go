@@ -51,7 +51,7 @@ func TestAT_AUDIT_001_025_RefundWorkerReceiptVisibleThroughGet(t *testing.T) {
 		RateTableSnapshotID: 12,
 		CreatedAt:           now,
 	}}
-	formatter, err := audit.NewReceiptFormatter(ledger, nil, source, signer, audit.WithReceiptNow(func() time.Time { return now }))
+	formatter, err := audit.NewReceiptFormatter(ledger, source, signer, audit.WithReceiptNow(func() time.Time { return now }))
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}

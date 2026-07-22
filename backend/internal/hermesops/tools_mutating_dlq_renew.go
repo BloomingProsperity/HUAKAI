@@ -6,17 +6,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 )
 
-// 本文件声明 dlq_replay + renew_trigger 两个 MUTATING 工具。与 account toggle 一样,
-// 每个都包装一个已有的改动。但与 account toggle 不同的是,底层改动
-// (dlq.Service.Replay、credentialstore.Store.Rotate)管理着它自己的事务 + 副作用
-// (handler 调用 / 嵌套的凭证审计 tx),因此无法折叠进 orchestrator 的 tx。对这两个工具,
-// 适用 orchestrator 的"提交前已校验"排序:hermes_tool_calls + admin_audit_events 行会在
-// Replay/Rotate 运行之前,在 orchestrator tx 内被插入并被 DB 接受,因此一旦审计路径损坏,
-// 会以目标未改动的状态中止。
+// 本文件声明死信重放与凭据轮换两个改动工具。死信重放包含外部投递副作用，使用独立恢复合同；
+// 凭据轮换则加入编排器事务，使凭据、凭据日志和 Hermes 日志同成同败。
 
 // ---------------------------------------------------------------------------
 // dlq_replay (仅限 platform_admin)
@@ -41,9 +38,9 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 		Mutating:             true,
 		RequiresConfirmation: true,
 		RequiredRole:         RolePlatformAdmin,
-		InputSchema: map[string]string{
-			"id": "dead-letter record id to replay (int64, required)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"id": PositiveIntegerSchema("要重放的死信记录 ID"),
+		}, "id"),
 		Resolve: func(ctx context.Context, req ToolRequest) (MutationPlan, error) {
 			if deps.Lookup == nil || deps.Replay == nil {
 				return MutationPlan{}, ErrDependencyUnwired
@@ -83,7 +80,7 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 			// L5 幂等:Replay 按 id 重新 claim,记录的 IdempotencyKey 负责去重 ——
 			// 已投递的记录不会被重新处理(ClaimByID 会拒绝一个 active/closed 的 claim)。
 			// actorID 是传入的 operator 用户 id。
-			actorID := fmt.Sprintf("%d", req.ActorUserID)
+			actorID := fmt.Sprintf("%s:%d", req.ActorSource, req.ActorID)
 			rec, err := deps.Replay(ctx, plan.TargetID, actorID)
 			if err != nil {
 				if errors.Is(err, dlq.ErrNotFound) {
@@ -120,7 +117,7 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 // (绝不返回轮换后的 payload)。
 type RenewTriggerDeps struct {
 	ListByAccount func(ctx context.Context, tenantID, accountID int64) ([]credentialstore.CredentialMetadata, error)
-	Rotate        func(ctx context.Context, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error)
+	RotateTx      func(ctx context.Context, tx pgx.Tx, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error)
 }
 
 // RenewTriggerSpec 构建 renew_trigger 改动型工具:它把某个 provider account 的凭证轮换到
@@ -137,13 +134,13 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 		Mutating:             true,
 		RequiresConfirmation: true,
 		RequiredRole:         RoleTenantOperator,
-		InputSchema: map[string]string{
-			"account_id":    "provider account id owning the credential (int64, required)",
-			"credential_id": "credential id to rotate (int64, required)",
-			"credentials":   "new credential payload (object, required, redacted in audit)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"account_id":    PositiveIntegerSchema("凭据所属的上游账号 ID"),
+			"credential_id": PositiveIntegerSchema("要轮换的凭据 ID"),
+			"credentials":   ObjectValueSchema("新凭据载荷，日志中会脱敏"),
+		}, "account_id", "credential_id", "credentials"),
 		Resolve: func(ctx context.Context, req ToolRequest) (MutationPlan, error) {
-			if deps.ListByAccount == nil || deps.Rotate == nil {
+			if deps.ListByAccount == nil || deps.RotateTx == nil {
 				return MutationPlan{}, ErrDependencyUnwired
 			}
 			accountID, err := ArgInt(req.Args, "account_id")
@@ -188,7 +185,11 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 			}, nil
 		},
 		Mutate: func(ctx context.Context, req ToolRequest, plan MutationPlan) (ToolResult, error) {
-			if deps.Rotate == nil {
+			if deps.RotateTx == nil {
+				return ToolResult{}, ErrDependencyUnwired
+			}
+			tx := txFromContext(ctx)
+			if tx == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
 			accountID, err := ArgInt(req.Args, "account_id")
@@ -199,12 +200,12 @@ func RenewTriggerSpec(deps RenewTriggerDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
-			meta, err := deps.Rotate(ctx, credentialstore.RotateCredentialInput{
+			meta, err := deps.RotateTx(ctx, tx, credentialstore.RotateCredentialInput{
 				TenantID:          req.TenantID,
 				ProviderAccountID: accountID,
 				CredentialID:      plan.TargetID,
 				Payload:           payload,
-				ActorID:           fmt.Sprintf("%d", req.ActorUserID),
+				ActorID:           fmt.Sprintf("%s:%d", req.ActorSource, req.ActorID),
 			})
 			if err != nil {
 				return ToolResult{}, err

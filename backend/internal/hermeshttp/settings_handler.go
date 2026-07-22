@@ -10,6 +10,7 @@ import (
 type enableSettingsRequest struct {
 	APISource string `json:"api_source,omitempty"`
 	ProfileID *int64 `json:"profile_id,omitempty"`
+	Model     string `json:"model"`
 }
 
 func (h handler) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -36,11 +37,11 @@ func (h handler) enableSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	apiSource := req.APISource
 	if apiSource == "" {
-		apiSource = hermes.APISourceManaged
+		apiSource = hermes.APISourceExternal
 	}
-	args := map[string]any{"api_source": apiSource, "profile_id": req.ProfileID}
+	args := map[string]any{"api_source": apiSource, "profile_id": req.ProfileID, "model": req.Model}
 	settings, err := h.svc.EnableForUserWithAudit(
-		r.Context(), ident.TenantID, ident.UserID, apiSource, req.ProfileID,
+		r.Context(), ident.TenantID, ident.UserID, apiSource, req.ProfileID, req.Model,
 		auditFields(r, ident, hermes.ActionEnable, args, hermes.AuditResultSuccess),
 	)
 	if err != nil {

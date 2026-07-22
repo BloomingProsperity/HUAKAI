@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -507,8 +506,8 @@ func TestClassify_NilBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(c.Class), "upstream_") {
-		// 可接受的结果是 rate_limited。
+	if c.Class != ErrorClassRateLimited {
+		t.Fatalf("nil body class=%q want %q", c.Class, ErrorClassRateLimited)
 	}
 }
 

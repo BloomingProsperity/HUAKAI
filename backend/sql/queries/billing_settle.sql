@@ -20,7 +20,8 @@ SELECT
     billing_policy_version,
     requested_model,
     request_fingerprint,
-    status
+    status,
+    billing_effect
 FROM billing_ledger_claims
 WHERE id = $1 AND tenant_id = $2 AND acquisition_token = $3 AND status = 'reserving'
 FOR UPDATE;
@@ -43,7 +44,7 @@ INSERT INTO usage_records (
     requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
     requested_model, upstream_model, stream, snapshot_version, settlement_source,
     image_count, image_size, image_size_breakdown, ip_address, user_agent,
-    client_tool
+    client_tool, billing_effect
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7,
@@ -58,7 +59,7 @@ INSERT INTO usage_records (
     $32, $33, $34, $35, $36,
     $37, $38, $39, $40, $41,
     $42, $43, $44, $45, $46,
-    $47
+    $47, COALESCE(NULLIF(sqlc.arg(billing_effect)::text, ''), 'user_charge')
 )
 RETURNING id;
 
@@ -70,9 +71,10 @@ INSERT INTO billing_events (
     actual_cost, actual_cost_signed,
     end_class, usage_source,
     stream_state, delivered_token_count, stream_terminated_reason,
-    fingerprint, audit_request_id
+    fingerprint, audit_request_id, billing_effect
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+    COALESCE(NULLIF(sqlc.arg(billing_effect)::text, ''), 'user_charge')
 )
 RETURNING id, occurred_at;
 
@@ -91,13 +93,13 @@ RETURNING id, created_at;
 -- name: ReleaseSlotAndDecrementInFlight :execrows
 -- Tx2 槽释放原语：只有 acquired 行成功翻到指定终态后才递减账号在途数。
 -- 重放同一 token 时内层 UPDATE 为 0 行，外层自然不递减，保持幂等。
--- $2 = release_status（released_success 或 released_failure）；$3 = release_reason。
+-- 参数使用具名绑定；acquisition_token 由目标列推导 UUID 类型并套用统一类型覆盖。
 WITH released AS (
     UPDATE pool_slot_acquisitions
     SET status = sqlc.arg(release_status)::text,
         released_at = NOW(),
         release_reason = sqlc.narg(release_reason)::text
-    WHERE acquisition_token = sqlc.arg(acquisition_token)::uuid AND status = 'acquired'
+    WHERE acquisition_token = sqlc.arg(acquisition_token) AND status = 'acquired'
     RETURNING provider_account_id
 )
 UPDATE provider_accounts pa

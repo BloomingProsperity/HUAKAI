@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
 
@@ -342,16 +342,16 @@ func writeDetachedError(out io.Writer, asJSON bool, code string, err error) int 
 	return 1
 }
 
-func fetchAudit(client *http.Client, gatewayURL, requestID, tenantScopeRef string) (gatewayhttp.AuditVerifyResponse, gatewayhttp.AuditMerkleTreeResponse, error) {
-	var verify gatewayhttp.AuditVerifyResponse
+func fetchAudit(client *http.Client, gatewayURL, requestID, tenantScopeRef string) (auditverifyhttp.AuditVerifyResponse, auditverifyhttp.AuditMerkleTreeResponse, error) {
+	var verify auditverifyhttp.AuditVerifyResponse
 	verifyQuery := url.Values{}
 	verifyQuery.Set("request_id", requestID)
 	verifyQuery.Set("tenant_scope_ref", tenantScopeRef)
 	verifyURL := strings.TrimRight(gatewayURL, "/") + "/v1/audit/verify?" + verifyQuery.Encode()
 	if err := fetchJSON(client, verifyURL, &verify); err != nil {
-		return verify, gatewayhttp.AuditMerkleTreeResponse{}, err
+		return verify, auditverifyhttp.AuditMerkleTreeResponse{}, err
 	}
-	var tree gatewayhttp.AuditMerkleTreeResponse
+	var tree auditverifyhttp.AuditMerkleTreeResponse
 	treeURL := strings.TrimRight(gatewayURL, "/") + "/v1/audit/merkle-tree.json"
 	if err := fetchJSON(client, treeURL, &tree); err != nil {
 		return verify, tree, err
@@ -362,7 +362,7 @@ func fetchAudit(client *http.Client, gatewayURL, requestID, tenantScopeRef strin
 	return verify, tree, nil
 }
 
-func verifyEntryProof(resp gatewayhttp.AuditVerifyResponse, pub ed25519.PublicKey) (auditledger.LedgerEntry, error) {
+func verifyEntryProof(resp auditverifyhttp.AuditVerifyResponse, pub ed25519.PublicKey) (auditledger.LedgerEntry, error) {
 	entry, err := ledgerEntryFromResponse(resp)
 	if err != nil {
 		return auditledger.LedgerEntry{}, err
@@ -397,12 +397,12 @@ func verifyRequestedEntry(entry auditledger.LedgerEntry, requestID, tenantScopeR
 	return nil
 }
 
-func ledgerEntryFromResponse(resp gatewayhttp.AuditVerifyResponse) (auditledger.LedgerEntry, error) {
-	prev, err := gatewayhttp.ParseAuditRootHex(resp.ChainProof.PrevMerkleRoot)
+func ledgerEntryFromResponse(resp auditverifyhttp.AuditVerifyResponse) (auditledger.LedgerEntry, error) {
+	prev, err := auditverifyhttp.ParseAuditRootHex(resp.ChainProof.PrevMerkleRoot)
 	if err != nil {
 		return auditledger.LedgerEntry{}, fmt.Errorf("prev_merkle_root: %w", err)
 	}
-	root, err := gatewayhttp.ParseAuditRootHex(resp.ChainProof.MerkleRoot)
+	root, err := auditverifyhttp.ParseAuditRootHex(resp.ChainProof.MerkleRoot)
 	if err != nil {
 		return auditledger.LedgerEntry{}, fmt.Errorf("merkle_root: %w", err)
 	}

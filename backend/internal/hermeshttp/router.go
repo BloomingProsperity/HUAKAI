@@ -1,4 +1,4 @@
-// Package hermeshttp 暴露 Hermes user-facing HTTP endpoints。
+// Package hermeshttp 暴露部署者与获授权租户管理员使用的 Hermes 运维端点。
 package hermeshttp
 
 import (
@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -23,10 +24,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 )
-
-type AuthResolver interface {
-	Resolve(context.Context, *http.Request) (sessionauth.Identity, error)
-}
 
 type authContextKey struct{}
 
@@ -63,13 +60,12 @@ type handler struct {
 	tools          ToolRegistry
 	toolCalls      hermesops.ToolCallInserter
 	contextSource  ContextSource
-	// mutator + confirmCache 支撑 WAVE H4 的 mutating 工具路径。当 mutator 为
+	// mutator + confirmStore 支撑改动型工具路径。当 mutator 为
 	// nil 时,mutating 工具被拒绝(503)——只读路径不受影响。
-	// confirmCache 现为 hermesconfirm 共享单例(可经 RouterDeps 注入,以便未来 Phase B 的 LLM 提议侧
-	// 与 operator 确认侧共用同一实例);未注入时本构造回退新建一个(行为同旧 newConfirmCache())。
+	// 生产注入跨副本共享存储；未注入时只为纯单元测试回退到进程内实现。
 	mutator      MutateOrchestrator
-	confirmCache *hermesconfirm.Cache
-	// mutatingDisabled 是 KNOB A 的取反值:针对所有 mutating 工具的运行时 kill-switch。
+	confirmStore hermesconfirm.Store
+	// mutatingDisabled 是所有改动型工具运行时总开关的取反值。
 	// 以「禁用」形式存储,这样 handler 的 0 值即表示「启用」(当前行为)——直接构造
 	// handler{} 的白盒 handler 测试无需任何设置即可让 mutating 路径保持可用。
 	// NewRouterWithDeps 把 RouterDeps.MutatingEnabled(接线层默认 true)映射成这里的
@@ -77,7 +73,7 @@ type handler struct {
 	// 之前拒绝 mutating 分支(403 hermes_mutating_disabled)并记录一条 denied 行;
 	// 只读诊断路径不受影响。
 	mutatingDisabled bool
-	// mutateRateLimiter 是 S2 (c) 的 per-operator-token 滑动窗口限流器。它在
+	// mutateRateLimiter 是按管理员身份执行的滑动窗口限流器。它在
 	// confirmMutation 里、correlation-id 消费之后、Execute 之前被检查,因此只有真正
 	// 已确认的执行才计数(preview/denial 不计)。nil 限流器(handler 的 0 值,也是测试
 	// 默认构造的形态)是「禁用」哨兵——每次 confirm 都放行,与旧行为逐字节一致。
@@ -89,38 +85,30 @@ type RouterDeps struct {
 	Runner         *hermes.RunnerClient
 	Bridge         *hermeschat.Bridge
 	HeaderSettings headerfirewall.PlatformSettings
-	// Tools、ToolCalls 与 ContextSource 接入 WAVE H3 的只读 ops 主干。
+	// Tools、ToolCalls 与 ContextSource 接入只读运维工具主干。
 	// 三者均可选:未设置时,tool/context 路由返回 503(service unavailable)
 	// 而非 panic。
 	Tools         ToolRegistry
 	ToolCalls     hermesops.ToolCallInserter
 	ContextSource ContextSource
-	// Mutator 接入 WAVE H4 的 mutating 工具路径(atomic-audit + advisory-lock
-	// orchestrator)。可选:未设置时,mutating 工具被拒绝(503),只读路径不受影响。
+	// Mutator 接入带原子日志和 advisory lock 的改动型工具路径。未设置时，
+	// 改动型工具返回 503，只读路径不受影响。
 	Mutator MutateOrchestrator
-	// MutatingEnabled 是 KNOB A:针对所有 mutating 工具的运行时 kill-switch。
+	// MutatingEnabled 是所有改动型工具的运行时总开关。
 	// gateway 接线层从 HUAKAI_HERMES_MUTATING_ENABLED 取值(默认 true)。为 false 时,
 	// handler 拒绝 tool-execute 的 mutating 分支(403 hermes_mutating_disabled,记录
 	// denial),而只读路径 + chat 仍保持可用。注意:为接线层表达清晰,该字段以「启用」
 	// 形式命名;handler 存储其取反值,这样 0 值 handler{}(测试里直接构造)默认保持
 	// mutation 启用。
 	MutatingEnabled bool
-	// ConfirmCache 是 dry-run→confirm 的共享 correlation-id 存储。可选:为 nil 时,
-	// NewRouterWithDeps 会为每个 router 新建一个独立实例(与旧行为完全一致)。gateway
-	// 接线层注入一个进程级单例,使(未来 Phase B 的)LLM 提议侧与本 operator 确认侧
-	// 共用同一份缓存——一次提议发出的 correlation_id 可被 operator confirm 消费。
-	// nil 缓存始终 fail-closed(confirm → 400,绝不执行)。
-	ConfirmCache *hermesconfirm.Cache
-	// MutateGuard 是可选的 S2「为 mutating 路径设界」组合。其 handler 侧的部分是
-	// per-operator-token 限流器;并发信号量 + tx deadline 在接线时施加于 orchestrator。
-	// gateway 接线层仅在 admin-only mutator 路径激活时设置它;为 nil 时,handler 的
-	// 限流器是「禁用」哨兵——与旧行为逐字节一致。
+	// ConfirmStore 是提议与人工确认共用的跨副本单次消费存储。
+	ConfirmStore hermesconfirm.Store
+	// MutateGuard 是改动路径的可选资源保护组合。处理器侧按管理员身份限流，
+	// 并发信号量和事务期限由接线层施加于编排器。为 nil 时不启用限流。
 	MutateGuard *MutateGuardDeps
 }
 
-// MutateGuardDeps 携带 S2 mutating 路径设界中 handler 侧的部分:per-operator-token
-// 限流器。并发信号量 + tx deadline 在接线时施加于 orchestrator(NewMutateOrchestrator
-// 选项),而非这里。nil 的 RateLimiter(或一个被禁用的)即旧的无界行为。
+// MutateGuardDeps 携带改动路径在处理器侧使用的按管理员身份限流器。
 type MutateGuardDeps struct {
 	RateLimiter *mutateguard.RateLimiter
 }
@@ -143,18 +131,16 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 		toolCalls:      d.ToolCalls,
 		contextSource:  d.ContextSource,
 		mutator:        d.Mutator,
-		// 注入共享 Cache;未注入则回退新建(行为同旧 newConfirmCache(),保证 NewRouter()/白盒测试不变)。
-		confirmCache: d.ConfirmCache,
-		// KNOB A:存储取反值,使 0 值 handler{}(白盒测试)默认保持 mutation 启用;
+		confirmStore:   d.ConfirmStore,
+		// 存储取反值，使 0 值 handler{} 在白盒测试中默认保持改动路径启用；
 		// 接线层传入 MutatingEnabled(默认 true)。
 		mutatingDisabled: !d.MutatingEnabled,
 	}
-	// 未注入共享 Cache 时回退新建一个(行为同旧 newConfirmCache():每路由一份),保证 NewRouter()
-	// 与白盒 handler 测试无需注入即可工作。
-	if h.confirmCache == nil {
-		h.confirmCache = hermesconfirm.NewCache()
+	// 仅纯单元测试未注入数据库时回退到每路由一份内存存储。
+	if h.confirmStore == nil {
+		h.confirmStore = hermesconfirm.NewCache()
 	}
-	// S2 (c):当 guard 组合被接入时,启用 per-operator-token 限流器。
+	// 接入保护组合时启用按管理员身份限流器。
 	// nil 组合(或 nil 限流器)会让 h.mutateRateLimiter 保持 nil = 禁用。
 	if d.MutateGuard != nil {
 		h.mutateRateLimiter = d.MutateGuard.RateLimiter
@@ -166,45 +152,18 @@ func NewRouterWithDeps(d RouterDeps) http.Handler {
 	r.Post("/api-profiles", h.createProfile)
 	r.Get("/api-profiles", h.listProfiles)
 	r.Get("/api-profiles/{id}", h.getProfile)
+	r.Put("/api-profiles/{id}", h.rotateProfile)
 	r.Delete("/api-profiles/{id}", h.deleteProfile)
 	r.Post("/chat", h.startChat)
 	r.Get("/conversations", h.listConversations)
 	r.Get("/conversations/{id}", h.getConversation)
 	r.Delete("/conversations/{id}", h.deleteConversation)
 	r.Get("/conversations/{id}/messages", h.listConversationMessages)
-	// WAVE H3 只读 ops 主干 + WAVE H4 mutating ops 工具。tool-execute 直接派发只读
-	// 工具,而把 mutating 工具引导经过 dry-run + confirm 流程(confirm=false => preview,
-	// confirm=true => execute)。
+	// tool-execute 直接派发只读工具，并把改动型工具引导经过预览和人工确认流程。
 	r.Get("/tools", h.listTools)
 	r.Post("/tool-execute", h.executeTool)
 	r.Get("/context", h.getModuleContext)
 	return r
-}
-
-func APIKeyMiddleware(resolver AuthResolver) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if resolver == nil {
-				writeError(w, http.StatusServiceUnavailable, "hermes_auth_unavailable", "hermes auth resolver unset")
-				return
-			}
-			ident, err := resolver.Resolve(r.Context(), r)
-			if err != nil {
-				if errors.Is(err, sessionauth.ErrAuthBackend) || errors.Is(err, sessionauth.ErrAuthMisconfigured) {
-					writeError(w, http.StatusServiceUnavailable, "hermes_auth_backend_error", "hermes auth backend transient failure")
-					return
-				}
-				if errors.Is(err, sessionauth.ErrForbidden) {
-					writeError(w, http.StatusForbidden, "forbidden", "api key policy forbids this request")
-					return
-				}
-				writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "missing or invalid bearer token")
-				return
-			}
-			ctx := context.WithValue(r.Context(), authContextKey{}, ident)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
 }
 
 func (h handler) requireIdentity(w http.ResponseWriter, r *http.Request) (sessionauth.Identity, bool) {
@@ -214,7 +173,7 @@ func (h handler) requireIdentity(w http.ResponseWriter, r *http.Request) (sessio
 	}
 	ident, ok := r.Context().Value(authContextKey{}).(sessionauth.Identity)
 	if !ok || ident.TenantID <= 0 || ident.UserID <= 0 {
-		writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "hermes api key bearer token is required")
+		writeError(w, http.StatusUnauthorized, "hermes_unauthorized", "hermes administrator identity is required")
 		return sessionauth.Identity{}, false
 	}
 	return ident, true
@@ -237,35 +196,12 @@ func (h handler) requireChatBridge(w http.ResponseWriter) bool {
 }
 
 func (h handler) audit(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) bool {
-	err := h.svc.RecordAudit(r.Context(), ident.TenantID, ident.UserID, action, withAdminActor(r.Context(), args), result, correlationID(r), requestID(r))
+	err := h.svc.RecordAudit(r.Context(), auditFields(r, ident, action, args, result))
 	if err != nil {
 		writeHermesError(w, err)
 		return false
 	}
 	return true
-}
-
-// withAdminActor 在请求以 admin-only 模式完成认证时,把解析出的 operator token id
-// + role 折入已脱敏的审计 args。actor_user_id 仍记录 tenant user(以保证 users FK
-// 成立);本函数记录是哪个 operator 执行了该动作,使审计轨迹能归因到真正的 admin。
-// 终端用户路径的请求原样返回。该 map 会被复制,以免调用方的 args(也用于错误路径)
-// 被改动,同时也让审计的敏感键脱敏器仍能作用其上。
-func withAdminActor(ctx context.Context, args map[string]any) map[string]any {
-	actor, ok := adminActorFromContext(ctx)
-	if !ok {
-		return args
-	}
-	out := make(map[string]any, len(args)+2)
-	for k, v := range args {
-		out[k] = v
-	}
-	// 键名用 admin_actor_id(而非 *_token_id):hermes 审计脱敏器
-	// (hermes.SanitizeArgs/sensitiveKey)会对任何含 "token" 的键脱敏,而这个值是
-	// 非机密的 admin_tokens 行 PK,必须保留进入持久化轨迹——否则 operator 归因会被
-	// 静默丢弃。
-	out["admin_actor_id"] = actor.TokenID
-	out["admin_role"] = actor.Role
-	return out
 }
 
 func (h handler) auditFailureThenError(w http.ResponseWriter, r *http.Request, ident sessionauth.Identity, action string, args map[string]any, err error) {
@@ -276,9 +212,10 @@ func (h handler) auditFailureThenError(w http.ResponseWriter, r *http.Request, i
 }
 
 func auditFields(r *http.Request, ident sessionauth.Identity, action string, args map[string]any, result string) hermes.AuditFields {
+	actor, _ := adminActorFromContext(r.Context())
 	return hermes.AuditFields{
-		TenantID: ident.TenantID, ActorUserID: ident.UserID, Action: action,
-		SanitizedArgs: withAdminActor(r.Context(), args), Result: result,
+		TenantID: ident.TenantID, ActorSource: actor.Source, ActorID: actor.ID, ActorRole: actor.Role, Action: action,
+		SanitizedArgs: args, Result: result,
 		CorrelationID: correlationID(r), RequestID: requestID(r),
 	}
 }
@@ -308,6 +245,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
 		return false
 	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON value")
+		return false
+	}
 	return true
 }
 
@@ -333,6 +275,8 @@ func writeHermesError(w http.ResponseWriter, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_, _ = fmt.Fprint(w, `{"error":"profile_in_use","detail":"profile is currently used by settings"}`)
+	case errors.Is(err, hermes.ErrConflict):
+		writeError(w, http.StatusConflict, "hermes_conflict", "hermes resource changed concurrently")
 	case errors.Is(err, hermes.ErrForbidden):
 		writeError(w, http.StatusForbidden, "hermes_forbidden", "hermes resource is not allowed")
 	case errors.Is(err, hermes.ErrNotFound):

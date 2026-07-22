@@ -61,12 +61,14 @@ func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
 		RequestedModel:   "gpt-4o",
 		SettlementSource: SettlementSourceProviderUpstream,
 		CostSnapshot:     stringPtrForTest("tiered:vtest-policy"),
+		BillingEffect:    string(BillingEffectOperationalCost),
 	})
 	if err != nil {
 		t.Fatalf("marshalUsageRecordPayload: %v", err)
 	}
 	var decoded struct {
 		CostSnapshot *string `json:"cost_snapshot"`
+		BillingEffect string  `json:"billing_effect"`
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
@@ -74,13 +76,16 @@ func TestMarshalUsageRecordPayloadCarriesCostSnapshot(t *testing.T) {
 	if decoded.CostSnapshot == nil || *decoded.CostSnapshot != "tiered:vtest-policy" {
 		t.Fatalf("cost_snapshot=%v want tiered:vtest-policy", decoded.CostSnapshot)
 	}
+	if decoded.BillingEffect != string(BillingEffectOperationalCost) {
+		t.Fatalf("billing_effect=%q", decoded.BillingEffect)
+	}
 }
 
 func TestAT_AUDIT_001_060_RefundZeroReturnsSkippedCode(t *testing.T) {
 	// 查询顺序:退款事实未命中、claim 锁、旧事件未命中。
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{values: []any{"fp-zero", "committed", decimal.RequireFromString("0.02000000"), int64(901), string(BillingEffectUserCharge)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
 	)
 	settler := &DefaultSettler{q: dbbilling.New(tx)}
@@ -112,7 +117,7 @@ func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
 	// 查询顺序:退款事实未命中、claim 锁、旧事件未命中、captured hold。
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808"), int64(901)}},
+		refundSettlerRow{values: []any{"fp-overflow", "committed", decimal.RequireFromString("9223372036854.775808"), int64(901), string(BillingEffectUserCharge)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{values: []any{int64(1), int64(901), decimal.RequireFromString("1.00000000"), decimal.RequireFromString("1.00000000"), "captured"}},
 	)
@@ -134,7 +139,7 @@ func TestAT_AUDIT_001_062_RefundActualCostOverflowRejected(t *testing.T) {
 func TestRefundWithoutCapturedHoldIsRejected(t *testing.T) {
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-unpaid", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{values: []any{"fp-unpaid", "committed", decimal.RequireFromString("0.02000000"), int64(901), string(BillingEffectUserCharge)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{err: pgx.ErrNoRows},
 	)
@@ -166,7 +171,7 @@ func TestRefundRejectsHoldIdentityMismatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tx := newRefundSettlerTestTx(
 				refundSettlerRow{err: pgx.ErrNoRows},
-				refundSettlerRow{values: []any{"fp-identity", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+				refundSettlerRow{values: []any{"fp-identity", "committed", decimal.RequireFromString("0.02000000"), int64(901), string(BillingEffectUserCharge)}},
 				refundSettlerRow{err: pgx.ErrNoRows},
 				refundSettlerRow{values: []any{tt.tenantID, tt.userID, decimal.RequireFromString("0.02000000"), decimal.RequireFromString("0.02000000"), "captured"}},
 			)
@@ -202,7 +207,7 @@ func TestRefundRejectsHoldThatWasNotCaptured(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tx := newRefundSettlerTestTx(
 				refundSettlerRow{err: pgx.ErrNoRows},
-				refundSettlerRow{values: []any{"fp-state", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+				refundSettlerRow{values: []any{"fp-state", "committed", decimal.RequireFromString("0.02000000"), int64(901), string(BillingEffectUserCharge)}},
 				refundSettlerRow{err: pgx.ErrNoRows},
 				refundSettlerRow{values: []any{int64(1), int64(901), decimal.RequireFromString("0.02000000"), tt.captured, tt.state}},
 			)
@@ -227,7 +232,7 @@ func TestRefundPropagatesHoldReadFailure(t *testing.T) {
 	boom := errors.New("hold storage unavailable")
 	tx := newRefundSettlerTestTx(
 		refundSettlerRow{err: pgx.ErrNoRows},
-		refundSettlerRow{values: []any{"fp-hold-error", "committed", decimal.RequireFromString("0.02000000"), int64(901)}},
+		refundSettlerRow{values: []any{"fp-hold-error", "committed", decimal.RequireFromString("0.02000000"), int64(901), string(BillingEffectUserCharge)}},
 		refundSettlerRow{err: pgx.ErrNoRows},
 		refundSettlerRow{err: boom},
 	)

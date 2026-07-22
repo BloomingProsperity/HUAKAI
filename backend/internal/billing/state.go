@@ -28,10 +28,6 @@ type Attempt struct {
 	StreamTerminatedReason string
 }
 
-func NewAttempt() Attempt {
-	return Attempt{State: StreamStateAcquired}
-}
-
 func (s StreamState) Valid() bool {
 	return s >= StreamStateAcquired && s <= StreamStateFailed
 }

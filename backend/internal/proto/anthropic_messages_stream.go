@@ -31,6 +31,11 @@ func NewAnthropicMessagesStreamState() *AnthropicMessagesStreamState {
 	return &AnthropicMessagesStreamState{OpenBlocks: make(map[int]bool)}
 }
 
+// NewClientStreamState 创建当前协议一次流式响应独占的状态。
+func (*AnthropicMessagesClient) NewClientStreamState() any {
+	return NewAnthropicMessagesStreamState()
+}
+
 // anthropicStreamStateRef 把 *AnthropicMessagesStreamState 或 nil 转成统一非 nil
 // 引用；state == nil 时返回临时新 state（容忍 forwarder 漏初始化）。
 func anthropicStreamStateRef(state any) (*AnthropicMessagesStreamState, error) {

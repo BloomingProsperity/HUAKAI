@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/cachecontrol"
 	"github.com/BloomingProsperity/HUAKAI/internal/cacheplan"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway/streamusage"
@@ -243,8 +244,8 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	in.InboundBody = controlledBody
 
-	// RR-04:裁剪 >CacheControlMaxAllowed 的 cache_control breakpoints(Anthropic >4 返 400);fail-open。
-	if trimmed, _ := EnforceCacheControlLimit(in.InboundBody, CacheControlMaxAllowed); len(trimmed) > 0 {
+	// RR-04:裁剪超过 cachecontrol.CacheControlMaxAllowed 的 cache_control 断点（上游会拒绝）；失败时保留原请求。
+	if trimmed, _ := cachecontrol.EnforceCacheControlLimit(in.InboundBody, cachecontrol.CacheControlMaxAllowed); len(trimmed) > 0 {
 		in.InboundBody = trimmed
 	}
 	// 可选 Anthropic cache_control breakpoint 规划(仅 anthropic_messages、opt-in;见 maybeInjectAnthropicBreakpoints)。
@@ -439,21 +440,21 @@ func (d *UpstreamDispatcher) maybeInjectAnthropicBreakpoints(ctx context.Context
 	if cacheplan.HasAnyCacheControl(body) {
 		return body
 	}
-	snapshot, err := InspectCacheControl(body)
+	snapshot, err := cachecontrol.InspectCacheControl(body)
 	if err != nil {
 		return body
 	}
-	suggestion, err := SuggestBreakpoints(body, snapshot, nil)
+	suggestion, err := cachecontrol.SuggestBreakpoints(body, snapshot, nil)
 	if err != nil || len(suggestion.Add) == 0 {
 		return body
 	}
-	apply := ApplyBreakpoints
+	apply := cachecontrol.ApplyBreakpoints
 	if d.AnthropicTTLSettings != nil {
 		if enabled, readErr := d.AnthropicTTLSettings.AnthropicTTL1hRewriteEnabled(ctx); readErr == nil && enabled {
 			for i := range suggestion.Add {
 				suggestion.Add[i].TTL = "1h"
 			}
-			apply = ApplyBreakpointsWithTTLOrdering
+			apply = cachecontrol.ApplyBreakpointsWithTTLOrdering
 		}
 	}
 	result, err := apply(body, suggestion)

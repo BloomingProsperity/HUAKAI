@@ -10,10 +10,41 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 )
+
+type AuditVerifyDeps = auditverifyhttp.AuditVerifyDeps
+type AuditVerifyStaticDeps = auditverifyhttp.AuditVerifyStaticDeps
+type AuditVerifyResponse = auditverifyhttp.AuditVerifyResponse
+type AuditMerkleTreeResponse = auditverifyhttp.AuditMerkleTreeResponse
+type AuditPubkeyDeps = auditverifyhttp.AuditPubkeyDeps
+type AuditPubkeyResponse = auditverifyhttp.AuditPubkeyResponse
+type AuditPubkeysResponse = auditverifyhttp.AuditPubkeysResponse
+
+const auditVerifyBodyMaxBytes = auditverifyhttp.BodyMaxBytes
+
+var (
+	NewAuditVerifyHandler     = auditverifyhttp.NewAuditVerifyHandler
+	NewAuditMerkleTreeHandler = auditverifyhttp.NewAuditMerkleTreeHandler
+	NewAuditPubkeyHandler     = auditverifyhttp.NewAuditPubkeyHandler
+	MountAuditPubkeyRoutes    = auditverifyhttp.MountAuditPubkeyRoutes
+)
+
+func auditVerifyResponse(entry auditledger.LedgerEntry) AuditVerifyResponse {
+	return auditverifyhttp.ResponseForEntry(entry)
+}
+
+func rootHex(root [32]byte) string {
+	return auditverifyhttp.RootHex(root)
+}
+
+func writeAuditJSONError(w http.ResponseWriter, status int, code, message string) {
+	adminhttpcore.WriteJSONError(w, status, code, message)
+}
 
 func mustPrepareGatewayHTTPLedgerEntry(t testing.TB, ctx context.Context, entry auditledger.LedgerEntry) auditledger.PreparedEntry {
 	t.Helper()

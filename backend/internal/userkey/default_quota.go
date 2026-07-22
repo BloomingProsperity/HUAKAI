@@ -59,9 +59,10 @@ func (s *Service) seedDefaultKeyQuota(ctx context.Context, tx pgx.Tx, tenantID, 
 			        $6::numeric(20,8), 0, 'enforce', 200, true, now(),
 			        NULL, 'system_default', 'system_default'
 			 WHERE EXISTS (
-			     SELECT 1 FROM api_keys ak
-			      WHERE ak.id = $7::bigint AND ak.tenant_id = $1::bigint
-			        AND ak.user_id = $8::bigint AND ak.deleted_at IS NULL)
+				     SELECT 1 FROM api_keys ak
+				      WHERE ak.id = $7::bigint AND ak.tenant_id = $1::bigint
+				        AND ak.user_id = $8::bigint AND ak.purpose = 'user'
+				        AND ak.deleted_at IS NULL)
 			 ON CONFLICT DO NOTHING`,
 			tenantID, scopeID, spec.metric, spec.windowKind, spec.windowSeconds, spec.limit, apiKeyID, userID,
 		); err != nil {

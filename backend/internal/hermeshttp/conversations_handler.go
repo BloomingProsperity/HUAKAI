@@ -15,11 +15,17 @@ func (h handler) listConversations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actor, ok := requireConversationActor(w, r)
+	if !ok {
+		return
+	}
 	limit, offset, ok := parsePagination(w, r)
 	if !ok {
 		return
 	}
-	conversations, err := h.svc.ListConversationsByOwner(r.Context(), ident.TenantID, ident.UserID, limit, offset)
+	conversations, err := h.svc.ListConversationsByOwner(
+		r.Context(), ident.TenantID, ident.UserID, actor.Source, actor.ID, limit, offset,
+	)
 	if err != nil {
 		writeHermesError(w, err)
 		return
@@ -36,6 +42,10 @@ func (h handler) listConversationMessages(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	actor, ok := requireConversationActor(w, r)
+	if !ok {
+		return
+	}
 	id, ok := conversationIDParam(w, r)
 	if !ok {
 		return
@@ -44,7 +54,9 @@ func (h handler) listConversationMessages(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	messages, err := h.svc.ListMessagesByConversation(r.Context(), ident.TenantID, id, ident.UserID, limit, offset)
+	messages, err := h.svc.ListMessagesByConversation(
+		r.Context(), ident.TenantID, id, ident.UserID, actor.Source, actor.ID, limit, offset,
+	)
 	if err != nil {
 		writeHermesError(w, err)
 		return
@@ -61,11 +73,15 @@ func (h handler) getConversation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actor, ok := requireConversationActor(w, r)
+	if !ok {
+		return
+	}
 	id, ok := conversationIDParam(w, r)
 	if !ok {
 		return
 	}
-	conversation, err := h.svc.GetConversation(r.Context(), ident.TenantID, id, ident.UserID)
+	conversation, err := h.svc.GetConversation(r.Context(), ident.TenantID, id, ident.UserID, actor.Source, actor.ID)
 	if err != nil {
 		writeHermesError(w, err)
 		return
@@ -78,6 +94,10 @@ func (h handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actor, ok := requireConversationActor(w, r)
+	if !ok {
+		return
+	}
 	id, ok := conversationIDParam(w, r)
 	if !ok {
 		return
@@ -86,7 +106,7 @@ func (h handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 		"conversation_id": id,
 	}
 	err := h.svc.SoftDeleteConversationWithAudit(
-		r.Context(), ident.TenantID, ident.UserID, id,
+		r.Context(), ident.TenantID, ident.UserID, id, actor.Source, actor.ID,
 		auditFields(r, ident, hermes.ActionConversationDelete, args, hermes.AuditResultSuccess),
 	)
 	if err != nil {
@@ -94,6 +114,15 @@ func (h handler) deleteConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func requireConversationActor(w http.ResponseWriter, r *http.Request) (adminActor, bool) {
+	actor, ok := adminActorFromContext(r.Context())
+	if !ok || actor.ID <= 0 || (actor.Source != "token" && actor.Source != "session") {
+		writeError(w, http.StatusUnauthorized, "hermes_admin_unauthorized", "administrator actor identity is required")
+		return adminActor{}, false
+	}
+	return actor, true
 }
 
 func conversationIDParam(w http.ResponseWriter, r *http.Request) (int64, bool) {

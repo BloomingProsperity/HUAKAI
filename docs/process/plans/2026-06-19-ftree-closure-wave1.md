@@ -14,7 +14,7 @@ secret-mask + 身份取自认证上下文;默认行为翻转保留 env 开关;�
 ## 经对抗验证的实现队列(按价值降序)
 | 模块 | 功能 | 分数 | 风险 | 缺口(一句话) | 状态 |
 |---|---|---|---|---|---|
-| dlq | F-OBS-005 | 82 | 无 | StatusQuarantined/DLQ 已定义、schema 允许、有索引、被 hermesadmin 消费,但从无代码"产生"它——毒消息要烧满 10 次重试/15 分钟才进 operator_review,而不是第 1 次就隔离 | **第1波 ✅** |
+| dlq | F-OBS-005 | 82 | 无 | StatusQuarantined/DLQ 已定义、schema 允许、有索引、被 opsinspection 消费,但从无代码"产生"它——毒消息要烧满 10 次重试/15 分钟才进 operator_review,而不是第 1 次就隔离 | **第1波 ✅** |
 | hermes | F-OBS-004 | 82 | schema | 软删的会话行从不硬删——明文标题比消息和留存窗口活得更久;给已接线的留存 worker 加 purge,同 env 开关 | 第2波 |
 | settlementrecovery | F-OBS-001 | 78 | money(测试) | 生产 money 路径幂等闸 PostgresCommittedProof.IsCommitted 零真 PG 覆盖(handler 全打桩);加 env 门控集成测试覆盖 4 个分支 + 每个变异 RED | 第2波 |
 | eventbus | F-OBS-004 | 72 | 无 | 每 handler 的状态 map 在每次 money 路径结算时无界增长(无 cap/TTL/清扫)——进程内泄漏;加有限默认 cap + 驱逐最旧 + env 逃生阀 | **第1波 ✅** |
@@ -55,4 +55,4 @@ secret-mask + 身份取自认证上下文;默认行为翻转保留 env 开关;�
 测试(变异可证,每个都抓到 RED):retry 的 `NextFailureForErr` 第 1 次隔离 + 瞬时/nil 委托等价;
 settlementrecovery 的 Decode/Validate/wrong-kind 归类为 `ErrUnretryable`;两个 **money 安全控制测试**证明瞬时
 结算错误 + `ErrClaimNotReserving` 保持可重试;以及 env 逃生阀开关(开→隔离、关→pending)及其 env 解析。
-消费方(hermesadmin)本就把 quarantined 当可处理 backlog;迁移 0015 的 status CHECK + partial index 本就允许该终态。
+消费方(opsinspection)本就把 quarantined 当可处理 backlog;迁移 0015 的 status CHECK + partial index 本就允许该终态。

@@ -55,8 +55,7 @@ func TestAuthorizeMutating_RefusesReadOnlyTool(t *testing.T) {
 	// 回归:只读工具永远不能进入 mutate 路径。变异检验:去掉 AuthorizeMutating 里的
 	// !spec.Mutating 守卫,则此处会返回 nil。
 	reg := NewRegistry()
-	reg.Register(ToolSpec{Name: ToolDLQInspect, ReadOnly: true, RequiredRole: RoleTenantOperator,
-		Run: func(context.Context, ToolRequest) (ToolResult, error) { return ToolResult{}, nil }})
+	reg.Register(okSpec(ToolDLQInspect, RoleTenantOperator))
 	if _, err := reg.AuthorizeMutating(ToolDLQInspect, RolePlatformAdmin); !errors.Is(err, ErrNotMutating) {
 		t.Fatalf("read-only via mutate path err=%v want ErrNotMutating", err)
 	}
@@ -125,7 +124,7 @@ func TestAccountPause_MutateFlipsEnabledFalseViaRealPath(t *testing.T) {
 		},
 	}
 	pausePlan := MutationPlan{TargetType: "provider_account", TargetID: 5, Preview: map[string]any{"current_enabled": true}}
-	res, err := AccountPauseSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, pausePlan)
+	res, err := AccountPauseSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, pausePlan)
 	if err != nil {
 		t.Fatalf("pause mutate err=%v", err)
 	}
@@ -137,7 +136,7 @@ func TestAccountPause_MutateFlipsEnabledFalseViaRealPath(t *testing.T) {
 	}
 
 	resumePlan := MutationPlan{TargetType: "provider_account", TargetID: 5, Preview: map[string]any{"current_enabled": false}}
-	if _, err := AccountResumeSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, resumePlan); err != nil {
+	if _, err := AccountResumeSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, resumePlan); err != nil {
 		t.Fatalf("resume mutate err=%v", err)
 	}
 	if enabledRec.lastEnabled == nil || *enabledRec.lastEnabled != true {
@@ -170,7 +169,7 @@ func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
 	spec := DLQReplaySpec(deps)
 	plan := MutationPlan{TargetType: "dlq_event", TargetID: 11, Preview: map[string]any{"current_status": "pending"}}
 	for i := 0; i < 2; i++ {
-		if _, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorUserID: 42}, plan); err != nil {
+		if _, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, plan); err != nil {
 			t.Fatalf("replay %d err=%v", i, err)
 		}
 	}
@@ -196,7 +195,7 @@ func TestDLQReplay_ErrNotFoundAfterPreviewIsIdempotentAlreadyProcessed(t *testin
 	if err != nil {
 		t.Fatalf("resolve err=%v", err)
 	}
-	res, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorUserID: 42}, plan)
+	res, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, plan)
 	if err != nil {
 		t.Fatalf("mutate err=%v want idempotent success", err)
 	}
@@ -217,7 +216,10 @@ func TestRenewTrigger_NeverReturnsCredentialMaterial(t *testing.T) {
 		ListByAccount: func(_ context.Context, tenant, account int64) ([]credentialstore.CredentialMetadata, error) {
 			return []credentialstore.CredentialMetadata{{ID: 3, TenantID: tenant, ProviderAccountID: account, Version: 4, State: "active", Vendor: "anthropic"}}, nil
 		},
-		Rotate: func(_ context.Context, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error) {
+		RotateTx: func(_ context.Context, tx pgx.Tx, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error) {
+			if tx == nil {
+				t.Fatal("凭据轮换未收到编排器事务")
+			}
 			if !strings.Contains(string(in.Payload), secret) {
 				t.Fatalf("Rotate did not receive the new payload")
 			}
@@ -230,7 +232,7 @@ func TestRenewTrigger_NeverReturnsCredentialMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve err=%v", err)
 	}
-	res, err := spec.Mutate(context.Background(), ToolRequest{TenantID: 7, ActorUserID: 42, Args: args}, plan)
+	res, err := spec.Mutate(withMutationTx(context.Background(), &enabledFakeTx{rec: &enabledTxRecorder{}}), ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42, Args: args}, plan)
 	if err != nil {
 		t.Fatalf("mutate err=%v", err)
 	}

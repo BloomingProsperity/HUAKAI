@@ -207,6 +207,8 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/hermes.sql
+      - sql/queries/hermes_conversations.sql
+      - sql/queries/hermes_jwt_keys.sql
     gen:
       go:
         package: hermes
@@ -236,6 +238,7 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/hermes_tool_calls.sql
+      - sql/queries/hermes_mutation_recovery.sql
     gen:
       go:
         package: hermestoolsdb
@@ -391,6 +394,7 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/moderation.sql
+      - sql/queries/moderation_enforcement.sql
     gen:
       go:
         package: moderation

@@ -99,12 +99,6 @@ func (m *memSlotManager) releaseCount(tok uuid.UUID) int {
 	return m.releases[tok]
 }
 
-func (m *memSlotManager) releaseFor(tok uuid.UUID) ReleaseFunc {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.releaseFns[tok]
-}
-
 // snap 是构造 AccountSnapshot 字面量的简写。
 func snap(id, tenant int64, prio int, load float64, lastUsed time.Time) *AccountSnapshot {
 	return &AccountSnapshot{

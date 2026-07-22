@@ -340,6 +340,7 @@ type ForceCooldownController interface {
 type Store interface {
 	Get(context.Context, ChannelKey) (Record, error)
 	ListChannelHealth(context.Context, int64, int, int) ([]ChannelHealthState, error)
+	ListChannelHealthByProviderAccount(context.Context, int64, int64, int, int) ([]ChannelHealthState, error)
 	GetChannelHealth(context.Context, int64, string) (ChannelHealthState, []AuditEvent, error)
 	SummarizeChannelHealth(context.Context, int64) (ChannelHealthSummary, error)
 	UpsertRecord(context.Context, Record) (Record, error)

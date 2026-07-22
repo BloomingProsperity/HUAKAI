@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -25,6 +26,7 @@ func TestListConversationsReadsPostgresWithOwnerAndPagination(t *testing.T) {
 	store := &conversationHTTPStore{
 		listConversationsRows: []dbhermes.HermesConversation{{
 			ID: 701, TenantID: 7, OwnerUserID: 42, Title: stringPtrHTTPTest("own"),
+			ActorSource: "token", ActorID: 99,
 			CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 		}},
 	}
@@ -41,6 +43,8 @@ func TestListConversationsReadsPostgresWithOwnerAndPagination(t *testing.T) {
 	if !store.listConversationsCalled ||
 		store.listConversationsArg.TenantID != 7 ||
 		store.listConversationsArg.OwnerUserID != 42 ||
+		store.listConversationsArg.ActorSource != "token" ||
+		store.listConversationsArg.ActorID != 99 ||
 		store.listConversationsArg.PageLimit != 200 ||
 		store.listConversationsArg.PageOffset != 3 {
 		t.Fatalf("list arg=%+v called=%v want tenant=7 owner=42 limit=200 offset=3",
@@ -74,6 +78,16 @@ func TestGetConversationCrossOwner404AndDeleted410(t *testing.T) {
 			name: "cross owner returns 404",
 			row: dbhermes.HermesConversation{
 				ID: 801, TenantID: 7, OwnerUserID: 99,
+				ActorSource: "token", ActorID: 99,
+				CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "same tenant other administrator returns 404",
+			row: dbhermes.HermesConversation{
+				ID: 803, TenantID: 7, OwnerUserID: 42,
+				ActorSource: "token", ActorID: 777,
 				CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 			},
 			wantStatus: http.StatusNotFound,
@@ -82,6 +96,7 @@ func TestGetConversationCrossOwner404AndDeleted410(t *testing.T) {
 			name: "soft deleted returns 410",
 			row: dbhermes.HermesConversation{
 				ID: 802, TenantID: 7, OwnerUserID: 42,
+				ActorSource: "token", ActorID: 99,
 				CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 				DeletedAt: pgtype.Timestamptz{Time: httpTestPGTime().Time, Valid: true},
 			},
@@ -109,6 +124,7 @@ func TestListConversationMessagesRejectsCrossOwner404(t *testing.T) {
 	// 回归:对他人的 conversation id 不得返回 200 + 空 messages,那会通过行为泄露其存在性。
 	store := &conversationHTTPStore{conversationRow: dbhermes.HermesConversation{
 		ID: 901, TenantID: 7, OwnerUserID: 99,
+		ActorSource: "token", ActorID: 99,
 		CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 	}}
 	router := NewRouter(hermes.NewService(store), nil)
@@ -131,6 +147,7 @@ func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
 	store := &conversationHTTPStore{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 902, TenantID: 7, OwnerUserID: 42,
+			ActorSource: "token", ActorID: 99,
 			CreatedAt: httpTestPGTime(), UpdatedAt: httpTestPGTime(),
 		},
 		listMessagesRows: []dbhermes.ListMessagesByConversationRow{{
@@ -152,6 +169,8 @@ func TestListConversationMessagesReadsPostgresWithOwner(t *testing.T) {
 		store.listMessagesArg.TenantID != 7 ||
 		store.listMessagesArg.ConversationID != 902 ||
 		store.listMessagesArg.OwnerUserID != 42 ||
+		store.listMessagesArg.ActorSource != "token" ||
+		store.listMessagesArg.ActorID != 99 ||
 		store.listMessagesArg.PageLimit != 5 ||
 		store.listMessagesArg.PageOffset != 1 {
 		t.Fatalf("list messages arg=%+v called=%v want tenant=7 conv=902 owner=42 limit=5 offset=1",
@@ -248,11 +267,17 @@ func TestDeleteConversationCrossTenantWritesFailureAudit(t *testing.T) {
 
 func newConversationHTTPRequest(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	return req.WithContext(context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
+	ctx := context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
 		TenantID: 7,
 		UserID:   42,
 		APIKeyID: 11,
-	}))
+	})
+	ctx = context.WithValue(ctx, adminActorContextKey{}, adminActor{
+		Source: admin.AdminSourceToken,
+		ID:     99,
+		Role:   admin.RolePlatformAdmin,
+	})
+	return req.WithContext(ctx)
 }
 
 type conversationHTTPStore struct {
@@ -284,7 +309,10 @@ func (s *conversationHTTPStore) GetConversation(_ context.Context, arg dbhermes.
 	if s.conversationRow.ID != 0 {
 		return s.conversationRow, nil
 	}
-	return dbhermes.HermesConversation{ID: arg.ID, TenantID: arg.TenantID, OwnerUserID: 42}, nil
+	return dbhermes.HermesConversation{
+		ID: arg.ID, TenantID: arg.TenantID, OwnerUserID: arg.OwnerUserID,
+		ActorSource: arg.ActorSource, ActorID: arg.ActorID,
+	}, nil
 }
 
 func (s *conversationHTTPStore) ListConversationsByOwner(_ context.Context, arg dbhermes.ListConversationsByOwnerParams) ([]dbhermes.HermesConversation, error) {
@@ -339,9 +367,9 @@ func requireConversationDeleteAudit(t *testing.T, recorder *conversationDeleteAu
 		t.Fatalf("audit events=%d want exactly 1 (%+v)", len(recorder.auditEvents), recorder.auditEvents)
 	}
 	event := recorder.auditEvents[0]
-	if event.TenantID != 7 || event.ActorUserID != 42 ||
+	if event.TenantID != 7 || event.ActorSource != admin.AdminSourceToken || event.ActorID != 99 || event.ActorRole != admin.RolePlatformAdmin ||
 		event.Action != hermes.ActionConversationDelete || event.Result != result {
-		t.Fatalf("audit=%+v want tenant=7 actor=42 action=%q result=%q",
+		t.Fatalf("日志=%+v，期望租户=7、管理员令牌=99、动作=%q、结果=%q",
 			event, hermes.ActionConversationDelete, result)
 	}
 	var args map[string]any
@@ -370,24 +398,31 @@ func (r *conversationDeleteAuditRecorder) auditRow(args []any) pgx.Row {
 	event := dbhermes.InsertAuditEventParams{
 		Ts:            args[0].(pgtype.Timestamptz),
 		TenantID:      args[1].(int64),
-		ActorUserID:   args[2].(int64),
-		Action:        args[3].(string),
-		SanitizedArgs: append([]byte(nil), args[4].([]byte)...),
-		Result:        args[5].(string),
-		CorrelationID: conversationDeleteAuditStringArg(args[6]),
-		RequestID:     conversationDeleteAuditStringArg(args[7]),
+		ActorSource:   args[2].(string),
+		ActorID:       args[3].(int64),
+		ActorRole:     args[4].(string),
+		Action:        args[5].(string),
+		SanitizedArgs: append([]byte(nil), args[6].([]byte)...),
+		Result:        args[7].(string),
+		CorrelationID: conversationDeleteAuditStringArg(args[8]),
+		RequestID:     conversationDeleteAuditStringArg(args[9]),
+		LogCategory:   args[10].(string),
 	}
 	r.auditEvents = append(r.auditEvents, event)
 	return conversationDeleteAuditRow{scan: func(dest ...any) error {
 		*dest[0].(*int64) = int64(7000 + len(r.auditEvents))
 		*dest[1].(*pgtype.Timestamptz) = event.Ts
 		*dest[2].(*int64) = event.TenantID
-		*dest[3].(*int64) = event.ActorUserID
-		*dest[4].(*string) = event.Action
-		*dest[5].(*[]byte) = event.SanitizedArgs
-		*dest[6].(*string) = event.Result
-		*dest[7].(**string) = event.CorrelationID
-		*dest[8].(**string) = event.RequestID
+		*dest[3].(*string) = event.Action
+		*dest[4].(*[]byte) = event.SanitizedArgs
+		*dest[5].(*string) = event.Result
+		*dest[6].(**string) = event.CorrelationID
+		*dest[7].(**string) = event.RequestID
+		*dest[8].(*pgtype.Timestamptz) = event.Ts
+		*dest[9].(*string) = event.LogCategory
+		*dest[10].(*string) = event.ActorSource
+		*dest[11].(*int64) = event.ActorID
+		*dest[12].(**string) = stringPtrHTTPTest(event.ActorRole)
 		return nil
 	}}
 }
@@ -406,6 +441,9 @@ func (r *conversationDeleteAuditRecorder) conversationRow() pgx.Row {
 		} else {
 			*dest[7].(*pgtype.Timestamptz) = pgtype.Timestamptz{}
 		}
+		*dest[8].(*string) = admin.AdminSourceToken
+		*dest[9].(*int64) = 99
+		*dest[10].(**string) = stringPtrHTTPTest(admin.RolePlatformAdmin)
 		return nil
 	}}
 }
@@ -513,12 +551,17 @@ func (tx *conversationDeleteAuditTx) Conn() *pgx.Conn {
 }
 
 func (r *conversationDeleteAuditRecorder) matchesConversationArgs(args []any) bool {
-	if len(args) < 2 || r.existingConversationID == 0 {
+	if len(args) < 5 || r.existingConversationID == 0 {
 		return false
 	}
 	id, idOK := args[0].(int64)
 	tenantID, tenantOK := args[1].(int64)
-	return idOK && tenantOK && id == r.existingConversationID && tenantID == r.existingTenantID
+	ownerUserID, ownerOK := args[2].(int64)
+	actorSource, sourceOK := args[3].(string)
+	actorID, actorOK := args[4].(int64)
+	return idOK && tenantOK && ownerOK && sourceOK && actorOK &&
+		id == r.existingConversationID && tenantID == r.existingTenantID &&
+		ownerUserID == r.existingOwnerUserID && actorSource == admin.AdminSourceToken && actorID == 99
 }
 
 type conversationDeleteAuditRow struct {

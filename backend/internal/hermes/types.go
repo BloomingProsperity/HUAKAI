@@ -17,9 +17,6 @@ import (
 )
 
 const (
-	APISourceManaged        = "managed_huakai_api"
-	APISourceDedicatedGroup = "dedicated_group"
-
 	AuditResultSuccess = "success"
 	AuditResultFailure = "failure"
 )
@@ -32,6 +29,7 @@ var (
 	ErrMisconfigured     = errors.New("hermes: misconfigured")
 	ErrProfileNotOwned   = errors.New("hermes: profile not owned")
 	ErrProfileInUse      = errors.New("hermes: profile in use")
+	ErrConflict          = errors.New("hermes: concurrent update conflict")
 	ErrAuditRecordFailed = errors.New("hermes: audit record failed")
 	ErrRunnerFailure     = errors.New("hermes: runner request failed")
 )
@@ -51,20 +49,22 @@ type ProfileSpec struct {
 	TenantID    int64
 	OwnerUserID int64
 	Name        string
-	Kind        string
-	APIKeyID    *int64
-	PoolGroupID *int64
+	BaseURL     string
+	APIKey      string
 }
 
 // AuditFields 是写 hermes_audit_events 的显式字段集合。
 type AuditFields struct {
 	TenantID      int64
-	ActorUserID   int64
+	ActorSource   string
+	ActorID       int64
+	ActorRole     string
 	Action        string
 	SanitizedArgs map[string]any
 	Result        string
 	CorrelationID string
 	RequestID     string
+	LogCategory   string
 }
 
 type Settings struct {
@@ -73,26 +73,31 @@ type Settings struct {
 	Enabled   bool      `json:"enabled"`
 	APISource string    `json:"api_source"`
 	ProfileID *int64    `json:"profile_id,omitempty"`
+	Model     string    `json:"model"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Profile struct {
-	ID          int64     `json:"id"`
-	TenantID    int64     `json:"tenant_id"`
-	OwnerUserID int64     `json:"owner_user_id"`
-	Name        string    `json:"name"`
-	Kind        string    `json:"kind"`
-	APIKeyID    *int64    `json:"api_key_id,omitempty"`
-	PoolGroupID *int64    `json:"pool_group_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	TenantID          int64     `json:"tenant_id"`
+	OwnerUserID       int64     `json:"owner_user_id"`
+	Name              string    `json:"name"`
+	Kind              string    `json:"kind"`
+	BaseURL           string    `json:"base_url"`
+	APIKeyMasked      string    `json:"api_key_masked"`
+	CredentialVersion int32     `json:"credential_version"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type Conversation struct {
 	ID            int64      `json:"id"`
 	TenantID      int64      `json:"tenant_id"`
 	OwnerUserID   int64      `json:"owner_user_id"`
+	ActorSource   string     `json:"actor_source"`
+	ActorID       int64      `json:"actor_id"`
+	ActorRole     *string    `json:"actor_role,omitempty"`
 	Title         *string    `json:"title,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
@@ -114,11 +119,14 @@ type Message struct {
 type AuditEvent struct {
 	ID            int64     `json:"id"`
 	TenantID      int64     `json:"tenant_id"`
-	ActorUserID   int64     `json:"actor_user_id"`
+	ActorSource   string    `json:"actor_source"`
+	ActorID       int64     `json:"actor_id"`
+	ActorRole     *string   `json:"actor_role,omitempty"`
 	Action        string    `json:"action"`
 	Result        string    `json:"result"`
 	CorrelationID *string   `json:"correlation_id,omitempty"`
 	RequestID     *string   `json:"request_id,omitempty"`
+	LogCategory   string    `json:"log_category"`
 	CreatedAt     time.Time `json:"created_at"`
 }
 
@@ -128,7 +136,6 @@ type Store interface {
 	CreateProfile(ctx context.Context, arg dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error)
 	DeleteProfile(ctx context.Context, arg dbhermes.DeleteProfileParams) (int64, error)
 	DisableHermes(ctx context.Context, arg dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error)
-	GetAPIKeyOwner(ctx context.Context, arg dbhermes.GetAPIKeyOwnerParams) (int64, error)
 	GetConversation(ctx context.Context, arg dbhermes.GetConversationParams) (dbhermes.HermesConversation, error)
 	GetProfile(ctx context.Context, arg dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error)
 	GetSettings(ctx context.Context, arg dbhermes.GetSettingsParams) (dbhermes.HermesSetting, error)
@@ -152,9 +159,10 @@ type transactor interface {
 }
 
 type Service struct {
-	store              Store
-	tx                 transactor
-	messageContentKeys credentialstore.KeyProvider
+	store                 Store
+	tx                    transactor
+	messageContentKeys    credentialstore.KeyProvider
+	profileCredentialKeys credentialstore.KeyProvider
 }
 
 type sqlcTransactor struct {
@@ -177,6 +185,13 @@ func NewServiceWithTx(queries *dbhermes.Queries, beginner txBeginner) *Service {
 func (s *Service) WithMessageContentKeys(keys credentialstore.KeyProvider) *Service {
 	if s != nil {
 		s.messageContentKeys = keys
+	}
+	return s
+}
+
+func (s *Service) WithProfileCredentialKeys(keys credentialstore.KeyProvider) *Service {
+	if s != nil {
+		s.profileCredentialKeys = keys
 	}
 	return s
 }

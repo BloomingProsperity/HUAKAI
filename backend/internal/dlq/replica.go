@@ -24,6 +24,7 @@ type BillingEventReplicaPayload struct {
 	Fingerprint            string  `json:"fingerprint"`
 	AuditRequestID         *string `json:"audit_request_id,omitempty"`
 	OccurredAt             string  `json:"occurred_at"`
+	BillingEffect          string  `json:"billing_effect,omitempty"`
 }
 
 func NewPostgresReplicaHandler(pool *pgxpool.Pool) Handler {

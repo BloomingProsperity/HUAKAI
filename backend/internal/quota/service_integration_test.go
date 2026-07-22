@@ -1110,22 +1110,6 @@ func (f *quotaFixture) windowReservedValue(policyID int64, at time.Time) decimal
 	return value
 }
 
-func (f *quotaFixture) markReservationReleased(reservationID int64, claimID int64) {
-	f.t.Helper()
-	tag, err := f.pool.Exec(f.ctx,
-		`UPDATE quota_reservations
-		 SET status='released', released_at=NOW(), release_reason='test-release', updated_at=NOW()
-		 WHERE tenant_id=$1 AND id=$2 AND claim_id=$3`,
-		f.tenantID, reservationID, claimID,
-	)
-	if err != nil {
-		f.t.Fatalf("mark reservation released: %v", err)
-	}
-	if tag.RowsAffected() != 1 {
-		f.t.Fatalf("mark reservation released affected=%d; want 1", tag.RowsAffected())
-	}
-}
-
 func (f *quotaFixture) reservationStatus(reservationID int64) ReservationStatus {
 	f.t.Helper()
 	var status string

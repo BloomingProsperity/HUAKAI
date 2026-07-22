@@ -26,8 +26,8 @@ import (
 type AccountHealthDeps struct {
 	ProviderAccountHealth func(ctx context.Context, params admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error)
 	ChannelSummary        func(ctx context.Context, tenantID int64) (channelhealth.ChannelHealthSummary, error)
-	// ChannelList 是可选的逐通道读;nil 时本工具退化为只返聚合 summary(向后兼容)。
-	ChannelList func(ctx context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error)
+	// ChannelListByAccount 是可选的账号级精确逐通道读；nil 时只返回聚合摘要。
+	ChannelListByAccount func(ctx context.Context, tenantID, accountID int64, limit, offset int) ([]channelhealth.Record, error)
 }
 
 // AccountHealthDiagnoseSpec 构建只读 account_health_diagnose 工具。
@@ -42,7 +42,9 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 		Description:  "Read a provider account's health state + the tenant's channel-health summary (states, counts, latency).",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{"account_id": "provider account id (positive integer, required)"},
+		InputSchema: ObjectSchema(map[string]any{
+			"account_id": PositiveIntegerSchema("要诊断的上游账号 ID"),
+		}, "account_id"),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.ProviderAccountHealth == nil {
 				return ToolResult{}, ErrDependencyUnwired
@@ -128,16 +130,14 @@ func AccountHealthDiagnoseSpec(deps AccountHealthDeps) ToolSpec {
 			// 当 ChannelList 已接线时,折叠进「本账号」的逐通道明细(按 account_id 过滤)
 			// —— 给出聚合 summary 缺失的通道级「为什么」(cooling/disabled/paused + reason)。
 			// 用 ListChannelHealth(不含 AuditEvent payload),由 channelHealthShape 安全投影。
-			if deps.ChannelList != nil {
-				rows, cerr := deps.ChannelList(ctx, req.TenantID, channelHealthListLimit, 0)
+			if deps.ChannelListByAccount != nil {
+				rows, cerr := deps.ChannelListByAccount(ctx, req.TenantID, accountID, channelHealthListLimit, 0)
 				if cerr != nil {
 					summary["channels_error"] = "channel_list_read_failed"
 				} else {
-					chans := make([]map[string]any, 0)
+					chans := make([]map[string]any, 0, len(rows))
 					for _, r := range rows {
-						if r.Key.ProviderAccountID == accountID {
-							chans = append(chans, channelHealthShape(r))
-						}
+						chans = append(chans, channelHealthShape(r))
 					}
 					summary["channels"] = chans
 				}

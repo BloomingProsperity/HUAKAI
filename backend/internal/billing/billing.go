@@ -20,12 +20,33 @@ import (
 
 var (
 	ErrInsufficientBalance       = errors.New("billing: insufficient balance")
+	ErrInvalidBillingEffect      = errors.New("billing: invalid billing effect")
 	ErrRefundNoCapturedCharge    = errors.New("billing: refund has no captured balance charge")
 	ErrRefundBalanceRowMissing   = errors.New("billing: refund balance row missing")
 	ErrRefundAmountNotCovered    = errors.New("billing: refund amount exceeds captured charge coverage")
 	ErrRefundIdempotencyConflict = errors.New("billing: refund idempotency key conflicts with a different request")
 	ErrRefundFactInvalid         = errors.New("billing: stored refund fact is invalid")
 )
+
+// BillingEffect 区分用户消费与平台运维成本。两者共用完整账务证据链，
+// 但只有 UserCharge 可以预扣、扣减或退款用户余额。
+type BillingEffect string
+
+const (
+	BillingEffectUserCharge      BillingEffect = "user_charge"
+	BillingEffectOperationalCost BillingEffect = "operational_cost"
+)
+
+func NormalizeBillingEffect(effect BillingEffect) (BillingEffect, error) {
+	switch effect {
+	case "", BillingEffectUserCharge:
+		return BillingEffectUserCharge, nil
+	case BillingEffectOperationalCost:
+		return BillingEffectOperationalCost, nil
+	default:
+		return "", ErrInvalidBillingEffect
+	}
+}
 
 // ClaimGate 按规格 §Tx1 执行 Tx1 预扣事务。
 type ClaimGate interface {
@@ -75,6 +96,7 @@ type ReserveRequest struct {
 	PredictedCost              decimal.Decimal
 	IdempotencyKeyClientHeader string
 	BalanceEnforcementMode     BalanceEnforcementMode
+	BillingEffect              BillingEffect
 }
 
 // ReserveResult 标识 claim 行,以及是否命中可用的缓存历史响应。
@@ -125,6 +147,8 @@ type SettleRequest struct {
 	// 写入 usage_records.snapshot_version,使审计重放能够
 	// 重建构造该 plan 时的路由配置。
 	SnapshotVersion string
+	// BillingEffect 由 claim 的持久化值最终裁决；请求携带它用于链路一致性校验和恢复重放。
+	BillingEffect BillingEffect
 }
 
 // SettleResult 是 Tx2 的提交结果。
@@ -135,6 +159,8 @@ type SettleResult struct {
 	TenantID             int64
 	UserID               int64
 	BillingEventID       int64
+	BillingEffect        BillingEffect
+	BalanceChanged       bool
 }
 
 // RefundRequest 是 append-only 退款 / 修正请求。

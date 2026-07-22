@@ -41,7 +41,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 	}
 
 	// 非 hex 字母也必须能往返（因真实 ID 含 f 之外的 A-Z / a-z）。
-	for _, tc := range []caseItem{
+	cases = append(cases, []caseItem{
 		{
 			name:     "lowercase-g",
 			upstream: UpstreamProtocolOpenAI,
@@ -62,9 +62,7 @@ func TestAT_PROTO_002_12_ToolCallIDBijection(t *testing.T) {
 			upstream: UpstreamProtocolBedrock,
 			raw:      "tool_id_with_G_G4",
 		},
-	} {
-		cases = append(cases, tc)
-	}
+	}...)
 
 	for _, tc := range cases {
 		canonical, err := ToCanonicalCallID(tc.raw, tc.upstream)

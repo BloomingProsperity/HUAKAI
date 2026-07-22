@@ -58,7 +58,3 @@ func ledgerEntryWithRedactionDroppedSentinel(entry LedgerEntry) LedgerEntry {
 	entry.TenantScopeRef = ""
 	return entry
 }
-
-func SanitizeLedgerEntry(ctx context.Context, entry LedgerEntry) (LedgerEntry, error) {
-	return sanitizeLedgerEntry(ctx, entry)
-}

@@ -11,8 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
@@ -43,7 +43,7 @@ func TestAuditProofDownload_Attachment(t *testing.T) {
 
 	verifyRec := httptest.NewRecorder()
 	verifyReq := httptest.NewRequest(http.MethodGet, "/v1/audit/verify?request_id="+entry.RequestID+"&tenant_scope_ref="+auditledger.TenantScopeRef(7), nil)
-	gatewayhttp.NewAuditVerifyHandler(gatewayhttp.AuditVerifyStaticDeps{Ledger: ledger, Registry: registry})(verifyRec, verifyReq.WithContext(ctx))
+	auditverifyhttp.NewAuditVerifyHandler(auditverifyhttp.AuditVerifyStaticDeps{Ledger: ledger, Registry: registry})(verifyRec, verifyReq.WithContext(ctx))
 	if verifyRec.Code != http.StatusOK {
 		t.Fatalf("verify status=%d body=%s", verifyRec.Code, verifyRec.Body.String())
 	}
@@ -239,7 +239,7 @@ func TestAuditProof_RevokedKeyDowngraded(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var resp gatewayhttp.AuditVerifyResponse
+	var resp auditverifyhttp.AuditVerifyResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode proof: %v", err)
 	}
@@ -403,16 +403,16 @@ func invokeAuditExportAs(t testing.TB, deps Deps, target string, tenantID int64)
 	return rec
 }
 
-func decodeVerifyResponse(t testing.TB, body []byte) gatewayhttp.AuditVerifyResponse {
+func decodeVerifyResponse(t testing.TB, body []byte) auditverifyhttp.AuditVerifyResponse {
 	t.Helper()
-	var out gatewayhttp.AuditVerifyResponse
+	var out auditverifyhttp.AuditVerifyResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatalf("decode verify response: %v", err)
 	}
 	return out
 }
 
-func verifyRequestIDs(entries []gatewayhttp.AuditVerifyResponse) []string {
+func verifyRequestIDs(entries []auditverifyhttp.AuditVerifyResponse) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, entry.LedgerEntry.RequestID)
@@ -420,15 +420,15 @@ func verifyRequestIDs(entries []gatewayhttp.AuditVerifyResponse) []string {
 	return out
 }
 
-func bundleLedgerEntries(t testing.TB, entries []gatewayhttp.AuditVerifyResponse) []auditledger.LedgerEntry {
+func bundleLedgerEntries(t testing.TB, entries []auditverifyhttp.AuditVerifyResponse) []auditledger.LedgerEntry {
 	t.Helper()
 	out := make([]auditledger.LedgerEntry, 0, len(entries))
 	for _, entry := range entries {
-		prev, err := gatewayhttp.ParseAuditRootHex(entry.ChainProof.PrevMerkleRoot)
+		prev, err := auditverifyhttp.ParseAuditRootHex(entry.ChainProof.PrevMerkleRoot)
 		if err != nil {
 			t.Fatalf("parse prev root: %v", err)
 		}
-		root, err := gatewayhttp.ParseAuditRootHex(entry.ChainProof.MerkleRoot)
+		root, err := auditverifyhttp.ParseAuditRootHex(entry.ChainProof.MerkleRoot)
 		if err != nil {
 			t.Fatalf("parse root: %v", err)
 		}
@@ -468,14 +468,6 @@ func (l *tamperingRangeLedger) ListByRequestIDs(ctx context.Context, tenantScope
 	}
 	rows[0].LedgerID = rows[0].LedgerID + "-tampered"
 	return rows, nil
-}
-
-func ledgerRequestIDs(entries []auditledger.LedgerEntry) []string {
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, entry.RequestID)
-	}
-	return out
 }
 
 func equalStrings(a, b []string) bool {

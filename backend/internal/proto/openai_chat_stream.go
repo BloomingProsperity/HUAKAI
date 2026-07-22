@@ -35,6 +35,11 @@ func NewOpenAIChatStreamState() *OpenAIChatStreamState {
 	return &OpenAIChatStreamState{ToolSlotIndex: make(map[string]int)}
 }
 
+// NewClientStreamState 创建当前协议一次流式响应独占的状态。
+func (*OpenAIChatClient) NewClientStreamState() any {
+	return NewOpenAIChatStreamState()
+}
+
 // meaningfulToolInput 判定 content_block_start 携带的工具 Input 是否是"真入参"(需在 start 即投递),
 // 而非占位空对象。**关键区分**:gemini 上游在 start 携带完整真入参(无后续 delta)→ true,必须投递;
 // 而 Anthropic 流式协议在 start 恒发占位 `"input":{}`、真入参随后由 input_json_delta 流入 → 必须返回

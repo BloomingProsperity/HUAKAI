@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-migrate/migrate/v4"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -129,8 +130,20 @@ WHERE id=$1::uuid`, flowID).Scan(&status, &errorClass, &message, &payload, &encr
 			t.Fatalf("缺失授权必须默认关闭：allowed=%v err=%v", allowed, err)
 		}
 		list, err := store.List(ctx, tenantID)
-		if err != nil || len(list) != 1 || list[0].Configured || list[0].Enabled || list[0].UpdatedAt != nil {
+		if err != nil {
 			t.Fatalf("默认投影不准确：list=%+v err=%v", list, err)
+		}
+		foundAdvanced := false
+		for _, grant := range list {
+			if grant.Configured || grant.Enabled || grant.UpdatedAt != nil {
+				t.Fatalf("未授权能力必须默认关闭：grant=%+v", grant)
+			}
+			if grant.Capability == tenantcapability.AdvancedAccountIntake {
+				foundAdvanced = true
+			}
+		}
+		if !foundAdvanced {
+			t.Fatalf("默认投影缺少 %s：list=%+v", tenantcapability.AdvancedAccountIntake, list)
 		}
 
 		input := tenantcapability.SetInput{
@@ -194,6 +207,9 @@ VALUES ($1, 'advanced_account_intake', true, 'admin_token:9', '回退保护', cl
 		runner := newEmbeddedMigrationRunner(t, dsn)
 		if err := runner.Migrate(206); err != nil {
 			t.Fatalf("迁移到 0206: %v", err)
+		}
+		if err := runner.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			t.Fatalf("从 0206 升级到当前 schema: %v", err)
 		}
 		pool, err := pgxpool.New(ctx, dsn)
 		if err != nil {

@@ -34,8 +34,8 @@ func TestAlertEventListSpec(t *testing.T) {
 			if in.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7", in.TenantID)
 			}
-			if in.Limit != alertEventListLimit {
-				t.Fatalf("Limit 应为 alertEventListLimit=%d, got %d", alertEventListLimit, in.Limit)
+			if in.Limit != defaultToolPageLimit+1 || in.Offset != 0 {
+				t.Fatalf("告警事件分页参数=%+v，期望 limit=%d offset=0", in, defaultToolPageLimit+1)
 			}
 			return fakeAlertEvents(), nil
 		},

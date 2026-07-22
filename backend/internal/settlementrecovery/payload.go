@@ -84,15 +84,16 @@ type settleRequestPersisted struct {
 	Draft               gateway.UsageRecordDraft `json:"draft"`
 	// ProtocolLoss 镜像 billing.SettleRequest.ProtocolLoss(billing.go:99);
 	// 之前缺此字段 → settle 失败 DLQ replay 重放时 usage_records.protocol_loss 退化成 "[]"。
-	ProtocolLoss          json.RawMessage  `json:"protocol_loss,omitempty"`
-	StreamAttempt         *billing.Attempt `json:"stream_attempt,omitempty"`
-	Fingerprint           string           `json:"fingerprint"`
-	AuditRequestID        string           `json:"audit_request_id"`
-	AuditRouteID          string           `json:"audit_route_id,omitempty"`
-	AuditPoolGroupID      int64            `json:"audit_pool_group_id,omitempty"`
-	AuditProviderEndpoint string           `json:"audit_provider_endpoint,omitempty"`
-	EmitSchedulerOutbox   bool             `json:"emit_scheduler_outbox"`
-	SnapshotVersion       string           `json:"snapshot_version"`
+	ProtocolLoss          json.RawMessage       `json:"protocol_loss,omitempty"`
+	StreamAttempt         *billing.Attempt      `json:"stream_attempt,omitempty"`
+	Fingerprint           string                `json:"fingerprint"`
+	AuditRequestID        string                `json:"audit_request_id"`
+	AuditRouteID          string                `json:"audit_route_id,omitempty"`
+	AuditPoolGroupID      int64                 `json:"audit_pool_group_id,omitempty"`
+	AuditProviderEndpoint string                `json:"audit_provider_endpoint,omitempty"`
+	EmitSchedulerOutbox   bool                  `json:"emit_scheduler_outbox"`
+	SnapshotVersion       string                `json:"snapshot_version"`
+	BillingEffect         billing.BillingEffect `json:"billing_effect,omitempty"`
 }
 
 // Validate 失败原因 — worker 用这些判断"该 quarantine 还是默默重试"。
@@ -162,6 +163,7 @@ func FromSettleRequest(src Source, requestID string, req billing.SettleRequest) 
 			AuditProviderEndpoint: req.AuditProviderEndpoint,
 			EmitSchedulerOutbox:   req.EmitSchedulerOutbox,
 			SnapshotVersion:       req.SnapshotVersion,
+			BillingEffect:         req.BillingEffect,
 		},
 	}
 }
@@ -238,6 +240,7 @@ func (p Payload) ToSettleRequest() billing.SettleRequest {
 		AuditProviderEndpoint: p.Settle.AuditProviderEndpoint,
 		EmitSchedulerOutbox:   p.Settle.EmitSchedulerOutbox,
 		SnapshotVersion:       p.Settle.SnapshotVersion,
+		BillingEffect:         p.Settle.BillingEffect,
 	}
 }
 

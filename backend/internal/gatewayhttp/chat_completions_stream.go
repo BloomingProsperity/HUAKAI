@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,14 +59,14 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 			logInternalError(ex.ctx, ex.requestID, "l2_cache_principal_mismatch",
 				fmt.Errorf("cached entry tenant=%d scope_id=%d != request tenant=%d scope_id=%d", cached.TenantID, cached.ScopeID, ex.ident.TenantID, ex.cacheScopeID()))
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
-			syncL2SizeMetrics(ex.d.ResponseCache)
+			cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 		} else {
 			cachemetrics.ObserveL2Hit(ex.cacheVendor, ex.upstreamModelID)
 			if serveL2CacheHit(ex.ctx, w, ex.r, ex.d, ex.cacheHitInput(cached)) {
 				return true, false
 			}
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
-			syncL2SizeMetrics(ex.d.ResponseCache)
+			cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 		}
 	}
 	cachemetrics.ObserveL2Miss(ex.cacheVendor, ex.upstreamModelID)
@@ -310,7 +311,10 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
 	streamAttempt, businessDelivered := chatpipe.DeliveredStreamAttempt(draft)
-	if fwdErr != nil {
+	orchestratorCancelled := fwdErr != nil &&
+		errors.Is(fwdErr, context.Canceled) &&
+		draft.EndClass == gateway.OrchestratorCancel
+	if fwdErr != nil && !orchestratorCancelled {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
 		if ex.healthKeyOK {
 			class := channelhealth.SignalChannelError
@@ -319,7 +323,8 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 			}
 			recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, class, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
 		}
-	} else if ex.healthKeyOK {
+	} else if ex.healthKeyOK && (fwdErr == nil || businessDelivered) {
+		// 编排层在已交付业务帧后取消只影响流终态，不代表上游账号故障。
 		recordChannelHealthSignal(ex.ctx, ex.d, ex.healthKey, channelhealth.SignalSuccess, dispatchRes.StatusCode, time.Since(startedAt), ex.requestID, nil, 0)
 	}
 	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
@@ -334,7 +339,7 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	// Abort 与结算只认客户端整帧交付证据，上游 usage 不能反推客户端已收到。
 	var streamAbortErr error
 	if businessDelivered {
-		event := ex.streamingCompletionEvent(draft, streamAttempt, ledgerResult)
+		event := ex.streamingCompletionEventWithContext(settleCtx, draft, streamAttempt, ledgerResult)
 		// 交付后结算失败进入持久恢复，后续重放 Settle。
 		_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream)
 		ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, event.SettleRequest.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
@@ -506,6 +511,10 @@ func (a canonicalEventPointerClientAdapter) CanonicalToClientResponse(ctx contex
 	return a.inner.CanonicalToClientResponse(ctx, canonical)
 }
 
+func (a canonicalEventPointerClientAdapter) NewClientStreamState() any {
+	return a.inner.NewClientStreamState()
+}
+
 func (a canonicalEventPointerClientAdapter) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	if evt, ok := canonicalEvt.(proto.CanonicalEvent); ok {
 		canonicalEvt = &evt
@@ -526,11 +535,25 @@ func ambiguousDeliveredEstimable(draft gateway.UsageRecordDraft) bool {
 	return draft.EstimatedOutputTokens+draft.EstimatedReasoningTokens > 0
 }
 
-func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
+func (ex *chatExecution) streamingCompletionEventWithContext(pricingCtx context.Context, draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
+	pricingExecution := ex
+	if pricingCtx != nil && pricingCtx != ex.ctx {
+		cloned := *ex
+		cloned.ctx = pricingCtx
+		pricingExecution = &cloned
+	}
 	usage := usageFromDraft(draft)
 	usageBasisEstimated := false
-	actualCost, err := ex.actualCompletionCost(usage)
+	actualCost, err := pricingExecution.actualCompletionCost(usage)
 	if err != nil {
+		slog.ErrorContext(pricingExecution.ctx, "流式响应计价失败，转入待对账",
+			"request_id", ex.requestID,
+			"tenant_id", ex.ident.TenantID,
+			"pool_group_id", ex.attempt.PoolGroupID,
+			"provider", ex.cacheVendor,
+			"requested_model", ex.req.Model,
+			"reason_class", completionPricingFailureClass(err),
+		)
 		draft.PendingReconciliation = true
 		actualCost = completionCostBreakdown{}
 		// DeliveredTokenCount 是内容帧数，不能当 token 收费。仅在缺 usage 且已有可估交付时
@@ -539,7 +562,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			(draft.UsageSource != gateway.UsageSourceAmbiguous || ambiguousDeliveredEstimable(draft)) {
 			// 缺终帧/usage 时按可见内容估算并记录 inferred；无法估算则保留 pending，
 			// 由 reconciliation worker 宽限后零差额定稿。
-			if cost, estimated, ok := ex.estimatedStreamingCost(draft); ok {
+			if cost, estimated, ok := pricingExecution.estimatedStreamingCost(draft); ok {
 				actualCost = cost
 				draft.TokensInput = estimated.InputTokens
 				draft.TokensOutput = estimated.OutputTokens
@@ -608,6 +631,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:       &streamAttempt,
 			EmitSchedulerOutbox: true,
 			SnapshotVersion:     ex.plan.SnapshotVersion,
+			BillingEffect:       ex.d.effectiveBillingEffect(),
 		},
 		Metadata: completionMetadata(ex.routeID, ex.clientRequestID),
 	}

@@ -145,19 +145,6 @@ func (r ChatGPTRefresh) httpClient() *http.Client {
 	return auth.NewSSRFProtectedOAuthClient(http.DefaultClient)
 }
 
-func ShouldRefreshOpenAIForRateLimit(raw []byte) bool {
-	cred, err := parseCredential(raw)
-	if err != nil {
-		return false
-	}
-	if credentialString(cred, "expires_at") != "" {
-		return false
-	}
-	state := strings.ToLower(credentialString(cred, "account_state"))
-	reason := strings.ToLower(credentialString(cred, "rate_limit_reason"))
-	return strings.Contains(state, "rate") || strings.Contains(reason, "rate")
-}
-
 type tokenResponse struct {
 	AccessToken      string `json:"access_token"`
 	RefreshToken     string `json:"refresh_token"`

@@ -375,6 +375,26 @@ func (s *Service) ListChannelHealth(ctx context.Context, tenantID int64, limit, 
 	return s.store.ListChannelHealth(ctx, tenantID, limit, offset)
 }
 
+// ListChannelHealthByProviderAccount 精确返回一个租户内指定账号的通道健康记录。
+func (s *Service) ListChannelHealthByProviderAccount(ctx context.Context, tenantID, providerAccountID int64, limit, offset int) ([]ChannelHealthState, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("channelhealth: service not configured")
+	}
+	if tenantID <= 0 || providerAccountID <= 0 {
+		return nil, errors.New("tenant_id and provider_account_id must be positive")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		return nil, errors.New("offset must be non-negative")
+	}
+	return s.store.ListChannelHealthByProviderAccount(ctx, tenantID, providerAccountID, limit, offset)
+}
+
 func (s *Service) GetChannelHealth(ctx context.Context, tenantID int64, channelID string) (ChannelHealthState, []AuditEvent, error) {
 	if s == nil || s.store == nil {
 		return ChannelHealthState{}, nil, errors.New("channelhealth: service not configured")

@@ -59,9 +59,6 @@ func (s *auditCaptureStore) DeleteProfile(context.Context, dbhermes.DeleteProfil
 func (s *auditCaptureStore) DisableHermes(context.Context, dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error) {
 	return dbhermes.HermesSetting{}, nil
 }
-func (s *auditCaptureStore) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	return 0, nil
-}
 func (s *auditCaptureStore) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
 	return dbhermes.HermesConversation{}, nil
 }
@@ -110,6 +107,12 @@ func buildToolHandler(t *testing.T, reg ToolRegistry, calls *fakeToolCalls) (han
 	return h, store
 }
 
+func mustRegisterTestTool(reg *hermesops.Registry, spec hermesops.ToolSpec) {
+	if err := reg.Register(spec); err != nil {
+		panic("测试工具注册失败: " + err.Error())
+	}
+}
+
 func execute(h handler, ident sessionauth.Identity, actor adminActor, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/tool-execute", bytes.NewBufferString(body))
 	ctx := context.WithValue(req.Context(), authContextKey{}, ident)
@@ -124,9 +127,12 @@ func execute(h handler, ident sessionauth.Identity, actor adminActor, body strin
 // 之下的注入秘密,用以证明持久化的行会将其脱敏。
 func leakyRegistry() *hermesops.Registry {
 	reg := hermesops.NewRegistry()
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolDLQInspect, Category: hermesops.CategoryDiagnostic,
-		ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		Description: "读取测试死信状态", ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		InputSchema: hermesops.ObjectSchema(map[string]any{
+			"status": hermesops.StringSchema("可选状态"),
+		}),
 		Run: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.ToolResult, error) {
 			return hermesops.ToolResult{Summary: map[string]any{
 				"dlq_count":    1,
@@ -135,9 +141,10 @@ func leakyRegistry() *hermesops.Registry {
 		},
 	})
 	// 一个仅限 platform-admin 的工具,用于检验 RBAC 拒绝路径。
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: "admin_only_probe", Category: hermesops.CategoryDiagnostic,
-		ReadOnly: true, RequiredRole: hermesops.RolePlatformAdmin,
+		Description: "测试平台管理员权限", ReadOnly: true, RequiredRole: hermesops.RolePlatformAdmin,
+		InputSchema: hermesops.ObjectSchema(nil),
 		Run: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.ToolResult, error) {
 			return hermesops.ToolResult{Summary: map[string]any{"ran": true}}, nil
 		},
@@ -146,7 +153,11 @@ func leakyRegistry() *hermesops.Registry {
 }
 
 func operator(tenant int64) (sessionauth.Identity, adminActor) {
-	return sessionauth.Identity{TenantID: tenant, UserID: 42}, adminActor{TokenID: 99, Role: admin.RoleTenantOperator}
+	return sessionauth.Identity{TenantID: tenant, UserID: 42}, adminActor{
+		Source: admin.AdminSourceToken,
+		ID:     99,
+		Role:   admin.RoleTenantOperator,
+	}
 }
 
 // --- 测试 ------------------------------------------------------------------
@@ -170,8 +181,8 @@ func TestToolExecuteRecordsOkRowAndMirrorsAudit(t *testing.T) {
 	if calls.rows[0].ResultStatus != string(hermesops.ResultOK) {
 		t.Fatalf("result_status=%q want ok", calls.rows[0].ResultStatus)
 	}
-	if calls.rows[0].AdminActorTokenID == nil || *calls.rows[0].AdminActorTokenID != 99 {
-		t.Fatalf("admin_actor_token_id=%v want 99", calls.rows[0].AdminActorTokenID)
+	if calls.rows[0].ActorSource != admin.AdminSourceToken || calls.rows[0].ActorID != 99 || calls.rows[0].ActorRole != admin.RoleTenantOperator {
+		t.Fatalf("工具调用操作者=%+v，不符合管理员令牌 99 的归因", calls.rows[0])
 	}
 	if store.auditCalls != 1 {
 		t.Fatalf("hermes audit mirror calls=%d want 1", store.auditCalls)
@@ -238,9 +249,23 @@ func TestToolExecuteUnknownToolIs404WithDeniedRow(t *testing.T) {
 	}
 }
 
+func TestToolExecute拒绝尾随JSON对象(t *testing.T) {
+	calls := &fakeToolCalls{}
+	h, _ := buildToolHandler(t, leakyRegistry(), calls)
+	ident, actor := operator(7)
+
+	rec := execute(h, ident, actor, `{"tool_name":"dlq_inspect","args":{}} {"tool_name":"dlq_inspect","args":{}}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_json") {
+		t.Fatalf("尾随 JSON 响应=%d %s，期望 400 invalid_json", rec.Code, rec.Body.String())
+	}
+	if len(calls.rows) != 0 {
+		t.Fatalf("非法请求仍写入工具日志：%+v", calls.rows)
+	}
+}
+
 func TestToolExecuteRequiresIdentity(t *testing.T) {
-	// 回归:当 context 中没有已解析的身份时(生产中由 H1 中间件保证),handler
-	// 必须拒绝 401 且绝不派发。这证明 handler 复用了 requireIdentity,而非盲目信任
+	// 回归：当上下文中没有已解析身份时，处理器必须拒绝 401 且绝不派发。
+	// 这证明处理器复用了 requireIdentity，而非盲目信任
 	// 请求。
 	calls := &fakeToolCalls{}
 	h, _ := buildToolHandler(t, leakyRegistry(), calls)
@@ -262,8 +287,10 @@ func TestToolExecuteTenantThreadedFromIdentityNotBody(t *testing.T) {
 	// 一个会回显其收到的 tenant 的工具,并断言:即便 body 指定了不同的 tenant,
 	// 它仍等于身份里的 tenant。
 	reg := hermesops.NewRegistry()
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolDLQInspect, ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		Category: hermesops.CategoryDiagnostic, Description: "回显可信租户",
+		InputSchema: hermesops.ObjectSchema(nil),
 		Run: func(_ context.Context, r hermesops.ToolRequest) (hermesops.ToolResult, error) {
 			return hermesops.ToolResult{Summary: map[string]any{"seen_tenant": r.TenantID}}, nil
 		},
@@ -272,7 +299,11 @@ func TestToolExecuteTenantThreadedFromIdentityNotBody(t *testing.T) {
 	h, _ := buildToolHandler(t, reg, calls)
 	ident, actor := operator(7)
 
-	rec := execute(h, ident, actor, `{"tool_name":"dlq_inspect","args":{"tenant_id":999}}`)
+	injected := execute(h, ident, actor, `{"tool_name":"dlq_inspect","args":{"tenant_id":999}}`)
+	if injected.Code != http.StatusBadRequest {
+		t.Fatalf("夹带租户字段 status=%d body=%s want 400", injected.Code, injected.Body.String())
+	}
+	rec := execute(h, ident, actor, `{"tool_name":"dlq_inspect","args":{}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}

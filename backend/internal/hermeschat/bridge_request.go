@@ -20,26 +20,25 @@ type Request struct {
 	UserID        int64
 	RequestID     string
 	CorrelationID string
+	Model         string
+	ModelBaseURL  string
+	ModelAPIKey   []byte
 	Body          []byte
-	// Operator 携带开启聊天的 admin actor(role + admin token id),使会话式只读工具
-	// 循环(WAVE H3b)能强制执行与显式 H3 tool-execute 端点相同的 RBAC role 下限 +
-	// tenant 范围,并记录相同的 operator 归属。它被绑定到会话的 request_id,使 runner
-	// 在对话中途的工具回调能解析到此 operator。零值(无 role / 无 token id)=> 会话未
-	// 绑定,该聊天无法使用会话式工具循环(fail closed)。
+	// Operator 携带开启聊天的真实管理员身份，并被签入短时内部令牌。
 	Operator SessionOperator
 }
 
 type PreparedRequest struct {
 	TenantID            int64
 	UserID              int64
+	ActorSource         string
+	ActorID             int64
+	ActorRole           string
 	RequestID           string
 	CorrelationID       string
 	ConversationID      int64
 	CreatedConversation bool
 	Body                []byte
-	// BoundOperator 为 true 表示 PrepareRequest 已为此 request_id 注册了一个 WAVE H3b
-	// 会话绑定。调用方(startChat)会在流结束后释放它,使绑定不会比其会话存活更久。
-	BoundOperator bool
 }
 
 func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedRequest, error) {
@@ -56,6 +55,7 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 	if err := validateChatPayload(body); err != nil {
 		return PreparedRequest{}, err
 	}
+	model := strings.TrimSpace(req.Model)
 	conversationID, hasConversation, err := requestConversationID(body)
 	if err != nil {
 		return PreparedRequest{}, err
@@ -66,23 +66,34 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 		return PreparedRequest{}, err
 	}
 	claims := InternalTokenClaims{
-		TenantID: req.TenantID, UserID: req.UserID, RequestID: requestID,
-		ExpiresAt: now.Add(InternalTokenTTL),
+		TenantID: req.TenantID, UserID: req.UserID,
+		ActorSource: req.Operator.ActorSource, ActorID: req.Operator.ActorID, ActorRole: req.Operator.Role,
+		RequestID: requestID,
+		IssuedAt:  now, ExpiresAt: now.Add(InternalTokenTTL),
 	}
 	if err := validateInternalClaimsForRequest(req, claims); err != nil {
 		return PreparedRequest{}, err
 	}
-	token, err := SignInternalToken(b.internalTokenSecret, claims)
+	mcpClaims := claims
+	mcpClaims.Purpose = InternalTokenPurposeMCP
+	mcpToken, err := SignInternalToken(b.internalTokenSecret, mcpClaims)
 	if err != nil {
 		return PreparedRequest{}, err
 	}
+	modelBaseURL, err := hermes.NormalizeExternalBaseURL(req.ModelBaseURL)
+	if err != nil {
+		return PreparedRequest{}, fmt.Errorf("%w: model_base_url invalid", hermes.ErrInvalidInput)
+	}
+	if len(bytes.TrimSpace(req.ModelAPIKey)) == 0 {
+		return PreparedRequest{}, fmt.Errorf("%w: model_api_key is required", hermes.ErrInvalidInput)
+	}
 	created := false
 	if hasConversation {
-		if err := b.ensureConversationOwner(ctx, req.TenantID, req.UserID, conversationID); err != nil {
+		if err := b.ensureConversationOwner(ctx, req.TenantID, req.UserID, conversationID, req.Operator); err != nil {
 			return PreparedRequest{}, err
 		}
 	} else {
-		conversationID, err = b.createConversation(ctx, req.TenantID, req.UserID)
+		conversationID, err = b.createConversation(ctx, req.TenantID, req.UserID, req.Operator)
 		if err != nil {
 			return PreparedRequest{}, err
 		}
@@ -91,50 +102,32 @@ func (b *Bridge) PrepareRequest(ctx context.Context, req Request) (PreparedReque
 	if err := setJSONField(body, "conversation_id", conversationID); err != nil {
 		return PreparedRequest{}, err
 	}
-	if err := setJSONField(body, "internal_base_url", b.internalBaseURL); err != nil {
+	if err := setJSONField(body, "mcp_token", mcpToken); err != nil {
 		return PreparedRequest{}, err
 	}
-	if err := setJSONField(body, "internal_token", token); err != nil {
+	if err := setJSONField(body, "model_base_url", modelBaseURL); err != nil {
 		return PreparedRequest{}, err
 	}
-
-	// WAVE H3b:将会话 operator 绑定到此 request_id 并注入只读工具目录。两者都以一个可用的
-	// operator(role + admin token id)以及已接线的绑定存储为前提——若任一缺失,聊天将在
-	// 没有工具循环的情况下继续(fail closed:内部端点会拒绝未绑定的会话)。绑定的过期时间
-	// 跟随 internal_token 的过期时间,使两者同生共死。
-	boundOperator := false
-	if b.sessionBindings != nil && req.Operator.Role != "" && req.Operator.AdminActorTokenID > 0 {
-		op := req.Operator
-		op.TenantID = req.TenantID
-		op.ActorUserID = req.UserID
-		op.ExpiresAt = claims.ExpiresAt
-		boundOperator = b.sessionBindings.Bind(requestID, op)
-		// 仅为已绑定的(admin)会话注入目录——不应让 LLM 知道它无法调用的工具。KNOB B:
-		// 当会话式工具循环在运行时被禁用时,完全跳过注入,使 LLM 被告知没有任何工具
-		//(内部 tool-execute 端点同样被闸门关闭)。
-		if boundOperator && b.toolLoopEnabled && b.toolCatalog != nil {
-			catalog := b.toolCatalog.ToolCatalog()
-			if catalog != nil {
-				if err := setJSONField(body, "tool_catalog", catalog); err != nil {
-					b.sessionBindings.Release(requestID)
-					return PreparedRequest{}, err
-				}
-			}
-		}
+	if err := setJSONField(body, "model_api_key", string(req.ModelAPIKey)); err != nil {
+		return PreparedRequest{}, err
 	}
+	if err := setJSONField(body, "internal_token_expires_at", claims.ExpiresAt.Unix()); err != nil {
+		return PreparedRequest{}, err
+	}
+	if err := setJSONField(body, "model", model); err != nil {
+		return PreparedRequest{}, err
+	}
+	delete(body, "context_window")
 
 	raw, err := json.Marshal(body)
 	if err != nil {
-		if boundOperator {
-			b.sessionBindings.Release(requestID)
-		}
 		return PreparedRequest{}, err
 	}
 	return PreparedRequest{
 		TenantID: req.TenantID, UserID: req.UserID,
+		ActorSource: req.Operator.ActorSource, ActorID: req.Operator.ActorID, ActorRole: req.Operator.Role,
 		RequestID: requestID, CorrelationID: strings.TrimSpace(req.CorrelationID),
 		ConversationID: conversationID, CreatedConversation: created, Body: raw,
-		BoundOperator: boundOperator,
 	}, nil
 }
 
@@ -257,7 +250,10 @@ func validateInternalClaimsForRequest(req Request, claims InternalTokenClaims) e
 	if claims.TenantID != req.TenantID || claims.UserID != req.UserID {
 		return fmt.Errorf("%w: internal token claims do not match request identity", hermes.ErrInvalidInput)
 	}
-	if claims.TenantID <= 0 || claims.UserID <= 0 || strings.TrimSpace(claims.RequestID) == "" || claims.ExpiresAt.IsZero() {
+	if claims.ActorSource != req.Operator.ActorSource || claims.ActorID != req.Operator.ActorID || claims.ActorRole != req.Operator.Role {
+		return fmt.Errorf("%w: internal token claims do not match administrator identity", hermes.ErrInvalidInput)
+	}
+	if claims.TenantID <= 0 || claims.UserID <= 0 || claims.ActorID <= 0 || strings.TrimSpace(claims.RequestID) == "" || claims.ExpiresAt.IsZero() {
 		return fmt.Errorf("%w: internal token claims are incomplete", hermes.ErrInvalidInput)
 	}
 	return nil
@@ -272,11 +268,12 @@ func setJSONField(body map[string]json.RawMessage, key string, value any) error 
 	return nil
 }
 
-func (b *Bridge) createConversation(ctx context.Context, tenantID, userID int64) (int64, error) {
+func (b *Bridge) createConversation(ctx context.Context, tenantID, userID int64, operator SessionOperator) (int64, error) {
 	var id int64
 	err := b.tx.RunHermesTx(ctx, func(store hermes.Store) error {
 		created, err := store.CreateConversation(ctx, dbhermes.CreateConversationParams{
 			TenantID: tenantID, OwnerUserID: userID,
+			ActorSource: operator.ActorSource, ActorID: operator.ActorID, ActorRole: operator.Role,
 		})
 		if err != nil {
 			return fmt.Errorf("create hermes conversation: %w", err)
@@ -293,9 +290,12 @@ func (b *Bridge) createConversation(ctx context.Context, tenantID, userID int64)
 	return id, nil
 }
 
-func (b *Bridge) ensureConversationOwner(ctx context.Context, tenantID, userID, conversationID int64) error {
+func (b *Bridge) ensureConversationOwner(ctx context.Context, tenantID, userID, conversationID int64, operator SessionOperator) error {
 	return b.tx.RunHermesTx(ctx, func(store hermes.Store) error {
-		row, err := store.GetConversation(ctx, dbhermes.GetConversationParams{ID: conversationID, TenantID: tenantID})
+		row, err := store.GetConversation(ctx, dbhermes.GetConversationParams{
+			ID: conversationID, TenantID: tenantID, OwnerUserID: userID,
+			ActorSource: operator.ActorSource, ActorID: operator.ActorID,
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return hermes.ErrNotFound
 		}
@@ -305,7 +305,7 @@ func (b *Bridge) ensureConversationOwner(ctx context.Context, tenantID, userID, 
 		if row.DeletedAt.Valid {
 			return hermes.ErrNotFound
 		}
-		if row.OwnerUserID != userID {
+		if row.OwnerUserID != userID || row.ActorSource != operator.ActorSource || row.ActorID != operator.ActorID {
 			return hermes.ErrForbidden
 		}
 		return nil

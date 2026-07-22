@@ -345,7 +345,7 @@ const listAuditEvents = `-- name: ListAuditEvents :many
 WITH audit_union AS (
     SELECT be.id, be.tenant_id, 'billing'::text AS event_class, be.event_type,
            CASE WHEN be.event_type = 'claim_aborted' THEN 'warning' ELSE 'info' END AS severity,
-           be.claim_id::text AS ledger_id, be.claim_id, NULL::bigint AS provider_account_id,
+           COALESCE(be.claim_id::text, '') AS ledger_id, be.claim_id, NULL::bigint AS provider_account_id,
            NULL::bigint AS pool_group_id, NULL::text AS request_id, NULL::text AS actor_id,
            NULL::text AS actor_role, NULL::text AS reason,
            jsonb_build_object('actual_cost', be.actual_cost::text, 'actual_cost_signed', be.actual_cost_signed::text,
@@ -395,7 +395,8 @@ WHERE ($1::bigint IS NULL OR au.tenant_id = $1::bigint)
   AND ($8::text IS NULL OR au.actor_id = $8::text)
   AND ($9::boolean = false OR (au.created_at, au.id) < ($10::timestamptz, $11::bigint))
 ORDER BY au.created_at DESC, au.id DESC
-LIMIT $12::integer
+LIMIT $13::integer
+OFFSET $12::integer
 `
 
 type ListAuditEventsParams struct {
@@ -410,6 +411,7 @@ type ListAuditEventsParams struct {
 	HasCursor       bool               `db:"has_cursor" json:"has_cursor"`
 	CursorCreatedAt pgtype.Timestamptz `db:"cursor_created_at" json:"cursor_created_at"`
 	CursorID        int64              `db:"cursor_id" json:"cursor_id"`
+	PageOffset      int32              `db:"page_offset" json:"page_offset"`
 	PageLimit       int32              `db:"page_limit" json:"page_limit"`
 }
 
@@ -419,10 +421,7 @@ type ListAuditEventsRow struct {
 	EventClass        string             `db:"event_class" json:"event_class"`
 	EventType         string             `db:"event_type" json:"event_type"`
 	Severity          string             `db:"severity" json:"severity"`
-	// ledger_id 在 ListAuditEvents 的 UNION 里源自 billing/admin 分支的 claim_id::text,
-	// 目录/用户管理类审计事件没有挂 ledger 会产出 NULL,故必须可空指针;
-	// sqlc 重新生成会退回非指针 string,扫描 NULL 时崩(audit_query_failed),需手工回补。
-	LedgerID          *string            `db:"ledger_id" json:"ledger_id"`
+	LedgerID          interface{}        `db:"ledger_id" json:"ledger_id"`
 	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	ProviderAccountID *int64             `db:"provider_account_id" json:"provider_account_id"`
 	PoolGroupID       *int64             `db:"pool_group_id" json:"pool_group_id"`
@@ -447,6 +446,7 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.HasCursor,
 		arg.CursorCreatedAt,
 		arg.CursorID,
+		arg.PageOffset,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -494,21 +494,25 @@ FROM billing_ledger_claims blc
 LEFT JOIN provider_accounts pa ON pa.id = blc.provider_account_id AND pa.tenant_id = blc.tenant_id
 LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = blc.tenant_id
 WHERE ($1::bigint IS NULL OR blc.tenant_id = $1::bigint)
-  AND ($2::timestamptz IS NULL OR blc.reserved_at >= $2::timestamptz)
-  AND ($3::timestamptz IS NULL OR blc.reserved_at <= $3::timestamptz)
-  AND ($4::text IS NULL OR blc.status = $4::text)
-  AND ($5::text IS NULL OR p.code = $5::text)
-  AND ($6::bigint IS NULL OR blc.pooling_group_id = $6::bigint)
-  AND ($7::bigint IS NULL OR blc.api_key_id = $7::bigint)
-  AND ($8::bigint IS NULL OR blc.provider_account_id = $8::bigint)
-  AND ($9::text IS NULL OR blc.requested_model = $9::text)
-  AND ($10::boolean = false OR (blc.reserved_at, blc.id) < ($11::timestamptz, $12::bigint))
+  AND ($2::text IS NULL OR blc.logical_request_id = $2::text)
+  AND ($3::bigint IS NULL OR blc.id = $3::bigint)
+  AND ($4::timestamptz IS NULL OR blc.reserved_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR blc.reserved_at <= $5::timestamptz)
+  AND ($6::text IS NULL OR blc.status = $6::text)
+  AND ($7::text IS NULL OR p.code = $7::text)
+  AND ($8::bigint IS NULL OR blc.pooling_group_id = $8::bigint)
+  AND ($9::bigint IS NULL OR blc.api_key_id = $9::bigint)
+  AND ($10::bigint IS NULL OR blc.provider_account_id = $10::bigint)
+  AND ($11::text IS NULL OR blc.requested_model = $11::text)
+  AND ($12::boolean = false OR (blc.reserved_at, blc.id) < ($13::timestamptz, $14::bigint))
 ORDER BY blc.reserved_at DESC, blc.id DESC
-LIMIT $13::integer
+LIMIT $15::integer
 `
 
 type ListBillingClaimsParams struct {
 	TenantID          *int64             `db:"tenant_id" json:"tenant_id"`
+	RequestID         *string            `db:"request_id" json:"request_id"`
+	ClaimID           *int64             `db:"claim_id" json:"claim_id"`
 	FromTs            pgtype.Timestamptz `db:"from_ts" json:"from_ts"`
 	ToTs              pgtype.Timestamptz `db:"to_ts" json:"to_ts"`
 	Status            *string            `db:"status" json:"status"`
@@ -548,6 +552,8 @@ type ListBillingClaimsRow struct {
 func (q *Queries) ListBillingClaims(ctx context.Context, arg ListBillingClaimsParams) ([]ListBillingClaimsRow, error) {
 	rows, err := q.db.Query(ctx, listBillingClaims,
 		arg.TenantID,
+		arg.RequestID,
+		arg.ClaimID,
 		arg.FromTs,
 		arg.ToTs,
 		arg.Status,
@@ -695,17 +701,19 @@ LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
 LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
     AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
 WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
-  AND ($2::timestamptz IS NULL OR ur.settled_at >= $2::timestamptz)
-  AND ($3::timestamptz IS NULL OR ur.settled_at <= $3::timestamptz)
-  AND ($4::text IS NULL OR p.code = $4::text)
-  AND ($5::bigint IS NULL OR blc.pooling_group_id = $5::bigint)
-  AND ($6::bigint IS NULL OR ur.api_key_id = $6::bigint)
+  AND ($2::text IS NULL OR blc.logical_request_id = $2::text)
+  AND ($3::bigint IS NULL OR ur.claim_id = $3::bigint)
+  AND ($4::timestamptz IS NULL OR ur.settled_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR ur.settled_at <= $5::timestamptz)
+  AND ($6::text IS NULL OR p.code = $6::text)
+  AND ($7::bigint IS NULL OR blc.pooling_group_id = $7::bigint)
+  AND ($8::bigint IS NULL OR ur.api_key_id = $8::bigint)
   -- user_id 过滤:供会话级用量端点按调用者用户(跨其所有 key)收敛,与 api_key_id 互补。
-  AND ($7::bigint IS NULL OR ur.user_id = $7::bigint)
-  AND ($8::bigint IS NULL OR ur.provider_account_id = $8::bigint)
-  AND ($9::text IS NULL OR ur.requested_model = $9::text)
+  AND ($9::bigint IS NULL OR ur.user_id = $9::bigint)
+  AND ($10::bigint IS NULL OR ur.provider_account_id = $10::bigint)
+  AND ($11::text IS NULL OR ur.requested_model = $11::text)
   AND (
-    $10::boolean = false
+    $12::boolean = false
     OR (
       ur.pending_reconciliation = true
       AND NOT EXISTS (
@@ -717,18 +725,20 @@ WHERE ($1::bigint IS NULL OR ur.tenant_id = $1::bigint)
     )
   )
   AND (
-    $11::text IS NULL
-    OR $11::text = 'all'
-    OR ($11::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
-    OR ($11::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
+    $13::text IS NULL
+    OR $13::text = 'all'
+    OR ($13::text = 'success' AND ur.end_class IN ('stream_end_graceful', 'non_streaming'))
+    OR ($13::text = 'error' AND ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))
   )
-  AND ($12::boolean = false OR (ur.settled_at, ur.id) < ($13::timestamptz, $14::bigint))
+  AND ($14::boolean = false OR (ur.settled_at, ur.id) < ($15::timestamptz, $16::bigint))
 ORDER BY ur.settled_at DESC, ur.id DESC
-LIMIT $15::integer
+LIMIT $17::integer
 `
 
 type ListUsageRecordsParams struct {
 	TenantID                  *int64             `db:"tenant_id" json:"tenant_id"`
+	RequestID                 *string            `db:"request_id" json:"request_id"`
+	ClaimID                   *int64             `db:"claim_id" json:"claim_id"`
 	FromTs                    pgtype.Timestamptz `db:"from_ts" json:"from_ts"`
 	ToTs                      pgtype.Timestamptz `db:"to_ts" json:"to_ts"`
 	Provider                  *string            `db:"provider" json:"provider"`
@@ -789,6 +799,8 @@ type ListUsageRecordsRow struct {
 func (q *Queries) ListUsageRecords(ctx context.Context, arg ListUsageRecordsParams) ([]ListUsageRecordsRow, error) {
 	rows, err := q.db.Query(ctx, listUsageRecords,
 		arg.TenantID,
+		arg.RequestID,
+		arg.ClaimID,
 		arg.FromTs,
 		arg.ToTs,
 		arg.Provider,

@@ -36,13 +36,6 @@ func NewKeyControlService(pool *pgxpool.Pool, logger *slog.Logger, opts ...func(
 	return s
 }
 
-func NewControlsService(store controlsStore, logger *slog.Logger) *KeyControlService {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &KeyControlService{store: store, logger: logger, now: time.Now}
-}
-
 func newServiceForTest(store controlsStore, now func() time.Time) *KeyControlService {
 	if now == nil {
 		now = time.Now

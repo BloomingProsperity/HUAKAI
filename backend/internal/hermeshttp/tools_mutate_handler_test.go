@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,12 +26,6 @@ type fakeMutator struct {
 	lastLock   string
 	lastRec    hermesops.MutationAuditRecord
 	failWith   error
-	// failCommitPhase 复刻真实 orchestrator 的提交阶段故障:变更先运行(因此 own-tx
-	// 工具已持久化),随后最终的提交失败。与 orchestrator 一样,它仅在 rec.OwnTx 置位
-	// 时包装 ErrCommitAfterOwnTxMutation;in-tx 工具得到一个裸提交错误。这使 handler
-	// 测试能够纯粹依据 handler 是否为该工具打了 rec.OwnTx 标记,来证明 error_class 是
-	// commit_uncertain 还是 mutation_failed。
-	failCommitPhase bool
 }
 
 func (f *fakeMutator) Execute(ctx context.Context, lockKey string, rec hermesops.MutationAuditRecord, mutate func(ctx context.Context, tx pgx.Tx) (hermesops.ToolResult, error)) (hermesops.ToolResult, error) {
@@ -41,18 +34,6 @@ func (f *fakeMutator) Execute(ctx context.Context, lockKey string, rec hermesops
 	f.lastRec = rec
 	if f.failWith != nil {
 		return hermesops.ToolResult{}, f.failWith
-	}
-	if f.failCommitPhase {
-		// 先运行变更(与 orchestrator 一致:先 mutate 再 commit),然后抛出按
-		// tx-mode 分类的提交故障。
-		if _, err := mutate(ctx, nil); err != nil {
-			return hermesops.ToolResult{}, err
-		}
-		base := errors.New("commit: connection reset")
-		if rec.OwnTx {
-			return hermesops.ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w: %w", hermesops.ErrCommitAfterOwnTxMutation, base)
-		}
-		return hermesops.ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w", base)
 	}
 	return mutate(ctx, nil)
 }
@@ -63,23 +44,32 @@ type mutateCounters struct {
 	resolves int
 	mutates  int
 	enabled  bool
+	state    string
 }
 
 func mutatingRegistry(c *mutateCounters) *hermesops.Registry {
 	reg := hermesops.NewRegistry()
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolAccountPause, Category: hermesops.CategoryMutating,
-		Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RoleTenantOperator,
+		Description: "暂停测试账号", Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RoleTenantOperator,
+		InputSchema: hermesops.ObjectSchema(map[string]any{
+			"account_id":    hermesops.PositiveIntegerSchema("账号编号"),
+			"operator_note": hermesops.NonEmptyStringSchema("本次操作标记"),
+		}, "account_id"),
 		Resolve: func(_ context.Context, req hermesops.ToolRequest) (hermesops.MutationPlan, error) {
 			c.resolves++
 			id, err := hermesops.ArgInt(req.Args, "account_id")
 			if err != nil {
 				return hermesops.MutationPlan{}, err
 			}
+			state := c.state
+			if state == "" {
+				state = "active"
+			}
 			return hermesops.MutationPlan{
 				TargetType: "provider_account", TargetID: id,
 				LockKey: "lock:7:" + itoa(id),
-				Preview: map[string]any{"current_enabled": true, "next_enabled": false},
+				Preview: map[string]any{"current_state": state, "next_enabled": false},
 			}, nil
 		},
 		Mutate: func(_ context.Context, _ hermesops.ToolRequest, _ hermesops.MutationPlan) (hermesops.ToolResult, error) {
@@ -89,9 +79,12 @@ func mutatingRegistry(c *mutateCounters) *hermesops.Registry {
 		},
 	})
 	// 仅限 platform-admin 的 mutating 工具,用于检验 RBAC 拒绝。
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolDLQReplay, Category: hermesops.CategoryMutating,
-		Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RolePlatformAdmin,
+		Description: "重放测试死信", Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RolePlatformAdmin,
+		InputSchema: hermesops.ObjectSchema(map[string]any{
+			"id": hermesops.PositiveIntegerSchema("死信编号"),
+		}, "id"),
 		Resolve: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.MutationPlan, error) {
 			return hermesops.MutationPlan{TargetType: "dlq_event", TargetID: 1}, nil
 		},
@@ -130,7 +123,7 @@ func buildMutateHandler(reg ToolRegistry, calls *fakeToolCalls, mutator MutateOr
 		tools:        reg,
 		toolCalls:    calls,
 		mutator:      mutator,
-		confirmCache: hermesconfirm.NewCache(),
+		confirmStore: hermesconfirm.NewCache(),
 	}
 }
 
@@ -139,9 +132,10 @@ func buildMutateHandler(reg ToolRegistry, calls *fakeToolCalls, mutator MutateOr
 // mutating 工具的同时只读路径仍保持可用。
 func mutatingPlusReadOnlyRegistry(c *mutateCounters) *hermesops.Registry {
 	reg := mutatingRegistry(c)
-	reg.Register(hermesops.ToolSpec{
+	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolDLQInspect, Category: hermesops.CategoryDiagnostic,
-		ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		Description: "读取测试死信", ReadOnly: true, RequiredRole: hermesops.RoleTenantOperator,
+		InputSchema: hermesops.ObjectSchema(nil),
 		Run: func(_ context.Context, _ hermesops.ToolRequest) (hermesops.ToolResult, error) {
 			return hermesops.ToolResult{Summary: map[string]any{"dlq_count": 0}}, nil
 		},
@@ -296,7 +290,7 @@ func TestMutate_CorrelationIDBoundToTool(t *testing.T) {
 	mut := &fakeMutator{}
 	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, mut)
 	platform := func() (sessionauth.Identity, adminActor) {
-		return sessionauth.Identity{TenantID: 7, UserID: 42}, adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
+		return sessionauth.Identity{TenantID: 7, UserID: 42}, adminActor{Source: admin.AdminSourceToken, ID: 99, Role: admin.RolePlatformAdmin}
 	}
 	ident, actor := platform()
 
@@ -308,6 +302,45 @@ func TestMutate_CorrelationIDBoundToTool(t *testing.T) {
 	}
 	if mut.executions != 0 {
 		t.Fatalf("cross-tool confirm executed: %d want 0", mut.executions)
+	}
+}
+
+func TestMutate_确认时换参会被拒绝且确认被销毁(t *testing.T) {
+	c := &mutateCounters{}
+	mut := &fakeMutator{}
+	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, mut)
+	ident, actor := operator(7)
+
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5,"operator_note":"first"}}`)
+	corr := decodeBody(t, preview)["correlation_id"].(string)
+	changed := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5,"operator_note":"second"},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if changed.Code != http.StatusBadRequest {
+		t.Fatalf("换参确认 status=%d body=%s，期望 400", changed.Code, changed.Body.String())
+	}
+	original := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5,"operator_note":"first"},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if original.Code != http.StatusBadRequest {
+		t.Fatalf("换参冲突后的原请求 status=%d，期望确认已销毁", original.Code)
+	}
+	if c.mutates != 0 || mut.executions != 0 {
+		t.Fatalf("换参确认执行了改动: mutates=%d executions=%d", c.mutates, mut.executions)
+	}
+}
+
+func TestMutate_确认前目标状态变化必须重新预览(t *testing.T) {
+	c := &mutateCounters{state: "active"}
+	mut := &fakeMutator{}
+	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, mut)
+	ident, actor := operator(7)
+
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
+	corr := decodeBody(t, preview)["correlation_id"].(string)
+	c.state = "rate_limited"
+	confirm := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if confirm.Code != http.StatusBadRequest {
+		t.Fatalf("陈旧预览确认 status=%d body=%s，期望 400", confirm.Code, confirm.Body.String())
+	}
+	if c.mutates != 0 || mut.executions != 0 {
+		t.Fatalf("状态漂移后仍执行改动: mutates=%d executions=%d", c.mutates, mut.executions)
 	}
 }
 
@@ -342,7 +375,7 @@ func TestMutate_PlatformAdminCanDLQReplay(t *testing.T) {
 	mut := &fakeMutator{}
 	h := buildMutateHandler(mutatingRegistry(c), &fakeToolCalls{}, mut)
 	ident := sessionauth.Identity{TenantID: 7, UserID: 42}
-	actor := adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
+	actor := adminActor{Source: admin.AdminSourceToken, ID: 99, Role: admin.RolePlatformAdmin}
 
 	rec := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":1}}`)
 	if rec.Code != http.StatusOK {
@@ -388,64 +421,34 @@ func TestMutate_OrchestratorAbortReturnsServiceError(t *testing.T) {
 	}
 }
 
-// --- H4 S2 提交阶段分类 --------------------------------------
-
-// errorClassFor 在强制的提交阶段故障下,驱动一次完整 confirm 穿过 handler,并返回
-// 为给定工具记录在尽力而为 hermes_tool_calls 行上的 error_class。tool 是已注册
-// mutating 工具之一;args 是它的参数对象;confirm 以 platform_admin 身份运行,因此
-// dlq_replay 也已获授权。
-func errorClassFor(t *testing.T, tool, args string) string {
-	t.Helper()
-	c := &mutateCounters{}
-	mut := &fakeMutator{failCommitPhase: true}
+func TestMutate_RecoveryPendingDoesNotWriteDuplicateErrorRow(t *testing.T) {
+	counters := &mutateCounters{}
 	calls := &fakeToolCalls{}
-	h := buildMutateHandler(mutatingRegistry(c), calls, mut)
+	mutator := &fakeMutator{failWith: hermesops.ErrMutationRecoveryPending}
+	h := buildMutateHandler(mutatingRegistry(counters), calls, mutator)
 	ident := sessionauth.Identity{TenantID: 7, UserID: 42}
-	actor := adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
-
-	preview := mutateRequest(h, ident, actor, `{"tool_name":"`+tool+`","args":`+args+`}`)
-	corr, ok := decodeBody(t, preview)["correlation_id"].(string)
-	if !ok {
-		t.Fatalf("%s: no correlation_id in preview body=%s", tool, preview.Body.String())
+	actor := adminActor{Source: admin.AdminSourceToken, ID: 99, Role: admin.RolePlatformAdmin}
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":1}}`)
+	corr := decodeBody(t, preview)["correlation_id"].(string)
+	confirm := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":1},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if confirm.Code != http.StatusServiceUnavailable || !bytes.Contains(confirm.Body.Bytes(), []byte("hermes_tool_recovery_pending")) {
+		t.Fatalf("恢复中响应=%d %s", confirm.Code, confirm.Body.String())
 	}
-	mutateRequest(h, ident, actor, `{"tool_name":"`+tool+`","args":`+args+`,"confirm":true,"correlation_id":"`+corr+`"}`)
-
-	// 尽力而为的 error 行是最后记录的那一行(在它之前先有一条 dry-run 行)。
-	if len(calls.rows) == 0 {
-		t.Fatalf("%s: no tool-call row recorded", tool)
+	if len(calls.rows) != 1 || !calls.rows[0].DryRun {
+		t.Fatalf("恢复日志负责最终结果时不应补写重复错误行：%+v", calls.rows)
 	}
-	last := calls.rows[len(calls.rows)-1]
-	if last.ResultStatus != string(hermesops.ResultError) {
-		t.Fatalf("%s: last row status=%q want error", tool, last.ResultStatus)
-	}
-	if last.ErrorClass == nil {
-		t.Fatalf("%s: error row has nil error_class", tool)
-	}
-	return *last.ErrorClass
 }
 
-func TestMutate_CommitPhaseFaultClassifiesByTxMode(t *testing.T) {
-	// 回归(H4 S2,区分性):提交阶段故障(变更已运行,携带审计行的最终
-	// orchestrator 提交失败)必须按 tx-mode 分类。dlq_replay 在它自己的 tx 里提交
-	// 变更,因此变更已持久化而审计被回滚 -> error_class "commit_uncertain"。
-	// account_pause 在 orchestrator tx 内部翻转 enabled,因此同样的故障会把变更回滚
-	// -> "mutation_failed"。
-	//
-	// 变异检查(自证):两个工具命中同一强制故障与同一分类器;唯一不同的是
-	// hermesops.IsOwnTxMutation(tool),由 handler 贯穿写入 rec.OwnTx。如果 handler
-	// 不再设置 rec.OwnTx(或 IsOwnTxMutation 丢了 dlq_replay),own-tx 类别就会塌缩为
-	// "mutation_failed",`ownClass == inClass` 防护即变红。
-	ownClass := errorClassFor(t, "dlq_replay", `{"id":1}`)
-	inClass := errorClassFor(t, "account_pause", `{"account_id":5}`)
-
-	if ownClass != "commit_uncertain" {
-		t.Fatalf("own-tx dlq_replay commit fault error_class=%q want commit_uncertain", ownClass)
-	}
-	if inClass != "mutation_failed" {
-		t.Fatalf("in-tx account_pause commit fault error_class=%q want mutation_failed", inClass)
-	}
-	if ownClass == inClass {
-		t.Fatalf("tx-mode did not flip the class (own=%q in=%q) — rec.OwnTx not threaded per tool", ownClass, inClass)
+func TestMutate_InTransactionFailureStillWritesAttemptError(t *testing.T) {
+	counters := &mutateCounters{}
+	calls := &fakeToolCalls{}
+	h := buildMutateHandler(mutatingRegistry(counters), calls, &fakeMutator{failWith: errors.New("事务失败")})
+	ident, actor := operator(7)
+	preview := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
+	corr := decodeBody(t, preview)["correlation_id"].(string)
+	mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5},"confirm":true,"correlation_id":"`+corr+`"}`)
+	if len(calls.rows) != 2 || calls.rows[1].ResultStatus != string(hermesops.ResultError) {
+		t.Fatalf("同事务失败应保留一次失败尝试日志：%+v", calls.rows)
 	}
 }
 
@@ -454,7 +457,7 @@ func TestMutate_DLQReplayAlreadyDeliveredIsIdempotentSuccess(t *testing.T) {
 	// operator 应看到 200 + 幂等提示,而不是泛化 503 "rolled back"。变异证伪:
 	// 把 DLQReplaySpec.Mutate 改回直接返回 dlq.ErrNotFound,本测试会收到 503。
 	reg := hermesops.NewRegistry()
-	reg.Register(hermesops.DLQReplaySpec(hermesops.DLQReplayDeps{
+	mustRegisterTestTool(reg, hermesops.DLQReplaySpec(hermesops.DLQReplayDeps{
 		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
 			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusDelivered}, nil
 		},
@@ -464,7 +467,7 @@ func TestMutate_DLQReplayAlreadyDeliveredIsIdempotentSuccess(t *testing.T) {
 	}))
 	h := buildMutateHandler(reg, &fakeToolCalls{}, &fakeMutator{})
 	ident := sessionauth.Identity{TenantID: 7, UserID: 42}
-	actor := adminActor{TokenID: 99, Role: admin.RolePlatformAdmin}
+	actor := adminActor{Source: admin.AdminSourceToken, ID: 99, Role: admin.RolePlatformAdmin}
 
 	preview := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":11}}`)
 	corr := decodeBody(t, preview)["correlation_id"].(string)
@@ -478,7 +481,7 @@ func TestMutate_DLQReplayAlreadyDeliveredIsIdempotentSuccess(t *testing.T) {
 	}
 }
 
-// --- KNOB A:HUAKAI_HERMES_MUTATING_ENABLED 运行时 kill-switch --------------
+// --- HUAKAI_HERMES_MUTATING_ENABLED 运行时总开关 -------------------------
 
 func TestKnobA_MutatingDisabledRefusesMutatingTool403AndRecordsDenial(t *testing.T) {
 	// 它捕获的缺陷:若运行时 mutating kill-switch 没有被执行(或只在 confirm 上执行、
@@ -493,7 +496,7 @@ func TestKnobA_MutatingDisabledRefusesMutatingTool403AndRecordsDenial(t *testing
 	mut := &fakeMutator{}
 	calls := &fakeToolCalls{}
 	h := buildMutateHandler(mutatingPlusReadOnlyRegistry(c), calls, mut)
-	h.mutatingDisabled = true // KNOB A 关闭(HUAKAI_HERMES_MUTATING_ENABLED=false)
+	h.mutatingDisabled = true // 模拟 HUAKAI_HERMES_MUTATING_ENABLED=false。
 	ident, actor := operator(7)
 
 	rec := mutateRequest(h, ident, actor, `{"tool_name":"account_pause","args":{"account_id":5}}`)
@@ -518,7 +521,7 @@ func TestKnobA_MutatingDisabledRefusesMutatingTool403AndRecordsDenial(t *testing
 
 func TestKnobA_MutatingDisabledKeepsReadOnlyPathLive(t *testing.T) {
 	// 它捕获的缺陷:一个会禁用整个 handler(而不只是 mutating 分支)的 kill-switch
-	// 会连只读诊断一起搞坏。本测试证明正交性要求——KNOB A 关闭时,只读工具仍返回
+	// 会连只读诊断一起搞坏。本测试证明总开关关闭时，只读工具仍返回
 	// 200 并带其结果。
 	//
 	// 变异检查(已运行 + 确认变红):把 `if h.mutatingDisabled` 防护移到 mutating
@@ -541,7 +544,7 @@ func TestKnobA_MutatingDisabledKeepsReadOnlyPathLive(t *testing.T) {
 }
 
 func TestKnobA_MutatingEnabledByDefaultStillPreviews(t *testing.T) {
-	// 正向对照:当 KNOB A 处于默认(启用)状态时——构造 handler 时未设置
+	// 正向对照：当总开关处于默认启用状态时，构造处理器时未设置
 	// mutatingDisabled——mutating 工具仍会 preview。这证明上面的 403 是由 kill-switch
 	// 引起,而非工具坏了,并且默认状态是零行为变更。
 	c := &mutateCounters{}

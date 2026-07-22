@@ -1,4 +1,4 @@
-//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live || e2e_grok_image_live || e2e_grok_video_live || e2e_gemini_video_live || e2e_concurrency || e2e_upstream || smoke
+//go:build e2e_codex_live || e2e_grok_live || e2e_chatgpt_session || e2e_openai_image_live || e2e_grok_image_live || e2e_grok_video_live || e2e_gemini_video_live || e2e_hermes_live || e2e_concurrency || e2e_upstream || smoke
 
 package main
 

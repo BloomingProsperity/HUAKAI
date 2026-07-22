@@ -18,12 +18,13 @@ func TestListConversationsByOwnerPassesTenantOwnerAndPagination(t *testing.T) {
 	store := &hermesStoreSpy{
 		listConversationsRows: []dbhermes.HermesConversation{{
 			ID: 101, TenantID: 7, OwnerUserID: 42, Title: stringPtrForTest("own"),
+			ActorSource: "token", ActorID: 42,
 			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 		}},
 	}
 	service := NewService(store)
 
-	got, err := service.ListConversationsByOwner(context.Background(), 7, 42, 25, 3)
+	got, err := service.ListConversationsByOwner(context.Background(), 7, 42, "token", 42, 25, 3)
 	if err != nil {
 		t.Fatalf("ListConversationsByOwner: %v", err)
 	}
@@ -32,6 +33,8 @@ func TestListConversationsByOwnerPassesTenantOwnerAndPagination(t *testing.T) {
 	if !store.listConversationsCalled ||
 		store.listConversationsArg.TenantID != 7 ||
 		store.listConversationsArg.OwnerUserID != 42 ||
+		store.listConversationsArg.ActorSource != "token" ||
+		store.listConversationsArg.ActorID != 42 ||
 		store.listConversationsArg.PageLimit != 25 ||
 		store.listConversationsArg.PageOffset != 3 {
 		t.Fatalf("list arg=%+v called=%v want tenant=7 owner=42 limit=25 offset=3",
@@ -52,6 +55,16 @@ func TestGetConversationRejectsCrossOwnerAndReportsDeleted(t *testing.T) {
 			name: "cross owner is not found",
 			row: dbhermes.HermesConversation{
 				ID: 201, TenantID: 7, OwnerUserID: 99,
+				ActorSource: "token", ActorID: 42,
+				CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
+			},
+			wantErr: ErrNotFound,
+		},
+		{
+			name: "same principal but another administrator is not found",
+			row: dbhermes.HermesConversation{
+				ID: 203, TenantID: 7, OwnerUserID: 42,
+				ActorSource: "token", ActorID: 99,
 				CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 			},
 			wantErr: ErrNotFound,
@@ -60,6 +73,7 @@ func TestGetConversationRejectsCrossOwnerAndReportsDeleted(t *testing.T) {
 			name: "soft deleted is gone",
 			row: dbhermes.HermesConversation{
 				ID: 202, TenantID: 7, OwnerUserID: 42,
+				ActorSource: "token", ActorID: 42,
 				CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 				DeletedAt: pgtype.Timestamptz{Time: testPGTime().Time, Valid: true},
 			},
@@ -71,7 +85,7 @@ func TestGetConversationRejectsCrossOwnerAndReportsDeleted(t *testing.T) {
 			store := &hermesStoreSpy{conversationRow: tc.row}
 			service := NewService(store)
 
-			_, err := service.GetConversation(context.Background(), 7, tc.row.ID, 42)
+			_, err := service.GetConversation(context.Background(), 7, tc.row.ID, 42, "token", 42)
 
 			// 变异检测:去掉 owner 或 deleted_at 守卫会返回 nil 并使此断言失败。
 			if !errors.Is(err, tc.wantErr) {
@@ -85,11 +99,12 @@ func TestListMessagesByConversationRejectsCrossOwnerBeforeListing(t *testing.T) 
 	// 回归守护:对他人拥有的 conversation id,消息历史不能返回空的 200;必须是不可枚举的 404。
 	store := &hermesStoreSpy{conversationRow: dbhermes.HermesConversation{
 		ID: 301, TenantID: 7, OwnerUserID: 99,
+		ActorSource: "token", ActorID: 42,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}}
 	service := NewService(store)
 
-	_, err := service.ListMessagesByConversation(context.Background(), 7, 301, 42, 50, 0)
+	_, err := service.ListMessagesByConversation(context.Background(), 7, 301, 42, "token", 42, 50, 0)
 
 	// 变异检测:未先校验 owner 就调用 ListMessagesByConversation 会置 listMessagesCalled 为 true 并返回 nil。
 	if !errors.Is(err, ErrNotFound) {
@@ -105,6 +120,7 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 	store := &hermesStoreSpy{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 302, TenantID: 7, OwnerUserID: 42,
+			ActorSource: "token", ActorID: 42,
 			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 		},
 		listMessagesRows: []dbhermes.ListMessagesByConversationRow{{
@@ -114,7 +130,7 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 	}
 	service := NewService(store)
 
-	got, err := service.ListMessagesByConversation(context.Background(), 7, 302, 42, 20, 4)
+	got, err := service.ListMessagesByConversation(context.Background(), 7, 302, 42, "token", 42, 20, 4)
 	if err != nil {
 		t.Fatalf("ListMessagesByConversation: %v", err)
 	}
@@ -124,6 +140,8 @@ func TestListMessagesByConversationPassesOwnerToStore(t *testing.T) {
 		store.listMessagesArg.TenantID != 7 ||
 		store.listMessagesArg.ConversationID != 302 ||
 		store.listMessagesArg.OwnerUserID != 42 ||
+		store.listMessagesArg.ActorSource != "token" ||
+		store.listMessagesArg.ActorID != 42 ||
 		store.listMessagesArg.PageLimit != 20 ||
 		store.listMessagesArg.PageOffset != 4 {
 		t.Fatalf("list messages arg=%+v called=%v want tenant=7 conv=302 owner=42 limit=20 offset=4",
@@ -148,6 +166,7 @@ func TestListMessagesByConversationDecryptsCiphertextAndKeepsLegacyPlaintext(t *
 	store := &hermesStoreSpy{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 302, TenantID: 7, OwnerUserID: 42,
+			ActorSource: "token", ActorID: 42,
 			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 		},
 		listMessagesRows: []dbhermes.ListMessagesByConversationRow{
@@ -163,7 +182,7 @@ func TestListMessagesByConversationDecryptsCiphertextAndKeepsLegacyPlaintext(t *
 	}
 	service := NewService(store).WithMessageContentKeys(keys)
 
-	got, err := service.ListMessagesByConversation(context.Background(), 7, 302, 42, 20, 0)
+	got, err := service.ListMessagesByConversation(context.Background(), 7, 302, 42, "token", 42, 20, 0)
 	if err != nil {
 		t.Fatalf("ListMessagesByConversation: %v", err)
 	}
@@ -194,6 +213,7 @@ func TestSoftDeleteConversationWithAuditIsAtomicAndIdempotent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			row := dbhermes.HermesConversation{
 				ID: 501, TenantID: 7, OwnerUserID: 42,
+				ActorSource: "token", ActorID: 42,
 				CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 			}
 			if tc.deleted {
@@ -203,7 +223,8 @@ func TestSoftDeleteConversationWithAuditIsAtomicAndIdempotent(t *testing.T) {
 			tx := &conversationTxSpy{store: store}
 			service := &Service{store: store, tx: tx}
 
-			err := service.SoftDeleteConversationWithAudit(context.Background(), 7, 42, 501, AuditFields{
+			err := service.SoftDeleteConversationWithAudit(context.Background(), 7, 42, 501, "token", 42, AuditFields{
+				ActorSource: "token", ActorID: 42, ActorRole: "platform_admin",
 				Action: ActionConversationDelete,
 				SanitizedArgs: map[string]any{
 					"conversation_id": int64(501),
@@ -221,7 +242,7 @@ func TestSoftDeleteConversationWithAuditIsAtomicAndIdempotent(t *testing.T) {
 				t.Fatalf("tx calls=%d committed=%v want one committed transaction", tx.calls, tx.committed)
 			}
 			if !store.auditCalled || store.auditArg.Action != ActionConversationDelete ||
-				store.auditArg.TenantID != 7 || store.auditArg.ActorUserID != 42 {
+				store.auditArg.TenantID != 7 || store.auditArg.ActorSource != "token" || store.auditArg.ActorID != 42 {
 				t.Fatalf("audit=%+v called=%v want conversation delete success", store.auditArg, store.auditCalled)
 			}
 			var args map[string]any
@@ -239,6 +260,7 @@ func TestSoftDeleteConversationWithAuditRejectsCrossOwnerBeforeDelete(t *testing
 	store := &hermesStoreSpy{
 		conversationRow: dbhermes.HermesConversation{
 			ID: 601, TenantID: 7, OwnerUserID: 99,
+			ActorSource: "token", ActorID: 42,
 			CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 		},
 		softDeleteRows: 1,
@@ -246,8 +268,8 @@ func TestSoftDeleteConversationWithAuditRejectsCrossOwnerBeforeDelete(t *testing
 	tx := &conversationTxSpy{store: store}
 	service := &Service{store: store, tx: tx}
 
-	err := service.SoftDeleteConversationWithAudit(context.Background(), 7, 42, 601, AuditFields{
-		Action: ActionConversationDelete,
+	err := service.SoftDeleteConversationWithAudit(context.Background(), 7, 42, 601, "token", 42, AuditFields{
+		ActorSource: "token", ActorID: 42, ActorRole: "platform_admin", Action: ActionConversationDelete,
 	})
 
 	// 变异检测:在 owner 检查之前就删除,会对他人拥有的记录置 softDeleteCalled 和 auditCalled 为 true。
@@ -267,9 +289,11 @@ func TestActionConversationDeleteIsValidAuditAction(t *testing.T) {
 	store := &hermesStoreSpy{}
 	service := NewService(store)
 
-	err := service.RecordAudit(context.Background(), 7, 42, ActionConversationDelete, map[string]any{
-		"conversation_id": int64(123),
-	}, AuditResultSuccess, "corr-action", "req-action")
+	err := service.RecordAudit(context.Background(), AuditFields{
+		TenantID: 7, ActorSource: "token", ActorID: 42, ActorRole: "platform_admin",
+		Action: ActionConversationDelete, SanitizedArgs: map[string]any{"conversation_id": int64(123)},
+		Result: AuditResultSuccess, CorrelationID: "corr-action", RequestID: "req-action",
+	})
 	if err != nil {
 		t.Fatalf("RecordAudit(ActionConversationDelete): %v", err)
 	}

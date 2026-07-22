@@ -16,25 +16,26 @@ import (
 
 const (
 	MessageRetentionDaysEnv = "HUAKAI_HERMES_RETENTION_DAYS"
-	// 默认 0 表示永久保留；只有运维显式设置正整数才启用硬删清理。
-	DefaultMessageRetentionDays   = 0
+	// 运维助手聊天属于普通日志，统一保留 30 天，模块不能自行关闭、延长或缩短。
+	DefaultMessageRetentionDays   = 30
 	defaultMessageRetentionBatch  = int32(1000)
 	defaultMessageRetentionTicker = time.Hour
 )
 
-type MessagePurgeStore interface {
+type MessageRetentionStore interface {
 	PurgeMessagesBefore(context.Context, time.Time, int32) (int64, error)
+	PurgeConversationsBefore(context.Context, time.Time, int32) (int64, error)
 }
 
 type MessageRetentionWorkerConfig struct {
-	Store         MessagePurgeStore
+	Store         MessageRetentionStore
 	RetentionDays int
 	Interval      time.Duration
 	BatchLimit    int32
 }
 
 type MessageRetentionWorker struct {
-	store         MessagePurgeStore
+	store         MessageRetentionStore
 	retentionDays int
 	interval      time.Duration
 	batchLimit    int32
@@ -47,6 +48,9 @@ type MessageRetentionWorker struct {
 }
 
 func NewMessageRetentionWorker(cfg MessageRetentionWorkerConfig) *MessageRetentionWorker {
+	if cfg.RetentionDays != DefaultMessageRetentionDays {
+		cfg.RetentionDays = DefaultMessageRetentionDays
+	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = defaultMessageRetentionTicker
 	}
@@ -71,15 +75,14 @@ func MessageRetentionDaysFromEnv() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s: invalid integer %q: %w", MessageRetentionDaysEnv, raw, err)
 	}
-	if days < 0 {
-		return 0, fmt.Errorf("%s: must be non-negative, got %d", MessageRetentionDaysEnv, days)
+	if days != DefaultMessageRetentionDays {
+		return 0, fmt.Errorf("%s 只能为全局固定值 %d 天，实际为 %d", MessageRetentionDaysEnv, DefaultMessageRetentionDays, days)
 	}
 	return days, nil
 }
 
 func (w *MessageRetentionWorker) Start(ctx context.Context) {
-	// retention_days <= 0 时不启动后台清理，避免默认部署误删聊天历史。
-	if w == nil || w.store == nil || w.retentionDays <= 0 {
+	if w == nil || w.store == nil {
 		return
 	}
 	w.mu.Lock()
@@ -111,7 +114,7 @@ func (w *MessageRetentionWorker) loop(ctx context.Context) {
 }
 
 func (w *MessageRetentionWorker) RunOnce(ctx context.Context, now time.Time) (int64, error) {
-	if w == nil || w.store == nil || w.retentionDays <= 0 {
+	if w == nil || w.store == nil {
 		return 0, nil
 	}
 	if now.IsZero() {
@@ -122,11 +125,31 @@ func (w *MessageRetentionWorker) RunOnce(ctx context.Context, now time.Time) (in
 		batchLimit = defaultMessageRetentionBatch
 	}
 	cutoff := now.UTC().AddDate(0, 0, -w.retentionDays)
+	messageTotal, err := purgeRetentionBatches(ctx, batchLimit, func(ctx context.Context, limit int32) (int64, error) {
+		return w.store.PurgeMessagesBefore(ctx, cutoff, limit)
+	})
+	if err != nil {
+		return messageTotal, fmt.Errorf("清理过期 Hermes 消息: %w", err)
+	}
+	conversationTotal, err := purgeRetentionBatches(ctx, batchLimit, func(ctx context.Context, limit int32) (int64, error) {
+		return w.store.PurgeConversationsBefore(ctx, cutoff, limit)
+	})
+	if err != nil {
+		return messageTotal + conversationTotal, fmt.Errorf("清理空的过期 Hermes 会话: %w", err)
+	}
+	return messageTotal + conversationTotal, nil
+}
+
+func purgeRetentionBatches(
+	ctx context.Context,
+	batchLimit int32,
+	purge func(context.Context, int32) (int64, error),
+) (int64, error) {
 	var total int64
 	for {
-		deleted, err := w.store.PurgeMessagesBefore(ctx, cutoff, batchLimit)
+		deleted, err := purge(ctx, batchLimit)
 		if err != nil {
-			return total, fmt.Errorf("purge expired hermes messages: %w", err)
+			return total, err
 		}
 		total += deleted
 		if deleted < int64(batchLimit) {
@@ -169,6 +192,19 @@ func (s *PostgresMessagePurgeStore) PurgeMessagesBefore(ctx context.Context, cut
 		batchLimit = defaultMessageRetentionBatch
 	}
 	return s.queries.PurgeMessagesBefore(ctx, dbhermes.PurgeMessagesBeforeParams{
+		Cutoff:     pgtype.Timestamptz{Time: cutoff.UTC(), Valid: true},
+		BatchLimit: batchLimit,
+	})
+}
+
+func (s *PostgresMessagePurgeStore) PurgeConversationsBefore(ctx context.Context, cutoff time.Time, batchLimit int32) (int64, error) {
+	if s == nil || s.queries == nil {
+		return 0, ErrMisconfigured
+	}
+	if batchLimit <= 0 {
+		batchLimit = defaultMessageRetentionBatch
+	}
+	return s.queries.PurgeConversationsBefore(ctx, dbhermes.PurgeConversationsBeforeParams{
 		Cutoff:     pgtype.Timestamptz{Time: cutoff.UTC(), Valid: true},
 		BatchLimit: batchLimit,
 	})

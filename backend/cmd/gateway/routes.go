@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,16 +15,22 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountproxyimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminobservabilityhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminpoolhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminquotahttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminuserhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcementhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/audiohttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditexporthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/billingreconhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/cacheadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/checkinhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/codexagent"
 	"github.com/BloomingProsperity/HUAKAI/internal/completionshttp"
@@ -36,17 +40,21 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
+	"github.com/BloomingProsperity/HUAKAI/internal/dlqhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/emailsettingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/credentialacqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/geminihttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesprincipal"
 	"github.com/BloomingProsperity/HUAKAI/internal/imageshttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/invitationhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/invoicehttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediataskhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/meexporthttp"
@@ -75,6 +83,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/rerankhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/responsescompacthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/runtimeloghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/setuphttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
@@ -93,24 +102,24 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/voucherhttp"
 )
 
-func (d *deps) AdminObservabilityAuth() gatewayhttp.AdminObservabilityAuth {
+func (d *deps) AdminObservabilityAuth() adminobservabilityhttp.AdminObservabilityAuth {
 	return d.adminAuth
 }
 
-func (d *deps) AdminObservabilityStore() gatewayhttp.AdminObservabilityStore {
+func (d *deps) AdminObservabilityStore() adminobservabilityhttp.AdminObservabilityStore {
 	return d.billingQueries
 }
 
-func (d *deps) AdminDLQAuth() gatewayhttp.AdminDLQAuth {
+func (d *deps) AdminDLQAuth() dlqhttp.AdminDLQAuth {
 	return d.adminAuth
 }
 
-func (d *deps) AdminDLQStore() gatewayhttp.AdminDLQStore {
+func (d *deps) AdminDLQStore() dlqhttp.AdminDLQStore {
 	return d.dlqService
 }
 
-func credentialAcquisitionRouteDeps(d *deps) gatewayhttp.AdminCredentialAcquisitionDeps {
-	return gatewayhttp.AdminCredentialAcquisitionDeps{
+func credentialAcquisitionRouteDeps(d *deps) credentialacqhttp.AdminCredentialAcquisitionDeps {
+	return credentialacqhttp.AdminCredentialAcquisitionDeps{
 		Auth: d.adminAuth, Sessions: d.credentialAcqStore,
 		Credentials: d.credentialStore, CredentialAudit: d.credentialStore,
 		AuditStore: d.adminQueries, Exchangers: d.credentialExchangers,
@@ -207,17 +216,17 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Store: d.billingQueries,
 	}))
 
-	auditVerifyDeps := gatewayhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
-	auditPubkeyDeps := gatewayhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}
+	auditVerifyDeps := auditverifyhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
+	auditPubkeyDeps := auditverifyhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}
 	r.Get("/.well-known/huakai-pubkey.json", trusthttp.NewWellKnownHandler(trusthttp.WellKnownDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}))
 	r.Post("/v1/trust/verify", trusthttp.NewVerifyHandler(trusthttp.VerifyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}).ServeHTTP)
 	r.Route("/v1/audit", func(r chi.Router) {
-		r.Get("/pubkey", gatewayhttp.NewAuditPubkeyHandler(auditPubkeyDeps))
-		r.Get("/pubkeys", gatewayhttp.NewAuditPubkeysHandler(auditPubkeyDeps))
-		r.Get("/pubkey/{fingerprint_hex}", gatewayhttp.NewAuditPubkeyByFingerprintHandler(auditPubkeyDeps))
-		r.Get("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
-		r.Post("/verify", gatewayhttp.NewAuditVerifyHandler(auditVerifyDeps))
-		r.Get("/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
+		r.Get("/pubkey", auditverifyhttp.NewAuditPubkeyHandler(auditPubkeyDeps))
+		r.Get("/pubkeys", auditverifyhttp.NewAuditPubkeysHandler(auditPubkeyDeps))
+		r.Get("/pubkey/{fingerprint_hex}", auditverifyhttp.NewAuditPubkeyByFingerprintHandler(auditPubkeyDeps))
+		r.Get("/verify", auditverifyhttp.NewAuditVerifyHandler(auditVerifyDeps))
+		r.Post("/verify", auditverifyhttp.NewAuditVerifyHandler(auditVerifyDeps))
+		r.Get("/merkle-tree.json", auditverifyhttp.NewAuditMerkleTreeHandler(auditVerifyDeps))
 		// 审计导出/证明会按租户范围返回整条审计链,必须认证并绑定到认证身份的租户;
 		// pubkey/verify/merkle 保持公开(trust-chain 单负载验证)。处理器内部还会从认证
 		// 上下文派生 tenant_scope_ref 并失败闭合,中间件与处理器双层堵住跨租户 IDOR。
@@ -270,10 +279,10 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 			Keys:  d.userKeyService,
 			Store: d.billingQueries,
 		}))
-		r.Get("/invitations", gatewayhttp.NewInvitationSummaryHandler(gatewayhttp.InvitationDeps{
+		r.Get("/invitations", invitationhttp.NewInvitationSummaryHandler(invitationhttp.InvitationDeps{
 			Service: d.invitationService,
 		}))
-		r.Get("/invitation-code", gatewayhttp.NewMyReferralCodeHandler(gatewayhttp.InvitationDeps{
+		r.Get("/invitation-code", invitationhttp.NewMyReferralCodeHandler(invitationhttp.InvitationDeps{
 			Service: d.invitationService,
 		}))
 		meGroupsRatios := megroupshttp.RatioLister(d.pricingRatioStore)
@@ -366,7 +375,7 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
-		gatewayhttp.MountVoucherUserRoutes(r, gatewayhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver, PlatformSettings: d.platformSettings})
+		voucherhttp.MountVoucherUserRoutes(r, voucherhttp.VoucherUserDeps{Service: d.voucherService, ClientIPResolver: d.clientIPResolver, PlatformSettings: d.platformSettings})
 	})
 	r.Route("/v1/users/me/oauth-bindings", func(r chi.Router) {
 		r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
@@ -417,69 +426,47 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		userkeyhttp.MountUserAPIKeyRoutes(r, userkeyhttp.Deps{Service: d.userKeyService})
 		mountUserKeyControlsRoutes(r, d)
 	})
-	if d.hermesService != nil && d.hermesRunner != nil {
-		// WAVE H1:Hermes 被重新定位为面向 admin/operator 的运维助手。
-		// 当 HUAKAI_HERMES_ADMIN_ONLY 为 true(默认)时,挂在
-		// admin-token 中间件之后(admin_tokens 鉴权 + 租户作用域强制)。
-		// 为 false 时,旧的终端用户 customer-key 路径被逐字保留,
-		// 以便干净回滚。
-		hermesAuth := hermeshttp.APIKeyMiddleware(d.inboundAuth)
-		if d.hermesAdminOnly {
-			hermesAuth = hermeshttp.AdminAuthMiddleware(d.adminAuth)
-		}
+	if d.hermesService != nil {
+		hermesAuth := hermeshttp.AdminAuthMiddleware(hermeshttp.AdminAuthDeps{
+			Resolver: d.adminAuth, PlatformTenantID: d.platformTenantID,
+			Capabilities: tenantcapability.NewStore(d.pgPool),
+			Principals:   hermesprincipal.NewStore(d.pgPool),
+		})
 		hermesRouterDeps := hermeshttp.RouterDeps{
 			Service:        d.hermesService,
 			Runner:         d.hermesRunner,
 			Bridge:         d.hermesChatBridge,
 			HeaderSettings: d.platformSettings,
-			// 注入共享 confirm Cache 单例(同一实例后续也会注入 hermeschat 提议侧)。
-			ConfirmCache: d.hermesConfirmCache,
-			// KNOB A:运行时 mutating-tool 总开关。handler 在 mutating 分支顶端
-			// 强制它(覆盖 preview 与 confirm);下方的双保险在它关闭时
-			// 还会扣住 orchestrator 不接线。
+			// 提议和人工确认共用 PostgreSQL 单次消费存储，可跨网关副本完成。
+			ConfirmStore: d.hermesConfirmStore,
+			// 运行时改动工具总开关在处理器分支顶端强制，覆盖预览与确认。
+			// 关闭时同时不接入编排器，形成第二道保护。
 			MutatingEnabled: d.hermesMutatingEnabled,
 		}
-		// WAVE H3 只读运维脊柱。仅在 admin-only 重定位生效时才挂上
-		// tool/context 依赖——旧的终端用户 customer-key 路径绝不得暴露
-		// 运维诊断。任一依赖为 nil 时,handler 也会 fail closed(503)。
-		if d.hermesAdminOnly {
-			if d.hermesToolRegistry != nil {
-				hermesRouterDeps.Tools = d.hermesToolRegistry
-			}
-			if d.hermesToolCalls != nil {
-				hermesRouterDeps.ToolCalls = d.hermesToolCalls
-			}
-			if d.hermesModuleSource != nil {
-				hermesRouterDeps.ContextSource = d.hermesModuleSource
-			}
-			// WAVE H4 mutating-tool orchestrator(原子审计 + advisory-lock)。
-			// KNOB A 双保险:当 mutating 总开关关闭时,orchestrator 不被接线,
-			// 因此即便 handler 的标志检查被绕过,直接走 confirm 路径也会
-			// 503(mutator 为 nil)而非真的去改动。
-			if d.hermesMutator != nil && d.hermesMutatingEnabled {
-				hermesRouterDeps.Mutator = d.hermesMutator
-				// S2 (c):按 operator-token 的限流器随 mutator 一起挂载
-				//(同样的 admin-only + mutating-enabled 门控)。limiter 为 nil/禁用
-				// 即旧的无界行为。
-				hermesRouterDeps.MutateGuard = &hermeshttp.MutateGuardDeps{
-					RateLimiter: d.hermesMutateRateLimiter,
-				}
+		if d.hermesToolRegistry != nil {
+			hermesRouterDeps.Tools = d.hermesToolRegistry
+		}
+		if d.hermesToolCalls != nil {
+			hermesRouterDeps.ToolCalls = d.hermesToolCalls
+		}
+		if d.hermesModuleSource != nil {
+			hermesRouterDeps.ContextSource = d.hermesModuleSource
+		}
+		if d.hermesMutator != nil && d.hermesMutatingEnabled {
+			hermesRouterDeps.Mutator = d.hermesMutator
+			hermesRouterDeps.MutateGuard = &hermeshttp.MutateGuardDeps{
+				RateLimiter: d.hermesMutateRateLimiter,
 			}
 		}
-		r.With(hermesAuth).
+		r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe), hermesAuth).
 			Mount("/v1/hermes", hermeshttp.NewRouterWithDeps(hermesRouterDeps))
 	}
-	r.Post("/internal/runner/bootstrap", d.handleRunnerBootstrap)
-	r.Post("/internal/runner/refresh", d.handleRunnerRefresh)
-	r.Get("/internal/keys", d.handleRunnerKeys)
-	// WAVE H3b:runner 在对话中途的只读 tool-execute 回调。它由 session 的
-	// internal_token 鉴权(在 handler 内部校验)——与 runner 在这个内部
-	// 监听器上做 LLM completions 所用的是同一个 HMAC——并且只用绑定 operator 的
-	// 作用域派发只读工具。仅在该 handler 已接线时(admin-only + chat bridge)挂载。
-	if d.hermesInternalToolHandler != nil {
-		r.Method(http.MethodPost, "/internal/hermes/tool-execute", d.hermesInternalToolHandler)
+	// 官方 runner 通过短时内部令牌调用唯一 MCP 入口。处理器从令牌恢复固定租户和
+	// 真实管理员，只执行获授权的只读工具或生成等待人工确认的可逆提议。
+	if d.hermesMCPHandler != nil {
+		r.Method(http.MethodPost, "/internal/hermes/mcp", d.hermesMCPHandler)
 	}
-	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/v1/invitations", gatewayhttp.NewInvitationCreateHandler(gatewayhttp.InvitationDeps{
+	r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)).Post("/v1/invitations", invitationhttp.NewInvitationCreateHandler(invitationhttp.InvitationDeps{
 		Service: d.invitationService,
 	}))
 
@@ -503,183 +490,6 @@ func writeGatewayJSONError(w http.ResponseWriter, status int, code, message stri
 	_ = json.NewEncoder(w).Encode(map[string]map[string]string{
 		"error": {"code": code, "message": message},
 	})
-}
-
-func (d *deps) handleRunnerBootstrap(w http.ResponseWriter, r *http.Request) {
-	if d == nil || d.hermesBootstrapIssuer == nil {
-		writeInternalError(w, http.StatusServiceUnavailable, "hermes_bootstrap_unavailable")
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		writeInternalError(w, http.StatusBadRequest, "invalid_body")
-		return
-	}
-	if !hermes.VerifyRunnerHMACRequest(r, body, d.hermesRunnerSharedSecret, time.Now().UTC()) {
-		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	tenantID, actorUserID, ok := runnerSignedIdentity(r)
-	if !ok {
-		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	var req struct {
-		RunnerID    string `json:"runner_id"`
-		TenantID    int64  `json:"tenant_id"`
-		ActorUserID int64  `json:"actor_user_id"`
-	}
-	if err := json.Unmarshal(body, &req); err != nil {
-		writeInternalError(w, http.StatusBadRequest, "invalid_json")
-		return
-	}
-	token, err := d.hermesBootstrapIssuer.IssueBootstrapJWT(r.Context(), req.RunnerID)
-	if err != nil {
-		writeInternalError(w, http.StatusBadRequest, "jwt_issue_failed")
-		return
-	}
-	if d.hermesService != nil {
-		kid, _ := hermes.KIDFromToken(token)
-		err := d.hermesService.RecordAudit(r.Context(), tenantID, actorUserID, hermes.ActionProfileRotate, map[string]any{
-			"jwt_action": "issue",
-			"runner_id":  req.RunnerID,
-			"kid":        kid,
-		}, hermes.AuditResultSuccess, r.Header.Get("X-Correlation-ID"), r.Header.Get("X-Request-ID"))
-		if err != nil {
-			writeInternalError(w, http.StatusServiceUnavailable, "audit_failed")
-			return
-		}
-	}
-	writeInternalJSON(w, http.StatusOK, map[string]string{"token": token})
-}
-
-func (d *deps) handleRunnerRefresh(w http.ResponseWriter, r *http.Request) {
-	if d == nil || d.hermesBootstrapIssuer == nil {
-		writeInternalError(w, http.StatusServiceUnavailable, "hermes_bootstrap_unavailable")
-		return
-	}
-	var req struct {
-		Token       string `json:"token"`
-		TenantID    int64  `json:"tenant_id"`
-		ActorUserID int64  `json:"actor_user_id"`
-	}
-	var body []byte
-	if r.Body != nil {
-		var err error
-		body, err = io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-		if err != nil {
-			writeInternalError(w, http.StatusBadRequest, "invalid_body")
-			return
-		}
-		if len(strings.TrimSpace(string(body))) > 0 {
-			_ = json.Unmarshal(body, &req)
-		}
-	}
-	if !hermes.VerifyRunnerHMACRequest(r, body, d.hermesRunnerSharedSecret, time.Now().UTC()) {
-		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	tenantID, actorUserID, ok := runnerSignedIdentity(r)
-	if !ok {
-		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	token := bearerToken(r.Header.Get(hermes.HeaderAuthorization))
-	if token == "" {
-		token = strings.TrimSpace(req.Token)
-	}
-	if token == "" {
-		writeInternalError(w, http.StatusUnauthorized, "missing_token")
-		return
-	}
-	refreshed, err := d.hermesBootstrapIssuer.RefreshJWT(r.Context(), token)
-	if err != nil {
-		writeInternalError(w, http.StatusUnauthorized, "invalid_token")
-		return
-	}
-	if d.hermesService != nil {
-		kid, _ := hermes.KIDFromToken(refreshed)
-		err := d.hermesService.RecordAudit(r.Context(), tenantID, actorUserID, hermes.ActionProfileRotate, map[string]any{
-			"jwt_action": "refresh",
-			"kid":        kid,
-		}, hermes.AuditResultSuccess, r.Header.Get("X-Correlation-ID"), r.Header.Get("X-Request-ID"))
-		if err != nil {
-			writeInternalError(w, http.StatusServiceUnavailable, "audit_failed")
-			return
-		}
-	}
-	writeInternalJSON(w, http.StatusOK, map[string]string{"token": refreshed})
-}
-
-func (d *deps) handleRunnerKeys(w http.ResponseWriter, r *http.Request) {
-	if d == nil || d.hermesKeyStore == nil {
-		writeInternalError(w, http.StatusServiceUnavailable, "hermes_keys_unavailable")
-		return
-	}
-	if !hermes.VerifyRunnerHMACRequest(r, nil, d.hermesRunnerSharedSecret, time.Now().UTC()) {
-		writeInternalError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	keys, err := d.hermesKeyStore.GetActiveKeys(r.Context())
-	if err != nil {
-		writeInternalError(w, http.StatusServiceUnavailable, "keys_failed")
-		return
-	}
-	type keyResponse struct {
-		Kid          string `json:"kid"`
-		Alg          string `json:"alg"`
-		PublicKeyPEM string `json:"public_key_pem"`
-	}
-	out := make([]keyResponse, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, keyResponse{Kid: key.Kid, Alg: key.Alg, PublicKeyPEM: key.PublicKeyPEM})
-	}
-	writeInternalJSON(w, http.StatusOK, map[string]any{"keys": out})
-}
-
-func runnerSignedIdentity(r *http.Request) (int64, int64, bool) {
-	if r == nil {
-		return 0, 0, false
-	}
-	tenantID, ok := positiveInt64Header(r, hermes.HeaderTenant)
-	if !ok {
-		return 0, 0, false
-	}
-	actorUserID, ok := positiveInt64Header(r, hermes.HeaderUser)
-	if !ok {
-		return 0, 0, false
-	}
-	return tenantID, actorUserID, true
-}
-
-func positiveInt64Header(r *http.Request, header string) (int64, bool) {
-	raw := strings.TrimSpace(r.Header.Get(header))
-	if raw == "" {
-		return 0, false
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value <= 0 {
-		return 0, false
-	}
-	return value, true
-}
-
-func bearerToken(header string) string {
-	header = strings.TrimSpace(header)
-	if len(header) < len("Bearer ") || !strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
-		return ""
-	}
-	return strings.TrimSpace(header[len("Bearer "):])
-}
-
-func writeInternalJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeInternalError(w http.ResponseWriter, status int, code string) {
-	writeInternalJSON(w, status, map[string]string{"error": code})
 }
 
 // authHandlerDeps 装配 /v1/auth handlers 的依赖。关键: EventSink 接生产
@@ -1022,7 +832,7 @@ func modelAdminRouteDeps(d *deps) modeladminhttp.Deps {
 
 func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Route("/v1/admin/email", func(r chi.Router) {
-		gatewayhttp.MountAdminEmailSettingsRoutes(r, gatewayhttp.AdminEmailSettingsDeps{
+		emailsettingshttp.MountAdminEmailSettingsRoutes(r, emailsettingshttp.AdminEmailSettingsDeps{
 			Auth:  d.adminAuth,
 			Store: d.emailSettings,
 			Keys:  d.credentialKeys,
@@ -1033,7 +843,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountSystemHealthRoutes(r, d) // ADMIN-042
 	// 运行日志查询/清理/采集健康(platform_admin;handler 内部自解析鉴权)。
 	r.Route("/v1/admin/ops", func(r chi.Router) {
-		gatewayhttp.MountAdminRuntimeLogRoutes(r, gatewayhttp.AdminRuntimeLogsDeps{
+		runtimeloghttp.MountAdminRuntimeLogRoutes(r, runtimeloghttp.AdminRuntimeLogsDeps{
 			Auth:      d.adminAuth,
 			Store:     d.runtimeLogStore,
 			Sink:      d.logSink,
@@ -1042,7 +852,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	mountBackupRoutes(r, d)         // 只读备份 manifest(platform_admin)
-	mountModuleRegistryRoutes(r, d) // WAVE H2 模块知识脊柱
+	mountModuleRegistryRoutes(r, d) // 模块知识管理入口
 	var adminResolver adminIdentityResolver
 	if d.adminAuth != nil {
 		adminResolver = d.adminAuth
@@ -1158,7 +968,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Delete("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateDeleteHandler(channelTestTemplateDeps))
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
-		gatewayhttp.MountAdminPoolAccountRoutes(r, gatewayhttp.AdminPoolAccountDeps{
+		adminpoolhttp.MountAdminPoolAccountRoutes(r, adminpoolhttp.AdminPoolAccountDeps{
 			Auth:              d.adminAuth,
 			Store:             d.adminQueries,
 			Credentials:       d.credentialStore,
@@ -1207,8 +1017,8 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditStore:  d.adminQueries,
 		})
 		credentialprojecthttp.MountRoutes(r, credentialProjectRouteDeps(d))
-		gatewayhttp.MountAdminCredentialAcquisitionRoutes(r, credentialAcquisitionRouteDeps(d))
-		gatewayhttp.MountChannelHealthAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
+		credentialacqhttp.MountAdminCredentialAcquisitionRoutes(r, credentialAcquisitionRouteDeps(d))
+		channelhealthhttp.MountChannelHealthAdminRoutes(r, channelhealthhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
 			Controller: d.channelHealth,
 		})
@@ -1224,7 +1034,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminhttp.MountLogLevelRoutes(r, adminhttp.LogLevelDeps{Auth: d.adminAuth})
 	})
 	r.Route("/v1/admin/channel-health", func(r chi.Router) {
-		gatewayhttp.MountChannelHealthReadAdminRoutes(r, gatewayhttp.ChannelHealthAdminDeps{
+		channelhealthhttp.MountChannelHealthReadAdminRoutes(r, channelhealthhttp.ChannelHealthAdminDeps{
 			Auth:       d.adminAuth,
 			Controller: d.channelHealth,
 		})
@@ -1237,7 +1047,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			Credentials: d.credentialStore,
 			AuditStore:  d.adminQueries,
 		})
-		gatewayhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
+		credentialacqhttp.MountAdminCredentialAcquisitionHelperRoutes(r, credentialAcquisitionRouteDeps(d))
 		stagedStore := accountintake.NewStagedStore(d.pgPool, d.credentialKeys)
 		intakeService := accountintake.NewService(d.pgPool, d.credentialStore).
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
@@ -1284,13 +1094,13 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	r.Route("/admin/v1/pools", func(r chi.Router) {
-		r.Mount("/", gatewayhttp.NewAdminPoolsHandler(gatewayhttp.AdminPoolsDeps{
+		r.Mount("/", adminpoolhttp.NewAdminPoolsHandler(adminpoolhttp.AdminPoolsDeps{
 			Auth:  d.adminAuth,
-			Store: gatewayhttp.NewAdminPoolsStoreAdapter(d.billingQueries, d.adminQueries, d.pgPool),
+			Store: adminpoolhttp.NewAdminPoolsStoreAdapter(d.billingQueries, d.adminQueries, d.pgPool),
 		}))
 	})
 	r.Route("/admin/v1/billing", func(r chi.Router) {
-		gatewayhttp.MountAdminBillingSettingsRoutes(r, gatewayhttp.AdminBillingSettingsDeps{
+		billingadminhttp.MountAdminBillingSettingsRoutes(r, billingadminhttp.AdminBillingSettingsDeps{
 			Auth:          d.adminAuth,
 			Store:         d.billingPolicyStore,
 			TenantChecker: d.adminQueries,
@@ -1323,7 +1133,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
-		gatewayhttp.MountVoucherAdminRoutes(r, gatewayhttp.VoucherAdminDeps{
+		voucherhttp.MountVoucherAdminRoutes(r, voucherhttp.VoucherAdminDeps{
 			Auth:    d.adminAuth,
 			Service: d.voucherService,
 		})
@@ -1395,17 +1205,17 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	mountAlertingAdminRoutes(r, d)
 	mountRiskAdminRoutes(r, d)
 	mountModerationAdminRoutes(r, d)
-	r.Get("/admin/v1/usage", gatewayhttp.NewUsageHandler(d))
-	r.Get("/admin/v1/billing/claims", gatewayhttp.NewClaimsHandler(d))
-	r.Get("/admin/v1/audit-events", gatewayhttp.NewAuditEventsHandler(d))
-	r.Get("/admin/v1/dlq/{handler}", gatewayhttp.NewAdminDLQListHandler(d))
-	r.Post("/admin/v1/dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
-	r.Post("/admin/v1/usage-record-dlq/{id}/replay", gatewayhttp.NewAdminDLQReplayHandler(d))
+	r.Get("/admin/v1/usage", adminobservabilityhttp.NewUsageHandler(d))
+	r.Get("/admin/v1/billing/claims", adminobservabilityhttp.NewClaimsHandler(d))
+	r.Get("/admin/v1/audit-events", adminobservabilityhttp.NewAuditEventsHandler(d))
+	r.Get("/admin/v1/dlq/{handler}", dlqhttp.NewAdminDLQListHandler(d))
+	r.Post("/admin/v1/dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
+	r.Post("/admin/v1/usage-record-dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
 	obsDLQDeps := obsdlqhttp.Deps{Auth: d.adminAuth, Store: d.obsDLQAdminStore}
 	r.Get("/admin/v1/obs-dlq", obsdlqhttp.NewListHandler(obsDLQDeps))
 	r.Post("/admin/v1/obs-dlq/{id}/replay", obsdlqhttp.NewReplayHandler(obsDLQDeps))
 	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
-		gatewayhttp.MountAdminL2CacheRoutes(r, gatewayhttp.AdminL2CacheDeps{
+		cacheadminhttp.MountAdminL2CacheRoutes(r, cacheadminhttp.AdminL2CacheDeps{
 			Auth:  d.adminAuth,
 			Store: d.responseCache,
 		})

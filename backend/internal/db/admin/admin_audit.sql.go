@@ -78,32 +78,34 @@ func (q *Queries) CountIssuanceInWindow(ctx context.Context, arg CountIssuanceIn
 const insertAdminAuditEvent = `-- name: InsertAdminAuditEvent :one
 
 INSERT INTO admin_audit_events (
-    tenant_id, actor_id, actor_role, action,
+    operation_id, tenant_id, actor_id, actor_role, action,
     target_type, target_id, request_id, reason, payload
 ) VALUES (
-    $1::bigint,
-    $2::text,
+    $1::uuid,
+    $2::bigint,
     $3::text,
     $4::text,
     $5::text,
-    $6::bigint,
-    $7::text,
+    $6::text,
+    $7::bigint,
     $8::text,
-    $9::jsonb
+    $9::text,
+    $10::jsonb
 )
 RETURNING id, occurred_at
 `
 
 type InsertAdminAuditEventParams struct {
-	TenantID   *int64  `db:"tenant_id" json:"tenant_id"`
-	ActorID    string  `db:"actor_id" json:"actor_id"`
-	ActorRole  string  `db:"actor_role" json:"actor_role"`
-	Action     string  `db:"action" json:"action"`
-	TargetType string  `db:"target_type" json:"target_type"`
-	TargetID   *int64  `db:"target_id" json:"target_id"`
-	RequestID  *string `db:"request_id" json:"request_id"`
-	Reason     *string `db:"reason" json:"reason"`
-	Payload    []byte  `db:"payload" json:"payload"`
+	OperationID pgtype.UUID `db:"operation_id" json:"operation_id"`
+	TenantID    *int64      `db:"tenant_id" json:"tenant_id"`
+	ActorID     string      `db:"actor_id" json:"actor_id"`
+	ActorRole   string      `db:"actor_role" json:"actor_role"`
+	Action      string      `db:"action" json:"action"`
+	TargetType  string      `db:"target_type" json:"target_type"`
+	TargetID    *int64      `db:"target_id" json:"target_id"`
+	RequestID   *string     `db:"request_id" json:"request_id"`
+	Reason      *string     `db:"reason" json:"reason"`
+	Payload     []byte      `db:"payload" json:"payload"`
 }
 
 type InsertAdminAuditEventRow struct {
@@ -119,6 +121,7 @@ type InsertAdminAuditEventRow struct {
 // atomic with the action.
 func (q *Queries) InsertAdminAuditEvent(ctx context.Context, arg InsertAdminAuditEventParams) (InsertAdminAuditEventRow, error) {
 	row := q.db.QueryRow(ctx, insertAdminAuditEvent,
+		arg.OperationID,
 		arg.TenantID,
 		arg.ActorID,
 		arg.ActorRole,

@@ -109,21 +109,6 @@ type SlotManager = router.SlotManager
 type ReleaseFunc = router.ReleaseFunc
 type AcquireResult = router.AcquireResult
 
-type RoutingLayer = router.RoutingLayer
-
-const (
-	RoutingLayerRoutingAffinity   = router.RoutingLayerRoutingAffinity
-	RoutingLayerStickyWithinRoute = router.RoutingLayerStickyWithinRoute
-	RoutingLayerStickyStandalone  = router.RoutingLayerStickyStandalone
-	RoutingLayerFresh             = router.RoutingLayerFresh
-	RoutingLayerForced            = router.RoutingLayerForced
-	RoutingLayerFallbackQueue     = router.RoutingLayerFallbackQueue
-)
-
-type RoutingReasonWaitAction = router.RoutingReasonWaitAction
-type RoutingReasonExclusionItem = router.RoutingReasonExclusionItem
-type RoutingReasonBuilder = router.RoutingReasonBuilder
-
 // NoCapacityError 透传 router 的无容量错误类型,供 HTTP 层 errors.As 取最早恢复时刻算 Retry-After。
 type NoCapacityError = router.NoCapacityError
 

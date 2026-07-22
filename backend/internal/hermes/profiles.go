@@ -2,47 +2,71 @@ package hermes
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
-func (s *Service) CreateProfile(ctx context.Context, tenantID, ownerUserID int64, name, kind string, apiKeyID, poolGroupID *int64) (Profile, error) {
+const (
+	APISourceExternal     = "external_openai_compatible"
+	hermesProfileVendor   = "hermes_model"
+	hermesProfileAuthMode = "api_key"
+)
+
+type ResolvedProfileCredential struct {
+	ProfileID int64
+	TenantID  int64
+	BaseURL   string
+	APIKey    []byte
+}
+
+type profileCredentialRotator interface {
+	RotateProfileCredential(context.Context, dbhermes.RotateProfileCredentialParams) (dbhermes.HermesApiProfile, error)
+}
+
+func (s *Service) CreateProfile(ctx context.Context, tenantID, ownerUserID int64, name, baseURL, apiKey string) (Profile, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, ErrMisconfigured
 	}
 	spec := ProfileSpec{
 		TenantID: tenantID, OwnerUserID: ownerUserID, Name: name,
-		Kind: kind, APIKeyID: apiKeyID, PoolGroupID: poolGroupID,
+		BaseURL: baseURL, APIKey: apiKey,
 	}
-	row, err := createProfileWithStore(ctx, s.store, spec)
+	row, err := s.createProfileWithStore(ctx, s.store, spec)
 	if err != nil {
 		return Profile{}, err
 	}
 	return profileFromRow(row), nil
 }
 
-func (s *Service) CreateProfileWithAudit(ctx context.Context, tenantID, ownerUserID int64, name, kind string, apiKeyID, poolGroupID *int64, audit AuditFields) (Profile, error) {
+func (s *Service) CreateProfileWithAudit(ctx context.Context, tenantID, ownerUserID int64, name, baseURL, apiKey string, audit AuditFields) (Profile, error) {
 	if s == nil || s.store == nil {
 		return Profile{}, ErrMisconfigured
 	}
 	spec := ProfileSpec{
 		TenantID: tenantID, OwnerUserID: ownerUserID, Name: name,
-		Kind: kind, APIKeyID: apiKeyID, PoolGroupID: poolGroupID,
+		BaseURL: baseURL, APIKey: apiKey,
 	}
 	var profile Profile
 	err := s.withTx(ctx, func(store Store) error {
-		row, err := createProfileWithStore(ctx, store, spec)
+		row, err := s.createProfileWithStore(ctx, store, spec)
 		if err != nil {
 			return err
 		}
 		profile = profileFromRow(row)
 		audit.TenantID = tenantID
-		audit.ActorUserID = ownerUserID
 		audit.Result = AuditResultSuccess
 		return recordAuditWithStore(ctx, store, audit)
 	})
@@ -52,21 +76,109 @@ func (s *Service) CreateProfileWithAudit(ctx context.Context, tenantID, ownerUse
 	return profile, nil
 }
 
-func createProfileWithStore(ctx context.Context, store Store, spec ProfileSpec) (dbhermes.HermesApiProfile, error) {
+func (s *Service) createProfileWithStore(ctx context.Context, store Store, spec ProfileSpec) (dbhermes.HermesApiProfile, error) {
 	if store == nil {
 		return dbhermes.HermesApiProfile{}, ErrMisconfigured
 	}
-	if err := validateProfileSpecWithStore(ctx, store, spec); err != nil {
+	if err := validateProfileSpec(spec); err != nil {
+		return dbhermes.HermesApiProfile{}, err
+	}
+	normalizedBaseURL, _ := NormalizeExternalBaseURL(spec.BaseURL)
+	bindingID, err := randomPositiveInt64()
+	if err != nil {
+		return dbhermes.HermesApiProfile{}, err
+	}
+	envelope, fingerprint, hint, err := s.encryptProfileAPIKey(ctx, spec.TenantID, bindingID, 1, spec.APIKey)
+	if err != nil {
 		return dbhermes.HermesApiProfile{}, err
 	}
 	row, err := store.CreateProfile(ctx, dbhermes.CreateProfileParams{
 		TenantID: spec.TenantID, OwnerUserID: spec.OwnerUserID, Name: strings.TrimSpace(spec.Name),
-		ProfileKind: spec.Kind, APIKeyID: spec.APIKeyID, PoolGroupID: spec.PoolGroupID,
+		ProfileKind: APISourceExternal, BaseUrl: normalizedBaseURL,
+		EncryptedApiKey: envelope.Ciphertext, EncryptionScheme: envelope.EncryptionScheme,
+		KeyID: envelope.KeyID, Nonce: envelope.Nonce, AadHash: envelope.AADHash,
+		ApiKeyFingerprint: fingerprint, ApiKeyHint: hint, CredentialVersion: 1,
+		SecretBindingID: bindingID,
 	})
 	if err != nil {
 		return dbhermes.HermesApiProfile{}, fmt.Errorf("create hermes profile: %w", err)
 	}
 	return row, nil
+}
+
+func (s *Service) RotateProfileWithAudit(ctx context.Context, profileID, tenantID, ownerUserID int64, name, baseURL, apiKey string, audit AuditFields) (Profile, error) {
+	if s == nil || s.store == nil {
+		return Profile{}, ErrMisconfigured
+	}
+	spec := ProfileSpec{TenantID: tenantID, OwnerUserID: ownerUserID, Name: name, BaseURL: baseURL, APIKey: apiKey}
+	if err := validateProfileSpec(spec); err != nil {
+		return Profile{}, err
+	}
+	normalizedBaseURL, _ := NormalizeExternalBaseURL(spec.BaseURL)
+	var profile Profile
+	err := s.withTx(ctx, func(store Store) error {
+		row, err := store.GetProfile(ctx, dbhermes.GetProfileParams{ID: profileID, TenantID: tenantID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("get hermes profile for rotation: %w", err)
+		}
+		if row.OwnerUserID != ownerUserID {
+			return ErrNotFound
+		}
+		nextVersion := row.CredentialVersion + 1
+		envelope, fingerprint, hint, err := s.encryptProfileAPIKey(ctx, tenantID, row.SecretBindingID, nextVersion, apiKey)
+		if err != nil {
+			return err
+		}
+		rotator, ok := store.(profileCredentialRotator)
+		if !ok {
+			return ErrMisconfigured
+		}
+		updated, err := rotator.RotateProfileCredential(ctx, dbhermes.RotateProfileCredentialParams{
+			ID: profileID, TenantID: tenantID, Name: strings.TrimSpace(name), BaseUrl: normalizedBaseURL,
+			EncryptedApiKey: envelope.Ciphertext, EncryptionScheme: envelope.EncryptionScheme,
+			KeyID: envelope.KeyID, Nonce: envelope.Nonce, AadHash: envelope.AADHash,
+			ApiKeyFingerprint: fingerprint, ApiKeyHint: hint,
+			NewCredentialVersion: nextVersion, ExpectedCredentialVersion: row.CredentialVersion,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrConflict
+		}
+		if err != nil {
+			return fmt.Errorf("rotate hermes profile credential: %w", err)
+		}
+		profile = profileFromRow(updated)
+		audit.TenantID = tenantID
+		audit.Result = AuditResultSuccess
+		return recordAuditWithStore(ctx, store, audit)
+	})
+	if err != nil {
+		return Profile{}, err
+	}
+	return profile, nil
+}
+
+func (s *Service) ResolveProfileCredential(ctx context.Context, profileID, tenantID int64) (ResolvedProfileCredential, error) {
+	if s == nil || s.store == nil || s.profileCredentialKeys == nil {
+		return ResolvedProfileCredential{}, ErrMisconfigured
+	}
+	row, err := s.store.GetProfile(ctx, dbhermes.GetProfileParams{ID: profileID, TenantID: tenantID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ResolvedProfileCredential{}, ErrNotFound
+	}
+	if err != nil {
+		return ResolvedProfileCredential{}, fmt.Errorf("resolve hermes profile: %w", err)
+	}
+	plaintext, err := credentialstore.NewCipher(s.profileCredentialKeys).Decrypt(ctx, credentialstore.Envelope{
+		Ciphertext: row.EncryptedApiKey, Nonce: row.Nonce, KeyID: row.KeyID,
+		EncryptionScheme: row.EncryptionScheme, AADHash: row.AadHash,
+	}, profileAAD(row.TenantID, row.SecretBindingID, row.CredentialVersion))
+	if err != nil {
+		return ResolvedProfileCredential{}, fmt.Errorf("resolve hermes profile credential: %w", err)
+	}
+	return ResolvedProfileCredential{ProfileID: row.ID, TenantID: row.TenantID, BaseURL: row.BaseUrl, APIKey: plaintext}, nil
 }
 
 func (s *Service) ListProfilesByTenant(ctx context.Context, tenantID int64) ([]Profile, error) {
@@ -149,7 +261,6 @@ func (s *Service) DeleteProfileWithAudit(ctx context.Context, profileID, tenantI
 			return err
 		}
 		audit.TenantID = tenantID
-		audit.ActorUserID = ownerUserID
 		audit.Result = AuditResultSuccess
 		return recordAuditWithStore(ctx, store, audit)
 	})
@@ -179,45 +290,20 @@ func deleteProfileWithStore(ctx context.Context, store Store, profileID, tenantI
 	return nil
 }
 
-func (s *Service) validateProfileSpec(ctx context.Context, spec ProfileSpec) error {
-	if s == nil || s.store == nil {
-		return ErrMisconfigured
-	}
-	return validateProfileSpecWithStore(ctx, s.store, spec)
-}
-
-func validateProfileSpecWithStore(ctx context.Context, store Store, spec ProfileSpec) error {
+func validateProfileSpec(spec ProfileSpec) error {
 	if err := validateTenantUser(spec.TenantID, spec.OwnerUserID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(spec.Name) == "" {
-		return fmt.Errorf("%w: profile name is required", ErrInvalidInput)
+	if strings.TrimSpace(spec.Name) == "" || len(strings.TrimSpace(spec.Name)) > 255 {
+		return fmt.Errorf("%w: profile name must contain 1 to 255 bytes", ErrInvalidInput)
 	}
-	switch spec.Kind {
-	case APISourceManaged:
-		if spec.PoolGroupID != nil {
-			return fmt.Errorf("%w: managed profile must not set pool_group_id", ErrInvalidInput)
-		}
-	case APISourceDedicatedGroup:
-		if spec.PoolGroupID == nil || *spec.PoolGroupID <= 0 {
-			return fmt.Errorf("%w: dedicated profile requires pool_group_id", ErrInvalidInput)
-		}
-	default:
-		return fmt.Errorf("%w: unknown profile kind", ErrInvalidInput)
+	normalized, err := NormalizeExternalBaseURL(spec.BaseURL)
+	if err != nil {
+		return err
 	}
-	if spec.APIKeyID != nil {
-		owner, err := store.GetAPIKeyOwner(ctx, dbhermes.GetAPIKeyOwnerParams{
-			APIKeyID: *spec.APIKeyID, TenantID: spec.TenantID,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("validate hermes api key owner: %w", err)
-		}
-		if owner != spec.OwnerUserID {
-			return fmt.Errorf("%w: api_key owner mismatch", ErrForbidden)
-		}
+	spec.BaseURL = normalized
+	if strings.TrimSpace(spec.APIKey) == "" || len(spec.APIKey) > 8192 {
+		return fmt.Errorf("%w: api_key must contain 1 to 8192 bytes", ErrInvalidInput)
 	}
 	return nil
 }
@@ -233,8 +319,87 @@ func profilesFromRows(rows []dbhermes.HermesApiProfile) []Profile {
 func profileFromRow(row dbhermes.HermesApiProfile) Profile {
 	return Profile{
 		ID: row.ID, TenantID: row.TenantID, OwnerUserID: row.OwnerUserID,
-		Name: row.Name, Kind: row.ProfileKind, APIKeyID: row.APIKeyID,
-		PoolGroupID: row.PoolGroupID, CreatedAt: row.CreatedAt.Time,
+		Name: row.Name, Kind: row.ProfileKind,
+		BaseURL: row.BaseUrl, APIKeyMasked: row.ApiKeyHint,
+		CredentialVersion: row.CredentialVersion, CreatedAt: row.CreatedAt.Time,
 		UpdatedAt: row.UpdatedAt.Time,
 	}
+}
+
+func (s *Service) encryptProfileAPIKey(ctx context.Context, tenantID, bindingID int64, version int32, apiKey string) (credentialstore.Envelope, string, string, error) {
+	if s == nil || s.profileCredentialKeys == nil {
+		return credentialstore.Envelope{}, "", "", ErrMisconfigured
+	}
+	secret := []byte(strings.TrimSpace(apiKey))
+	defer privacy.Zeroize(secret)
+	envelope, err := credentialstore.NewCipher(s.profileCredentialKeys).Encrypt(ctx, secret, profileAAD(tenantID, bindingID, version))
+	if err != nil {
+		return credentialstore.Envelope{}, "", "", err
+	}
+	key, err := s.profileCredentialKeys.CurrentKey(ctx)
+	if err != nil {
+		return credentialstore.Envelope{}, "", "", err
+	}
+	defer privacy.Zeroize(key.Material)
+	fingerprint := credentialstore.HMACFingerprint(key, fmt.Sprintf("hermes-profile:%d:%d", tenantID, bindingID), secret)
+	return envelope, fingerprint, maskAPIKey(string(secret)), nil
+}
+
+func profileAAD(tenantID, bindingID int64, version int32) credentialstore.AAD {
+	return credentialstore.AAD{
+		TenantID: tenantID, ProviderAccountID: bindingID,
+		Vendor: hermesProfileVendor, AuthMode: hermesProfileAuthMode, Version: version,
+	}
+}
+
+func randomPositiveInt64() (int64, error) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 63)
+	value, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		return 0, fmt.Errorf("generate hermes profile binding: %w", err)
+	}
+	if value.Sign() == 0 {
+		return randomPositiveInt64()
+	}
+	return value.Int64(), nil
+}
+
+func maskAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if len(apiKey) <= 4 {
+		return "****"
+	}
+	return "****" + apiKey[len(apiKey)-4:]
+}
+
+func NormalizeExternalBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 2048 {
+		return "", fmt.Errorf("%w: base_url must contain 1 to 2048 bytes", ErrInvalidInput)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" {
+		return "", fmt.Errorf("%w: base_url must be an absolute https URL", ErrInvalidInput)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" {
+		return "", fmt.Errorf("%w: base_url must not contain credentials, query, fragment, or encoded path", ErrInvalidInput)
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if strings.HasSuffix(host, ".") || strings.ContainsAny(u.Path, "\\\r\n\t") {
+		return "", fmt.Errorf("%w: base_url host or path is unsafe", ErrInvalidInput)
+	}
+	if ip := net.ParseIP(host); ip != nil && !auth.IsPublicOAuthIP(ip) {
+		return "", fmt.Errorf("%w: base_url must resolve to a public service", ErrInvalidInput)
+	}
+	cleanPath := path.Clean("/" + strings.TrimPrefix(u.Path, "/"))
+	if cleanPath == "/" {
+		cleanPath = ""
+	}
+	cleanPath = strings.TrimSuffix(cleanPath, "/chat/completions")
+	u.Scheme = "https"
+	u.Path = strings.TrimRight(cleanPath, "/")
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return strings.TrimRight(u.String(), "/"), nil
 }

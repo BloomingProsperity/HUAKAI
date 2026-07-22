@@ -517,7 +517,7 @@ func refundAtomicLedgerAndFormatter(t *testing.T, ctx context.Context, pool *pgx
 	})); err != nil {
 		t.Fatalf("append source ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &refundAtomicReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &refundAtomicReceiptSource{inputs: ReceiptInputs{
 		TenantID:            seed.tenantID,
 		UserID:              seed.userID,
 		ClaimID:             seed.claimID,

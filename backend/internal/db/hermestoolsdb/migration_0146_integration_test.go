@@ -37,11 +37,14 @@ func TestMigration0146_MutatingToolNamesAndDryRun(t *testing.T) {
 	for _, tool := range []string{"dlq_replay", "account_pause", "account_resume", "renew_trigger"} {
 		row, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 			TenantID:     tenantID,
-			ActorUserID:  userID,
+			ActorSource:  "session",
+			ActorID:      userID,
+			ActorRole:    "tenant_operator",
 			ToolName:     tool,
 			ResultStatus: "ok",
 			CalledAt:     pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
 			DryRun:       true,
+			LogCategory:  "operation",
 		})
 		if err != nil {
 			t.Fatalf("mutating tool %q rejected after migration: %v", tool, err)
@@ -60,8 +63,10 @@ func TestMigration0146_MutatingToolNamesAndDryRun(t *testing.T) {
 
 	// 判别力:一个仍然未知的工具名会被扩展后的 CHECK 拒绝。
 	_, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
-		TenantID: tenantID, ActorUserID: userID, ToolName: "bogus_mutator",
+		TenantID: tenantID, ActorSource: "session", ActorID: userID,
+		ActorRole: "tenant_operator", ToolName: "bogus_mutator",
 		ResultStatus: "ok", CalledAt: pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		LogCategory: "operation",
 	})
 	if err == nil {
 		t.Fatalf("bogus tool_name accepted; tool_name CHECK is too permissive")

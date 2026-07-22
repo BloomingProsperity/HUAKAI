@@ -339,13 +339,6 @@ func (s *Service) registrationConfig(ctx context.Context) (Config, error) {
 	return cfg, cfg.registrationReady()
 }
 
-func (s *Service) nowTime() time.Time {
-	if s != nil && s.now != nil {
-		return s.now().UTC()
-	}
-	return time.Now().UTC()
-}
-
 func credentialRecordFromVerified(tenantID, userID int64, verified VerifiedCredential, name string, now time.Time) CredentialRecord {
 	return CredentialRecord{
 		TenantID: tenantID, UserID: userID, CredentialID: append([]byte(nil), verified.CredentialID...),

@@ -24,10 +24,11 @@ type ToolCallInserter interface {
 
 // ToolCallAudit 是一次工具调用(或拒绝)的已脱敏记录。
 type ToolCallAudit struct {
-	TenantID          int64
-	ActorUserID       int64
-	AdminActorTokenID int64 // 0 => 非 admin 模式 actor(记录为 NULL)
-	ToolName          string
+	TenantID    int64
+	ActorSource string
+	ActorID     int64
+	ActorRole   string
+	ToolName    string
 	// Args 是 RAW(原始)的请求参数 map;recorder 在 insert 前脱敏它。
 	Args map[string]any
 	// ResultSummary 是工具的结构化 summary;insert 前脱敏。
@@ -38,15 +39,14 @@ type ToolCallAudit struct {
 	RequestID     string
 	CalledAt      time.Time
 	ReturnedAt    time.Time
-	// DryRun 标记一条 WAVE H4 mutating 工具的 PREVIEW(预览)行(true),区别于一条真正执行 /
-	// 只读的行(false)。只读工具始终把它留为 false。
+	// DryRun 区分改动预览与真实执行；只读工具始终为 false。
 	DryRun bool
+	// LogCategory 使用全局日志分类；空值按调用结果自动归类。
+	LogCategory string
 }
 
-// RecordToolCall 脱敏 args + summary,并追加一条 hermes_tool_calls 行。它是唯一的持久化路径:
-// 成功、出错 AND(以及)拒绝都流经此处,这样每一次调用都被记录。脱敏(hermes.SanitizeArgs)作为
-// 纵深防御施加,即便工具已经只输出诊断性的 summary——某个工具若意外暴露了 "token"/"secret"/
-// "password" 键,在它触及该行之前仍会被打码。
+// RecordToolCall 脱敏参数和结果摘要，并追加一条 hermes_tool_calls 行。成功、错误和
+// 拒绝共用这条持久化路径；敏感键在写库前再次打码。
 func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCallAudit) error {
 	if inserter == nil {
 		return ErrAuditStoreUnavailable
@@ -68,7 +68,9 @@ func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCall
 
 	params := hermestoolsdb.InsertHermesToolCallParams{
 		TenantID:      rec.TenantID,
-		ActorUserID:   rec.ActorUserID,
+		ActorSource:   rec.ActorSource,
+		ActorID:       rec.ActorID,
+		ActorRole:     rec.ActorRole,
 		ToolName:      rec.ToolName,
 		RequestedArgs: argsJSON,
 		ResultStatus:  string(rec.Status),
@@ -78,10 +80,7 @@ func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCall
 		ErrorClass:    nilIfEmpty(rec.ErrorClass),
 		CalledAt:      pgtype.Timestamptz{Time: called.UTC(), Valid: true},
 		DryRun:        rec.DryRun,
-	}
-	if rec.AdminActorTokenID > 0 {
-		id := rec.AdminActorTokenID
-		params.AdminActorTokenID = &id
+		LogCategory:   toolLogCategory(rec.Status, rec.LogCategory),
 	}
 	if !rec.ReturnedAt.IsZero() {
 		params.ReturnedAt = pgtype.Timestamptz{Time: rec.ReturnedAt.UTC(), Valid: true}
@@ -89,6 +88,20 @@ func RecordToolCall(ctx context.Context, inserter ToolCallInserter, rec ToolCall
 
 	_, err = inserter.InsertHermesToolCall(ctx, params)
 	return err
+}
+
+func toolLogCategory(status ResultStatus, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	switch status {
+	case ResultDenied:
+		return "security"
+	case ResultError:
+		return "error"
+	default:
+		return "operation"
+	}
 }
 
 // sanitizedJSON 先施加 hermes 的敏感键 sanitizer,再做 JSON 编码。nil/空 map 产出 nil 字节

@@ -21,8 +21,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/textsafe"
 
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -258,7 +256,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM api_keys
 			   WHERE tenant_id = $1 AND user_id = $2
-			     AND status = 'active' AND deleted_at IS NULL`,
+			     AND purpose = 'user' AND status = 'active' AND deleted_at IS NULL`,
 			req.TenantID, req.UserID,
 		).Scan(&activeCount); err != nil {
 			return fmt.Errorf("%w: count active: %v", ErrBackend, err)
@@ -279,7 +277,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 			`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status, expires_at)
 			 SELECT $1::bigint, $2::bigint, $3::text, $4::text, $5::text, 'active', $6::timestamptz
 			 WHERE EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1::bigint AND t.deleted_at IS NULL AND t.status='active')
-			   AND EXISTS (SELECT 1 FROM users u WHERE u.id=$2::bigint AND u.tenant_id=$1::bigint AND u.deleted_at IS NULL AND u.status='active')
+			   AND EXISTS (SELECT 1 FROM users u WHERE u.id=$2::bigint AND u.tenant_id=$1::bigint AND u.principal_kind='human' AND u.deleted_at IS NULL AND u.status='active')
 			 RETURNING id, created_at`,
 			req.TenantID, req.UserID, name, string(hash), prefix, expiresParam,
 		).Scan(&id, &createdAt)
@@ -339,9 +337,9 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]KeyDescriptor, e
 		        k.created_at, k.updated_at
 		   FROM api_keys k
 		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-		   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-		                 AND u.deleted_at IS NULL AND u.status = 'active'
-		  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.deleted_at IS NULL
+			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+			                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.purpose = 'user' AND k.deleted_at IS NULL
 		  ORDER BY k.created_at DESC, k.id DESC
 		  LIMIT $3 OFFSET $4`,
 		req.TenantID, req.UserID, int32(limit), int32(offset),
@@ -409,9 +407,9 @@ func (s *Service) Count(ctx context.Context, tenantID, userID int64) (int, error
 		`SELECT count(*)
 		   FROM api_keys k
 		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-		   JOIN users   u ON u.id = k.user_id AND u.tenant_id = k.tenant_id
-		                  AND u.deleted_at IS NULL AND u.status = 'active'
-		  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.deleted_at IS NULL`,
+			   JOIN users   u ON u.id = k.user_id AND u.tenant_id = k.tenant_id
+			                  AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.purpose = 'user' AND k.deleted_at IS NULL`,
 		tenantID, userID,
 	).Scan(&total)
 	if err != nil {
@@ -445,9 +443,9 @@ func (s *Service) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (Ke
 		        k.created_at, k.updated_at
 		   FROM api_keys k
 		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-		   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-		                 AND u.deleted_at IS NULL AND u.status = 'active'
-		  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.deleted_at IS NULL`,
+			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+			                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.purpose = 'user' AND k.deleted_at IS NULL`,
 		apiKeyID, tenantID, userID,
 	).Scan(&d.APIKeyID, &d.Name, &d.KeyPrefix, &d.Status,
 		&expiresAt, &lastUsedAt, &revokedAt, &revokedReason,
@@ -507,10 +505,10 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 		var status string
 		err := tx.QueryRow(ctx,
 			`SELECT k.status, k.key_prefix FROM api_keys k
-			   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-			                 AND u.deleted_at IS NULL AND u.status = 'active'
-			  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.deleted_at IS NULL
+				   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+				   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+				                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+				  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.purpose = 'user' AND k.deleted_at IS NULL
 			  FOR UPDATE OF k`,
 			req.APIKeyID, req.TenantID, req.UserID,
 		).Scan(&status, &keyPrefix)
@@ -529,8 +527,8 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 		// 都能 SELECT 到别人的 row → integration_pg 测试变红)。
 		cmd, err := tx.Exec(ctx,
 			`UPDATE api_keys
-			    SET status = 'revoked', revoked_at = NOW(), revoked_reason = $1::text, updated_at = NOW()
-			  WHERE id = $2 AND status <> 'revoked' AND deleted_at IS NULL`,
+				    SET status = 'revoked', revoked_at = NOW(), revoked_reason = $1::text, updated_at = NOW()
+				  WHERE id = $2 AND purpose = 'user' AND status <> 'revoked' AND deleted_at IS NULL`,
 			reason, req.APIKeyID,
 		)
 		if err != nil {
@@ -772,7 +770,17 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 			  WHERE id = $%d
 			    AND tenant_id = $%d
 			    AND user_id = $%d
+			    AND purpose = 'user'
 			    AND deleted_at IS NULL
+			    AND EXISTS (
+			        SELECT 1 FROM tenants t
+			         WHERE t.id = api_keys.tenant_id
+			           AND t.status = 'active' AND t.deleted_at IS NULL)
+			    AND EXISTS (
+			        SELECT 1 FROM users u
+			         WHERE u.id = api_keys.user_id AND u.tenant_id = api_keys.tenant_id
+			           AND u.principal_kind = 'human'
+			           AND u.status = 'active' AND u.deleted_at IS NULL)
 			RETURNING name, status, expires_at`,
 			setSQL, argIdx, argIdx+1, argIdx+2,
 		)
@@ -795,12 +803,4 @@ func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, err
 		return PatchResult{}, err
 	}
 	return out, nil
-}
-
-// randomHex 仅用于测试 fixture 生成 key_prefix / key_hash 占位;production
-// 路径用 admin.GenerateBearer + bcrypt.GenerateFromPassword。
-func randomHex(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

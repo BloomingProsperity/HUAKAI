@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
@@ -42,13 +43,17 @@ func TestStartChatRejectsDisabledHermesBeforeRunnerCall(t *testing.T) {
 		t.Fatalf("NewRunnerClient: %v", err)
 	}
 	svc := hermes.NewService(&chatStoreStub{settings: dbhermes.HermesSetting{
-		TenantID: 7, UserID: 42, Enabled: false, APISource: hermes.APISourceManaged,
+		TenantID: 7, UserID: 42, Enabled: false, APISource: hermes.APISourceExternal,
 	}})
 	router := NewRouter(svc, runner)
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"messages":[]}`))
-	req = req.WithContext(context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
+	ctx := context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
 		TenantID: 7, APIKeyID: 11, UserID: 42,
-	}))
+	})
+	ctx = context.WithValue(ctx, adminActorContextKey{}, adminActor{
+		Source: admin.AdminSourceToken, ID: 99, Role: admin.RolePlatformAdmin,
+	})
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -176,10 +181,6 @@ func (s *chatStoreStub) DeleteProfile(context.Context, dbhermes.DeleteProfilePar
 
 func (s *chatStoreStub) DisableHermes(context.Context, dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error) {
 	return dbhermes.HermesSetting{}, nil
-}
-
-func (s *chatStoreStub) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	return 0, nil
 }
 
 func (s *chatStoreStub) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {

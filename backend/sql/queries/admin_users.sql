@@ -17,6 +17,7 @@ LEFT JOIN user_balances ub
   ON ub.tenant_id = u.tenant_id
  AND ub.user_id = u.id
 WHERE u.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND u.principal_kind = 'human'
   AND u.deleted_at IS NULL
   AND (
     sqlc.arg(query)::text = ''
@@ -43,6 +44,7 @@ LEFT JOIN user_balances ub
  AND ub.user_id = u.id
 WHERE u.tenant_id = sqlc.arg(tenant_id)::bigint
   AND u.id = sqlc.arg(user_id)::bigint
+  AND u.principal_kind = 'human'
   AND u.deleted_at IS NULL;
 
 -- name: AdminGetTwoFAAdoptionStatsForTenant :one
@@ -56,6 +58,7 @@ total_users AS (
     SELECT COUNT(*)::bigint AS total_user_count
     FROM users
     WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+      AND principal_kind = 'human'
       AND deleted_at IS NULL
 )
 SELECT

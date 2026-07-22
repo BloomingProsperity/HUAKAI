@@ -8,19 +8,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type HermesToolCall struct {
-	ID                int64              `db:"id" json:"id"`
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-	ActorUserID       int64              `db:"actor_user_id" json:"actor_user_id"`
-	AdminActorTokenID *int64             `db:"admin_actor_token_id" json:"admin_actor_token_id"`
-	ToolName          string             `db:"tool_name" json:"tool_name"`
-	RequestedArgs     []byte             `db:"requested_args" json:"requested_args"`
-	ResultStatus      string             `db:"result_status" json:"result_status"`
-	ResultSummary     []byte             `db:"result_summary" json:"result_summary"`
-	ErrorClass        *string            `db:"error_class" json:"error_class"`
-	CorrelationID     *string            `db:"correlation_id" json:"correlation_id"`
-	RequestID         *string            `db:"request_id" json:"request_id"`
-	CalledAt          pgtype.Timestamptz `db:"called_at" json:"called_at"`
-	ReturnedAt        pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
-	DryRun            bool               `db:"dry_run" json:"dry_run"`
+type HermesMutationRecovery struct {
+	OperationID      pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
+	ActorSource      string             `db:"actor_source" json:"actor_source"`
+	ActorID          int64              `db:"actor_id" json:"actor_id"`
+	ActorRole        string             `db:"actor_role" json:"actor_role"`
+	ToolName         string             `db:"tool_name" json:"tool_name"`
+	RequestedArgs    []byte             `db:"requested_args" json:"requested_args"`
+	AdminAction      string             `db:"admin_action" json:"admin_action"`
+	TargetType       string             `db:"target_type" json:"target_type"`
+	TargetID         int64              `db:"target_id" json:"target_id"`
+	AuditPayload     []byte             `db:"audit_payload" json:"audit_payload"`
+	CorrelationID    *string            `db:"correlation_id" json:"correlation_id"`
+	RequestID        *string            `db:"request_id" json:"request_id"`
+	ResultStatus     string             `db:"result_status" json:"result_status"`
+	ResultSummary    []byte             `db:"result_summary" json:"result_summary"`
+	ErrorClass       *string            `db:"error_class" json:"error_class"`
+	CalledAt         pgtype.Timestamptz `db:"called_at" json:"called_at"`
+	ReturnedAt       pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	RecoveryAttempts int32              `db:"recovery_attempts" json:"recovery_attempts"`
+	NextRecoveryAt   pgtype.Timestamptz `db:"next_recovery_at" json:"next_recovery_at"`
+	LastRecoveryAt   pgtype.Timestamptz `db:"last_recovery_at" json:"last_recovery_at"`
+	LeaseOwner       *string            `db:"lease_owner" json:"lease_owner"`
+	LeaseUntil       pgtype.Timestamptz `db:"lease_until" json:"lease_until"`
+	AuditCommittedAt pgtype.Timestamptz `db:"audit_committed_at" json:"audit_committed_at"`
+	CreatedAt        pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	IngestedAt       pgtype.Timestamptz `db:"ingested_at" json:"ingested_at"`
+	LogCategory      string             `db:"log_category" json:"log_category"`
 }

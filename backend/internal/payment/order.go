@@ -13,7 +13,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const defaultPaymentProvider = "test"
+const (
+	defaultPaymentProvider = "test"
+	maxOutTradeNoLen       = 128
+)
 
 type ExternalTradeNoGenerator func(context.Context) (string, error)
 
@@ -180,6 +183,25 @@ func randomExternalTradeNo(context.Context) (string, error) {
 		return "", err
 	}
 	return "rech_" + hex.EncodeToString(b[:]), nil
+}
+
+// validateOutTradeNo 校验调用方提供的外部订单号：它必须稳定、长度受限，且仅包含
+// [A-Za-z0-9_-]。稳定编号是支付重试幂等的基础，缺失或变化都会导致重复开单风险。
+func validateOutTradeNo(value string) error {
+	if value == "" || len(value) > maxOutTradeNoLen {
+		return ErrInvalidInput
+	}
+	for _, r := range value {
+		switch {
+		case r == '-' || r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		default:
+			return ErrInvalidInput
+		}
+	}
+	return nil
 }
 
 func normalizeProvider(provider string) string {

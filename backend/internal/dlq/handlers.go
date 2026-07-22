@@ -58,6 +58,7 @@ type UsageRecordPayload struct {
 	IPAddress              *string         `json:"ip_address,omitempty"`
 	UserAgent              *string         `json:"user_agent,omitempty"`
 	ClientTool             *string         `json:"client_tool,omitempty"`
+	BillingEffect          string          `json:"billing_effect,omitempty"`
 }
 
 func NewUsageRecordHandler(pool *pgxpool.Pool) Handler {
@@ -84,6 +85,13 @@ func NewUsageRecordHandler(pool *pgxpool.Pool) Handler {
 			// 旧 DLQ payload 无此字段; migration 0043 前 usage 行全部上游路径。
 			settlementSource = "provider_upstream"
 		}
+		billingEffect := p.BillingEffect
+		if billingEffect == "" {
+			billingEffect = "user_charge"
+		}
+		if billingEffect != "user_charge" && billingEffect != "operational_cost" {
+			return fmt.Errorf("dlq: invalid billing effect %q", billingEffect)
+		}
 		requestedAt, err := parseTime(p.RequestedAt)
 		if err != nil {
 			return fmt.Errorf("dlq: parse requested_at: %w", err)
@@ -103,7 +111,7 @@ INSERT INTO usage_records (
 	requested_at, upstream_request_at, first_byte_at, first_event_at, last_event_at,
 	requested_model, upstream_model, stream, snapshot_version, settlement_source,
 	image_count, image_size, image_size_breakdown, ip_address, user_agent,
-	client_tool
+	client_tool, billing_effect
 )
 SELECT
 	$1, $2, $3, $4, $5,
@@ -119,7 +127,7 @@ SELECT
 	$32, $33, $34, $35, $36,
 	$37, $38, $39, $40, $41,
 	$42, $43, $44, $45, $46,
-	$47
+	$47, $48
 WHERE NOT EXISTS (
 	SELECT 1 FROM usage_records WHERE tenant_id = $1 AND claim_id = $2
 )`,
@@ -137,7 +145,7 @@ WHERE NOT EXISTS (
 			parseOptionalTime(p.FirstEventAt), parseOptionalTime(p.LastEventAt),
 			p.RequestedModel, p.UpstreamModel, p.Stream, p.SnapshotVersion, settlementSource,
 			p.ImageCount, p.ImageSize, nullableJSON(p.ImageSizeBreakdown), p.IPAddress, p.UserAgent,
-			p.ClientTool,
+			p.ClientTool, billingEffect,
 		)
 		if err != nil {
 			return fmt.Errorf("dlq: replay usage record: %w", err)

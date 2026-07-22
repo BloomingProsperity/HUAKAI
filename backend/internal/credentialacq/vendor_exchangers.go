@@ -125,14 +125,6 @@ func AntigravityPublicCLIConfig() OAuthClientConfig {
 
 var defaultExchangers = DefaultExchangerRegistry()
 
-func RegisterExchanger(name string, exc Exchanger) error {
-	return defaultExchangers.RegisterExchanger(name, exc)
-}
-
-func RegisterOrReplaceExchanger(name string, exc Exchanger) error {
-	return defaultExchangers.RegisterOrReplaceExchanger(name, exc)
-}
-
 func (r *ExchangerRegistry) RegisterExchanger(name string, exc Exchanger) error {
 	if r == nil {
 		return errors.New("credentialacq: exchanger registry is nil")

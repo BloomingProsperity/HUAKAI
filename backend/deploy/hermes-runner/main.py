@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from jwt_verify import JWTVerificationError, load_public_key_cache_from_env
 
 
-SERVICE_VERSION = "0.14.0"
+SERVICE_VERSION = "0.19.0"
 HEADER_TENANT = "X-Hermes-Tenant"
 HEADER_USER = "X-Hermes-User"
 
@@ -56,17 +56,6 @@ async def healthz():
 
 @app.post("/chat")
 async def chat(request: Request):
-    from hermes_chat import chat_response
+    from official_runner import chat_response
 
     return await chat_response(request, tenant_header=HEADER_TENANT, user_header=HEADER_USER)
-
-
-@app.get("/conversations")
-async def conversations():
-    raise HTTPException(status_code=501, detail="Not Implemented")
-
-
-@app.get("/conversations/{conversation_id}/messages")
-async def conversation_messages(conversation_id: str):
-    _ = conversation_id
-    raise HTTPException(status_code=501, detail="Not Implemented")

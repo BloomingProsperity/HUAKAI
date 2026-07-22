@@ -1,6 +1,8 @@
+private.pem
+public.pem
 dev_jwt_private.pem
+dev_jwt_public.pem
 *.private.pem
 *.key
 .dev_jwt_private.*
 .dev_jwt_public.*
-!dev_jwt_public.pem

@@ -42,10 +42,6 @@ func (s OAuthErrorSanitizer) SanitizeError(err error) error {
 	return errors.New(s.Sanitize(err.Error()))
 }
 
-func SanitizeError(err error) error {
-	return (OAuthErrorSanitizer{}).SanitizeError(err)
-}
-
 func SanitizeOAuthMessage(message string) string {
 	return (OAuthErrorSanitizer{}).Sanitize(message)
 }

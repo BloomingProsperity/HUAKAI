@@ -186,7 +186,7 @@ func TestBusHandlerFailureIsolationAndDLQ(t *testing.T) {
 		Fn:           func(context.Context, eventbus.RequestCompletionEvent) error { return nil },
 	})
 	mustRegister(t, bus, eventbus.HandlerFunc{
-		HandlerID:      eventbus.HandlerMetricsAggregator,
+		HandlerID:      eventbus.HandlerID("test_metrics_handler"),
 		HandlerTier:    eventbus.TierLow,
 		HandlerOrder:   30,
 		HandlerDLQKind: dlq.EventKindMetrics,
@@ -197,7 +197,7 @@ func TestBusHandlerFailureIsolationAndDLQ(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	waitState(t, bus, "evt-chaos", eventbus.HandlerAccountHealthProbe, eventbus.HandlerStateDone)
-	waitState(t, bus, "evt-chaos", eventbus.HandlerMetricsAggregator, eventbus.HandlerStateFailed)
+	waitState(t, bus, "evt-chaos", eventbus.HandlerID("test_metrics_handler"), eventbus.HandlerStateFailed)
 	if sink.count() != 1 {
 		t.Fatalf("DLQ count=%d want 1", sink.count())
 	}
@@ -391,7 +391,7 @@ func TestBusHotPathLatencyIgnoresSlowLowPriorityHandler(t *testing.T) {
 		Fn:           func(context.Context, eventbus.RequestCompletionEvent) error { return nil },
 	})
 	mustRegister(t, bus, eventbus.HandlerFunc{
-		HandlerID:      eventbus.HandlerMetricsAggregator,
+		HandlerID:      eventbus.HandlerID("test_metrics_handler"),
 		HandlerTier:    eventbus.TierLow,
 		HandlerOrder:   20,
 		HandlerTimeout: 200 * time.Millisecond,

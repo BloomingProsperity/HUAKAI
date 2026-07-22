@@ -15,6 +15,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/httpkeepalive"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreambody"
 )
 
 // streamingIdempotencyReplayCaptureWriter 捕获已成功写给客户端的 SSE 字节,
@@ -144,18 +145,18 @@ func protocolAdapterForBuffered(f *gateway.StreamForwarder, protocolFamily strin
 	return adapters.For(protocolFamily)
 }
 
-const maxRawBufferedUpstreamBodyBytes = 1 << 20
+const maxRawBufferedUpstreamBodyBytes = upstreambody.MaxBufferedResponseBytes
 
 var errRawBufferedUpstreamBodyTooLarge = errors.New("gatewayhttp: upstream buffered response exceeds 1MiB limit")
 
 func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(r, maxRawBufferedUpstreamBodyBytes+1))
+	raw, oversized, err := upstreambody.ReadBounded(r)
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) > maxRawBufferedUpstreamBodyBytes {
+	if oversized {
 		// 超限时保留截断 body，供调用方对非 2xx 上游响应继续做错误分类。
-		return raw[:maxRawBufferedUpstreamBodyBytes], errRawBufferedUpstreamBodyTooLarge
+		return raw, errRawBufferedUpstreamBodyTooLarge
 	}
 	return raw, nil
 }

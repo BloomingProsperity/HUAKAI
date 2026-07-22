@@ -14,8 +14,8 @@ func TestProviderCatalogListSpec(t *testing.T) {
 			if params.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7", params.TenantID)
 			}
-			if params.PageLimit != catalogListLimit {
-				t.Fatalf("PageLimit 应为 catalogListLimit=%d, got %d", catalogListLimit, params.PageLimit)
+			if params.PageLimit != defaultToolPageLimit+1 || params.PageOffset != 0 {
+				t.Fatalf("供应商目录分页参数=%+v，期望 limit=%d offset=0", params, defaultToolPageLimit+1)
 			}
 			return []admindb.ListAdminProvidersByTenantRow{
 				{ID: 1, Code: "anthropic", DisplayName: "Anthropic", UpstreamProtocol: "anthropic_messages", Enabled: true},
@@ -62,8 +62,8 @@ func TestChannelCatalogListSpec(t *testing.T) {
 			if params.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7", params.TenantID)
 			}
-			if params.PageLimit != catalogListLimit {
-				t.Fatalf("PageLimit 应为 catalogListLimit=%d, got %d", catalogListLimit, params.PageLimit)
+			if params.PageLimit != defaultToolPageLimit+1 || params.PageOffset != 0 {
+				t.Fatalf("渠道目录分页参数=%+v，期望 limit=%d offset=0", params, defaultToolPageLimit+1)
 			}
 			return []admindb.ListAdminChannelsByTenantRow{
 				{ID: 10, PoolGroupID: 3, Name: "anthropic-channel", FailoverStatusCodes: []int32{429, 503}, Enabled: true},

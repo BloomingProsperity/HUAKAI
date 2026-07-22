@@ -6,14 +6,20 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/headerfirewall"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 	ident, ok := h.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	actor, ok := requireConversationActor(w, r)
 	if !ok {
 		return
 	}
@@ -26,6 +32,29 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 		writeHermesError(w, err)
 		return
 	}
+	model := strings.TrimSpace(settings.Model)
+	if model == "" {
+		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, nil, hermes.ErrMisconfigured)
+		return
+	}
+	if settings.APISource != hermes.APISourceExternal || settings.ProfileID == nil || *settings.ProfileID <= 0 {
+		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, nil, hermes.ErrMisconfigured)
+		return
+	}
+	profile, profileErr := h.svc.GetProfile(r.Context(), *settings.ProfileID, ident.TenantID)
+	if profileErr != nil || profile.OwnerUserID != ident.UserID || profile.Kind != hermes.APISourceExternal {
+		if profileErr == nil {
+			profileErr = hermes.ErrMisconfigured
+		}
+		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, nil, profileErr)
+		return
+	}
+	credential, credentialErr := h.svc.ResolveProfileCredential(r.Context(), profile.ID, ident.TenantID)
+	if credentialErr != nil {
+		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, nil, credentialErr)
+		return
+	}
+	defer privacy.Zeroize(credential.APIKey)
 	if !h.requireRunner(w) {
 		return
 	}
@@ -38,27 +67,21 @@ func (h handler) startChat(w http.ResponseWriter, r *http.Request) {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
 	}
-	// WAVE H3b:把 operator actor(role + admin token id)贯穿传递下去,使 bridge
-	// 能把它绑定到 session,并让 runner 在会话过程中的只读工具回调解析到「本」
-	// operator 的 scope。终端用户路径的请求(无 admin actor)会让 Operator 保持 0 值,
-	// 因此不会绑定任何工具循环。
+	// 将真实管理员身份签入短时内部令牌，使任意网关副本都能验证会话式工具回调。
 	chatReq := hermeschat.Request{
 		TenantID: ident.TenantID, UserID: ident.UserID,
 		RequestID: requestID(r), CorrelationID: correlationID(r), Body: body,
+		Model: model, ModelBaseURL: credential.BaseURL, ModelAPIKey: credential.APIKey,
 	}
-	if actor, ok := adminActorFromContext(r.Context()); ok {
-		chatReq.Operator = hermeschat.SessionOperator{
-			AdminActorTokenID: actor.TokenID,
-			Role:              actor.Role,
-		}
+	chatReq.Operator = hermeschat.SessionOperator{
+		ActorSource: actor.Source,
+		ActorID:     actor.ID,
+		Role:        actor.Role,
 	}
 	prepared, err := h.chatBridge.PrepareRequest(r.Context(), chatReq)
 	if err != nil {
 		h.auditFailureThenError(w, r, ident, hermes.ActionChatStart, args, err)
 		return
-	}
-	if prepared.BoundOperator {
-		defer h.chatBridge.ReleaseSession(prepared.RequestID)
 	}
 	args["conversation_id"] = prepared.ConversationID
 	resp, err := h.runner.Chat(r.Context(), ident.TenantID, ident.UserID, prepared.Body)

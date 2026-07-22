@@ -136,7 +136,7 @@ func TestModerationKeywordToggle_MutateSetsEnabledByTargetAndTenant(t *testing.T
 	}
 	plan := MutationPlan{TargetType: "moderation_keyword", TargetID: 5, Preview: map[string]any{"current_enabled": true}}
 
-	res, err := ModerationKeywordDisableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, plan)
+	res, err := ModerationKeywordDisableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, plan)
 	if err != nil {
 		t.Fatalf("disable mutate err=%v", err)
 	}
@@ -154,7 +154,7 @@ func TestModerationKeywordToggle_MutateSetsEnabledByTargetAndTenant(t *testing.T
 	}
 
 	planEnable := MutationPlan{TargetType: "moderation_keyword", TargetID: 9, Preview: map[string]any{"current_enabled": false}}
-	if _, err := ModerationKeywordEnableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, planEnable); err != nil {
+	if _, err := ModerationKeywordEnableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, planEnable); err != nil {
 		t.Fatalf("enable mutate err=%v", err)
 	}
 	if rec.gotEnabled != true {

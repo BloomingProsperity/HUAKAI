@@ -77,14 +77,6 @@ func WithLockDuration(d time.Duration) Option {
 	}
 }
 
-func WithChallengeTTL(d time.Duration) Option {
-	return func(s *Service) {
-		if d > 0 {
-			s.challengeTTL = d
-		}
-	}
-}
-
 func (s *Service) Setup(ctx context.Context, in SetupInput) (SetupResult, error) {
 	if err := validateUserScope(in.TenantID, in.UserID); err != nil {
 		return SetupResult{}, err

@@ -824,7 +824,7 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 		RateTableSnapshotID: 77,
 		CreatedAt:           time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
 	}}
-	formatter, err := audit.NewReceiptFormatter(ledger, nil, source, signer)
+	formatter, err := audit.NewReceiptFormatter(ledger, source, signer)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
@@ -1089,18 +1089,24 @@ func (s *receiptStoreStub) AppendReceipt(_ context.Context, receipt *audit.CostR
 }
 
 type rateTableSourceStub struct {
-	mu             sync.Mutex
-	table          billing.RateTable
-	snapshots      []billing.RateTableSnapshot
-	seenVersion    string
-	seenSnapshotID int64
-	err            error
+	mu                   sync.Mutex
+	table                billing.RateTable
+	snapshots            []billing.RateTableSnapshot
+	seenVersion          string
+	seenSnapshotID       int64
+	seenContextErr       error
+	requireActiveContext bool
+	err                  error
 }
 
-func (s *rateTableSourceStub) GetRateTable(_ context.Context, version string) (billing.RateTable, error) {
+func (s *rateTableSourceStub) GetRateTable(ctx context.Context, version string) (billing.RateTable, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seenVersion = version
+	s.seenContextErr = ctx.Err()
+	if s.requireActiveContext && s.seenContextErr != nil {
+		return billing.RateTable{}, s.seenContextErr
+	}
 	if s.err != nil {
 		return billing.RateTable{}, s.err
 	}

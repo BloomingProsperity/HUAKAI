@@ -89,6 +89,11 @@ func (g *DefaultClaimGate) Reserve(ctx context.Context, req ReserveRequest) (*Re
 	if g == nil || g.pool == nil {
 		return nil, ErrPoolNotConfigured
 	}
+	billingEffect, err := NormalizeBillingEffect(req.BillingEffect)
+	if err != nil {
+		return nil, err
+	}
+	req.BillingEffect = billingEffect
 	idempotencyKey := ComputeIdempotencyFingerprint(req)
 	// Serializable 隔离下同一用户并发争抢 user_balances 行会抛 40001;retryReserve 在
 	// 序列化冲突上做有限退避重试(每次重跑一整个干净事务),预算耗尽映射 ErrClaimRace
@@ -127,6 +132,10 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 		case "reserving":
 			return nil, ErrClaimRace
 		case "aborted":
+			existingEffect, effectErr := NormalizeBillingEffect(BillingEffect(existing.BillingEffect))
+			if effectErr != nil || existingEffect != req.BillingEffect {
+				return nil, ErrFingerprintConflict
+			}
 			// 前驱已 aborted——通过复活该行来重试。
 			// 在相同的 (tenant, api_key, idempotency_key) 下插入新行
 			// 会违反 uq_claims_idempotency。ReReserveAbortedClaim 把
@@ -142,17 +151,19 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 			if err != nil {
 				return nil, fmt.Errorf("billing: re-reserve aborted claim: %w", err)
 			}
-			if _, err := Reserve(ctx, tx, ReserveParams{
-				TenantID:        req.TenantID,
-				UserID:          req.UserID,
-				ClaimID:         row.ID,
-				Cost:            req.PredictedCost,
-				EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
-			}); err != nil {
-				if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
-					return nil, ErrInsufficientBalance
+			if req.BillingEffect == BillingEffectUserCharge {
+				if _, err := Reserve(ctx, tx, ReserveParams{
+					TenantID:        req.TenantID,
+					UserID:          req.UserID,
+					ClaimID:         row.ID,
+					Cost:            req.PredictedCost,
+					EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
+				}); err != nil {
+					if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
+						return nil, ErrInsufficientBalance
+					}
+					return nil, fmt.Errorf("billing: hold for re-reserve: %w", err)
 				}
-				return nil, fmt.Errorf("billing: hold for re-reserve: %w", err)
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return nil, fmt.Errorf("billing: commit re-reserve Tx1: %w", err)
@@ -197,6 +208,7 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 		PredictedCost:        req.PredictedCost,
 		CurrencyCode:         "USD",
 		LeaseExpiresAt:       pgtype.Timestamptz{Time: leaseExpiresAt, Valid: true},
+		BillingEffect:        string(req.BillingEffect),
 	})
 	if err != nil {
 		// 唯一约束冲突 = 幂等竞争(并发插入者)。按竞争处理。
@@ -206,17 +218,19 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 		}
 		return nil, fmt.Errorf("billing: insert claim: %w", err)
 	}
-	if _, err := Reserve(ctx, tx, ReserveParams{
-		TenantID:        req.TenantID,
-		UserID:          req.UserID,
-		ClaimID:         inserted.ID,
-		Cost:            req.PredictedCost,
-		EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
-	}); err != nil {
-		if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
-			return nil, ErrInsufficientBalance
+	if req.BillingEffect == BillingEffectUserCharge {
+		if _, err := Reserve(ctx, tx, ReserveParams{
+			TenantID:        req.TenantID,
+			UserID:          req.UserID,
+			ClaimID:         inserted.ID,
+			Cost:            req.PredictedCost,
+			EnforcementMode: balanceHoldEnforcementMode(req.BalanceEnforcementMode),
+		}); err != nil {
+			if errors.Is(err, ErrBalanceHoldInsufficientBalance) {
+				return nil, ErrInsufficientBalance
+			}
+			return nil, fmt.Errorf("billing: hold for new claim: %w", err)
 		}
-		return nil, fmt.Errorf("billing: hold for new claim: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -236,6 +250,10 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 // (tenant + key + logical id + payload + model alias + endpoint +
 // billing policy + request class)。
 func ComputeIdempotencyFingerprint(r ReserveRequest) string {
+	billingEffect, err := NormalizeBillingEffect(r.BillingEffect)
+	if err != nil {
+		billingEffect = r.BillingEffect
+	}
 	h := sha256.New()
 	for _, field := range []string{
 		strconv.FormatInt(r.TenantID, 10),
@@ -246,6 +264,7 @@ func ComputeIdempotencyFingerprint(r ReserveRequest) string {
 		r.RequestedModel,
 		r.BillingPolicyVersion,
 		r.RequestClass,
+		string(billingEffect),
 	} {
 		h.Write([]byte(field))
 		h.Write([]byte{0x1F}) // 单元分隔符:防止相邻字段拼接产生碰撞

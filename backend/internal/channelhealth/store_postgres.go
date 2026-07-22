@@ -160,6 +160,41 @@ LIMIT $2 OFFSET $3`,
 	return out, nil
 }
 
+func (s *PostgresStore) ListChannelHealthByProviderAccount(ctx context.Context, tenantID, providerAccountID int64, limit, offset int) ([]ChannelHealthState, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("channelhealth: postgres store not configured")
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT tenant_id, channel_id, vendor, provider_account_id, account_credential_id,
+       credential_version, state, score::float8, reason_class, confidence_tier,
+       cooldown_until, ramp_stage_pct, ramp_started_at, state_entered_at,
+       last_transition_at, policy_version, sample_window, last_signal_class,
+       last_signal_at, manual_pause_reason, manual_override_actor_id,
+       manual_override_reason, ramp_failure_count, recovery_blocked_reason,
+       created_at, updated_at
+FROM channel_health_state
+WHERE tenant_id = $1
+  AND provider_account_id = $2
+ORDER BY updated_at DESC, channel_id ASC
+LIMIT $3 OFFSET $4`, tenantID, providerAccountID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ChannelHealthState, 0, limit)
+	for rows.Next() {
+		rec, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *PostgresStore) GetChannelHealth(ctx context.Context, tenantID int64, channelID string) (ChannelHealthState, []AuditEvent, error) {
 	if s == nil || s.db == nil {
 		return ChannelHealthState{}, nil, errors.New("channelhealth: postgres store not configured")

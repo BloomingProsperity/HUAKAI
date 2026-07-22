@@ -52,15 +52,6 @@ type Deps struct {
 	Store orphanStore
 }
 
-// MountRoutes 注册孤儿对账 admin 子树:
-//
-//	GET  /admin/v1/media-task-orphans            列出 pending 孤儿(走 idx_media_task_orphans_pending)
-//	POST /admin/v1/media-task-orphans/{id}/reconcile  显式对账一个孤儿(默认仅标记,back_charge 才追扣)
-func MountRoutes(r chi.Router, d Deps) {
-	r.Get("/", newListHandler(d))
-	r.Post("/{id}/reconcile", newReconcileHandler(d))
-}
-
 // NewListHandler / NewReconcileHandler 让 gateway 可内联挂载到规范无尾斜杠路径
 // (与 adminquotahttp 同款),避免 chi.Route 子树导致路径走样。
 func NewListHandler(d Deps) http.HandlerFunc      { return newListHandler(d) }

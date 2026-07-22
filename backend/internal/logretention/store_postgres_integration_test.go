@@ -17,9 +17,12 @@ import (
 
 func openLogRetentionPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
-	dsn := os.Getenv("HUAKAI_DATABASE_URL")
+	dsn := os.Getenv("HUAKAI_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("HUAKAI_DATABASE_URL not set; skipping integration_pg")
+		dsn = os.Getenv("HUAKAI_DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("未设置 HUAKAI_TEST_DATABASE_URL 或 HUAKAI_DATABASE_URL")
 	}
 	pool, err := db.Open(ctx, db.PoolConfig{DSN: dsn, MaxConns: 4})
 	if err != nil {
@@ -51,10 +54,22 @@ func TestPostgresRetentionDeletesAllAllowlistedTablesAtStrictBoundary(t *testing
 		if category == "" {
 			category = "access"
 		}
-		query := fmt.Sprintf(`INSERT INTO %s (ingested_at, log_category) VALUES ($1,$2),($3,$2)`,
-			pgx.Identifier{table.name}.Sanitize())
-		if _, err := tx.Exec(ctx, query, cutoff.Add(-time.Second), category, cutoff.Add(time.Second)); err != nil {
+		tableName := pgx.Identifier{table.name}.Sanitize()
+		query := fmt.Sprintf(`INSERT INTO %s (ingested_at, log_category) VALUES ($1,$2),($3,$2)`, tableName)
+		args := []any{cutoff.Add(-time.Second), category, cutoff.Add(time.Second)}
+		if table.requiredNotNullColumn != "" {
+			guardColumn := pgx.Identifier{table.requiredNotNullColumn}.Sanitize()
+			query = fmt.Sprintf(`INSERT INTO %s (ingested_at, log_category, %s) VALUES ($1,$2,$4),($3,$2,$4)`, tableName, guardColumn)
+			args = append(args, databaseNow)
+		}
+		if _, err := tx.Exec(ctx, query, args...); err != nil {
 			t.Fatalf("写入隔离日志表 %s: %v", table.name, err)
+		}
+		if table.requiredNotNullColumn != "" {
+			query = fmt.Sprintf(`INSERT INTO %s (ingested_at, log_category) VALUES ($1,$2)`, tableName)
+			if _, err := tx.Exec(ctx, query, cutoff.Add(-time.Hour), category); err != nil {
+				t.Fatalf("写入待恢复保护样本 %s: %v", table.name, err)
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx,
@@ -74,8 +89,12 @@ func TestPostgresRetentionDeletesAllAllowlistedTablesAtStrictBoundary(t *testing
 		query := fmt.Sprintf(`SELECT count(*) FROM %s WHERE ingested_at < $1`,
 			pgx.Identifier{table.name}.Sanitize())
 		var expired int
-		if err := tx.QueryRow(ctx, query, cutoff).Scan(&expired); err != nil || expired != 0 {
-			t.Fatalf("%s 过期行=%d err=%v", table.name, expired, err)
+		wantExpired := 0
+		if table.requiredNotNullColumn != "" {
+			wantExpired = 1
+		}
+		if err := tx.QueryRow(ctx, query, cutoff).Scan(&expired); err != nil || expired != wantExpired {
+			t.Fatalf("%s 过期行=%d want=%d err=%v", table.name, expired, wantExpired, err)
 		}
 	}
 	var runtimeRows int
@@ -119,11 +138,19 @@ var durableIsolationTables = []string{
 func createIsolatedLogTables(t *testing.T, ctx context.Context, tx pgx.Tx) {
 	t.Helper()
 	for _, table := range ordinaryLogTables {
+		extraColumn := ""
+		if table.requiredNotNullColumn != "" {
+			extraColumn = ", " + pgx.Identifier{table.requiredNotNullColumn}.Sanitize() + " TIMESTAMPTZ"
+		}
+		primaryKey := "id BIGSERIAL PRIMARY KEY"
+		if table.orderColumn != "" {
+			primaryKey = pgx.Identifier{table.orderColumn}.Sanitize() + " UUID PRIMARY KEY DEFAULT gen_random_uuid()"
+		}
 		query := fmt.Sprintf(`CREATE TEMP TABLE %s (
-    id BIGSERIAL PRIMARY KEY,
-    ingested_at TIMESTAMPTZ NOT NULL,
-    log_category TEXT NOT NULL
-) ON COMMIT DROP`, pgx.Identifier{table.name}.Sanitize())
+	    %s,
+	    ingested_at TIMESTAMPTZ NOT NULL,
+	    log_category TEXT NOT NULL%s
+	) ON COMMIT DROP`, pgx.Identifier{table.name}.Sanitize(), primaryKey, extraColumn)
 		if _, err := tx.Exec(ctx, query); err != nil {
 			t.Fatalf("创建隔离日志表 %s: %v", table.name, err)
 		}

@@ -29,7 +29,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 		rec := invokeAdminCredentials(t, AdminCredentialDeps{
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodGet, "/admin/v1/provider-accounts/77/credentials?tenant_id=7", "")
-		assertStatus(t, rec, http.StatusOK)
+		assertHTTPStatus(t, rec, http.StatusOK)
 		if store.listTenantID != 7 || store.listAccountID != 77 {
 			t.Fatalf("list scope mismatch: tenant=%d account=%d", store.listTenantID, store.listAccountID)
 		}
@@ -52,7 +52,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
 			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"},"reason":"initial load"}`)
-		assertStatus(t, rec, http.StatusCreated)
+		assertHTTPStatus(t, rec, http.StatusCreated)
 		if store.createInput == nil || store.createInput.TenantID != 7 || store.createInput.ProviderAccountID != 77 ||
 			store.createInput.Vendor != credentialstore.VendorOpenAI || store.createInput.AuthMode != credentialstore.AuthModeAPIKey {
 			t.Fatalf("create input mismatch: %+v", store.createInput)
@@ -75,7 +75,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials/201/rotate",
 			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-rotated"},"reason":"rotation"}`)
-		assertStatus(t, rec, http.StatusOK)
+		assertHTTPStatus(t, rec, http.StatusOK)
 		if store.rotateInput == nil || store.rotateInput.TenantID != 7 || store.rotateInput.ProviderAccountID != 77 ||
 			store.rotateInput.CredentialID != 201 {
 			t.Fatalf("rotate input mismatch: %+v", store.rotateInput)
@@ -95,7 +95,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPatch, "/admin/v1/provider-accounts/77/credentials/201/state",
 			`{"tenant_id":7,"state":"revoked","reason":"disable compromised key"}`)
-		assertStatus(t, rec, http.StatusOK)
+		assertHTTPStatus(t, rec, http.StatusOK)
 		if !store.setStateCalled || store.setTenantID != 7 || store.setAccountID != 77 ||
 			store.setCredentialID != 201 || store.setState != credentialstore.StateRevoked {
 			t.Fatalf("state input mismatch: %+v", store)
@@ -112,7 +112,7 @@ func TestAdminCredentialsHandlersHappyPath(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodDelete, "/admin/v1/provider-accounts/77/credentials/201",
 			`{"tenant_id":7,"reason":"operator cleanup"}`)
-		assertStatus(t, rec, http.StatusOK)
+		assertHTTPStatus(t, rec, http.StatusOK)
 		if !store.deleteCalled || store.deleteTenantID != 7 || store.deleteAccountID != 77 || store.deleteCredentialID != 201 {
 			t.Fatalf("delete input mismatch: %+v", store)
 		}
@@ -129,7 +129,7 @@ func TestCreateAccountCredentialFailsClosedWhenCompatibilityLookupFails(t *testi
 		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 	}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
 		`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-live"}}`)
-	assertStatus(t, rec, http.StatusServiceUnavailable)
+	assertHTTPStatus(t, rec, http.StatusServiceUnavailable)
 	if store.createInput != nil {
 		t.Fatal("兼容性查询失败时不应写入凭据")
 	}
@@ -143,7 +143,7 @@ func TestAdminCredentialsHandlersUnauthorized(t *testing.T) {
 			rec := invokeAdminCredentials(t, AdminCredentialDeps{
 				Auth: adminPoolAuthStub{err: admin.ErrAdminUnauthorized}, Credentials: store, AuditStore: audit,
 			}, tc.method, tc.target, tc.body)
-			assertStatus(t, rec, http.StatusUnauthorized)
+			assertHTTPStatus(t, rec, http.StatusUnauthorized)
 			assertAdminCredentialStoreUntouched(t, store, audit)
 		})
 	}
@@ -157,7 +157,7 @@ func TestAdminCredentialsHandlersForbidden(t *testing.T) {
 			rec := invokeAdminCredentials(t, AdminCredentialDeps{
 				Auth: providerAccountAdmin(), Credentials: store, AuditStore: audit,
 			}, tc.method, tc.target, tc.body)
-			assertStatus(t, rec, http.StatusForbidden)
+			assertHTTPStatus(t, rec, http.StatusForbidden)
 			assertAdminCredentialStoreUntouched(t, store, audit)
 		})
 	}
@@ -183,7 +183,7 @@ func TestAdminCredentialsHandlersInvalidRequest(t *testing.T) {
 			rec := invokeAdminCredentials(t, AdminCredentialDeps{
 				Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 			}, tc.method, tc.target, tc.body)
-			assertStatus(t, rec, http.StatusBadRequest)
+			assertHTTPStatus(t, rec, http.StatusBadRequest)
 			assertAdminCredentialStoreUntouched(t, store, audit)
 		})
 	}
@@ -200,7 +200,7 @@ func TestAdminCredentialRenewStatusPlatformAdminAllTenants(t *testing.T) {
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status")
-	assertStatus(t, rec, http.StatusOK)
+	assertHTTPStatus(t, rec, http.StatusOK)
 	if store.renewCalls != 1 || store.renewParams.TenantID != nil {
 		t.Fatalf("renew scope mismatch: calls=%d params=%+v", store.renewCalls, store.renewParams)
 	}
@@ -238,7 +238,7 @@ func TestAdminCredentialRenewStatusPlatformAdminQueryTenantFiltersAndAudits(t *t
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status?tenant_id=8")
-	assertStatus(t, rec, http.StatusOK)
+	assertHTTPStatus(t, rec, http.StatusOK)
 	if store.renewCalls != 1 || store.renewParams.TenantID == nil || *store.renewParams.TenantID != 8 {
 		t.Fatalf("renew tenant query scope mismatch: calls=%d params=%+v", store.renewCalls, store.renewParams)
 	}
@@ -272,7 +272,7 @@ func TestAdminCredentialRenewStatusTenantOperatorSeesOnlyScope(t *testing.T) {
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: providerAccountAdmin(), Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status")
-	assertStatus(t, rec, http.StatusOK)
+	assertHTTPStatus(t, rec, http.StatusOK)
 	if store.renewParams.TenantID == nil || *store.renewParams.TenantID != 7 {
 		t.Fatalf("renew tenant scope mismatch: %+v", store.renewParams)
 	}
@@ -300,7 +300,7 @@ func TestAdminCredentialRenewStatusForbiddenRoles(t *testing.T) {
 		Auth:        adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: 12, Role: "viewer"}},
 		Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status")
-	assertStatus(t, rec, http.StatusForbidden)
+	assertHTTPStatus(t, rec, http.StatusForbidden)
 	assertAdminCredentialStoreUntouched(t, store, audit)
 }
 
@@ -310,7 +310,7 @@ func TestAdminCredentialRenewStatusTenantOperatorCrossTenantQueryForbidden(t *te
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: providerAccountAdmin(), Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status?tenant_id=8")
-	assertStatus(t, rec, http.StatusForbidden)
+	assertHTTPStatus(t, rec, http.StatusForbidden)
 	assertAdminCredentialStoreUntouched(t, store, audit)
 }
 
@@ -320,7 +320,7 @@ func TestAdminCredentialRenewStatusInvalidTenantQuery(t *testing.T) {
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 	}, "/admin/v1/credentials/renew-status?tenant_id=0")
-	assertStatus(t, rec, http.StatusBadRequest)
+	assertHTTPStatus(t, rec, http.StatusBadRequest)
 	assertAdminCredentialStoreUntouched(t, store, audit)
 }
 
@@ -335,7 +335,7 @@ func TestAdminCredentialRenewStatusCursorPagination(t *testing.T) {
 	rec := invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: providerAccountAdmin(), Credentials: store, AuditStore: &adminPoolStoreStub{},
 	}, "/admin/v1/credentials/renew-status?limit=2")
-	assertStatus(t, rec, http.StatusOK)
+	assertHTTPStatus(t, rec, http.StatusOK)
 	if store.renewParams.Limit != 3 {
 		t.Fatalf("handler must request one extra row for pagination, got limit=%d", store.renewParams.Limit)
 	}
@@ -352,7 +352,7 @@ func TestAdminCredentialRenewStatusCursorPagination(t *testing.T) {
 	rec = invokeAdminCredentialRenewStatus(t, AdminCredentialDeps{
 		Auth: providerAccountAdmin(), Credentials: nextStore, AuditStore: &adminPoolStoreStub{},
 	}, "/admin/v1/credentials/renew-status?limit=2&cursor="+*body.NextCursor)
-	assertStatus(t, rec, http.StatusOK)
+	assertHTTPStatus(t, rec, http.StatusOK)
 	if nextStore.renewParams.CursorID != second.CredentialID || !nextStore.renewParams.CursorUpdatedAt.Equal(second.UpdatedAt) {
 		t.Fatalf("cursor params mismatch: %+v want updated_at=%s id=%d", nextStore.renewParams, second.UpdatedAt.Format(time.RFC3339), second.CredentialID)
 	}
@@ -531,7 +531,7 @@ func TestCreateAccountCredentialProtocolGuard(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
 			`{"tenant_id":7,"vendor":"openai","auth_mode":"api_key","credentials":{"api_key":"sk-openai"}}`)
-		assertStatus(t, rec, http.StatusBadRequest)
+		assertHTTPStatus(t, rec, http.StatusBadRequest)
 		if store.createInput != nil {
 			t.Fatal("错配凭据不应进入 Create")
 		}
@@ -544,7 +544,7 @@ func TestCreateAccountCredentialProtocolGuard(t *testing.T) {
 			Auth: adminPoolAdmin(), Credentials: store, AuditStore: audit,
 		}, http.MethodPost, "/admin/v1/provider-accounts/77/credentials",
 			`{"tenant_id":7,"vendor":"anthropic","auth_mode":"api_key","credentials":{"api_key":"sk-ant"}}`)
-		assertStatus(t, rec, http.StatusCreated)
+		assertHTTPStatus(t, rec, http.StatusCreated)
 		if store.createInput == nil {
 			t.Fatal("正配凭据应进入 Create")
 		}

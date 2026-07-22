@@ -14,41 +14,47 @@ import (
 const insertHermesToolCall = `-- name: InsertHermesToolCall :one
 
 INSERT INTO hermes_tool_calls (
-    tenant_id, actor_user_id, admin_actor_token_id, tool_name,
+    operation_id, tenant_id, actor_source, actor_id, actor_role, tool_name,
     requested_args, result_status, result_summary, error_class,
-    correlation_id, request_id, called_at, returned_at, dry_run
+    correlation_id, request_id, called_at, returned_at, dry_run, log_category
 ) VALUES (
-    $1::bigint,
+    $1::uuid,
     $2::bigint,
-    $3::bigint,
-    $4::text,
-    $5::jsonb,
+    $3::text,
+    $4::bigint,
+    $5::text,
     $6::text,
     $7::jsonb,
     $8::text,
-    $9::text,
+    $9::jsonb,
     $10::text,
-    $11::timestamptz,
-    $12::timestamptz,
-    $13::boolean
+    $11::text,
+    $12::text,
+    $13::timestamptz,
+    $14::timestamptz,
+    $15::boolean,
+    $16::text
 )
 RETURNING id, called_at
 `
 
 type InsertHermesToolCallParams struct {
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-	ActorUserID       int64              `db:"actor_user_id" json:"actor_user_id"`
-	AdminActorTokenID *int64             `db:"admin_actor_token_id" json:"admin_actor_token_id"`
-	ToolName          string             `db:"tool_name" json:"tool_name"`
-	RequestedArgs     []byte             `db:"requested_args" json:"requested_args"`
-	ResultStatus      string             `db:"result_status" json:"result_status"`
-	ResultSummary     []byte             `db:"result_summary" json:"result_summary"`
-	ErrorClass        *string            `db:"error_class" json:"error_class"`
-	CorrelationID     *string            `db:"correlation_id" json:"correlation_id"`
-	RequestID         *string            `db:"request_id" json:"request_id"`
-	CalledAt          pgtype.Timestamptz `db:"called_at" json:"called_at"`
-	ReturnedAt        pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
-	DryRun            bool               `db:"dry_run" json:"dry_run"`
+	OperationID   pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     string             `db:"actor_role" json:"actor_role"`
+	ToolName      string             `db:"tool_name" json:"tool_name"`
+	RequestedArgs []byte             `db:"requested_args" json:"requested_args"`
+	ResultStatus  string             `db:"result_status" json:"result_status"`
+	ResultSummary []byte             `db:"result_summary" json:"result_summary"`
+	ErrorClass    *string            `db:"error_class" json:"error_class"`
+	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
+	RequestID     *string            `db:"request_id" json:"request_id"`
+	CalledAt      pgtype.Timestamptz `db:"called_at" json:"called_at"`
+	ReturnedAt    pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	DryRun        bool               `db:"dry_run" json:"dry_run"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
 }
 
 type InsertHermesToolCallRow struct {
@@ -56,21 +62,20 @@ type InsertHermesToolCallRow struct {
 	CalledAt pgtype.Timestamptz `db:"called_at" json:"called_at"`
 }
 
-// Hermes WAVE H3 tool-call audit ledger queries.
+// Hermes 工具调用日志查询。
 //
-// These mirror the append-only audit shape of hermes.sql / admin_audit.sql: a
-// single INSERT per tool invocation, written inside the same transaction as the
-// tool's execution + the mirrored hermes_audit_events / admin_audit_events rows,
-// so the tool-call trail is atomic with the action (or denial).
+// 普通改动工具在同一事务内先写工具调用和管理员操作日志，执行成功后再更新结果并共同提交。
+// 含外部副作用或独立事务的工具先写恢复日志，结果明确后由恢复流程补齐两类日志。
 //
-// requested_args / result_summary are SANITIZED by the application before this
-// INSERT — only system-diagnostic enums / counts / ids / fingerprints, never
-// prompts / completions / raw bodies / secrets / PII.
+// 应用层在写入前清洗 requested_args 和 result_summary，只允许系统诊断枚举、计数、标识符
+// 和指纹，不持久化提示词、模型回复、原始请求体、秘密或个人信息。
 func (q *Queries) InsertHermesToolCall(ctx context.Context, arg InsertHermesToolCallParams) (InsertHermesToolCallRow, error) {
 	row := q.db.QueryRow(ctx, insertHermesToolCall,
+		arg.OperationID,
 		arg.TenantID,
-		arg.ActorUserID,
-		arg.AdminActorTokenID,
+		arg.ActorSource,
+		arg.ActorID,
+		arg.ActorRole,
 		arg.ToolName,
 		arg.RequestedArgs,
 		arg.ResultStatus,
@@ -81,6 +86,7 @@ func (q *Queries) InsertHermesToolCall(ctx context.Context, arg InsertHermesTool
 		arg.CalledAt,
 		arg.ReturnedAt,
 		arg.DryRun,
+		arg.LogCategory,
 	)
 	var i InsertHermesToolCallRow
 	err := row.Scan(&i.ID, &i.CalledAt)
@@ -88,9 +94,9 @@ func (q *Queries) InsertHermesToolCall(ctx context.Context, arg InsertHermesTool
 }
 
 const listHermesToolCallsByTenant = `-- name: ListHermesToolCallsByTenant :many
-SELECT id, tenant_id, actor_user_id, admin_actor_token_id, tool_name,
+SELECT id, operation_id, tenant_id, actor_source, actor_id, actor_role, tool_name,
        requested_args, result_status, result_summary, error_class,
-       correlation_id, request_id, called_at, returned_at, dry_run
+       correlation_id, request_id, called_at, returned_at, dry_run, log_category
 FROM hermes_tool_calls
 WHERE tenant_id = $1::bigint
 ORDER BY called_at DESC, id DESC
@@ -102,20 +108,42 @@ type ListHermesToolCallsByTenantParams struct {
 	PageLimit int32 `db:"page_limit" json:"page_limit"`
 }
 
-func (q *Queries) ListHermesToolCallsByTenant(ctx context.Context, arg ListHermesToolCallsByTenantParams) ([]HermesToolCall, error) {
+type ListHermesToolCallsByTenantRow struct {
+	ID            int64              `db:"id" json:"id"`
+	OperationID   pgtype.UUID        `db:"operation_id" json:"operation_id"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     *string            `db:"actor_role" json:"actor_role"`
+	ToolName      string             `db:"tool_name" json:"tool_name"`
+	RequestedArgs []byte             `db:"requested_args" json:"requested_args"`
+	ResultStatus  string             `db:"result_status" json:"result_status"`
+	ResultSummary []byte             `db:"result_summary" json:"result_summary"`
+	ErrorClass    *string            `db:"error_class" json:"error_class"`
+	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
+	RequestID     *string            `db:"request_id" json:"request_id"`
+	CalledAt      pgtype.Timestamptz `db:"called_at" json:"called_at"`
+	ReturnedAt    pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	DryRun        bool               `db:"dry_run" json:"dry_run"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
+}
+
+func (q *Queries) ListHermesToolCallsByTenant(ctx context.Context, arg ListHermesToolCallsByTenantParams) ([]ListHermesToolCallsByTenantRow, error) {
 	rows, err := q.db.Query(ctx, listHermesToolCallsByTenant, arg.TenantID, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []HermesToolCall
+	var items []ListHermesToolCallsByTenantRow
 	for rows.Next() {
-		var i HermesToolCall
+		var i ListHermesToolCallsByTenantRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.OperationID,
 			&i.TenantID,
-			&i.ActorUserID,
-			&i.AdminActorTokenID,
+			&i.ActorSource,
+			&i.ActorID,
+			&i.ActorRole,
 			&i.ToolName,
 			&i.RequestedArgs,
 			&i.ResultStatus,
@@ -126,6 +154,7 @@ func (q *Queries) ListHermesToolCallsByTenant(ctx context.Context, arg ListHerme
 			&i.CalledAt,
 			&i.ReturnedAt,
 			&i.DryRun,
+			&i.LogCategory,
 		); err != nil {
 			return nil, err
 		}
@@ -135,4 +164,41 @@ func (q *Queries) ListHermesToolCallsByTenant(ctx context.Context, arg ListHerme
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateHermesToolCallOutcome = `-- name: UpdateHermesToolCallOutcome :execrows
+UPDATE hermes_tool_calls
+SET result_status = $1::text,
+    result_summary = $2::jsonb,
+    error_class = $3::text,
+    returned_at = $4::timestamptz,
+    log_category = $5::text
+WHERE id = $6::bigint
+  AND operation_id = $7::uuid
+`
+
+type UpdateHermesToolCallOutcomeParams struct {
+	ResultStatus  string             `db:"result_status" json:"result_status"`
+	ResultSummary []byte             `db:"result_summary" json:"result_summary"`
+	ErrorClass    *string            `db:"error_class" json:"error_class"`
+	ReturnedAt    pgtype.Timestamptz `db:"returned_at" json:"returned_at"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
+	ID            int64              `db:"id" json:"id"`
+	OperationID   pgtype.UUID        `db:"operation_id" json:"operation_id"`
+}
+
+func (q *Queries) UpdateHermesToolCallOutcome(ctx context.Context, arg UpdateHermesToolCallOutcomeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateHermesToolCallOutcome,
+		arg.ResultStatus,
+		arg.ResultSummary,
+		arg.ErrorClass,
+		arg.ReturnedAt,
+		arg.LogCategory,
+		arg.ID,
+		arg.OperationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

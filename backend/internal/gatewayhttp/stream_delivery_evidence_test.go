@@ -63,6 +63,8 @@ func (fixedChunkClientAdapter) CanonicalToClientResponse(context.Context, *proto
 	return nil, nil, errors.New("测试未使用 CanonicalToClientResponse")
 }
 
+func (fixedChunkClientAdapter) NewClientStreamState() any { return nil }
+
 func (fixedChunkClientAdapter) CanonicalEventToClientChunk(context.Context, any, any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	return [][]byte{[]byte("data: translated-business\n\n")}, nil, nil
 }

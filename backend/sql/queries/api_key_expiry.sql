@@ -6,7 +6,8 @@
 WITH candidates AS (
     SELECT id
     FROM api_keys
-    WHERE status = 'active'
+    WHERE purpose = 'user'
+      AND status = 'active'
       AND expires_at IS NOT NULL
       AND expires_at <= NOW()
       AND deleted_at IS NULL
@@ -19,6 +20,7 @@ SET status = 'expired',
     updated_at = NOW()
 FROM candidates c
 WHERE ak.id = c.id
+  AND ak.purpose = 'user'
   AND ak.status = 'active'
   AND ak.expires_at IS NOT NULL
   AND ak.expires_at <= NOW()

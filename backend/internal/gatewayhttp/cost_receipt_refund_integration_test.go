@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 )
@@ -28,7 +26,7 @@ import (
 func TestSignedReceiptMismatchRefundEndToEndPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool := openReceiptRefundIntegrationPool(t, ctx)
+	pool := openGatewayHTTPIntegrationPool(t, ctx)
 	seed := seedReceiptRefundIntegration(t, ctx, pool)
 
 	signer := mustReceiptSigner(t)
@@ -57,7 +55,6 @@ func TestSignedReceiptMismatchRefundEndToEndPostgres(t *testing.T) {
 	settler := billing.NewSettler(pool)
 	formatter, err := audit.NewReceiptFormatter(
 		ledger,
-		settler,
 		receiptSource,
 		signer,
 		audit.WithReceiptNow(func() time.Time { return seed.now }),
@@ -166,23 +163,6 @@ type receiptRefundIntegrationSeed struct {
 	inputTokens          int64
 	originalChargeMicros int64
 	currentChargeMicros  int64
-}
-
-func openReceiptRefundIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
-	t.Helper()
-	dsn := strings.TrimSpace(os.Getenv("HUAKAI_TEST_DATABASE_URL"))
-	if dsn == "" {
-		dsn = strings.TrimSpace(os.Getenv("HUAKAI_DATABASE_URL"))
-	}
-	if dsn == "" {
-		t.Fatal("integration_pg 必须设置 HUAKAI_TEST_DATABASE_URL 或 HUAKAI_DATABASE_URL")
-	}
-	pool, err := db.Open(ctx, db.PoolConfig{DSN: dsn, MaxConns: 8})
-	if err != nil {
-		t.Fatalf("打开 PostgreSQL：%v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
 }
 
 func seedReceiptRefundIntegration(t *testing.T, ctx context.Context, pool *pgxpool.Pool) receiptRefundIntegrationSeed {

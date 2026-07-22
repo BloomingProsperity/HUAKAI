@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/cachecontrol"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
@@ -865,7 +866,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 	if !strings.Contains(got, "cache_control") {
 		t.Fatalf("expected cache_control injected into outbound body, got=%s", got)
 	}
-	snap, err := InspectCacheControl(adapter.lastInput.InboundBody)
+	snap, err := cachecontrol.InspectCacheControl(adapter.lastInput.InboundBody)
 	if err != nil {
 		t.Fatalf("inspect injected body: %v", err)
 	}
@@ -877,7 +878,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_InjectsWhenAbsent(t *testing.T) {
 			t.Fatalf("自动断点 ttl=%q，期望显式 1h；snapshot=%+v", loc.TTL, snap)
 		}
 	}
-	if err := ValidateTTLOrdering(snap); err != nil {
+	if err := cachecontrol.ValidateTTLOrdering(snap); err != nil {
 		t.Fatalf("1h 自动断点 TTL 排序无效: %v", err)
 	}
 }
@@ -901,7 +902,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_ClientAlreadyHas(t *testing.T) {
 		t.Fatalf("client-supplied cache_control body must pass through unchanged.\n want=%s\n got =%s",
 			body, string(adapter.lastInput.InboundBody))
 	}
-	snap, err := InspectCacheControl(adapter.lastInput.InboundBody)
+	snap, err := cachecontrol.InspectCacheControl(adapter.lastInput.InboundBody)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
@@ -935,7 +936,7 @@ func TestDispatcher_AnthropicAutoBreakpoints_TTLSettingOffMatchesLegacyBytes(t *
 	if offBody != legacyBody {
 		t.Fatalf("设置关闭改变了既有自动注入字节\nlegacy=%s\noff=%s", legacyBody, offBody)
 	}
-	snap, err := InspectCacheControl(offAdapter.lastInput.InboundBody)
+	snap, err := cachecontrol.InspectCacheControl(offAdapter.lastInput.InboundBody)
 	if err != nil {
 		t.Fatal(err)
 	}

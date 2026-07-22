@@ -8,7 +8,7 @@ import (
 )
 
 // pendingOnlyBlockAt 生成 pending_reconciliation_only 契约块;占位符编号随各查询
-// 的参数集不同(list 多带 user_id 过滤,块顺延到 $10;count/list_names 仍是 $9)。
+// 的参数集不同；精确 request/claim 过滤只加入主列表，因此其块顺延到 $12。
 func pendingOnlyBlockAt(n int) string {
 	return normalizeSQLForPendingQueryTest(fmt.Sprintf(`
 		AND (
@@ -31,7 +31,7 @@ func TestUsagePendingQueriesExcludeAnyReconciliationEventInsidePendingOnlyClause
 		query      string
 		pendingArg int
 	}{
-		"list":       {listUsageRecords, 10},
+		"list":       {listUsageRecords, 12},
 		"list_names": {listUsageRecordsWithNames, 9},
 		"count":      {countUsageRecords, 9},
 	} {
@@ -62,7 +62,7 @@ func TestUsageOutcomeSQLFilterContracts(t *testing.T) {
 		query      string
 		outcomeArg int
 	}{
-		"list":  {listUsageRecords, 11},
+		"list":  {listUsageRecords, 13},
 		"count": {countUsageRecords, 10},
 	} {
 		t.Run(name, func(t *testing.T) {

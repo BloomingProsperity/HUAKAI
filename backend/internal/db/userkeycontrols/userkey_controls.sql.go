@@ -26,6 +26,7 @@ LEFT JOIN api_key_groups g
 WHERE ak.id = $1::bigint
   AND ak.tenant_id = $2::bigint
   AND ak.user_id = $3::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -64,6 +65,7 @@ FROM api_keys ak
 WHERE ak.id = $1::bigint
   AND ak.tenant_id = $2::bigint
   AND ak.user_id = $3::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -93,6 +95,7 @@ FROM api_keys ak
 WHERE ak.id = $1::bigint
   AND ak.tenant_id = $2::bigint
   AND ak.user_id = $3::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -137,6 +140,7 @@ JOIN quota_policies qp
 WHERE ak.id = $1::bigint
   AND ak.tenant_id = $2::bigint
   AND ak.user_id = $3::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
   AND qp.scope_kind = 'api_key'
   AND qp.scope_id = ak.id::text
@@ -196,6 +200,7 @@ SET key_group_id = $1::bigint,
 WHERE ak.id = $2::bigint
   AND ak.tenant_id = $3::bigint
   AND ak.user_id = $4::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -226,6 +231,7 @@ SET ip_allowlist = $1::text,
 WHERE ak.id = $2::bigint
   AND ak.tenant_id = $3::bigint
   AND ak.user_id = $4::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -256,6 +262,7 @@ SET allowed_models = $1::text,
 WHERE ak.id = $2::bigint
   AND ak.tenant_id = $3::bigint
   AND ak.user_id = $4::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -286,6 +293,7 @@ SET quota_policy_id = $1::bigint,
 WHERE ak.id = $2::bigint
   AND ak.tenant_id = $3::bigint
   AND ak.user_id = $4::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
 `
 
@@ -356,9 +364,11 @@ WHERE EXISTS (
      AND u.tenant_id = ak.tenant_id
      AND u.deleted_at IS NULL
      AND u.status = 'active'
+     AND u.principal_kind = 'human'
     WHERE ak.id = $10::bigint
       AND ak.tenant_id = $1::bigint
       AND ak.user_id = $11::bigint
+      AND ak.purpose = 'user'
       AND ak.deleted_at IS NULL
 )
 ON CONFLICT (

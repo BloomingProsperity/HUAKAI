@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachecontrol"
 )
 
 // ---- RR-04 测试辅助函数 ----
@@ -65,7 +67,7 @@ func TestEnforceCacheControlLimit_5to4(t *testing.T) {
 	body := buildRR04Body(t, 1, 1, 4, 4)
 
 	// 校验前置条件。
-	snap, err := InspectCacheControl(body)
+	snap, err := cachecontrol.InspectCacheControl(body)
 	if err != nil {
 		t.Fatalf("precondition inspect: %v", err)
 	}
@@ -73,12 +75,12 @@ func TestEnforceCacheControlLimit_5to4(t *testing.T) {
 		t.Fatalf("precondition: want 5 CC blocks, got %d", snap.Count)
 	}
 
-	out, err := EnforceCacheControlLimit(body, CacheControlMaxAllowed)
+	out, err := cachecontrol.EnforceCacheControlLimit(body, cachecontrol.CacheControlMaxAllowed)
 	if err != nil {
 		t.Fatalf("EnforceCacheControlLimit error: %v", err)
 	}
 
-	snapAfter, err := InspectCacheControl(out)
+	snapAfter, err := cachecontrol.InspectCacheControl(out)
 	if err != nil {
 		t.Fatalf("post-enforce inspect: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestEnforceCacheControlLimit_5to4(t *testing.T) {
 func TestEnforceCacheControlLimit_Exactly4_ByteIdentical(t *testing.T) {
 	body := buildRR04Body(t, 1, 1, 3, 3) // 1+3=4
 
-	snap, err := InspectCacheControl(body)
+	snap, err := cachecontrol.InspectCacheControl(body)
 	if err != nil {
 		t.Fatalf("precondition: %v", err)
 	}
@@ -126,7 +128,7 @@ func TestEnforceCacheControlLimit_Exactly4_ByteIdentical(t *testing.T) {
 		t.Fatalf("precondition: want 4, got %d", snap.Count)
 	}
 
-	out, err := EnforceCacheControlLimit(body, CacheControlMaxAllowed)
+	out, err := cachecontrol.EnforceCacheControlLimit(body, cachecontrol.CacheControlMaxAllowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +143,7 @@ func TestEnforceCacheControlLimit_Exactly4_ByteIdentical(t *testing.T) {
 func TestEnforceCacheControlLimit_Zero_ByteIdentical(t *testing.T) {
 	body := buildRR04Body(t, 0, 2, 0, 2) // 0 个 CC
 
-	out, err := EnforceCacheControlLimit(body, CacheControlMaxAllowed)
+	out, err := cachecontrol.EnforceCacheControlLimit(body, cachecontrol.CacheControlMaxAllowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +157,7 @@ func TestEnforceCacheControlLimit_Zero_ByteIdentical(t *testing.T) {
 func TestEnforceCacheControlLimit_Two_ByteIdentical(t *testing.T) {
 	body := buildRR04Body(t, 0, 1, 2, 2) // 0+2=2
 
-	out, err := EnforceCacheControlLimit(body, CacheControlMaxAllowed)
+	out, err := cachecontrol.EnforceCacheControlLimit(body, cachecontrol.CacheControlMaxAllowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +171,7 @@ func TestEnforceCacheControlLimit_Two_ByteIdentical(t *testing.T) {
 func TestEnforceCacheControlLimit_MalformedJSON_Passthrough(t *testing.T) {
 	bad := []byte(`{not valid json`)
 
-	out, err := EnforceCacheControlLimit(bad, CacheControlMaxAllowed)
+	out, err := cachecontrol.EnforceCacheControlLimit(bad, cachecontrol.CacheControlMaxAllowed)
 	// 必须原样返回原始字节。
 	if !bytes.Equal(bad, out) {
 		t.Fatalf("malformed JSON: expected original bytes back\ngot: %s", out)

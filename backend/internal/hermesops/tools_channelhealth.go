@@ -23,20 +23,25 @@ func ChannelHealthListSpec(deps ChannelHealthListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolChannelHealthList,
 		Category:     CategoryDiagnostic,
-		Description:  "List per-channel health records for the WHOLE tenant (state, cooldown, ramp, reason), optionally filtered by state. Tenant-wide complement to per-account account_health_diagnose. READ ONLY.",
+		Description:  "分页列出当前租户的逐通道健康记录，可按状态筛选；只读，不返回自由文本原因。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"state": "filter by health state (active/degraded/cooling_down/ramping/disabled/manual_paused, optional)",
-		},
+		InputSchema: ObjectSchema(paginationProperties(map[string]any{
+			"state": StringSchema("按渠道健康状态筛选", "active", "degraded", "cooling_down", "ramping", "disabled", "manual_paused"),
+		})),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
-			rows, err := deps.List(ctx, req.TenantID, channelHealthListLimit, 0)
+			limit, offset, err := pageArgs(req.Args)
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, err := deps.List(ctx, req.TenantID, limit+1, offset)
+			if err != nil {
+				return ToolResult{}, err
+			}
+			rows, page := trimPage(rows, limit, offset)
 			stateFilter, hasFilter := ArgString(req.Args, "state")
 			items := make([]map[string]any, 0, len(rows))
 			byState := map[string]int{}
@@ -52,6 +57,7 @@ func ChannelHealthListSpec(deps ChannelHealthListDeps) ToolSpec {
 				"channel_count": len(rows),
 				"by_state":      intCountMap(byState),
 				"items":         items,
+				"page":          page,
 			}}, nil
 		},
 	}

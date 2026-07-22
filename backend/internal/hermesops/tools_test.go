@@ -35,7 +35,7 @@ func jsonContains(t *testing.T, v any, needle string) bool {
 }
 
 func req(tenant int64) ToolRequest {
-	return ToolRequest{TenantID: tenant, ActorUserID: 42, Role: RoleTenantOperator, Args: map[string]any{}}
+	return ToolRequest{TenantID: tenant, ActorSource: "token", ActorID: 42, Role: RoleTenantOperator, Args: map[string]any{}}
 }
 
 // --- credential_diagnose ----------------------------------------------------
@@ -55,11 +55,13 @@ func TestCredentialDiagnoseShapeAndPrivacy(t *testing.T) {
 			return credentialworker.ProviderAccountCredentialTestResult{OK: false, ErrorClass: "invalid_grant", Message: "credential authorization failed; operator re-authentication is required"}, nil
 		},
 		TestStore: fakeCredTestStore{},
-		RenewStatus: func(_ context.Context, _ credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
-			// AccountName 携带被注入的密钥哨兵值 —— 它是一个非诊断字段,投影必须丢弃它。
+		ListByAccount: func(_ context.Context, tenantID, accountID int64) ([]credentialstore.CredentialMetadata, error) {
+			if tenantID != 7 || accountID != 5 {
+				t.Fatalf("凭据精确查询范围=%d/%d，期望 7/5", tenantID, accountID)
+			}
 			fc := "invalid_grant"
-			return []credentialstore.RenewStatusMetadata{{
-				CredentialID: 9, AccountID: 5, AccountName: secretSentinel,
+			return []credentialstore.CredentialMetadata{{
+				ID: 9, TenantID: 7, ProviderAccountID: 5,
 				Vendor: "anthropic", AuthMode: "api_key", State: "failing",
 				FailureClass: &fc, FailureCount: 3,
 			}}, nil
@@ -107,9 +109,9 @@ func TestCredentialDiagnoseProjectsExpiryTiming(t *testing.T) {
 			return credentialworker.ProviderAccountCredentialTestResult{OK: true, Message: "credential is valid"}, nil
 		},
 		TestStore: fakeCredTestStore{},
-		RenewStatus: func(_ context.Context, _ credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error) {
-			return []credentialstore.RenewStatusMetadata{{
-				CredentialID: 9, AccountID: 5, AccountName: secretSentinel,
+		ListByAccount: func(_ context.Context, _, _ int64) ([]credentialstore.CredentialMetadata, error) {
+			return []credentialstore.CredentialMetadata{{
+				ID: 9, TenantID: 7, ProviderAccountID: 5,
 				Vendor: "anthropic", AuthMode: "oauth", State: "active",
 				AccessExpiresAt: &accessExp, RefreshBeforeAt: &refreshBy, LastRefreshAt: &lastRefresh,
 			}}, nil
@@ -302,12 +304,18 @@ func TestRequestDiagnoseCorrelatesAndDropsCost(t *testing.T) {
 	// 变异:输出 actual_cost,或不按 request_id 过滤,都会让此测试失败。
 	deps := ObservabilityDeps{
 		ListUsage: func(_ context.Context, p dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+			if p.TenantID == nil || *p.TenantID != 7 || p.RequestID == nil || *p.RequestID != "req-A" || p.ClaimID != nil {
+				t.Fatalf("用量精确查询参数=%+v，期望 tenant=7 request=req-A", p)
+			}
 			return []dbbilling.ListUsageRecordsRow{
 				{ID: 1, ClaimID: 11, RequestID: "req-A", EndClass: "ok", TokensInput: 10},
 				{ID: 2, ClaimID: 22, RequestID: "req-B", EndClass: "error"},
 			}, nil
 		},
 		ListClaims: func(_ context.Context, p dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error) {
+			if p.TenantID == nil || *p.TenantID != 7 || p.RequestID == nil || *p.RequestID != "req-A" || p.ClaimID != nil {
+				t.Fatalf("计费精确查询参数=%+v，期望 tenant=7 request=req-A", p)
+			}
 			return []dbbilling.ListBillingClaimsRow{
 				{ID: 11, LogicalRequestID: "req-A", Status: "settled", EndpointFamily: "chat"},
 			}, nil
@@ -325,6 +333,32 @@ func TestRequestDiagnoseCorrelatesAndDropsCost(t *testing.T) {
 	}
 	if jsonContains(t, res.Summary, "actual_cost") {
 		t.Fatalf("request_diagnose leaked the money field actual_cost: %v", res.Summary)
+	}
+}
+
+func TestRequestDiagnose将ClaimID下推数据库(t *testing.T) {
+	deps := ObservabilityDeps{
+		ListUsage: func(_ context.Context, p dbbilling.ListUsageRecordsParams) ([]dbbilling.ListUsageRecordsRow, error) {
+			if p.ClaimID == nil || *p.ClaimID != 11 {
+				t.Fatalf("用量 claim 过滤=%v，期望 11", p.ClaimID)
+			}
+			return []dbbilling.ListUsageRecordsRow{{ID: 1, ClaimID: 11, RequestID: "req-A"}}, nil
+		},
+		ListClaims: func(_ context.Context, p dbbilling.ListBillingClaimsParams) ([]dbbilling.ListBillingClaimsRow, error) {
+			if p.ClaimID == nil || *p.ClaimID != 11 {
+				t.Fatalf("计费 claim 过滤=%v，期望 11", p.ClaimID)
+			}
+			return []dbbilling.ListBillingClaimsRow{{ID: 11, LogicalRequestID: "req-A"}}, nil
+		},
+	}
+	r := req(7)
+	r.Args = map[string]any{"request_id": "req-A", "claim_id": float64(11)}
+	res, err := RequestDiagnoseSpec(deps).Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("运行请求诊断：%v", err)
+	}
+	if res.Summary["usage_count"] != 1 || res.Summary["claim_count"] != 1 {
+		t.Fatalf("诊断计数=%v/%v，期望 1/1", res.Summary["usage_count"], res.Summary["claim_count"])
 	}
 }
 
@@ -524,15 +558,14 @@ func TestAccountHealthDiagnoseFoldsAccountChannels(t *testing.T) {
 		ProviderAccountHealth: func(_ context.Context, p admindb.GetAdminProviderAccountHealthParams) (admindb.GetAdminProviderAccountHealthRow, error) {
 			return admindb.GetAdminProviderAccountHealthRow{ID: 5, TenantID: 7, HealthState: "active", Enabled: true}, nil
 		},
-		ChannelList: func(_ context.Context, tenantID int64, limit, offset int) ([]channelhealth.Record, error) {
-			if tenantID != 7 {
-				t.Fatalf("scope leaked: tenantID=%d want 7", tenantID)
+		ChannelListByAccount: func(_ context.Context, tenantID, accountID int64, limit, offset int) ([]channelhealth.Record, error) {
+			if tenantID != 7 || accountID != 5 {
+				t.Fatalf("健康精确查询范围=%d/%d，期望 7/5", tenantID, accountID)
 			}
 			return []channelhealth.Record{
 				// ManualPauseReason 设哨兵:operator 自填自由文本,**绝不能进 LLM 可见输出**。
 				{Key: channelhealth.ChannelKey{ChannelID: "ch-a", ProviderAccountID: 5, Vendor: "openai"}, State: "cooling_down", ReasonClass: "rate_limit", ManualPauseReason: "SENTINEL-free-text-must-not-leak"},
 				{Key: channelhealth.ChannelKey{ChannelID: "ch-b", ProviderAccountID: 5}, State: "active"},
-				{Key: channelhealth.ChannelKey{ChannelID: "ch-other", ProviderAccountID: 99}, State: "disabled"}, // 别账号:不应出现
 			}, nil
 		},
 	}

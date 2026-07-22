@@ -366,7 +366,7 @@ func buildGatewayTimeoutConfig(ctx context.Context, settings gatewayPlatformSett
 		FirstTokenTimeout:   streamDurationEnv("HUAKAI_STREAM_FIRST_TOKEN_TIMEOUT", 120*time.Second),
 		InterEventTimeout:   streamDurationEnv("HUAKAI_STREAM_INTER_EVENT_TIMEOUT", 60*time.Second),
 		TotalStreamTimeout:  totalStreamTimeoutFromSettings(ctx, settings, totalFallback),
-		DrainMaxSeconds:     streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
+		DrainMax:            streamDurationEnv("HUAKAI_STREAM_DRAIN_MAX", 15*time.Second),
 		KeepAliveInterval:   streamDurationEnv("HUAKAI_STREAM_KEEPALIVE_INTERVAL", 15*time.Second),
 		HeaderToFirstByte:   streamDurationEnv("HUAKAI_UPSTREAM_HEADER_TIMEOUT", 15*time.Second),
 		RequestTotalTimeout: streamDurationEnv("HUAKAI_UPSTREAM_REQUEST_TIMEOUT", 120*time.Second),
@@ -416,7 +416,7 @@ func buildSettlementServices(_ context.Context, pgPool *pgxpool.Pool, auditSigne
 		return nil, nil, nil, nil, nil, fmt.Errorf("build receipt source: %w", err)
 	}
 	baseSettler := billing.NewSettler(pgPool, billing.WithDLQStore(dlqStore), billing.WithReplicaTarget(replicaTarget))
-	receiptFormatter, err := auditreceipt.NewReceiptFormatter(auditLedger, baseSettler, receiptSource, auditSigner)
+	receiptFormatter, err := auditreceipt.NewReceiptFormatter(auditLedger, receiptSource, auditSigner)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("build receipt formatter: %w", err)
 	}
@@ -487,7 +487,6 @@ func buildCompletionEventBus(cfg *runtimeconfig.EventBusConfig, settler billing.
 			observability.WithRequiredAuditRef(),
 			observability.WithAuditRefPolicy(auditRefPolicy)),
 		observability.NewAccountHealthProbeHandler(cfg.HandlerTimeout, healthProbe),
-		observability.NewMetricsAggregatorHandler(cfg.HandlerTimeout),
 	}
 	for _, h := range handlers {
 		if err := bus.Register(h); err != nil {

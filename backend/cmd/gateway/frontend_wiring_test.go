@@ -498,11 +498,11 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// 模块:hermes(管理助手)。/v1/hermes 仅在 hermesService
-	// 「与」hermesRunner 都已接线时才挂载(routes.go)—— 最小 dev 网关二者皆未接线,
-	// 因此该路由不存在(404)。这种情况下如实 skip;在已挂载处则断言接线。
+	// 模块:hermes(管理助手)。/v1/hermes 在 hermesService 接线后挂载，身份和租户
+	// 完全从管理员凭据推导；最小开发网关未接 Hermes 服务时路由不存在(404)，如实跳过。
+	// 已挂载时必须走不含旧身份覆盖参数的真实管理员路径。
 	t.Run("hermes_page", func(t *testing.T) {
-		url := fmt.Sprintf("%s/v1/hermes/settings?as_user_id=%d&tenant_id=%d", base, seed.userID, seed.tenantID)
+		url := base + "/v1/hermes/settings"
 		st, _, _ := doJSON(t, ctx, http.MethodGet, url, adminPlatformBearer, nil)
 		if st == http.StatusNotFound {
 			t.Skip("hermes not mounted in minimal dev gateway (needs hermesService+hermesRunner); frontend page uses verified contract")

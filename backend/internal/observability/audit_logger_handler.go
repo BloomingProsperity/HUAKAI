@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"time"
 
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
@@ -18,7 +17,6 @@ type AuditLoggerHandler struct {
 	timeout        time.Duration
 	requireRef     bool
 	auditRefPolicy *eventbus.AuditRefPolicy
-	observations   *AuditObservationStore
 }
 
 type AuditLoggerOption func(*AuditLoggerHandler)
@@ -29,10 +27,6 @@ func WithRequiredAuditRef() AuditLoggerOption {
 
 func WithAuditRefPolicy(policy *eventbus.AuditRefPolicy) AuditLoggerOption {
 	return func(h *AuditLoggerHandler) { h.auditRefPolicy = policy }
-}
-
-func WithAuditObservationStore(store *AuditObservationStore) AuditLoggerOption {
-	return func(h *AuditLoggerHandler) { h.observations = store }
 }
 
 func NewAuditLoggerHandler(timeout time.Duration, opts ...AuditLoggerOption) *AuditLoggerHandler {
@@ -87,17 +81,6 @@ func (h *AuditLoggerHandler) Handle(ctx context.Context, event eventbus.RequestC
 			return ErrAuditRefMissing
 		}
 	}
-	if h != nil && h.observations != nil {
-		h.observations.Append(AuditObservation{
-			EventID:     event.ID,
-			RequestID:   event.RequestID,
-			TenantID:    event.TenantID,
-			ClaimID:     event.ClaimID,
-			LedgerID:    event.AuditLedgerID,
-			Fingerprint: event.AuditSignatureFingerprint,
-			ObservedAt:  time.Now().UTC(),
-		})
-	}
 	return nil
 }
 
@@ -106,39 +89,4 @@ func auditLoggerRouteID(event eventbus.RequestCompletionEvent) string {
 		return ""
 	}
 	return event.Metadata["route_id"]
-}
-
-type AuditObservation struct {
-	EventID     string
-	RequestID   string
-	TenantID    int64
-	ClaimID     int64
-	LedgerID    string
-	Fingerprint string
-	ObservedAt  time.Time
-}
-
-type AuditObservationStore struct {
-	mu    sync.Mutex
-	items []AuditObservation
-}
-
-func (s *AuditObservationStore) Append(obs AuditObservation) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.items = append(s.items, obs)
-}
-
-func (s *AuditObservationStore) Snapshot() []AuditObservation {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]AuditObservation, len(s.items))
-	copy(out, s.items)
-	return out
 }

@@ -14,9 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/trusthttp"
 )
 
@@ -58,12 +58,12 @@ func (d Deps) resolveRevocations() (trusthttp.Revocations, error) {
 }
 
 type ExportBundle struct {
-	Entries          []gatewayhttp.AuditVerifyResponse `json:"entries"`
-	ChainEntries     []gatewayhttp.AuditVerifyResponse `json:"chain_entries"`
-	LatestMerkleRoot string                            `json:"latest_merkle_root"`
-	Pubkeys          []PubkeyJSON                      `json:"pubkeys"`
-	SelfAttestation  SelfAttestationJSON               `json:"self_attestation"`
-	Request          ExportRequestJSON                 `json:"request"`
+	Entries          []auditverifyhttp.AuditVerifyResponse `json:"entries"`
+	ChainEntries     []auditverifyhttp.AuditVerifyResponse `json:"chain_entries"`
+	LatestMerkleRoot string                                `json:"latest_merkle_root"`
+	Pubkeys          []PubkeyJSON                          `json:"pubkeys"`
+	SelfAttestation  SelfAttestationJSON                   `json:"self_attestation"`
+	Request          ExportRequestJSON                     `json:"request"`
 }
 
 type PubkeyJSON struct {
@@ -143,7 +143,7 @@ func NewProofDownloadHandler(d Deps) http.HandlerFunc {
 		if !writeLedgerLookupError(w, err) {
 			return
 		}
-		if !gatewayhttp.AuditEntryMatchesTenantScope(entry, tenantScopeRef) {
+		if !auditverifyhttp.AuditEntryMatchesTenantScope(entry, tenantScopeRef) {
 			writeJSONError(w, http.StatusNotFound, "audit_entry_not_found", "request_id not found")
 			return
 		}
@@ -153,7 +153,7 @@ func NewProofDownloadHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "audit_revocations_error", "audit revocation list temporarily unavailable")
 			return
 		}
-		resp := gatewayhttp.AuditVerifyResponseForEntry(r.Context(), entry, d.Registry, revocations)
+		resp := auditverifyhttp.AuditVerifyResponseForEntry(r.Context(), entry, d.Registry, revocations)
 		writeJSONAttachment(w, http.StatusOK, fmt.Sprintf(auditProofFilename, safeFilenamePart(requestID)), resp)
 	}
 }
@@ -320,10 +320,10 @@ func buildBundle(ctx context.Context, d Deps, selected, chainEntries []auditledg
 	}, nil
 }
 
-func verifyResponses(ctx context.Context, entries []auditledger.LedgerEntry, registry auditledger.PubkeyRegistry, revocations trusthttp.Revocations) []gatewayhttp.AuditVerifyResponse {
-	out := make([]gatewayhttp.AuditVerifyResponse, 0, len(entries))
+func verifyResponses(ctx context.Context, entries []auditledger.LedgerEntry, registry auditledger.PubkeyRegistry, revocations trusthttp.Revocations) []auditverifyhttp.AuditVerifyResponse {
+	out := make([]auditverifyhttp.AuditVerifyResponse, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, gatewayhttp.AuditVerifyResponseForEntry(ctx, entry, registry, revocations))
+		out = append(out, auditverifyhttp.AuditVerifyResponseForEntry(ctx, entry, registry, revocations))
 	}
 	return out
 }

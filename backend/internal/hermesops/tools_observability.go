@@ -32,13 +32,13 @@ func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolRequestDiagnose,
 		Category:     CategoryDiagnostic,
-		Description:  "Correlate usage records + billing claims for a request_id/claim_id (classes, token counts, stream state).",
+		Description:  "按逻辑请求 ID 和可选计费声明 ID 精确关联用量、流状态和结算状态；不返回金额或原始内容。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"request_id": "logical request id to correlate (string, required)",
-			"claim_id":   "billing claim id (positive integer, optional narrowing filter)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"request_id": NonEmptyStringSchema("要关联诊断的逻辑请求 ID"),
+			"claim_id":   PositiveIntegerSchema("可选的计费 claim ID"),
+		}, "request_id"),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.ListUsage == nil || deps.ListClaims == nil {
 				return ToolResult{}, ErrDependencyUnwired
@@ -48,26 +48,37 @@ func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 				return ToolResult{}, ErrInvalidArgs
 			}
 			tenant := req.TenantID
+			claimFilter := int64(0)
+			if cid, cerr := ArgInt(req.Args, "claim_id"); cerr == nil {
+				claimFilter = cid
+			}
+			requestFilter := requestID
+			var claimIDFilter *int64
+			if claimFilter > 0 {
+				claimIDFilter = &claimFilter
+			}
 
 			usage, err := deps.ListUsage(ctx, dbbilling.ListUsageRecordsParams{
-				TenantID: &tenant, PageLimit: obsReadLimit,
+				TenantID: &tenant, RequestID: &requestFilter, ClaimID: claimIDFilter, PageLimit: obsReadLimit + 1,
 			})
 			if err != nil {
 				return ToolResult{}, err
 			}
 			claims, err := deps.ListClaims(ctx, dbbilling.ListBillingClaimsParams{
-				TenantID: &tenant, PageLimit: obsReadLimit,
+				TenantID: &tenant, RequestID: &requestFilter, ClaimID: claimIDFilter, PageLimit: obsReadLimit + 1,
 			})
 			if err != nil {
 				return ToolResult{}, err
 			}
 
-			// 可选的 claim_id 收窄过滤。
-			claimFilter := int64(0)
-			if cid, cerr := ArgInt(req.Args, "claim_id"); cerr == nil {
-				claimFilter = cid
+			usageHasMore := len(usage) > obsReadLimit
+			if usageHasMore {
+				usage = usage[:obsReadLimit]
 			}
-
+			claimHasMore := len(claims) > obsReadLimit
+			if claimHasMore {
+				claims = claims[:obsReadLimit]
+			}
 			usageShapes := make([]map[string]any, 0)
 			for _, u := range usage {
 				if u.RequestID != requestID {
@@ -95,6 +106,8 @@ func RequestDiagnoseSpec(deps ObservabilityDeps) ToolSpec {
 				"billing_claims": claimShapes,
 				"usage_count":    len(usageShapes),
 				"claim_count":    len(claimShapes),
+				"usage_has_more": usageHasMore,
+				"claim_has_more": claimHasMore,
 			}}, nil
 		},
 	}
@@ -150,19 +163,23 @@ func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolAuditLookup,
 		Category:     CategoryDiagnostic,
-		Description:  "Read recent observability audit events (classes, types, severity, ids) — payload/reason are dropped.",
+		Description:  "分页读取当前租户的近期日志事件，可按类别和严重度筛选；不返回自由文本载荷。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"event_class": "filter by event class (string, optional)",
-			"severity":    "filter by severity (string, optional)",
-		},
+		InputSchema: ObjectSchema(paginationProperties(map[string]any{
+			"event_class": StringSchema("按日志事件类别筛选"),
+			"severity":    StringSchema("按日志严重度筛选"),
+		})),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.ListAudit == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
+			limit, offset, err := pageArgs(req.Args)
+			if err != nil {
+				return ToolResult{}, err
+			}
 			tenant := req.TenantID
-			params := dbbilling.ListAuditEventsParams{TenantID: &tenant, PageLimit: obsReadLimit}
+			params := dbbilling.ListAuditEventsParams{TenantID: &tenant, PageLimit: int32(limit + 1), PageOffset: int32(offset)}
 			if ec, ok := ArgString(req.Args, "event_class"); ok {
 				params.EventClass = &ec
 			}
@@ -174,6 +191,7 @@ func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, page := trimPage(rows, limit, offset)
 			events := make([]map[string]any, 0, len(rows))
 			for _, e := range rows {
 				events = append(events, auditDiagnosticShape(e))
@@ -181,6 +199,7 @@ func AuditLookupSpec(deps ObservabilityDeps) ToolSpec {
 			return ToolResult{Summary: map[string]any{
 				"event_count": len(events),
 				"events":      events,
+				"page":        page,
 			}}, nil
 		},
 	}
@@ -216,7 +235,7 @@ func LogAnalyzeSpec(deps ObservabilityDeps) ToolSpec {
 		Description:  "Aggregate end_class / settlement / stream trends across the tenant's recent usage (enums + counts only).",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{},
+		InputSchema:  ObjectSchema(nil),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.ListUsage == nil {
 				return ToolResult{}, ErrDependencyUnwired

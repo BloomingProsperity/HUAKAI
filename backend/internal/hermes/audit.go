@@ -18,14 +18,12 @@ const (
 	ActionDisable            = "hermes.disable"
 	ActionProfileCreate      = "hermes.profile.create"
 	ActionProfileRotate      = "hermes.profile.rotate"
+	ActionProfileDelete      = "hermes.profile.delete"
 	ActionChatStart          = "hermes.chat.start"
 	ActionMessageSend        = "hermes.message.send"
 	ActionConversationDelete = "hermes.conversation.delete"
 
-	// WAVE H3 只读诊断工具的 action(hermes.tool.<name>)。
-	// tool-execute handler 会把每次调用按这些 action 镜像写入 hermes_audit_events。
-	// 对应的 DB CHECK 在 migration 0145 中扩展;H4 的
-	// mutating 工具在落地时会自带各自的 action(validAction + CHECK)。
+	// 只读诊断工具统一使用 hermes.tool.<name> 动作写入 Hermes 日志。
 	ActionToolCredentialDiagnose    = "hermes.tool.credential_diagnose"
 	ActionToolAccountHealthDiagnose = "hermes.tool.account_health_diagnose"
 	ActionToolRequestDiagnose       = "hermes.tool.request_diagnose"
@@ -34,22 +32,18 @@ const (
 	ActionToolLogAnalyze            = "hermes.tool.log_analyze"
 )
 
-func (s *Service) RecordAudit(ctx context.Context, tenantID, actorUserID int64, action string, sanitizedArgs map[string]any, result, correlationID, requestID string) error {
+func (s *Service) RecordAudit(ctx context.Context, fields AuditFields) error {
 	if s == nil || s.store == nil {
 		return ErrMisconfigured
 	}
-	return recordAuditWithStore(ctx, s.store, AuditFields{
-		TenantID: tenantID, ActorUserID: actorUserID, Action: action,
-		SanitizedArgs: sanitizedArgs, Result: result,
-		CorrelationID: correlationID, RequestID: requestID,
-	})
+	return recordAuditWithStore(ctx, s.store, fields)
 }
 
 func recordAuditWithStore(ctx context.Context, store Store, fields AuditFields) error {
 	if store == nil {
 		return ErrMisconfigured
 	}
-	if err := validateTenantUser(fields.TenantID, fields.ActorUserID); err != nil {
+	if err := validateAuditActor(fields); err != nil {
 		return err
 	}
 	if !validAction(fields.Action) {
@@ -63,16 +57,54 @@ func recordAuditWithStore(ctx context.Context, store Store, fields AuditFields) 
 	if err != nil {
 		return fmt.Errorf("%w: audit args must be json encodable", ErrInvalidInput)
 	}
+	category := strings.TrimSpace(fields.LogCategory)
+	if category == "" {
+		if fields.Result == AuditResultFailure {
+			category = "error"
+		} else {
+			category = "operation"
+		}
+	}
+	if !validLogCategory(category) {
+		return fmt.Errorf("%w: unknown log category", ErrInvalidInput)
+	}
 	_, err = store.InsertAuditEvent(ctx, dbhermes.InsertAuditEventParams{
-		Ts:       pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
-		TenantID: fields.TenantID, ActorUserID: fields.ActorUserID, Action: fields.Action,
+		Ts:            pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		TenantID:      fields.TenantID,
+		ActorSource:   fields.ActorSource,
+		ActorID:       fields.ActorID,
+		ActorRole:     fields.ActorRole,
+		Action:        fields.Action,
 		SanitizedArgs: raw, Result: fields.Result,
 		CorrelationID: stringPtr(fields.CorrelationID), RequestID: stringPtr(fields.RequestID),
+		LogCategory: category,
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrAuditRecordFailed, err)
 	}
 	return nil
+}
+
+func validateAuditActor(fields AuditFields) error {
+	if fields.TenantID <= 0 || fields.ActorID <= 0 {
+		return fmt.Errorf("%w: tenant_id and actor_id must be positive", ErrInvalidInput)
+	}
+	if fields.ActorSource != "token" && fields.ActorSource != "session" {
+		return fmt.Errorf("%w: unknown actor source", ErrInvalidInput)
+	}
+	if fields.ActorRole != "platform_admin" && fields.ActorRole != "tenant_operator" {
+		return fmt.Errorf("%w: unknown actor role", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validLogCategory(category string) bool {
+	switch category {
+	case "operation", "financial", "security", "error", "access", "recovery":
+		return true
+	default:
+		return false
+	}
 }
 
 func SanitizeArgs(in map[string]any) map[string]any {
@@ -181,7 +213,7 @@ func sensitiveKey(key string) bool {
 
 func validAction(action string) bool {
 	switch action {
-	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionChatStart, ActionMessageSend, ActionConversationDelete,
+	case ActionEnable, ActionDisable, ActionProfileCreate, ActionProfileRotate, ActionProfileDelete, ActionChatStart, ActionMessageSend, ActionConversationDelete,
 		ActionToolCredentialDiagnose, ActionToolAccountHealthDiagnose, ActionToolRequestDiagnose,
 		ActionToolDLQInspect, ActionToolAuditLookup, ActionToolLogAnalyze:
 		return true

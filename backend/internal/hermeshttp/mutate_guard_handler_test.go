@@ -10,9 +10,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
 )
 
-// 本文件检验 S2 (c) handler 侧的 per-operator-token 限流器:它只对真正已确认的执行
-// 计数(preview/denial 不计),按 operator TOKEN(而非按 tenant)划分 key,且在未设置
-// 任何 knob 时,整个 mutating 路径与旧行为逐字节一致。固定时钟使窗口确定性。fake
+// 本文件检验处理器侧按运营者令牌限流：它只对真正已确认的执行计数，预览和拒绝不计，
+// 并按运营者令牌而非租户划分限流键。未配置限流参数时不改变改动路径行为。
+// 固定时钟使窗口确定性。测试替身
 // (fakeMutator / mutatingRegistry / mutateCounters / buildMutateHandler /
 // mutateRequest / operator / decodeBody)复用自本包内的 tools_mutate_handler_test.go
 // + tools_handler_test.go。
@@ -30,11 +30,11 @@ func (c *fixedClock) Now() time.Time {
 	return c.t
 }
 
-// operatorTok 构造一个带指定 admin token id 的 operator 身份,使测试能在同一 tenant
-// 内驱动两个不同的 operator token。
+// operatorTok 构造一个带指定管理员令牌编号的操作者身份，使测试能在同一租户内
+// 驱动两个不同的管理员令牌。
 func operatorTok(tenant, tokenID int64) (sessionauth.Identity, adminActor) {
 	ident, actor := operator(tenant)
-	actor.TokenID = tokenID
+	actor.ID = tokenID
 	return ident, actor
 }
 
@@ -59,7 +59,7 @@ func TestS2_RateLimitPerTokenNotPerTenant(t *testing.T) {
 	// confirm -> 通过,证明配额按 operator TOKEN 划分,而非按 tenant。
 	//
 	// 变异检查(已运行 + 确认变红,随后恢复):
-	//   - 把限流器 key 改用 tenant id 而非 actor.TokenID -> token B 的首次 confirm
+	//   - 把限流键改用租户编号而非 actor.ID -> 令牌 B 的首次确认
 	//     会被 token A 的配额限流 -> `bFirst==200` 防护变红;
 	//   - 删掉 confirmMutation 里的限流检查 -> token A 的第三次 confirm 通过(200)
 	//     -> `aThird==429` 防护变红。

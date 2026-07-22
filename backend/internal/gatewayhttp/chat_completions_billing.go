@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -30,6 +31,10 @@ import (
 
 // 高于启发式估算器自身的噪声底线; 低于该底线的 delta 以误报为主。
 const crossCheckMinAbsTokenDelta = 50
+
+func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft, streamAttempt billing.Attempt, ledgerResult auditledger.AuditLedgerResult) eventbus.RequestCompletionEvent {
+	return ex.streamingCompletionEventWithContext(ex.ctx, draft, streamAttempt, ledgerResult)
+}
 
 // crossCheckAudit 计算 token 交叉校验的审计信号(confidence_score / pending_reconciliation)。
 // reportedOutput = 上游报告 OutputTokens;reasoningTokens = 其中隐藏推理 token(o1/o3,
@@ -67,13 +72,6 @@ func crossCheckAudit(reportedOutput, reasoningTokens, estimated, estimatedReason
 		}
 	}
 	return confidence, pending
-}
-
-func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
-	outcome := ex.executeNonStreamingAttempt(w)
-	if outcome.Success != nil {
-		writeAttemptSuccess(w, outcome)
-	}
 }
 
 func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
@@ -184,7 +182,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
 			if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
 				ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
-				syncL2SizeMetrics(ex.d.ResponseCache)
+				cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 			}
 		}
 	}
@@ -229,6 +227,7 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 		Draft:               draft,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
+		BillingEffect:       ex.d.effectiveBillingEffect(),
 	}
 }
 

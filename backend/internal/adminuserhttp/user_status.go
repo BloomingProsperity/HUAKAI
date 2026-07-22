@@ -37,7 +37,7 @@ func NewPostgresUserStatusStore(pool *pgxpool.Pool) userStatusSetter {
 }
 
 func (s postgresUserStatusStore) SetUserStatusForTenant(ctx context.Context, tenantID, userID int64, status string) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE users SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL`, tenantID, userID, status)
+	tag, err := s.pool.Exec(ctx, `UPDATE users SET status=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2 AND principal_kind='human' AND deleted_at IS NULL`, tenantID, userID, status)
 	if err != nil {
 		return 0, err
 	}

@@ -6,9 +6,6 @@ import (
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
-// catalogListLimit 是单次列出目录条目上限(防超大读)。
-const catalogListLimit = 200
-
 // ---- provider_catalog_list ------------------------------------------------
 
 // ProviderCatalogListDeps 是 provider_catalog_list 工具的只读依赖:List 包装
@@ -24,18 +21,23 @@ func ProviderCatalogListSpec(deps ProviderCatalogListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolProviderCatalogList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's upstream provider catalog: code, display name, upstream protocol, enabled, created-at. Lets you answer 'which provider types have I onboarded'. READ ONLY.",
+		Description:  "分页列出当前租户的上游供应商目录、协议和启用状态；只读。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{},
+		InputSchema:  ObjectSchema(paginationProperties(nil)),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
-			rows, err := deps.List(ctx, admindb.ListAdminProvidersByTenantParams{TenantID: req.TenantID, PageOffset: 0, PageLimit: catalogListLimit})
+			limit, offset, err := pageArgs(req.Args)
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, err := deps.List(ctx, admindb.ListAdminProvidersByTenantParams{TenantID: req.TenantID, PageOffset: int32(offset), PageLimit: int32(limit + 1)})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			enabledCount := 0
 			for _, p := range rows {
@@ -48,6 +50,7 @@ func ProviderCatalogListSpec(deps ProviderCatalogListDeps) ToolSpec {
 				"provider_count": len(rows),
 				"enabled_count":  enabledCount,
 				"items":          items,
+				"page":           page,
 			}}, nil
 		},
 	}
@@ -79,18 +82,23 @@ func ChannelCatalogListSpec(deps ChannelCatalogListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolChannelCatalogList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's channel catalog: pool group id, name, failover status codes, enabled, created-at. Lets you answer 'what channels have I defined and which pool they belong to'. READ ONLY.",
+		Description:  "分页列出当前租户的渠道目录、所属池、故障切换状态码和启用状态；只读。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{},
+		InputSchema:  ObjectSchema(paginationProperties(nil)),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
-			rows, err := deps.List(ctx, admindb.ListAdminChannelsByTenantParams{TenantID: req.TenantID, PageOffset: 0, PageLimit: catalogListLimit})
+			limit, offset, err := pageArgs(req.Args)
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, err := deps.List(ctx, admindb.ListAdminChannelsByTenantParams{TenantID: req.TenantID, PageOffset: int32(offset), PageLimit: int32(limit + 1)})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			enabledCount := 0
 			for _, c := range rows {
@@ -103,6 +111,7 @@ func ChannelCatalogListSpec(deps ChannelCatalogListDeps) ToolSpec {
 				"channel_count": len(rows),
 				"enabled_count": enabledCount,
 				"items":         items,
+				"page":          page,
 			}}, nil
 		},
 	}

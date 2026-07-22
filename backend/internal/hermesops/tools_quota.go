@@ -14,9 +14,6 @@ type QuotaPolicyListDeps struct {
 	List func(ctx context.Context, params dbquota.ListQuotaPoliciesForAdminParams) ([]dbquota.QuotaPolicy, error)
 }
 
-// quotaPolicyListLimit 是单次列出配额策略上限(防超大读)。
-const quotaPolicyListLimit = 200
-
 // QuotaPolicyListSpec 构建只读 quota_policy_list 工具:列出本租户的配额策略及配置,让 Hermes 能回答
 // "我的配额怎么配的、作用在什么 scope/metric、限多少、什么窗口、是否启用"。租户 scope 取自已鉴权
 // req.TenantID(ListQuotaPoliciesForAdmin 按 tenant_id 过滤)。
@@ -29,22 +26,27 @@ func QuotaPolicyListSpec(deps QuotaPolicyListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolQuotaPolicyList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's quota policies and their config: scope (kind/id), metric, window kind+seconds, limit + burst value, mode, priority, enabled, valid-from/until. Lets you answer 'how is my quota configured, on whom, what limit'. READ ONLY.",
+		Description:  "分页列出当前租户的配额策略、作用范围、窗口、限额、优先级和生效时间；只读。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{},
+		InputSchema:  ObjectSchema(paginationProperties(nil)),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
+			limit, offset, err := pageArgs(req.Args)
+			if err != nil {
+				return ToolResult{}, err
+			}
 			rows, err := deps.List(ctx, dbquota.ListQuotaPoliciesForAdminParams{
 				TenantID:   req.TenantID,
-				PageOffset: 0,
-				PageLimit:  quotaPolicyListLimit,
+				PageOffset: int32(offset),
+				PageLimit:  int32(limit + 1),
 			})
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			enabledCount := 0
 			for _, p := range rows {
@@ -57,6 +59,7 @@ func QuotaPolicyListSpec(deps QuotaPolicyListDeps) ToolSpec {
 				"policy_count":  len(rows),
 				"enabled_count": enabledCount,
 				"items":         items,
+				"page":          page,
 			}}, nil
 		},
 	}

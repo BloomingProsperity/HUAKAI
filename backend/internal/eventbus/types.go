@@ -20,11 +20,9 @@ const (
 type HandlerID string
 
 const (
-	HandlerBillingPersister    HandlerID = "billing_persister"
-	HandlerAuditLogger         HandlerID = "audit_logger"
-	HandlerReconciliationCheck HandlerID = "reconciliation_check"
-	HandlerAccountHealthProbe  HandlerID = "account_health_probe"
-	HandlerMetricsAggregator   HandlerID = "metrics_aggregator"
+	HandlerBillingPersister   HandlerID = "billing_persister"
+	HandlerAuditLogger        HandlerID = "audit_logger"
+	HandlerAccountHealthProbe HandlerID = "account_health_probe"
 )
 
 type Tier string

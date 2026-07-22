@@ -293,7 +293,7 @@ func configFromDB(row dbmoderation.ModerationConfig) ModerationConfig {
 	return cfg
 }
 
-func moderationLogFromDB(row dbmoderation.ModerationLog) ModerationLog {
+func moderationLogFromDB(row dbmoderation.ListModerationLogRow) ModerationLog {
 	log := ModerationLog{
 		ID:               row.ID,
 		TenantID:         row.TenantID,

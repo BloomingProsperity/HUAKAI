@@ -71,6 +71,7 @@ JOIN user_balances AS balance
 WHERE claim.tenant_id = $1
   AND claim.id = $2
   AND claim.status = 'committed'
+  AND claim.billing_effect = 'user_charge'
   AND claim.actual_cost > 0
   AND hold.state = 'captured'
   AND hold.captured > 0`, req.TenantID, req.ClaimID).Scan(&refundableCost)
@@ -135,16 +136,17 @@ func (s *DefaultSettler) RefundInTx(ctx context.Context, tx pgx.Tx, req RefundRe
 
 	// 幂等键锁固定在 claim 行锁之前；同键和同 claim 的并发请求都按同一顺序收敛。
 	var (
-		fingerprint string
-		status      string
-		actualCost  decimal.Decimal
-		userID      int64
+		fingerprint  string
+		status       string
+		actualCost   decimal.Decimal
+		userID       int64
+		storedEffect string
 	)
 	if err := tx.QueryRow(ctx, `
-SELECT request_fingerprint, status, actual_cost, user_id
+SELECT request_fingerprint, status, actual_cost, user_id, billing_effect
 FROM billing_ledger_claims
 WHERE tenant_id = $1 AND id = $2
-FOR UPDATE`, req.TenantID, req.ClaimID).Scan(&fingerprint, &status, &actualCost, &userID); err != nil {
+FOR UPDATE`, req.TenantID, req.ClaimID).Scan(&fingerprint, &status, &actualCost, &userID, &storedEffect); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrClaimNotReserving
 		}
@@ -175,6 +177,13 @@ LIMIT 1`, req.TenantID, req.AuditRequestID, req.ClaimID).Scan(&legacyEventID); e
 
 	if status != "committed" {
 		return nil, ErrClaimNotReserving
+	}
+	billingEffect, err := NormalizeBillingEffect(BillingEffect(storedEffect))
+	if err != nil {
+		return nil, fmt.Errorf("billing: stored billing effect for refund claim %d: %w", req.ClaimID, err)
+	}
+	if billingEffect != BillingEffectUserCharge {
+		return nil, ErrRefundNoCapturedCharge
 	}
 	refundMicros := req.AmountMicroUSD
 	if refundMicros == 0 {
@@ -280,6 +289,7 @@ WHERE tenant_id = $1 AND claim_id = $2 AND event_type = 'reconciliation_appended
 		StreamState:      StreamStatePartial.DBValue(),
 		Fingerprint:      fingerprint,
 		AuditRequestID:   nullableString(req.AuditRequestID),
+		BillingEffect:    string(BillingEffectUserCharge),
 	}
 	row, err := s.q.WithTx(tx).InsertBillingEvent(ctx, refundEventParams)
 	if err != nil {
