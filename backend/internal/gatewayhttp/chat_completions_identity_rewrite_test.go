@@ -276,3 +276,19 @@ func TestIdentityRewrite_BodyCloak_反转号注入system三块(t *testing.T) {
 		t.Fatalf("original system must sink to messages, got %s", out)
 	}
 }
+
+// TestOfficialDirect_AllFamiliesSkipRewrite OfficialDirect 对任意协议族跳过 body 改写。
+func TestOfficialDirect_AllFamiliesSkipRewrite(t *testing.T) {
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_REWRITE", "true")
+	t.Setenv("HUAKAI_MIMICRY_IDENTITY_SECRET", "fixed-secret-for-test")
+	input := []byte(`{"model":"claude-3-5-sonnet","system":"keep-me","messages":[{"role":"user","content":"hi"}]}`)
+	for _, family := range []string{"anthropic_messages", "anthropic_claude_session", "openai_chat"} {
+		ex := newIdentityRewriteExecFamily("acc-uuid", family)
+		ex.officialDirect = true
+		got := chatpipe.OutboundDispatchBody(true, family, input, ex.identityRewrite)
+		if !bytes.Equal(got, input) {
+			t.Fatalf("family %s OfficialDirect must not rewrite\ngot %s", family, got)
+		}
+	}
+}

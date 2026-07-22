@@ -16,14 +16,13 @@ import (
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
 	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
-	"github.com/BloomingProsperity/HUAKAI/internal/claudecodecloak"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
-	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -127,52 +126,26 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 	}
 }
 
-// identityRewrite 对 dispatch 专用 body 施加出站伪装:
-//  1. 非官方客户端 + 反转号 → Claude Code system 三块 body 伪装(claudecodecloak)
-//  2. metadata.user_id 身份改写(mimicryidentity, 仅 anthropic messages 形态)
-//
-// OfficialDirect 路径由 OutboundDispatchBody 跳过本函数(claude_session 族)。
-// 全部 fail-open:任一步失败或未满足条件时返回当前 body 拷贝,不阻断请求。
+// identityRewrite 是出站 body 改写的薄委托：策略与变换集中在 outboundbody。
+// OfficialDirect 时 BuildPlan.SkipAll；否则按需 system 三块 + user_id。
 func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 	if ex == nil || ex.r == nil {
 		return dispatchBody
 	}
-	body := dispatchBody
-	cliVer := mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent())
 	family := ""
 	if ex.resolved.ProtocolFamily != "" {
 		family = ex.resolved.ProtocolFamily
 	}
-	// Body 三块伪装:反转 Anthropic 族 + 非官方直发 + 开关默认开。
-	if !ex.officialDirect && claudecodecloak.Enabled() && isAnthropicMessagesFamily(family) {
-		if officialclient.IsReverseAccountType(ex.accInfo.AccountType) {
-			res := claudecodecloak.Apply(body, claudecodecloak.Options{CLIVersion: cliVer})
-			if len(res.Body) > 0 {
-				body = res.Body
-			}
-		}
-	}
-	// metadata.user_id:仅 anthropic_messages / claude_session 上游形态。
-	if !isAnthropicMessagesFamily(family) {
-		return body
-	}
-	return mimicryidentity.RewriteForDispatch(
-		body,
-		ex.accInfo.AccountID,
-		ex.accInfo.ExternalAccountID, // 空 → fail-open 不改写
-		ex.accInfo.AccountType,       // scope 硬守卫:仅 oauth/session 反转号伪装,apikey/bedrock 永不
-		ex.clientSessionID,           // 参与 session 派生,避免同账号跨会话共用 upstream session
-		cliVer,
-	)
-}
-
-func isAnthropicMessagesFamily(family string) bool {
-	switch family {
-	case "anthropic_messages", "anthropic_claude_session":
-		return true
-	default:
-		return false
-	}
+	plan := outboundbody.BuildPlan(outboundbody.Input{
+		OfficialDirect:    ex.officialDirect,
+		ProtocolFamily:    family,
+		AccountType:       ex.accInfo.AccountType,
+		AccountID:         ex.accInfo.AccountID,
+		ExternalAccountID: ex.accInfo.ExternalAccountID,
+		ClientSessionID:   ex.clientSessionID,
+		CLIVersion:        mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
+	})
+	return outboundbody.Apply(dispatchBody, plan)
 }
 
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {

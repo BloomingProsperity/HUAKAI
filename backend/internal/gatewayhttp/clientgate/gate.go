@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/claudecodecloak"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/codexclientaccess"
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
@@ -77,9 +77,9 @@ func DecideWithBody(ctx context.Context, getter SettingsGetter, accountType, pla
 		if strict.Decision == officialclient.DirectDecisionOfficialDirect {
 			return Result{Decision: DecisionOfficialDirect, Body: strict.Body}
 		}
-		// 兼容伪装模式:放行第三方,body 在 identityRewrite 中改成 CLI 形态。
-		if claudecodecloak.Enabled() {
-			return Result{Decision: DecisionAllow, Reason: "claude_oauth_body_cloak"}
+		// 兼容伪装模式:放行第三方;出站 body 由 outboundbody 统一改写。
+		if outboundbody.ThirdPartyAdmissionAllowed() {
+			return Result{Decision: DecisionAllow, Reason: outboundbody.ReasonAllowBodyCloak}
 		}
 		return Result{Decision: DecisionReject, Reason: ReasonOfficialClientRequired}
 	}

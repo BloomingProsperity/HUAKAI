@@ -14,7 +14,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
-	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
 const (
@@ -32,9 +31,11 @@ var clientSessionIDHeaderPriority = []string{
 
 var openAIMetadataUserIDSessionSuffixRE = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
 
-// OutboundDispatchBody 保证严格官方 session 请求不经过 JSON 改写，并返回独立切片。
+// OutboundDispatchBody 保证 OfficialDirect 请求不经过 JSON 改写（任意协议族），
+// 并返回独立切片。非官方直发走 fallback（通常为 outboundbody.Apply 委托）。
 func OutboundDispatchBody(officialDirect bool, family string, body []byte, fallback func([]byte) []byte) []byte {
-	if officialDirect && family == registrydefault.ProtocolAnthropicClaudeSession {
+	_ = family // 保留参数兼容调用方；Skip 不再依赖协议族。
+	if officialDirect {
 		return bytes.Clone(body)
 	}
 	return fallback(body)

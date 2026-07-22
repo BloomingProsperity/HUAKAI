@@ -9,6 +9,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/codexclientaccess"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 )
 
 func reqWithUA(ua string) *http.Request {
@@ -52,7 +53,7 @@ func TestDecideWithBodyAnthropicThirdPartyBodyCloak(t *testing.T) {
 
 	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "")
 	got := DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, body)
-	if got.Decision != DecisionAllow || got.Reason != "claude_oauth_body_cloak" {
+	if got.Decision != DecisionAllow || got.Reason != outboundbody.ReasonAllowBodyCloak {
 		t.Fatalf("body cloak on: result=%+v want allow+claude_oauth_body_cloak", got)
 	}
 

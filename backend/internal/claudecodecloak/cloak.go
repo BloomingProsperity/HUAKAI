@@ -72,19 +72,14 @@ func Apply(body []byte, opts Options) Result {
 	if cliVer == "" {
 		cliVer = DefaultCLIVersion
 	}
-	fp := fingerprint(body, cliVer)
+	model := rawString(root["model"])
+	fp := fingerprint(cliVer, model)
 	billing := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli;", cliVer, fp)
 
-	systemBlocks := []map[string]any{
-		{"type": "text", "text": billing},
-		{"type": "text", "text": identityPrompt},
-		{
-			"type": "text",
-			"text": expansionPrompt,
-			"cache_control": map[string]any{
-				"type": "ephemeral",
-			},
-		},
+	systemBlocks := []textBlock{
+		{Type: "text", Text: billing},
+		{Type: "text", Text: identityPrompt},
+		{Type: "text", Text: expansionPrompt, CacheControl: &cacheControl{Type: "ephemeral"}},
 	}
 	sysRaw, err := json.Marshal(systemBlocks)
 	if err != nil {
@@ -199,25 +194,28 @@ func prependInstructionMessages(root map[string]json.RawMessage, systemText stri
 	return root, true
 }
 
-// fingerprint 从 body+版本派生短 hex，写入 billing 归因；确定性、无密钥、仅用于形态对齐。
-func fingerprint(body []byte, cliVersion string) string {
+type textBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
+}
+
+// fingerprint 从 CLI 版本 + model 派生短 hex，写入 billing 归因；确定性、无密钥。
+func fingerprint(cliVersion, model string) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(cliVersion))
 	_, _ = h.Write([]byte{0})
-	// 只用稳定长度与前缀，避免整 body 逐 token 变化导致归因每轮剧变；取 model 字段优先。
-	model := gjsonModel(body)
 	_, _ = h.Write([]byte(model))
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum[:4])
 }
 
-func gjsonModel(body []byte) string {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(body, &root); err != nil {
-		return ""
-	}
-	raw, ok := root["model"]
-	if !ok {
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
 		return ""
 	}
 	var s string
