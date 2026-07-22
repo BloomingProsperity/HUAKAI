@@ -531,9 +531,14 @@ def _read_usage_report(path: Path) -> UsageReport:
         if path.stat().st_size > 65_536:
             return UsageReport(total_tokens=0, completed=None, failed=False)
         value = json.loads(path.read_text(encoding="utf-8"))
-        total = int(value.get("total_tokens", 0))
-    except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+    except (OSError, json.JSONDecodeError):
         return UsageReport(total_tokens=0, completed=None, failed=False)
+    if not isinstance(value, dict):
+        return UsageReport(total_tokens=0, completed=None, failed=False)
+    try:
+        total = int(value.get("total_tokens") or 0)
+    except (ValueError, TypeError):
+        total = 0
     completed_value = value.get("completed")
     return UsageReport(
         total_tokens=max(total, 0),

@@ -304,7 +304,7 @@ class OfficialRunnerTests(unittest.TestCase):
         async def executor(spec):
             usage_path = Path(spec.argv[spec.argv.index("--usage-file") + 1])
             usage_path.write_text(
-                '{"total_tokens":0,"completed":false,"failed":false}',
+                '{"total_tokens":null,"completed":false,"failed":true}',
                 encoding="utf-8",
             )
             return official_runner.ProcessResult(
