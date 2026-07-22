@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -368,13 +369,25 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		return body
 	}
 	if ex.officialDirect && ex.resolved.ProtocolFamily == "anthropic_claude_session" {
+		out := body
 		// 官方直发默认字节等价;仅当 alias≠上游 model 时才改写 model(否则上游未知模型)。
-		if strings.TrimSpace(ex.upstreamModelID) != "" && !bodymodel.ModelMatches(body, ex.upstreamModelID) {
-			if rewritten, ok := bodymodel.RewriteModel(body, ex.upstreamModelID); ok {
-				return rewritten
+		if strings.TrimSpace(ex.upstreamModelID) != "" && !bodymodel.ModelMatches(out, ex.upstreamModelID) {
+			if rewritten, ok := bodymodel.RewriteModel(out, ex.upstreamModelID); ok {
+				out = rewritten
 			}
 		}
-		return body
+		// Anthropic OAuth 反转号硬约束:高级模型(Sonnet/Opus)要求 system 头部带 Claude Code
+		// 官方身份前缀,缺则上游以误导性 429 rate_limit_error 拒(Haiku 宽松不校验会掩盖)。与
+		// OAuthSessionAdapter 已自动补的 Claude Code 静态头对齐,这里对官方直发的原始 body 幂等
+		// EnsurePrefix 注入(真 Claude Code 请求已带前缀→字节不变;反转用户普通请求缺前缀→补上)。
+		// 直接改原始 body、仍走字节直通,不引 body controls(官方直发路禁 body controls)。
+		if res, err := gateway.RewriteSystem(out, gateway.SystemRewritePlan{
+			PrefixText: anthropic.ClaudeCodeSystemPrompt,
+			Mode:       gateway.SystemRewriteEnsurePrefix,
+		}); err == nil && res.Applied {
+			out = res.Body
+		}
+		return out
 	}
 	out := body
 	// dify_chat 的出站 body 没有 model 字段(Dify 由 app token 决定模型,

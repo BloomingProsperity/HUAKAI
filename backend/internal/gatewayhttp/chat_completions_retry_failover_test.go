@@ -660,11 +660,13 @@ func (f *claudeSessionQuotaFinalizer) CommitCacheHit(_ context.Context, req quot
 }
 
 func claudeSessionOfficialBody() string {
+	// 真实 Claude Code 官方直发请求 system 头部首块即官方身份前缀;反转号出口对该前缀做
+	// EnsurePrefix 幂等注入,已带前缀故字节等价(下方 raw 直发 byte-equal 断言据此成立)。
 	return `{
   "model":"claude-sonnet",
   "max_tokens":8,
   "stream":false,
-  "system":[{"type":"text","text":"supported CLI"}],
+  "system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"supported CLI"}],
   "metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account_00000000-1111-2222-3333-444444444444_session_11111111-2222-3333-4444-555555555555"},
   "messages":[{"role":"user","content":"hi"}]
 }`
