@@ -11,7 +11,8 @@ SELECT
     id,
     request_fingerprint,
     status,
-    attempt_seq
+    attempt_seq,
+    billing_effect
 FROM billing_ledger_claims
 WHERE tenant_id = $1 AND api_key_id = $2 AND idempotency_key = $3
 FOR UPDATE;
@@ -33,9 +34,10 @@ INSERT INTO billing_ledger_claims (
     tenant_id, idempotency_key, request_fingerprint,
     api_key_id, user_id, logical_request_id, endpoint_family,
     requested_model, pooling_group_id, billing_policy_version, request_class,
-    predicted_cost, currency_code, lease_expires_at
+    predicted_cost, currency_code, lease_expires_at, billing_effect
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    COALESCE(NULLIF(sqlc.arg(billing_effect)::text, ''), 'user_charge')
 )
 RETURNING id, status, reserved_at, attempt_seq;
 

@@ -1,70 +1,58 @@
 #!/usr/bin/env bash
-# quality-gate.sh — block NEW staticcheck findings or NEW deadcode vs committed baseline.
-# Ratchet: existing findings grandfathered (baseline files); only NEW issues fail CI.
-#
-# baseline 只能下降(2026-06-25 加固,对应 renew 审查 S1「质量门允许 --update 洗 baseline」):
-#   - SC_MAX/DC_MAX 是 baseline 行数硬上限常量(=当前提交值)。baseline 一旦膨胀超过上限,
-#     正常 gate 直接失败 —— 杜绝用 `--update` 把新债洗进基线绕过门禁。
-#   - 上限只能在本脚本里显式调低(清债后);若确需调高,必须在 PR diff 里显式改这两个常量
-#     (= Owner 可见可审的批准面),并在 docs/process/reviews/DEFERRED-*.md 记录理由。
-#   - `--update` 在 CI 中被拒;本地也必须显式 HUAKAI_ALLOW_BASELINE_REWRITE=1 才能重写,
-#     且重写【不】自动调高上限 —— 膨胀的重写仍会被上限拦下,逼人要么修、要么显式改常量。
-# Regenerate baseline after a real cleanup(本地):
-#   HUAKAI_ALLOW_BASELINE_REWRITE=1 scripts/quality-gate.sh --update
+# 质量棘轮：阻止新增 staticcheck 问题和新增真死代码。
+# deadcode 同时分析默认和带标签的测试形态，只保留所有形态都不可达的交集。
+# 基线只能下降；本地完成真实清理后可显式执行：
+# HUAKAI_ALLOW_BASELINE_REWRITE=1 scripts/quality-gate.sh --update
 set -uo pipefail
 cd "$(cd "$(dirname "$0")/.." && pwd)" # -> backend/
 export GOFLAGS=-buildvcs=false
 SC_BASE="scripts/staticcheck-baseline.txt"
 DC_BASE="scripts/deadcode-baseline.txt"
-# baseline 行数硬上限(只能在此显式调低;调高 = Owner-gated,见文件头注释)。
-# 2026-06-25 Owner 拍板「re-baseline 吸收+装锁+排清债」:把已红一阵、被 PR 无视合并的存量
-# 270 项新发现一次性吸收进 baseline(staticcheck 93→174 / deadcode 787→907),恢复 CI 真跑
-# go test;上限锁在吸收后的值防再膨胀;存量债排进 DEFERRED 排清(见 docs/process/reviews/)。
-# 2026-06-25 DEFERRED 批1 清债:修 gemini(SA4017/SA4006/ST1005)+ subscription newExpires(SA4006×2)
-# + sql/embed.go 注释假阳(SA9009),staticcheck baseline 174→168,上限同步调低。
-# 2026-06-25 DEFERRED 批2 清债:SA1012 nil ctx(error_rule_eval 5 处惰性 nil→context.TODO();
-# clientid/postgres 有意 nil 测试 //nolint 改 //lint:ignore SA1012)+ ST1018 把零宽字符 ZWSP
-# 字面改用 backslash-u200b 转义(obfuscate 生产 + 2 测试),baseline 168->162,上限同步调低。
-# 2026-06-25 DEFERRED 批3 清债:SA4000 自反比较 ×6(均非笔误,有状态 budget.Allow/cachedSessionID
-# 或确定性守卫 auditLedgerAdvisoryLockKey/pickIndex)改「两次调用各存变量再比」,baseline 162->156,上限同步调低。
-# 2026-06-26 删 referral_reward 平行死实现(community/invitation/referral_reward_store+config.go,零生产消费的
-# 休眠双花地雷):连带移除其 staticcheck findings(156->94)与 deadcode 条目(907->873),两上限同步调低。
-# 2026-06-29 订阅自动续费 worker(money,默认关 KNOB):Store 接口新增 ListAutoRenewDue/
-# TryAutoRenewSubscription,内存实现 memoryStore 经 `var _ Store` 编译断言被强制实现这两个方法,
-# 但 memoryStore 是 test-fake、从生产 main 不可达 → deadcode 必然命中(与已收录的 31 个 memoryStore
-# 兄弟方法同类,删不掉/不接生产)。按本文件头规定的 deferral 正路 +2 进 baseline 并显式调高 DC_MAX
-# 873->875(Owner 可见可审);非死代码堆积,是接口契约的内存实现。
-# 2026-07-02 role 制单登录共享测试脚手架 internal/adminsessionauthtest/support.go:该包被 10 个
-# 写分级 _test.go 真调用(Resolver/Status 等),但 `deadcode ./...` 不带 -test 看不到跨包测试引用
-# → 必然误命中(与上述 memoryStore test-fake 同类)。全量重算基线净 +4(+5 脚手架项,-1 voucher
-# WithBurstLimiter 已不再死),DC_MAX 875->879(Owner 可见可审);非死代码堆积,是测试专用脚手架。
-# 2026-07-12 B6/B7 收口清债+补录:真死码删除(vertexsa cache 层未接线——adapter 直用 Mint、
-# email 枚举助手零消费者、credentialworker 测试专用 wrapper 改由测试直调底层);补录 3 项——
-# logsink WithBatch/WithQueueSize 被 3 个 _test.go 真调用(deadcode 不带 -test 看不到,与
-# memoryStore/adminsessionauthtest 先例同类),antigravity validateRefreshOAuthConfig 属
-# env-gated 车道家族(全部调用者已在 baseline)。DC_MAX 879->882(Owner 可见可审)。
-# 2026-07-17 删除零调用 Codex CLI 通用导入包装器，专用解析入口已接入生产账号导入链；
-# 同时删除从未进入生产依赖图且带 clean-room 风险的 Grok 网页 session 实现及其 6 条 deadcode 豁免（codex 侧）。
-# 2026-07-14 绑定三字段 arc 收口清债+fallback_class 清债（#252 侧）：删真死码+补录测试专用引用。
-# 2026-07-17 合并 codex 扇形与 #252 后,两侧删改叠加,基线文件净收紧;上限=合并后基线真实行数
-# (deadcode-baseline.txt=804 / staticcheck-baseline.txt=93,棘轮只降)。
-# 2026-07-17 账号运营台统一收官:删冗余 poolaccountadmin 替代 handler 包(35 处死代码清零,
-# accountadvanced 统一字段契约改由活 handler 引用),staticcheck 93->92 棘轮收紧;deadcode 净 +2
-# = #252 C②/C③ 模型管理路由 modeladminhttp/modelroutingadminhttp 的 NewRouter(被各自 routes_test.go
-# 真调用,deadcode 不带 -test 看不到跨测试引用而误命中,与 memoryStore/logsink/adminsessionauthtest
-# 先例同类;生产入口是 MountRoutes),DC_MAX 804->806(Owner 可见可审;非死代码堆积,是测试专用构造器)。
-SC_MAX=77
-# 2026-07-19 全局接线审计删除零生产入口的旧 obs 平行读模型及其专用 SQL，棘轮同步收紧 806->799。
-# 2026-07-20 账号转 API 统一刷新链收口：删除七套零生产入口的厂商私有刷新器及其
-# 重复凭据事务适配层，保留统一 credentialworker 模式适配器；全量重算后
-# staticcheck 92→77、deadcode 787→697，两条棘轮同步收紧。
-DC_MAX=697
+# 基线行数硬上限只能随清债调低；调高必须在变更中显式说明原因。
+SC_MAX=0
+DC_MAX=0
 GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
-command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@latest >/dev/null 2>&1
+command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@v0.47.0 >/dev/null 2>&1
+
+# 常规集成、调试、内嵌前端与真实上游测试可能使用不同的测试支架。
+# 生图与视频的构建约束互斥，所以额外保留纯视频形态。
+DC_ALL_TAGS="integration_pg,integration_redis,debug,embed,smoke,e2e_concurrency,e2e_upstream,e2e_chatgpt_session,e2e_codex_live,e2e_gemini_video_live,e2e_grok_live,e2e_openai_image_live,e2e_grok_image_live,e2e_grok_video_live,live_upstream"
+DC_VIDEO_TAGS="e2e_grok_video_live,e2e_gemini_video_live"
+QUALITY_CACHE_ROOT="${HUAKAI_QUALITY_GATE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/huakai-quality-gate}"
+mkdir -p "$QUALITY_CACHE_ROOT"
+QUALITY_WORKDIR="$(mktemp -d "$QUALITY_CACHE_ROOT/run.XXXXXX")"
+trap 'rm -rf "$QUALITY_WORKDIR"' EXIT
+
 # normalize: strip :line:col so the baseline tolerates code movement; drop VCS/compile noise
 norm_sc() { "$GOBIN/staticcheck" ./... 2>/dev/null | grep -vE "error obtaining VCS status|buildvcs|\(compile\)$" | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
-norm_dc() { "$GOBIN/deadcode" ./... 2>/dev/null | sed -E "s/:[0-9]+:[0-9]+:/: /" | sort -u; }
+run_dc_profile() {
+  local name="$1"
+  shift
+  local raw="$QUALITY_WORKDIR/$name.raw"
+  local normalized="$QUALITY_WORKDIR/$name.normalized"
+  local errors="$QUALITY_WORKDIR/$name.stderr"
+  # deadcode 找到不可达符号时以非零退出码报告诊断；这不是分析失败。
+  # 只有 stderr 有真实报错时才中止，随后仍要把三种构建形态的诊断求交集。
+  if ! "$GOBIN/deadcode" -test "$@" ./... >"$raw" 2>"$errors" && [ -s "$errors" ]; then
+    echo "FAIL: deadcode 形态 $name 编译失败：" >&2
+    sed 's/^/  /' "$errors" >&2
+    return 1
+  fi
+  sed -E "s/:[0-9]+:[0-9]+:/: /" "$raw" | sort -u >"$normalized"
+}
+norm_dc() {
+  run_dc_profile default || return 1
+  run_dc_profile all-tags -tags="$DC_ALL_TAGS" || return 1
+  run_dc_profile video-tags -tags="$DC_VIDEO_TAGS" || return 1
+  comm -12 \
+    <(comm -12 "$QUALITY_WORKDIR/default.normalized" "$QUALITY_WORKDIR/all-tags.normalized" | sort -u) \
+    "$QUALITY_WORKDIR/video-tags.normalized"
+}
+
+if ! norm_dc >"$QUALITY_WORKDIR/deadcode-current.txt"; then
+  exit 2
+fi
 
 if [ "${1:-}" = "--update" ]; then
   # CI 中一律拒绝重写 baseline(GitHub Actions 自动设 CI=true),杜绝在流水线里洗债。
@@ -78,7 +66,7 @@ if [ "${1:-}" = "--update" ]; then
     exit 2
   fi
   norm_sc >"$SC_BASE"
-  norm_dc >"$DC_BASE"
+  cp "$QUALITY_WORKDIR/deadcode-current.txt" "$DC_BASE"
   sc_n=$(wc -l <"$SC_BASE")
   dc_n=$(wc -l <"$DC_BASE")
   echo "updated baselines: staticcheck=$sc_n deadcode=$dc_n"
@@ -109,7 +97,7 @@ if [ -n "$new_sc" ]; then
   echo "$new_sc" | sed "s/^/  + /"
   fail=1
 else echo "OK staticcheck: no new findings (baseline $sc_n)"; fi
-new_dc=$(comm -23 <(norm_dc) <(sort -u "$DC_BASE" 2>/dev/null))
+new_dc=$(comm -23 "$QUALITY_WORKDIR/deadcode-current.txt" <(sort -u "$DC_BASE" 2>/dev/null))
 if [ -n "$new_dc" ]; then
   echo "FAIL: new deadcode (not in baseline):"
   echo "$new_dc" | sed "s/^/  + /"

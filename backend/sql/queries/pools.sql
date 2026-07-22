@@ -82,7 +82,8 @@ FROM pool_groups
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
-LIMIT sqlc.arg(limit_count)::integer;
+LIMIT sqlc.arg(limit_count)::integer
+OFFSET sqlc.arg(page_offset)::integer;
 
 -- name: UpdatePool :one
 UPDATE pool_groups

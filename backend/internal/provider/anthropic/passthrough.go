@@ -151,6 +151,13 @@ const (
 	claudeStainlessArch           = "arm64"
 )
 
+// ClaudeCodeSystemPrompt 是官方 Claude Code CLI 固定放在 system 头部的第一行身份句
+// (官方 2.1.211 二进制实证)。Anthropic 对 claude_ai_oauth 订阅 token 的高级模型
+// (Sonnet/Opus)推理【强制】校验该前缀:缺失即返回误导性的 429 rate_limit_error;
+// Haiku 宽松不校验。故反转订阅号出口除自动补全 Claude Code 静态头外,还须保证请求
+// system 头部带此前缀,是 Claude Code 身份伪装的组成部分而非可选风格。
+const ClaudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
+
 func applyClaudeDeviceProfile(h http.Header, p claudeDeviceProfile) {
 	h.Set("User-Agent", p.userAgent)
 	h.Set("X-Stainless-Package-Version", p.packageVersion)

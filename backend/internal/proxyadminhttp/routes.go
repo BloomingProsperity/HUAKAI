@@ -74,13 +74,6 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.Post("/{id}/test", newTestHandler(d))
 }
 
-// NewRouter 返回一个独立路由器,代理管理端点挂在其根路径上。
-func NewRouter(d Deps) http.Handler {
-	r := chi.NewRouter()
-	MountRoutes(r, d)
-	return r
-}
-
 // proxyResponse 是不含凭据的读取 DTO。它刻意没有 auth_secret 字段:
 // 加密的凭据只写,绝不能离开 service。
 type proxyResponse struct {

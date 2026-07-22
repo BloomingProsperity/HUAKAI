@@ -105,16 +105,6 @@ func (b *RoutingReasonBuilder) Wait(plan *WaitPlan) {
 	b.reason.WaitAction = &RoutingReasonWaitAction{EnteredQueueAt: time.Now().UTC(), ExitReason: "queued"}
 }
 
-func (b *RoutingReasonBuilder) Merge(other *RoutingReasonBuilder) {
-	if other == nil {
-		return
-	}
-	for reason, count := range other.reason.CandidateCountsByExclusion {
-		b.reason.CandidateCountsByExclusion[reason] += count
-	}
-	b.reason.PerRequestExclusionSummary = append(b.reason.PerRequestExclusionSummary, other.reason.PerRequestExclusionSummary...)
-}
-
 func (b *RoutingReasonBuilder) JSON() []byte {
 	out, err := json.Marshal(b.reason)
 	if err != nil {

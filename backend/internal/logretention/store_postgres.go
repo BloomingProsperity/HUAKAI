@@ -12,9 +12,10 @@ import (
 )
 
 type tableSpec struct {
-	name          string
-	timeColumn    string
-	fixedCategory string
+	name                  string
+	timeColumn            string
+	fixedCategory         string
+	requiredNotNullColumn string
 }
 
 var ordinaryLogTables = []tableSpec{
@@ -24,6 +25,8 @@ var ordinaryLogTables = []tableSpec{
 	{name: "channel_health_audit_events", timeColumn: "ingested_at", fixedCategory: "recovery"},
 	{name: "credential_audit_events", timeColumn: "ingested_at", fixedCategory: "security"},
 	{name: "hermes_audit_events", timeColumn: "ingested_at", fixedCategory: "operation"},
+	{name: "hermes_tool_calls", timeColumn: "ingested_at"},
+	{name: "hermes_mutation_recovery", timeColumn: "ingested_at", fixedCategory: "recovery", requiredNotNullColumn: "audit_committed_at"},
 	{name: "oauth_refresh_audit_events", timeColumn: "ingested_at", fixedCategory: "security"},
 	{name: "pool_routing_audit_events", timeColumn: "ingested_at", fixedCategory: "operation"},
 	{name: "rate_limit_audit_events", timeColumn: "ingested_at", fixedCategory: "recovery"},
@@ -67,6 +70,15 @@ func (s *postgresStore) deleteExpiredBatch(ctx context.Context, spec tableSpec, 
 	tableName := pgx.Identifier{spec.name}.Sanitize()
 	timeColumn := pgx.Identifier{spec.timeColumn}.Sanitize()
 	categoryExpression := "target." + pgx.Identifier{"log_category"}.Sanitize()
+	retentionGuard := ""
+	if spec.requiredNotNullColumn != "" {
+		retentionGuard = " AND target." + pgx.Identifier{spec.requiredNotNullColumn}.Sanitize() + " IS NOT NULL"
+	}
+	queryArgs := []any{"huakai.global-log-retention." + spec.name, cutoff.UTC(), limit}
+	if spec.fixedCategory != "" {
+		categoryExpression = "$4::text"
+		queryArgs = append(queryArgs, spec.fixedCategory)
+	}
 	query := fmt.Sprintf(`
 WITH lease AS MATERIALIZED (
     SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired
@@ -74,7 +86,7 @@ WITH lease AS MATERIALIZED (
     SELECT target.ctid
     FROM %s AS target
     CROSS JOIN lease
-    WHERE lease.acquired AND target.%s < $2
+	    WHERE lease.acquired AND target.%s < $2%s
     ORDER BY target.%s, target.id
     LIMIT $3
     FOR UPDATE OF target SKIP LOCKED
@@ -97,11 +109,11 @@ SELECT lease.acquired,
        )
 FROM lease
 LEFT JOIN counts ON true
-GROUP BY lease.acquired`, tableName, timeColumn, timeColumn, tableName, categoryExpression)
+	GROUP BY lease.acquired`, tableName, timeColumn, retentionGuard, timeColumn, tableName, categoryExpression)
 
 	var result batchResult
 	var categoryJSON []byte
-	err := s.db.QueryRow(ctx, query, "huakai.global-log-retention."+spec.name, cutoff.UTC(), limit).
+	err := s.db.QueryRow(ctx, query, queryArgs...).
 		Scan(&result.acquired, &result.deleted, &categoryJSON)
 	if err != nil {
 		return batchResult{}, err

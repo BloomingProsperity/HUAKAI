@@ -124,6 +124,7 @@ func TestPreparedEntryExternalJSONUnmarshalCannotBypassSeal(t *testing.T) {
 	}
 
 	var externalStyle PreparedEntry
+	//lint:ignore SA9005 此处刻意证明没有导出字段的封装对象不能被 JSON 反序列化绕过。
 	if err := json.Unmarshal(raw, &externalStyle); err != nil {
 		t.Fatalf("external-style Unmarshal PreparedEntry: %v", err)
 	}

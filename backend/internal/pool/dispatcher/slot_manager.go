@@ -1,5 +1,3 @@
-// Phase C.2 生产适配器：基于 DB 的 pool.SlotManager。
-//
 // 真实的 Acquire/Release 路径：
 //   - Acquire 开启一个 Serializable Tx，在同一个 Tx 内递增
 //     provider_accounts.in_flight_count 并插入一行新的

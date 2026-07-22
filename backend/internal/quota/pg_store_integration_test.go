@@ -129,11 +129,6 @@ func (f *quotaFixture) seedClaim(label string) int64 {
 	return f.seedClaimWithModel(label, "gpt-4.1-mini")
 }
 
-func (f *quotaFixture) seedClaimForTenant(tenantID, userID, apiKeyID int64, label string) int64 {
-	f.t.Helper()
-	return f.seedClaimForTenantWithModel(tenantID, userID, apiKeyID, label, "gpt-4.1-mini")
-}
-
 func (f *quotaFixture) seedClaimWithModel(label, model string) int64 {
 	f.t.Helper()
 	return f.seedClaimForTenantWithModel(f.tenantID, f.userID, f.apiKeyID, label, model)

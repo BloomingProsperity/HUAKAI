@@ -11,10 +11,9 @@ import (
 )
 
 type createProfileRequest struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	APIKeyID    *int64 `json:"api_key_id,omitempty"`
-	PoolGroupID *int64 `json:"pool_group_id,omitempty"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	APIKey  string `json:"api_key"`
 }
 
 type profileListResponse struct {
@@ -32,11 +31,11 @@ func (h handler) createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := map[string]any{
-		"name": req.Name, "kind": req.Kind,
-		"api_key_id": req.APIKeyID, "pool_group_id": req.PoolGroupID,
+		"name": req.Name, "base_url": req.BaseURL,
+		"api_key_configured": req.APIKey != "",
 	}
 	profile, err := h.svc.CreateProfileWithAudit(
-		r.Context(), ident.TenantID, ident.UserID, req.Name, req.Kind, req.APIKeyID, req.PoolGroupID,
+		r.Context(), ident.TenantID, ident.UserID, req.Name, req.BaseURL, req.APIKey,
 		auditFields(r, ident, hermes.ActionProfileCreate, args, hermes.AuditResultSuccess),
 	)
 	if err != nil {
@@ -48,6 +47,38 @@ func (h handler) createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, profile)
+}
+
+func (h handler) rotateProfile(w http.ResponseWriter, r *http.Request) {
+	ident, ok := h.requireIdentity(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseProfileID(w, r)
+	if !ok {
+		return
+	}
+	var req createProfileRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	args := map[string]any{
+		"operation": "rotate", "profile_id": id, "name": req.Name,
+		"base_url": req.BaseURL, "api_key_configured": req.APIKey != "",
+	}
+	profile, err := h.svc.RotateProfileWithAudit(
+		r.Context(), id, ident.TenantID, ident.UserID, req.Name, req.BaseURL, req.APIKey,
+		auditFields(r, ident, hermes.ActionProfileRotate, args, hermes.AuditResultSuccess),
+	)
+	if err != nil {
+		if errors.Is(err, hermes.ErrAuditRecordFailed) {
+			writeHermesError(w, err)
+			return
+		}
+		h.auditFailureThenError(w, r, ident, hermes.ActionProfileRotate, args, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, profile)
 }
 
 func (h handler) listProfiles(w http.ResponseWriter, r *http.Request) {
@@ -96,14 +127,14 @@ func (h handler) deleteProfile(w http.ResponseWriter, r *http.Request) {
 	args := map[string]any{"operation": "delete", "profile_id": id}
 	err := h.svc.DeleteProfileWithAudit(
 		r.Context(), id, ident.TenantID, ident.UserID,
-		auditFields(r, ident, hermes.ActionProfileRotate, args, hermes.AuditResultSuccess),
+		auditFields(r, ident, hermes.ActionProfileDelete, args, hermes.AuditResultSuccess),
 	)
 	if err != nil {
 		if errors.Is(err, hermes.ErrAuditRecordFailed) {
 			writeHermesError(w, err)
 			return
 		}
-		h.auditFailureThenError(w, r, ident, hermes.ActionProfileRotate, args, err)
+		h.auditFailureThenError(w, r, ident, hermes.ActionProfileDelete, args, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})

@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreambody"
 )
 
 type HCSFDispatchInput struct {
@@ -61,10 +62,8 @@ type envelopeRequestBuilder interface {
 	BuildRequestFromEnvelope(context.Context, provider.BuildInput, *proto.HCSF) (*http.Request, error)
 }
 
-// maxBufferedUpstreamResponseBytes 是 HCSF non-streaming buffered 上游响应的读取上限(1MiB)。
-// 与 gatewayhttp legacy raw 路径(maxRawBufferedUpstreamBodyBytes)同值，保证两条 buffered
-// 路径对超大响应行为一致。
-const maxBufferedUpstreamResponseBytes = 1 << 20
+// maxBufferedUpstreamResponseBytes 供本包既有调用与测试读取统一的上游响应体上限。
+const maxBufferedUpstreamResponseBytes = upstreambody.MaxBufferedResponseBytes
 
 // ErrUpstreamResponseTooLarge 表示上游 2xx 成功响应超过 buffered 读取上限。调用方应映射成
 // clienterr.CodeUpstreamResponseTooLarge(终止、不重试：重试不会变小)，而非把截断字节喂给
@@ -94,14 +93,7 @@ func hcsfShouldAggregateForcedStreamingBuffered(family string, env *proto.HCSF) 
 // oversized 时 raw 截断到 maxBufferedUpstreamResponseBytes —— 仅供非 2xx 响应的错误分类用；
 // 2xx 成功响应一旦 oversized，调用方必须拒绝(截断的成功体不可解析/会错计费)。
 func readBufferedUpstreamResponse(r io.Reader) (raw []byte, oversized bool, err error) {
-	raw, err = io.ReadAll(io.LimitReader(r, maxBufferedUpstreamResponseBytes+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if len(raw) > maxBufferedUpstreamResponseBytes {
-		return raw[:maxBufferedUpstreamResponseBytes], true, nil
-	}
-	return raw, false, nil
+	return upstreambody.ReadBounded(r)
 }
 
 // DispatchHCSF 执行 non-streaming HCSF 主链路：envelope -> vendor HTTP -> buffered envelope。

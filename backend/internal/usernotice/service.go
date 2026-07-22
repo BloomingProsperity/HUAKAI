@@ -28,14 +28,6 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
-func WithBroadcastRecipientLimit(limit int) Option {
-	return func(s *Service) {
-		if limit > 0 {
-			s.broadcastRecipientLimit = limit
-		}
-	}
-}
-
 func NewService(store Store, opts ...Option) *Service {
 	s := &Service{
 		store:                   store,

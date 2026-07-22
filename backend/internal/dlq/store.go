@@ -31,6 +31,7 @@ type ListFilter struct {
 	Status    Status
 	TenantID  *int64
 	Limit     int
+	Offset    int
 }
 
 const recordColumnsDLQ = `
@@ -66,6 +67,10 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Record, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
+	offset := f.Offset
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.pool.Query(ctx, `
 SELECT `+recordColumnsDLQ+`
 FROM usage_record_dlq d
@@ -73,8 +78,8 @@ WHERE ($1::text = '' OR d.event_kind = $1)
   AND ($2::text = '' OR d.status = $2)
   AND ($3::bigint IS NULL OR d.tenant_id = $3)
 ORDER BY d.failure_at DESC, d.id DESC
-LIMIT $4`,
-		string(f.EventKind), string(f.Status), nullableInt64Ptr(f.TenantID), limit,
+LIMIT $4 OFFSET $5`,
+		string(f.EventKind), string(f.Status), nullableInt64Ptr(f.TenantID), limit, offset,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dlq: list: %w", err)

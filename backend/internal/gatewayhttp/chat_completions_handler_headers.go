@@ -246,6 +246,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				Fingerprint:     in.PayloadHash,
 				Draft:           cacheHitDraft,
 				SnapshotVersion: in.PlanSnapshot,
+				BillingEffect:   d.effectiveBillingEffect(),
 			}
 			auditEvent := eventbus.RequestCompletionEvent{
 				ID:                        in.RequestID,
@@ -321,6 +322,7 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		Draft:               settleDraft,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     in.PlanSnapshot,
+		BillingEffect:       d.effectiveBillingEffect(),
 	}
 	if _, err := settleCompletion(ctx, d, eventbus.RequestCompletionEvent{
 		ID:                        in.RequestID,

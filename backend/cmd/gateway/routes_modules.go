@@ -8,11 +8,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/modulehttp"
 )
 
-// mountModuleRegistryRoutes 接线 WAVE H2 只读的模块知识（module-knowledge）端点，
-// 置于 adminGate（platform-admin RBAC）之后，与 routes_systemhealth.go 保持一致。
+// mountModuleRegistryRoutes 接线只读模块知识端点，并置于平台管理员权限门之后。
 //
-// GET /admin/v1/modules            — 合并的身份 + 能力 + 状态 + 实时探测
-// GET /admin/v1/modules?category=  — 过滤到单一类别
+// GET /admin/v1/modules 返回合并后的身份、能力、状态和实时探测结果。
+// GET /admin/v1/modules?category= 过滤到单一类别。
 //
 // 门控：复用与其它每个 /admin/v1/* 路由完全相同的 admin 鉴权 —— 由 d.adminAuth
 // （*admin.AdminResolver）支撑的 adminGate(adminIdentityResolver, handler) 包装器，

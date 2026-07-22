@@ -32,6 +32,8 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachecontrol"
 )
 
 // 步骤名常量（封闭枚举，audit/admin 渲染用）。
@@ -72,7 +74,7 @@ type MimicryPlan struct {
 	// cache_control（为 step 3 分配新 breakpoint 让路）。
 	StripSystemCacheControl bool
 	// CacheBreakpoints 启动 step 3：在指定位置注入 cache_control。
-	CacheBreakpoints *BreakpointSuggestion
+	CacheBreakpoints *cachecontrol.BreakpointSuggestion
 	// UseTTLOrderingForStep3=true 时 step 3 走 TTL 排序版本（长 TTL 在前）。
 	UseTTLOrderingForStep3 bool
 	// ToolNames 启动 step 4：工具名混淆。
@@ -91,7 +93,7 @@ type MimicryStepResult struct {
 	Skipped bool
 	Applied bool
 	Reason  string
-	// Audit 是步骤特定结果（SystemRewriteResult / BreakpointApplyResult 等），
+	// Audit 是步骤特定结果（SystemRewriteResult / cachecontrol.BreakpointApplyResult 等），
 	// admin trace 渲染时按 Step 名分支取出展开。
 	Audit interface{}
 }
@@ -163,12 +165,12 @@ func ApplyMimicryPlan(body []byte, plan MimicryPlan) (MimicryResult, error) {
 
 	// 步骤 3:注入 cache_control 断点
 	if plan.CacheBreakpoints != nil {
-		var r BreakpointApplyResult
+		var r cachecontrol.BreakpointApplyResult
 		var err error
 		if plan.UseTTLOrderingForStep3 {
-			r, err = ApplyBreakpointsWithTTLOrdering(out.Body, *plan.CacheBreakpoints)
+			r, err = cachecontrol.ApplyBreakpointsWithTTLOrdering(out.Body, *plan.CacheBreakpoints)
 		} else {
-			r, err = ApplyBreakpoints(out.Body, *plan.CacheBreakpoints)
+			r, err = cachecontrol.ApplyBreakpoints(out.Body, *plan.CacheBreakpoints)
 		}
 		applied := len(r.Applied) > 0
 		reason := mimicryStepBPAppliedReason
@@ -331,8 +333,8 @@ func applyToolsTailCacheBreakpoint(body []byte, ttl string) ([]byte, bool, strin
 	}
 	// 守卫二：检查当前 body 总 cache_control 数量是否达到 cap。InspectCacheControl
 	// 走与既有 R7.1 inspector 一致的路径，确保两边对"已有几个"的视角统一。
-	snapshot, inspectErr := InspectCacheControl(body)
-	if inspectErr == nil && len(snapshot.Locations) >= CacheControlMaxAllowed {
+	snapshot, inspectErr := cachecontrol.InspectCacheControl(body)
+	if inspectErr == nil && len(snapshot.Locations) >= cachecontrol.CacheControlMaxAllowed {
 		return appendCopy(body), false, mimicryStepTailExceedsCap, nil
 	}
 	cc := map[string]string{"type": "ephemeral"}

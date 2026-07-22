@@ -43,12 +43,10 @@ const (
 )
 
 var (
-	errFlowNotFound      = errors.New("acquisition flow not found")
-	errFlowExpired       = errors.New("acquisition flow expired")
-	errFlowReplay        = errors.New("acquisition flow replay")
-	errStateMismatch     = errors.New("oauth state mismatch")
-	errUnknownMode       = errors.New("unknown acquisition mode")
-	errInvalidImportBody = errors.New("invalid import body")
+	errFlowNotFound  = errors.New("acquisition flow not found")
+	errFlowExpired   = errors.New("acquisition flow expired")
+	errFlowReplay    = errors.New("acquisition flow replay")
+	errStateMismatch = errors.New("oauth state mismatch")
 )
 
 type acqModePlan struct {

@@ -92,10 +92,6 @@ func TestSettleCompletionWithRecovery_EnqueueUsesFreshContext(t *testing.T) {
 	}
 }
 
-// fakeAuditRefPolicy 返"不需要 audit ref" — 让 validateMoneyPathAuditRefForSource
-// 不阻断 settle path。
-type fakeAuditRefPolicy struct{}
-
 func newPostDeliveryFixtureEvent() eventbus.RequestCompletionEvent {
 	return eventbus.RequestCompletionEvent{
 		ID:                "evt-pd-1",

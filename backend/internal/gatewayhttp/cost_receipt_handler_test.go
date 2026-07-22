@@ -824,7 +824,7 @@ func TestAT_AUDIT_001_022_ChatCompletionWritesReceiptThenGet200(t *testing.T) {
 		RateTableSnapshotID: 77,
 		CreatedAt:           time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC),
 	}}
-	formatter, err := audit.NewReceiptFormatter(ledger, nil, source, signer)
+	formatter, err := audit.NewReceiptFormatter(ledger, source, signer)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}

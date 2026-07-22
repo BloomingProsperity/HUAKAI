@@ -1,14 +1,5 @@
-// db_sticky_store.go — DBRepository → StickyStore adapter (Track B 闭环)。
-//
-// 把 pool.StickyStore 接口（selector.go:47 trySticky 用）桥接到
-// DBRepository.GetStickyBinding (sticky_bindings 表持久化)。
-//
-// 在 commit e8d1621 之前: WithStickyStore 接口存在但从未被任何 caller
-// 注入真实现**, selector 走 trySticky 直接 nil-guard return false → 永远
-// fall-through 到 round-robin。Track B 的 prompt-hash 路由价值因此为零。
-//
-// 本文件提供 DBStickyStore 把 DB 层 sticky_bindings 表暴露给 selector,
-// 让 prompt-hash 真生效。
+// DBStickyStore 把 sticky_bindings 持久化能力接入选号器，让相同会话前缀
+// 尽量复用同一账号，同时允许只读模式用于不写绑定的场景。
 package binding
 
 import (
@@ -21,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// stickyBindingReader 是 DBRepository 的最小子集——只读路径。
+// stickyBindingReader 是黏性绑定只读路径的最小接口。
 // selector.trySticky 只调 GetStickyBinding。
 type stickyBindingReader interface {
 	GetStickyBinding(ctx context.Context, arg dbbilling.GetStickyBindingParams) (int64, error)
@@ -33,7 +24,7 @@ type stickyBindingWriter interface {
 	UpsertStickyBinding(ctx context.Context, arg dbbilling.UpsertStickyBindingParams) error
 }
 
-// stickyBindingRepo 是读+写两面（实现都是 *dbbilling.Queries 或 DBRepository）。
+// stickyBindingRepo 组合黏性绑定的读写能力。
 type stickyBindingRepo interface {
 	stickyBindingReader
 	stickyBindingWriter
@@ -63,9 +54,7 @@ type DBStickyStore struct {
 // defaultStickyTTL = 1h, 对齐 Anthropic prompt cache extended TTL。
 const defaultStickyTTL = time.Hour
 
-// NewDBStickyStore 用 DBRepository (或任何 stickyBindingRepo 实现) 构造 read+write store.
-//
-// repo 类型可以是 *dbbilling.Queries 或 DBRepository，二者都满足 stickyBindingRepo。
+// NewDBStickyStore 构造可读写的数据库黏性存储。
 func NewDBStickyStore(repo stickyBindingRepo) *DBStickyStore {
 	return &DBStickyStore{repo: repo, writer: repo}
 }

@@ -8,7 +8,8 @@ import (
 
 func okSpec(name, role string) ToolSpec {
 	return ToolSpec{
-		Name: name, Category: CategoryDiagnostic, ReadOnly: true, RequiredRole: role,
+		Name: name, Category: CategoryDiagnostic, Description: "测试只读工具",
+		ReadOnly: true, RequiredRole: role, InputSchema: ObjectSchema(nil),
 		Run: func(_ context.Context, _ ToolRequest) (ToolResult, error) {
 			return ToolResult{Summary: map[string]any{"ran": name}}, nil
 		},
@@ -67,7 +68,8 @@ func TestRegistryRunDeniesBeforeDispatch(t *testing.T) {
 	ran := false
 	reg := NewRegistry()
 	reg.Register(ToolSpec{
-		Name: "admin_only", RequiredRole: RolePlatformAdmin, ReadOnly: true,
+		Name: "admin_only", Description: "仅平台管理员可用的测试工具",
+		RequiredRole: RolePlatformAdmin, ReadOnly: true, InputSchema: ObjectSchema(nil),
 		Run: func(_ context.Context, _ ToolRequest) (ToolResult, error) {
 			ran = true
 			return ToolResult{}, nil

@@ -25,14 +25,12 @@ func (f *fakeInserter) InsertHermesToolCall(_ context.Context, arg hermestoolsdb
 }
 
 func TestRecordToolCallSanitizesArgsAndSummary(t *testing.T) {
-	// 回归(隐私、有区分度):一个在敏感键下溜进 args 或 summary map 的密钥,在它到达该行之前
-	// MUST(必须)被打码。变异:移除 hermes.SanitizeArgs 这一遍,就会持久化原始密钥。我们同时断言
-	// 原始密钥 ABSENT(缺席)AND(且)打码标记 PRESENT(在场),这样无论 sanitizer 被去掉 OR(还是)
-	// 被替换成一个 no-op 直通,测试都会失败。
+	// 回归：敏感键下的密钥在持久化前必须被打码。移除 hermes.SanitizeArgs 会泄露原始密钥。
+	// 测试同时断言原始密钥不存在且打码标记存在，防止清洗器被删除或退化成直通。
 	const secret = "sk-LIVE-leak-1234"
 	f := &fakeInserter{}
 	err := RecordToolCall(context.Background(), f, ToolCallAudit{
-		TenantID: 7, ActorUserID: 42, AdminActorTokenID: 99,
+		TenantID: 7, ActorSource: "token", ActorID: 99, ActorRole: RolePlatformAdmin,
 		ToolName: ToolCredentialDiagnose,
 		Args:     map[string]any{"account_id": 5, "api_key": secret},
 		ResultSummary: map[string]any{
@@ -66,8 +64,8 @@ func TestRecordToolCallSanitizesArgsAndSummary(t *testing.T) {
 		t.Fatalf("account_id was wrongly dropped from args: %s", argsStr)
 	}
 	// 运营者归属 + 状态必须被持久化。
-	if f.got.AdminActorTokenID == nil || *f.got.AdminActorTokenID != 99 {
-		t.Fatalf("admin_actor_token_id=%v want 99", f.got.AdminActorTokenID)
+	if f.got.ActorSource != "token" || f.got.ActorID != 99 || f.got.ActorRole != RolePlatformAdmin {
+		t.Fatalf("管理员归属=%s:%d/%s，期望 token:99/%s", f.got.ActorSource, f.got.ActorID, f.got.ActorRole, RolePlatformAdmin)
 	}
 	if f.got.ResultStatus != string(ResultOK) {
 		t.Fatalf("result_status=%q want ok", f.got.ResultStatus)
@@ -75,11 +73,10 @@ func TestRecordToolCallSanitizesArgsAndSummary(t *testing.T) {
 }
 
 func TestRecordToolCallDeniedRow(t *testing.T) {
-	// 回归:一次拒绝必须持久化一条 status 为 'denied' 的行,且 NO(无)admin actor 强转错误——
-	// 证明 denied 路径可审计。变异:跳过 denied insert,被拒绝的尝试就不留任何轨迹。
+	// 一次拒绝必须持久化安全分类，并保留会话管理员归属。
 	f := &fakeInserter{}
 	err := RecordToolCall(context.Background(), f, ToolCallAudit{
-		TenantID: 7, ActorUserID: 42,
+		TenantID: 7, ActorSource: "session", ActorID: 42, ActorRole: RoleTenantOperator,
 		ToolName: ToolDLQInspect,
 		Args:     map[string]any{"status": "pending"},
 		Status:   ResultDenied,
@@ -90,9 +87,8 @@ func TestRecordToolCallDeniedRow(t *testing.T) {
 	if f.got.ResultStatus != string(ResultDenied) {
 		t.Fatalf("result_status=%q want denied", f.got.ResultStatus)
 	}
-	// 无 admin actor => token id 列为 NULL。
-	if f.got.AdminActorTokenID != nil {
-		t.Fatalf("admin_actor_token_id=%v want nil for non-admin actor", f.got.AdminActorTokenID)
+	if f.got.ActorSource != "session" || f.got.ActorID != 42 || f.got.LogCategory != "security" {
+		t.Fatalf("拒绝日志归属/分类错误: %+v", f.got)
 	}
 }
 

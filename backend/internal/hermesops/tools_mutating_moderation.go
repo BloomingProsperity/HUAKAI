@@ -9,8 +9,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 )
 
-// 本文件声明 Phase B"扩可提议覆盖面"的新增 MUTATING 工具:moderation_keyword_enable /
-// moderation_keyword_disable —— 启用/禁用本租户的一条内容审核关键词规则(moderation keyword)。
+// 本文件声明内容审核关键词启用与停用工具，用于切换本租户的一条关键词规则。
 //
 // 它们包装已有的 moderation_keywords.enabled 列翻转,绝不重新实现审核匹配逻辑。与 0160 的
 // alert_rule_enable/disable 同构:设置 Mutating=true + RequiresConfirmation=true,提供 Resolve
@@ -72,11 +71,11 @@ func moderationKeywordToggleSpec(name, description string, targetEnabled bool, d
 		// 其 Proposable 保持 false:不可逆 / A 级,LLM 永不提议。
 		Proposable: true,
 		// enable/disable 有 scope 限制:platform_admin 或目标租户内的 tenant_operator
-		// (H1 中间件 + Resolve 复检负责强制租户 scope;此底线放行 tenant_operator)。
+		// 身份授权和 Resolve 目标复检共同强制租户作用域；此处允许租户运营者进入解析阶段。
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"keyword_id": "moderation keyword rule id to toggle (int64, required)",
-		},
+		InputSchema: ObjectSchema(map[string]any{
+			"keyword_id": PositiveIntegerSchema("要切换状态的内容审核关键词规则 ID"),
+		}, "keyword_id"),
 		Resolve: func(ctx context.Context, req ToolRequest) (MutationPlan, error) {
 			if deps.GetKeyword == nil {
 				return MutationPlan{}, ErrDependencyUnwired

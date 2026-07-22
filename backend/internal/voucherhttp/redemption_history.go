@@ -7,7 +7,6 @@ package voucherhttp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,15 +83,6 @@ func parseLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 		return 0, false
 	}
 	return limit, true
-}
-
-func writeVoucherError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, voucher.ErrInvalidInput):
-		writeJSONError(w, http.StatusBadRequest, "invalid_voucher_request", "voucher request is invalid")
-	default:
-		writeJSONError(w, http.StatusServiceUnavailable, "voucher_backend_error", "voucher service unavailable")
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

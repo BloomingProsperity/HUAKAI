@@ -13,7 +13,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
@@ -25,7 +27,7 @@ func TestEnableForUser_AtomicWithAudit(t *testing.T) {
 	beginner := &atomicBeginner{tx: tx}
 	service := hermes.NewServiceWithTx(dbhermes.New(&atomicBaseDB{recorder: recorder}), beginner)
 	router := NewRouter(service, nil)
-	req := newAtomicHermesRequest(http.MethodPost, "/settings/enable", `{}`)
+	req := newAtomicHermesRequest(http.MethodPost, "/settings/enable", `{"profile_id":9,"model":"gpt-4o"}`)
 	resp := httptest.NewRecorder()
 
 	router.ServeHTTP(resp, req)
@@ -52,8 +54,9 @@ func TestProfileCreate_AtomicWithAudit(t *testing.T) {
 	tx := &atomicTx{recorder: recorder}
 	beginner := &atomicBeginner{tx: tx}
 	service := hermes.NewServiceWithTx(dbhermes.New(&atomicBaseDB{recorder: recorder}), beginner)
+	service.WithProfileCredentialKeys(atomicProfileKeys(t))
 	router := NewRouter(service, nil)
-	req := newAtomicHermesRequest(http.MethodPost, "/api-profiles", `{"name":"managed","kind":"managed_huakai_api"}`)
+	req := newAtomicHermesRequest(http.MethodPost, "/api-profiles", `{"name":"external","base_url":"https://api.example.com/v1","api_key":"sk-test-secret"}`)
 	resp := httptest.NewRecorder()
 
 	router.ServeHTTP(resp, req)
@@ -138,11 +141,17 @@ func TestConversationDelete_SecondDeleteIsIdempotent(t *testing.T) {
 func newAtomicHermesRequest(method, path, body string) *http.Request {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	return req.WithContext(context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
+	ctx := context.WithValue(req.Context(), authContextKey{}, sessionauth.Identity{
 		TenantID: 7,
 		UserID:   42,
 		APIKeyID: 11,
-	}))
+	})
+	ctx = context.WithValue(ctx, adminActorContextKey{}, adminActor{
+		Source: admin.AdminSourceToken,
+		ID:     99,
+		Role:   admin.RolePlatformAdmin,
+	})
+	return req.WithContext(ctx)
 }
 
 type atomicSQLRecorder struct {
@@ -252,6 +261,7 @@ func (tx *atomicTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row
 			*dest[4].(**int64) = optionalInt64Arg(args[4])
 			*dest[5].(*pgtype.Timestamptz) = atomicPGTime()
 			*dest[6].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[7].(*string) = args[5].(string)
 			return nil
 		}}
 	case strings.Contains(sql, "INSERT INTO hermes_api_profiles"):
@@ -262,10 +272,39 @@ func (tx *atomicTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row
 			*dest[2].(*int64) = args[1].(int64)
 			*dest[3].(*string) = args[2].(string)
 			*dest[4].(*string) = args[3].(string)
-			*dest[5].(**int64) = optionalInt64Arg(args[4])
-			*dest[6].(**int64) = optionalInt64Arg(args[5])
-			*dest[7].(*pgtype.Timestamptz) = atomicPGTime()
-			*dest[8].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[5].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[6].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[7].(*string) = args[4].(string)
+			*dest[8].(*[]byte) = args[5].([]byte)
+			*dest[9].(*string) = args[6].(string)
+			*dest[10].(*string) = args[7].(string)
+			*dest[11].(*[]byte) = args[8].([]byte)
+			*dest[12].(*string) = args[9].(string)
+			*dest[13].(*string) = args[10].(string)
+			*dest[14].(*string) = args[11].(string)
+			*dest[15].(*int32) = args[12].(int32)
+			*dest[16].(*int64) = args[13].(int64)
+			return nil
+		}}
+	case strings.Contains(sql, "FROM hermes_api_profiles"):
+		return atomicRow{scan: func(dest ...any) error {
+			*dest[0].(*int64) = 9
+			*dest[1].(*int64) = 7
+			*dest[2].(*int64) = 42
+			*dest[3].(*string) = "external"
+			*dest[4].(*string) = hermes.APISourceExternal
+			*dest[5].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[6].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[7].(*string) = "https://api.example.com/v1"
+			*dest[8].(*[]byte) = []byte("encrypted")
+			*dest[9].(*string) = credentialstore.EncryptionSchemeAES256GCM
+			*dest[10].(*string) = "test"
+			*dest[11].(*[]byte) = make([]byte, 12)
+			*dest[12].(*string) = strings.Repeat("a", 64)
+			*dest[13].(*string) = strings.Repeat("b", 64)
+			*dest[14].(*string) = "****test"
+			*dest[15].(*int32) = 1
+			*dest[16].(*int64) = 77
 			return nil
 		}}
 	case strings.Contains(sql, "FROM hermes_conversations"):
@@ -283,12 +322,15 @@ func (tx *atomicTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row
 			} else {
 				*dest[7].(*pgtype.Timestamptz) = pgtype.Timestamptz{}
 			}
+			*dest[8].(*string) = admin.AdminSourceToken
+			*dest[9].(*int64) = 99
+			*dest[10].(**string) = optionalStringValue(admin.RolePlatformAdmin)
 			return nil
 		}}
 	case strings.Contains(sql, "INSERT INTO hermes_audit_events"):
 		tx.recorder.auditWrites++
-		if len(args) > 3 {
-			tx.recorder.auditAction, _ = args[3].(string)
+		if len(args) > 5 {
+			tx.recorder.auditAction, _ = args[5].(string)
 		}
 		return atomicRow{scan: func(dest ...any) error {
 			if tx.recorder.auditErr != nil {
@@ -297,12 +339,16 @@ func (tx *atomicTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row
 			*dest[0].(*int64) = 7001
 			*dest[1].(*pgtype.Timestamptz) = args[0].(pgtype.Timestamptz)
 			*dest[2].(*int64) = args[1].(int64)
-			*dest[3].(*int64) = args[2].(int64)
-			*dest[4].(*string) = args[3].(string)
-			*dest[5].(*[]byte) = args[4].([]byte)
-			*dest[6].(*string) = args[5].(string)
-			*dest[7].(**string) = optionalStringArg(args[6])
-			*dest[8].(**string) = optionalStringArg(args[7])
+			*dest[3].(*string) = args[5].(string)
+			*dest[4].(*[]byte) = args[6].([]byte)
+			*dest[5].(*string) = args[7].(string)
+			*dest[6].(**string) = optionalStringArg(args[8])
+			*dest[7].(**string) = optionalStringArg(args[9])
+			*dest[8].(*pgtype.Timestamptz) = atomicPGTime()
+			*dest[9].(*string) = args[10].(string)
+			*dest[10].(*string) = args[2].(string)
+			*dest[11].(*int64) = args[3].(int64)
+			*dest[12].(**string) = optionalStringValue(args[4].(string))
 			return nil
 		}}
 	default:
@@ -336,6 +382,22 @@ func optionalStringArg(arg any) *string {
 	return value
 }
 
+func optionalStringValue(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
 func atomicPGTime() pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: time.Unix(1700000000, 0).UTC(), Valid: true}
+}
+
+func atomicProfileKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("创建 Hermes 测试加密密钥：%v", err)
+	}
+	return keys
 }

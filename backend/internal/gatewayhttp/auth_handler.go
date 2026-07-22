@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
 	"github.com/BloomingProsperity/HUAKAI/internal/authaudit"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -821,7 +822,7 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_auth_request", "auth request is invalid")
 			return
 		}
-		if !adminCanAccessTenant(ident, req.TenantID) {
+		if !adminhttpcore.CanAccessTenant(ident, req.TenantID) {
 			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 			return
 		}

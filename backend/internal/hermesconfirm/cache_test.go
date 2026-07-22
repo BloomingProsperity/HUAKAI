@@ -1,99 +1,142 @@
 package hermesconfirm
 
 import (
+	"context"
 	"testing"
 	"time"
 )
 
-// TestConfirmCacheBindsOperatorToken 是 H4 审查 S1 的判别式守卫:mutating-tool 的确认
-// 必须绑定到签发 dry-run 预览的那个确切 operator admin token,而不只是 tenant + tenant-
-// user 上下文。若没有 TokenID 校验,在同一 (tenant, as_user_id) 上下文中操作的 operator B
-// (不同的 admin token)就能消费 operator A 的预览并执行一次特权 mutation。
-//
-// 捕获的回归:从 Cache.Consume 删除 `entry.TokenID != tokenID` 会让错误 operator token
-// 的消费成功——此测试随之变红。
-func TestConfirmCacheBindsOperatorToken(t *testing.T) {
+func TestConfirmCache绑定真实管理员来源和ID(t *testing.T) {
 	const (
-		tool      = "account_pause"
-		tenantID  = int64(7)
-		actorUser = int64(42)
-		tokenA    = int64(100)
-		tokenB    = int64(200)
-		target    = int64(555)
+		tool     = "account_pause"
+		tenantID = int64(7)
+		actorA   = int64(100)
+		actorB   = int64(200)
+		target   = int64(555)
 	)
 	c := NewCache()
+	pending := testPending(tool, tenantID, "token", actorA, target, "active")
 
-	// Operator A(token 100)签发一个预览。
-	id, err := c.Issue(PendingConfirmation{
-		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
-	})
+	id, err := c.Issue(context.Background(), pending)
 	if err != nil {
-		t.Fatalf("issue: %v", err)
+		t.Fatalf("签发确认: %v", err)
+	}
+	wrongActor := pending
+	wrongActor.ActorID = actorB
+	if _, ok := c.Consume(context.Background(), id, wrongActor); ok {
+		t.Fatal("另一位令牌管理员消费了不属于自己的确认")
+	}
+	if _, ok := c.Consume(context.Background(), id, pending); ok {
+		t.Fatal("绑定不匹配后确认仍可复用")
 	}
 
-	// Operator B(token 200)——相同的 tool/tenant/tenant-user——绝不能消费 A 的
-	// correlation_id。(而且这次尝试仍会消费掉它:单次消费。)
-	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenB); ok {
-		t.Fatal("operator B (different admin token) consumed operator A's confirmation — confirm is not bound to the operator token")
-	}
-
-	// 错误 token 的尝试是单次消费:即便是 A 也无法再消费它。
-	if _, ok := c.Consume(id, tool, tenantID, actorUser, tokenA); ok {
-		t.Fatal("correlation_id survived a failed consume — single-use is broken")
-	}
-
-	// 完整性检查:由同一个 operator token 消费的全新预览恰好成功一次。
-	id2, err := c.Issue(PendingConfirmation{
-		ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenA, TargetID: target,
-	})
+	id2, err := c.Issue(context.Background(), pending)
 	if err != nil {
-		t.Fatalf("issue 2: %v", err)
+		t.Fatalf("再次签发确认: %v", err)
 	}
-	entry, ok := c.Consume(id2, tool, tenantID, actorUser, tokenA)
-	if !ok {
-		t.Fatal("the issuing operator could not consume its own confirmation")
+	wrongSource := pending
+	wrongSource.ActorSource = "session"
+	if _, ok := c.Consume(context.Background(), id2, wrongSource); ok {
+		t.Fatal("相同数值 ID 的会话管理员串用了令牌管理员确认")
 	}
-	if entry.TargetID != target {
-		t.Fatalf("consumed entry target=%d want %d", entry.TargetID, target)
+
+	sessionPending := testPending(tool, tenantID, "session", actorA, target, "active")
+	id3, err := c.Issue(context.Background(), sessionPending)
+	if err != nil {
+		t.Fatalf("签发会话确认: %v", err)
 	}
-	if _, ok := c.Consume(id2, tool, tenantID, actorUser, tokenA); ok {
-		t.Fatal("correlation_id was reusable after a successful consume — single-use is broken")
+	entry, ok := c.Consume(context.Background(), id3, sessionPending)
+	if !ok || entry.TargetID != target {
+		t.Fatalf("签发者不能消费自己的确认: ok=%v entry=%+v", ok, entry)
+	}
+	if _, ok := c.Consume(context.Background(), id3, sessionPending); ok {
+		t.Fatal("成功消费后的确认仍可复用")
 	}
 }
 
-func TestConfirmCacheConsumeWithStatusDistinguishesRecoverableMiss(t *testing.T) {
-	// HERMES-IP-02:未知/过期 correlation_id 要能被 HTTP 层映射成“重新 dry-run/propose”
-	// 的可恢复错误,而不是和错误工具/错误 operator 混成一个泛化 invalid。
-	// 变异证伪:若 ConsumeWithStatus 退回 bool 或把 missing/expired/mismatch 都返回同一状态,
-	// 本测试会在状态断言处变红。
+func TestConfirmCache区分可恢复缺失和绑定冲突(t *testing.T) {
 	const (
-		tool      = "account_pause"
-		tenantID  = int64(7)
-		actorUser = int64(42)
-		tokenID   = int64(99)
+		tool     = "account_pause"
+		tenantID = int64(7)
+		actorID  = int64(99)
 	)
 	c := NewCache()
+	pending := testPending(tool, tenantID, "token", actorID, 5, "active")
 
-	if _, status := c.ConsumeWithStatus("hmc_missing", tool, tenantID, actorUser, tokenID); status != ConsumeMissing {
-		t.Fatalf("missing status=%s want %s", status, ConsumeMissing)
+	if _, status, err := c.ConsumeWithStatus(context.Background(), "hmc_missing", pending); err != nil || status != ConsumeMissing {
+		t.Fatalf("缺失状态=%s，期望 %s", status, ConsumeMissing)
 	}
 
-	id, err := c.Issue(PendingConfirmation{ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenID, TargetID: 5})
+	id, err := c.Issue(context.Background(), pending)
 	if err != nil {
-		t.Fatalf("issue mismatch: %v", err)
+		t.Fatalf("签发冲突确认: %v", err)
 	}
-	if _, status := c.ConsumeWithStatus(id, "dlq_replay", tenantID, actorUser, tokenID); status != ConsumeMismatch {
-		t.Fatalf("wrong tool status=%s want %s", status, ConsumeMismatch)
+	wrongTool := pending
+	wrongTool.ToolName = "dlq_replay"
+	if _, status, err := c.ConsumeWithStatus(context.Background(), id, wrongTool); err != nil || status != ConsumeMismatch {
+		t.Fatalf("错误工具状态=%s，期望 %s", status, ConsumeMismatch)
 	}
 
 	base := time.Now()
 	c.now = func() time.Time { return base }
-	expiredID, err := c.Issue(PendingConfirmation{ToolName: tool, TenantID: tenantID, ActorID: actorUser, TokenID: tokenID, TargetID: 5})
+	expiredID, err := c.Issue(context.Background(), pending)
 	if err != nil {
-		t.Fatalf("issue expired: %v", err)
+		t.Fatalf("签发过期确认: %v", err)
 	}
 	c.now = func() time.Time { return base.Add(ConfirmTTL + time.Nanosecond) }
-	if _, status := c.ConsumeWithStatus(expiredID, tool, tenantID, actorUser, tokenID); status != ConsumeExpired {
-		t.Fatalf("expired status=%s want %s", status, ConsumeExpired)
+	if _, status, err := c.ConsumeWithStatus(context.Background(), expiredID, pending); err != nil || status != ConsumeExpired {
+		t.Fatalf("过期状态=%s，期望 %s", status, ConsumeExpired)
+	}
+}
+
+func TestConfirmCache换参或状态漂移均拒绝且销毁确认(t *testing.T) {
+	ctx := context.Background()
+	c := NewCache()
+	original := testPending("renew_trigger", 7, "token", 99, 5, "active")
+
+	argsChanged := original
+	argsChanged.ArgsDigest, _ = DigestArguments(map[string]any{"account_id": 5, "credentials": map[string]any{"access_token": "changed"}})
+	id, err := c.Issue(ctx, original)
+	if err != nil {
+		t.Fatalf("签发换参测试确认: %v", err)
+	}
+	if _, status, err := c.ConsumeWithStatus(ctx, id, argsChanged); err != nil || status != ConsumeMismatch {
+		t.Fatalf("换参状态=%s err=%v，期望 mismatch", status, err)
+	}
+	if _, status, err := c.ConsumeWithStatus(ctx, id, original); err != nil || status != ConsumeMissing {
+		t.Fatalf("换参冲突后确认仍可复用: status=%s err=%v", status, err)
+	}
+
+	planChanged := original
+	planChanged.PlanDigest, _ = DigestPlan("provider_account", 5, "lock:5", map[string]any{"state": "rate_limited"})
+	id, err = c.Issue(ctx, original)
+	if err != nil {
+		t.Fatalf("签发状态漂移测试确认: %v", err)
+	}
+	if _, status, err := c.ConsumeWithStatus(ctx, id, planChanged); err != nil || status != ConsumeMismatch {
+		t.Fatalf("状态漂移=%s err=%v，期望 mismatch", status, err)
+	}
+}
+
+func TestDigestArguments不受对象字段顺序影响(t *testing.T) {
+	left, err := DigestArguments(map[string]any{"account_id": 5, "credentials": map[string]any{"refresh_token": "r", "access_token": "a"}})
+	if err != nil {
+		t.Fatalf("摘要左侧参数: %v", err)
+	}
+	right, err := DigestArguments(map[string]any{"credentials": map[string]any{"access_token": "a", "refresh_token": "r"}, "account_id": 5})
+	if err != nil {
+		t.Fatalf("摘要右侧参数: %v", err)
+	}
+	if left != right {
+		t.Fatal("相同 JSON 对象因字段顺序不同得到不同摘要")
+	}
+}
+
+func testPending(tool string, tenantID int64, source string, actorID, targetID int64, state string) PendingConfirmation {
+	argsDigest, _ := DigestArguments(map[string]any{"account_id": targetID})
+	planDigest, _ := DigestPlan("provider_account", targetID, "lock", map[string]any{"state": state})
+	return PendingConfirmation{
+		ToolName: tool, TenantID: tenantID, ActorSource: source, ActorID: actorID,
+		TargetID: targetID, ArgsDigest: argsDigest, PlanDigest: planDigest,
 	}
 }

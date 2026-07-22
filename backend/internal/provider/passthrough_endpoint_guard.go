@@ -181,6 +181,7 @@ func WrapPassthroughEndpointTransport(rt http.RoundTripper) (http.RoundTripper, 
 	}
 	clone.Proxy = nil
 	clone.DialContext = passthroughGuardedDialContext(dial)
+	//lint:ignore SA1019 必须显式清空旧钩子，避免它绕过受保护的 DialContext。
 	clone.DialTLS = nil
 	clone.DialTLSContext = nil
 	return clone, nil

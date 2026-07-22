@@ -6,21 +6,29 @@ package hermestoolsdb
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
-	// Hermes WAVE H3 tool-call audit ledger queries.
+	ClaimHermesMutationRecovery(ctx context.Context, arg ClaimHermesMutationRecoveryParams) (HermesMutationRecovery, error)
+	GetHermesMutationRecoveryForUpdate(ctx context.Context, operationID pgtype.UUID) (HermesMutationRecovery, error)
+	// 独立事务变更先登记已确认意图，执行后再写结果。恢复任务只处理尚未完成日志提交的记录。
+	InsertHermesMutationRecovery(ctx context.Context, arg InsertHermesMutationRecoveryParams) error
+	// Hermes 工具调用日志查询。
 	//
-	// These mirror the append-only audit shape of hermes.sql / admin_audit.sql: a
-	// single INSERT per tool invocation, written inside the same transaction as the
-	// tool's execution + the mirrored hermes_audit_events / admin_audit_events rows,
-	// so the tool-call trail is atomic with the action (or denial).
+	// 普通改动工具在同一事务内先写工具调用和管理员操作日志，执行成功后再更新结果并共同提交。
+	// 含外部副作用或独立事务的工具先写恢复日志，结果明确后由恢复流程补齐两类日志。
 	//
-	// requested_args / result_summary are SANITIZED by the application before this
-	// INSERT — only system-diagnostic enums / counts / ids / fingerprints, never
-	// prompts / completions / raw bodies / secrets / PII.
+	// 应用层在写入前清洗 requested_args 和 result_summary，只允许系统诊断枚举、计数、标识符
+	// 和指纹，不持久化提示词、模型回复、原始请求体、秘密或个人信息。
 	InsertHermesToolCall(ctx context.Context, arg InsertHermesToolCallParams) (InsertHermesToolCallRow, error)
-	ListHermesToolCallsByTenant(ctx context.Context, arg ListHermesToolCallsByTenantParams) ([]HermesToolCall, error)
+	ListHermesToolCallsByTenant(ctx context.Context, arg ListHermesToolCallsByTenantParams) ([]ListHermesToolCallsByTenantRow, error)
+	MarkHermesMutationRecoveryAudited(ctx context.Context, operationID pgtype.UUID) (int64, error)
+	ReleaseHermesMutationRecovery(ctx context.Context, arg ReleaseHermesMutationRecoveryParams) (int64, error)
+	SetClaimedHermesMutationRecoveryOutcome(ctx context.Context, arg SetClaimedHermesMutationRecoveryOutcomeParams) (int64, error)
+	SetHermesMutationRecoveryOutcome(ctx context.Context, arg SetHermesMutationRecoveryOutcomeParams) (int64, error)
+	UpdateHermesToolCallOutcome(ctx context.Context, arg UpdateHermesToolCallOutcomeParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)

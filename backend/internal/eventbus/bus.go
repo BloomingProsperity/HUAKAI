@@ -364,8 +364,6 @@ func dlqKindForHandler(id HandlerID) dlq.EventKind {
 		return dlq.EventKindAuditEventReplica
 	case HandlerAccountHealthProbe:
 		return dlq.EventKindAccountHealth
-	case HandlerMetricsAggregator, HandlerReconciliationCheck:
-		return dlq.EventKindMetrics
 	default:
 		return dlq.EventKindMetrics
 	}

@@ -28,14 +28,6 @@ func WithSettlerAsync(async func(func())) SettlerOption {
 	}
 }
 
-func WithSettlerTimeout(timeout time.Duration) SettlerOption {
-	return func(cfg *settlerConfig) {
-		if timeout > 0 {
-			cfg.timeout = timeout
-		}
-	}
-}
-
 func WithSettlerDeliveryErrorRecorder(record func(error)) SettlerOption {
 	return func(cfg *settlerConfig) {
 		cfg.recordError = record
@@ -63,7 +55,7 @@ func NewSettler(next billing.Settler, notifier *Notifier, opts ...SettlerOption)
 
 func (s *Settler) Settle(ctx context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	res, err := s.next.Settle(ctx, req)
-	if err != nil || res == nil || s.notifier == nil {
+	if err != nil || res == nil || s.notifier == nil || !res.BalanceChanged || res.BillingEffect != billing.BillingEffectUserCharge {
 		return res, err
 	}
 	tenantID := firstPositive(res.TenantID, req.TenantID)

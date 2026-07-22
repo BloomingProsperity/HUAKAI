@@ -1558,7 +1558,7 @@ func streamingReplayDeps(t *testing.T, claimID int64, hit bool, responseBody str
 			FirstTokenTimeout:  500 * time.Millisecond,
 			InterEventTimeout:  500 * time.Millisecond,
 			TotalStreamTimeout: 5 * time.Second,
-			DrainMaxSeconds:    100 * time.Millisecond,
+			DrainMax:           100 * time.Millisecond,
 		},
 		ScannerBufferCap: 1 << 20,
 	}
@@ -1669,13 +1669,6 @@ func openAIStreamingEOFNoTerminalFixture() string {
 	return strings.Join([]string{
 		`data: {"id":"chatcmpl-eof","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}`,
 		``,
-		``,
-	}, "\n")
-}
-
-func partialOpenAIStreamingFixtureBeforeReadError() string {
-	return strings.Join([]string{
-		`data: {"id":"chatcmpl-error","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}`,
 		``,
 	}, "\n")
 }

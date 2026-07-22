@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -28,35 +29,36 @@ type txBeginner interface {
 // (以及按下面的次序,缺少 mutation)的情况下存在。
 type MutationAuditRecord struct {
 	// tool-call 流水字段(hermes_tool_calls)。
-	TenantID          int64
-	ActorUserID       int64
-	AdminActorTokenID int64
-	ToolName          string
-	Args              map[string]any
-	ResultSummary     map[string]any
-	Status            ResultStatus
-	ErrorClass        string
-	CorrelationID     string
-	RequestID         string
-	CalledAt          time.Time
-	ReturnedAt        time.Time
-	DryRun            bool
+	OperationID   uuid.UUID
+	TenantID      int64
+	ActorSource   string
+	ActorID       int64
+	ActorRole     string
+	ToolName      string
+	Args          map[string]any
+	ResultSummary map[string]any
+	Status        ResultStatus
+	ErrorClass    string
+	CorrelationID string
+	RequestID     string
+	CalledAt      time.Time
+	ReturnedAt    time.Time
+	DryRun        bool
 
 	// admin_audit_events 镜像字段。
 	AdminAction string // 例如 hermes.tool.account_pause
-	AdminRole   string
 	TargetType  string
 	TargetID    int64
 	// AuditPayload 是已脱敏的 previous->next 状态载荷。作为纵深防御,insert 前会再脱敏一次。
 	AuditPayload map[string]any
+}
 
-	// OwnTx 标记这样一种工具:其底层 mutation 在自己 OWN(独立)的事务中提交(在 orchestrator
-	// 提交 BEFORE(之前)于内部已提交),而非在 orchestrator 事务内运行。对这类工具,当 orchestrator
-	// 到达自己的 COMMIT 时 mutation 已经持久化,因此一次提交阶段的故障会让 mutation 已生效而审计行
-	// 回滚——这是一种 "commit_uncertain"(需要对账)状况,NOT(而非)"mutation_failed"。对一个
-	// in-tx 工具,同样的故障会把 mutation 原子地回滚,所以它仍是 mutation_failed。IsOwnTxMutation
-	// 推导此值。
-	OwnTx bool
+// MutationRecoveryJournal 是独立事务工具的持久恢复合同。Prepare 必须先于真实变更成功；
+// RecordOutcome 在变更返回后保存最终结果；FinalizeAudit 原子补齐工具日志、管理员日志和完成标记。
+type MutationRecoveryJournal interface {
+	Prepare(context.Context, MutationAuditRecord) error
+	RecordOutcome(context.Context, uuid.UUID, ResultStatus, map[string]any, string, time.Time) error
+	FinalizeAudit(context.Context, uuid.UUID) error
 }
 
 // MutateOrchestrator 在 L3(atomic audit)+ L4(advisory lock)下运行一个已确认的 mutating
@@ -73,7 +75,8 @@ type MutationAuditRecord struct {
 // 残余窗口(mutation 成功,随后最终的 COMMIT 因传输故障失败)作为已知风险被记录在案;此时审计行
 // 已被数据库接受,所以这是一次连接故障,而非静默的审计缺失。
 type MutateOrchestrator struct {
-	begin txBeginner
+	begin    txBeginner
+	recovery MutationRecoveryJournal
 	// sem 把进程级 mutating 并发上限压到连接池 MaxConns 之下(BELOW),这样一阵 mutation 风暴
 	// 就无法耗尽共享的 pgxpool / advisory-lock 槽位、把核心网关拖垮。nil 的 sem(或被禁用的)
 	// 即旧的无上限行为。
@@ -110,9 +113,16 @@ func WithTxDeadline(d time.Duration) MutateOption {
 	}
 }
 
-// NewMutateOrchestrator 基于一个事务 beginner(pgx 连接池)构造 orchestrator。nil 的 beginner
-// 会让 Execute fail-closed。不带任何选项时,它逐字节就是旧的无上限行为;传入
-// WithConcurrencyGuard / WithTxDeadline 来启用可叠加的 S2 guard。
+// WithMutationRecoveryJournal 为包含外部投递或独立事务的工具接入持久恢复日志。
+// 未接入时，这类工具在执行真实变更前拒绝运行。
+func WithMutationRecoveryJournal(journal MutationRecoveryJournal) MutateOption {
+	return func(o *MutateOrchestrator) {
+		o.recovery = journal
+	}
+}
+
+// NewMutateOrchestrator 基于事务开启器构造编排器。事务开启器为空时，Execute 失败关闭；
+// 选项可以增加并发保护、事务期限和持久恢复。
 func NewMutateOrchestrator(begin txBeginner, opts ...MutateOption) *MutateOrchestrator {
 	o := &MutateOrchestrator{begin: begin}
 	for _, opt := range opts {
@@ -123,74 +133,65 @@ func NewMutateOrchestrator(begin txBeginner, opts ...MutateOption) *MutateOrches
 	return o
 }
 
-// errAuditUnavailable 在 orchestrator 未接线任何事务 beginner 时返回——没有原子审计路径,
-// mutation 绝不能继续。
+// errAuditUnavailable 表示事务或日志路径未接线，此时业务变更不得继续。
 var errAuditUnavailable = errors.New("hermesops: mutation audit transaction unavailable")
 
-// ErrCommitAfterOwnTxMutation 标记这一特定的残余故障:一个 OWN-TX 工具的 mutation 已在它自己的
-// 事务中提交,orchestrator 随后成功插入了审计行,但 FINAL(最终)的 orchestrator COMMIT 失败了
-// (传输/连接故障)。mutation 已持久化而审计行回滚,所以结果不确定(需要对账)——它 NOT(不是)一种
-// "mutation 没有发生"的失败。HTTP 层把它尽力映射到 error_class "commit_uncertain"。只有 Execute
-// 用此哨兵包裹一次提交阶段的故障,且仅当 rec.OwnTx 被置位时;一个 in-tx 工具的提交故障会把 mutation
-// 原子地回滚,仍是 mutation_failed。
-var ErrCommitAfterOwnTxMutation = errors.New("hermesops: orchestrator commit failed after own-tx mutation persisted")
-
-// ErrMutateBusy 标记在 mutating 并发上限上的一次获取超时:已有太多 mutation 在途,且有界的获取
-// 窗口在某个槽位空出之前就已过去。它是一个干净的背压信号(在上游映射到 HTTP 429),NOT(不是)一次
-// 失败的 mutation——什么都还没开始。仅在并发 guard 被启用时返回。
+// ErrMutateBusy 表示改动并发槽在等待期限内未释放。此时尚未开始业务写，可安全映射为 429。
 var ErrMutateBusy = errors.New("hermesops: mutating concurrency saturated, retry")
 
-// ErrMutateTimeoutUncertain 是 ErrCommitAfterOwnTxMutation 在 tx-deadline 路径上的 OWN-TX
-// 对应物:一个 own-tx 工具(dlq_replay/renew_trigger)在其内层 own-tx 已经提交 AFTER(之后)
-// 触发了 tx 截止。mutation 可能已持久化而 orchestrator 审计行回滚,所以结果是 UNCERTAIN(不确定,
-// 需要对账),MUST NOT(绝不能)被报告成干净的 "rolled back"/mutation_failed。HTTP 层把它尽力
-// 映射到 error_class "mutate_timeout_uncertain"。一个 in-tx 工具的截止会把 mutation 原子地回滚,
-// 仍是 timeout/mutation_failed 的默认。
-var ErrMutateTimeoutUncertain = errors.New("hermesops: mutation tx deadline hit after own-tx mutation may have persisted")
+// ErrMutationOutcomeAudited 表示独立事务工具已返回失败，而且失败结果已经完整写入两类日志。
+// 调用层不得再补写第二条错误日志，也不得谎称该操作已由外层事务回滚。
+var ErrMutationOutcomeAudited = errors.New("hermesops: recoverable mutation failed and outcome was audited")
 
-// IsOwnTxMutation 报告一个 mutating 工具是否在它自己 OWN(独立)的事务中运行其 mutation
-// (在 orchestrator 提交之前于内部提交),而非在 orchestrator 事务内部。这是每个 H4 mutating
-// 工具事务模式的单一事实来源,紧挨着工具名常量保存,这样 orchestrator 提交失败的分类
-// (commit_uncertain 还是 mutation_failed)就不会与每个工具实际的持久化方式分叉。
+// ErrMutationRecoveryPending 表示独立事务工具已经开始或已经返回，但最终日志尚未完成提交。
+// 持久恢复任务会继续处理；调用层不得把它报告成“变更已回滚”。
+var ErrMutationRecoveryPending = errors.New("hermesops: recoverable mutation outcome awaits audit recovery")
+
+// IsOwnTxMutation 报告工具是否通过独立事务和外部副作用完成变更。这是事务模式的单一
+// 事实来源，用于正确区分结果待恢复和普通事务失败。
 //
-//   - account_pause / account_resume 在 orchestrator 事务 INSIDE(内部)运行其 enabled 翻转
-//     (经 txFromContext)——in-tx,与审计行原子。
-//   - dlq_replay / renew_trigger 委托给 dlq.Service.Replay / credentialstore.Store.Rotate,
-//     二者各自拥有自己的事务并在返回前提交——own-tx。
+//   - account_pause / account_resume 在编排器事务内修改 enabled，与日志行原子提交。
+//   - dlq_replay 包含独立的投递事务与副作用，属于独立事务。
+//   - renew_trigger 使用编排器传入的事务，凭据轮换及两类日志原子提交。
 func IsOwnTxMutation(toolName string) bool {
 	switch toolName {
-	case ToolDLQReplay, ToolRenewTrigger:
+	case ToolDLQReplay:
 		return true
 	default:
 		return false
 	}
 }
 
-// Execute 在 atomic-audit + advisory-lock 事务内部运行 mutate()。mutate 收到请求与已 resolve
-// 的 plan,并返回最终的 mutation 后 summary;它恰好被调用一次,且只在审计行被接受之后、并且只在
-// 持有 advisory lock 期间调用。lockKey 判别 advisory lock(L4)。
+// Execute 在原子日志和 advisory lock 事务中运行 mutate。变更只在日志行被数据库接受后
+// 执行一次，lockKey 用于串行化同一目标。
 //
-// 在 mutation 之前/之时出现任何 error,整个事务都会回滚,这样就不会有任何审计行(以及任何锁副作用)
-// 为一个未发生的 mutation 持久化下来。成功时返回的 summary 即 mutate() 的 summary。
+// 业务写提交前出现任何错误都会回滚，避免为未发生的变更留下成功日志。
 func (o *MutateOrchestrator) Execute(
 	ctx context.Context,
 	lockKey string,
 	rec MutationAuditRecord,
 	mutate func(ctx context.Context, tx pgx.Tx) (ToolResult, error),
 ) (ToolResult, error) {
-	if o == nil || o.begin == nil {
+	if o == nil {
 		return ToolResult{}, errAuditUnavailable
 	}
+	if rec.OperationID == uuid.Nil {
+		rec.OperationID = uuid.New()
+	}
 
-	// S2 (a) 并发上限:在 BeginTx BEFORE(之前)预留一个 mutating 槽位,这样该上限约束的是同时
-	// 有多少 mutation 持有(HOLD)一个连接池连接 / advisory-lock 槽位(在 BeginTx 之后再获取就已经
-	// 占用了连接)。被禁用的 guard 是 no-op(旧的无上限)。获取超时时干净地返回 ErrMutateBusy——
-	// 什么都还没开始,所以这是纯背压,绝不是挂起。
+	// 在开启事务前预留并发槽，避免等待保护本身先占用数据库连接。等待超时返回纯背压信号。
 	release, err := o.sem.Acquire(ctx, o.acquireWait)
 	if err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: %w: %w", ErrMutateBusy, err)
 	}
 	defer release()
+
+	if IsOwnTxMutation(rec.ToolName) {
+		return o.executeRecoverableMutation(ctx, rec, mutate)
+	}
+	if o.begin == nil {
+		return ToolResult{}, errAuditUnavailable
+	}
 
 	tx, err := o.begin.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -199,18 +200,15 @@ func (o *MutateOrchestrator) Execute(
 	committed := false
 	defer func() {
 		if !committed {
-			// 在它自己 OWN(独立)的 ctx 上回滚,这样即便 tx 截止已触发(mutCtx 已 done),回滚
-			// 仍能运行——释放连接 + advisory lock。
+			// 使用独立上下文回滚；即使业务上下文已超时，也要释放连接和目标锁。
 			rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = tx.Rollback(rollbackCtx)
 		}
 	}()
 
-	// S2 (b) 事务截止:用客户端 ctx 截止(mutCtx,贯穿下面的 lock/audit/mutate/commit)与服务端
-	// SET LOCAL statement_timeout 一起给 THIS(本)mutation 事务设界。SET LOCAL 仅作用于 THIS
-	// (本)事务,并在事务结束时自动复位,所以它永不触及核心路径上的连接。零截止 = 禁用
-	// (mutCtx == ctx,无 statement_timeout)——旧行为。
+	// 客户端期限和事务内 statement_timeout 共同限制改动时长；SET LOCAL 在事务结束时
+	// 自动复位，不污染连接池中的后续请求。零值表示不额外设置期限。
 	mutCtx := ctx
 	if o.txDeadline > 0 {
 		var cancel context.CancelFunc
@@ -222,79 +220,105 @@ func (o *MutateOrchestrator) Execute(
 		}
 	}
 
-	// L4:串行化对 SAME(同一)目标的并发 mutation。该锁在本事务的整个生命周期内持有
-	// (commit/rollback 时释放),所以第二个运营者或副本会阻塞,直到本 mutation + 审计提交或中止。
+	// 串行化同一目标的并发改动。锁在本事务提交或回滚时释放。
 	if _, err := tx.Exec(mutCtx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, lockKey); err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: acquire advisory lock: %w", err)
 	}
 
-	// L3:在 mutation BEFORE(之前)写入 + VERIFY(校验)审计行。若任一插入失败,我们就在此返回,
-	// 事务回滚,mutation 从未运行。
-	if err := insertToolCallRow(mutCtx, tx, rec); err != nil {
+	// 先写入并校验两类日志；任一插入失败都回滚，业务变更不会运行。
+	toolCallID, err := insertToolCallRow(mutCtx, tx, rec)
+	if err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: tool-call audit insert failed: %w", err)
 	}
 	if err := insertAdminAuditRow(mutCtx, tx, rec); err != nil {
 		return ToolResult{}, fmt.Errorf("hermesops: admin audit insert failed: %w", err)
 	}
 
-	// mutation 只在审计行被数据库接受之后才运行。事务经 context 贯穿,这样一个工具的 Mutate
-	// 就能与审计行原子地运行受事务约束的写(例如翻转 provider_accounts.enabled)。
+	// 业务变更只在日志行被数据库接受后运行，并通过同一事务与日志原子提交。
 	result, mErr := mutate(withMutationTx(mutCtx, tx), tx)
 	if mErr != nil {
-		return ToolResult{}, o.classifyMutateErr(rec, mErr)
+		return ToolResult{}, mErr
+	}
+	rec.Status = ResultOK
+	rec.ResultSummary = result.Summary
+	rec.ErrorClass = result.ErrorClass
+	rec.ReturnedAt = time.Now().UTC()
+	if err := updateToolCallOutcome(mutCtx, tx, toolCallID, rec); err != nil {
+		return ToolResult{}, fmt.Errorf("hermesops: tool-call outcome update failed: %w", err)
 	}
 
 	if err := tx.Commit(mutCtx); err != nil {
-		// mutation 已经运行(mErr 为 nil)。若本工具在此之前已在它自己 OWN(独立)的事务中提交了
-		// 其 mutation,那么即便这次(承载审计行的)提交失败,该 mutation 也已持久化——把它分类为
-		// commit_uncertain 以发出对账信号,而非报告 "mutation_failed"。一个 in-tx 工具的 mutation
-		// 属于 THIS(本)事务,所以这次提交失败会把它原子地回滚,仍是默认值。
-		if rec.OwnTx {
-			return ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w: %w", ErrCommitAfterOwnTxMutation, err)
-		}
 		return ToolResult{}, fmt.Errorf("hermesops: commit mutation tx: %w", err)
 	}
 	committed = true
 	return result, nil
 }
 
-// classifyMutateErr 为 tx-deadline 路径包裹一个 mutate() 阶段的 error。
-//
-// 它防范的危险情形(正确性约束):一个 OWN-TX 工具(dlq_replay/renew_trigger),其内层 own-tx 在
-// orchestrator 的 tx 截止(mutCtx)触发某个后续步骤 BEFORE(之前)已经 COMMITTED(提交)。mutation
-// 可能已持久化,所以该截止 error MUST(必须)被分类为 ErrMutateTimeoutUncertain(需要对账)——
-// NEVER(绝不)分类为干净的、已回滚的 mutation_failed,否则会谎称 replay/rotate 没有发生。
-//
-// 它只在 (1) tx 截止已启用、(2) error 是一个 context 截止、(3) 工具是 own-tx 时触发。一个 in-tx
-// 工具的截止会把 mutation 原子地回滚(它属于 THIS(本)事务),所以原样返回,在上游仍是
-// timeout/mutation_failed 的默认。一个非截止的 mutate error(真正的工具失败)也原样返回。
-func (o *MutateOrchestrator) classifyMutateErr(rec MutationAuditRecord, mErr error) error {
-	if o.txDeadline <= 0 || !rec.OwnTx {
-		return mErr
+func (o *MutateOrchestrator) executeRecoverableMutation(
+	ctx context.Context,
+	rec MutationAuditRecord,
+	mutate func(context.Context, pgx.Tx) (ToolResult, error),
+) (ToolResult, error) {
+	if o.recovery == nil {
+		return ToolResult{}, errAuditUnavailable
 	}
-	if !errors.Is(mErr, context.DeadlineExceeded) {
-		return mErr
+	if err := o.recovery.Prepare(ctx, rec); err != nil {
+		return ToolResult{}, fmt.Errorf("hermesops: prepare mutation recovery: %w", err)
 	}
-	return fmt.Errorf("hermesops: own-tx mutation deadline: %w: %w", ErrMutateTimeoutUncertain, mErr)
+
+	mutCtx := ctx
+	if o.txDeadline > 0 {
+		var cancel context.CancelFunc
+		mutCtx, cancel = context.WithTimeout(ctx, o.txDeadline)
+		defer cancel()
+	}
+	result, mutateErr := mutate(mutCtx, nil)
+	status := ResultOK
+	errorClass := result.ErrorClass
+	if mutateErr != nil {
+		status = ResultError
+		errorClass = "mutation_failed"
+		if errors.Is(mutateErr, context.DeadlineExceeded) || errors.Is(mutateErr, context.Canceled) {
+			errorClass = "mutate_timeout"
+		}
+	}
+
+	// 真实变更一旦开始，结果持久化不能再依赖已断开的客户端上下文。
+	finishCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	returnedAt := time.Now().UTC()
+	if err := o.recovery.RecordOutcome(finishCtx, rec.OperationID, status, result.Summary, errorClass, returnedAt); err != nil {
+		return ToolResult{}, errors.Join(ErrMutationRecoveryPending, mutateErr, err)
+	}
+	if err := o.recovery.FinalizeAudit(finishCtx, rec.OperationID); err != nil {
+		return ToolResult{}, errors.Join(ErrMutationRecoveryPending, mutateErr, err)
+	}
+	if mutateErr != nil {
+		return ToolResult{}, errors.Join(ErrMutationOutcomeAudited, mutateErr)
+	}
+	return result, nil
 }
 
 // insertToolCallRow 在事务上追加已脱敏的 hermes_tool_calls 行。
-func insertToolCallRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord) error {
+func insertToolCallRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord) (int64, error) {
 	argsJSON, err := sanitizedJSON(rec.Args)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	summaryJSON, err := sanitizedJSON(rec.ResultSummary)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	called := rec.CalledAt
 	if called.IsZero() {
 		called = time.Now()
 	}
 	params := hermestoolsdb.InsertHermesToolCallParams{
+		OperationID:   pgUUID(rec.OperationID),
 		TenantID:      rec.TenantID,
-		ActorUserID:   rec.ActorUserID,
+		ActorSource:   rec.ActorSource,
+		ActorID:       rec.ActorID,
+		ActorRole:     rec.ActorRole,
 		ToolName:      rec.ToolName,
 		RequestedArgs: argsJSON,
 		ResultStatus:  string(rec.Status),
@@ -304,20 +328,40 @@ func insertToolCallRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord) 
 		ErrorClass:    nilIfEmpty(rec.ErrorClass),
 		CalledAt:      pgtype.Timestamptz{Time: called.UTC(), Valid: true},
 		DryRun:        rec.DryRun,
-	}
-	if rec.AdminActorTokenID > 0 {
-		id := rec.AdminActorTokenID
-		params.AdminActorTokenID = &id
+		LogCategory:   toolLogCategory(rec.Status, ""),
 	}
 	if !rec.ReturnedAt.IsZero() {
 		params.ReturnedAt = pgtype.Timestamptz{Time: rec.ReturnedAt.UTC(), Valid: true}
 	}
-	_, err = hermestoolsdb.New(tx).InsertHermesToolCall(ctx, params)
-	return err
+	row, err := hermestoolsdb.New(tx).InsertHermesToolCall(ctx, params)
+	return row.ID, err
 }
 
-// insertAdminAuditRow 在同一事务上把 mutation 镜像进 admin_audit_events。action MUST(必须)
-// 在迁移白名单中;payload 已脱敏(previous->next 状态,只含枚举/id——绝不含密钥)。
+func updateToolCallOutcome(ctx context.Context, tx pgx.Tx, id int64, rec MutationAuditRecord) error {
+	summaryJSON, err := sanitizedJSON(rec.ResultSummary)
+	if err != nil {
+		return err
+	}
+	rows, err := hermestoolsdb.New(tx).UpdateHermesToolCallOutcome(ctx, hermestoolsdb.UpdateHermesToolCallOutcomeParams{
+		ResultStatus:  string(rec.Status),
+		ResultSummary: summaryJSON,
+		ErrorClass:    nilIfEmpty(rec.ErrorClass),
+		ReturnedAt:    pgtype.Timestamptz{Time: rec.ReturnedAt.UTC(), Valid: true},
+		LogCategory:   toolLogCategory(rec.Status, rec.ErrorClass),
+		ID:            id,
+		OperationID:   pgUUID(rec.OperationID),
+	})
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("hermesops: tool-call outcome row missing")
+	}
+	return nil
+}
+
+// insertAdminAuditRow 在同一事务中写入 admin_audit_events。动作必须在数据库允许清单中，
+// 载荷已脱敏且不得包含密钥。
 func insertAdminAuditRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord) error {
 	payload := hermes.SanitizeArgs(rec.AuditPayload)
 	raw, err := json.Marshal(payload)
@@ -327,19 +371,47 @@ func insertAdminAuditRow(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord
 	tenant := rec.TenantID
 	// 与其它 handler 一致走 AuditActor()(admin_token:<id>),否则同一 operator 在同一
 	// admin_audit_events 表里被分裂成两种归属串、按新格式检索会漏掉 Hermes mutation 行。
-	actorID := admin.AdminIdentity{TokenID: rec.AdminActorTokenID, Source: admin.AdminSourceToken}.AuditActor()
+	identity := admin.AdminIdentity{Source: rec.ActorSource, Role: rec.ActorRole}
+	switch rec.ActorSource {
+	case admin.AdminSourceToken:
+		identity.TokenID = rec.ActorID
+	case admin.AdminSourceSession:
+		identity.UserID = rec.ActorID
+	default:
+		return fmt.Errorf("hermesops: invalid admin actor source")
+	}
+	if rec.ActorID <= 0 {
+		return fmt.Errorf("hermesops: invalid admin actor id")
+	}
+	actorID := identity.AuditActor()
 	reqID := nilIfEmpty(rec.RequestID)
 	targetID := rec.TargetID
 	_, err = admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
-		TenantID:   &tenant,
-		ActorID:    actorID,
-		ActorRole:  rec.AdminRole,
-		Action:     rec.AdminAction,
-		TargetType: rec.TargetType,
-		TargetID:   &targetID,
-		RequestID:  reqID,
-		Reason:     nil,
-		Payload:    raw,
+		OperationID: pgUUID(rec.OperationID),
+		TenantID:    &tenant,
+		ActorID:     actorID,
+		ActorRole:   rec.ActorRole,
+		Action:      rec.AdminAction,
+		TargetType:  rec.TargetType,
+		TargetID:    &targetID,
+		RequestID:   reqID,
+		Reason:      nil,
+		Payload:     raw,
 	})
 	return err
+}
+
+// InsertMutationAuditRows 供持久恢复事务复用同一套两类日志写入合同。
+func InsertMutationAuditRows(ctx context.Context, tx pgx.Tx, rec MutationAuditRecord) error {
+	if _, err := insertToolCallRow(ctx, tx, rec); err != nil {
+		return err
+	}
+	return insertAdminAuditRow(ctx, tx, rec)
+}
+
+func pgUUID(value uuid.UUID) pgtype.UUID {
+	if value == uuid.Nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: value, Valid: true}
 }

@@ -23,6 +23,7 @@ SELECT
         SELECT 1 FROM users u
         WHERE u.id = $2::bigint
           AND u.tenant_id = $1::bigint
+          AND u.principal_kind = 'human'
           AND u.deleted_at IS NULL
           AND u.status = 'active'
     ) AS user_ok
@@ -78,6 +79,7 @@ SELECT
 FROM api_keys
 WHERE id = $1::bigint
   AND tenant_id = $2::bigint
+  AND purpose = 'user'
   AND deleted_at IS NULL
 `
 
@@ -145,6 +147,7 @@ AND EXISTS (
     SELECT 1 FROM users u
     WHERE u.id = $2::bigint
       AND u.tenant_id = $1::bigint
+      AND u.principal_kind = 'human'
       AND u.deleted_at IS NULL
       AND u.status = 'active'
 )
@@ -199,6 +202,7 @@ SELECT
     created_at, updated_at
 FROM api_keys
 WHERE tenant_id = $1::bigint
+  AND purpose = 'user'
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
 LIMIT $3::integer
@@ -270,6 +274,7 @@ SET status = 'revoked',
     updated_at = NOW()
 WHERE id = $2::bigint
   AND tenant_id = $3::bigint
+  AND purpose = 'user'
   AND status <> 'revoked'
   AND deleted_at IS NULL
 `

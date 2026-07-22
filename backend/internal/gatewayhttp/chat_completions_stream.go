@@ -58,14 +58,14 @@ func (ex *chatExecution) serveL2CacheIfAvailable(w http.ResponseWriter) (bool, b
 			logInternalError(ex.ctx, ex.requestID, "l2_cache_principal_mismatch",
 				fmt.Errorf("cached entry tenant=%d scope_id=%d != request tenant=%d scope_id=%d", cached.TenantID, cached.ScopeID, ex.ident.TenantID, ex.cacheScopeID()))
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
-			syncL2SizeMetrics(ex.d.ResponseCache)
+			cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 		} else {
 			cachemetrics.ObserveL2Hit(ex.cacheVendor, ex.upstreamModelID)
 			if serveL2CacheHit(ex.ctx, w, ex.r, ex.d, ex.cacheHitInput(cached)) {
 				return true, false
 			}
 			ex.d.ResponseCache.Delete(ex.ctx, ex.cacheKey)
-			syncL2SizeMetrics(ex.d.ResponseCache)
+			cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 		}
 	}
 	cachemetrics.ObserveL2Miss(ex.cacheVendor, ex.upstreamModelID)
@@ -506,6 +506,10 @@ func (a canonicalEventPointerClientAdapter) CanonicalToClientResponse(ctx contex
 	return a.inner.CanonicalToClientResponse(ctx, canonical)
 }
 
+func (a canonicalEventPointerClientAdapter) NewClientStreamState() any {
+	return a.inner.NewClientStreamState()
+}
+
 func (a canonicalEventPointerClientAdapter) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []proto.ProtocolLossEntry, error) {
 	if evt, ok := canonicalEvt.(proto.CanonicalEvent); ok {
 		canonicalEvt = &evt
@@ -608,6 +612,7 @@ func (ex *chatExecution) streamingCompletionEvent(draft gateway.UsageRecordDraft
 			StreamAttempt:       &streamAttempt,
 			EmitSchedulerOutbox: true,
 			SnapshotVersion:     ex.plan.SnapshotVersion,
+			BillingEffect:       ex.d.effectiveBillingEffect(),
 		},
 		Metadata: completionMetadata(ex.routeID, ex.clientRequestID),
 	}

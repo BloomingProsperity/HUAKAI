@@ -70,7 +70,7 @@ func TestChatCompletionsEventBusHotPathIgnoresSlowSuffix(t *testing.T) {
 	mustRegisterEventHandler(t, bus, observability.NewBillingPersisterHandler(settler, 250*time.Millisecond))
 	mustRegisterEventHandler(t, bus, observability.NewAuditLoggerHandler(250*time.Millisecond))
 	mustRegisterEventHandler(t, bus, eventbus.HandlerFunc{
-		HandlerID:      eventbus.HandlerMetricsAggregator,
+		HandlerID:      eventbus.HandlerID("test_slow_suffix"),
 		HandlerTier:    eventbus.TierLow,
 		HandlerOrder:   50,
 		HandlerTimeout: 250 * time.Millisecond,

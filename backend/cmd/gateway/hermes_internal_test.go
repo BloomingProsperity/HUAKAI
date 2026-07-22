@@ -1,263 +1,80 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
 
-	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 )
 
-func TestInternalRunnerBootstrapRequiresHMACAndIssuesVerifiableJWT(t *testing.T) {
-	// 回归：bootstrap 在签发由网关签名的 runner JWT 之前，必须先对内部调用方完成认证。
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	keyStore := hermes.NewKeyStore(newMemoryGatewayJWTKeyQueries())
-	now := time.Unix(1700000000, 0).UTC()
-	d := &deps{
-		cfg: &config.Config{BillingPolicyVersion: "test-1.0", RequestClass: "standard"},
-		hermesBootstrapIssuer: &hermes.BootstrapIssuer{
-			PrivateKey: privateKey,
-			PublicKey:  publicKey,
-			KeyStore:   keyStore,
-			Now:        func() time.Time { return now },
-		},
-		hermesRunnerSharedSecret: []byte("runner-secret"),
-	}
+func Test旧自定义运行器端点已彻底移除(t *testing.T) {
+	d := newHermesGateTestDeps(t)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
-
-	body := []byte(`{"runner_id":"runner-7","tenant_id":7,"actor_user_id":42}`)
-
-	unsigned := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
-	setRunnerIdentityHeaders(unsigned, "7", "42")
-	unsignedRec := httptest.NewRecorder()
-	r.ServeHTTP(unsignedRec, unsigned)
-	if unsignedRec.Code != http.StatusUnauthorized {
-		t.Fatalf("unsigned status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/internal/runner/bootstrap"},
+		{http.MethodPost, "/internal/runner/refresh"},
+		{http.MethodGet, "/internal/keys"},
 	}
-
-	wrong := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
-	signInternalRunnerRequest(wrong, body, "wrong-secret", time.Now().UTC(), "7", "42")
-	wrongRec := httptest.NewRecorder()
-	r.ServeHTTP(wrongRec, wrong)
-	if wrongRec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong HMAC status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(body))
-	signInternalRunnerRequest(req, body, "runner-secret", time.Now().UTC(), "7", "42")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("signed status=%d body=%s want 200", rec.Code, rec.Body.String())
-	}
-	token := extractJSONToken(t, rec.Body.String())
-	claims, err := hermes.VerifyAt(publicKey, token, now)
-	if err != nil {
-		t.Fatalf("Verify bootstrap token: %v", err)
-	}
-	if claims.Sub != "runner-7" || claims.Kid == "" {
-		t.Fatalf("claims=%+v want runner subject and kid", claims)
+	for _, tc := range tests {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s 状态码=%d，响应=%s，期望 404", tc.method, tc.path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
-func TestInternalRunnerBootstrapRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// 回归：请求体中的 tenant/user 不得回填审计身份；内部头缺失或为零值时不能签发 JWT。
-	d, auditStore, _, _ := newHermesInternalTestDeps(t)
+// TestHermesMCP仅挂在内部路径，防止官方 runner 的工具入口被用户 API 路由误暴露。
+func TestHermesMCP仅挂在内部路径(t *testing.T) {
+	d := newHermesGateTestDeps(t)
+	d.hermesMCPHandler = hermeschat.NewMCPHandler(
+		[]byte("mcp-test-secret"), hermesops.NewRegistry(), nil, nil, nil, true, false,
+	)
 	r := chi.NewRouter()
 	mountRoutes(r, d, zap.NewNop())
 
-	bodyWithIDs := []byte(`{"runner_id":"runner-7","tenant_id":7,"actor_user_id":42}`)
-	zeroTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(zeroTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "0", "42")
-	zeroRec := httptest.NewRecorder()
-	r.ServeHTTP(zeroRec, zeroTenant)
-	if zeroRec.Code != http.StatusUnauthorized {
-		t.Fatalf("zero header tenant status=%d body=%s want 401", zeroRec.Code, zeroRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after rejected zero tenant=%d want 0", len(auditStore.auditArgs))
+	internal := httptest.NewRequest(http.MethodPost, "/internal/hermes/mcp", nil)
+	internalRec := httptest.NewRecorder()
+	r.ServeHTTP(internalRec, internal)
+	if internalRec.Code != http.StatusUnauthorized {
+		t.Fatalf("内部 MCP 无令牌状态码=%d，响应=%s，期望 401", internalRec.Code, internalRec.Body.String())
 	}
 
-	missingTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "", "42")
-	missingRec := httptest.NewRecorder()
-	r.ServeHTTP(missingRec, missingTenant)
-	if missingRec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing header tenant status=%d body=%s want 401", missingRec.Code, missingRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after rejected missing tenant=%d want 0", len(auditStore.auditArgs))
-	}
-
-	bodyWithoutIDs := []byte(`{"runner_id":"runner-7"}`)
-	complete := httptest.NewRequest(http.MethodPost, "/internal/runner/bootstrap", bytes.NewReader(bodyWithoutIDs))
-	signInternalRunnerRequest(complete, bodyWithoutIDs, "runner-secret", time.Now().UTC(), "7", "42")
-	completeRec := httptest.NewRecorder()
-	r.ServeHTTP(completeRec, complete)
-	if completeRec.Code != http.StatusOK {
-		t.Fatalf("complete signed status=%d body=%s want 200", completeRec.Code, completeRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 1 {
-		t.Fatalf("audit rows after complete signed request=%d want 1", len(auditStore.auditArgs))
-	}
-	got := auditStore.auditArgs[0]
-	if got.TenantID != 7 || got.ActorUserID != 42 || got.Action != hermes.ActionProfileRotate || got.Result != hermes.AuditResultSuccess {
-		t.Fatalf("audit arg=%+v want tenant=7 actor=42 rotate success", got)
+	public := httptest.NewRequest(http.MethodPost, "/v1/hermes/mcp", nil)
+	publicRec := httptest.NewRecorder()
+	r.ServeHTTP(publicRec, public)
+	if publicRec.Code != http.StatusServiceUnavailable || !strings.Contains(publicRec.Body.String(), "hermes_admin_backend_error") {
+		t.Fatalf("公开 Hermes 前缀状态码=%d，响应=%s；不得落到 MCP 处理器或普通用户入口", publicRec.Code, publicRec.Body.String())
 	}
 }
 
-func TestInternalRunnerRefreshRequiresPositiveSignedAuditIdentity(t *testing.T) {
-	// 回归：refresh 时的审计身份必须来自内部头，而非可选的请求体字段。
-	d, auditStore, _, now := newHermesInternalTestDeps(t)
-	issuedAt := *now
-	token, err := d.hermesBootstrapIssuer.IssueBootstrapJWT(context.Background(), "runner-7")
-	if err != nil {
-		t.Fatalf("IssueBootstrapJWT: %v", err)
-	}
-	*now = issuedAt.Add(14 * time.Minute)
-	r := chi.NewRouter()
-	mountRoutes(r, d, zap.NewNop())
-
-	bodyWithIDs := []byte(`{"token":"` + token + `","tenant_id":7,"actor_user_id":42}`)
-
-	unsigned := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
-	setRunnerIdentityHeaders(unsigned, "7", "42")
-	unsignedRec := httptest.NewRecorder()
-	r.ServeHTTP(unsignedRec, unsigned)
-	if unsignedRec.Code != http.StatusUnauthorized {
-		t.Fatalf("unsigned refresh status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after unsigned refresh=%d want 0", len(auditStore.auditArgs))
-	}
-
-	wrong := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(wrong, bodyWithIDs, "wrong-secret", time.Now().UTC(), "7", "42")
-	wrongRec := httptest.NewRecorder()
-	r.ServeHTTP(wrongRec, wrong)
-	if wrongRec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong HMAC refresh status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after wrong-HMAC refresh=%d want 0", len(auditStore.auditArgs))
-	}
-
-	zeroTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(zeroTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "0", "42")
-	zeroRec := httptest.NewRecorder()
-	r.ServeHTTP(zeroRec, zeroTenant)
-	if zeroRec.Code != http.StatusUnauthorized {
-		t.Fatalf("zero header tenant refresh status=%d body=%s want 401", zeroRec.Code, zeroRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after rejected zero tenant refresh=%d want 0", len(auditStore.auditArgs))
-	}
-
-	missingTenant := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithIDs))
-	signInternalRunnerRequest(missingTenant, bodyWithIDs, "runner-secret", time.Now().UTC(), "", "42")
-	missingRec := httptest.NewRecorder()
-	r.ServeHTTP(missingRec, missingTenant)
-	if missingRec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing header tenant refresh status=%d body=%s want 401", missingRec.Code, missingRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 0 {
-		t.Fatalf("audit rows after rejected missing tenant refresh=%d want 0", len(auditStore.auditArgs))
-	}
-
-	bodyWithoutIDs := []byte(`{"token":"` + token + `"}`)
-	complete := httptest.NewRequest(http.MethodPost, "/internal/runner/refresh", bytes.NewReader(bodyWithoutIDs))
-	signInternalRunnerRequest(complete, bodyWithoutIDs, "runner-secret", time.Now().UTC(), "7", "42")
-	completeRec := httptest.NewRecorder()
-	r.ServeHTTP(completeRec, complete)
-	if completeRec.Code != http.StatusOK {
-		t.Fatalf("complete signed refresh status=%d body=%s want 200", completeRec.Code, completeRec.Body.String())
-	}
-	if len(auditStore.auditArgs) != 1 {
-		t.Fatalf("audit rows after complete signed refresh=%d want 1", len(auditStore.auditArgs))
-	}
-	got := auditStore.auditArgs[0]
-	if got.TenantID != 7 || got.ActorUserID != 42 || got.Action != hermes.ActionProfileRotate || got.Result != hermes.AuditResultSuccess {
-		t.Fatalf("refresh audit arg=%+v want tenant=7 actor=42 rotate success", got)
-	}
-}
-
-func TestInternalRunnerKeysRequiresHMACProof(t *testing.T) {
-	// 回归：只能伪造内部头的调用方，不得读取到活跃的 JWT 公钥。
-	d, _, _, _ := newHermesInternalTestDeps(t)
-	r := chi.NewRouter()
-	mountRoutes(r, d, zap.NewNop())
-
-	unsigned := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
-	setRunnerIdentityHeaders(unsigned, "7", "42")
-	unsignedRec := httptest.NewRecorder()
-	r.ServeHTTP(unsignedRec, unsigned)
-	if unsignedRec.Code != http.StatusUnauthorized {
-		t.Fatalf("unsigned keys status=%d body=%s want 401", unsignedRec.Code, unsignedRec.Body.String())
-	}
-
-	wrong := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
-	signInternalRunnerRequest(wrong, nil, "wrong-secret", time.Now().UTC(), "7", "42")
-	wrongRec := httptest.NewRecorder()
-	r.ServeHTTP(wrongRec, wrong)
-	if wrongRec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong HMAC keys status=%d body=%s want 401", wrongRec.Code, wrongRec.Body.String())
-	}
-
-	tampered := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
-	signInternalRunnerRequest(tampered, nil, "runner-secret", time.Now().UTC(), "7", "42")
-	tampered.Header.Set(hermes.HeaderTenant, "8")
-	tamperedRec := httptest.NewRecorder()
-	r.ServeHTTP(tamperedRec, tampered)
-	if tamperedRec.Code != http.StatusUnauthorized {
-		t.Fatalf("tampered tenant keys status=%d body=%s want 401", tamperedRec.Code, tamperedRec.Body.String())
-	}
-
-	valid := httptest.NewRequest(http.MethodGet, "/internal/keys", nil)
-	signInternalRunnerRequest(valid, nil, "runner-secret", time.Now().UTC(), "7", "42")
-	validRec := httptest.NewRecorder()
-	r.ServeHTTP(validRec, valid)
-	if validRec.Code != http.StatusOK {
-		t.Fatalf("valid HMAC keys status=%d body=%s want 200", validRec.Code, validRec.Body.String())
-	}
-}
-
-func TestBuildHermesChatBridgeRequiresDedicatedInternalTokenSecret(t *testing.T) {
-	// 回归：当 runner 共享密钥存在但 bridge token 密钥缺失时，/chat 必须 fail closed。
-	t.Setenv(hermeschat.InternalTokenSecretEnv, "")
-
+func TestBuildHermesChatBridge必须使用专用内部令牌密钥(t *testing.T) {
 	keys := mustGatewayHermesContentKeys(t)
-	bridge, err := buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys, nil, nil, true, false)
+	service := hermes.NewService(&hermesAuditStoreSpy{})
+	bridge, err := buildHermesChatBridge(service, nil, nil, keys, nil)
 	if !errors.Is(err, hermes.ErrMisconfigured) || bridge != nil {
-		t.Fatalf("bridge=%v err=%v want misconfigured nil bridge without %s", bridge, err, hermeschat.InternalTokenSecretEnv)
+		t.Fatalf("桥接器=%v，错误=%v；缺少 %s 时应关闭入口", bridge, err, hermeschat.InternalTokenSecretEnv)
 	}
 
-	t.Setenv(hermeschat.InternalTokenSecretEnv, "dedicated-internal-token-secret")
-	bridge, err = buildHermesChatBridge(hermes.NewService(&hermesAuditStoreSpy{}), nil, nil, keys, nil, nil, true, false)
+	bridge, err = buildHermesChatBridge(service, nil, nil, keys, []byte("dedicated-internal-token-secret"))
 	if err != nil || bridge == nil {
-		t.Fatalf("bridge=%v err=%v want bridge with explicit %s", bridge, err, hermeschat.InternalTokenSecretEnv)
+		t.Fatalf("桥接器=%v，错误=%v；配置专用密钥后应成功", bridge, err)
 	}
 }
 
@@ -265,130 +82,9 @@ func mustGatewayHermesContentKeys(t *testing.T) credentialstore.KeyProvider {
 	t.Helper()
 	keys, err := credentialstore.NewStaticKeyProvider("gateway-hermes-test", []byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
-		t.Fatalf("NewStaticKeyProvider: %v", err)
+		t.Fatalf("创建测试内容密钥失败：%v", err)
 	}
 	return keys
-}
-
-func signInternalRunnerRequest(req *http.Request, body []byte, secret string, now time.Time, tenant, user string) {
-	timestamp := "1700000000"
-	if !now.IsZero() {
-		timestamp = strconv.FormatInt(now.Unix(), 10)
-	}
-	req.Header.Set(hermes.HeaderTimestamp, timestamp)
-	req.Header.Set(hermes.HeaderTenant, tenant)
-	req.Header.Set(hermes.HeaderUser, user)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(req.Method))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(req.URL.Path))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(req.URL.RawQuery))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(tenant))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(user))
-	mac.Write([]byte("\n"))
-	mac.Write(body)
-	req.Header.Set(hermes.HeaderSignature, hex.EncodeToString(mac.Sum(nil)))
-}
-
-func setRunnerIdentityHeaders(req *http.Request, tenant, user string) {
-	if tenant != "" {
-		req.Header.Set(hermes.HeaderTenant, tenant)
-	}
-	if user != "" {
-		req.Header.Set(hermes.HeaderUser, user)
-	}
-}
-
-func extractJSONToken(t *testing.T, body string) string {
-	t.Helper()
-	const marker = `"token":"`
-	start := strings.Index(body, marker)
-	if start < 0 {
-		t.Fatalf("body=%s missing token", body)
-	}
-	start += len(marker)
-	end := strings.Index(body[start:], `"`)
-	if end < 0 {
-		t.Fatalf("body=%s unterminated token", body)
-	}
-	return body[start : start+end]
-}
-
-func newHermesInternalTestDeps(t *testing.T) (*deps, *hermesAuditStoreSpy, ed25519.PublicKey, *time.Time) {
-	t.Helper()
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
-	}
-	keyStore := hermes.NewKeyStore(newMemoryGatewayJWTKeyQueries())
-	now := time.Unix(1700000000, 0).UTC()
-	auditStore := &hermesAuditStoreSpy{}
-	d := &deps{
-		cfg: &config.Config{BillingPolicyVersion: "test-1.0", RequestClass: "standard"},
-		hermesBootstrapIssuer: &hermes.BootstrapIssuer{
-			PrivateKey: privateKey,
-			PublicKey:  publicKey,
-			KeyStore:   keyStore,
-			Now:        func() time.Time { return now },
-		},
-		hermesService:            hermes.NewService(auditStore),
-		hermesKeyStore:           keyStore,
-		hermesRunnerSharedSecret: []byte("runner-secret"),
-	}
-	return d, auditStore, publicKey, &now
-}
-
-type memoryGatewayJWTKeyQueries struct {
-	keys map[string]dbhermes.HermesJwtKey
-}
-
-func newMemoryGatewayJWTKeyQueries() *memoryGatewayJWTKeyQueries {
-	return &memoryGatewayJWTKeyQueries{keys: make(map[string]dbhermes.HermesJwtKey)}
-}
-
-func (m *memoryGatewayJWTKeyQueries) InsertJWTKey(_ context.Context, arg dbhermes.InsertJWTKeyParams) (dbhermes.HermesJwtKey, error) {
-	now := time.Unix(1700000000, 0).UTC()
-	row := dbhermes.HermesJwtKey{
-		Kid:          arg.Kid,
-		Alg:          arg.Alg,
-		PublicKeyPem: arg.PublicKeyPem,
-		ValidFrom:    pgtype.Timestamptz{Time: now, Valid: true},
-		ValidUntil:   arg.ValidUntil,
-		CreatedAt:    pgtype.Timestamptz{Time: now, Valid: true},
-	}
-	m.keys[arg.Kid] = row
-	return row, nil
-}
-
-func (m *memoryGatewayJWTKeyQueries) GetActiveJWTKeys(context.Context) ([]dbhermes.HermesJwtKey, error) {
-	rows := make([]dbhermes.HermesJwtKey, 0, len(m.keys))
-	for _, row := range m.keys {
-		rows = append(rows, row)
-	}
-	return rows, nil
-}
-
-func (m *memoryGatewayJWTKeyQueries) GetJWTKeyByKid(_ context.Context, kid string) (dbhermes.HermesJwtKey, error) {
-	row, ok := m.keys[kid]
-	if !ok {
-		return dbhermes.HermesJwtKey{}, hermes.ErrNotFound
-	}
-	return row, nil
-}
-
-func (m *memoryGatewayJWTKeyQueries) RevokeJWTKey(_ context.Context, kid string) (int64, error) {
-	row, ok := m.keys[kid]
-	if !ok {
-		return 0, nil
-	}
-	row.RevokedAt = pgtype.Timestamptz{Time: time.Unix(1700000000, 0).UTC(), Valid: true}
-	m.keys[kid] = row
-	return 1, nil
 }
 
 type hermesAuditStoreSpy struct {
@@ -415,10 +111,6 @@ func (s *hermesAuditStoreSpy) DisableHermes(context.Context, dbhermes.DisableHer
 	return dbhermes.HermesSetting{}, nil
 }
 
-func (s *hermesAuditStoreSpy) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	return 0, nil
-}
-
 func (s *hermesAuditStoreSpy) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
 	return dbhermes.HermesConversation{}, nil
 }
@@ -442,11 +134,9 @@ func (s *hermesAuditStoreSpy) GetSettings(context.Context, dbhermes.GetSettingsP
 func (s *hermesAuditStoreSpy) InsertAuditEvent(_ context.Context, arg dbhermes.InsertAuditEventParams) (dbhermes.HermesAuditEvent, error) {
 	s.auditArgs = append(s.auditArgs, arg)
 	return dbhermes.HermesAuditEvent{
-		ID:          int64(len(s.auditArgs)),
-		TenantID:    arg.TenantID,
-		ActorUserID: arg.ActorUserID,
-		Action:      arg.Action,
-		Result:      arg.Result,
+		ID: int64(len(s.auditArgs)), TenantID: arg.TenantID,
+		Action: arg.Action, Result: arg.Result, LogCategory: arg.LogCategory,
+		ActorSource: arg.ActorSource, ActorID: arg.ActorID, ActorRole: gatewayStringPtr(arg.ActorRole),
 	}, nil
 }
 
@@ -472,4 +162,11 @@ func (s *hermesAuditStoreSpy) UpdateConversationLastMessageAt(context.Context, d
 
 func (s *hermesAuditStoreSpy) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {
 	return dbhermes.HermesSetting{}, nil
+}
+
+func gatewayStringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

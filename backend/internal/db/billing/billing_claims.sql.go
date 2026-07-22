@@ -41,7 +41,8 @@ SELECT
     id,
     request_fingerprint,
     status,
-    attempt_seq
+    attempt_seq,
+    billing_effect
 FROM billing_ledger_claims
 WHERE tenant_id = $1 AND api_key_id = $2 AND idempotency_key = $3
 FOR UPDATE
@@ -58,6 +59,7 @@ type GetClaimByIdempotencyRow struct {
 	RequestFingerprint string `db:"request_fingerprint" json:"request_fingerprint"`
 	Status             string `db:"status" json:"status"`
 	AttemptSeq         int32  `db:"attempt_seq" json:"attempt_seq"`
+	BillingEffect      string `db:"billing_effect" json:"billing_effect"`
 }
 
 // F-OBS-001 Tx1/Tx2 billing ledger claim queries.
@@ -75,6 +77,7 @@ func (q *Queries) GetClaimByIdempotency(ctx context.Context, arg GetClaimByIdemp
 		&i.RequestFingerprint,
 		&i.Status,
 		&i.AttemptSeq,
+		&i.BillingEffect,
 	)
 	return i, err
 }
@@ -126,9 +129,10 @@ INSERT INTO billing_ledger_claims (
     tenant_id, idempotency_key, request_fingerprint,
     api_key_id, user_id, logical_request_id, endpoint_family,
     requested_model, pooling_group_id, billing_policy_version, request_class,
-    predicted_cost, currency_code, lease_expires_at
+    predicted_cost, currency_code, lease_expires_at, billing_effect
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    COALESCE(NULLIF($15::text, ''), 'user_charge')
 )
 RETURNING id, status, reserved_at, attempt_seq
 `
@@ -148,6 +152,7 @@ type InsertClaimParams struct {
 	PredictedCost        decimal.Decimal    `db:"predicted_cost" json:"predicted_cost"`
 	CurrencyCode         string             `db:"currency_code" json:"currency_code"`
 	LeaseExpiresAt       pgtype.Timestamptz `db:"lease_expires_at" json:"lease_expires_at"`
+	BillingEffect        string             `db:"billing_effect" json:"billing_effect"`
 }
 
 type InsertClaimRow struct {
@@ -176,6 +181,7 @@ func (q *Queries) InsertClaim(ctx context.Context, arg InsertClaimParams) (Inser
 		arg.PredictedCost,
 		arg.CurrencyCode,
 		arg.LeaseExpiresAt,
+		arg.BillingEffect,
 	)
 	var i InsertClaimRow
 	err := row.Scan(

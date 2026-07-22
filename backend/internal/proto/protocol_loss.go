@@ -1,5 +1,12 @@
 package proto
 
+import "errors"
+
+var (
+	ErrUnknownEventType = errors.New("proto: unknown upstream event type")
+	ErrNotImplemented   = errors.New("proto: not implemented")
+)
+
 // ProtocolLossSeverity 是 v0.4 ProtocolLossEntry 的严重等级。
 //
 //   - info：native 建议或 policy note；请求可继续。

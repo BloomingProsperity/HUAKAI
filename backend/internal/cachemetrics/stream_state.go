@@ -38,21 +38,6 @@ func ObserveStreamState(state, vendor, model string) {
 	counter.Add(streamStateLabelKey(vendor, model), 1)
 }
 
-func SnapshotStreamState(state string) map[string]int64 {
-	initStreamStateCounters()
-	out := map[string]int64{}
-	counter := streamStateCounters[state]
-	if counter == nil {
-		return out
-	}
-	counter.Do(func(kv expvar.KeyValue) {
-		if v, ok := kv.Value.(*expvar.Int); ok {
-			out[kv.Key] = v.Value()
-		}
-	})
-	return out
-}
-
 func streamStateLabelKey(vendor, model string) string {
 	if vendor == "" {
 		vendor = "unknown"

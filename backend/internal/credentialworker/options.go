@@ -33,36 +33,10 @@ func WithRotationScan(store RotationStore, maxAge time.Duration, limit int, aler
 	}
 }
 
-// withRotationClassifier 覆盖可刷新性分类器(仅供测试:让单元测试可以钉死哪个
-// (vendor, auth_mode) 被当作可刷新,而无需搭起完整的 mode-handler registry)。
-func withRotationClassifier(classifier RefreshClassifier) Option {
-	return func(s *Scheduler) {
-		if classifier != nil {
-			s.rotationClassifier = classifier
-		}
-	}
-}
-
-func WithInterval(d time.Duration) Option {
-	return func(s *Scheduler) {
-		if d > 0 {
-			s.interval = d
-		}
-	}
-}
-
 func WithRefreshTimeout(d time.Duration) Option {
 	return func(s *Scheduler) {
 		if d > 0 {
 			s.refreshTimeout = d
-		}
-	}
-}
-
-func WithWarningWindow(d time.Duration) Option {
-	return func(s *Scheduler) {
-		if d > 0 {
-			s.warningWindow = d
 		}
 	}
 }
@@ -118,12 +92,6 @@ func WithAuditLedgerSigner(signer any) Option {
 		if signer != nil {
 			s.auditSigner = signer
 		}
-	}
-}
-
-func WithProviderAccountHealthPolicy(policy ProviderAccountHealthPolicy) Option {
-	return func(s *Scheduler) {
-		s.healthPolicy = policy.normalized()
 	}
 }
 

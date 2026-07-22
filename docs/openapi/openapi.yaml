@@ -50,9 +50,9 @@ tags:
   - name: gateway
     description: Client-facing relay endpoints. F-GW-002 + F-PROTO-002 + F-AUTH-005.
   - name: hermes
-    description: Optional Hermes assistant settings, profile management, and runner proxy endpoints.
+    description: 部署者与获授权租户管理员使用的 Hermes 运维助手端点。
   - name: hermes-internal
-    description: Internal Hermes runner bootstrap, JWT refresh, and public-key sync endpoints.
+    description: Hermes Runner 使用的内部模型代理与 MCP 端点。
   - name: auth
     description: HUAKAI platform User authentication. F-AUTH-007.
   - name: user-passkeys
@@ -2942,9 +2942,9 @@ paths:
   /v1/hermes/settings:
     get:
       tags: [hermes]
-      summary: Read Hermes settings for the authenticated user
+      summary: 读取当前管理员所属租户的 Hermes 设置
       operationId: getHermesSettings
-      description: Returns the caller's Hermes enablement state and selected API source.
+      description: 租户来源完全由管理员身份推导，不接受请求覆盖。
       responses:
         '200':
           description: Current Hermes settings for the bearer-authenticated user.
@@ -2964,9 +2964,9 @@ paths:
   /v1/hermes/settings/enable:
     post:
       tags: [hermes]
-      summary: Enable Hermes for the authenticated user
+      summary: 为当前管理员所属租户启用 Hermes
       operationId: enableHermesSettings
-      description: Enables Hermes with managed HUAKAI API access or a caller-owned dedicated profile.
+      description: 选择当前租户自己的外部 OpenAI 兼容配置和模型后启用 Hermes。
       requestBody:
         required: false
         content:
@@ -2974,8 +2974,10 @@ paths:
             schema:
               type: object
               properties:
-                api_source: { type: string, enum: [managed_huakai_api, dedicated_group] }
-                profile_id: { type: integer, format: int64, nullable: true }
+                api_source: { type: string, enum: [external_openai_compatible] }
+                profile_id: { type: integer, format: int64, minimum: 1 }
+                model: { type: string, minLength: 1, maxLength: 255 }
+              required: [profile_id, model]
       responses:
         '200':
           description: Hermes was enabled and the current settings are returned.
@@ -3200,160 +3202,12 @@ paths:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
-  /internal/runner/bootstrap:
-    post:
-      tags: [hermes-internal]
-      summary: Issue an initial Hermes runner JWT
-      operationId: bootstrapHermesRunnerJWT
-      description: >-
-        Internal endpoint that issues a short-lived EdDSA JWT for a Hermes runner.
-        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
-        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
-        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
-      security: []
-      parameters:
-        - name: X-Hermes-Signature
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Timestamp
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Tenant
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-User
-          in: header
-          required: true
-          schema: { type: string }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [runner_id]
-              properties:
-                runner_id: { type: string, minLength: 1 }
-                tenant_id: { type: integer, format: int64, minimum: 1 }
-                actor_user_id: { type: integer, format: int64, minimum: 1 }
-      responses:
-        '200':
-          description: Bootstrap JWT.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [token]
-                properties:
-                  token: { type: string }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
-
-  /internal/runner/refresh:
-    post:
-      tags: [hermes-internal]
-      summary: Refresh a Hermes runner JWT
-      operationId: refreshHermesRunnerJWT
-      description: >-
-        Internal endpoint that verifies an existing Hermes JWT and returns a replacement before expiry.
-        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
-        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
-        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
-      security: []
-      parameters:
-        - name: X-Hermes-Signature
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Timestamp
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Tenant
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-User
-          in: header
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Refreshed JWT.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [token]
-                properties:
-                  token: { type: string }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
-
-  /internal/keys:
-    get:
-      tags: [hermes-internal]
-      summary: List active Hermes JWT public keys
-      operationId: listHermesRunnerJWTKeys
-      description: >-
-        Internal public-key sync endpoint for Hermes runner local verifier cache.
-        Requires HMAC proof: X-Hermes-Signature, X-Hermes-Timestamp, X-Hermes-Tenant,
-        X-Hermes-User computed over `<timestamp>\n<method>\n<path>\n<raw_query>\n<tenant>\n<user>\n`
-        + body, signed with HUAKAI_HERMES_INTERNAL_SHARED_SECRET HMAC-SHA256.
-      security: []
-      parameters:
-        - name: X-Hermes-Signature
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Timestamp
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-Tenant
-          in: header
-          required: true
-          schema: { type: string }
-        - name: X-Hermes-User
-          in: header
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Active public keys.
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [keys]
-                properties:
-                  keys:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: false
-                      required: [kid, alg, public_key_pem]
-                      properties:
-                        kid: { type: string }
-                        alg: { type: string, enum: [EdDSA] }
-                        public_key_pem: { type: string }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
-
   /v1/hermes/api-profiles:
     get:
       tags: [hermes]
-      summary: List caller-owned Hermes API profiles
+      summary: 列出当前租户的 Hermes 外部模型配置
       operationId: listHermesAPIProfiles
-      description: Lists API profiles the authenticated user may select for Hermes dedicated-group mode.
+      description: 只返回 URL、模型配置元数据和 Key 掩码，不返回明文或加密信封字段。
       responses:
         '200':
           description: Profile list.
@@ -3369,21 +3223,20 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
     post:
       tags: [hermes]
-      summary: Create a Hermes API profile
+      summary: 创建 Hermes 外部模型配置
       operationId: createHermesAPIProfile
-      description: Creates a caller-owned profile for managed or dedicated Hermes API routing.
+      description: API Key 使用租户绑定的 AES-256-GCM 信封加密后落库。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [name, kind]
+              required: [name, base_url, api_key]
               properties:
-                name: { type: string, minLength: 1 }
-                kind: { type: string, enum: [managed_huakai_api, dedicated_group] }
-                api_key_id: { type: integer, format: int64, nullable: true }
-                pool_group_id: { type: integer, format: int64, nullable: true }
+                name: { type: string, minLength: 1, maxLength: 255 }
+                base_url: { type: string, format: uri, minLength: 8, maxLength: 2048 }
+                api_key: { type: string, minLength: 1, maxLength: 8192, writeOnly: true }
       responses:
         '201':
           description: Profile created.
@@ -3416,6 +3269,38 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [hermes]
+      summary: 原子轮换 Hermes 外部模型 URL 与 Key
+      operationId: rotateHermesAPIProfile
+      description: 使用乐观版本检查更新加密凭据并在同一事务写入分类日志。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, base_url, api_key]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 255 }
+                base_url: { type: string, format: uri, minLength: 8, maxLength: 2048 }
+                api_key: { type: string, minLength: 1, maxLength: 8192, writeOnly: true }
+      responses:
+        '200':
+          description: 已完成轮换，响应只含 Key 掩码。
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
     delete:
       tags: [hermes]

@@ -52,6 +52,9 @@ type Identity struct {
 	// Nil/空白表示不限制; 带模型的 ingress handler 在解析出请求模型后
 	// 再执行该限制。
 	AllowedModels *string
+	// AllowedPoolGroupID 是服务端签发的单池约束。普通用户 Key 永远为 nil；
+	// 内部运维主体可用它把一次请求钉在管理员配置的池内。
+	AllowedPoolGroupID *int64
 	// UserGroup 是该用户当前订阅档位 (users.user_group, 默认 'default')。
 	// 供 R-SUB-WIRE-1 分组→路由的 GroupPolicyGate 在 pool 选择时限制可用渠道。
 	// 空字符串视同无限制 (向后兼容老链路)。

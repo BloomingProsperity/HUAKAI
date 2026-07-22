@@ -7,9 +7,10 @@
 -- the corresponding api_keys / admin_tokens write so the audit trail is
 -- atomic with the action.
 INSERT INTO admin_audit_events (
-    tenant_id, actor_id, actor_role, action,
+    operation_id, tenant_id, actor_id, actor_role, action,
     target_type, target_id, request_id, reason, payload
 ) VALUES (
+    sqlc.narg(operation_id)::uuid,
     sqlc.narg(tenant_id)::bigint,
     sqlc.arg(actor_id)::text,
     sqlc.arg(actor_role)::text,

@@ -72,18 +72,96 @@ services:
       # 生成后挂载到容器内固定路径;切勿提交私钥进仓库。
       HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-postgres}
       HUAKAI_AUDIT_PRIVATE_KEY_PATH: /run/secrets/audit/key.pem
+      # Hermes 默认关闭。只有显式设置 runner URL 后才加载私钥和内部令牌；模型与 MCP
+      # 都回到本 gateway，继续经过正式账号池、费用证据和日志链。
+      HUAKAI_HERMES_RUNNER_URL: ${HUAKAI_HERMES_RUNNER_URL:-}
+      HUAKAI_HERMES_JWT_PRIVATE_KEY_PATH: /run/secrets/hermes/private.pem
+      HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-compose-hermes}
+      HUAKAI_HERMES_INTERNAL_TOKEN_SECRET: ${HUAKAI_HERMES_INTERNAL_TOKEN_SECRET:-}
+      HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED: ${HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED:-true}
+      HUAKAI_HERMES_LLM_PROPOSE_ENABLED: ${HUAKAI_HERMES_LLM_PROPOSE_ENABLED:-false}
+      HUAKAI_HERMES_MUTATING_ENABLED: ${HUAKAI_HERMES_MUTATING_ENABLED:-true}
     volumes:
       # 运维在宿主生成 ed25519 私钥并经 HUAKAI_AUDIT_PRIVATE_KEY_HOST 指向它
       # (默认 ./secrets/audit_key.pem);只读挂载,容器内路径与上面 env 对应。
       - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
+      # 目录可在 Hermes 关闭时为空；启用前用 generate-keypair.sh 生成密钥。
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}:/run/secrets/hermes:ro
     networks:
       - huakai-prod
+      - huakai-hermes
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # 官方 Hermes 只负责推理循环。该服务默认不随主栈启动；启用时通过隔离内网
+  # 访问 HUAKAI MCP，并通过独立出口网络访问租户配置的外部模型服务。
+  # 它没有宿主端口、持久目录、数据库或 Redis 网络访问。
+  hermes-runner:
+    profiles: ["hermes"]
+    build:
+      context: ./deploy/hermes-runner
+    depends_on:
+      gateway:
+        condition: service_healthy
+      hermes-egress:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8801"
+    environment:
+      HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/public.pem
+      HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-compose-hermes}
+      HUAKAI_HERMES_MCP_URL: http://gateway:8080/internal/hermes/mcp
+      HUAKAI_HERMES_EGRESS_PROXY_URL: http://hermes-egress:8080
+      HUAKAI_HERMES_RUNNER_BIND: 0.0.0.0:8801
+      HUAKAI_HERMES_MAX_CONCURRENCY: ${HUAKAI_HERMES_MAX_CONCURRENCY:-1}
+      HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS: ${HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS:-10}
+      HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS: ${HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS:-240}
+    volumes:
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}/public.pem:/run/secrets/hermes/public.pem:ro
+    read_only: true
+    tmpfs:
+      - /run/huakai-hermes:rw,noexec,nosuid,nodev,size=128m,uid=10101,gid=10101,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 1.0
+    networks:
+      - huakai-hermes
+
+  # runner 没有公网路由；所有外部模型连接必须经过本代理。代理在实际 CONNECT 拨号时
+  # 拒绝内网、回环、链路本地、保留地址和混合 DNS 返回集，并固定已校验的公网 IP。
+  hermes-egress:
+    profiles: ["hermes"]
+    build:
+      context: ./deploy/hermes-runner
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--", "python3", "/app/egress_proxy.py"]
+    environment:
+      HUAKAI_HERMES_EGRESS_BIND: 0.0.0.0:8080
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    networks:
+      - huakai-hermes
+      - huakai-hermes-egress
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # 反向代理 + 自动 HTTPS(一键上线的 TLS 终结层)。Caddy 对 HUAKAI_PUBLIC_DOMAIN 自动签发/
   # 续期 Let's Encrypt 证书(需 80/443 对公网可达 + 域名解析到本机),并反代到内网 gateway:8080。
@@ -163,6 +241,11 @@ networks:
     name: huakai-prod-net
     # 不固定子网:让 docker 自动选可用网段,避免与宿主已有 docker 网络撞车(pool overlap)。
     # gateway 的 HUAKAI_TRUSTED_PROXY_CIDRS 默认覆盖全部 RFC1918,docker 自选网段必落其内。
+  huakai-hermes:
+    name: huakai-hermes-prod-net
+    internal: true
+  huakai-hermes-egress:
+    name: huakai-hermes-prod-egress-net
 
 volumes:
   huakai-prod-pgdata:

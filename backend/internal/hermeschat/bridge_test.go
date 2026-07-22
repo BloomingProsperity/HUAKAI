@@ -19,7 +19,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
-	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
 )
 
@@ -29,11 +28,21 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	store.nextConversationID = 1001
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-done",
-		Body: []byte(`{"messages":[{"role":"user","content":"hi"}],"model":"gpt-test"}`),
+		TenantID: 7, UserID: 42, RequestID: "req-done", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"messages":[{"role":"user","content":"hi"}],"model":"gpt-test","context_window":999}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
+	}
+	var preparedBody map[string]any
+	if err := json.Unmarshal(prepared.Body, &preparedBody); err != nil {
+		t.Fatalf("解析准备后的请求体：%v", err)
+	}
+	if preparedBody["model"] != "gpt-4o" {
+		t.Fatalf("准备后的模型=%v，期望服务端配置覆盖客户端模型", preparedBody["model"])
+	}
+	if _, exists := preparedBody["context_window"]; exists {
+		t.Fatalf("外部兼容模型的上下文窗口不得由 HUAKAI 目录伪造：%v", preparedBody["context_window"])
 	}
 	// 变异检查:若正常路径在校验之后不再创建会话,本夹具就会丢失 gateway 事件。
 	if !store.createdConversation || len(store.conversations) != 1 {
@@ -43,19 +52,22 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 	if err := json.Unmarshal(prepared.Body, &runnerBody); err != nil {
 		t.Fatalf("runner body json: %v", err)
 	}
-	if runnerBody["conversation_id"] != float64(1001) || runnerBody["internal_base_url"] != testInternalBaseURL {
-		t.Fatalf("runner body conversation/base=%v/%v want 1001/%s", runnerBody["conversation_id"], runnerBody["internal_base_url"], testInternalBaseURL)
+	if runnerBody["conversation_id"] != float64(1001) || runnerBody["model_base_url"] != "https://model.example.com/v1" {
+		t.Fatalf("runner body conversation/base=%v/%v want 1001/external model url", runnerBody["conversation_id"], runnerBody["model_base_url"])
 	}
-	token, _ := runnerBody["internal_token"].(string)
-	if token == "" {
-		t.Fatalf("internal_token missing from runner body: %+v", runnerBody)
+	mcpToken, _ := runnerBody["mcp_token"].(string)
+	if mcpToken == "" || runnerBody["model_api_key"] != "sk-test" {
+		t.Fatalf("运行器请求未携带官方模型配置或 MCP 令牌：%+v", runnerBody)
 	}
-	claims, err := VerifyInternalToken(token, []byte(testInternalSecret), time.Unix(1700000000, 0).UTC())
+	claims, err := VerifyInternalToken(mcpToken, []byte(testInternalSecret), time.Unix(1700000000, 0).UTC())
 	if err != nil {
 		t.Fatalf("VerifyInternalToken: %v", err)
 	}
-	if claims.TenantID != 7 || claims.UserID != 42 || claims.RequestID != "req-done" {
+	if claims.Purpose != InternalTokenPurposeMCP || claims.TenantID != 7 || claims.UserID != 42 || claims.RequestID != "req-done" {
 		t.Fatalf("internal token claims=%+v want tenant 7 user 42 request req-done", claims)
+	}
+	if runnerBody["internal_token_expires_at"] != float64(claims.ExpiresAt.Unix()) {
+		t.Fatalf("令牌到期时间=%v，期望与签名声明 %d 一致", runnerBody["internal_token_expires_at"], claims.ExpiresAt.Unix())
 	}
 
 	rec := httptest.NewRecorder()
@@ -117,12 +129,12 @@ func TestBridgeDoneEventTriggersPersist(t *testing.T) {
 func TestBridgePersistFailureEmitsErrorAndSuppressesDone(t *testing.T) {
 	// 回归:若消息持久化在 done 栅栏处失败,客户端必须看到 error,而非一个虚假的 done。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 55}] = dbhermes.HermesConversation{ID: 55, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 55}] = testBridgeConversation(55, 7, 42)
 	store.appendPanic = true
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-persist-fail",
-		Body: []byte(`{"conversation_id":55,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-persist-fail", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":55,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -146,17 +158,79 @@ func TestBridgePersistFailureEmitsErrorAndSuppressesDone(t *testing.T) {
 	if !strings.Contains(got, "event: error") || !strings.Contains(got, "persist_failed") {
 		t.Fatalf("body=%q want persist_failed error event", got)
 	}
+	if store.auditWrites != 1 || store.auditArg.Result != hermes.AuditResultFailure || store.auditArg.LogCategory != "error" {
+		t.Fatalf("失败日志=%d/%s/%s，期望 1/failure/error", store.auditWrites, store.auditArg.Result, store.auditArg.LogCategory)
+	}
+}
+
+func TestBridgeRunner错误会脱敏转发并记录失败日志(t *testing.T) {
+	store := newBridgeStore()
+	store.conversations[conversationKey{tenantID: 7, id: 56}] = testBridgeConversation(56, 7, 42)
+	bridge := mustBridge(t, store)
+	prepared := PreparedRequest{
+		TenantID: 7, UserID: 42, ConversationID: 56, RequestID: "req-runner-error",
+		CorrelationID: "corr-runner-error", ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
+	}
+
+	rec := httptest.NewRecorder()
+	err := bridge.Stream(context.Background(), rec, sseResponse(
+		"event: error\n"+
+			"data: {\"code\":\"provider_request_rejected\",\"message\":\"上游秘密 sk-live-do-not-leak\"}\n\n",
+	), prepared)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"provider_request_rejected"`) || strings.Contains(body, "sk-live-do-not-leak") {
+		t.Fatalf("错误事件未保留官方 code 或泄露 runner 原文：%q", body)
+	}
+	if store.auditWrites != 1 || store.auditArg.Result != hermes.AuditResultFailure || store.auditArg.LogCategory != "error" {
+		t.Fatalf("失败日志=%d/%s/%s，期望 1/failure/error", store.auditWrites, store.auditArg.Result, store.auditArg.LogCategory)
+	}
+	var args map[string]any
+	if err := json.Unmarshal(store.auditArg.SanitizedArgs, &args); err != nil {
+		t.Fatalf("解析失败日志参数：%v", err)
+	}
+	if args["error_class"] != "provider_request_rejected" || args["conversation_id"] != float64(56) {
+		t.Fatalf("失败日志参数=%v", args)
+	}
+}
+
+func TestBridgeRunner意外结束会生成明确错误和失败日志(t *testing.T) {
+	store := newBridgeStore()
+	store.conversations[conversationKey{tenantID: 7, id: 57}] = testBridgeConversation(57, 7, 42)
+	bridge := mustBridge(t, store)
+	prepared := PreparedRequest{
+		TenantID: 7, UserID: 42, ConversationID: 57, RequestID: "req-runner-eof",
+		CorrelationID: "corr-runner-eof", ActorSource: "session", ActorID: 88, ActorRole: "tenant_operator",
+	}
+
+	rec := httptest.NewRecorder()
+	err := bridge.Stream(context.Background(), rec, sseResponse(
+		"event: token\n"+
+			"data: {\"delta\":\"未完成\"}\n\n",
+	), prepared)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "runner_stream_incomplete") || strings.Contains(body, "event: done") {
+		t.Fatalf("意外结束响应=%q", body)
+	}
+	if store.auditWrites != 1 || store.auditArg.Result != hermes.AuditResultFailure || store.auditArg.LogCategory != "error" {
+		t.Fatalf("失败日志=%d/%s/%s，期望 1/failure/error", store.auditWrites, store.auditArg.Result, store.auditArg.LogCategory)
+	}
 }
 
 func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
 	// 回归:在 DELETE 之前已开始的流,不得追加删除后的消息,也不得转发 done。
 	store := newBridgeStore()
 	key := conversationKey{tenantID: 7, id: 66}
-	store.conversations[key] = dbhermes.HermesConversation{ID: 66, TenantID: 7, OwnerUserID: 42}
+	store.conversations[key] = testBridgeConversation(66, 7, 42)
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-delete-race",
-		Body: []byte(`{"conversation_id":66,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-delete-race", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":66,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -185,24 +259,27 @@ func TestBridgeDoesNotPersistDoneAfterConversationDelete(t *testing.T) {
 		t.Fatalf("body=%q want persist_failed error event after delete", got)
 	}
 	// 变异检查:若去掉 AppendMessage 或 SQL 的活跃会话守卫,这里就会记录一条删除后的消息。
-	if len(store.appended) != 0 || store.touchedConversationID != 0 || store.auditArg.Action != "" {
-		t.Fatalf("append/touch/audit=%d/%d/%q want no post-delete writes", len(store.appended), store.touchedConversationID, store.auditArg.Action)
+	if len(store.appended) != 0 || store.touchedConversationID != 0 {
+		t.Fatalf("删除后消息写入/会话触碰=%d/%d，期望 0/0", len(store.appended), store.touchedConversationID)
 	}
-	if store.committedTxs != commitsBeforeDelete {
-		t.Fatalf("committed txs=%d before=%d want rollback after deleted conversation", store.committedTxs, commitsBeforeDelete)
+	if store.auditWrites != 1 || store.auditArg.Result != hermes.AuditResultFailure || store.auditArg.LogCategory != "error" {
+		t.Fatalf("删除竞争失败日志=%d/%s/%s，期望 1/failure/error", store.auditWrites, store.auditArg.Result, store.auditArg.LogCategory)
+	}
+	if store.committedTxs != commitsBeforeDelete+1 {
+		t.Fatalf("提交事务=%d，原值=%d；期望业务事务回滚且仅失败日志事务提交", store.committedTxs, commitsBeforeDelete)
 	}
 }
 
 func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
 	// 回归:消息持久化与主审计必须原子;审计失败必须回滚消息写入。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
 	store.auditErr = errors.New("audit insert failed")
 	bridge := mustBridge(t, store)
 	var err error
 	prepared := PreparedRequest{
 		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-audit-fail",
-		CorrelationID: "corr-audit-fail",
+		CorrelationID: "corr-audit-fail", ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
 	}
 	err = bridge.persistDone(context.Background(), prepared, &streamState{
 		assistantText: strings.Builder{},
@@ -226,12 +303,12 @@ func TestBridgePersistDone_AuditInsertFailureAbortsTransaction(t *testing.T) {
 func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
 	// 回归:正常路径在一个事务里持久化消息与审计,并提交一次。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
 	bridge := mustBridge(t, store)
 	var err error
 	prepared := PreparedRequest{
 		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-audit-ok",
-		CorrelationID: "corr-audit-ok",
+		CorrelationID: "corr-audit-ok", ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
 	}
 	err = bridge.persistDone(context.Background(), prepared, &streamState{
 		assistantText: strings.Builder{},
@@ -257,7 +334,7 @@ func TestBridgePersistDone_AuditInsertSuccessCommitsTransaction(t *testing.T) {
 func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
 	// 回归:Hermes 允许保留用户可见的聊天历史,但新写入的行不得以明文持久化消息文本。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
 	keys := mustHermesChatContentKeys(t)
 	bridge := mustBridgeWithOptions(t, store, WithMessageContentKeys(keys))
 	sentinel := "HERMES_PRIVACY_SENTINEL_plaintext_must_not_be_stored"
@@ -265,6 +342,7 @@ func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
 	state.assistantText.WriteString(sentinel)
 	err := bridge.persistDone(context.Background(), PreparedRequest{
 		TenantID: 7, UserID: 42, ConversationID: 77, RequestID: "req-encrypt",
+		ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
 	}, &state, []byte(`{"total_tokens":2}`))
 	if err != nil {
 		t.Fatalf("persistDone encrypted: %v", err)
@@ -302,12 +380,12 @@ func TestBridgePersistDoneEncryptsMessageContentBeforeStore(t *testing.T) {
 func TestBridgeRejectsRunnerConversationRetarget(t *testing.T) {
 	// 守护的回归:runner 提供的会话 id 不得把已持久化的消息跨用户改向到别处。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
-	store.conversations[conversationKey{tenantID: 7, id: 88}] = dbhermes.HermesConversation{ID: 88, TenantID: 7, OwnerUserID: 99}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
+	store.conversations[conversationKey{tenantID: 7, id: 88}] = testBridgeConversation(88, 7, 99)
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-retarget",
-		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-retarget", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -344,8 +422,8 @@ func TestBridgeSuppressesRunnerConversationDuplicate(t *testing.T) {
 	store.nextConversationID = 1001
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-conversation-echo",
-		Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-conversation-echo", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -379,13 +457,13 @@ func TestBridgeSuppressesRunnerConversationDuplicate(t *testing.T) {
 func TestBridgeUsesTenantScopedConversationOwner(t *testing.T) {
 	// 回归:会话归属必须按 tenant id 校验,否则相同数字 id 可能跨 tenant 串号。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 501}] = dbhermes.HermesConversation{ID: 501, TenantID: 7, OwnerUserID: 42}
-	store.conversations[conversationKey{tenantID: 8, id: 501}] = dbhermes.HermesConversation{ID: 501, TenantID: 8, OwnerUserID: 99}
+	store.conversations[conversationKey{tenantID: 7, id: 501}] = testBridgeConversation(501, 7, 42)
+	store.conversations[conversationKey{tenantID: 8, id: 501}] = testBridgeConversation(501, 8, 99)
 	bridge := mustBridge(t, store)
 
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-tenant-scope",
-		Body: []byte(`{"conversation_id":501,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-tenant-scope", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":501,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -396,6 +474,25 @@ func TestBridgeUsesTenantScopedConversationOwner(t *testing.T) {
 	}
 	if store.getConversationArg.TenantID != 7 || store.getConversationArg.ID != 501 {
 		t.Fatalf("GetConversation arg tenant/id=%d/%d want 7/501", store.getConversationArg.TenantID, store.getConversationArg.ID)
+	}
+	if store.getConversationArg.ActorSource != "token" || store.getConversationArg.ActorID != 99 {
+		t.Fatalf("GetConversation 管理员=%s/%d，期望 token/99", store.getConversationArg.ActorSource, store.getConversationArg.ActorID)
+	}
+}
+
+func TestBridge拒绝续写同租户其他管理员会话(t *testing.T) {
+	store := newBridgeStore()
+	row := testBridgeConversation(502, 7, 42)
+	row.ActorID = 777
+	store.conversations[conversationKey{tenantID: 7, id: 502}] = row
+	bridge := mustBridge(t, store)
+
+	_, err := bridge.PrepareRequest(context.Background(), Request{
+		TenantID: 7, UserID: 42, RequestID: "req-actor-scope", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":502,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
+	})
+	if !errors.Is(err, hermes.ErrNotFound) {
+		t.Fatalf("跨管理员续聊 err=%v，期望不可枚举的 ErrNotFound", err)
 	}
 }
 
@@ -431,7 +528,7 @@ func TestBridgePrepareRequestConversationIDContract(t *testing.T) {
 			bridge := mustBridge(t, store)
 
 			prepared, err := bridge.PrepareRequest(context.Background(), Request{
-				TenantID: 7, UserID: 42, RequestID: "req-conversation-contract", Body: []byte(tc.body),
+				TenantID: 7, UserID: 42, RequestID: "req-conversation-contract", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"), Body: []byte(tc.body), Operator: testBridgeOperator(),
 			})
 			if tc.wantError {
 				if !errors.Is(err, hermes.ErrInvalidInput) {
@@ -525,7 +622,7 @@ func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T)
 			bridge := mustBridge(t, store)
 
 			_, err := bridge.PrepareRequest(context.Background(), Request{
-				TenantID: 7, UserID: 42, RequestID: tc.requestID, Body: []byte(tc.body),
+				TenantID: 7, UserID: 42, RequestID: tc.requestID, Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"), Body: []byte(tc.body), Operator: testBridgeOperator(),
 			})
 			if !errors.Is(err, hermes.ErrInvalidInput) {
 				t.Fatalf("PrepareRequest error=%v want ErrInvalidInput", err)
@@ -538,14 +635,29 @@ func TestBridgePrepareRequestRejectsInvalidChatPayloadBeforeCreate(t *testing.T)
 	}
 }
 
+func TestBridge允许租户配置任意兼容模型名(t *testing.T) {
+	store := newBridgeStore()
+	bridge := mustBridgeWithOptions(t, store)
+
+	prepared, err := bridge.PrepareRequest(context.Background(), Request{
+		TenantID: 7, UserID: 42, RequestID: "req-unknown-model", Model: "unknown-model", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
+	})
+	if err != nil {
+		t.Fatalf("外部兼容模型不应被 HUAKAI 内部目录拒绝：%v", err)
+	}
+	if !store.createdConversation || prepared.ConversationID <= 0 {
+		t.Fatalf("合法外部模型请求没有建立会话：created=%v conversation=%d", store.createdConversation, prepared.ConversationID)
+	}
+}
+
 func TestInternalTokenSignedAndVerifiesSecret(t *testing.T) {
 	// 回归:面向 runner 的请求体必须携带一个已签名的 internal token,而非任何 secret 都接受的 bearer 字符串。
 	now := time.Unix(1700000000, 0).UTC()
 	token, err := SignInternalToken([]byte(testInternalSecret), InternalTokenClaims{
-		TenantID:  7,
-		UserID:    42,
-		RequestID: "req-token",
-		ExpiresAt: now.Add(5 * time.Minute),
+		TenantID: 7, UserID: 42,
+		ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
+		RequestID: "req-token", IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("SignInternalToken: %v", err)
@@ -555,7 +667,7 @@ func TestInternalTokenSignedAndVerifiesSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyInternalToken: %v", err)
 	}
-	if claims.TenantID != 7 || claims.UserID != 42 || claims.RequestID != "req-token" {
+	if claims.TenantID != 7 || claims.UserID != 42 || claims.ActorSource != "token" || claims.ActorID != 99 || claims.ActorRole != "platform_admin" || claims.RequestID != "req-token" {
 		t.Fatalf("claims=%+v want tenant/user/request", claims)
 	}
 	if _, err := VerifyInternalToken(token, []byte("wrong-secret-32-bytes-minimum-value"), now); err == nil {
@@ -564,14 +676,19 @@ func TestInternalTokenSignedAndVerifiesSecret(t *testing.T) {
 }
 
 func TestActionMessageSendIsValidAuditAction(t *testing.T) {
-	// 回归:在 Slice 2.0 的 DB CHECK 迁移之后,hermes.message.send 必须被本地白名单接受。
+	// hermes.message.send 必须被当前日志动作允许清单接受。
 	store := newBridgeStore()
 	svc := hermes.NewService(store)
 
-	err := svc.RecordAudit(context.Background(), 7, 42, hermes.ActionMessageSend, map[string]any{
-		"conversation_id": int64(123),
-		"message_role":    "assistant",
-	}, hermes.AuditResultSuccess, "corr-action", "req-action")
+	err := svc.RecordAudit(context.Background(), hermes.AuditFields{
+		TenantID: 7, ActorSource: "token", ActorID: 99, ActorRole: "platform_admin",
+		Action: hermes.ActionMessageSend,
+		SanitizedArgs: map[string]any{
+			"conversation_id": int64(123),
+			"message_role":    "assistant",
+		},
+		Result: hermes.AuditResultSuccess, CorrelationID: "corr-action", RequestID: "req-action",
+	})
 	if err != nil {
 		t.Fatalf("RecordAudit(ActionMessageSend): %v", err)
 	}
@@ -581,9 +698,19 @@ func TestActionMessageSendIsValidAuditAction(t *testing.T) {
 }
 
 const (
-	testInternalSecret  = "test-internal-secret-32-byte-value"
-	testInternalBaseURL = "http://gateway.internal/internal/v1/openai"
+	testInternalSecret = "test-internal-secret-32-byte-value"
 )
+
+func testBridgeOperator() SessionOperator {
+	return SessionOperator{TenantID: 7, ActorSource: "token", ActorID: 99, Role: "platform_admin"}
+}
+
+func testBridgeConversation(id, tenantID, ownerUserID int64) dbhermes.HermesConversation {
+	return dbhermes.HermesConversation{
+		ID: id, TenantID: tenantID, OwnerUserID: ownerUserID,
+		ActorSource: "token", ActorID: 99,
+	}
+}
 
 func mustBridge(t *testing.T, store *bridgeStore) *Bridge {
 	t.Helper()
@@ -594,7 +721,6 @@ func mustBridgeWithOptions(t *testing.T, store *bridgeStore, opts ...Option) *Br
 	t.Helper()
 	allOpts := []Option{
 		WithInternalTokenSecret([]byte(testInternalSecret)),
-		WithInternalBaseURL(testInternalBaseURL),
 		WithClock(func() time.Time { return time.Unix(1700000000, 0).UTC() }),
 		WithMessageContentKeys(mustHermesChatContentKeys(t)),
 	}
@@ -628,11 +754,11 @@ func sseResponse(body string) *http.Response {
 func TestBridgeDoesNotForwardRunnerFramingHeaders(t *testing.T) {
 	// 回归:gateway 会重写 SSE 字节,因此 runner 的 framing 头会让 net/http 截断或拒绝 body。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-framing",
-		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-framing", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -665,11 +791,11 @@ func TestBridgeDoesNotForwardRunnerFramingHeaders(t *testing.T) {
 func TestBridgeStreamFiltersSensitiveRunnerHeaders(t *testing.T) {
 	// 回归:runner 的响应头不得把凭证或基础设施元数据夹带给客户端。
 	store := newBridgeStore()
-	store.conversations[conversationKey{tenantID: 7, id: 77}] = dbhermes.HermesConversation{ID: 77, TenantID: 7, OwnerUserID: 42}
+	store.conversations[conversationKey{tenantID: 7, id: 77}] = testBridgeConversation(77, 7, 42)
 	bridge := mustBridge(t, store)
 	prepared, err := bridge.PrepareRequest(context.Background(), Request{
-		TenantID: 7, UserID: 42, RequestID: "req-header-firewall",
-		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`),
+		TenantID: 7, UserID: 42, RequestID: "req-header-firewall", Model: "gpt-4o", ModelBaseURL: "https://model.example.com/v1", ModelAPIKey: []byte("sk-test"),
+		Body: []byte(`{"conversation_id":77,"messages":[{"role":"user","content":"hi"}]}`), Operator: testBridgeOperator(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareRequest: %v", err)
@@ -799,7 +925,7 @@ func (s *bridgeStore) AppendMessage(_ context.Context, arg dbhermes.AppendMessag
 		return 0, s.appendErr
 	}
 	row, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ConversationID}]
-	if !ok || row.DeletedAt.Valid {
+	if !ok || row.DeletedAt.Valid || row.OwnerUserID != arg.OwnerUserID || row.ActorSource != arg.ActorSource || row.ActorID != arg.ActorID {
 		return 0, pgx.ErrNoRows
 	}
 	if !s.inTransaction {
@@ -818,6 +944,7 @@ func (s *bridgeStore) CreateConversation(_ context.Context, arg dbhermes.CreateC
 	}
 	s.conversations[conversationKey{tenantID: arg.TenantID, id: id}] = dbhermes.HermesConversation{
 		ID: id, TenantID: arg.TenantID, OwnerUserID: arg.OwnerUserID,
+		ActorSource: arg.ActorSource, ActorID: arg.ActorID, ActorRole: bridgeStringPtr(arg.ActorRole),
 	}
 	return id, nil
 }
@@ -825,7 +952,7 @@ func (s *bridgeStore) CreateConversation(_ context.Context, arg dbhermes.CreateC
 func (s *bridgeStore) GetConversation(_ context.Context, arg dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
 	s.getConversationArg = arg
 	row, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ID}]
-	if !ok {
+	if !ok || row.OwnerUserID != arg.OwnerUserID || row.ActorSource != arg.ActorSource || row.ActorID != arg.ActorID {
 		return dbhermes.HermesConversation{}, pgx.ErrNoRows
 	}
 	return row, nil
@@ -841,7 +968,7 @@ func (s *bridgeStore) ListMessagesByConversation(context.Context, dbhermes.ListM
 
 func (s *bridgeStore) UpdateConversationLastMessageAt(_ context.Context, arg dbhermes.UpdateConversationLastMessageAtParams) (int64, error) {
 	row, ok := s.conversations[conversationKey{tenantID: arg.TenantID, id: arg.ID}]
-	if !ok || row.DeletedAt.Valid {
+	if !ok || row.DeletedAt.Valid || row.OwnerUserID != arg.OwnerUserID || row.ActorSource != arg.ActorSource || row.ActorID != arg.ActorID {
 		return 0, nil
 	}
 	if !s.inTransaction {
@@ -867,9 +994,10 @@ func (s *bridgeStore) InsertAuditEvent(_ context.Context, arg dbhermes.InsertAud
 			panic("audit panic")
 		}
 		return dbhermes.HermesAuditEvent{
-			ID: 1, Ts: arg.Ts, TenantID: arg.TenantID, ActorUserID: arg.ActorUserID,
+			ID: 1, Ts: arg.Ts, TenantID: arg.TenantID,
 			Action: arg.Action, SanitizedArgs: arg.SanitizedArgs, Result: arg.Result,
-			CorrelationID: arg.CorrelationID, RequestID: arg.RequestID,
+			CorrelationID: arg.CorrelationID, RequestID: arg.RequestID, LogCategory: arg.LogCategory,
+			ActorSource: arg.ActorSource, ActorID: arg.ActorID, ActorRole: bridgeStringPtr(arg.ActorRole),
 		}, nil
 	}
 
@@ -885,10 +1013,18 @@ func (s *bridgeStore) InsertAuditEvent(_ context.Context, arg dbhermes.InsertAud
 		panic("audit panic")
 	}
 	return dbhermes.HermesAuditEvent{
-		ID: 1, Ts: arg.Ts, TenantID: arg.TenantID, ActorUserID: arg.ActorUserID,
+		ID: 1, Ts: arg.Ts, TenantID: arg.TenantID,
 		Action: arg.Action, SanitizedArgs: arg.SanitizedArgs, Result: arg.Result,
-		CorrelationID: arg.CorrelationID, RequestID: arg.RequestID,
+		CorrelationID: arg.CorrelationID, RequestID: arg.RequestID, LogCategory: arg.LogCategory,
+		ActorSource: arg.ActorSource, ActorID: arg.ActorID, ActorRole: bridgeStringPtr(arg.ActorRole),
 	}, nil
+}
+
+func bridgeStringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (s *bridgeStore) Exec(_ context.Context, sql string, _ ...interface{}) (pgconn.CommandTag, error) {
@@ -905,10 +1041,6 @@ func (s *bridgeStore) DeleteProfile(context.Context, dbhermes.DeleteProfileParam
 
 func (s *bridgeStore) DisableHermes(context.Context, dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error) {
 	return dbhermes.HermesSetting{}, nil
-}
-
-func (s *bridgeStore) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	return 0, nil
 }
 
 func (s *bridgeStore) GetProfile(context.Context, dbhermes.GetProfileParams) (dbhermes.HermesApiProfile, error) {
@@ -937,26 +1069,4 @@ func (s *bridgeStore) SoftDeleteConversation(context.Context, dbhermes.SoftDelet
 
 func (s *bridgeStore) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {
 	return dbhermes.HermesSetting{}, nil
-}
-
-type warnRecorder struct {
-	messages []string
-}
-
-func (r *warnRecorder) Warnf(format string, args ...any) {
-	r.messages = append(r.messages, fmt.Sprintf(format, args...))
-}
-
-type dlqRecorder struct {
-	id     int64
-	events []legacydlq.Event
-	err    error
-}
-
-func (r *dlqRecorder) Enqueue(_ context.Context, event legacydlq.Event) (int64, error) {
-	r.events = append(r.events, event)
-	if r.err != nil {
-		return 0, r.err
-	}
-	return r.id, nil
 }

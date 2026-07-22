@@ -129,7 +129,8 @@ class JWTVerifyTests(unittest.TestCase):
             if parts and parts[0] == "COPY" and len(parts) >= 3:
                 copy_sources.extend(parts[1:-1])
 
-        self.assertIn("hermes_chat.py", copy_sources)
+        self.assertIn("official_runner.py", copy_sources)
+        self.assertNotIn("hermes_chat.py", copy_sources)
         self.assertIn("sse_events.py", copy_sources)
 
     def _set_env(self, name, value):

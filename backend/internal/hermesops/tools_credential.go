@@ -13,8 +13,8 @@ import (
 //
 //   - DryRun 包装 credentialworker.DryRunProviderAccountCredential —— 一次
 //     非持久化的凭证校验(它会显式清零明文,且从不调用 SaveRefreshSuccess/SaveRefreshFailure)。
-//   - RenewStore 包装 credentialstore.Store.ListRenewStatus —— 对凭证续期元数据
-//     (状态、失败分类、计数)的 SELECT-only 读取。
+//   - ListByAccount 包装 credentialstore.Store.ListByAccount —— 精确读取目标账号的
+//     凭证续期元数据，避免先截取租户列表再筛选造成漏报。
 type CredentialDiagnoseDeps struct {
 	// DryRun 以注入方式提供(而非具体函数),这样未接线时工具会 fail-closed,
 	// 且可用 fake 做单元测试。
@@ -24,8 +24,8 @@ type CredentialDiagnoseDeps struct {
 	// Registry 是 mode-adapter registry;底层函数容忍 nil(会回退到默认值),
 	// 因此 nil 不算接线失败。
 	Registry *credentialworker.ModeAdapterRegistry
-	// RenewStatus 包装 SELECT-only 的续期状态读取。
-	RenewStatus func(ctx context.Context, params credentialstore.ListRenewStatusParams) ([]credentialstore.RenewStatusMetadata, error)
+	// ListByAccount 包装 SELECT-only 的账号凭证读取。
+	ListByAccount func(ctx context.Context, tenantID, accountID int64) ([]credentialstore.CredentialMetadata, error)
 }
 
 // CredentialDiagnoseSpec 构建只读 credential_diagnose 工具。它在不持久化任何东西的前提下
@@ -42,7 +42,9 @@ func CredentialDiagnoseSpec(deps CredentialDiagnoseDeps) ToolSpec {
 		Description:  "Validate a provider account's stored credential (non-persistent dry-run) and report its renew status.",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{"account_id": "provider account id (positive integer, required)"},
+		InputSchema: ObjectSchema(map[string]any{
+			"account_id": PositiveIntegerSchema("要诊断凭据的上游账号 ID"),
+		}, "account_id"),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.DryRun == nil || deps.TestStore == nil {
 				return ToolResult{}, ErrDependencyUnwired
@@ -73,16 +75,12 @@ func CredentialDiagnoseSpec(deps CredentialDiagnoseDeps) ToolSpec {
 
 			// 可选:当 SELECT-only 读取已接线时,把指定 account 的续期状态合并进来。
 			// 缺失续期依赖不是致命错误 —— dry-run 才是主要诊断。
-			if deps.RenewStatus != nil {
-				tenant := req.TenantID
-				rows, rerr := deps.RenewStatus(ctx, credentialstore.ListRenewStatusParams{
-					TenantID: &tenant,
-					Limit:    200,
-				})
+			if deps.ListByAccount != nil {
+				rows, rerr := deps.ListByAccount(ctx, req.TenantID, accountID)
 				if rerr != nil {
 					summary["renew_status_error"] = "renew_status_read_failed"
 				} else {
-					summary["renew_status"] = renewStatusForAccount(rows, accountID)
+					summary["renew_status"] = renewStatusForAccount(rows)
 				}
 			}
 
@@ -94,18 +92,15 @@ func CredentialDiagnoseSpec(deps CredentialDiagnoseDeps) ToolSpec {
 // renewStatusForAccount 把某个 account 的续期状态行投影成仅诊断用的结构
 // (状态 / 分类 / 计数 / ids)。它丢弃每一个非严格诊断用的自由文本 / 身份字段。
 // 当该 account 没有匹配的凭证行时返回 nil。
-func renewStatusForAccount(rows []credentialstore.RenewStatusMetadata, accountID int64) []map[string]any {
+func renewStatusForAccount(rows []credentialstore.CredentialMetadata) []map[string]any {
 	var out []map[string]any
 	for _, r := range rows {
-		if r.AccountID != accountID {
-			continue
-		}
 		out = append(out, map[string]any{
-			"credential_id":        r.CredentialID,
+			"credential_id":        r.ID,
 			"vendor":               r.Vendor,
 			"auth_mode":            r.AuthMode,
 			"state":                r.State,
-			"credential_version":   r.CredentialVersion,
+			"credential_version":   r.Version,
 			"access_expires_at":    timePtrAny(r.AccessExpiresAt),
 			"refresh_before_at":    timePtrAny(r.RefreshBeforeAt),
 			"last_refresh_at":      timePtrAny(r.LastRefreshAt),

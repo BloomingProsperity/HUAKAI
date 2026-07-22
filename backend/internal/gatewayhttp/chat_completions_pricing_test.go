@@ -1251,10 +1251,13 @@ type cacheOverrideResolverStub struct {
 }
 
 func (s *cacheOverrideResolverStub) ResolveMultiplier(tenantID int64, model string) decimal.Decimal {
+	if s == nil {
+		return decimal.NewFromInt(1)
+	}
 	s.calls++
 	s.lastTenantID = tenantID
 	s.lastModel = model
-	if s != nil && tenantID == s.tenantID && model == s.model {
+	if tenantID == s.tenantID && model == s.model {
 		return s.multiplier
 	}
 	return decimal.NewFromInt(1)

@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/auditverifyhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
@@ -370,9 +370,9 @@ func newVerifyGatewayRevoked(t *testing.T) (*sign.Signer, *httptest.Server) {
 	}
 
 	mux := http.NewServeMux()
-	deps := gatewayhttp.AuditVerifyStaticDeps{Ledger: ledger}
-	mux.HandleFunc("/v1/audit/verify", gatewayhttp.NewAuditVerifyHandler(deps))
-	mux.HandleFunc("/v1/audit/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(deps))
+	deps := auditverifyhttp.AuditVerifyStaticDeps{Ledger: ledger}
+	mux.HandleFunc("/v1/audit/verify", auditverifyhttp.NewAuditVerifyHandler(deps))
+	mux.HandleFunc("/v1/audit/merkle-tree.json", auditverifyhttp.NewAuditMerkleTreeHandler(deps))
 	mux.HandleFunc("/.well-known/huakai-pubkey.json", func(w http.ResponseWriter, _ *http.Request) {
 		doc := fmt.Sprintf(`{"keys":[{"fingerprint":%q,"public_key":%q}],"revoked":[{"fingerprint":%q}]}`,
 			signer.Fingerprint(), base64.StdEncoding.EncodeToString(signer.PublicKey()), signer.Fingerprint())
@@ -407,9 +407,9 @@ func newVerifyGateway(t *testing.T) (*sign.Signer, *httptest.Server) {
 	}
 
 	mux := http.NewServeMux()
-	deps := gatewayhttp.AuditVerifyStaticDeps{Ledger: ledger}
-	mux.HandleFunc("/v1/audit/verify", gatewayhttp.NewAuditVerifyHandler(deps))
-	mux.HandleFunc("/v1/audit/merkle-tree.json", gatewayhttp.NewAuditMerkleTreeHandler(deps))
+	deps := auditverifyhttp.AuditVerifyStaticDeps{Ledger: ledger}
+	mux.HandleFunc("/v1/audit/verify", auditverifyhttp.NewAuditVerifyHandler(deps))
+	mux.HandleFunc("/v1/audit/merkle-tree.json", auditverifyhttp.NewAuditMerkleTreeHandler(deps))
 	mux.HandleFunc("/.well-known/huakai-pubkey.json", func(w http.ResponseWriter, _ *http.Request) {
 		doc := fmt.Sprintf(`{"keys":[{"fingerprint":%q,"public_key":%q}]}`,
 			signer.Fingerprint(), base64.StdEncoding.EncodeToString(signer.PublicKey()))
@@ -443,15 +443,15 @@ func newSubstitutingVerifyClient(t *testing.T, entryReqID string, entryTenant in
 		t.Fatalf("append: %v", err)
 	}
 
-	verifyBodyBytes, err := json.Marshal(gatewayhttp.AuditVerifyResponse{
-		LedgerEntry: gatewayhttp.AuditLedgerEntryJSON{
+	verifyBodyBytes, err := json.Marshal(auditverifyhttp.AuditVerifyResponse{
+		LedgerEntry: auditverifyhttp.AuditLedgerEntryJSON{
 			LedgerID:       entry.LedgerID,
 			Timestamp:      entry.Timestamp,
 			RequestID:      entry.RequestID,
 			TenantScopeRef: auditledger.TenantScopeRef(entry.TenantID),
 			HopChain:       entry.HopChain,
 		},
-		ChainProof: gatewayhttp.AuditChainProofJSON{
+		ChainProof: auditverifyhttp.AuditChainProofJSON{
 			PrevMerkleRoot:    fmt.Sprintf("%x", entry.PrevMerkleRoot),
 			MerkleRoot:        fmt.Sprintf("%x", entry.MerkleRoot),
 			Signature:         entry.Signature,

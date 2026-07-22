@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const redisCounterTTLSeconds = 120
 const redisReservationTTL = 24 * time.Hour
 
 var checkAndIncrementScript = redis.NewScript(`
@@ -255,10 +254,6 @@ func redisString(v any) string {
 	default:
 		return fmt.Sprint(x)
 	}
-}
-
-func IsRedisClosed(err error) bool {
-	return errors.Is(err, redis.ErrClosed)
 }
 
 func redisReservationKey(tenantID, claimID int64) string {

@@ -3,7 +3,6 @@ package budgetenforce
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -227,10 +226,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func IsBudgetDenied(err error) bool {
-	return errors.Is(err, budget.ErrDenied) || budget.IsDenied(err)
 }
 
 var _ billing.Settler = (*Settler)(nil)

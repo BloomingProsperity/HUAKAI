@@ -13,7 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const AdvancedAccountIntake = "advanced_account_intake"
+const (
+	AdvancedAccountIntake = "advanced_account_intake"
+	HermesOperations      = "hermes_operations"
+)
 
 var (
 	ErrNotConfigured     = errors.New("tenantcapability: 存储未配置")
@@ -103,13 +106,7 @@ ORDER BY capability`, tenantID)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(out) == 0 {
-		out = append(out, Grant{
-			TenantID: tenantID, Capability: AdvancedAccountIntake,
-			Enabled: false, Configured: false,
-		})
-	}
-	return out, nil
+	return withCapabilityDefaults(tenantID, out), nil
 }
 
 func (s *Store) Set(ctx context.Context, in SetInput) (SetResult, error) {
@@ -128,13 +125,17 @@ func (s *Store) Set(ctx context.Context, in SetInput) (SetResult, error) {
 	if in.TenantID <= 0 || in.Actor == "" || in.ActorRole == "" || in.Reason == "" || len(in.Reason) > 1000 {
 		return SetResult{}, ErrInvalidInput
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// 能力变更是低频管理操作。锁住租户行可让同一租户的并发授权按顺序执行，
+	// 读已提交则保证等待者能看见前一事务的结果，避免缺失记录上的序列化冲突。
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return SetResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var lockedTenantID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR KEY SHARE`, in.TenantID).Scan(&lockedTenantID); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, `SELECT id FROM tenants
+		WHERE id = $1 AND status = 'active' AND deleted_at IS NULL
+		FOR UPDATE`, in.TenantID).Scan(&lockedTenantID); errors.Is(err, pgx.ErrNoRows) {
 		return SetResult{}, ErrTenantNotFound
 	} else if err != nil {
 		return SetResult{}, err
@@ -178,10 +179,26 @@ INSERT INTO admin_audit_events (
 
 func normalizeCapability(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
-	if value != AdvancedAccountIntake {
+	if value != AdvancedAccountIntake && value != HermesOperations {
 		return "", fmt.Errorf("%w: %s", ErrCapabilityUnknown, value)
 	}
 	return value, nil
+}
+
+func withCapabilityDefaults(tenantID int64, configured []Grant) []Grant {
+	byName := make(map[string]Grant, len(configured))
+	for _, grant := range configured {
+		byName[grant.Capability] = grant
+	}
+	out := make([]Grant, 0, 2)
+	for _, capability := range []string{AdvancedAccountIntake, HermesOperations} {
+		grant, ok := byName[capability]
+		if !ok {
+			grant = Grant{TenantID: tenantID, Capability: capability}
+		}
+		out = append(out, grant)
+	}
+	return out
 }
 
 func loadGrantForUpdate(ctx context.Context, tx pgx.Tx, tenantID int64, capability string) (Grant, bool, error) {

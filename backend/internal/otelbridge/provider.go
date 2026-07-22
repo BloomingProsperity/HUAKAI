@@ -27,6 +27,7 @@ func Setup(_ context.Context) (otelmetric.MeterProvider, http.Handler, func(cont
 	registry := prometheus.NewRegistry()
 	exporter, err := otelprom.New(
 		otelprom.WithRegisterer(registry),
+		//lint:ignore SA1019 新策略会同时移除单位后缀，改变既有 /metrics 名称合同。
 		otelprom.WithoutCounterSuffixes(),
 		otelprom.WithoutScopeInfo(),
 		otelprom.WithoutTargetInfo(),

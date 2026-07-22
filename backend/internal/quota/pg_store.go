@@ -34,11 +34,6 @@ func NewPostgresStore(db dbquota.DBTX) *PostgresStore {
 	return store
 }
 
-// NewPGStore 保留短命名构造器, 方便 wiring 侧按 PGStore 接口注入。
-func NewPGStore(db dbquota.DBTX) *PostgresStore {
-	return NewPostgresStore(db)
-}
-
 func (s *PostgresStore) queries() (quotaQueries, error) {
 	if s == nil || s.q == nil {
 		return nil, ErrStoreNotConfigured

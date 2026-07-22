@@ -1,9 +1,4 @@
-// Phase C.2 生产适配器:基于 DB 的 pool.AccountSource。
-//
-// 把 selector 的 account 列举接缝桥接到以 pool_group 为键的 sqlc 查询。
-// 之前的 DBRepository.ListEligibleAccounts 是以 channel 为键的;对于
-// chat-completions 热路径,我们希望从 pool_group → eligible accounts
-// 只走一次往返。
+// 基于数据库的账号来源，把池组维度的 sqlc 查询转换为选号快照。
 //
 // LoadRate 计算为 in_flight_count / cap_concurrency。容量为零的容量行
 // 被当作 load=1.0(由上游 gate 排除,而非悄悄触发除零)。
@@ -26,7 +21,7 @@ type DBAccountSource struct {
 	q *dbbilling.Queries
 }
 
-// NewDBAccountSource 从 sqlc.Queries 句柄构造适配器。
+// NewDBAccountSource 从 sqlc 查询句柄构造适配器。
 func NewDBAccountSource(q *dbbilling.Queries) *DBAccountSource {
 	return &DBAccountSource{q: q}
 }

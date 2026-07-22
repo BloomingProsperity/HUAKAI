@@ -4,33 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 )
 
-func (s *Service) EnableForUser(ctx context.Context, tenantID, userID int64, apiSource string, profileID *int64) error {
+func (s *Service) EnableForUser(ctx context.Context, tenantID, userID int64, apiSource string, profileID *int64, model string) error {
 	if s == nil || s.store == nil {
 		return ErrMisconfigured
 	}
-	_, err := enableForUserWithStore(ctx, s.store, tenantID, userID, apiSource, profileID)
+	_, err := enableForUserWithStore(ctx, s.store, tenantID, userID, apiSource, profileID, model)
 	return err
 }
 
-func (s *Service) EnableForUserWithAudit(ctx context.Context, tenantID, userID int64, apiSource string, profileID *int64, audit AuditFields) (Settings, error) {
+func (s *Service) EnableForUserWithAudit(ctx context.Context, tenantID, userID int64, apiSource string, profileID *int64, model string, audit AuditFields) (Settings, error) {
 	if s == nil || s.store == nil {
 		return Settings{}, ErrMisconfigured
 	}
 	var settings Settings
 	err := s.withTx(ctx, func(store Store) error {
-		row, err := enableForUserWithStore(ctx, store, tenantID, userID, apiSource, profileID)
+		row, err := enableForUserWithStore(ctx, store, tenantID, userID, apiSource, profileID, model)
 		if err != nil {
 			return err
 		}
 		settings = settingsFromRow(row)
 		audit.TenantID = tenantID
-		audit.ActorUserID = userID
 		audit.Result = AuditResultSuccess
 		return recordAuditWithStore(ctx, store, audit)
 	})
@@ -40,7 +40,7 @@ func (s *Service) EnableForUserWithAudit(ctx context.Context, tenantID, userID i
 	return settings, nil
 }
 
-func enableForUserWithStore(ctx context.Context, store Store, tenantID, userID int64, apiSource string, profileID *int64) (dbhermes.HermesSetting, error) {
+func enableForUserWithStore(ctx context.Context, store Store, tenantID, userID int64, apiSource string, profileID *int64, model string) (dbhermes.HermesSetting, error) {
 	if store == nil {
 		return dbhermes.HermesSetting{}, ErrMisconfigured
 	}
@@ -48,14 +48,18 @@ func enableForUserWithStore(ctx context.Context, store Store, tenantID, userID i
 		return dbhermes.HermesSetting{}, err
 	}
 	if apiSource == "" {
-		apiSource = APISourceManaged
+		apiSource = APISourceExternal
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || len(model) > 255 {
+		return dbhermes.HermesSetting{}, fmt.Errorf("%w: model must contain 1 to 255 bytes", ErrInvalidInput)
 	}
 	if err := validateSettingsSourceWithStore(ctx, store, tenantID, userID, apiSource, profileID); err != nil {
 		return dbhermes.HermesSetting{}, err
 	}
 	row, err := store.UpsertSettings(ctx, dbhermes.UpsertSettingsParams{
 		TenantID: tenantID, UserID: userID, Enabled: true,
-		APISource: apiSource, ProfileID: profileID,
+		APISource: apiSource, ProfileID: profileID, ModelKey: model,
 	})
 	if err != nil {
 		return dbhermes.HermesSetting{}, fmt.Errorf("enable hermes: %w", err)
@@ -83,7 +87,6 @@ func (s *Service) DisableForUserWithAudit(ctx context.Context, tenantID, userID 
 		}
 		settings = settingsFromRow(row)
 		audit.TenantID = tenantID
-		audit.ActorUserID = userID
 		audit.Result = AuditResultSuccess
 		return recordAuditWithStore(ctx, store, audit)
 	})
@@ -106,7 +109,7 @@ func disableForUserWithStore(ctx context.Context, store Store, tenantID, userID 
 		return dbhermes.HermesSetting{}, fmt.Errorf("disable hermes: %w", err)
 	}
 	row, err := store.UpsertSettings(ctx, dbhermes.UpsertSettingsParams{
-		TenantID: tenantID, UserID: userID, Enabled: false, APISource: APISourceManaged,
+		TenantID: tenantID, UserID: userID, Enabled: false, APISource: APISourceExternal, ModelKey: "",
 	})
 	if err != nil {
 		return dbhermes.HermesSetting{}, fmt.Errorf("disable hermes default row: %w", err)
@@ -123,7 +126,7 @@ func (s *Service) GetSettings(ctx context.Context, tenantID, userID int64) (Sett
 	}
 	row, err := s.store.GetSettings(ctx, dbhermes.GetSettingsParams{TenantID: tenantID, UserID: userID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Settings{TenantID: tenantID, UserID: userID, APISource: APISourceManaged}, nil
+		return Settings{TenantID: tenantID, UserID: userID, APISource: APISourceExternal}, nil
 	}
 	if err != nil {
 		return Settings{}, fmt.Errorf("get hermes settings: %w", err)
@@ -131,29 +134,17 @@ func (s *Service) GetSettings(ctx context.Context, tenantID, userID int64) (Sett
 	return settingsFromRow(row), nil
 }
 
-func (s *Service) validateSettingsSource(ctx context.Context, tenantID, userID int64, apiSource string, profileID *int64) error {
-	if s == nil || s.store == nil {
-		return ErrMisconfigured
-	}
-	return validateSettingsSourceWithStore(ctx, s.store, tenantID, userID, apiSource, profileID)
-}
-
 func validateSettingsSourceWithStore(ctx context.Context, store Store, tenantID, userID int64, apiSource string, profileID *int64) error {
 	switch apiSource {
-	case APISourceManaged:
-		if profileID != nil {
-			return fmt.Errorf("%w: managed source must not set profile_id", ErrInvalidInput)
-		}
-		return nil
-	case APISourceDedicatedGroup:
+	case APISourceExternal:
 		if profileID == nil || *profileID <= 0 {
-			return fmt.Errorf("%w: dedicated source requires profile_id", ErrInvalidInput)
+			return fmt.Errorf("%w: external source requires profile_id", ErrInvalidInput)
 		}
 		profile, err := getProfileWithStore(ctx, store, *profileID, tenantID)
 		if err != nil {
 			return err
 		}
-		if profile.Kind != APISourceDedicatedGroup {
+		if profile.Kind != APISourceExternal {
 			return fmt.Errorf("%w: profile kind does not match api_source", ErrInvalidInput)
 		}
 		if profile.OwnerUserID != userID {
@@ -175,7 +166,7 @@ func validateTenantUser(tenantID, userID int64) error {
 func settingsFromRow(row dbhermes.HermesSetting) Settings {
 	return Settings{
 		TenantID: row.TenantID, UserID: row.UserID, Enabled: row.Enabled,
-		APISource: row.APISource, ProfileID: row.ProfileID,
+		APISource: row.APISource, ProfileID: row.ProfileID, Model: row.ModelKey,
 		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time,
 	}
 }

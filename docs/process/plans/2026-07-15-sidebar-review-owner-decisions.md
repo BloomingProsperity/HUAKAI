@@ -77,10 +77,10 @@ SET-备份. **备份与恢复(/admin/backup)→ 应用内真备份(主力)+ 云�
     - **云快照(部署文档)**:AWS RDS 自动备份 / EBS 快照,几乎不占服务器资源+便宜,用云者额外保险。
     - **安全硬门**:备份含敏感数据(凭证)→ 导出必加密或脱敏(照 secret-mask,不导明文凭证)、恢复入口鉴权防越权、导入校验防注入。=schema/数据导出+安全敏感,codex 实施带判别测试。
 
-SET-Hermes. **Hermes(AI 运维助手)→ 配置页 A 全暴露 + 两大产品化扩展(Owner 拍板)**。详细后端调研见 a7f39cbb(23工具/五层安全/大部分已接线)。
-    - **配置页 A 全暴露**:4 区全展示——①启停+身份(enabled/api_source managed或dedicated_group/绑profile/默认模型)②功能总开关(MUTATING/TOOLLOOP/**LLM_PROPOSE 高危 Owner-gated 高亮**/ADMIN_ONLY只读展)③23工具权限矩阵(名/作用/只读或改动/角色/是否Proposable)④安全设界(并发/等待/tx deadline/限流/巡检/保留期/confirm TTL)。
-    - **扩展① 每日巡检+主动邮件预警(Owner 新需求)**:基础现成=hermesadmin worker(worker.go/report.go,默认关 HUAKAI_HERMES_DAILY_INSPECTION_ENABLED)。扩展:巡检内容覆盖**四类事件(危险情况/被攻击被扫/账号被封/服务中断)**,数据源接安全监测台(降噪聚合规则,见 security-monitoring 方案 §3.5)+ systemhealth + 封号计数;关联 SMTP(系统设置邮件分区)+ 邮件模板;**默认开**(建站引导配收件邮箱 admin_notification_email)。让部署者第一时间知服务器状况。
-    - **扩展② 内联 Hermes 解释按钮(Owner 新需求,核心小白友好亮点)**:报错/账号方块/日志条目旁放**通用小按钮组件**,点击→按上下文调 Hermes **只读诊断**(request_id 429/400→request_diagnose;账号问题→account_health_diagnose;错误码→字典式解释)→ LLM 用**大白话翻译**错误出处/含义/怎么办。安全:**纯只读**(复用 Hermes 只读工具墙,改动型工具结构性不可见),鉴权门控。目的=很多用户是小白,每个报错配"点一下就懂",帮秒定位。三镜无此。
+SET-Hermes. **Hermes(AI 运维助手)→ 配置页展示真实运行合同 + 两大产品化扩展(Owner 拍板)**。后端当前权威执行计划见 `2026-07-22-hermes-ops-and-codebase-convergence-codex.md`。
+    - **配置页展示真实合同**:展示启停与模型身份、工具循环和模型提议总开关、按当前身份动态返回的工具目录、安全边界和巡检配置。不得继续展示已删除的 `ADMIN_ONLY` 开关，也不得在前端硬编码工具矩阵；当前完整注册表为 15 个只读工具和 8 个改动型工具，实际可见项由角色、租户授权、`Proposable` 和运行时开关共同决定。
+    - **扩展① 每日巡检+主动邮件预警(Owner 新需求)**:确定性巡检已归入 `opsinspection`，默认关闭，使用 `HUAKAI_DAILY_OPS_INSPECTION_ENABLED`、`HUAKAI_DAILY_OPS_INSPECTION_INTERVAL` 和 `HUAKAI_ADMIN_NOTIFICATION_EMAIL`。它独立聚合账号池、凭据、死信、错误趋势和模块状态，不由模型自治执行；后续前端只配置和展示这份真实状态。
+    - **扩展② 内联 Hermes 解释按钮(Owner 新需求,核心小白友好亮点)**:报错/账号方块/日志条目旁放**通用小按钮组件**,点击→按上下文调 Hermes 诊断工具→模型用**大白话翻译**错误出处、含义和处理办法。目录按角色和租户过滤；可逆改动只允许生成预案，真正执行仍需运营者独立确认，普通用户无 Hermes 入口。
     - **定位升华**:Hermes 从"运营专家工具"→"小白友好的系统解释器 + 主动预警助手",差异化护城河。
     - 公告管理(/admin/announcements)保留(平台通告墙);站内信广播(/admin/broadcast)保留(群发私信,与公告不重复)。
 

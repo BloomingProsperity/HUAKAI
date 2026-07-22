@@ -25,6 +25,8 @@ LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = ur.tenant_id
 LEFT JOIN audit_ledger_entries ale ON ale.request_id = blc.logical_request_id
     AND (ale.tenant_id IS NULL OR ale.tenant_id = ur.tenant_id)
 WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR ur.tenant_id = sqlc.narg(tenant_id)::bigint)
+  AND (sqlc.narg(request_id)::text IS NULL OR blc.logical_request_id = sqlc.narg(request_id)::text)
+  AND (sqlc.narg(claim_id)::bigint IS NULL OR ur.claim_id = sqlc.narg(claim_id)::bigint)
   AND (sqlc.narg(from_ts)::timestamptz IS NULL OR ur.settled_at >= sqlc.narg(from_ts)::timestamptz)
   AND (sqlc.narg(to_ts)::timestamptz IS NULL OR ur.settled_at <= sqlc.narg(to_ts)::timestamptz)
   AND (sqlc.narg(provider)::text IS NULL OR p.code = sqlc.narg(provider)::text)
@@ -237,6 +239,8 @@ FROM billing_ledger_claims blc
 LEFT JOIN provider_accounts pa ON pa.id = blc.provider_account_id AND pa.tenant_id = blc.tenant_id
 LEFT JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = blc.tenant_id
 WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR blc.tenant_id = sqlc.narg(tenant_id)::bigint)
+  AND (sqlc.narg(request_id)::text IS NULL OR blc.logical_request_id = sqlc.narg(request_id)::text)
+  AND (sqlc.narg(claim_id)::bigint IS NULL OR blc.id = sqlc.narg(claim_id)::bigint)
   AND (sqlc.narg(from_ts)::timestamptz IS NULL OR blc.reserved_at >= sqlc.narg(from_ts)::timestamptz)
   AND (sqlc.narg(to_ts)::timestamptz IS NULL OR blc.reserved_at <= sqlc.narg(to_ts)::timestamptz)
   AND (sqlc.narg(status)::text IS NULL OR blc.status = sqlc.narg(status)::text)
@@ -268,7 +272,7 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR blc.tenant_id = sqlc.narg(tenant_
 WITH audit_union AS (
     SELECT be.id, be.tenant_id, 'billing'::text AS event_class, be.event_type,
            CASE WHEN be.event_type = 'claim_aborted' THEN 'warning' ELSE 'info' END AS severity,
-           be.claim_id::text AS ledger_id, be.claim_id, NULL::bigint AS provider_account_id,
+           COALESCE(be.claim_id::text, '') AS ledger_id, be.claim_id, NULL::bigint AS provider_account_id,
            NULL::bigint AS pool_group_id, NULL::text AS request_id, NULL::text AS actor_id,
            NULL::text AS actor_role, NULL::text AS reason,
            jsonb_build_object('actual_cost', be.actual_cost::text, 'actual_cost_signed', be.actual_cost_signed::text,
@@ -318,7 +322,8 @@ WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR au.tenant_id = sqlc.narg(tenant_i
   AND (sqlc.narg(actor_id)::text IS NULL OR au.actor_id = sqlc.narg(actor_id)::text)
   AND (sqlc.arg(has_cursor)::boolean = false OR (au.created_at, au.id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_id)::bigint))
 ORDER BY au.created_at DESC, au.id DESC
-LIMIT sqlc.arg(page_limit)::integer;
+LIMIT sqlc.arg(page_limit)::integer
+OFFSET sqlc.arg(page_offset)::integer;
 
 -- name: CountAuditEvents :one
 WITH audit_union AS (

@@ -464,7 +464,7 @@ func (f *StreamForwarder) drainWithAdapter(
 	acc *UsageAccumulator,
 ) DrainOutcome {
 	budgets := f.effectiveDrainBudgets()
-	deadline := time.NewTimer(budgets.MaxSeconds)
+	deadline := time.NewTimer(budgets.MaxDuration)
 	defer deadline.Stop()
 	var drainedBytes int64
 	for {
@@ -485,9 +485,6 @@ func (f *StreamForwarder) drainWithAdapter(
 			// 用传入的 adapter 解析 drain 阶段的 usage，保证与主流水线一致
 			if adapter != nil {
 				canonicalEvents, drainLosses, err := adapter.ProviderEventToCanonicalEvents(ctx, res.event.Data, upstreamState)
-				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
-				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
-				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信。
 				// loss 可能连同 error 一起返回(anthropic/sse.go:228 未知事件 → loss +
 				// ErrUnknownEventType),drain 阶段同样在 err 判断之前累积,否则 drain 期的
 				// 未知/畸形事件证据丢失;usage 仅在 err==nil 时可信。
@@ -645,28 +642,22 @@ func (f *StreamForwarder) newUpstreamState(req ForwardRequest) any {
 	return &anthropic.UpstreamState{TenantID: req.TenantID, AccountID: req.AccountID, RequestID: req.RequestID, PrefixHash: req.SessionHash}
 }
 
-// newClientState 按 client adapter 的具体协议创建 per-stream 状态。
+// newClientState 委托 client adapter 创建每条流独占的协议状态。
 // 未注入 ClientAdapter 时返回 nil，让 raw SSE passthrough 行为保持原样。
 func (f *StreamForwarder) newClientState() any {
-	switch f.ClientAdapter.(type) {
-	case *proto.AnthropicMessagesClient:
-		return proto.NewAnthropicMessagesStreamState()
-	case *proto.OpenAIChatClient:
-		return proto.NewOpenAIChatStreamState()
-	case *proto.OpenAIResponsesClient:
-		return proto.NewOpenAIResponsesStreamState()
-	default:
+	if f.ClientAdapter == nil {
 		return nil
 	}
+	return f.ClientAdapter.NewClientStreamState()
 }
 
 func (f *StreamForwarder) effectiveDrainBudgets() DrainBudgets {
 	b := f.DrainBudgets
-	if b.MaxSeconds <= 0 {
-		b.MaxSeconds = f.Timeouts.DrainMaxSeconds
+	if b.MaxDuration <= 0 {
+		b.MaxDuration = f.Timeouts.DrainMax
 	}
-	if b.MaxSeconds <= 0 {
-		b.MaxSeconds = 30 * time.Second
+	if b.MaxDuration <= 0 {
+		b.MaxDuration = 30 * time.Second
 	}
 	if b.MaxBytes <= 0 {
 		b.MaxBytes = 1 << 20

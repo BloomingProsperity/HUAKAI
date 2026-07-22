@@ -71,7 +71,3 @@ func TestServiceDefaultsCreateFields(t *testing.T) {
 func ptrTime(t time.Time) *time.Time {
 	return &t
 }
-
-func ptrBool(v bool) *bool {
-	return &v
-}

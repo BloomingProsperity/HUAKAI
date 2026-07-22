@@ -253,31 +253,6 @@ func postAccountSlotChat(ctx context.Context, client *http.Client, addr, bearer,
 	}
 }
 
-func classifyAccountSlotResults(t *testing.T, holderResults, overflowResults []accountSlotHTTPResult) (successes, rejects []accountSlotHTTPResult) {
-	t.Helper()
-	for _, result := range holderResults {
-		if result.err != nil {
-			t.Fatalf("holder request logical_id=%s err=%v", result.logicalID, result.err)
-		}
-		if result.statusCode != http.StatusOK {
-			t.Fatalf("holder request logical_id=%s status=%d body=%s; want 200 while slots are available",
-				result.logicalID, result.statusCode, safeAccountSlotBody(result.body))
-		}
-		successes = append(successes, result)
-	}
-	for _, result := range overflowResults {
-		if result.err != nil {
-			t.Fatalf("overflow request logical_id=%s err=%v", result.logicalID, result.err)
-		}
-		if result.statusCode != http.StatusTooManyRequests || !bytes.Contains(result.body, []byte("queue_wait")) {
-			t.Fatalf("overflow request logical_id=%s status=%d body=%s; want 429/queue_wait",
-				result.logicalID, result.statusCode, safeAccountSlotBody(result.body))
-		}
-		rejects = append(rejects, result)
-	}
-	return successes, rejects
-}
-
 func waitForAccountSlotInFlight(t *testing.T, ctx context.Context, pgPool *pgxpool.Pool, providerAccountID int64, want, cap int32) int32 {
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)

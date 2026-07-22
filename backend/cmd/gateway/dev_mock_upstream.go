@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/devupstream"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
-	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 )
 
 // DevMockUpstreamEnv 为真值且网关不在 production 模式时,注入一个假的上游 HTTP doer,
@@ -67,7 +67,7 @@ func (mockUpstreamDoer) Do(req *http.Request) (*http.Response, error) {
 		}
 		switch {
 		case strings.Contains(req.URL.Path, "/messages"):
-			body = gatewayhttp.MockAnthropicUpstreamBytes("msg_devmock", "dev-mock-model", inTok, outTok)
+			body = devupstream.MockAnthropicUpstreamBytes("msg_devmock", "dev-mock-model", inTok, outTok)
 		case strings.Contains(req.URL.Path, "streamGenerateContent"):
 			body = mockGeminiSSE(inTok, outTok)
 		}

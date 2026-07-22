@@ -213,6 +213,7 @@ func (stubClientAdapter) RequestToCanonical(ctx context.Context, raw []byte) (*H
 func (stubClientAdapter) CanonicalToClientResponse(ctx context.Context, canonical *HCSF) ([]byte, []ProtocolLossEntry, error) {
 	return nil, nil, errors.New("stub")
 }
+func (stubClientAdapter) NewClientStreamState() any { return nil }
 func (stubClientAdapter) CanonicalEventToClientChunk(ctx context.Context, canonicalEvt any, state any) ([][]byte, []ProtocolLossEntry, error) {
 	return nil, nil, errors.New("stub")
 }

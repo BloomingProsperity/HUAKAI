@@ -576,7 +576,7 @@ func refundWorkerFixture(t *testing.T, refundErr error) (*MismatchRefundWorker, 
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            9,
 		UserID:              7001,
 		ClaimID:             1001,

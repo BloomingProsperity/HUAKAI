@@ -34,6 +34,7 @@ AND EXISTS (
     SELECT 1 FROM users u
     WHERE u.id = sqlc.arg(user_id)::bigint
       AND u.tenant_id = sqlc.arg(tenant_id)::bigint
+      AND u.principal_kind = 'human'
       AND u.deleted_at IS NULL
       AND u.status = 'active'
 )
@@ -49,6 +50,7 @@ SELECT
     created_at, updated_at
 FROM api_keys
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
+  AND purpose = 'user'
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit)::integer
@@ -66,6 +68,7 @@ SET status = 'revoked',
     updated_at = NOW()
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND purpose = 'user'
   AND status <> 'revoked'
   AND deleted_at IS NULL;
 
@@ -86,6 +89,7 @@ SELECT
         SELECT 1 FROM users u
         WHERE u.id = sqlc.arg(user_id)::bigint
           AND u.tenant_id = sqlc.arg(tenant_id)::bigint
+          AND u.principal_kind = 'human'
           AND u.deleted_at IS NULL
           AND u.status = 'active'
     ) AS user_ok;
@@ -111,4 +115,5 @@ SELECT
 FROM api_keys
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND purpose = 'user'
   AND deleted_at IS NULL;

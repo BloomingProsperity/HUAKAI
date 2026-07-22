@@ -2,17 +2,17 @@ package hermeshttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
-	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesprincipal"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
-// fakeAdminResolver 注入一个固定的身份 / 错误,替代 *admin.AdminResolver,
-// 使中间件 RBAC 可在无 DB 的情况下测试。
 type fakeAdminResolver struct {
 	identity admin.AdminIdentity
 	err      error
@@ -24,8 +24,34 @@ func (f *fakeAdminResolver) Resolve(_ context.Context, _ *http.Request) (admin.A
 	return f.identity, f.err
 }
 
-// captureNext 记录中间件注入的身份 + admin actor,使成功用例能断言贯穿传递的
-// 上下文,并返回 200。
+type fakeCapabilityChecker struct {
+	allowed       bool
+	err           error
+	called        bool
+	tenantID      int64
+	capabilityKey string
+}
+
+func (f *fakeCapabilityChecker) Allowed(_ context.Context, tenantID int64, capability string) (bool, error) {
+	f.called = true
+	f.tenantID = tenantID
+	f.capabilityKey = capability
+	return f.allowed, f.err
+}
+
+type fakePrincipalEnsurer struct {
+	principal hermesprincipal.Principal
+	err       error
+	called    bool
+	tenantID  int64
+}
+
+func (f *fakePrincipalEnsurer) Ensure(_ context.Context, tenantID int64) (hermesprincipal.Principal, error) {
+	f.called = true
+	f.tenantID = tenantID
+	return f.principal, f.err
+}
+
 type captureNext struct {
 	gotIdentity sessionauth.Identity
 	gotActor    adminActor
@@ -41,167 +67,190 @@ func (c *captureNext) ServeHTTP(_ http.ResponseWriter, r *http.Request) {
 	c.gotActor, c.gotActorOK = adminActorFromContext(r.Context())
 }
 
-func runAdminMiddleware(resolver AdminAuthResolver, path string) (*httptest.ResponseRecorder, *captureNext) {
+func runAdminMiddleware(deps AdminAuthDeps, path string) (*httptest.ResponseRecorder, *captureNext) {
 	next := &captureNext{}
-	h := AdminAuthMiddleware(resolver)(next)
+	h := AdminAuthMiddleware(deps)(next)
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec, next
 }
 
-func TestAdminAuthMiddlewareRejectsCredentialFailure(t *testing.T) {
-	// 回归(变异:把 routes.go 的中间件替换还原回 APIKeyMiddleware):若某请求的
-	// admin 凭证无法解析,必须被拒绝 401,且绝不应到达任何 Hermes handler。
-	rec, next := runAdminMiddleware(&fakeAdminResolver{err: admin.ErrAdminUnauthorized}, "/conversations?tenant_id=7&as_user_id=42")
+func completeAdminDeps(resolver AdminAuthResolver) (AdminAuthDeps, *fakeCapabilityChecker, *fakePrincipalEnsurer) {
+	capabilities := &fakeCapabilityChecker{allowed: true}
+	principals := &fakePrincipalEnsurer{principal: hermesprincipal.Principal{TenantID: 1, UserID: 81, APIKeyID: 91}}
+	return AdminAuthDeps{
+		Resolver:         resolver,
+		PlatformTenantID: 1,
+		Capabilities:     capabilities,
+		Principals:       principals,
+	}, capabilities, principals
+}
+
+func TestAdminAuthMiddleware认证失败时拒绝请求(t *testing.T) {
+	deps, _, _ := completeAdminDeps(&fakeAdminResolver{err: admin.ErrAdminUnauthorized})
+	rec, next := runAdminMiddleware(deps, "/conversations")
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d body=%s want 401", rec.Code, rec.Body.String())
+		t.Fatalf("状态码=%d，响应=%s，期望 401", rec.Code, rec.Body.String())
 	}
 	if next.served {
-		t.Fatalf("handler was reached despite unauthorized admin credential")
+		t.Fatal("认证失败后仍进入了业务处理器")
 	}
 }
 
-func TestAdminAuthMiddlewareBackendErrorIs503(t *testing.T) {
-	// 回归:数据存储的瞬时故障必须 fail-closed 为 503,不能被误当成 401(那会诱使
-	// 凭证枚举式的重试),也不能静默放行。
-	rec, next := runAdminMiddleware(&fakeAdminResolver{err: admin.ErrAdminBackend}, "/conversations?tenant_id=7&as_user_id=42")
+func TestAdminAuthMiddleware认证后端异常时返回503(t *testing.T) {
+	deps, _, _ := completeAdminDeps(&fakeAdminResolver{err: admin.ErrAdminBackend})
+	rec, next := runAdminMiddleware(deps, "/conversations")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+		t.Fatalf("状态码=%d，响应=%s，期望 503", rec.Code, rec.Body.String())
 	}
 	if next.served {
-		t.Fatalf("handler reached on backend error")
+		t.Fatal("认证后端异常后仍进入了业务处理器")
 	}
 }
 
-func TestAdminAuthMiddlewareNilResolverIs503(t *testing.T) {
-	// 回归:未配置的 resolver 必须 fail-closed(503),绝不能在未认证状态下暴露 Hermes。
-	rec, next := runAdminMiddleware(nil, "/conversations?tenant_id=7&as_user_id=42")
+func TestAdminAuthMiddleware依赖不完整时关闭入口(t *testing.T) {
+	rec, next := runAdminMiddleware(AdminAuthDeps{}, "/conversations")
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+		t.Fatalf("状态码=%d，响应=%s，期望 503", rec.Code, rec.Body.String())
 	}
 	if next.served {
-		t.Fatalf("handler reached with nil resolver")
+		t.Fatal("依赖不完整时仍进入了业务处理器")
 	}
 }
 
-func TestAdminAuthMiddlewareTenantOperatorCrossTenant403(t *testing.T) {
-	// 回归(变异:去掉 CanIssueForTenant / scope 不匹配检查):scope 为 tenant 7 的
-	// tenant_operator 请求 tenant 9 的资源时,必须被拒绝 403,且不应到达任何 handler。
+func TestAdminAuthMiddleware拒绝请求覆盖身份范围(t *testing.T) {
 	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
-		TokenID: 100, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+		TokenID: 7,
+		Source:  admin.AdminSourceToken,
+		Role:    admin.RolePlatformAdmin,
 	}}
-	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=9&as_user_id=42")
+	deps, _, principals := completeAdminDeps(resolver)
+	for _, path := range []string{
+		"/conversations?tenant_id=9",
+		"/conversations?as_user_id=42",
+	} {
+		rec, next := runAdminMiddleware(deps, path)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("路径=%s，状态码=%d，响应=%s，期望 400", path, rec.Code, rec.Body.String())
+		}
+		if next.served || resolver.called || principals.called {
+			t.Fatalf("路径=%s 的旧身份覆盖参数未在认证前被拒绝", path)
+		}
+	}
+}
+
+func TestAdminAuthMiddleware部署者固定使用平台租户(t *testing.T) {
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID: 41,
+		Source:  admin.AdminSourceToken,
+		Role:    admin.RolePlatformAdmin,
+	}}
+	deps, capabilities, principals := completeAdminDeps(resolver)
+	rec, next := runAdminMiddleware(deps, "/conversations")
+	if rec.Code != http.StatusOK || !next.served {
+		t.Fatalf("状态码=%d，响应=%s，处理器到达=%v", rec.Code, rec.Body.String(), next.served)
+	}
+	if capabilities.called {
+		t.Fatal("部署者不应查询下级租户能力授权")
+	}
+	if !principals.called || principals.tenantID != 1 {
+		t.Fatalf("服务主体租户=%d，期望平台租户 1", principals.tenantID)
+	}
+	if next.gotIdentity != (sessionauth.Identity{TenantID: 1, UserID: 81, APIKeyID: 91}) {
+		t.Fatalf("内部服务身份=%+v，不符合预期", next.gotIdentity)
+	}
+	if !next.gotActorOK || next.gotActor != (adminActor{Source: admin.AdminSourceToken, ID: 41, Role: admin.RolePlatformAdmin}) {
+		t.Fatalf("真实操作者=%+v，存在=%v，不符合预期", next.gotActor, next.gotActorOK)
+	}
+}
+
+func TestAdminAuthMiddleware下级租户管理员默认无权使用(t *testing.T) {
+	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
+		TokenID:       52,
+		Source:        admin.AdminSourceToken,
+		Role:          admin.RoleTenantOperator,
+		ScopeTenantID: 7,
+	}}
+	deps, capabilities, principals := completeAdminDeps(resolver)
+	capabilities.allowed = false
+	rec, next := runAdminMiddleware(deps, "/conversations")
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
+		t.Fatalf("状态码=%d，响应=%s，期望 403", rec.Code, rec.Body.String())
 	}
-	if next.served {
-		t.Fatalf("handler reached for cross-tenant operator request")
+	if next.served || principals.called {
+		t.Fatal("未获授权的租户管理员进入了 Hermes 或创建了服务主体")
+	}
+	if !capabilities.called || capabilities.tenantID != 7 || capabilities.capabilityKey != tenantcapability.HermesOperations {
+		t.Fatalf("能力检查=%+v，不符合租户 7 的 Hermes 授权合同", capabilities)
 	}
 }
 
-func TestAdminAuthMiddlewarePlatformAdminRequiresTenantParam(t *testing.T) {
-	// 回归:platform_admin 没有隐含 tenant;缺省 ?tenant_id 必须是 400,绝不能静默
-	// 默认成某个跨 tenant 的值并泄露进 tenant 范围的 handler。
+func TestAdminAuthMiddleware已授权租户管理员只能使用自身租户(t *testing.T) {
 	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
-		TokenID: 200, Role: admin.RolePlatformAdmin,
+		TokenID:       53,
+		Source:        admin.AdminSourceToken,
+		Role:          admin.RoleTenantOperator,
+		ScopeTenantID: 7,
 	}}
-	rec, next := runAdminMiddleware(resolver, "/conversations?as_user_id=42")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	deps, capabilities, principals := completeAdminDeps(resolver)
+	principals.principal = hermesprincipal.Principal{TenantID: 7, UserID: 82, APIKeyID: 92}
+	rec, next := runAdminMiddleware(deps, "/conversations")
+	if rec.Code != http.StatusOK || !next.served {
+		t.Fatalf("状态码=%d，响应=%s，处理器到达=%v", rec.Code, rec.Body.String(), next.served)
 	}
-	if next.served {
-		t.Fatalf("handler reached for platform_admin without tenant_id")
+	if !capabilities.called || capabilities.tenantID != 7 || principals.tenantID != 7 {
+		t.Fatalf("授权租户=%d，服务主体租户=%d，期望均为 7", capabilities.tenantID, principals.tenantID)
+	}
+	if next.gotIdentity != (sessionauth.Identity{TenantID: 7, UserID: 82, APIKeyID: 92}) {
+		t.Fatalf("内部服务身份=%+v，不符合预期", next.gotIdentity)
+	}
+	if !next.gotActorOK || next.gotActor.ID != 53 || next.gotActor.Role != admin.RoleTenantOperator {
+		t.Fatalf("真实操作者=%+v，存在=%v，不符合预期", next.gotActor, next.gotActorOK)
 	}
 }
 
-func TestAdminAuthMiddlewareRequiresAsUserID(t *testing.T) {
-	// 回归:admin 模式要求 ?as_user_id,以便贯穿传递的 user id 能解析 users FK;
-	// 缺省它必须是 400,而不是用 0 值 user id 去写入、在 DB 层违反 FK。
+func TestAdminAuthMiddleware管理员会话按用户归因(t *testing.T) {
 	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
-		TokenID: 300, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+		UserID: 67,
+		Source: admin.AdminSourceSession,
+		Role:   admin.RolePlatformAdmin,
 	}}
-	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=7")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s want 400", rec.Code, rec.Body.String())
+	deps, _, _ := completeAdminDeps(resolver)
+	rec, next := runAdminMiddleware(deps, "/tools")
+	if rec.Code != http.StatusOK || !next.gotActorOK {
+		t.Fatalf("状态码=%d，响应=%s，操作者存在=%v", rec.Code, rec.Body.String(), next.gotActorOK)
 	}
-	if next.served {
-		t.Fatalf("handler reached without as_user_id")
+	if next.gotActor != (adminActor{Source: admin.AdminSourceSession, ID: 67, Role: admin.RolePlatformAdmin}) {
+		t.Fatalf("会话操作者=%+v，不符合预期", next.gotActor)
 	}
 }
 
-func TestAdminAuthMiddlewareOperatorSuccessInjectsScopedIdentityAndActor(t *testing.T) {
-	// 回归:成功时,中间件必须贯穿传递 operator 的 scoped tenant + 请求的
-	// as_user_id,并记录 operator 的 token id/role 用于审计归因。去掉 actor 注入的
-	// 变异会使 gotActorOK 为 false;忽略 ScopeTenantID 的变异会改变 gotIdentity。
+func TestAdminAuthMiddleware能力后端异常时关闭入口(t *testing.T) {
 	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
-		TokenID: 400, Role: admin.RoleTenantOperator, ScopeTenantID: 7,
+		TokenID:       70,
+		Source:        admin.AdminSourceToken,
+		Role:          admin.RoleTenantOperator,
+		ScopeTenantID: 7,
 	}}
-	rec, next := runAdminMiddleware(resolver, "/conversations?as_user_id=42")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
-	}
-	if !next.served {
-		t.Fatalf("handler was not reached on authorized operator request")
-	}
-	if next.gotIdentity.TenantID != 7 || next.gotIdentity.UserID != 42 {
-		t.Fatalf("identity=%+v want tenant=7 user=42", next.gotIdentity)
-	}
-	if !next.gotActorOK || next.gotActor.TokenID != 400 || next.gotActor.Role != admin.RoleTenantOperator {
-		t.Fatalf("admin actor=%+v ok=%v want token=400 role=%s", next.gotActor, next.gotActorOK, admin.RoleTenantOperator)
+	deps, capabilities, principals := completeAdminDeps(resolver)
+	capabilities.err = errors.New("存储暂时不可用")
+	rec, next := runAdminMiddleware(deps, "/tools")
+	if rec.Code != http.StatusServiceUnavailable || next.served || principals.called {
+		t.Fatalf("状态码=%d，处理器到达=%v，服务主体调用=%v", rec.Code, next.served, principals.called)
 	}
 }
 
-func TestWithAdminActorFoldsAttributionOnlyInAdminMode(t *testing.T) {
-	// 回归:当且仅当上下文中存在 admin actor 时,审计 args 才应新增 admin_actor_id +
-	// admin_role,使轨迹归因到真正的 operator。变异:去掉折入会让 args 缺少 operator
-	// 键;在终端用户模式下折入则会错误地给正常流量打标。
-	base := map[string]any{"conversation_id": int64(1002)}
-
-	endUser := withAdminActor(context.Background(), base)
-	if _, ok := endUser["admin_actor_id"]; ok {
-		t.Fatalf("end-user args unexpectedly carry admin attribution: %v", endUser)
-	}
-
-	ctx := context.WithValue(context.Background(), adminActorContextKey{}, adminActor{TokenID: 77, Role: admin.RoleTenantOperator})
-	adminArgs := withAdminActor(ctx, base)
-	if adminArgs["admin_actor_id"] != int64(77) || adminArgs["admin_role"] != admin.RoleTenantOperator {
-		t.Fatalf("admin args=%v want admin_actor_id=77 role=%s", adminArgs, admin.RoleTenantOperator)
-	}
-	// 原始 map 不应被改动(它在错误路径上会被复用)。
-	if _, ok := base["admin_actor_id"]; ok {
-		t.Fatalf("withAdminActor mutated the caller's args map: %v", base)
-	}
-
-	// 区分性:归因必须能挺过真实的持久化路径(RecordAudit 在写入前会施加
-	// hermes.SanitizeArgs)。operator id 是非机密的 admin_tokens 行 PK,绝不能被脱敏。
-	// 这正是先前测试漏掉的防护(它只断言了脱敏前的输出)。
-	persisted := hermes.SanitizeArgs(adminArgs)
-	if persisted["admin_actor_id"] != int64(77) {
-		t.Fatalf("admin_actor_id did not survive SanitizeArgs: got %v (operator attribution silently dropped — key must not match the sensitive 'token' substring)", persisted["admin_actor_id"])
-	}
-	if persisted["admin_role"] != admin.RoleTenantOperator {
-		t.Fatalf("admin_role did not survive SanitizeArgs: got %v", persisted["admin_role"])
-	}
-	// 证明这次重命名很重要:旧的 *_token_id 命名会被 sanitizer 脱敏,而这正是
-	// 本次修复所封堵的缺陷。
-	redacted := hermes.SanitizeArgs(map[string]any{"admin_actor_token_id": int64(77)})
-	if redacted["admin_actor_token_id"] != "[REDACTED]" {
-		t.Fatalf("expected a *_token_id key to be redacted by the sanitizer, got %v", redacted["admin_actor_token_id"])
-	}
-}
-
-func TestAdminAuthMiddlewarePlatformAdminCrossTenantAllowedWithParam(t *testing.T) {
-	// 回归:platform_admin 可对一个显式 tenant 进行操作;scoped tenant 必须是
-	// ?tenant_id 的值,而不是 operator(缺失)的 scope。
+func TestAdminAuthMiddleware服务主体异常时关闭入口(t *testing.T) {
 	resolver := &fakeAdminResolver{identity: admin.AdminIdentity{
-		TokenID: 500, Role: admin.RolePlatformAdmin,
+		TokenID: 71,
+		Source:  admin.AdminSourceToken,
+		Role:    admin.RolePlatformAdmin,
 	}}
-	rec, next := runAdminMiddleware(resolver, "/conversations?tenant_id=9&as_user_id=42")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
-	}
-	if next.gotIdentity.TenantID != 9 || next.gotIdentity.UserID != 42 {
-		t.Fatalf("identity=%+v want tenant=9 user=42", next.gotIdentity)
+	deps, _, principals := completeAdminDeps(resolver)
+	principals.err = errors.New("服务主体暂时不可用")
+	rec, next := runAdminMiddleware(deps, "/tools")
+	if rec.Code != http.StatusServiceUnavailable || next.served {
+		t.Fatalf("状态码=%d，处理器到达=%v，期望关闭入口", rec.Code, next.served)
 	}
 }

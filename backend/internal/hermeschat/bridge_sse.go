@@ -13,6 +13,7 @@ import (
 type streamState struct {
 	assistantText strings.Builder
 	blocked       bool
+	terminal      bool
 }
 
 func (b *Bridge) handleBlock(ctx context.Context, w io.Writer, flusher http.Flusher, prepared PreparedRequest, state *streamState, raw []byte) error {
@@ -25,16 +26,32 @@ func (b *Bridge) handleBlock(ctx context.Context, w io.Writer, flusher http.Flus
 	evt := parseSSE(raw)
 	switch evt.name {
 	case "conversation":
-		return handleConversationEvent(w, flusher, prepared, state, evt.data())
+		if conversationIDFromData(evt.data()) != prepared.ConversationID {
+			state.blocked = true
+			state.terminal = true
+			b.recordStreamFailure(prepared, "conversation_mismatch")
+			return writeConversationMismatchError(w, flusher)
+		}
+		return nil
 	case "token":
 		if delta := tokenDeltaFromData(evt.data()); delta != "" {
 			state.assistantText.WriteString(delta)
 		}
 		return writeAndFlush(w, flusher, raw)
+	case "error":
+		errorCode := runnerErrorCodeFromData(evt.data())
+		state.blocked = true
+		state.terminal = true
+		b.recordStreamFailure(prepared, errorCode)
+		return writeRunnerError(w, flusher, errorCode)
 	case "done":
+		state.terminal = true
 		if err := b.persistDone(ctx, prepared, state, evt.data()); err != nil {
+			state.blocked = true
+			b.recordStreamFailure(prepared, "message_persist_failed")
 			return writePersistError(w, flusher)
 		}
+		state.blocked = true
 		return writeAndFlush(w, flusher, raw)
 	default:
 		return writeAndFlush(w, flusher, raw)
@@ -83,14 +100,6 @@ func conversationIDFromData(data []byte) int64 {
 	return payload.ID
 }
 
-func handleConversationEvent(w io.Writer, flusher http.Flusher, prepared PreparedRequest, state *streamState, data []byte) error {
-	if conversationIDFromData(data) != prepared.ConversationID {
-		state.blocked = true
-		return writeConversationMismatchError(w, flusher)
-	}
-	return nil
-}
-
 func tokenDeltaFromData(data []byte) string {
 	var payload struct {
 		Delta string `json:"delta"`
@@ -99,6 +108,20 @@ func tokenDeltaFromData(data []byte) string {
 		return ""
 	}
 	return payload.Delta
+}
+
+func runnerErrorCodeFromData(data []byte) string {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "runner_failed"
+	}
+	code := strings.TrimSpace(payload.Code)
+	if code == "" {
+		return "runner_failed"
+	}
+	return code
 }
 
 func totalTokensFromDone(data []byte) *int32 {

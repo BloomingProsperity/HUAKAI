@@ -208,6 +208,11 @@ type GeminiClientStreamState struct {
 	Usage      proto.CanonicalUsage
 }
 
+// NewClientStreamState 创建当前协议一次流式响应独占的状态。
+func (*GeminiClient) NewClientStreamState() any {
+	return &GeminiClientStreamState{}
+}
+
 func geminiClientStreamStateRef(state any) (*GeminiClientStreamState, error) {
 	if state == nil {
 		return &GeminiClientStreamState{}, nil

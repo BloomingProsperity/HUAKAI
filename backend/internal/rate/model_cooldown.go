@@ -61,14 +61,6 @@ func WithNow(fn func() time.Time) ModelCooldownOption {
 	}
 }
 
-func WithDefaultCooldown(d time.Duration) ModelCooldownOption {
-	return func(s *ModelCooldownService) {
-		if d > 0 {
-			s.defaultCooldown = d
-		}
-	}
-}
-
 func (s *ModelCooldownService) RecordModelRateLimit(ctx context.Context, in ModelCooldownInput) error {
 	if s == nil || s.q == nil {
 		return ErrModelCooldownInvalidInput

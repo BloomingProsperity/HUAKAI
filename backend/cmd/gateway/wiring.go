@@ -32,6 +32,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/balanceledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billingadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/billingmaint"
 	"github.com/BloomingProsperity/HUAKAI/internal/budget"
 	"github.com/BloomingProsperity/HUAKAI/internal/budgetenforce"
@@ -68,6 +69,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesconfirm"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/mutateguard"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/inboundlimit"
 	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/loginthrottle"
@@ -136,7 +138,7 @@ const (
 	modelSyncLeaderLockKey        int64 = 0x48554B4D4F44454C
 	proxyHealthLeaderLockKey      int64 = 0x48554B505258484C
 	tlsProfileHealthLeaderLockKey int64 = 0x48554B544C534650
-	hermesInspectLeaderLockKey    int64 = 0x48554B4845524D49
+	opsInspectionLeaderLockKey    int64 = 0x48554B4845524D49
 	stagedCleanupLeaderLockKey    int64 = 0x48554B535447434C
 )
 
@@ -209,108 +211,85 @@ type deps struct {
 	mediaTaskWorker           *mediatask.Worker
 	// mediaTaskStore 既供 worker/service 用,也供孤儿对账 admin 面(orphanreconcilehttp)
 	// 复用其只读列表 + 单一动钱入口 ReconcileOrphan(Manual-First,复用既有 billing settle)。
-	mediaTaskStore           *mediatask.PostgresStore
-	routeAdminService        *routeadmin.Service
-	panelAuthResolver        *panelauth.Resolver
-	invitationService        *communityinvitation.Service
-	dispatcher               *gateway.UpstreamDispatcher
-	accountModelDiscovery    *accountmodeldiscovery.Service
-	responseCache            l2cache.Store
-	cacheScope               string
-	dlqService               *legacydlq.Service
-	obsDLQAdminStore         *obsoutbox.PostgresOutbox
-	completionBus            *eventbus.Bus
-	auditRefPolicy           *eventbus.AuditRefPolicy
-	inboundAuth              *auth.APIKeyResolver
-	auditLedger              auditledger.Ledger
-	auditSigner              *sign.Signer
-	cacheOverrideStore       *billing.CacheOverrideStore
-	auditPubkeyRegistry      auditledger.PubkeyRegistry
-	receiptStore             *auditreceipt.PGXReceiptStorage
-	receiptFormatter         *auditreceipt.ReceiptFormatter
-	disputeStore             *auditreceipt.CostDisputeStore
-	disputeResolver          *auditreceipt.CostDisputeResolver
-	refundQueue              *auditreceipt.MismatchRefundQueue
-	rateTableSource          *billing.PGXRateTableSource
-	pricingRatioStore        pricingcatalog.Store
-	pricingRatioResolver     *pricingcatalog.RatioResolver
-	modelRegistry            *registry.PostgresRegistry
-	modelSync                *modelsync.Service
-	modelSyncScheduler       *modelsync.Scheduler
-	routePlanner             *router.DefaultRouter
-	adminAuth                *adminsessionauth.Resolver
-	adminIssuer              *admin.KeyIssuer
-	adminRevoker             *admin.KeyRevoker
-	adminTokenIssuer         *admin.AdminTokenIssuer
-	billingAuditUpdater      gatewayhttp.AdminBillingSettingsAuditUpdater
-	platformSettings         *platformsettings.Service
-	hermesService            *hermes.Service
-	hermesRunner             *hermes.RunnerClient
-	hermesChatBridge         *hermeschat.Bridge
-	hermesKeyStore           *hermes.KeyStore
-	hermesBootstrapIssuer    *hermes.BootstrapIssuer
-	hermesRunnerSharedSecret []byte
-	// hermesAdminOnly 为 true(默认)时,把 Hermes 重新门控为仅
-	// ADMIN/OPERATOR 鉴权。为 false 时,旧的终端用户 APIKeyMiddleware 路径被
-	// 逐字保留以便干净回滚。经 envBoolDefault(..., true) 从
-	// HUAKAI_HERMES_ADMIN_ONLY 取值。
-	hermesAdminOnly      bool
-	metricsHandler       http.Handler
-	otelShutdown         func(context.Context) error
-	usageRetentionWorker *usageretention.Worker
-	sessionCapRegistry   *sessioncap.Registry
-	recentReqRing        *recentreq.Ring
-	alertingService      *alerting.Service
-	serverMonitorStore   *servermonitor.PostgresStore
-	serverMonitorEnabled bool
-	serverMonitorOffline time.Duration
+	mediaTaskStore            *mediatask.PostgresStore
+	routeAdminService         *routeadmin.Service
+	panelAuthResolver         *panelauth.Resolver
+	invitationService         *communityinvitation.Service
+	dispatcher                *gateway.UpstreamDispatcher
+	accountModelDiscovery     *accountmodeldiscovery.Service
+	responseCache             l2cache.Store
+	cacheScope                string
+	dlqService                *legacydlq.Service
+	obsDLQAdminStore          *obsoutbox.PostgresOutbox
+	completionBus             *eventbus.Bus
+	auditRefPolicy            *eventbus.AuditRefPolicy
+	inboundAuth               *auth.APIKeyResolver
+	auditLedger               auditledger.Ledger
+	auditSigner               *sign.Signer
+	cacheOverrideStore        *billing.CacheOverrideStore
+	auditPubkeyRegistry       auditledger.PubkeyRegistry
+	receiptStore              *auditreceipt.PGXReceiptStorage
+	receiptFormatter          *auditreceipt.ReceiptFormatter
+	disputeStore              *auditreceipt.CostDisputeStore
+	disputeResolver           *auditreceipt.CostDisputeResolver
+	refundQueue               *auditreceipt.MismatchRefundQueue
+	rateTableSource           *billing.PGXRateTableSource
+	pricingRatioStore         pricingcatalog.Store
+	pricingRatioResolver      *pricingcatalog.RatioResolver
+	modelRegistry             *registry.PostgresRegistry
+	modelSync                 *modelsync.Service
+	modelSyncScheduler        *modelsync.Scheduler
+	routePlanner              *router.DefaultRouter
+	adminAuth                 *adminsessionauth.Resolver
+	adminIssuer               *admin.KeyIssuer
+	adminRevoker              *admin.KeyRevoker
+	adminTokenIssuer          *admin.AdminTokenIssuer
+	billingAuditUpdater       billingadminhttp.AdminBillingSettingsAuditUpdater
+	platformSettings          *platformsettings.Service
+	hermesService             *hermes.Service
+	hermesRunner              *hermes.RunnerClient
+	hermesChatBridge          *hermeschat.Bridge
+	hermesInternalTokenSecret []byte
+	metricsHandler            http.Handler
+	otelShutdown              func(context.Context) error
+	sessionCapRegistry        *sessioncap.Registry
+	recentReqRing             *recentreq.Ring
+	alertingService           *alerting.Service
+	serverMonitorStore        *servermonitor.PostgresStore
+	serverMonitorEnabled      bool
+	serverMonitorOffline      time.Duration
 	// toolPriceSource 提供工具调用附加费价表来源(NAPI-BILLING-01)。按运维开关
 	// HUAKAI_TOOL_SURCHARGE_ENABLED 构建:启用 → 带平台默认价的 platformSource;
 	// 关闭 → nil(退回旧 $0 行为)。接入 chatHandlerDeps 的 ToolPricingTable。
 	toolPriceSource toolpricing.Source
-	// moduleRegistry 是 WAVE H2 运行时的模块知识脊柱,由 admin 的
-	// /admin/v1/modules 端点(以及后续的 Hermes 运维助手)查询。它不在任何
+	// moduleRegistry 是模块知识的运行时真相源，由管理端点和 Hermes 查询。它不在任何
 	// 请求热路径上;在 buildGatewayRuntime 接近结尾、probe 引用的服务都接好后填充。
 	moduleRegistry *moduleregistry.Registry
-	// WAVE H3 只读运维脊柱:诊断工具 registry、hermes_tool_calls 审计写入器,
-	// 以及模块上下文 source。三者都不在请求热路径上;挂在 H1 admin 门控的
-	// /v1/hermes 之下。
+	// Hermes 只读运维主干包含工具注册表、工具日志写入器和模块上下文来源。
 	hermesToolRegistry *hermesops.Registry
 	hermesToolCalls    *hermestoolsdb.Queries
 	hermesModuleSource *moduleSource
-	// hermesMutator 运行 WAVE H4 mutating-tool 的原子审计 + advisory-lock 事务。
+	// hermesMutator 在原子日志和 advisory lock 事务中运行改动型工具。
 	// pool 未设置时为 nil(此时 mutating 工具 fail closed)。
-	// 用 S2 并发上限 + 事务 deadline 的 orchestrator 选项构建。
+	// 编排器同时受并发上限和事务期限保护。
 	hermesMutator *hermesops.MutateOrchestrator
-	// hermesConfirmCache 是 Hermes mutating-tool 的 dry-run→confirm 进程内单次令牌 store 的
-	// **共享单例**。构造一次,注入 hermeshttp 的 operator 确认侧(本 PR);后续 Phase B 会把同一实例
-	// 注入 hermeschat 的 LLM 提议侧,使提议发的 correlation_id 能被 operator 的确认消费(同一进程内)。
-	hermesConfirmCache *hermesconfirm.Cache
-	// hermesMutateRateLimiter 是 S2 (c) 的按 operator-token 滑动窗口限流器,
+	// hermesConfirmStore 由 PostgreSQL 提供跨副本原子单次消费，提议和人工确认共用。
+	hermesConfirmStore hermesconfirm.Store
+	// hermesMutateRateLimiter 是按管理员身份执行的滑动窗口限流器，
 	// 在 mutate handler 中强制。rate 旋钮为 0 时为 nil/禁用(旧的无界行为)。
 	// 仅在 admin-only 的 mutator 路径生效时挂载。
 	hermesMutateRateLimiter *mutateguard.RateLimiter
-	// hermesMutatingEnabled 是所有 Hermes mutating 工具的运行时总开关(KNOB A)。
+	// hermesMutatingEnabled 是所有 Hermes 改动型工具的运行时总开关。
 	// 默认 true(HUAKAI_HERMES_MUTATING_ENABLED)。为 false 时,tool-execute 的
 	// mutating 分支被拒绝(403 hermes_mutating_disabled),且 mutator 也不会被挂入
 	// router,而只读诊断 + chat 仍然在线。
 	hermesMutatingEnabled bool
-	// hermesToolLoopEnabled 是 LLM 对话式工具循环的运行时总开关(KNOB B)。
-	// 默认 true(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)。为 false 时,不向 chat
-	// 请求体注入任何只读工具 catalog,且 runner 的 /internal/hermes/tool-execute
-	// 回调被拒绝(403 llm_toolloop_disabled),而普通的 /v1/hermes/chat 仍持续流式。
+	// hermesToolLoopEnabled 是官方 Hermes MCP 工具面的运行时总开关。
+	// 关闭后模型对话仍可用，但 MCP 目录和工具调用全部拒绝。
 	hermesToolLoopEnabled bool
-	// hermesProposeEnabled 是 Phase B 提议 KNOB(默认 FALSE,HUAKAI_HERMES_LLM_PROPOSE_ENABLED)。
-	// 为 false 时,internal handler 在任何 dry-run 解析之前拒绝每个 mode=propose 调用
-	//(403 llm_propose_disabled),故 LLM 无法提议任何 mutating 工具。默认关意味着接入提议路径在
-	// Owner 翻开它之前是零生产行为变。额外受 hermesToolLoopEnabled(KNOB B)门控。
+	// hermesProposeEnabled 控制 MCP 是否向模型暴露可逆且需人工确认的提议工具。
 	hermesProposeEnabled bool
-	// WAVE H3b 对话式只读工具循环:共享的 session-binding store
-	//(每个 chat 会话的 operator 身份,以 internal_token 的 request_id 为键),
-	// 以及 runner 回调进来的 internal tool-execute handler。在 admin-only 重定位
-	// 之外、或 chat bridge 未设置时,该 handler 为 nil。
-	hermesSessionBindings     *hermeschat.SessionBindings
-	hermesInternalToolHandler *hermeschat.InternalToolHandler
+	hermesMCPHandler     *hermeschat.MCPHandler
 }
 
 func quotaReconcilerEnabledFromEnv() bool {
@@ -868,19 +847,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	}
 	logCaptchaConfig(ctx, logger, platformSettingsService, captchaSecret)
 	hermesQueries := dbhermes.New(pgPool)
-	hermesKeyStore := hermes.NewKeyStore(hermesQueries)
-	hermesBootstrapIssuer, err := hermes.NewBootstrapIssuerFromEnv(hermesKeyStore)
-	if err != nil {
-		return nil, fmt.Errorf("build hermes bootstrap issuer: %w", err)
-	}
 	hermesRunner, err := hermes.NewRunnerClientFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("build hermes runner client: %w", err)
 	}
-	var hermesRunnerSharedSecret []byte
+	var hermesInternalTokenSecret []byte
 	var hermesService *hermes.Service
-	if hermesRunner != nil || hermesBootstrapIssuer != nil {
-		hermesRunnerSharedSecret, err = loadHermesInternalSharedSecret()
+	if hermesRunner != nil {
+		hermesInternalTokenSecret, err = loadHermesInternalTokenSecret()
 		if err != nil {
 			return nil, err
 		}
@@ -888,10 +862,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		logger.Info("Hermes runner: configured")
 	} else {
 		logger.Info("Hermes runner: disabled (env missing)")
-	}
-	hermesAdminOnly, err := hermesAdminOnlyFromEnv(logger)
-	if err != nil {
-		return nil, err
 	}
 	// 运行时总开关(两者默认 ENABLED => 不设置时零行为变更)。
 	hermesMutatingEnabled, err := hermesBoolEnabledDefaultTrue(hermesMutatingEnabledEnv)
@@ -902,8 +872,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if err != nil {
 		return nil, err
 	}
-	// Phase B 提议 KNOB(默认禁用 => 未设置即零行为变:在 Owner 显式打开它之前,LLM 无法提议任何
-	// mutating 工具)。
+	// 模型提议开关默认关闭；部署者显式启用前，模型不能提议任何改动型工具。
 	hermesProposeEnabled, err := hermesBoolEnabledDefaultFalse(hermesLLMProposeEnabledEnv)
 	if err != nil {
 		return nil, err
@@ -946,7 +915,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 
 	// credentialKeys 已在前面(platformSettings 构造处)加载,此处直接复用。
 	if hermesService != nil {
-		hermesService.WithMessageContentKeys(credentialKeys)
+		hermesService.WithMessageContentKeys(credentialKeys).WithProfileCredentialKeys(credentialKeys)
 	}
 	credentialStore := credentialstore.NewStore(pgPool, credentialKeys, credentialstore.DefaultHandlerRegistry())
 	credentialVault := provider.NewPostgresCredentialVaultWithStore(pgPool, credentialStore)
@@ -1202,13 +1171,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	settlementProof := settlementrecovery.NewPostgresCommittedProof(pgPool)
 	settlementHandler := newSettlementRecoveryHandler(settler, settlementProof, auditRefPolicy)
 	dlqService.Register(legacydlq.EventKindPostDeliverySettlement, settlementHandler.Handle)
-	// WAVE H3 只读诊断工具脊柱 + 它的 hermes_tool_calls 审计写入器,在这里构建
-	//(早于 chat bridge),这样 WAVE H3b 对话式工具循环就能把 registry(catalog
-	// provider)+ session-binding store 与 bridge 以及 internal tool-execute handler
-	// 共享。mutating orchestrator 也一并返回,供 H4 路径用。每个工具都包裹它已有的
-	// 读函数——没有新的查询逻辑。这里先暂存在局部变量中(deps 结构体稍后才构建),
-	// 然后在下方赋给 d。
-	hermesToolRegistry, hermesToolCalls, hermesMutator := buildHermesToolRegistry(hermesToolDeps{
+	modelRegistry := registry.NewPostgresRegistry(pgPool, nil)
+	// 工具注册表、工具日志写入器和改动编排器在聊天桥之前构建，使管理端点与 MCP
+	// 共用同一目录和持久化合同。每个工具复用既有查询或管理写路径。
+	hermesToolRegistry, hermesToolCalls, hermesMutator, err := buildHermesToolRegistry(hermesToolDeps{
 		pool:           pgPool,
 		adminQueries:   adminQueries,
 		billingQueries: billingQueries,
@@ -1216,21 +1182,26 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		channelHealth:  channelHealthService,
 		dlqStore:       dlqStore,
 		dlqService:     dlqService,
-		// model_resolve_diagnose 的只读解析依赖。此 hermes 工具注册早于下方 1150 行的 canonical
-		// modelRegistry 构造(它给 model registry admin/router 用),故这里就地构造一份专用实例:
-		// PostgresRegistry 是 pgPool 的无状态包装(noopCache),ResolveModel 每次自开只读 TX,
-		// 两份实例语义等价且彼此隔离,避免为接线而重排这个 god-file 的 100+ 行依赖顺序。
-		modelRegistry: registry.NewPostgresRegistry(pgPool, nil),
-		vendorOAuth:   cfg.VendorOAuth,
+		modelRegistry:  modelRegistry,
+		vendorOAuth:    cfg.VendorOAuth,
 	}, hermesMutateGuard.orchestratorOptions()...)
-	// S2 (c):按 operator-token 的限流器,在 mutate handler 中强制。
+	if err != nil {
+		return nil, err
+	}
+	hermesRecoveryWorker, err := hermesrecovery.NewWorker(hermesrecovery.NewStore(pgPool), dlqService.Replay)
+	if err != nil {
+		return nil, fmt.Errorf("构造 Hermes 变更恢复任务：%w", err)
+	}
+	hermesRecoveryWorker.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "Hermes 变更恢复任务",
+		wait: hermesRecoveryWorker.Wait,
+	})
+	// 改动确认按运营者令牌限流，由改动处理器统一强制执行。
 	hermesMutateRateLimiter := hermesMutateGuard.newRateLimiter()
-	// WAVE H3b:进程内的 session-binding store,由 bridge(在 chat 开始时写入
-	// operator 绑定)和 internal tool handler(读取它以授权每次对话式工具调用)共享。
-	hermesSessionBindings := hermeschat.NewSessionBindings(nil)
 	var hermesChatBridge *hermeschat.Bridge
 	if hermesRunner != nil {
-		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesSessionBindings, hermesToolRegistry, hermesToolLoopEnabled, hermesProposeEnabled)
+		hermesChatBridge, err = buildHermesChatBridge(hermesService, dlqService, platformSettingsService, credentialKeys, hermesInternalTokenSecret)
 		if err != nil {
 			return nil, err
 		}
@@ -1240,15 +1211,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		if err != nil {
 			return nil, err
 		}
-		// retention_days=0 是默认安全值：永久保留，运维显式配置正整数后才启动硬删 worker。
-		if retentionDays > 0 {
-			hermesRetentionWorker := hermes.NewMessageRetentionWorker(hermes.MessageRetentionWorkerConfig{
-				Store:         hermes.NewPostgresMessagePurgeStore(hermesQueries),
-				RetentionDays: retentionDays,
-			})
-			hermesRetentionWorker.Start(workerCtx)
-			rt.hermesRetentionWorker = hermesRetentionWorker
-		}
+		hermesRetentionWorker := hermes.NewMessageRetentionWorker(hermes.MessageRetentionWorkerConfig{
+			Store:         hermes.NewPostgresMessagePurgeStore(hermesQueries),
+			RetentionDays: retentionDays,
+		})
+		hermesRetentionWorker.Start(workerCtx)
+		rt.hermesRetentionWorker = hermesRetentionWorker
 	}
 	usageRetentionDays, err := usageretention.UsageRetentionDaysFromEnv()
 	if err != nil {
@@ -1415,7 +1383,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if err != nil {
 		return nil, fmt.Errorf("build payment provider bindings: %w", err)
 	}
-	modelRegistry := registry.NewPostgresRegistry(pgPool, nil)
 	modelSyncService := buildModelSyncService(opts.modelSync, modelRegistry)
 	pricingRatioStore := pricingcatalog.NewPostgresStoreWithAuditSigner(pgPool, auditSigner)
 	pricingRatioResolver := pricingcatalog.NewRatioResolver(pricingRatioStore, 0)
@@ -1590,27 +1557,23 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			clientIPResolver,
 			platformTenantID,
 		),
-		adminIssuer:              admin.NewKeyIssuer(pgPool),
-		adminRevoker:             admin.NewKeyRevoker(pgPool),
-		adminTokenIssuer:         admin.NewAdminTokenIssuer(pgPool),
-		billingAuditUpdater:      gatewayhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
-		platformSettings:         platformSettingsService,
-		hermesService:            hermesService,
-		hermesRunner:             hermesRunner,
-		hermesChatBridge:         hermesChatBridge,
-		hermesKeyStore:           hermesKeyStore,
-		hermesBootstrapIssuer:    hermesBootstrapIssuer,
-		hermesRunnerSharedSecret: hermesRunnerSharedSecret,
-		hermesAdminOnly:          hermesAdminOnly,
-		hermesToolRegistry:       hermesToolRegistry,
-		hermesToolCalls:          hermesToolCalls,
-		hermesMutator:            hermesMutator,
-		hermesConfirmCache:       hermesconfirm.NewCache(),
-		hermesMutateRateLimiter:  hermesMutateRateLimiter,
-		hermesMutatingEnabled:    hermesMutatingEnabled,
-		hermesToolLoopEnabled:    hermesToolLoopEnabled,
-		hermesProposeEnabled:     hermesProposeEnabled,
-		hermesSessionBindings:    hermesSessionBindings,
+		adminIssuer:               admin.NewKeyIssuer(pgPool),
+		adminRevoker:              admin.NewKeyRevoker(pgPool),
+		adminTokenIssuer:          admin.NewAdminTokenIssuer(pgPool),
+		billingAuditUpdater:       billingadminhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
+		platformSettings:          platformSettingsService,
+		hermesService:             hermesService,
+		hermesRunner:              hermesRunner,
+		hermesChatBridge:          hermesChatBridge,
+		hermesInternalTokenSecret: hermesInternalTokenSecret,
+		hermesToolRegistry:        hermesToolRegistry,
+		hermesToolCalls:           hermesToolCalls,
+		hermesMutator:             hermesMutator,
+		hermesConfirmStore:        hermesconfirm.NewPostgresStore(pgPool),
+		hermesMutateRateLimiter:   hermesMutateRateLimiter,
+		hermesMutatingEnabled:     hermesMutatingEnabled,
+		hermesToolLoopEnabled:     hermesToolLoopEnabled,
+		hermesProposeEnabled:      hermesProposeEnabled,
 	}
 	rt.deps = d
 	apiKeyExpiryService := apikeyexpiry.NewService(
@@ -1845,43 +1808,40 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	rt.subscriptionReminderWorker = subscriptionReminderWorker
 	rt.subscriptionAutoRenewWorker = subscriptionAutoRenewWorker
 	rt.obsDLQEnabled = opts.obsDLQ.Enabled
-	// WAVE H2:最后再构建模块知识脊柱,等所有 probe 引用的服务
+	// 最后构建模块知识真相源，等待所有探针依赖的服务
 	//(settler、selector、credential store + scheduler)都接好之后,这样 seed
 	// probe 捕获到的是 live(非 nil)引用。不在请求热路径上。
 	d.moduleRegistry = buildModuleRegistry(d)
-	// WAVE H3 只读诊断工具脊柱在更早处构建(早于 chat bridge),这样 H3b
-	// 对话式工具循环能共享它。这里只构建模块上下文 source。
+	// 工具主干已在聊天桥之前构建；这里只构建共用的模块上下文来源。
 	d.hermesModuleSource = newModuleSource(d.moduleRegistry)
-	// WAVE H3b:runner 在对话中途回调进来的 internal 只读 tool-execute handler。
-	// 它校验 session 的 internal_token、解析出绑定的 operator,并且只派发只读工具
-	//(Run 拒绝任何 mutation),带上 operator 的角色下限 + 租户作用域 + 审计。
-	// 仅在 admin-only 重定位 + chat bridge 都生效时才构建。
-	if d.hermesAdminOnly && d.hermesChatBridge != nil {
+	// 官方 Hermes 通过标准 MCP 读取工具目录并调用工具。短时内部令牌携带固定租户和真实管理员，
+	// 不再向 runner 注入自定义工具目录或私有执行器。
+	if d.hermesChatBridge != nil {
 		if internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv)); internalSecret != "" {
-			d.hermesInternalToolHandler = buildHermesInternalToolHandler(
-				[]byte(internalSecret), d.hermesSessionBindings, d.hermesToolRegistry, d.hermesToolCalls, d.hermesToolLoopEnabled,
-				d.hermesConfirmCache, d.hermesProposeEnabled,
+			d.hermesMCPHandler = buildHermesMCPHandler(
+				[]byte(internalSecret), d.hermesToolRegistry, d.hermesToolCalls, d.hermesToolLoopEnabled,
+				d.hermesConfirmStore, d.hermesProposeEnabled,
 			)
 		}
 	}
-	// WAVE H5:每日运维巡检 worker。默认关闭(opt-in 启用标志);仅在启用
-	// 且能解析出一个 admin 收件人(platform setting 或 env 回退)时才启动。
-	// 它复用已有的只读诊断 + 通知邮件发送器 + 模块脊柱——纯增量,不在请求热路径上。
-	if inspectionWorker := buildHermesInspectionWorker(ctx, hermesAdminDeps{
-		settings:       platformSettingsService,
-		emailSender:    notificationEmailSender,
-		moduleRegistry: d.moduleRegistry,
-		credentialStr:  credentialStore,
-		channelHealth:  channelHealthService,
-		dlqStore:       dlqStore,
-		obsDLQStore:    outboxStore,
-		billingQueries: billingQueries,
-		logger:         logger,
-		leaderLease:    workerlease.NewPostgres(pgPool, hermesInspectLeaderLockKey, "hermes_inspection"),
-		windowClaims:   sharedRateLimits.windows,
+	// 每日运维巡检默认关闭，只在显式开启并解析出管理员收件人时启动。
+	// 所有读取固定在部署者平台租户，不接受环境变量覆盖租户。
+	if inspectionWorker := buildOpsInspectionWorker(ctx, opsInspectionDeps{
+		platformTenantID: platformTenantID,
+		settings:         platformSettingsService,
+		emailSender:      notificationEmailSender,
+		moduleRegistry:   d.moduleRegistry,
+		credentialStr:    credentialStore,
+		channelHealth:    channelHealthService,
+		dlqStore:         dlqStore,
+		obsDLQStore:      outboxStore,
+		billingQueries:   billingQueries,
+		logger:           logger,
+		leaderLease:      workerlease.NewPostgres(pgPool, opsInspectionLeaderLockKey, "ops_inspection"),
+		windowClaims:     sharedRateLimits.windows,
 	}); inspectionWorker != nil {
 		inspectionWorker.Start(workerCtx)
-		rt.hermesInspectionWorker = inspectionWorker
+		rt.opsInspectionWorker = inspectionWorker
 	}
 	readiness.MarkReady()
 	ready = true
@@ -1950,40 +1910,22 @@ func buildModelSyncService(cfg *runtimeconfig.ModelSyncConfig, store *registry.P
 	})
 }
 
-func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, bindings *hermeschat.SessionBindings, toolRegistry *hermesops.Registry, toolLoopEnabled bool, proposeEnabled bool) (*hermeschat.Bridge, error) {
+func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.Service, settings *platformsettings.Service, keys credentialstore.KeyProvider, internalTokenSecret []byte) (*hermeschat.Bridge, error) {
 	if hermesService == nil {
 		return nil, nil
 	}
 	if keys == nil {
 		return nil, fmt.Errorf("%w: Hermes message content encryption key provider is required", hermes.ErrMisconfigured)
 	}
-	internalSecret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv))
-	if internalSecret == "" {
+	if len(internalTokenSecret) == 0 {
 		return nil, fmt.Errorf("%w: %s is required for Hermes chat bridge", hermes.ErrMisconfigured, hermeschat.InternalTokenSecretEnv)
 	}
 	opts := []hermeschat.Option{
-		hermeschat.WithInternalTokenSecret([]byte(internalSecret)),
-		hermeschat.WithInternalBaseURL(envDefault(hermeschat.InternalBaseURLEnv, hermeschat.DefaultInternalBaseURL)),
+		hermeschat.WithInternalTokenSecret(internalTokenSecret),
 		hermeschat.WithAuditDLQ(dlqService),
 		hermeschat.WithResponseHeaderSettings(settings),
 		hermeschat.WithMessageContentKeys(keys),
 	}
-	// WAVE H3b:挂上 session-binding store + 只读工具 catalog,这样 chat 负载
-	// 就携带该 catalog,且每个会话的 operator 都被绑定。两者均可选——
-	// bindings store 为 nil 时,chat 路径保持不变。
-	if bindings != nil {
-		opts = append(opts, hermeschat.WithSessionBindings(bindings))
-	}
-	if toolRegistry != nil {
-		// Phase B:proposeEnabled 打开时注入 ProposableCatalog(含可提议的 mutating 工具 + 标志),
-		// 否则注入 ReadOnlyCatalog(默认,零行为变)。与 internal_tool_handler 的 propose 分支共用
-		// 同一个 KNOB。
-		opts = append(opts, hermeschat.WithToolCatalog(hermesToolCatalogProvider{reg: toolRegistry, proposeEnabled: proposeEnabled}))
-	}
-	// KNOB B:当 LLM 对话式工具循环在运行时被禁用时,bridge 不注入任何
-	// tool_catalog(上面的 WithToolCatalog provider 仍接着,但 gate 抑制注入),
-	// 因此 LLM 被告知没有任何工具。
-	opts = append(opts, hermeschat.WithToolLoopEnabled(toolLoopEnabled))
 	bridge, err := hermeschat.NewBridge(hermesService, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("build hermes chat bridge: %w", err)
@@ -1991,84 +1933,29 @@ func buildHermesChatBridge(hermesService *hermes.Service, dlqService *legacydlq.
 	return bridge, nil
 }
 
-func loadHermesInternalSharedSecret() ([]byte, error) {
-	secret := strings.TrimSpace(os.Getenv(hermes.RunnerInternalSharedSecretEnv))
+func loadHermesInternalTokenSecret() ([]byte, error) {
+	secret := strings.TrimSpace(os.Getenv(hermeschat.InternalTokenSecretEnv))
 	if secret == "" {
-		return nil, fmt.Errorf("%w: %s is required for Hermes internal routes", hermes.ErrMisconfigured, hermes.RunnerInternalSharedSecretEnv)
+		return nil, fmt.Errorf("%w: %s is required for Hermes internal routes", hermes.ErrMisconfigured, hermeschat.InternalTokenSecretEnv)
 	}
 	return []byte(secret), nil
-}
-
-// hermesAdminOnlyEnv 把 Hermes 路由重新门控为仅 ADMIN/OPERATOR 鉴权。
-const hermesAdminOnlyEnv = "HUAKAI_HERMES_ADMIN_ONLY"
-
-// hermesAllowLegacyUserAuthEnv 是把 Hermes 挂到旧 customer-key 路径背后所需的
-// 显式第二个 opt-in。没有它,HUAKAI_HERMES_ADMIN_ONLY=false 会被忽略,Hermes
-// 保持 admin-only——单次 env 翻转再也无法默默把 LLM 运维助手暴露给
-// 普通客户 API key。
-const hermesAllowLegacyUserAuthEnv = "HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH"
-
-// hermesAdminOnlyFromEnv 解析 Hermes 是否为 admin/operator-only。它是
-// FAIL-CLOSED 的:默认(未设置)、任何真值、乃至显式的
-// HUAKAI_HERMES_ADMIN_ONLY=false 但缺少第二个 opt-in
-// HUAKAI_HERMES_ALLOW_LEGACY_USER_AUTH=true,都解析为 admin-only。只有当
-// 两个 opt-in 都存在时,才进入旧的终端用户(customer-key)鉴权;并且在
-// production(HUAKAI_RELEASE_MODE=production)下直接拒绝,镜像
-// validateProductionCaptchaConfig 的启动门。格式错误的
-// HUAKAI_HERMES_ADMIN_ONLY 仍是一个 fail-loud 启动错误。logger 为 nil 时
-// 可容忍(跳过警告),与 logCaptchaConfig 一致。
-func hermesAdminOnlyFromEnv(logger *zap.Logger) (bool, error) {
-	raw := strings.TrimSpace(os.Getenv(hermesAdminOnlyEnv))
-	if raw == "" {
-		return true, nil
-	}
-	wantAdminOnly, err := strconv.ParseBool(raw)
-	if err != nil {
-		return false, fmt.Errorf("%s must be a boolean, got %q: %w", hermesAdminOnlyEnv, raw, err)
-	}
-	if wantAdminOnly {
-		return true, nil
-	}
-	// 显式 false:请求使用旧的 customer-key 鉴权。要求第二个 opt-in;
-	// 否则保持 admin-only(fail-closed)并大声告警。
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv(hermesAllowLegacyUserAuthEnv)), "true") {
-		if logger != nil {
-			logger.Warn("HUAKAI_HERMES_ADMIN_ONLY=false ignored — legacy end-user auth for Hermes requires an explicit second opt-in; staying admin-only",
-				zap.String("required_optin", hermesAllowLegacyUserAuthEnv+"=true"))
-		}
-		return true, nil
-	}
-	// 两个 opt-in 都存在 → 旧模式。production 下绝不允许。
-	if releaseModeProduction() {
-		return false, fmt.Errorf("refusing to start: Hermes legacy end-user auth (%s=false + %s=true) exposes the LLM ops-assistant to customer API keys and is forbidden when HUAKAI_RELEASE_MODE=production",
-			hermesAdminOnlyEnv, hermesAllowLegacyUserAuthEnv)
-	}
-	if logger != nil {
-		logger.Warn("Hermes mounted behind LEGACY end-user (customer API key) auth — the LLM ops-assistant is reachable by customer keys; admin-only is the safe default",
-			zap.String("enabled_by", hermesAdminOnlyEnv+"=false + "+hermesAllowLegacyUserAuthEnv+"=true"))
-	}
-	return false, nil
 }
 
 // hermesMutatingEnabledEnv 是所有 Hermes mutating 工具
 // (account_pause/account_resume/dlq_replay/renew_trigger)的运行时总开关。
 // 它默认 ENABLED,因此未设置 env 即零行为变更;翻为 false 可在运行时
 // 禁用每个 mutating 工具,同时保持只读诊断 + 对话式 chat 完全在线。
-// 与 HUAKAI_HERMES_ADMIN_ONLY 正交。
 const hermesMutatingEnabledEnv = "HUAKAI_HERMES_MUTATING_ENABLED"
 
 // hermesLLMToolLoopEnabledEnv 是 LLM 对话式工具循环的运行时总开关
 // (向 chat 请求体注入只读工具 catalog + runner 在对话中途的
 // /internal/hermes/tool-execute 回调)。它默认 ENABLED;翻为 false 可禁用
-// 工具循环,同时普通的 /v1/hermes/chat 仍持续流式。与 HUAKAI_HERMES_ADMIN_ONLY
-// 以及上面的 mutating 总开关均正交。
+// 工具循环,同时普通的 /v1/hermes/chat 仍持续流式。
 const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
 
-// hermesLLMProposeEnabledEnv 是 Phase B 提议 KNOB(默认禁用)。未设置/false 时,internal handler
-// 在任何 dry-run 解析之前拒绝每个 mode=propose 调用(403),故 LLM 无法提议任何 mutating 工具——
-// 接入提议路径是零行为变。设为 true(Owner-gated 激活)可让助手提议可逆的 B 级 mutating 工具;
-// 执行仍需一个独立的 OPERATOR 确认。额外受 tool-loop kill-switch(HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED)
-// 与 per-tool 的 Proposable 标志门控。
+// hermesLLMProposeEnabledEnv 是默认关闭的模型提议开关。未设置或为 false 时，内部处理器
+// 在空跑解析前拒绝 mode=propose 请求，模型不能提议改动型工具。设为 true 后，助手只能提议
+// 标记为 Proposable 的可逆工具，真正执行仍需运营者独立确认，并继续受工具循环总开关约束。
 const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
 
 // subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的启用开关。默认 FALSE:
@@ -2091,10 +1978,8 @@ func subscriptionAutoRenewEnabledFromEnv(envName string) (bool, error) {
 	return enabled, nil
 }
 
-// hermesBoolEnabledDefaultFalse 解析一个默认 FALSE 的运行时布尔 knob(hermesBoolEnabledDefaultTrue
-// 的镜像):unset/空 => 默认(false、禁用);任何可解析的 bool 被采纳;格式错误的值是 fail-loud
-// boot error(绝不静默回退而悄悄启用 operator 未选择开启的特权面)。用于 Phase B 提议 KNOB,其
-// 安全默认是关。
+// hermesBoolEnabledDefaultFalse 解析默认关闭的运行时布尔开关。未设置或为空时返回 false，
+// 合法布尔值按配置生效；格式错误会阻止启动，避免静默启用部署者未授权的特权能力。
 func hermesBoolEnabledDefaultFalse(envName string) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(envName))
 	if raw == "" {

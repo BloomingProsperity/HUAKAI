@@ -1,24 +1,63 @@
 package hermes
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	dbhermes "github.com/BloomingProsperity/HUAKAI/internal/db/hermes"
 )
 
-func TestEnableForUserRejectsDedicatedProfileOwnedByAnotherUser(t *testing.T) {
+func TestExternalProfile加密落库且读取只返回掩码(t *testing.T) {
+	store := &settingsStoreStub{}
+	service := NewService(store).WithProfileCredentialKeys(testProfileKeys(t))
+
+	profile, err := service.CreateProfile(context.Background(), 7, 42, "外部模型", "https://model.example.com/v1/", "sk-live-secret-1234")
+	if err != nil {
+		t.Fatalf("创建外部模型配置：%v", err)
+	}
+	if bytes.Contains(store.createArg.EncryptedApiKey, []byte("sk-live-secret-1234")) || len(store.createArg.EncryptedApiKey) == 0 {
+		t.Fatalf("数据库载荷没有正确加密：%q", store.createArg.EncryptedApiKey)
+	}
+	if profile.BaseURL != "https://model.example.com/v1" || profile.APIKeyMasked != "****1234" || profile.CredentialVersion != 1 {
+		t.Fatalf("公开投影=%+v", profile)
+	}
+	resolved, err := service.ResolveProfileCredential(context.Background(), profile.ID, 7)
+	if err != nil {
+		t.Fatalf("解密外部模型配置：%v", err)
+	}
+	if string(resolved.APIKey) != "sk-live-secret-1234" || resolved.BaseURL != "https://model.example.com/v1" {
+		t.Fatalf("解密结果不符合预期：url=%q key=%q", resolved.BaseURL, resolved.APIKey)
+	}
+}
+
+func TestExternalProfile拒绝私网与携带用户信息的URL(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://model.example.com/v1",
+		"https://user:pass@model.example.com/v1",
+		"https://127.0.0.1/v1",
+		"https://169.254.169.254/latest/meta-data",
+		"https://model.example.com/v1?next=https://evil.example",
+	} {
+		if _, err := NormalizeExternalBaseURL(rawURL); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("URL %q err=%v，期望拒绝", rawURL, err)
+		}
+	}
+}
+
+func TestEnableForUserRejectsExternalProfileOwnedByAnotherUser(t *testing.T) {
 	profileID := int64(99)
 	store := &settingsStoreStub{
 		profile: dbhermes.HermesApiProfile{
 			ID: profileID, TenantID: 7, OwnerUserID: 100,
-			ProfileKind: APISourceDedicatedGroup,
+			ProfileKind: APISourceExternal,
 		},
 	}
 	service := NewService(store)
 
-	err := service.EnableForUser(context.Background(), 7, 42, APISourceDedicatedGroup, &profileID)
+	err := service.EnableForUser(context.Background(), 7, 42, APISourceExternal, &profileID, "gpt-4o")
 
 	if !errors.Is(err, ErrProfileNotOwned) {
 		t.Fatalf("err=%v want ErrProfileNotOwned", err)
@@ -30,13 +69,14 @@ func TestEnableForUserRejectsDedicatedProfileOwnedByAnotherUser(t *testing.T) {
 
 func TestEnableForUserWithAuditRollsBackSettingsWhenAuditInsertFails(t *testing.T) {
 	auditErr := errors.New("audit sink down")
+	profileID := int64(99)
 	baseStore := &settingsStoreStub{}
-	txStore := &settingsStoreStub{auditErr: auditErr}
+	txStore := &settingsStoreStub{auditErr: auditErr, profile: dbhermes.HermesApiProfile{ID: profileID, TenantID: 7, OwnerUserID: 42, ProfileKind: APISourceExternal}}
 	transactor := &storeTransactor{store: txStore}
 	service := NewService(baseStore)
 	service.tx = transactor
 
-	_, err := service.EnableForUserWithAudit(context.Background(), 7, 42, APISourceManaged, nil, testAuditFields(ActionEnable))
+	_, err := service.EnableForUserWithAudit(context.Background(), 7, 42, APISourceExternal, &profileID, "gpt-4o", testAuditFields(ActionEnable))
 
 	if !errors.Is(err, ErrAuditRecordFailed) {
 		t.Fatalf("err=%v want ErrAuditRecordFailed", err)
@@ -83,8 +123,9 @@ func TestCreateProfileWithAuditRollsBackProfileWhenAuditInsertFails(t *testing.T
 	transactor := &storeTransactor{store: txStore}
 	service := NewService(baseStore)
 	service.tx = transactor
+	service.WithProfileCredentialKeys(testProfileKeys(t))
 
-	_, err := service.CreateProfileWithAudit(context.Background(), 7, 42, "managed", APISourceManaged, nil, nil, testAuditFields(ActionProfileCreate))
+	_, err := service.CreateProfileWithAudit(context.Background(), 7, 42, "external", "https://api.example.com/v1", "sk-test-secret", testAuditFields(ActionProfileCreate))
 
 	if !errors.Is(err, ErrAuditRecordFailed) {
 		t.Fatalf("err=%v want ErrAuditRecordFailed", err)
@@ -106,7 +147,7 @@ func TestDeleteProfileWithAuditRejectsProfileInUseBeforeDelete(t *testing.T) {
 	txStore := &settingsStoreStub{
 		profile: dbhermes.HermesApiProfile{
 			ID: profileID, TenantID: 7, OwnerUserID: 42,
-			ProfileKind: APISourceDedicatedGroup,
+			ProfileKind: APISourceExternal,
 		},
 		profileInUse: true,
 	}
@@ -132,7 +173,7 @@ func TestDeleteProfileWithAuditRejectsProfileInUseBeforeDelete(t *testing.T) {
 
 func testAuditFields(action string) AuditFields {
 	return AuditFields{
-		TenantID: 7, ActorUserID: 42, Action: action,
+		TenantID: 7, ActorSource: "token", ActorID: 42, ActorRole: "platform_admin", Action: action,
 		SanitizedArgs: map[string]any{"source": "test"}, Result: AuditResultSuccess,
 		CorrelationID: "corr-test", RequestID: "req-test",
 	}
@@ -143,6 +184,7 @@ type settingsStoreStub struct {
 	profileInUse  bool
 	auditErr      error
 	createCalled  bool
+	createArg     dbhermes.CreateProfileParams
 	deleteCalled  bool
 	disableCalled bool
 	upsertCalled  bool
@@ -173,12 +215,18 @@ func (s *settingsStoreStub) CreateConversation(context.Context, dbhermes.CreateC
 	return 1, nil
 }
 
-func (s *settingsStoreStub) CreateProfile(context.Context, dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
+func (s *settingsStoreStub) CreateProfile(_ context.Context, arg dbhermes.CreateProfileParams) (dbhermes.HermesApiProfile, error) {
 	s.createCalled = true
-	return dbhermes.HermesApiProfile{
-		ID: 123, TenantID: 7, OwnerUserID: 42, Name: "managed",
-		ProfileKind: APISourceManaged,
-	}, nil
+	s.createArg = arg
+	s.profile = dbhermes.HermesApiProfile{
+		ID: 123, TenantID: arg.TenantID, OwnerUserID: arg.OwnerUserID, Name: arg.Name,
+		ProfileKind: arg.ProfileKind, BaseUrl: arg.BaseUrl,
+		EncryptedApiKey: arg.EncryptedApiKey, EncryptionScheme: arg.EncryptionScheme,
+		KeyID: arg.KeyID, Nonce: arg.Nonce, AadHash: arg.AadHash,
+		ApiKeyFingerprint: arg.ApiKeyFingerprint, ApiKeyHint: arg.ApiKeyHint,
+		CredentialVersion: arg.CredentialVersion, SecretBindingID: arg.SecretBindingID,
+	}
+	return s.profile, nil
 }
 
 func (s *settingsStoreStub) DeleteProfile(context.Context, dbhermes.DeleteProfileParams) (int64, error) {
@@ -188,11 +236,7 @@ func (s *settingsStoreStub) DeleteProfile(context.Context, dbhermes.DeleteProfil
 
 func (s *settingsStoreStub) DisableHermes(context.Context, dbhermes.DisableHermesParams) (dbhermes.HermesSetting, error) {
 	s.disableCalled = true
-	return dbhermes.HermesSetting{TenantID: 7, UserID: 42, Enabled: false, APISource: APISourceManaged}, nil
-}
-
-func (s *settingsStoreStub) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	return 0, nil
+	return dbhermes.HermesSetting{TenantID: 7, UserID: 42, Enabled: false, APISource: APISourceExternal}, nil
 }
 
 func (s *settingsStoreStub) GetConversation(context.Context, dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
@@ -243,7 +287,16 @@ func (s *settingsStoreStub) UpdateConversationLastMessageAt(context.Context, dbh
 	return 1, nil
 }
 
-func (s *settingsStoreStub) UpsertSettings(context.Context, dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {
+func (s *settingsStoreStub) UpsertSettings(_ context.Context, arg dbhermes.UpsertSettingsParams) (dbhermes.HermesSetting, error) {
 	s.upsertCalled = true
-	return dbhermes.HermesSetting{TenantID: 7, UserID: 42, Enabled: true, APISource: APISourceManaged}, nil
+	return dbhermes.HermesSetting{TenantID: 7, UserID: 42, Enabled: true, APISource: APISourceExternal, ProfileID: arg.ProfileID, ModelKey: arg.ModelKey}, nil
+}
+
+func testProfileKeys(t *testing.T) credentialstore.KeyProvider {
+	t.Helper()
+	keys, err := credentialstore.NewStaticKeyProvider("test", []byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("创建测试密钥：%v", err)
+	}
+	return keys
 }

@@ -20,10 +20,10 @@ import (
 	mailinfra "github.com/BloomingProsperity/HUAKAI/internal/email"
 	"github.com/BloomingProsperity/HUAKAI/internal/healthhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
-	"github.com/BloomingProsperity/HUAKAI/internal/hermesadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	obsoutbox "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/opsinspection"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/servermonitor"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
@@ -65,7 +65,7 @@ type gatewayRuntime struct {
 	subscriptionExpiryWorker    *subscription.ExpiryWorker
 	subscriptionReminderWorker  *subscription.ReminderWorker
 	subscriptionAutoRenewWorker *subscription.AutoRenewWorker
-	hermesInspectionWorker      *hermesadmin.InspectionWorker
+	opsInspectionWorker         *opsinspection.InspectionWorker
 	mediaTaskWorker             *mediatask.Worker
 	serverMonitorWorker         *servermonitor.Worker
 	obsDLQEnabled               bool
@@ -133,8 +133,8 @@ func (rt *gatewayRuntime) close() {
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()
 	}
-	if rt.hermesInspectionWorker != nil {
-		rt.hermesInspectionWorker.Stop()
+	if rt.opsInspectionWorker != nil {
+		rt.opsInspectionWorker.Stop()
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
@@ -276,8 +276,8 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 		rt.subscriptionAutoRenewWorker.Stop()
 	}
 	// 每日巡检 worker 独立于 in-flight handler; Stop 在当前 tick 结束后立即返回。
-	if rt.hermesInspectionWorker != nil {
-		rt.hermesInspectionWorker.Stop()
+	if rt.opsInspectionWorker != nil {
+		rt.opsInspectionWorker.Stop()
 	}
 	if rt.mediaTaskWorker != nil {
 		rt.mediaTaskWorker.Stop()

@@ -82,6 +82,7 @@ func fixtureCompletionEvent(t *testing.T) eventbus.RequestCompletionEvent {
 			AuditRequestID:      "audit-req-7",
 			EmitSchedulerOutbox: true,
 			SnapshotVersion:     "registry:3001:v9;router:rv2",
+			BillingEffect:       billing.BillingEffectOperationalCost,
 		},
 	}
 }
@@ -164,6 +165,9 @@ func TestPayload_RoundTrip_SettleRequestFieldsByteIdentical(t *testing.T) {
 	}
 	if got.EmitSchedulerOutbox != original.EmitSchedulerOutbox {
 		t.Fatalf("EmitSchedulerOutbox=%v want %v", got.EmitSchedulerOutbox, original.EmitSchedulerOutbox)
+	}
+	if got.BillingEffect != original.BillingEffect {
+		t.Fatalf("BillingEffect=%q want %q", got.BillingEffect, original.BillingEffect)
 	}
 	// item 1: protocol_loss 必须存活 DLQ replay round-trip,否则重放写 "[]"。
 	// 变异: 删 FromCompletionEvent 或 ToSettleRequest 的 ProtocolLoss 赋值 → 空 → 红。

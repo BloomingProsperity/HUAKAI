@@ -9,27 +9,39 @@ import (
 )
 
 type HermesApiProfile struct {
-	ID          int64              `db:"id" json:"id"`
-	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
-	OwnerUserID int64              `db:"owner_user_id" json:"owner_user_id"`
-	Name        string             `db:"name" json:"name"`
-	ProfileKind string             `db:"profile_kind" json:"profile_kind"`
-	APIKeyID    *int64             `db:"api_key_id" json:"api_key_id"`
-	PoolGroupID *int64             `db:"pool_group_id" json:"pool_group_id"`
-	CreatedAt   pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ID                int64              `db:"id" json:"id"`
+	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
+	OwnerUserID       int64              `db:"owner_user_id" json:"owner_user_id"`
+	Name              string             `db:"name" json:"name"`
+	ProfileKind       string             `db:"profile_kind" json:"profile_kind"`
+	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	BaseUrl           string             `db:"base_url" json:"base_url"`
+	EncryptedApiKey   []byte             `db:"encrypted_api_key" json:"encrypted_api_key"`
+	EncryptionScheme  string             `db:"encryption_scheme" json:"encryption_scheme"`
+	KeyID             string             `db:"key_id" json:"key_id"`
+	Nonce             []byte             `db:"nonce" json:"nonce"`
+	AadHash           string             `db:"aad_hash" json:"aad_hash"`
+	ApiKeyFingerprint string             `db:"api_key_fingerprint" json:"api_key_fingerprint"`
+	ApiKeyHint        string             `db:"api_key_hint" json:"api_key_hint"`
+	CredentialVersion int32              `db:"credential_version" json:"credential_version"`
+	SecretBindingID   int64              `db:"secret_binding_id" json:"secret_binding_id"`
 }
 
 type HermesAuditEvent struct {
 	ID            int64              `db:"id" json:"id"`
 	Ts            pgtype.Timestamptz `db:"ts" json:"ts"`
 	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ActorUserID   int64              `db:"actor_user_id" json:"actor_user_id"`
 	Action        string             `db:"action" json:"action"`
 	SanitizedArgs []byte             `db:"sanitized_args" json:"sanitized_args"`
 	Result        string             `db:"result" json:"result"`
 	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
 	RequestID     *string            `db:"request_id" json:"request_id"`
+	IngestedAt    pgtype.Timestamptz `db:"ingested_at" json:"ingested_at"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     *string            `db:"actor_role" json:"actor_role"`
 }
 
 type HermesConversation struct {
@@ -41,6 +53,9 @@ type HermesConversation struct {
 	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	LastMessageAt pgtype.Timestamptz `db:"last_message_at" json:"last_message_at"`
 	DeletedAt     pgtype.Timestamptz `db:"deleted_at" json:"deleted_at"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     *string            `db:"actor_role" json:"actor_role"`
 }
 
 type HermesJwtKey struct {
@@ -61,4 +76,5 @@ type HermesSetting struct {
 	ProfileID *int64             `db:"profile_id" json:"profile_id"`
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	ModelKey  string             `db:"model_key" json:"model_key"`
 }

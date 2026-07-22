@@ -167,12 +167,6 @@ func MountRoutes(r chi.Router, d Deps) {
 	r.With(safe).Delete("/{id}/account-bindings/{provider}", newUnlinkSocialIdentityHandler(d))
 }
 
-func NewRouter(d Deps) http.Handler {
-	r := chi.NewRouter()
-	MountRoutes(r, d)
-	return r
-}
-
 func NewListHandler(d Deps) http.HandlerFunc {
 	return newListHandler(d)
 }
@@ -666,7 +660,7 @@ func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
 }
 
 func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, group)
+	_, err := s.pool.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2 AND principal_kind='human'`, tenantID, userID, group)
 	return err
 }
 
@@ -740,7 +734,7 @@ func NewPostgresUserRemarkStore(pool *pgxpool.Pool) userRemarkSetter {
 }
 
 func (s postgresUserRemarkStore) SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET remark=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, userID, remark)
+	_, err := s.pool.Exec(ctx, `UPDATE users SET remark=$3 WHERE tenant_id=$1 AND id=$2 AND principal_kind='human'`, tenantID, userID, remark)
 	return err
 }
 

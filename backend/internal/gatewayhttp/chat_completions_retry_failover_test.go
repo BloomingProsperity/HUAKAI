@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
@@ -660,11 +661,13 @@ func (f *claudeSessionQuotaFinalizer) CommitCacheHit(_ context.Context, req quot
 }
 
 func claudeSessionOfficialBody() string {
+	// 真实 Claude Code 官方直发请求 system 头部首块即官方身份前缀;反转号出口对该前缀做
+	// EnsurePrefix 幂等注入,已带前缀故字节等价(下方 raw 直发 byte-equal 断言据此成立)。
 	return `{
   "model":"claude-sonnet",
   "max_tokens":8,
   "stream":false,
-  "system":[{"type":"text","text":"supported CLI"}],
+  "system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"supported CLI"}],
   "metadata":{"user_id":"user_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_account_00000000-1111-2222-3333-444444444444_session_11111111-2222-3333-4444-555555555555"},
   "messages":[{"role":"user","content":"hi"}]
 }`
@@ -1491,6 +1494,36 @@ func TestModelFallback_PrimaryNoCapacityFallsBackAndSettlesOnlyFallbackModel(t *
 		t.Fatalf("settles=%+v want exactly fallback claim/model settled", settler.calls)
 	}
 	assertNoHangingModelFallbackClaims(t, claimGate, settler)
+}
+
+func TestModelFallback不得越过身份模型白名单(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := &modelFallbackSelector{
+		noCapacity: map[string]bool{"gpt-4o": true},
+		accounts:   map[string]int64{"gpt-4o-mini": 2202},
+	}
+	claimGate := &modelFallbackClaimGate{nextClaimID: 91501}
+	settler := &recordingSettler{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{steps: []pr5CanonicalStep{{successText: "不得抵达"}}}
+	deps := modelFallbackDeps(t, selector, claimGate, settler, dispatcher, `{
+		"enabled": true,
+		"general": {"gpt-4o":["gpt-4o-mini"]}
+	}`)
+	allowedModels := "gpt-4o"
+	deps.Auth = stubAuth{identity: auth.Identity{
+		TenantID: 7, UserID: 3, APIKeyID: 11, AllowedModels: &allowedModels,
+	}}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("状态码=%d，响应=%s，期望保留主模型无容量错误", rec.Code, rec.Body.String())
+	}
+	if got := reserveModels(claimGate.requests); strings.Join(got, ",") != "gpt-4o" {
+		t.Fatalf("预留模型=%v，身份白名单外模型不得建立 claim", got)
+	}
+	if dispatcher.calls != 0 || len(settler.aborts) != 1 || len(settler.calls) != 0 {
+		t.Fatalf("分发=%d，中止=%+v，结算=%+v；白名单外 fallback 不得执行", dispatcher.calls, settler.aborts, settler.calls)
+	}
 }
 
 func TestModelFallback_AllModelsFailAbortsEveryReservedClaimAndReturnsLastError(t *testing.T) {

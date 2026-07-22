@@ -85,17 +85,6 @@ type providerAccountHealthStore interface {
 	UpdateProviderAccountHealth(context.Context, ProviderAccountHealthChange) error
 }
 
-type providerAccountHealthDBStore struct {
-	db db.DBTX
-}
-
-func (s providerAccountHealthDBStore) UpdateProviderAccountHealth(ctx context.Context, change ProviderAccountHealthChange) error {
-	if s.db == nil {
-		return fmt.Errorf("credentialworker: provider account health db is nil")
-	}
-	return updateProviderAccountHealth(ctx, s.db, change)
-}
-
 func (s *Scheduler) providerAccountHealthPolicy() ProviderAccountHealthPolicy {
 	if s == nil {
 		return DefaultProviderAccountHealthPolicy()

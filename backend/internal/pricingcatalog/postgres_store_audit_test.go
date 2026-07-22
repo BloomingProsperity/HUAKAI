@@ -404,7 +404,7 @@ func (r ratioAuditBatchResults) Query() (pgx.Rows, error) {
 }
 
 func (r ratioAuditBatchResults) QueryRow() pgx.Row {
-	return ratioAuditErrRow{err: r.err}
+	return ratioAuditErrRow(r)
 }
 
 func (r ratioAuditBatchResults) Close() error {

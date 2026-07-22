@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -16,7 +18,8 @@ import (
 
 func TestNewRunnerClientFromEnvMissingDisablesHermes(t *testing.T) {
 	t.Setenv(RunnerURLEnv, "")
-	t.Setenv("HUAKAI_HERMES_SHARED_SECRET", "")
+	t.Setenv(RunnerJWTPrivateKeyEnv, "/run/secrets/hermes/private.pem")
+	t.Setenv(RunnerJWTKIDEnv, "mounted-but-disabled")
 
 	client, err := NewRunnerClientFromEnv()
 
@@ -30,7 +33,8 @@ func TestNewRunnerClientFromEnvMissingDisablesHermes(t *testing.T) {
 
 func TestNewRunnerClientFromEnvPartialConfigErrors(t *testing.T) {
 	t.Setenv(RunnerURLEnv, "http://127.0.0.1:8080")
-	t.Setenv("HUAKAI_HERMES_SHARED_SECRET", "")
+	t.Setenv(RunnerJWTPrivateKeyEnv, "")
+	t.Setenv(RunnerJWTKIDEnv, "")
 
 	client, err := NewRunnerClientFromEnv()
 
@@ -40,7 +44,7 @@ func TestNewRunnerClientFromEnvPartialConfigErrors(t *testing.T) {
 }
 
 func TestNewRunnerClientFromEnvRejectsLegacyHMACOnlyConfig(t *testing.T) {
-	// 回归守护：Slice 2.5 移除了 HMAC 回退；一个遗留的 shared secret 绝不能构造出已认证的 client。
+	// 遗留的共享密钥不能构造出已认证客户端，runner 只接受非对称 JWT 合同。
 	t.Setenv(RunnerURLEnv, "http://runner.local")
 	t.Setenv("HUAKAI_HERMES_SHARED_SECRET", "runner-secret")
 	t.Setenv(RunnerJWTPrivateKeyEnv, "")
@@ -189,10 +193,11 @@ func TestRunnerClientRejectsMissingJWTMinimumConfig(t *testing.T) {
 
 func writeRunnerClientPrivateKey(t *testing.T, privateKey ed25519.PrivateKey) string {
 	t.Helper()
-	pemBytes, err := EncodePrivateKeyPEM(privateKey)
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
 	if err != nil {
-		t.Fatalf("EncodePrivateKeyPEM: %v", err)
+		t.Fatalf("编码测试私钥失败：%v", err)
 	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 	path := filepath.Join(t.TempDir(), "runner-client.key")
 	if err := os.WriteFile(path, pemBytes, 0o400); err != nil {
 		t.Fatalf("WriteFile private key: %v", err)

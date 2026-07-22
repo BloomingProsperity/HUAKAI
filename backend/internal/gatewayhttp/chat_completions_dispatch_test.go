@@ -84,6 +84,30 @@ func TestHandler_DefaultHCSFOn(t *testing.T) {
 	}
 }
 
+func TestHandler运营成本贯穿预留与结算(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	dispatcher := &mockCanonicalBufferedDispatcher{}
+	claimGate := &recordingClaimGate{claimID: 7001}
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = dispatcher
+	d.ClaimGate = claimGate
+	d.Settler = settler
+	d.BillingEffect = billing.BillingEffectOperationalCost
+	d.EndpointFamily = "hermes_chat"
+
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"诊断系统"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码=%d，响应=%s，期望 200", rec.Code, rec.Body.String())
+	}
+	if claimGate.req.BillingEffect != billing.BillingEffectOperationalCost || claimGate.req.EndpointFamily != "hermes_chat" {
+		t.Fatalf("预留请求=%+v，没有携带 Hermes 运营成本合同", claimGate.req)
+	}
+	if len(settler.calls) != 1 || settler.calls[0].BillingEffect != billing.BillingEffectOperationalCost {
+		t.Fatalf("结算调用=%+v，没有携带 Hermes 运营成本合同", settler.calls)
+	}
+}
+
 func TestHandler_HCSFUpstreamHTTPErrorDoesNotLeakBody(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	const marker = "SENSITIVE_UPSTREAM_MARKER"

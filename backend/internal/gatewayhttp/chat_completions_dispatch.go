@@ -124,6 +124,12 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, clienterr.CodeRegistryUnknownError, err)
 		return false
 	}
+	if constrained, ok := constrainResolvedPool(resolved, ex.ident.AllowedPoolGroupID); ok {
+		resolved = constrained
+	} else {
+		writeJSONError(w, http.StatusNotFound, "model_not_available", "model not available")
+		return false
+	}
 	ex.resolved = resolved
 	resolvedModel := routerResolvedModelFromRegistry(resolved)
 
@@ -171,6 +177,8 @@ func (ex *chatExecution) activeBindingMetadata() (registry.BindingMetadata, bool
 
 func (ex *chatExecution) activeDispatchBodyControls() gateway.DispatchBodyControls {
 	if ex != nil && ex.officialDirect && ex.resolved.ProtocolFamily == "anthropic_claude_session" {
+		// 官方直发要求原始字节直通、禁带 body controls;claude_session 的 Claude Code
+		// system 前缀改在 upstreamInboundBody 直接注入原始 body(见该函数注释)。
 		return gateway.DispatchBodyControls{}
 	}
 	binding, ok := ex.activeBindingMetadata()
@@ -269,6 +277,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		PredictedCost:              predictedCost,
 		IdempotencyKeyClientHeader: ex.idempotencyHeader,
 		BalanceEnforcementMode:     ex.balanceEnforcementMode,
+		BillingEffect:              ex.d.effectiveBillingEffect(),
 	})
 	if errors.Is(err, billing.ErrFingerprintConflict) || (reserveRes != nil && reserveRes.FingerprintConflict) {
 		writeJSONError(w, http.StatusConflict, "idempotency_conflict",
@@ -301,10 +310,7 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 	}
 	ex.reserveRes = reserveRes
 	ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, reserveRes.ClaimID, reserveRes.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predictedCost)
-	if !ex.reserveQuota(w, reserveRes, predictedCost) {
-		return false
-	}
-	return true
+	return ex.reserveQuota(w, reserveRes, predictedCost)
 }
 
 func (ex *chatExecution) reserveQuota(w http.ResponseWriter, reserveRes *billing.ReserveResult, predictedCost decimal.Decimal) bool {

@@ -34,8 +34,8 @@ func TestAlertRuleListSpec(t *testing.T) {
 			if in.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7", in.TenantID)
 			}
-			if in.Limit != alertRuleListLimit {
-				t.Fatalf("Limit 应为 alertRuleListLimit=%d, got %d", alertRuleListLimit, in.Limit)
+			if in.Limit != defaultToolPageLimit+1 || in.Offset != 0 {
+				t.Fatalf("告警规则分页参数=%+v，期望 limit=%d offset=0", in, defaultToolPageLimit+1)
 			}
 			return fakeAlertRules(), nil
 		},

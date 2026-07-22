@@ -89,7 +89,7 @@ class MainAuthTests(unittest.TestCase):
         self.assertEqual(response.kwargs["status_code"], 401)
 
     def test_entrypoint_fails_before_uvicorn_without_jwt_key_material_even_with_legacy_hmac_secret(self):
-        with tempfile.TemporaryDirectory() as tempdir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
             fake_bin = Path(tempdir) / "bin"
             fake_bin.mkdir()
             _write_fake_uvicorn(fake_bin)
@@ -107,11 +107,12 @@ class MainAuthTests(unittest.TestCase):
         self.assertNotIn("uvicorn-started", result.stdout)
 
     def test_entrypoint_accepts_single_public_key_path_and_kid(self):
-        with tempfile.TemporaryDirectory() as tempdir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
             temp = Path(tempdir)
             fake_bin = temp / "bin"
             fake_bin.mkdir()
             _write_fake_uvicorn(fake_bin)
+            _write_fake_hermes(fake_bin)
             key_path = temp / "runner.pem"
             key_path.write_text("public-key", encoding="utf-8")
             env = _entrypoint_env(fake_bin)
@@ -128,11 +129,12 @@ class MainAuthTests(unittest.TestCase):
         self.assertIn("uvicorn-started main:app --host 0.0.0.0 --port 8801", result.stdout)
 
     def test_entrypoint_accepts_public_keys_directory(self):
-        with tempfile.TemporaryDirectory() as tempdir:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
             temp = Path(tempdir)
             fake_bin = temp / "bin"
             fake_bin.mkdir()
             _write_fake_uvicorn(fake_bin)
+            _write_fake_hermes(fake_bin)
             keys_dir = temp / "keys"
             keys_dir.mkdir()
             (keys_dir / "kid-a.pem").write_text("public-key", encoding="utf-8")
@@ -147,6 +149,79 @@ class MainAuthTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 42)
         self.assertIn("uvicorn-started main:app --host 0.0.0.0 --port 8801", result.stdout)
+
+    def test_entrypoint_rejects_wrong_hermes_package_version(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
+            temp = Path(tempdir)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            _write_fake_uvicorn(fake_bin)
+            _write_fake_hermes(fake_bin)
+            key_path = temp / "runner.pem"
+            key_path.write_text("public-key", encoding="utf-8")
+            env = _entrypoint_env(fake_bin)
+            _write_fake_distribution(Path(env["PYTHONPATH"]), "0.18.0")
+            env.update(
+                {
+                    "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH": str(key_path),
+                    "HUAKAI_HERMES_JWT_KID": "kid-a",
+                }
+            )
+
+            result = _run_entrypoint(env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("requires hermes-agent 0.19.0", result.stderr)
+        self.assertNotIn("uvicorn-started", result.stdout)
+
+    def test_entrypoint_rejects_expanded_official_tool_surface(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
+            temp = Path(tempdir)
+            fake_bin = temp / "bin"
+            fake_bin.mkdir()
+            _write_fake_uvicorn(fake_bin)
+            _write_fake_hermes(fake_bin, restricted=False)
+            key_path = temp / "runner.pem"
+            key_path.write_text("public-key", encoding="utf-8")
+            env = _entrypoint_env(fake_bin)
+            env.update(
+                {
+                    "HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH": str(key_path),
+                    "HUAKAI_HERMES_JWT_KID": "kid-a",
+                }
+            )
+
+            result = _run_entrypoint(env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tool surface is not restricted", result.stderr)
+        self.assertNotIn("uvicorn-started", result.stdout)
+
+    def test_key_generator_creates_strict_pair_and_refuses_overwrite(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tempdir:
+            target = Path(tempdir) / "keys"
+            script = Path(__file__).with_name("generate-keypair.sh")
+
+            first = subprocess.run(
+                ["sh", str(script), str(target)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            second = subprocess.run(
+                ["sh", str(script), str(target)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual((target / "private.pem").stat().st_mode & 0o777, 0o400)
+            self.assertEqual((target / "public.pem").stat().st_mode & 0o777, 0o444)
+            self.assertEqual(second.returncode, 1)
+            self.assertIn("拒绝覆盖", second.stderr)
 
 
 def _request(token, tenant, user):
@@ -199,9 +274,16 @@ def _restore_env(name, old_value):
 
 
 def _entrypoint_env(fake_bin):
+    fake_site = fake_bin.parent / "site"
+    _write_fake_distribution(fake_site, "0.19.0")
+    _write_fake_runtime_modules(fake_site)
     env = {
         "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+        "PYTHONPATH": str(fake_site),
         "HUAKAI_HERMES_RUNNER_BIND": "0.0.0.0:8801",
+        "HUAKAI_HERMES_MCP_URL": "http://gateway:8080/internal/hermes/mcp",
+        "HUAKAI_HERMES_EGRESS_PROXY_URL": "http://hermes-egress:8080",
+        "HUAKAI_HERMES_WORK_ROOT": str(fake_bin.parent / "runner-work"),
     }
     return env
 
@@ -223,6 +305,50 @@ def _write_fake_uvicorn(fake_bin):
     uvicorn = fake_bin / "uvicorn"
     uvicorn.write_text("#!/usr/bin/env sh\necho \"uvicorn-started $*\"\nexit 42\n", encoding="utf-8")
     uvicorn.chmod(0o755)
+
+
+def _write_fake_hermes(fake_bin, *, restricted=True):
+    hermes = fake_bin / "hermes"
+    status = "disabled" if restricted else "enabled"
+    hermes.write_text(
+        "#!/usr/bin/env sh\n"
+        "if [ \"${1:-}\" = \"tools\" ]; then\n"
+        "  echo 'Built-in toolsets (cli):'\n"
+        f"  echo '  {status} terminal'\n"
+        "  echo 'MCP servers:'\n"
+        "  echo '  huakai all tools enabled'\n"
+        "  exit 0\n"
+        "fi\n"
+        "echo 'Hermes Agent v0.19.0 (test)'\n",
+        encoding="utf-8",
+    )
+    hermes.chmod(0o755)
+
+
+def _write_fake_distribution(fake_site, version):
+    metadata_dir = fake_site / "hermes_agent-0.19.0.dist-info"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.4\nName: hermes-agent\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_fake_runtime_modules(fake_site):
+    fastapi = fake_site / "fastapi"
+    fastapi.mkdir(parents=True, exist_ok=True)
+    (fastapi / "__init__.py").write_text(
+        "class HTTPException(Exception):\n"
+        "    pass\n\n"
+        "class Request:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    sse = fake_site / "sse_starlette"
+    sse.mkdir(parents=True, exist_ok=True)
+    response = "class EventSourceResponse:\n    pass\n"
+    (sse / "__init__.py").write_text(response, encoding="utf-8")
+    (sse / "sse.py").write_text(response, encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ func openToolCallsPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 }
 
 // seedTenantUser 创建一个一次性的 tenant + user,使 (tenant_id,
-// actor_user_id) 的值引用合理的 id;hermes_tool_calls 对它们没有 FK,
+// actor_id) 的值引用合理的 id;hermes_tool_calls 对它们没有 FK,
 // 但真实的 tenant/user 让行更接近实际。返回 id 与 cleanup。
 func seedTenantUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, int64) {
 	t.Helper()
@@ -77,12 +77,15 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 	// 白名单内的 tool 名 + 合法 status 能干净插入。
 	row, err := q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:      tenantID,
-		ActorUserID:   userID,
+		ActorSource:   "session",
+		ActorID:       userID,
+		ActorRole:     "tenant_operator",
 		ToolName:      "dlq_inspect",
 		ResultStatus:  "ok",
 		RequestedArgs: []byte(`{"status":"pending"}`),
 		ResultSummary: []byte(`{"dlq_count":0}`),
 		CalledAt:      pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		LogCategory:   "operation",
 	})
 	if err != nil {
 		t.Fatalf("insert whitelisted tool: %v", err)
@@ -97,10 +100,13 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 	// 违例。
 	_, err = q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:     tenantID,
-		ActorUserID:  userID,
+		ActorSource:  "session",
+		ActorID:      userID,
+		ActorRole:    "tenant_operator",
 		ToolName:     "totally_unknown_tool",
 		ResultStatus: "ok",
 		CalledAt:     pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		LogCategory:  "operation",
 	})
 	if err == nil {
 		t.Fatalf("unknown tool_name was accepted; the CHECK constraint is missing or non-discriminating")
@@ -113,10 +119,13 @@ func TestHermesToolCallsTableAndCheckExist(t *testing.T) {
 	// 错误的 result_status 也必须被拒绝(其 CHECK)。
 	_, err = q.InsertHermesToolCall(ctx, InsertHermesToolCallParams{
 		TenantID:     tenantID,
-		ActorUserID:  userID,
+		ActorSource:  "session",
+		ActorID:      userID,
+		ActorRole:    "tenant_operator",
 		ToolName:     "dlq_inspect",
 		ResultStatus: "maybe",
 		CalledAt:     pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true},
+		LogCategory:  "operation",
 	})
 	if err == nil {
 		t.Fatalf("invalid result_status accepted; the CHECK constraint is missing")
@@ -138,8 +147,10 @@ func TestHermesAuditActionWhitelistAcceptsToolActions(t *testing.T) {
 
 	insertAudit := func(action string) error {
 		_, e := pool.Exec(ctx,
-			`INSERT INTO hermes_audit_events (ts, tenant_id, actor_user_id, action, result)
-			 VALUES (now(), $1, $2, $3, 'success')`, tenantID, userID, action)
+			`INSERT INTO hermes_audit_events (
+				ts, tenant_id, actor_source, actor_id, actor_role, action, result, log_category
+			 ) VALUES (now(), $1, 'session', $2, 'tenant_operator', $3, 'success', 'operation')`,
+			tenantID, userID, action)
 		return e
 	}
 

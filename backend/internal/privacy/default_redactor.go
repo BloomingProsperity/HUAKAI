@@ -19,32 +19,10 @@ const (
 	redactedValue    = "[REDACTED]"
 )
 
-type RedactorOption func(*AllowlistRedactor)
+type AllowlistRedactor struct{}
 
-type AllowlistRedactor struct {
-	maxString         int
-	panicOnLongString bool
-}
-
-func NewAllowlistRedactor(opts ...RedactorOption) *AllowlistRedactor {
-	r := &AllowlistRedactor{maxString: defaultMaxString}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(r)
-		}
-	}
-	if r.maxString <= 0 {
-		r.maxString = defaultMaxString
-	}
-	return r
-}
-
-func WithMaxString(n int) RedactorOption {
-	return func(r *AllowlistRedactor) { r.maxString = n }
-}
-
-func WithPanicOnLongString(enabled bool) RedactorOption {
-	return func(r *AllowlistRedactor) { r.panicOnLongString = enabled }
+func NewAllowlistRedactor() *AllowlistRedactor {
+	return &AllowlistRedactor{}
 }
 
 func (r *AllowlistRedactor) SanitizePayload(_ context.Context, payload any) ([]byte, error) {
@@ -195,14 +173,11 @@ func (r *AllowlistRedactor) sanitizeString(key, value string) (any, bool) {
 	if (strings.EqualFold(key, "stack") || strings.EqualFold(key, "body_envelope")) && !blocked {
 		return value, false
 	}
-	if len(value) > r.maxString {
-		if r.panicOnLongString {
-			panic("privacy: string field exceeded max length")
-		}
+	if len(value) > defaultMaxString {
 		sum := sha256.Sum256([]byte(value))
 		prefix := value
-		if len(prefix) > r.maxString {
-			prefix = prefix[:r.maxString]
+		if len(prefix) > defaultMaxString {
+			prefix = prefix[:defaultMaxString]
 		}
 		return map[string]any{
 			"value":             prefix,

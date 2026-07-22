@@ -109,7 +109,9 @@ type ChatHandlerDeps struct {
 	PlatformSettings     platformSettingsReader
 	BillingPolicyVersion string
 	RequestClass         string
-	ClientIPResolver     *clientip.Resolver
+	// BillingEffect 为空时按普通用户消费处理；内部运维入口必须显式设为 operational_cost。
+	BillingEffect    billing.BillingEffect
+	ClientIPResolver *clientip.Resolver
 
 	// SessionCapRegistry 在 dispatch 成功时登记 session hash；nil 时跳过。
 	SessionCapRegistry *sessioncap.Registry
@@ -171,6 +173,14 @@ func (d ChatHandlerDeps) effectiveCacheScope() string {
 		return "apikey"
 	}
 	return d.CacheScope
+}
+
+func (d ChatHandlerDeps) effectiveBillingEffect() billing.BillingEffect {
+	effect, err := billing.NormalizeBillingEffect(d.BillingEffect)
+	if err != nil {
+		return d.BillingEffect
+	}
+	return effect
 }
 
 type chatExecution struct {
@@ -499,6 +509,10 @@ func (ex *chatExecution) runWithModelFallback(w *deliveryTracker) {
 		class := modelfallback.ClassForFailure(result.Failure.ClientCode, result.Failure.EndClass, result.Failure.Classification.Class, result.Failure.AbortReason)
 		nextModel := resolver.Resolve(originalModel, class, triedModels)
 		if nextModel == "" {
+			writeAttemptFailure(w, result.Failure)
+			return
+		}
+		if !apikeymodelallow.AllowsCSV(ex.ident.AllowedModels, nextModel) {
 			writeAttemptFailure(w, result.Failure)
 			return
 		}

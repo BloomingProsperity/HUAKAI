@@ -47,9 +47,11 @@ WHERE EXISTS (
      AND u.tenant_id = ak.tenant_id
      AND u.deleted_at IS NULL
      AND u.status = 'active'
+     AND u.principal_kind = 'human'
     WHERE ak.id = sqlc.arg(api_key_id)::bigint
       AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
       AND ak.user_id = sqlc.arg(user_id)::bigint
+      AND ak.purpose = 'user'
       AND ak.deleted_at IS NULL
 )
 -- The live uniqueness surface is a partial unique index, so the executable
@@ -94,6 +96,7 @@ SET quota_policy_id = sqlc.arg(quota_policy_id)::bigint,
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: SetAPIKeyIPAllowlist :execrows
@@ -103,6 +106,7 @@ SET ip_allowlist = sqlc.narg(ip_allowlist)::text,
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: GetAPIKeyIPAllowlist :one
@@ -113,6 +117,7 @@ FROM api_keys ak
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: SetAPIKeyModelAllowlist :execrows
@@ -122,6 +127,7 @@ SET allowed_models = sqlc.narg(allowed_models)::text,
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: GetAPIKeyModelAllowlist :one
@@ -132,6 +138,7 @@ FROM api_keys ak
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: GetAPIKeyQuotaPolicy :one
@@ -157,6 +164,7 @@ JOIN quota_policies qp
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL
   AND qp.scope_kind = 'api_key'
   AND qp.scope_id = ak.id::text
@@ -182,6 +190,7 @@ SET key_group_id = sqlc.narg(key_group_id)::bigint,
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;
 
 -- name: GetAPIKeyGroup :one
@@ -199,4 +208,5 @@ LEFT JOIN api_key_groups g
 WHERE ak.id = sqlc.arg(api_key_id)::bigint
   AND ak.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ak.user_id = sqlc.arg(user_id)::bigint
+  AND ak.purpose = 'user'
   AND ak.deleted_at IS NULL;

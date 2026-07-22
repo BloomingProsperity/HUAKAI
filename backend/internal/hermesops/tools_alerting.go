@@ -12,9 +12,6 @@ type AlertRuleListDeps struct {
 	List func(ctx context.Context, in alerting.ListRulesInput) ([]alerting.AlertRule, error)
 }
 
-// alertRuleListLimit 是单次列出告警规则上限(防超大读)。
-const alertRuleListLimit = 200
-
 // AlertRuleListSpec 构建只读 alert_rule_list 工具:列出本租户的告警规则及配置,让 Hermes 能回答"我配了
 // 哪些告警、对什么 metric、阈值多少、上次什么时候触发"。租户 scope 取自已鉴权 req.TenantID
 // (ListRules 按 tenant_id 过滤)。
@@ -27,18 +24,23 @@ func AlertRuleListSpec(deps AlertRuleListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolAlertRuleList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's alert rules and their config: name, metric, comparator+threshold, severity, window/sustained/cooldown seconds, notify-email, filters, enabled, last-triggered. Lets you answer 'what alerts have I configured, on what metric, at what threshold, when last fired'. READ ONLY.",
+		Description:  "分页列出当前租户的告警规则、指标、阈值、严重度、通知和启用状态；只读。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema:  map[string]string{},
+		InputSchema:  ObjectSchema(paginationProperties(nil)),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
-			rows, err := deps.List(ctx, alerting.ListRulesInput{TenantID: req.TenantID, Limit: alertRuleListLimit, Offset: 0})
+			limit, offset, err := pageArgs(req.Args)
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, err := deps.List(ctx, alerting.ListRulesInput{TenantID: req.TenantID, Limit: limit + 1, Offset: offset})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			bySeverity := map[string]int{}
 			enabledCount := 0
@@ -54,6 +56,7 @@ func AlertRuleListSpec(deps AlertRuleListDeps) ToolSpec {
 				"enabled_count": enabledCount,
 				"by_severity":   intCountMap(bySeverity),
 				"items":         items,
+				"page":          page,
 			}}, nil
 		},
 	}
@@ -64,9 +67,6 @@ func AlertRuleListSpec(deps AlertRuleListDeps) ToolSpec {
 type AlertEventListDeps struct {
 	List func(ctx context.Context, in alerting.ListEventsInput) ([]alerting.AlertEvent, error)
 }
-
-// alertEventListLimit 是单次列出告警事件上限(防超大读)。
-const alertEventListLimit = 200
 
 // AlertEventListSpec 构建只读 alert_event_list 工具:列出本租户的告警事件(可按 state 过滤),补
 // alert_rule_list(规则配置)缺的"实际触发了什么"。让 Hermes 能回答"现在有什么告警在响、最近触发过什么"。
@@ -81,27 +81,32 @@ func AlertEventListSpec(deps AlertEventListDeps) ToolSpec {
 	return ToolSpec{
 		Name:         ToolAlertEventList,
 		Category:     CategoryDiagnostic,
-		Description:  "List the tenant's alert events (optionally filtered by state firing/resolved/manual_resolved): rule id, state, observed/threshold/metric values, dimensions, fired-at/resolved-at, email-sent. Complements alert_rule_list (config) with what actually fired. Lets you answer 'what alerts are firing now, what fired recently'. READ ONLY.",
+		Description:  "分页列出当前租户的告警事件，可按触发或解决状态筛选；只读。",
 		ReadOnly:     true,
 		RequiredRole: RoleTenantOperator,
-		InputSchema: map[string]string{
-			"state": "filter by event state (firing/resolved/manual_resolved, optional)",
-		},
+		InputSchema: ObjectSchema(paginationProperties(map[string]any{
+			"state": StringSchema("按告警事件状态筛选", "firing", "resolved", "manual_resolved"),
+		})),
 		Run: func(ctx context.Context, req ToolRequest) (ToolResult, error) {
 			if deps.List == nil {
 				return ToolResult{}, ErrDependencyUnwired
 			}
 			// 未知/缺失 state → "":SQL 把 '' 当 no-filter;任意非法值只匹配不到行返回空(参数已绑定,不注入)。
 			state, _ := ArgString(req.Args, "state")
+			limit, offset, err := pageArgs(req.Args)
+			if err != nil {
+				return ToolResult{}, err
+			}
 			rows, err := deps.List(ctx, alerting.ListEventsInput{
 				TenantID: req.TenantID,
 				State:    alerting.EventState(state),
-				Limit:    alertEventListLimit,
-				Offset:   0,
+				Limit:    limit + 1,
+				Offset:   offset,
 			})
 			if err != nil {
 				return ToolResult{}, err
 			}
+			rows, page := trimPage(rows, limit, offset)
 			items := make([]map[string]any, 0, len(rows))
 			byState := map[string]int{}
 			for _, e := range rows {
@@ -112,6 +117,7 @@ func AlertEventListSpec(deps AlertEventListDeps) ToolSpec {
 				"event_count": len(rows),
 				"by_state":    intCountMap(byState),
 				"items":       items,
+				"page":        page,
 			}}, nil
 		},
 	}

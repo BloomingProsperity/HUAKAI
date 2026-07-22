@@ -126,7 +126,7 @@ func TestAlertRuleToggle_MutateSetsEnabledByTargetAndTenant(t *testing.T) {
 	}
 	plan := MutationPlan{TargetType: "alert_rule", TargetID: 5, Preview: map[string]any{"current_enabled": true}}
 
-	res, err := AlertRuleDisableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, plan)
+	res, err := AlertRuleDisableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, plan)
 	if err != nil {
 		t.Fatalf("disable mutate err=%v", err)
 	}
@@ -144,7 +144,7 @@ func TestAlertRuleToggle_MutateSetsEnabledByTargetAndTenant(t *testing.T) {
 	}
 
 	planEnable := MutationPlan{TargetType: "alert_rule", TargetID: 9, Preview: map[string]any{"current_enabled": false}}
-	if _, err := AlertRuleEnableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorUserID: 42}, planEnable); err != nil {
+	if _, err := AlertRuleEnableSpec(deps).Mutate(ctx, ToolRequest{TenantID: 7, ActorSource: "token", ActorID: 42}, planEnable); err != nil {
 		t.Fatalf("enable mutate err=%v", err)
 	}
 	if rec.gotEnabled != true {

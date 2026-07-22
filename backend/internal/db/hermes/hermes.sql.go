@@ -11,94 +11,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const appendMessage = `-- name: AppendMessage :one
-INSERT INTO hermes_messages (tenant_id, conversation_id, role, content, content_ciphertext, token_count, completed_at)
-SELECT
-    c.tenant_id,
-    c.id,
-    $1::text,
-    $2::jsonb,
-    $3::bytea,
-    $4::integer,
-    $5::timestamptz
-FROM hermes_conversations c
-WHERE c.id = $6::bigint
-  AND c.tenant_id = $7::bigint
-  AND c.deleted_at IS NULL
-RETURNING id
-`
-
-type AppendMessageParams struct {
-	Role              string             `db:"role" json:"role"`
-	Content           []byte             `db:"content" json:"content"`
-	ContentCiphertext []byte             `db:"content_ciphertext" json:"content_ciphertext"`
-	TokenCount        *int32             `db:"token_count" json:"token_count"`
-	CompletedAt       pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	ConversationID    int64              `db:"conversation_id" json:"conversation_id"`
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) AppendMessage(ctx context.Context, arg AppendMessageParams) (int64, error) {
-	row := q.db.QueryRow(ctx, appendMessage,
-		arg.Role,
-		arg.Content,
-		arg.ContentCiphertext,
-		arg.TokenCount,
-		arg.CompletedAt,
-		arg.ConversationID,
-		arg.TenantID,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
-const createConversation = `-- name: CreateConversation :one
-
-INSERT INTO hermes_conversations (tenant_id, owner_user_id, title)
-VALUES (
-    $1::bigint,
-    $2::bigint,
-    $3::text
-)
-RETURNING id
-`
-
-type CreateConversationParams struct {
-	TenantID    int64   `db:"tenant_id" json:"tenant_id"`
-	OwnerUserID int64   `db:"owner_user_id" json:"owner_user_id"`
-	Title       *string `db:"title" json:"title"`
-}
-
-// Hermes Phase 1 Slice 2 schema gate queries.
-// Scope: conversations, messages, and JWT public key registry.
-func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversationParams) (int64, error) {
-	row := q.db.QueryRow(ctx, createConversation, arg.TenantID, arg.OwnerUserID, arg.Title)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
 const createProfile = `-- name: CreateProfile :one
-INSERT INTO hermes_api_profiles (tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id)
+INSERT INTO hermes_api_profiles (
+    tenant_id, owner_user_id, name, profile_kind, base_url,
+    encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash,
+    api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
+)
 VALUES (
     $1::bigint,
     $2::bigint,
     $3::text,
     $4::text,
-    $5::bigint,
-    $6::bigint
+    $5::text,
+    $6::bytea,
+    $7::text,
+    $8::text,
+    $9::bytea,
+    $10::text,
+    $11::text,
+    $12::text,
+    $13::integer,
+    $14::bigint
 )
-RETURNING id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+RETURNING id, tenant_id, owner_user_id, name, profile_kind, created_at, updated_at, base_url, encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash, api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
 `
 
 type CreateProfileParams struct {
-	TenantID    int64  `db:"tenant_id" json:"tenant_id"`
-	OwnerUserID int64  `db:"owner_user_id" json:"owner_user_id"`
-	Name        string `db:"name" json:"name"`
-	ProfileKind string `db:"profile_kind" json:"profile_kind"`
-	APIKeyID    *int64 `db:"api_key_id" json:"api_key_id"`
-	PoolGroupID *int64 `db:"pool_group_id" json:"pool_group_id"`
+	TenantID          int64  `db:"tenant_id" json:"tenant_id"`
+	OwnerUserID       int64  `db:"owner_user_id" json:"owner_user_id"`
+	Name              string `db:"name" json:"name"`
+	ProfileKind       string `db:"profile_kind" json:"profile_kind"`
+	BaseUrl           string `db:"base_url" json:"base_url"`
+	EncryptedApiKey   []byte `db:"encrypted_api_key" json:"encrypted_api_key"`
+	EncryptionScheme  string `db:"encryption_scheme" json:"encryption_scheme"`
+	KeyID             string `db:"key_id" json:"key_id"`
+	Nonce             []byte `db:"nonce" json:"nonce"`
+	AadHash           string `db:"aad_hash" json:"aad_hash"`
+	ApiKeyFingerprint string `db:"api_key_fingerprint" json:"api_key_fingerprint"`
+	ApiKeyHint        string `db:"api_key_hint" json:"api_key_hint"`
+	CredentialVersion int32  `db:"credential_version" json:"credential_version"`
+	SecretBindingID   int64  `db:"secret_binding_id" json:"secret_binding_id"`
 }
 
 func (q *Queries) CreateProfile(ctx context.Context, arg CreateProfileParams) (HermesApiProfile, error) {
@@ -107,8 +59,16 @@ func (q *Queries) CreateProfile(ctx context.Context, arg CreateProfileParams) (H
 		arg.OwnerUserID,
 		arg.Name,
 		arg.ProfileKind,
-		arg.APIKeyID,
-		arg.PoolGroupID,
+		arg.BaseUrl,
+		arg.EncryptedApiKey,
+		arg.EncryptionScheme,
+		arg.KeyID,
+		arg.Nonce,
+		arg.AadHash,
+		arg.ApiKeyFingerprint,
+		arg.ApiKeyHint,
+		arg.CredentialVersion,
+		arg.SecretBindingID,
 	)
 	var i HermesApiProfile
 	err := row.Scan(
@@ -117,10 +77,18 @@ func (q *Queries) CreateProfile(ctx context.Context, arg CreateProfileParams) (H
 		&i.OwnerUserID,
 		&i.Name,
 		&i.ProfileKind,
-		&i.APIKeyID,
-		&i.PoolGroupID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BaseUrl,
+		&i.EncryptedApiKey,
+		&i.EncryptionScheme,
+		&i.KeyID,
+		&i.Nonce,
+		&i.AadHash,
+		&i.ApiKeyFingerprint,
+		&i.ApiKeyHint,
+		&i.CredentialVersion,
+		&i.SecretBindingID,
 	)
 	return i, err
 }
@@ -150,7 +118,7 @@ SET enabled = FALSE,
     updated_at = NOW()
 WHERE tenant_id = $1::bigint
   AND user_id = $2::bigint
-RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at
+RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at, model_key
 `
 
 type DisableHermesParams struct {
@@ -169,6 +137,7 @@ func (q *Queries) DisableHermes(ctx context.Context, arg DisableHermesParams) (H
 		&i.ProfileID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelKey,
 	)
 	return i, err
 }
@@ -179,7 +148,7 @@ SET enabled = TRUE,
     updated_at = NOW()
 WHERE tenant_id = $1::bigint
   AND user_id = $2::bigint
-RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at
+RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at, model_key
 `
 
 type EnableHermesParams struct {
@@ -198,69 +167,14 @@ func (q *Queries) EnableHermes(ctx context.Context, arg EnableHermesParams) (Her
 		&i.ProfileID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelKey,
 	)
 	return i, err
 }
 
-const getAPIKeyOwner = `-- name: GetAPIKeyOwner :one
-SELECT user_id
-FROM api_keys
-WHERE id = $1::bigint
-  AND tenant_id = $2::bigint
-  AND deleted_at IS NULL
-`
-
-type GetAPIKeyOwnerParams struct {
-	APIKeyID int64 `db:"api_key_id" json:"api_key_id"`
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) GetAPIKeyOwner(ctx context.Context, arg GetAPIKeyOwnerParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getAPIKeyOwner, arg.APIKeyID, arg.TenantID)
-	var user_id int64
-	err := row.Scan(&user_id)
-	return user_id, err
-}
-
-const getActiveJWTKeys = `-- name: GetActiveJWTKeys :many
-SELECT kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
-FROM hermes_jwt_keys
-WHERE valid_from <= NOW()
-  AND (valid_until IS NULL OR valid_until > NOW())
-  AND revoked_at IS NULL
-ORDER BY valid_from DESC, kid ASC
-`
-
-func (q *Queries) GetActiveJWTKeys(ctx context.Context) ([]HermesJwtKey, error) {
-	rows, err := q.db.Query(ctx, getActiveJWTKeys)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []HermesJwtKey
-	for rows.Next() {
-		var i HermesJwtKey
-		if err := rows.Scan(
-			&i.Kid,
-			&i.Alg,
-			&i.PublicKeyPem,
-			&i.ValidFrom,
-			&i.ValidUntil,
-			&i.RevokedAt,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getAuditEventByCorrelation = `-- name: GetAuditEventByCorrelation :many
-SELECT id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
+SELECT id, ts, tenant_id, actor_source, actor_id, actor_role, action,
+       sanitized_args, result, correlation_id, request_id, log_category
 FROM hermes_audit_events
 WHERE tenant_id = $1::bigint
   AND correlation_id = $2::text
@@ -272,25 +186,43 @@ type GetAuditEventByCorrelationParams struct {
 	CorrelationID string `db:"correlation_id" json:"correlation_id"`
 }
 
-func (q *Queries) GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEventByCorrelationParams) ([]HermesAuditEvent, error) {
+type GetAuditEventByCorrelationRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Ts            pgtype.Timestamptz `db:"ts" json:"ts"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     *string            `db:"actor_role" json:"actor_role"`
+	Action        string             `db:"action" json:"action"`
+	SanitizedArgs []byte             `db:"sanitized_args" json:"sanitized_args"`
+	Result        string             `db:"result" json:"result"`
+	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
+	RequestID     *string            `db:"request_id" json:"request_id"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
+}
+
+func (q *Queries) GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEventByCorrelationParams) ([]GetAuditEventByCorrelationRow, error) {
 	rows, err := q.db.Query(ctx, getAuditEventByCorrelation, arg.TenantID, arg.CorrelationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []HermesAuditEvent
+	var items []GetAuditEventByCorrelationRow
 	for rows.Next() {
-		var i HermesAuditEvent
+		var i GetAuditEventByCorrelationRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Ts,
 			&i.TenantID,
-			&i.ActorUserID,
+			&i.ActorSource,
+			&i.ActorID,
+			&i.ActorRole,
 			&i.Action,
 			&i.SanitizedArgs,
 			&i.Result,
 			&i.CorrelationID,
 			&i.RequestID,
+			&i.LogCategory,
 		); err != nil {
 			return nil, err
 		}
@@ -302,57 +234,8 @@ func (q *Queries) GetAuditEventByCorrelation(ctx context.Context, arg GetAuditEv
 	return items, nil
 }
 
-const getConversation = `-- name: GetConversation :one
-SELECT id, tenant_id, owner_user_id, title, created_at, updated_at, last_message_at, deleted_at
-FROM hermes_conversations
-WHERE id = $1::bigint
-  AND tenant_id = $2::bigint
-`
-
-type GetConversationParams struct {
-	ID       int64 `db:"id" json:"id"`
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) GetConversation(ctx context.Context, arg GetConversationParams) (HermesConversation, error) {
-	row := q.db.QueryRow(ctx, getConversation, arg.ID, arg.TenantID)
-	var i HermesConversation
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.OwnerUserID,
-		&i.Title,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.LastMessageAt,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
-const getJWTKeyByKid = `-- name: GetJWTKeyByKid :one
-SELECT kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
-FROM hermes_jwt_keys
-WHERE kid = $1::text
-`
-
-func (q *Queries) GetJWTKeyByKid(ctx context.Context, kid string) (HermesJwtKey, error) {
-	row := q.db.QueryRow(ctx, getJWTKeyByKid, kid)
-	var i HermesJwtKey
-	err := row.Scan(
-		&i.Kid,
-		&i.Alg,
-		&i.PublicKeyPem,
-		&i.ValidFrom,
-		&i.ValidUntil,
-		&i.RevokedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getProfile = `-- name: GetProfile :one
-SELECT id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+SELECT id, tenant_id, owner_user_id, name, profile_kind, created_at, updated_at, base_url, encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash, api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
 FROM hermes_api_profiles
 WHERE id = $1::bigint
   AND tenant_id = $2::bigint
@@ -372,17 +255,25 @@ func (q *Queries) GetProfile(ctx context.Context, arg GetProfileParams) (HermesA
 		&i.OwnerUserID,
 		&i.Name,
 		&i.ProfileKind,
-		&i.APIKeyID,
-		&i.PoolGroupID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BaseUrl,
+		&i.EncryptedApiKey,
+		&i.EncryptionScheme,
+		&i.KeyID,
+		&i.Nonce,
+		&i.AadHash,
+		&i.ApiKeyFingerprint,
+		&i.ApiKeyHint,
+		&i.CredentialVersion,
+		&i.SecretBindingID,
 	)
 	return i, err
 }
 
 const getSettings = `-- name: GetSettings :one
 
-SELECT tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at
+SELECT tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at, model_key
 FROM hermes_settings
 WHERE tenant_id = $1::bigint
   AND user_id = $2::bigint
@@ -393,8 +284,7 @@ type GetSettingsParams struct {
 	UserID   int64 `db:"user_id" json:"user_id"`
 }
 
-// Hermes Phase 1 Slice 1 schema gate queries.
-// Scope: settings, API profiles, and append-only audit events only.
+// Hermes 设置、模型档案与日志查询。
 func (q *Queries) GetSettings(ctx context.Context, arg GetSettingsParams) (HermesSetting, error) {
 	row := q.db.QueryRow(ctx, getSettings, arg.TenantID, arg.UserID)
 	var i HermesSetting
@@ -406,104 +296,81 @@ func (q *Queries) GetSettings(ctx context.Context, arg GetSettingsParams) (Herme
 		&i.ProfileID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelKey,
 	)
 	return i, err
 }
 
 const insertAuditEvent = `-- name: InsertAuditEvent :one
 INSERT INTO hermes_audit_events (
-    ts, tenant_id, actor_user_id, action,
-    sanitized_args, result, correlation_id, request_id
+    ts, tenant_id, actor_source, actor_id, actor_role, action,
+    sanitized_args, result, correlation_id, request_id, log_category
 ) VALUES (
     $1::timestamptz,
     $2::bigint,
-    $3::bigint,
-    $4::text,
-    $5::jsonb,
+    $3::text,
+    $4::bigint,
+    $5::text,
     $6::text,
-    $7::text,
-    $8::text
+    $7::jsonb,
+    $8::text,
+    $9::text,
+    $10::text,
+    $11::text
 )
-RETURNING id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
+RETURNING id, ts, tenant_id, action, sanitized_args, result, correlation_id, request_id, ingested_at, log_category, actor_source, actor_id, actor_role
 `
 
 type InsertAuditEventParams struct {
 	Ts            pgtype.Timestamptz `db:"ts" json:"ts"`
 	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
-	ActorUserID   int64              `db:"actor_user_id" json:"actor_user_id"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     string             `db:"actor_role" json:"actor_role"`
 	Action        string             `db:"action" json:"action"`
 	SanitizedArgs []byte             `db:"sanitized_args" json:"sanitized_args"`
 	Result        string             `db:"result" json:"result"`
 	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
 	RequestID     *string            `db:"request_id" json:"request_id"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
 }
 
 func (q *Queries) InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (HermesAuditEvent, error) {
 	row := q.db.QueryRow(ctx, insertAuditEvent,
 		arg.Ts,
 		arg.TenantID,
-		arg.ActorUserID,
+		arg.ActorSource,
+		arg.ActorID,
+		arg.ActorRole,
 		arg.Action,
 		arg.SanitizedArgs,
 		arg.Result,
 		arg.CorrelationID,
 		arg.RequestID,
+		arg.LogCategory,
 	)
 	var i HermesAuditEvent
 	err := row.Scan(
 		&i.ID,
 		&i.Ts,
 		&i.TenantID,
-		&i.ActorUserID,
 		&i.Action,
 		&i.SanitizedArgs,
 		&i.Result,
 		&i.CorrelationID,
 		&i.RequestID,
-	)
-	return i, err
-}
-
-const insertJWTKey = `-- name: InsertJWTKey :one
-INSERT INTO hermes_jwt_keys (kid, alg, public_key_pem, valid_until)
-VALUES (
-    $1::text,
-    $2::text,
-    $3::text,
-    $4::timestamptz
-)
-RETURNING kid, alg, public_key_pem, valid_from, valid_until, revoked_at, created_at
-`
-
-type InsertJWTKeyParams struct {
-	Kid          string             `db:"kid" json:"kid"`
-	Alg          string             `db:"alg" json:"alg"`
-	PublicKeyPem string             `db:"public_key_pem" json:"public_key_pem"`
-	ValidUntil   pgtype.Timestamptz `db:"valid_until" json:"valid_until"`
-}
-
-func (q *Queries) InsertJWTKey(ctx context.Context, arg InsertJWTKeyParams) (HermesJwtKey, error) {
-	row := q.db.QueryRow(ctx, insertJWTKey,
-		arg.Kid,
-		arg.Alg,
-		arg.PublicKeyPem,
-		arg.ValidUntil,
-	)
-	var i HermesJwtKey
-	err := row.Scan(
-		&i.Kid,
-		&i.Alg,
-		&i.PublicKeyPem,
-		&i.ValidFrom,
-		&i.ValidUntil,
-		&i.RevokedAt,
-		&i.CreatedAt,
+		&i.IngestedAt,
+		&i.LogCategory,
+		&i.ActorSource,
+		&i.ActorID,
+		&i.ActorRole,
 	)
 	return i, err
 }
 
 const listAuditEventsByTenant = `-- name: ListAuditEventsByTenant :many
-SELECT id, ts, tenant_id, actor_user_id, action, sanitized_args, result, correlation_id, request_id
+SELECT id, ts, tenant_id, actor_source, actor_id, actor_role, action,
+       sanitized_args, result, correlation_id, request_id, log_category
 FROM hermes_audit_events
 WHERE tenant_id = $1::bigint
 ORDER BY ts DESC, id DESC
@@ -517,149 +384,43 @@ type ListAuditEventsByTenantParams struct {
 	PageLimit  int32 `db:"page_limit" json:"page_limit"`
 }
 
-func (q *Queries) ListAuditEventsByTenant(ctx context.Context, arg ListAuditEventsByTenantParams) ([]HermesAuditEvent, error) {
+type ListAuditEventsByTenantRow struct {
+	ID            int64              `db:"id" json:"id"`
+	Ts            pgtype.Timestamptz `db:"ts" json:"ts"`
+	TenantID      int64              `db:"tenant_id" json:"tenant_id"`
+	ActorSource   string             `db:"actor_source" json:"actor_source"`
+	ActorID       int64              `db:"actor_id" json:"actor_id"`
+	ActorRole     *string            `db:"actor_role" json:"actor_role"`
+	Action        string             `db:"action" json:"action"`
+	SanitizedArgs []byte             `db:"sanitized_args" json:"sanitized_args"`
+	Result        string             `db:"result" json:"result"`
+	CorrelationID *string            `db:"correlation_id" json:"correlation_id"`
+	RequestID     *string            `db:"request_id" json:"request_id"`
+	LogCategory   string             `db:"log_category" json:"log_category"`
+}
+
+func (q *Queries) ListAuditEventsByTenant(ctx context.Context, arg ListAuditEventsByTenantParams) ([]ListAuditEventsByTenantRow, error) {
 	rows, err := q.db.Query(ctx, listAuditEventsByTenant, arg.TenantID, arg.PageOffset, arg.PageLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []HermesAuditEvent
+	var items []ListAuditEventsByTenantRow
 	for rows.Next() {
-		var i HermesAuditEvent
+		var i ListAuditEventsByTenantRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Ts,
 			&i.TenantID,
-			&i.ActorUserID,
+			&i.ActorSource,
+			&i.ActorID,
+			&i.ActorRole,
 			&i.Action,
 			&i.SanitizedArgs,
 			&i.Result,
 			&i.CorrelationID,
 			&i.RequestID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listConversationsByOwner = `-- name: ListConversationsByOwner :many
-SELECT id, tenant_id, owner_user_id, title, created_at, updated_at, last_message_at, deleted_at
-FROM hermes_conversations
-WHERE tenant_id = $1::bigint
-  AND owner_user_id = $2::bigint
-  AND deleted_at IS NULL
-ORDER BY last_message_at DESC NULLS LAST, updated_at DESC, id DESC
-LIMIT $4::integer
-OFFSET $3::integer
-`
-
-type ListConversationsByOwnerParams struct {
-	TenantID    int64 `db:"tenant_id" json:"tenant_id"`
-	OwnerUserID int64 `db:"owner_user_id" json:"owner_user_id"`
-	PageOffset  int32 `db:"page_offset" json:"page_offset"`
-	PageLimit   int32 `db:"page_limit" json:"page_limit"`
-}
-
-func (q *Queries) ListConversationsByOwner(ctx context.Context, arg ListConversationsByOwnerParams) ([]HermesConversation, error) {
-	rows, err := q.db.Query(ctx, listConversationsByOwner,
-		arg.TenantID,
-		arg.OwnerUserID,
-		arg.PageOffset,
-		arg.PageLimit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []HermesConversation
-	for rows.Next() {
-		var i HermesConversation
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.OwnerUserID,
-			&i.Title,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.LastMessageAt,
-			&i.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listMessagesByConversation = `-- name: ListMessagesByConversation :many
-SELECT m.id, m.tenant_id, m.conversation_id, m.role, m.content, m.content_ciphertext,
-       m.token_count, m.completed_at, m.created_at
-FROM hermes_messages m
-INNER JOIN hermes_conversations c
-    ON c.tenant_id = m.tenant_id
-    AND c.id = m.conversation_id
-    AND c.deleted_at IS NULL
-WHERE m.tenant_id = $1::bigint
-  AND m.conversation_id = $2::bigint
-  AND c.owner_user_id = $3::bigint
-ORDER BY m.created_at ASC, m.id ASC
-LIMIT $5::integer
-OFFSET $4::integer
-`
-
-type ListMessagesByConversationParams struct {
-	TenantID       int64 `db:"tenant_id" json:"tenant_id"`
-	ConversationID int64 `db:"conversation_id" json:"conversation_id"`
-	OwnerUserID    int64 `db:"owner_user_id" json:"owner_user_id"`
-	PageOffset     int32 `db:"page_offset" json:"page_offset"`
-	PageLimit      int32 `db:"page_limit" json:"page_limit"`
-}
-
-type ListMessagesByConversationRow struct {
-	ID                int64              `db:"id" json:"id"`
-	TenantID          int64              `db:"tenant_id" json:"tenant_id"`
-	ConversationID    int64              `db:"conversation_id" json:"conversation_id"`
-	Role              string             `db:"role" json:"role"`
-	Content           []byte             `db:"content" json:"content"`
-	ContentCiphertext []byte             `db:"content_ciphertext" json:"content_ciphertext"`
-	TokenCount        *int32             `db:"token_count" json:"token_count"`
-	CompletedAt       pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	CreatedAt         pgtype.Timestamptz `db:"created_at" json:"created_at"`
-}
-
-func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessagesByConversationParams) ([]ListMessagesByConversationRow, error) {
-	rows, err := q.db.Query(ctx, listMessagesByConversation,
-		arg.TenantID,
-		arg.ConversationID,
-		arg.OwnerUserID,
-		arg.PageOffset,
-		arg.PageLimit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListMessagesByConversationRow
-	for rows.Next() {
-		var i ListMessagesByConversationRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.ConversationID,
-			&i.Role,
-			&i.Content,
-			&i.ContentCiphertext,
-			&i.TokenCount,
-			&i.CompletedAt,
-			&i.CreatedAt,
+			&i.LogCategory,
 		); err != nil {
 			return nil, err
 		}
@@ -672,7 +433,7 @@ func (q *Queries) ListMessagesByConversation(ctx context.Context, arg ListMessag
 }
 
 const listProfilesByOwner = `-- name: ListProfilesByOwner :many
-SELECT id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+SELECT id, tenant_id, owner_user_id, name, profile_kind, created_at, updated_at, base_url, encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash, api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
 FROM hermes_api_profiles
 WHERE tenant_id = $1::bigint
   AND owner_user_id = $2::bigint
@@ -699,10 +460,18 @@ func (q *Queries) ListProfilesByOwner(ctx context.Context, arg ListProfilesByOwn
 			&i.OwnerUserID,
 			&i.Name,
 			&i.ProfileKind,
-			&i.APIKeyID,
-			&i.PoolGroupID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.BaseUrl,
+			&i.EncryptedApiKey,
+			&i.EncryptionScheme,
+			&i.KeyID,
+			&i.Nonce,
+			&i.AadHash,
+			&i.ApiKeyFingerprint,
+			&i.ApiKeyHint,
+			&i.CredentialVersion,
+			&i.SecretBindingID,
 		); err != nil {
 			return nil, err
 		}
@@ -715,7 +484,7 @@ func (q *Queries) ListProfilesByOwner(ctx context.Context, arg ListProfilesByOwn
 }
 
 const listProfilesByTenant = `-- name: ListProfilesByTenant :many
-SELECT id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+SELECT id, tenant_id, owner_user_id, name, profile_kind, created_at, updated_at, base_url, encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash, api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
 FROM hermes_api_profiles
 WHERE tenant_id = $1::bigint
 ORDER BY created_at DESC, id DESC
@@ -736,10 +505,18 @@ func (q *Queries) ListProfilesByTenant(ctx context.Context, tenantID int64) ([]H
 			&i.OwnerUserID,
 			&i.Name,
 			&i.ProfileKind,
-			&i.APIKeyID,
-			&i.PoolGroupID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.BaseUrl,
+			&i.EncryptedApiKey,
+			&i.EncryptionScheme,
+			&i.KeyID,
+			&i.Nonce,
+			&i.AadHash,
+			&i.ApiKeyFingerprint,
+			&i.ApiKeyHint,
+			&i.CredentialVersion,
+			&i.SecretBindingID,
 		); err != nil {
 			return nil, err
 		}
@@ -773,149 +550,56 @@ func (q *Queries) ProfileInUse(ctx context.Context, arg ProfileInUseParams) (boo
 	return column_1, err
 }
 
-const purgeMessagesBefore = `-- name: PurgeMessagesBefore :execrows
-WITH victims AS (
-    SELECT id
-    FROM hermes_messages
-    WHERE created_at < $1::timestamptz
-    ORDER BY created_at ASC, id ASC
-    LIMIT $2::integer
-)
-DELETE FROM hermes_messages
-WHERE id IN (SELECT id FROM victims)
-RETURNING id
-`
-
-type PurgeMessagesBeforeParams struct {
-	Cutoff     pgtype.Timestamptz `db:"cutoff" json:"cutoff"`
-	BatchLimit int32              `db:"batch_limit" json:"batch_limit"`
-}
-
-func (q *Queries) PurgeMessagesBefore(ctx context.Context, arg PurgeMessagesBeforeParams) (int64, error) {
-	result, err := q.db.Exec(ctx, purgeMessagesBefore, arg.Cutoff, arg.BatchLimit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const revokeJWTKey = `-- name: RevokeJWTKey :execrows
-UPDATE hermes_jwt_keys
-SET revoked_at = NOW()
-WHERE kid = $1::text
-  AND revoked_at IS NULL
-RETURNING kid
-`
-
-func (q *Queries) RevokeJWTKey(ctx context.Context, kid string) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeJWTKey, kid)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const softDeleteConversation = `-- name: SoftDeleteConversation :execrows
-UPDATE hermes_conversations
-SET deleted_at = COALESCE(deleted_at, NOW()),
-    updated_at = NOW()
-WHERE id = $1::bigint
-  AND tenant_id = $2::bigint
-`
-
-type SoftDeleteConversationParams struct {
-	ID       int64 `db:"id" json:"id"`
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) SoftDeleteConversation(ctx context.Context, arg SoftDeleteConversationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteConversation, arg.ID, arg.TenantID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const updateConversationLastMessageAt = `-- name: UpdateConversationLastMessageAt :execrows
-UPDATE hermes_conversations
-SET last_message_at = $1::timestamptz,
-    updated_at = NOW()
-WHERE id = $2::bigint
-  AND tenant_id = $3::bigint
-  AND deleted_at IS NULL
-`
-
-type UpdateConversationLastMessageAtParams struct {
-	Ts       pgtype.Timestamptz `db:"ts" json:"ts"`
-	ID       int64              `db:"id" json:"id"`
-	TenantID int64              `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) UpdateConversationLastMessageAt(ctx context.Context, arg UpdateConversationLastMessageAtParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateConversationLastMessageAt, arg.Ts, arg.ID, arg.TenantID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const updateMessageCompleted = `-- name: UpdateMessageCompleted :execrows
-UPDATE hermes_messages
-SET token_count = $1::integer,
-    completed_at = $2::timestamptz
-WHERE id = $3::bigint
-  AND tenant_id = $4::bigint
-`
-
-type UpdateMessageCompletedParams struct {
-	TokenCount  *int32             `db:"token_count" json:"token_count"`
-	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-	ID          int64              `db:"id" json:"id"`
-	TenantID    int64              `db:"tenant_id" json:"tenant_id"`
-}
-
-func (q *Queries) UpdateMessageCompleted(ctx context.Context, arg UpdateMessageCompletedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateMessageCompleted,
-		arg.TokenCount,
-		arg.CompletedAt,
-		arg.ID,
-		arg.TenantID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const updateProfile = `-- name: UpdateProfile :one
+const rotateProfileCredential = `-- name: RotateProfileCredential :one
 UPDATE hermes_api_profiles
 SET name = $1::text,
-    profile_kind = $2::text,
-    api_key_id = $3::bigint,
-    pool_group_id = $4::bigint,
+    base_url = $2::text,
+    encrypted_api_key = $3::bytea,
+    encryption_scheme = $4::text,
+    key_id = $5::text,
+    nonce = $6::bytea,
+    aad_hash = $7::text,
+    api_key_fingerprint = $8::text,
+    api_key_hint = $9::text,
+    credential_version = $10::integer,
     updated_at = NOW()
-WHERE id = $5::bigint
-  AND tenant_id = $6::bigint
-RETURNING id, tenant_id, owner_user_id, name, profile_kind, api_key_id, pool_group_id, created_at, updated_at
+WHERE id = $11::bigint
+  AND tenant_id = $12::bigint
+  AND credential_version = $13::integer
+RETURNING id, tenant_id, owner_user_id, name, profile_kind, created_at, updated_at, base_url, encrypted_api_key, encryption_scheme, key_id, nonce, aad_hash, api_key_fingerprint, api_key_hint, credential_version, secret_binding_id
 `
 
-type UpdateProfileParams struct {
-	Name        string `db:"name" json:"name"`
-	ProfileKind string `db:"profile_kind" json:"profile_kind"`
-	APIKeyID    *int64 `db:"api_key_id" json:"api_key_id"`
-	PoolGroupID *int64 `db:"pool_group_id" json:"pool_group_id"`
-	ID          int64  `db:"id" json:"id"`
-	TenantID    int64  `db:"tenant_id" json:"tenant_id"`
+type RotateProfileCredentialParams struct {
+	Name                      string `db:"name" json:"name"`
+	BaseUrl                   string `db:"base_url" json:"base_url"`
+	EncryptedApiKey           []byte `db:"encrypted_api_key" json:"encrypted_api_key"`
+	EncryptionScheme          string `db:"encryption_scheme" json:"encryption_scheme"`
+	KeyID                     string `db:"key_id" json:"key_id"`
+	Nonce                     []byte `db:"nonce" json:"nonce"`
+	AadHash                   string `db:"aad_hash" json:"aad_hash"`
+	ApiKeyFingerprint         string `db:"api_key_fingerprint" json:"api_key_fingerprint"`
+	ApiKeyHint                string `db:"api_key_hint" json:"api_key_hint"`
+	NewCredentialVersion      int32  `db:"new_credential_version" json:"new_credential_version"`
+	ID                        int64  `db:"id" json:"id"`
+	TenantID                  int64  `db:"tenant_id" json:"tenant_id"`
+	ExpectedCredentialVersion int32  `db:"expected_credential_version" json:"expected_credential_version"`
 }
 
-func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (HermesApiProfile, error) {
-	row := q.db.QueryRow(ctx, updateProfile,
+func (q *Queries) RotateProfileCredential(ctx context.Context, arg RotateProfileCredentialParams) (HermesApiProfile, error) {
+	row := q.db.QueryRow(ctx, rotateProfileCredential,
 		arg.Name,
-		arg.ProfileKind,
-		arg.APIKeyID,
-		arg.PoolGroupID,
+		arg.BaseUrl,
+		arg.EncryptedApiKey,
+		arg.EncryptionScheme,
+		arg.KeyID,
+		arg.Nonce,
+		arg.AadHash,
+		arg.ApiKeyFingerprint,
+		arg.ApiKeyHint,
+		arg.NewCredentialVersion,
 		arg.ID,
 		arg.TenantID,
+		arg.ExpectedCredentialVersion,
 	)
 	var i HermesApiProfile
 	err := row.Scan(
@@ -924,29 +608,39 @@ func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (H
 		&i.OwnerUserID,
 		&i.Name,
 		&i.ProfileKind,
-		&i.APIKeyID,
-		&i.PoolGroupID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.BaseUrl,
+		&i.EncryptedApiKey,
+		&i.EncryptionScheme,
+		&i.KeyID,
+		&i.Nonce,
+		&i.AadHash,
+		&i.ApiKeyFingerprint,
+		&i.ApiKeyHint,
+		&i.CredentialVersion,
+		&i.SecretBindingID,
 	)
 	return i, err
 }
 
 const upsertSettings = `-- name: UpsertSettings :one
-INSERT INTO hermes_settings (tenant_id, user_id, enabled, api_source, profile_id)
+INSERT INTO hermes_settings (tenant_id, user_id, enabled, api_source, profile_id, model_key)
 VALUES (
     $1::bigint,
     $2::bigint,
     $3::boolean,
     $4::text,
-    $5::bigint
+    $5::bigint,
+    $6::text
 )
 ON CONFLICT (tenant_id, user_id)
 DO UPDATE SET enabled = EXCLUDED.enabled,
               api_source = EXCLUDED.api_source,
               profile_id = EXCLUDED.profile_id,
+              model_key = EXCLUDED.model_key,
               updated_at = NOW()
-RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at
+RETURNING tenant_id, user_id, enabled, api_source, profile_id, created_at, updated_at, model_key
 `
 
 type UpsertSettingsParams struct {
@@ -955,6 +649,7 @@ type UpsertSettingsParams struct {
 	Enabled   bool   `db:"enabled" json:"enabled"`
 	APISource string `db:"api_source" json:"api_source"`
 	ProfileID *int64 `db:"profile_id" json:"profile_id"`
+	ModelKey  string `db:"model_key" json:"model_key"`
 }
 
 func (q *Queries) UpsertSettings(ctx context.Context, arg UpsertSettingsParams) (HermesSetting, error) {
@@ -964,6 +659,7 @@ func (q *Queries) UpsertSettings(ctx context.Context, arg UpsertSettingsParams) 
 		arg.Enabled,
 		arg.APISource,
 		arg.ProfileID,
+		arg.ModelKey,
 	)
 	var i HermesSetting
 	err := row.Scan(
@@ -974,6 +670,7 @@ func (q *Queries) UpsertSettings(ctx context.Context, arg UpsertSettingsParams) 
 		&i.ProfileID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ModelKey,
 	)
 	return i, err
 }

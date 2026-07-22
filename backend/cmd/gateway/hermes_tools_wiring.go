@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,11 +20,12 @@ import (
 	dbquota "github.com/BloomingProsperity/HUAKAI/internal/db/quotaadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermesops"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
-// hermesToolDeps 打包了 WAVE H3 诊断工具所封装的、已存在的只读存储。
+// hermesToolDeps 汇集 Hermes 工具复用的现有存储和服务。
 // 每个字段都是已在 buildGatewayRuntime 中构造好的 store/service;本接线
 // 只是把它们已有的读方法适配成 hermesops 工具依赖的形状——
 // 不新增任何查询逻辑。
@@ -34,7 +36,7 @@ type hermesToolDeps struct {
 	credentialStr  *credentialstore.Store
 	channelHealth  *channelhealth.Service
 	dlqStore       *dlq.Store
-	// dlqService 暴露 WAVE H4 dlq_replay 工具所封装的、已存在的 Replay 变更操作
+	// dlqService 暴露 dlq_replay 复用的 Replay 变更操作
 	//(重新 claim + 重新投递,以幂等键标识)。Nil => 该工具在依赖检查处
 	// fail closed。
 	dlqService *dlq.Service
@@ -44,25 +46,20 @@ type hermesToolDeps struct {
 	vendorOAuth   runtimeconfig.VendorOAuthConfigs
 }
 
-// buildHermesToolRegistry 组装只读诊断工具的 registry,做法是把每个工具的 Run
-// 接到对应的、已存在的读函数上。每个工具都是只读的;不引用任何变更方法。
-// 返回 registry + 工具调用的审计 inserter(由 pool 支撑)。pool 为 nil 时,
-// 返回的 registry 中工具仍会注册,但在依赖检查处 fail closed。
-//
-// mutateOpts 是附加式的 S2 orchestrator 守卫(并发上限 + tx 超时)。
-// 不传任何选项时,orchestrator 在字节层面等同于旧版的无界行为。
-func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOption) (*hermesops.Registry, *hermestoolsdb.Queries, *hermesops.MutateOrchestrator) {
+// buildHermesToolRegistry 把现有查询和管理写路径注册为唯一工具目录，并返回工具日志
+// 写入器与改动编排器。依赖缺失时工具仍注册，但调用会失败关闭。
+func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOption) (*hermesops.Registry, *hermestoolsdb.Queries, *hermesops.MutateOrchestrator, error) {
 	reg := hermesops.NewRegistry()
 
 	// credential_diagnose -> credentialworker.DryRunProviderAccountCredential
-	//(非持久化的校验)+ credentialstore.Store.ListRenewStatus(读)。
+	//（非持久化校验）+ credentialstore.Store.ListByAccount（精确账号读取）。
 	credDeps := hermesops.CredentialDiagnoseDeps{
 		DryRun:   credentialworker.DryRunProviderAccountCredential,
 		Registry: credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.vendorOAuth),
 	}
 	if d.credentialStr != nil {
 		credDeps.TestStore = d.credentialStr
-		credDeps.RenewStatus = d.credentialStr.ListRenewStatus
+		credDeps.ListByAccount = d.credentialStr.ListByAccount
 	}
 	reg.Register(hermesops.CredentialDiagnoseSpec(credDeps))
 
@@ -75,7 +72,7 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	if d.channelHealth != nil {
 		healthDeps.ChannelSummary = d.channelHealth.SummarizeChannelHealth
-		healthDeps.ChannelList = d.channelHealth.ListChannelHealth
+		healthDeps.ChannelListByAccount = d.channelHealth.ListChannelHealthByProviderAccount
 	}
 	reg.Register(hermesops.AccountHealthDiagnoseSpec(healthDeps))
 
@@ -142,11 +139,7 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.AlertEventListSpec(alertEvtDeps))
 
-	// alert_rule_enable / alert_rule_disable -> alerting.PostgresStore.SetRuleEnabledInTx
-	// (由 orchestrator 绑定到 tx)。Resolve 通过 GetRule 读取当前状态 + 复检租户归属。
-	// 这是 Phase B 首批新增的可提议(Proposable)mutating 工具:可逆 B 级、LLM 可提议但仍需
-	// operator 确认。0160 迁移已把 alert_rule_enable/disable 加进 hermes_tool_calls.tool_name
-	// 与 admin_audit_events.action 的 CHECK。Nil pool => 两工具在依赖检查处 fail closed。
+	// 告警规则启停复用事务内写路径；Resolve 读取当前状态并复检租户归属。
 	alertRuleMutDeps := hermesops.AlertRuleMutationDeps{}
 	if d.pool != nil {
 		alertRuleMutDeps.GetRule = alerting.NewPostgresStore(d.pool).GetRule
@@ -155,12 +148,7 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	reg.Register(hermesops.AlertRuleEnableSpec(alertRuleMutDeps))
 	reg.Register(hermesops.AlertRuleDisableSpec(alertRuleMutDeps))
 
-	// moderation_keyword_enable / moderation_keyword_disable -> dbmoderation 的
-	// GetModerationKeyword(读+租户复检+预览)+ SetModerationKeywordEnabled(由 orchestrator
-	// 绑定到 tx 翻转 enabled 列)。这是 Phase B 新增的可提议(Proposable)mutating 工具:安全敏感
-	// (disable=临时关掉一个内容过滤器)但可逆 —— LLM 可提议但仍需 operator 确认。0161 迁移已把
-	// moderation_keyword_enable/disable 加进 hermes_tool_calls.tool_name 与 admin_audit_events.action
-	// 的 CHECK,并把 moderation_keyword 加进 target_type CHECK。Nil pool => 两工具在依赖检查处 fail closed。
+	// 内容审核关键词启停复用现有读取和事务内写路径，并在预览阶段复检租户归属。
 	moderationKwMutDeps := hermesops.ModerationKeywordMutationDeps{}
 	if d.pool != nil {
 		moderationKwMutDeps.GetKeyword = func(ctx context.Context, tenantID, id int64) (moderation.KeywordRule, error) {
@@ -218,18 +206,10 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	}
 	reg.Register(hermesops.DLQInspectSpec(dlqDeps))
 
-	// ---- WAVE H4 MUTATING 工具 ----------------------------------------------
-	// 每个工具都把一个已存在的变更操作封装在 5 层安全契约之后。它们以
-	// Mutating=true 注册,因此只读 dispatch 会拒绝它们;它们只通过
-	// confirm 把关的 mutate 路径 + orchestrator 运行。
+	// 改动型工具复用现有管理操作，只能通过人工确认与编排器执行。
 
-	// account_pause / account_resume -> UpdateProviderAccountEnabled(由
-	// orchestrator 绑定到 tx)。Resolve 通过 GetAdminProviderAccount 读取。
-	// channelhealth 的手动覆盖协调需要一个凭证维度的
-	// ChannelKey(vendor + credential id + version),而单凭账号行
-	// 并不携带它,因此本波次中 Coordinate 留空(nil):enabled=false 才是
-	// dispatcher 的事实来源,它生效暂停;从账号 id 出发的 channel-health
-	// 协调是一项有记录在案的后续事项。
+	// account_pause / account_resume 在编排器事务内修改账号 enabled 状态。
+	// enabled 是调度器的权威来源，健康状态的人工覆盖由独立工具维护，避免跨事务假联动。
 	accountDeps := hermesops.AccountMutationDeps{}
 	if d.adminQueries != nil {
 		accountDeps.GetAccount = d.adminQueries.GetAdminProviderAccount
@@ -255,7 +235,9 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	renewDeps := hermesops.RenewTriggerDeps{}
 	if d.credentialStr != nil {
 		renewDeps.ListByAccount = d.credentialStr.ListByAccount
-		renewDeps.Rotate = d.credentialStr.Rotate
+		renewDeps.RotateTx = func(ctx context.Context, tx pgx.Tx, in credentialstore.RotateCredentialInput) (credentialstore.CredentialMetadata, error) {
+			return d.credentialStr.WithDB(tx).Rotate(ctx, in)
+		}
 	}
 	reg.Register(hermesops.RenewTriggerSpec(renewDeps))
 
@@ -263,9 +245,13 @@ func buildHermesToolRegistry(d hermesToolDeps, mutateOpts ...hermesops.MutateOpt
 	var mutator *hermesops.MutateOrchestrator
 	if d.pool != nil {
 		inserter = hermestoolsdb.New(d.pool)
+		mutateOpts = append(mutateOpts, hermesops.WithMutationRecoveryJournal(hermesrecovery.NewStore(d.pool)))
 		mutator = hermesops.NewMutateOrchestrator(d.pool, mutateOpts...)
 	}
-	return reg, inserter, mutator
+	if err := reg.Validate(); err != nil {
+		return nil, nil, nil, fmt.Errorf("校验 Hermes 工具注册表：%w", err)
+	}
+	return reg, inserter, mutator, nil
 }
 
 // dlqLookupByID 把限定在租户内的、按 id 的 dlq 读适配成 hermesops

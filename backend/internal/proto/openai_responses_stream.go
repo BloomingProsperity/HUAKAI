@@ -46,6 +46,11 @@ func NewOpenAIResponsesStreamState() *OpenAIResponsesStreamState {
 	return &OpenAIResponsesStreamState{CurrentOutputIndex: -1, CurrentContentPart: -1}
 }
 
+// NewClientStreamState 创建当前协议一次流式响应独占的状态。
+func (*OpenAIResponsesClient) NewClientStreamState() any {
+	return NewOpenAIResponsesStreamState()
+}
+
 // closeOpenMessageItem 收尾未关闭的 message item（content_part.done + output_item.done）。
 // content_block_stop / message_stop / Finalize 共用，保证三处事件形状一致。
 func (s *OpenAIResponsesStreamState) closeOpenMessageItem() [][]byte {

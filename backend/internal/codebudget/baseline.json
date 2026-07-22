@@ -1,63 +1,46 @@
 {
-  "credentialstore/postgres_store.go": 1377,
-  "credentialworker/mode_refresh.go": 838,
   "files": {
-    "adminuserhttp/routes.go": 804,
-    "audit/receipt_formatter.go": 697,
-    "audit/refund_worker.go": 889,
+    "adminuserhttp/routes.go": 801,
+    "audit/refund_worker.go": 770,
     "auth/antigravity_token_provider.go": 684,
-    "billing/settler.go": 1157,
+    "billing/settler.go": 1025,
     "channelhealth/service.go": 839,
     "credentialacq/oauth_devicecode.go": 762,
-    "credentialstore/postgres_store.go": 1428,
+    "credentialstore/postgres_store.go": 1379,
     "credentialworker/mode_refresh.go": 871,
-    "db/admin/admin_provider_channel_catalog.sql.go": 698,
+    "db/admin/admin_provider_channel_catalog.sql.go": 609,
     "db/billing/observability.sql.go": 1074,
-    "db/billing/pool_accounts.sql.go": 888,
     "db/billing/usage_analytics.sql.go": 984,
-    "db/hermes/hermes.sql.go": 980,
-    "db/moderation/moderation.sql.go": 937,
-    "db/quota/quota.sql.go": 1448,
+    "db/hermes/hermes.sql.go": 677,
+    "db/moderation/moderation.sql.go": 655,
     "gateway/forwarder.go": 999,
-    "gatewayhttp/admin_pool_accounts_handler.go": 1068,
     "gatewayhttp/auth_handler.go": 1090,
-    "gatewayhttp/chat_completions_billing.go": 699,
-    "gatewayhttp/chat_completions_dispatch.go": 887,
-    "gatewayhttp/chat_completions_handler.go": 981,
+    "gatewayhttp/chat_completions_billing.go": 693,
+    "gatewayhttp/chat_completions_dispatch.go": 822,
+    "gatewayhttp/chat_completions_handler.go": 604,
     "gatewayhttp/chat_completions_pricing.go": 751,
     "gatewayhttp/chat_completions_stream.go": 656,
-    "gatewayhttp/cost_receipt_handler.go": 904,
     "payment/store_postgres.go": 731,
     "proto/anthropic/sse.go": 638,
-    "proto/envelope_validate.go": 1058,
     "proto/gemini/client.go": 650,
     "proto/openai/sse.go": 676,
     "quota/service.go": 892,
-    "quota/service_settle.go": 866,
-    "registry/model_sync_writer.go": 656,
+    "quota/service_settle.go": 809,
     "subscription/store_postgres.go": 1098,
     "subscriptionhttp/handler.go": 744,
     "userauth/store.go": 1029,
     "userkey/userkey.go": 782,
-    "usersession/store.go": 947,
+    "usersession/store.go": 928,
     "voucher/store_postgres.go": 714
   },
   "packages": {
-    "gateway": [
-      8495,
-      27
-    ],
     "gatewayhttp": [
-      13835,
-      33
-    ],
-    "payment": [
-      5719,
-      25
+      9171,
+      19
     ],
     "proto": [
-      8164,
-      55
+      7480,
+      34
     ]
   }
 }

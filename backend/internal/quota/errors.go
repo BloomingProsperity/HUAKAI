@@ -100,8 +100,3 @@ func (e *ReconciliationNeededError) Unwrap() error {
 func (e *ReconciliationNeededError) Is(target error) bool {
 	return target == ErrReconciliationNeeded
 }
-
-// IsReconciliationNeeded 判断错误是否需要 quota reconciliation job。
-func IsReconciliationNeeded(err error) bool {
-	return errors.Is(err, ErrReconciliationNeeded)
-}

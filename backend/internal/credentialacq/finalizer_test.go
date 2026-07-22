@@ -17,10 +17,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type credentialCreator interface {
-	Create(context.Context, credentialstore.CreateCredentialInput) (credentialstore.CredentialMetadata, error)
-}
-
 type fakeCredentialCreator struct {
 	mu    sync.Mutex
 	calls int

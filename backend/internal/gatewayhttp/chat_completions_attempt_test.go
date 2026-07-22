@@ -15,9 +15,37 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
+
+func TestConstrainResolvedPool只保留服务端授权池(t *testing.T) {
+	allowed := int64(22)
+	original := registry.Resolved{
+		PoolCandidates: []int64{11, 22, 33},
+		BindingMetadata: []registry.BindingMetadata{
+			{BindingID: 101, PoolGroupID: 11},
+			{BindingID: 202, PoolGroupID: 22},
+		},
+	}
+
+	got, ok := constrainResolvedPool(original, &allowed)
+	if !ok {
+		t.Fatal("授权池存在却被拒绝")
+	}
+	if len(got.PoolCandidates) != 1 || got.PoolCandidates[0] != allowed || len(got.BindingMetadata) != 1 || got.BindingMetadata[0].BindingID != 202 {
+		t.Fatalf("收窄结果=%+v，期望只保留池 22 的 binding", got)
+	}
+	if len(original.PoolCandidates) != 3 || len(original.BindingMetadata) != 2 {
+		t.Fatalf("原始 registry 结果被原地修改：%+v", original)
+	}
+
+	missing := int64(44)
+	if _, ok := constrainResolvedPool(original, &missing); ok {
+		t.Fatal("不存在的授权池被错误放行")
+	}
+}
 
 func TestPR4RetryKeepsGeneratedLogicalRequestIDStable(t *testing.T) {
 	ex := &chatExecution{
@@ -148,7 +176,9 @@ func TestOfficialDirectRemapsModelWhenAliasDiffersFromUpstream(t *testing.T) {
 // 直接请求真实模型名,alias==上游 model)保持字节等价,不做无谓重序列化。
 // 变异:去掉 bodyModelMatches 的相等短路 → body 被 rewriteUpstreamModel 重排 → 本测试红。
 func TestOfficialDirectPreservesBytesWhenModelAlreadyMatches(t *testing.T) {
-	original := []byte(`{"model":"claude-sonnet-4-5","max_tokens":8,"system":"x","messages":[{"role":"user","content":"hi"}]}`)
+	// 真 Claude Code 请求 system 头部已带官方前缀:alias==上游 model 且 EnsurePrefix 幂等无操作
+	// → 字节等价,不做无谓重序列化。
+	original := []byte(`{"model":"claude-sonnet-4-5","max_tokens":8,"system":"You are Claude Code, Anthropic's official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}`)
 	ex := &chatExecution{
 		officialDirect:  true,
 		upstreamModelID: "claude-sonnet-4-5",
@@ -157,7 +187,32 @@ func TestOfficialDirectPreservesBytesWhenModelAlreadyMatches(t *testing.T) {
 	}
 	out := ex.upstreamInboundBody(ex.body)
 	if !bytes.Equal(out, original) {
-		t.Fatalf("alias==上游 model 时官方直发 body 不应改动\ngot:  %s\nwant: %s", out, original)
+		t.Fatalf("已带 Claude Code 前缀的官方直发 body 不应改动(EnsurePrefix 幂等)\ngot:  %s\nwant: %s", out, original)
+	}
+}
+
+// TestOfficialDirectInjectsClaudeCodeSystemPromptForSession 咬住 reverse-account 车道的
+// 出口修复:Anthropic OAuth 订阅号(anthropic_claude_session)的高级模型要求 system 头部带
+// Claude Code 官方前缀,缺则上游以误导性 429 rate_limit_error 拒。反转用户发的普通请求 body
+// 无该前缀,upstreamInboundBody 必须在字节直通前幂等注入。变异:删掉 upstreamInboundBody 里
+// officialDirect+session 分支的 RewriteSystem 注入 → system 缺前缀 → 本测试红。
+func TestOfficialDirectInjectsClaudeCodeSystemPromptForSession(t *testing.T) {
+	original := []byte(`{"model":"claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	ex := &chatExecution{
+		officialDirect:  true,
+		upstreamModelID: "claude-opus-4-8",
+		body:            original,
+		resolved:        registry.Resolved{ProtocolFamily: "anthropic_claude_session"},
+	}
+	out := ex.upstreamInboundBody(ex.body)
+	var parsed struct {
+		System string `json:"system"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("outbound body 非 JSON: %v", err)
+	}
+	if !strings.HasPrefix(parsed.System, anthropic.ClaudeCodeSystemPrompt) {
+		t.Fatalf("session 号出口未注入 Claude Code 官方 system 前缀\nsystem=%q\nbody=%s", parsed.System, out)
 	}
 }
 

@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"crypto/ed25519"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
-	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
 const (
@@ -95,40 +93,6 @@ type ReceiptInputs struct {
 	CreatedAt           time.Time
 }
 
-// ReceiptCanonicalPayloadV1 是历史 receipt 的签名输入；仅用于兼容老签名。
-type ReceiptCanonicalPayloadV1 struct {
-	SchemaVersion       string `json:"schema_version"`
-	RequestID           string `json:"request_id"`
-	TenantID            int64  `json:"tenant_id"`
-	Model               string `json:"model"`
-	InputTokens         int64  `json:"input_tokens"`
-	OutputTokens        int64  `json:"output_tokens"`
-	CachedTokens        int64  `json:"cached_tokens"`
-	CostTotalMicroUSD   int64  `json:"cost_total_micro_usd"`
-	RateTableSnapshotID int64  `json:"rate_table_snapshot_id"`
-	CreatedAt           string `json:"created_at"`
-}
-
-// ReceiptCanonicalPayloadV2 是用户可见 receipt 的 canonical 响应字段结构。
-type ReceiptCanonicalPayloadV2 struct {
-	SchemaVersion       string   `json:"schema_version"`
-	RequestID           string   `json:"request_id"`
-	ReceiptSequence     int32    `json:"receipt_sequence"`
-	TenantScopeRef      string   `json:"tenant_scope_ref"`
-	Model               string   `json:"model"`
-	InputTokens         int64    `json:"input_tokens"`
-	OutputTokens        int64    `json:"output_tokens"`
-	CachedTokens        int64    `json:"cached_tokens"`
-	CostTotalMicroUSD   int64    `json:"cost_total_micro_usd"`
-	RateTableSnapshotID int64    `json:"rate_table_snapshot_id"`
-	CreatedAt           string   `json:"created_at"`
-	ValidationState     string   `json:"validation_state"`
-	Verdict             string   `json:"verdict"`
-	AdjustmentRefs      []string `json:"adjustment_refs"`
-}
-
-type ReceiptCanonicalPayload = ReceiptCanonicalPayloadV2
-
 // ReceiptInputSource 负责把现有账务事实读成 receipt 输入，不拥有第二套账本。
 type ReceiptInputSource interface {
 	LookupReceiptInputs(ctx context.Context, requestID string, tenantID int64) (ReceiptInputs, error)
@@ -157,20 +121,17 @@ func (a legacyReceiptSignerAdapter) Sign(_ context.Context, payload []byte) ([]b
 
 // ReceiptFormatter 从 audit ledger + billing facts 生成用户可验证 receipt。
 type ReceiptFormatter struct {
-	ledger   auditledger.Ledger
-	billing  billing.Settler
-	source   ReceiptInputSource
-	signer   receiptSigner
-	redactor privacy.Redactor
-	now      func() time.Time
+	ledger auditledger.Ledger
+	source ReceiptInputSource
+	signer receiptSigner
+	now    func() time.Time
 }
 
 type ReceiptFormatterOption func(*ReceiptFormatter)
 
-// NewReceiptFormatter 构造 receipt formatter；billingSettler 只作为上游账务边界依赖保存。
+// NewReceiptFormatter 构造只依赖既有账务事实的回执格式化器。
 func NewReceiptFormatter(
 	ledger auditledger.Ledger,
-	billingSettler billing.Settler,
 	source ReceiptInputSource,
 	signer any,
 	opts ...ReceiptFormatterOption,
@@ -189,34 +150,20 @@ func NewReceiptFormatter(
 		return nil, err
 	}
 	rf := &ReceiptFormatter{
-		ledger:   ledger,
-		billing:  billingSettler,
-		source:   source,
-		signer:   normalizedSigner,
-		redactor: privacy.DefaultRedactor(),
-		now:      func() time.Time { return time.Now().UTC() },
+		ledger: ledger,
+		source: source,
+		signer: normalizedSigner,
+		now:    func() time.Time { return time.Now().UTC() },
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(rf)
 		}
 	}
-	if rf.redactor == nil {
-		rf.redactor = privacy.DefaultRedactor()
-	}
 	if rf.now == nil {
 		rf.now = func() time.Time { return time.Now().UTC() }
 	}
 	return rf, nil
-}
-
-// WithReceiptRedactor 替换 canonical payload 使用的隐私守门器。
-func WithReceiptRedactor(redactor privacy.Redactor) ReceiptFormatterOption {
-	return func(rf *ReceiptFormatter) {
-		if redactor != nil {
-			rf.redactor = redactor
-		}
-	}
 }
 
 // WithReceiptNow 注入时间源，测试用固定时间。
@@ -333,93 +280,6 @@ func (rf *ReceiptFormatter) SignReceipt(ctx context.Context, receipt *CostReceip
 	out.SignerFingerprint = []byte(fingerprint)
 	out.SignedHash = []byte(base64.StdEncoding.EncodeToString(signature))
 	return out, nil
-}
-
-// SQLReceiptSource 是当前 PostgreSQL schema 的 receipt 派生读取器。
-type SQLReceiptSource struct {
-	db    *sql.DB
-	query receiptQueryer
-}
-
-// NewSQLReceiptSource 用 database/sql 包装现有 PostgreSQL 连接。
-func NewSQLReceiptSource(db *sql.DB) (*SQLReceiptSource, error) {
-	if db == nil {
-		return nil, errors.New("audit: sql db required")
-	}
-	return &SQLReceiptSource{db: db, query: sqlReceiptDB{db: db}}, nil
-}
-
-// LookupReceiptInputs 读取 audit/billing/usage 的现有事实并转换为 receipt 输入。
-func (s *SQLReceiptSource) LookupReceiptInputs(ctx context.Context, requestID string, tenantID int64) (ReceiptInputs, error) {
-	if s == nil {
-		return ReceiptInputs{}, ErrReceiptSourceRequired
-	}
-	if err := validateReceiptRequestID(requestID); err != nil {
-		return ReceiptInputs{}, err
-	}
-	query := s.query
-	if query == nil && s.db != nil {
-		query = sqlReceiptDB{db: s.db}
-	}
-	if query == nil {
-		return ReceiptInputs{}, errors.New("audit: sql receipt source db required")
-	}
-
-	var (
-		inputs         ReceiptInputs
-		costUSD        string
-		snapshot       sql.NullString
-		claimID        int64
-		userID         int64
-		usageRecordID  sql.NullInt64
-		createdAt      time.Time
-		modelNullable  sql.NullString
-		inputTokens    sql.NullInt64
-		outputTokens   sql.NullInt64
-		cacheReadToken sql.NullInt64
-		ownerSource    sql.NullString
-	)
-	row := query.QueryRowContext(ctx, receiptInputsSQL, requestID, tenantID)
-	if err := row.Scan(
-		&inputs.TenantID,
-		&claimID,
-		&userID,
-		&modelNullable,
-		&inputTokens,
-		&outputTokens,
-		&cacheReadToken,
-		&costUSD,
-		&snapshot,
-		&usageRecordID,
-		&createdAt,
-		&ownerSource,
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ReceiptInputs{}, ErrReceiptInputsNotFound
-		}
-		return ReceiptInputs{}, fmt.Errorf("audit: lookup receipt inputs: %w", err)
-	}
-	if !usageRecordID.Valid {
-		return ReceiptInputs{}, ErrReceiptUnavailable
-	}
-	costMicros, err := usdDecimalStringToMicros(costUSD)
-	if err != nil {
-		return ReceiptInputs{}, err
-	}
-	inputs.ClaimID = claimID
-	inputs.UserID = userID
-	inputs.OwnerSource = receiptOwnerSourceFromSettlementSource(ownerSource.String)
-	inputs.Model = modelNullable.String
-	inputs.InputTokens = inputTokens.Int64
-	inputs.OutputTokens = outputTokens.Int64
-	inputs.CachedTokens = cacheReadToken.Int64
-	inputs.CostUSDMicros = costMicros
-	inputs.RateTableSnapshotID = rateTableSnapshotID(snapshot.String, usageRecordID.Int64)
-	inputs.CreatedAt = createdAt
-	if err := validateReceiptInputs(inputs); err != nil {
-		return ReceiptInputs{}, err
-	}
-	return inputs, nil
 }
 
 const receiptInputsSQL = `

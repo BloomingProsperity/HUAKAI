@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -43,10 +42,6 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string) {
 
 func writeInsufficientBalanceError(w http.ResponseWriter) {
 	writeInsufficientQuotaBody(w, http.StatusPaymentRequired, 0, "")
-}
-
-func writeInsufficientQuotaError(w http.ResponseWriter) {
-	writeInsufficientQuotaBody(w, http.StatusTooManyRequests, 0, "")
 }
 
 // writeInsufficientQuotaErrorRetryable 返回窗口重置时间和类型，让客户端按真实边界退避并区分配额拒绝。
@@ -108,14 +103,6 @@ func setAbortFailedHeader(w http.ResponseWriter, ctx context.Context, requestID 
 	if w != nil {
 		w.Header().Set(headerHuakaiAbortFailed, clienterr.CodeAbortFailed)
 	}
-}
-
-func writeNormalizedUpstreamError(w http.ResponseWriter, status int, fallbackCode string, c gateway.Classification) {
-	code := normalizedUpstreamErrorCode(fallbackCode, c.Class)
-	if c.RetryAfterMs > 0 {
-		w.Header().Set("Retry-After", fmt.Sprintf("%d", (c.RetryAfterMs+999)/1000))
-	}
-	writeJSONError(w, status, code, "upstream request failed")
 }
 
 func normalizedUpstreamErrorCode(fallbackCode string, class gateway.ErrorClass) string {

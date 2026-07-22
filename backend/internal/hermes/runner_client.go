@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,18 +15,14 @@ import (
 )
 
 const (
-	RunnerURLEnv                  = "HUAKAI_HERMES_RUNNER_URL"
-	RunnerInternalSharedSecretEnv = "HUAKAI_HERMES_INTERNAL_SHARED_SECRET"
-	RunnerJWTPrivateKeyEnv        = "HUAKAI_HERMES_JWT_PRIVATE_KEY_PATH"
-	RunnerJWTKIDEnv               = "HUAKAI_HERMES_JWT_KID"
-	RunnerJWTIssuerEnv            = "HUAKAI_HERMES_JWT_ISSUER"
-	RunnerJWTAudienceEnv          = "HUAKAI_HERMES_JWT_AUDIENCE"
-	HeaderAuthorization           = "Authorization"
-	HeaderSignature               = "X-Hermes-Signature"
-	HeaderTimestamp               = "X-Hermes-Timestamp"
-	HeaderTenant                  = "X-Hermes-Tenant"
-	HeaderUser                    = "X-Hermes-User"
-	RunnerHMACFreshnessLimit      = 5 * time.Minute
+	RunnerURLEnv           = "HUAKAI_HERMES_RUNNER_URL"
+	RunnerJWTPrivateKeyEnv = "HUAKAI_HERMES_JWT_PRIVATE_KEY_PATH"
+	RunnerJWTKIDEnv        = "HUAKAI_HERMES_JWT_KID"
+	RunnerJWTIssuerEnv     = "HUAKAI_HERMES_JWT_ISSUER"
+	RunnerJWTAudienceEnv   = "HUAKAI_HERMES_JWT_AUDIENCE"
+	HeaderAuthorization    = "Authorization"
+	HeaderTenant           = "X-Hermes-Tenant"
+	HeaderUser             = "X-Hermes-User"
 )
 
 type RunnerClient struct {
@@ -46,7 +39,8 @@ func NewRunnerClientFromEnv() (*RunnerClient, error) {
 	runnerURL := strings.TrimSpace(os.Getenv(RunnerURLEnv))
 	keyPath := strings.TrimSpace(os.Getenv(RunnerJWTPrivateKeyEnv))
 	jwtKID := strings.TrimSpace(os.Getenv(RunnerJWTKIDEnv))
-	if runnerURL == "" && keyPath == "" && jwtKID == "" {
+	// URL 是唯一启用信号。部署文件可以长期挂载密钥目录，但未配置运行器地址时不会误开启 Hermes。
+	if runnerURL == "" {
 		return nil, nil
 	}
 	var privateKey ed25519.PrivateKey
@@ -100,24 +94,6 @@ func (c *RunnerClient) Chat(ctx context.Context, tenantID, userID int64, body []
 		return nil, err
 	}
 	return c.do(ctx, http.MethodPost, "/chat", "", tenantID, userID, body, "application/json")
-}
-
-func (c *RunnerClient) Conversations(ctx context.Context, tenantID, userID int64, rawQuery string) (*http.Response, error) {
-	if err := validateTenantUser(tenantID, userID); err != nil {
-		return nil, err
-	}
-	return c.do(ctx, http.MethodGet, "/conversations", rawQuery, tenantID, userID, nil, "")
-}
-
-func (c *RunnerClient) ConversationMessages(ctx context.Context, tenantID, userID int64, id, rawQuery string) (*http.Response, error) {
-	if err := validateTenantUser(tenantID, userID); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(id) == "" {
-		return nil, fmt.Errorf("%w: conversation id is required", ErrInvalidInput)
-	}
-	path := "/conversations/" + url.PathEscape(id) + "/messages"
-	return c.do(ctx, http.MethodGet, path, rawQuery, tenantID, userID, nil, "")
 }
 
 func (c *RunnerClient) Health(ctx context.Context) error {
@@ -189,49 +165,4 @@ func (c *RunnerClient) signJWT(req *http.Request, tenantID, userID int64) error 
 	}
 	req.Header.Set(HeaderAuthorization, "Bearer "+token)
 	return nil
-}
-
-func VerifyRunnerHMACRequest(req *http.Request, body []byte, sharedSecret []byte, now time.Time) bool {
-	if req == nil || len(sharedSecret) == 0 {
-		return false
-	}
-	signature := strings.TrimSpace(req.Header.Get(HeaderSignature))
-	ts := strings.TrimSpace(req.Header.Get(HeaderTimestamp))
-	tenant := strings.TrimSpace(req.Header.Get(HeaderTenant))
-	user := strings.TrimSpace(req.Header.Get(HeaderUser))
-	if signature == "" || ts == "" || tenant == "" || user == "" {
-		return false
-	}
-	signedAt, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return false
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	if delta := now.UTC().Sub(time.Unix(signedAt, 0).UTC()); delta > RunnerHMACFreshnessLimit || delta < -RunnerHMACFreshnessLimit {
-		return false
-	}
-	path := ""
-	rawQuery := ""
-	if req.URL != nil {
-		path = req.URL.Path
-		rawQuery = req.URL.RawQuery
-	}
-	mac := hmac.New(sha256.New, sharedSecret)
-	mac.Write([]byte(ts))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(req.Method))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(path))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(rawQuery))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(tenant))
-	mac.Write([]byte("\n"))
-	mac.Write([]byte(user))
-	mac.Write([]byte("\n"))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(signature), []byte(expected))
 }

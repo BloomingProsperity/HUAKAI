@@ -462,21 +462,15 @@ func applyReleaseWindows(ctx context.Context, store PGStore, reservation Reserva
 		if err != nil {
 			return err
 		}
-		releaseValue := decimal.Zero
 		switch policy.Metric {
-		case MetricRequests:
-			releaseValue = policy.ReservedAmount
-		case MetricCostUSD:
-			releaseValue = policy.ReservedAmount
-		case MetricTokensEstimated:
-			releaseValue = policy.ReservedAmount
+		case MetricRequests, MetricCostUSD, MetricTokensEstimated:
 		default:
 			continue
 		}
 		if _, err := store.ApplyWindowSettlement(ctx, WindowSettlement{
 			TenantID:             reservation.TenantID,
 			WindowID:             counter.ID,
-			ReservedReleaseValue: releaseValue,
+			ReservedReleaseValue: policy.ReservedAmount,
 			SettledAddValue:      decimal.Zero,
 			OverageAddValue:      decimal.Zero,
 		}); err != nil {
@@ -743,10 +737,7 @@ func shouldQueueQuotaFinalizationFailure(err error) bool {
 		return false
 	}
 	var invalid *invalidReservationStatus
-	if errors.As(err, &invalid) {
-		return false
-	}
-	return true
+	return !errors.As(err, &invalid)
 }
 
 func reconciliationStateError(tenantID int64, claimID int64, reservationID int64, kind string, status ReservationStatus) error {

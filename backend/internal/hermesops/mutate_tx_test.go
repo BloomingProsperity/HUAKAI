@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -18,18 +20,17 @@ type fakeMutateTx struct {
 }
 
 type txRecorder struct {
-	lockAcquired   bool
-	lockKey        string
-	adminActorID   string // 捕获 admin_audit_events 写入的 actor_id,守其格式统一走 AuditActor()
-	toolCallInsert int
-	// toolCallTokenID 捕获 hermes_tool_calls 的 admin_actor_token_id 实参($3)。
-	// 它是 *int64:token>0 时指向该 id、token==0 时为 nil(持久化为 SQL NULL)。
-	// 守 insertToolCallRow 的 `if rec.AdminActorTokenID > 0` 分支——nil vs 非 nil 判别性。
-	toolCallTokenID    *int64
-	toolCallTokenIDSet bool // 是否见过一次 tool_calls insert(区分「未插入」与「插了个 nil」)
-	adminInsert        int
-	commitCount        int
-	rollbackCount      int
+	lockAcquired    bool
+	lockKey         string
+	adminActorID    string // 捕获 admin_audit_events 写入的 actor_id,守其格式统一走 AuditActor()
+	toolCallInsert  int
+	toolActorSource string
+	toolActorID     int64
+	toolActorRole   string
+	adminInsert     int
+	outcomeUpdate   int
+	commitCount     int
+	rollbackCount   int
 	// rollbackLiveCtx 计数那些以 NON-cancelled(未被取消)context 调用的回滚。orchestrator
 	// 必须在一个 INDEPENDENT(独立)ctx 上回滚,而非那个已死的截止 ctx——否则回滚本身就会被取消,
 	// 连接池连接 + advisory lock 就会泄漏。一次以已取消 ctx 看到的回滚,意味着那份独立性丢失了。
@@ -58,6 +59,10 @@ func (tx *fakeMutateTx) Exec(_ context.Context, sql string, args ...any) (pgconn
 		}
 		return pgconn.NewCommandTag("SELECT 1"), nil
 	}
+	if strings.Contains(sql, "UPDATE hermes_tool_calls") {
+		tx.rec.outcomeUpdate++
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	}
 	return pgconn.NewCommandTag("OK"), nil
 }
 
@@ -65,10 +70,10 @@ func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, args ...any) pgx
 	switch {
 	case strings.Contains(sql, "INSERT INTO hermes_tool_calls"):
 		tx.rec.toolCallInsert++
-		// admin_actor_token_id 是第 3 个占位符($3)→ args 下标 2,类型 *int64。
-		tx.rec.toolCallTokenIDSet = true
-		if len(args) > 2 {
-			tx.rec.toolCallTokenID, _ = args[2].(*int64)
+		if len(args) > 4 {
+			tx.rec.toolActorSource, _ = args[2].(string)
+			tx.rec.toolActorID, _ = args[3].(int64)
+			tx.rec.toolActorRole, _ = args[4].(string)
 		}
 		if tx.rec.toolCallErr != nil {
 			return errRow{err: tx.rec.toolCallErr}
@@ -76,9 +81,9 @@ func (tx *fakeMutateTx) QueryRow(_ context.Context, sql string, args ...any) pgx
 		return toolCallRow{}
 	case strings.Contains(sql, "INSERT INTO admin_audit_events"):
 		tx.rec.adminInsert++
-		// InsertAdminAuditEvent 列序 (tenant_id, actor_id, ...) → actor_id 为第 2 个参数。
-		if len(args) > 1 {
-			tx.rec.adminActorID, _ = args[1].(string)
+		// InsertAdminAuditEvent 列序为 operation_id、tenant_id、actor_id，actor_id 是第 3 个参数。
+		if len(args) > 2 {
+			tx.rec.adminActorID, _ = args[2].(string)
 		}
 		if tx.rec.adminErr != nil {
 			return errRow{err: tx.rec.adminErr}
@@ -149,12 +154,43 @@ func (r errRow) Scan(...any) error { return r.err }
 
 func baseRecord() MutationAuditRecord {
 	return MutationAuditRecord{
-		TenantID: 7, ActorUserID: 42, AdminActorTokenID: 99,
+		OperationID: uuid.MustParse("11111111-1111-4111-8111-111111111111"),
+		TenantID:    7, ActorSource: "token", ActorID: 99, ActorRole: RoleTenantOperator,
 		ToolName: ToolAccountPause, Status: ResultOK,
-		AdminAction: "hermes.tool.account_pause", AdminRole: RoleTenantOperator,
-		TargetType: "provider_account", TargetID: 5,
+		AdminAction: "hermes.tool.account_pause",
+		TargetType:  "provider_account", TargetID: 5,
 		AuditPayload: map[string]any{"account_id": int64(5)},
 	}
+}
+
+type fakeMutationRecovery struct {
+	prepareCount  int
+	outcomeCount  int
+	finalizeCount int
+	prepareErr    error
+	outcomeErr    error
+	finalizeErr   error
+	status        ResultStatus
+	errorClass    string
+	summary       map[string]any
+}
+
+func (f *fakeMutationRecovery) Prepare(context.Context, MutationAuditRecord) error {
+	f.prepareCount++
+	return f.prepareErr
+}
+
+func (f *fakeMutationRecovery) RecordOutcome(_ context.Context, _ uuid.UUID, status ResultStatus, summary map[string]any, errorClass string, _ time.Time) error {
+	f.outcomeCount++
+	f.status = status
+	f.summary = summary
+	f.errorClass = errorClass
+	return f.outcomeErr
+}
+
+func (f *fakeMutationRecovery) FinalizeAudit(context.Context, uuid.UUID) error {
+	f.finalizeCount++
+	return f.finalizeErr
 }
 
 func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
@@ -177,8 +213,8 @@ func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
 	if rec.lockKey != "hermes:account_toggle:7:5" {
 		t.Fatalf("lock key=%q want the per-target key", rec.lockKey)
 	}
-	if rec.toolCallInsert != 1 || rec.adminInsert != 1 {
-		t.Fatalf("audit inserts toolcall=%d admin=%d want 1/1", rec.toolCallInsert, rec.adminInsert)
+	if rec.toolCallInsert != 1 || rec.adminInsert != 1 || rec.outcomeUpdate != 1 {
+		t.Fatalf("日志写入 toolcall=%d admin=%d outcome=%d，期望 1/1/1", rec.toolCallInsert, rec.adminInsert, rec.outcomeUpdate)
 	}
 	// admin_audit_events.actor_id 必须与其它 handler 同格式(AuditActor()=admin_token:<id>),
 	// 否则同一 operator 在同表被分裂成两种归属串、按新格式检索漏掉 Hermes mutation 行。
@@ -194,60 +230,34 @@ func TestOrchestrator_CommitsMutationWithAuditAndLock(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_ActorAttributionByTokenID(t *testing.T) {
-	// 回归(actor 归属、有区分度、刚修的 S1 区):Hermes mutation 镜像进 admin_audit_events 时,
-	// actor_id MUST(必须)走 admin.AdminIdentity.AuditActor()(admin_token:<id>);同一次 mutation
-	// 在 hermes_tool_calls 里落 admin_actor_token_id FK 列:token>0 写具体 id、token==0(非 admin 模式)
-	// 写 NULL(nil *int64)。两条腿一起锁,证明 AuditActor 归属格式与 FK NULL/非NULL 分支都不回退。
-	//
-	// 关键补充:token==0 这条腿此前完全无覆盖。若把 mutate_tx.go 里
-	//   actorID := admin.AdminIdentity{TokenID: rec.AdminActorTokenID, ...}.AuditActor()
-	// 退回裸 fmt.Sprintf("%d", rec.AdminActorTokenID),token=99 那腿仍得 "99"≠"admin_token:99" 会红,
-	// 但真正的语义漂移(token=0 该不该带 admin_token: 前缀、FK 列该不该是 NULL)只有 token==0 的用例能锁死。
+func TestOrchestrator_ActorAttributionBySource(t *testing.T) {
 	cases := []struct {
-		name          string
-		tokenID       int64
-		wantActorID   string // admin_audit_events.actor_id 期望值(AuditActor 统一格式)
-		wantTokenNull bool   // hermes_tool_calls.admin_actor_token_id 是否应为 NULL
+		name        string
+		source      string
+		actorID     int64
+		wantAuditID string
 	}{
-		// token>0:admin token 模式。actor_id 带 admin_token:<id>,FK 列写具体 id。
-		{name: "admin_token_present", tokenID: 99, wantActorID: "admin_token:99", wantTokenNull: false},
-		// token==0:非 admin 模式(未接 admin token 通道)。走 AuditActor→admin_token:0(与其它 handler
-		// 同格式,不因 token 缺失被分裂成裸 "0" 归属);FK 列 admin_actor_token_id 写 NULL——绝不能把 0
-		// 当成一个真实存在的 admin_tokens.id(那会撞 FK 或错误归因到 id=0 的 token)。
-		{name: "non_admin_actor_zero", tokenID: 0, wantActorID: "admin_token:0", wantTokenNull: true},
+		{name: "令牌管理员", source: "token", actorID: 99, wantAuditID: "admin_token:99"},
+		{name: "会话管理员", source: "session", actorID: 88, wantAuditID: "admin_user:88"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &txRecorder{}
 			o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
 			audit := baseRecord()
-			audit.AdminActorTokenID = tc.tokenID
+			audit.ActorSource = tc.source
+			audit.ActorID = tc.actorID
 			_, err := o.Execute(context.Background(), "lock:actor", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
 				return ToolResult{Summary: map[string]any{"enabled": false}}, nil
 			})
 			if err != nil {
 				t.Fatalf("execute err=%v want nil", err)
 			}
-			// (a) admin_audit_events 镜像 actor_id 走 AuditActor 统一格式。
-			if rec.adminActorID != tc.wantActorID {
-				t.Fatalf("admin_audit actor_id=%q want %q(须走 AuditActor 统一格式,token=%d)", rec.adminActorID, tc.wantActorID, tc.tokenID)
+			if rec.adminActorID != tc.wantAuditID {
+				t.Fatalf("管理日志 actor_id=%q，期望 %q", rec.adminActorID, tc.wantAuditID)
 			}
-			// (b) hermes_tool_calls.admin_actor_token_id FK 列:token>0 非 nil 且等于 id;token==0 为 nil(NULL)。
-			if !rec.toolCallTokenIDSet {
-				t.Fatalf("tool_calls insert 从未发生(无法断言 admin_actor_token_id 分支)")
-			}
-			if tc.wantTokenNull {
-				if rec.toolCallTokenID != nil {
-					t.Fatalf("admin_actor_token_id=%v want NULL(nil)对 token=0——绝不能把 0 当真实 FK", *rec.toolCallTokenID)
-				}
-			} else {
-				if rec.toolCallTokenID == nil {
-					t.Fatalf("admin_actor_token_id=NULL want %d——token>0 必须落具体 FK id", tc.tokenID)
-				}
-				if *rec.toolCallTokenID != tc.tokenID {
-					t.Fatalf("admin_actor_token_id=%d want %d", *rec.toolCallTokenID, tc.tokenID)
-				}
+			if rec.toolActorSource != tc.source || rec.toolActorID != tc.actorID || rec.toolActorRole != RoleTenantOperator {
+				t.Fatalf("工具日志管理员归属错误: %s:%d/%s", rec.toolActorSource, rec.toolActorID, rec.toolActorRole)
 			}
 		})
 	}
@@ -313,53 +323,80 @@ func TestOrchestrator_MutationFailureRollsBack(t *testing.T) {
 	}
 }
 
-func TestOrchestrator_CommitFailureAfterOwnTxMutationIsCommitUncertain(t *testing.T) {
-	// 回归(H4 S2、有区分度):mutation 成功(mErr=nil),但 FINAL(最终)的 orchestrator 提交失败。
-	// 对一个 OWN-TX 工具(dlq_replay/renew_trigger),mutation 已在它自己的 tx 中提交,所以返回的
-	// error MUST(必须)包裹 ErrCommitAfterOwnTxMutation(-> commit_uncertain)。对一个 IN-TX 工具
-	// (account_pause/resume),同样的故障会把 mutation 原子地回滚,所以它必须 NOT(不)携带该哨兵
-	// (-> mutation_failed)。
-	//
-	// 变异检查(自证):本测试对 OwnTx=true 与 OwnTx=false 运行 EXACT(完全)相同的强制提交故障,
-	// 并断言哨兵的存在性 DIFFERS(不同)。如果 Execute 忽略 rec.OwnTx 而无条件地包裹(或不包裹)该哨兵,
-	// own 与 in-tx 两条腿就会一致,`ownWrapped == inWrapped` 的断言就会变红。
-	run := func(ownTx bool) error {
-		rec := &txRecorder{commitErr: errors.New("connection reset by peer")}
-		o := NewMutateOrchestrator(&fakeBeginner{rec: rec})
-		audit := baseRecord()
-		audit.OwnTx = ownTx
-		mutated := 0
-		_, err := o.Execute(context.Background(), "lock:commit", audit, func(context.Context, pgx.Tx) (ToolResult, error) {
-			mutated++
-			return ToolResult{Summary: map[string]any{"ok": true}}, nil
-		})
-		if err == nil {
-			t.Fatalf("ownTx=%v: execute err=nil want commit failure", ownTx)
+func TestOrchestrator_RecoverableMutationUsesJournalWithoutOuterTransaction(t *testing.T) {
+	recorder := &txRecorder{}
+	beginner := &fakeBeginner{rec: recorder}
+	recovery := &fakeMutationRecovery{}
+	orchestrator := NewMutateOrchestrator(beginner, WithMutationRecoveryJournal(recovery))
+	record := baseRecord()
+	record.ToolName = ToolDLQReplay
+	mutated := 0
+	result, err := orchestrator.Execute(context.Background(), "unused", record, func(_ context.Context, tx pgx.Tx) (ToolResult, error) {
+		mutated++
+		if tx != nil {
+			t.Fatal("独立事务工具不应收到外层事务")
 		}
-		if mutated != 1 {
-			t.Fatalf("ownTx=%v: mutate ran %d times want 1 (mutation runs before the failing commit)", ownTx, mutated)
-		}
-		if rec.commitCount != 1 || rec.rollbackCount != 1 {
-			// commit 被尝试一次(失败),随后 defer 回滚。
-			t.Fatalf("ownTx=%v: commit=%d rollback=%d want 1/1", ownTx, rec.commitCount, rec.rollbackCount)
-		}
-		return err
+		return ToolResult{Summary: map[string]any{"status": "delivered"}}, nil
+	})
+	if err != nil {
+		t.Fatalf("执行独立事务工具：%v", err)
 	}
-
-	ownErr := run(true)
-	inErr := run(false)
-
-	ownWrapped := errors.Is(ownErr, ErrCommitAfterOwnTxMutation)
-	inWrapped := errors.Is(inErr, ErrCommitAfterOwnTxMutation)
-
-	if !ownWrapped {
-		t.Fatalf("own-tx commit fault did NOT wrap ErrCommitAfterOwnTxMutation: %v", ownErr)
+	if mutated != 1 || beginner.beginCount != 0 {
+		t.Fatalf("变更次数=%d 外层事务=%d，期望 1/0", mutated, beginner.beginCount)
 	}
-	if inWrapped {
-		t.Fatalf("in-tx commit fault WRONGLY wrapped ErrCommitAfterOwnTxMutation (in-tx mutation rolled back, must stay mutation_failed): %v", inErr)
+	if recovery.prepareCount != 1 || recovery.outcomeCount != 1 || recovery.finalizeCount != 1 {
+		t.Fatalf("恢复阶段次数=%d/%d/%d，期望 1/1/1", recovery.prepareCount, recovery.outcomeCount, recovery.finalizeCount)
 	}
-	if ownWrapped == inWrapped {
-		t.Fatalf("tx-mode did not change the classification (own=%v in=%v) — rec.OwnTx is not threaded into the commit-failure path", ownWrapped, inWrapped)
+	if recovery.status != ResultOK || result.Summary["status"] != "delivered" {
+		t.Fatalf("结果未持久化：status=%s result=%+v", recovery.status, result)
+	}
+}
+
+func TestOrchestrator_RecoverablePrepareFailureStopsMutation(t *testing.T) {
+	recovery := &fakeMutationRecovery{prepareErr: errors.New("数据库不可用")}
+	orchestrator := NewMutateOrchestrator(&fakeBeginner{rec: &txRecorder{}}, WithMutationRecoveryJournal(recovery))
+	record := baseRecord()
+	record.ToolName = ToolDLQReplay
+	ran := false
+	_, err := orchestrator.Execute(context.Background(), "unused", record, func(context.Context, pgx.Tx) (ToolResult, error) {
+		ran = true
+		return ToolResult{}, nil
+	})
+	if err == nil || ran {
+		t.Fatalf("预登记失败后 err=%v ran=%v，期望失败且不执行", err, ran)
+	}
+}
+
+func TestOrchestrator_RecoverableAuditFailureEntersDurableRecovery(t *testing.T) {
+	recovery := &fakeMutationRecovery{finalizeErr: errors.New("提交日志失败")}
+	orchestrator := NewMutateOrchestrator(&fakeBeginner{rec: &txRecorder{}}, WithMutationRecoveryJournal(recovery))
+	record := baseRecord()
+	record.ToolName = ToolDLQReplay
+	_, err := orchestrator.Execute(context.Background(), "unused", record, func(context.Context, pgx.Tx) (ToolResult, error) {
+		return ToolResult{Summary: map[string]any{"status": "delivered"}}, nil
+	})
+	if !errors.Is(err, ErrMutationRecoveryPending) {
+		t.Fatalf("日志提交失败=%v，期望 ErrMutationRecoveryPending", err)
+	}
+	if recovery.outcomeCount != 1 || recovery.finalizeCount != 1 {
+		t.Fatalf("结果/日志阶段=%d/%d，期望 1/1", recovery.outcomeCount, recovery.finalizeCount)
+	}
+}
+
+func TestOrchestrator_RecoverableMutationFailureIsAuditedOnce(t *testing.T) {
+	recovery := &fakeMutationRecovery{}
+	orchestrator := NewMutateOrchestrator(&fakeBeginner{rec: &txRecorder{}}, WithMutationRecoveryJournal(recovery))
+	record := baseRecord()
+	record.ToolName = ToolDLQReplay
+	mutationErr := errors.New("重放失败")
+	_, err := orchestrator.Execute(context.Background(), "unused", record, func(context.Context, pgx.Tx) (ToolResult, error) {
+		return ToolResult{}, mutationErr
+	})
+	if !errors.Is(err, ErrMutationOutcomeAudited) || !errors.Is(err, mutationErr) {
+		t.Fatalf("失败=%v，期望保留原错误并标记已记日志", err)
+	}
+	if recovery.status != ResultError || recovery.errorClass != "mutation_failed" || recovery.finalizeCount != 1 {
+		t.Fatalf("失败结果未完整持久化：status=%s class=%s finalize=%d", recovery.status, recovery.errorClass, recovery.finalizeCount)
 	}
 }
 

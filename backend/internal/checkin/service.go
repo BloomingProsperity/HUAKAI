@@ -51,14 +51,6 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
-func WithRewardGenerator(gen func(int64, int64) (int64, error)) Option {
-	return func(s *Service) {
-		if gen != nil {
-			s.reward = gen
-		}
-	}
-}
-
 func NewService(d Deps, opts ...Option) *Service {
 	s := &Service{
 		store:    d.Store,

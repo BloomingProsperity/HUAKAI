@@ -17,11 +17,14 @@ const (
 	maxPageLimit     int32 = 200
 )
 
-func (s *Service) ListConversationsByOwner(ctx context.Context, tenantID, ownerUserID int64, limit, offset int32) ([]Conversation, error) {
+func (s *Service) ListConversationsByOwner(ctx context.Context, tenantID, ownerUserID int64, actorSource string, actorID int64, limit, offset int32) ([]Conversation, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrMisconfigured
 	}
 	if err := validateTenantUser(tenantID, ownerUserID); err != nil {
+		return nil, err
+	}
+	if err := validateConversationActor(actorSource, actorID); err != nil {
 		return nil, err
 	}
 	limit, offset, err := normalizePagination(limit, offset)
@@ -29,7 +32,8 @@ func (s *Service) ListConversationsByOwner(ctx context.Context, tenantID, ownerU
 		return nil, err
 	}
 	rows, err := s.store.ListConversationsByOwner(ctx, dbhermes.ListConversationsByOwnerParams{
-		TenantID: tenantID, OwnerUserID: ownerUserID, PageLimit: limit, PageOffset: offset,
+		TenantID: tenantID, OwnerUserID: ownerUserID, ActorSource: actorSource, ActorID: actorID,
+		PageLimit: limit, PageOffset: offset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list hermes conversations: %w", err)
@@ -37,18 +41,18 @@ func (s *Service) ListConversationsByOwner(ctx context.Context, tenantID, ownerU
 	return conversationsFromRows(rows), nil
 }
 
-func (s *Service) GetConversation(ctx context.Context, tenantID, conversationID, ownerUserID int64) (Conversation, error) {
+func (s *Service) GetConversation(ctx context.Context, tenantID, conversationID, ownerUserID int64, actorSource string, actorID int64) (Conversation, error) {
 	if s == nil || s.store == nil {
 		return Conversation{}, ErrMisconfigured
 	}
 	if err := validateTenantUser(tenantID, ownerUserID); err != nil {
 		return Conversation{}, err
 	}
-	row, err := getConversationWithStore(ctx, s.store, tenantID, conversationID)
+	row, err := getConversationWithStore(ctx, s.store, tenantID, conversationID, ownerUserID, actorSource, actorID)
 	if err != nil {
 		return Conversation{}, err
 	}
-	if row.OwnerUserID != ownerUserID {
+	if row.OwnerUserID != ownerUserID || row.ActorSource != actorSource || row.ActorID != actorID {
 		return Conversation{}, ErrNotFound
 	}
 	if row.DeletedAt.Valid {
@@ -57,7 +61,7 @@ func (s *Service) GetConversation(ctx context.Context, tenantID, conversationID,
 	return conversationFromRow(row), nil
 }
 
-func (s *Service) SoftDeleteConversationWithAudit(ctx context.Context, tenantID, ownerUserID, conversationID int64, audit AuditFields) error {
+func (s *Service) SoftDeleteConversationWithAudit(ctx context.Context, tenantID, ownerUserID, conversationID int64, actorSource string, actorID int64, audit AuditFields) error {
 	if s == nil || s.store == nil {
 		return ErrMisconfigured
 	}
@@ -67,17 +71,21 @@ func (s *Service) SoftDeleteConversationWithAudit(ctx context.Context, tenantID,
 	if conversationID <= 0 {
 		return fmt.Errorf("%w: conversation_id must be positive", ErrInvalidInput)
 	}
+	if err := validateConversationActor(actorSource, actorID); err != nil {
+		return err
+	}
 	return s.withTx(ctx, func(store Store) error {
-		row, err := getConversationWithStore(ctx, store, tenantID, conversationID)
+		row, err := getConversationWithStore(ctx, store, tenantID, conversationID, ownerUserID, actorSource, actorID)
 		if err != nil {
 			return err
 		}
-		if row.OwnerUserID != ownerUserID {
+		if row.OwnerUserID != ownerUserID || row.ActorSource != actorSource || row.ActorID != actorID {
 			return ErrNotFound
 		}
 		if !row.DeletedAt.Valid {
 			rows, err := store.SoftDeleteConversation(ctx, dbhermes.SoftDeleteConversationParams{
-				ID: conversationID, TenantID: tenantID,
+				ID: conversationID, TenantID: tenantID, OwnerUserID: ownerUserID,
+				ActorSource: actorSource, ActorID: actorID,
 			})
 			if err != nil {
 				return fmt.Errorf("soft delete hermes conversation: %w", err)
@@ -87,14 +95,13 @@ func (s *Service) SoftDeleteConversationWithAudit(ctx context.Context, tenantID,
 			}
 		}
 		audit.TenantID = tenantID
-		audit.ActorUserID = ownerUserID
 		audit.Action = ActionConversationDelete
 		audit.Result = AuditResultSuccess
 		return recordAuditWithStore(ctx, store, audit)
 	})
 }
 
-func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conversationID, ownerUserID int64, limit, offset int32) ([]Message, error) {
+func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conversationID, ownerUserID int64, actorSource string, actorID int64, limit, offset int32) ([]Message, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrMisconfigured
 	}
@@ -104,15 +111,18 @@ func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conv
 	if conversationID <= 0 {
 		return nil, fmt.Errorf("%w: conversation_id must be positive", ErrInvalidInput)
 	}
+	if err := validateConversationActor(actorSource, actorID); err != nil {
+		return nil, err
+	}
 	limit, offset, err := normalizePagination(limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	row, err := getConversationWithStore(ctx, s.store, tenantID, conversationID)
+	row, err := getConversationWithStore(ctx, s.store, tenantID, conversationID, ownerUserID, actorSource, actorID)
 	if err != nil {
 		return nil, err
 	}
-	if row.OwnerUserID != ownerUserID {
+	if row.OwnerUserID != ownerUserID || row.ActorSource != actorSource || row.ActorID != actorID {
 		return nil, ErrNotFound
 	}
 	if row.DeletedAt.Valid {
@@ -120,6 +130,7 @@ func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conv
 	}
 	rows, err := s.store.ListMessagesByConversation(ctx, dbhermes.ListMessagesByConversationParams{
 		TenantID: tenantID, ConversationID: conversationID, OwnerUserID: ownerUserID,
+		ActorSource: actorSource, ActorID: actorID,
 		PageLimit: limit, PageOffset: offset,
 	})
 	if err != nil {
@@ -132,14 +143,20 @@ func (s *Service) ListMessagesByConversation(ctx context.Context, tenantID, conv
 	return messages, nil
 }
 
-func getConversationWithStore(ctx context.Context, store Store, tenantID, conversationID int64) (dbhermes.HermesConversation, error) {
+func getConversationWithStore(ctx context.Context, store Store, tenantID, conversationID, ownerUserID int64, actorSource string, actorID int64) (dbhermes.HermesConversation, error) {
 	if store == nil {
 		return dbhermes.HermesConversation{}, ErrMisconfigured
 	}
-	if tenantID <= 0 || conversationID <= 0 {
+	if tenantID <= 0 || conversationID <= 0 || ownerUserID <= 0 {
 		return dbhermes.HermesConversation{}, fmt.Errorf("%w: tenant_id and conversation_id must be positive", ErrInvalidInput)
 	}
-	row, err := store.GetConversation(ctx, dbhermes.GetConversationParams{ID: conversationID, TenantID: tenantID})
+	if err := validateConversationActor(actorSource, actorID); err != nil {
+		return dbhermes.HermesConversation{}, err
+	}
+	row, err := store.GetConversation(ctx, dbhermes.GetConversationParams{
+		ID: conversationID, TenantID: tenantID, OwnerUserID: ownerUserID,
+		ActorSource: actorSource, ActorID: actorID,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return dbhermes.HermesConversation{}, ErrNotFound
 	}
@@ -147,6 +164,13 @@ func getConversationWithStore(ctx context.Context, store Store, tenantID, conver
 		return dbhermes.HermesConversation{}, fmt.Errorf("get hermes conversation: %w", err)
 	}
 	return row, nil
+}
+
+func validateConversationActor(actorSource string, actorID int64) error {
+	if actorID <= 0 || (actorSource != "token" && actorSource != "session") {
+		return fmt.Errorf("%w: administrator identity is required", ErrInvalidInput)
+	}
+	return nil
 }
 
 func normalizePagination(limit, offset int32) (int32, int32, error) {
@@ -172,7 +196,8 @@ func conversationsFromRows(rows []dbhermes.HermesConversation) []Conversation {
 
 func conversationFromRow(row dbhermes.HermesConversation) Conversation {
 	return Conversation{
-		ID: row.ID, TenantID: row.TenantID, OwnerUserID: row.OwnerUserID, Title: row.Title,
+		ID: row.ID, TenantID: row.TenantID, OwnerUserID: row.OwnerUserID,
+		ActorSource: row.ActorSource, ActorID: row.ActorID, ActorRole: row.ActorRole, Title: row.Title,
 		CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time,
 		LastMessageAt: pgTimePtr(row.LastMessageAt), DeletedAt: pgTimePtr(row.DeletedAt),
 	}

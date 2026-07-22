@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/cachecontrol"
 )
 
 // composerInputBody 是端到端测试的标准 body，包含 system / messages / tools /
@@ -325,7 +327,7 @@ func TestApplyMimicryPlan_AllStepsEnabled(t *testing.T) {
 		StripSystemCacheControl: true,
 		// 注：CacheBreakpoints 真实场景由 SuggestBreakpoints 输出；这里给一个简化空 plan
 		// 来验证 step 3 路径（applied 取决于建议是否非空）
-		CacheBreakpoints: &BreakpointSuggestion{},
+		CacheBreakpoints: &cachecontrol.BreakpointSuggestion{},
 		ToolNames: &ToolNameRewritePlan{
 			Mapping: ToolNameMapping{"mcp_search": "analyze_sea00"},
 		},

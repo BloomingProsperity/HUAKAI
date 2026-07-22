@@ -1,33 +1,18 @@
-// Package hermesops 是受 admin 门控的 Hermes 运维助手的、由网关中介的工具执行主干
-// (WAVE H3 只读 + WAVE H4 mutating)。
-//
-// 它暴露一个工具 registry,这些工具包裹 EXISTING(既有)的网关函数,好让运营者
-// (以及之后的助手 LLM)能通过单一的受审计端点运行根因诊断 AND(并)施加修复:
-//   - READ-ONLY 诊断工具(H3):MUST NOT(绝不能)改动状态;经 Run dispatch。
-//   - MUTATING 运维工具(H4):replay / pause / resume / renew。每个都把一项既有的 mutation
-//     包在五层安全契约后面(RBAC 下限、dry-run + confirm、atomic audit、advisory lock、
-//     幂等),并且只经 confirm 门控的 mutate 路径 dispatch——NEVER(绝不)经 Run。
-//
-// 设计:
-//   - ToolSpec 声明一个工具的身份、类别、最低要求角色,以及一个 Run(只读)或一对
-//     Resolve + Mutate(mutating)。
-//   - Registry 持有这些 spec 并执行 RBAC + dispatch。它 fail-closed:未知工具被拒,依赖
-//     未接线的工具返回 error(永不 panic),角色不足的调用方被拒,且 mutating 工具永远无法
-//     走只读 Run 路径运行(反之亦然)。
-//   - MutateOrchestrator(mutate_tx.go)拥有那个单一事务,它在每目标 advisory lock(L4)下
-//     把 mutation 与其 hermes_tool_calls + admin_audit_events 行(L3)绑在一起。
-//   - 隐私:一份工具结果 ONLY(只)携带枚举 / 计数 / id / 指纹 / 状态名——绝不携带 prompt、
-//     completion、原始 body、密钥、PII 或轮换后的凭证材料。持久化层还会作为纵深防御,把 args
-//     与 summary 再过一遍 hermes sanitizer。
+// Package hermesops 提供由网关控制的 Hermes 运维工具注册、授权、派发和日志合同。
+// 只读工具只能运行查询；改动型工具只能经过目标解析、预览、人工确认、目标锁和原子日志
+// 路径执行。工具结果只允许封闭的系统状态，不携带请求正文、凭据或个人信息。
 package hermesops
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/hermesops/toolschema"
 )
 
-// 工具名。这些是权威标识符;它们 MUST(必须)与 hermes_tool_calls.tool_name 的 CHECK 列表
-// 以及 hermes.tool.<name> 审计动作匹配。H4 mutating 工具通过 DROP+ADD 迁移加入新名字。
+// 工具名是日志、数据库约束和管理接口共同使用的权威标识符。
 const (
 	ToolCredentialDiagnose    = "credential_diagnose"
 	ToolAccountHealthDiagnose = "account_health_diagnose"
@@ -88,30 +73,17 @@ const (
 	// hermes_tool_calls。Row 全是结构化目录数据(无 PII/密钥)。
 	ToolChannelCatalogList = "channel_catalog_list"
 
-	// WAVE H4 MUTATING(可变更)工具名。每个都把一项 EXISTING(既有)的 admin mutation 包在
-	// 五层安全契约后面(RBAC、dry-run+confirm、atomic audit、advisory lock、幂等)。它们以
-	// Mutating=true 注册,所以只读 dispatch 路径永远无法运行它们。
+	// 改动型工具复用既有管理写路径，只能从人工确认路径执行。
 	ToolDLQReplay     = "dlq_replay"
 	ToolAccountPause  = "account_pause"
 	ToolAccountResume = "account_resume"
 	ToolRenewTrigger  = "renew_trigger"
 
-	// ToolAlertRuleEnable / ToolAlertRuleDisable(0160 迁移准入)是 Phase B"扩可提议覆盖面"
-	// 的首批新增 mutating 工具:启用/禁用本租户的一条告警规则(alert rule)。它们是**可逆的 B 级
-	// 运营操作**(翻 enabled 列,随时可翻回),因此 Proposable=true —— LLM 可在对话里提议,但
-	// RequiresConfirmation=true 意味着仍需 operator 一键确认才真正执行,LLM 绝不能直接执行。
-	// 与 0146 的四个 mutating 工具一样,经 confirm 门控的 mutate 路径 + orchestrator 原子运行
-	// (规则翻转与 hermes_tool_calls + admin_audit_events 行在同一事务内提交)。
+	// 告警规则启停是可逆操作，模型可以提议，但管理员确认后才会执行。
 	ToolAlertRuleEnable  = "alert_rule_enable"
 	ToolAlertRuleDisable = "alert_rule_disable"
 
-	// ToolModerationKeywordEnable / ToolModerationKeywordDisable(0161 迁移准入)继续 Phase B
-	// "扩可提议覆盖面":启用/禁用本租户的一条内容审核关键词规则(moderation keyword)。它们是
-	// **安全敏感但可逆的 B 级运营操作** —— disable 等于临时关掉一个内容过滤器,enable 再开回来,
-	// 翻 enabled 列、随时可翻回,因此 Proposable=true(LLM 可在对话里提议);但 RequiresConfirmation=true
-	// 意味着仍需 operator 一键确认才真正执行,LLM 绝不能直接执行。与 alert_rule_enable/disable 同构:
-	// 经 confirm 门控的 mutate 路径 + orchestrator 原子运行(关键词翻转与 hermes_tool_calls +
-	// admin_audit_events 行在同一事务内提交),且只对未软删(deleted_at IS NULL)的关键词 toggle。
+	// 内容审核关键词启停安全敏感但可逆；模型只能提议，管理员确认后才会修改未删除规则。
 	ToolModerationKeywordEnable  = "moderation_keyword_enable"
 	ToolModerationKeywordDisable = "moderation_keyword_disable"
 )
@@ -123,7 +95,7 @@ const (
 	RoleTenantOperator = "tenant_operator"
 )
 
-// Category 给工具分组用于列表/UX。H3 工具是诊断读;H4 增加了 mutating 运维工具("修复"能力)。
+// Category 用于区分诊断工具和改动型运维工具。
 type Category string
 
 const (
@@ -147,21 +119,24 @@ var (
 	// ErrToolForbidden 在调用方角色低于工具最低要求角色时返回。租户作用域的拒绝由调用方经
 	// CanIssueForTenant 单独强制执行,也会同样呈现为一条 denied 行。
 	ErrToolForbidden = errors.New("hermesops: tool forbidden for role")
-	// ErrDependencyUnwired 由其底层读依赖为 nil 的工具返回。工具 MUST(必须)以此 fail-closed
-	// 而非 panic。
+	// ErrDependencyUnwired 表示工具依赖未接线，调用必须失败关闭而不能 panic。
 	ErrDependencyUnwired = errors.New("hermesops: tool dependency unwired")
 	// ErrInvalidArgs 在工具参数格式错误 / 缺少必填项时返回。
 	ErrInvalidArgs = errors.New("hermesops: invalid tool args")
 	// ErrNotMutating 在 mutate/preview 路径被要求运行一个只读工具(或反之)时返回,这样 mutation
 	// 永远无法从只读 dispatch 偷溜进来,只读工具也永远无法到达 confirm 路径。
 	ErrNotMutating = errors.New("hermesops: tool is not mutating")
-	// ErrNotProposable 在 LLM-propose 路径被要求 resolve 一个未标记 Proposable 的 mutating 工具
-	// (不可逆 / A 级,例如凭证轮换)时返回。这类工具仍可由 OPERATOR(运营者)经 H1 confirm 路径
-	// 驱动;但 LLM 永不提议它。区别于 ErrNotMutating(只读工具)与 ErrToolForbidden(角色不足)。
+	// ErrNotProposable 表示模型尝试提议一个仅允许管理员主动发起的改动型工具。
 	ErrNotProposable = errors.New("hermesops: tool is not LLM-proposable")
 	// ErrTargetResolution 在 mutating 工具无法 resolve 其目标(租户缺失/异租户、账号未找到)时返回。
 	// 它区别于 ErrInvalidArgs,好让 HTTP 层把它映射到 404/403 而非 400。
 	ErrTargetResolution = errors.New("hermesops: target resolution failed")
+	// ErrInvalidToolSpec 表示注册表中的工具定义不完整。
+	ErrInvalidToolSpec = errors.New("hermesops: invalid tool spec")
+	// ErrInvalidToolSchema 表示工具参数合同不是受支持的 JSON Schema。
+	ErrInvalidToolSchema = errors.New("hermesops: invalid tool schema")
+	// ErrDuplicateTool 表示同名工具被重复注册。
+	ErrDuplicateTool = errors.New("hermesops: duplicate tool")
 )
 
 // ToolRequest 是交给工具 Run 的、已 resolve 且已授权的调用上下文。TenantID 是由中间件推导、
@@ -170,8 +145,9 @@ type ToolRequest struct {
 	// TenantID 是工具必须把其读操作限定到的、已 resolve 的租户。永远 > 0(HTTP 层会在 dispatch
 	// 之前拒绝非正的租户)。
 	TenantID int64
-	// ActorUserID 是运营者所在的、其运维上下文所属的租户用户。
-	ActorUserID int64
+	// ActorSource 与 ActorID 唯一标识真实管理员，不能使用内部服务主体代替。
+	ActorSource string
+	ActorID     int64
 	// Role 是运营者的 admin 角色(platform_admin / tenant_operator)。
 	Role string
 	// Args 是来自请求 body 的、原始的、已解码的工具参数 map。工具只读它认识的键,其余忽略。
@@ -179,7 +155,7 @@ type ToolRequest struct {
 	Args map[string]any
 }
 
-// ToolResult 是一个工具的结构化、已脱敏输出。Summary ONLY(只)持有系统诊断的枚举 / 计数 / id;
+// ToolResult 是工具的结构化、已脱敏输出。Summary 只持有系统诊断的枚举、计数和编号；
 // 它是返回给调用方的 body,并(在第二遍脱敏后)持久化到 hermes_tool_calls.result_summary。
 type ToolResult struct {
 	// Summary 是诊断载荷(只含枚举/计数/id)。
@@ -235,39 +211,176 @@ func ArgString(args map[string]any, key string) (string, bool) {
 	return s, true
 }
 
-// ToolSpec 声明一个工具(只读诊断 OR mutating 运维工具)。
+// ToolSpec 声明一个只读诊断或改动型运维工具。
 type ToolSpec struct {
 	Name         string
 	Category     Category
 	Description  string
 	ReadOnly     bool
 	RequiredRole string
-	// Mutating 对 H4 的"修复"工具为 true。mutating 工具 MUST(必须)设置 Resolve + Mutate
-	// (而非 Run),并且只经 confirm 门控的 mutate 路径 dispatch;只读 Run dispatch 会拒绝它。
-	// 本波次每个 mutating 工具的 RequiresConfirmation 都为 true(dry-run + confirm 是强制的)。
+	// 改动型工具必须设置 Resolve 和 Mutate，并强制人工确认；只读派发会拒绝它。
 	Mutating             bool
 	RequiresConfirmation bool
-	// Proposable 标记一个 LLM 可在对话中 PROPOSE(提议)的 MUTATING 工具(随后它会走 dry-run
-	// preview → 运营者 confirm)。它门控 ResolveProposal 与 ProposableCatalog。ONLY(只)对
-	// 可逆的 B 级 mutation 置 true(例如启用/禁用一个账号)。对不可逆 / A 级 mutation(例如凭证
-	// 轮换)为 false(默认)——这类工具经 H1 confirm 路径保持运营者专属,且 NEVER(绝不)展示给
-	// LLM、也不可由 LLM 提议。只读工具忽略此标志。
+	// Proposable 只对可逆操作开启。模型生成的提议仍需管理员确认；凭证轮换等操作保持
+	// 管理员主动发起，不向模型目录暴露。
 	Proposable bool
-	// InputSchema 是一个描述所接受参数的小 map(name -> 给人看的提示),由 GET /v1/hermes/tools
-	// 呈现。它仅供文档说明,不做校验。
-	InputSchema map[string]string
-	// Run 为一个 READ-ONLY 工具包裹其底层读函数。它 MUST NOT(绝不能)改动状态,并且在依赖缺失时
-	// MUST(必须)返回 error(永不 panic)。对 mutating 工具为 nil。
+	// InputSchema 是同时供管理 API 与 MCP 使用的 JSON Schema。注册时会校验其结构，
+	// 调用时也会按同一份合同校验参数，避免目录说明与真实执行规则漂移。
+	InputSchema map[string]any
+	// Run 包装只读查询；依赖缺失时返回错误。改动型工具必须为 nil。
 	Run func(ctx context.Context, req ToolRequest) (ToolResult, error)
-	// Resolve 为一个 MUTATING 工具执行 READ-ONLY 的目标 resolve + dry-run preview。它校验目标
-	// 属于 req.TenantID、读取其当前状态,并返回一个描述目标 + 意图改动的 MutationPlan。它在 BOTH
-	// (两处)被调用——dry-run preview 时 AND 紧接真正 mutation 之前——所以 preview 永远不会与
-	// 实际动作分叉。它 MUST NOT(绝不能)改动状态。对只读工具为 nil。
+	// Resolve 只读解析目标、校验租户归属并生成预览。预览和确认执行共用该结果，避免
+	// 展示内容与实际动作分叉。只读工具必须为 nil。
 	Resolve func(ctx context.Context, req ToolRequest) (MutationPlan, error)
-	// Mutate 在给定 Resolve 产出的 plan 后,为一个 MUTATING 工具执行真正的状态改动。它恰好被调用
-	// 一次,且只在已确认的请求上、在持有每目标 advisory lock 期间调用。它返回最终的 mutation 后
-	// summary(只含枚举/计数/id/状态名——NEVER(绝不)含密钥或轮换后的凭证材料)。对只读工具为 nil。
+	// Mutate 只在确认成功且持有目标锁时执行一次，结果不得包含密钥或凭证材料。
 	Mutate func(ctx context.Context, req ToolRequest, plan MutationPlan) (ToolResult, error)
+}
+
+// ObjectSchema 构造 HUAKAI 工具统一使用的对象参数合同。默认拒绝未声明字段，避免模型把
+// 租户、角色或其它越权参数夹带进工具调用。
+func ObjectSchema(properties map[string]any, required ...string) map[string]any {
+	if properties == nil {
+		properties = map[string]any{}
+	}
+	requiredCopy := append([]string(nil), required...)
+	return map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"required":             requiredCopy,
+		"additionalProperties": false,
+	}
+}
+
+// StringSchema 构造字符串参数合同。
+func StringSchema(description string, enum ...string) map[string]any {
+	schema := map[string]any{"type": "string", "description": description}
+	if len(enum) > 0 {
+		schema["enum"] = append([]string(nil), enum...)
+	}
+	return schema
+}
+
+// NonEmptyStringSchema 构造必需非空的字符串参数合同。
+func NonEmptyStringSchema(description string) map[string]any {
+	schema := StringSchema(description)
+	schema["minLength"] = 1
+	return schema
+}
+
+// PositiveIntegerSchema 构造正整数参数合同。
+func PositiveIntegerSchema(description string) map[string]any {
+	return map[string]any{"type": "integer", "minimum": 1, "description": description}
+}
+
+// BoundedIntegerSchema 构造带上下界的整数参数合同。
+func BoundedIntegerSchema(description string, minimum, maximum int64) map[string]any {
+	return map[string]any{
+		"type": "integer", "minimum": minimum, "maximum": maximum, "description": description,
+	}
+}
+
+const (
+	defaultToolPageLimit = 50
+	maxToolPageLimit     = 200
+	maxToolPageOffset    = 1_000_000
+	maxToolCursorID      = int64(9_007_199_254_740_991)
+)
+
+// paginationProperties 在已有工具参数上加入统一的有界分页合同。
+func paginationProperties(properties map[string]any) map[string]any {
+	out := make(map[string]any, len(properties)+2)
+	for key, value := range properties {
+		out[key] = value
+	}
+	out["limit"] = BoundedIntegerSchema("本页最多返回的记录数", 1, maxToolPageLimit)
+	out["offset"] = BoundedIntegerSchema("从结果集起点跳过的记录数", 0, maxToolPageOffset)
+	return out
+}
+
+func pageArgs(args map[string]any) (limit, offset int, err error) {
+	limit = defaultToolPageLimit
+	if raw, ok := args["limit"]; ok {
+		value, valid := integerValue(raw)
+		if !valid || value < 1 || value > maxToolPageLimit {
+			return 0, 0, ErrInvalidArgs
+		}
+		limit = int(value)
+	}
+	if raw, ok := args["offset"]; ok {
+		value, valid := integerValue(raw)
+		if !valid || value < 0 || value > maxToolPageOffset {
+			return 0, 0, ErrInvalidArgs
+		}
+		offset = int(value)
+	}
+	return limit, offset, nil
+}
+
+func trimPage[T any](rows []T, limit, offset int) ([]T, map[string]any) {
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	var nextOffset any
+	if hasMore {
+		nextOffset = offset + len(rows)
+	}
+	return rows, map[string]any{
+		"limit": limit, "offset": offset, "returned": len(rows),
+		"has_more": hasMore, "next_offset": nextOffset,
+	}
+}
+
+// ObjectValueSchema 构造普通 JSON 对象参数合同。
+func ObjectValueSchema(description string) map[string]any {
+	return map[string]any{"type": "object", "description": description}
+}
+
+// ValidateToolSpec 在注册阶段验证工具分类、执行入口与 JSON Schema。任何不完整定义都必须
+// 在进程启动时暴露，不能等模型真正调用时才发现。
+func ValidateToolSpec(spec ToolSpec) error {
+	if strings.TrimSpace(spec.Name) == "" {
+		return fmt.Errorf("%w: 工具名为空", ErrInvalidToolSpec)
+	}
+	if strings.TrimSpace(spec.Description) == "" {
+		return fmt.Errorf("%w: %s 缺少说明", ErrInvalidToolSpec, spec.Name)
+	}
+	if roleRank(spec.RequiredRole) == 0 {
+		return fmt.Errorf("%w: %s 的角色无效", ErrInvalidToolSpec, spec.Name)
+	}
+	if spec.Mutating {
+		if spec.ReadOnly || spec.Resolve == nil || spec.Mutate == nil || !spec.RequiresConfirmation {
+			return fmt.Errorf("%w: %s 的改动合同不完整", ErrInvalidToolSpec, spec.Name)
+		}
+	} else if !spec.ReadOnly || spec.Run == nil || spec.Resolve != nil || spec.Mutate != nil || spec.Proposable {
+		return fmt.Errorf("%w: %s 的只读合同不完整", ErrInvalidToolSpec, spec.Name)
+	}
+	return ValidateInputSchema(spec.InputSchema)
+}
+
+// ValidateInputSchema 校验本项目工具支持的 JSON Schema 子集。
+func ValidateInputSchema(schema map[string]any) error {
+	if err := toolschema.ValidateSchema(schema); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidToolSchema, err)
+	}
+	return nil
+}
+
+// ValidateToolArguments 按工具注册时的合同校验一次调用。
+func ValidateToolArguments(schema map[string]any, args map[string]any) error {
+	err := toolschema.ValidateArguments(schema, args)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, toolschema.ErrSchema):
+		return fmt.Errorf("%w: %v", ErrInvalidToolSchema, err)
+	default:
+		return fmt.Errorf("%w: %v", ErrInvalidArgs, err)
+	}
+}
+
+func integerValue(value any) (int64, bool) {
+	return toolschema.IntegerValue(value)
 }
 
 // MutationPlan 是对一项待执行 mutation 的、已 resolve 的只读描述:目标身份 + 当前状态 +
@@ -275,12 +388,11 @@ type ToolSpec struct {
 // 什么撒谎)。TargetType/TargetID 喂给 admin_audit_events 行;Preview 是 dry-run 时返回给
 // 调用方的、已脱敏的"将会改什么"载荷。
 type MutationPlan struct {
-	// TargetType 是 admin_audit_events 的 target_type(例如 "provider_account"、
-	// "account_credential"、"dlq_event")。它 MUST(必须)在迁移白名单中。
+	// TargetType 是 admin_audit_events 的目标类型，必须在数据库允许清单中。
 	TargetType string
 	// TargetID 是目标行的数字 id(advisory-lock 键 + 审计 target_id)。
 	TargetID int64
-	// LockKey 是 advisory-lock 判别符,用于串行化对 SAME(同一)目标的并发 mutation。以
+	// LockKey 是 advisory lock 判别符，用于串行化对同一目标的并发改动。以
 	// tenant + tool + target 为键,这样两个运营者无法对一个账号竞争 pause/replay。为空 =>
 	// orchestrator 从 (TenantID, ToolName, TargetID) 推导一个默认值。
 	LockKey string

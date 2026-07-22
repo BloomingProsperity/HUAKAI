@@ -118,6 +118,16 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 	if err != nil {
 		return nil, fmt.Errorf("billing: get claim for settle: %w", err)
 	}
+	billingEffect, err := NormalizeBillingEffect(BillingEffect(claim.BillingEffect))
+	if err != nil {
+		return nil, fmt.Errorf("billing: stored billing effect for claim %d: %w", claim.ID, err)
+	}
+	if req.BillingEffect != "" {
+		requestedEffect, effectErr := NormalizeBillingEffect(req.BillingEffect)
+		if effectErr != nil || requestedEffect != billingEffect {
+			return nil, fmt.Errorf("billing: settle billing effect mismatch: %w", ErrInvalidBillingEffect)
+		}
+	}
 
 	// 一致性: claim 行经 Tx2 锁定 (tenant_id+claim_id+acquisition_token), 其
 	// providerAccountID / APIKeyID / UserID / AttemptSeq 是权威值; req 字段
@@ -206,6 +216,7 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 		IPAddress:          req.Draft.IPAddress,
 		UserAgent:          req.Draft.UserAgent,
 		ClientTool:         nullableString(req.Draft.ClientTool),
+		BillingEffect:      string(billingEffect),
 	}
 
 	endClass := normalizeEndClass(req.Draft.EndClass, req.Stream)
@@ -224,6 +235,7 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 		StreamTerminatedReason: nullableString(attempt.StreamTerminatedReason),
 		Fingerprint:            coalesceString(req.Fingerprint, claim.RequestFingerprint),
 		AuditRequestID:         nullableString(auditRequestID),
+		BillingEffect:          string(billingEffect),
 	}
 	billingEvent, err := qtx.InsertBillingEvent(ctx, billingEventParams)
 	if err != nil {
@@ -277,9 +289,18 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 	if rows == 0 {
 		return nil, ErrClaimNotReserving
 	}
-	snap, err := Capture(ctx, tx, claim.ID, actualCost)
-	if err != nil {
-		return nil, fmt.Errorf("billing: capture hold: %w", err)
+	var snap Snapshot
+	balanceChanged := false
+	if billingEffect == BillingEffectUserCharge {
+		capturable, captureCheckErr := HoldCapturable(ctx, tx, claim.ID)
+		if captureCheckErr != nil {
+			return nil, fmt.Errorf("billing: inspect hold before capture: %w", captureCheckErr)
+		}
+		snap, err = Capture(ctx, tx, claim.ID, actualCost)
+		if err != nil {
+			return nil, fmt.Errorf("billing: capture hold: %w", err)
+		}
+		balanceChanged = capturable && !actualCost.IsZero()
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -293,6 +314,8 @@ func (s *DefaultSettler) settleOnce(ctx context.Context, req SettleRequest) (*Se
 		TenantID:             claim.TenantID,
 		UserID:               claim.UserID,
 		BillingEventID:       billingEvent.ID,
+		BillingEffect:        billingEffect,
+		BalanceChanged:       balanceChanged,
 	}, nil
 }
 
@@ -332,14 +355,14 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 	var apiKeyID, userID int64
 	var providerAccountID *int64
 	var attemptSeq int32
-	var requestedModel string
+	var requestedModel, storedBillingEffect string
 	if err := tx.QueryRow(ctx,
 		`SELECT request_fingerprint, status, acquisition_token, api_key_id, user_id,
-		        provider_account_id, attempt_seq, requested_model
+		        provider_account_id, attempt_seq, requested_model, billing_effect
 		 FROM billing_ledger_claims WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
 		claimID, tenantID,
 	).Scan(&fingerprint, &status, &acquisitionToken, &apiKeyID, &userID,
-		&providerAccountID, &attemptSeq, &requestedModel); err != nil {
+		&providerAccountID, &attemptSeq, &requestedModel, &storedBillingEffect); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrClaimNotReserving
 		}
@@ -352,6 +375,10 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 	}
 	if status != "reserving" {
 		return ErrClaimNotReserving
+	}
+	billingEffect, err := NormalizeBillingEffect(BillingEffect(storedBillingEffect))
+	if err != nil {
+		return fmt.Errorf("billing: stored billing effect for abort claim %d: %w", claimID, err)
 	}
 	// 候选清扫查询与本事务之间存在时间窗；在持有 claim 行锁时再次检查恢复队列，
 	// 防止已交付请求刚落下未决恢复行却仍被零成本中止。所有状态未闭合的恢复行都保护 claim。
@@ -384,8 +411,10 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 	if rows == 0 {
 		return ErrClaimNotReserving
 	}
-	if _, err := Release(ctx, tx, claimID); err != nil {
-		return fmt.Errorf("billing: release hold: %w", err)
+	if billingEffect == BillingEffectUserCharge {
+		if _, err := Release(ctx, tx, claimID); err != nil {
+			return fmt.Errorf("billing: release hold: %w", err)
+		}
 	}
 	abortEndClass := "unknown_termination"
 	abortUsageSource := string(gateway.UsageSourceInferred)
@@ -404,6 +433,7 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 		StreamTerminatedReason: nullableString(abortAttempt.StreamTerminatedReason),
 		Fingerprint:            fingerprint,
 		AuditRequestID:         nullableString(auditRequestID),
+		BillingEffect:          string(billingEffect),
 	}
 	abortEvent, err := qtx.InsertBillingEvent(ctx, abortEventParams)
 	if err != nil {
@@ -448,7 +478,8 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 			RequestedModel:         requestedModel,
 			// abort 路径不持有 draft → 无客户端归因(NULL),与既有 abort
 			// 用量记录"只记结构性字段"一致。
-			ClientTool: nil,
+			ClientTool:    nil,
+			BillingEffect: string(billingEffect),
 		}
 		if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "abort_usage_record_insert_failed"); err != nil {
 			return err
@@ -504,14 +535,14 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var fingerprint, status, claimRequestedModel string
+	var fingerprint, status, claimRequestedModel, storedBillingEffect string
 	var apiKeyID, userID int64
 	var attemptSeq int32
 	if err := tx.QueryRow(ctx,
-		`SELECT request_fingerprint, status, api_key_id, user_id, attempt_seq, requested_model
+		`SELECT request_fingerprint, status, api_key_id, user_id, attempt_seq, requested_model, billing_effect
 		 FROM billing_ledger_claims WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
 		req.ClaimID, req.TenantID,
-	).Scan(&fingerprint, &status, &apiKeyID, &userID, &attemptSeq, &claimRequestedModel); err != nil {
+	).Scan(&fingerprint, &status, &apiKeyID, &userID, &attemptSeq, &claimRequestedModel, &storedBillingEffect); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrClaimNotReserving
 		}
@@ -519,6 +550,16 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 	}
 	if status != "reserving" {
 		return ErrClaimNotReserving
+	}
+	billingEffect, err := NormalizeBillingEffect(BillingEffect(storedBillingEffect))
+	if err != nil {
+		return fmt.Errorf("billing: stored billing effect for cache-hit claim %d: %w", req.ClaimID, err)
+	}
+	if req.BillingEffect != "" {
+		requestedEffect, effectErr := NormalizeBillingEffect(req.BillingEffect)
+		if effectErr != nil || requestedEffect != billingEffect {
+			return fmt.Errorf("billing: cache-hit billing effect mismatch: %w", ErrInvalidBillingEffect)
+		}
 	}
 
 	qtx := s.q.WithTx(tx)
@@ -533,8 +574,10 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 	if rows == 0 {
 		return ErrClaimNotReserving
 	}
-	if _, err := Capture(ctx, tx, req.ClaimID, decimal.Zero); err != nil {
-		return fmt.Errorf("billing: capture hold for cache hit: %w", err)
+	if billingEffect == BillingEffectUserCharge {
+		if _, err := Capture(ctx, tx, req.ClaimID, decimal.Zero); err != nil {
+			return fmt.Errorf("billing: capture hold for cache hit: %w", err)
+		}
 	}
 
 	// 非流式成功结清: stream_state partial (与 AccountID!=0 的 cache-hit Settle
@@ -557,6 +600,7 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		DeliveredTokenCount: attempt.DeliveredTokenCount,
 		Fingerprint:         eventFingerprint,
 		AuditRequestID:      nullableString(auditRequestID),
+		BillingEffect:       string(billingEffect),
 	}
 	event, err := qtx.InsertBillingEvent(ctx, eventParams)
 	if err != nil {
@@ -614,6 +658,7 @@ func (s *DefaultSettler) CommitCacheHit(ctx context.Context, req SettleRequest) 
 		IPAddress:              req.Draft.IPAddress,
 		UserAgent:              req.Draft.UserAgent,
 		ClientTool:             nullableString(req.Draft.ClientTool),
+		BillingEffect:          string(billingEffect),
 	}
 	if err := s.insertUsageRecordOrDLQ(ctx, tx, qtx, usageParams, "cache_hit_usage_record_insert_failed"); err != nil {
 		return err
@@ -714,6 +759,7 @@ func (s *DefaultSettler) enqueueBillingEventReplica(ctx context.Context, tx pgx.
 		Fingerprint:            params.Fingerprint,
 		AuditRequestID:         params.AuditRequestID,
 		OccurredAt:             timestampString(row.OccurredAt),
+		BillingEffect:          params.BillingEffect,
 	})
 	if err != nil {
 		return fmt.Errorf("billing: marshal billing replica payload: %w", err)
@@ -786,6 +832,7 @@ func marshalUsageRecordPayload(params dbbilling.InsertUsageRecordParams) (json.R
 		IPAddress:              params.IPAddress,
 		UserAgent:              params.UserAgent,
 		ClientTool:             params.ClientTool,
+		BillingEffect:          params.BillingEffect,
 	}
 	raw, err := json.Marshal(payload)
 	return json.RawMessage(raw), err

@@ -14,8 +14,10 @@ import (
 func TestEnableForUser_TenantIsolation(t *testing.T) {
 	// 回归守护:为租户 A 启用 Hermes 绝不能更新到租户 B 中同一个 user id。
 	store := &hermesStoreSpy{}
+	profileID := int64(9)
 
-	row, err := enableForUserWithStore(context.Background(), store, 7, 1, APISourceManaged, nil)
+	store.getProfileRow = dbhermes.HermesApiProfile{ID: profileID, TenantID: 7, OwnerUserID: 1, ProfileKind: APISourceExternal}
+	row, err := enableForUserWithStore(context.Background(), store, 7, 1, APISourceExternal, &profileID, "gpt-4o")
 
 	if err != nil {
 		t.Fatalf("EnableForUser: %v", err)
@@ -53,18 +55,18 @@ func TestRecordAudit_TenantTagged(t *testing.T) {
 	store := &hermesStoreSpy{}
 	service := NewService(store)
 
-	err := service.RecordAudit(
-		context.Background(), 7, 42, ActionEnable,
-		map[string]any{"api_key": "sk-secret-123"}, AuditResultSuccess,
-		"corr-tenant", "req-tenant",
-	)
+	err := service.RecordAudit(context.Background(), AuditFields{
+		TenantID: 7, ActorSource: "token", ActorID: 42, ActorRole: "platform_admin",
+		Action: ActionEnable, SanitizedArgs: map[string]any{"api_key": "sk-secret-123"},
+		Result: AuditResultSuccess, CorrelationID: "corr-tenant", RequestID: "req-tenant",
+	})
 
 	if err != nil {
 		t.Fatalf("RecordAudit: %v", err)
 	}
 	// Mutation check: 删除 InsertAuditEventParams.TenantID 赋值,tenant_id 会变 0 并触发此断言。
-	if !store.auditCalled || store.auditArg.TenantID != 7 || store.auditArg.ActorUserID != 42 {
-		t.Fatalf("audit tenant/actor=(%d,%d) called=%v want (7,42)", store.auditArg.TenantID, store.auditArg.ActorUserID, store.auditCalled)
+	if !store.auditCalled || store.auditArg.TenantID != 7 || store.auditArg.ActorSource != "token" || store.auditArg.ActorID != 42 {
+		t.Fatalf("audit tenant/actor=(%d,%s:%d) called=%v want (7,token:42)", store.auditArg.TenantID, store.auditArg.ActorSource, store.auditArg.ActorID, store.auditCalled)
 	}
 	var args map[string]any
 	if err := json.Unmarshal(store.auditArg.SanitizedArgs, &args); err != nil {
@@ -111,9 +113,6 @@ type hermesStoreSpy struct {
 	disableCalled bool
 	disableArg    dbhermes.DisableHermesParams
 
-	getAPIKeyOwner int64
-	getAPIKeyErr   error
-
 	getProfileCalled bool
 	getProfileArg    dbhermes.GetProfileParams
 	getProfileRow    dbhermes.HermesApiProfile
@@ -159,8 +158,11 @@ func (s *hermesStoreSpy) CreateProfile(_ context.Context, arg dbhermes.CreatePro
 	}
 	return dbhermes.HermesApiProfile{
 		ID: 123, TenantID: arg.TenantID, OwnerUserID: arg.OwnerUserID,
-		Name: arg.Name, ProfileKind: arg.ProfileKind,
-		APIKeyID: arg.APIKeyID, PoolGroupID: arg.PoolGroupID,
+		Name: arg.Name, ProfileKind: arg.ProfileKind, BaseUrl: arg.BaseUrl,
+		EncryptedApiKey: arg.EncryptedApiKey, EncryptionScheme: arg.EncryptionScheme,
+		KeyID: arg.KeyID, Nonce: arg.Nonce, AadHash: arg.AadHash,
+		ApiKeyFingerprint: arg.ApiKeyFingerprint, ApiKeyHint: arg.ApiKeyHint,
+		CredentialVersion: arg.CredentialVersion, SecretBindingID: arg.SecretBindingID,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}, nil
 }
@@ -179,16 +181,9 @@ func (s *hermesStoreSpy) DisableHermes(_ context.Context, arg dbhermes.DisableHe
 	s.disableArg = arg
 	return dbhermes.HermesSetting{
 		TenantID: arg.TenantID, UserID: arg.UserID,
-		Enabled: false, APISource: APISourceManaged,
+		Enabled: false, APISource: APISourceExternal,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}, nil
-}
-
-func (s *hermesStoreSpy) GetAPIKeyOwner(context.Context, dbhermes.GetAPIKeyOwnerParams) (int64, error) {
-	if s.getAPIKeyErr != nil {
-		return 0, s.getAPIKeyErr
-	}
-	return s.getAPIKeyOwner, nil
 }
 
 func (s *hermesStoreSpy) GetConversation(_ context.Context, arg dbhermes.GetConversationParams) (dbhermes.HermesConversation, error) {
@@ -231,7 +226,7 @@ func (s *hermesStoreSpy) GetProfile(_ context.Context, arg dbhermes.GetProfilePa
 	}
 	return dbhermes.HermesApiProfile{
 		ID: arg.ID, TenantID: arg.TenantID, OwnerUserID: 42,
-		Name: "profile", ProfileKind: APISourceManaged,
+		Name: "profile", ProfileKind: APISourceExternal,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}, nil
 }
@@ -247,7 +242,7 @@ func (s *hermesStoreSpy) GetSettings(_ context.Context, arg dbhermes.GetSettings
 	}
 	return dbhermes.HermesSetting{
 		TenantID: arg.TenantID, UserID: arg.UserID,
-		Enabled: true, APISource: APISourceManaged,
+		Enabled: true, APISource: APISourceExternal,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}, nil
 }
@@ -259,9 +254,10 @@ func (s *hermesStoreSpy) InsertAuditEvent(_ context.Context, arg dbhermes.Insert
 		return dbhermes.HermesAuditEvent{}, s.auditErr
 	}
 	return dbhermes.HermesAuditEvent{
-		ID: 500, Ts: arg.Ts, TenantID: arg.TenantID, ActorUserID: arg.ActorUserID,
+		ID: 500, Ts: arg.Ts, TenantID: arg.TenantID,
+		ActorSource: arg.ActorSource, ActorID: arg.ActorID, ActorRole: stringPtr(arg.ActorRole),
 		Action: arg.Action, SanitizedArgs: arg.SanitizedArgs, Result: arg.Result,
-		CorrelationID: arg.CorrelationID, RequestID: arg.RequestID,
+		CorrelationID: arg.CorrelationID, RequestID: arg.RequestID, LogCategory: arg.LogCategory,
 	}, nil
 }
 
@@ -303,7 +299,7 @@ func (s *hermesStoreSpy) UpsertSettings(_ context.Context, arg dbhermes.UpsertSe
 	}
 	return dbhermes.HermesSetting{
 		TenantID: arg.TenantID, UserID: arg.UserID,
-		Enabled: arg.Enabled, APISource: arg.APISource, ProfileID: arg.ProfileID,
+		Enabled: arg.Enabled, APISource: arg.APISource, ProfileID: arg.ProfileID, ModelKey: arg.ModelKey,
 		CreatedAt: testPGTime(), UpdatedAt: testPGTime(),
 	}, nil
 }

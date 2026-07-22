@@ -157,7 +157,7 @@ Coverage 只使用以下四值：
 | L2 cache 运维 | `GET /admin/v1/cache/l2/stats`<br>`DELETE /admin/v1/cache/l2/{key}` | `/admin/cache` | `full` | 统计与单 key 删除完整。 |
 | 版本信息 | `GET /admin/v1/version`<br>`GET /v1/admin/version` | `/admin/version` | `full` | 页面使用规范别名；无需双发。 |
 | Hermes 设置、对话、历史、上下文和工具 | `GET /v1/hermes/settings`<br>`POST /v1/hermes/settings/enable`<br>`POST /v1/hermes/settings/disable`<br>`GET /v1/hermes/api-profiles`<br>`POST /v1/hermes/api-profiles`<br>`GET /v1/hermes/api-profiles/{id}`<br>`DELETE /v1/hermes/api-profiles/{id}`<br>`POST /v1/hermes/chat`<br>`GET /v1/hermes/conversations`<br>`GET /v1/hermes/conversations/{id}`<br>`DELETE /v1/hermes/conversations/{id}`<br>`GET /v1/hermes/conversations/{id}/messages`<br>`GET /v1/hermes/tools`<br>`POST /v1/hermes/tool-execute`<br>`GET /v1/hermes/context` | `/admin/hermes` + AppShell 的 Hermes 面板 | `full` | 配置、profile、SSE 对话、历史、删除、上下文和工具 dry-run/确认均有真实 UI。 |
-| 内部 runner 与指标 | `POST /internal/runner/bootstrap`<br>`POST /internal/runner/refresh`<br>`GET /internal/keys`<br>条件 `POST /internal/hermes/tool-execute`<br>`* /debug/vars`<br>条件 `* /metrics` | 无 | `backend_only` | runner、expvar、Prometheus 是机器接口。 |
+| Hermes 内部工具回调与指标 | 条件 `POST /internal/hermes/tool-execute`<br>`* /debug/vars`<br>条件 `* /metrics` | 无 | `backend_only` | 官方 Hermes 只通过短时自包含令牌回调工具端点；expvar、Prometheus 是机器接口。旧自定义 runner JWT 端点已删除。 |
 
 ### 12. 平台管理租户
 
@@ -400,12 +400,14 @@ internal/headerfirewall
 internal/healthhttp
 internal/healthscore
 internal/hermes
-internal/hermesadmin
 internal/hermeschat
 internal/hermesconfirm
 internal/hermeshttp
 internal/hermesops
 internal/hermesops/mutateguard
+internal/hermesops/toolschema
+internal/hermesprincipal
+internal/hermesrecovery
 internal/httpkeepalive
 internal/imagepricing
 internal/imageshttp
@@ -442,6 +444,7 @@ internal/observability
 internal/observability/accounthealthprobe
 internal/officialclient
 internal/openapicheck
+internal/opsinspection
 internal/orphanreconcilehttp
 internal/otelbridge
 internal/panelauth
@@ -515,6 +518,7 @@ internal/retrybudget
 internal/riskoverviewhttp
 internal/routeadmin
 internal/router
+internal/routingmodel
 internal/sensitiveobfuscate
 internal/servingcapability
 internal/sessioncap

@@ -37,6 +37,7 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 	err = b.tx.RunHermesTx(ctx, func(store hermes.Store) error {
 		_, err := store.AppendMessage(ctx, dbhermes.AppendMessageParams{
 			TenantID: prepared.TenantID, ConversationID: conversationID, Role: "assistant",
+			OwnerUserID: prepared.UserID, ActorSource: prepared.ActorSource, ActorID: prepared.ActorID,
 			Content:           []byte(hermes.EncryptedMessageContentPlaceholder),
 			ContentCiphertext: contentCiphertext,
 			TokenCount:        totalTokensFromDone(doneData),
@@ -50,6 +51,7 @@ func (b *Bridge) persistDone(ctx context.Context, prepared PreparedRequest, stat
 		}
 		rows, err := store.UpdateConversationLastMessageAt(ctx, dbhermes.UpdateConversationLastMessageAtParams{
 			Ts: completedAt, ID: conversationID, TenantID: prepared.TenantID,
+			OwnerUserID: prepared.UserID, ActorSource: prepared.ActorSource, ActorID: prepared.ActorID,
 		})
 		if err != nil {
 			return fmt.Errorf("touch hermes conversation: %w", err)

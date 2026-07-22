@@ -128,12 +128,14 @@ func TestEmailHeaderInjectionRejectedBeforeSender(t *testing.T) {
 }
 
 func TestSettlerNotificationFailureDoesNotBlockSettle(t *testing.T) {
-	next := &fakeSettler{result: &billing.SettleResult{
-		TenantID:       7,
-		UserID:         42,
-		NewUserBalance: decimal.RequireFromString("1.00000000"),
-		BillingEventID: 9001,
-	}}
+		next := &fakeSettler{result: &billing.SettleResult{
+			TenantID:       7,
+			UserID:         42,
+			NewUserBalance: decimal.RequireFromString("1.00000000"),
+			BillingEventID: 9001,
+			BillingEffect:  billing.BillingEffectUserCharge,
+			BalanceChanged: true,
+		}}
 	store := fakeStore{settings: Settings{
 		TenantID:         7,
 		UserID:           42,
@@ -158,6 +160,26 @@ func TestSettlerNotificationFailureDoesNotBlockSettle(t *testing.T) {
 	}
 	if next.settleCalls != 1 {
 		t.Fatalf("underlying settle calls=%d want 1", next.settleCalls)
+	}
+}
+
+func TestSettlerOperationalCostDoesNotSendLowBalanceNotification(t *testing.T) {
+	next := &fakeSettler{result: &billing.SettleResult{
+		TenantID: 7, UserID: 42, BillingEventID: 9002,
+		BillingEffect: billing.BillingEffectOperationalCost,
+	}}
+	store := &countingStore{settings: Settings{
+		TenantID: 7, UserID: 42, NotifyType: TypeWebhook,
+		WebhookURL: "https://hooks.example.test/low-balance",
+	}}
+	notifier := NewNotifier(Config{Store: store, Now: fixedNow})
+	settler := NewSettler(next, notifier, WithSettlerAsync(func(fn func()) { fn() }))
+
+	if _, err := settler.Settle(context.Background(), billing.SettleRequest{TenantID: 7, UserID: 42}); err != nil {
+		t.Fatalf("运营成本结算失败：%v", err)
+	}
+	if calls := store.Calls(); calls != 0 {
+		t.Fatalf("运营成本读取了低余额通知设置 %d 次，期望 0", calls)
 	}
 }
 

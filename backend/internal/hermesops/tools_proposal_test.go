@@ -80,7 +80,7 @@ func TestProposableCatalogExcludesNonProposableMutating(t *testing.T) {
 	reg.Register(mutatingSpec("account_pause"))              // 可提议的改动型
 	reg.Register(nonProposableMutatingSpec("renew_trigger")) // 不可提议的改动型
 	names := map[string]bool{}
-	for _, c := range reg.ProposableCatalog() {
+	for _, c := range reg.CatalogForRole(RolePlatformAdmin, true) {
 		names[c.Name] = true
 	}
 	if !names["audit_lookup"] || !names["account_pause"] {

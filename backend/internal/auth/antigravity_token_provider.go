@@ -403,6 +403,7 @@ func newSSRFProtectedOAuthClient(base *http.Client) *http.Client {
 	transport.Proxy = nil
 	transport.DialContext = ssrfGuardedDialContext(dial)
 	transport.DialTLSContext = nil
+	//lint:ignore SA1019 必须显式清空旧钩子，避免它绕过受保护的 DialContext。
 	transport.DialTLS = nil
 	clone.Transport = transport
 	clone.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {

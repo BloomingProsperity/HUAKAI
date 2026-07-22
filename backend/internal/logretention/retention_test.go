@@ -194,6 +194,8 @@ func TestOrdinaryLogAllowlistExcludesDurableBusinessFacts(t *testing.T) {
 	want := map[string]bool{
 		"ops_runtime_logs": true, "admin_audit_events": true, "user_audit_events": true,
 		"channel_health_audit_events": true, "credential_audit_events": true, "hermes_audit_events": true,
+		"hermes_tool_calls":          true,
+		"hermes_mutation_recovery":   true,
 		"oauth_refresh_audit_events": true, "pool_routing_audit_events": true,
 		"rate_limit_audit_events": true, "quota_audit_events": true, "payment_audit_events": true,
 		"subscription_plan_audit_events": true, "moderation_log": true,
@@ -205,6 +207,13 @@ func TestOrdinaryLogAllowlistExcludesDurableBusinessFacts(t *testing.T) {
 	for _, table := range ordinaryLogTables {
 		if !want[table.name] || table.timeColumn != "ingested_at" {
 			t.Fatalf("白名单出现未经核实的表或时间轴: %+v", table)
+		}
+		if table.name == "hermes_mutation_recovery" {
+			if table.requiredNotNullColumn != "audit_committed_at" {
+				t.Fatalf("Hermes 恢复事实只能清理已补齐日志的记录: %+v", table)
+			}
+		} else if table.requiredNotNullColumn != "" {
+			t.Fatalf("普通日志表出现未经核实的清理前置列: %+v", table)
 		}
 		delete(want, table.name)
 	}

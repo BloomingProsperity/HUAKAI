@@ -223,16 +223,18 @@ FROM pool_groups
 WHERE tenant_id = $1::bigint
   AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
-LIMIT $2::integer
+LIMIT $3::integer
+OFFSET $2::integer
 `
 
 type ListPoolsParams struct {
 	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
+	PageOffset int32 `db:"page_offset" json:"page_offset"`
 	LimitCount int32 `db:"limit_count" json:"limit_count"`
 }
 
 func (q *Queries) ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error) {
-	rows, err := q.db.Query(ctx, listPools, arg.TenantID, arg.LimitCount)
+	rows, err := q.db.Query(ctx, listPools, arg.TenantID, arg.PageOffset, arg.LimitCount)
 	if err != nil {
 		return nil, err
 	}

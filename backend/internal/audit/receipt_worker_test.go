@@ -42,7 +42,7 @@ func TestReceiptHookSettlerAppendsAfterSuccessfulSettle(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            7,
 		UserID:              7001,
 		ClaimID:             9001,
@@ -90,7 +90,7 @@ func TestReceiptHookSettlerCacheHitAppendsCacheHitOwnerSource(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            7,
 		UserID:              7001,
 		ClaimID:             9001,
@@ -134,7 +134,7 @@ func TestReceiptHookSettlerBestEffortDoesNotBlockSettle(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestReceiptHookSettlerEnqueuesRecoveryOnHookErrorWithoutBlockingSettle(t *t
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestReceiptHookSettlerRecoveryEnqueueUsesDetachedContextAfterSettle(t *test
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{err: ErrReceiptInputsNotFound}, signer)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestReceiptRecoveryHandlerAppendsMissingReceipt(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            7,
 		UserID:              7001,
 		ClaimID:             9001,
@@ -489,7 +489,7 @@ func TestAppendSettledReceiptSignsFinalReceiptWhenSignerAvailable(t *testing.T) 
 		RateTableSnapshotID: 44,
 		CreatedAt:           time.Date(2026, 5, 27, 11, 12, 13, 0, time.UTC),
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: receiptInputs}, auditSigner)
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: receiptInputs}, auditSigner)
 	if err != nil {
 		t.Fatalf("formatter: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestAppendSettledReceiptSkipsSignWhenSignerNil(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            7,
 		UserID:              7001,
 		ClaimID:             9001,
@@ -866,7 +866,7 @@ func receiptHookForReferralTest(t *testing.T, requestID string, userID, claimID,
 	})); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := NewReceiptFormatter(ledger, nil, &staticReceiptSource{inputs: ReceiptInputs{
+	formatter, err := NewReceiptFormatter(ledger, &staticReceiptSource{inputs: ReceiptInputs{
 		TenantID:            7,
 		UserID:              userID,
 		ClaimID:             claimID,

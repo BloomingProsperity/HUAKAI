@@ -66,7 +66,7 @@ func TestBillingPersisterReceiptHookAppendsAfterAsyncSettle(t *testing.T) {
 	if _, err := ledger.Append(ctx, prepared); err != nil {
 		t.Fatalf("append ledger: %v", err)
 	}
-	formatter, err := audit.NewReceiptFormatter(ledger, nil, &staticReceiptInputSource{inputs: audit.ReceiptInputs{
+	formatter, err := audit.NewReceiptFormatter(ledger, &staticReceiptInputSource{inputs: audit.ReceiptInputs{
 		TenantID:            7,
 		UserID:              7001,
 		ClaimID:             9001,

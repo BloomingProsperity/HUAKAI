@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/cachemetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
@@ -67,13 +68,6 @@ func crossCheckAudit(reportedOutput, reasoningTokens, estimated, estimatedReason
 		}
 	}
 	return confidence, pending
-}
-
-func (ex *chatExecution) handleNonStreamingResponse(w http.ResponseWriter) {
-	outcome := ex.executeNonStreamingAttempt(w)
-	if outcome.Success != nil {
-		writeAttemptSuccess(w, outcome)
-	}
 }
 
 func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attemptOutcome {
@@ -184,7 +178,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		if ex.d.ResponseCache != nil && ex.cacheKey != "" && cacheEnvelopeOK {
 			if cacheKey, err := ex.l2CacheKeyForModel(ex.upstreamModelID); err == nil {
 				ex.d.ResponseCache.Set(ex.ctx, cacheEntry(ex, cacheKey, clientBody, cacheEnvelope))
-				syncL2SizeMetrics(ex.d.ResponseCache)
+				cachemetrics.SyncL2StoreSize(ex.d.ResponseCache)
 			}
 		}
 	}
@@ -229,6 +223,7 @@ func (ex *chatExecution) nonStreamingSettleRequest(env *proto.HCSF, actualCost c
 		Draft:               draft,
 		EmitSchedulerOutbox: true,
 		SnapshotVersion:     ex.plan.SnapshotVersion,
+		BillingEffect:       ex.d.effectiveBillingEffect(),
 	}
 }
 

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -36,7 +36,13 @@ type AdminCredentialStore interface {
 type AdminCredentialDeps struct {
 	Auth        AdminCredentialAuth
 	Credentials AdminCredentialStore
-	AuditStore  AdminPoolAccountStore
+	AuditStore  adminCredentialAuditStore
+}
+
+type adminCredentialAuditStore interface {
+	adminhttpcore.AuditStore
+	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
+	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
 }
 
 type credentialWriteRequest struct {
@@ -319,8 +325,17 @@ func resolveCredentialAdminRequest(w http.ResponseWriter, r *http.Request, d Adm
 		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin credential dependency unset")
 		return admin.AdminIdentity{}, 0, 0, false
 	}
-	ident, ok := resolvePlatformAdmin(w, r, AdminPoolAccountDeps{Auth: d.Auth, Store: d.AuditStore})
-	if !ok {
+	ident, err := d.Auth.Resolve(r.Context(), r)
+	if err != nil {
+		if errors.Is(err, admin.ErrAdminBackend) {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_backend_error", "admin auth backend transient failure")
+		} else {
+			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
+		}
+		return admin.AdminIdentity{}, 0, 0, false
+	}
+	if ident.Role != admin.RolePlatformAdmin {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
 		return admin.AdminIdentity{}, 0, 0, false
 	}
 	accountID, ok := parseAdminPoolID(w, r)
@@ -415,16 +430,9 @@ func writeCredentialAdminAudit(r *http.Request, d AdminCredentialDeps, ident adm
 		"auth_mode":           meta.AuthMode,
 		"credentials_present": true,
 	})
-	_ = writeProviderAccountAudit(r.Context(), r, d.AuditStore, ident, meta.TenantID, action, meta.ProviderAccountID, chineseReason(reason, "更新 provider account credential"), payload)
+	_ = adminhttpcore.WriteAudit(r.Context(), r, d.AuditStore, ident, &meta.TenantID, action, "provider_account", &meta.ProviderAccountID, adminhttpcore.Reason(reason, "更新 provider account credential"), payload)
 }
 
-func writeAccountCredentialAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID *int64, action string, reason *string, payload []byte) error {
-	actorID := ident.AuditActor()
-	reqID := middleware.GetReqID(r.Context())
-	_, err := store.InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
-		TenantID: tenantID, ActorID: actorID, ActorRole: ident.Role,
-		Action: action, TargetType: "account_credential", TargetID: nil,
-		RequestID: &reqID, Reason: reason, Payload: payload,
-	})
-	return err
+func writeAccountCredentialAudit(ctx context.Context, r *http.Request, store adminhttpcore.AuditStore, ident admin.AdminIdentity, tenantID *int64, action string, reason *string, payload []byte) error {
+	return adminhttpcore.WriteAudit(ctx, r, store, ident, tenantID, action, "account_credential", nil, reason, payload)
 }

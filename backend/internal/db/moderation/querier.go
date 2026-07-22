@@ -18,16 +18,22 @@ type Querier interface {
 	EnableModerationAPIKey(ctx context.Context, arg EnableModerationAPIKeyParams) (EnableModerationAPIKeyRow, error)
 	FindEnabledModerationHash(ctx context.Context, arg FindEnabledModerationHashParams) (FindEnabledModerationHashRow, error)
 	GetModerationConfig(ctx context.Context, tenantID int64) (ModerationConfig, error)
+	// 供 Hermes mutating 工具 moderation_keyword_enable/disable 的 Resolve 按租户+id 读取单条
+	// 未软删关键词(复检租户归属 + 渲染预览)。
+	GetModerationKeyword(ctx context.Context, arg GetModerationKeywordParams) (GetModerationKeywordRow, error)
+	// 内容审核执行日志、违规计数与用户密钥封禁查询。
+	// 日志只保存元数据与载荷指纹，不保存原始请求、明文凭据或密钥哈希。
 	InsertModerationLog(ctx context.Context, arg InsertModerationLogParams) (int64, error)
 	InsertModerationViolationEvent(ctx context.Context, arg InsertModerationViolationEventParams) (int64, error)
 	ListBannedKeys(ctx context.Context, arg ListBannedKeysParams) ([]ListBannedKeysRow, error)
-	// Content moderation sqlc queries.
-	// moderation_log writes metadata and payload_hash only; raw request
-	// bodies, plaintext credentials, and key hashes never appear in this file.
+	// 内容审核规则、哈希与租户配置查询。
 	ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error)
 	ListModerationHashes(ctx context.Context, arg ListModerationHashesParams) ([]ListModerationHashesRow, error)
 	ListModerationKeywords(ctx context.Context, arg ListModerationKeywordsParams) ([]ListModerationKeywordsRow, error)
-	ListModerationLog(ctx context.Context, arg ListModerationLogParams) ([]ModerationLog, error)
+	ListModerationLog(ctx context.Context, arg ListModerationLogParams) ([]ListModerationLogRow, error)
+	// 供 Hermes mutating 工具在 orchestrator 事务内定向翻转单条未软删关键词的 enabled 列
+	// (只改 enabled + updated_at;租户 scope 绑死在 WHERE tenant_id)。
+	SetModerationKeywordEnabled(ctx context.Context, arg SetModerationKeywordEnabledParams) (int64, error)
 	SoftDeleteModerationHash(ctx context.Context, arg SoftDeleteModerationHashParams) (int64, error)
 	SoftDeleteModerationKeyword(ctx context.Context, arg SoftDeleteModerationKeywordParams) (int64, error)
 	UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (ModerationConfig, error)

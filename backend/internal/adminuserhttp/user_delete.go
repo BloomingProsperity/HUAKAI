@@ -129,7 +129,7 @@ func NewPostgresUserSoftDeleteStore(pool *pgxpool.Pool) userSoftDeleteService {
 func (s postgresUserSoftDeleteStore) SoftDeleteForTenant(ctx context.Context, tenantID, userID int64) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE users SET deleted_at=now(), status='deleted', updated_at=now()
-		 WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL`,
+		 WHERE tenant_id=$1 AND id=$2 AND principal_kind='human' AND deleted_at IS NULL`,
 		tenantID, userID)
 	if err != nil {
 		return 0, err

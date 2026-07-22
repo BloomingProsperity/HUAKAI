@@ -14,8 +14,8 @@ func TestPoolListSpec(t *testing.T) {
 			if params.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7(必须用已鉴权 req.TenantID)", params.TenantID)
 			}
-			if params.LimitCount != poolListLimit {
-				t.Fatalf("LimitCount 应为 poolListLimit=%d, got %d", poolListLimit, params.LimitCount)
+			if params.LimitCount != defaultToolPageLimit+1 || params.PageOffset != 0 {
+				t.Fatalf("池分页参数=%+v，期望 limit=%d offset=0", params, defaultToolPageLimit+1)
 			}
 			return []dbbilling.PoolGroup{
 				{ID: 1, TenantID: 7, Name: "default-pool", RoutingPolicyVersion: "v3", TopKDefault: 3, CapabilityDefault: "chat", Enabled: true},
@@ -63,6 +63,28 @@ func TestPoolListSpec(t *testing.T) {
 		if _, has := p0[omit]; has {
 			t.Fatalf("不应投影字段 %q: %v", omit, p0)
 		}
+	}
+}
+
+func TestPoolListPagination(t *testing.T) {
+	deps := PoolListDeps{List: func(_ context.Context, params dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error) {
+		if params.LimitCount != 3 || params.PageOffset != 5 {
+			t.Fatalf("池分页参数=%+v，期望 limit=3 offset=5", params)
+		}
+		return []dbbilling.PoolGroup{{ID: 6}, {ID: 7}, {ID: 8}}, nil
+	}}
+	r := req(7)
+	r.Args = map[string]any{"limit": float64(2), "offset": float64(5)}
+	res, err := PoolListSpec(deps).Run(context.Background(), r)
+	if err != nil {
+		t.Fatalf("运行池分页：%v", err)
+	}
+	if len(res.Summary["items"].([]map[string]any)) != 2 {
+		t.Fatalf("分页返回数量=%v，期望 2", res.Summary["pool_count"])
+	}
+	page := res.Summary["page"].(map[string]any)
+	if page["has_more"] != true || page["next_offset"] != 7 {
+		t.Fatalf("分页元数据=%v，期望 has_more=true next_offset=7", page)
 	}
 }
 

@@ -170,10 +170,6 @@ func attachRequestPassthroughField(env *HCSF, field string, value json.RawMessag
 	env.Passthrough.Extra[field] = copied
 }
 
-func attachPassthroughToEvents(events []CanonicalEvent, env PassthroughEnvelope) []CanonicalEvent {
-	return AttachPassthroughToEvents(events, env)
-}
-
 func clonePassthroughEnvelope(env *PassthroughEnvelope) *PassthroughEnvelope {
 	if env == nil || len(env.Extra) == 0 {
 		return nil

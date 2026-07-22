@@ -52,8 +52,8 @@ func TestProviderAccountListSpec(t *testing.T) {
 			if params.TenantID != 7 {
 				t.Fatalf("scope leaked: tenantID=%d want 7(必须用已鉴权 req.TenantID)", params.TenantID)
 			}
-			if params.LimitCount != providerAccountListLimit {
-				t.Fatalf("LimitCount 应为 providerAccountListLimit=%d, got %d", providerAccountListLimit, params.LimitCount)
+			if params.LimitCount != defaultToolPageLimit+1 || params.AfterID != 0 {
+				t.Fatalf("账号分页参数=%+v，期望 limit=%d after_id=0", params, defaultToolPageLimit+1)
 			}
 			return fakeAccountRows(), nil
 		},

@@ -41,22 +41,61 @@ services:
       context: ./deploy/hermes-runner
     container_name: huakai-hermes-runner
     depends_on:
-      postgres:
+      hermes-egress:
         condition: service_healthy
     environment:
-      HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/dev_jwt_public.pem
+      HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/public.pem
       HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-dev-local}
-      HUAKAI_HERMES_INTERNAL_SHARED_SECRET: ${HUAKAI_HERMES_INTERNAL_SHARED_SECRET:-dev-internal-runner-secret-change-me}
+      HUAKAI_HERMES_MCP_URL: http://host.docker.internal:8080/internal/hermes/mcp
+      HUAKAI_HERMES_EGRESS_PROXY_URL: http://hermes-egress:8080
       HUAKAI_HERMES_RUNNER_BIND: 0.0.0.0:8801
+      HUAKAI_HERMES_MAX_CONCURRENCY: ${HUAKAI_HERMES_MAX_CONCURRENCY:-1}
+      HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS: ${HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS:-10}
+      HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS: ${HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS:-240}
     ports:
       - "8801:8801"
     volumes:
-      - huakai-hermes-data:/var/lib/huakai/hermes
-      - ./deploy/hermes-runner/dev-keys/dev_jwt_public.pem:/run/secrets/hermes/dev_jwt_public.pem:ro
+      - ./deploy/hermes-runner/dev-keys/public.pem:/run/secrets/hermes/public.pem:ro
+    read_only: true
+    tmpfs:
+      - /run/huakai-hermes:rw,noexec,nosuid,nodev,size=128m,uid=10101,gid=10101,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 1.0
+    extra_hosts:
+      - host.docker.internal:host-gateway
     networks:
       - huakai-dev
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8801/healthz >/dev/null"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8801/healthz', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  hermes-egress:
+    build:
+      context: ./deploy/hermes-runner
+    container_name: huakai-hermes-egress
+    entrypoint: ["/usr/bin/tini", "--", "python3", "/app/egress_proxy.py"]
+    environment:
+      HUAKAI_HERMES_EGRESS_BIND: 0.0.0.0:8080
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    networks:
+      - huakai-dev
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 2).close()"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -70,4 +109,3 @@ networks:
 
 volumes:
   huakai-pgdata:
-  huakai-hermes-data:

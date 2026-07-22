@@ -311,11 +311,17 @@ func isClaimLockRaceQuery(data pgx.TraceQueryStartData, claimID int64) bool {
 }
 
 func isSlotReleaseRaceQuery(data pgx.TraceQueryStartData, token uuid.UUID) bool {
-	if !strings.Contains(data.SQL, "WITH released AS") || !strings.Contains(data.SQL, "UPDATE pool_slot_acquisitions") || len(data.Args) == 0 {
+	if !strings.Contains(data.SQL, "WITH released AS") || !strings.Contains(data.SQL, "UPDATE pool_slot_acquisitions") {
 		return false
 	}
-	got, ok := data.Args[0].(uuid.UUID)
-	return ok && got == token
+	// sqlc 会按参数首次出现位置排列实参；查询字段调整后 UUID 不保证在首位。
+	for _, arg := range data.Args {
+		got, ok := arg.(uuid.UUID)
+		if ok && got == token {
+			return true
+		}
+	}
+	return false
 }
 
 func raceInt64Arg(value any) (int64, bool) {

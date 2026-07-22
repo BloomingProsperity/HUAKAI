@@ -14,18 +14,17 @@ import (
 // + 所需 role + read-only 标记,使 operator / assistant 无需反复试错即可发现哪些工具
 // 可调用。
 type toolDescriptor struct {
-	Name                 string            `json:"name"`
-	Category             string            `json:"category"`
-	Description          string            `json:"description"`
-	ReadOnly             bool              `json:"read_only"`
-	Mutating             bool              `json:"mutating"`
-	RequiresConfirmation bool              `json:"requires_confirmation"`
-	RequiredRole         string            `json:"required_role"`
-	InputSchema          map[string]string `json:"input_schema"`
+	Name                 string         `json:"name"`
+	Category             string         `json:"category"`
+	Description          string         `json:"description"`
+	ReadOnly             bool           `json:"read_only"`
+	Mutating             bool           `json:"mutating"`
+	RequiresConfirmation bool           `json:"requires_confirmation"`
+	RequiredRole         string         `json:"required_role"`
+	InputSchema          map[string]any `json:"input_schema"`
 }
 
-// listTools 服务 GET /v1/hermes/tools。它由 H1 中间件挂载做 admin 门控;这里只要求
-// 一个已解析的身份(由中间件保证),并列出每一个已注册的工具。
+// listTools 返回当前注册的管理工具；管理员身份和租户能力已由上层中间件校验。
 func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireIdentity(w, r); !ok {
 		return
@@ -39,7 +38,7 @@ func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 	for _, s := range specs {
 		schema := s.InputSchema
 		if schema == nil {
-			schema = map[string]string{}
+			schema = hermesops.ObjectSchema(nil)
 		}
 		out = append(out, toolDescriptor{
 			Name:                 s.Name,
@@ -58,7 +57,7 @@ func (h handler) listTools(w http.ResponseWriter, r *http.Request) {
 type toolExecuteRequest struct {
 	ToolName string         `json:"tool_name"`
 	Args     map[string]any `json:"args"`
-	// Confirm + CorrelationID 驱动 WAVE H4 mutating 工具的 dry-run+confirm 流程。
+	// Confirm + CorrelationID 驱动改动型工具的预览与人工确认流程。
 	// 对只读工具会被忽略。对 mutating 工具,Confirm=false(默认)返回只读 preview +
 	// 一个 correlation_id;Confirm=true 且 correlation_id 匹配时,恰好执行一次该变更。
 	Confirm       bool   `json:"confirm,omitempty"`
@@ -72,8 +71,8 @@ type toolExecuteRequest struct {
 //  4. 放行时——运行只读工具,记录一条 ok/error 的 hermes_tool_calls 行,并把本次
 //     调用以 hermes.tool.<name> 的形式镜像写入 hermes_audit_events,然后返回结构化结果。
 //
-// 每条路径在返回前都会记录一条 tool-call 行,因此成功、错误、拒绝都可审计。会改动
-// 状态的工具无法到达此处——本 wave 只注册了只读工具。
+// 每条路径在返回前都会记录一条工具日志，因此成功、错误和拒绝都可追踪。改动型
+// 工具会在只读派发前分流到独立的预览与人工确认路径。
 func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 	ident, ok := h.requireIdentity(w, r)
 	if !ok {
@@ -98,14 +97,14 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 
 	actor, _ := adminActorFromContext(r.Context())
 
-	// WAVE H4:mutating 工具只能经由 dry-run + confirm 流程(5 层安全)派发。它绝不
+	// 改动型工具只能经由预览和人工确认流程派发。它绝不
 	// 应到达下方的只读 Authorize/Run 路径。在只读 RBAC 之前就把它分流出去,使得任何
 	// 变更都不可能绕过 confirm 门 + advisory lock + atomic audit 而运行。
 	if mutSpec, ok := h.tools.Get(req.ToolName); ok && mutSpec.Mutating {
-		// KNOB A(运行时 kill-switch):当 mutating 工具被禁用时,在这里拒绝 mutating
+		// 运行时总开关关闭时，在预览和确认之前拒绝所有改动型工具。
 		// 分支——在 previewMutation 或 confirmMutation 之前——使单一节流点同时覆盖
 		// dry-run preview 与已确认的执行。记录一条 denied 的 hermes_tool_calls 行
-		// (与其它 L1 denial 审计对齐,复用 mutate handler 的 denial 记录器),让被拒绝
+		// 并复用改动处理器的拒绝记录器，让被拒绝
 		// 的尝试可审计,然后 403。下方的只读路径不受影响。
 		if h.mutatingDisabled {
 			h.recordMutatingDenied(r, ident, actor, req)
@@ -116,7 +115,7 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC:校验 role 下限。tenant scope 在本 handler 运行前已由 H1 中间件
+	// 校验角色下限。租户作用域在本处理器运行前已由管理中间件
 	// (CanIssueForTenant)执行——跨 tenant 的调用方永远到不了这里。未知工具或权限
 	// 不足均视为拒绝,记录为一条 denied 行。
 	spec, authErr := h.tools.Authorize(req.ToolName, actor.Role)
@@ -130,10 +129,16 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if err := hermesops.ValidateToolArguments(spec.InputSchema, req.Args); err != nil {
+		h.recordToolCall(r, ident, actor, req, hermesops.ResultError, nil, "invalid_args")
+		writeError(w, http.StatusBadRequest, "hermes_tool_invalid_args", "invalid or missing tool arguments")
+		return
+	}
 
 	toolReq := hermesops.ToolRequest{
 		TenantID:    ident.TenantID,
-		ActorUserID: ident.UserID,
+		ActorSource: actor.Source,
+		ActorID:     actor.ID,
 		Role:        actor.Role,
 		Args:        req.Args,
 	}
@@ -166,18 +171,19 @@ func (h handler) executeTool(w http.ResponseWriter, r *http.Request) {
 func (h handler) recordToolCall(r *http.Request, ident sessionauth.Identity, actor adminActor, req toolExecuteRequest, status hermesops.ResultStatus, summary map[string]any, errorClass string) {
 	now := time.Now().UTC()
 	rec := hermesops.ToolCallAudit{
-		TenantID:          ident.TenantID,
-		ActorUserID:       ident.UserID,
-		AdminActorTokenID: actor.TokenID,
-		ToolName:          req.ToolName,
-		Args:              req.Args,
-		ResultSummary:     summary,
-		Status:            status,
-		ErrorClass:        errorClass,
-		CorrelationID:     correlationID(r),
-		RequestID:         requestID(r),
-		CalledAt:          now,
-		ReturnedAt:        now,
+		TenantID:      ident.TenantID,
+		ActorSource:   actor.Source,
+		ActorID:       actor.ID,
+		ActorRole:     actor.Role,
+		ToolName:      req.ToolName,
+		Args:          req.Args,
+		ResultSummary: summary,
+		Status:        status,
+		ErrorClass:    errorClass,
+		CorrelationID: correlationID(r),
+		RequestID:     requestID(r),
+		CalledAt:      now,
+		ReturnedAt:    now,
 	}
 	if err := hermesops.RecordToolCall(r.Context(), h.toolCalls, rec); err != nil {
 		logToolCallWriteFailure(req.ToolName, err)
@@ -197,8 +203,7 @@ func (h handler) mirrorToolAudit(r *http.Request, ident sessionauth.Identity, to
 		return
 	}
 	args := map[string]any{"tool_name": toolName}
-	if err := h.svc.RecordAudit(r.Context(), ident.TenantID, ident.UserID, action,
-		withAdminActor(r.Context(), args), result, correlationID(r), requestID(r)); err != nil {
+	if err := h.svc.RecordAudit(r.Context(), auditFields(r, ident, action, args, result)); err != nil {
 		logToolAuditMirrorFailure(toolName, err)
 	}
 }

@@ -96,19 +96,95 @@ services:
       # 并把下方 gateway 的 volumes 审计挂载段一并取消注释。
       HUAKAI_AUDIT_LEDGER_BACKEND: ${HUAKAI_AUDIT_LEDGER_BACKEND:-}
       HUAKAI_AUDIT_PRIVATE_KEY_PATH: ${HUAKAI_AUDIT_PRIVATE_KEY_PATH:-}
+      # Hermes 默认关闭；显式配置 runner URL 后才启用完整运维助手链。
+      HUAKAI_HERMES_RUNNER_URL: ${HUAKAI_HERMES_RUNNER_URL:-}
+      HUAKAI_HERMES_JWT_PRIVATE_KEY_PATH: /run/secrets/hermes/private.pem
+      HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-compose-hermes}
+      HUAKAI_HERMES_INTERNAL_TOKEN_SECRET: ${HUAKAI_HERMES_INTERNAL_TOKEN_SECRET:-}
+      HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED: ${HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED:-true}
+      HUAKAI_HERMES_LLM_PROPOSE_ENABLED: ${HUAKAI_HERMES_LLM_PROPOSE_ENABLED:-false}
+      HUAKAI_HERMES_MUTATING_ENABLED: ${HUAKAI_HERMES_MUTATING_ENABLED:-true}
     # ---- production 直连才需要:持久审计私钥(默认注释,dev 无需任何密钥文件)----
     # 运维在宿主用 `openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem` 生成后,取消下面挂载,
     # 并在 .env 设齐上面三个 HUAKAI_AUDIT_*(BACKEND=postgres / PATH=容器内读取路径 / HOST=宿主源路径)。
-    # volumes:
-    #   - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
+    volumes:
+      # Hermes 关闭时允许此目录为空；启用前用 generate-keypair.sh 生成密钥。
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}:/run/secrets/hermes:ro
+      # production 直连如需持久审计私钥，再取消下一行注释。
+      # - ${HUAKAI_AUDIT_PRIVATE_KEY_HOST:-./secrets/audit_key.pem}:/run/secrets/audit/key.pem:ro
     networks:
       - huakai-direct
+      - huakai-hermes
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # 官方 Hermes 运行器默认关闭；启用 profile 后经隔离网络回连 gateway，
+  # 并通过仅 runner 使用的出口网络访问租户配置的外部模型服务。
+  hermes-runner:
+    profiles: ["hermes"]
+    build:
+      context: ./deploy/hermes-runner
+    depends_on:
+      gateway:
+        condition: service_healthy
+      hermes-egress:
+        condition: service_healthy
+    restart: unless-stopped
+    expose:
+      - "8801"
+    environment:
+      HUAKAI_HERMES_JWT_PUBLIC_KEY_PATH: /run/secrets/hermes/public.pem
+      HUAKAI_HERMES_JWT_KID: ${HUAKAI_HERMES_JWT_KID:-compose-hermes}
+      HUAKAI_HERMES_MCP_URL: http://gateway:8080/internal/hermes/mcp
+      HUAKAI_HERMES_EGRESS_PROXY_URL: http://hermes-egress:8080
+      HUAKAI_HERMES_RUNNER_BIND: 0.0.0.0:8801
+      HUAKAI_HERMES_MAX_CONCURRENCY: ${HUAKAI_HERMES_MAX_CONCURRENCY:-1}
+      HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS: ${HUAKAI_HERMES_QUEUE_TIMEOUT_SECONDS:-10}
+      HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS: ${HUAKAI_HERMES_PROCESS_TIMEOUT_SECONDS:-240}
+    volumes:
+      - ${HUAKAI_HERMES_KEYS_HOST_DIR:-./secrets/hermes}/public.pem:/run/secrets/hermes/public.pem:ro
+    read_only: true
+    tmpfs:
+      - /run/huakai-hermes:rw,noexec,nosuid,nodev,size=128m,uid=10101,gid=10101,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 1.0
+    networks:
+      - huakai-hermes
+
+  # runner 没有公网路由；外部模型连接统一经过拨号期公网地址校验代理。
+  hermes-egress:
+    profiles: ["hermes"]
+    build:
+      context: ./deploy/hermes-runner
+    restart: unless-stopped
+    entrypoint: ["/usr/bin/tini", "--", "python3", "/app/egress_proxy.py"]
+    environment:
+      HUAKAI_HERMES_EGRESS_BIND: 0.0.0.0:8080
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.25
+    networks:
+      - huakai-hermes
+      - huakai-hermes-egress
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # 一次性数据库迁移:与 prod 一致,gateway 之前把 sql/migrations 应用到 postgres,成功退出后
   # gateway 才启动。迁移幂等,重复 up 安全。
@@ -163,6 +239,11 @@ networks:
     # 独立网络名;配合顶层 name: huakai-direct,与 prod 的容器/网络/卷均不相撞,可同机并存。
     name: huakai-direct-net
     # 不固定子网:让 docker 自动选可用网段,避免与宿主已有 docker 网络撞车(pool overlap)。
+  huakai-hermes:
+    name: huakai-hermes-direct-net
+    internal: true
+  huakai-hermes-egress:
+    name: huakai-hermes-direct-egress-net
 
 volumes:
   # 独立卷名,与 prod 的 huakai-prod-pgdata 隔离。
