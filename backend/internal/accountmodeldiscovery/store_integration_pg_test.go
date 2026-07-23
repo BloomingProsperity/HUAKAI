@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	sqlmigrations "github.com/BloomingProsperity/HUAKAI/sql"
 )
 
@@ -43,7 +44,7 @@ func TestSyncPersistsCatalogAndRejectsRotatedCredential(t *testing.T) {
 		response(http.StatusOK, `{"data":[{"id":"gpt-a"},{"id":"gpt-b"}]}`),
 		response(http.StatusOK, `{"data":[{"id":"gpt-c"}]}`),
 	}}
-	service := NewService(vault, dispatcher, pool)
+	service := NewService(vault, dispatcher, pool, registry.NewPostgresRegistry(pool, nil))
 	input := SyncInput{
 		TenantID: tenantID, AccountID: accountID,
 		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
@@ -58,6 +59,12 @@ func TestSyncPersistsCatalogAndRejectsRotatedCredential(t *testing.T) {
 		t.Fatalf("首次同步结果=%+v", first)
 	}
 	assertStoredModelIDs(t, ctx, pool, tenantID, accountID, []string{"gpt-a", "gpt-b"})
+	// 上架管道第 2 关:账号级发现必须同事务投进全局发现箱。
+	// MUTATION: 删掉 store.Sync 里的 InvestAccountModelDiscoveriesTx 调用 → 此处红。
+	if first.InboxInvested != 2 {
+		t.Fatalf("首次同步 InboxInvested=%d,期望 2", first.InboxInvested)
+	}
+	assertInboxPending(t, ctx, pool, "openai", "openai_chat", []string{"gpt-a", "gpt-b"})
 
 	input.RequestID = "req-model-sync-2"
 	second, err := service.Sync(ctx, input)
@@ -66,6 +73,9 @@ func TestSyncPersistsCatalogAndRejectsRotatedCredential(t *testing.T) {
 	}
 	if second.Changed || second.PreviousCount != 2 {
 		t.Fatalf("重复同步结果=%+v", second)
+	}
+	if second.InboxInvested != 0 {
+		t.Fatalf("模型集合未变时 InboxInvested=%d,期望 0(unchanged 不计数)", second.InboxInvested)
 	}
 	var logCount int
 	if err := pool.QueryRow(ctx, `
@@ -95,6 +105,58 @@ WHERE tenant_id=$1 AND provider_account_id=$2 AND id=$3`, tenantID, accountID, c
 		t.Fatalf("同步失败必须回填账号族供失败日志辨识: %+v", rotationErr)
 	}
 	assertStoredModelIDs(t, ctx, pool, tenantID, accountID, []string{"gpt-a", "gpt-b"})
+}
+
+// 反转号车道(grok)账号级发现也必须能入箱:0219 前发现箱 CHECK 只放行
+// openai/anthropic/gemini,grok 模型入箱会被约束拒掉、整个白名单事务回滚。
+// 本测同时坐实迁移 0219 的 vendor/protocol CHECK 扩容(在旧 CHECK 上此测必红)。
+func TestSyncInvestsReversedLaneVendorIntoInbox(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool := openModelDiscoveryIntegrationPool(t, ctx)
+	tenantID, accountID, credentialID := seedModelDiscoveryAccount(t, ctx, pool)
+
+	vault := stubVault{
+		credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+		account: provider.AccountInfo{
+			AccountID: accountID, TenantID: tenantID,
+			Platform: credentialstore.VendorGrok, AccountType: credentialstore.AuthModeAPIKey,
+			AccountCredentialID: credentialID, CredentialVersion: 1,
+		},
+	}
+	dispatcher := &queuedDispatcher{responses: []*gateway.DispatchResult{
+		response(http.StatusOK, `{"data":[{"id":"grok-4-fast"}]}`),
+	}}
+	service := NewService(vault, dispatcher, pool, registry.NewPostgresRegistry(pool, nil))
+
+	result, err := service.Sync(ctx, SyncInput{
+		TenantID: tenantID, AccountID: accountID,
+		ActorID: "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-model-sync-grok", Reason: "反转号车道入箱",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InboxInvested != 1 {
+		t.Fatalf("grok 车道 InboxInvested=%d,期望 1", result.InboxInvested)
+	}
+	assertInboxPending(t, ctx, pool, "grok", "grok_chat", []string{"grok-4-fast"})
+}
+
+func assertInboxPending(t *testing.T, ctx context.Context, pool *pgxpool.Pool, vendor, protocolFamily string, wantModels []string) {
+	t.Helper()
+	for _, modelID := range wantModels {
+		var count int
+		if err := pool.QueryRow(ctx, `
+SELECT count(*)::int FROM model_discovery_inbox
+WHERE vendor=$1 AND provider_model_id=$2 AND protocol_family=$3 AND status='pending'`,
+			vendor, modelID, protocolFamily).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("发现箱缺 pending 行 vendor=%s model=%s protocol=%s (count=%d)", vendor, modelID, protocolFamily, count)
+		}
+	}
 }
 
 func seedModelDiscoveryAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, int64, int64) {

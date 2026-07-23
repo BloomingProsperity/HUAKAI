@@ -214,7 +214,8 @@ func normalizeModelDiscoveryDecision(in *ModelDiscoveryDecision) error {
 
 func validModelDiscoveryVendor(vendor modelsync.Vendor) bool {
 	switch vendor {
-	case modelsync.VendorAnthropic, modelsync.VendorOpenAI, modelsync.VendorGemini, modelsync.VendorGrok:
+	case modelsync.VendorAnthropic, modelsync.VendorOpenAI, modelsync.VendorGemini,
+		modelsync.VendorGrok, modelsync.VendorKimi, modelsync.VendorAntigravity:
 		return true
 	default:
 		return false

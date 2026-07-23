@@ -136,6 +136,35 @@ WHERE id = $1
 	}
 }
 
+// InvestAccountModelDiscoveriesTx 把账号级发现的模型投进发现箱(上架管道第 2 关)。
+// 复用 vendor 级同步的写入原语,在调用方提供的事务内执行,与账号白名单写入保持原子:
+// 白名单回滚则投箱一并回滚。单个模型 id 非法(规范化失败)只跳过该项,不拖垮其余模型
+// 与白名单提交;后端错误照常上抛触发回滚。vendor 无发现箱合同(如自定义 upstream_static
+// 归一化出的非枚举 vendor)时静默跳过,只走白名单。返回本次真正新入箱或元数据更新的条数。
+func (r *PostgresRegistry) InvestAccountModelDiscoveriesTx(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor, models []modelsync.Model) (int, error) {
+	if tx == nil {
+		return 0, ErrRegistryBackend
+	}
+	if !validModelDiscoveryVendor(vendor) {
+		return 0, nil
+	}
+	invested := 0
+	for _, model := range models {
+		outcome, _, err := syncModelDiscoveryTx(ctx, tx, vendor, model, true)
+		if err != nil {
+			if errors.Is(err, ErrModelDiscoveryInvalid) {
+				continue
+			}
+			return invested, err
+		}
+		switch outcome {
+		case discoverySyncDiscovered, discoverySyncUpdated:
+			invested++
+		}
+	}
+	return invested, nil
+}
+
 func markModelDiscoveriesAbsentTx(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor, normalizedIDs []string) ([]string, error) {
 	if len(normalizedIDs) == 0 {
 		return nil, nil

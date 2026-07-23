@@ -100,7 +100,7 @@ func TestPlanForAccountPreservesStaticUpstreamAndUsesStandardDispatcher(t *testi
 			Extra: map[string]string{"base_url": "https://upstream.example/api/v1"},
 		},
 		account: provider.AccountInfo{AccountID: 9, TenantID: 7, Platform: "custom_vendor", AccountType: "upstream_static"},
-	}, dispatcher, nil)
+	}, dispatcher, nil, nil)
 	if _, err := service.Discover(context.Background(), 7, 9); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestDiscoverPaginatesAnthropicAndNormalizesModels(t *testing.T) {
 		credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 		account: provider.AccountInfo{AccountID: 9, TenantID: 7, Platform: credentialstore.VendorAnthropic,
 			AccountType: credentialstore.AuthModeAPIKey, AccountCredentialID: 11, CredentialVersion: 3},
-	}, dispatcher, nil)
+	}, dispatcher, nil, nil)
 	result, err := service.Discover(context.Background(), 7, 9)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +179,7 @@ func TestDiscoverClassifiesUpstreamStatusWithoutLeakingBody(t *testing.T) {
 		service := NewService(stubVault{
 			credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 			account:    provider.AccountInfo{Platform: credentialstore.VendorOpenAI, AccountType: credentialstore.AuthModeAPIKey},
-		}, dispatcher, nil)
+		}, dispatcher, nil, nil)
 		_, err := service.Discover(context.Background(), 1, 2)
 		if KindOf(err) != test.kind {
 			t.Fatalf("status=%d kind=%q，期望 %q，err=%v", test.status, KindOf(err), test.kind, err)
@@ -203,7 +203,7 @@ func TestDispatchPageClosesResponse(t *testing.T) {
 	service := NewService(stubVault{
 		credential: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
 		account:    provider.AccountInfo{Platform: credentialstore.VendorOpenAI, AccountType: credentialstore.AuthModeAPIKey},
-	}, dispatcher, nil)
+	}, dispatcher, nil, nil)
 	if _, err := service.Discover(context.Background(), 1, 2); err != nil {
 		t.Fatal(err)
 	}

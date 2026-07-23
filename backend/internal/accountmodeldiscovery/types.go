@@ -7,9 +7,11 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
@@ -111,6 +113,26 @@ func (r Result) ModelIDs() []string {
 	return out
 }
 
+// syncModels 把账号级发现结果映射成 registry 发现箱写入原语所需的 modelsync.Model。
+// 单模型未带协议族时回退到本次请求计划的协议族;owned_by 留空由 registry 按 vendor 补默认。
+func (r Result) syncModels() []modelsync.Model {
+	out := make([]modelsync.Model, 0, len(r.Models))
+	for _, model := range r.Models {
+		protocol := model.ProtocolFamily
+		if protocol == "" {
+			protocol = r.ProtocolFamily
+		}
+		out = append(out, modelsync.Model{
+			ID:             model.ID,
+			DisplayName:    model.DisplayName,
+			ProtocolFamily: protocol,
+			ContextWindow:  model.ContextWindow,
+			Capabilities:   model.Capabilities,
+		})
+	}
+	return out
+}
+
 type SyncInput struct {
 	TenantID  int64
 	AccountID int64
@@ -124,6 +146,8 @@ type SyncResult struct {
 	Result
 	Changed       bool `json:"changed"`
 	PreviousCount int  `json:"previous_count"`
+	// InboxInvested 是本次同步真正新入发现箱或元数据更新的模型条数(上架管道第 2 关)。
+	InboxInvested int `json:"inbox_invested"`
 }
 
 type CredentialVault interface {
@@ -134,13 +158,21 @@ type Dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
+// DiscoveryInboxRecorder 把账号级发现的模型投进全局发现箱(model_discovery_inbox)。
+// 由 registry.PostgresRegistry 结构化实现,在账号白名单写入的同一事务内执行以保持原子。
+// 传 nil(未接线)时账号同步只写白名单,不投箱。
+type DiscoveryInboxRecorder interface {
+	InvestAccountModelDiscoveriesTx(ctx context.Context, tx pgx.Tx, vendor modelsync.Vendor, models []modelsync.Model) (int, error)
+}
+
 type Service struct {
 	vault      CredentialVault
 	dispatcher Dispatcher
 	pool       *pgxpool.Pool
+	inbox      DiscoveryInboxRecorder
 	timeout    time.Duration
 }
 
-func NewService(vault CredentialVault, dispatcher Dispatcher, pool *pgxpool.Pool) *Service {
-	return &Service{vault: vault, dispatcher: dispatcher, pool: pool, timeout: defaultTimeout}
+func NewService(vault CredentialVault, dispatcher Dispatcher, pool *pgxpool.Pool, inbox DiscoveryInboxRecorder) *Service {
+	return &Service{vault: vault, dispatcher: dispatcher, pool: pool, inbox: inbox, timeout: defaultTimeout}
 }

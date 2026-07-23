@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
+	"github.com/BloomingProsperity/HUAKAI/internal/autolisting"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyexpiry"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
@@ -140,6 +141,8 @@ const (
 	tlsProfileHealthLeaderLockKey int64 = 0x48554B544C534650
 	opsInspectionLeaderLockKey    int64 = 0x48554B4845524D49
 	stagedCleanupLeaderLockKey    int64 = 0x48554B535447434C
+	autoListingLeaderLockKey      int64 = 0x48554B4155544F4C
+	autoListingWorkerInterval           = 3 * time.Hour
 )
 
 // deps 是 run() 启动后 handler 收到的 live 依赖树。
@@ -1423,7 +1426,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		AnthropicTTLSettings:     platformSettingsService,
 		HTTPClient:               devMockUpstreamDoer(),
 	}
-	accountModelDiscovery := accountmodeldiscovery.NewService(credentialVault, gatewayDispatcher, pgPool)
+	accountModelDiscovery := accountmodeldiscovery.NewService(credentialVault, gatewayDispatcher, pgPool, modelRegistry)
 	mediaTaskConfig := mediatask.NewPlatformConfigSource(platformSettingsService, cfg.BillingPolicyVersion, cfg.RequestClass)
 	mediaTaskStore := mediatask.NewPostgresStore(pgPool, mediatask.PostgresStoreConfig{
 		BillingPolicyVersion: cfg.BillingPolicyVersion,
@@ -1770,6 +1773,21 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		d.modelSyncScheduler = scheduler
 		rt.modelSyncStop = scheduler.Start(workerCtx)
 	}
+
+	// 自动上架管道(part 2)worker:每 tick 现读 auto_listing_enabled 总闸(默认关 → 纯人工挡,
+	// 不抢 leader、不触上游),开启后先保鲜反转号(投发现箱)再自动上架有官方价的待处理模型。
+	// 与 modelSync 独立:后者只覆盖官方 API-key 车道,前者补齐 oauth 反转号车道 + 自动 promote/绑池。
+	autoListingWorker := autolisting.NewWorker(
+		autolisting.NewAccountRefresher(pgPool, accountModelDiscovery),
+		autolisting.NewService(modelRegistry, rateTableSource, platformSettingsService),
+		autolisting.NewSettingsGate(platformSettingsService),
+		autolisting.WorkerConfig{
+			Interval:    autoListingWorkerInterval,
+			RunOnStart:  false,
+			LeaderLease: workerlease.NewPostgres(pgPool, autoListingLeaderLockKey, "auto_listing"),
+		},
+	)
+	rt.autoListingStop = autoListingWorker.Start(workerCtx)
 
 	subscriptionExpiryWorker := subscription.NewExpiryWorker(subscription.ExpiryWorkerConfig{Service: d.subscriptionService})
 	subscriptionExpiryWorker.Start(workerCtx)
