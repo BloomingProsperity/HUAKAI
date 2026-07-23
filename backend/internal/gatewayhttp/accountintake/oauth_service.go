@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -265,6 +266,26 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 	})
 	if executeErr != nil {
 		return ExecutionResult{}, executeErr
+	}
+	// 失败路径收尾:主执行事务在完成日志/账号写入失败时整体回滚,账号未落库、会话未 finalize,
+	// 但暂存流程仍停在 staged。成功路径已在 CommitHook 内 FinishTx(true) 收尾;失败路径这里在
+	// 独立事务补写 failed 终态 + credential_acquisition_failed 审计,防流程永久悬挂。补写失败只记
+	// 高辨识度日志、不掩盖原始执行结果(cleanup worker 兜底收超时 claimed)。
+	if result.Summary.Failed > 0 {
+		// 脱离原请求取消(客户端可能已断开),但加超时上界防 DB 池耗尽/锁等待时无限挂起
+		//(镜像同文件 persistOAuthCandidate 的 8s 收尾窗口)。
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		defer cancel()
+		if ferr := s.staged.FinishFailedFromStaged(
+			finishCtx, in.TenantID, in.ActorID, in.ActorRole,
+			in.FlowID, in.PlanHash, in.RequestID, in.Reason, result.Summary,
+		); ferr != nil {
+			slog.WarnContext(ctx, "account intake 失败流程终态补写失败",
+				"component", "account_intake_oauth",
+				"event_class", "staged_finalize_failed_write_failed",
+				"tenant_id", in.TenantID, "flow_id", strings.TrimSpace(in.FlowID),
+				"error", ferr.Error())
+		}
 	}
 	return result, nil
 }
