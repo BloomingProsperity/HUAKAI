@@ -175,8 +175,10 @@ func BuildCandidates(in BuildInput, candidates []credentialacq.CredentialCandida
 	seenIdentity := make(map[string]int)
 	seenUntrusted := make(map[string]int)
 	for index, candidate := range candidates {
-		candidate.Vendor = credentialstore.Normalize(candidate.Vendor)
-		candidate.AuthMode = credentialstore.Normalize(candidate.AuthMode)
+		// 反转身份归一必须在去重/计划之前:planCandidate 的 identityMatchKey 以 vendor 为
+		// 前缀,若用别名 vendor(如 gemini/antigravity)去重会与规范身份(antigravity/oauth)
+		// 落库不一致,导致跨别名重复账号或错误 mode-match。此处统一归一,让去重键与落库同源。
+		candidate.Vendor, candidate.AuthMode = credentialstore.CanonicalReversalIdentity(candidate.Vendor, candidate.AuthMode)
 		credentialacq.AttachSubscription(&candidate)
 		candidates[index] = candidate
 		item := planCandidate(index, in.TenantID, in.SourceKind, candidate, in.Existing, registry, now, seenPayload, seenIdentity, seenUntrusted)

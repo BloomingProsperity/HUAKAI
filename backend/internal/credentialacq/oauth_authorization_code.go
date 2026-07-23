@@ -89,26 +89,33 @@ func cloneOAuthClientConfig(cfg OAuthClientConfig) OAuthClientConfig {
 
 func mergeOAuthClientConfig(base, override OAuthClientConfig) OAuthClientConfig {
 	cfg := cloneOAuthClientConfig(base)
-	if strings.TrimSpace(override.ClientID) != "" {
-		cfg.ClientID = strings.TrimSpace(override.ClientID)
-	}
-	if strings.TrimSpace(override.ClientSecret) != "" {
-		cfg.ClientSecret = strings.TrimSpace(override.ClientSecret)
-	}
-	if strings.TrimSpace(override.AuthURL) != "" {
-		cfg.AuthURL = strings.TrimSpace(override.AuthURL)
-	}
-	if strings.TrimSpace(override.TokenURL) != "" {
-		cfg.TokenURL = strings.TrimSpace(override.TokenURL)
-	}
-	if strings.TrimSpace(override.RedirectURI) != "" {
-		cfg.RedirectURI = strings.TrimSpace(override.RedirectURI)
-	}
-	if len(override.Scopes) > 0 {
-		cfg.Scopes = append([]string(nil), override.Scopes...)
-	}
-	if strings.TrimSpace(override.Source) != "" {
-		cfg.Source = strings.TrimSpace(override.Source)
+	// 公开 CLI 客户端的整套身份(client_id/secret、授权与令牌端点、redirect_uri、scope、source)
+	// 已在提供商侧注册为固定值,禁止任何 per-request override 注入不同身份:redirect 被改会导致
+	// 换码 redirect_mismatch 失败并构成开放重定向;client_id/secret/端点被改则冒用他人客户端身份。
+	// 与公开 CLI「不允许单次请求注入不同身份」的设计意图一致。只有非身份的运行期依赖(HTTPClient)
+	// 允许注入。非公开源(operator_config 等)按原样接受各字段 override。
+	if base.Source != ClientSourcePublicCLI {
+		if strings.TrimSpace(override.ClientID) != "" {
+			cfg.ClientID = strings.TrimSpace(override.ClientID)
+		}
+		if strings.TrimSpace(override.ClientSecret) != "" {
+			cfg.ClientSecret = strings.TrimSpace(override.ClientSecret)
+		}
+		if strings.TrimSpace(override.AuthURL) != "" {
+			cfg.AuthURL = strings.TrimSpace(override.AuthURL)
+		}
+		if strings.TrimSpace(override.TokenURL) != "" {
+			cfg.TokenURL = strings.TrimSpace(override.TokenURL)
+		}
+		if strings.TrimSpace(override.RedirectURI) != "" {
+			cfg.RedirectURI = strings.TrimSpace(override.RedirectURI)
+		}
+		if len(override.Scopes) > 0 {
+			cfg.Scopes = append([]string(nil), override.Scopes...)
+		}
+		if strings.TrimSpace(override.Source) != "" {
+			cfg.Source = strings.TrimSpace(override.Source)
+		}
 	}
 	if override.HTTPClient != nil {
 		cfg.HTTPClient = override.HTTPClient

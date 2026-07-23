@@ -176,6 +176,18 @@ func Normalize(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
+// CanonicalReversalIdentity 把反转号的历史身份别名归一到 serving 契约认的规范身份。
+// 当前唯一有别名的是 Antigravity:gemini/antigravity 与 antigravity/oauth 是同一种反转号,
+// serving 契约只认 antigravity/oauth。必须在 candidate 进入 plan/去重之前归一,确保去重键、
+// 计划与落库都用同一个规范身份,消除跨别名 dedup 错配与 split-brain。幂等;先做大小写归一。
+func CanonicalReversalIdentity(vendor, authMode string) (string, string) {
+	v, a := Normalize(vendor), Normalize(authMode)
+	if v == VendorGemini && a == AuthModeAntigravity {
+		return VendorAntigravity, AuthModeOAuth
+	}
+	return v, a
+}
+
 type handlerSpec struct {
 	vendor       string
 	authMode     string

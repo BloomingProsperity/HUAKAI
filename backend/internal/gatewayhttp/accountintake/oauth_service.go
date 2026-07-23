@@ -234,6 +234,18 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 	if !credentialacq.IsAccountIntakeSession(session) || session.TenantID != in.TenantID || session.ActorID != strings.TrimSpace(in.ActorID) || session.ActorRole != in.ActorRole {
 		return ExecutionResult{}, ErrInvalidInput
 	}
+	// 破坏性 Claim 之前先非破坏预检必需确认项:缺确认时消费+wipe staged 密文,会导致
+	// 重试 replay、逼用户重走整个 OAuth。LoadOAuthCandidate 只读不消费;intake.Plan 无网络副作用。
+	if peek, perr := s.staged.LoadOAuthCandidate(ctx, in.TenantID, in.ActorID, in.FlowID); perr == nil {
+		if planned, planErr := s.intake.Plan(ctx, peek.PlanInput); planErr == nil {
+			if blockedResult, blocked := precheckOAuthConfirmations(planned.Plan, in.Confirmations); blocked {
+				peek.PlanInput.Content = ""
+				blockedResult.PlanHash = in.PlanHash
+				return blockedResult, nil
+			}
+		}
+		peek.PlanInput.Content = ""
+	}
 	claimed, err := s.staged.Claim(ctx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash)
 	if err != nil {
 		return ExecutionResult{}, err

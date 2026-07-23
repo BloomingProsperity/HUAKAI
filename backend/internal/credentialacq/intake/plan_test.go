@@ -328,3 +328,24 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+// TestBuildCandidatesCanonicalizesReversalIdentityBeforeDedup 判别性守卫:反转身份别名
+// (gemini/antigravity)必须在 BuildCandidates 内、planCandidate 去重之前归一到规范身份
+// (antigravity/oauth)。identityMatchKey 以 vendor 为前缀,若归一晚于去重,别名 vendor 会
+// 与落库的规范 vendor 不一致,导致跨别名重复账号。删除 BuildCandidates 里的归一调用会转红。
+func TestBuildCandidatesCanonicalizesReversalIdentityBeforeDedup(t *testing.T) {
+	candidate := credentialacq.CredentialCandidate{
+		Vendor:   credentialstore.VendorGemini,
+		AuthMode: credentialstore.AuthModeAntigravity,
+		Payload:  []byte(`{"refresh_token":"rt-antigravity"}`),
+	}
+	prepared := BuildCandidates(BuildInput{TenantID: 7, SourceKind: SourceJSON},
+		[]credentialacq.CredentialCandidate{candidate})
+	if len(prepared.Candidates) != 1 {
+		t.Fatalf("candidates 数=%d，期望 1", len(prepared.Candidates))
+	}
+	got := prepared.Candidates[0]
+	if got.Vendor != credentialstore.VendorAntigravity || got.AuthMode != credentialstore.AuthModeOAuth {
+		t.Fatalf("BuildCandidates 未在去重前归一:vendor/auth=(%q,%q)，期望 (antigravity,oauth)", got.Vendor, got.AuthMode)
+	}
+}
