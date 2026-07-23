@@ -232,7 +232,7 @@ VALUES ($1, 'advanced_account_intake', true, 'admin_token:9', '回退保护', cl
 			SourceKind: "claude_cookie", Vendor: credentialstore.VendorAnthropic,
 			AuthMode: credentialstore.AuthModeClaudeAIOAuth, PlanHash: planHash, Content: secret,
 			PlanInput: accountintake.PlanInput{
-				TenantID: tenantID, SourceKind: intake.SourceJSON,
+				TenantID: tenantID, SourceKind: intake.SourceClaudeCookie,
 				DefaultVendor: credentialstore.VendorAnthropic, DefaultAuthMode: credentialstore.AuthModeClaudeAIOAuth,
 				Account: accountintake.AccountDefaults{ProviderID: 1, ChannelID: 1, NamePrefix: "claude", AccountType: "oauth"},
 				Now:     time.Now().UTC(),

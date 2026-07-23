@@ -26,13 +26,16 @@ const (
 type SourceKind string
 
 const (
-	SourceCLI              SourceKind = "cli_import"
-	SourceJSON             SourceKind = "json_import"
-	SourceCSV              SourceKind = "csv_import"
-	SourceClaudeSetupToken SourceKind = "claude_setup_token"
-	SourceCodexAgent       SourceKind = "codex_agent_identity"
-	SourceCRSSync          SourceKind = "crs_sync"
-	SourceOAuth            SourceKind = "oauth"
+	SourceCLI               SourceKind = "cli_import"
+	SourceJSON              SourceKind = "json_import"
+	SourceCSV               SourceKind = "csv_import"
+	SourceClaudeSetupToken  SourceKind = "claude_setup_token"
+	SourceClaudeCookie      SourceKind = "claude_cookie"
+	SourceClaudeSetupCookie SourceKind = "claude_setup_cookie"
+	SourceCodexAgent        SourceKind = "codex_agent_identity"
+	SourceCRSSync           SourceKind = "crs_sync"
+	SourceAccountBundle     SourceKind = "account_bundle"
+	SourceOAuth             SourceKind = "oauth"
 )
 
 type Action string
@@ -200,31 +203,11 @@ func ExistingFromIdentityMetadata(rows []credentialstore.CredentialIdentityMetad
 	return out
 }
 
-// sourceFlowKind 把批量导入来源映射成 flow_kind,用于对 ModePlan.AllowedHelpers 做来源回校
-// (与 CreateFromStart 同一合同)。第二返回值 false 表示该来源由专用解析器固定身份、不做通用
-// 来源回校(如 codex agent identity),避免误拒。
-func sourceFlowKind(s SourceKind) (credentialacq.FlowKind, bool) {
-	switch s {
-	case SourceCLI:
-		return credentialacq.FlowKindCLIImport, true
-	case SourceJSON, SourceCRSSync:
-		return credentialacq.FlowKindJSONImport, true
-	case SourceCSV:
-		return credentialacq.FlowKindCSVImport, true
-	case SourceClaudeSetupToken:
-		return credentialacq.FlowKindSetupToken, true
-	case SourceOAuth:
-		return credentialacq.FlowKindOAuth, true
-	default:
-		return "", false
-	}
-}
-
 func parseSource(source SourceKind, content, vendor, authMode string) ([]credentialacq.CredentialCandidate, error) {
 	switch source {
 	case SourceCLI:
 		return codeximport.Parse(content)
-	case SourceJSON, SourceCRSSync:
+	case SourceJSON, SourceClaudeCookie, SourceClaudeSetupCookie, SourceCRSSync, SourceAccountBundle:
 		return credentialacq.ParseImportContent(content,
 			firstNonEmpty(vendor, credentialstore.VendorOpenAI),
 			firstNonEmpty(authMode, credentialstore.AuthModeCodexCLIOAuth))
@@ -284,14 +267,11 @@ func planCandidate(
 		item.Message = "该账号模式当前处于封存状态，不能新建或更新凭据"
 		return item
 	}
-	// 来源回校:OAuth-only 模式(如 claude_ai_oauth,AllowedHelpers 仅含 oauth)不能被通用
-	// JSON/CSV/CLI 导入自声明 auth_mode 绕过——手写/窃取的 token 不得被标成"官方 OAuth 获取"。
-	// 与 CreateFromStart 的 AllowedHelpers 强制同一真相源;粘贴既有 token 应走 claude_code 等
-	// AllowedHelpers 含导入类来源的模式。
-	if flowKind, enforce := sourceFlowKind(sourceKind); enforce &&
-		!credentialacq.SourceAllowedForMode(candidate.Vendor, candidate.AuthMode, flowKind) {
+	// 来源由服务端入口确定。通用导入服从 ModePlan，专用来源还要通过固定厂商/模式矩阵；
+	// 迁移恢复与交互授权分开建模，不能靠请求体自报 auth_mode 绕过来源合同。
+	if !SourceAllowedForMode(sourceKind, candidate.Vendor, candidate.AuthMode) {
 		item.Code = "source_not_allowed_for_mode"
-		item.Message = "该来源不被账号模式允许:OAuth-only 模式不能通过粘贴/导入建立凭据"
+		item.Message = "该来源不被账号模式允许"
 		return item
 	}
 	if err := handler.ValidatePayload(candidate.Payload); err != nil {

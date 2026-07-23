@@ -9,7 +9,7 @@ import (
 
 // AI-01:OAuth-only 模式的来源回校。通用 JSON/CSV/CLI 导入不能自声明 OAuth-only 的
 // auth_mode(如 claude_ai_oauth)把手写 token 标成"官方 OAuth 获取"。
-// 变异刀:删掉 planCandidate 里 sourceFlowKind/SourceAllowedForMode 回校块 →
+// 变异刀:删掉 planCandidate 里 SourceAllowedForMode 回校块 →
 // claude_ai_oauth 那条不再拿 source_not_allowed_for_mode → 转红。
 func TestPlanCandidate_RejectsOAuthOnlyModeViaImport(t *testing.T) {
 	oauthOnly := credentialacq.CredentialCandidate{

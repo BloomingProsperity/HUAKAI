@@ -195,6 +195,27 @@ func TestExecutionErrorMessageDoesNotExposeBackendDetails(t *testing.T) {
 	}
 }
 
+func TestExecutionErrorClassification保留暂存流程原因(t *testing.T) {
+	tests := []struct {
+		err     error
+		code    string
+		message string
+	}{
+		{ErrStagedCredentialNotFound, "credential_flow_not_found", "短期账号流程不存在"},
+		{ErrStagedCredentialExpired, "credential_flow_expired", "短期账号流程已过期"},
+		{ErrStagedCredentialReplay, "credential_flow_replayed", "短期账号流程已被领取"},
+		{ErrPlanChanged, "account_plan_changed", "账号状态已变化，需要重新预检"},
+	}
+	for _, test := range tests {
+		if code := executionErrorCode(test.err); code != test.code {
+			t.Fatalf("err=%v code=%q，期望 %q", test.err, code, test.code)
+		}
+		if message := executionErrorMessage(test.err); message != test.message {
+			t.Fatalf("err=%v message=%q，期望 %q", test.err, message, test.message)
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

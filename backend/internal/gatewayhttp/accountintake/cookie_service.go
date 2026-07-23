@@ -73,8 +73,17 @@ func (s *CookieService) Plan(ctx context.Context, in CookiePlanInput) (CookiePla
 	if err != nil {
 		return CookiePlanResult{}, err
 	}
+	sourceKind := intake.SourceClaudeCookie
+	expectedMode := credentialstore.AuthModeClaudeAIOAuth
+	if in.SetupToken {
+		sourceKind = intake.SourceClaudeSetupCookie
+		expectedMode = credentialstore.AuthModeClaudeSetupToken
+	}
+	if credentialstore.Normalize(converted.AuthMode) != expectedMode {
+		return CookiePlanResult{}, ErrInvalidInput
+	}
 	planInput := PlanInput{
-		TenantID: in.TenantID, SourceKind: intake.SourceJSON,
+		TenantID: in.TenantID, SourceKind: sourceKind,
 		DefaultVendor: credentialstore.VendorAnthropic, DefaultAuthMode: converted.AuthMode,
 		Content: converted.ImportContent, Account: in.Account, Now: s.nowTime(),
 	}
@@ -82,13 +91,9 @@ func (s *CookieService) Plan(ctx context.Context, in CookiePlanInput) (CookiePla
 	if err != nil {
 		return CookiePlanResult{}, err
 	}
-	source := "claude_cookie"
-	if in.SetupToken {
-		source = "claude_setup_cookie"
-	}
 	staged, err := s.staged.Stage(ctx, StageInput{
 		TenantID: in.TenantID, ActorID: in.ActorID, ActorRole: in.ActorRole,
-		SourceKind: source, Vendor: credentialstore.VendorAnthropic, AuthMode: converted.AuthMode,
+		SourceKind: string(sourceKind), Vendor: credentialstore.VendorAnthropic, AuthMode: converted.AuthMode,
 		PlanInput: planInput, PlanHash: plan.PlanHash, Content: converted.ImportContent,
 		RequestID: in.RequestID, Reason: in.Reason,
 	})

@@ -358,6 +358,30 @@ func normalizeExport(wire exportResponse) ([]Account, error) {
 	return out, nil
 }
 
+// SourceModeAllowed 把 CRS 的来源类型绑定到唯一生产归一化结果。
+// 它同时约束真实客户端和测试/插件实现，防止未来的 CRSSource 旁路注入其他已注册模式。
+func SourceModeAllowed(sourceType, vendor, authMode string) bool {
+	vendor, authMode = credentialstore.CanonicalCredentialMode(vendor, authMode)
+	switch strings.TrimSpace(sourceType) {
+	case "claude":
+		return vendor == credentialstore.VendorAnthropic &&
+			(authMode == credentialstore.AuthModeClaudeAIOAuth ||
+				authMode == credentialstore.AuthModeClaudeSetupToken)
+	case "claude_console":
+		return vendor == credentialstore.VendorAnthropic && authMode == credentialstore.AuthModeAPIKey
+	case "openai_oauth":
+		return vendor == credentialstore.VendorOpenAI && authMode == credentialstore.AuthModeChatGPTOAuth
+	case "openai_responses":
+		return vendor == credentialstore.VendorOpenAI && authMode == credentialstore.AuthModeAPIKey
+	case "gemini_oauth":
+		return vendor == credentialstore.VendorGemini && authMode == credentialstore.AuthModeCodeAssist
+	case "gemini_api_key":
+		return vendor == credentialstore.VendorGemini && authMode == credentialstore.AuthModeAIStudioAPIKey
+	default:
+		return false
+	}
+}
+
 func normalizedAccount(sourceType string, item accountWire, vendor, authMode, accountType string) Account {
 	credentials := cloneMap(item.Credentials)
 	warnings := stripEndpointOverrides(credentials)
