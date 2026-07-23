@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/imagepricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
@@ -211,7 +212,7 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.resolved = resolved
-	if !hasImageOutputCapability(resolved.Capabilities) {
+	if !modality.Supports(resolved.Capabilities, modality.Image) {
 		writeJSONError(w, http.StatusBadRequest, "model_not_image_capable", "model is not enabled for image output")
 		return false
 	}
@@ -227,7 +228,6 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return false
 	}
-	requireImageOutputCapability(&plan)
 	ex.plan = plan
 	ex.activateAttempt(plan.Attempts[0])
 	return true

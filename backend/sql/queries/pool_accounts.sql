@@ -111,8 +111,13 @@ WITH target_channels AS (
 --   - model_allow_list 空 数组 → 无限制
 --   - model_allow_list 非空 → 必须包含 requested_model
 --   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+--     ※ 所有请求路径(chat 与媒体)现已不再输出 required_capabilities,该谓词对选号
+--     恒中性;capability_flags 列仅作展示/历史标记,改它不影响选号。modality 由模型
+--     注册表能力在各 handler 判定,账号侧由 model_allow_list 门(含下方媒体清单门)把关。
 --   - requested_protocol_family 为空 → legacy bypass
 --   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
+--   - require_model_listed=true(媒体端点族)→ model_allow_list 必须显式含该模型,
+--     空清单不放行(媒体静态必败不换号,选号前挡)
 SELECT
     pa.id,
     pa.tenant_id,
@@ -199,6 +204,11 @@ WHERE pa.tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.arg(requested_protocol_family)::text = ''
        OR p.upstream_protocol = sqlc.arg(requested_protocol_family)::text)
   AND pa.capability_flags @> sqlc.arg(required_capabilities)::text[]
+  -- 媒体端点族清单门:require_model_listed=true 时账号必须显式列出该模型(空清单的
+  -- "无限制" bypass 不适用)——媒体请求打到不含该模型的账号是静态必败(上游"不支持"
+  -- 多为终态 4xx,不触发换号),必须在选号前挡住,不靠 failover 兜底。
+  AND (NOT sqlc.arg(require_model_listed)::boolean
+       OR pa.model_allow_list @> ARRAY[sqlc.arg(requested_model)::text])
   -- 凭据真相门:只放至少有一条可服务凭据的账号。此前过滤 pa.credential_state
   -- (冻死列、无生命周期写点、恒 'valid') 是虚设过滤且放空壳账号进池;改读真相
   -- account_credentials.state(credentialstore 写生命周期)。谓词逐字匹配物化

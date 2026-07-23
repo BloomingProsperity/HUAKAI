@@ -2,6 +2,7 @@ package audiohttp
 
 import (
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
@@ -12,11 +13,6 @@ const (
 	audioEndpointSpeech         audioEndpoint = "speech"
 	audioEndpointTranscriptions audioEndpoint = "transcriptions"
 	audioEndpointTranslations   audioEndpoint = "translations"
-)
-
-const (
-	audioSpeechCapability        = "audio_speech"
-	audioTranscriptionCapability = "audio_transcription"
 )
 
 func (e audioEndpoint) Path() string {
@@ -30,49 +26,12 @@ func (e audioEndpoint) Path() string {
 	}
 }
 
-func (e audioEndpoint) RequiredCapability() string {
+// Modality 返回端点对应的媒体能力域:speech=语音合成,transcriptions/translations=转写。
+func (e audioEndpoint) Modality() modality.Modality {
 	if e == audioEndpointSpeech {
-		return audioSpeechCapability
+		return modality.AudioSpeech
 	}
-	return audioTranscriptionCapability
-}
-
-func hasAudioEndpointCapability(capabilities []string, endpoint audioEndpoint) bool {
-	required := endpoint.RequiredCapability()
-	for _, capability := range capabilities {
-		if capability == required {
-			return true
-		}
-	}
-	return false
-}
-
-func requireAudioEndpointCapability(plan *router.RoutePlan, endpoint audioEndpoint) {
-	if plan == nil {
-		return
-	}
-	required := endpoint.RequiredCapability()
-	for index := range plan.Attempts {
-		plan.Attempts[index].RequiredCapabilities = appendAudioCapability(
-			plan.Attempts[index].RequiredCapabilities,
-			required,
-		)
-	}
-	for phaseIndex := range plan.FallbackPhases {
-		for attemptIndex := range plan.FallbackPhases[phaseIndex].Attempts {
-			attempt := &plan.FallbackPhases[phaseIndex].Attempts[attemptIndex]
-			attempt.RequiredCapabilities = appendAudioCapability(attempt.RequiredCapabilities, required)
-		}
-	}
-}
-
-func appendAudioCapability(capabilities []string, required string) []string {
-	for _, capability := range capabilities {
-		if capability == required {
-			return capabilities
-		}
-	}
-	return append(capabilities, required)
+	return modality.AudioTranscription
 }
 
 func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {

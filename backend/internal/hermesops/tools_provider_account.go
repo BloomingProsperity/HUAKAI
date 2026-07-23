@@ -105,7 +105,8 @@ func ProviderAccountListSpec(deps ProviderAccountListDeps) ToolSpec {
 
 // providerAccountShape 把一条 AdminProviderAccountRow 投影成账号清册诊断字段。**显式列举 +
 // safe-by-construction**:只露结构化枚举/数值/布尔/时间戳 + 受控字符串数组(model_allow_list/
-// capability_flags 是模型名/能力枚举);**有意不投** Extra(原始 blob)、RateLimitReason(自由文本)、
+// capability_flags 是模型名/能力枚举;capability_flags 仅历史/展示标记,不参与选号——媒体资格
+// 看 model_allow_list 与模型注册表能力);**有意不投** Extra(原始 blob)、RateLimitReason(自由文本)、
 // Tags 值(→tag_count)、ProxyGroupID(自由文本)、TenantID(调用方已知)。LastRefreshOutcome 沿用
 // account_health_diagnose 既有判定(受控结果枚举)投出。
 func providerAccountShape(a admindb.AdminProviderAccountRow) map[string]any {

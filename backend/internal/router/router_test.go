@@ -300,7 +300,8 @@ func assertAttempts(t *testing.T, plan RoutePlan, want []wantAttempt) {
 // 设计决定(2026-07-23):chat 请求特性(stream/tools/vision/json/audio-input)【不再】作为账号池选号的
 // capability gate。requiredCapabilities 对任何 chat 特性组合都返回空(由 handler/上游处理);此前做账号级门
 // 有两个真实缺陷:账号默认空标记时流式(最常用)被误滤成 no_capacity,以及账号并集能力→跨模型误授权。
-// 媒体 lane(image_output/embeddings/rerank/video)的账号门不在此函数,由各自 route planner 独立追加,保留不变。
+// 媒体特性同样不做账号级能力门:modality 由各媒体 handler 按模型注册表能力(internal/modality)判定,
+// 账号侧由选号 SQL 的 model_allow_list 媒体清单门把关。
 // mutation: 让 requiredCapabilities 对任一 chat 特性重新 append 词 -> 转红。
 func TestRequiredCapabilities_ChatFeaturesNotAccountGated(t *testing.T) {
 	cases := []RequestFeatures{

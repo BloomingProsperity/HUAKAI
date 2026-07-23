@@ -22,7 +22,6 @@ import (
 const (
 	grokVideoProviderName   = "grok_video"
 	maxGrokVideoBodyBytes   = 2 << 20
-	videoOutputCapability   = "video"
 	selectionReleaseTimeout = 5 * time.Second
 )
 
@@ -175,7 +174,7 @@ func (p *GrokVideoProvider) dispatchBound(ctx context.Context, task Task, method
 		PoolGroupID: task.PoolGroupID, RequestedModel: task.RequestedModel,
 		ProviderModelID:  task.ProviderModelID,
 		ModelCooldownKey: task.ProviderModelID, ProtocolFamily: task.ProtocolFamily,
-		EndpointFamily: "videos", CapabilityFlags: []string{videoOutputCapability},
+		EndpointFamily: "videos",
 		RequestID: task.RequestID, PinnedAccountID: task.ProviderAccountID,
 		ClaimID: claimID, AttemptSeq: 1, Vendor: pool.VendorFromProtocolFamily(task.ProtocolFamily),
 		BindingID: task.BindingID, BindingRPMLimit: task.BindingRPMLimit,

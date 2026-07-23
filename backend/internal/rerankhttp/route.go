@@ -6,47 +6,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
 )
 
-const rerankCapability = "rerank"
-
-func hasRerankModelCapability(capabilities []string) bool {
-	if len(capabilities) == 0 {
-		return true
-	}
-	for _, capability := range capabilities {
-		if capability == rerankCapability {
-			return true
-		}
-	}
-	return false
-}
-
-func requireRerankCapability(plan *router.RoutePlan) {
-	if plan == nil {
-		return
-	}
-	for index := range plan.Attempts {
-		plan.Attempts[index].RequiredCapabilities = appendRerankCapability(
-			plan.Attempts[index].RequiredCapabilities,
-			rerankCapability,
-		)
-	}
-	for phaseIndex := range plan.FallbackPhases {
-		for attemptIndex := range plan.FallbackPhases[phaseIndex].Attempts {
-			attempt := &plan.FallbackPhases[phaseIndex].Attempts[attemptIndex]
-			attempt.RequiredCapabilities = appendRerankCapability(attempt.RequiredCapabilities, rerankCapability)
-		}
-	}
-}
-
-func appendRerankCapability(capabilities []string, required string) []string {
-	for _, capability := range capabilities {
-		if capability == required {
-			return capabilities
-		}
-	}
-	return append(capabilities, required)
-}
-
 func routerResolvedModel(resolved registry.Resolved) router.ResolvedModel {
 	out := router.ResolvedModel{
 		PublicAlias:     resolved.PublicAlias,
