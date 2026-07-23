@@ -119,7 +119,7 @@ func (embeddingsFallbackRegistry) ResolveModel(context.Context, string, int64) (
 	return registry.Resolved{
 		PublicAlias: "embed-public", CanonicalModelID: "embedding/canonical",
 		DefaultProviderModelID: "text-embedding-3-small", ProviderModelID: "text-embedding-3-small",
-		ProtocolFamily: "openai_chat", PoolCandidates: []int64{101, 201},
+		ProtocolFamily: "openai_chat", Capabilities: []string{"embeddings"}, PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 1101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", FallbackClass: string(bindingfallback.ClassNormal)},
 			{PoolGroupID: 201, BindingID: 2201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, FallbackClass: string(bindingfallback.ClassManual)},

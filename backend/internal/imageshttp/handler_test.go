@@ -97,6 +97,9 @@ func TestImagesHandler_TokenImageSettlesReportedUsageNotReserveEstimate(t *testi
 
 	rec := env.invoke(t, `{"model":"gpt-image-1","prompt":"transparent icon","size":"1024x1024","background":"transparent"}`)
 
+	if got := env.selector.last.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v,图片不得携带账号级媒体能力门(modality 由模型注册表判)", got)
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
@@ -518,6 +521,7 @@ func TestImagesHandler_ResponseIsUpstreamBytesWithAllowedHeaders(t *testing.T) {
 }
 
 type imagesTestEnv struct {
+	selector *selectorStub
 	deps      Deps
 	claims    *recordingClaimGate
 	settler   *recordingSettler
@@ -542,13 +546,14 @@ func newImagesTestEnv(t *testing.T, endpoint imageEndpoint, resp upstreamRespons
 	adapters.MustRegister("openai_chat", &openai.PassthroughAdapter{})
 	tf := transport.NewFactory()
 	tf.SetStandard(rt)
+	sel := &selectorStub{}
 	deps := Deps{
 		Auth:                  authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13, UserGroup: "pro"}},
 		Registry:              registryStub{},
 		Router:                routerStub{},
 		ClaimGate:             claims,
 		RateTables:            rates,
-		Selector:              selectorStub{},
+		Selector:              sel,
 		CredentialVault:       vaultStub{},
 		Dispatcher:            &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf},
 		Settler:               settler,
@@ -556,7 +561,7 @@ func newImagesTestEnv(t *testing.T, endpoint imageEndpoint, resp upstreamRespons
 		BillingPolicyVersion:  "test-policy",
 		RequestClass:          "standard",
 	}
-	return &imagesTestEnv{deps: deps, claims: claims, settler: settler, transport: rt, rateTable: rates, endpoint: endpoint}
+	return &imagesTestEnv{selector: sel, deps: deps, claims: claims, settler: settler, transport: rt, rateTable: rates, endpoint: endpoint}
 }
 
 func (e *imagesTestEnv) invoke(t *testing.T, body string) *httptest.ResponseRecorder {
@@ -683,9 +688,10 @@ func (s *rateTableStub) ListRateTableSnapshots(context.Context) ([]billing.RateT
 	return nil, nil
 }
 
-type selectorStub struct{}
+type selectorStub struct{ last pool.SelectionRequest }
 
-func (selectorStub) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+func (s *selectorStub) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.last = req
 	return &pool.SelectionResult{
 		AccountID:         44,
 		AcquisitionToken:  uuid.MustParse("11111111-1111-1111-1111-111111111111"),

@@ -347,6 +347,11 @@ WHERE pa.tenant_id = $2
   AND ($4::text = ''
        OR p.upstream_protocol = $4::text)
   AND pa.capability_flags @> $5::text[]
+  -- 媒体端点族清单门:require_model_listed=true 时账号必须显式列出该模型(空清单的
+  -- "无限制" bypass 不适用)——媒体请求打到不含该模型的账号是静态必败(上游"不支持"
+  -- 多为终态 4xx,不触发换号),必须在选号前挡住,不靠 failover 兜底。
+  AND (NOT $6::boolean
+       OR pa.model_allow_list @> ARRAY[$1::text])
   -- 凭据真相门:只放至少有一条可服务凭据的账号。此前过滤 pa.credential_state
   -- (冻死列、无生命周期写点、恒 'valid') 是虚设过滤且放空壳账号进池;改读真相
   -- account_credentials.state(credentialstore 写生命周期)。谓词逐字匹配物化
@@ -371,6 +376,7 @@ type ListEligibleAccountsByPoolGroupParams struct {
 	PoolGroupID             int64    `db:"pool_group_id" json:"pool_group_id"`
 	RequestedProtocolFamily string   `db:"requested_protocol_family" json:"requested_protocol_family"`
 	RequiredCapabilities    []string `db:"required_capabilities" json:"required_capabilities"`
+	RequireModelListed      bool     `db:"require_model_listed" json:"require_model_listed"`
 }
 
 type ListEligibleAccountsByPoolGroupRow struct {
@@ -424,6 +430,8 @@ type ListEligibleAccountsByPoolGroupRow struct {
 //   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
 //   - requested_protocol_family 为空 → legacy bypass
 //   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
+//   - require_model_listed=true(媒体端点族)→ model_allow_list 必须显式含该模型,
+//     空清单不放行(媒体静态必败不换号,选号前挡)
 func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error) {
 	rows, err := q.db.Query(ctx, listEligibleAccountsByPoolGroup,
 		arg.RequestedModel,
@@ -431,6 +439,7 @@ func (q *Queries) ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListE
 		arg.PoolGroupID,
 		arg.RequestedProtocolFamily,
 		arg.RequiredCapabilities,
+		arg.RequireModelListed,
 	)
 	if err != nil {
 		return nil, err

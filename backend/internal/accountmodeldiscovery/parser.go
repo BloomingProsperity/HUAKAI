@@ -38,12 +38,16 @@ func parseOpenAIModels(family string, body []byte) ([]Model, url.Values, error) 
 	}
 	models := make([]Model, 0, len(payload.Data))
 	for _, item := range payload.Data {
-		capabilities := []string{"chat"}
+		var capabilities []string
 		switch family {
 		case registrydefault.ProtocolOpenAIChat:
 			capabilities = modelsync.ClassifyOpenAIModel(item.ID)
 		case registrydefault.ProtocolGrokChat:
 			capabilities = modelsync.ClassifyGrokModel(item.ID)
+		default:
+			// 其余 openai-compatible 车道也按模型名派生媒体能力,嵌入/重排模型
+			// 不再被一刀切标成 chat(媒体能力门 fail-closed 会拒 chat-only 声明)。
+			capabilities = modelsync.ClassifyOpenAICompatibleModel(item.ID)
 		}
 		models = append(models, Model{ID: item.ID, DisplayName: item.ID, ProtocolFamily: family, Capabilities: capabilities})
 	}

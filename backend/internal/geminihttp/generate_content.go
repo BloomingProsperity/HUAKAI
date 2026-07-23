@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
@@ -186,7 +187,7 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
-	if !hasCountTokensModelCapability(resolved.Capabilities) {
+	if !modality.Supports(resolved.Capabilities, modality.CountTokens) {
 		writeJSONError(w, http.StatusNotFound, "model_not_available", "model does not support countTokens")
 		return
 	}
@@ -331,7 +332,6 @@ func (relay *countTokensRelay) planRoute(w http.ResponseWriter, ctx context.Cont
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return router.RoutePlan{}, false
 	}
-	requireCountTokensCapability(&plan)
 	_ = model
 	return plan, true
 }

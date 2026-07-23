@@ -46,8 +46,8 @@ func TestEmbeddingsHandler_SuccessSettlesPromptTokensAndForwardsPassthrough(t *t
 	if got := env.transport.auth; got != "Bearer sk-test" {
 		t.Fatalf("Authorization=%q want provider credential", got)
 	}
-	if got := env.selector.req.CapabilityFlags; len(got) != 1 || got[0] != embeddingsCapability {
-		t.Fatalf("选号能力=%v，期望 [%s]", got, embeddingsCapability)
+	if got := env.selector.req.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v，embeddings 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
 	}
 	if !strings.Contains(env.transport.body, `"encoding_format":"float"`) {
 		t.Fatalf("passthrough body lost client option: %s", env.transport.body)
@@ -253,6 +253,7 @@ func (registryStub) ResolveModel(context.Context, string, int64) (registry.Resol
 		CanonicalModelID: "embedding/canonical",
 		ProviderModelID:  "text-embedding-3-small",
 		ProtocolFamily:   "openai_chat",
+		Capabilities:     []string{"embeddings"},
 		PoolCandidates:   []int64{101},
 		SnapshotVersion:  "registry:7:1",
 	}, nil

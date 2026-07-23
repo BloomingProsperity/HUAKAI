@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
+	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -143,7 +144,7 @@ func newSubmitHandler(deps Deps, target endpoint) http.HandlerFunc {
 			writeRegistryError(w, err)
 			return
 		}
-		if !hasVideoCapability(resolved.Capabilities) {
+		if !modality.Supports(resolved.Capabilities, modality.Video) {
 			writeError(w, http.StatusBadRequest, "model_not_video_capable", "model is not enabled for video output")
 			return
 		}
@@ -316,22 +317,6 @@ func jsonNumber(value int64) string {
 	return string(encoded)
 }
 
-func hasVideoCapability(capabilities []string) bool {
-	for _, capability := range capabilities {
-		if capability == "video" || capability == "video_output" {
-			return true
-		}
-	}
-	return false
-}
-
-func appendVideoCapability(capabilities []string) []string {
-	if hasVideoCapability(capabilities) {
-		return capabilities
-	}
-	return append(capabilities, "video")
-}
-
 func selectBoundAccount(ctx context.Context, deps Deps, identity auth.Identity, resolved registry.Resolved, plan router.RoutePlan, requestID string) (*pool.SelectionResult, router.AttemptPlan, provider.AccountInfo, bool) {
 	budget := plan.AttemptBudget
 	if budget <= 0 || budget > len(plan.Attempts) {
@@ -340,7 +325,6 @@ func selectBoundAccount(ctx context.Context, deps Deps, identity auth.Identity, 
 	excluded := make(map[int64]struct{})
 	for index := 0; index < budget; index++ {
 		attempt := plan.Attempts[index]
-		attempt.RequiredCapabilities = appendVideoCapability(attempt.RequiredCapabilities)
 		providerModel := strings.TrimSpace(attempt.UpstreamModelID)
 		if providerModel == "" {
 			providerModel = resolved.ProviderModelID

@@ -62,6 +62,9 @@ func TestGrokVideoProviderPinsAccountAcrossSubmitAndPoll(t *testing.T) {
 			request.MaxParallelRequests != 3 || request.RateAccountingScope != pool.RateAccountingAccountOnly {
 			t.Fatalf("后台提交没有恢复原绑定合同: %+v", request)
 		}
+		if len(request.CapabilityFlags) != 0 {
+			t.Fatalf("选号能力=%v,pin 重选不得携带账号级媒体能力门(资格由提交时清单门保证)", request.CapabilityFlags)
+		}
 	}
 	if len(dispatcher.inputs) != 2 {
 		t.Fatalf("dispatch calls=%d want 2", len(dispatcher.inputs))

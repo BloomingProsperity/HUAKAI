@@ -226,8 +226,8 @@ func TestRerankTenantScoped(t *testing.T) {
 	if env.selector.req.TenantID != 7 || env.selector.req.UserID != 13 || env.selector.req.APIKeyID != 11 {
 		t.Fatalf("selector request=%+v want tenant/user/api key 7/13/11", env.selector.req)
 	}
-	if got := env.selector.req.CapabilityFlags; len(got) != 1 || got[0] != rerankCapability {
-		t.Fatalf("选号能力=%v，期望 [%s]", got, rerankCapability)
+	if got := env.selector.req.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v，rerank 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
 	}
 	if env.vault.tenantID != 7 {
 		t.Fatalf("vault tenantID=%d want 7", env.vault.tenantID)
