@@ -151,6 +151,12 @@ func defaultProtocolForVendor(vendor modelsync.Vendor) string {
 		return registrydefault.ProtocolAnthropicMessages
 	case modelsync.VendorGemini:
 		return registrydefault.ProtocolGeminiMessages
+	case modelsync.VendorGrok:
+		return registrydefault.ProtocolGrokChat
+	case modelsync.VendorKimi:
+		return registrydefault.ProtocolKimiChat
+	case modelsync.VendorAntigravity:
+		return registrydefault.ProtocolAntigravitySession
 	default:
 		return registrydefault.ProtocolOpenAIChat
 	}
@@ -170,6 +176,12 @@ func defaultOwnerForVendor(vendor modelsync.Vendor) string {
 	case modelsync.VendorAnthropic:
 		return "anthropic"
 	case modelsync.VendorGemini:
+		return "google"
+	case modelsync.VendorGrok:
+		return "xai"
+	case modelsync.VendorKimi:
+		return "moonshot"
+	case modelsync.VendorAntigravity:
 		return "google"
 	default:
 		return "openai"

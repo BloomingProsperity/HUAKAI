@@ -11,6 +11,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 )
 
 func (s *Service) Sync(ctx context.Context, in SyncInput) (_ SyncResult, retErr error) {
@@ -100,6 +101,16 @@ FOR SHARE`, discovered.AccountCredentialID, in.TenantID, in.AccountID, discovere
 			RequestID: optional(strings.TrimSpace(in.RequestID)), Payload: payload,
 		}); err != nil {
 			return err
+		}
+		// 上架管道第 2 关:把发现到的模型投进全局发现箱,与白名单写入同事务保持原子。
+		// 每次同步都投(不只在 changed 时):存量账号首次接线后箱里可能还没有这些模型。
+		// 投箱与白名单是两条正交事实——即便本次模型集合未变,箱里仍可能缺行。
+		if s.inbox != nil {
+			invested, err := s.inbox.InvestAccountModelDiscoveriesTx(ctx, tx, modelsync.Vendor(discovered.Vendor), discovered.syncModels())
+			if err != nil {
+				return err
+			}
+			result.InboxInvested = invested
 		}
 		result.Changed = changed
 		return nil

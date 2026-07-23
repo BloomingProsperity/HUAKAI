@@ -10,6 +10,9 @@ const (
 	VendorOpenAI    Vendor = "openai"
 	VendorGemini    Vendor = "gemini"
 	VendorGrok      Vendor = "grok"
+	// 下面两个只用于账号级发现(反转号车道)入发现箱,没有定时 API-key fetcher。
+	VendorKimi        Vendor = "kimi"
+	VendorAntigravity Vendor = "antigravity"
 )
 
 // Model 是 vendor model-list API 归一化后的最小目录项。

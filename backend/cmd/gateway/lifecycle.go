@@ -57,6 +57,7 @@ type gatewayRuntime struct {
 	pendingReconcileStop        func()
 	quotaReconcileStop          func()
 	modelSyncStop               func()
+	autoListingStop             func()
 	alertingEvalStop            func()
 	closeReplica                func()
 	credentialScheduler         *credentialworker.Scheduler
@@ -138,6 +139,9 @@ func (rt *gatewayRuntime) close() {
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
+	}
+	if rt.autoListingStop != nil {
+		rt.autoListingStop()
 	}
 	if rt.alertingEvalStop != nil {
 		rt.alertingEvalStop()
@@ -250,6 +254,9 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 	}
 	if rt.modelSyncStop != nil {
 		rt.modelSyncStop()
+	}
+	if rt.autoListingStop != nil {
+		rt.autoListingStop()
 	}
 	if rt.alertingEvalStop != nil {
 		rt.alertingEvalStop()

@@ -127,6 +127,11 @@ func (r *PostgresRegistry) promoteModelDiscoveryOnce(ctx context.Context, in Mod
 	if _, err := bumpAffectedSnapshots(ctx, tx, []int64{modelID}, "model discovery promotion: "+in.Reason, in.Access.Actor); err != nil {
 		return ModelDiscovery{}, err
 	}
+	// 上架管道第 4 关:上架成功即自动绑到能提供它的全部 pool_group,让手动上架也一步到位
+	// (自动挡复用同一 promote 路径,因此两挡上架后都自动可用)。无合格账号则不建空绑定。
+	if _, err := r.AutoBindModelToEligiblePoolsTx(ctx, tx, modelID, current.ProtocolFamily, current.ProviderModelID, in.Access.Actor, "model discovery promotion: "+in.Reason); err != nil {
+		return ModelDiscovery{}, err
+	}
 	if err := insertModelDiscoveryLogTx(ctx, tx, "promote_model_discovery", current, updated, in); err != nil {
 		return ModelDiscovery{}, err
 	}

@@ -106,6 +106,11 @@ const (
 	// 未配置的部署解析不出收件人，巡检 worker 保持关闭（fail-safe）。worker 层
 	// 还另有一处 env 回退。
 	KeyAdminNotificationEmail SettingKey = "admin_notification_email"
+	// 自动上架管道(part 2)。AutoListingEnabled 是自动挡总闸(Owner 2026-07-23 拍板默认开);
+	// AutoListingAutoVendors 是"默认走自动挡"的 vendor 白名单(JSON string 数组),不在名单内的
+	// vendor 走人工审批挡。仅总闸开启时生效。
+	KeyAutoListingEnabled     SettingKey = "auto_listing_enabled"
+	KeyAutoListingAutoVendors SettingKey = "auto_listing_auto_vendors"
 	// codex-cli 全局加固层的 7 个 SettingKey 常量在 codex_client_access.go 定义(§13 体量,同包)。
 )
 
@@ -113,7 +118,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyQuotaProbeIntervalMinutes, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyQuotaProbeIntervalMinutes, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail, KeyAutoListingEnabled, KeyAutoListingAutoVendors}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:          "false",
 		KeyInvitationRequired:           "true",
@@ -191,6 +196,11 @@ var (
 		KeyCodexClientAccessAllowAppServer:           "false",
 		KeyCodexClientAccessEngineFingerprintSignals: "[]",
 		KeyCodexClientAccessForceAllow:               "false",
+		// 自动上架总闸默认开(Owner 2026-07-23 拍板):官方号(定价可信)自动上架 + 保鲜,
+		// 反转号(grok/kimi/antigravity)默认走人工审批挡。auto-vendor 白名单即"走自动挡"的
+		// vendor,仅总闸开启时生效;运营可随时改这两个键调挡。
+		KeyAutoListingEnabled:     "true",
+		KeyAutoListingAutoVendors: `["openai","anthropic","gemini"]`,
 	}
 )
 
@@ -280,6 +290,9 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 	if key == KeyAdminNotificationEmail {
 		return validateOptionalEmailValue(key, value)
 	}
+	if key == KeyAutoListingAutoVendors {
+		return validateAutoListingVendorsValue(key, value)
+	}
 	if key == KeyOAuthProvidersConfig {
 		return validateOAuthProvidersConfigValue(key, value)
 	}
@@ -290,7 +303,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrInvalidValue, key)
 	}
 	switch key {
-	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessForceAllow:
+	case KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailAliasRestrictionEnabled, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyPromoEnabled, KeyCheckinEnabled, KeyReferralRewardEnabled, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyMediaTaskEnabled, KeyModerationExternalEnabled, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessForceAllow, KeyAutoListingEnabled:
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
