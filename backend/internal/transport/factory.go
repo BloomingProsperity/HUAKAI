@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -76,6 +77,12 @@ type Factory struct {
 	// 保留 connection pool 复用（http.Transport 重复 new 会让池作废）。
 	standardOnce   sync.Once
 	standardCached http.RoundTripper
+	// standardH1{Once,Cached} 是强制 HTTP/1.1 的标准出口变体,给打 Google
+	// cloudcode-pa 的 antigravity 反转号用——真实 Antigravity 客户端是
+	// Electron/Node(https 默认 http/1.1),H2 的 ALPN/SETTINGS 会暴露非真实
+	// 客户端。从 standardRoundTripper clone 后收窄 ALPN,复用同一连接池语义。
+	standardH1Once   sync.Once
+	standardH1Cached http.RoundTripper
 	// sidecarTestOverride 只供跨包单元测试验证模式选择，不参与生产 wiring。
 	// 生产代码没有配置入口，真实路径仍必须通过 Unix socket 探测 Rust sidecar。
 	sidecarTestOverride  http.RoundTripper
@@ -140,6 +147,12 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	}
 	switch mode {
 	case TransportModeStandard:
+		// antigravity 打 Google cloudcode-pa,真实客户端是 Electron/Node
+		// (https 默认 HTTP/1.1)。走标准 TLS 但强制 H1,匹配 Node.js https 默认,
+		// 避免 H2 ALPN/SETTINGS 暴露成非真实客户端。
+		if provider == ProviderAntigravity {
+			return f.standardH1RoundTripper(), nil
+		}
 		return f.standardRoundTripper(), nil
 	case TransportModeMimicryClaudeCode,
 		TransportModeMimicryChatGPT,
@@ -214,6 +227,33 @@ func (f *Factory) standardRoundTripper() http.RoundTripper {
 		f.standardCached = cloned
 	})
 	return f.standardCached
+}
+
+// standardH1RoundTripper 从 standardRoundTripper clone 一份并把 ALPN 收窄到
+// http/1.1(禁 H2)。仅 antigravity 标准出口使用,匹配真实 Antigravity(Node
+// https)的 HTTP/1.1 握手;非 *http.Transport(测试注入)时原样返回。
+func (f *Factory) standardH1RoundTripper() http.RoundTripper {
+	f.standardH1Once.Do(func() {
+		base := f.standardRoundTripper()
+		t, ok := base.(*http.Transport)
+		if !ok {
+			f.standardH1Cached = base
+			return
+		}
+		clone := t.Clone()
+		clone.ForceAttemptHTTP2 = false
+		// 清空 TLSNextProto 阻断隐式 H2 升级。
+		clone.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+		if clone.TLSClientConfig == nil {
+			clone.TLSClientConfig = &tls.Config{}
+		} else {
+			clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+		}
+		// 只在 ALPN 广播 http/1.1,不改 cipher/curve/sigalg(那些是标准 Go 值)。
+		clone.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		f.standardH1Cached = clone
+	})
+	return f.standardH1Cached
 }
 
 func (f *Factory) sidecarRoundTripper(mode TransportMode) (http.RoundTripper, error) {

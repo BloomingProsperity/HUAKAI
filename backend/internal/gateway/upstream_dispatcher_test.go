@@ -530,11 +530,12 @@ func TestResolveDispatchTransportMatrix(t *testing.T) {
 		{"Codex", "openai", credentialstore.AuthModeCodexCLIOAuth, "openai_codex", transport.ProviderOpenAICodex, transport.TransportModeMimicryChatGPT},
 		{"Gemini Advanced", "gemini", credentialstore.AuthModeGoogleOne, "gemini_advanced_session", transport.ProviderGeminiAdvanced, transport.TransportModeMimicryGeminiAdvanced},
 		{"Gemini Code Assist", "gemini", credentialstore.AuthModeCodeAssist, "gemini_code_assist", transport.ProviderGeminiCodeAssist, transport.TransportModeStandard},
-		{"Antigravity", "gemini", credentialstore.AuthModeAntigravity, "antigravity_session", transport.ProviderAntigravity, transport.TransportModeMimicryAntigravity},
-		{"Cursor", "cursor", "session", "cursor_session", transport.ProviderCursor, transport.TransportModeMimicryCursor},
-		{"Copilot", "copilot", credentialstore.AuthModeCopilotOAuth, "copilot_session", transport.ProviderCopilot, transport.TransportModeMimicryCopilot},
+		// antigravity/cursor/copilot/windsurf 无真抓指纹(仅 Safe Equivalent),收标准 TLS。
+		{"Antigravity", "gemini", credentialstore.AuthModeAntigravity, "antigravity_session", transport.ProviderAntigravity, transport.TransportModeStandard},
+		{"Cursor", "cursor", "session", "cursor_session", transport.ProviderCursor, transport.TransportModeStandard},
+		{"Copilot", "copilot", credentialstore.AuthModeCopilotOAuth, "copilot_session", transport.ProviderCopilot, transport.TransportModeStandard},
 		{"Kiro", "kiro", "session", "kiro_session", transport.ProviderKiro, transport.TransportModeMimicryKiro},
-		{"Windsurf", "windsurf", "session", "windsurf_session", transport.ProviderWindsurf, transport.TransportModeMimicryWindsurf},
+		{"Windsurf", "windsurf", "session", "windsurf_session", transport.ProviderWindsurf, transport.TransportModeStandard},
 		{"OpenAI API key", "openai", credentialstore.AuthModeAPIKey, "openai_chat", transport.ProviderOpenAI, transport.TransportModeStandard},
 		{"Anthropic API key", "anthropic", credentialstore.AuthModeAPIKey, "anthropic_messages", transport.ProviderAnthropic, transport.TransportModeStandard},
 		{"Gemini API key", "gemini", credentialstore.AuthModeAIStudioAPIKey, "gemini_messages", transport.ProviderGemini, transport.TransportModeStandard},
@@ -573,16 +574,18 @@ func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
 	factory.SetSidecarForTesting(mimicry)
-	adapter := &stubAdapter{platform: "copilot"}
+	// 用 codex(仍真抓指纹→mimicry)验证 session 账号走 mimicry 路由;
+	// copilot 等假脸车道已收标准,见 TestResolveDispatchTransportMatrix。
+	adapter := &stubAdapter{platform: "openai"}
 	dispatcher := &UpstreamDispatcher{
 		Adapters:         &stubRegistry{adapter: adapter},
 		TransportFactory: factory,
 	}
 
 	res, err := dispatcher.Dispatch(context.Background(), DispatchInput{
-		ProtocolFamily: "copilot_session",
+		ProtocolFamily: "openai_codex",
 		Account: provider.AccountInfo{
-			AccountID: 7, Platform: "copilot", AccountType: credentialstore.AuthModeCopilotOAuth,
+			AccountID: 7, Platform: "openai", AccountType: credentialstore.AuthModeCodexCLIOAuth,
 		},
 		Credential: provider.Credential{Type: provider.CredentialTypeSessionToken, Value: "session-token"},
 	})
@@ -593,8 +596,8 @@ func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
 	if standardCalls != 0 || mimicryCalls != 1 {
 		t.Fatalf("transport calls standard/mimicry=%d/%d want 0/1", standardCalls, mimicryCalls)
 	}
-	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
-		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
+	if adapter.lastInput.Account.Platform != string(transport.ProviderOpenAICodex) {
+		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderOpenAICodex)
 	}
 }
 

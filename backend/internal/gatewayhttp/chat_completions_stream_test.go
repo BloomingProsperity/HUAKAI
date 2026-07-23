@@ -314,7 +314,7 @@ func (rt *selectiveTransportRoundTripper) RoundTrip(req *http.Request) (*http.Re
 	}, nil
 }
 
-func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
+func TestChatCompletions_CopilotStandardLaneUsesStandardTransport(t *testing.T) {
 	// 变异:若 chatExecution 不再把 TransportMode 传入 Dispatch 或 DispatchHCSF,
 	// 这些用例就会走 standard transport,在交付前失败,
 	// 而非返回 fixture 响应。
@@ -370,7 +370,7 @@ func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 		}
-		assertMimicryOnlyTransport(t, standard, mimicry)
+		assertStandardOnlyTransport(t, standard, mimicry)
 	})
 
 	t.Run("buffered HCSF dispatch", func(t *testing.T) {
@@ -382,7 +382,7 @@ func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 		}
-		assertMimicryOnlyTransport(t, standard, mimicry)
+		assertStandardOnlyTransport(t, standard, mimicry)
 	})
 
 	t.Run("buffered raw dispatch", func(t *testing.T) {
@@ -394,7 +394,7 @@ func TestChatCompletions_ReverseSessionUsesMimicryTransport(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status=%d want 200; body=%s", rec.Code, rec.Body.String())
 		}
-		assertMimicryOnlyTransport(t, standard, mimicry)
+		assertStandardOnlyTransport(t, standard, mimicry)
 	})
 }
 
@@ -435,11 +435,12 @@ func TestResolveDispatchTransport_V2ReverseSessionShapes(t *testing.T) {
 			wantMode:       transport.TransportModeStandard,
 		},
 		{
-			name:           "gemini antigravity auth mode uses antigravity provider",
+			// 仍解析到 antigravity provider,但假脸车道收标准 TLS(mode=standard)。
+			name:           "gemini antigravity auth mode uses antigravity provider standard",
 			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
 			protocolFamily: "antigravity_session",
 			wantPlatform:   string(transport.ProviderAntigravity),
-			wantMode:       transport.TransportModeMimicryAntigravity,
+			wantMode:       transport.TransportModeStandard,
 		},
 		{
 			name:           "openai api key remains standard",
@@ -472,8 +473,10 @@ func TestResolveDispatchTransport_V2ReverseSessionShapes(t *testing.T) {
 
 func copilotTransportModeDispatcher(t *testing.T, responseBody string) (*selectiveTransportRoundTripper, *selectiveTransportRoundTripper, *gateway.UpstreamDispatcher) {
 	t.Helper()
-	standard := &selectiveTransportRoundTripper{err: errors.New("standard transport must not be used for copilot session")}
-	mimicry := &selectiveTransportRoundTripper{responseBody: responseBody}
+	// copilot 无真抓指纹(仅 Safe Equivalent),已收标准 TLS:响应挂标准出口,
+	// mimicry sidecar 不应被调用。
+	standard := &selectiveTransportRoundTripper{responseBody: responseBody}
+	mimicry := &selectiveTransportRoundTripper{err: errors.New("mimicry sidecar must not be used for copilot standard-lane session")}
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
 	factory.SetSidecarForTesting(mimicry)
@@ -523,13 +526,15 @@ func copilotTransportModeDeps(t *testing.T, dispatcher *gateway.UpstreamDispatch
 	return deps
 }
 
-func assertMimicryOnlyTransport(t *testing.T, standard, mimicry *selectiveTransportRoundTripper) {
+// assertStandardOnlyTransport 守住假脸车道(copilot 等仅 Safe Equivalent 指纹)
+// 收标准后:标准出口被调、mimicry sidecar 不被调。
+func assertStandardOnlyTransport(t *testing.T, standard, mimicry *selectiveTransportRoundTripper) {
 	t.Helper()
-	if standard.called {
-		t.Fatal("standard transport was used for reverse session account")
+	if !standard.called {
+		t.Fatal("standard transport was not used for standard-lane session account")
 	}
-	if !mimicry.called {
-		t.Fatal("mimicry transport was not used for reverse session account")
+	if mimicry.called {
+		t.Fatal("mimicry sidecar was used for standard-lane session account")
 	}
 }
 

@@ -165,16 +165,11 @@ func dispatchTransportMode(providerCode transport.ProviderCode, accountType stri
 		return transport.TransportModeMimicryChatGPT
 	case transport.ProviderGeminiAdvanced:
 		return transport.TransportModeMimicryGeminiAdvanced
-	case transport.ProviderAntigravity:
-		return transport.TransportModeMimicryAntigravity
-	case transport.ProviderCursor:
-		return transport.TransportModeMimicryCursor
-	case transport.ProviderCopilot:
-		return transport.TransportModeMimicryCopilot
 	case transport.ProviderKiro:
 		return transport.TransportModeMimicryKiro
-	case transport.ProviderWindsurf:
-		return transport.TransportModeMimicryWindsurf
+	// antigravity / cursor / copilot / windsurf 无真抓客户端指纹(profile 仅 Safe
+	// Equivalent),伪装假指纹反成特征;且 antigravity 打 Google cloudcode-pa 不校验
+	// TLS 指纹。故走标准 TLS，客户端身份仍由各 provider 的应用层 UA/header 承担。
 	case transport.ProviderAnthropic:
 		switch strings.ToLower(strings.TrimSpace(accountType)) {
 		case "oauth", "session", credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode,

@@ -1,7 +1,7 @@
 // Package claudecodecloak 把「非官方 Claude Code 客户端」打到 Anthropic 反转号时的
 // 请求体改写成接近真实 CLI 的 system 形态。
 //
-// 纯 JSON 变换，无 IO/网络。clean-room 自研算法，不依赖参考项目源码。
+// 纯 JSON 变换，无 IO/网络。自研算法，无外部来源代码依赖。
 //
 // 策略概要：
 //  1. system 整段替换为 3 个 text block：billing 归因 / 身份句 / 扩充段(带 cache_control)
@@ -206,7 +206,7 @@ type cacheControl struct {
 }
 
 // fingerprintSalt 是 cc_version 后缀指纹的盐,取真实 Claude Code CLI 出站流量
-// 推导的固定互操作常量(协议事实值,非参考项目的创作表达)。任何偏差都会使指纹
+// 推导的固定互操作常量(协议事实值,非受版权保护的创作表达)。任何偏差都会使指纹
 // 与真实 CLI 不一致、反而暴露成第三方,故与出站 UA 版本一样必须精确复刻。
 const fingerprintSalt = "59cf53e54c78"
 

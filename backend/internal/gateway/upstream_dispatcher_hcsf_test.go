@@ -98,20 +98,23 @@ func TestDispatchHCSFHappyPathBuildsBodyFromEnvelope(t *testing.T) {
 	}
 }
 
-func TestDispatchHCSFAutoTransportModeUsesSessionMimicry(t *testing.T) {
+// TestDispatchHCSFCopilotSessionUsesStandard 守住:copilot 等假脸车道(仅 Safe
+// Equivalent 指纹)HCSF 路径收标准 TLS,不落入 mimicry sidecar。若有人把 copilot
+// 改回 mimicry,mimicry mock 报错使本测试转红。
+func TestDispatchHCSFCopilotSessionUsesStandard(t *testing.T) {
 	standardCalls, mimicryCalls := 0, 0
-	standard := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	standard := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		standardCalls++
-		return nil, errors.New("HCSF session 账号不得落入 standard transport")
-	})
-	mimicry := dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		mimicryCalls++
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
 			Body:       io.NopCloser(strings.NewReader(openAIHCSFResponse)),
 			Request:    req,
 		}, nil
+	})
+	mimicry := dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		mimicryCalls++
+		return nil, errors.New("copilot 假脸车道已收标准,不应走 mimicry sidecar")
 	})
 	factory := transport.NewFactory()
 	factory.SetStandard(standard)
@@ -141,8 +144,8 @@ func TestDispatchHCSFAutoTransportModeUsesSessionMimicry(t *testing.T) {
 	if got.BufferedResponse == nil || got.BufferedResponse.Model != "gpt-4o-upstream" {
 		t.Fatalf("buffered response=%+v", got.BufferedResponse)
 	}
-	if standardCalls != 0 || mimicryCalls != 1 {
-		t.Fatalf("transport calls standard/mimicry=%d/%d want 0/1", standardCalls, mimicryCalls)
+	if standardCalls != 1 || mimicryCalls != 0 {
+		t.Fatalf("transport calls standard/mimicry=%d/%d want 1/0", standardCalls, mimicryCalls)
 	}
 	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
 		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
