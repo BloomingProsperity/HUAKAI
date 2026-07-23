@@ -401,6 +401,30 @@ WHERE id=$2::uuid AND tenant_id=$3 AND actor_id=$4 AND status='claimed'`,
 	return nil
 }
 
+// FinishFailedFromStaged 在主执行事务回滚后，把仍处于 staged 的流程独立收尾为 failed：
+// 一个新事务内先 claim(staged→claimed)再 finish(claimed→failed)并写
+// credential_acquisition_failed 审计。用于完成日志/账号写入回滚后补写终态，防流程永久悬挂在
+// staged。不触碰已回滚的账号写入，也不 finalize 会话(会话保持 validated 供排障)。plan_hash
+// 沿用执行请求的哈希，暂存过期/被并发收尾时返回相应错误由调用方记日志兜底(cleanup worker 亦会
+// 兜底把超时 claimed 收成 failed)。
+func (s *StagedStore) FinishFailedFromStaged(ctx context.Context, tenantID int64, actorID, actorRole, id, planHash, requestID, reason string, summary ExecutionSummary) error {
+	if s == nil || s.pool == nil {
+		return ErrNotConfigured
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.ClaimTx(ctx, tx, tenantID, actorID, id, planHash); err != nil {
+		return err
+	}
+	if err := s.FinishTx(ctx, tx, tenantID, actorID, actorRole, id, requestID, reason, false, summary); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Cleanup 独立执行短期凭据生命周期清理，不依赖新的导入请求触发。
 func (s *StagedStore) Cleanup(ctx context.Context) error {
 	if s == nil || s.pool == nil {
