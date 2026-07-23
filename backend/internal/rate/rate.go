@@ -1,6 +1,6 @@
 // Package rate 实现 F-RATE-001:上游限流 + 冷却(cooldown)。
 //
-// 已发布的规格见 docs/specs/rate-limiting.md。
+// 当前健康与限流合同见 docs/HUAKAI工程设计手册.md §10。
 // 本包定义限流/冷却契约,以及各 provider 专属的分类器接口面。
 package rate
 

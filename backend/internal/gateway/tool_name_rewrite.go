@@ -1,6 +1,5 @@
 // R7.4：Anthropic Messages API 工具名混淆引擎（强伪装层 6 步 body 变换的
-// 第 4 步）。Spec：docs/specs/upstream-credential-management.md §Phase C 第
-// 27 步 step 4 of 6。
+// 第 4 步）。当前出站合同见 docs/HUAKAI工程设计手册.md §6。
 //
 // 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖工具名出现的三个位置：
 //  1. 顶层 tools[].name —— 工具声明列表

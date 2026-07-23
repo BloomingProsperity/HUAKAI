@@ -1,6 +1,6 @@
 // 包 gateway 实现 F-GW-002:流式转发器 + 用量计量。
 //
-// 已发布的规范见 docs/specs/streaming-forwarder.md。
+// 当前转发与流式合同见 docs/HUAKAI工程设计手册.md §7。
 package gateway
 
 import (

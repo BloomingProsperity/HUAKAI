@@ -62,8 +62,8 @@ var allFeatures = []FeatureName{
 	FeatureMultiCandidate,
 }
 
-// CapabilityMatrix 是内存中的协议矩阵，对应规范第 4.1 节。当前由 DefaultMatrix 构造，
-// 不读取 protocol_capability_matrix/protocol_policy_versions，见 docs/architecture/deprecated-schema.md。
+// CapabilityMatrix 是内存中的协议矩阵。当前由 DefaultMatrix 构造，
+// 不读取 protocol_capability_matrix/protocol_policy_versions。
 type CapabilityMatrix map[ClientProtocol]map[UpstreamProtocol]map[FeatureName]Verdict
 
 func (m CapabilityMatrix) Lookup(client ClientProtocol, upstream UpstreamProtocol, feature FeatureName) Verdict {

@@ -1,109 +1,74 @@
-# Legal Notice
+# 法律声明
 
-**Languages:** [English](LEGAL.md) · [简体中文 (TBD)](LEGAL_CN.md)
+## 商标
 
----
+本仓库提及的名称，包括但不限于 Anthropic、Claude、Claude Code、OpenAI、
+ChatGPT、Codex、Google、Vertex AI、Gemini、Amazon、AWS、Bedrock、
+OpenRouter、Cursor 和 Aider，均为各自权利人的商标或注册商标。
 
-## Trademarks
+HUAKAI 与上述主体不存在隶属、认可、赞助或合作关系。源码、文档、配置或界面中提及
+这些名称，仅用于说明互操作行为，不表示任何商业关系。
 
-Names referenced in this repository — including but not limited to:
+## 合规责任
 
-- "Anthropic", "Claude", "Claude Code"
-- "OpenAI", "ChatGPT", "Codex"
-- "Google", "Vertex AI", "Gemini"
-- "Amazon", "AWS", "Bedrock"
-- "OpenRouter", "Cursor", "Aider"
+HUAKAI 的设计假定部署者：
 
-— are trademarks or registered trademarks of their respective owners. HUAKAI is
-not affiliated with, endorsed by, or sponsored by any of these entities.
-References to these names in HUAKAI source code, documentation, configuration,
-or interface are made solely for the purpose of describing interoperability
-behavior and do not imply any commercial relationship.
+1. 合法持有被接入和路由的上游账号；
+2. 已针对具体使用场景审阅并遵守各上游服务条款；
+3. 在自己控制的基础设施上运行 HUAKAI。
 
-## Compliance
+HUAKAI 的作者和贡献者不声称任何特定上游允许任何特定使用方式。部署者必须自行确认
+服务条款和法律合规性。部署者若把 HUAKAI 用作 SaaS 或面向第三方的服务，应独立承担
+该部署符合各上游条款和适用法律的全部责任。
 
-HUAKAI's design assumes an operator who:
+## 不构成法律意见
 
-1. Lawfully holds the upstream provider account(s) being routed.
-2. Has reviewed and complies with each upstream provider's Terms of Service for
-   the specific use case in question.
-3. Operates HUAKAI on infrastructure they control.
+本仓库中的代码、文档、注释、计划、决策记录和提交信息均不构成法律意见。涉及特定
+司法辖区或使用方式的合规问题，部署者应咨询独立法律顾问。
 
-The HUAKAI project authors and contributors **do not** claim that HUAKAI's use
-is permitted by any specific upstream provider for any specific use case. The
-operator must independently verify ToS compliance.
+## 责任限制
 
-If an operator chooses to deploy HUAKAI as a SaaS or any third-party-facing
-service, that operator is solely responsible for ensuring such deployment
-complies with each upstream's ToS and applicable law.
+在任何情况下，HUAKAI 的作者或贡献者均不对因使用本软件产生的直接、间接、附带、
+特殊、惩罚性或后果性损害承担责任，包括但不限于替代商品或服务采购、使用损失、
+数据或利润损失以及业务中断；无论该损害基于合同、严格责任、侵权或其他责任理论，
+即使已被告知可能发生该损害。
 
-## No legal advice
+本段不替代或缩减 [MIT 许可证](LICENSE)中的免责条款。
 
-Nothing in this repository — including code, documentation, comments, plan
-documents, decision records, or commit messages — constitutes legal advice.
-Operators should consult independent legal counsel for any compliance questions
-specific to their jurisdiction and use case.
+## 知识产权投诉
 
-## Liability disclaimer
+如认为本仓库内容侵犯知识产权，请联系：
 
-In no event shall the HUAKAI authors or contributors be liable for any direct,
-indirect, incidental, special, exemplary, or consequential damages (including
-but not limited to procurement of substitute goods or services; loss of use,
-data, or profits; or business interruption) however caused and on any theory of
-liability, whether in contract, strict liability, or tort (including negligence
-or otherwise) arising in any way out of the use of this software, even if
-advised of the possibility of such damage.
+- 邮箱：`Huaxiaokai2@outlook.com`
 
-## DMCA / takedown contact
+通知应包含：受保护作品的识别信息、被投诉材料的位置、联系方式、善意声明、准确性
+声明，以及手写或电子签名。
 
-If you believe your intellectual property rights have been infringed by content
-in this repository, please contact:
+## 数据处理
 
-- Email: `Huaxiaokai2@outlook.com`
+- HUAKAI 本身不收集遥测，也不主动回传数据。
+- `tools/fingerprint-collector` 生成的本地文件可能含原始抓包。此类文件不得离开
+  部署者本机，不得附加到 Issue、PR 或任何公开沟通。
+- HUAKAI 作为反向代理，会处理运营者凭据、请求体和响应体。部署者负责通过网络、
+  存储、访问控制和日志脱敏保护这些数据。
 
-Notice should include: identification of the copyrighted work, identification
-of the allegedly infringing material, your contact information, a statement of
-good faith belief, a statement of accuracy under penalty of perjury, and your
-physical or electronic signature.
+## 安全报告
 
-## Data handling
+漏洞报告流程见 [安全报告政策](SECURITY.md)。以“如何绕过上游服务条款”为目的的报告
+不属于本项目安全响应范围。
 
-- HUAKAI itself collects no telemetry. The software does not phone home.
-- The bundled `tools/fingerprint-collector` produces local files including raw
-  packet captures. **These files must never leave the operator's local machine.**
-  Specifically: do not attach pcap files or fingerprint output to issues, pull
-  requests, or any public communication.
-- Operator credentials, request bodies, and response bodies pass through HUAKAI
-  in plain form by design (HUAKAI is a reverse proxy). Operators are responsible
-  for ensuring their HUAKAI deployment's network and storage layers protect
-  this data appropriately.
+## 适用法律
 
-## Security disclosure
+本声明适用越南社会主义共和国法律，不适用法律冲突规则；争议由越南胡志明市有管辖权
+的法院处理。本条不免除部署者遵守其所在司法辖区法律的义务。
 
-See [SECURITY.md](SECURITY.md) (TBD) for vulnerability disclosure procedure.
+## 更新
 
-We do not accept reports framed as "how to use HUAKAI to bypass an upstream
-provider's ToS". Such reports are out of scope of this project's security
-program.
+本声明可能更新。某个发布版本适用的文本，以该版本 Git tag 中包含的文本为准；重大
+变更应写入发布说明。
 
-## Governing law
+## 许可证与第三方依赖
 
-This notice is governed by the laws of the **Socialist Republic of Vietnam**,
-without regard to conflict-of-law principles. Disputes shall be brought in the
-courts of **Ho Chi Minh City, Vietnam**.
-
-This choice of law does not override the operator's own legal obligations
-under the laws of their own jurisdiction; operators outside Vietnam remain
-responsible for their local compliance.
-
-## Updates
-
-This document may be updated. The version in effect for any release is the
-version contained in that release's git tag. Material changes will be noted
-in the project's release notes.
-
-## Acknowledgements
-
-HUAKAI is published under [MIT](LICENSE). Third-party libraries used by HUAKAI
-remain subject to their own licenses; see project go.mod / package.json files
-for the canonical dependency list.
+HUAKAI 按 [MIT 许可证](LICENSE)发布。第三方库适用其各自许可证；依赖清单以项目
+`go.mod`、`Cargo.toml` 等机器合同为准，治理要求见
+[依赖与许可证政策](docs/dependency-policy.md)。

@@ -1,48 +1,37 @@
 ---
-description: Run Codex reviewer-lane against committed slice acceptance-test coverage
-allowed-tools: Bash, Read, Edit, Write, Glob, Grep
+description: 对指定行为合同和验收测试运行 Codex 只读覆盖审查
+allowed-tools: Bash, Read, Glob, Grep
 ---
 
-# /cross-review — HUAKAI cross-validation protocol
+# /cross-review
 
-Argument format: `/cross-review <slice-id> <feature-id> <spec-path>`
+参数格式：
 
-Examples:
-- `/cross-review "Phase 4 v0.1 slice 1" F-AUTH-005 docs/specs/upstream-credential-management.md`
-- `/cross-review "Phase 4 v0.1 slice 2" F-POOL-001 docs/specs/pool-routing.md`
+`/cross-review <目标标识> <功能标识> <当前合同材料路径>`
 
-Arguments parsed from `$ARGUMENTS`: $ARGUMENTS
+参数来自 `$ARGUMENTS`：$ARGUMENTS
 
-## Workflow you MUST follow
+## 强制流程
 
-1. **Parse arguments** from `$ARGUMENTS` — extract slice ID, feature ID, spec path
-2. **Locate test + impl files** under `backend/internal/<feature_pkg>/`:
-   - Test files: `*_test.go` in the feature's package
-   - Impl files: production `.go` files
-3. **Read template** at `docs/templates/codex-reviewer.md` (NEVER skip this; it encodes the cross-review protocol)
-4. **Substitute placeholders** in the template with actual paths
-5. **Dispatch** Codex with `codex exec --full-auto --sandbox read-only -C $REPO -` reading from the substituted template piped via stdin (`run_in_background: true`)
-6. **Wait** for the background notification (do NOT poll)
-7. **On completion**:
-   - Trim Codex CLI noise (intermediate stream + duplicate sections); keep only the final report (find last `^# {Slice}` heading)
-   - Save to `docs/reviews/{YYYY-MM-DD}-{slice-id-slug}-coverage-audit.md`
-   - Add a header with reviewer / audit date / scope / verdict before the report body
-8. **Report to Owner** in concise Chinese:
-   - Final verdict (APPROVE / APPROVE-WITH-FIXES / REJECT)
-   - Top 3 HIGH-severity findings with file:line citations
-   - Whether forward progression to next slice is blocked
-   - File path to the saved review
+1. 从参数提取目标标识、功能标识和当前合同材料路径。材料可以是白皮书对应章节、
+   OpenAPI、迁移/查询合同或当前 PR 的验收条款，不得使用已经退役的历史规格状态。
+2. 定位对应的 `*_test.go` 与生产实现文件。
+3. 完整读取 `docs/templates/codex-reviewer.md`。
+4. 替换模板中的输入占位符。
+5. 在仓库根目录运行只读 reviewer：
 
-## Hard rules — NOT NEGOTIABLE
+   ```bash
+   codex exec --full-auto --sandbox read-only -C "$REPO" -
+   ```
 
-- **Never** dispatch Codex without the read-only sandbox flag (the reviewer must NOT be able to edit files)
-- **Never** hand-write the prompt body; you MUST cat the template
-- **Never** claim a slice is "covered" because tests pass — only the reviewer's verdict counts
-- If the reviewer returns REJECT, you MUST NOT proceed to the next slice; surface the verdict to Owner and ask for direction
-- If template is missing or unreadable, FAIL CLOSED — abort and tell Owner the template is broken
+6. 等待 reviewer 完成，不轮询、不允许它写文件。
+7. 直接向 Owner 返回最终报告，不在仓库新建 review Markdown。
+8. 将阻断问题修复证据留在当前 PR；后续项进入当前唯一计划或 GitHub Issue。
 
-## Why this command exists
+## 硬规则
 
-Owner asked: "你怎么保证每个 AI 都会阅读这个 md?" Slash commands are stronger enforcement than auto-loaded docs because the template is **physically piped into the model's context** at dispatch time — there is no "read it later" failure mode.
-
-Begin now.
+- 缺少模板、当前合同材料或测试路径时必须失败关闭。
+- 不得因为测试命令通过就自行宣布覆盖完成。
+- `REJECT` 阻止当前切片完成。
+- 每项结论必须同时引用当前合同材料和测试 `file:line`。
+- reviewer 不读取外部参考项目，不修改任何文件。

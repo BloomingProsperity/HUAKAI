@@ -15,7 +15,7 @@ description: 将公开 issue、事故、讨论和运营投诉转换为 clean-roo
 
 - issue/事故原文、版本、环境和时间；
 - 相关行为合同；
-- `docs/08_REAL_WORLD_SCENARIOS.md`、`docs/09_BUG_PATTERN_LIBRARY.md`、`docs/11_ACCEPTANCE_TEST_MATRIX.md`。
+- HUAKAI 当前源码、测试，以及当前 Issue/PR 的验收与恢复条件。
 
 ## 执行步骤
 
@@ -24,7 +24,7 @@ description: 将公开 issue、事故、讨论和运营投诉转换为 clean-roo
 3. 不复制非许可 patch；若机制结论依赖源码，转交 `reference-project-miner` 核实。
 4. 把一次问题抽象为可复发 bug pattern，并指出可能辐射的兄弟模块。
 5. 设计正常、失败、并发/重放和 operator recovery 场景。
-6. 更新现有场景、bug pattern 和 acceptance matrix，不另建重复报告。
+6. 把场景、bug pattern 和验收矩阵写回当前 Issue/PR 并落实为测试，不另建重复报告。
 
 ## 输出
 

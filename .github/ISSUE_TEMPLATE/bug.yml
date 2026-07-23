@@ -1,0 +1,128 @@
+name: 缺陷报告
+description: 记录可复现的问题、真实根因、影响链和关闭条件
+title: "[缺陷] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请只填写已经观察到的事实。敏感凭据、令牌、Cookie、个人信息和完整请求正文不得进入 Issue。
+
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 功能域
+      options:
+        - 身份、租户与用户
+        - 用户 Key 与入口
+        - 账号添加与凭据
+        - 模型、池组、路由与选号
+        - 协议、厂商与出站
+        - 计费、余额、配额与退款
+        - 日志、健康、告警与恢复
+        - Hermes
+        - 数据库与迁移
+        - 构建、部署与运维
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: 实际现象
+      description: 写清谁在什么入口执行了什么操作，得到什么错误结果。
+      placeholder: |
+        角色：
+        入口：
+        输入条件：
+        实际结果：
+        错误码或脱敏日志：
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 写用户或运维人员应当得到的结果，不要只写“应该正常”。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与事实基线
+      placeholder: |
+        提交 SHA：
+        部署方式：
+        数据库迁移版本：
+        协议/厂商/账号类型：
+        是否真实账号：
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 已知影响范围
+      description: 说明角色、租户、端点、账号、池组、协议、厂商、钱路、数据和恢复是否受影响。
+      placeholder: |
+        直接影响：
+        同链路可能影响：
+        不受影响的已验证部分：
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 提供脱敏日志、请求 ID、截图、测试输出或源码位置；不要提交秘密。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: risk
+    attributes:
+      label: 高风险检查
+      options:
+        - label: 涉及鉴权、跨租户或权限边界
+        - label: 涉及余额、计费、配额、退款或账本
+        - label: 涉及数据库 schema、迁移或数据删除
+        - label: 涉及真实凭据、密钥或个人信息
+        - label: 涉及生产部署、回滚或第三方上游
+        - label: 以上均不涉及
+
+  - type: textarea
+    id: close
+    attributes:
+      label: 建议关闭条件
+      description: 至少包含回归测试、整链验证和主线验证。
+      placeholder: |
+        回归测试：
+        关联模块验证：
+        主线验证：
+        运维恢复验证：
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 敏感信息确认
+      options:
+        - label: 我已确认正文、附件和日志不含明文凭据、Cookie、令牌、私钥或个人信息
+          required: true

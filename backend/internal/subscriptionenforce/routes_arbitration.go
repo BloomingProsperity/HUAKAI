@@ -11,8 +11,7 @@ type matchedRoute struct {
 // highestPriorityAllowed 实现 match_priority 真裁决(路由向导 slice B, Owner Q3):
 // 在所有已命中本 model 的有效路由中, 只保留【最高优先档】的目标 pool_group。
 //
-// 方向: 小值 = 高优先 —— 与 routes 表的规范声明 (docs/schema/pool-routing.sql
-// "lower = match first")、store List 的 match_priority 升序、DB 默认 100 一致, 故最高档 =
+// 方向：小值 = 高优先。它与 store List 的 match_priority 升序和数据库默认值 100 一致，故最高档 =
 // 最小 match_priority。并列同档(优先级相等)取并集。
 // 前置条件: priority 由写侧 (routeadmin.Service Create/Update) 应用层校验为 >=0; 本函数只做
 // 纯整数比较 (不 panic、不校验), 负值若绕过写侧入库也只是按更小值当更高档处理, 不破坏不变量。

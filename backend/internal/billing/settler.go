@@ -896,7 +896,7 @@ func outputTokensForAttempt(draft gateway.UsageRecordDraft, _ Attempt) int64 {
 	// 会先把内容感知估算基数写入 draft.TokensOutput 再进本函数——该类行 usage_source=inferred 且
 	// cost_snapshot 携带 usage_basis=estimated_from_delivered_content 标记;在 C3 计划的
 	// usage_source='estimated' 枚举(需 schema 迁移,park 待 Owner)落地前以该标记区分估算行。
-	// 使用量估算与真实 token 分离的决策证据见 docs/process/plans/2026-05-29-money-path-worker-claude.md §9。
+	// 使用量估算与上游返回的真实 token 必须保持不同来源标记。
 	output := int64(draft.TokensOutput)
 	if output < 0 {
 		return 0

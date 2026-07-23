@@ -71,8 +71,8 @@ func (e *NoCapacityError) ContextWindowOnly() bool {
 	return e != nil && e.Exhaustion.Family == ExhaustionFamilyContextWindow
 }
 
-// Selector 按 docs/specs/pool-routing.md §Phase A-D 的分层算法为租户请求
-// 选择 Provider Account。
+// Selector 按分层路由算法为租户请求选择 Provider Account。
+// 当前合同见 docs/HUAKAI工程设计手册.md §5。
 type Selector interface {
 	// Select 执行选择流水线和原子 admission writeback。
 	Select(ctx context.Context, req SelectionRequest) (*SelectionResult, error)

@@ -20,6 +20,7 @@ Claude 进入 HUAKAI 后按顺序读取：
 - Owner 已关闭强制 Claude/Codex 并行双计划。不得自动生成 `*-claude.md`、`*-codex.md` 两份计划。
 - 若 Owner 指派 Claude 执行，Claude 对调研、设计、实现、测试、review 收口和中文汇报负责；可以调用独立 reviewer，但不能把工作推回固定模型角色。
 - 所有判断、实现、测试和提交先同步并核对最新 `origin/main`，再在当前唯一功能分支处理；禁止直接在 `main` 分支或主线工作树修改、提交或推送，主线只接受经验证且获 Owner 批准的 PR。
+- 白皮书、架构图、源码责任索引和“当前已实现”判断只读最新 `origin/main`；其他工作树、未合并分支和未合并 PR 不属于当前项目事实。
 - 当前目标沿用一个计划、一个功能分支、一个 PR；不得为了同步主线新开 worktree/branch，未经 Owner 同意不合主线、不碰另一个目标。
 - 当前工作未闭环时，Owner 中途提出的新需求排到当前目标之后；只有 Owner 明确要求暂停、替换或调整优先级时才切换。禁止一套未完成就并行开另一套。
 - 已经独立验证、CI 全绿并获 Owner 明确批准的闭环切片可以先合主线；未验证工作必须留在工作树，禁止夹带进该次合并。前一 PR 合并后，剩余目标只允许再开一个活动 PR。
@@ -50,9 +51,7 @@ Owner start
 ## 3. Claude 工具与文件约束
 
 - `.agents/skills/` 是 Skill canonical；`.claude/skills/` 是只读机械镜像。
-- `.claude/agents/` 仅是可选角色模板，不能覆盖当前 Owner 指派或重新启动并行双计划。
 - `/cross-review` 只用于完整 slice、money/auth/schema 或跨功能收口；普通提交仍按 `AGENTS.md` 的 per-commit review。
-- 修改共享文件前仅在 Owner 明确恢复多 agent 并行时使用 `.coordination/`；单 agent 不制造协调噪音。
 - 大型临时产物不放 `/tmp`，放当前磁盘的项目缓存目录。
 - 不修改 `LICENSE`、真实凭据、生产数据，不部署或合并主线，除非 Owner 明确批准。
 

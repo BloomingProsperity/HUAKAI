@@ -13,7 +13,7 @@
 #    不拷的话 /tree、/tree/data 会优雅返回 404,看板仍正常)
 sudo mkdir -p /opt/huakai-coord/tree && sudo useradd -r -s /usr/sbin/nologin coord 2>/dev/null || true
 sudo cp .coordination/server/coord_server.py /opt/huakai-coord/
-sudo cp docs/process/feature-tree/feature-tree.html docs/process/feature-tree/feature-tree.json /opt/huakai-coord/tree/
+sudo cp docs/process/feature-tree/feature-tree.json /opt/huakai-coord/tree/
 sudo chown -R coord:coord /opt/huakai-coord
 
 # 2. token + 自签证书 + 环境文件

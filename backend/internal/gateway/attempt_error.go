@@ -308,7 +308,6 @@ func decisionFromHTTPClassification(httpStatus int, c Classification) AttemptRet
 	case ErrorClassRateLimited:
 		return retryableHTTPDecision(http.StatusServiceUnavailable, "upstream_rate_limited")
 	case ErrorClassOAuthInvalidGrant, ErrorClassTokenRevoked:
-		// 见 docs/process/plans/2026-05-21-phase1-design-synthesis.md §3
 		// override-1: 401 可交付前换一次号，但只消费 auth 子预算，
 		// 不把它当普通 channelhealth degraded 信号。upstream_auth_failure
 		// 故意不进 RoutePlan.RetryableEndClasses；executor 必须用

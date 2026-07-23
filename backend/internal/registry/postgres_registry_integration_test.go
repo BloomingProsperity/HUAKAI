@@ -1,8 +1,6 @@
 //go:build integration_pg
 
-// PostgresRegistry 针对真实 PostgreSQL 的 Slice 2 集成测试。
-// 验证 docs/process/plans/2026-04-30-n5-model-registry.md §"Test Plan"
-// 列举的 14 个原始用例:
+// PostgresRegistry 针对真实 PostgreSQL 的集成测试，覆盖 14 个原始用例：
 //
 //   1.  HappyPath
 //   2.  UnknownAlias
@@ -329,7 +327,6 @@ func TestPostgresRegistry_HappyPath(t *testing.T) {
 
 	// 根据 2026-04-30T10:08Z 已核实的 WebFetch 得到的当前 Anthropic 顶级 model
 	// @ https://platform.claude.com/docs/en/docs/about-claude/models/overview。
-	// 参见 docs/process/plans/2026-04-30-n5-model-registry.md 附录 B。
 	mid := f.seedModel(modelOpts{
 		canonicalID:     "anthropic/claude-opus-4-7-" + f.suffix,
 		providerModelID: "claude-opus-4-7",

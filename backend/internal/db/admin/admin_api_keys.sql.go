@@ -168,10 +168,8 @@ type AdminInsertAPIKeyRow struct {
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
-// Slice 2 (N+4b2) admin-side api_keys queries.
-// Per docs/process/plans/2026-05-01-n4b-admin-keys.md §Scope A.
-// These queries are issued by internal/admin (operator-facing) and are
-// distinct from internal/auth's customer-facing LookupAPIKeysByPrefix:
+// 管理侧 api_keys 查询由 internal/admin 调用，与 internal/auth 面向客户的
+// LookupAPIKeysByPrefix 热路径相互独立。
 // admin tooling MUST NOT use the prefix-only lookup that the customer
 // hot path optimizes for (it's a different security surface).
 // Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being

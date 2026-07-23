@@ -1,7 +1,7 @@
 # run-go-test.ps1 — PowerShell wrapper around `go test` that survives Smart App Control hiccups.
 #
 # See run-go-test.sh for the full rationale; this is the PowerShell-native sibling.
-# Permanent fix: disable Smart App Control. See docs/01_APPLOCKER_DEFENDER_RESOLUTION.md.
+# 长期处理方式是关闭 Smart App Control，详见 docs/dev-tests.md。
 
 [CmdletBinding()]
 param(
@@ -84,5 +84,5 @@ for ($i = 1; $i -le $MaxAttempts; $i++) {
 }
 
 Write-Host "[run-go-test] exhausted $MaxAttempts attempts."
-Write-Host '[run-go-test] consider disabling Smart App Control - see docs/01_APPLOCKER_DEFENDER_RESOLUTION.md'
+Write-Host '[run-go-test] 可考虑关闭 Smart App Control，详见 docs/dev-tests.md'
 exit 75

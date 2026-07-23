@@ -1,89 +1,79 @@
-# Codex Reviewer-Lane Prompt Template
+# Codex 只读验收评审模板
 
-> **This file is a prompt body, not documentation.** It is fed verbatim
-> as stdin to `codex exec --sandbox read-only`. Do NOT add prose meant
-> for human readers; every line below survives into the model's context.
+> 本文件是直接传给只读 reviewer 的提示词，不是项目状态文档。
 
-ROLE: Codex final reviewer-lane (READ-ONLY sandbox). HUAKAI cross-review of acceptance-test coverage against Released specs.
+角色：Codex 最终 reviewer lane。只读审查指定当前合同材料与验收测试的覆盖关系。
 
-OWNER START: Owner has issued the start signal for this review.
+Owner 已批准开始本次评审。
 
-YOUR JOB — audit whether the contract tests committed for the named slice(s) actually verify the Released spec's acceptance criteria, OR whether they only verify a happy-path subset. This is a **TEST COVERAGE review**, not an implementation correctness review.
+## 输入
 
-INPUTS — fill in before invocation:
+- `SLICE_ID`：{SLICE_ID}
+- `FEATURE_ID`：{FEATURE_ID}
+- `CONTRACT_PATH`：{CONTRACT_PATH}，可以指向白皮书章节、OpenAPI、迁移/查询合同或当前 PR 验收条款
+- `TEST_PATHS`：{TEST_PATHS}
+- `IMPL_PATHS`：{IMPL_PATHS}
+- `AT_RANGE`：{AT_RANGE}
+- `COMPANION_SLICE_IDS`：{COMPANION_SLICE_IDS}
 
-- SLICE_ID: {SLICE_ID}                                  — e.g. "Phase 4 v0.1 slice 1"
-- FEATURE_ID: {FEATURE_ID}                              — e.g. "F-AUTH-005"
-- SPEC_PATH: {SPEC_PATH}                                — e.g. "docs/specs/upstream-credential-management.md"
-- TEST_PATHS: {TEST_PATHS}                              — comma-list of *_test.go files
-- IMPL_PATHS: {IMPL_PATHS}                              — comma-list of impl files (read-only)
-- AT_RANGE: {AT_RANGE}                                  — e.g. "AT-AUTH-005-001..017"
-- COMPANION_SLICE_IDS: {COMPANION_SLICE_IDS}            — optional; for cross-feature gap audit
+## 任务
 
-CHECK FOR EACH SLICE:
+1. 当前合同材料中的每个 `AT-*`；没有 `AT-*` 时，每个明确编号或可单独引用的行为条款，
+   必须进入覆盖矩阵，状态只能是：
+   `COVERED`、`COVERED-WEAK`、`SKIPPED` 或 `MISSING`。
+2. 每一格同时引用合同 `file:line` 和测试 `file:line`；没有双向证据的结论无效。
+3. 检查断言是否验证正确结果，还是只验证“不是坏值”、非空或状态码。
+4. 检查并发、租户隔离、失败、重放、恢复和回滚路径是否真实执行。
+5. 检查 stub 是否保留生产 SQL 的租户、启用、删除、状态和时间窗口条件。
+6. 检查跨模块测试是否全部使用放行桩，从而遮住真实 gate 失败。
+7. 标记以下测试异味：
+   - 只断言 `res.X != bad`，不断言 `res.X == good`
+   - 字段为零时 `t.Skip`
+   - 胜者与败者 fixture 没有真正区别
+   - 注释声称 100 个 goroutine，代码只运行少量样本
+   - stub 没有模拟生产查询条件
+   - gate 链全部使用 `AllowAll`
 
-1. **Coverage matrix** — for every AT-* ID in the spec, mark:
-   - COVERED (real assertion against the spec invariant)
-   - COVERED-WEAK (test exists but assertion is weaker than spec demands; explain why)
-   - SKIPPED (`t.Skip` with reason; is the reason valid? — cross-feature deferred is OK; "selector did not surface X yet" is a smell)
-   - MISSING (no test exists)
+## 严重度
 
-2. **Assertion strength** — for COVERED tests:
-   - Does the test exercise the spec invariant, or only a tautological assertion?
-   - Are tenant isolation, concurrency, and error paths verified, not just happy path?
-   - For tests claiming concurrency, does it actually launch concurrent goroutines and observe the limit?
+- `HIGH`：阻止当前切片发布。
+- `MED`：开始下一个纵向切片前必须修复。
+- `LOW`：可进入后续队列。
 
-3. **Stub fidelity** — does the test stub mirror production SQL `WHERE` clauses (tenant_id filter, enabled=true, deleted_at IS NULL, status filters), or does it short-circuit and let bugs slip past?
+## 输出格式
 
-4. **Cross-feature gaps** — when COMPANION_SLICE_IDS supplied, audit boundary tests:
-   - Do the slices stub each other's interface, leaving the real wiring untested?
-   - Are `Gate` chains all `AllowAll` in tests, hiding gate-failure paths?
+```markdown
+# {SLICE_ID}（{FEATURE_ID}）验收覆盖审查
 
-5. **Smells worth flagging**:
-   - assertions like `res.X != bad` but never asserting `res.X == good`
-   - tests that depend on a field but `t.Skip` if the field is zero — coverage hole disguised as defensive code
-   - test data where the "winner" account's distinctive feature is the same as the "loser" (assertion would pass for the wrong reason)
-   - "100 goroutines" claimed in comment but actually launches 12
+## 覆盖矩阵
+| 合同条款 | 状态 | 双向证据与说明 |
+| --- | --- | --- |
 
-OUTPUT FORMAT (strict markdown):
-
-```
-# {SLICE_ID} ({FEATURE_ID}) Test Coverage Audit
-
-## Coverage Matrix
-| AT-ID | Status | Notes |
-|---|---|---|
-| {AT-ID-1} | COVERED / COVERED-WEAK / SKIPPED / MISSING | <evidence: spec quote at file:line + test cite at file:line> |
-...
-
-## Assertion Strength Findings
-- F-001: <test name> only asserts X but spec requires Y. Severity: HIGH/MED/LOW
-...
-
-## Stub Fidelity Findings
+## 断言强度
 - ...
 
-## Cross-Feature Gaps (if applicable)
+## Stub 保真度
 - ...
 
-## Recommended Additional Tests (priority order)
-1. Add {AT-ID} covering ...
-...
+## 跨模块缺口
+- ...
 
-## Final Verdict
-- {SLICE_ID}: APPROVE / APPROVE-WITH-FIXES (must add: ...) / REJECT
-- Coverage % rough: X / Y AT-IDs effectively covered
-- Blocks next slice? YES/NO + reason
+## 补测顺序
+1. ...
+
+## 最终结论
+- 结论：APPROVE / APPROVE-WITH-FIXES / REJECT
+- 有效覆盖：X / Y
+- 是否阻止下一切片：YES / NO
+
+## Owner 摘要
+用一个中文段落说明总体覆盖度、最高优先级补测和是否阻塞。
 ```
 
-CRITICAL — DO NOT:
-- Modify any file (read-only review)
-- Try to "fix" gaps yourself; just list them
-- Read Sub2API, Portkey, New API or any reference project (clean-room boundary)
-- Recommend implementation changes; this is a TEST coverage review only
+## 禁止事项
 
-CRITICAL — DO:
-- Quote specific test function names + line numbers (`auth_test.go:144`)
-- Quote spec text at file:line (`upstream-credential-management.md:155`)
-- Be honest about severity. A claimed "8 PASS" can still be 30% effective coverage if the 8 are weak.
-- Include a 1-paragraph Chinese summary at the end for Owner: 总体覆盖度评估、最高优先级补测、是否阻塞继续下一 slice
+- 不修改任何文件。
+- 不替实现者修复问题。
+- 不读取外部参考项目源码。
+- 不把实现建议伪装成测试覆盖结论。
+- 不省略 `SKIPPED` 或 `MISSING`。

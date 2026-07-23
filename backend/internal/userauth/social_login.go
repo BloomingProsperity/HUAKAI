@@ -58,7 +58,7 @@ type OAuthService struct {
 	providers map[string]OAuthProvider
 	// resolver 是请求期 provider 解析器(由 cmd/gateway 注入):按 provider 名 + ctx 读后台设置,
 	// settings-first 覆盖 env 基线后现构 provider。nil = 不启用,只用下面 boot 期 env 静态 providers。
-	// 当前 resolver 不读取 oidc_provider_configs 表；该表保留状态见 docs/architecture/deprecated-schema.md。
+	// 当前 resolver 不读取 oidc_provider_configs 表，该表没有运行时消费者。
 	// 放在这里而非直接依赖 platformsettings,是为让 userauth 包保持对配置来源无感(依赖倒置)。
 	resolver func(ctx context.Context, name string) (OAuthProvider, bool)
 }

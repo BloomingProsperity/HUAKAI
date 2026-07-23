@@ -7,8 +7,8 @@
 //	ErrTenantNoAccess   -> 404 model_not_available
 //	ErrRegistryBackend  -> 503 registry_backend_error
 //
-// 之所以分成这四类,是为了让审计日志与结构化字段能记录精确的内部原因,
-// 而对外响应保持统一 —— 依据 docs/process/plans/2026-04-30-n5-model-registry.md D4。
+// 之所以分成这四类，是为了让日志与结构化字段记录精确的内部原因，
+// 同时保持对外响应稳定。
 
 package registry
 

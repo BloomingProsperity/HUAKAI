@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: rate-limiting
+-- HUAKAI 限流与冷却基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/rate-limiting.md
--- (F-RATE-001).
--- DR-008 §1: schema fragments locked only after spec is Released.
+-- 提供 F-RATE-001 所需表面。
 --
 -- Most F-RATE-001 state lives on provider_accounts (already locked in
 -- pool-routing.sql). This fragment ALTERs that table to add cooldown-state
@@ -12,7 +10,7 @@
 -- ----------------------------------------------------------------------------
 -- ALTER TABLE: provider_accounts — F-RATE-001 cooldown state columns
 -- ----------------------------------------------------------------------------
--- 6-state machine per docs/specs/rate-limiting.md:
+-- 账号健康状态：
 --   active | error | disabled | rate_limited | overloaded |
 --   temp_unschedulable | model_rate_limited (note: model is tracked
 --   via separate model_rate_limits table, NOT a top-level state)
@@ -129,8 +127,6 @@ COMMENT ON TABLE rate_limit_audit_events IS 'F-RATE-001: append-only audit trail
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/rate-limiting.md @ Status=Released
--- Migration order: 0004 (after pool-routing, observability-billing,
---   streaming-forwarder).
+-- 固化日期：2026-04-28
+-- 迁移顺序：0004（在账号池、观测计费和流式转发之后）。
 -- ----------------------------------------------------------------------------

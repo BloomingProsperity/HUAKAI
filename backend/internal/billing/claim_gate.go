@@ -239,9 +239,9 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 	return &ReserveResult{ClaimID: inserted.ID, AttemptSeq: inserted.AttemptSeq}, nil
 }
 
-// ComputeIdempotencyFingerprint 按规格 §Tx1 步骤 1 对 9 个已持久化字段做 hash。
-// ReserveRequest 中的 IdempotencyKeyClientHeader 被有意从该 hash 中排除——
-// 见 docs/process/plans/2026-04-29-integration-sprint-plan.md。
+// ComputeIdempotencyFingerprint 对 9 个已持久化字段做 hash。
+// ReserveRequest 中的 IdempotencyKeyClientHeader 被有意排除，因为客户端
+// 重试标识不属于同一服务端请求事实的内容摘要。
 //
 // PoolingGroupID 同样被排除:pool group 现在由 Registry/Router 从可变的 admin
 // 状态推导,而非来自客户端请求。若某 admin 在请求进行途中改写了 model→pool

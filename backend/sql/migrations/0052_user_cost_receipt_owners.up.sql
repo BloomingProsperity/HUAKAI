@@ -3,7 +3,7 @@ BEGIN;
 -- D-010 (Owner 2026-05-23 schema gate 批): billing_ledger_claims (tenant_id, id, user_id)
 -- superset UNIQUE 加固 — 现有 0009 (tenant_id, id) UNIQUE 零碰撞加一列,
 -- 让 sidecar 能以 composite FK 强制 sidecar.user_id == claim.user_id DB 层一致性。
--- 决策对照:docs/process/research/2026-05-23-receipt-owner-isolation-prestudy.md §A
+-- 复合唯一键让 sidecar 的外键在数据库层同时校验 tenant_id、claim_id 和 user_id。
 CREATE UNIQUE INDEX IF NOT EXISTS uq_billing_ledger_claims_tenant_id_id_user_id
     ON billing_ledger_claims (tenant_id, id, user_id);
 

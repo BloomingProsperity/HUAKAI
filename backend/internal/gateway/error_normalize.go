@@ -1,5 +1,5 @@
-// Package gateway 上游 provider 错误归一化(A13 ERROR_RULES 规则表)。
-// 规格: docs/specs/rate-limiting.md A13 / DR-009 1 Q1。
+// Package gateway 上游 provider 错误归一化（A13 ERROR_RULES 规则表）。
+// 当前健康、限流与恢复合同见 docs/HUAKAI工程设计手册.md §10。
 //
 // 硬底线(DR-009 6.6): FSM 绝不能仅凭一个 ambiguous 信号就自动到达
 // disabled。结构上强制保证: ambiguous 规则只能产出
@@ -267,8 +267,8 @@ var errorRules = []ErrorRule{
 	{RuleID: "R-004", Version: 1, Priority: 10, Provider: "*", HTTPStatus: "401",
 		BodyKeyword: keywordTokenRevoked, Class: ErrorClassTokenRevoked,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},
-	// 漂移 D3(详见 docs/reference_delta/2026-05-06/vendor-drift-audit.md):OpenAI 文档不再为
-	// billing/deactivation 给出 402,故保留跨状态码防御性匹配。
+	// OpenAI 当前文档不再只用 402 表示 billing/deactivation，
+	// 因此保留跨状态码的防御性匹配。
 	{RuleID: "R-005", Version: 2, Priority: 10, Provider: "openai", HTTPStatus: "*",
 		BodyKeyword: keywordDeactivatedWorkspace, Class: ErrorClassWorkspaceDeactivated,
 		Action: RetryActionPermanentDisable, Tier: TierIronClad},

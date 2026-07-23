@@ -4,8 +4,8 @@
 --   并放开两处 CHECK 容纳新来源/新事件类型。本切片只建地基与事务内激活入口, 不接订单/兑换流程。
 -- 红线: 订阅购买零碰 billing_events / payment_credits / 净额余额 (新机独占 money 路径)。
 --   本迁移 additive only (加列 / 新表 / 放开 CHECK 加值), 不动 billing_events / payment_credits 约束。
--- Owner 决策 (见 docs/process/plans/2026-05-29-payment-p3b-synthesis.md): 同组叠买自助只能往高
---   (caps 逐窗口支配), 降档仅管理员; 退款逻辑延 P5, 但效果账本预留逆转列避免二次迁移。
+-- 同组叠买自助只能升级（caps 逐窗口支配），降档仅管理员可操作；
+-- 效果账本预留逆转列，避免退款能力落地时再次迁移。
 
 BEGIN;
 

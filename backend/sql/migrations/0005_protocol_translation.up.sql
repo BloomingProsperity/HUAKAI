@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: protocol-translation
+-- HUAKAI 协议转换基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/protocol-translation.md
--- (F-PROTO-002).
--- DR-008 §1: schema fragments locked only after spec is Released.
+-- 提供 F-PROTO-002 所需表面。
 --
 -- Most F-PROTO-002 state is in-memory per-stream (UpstreamState +
 -- ClientState). The persisted artifacts already exist via observability-billing.sql:
@@ -101,7 +99,6 @@ COMMENT ON TABLE protocol_policy_versions IS 'F-PROTO-002: versioned policy. Usa
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/protocol-translation.md @ Status=Released
--- Migration order: 0005 (after rate-limiting). Forward-only.
+-- 固化日期：2026-04-28
+-- 迁移顺序：0005（在限流之后）；后续只允许前向演进。
 -- ----------------------------------------------------------------------------

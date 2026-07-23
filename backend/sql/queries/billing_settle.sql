@@ -1,7 +1,6 @@
 -- F-OBS-001 Tx2 Settler queries.
--- Backed by billing_ledger_claims + usage_records + billing_events tables
--- in docs/schema/observability-billing.sql + scheduler_outbox in
--- docs/schema/pool-routing.sql.
+-- billing_ledger_claims、usage_records 与 billing_events 由迁移 0002 建立，
+-- scheduler_outbox 由迁移 0001 建立。
 
 -- name: GetClaimForSettle :one
 -- Tx2 entry: lock the claim row + verify still-settle-able state.

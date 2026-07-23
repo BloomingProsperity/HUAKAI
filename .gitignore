@@ -17,9 +17,9 @@ desktop.ini
 .gemini/settings.local.json
 .codex/local/
 
-# Go test/build caches pinned by backend/scripts/run-go-test.* (Defender-
-# excluded paths used to dodge SAC/AppLocker blocks; see
-# docs/01_APPLOCKER_DEFENDER_RESOLUTION.md). Each can hit ~150 MB; never commit.
+# backend/scripts/run-go-test.* 固定使用的 Go 测试和构建缓存。
+# Windows 下可将这些目录加入 Defender 排除项，详见 docs/dev-tests.md；
+# 单个目录可能达到约 150 MB，禁止提交。
 backend/.tmp/
 backend/.gotmp/
 backend/.gocache/
@@ -110,9 +110,7 @@ tools/fingerprint-collector/output/
 tools/fingerprint-collector/fpc.exe
 tools/fingerprint-collector/fpc
 
-# Cursor C0 真流量证据 — Owner 本机填写,严禁进库；
-# 只允许 docs/process/evidence/cursor-real-traffic-template.md (空模板) +
-# cursor-real-traffic-summary.md (Owner sanitized 后) 进库。
+# Cursor C0 真流量证据只能保存在 Owner 本机，严禁提交原始证据。
 docs/process/evidence/cursor-real-traffic-evidence.md
 docs/process/evidence/cursor-real-traffic-evidence-*.md
 docs/process/evidence/cursor-real-traffic-actual*.md

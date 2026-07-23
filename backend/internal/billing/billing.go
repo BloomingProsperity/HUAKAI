@@ -1,7 +1,7 @@
 // Package billing 实现 F-OBS-001 + F-BILL-001 框架:
 // 带 Usage Record 终结的 Tx1/Tx2 原子计费。
 //
-// 已发布规格见 docs/specs/observability-billing.md。
+// 当前计费合同见 docs/HUAKAI工程设计手册.md §9。
 // 当前切片包含基于 PostgreSQL 的 ClaimGate 与 DefaultSettler 实现。
 // 动态定价精度与对账 worker 仍属 Phase E+ 工作;scheduler outbox 意图由
 // SettleRequest 携带,因此直接结算与投递后恢复保持同一条证据链效果。

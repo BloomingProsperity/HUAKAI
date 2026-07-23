@@ -109,7 +109,7 @@ type Querier interface {
 	// 结算意图追平只读取权威 claim 的终态、尝试序号和实际费用，并强制租户隔离。
 	GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (GetClaimByIDRow, error)
 	// F-OBS-001 Tx1/Tx2 billing ledger claim queries.
-	// Backed by billing_ledger_claims in docs/schema/observability-billing.sql.
+	// billing_ledger_claims 的权威结构由 sql/migrations/0002_observability_billing.up.sql 建立。
 	// Hot-path Tx1 lookup with FOR UPDATE row lock per spec §Tx1 step 2.
 	// Selects ONLY the columns the gate needs to make a control-flow decision;
 	// nullable money/token fields (actual_cost, acquisition_token) are populated
@@ -122,9 +122,8 @@ type Querier interface {
 	// idempotency index does NOT catch this; we scan by logical_request_id.
 	GetClaimFingerprintByLogicalRequestID(ctx context.Context, arg GetClaimFingerprintByLogicalRequestIDParams) ([]GetClaimFingerprintByLogicalRequestIDRow, error)
 	// F-OBS-001 Tx2 Settler queries.
-	// Backed by billing_ledger_claims + usage_records + billing_events tables
-	// in docs/schema/observability-billing.sql + scheduler_outbox in
-	// docs/schema/pool-routing.sql.
+	// billing_ledger_claims、usage_records 与 billing_events 由迁移 0002 建立，
+	// scheduler_outbox 由迁移 0001 建立。
 	// Tx2 entry: lock the claim row + verify still-settle-able state.
 	// Spec §Tx2 step 9: re-fetch claim row; verify status='reserving' AND
 	// acquisition_token matches.

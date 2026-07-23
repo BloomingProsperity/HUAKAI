@@ -1,7 +1,5 @@
 // R6 辅助：把 Classification 桥接到 UsageRecordDraft 的 routing-reason + end-class。
-// 规格：docs/specs/rate-limiting.md §A13 / DR-009 §1 Q1 / F-GW-002 Phase D。
-//
-// 综合说明：docs/process/plans/2026-05-04-r6-wire-codeparallel-synthesis.md。
+// 当前健康、限流与恢复合同见 docs/HUAKAI工程设计手册.md §10。
 package gateway
 
 import (

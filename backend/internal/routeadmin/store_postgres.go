@@ -162,7 +162,6 @@ WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
 // 路线图(后续扩展点): enabled 现为裸布尔, 只表达「运营手动启/停」。若将来落地健康检查自动停用(auto-disable),
 // 须把它扩成小枚举(enabled / manual-disabled / auto-disabled)以区分运营手动停用与系统自动停用 —— 否则
 // 自动重新启用会覆盖运营的手动停用，因此扩展时必须用多态 status 区分来源。
-// 详见 docs/process/plans/2026-06-18-routes-enable-disable.md。
 func (s *PostgresStore) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error) {
 	if s == nil || s.pool == nil {
 		return Route{}, ErrStoreNotConfigured

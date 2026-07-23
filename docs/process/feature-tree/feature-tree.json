@@ -1,10 +1,10 @@
 {
   "meta": {
-    "title": "HUAKAI 功能树 · 推进 + 修复 状态地图",
+    "title": "HUAKAI 兼容模块目录输入（历史状态快照）",
     "generated": "2026-05-30",
-    "supersedes": "docs/process/research/2026-05-21-full-audit-tree.md (codex 基线,不删)",
+    "authority": "仅供 modulecatalog 兼容生成；当前状态以项目白皮书、工程设计手册和源码责任索引为准",
     "overall_weighted_pct": 34,
-    "overall_note": "总加权 = 9 轴按权重算(5×100+25×70+15×60+10×15+5×10 = 3350/100 = 33.5 ≈ 34%);轴值源自 02_HUAKAI_FUSION_ARCHITECTURE.md(那里口径约 30%,本表按权重精确重算为 34%,页面即显示此数)。这是【建设进度】;另一条轴是【问题修复】。",
+    "overall_note": "34% 是 2026-05-30 历史快照值，已失效，不得用于判断当前完成度或发布状态。",
     "weighted_axes": [
       {"name": "治理基线", "weight": 5, "pct": 100},
       {"name": "计费补偿 money-path", "weight": 25, "pct": 70},
@@ -17,13 +17,13 @@
       {"name": "L2 生产就绪", "weight": 5, "pct": 0}
     ],
     "fix_campaign": {
-      "source": "/home/ubuntu/audit/MASTER-verification-2026-05-29.md (195 条第三方审计逐条对真码核实)",
+      "source": "历史修复战役快照；原始过程材料只保留在 Git 历史",
       "total": 195, "real": 182, "refuted_or_alreadyfixed_or_drifted": 13,
       "by_real_sev": {"S1": 56, "S2": 127, "S3": 1, "none": 11},
       "landed": 16, "deferred": 2, "open_real": 164,
       "landed_ids": ["S1-019","S1-031","S1-032","S2-148","S2-079","S2-096","S2-091","S2-054","S2-062","S1-011","S1-008","S1-010","S1-012","S1-014","S2-109","S2-045"],
       "deferred_ids": ["S1-021","S1-024"],
-      "note": "已落地=Wave1(7)+credentialacq OAuth 簇(7,含 S2-054/062)+S2-109+S2-045。deferred=S1-021 voucher↔wallet(钱路,需 Owner gate)+S1-024 revoked-cooldown(钱路)。余 164 条按 Wave 3-8 排期。S2-045 另有 D1/D2 精度细化记 roadmap。"
+      "note": "以下计数和状态只描述 2026-05-30 快照，不代表当前主线。"
     },
     "legend": {
       "stage": {
@@ -230,7 +230,7 @@
   ],
   "reference_parity_union": {
     "note": "参考并集 22 功能类(sub2api@16793d3a / CLIProxyAPI@21fad9db / new-api@20d3e737)——确保 HUAKAI 树覆盖 ≥ 借鉴项目。缺口显式列出不隐藏。",
-    "_provenance": "本节是【派生汇总】,非主证据。每条 ref-project 断言的 repo@sha:file:line 证据在两份带 cite 的报告里:(1) codex docs/process/research/2026-05-21-audit-A~E.md(逐叶 file:line + 三参照 @sha);(2) 2026-05-30 clean-room Explore 侦察(本会话)。下面 gaps 为【候选缺口】,接入/决策前须按 AGENTS.md Source-Must-Read 回源逐条 file:line 核实,勿据此直接下结论。",
+    "_provenance": "本节是 2026-05-30 历史派生汇总，原始报告只保留在 Git 历史。下面的 gaps 和外部项目断言均不得作为当前事实；使用前必须按 AGENTS.md 从最新主线和外部项目当前源码重新核实。",
     "covered": ["多 provider 中继+协议转换(§2/§5)","用户与账号管理(§1)","token 级计费(§8)","智能调度+负载均衡(§4/§7)","限流+并发控制(§4/§11)","凭证+OAuth(§3)","可观测+审计(§9/§10)","admin 面板(§15)","支付/voucher(§8)","流式+实时(§5)","thinking/reasoning(§2/§5)","缓存(§7)","provider 健康(§7/§10)","配置+热重载(§16)","模型 registry(§5)","信任链签名(§9,HUAKAI 独有强项)","隐私脱敏(§11,强于三参照)"],
     "gaps": [
       {"item": "Rerank 模型 (Cohere/Jina)", "ref": "new-api@20d3e737", "huakai": "无 → roadmap Phase9+ F-MODEL-002"},

@@ -1,8 +1,6 @@
-# HUAKAI Gateway example configuration.
-# Current Phase C example configuration. Operator config schema remains
-# illustrative and may be refined by Phase E+ admin/config work.
-# See docs/specs/api-contract.md and docs/specs/*.md for the locked
-# behavior contracts.
+# HUAKAI Gateway 配置示例。
+# 当前配置与 API 合同以 docs/HUAKAI工程设计手册.md 和
+# docs/openapi/openapi.yaml 为准。
 
 server:
   addr: ":8080"

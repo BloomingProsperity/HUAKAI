@@ -223,7 +223,7 @@ func validateDevAuthTokenFlag() error {
 // 避免运维卡在"知道缺私钥却不知怎么补"。这是降摩擦文案,不改任何启动门判定。
 const auditKeySetupHint = "生成 ed25519 私钥:openssl genpkey -algorithm ed25519 -out secrets/audit_key.pem " +
 	"(或跑 backend/scripts/gen-audit-key.sh 一键生成),再设 HUAKAI_AUDIT_PRIVATE_KEY_PATH 指向它;" +
-	"容器部署经 volumes 把宿主私钥挂到该路径,详见 docs/deploy/production-bootstrap.md"
+	"容器部署经 volumes 把宿主私钥挂到该路径，详见 docs/deploy/生产部署与升级.md"
 
 func requireProductionChannelHealthSigner(signer *sign.Signer) error {
 	if !releaseModeProduction() {

@@ -58,7 +58,7 @@ services:
       HUAKAI_ADMIN_BOOTSTRAP_TOKEN: ${HUAKAI_ADMIN_BOOTSTRAP_TOKEN}
       # 必填,无默认:dev = 自测 / 内网最省事(审计账本走内存、签名用临时密钥,免私钥文件);
       # production = 对外硬化(强制审计账本持久化 + 持久 ed25519 私钥等启动门,见下方审计段与
-      # docs/deploy/production-bootstrap.md)。我们不替你设默认 —— 选项在你手里。
+      # docs/deploy/生产部署与升级.md）。这里不设置隐式默认值，部署者必须明确选择。
       HUAKAI_RELEASE_MODE: ${HUAKAI_RELEASE_MODE}
       # 共享限流在 production 下为硬依赖；dev 也默认接同一后端，行为与未来扩容一致。
       HUAKAI_RATE_LIMIT_REDIS_URL: ${HUAKAI_RATE_LIMIT_REDIS_URL:-redis://redis:6379/0}

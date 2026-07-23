@@ -10,8 +10,7 @@ var ZeroRoot [32]byte
 // EntryHash 计算 canonical entry hash，用作签名 payload 以及 Merkle 链的
 // 叶子 hash。
 //
-// 该 payload 即 CanonicalPayload(entry)，遵循
-// docs/specs/trust-chain-user-verifiable-ledger.md §2，且不含 Signature。
+// 该 payload 即 CanonicalPayload(entry)，不包含 Signature。
 func EntryHash(e *LedgerEntry) ([32]byte, error) {
 	if e == nil {
 		return [32]byte{}, nil

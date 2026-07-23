@@ -13,16 +13,14 @@ description: 检查行为证据中的每项有效能力是否在 HUAKAI 有真�
 
 ## 前置输入
 
-- `docs/02_CAPABILITY_CONTRACT.md`；
-- `docs/03_FEATURE_PARITY_MATRIX.md`；
-- `docs/04_FEATURE_LOCK.md`；
-- 行为合同与 `docs/11_ACCEPTANCE_TEST_MATRIX.md`；
+- 当前 Issue/PR 中有源码证据的行为合同、能力处置和验收条件；
+- `docs/HUAKAI项目与架构白皮书.md`、`docs/源码责任索引.md` 与 OpenAPI；
 - HUAKAI 当前源码接线证据。
 
 ## 执行步骤
 
 1. 列出行为合同中的每个 path/mode/state/actor 和用户/运营结果。
-2. 验证每项都有 parity row 和合法 disposition。
+2. 验证每项在当前 Issue/PR 中都有能力处置和合法 disposition。
 3. 分开核实“代码存在”“真实接线”“当前状态”“目标处置”。
 4. 拒绝 `Dropped / Ignored / Not needed / Too risky` 等无效处置。
 5. 检查 Merged/Safe Equivalent 是否保留权限、状态、失败、审计和恢复结果。

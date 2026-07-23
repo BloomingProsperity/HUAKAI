@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: streaming-forwarder
+-- HUAKAI 流式转发基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/streaming-forwarder.md
--- (F-GW-002).
--- DR-008 §1: schema fragments locked only after spec is Released.
+-- 提供 F-GW-002 所需表面。
 --
 -- Most F-GW-002 state lives in tables already locked by:
 --   - pool-routing.sql (provider_accounts, pool_slot_acquisitions, routes)
@@ -59,7 +57,6 @@ COMMENT ON COLUMN routes.mid_stream_failover_default IS 'F-GW-002 H6: default of
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/streaming-forwarder.md @ Status=Released
--- Migration order: 0003 (after observability-billing). Forward-only.
+-- 固化日期：2026-04-28
+-- 迁移顺序：0003（在观测与计费之后）；后续只允许前向演进。
 -- ----------------------------------------------------------------------------

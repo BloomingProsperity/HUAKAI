@@ -20,7 +20,7 @@ func (s *Service) QualifyPendingReferral(ctx context.Context, tenantID, refereeU
 	if !ok {
 		return ErrStoreNotConfigured
 	}
-	// 当前资格更新不维护 tier_progress；保留表与未来补链见 docs/architecture/deprecated-schema.md。
+	// 当前资格更新不维护 tier_progress；该保留表尚无运行时消费者。
 	return store.qualifyPendingReferral(ctx, tenantID, refereeUserID, billingEventID, s.now().UTC())
 }
 

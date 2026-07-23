@@ -54,7 +54,7 @@ const (
 )
 
 // TimeoutConfig 携带 F-GW-002 八轴超时配置。当前值来自 env/平台设置，不读取 routes
-// 的同名历史列；字段关系见 docs/architecture/deprecated-schema.md。
+// 的同名历史列。
 type TimeoutConfig struct {
 	FirstTokenTimeout   time.Duration `json:"first_token_timeout"`
 	InterEventTimeout   time.Duration `json:"inter_event_timeout"`
