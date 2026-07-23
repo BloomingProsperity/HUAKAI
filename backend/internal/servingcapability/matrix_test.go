@@ -9,23 +9,17 @@ import (
 )
 
 const (
-	envGeminiCodeAssist = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"
-	envCursorSession    = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
-	envCopilotSession   = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
-	envGeminiAdvanced   = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
-	envAntigravity      = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
-	envKiroSession      = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
-	envWindsurfSession  = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
+	// 仅剩 3 个占位/推测上游 session 族仍 opt-in;antigravity/gemini_code_assist/
+	// copilot/cursor 已转默认注册,不再由 env 门控。
+	envGeminiAdvanced  = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
+	envKiroSession     = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
+	envWindsurfSession = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
 )
 
 var gatedFamilyByEnv = map[string]string{
-	envGeminiCodeAssist: registrydefault.ProtocolGeminiCodeAssist,
-	envCursorSession:    registrydefault.ProtocolCursorSession,
-	envCopilotSession:   registrydefault.ProtocolCopilotSession,
-	envGeminiAdvanced:   registrydefault.ProtocolGeminiAdvancedSession,
-	envAntigravity:      registrydefault.ProtocolAntigravitySession,
-	envKiroSession:      registrydefault.ProtocolKiroSession,
-	envWindsurfSession:  registrydefault.ProtocolWindsurfSession,
+	envGeminiAdvanced:  registrydefault.ProtocolGeminiAdvancedSession,
+	envKiroSession:     registrydefault.ProtocolKiroSession,
+	envWindsurfSession: registrydefault.ProtocolWindsurfSession,
 }
 
 var defaultVisibleFamilies = []string{
@@ -61,6 +55,11 @@ var defaultVisibleFamilies = []string{
 	registrydefault.ProtocolReplicateImage,
 	registrydefault.ProtocolVertexGemini,
 	registrydefault.ProtocolVertexAnthropic,
+	// 已验证真实端点的反转 session 族,默认注册可见。
+	registrydefault.ProtocolAntigravitySession,
+	registrydefault.ProtocolGeminiCodeAssist,
+	registrydefault.ProtocolCopilotSession,
+	registrydefault.ProtocolCursorSession,
 }
 
 var visibleButNotEnableable = map[string]bool{
@@ -92,7 +91,7 @@ func TestProductionRegistryEnvironmentMatrices(t *testing.T) {
 		enabledEnv []string
 	}{
 		{name: "default env"},
-		{name: "single env on", enabledEnv: []string{envGeminiCodeAssist}},
+		{name: "single env on", enabledEnv: []string{envGeminiAdvanced}},
 		{name: "all env on", enabledEnv: sortedEnvironmentNames()},
 	}
 

@@ -43,11 +43,10 @@ func TestBuild_DefaultProtocolFamiliesRegistered(t *testing.T) {
 // 漏掉默认 Claude session family → 正向成员断言红。
 func TestSupportedProtocolFamiliesMatchOptInRegistration(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
+	// 4 个已验证族默认注册(clear 后即 on);3 个占位族显式 opt-in。
 	for _, env := range []string{
-		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
-		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
-		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv, kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
 	} {
 		t.Setenv(env, "true")
 	}
@@ -156,11 +155,10 @@ func readRegistryDefaultMigration(t *testing.T, name string) string {
 // 变异:从 transport/policy.go 删任一平台条目 → 对应子断言红。
 func TestEveryRegisteredPlatformHasTransportPolicy(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
+	clearPlaceholderSessionAdapterEnvs(t)
+	// 4 个已验证族默认注册(clear 后即 on);3 个占位族显式 opt-in。
 	for _, env := range []string{
-		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
-		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
-		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv, kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
 	} {
 		t.Setenv(env, "true")
 	}
@@ -517,10 +515,7 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 		env          string
 		wantPlatform string
 	}{
-		{ProtocolCursorSession, cursorSessionAdapterEnv, "cursor"},
-		{ProtocolCopilotSession, copilotSessionAdapterEnv, "copilot"},
 		{ProtocolGeminiAdvancedSession, geminiAdvancedSessionAdapterEnv, "gemini_advanced"},
-		{ProtocolAntigravitySession, antigravitySessionAdapterEnv, "antigravity"},
 		{ProtocolKiroSession, kiroSessionAdapterEnv, "kiro"},
 		{ProtocolWindsurfSession, windsurfSessionAdapterEnv, "windsurf"},
 	}
@@ -555,30 +550,27 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 // 到 Google 内部 cloudcode-pa 端点);开 env 后注册且 Platform()=="gemini_code_assist"。
 // 变异:把 registrydefault 的注册改成无条件 → 默认 off 子断言红;删注册 →
 // 开 env 子断言红。
-func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
-	t.Run("default off not registered", func(t *testing.T) {
-		t.Setenv(placeholderSessionAdaptersEnv, "")
+func TestBuild_GeminiCodeAssistDefaultOnOptOut(t *testing.T) {
+	t.Run("默认注册且平台身份正确", func(t *testing.T) {
 		clearPlaceholderSessionAdapterEnvs(t)
-		r := Build()
-		if _, err := r.For(ProtocolGeminiCodeAssist); !errors.Is(err, provider.ErrAdapterNotRegistered) {
-			t.Fatalf("gemini_code_assist 默认应 unregistered(高危 OAuth/内部端点),got err=%v", err)
-		}
-	})
-	t.Run("env on registers with vertex-distinct platform", func(t *testing.T) {
-		t.Setenv(placeholderSessionAdaptersEnv, "")
-		clearPlaceholderSessionAdapterEnvs(t)
-		t.Setenv(geminiCodeAssistAdapterEnv, "true")
 		r := Build()
 		a, err := r.For(ProtocolGeminiCodeAssist)
 		if err != nil {
-			t.Fatalf("env on 后 For(gemini_code_assist) err=%v", err)
+			t.Fatalf("gemini_code_assist 默认应注册(真实 cloudcode-pa 端点),got err=%v", err)
 		}
 		if got := a.Platform(); got != "gemini_code_assist" {
 			t.Errorf("Platform=%q want gemini_code_assist", got)
 		}
-		// 平台必须有 transport 策略,否则 dispatcher 取 RoundTripper 整族挂。
 		if err := transport.ValidateModeForProvider(transport.ProviderCode(a.Platform()), transport.TransportModeStandard); err != nil {
 			t.Errorf("gemini_code_assist 平台无 transport 策略: %v", err)
+		}
+	})
+	t.Run("DISABLE env 显式关闭后不注册", func(t *testing.T) {
+		clearPlaceholderSessionAdapterEnvs(t)
+		t.Setenv(geminiCodeAssistAdapterDisableEnv, "true")
+		r := Build()
+		if _, err := r.For(ProtocolGeminiCodeAssist); !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Fatalf("DISABLE 后应 unregistered,got err=%v", err)
 		}
 	})
 }
@@ -587,23 +579,35 @@ func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
 // 姿态：env 关闭时注册表完全不含该族，不进入转发热路径；env 开启后构造的
 // 必须是真实 Cloud Code adapter，而不是旧占位实现。无条件注册或删 env 分支
 // 分别会使两个子测试变红。
-func TestBuild_AntigravityEnvGateDefaultsOffAndBuildsCloudCodeAdapter(t *testing.T) {
-	t.Run("默认关闭不进入热路径", func(t *testing.T) {
+func TestBuild_AntigravityDefaultOnAndBuildsCloudCodeAdapter(t *testing.T) {
+	t.Run("默认注册进入热路径", func(t *testing.T) {
 		clearPlaceholderSessionAdapterEnvs(t)
 		r := Build()
-		if _, err := r.For(ProtocolAntigravitySession); !errors.Is(err, provider.ErrAdapterNotRegistered) {
-			t.Fatalf("Antigravity 默认应未注册，err=%v", err)
+		if _, err := r.For(ProtocolAntigravitySession); err != nil {
+			t.Fatalf("Antigravity 默认应注册(真实 cloudcode-pa 端点),err=%v", err)
 		}
+		found := false
 		for _, family := range r.RegisteredProtocolFamilies() {
 			if family == ProtocolAntigravitySession {
-				t.Fatalf("默认注册集合不应含 %q", ProtocolAntigravitySession)
+				found = true
 			}
+		}
+		if !found {
+			t.Fatalf("默认注册集合应含 %q", ProtocolAntigravitySession)
 		}
 	})
 
-	t.Run("显式开启构造正确 adapter", func(t *testing.T) {
+	t.Run("DISABLE env 显式关闭后不注册", func(t *testing.T) {
 		clearPlaceholderSessionAdapterEnvs(t)
-		t.Setenv(antigravitySessionAdapterEnv, "true")
+		t.Setenv(antigravitySessionAdapterDisableEnv, "true")
+		r := Build()
+		if _, err := r.For(ProtocolAntigravitySession); !errors.Is(err, provider.ErrAdapterNotRegistered) {
+			t.Fatalf("DISABLE 后应 unregistered,err=%v", err)
+		}
+	})
+
+	t.Run("默认构造真实 CloudCode adapter", func(t *testing.T) {
+		clearPlaceholderSessionAdapterEnvs(t)
 		r := Build()
 		raw, err := r.For(ProtocolAntigravitySession)
 		if err != nil {
@@ -669,12 +673,11 @@ func TestBuild_ConsistentWithProviderInterface(t *testing.T) {
 	}
 }
 
+// placeholderSessionProtocolFamilies 是仍保持 opt-in(默认不注册)的占位/推测上游族。
+// 已验证真实端点的 antigravity/gemini_code_assist/copilot/cursor 已转默认开,不在此列。
 func placeholderSessionProtocolFamilies() []string {
 	return []string{
-		ProtocolCursorSession,
-		ProtocolCopilotSession,
 		ProtocolGeminiAdvancedSession,
-		ProtocolAntigravitySession,
 		ProtocolKiroSession,
 		ProtocolWindsurfSession,
 	}
@@ -689,11 +692,11 @@ func clearPlaceholderSessionAdapterEnvs(t *testing.T) {
 
 func placeholderSessionAdapterEnvNames() []string {
 	return []string{
-		cursorSessionAdapterEnv,
-		copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
+		antigravitySessionAdapterDisableEnv,
+		geminiCodeAssistAdapterDisableEnv,
+		copilotSessionAdapterDisableEnv,
+		cursorSessionAdapterDisableEnv,
 		geminiAdvancedSessionAdapterEnv,
-		antigravitySessionAdapterEnv,
 		kiroSessionAdapterEnv,
 		windsurfSessionAdapterEnv,
 	}

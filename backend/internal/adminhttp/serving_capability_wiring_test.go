@@ -31,17 +31,18 @@ func TestDefaultCatalogMakesNonServingStatesExplicit(t *testing.T) {
 			reason:   servingcapability.ReasonExperimentalWireUnverified,
 		},
 		{
-			name: "Code Assist 实验态", vendor: credentialstore.VendorGemini,
-			authMode: credentialstore.AuthModeCodeAssist,
-			status:   servingcapability.StatusExperimental,
-			reason:   servingcapability.ReasonAdapterNotRegistered,
-		},
-		{
 			name: "仅采集无 serving contract", vendor: credentialstore.VendorGemini,
 			authMode: credentialstore.AuthModeOAuth,
 			status:   servingcapability.StatusCollectOnly,
 			reason:   "released_or_experimental_contract_missing",
 		},
+	}
+
+	// gemini_code_assist 已转默认注册(真实 cloudcode-pa,wire 已验证):registered +
+	// experimental,enableable 但 traffic 仍受实验门控。不再是 adapter_not_registered。
+	codeAssist := findCatalogMode(t, catalog, credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist).ServingReadiness
+	if !codeAssist.Enableable || codeAssist.TrafficAllowed || codeAssist.Status != servingcapability.StatusExperimental {
+		t.Fatalf("gemini_code_assist 默认应 registered+experimental+enableable+traffic-false: %+v", codeAssist)
 	}
 	for _, authMode := range []string{credentialstore.AuthModeClaudeAIOAuth, credentialstore.AuthModeClaudeCode} {
 		mode := findCatalogMode(t, catalog, credentialstore.VendorAnthropic, authMode)
@@ -84,8 +85,8 @@ func TestProviderCatalogEnabledWriteRequiresCurrentProcessReadiness(t *testing.T
 		reason string
 	}{
 		{
-			name: "env off family", family: registrydefault.ProtocolGeminiCodeAssist,
-			reason: servingcapability.ReasonAdapterNotRegistered,
+			name: "wire 未验证 family", family: registrydefault.ProtocolAntigravitySession,
+			reason: servingcapability.ReasonExperimentalWireUnverified,
 		},
 	}
 

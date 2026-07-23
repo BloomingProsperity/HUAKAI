@@ -97,14 +97,16 @@ var defaultProtocolFamilies = []string{
 	ProtocolReplicateImage,
 	ProtocolVertexGemini,
 	ProtocolVertexAnthropic,
+	// 已验证真实端点的反转 session 族,默认注册(见 Build 的 verifiedSessionAdapterEnabled)。
+	ProtocolAntigravitySession,
+	ProtocolGeminiCodeAssist,
+	ProtocolCopilotSession,
+	ProtocolCursorSession,
 }
 
+// envGatedProtocolFamilies 是仍 opt-in(默认不注册)的占位/推测上游 session 族。
 var envGatedProtocolFamilies = []string{
-	ProtocolGeminiCodeAssist,
-	ProtocolCursorSession,
-	ProtocolCopilotSession,
 	ProtocolGeminiAdvancedSession,
-	ProtocolAntigravitySession,
 	ProtocolKiroSession,
 	ProtocolWindsurfSession,
 }
@@ -198,11 +200,14 @@ const (
 )
 
 const (
-	cursorSessionAdapterEnv         = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
-	copilotSessionAdapterEnv        = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
-	geminiCodeAssistAdapterEnv      = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"
+	// 已验证真实端点的反转 family:默认注册,仅显式 DISABLE env 关闭(opt-out)。
+	antigravitySessionAdapterDisableEnv = "HUAKAI_DISABLE_ANTIGRAVITY_SESSION_ADAPTER"
+	geminiCodeAssistAdapterDisableEnv   = "HUAKAI_DISABLE_GEMINI_CODE_ASSIST_ADAPTER"
+	copilotSessionAdapterDisableEnv     = "HUAKAI_DISABLE_COPILOT_SESSION_ADAPTER"
+	cursorSessionAdapterDisableEnv      = "HUAKAI_DISABLE_CURSOR_SESSION_ADAPTER"
+
+	// 占位/推测上游 family:保持 opt-in,显式 ENABLE env 才注册。
 	geminiAdvancedSessionAdapterEnv = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
-	antigravitySessionAdapterEnv    = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
 	kiroSessionAdapterEnv           = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
 	windsurfSessionAdapterEnv       = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
 )
@@ -351,28 +356,27 @@ func Build() *provider.StaticRegistry {
 	// Gemini Code Assist（cloudcode-pa v1internal）：纯 OAuth Bearer 出站到
 	// Google 内部端点，请求包 {model,project,request} envelope，响应包
 	// {response} envelope（入站 proto/geminicodeassist 解）。属 OAuth session +
-	// 内部 Google 端点高危项 + 反封禁姿态（最小 UA/X-Goog-Api-Client），按
-	// cursor/copilot placeholder 模式默认 off、env opt-in 注册——避免把真实
-	// session credential 默认发到未广泛验证的私有上游。
-	if placeholderSessionAdapterEnabled(geminiCodeAssistAdapterEnv) {
+	// 已验证真实上游端点的反转 family 默认注册(能力默认可用,对齐成熟中转项目,
+	// 不让部署者逐个 opt-in),仅显式 DISABLE env 时关闭:
+	//   - antigravity / gemini_code_assist → cloudcode-pa(真号已验证)
+	//   - copilot → api.githubcopilot.com;cursor → api2.cursor.sh(真实文档化端点)
+	if verifiedSessionAdapterEnabled(geminiCodeAssistAdapterDisableEnv) {
 		r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
 	}
-
-	// 未验证 session adapter 默认不注册，避免把真实凭据发到占位上游；
-	// 实验环境必须逐 family 显式 opt-in，不能由旧总开关一次性打开全部。
-	if placeholderSessionAdapterEnabled(cursorSessionAdapterEnv) {
-		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
+	if verifiedSessionAdapterEnabled(antigravitySessionAdapterDisableEnv) {
+		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 	}
-	if placeholderSessionAdapterEnabled(copilotSessionAdapterEnv) {
+	if verifiedSessionAdapterEnabled(copilotSessionAdapterDisableEnv) {
 		r.MustRegister(ProtocolCopilotSession, &copilot.CopilotSessionAdapter{})
 	}
+	if verifiedSessionAdapterEnabled(cursorSessionAdapterDisableEnv) {
+		r.MustRegister(ProtocolCursorSession, &cursor.CursorSessionAdapter{})
+	}
+
+	// 占位/推测上游(endpoint 未采集或 adapter 明标"OCAW 采集前请勿上线")的 family
+	// 保持 opt-in,避免把真实凭据默认发到未验证端点;采集验证后再转默认开。
 	if placeholderSessionAdapterEnabled(geminiAdvancedSessionAdapterEnv) {
 		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
-	}
-	// Antigravity wire 已落到正式 cloudcode-pa，但生产默认仍保持 off；只有
-	// 部署方显式开启本 family 时才构造并注册 adapter。
-	if placeholderSessionAdapterEnabled(antigravitySessionAdapterEnv) {
-		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 	}
 	if placeholderSessionAdapterEnabled(kiroSessionAdapterEnv) {
 		r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})
@@ -386,4 +390,10 @@ func Build() *provider.StaticRegistry {
 
 func placeholderSessionAdapterEnabled(env string) bool {
 	return os.Getenv(env) == "true"
+}
+
+// verifiedSessionAdapterEnabled 对 wire 已验证真实端点的反转 family 默认开启,
+// 仅显式 DISABLE env=="true" 时关闭(能力默认可用,运维可 opt-out)。
+func verifiedSessionAdapterEnabled(disableEnv string) bool {
+	return os.Getenv(disableEnv) != "true"
 }
