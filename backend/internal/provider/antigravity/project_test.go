@@ -45,7 +45,12 @@ func TestProjectResolverReturnsLoadedProject(t *testing.T) {
 	defer loadServer.Close()
 
 	var onboardCalls atomic.Int32
-	onboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	onboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// privacy 防封调用(setUserSettings/fetchUserInfo)打在 daily 端点,放行且不计入 onboard。
+		if strings.HasSuffix(req.URL.Path, ":setUserSettings") || strings.HasSuffix(req.URL.Path, ":fetchUserInfo") {
+			_, _ = w.Write([]byte(`{"userSettings":{}}`))
+			return
+		}
 		onboardCalls.Add(1)
 		_, _ = w.Write([]byte(`{"cloudaicompanionProject":"unexpected"}`))
 	}))
@@ -87,8 +92,13 @@ func TestProjectResolverOnboardsAndPolls(t *testing.T) {
 
 	var onboardCalls atomic.Int32
 	onboardServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		call := onboardCalls.Add(1)
 		assertProjectRequestHeaders(t, req)
+		// privacy 防封调用放行,不计入 onboard 轮询计数。
+		if strings.HasSuffix(req.URL.Path, ":setUserSettings") || strings.HasSuffix(req.URL.Path, ":fetchUserInfo") {
+			_, _ = w.Write([]byte(`{"userSettings":{}}`))
+			return
+		}
+		call := onboardCalls.Add(1)
 		if req.URL.Path != "/v1internal:onboardUser" {
 			t.Errorf("onboard path=%q", req.URL.Path)
 		}

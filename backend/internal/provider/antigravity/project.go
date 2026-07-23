@@ -87,6 +87,7 @@ func (r *ProjectResolver) resolveAntigravityProjectMetadata(ctx context.Context,
 	}
 	tier := subscriptionTierFromResponse(raw)
 	if projectID := projectIDFromResponse(raw); projectID != "" {
+		r.ensurePrivacyBestEffort(ctx, accessToken, projectID)
 		return projectID, tier, nil
 	}
 	onboardBody := map[string]string{
@@ -104,6 +105,7 @@ func (r *ProjectResolver) resolveAntigravityProjectMetadata(ctx context.Context,
 			tier = observedTier
 		}
 		if projectID := projectIDFromResponse(raw); projectID != "" {
+			r.ensurePrivacyBestEffort(ctx, accessToken, projectID)
 			return projectID, tier, nil
 		}
 		if attempt+1 < attempts {
