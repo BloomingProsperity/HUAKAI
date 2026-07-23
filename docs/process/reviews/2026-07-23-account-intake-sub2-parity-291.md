@@ -6,12 +6,13 @@
 
 HUAKAI 的账号接入并非“没做”或“全是空壳”。当前主线已经形成包含身份消歧、显式冲突、账号/凭据/健康/日志同事务、OAuth 临时凭据持久化、套餐标签、5h/7d 配额和恢复状态的标准导入主链。
 
-但当前主线仍有四组 S1：
+但当前主线仍有五组 S1：
 
 1. Cookie、CRS、加密迁移包共用的来源语义错误，使部分可信 OAuth/Setup Token 账号“入口存在但不能成功落库”。
 2. 部署者、租户管理员的权限合同在接入、账号管理、凭据轮换和渠道恢复之间互相矛盾。
 3. 单账号更新、启停、删除先改业务状态，再单独写日志，日志失败会留下半完成结果。
 4. “账号+凭据直接创建”仍是较弱的平行会话导入通道，可绕过标准链的稳定身份匹配、项目补全和激活通知。
+5. OAuth 执行失败没有区分可重试与永久失败，当前 `integration_pg` 门确定性失败，并缺失持久失败日志。
 
 另有四组 S2 和两组 S3。它们不代表主链完全不可用，但会直接影响批量运营、订阅到期预警、原地重认证和秘密导出安全。
 
@@ -28,7 +29,7 @@ HUAKAI 的账号接入并非“没做”或“全是空壳”。当前主线已�
 
 外部项目由三个独立 clean-room specifier 读取当前源码。本报告只综合行为和证据锚点，没有复制函数、结构、注释、数据库设计、UI 或算法顺序。
 
-证据分类口径：正文“事实”、源码直接描述和带锚点的外部行为均为 `Observed`；跨函数、跨入口或故障结果的推导在正文逐项标为 `Inferred I-01` 至 `I-09`；未取得源码或活体证据的事项只列入 `Open Question`。
+证据分类口径：正文“事实”、源码直接描述和带锚点的外部行为均为 `Observed`；跨函数、跨入口或故障结果的推导在正文逐项标为 `Inferred I-01` 至 `I-10`；未取得源码或活体证据的事项只列入 `Open Question`。
 
 ### 2.2 维护、发布与公开场景
 
@@ -56,7 +57,7 @@ HUAKAI 的账号接入并非“没做”或“全是空壳”。当前主线已�
 
 ### 2.4 定向测试
 
-以下包以 `-count=1` 运行通过：
+以下包先以普通构建标签和 `-count=1` 运行通过：
 
 ```text
 ./internal/credentialacq/intake
@@ -70,11 +71,13 @@ HUAKAI 的账号接入并非“没做”或“全是空壳”。当前主线已�
 ./internal/credentialworker
 ```
 
-绿测不能推翻本报告的来源语义缺陷。现有判别测试明确证明普通 JSON/CSV/CLI 必须拒绝 OAuth-only 模式，但 Cookie、CRS 和迁移包测试没有把可信来源接到该闸上：
+普通绿测不能推翻本报告的来源语义缺陷，也不能代表 `integration_pg` 已执行。现有判别测试明确证明普通 JSON/CSV/CLI 必须拒绝 OAuth-only 模式，但 Cookie、CRS 和迁移包测试没有把可信来源接到该闸上：
 
 - 来源闸测试：`backend/internal/credentialacq/intake/source_provenance_test.go:10-35`
 - 迁移包唯一 PostgreSQL 往返材料是 OpenAI API Key：`backend/internal/accountbundle/service_integration_pg_test.go:32-85`
 - Setup Token 的迁移测试只验证迁移 0191 的数据库 CHECK 往返，不是账号迁移包往返：`backend/internal/gatewayhttp/accountintake/service_integration_test.go:1051-1081`
+
+PR `#295` 的完整 CI 进一步暴露了 S1-05：Rust、Go race/vet/性能和生产镜像 smoke 三个门通过，但 `integration_pg` 在 `TestOAuthAccountIntakeCompletionLogFailureRollsBackBusinessState` 失败。随后用全新一次性 PostgreSQL 库迁移到 0218，只运行该测试并 `-count=3`，三次均得到“暂存流程状态=`staged`，期望 `failed`”；测试库在命令结束时删除。失败测试：`backend/internal/gatewayhttp/accountintake/oauth_service_integration_test.go:390-485`。
 
 ## 三、主线真实链路
 
@@ -266,6 +269,39 @@ CRS 证据：`backend/internal/gatewayhttp/accountintake/crs_service.go:322-378`
 
 直接创建只保留真正静态、无需上游身份的 Key/云配置；所有 session/OAuth 载荷统一进入标准接入计划。若为了兼容保留旧 API，也应在服务内部转调标准计划和执行，而不是维持第二套写入逻辑。
 
+### S1-05：OAuth 执行失败状态被一刀切保留为可重试
+
+### 事实
+
+OAuth 执行先非破坏读取暂存候选，只有账号事务即将提交时才认领并擦除凭据。这保证缺少确认、计划漂移或事务失败时不会提前消费秘密，是正确的可重试基础：`backend/internal/gatewayhttp/accountintake/oauth_service.go:237-265`；`backend/internal/gatewayhttp/accountintake/staged_store.go:203-229`、`289-329`。
+
+但账号事务或 `CommitHook` 失败时，`executeCreate`/`executeUpdate` 只把错误折叠成失败项，外层 `OAuthService.Execute` 收到的 `executeErr` 仍为 `nil`，随后直接返回结果：`backend/internal/gatewayhttp/accountintake/execute.go:212-338`、`341-450`；`backend/internal/gatewayhttp/accountintake/oauth_service.go:246-269`。
+
+因此当前没有按错误类别执行以下任何一项：
+
+- 可重试失败：保留 `staged` 和加密凭据，同时持久记录一次失败尝试。
+- 永久失败：转为 `failed`、擦除临时秘密并持久记录终态。
+- 完成日志自身失败：保持账号事务回滚，同时留下可识别、可恢复的流程状态。
+
+主线已有 PostgreSQL 判别测试要求“完成日志失败时账号、凭据、健康整体回滚，OAuth 会话不完成，暂存流程失败且只有失败日志”。账号数据和会话回滚断言通过，唯独暂存状态仍为 `staged`，测试在该处失败：`backend/internal/gatewayhttp/accountintake/oauth_service_integration_test.go:431-485`。
+
+### 影响（`Inferred I-10`）
+
+- CI 主线发布门确定性红，当前 PR 即使只改文档也无法达到全绿。
+- 运维只能看到接口失败，数据库中没有对应失败日志，无法区分缺确认、计划漂移、临时数据库错误和永久凭据错误。
+- 永久错误仍携带加密临时秘密停留到过期清理；若自动化盲目重试，会重复执行不可能成功的流程。
+- 若简单恢复旧的“任何失败都终结”逻辑，又会破坏缺确认后可修正重试的能力。
+
+### 修复方向与验收
+
+不要在“全部失败”与“全部保留”之间二选一。建立唯一错误分类器：
+
+1. 确认缺失、计划已变化、瞬时数据库或日志故障标为可重试；保留秘密和 `staged`，写入独立的尝试失败日志及稳定错误码。
+2. 凭据形状无效、供应商或模式不匹配、明确拒绝等不可恢复错误转为 `failed`，立即擦除临时秘密并写终态日志。
+3. 账号、凭据、健康、OAuth 会话和完成日志仍必须同事务；该事务失败不能留下业务半状态。
+4. 把现有完成日志失败测试改成同时断言“业务整体回滚”和选定的可重试状态合同；另补永久失败、缺确认后重试成功、失败日志也不可写时的恢复测试。
+5. 同一分类器复用于 OAuth、Cookie 和 CRS，禁止三个入口各自解释失败。
+
 ## 五、功能缺口
 
 ### S2-01：没有显式“重认证这个账号”
@@ -382,13 +418,14 @@ HUAKAI 应补齐它们成熟的运维颗粒度，同时保留自己的身份冲�
 
 ## 九、建议实施顺序
 
-1. **先修 S1-01。** 一个根因影响三个正式入口，且当前测试无法证明可用。
-2. **统一三身份 capability。** 先由 Owner 定稿部署者对租户账号的代管边界，再改 resolver、动作投影和测试，避免继续扩散。
-3. **关闭单账号日志半事务。** 复用已有创建和批量事务范式。
-4. **收口直接会话创建旁路。** 静态 Key 保留直建，session/OAuth 统一走接入主链。
-5. **补显式重认证和订阅起止。**
-6. **在现有健康状态机上扩 Day-2 颗粒度和批量动作。**
-7. **最后做秘密导出 step-up、死 API 和注释清理。**
+1. **先修 S1-05。** 它已让主线 `integration_pg` 发布门确定性失败；必须保留可重试能力并补齐失败分类和日志。
+2. **再修 S1-01。** 一个根因影响三个正式入口，且当前测试无法证明可用。
+3. **统一三身份 capability。** 先由 Owner 定稿部署者对租户账号的代管边界，再改 resolver、动作投影和测试，避免继续扩散。
+4. **关闭单账号日志半事务。** 复用已有创建和批量事务范式。
+5. **收口直接会话创建旁路。** 静态 Key 保留直建，session/OAuth 统一走接入主链。
+6. **补显式重认证和订阅起止。**
+7. **在现有健康状态机上扩 Day-2 颗粒度和批量动作。**
+8. **最后做秘密导出 step-up、死 API 和注释清理。**
 
 每批修复都应从最新 `origin/main` 起干净分支，只保留一个 PR；先跑针对性判别测试，再跑相关包和主线全量测试；合并必须等 Owner 明确同意。
 
@@ -401,6 +438,7 @@ HUAKAI 应补齐它们成熟的运维颗粒度，同时保留自己的身份冲�
 - [ ] 获得能力的租户管理员能维护自己账号的凭据和健康
 - [ ] 最终用户仍不能进入账号池管理
 - [ ] 单账号更新、启停、删除在日志失败时整体回滚
+- [ ] OAuth、Cookie、CRS 共用可重试/永久失败分类，失败尝试有持久日志且秘密按终态及时擦除
 - [ ] 同一上游身份从任一入口都不能形成重复账号
 - [ ] 重认证能明确目标账号，并校验上游身份一致
 - [ ] 套餐等级、证据、观测时间和可得的订阅起止统一展示
@@ -409,9 +447,9 @@ HUAKAI 应补齐它们成熟的运维颗粒度，同时保留自己的身份冲�
 
 ## 十一、真实性元数据
 
-- HUAKAI 生产/测试区域实读：42
+- HUAKAI 生产/测试区域实读：45
 - 外部 clean-room 行为区域：34
-- 合理推断：9（逐项如下）
+- 合理推断：10（逐项如下）
 - 开放问题：5
 - 未恢复原始文档：8
 
@@ -434,6 +472,7 @@ HUAKAI 应补齐它们成熟的运维颗粒度，同时保留自己的身份冲�
 7. `Inferred I-07`：身份缺失、上游主体变化或库存冲突时，现有 OAuth 输入无法表达“只重认证指定账号”。基础是 OAuth 输入没有目标账号字段，而账号归属由完成后的匹配结果决定：`backend/internal/gatewayhttp/accountintake/oauth_service.go:18-30`、`193-269`。
 8. `Inferred I-08`：账号 `expires_at` 不能替代上游订阅到期。基础是套餐投影没有订阅起止字段，账号列表把 `expires_at` 作为独立账号字段：`backend/internal/subscriptionprofile/profile.go:59-73`、`backend/internal/db/admin/admin_provider_accounts.go:198-236`。
 9. `Inferred I-09`：迁移包秘密导出低于独立二次认证保护等级，属于安全差距而非当前路由实现错误。基础是路由安全级、resolver 和既定导出合同均未要求 step-up：`backend/internal/gatewayhttp/accountintakehttp/handler.go:85-108`、`172-232`。
+10. `Inferred I-10`：不分类地保留 `staged` 会使永久错误重复重试并延长临时秘密驻留，而恢复旧的一刀切终结会破坏缺确认后的正常重试。基础是当前非破坏读取、事务内认领、所有执行错误折叠为失败项，以及缺确认重试判别测试：`backend/internal/gatewayhttp/accountintake/oauth_service.go:237-269`、`backend/internal/gatewayhttp/accountintake/execute.go:212-338`、`backend/internal/gatewayhttp/accountintake/oauth_service_integration_test.go:257-295`、`390-485`。
 
 本报告的“真实问题”来自当前主线生产码和可复现测试链；外部项目部分来自独立 clean-room 源码核实；2026-07-22 原始长文不可恢复，因此只验证了保留下来的问题声明，没有伪造原文覆盖。
 
@@ -466,6 +505,7 @@ new-api source files read:
 - 第三轮：OpenAI Codex `gpt-5.6-sol`，会话 `019f8d2b-01ab-7090-8aa3-61ffc46f3b98`，`sandbox=read-only`。提出一项 S1：外部行为结论虽有尾部来源清单，但部分比较句和表格单元缺少紧邻的 `repo@sha:file:line` 锚点。
 - 第四轮：OpenAI Codex `gpt-5.6-sol`，会话 `019f8d30-a778-7f02-9213-6eefda8a172e`，`sandbox=read-only`。提出一项 S1：真实性元数据统计了九项合理推断，但正文没有逐项标识及列出观测基础。
 - 最终轮：OpenAI Codex `gpt-5.6-sol`，会话 `019f8d32-c060-7913-8a2f-d895e3e00d22`，`sandbox=read-only`。未发现剩余 S0/S1 或会误导后续实施的明确缺陷。
+- CI 新发现复审：OpenAI Codex `gpt-5.6-sol`，会话 `019f8d40-0479-7c13-b41d-e75ec4eda5fd`，`sandbox=read-only`。未提出 S0/S1；一项 S2 为新增 `I-10` 后前文编号范围仍停在 `I-09`，本版已同步。
 
 本版已完成上述修正。
 
@@ -475,4 +515,4 @@ Lane: reviewer
 
 Agent: GPT-5 Codex / 主会话 `019ef462-51f1-7da2-b94c-141e85ff0eb0`
 
-UTC timestamp: 2026-07-23T04:19:39Z
+UTC timestamp: 2026-07-23T04:34:12Z
