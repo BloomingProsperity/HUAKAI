@@ -308,26 +308,18 @@ func stampSnapshot(modelStamp, routerVersion string) string {
 	return modelStamp + ";router:" + routerVersion
 }
 
-// requiredCapabilities 把 Features 映射成 Pool 的池内 gate 所使用的
-// capability 字符串。顺序是稳定的，以便审计比对能正常工作。
-func requiredCapabilities(f RequestFeatures) []string {
-	caps := make([]string, 0, 5)
-	if f.Stream {
-		caps = append(caps, "stream")
-	}
-	if f.WantsToolUse {
-		caps = append(caps, "tools")
-	}
-	if f.WantsVision {
-		caps = append(caps, "vision")
-	}
-	if f.WantsJSON {
-		caps = append(caps, "json")
-	}
-	if f.WantsAudio {
-		caps = append(caps, "audio")
-	}
-	return caps
+// requiredCapabilities 把 chat 请求特性映射成【账号池选号】的 capability gate。
+//
+// 设计决定(2026-07-23):stream/tools/vision/json/audio-input 这些 chat 特性【不再】作为账号级选号门。
+// 它们是模型/上游的属性,由 handler 与上游处理,选不到就失败转移;做成账号级 `capability_flags @> required`
+// 门有两个真实缺陷:①账号默认空标记时流式请求(最常用)被误滤成 no_capacity,逼每个建号路径手工同步标记;
+// ②账号能力是多模型并集→在不支持某特性的模型上放行(跨模型误授权)。故这里返回空:chat 特性不参与账号选号。
+//
+// 媒体 lane(图片生成 image_output、embeddings、rerank、video)的账号级门【不在此处】,由各自的 route
+// planner(如 imageshttp.requireImageOutputCapability)独立追加 RequiredCapabilities,不受本改动影响——
+// 媒体账号门保留:媒体资格确实是账号级事实(某订阅号能否出图/转写)。
+func requiredCapabilities(_ RequestFeatures) []string {
+	return nil
 }
 
 func copyStrings(in []string) []string {

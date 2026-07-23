@@ -2088,14 +2088,6 @@ func (r *recordingPlanInputRouter) Plan(ctx context.Context, in router.PlanInput
 	return r.delegate.Plan(ctx, in)
 }
 
-func capSet(caps []string) map[string]bool {
-	m := make(map[string]bool, len(caps))
-	for _, c := range caps {
-		m[c] = true
-	}
-	return m
-}
-
 // TestPrepareRoute_ThreadsBodyDerivedCapabilities 是自证接线测试 (ROUTE-024 核心契约):
 // 一个含 image part + tools + json_schema 的 streamed body 经 prepareRoute 后,
 // 真 Router 产出的 AttemptPlan.RequiredCapabilities 必须 == {stream,vision,tools,json};
@@ -2137,20 +2129,16 @@ func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
 	}
 
 	richPlan, richCaps := run(t, richBody, true)
+	// body 仍必须驱动 PlanInput.Features(喂模型级校验/mimicry/body 特性检测),这条不变。
 	if !richPlan.Features.WantsVision || !richPlan.Features.WantsToolUse || !richPlan.Features.WantsJSON {
 		t.Fatalf("PlanInput.Features not driven by body: %+v", richPlan.Features)
 	}
 	if !richPlan.Features.Stream {
 		t.Fatalf("PlanInput.Features.Stream regressed; want true for streamed request")
 	}
-	gotRich := capSet(richCaps)
-	for _, want := range []string{"stream", "vision", "tools", "json"} {
-		if !gotRich[want] {
-			t.Fatalf("rich arm RequiredCapabilities missing %q; got %v", want, richCaps)
-		}
-	}
-	if len(richCaps) != 4 {
-		t.Fatalf("rich arm should carry exactly {stream,vision,tools,json}; got %v", richCaps)
+	// 但 chat 特性(2026-07-23 对齐两镜)不再变成账号选号门 RequiredCapabilities。
+	if len(richCaps) != 0 {
+		t.Fatalf("chat 特性不应进账号选号门;rich arm RequiredCapabilities 应为空,got %v", richCaps)
 	}
 
 	basePlan, baseCaps := run(t, baselineBody, false)
@@ -2161,16 +2149,15 @@ func TestPrepareRoute_ThreadsBodyDerivedCapabilities(t *testing.T) {
 		t.Fatalf("baseline arm RequiredCapabilities should be empty; got %v", baseCaps)
 	}
 
-	// 自证：两个分支必须不同。没有 :313 处的接线，两者都会塌缩成 {stream}/{}，
-	// 这个守卫就会变红。
-	if len(richCaps) == len(baseCaps) {
-		t.Fatalf("rich and baseline arms must differ; rich=%v baseline=%v", richCaps, baseCaps)
+	// 自证:body 特性检测仍区分两分支(即便都不再进账号门)——Features 必须不同。
+	if richPlan.Features == basePlan.Features {
+		t.Fatalf("rich 与 baseline 的 body 特性必须不同;rich=%+v baseline=%+v", richPlan.Features, basePlan.Features)
 	}
 }
 
-// TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps 守 stream 不被回归:
-// 一个 streamed 但无 vision/tools/json 的 body 只应得到 {stream}。
-// 变异: :313 误删 Stream 字段 -> 转红。
+// TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps 守 body 特性检测仍驱动 Features(Stream),
+// 但 chat 特性(2026-07-23 对齐两镜)不再进账号选号门:流式 body 的 attempt 不带 RequiredCapabilities。
+// 变异: prepareRoute 误删 Stream 检测 -> Features.Stream 断言转红。
 func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
 	rec := &recordingPlanInputRouter{delegate: router.NewDefaultRouter()}
 	ex := &chatExecution{
@@ -2191,9 +2178,11 @@ func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
 	if ok := ex.prepareRoute(httptest.NewRecorder()); !ok {
 		t.Fatalf("prepareRoute returned false")
 	}
-	caps := ex.attempt.RequiredCapabilities
-	if len(caps) != 1 || caps[0] != "stream" {
-		t.Fatalf("stream-only body should yield exactly [stream]; got %v", caps)
+	if !rec.last.Features.Stream {
+		t.Fatalf("流式 body 应驱动 Features.Stream=true;got %+v", rec.last.Features)
+	}
+	if caps := ex.attempt.RequiredCapabilities; len(caps) != 0 {
+		t.Fatalf("chat 特性不进账号门;流式 body 的 RequiredCapabilities 应为空,got %v", caps)
 	}
 }
 

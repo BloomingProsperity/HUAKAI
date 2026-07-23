@@ -91,7 +91,8 @@ func TestRouter_Plan_UsesRankedCandidates(t *testing.T) {
 	if plan.AttemptBudget != 3 {
 		t.Fatalf("expected AttemptBudget=3; got %d", plan.AttemptBudget)
 	}
-	want := map[string]bool{"stream": true, "tools": true}
+	// chat 特性(stream/tools)不再作为账号选号门(2026-07-23 对齐两镜),attempt 不带 RequiredCapabilities。
+	want := map[string]bool{}
 	for i, attempt := range plan.Attempts {
 		if len(attempt.RequiredCapabilities) != len(want) {
 			t.Fatalf("attempt %d RequiredCapabilities mismatch; got %v want %v", i, attempt.RequiredCapabilities, want)
@@ -296,69 +297,24 @@ func assertAttempts(t *testing.T, plan RoutePlan, want []wantAttempt) {
 }
 
 // TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens 锁死能力词表:
-// requiredCapabilities 必须吐 {stream,tools,vision,json,audio} (账号 capability_flags
-// 被戳的同一套词,registry 的 model_capabilities 也认 "audio"),而不是 proto 层的
-// 'image'/'tool_use'。词表错位时 @> 会排除所有账号 -> 恒 no_eligible_account 503。
-// mutation: 把 mapper 里的 "vision" 改成 "image" 或 "tools" 改成 "tool_use" -> 转红。
-func TestRequiredCapabilities_EmitsMapperVocabularyNotProtoTokens(t *testing.T) {
-	caps := requiredCapabilities(RequestFeatures{
-		Stream:       true,
-		WantsToolUse: true,
-		WantsVision:  true,
-		WantsJSON:    true,
-		WantsAudio:   true,
-	})
-	got := map[string]bool{}
-	for _, c := range caps {
-		got[c] = true
+// 设计决定(2026-07-23):chat 请求特性(stream/tools/vision/json/audio-input)【不再】作为账号池选号的
+// capability gate。requiredCapabilities 对任何 chat 特性组合都返回空(由 handler/上游处理);此前做账号级门
+// 有两个真实缺陷:账号默认空标记时流式(最常用)被误滤成 no_capacity,以及账号并集能力→跨模型误授权。
+// 媒体 lane(image_output/embeddings/rerank/video)的账号门不在此函数,由各自 route planner 独立追加,保留不变。
+// mutation: 让 requiredCapabilities 对任一 chat 特性重新 append 词 -> 转红。
+func TestRequiredCapabilities_ChatFeaturesNotAccountGated(t *testing.T) {
+	cases := []RequestFeatures{
+		{Stream: true},
+		{WantsToolUse: true},
+		{WantsVision: true},
+		{WantsJSON: true},
+		{WantsAudio: true},
+		{Stream: true, WantsToolUse: true, WantsVision: true, WantsJSON: true, WantsAudio: true},
+		{},
 	}
-	for _, want := range []string{"stream", "tools", "vision", "json", "audio"} {
-		if !got[want] {
-			t.Fatalf("requiredCapabilities missing token %q; got %v", want, caps)
+	for _, f := range cases {
+		if caps := requiredCapabilities(f); len(caps) != 0 {
+			t.Fatalf("chat 特性不应作为账号选号门,requiredCapabilities(%+v) 必须为空;got %v", f, caps)
 		}
-	}
-	for _, forbidden := range []string{"image", "tool_use", "reasoning_high", "input_audio", "long_context"} {
-		if got[forbidden] {
-			t.Fatalf("requiredCapabilities emitted off-vocabulary token %q; would exclude every account; got %v", forbidden, caps)
-		}
-	}
-	if len(caps) != 5 {
-		t.Fatalf("requiredCapabilities should emit exactly the 5 locked tokens; got %v", caps)
-	}
-}
-
-// TestRequiredCapabilities_AudioTokenDiscriminates 锁死 audio 词表映射: WantsAudio
-// 必须且只能吐 capability token "audio" (registry model_capabilities 与账号
-// capability_flags 共用的同一套词),不带任何其它约束。这样 SelectionRequest
-// .RequiredCapabilities 经 @> 过滤只筛掉缺 audio 的账号,不误排他人。
-// mutation: 删 mapper 里 `if f.WantsAudio { append "audio" }` 这一支 -> 第一个断言
-// (audio token 缺失) 转红;把 token 写成 "input_audio"/"voice" 等错词 -> 同样转红。
-func TestRequiredCapabilities_AudioTokenDiscriminates(t *testing.T) {
-	caps := requiredCapabilities(RequestFeatures{WantsAudio: true})
-	if len(caps) != 1 || caps[0] != "audio" {
-		t.Fatalf("WantsAudio-only request must emit exactly [audio]; got %v", caps)
-	}
-
-	// 反向分支：一个不需要 audio 的请求绝不能携带 audio 约束（否则
-	// 每个纯文本调用都会被钉死在 audio 类账号上而被饿死）。
-	// 做一次正确值与基线的对照。
-	noAudio := requiredCapabilities(RequestFeatures{Stream: true, WantsVision: true})
-	for _, c := range noAudio {
-		if c == "audio" {
-			t.Fatalf("non-audio request leaked the audio token; got %v", noAudio)
-		}
-	}
-}
-
-// TestRequiredCapabilities_OnlyEmitsRequestedTokens 守过度检测: 只有被请求的 feature
-// 才进 required_capabilities。不请求 vision/json/tools 时不能凭空多约束 (会缩小可用账号集)。
-// mutation: 在 mapper 里无条件 append "vision" -> 转红。
-func TestRequiredCapabilities_OnlyEmitsRequestedTokens(t *testing.T) {
-	caps := requiredCapabilities(RequestFeatures{Stream: true})
-	if len(caps) != 1 || caps[0] != "stream" {
-		t.Fatalf("stream-only request should emit only [stream]; got %v", caps)
-	}
-	if len(requiredCapabilities(RequestFeatures{})) != 0 {
-		t.Fatalf("empty features should emit no capability constraints")
 	}
 }
