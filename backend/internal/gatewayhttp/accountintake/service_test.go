@@ -195,6 +195,77 @@ func TestExecutionErrorMessageDoesNotExposeBackendDetails(t *testing.T) {
 	}
 }
 
+func TestClassifyExecutionFailureSeparatesRetryableAndTerminal(t *testing.T) {
+	tests := []struct {
+		name         string
+		result       ExecutionResult
+		executeErr   error
+		wantFailure  bool
+		wantTerminal bool
+		wantCode     string
+	}{
+		{
+			name: "成功",
+			result: ExecutionResult{
+				Summary: ExecutionSummary{Created: 1},
+				Items:   []ExecutionItem{{Status: StatusCreated}},
+			},
+		},
+		{
+			name: "缺少确认可重试",
+			result: ExecutionResult{
+				Summary: ExecutionSummary{Conflict: 1},
+				Items:   []ExecutionItem{{Status: StatusConflict, Code: "confirmation_required"}},
+			},
+			wantFailure: true,
+			wantCode:    "confirmation_required",
+		},
+		{
+			name: "事务失败可重试",
+			result: ExecutionResult{
+				Summary: ExecutionSummary{Failed: 1},
+				Items:   []ExecutionItem{{Status: StatusFailed, Code: "execution_failed"}},
+			},
+			wantFailure: true,
+			wantCode:    "execution_failed",
+		},
+		{
+			name: "非法凭据终止",
+			result: ExecutionResult{
+				Summary: ExecutionSummary{Failed: 1},
+				Items: []ExecutionItem{{
+					PlannedAction: intake.ActionFail,
+					Status:        StatusFailed,
+					Code:          "provider_protocol_incompatible",
+				}},
+			},
+			wantFailure:  true,
+			wantTerminal: true,
+			wantCode:     "provider_protocol_incompatible",
+		},
+		{
+			name:         "计划漂移错误可重试",
+			executeErr:   ErrPlanChanged,
+			wantFailure:  true,
+			wantTerminal: false,
+			wantCode:     "plan_stale",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, failed := classifyExecutionFailure(test.result, test.executeErr)
+			if failed != test.wantFailure || got.Terminal != test.wantTerminal || got.Code != test.wantCode {
+				t.Fatalf("分类=%+v failed=%v，期望 terminal=%v code=%q failed=%v",
+					got, failed, test.wantTerminal, test.wantCode, test.wantFailure)
+			}
+		})
+	}
+	corrupt, failed := classifyStagedPreparationFailure(ErrStagedCredentialCorrupt, "")
+	if !failed || !corrupt.Terminal || corrupt.Code != "staged_candidate_corrupt" {
+		t.Fatalf("暂存密文损坏分类=%+v failed=%v", corrupt, failed)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

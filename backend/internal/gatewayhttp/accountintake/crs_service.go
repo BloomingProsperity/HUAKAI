@@ -262,6 +262,11 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 	claimed, err := s.staged.LoadForExecution(ctx, batch.TenantID, batch.ActorID, entry.FlowID, entry.PlanHash)
 	if err != nil {
 		item.Status, item.Code, item.Message = classifyCRSFlowError(err)
+		if failure, record := classifyStagedPreparationFailure(err, ""); record {
+			if recordErr := s.recordEntryDisposition(ctx, batch, entry, failure); recordErr != nil {
+				item.Message += "，且失败日志写入失败"
+			}
+		}
 		return item
 	}
 	defer privacy.Zeroize(claimed.Auxiliary)
@@ -269,6 +274,10 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 	auxiliary, err := decodeCRSAuxiliary(claimed.Auxiliary)
 	if err != nil {
 		item.Code = "source_auxiliary_invalid"
+		failure, _ := classifyStagedPreparationFailure(err, item.Code)
+		if recordErr := s.recordEntryDisposition(ctx, batch, entry, failure); recordErr != nil {
+			item.Message += "，且失败日志写入失败"
+		}
 		return item
 	}
 	if auxiliary.Proxy != nil {
@@ -299,7 +308,11 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 	})
 	clearProxyMaterial(claimed.PlanInput.Account.Proxy)
 	if executeErr != nil {
+		recordErr := s.recordEntryFailure(ctx, batch, entry, result, executeErr)
 		item.Status, item.Code, item.Message = classifyCRSFlowError(executeErr)
+		if recordErr != nil {
+			item.Message += "，且失败日志写入失败"
+		}
 		return item
 	}
 	item.Result = &result
@@ -316,7 +329,46 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 		item.Code = "account_execution_completed"
 		item.Message = "账号接入执行完成"
 	}
+	if item.Status != "completed" {
+		if recordErr := s.recordEntryFailure(ctx, batch, entry, result, nil); recordErr != nil {
+			for index := range result.Items {
+				result.Items[index].Warnings = appendUnique(
+					result.Items[index].Warnings,
+					"credential_flow_failure_log_failed",
+				)
+			}
+		}
+	}
 	return item
+}
+
+func (s *CRSService) recordEntryFailure(
+	ctx context.Context,
+	batch CRSExecuteInput,
+	entry CRSExecuteEntry,
+	result ExecutionResult,
+	executeErr error,
+) error {
+	failure, failed := classifyExecutionFailure(result, executeErr)
+	if !failed {
+		return nil
+	}
+	return s.recordEntryDisposition(ctx, batch, entry, failure)
+}
+
+func (s *CRSService) recordEntryDisposition(
+	ctx context.Context,
+	batch CRSExecuteInput,
+	entry CRSExecuteEntry,
+	failure executionFailureDisposition,
+) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.staged.RecordExecutionFailure(recordCtx, stagedExecutionFailureInput{
+		TenantID: batch.TenantID, ActorID: batch.ActorID, ActorRole: batch.ActorRole,
+		FlowID: entry.FlowID, RequestID: batch.RequestID, Reason: batch.Reason,
+		Code: failure.Code, Summary: failure.Summary, Terminal: failure.Terminal,
+	})
 }
 
 func buildCRSPlanInput(tenantID int64, destination AccountDefaults, sourceRef string, source crssource.Account, syncProxy bool, now time.Time) (PlanInput, json.RawMessage, error) {

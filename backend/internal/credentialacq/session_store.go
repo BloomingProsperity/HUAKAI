@@ -515,6 +515,29 @@ func (s *PostgresSessionStore) MarkFailed(ctx context.Context, id, errorClass, r
 	return s.UpdateStatus(ctx, id, StatusFailed, errorClass, redactedMessage)
 }
 
+// MarkFailedFromTx 把获取会话的失败终态加入调用方事务，确保临时凭据擦除、
+// 会话终结和失败日志不会出现部分提交。
+func (s *PostgresSessionStore) MarkFailedFromTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	id, errorClass, redactedMessage string,
+	allowed ...FlowStatus,
+) (Session, error) {
+	if s == nil || tx == nil {
+		return Session{}, errors.New("credentialacq: session transaction not configured")
+	}
+	transactional := *s
+	transactional.db = tx
+	return transactional.UpdateStatusFrom(
+		ctx,
+		id,
+		StatusFailed,
+		errorClass,
+		redactedMessage,
+		allowed...,
+	)
+}
+
 func scanSession(row pgx.Row) (Session, error) {
 	var out Session
 	var authType, redirectURI, errorClass, errorMessage pgtype.Text

@@ -236,10 +236,19 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 	}
 	claimed, err := s.staged.LoadOAuthCandidate(ctx, in.TenantID, in.ActorID, in.FlowID)
 	if err != nil {
+		if failure, record := classifyStagedPreparationFailure(err, ""); record {
+			if recordErr := s.recordExecutionFailure(ctx, in, session, failure); recordErr != nil {
+				return ExecutionResult{}, errors.Join(err, recordErr)
+			}
+		}
 		return ExecutionResult{}, err
 	}
 	defer func() { claimed.PlanInput.Content = "" }()
 	if err := restoreOAuthProxy(&claimed); err != nil {
+		failure, _ := classifyStagedPreparationFailure(err, "staged_auxiliary_invalid")
+		if recordErr := s.recordExecutionFailure(ctx, in, session, failure); recordErr != nil {
+			return ExecutionResult{}, errors.Join(err, recordErr)
+		}
 		return ExecutionResult{}, err
 	}
 	defer clearProxyMaterial(claimed.PlanInput.Account.Proxy)
@@ -263,10 +272,58 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 			)
 		},
 	})
+	if failure, failed := classifyExecutionFailure(result, executeErr); failed {
+		if recordErr := s.recordExecutionFailure(ctx, in, session, failure); recordErr != nil {
+			for index := range result.Items {
+				result.Items[index].Warnings = appendUnique(
+					result.Items[index].Warnings,
+					"credential_flow_failure_log_failed",
+				)
+			}
+			if executeErr != nil {
+				return ExecutionResult{}, errors.Join(executeErr, recordErr)
+			}
+		}
+	}
 	if executeErr != nil {
 		return ExecutionResult{}, executeErr
 	}
 	return result, nil
+}
+
+func (s *OAuthService) recordExecutionFailure(
+	ctx context.Context,
+	in OAuthExecuteInput,
+	session credentialacq.Session,
+	failure executionFailureDisposition,
+) error {
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	tx, err := s.staged.pool.Begin(recordCtx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(recordCtx) }()
+	if failure.Terminal {
+		if _, err := s.sessions.MarkFailedFromTx(
+			recordCtx,
+			tx,
+			session.ID,
+			failure.Code,
+			"账号接入候选存在不可恢复错误",
+			credentialacq.StatusValidated,
+		); err != nil {
+			return err
+		}
+	}
+	if err := s.staged.RecordExecutionFailureTx(recordCtx, tx, stagedExecutionFailureInput{
+		TenantID: in.TenantID, ActorID: in.ActorID, ActorRole: in.ActorRole,
+		FlowID: in.FlowID, RequestID: in.RequestID, Reason: in.Reason,
+		Code: failure.Code, Summary: failure.Summary, Terminal: failure.Terminal,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(recordCtx)
 }
 
 func (s *OAuthService) storeAndPlanCandidate(ctx context.Context, session credentialacq.Session, candidate credentialacq.CredentialCandidate) (OAuthPlanResult, error) {

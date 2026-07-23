@@ -2,6 +2,7 @@ package accountintake
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -112,6 +113,18 @@ func (s *CookieService) Execute(ctx context.Context, in CookieExecuteInput) (Exe
 	}
 	claimed, err := s.staged.LoadForExecution(ctx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash)
 	if err != nil {
+		if failure, record := classifyStagedPreparationFailure(err, ""); record {
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			recordErr := s.staged.RecordExecutionFailure(recordCtx, stagedExecutionFailureInput{
+				TenantID: in.TenantID, ActorID: in.ActorID, ActorRole: in.ActorRole,
+				FlowID: in.FlowID, RequestID: in.RequestID, Reason: in.Reason,
+				Code: failure.Code, Summary: failure.Summary, Terminal: failure.Terminal,
+			})
+			cancel()
+			if recordErr != nil {
+				return ExecutionResult{}, errors.Join(err, recordErr)
+			}
+		}
 		return ExecutionResult{}, err
 	}
 	defer func() { claimed.PlanInput.Content = "" }()
@@ -132,7 +145,28 @@ func (s *CookieService) Execute(ctx context.Context, in CookieExecuteInput) (Exe
 			)
 		},
 	})
+	var failureRecordErr error
+	if failure, failed := classifyExecutionFailure(result, executeErr); failed {
+		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		failureRecordErr = s.staged.RecordExecutionFailure(recordCtx, stagedExecutionFailureInput{
+			TenantID: in.TenantID, ActorID: in.ActorID, ActorRole: in.ActorRole,
+			FlowID: in.FlowID, RequestID: in.RequestID, Reason: in.Reason,
+			Code: failure.Code, Summary: failure.Summary, Terminal: failure.Terminal,
+		})
+		cancel()
+		if failureRecordErr != nil {
+			for index := range result.Items {
+				result.Items[index].Warnings = appendUnique(
+					result.Items[index].Warnings,
+					"credential_flow_failure_log_failed",
+				)
+			}
+		}
+	}
 	if executeErr != nil {
+		if failureRecordErr != nil {
+			return ExecutionResult{}, errors.Join(executeErr, failureRecordErr)
+		}
 		return ExecutionResult{}, executeErr
 	}
 	return result, nil

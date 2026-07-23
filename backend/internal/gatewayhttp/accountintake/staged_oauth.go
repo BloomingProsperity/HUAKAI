@@ -243,16 +243,16 @@ FOR UPDATE`, strings.TrimSpace(id), tenantID, strings.TrimSpace(actorID)).Scan(
 		Nonce: nonce, AADHash: aadHash.String,
 	}, stagedAAD(tenantID, row.vendor, row.authMode))
 	if err != nil {
-		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, err
+		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, errors.Join(ErrStagedCredentialCorrupt, err)
 	}
 	defer privacy.Zeroize(plaintext)
 	var secret stagedSecretEnvelope
 	if json.Unmarshal(plaintext, &secret) != nil || secret.Version != 1 {
-		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, ErrInvalidInput
+		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, ErrStagedCredentialCorrupt
 	}
 	var staged stagedPlanInput
 	if json.Unmarshal(planRaw, &staged) != nil || staged.TenantID != tenantID || staged.SourceKind != intake.SourceOAuth {
-		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, ErrInvalidInput
+		return stagedOAuthRow{}, stagedSecretEnvelope{}, PlanInput{}, ErrStagedCredentialCorrupt
 	}
 	return row, secret, staged.withContent(""), nil
 }

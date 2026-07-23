@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
@@ -28,6 +29,7 @@ var (
 	ErrStagedCredentialNotFound = errors.New("account intake staged credential not found")
 	ErrStagedCredentialExpired  = errors.New("account intake staged credential expired")
 	ErrStagedCredentialReplay   = errors.New("account intake staged credential replay")
+	ErrStagedCredentialCorrupt  = errors.New("account intake staged credential corrupt")
 	ErrOAuthCandidateNotReady   = errors.New("account intake oauth candidate not ready")
 )
 
@@ -269,16 +271,16 @@ FOR UPDATE`, strings.TrimSpace(id), tenantID, strings.TrimSpace(actorID)).Scan(
 		Nonce: row.nonce, AADHash: row.aadHash.String,
 	}, stagedAAD(tenantID, row.vendor, row.authMode))
 	if err != nil {
-		return ClaimedCredential{}, err
+		return ClaimedCredential{}, errors.Join(ErrStagedCredentialCorrupt, err)
 	}
 	defer privacy.Zeroize(plaintext)
 	var secret stagedSecretEnvelope
 	if json.Unmarshal(plaintext, &secret) != nil || secret.Version != 1 || strings.TrimSpace(secret.Content) == "" || len(secret.Auxiliary) > maxStagedAuxiliaryBytes {
-		return ClaimedCredential{}, ErrInvalidInput
+		return ClaimedCredential{}, ErrStagedCredentialCorrupt
 	}
 	var input stagedPlanInput
 	if json.Unmarshal(row.planRaw, &input) != nil || input.TenantID != tenantID {
-		return ClaimedCredential{}, ErrInvalidInput
+		return ClaimedCredential{}, ErrStagedCredentialCorrupt
 	}
 	return ClaimedCredential{
 		ID: strings.TrimSpace(id), PlanInput: input.withContent(secret.Content),
@@ -399,6 +401,84 @@ WHERE id=$2::uuid AND tenant_id=$3 AND actor_id=$4 AND status='claimed'`,
 		return err
 	}
 	return nil
+}
+
+type stagedExecutionFailureInput struct {
+	TenantID  int64
+	ActorID   string
+	ActorRole string
+	FlowID    string
+	RequestID string
+	Reason    string
+	Code      string
+	Summary   ExecutionSummary
+	Terminal  bool
+}
+
+func (s *StagedStore) RecordExecutionFailure(ctx context.Context, in stagedExecutionFailureInput) error {
+	if s == nil || s.pool == nil {
+		return ErrNotConfigured
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := s.RecordExecutionFailureTx(ctx, tx, in); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RecordExecutionFailureTx 记录一次失败执行。可重试失败保留加密候选，
+// 结构性失败则在同一事务进入终态并立即擦除临时秘密。
+func (s *StagedStore) RecordExecutionFailureTx(ctx context.Context, tx pgx.Tx, in stagedExecutionFailureInput) error {
+	if s == nil || tx == nil || in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" ||
+		!validIntakeActorRole(in.ActorRole) || uuid.Validate(strings.TrimSpace(in.FlowID)) != nil ||
+		strings.TrimSpace(in.Code) == "" {
+		return ErrInvalidInput
+	}
+	var tag pgconn.CommandTag
+	var err error
+	if in.Terminal {
+		tag, err = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
+SET status='failed', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
+    nonce=NULL, aad_hash=NULL, finished_at=clock_timestamp(), updated_at=clock_timestamp()
+WHERE id=$1::uuid AND tenant_id=$2 AND actor_id=$3
+  AND status IN ('oauth_exchanged','staged')`,
+			strings.TrimSpace(in.FlowID), in.TenantID, strings.TrimSpace(in.ActorID))
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
+SET updated_at=clock_timestamp()
+WHERE id=$1::uuid AND tenant_id=$2 AND actor_id=$3
+  AND status IN ('oauth_exchanged','staged')`,
+			strings.TrimSpace(in.FlowID), in.TenantID, strings.TrimSpace(in.ActorID))
+	}
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrStagedCredentialReplay
+	}
+	recoveryState := "retryable"
+	if in.Terminal {
+		recoveryState = "operator_required"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"flow_id": in.FlowID, "error_code": strings.TrimSpace(in.Code),
+		"terminal": in.Terminal, "recovery_state": recoveryState,
+		"created": in.Summary.Created, "updated": in.Summary.Updated,
+		"skipped": in.Summary.Skipped, "conflict": in.Summary.Conflict,
+		"failed": in.Summary.Failed,
+	})
+	_, err = admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+		TenantID: &in.TenantID, ActorID: strings.TrimSpace(in.ActorID), ActorRole: in.ActorRole,
+		Action: "credential_acquisition_failed", TargetType: "account_credential",
+		RequestID: optionalString(strings.TrimSpace(in.RequestID)),
+		Reason:    optionalString(strings.TrimSpace(in.Reason)),
+		Payload:   payload,
+	})
+	return err
 }
 
 // Cleanup 独立执行短期凭据生命周期清理，不依赖新的导入请求触发。
