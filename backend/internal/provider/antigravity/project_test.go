@@ -283,11 +283,17 @@ func TestProjectResolverGeminiCodeAssistValidatesOperatorProject(t *testing.T) {
 
 func assertProjectRequestHeaders(t *testing.T, req *http.Request) {
 	t.Helper()
+	// onboardUser 用带 nodejs 后缀的 UA(对齐真实 Antigravity 的 Node.js 客户端),
+	// loadCodeAssist / privacy 等其它调用用短 UA。
+	wantUA := defaultAntigravityUserAgent
+	if strings.HasSuffix(req.URL.Path, ":onboardUser") {
+		wantUA = antigravityOnboardUserUserAgent
+	}
 	want := map[string]string{
 		"Authorization":     "Bearer access-for-project",
 		"Content-Type":      "application/json",
 		"Accept":            "application/json",
-		"User-Agent":        defaultAntigravityUserAgent,
+		"User-Agent":        wantUA,
 		"X-Goog-Api-Client": defaultAntigravityAPIClient,
 	}
 	for key, value := range want {

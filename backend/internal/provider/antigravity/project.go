@@ -211,6 +211,11 @@ func (r *ProjectResolver) postForProfile(ctx context.Context, base, action, acce
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	applyProjectHeaders(req.Header, profile)
+	// onboardUser 在真实 Antigravity 里由内置 Node.js google-api 客户端发出,UA 带 nodejs
+	// 后缀;仅 antigravity profile 适用(gemini code assist 有各自身份头)。
+	if action == "onboardUser" && profile == ProjectProfileAntigravity {
+		req.Header.Set("User-Agent", antigravityOnboardUserUserAgent)
+	}
 	return r.do(req, action)
 }
 

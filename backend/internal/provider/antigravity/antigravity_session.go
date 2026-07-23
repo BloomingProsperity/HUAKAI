@@ -15,6 +15,11 @@ const (
 	defaultAntigravityUserAgent    = "antigravity/hub/" + antigravityIDEVersion + " darwin/arm64"
 	defaultAntigravityAPIClient    = "google-genai-sdk/1.0 gl-go/1.0"
 	antigravityGoogleOneCreditType = "GOOGLE_ONE_AI"
+	// antigravityOnboardUserUserAgent:真实 Antigravity 的 onboardUser 请求经其内置
+	// Node.js google-api 客户端发出,UA 带该客户端后缀;loadCodeAssist 与推理请求则用短 UA。
+	// 分场景 UA 与真实客户端一致,避免 onboard 出站被识破。
+	antigravityNodeAPIClientUA      = "google-api-nodejs-client/10.3.0"
+	antigravityOnboardUserUserAgent = defaultAntigravityUserAgent + " " + antigravityNodeAPIClientUA
 )
 
 // ApplyCloudCodeHeaders 统一 Antigravity 的公开客户端身份头，避免各条出站链漂移。
