@@ -1,6 +1,6 @@
 # HUAKAI 运维手册索引
 
-> 事实基线：`origin/main@71abcf8e`
+> 事实基线：`origin/main@cb730be7`
 > 原则：Runbook 只保留当前可执行步骤；历史故障、旧迁移和一次性测试由 Git、Issue、PR、CI 记录。
 
 ## 使用顺序

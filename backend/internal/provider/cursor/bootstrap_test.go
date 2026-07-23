@@ -29,7 +29,7 @@ func TestCursorOAuthConfigRequiresOperatorVerifiedEndpoints(t *testing.T) {
 }
 
 func TestCursorOAuthConfigRejectsMissingEachOperatorField(t *testing.T) {
-	// 变异守卫(CLAUDE.md #14):一旦 ValidateOAuthConfig 不再检查
+	// 变异守卫：一旦 ValidateOAuthConfig 不再检查
 	// auth_url / token_url / client_id / redirect_uri 中的任意一个,对应子测试就会变红。
 	fullValid := credentialacq.OAuthClientConfig{
 		AuthURL:     "https://cursor-oauth.example.test/authorize",

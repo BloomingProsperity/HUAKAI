@@ -1,7 +1,7 @@
 # HUAKAI 工程设计手册
 
 > 文档性质：项目级详细设计单一事实源
-> 事实基线：`origin/main@71abcf8ed7557575eedae8595d4727cd07117be5`
+> 事实基线：`origin/main@cb730be735986c47c945a0c7e3bee4d198f4bfd0`
 > 核实日期：2026-07-23
 > 事实原则：本手册描述当前主线代码；产品目标与当前代码不一致时必须同时写明，不能把目标冒充实现
 > 关联入口：[项目与架构白皮书](HUAKAI项目与架构白皮书.md) · [源码责任索引](源码责任索引.md) · [OpenAPI](openapi/openapi.yaml) · [运维手册](runbooks/README.md)
@@ -404,8 +404,8 @@ OAuth/Session 账号可从可信上游响应、项目元数据或刷新结果形
 
 - 租户和池组归属；
 - 启用和手工暂停；
-- 模型允许列表与模型/协议能力；
-- 仅确属账号资格的媒体或专用能力；
+- 账号模型允许列表；
+- 模型注册表中的模型/协议能力；
 - 凭据可用性；
 - 账号健康和冷却；
 - RPM/TPM 预检；
@@ -419,8 +419,10 @@ OAuth/Session 账号可从可信上游响应、项目元数据或刷新结果形
 
 chat 的 stream、tools、vision、JSON 和 audio-input 是模型/协议属性，不进入账号级
 `capability_flags` gate。账号能力是多模型并集，把这些 chat 特性当账号门既会误过滤默认空标记账号，
-也会在同一账号的其他模型上形成跨模型误授权。图片、embeddings、rerank、视频等入口仍可在其
-route planner 中追加真正的账号级能力要求。
+也会在同一账号的其他模型上形成跨模型误授权。图片、embeddings、rerank、countTokens、音频和视频
+同样是模型属性：各入口统一调用 `internal/modality.Supports` 检查请求模型的注册表能力，能力为空或未知
+时 fail-closed；媒体选号还要求账号 `model_allow_list` 明确包含请求模型。账号级 gate 只保留池归属、
+凭据、健康、冷却、额度、上下文、会话和并发等真实账号事实。
 
 ### 5.4 评分与选择
 

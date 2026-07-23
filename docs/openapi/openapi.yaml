@@ -24251,7 +24251,7 @@ components:
 # ============================================================================
 x-huakai-contract:
   authority: HTTP shape only
-  fact_baseline: origin/main@71abcf8ed7557575eedae8595d4727cd07117be5
+  fact_baseline: origin/main@cb730be735986c47c945a0c7e3bee4d198f4bfd0
   product_source: docs/HUAKAI项目与架构白皮书.md
   mechanism_source: docs/HUAKAI工程设计手册.md
   source_policy: Route mounting and authorization claims must be rechecked against current production source.

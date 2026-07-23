@@ -1,7 +1,7 @@
 # HUAKAI 项目与架构白皮书
 
 > 文档状态：待 Owner 审核的唯一项目总纲候选
-> 事实基线：`origin/main@71abcf8ed7557575eedae8595d4727cd07117be5`
+> 事实基线：`origin/main@cb730be735986c47c945a0c7e3bee4d198f4bfd0`
 > 核实日期：2026-07-23
 > 语言：中文；代码标识符、协议名和环境变量保留英文
 > 当前权威性：本分支唯一总纲候选；Owner 批准 PR 并合入主线后成为项目级唯一总纲
@@ -402,7 +402,11 @@ sequenceDiagram
 - Router 根据模型 binding、池组、协议族和入口给出的约束生成有序 attempt 计划。
 - chat 的 stream、vision、tool、JSON 和 audio-input 特性在模型/协议层校验，不再被映射成账号级
   `capability_flags`；否则空标记账号会被误判为无容量，并产生跨模型能力误授权。
-- 图片、embeddings、rerank、视频等确属账号资格的能力，仍由各自入口显式加入账号级选号门。
+- 图片、embeddings、rerank、countTokens、音频和视频等专用能力统一由
+  `internal/modality.Supports` 根据请求模型在注册表中的能力声明判定；能力为空或未知时
+  fail-closed。它们是模型属性，不进入账号级 `capability_flags` 选号门。
+- 账号层只回答该账号是否允许调用请求模型及当前是否可调度：媒体入口要求账号的
+  `model_allow_list` 明确命中请求模型；池归属、凭据、健康、冷却、额度、并发和会话限制继续参与选号。
 - Key 可以被服务端限制到单一池组；不匹配时对外表现为模型不可用，不能绕过。
 - binding 可以定义优先级、同优先级权重、上游模型覆盖、RPM/TPM、并发上限和 fallback class。
 

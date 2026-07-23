@@ -573,7 +573,7 @@ func stopGateway(processes *specializedLiveProcesses) {
 func waitForGateway(t *testing.T, addr string) {
 	t.Helper()
 	for i := 0; i < smokeBootRetries; i++ {
-		// 我们没有 /healthz;改用一个非 API 的 GET,它应当很快返回 404。
+		// 这里仅探测监听是否建立，使用根路径避免把启动等待与依赖健康判定混在一起。
 		resp, err := http.Get("http://" + addr + "/")
 		if err == nil {
 			_ = resp.Body.Close()
