@@ -529,6 +529,22 @@ func (s *Service) evaluate(ctx context.Context, rec Record, sig Signal, now time
 		}
 		return dec
 	}
+	if class == SignalCreditsExhausted {
+		// credits 耗尽是可回充的中档:进入 CoolingDown,不 ban、不 ack。冷却时长优先取上游给的
+		// reset 时间(retryDelay/quotaResetTimeStamp,经 error_normalize 提取到 Signal.RateLimitResetAt);
+		// 上游未给时才回退中档默认。与 RateLimit 分支同范式,避免固定时长盖过服务器明确的回充时间。
+		until := now.Add(s.policy.CreditsExhaustedCooldown)
+		if sig.RateLimitResetAt != nil && sig.RateLimitResetAt.After(now) {
+			until = sig.RateLimitResetAt.UTC()
+		}
+		return decision{
+			state:         StateCoolingDown,
+			reason:        class,
+			cooldownUntil: &until,
+			confidence:    ConfidenceObserved,
+			eventTypes:    []AuditEventType{EventDegraded},
+		}
+	}
 	if rec.State == StateRamping {
 		recent := windowFor(rec.SampleWindow, s.policy.MinObservation, now)
 		if recent.TotalAttempts >= s.policy.RampStageMinSamples && rampFailureRate(recent) > s.policy.RampErrorThresholdPct {

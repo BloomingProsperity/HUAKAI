@@ -800,3 +800,32 @@ func TestChannelHealth_RampRollbackExponentialBackoffAndReset(t *testing.T) {
 		t.Fatalf("ramp 完全恢复后 RampFailureCount 应清零, got %d", rec.RampFailureCount)
 	}
 }
+
+// TestChannelHealth_CreditsExhaustedPrefersServerReset 守卫:credits 耗尽冷却优先用上游给的
+// reset 时间,上游未给时才回退中档默认。对齐 RateLimit 分支的服务器优先范式。
+func TestChannelHealth_CreditsExhaustedPrefersServerReset(t *testing.T) {
+	t.Run("回退中档默认(无服务器reset)", func(t *testing.T) {
+		ctx, svc, store, clock := testService()
+		key := testKey()
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalCreditsExhausted}); err != nil {
+			t.Fatalf("ApplySignal: %v", err)
+		}
+		rec, _ := store.Get(ctx, key)
+		want := clock.Now().Add(5 * time.Hour)
+		if rec.State != StateCoolingDown || rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(want) {
+			t.Fatalf("cooldown_until=%v want 回退默认 %s", rec.CooldownUntil, want)
+		}
+	})
+	t.Run("优先服务器reset", func(t *testing.T) {
+		ctx, svc, store, clock := testService()
+		key := testKey()
+		reset := clock.Now().Add(20 * time.Minute).UTC()
+		if _, err := svc.ApplySignal(ctx, Signal{Key: key, Class: SignalCreditsExhausted, RateLimitResetAt: &reset}); err != nil {
+			t.Fatalf("ApplySignal: %v", err)
+		}
+		rec, _ := store.Get(ctx, key)
+		if rec.State != StateCoolingDown || rec.CooldownUntil == nil || !rec.CooldownUntil.Equal(reset) {
+			t.Fatalf("cooldown_until=%v want 服务器 reset %s", rec.CooldownUntil, reset)
+		}
+	})
+}

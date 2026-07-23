@@ -47,6 +47,9 @@ const (
 	SignalSubscriptionOrWorkspaceDisabled SignalClass = "subscription_or_workspace_disabled"
 	SignalPolicyAutoDisabled              SignalClass = "policy_auto_disabled"
 	SignalManualOverride                  SignalClass = "manual_override"
+	// SignalCreditsExhausted 是 credits/quota 可回充耗尽的中档信号:进入 CoolingDown,
+	// 不 ban、不 ack;冷却时长优先取上游 reset,无则回退 CreditsExhaustedCooldown。
+	SignalCreditsExhausted SignalClass = "credits_exhausted"
 )
 
 type ConfidenceTier string
@@ -126,6 +129,7 @@ type Policy struct {
 	RateLimitHitRateThresholdPct       float64
 	RateLimitWindow                    time.Duration
 	DefaultRateLimitCooldown           time.Duration
+	CreditsExhaustedCooldown           time.Duration
 	Upstream5xxRateThresholdPct        float64
 	Upstream5xxWindow                  time.Duration
 	Upstream5xxCooldown                time.Duration
@@ -155,6 +159,7 @@ func DefaultPolicy() Policy {
 		RateLimitHitRateThresholdPct:       40,
 		RateLimitWindow:                    5 * time.Minute,
 		DefaultRateLimitCooldown:           5 * time.Minute,
+		CreditsExhaustedCooldown:           5 * time.Hour,
 		Upstream5xxRateThresholdPct:        50,
 		Upstream5xxWindow:                  5 * time.Minute,
 		Upstream5xxCooldown:                5 * time.Minute,
@@ -207,6 +212,9 @@ func (p Policy) normalized() Policy {
 	}
 	if p.DefaultRateLimitCooldown <= 0 {
 		p.DefaultRateLimitCooldown = def.DefaultRateLimitCooldown
+	}
+	if p.CreditsExhaustedCooldown <= 0 {
+		p.CreditsExhaustedCooldown = def.CreditsExhaustedCooldown
 	}
 	if p.Upstream5xxRateThresholdPct <= 0 {
 		p.Upstream5xxRateThresholdPct = def.Upstream5xxRateThresholdPct

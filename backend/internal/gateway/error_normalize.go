@@ -79,6 +79,8 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 	case ErrorClassKYCRequired, ErrorClassOrgDisabled,
 		ErrorClassWorkspaceDeactivated, ErrorClassCreditExhausted:
 		return channelhealth.SignalAccountSuspended
+	case ErrorClassCreditsRefillable:
+		return channelhealth.SignalCreditsExhausted
 	case ErrorClassPlatformPolicy:
 		return channelhealth.SignalForbidden
 	}
@@ -109,13 +111,16 @@ func clientMalformedStatus(statusCode int) bool {
 type ErrorClass string
 
 const (
-	ErrorClassOAuthInvalidGrant      ErrorClass = "oauth_invalid_grant"
-	ErrorClassTokenRevoked           ErrorClass = "token_revoked"
-	ErrorClassCredentialRejected     ErrorClass = "credential_rejected"
-	ErrorClassKYCRequired            ErrorClass = "kyc_required"
-	ErrorClassOrgDisabled            ErrorClass = "org_disabled"
-	ErrorClassWorkspaceDeactivated   ErrorClass = "workspace_deactivated"
-	ErrorClassCreditExhausted        ErrorClass = "credit_exhausted"
+	ErrorClassOAuthInvalidGrant    ErrorClass = "oauth_invalid_grant"
+	ErrorClassTokenRevoked         ErrorClass = "token_revoked"
+	ErrorClassCredentialRejected   ErrorClass = "credential_rejected"
+	ErrorClassKYCRequired          ErrorClass = "kyc_required"
+	ErrorClassOrgDisabled          ErrorClass = "org_disabled"
+	ErrorClassWorkspaceDeactivated ErrorClass = "workspace_deactivated"
+	ErrorClassCreditExhausted      ErrorClass = "credit_exhausted"
+	// ErrorClassCreditsRefillable 是可回充的软额度耗尽(如 antigravity insufficient_g1_credits):
+	// 进入中档冷却而非硬 ban,区别于 ErrorClassCreditExhausted 的永久禁用。
+	ErrorClassCreditsRefillable      ErrorClass = "credits_refillable"
 	ErrorClassPlatformPolicy         ErrorClass = "platform_policy"
 	ErrorClassRateLimited            ErrorClass = "upstream_rate_limited"
 	ErrorClassOverloaded             ErrorClass = "upstream_overloaded"
@@ -237,6 +242,8 @@ const (
 	keywordCredit               = "credit"
 	keywordCreditBalance        = "credit balance"
 	keywordInsufficientQuota    = "insufficient_quota"
+	// antigravity 的可回充额度耗尽标记(RESOURCE_EXHAUSTED / INSUFFICIENT_G1_CREDITS_BALANCE)。
+	keywordAntigravityCreditsExhausted = "insufficient_g1_credits_balance"
 	// 匹配机器码字段形态(如 error.code=billing_hard_limit_reached);OpenAI/Codex 把稳定标识
 	// 放在 code/type 而非人类可读 message,下划线子串比空格文案更可靠,也能命中 *_reached 后缀变体。
 	keywordBillingHardLimit            = "billing_hard_limit"
@@ -337,6 +344,10 @@ var errorRules = []ErrorRule{
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
 	// 优先级 48 - OpenAI/Codex 429 的明确配额耗尽证据;极窄词表避免把普通限速误禁整号。
+	// R-032 antigravity 可回充额度耗尽:进中档冷却(非硬 ban),优先级高于通用 429/硬额度规则。
+	{RuleID: "R-032", Version: 1, Priority: 47, Provider: "antigravity", HTTPStatus: "429",
+		BodyKeyword: keywordAntigravityCreditsExhausted, Class: ErrorClassCreditsRefillable,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
 	{RuleID: "R-026", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
 	{RuleID: "R-027", Version: 1, Priority: 48, Provider: "codex", HTTPStatus: "429", BodyKeyword: keywordInsufficientQuota, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
 	{RuleID: "R-028", Version: 1, Priority: 48, Provider: "openai", HTTPStatus: "429", BodyKeyword: keywordBillingHardLimit, Class: ErrorClassCreditExhausted, Action: RetryActionPermanentDisable, Tier: TierIronClad},
