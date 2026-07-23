@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,10 @@ import (
 // ErrTransportNotImplemented 表示 (provider, mode) 组合策略允许但具体
 // RoundTripper 还没实现（diagnostics 还在路径上）。
 var ErrTransportNotImplemented = errors.New("transport: round-tripper not yet implemented for this mode")
+
+// ErrStandardH1TransportRequired 表示部署注入了不可克隆的标准出站包装器，
+// 但没有同时提供 H1 版本。此时必须明确失败，禁止绕过既有代理或日志策略直连。
+var ErrStandardH1TransportRequired = errors.New("transport: dedicated standard H1 round-tripper required")
 
 type TransportErrorClass string
 
@@ -76,6 +81,12 @@ type Factory struct {
 	// 保留 connection pool 复用（http.Transport 重复 new 会让池作废）。
 	standardOnce   sync.Once
 	standardCached http.RoundTripper
+	// standardH1 是标准 TLS + HTTP/1.1 的独立连接池，不能与允许协商 H2
+	// 的 standard 连接复用。
+	standardH1Once   sync.Once
+	standardH1Cached http.RoundTripper
+	standardH1       http.RoundTripper
+	standardH1Err    error
 	// sidecarTestOverride 只供跨包单元测试验证模式选择，不参与生产 wiring。
 	// 生产代码没有配置入口，真实路径仍必须通过 Unix socket 探测 Rust sidecar。
 	sidecarTestOverride  http.RoundTripper
@@ -116,6 +127,11 @@ func (f *Factory) SetStandard(rt http.RoundTripper) {
 	f.standard = rt
 }
 
+// SetStandardH1 注入标准 H1 RoundTripper，仅供测试或定制拨号器使用。
+func (f *Factory) SetStandardH1(rt http.RoundTripper) {
+	f.standardH1 = rt
+}
+
 // SetSidecarForTesting 注入仅供单元测试使用的 sidecar 替身。
 // 生产构造链不得调用；仓库检查会约束调用点只存在于 *_test.go。
 func (f *Factory) SetSidecarForTesting(rt http.RoundTripper) {
@@ -141,6 +157,8 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	switch mode {
 	case TransportModeStandard:
 		return f.standardRoundTripper(), nil
+	case TransportModeStandardH1:
+		return f.standardH1RoundTripper()
 	case TransportModeMimicryClaudeCode,
 		TransportModeMimicryChatGPT,
 		TransportModeMimicryGeminiAdvanced,
@@ -171,6 +189,31 @@ func (f *Factory) For(provider ProviderCode, mode TransportMode) (http.RoundTrip
 	}
 	// ValidateModeForProvider 已确保 mode 已知，理论不可达。
 	return nil, ErrUnknownMode
+}
+
+func (f *Factory) standardH1RoundTripper() (http.RoundTripper, error) {
+	if f.standardH1 != nil {
+		return f.standardH1, nil
+	}
+	f.standardH1Once.Do(func() {
+		base, ok := f.standardRoundTripper().(*http.Transport)
+		if !ok {
+			f.standardH1Err = fmt.Errorf("%w: configured standard transport type %T", ErrStandardH1TransportRequired, f.standardRoundTripper())
+			return
+		}
+		cloned := base.Clone()
+		cloned.Proxy = nil
+		cloned.ForceAttemptHTTP2 = false
+		cloned.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		if cloned.TLSClientConfig == nil {
+			cloned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		} else {
+			cloned.TLSClientConfig = cloned.TLSClientConfig.Clone()
+		}
+		cloned.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		f.standardH1Cached = cloned
+	})
+	return f.standardH1Cached, f.standardH1Err
 }
 
 func (f *Factory) standardRoundTripper() http.RoundTripper {

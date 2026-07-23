@@ -399,6 +399,8 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 			ProviderAccountID:      expected.ExistingAccountID,
 			CredentialID:           expected.ExistingCredentialID,
 			ExpectedVersion:        &version,
+			Vendor:                 candidate.Vendor,
+			AuthMode:               candidate.AuthMode,
 			Payload:                candidate.Payload,
 			ActorID:                strings.TrimSpace(in.ActorID),
 			ExternalAccountID:      candidate.ExternalAccountID,

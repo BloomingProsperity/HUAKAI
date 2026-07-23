@@ -637,6 +637,34 @@ func TestSignalFromClassification_ClientMalformed4xxDoesNotBecomeChannelError(t 
 	}
 }
 
+func TestAntigravityCreditsExhaustedUsesQuotaResetDelay(t *testing.T) {
+	body := []byte(`{"error":{"code":429,"message":"insufficient_g1_credits_balance","details":[{"metadata":{"quotaResetDelay":"2h15m"}}]}}`)
+	classification, err := Classify(http.StatusTooManyRequests, nil, body, "antigravity")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if classification.Class != ErrorClassCreditsRefillable || classification.RuleID != "R-032" ||
+		classification.RetryAction != RetryActionCooldown || classification.FsmTransition != FsmTransitionCooling {
+		t.Fatalf("classification=%+v，期望可恢复额度冷却", classification)
+	}
+	if classification.RetryAfterMs != int64((2*time.Hour+15*time.Minute)/time.Millisecond) {
+		t.Fatalf("RetryAfterMs=%d，期望 2h15m", classification.RetryAfterMs)
+	}
+	if signal := SignalFromClassification(http.StatusTooManyRequests, classification); signal != channelhealth.SignalCreditsExhausted {
+		t.Fatalf("signal=%s，期望 credits_exhausted", signal)
+	}
+}
+
+func TestAntigravityOrdinaryRateLimitIsNotCreditsExhausted(t *testing.T) {
+	classification, err := Classify(http.StatusTooManyRequests, nil, []byte(`{"error":{"message":"rate limit"}}`), "antigravity")
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if classification.Class != ErrorClassRateLimited || classification.RuleID != "R-013" {
+		t.Fatalf("classification=%+v，普通 429 不得误判为额度窗口耗尽", classification)
+	}
+}
+
 // TestR007_StillFiresWithCreditKeyword:anthropic 402 + credit 关键词 -> R-007(优先级 20)
 // 胜过 R-021(优先级 25)。优先级数字越小 = 优先级越高。
 func TestR007_StillFiresWithCreditKeyword(t *testing.T) {

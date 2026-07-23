@@ -531,7 +531,7 @@ func TestResolveDispatchTransportMatrix(t *testing.T) {
 		{"Codex", "openai", credentialstore.AuthModeCodexCLIOAuth, "openai_codex", transport.ProviderOpenAICodex, transport.TransportModeMimicryChatGPT},
 		{"Gemini Advanced", "gemini", credentialstore.AuthModeGoogleOne, "gemini_advanced_session", transport.ProviderGeminiAdvanced, transport.TransportModeMimicryGeminiAdvanced},
 		{"Gemini Code Assist", "gemini", credentialstore.AuthModeCodeAssist, "gemini_code_assist", transport.ProviderGeminiCodeAssist, transport.TransportModeStandard},
-		{"Antigravity", "gemini", credentialstore.AuthModeAntigravity, "antigravity_session", transport.ProviderAntigravity, transport.TransportModeMimicryAntigravity},
+		{"Antigravity", "gemini", credentialstore.AuthModeAntigravity, "antigravity_session", transport.ProviderAntigravity, transport.TransportModeStandardH1},
 		{"Cursor", "cursor", "session", "cursor_session", transport.ProviderCursor, transport.TransportModeMimicryCursor},
 		{"Copilot", "copilot", credentialstore.AuthModeCopilotOAuth, "copilot_session", transport.ProviderCopilot, transport.TransportModeMimicryCopilot},
 		{"Kiro", "kiro", "session", "kiro_session", transport.ProviderKiro, transport.TransportModeMimicryKiro},
@@ -596,6 +596,74 @@ func TestDispatcher_AutoTransportModeUsesSessionMimicry(t *testing.T) {
 	}
 	if adapter.lastInput.Account.Platform != string(transport.ProviderCopilot) {
 		t.Fatalf("adapter account platform=%q want %q", adapter.lastInput.Account.Platform, transport.ProviderCopilot)
+	}
+}
+
+func TestDispatcher_AntigravityInferenceUsesStandardH1(t *testing.T) {
+	standardCalls, h1Calls, mimicryCalls := 0, 0, 0
+	factory := transport.NewFactory()
+	factory.SetStandard(dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		standardCalls++
+		return nil, errors.New("推理请求不得使用可协商 H2 的标准出口")
+	}))
+	factory.SetStandardH1(dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		h1Calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: req}, nil
+	}))
+	factory.SetSidecarForTesting(dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		mimicryCalls++
+		return nil, errors.New("Antigravity 不得再进入 Rust 仿真出口")
+	}))
+	dispatcher := &UpstreamDispatcher{
+		Adapters: &stubRegistry{adapter: &stubAdapter{
+			platform: string(transport.ProviderAntigravity),
+			endpoint: "https://cloudcode-pa.googleapis.com/v1internal:generateContent",
+		}},
+		TransportFactory: factory,
+	}
+	result, err := dispatcher.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "antigravity_session",
+		Account:        provider.AccountInfo{AccountID: 9, Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
+		Credential:     provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token"},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	defer result.Close()
+	if standardCalls != 0 || h1Calls != 1 || mimicryCalls != 0 {
+		t.Fatalf("transport calls standard/h1/mimicry=%d/%d/%d，期望 0/1/0", standardCalls, h1Calls, mimicryCalls)
+	}
+}
+
+func TestDispatcher_AntigravityModelDiscoveryKeepsStandardNegotiation(t *testing.T) {
+	standardCalls, h1Calls := 0, 0
+	factory := transport.NewFactory()
+	factory.SetStandard(dispatcherRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		standardCalls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"models":{}}`)), Request: req}, nil
+	}))
+	factory.SetStandardH1(dispatcherRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		h1Calls++
+		return nil, errors.New("模型发现不应被无依据强制 H1")
+	}))
+	dispatcher := &UpstreamDispatcher{
+		Adapters: &stubRegistry{adapter: &stubAdapter{
+			platform: string(transport.ProviderAntigravity),
+			endpoint: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+		}},
+		TransportFactory: factory,
+	}
+	result, err := dispatcher.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "antigravity_session",
+		Account:        provider.AccountInfo{AccountID: 9, Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
+		Credential:     provider.Credential{Type: provider.CredentialTypeOAuthAccessToken, Value: "token"},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	defer result.Close()
+	if standardCalls != 1 || h1Calls != 0 {
+		t.Fatalf("transport calls standard/h1=%d/%d，期望 1/0", standardCalls, h1Calls)
 	}
 }
 

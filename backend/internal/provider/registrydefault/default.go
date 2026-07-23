@@ -34,11 +34,11 @@
 //   - replicate_image          Replicate 图片生成（models/{model}/predictions；图片 lane 专用）
 //   - vertex_gemini            Gemini-on-Vertex 协议（publishers/google；generateContent/streamGenerateContent）
 //   - vertex_anthropic         Anthropic-on-Vertex（publishers/anthropic；rawPredict/streamRawPredict + body reshape 重塑）
-//   - gemini_code_assist       Google Gemini Code Assist（cloudcode-pa v1internal，OAuth；env-gated 默认 off）
+//   - gemini_code_assist       Google Gemini Code Assist（cloudcode-pa v1internal，OAuth）
 //   - cursor_session           Cursor IDE 网页 session 反转
 //   - copilot_session          GitHub Copilot session 反转
 //   - gemini_advanced_session  Google Gemini Advanced 网页 session 反转
-//   - antigravity_session      Antigravity Cloud Code OAuth 反转（env-gated 默认 off）
+//   - antigravity_session      Antigravity Cloud Code OAuth 反转
 //   - kiro_session             AWS Kiro session 反转（占位）
 //   - windsurf_session         Codeium Windsurf session 反转（占位）
 package registrydefault
@@ -97,14 +97,14 @@ var defaultProtocolFamilies = []string{
 	ProtocolReplicateImage,
 	ProtocolVertexGemini,
 	ProtocolVertexAnthropic,
+	ProtocolGeminiCodeAssist,
+	ProtocolAntigravitySession,
 }
 
 var envGatedProtocolFamilies = []string{
-	ProtocolGeminiCodeAssist,
 	ProtocolCursorSession,
 	ProtocolCopilotSession,
 	ProtocolGeminiAdvancedSession,
-	ProtocolAntigravitySession,
 	ProtocolKiroSession,
 	ProtocolWindsurfSession,
 }
@@ -184,11 +184,10 @@ const (
 	// Gemini Code Assist（cloudcode-pa v1internal，OAuth）。纯 OAuth Bearer
 	// 出站到 Google 内部 cloudcode-pa 端点；请求包 {model,project,request}
 	// envelope、响应包 {response} envelope（入站 proto/geminicodeassist 解）。
-	// 默认 off（OAuth session + 内部 Google 端点高危项），按 cursor/copilot
-	// placeholder 模式 env-gated opt-in 注册。
+	// 账号获取、项目初始化和账号级模型发现已有正式接线，默认注册。
 	ProtocolGeminiCodeAssist = "gemini_code_assist"
-	// 订阅 session 反转路径；Antigravity 已完成 Cloud Code wire，其他族仍为
-	// 待验证 scaffold。全部保持逐 family env-gated，默认不注册。
+	// 订阅 session 反转路径；Antigravity 已完成 Cloud Code 控制面与 adapter
+	// 接线，其他族仍为待验证 scaffold。
 	ProtocolCursorSession         = "cursor_session"
 	ProtocolCopilotSession        = "copilot_session"
 	ProtocolGeminiAdvancedSession = "gemini_advanced_session"
@@ -200,9 +199,7 @@ const (
 const (
 	cursorSessionAdapterEnv         = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
 	copilotSessionAdapterEnv        = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
-	geminiCodeAssistAdapterEnv      = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"
 	geminiAdvancedSessionAdapterEnv = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
-	antigravitySessionAdapterEnv    = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
 	kiroSessionAdapterEnv           = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
 	windsurfSessionAdapterEnv       = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
 )
@@ -348,15 +345,11 @@ func Build() *provider.StaticRegistry {
 	r.MustRegister(ProtocolVertexGemini, &vertex.PassthroughAdapter{Mode: vertex.ModeGemini})
 	r.MustRegister(ProtocolVertexAnthropic, &vertex.PassthroughAdapter{Mode: vertex.ModeAnthropic})
 
-	// Gemini Code Assist（cloudcode-pa v1internal）：纯 OAuth Bearer 出站到
-	// Google 内部端点，请求包 {model,project,request} envelope，响应包
-	// {response} envelope（入站 proto/geminicodeassist 解）。属 OAuth session +
-	// 内部 Google 端点高危项 + 反封禁姿态（最小 UA/X-Goog-Api-Client），按
-	// cursor/copilot placeholder 模式默认 off、env opt-in 注册——避免把真实
-	// session credential 默认发到未广泛验证的私有上游。
-	if placeholderSessionAdapterEnabled(geminiCodeAssistAdapterEnv) {
-		r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
-	}
+	// Gemini Code Assist 与 Antigravity 的账号获取、项目初始化、模型发现和
+	// Cloud Code 请求构造已形成正式接线，默认注册，部署后无需再补环境开关。
+	// 发布态与真实推理是否放量仍由 serving capability 合同独立判定。
+	r.MustRegister(ProtocolGeminiCodeAssist, &gemini.CodeAssistAdapter{})
+	r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 
 	// 未验证 session adapter 默认不注册，避免把真实凭据发到占位上游；
 	// 实验环境必须逐 family 显式 opt-in，不能由旧总开关一次性打开全部。
@@ -368,11 +361,6 @@ func Build() *provider.StaticRegistry {
 	}
 	if placeholderSessionAdapterEnabled(geminiAdvancedSessionAdapterEnv) {
 		r.MustRegister(ProtocolGeminiAdvancedSession, &gemini.GeminiAdvancedSessionAdapter{})
-	}
-	// Antigravity wire 已落到正式 cloudcode-pa，但生产默认仍保持 off；只有
-	// 部署方显式开启本 family 时才构造并注册 adapter。
-	if placeholderSessionAdapterEnabled(antigravitySessionAdapterEnv) {
-		r.MustRegister(ProtocolAntigravitySession, &antigravity.AntigravitySessionAdapter{})
 	}
 	if placeholderSessionAdapterEnabled(kiroSessionAdapterEnv) {
 		r.MustRegister(ProtocolKiroSession, &kiro.KiroSessionAdapter{})

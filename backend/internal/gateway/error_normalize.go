@@ -66,6 +66,8 @@ func SignalFromClassification(statusCode int, c Classification) channelhealth.Si
 	switch c.Class {
 	case ErrorClassRateLimited:
 		return channelhealth.SignalRateLimit
+	case ErrorClassCreditsRefillable:
+		return channelhealth.SignalCreditsExhausted
 	case ErrorClassServerError, ErrorClassOverloaded:
 		return channelhealth.SignalUpstream5xx
 	case ErrorClassNetworkTimeout, ErrorClassUpstreamTimeout:
@@ -116,6 +118,7 @@ const (
 	ErrorClassOrgDisabled            ErrorClass = "org_disabled"
 	ErrorClassWorkspaceDeactivated   ErrorClass = "workspace_deactivated"
 	ErrorClassCreditExhausted        ErrorClass = "credit_exhausted"
+	ErrorClassCreditsRefillable      ErrorClass = "credits_refillable"
 	ErrorClassPlatformPolicy         ErrorClass = "platform_policy"
 	ErrorClassRateLimited            ErrorClass = "upstream_rate_limited"
 	ErrorClassOverloaded             ErrorClass = "upstream_overloaded"
@@ -240,6 +243,7 @@ const (
 	// 匹配机器码字段形态(如 error.code=billing_hard_limit_reached);OpenAI/Codex 把稳定标识
 	// 放在 code/type 而非人类可读 message,下划线子串比空格文案更可靠,也能命中 *_reached 后缀变体。
 	keywordBillingHardLimit            = "billing_hard_limit"
+	keywordAntigravityCreditsExhausted = "insufficient_g1_credits_balance"
 	keywordValidation                  = "validation"
 	keywordPermissionDenied            = "permission denied"
 	keywordThrottling                  = "throttling"
@@ -334,6 +338,13 @@ var errorRules = []ErrorRule{
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 	{RuleID: "R-020", Version: 1, Priority: 45, Provider: "bedrock", HTTPStatus: "503",
 		BodyKeyword: keywordServiceUnavailableException, Class: ErrorClassOverloaded,
+		Action: RetryActionCooldown, Tier: TierAmbiguous},
+
+	// Antigravity 的订阅额度会按窗口恢复，不能按普通 429 短冷却，也不能按
+	// 永久欠费禁号。恢复时间由响应头或错误详情提供，缺失时由健康策略采用
+	// 5 小时保守窗口。
+	{RuleID: "R-032", Version: 1, Priority: 47, Provider: "antigravity", HTTPStatus: "429",
+		BodyKeyword: keywordAntigravityCreditsExhausted, Class: ErrorClassCreditsRefillable,
 		Action: RetryActionCooldown, Tier: TierAmbiguous},
 
 	// 优先级 48 - OpenAI/Codex 429 的明确配额耗尽证据;极窄词表避免把普通限速误禁整号。

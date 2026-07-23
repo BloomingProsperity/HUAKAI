@@ -32,9 +32,9 @@ func strictAnthropicGateFixture() (*http.Request, []byte) {
 	return r, body
 }
 
-// TestDecideWithBodyAnthropicIsClosedTwoState 守住 S1 的封闭状态机：严格 fixture
-// 只能 OfficialDirect；只保留 UA/X-Client 的伪造请求只能 Reject，不存在 raw allow。
-func TestDecideWithBodyAnthropicIsClosedTwoState(t *testing.T) {
+// TestDecideWithBodyAnthropicSeparatesDirectAndCompatible 守住官方直发与第三方
+// 兼容请求的分流，畸形请求不能借兼容入口放行。
+func TestDecideWithBodyAnthropicSeparatesDirectAndCompatible(t *testing.T) {
 	r, body := strictAnthropicGateFixture()
 	got := DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, r, body)
 	if got.Decision != DecisionOfficialDirect || !bytes.Equal(got.Body, body) {
@@ -46,8 +46,19 @@ func TestDecideWithBodyAnthropicIsClosedTwoState(t *testing.T) {
 	spoof.Header.Set("User-Agent", "claude-cli/2.1.78 (external, cli)")
 	spoof.Header.Set("X-Client-Name", "Claude Code")
 	got = DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, body)
-	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired || len(got.Body) != 0 {
-		t.Fatalf("伪造 fixture result=%+v want reject without raw body", got)
+	if got.Decision != DecisionAllow || got.Reason != "anthropic_session_compatible_rewrite" || len(got.Body) != 0 {
+		t.Fatalf("第三方 fixture result=%+v，期望进入兼容重写", got)
+	}
+
+	got = DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, []byte(`{"model":"claude-sonnet"}`))
+	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired {
+		t.Fatalf("畸形 fixture result=%+v，期望拒绝", got)
+	}
+
+	unsupportedSystem := []byte(`{"model":"claude-sonnet","max_tokens":8,"system":42,"messages":[{"role":"user","content":"hi"}]}`)
+	got = DecideWithBody(context.Background(), nil, credentialstore.AuthModeClaudeAIOAuth, "anthropic", false, spoof, unsupportedSystem)
+	if got.Decision != DecisionReject || got.Reason != ReasonOfficialClientRequired {
+		t.Fatalf("不可重写 system result=%+v，期望在出站前拒绝", got)
 	}
 }
 

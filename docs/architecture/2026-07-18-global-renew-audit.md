@@ -141,7 +141,7 @@ HUAKAI:无单一真相源、无物化快照、无 outbox 重建;真相散在 **5
 
 低优参考(仅 1 家有,不计强缺口):在线调试台 Playground(仅 new-api `controller/playground.go`)。
 
-**已知故意缓做(Owner 拍板,非缺口)**:真支付 canonical webhook、多级分销树、违规罚款扣费、反封禁 L1-L6 指纹栈、系统自更新、Rust 出口四家上生产。
+**已知故意缓做(Owner 拍板,非缺口)**:真支付 canonical webhook、多级分销树、违规罚款扣费、反封禁 L1-L6 指纹栈、系统自更新，以及 Cursor/Copilot/Windsurf 上线后再启用。Antigravity 已完成真实账号验真，推理链使用标准 TLS + HTTP/1.1，不进入 Rust 仿真出口。
 
 ---
 
@@ -167,6 +167,22 @@ HUAKAI:无单一真相源、无物化快照、无 outbox 重建;真相散在 **5
 6. **三镜真缺口**:客户端每模型限速限额(F-1,最关键)、可配错误透传(F-2)、缺失模型发现(F-3)。
 7. **Owner 拍板项**:音频退宽口径、配额 fail-open、结算意图默认开。
 8. **卫生批**:死代码清理、现行 SSOT 与模块目录同步、迁移回滚 runbook；不再新增平行状态文档。
+
+---
+
+## 10. 2026-07-23 账号导入与 Antigravity 集中收口
+
+本节是 PR #289-#293 相关能力在最新主线上的验真结果，替代旧 PR 之间互相叠加的状态说明：
+
+- **账号导入身份统一**：历史 `gemini/antigravity` 与当前 `antigravity/oauth` 使用同一规范身份参与计划、查重和落库；库存若同时存在多条等价身份则显式报冲突，不再任取第一条覆盖。
+- **OAuth 暂存凭据不再提前消费**：确认前只读取，账号、凭据、日志和暂存状态在同一事务中认领并完成；预检失败可以重试，不会留下“授权成功但凭据已丢”的半成品。
+- **Antigravity 出站已按真实行为收敛**：模型发现走标准 ALPN，推理与流式推理走标准 TLS + HTTP/1.1；显式选择旧仿真模式会被拒绝，避免配置重新打开已证实失败的路径。
+- **Rust 边界纠正**：账号转 API 不等于所有账号统一走 Rust。CLIProxyAPI 为 Antigravity 派生并复用标准 HTTP/1.1 transport，同时保留账号代理 transport（`CLIProxyAPI@f71ec0eb:internal/runtime/executor/antigravity_executor.go:243-296`）；sub2 的 Antigravity 请求进入不带 TLS profile 的通用标准 HTTP 上游（`sub2api@fa2da040:backend/internal/service/antigravity_gateway_retry.go:523-528`、`backend/internal/repository/http_upstream.go:185-204`）。HUAKAI 因此只让明确需要客户端指纹的车道进入 Rust sidecar；官方 Key 和 Antigravity 使用标准传输，并且自定义出站包装器无法安全派生 H1 时必须明确失败，禁止静默绕过代理或日志策略。
+- **Antigravity 默认可用状态统一**：adapter 默认注册，serving contract、管理端可启用性和真实请求形态使用同一结论；Cursor、Copilot、Windsurf 与未验真的网页 session 继续封存。
+- **额度耗尽恢复细化**：`insufficient_g1_credits_balance` 单独归类为可恢复额度耗尽，优先采用上游恢复时间，缺失时冷却 5 小时；不再误判为永久欠费，也不套普通 5 分钟限流。
+- **Claude 订阅号兼容入口补齐**：官方 Claude Code 请求保持原字节直发；合法第三方 Messages 请求补齐兼容 system 前缀且保留用户原内容；错误路径和畸形 body 继续拒绝。
+- **真实账号证据**：专用活体测试完成 OAuth 刷新、项目/套餐识别、21 个模型发现、非流式推理和 SSE 流式推理；自动推理为 HTTP/1.1，标准对照为 HTTP/2.0，均返回有效内容。真实凭据只从仓库外文件读取，未写入日志或提交。
+- **验证范围**：相关账号导入、凭据事务、传输、网关、健康状态、注册表、serving 管理端、Claude 兼容与代码预算定向测试通过。Owner 要求先合并继续后续工作，本批不等待全仓测试。
 
 ---
 

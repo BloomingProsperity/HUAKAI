@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/bodymodel"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
+	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
@@ -377,6 +378,38 @@ func (ex *chatExecution) upstreamInboundBody(body []byte) []byte {
 		out = next
 	}
 	return out
+}
+
+// identityRewrite 对 dispatch 专用 body 施加订阅号兼容前缀与可选身份改写。
+func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
+	if ex == nil || ex.r == nil {
+		return dispatchBody
+	}
+	body := dispatchBody
+	family := ex.resolved.ProtocolFamily
+	if family == "anthropic_claude_session" && !ex.officialDirect {
+		result, err := gateway.RewriteSystem(body, gateway.SystemRewritePlan{
+			PrefixText: anthropic.ClaudeCodeSystemPrompt,
+			Mode:       gateway.SystemRewriteEnsurePrefix,
+		})
+		if err == nil {
+			body = result.Body
+		}
+	}
+	if family != "anthropic_messages" && family != "anthropic_claude_session" {
+		return body
+	}
+	if ex.accInfo.ExternalAccountID == "" || ex.accInfo.AccountType == "apikey" {
+		return body
+	}
+	return mimicryidentity.RewriteForDispatch(
+		body,
+		ex.accInfo.AccountID,
+		ex.accInfo.ExternalAccountID,
+		ex.accInfo.AccountType,
+		ex.clientSessionID,
+		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
+	)
 }
 
 func (ex *chatExecution) activeBodyParamGate() (map[string]json.RawMessage, []string) {

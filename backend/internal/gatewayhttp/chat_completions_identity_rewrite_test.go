@@ -16,6 +16,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -104,6 +105,26 @@ func TestOfficialDirectBodyThreePathsByteEquivalent(t *testing.T) {
 				t.Fatalf("%s 输出与输入共享底层切片", path)
 			}
 		})
+	}
+}
+
+func TestClaudeSessionThirdPartyBodyGetsCompatiblePrefix(t *testing.T) {
+	ex := newIdentityRewriteExecFamily("", "anthropic_claude_session")
+	body := []byte(`{"model":"claude-sonnet","max_tokens":16,"system":"只回答事实","messages":[{"role":"user","content":"hi"}]}`)
+	out := ex.identityRewrite(body)
+	var parsed struct {
+		System any `json:"system"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("解析兼容 body: %v", err)
+	}
+	text, ok := parsed.System.(string)
+	if !ok || !strings.HasPrefix(text, anthropic.ClaudeCodeSystemPrompt) || !strings.Contains(text, "只回答事实") {
+		t.Fatalf("system=%#v，期望官方前缀在前且保留原指令", parsed.System)
+	}
+	second := ex.identityRewrite(out)
+	if !bytes.Equal(second, out) {
+		t.Fatal("兼容前缀二次应用必须幂等")
 	}
 }
 

@@ -22,7 +22,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
-	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
@@ -124,25 +123,6 @@ func (ex *chatExecution) cacheHitInput(entry l2cache.Entry) l2CacheHitInput {
 		AttemptSeq:        ex.activeAttemptSeq(),
 		SettlementIntent:  ex.settlementIntent,
 	}
-}
-
-// identityRewrite 对 dispatch 专用 body 施加默认关闭且 fail-open 的身份改写。
-func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
-	if ex == nil || ex.r == nil {
-		return dispatchBody
-	}
-	// metadata.user_id 只适用于 Anthropic Messages；其它形态保持原 body。
-	if ex.resolved.ProtocolFamily != "anthropic_messages" {
-		return dispatchBody
-	}
-	return mimicryidentity.RewriteForDispatch(
-		dispatchBody,
-		ex.accInfo.AccountID,
-		ex.accInfo.ExternalAccountID, // 空 → fail-open 不改写
-		ex.accInfo.AccountType,       // scope 硬守卫:仅 oauth/session 反转号伪装,apikey/bedrock 永不
-		ex.clientSessionID,           // 参与 session 派生,避免同账号跨会话共用 upstream session
-		mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
-	)
 }
 
 func (ex *chatExecution) handleStreamingResponse(w http.ResponseWriter) {

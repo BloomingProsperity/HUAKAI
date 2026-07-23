@@ -17,6 +17,10 @@ import (
 
 const testSidecarSocket = "/home/ubuntu/.cache/huakai-codex/test-sidecar.sock"
 
+type factoryRoundTripper struct{}
+
+func (*factoryRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+
 func TestFactoryStandardTransportIsolatedFromEnvironmentProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://bad-proxy.invalid:9999")
 	t.Setenv("HTTPS_PROXY", "http://bad-proxy.invalid:9999")
@@ -40,6 +44,43 @@ func TestFactoryStandardTransportIsolatedFromEnvironmentProxy(t *testing.T) {
 	if err != nil || second != rt {
 		t.Fatalf("standard transport 必须复用连接池，second=%T err=%v", second, err)
 	}
+}
+
+func TestFactoryStandardH1PreservesCustomEgressPolicy(t *testing.T) {
+	t.Run("可克隆标准传输派生独立 H1", func(t *testing.T) {
+		base := &http.Transport{Proxy: nil}
+		factory := NewFactory()
+		factory.SetStandard(base)
+		rt, err := factory.For(ProviderAntigravity, TransportModeStandardH1)
+		if err != nil {
+			t.Fatalf("派生 H1 transport：%v", err)
+		}
+		derived, ok := rt.(*http.Transport)
+		if !ok || derived == base || derived.TLSClientConfig == nil || len(derived.TLSClientConfig.NextProtos) != 1 || derived.TLSClientConfig.NextProtos[0] != "http/1.1" {
+			t.Fatalf("H1 派生结果=%T %#v", rt, derived)
+		}
+	})
+
+	t.Run("包装型标准传输缺少 H1 配置时拒绝", func(t *testing.T) {
+		factory := NewFactory()
+		factory.SetStandard(&factoryRoundTripper{})
+		rt, err := factory.For(ProviderAntigravity, TransportModeStandardH1)
+		if rt != nil || !errors.Is(err, ErrStandardH1TransportRequired) {
+			t.Fatalf("rt=%T err=%v，期望明确要求专用 H1 transport", rt, err)
+		}
+	})
+
+	t.Run("显式 H1 包装器保持原出站策略", func(t *testing.T) {
+		factory := NewFactory()
+		standard := &factoryRoundTripper{}
+		h1 := &factoryRoundTripper{}
+		factory.SetStandard(standard)
+		factory.SetStandardH1(h1)
+		rt, err := factory.For(ProviderAntigravity, TransportModeStandardH1)
+		if err != nil || rt != h1 {
+			t.Fatalf("rt=%T err=%v，期望使用显式 H1 包装器", rt, err)
+		}
+	})
 }
 
 func TestFactoryMimicryRequiresSidecarSocket(t *testing.T) {
@@ -170,7 +211,6 @@ func TestFactorySafeEquivalentProfilesAreRoutable(t *testing.T) {
 		mode     TransportMode
 		profile  string
 	}{
-		{ProviderAntigravity, TransportModeMimicryAntigravity, mimicry.SidecarProfileAntigravitySafeV1},
 		{ProviderCursor, TransportModeMimicryCursor, mimicry.SidecarProfileCursorSafeV1},
 		{ProviderCopilot, TransportModeMimicryCopilot, mimicry.SidecarProfileCopilotSafeV1},
 		{ProviderWindsurf, TransportModeMimicryWindsurf, mimicry.SidecarProfileWindsurfSafeV1},

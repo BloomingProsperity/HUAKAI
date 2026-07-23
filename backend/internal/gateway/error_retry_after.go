@@ -43,8 +43,9 @@ func retryAfterFromBody(body []byte, now time.Time) int64 {
 			ResetsAt        *int64   `json:"resets_at"`
 			ResetsInSeconds *float64 `json:"resets_in_seconds"`
 			Details         []struct {
-				Type       string          `json:"@type"`
-				RetryDelay json.RawMessage `json:"retryDelay"`
+				Type       string                     `json:"@type"`
+				RetryDelay json.RawMessage            `json:"retryDelay"`
+				Metadata   map[string]json.RawMessage `json:"metadata"`
 			} `json:"details"`
 		} `json:"error"`
 	}
@@ -60,6 +61,9 @@ func retryAfterFromBody(body []byte, now time.Time) int64 {
 		}
 	}
 	for _, detail := range parsed.Error.Details {
+		if delay, ok := parseDurationJSON(detail.Metadata["quotaResetDelay"]); ok {
+			return delay.Milliseconds()
+		}
 		if !strings.Contains(detail.Type, "google.rpc.RetryInfo") {
 			continue
 		}
@@ -68,6 +72,18 @@ func retryAfterFromBody(body []byte, now time.Time) int64 {
 		}
 	}
 	return 0
+}
+
+func parseDurationJSON(raw json.RawMessage) (time.Duration, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, false
+	}
+	delay, err := time.ParseDuration(strings.TrimSpace(text))
+	return boundedBodyRetryDelay(delay, err == nil)
 }
 
 const maximumBodyRetryDelay = 30 * 24 * time.Hour

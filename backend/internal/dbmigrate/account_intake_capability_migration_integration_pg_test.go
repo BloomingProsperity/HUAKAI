@@ -300,6 +300,23 @@ WHERE tenant_id=$1 AND actor_id='admin_token:9'
 			t.Fatalf("过期后密文未销毁：status=%s encrypted=%d", status, len(encryptedAfter))
 		}
 
+		expiredOnRead, err := store.Stage(ctx, stageInput)
+		if err != nil {
+			t.Fatalf("创建读取过期样本: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE account_intake_staged_credentials SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid`, expiredOnRead.ID); err != nil {
+			t.Fatalf("设置读取过期样本: %v", err)
+		}
+		if _, err := store.LoadForExecution(ctx, tenantID, "admin_token:9", expiredOnRead.ID, planHash); !errors.Is(err, accountintake.ErrStagedCredentialExpired) {
+			t.Fatalf("读取过期样本 err=%v", err)
+		}
+		if err := pool.QueryRow(ctx, `SELECT encrypted_content, status FROM account_intake_staged_credentials WHERE id=$1::uuid`, expiredOnRead.ID).Scan(&encryptedAfter, &status); err != nil {
+			t.Fatalf("读取即时销毁状态: %v", err)
+		}
+		if status != "expired" || encryptedAfter != nil {
+			t.Fatalf("首次读取过期凭据必须即时销毁：status=%s encrypted=%d", status, len(encryptedAfter))
+		}
+
 		abandoned, err := store.Stage(ctx, stageInput)
 		if err != nil {
 			t.Fatalf("创建中断样本: %v", err)

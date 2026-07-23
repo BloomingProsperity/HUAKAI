@@ -45,8 +45,7 @@ func TestSupportedProtocolFamiliesMatchOptInRegistration(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	for _, env := range []string{
 		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
-		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv,
 		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
 	} {
 		t.Setenv(env, "true")
@@ -158,8 +157,7 @@ func TestEveryRegisteredPlatformHasTransportPolicy(t *testing.T) {
 	t.Setenv(placeholderSessionAdaptersEnv, "")
 	for _, env := range []string{
 		cursorSessionAdapterEnv, copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
-		geminiAdvancedSessionAdapterEnv, antigravitySessionAdapterEnv,
+		geminiAdvancedSessionAdapterEnv,
 		kiroSessionAdapterEnv, windsurfSessionAdapterEnv,
 	} {
 		t.Setenv(env, "true")
@@ -520,7 +518,6 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 		{ProtocolCursorSession, cursorSessionAdapterEnv, "cursor"},
 		{ProtocolCopilotSession, copilotSessionAdapterEnv, "copilot"},
 		{ProtocolGeminiAdvancedSession, geminiAdvancedSessionAdapterEnv, "gemini_advanced"},
-		{ProtocolAntigravitySession, antigravitySessionAdapterEnv, "antigravity"},
 		{ProtocolKiroSession, kiroSessionAdapterEnv, "kiro"},
 		{ProtocolWindsurfSession, windsurfSessionAdapterEnv, "windsurf"},
 	}
@@ -550,87 +547,44 @@ func TestBuild_PlaceholderSessionAdaptersOptIn(t *testing.T) {
 	}
 }
 
-// TestBuild_GeminiCodeAssistEnvGated 守卫 gemini_code_assist 出站注册的
-// env-gate 姿态:默认 off(不注册,避免把真实 OAuth session credential 默认发
-// 到 Google 内部 cloudcode-pa 端点);开 env 后注册且 Platform()=="gemini_code_assist"。
-// 变异:把 registrydefault 的注册改成无条件 → 默认 off 子断言红;删注册 →
-// 开 env 子断言红。
-func TestBuild_GeminiCodeAssistEnvGated(t *testing.T) {
-	t.Run("default off not registered", func(t *testing.T) {
-		t.Setenv(placeholderSessionAdaptersEnv, "")
-		clearPlaceholderSessionAdapterEnvs(t)
-		r := Build()
-		if _, err := r.For(ProtocolGeminiCodeAssist); !errors.Is(err, provider.ErrAdapterNotRegistered) {
-			t.Fatalf("gemini_code_assist 默认应 unregistered(高危 OAuth/内部端点),got err=%v", err)
-		}
-	})
-	t.Run("env on registers with vertex-distinct platform", func(t *testing.T) {
-		t.Setenv(placeholderSessionAdaptersEnv, "")
-		clearPlaceholderSessionAdapterEnvs(t)
-		t.Setenv(geminiCodeAssistAdapterEnv, "true")
-		r := Build()
-		a, err := r.For(ProtocolGeminiCodeAssist)
-		if err != nil {
-			t.Fatalf("env on 后 For(gemini_code_assist) err=%v", err)
-		}
-		if got := a.Platform(); got != "gemini_code_assist" {
-			t.Errorf("Platform=%q want gemini_code_assist", got)
-		}
-		// 平台必须有 transport 策略,否则 dispatcher 取 RoundTripper 整族挂。
-		if err := transport.ValidateModeForProvider(transport.ProviderCode(a.Platform()), transport.TransportModeStandard); err != nil {
-			t.Errorf("gemini_code_assist 平台无 transport 策略: %v", err)
-		}
-	})
+func TestBuild_GeminiCodeAssistDefaultsOn(t *testing.T) {
+	clearPlaceholderSessionAdapterEnvs(t)
+	a, err := Build().For(ProtocolGeminiCodeAssist)
+	if err != nil {
+		t.Fatalf("gemini_code_assist 默认应注册: %v", err)
+	}
+	if got := a.Platform(); got != "gemini_code_assist" {
+		t.Fatalf("Platform=%q want gemini_code_assist", got)
+	}
+	if err := transport.ValidateModeForProvider(transport.ProviderCode(a.Platform()), transport.TransportModeStandard); err != nil {
+		t.Fatalf("gemini_code_assist 平台无标准 transport 策略: %v", err)
+	}
 }
 
-// TestBuild_AntigravityEnvGateDefaultsOffAndBuildsCloudCodeAdapter 守住 rollout
-// 姿态：env 关闭时注册表完全不含该族，不进入转发热路径；env 开启后构造的
-// 必须是真实 Cloud Code adapter，而不是旧占位实现。无条件注册或删 env 分支
-// 分别会使两个子测试变红。
-func TestBuild_AntigravityEnvGateDefaultsOffAndBuildsCloudCodeAdapter(t *testing.T) {
-	t.Run("默认关闭不进入热路径", func(t *testing.T) {
-		clearPlaceholderSessionAdapterEnvs(t)
-		r := Build()
-		if _, err := r.For(ProtocolAntigravitySession); !errors.Is(err, provider.ErrAdapterNotRegistered) {
-			t.Fatalf("Antigravity 默认应未注册，err=%v", err)
-		}
-		for _, family := range r.RegisteredProtocolFamilies() {
-			if family == ProtocolAntigravitySession {
-				t.Fatalf("默认注册集合不应含 %q", ProtocolAntigravitySession)
-			}
-		}
+func TestBuild_AntigravityDefaultsOnWithCloudCodeAdapter(t *testing.T) {
+	clearPlaceholderSessionAdapterEnvs(t)
+	raw, err := Build().For(ProtocolAntigravitySession)
+	if err != nil {
+		t.Fatalf("Antigravity 默认应注册: %v", err)
+	}
+	adapter, ok := raw.(*providerantigravity.AntigravitySessionAdapter)
+	if !ok {
+		t.Fatalf("adapter type=%T，期望 *antigravity.AntigravitySessionAdapter", raw)
+	}
+	req, err := adapter.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID: "gemini-3-flash",
+		InboundBody:     []byte(`{"contents":[]}`),
+		Credential: provider.Credential{
+			Type: provider.CredentialTypeSessionToken, Value: "access-token",
+			Extra: map[string]string{"project_id": "project-id"},
+		},
 	})
-
-	t.Run("显式开启构造正确 adapter", func(t *testing.T) {
-		clearPlaceholderSessionAdapterEnvs(t)
-		t.Setenv(antigravitySessionAdapterEnv, "true")
-		r := Build()
-		raw, err := r.For(ProtocolAntigravitySession)
-		if err != nil {
-			t.Fatalf("env 开启后取 adapter 失败：%v", err)
-		}
-		adapter, ok := raw.(*providerantigravity.AntigravitySessionAdapter)
-		if !ok {
-			t.Fatalf("adapter type=%T，期望 *antigravity.AntigravitySessionAdapter", raw)
-		}
-		req, err := adapter.BuildRequest(context.Background(), provider.BuildInput{
-			UpstreamModelID: "gemini-3-flash",
-			InboundBody:     []byte(`{"contents":[]}`),
-			Credential: provider.Credential{
-				Type: provider.CredentialTypeSessionToken, Value: "access-token",
-				Extra: map[string]string{"project_id": "project-id"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("已构造 adapter 无法 BuildRequest：%v", err)
-		}
-		if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:generateContent" {
-			t.Fatalf("env 开启后的出站 URL=%q", got)
-		}
-		if got := req.Header.Get("User-Agent"); got != "antigravity/hub/2.2.1 darwin/arm64" {
-			t.Fatalf("env 开启后的 User-Agent=%q", got)
-		}
-	})
+	if err != nil {
+		t.Fatalf("默认 adapter 无法 BuildRequest: %v", err)
+	}
+	if got := req.URL.String(); got != "https://cloudcode-pa.googleapis.com/v1internal:generateContent" {
+		t.Fatalf("默认出站 URL=%q", got)
+	}
 }
 
 func TestBuild_UnregisteredReturnsErrAdapterNotRegistered(t *testing.T) {
@@ -674,7 +628,6 @@ func placeholderSessionProtocolFamilies() []string {
 		ProtocolCursorSession,
 		ProtocolCopilotSession,
 		ProtocolGeminiAdvancedSession,
-		ProtocolAntigravitySession,
 		ProtocolKiroSession,
 		ProtocolWindsurfSession,
 	}
@@ -691,9 +644,7 @@ func placeholderSessionAdapterEnvNames() []string {
 	return []string{
 		cursorSessionAdapterEnv,
 		copilotSessionAdapterEnv,
-		geminiCodeAssistAdapterEnv,
 		geminiAdvancedSessionAdapterEnv,
-		antigravitySessionAdapterEnv,
 		kiroSessionAdapterEnv,
 		windsurfSessionAdapterEnv,
 	}

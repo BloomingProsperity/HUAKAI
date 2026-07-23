@@ -561,6 +561,9 @@ func (s *Service) evaluate(ctx context.Context, rec Record, sig Signal, now time
 			}
 		}
 	}
+	if dec := s.creditsExhaustedDecision(sig, now); dec.state != "" {
+		return dec
+	}
 	if dec := s.rateLimitDecision(ctx, rec, sig, now); dec.state != "" {
 		return dec
 	}
