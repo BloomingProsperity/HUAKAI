@@ -43,4 +43,4 @@
 - [x] sub2api、CLIProxyAPI、new-api 当前源码 clean-room 行为核实
 - [x] 定向测试和测试覆盖反查
 - [x] 唯一报告交叉审查
-- [ ] 提交并建立单一 PR
+- [x] 已提交并建立单一 PR：`#295`
