@@ -96,6 +96,40 @@ func TestAdminAccountIntakePlanPassesClaudeSetupTokenSourceWithoutOverrides(t *t
 	}
 }
 
+func Test泛化账号导入拒绝服务端专用来源(t *testing.T) {
+	serverSources := []intake.SourceKind{
+		intake.SourceOAuth,
+		intake.SourceClaudeCookie,
+		intake.SourceClaudeSetupCookie,
+		intake.SourceCodexAgent,
+		intake.SourceCRSSync,
+		intake.SourceAccountBundle,
+	}
+	for _, source := range serverSources {
+		t.Run(string(source), func(t *testing.T) {
+			service := &accountIntakeServiceStub{}
+			handler := accountIntakeTestHandler(accountIntakeAuthStub{identity: tenantTokenIdentity(7)}, service)
+			base := `{"tenant_id":7,"source_kind":"` + string(source) +
+				`","content":"secret","account":{"provider_id":2,"channel_id":3,"name_prefix":"blocked","account_type":"oauth"}}`
+			plan := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/plan", base)
+			if plan.Code != http.StatusBadRequest ||
+				!strings.Contains(plan.Body.String(), "account_intake_source_forbidden") {
+				t.Fatalf("plan status=%d body=%s", plan.Code, plan.Body.String())
+			}
+			executeBody := strings.TrimSuffix(base, "}") +
+				`,"plan_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+			execute := doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/execute", executeBody)
+			if execute.Code != http.StatusBadRequest ||
+				!strings.Contains(execute.Body.String(), "account_intake_source_forbidden") {
+				t.Fatalf("execute status=%d body=%s", execute.Code, execute.Body.String())
+			}
+			if service.planCalls != 0 || service.executeCalls != 0 {
+				t.Fatalf("专用来源触发泛化 service：plan=%d execute=%d", service.planCalls, service.executeCalls)
+			}
+		})
+	}
+}
+
 func TestAdminAccountIntakeExecuteDoesNotEchoClaudeSetupToken(t *testing.T) {
 	service := &accountIntakeServiceStub{executeResult: accountintake.ExecutionResult{
 		Summary: accountintake.ExecutionSummary{Created: 1},

@@ -98,6 +98,14 @@ func executionCommitSummary(commit ExecutionCommit) (ExecutionSummary, error) {
 
 func executionErrorCode(err error) string {
 	switch {
+	case errors.Is(err, ErrStagedCredentialNotFound):
+		return "credential_flow_not_found"
+	case errors.Is(err, ErrStagedCredentialExpired):
+		return "credential_flow_expired"
+	case errors.Is(err, ErrStagedCredentialReplay):
+		return "credential_flow_replayed"
+	case errors.Is(err, ErrPlanChanged):
+		return "account_plan_changed"
 	case errors.Is(err, ErrExecutionStale), errors.Is(err, credentialstore.ErrCredentialVersionConflict):
 		return "plan_stale"
 	case errors.Is(err, accountcreate.ErrMixedRiskConfirmRequired):
@@ -113,6 +121,14 @@ func executionErrorCode(err error) string {
 
 func executionErrorMessage(err error) string {
 	switch {
+	case errors.Is(err, ErrStagedCredentialNotFound):
+		return "短期账号流程不存在"
+	case errors.Is(err, ErrStagedCredentialExpired):
+		return "短期账号流程已过期"
+	case errors.Is(err, ErrStagedCredentialReplay):
+		return "短期账号流程已被领取"
+	case errors.Is(err, ErrPlanChanged):
+		return "账号状态已变化，需要重新预检"
 	case errors.Is(err, ErrExecutionStale), errors.Is(err, credentialstore.ErrCredentialVersionConflict):
 		return "执行前账号或凭据状态已变化，请重新预检"
 	case errors.Is(err, accountcreate.ErrMixedRiskConfirmRequired):

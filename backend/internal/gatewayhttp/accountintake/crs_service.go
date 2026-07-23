@@ -320,6 +320,9 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 }
 
 func buildCRSPlanInput(tenantID int64, destination AccountDefaults, sourceRef string, source crssource.Account, syncProxy bool, now time.Time) (PlanInput, json.RawMessage, error) {
+	if !crssource.SourceModeAllowed(source.SourceType, source.Vendor, source.AuthMode) {
+		return PlanInput{}, nil, ErrInvalidInput
+	}
 	destination.AccountType = source.AccountType
 	destination.NamePrefix = combinedAccountName(destination.NamePrefix, source.Name, sourceIDHint(sourceRef, source.SourceType, source.SourceID))
 	enabled := source.Enabled

@@ -122,6 +122,11 @@ func newAdminAccountIntakePlanHandler(d Deps) http.HandlerFunc {
 			req.Content = ""
 			return
 		}
+		if !clientSelectableAccountIntakeSource(req.SourceKind) {
+			req.Content = ""
+			writeJSONError(w, http.StatusBadRequest, "account_intake_source_forbidden", "该来源必须使用服务端专用账号导入入口")
+			return
+		}
 		result, err := d.Service.Plan(r.Context(), req.planInput())
 		req.Content = ""
 		if err != nil {
@@ -146,6 +151,11 @@ func newAdminAccountIntakeExecuteHandler(d Deps) http.HandlerFunc {
 			req.Content = ""
 			return
 		}
+		if !clientSelectableAccountIntakeSource(req.SourceKind) {
+			req.Content = ""
+			writeJSONError(w, http.StatusBadRequest, "account_intake_source_forbidden", "该来源必须使用服务端专用账号导入入口")
+			return
+		}
 		result, err := d.Service.Execute(r.Context(), accountintake.ExecuteInput{
 			PlanInput: req.planInput(), PlanHash: req.PlanHash,
 			Confirmations: req.Confirmations,
@@ -158,6 +168,15 @@ func newAdminAccountIntakeExecuteHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func clientSelectableAccountIntakeSource(source intake.SourceKind) bool {
+	switch source {
+	case intake.SourceCLI, intake.SourceJSON, intake.SourceCSV, intake.SourceClaudeSetupToken:
+		return true
+	default:
+		return false
 	}
 }
 

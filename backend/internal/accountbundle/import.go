@@ -121,7 +121,7 @@ func (s *Service) planImportAccount(ctx context.Context, tenantID int64, index i
 	}
 	defer privacy.Zeroize(content)
 	planInput := accountintake.PlanInput{
-		TenantID: tenantID, SourceKind: intake.SourceJSON,
+		TenantID: tenantID, SourceKind: intake.SourceAccountBundle,
 		DefaultVendor: account.Credential.Vendor, DefaultAuthMode: account.Credential.AuthMode,
 		Content: string(content), Account: defaults,
 	}
@@ -280,7 +280,7 @@ func (s *Service) executeImportAccount(ctx context.Context, batch ImportExecuteI
 	defer privacy.Zeroize(content)
 	result, err := s.intake.Execute(ctx, accountintake.ExecuteInput{
 		PlanInput: accountintake.PlanInput{
-			TenantID: batch.TenantID, SourceKind: intake.SourceJSON,
+			TenantID: batch.TenantID, SourceKind: intake.SourceAccountBundle,
 			DefaultVendor: account.Credential.Vendor, DefaultAuthMode: account.Credential.AuthMode,
 			Content: string(content), Account: defaults,
 		},

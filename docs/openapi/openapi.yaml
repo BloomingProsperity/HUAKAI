@@ -21742,8 +21742,8 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync]
-          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          description: 服务端转换、OAuth、CRS、Codex Agent 与账号迁移包必须使用各自专用入口；claude_setup_token 固定厂商和鉴权模式。
         default_vendor: { type: string }
         default_auth_mode: { type: string }
         content:
@@ -21765,8 +21765,8 @@ components:
           description: Must equal the authenticated tenant_operator token scope.
         source_kind:
           type: string
-          enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync]
-          description: claude_setup_token accepts raw token lines, JSON strings, or objects with setup_token; vendor, auth mode, and endpoint overrides are ignored for this source.
+          enum: [cli_import, json_import, csv_import, claude_setup_token]
+          description: 服务端转换、OAuth、CRS、Codex Agent 与账号迁移包必须使用各自专用入口；claude_setup_token 固定厂商和鉴权模式。
         default_vendor: { type: string }
         default_auth_mode: { type: string }
         content:
@@ -22580,7 +22580,7 @@ components:
       required: [contract_version, source_kind, input_count, items, summary]
       properties:
         contract_version: { type: string, enum: [account-intake-v2] }
-        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, codex_agent_identity, crs_sync, oauth] }
+        source_kind: { type: string, enum: [cli_import, json_import, csv_import, claude_setup_token, claude_cookie, claude_setup_cookie, codex_agent_identity, crs_sync, account_bundle, oauth] }
         input_count: { type: integer, minimum: 0, maximum: 500 }
         items:
           type: array

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 )
 
 func TestFetch归一六类账号并移除来源端点覆盖(t *testing.T) {
@@ -64,6 +66,32 @@ func TestFetch归一六类账号并移除来源端点覆盖(t *testing.T) {
 	}
 	if result.Accounts[1].Concurrency != 8 || result.Accounts[4].AuthMode != "code_assist" || result.SourceRef() == "" {
 		t.Fatalf("账号映射错误：%+v source_ref=%q", result.Accounts, result.SourceRef())
+	}
+}
+
+func TestSourceModeAllowed绑定生产归一化矩阵(t *testing.T) {
+	tests := []struct {
+		sourceType string
+		vendor     string
+		authMode   string
+		want       bool
+	}{
+		{"claude", credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeAIOAuth, true},
+		{"claude", credentialstore.VendorAnthropic, credentialstore.AuthModeClaudeSetupToken, true},
+		{"claude_console", credentialstore.VendorAnthropic, credentialstore.AuthModeAPIKey, true},
+		{"openai_oauth", credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, true},
+		{"openai_responses", credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, true},
+		{"gemini_oauth", credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist, true},
+		{"gemini_api_key", credentialstore.VendorGemini, credentialstore.AuthModeAIStudioAPIKey, true},
+		{"openai_oauth", credentialstore.VendorOpenAI, credentialstore.AuthModeAPIKey, false},
+		{"gemini_oauth", credentialstore.VendorGemini, credentialstore.AuthModeGoogleOne, false},
+		{"unknown", credentialstore.VendorOpenAI, credentialstore.AuthModeChatGPTOAuth, false},
+	}
+	for _, test := range tests {
+		if got := SourceModeAllowed(test.sourceType, test.vendor, test.authMode); got != test.want {
+			t.Fatalf("SourceModeAllowed(%s,%s,%s)=%v，期望 %v",
+				test.sourceType, test.vendor, test.authMode, got, test.want)
+		}
 	}
 }
 

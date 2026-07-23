@@ -32,27 +32,42 @@ var (
 )
 
 type stagedPlanInput struct {
-	TenantID        int64             `json:"tenant_id"`
-	SourceKind      intake.SourceKind `json:"source_kind"`
-	DefaultVendor   string            `json:"default_vendor"`
-	DefaultAuthMode string            `json:"default_auth_mode"`
-	Account         AccountDefaults   `json:"account"`
-	Now             time.Time         `json:"now"`
+	TenantID                  int64             `json:"tenant_id"`
+	SourceKind                intake.SourceKind `json:"source_kind"`
+	DefaultVendor             string            `json:"default_vendor"`
+	DefaultAuthMode           string            `json:"default_auth_mode"`
+	Account                   AccountDefaults   `json:"account"`
+	AccountExtraRaw           []byte            `json:"account_extra_raw,omitempty"`
+	TempUnschedulableRulesRaw []byte            `json:"temp_unschedulable_rules_raw,omitempty"`
+	Now                       time.Time         `json:"now"`
 }
 
 func stagedInputFromPlan(in PlanInput) stagedPlanInput {
+	account := in.Account
+	extra := append([]byte(nil), account.Extra...)
+	rules := append([]byte(nil), account.TempUnschedulableRules...)
+	account.Extra = nil
+	account.TempUnschedulableRules = nil
 	return stagedPlanInput{
 		TenantID: in.TenantID, SourceKind: in.SourceKind,
 		DefaultVendor: in.DefaultVendor, DefaultAuthMode: in.DefaultAuthMode,
-		Account: in.Account, Now: in.Now.UTC(),
+		Account: account, AccountExtraRaw: extra, TempUnschedulableRulesRaw: rules,
+		Now: in.Now.UTC(),
 	}
 }
 
 func (in stagedPlanInput) withContent(content string) PlanInput {
+	account := in.Account
+	if in.AccountExtraRaw != nil {
+		account.Extra = append(json.RawMessage(nil), in.AccountExtraRaw...)
+	}
+	if in.TempUnschedulableRulesRaw != nil {
+		account.TempUnschedulableRules = append(json.RawMessage(nil), in.TempUnschedulableRulesRaw...)
+	}
 	return PlanInput{
 		TenantID: in.TenantID, SourceKind: in.SourceKind,
 		DefaultVendor: in.DefaultVendor, DefaultAuthMode: in.DefaultAuthMode,
-		Content: content, Account: in.Account, Now: in.Now,
+		Content: content, Account: account, Now: in.Now,
 	}
 }
 
@@ -103,7 +118,13 @@ func (s *StagedStore) Stage(ctx context.Context, in StageInput) (StagedCredentia
 		return StagedCredential{}, ErrNotConfigured
 	}
 	if in.TenantID <= 0 || strings.TrimSpace(in.ActorID) == "" || !validIntakeActorRole(in.ActorRole) ||
-		strings.TrimSpace(in.Content) == "" || len(in.Auxiliary) > maxStagedAuxiliaryBytes || !validPlanHash(in.PlanHash) {
+		strings.TrimSpace(in.Content) == "" || len(in.Auxiliary) > maxStagedAuxiliaryBytes ||
+		!validPlanHash(in.PlanHash) || in.PlanInput.Now.IsZero() {
+		return StagedCredential{}, ErrInvalidInput
+	}
+	if in.PlanInput.TenantID != in.TenantID || string(in.PlanInput.SourceKind) != in.SourceKind ||
+		credentialstore.Normalize(in.PlanInput.DefaultVendor) != credentialstore.Normalize(in.Vendor) ||
+		credentialstore.Normalize(in.PlanInput.DefaultAuthMode) != credentialstore.Normalize(in.AuthMode) {
 		return StagedCredential{}, ErrInvalidInput
 	}
 	if !validStagedSource(in.SourceKind, in.Vendor, in.AuthMode) {
@@ -330,21 +351,13 @@ WHERE id=$1::uuid AND tenant_id=$2 AND actor_id=$3 AND status='staged'`,
 }
 
 func validStagedSource(sourceKind, vendor, authMode string) bool {
-	vendor = credentialstore.Normalize(vendor)
-	authMode = credentialstore.Normalize(authMode)
-	switch sourceKind {
-	case "claude_cookie", "claude_setup_cookie":
-		return vendor == credentialstore.VendorAnthropic &&
-			(authMode == credentialstore.AuthModeClaudeAIOAuth || authMode == credentialstore.AuthModeClaudeSetupToken)
-	case "crs_sync":
-		if vendor != credentialstore.VendorAnthropic && vendor != credentialstore.VendorOpenAI && vendor != credentialstore.VendorGemini {
-			return false
-		}
-		_, ok := credentialstore.DefaultHandlerRegistry().Lookup(vendor, authMode)
-		return ok
-	case "oauth":
+	source := intake.SourceKind(strings.TrimSpace(sourceKind))
+	switch source {
+	case intake.SourceClaudeCookie, intake.SourceClaudeSetupCookie, intake.SourceCRSSync:
+		return intake.SourceAllowedForMode(source, vendor, authMode)
+	case intake.SourceOAuth:
 		return credentialacq.ModeAcquisitionReleased(vendor, authMode) &&
-			credentialacq.SourceAllowedForMode(vendor, authMode, credentialacq.FlowKindOAuth)
+			intake.SourceAllowedForMode(source, vendor, authMode)
 	default:
 		return false
 	}

@@ -134,6 +134,38 @@ func TestProviderAccountSubscriptionOpenAPI合同完整(t *testing.T) {
 	}
 }
 
+func TestAccountIntakeOpenAPI区分客户端来源和服务端来源(t *testing.T) {
+	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("读取 OpenAPI: %v", err)
+	}
+	source := string(raw)
+	wantClientEnum := "enum: [cli_import, json_import, csv_import, claude_setup_token]"
+	for _, schema := range []string{"AccountIntakePlanRequest", "AccountIntakeExecuteRequest"} {
+		block := openAPIComponentSchema(source, schema)
+		if !strings.Contains(block, wantClientEnum) {
+			t.Errorf("%s 未锁定客户端可选来源", schema)
+		}
+		for _, forbidden := range []string{
+			"claude_cookie", "claude_setup_cookie", "codex_agent_identity",
+			"crs_sync", "account_bundle", "oauth",
+		} {
+			if strings.Contains(textSection(t, block, "        source_kind:", "        default_vendor:"), forbidden) {
+				t.Errorf("%s 暴露服务端来源 %s", schema, forbidden)
+			}
+		}
+	}
+	response := openAPIComponentSchema(source, "AccountIntakePlan")
+	for _, serverSource := range []string{
+		"claude_cookie", "claude_setup_cookie", "codex_agent_identity",
+		"crs_sync", "account_bundle", "oauth",
+	} {
+		if !strings.Contains(response, serverSource) {
+			t.Errorf("账号导入计划响应缺服务端来源 %s", serverSource)
+		}
+	}
+}
+
 func TestProviderAccountAdvancedSQL源覆盖全部存储列(t *testing.T) {
 	raw, err := os.ReadFile("../../sql/queries/admin_provider_account_mutations.sql")
 	if err != nil {

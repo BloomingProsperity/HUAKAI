@@ -20,6 +20,8 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountproxyimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq"
+	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/accountident"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/dbmigrate"
@@ -154,6 +156,273 @@ func TestEncryptedAccountBundleRoundTripAndReplayGuard(t *testing.T) {
 		t.Fatalf("旧计划重放 err=%v，期望 %v", err, ErrPlanChanged)
 	}
 	assertAccountBundleLogs(t, ctx, pool, source.tenantID, destination.tenantID, apiSecret, proxyPassword)
+}
+
+func TestOAuthAccountBundleImportsAndKeepsClaimedIdentityUntrusted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool := openAccountBundleIntegrationPool(t, ctx)
+	keys, err := credentialstore.NewStaticKeyProvider("bundle-oauth-test-key", []byte("abcdef0123456789abcdef0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := credentialstore.NewStore(pool, keys, credentialstore.DefaultHandlerRegistry())
+	intakeService := accountintake.NewService(pool, credentials)
+	service := NewService(pool, credentials, keys, intakeService)
+	source := seedAccountBundleTenant(t, ctx, pool, "oauth-source")
+	destination := seedAccountBundleTenant(t, ctx, pool, "oauth-destination")
+	for _, providerID := range []int64{source.providerID, destination.providerID} {
+		if _, err := pool.Exec(ctx, `
+UPDATE providers SET upstream_protocol='anthropic_claude_session' WHERE id=$1`, providerID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	accessToken := "oauth-bundle-access-" + uuid.NewString()
+	candidate, err := intake.EncodeOAuthCandidate(credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		Payload:              []byte(fmt.Sprintf(`{"access_token":%q,"refresh_token":"refresh"}`, accessToken)),
+		ExternalAccountID:    "claimed-upstream-account",
+		ExternalAccountEmail: "claimed@example.test",
+		AccountIDSource:      accountident.SourceAnthropicAccountID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createInput := accountintake.PlanInput{
+		TenantID: source.tenantID, SourceKind: intake.SourceOAuth,
+		DefaultVendor: credentialstore.VendorAnthropic, DefaultAuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		Content: candidate,
+		Account: accountintake.AccountDefaults{
+			ProviderID: source.providerID, ChannelID: source.channelID,
+			ExactName: "OAuth 迁移源-" + source.suffix, AccountType: "oauth",
+		},
+		Now: time.Date(2026, 7, 23, 0, 0, 0, 0, time.UTC),
+	}
+	createPlan, err := intakeService.Plan(ctx, createInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := intakeService.Execute(ctx, accountintake.ExecuteInput{
+		PlanInput: createInput, PlanHash: createPlan.PlanHash,
+		Confirmations: createPlan.Plan.Items[0].RequiredConfirmations,
+		ActorID:       "admin_token:oauth-source", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-oauth-bundle-source", Reason: "建立 OAuth 迁移源账号",
+	})
+	if err != nil || created.Summary.Created != 1 {
+		t.Fatalf("创建 OAuth 源账号结果=%+v err=%v", created, err)
+	}
+
+	trustedDestinationCandidate, err := intake.EncodeOAuthCandidate(credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorAnthropic, AuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		Payload:              []byte(`{"access_token":"trusted-old-access","refresh_token":"trusted-old-refresh"}`),
+		ExternalAccountID:    "claimed-upstream-account",
+		ExternalAccountEmail: "verified@example.test",
+		AccountIDSource:      accountident.SourceAnthropicAccountID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedDestinationInput := accountintake.PlanInput{
+		TenantID: destination.tenantID, SourceKind: intake.SourceOAuth,
+		DefaultVendor: credentialstore.VendorAnthropic, DefaultAuthMode: credentialstore.AuthModeClaudeAIOAuth,
+		Content: trustedDestinationCandidate,
+		Account: accountintake.AccountDefaults{
+			ProviderID: destination.providerID, ChannelID: destination.channelID,
+			ExactName: "可信 OAuth 目标-" + destination.suffix, AccountType: "oauth",
+		},
+		Now: time.Date(2026, 7, 23, 0, 0, 0, 0, time.UTC),
+	}
+	trustedDestinationPlan, err := intakeService.Plan(ctx, trustedDestinationInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedDestination, err := intakeService.Execute(ctx, accountintake.ExecuteInput{
+		PlanInput: trustedDestinationInput, PlanHash: trustedDestinationPlan.PlanHash,
+		Confirmations: trustedDestinationPlan.Plan.Items[0].RequiredConfirmations,
+		ActorID:       "admin_token:oauth-destination", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-oauth-bundle-trusted-destination", Reason: "建立可信身份目标账号",
+	})
+	if err != nil || trustedDestination.Summary.Created != 1 {
+		t.Fatalf("创建可信目标账号结果=%+v err=%v", trustedDestination, err)
+	}
+	trustedAccountID := trustedDestination.Items[0].ProviderAccountID
+	trustedCredentialID := trustedDestination.Items[0].AccountCredentialID
+	trustedCredentialVersion := trustedDestination.Items[0].CredentialVersion
+
+	exportPlan, err := service.PlanExport(ctx, ExportPlanInput{
+		TenantID: source.tenantID, AccountIDs: []int64{created.Items[0].ProviderAccountID},
+		ActorID: "admin_token:oauth-source", ActorRole: admin.RoleTenantOperator,
+		ActorScopeTenantID: source.tenantID, Reason: "迁移 OAuth 账号",
+	})
+	if err != nil || exportPlan.Ready != 1 {
+		t.Fatalf("OAuth 导出预检=%+v err=%v", exportPlan, err)
+	}
+	password := "oauth-bundle-password-" + uuid.NewString()
+	exported, err := service.ExecuteExport(ctx, ExportExecuteInput{
+		ExportPlanInput: ExportPlanInput{
+			TenantID: source.tenantID, AccountIDs: []int64{created.Items[0].ProviderAccountID},
+			ActorID: "admin_token:oauth-source", ActorRole: admin.RoleTenantOperator,
+			ActorScopeTenantID: source.tenantID, RequestID: "req-oauth-bundle-export", Reason: "迁移 OAuth 账号",
+		},
+		PlanHash: exportPlan.PlanHash, Password: password, Confirmation: exportConfirmation,
+	})
+	if err != nil || exported.AccountCount != 1 {
+		t.Fatalf("OAuth 导出结果=%+v err=%v", exported, err)
+	}
+
+	destinations := map[string]Destination{
+		fmt.Sprintf("provider:%d/channel:%d", source.providerID, source.channelID): {
+			ProviderID: destination.providerID, ChannelID: destination.channelID,
+		},
+	}
+	importInput := ImportPlanInput{
+		TenantID: destination.tenantID, Envelope: exported.Envelope, Password: password,
+		Destinations: destinations, ActorID: "admin_token:oauth-destination",
+		ActorRole: admin.RoleTenantOperator, ActorScopeTenantID: destination.tenantID,
+		Reason: "恢复 OAuth 账号",
+	}
+	importPlan, err := service.PlanImport(ctx, importInput)
+	if err != nil || importPlan.Ready != 1 || len(importPlan.Items) != 1 {
+		t.Fatalf("OAuth 导入预检=%+v err=%v", importPlan, err)
+	}
+	item := importPlan.Items[0]
+	if item.Plan == nil || len(item.Plan.Items) != 1 ||
+		item.Plan.Items[0].Action != intake.ActionUpdate ||
+		item.Plan.Items[0].ExistingAccountID != trustedAccountID {
+		t.Fatalf("不可信迁移身份没有显式指向待确认的已有账号：%+v", item)
+	}
+	if missing := missingConfirmations(
+		[]string{"confirm_unverified_account_match", "confirm_credential_rotation", "confirm_account_config_replace"},
+		item.RequiredConfirmations,
+	); len(missing) != 0 {
+		t.Fatalf("不可信迁移身份缺少人工确认：%v", missing)
+	}
+	unconfirmed, err := service.ExecuteImport(ctx, ImportExecuteInput{
+		ImportPlanInput: importInput, BundleHash: importPlan.BundleHash,
+		Entries: []ImportExecuteEntry{{
+			AccountRef: item.AccountRef, PlanHash: item.PlanHash,
+		}},
+	})
+	if err != nil || unconfirmed.Conflict != 1 || unconfirmed.Completed != 0 ||
+		len(unconfirmed.Items) != 1 || unconfirmed.Items[0].Code != "confirmation_required" {
+		t.Fatalf("未确认迁移身份结果=%+v err=%v", unconfirmed, err)
+	}
+	var versionAfterUnconfirmed int32
+	var sourceAfterUnconfirmed string
+	if err := pool.QueryRow(ctx, `
+SELECT credential_version, COALESCE(external_identity_source, '')
+FROM account_credentials WHERE tenant_id=$1 AND id=$2 AND deleted_at IS NULL`,
+		destination.tenantID, trustedCredentialID).Scan(&versionAfterUnconfirmed, &sourceAfterUnconfirmed); err != nil {
+		t.Fatal(err)
+	}
+	if versionAfterUnconfirmed != trustedCredentialVersion ||
+		sourceAfterUnconfirmed != accountident.SourceAnthropicAccountID {
+		t.Fatalf("未确认迁移错误轮换可信凭据 version=%d source=%q",
+			versionAfterUnconfirmed, sourceAfterUnconfirmed)
+	}
+	result, err := service.ExecuteImport(ctx, ImportExecuteInput{
+		ImportPlanInput: importInput, BundleHash: importPlan.BundleHash,
+		Entries: []ImportExecuteEntry{{
+			AccountRef: item.AccountRef, PlanHash: item.PlanHash,
+			Confirmations: item.RequiredConfirmations,
+		}},
+	})
+	if err != nil || result.Completed != 1 || result.Failed != 0 || result.Conflict != 0 {
+		t.Fatalf("OAuth 导入执行=%+v err=%v", result, err)
+	}
+	accountID := result.Items[0].Result.Items[0].ProviderAccountID
+	if accountID != trustedAccountID {
+		t.Fatalf("显式确认后更新账号=%d，期望可信目标账号=%d", accountID, trustedAccountID)
+	}
+	record, err := credentials.ResolveActive(ctx, destination.tenantID, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	if record.Vendor != credentialstore.VendorAnthropic ||
+		record.AuthMode != credentialstore.AuthModeClaudeAIOAuth ||
+		!bytes.Contains(record.PlaintextPayload, []byte(accessToken)) {
+		t.Fatalf("OAuth 迁移凭据不完整：vendor=%s mode=%s", record.Vendor, record.AuthMode)
+	}
+	var externalAccountID, identitySource string
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(external_account_id, ''), COALESCE(external_identity_source, '')
+FROM account_credentials WHERE tenant_id=$1 AND provider_account_id=$2 AND deleted_at IS NULL`,
+		destination.tenantID, accountID).Scan(&externalAccountID, &identitySource); err != nil {
+		t.Fatal(err)
+	}
+	if externalAccountID != "claimed-upstream-account" || identitySource != accountident.SourceImportPayload {
+		t.Fatalf("迁移身份信任错误：id=%q source=%q", externalAccountID, identitySource)
+	}
+
+	emptyDestination := seedAccountBundleTenant(t, ctx, pool, "oauth-empty-destination")
+	if _, err := pool.Exec(ctx, `
+UPDATE providers SET upstream_protocol='anthropic_claude_session' WHERE id=$1`,
+		emptyDestination.providerID); err != nil {
+		t.Fatal(err)
+	}
+	createDestinations := map[string]Destination{
+		fmt.Sprintf("provider:%d/channel:%d", source.providerID, source.channelID): {
+			ProviderID: emptyDestination.providerID, ChannelID: emptyDestination.channelID,
+		},
+	}
+	createImportInput := ImportPlanInput{
+		TenantID: emptyDestination.tenantID, Envelope: exported.Envelope, Password: password,
+		Destinations: createDestinations, ActorID: "admin_token:oauth-empty-destination",
+		ActorRole: admin.RoleTenantOperator, ActorScopeTenantID: emptyDestination.tenantID,
+		Reason: "恢复 OAuth 账号到空目标租户",
+	}
+	createImportPlan, err := service.PlanImport(ctx, createImportInput)
+	if err != nil || createImportPlan.Ready != 1 || len(createImportPlan.Items) != 1 ||
+		createImportPlan.Items[0].Plan == nil || len(createImportPlan.Items[0].Plan.Items) != 1 ||
+		createImportPlan.Items[0].Plan.Items[0].Action != intake.ActionCreate {
+		t.Fatalf("OAuth 空目标导入预检=%+v err=%v", createImportPlan, err)
+	}
+	createItem := createImportPlan.Items[0]
+	createdImport, err := service.ExecuteImport(ctx, ImportExecuteInput{
+		ImportPlanInput: createImportInput, BundleHash: createImportPlan.BundleHash,
+		Entries: []ImportExecuteEntry{{
+			AccountRef: createItem.AccountRef, PlanHash: createItem.PlanHash,
+			Confirmations: createItem.RequiredConfirmations,
+		}},
+	})
+	if err != nil || createdImport.Completed != 1 || createdImport.Conflict != 0 ||
+		createdImport.Failed != 0 || len(createdImport.Items) != 1 ||
+		createdImport.Items[0].Result == nil || createdImport.Items[0].Result.Summary.Created != 1 {
+		t.Fatalf("OAuth 空目标导入执行=%+v err=%v", createdImport, err)
+	}
+	createdAccountID := createdImport.Items[0].Result.Items[0].ProviderAccountID
+	createdRecord, err := credentials.ResolveActive(ctx, emptyDestination.tenantID, createdAccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer privacy.Zeroize(createdRecord.PlaintextPayload)
+	if createdRecord.Vendor != credentialstore.VendorAnthropic ||
+		createdRecord.AuthMode != credentialstore.AuthModeClaudeAIOAuth ||
+		!bytes.Contains(createdRecord.PlaintextPayload, []byte(accessToken)) {
+		t.Fatalf("OAuth 空目标迁移凭据不完整：vendor=%s mode=%s",
+			createdRecord.Vendor, createdRecord.AuthMode)
+	}
+	var createdIdentitySource string
+	var createdHealthCount int
+	if err := pool.QueryRow(ctx, `
+SELECT COALESCE(external_identity_source, '')
+FROM account_credentials
+WHERE tenant_id=$1 AND provider_account_id=$2 AND state='active' AND deleted_at IS NULL`,
+		emptyDestination.tenantID, createdAccountID).Scan(&createdIdentitySource); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)::int FROM channel_health_state
+WHERE tenant_id=$1 AND provider_account_id=$2`,
+		emptyDestination.tenantID, createdAccountID).Scan(&createdHealthCount); err != nil {
+		t.Fatal(err)
+	}
+	if createdIdentitySource != accountident.SourceImportPayload || createdHealthCount != 1 {
+		t.Fatalf("OAuth 空目标迁移终态 source=%q health=%d",
+			createdIdentitySource, createdHealthCount)
+	}
 }
 
 type accountBundleSeed struct {

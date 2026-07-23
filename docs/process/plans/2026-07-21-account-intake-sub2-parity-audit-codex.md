@@ -14,6 +14,45 @@
 | 缓解方式 | 只允许显式 `account_intake` 目的使用空账号会话；回调先校验操作者与 state；授权结果短期加密暂存；执行后绑定真实账号；真 PostgreSQL 检查表状态；保留单一计划和报告。 |
 | 决策点 | 当前实现无待 Owner 的代码决策。真实 Claude OAuth 刷新可能旋转测试账号 refresh token，执行活体验证前需确认该测试账号允许被消耗或重新登录。活体清单还必须保留：用 Claude 订阅 OAuth 反转号验证 `opus-4-8`、`fable-5` 与 Sonnet 的 429 差异；现有官方 `sk-ant-api03` key 不能替代该场景。 |
 
+## 2026-07-23 来源信任重开切片
+
+Owner 要求以最新主线起一个干净 PR，先闭环账号导入来源信任，再继续项目文档工作。本切片不复用旧工作树补丁，只在 `fix/account-intake-source-trust` 上处理以下真实缺口：
+
+1. Claude Cookie、Claude Setup Cookie、CRS 同步和账号迁移包当前借用 `json_import` 进入统一计划，导致 OAuth-only 与 Setup-only 模式被错误拒绝。
+2. CRS 暂存只校验厂商和处理器存在，没有把来源类型与生产归一化矩阵绑定；未来错误接线可能让 CRS 进入该来源从未产出的模式。
+3. 泛化导入 HTTP 允许请求自行填写服务端专用来源，入口与专用流程的信任边界没有收口。
+4. 暂存计划写入 PostgreSQL `jsonb` 后会重排 `json.RawMessage`，可能让执行重算哈希时误报计划漂移；调用方未提供显式时间时，计划与暂存也可能使用不同时间。
+
+### 行为合同
+
+- `Observed`：sub2api 的普通账号导入、专用 Codex 导入和整库恢复均由管理入口控制；专用入口固定平台与模式，通用导入逐项返回结果，敏感导出和整库恢复增加二次认证。`<Wei-Shaw/sub2api@6aeea70ee008825604ac3293ca0f216e951795d1:backend/internal/server/routes/admin.go:342-403>` `<Wei-Shaw/sub2api@6aeea70ee008825604ac3293ca0f216e951795d1:backend/internal/handler/admin/account_codex_import.go:117-380>`
+- `Observed`：CLIProxyAPI 的授权启动和凭据文件管理受管理密钥保护，公开回调还要校验短期状态与厂商；专用服务账号入口固定模式，普通文件上传与授权入口分离。`<router-for-me/CLIProxyAPI@f71ec0eb6776854457892452cf28c47f0d658251:internal/api/server.go:864-879>` `<router-for-me/CLIProxyAPI@f71ec0eb6776854457892452cf28c47f0d658251:internal/api/handlers/management/oauth_callback.go:45-138>` `<router-for-me/CLIProxyAPI@f71ec0eb6776854457892452cf28c47f0d658251:internal/api/handlers/management/vertex_import.go:16-117>`
+- `Observed`：new-api 通过敏感写权限创建固定类型渠道并接收已有令牌，批量创建在单事务中；未把任意 OAuth 来源声明暴露成通用渠道入口。`<QuantumNous/new-api@1721144221ec5c94dd87891a7ae1bee228e7bb63:router/channel-router.go:19-79>` `<QuantumNous/new-api@1721144221ec5c94dd87891a7ae1bee228e7bb63:model/channel.go:426-452>`
+- `Inferred`：权威来源应由服务端入口、固定厂商/模式、权限上下文和一次性状态共同建立。迁移恢复可以恢复 OAuth 凭据，但不能把迁移包自报身份升级为上游已验证身份。
+- `Open Question`：外部插件或部署外数据库备份不在上述生产路径证据范围，不据此推断其能力。
+
+### 实现与影响半径
+
+- 增加服务端专用来源：Claude Cookie、Claude Setup Cookie、CRS 同步、Codex Agent 和账号迁移包；通用 CLI/JSON/CSV 继续复用模式计划的允许来源。
+- Cookie、CRS、Codex Agent 使用精确厂商/模式矩阵并 fail-closed；账号迁移包仅作为已授权、同租户的恢复来源，可恢复已发布且有生产处理器的模式，导入身份仍保持 `import_payload` 不可信等级。
+- 泛化计划与执行入口拒绝 `oauth`、Cookie、CRS 和账号迁移包等服务端来源，专用路由继续承担权限、网络交换、短期暂存和恢复合同。
+- 暂存记录保留参与计划哈希的原始 JSON 字节，并要求调用方在计划前固定 `Now`；不新增 schema，既有 15 分钟暂存记录可自然过期后重新预检。
+- 爆炸半径覆盖账号创建/更新、凭据加密、身份消歧、套餐标签、健康初始化、代理恢复、日志和一次性流程状态；任何来源错配都必须在写库前拒绝。
+
+### 判别测试与成功标准
+
+| 验收编号 | 必须成立的结果 |
+| --- | --- |
+| `AT-AI-SRC-001` | 通用 CLI/JSON/CSV 不能进入 OAuth-only/Setup-only；固定厂商/模式的专用来源不能跨厂商或跨模式，迁移包不能绕过封存闸。 |
+| `AT-AI-SRC-002` | 泛化 HTTP 的计划和执行都拒绝 OAuth、Cookie、Codex Agent、CRS 和迁移包来源，且拒绝前不调用业务服务。 |
+| `AT-AI-SRC-003` | Claude Cookie OAuth 与 Setup Cookie 均能完成“转换 -> 计划 -> 加密暂存 -> 账号/凭据/健康原子写入 -> 完成态”，模式错配在暂存前拒绝。 |
+| `AT-AI-SRC-004` | CRS 六类生产来源逐项绑定来源类型、厂商和认证模式，完成计划、暂存、执行与终态回流；任一错配在写库前拒绝。 |
+| `AT-AI-SRC-005` | OAuth 账号迁移包可以导入即建号并恢复加密凭据，但包内自报身份必须降为 `import_payload`，不得获得可信消歧权。 |
+| `AT-AI-SRC-006` | PostgreSQL `jsonb` 往返不会改变参与计划哈希的 `Extra` 和临时摘除规则原始字节；零时间或来源前像错配不写暂存行。 |
+| `AT-AI-SRC-007` | 暂存流程只能由原租户和原操作者按原计划哈希领取一次，重放、过期和计划漂移均返回稳定分类。 |
+
+发布门 `RG-AI-SRC-001`：专项、race、OpenAPI、代码预算、全量门和独立 review 无 S0/S1；功能分支只推送一个 PR，合并仍由 Owner 决定。该项是提交事实，不冒充业务验收测试。
+
 ## 执行顺序
 
 1. 核实账号导入、直接建号和用户创建的全部生产入口、权限、写库、日志与恢复链。
@@ -35,6 +74,8 @@
 
 ## 当前状态
 
+- 2026-07-23 来源信任切片已在最新主线基线的干净分支完成：Claude Cookie、Setup Cookie、CRS、Codex Agent 与账号迁移包均有独立来源语义；泛化 HTTP 不再接受服务端专用来源；CRS 来源类型、厂商和认证模式使用同一 fail-closed 矩阵；暂存计划保留参与哈希的原始 JSON 字节，并按租户、操作者、计划哈希和一次性状态领取。
+- `AT-AI-SRC-001..007` 已由独立完整 reviewer 判定 7/7 `COVERED` 并 `APPROVE`；独立未提交 diff 审查未发现可归因缺陷。最终门已实际通过后端全量单元、目标包 `-race`、`go vet ./...`、OpenAPI、代码预算、`git diff --check`，以及账号导入、账号迁移包、迁移器三个真实 PostgreSQL `integration_pg -race` 包；专用测试数据库已删除。当前切片只进入一个功能 PR，尚未合并主线。
 - 第 1-16 步均已实施；账号/凭据/健康/账号操作日志、OAuth 会话终态、暂存完成态和完成日志现为同一 PostgreSQL 事务。
 - Grok OAuth 使用固定公共客户端的设备码合同；ID Token 验证 ES256 签名、issuer、client audience 与时效并确定个人主体，access token 独立验证签名、issuer、client audience、时效及同一主体后确定团队范围。OpenAI 工作区与 Grok 团队账号均按“账号范围 + 个人主体”复合身份消歧。
 - 账号创建或轮换提交后会异步触发单账号额度/套餐采集；Kimi 明确套餐字段可进入系统标签，缺证据仍诚实显示 unknown。
