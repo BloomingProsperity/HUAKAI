@@ -23,10 +23,12 @@ type existingMatch struct {
 }
 
 func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candidate credentialacq.CredentialCandidate, existing []ExistingCredential) (*existingMatch, *existingConflict) {
+	candidateVendor, candidateAuthMode := credentialstore.CanonicalCredentialMode(candidate.Vendor, candidate.AuthMode)
 	available := make([]*ExistingCredential, 0, len(existing))
 	for index := range existing {
 		current := &existing[index]
-		if credentialstore.Normalize(current.Vendor) == candidate.Vendor {
+		currentVendor, _ := credentialstore.CanonicalCredentialMode(current.Vendor, current.AuthMode)
+		if currentVendor == candidateVendor {
 			available = append(available, current)
 		}
 	}
@@ -57,7 +59,7 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 			return nil, conflictFromExisting("subject_identity_unverified", "导入声明的复合成员身份不能自动选择已有账号", matches[0])
 		}
 		if identity.SubjectTrusted {
-			match, conflict := selectExistingModeMatch(matches, candidate, "account_member_identity_ambiguous", "同一账号范围与个人主体命中多个已有账号")
+			match, conflict := selectExistingModeMatch(matches, available, candidateVendor, candidateAuthMode, "account_member_identity_ambiguous", "同一账号范围与个人主体命中多个已有账号")
 			if conflict != nil {
 				return nil, conflict
 			}
@@ -88,7 +90,7 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 			return nil, conflictFromExisting("subject_identity_unverified", "导入声明的个人身份不能自动选择已有账号", matches[0])
 		}
 		if identity.SubjectTrusted {
-			match, conflict := selectExistingModeMatch(matches, candidate, "subject_identity_ambiguous", "同一上游个人身份命中多个已有账号")
+			match, conflict := selectExistingModeMatch(matches, available, candidateVendor, candidateAuthMode, "subject_identity_ambiguous", "同一上游个人身份命中多个已有账号")
 			if conflict != nil {
 				return nil, conflict
 			}
@@ -110,7 +112,7 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 		}) {
 			return nil, conflictFromExisting("workspace_member_unknown", "导入项缺少个人身份，无法确定共享账号作用域中的具体成员", matches[0])
 		}
-		match, conflict := selectExistingModeMatch(matches, candidate, "account_scope_ambiguous", "同一上游账号作用域命中多个已有账号")
+		match, conflict := selectExistingModeMatch(matches, available, candidateVendor, candidateAuthMode, "account_scope_ambiguous", "同一上游账号作用域命中多个已有账号")
 		if conflict != nil {
 			return nil, conflict
 		}
@@ -128,7 +130,7 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 		matches := filterExisting(available, func(current *ExistingCredential) bool {
 			return strings.EqualFold(strings.TrimSpace(current.ExternalAccountEmail), identity.Email)
 		})
-		match, conflict := selectExistingModeMatch(matches, candidate, "email_identity_ambiguous", "同一邮箱命中多个已有账号")
+		match, conflict := selectExistingModeMatch(matches, available, candidateVendor, candidateAuthMode, "email_identity_ambiguous", "同一邮箱命中多个已有账号")
 		if conflict != nil {
 			return nil, conflict
 		}
@@ -150,14 +152,15 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 }
 
 func resolveExistingMatches(matches []*ExistingCredential, candidate credentialacq.CredentialCandidate, conflictCode, conflictMessage string) (*existingMatch, *existingConflict) {
-	match, conflict := selectExistingModeMatch(matches, candidate, conflictCode, conflictMessage)
+	vendor, authMode := credentialstore.CanonicalCredentialMode(candidate.Vendor, candidate.AuthMode)
+	match, conflict := selectExistingModeMatch(matches, matches, vendor, authMode, conflictCode, conflictMessage)
 	if conflict != nil || match == nil {
 		return nil, conflict
 	}
 	return guardedExistingMatch(match, "rotate_existing_credential", "将轮换已存在账号的同模式凭据", "confirm_credential_rotation")
 }
 
-func selectExistingModeMatch(matches []*ExistingCredential, candidate credentialacq.CredentialCandidate, ambiguityCode, ambiguityMessage string) (*ExistingCredential, *existingConflict) {
+func selectExistingModeMatch(matches, inventory []*ExistingCredential, candidateVendor, candidateAuthMode, ambiguityCode, ambiguityMessage string) (*ExistingCredential, *existingConflict) {
 	if len(matches) == 0 {
 		return nil, nil
 	}
@@ -171,12 +174,20 @@ func selectExistingModeMatch(matches []*ExistingCredential, candidate credential
 		return nil, conflictFromExisting(ambiguityCode, ambiguityMessage, matches[0])
 	}
 	modeMatches := filterExisting(matches, func(current *ExistingCredential) bool {
-		return credentialstore.Normalize(current.AuthMode) == candidate.AuthMode
+		vendor, authMode := credentialstore.CanonicalCredentialMode(current.Vendor, current.AuthMode)
+		return vendor == candidateVendor && authMode == candidateAuthMode
 	})
 	switch len(modeMatches) {
 	case 0:
 		return nil, conflictFromExisting("identity_mode_conflict", "同一上游身份已存在，但没有相同 auth_mode 的凭据", matches[0])
 	case 1:
+		accountModeMatches := filterExisting(inventory, func(current *ExistingCredential) bool {
+			vendor, authMode := credentialstore.CanonicalCredentialMode(current.Vendor, current.AuthMode)
+			return current.ProviderAccountID == modeMatches[0].ProviderAccountID && vendor == candidateVendor && authMode == candidateAuthMode
+		})
+		if len(accountModeMatches) > 1 {
+			return nil, conflictFromExisting(ambiguityCode, "同一账号存在多条等价模式凭据，必须人工消歧", accountModeMatches[0])
+		}
 		return modeMatches[0], nil
 	default:
 		return nil, conflictFromExisting(ambiguityCode, "同一账号同一 auth_mode 存在多条凭据，必须人工消歧", modeMatches[0])

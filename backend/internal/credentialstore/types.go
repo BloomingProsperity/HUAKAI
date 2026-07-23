@@ -176,6 +176,17 @@ func Normalize(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
+// CanonicalCredentialMode 把历史兼容模式归一到当前唯一运行身份。
+// 旧模式仍可被读取和迁移，但新的计划、去重键和写入都使用规范身份。
+func CanonicalCredentialMode(vendor, authMode string) (string, string) {
+	vendor = Normalize(vendor)
+	authMode = Normalize(authMode)
+	if vendor == VendorGemini && authMode == AuthModeAntigravity {
+		return VendorAntigravity, AuthModeOAuth
+	}
+	return vendor, authMode
+}
+
 type handlerSpec struct {
 	vendor       string
 	authMode     string

@@ -234,15 +234,12 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 	if !credentialacq.IsAccountIntakeSession(session) || session.TenantID != in.TenantID || session.ActorID != strings.TrimSpace(in.ActorID) || session.ActorRole != in.ActorRole {
 		return ExecutionResult{}, ErrInvalidInput
 	}
-	claimed, err := s.staged.Claim(ctx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash)
+	claimed, err := s.staged.LoadOAuthCandidate(ctx, in.TenantID, in.ActorID, in.FlowID)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
 	defer func() { claimed.PlanInput.Content = "" }()
 	if err := restoreOAuthProxy(&claimed); err != nil {
-		if finishErr := s.finishOAuthFailure(ctx, in, ExecutionSummary{Failed: 1}); finishErr != nil {
-			return ExecutionResult{}, errors.Join(err, finishErr)
-		}
 		return ExecutionResult{}, err
 	}
 	defer clearProxyMaterial(claimed.PlanInput.Account.Proxy)
@@ -250,20 +247,15 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 		PlanInput: claimed.PlanInput, PlanHash: in.PlanHash, Confirmations: in.Confirmations,
 		ActorID: in.ActorID, ActorRole: in.ActorRole, RequestID: in.RequestID, Reason: in.Reason,
 		CommitHook: func(commitCtx context.Context, tx pgx.Tx, commit ExecutionCommit) error {
-			if commit.ProviderAccountID <= 0 || commit.AccountCredentialID <= 0 {
-				return ErrExecutionStale
+			summary, err := executionCommitSummary(commit)
+			if err != nil {
+				return err
+			}
+			if err := s.staged.ClaimTx(commitCtx, tx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash); err != nil {
+				return err
 			}
 			if _, err := s.sessions.MarkFinalizedTx(commitCtx, tx, session.ID, commit.AccountCredentialID); err != nil {
 				return err
-			}
-			summary := ExecutionSummary{}
-			switch commit.Status {
-			case StatusCreated:
-				summary.Created = 1
-			case StatusUpdated:
-				summary.Updated = 1
-			default:
-				return ErrExecutionStale
 			}
 			return s.staged.FinishTx(
 				commitCtx, tx, in.TenantID, in.ActorID, in.ActorRole,
@@ -271,44 +263,10 @@ func (s *OAuthService) Execute(ctx context.Context, in OAuthExecuteInput) (Execu
 			)
 		},
 	})
-	committed := result.Summary.Created + result.Summary.Updated
-	success := executeErr == nil && committed == 1 && result.Summary.Skipped == 0 &&
-		result.Summary.Failed == 0 && result.Summary.Conflict == 0
-	if executeErr != nil {
-		summary := result.Summary
-		if summary.Created+summary.Updated+summary.Skipped+summary.Conflict+summary.Failed == 0 {
-			summary.Failed = 1
-		}
-		if finishErr := s.finishOAuthFailure(ctx, in, summary); finishErr != nil {
-			return ExecutionResult{}, errors.Join(executeErr, finishErr)
-		}
-		return ExecutionResult{}, executeErr
-	}
-	if success {
-		return result, nil
-	}
-	if executeErr == nil && (result.Summary.Skipped > 0 ||
-		(result.Summary.Failed == 0 && result.Summary.Conflict == 0 && committed != 1)) {
-		executeErr = ErrExecutionStale
-	}
-	if finishErr := s.finishOAuthFailure(ctx, in, result.Summary); finishErr != nil {
-		for index := range result.Items {
-			result.Items[index].Warnings = appendUnique(result.Items[index].Warnings, "credential_flow_finish_log_failed")
-		}
-	}
 	if executeErr != nil {
 		return ExecutionResult{}, executeErr
 	}
 	return result, nil
-}
-
-func (s *OAuthService) finishOAuthFailure(ctx context.Context, in OAuthExecuteInput, summary ExecutionSummary) error {
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	return s.staged.Finish(
-		finishCtx, in.TenantID, in.ActorID, in.ActorRole,
-		in.FlowID, in.RequestID, in.Reason, false, summary,
-	)
 }
 
 func (s *OAuthService) storeAndPlanCandidate(ctx context.Context, session credentialacq.Session, candidate credentialacq.CredentialCandidate) (OAuthPlanResult, error) {

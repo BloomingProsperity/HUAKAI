@@ -68,6 +68,40 @@ func TestChannelHealth_AT001_DefaultActiveSubject(t *testing.T) {
 	}
 }
 
+func TestCreditsExhaustedUsesServerResetOrFiveHourFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		reset     time.Duration
+		wantDelay time.Duration
+	}{
+		{name: "上游给出恢复时间", reset: 93 * time.Minute, wantDelay: 93 * time.Minute},
+		{name: "上游未给恢复时间", wantDelay: 5 * time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewMemoryStore()
+			clock := &fixedClock{now: time.Date(2026, 7, 23, 3, 0, 0, 0, time.UTC)}
+			svc := NewService(store, testPolicy(), clock)
+			signal := Signal{Key: testKey(), Class: SignalCreditsExhausted, StatusCode: 429}
+			if tc.reset > 0 {
+				resetAt := clock.now.Add(tc.reset)
+				signal.RateLimitResetAt = &resetAt
+			}
+			record, err := svc.ApplySignal(ctx, signal)
+			if err != nil {
+				t.Fatalf("ApplySignal: %v", err)
+			}
+			if record.State != StateCoolingDown || record.ReasonClass != SignalCreditsExhausted || record.CooldownUntil == nil {
+				t.Fatalf("record=%+v，期望额度耗尽立即进入冷却", record)
+			}
+			if got := record.CooldownUntil.Sub(clock.now); got != tc.wantDelay {
+				t.Fatalf("cooldown=%s，期望 %s", got, tc.wantDelay)
+			}
+		})
+	}
+}
+
 func TestChannelHealthLatestByProviderAccountMatchesPersistentOrdering(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

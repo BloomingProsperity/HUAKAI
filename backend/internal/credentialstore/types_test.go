@@ -72,6 +72,24 @@ func TestModeValidationRejectsWrongVendorMode(t *testing.T) {
 	}
 }
 
+func TestCanonicalCredentialModeKeepsOneAntigravityIdentity(t *testing.T) {
+	tests := []struct {
+		vendor, authMode     string
+		wantVendor, wantMode string
+	}{
+		{VendorGemini, AuthModeAntigravity, VendorAntigravity, AuthModeOAuth},
+		{VendorAntigravity, AuthModeOAuth, VendorAntigravity, AuthModeOAuth},
+		{VendorGemini, AuthModeCodeAssist, VendorGemini, AuthModeCodeAssist},
+	}
+	for _, test := range tests {
+		vendor, mode := CanonicalCredentialMode(test.vendor, test.authMode)
+		if vendor != test.wantVendor || mode != test.wantMode {
+			t.Fatalf("CanonicalCredentialMode(%q,%q)=(%q,%q)，期望 (%q,%q)",
+				test.vendor, test.authMode, vendor, mode, test.wantVendor, test.wantMode)
+		}
+	}
+}
+
 func TestRuntimeMaterialMappings(t *testing.T) {
 	registry := DefaultHandlerRegistry()
 	cases := []struct {

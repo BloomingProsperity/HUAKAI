@@ -102,6 +102,38 @@ func DecideAnthropicOfficialDirect(r *http.Request, body []byte) DirectResult {
 	return DirectResult{Decision: DirectDecisionOfficialDirect, Reason: ReasonShapeCompatible, Body: directBody}
 }
 
+// IsAnthropicMessagesRequestShape 校验第三方兼容入口所需的协议核心和可重写
+// system 形态，不把自报的 Claude Code 头当访问控制。数字、布尔等无法安全
+// 补齐兼容前缀的 system 会在入口拒绝，禁止带着未改写 body 继续出站。
+func IsAnthropicMessagesRequestShape(r *http.Request, body []byte) bool {
+	if r == nil || r.Method != http.MethodPost || r.URL == nil || r.URL.Path != "/v1/messages" {
+		return false
+	}
+	cloned := bytes.Clone(body)
+	if !messagesCoreShapeOK(cloned) {
+		return false
+	}
+	root, _, _, ok := parseClaudeCoreBody(cloned)
+	return ok && anthropicSystemShapeRewriteable(root)
+}
+
+func anthropicSystemShapeRewriteable(root map[string]json.RawMessage) bool {
+	raw, exists := root["system"]
+	if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return true
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return true
+	}
+	var blocks []json.RawMessage
+	if json.Unmarshal(raw, &blocks) == nil {
+		return true
+	}
+	var block map[string]json.RawMessage
+	return json.Unmarshal(raw, &block) == nil && block != nil
+}
+
 // claudeCodeHeaderShapeOK 校验 Claude Code SDK 核心头的形态:JSON Content-Type、
 // X-App∈{cli,cli-bg}、Stainless lang=js/runtime=node、package 为 semver 形态、
 // retry 非负整数、anthropic-version 属受支持集合。版本值不锁死、beta/os/arch/timeout/

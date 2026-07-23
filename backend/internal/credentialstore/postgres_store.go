@@ -80,6 +80,8 @@ type RotateCredentialInput struct {
 	ProviderAccountID      int64
 	CredentialID           int64
 	ExpectedVersion        *int32
+	Vendor                 string
+	AuthMode               string
 	Payload                []byte
 	ActorID                string
 	ExternalAccountID      string
@@ -397,7 +399,14 @@ func (s *Store) Rotate(ctx context.Context, in RotateCredentialInput) (Credentia
 	if err := s.ensureProviderAccountTenant(ctx, current.TenantID, current.ProviderAccountID); err != nil {
 		return CredentialMetadata{}, err
 	}
-	handler, err := s.registry.MustLookup(current.Vendor, current.AuthMode)
+	targetVendor, targetAuthMode := current.Vendor, current.AuthMode
+	if strings.TrimSpace(in.Vendor) != "" || strings.TrimSpace(in.AuthMode) != "" {
+		targetVendor, targetAuthMode = CanonicalCredentialMode(in.Vendor, in.AuthMode)
+		if targetVendor == "" || targetAuthMode == "" {
+			return CredentialMetadata{}, ErrInvalidPayload
+		}
+	}
+	handler, err := s.registry.MustLookup(targetVendor, targetAuthMode)
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
@@ -409,7 +418,7 @@ func (s *Store) Rotate(ctx context.Context, in RotateCredentialInput) (Credentia
 		return CredentialMetadata{}, err
 	}
 	nextVersion := current.CredentialVersion + 1
-	prepared, err := s.prepareEnvelope(ctx, current.TenantID, current.ProviderAccountID, current.Vendor, current.AuthMode, nextVersion, payload, handler)
+	prepared, err := s.prepareEnvelope(ctx, current.TenantID, current.ProviderAccountID, targetVendor, targetAuthMode, nextVersion, payload, handler)
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
@@ -426,23 +435,25 @@ SET encrypted_payload = $1,
     access_expires_at = $9,
     refresh_expires_at = $10,
     refresh_before_at = $11,
-    project_ref = $12,
-    external_account_id = COALESCE(NULLIF($14, ''), external_account_id),
-    external_subject_id = COALESCE(NULLIF($15, ''), external_subject_id),
-    external_account_email = COALESCE(NULLIF($16, ''), external_account_email),
-    external_identity_source = COALESCE(NULLIF($17, ''), external_identity_source),
+	    project_ref = $12,
+	    vendor = $13,
+	    auth_mode = $14,
+	    external_account_id = COALESCE(NULLIF($16, ''), external_account_id),
+	    external_subject_id = COALESCE(NULLIF($17, ''), external_subject_id),
+	    external_account_email = COALESCE(NULLIF($18, ''), external_account_email),
+	    external_identity_source = COALESCE(NULLIF($19, ''), external_identity_source),
     state = 'active',
     credential_version = credential_version + 1,
     failure_class = NULL,
     failure_count = 0,
     next_attempt_at = NULL,
     updated_at = NOW(),
-    last_modified_by_actor = NULLIF($13, '')
-WHERE id = $18
-  AND tenant_id = $19
-  AND provider_account_id = $20
-  AND deleted_at IS NULL
-  AND credential_version = $21
+	    last_modified_by_actor = NULLIF($15, '')
+	WHERE id = $20
+	  AND tenant_id = $21
+	  AND provider_account_id = $22
+	  AND deleted_at IS NULL
+	  AND credential_version = $23
 RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credential_version,
           access_expires_at, refresh_before_at, last_refresh_at, last_refresh_outcome,
           failure_class, failure_count, external_account_id, external_subject_id,
@@ -454,7 +465,7 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 			prepared.env.Ciphertext, prepared.env.EncryptionScheme, prepared.env.KeyID, prepared.env.Nonce, prepared.env.AADHash,
 			prepared.payloadFingerprint, prepared.refreshFingerprint, prepared.materialFingerprint,
 			nullableTime(prepared.accessExpiresAt), nullableTime(prepared.refreshExpiresAt), nullableTime(prepared.refreshBeforeAt),
-			prepared.projectRef, strings.TrimSpace(in.ActorID),
+			prepared.projectRef, targetVendor, targetAuthMode, strings.TrimSpace(in.ActorID),
 			strings.TrimSpace(in.ExternalAccountID), strings.TrimSpace(in.ExternalSubjectID), strings.TrimSpace(in.ExternalAccountEmail),
 			strings.TrimSpace(in.ExternalIdentitySource),
 			current.ID, current.TenantID, current.ProviderAccountID, current.CredentialVersion,
@@ -470,16 +481,21 @@ RETURNING id, tenant_id, provider_account_id, vendor, auth_mode, state, credenti
 		meta = rec.metadata()
 		meta.Subscription, err = txStore.persistSubscriptionProjection(
 			ctx, current.TenantID, current.ProviderAccountID, current.ID, meta.Version,
-			current.Vendor, current.AuthMode, payload, in.Subscription,
+			targetVendor, targetAuthMode, payload, in.Subscription,
 		)
 		if err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseMutation, err)
 		}
+		auditPayload := credentialSubscriptionAuditPayload(meta.Subscription)
+		if targetVendor != current.Vendor || targetAuthMode != current.AuthMode {
+			auditPayload["previous_vendor"] = current.Vendor
+			auditPayload["previous_auth_mode"] = current.AuthMode
+		}
 		if err := txStore.insertAuditEventStrict(ctx, AuditEvent{
 			TenantID: current.TenantID, ProviderAccountID: current.ProviderAccountID, CredentialID: current.ID,
-			EventType: CredentialEventRotated, Vendor: current.Vendor, AuthMode: current.AuthMode,
+			EventType: CredentialEventRotated, Vendor: targetVendor, AuthMode: targetAuthMode,
 			CredentialVersion: meta.Version, ActorID: strings.TrimSpace(in.ActorID),
-			Payload: credentialSubscriptionAuditPayload(meta.Subscription),
+			Payload: auditPayload,
 		}); err != nil {
 			return credentialAuditPhaseError(credentialAuditTxPhaseAudit, err)
 		}

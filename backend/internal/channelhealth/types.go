@@ -35,6 +35,7 @@ const (
 	SignalUpstream5xx      SignalClass = "upstream_5xx"
 	SignalTimeout          SignalClass = "timeout"
 	SignalRateLimit        SignalClass = "rate_limit"
+	SignalCreditsExhausted SignalClass = "credits_exhausted"
 	SignalForbidden        SignalClass = "forbidden"
 	SignalLatencyP99       SignalClass = "latency_p99"
 	SignalAccountSuspended SignalClass = "account_suspended"
@@ -126,6 +127,7 @@ type Policy struct {
 	RateLimitHitRateThresholdPct       float64
 	RateLimitWindow                    time.Duration
 	DefaultRateLimitCooldown           time.Duration
+	CreditsExhaustedCooldown           time.Duration
 	Upstream5xxRateThresholdPct        float64
 	Upstream5xxWindow                  time.Duration
 	Upstream5xxCooldown                time.Duration
@@ -155,6 +157,7 @@ func DefaultPolicy() Policy {
 		RateLimitHitRateThresholdPct:       40,
 		RateLimitWindow:                    5 * time.Minute,
 		DefaultRateLimitCooldown:           5 * time.Minute,
+		CreditsExhaustedCooldown:           5 * time.Hour,
 		Upstream5xxRateThresholdPct:        50,
 		Upstream5xxWindow:                  5 * time.Minute,
 		Upstream5xxCooldown:                5 * time.Minute,
@@ -207,6 +210,9 @@ func (p Policy) normalized() Policy {
 	}
 	if p.DefaultRateLimitCooldown <= 0 {
 		p.DefaultRateLimitCooldown = def.DefaultRateLimitCooldown
+	}
+	if p.CreditsExhaustedCooldown <= 0 {
+		p.CreditsExhaustedCooldown = def.CreditsExhaustedCooldown
 	}
 	if p.Upstream5xxRateThresholdPct <= 0 {
 		p.Upstream5xxRateThresholdPct = def.Upstream5xxRateThresholdPct

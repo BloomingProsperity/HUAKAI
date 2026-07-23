@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
@@ -108,23 +110,30 @@ func (s *CookieService) Execute(ctx context.Context, in CookieExecuteInput) (Exe
 	if s == nil || s.intake == nil || s.staged == nil {
 		return ExecutionResult{}, ErrNotConfigured
 	}
-	claimed, err := s.staged.Claim(ctx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash)
+	claimed, err := s.staged.LoadForExecution(ctx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	defer func() { claimed.PlanInput.Content = "" }()
 	result, executeErr := s.intake.Execute(ctx, ExecuteInput{
 		PlanInput: claimed.PlanInput, PlanHash: in.PlanHash, Confirmations: in.Confirmations,
 		ActorID: in.ActorID, ActorRole: in.ActorRole, RequestID: in.RequestID, Reason: in.Reason,
+		CommitHook: func(commitCtx context.Context, tx pgx.Tx, commit ExecutionCommit) error {
+			summary, err := executionCommitSummary(commit)
+			if err != nil {
+				return err
+			}
+			if err := s.staged.ClaimTx(commitCtx, tx, in.TenantID, in.ActorID, in.FlowID, in.PlanHash); err != nil {
+				return err
+			}
+			return s.staged.FinishTx(
+				commitCtx, tx, in.TenantID, in.ActorID, in.ActorRole,
+				in.FlowID, in.RequestID, in.Reason, true, summary,
+			)
+		},
 	})
-	success := executeErr == nil && result.Summary.Failed == 0
-	finishErr := s.staged.Finish(ctx, in.TenantID, in.ActorID, in.ActorRole, in.FlowID, in.RequestID, in.Reason, success, result.Summary)
 	if executeErr != nil {
 		return ExecutionResult{}, executeErr
-	}
-	if finishErr != nil {
-		for i := range result.Items {
-			result.Items[i].Warnings = appendUnique(result.Items[i].Warnings, "credential_flow_finish_log_failed")
-		}
 	}
 	return result, nil
 }

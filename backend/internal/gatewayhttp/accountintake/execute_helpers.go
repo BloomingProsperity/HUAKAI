@@ -80,6 +80,22 @@ func optionalString(value string) *string {
 	return &value
 }
 
+func executionCommitSummary(commit ExecutionCommit) (ExecutionSummary, error) {
+	if commit.ProviderAccountID <= 0 || commit.AccountCredentialID <= 0 {
+		return ExecutionSummary{}, ErrExecutionStale
+	}
+	summary := ExecutionSummary{}
+	switch commit.Status {
+	case StatusCreated:
+		summary.Created = 1
+	case StatusUpdated:
+		summary.Updated = 1
+	default:
+		return ExecutionSummary{}, ErrExecutionStale
+	}
+	return summary, nil
+}
+
 func executionErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrExecutionStale), errors.Is(err, credentialstore.ErrCredentialVersionConflict):

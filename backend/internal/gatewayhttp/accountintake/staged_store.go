@@ -175,13 +175,73 @@ func (s *StagedStore) Claim(ctx context.Context, tenantID int64, actorID, id, pl
 		return ClaimedCredential{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	claimed, err := s.loadForExecution(ctx, tx, tenantID, actorID, id, planHash)
+	if errors.Is(err, ErrStagedCredentialExpired) {
+		_, _ = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
+	SET status='expired', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
+	    nonce=NULL, aad_hash=NULL, finished_at=clock_timestamp(), updated_at=clock_timestamp()
+	WHERE id=$1::uuid`, strings.TrimSpace(id))
+		_ = tx.Commit(ctx)
+		return ClaimedCredential{}, ErrStagedCredentialExpired
+	}
+	if err != nil {
+		return ClaimedCredential{}, err
+	}
+	_, err = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
+SET status='claimed', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
+    nonce=NULL, aad_hash=NULL, claimed_at=clock_timestamp(), updated_at=clock_timestamp()
+WHERE id=$1::uuid AND status='staged'`, strings.TrimSpace(id))
+	if err != nil {
+		return ClaimedCredential{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ClaimedCredential{}, err
+	}
+	return claimed, nil
+}
+
+// LoadForExecution 非破坏读取可执行的短期凭据。只有账号事务成功提交时才应调用 ClaimTx。
+func (s *StagedStore) LoadForExecution(ctx context.Context, tenantID int64, actorID, id, planHash string) (ClaimedCredential, error) {
+	if s == nil || s.pool == nil || s.cipher == nil {
+		return ClaimedCredential{}, ErrNotConfigured
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ClaimedCredential{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	claimed, err := s.loadForExecution(ctx, tx, tenantID, actorID, id, planHash)
+	if errors.Is(err, ErrStagedCredentialExpired) {
+		if expireErr := expireStagedCredential(ctx, tx, id); expireErr != nil {
+			return ClaimedCredential{}, errors.Join(err, expireErr)
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return ClaimedCredential{}, errors.Join(err, commitErr)
+		}
+		return ClaimedCredential{}, err
+	}
+	if err != nil {
+		return ClaimedCredential{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ClaimedCredential{}, err
+	}
+	return claimed, nil
+}
+
+func (s *StagedStore) loadForExecution(ctx context.Context, database interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, tenantID int64, actorID, id, planHash string) (ClaimedCredential, error) {
+	if tenantID <= 0 || strings.TrimSpace(actorID) == "" || uuid.Validate(strings.TrimSpace(id)) != nil || !validPlanHash(planHash) {
+		return ClaimedCredential{}, ErrInvalidInput
+	}
 	var row struct {
 		vendor, authMode, storedHash, status string
 		planRaw, ciphertext, nonce           []byte
 		scheme, keyID, aadHash               sql.NullString
 		expiresAt                            time.Time
 	}
-	err = tx.QueryRow(ctx, `
+	err := database.QueryRow(ctx, `
 SELECT vendor, auth_mode, plan_input, plan_hash, encrypted_content,
        encryption_scheme, key_id, nonce, aad_hash, status, expires_at
 FROM account_intake_staged_credentials
@@ -199,11 +259,6 @@ FOR UPDATE`, strings.TrimSpace(id), tenantID, strings.TrimSpace(actorID)).Scan(
 		return ClaimedCredential{}, ErrStagedCredentialReplay
 	}
 	if !row.expiresAt.After(s.nowTime()) {
-		_, _ = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
-SET status='expired', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
-    nonce=NULL, aad_hash=NULL, finished_at=clock_timestamp(), updated_at=clock_timestamp()
-WHERE id=$1::uuid`, strings.TrimSpace(id))
-		_ = tx.Commit(ctx)
 		return ClaimedCredential{}, ErrStagedCredentialExpired
 	}
 	if subtle.ConstantTimeCompare([]byte(row.storedHash), []byte(planHash)) != 1 {
@@ -225,20 +280,53 @@ WHERE id=$1::uuid`, strings.TrimSpace(id))
 	if json.Unmarshal(row.planRaw, &input) != nil || input.TenantID != tenantID {
 		return ClaimedCredential{}, ErrInvalidInput
 	}
-	_, err = tx.Exec(ctx, `UPDATE account_intake_staged_credentials
-SET status='claimed', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
-    nonce=NULL, aad_hash=NULL, claimed_at=clock_timestamp(), updated_at=clock_timestamp()
-WHERE id=$1::uuid AND status='staged'`, strings.TrimSpace(id))
-	if err != nil {
-		return ClaimedCredential{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return ClaimedCredential{}, err
-	}
 	return ClaimedCredential{
 		ID: strings.TrimSpace(id), PlanInput: input.withContent(secret.Content),
 		Auxiliary: append(json.RawMessage(nil), secret.Auxiliary...),
 	}, nil
+}
+
+// ClaimTx 在账号写入事务即将提交时领取并擦除短期凭据。
+// 计划漂移、确认缺失或账号写入失败都会回滚该状态，因此操作者可以修正后重试。
+func (s *StagedStore) ClaimTx(ctx context.Context, tx pgx.Tx, tenantID int64, actorID, id, planHash string) error {
+	if s == nil || tx == nil || tenantID <= 0 || strings.TrimSpace(actorID) == "" ||
+		uuid.Validate(strings.TrimSpace(id)) != nil || !validPlanHash(planHash) {
+		return ErrInvalidInput
+	}
+	var storedHash, status string
+	var expiresAt time.Time
+	err := tx.QueryRow(ctx, `
+SELECT plan_hash, status, expires_at
+FROM account_intake_staged_credentials
+WHERE id=$1::uuid AND tenant_id=$2 AND actor_id=$3
+FOR UPDATE`, strings.TrimSpace(id), tenantID, strings.TrimSpace(actorID)).Scan(&storedHash, &status, &expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrStagedCredentialNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != "staged" {
+		return ErrStagedCredentialReplay
+	}
+	if !expiresAt.After(s.nowTime()) {
+		return ErrStagedCredentialExpired
+	}
+	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(planHash)) != 1 {
+		return ErrPlanChanged
+	}
+	tag, err := tx.Exec(ctx, `UPDATE account_intake_staged_credentials
+SET status='claimed', encrypted_content=NULL, encryption_scheme=NULL, key_id=NULL,
+    nonce=NULL, aad_hash=NULL, claimed_at=clock_timestamp(), updated_at=clock_timestamp()
+WHERE id=$1::uuid AND tenant_id=$2 AND actor_id=$3 AND status='staged'`,
+		strings.TrimSpace(id), tenantID, strings.TrimSpace(actorID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrStagedCredentialReplay
+	}
+	return nil
 }
 
 func validStagedSource(sourceKind, vendor, authMode string) bool {

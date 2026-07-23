@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/crssource"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/intake"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
@@ -257,7 +259,7 @@ func (s *CRSService) Execute(ctx context.Context, in CRSExecuteInput) (CRSExecut
 
 func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, entry CRSExecuteEntry) CRSExecutionItem {
 	item := CRSExecutionItem{FlowID: strings.TrimSpace(entry.FlowID), Status: "failed", Code: "credential_flow_failed", Message: "短期账号流程执行失败"}
-	claimed, err := s.staged.Claim(ctx, batch.TenantID, batch.ActorID, entry.FlowID, entry.PlanHash)
+	claimed, err := s.staged.LoadForExecution(ctx, batch.TenantID, batch.ActorID, entry.FlowID, entry.PlanHash)
 	if err != nil {
 		item.Status, item.Code, item.Message = classifyCRSFlowError(err)
 		return item
@@ -266,7 +268,6 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 	defer func() { claimed.PlanInput.Content = "" }()
 	auxiliary, err := decodeCRSAuxiliary(claimed.Auxiliary)
 	if err != nil {
-		_ = s.staged.Finish(ctx, batch.TenantID, batch.ActorID, batch.ActorRole, entry.FlowID, batch.RequestID, batch.Reason, false, ExecutionSummary{Failed: 1})
 		item.Code = "source_auxiliary_invalid"
 		return item
 	}
@@ -282,18 +283,24 @@ func (s *CRSService) executeEntry(ctx context.Context, batch CRSExecuteInput, en
 	result, executeErr := s.intake.Execute(ctx, ExecuteInput{
 		PlanInput: claimed.PlanInput, PlanHash: entry.PlanHash, Confirmations: entry.Confirmations,
 		ActorID: batch.ActorID, ActorRole: batch.ActorRole, RequestID: batch.RequestID, Reason: batch.Reason,
+		CommitHook: func(commitCtx context.Context, tx pgx.Tx, commit ExecutionCommit) error {
+			summary, err := executionCommitSummary(commit)
+			if err != nil {
+				return err
+			}
+			if err := s.staged.ClaimTx(commitCtx, tx, batch.TenantID, batch.ActorID, entry.FlowID, entry.PlanHash); err != nil {
+				return err
+			}
+			return s.staged.FinishTx(
+				commitCtx, tx, batch.TenantID, batch.ActorID, batch.ActorRole,
+				entry.FlowID, batch.RequestID, batch.Reason, true, summary,
+			)
+		},
 	})
-	success := executeErr == nil && result.Summary.Failed == 0
-	finishErr := s.staged.Finish(ctx, batch.TenantID, batch.ActorID, batch.ActorRole, entry.FlowID, batch.RequestID, batch.Reason, success, result.Summary)
 	clearProxyMaterial(claimed.PlanInput.Account.Proxy)
 	if executeErr != nil {
 		item.Status, item.Code, item.Message = classifyCRSFlowError(executeErr)
 		return item
-	}
-	if finishErr != nil {
-		for index := range result.Items {
-			result.Items[index].Warnings = appendUnique(result.Items[index].Warnings, "credential_flow_finish_log_failed")
-		}
 	}
 	item.Result = &result
 	if result.Summary.Conflict > 0 {

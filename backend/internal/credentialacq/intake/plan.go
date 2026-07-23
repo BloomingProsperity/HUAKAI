@@ -175,8 +175,7 @@ func BuildCandidates(in BuildInput, candidates []credentialacq.CredentialCandida
 	seenIdentity := make(map[string]int)
 	seenUntrusted := make(map[string]int)
 	for index, candidate := range candidates {
-		candidate.Vendor = credentialstore.Normalize(candidate.Vendor)
-		candidate.AuthMode = credentialstore.Normalize(candidate.AuthMode)
+		candidate.Vendor, candidate.AuthMode = credentialstore.CanonicalCredentialMode(candidate.Vendor, candidate.AuthMode)
 		credentialacq.AttachSubscription(&candidate)
 		candidates[index] = candidate
 		item := planCandidate(index, in.TenantID, in.SourceKind, candidate, in.Existing, registry, now, seenPayload, seenIdentity, seenUntrusted)

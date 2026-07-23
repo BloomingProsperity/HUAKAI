@@ -75,6 +75,10 @@ const (
 	// TransportModeStandard 走 Go 标准 net/http 默认 transport。所有
 	// provider 默认。
 	TransportModeStandard TransportMode = "standard"
+	// TransportModeStandardH1 仍走 Go 标准 TLS，但把 ALPN 收窄为
+	// http/1.1。它用于已被活体链路证明确实要求 H1、同时不需要指纹伪装的
+	// 少数订阅出口，不得当作普通 provider 的默认模式。
+	TransportModeStandardH1 TransportMode = "standard_h1"
 	// 各 vendor 反转模式下的 mimicry transport 选项。每家伪装目标不同
 	// （TLS ClientHello + HTTP/2 SETTINGS + ALPN 等），由调用方选择 Rust
 	// sidecar 内置或动态 profile；Go 不再持有 TLS 指纹执行器。
@@ -179,10 +183,10 @@ var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 		// Codeium Windsurf 反转
 	},
 	ProviderAntigravity: {
-		TransportModeStandard:           true,
-		TransportModeMimicryAntigravity: true,
-		// Google Antigravity 反转（独立 ProviderCode 视未来规划，可能走
-		// Vertex 后端）
+		TransportModeStandard:   true,
+		TransportModeStandardH1: true,
+		// 活体链路已经证伪当前仿真 profile，策略层直接拒绝显式选用，避免
+		// 自动路径修好后仍被配置重新切回坏出口。
 	},
 	ProviderGemini: {
 		TransportModeStandard:        true,
@@ -325,6 +329,7 @@ func AllowedModesForProvider(provider ProviderCode) []TransportMode {
 func isKnownMode(mode TransportMode) bool {
 	switch mode {
 	case TransportModeStandard,
+		TransportModeStandardH1,
 		TransportModeMimicryClaudeCode,
 		TransportModeMimicryChatGPT,
 		TransportModeMimicryGeminiAdvanced,

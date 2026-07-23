@@ -109,6 +109,39 @@ func TestRotateExpectedVersionRejectsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestRotateReencryptsLegacyModeIntoCanonicalIdentity(t *testing.T) {
+	db := newCredentialAuditTxFakeDB()
+	db.credential = &credentialAuditTxFakeCredential{
+		id: db.credentialID, tenantID: db.tenantID, providerAccountID: db.providerAccountID,
+		vendor: VendorGemini, authMode: AuthModeAntigravity, state: StateActive, version: 2,
+	}
+	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
+	expected := int32(2)
+	metadata, err := store.Rotate(context.Background(), RotateCredentialInput{
+		TenantID: db.tenantID, ProviderAccountID: db.providerAccountID,
+		CredentialID: db.credentialID, ExpectedVersion: &expected,
+		Vendor: VendorAntigravity, AuthMode: AuthModeOAuth,
+		Payload: []byte(`{"access_token":"canonical-access","refresh_token":"canonical-refresh"}`),
+		ActorID: "owner",
+	})
+	if err != nil {
+		t.Fatalf("迁移轮换失败：%v", err)
+	}
+	if metadata.Vendor != VendorAntigravity || metadata.AuthMode != AuthModeOAuth || metadata.Version != 3 {
+		t.Fatalf("迁移后元数据=%+v", metadata)
+	}
+	resolved, err := store.ResolveActive(context.Background(), db.tenantID, db.providerAccountID)
+	if err != nil {
+		t.Fatalf("迁移后读取失败：%v", err)
+	}
+	defer privacy.Zeroize(resolved.PlaintextPayload)
+	if resolved.Vendor != VendorAntigravity || resolved.AuthMode != AuthModeOAuth ||
+		!strings.Contains(string(resolved.PlaintextPayload), "canonical-access") {
+		t.Fatalf("迁移后凭据未按规范身份重新加密：vendor=%s mode=%s payload=%s",
+			resolved.Vendor, resolved.AuthMode, resolved.PlaintextPayload)
+	}
+}
+
 func TestProjectRefPersistsAcrossCredentialWritePaths(t *testing.T) {
 	db := newCredentialAuditTxFakeDB()
 	store := NewStore(db, mustTestKeyProvider(t), DefaultHandlerRegistry())
@@ -511,16 +544,18 @@ func (c *credentialAuditTxFakeCredential) applyRotateArgs(args []any) {
 	c.refreshFingerprint = credentialAuditStringArg(args[6])
 	c.materialFingerprint = credentialAuditStringArg(args[7])
 	c.projectRef = credentialAuditOptionalStringArg(args[11])
-	if value := credentialAuditOptionalStringArg(args[13]); value != nil {
+	c.vendor = credentialAuditStringArg(args[12])
+	c.authMode = credentialAuditStringArg(args[13])
+	if value := credentialAuditOptionalStringArg(args[15]); value != nil {
 		c.externalAccountID = value
 	}
-	if value := credentialAuditOptionalStringArg(args[14]); value != nil {
+	if value := credentialAuditOptionalStringArg(args[16]); value != nil {
 		c.externalSubjectID = value
 	}
-	if value := credentialAuditOptionalStringArg(args[15]); value != nil {
+	if value := credentialAuditOptionalStringArg(args[17]); value != nil {
 		c.externalAccountEmail = value
 	}
-	if value := credentialAuditOptionalStringArg(args[16]); value != nil {
+	if value := credentialAuditOptionalStringArg(args[18]); value != nil {
 		c.externalIdentitySource = value
 	}
 	c.encryptedPayload = append(c.encryptedPayload[:0], args[0].([]byte)...)

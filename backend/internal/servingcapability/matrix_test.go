@@ -9,23 +9,19 @@ import (
 )
 
 const (
-	envGeminiCodeAssist = "HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER"
-	envCursorSession    = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
-	envCopilotSession   = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
-	envGeminiAdvanced   = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
-	envAntigravity      = "HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER"
-	envKiroSession      = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
-	envWindsurfSession  = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
+	envCursorSession   = "HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER"
+	envCopilotSession  = "HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER"
+	envGeminiAdvanced  = "HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER"
+	envKiroSession     = "HUAKAI_ENABLE_KIRO_SESSION_ADAPTER"
+	envWindsurfSession = "HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER"
 )
 
 var gatedFamilyByEnv = map[string]string{
-	envGeminiCodeAssist: registrydefault.ProtocolGeminiCodeAssist,
-	envCursorSession:    registrydefault.ProtocolCursorSession,
-	envCopilotSession:   registrydefault.ProtocolCopilotSession,
-	envGeminiAdvanced:   registrydefault.ProtocolGeminiAdvancedSession,
-	envAntigravity:      registrydefault.ProtocolAntigravitySession,
-	envKiroSession:      registrydefault.ProtocolKiroSession,
-	envWindsurfSession:  registrydefault.ProtocolWindsurfSession,
+	envCursorSession:   registrydefault.ProtocolCursorSession,
+	envCopilotSession:  registrydefault.ProtocolCopilotSession,
+	envGeminiAdvanced:  registrydefault.ProtocolGeminiAdvancedSession,
+	envKiroSession:     registrydefault.ProtocolKiroSession,
+	envWindsurfSession: registrydefault.ProtocolWindsurfSession,
 }
 
 var defaultVisibleFamilies = []string{
@@ -35,6 +31,8 @@ var defaultVisibleFamilies = []string{
 	registrydefault.ProtocolAnthropicMessages,
 	registrydefault.ProtocolAnthropicClaudeSession,
 	registrydefault.ProtocolGeminiMessages,
+	registrydefault.ProtocolGeminiCodeAssist,
+	registrydefault.ProtocolAntigravitySession,
 	registrydefault.ProtocolOpenRouterChat,
 	registrydefault.ProtocolBedrockInvoke,
 	registrydefault.ProtocolGrokChat,
@@ -81,7 +79,6 @@ var visibleButNotEnableable = map[string]bool{
 	registrydefault.ProtocolCursorSession:         true,
 	registrydefault.ProtocolCopilotSession:        true,
 	registrydefault.ProtocolGeminiAdvancedSession: true,
-	registrydefault.ProtocolAntigravitySession:    true,
 	registrydefault.ProtocolKiroSession:           true,
 	registrydefault.ProtocolWindsurfSession:       true,
 }
@@ -92,7 +89,7 @@ func TestProductionRegistryEnvironmentMatrices(t *testing.T) {
 		enabledEnv []string
 	}{
 		{name: "default env"},
-		{name: "single env on", enabledEnv: []string{envGeminiCodeAssist}},
+		{name: "single env on", enabledEnv: []string{envGeminiAdvanced}},
 		{name: "all env on", enabledEnv: sortedEnvironmentNames()},
 	}
 
@@ -152,13 +149,13 @@ func TestCurrentClaudeAndAntigravityVerdictsArePinned(t *testing.T) {
 	antigravity := evaluator.EvaluateProviderConfig(ProviderConfigInput{
 		Family: registrydefault.ProtocolAntigravitySession, Enabled: true,
 	})
-	if antigravity.Ready || antigravity.Allowed || antigravity.TrafficAllowed ||
-		antigravity.Status != StatusExperimentalWireUnverified || antigravity.Reason != ReasonExperimentalWireUnverified ||
-		antigravity.Action != ActionMarkRed {
+	if !antigravity.Ready || !antigravity.Allowed || !antigravity.TrafficAllowed ||
+		antigravity.Status != StatusExperimental || antigravity.Reason != "" ||
+		antigravity.Action != ActionAllow {
 		t.Fatalf("Antigravity 当前结论漂移: %+v", antigravity)
 	}
 	if _, err := registry.For(registrydefault.ProtocolAntigravitySession); err != nil {
-		t.Fatalf("全 env on 应只让 Antigravity adapter 可见，实际未注册: %v", err)
+		t.Fatalf("Antigravity adapter 应默认注册，实际未注册: %v", err)
 	}
 }
 

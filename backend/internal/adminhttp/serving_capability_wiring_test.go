@@ -25,18 +25,6 @@ func TestDefaultCatalogMakesNonServingStatesExplicit(t *testing.T) {
 		reason   string
 	}{
 		{
-			name: "Antigravity wire 未验证", vendor: credentialstore.VendorAntigravity,
-			authMode: credentialstore.AuthModeOAuth,
-			status:   servingcapability.StatusExperimentalWireUnverified,
-			reason:   servingcapability.ReasonExperimentalWireUnverified,
-		},
-		{
-			name: "Code Assist 实验态", vendor: credentialstore.VendorGemini,
-			authMode: credentialstore.AuthModeCodeAssist,
-			status:   servingcapability.StatusExperimental,
-			reason:   servingcapability.ReasonAdapterNotRegistered,
-		},
-		{
 			name: "仅采集无 serving contract", vendor: credentialstore.VendorGemini,
 			authMode: credentialstore.AuthModeOAuth,
 			status:   servingcapability.StatusCollectOnly,
@@ -59,6 +47,16 @@ func TestDefaultCatalogMakesNonServingStatesExplicit(t *testing.T) {
 					tc.vendor, tc.authMode, got, tc.status, tc.reason)
 			}
 		})
+	}
+	codeAssist := findCatalogMode(t, catalog, credentialstore.VendorGemini, credentialstore.AuthModeCodeAssist).ServingReadiness
+	if !codeAssist.Ready || !codeAssist.Enableable || codeAssist.TrafficAllowed ||
+		codeAssist.Status != servingcapability.StatusExperimental || codeAssist.Reason != "" {
+		t.Fatalf("Gemini/Code Assist readiness=%+v，期望可配置的实验态且暂不承载流量", codeAssist)
+	}
+	antigravity := findCatalogMode(t, catalog, credentialstore.VendorAntigravity, credentialstore.AuthModeOAuth).ServingReadiness
+	if !antigravity.Ready || !antigravity.Enableable || antigravity.TrafficAllowed ||
+		antigravity.Status != servingcapability.StatusExperimental || antigravity.Reason != "" {
+		t.Fatalf("Antigravity readiness=%+v，期望已验证、可配置的实验态", antigravity)
 	}
 
 	// scaffold 计划默认仍按 feature/risk 规则隐藏；显式可见时也必须带 scaffold，
@@ -84,8 +82,8 @@ func TestProviderCatalogEnabledWriteRequiresCurrentProcessReadiness(t *testing.T
 		reason string
 	}{
 		{
-			name: "env off family", family: registrydefault.ProtocolGeminiCodeAssist,
-			reason: servingcapability.ReasonAdapterNotRegistered,
+			name: "仍封存的网页 session", family: registrydefault.ProtocolGeminiAdvancedSession,
+			reason: servingcapability.ReasonExperimentalWireUnverified,
 		},
 	}
 
@@ -315,11 +313,9 @@ func setAdminSessionAdapterEnvironment(t *testing.T, enabled bool) {
 		value = "true"
 	}
 	for _, env := range []string{
-		"HUAKAI_ENABLE_GEMINI_CODE_ASSIST_ADAPTER",
 		"HUAKAI_ENABLE_CURSOR_SESSION_ADAPTER",
 		"HUAKAI_ENABLE_COPILOT_SESSION_ADAPTER",
 		"HUAKAI_ENABLE_GEMINI_ADVANCED_SESSION_ADAPTER",
-		"HUAKAI_ENABLE_ANTIGRAVITY_SESSION_ADAPTER",
 		"HUAKAI_ENABLE_KIRO_SESSION_ADAPTER",
 		"HUAKAI_ENABLE_WINDSURF_SESSION_ADAPTER",
 	} {

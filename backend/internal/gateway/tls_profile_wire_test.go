@@ -65,8 +65,9 @@ func TestApplyTLSProfileSkipsNonMimicryContexts(t *testing.T) {
 		mode      transport.TransportMode
 		accountID int64
 	}{
-		"standard":  {mode: transport.TransportModeStandard, accountID: 7},
-		"account-0": {mode: transport.TransportModeMimicryClaudeCode},
+		"standard":    {mode: transport.TransportModeStandard, accountID: 7},
+		"standard-h1": {mode: transport.TransportModeStandardH1, accountID: 7},
+		"account-0":   {mode: transport.TransportModeMimicryClaudeCode},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := d.applyTLSProfile(context.Background(), orig, tc.mode, tc.accountID)

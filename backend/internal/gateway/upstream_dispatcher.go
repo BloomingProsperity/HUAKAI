@@ -167,7 +167,9 @@ func dispatchTransportMode(providerCode transport.ProviderCode, accountType stri
 	case transport.ProviderGeminiAdvanced:
 		return transport.TransportModeMimicryGeminiAdvanced
 	case transport.ProviderAntigravity:
-		return transport.TransportModeMimicryAntigravity
+		// 推理链的统一默认是标准 TLS + H1；自动 Dispatch 在看见模型发现等
+		// 控制面路径后会由 dispatchTransportModeForRequest 放宽到标准协商。
+		return transport.TransportModeStandardH1
 	case transport.ProviderCursor:
 		return transport.TransportModeMimicryCursor
 	case transport.ProviderCopilot:
@@ -182,6 +184,18 @@ func dispatchTransportMode(providerCode transport.ProviderCode, accountType stri
 			credentialstore.AuthModeClaudeSetupToken:
 			return transport.TransportModeMimicryClaudeCode
 		}
+	}
+	return transport.TransportModeStandard
+}
+
+func dispatchTransportModeForRequest(providerCode transport.ProviderCode, accountType, endpointPath string) transport.TransportMode {
+	mode := dispatchTransportMode(providerCode, accountType)
+	if providerCode != transport.ProviderAntigravity {
+		return mode
+	}
+	path := strings.ToLower(strings.TrimSpace(endpointPath))
+	if strings.Contains(path, ":generatecontent") || strings.Contains(path, ":streamgeneratecontent") {
+		return transport.TransportModeStandardH1
 	}
 	return transport.TransportModeStandard
 }
@@ -226,11 +240,9 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if d.TransportFactory == nil {
 		return nil, errors.New("dispatcher: TransportFactory 未配置")
 	}
-	resolvedAccount, automaticMode := ResolveDispatchTransport(in.Account, in.ProtocolFamily)
+	resolvedAccount, _ := ResolveDispatchTransport(in.Account, in.ProtocolFamily)
 	in.Account = resolvedAccount
-	if in.TransportMode == "" {
-		in.TransportMode = automaticMode
-	}
+	automaticTransport := in.TransportMode == ""
 
 	// 1. 选 adapter
 	adapter, err := d.Adapters.For(in.ProtocolFamily)
@@ -280,6 +292,13 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	headerfirewall.StripHopByHopRequestHeaders(req.Header)
 	headerfirewall.NormalizeEgressRequestHeaders(req.Header)
+	if automaticTransport {
+		in.TransportMode = dispatchTransportModeForRequest(
+			transport.ProviderCode(in.Account.Platform),
+			in.Account.AccountType,
+			req.URL.Path,
+		)
+	}
 
 	// 3. 取 transport
 	mode := in.TransportMode
@@ -369,7 +388,8 @@ type TLSProfileResolver interface {
 // 没有绑定时保留内置 profile；显式绑定的坏数据、数据库故障或非 sidecar transport
 // 都明确失败，避免静默换用另一套 ClientHello。
 func (d *UpstreamDispatcher) applyTLSProfile(ctx context.Context, rt http.RoundTripper, mode transport.TransportMode, accountID int64) (http.RoundTripper, error) {
-	if d.TLSProfileResolver == nil || accountID == 0 || mode == transport.TransportModeStandard {
+	if d.TLSProfileResolver == nil || accountID == 0 ||
+		mode == transport.TransportModeStandard || mode == transport.TransportModeStandardH1 {
 		return rt, nil
 	}
 	profile, err := d.TLSProfileResolver.ResolveProfile(ctx, accountID)

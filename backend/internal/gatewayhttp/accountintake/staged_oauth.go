@@ -160,12 +160,26 @@ func (s *StagedStore) LoadOAuthCandidate(ctx context.Context, tenantID int64, ac
 	if s == nil || s.pool == nil || s.cipher == nil || tenantID <= 0 || strings.TrimSpace(actorID) == "" || uuid.Validate(strings.TrimSpace(id)) != nil {
 		return ClaimedCredential{}, ErrInvalidInput
 	}
-	row, secret, input, err := s.loadOAuthSecret(ctx, s.pool, tenantID, actorID, id, "oauth_exchanged", "staged")
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ClaimedCredential{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	row, secret, input, err := s.loadOAuthSecret(ctx, tx, tenantID, actorID, id, "oauth_exchanged", "staged")
 	if err != nil {
 		return ClaimedCredential{}, err
 	}
 	if !row.expiresAt.After(s.nowTime()) {
+		if err := expireStagedCredential(ctx, tx, id); err != nil {
+			return ClaimedCredential{}, errors.Join(ErrStagedCredentialExpired, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return ClaimedCredential{}, errors.Join(ErrStagedCredentialExpired, err)
+		}
 		return ClaimedCredential{}, ErrStagedCredentialExpired
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ClaimedCredential{}, err
 	}
 	input.Content = secret.Content
 	return ClaimedCredential{ID: strings.TrimSpace(id), PlanInput: input, Auxiliary: append(json.RawMessage(nil), secret.Auxiliary...)}, nil

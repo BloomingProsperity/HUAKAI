@@ -18,8 +18,9 @@ import (
 // ReasonOfficialClientRequired 是片2e 官方客户端门拒绝时的审计/错误原因标签。
 const ReasonOfficialClientRequired = "official_client_required"
 
-// Decision 是 clientgate 对调用方的封闭结果。S1 不定义 RewriteRequired：
-// Anthropic 反转账号只能 OfficialDirect 或 Reject；其它既有账号可保持 Allow。
+// Decision 是 clientgate 对调用方的封闭结果。Anthropic 反转账号的官方请求
+// 走 OfficialDirect；合法的第三方 Messages 请求走 Allow 并在最终出站体补齐兼容
+// 前缀；畸形请求仍 Reject。其它既有账号保持原策略。
 type Decision string
 
 const (
@@ -65,13 +66,15 @@ func Decide(ctx context.Context, getter SettingsGetter, accountType, platform st
 	return true, ReasonOfficialClientRequired
 }
 
-// DecideWithBody 在既有策略之前为 Anthropic 反转账号启用严格官方直发。
-// 自报 UA/X-Client 命中但缺少路径、SDK 头或 body 结构时只能 Reject。
+// DecideWithBody 在既有策略之前区分 Anthropic 官方直发与第三方兼容请求。
 func DecideWithBody(ctx context.Context, getter SettingsGetter, accountType, platform string, codexCLIOnly bool, r *http.Request, body []byte) Result {
 	if officialclient.RequiresStrictAnthropicDirect(accountType, platform, codexCLIOnly) {
 		strict := officialclient.DecideAnthropicOfficialDirect(r, body)
 		if strict.Decision == officialclient.DirectDecisionOfficialDirect {
 			return Result{Decision: DecisionOfficialDirect, Body: strict.Body}
+		}
+		if officialclient.IsAnthropicMessagesRequestShape(r, body) {
+			return Result{Decision: DecisionAllow, Reason: "anthropic_session_compatible_rewrite"}
 		}
 		return Result{Decision: DecisionReject, Reason: ReasonOfficialClientRequired}
 	}

@@ -439,7 +439,7 @@ func TestResolveDispatchTransport_V2ReverseSessionShapes(t *testing.T) {
 			account:        provider.AccountInfo{Platform: "gemini", AccountType: credentialstore.AuthModeAntigravity},
 			protocolFamily: "antigravity_session",
 			wantPlatform:   string(transport.ProviderAntigravity),
-			wantMode:       transport.TransportModeMimicryAntigravity,
+			wantMode:       transport.TransportModeStandardH1,
 		},
 		{
 			name:           "openai api key remains standard",

@@ -41,6 +41,44 @@ func TestBuildCandidatesRejectsDuplicateModeInsideOneAccount(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesMatchesAndMigratesLegacyAntigravityMode(t *testing.T) {
+	candidate := credentialacq.CredentialCandidate{
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity,
+		Payload:           []byte(`{"access_token":"new-access","refresh_token":"new-refresh"}`),
+		ExternalAccountID: "antigravity-account-1", AccountIDSource: accountident.SourceImportPayload,
+	}
+	legacy := ExistingCredential{
+		CredentialID: 31, CredentialVersion: 4, ProviderAccountID: 401, ProviderAccountName: "legacy",
+		Vendor: credentialstore.VendorGemini, AuthMode: credentialstore.AuthModeAntigravity,
+		State: credentialstore.StateActive, ExternalAccountID: "antigravity-account-1",
+	}
+	prepared := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceOAuth, Existing: []ExistingCredential{legacy},
+	}, []credentialacq.CredentialCandidate{candidate})
+	item := requireSingleItem(t, prepared.Plan)
+	if item.Action != ActionUpdate || item.ExistingAccountID != legacy.ProviderAccountID ||
+		item.ExistingCredentialID != legacy.CredentialID {
+		t.Fatalf("旧模式命中结果=%+v，期望轮换原账号", item)
+	}
+	if prepared.Candidates[0].Vendor != credentialstore.VendorAntigravity ||
+		prepared.Candidates[0].AuthMode != credentialstore.AuthModeOAuth {
+		t.Fatalf("候选模式=%s/%s，期望规范身份 antigravity/oauth",
+			prepared.Candidates[0].Vendor, prepared.Candidates[0].AuthMode)
+	}
+
+	canonical := legacy
+	canonical.CredentialID = 32
+	canonical.Vendor = credentialstore.VendorAntigravity
+	canonical.AuthMode = credentialstore.AuthModeOAuth
+	canonical.ExternalAccountID = "different-stored-identity"
+	conflicted := BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceOAuth, Existing: []ExistingCredential{legacy, canonical},
+	}, []credentialacq.CredentialCandidate{candidate}).Plan
+	if duplicate := requireSingleItem(t, conflicted); duplicate.Action != ActionConflict || duplicate.Code != "account_scope_ambiguous" {
+		t.Fatalf("新旧模式并存结果=%+v，期望显式冲突", duplicate)
+	}
+}
+
 func TestBuildCandidatesMatchesSharedAccountsByScopeAndSubject(t *testing.T) {
 	existing := ExistingCredential{
 		CredentialID: 11, CredentialVersion: 2,

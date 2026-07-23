@@ -257,6 +257,24 @@ WHERE tenant_id=$1 AND action='credential_acquisition_completed'`, seed.tenantID
 	if secondPlan.Plan.Items[0].MixedChannelRisk != nil && secondPlan.Plan.Items[0].MixedChannelRisk.HighRisk {
 		secondConfirmations = append(secondConfirmations, "confirm_mixed_channel_risk")
 	}
+	blocked, err := service.Execute(ctx, OAuthExecuteInput{
+		TenantID: seed.tenantID, FlowID: secondStart.Session.ID, PlanHash: secondPlan.PlanHash,
+		ActorID: "platform-owner", ActorRole: "platform_admin", Reason: "缺确认时不得消费临时凭据",
+	})
+	if err != nil {
+		t.Fatalf("缺确认预检失败：%v", err)
+	}
+	if blocked.Summary.Conflict != 1 || len(blocked.Items) != 1 || blocked.Items[0].Code != "confirmation_required" {
+		t.Fatalf("缺确认结果=%+v，期望 confirmation_required", blocked)
+	}
+	var retryableStatus string
+	var retryableCiphertext []byte
+	if err := pool.QueryRow(ctx, `SELECT status, encrypted_content FROM account_intake_staged_credentials WHERE id=$1::uuid`, secondStart.Session.ID).Scan(&retryableStatus, &retryableCiphertext); err != nil {
+		t.Fatal(err)
+	}
+	if retryableStatus != "staged" || len(retryableCiphertext) == 0 {
+		t.Fatalf("缺确认后临时凭据不可重试：status=%s encrypted=%d 字节", retryableStatus, len(retryableCiphertext))
+	}
 	secondResult, err := service.Execute(ctx, OAuthExecuteInput{
 		TenantID: seed.tenantID, FlowID: secondStart.Session.ID, PlanHash: secondPlan.PlanHash,
 		Confirmations: secondConfirmations,
