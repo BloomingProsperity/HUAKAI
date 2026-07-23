@@ -2088,14 +2088,6 @@ func (r *recordingPlanInputRouter) Plan(ctx context.Context, in router.PlanInput
 	return r.delegate.Plan(ctx, in)
 }
 
-func capSet(caps []string) map[string]bool {
-	m := make(map[string]bool, len(caps))
-	for _, c := range caps {
-		m[c] = true
-	}
-	return m
-}
-
 // TestPrepareRoute_ThreadsBodyDerivedCapabilities 是自证接线测试 (ROUTE-024 核心契约):
 // 一个含 image part + tools + json_schema 的 streamed body 经 prepareRoute 后,
 // 真 Router 产出的 AttemptPlan.RequiredCapabilities 必须 == {stream,vision,tools,json};
