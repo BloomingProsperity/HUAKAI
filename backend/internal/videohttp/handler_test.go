@@ -58,6 +58,9 @@ func TestGrokVideoSubmitPersistsFullIdentityAndRouteBinding(t *testing.T) {
 	if env.selector.last.RateAccountingScope != pool.RateAccountingLogicalOnly {
 		t.Fatalf("入口预选必须只消费逻辑请求预算: %+v", env.selector.last)
 	}
+	if got := env.selector.last.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v,video 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
+	}
 	if env.selector.released != 1 {
 		t.Fatalf("preflight slot released=%d want 1", env.selector.released)
 	}
@@ -226,7 +229,7 @@ func (videoRoutePlanner) Plan(_ context.Context, input router.PlanInput) (router
 		Attempts: []router.AttemptPlan{{
 			Index: 0, PoolGroupID: meta.PoolGroupID, BindingID: meta.BindingID,
 			BindingRPMLimit: meta.BindingRPMLimit, BindingTPMLimit: meta.BindingTPMLimit,
-			MaxParallelRequests: meta.MaxParallelRequests, RequiredCapabilities: []string{"video"},
+			MaxParallelRequests: meta.MaxParallelRequests,
 			UpstreamModelID: meta.ProviderModelID, Reason: "primary",
 		}},
 	}, nil

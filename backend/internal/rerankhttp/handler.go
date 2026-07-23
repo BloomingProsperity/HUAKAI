@@ -17,6 +17,7 @@ import (
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
@@ -176,7 +177,7 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRegistryUnknownError, clienterr.MessageFor(clienterr.CodeRegistryUnknownError))
 		return false
 	}
-	if !hasRerankModelCapability(resolved.Capabilities) {
+	if !modality.Supports(resolved.Capabilities, modality.Rerank) {
 		writeJSONError(w, http.StatusNotFound, "model_not_available", "model does not support rerank")
 		return false
 	}
@@ -193,7 +194,6 @@ func (ex *execution) prepareRoute(w http.ResponseWriter) bool {
 		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeRouterPlanError, "router returned no attempts")
 		return false
 	}
-	requireRerankCapability(&plan)
 	ex.plan = plan
 	return true
 }

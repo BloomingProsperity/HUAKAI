@@ -46,6 +46,9 @@ func TestAudioSpeech_ChargesUTF8RunesAndSettlesExactlyOnce(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
+	if got := env.selector.last.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v,audio speech 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
+	}
 	env.assertNoHangingClaims(t)
 	if got := env.transport.path; got != "/v1/audio/speech" {
 		t.Fatalf("upstream path=%q want /v1/audio/speech", got)
@@ -107,6 +110,9 @@ func TestAudioTranscriptions_WavDurationDrivesReserveAndSettle(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := env.selector.last.CapabilityFlags; len(got) != 0 {
+		t.Fatalf("选号能力=%v,audio 转写不得携带账号级媒体能力门(modality 由模型注册表判)", got)
 	}
 	env.assertNoHangingClaims(t)
 	want := decimal.RequireFromString("0.00025")
@@ -442,6 +448,7 @@ func TestAudioTranslations_RoutesToTranslationsPath(t *testing.T) {
 }
 
 type audioTestEnv struct {
+	selector *selectorStub
 	deps      Deps
 	claims    *recordingClaimGate
 	settler   *recordingSettler
@@ -466,13 +473,14 @@ func newAudioTestEnv(t *testing.T, endpoint audioEndpoint, resp upstreamResponse
 	adapters.MustRegister("openai_chat", &openai.PassthroughAdapter{})
 	tf := transport.NewFactory()
 	tf.SetStandard(rt)
+	sel := &selectorStub{}
 	deps := Deps{
 		Auth:                  authStub{ident: auth.Identity{TenantID: 7, APIKeyID: 11, UserID: 13, UserGroup: "pro"}},
 		Registry:              registryStub{},
 		Router:                routerStub{},
 		ClaimGate:             claims,
 		RateTables:            rates,
-		Selector:              selectorStub{},
+		Selector:              sel,
 		CredentialVault:       vaultStub{},
 		Dispatcher:            &gateway.UpstreamDispatcher{Adapters: adapters, TransportFactory: tf},
 		Settler:               settler,
@@ -480,7 +488,7 @@ func newAudioTestEnv(t *testing.T, endpoint audioEndpoint, resp upstreamResponse
 		BillingPolicyVersion:  "test-policy",
 		RequestClass:          "standard",
 	}
-	return &audioTestEnv{deps: deps, claims: claims, settler: settler, transport: rt, rateTable: rates, endpoint: endpoint}
+	return &audioTestEnv{selector: sel, deps: deps, claims: claims, settler: settler, transport: rt, rateTable: rates, endpoint: endpoint}
 }
 
 func (e *audioTestEnv) invokeJSON(t *testing.T, body string) *httptest.ResponseRecorder {
@@ -558,7 +566,7 @@ func (registryStub) ResolveModel(_ context.Context, model string, _ int64) (regi
 		CanonicalModelID: "audio/" + model,
 		ProviderModelID:  model,
 		ProtocolFamily:   "openai_chat",
-		Capabilities:     []string{"audio", audioSpeechCapability, audioTranscriptionCapability},
+		Capabilities:     []string{"audio", "audio_speech", "audio_transcription"},
 		PoolCandidates:   []int64{101},
 		SnapshotVersion:  "registry:7:1",
 	}, nil
@@ -611,9 +619,10 @@ func (s *rateTableStub) ListRateTableSnapshots(context.Context) ([]billing.RateT
 	return nil, nil
 }
 
-type selectorStub struct{}
+type selectorStub struct{ last pool.SelectionRequest }
 
-func (selectorStub) Select(context.Context, pool.SelectionRequest) (*pool.SelectionResult, error) {
+func (s *selectorStub) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
+	s.last = req
 	return &pool.SelectionResult{
 		AccountID:         44,
 		AcquisitionToken:  uuid.MustParse("11111111-1111-1111-1111-111111111111"),

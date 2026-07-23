@@ -41,8 +41,8 @@ func TestGeminiCountTokensBindingFallbackClass(t *testing.T) {
 		if env.selector.requests[0].PoolGroupID != 101 {
 			t.Fatalf("首个 pool=%d，期望 normal 101", env.selector.requests[0].PoolGroupID)
 		}
-		if got := env.selector.requests[0].CapabilityFlags; len(got) != 1 || got[0] != countTokensCapability {
-			t.Fatalf("选号能力=%v，期望 [%s]", got, countTokensCapability)
+		if got := env.selector.requests[0].CapabilityFlags; len(got) != 0 {
+			t.Fatalf("选号能力=%v，countTokens 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
 		}
 	})
 
@@ -202,7 +202,9 @@ func (geminiFallbackRegistry) ResolveModel(context.Context, string, int64) (regi
 	return registry.Resolved{
 		PublicAlias: "gemini-pro", CanonicalModelID: "gemini/canonical",
 		DefaultProviderModelID: "gemini-normal-a", ProviderModelID: "gemini-normal-a",
-		ProtocolFamily: "gemini_messages", ContextWindow: 1_048_576, PoolCandidates: []int64{101, 201},
+		ProtocolFamily: "gemini_messages", ContextWindow: 1_048_576,
+		Capabilities:   []string{"generateContent", "countTokens"},
+		PoolCandidates: []int64{101, 201},
 		BindingMetadata: []registry.BindingMetadata{
 			{PoolGroupID: 101, BindingID: 6101, Priority: 10, Weight: 1, SelectionMode: "strict_priority", ProviderModelIDOverride: &normalModel, FallbackClass: string(bindingfallback.ClassNormal)},
 			{PoolGroupID: 201, BindingID: 6201, Priority: 20, Weight: 1, SelectionMode: "priority_weighted", RPMLimit: &targetRPM, TPMLimit: &targetTPM, MaxParallelRequests: &targetMax, ProviderModelIDOverride: &targetModel, FallbackClass: string(bindingfallback.ClassManual)},

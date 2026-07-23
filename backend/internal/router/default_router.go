@@ -315,9 +315,10 @@ func stampSnapshot(modelStamp, routerVersion string) string {
 // 门有两个真实缺陷:①账号默认空标记时流式请求(最常用)被误滤成 no_capacity,逼每个建号路径手工同步标记;
 // ②账号能力是多模型并集→在不支持某特性的模型上放行(跨模型误授权)。故这里返回空:chat 特性不参与账号选号。
 //
-// 媒体 lane(图片生成 image_output、embeddings、rerank、video)的账号级门【不在此处】,由各自的 route
-// planner(如 imageshttp.requireImageOutputCapability)独立追加 RequiredCapabilities,不受本改动影响——
-// 媒体账号门保留:媒体资格确实是账号级事实(某订阅号能否出图/转写)。
+// 媒体特性(图片/embeddings/rerank/countTokens/audio/video)同样不做账号级能力门:modality 是
+// 模型属性,由各媒体 handler 用请求模型的注册表能力(internal/modality.Supports)判定;账号侧
+// 由选号 SQL 的 model_allow_list 清单门把关(媒体端点族要求显式命中,见 pool_accounts.sql
+// require_model_listed)。capability_flags 不再参与任何请求路径的选号过滤。
 func requiredCapabilities(_ RequestFeatures) []string {
 	return nil
 }

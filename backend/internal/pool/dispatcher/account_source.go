@@ -47,6 +47,7 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		RequestedModel:          providerModelID,
 		RequestedProtocolFamily: req.ProtocolFamily,
 		RequiredCapabilities:    required,
+		RequireModelListed:      mediaEndpointFamily(req.EndpointFamily),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pool: list eligible accounts: %w", err)
@@ -108,6 +109,19 @@ func (s *DBAccountSource) ListAccounts(ctx context.Context, req SelectionRequest
 		out = append(out, snap)
 	}
 	return out, nil
+}
+
+// mediaEndpointFamily 判定端点族是否媒体类。媒体请求要求账号 model_allow_list 显式
+// 列出该模型(空清单不放行):媒体打到不含该模型的账号是静态必败,上游"不支持"多为
+// 终态 4xx 不触发换号,video 更是提交前就预留钱并把账号 pin 进任务——必须选号前挡住。
+// chat 族保持空清单=无限制的历史语义不变。
+func mediaEndpointFamily(family string) bool {
+	switch family {
+	case "images", "videos", "audio", "embeddings", "rerank", "gemini_count_tokens":
+		return true
+	default:
+		return false
+	}
 }
 
 func float64Value(value *float64) float64 {
