@@ -58,8 +58,8 @@ func TestGrokVideoSubmitPersistsFullIdentityAndRouteBinding(t *testing.T) {
 	if env.selector.last.RateAccountingScope != pool.RateAccountingLogicalOnly {
 		t.Fatalf("入口预选必须只消费逻辑请求预算: %+v", env.selector.last)
 	}
-	if got := env.selector.last.CapabilityFlags; len(got) != 0 {
-		t.Fatalf("选号能力=%v,video 不得携带账号级媒体能力门(modality 由模型注册表判)", got)
+	if got := env.selector.last.CapabilityFlags; len(got) != 1 || got[0] != "placeholder_non_media_gate" {
+		t.Fatalf("选号能力=%v,video 须原样透传计划自带资格门,且不得追加账号级媒体能力门", got)
 	}
 	if env.selector.released != 1 {
 		t.Fatalf("preflight slot released=%d want 1", env.selector.released)
@@ -231,6 +231,9 @@ func (videoRoutePlanner) Plan(_ context.Context, input router.PlanInput) (router
 			BindingRPMLimit: meta.BindingRPMLimit, BindingTPMLimit: meta.BindingTPMLimit,
 			MaxParallelRequests: meta.MaxParallelRequests,
 			UpstreamModelID: meta.ProviderModelID, Reason: "primary",
+			// 非媒体占位资格门:计划若携带其它真实门,handler 必须原样透传——
+			// 既不清空,也不追加媒体 modality(见下方选号断言)。
+			RequiredCapabilities: []string{"placeholder_non_media_gate"},
 		}},
 	}, nil
 }
