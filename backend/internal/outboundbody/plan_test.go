@@ -5,7 +5,23 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 )
+
+// TestBuildPlan_CLIVersion与出站UA同源 守住 billing/user_id 版本必须取自出站 UA
+// 的同一常量,不能各写各的(否则伪装请求里 UA 版本与 cc_version 不一致成破绽)。
+//
+// 变异证伪:把 BuildPlan 改回读入站 in.CLIVersion → p.CLIVersion 为空 → 变红。
+func TestBuildPlan_CLIVersion与出站UA同源(t *testing.T) {
+	t.Setenv("HUAKAI_CLAUDE_OAUTH_BODY_CLOAK", "true")
+	p := BuildPlan(Input{
+		ProtocolFamily: "anthropic_claude_session",
+		AccountType:    credentialstore.AuthModeClaudeAIOAuth,
+	})
+	if p.CLIVersion != anthropic.ClaudeCLIVersion {
+		t.Fatalf("CLIVersion 必须 = 出站 UA 版本 %q, got %q", anthropic.ClaudeCLIVersion, p.CLIVersion)
+	}
+}
 
 func TestBuildPlan_OfficialDirectSkipAll(t *testing.T) {
 	p := BuildPlan(Input{

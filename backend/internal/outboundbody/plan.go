@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/claudecodecloak"
 	"github.com/BloomingProsperity/HUAKAI/internal/officialclient"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider/anthropic"
 )
 
 // Reason 是 clientgate / 审计可稳定引用的放行原因（避免散落魔法串）。
@@ -43,7 +44,6 @@ type Input struct {
 	AccountID         int64
 	ExternalAccountID string
 	ClientSessionID   string
-	CLIVersion        string
 }
 
 // BuildPlan 据账号与官方直发标志决定出站变换。开关只在此读取一次。
@@ -59,7 +59,9 @@ func BuildPlan(in Input) Plan {
 		ExternalAccountID: in.ExternalAccountID,
 		AccountType:       in.AccountType,
 		ClientSessionID:   in.ClientSessionID,
-		CLIVersion:        in.CLIVersion,
+		// cc_version 与 user_id 格式都必须跟随【出站】UA 钉死的版本(不是入站客户端
+		// 版本):出站 UA 与 billing/user_id 三处版本一致,才不会自相矛盾成破绽。
+		CLIVersion: anthropic.ClaudeCLIVersion,
 		// Anthropic messages 形态下总是尝试 user_id；内部对非反转/缺 id/关开关 fail-open。
 		IdentityUserID: true,
 	}

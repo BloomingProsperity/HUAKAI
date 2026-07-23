@@ -21,7 +21,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
-	"github.com/BloomingProsperity/HUAKAI/internal/mimicryidentity"
 	"github.com/BloomingProsperity/HUAKAI/internal/outboundbody"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -143,7 +142,6 @@ func (ex *chatExecution) identityRewrite(dispatchBody []byte) []byte {
 		AccountID:         ex.accInfo.AccountID,
 		ExternalAccountID: ex.accInfo.ExternalAccountID,
 		ClientSessionID:   ex.clientSessionID,
-		CLIVersion:        mimicryidentity.ExtractClaudeCodeVersion(ex.r.UserAgent()),
 	})
 	return outboundbody.Apply(dispatchBody, plan)
 }

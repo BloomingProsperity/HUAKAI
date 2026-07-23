@@ -7,7 +7,6 @@ package mimicryidentity
 
 import (
 	"os"
-	"regexp"
 	"strings"
 )
 
@@ -15,19 +14,6 @@ import (
 // 轮换会致同账号派生指纹整体突变(同账号前后请求的 device_id/session 变化)。
 // 未配置(空)时 RewriteForDispatch fail-open 不改写。
 const envServerSecret = "HUAKAI_MIMICRY_IDENTITY_SECRET"
-
-// claudeCodeUAVersionRE 从 User-Agent 抽取 Claude Code CLI 版本号(形如
-// "claude-cli/2.1.78 ...")。抽不到返回空串,按旧版 user_id 格式处理。
-var claudeCodeUAVersionRE = regexp.MustCompile(`(?i)claude-cli/([0-9]+(?:\.[0-9]+)*)`)
-
-// ExtractClaudeCodeVersion 从 UA 串抽 CLI 版本;抽不到返回空。
-func ExtractClaudeCodeVersion(userAgent string) string {
-	m := claudeCodeUAVersionRE.FindStringSubmatch(userAgent)
-	if len(m) >= 2 {
-		return m[1]
-	}
-	return ""
-}
 
 // serverSecret 读固定来源的派生密钥(env);两端空白裁剪。
 func serverSecret() string {

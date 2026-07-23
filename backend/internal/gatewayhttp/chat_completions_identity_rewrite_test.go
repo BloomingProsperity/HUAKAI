@@ -51,13 +51,25 @@ func extractMetadataAccountUUID(t *testing.T, body []byte) string {
 	if err := json.Unmarshal(body, &outer); err != nil {
 		t.Fatalf("解析 metadata.user_id 失败: %v", err)
 	}
+	uid := outer.Metadata.UserID
+	// 新格式(CLI ≥ 2.1.78):JSON {"account_uuid":...}。
 	var inner struct {
 		AccountUUID string `json:"account_uuid"`
 	}
-	if err := json.Unmarshal([]byte(outer.Metadata.UserID), &inner); err != nil {
-		t.Fatalf("解析 user_id JSON 失败: %v (user_id=%q)", err, outer.Metadata.UserID)
+	if json.Unmarshal([]byte(uid), &inner) == nil && inner.AccountUUID != "" {
+		return inner.AccountUUID
 	}
-	return inner.AccountUUID
+	// 旧格式(CLI < 2.1.78,含出站钉死的 2.1.63):
+	// "user_<hex>_account_<account>_session_<uuid>";account 组件在 _account_ 与
+	// _session_ 之间。出站统一按 2.1.63 伪装后走这条路。
+	const accMark, sessMark = "_account_", "_session_"
+	ai := strings.Index(uid, accMark)
+	si := strings.LastIndex(uid, sessMark)
+	if ai >= 0 && si > ai {
+		return uid[ai+len(accMark) : si]
+	}
+	t.Fatalf("user_id 既非新格式 JSON 也非旧格式字符串: %q", uid)
+	return ""
 }
 
 // newIdentityRewriteExec 构造一个最小 chatExecution,带 Claude Code UA + 指定

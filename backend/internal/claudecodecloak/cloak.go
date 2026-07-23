@@ -72,8 +72,9 @@ func Apply(body []byte, opts Options) Result {
 	if cliVer == "" {
 		cliVer = DefaultCLIVersion
 	}
-	model := rawString(root["model"])
-	fp := fingerprint(cliVer, model)
+	// 指纹须用真实 CLI 算法在【原 messages】上算(system 下沉在其后发生),
+	// 与上游最终看到的首条 user 文本口径一致。
+	fp := computeFingerprint(firstUserMessageText(root["messages"]), cliVer)
 	billing := fmt.Sprintf("x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli;", cliVer, fp)
 
 	systemBlocks := []textBlock{
@@ -204,25 +205,62 @@ type cacheControl struct {
 	Type string `json:"type"`
 }
 
-// fingerprint 从 CLI 版本 + model 派生短 hex，写入 billing 归因；确定性、无密钥。
-func fingerprint(cliVersion, model string) string {
-	h := sha256.New()
-	_, _ = h.Write([]byte(cliVersion))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(model))
-	sum := h.Sum(nil)
-	return hex.EncodeToString(sum[:4])
+// fingerprintSalt 是 cc_version 后缀指纹的盐,取真实 Claude Code CLI 出站流量
+// 推导的固定互操作常量(协议事实值,非参考项目的创作表达)。任何偏差都会使指纹
+// 与真实 CLI 不一致、反而暴露成第三方,故与出站 UA 版本一样必须精确复刻。
+const fingerprintSalt = "59cf53e54c78"
+
+// computeFingerprint 复刻真实 Claude Code CLI 的 cc_version 后缀指纹算法:取首条
+// role=user 文本的第 4/7/20 个字节(不足处以 '0' 补齐),与盐、cc_version 依次
+// 拼接后 SHA256,取十六进制前 3 位。firstUserText 须取【system 下沉之前】的原始
+// messages,与上游最终看到的首条 user 文本一致。
+func computeFingerprint(firstUserText, cliVersion string) string {
+	indices := []int{4, 7, 20}
+	chars := make([]byte, 0, len(indices))
+	for _, i := range indices {
+		if i < len(firstUserText) {
+			chars = append(chars, firstUserText[i])
+		} else {
+			chars = append(chars, '0')
+		}
+	}
+	sum := sha256.Sum256([]byte(fingerprintSalt + string(chars) + cliVersion))
+	return hex.EncodeToString(sum[:])[:3]
 }
 
-func rawString(raw json.RawMessage) string {
+// firstUserMessageText 取 messages 中第一条 role==user 的首个 text 内容,兼容
+// content 为字符串或内容块数组两种形态;无则返回空串。
+func firstUserMessageText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
+	var msgs []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &msgs); err != nil {
 		return ""
 	}
-	return s
+	for _, m := range msgs {
+		var role string
+		if json.Unmarshal(m["role"], &role) != nil || role != "user" {
+			continue
+		}
+		var asString string
+		if json.Unmarshal(m["content"], &asString) == nil {
+			return asString
+		}
+		var blocks []map[string]any
+		if json.Unmarshal(m["content"], &blocks) == nil {
+			for _, b := range blocks {
+				if typ, _ := b["type"].(string); typ != "" && typ != "text" {
+					continue
+				}
+				if text, ok := b["text"].(string); ok {
+					return text
+				}
+			}
+		}
+		return ""
+	}
+	return ""
 }
 
 func clone(b []byte) []byte {

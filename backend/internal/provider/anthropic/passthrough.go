@@ -143,8 +143,13 @@ func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 // Claude Code(Anthropic CLI)设备 profile 默认值——让出口流量带上真实的 Claude
 // Code 客户端签名,使上游看到的是真实客户端而非裸中转。
 // 按 Owner 2026-06-08「必须开着」默认开启(覆盖 CB-001 的默认关闭)。
+// ClaudeCLIVersion 是出站钉死的 Claude Code CLI 版本(已知真实 baseline 下限)。
+// billing 归因块的 cc_version 与出站 UA 版本必须同源——两处版本不一致本身就是
+// 破绽,故统一从此常量派生。
+const ClaudeCLIVersion = "2.1.63"
+
 const (
-	claudeCodeUserAgent           = "claude-cli/2.1.63 (external, cli)"
+	claudeCodeUserAgent           = "claude-cli/" + ClaudeCLIVersion + " (external, cli)"
 	claudeStainlessPackageVersion = "0.74.0"
 	claudeStainlessRuntimeVersion = "v24.3.0"
 	claudeStainlessOS             = "MacOS"

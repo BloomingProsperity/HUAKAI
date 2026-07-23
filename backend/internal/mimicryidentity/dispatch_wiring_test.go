@@ -51,21 +51,6 @@ func TestRewriteForDispatch_开启有身份改写_自证(t *testing.T) {
 	}
 }
 
-// TestExtractClaudeCodeVersion 验证从 UA 抽取 CLI 版本;非 Claude Code UA 返回空。
-//
-// 变异证伪:把正则捕获组删掉 → 抽取失败返回空 → 第一段断言变红。
-func TestExtractClaudeCodeVersion(t *testing.T) {
-	if got := ExtractClaudeCodeVersion("claude-cli/2.1.78 (external, cli)"); got != "2.1.78" {
-		t.Fatalf("应抽出 2.1.78,实际 %q", got)
-	}
-	if got := ExtractClaudeCodeVersion("claude-cli/1.0"); got != "1.0" {
-		t.Fatalf("应抽出 1.0,实际 %q", got)
-	}
-	if got := ExtractClaudeCodeVersion("curl/8.0"); got != "" {
-		t.Fatalf("非 Claude Code UA 应返回空,实际 %q", got)
-	}
-}
-
 // TestRewriteForDispatch_scope_apikey不伪装 验证经 dispatch 入口时 scope 硬守卫也生效:
 // apikey 号即便开关开 + 密钥就绪也不伪装(I1),oauth 反转号则改写。
 //
