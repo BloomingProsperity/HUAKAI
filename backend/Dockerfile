@@ -1,8 +1,8 @@
 # HUAKAI Gateway Dockerfile —— Go 网关与 Rust TLS sidecar 同镜像运行。
 #
 # **build context = 仓库根**（不是 backend/），因为生产镜像同时编译
-# exploratory/rust-core-gateway 下的 Rust sidecar。当前仓库没有可信前端源码，
-# 因此网关按无 embed 构建，API 可独立上线；后续前端重构完成后再恢复独立静态构建合同。
+# exploratory/rust-core-gateway 下的 Rust sidecar。Gateway 镜像只提供 API，
+# 不包含业务前端源码、Node 工具链或静态页面。
 #
 # Runtime 必须 env vars (config.Load 只读 env, 不读 YAML 文件):
 #   HUAKAI_DATABASE_URL          - PostgreSQL DSN
@@ -13,7 +13,7 @@
 #   可选: HUAKAI_ADDR (default :8080), OAuth client_id/secret 等
 # 缺关键 env 启动 fail-loud。
 
-# ── Go 构建阶段：后端 API 独立构建，不嵌入不存在的前端产物。──
+# ── Go 构建阶段：后端 API 独立构建。──
 FROM golang:1.25.12-alpine AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum* ./

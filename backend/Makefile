@@ -1,10 +1,10 @@
 .PHONY: build test perf fmt vet tidy generate migrate-up migrate-down run docker-build clean help \
-	db-up db-down db-reset db-migrate db-psql test-integration embed-assets build-embed
+	db-up db-down db-reset db-migrate db-psql test-integration
 
 GO          ?= go
 BIN_DIR     := bin
 GATEWAY_BIN := $(BIN_DIR)/huakai-gateway
-# 仓库根目录(本 Makefile 位于 backend/ 下)。
+# 生产 Dockerfile 同时读取 backend 与 Rust workspace，构建上下文必须是仓库根。
 REPO_ROOT   := $(abspath ..)
 
 # Database URL for migrations (override per environment)
@@ -16,13 +16,6 @@ help: ## Show this help.
 build: ## Build the gateway binary.
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -o $(GATEWAY_BIN) ./cmd/gateway
-
-embed-assets: ## Build the frontend SPA and copy it into the go:embed dist dir.
-	$(REPO_ROOT)/scripts/build-frontend-embed.sh
-
-build-embed: embed-assets ## Build the gateway binary with the embedded SPA (-tags embed).
-	@mkdir -p $(BIN_DIR)
-	$(GO) build -tags embed -o $(GATEWAY_BIN) ./cmd/gateway
 
 test: ## Run all tests.
 	$(GO) test ./... -race -count=1
@@ -52,7 +45,7 @@ run: build ## Build and run the gateway.
 	$(GATEWAY_BIN)
 
 docker-build: ## Build the gateway Docker image.
-	docker build -t huakai-gateway:dev .
+	docker build -f $(REPO_ROOT)/backend/Dockerfile -t huakai-gateway:dev $(REPO_ROOT)
 
 clean: ## Remove build artifacts.
 	rm -rf $(BIN_DIR)

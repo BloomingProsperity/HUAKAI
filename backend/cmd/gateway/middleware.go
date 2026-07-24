@@ -44,7 +44,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/reqdecompress"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
-	"github.com/BloomingProsperity/HUAKAI/internal/webui"
 )
 
 func newRouter(d *deps, logger *zap.Logger) chi.Router {
@@ -130,12 +129,6 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 		router.Handle("/metrics", adminGate(adminResolver, d.metricsHandler))
 	}
 	mountRoutes(router, d, logger)
-	// 对任何未命中 API 路由的路径,提供内嵌的单页前端。
-	// 仅在以 `-tags embed` 编译的构建(包含真实 dist)中启用;
-	// 默认构建在此返回 nil handler,保留 chi 的原始 404。
-	if spa := webui.Handler(webui.Dist()); spa != nil {
-		router.NotFound(spa.ServeHTTP)
-	}
 	return router
 }
 
@@ -303,14 +296,6 @@ func requestExternalScheme(r *http.Request, proxyResolver *clientip.Resolver) st
 	}
 }
 
-// spaContentSecurityPolicy 是内嵌前端「文档面」的 CSP:允许加载同源脚本/样式/字体/图片、
-// 同源 fetch(connect-src),行内样式属性(React 的 style={} 会生成 inline style)需 'unsafe-inline'。
-// 脚本属性、插件对象和 frame 全部禁用。Trusted Types 仍是前端首版硬门，但必须与
-// 实际 SPA 中经过审查的集中策略同批启用；当前仓库只有占位壳，提前强制会让未来
-// Vite 产物在尚未创建策略时白屏。
-// 与 API 面的 default-src 'none' 分流:文档要能自举、API 要彻底锁死,两者 CSP 不能共用一份。
-const spaContentSecurityPolicy = "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-
 // securityHeaders 在每个响应上安装浏览器安全响应头契约。
 // 该网关是一个 JSON API,背后是面向浏览器的 /v1/auth、/v1/sessions、
 // /v1/api-keys、/v1/admin 路由,这些此前一个安全响应头都没有。
@@ -326,14 +311,8 @@ func securityHeaders(proxyResolver *clientip.Resolver) func(http.Handler) http.H
 			h.Set("Cross-Origin-Opener-Policy", "same-origin")
 			h.Set("Referrer-Policy", "no-referrer")
 			h.Set("Permissions-Policy", "camera=(), geolocation=(), payment=(), serial=(), usb=(), microphone=(self)")
-			// CSP 按响应面分流:API 响应是 JSON、绝非文档上下文,default-src 'none' 把页面彻底锁死;
-			// 但内嵌 SPA 的 HTML 外壳(及其 /assets 静态资源)是文档,必须允许加载自身的同源
-			// 脚本/样式,否则 'none' 会连它自己的 JS/CSS 一起拦死 → 整个前端白屏。
-			if webui.IsAPIPath(r.URL.Path) {
-				h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-			} else {
-				h.Set("Content-Security-Policy", spaContentSecurityPolicy)
-			}
+			// 当前进程只提供 API；所有路径统一使用不允许文档资源自举的严格 CSP。
+			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 			if requestExternalScheme(r, proxyResolver) == "https" {
 				h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 			}

@@ -15,9 +15,9 @@ GOBIN="$(go env GOPATH)/bin"
 command -v "$GOBIN/staticcheck" >/dev/null 2>&1 || go install honnef.co/go/tools/cmd/staticcheck@2025.1.1 >/dev/null 2>&1
 command -v "$GOBIN/deadcode" >/dev/null 2>&1 || go install golang.org/x/tools/cmd/deadcode@v0.47.0 >/dev/null 2>&1
 
-# 常规集成、调试、内嵌前端与真实上游测试可能使用不同的测试支架。
+# 常规集成、调试与真实上游测试可能使用不同的测试支架。
 # 生图与视频的构建约束互斥，所以额外保留纯视频形态。
-DC_ALL_TAGS="integration_pg,integration_redis,debug,embed,smoke,e2e_concurrency,e2e_upstream,e2e_chatgpt_session,e2e_codex_live,e2e_gemini_video_live,e2e_grok_live,e2e_openai_image_live,e2e_grok_image_live,e2e_grok_video_live,live_upstream"
+DC_ALL_TAGS="integration_pg,integration_redis,debug,smoke,e2e_concurrency,e2e_upstream,e2e_chatgpt_session,e2e_codex_live,e2e_gemini_video_live,e2e_grok_live,e2e_openai_image_live,e2e_grok_image_live,e2e_grok_video_live,live_upstream"
 DC_VIDEO_TAGS="e2e_grok_video_live,e2e_gemini_video_live"
 QUALITY_CACHE_ROOT="${HUAKAI_QUALITY_GATE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/huakai-quality-gate}"
 mkdir -p "$QUALITY_CACHE_ROOT"

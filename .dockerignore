@@ -20,6 +20,8 @@
 **/tmp
 **/temp
 **/.cache
+**/.gocache
+**/.gotmp
 **/coverage
 coverage*.out
 *.cover
