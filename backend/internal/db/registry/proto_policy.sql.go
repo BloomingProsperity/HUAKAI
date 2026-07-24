@@ -48,7 +48,7 @@ LIMIT 1
 `
 
 // F-PROTO-002 protocol policy version registry queries.
-// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
+// protocol_policy_versions 由 sql/migrations/0005_protocol_translation.up.sql 建立。
 func (q *Queries) GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error) {
 	row := q.db.QueryRow(ctx, getActiveProtocolPolicy, tenantID)
 	var i ProtocolPolicyVersion

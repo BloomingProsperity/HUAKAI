@@ -12,7 +12,7 @@ type Querier interface {
 	CreateAdminModel(ctx context.Context, arg CreateAdminModelParams) (CreateAdminModelRow, error)
 	ExpireCurrentProtocolPolicy(ctx context.Context, arg ExpireCurrentProtocolPolicyParams) error
 	// F-PROTO-002 protocol policy version registry queries.
-	// Backed by protocol_policy_versions table in docs/schema/protocol-translation.sql.
+	// protocol_policy_versions 由 sql/migrations/0005_protocol_translation.up.sql 建立。
 	GetActiveProtocolPolicy(ctx context.Context, tenantID int64) (ProtocolPolicyVersion, error)
 	GetAdminModel(ctx context.Context, arg GetAdminModelParams) (GetAdminModelRow, error)
 	// Resolves the canonical model row, constrained to the requesting tenant
@@ -31,7 +31,7 @@ type Querier interface {
 	// 模型主体运维查询。所有读写都显式携带 scope 与 tenant_id，避免只靠 HTTP 门做归属判断。
 	ListAdminModels(ctx context.Context, arg ListAdminModelsParams) ([]ListAdminModelsRow, error)
 	// F-PROTO-002 protocol capability matrix queries.
-	// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
+	// 协议能力与策略表由 sql/migrations/0005_protocol_translation.up.sql 建立。
 	ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error)
 	ListCapabilityCellsForTenant(ctx context.Context, tenantID int64) ([]ListCapabilityCellsForTenantRow, error)
 	ListLossyCellsForOperatorUI(ctx context.Context, tenantID int64) ([]ListLossyCellsForOperatorUIRow, error)

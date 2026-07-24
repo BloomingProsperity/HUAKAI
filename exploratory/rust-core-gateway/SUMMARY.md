@@ -122,4 +122,4 @@ Bedrock 路径数据是假信号 (Owner 无 AWS 凭据, memory: project_no_aws_c
 - `PLAN.md` — codex lane 起草的完整 10-atom plan (M-rust-1 阶段)
 - `merged/README.md` — merged/ 三 lane 整合说明
 - `merged/READINESS.md` — sonnet M-rust-10 readiness 评估报告
-- 主线 plan: `docs/process/plans/2026-05-08-pasr-mainwire-synthesis.md` (Go 主线参照)
+- 当前生产边界：`docs/HUAKAI工程设计手册.md` §6

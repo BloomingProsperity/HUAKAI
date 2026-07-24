@@ -1,7 +1,7 @@
 // Package registry 把公开模型别名与租户 id 解析为
-// router.ResolvedModel——HUAKAI 模型注册表计划的第 2 个切片。
+// router.ResolvedModel。
 //
-// 流水线参见 docs/process/plans/2026-04-30-n5-model-registry.md:
+// 流水线：
 //
 //	解析 alias -> AliasNormalize -> LookupTenantAlias
 //	  若 tenant alias 处于 active   -> 使用它
@@ -12,7 +12,7 @@
 //	GetModelByID -> 检查 status -> ListCapabilities -> ListBindings
 //	-> 盖上 snapshot version -> ResolvedModel
 //
-// 边界契约(docs/specs/_invariants/cross-module-boundaries.md):
+// 跨模块边界以 docs/HUAKAI工程设计手册.md 为准：
 //   - registry 绝不读取 provider_accounts.credentials、OAuth
 //     token 或 api_keys.key_hash。仅返回元数据。
 //   - 速率上限(rpm_limit/tpm_limit/max_parallel_requests)是

@@ -1,10 +1,10 @@
 {
   "_comment": "真实回填模板；JSON 不支持注释，字段来源见 _field_sources。",
   "_field_sources": {
-    "tls": "capture: /tmp/fingerprint-data/codex-tls/clienthello-template.json, ja3-hashes.txt, ja4-hashes.txt, metadata.json",
-    "http_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md",
-    "auth_layer": "source-analysis: docs/research/2026-05-14-codex-cli-request-signature-codex.md",
-    "target_host": "source-analysis endpoint host; TLS capture target_host was no-sni.vercel-infra.com"
+    "tls": "operator-local capture; raw artifacts are not committed",
+    "http_layer": "HUAKAI runtime profile contract",
+    "auth_layer": "HUAKAI credential mode contract",
+    "target_host": "runtime endpoint host"
   },
   "mode_name": "openai_codex_cli",
   "collected_at": "2026-05-14T06:56:31Z",

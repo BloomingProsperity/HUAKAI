@@ -1,5 +1,4 @@
-// 本包对照 docs/specs/upstream-credential-management.md 中的契约
-// 测试 F-AUTH-005 实现。
+// 本包按当前上游凭据合同测试认证与请求变换实现。
 //
 // 所有测试都使用内存版桩 (auth_helpers_test.go) + httptest.Server
 // 来模拟上游 OAuth refresh; 无需任何外部依赖。

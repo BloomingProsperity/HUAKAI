@@ -17,7 +17,7 @@ const DefaultExpiryBatchSize = 300
 
 // ExpiryWorker 后台 ticker: 周期把到点 active 订阅置 expired (关配额 + 降级)。
 // 单 goroutine; 接 context cancellation 优雅退出。配额窗口的"周期重置"由 quota 引擎日历窗口
-// 自动完成, 本 worker 只管订阅到期, 不做周期重置 (见 docs/.../payment-p3a-impl-claude.md §0)。
+// 自动完成，本 worker 只处理订阅到期，不负责周期重置。
 type ExpiryWorker struct {
 	svc       *Service
 	interval  time.Duration

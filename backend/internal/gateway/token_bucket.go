@@ -1,5 +1,5 @@
-// A07.1: TokenBucket 原语 —— 用于速率预算的纯数据结构。
-// 规格:docs/specs/upstream-credential-management.md §A07 / synthesis §1 A07。
+// A07.1：TokenBucket 原语，用于速率预算的纯数据结构。
+// 当前健康与限流合同见 docs/HUAKAI工程设计手册.md §10。
 //
 // 这是 A07 三作用域刷新风暴控制器的地基原语。A07.2(singleflight)
 // 与 A07.3(三作用域策略合成器)会在后续的原子提交里基于此原语构建。
@@ -105,7 +105,7 @@ func (b *TokenBucket) NextAvailableAt(now time.Time) time.Time {
 }
 
 // Refund 把 1 个令牌还回桶里 —— 用于:占用了名额后上游调用失败,
-//调用方不希望浪费预算的场景。令牌数会夹到 Burst。
+// 调用方不希望浪费预算的场景。令牌数会夹到 Burst。
 func (b *TokenBucket) Refund(now time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -134,7 +134,7 @@ func (b *TokenBucket) Snapshot() (tokens float64, lastRefillAt time.Time) {
 }
 
 // refillLocked 把自 lastRefillNs 以来攒下的令牌补充进来,上限为 Burst。
-//调用方必须持有 b.mu。
+// 调用方必须持有 b.mu。
 func (b *TokenBucket) refillLocked(now time.Time) {
 	nowNs := now.UnixNano()
 	b.normalizeLocked()

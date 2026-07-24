@@ -9,7 +9,7 @@
 //	   2. InsertAdminAuditEvent(action='issue_admin_token')
 //	-> commit -> 一次性返回 TokenIssueResult{Plaintext, ...}。
 //
-// 安全不变量(对应 CLAUDE.md §4 secret-mask):
+// 安全不变量：
 //   - 签发 admin token 是高权操作,只有 platform_admin 能调;tenant_operator
 //     一律 ErrAdminForbidden。身份取自鉴权上下文(Caller),绝不信 body。
 //   - 明文 bearer 只在 TokenIssueResult.Plaintext 中出现一次,绝不入库、

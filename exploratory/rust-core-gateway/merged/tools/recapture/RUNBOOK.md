@@ -7,8 +7,7 @@
 
 代跑仍守 §6 secret redaction：raw pcap 抓完立刻 tshark 抽 handshake-only 后删，secrets / token / API key / prompt / cookie 不进 git，也不留在 sandbox 持久路径。
 
-依据：`docs/process/plans/2026-05-14-r3-on-merged-closure-codex.md` 第 3 节 Phase R-D 要求：
-CI 只能做 local capture，真实上游验真必须由 Owner 本机执行；每个 vendor 至少 3 次样本；
+本操作手册要求 CI 只能做 local capture，真实上游验真必须由 Owner 本机执行；每个 vendor 至少 3 次样本；
 codex/gemini/anthropic stable hash 必须全匹配，kiro 走 sample set；任一 hash 漂移必须 surface 并暂停 mimicry production dispatch。
 
 ## 1. 前置条件
@@ -526,11 +525,9 @@ Operator 要求：
 ## 11. Source files read
 
 - `docs/RULES.md`
+- `docs/HUAKAI工程设计手册.md`
 - `.agents/skills/acceptance-test-writer/SKILL.md`
 - `.agents/skills/clean-room-license-guard/SKILL.md`
-- `docs/process/plans/2026-05-15-l2-a5-5-extension-list-codex.md`
-- `docs/process/reviews/2026-05-15-l2-a5-5-codex-review.md`
-- `docs/process/plans/2026-05-14-r3-on-merged-closure-codex.md`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/openssl_adapter.rs`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/src/mimicry/profile.rs`
 - `exploratory/rust-core-gateway/merged/crates/core_gateway/tests/common/capture_diff.rs`

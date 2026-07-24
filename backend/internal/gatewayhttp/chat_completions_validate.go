@@ -79,8 +79,8 @@ func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx 
 // relay 入站请求体上限:旧版硬写 1MiB,导致付费用户的带图(单张 base64 ~1.5MiB)、长上下文请求被
 // 413。这里把上限抽出来默认抬到成熟中转站量级,运维可经 cmd/gateway 在启动时覆盖(读
 // HUAKAI_MAX_REQUEST_BODY_MB)。放大后的滥用面由已有 per-key 限流(RPM/并发)兜住。
-// (上游非流式响应上限暂未纳入:它在 gatewayhttp 与 internal/gateway HCSF 两条路径各一份须一致,
-// 属 proxies 碰撞包,留作单独协调式 follow-up,见 docs/process/plans。)
+// 上游非流式响应上限仍分别位于 gatewayhttp 与 internal/gateway 两条路径；修改时必须同步校验，
+// 避免不同入口的限制发生漂移。
 const defaultMaxRequestBodyBytes int64 = 32 << 20 // 32 MiB
 
 // maxRequestBodyBytes 是进程级 relay 入站请求体上限:启动 wiring 阶段经 ConfigureBodyLimits 一次性

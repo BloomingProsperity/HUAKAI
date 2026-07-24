@@ -129,7 +129,7 @@ func TestKeyPatchBothFields(t *testing.T) {
 	}
 }
 
-// expires_at 三态解码遵守 CLAUDE.md #16。handler 必须把线上的 *string
+// expires_at 三态解码按生产接口合同执行。handler 必须把线上的 *string
 // 精确转换为 service 的「值 + 清除标志」二分形式。
 
 // SET:非空 RFC3339 字符串 -> service 收到解析出的截止时间,ClearExpiry=false。

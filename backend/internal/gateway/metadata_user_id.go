@@ -1,6 +1,5 @@
 // R7.5：Anthropic Messages API metadata.user_id 重写引擎（强伪装层 6 步
-// body 变换的第 5 步）。Spec：docs/specs/upstream-credential-management.md
-// §Phase C 第 27 步 step 5 of 6。
+// body 变换的第 5 步）。当前合同见 docs/HUAKAI工程设计手册.md §6。
 //
 // metadata.user_id 是 Anthropic 客户端（Claude Code）写入请求的身份指纹。
 // 上游用此字段做客户端识别 + 风控。HUAKAI 强伪装在请求转发前重写这个字段

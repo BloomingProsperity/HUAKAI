@@ -1,4 +1,4 @@
-// Package proto 按 docs/specs/protocol-translation.md 测试 F-PROTO-002 共享契约。
+// Package proto 按当前协议转换合同测试 F-PROTO-002 共享行为。
 package proto
 
 import (

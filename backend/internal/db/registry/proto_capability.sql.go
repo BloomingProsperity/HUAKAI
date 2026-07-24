@@ -50,7 +50,7 @@ type ListCapabilityCellsForPairRow struct {
 }
 
 // F-PROTO-002 protocol capability matrix queries.
-// Backed by docs/schema/protocol-translation.sql (capability + policy tables).
+// 协议能力与策略表由 sql/migrations/0005_protocol_translation.up.sql 建立。
 func (q *Queries) ListCapabilityCellsForPair(ctx context.Context, arg ListCapabilityCellsForPairParams) ([]ListCapabilityCellsForPairRow, error) {
 	rows, err := q.db.Query(ctx, listCapabilityCellsForPair, arg.TenantID, arg.ClientProtocol, arg.UpstreamProtocol)
 	if err != nil {

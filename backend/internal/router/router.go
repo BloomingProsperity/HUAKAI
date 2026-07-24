@@ -1,6 +1,6 @@
 // Package router 是 HUAKAI Router Engine —— 跨 pool / 跨 model /
 // 跨 cost / 跨 policy 的决策层。
-// 参见 docs/specs/_invariants/cross-module-boundaries.md：
+// 当前跨模块边界见 docs/HUAKAI工程设计手册.md：
 //
 //   Router Engine    —— 决定尝试哪些路由，以及按什么顺序
 //   Resource Pool    —— 决定在一条路由内可以 claim 哪个资源

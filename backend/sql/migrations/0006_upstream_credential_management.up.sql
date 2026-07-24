@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: upstream-credential-management
+-- HUAKAI 上游凭据管理基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/upstream-credential-management.md
--- (F-AUTH-005).
--- DR-008 §1: schema fragments locked only after spec is Released.
+-- 提供 F-AUTH-005 所需表面。
 --
 -- Most F-AUTH-005 state lives on provider_accounts.credentials (jsonb) which
 -- already exists in pool-routing.sql. This fragment adds CAS columns + audit
@@ -167,7 +165,6 @@ COMMENT ON TABLE mimicry_policy IS 'F-AUTH-005 H6: per-Pool Claude Code mimicry.
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/upstream-credential-management.md @ Status=Released
--- Migration order: 0006 (after protocol-translation). Forward-only.
+-- 固化日期：2026-04-28
+-- 迁移顺序：0006（在协议转换之后）；后续只允许前向演进。
 -- ----------------------------------------------------------------------------

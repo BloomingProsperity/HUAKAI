@@ -1,7 +1,7 @@
 -- Down migration for 0008.
 -- DEV ROLLBACK ONLY — do NOT run in production once 0009+ depends on
 -- uq_pool_groups_tenant_id_id or on usage_records.snapshot_version.
--- Down-migration discipline doc: docs/specs/_invariants/migrations.md.
+-- 回滚保持与对应 up migration 相反的依赖顺序。
 
 BEGIN;
 

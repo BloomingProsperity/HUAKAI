@@ -1,7 +1,7 @@
 // R7.6：强伪装层 6 步 body 变换组合器。把 R7.1～R7.5 各原子
 // 串成完整管线，按调用方配置启停每一步，输出每步审计 + 最终 body。
 //
-// 规格：docs/specs/upstream-credential-management.md §Phase C 第 27 步：
+// 当前出站合同见 docs/HUAKAI工程设计手册.md §6：
 //
 //	应用 6 步 body 变换：system 重写 + system cache_control 剥离
 //	+ cache_control 断点注入 + tool 名混淆 + metadata user_id 注入

@@ -7,7 +7,7 @@
 // public billing.Settler.Settle,并用三证 proof(claim committed +
 // usage_records + billing_events) 区分"已成功提交"和"未提交",防重复扣费。
 //
-// 决策上下文:docs/process/plans/2026-05-24-post-delivery-settle-recovery-synthesis.md
+// 当前结算恢复合同见 docs/HUAKAI工程设计手册.md §10.4。
 package settlementrecovery
 
 import (

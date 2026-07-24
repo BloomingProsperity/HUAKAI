@@ -1,0 +1,69 @@
+name: 重大生产事故
+description: 仅记录已经影响生产的资金、安全、跨租户、数据丢失或同等级事故
+title: "[事故] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        未上线缺口、开发环境缺陷和普通 CI 失败请使用缺陷报告。公开 Issue 不得写入秘密、个人信息或可直接利用的安全细节。
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 已确认影响
+      placeholder: |
+        开始时间（UTC）：
+        受影响角色/租户/请求/资金/数据：
+        当前是否仍在持续：
+        证据来源：
+    validations:
+      required: true
+
+  - type: textarea
+    id: containment
+    attributes:
+      label: 当前遏制与服务状态
+      placeholder: |
+        已执行动作：
+        当前服务状态：
+        数据与资金保护状态：
+        下一次更新时间：
+    validations:
+      required: true
+
+  - type: textarea
+    id: timeline
+    attributes:
+      label: 事实时间线
+      description: 只写已核实的 UTC 时间、事件和证据，不写推测。
+    validations:
+      required: true
+
+  - type: textarea
+    id: recovery
+    attributes:
+      label: 恢复、对账与验证
+      placeholder: |
+        自动恢复：
+        人工恢复：
+        对账/数据校验：
+        防复发验证：
+    validations:
+      required: true
+
+  - type: textarea
+    id: root_cause
+    attributes:
+      label: 根因与纠正措施
+      description: 未核实前标明“调查中”；核实后区分直接根因、系统性条件和长期措施。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 公开披露确认
+      options:
+        - label: 已移除秘密、个人信息和可直接利用的安全细节
+          required: true
+        - label: 若涉及安全漏洞，已同时使用私密安全报告渠道

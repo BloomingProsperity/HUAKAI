@@ -1,6 +1,6 @@
 // 基于 Postgres 的 Registry 实现。
 //
-// Resolve 流程见 docs/process/plans/2026-04-30-n5-model-registry.md §"Resolve query":
+// Resolve 流程：
 //
 //   1. 规范化 alias。
 //   2. 开启一个 REPEATABLE READ + 只读 TX,使所有读取都观察到同一份
@@ -247,7 +247,7 @@ type resolvedAliasRow struct {
 }
 
 // lookupAlias 依据 D3 执行 tenant-then-global 的两步解析
-//(显式拒绝不变量:tenant 被禁用会阻断 global 回退)。
+// (显式拒绝不变量:tenant 被禁用会阻断 global 回退)。
 // 所有读取都使用调用方提供的 Queries(它绑定到外层的
 // REPEATABLE READ tx 以保证快照一致性)。
 func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Queries, tenantID int64, aliasLower string) (resolvedAliasRow, error) {

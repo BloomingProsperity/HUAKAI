@@ -2,7 +2,7 @@
 // Provider Account 凭证管理 (OAuth refresh、token cache、storm
 // 防护、mimicry policy)。
 //
-// 已发布的上游凭证规格见 docs/specs/upstream-credential-management.md。
+// 当前上游凭据合同见 docs/HUAKAI工程设计手册.md §4。
 // 当前切片包含基于数据表的入站 API key 鉴权、Antigravity token-provider
 // 构件、以及 account-scope storm budget;
 // 其它 provider adapter 与更广的 storm scope 留待 Phase E+ 完成。
@@ -18,8 +18,8 @@ type TokenProvider interface {
 	GetAccessToken(ctx context.Context, tenantID, accountID int64) (string, error)
 }
 
-// MimicryEngine 按 F-AUTH-005 §Phase H 应用请求变换。当前运行时不读取
-// mimicry_policy 表；该表的保留状态见 docs/architecture/deprecated-schema.md。
+// MimicryEngine 应用账号模式要求的请求变换。当前运行时不读取
+// mimicry_policy 表；数据库保留列的运行状态见 docs/HUAKAI工程设计手册.md §17。
 type MimicryEngine interface {
 	// ApplyToBody 返回变换后的请求 body + 审计属性。
 	// 6 步变换: 改写 system + 剥离 cache_control + breakpoints +

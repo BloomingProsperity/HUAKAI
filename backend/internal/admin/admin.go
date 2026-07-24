@@ -3,7 +3,7 @@
 //   - api_keys 的签发 / 吊销 / 列举(取代手工 SQL INSERT 到 api_keys 的工作流)
 //   - admin_audit_events 写入
 //
-// 边界契约(docs/specs/_invariants/cross-module-boundaries.md):
+// 跨模块边界以 docs/HUAKAI工程设计手册.md 为准：
 // 本包【绝不可】被 internal/router 或 internal/auth 的热路径 resolver 引入。
 //     入站 resolver 查 api_keys;admin 工作写 api_keys。两个不同的能力面。
 // 明文 bearer 仅在 IssueResult.Plaintext 中暴露,
@@ -12,7 +12,7 @@
 // 本包写入 admin_tokens、api_keys 和 admin_audit_events,
 //     绝不写 billing、pool 或 registry 表。
 //
-// 依据 docs/process/plans/2026-05-01-n4b-admin-keys.md。
+// 管理令牌的当前接口合同见 docs/openapi/openapi.yaml。
 
 package admin
 
@@ -27,11 +27,11 @@ var ErrAdminUnauthorized = errors.New("admin: unauthorized")
 var ErrAdminForbidden = errors.New("admin: forbidden")
 
 // ErrAdminRateLimited 在调用方超出 per-actor 签发速率窗口时返回
-//(D4 默认:30 次签发 / 小时)。handler 将其映射为 429。
+// (D4 默认:30 次签发 / 小时)。handler 将其映射为 429。
 var ErrAdminRateLimited = errors.New("admin: rate limited")
 
 // ErrAdminBadRequest 覆盖那些数据库本就会拒绝的结构性非法输入
-//(例如缺少必填字段)。400。
+// (例如缺少必填字段)。400。
 var ErrAdminBadRequest = errors.New("admin: bad request")
 
 // ErrAdminNotFound 在目标资源(api_keys 行、admin_tokens 行)不存在

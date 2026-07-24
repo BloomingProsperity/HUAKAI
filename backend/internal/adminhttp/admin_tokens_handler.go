@@ -2,7 +2,7 @@
 // /admin/v1/admin-tokens 之下。区别于 api_keys_handler.go(后者管的是
 // 客户 api_keys);本文件管的是 admin_tokens 行。
 //
-// 安全契约(CLAUDE.md §4 secret-mask + auth-core):
+// 安全契约：
 //   - 签发 / 列举 / 吊销 admin token 都是高权操作 —— internal/admin 侧的
 //     AdminTokenIssuer 已做 platform_admin-only 的 fail-closed RBAC,本层
 //     只负责解析 / 投影,绝不放宽。身份取自 Auth.Resolve(鉴权上下文),

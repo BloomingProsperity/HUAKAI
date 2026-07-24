@@ -8,7 +8,7 @@ import (
 )
 
 // 当前窗口的只读投影, 集中放在这个专门文件里。pg_store.go 在 HEAD 处已有 588 行;
-// 若把新的多 metric 读取也加进去会涨到 611 行, 超过每文件 600 行上限(CLAUDE.md #13),
+// 若把新的多 metric 读取也加进去会涨到 611 行，超过项目约 600 行的单文件维护上限，
 // 所以这些读取方法改放在这里。cost-only 读取服务于 subscription 进度与 key-control;
 // 多 metric 读取服务于 /quota 状态。
 

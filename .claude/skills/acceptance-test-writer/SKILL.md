@@ -13,10 +13,9 @@ description: 把行为合同、真实事故、bug pattern、parity 义务和运�
 
 ## 前置输入
 
-- `docs/02_CAPABILITY_CONTRACT.md`；
-- `docs/08_REAL_WORLD_SCENARIOS.md`；
-- `docs/09_BUG_PATTERN_LIBRARY.md`；
-- `docs/11_ACCEPTANCE_TEST_MATRIX.md`；
+- 当前 Issue/PR 中已核实的行为合同、事故场景和验收条件；
+- `docs/HUAKAI项目与架构白皮书.md` 与 `docs/源码责任索引.md`；
+- OpenAPI、数据库约束和现有测试等机器可验证合同；
 - 真实入口、存储和 worker 接线。
 
 ## 执行步骤
@@ -28,7 +27,7 @@ description: 把行为合同、真实事故、bug pattern、parity 义务和运�
 5. 为每个测试给 mutation：删哪个守卫/接线后必须变红。
 6. 使用判别 fixture，断言最终 balance/hold/quota/state/audit/DLQ，而不只断言 HTTP 状态。
 7. 指定 unit、PostgreSQL integration、race、fault injection、container/real upstream 层级。
-8. 更新现有 test matrix，不另建重复列表。
+8. 把验收矩阵写入当前 Issue/PR 并落实为测试，不另建长期重复列表。
 
 ## 输出
 

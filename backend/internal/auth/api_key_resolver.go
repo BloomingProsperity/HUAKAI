@@ -1,13 +1,13 @@
 // Phase L0 最小实现: 基于数据表的入站鉴权 resolver。
 // 取代 Phase C v0.1 期间使用的 SmokeAuthResolver 路径。
 //
-// 流水线参见 docs/process/plans/2026-04-30-n4-l0-minimum.md (综合方案):
+// 当前入站 Key 流水线如下：
 //
 //	解析 Bearer header → 推导 16 字符 key_prefix → LookupAPIKeysByPrefix
 //	(<= 5 个候选) → 对每个候选执行 bcrypt.CompareHashAndPassword → 检查
 //	status + expires_at → 返回 Identity{TenantID, APIKeyID, UserID}
 //
-// 边界契约 (docs/specs/_invariants/cross-module-boundaries.md):
+// 跨模块边界以 docs/HUAKAI工程设计手册.md 为准：
 // 这是 Auth 层; 分层调用顺序为
 //     Auth → Registry → Router。Resolver 不 import router, 也不调用
 //     Pool/Adapter/Ledger。

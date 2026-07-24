@@ -1,7 +1,6 @@
 // KeyRevoker 为 admin 端点处理 api_keys 的吊销。仅软吊销 —— billing 表
 // 以 ON DELETE RESTRICT 的 FK 指回 api_keys(见 migration 0009),因此
-// 只要审计历史存在,硬删除在结构上就不可能。依据 CLAUDE.md,这正是
-// 预期的不变量。
+// 只要资金或用量历史仍引用该 Key，数据库就拒绝硬删除；这是预期的不变量。
 
 package admin
 

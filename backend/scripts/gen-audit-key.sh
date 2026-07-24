@@ -6,7 +6,7 @@
 #   bash backend/scripts/gen-audit-key.sh /path/key.pem
 #
 # 生成后按提示把 HUAKAI_AUDIT_PRIVATE_KEY_PATH 指向该私钥(容器部署经 volumes 挂载,
-# 详见 docs/deploy/production-bootstrap.md)。切勿把私钥提交进仓库(.gitignore 已忽略 secrets/)。
+# 详见 docs/deploy/生产部署与升级.md）。切勿把私钥提交进仓库（.gitignore 已忽略 secrets/）。
 set -euo pipefail
 
 OUT="${1:-secrets/audit_key.pem}"
@@ -29,7 +29,7 @@ chmod 600 "$OUT" 2>/dev/null || true
 
 echo "✓ 已生成审计私钥:$OUT"
 echo
-echo "下一步:在 .env / shell 设置(容器部署见 docs/deploy/production-bootstrap.md):"
+echo "下一步：在 .env / shell 设置（容器部署见 docs/deploy/生产部署与升级.md）："
 echo "  裸二进制:HUAKAI_AUDIT_PRIVATE_KEY_PATH=$OUT"
 echo "  容器部署:HUAKAI_AUDIT_PRIVATE_KEY_HOST=$OUT(经 volumes 挂到容器内 HUAKAI_AUDIT_PRIVATE_KEY_PATH)"
 echo "  同时确保 HUAKAI_AUDIT_LEDGER_BACKEND=postgres(production 强制持久化账本)。"

@@ -17,7 +17,7 @@ description: 在选择外部领域项目、增加依赖、vendoring 或发布前
 - 候选仓库 URL、当前 HEAD 和用途；
 - 现有依赖清单与 lockfile；
 - `AGENTS.md` §5 clean-room/参考源规则；
-- `docs/10_RISK_REGISTER.md`。
+- `docs/dependency-policy.md` 与当前 Issue/PR 的风险记录。
 
 ## 执行步骤
 
@@ -27,7 +27,7 @@ description: 在选择外部领域项目、增加依赖、vendoring 或发布前
 4. 判定用途是“行为证据、独立实现、官方 SDK、隔离插件或 vendoring”。
 5. AGPL/GPL/LGPL 默认只允许 clean-room 行为证据；不能因许可证风险删除能力。
 6. 对允许复用的官方 SDK/隔离 vendoring，列 LICENSE/NOTICE、来源 SHA、升级和漏洞跟踪要求。
-7. 把真实风险写入现有 risk register 或当前唯一计划，不新建重复文档。
+7. 把真实风险写入当前 Issue/PR；长期依赖规则只更新 `docs/dependency-policy.md`，不新建重复文档。
 
 ## 输出
 

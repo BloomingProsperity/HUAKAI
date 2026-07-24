@@ -1,6 +1,5 @@
 // R7.1：Anthropic Messages API 的 cache_control 状态分析器。
-// 规格:docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
-// docs/specs/protocol-translation.md(Anthropic Messages 形态)。
+// 当前凭据与协议合同见 docs/HUAKAI工程设计手册.md §4 和 §6。
 //
 // 只读检查器 + 断点规划器。纯 JSON 遍历——无 IO、无网络、不接触凭据、
 // 不修改请求体。R7.2(变换器)是下一个原子步骤。

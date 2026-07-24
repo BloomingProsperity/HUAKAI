@@ -2,7 +2,7 @@
 // /admin/v1/ 之下。本切片交付 api_keys 的签发 + 列表 +
 // 吊销能力面;后续切片会加上 /admin/v1/users、/admin/v1/pools 等。
 //
-// 依据 CLAUDE.md + docs/specs/_invariants/cross-module-boundaries.md:
+// 跨模块边界以 AGENTS.md 和 docs/HUAKAI工程设计手册.md 为准：
 // 本包永不 import internal/router 或 internal/auth。
 //     客户热路径不受影响。
 // 明文 bearer 仅在 POST 响应体中向运营者呈现一次。

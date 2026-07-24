@@ -1,5 +1,5 @@
 -- F-OBS-001 Tx1/Tx2 billing ledger claim queries.
--- Backed by billing_ledger_claims in docs/schema/observability-billing.sql.
+-- billing_ledger_claims 的权威结构由 sql/migrations/0002_observability_billing.up.sql 建立。
 
 -- name: GetClaimByIdempotency :one
 -- Hot-path Tx1 lookup with FOR UPDATE row lock per spec §Tx1 step 2.

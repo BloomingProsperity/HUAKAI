@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: observability-billing
+-- HUAKAI 观测与计费基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/observability-billing.md
--- (F-OBS-001 + F-BILL-001 framing).
--- DR-008 §1: schema fragments may be locked only after spec is Released.
+-- 提供 F-OBS-001 与 F-BILL-001 所需表面。
 -- DR-001: every primary table carries non-null tenant_id.
 -- DR-006: PostgreSQL with sqlc; SERIALIZABLE isolation for Tx1/Tx2 explicit.
 -- F-OBS-001 invariant: numeric(20,8) money types end-to-end; immutable
@@ -114,7 +112,7 @@ COMMENT ON TABLE billing_events IS 'F-OBS-001 H8: audit-grade event row in Tx2; 
 -- Table: usage_records
 -- ----------------------------------------------------------------------------
 -- Rich analytics record (in Tx2 per F-OBS-001 H2).
--- Immutable per docs/19_DOMAIN_MODEL.md §Invariant 4.
+-- usage_records 是不可变事实；对账通过追加事件表达。
 -- Reconciliation appends new rows in usage_record_reconciliation_events.
 -- Hot store; per-tenant retention policy.
 -- ----------------------------------------------------------------------------
@@ -187,7 +185,7 @@ CREATE INDEX idx_usage_records_claim
     ON usage_records (claim_id);
 CREATE INDEX idx_usage_records_account_settled
     ON usage_records (provider_account_id, settled_at DESC);
-COMMENT ON TABLE usage_records IS 'F-OBS-001: immutable usage record (per docs/19 §Invariant 4). Hot store. Reconciliation appends rows in usage_record_reconciliation_events; original is never mutated.';
+COMMENT ON TABLE usage_records IS 'F-OBS-001: immutable usage record. Hot store. Reconciliation appends rows in usage_record_reconciliation_events; original is never mutated.';
 
 -- ----------------------------------------------------------------------------
 -- Table: usage_record_dlq
@@ -265,7 +263,7 @@ CREATE INDEX idx_adjustments_claim
     ON billing_ledger_adjustments (original_claim_id);
 CREATE INDEX idx_adjustments_tenant_type_time
     ON billing_ledger_adjustments (tenant_id, adjustment_type, created_at DESC);
-COMMENT ON TABLE billing_ledger_adjustments IS 'F-OBS-001 + docs/19 §Invariant 4: append-only paired adjustments. Original claim never mutated; corrections via signed delta rows.';
+COMMENT ON TABLE billing_ledger_adjustments IS 'F-OBS-001: append-only paired adjustments. Original claim never mutated; corrections via signed delta rows.';
 
 -- ----------------------------------------------------------------------------
 -- Table: billing_pricing_versions
@@ -307,7 +305,6 @@ COMMENT ON TABLE billing_pricing_versions IS 'F-BILL-001 framing: versioned pric
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/observability-billing.md @ Status=Released
--- Migration order: 0002 (after pool-routing). Future migrations forward-only.
+-- 固化日期：2026-04-28
+-- 迁移顺序：0002（在账号池与路由之后）；后续只允许前向演进。
 -- ----------------------------------------------------------------------------

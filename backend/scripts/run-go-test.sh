@@ -17,8 +17,7 @@
 #   3. Retries up to 3 times if (and only if) the failure matches a SAC-block
 #      signature. Other failures (real test failures, compile errors) are not retried.
 #
-# Permanent fix: have an admin disable Smart App Control. See
-#   docs/01_APPLOCKER_DEFENDER_RESOLUTION.md  section 2.
+# 长期处理方式由管理员调整 Smart App Control，详见 docs/dev-tests.md。
 
 set -u
 
@@ -87,5 +86,5 @@ while (( attempt <= MAX_ATTEMPTS )); do
 done
 
 echo "[run-go-test] exhausted $MAX_ATTEMPTS attempts; giving up."
-echo "[run-go-test] consider disabling Smart App Control — see docs/01_APPLOCKER_DEFENDER_RESOLUTION.md"
+echo "[run-go-test] 可考虑关闭 Smart App Control，详见 docs/dev-tests.md"
 exit 75   # EX_TEMPFAIL

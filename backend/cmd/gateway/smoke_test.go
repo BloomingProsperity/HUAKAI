@@ -466,7 +466,7 @@ func buildGateway(t *testing.T) string {
 	// 唯一的二进制哈希。Smart App Control(Win11)按二进制哈希
 	// 缓存拦截决策;若不这样做,单次 SAC 拦截会在之后的所有运行中
 	// 一直持续,直到内容发生变化。参见
-	// docs/01_APPLOCKER_DEFENDER_RESOLUTION.md。
+	// Windows 应用控制导致的测试阻断处理见 docs/dev-tests.md。
 	stamp := fmt.Sprintf("smoke-%d", time.Now().UnixNano())
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.smokeBuildStamp="+stamp,
@@ -573,7 +573,7 @@ func stopGateway(processes *specializedLiveProcesses) {
 func waitForGateway(t *testing.T, addr string) {
 	t.Helper()
 	for i := 0; i < smokeBootRetries; i++ {
-		// 我们没有 /healthz;改用一个非 API 的 GET,它应当很快返回 404。
+		// 这里仅探测监听是否建立，使用根路径避免把启动等待与依赖健康判定混在一起。
 		resp, err := http.Get("http://" + addr + "/")
 		if err == nil {
 			_ = resp.Body.Close()

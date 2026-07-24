@@ -25,8 +25,8 @@ var (
 	ErrPoolGroupNotFound = errors.New("routeadmin: target pool_group not found for tenant")
 )
 
-// Route 是 routes 表的管理视图(只含管理 CRUD 关心的核心字段)。富表的 26 个
-// override/weight/streaming 历史列当前无运行时消费，见 docs/architecture/deprecated-schema.md。
+// Route 是 routes 表的管理视图（只含管理 CRUD 关心的核心字段）。富表的 26 个
+// override/weight/streaming 历史列当前无运行时消费。
 type Route struct {
 	ID                int64
 	TenantID          int64

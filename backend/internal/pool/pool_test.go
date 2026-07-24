@@ -1,5 +1,4 @@
-// Package pool 针对 docs/specs/pool-routing.md 中的契约测试
-// F-POOL-001 的实现。
+// Package pool 按当前分组和账号池合同测试 F-POOL-001 的实现。
 package pool
 
 import (

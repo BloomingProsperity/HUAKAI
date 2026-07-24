@@ -234,7 +234,7 @@ func newRevokeHandler(d Deps) http.HandlerFunc {
 type patchRequest struct {
 	Name   *string `json:"name,omitempty"`
 	Status *string `json:"status,omitempty"`
-	// expires_at 三态遵守 CLAUDE.md #16：
+	// expires_at 使用以下三态合同：
 	//   缺省 / JSON null -> nil 指针 = 保持截止时间不变
 	//   空字符串 ""      -> 清除截止时间(key 变为永不过期)
 	//   RFC3339 字符串   -> 把截止时间设为该时刻(解析失败 -> 400)

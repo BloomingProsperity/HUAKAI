@@ -1,8 +1,6 @@
--- HUAKAI Phase 2 Schema Lock: pool-routing
+-- HUAKAI 账号池与路由基础结构
 -- ============================================================================
--- Locks the schema surface required by docs/specs/pool-routing.md (F-POOL-001).
--- DR-008 §1: schema fragments may be locked only after spec is Released.
--- DR-001: every primary table carries non-null tenant_id.
+-- 提供 F-POOL-001 所需表面；每张主表都携带非空 tenant_id。
 -- DR-006: PostgreSQL with sqlc; no ORM; row-level locks via SELECT FOR UPDATE.
 -- ============================================================================
 
@@ -351,8 +349,6 @@ COMMENT ON TABLE scheduler_outbox IS 'Transactional outbox for cache invalidatio
 -- ----------------------------------------------------------------------------
 -- Schema lock metadata
 -- ----------------------------------------------------------------------------
--- Locked: 2026-04-28
--- Spec source: docs/specs/pool-routing.md @ Status=Released
--- Migration order: 0001 (initial). Future migrations forward-only.
--- Constraint: any field change requires new DR + new spec revision.
+-- 固化日期：2026-04-28
+-- 迁移顺序：0001（初始）；后续字段变更必须通过新迁移前向演进。
 -- ----------------------------------------------------------------------------

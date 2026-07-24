@@ -1,5 +1,5 @@
-// Anthropic Messages API system 字段重写引擎。规格：
-// docs/specs/upstream-credential-management.md §Phase C 第 27 步（6 步中的第 1 步）。
+// Anthropic Messages API system 字段重写引擎，是账号模式请求变换的第 1 步。
+// 当前出站合同见 docs/HUAKAI工程设计手册.md §6。
 //
 // 纯 JSON 变换，不做 IO/网络/凭据接触。覆盖 system 字段的合法形态：
 // 缺省/null、字符串、单个内容块对象（{"type":"text","text":"...",

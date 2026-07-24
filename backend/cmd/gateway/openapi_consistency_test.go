@@ -26,6 +26,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/openapicheck"
 )
 
@@ -52,15 +53,16 @@ func mountTestRoutes(t *testing.T, r chi.Router) {
 	if err != nil {
 		t.Fatalf("build Hermes test runner: %v", err)
 	}
-	// mountRoutes 在注册期会 deref d.cfg.BillingPolicyVersion / RequestClass，
-	// 因此 deps.cfg 必须非 nil；其它字段保持零值（handler 本身不会 invoke）。
+	// mountRoutes 在注册期会读取配置，并按生产组合根必定装配的依赖注册条件路由。
+	// handler 不会执行，因此媒体任务 store 只需非 nil，不连接测试数据库。
 	d := &deps{
 		cfg: &config.Config{
 			BillingPolicyVersion: "test-1.0",
 			RequestClass:         "standard",
 		},
-		hermesService: hermes.NewService(nil),
-		hermesRunner:  hermesRunner,
+		hermesService:  hermes.NewService(nil),
+		hermesRunner:   hermesRunner,
+		mediaTaskStore: mediatask.NewPostgresStore(nil, mediatask.PostgresStoreConfig{}),
 	}
 	mountRoutes(r, d, zap.NewNop())
 }

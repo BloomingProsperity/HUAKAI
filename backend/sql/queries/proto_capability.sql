@@ -1,5 +1,5 @@
 -- F-PROTO-002 protocol capability matrix queries.
--- Backed by docs/schema/protocol-translation.sql (capability + policy tables).
+-- 协议能力与策略表由 sql/migrations/0005_protocol_translation.up.sql 建立。
 
 -- name: ListCapabilityCellsForPair :many
 SELECT

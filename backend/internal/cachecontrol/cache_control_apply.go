@@ -1,7 +1,6 @@
 // R7.2：Anthropic Messages API 的 cache_control 变更器。
 // R7.1 探测器（cache_control.go）的姊妹函数。
-// 规格：docs/specs/upstream-credential-management.md §F-AUTH-005 Phase H /
-// docs/reference_delta/2026-05-06/vendor-drift-audit.md（D5 TTL 约束）。
+// 当前凭据与协议合同见 docs/HUAKAI工程设计手册.md §4 和 §6。
 //
 // 纯 JSON 变更 —— 无 IO、无网络、不接触凭证。
 // 按 SuggestBreakpoints（R7.1）规划好的方案插入 cache_control 断点。

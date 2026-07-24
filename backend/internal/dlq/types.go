@@ -22,7 +22,7 @@ const (
 	// 但 Tx2 settlement 未确认提交"的 durable recovery intent。
 	// worker 拿到后重调 public Settler.Settle 重放(走完整 idempotency 路径,
 	// 不重写底层 SQL),并用 claim/usage/billing_event 三证 proof 防重复扣费。
-	// 详见 docs/process/plans/2026-05-24-post-delivery-settle-recovery-synthesis.md。
+	// 当前结算恢复合同见 docs/HUAKAI工程设计手册.md §10.4。
 	EventKindPostDeliverySettlement EventKind = "post_delivery_settlement"
 	// EventKindCostReceiptAppend 用于 Tx2 已提交但 user_cost_receipts append
 	// hook 失败的 durable recovery intent。worker 重放只派生并写 receipt,
