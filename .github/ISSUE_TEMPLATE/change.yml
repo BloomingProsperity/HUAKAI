@@ -1,0 +1,121 @@
+name: 功能与工程变更
+description: 管理一个功能、治理、运维或结构变更的唯一工作项
+title: "[变更] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        一个目标只建立一个 Issue、一个功能分支和一个 PR。这里保存当前计划与状态，不再创建会话进度文档。
+
+  - type: dropdown
+    id: state
+    attributes:
+      label: 当前状态
+      options:
+        - 待确认
+        - 已确认
+        - 实施中
+        - 待审查
+        - 待合并
+        - 已合并待主线验证
+        - 阻塞
+    validations:
+      required: true
+
+  - type: textarea
+    id: owner_goal
+    attributes:
+      label: Owner 目标与用户结果
+      description: 写清最终要解决什么问题，以及部署者、租户管理员或最终用户会得到什么。
+    validations:
+      required: true
+
+  - type: textarea
+    id: source_truth
+    attributes:
+      label: 当前源码事实
+      description: 记录最新 origin/main SHA、真实入口、接线、存储、恢复和已知偏差；不能以旧文档代替源码。
+      placeholder: |
+        origin/main：
+        已存在：
+        已接线：
+        尚缺：
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与不在范围
+      placeholder: |
+        范围：
+        不在范围：
+        同根问题需要横查：
+    validations:
+      required: true
+
+  - type: textarea
+    id: contract
+    attributes:
+      label: 行为合同与执行顺序
+      description: 覆盖正常、失败、并发、幂等、恢复、运维和外部行为证据。
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 完整链路与影响半径
+      placeholder: |
+        入口与身份：
+        决策与持久化：
+        外部副作用：
+        计费、配额与日志：
+        重试、DLQ 与人工恢复：
+        同类模块：
+    validations:
+      required: true
+
+  - type: textarea
+    id: decisions
+    attributes:
+      label: 决策与风险
+      description: 列出已决策、待决策、依据、错误选择的影响和恢复方案。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收与关闭条件
+      placeholder: |
+        判别测试：
+        集成/并发/恢复：
+        运维验证：
+        主线验证：
+    validations:
+      required: true
+
+  - type: textarea
+    id: handoff
+    attributes:
+      label: 最新交接状态
+      description: 只有交接或暂停时更新；不要填秘密。
+      placeholder: |
+        分支与 PR：
+        最后可信 SHA：
+        已完成：
+        未完成：
+        已运行/未运行验证：
+        工作树状态：
+        外部副作用：
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 边界确认
+      options:
+        - label: 本 Issue 不含明文凭据、Cookie、令牌、私钥、个人信息或完整请求正文
+          required: true
+        - label: 未经 Owner 明确同意不合并主线
+          required: true

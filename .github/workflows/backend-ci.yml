@@ -12,6 +12,19 @@ permissions:
   contents: read
 
 jobs:
+  project-governance:
+    name: 项目治理一致性
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 治理校验器判别测试
+        run: python3 tools/project_governance/test_check.py
+
+      - name: 白皮书、源码责任索引与链接一致性
+        run: python3 tools/project_governance/check.py
+
   test:
     name: Go test + race + vet
     runs-on: ubuntu-latest
