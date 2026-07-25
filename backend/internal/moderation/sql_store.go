@@ -76,6 +76,7 @@ func (s *SQLStore) InsertModerationLog(ctx context.Context, event ModerationEven
 		MatchedKeywordID: event.MatchedKeywordID,
 		MatchedHashID:    event.MatchedHashID,
 		ViolationFeeUsd:  numericFromDecimal(decimal.Zero),
+		InputExcerpt:     event.InputExcerpt,
 	})
 }
 
@@ -107,6 +108,7 @@ func (s *SQLStore) RecordModerationViolationEvent(ctx context.Context, event Mod
 		ReasonCode:       safeReasonCode(event.ReasonCode, event.Decision),
 		MatchedKeywordID: event.MatchedKeywordID,
 		MatchedHashID:    event.MatchedHashID,
+		InputExcerpt:     event.InputExcerpt,
 	})
 	return err
 }
@@ -262,14 +264,15 @@ func (s *SQLStore) DeleteHash(ctx context.Context, tenantID int64, id int64) err
 func (s *SQLStore) UpsertConfig(ctx context.Context, cfg ModerationConfig) (ModerationConfig, error) {
 	// 管理面不暴露违规费，兼容列固定写零。
 	row, err := s.q.UpsertModerationConfig(ctx, dbmoderation.UpsertModerationConfigParams{
-		TenantID:         cfg.TenantID,
-		Enabled:          cfg.Enabled,
-		FailClosed:       cfg.FailClosed,
-		SampleRatePct:    cfg.SampleRatePct,
-		BanThreshold:     cfg.BanThreshold,
-		BanWindowSeconds: cfg.BanWindowSeconds,
-		ViolationFeeUsd:  numericFromDecimal(decimal.Zero),
-		UpdatedBy:        stringPtr(cfg.UpdatedBy),
+		TenantID:            cfg.TenantID,
+		Enabled:             cfg.Enabled,
+		FailClosed:          cfg.FailClosed,
+		SampleRatePct:       cfg.SampleRatePct,
+		BanThreshold:        cfg.BanThreshold,
+		BanWindowSeconds:    cfg.BanWindowSeconds,
+		ViolationFeeUsd:     numericFromDecimal(decimal.Zero),
+		UpdatedBy:           stringPtr(cfg.UpdatedBy),
+		AutoDisableKeyOnBan: cfg.AutoDisableKeyOnBan,
 	})
 	if err != nil {
 		return ModerationConfig{}, err
@@ -279,13 +282,14 @@ func (s *SQLStore) UpsertConfig(ctx context.Context, cfg ModerationConfig) (Mode
 
 func configFromDB(row dbmoderation.ModerationConfig) ModerationConfig {
 	cfg := ModerationConfig{
-		TenantID:         row.TenantID,
-		Enabled:          row.Enabled,
-		FailClosed:       row.FailClosed,
-		SampleRatePct:    row.SampleRatePct,
-		BanThreshold:     row.BanThreshold,
-		BanWindowSeconds: row.BanWindowSeconds,
-		UpdatedAt:        timeFromPG(row.UpdatedAt),
+		TenantID:            row.TenantID,
+		Enabled:             row.Enabled,
+		FailClosed:          row.FailClosed,
+		SampleRatePct:       row.SampleRatePct,
+		BanThreshold:        row.BanThreshold,
+		BanWindowSeconds:    row.BanWindowSeconds,
+		AutoDisableKeyOnBan: row.AutoDisableKeyOnBan,
+		UpdatedAt:           timeFromPG(row.UpdatedAt),
 	}
 	if row.UpdatedBy != nil {
 		cfg.UpdatedBy = *row.UpdatedBy
@@ -302,6 +306,7 @@ func moderationLogFromDB(row dbmoderation.ListModerationLogRow) ModerationLog {
 		PayloadHash:      row.PayloadHash,
 		Decision:         Decision(row.Decision),
 		ReasonCode:       row.ReasonCode,
+		InputExcerpt:     row.InputExcerpt,
 		MatchedKeywordID: row.MatchedKeywordID,
 		MatchedHashID:    row.MatchedHashID,
 		OccurredAt:       timeFromPG(row.OccurredAt),

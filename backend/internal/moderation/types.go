@@ -70,9 +70,14 @@ type ModerationConfig struct {
 	SampleRatePct    int32
 	BanThreshold     int32
 	BanWindowSeconds int32
-	External         ExternalModerationConfig
-	UpdatedBy        string
-	UpdatedAt        time.Time
+	// AutoDisableKeyOnBan 决定窗口内违规累计到阈值后是否直接停用 API Key。
+	// 关闭时只落库违规事实，由运营看过摘录后人工处置；开启时自动停用。
+	// 该开关必须独立于 BanThreshold：阈值为 0 会让计数链在记录违规之前提前返回，
+	// 连违规事件与计数一起丢失，无法充当「只记录不停用」。
+	AutoDisableKeyOnBan bool
+	External            ExternalModerationConfig
+	UpdatedBy           string
+	UpdatedAt           time.Time
 }
 
 type ExternalModerationConfig struct {
@@ -103,18 +108,23 @@ func DefaultConfig(tenantID int64) ModerationConfig {
 		SampleRatePct:    100,
 		BanThreshold:     3,
 		BanWindowSeconds: 3600,
-		External:         DefaultExternalModerationConfig(),
+		// 默认需要人工确认：达阈值只记录，不自动停用。
+		AutoDisableKeyOnBan: false,
+		External:            DefaultExternalModerationConfig(),
 	}
 }
 
 type ModerationEvent struct {
-	TenantID         int64
-	APIKeyID         int64
-	UserID           int64
-	RequestID        string
-	PayloadHash      string
-	Decision         Decision
-	ReasonCode       string
+	TenantID    int64
+	APIKeyID    int64
+	UserID      int64
+	RequestID   string
+	PayloadHash string
+	Decision    Decision
+	ReasonCode  string
+	// InputExcerpt 是已脱敏并按 rune 截断的用户消息片段，供运营判断这次请求
+	// 在做什么。不承载完整请求体，提取失败时为空串。
+	InputExcerpt     string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
 }
@@ -128,6 +138,8 @@ type ModerationLog struct {
 	PayloadHash      string
 	Decision         Decision
 	ReasonCode       string
+	// InputExcerpt 是已脱敏截断的用户消息片段，供运营判读；无法提取时为空。
+	InputExcerpt     string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
 	OccurredAt       time.Time

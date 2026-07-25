@@ -19,6 +19,7 @@ type moderationLogResponse struct {
 	PayloadHash      string `json:"payload_hash"`
 	Decision         string `json:"decision"`
 	ReasonCode       string `json:"reason_code"`
+	InputExcerpt     string `json:"input_excerpt"`
 	MatchedKeywordID *int64 `json:"matched_keyword_id,omitempty"`
 	MatchedHashID    *int64 `json:"matched_hash_id,omitempty"`
 	OccurredAt       string `json:"occurred_at,omitempty"`
@@ -187,6 +188,7 @@ func moderationLogFromValue(row moderation.ModerationLog) moderationLogResponse 
 		PayloadHash:      row.PayloadHash,
 		Decision:         string(row.Decision),
 		ReasonCode:       row.ReasonCode,
+		InputExcerpt:     row.InputExcerpt,
 		MatchedKeywordID: row.MatchedKeywordID,
 		MatchedHashID:    row.MatchedHashID,
 		OccurredAt:       formatTime(row.OccurredAt),

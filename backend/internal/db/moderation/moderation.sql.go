@@ -299,7 +299,8 @@ func (q *Queries) FindEnabledModerationHash(ctx context.Context, arg FindEnabled
 
 const getModerationConfig = `-- name: GetModerationConfig :one
 SELECT tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-       ban_window_seconds, violation_fee_usd, updated_by, updated_at
+       ban_window_seconds, violation_fee_usd, auto_disable_key_on_ban,
+       updated_by, updated_at
 FROM moderation_config
 WHERE tenant_id = $1::bigint
 `
@@ -315,6 +316,7 @@ func (q *Queries) GetModerationConfig(ctx context.Context, tenantID int64) (Mode
 		&i.BanThreshold,
 		&i.BanWindowSeconds,
 		&i.ViolationFeeUsd,
+		&i.AutoDisableKeyOnBan,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
 	)
@@ -592,7 +594,8 @@ func (q *Queries) SoftDeleteModerationKeyword(ctx context.Context, arg SoftDelet
 const upsertModerationConfig = `-- name: UpsertModerationConfig :one
 INSERT INTO moderation_config (
     tenant_id, enabled, fail_closed, sample_rate_pct,
-    ban_threshold, ban_window_seconds, violation_fee_usd, updated_by
+    ban_threshold, ban_window_seconds, violation_fee_usd, updated_by,
+    auto_disable_key_on_ban
 ) VALUES (
     $1::bigint,
     $2::boolean,
@@ -601,7 +604,8 @@ INSERT INTO moderation_config (
     $5::integer,
     $6::integer,
     $7::numeric,
-    $8::text
+    $8::text,
+    $9::boolean
 )
 ON CONFLICT (tenant_id) DO UPDATE
 SET enabled = EXCLUDED.enabled,
@@ -610,21 +614,24 @@ SET enabled = EXCLUDED.enabled,
     ban_threshold = EXCLUDED.ban_threshold,
     ban_window_seconds = EXCLUDED.ban_window_seconds,
     violation_fee_usd = EXCLUDED.violation_fee_usd,
+    auto_disable_key_on_ban = EXCLUDED.auto_disable_key_on_ban,
     updated_by = EXCLUDED.updated_by,
     updated_at = now()
 RETURNING tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-          ban_window_seconds, violation_fee_usd, updated_by, updated_at
+          ban_window_seconds, violation_fee_usd, auto_disable_key_on_ban,
+          updated_by, updated_at
 `
 
 type UpsertModerationConfigParams struct {
-	TenantID         int64          `db:"tenant_id" json:"tenant_id"`
-	Enabled          bool           `db:"enabled" json:"enabled"`
-	FailClosed       bool           `db:"fail_closed" json:"fail_closed"`
-	SampleRatePct    int32          `db:"sample_rate_pct" json:"sample_rate_pct"`
-	BanThreshold     int32          `db:"ban_threshold" json:"ban_threshold"`
-	BanWindowSeconds int32          `db:"ban_window_seconds" json:"ban_window_seconds"`
-	ViolationFeeUsd  pgtype.Numeric `db:"violation_fee_usd" json:"violation_fee_usd"`
-	UpdatedBy        *string        `db:"updated_by" json:"updated_by"`
+	TenantID            int64          `db:"tenant_id" json:"tenant_id"`
+	Enabled             bool           `db:"enabled" json:"enabled"`
+	FailClosed          bool           `db:"fail_closed" json:"fail_closed"`
+	SampleRatePct       int32          `db:"sample_rate_pct" json:"sample_rate_pct"`
+	BanThreshold        int32          `db:"ban_threshold" json:"ban_threshold"`
+	BanWindowSeconds    int32          `db:"ban_window_seconds" json:"ban_window_seconds"`
+	ViolationFeeUsd     pgtype.Numeric `db:"violation_fee_usd" json:"violation_fee_usd"`
+	UpdatedBy           *string        `db:"updated_by" json:"updated_by"`
+	AutoDisableKeyOnBan bool           `db:"auto_disable_key_on_ban" json:"auto_disable_key_on_ban"`
 }
 
 func (q *Queries) UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (ModerationConfig, error) {
@@ -637,6 +644,7 @@ func (q *Queries) UpsertModerationConfig(ctx context.Context, arg UpsertModerati
 		arg.BanWindowSeconds,
 		arg.ViolationFeeUsd,
 		arg.UpdatedBy,
+		arg.AutoDisableKeyOnBan,
 	)
 	var i ModerationConfig
 	err := row.Scan(
@@ -647,6 +655,7 @@ func (q *Queries) UpsertModerationConfig(ctx context.Context, arg UpsertModerati
 		&i.BanThreshold,
 		&i.BanWindowSeconds,
 		&i.ViolationFeeUsd,
+		&i.AutoDisableKeyOnBan,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
 	)

@@ -134,14 +134,16 @@ LIMIT 1;
 
 -- name: GetModerationConfig :one
 SELECT tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-       ban_window_seconds, violation_fee_usd, updated_by, updated_at
+       ban_window_seconds, violation_fee_usd, auto_disable_key_on_ban,
+       updated_by, updated_at
 FROM moderation_config
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint;
 
 -- name: UpsertModerationConfig :one
 INSERT INTO moderation_config (
     tenant_id, enabled, fail_closed, sample_rate_pct,
-    ban_threshold, ban_window_seconds, violation_fee_usd, updated_by
+    ban_threshold, ban_window_seconds, violation_fee_usd, updated_by,
+    auto_disable_key_on_ban
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(enabled)::boolean,
@@ -150,7 +152,8 @@ INSERT INTO moderation_config (
     sqlc.arg(ban_threshold)::integer,
     sqlc.arg(ban_window_seconds)::integer,
     sqlc.arg(violation_fee_usd)::numeric,
-    sqlc.narg(updated_by)::text
+    sqlc.narg(updated_by)::text,
+    sqlc.arg(auto_disable_key_on_ban)::boolean
 )
 ON CONFLICT (tenant_id) DO UPDATE
 SET enabled = EXCLUDED.enabled,
@@ -159,7 +162,9 @@ SET enabled = EXCLUDED.enabled,
     ban_threshold = EXCLUDED.ban_threshold,
     ban_window_seconds = EXCLUDED.ban_window_seconds,
     violation_fee_usd = EXCLUDED.violation_fee_usd,
+    auto_disable_key_on_ban = EXCLUDED.auto_disable_key_on_ban,
     updated_by = EXCLUDED.updated_by,
     updated_at = now()
 RETURNING tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-          ban_window_seconds, violation_fee_usd, updated_by, updated_at;
+          ban_window_seconds, violation_fee_usd, auto_disable_key_on_ban,
+          updated_by, updated_at;
