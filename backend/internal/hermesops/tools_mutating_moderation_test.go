@@ -13,10 +13,8 @@ import (
 
 // --- moderation_keyword_enable/disable 的 RBAC 底线(L1)----------------------
 
-func TestModerationKeywordToggle_TenantOperatorAllowedAtFloor(t *testing.T) {
-	// 回归(L1):moderation_keyword_enable/disable 在角色底线处放行 tenant_operator
-	// (租户 scope 由中间件 + Resolve 复检 + SQL WHERE 单独强制)。变异检验:把 RequiredRole
-	// 提升为 RolePlatformAdmin,则此处 tenant_operator 会被禁止(第一个断言翻红)。
+func TestModerationKeywordToggle_PlatformAdminOnly(t *testing.T) {
+	// 审核规则由部署者代租户维护；租户管理员只查看违规并解封自身租户用户。
 	reg := NewRegistry()
 	deps := ModerationKeywordMutationDeps{
 		GetKeyword: func(_ context.Context, tenantID, id int64) (moderation.KeywordRule, error) {
@@ -26,8 +24,11 @@ func TestModerationKeywordToggle_TenantOperatorAllowedAtFloor(t *testing.T) {
 	}
 	reg.Register(ModerationKeywordEnableSpec(deps))
 	reg.Register(ModerationKeywordDisableSpec(deps))
-	if _, err := reg.AuthorizeMutating(ToolModerationKeywordEnable, RoleTenantOperator); err != nil {
-		t.Fatalf("tenant_operator moderation_keyword_enable err=%v want nil", err)
+	if _, err := reg.AuthorizeMutating(ToolModerationKeywordEnable, RoleTenantOperator); !errors.Is(err, ErrToolForbidden) {
+		t.Fatalf("tenant_operator moderation_keyword_enable err=%v want ErrToolForbidden", err)
+	}
+	if _, err := reg.AuthorizeMutating(ToolModerationKeywordEnable, RolePlatformAdmin); err != nil {
+		t.Fatalf("platform_admin moderation_keyword_enable err=%v want nil", err)
 	}
 	if _, err := reg.AuthorizeMutating(ToolModerationKeywordDisable, "unknown_role"); !errors.Is(err, ErrToolForbidden) {
 		t.Fatalf("unknown role moderation_keyword_disable err=%v want ErrToolForbidden", err)
@@ -48,8 +49,8 @@ func TestModerationKeywordToggle_ProposableButRequiresConfirmation(t *testing.T)
 		if !spec.RequiresConfirmation {
 			t.Fatalf("%s RequiresConfirmation=false want true (关掉内容过滤器仍需 operator 确认)", spec.Name)
 		}
-		if !spec.Mutating || spec.RequiredRole != RoleTenantOperator {
-			t.Fatalf("%s Mutating=%v role=%s want true/tenant_operator", spec.Name, spec.Mutating, spec.RequiredRole)
+		if !spec.Mutating || spec.RequiredRole != RolePlatformAdmin {
+			t.Fatalf("%s Mutating=%v role=%s want true/platform_admin", spec.Name, spec.Mutating, spec.RequiredRole)
 		}
 	}
 }

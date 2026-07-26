@@ -3,14 +3,15 @@ package moderation
 import "context"
 
 type BanStore interface {
-	RecordModerationViolationEvent(context.Context, ModerationEvent) error
-	CountBlocksInWindow(context.Context, int64, int64, int32) (int64, error)
-	DisableAPIKey(context.Context, int64, int64) error
+	RecordModerationViolation(context.Context, ModerationEvent, ModerationConfig) (BanResult, error)
 }
 
 type BanResult struct {
-	Disabled bool
-	Count    int64
+	EventID          int64
+	Disabled         bool
+	Count            int64
+	ThresholdReached bool
+	Idempotent       bool
 }
 
 type DBBanCounter struct {
@@ -22,26 +23,20 @@ func NewBanCounter(store BanStore) *DBBanCounter {
 }
 
 func (c *DBBanCounter) RecordAndCheck(ctx context.Context, event ModerationEvent, cfg ModerationConfig) (BanResult, error) {
-	if c == nil || c.store == nil || cfg.BanThreshold <= 0 {
+	if c == nil || c.store == nil {
 		return BanResult{}, nil
 	}
 	if event.Decision != DecisionBlockKeyword && event.Decision != DecisionBlockHash && event.Decision != DecisionBlockExternal {
 		return BanResult{}, nil
 	}
-	if err := c.store.RecordModerationViolationEvent(ctx, event); err != nil {
-		return BanResult{}, err
+	return c.store.RecordModerationViolation(ctx, event, cfg)
+}
+
+func isCountedViolation(decision Decision) bool {
+	switch decision {
+	case DecisionBlockKeyword, DecisionBlockHash, DecisionBlockExternal:
+		return true
+	default:
+		return false
 	}
-	count, err := c.store.CountBlocksInWindow(ctx, event.TenantID, event.APIKeyID, cfg.BanWindowSeconds)
-	if err != nil {
-		return BanResult{}, err
-	}
-	result := BanResult{Count: count}
-	if count < int64(cfg.BanThreshold) {
-		return result, nil
-	}
-	if err := c.store.DisableAPIKey(ctx, event.TenantID, event.APIKeyID); err != nil {
-		return BanResult{}, err
-	}
-	result.Disabled = true
-	return result, nil
 }

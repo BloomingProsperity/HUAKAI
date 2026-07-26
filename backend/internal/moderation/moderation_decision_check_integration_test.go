@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	dbmoderation "github.com/BloomingProsperity/HUAKAI/internal/db/moderation"
 )
 
 // TestModerationLogAcceptsBlockExternal 咬住外部审核结论的审计落库约束。
@@ -23,13 +21,12 @@ func TestModerationLogAcceptsBlockExternal(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO moderation_log (
 			tenant_id, api_key_id, user_id, request_id,
-			payload_hash, decision, reason_code
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			decision, reason_code
+		) VALUES ($1, $2, $3, $4, $5, $6)`,
 		key.tenantID,
 		key.apiKeyID,
 		key.userID,
 		"decision-check-log-external",
-		"hash-log-external",
 		string(DecisionBlockExternal),
 		"external_match",
 	); err != nil {
@@ -42,22 +39,21 @@ func TestModerationLogAcceptsBlockExternal(t *testing.T) {
 func TestBanCounterBlockExternalPersistsAndDisables(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	tx, key := beginModerationDecisionCheckTest(t, ctx, "ban-external")
-	store := NewSQLStore(dbmoderation.New(tx))
+	pool := openModerationIntegrationPool(t, ctx)
+	key := seedModerationAPIKey(t, ctx, pool, "ban-external", "active")
+	store := NewSQLStoreWithPool(pool)
 	counter := NewBanCounter(store)
 
 	result, err := counter.RecordAndCheck(ctx, ModerationEvent{
-		TenantID:    key.tenantID,
-		APIKeyID:    key.apiKeyID,
-		UserID:      key.userID,
-		RequestID:   "decision-check-ban-external",
-		PayloadHash: "hash-ban-external",
-		Decision:    DecisionBlockExternal,
-		ReasonCode:  "external_match",
+		TenantID:   key.tenantID,
+		APIKeyID:   key.apiKeyID,
+		UserID:     key.userID,
+		RequestID:  "decision-check-ban-external",
+		Decision:   DecisionBlockExternal,
+		ReasonCode: "external_match",
 	}, ModerationConfig{
-		TenantID:         key.tenantID,
-		BanThreshold:     1,
-		BanWindowSeconds: 3600,
+		TenantID: key.tenantID, BanThreshold: 1, BanWindowSeconds: 3600,
+		AutoDisableKeyOnBan: true,
 	})
 	if err != nil {
 		t.Fatalf("RecordAndCheck block_external: %v", err)
@@ -67,7 +63,7 @@ func TestBanCounterBlockExternalPersistsAndDisables(t *testing.T) {
 	}
 
 	var status string
-	if err := tx.QueryRow(ctx,
+	if err := pool.QueryRow(ctx,
 		`SELECT status FROM api_keys WHERE tenant_id=$1 AND id=$2`,
 		key.tenantID,
 		key.apiKeyID,
@@ -79,9 +75,9 @@ func TestBanCounterBlockExternalPersistsAndDisables(t *testing.T) {
 	}
 }
 
-// TestModerationViolationEventsAcceptsBlockBackend 咬住后端审核结论的违规事件白名单。
-// 变异：恢复 0090 的旧白名单后，block_backend INSERT 会违反 CHECK，本测试变红。
-func TestModerationViolationEventsAcceptsBlockBackend(t *testing.T) {
+// TestModerationViolationEventsRejectsBlockBackend 咬住永久违规事实只记录真实内容命中。
+// 变异：把 block_backend 放回永久事件白名单后，INSERT 会成功，本测试变红。
+func TestModerationViolationEventsRejectsBlockBackend(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	tx, key := beginModerationDecisionCheckTest(t, ctx, "violation-backend")
@@ -89,17 +85,20 @@ func TestModerationViolationEventsAcceptsBlockBackend(t *testing.T) {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO moderation_violation_events (
 			tenant_id, api_key_id, user_id, request_id,
-			payload_hash, decision, reason_code
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			decision, reason_code, ban_threshold_snapshot,
+			ban_window_seconds_snapshot, auto_disable_enabled
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		key.tenantID,
 		key.apiKeyID,
 		key.userID,
 		"decision-check-violation-backend",
-		"hash-violation-backend",
 		string(DecisionBlockBackend),
 		"backend_unavailable",
-	); err != nil {
-		t.Fatalf("写入 block_backend moderation_violation_events: %v", err)
+		3,
+		3600,
+		false,
+	); err == nil {
+		t.Fatal("block_backend 被错误写入永久违规事实")
 	}
 }
 

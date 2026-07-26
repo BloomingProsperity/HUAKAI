@@ -34,6 +34,7 @@ func TestCodexAccountIntakePlanForcesDedicatedSourceAndRejectsOverrides(t *testi
 		`,"source_kind":"json_import"`,
 		`,"default_vendor":"anthropic"`,
 		`,"default_auth_mode":"api_key"`,
+		`,"mint_agent_identity":true`,
 	} {
 		invalid := strings.TrimSuffix(body, "}") + override + "}"
 		rec = doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/codex/plan", invalid)

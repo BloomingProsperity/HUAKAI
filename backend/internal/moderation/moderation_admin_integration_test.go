@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
-	dbmoderation "github.com/BloomingProsperity/HUAKAI/internal/db/moderation"
 )
 
 func TestListModerationLog_TenantScopedPaginated(t *testing.T) {
@@ -21,14 +20,14 @@ func TestListModerationLog_TenantScopedPaginated(t *testing.T) {
 	// 最新的那行会占据第 1 页,本用例就会看到错误的 tenant/api key。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
-	store := NewSQLStore(dbmoderation.New(pool))
+	store := NewSQLStoreWithPool(pool)
 	a := seedModerationAPIKey(t, ctx, pool, "logs-a", "active")
 	aSecond := seedModerationAPIKeyInTenant(t, ctx, pool, a.tenantID, "logs-a-second", "active")
 	b := seedModerationAPIKey(t, ctx, pool, "logs-b", "active")
 
-	insertModerationLogAt(t, ctx, pool, a, DecisionBlockKeyword, "a-old", "hash-a-old", time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC))
-	insertModerationLogAt(t, ctx, pool, aSecond, DecisionBlockHash, "a-new", "hash-a-new", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC))
-	insertModerationLogAt(t, ctx, pool, b, DecisionBlockKeyword, "b-newest", "hash-b-newest", time.Date(2026, 6, 6, 13, 0, 0, 0, time.UTC))
+	insertModerationLogAt(t, ctx, pool, a, DecisionBlockKeyword, "a-old", time.Date(2026, 6, 6, 10, 0, 0, 0, time.UTC))
+	insertModerationLogAt(t, ctx, pool, aSecond, DecisionBlockHash, "a-new", time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC))
+	insertModerationLogAt(t, ctx, pool, b, DecisionBlockKeyword, "b-newest", time.Date(2026, 6, 6, 13, 0, 0, 0, time.UTC))
 
 	got, err := store.ListModerationLogs(ctx, a.tenantID, nil, 1, 0)
 	if err != nil {
@@ -56,13 +55,14 @@ func TestListBannedKeys(t *testing.T) {
 	// api_keys；active 和手动 disabled 的 key 就会泄漏进列表。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
-	store := NewSQLStore(dbmoderation.New(pool))
-	banned := seedModerationAPIKey(t, ctx, pool, "banned-auto", "disabled")
+	store := NewSQLStoreWithPool(pool)
+	banned := seedModerationAPIKey(t, ctx, pool, "banned-auto", "active")
 	active := seedModerationAPIKeyInTenant(t, ctx, pool, banned.tenantID, "banned-active", "active")
 	manualDisabled := seedModerationAPIKeyInTenant(t, ctx, pool, banned.tenantID, "banned-manual", "disabled")
-	banAt := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
-	insertModerationViolationAt(t, ctx, pool, banned, DecisionBlockKeyword, "threshold-hit", "hash-banned", banAt)
-	setAPIKeyUpdatedAt(t, ctx, pool, banned, banAt.Add(time.Second))
+	recordViolation(t, ctx, store, banned, "banned-request", ModerationConfig{
+		TenantID: banned.tenantID, BanThreshold: 1, BanWindowSeconds: 3600,
+		AutoDisableKeyOnBan: true,
+	})
 
 	got, err := store.ListBannedAPIKeys(ctx, banned.tenantID, 10, 0)
 	if err != nil {
@@ -82,17 +82,18 @@ func TestUnbanReEnablesModerationDisabledKey(t *testing.T) {
 	// status 会翻成 active,但下面的 admin_unban 审计断言会变红。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
-	store := NewSQLStore(dbmoderation.New(pool))
-	key := seedModerationAPIKey(t, ctx, pool, "unban-ok", "disabled")
-	banAt := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
-	insertModerationViolationAt(t, ctx, pool, key, DecisionBlockKeyword, "threshold-hit", "hash-unban-ok", banAt)
-	setAPIKeyUpdatedAt(t, ctx, pool, key, banAt.Add(time.Second))
+	store := NewSQLStoreWithPool(pool)
+	key := seedModerationAPIKey(t, ctx, pool, "unban-ok", "active")
+	recordViolation(t, ctx, store, key, "unban-request", ModerationConfig{
+		TenantID: key.tenantID, BanThreshold: 1, BanWindowSeconds: 3600,
+		AutoDisableKeyOnBan: true,
+	})
 
 	result, err := store.UnbanAPIKey(ctx, UnbanAPIKeyRequest{
-		TenantID: key.tenantID,
-		APIKeyID: key.apiKeyID,
-		ActorID:  "1",
-		Reason:   "manual review cleared",
+		TenantID: key.tenantID, APIKeyID: key.apiKeyID,
+		IdempotencyKey: "unban-ok-1",
+		ActorID:        "1", ActorRole: "tenant_operator",
+		Reason: "manual review cleared",
 	})
 	if err != nil {
 		t.Fatalf("UnbanAPIKey: %v", err)
@@ -104,7 +105,7 @@ func TestUnbanReEnablesModerationDisabledKey(t *testing.T) {
 	if status := apiKeyStatus(t, ctx, pool, key); status != "active" {
 		t.Fatalf("api key status=%q want active", status)
 	}
-	if count := adminUnbanAuditCount(t, ctx, pool, key, "admin_unban_actor:1"); count != 1 {
+	if count := adminUnbanAuditCount(t, ctx, pool, key, "unban-ok-1"); count != 1 {
 		t.Fatalf("admin_unban audit rows=%d want 1", count)
 	}
 }
@@ -115,17 +116,14 @@ func TestUnbanRejectsNonModerationDisabledKey(t *testing.T) {
 	// 就会被错误地变成 active。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
-	store := NewSQLStore(dbmoderation.New(pool))
+	store := NewSQLStoreWithPool(pool)
 	key := seedModerationAPIKey(t, ctx, pool, "unban-manual-disabled", "disabled")
-	oldViolationAt := time.Date(2026, 6, 6, 8, 0, 0, 0, time.UTC)
-	insertModerationViolationAt(t, ctx, pool, key, DecisionBlockKeyword, "old-violation", "hash-old-manual", oldViolationAt)
-	setAPIKeyUpdatedAt(t, ctx, pool, key, oldViolationAt.Add(2*time.Hour))
 
 	_, err := store.UnbanAPIKey(ctx, UnbanAPIKeyRequest{
-		TenantID: key.tenantID,
-		APIKeyID: key.apiKeyID,
-		ActorID:  "1",
-		Reason:   "not a moderation disable",
+		TenantID: key.tenantID, APIKeyID: key.apiKeyID,
+		IdempotencyKey: "unban-manual-disabled-1",
+		ActorID:        "1", ActorRole: "tenant_operator",
+		Reason: "not a moderation disable",
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("UnbanAPIKey err=%v want ErrNotFound", err)
@@ -133,7 +131,7 @@ func TestUnbanRejectsNonModerationDisabledKey(t *testing.T) {
 	if status := apiKeyStatus(t, ctx, pool, key); status != "disabled" {
 		t.Fatalf("non-moderation disabled key status=%q want disabled", status)
 	}
-	if count := adminUnbanAuditCount(t, ctx, pool, key, "admin_unban_actor:1"); count != 0 {
+	if count := adminUnbanAuditCount(t, ctx, pool, key, "unban-manual-disabled-1"); count != 0 {
 		t.Fatalf("unexpected admin_unban audit rows=%d", count)
 	}
 }
@@ -143,18 +141,19 @@ func TestUnbanTenantIsolation(t *testing.T) {
 	// 启用租户 B 的 disabled key,本 status 断言随之变红。
 	ctx := context.Background()
 	pool := openModerationIntegrationPool(t, ctx)
-	store := NewSQLStore(dbmoderation.New(pool))
+	store := NewSQLStoreWithPool(pool)
 	tenantAKey := seedModerationAPIKey(t, ctx, pool, "unban-tenant-a", "active")
-	tenantBKey := seedModerationAPIKey(t, ctx, pool, "unban-tenant-b", "disabled")
-	banAt := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
-	insertModerationViolationAt(t, ctx, pool, tenantBKey, DecisionBlockKeyword, "threshold-hit", "hash-unban-tenant-b", banAt)
-	setAPIKeyUpdatedAt(t, ctx, pool, tenantBKey, banAt.Add(time.Second))
+	tenantBKey := seedModerationAPIKey(t, ctx, pool, "unban-tenant-b", "active")
+	recordViolation(t, ctx, store, tenantBKey, "tenant-b-request", ModerationConfig{
+		TenantID: tenantBKey.tenantID, BanThreshold: 1, BanWindowSeconds: 3600,
+		AutoDisableKeyOnBan: true,
+	})
 
 	_, err := store.UnbanAPIKey(ctx, UnbanAPIKeyRequest{
-		TenantID: tenantAKey.tenantID,
-		APIKeyID: tenantBKey.apiKeyID,
-		ActorID:  "1",
-		Reason:   "wrong tenant",
+		TenantID: tenantAKey.tenantID, APIKeyID: tenantBKey.apiKeyID,
+		IdempotencyKey: "cross-tenant-unban-1",
+		ActorID:        "1", ActorRole: "tenant_operator",
+		Reason: "wrong tenant",
 	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-tenant UnbanAPIKey err=%v want ErrNotFound", err)
@@ -196,7 +195,9 @@ func seedModerationAPIKey(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	}
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM moderation_key_operations WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM moderation_log WHERE tenant_id=$1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM moderation_key_states WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM moderation_violation_events WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, tenantID)
@@ -227,28 +228,29 @@ func seedModerationAPIKeyInTenant(t *testing.T, ctx context.Context, pool *pgxpo
 	return moderationAPIKeySeed{tenantID: tenantID, userID: userID, apiKeyID: apiKeyID}
 }
 
-func insertModerationLogAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed, decision Decision, reason string, payloadHash string, occurredAt time.Time) {
+func insertModerationLogAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed, decision Decision, reason string, occurredAt time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO moderation_log (
-			tenant_id, api_key_id, user_id, payload_hash, decision, reason_code, occurred_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		key.tenantID, key.apiKeyID, key.userID, payloadHash, string(decision), reason, occurredAt,
+			tenant_id, api_key_id, user_id, decision, reason_code, occurred_at
+		) VALUES ($1, $2, $3, $4, $5, $6)`,
+		key.tenantID, key.apiKeyID, key.userID, string(decision), reason, occurredAt,
 	); err != nil {
 		t.Fatalf("insert moderation_log: %v", err)
 	}
 }
 
-func insertModerationViolationAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed, decision Decision, reason string, payloadHash string, occurredAt time.Time) {
+func recordViolation(t *testing.T, ctx context.Context, store *SQLStore, key moderationAPIKeySeed, requestID string, cfg ModerationConfig) BanResult {
 	t.Helper()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO moderation_violation_events (
-			tenant_id, api_key_id, user_id, payload_hash, decision, reason_code, occurred_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		key.tenantID, key.apiKeyID, key.userID, payloadHash, string(decision), reason, occurredAt,
-	); err != nil {
-		t.Fatalf("insert moderation_violation_events: %v", err)
+	result, err := store.RecordModerationViolation(ctx, ModerationEvent{
+		TenantID: key.tenantID, APIKeyID: key.apiKeyID, UserID: key.userID,
+		RequestID: requestID, InputExcerpt: "违规原文",
+		Decision: DecisionBlockKeyword, ReasonCode: "threshold-hit",
+	}, cfg)
+	if err != nil {
+		t.Fatalf("RecordModerationViolation: %v", err)
 	}
+	return result
 }
 
 func apiKeyStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed) string {
@@ -261,16 +263,6 @@ func apiKeyStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key mod
 		t.Fatalf("query api key status: %v", err)
 	}
 	return status
-}
-
-func setAPIKeyUpdatedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed, updatedAt time.Time) {
-	t.Helper()
-	if _, err := pool.Exec(ctx,
-		`UPDATE api_keys SET updated_at=$3 WHERE tenant_id=$1 AND id=$2`,
-		key.tenantID, key.apiKeyID, updatedAt,
-	); err != nil {
-		t.Fatalf("set api key updated_at: %v", err)
-	}
 }
 
 func adminUnbanAuditCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, key moderationAPIKeySeed, requestID string) int64 {

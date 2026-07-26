@@ -43,8 +43,14 @@ func (fakeStore) UpsertConfig(context.Context, moderation.ModerationConfig) (mod
 func (fakeStore) ListModerationLogs(context.Context, int64, *int64, int32, int32) ([]moderation.ModerationLog, error) {
 	return nil, nil
 }
+func (fakeStore) ListModerationViolations(context.Context, int64, *int64, *int64, int32, int32) ([]moderation.ModerationViolation, error) {
+	return nil, nil
+}
 func (fakeStore) ListBannedAPIKeys(context.Context, int64, int32, int32) ([]moderation.BannedAPIKey, error) {
 	return nil, nil
+}
+func (fakeStore) DisableAPIKey(context.Context, moderation.DisableAPIKeyRequest) (moderation.DisableAPIKeyResult, error) {
+	return moderation.DisableAPIKeyResult{}, nil
 }
 func (fakeStore) UnbanAPIKey(context.Context, moderation.UnbanAPIKeyRequest) (moderation.UnbanAPIKeyResult, error) {
 	return moderation.UnbanAPIKeyResult{}, nil
@@ -81,7 +87,6 @@ func TestModerationWriteGate(t *testing.T) {
 		t.Fatalf("token-only PUT /config 对 session-admin 应 fail-closed 401,得 %d", code)
 	}
 }
-
 
 // token 通道豁免:hk_admin 令牌写 token-only 的 /config 也过鉴权≠401。
 func TestModerationTokenExempt(t *testing.T) {

@@ -70,8 +70,8 @@ func TestExternalImageByteCap(t *testing.T) {
 	})
 	oversized := "data:image/png;base64," + strings.Repeat("A", ExternalImageDataURLMaxBytes+1)
 	res, err := provider.ScreenExternal(context.Background(), ScreenRequest{
-		Body:          []byte("image fixture"),
-		ImageDataURLs: []string{oversized},
+		Body:      []byte("image fixture"),
+		ImageURLs: []string{oversized},
 	}, ExternalModerationConfig{
 		Enabled:      true,
 		BaseURL:      "https://moderation.example.test/v1/moderations",
@@ -86,6 +86,31 @@ func TestExternalImageByteCap(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("http calls=%d want 0 before rejecting oversized image", calls)
+	}
+}
+
+func TestExternalImageRejectsUnsafeRemoteSchemeBeforeHTTP(t *testing.T) {
+	calls := 0
+	provider := NewExternalModerator(ExternalModeratorDeps{
+		HTTPClient: &http.Client{Transport: moderationRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return moderationHTTPResponse(http.StatusOK, `{}`), nil
+		})},
+	})
+	res, err := provider.ScreenExternal(context.Background(), ScreenRequest{
+		ImageURLs: []string{"http://127.0.0.1/private.png"},
+	}, ExternalModerationConfig{
+		Enabled: true, BaseURL: "https://moderation.example.test/v1/moderations",
+		APIKeys: []string{"image-key"}, ImageEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("不安全图片地址返回 transport error: %v", err)
+	}
+	if !res.Blocked || res.ReasonCode != "external_image_invalid" {
+		t.Fatalf("result=%+v want blocked external_image_invalid", res)
+	}
+	if calls != 0 {
+		t.Fatalf("不安全图片地址仍触发外部 HTTP: calls=%d", calls)
 	}
 }
 

@@ -11,76 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const bulkCreateModerationHashes = `-- name: BulkCreateModerationHashes :many
-INSERT INTO moderation_hashes (
-    tenant_id, hash_hex, reason_code, enabled, created_by, updated_by
-)
-SELECT
-    $1::bigint,
-    h.hash_hex,
-    r.reason_code,
-    e.enabled,
-    $2::text,
-    $2::text
-FROM unnest($3::text[]) WITH ORDINALITY AS h(hash_hex, ord)
-JOIN unnest($4::text[]) WITH ORDINALITY AS r(reason_code, ord) USING (ord)
-JOIN unnest($5::boolean[]) WITH ORDINALITY AS e(enabled, ord) USING (ord)
-ON CONFLICT (tenant_id, hash_hex) WHERE deleted_at IS NULL DO NOTHING
-RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
-`
-
-type BulkCreateModerationHashesParams struct {
-	TenantID      int64    `db:"tenant_id" json:"tenant_id"`
-	UpdatedBy     *string  `db:"updated_by" json:"updated_by"`
-	HashHexes     []string `db:"hash_hexes" json:"hash_hexes"`
-	ReasonCodes   []string `db:"reason_codes" json:"reason_codes"`
-	EnabledValues []bool   `db:"enabled_values" json:"enabled_values"`
-}
-
-type BulkCreateModerationHashesRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	HashHex    string             `db:"hash_hex" json:"hash_hex"`
-	ReasonCode string             `db:"reason_code" json:"reason_code"`
-	Enabled    bool               `db:"enabled" json:"enabled"`
-	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-func (q *Queries) BulkCreateModerationHashes(ctx context.Context, arg BulkCreateModerationHashesParams) ([]BulkCreateModerationHashesRow, error) {
-	rows, err := q.db.Query(ctx, bulkCreateModerationHashes,
-		arg.TenantID,
-		arg.UpdatedBy,
-		arg.HashHexes,
-		arg.ReasonCodes,
-		arg.EnabledValues,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []BulkCreateModerationHashesRow
-	for rows.Next() {
-		var i BulkCreateModerationHashesRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.HashHex,
-			&i.ReasonCode,
-			&i.Enabled,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const bulkCreateModerationKeywords = `-- name: BulkCreateModerationKeywords :many
 INSERT INTO moderation_keywords (
     tenant_id, keyword, reason_code, enabled, created_by, updated_by
@@ -151,59 +81,6 @@ func (q *Queries) BulkCreateModerationKeywords(ctx context.Context, arg BulkCrea
 	return items, nil
 }
 
-const createModerationHash = `-- name: CreateModerationHash :one
-INSERT INTO moderation_hashes (
-    tenant_id, hash_hex, reason_code, enabled, created_by, updated_by
-) VALUES (
-    $1::bigint,
-    $2::text,
-    $3::text,
-    $4::boolean,
-    $5::text,
-    $5::text
-)
-RETURNING id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
-`
-
-type CreateModerationHashParams struct {
-	TenantID   int64   `db:"tenant_id" json:"tenant_id"`
-	HashHex    string  `db:"hash_hex" json:"hash_hex"`
-	ReasonCode string  `db:"reason_code" json:"reason_code"`
-	Enabled    bool    `db:"enabled" json:"enabled"`
-	UpdatedBy  *string `db:"updated_by" json:"updated_by"`
-}
-
-type CreateModerationHashRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	HashHex    string             `db:"hash_hex" json:"hash_hex"`
-	ReasonCode string             `db:"reason_code" json:"reason_code"`
-	Enabled    bool               `db:"enabled" json:"enabled"`
-	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-func (q *Queries) CreateModerationHash(ctx context.Context, arg CreateModerationHashParams) (CreateModerationHashRow, error) {
-	row := q.db.QueryRow(ctx, createModerationHash,
-		arg.TenantID,
-		arg.HashHex,
-		arg.ReasonCode,
-		arg.Enabled,
-		arg.UpdatedBy,
-	)
-	var i CreateModerationHashRow
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.HashHex,
-		&i.ReasonCode,
-		&i.Enabled,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const createModerationKeyword = `-- name: CreateModerationKeyword :one
 INSERT INTO moderation_keywords (
     tenant_id, keyword, reason_code, enabled, created_by, updated_by
@@ -252,70 +129,6 @@ func (q *Queries) CreateModerationKeyword(ctx context.Context, arg CreateModerat
 		&i.ReasonCode,
 		&i.Enabled,
 		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const findEnabledModerationHash = `-- name: FindEnabledModerationHash :one
-SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
-FROM moderation_hashes
-WHERE tenant_id = $1::bigint
-  AND hash_hex = $2::text
-  AND enabled = true
-  AND deleted_at IS NULL
-LIMIT 1
-`
-
-type FindEnabledModerationHashParams struct {
-	TenantID int64  `db:"tenant_id" json:"tenant_id"`
-	HashHex  string `db:"hash_hex" json:"hash_hex"`
-}
-
-type FindEnabledModerationHashRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	HashHex    string             `db:"hash_hex" json:"hash_hex"`
-	ReasonCode string             `db:"reason_code" json:"reason_code"`
-	Enabled    bool               `db:"enabled" json:"enabled"`
-	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-func (q *Queries) FindEnabledModerationHash(ctx context.Context, arg FindEnabledModerationHashParams) (FindEnabledModerationHashRow, error) {
-	row := q.db.QueryRow(ctx, findEnabledModerationHash, arg.TenantID, arg.HashHex)
-	var i FindEnabledModerationHashRow
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.HashHex,
-		&i.ReasonCode,
-		&i.Enabled,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const getModerationConfig = `-- name: GetModerationConfig :one
-SELECT tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-       ban_window_seconds, violation_fee_usd, updated_by, updated_at
-FROM moderation_config
-WHERE tenant_id = $1::bigint
-`
-
-func (q *Queries) GetModerationConfig(ctx context.Context, tenantID int64) (ModerationConfig, error) {
-	row := q.db.QueryRow(ctx, getModerationConfig, tenantID)
-	var i ModerationConfig
-	err := row.Scan(
-		&i.TenantID,
-		&i.Enabled,
-		&i.FailClosed,
-		&i.SampleRatePct,
-		&i.BanThreshold,
-		&i.BanWindowSeconds,
-		&i.ViolationFeeUsd,
-		&i.UpdatedBy,
 		&i.UpdatedAt,
 	)
 	return i, err
@@ -381,7 +194,7 @@ type ListEnabledModerationKeywordsRow struct {
 	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
-// 内容审核规则、哈希与租户配置查询。
+// 内容审核关键词规则查询。
 func (q *Queries) ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error) {
 	rows, err := q.db.Query(ctx, listEnabledModerationKeywords, tenantID)
 	if err != nil {
@@ -395,60 +208,6 @@ func (q *Queries) ListEnabledModerationKeywords(ctx context.Context, tenantID in
 			&i.ID,
 			&i.TenantID,
 			&i.Keyword,
-			&i.ReasonCode,
-			&i.Enabled,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listModerationHashes = `-- name: ListModerationHashes :many
-SELECT id, tenant_id, hash_hex, reason_code, enabled, created_at, updated_at
-FROM moderation_hashes
-WHERE tenant_id = $1::bigint
-  AND deleted_at IS NULL
-ORDER BY created_at DESC, id DESC
-LIMIT $3::integer
-OFFSET $2::integer
-`
-
-type ListModerationHashesParams struct {
-	TenantID   int64 `db:"tenant_id" json:"tenant_id"`
-	PageOffset int32 `db:"page_offset" json:"page_offset"`
-	PageLimit  int32 `db:"page_limit" json:"page_limit"`
-}
-
-type ListModerationHashesRow struct {
-	ID         int64              `db:"id" json:"id"`
-	TenantID   int64              `db:"tenant_id" json:"tenant_id"`
-	HashHex    string             `db:"hash_hex" json:"hash_hex"`
-	ReasonCode string             `db:"reason_code" json:"reason_code"`
-	Enabled    bool               `db:"enabled" json:"enabled"`
-	CreatedAt  pgtype.Timestamptz `db:"created_at" json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
-}
-
-func (q *Queries) ListModerationHashes(ctx context.Context, arg ListModerationHashesParams) ([]ListModerationHashesRow, error) {
-	rows, err := q.db.Query(ctx, listModerationHashes, arg.TenantID, arg.PageOffset, arg.PageLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListModerationHashesRow
-	for rows.Next() {
-		var i ListModerationHashesRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.HashHex,
 			&i.ReasonCode,
 			&i.Enabled,
 			&i.CreatedAt,
@@ -543,29 +302,6 @@ func (q *Queries) SetModerationKeywordEnabled(ctx context.Context, arg SetModera
 	return result.RowsAffected(), nil
 }
 
-const softDeleteModerationHash = `-- name: SoftDeleteModerationHash :execrows
-UPDATE moderation_hashes
-SET enabled = false,
-    deleted_at = now(),
-    updated_at = now()
-WHERE tenant_id = $1::bigint
-  AND id = $2::bigint
-  AND deleted_at IS NULL
-`
-
-type SoftDeleteModerationHashParams struct {
-	TenantID int64 `db:"tenant_id" json:"tenant_id"`
-	ID       int64 `db:"id" json:"id"`
-}
-
-func (q *Queries) SoftDeleteModerationHash(ctx context.Context, arg SoftDeleteModerationHashParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteModerationHash, arg.TenantID, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const softDeleteModerationKeyword = `-- name: SoftDeleteModerationKeyword :execrows
 UPDATE moderation_keywords
 SET enabled = false,
@@ -587,68 +323,4 @@ func (q *Queries) SoftDeleteModerationKeyword(ctx context.Context, arg SoftDelet
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const upsertModerationConfig = `-- name: UpsertModerationConfig :one
-INSERT INTO moderation_config (
-    tenant_id, enabled, fail_closed, sample_rate_pct,
-    ban_threshold, ban_window_seconds, violation_fee_usd, updated_by
-) VALUES (
-    $1::bigint,
-    $2::boolean,
-    $3::boolean,
-    $4::integer,
-    $5::integer,
-    $6::integer,
-    $7::numeric,
-    $8::text
-)
-ON CONFLICT (tenant_id) DO UPDATE
-SET enabled = EXCLUDED.enabled,
-    fail_closed = EXCLUDED.fail_closed,
-    sample_rate_pct = EXCLUDED.sample_rate_pct,
-    ban_threshold = EXCLUDED.ban_threshold,
-    ban_window_seconds = EXCLUDED.ban_window_seconds,
-    violation_fee_usd = EXCLUDED.violation_fee_usd,
-    updated_by = EXCLUDED.updated_by,
-    updated_at = now()
-RETURNING tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold,
-          ban_window_seconds, violation_fee_usd, updated_by, updated_at
-`
-
-type UpsertModerationConfigParams struct {
-	TenantID         int64          `db:"tenant_id" json:"tenant_id"`
-	Enabled          bool           `db:"enabled" json:"enabled"`
-	FailClosed       bool           `db:"fail_closed" json:"fail_closed"`
-	SampleRatePct    int32          `db:"sample_rate_pct" json:"sample_rate_pct"`
-	BanThreshold     int32          `db:"ban_threshold" json:"ban_threshold"`
-	BanWindowSeconds int32          `db:"ban_window_seconds" json:"ban_window_seconds"`
-	ViolationFeeUsd  pgtype.Numeric `db:"violation_fee_usd" json:"violation_fee_usd"`
-	UpdatedBy        *string        `db:"updated_by" json:"updated_by"`
-}
-
-func (q *Queries) UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (ModerationConfig, error) {
-	row := q.db.QueryRow(ctx, upsertModerationConfig,
-		arg.TenantID,
-		arg.Enabled,
-		arg.FailClosed,
-		arg.SampleRatePct,
-		arg.BanThreshold,
-		arg.BanWindowSeconds,
-		arg.ViolationFeeUsd,
-		arg.UpdatedBy,
-	)
-	var i ModerationConfig
-	err := row.Scan(
-		&i.TenantID,
-		&i.Enabled,
-		&i.FailClosed,
-		&i.SampleRatePct,
-		&i.BanThreshold,
-		&i.BanWindowSeconds,
-		&i.ViolationFeeUsd,
-		&i.UpdatedBy,
-		&i.UpdatedAt,
-	)
-	return i, err
 }

@@ -34,6 +34,9 @@ func newKeywordBulkCreateHandler(deps ModerationAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !requirePlatformAdmin(w, ident) {
+			return
+		}
 		var body keywordBulkCreateRequest
 		if !readJSONLimit(w, r, &body, 1<<20) {
 			return
@@ -75,6 +78,9 @@ func newHashBulkCreateHandler(deps ModerationAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveAdmin(deps, w, r)
 		if !ok {
+			return
+		}
+		if !requirePlatformAdmin(w, ident) {
 			return
 		}
 		var body hashBulkCreateRequest

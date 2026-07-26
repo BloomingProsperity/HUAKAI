@@ -74,6 +74,9 @@ func candidatesFromValue(value any) ([]credentialacq.CredentialCandidate, error)
 }
 
 func candidateFromObject(outer map[string]any) (credentialacq.CredentialCandidate, error) {
+	if containsMintDirective(outer) {
+		return credentialacq.CredentialCandidate{}, invalid("只允许导入已经存在的 Agent Identity")
+	}
 	mode := normalizeMode(firstString(outer, "auth_mode", "authMode"))
 	if mode != "" && mode != "agentidentity" && mode != "codexagentidentity" {
 		return credentialacq.CredentialCandidate{}, invalid("auth_mode 不是 Agent Identity")
@@ -137,6 +140,74 @@ func candidateFromObject(outer map[string]any) (credentialacq.CredentialCandidat
 	})
 	credentialacq.AttachSubscription(&candidate)
 	return candidate, nil
+}
+
+func containsMintDirective(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			normalized := strings.ToLower(key)
+			normalized = strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(normalized)
+			if isMintDirectiveKey(normalized) ||
+				isMintDirectiveValue(normalized, nested) ||
+				containsMintDirective(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if containsMintDirective(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isMintDirectiveKey(key string) bool {
+	switch key {
+	case "mint", "mintagentidentity", "mintidentity":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMintDirectiveValue(key string, value any) bool {
+	switch key {
+	case "action", "actions", "command", "commands", "directive", "directives",
+		"intent", "intents", "operation", "operations", "type", "types":
+	default:
+		return false
+	}
+	return containsMintDirectiveText(value)
+}
+
+func containsMintDirectiveText(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		text := strings.ToLower(strings.TrimSpace(typed))
+		text = strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(text)
+		switch text {
+		case "mint", "mintagentidentity", "mintidentity":
+			return true
+		default:
+			return false
+		}
+	case []any:
+		for _, nested := range typed {
+			if containsMintDirectiveText(nested) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, nested := range typed {
+			if containsMintDirectiveText(nested) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeMetadata(inner, outer map[string]any) map[string]any {

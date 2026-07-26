@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-func TestScreener_ConfigErrorPassesWhenTenantNotKnownEnabled(t *testing.T) {
+func TestScreener_ConfigErrorFailsClosedWhenTenantStateUnknown(t *testing.T) {
 	keywords := &keywordStoreStub{err: errors.New("must not call")}
-	beforeMetric := moderationFailureMetricValue("config_backend_error")
 	s := NewScreener(ScreenerDeps{
 		Config:   configStub{err: errors.New("config db gone")},
 		Keywords: keywords,
@@ -24,17 +23,14 @@ func TestScreener_ConfigErrorPassesWhenTenantNotKnownEnabled(t *testing.T) {
 		PayloadHash: "hash-config-error",
 		Body:        []byte("forbidden"),
 	})
-	if err != nil {
-		t.Fatalf("config error for default-disabled tenant should pass, got %v", err)
+	if !errors.Is(err, ErrScreenerBackend) {
+		t.Fatalf("config error err=%v want ErrScreenerBackend", err)
 	}
-	if res.Decision != DecisionPass || res.ReasonCode != "moderation_disabled" {
-		t.Fatalf("result=%+v want moderation_disabled pass", res)
+	if res.Decision != DecisionBlockBackend || res.ReasonCode != "config_backend_error" {
+		t.Fatalf("result=%+v want config backend block", res)
 	}
 	if keywords.calls != 0 {
-		t.Fatalf("keyword store was called while config load failed disabled: calls=%d", keywords.calls)
-	}
-	if got := moderationFailureMetricValue("config_backend_error") - beforeMetric; got != 1 {
-		t.Fatalf("config backend metric delta=%d want 1; MUTATION:删除冷缓存 pass 的指标记录会变红", got)
+		t.Fatalf("keyword store was called while config was unknown: calls=%d", keywords.calls)
 	}
 }
 
@@ -47,12 +43,12 @@ func TestScreener_ConfigCacheReusesWithinTTLAndRefreshesAfterExpiry(t *testing.T
 		Now:            func() time.Time { return now },
 	})
 
-	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-cache-1"})
+	res, err := s.Screen(context.Background(), testScreenRequest(7, "req-cache-1", "ordinary"))
 	if err != nil || res.ReasonCode != "moderation_disabled" {
 		t.Fatalf("first screen result=%+v err=%v", res, err)
 	}
 	configs.err = errors.New("config db should not be read inside ttl")
-	res, err = s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-cache-2"})
+	res, err = s.Screen(context.Background(), testScreenRequest(7, "req-cache-2", "ordinary"))
 	if err != nil || res.ReasonCode != "moderation_disabled" {
 		t.Fatalf("cached screen result=%+v err=%v", res, err)
 	}
@@ -63,7 +59,7 @@ func TestScreener_ConfigCacheReusesWithinTTLAndRefreshesAfterExpiry(t *testing.T
 	now = now.Add(31 * time.Second)
 	configs.err = nil
 	configs.cfg = ModerationConfig{TenantID: 7, Enabled: true, FailClosed: true}
-	res, err = s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-cache-3"})
+	res, err = s.Screen(context.Background(), testScreenRequest(7, "req-cache-3", "ordinary"))
 	if err != nil || res.Decision != DecisionPass || res.ReasonCode != "clean" {
 		t.Fatalf("refreshed screen result=%+v err=%v", res, err)
 	}
@@ -83,14 +79,14 @@ func TestScreener_ConfigErrorUsesExpiredEnabledCache(t *testing.T) {
 		Now:            func() time.Time { return now },
 	})
 
-	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-stale-1"})
+	res, err := s.Screen(context.Background(), testScreenRequest(7, "req-stale-1", "ordinary"))
 	if err != nil || res.Decision != DecisionPass || res.ReasonCode != "clean" {
 		t.Fatalf("first screen result=%+v err=%v", res, err)
 	}
 
 	now = now.Add(6 * time.Second)
 	configs.err = errors.New("config db gone with secret-like text")
-	res, err = s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "req-stale-2"})
+	res, err = s.Screen(context.Background(), testScreenRequest(7, "req-stale-2", "ordinary"))
 	if !errors.Is(err, ErrScreenerBackend) {
 		t.Fatalf("err=%v want ErrScreenerBackend from stale enabled config; MUTATION:删除 stale 兜底会变成 pass/nil", err)
 	}

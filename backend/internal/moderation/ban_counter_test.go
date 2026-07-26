@@ -5,120 +5,60 @@ import (
 	"testing"
 )
 
-func TestBanCounter_ThresholdTriggeredDisablesKey(t *testing.T) {
-	store := &banStoreStub{count: 3}
+func TestBanCounter_BlockUsesAtomicStore(t *testing.T) {
+	store := &banStoreStub{result: BanResult{
+		EventID: 19, Count: 3, ThresholdReached: true, Disabled: true,
+	}}
+	counter := NewBanCounter(store)
+	event := ModerationEvent{
+		TenantID: 7, APIKeyID: 11, UserID: 13, RequestID: "req-1",
+		Decision: DecisionBlockKeyword, InputExcerpt: "违规原文",
+	}
+	cfg := ModerationConfig{
+		BanThreshold: 3, BanWindowSeconds: 300, AutoDisableKeyOnBan: true,
+	}
+
+	result, err := counter.RecordAndCheck(context.Background(), event, cfg)
+	if err != nil {
+		t.Fatalf("RecordAndCheck returned error: %v", err)
+	}
+	if result.EventID != 19 || result.Count != 3 || !result.ThresholdReached || !result.Disabled {
+		t.Fatalf("result=%+v", result)
+	}
+	if store.calls != 1 || store.event != event ||
+		store.cfg.BanThreshold != cfg.BanThreshold ||
+		store.cfg.BanWindowSeconds != cfg.BanWindowSeconds ||
+		store.cfg.AutoDisableKeyOnBan != cfg.AutoDisableKeyOnBan {
+		t.Fatalf("atomic store call mismatch calls=%d event=%+v cfg=%+v", store.calls, store.event, store.cfg)
+	}
+}
+
+func TestBanCounter_PassDecisionDoesNotTouchStore(t *testing.T) {
+	store := &banStoreStub{}
 	counter := NewBanCounter(store)
 
-	res, err := counter.RecordAndCheck(context.Background(), ModerationEvent{
-		TenantID: 7,
-		APIKeyID: 11,
-		Decision: DecisionBlockKeyword,
+	result, err := counter.RecordAndCheck(context.Background(), ModerationEvent{
+		TenantID: 7, APIKeyID: 11, Decision: DecisionPass,
 	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
 	if err != nil {
 		t.Fatalf("RecordAndCheck returned error: %v", err)
 	}
-	if !res.Disabled {
-		t.Fatalf("Disabled=false want true")
-	}
-	if store.disabledTenantID != 7 || store.disabledAPIKeyID != 11 {
-		t.Fatalf("disabled key mismatch: tenant=%d api_key=%d", store.disabledTenantID, store.disabledAPIKeyID)
-	}
-}
-
-func TestBanCounter_WindowExpiryDoesNotBan(t *testing.T) {
-	store := &banStoreStub{count: 2}
-	counter := NewBanCounter(store)
-
-	res, err := counter.RecordAndCheck(context.Background(), ModerationEvent{
-		TenantID: 7,
-		APIKeyID: 11,
-		Decision: DecisionBlockKeyword,
-	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
-	if err != nil {
-		t.Fatalf("RecordAndCheck returned error: %v", err)
-	}
-	if res.Disabled {
-		t.Fatalf("Disabled=true want false below threshold")
-	}
-	if store.disableCalls != 0 {
-		t.Fatalf("disableCalls=%d want 0 below threshold", store.disableCalls)
-	}
-}
-
-func TestBanCounter_SampleRateZeroStillCountsDedicatedViolationEvents(t *testing.T) {
-	// 根因:auto-ban 以前复用受采样控制的 moderation_log 计数。sample_rate=0 时连续违规
-	// 不会进入封禁窗口。Mutation:删掉 RecordModerationViolationEvent 并改回数 audit log 时，
-	// recordCalls=0 且第三次也不会 Disabled。
-	store := &banStoreStub{countFromRecorded: true}
-	counter := NewBanCounter(store)
-	cfg := ModerationConfig{SampleRatePct: 0, BanThreshold: 3, BanWindowSeconds: 300}
-
-	var res BanResult
-	for i := 0; i < 3; i++ {
-		var err error
-		res, err = counter.RecordAndCheck(context.Background(), ModerationEvent{
-			TenantID: 7,
-			APIKeyID: 11,
-			Decision: DecisionBlockKeyword,
-		}, cfg)
-		if err != nil {
-			t.Fatalf("RecordAndCheck attempt %d returned error: %v", i+1, err)
-		}
-	}
-	if store.recordCalls != 3 {
-		t.Fatalf("dedicated violation record calls=%d want 3", store.recordCalls)
-	}
-	if !res.Disabled {
-		t.Fatalf("Disabled=false want true after three non-sampled violations")
-	}
-	if store.disableCalls != 1 {
-		t.Fatalf("disableCalls=%d want 1 after threshold", store.disableCalls)
-	}
-}
-
-func TestBanCounter_PassDecisionDoesNotCount(t *testing.T) {
-	store := &banStoreStub{count: 99}
-	counter := NewBanCounter(store)
-
-	res, err := counter.RecordAndCheck(context.Background(), ModerationEvent{
-		TenantID: 7,
-		APIKeyID: 11,
-		Decision: DecisionPass,
-	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
-	if err != nil {
-		t.Fatalf("RecordAndCheck returned error: %v", err)
-	}
-	if res.Disabled || store.countCalls != 0 || store.disableCalls != 0 {
-		t.Fatalf("pass decision touched ban store: res=%+v store=%+v", res, store)
+	if result != (BanResult{}) || store.calls != 0 {
+		t.Fatalf("pass touched violation store: result=%+v calls=%d", result, store.calls)
 	}
 }
 
 type banStoreStub struct {
-	count             int64
-	countFromRecorded bool
-	recordCalls       int
-	countCalls        int
-	disableCalls      int
-	disabledTenantID  int64
-	disabledAPIKeyID  int64
+	calls  int
+	event  ModerationEvent
+	cfg    ModerationConfig
+	result BanResult
+	err    error
 }
 
-func (s *banStoreStub) RecordModerationViolationEvent(context.Context, ModerationEvent) error {
-	s.recordCalls++
-	return nil
-}
-
-func (s *banStoreStub) CountBlocksInWindow(context.Context, int64, int64, int32) (int64, error) {
-	s.countCalls++
-	if s.countFromRecorded {
-		return int64(s.recordCalls), nil
-	}
-	return s.count, nil
-}
-
-func (s *banStoreStub) DisableAPIKey(_ context.Context, tenantID int64, apiKeyID int64) error {
-	s.disableCalls++
-	s.disabledTenantID = tenantID
-	s.disabledAPIKeyID = apiKeyID
-	return nil
+func (s *banStoreStub) RecordModerationViolation(_ context.Context, event ModerationEvent, cfg ModerationConfig) (BanResult, error) {
+	s.calls++
+	s.event = event
+	s.cfg = cfg
+	return s.result, s.err
 }

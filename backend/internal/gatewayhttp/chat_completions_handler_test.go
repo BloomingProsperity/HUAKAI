@@ -16,6 +16,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/moderation"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
+	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
@@ -243,7 +245,6 @@ func TestHandler_ModerationBlockReturns403BeforeReserveAndAutoBanUsesIdentity(t 
 	enableHCSFDispatchForTest(t)
 	claimGate := &moderationClaimGateSpy{}
 	dispatcher := &mockCanonicalBufferedDispatcher{}
-	audit := &chatModerationAuditSpy{}
 	ban := &chatModerationBanSpy{}
 	d := clientAdapterDeps(t)
 	d.ClaimGate = claimGate
@@ -254,7 +255,6 @@ func TestHandler_ModerationBlockReturns403BeforeReserveAndAutoBanUsesIdentity(t 
 			BanThreshold: 1, BanWindowSeconds: 3600,
 		}},
 		Keywords: &chatModerationKeywordStore{rules: []moderation.KeywordRule{{ID: 77, Keyword: "forbidden"}}},
-		Audit:    audit,
 		Ban:      ban,
 	})
 
@@ -273,18 +273,15 @@ func TestHandler_ModerationBlockReturns403BeforeReserveAndAutoBanUsesIdentity(t 
 	if dispatcher.calls != 0 {
 		t.Fatalf("dispatcher calls=%d want 0 for blocked moderation request", dispatcher.calls)
 	}
-	if len(audit.events) != 1 {
-		t.Fatalf("audit events=%d want 1", len(audit.events))
-	}
-	if audit.events[0].PayloadHash == "" || audit.events[0].ReasonCode == "forbidden" {
-		t.Fatalf("audit event leaked raw keyword or missed hash: %+v", audit.events[0])
-	}
 	if ban.calls != 1 {
-		t.Fatalf("auto-ban calls=%d want 1", ban.calls)
+		t.Fatalf("atomic violation calls=%d want 1", ban.calls)
 	}
 	if ban.events[0].APIKeyID != validIdentity().APIKeyID {
 		t.Fatalf("auto-ban APIKeyID=%d want authenticated identity %d; body spoof must be ignored",
 			ban.events[0].APIKeyID, validIdentity().APIKeyID)
+	}
+	if ban.events[0].InputExcerpt != "forbidden" || ban.events[0].ReasonCode == "forbidden" {
+		t.Fatalf("violation event excerpt/reason mismatch: %+v", ban.events[0])
 	}
 }
 
@@ -316,6 +313,90 @@ func TestHandler_ModerationCleanInputProceedsToReserveAndDispatch(t *testing.T) 
 	}
 	if ban.calls != 0 {
 		t.Fatalf("auto-ban calls=%d want 0 for clean request", ban.calls)
+	}
+}
+
+func TestHandler_PureImageModerationBlocksAllProtocolEntrancesBeforeReserve(t *testing.T) {
+	tests := []struct {
+		name   string
+		invoke func(t *testing.T, d ChatHandlerDeps) *httptest.ResponseRecorder
+	}{
+		{
+			name: "OpenAI Chat",
+			invoke: func(t *testing.T, d ChatHandlerDeps) *httptest.ResponseRecorder {
+				return invokeHandlerPath(t, d, "/v1/chat/completions",
+					`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/chat.png"}}]}]}`)
+			},
+		},
+		{
+			name: "Anthropic Messages",
+			invoke: func(t *testing.T, d ChatHandlerDeps) *httptest.ResponseRecorder {
+				return invokeHandlerPath(t, d, "/v1/messages",
+					`{"model":"claude-3-5-sonnet","max_tokens":16,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/messages.png"}}]}]}`)
+			},
+		},
+		{
+			name: "OpenAI Responses",
+			invoke: func(t *testing.T, d ChatHandlerDeps) *httptest.ResponseRecorder {
+				return invokeResponsesHandlerPath(t, d, "/v1/responses",
+					`{"model":"gpt-4o","input":[{"type":"input_image","image_url":"https://example.com/responses.png"}]}`)
+			},
+		},
+		{
+			name: "Gemini",
+			invoke: func(t *testing.T, d ChatHandlerDeps) *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost,
+					"/v1beta/models/gemini-pro:generateContent",
+					strings.NewReader(`{"contents":[{"role":"user","parts":[{"inlineData":{"mimeType":"image/png","data":"aGVsbG8="}}]}]}`))
+				rec := httptest.NewRecorder()
+				NewNativeClientGateway(d).ServeNativeClient(rec, req, NativeClientRequest{
+					Model: "gemini-pro", Action: "generateContent",
+					ClientProtocol: proto.ClientProtocolGemini,
+					ClientAdapter:  &protogemini.GeminiClient{},
+					EndpointFamily: "gemini_generate_content",
+				})
+				return rec
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enableHCSFDispatchForTest(t)
+			claimGate := &moderationClaimGateSpy{}
+			dispatcher := &mockCanonicalBufferedDispatcher{}
+			external := &chatExternalModeratorSpy{
+				result: moderation.ExternalModerationResult{
+					Blocked: true, ReasonCode: "external_moderation:image",
+				},
+			}
+			d := clientAdapterDeps(t)
+			d.ClaimGate = claimGate
+			d.CanonicalDispatcher = dispatcher
+			d.ModerationScreener = moderation.NewScreener(moderation.ScreenerDeps{
+				Config: chatModerationConfigStore{cfg: moderation.ModerationConfig{
+					Enabled: true, FailClosed: true, SampleRatePct: 100,
+					External: moderation.ExternalModerationConfig{
+						Enabled: true, ImageEnabled: true,
+					},
+				}},
+				External: external,
+			})
+
+			rec := tc.invoke(t, d)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
+			}
+			if external.calls != 1 || len(external.reqs) != 1 ||
+				len(external.reqs[0].ImageURLs) != 1 {
+				t.Fatalf("外部图片审核 calls/reqs/images=%d/%d/%v",
+					external.calls, len(external.reqs), external.reqs)
+			}
+			if claimGate.calls != 0 || dispatcher.calls != 0 {
+				t.Fatalf("审核阻断后 reserve/dispatch=%d/%d，期望 0/0",
+					claimGate.calls, dispatcher.calls)
+			}
+		})
 	}
 }
 
@@ -424,18 +505,25 @@ func (s *chatModerationKeywordStore) ListEnabled(context.Context, int64) ([]mode
 	return s.rules, nil
 }
 
-type chatModerationAuditSpy struct {
-	events []moderation.ModerationEvent
-}
-
-func (s *chatModerationAuditSpy) Log(_ context.Context, event moderation.ModerationEvent, _ moderation.ModerationConfig) error {
-	s.events = append(s.events, event)
-	return nil
-}
-
 type chatModerationBanSpy struct {
 	calls  int
 	events []moderation.ModerationEvent
+}
+
+type chatExternalModeratorSpy struct {
+	calls  int
+	reqs   []moderation.ScreenRequest
+	result moderation.ExternalModerationResult
+}
+
+func (s *chatExternalModeratorSpy) ScreenExternal(
+	_ context.Context,
+	req moderation.ScreenRequest,
+	_ moderation.ExternalModerationConfig,
+) (moderation.ExternalModerationResult, error) {
+	s.calls++
+	s.reqs = append(s.reqs, req)
+	return s.result, nil
 }
 
 func (s *chatModerationBanSpy) RecordAndCheck(_ context.Context, event moderation.ModerationEvent, _ moderation.ModerationConfig) (moderation.BanResult, error) {

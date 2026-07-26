@@ -76,16 +76,23 @@ func NewScreener(deps ScreenerDeps) Screener {
 
 func (s *storeScreener) Screen(ctx context.Context, req ScreenRequest) (ScreenResult, error) {
 	cfg, err := s.loadConfig(ctx, req.TenantID)
-	if !cfg.Enabled {
-		result := ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}
-		if err != nil {
-			reportModerationFailure(ctx, "config_backend_error", req, result, err)
-		}
-		return result, nil
-	}
 	if err != nil {
 		return s.backendResult(cfg, "config_backend_error", err)
 	}
+	if !cfg.Enabled {
+		return ScreenResult{Decision: DecisionPass, ReasonCode: "moderation_disabled"}, nil
+	}
+	extracted, err := extractModerationInput(req.ClientProtocol, req.Body)
+	if err != nil {
+		result, backendErr := s.backendResult(cfg, "input_parse_error", err)
+		if auditErr := s.writeAudit(ctx, req, result, cfg); auditErr != nil {
+			reportModerationFailure(ctx, "audit_write_failed", req, result, auditErr)
+		}
+		return result, backendErr
+	}
+	req.Body = []byte(extracted.AllText)
+	req.InputExcerpt = extracted.Excerpt
+	req.ImageURLs = extracted.ImageURLs
 	hashResult, err := s.checkHash(ctx, req, cfg)
 	if err != nil || hashResult.Decision != "" {
 		return hashResult, err
@@ -155,9 +162,6 @@ func (s *storeScreener) checkHash(ctx context.Context, req ScreenRequest, cfg Mo
 		ReasonCode:    nonEmpty(match.ReasonCode, "hash_match"),
 		MatchedHashID: &match.ID,
 	}
-	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
-		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
-	}
 	if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
 		reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
 	}
@@ -184,9 +188,6 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 			ReasonCode:       nonEmpty(rule.ReasonCode, "keyword_match"),
 			MatchedKeywordID: &id,
 		}
-		if err := s.writeAudit(ctx, req, result, cfg); err != nil {
-			reportModerationFailure(ctx, "audit_write_failed", req, result, err)
-		}
 		if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
 			reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
 		}
@@ -197,6 +198,9 @@ func (s *storeScreener) checkKeywords(ctx context.Context, req ScreenRequest, cf
 
 func (s *storeScreener) checkExternal(ctx context.Context, req ScreenRequest, cfg ModerationConfig) (ScreenResult, error) {
 	if s.external == nil || !cfg.External.Enabled {
+		return ScreenResult{}, nil
+	}
+	if len(req.Body) == 0 && len(req.ImageURLs) > 0 && !cfg.External.ImageEnabled {
 		return ScreenResult{}, nil
 	}
 	// 本地 hash/keyword 已在调用本函数前完成；只采样有成本的外部调用。
@@ -219,9 +223,6 @@ func (s *storeScreener) checkExternal(ctx context.Context, req ScreenRequest, cf
 	result := ScreenResult{
 		Decision:   DecisionBlockExternal,
 		ReasonCode: nonEmpty(externalResult.ReasonCode, "external_moderation"),
-	}
-	if err := s.writeAudit(ctx, req, result, cfg); err != nil {
-		reportModerationFailure(ctx, "audit_write_failed", req, result, err)
 	}
 	if err := s.recordAutoBan(ctx, req, result, cfg); err != nil {
 		reportModerationFailure(ctx, "auto_ban_record_failed", req, result, err)
@@ -344,11 +345,18 @@ func repeatAgentTurn(req ScreenRequest) bool {
 
 func (s *storeScreener) recordAutoBan(ctx context.Context, req ScreenRequest, res ScreenResult, cfg ModerationConfig) error {
 	if s.ban == nil {
-		return nil
+		return s.writeAudit(ctx, req, res, cfg)
 	}
 	// TailRole 来自客户端请求体，只能用于压缩干净请求的日志噪音，不能作为
 	// 免计违规的授权信号；否则攻击者把尾角色写成 assistant 即可绕过封禁。
 	_, err := s.ban.RecordAndCheck(ctx, eventFromResult(req, res), cfg)
+	if err != nil {
+		// 原子违规事务失败时，独立保留一条 30 天运营证据。它不参与累计和
+		// Key 状态恢复，避免把未提交的永久事实伪装成已经完成的处置。
+		if auditErr := s.writeAudit(ctx, req, res, cfg); auditErr != nil {
+			reportModerationFailure(ctx, "audit_fallback_write_failed", req, res, auditErr)
+		}
+	}
 	return err
 }
 
@@ -366,7 +374,7 @@ func reportModerationFailure(ctx context.Context, kind string, req ScreenRequest
 }
 
 func eventFromResult(req ScreenRequest, res ScreenResult) ModerationEvent {
-	return ModerationEvent{
+	event := ModerationEvent{
 		TenantID:         req.TenantID,
 		APIKeyID:         req.APIKeyID,
 		UserID:           req.UserID,
@@ -377,6 +385,10 @@ func eventFromResult(req ScreenRequest, res ScreenResult) ModerationEvent {
 		MatchedKeywordID: res.MatchedKeywordID,
 		MatchedHashID:    res.MatchedHashID,
 	}
+	if isCountedViolation(res.Decision) {
+		event.InputExcerpt = req.InputExcerpt
+	}
+	return event
 }
 
 func nonEmpty(value, fallback string) string {
