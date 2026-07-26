@@ -21,22 +21,26 @@ type AdminAuth interface {
 
 type Store interface {
 	ListDead(context.Context, obsdlq.AdminListFilter) ([]obsdlq.AdminDeadEvent, error)
-	ReplayDead(context.Context, string) (obsdlq.AdminReplayResult, error)
+	ReplayDead(context.Context, int64, string, string) (obsdlq.AdminReplayResult, error)
 }
 
 type Deps struct {
-	Auth  AdminAuth
-	Store Store
+	Auth             AdminAuth
+	Store            Store
+	PlatformTenantID int64
 }
 
 func NewListHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolvePlatformAdmin(w, r, d)
+		store, ident, ok := resolveAdmin(w, r, d)
 		if !ok {
 			return
 		}
 		filter, ok := parseListFilter(w, r)
 		if !ok {
+			return
+		}
+		if !scopeListFilter(w, ident, &filter) {
 			return
 		}
 		rows, err := store.ListDead(r.Context(), filter)
@@ -54,7 +58,11 @@ func NewListHandler(d Deps) http.HandlerFunc {
 
 func NewReplayHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ok := resolvePlatformAdmin(w, r, d)
+		store, ident, ok := resolveAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := ownedReplayTenant(w, ident, d.PlatformTenantID)
 		if !ok {
 			return
 		}
@@ -63,7 +71,7 @@ func NewReplayHandler(d Deps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_obs_dlq_id", "id is required")
 			return
 		}
-		result, err := store.ReplayDead(r.Context(), id)
+		result, err := store.ReplayDead(r.Context(), tenantID, id, ident.AuditActor())
 		if err != nil {
 			switch {
 			case errors.Is(err, obsdlq.ErrReplayConflict):
@@ -81,10 +89,10 @@ func NewReplayHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-func resolvePlatformAdmin(w http.ResponseWriter, r *http.Request, d Deps) (Store, bool) {
+func resolveAdmin(w http.ResponseWriter, r *http.Request, d Deps) (Store, admin.AdminIdentity, bool) {
 	if d.Auth == nil || d.Store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "obs dlq dependency unset")
-		return nil, false
+		return nil, admin.AdminIdentity{}, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
@@ -93,13 +101,52 @@ func resolvePlatformAdmin(w http.ResponseWriter, r *http.Request, d Deps) (Store
 		} else {
 			writeJSONError(w, http.StatusUnauthorized, "admin_unauthorized", "missing or invalid admin credential")
 		}
-		return nil, false
+		return nil, admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
-		return nil, false
+	switch ident.Role {
+	case admin.RolePlatformAdmin, admin.RoleTenantOperator:
+		return d.Store, ident, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return nil, admin.AdminIdentity{}, false
 	}
-	return d.Store, true
+}
+
+func scopeListFilter(w http.ResponseWriter, ident admin.AdminIdentity, filter *obsdlq.AdminListFilter) bool {
+	if ident.Role == admin.RolePlatformAdmin {
+		return true
+	}
+	if ident.ScopeTenantID <= 0 {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+		return false
+	}
+	if filter.TenantID != nil && *filter.TenantID != ident.ScopeTenantID {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot read this tenant")
+		return false
+	}
+	tenantID := ident.ScopeTenantID
+	filter.TenantID = &tenantID
+	return true
+}
+
+func ownedReplayTenant(w http.ResponseWriter, ident admin.AdminIdentity, platformTenantID int64) (int64, bool) {
+	switch ident.Role {
+	case admin.RolePlatformAdmin:
+		if platformTenantID <= 0 {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is not configured")
+			return 0, false
+		}
+		return platformTenantID, true
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+			return 0, false
+		}
+		return ident.ScopeTenantID, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return 0, false
+	}
 }
 
 func parseListFilter(w http.ResponseWriter, r *http.Request) (obsdlq.AdminListFilter, bool) {
@@ -174,20 +221,29 @@ func mapDeadEvent(row obsdlq.AdminDeadEvent) map[string]any {
 		payload = json.RawMessage(`{}`)
 	}
 	return map[string]any{
-		"id":              row.ID,
-		"outbox_event_id": row.OutboxEventID,
-		"tenant_id":       row.TenantID,
-		"event_type":      row.EventType,
-		"priority":        row.Priority,
-		"payload":         payload,
-		"dead_at":         row.DeadAt.UTC().Format(time.RFC3339Nano),
-		"dead_reason":     row.DeadReason,
-		"attempt_count":   row.AttemptCount,
-		"outbox_status":   row.OutboxStatus,
-		"failure_reason":  row.FailureReason,
-		"created_at":      row.CreatedAt.UTC().Format(time.RFC3339Nano),
-		"next_retry_at":   row.NextRetryAt.UTC().Format(time.RFC3339Nano),
+		"id":                row.ID,
+		"outbox_event_id":   row.OutboxEventID,
+		"tenant_id":         row.TenantID,
+		"event_type":        row.EventType,
+		"priority":          row.Priority,
+		"payload":           payload,
+		"dead_at":           row.DeadAt.UTC().Format(time.RFC3339Nano),
+		"dead_reason":       row.DeadReason,
+		"attempt_count":     row.AttemptCount,
+		"outbox_status":     row.OutboxStatus,
+		"failure_reason":    row.FailureReason,
+		"created_at":        row.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"next_retry_at":     row.NextRetryAt.UTC().Format(time.RFC3339Nano),
+		"last_replay_at":    formatOptionalTime(row.LastReplayAt),
+		"last_replay_actor": row.LastActor,
 	}
+}
+
+func formatOptionalTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

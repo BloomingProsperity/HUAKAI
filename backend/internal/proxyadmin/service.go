@@ -7,42 +7,91 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxysecret"
+	"github.com/BloomingProsperity/HUAKAI/internal/ssrfpolicy"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Querier interface {
 	CreateProxy(context.Context, admindb.CreateProxyParams) (admindb.CreateProxyRow, error)
 	UpdateProxy(context.Context, admindb.UpdateProxyParams) (admindb.UpdateProxyRow, error)
 	GetProxy(context.Context, admindb.GetProxyParams) (admindb.GetProxyRow, error)
+	GetProxyDeleteImpact(context.Context, admindb.GetProxyDeleteImpactParams) (admindb.GetProxyDeleteImpactRow, error)
 	ListProxiesByTenant(context.Context, int64) ([]admindb.ListProxiesByTenantRow, error)
-	SetProxyStatus(context.Context, admindb.SetProxyStatusParams) error
-	SoftDeleteProxy(context.Context, admindb.SoftDeleteProxyParams) error
+	SetProxyStatus(context.Context, admindb.SetProxyStatusParams) (int64, error)
+	DeleteProxyIfUnused(context.Context, admindb.DeleteProxyIfUnusedParams) (admindb.DeleteProxyIfUnusedRow, error)
 }
 
 type Service struct {
-	q    Querier
-	keys credentialstore.KeyProvider
+	q         Querier
+	keys      credentialstore.KeyProvider
+	mutations mutationStore
 }
 
 func New(q Querier, keys credentialstore.KeyProvider) *Service {
 	return &Service{q: q, keys: keys}
 }
 
-func (s *Service) Create(ctx context.Context, in CreateInput) (Proxy, error) {
-	if err := validateCreate(in); err != nil {
-		return Proxy{}, err
+// NewPostgres 构造管理写入口使用的服务。所有写操作由 mutationStore 将业务行与
+// 操作日志放进同一事务；普通 New 仍供只读、探测和受控内部流程复用。
+func NewPostgres(pool *pgxpool.Pool, keys credentialstore.KeyProvider) *Service {
+	if pool == nil {
+		return &Service{keys: keys}
 	}
-	secret, err := s.encryptAuthSecret(ctx, in.TenantID, in.AuthSecret)
+	return &Service{
+		q:         admindb.New(pool),
+		keys:      keys,
+		mutations: newPostgresMutationStore(pool),
+	}
+}
+
+func (s *Service) Create(ctx context.Context, in CreateInput) (Proxy, error) {
+	params, err := s.createParams(ctx, in)
 	if err != nil {
 		return Proxy{}, err
 	}
-	row, err := s.q.CreateProxy(ctx, admindb.CreateProxyParams{
+	if s == nil || s.q == nil {
+		return Proxy{}, ErrStoreNotConfigured
+	}
+	row, err := s.q.CreateProxy(ctx, params)
+	if err != nil {
+		return Proxy{}, mapErr(err)
+	}
+	return fromCreate(row), nil
+}
+
+// CreateWithAudit 是管理 HTTP 面唯一允许调用的新增入口。
+func (s *Service) CreateWithAudit(ctx context.Context, in CreateInput, audit MutationAudit) (Proxy, error) {
+	params, err := s.createParams(ctx, in)
+	if err != nil {
+		return Proxy{}, err
+	}
+	if err := validateMutationAudit(audit); err != nil {
+		return Proxy{}, err
+	}
+	if s == nil || s.mutations == nil {
+		return Proxy{}, ErrStoreNotConfigured
+	}
+	row, err := s.mutations.Create(ctx, params, audit)
+	if err != nil {
+		return Proxy{}, mapErr(err)
+	}
+	return fromCreate(row), nil
+}
+
+func (s *Service) createParams(ctx context.Context, in CreateInput) (admindb.CreateProxyParams, error) {
+	if err := validateCreate(in); err != nil {
+		return admindb.CreateProxyParams{}, err
+	}
+	secret, err := s.encryptAuthSecret(ctx, in.TenantID, in.AuthSecret)
+	if err != nil {
+		return admindb.CreateProxyParams{}, err
+	}
+	return admindb.CreateProxyParams{
 		TenantID:     in.TenantID,
 		Name:         strings.TrimSpace(in.Name),
 		Protocol:     strings.TrimSpace(in.Protocol),
@@ -52,36 +101,98 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Proxy, error) {
 		AuthSecret:   secret,
 		GroupID:      normalizeGroupID(in.GroupID),
 		Status:       statusOrActive(in.Status),
-	})
-	if err != nil {
-		return Proxy{}, mapErr(err)
-	}
-	return fromCreate(row), nil
+	}, nil
 }
 
 func (s *Service) Update(ctx context.Context, in UpdateInput) (Proxy, error) {
 	if err := validateUpdate(in); err != nil {
 		return Proxy{}, err
 	}
-	secret, err := s.encryptAuthSecret(ctx, in.TenantID, in.AuthSecret)
+	return s.Patch(ctx, PatchInput{
+		TenantID:     in.TenantID,
+		ID:           in.ID,
+		Name:         PatchField[string]{Set: true, Value: in.Name},
+		Protocol:     PatchField[string]{Set: true, Value: in.Protocol},
+		Host:         PatchField[string]{Set: true, Value: in.Host},
+		Port:         PatchField[int32]{Set: true, Value: in.Port},
+		AuthUsername: PatchField[*string]{Set: true, Value: in.AuthUsername},
+		AuthSecret:   PatchField[*string]{Set: true, Value: in.AuthSecret},
+		GroupID:      PatchField[*string]{Set: true, Value: in.GroupID},
+	})
+}
+
+// Patch 原子更新请求中出现的字段。认证秘密未出现时由 SQL 保留原密文，只有显式
+// null 或空串才清空，避免管理页面修改名称时意外擦除代理凭据。
+func (s *Service) Patch(ctx context.Context, in PatchInput) (Proxy, error) {
+	params, err := s.patchParams(ctx, in)
 	if err != nil {
 		return Proxy{}, err
 	}
-	row, err := s.q.UpdateProxy(ctx, admindb.UpdateProxyParams{
-		TenantID:     in.TenantID,
-		ID:           in.ID,
-		Name:         strings.TrimSpace(in.Name),
-		Protocol:     strings.TrimSpace(in.Protocol),
-		Host:         strings.TrimSpace(in.Host),
-		Port:         in.Port,
-		AuthUsername: cleanPtr(in.AuthUsername),
-		AuthSecret:   secret,
-		GroupID:      normalizeGroupID(in.GroupID),
-	})
+	if s == nil || s.q == nil {
+		return Proxy{}, ErrStoreNotConfigured
+	}
+	row, err := s.q.UpdateProxy(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Proxy{}, ErrNotFound
+	}
 	if err != nil {
 		return Proxy{}, mapErr(err)
 	}
 	return fromUpdate(row), nil
+}
+
+// PatchWithAudit 是管理 HTTP 面唯一允许调用的字段级更新入口。
+func (s *Service) PatchWithAudit(ctx context.Context, in PatchInput, audit MutationAudit) (Proxy, error) {
+	params, err := s.patchParams(ctx, in)
+	if err != nil {
+		return Proxy{}, err
+	}
+	if err := validateMutationAudit(audit); err != nil {
+		return Proxy{}, err
+	}
+	if s == nil || s.mutations == nil {
+		return Proxy{}, ErrStoreNotConfigured
+	}
+	row, err := s.mutations.Update(ctx, params, patchFieldNames(in), audit)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Proxy{}, ErrNotFound
+	}
+	if err != nil {
+		return Proxy{}, mapErr(err)
+	}
+	return fromUpdate(row), nil
+}
+
+func (s *Service) patchParams(ctx context.Context, in PatchInput) (admindb.UpdateProxyParams, error) {
+	if err := validatePatch(in); err != nil {
+		return admindb.UpdateProxyParams{}, err
+	}
+	var secret *string
+	var err error
+	if in.AuthSecret.Set {
+		secret, err = s.encryptAuthSecret(ctx, in.TenantID, in.AuthSecret.Value)
+	}
+	if err != nil {
+		return admindb.UpdateProxyParams{}, err
+	}
+	return admindb.UpdateProxyParams{
+		TenantID:        in.TenantID,
+		ID:              in.ID,
+		NameSet:         in.Name.Set,
+		Name:            strings.TrimSpace(in.Name.Value),
+		ProtocolSet:     in.Protocol.Set,
+		Protocol:        strings.TrimSpace(in.Protocol.Value),
+		HostSet:         in.Host.Set,
+		Host:            strings.TrimSpace(in.Host.Value),
+		PortSet:         in.Port.Set,
+		Port:            in.Port.Value,
+		AuthUsernameSet: in.AuthUsername.Set,
+		AuthUsername:    cleanPtr(in.AuthUsername.Value),
+		AuthSecretSet:   in.AuthSecret.Set,
+		AuthSecret:      secret,
+		GroupIDSet:      in.GroupID.Set,
+		GroupID:         normalizeGroupID(in.GroupID.Value),
+	}, nil
 }
 
 // List 返回某租户全部未删除的代理,不含凭据。底层行上加密的 auth_secret
@@ -89,6 +200,9 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (Proxy, error) {
 func (s *Service) List(ctx context.Context, tenantID int64) ([]Proxy, error) {
 	if tenantID <= 0 {
 		return nil, ErrInvalidInput
+	}
+	if s == nil || s.q == nil {
+		return nil, ErrStoreNotConfigured
 	}
 	rows, err := s.q.ListProxiesByTenant(ctx, tenantID)
 	if err != nil {
@@ -107,6 +221,9 @@ func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	if tenantID <= 0 || id <= 0 {
 		return Proxy{}, ErrInvalidInput
 	}
+	if s == nil || s.q == nil {
+		return Proxy{}, ErrStoreNotConfigured
+	}
 	row, err := s.q.GetProxy(ctx, admindb.GetProxyParams{TenantID: tenantID, ID: id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -117,16 +234,101 @@ func (s *Service) Get(ctx context.Context, tenantID, id int64) (Proxy, error) {
 	return fromGet(row), nil
 }
 
-// Delete 对按租户收敛的代理执行软删除。底层 UPDATE 同时按租户与"尚未删除"收敛;
-// 它是幂等的(再删一次是 no-op)。
+func (s *Service) DeleteImpact(ctx context.Context, tenantID, id int64) (DeleteImpact, error) {
+	if tenantID <= 0 || id <= 0 {
+		return DeleteImpact{}, ErrInvalidInput
+	}
+	if s == nil || s.q == nil {
+		return DeleteImpact{}, ErrStoreNotConfigured
+	}
+	row, err := s.q.GetProxyDeleteImpact(ctx, admindb.GetProxyDeleteImpactParams{
+		TargetTenantID: tenantID,
+		TargetProxyID:  id,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DeleteImpact{}, ErrNotFound
+	}
+	if err != nil {
+		return DeleteImpact{}, mapErr(err)
+	}
+	return deleteImpactFromCounts(
+		row.ID,
+		row.DirectAccountCount,
+		row.DefaultTenantCount,
+		row.GroupAccountCount,
+		row.GroupRemainingActiveCount,
+	), nil
+}
+
+// Delete 在数据库持有目标代理行锁期间复核全部引用；删除会打断单账号绑定、
+// 租户默认出口或最后一个可用代理组成员时返回 ErrInUse。
 func (s *Service) Delete(ctx context.Context, tenantID, id int64) error {
 	if tenantID <= 0 || id <= 0 {
 		return ErrInvalidInput
 	}
-	if err := s.q.SoftDeleteProxy(ctx, admindb.SoftDeleteProxyParams{TenantID: tenantID, ID: id}); err != nil {
+	row, err := s.q.DeleteProxyIfUnused(ctx, admindb.DeleteProxyIfUnusedParams{
+		TargetTenantID: tenantID,
+		TargetProxyID:  id,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
 		return mapErr(err)
 	}
+	if !row.Deleted {
+		return &InUseError{Impact: deleteImpactFromCounts(
+			row.ID,
+			row.DirectAccountCount,
+			row.DefaultTenantCount,
+			row.GroupAccountCount,
+			row.GroupRemainingActiveCount,
+		)}
+	}
 	return nil
+}
+
+// DeleteWithAudit 在数据库锁定引用关系后执行删除，并仅在实际删除时写操作日志。
+func (s *Service) DeleteWithAudit(ctx context.Context, tenantID, id int64, audit MutationAudit) error {
+	if tenantID <= 0 || id <= 0 {
+		return ErrInvalidInput
+	}
+	if err := validateMutationAudit(audit); err != nil {
+		return err
+	}
+	if s == nil || s.mutations == nil {
+		return ErrStoreNotConfigured
+	}
+	row, err := s.mutations.Delete(ctx, admindb.DeleteProxyIfUnusedParams{
+		TargetTenantID: tenantID,
+		TargetProxyID:  id,
+	}, audit)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return mapErr(err)
+	}
+	if !row.Deleted {
+		return &InUseError{Impact: deleteImpactFromCounts(
+			row.ID,
+			row.DirectAccountCount,
+			row.DefaultTenantCount,
+			row.GroupAccountCount,
+			row.GroupRemainingActiveCount,
+		)}
+	}
+	return nil
+}
+
+func deleteImpactFromCounts(proxyID, direct, tenantDefault, groupAccounts, groupRemaining int64) DeleteImpact {
+	return DeleteImpact{
+		ProxyID:                   proxyID,
+		DirectAccountCount:        direct,
+		DefaultTenantCount:        tenantDefault,
+		GroupAccountCount:         groupAccounts,
+		GroupRemainingActiveCount: groupRemaining,
+	}
 }
 
 // SetStatus 为某租户翻转代理的生命周期状态(active/disabled/dead)并打上
@@ -139,10 +341,74 @@ func (s *Service) SetStatus(ctx context.Context, tenantID, id int64, status stri
 	if !validStatus(status) {
 		return ErrInvalidStatus
 	}
-	if err := s.q.SetProxyStatus(ctx, admindb.SetProxyStatusParams{Status: status, TenantID: tenantID, ID: id}); err != nil {
+	affected, err := s.q.SetProxyStatus(ctx, admindb.SetProxyStatusParams{Status: status, TenantID: tenantID, ID: id})
+	if err != nil {
 		return mapErr(err)
 	}
+	if affected == 0 {
+		return ErrNotFound
+	}
 	return nil
+}
+
+// SetStatusWithAudit 原子写入生命周期状态和操作日志。
+func (s *Service) SetStatusWithAudit(ctx context.Context, tenantID, id int64, status string, audit MutationAudit) error {
+	if tenantID <= 0 || id <= 0 {
+		return ErrInvalidInput
+	}
+	status = strings.TrimSpace(status)
+	if !validStatus(status) {
+		return ErrInvalidStatus
+	}
+	if err := validateMutationAudit(audit); err != nil {
+		return err
+	}
+	if s == nil || s.mutations == nil {
+		return ErrStoreNotConfigured
+	}
+	affected, err := s.mutations.SetStatus(ctx, admindb.SetProxyStatusParams{
+		Status: status, TenantID: tenantID, ID: id,
+	}, audit)
+	if err != nil {
+		return mapErr(err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func validateMutationAudit(audit MutationAudit) error {
+	if strings.TrimSpace(audit.ActorID) == "" || strings.TrimSpace(audit.ActorRole) == "" {
+		return ErrInvalidInput
+	}
+	return nil
+}
+
+func patchFieldNames(in PatchInput) []string {
+	fields := make([]string, 0, 7)
+	if in.Name.Set {
+		fields = append(fields, "name")
+	}
+	if in.Protocol.Set {
+		fields = append(fields, "protocol")
+	}
+	if in.Host.Set {
+		fields = append(fields, "host")
+	}
+	if in.Port.Set {
+		fields = append(fields, "port")
+	}
+	if in.AuthUsername.Set {
+		fields = append(fields, "auth_username")
+	}
+	if in.AuthSecret.Set {
+		fields = append(fields, "auth_secret")
+	}
+	if in.GroupID.Set {
+		fields = append(fields, "group_id")
+	}
+	return fields
 }
 
 func (s *Service) encryptAuthSecret(ctx context.Context, tenantID int64, raw *string) (*string, error) {
@@ -175,6 +441,37 @@ func validateUpdate(in UpdateInput) error {
 	return validateGroupID(in.GroupID)
 }
 
+func validatePatch(in PatchInput) error {
+	if in.TenantID <= 0 || in.ID <= 0 {
+		return ErrInvalidInput
+	}
+	if !in.Name.Set && !in.Protocol.Set && !in.Host.Set && !in.Port.Set &&
+		!in.AuthUsername.Set && !in.AuthSecret.Set && !in.GroupID.Set {
+		return ErrInvalidInput
+	}
+	if in.Name.Set && strings.TrimSpace(in.Name.Value) == "" {
+		return ErrInvalidInput
+	}
+	if in.Protocol.Set && strings.TrimSpace(in.Protocol.Value) == "" {
+		return ErrInvalidInput
+	}
+	if in.Host.Set {
+		if strings.TrimSpace(in.Host.Value) == "" {
+			return ErrInvalidInput
+		}
+		if !proxyHostSafe(in.Host.Value) {
+			return ErrUnsafeHost
+		}
+	}
+	if in.Port.Set && (in.Port.Value <= 0 || in.Port.Value > 65535) {
+		return ErrInvalidInput
+	}
+	if in.GroupID.Set {
+		return validateGroupID(in.GroupID.Value)
+	}
+	return nil
+}
+
 var proxyGroupIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
 
 // validateGroupID 把代理组标识限制在可安全比较、可稳定输入的 ASCII 子集内。
@@ -202,10 +499,8 @@ func validateCommon(tenantID, id int64, name, protocol, host string, port int32,
 	if !validStatus(statusOrActive(status)) {
 		return ErrInvalidStatus
 	}
-	// SSRF 静态防护:挡管理员把租户代理 host 指向【绝不可能是合法代理】的目标
-	// (云 metadata 端点 / loopback / link-local / unspecified / multicast)。
-	// 刻意【放行】RFC1918 私网与 .internal 类主机名——企业/内网出口代理本就常驻
-	// 私网,封死会误伤正常配置。Create/Update 两条写路径单点覆盖。
+	// SSRF 静态防护先拦字面量；域名在每次真实拨号时重新解析并绑定。
+	// 私网代理必须由部署者按原始主机精确放行，租户管理员不能自行扩大服务器内网访问面。
 	if !proxyHostSafe(host) {
 		return ErrUnsafeHost
 	}
@@ -224,26 +519,10 @@ var blockedProxyHostnames = map[string]bool{
 	"instance-data.ec2.internal": true,
 }
 
-// 落在私网段、逃过 link-local 检测、但确是真实可达云 metadata 端点的 IP。
-// IPv4 169.254.169.254 已被 IsLinkLocalUnicast 覆盖;此处补 IPv6 ULA 形式——
-// fd00:ec2::254 是 AWS IMDS-over-IPv6,落在 fc00::/7 私网段、IsPrivate=true、
-// 非 link-local,故不在通用私网放行里特判挡掉(挡 metadata 是本守卫核心目标,
-// 且无任何合法代理会驻该地址,零误伤)。
-var blockedMetadataIPs = []netip.Addr{
-	netip.MustParseAddr("fd00:ec2::254"),
-}
-
 // proxyHostSafe 判定一个【裸主机名/IP】能否作为租户代理目标。
-// 阻断面刻意收窄成"绝无合法用途"的集合:
-//   - IP 字面量:loopback(127/8、::1)、link-local(169.254/16 含云 metadata IP、
-//     fe80::/10)、unspecified(0.0.0.0、::)、multicast,外加 blockedMetadataIPs
-//     里的非 link-local 云 metadata 地址。私网(10/172.16/192.168、fc00::/7)与
-//     公网一律放行。
-//   - 主机名:仅精确匹配 metadata/本机名单(见 blockedProxyHostnames),其余放行。
-//
-// 注:这是写时静态校验,不做 DNS 解析(无法挡 rebinding);代理目标本就 admin-gated,
-// 此处是纵深防御。若未来允许租户管理员自行配置代理,是否进一步【默认封私网 /
-// CGNAT 100.64.0.0/10 等 special-use】属于租户能力授权与网络边界决策,不在本切片。
+// 公网地址直接允许；私网地址仅在部署者专用 allowlist 中时允许；loopback、
+// link-local、metadata 和其它特殊用途地址永远拒绝。主机名在写入时只做静态
+// 格式/高危名称校验，DNS 重绑定由实际拨号守卫负责。
 func proxyHostSafe(host string) bool {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
@@ -253,17 +532,8 @@ func proxyHostSafe(host string) bool {
 		return false
 	}
 	if addr, err := netip.ParseAddr(h); err == nil {
-		addr = addr.Unmap()
-		for _, m := range blockedMetadataIPs {
-			if addr == m {
-				return false
-			}
-		}
-		if addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-			addr.IsMulticast() || addr.IsUnspecified() {
-			return false
-		}
-		return true
+		policy, policyErr := ssrfpolicy.LoadProxyFromEnv()
+		return policyErr == nil && policy.AllowsAddress(h, addr)
 	}
 	return !blockedProxyHostnames[h]
 }
@@ -301,51 +571,4 @@ func mapErr(err error) error {
 		return nil
 	}
 	return fmt.Errorf("%w: %v", ErrBackend, err)
-}
-
-func fromCreate(r admindb.CreateProxyRow) Proxy {
-	return Proxy{
-		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
-		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
-	}
-}
-
-func fromUpdate(r admindb.UpdateProxyRow) Proxy {
-	return Proxy{
-		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
-		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
-	}
-}
-
-func fromGet(r admindb.GetProxyRow) Proxy {
-	return Proxy{
-		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
-		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
-	}
-}
-
-func fromList(r admindb.ListProxiesByTenantRow) Proxy {
-	return Proxy{
-		ID: r.ID, TenantID: r.TenantID, Name: r.Name, Protocol: r.Protocol, Host: r.Host, Port: r.Port,
-		AuthUsername: r.AuthUsername, GroupID: r.GroupID, Status: r.Status, LastCheckAt: tsPtr(r.LastCheckAt),
-		CreatedAt: ts(r.CreatedAt), UpdatedAt: ts(r.UpdatedAt),
-	}
-}
-
-func ts(t pgtype.Timestamptz) time.Time {
-	if !t.Valid {
-		return time.Time{}
-	}
-	return t.Time
-}
-
-func tsPtr(t pgtype.Timestamptz) *time.Time {
-	if !t.Valid {
-		return nil
-	}
-	v := t.Time
-	return &v
 }

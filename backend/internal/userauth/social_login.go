@@ -293,7 +293,7 @@ func (s *Service) applyVerifiedSocialIdentity(ctx context.Context, tenantID int6
 		if err != nil {
 			return err
 		}
-		linkedUser, err = store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+		linkedUser, err = s.linkSocialIdentityAndEnsureRewards(ctx, store, user.TenantID, user.ID, provider, subject)
 		return err
 	})
 	if err != nil {
@@ -376,7 +376,7 @@ func (s *Service) CompleteSocialSignupWithVerifiedEmail(ctx context.Context, ten
 		if err != nil {
 			return err
 		}
-		linkedUser, err = store.LinkSocialIdentity(ctx, user.TenantID, user.ID, provider, subject)
+		linkedUser, err = s.linkSocialIdentityAndEnsureRewards(ctx, store, user.TenantID, user.ID, provider, subject)
 		return err
 	})
 	if err != nil {
@@ -395,103 +395,6 @@ func socialDisplayName(raw string) string {
 		return ""
 	}
 	return name
-}
-
-// LinkVerifiedSocialIdentity 把一个已校验的社交身份(provider+subject)绑定到指定的已登录用户。
-// 「先绑定后登录」模型的绑定腿:无已验证邮箱的社交源(telegram/QQ 等)不能凭空建号,只能由已登录用户
-// 在设置里主动绑定;绑定后再走 telegram-login 等端点凭既有绑定直接登录(见 applyVerifiedSocialIdentity
-// 的既有绑定优先分支)。
-//
-// 调用方必须先用对应的 verifier(如 telegramauth.VerifyWidget)校验出可信的 identity,本方法不做凭证校验,
-// 只负责「把已校验身份安全地落成本人绑定」。tenant/user 必须取自 session,绝不取自请求体。
-//
-// 接管保护:该 subject 已绑到「另一个」用户 → ErrSocialIdentityAlreadyBound;已绑到「本人」→ 幂等成功。
-// 账号须存在且允许登录(banned/inactive 会被 ensureSocialLoginUserAllowed 拒)。
-func (s *Service) LinkVerifiedSocialIdentity(ctx context.Context, tenantID, userID int64, identity VerifiedIdentity) (User, error) {
-	if s == nil || s.Store == nil {
-		return User{}, ErrStoreNotConfigured
-	}
-	provider := normalizeSocialProvider(identity.Provider)
-	subject := strings.TrimSpace(identity.Subject)
-	if tenantID <= 0 || userID <= 0 || provider == "" || subject == "" {
-		return User{}, ErrInvalidInput
-	}
-	var linked User
-	err := s.withStoreTx(ctx, func(store Store) error {
-		user, err := store.GetUserByID(ctx, tenantID, userID)
-		if err != nil {
-			return err
-		}
-		if err := ensureSocialLoginUserAllowed(user, s.now()); err != nil {
-			return err
-		}
-		// 接管保护:subject 已绑到他人则拒;已绑到本人则幂等(直接当成功)。
-		existing, err := store.GetUserBySocialIdentity(ctx, tenantID, provider, subject)
-		switch {
-		case err == nil:
-			if existing.ID != userID {
-				return ErrSocialIdentityAlreadyBound
-			}
-		case !errors.Is(err, ErrUserNotFound):
-			return err
-		}
-		linked, err = store.LinkSocialIdentity(ctx, tenantID, userID, provider, subject)
-		return err
-	})
-	if err != nil {
-		return User{}, err
-	}
-	return linked, nil
-}
-
-type socialIdentityUnlinkStore interface {
-	CountUserSocialIdentityLinks(context.Context, int64, int64) (int, error)
-	CountSocialIdentityLinks(context.Context, int64, int64, string) (int, error)
-	UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error)
-}
-
-func (s *Service) UnlinkSocialIdentity(ctx context.Context, tenantID, userID int64, provider string) (bool, error) {
-	if s == nil || s.Store == nil {
-		return false, ErrStoreNotConfigured
-	}
-	provider = normalizeSocialProvider(provider)
-	if tenantID <= 0 || userID <= 0 || provider == "" {
-		return false, ErrInvalidInput
-	}
-	var unlinked bool
-	err := s.withStoreTx(ctx, func(store Store) error {
-		unlinker, ok := store.(socialIdentityUnlinkStore)
-		if !ok {
-			return ErrStoreNotConfigured
-		}
-		user, err := store.GetUserByID(ctx, tenantID, userID)
-		if err != nil {
-			return err
-		}
-		providerLinks, err := unlinker.CountSocialIdentityLinks(ctx, tenantID, userID, provider)
-		if err != nil {
-			return err
-		}
-		if providerLinks == 0 {
-			unlinked = false
-			return nil
-		}
-		if strings.TrimSpace(user.PasswordHash) == "" {
-			totalLinks, err := unlinker.CountUserSocialIdentityLinks(ctx, tenantID, userID)
-			if err != nil {
-				return err
-			}
-			if totalLinks <= providerLinks {
-				return ErrLastLoginMethod
-			}
-		}
-		unlinked, err = unlinker.UnlinkSocialIdentity(ctx, tenantID, userID, provider)
-		return err
-	})
-	if err != nil {
-		return false, err
-	}
-	return unlinked, nil
 }
 
 // socialIdentityListStore 是 ListSocialIdentityLinks 所需的只读存储面;由 *PostgresStore 实现。

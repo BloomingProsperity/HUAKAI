@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,15 +201,44 @@ func mediaTaskWorkerErrorClass(err error) string {
 }
 
 func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now time.Time) error {
-	if cfg.TaskTimeout > 0 && !task.CreatedAt.IsZero() && !now.Before(task.CreatedAt.Add(cfg.TaskTimeout)) {
-		_, err := w.store.ExpireTask(ctx, task, w.owner, now)
+	if task.Status == StatusSubmitting {
+		// 上一进程可能死在“写前状态已提交”与“上游 ID 落库”之间。此处绝不
+		// 猜测请求未发送，也绝不再次 Submit；统一进入可人工恢复的未知态。
+		_, err := w.store.MarkSubmissionUnknown(
+			ctx, task, w.owner, "provider_submit_worker_interrupted",
+			DeriveIdempotencyKey(task.ID, task.RequestID), now,
+		)
 		return err
 	}
-	// 上轮已拿到终态结果但在统一结算或任务终态写入前中断时，只续结算，绝不再次轮询或提交上游。
+	if task.Status == StatusSubmissionReleasing {
+		// 管理员已确认上游未受理。退款仍走统一 Settler，失败时任务保留本状态，
+		// 下一轮幂等重试，不会出现任务已关闭但预扣未释放的半成品。
+		_, err := w.store.CompleteFailure(
+			ctx, task, w.owner, "provider_submit_confirmed_not_accepted", now,
+		)
+		return err
+	}
+	// 上轮已拿到终态结果但在统一结算或任务终态写入前中断时，只续结算，绝不再次轮询、过期或提交上游。
+	if task.Status == StatusSettlementPending {
+		if !isDurablyBoundVideoProvider(task.Provider) || len(task.Result) == 0 || task.ActualCents == nil {
+			return ErrSettlementPending
+		}
+		_, err := w.store.CompleteSuccess(ctx, task, w.owner, PollResult{
+			Status: StatusSucceeded, Progress: 100, Result: task.Result, ActualCents: *task.ActualCents,
+			RoutingReason: durableMediaRoutingReason(task),
+		}, now)
+		return err
+	}
+	// 兼容 0232 迁移前已落下成功结果但仍处于 in_progress 的任务。
 	if isDurablyBoundVideoProvider(task.Provider) && len(task.Result) > 0 && task.ActualCents != nil {
 		_, err := w.store.CompleteSuccess(ctx, task, w.owner, PollResult{
 			Status: StatusSucceeded, Progress: 100, Result: task.Result, ActualCents: *task.ActualCents,
+			RoutingReason: durableMediaRoutingReason(task),
 		}, now)
+		return err
+	}
+	if cfg.TaskTimeout > 0 && !task.CreatedAt.IsZero() && !now.Before(task.CreatedAt.Add(cfg.TaskTimeout)) {
+		_, err := w.store.ExpireTask(ctx, task, w.owner, now)
 		return err
 	}
 	provider, ok, err := w.registry.Provider(ctx, task.Provider)
@@ -219,7 +249,18 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		_, err := w.store.CompleteFailure(ctx, task, w.owner, "provider_unavailable", now)
 		return err
 	}
-	if task.ProviderTaskID == "" || task.Status == StatusQueued {
+	if task.Status == StatusInProgress && strings.TrimSpace(task.ProviderTaskID) == "" {
+		_, err := w.store.MarkSubmissionUnknown(
+			ctx, task, w.owner, "provider_task_id_missing_after_submit",
+			DeriveIdempotencyKey(task.ID, task.RequestID), now,
+		)
+		return err
+	}
+	if task.Status == StatusQueued {
+		task, err = w.store.MarkSubmitting(ctx, task, w.owner, now)
+		if err != nil {
+			return err
+		}
 		// 单次 Submit 加硬超时:慢上游/半开连接不会让串行 worker 永久挂起、整子系统停摆、预扣久冻。
 		// 超时 < LeaseTTL,保证单次调用绝不跨过租约。
 		submitCtx, cancelSubmit := context.WithTimeout(ctx, cfg.providerCallTimeout())
@@ -235,14 +276,31 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		}
 		cancelSubmit()
 		if err != nil {
-			if class, retryable, recognized := providerErrorDetails(err); recognized && retryable {
-				return errors.Join(err, w.deferTaskLease(ctx, task, now, providerRetryDelay(err)))
-			} else if recognized {
+			class, retryable, recognized := providerErrorDetails(err)
+			if submissionOutcomeUnknown(class, recognized) || !recognized {
+				_, recoveryErr := w.store.MarkSubmissionUnknown(
+					ctx, task, w.owner, firstNonEmpty(class, "provider_submit_outcome_unknown"),
+					submitReq.IdempotencyKey, now,
+				)
+				return errors.Join(err, recoveryErr)
+			}
+			if retryable {
+				return errors.Join(err, w.store.DeferSubmission(
+					ctx, task, w.owner, now, now.Add(providerRetryDelay(err)),
+				))
+			}
+			if recognized {
 				_, ferr := w.store.CompleteFailure(ctx, task, w.owner, class, now)
 				return errors.Join(err, ferr)
 			}
-			_, ferr := w.store.CompleteFailure(ctx, task, w.owner, "provider_submit_failed", now)
-			return errors.Join(err, ferr)
+		}
+		providerTaskID = strings.TrimSpace(providerTaskID)
+		if providerTaskID == "" {
+			_, recoveryErr := w.store.MarkSubmissionUnknown(
+				ctx, task, w.owner, "provider_submit_response_invalid",
+				submitReq.IdempotencyKey, now,
+			)
+			return recoveryErr
 		}
 		_, err = w.store.MarkProviderSubmitted(ctx, task, w.owner, providerTaskID, now)
 		if errors.Is(err, ErrLeaseLost) {
@@ -286,6 +344,18 @@ func (w *Worker) processLeased(ctx context.Context, cfg Config, task Task, now t
 		err = w.store.UpdateProgress(ctx, task, w.owner, result.Progress, now)
 	}
 	return err
+}
+
+func submissionOutcomeUnknown(class string, recognized bool) bool {
+	if !recognized {
+		return true
+	}
+	switch strings.TrimSpace(class) {
+	case "provider_submit_outcome_unknown", "provider_submit_response_invalid":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *Worker) releaseTaskLease(ctx context.Context, task Task, now time.Time) error {

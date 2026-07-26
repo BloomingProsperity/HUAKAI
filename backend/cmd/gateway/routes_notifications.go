@@ -13,17 +13,21 @@ import (
 func mountNotificationRoutes(r chi.Router, d *deps) {
 	var adminAuth subscriptionhttp.AdminAuth
 	var reader subscriptionhttp.WorkerStatsReader
-	var settings controlhttp.NotifySettingsService
+	var userSettings controlhttp.NotifySettingsService
+	var adminSettings controlhttp.NotifyAdminSettingsService
 	var inbox usernoticehttp.Service
 	var sessions sessionauth.SessionValidator
 	var clientIPResolver *clientip.Resolver
+	var platformTenantID int64
 	if d != nil {
 		adminAuth = d.adminAuth
 		reader = newSubscriptionWorkerStatsReader(d.subReminderWorker, d.subExpiryWorker, d.subAutoRenewWorker, d.billingQueries)
-		settings = d.notificationSettings
+		userSettings = d.notificationSettings
+		adminSettings = d.notificationSettings
 		inbox = d.userNoticeService
 		sessions = d.userSessions
 		clientIPResolver = d.clientIPResolver
+		platformTenantID = d.platformTenantID
 	}
 	r.Get("/v1/admin/notifications/worker-stats", subscriptionhttp.NewAdminWorkerStatsHandler(subscriptionhttp.AdminWorkerStatsDeps{
 		Auth:   adminAuth,
@@ -31,15 +35,17 @@ func mountNotificationRoutes(r chi.Router, d *deps) {
 	}))
 	r.Group(func(r chi.Router) {
 		r.Use(sessionauth.SessionMiddleware(sessions, clientIPResolver))
-		controlhttp.MountNotifyUserRoutes(r, controlhttp.NotifyUserDeps{Service: settings})
+		controlhttp.MountNotifyUserRoutes(r, controlhttp.NotifyUserDeps{Service: userSettings})
 		usernoticehttp.MountUserRoutes(r, usernoticehttp.UserDeps{Service: inbox})
 	})
 	controlhttp.MountNotifyAdminRoutes(r, controlhttp.NotifyAdminDeps{
-		Auth:    adminAuth,
-		Service: settings,
+		Auth:             adminAuth,
+		Service:          adminSettings,
+		PlatformTenantID: platformTenantID,
 	})
 	usernoticehttp.MountAdminRoutes(r, usernoticehttp.AdminDeps{
-		Auth:    adminAuth,
-		Service: inbox,
+		Auth:             adminAuth,
+		Service:          inbox,
+		PlatformTenantID: platformTenantID,
 	})
 }

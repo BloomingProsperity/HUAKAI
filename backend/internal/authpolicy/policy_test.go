@@ -14,7 +14,7 @@ import (
 // (这正是修复前「后端比前端宽松、直打 API 可绕过隐藏的注册入口」的口子)。
 func TestPasswordPolicyDefaults(t *testing.T) {
 	svc := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
-	policy := New(svc)
+	policy := New(svc, 1)
 
 	registerAllowed, err := policy.PasswordRegistrationAllowed(context.Background(), 7)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestPasswordPolicyMasterSwitch(t *testing.T) {
 			t.Fatalf("seed %s: %v", k, err)
 		}
 	}
-	policy := New(svc)
+	policy := New(svc, 1)
 
 	seed(platformsettings.KeyPasswordRegisterEnabled, "true") // 仅开子开关
 	if allowed, _ := policy.PasswordRegistrationAllowed(ctx, 1); allowed {
@@ -61,7 +61,7 @@ func TestPasswordPolicyMasterSwitch(t *testing.T) {
 func TestRegistrationEnabledReader(t *testing.T) {
 	ctx := context.Background()
 	svc := platformsettings.NewService(platformsettings.NewMemoryStore(), nil)
-	policy := New(svc)
+	policy := New(svc, 1)
 	if enabled, _ := policy.RegistrationEnabled(ctx, 1); enabled {
 		t.Fatal("RegistrationEnabled 默认应为 false(fail-closed)")
 	}
@@ -82,7 +82,7 @@ func TestPasswordPolicyReadsPlatformSettings(t *testing.T) {
 	if _, err := svc.Upsert(context.Background(), platformsettings.UpsertInput{Key: platformsettings.KeyPasswordLoginEnabled, Value: "false", UpdatedBy: "test"}); err != nil {
 		t.Fatalf("seed password_login_enabled: %v", err)
 	}
-	policy := New(svc)
+	policy := New(svc, 1)
 
 	registerAllowed, err := policy.PasswordRegistrationAllowed(context.Background(), 7)
 	if err != nil {

@@ -378,7 +378,7 @@ func upsertOpenAICredential(ctx context.Context, pool *pgxpool.Pool, keyMaterial
 }
 
 func issueHUAKAIAPIKey(ctx context.Context, pool *pgxpool.Pool) (admin.IssueResult, error) {
-	issuer := admin.NewKeyIssuer(pool)
+	issuer := admin.NewKeyIssuer(pool, tenantID)
 	result, err := issuer.Issue(ctx, admin.IssueRequest{
 		Caller: admin.AdminIdentity{
 			TokenID: time.Now().UnixNano(),

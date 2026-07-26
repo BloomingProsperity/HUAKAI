@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 )
 
 type adminAuth interface {
@@ -25,7 +27,7 @@ type overrideService interface {
 	List(context.Context, int64) ([]Override, error)
 	Create(context.Context, CreateInput) (Override, error)
 	Update(context.Context, UpdateInput) (Override, error)
-	Delete(context.Context, int64, int64) error
+	Delete(context.Context, int64, int64, MutationAudit) error
 }
 
 type Deps struct {
@@ -34,10 +36,11 @@ type Deps struct {
 }
 
 func MountRoutes(router chi.Router, deps Deps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	router.Get("/", newListHandler(deps))
-	router.Post("/", newCreateHandler(deps))
-	router.Patch("/{id}", newUpdateHandler(deps))
-	router.Delete("/{id}", newDeleteHandler(deps))
+	router.With(safe).Post("/", newCreateHandler(deps))
+	router.With(safe).Patch("/{id}", newUpdateHandler(deps))
+	router.With(safe).Delete("/{id}", newDeleteHandler(deps))
 }
 
 func NewRouter(deps Deps) http.Handler {
@@ -89,7 +92,7 @@ func newListHandler(deps Deps) http.HandlerFunc {
 
 func newCreateHandler(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, deps)
+		identity, tenantID, ok := resolveTenantIdentity(w, r, deps)
 		if !ok {
 			return
 		}
@@ -106,6 +109,7 @@ func newCreateHandler(deps Deps) http.HandlerFunc {
 		created, err := deps.Service.Create(r.Context(), CreateInput{
 			TenantID: tenantID, PoolGroupID: request.PoolGroupID, Model: model,
 			ProviderAccountIDs: accountIDs, Enabled: boolOrDefault(request.Enabled, true),
+			Audit: routingMutationAudit(r, identity),
 		})
 		if err != nil {
 			writeServiceError(w, err, "创建强制 pin 失败")
@@ -117,7 +121,7 @@ func newCreateHandler(deps Deps) http.HandlerFunc {
 
 func newUpdateHandler(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, deps)
+		identity, tenantID, ok := resolveTenantIdentity(w, r, deps)
 		if !ok {
 			return
 		}
@@ -143,6 +147,7 @@ func newUpdateHandler(deps Deps) http.HandlerFunc {
 		}
 		updated, err := deps.Service.Update(r.Context(), UpdateInput{
 			ID: id, TenantID: tenantID, ProviderAccountIDs: request.ProviderAccountIDs, Enabled: request.Enabled,
+			Audit: routingMutationAudit(r, identity),
 		})
 		if err != nil {
 			writeServiceError(w, err, "更新强制 pin 失败")
@@ -154,7 +159,7 @@ func newUpdateHandler(deps Deps) http.HandlerFunc {
 
 func newDeleteHandler(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, deps)
+		identity, tenantID, ok := resolveTenantIdentity(w, r, deps)
 		if !ok {
 			return
 		}
@@ -162,7 +167,7 @@ func newDeleteHandler(deps Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := deps.Service.Delete(r.Context(), id, tenantID); err != nil {
+		if err := deps.Service.Delete(r.Context(), id, tenantID, routingMutationAudit(r, identity)); err != nil {
 			writeServiceError(w, err, "删除强制 pin 失败")
 			return
 		}
@@ -172,22 +177,27 @@ func newDeleteHandler(deps Deps) http.HandlerFunc {
 
 // resolveTenant 复用 admin 身份的租户授权语义，tenant_operator 只能管理自身 scope。
 func resolveTenant(w http.ResponseWriter, r *http.Request, deps Deps) (int64, bool) {
+	_, tenantID, ok := resolveTenantIdentity(w, r, deps)
+	return tenantID, ok
+}
+
+func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, deps Deps) (admin.AdminIdentity, int64, bool) {
 	if deps.Auth == nil || deps.Service == nil {
 		writeError(w, http.StatusServiceUnavailable, "model_routing_overrides_not_configured", "强制 pin 管理依赖未配置")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	identity, err := deps.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		writeAdminAuthError(w, err)
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	if identity.Role != admin.RoleTenantOperator && identity.Role != admin.RolePlatformAdmin {
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "需要 admin 角色")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	if identity.Role == admin.RoleTenantOperator && identity.ScopeTenantID <= 0 {
 		writeError(w, http.StatusForbidden, "admin_tenant_scope_required", "tenant_operator 缺少租户 scope")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 
 	rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
@@ -195,21 +205,29 @@ func resolveTenant(w http.ResponseWriter, r *http.Request, deps Deps) (int64, bo
 	if rawTenantID == "" {
 		if identity.Role != admin.RoleTenantOperator {
 			writeError(w, http.StatusBadRequest, "tenant_id_required", "platform_admin 必须提供 tenant_id")
-			return 0, false
+			return admin.AdminIdentity{}, 0, false
 		}
 		tenantID = identity.ScopeTenantID
 	} else {
 		tenantID, err = strconv.ParseInt(rawTenantID, 10, 64)
 		if err != nil || tenantID <= 0 {
 			writeError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id 必须是正整数")
-			return 0, false
+			return admin.AdminIdentity{}, 0, false
 		}
 	}
 	if err := identity.CanIssueForTenant(tenantID); err != nil {
 		writeAdminAuthError(w, err)
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
-	return tenantID, true
+	return identity, tenantID, true
+}
+
+func routingMutationAudit(r *http.Request, identity admin.AdminIdentity) MutationAudit {
+	return MutationAudit{
+		ActorID:   identity.AuditActor(),
+		ActorRole: identity.Role,
+		RequestID: middleware.GetReqID(r.Context()),
+	}
 }
 
 func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

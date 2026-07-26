@@ -2,6 +2,7 @@ package modelroutingadminhttp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
 )
 
@@ -40,6 +42,7 @@ type CreateInput struct {
 	Model              string
 	ProviderAccountIDs []int64
 	Enabled            bool
+	Audit              MutationAudit
 }
 
 type UpdateInput struct {
@@ -47,6 +50,13 @@ type UpdateInput struct {
 	TenantID           int64
 	ProviderAccountIDs *[]int64
 	Enabled            *bool
+	Audit              MutationAudit
+}
+
+type MutationAudit struct {
+	ActorID   string
+	ActorRole string
+	RequestID string
 }
 
 type PostgresService struct {
@@ -88,6 +98,9 @@ func (s *PostgresService) Create(ctx context.Context, input CreateInput) (Overri
 	if input.TenantID <= 0 || input.PoolGroupID <= 0 || model == "" || err != nil {
 		return Override{}, ErrInvalid
 	}
+	if err := validateMutationAudit(input.Audit); err != nil {
+		return Override{}, err
+	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -108,6 +121,18 @@ func (s *PostgresService) Create(ctx context.Context, input CreateInput) (Overri
 		}
 		return Override{}, fmt.Errorf("创建模型路由强制 pin：%w", err)
 	}
+	payload, err := json.Marshal(map[string]any{
+		"pool_group_id": input.PoolGroupID,
+		"model":         model,
+		"account_count": len(accountIDs),
+		"enabled":       input.Enabled,
+	})
+	if err != nil {
+		return Override{}, fmt.Errorf("编码创建强制 pin 日志：%w", err)
+	}
+	if err := insertRoutingMutationLog(ctx, tx, input.TenantID, row.ID, "create_model_routing_override", payload, input.Audit); err != nil {
+		return Override{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Override{}, fmt.Errorf("提交创建模型路由强制 pin：%w", err)
 	}
@@ -120,6 +145,9 @@ func (s *PostgresService) Update(ctx context.Context, input UpdateInput) (Overri
 	}
 	if input.ID <= 0 || input.TenantID <= 0 || (input.ProviderAccountIDs == nil && input.Enabled == nil) {
 		return Override{}, ErrInvalid
+	}
+	if err := validateMutationAudit(input.Audit); err != nil {
+		return Override{}, err
 	}
 
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -165,20 +193,45 @@ func (s *PostgresService) Update(ctx context.Context, input UpdateInput) (Overri
 	if err != nil {
 		return Override{}, fmt.Errorf("更新模型路由强制 pin：%w", err)
 	}
+	changedFields := make([]string, 0, 2)
+	if input.ProviderAccountIDs != nil {
+		changedFields = append(changedFields, "provider_account_ids")
+	}
+	if input.Enabled != nil {
+		changedFields = append(changedFields, "enabled")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"changed_fields": changedFields,
+		"account_count":  len(accountIDs),
+	})
+	if err != nil {
+		return Override{}, fmt.Errorf("编码更新强制 pin 日志：%w", err)
+	}
+	if err := insertRoutingMutationLog(ctx, tx, input.TenantID, row.ID, "update_model_routing_override", payload, input.Audit); err != nil {
+		return Override{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Override{}, fmt.Errorf("提交更新模型路由强制 pin：%w", err)
 	}
 	return overrideFromDB(row), nil
 }
 
-func (s *PostgresService) Delete(ctx context.Context, id, tenantID int64) error {
-	if s == nil || s.queries == nil {
+func (s *PostgresService) Delete(ctx context.Context, id, tenantID int64, audit MutationAudit) error {
+	if s == nil || s.pool == nil || s.queries == nil {
 		return ErrNotConfigured
 	}
 	if id <= 0 || tenantID <= 0 {
 		return ErrInvalid
 	}
-	_, err := s.queries.DeleteModelRoutingOverrideAdmin(ctx, dbmodelroutingadmin.DeleteModelRoutingOverrideAdminParams{
+	if err := validateMutationAudit(audit); err != nil {
+		return err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("开始删除模型路由强制 pin 事务：%w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	row, err := s.queries.WithTx(tx).DeleteModelRoutingOverrideAdmin(ctx, dbmodelroutingadmin.DeleteModelRoutingOverrideAdminParams{
 		TenantID: tenantID,
 		ID:       id,
 	})
@@ -188,7 +241,60 @@ func (s *PostgresService) Delete(ctx context.Context, id, tenantID int64) error 
 	if err != nil {
 		return fmt.Errorf("删除模型路由强制 pin：%w", err)
 	}
+	payload, err := json.Marshal(map[string]any{
+		"pool_group_id": row.PoolGroupID,
+		"model":         row.Model,
+		"account_count": len(row.ProviderAccountIDs),
+	})
+	if err != nil {
+		return fmt.Errorf("编码删除强制 pin 日志：%w", err)
+	}
+	if err := insertRoutingMutationLog(ctx, tx, tenantID, row.ID, "delete_model_routing_override", payload, audit); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("提交删除模型路由强制 pin：%w", err)
+	}
 	return nil
+}
+
+func validateMutationAudit(audit MutationAudit) error {
+	if strings.TrimSpace(audit.ActorID) == "" || strings.TrimSpace(audit.ActorRole) == "" {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func insertRoutingMutationLog(
+	ctx context.Context,
+	tx pgx.Tx,
+	tenantID, overrideID int64,
+	action string,
+	payload []byte,
+	audit MutationAudit,
+) error {
+	requestID := strings.TrimSpace(audit.RequestID)
+	_, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+		TenantID:   &tenantID,
+		ActorID:    strings.TrimSpace(audit.ActorID),
+		ActorRole:  strings.TrimSpace(audit.ActorRole),
+		Action:     action,
+		TargetType: "model_routing_override",
+		TargetID:   &overrideID,
+		RequestID:  routingOptionalText(requestID),
+		Payload:    payload,
+	})
+	if err != nil {
+		return fmt.Errorf("写入模型路由强制 pin 操作日志：%w", err)
+	}
+	return nil
+}
+
+func routingOptionalText(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func validateRoutingTargets(ctx context.Context, queries *dbmodelroutingadmin.Queries, tenantID, poolGroupID int64, accountIDs []int64) error {

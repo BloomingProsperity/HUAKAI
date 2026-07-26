@@ -76,11 +76,12 @@ func TestPerfBucketed(t *testing.T) {
 	seedUsagePerformanceRecord(t, ctx, tx, fixture, model+"-h2-a", model, base.Add(time.Hour), base.Add(3*time.Hour), 300*time.Millisecond, 20, "upstream_error_5xx")
 
 	q := New(tx)
-	// 变异:去掉 date_trunc(bucket, requested_at) 会只按 model 分组并只返回一行 -> 变红。
+	// limit=1 表示选一个模型序列，但必须返回该序列的全部小时桶。旧实现把 LIMIT
+	// 作用在最终行集，只会留下第一个小时，本测试会精确转红。
 	rows, err := q.AggregateUsagePerformanceByModelBucketed(ctx, AggregateUsagePerformanceByModelBucketedParams{
 		SettledSince: pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true},
 		Bucket:       "hour",
-		RowLimit:     20,
+		RowLimit:     1,
 	})
 	if err != nil {
 		t.Fatalf("AggregateUsagePerformanceByModelBucketed: %v", err)

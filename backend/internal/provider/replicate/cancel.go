@@ -23,6 +23,10 @@ import (
 // 后的 prediction id 替换。凭据 base_url 覆盖与 SSRF 守卫走
 // EndpointForCredential 统一通道,与 BuildRequest 同口径。
 const defaultCancelEndpointTemplate = "https://api.replicate.com/v1/predictions/{id}/cancel"
+const (
+	cancelEndpointPrefix = "/v1/predictions/"
+	cancelEndpointSuffix = "/cancel"
+)
 
 // PredictionMeta 是取消/审计所需的最小 prediction 元数据。
 type PredictionMeta struct {
@@ -57,23 +61,37 @@ func CancelWorthwhile(status string) bool {
 // 白名单一次根除路径段注入。
 var predictionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-// NewCancelRequest 构造 POST predictions/{id}/cancel 请求。endpoint 与鉴权都
-// 复用 BuildRequest 的同一口径(EndpointForCredential + applyCredentialAuth),
-// 自托管/代理 base_url 凭据照常生效。注意:本函数只做静态构造;发送方必须再做
-// 运行时守卫(自定义 endpoint 凭据 ValidatePassthroughEndpointTarget + dial 时刻
-// wrap),与主出站 dispatcher 同口径。
-func NewCancelRequest(ctx context.Context, cred provider.Credential, predictionID string) (*http.Request, error) {
+// CancelEndpointPath 把上游返回的 prediction id 收紧为适配器唯一接受的取消路径。
+// 调用方把该路径交给统一 Dispatcher，取消请求因此与创建请求共用账号代理、TLS、
+// 自定义端点守卫和超时合同。
+func CancelEndpointPath(predictionID string) (string, error) {
 	id := strings.TrimSpace(predictionID)
 	if id == "" {
-		return nil, errors.New("replicate: prediction id 为空,无可取消项")
+		return "", errors.New("replicate: prediction id 为空,无可取消项")
 	}
 	if !predictionIDPattern.MatchString(id) {
-		return nil, fmt.Errorf("replicate: prediction id %q 含非法字符,拒绝构造 cancel", id)
+		return "", fmt.Errorf("replicate: prediction id %q 含非法字符,拒绝构造 cancel", id)
 	}
+	return cancelEndpointPrefix + id + cancelEndpointSuffix, nil
+}
+
+func predictionIDFromCancelPath(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if !strings.HasPrefix(path, cancelEndpointPrefix) || !strings.HasSuffix(path, cancelEndpointSuffix) {
+		return "", false
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(path, cancelEndpointPrefix), cancelEndpointSuffix)
+	if !predictionIDPattern.MatchString(id) {
+		return "", false
+	}
+	return id, true
+}
+
+func buildCancelRequest(ctx context.Context, cred provider.Credential, predictionID string) (*http.Request, error) {
 	if cred.Value == "" {
 		return nil, errors.New("replicate: 凭据 Value 为空")
 	}
-	substituted := strings.ReplaceAll(defaultCancelEndpointTemplate, "{id}", id)
+	substituted := strings.ReplaceAll(defaultCancelEndpointTemplate, "{id}", predictionID)
 	endpoint, err := provider.EndpointForCredential(substituted, cred)
 	if err != nil {
 		return nil, fmt.Errorf("replicate: cancel endpoint rejected: %w", err)
@@ -85,4 +103,17 @@ func NewCancelRequest(ctx context.Context, cred provider.Credential, predictionI
 	applyCredentialAuth(req, cred)
 	req.Header.Set("Accept", "application/json")
 	return req, nil
+}
+
+// NewCancelRequest 保留纯构造入口供适配器合同测试使用；生产发送必须走统一
+// Dispatcher，不得直接调用 http.Client。
+func NewCancelRequest(ctx context.Context, cred provider.Credential, predictionID string) (*http.Request, error) {
+	path, err := CancelEndpointPath(predictionID)
+	if err != nil {
+		return nil, err
+	}
+	return (&Adapter{}).BuildRequest(ctx, provider.BuildInput{
+		Credential:   cred,
+		EndpointPath: path,
+	})
 }

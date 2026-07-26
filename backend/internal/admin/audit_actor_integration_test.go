@@ -69,7 +69,7 @@ func TestAuditActor_APIKeyIssueRevoke_ActorIDPersisted(t *testing.T) {
 		t.Fatalf("AuditActor()=%q,与真库 token id=%d 不一致", wantActor, f.adminTokenID)
 	}
 
-	issuer := NewKeyIssuer(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
 	res, err := issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
 		TenantID:    f.tenantID,
@@ -93,7 +93,7 @@ func TestAuditActor_APIKeyIssueRevoke_ActorIDPersisted(t *testing.T) {
 	}
 
 	// 吊销同一 key,断言吊销审计行的 actor_id 同样落地。变异 revoker.go:108 即红。
-	revoker := NewKeyRevoker(pool)
+	revoker := NewKeyRevoker(pool, f.tenantID)
 	if _, err := revoker.Revoke(ctx, RevokeRequest{
 		Caller:   ident,
 		APIKeyID: res.APIKeyID,
@@ -181,7 +181,7 @@ func TestAuditActor_RateWindowKeyMatchesPersistedActorID(t *testing.T) {
 	caller := AdminIdentity{TokenID: f.adminTokenID, Source: AdminSourceToken, Role: RolePlatformAdmin}
 	wantActor := caller.AuditActor()
 
-	issuer := NewKeyIssuer(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
 	for n := 0; n < 2; n++ {
 		if _, err := issuer.Issue(ctx, IssueRequest{
 			Caller:      caller,

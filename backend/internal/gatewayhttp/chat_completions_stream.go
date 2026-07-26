@@ -24,6 +24,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/trust"
 )
@@ -275,8 +276,9 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if ex.activeForceFormat() {
 		streamForwarder.ForceOpenAIChatFormat = true
 	}
-	afterDelivery, waitForDeliveryIntent := ex.settlementIntent.AfterDeliveryAsync(ex.ctx)
-	streamForwarder.AfterFirstBusinessFrame = afterDelivery
+	streamForwarder.BeforeFirstBusinessFrame = func(at time.Time) error {
+		return ex.settlementIntent.MarkDelivering(ex.ctx, at)
+	}
 	var ledgerResult auditledger.AuditLedgerResult
 	streamForwarder.LedgerCallback = func(result auditledger.AuditLedgerResult) {
 		ledgerResult = result
@@ -291,12 +293,13 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	}
 	draft, fwdErr := streamForwarder.Forward(ex.ctx, dispatchRes.UpstreamReader, forwardWriter, ex.forwardReq)
 	streamAttempt, businessDelivered := chatpipe.DeliveredStreamAttempt(draft)
+	deliveryEvidenceFailed := errors.Is(fwdErr, settlementintent.ErrDeliveryEvidenceUnavailable)
 	orchestratorCancelled := fwdErr != nil &&
 		errors.Is(fwdErr, context.Canceled) &&
 		draft.EndClass == gateway.OrchestratorCancel
 	if fwdErr != nil && !orchestratorCancelled {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeForwardFailed, fwdErr)
-		if ex.healthKeyOK {
+		if ex.healthKeyOK && !deliveryEvidenceFailed {
 			class := channelhealth.SignalChannelError
 			if errors.Is(fwdErr, context.DeadlineExceeded) || os.IsTimeout(fwdErr) {
 				class = channelhealth.SignalTimeout
@@ -321,8 +324,14 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 	if businessDelivered {
 		event := ex.streamingCompletionEventWithContext(settleCtx, draft, streamAttempt, ledgerResult)
 		// 交付后结算失败进入持久恢复，后续重放 Settle。
-		_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream)
-		ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, event.SettleRequest.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
+		_, recoveryEnqueued, evidence, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, event, settlementrecovery.SourceStream)
+		ex.settlementIntent.MarkSettlementResult(
+			settleCtx,
+			event.SettleRequest.ActualCost,
+			settleErr,
+			recoveryEnqueued,
+			toSettlementIntentEvidence(evidence),
+		)
 		if settleErr != nil {
 			w.Header().Set(headerHUAKAIStreamState, "deferred")
 			logInternalError(settleCtx, ex.requestID, "settlement_deferred", settleErr)
@@ -340,13 +349,23 @@ func (ex *chatExecution) forwardSSEAndSettle(w http.ResponseWriter, dispatchRes 
 		}
 		observedInputTokens := ex.abortObservedInputTokens(draft)
 		streamAbortErr = ex.abortReservation(ex.reserveRes.ClaimID, reason, observedInputTokens, ex.protocolLoss)
-		waitForDeliveryIntent()
 		if streamAbortErr != nil {
 			logInternalError(settleCtx, ex.requestID, clienterr.CodeAbortFailed, streamAbortErr)
 		}
 	}
 	deliveryStarted := businessDelivered
 	if fwdErr != nil && !deliveryStarted {
+		if deliveryEvidenceFailed {
+			failure := terminalLocalAttemptFailure(
+				http.StatusServiceUnavailable,
+				clienterr.CodeSettleError,
+				clienterr.MessageFor(clienterr.CodeSettleError),
+				"delivery_evidence_unavailable",
+				fwdErr,
+			)
+			failure.EndClass = draft.EndClass
+			return false, degradeFailureIfAbortFailed(ex.ctx, ex.requestID, failure, streamAbortErr)
+		}
 		reason := streamAttempt.StreamTerminatedReason
 		if reason == "" {
 			reason = "upstream_timeout"

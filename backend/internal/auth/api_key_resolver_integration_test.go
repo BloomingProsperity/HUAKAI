@@ -338,6 +338,46 @@ func TestAPIKeyResolver_RevokedKey(t *testing.T) {
 	}
 }
 
+func TestAPIKeyResolver_ActiveStatusWithRevokedAtRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_keys SET status='active', revoked_at=NOW() WHERE id=$1`,
+		seed.apiKeyID,
+	); err != nil {
+		t.Fatalf("seed inconsistent revoked key: %v", err)
+	}
+
+	r := NewAPIKeyResolver(dbauth.New(pool))
+	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked_at 非空的 Key 必须拒绝认证，得到 %v", err)
+	}
+}
+
+func TestAPIKeyResolver_AdminRoleUserKeyRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET role='admin' WHERE id=$1`,
+		seed.userID,
+	); err != nil {
+		t.Fatalf("promote seeded user: %v", err)
+	}
+
+	r := NewAPIKeyResolver(dbauth.New(pool))
+	_, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext))
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("管理员身份绑定的普通用户 Key 必须拒绝认证，得到 %v", err)
+	}
+}
+
 func TestAPIKeyResolver_ExpiredKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -496,9 +536,9 @@ func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
 	if _, err := pool.Exec(ctx,
-		`UPDATE tenants SET status='suspended' WHERE id=$1`, seed.tenantID,
+		`UPDATE tenants SET status='disabled' WHERE id=$1`, seed.tenantID,
 	); err != nil {
-		t.Fatalf("flip tenant suspended: %v", err)
+		t.Fatalf("flip tenant disabled: %v", err)
 	}
 
 	r := NewAPIKeyResolver(dbauth.New(pool))
@@ -510,7 +550,7 @@ func TestAPIKeyResolver_DisabledTenantRejected(t *testing.T) {
 
 // 被软删除的租户绝不能通过鉴权。
 // 注意: 在真实 admin 流程中 api_keys 行通常会被级联处理;
-// 本测试直接在 tenants 上设置 deleted_at=NOW()。
+// 本测试直接写入租户生命周期的 deleted 终态。
 func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -518,7 +558,7 @@ func TestAPIKeyResolver_SoftDeletedTenantRejected(t *testing.T) {
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
 
 	if _, err := pool.Exec(ctx,
-		`UPDATE tenants SET deleted_at=NOW() WHERE id=$1`, seed.tenantID,
+		`UPDATE tenants SET status='deleted', deleted_at=NOW() WHERE id=$1`, seed.tenantID,
 	); err != nil {
 		t.Fatalf("soft-delete tenant: %v", err)
 	}

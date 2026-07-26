@@ -24,6 +24,7 @@ SELECT
         WHERE u.id = $2::bigint
           AND u.tenant_id = $1::bigint
           AND u.principal_kind = 'human'
+          AND u.role = 'user'
           AND u.deleted_at IS NULL
           AND u.status = 'active'
     ) AS user_ok
@@ -39,11 +40,7 @@ type AdminCheckIssuanceTargetRow struct {
 	UserOk   bool `db:"user_ok" json:"user_ok"`
 }
 
-// Codex N+4b2 pass-5 P2: validate the target (tenant, user) is active
-// and not soft-deleted BEFORE we mint a bearer + bcrypt-hash. Returning
-// false → handler responds 400 (or 404), avoiding "the key was minted but
-// the customer resolver immediately rejects it" + the unhelpful 503 that
-// would result from leaning on the FK as our only validator.
+// 在生成 bearer 与 bcrypt 前确认目标是有效终端用户。
 func (q *Queries) AdminCheckIssuanceTarget(ctx context.Context, arg AdminCheckIssuanceTargetParams) (AdminCheckIssuanceTargetRow, error) {
 	row := q.db.QueryRow(ctx, adminCheckIssuanceTarget, arg.TenantID, arg.UserID)
 	var i AdminCheckIssuanceTargetRow
@@ -103,7 +100,8 @@ type AdminGetAPIKeyByIDRow struct {
 	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
-// Tenant-scoped read for revocation flow + audit lookup.
+// 撤销流程使用的租户级 purpose=user Key 查询。不得依赖持有人当前状态，
+// 否则最需要退役的历史凭据反而会从管理面消失。
 func (q *Queries) AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByIDParams) (AdminGetAPIKeyByIDRow, error) {
 	row := q.db.QueryRow(ctx, adminGetAPIKeyByID, arg.ID, arg.TenantID)
 	var i AdminGetAPIKeyByIDRow
@@ -126,41 +124,43 @@ func (q *Queries) AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByID
 
 const adminInsertAPIKey = `-- name: AdminInsertAPIKey :one
 
+WITH eligible_target AS MATERIALIZED (
+    SELECT t.id AS tenant_id, u.id AS user_id
+    FROM tenants t
+    JOIN users u
+      ON u.tenant_id = t.id
+     AND u.id = $5::bigint
+     AND u.principal_kind = 'human'
+     AND u.role = 'user'
+     AND u.deleted_at IS NULL
+     AND u.status = 'active'
+    WHERE t.id = $6::bigint
+      AND t.deleted_at IS NULL
+      AND t.status = 'active'
+    FOR SHARE OF t, u
+)
 INSERT INTO api_keys (
     tenant_id, user_id, name, key_hash, key_prefix, status, expires_at
 )
 SELECT
-    $1::bigint,
-    $2::bigint,
+    eligible_target.tenant_id,
+    eligible_target.user_id,
+    $1::text,
+    $2::text,
     $3::text,
-    $4::text,
-    $5::text,
     'active',
-    $6::timestamptz
-WHERE EXISTS (
-    SELECT 1 FROM tenants t
-    WHERE t.id = $1::bigint
-      AND t.deleted_at IS NULL
-      AND t.status = 'active'
-)
-AND EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = $2::bigint
-      AND u.tenant_id = $1::bigint
-      AND u.principal_kind = 'human'
-      AND u.deleted_at IS NULL
-      AND u.status = 'active'
-)
+    $4::timestamptz
+FROM eligible_target
 RETURNING id, created_at
 `
 
 type AdminInsertAPIKeyParams struct {
-	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
-	UserID    int64              `db:"user_id" json:"user_id"`
 	Name      string             `db:"name" json:"name"`
 	KeyHash   string             `db:"key_hash" json:"key_hash"`
 	KeyPrefix string             `db:"key_prefix" json:"key_prefix"`
 	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	UserID    int64              `db:"user_id" json:"user_id"`
+	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
 }
 
 type AdminInsertAPIKeyRow struct {
@@ -169,24 +169,19 @@ type AdminInsertAPIKeyRow struct {
 }
 
 // 管理侧 api_keys 查询由 internal/admin 调用，与 internal/auth 面向客户的
-// LookupAPIKeysByPrefix 热路径相互独立。
-// admin tooling MUST NOT use the prefix-only lookup that the customer
-// hot path optimizes for (it's a different security surface).
-// Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being
-// active and not soft-deleted at the moment of write. INSERT ... SELECT
-// WHERE EXISTS makes "target validity" atomic with the row creation, so
-// a tenant/user that flips disabled between an external preflight and
-// this insert can no longer produce a freshly-minted-but-immediately-
-// rejected key. NoRows return → target became invalid; handler maps it
-// to ErrAdminBadRequest.
+// LookupAPIKeysByPrefix 热路径相互独立。管理面不得复用只按前缀查找的热路径，
+// 两者属于不同安全边界。
+// 写入时锁定并确认租户和终端用户仍有效；目标在外部预检后失活或角色已不是
+// user 时返回 NoRows。FOR SHARE 会与生命周期/用户状态的非键更新互斥，避免
+// 停用提交后又从旧快照落下一把新 Key。
 func (q *Queries) AdminInsertAPIKey(ctx context.Context, arg AdminInsertAPIKeyParams) (AdminInsertAPIKeyRow, error) {
 	row := q.db.QueryRow(ctx, adminInsertAPIKey,
-		arg.TenantID,
-		arg.UserID,
 		arg.Name,
 		arg.KeyHash,
 		arg.KeyPrefix,
 		arg.ExpiresAt,
+		arg.UserID,
+		arg.TenantID,
 	)
 	var i AdminInsertAPIKeyRow
 	err := row.Scan(&i.ID, &i.CreatedAt)
@@ -228,9 +223,9 @@ type AdminListAPIKeysForTenantRow struct {
 	UpdatedAt     pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }
 
-// Lists api_keys metadata for a tenant. NEVER returns key_hash. The
-// key_prefix is acceptable to expose (already public-safe per N+4a; 16
-// chars insufficient to authenticate without bcrypt match).
+// 列出该租户全部 purpose=user Key 元数据，绝不返回 key_hash。这里不能按
+// users 当前角色或 deleted_at 过滤：持有人升为管理员或被软删后，历史凭据
+// 仍必须留在运维视野中并可被永久撤销。
 func (q *Queries) AdminListAPIKeysForTenant(ctx context.Context, arg AdminListAPIKeysForTenantParams) ([]AdminListAPIKeysForTenantRow, error) {
 	rows, err := q.db.Query(ctx, adminListAPIKeysForTenant, arg.TenantID, arg.PageOffset, arg.PageLimit)
 	if err != nil {
@@ -283,10 +278,8 @@ type AdminRevokeAPIKeyParams struct {
 	TenantID int64  `db:"tenant_id" json:"tenant_id"`
 }
 
-// Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
-// collapses ANY non-revoked status (active / disabled / expired) into
-// 'revoked' — only an already-revoked row is the idempotent path.
-// Returning 0 rows means "was already revoked".
+// 将终端用户 Key 的任意非 revoked 状态收敛为 revoked。返回 0 行表示已撤销，
+// 持有人的当前角色和删除状态不得阻断永久撤销。
 func (q *Queries) AdminRevokeAPIKey(ctx context.Context, arg AdminRevokeAPIKeyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, adminRevokeAPIKey, arg.Reason, arg.ID, arg.TenantID)
 	if err != nil {

@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -47,31 +48,25 @@ type dispatcher interface {
 	Dispatch(context.Context, gateway.DispatchInput) (*gateway.DispatchResult, error)
 }
 
-// cancelHTTPDoer 发送 best-effort 上游任务取消请求(family_replicate)。控制面
-// 调用,独立于 Dispatcher 的 per-vendor transport 策略。
-type cancelHTTPDoer interface {
-	Do(*http.Request) (*http.Response, error)
-}
-
 type Deps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	Selector              pool.Selector
-	CredentialVault       provider.CredentialVault
-	Dispatcher            dispatcher
-	Settler               billing.Settler
-	SettleRecoveryDLQ     settlementrecovery.Enqueuer
-	BillingPolicyResolver *billing.PolicyResolver
-	BillingPolicyVersion  string
-	RequestClass          string
-	ClientIPResolver      *clientip.Resolver
-	// ReplicateCancelClient 可注入(测试/定制);nil 用包内默认 client(10s 超时)。
-	ReplicateCancelClient cancelHTTPDoer
+	Auth                    authResolver
+	Registry                registry.Registry
+	Router                  router.Router
+	ClaimGate               billing.ClaimGate
+	QuotaReserver           quotaenforce.Reserver
+	RateTables              billing.RateTableSource
+	PricingRatioResolver    pricingRatioResolver
+	Selector                pool.Selector
+	CredentialVault         provider.CredentialVault
+	Dispatcher              dispatcher
+	Settler                 billing.Settler
+	SettlementIntents       settlementintent.Store
+	SettlementIntentEnabled bool
+	SettleRecoveryDLQ       settlementrecovery.Enqueuer
+	BillingPolicyResolver   *billing.PolicyResolver
+	BillingPolicyVersion    string
+	RequestClass            string
+	ClientIPResolver        *clientip.Resolver
 	// NonStreamKeepAliveInterval:图片生成(强制 buffered,可达数十秒)期间每隔此时长向客户端写
 	// 一个裸换行保活,避开 Cloudflare 等反代 ~100s 空闲超时。0=关(默认)。JSON 容忍前导空白。
 	NonStreamKeepAliveInterval time.Duration
@@ -120,6 +115,7 @@ type execution struct {
 	classTransition     *bindingfallback.Transition
 	deliveryStarted     bool
 	excludedAccounts    map[int64]struct{}
+	settlementIntent    *settlementintent.Tracker
 }
 
 func NewGenerationsHandler(d Deps) http.HandlerFunc {
@@ -171,18 +167,19 @@ func newHandler(d Deps, endpoint imageEndpoint) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		w.Header().Set(middleware.RequestIDHeader, requestID)
 		ex := &execution{
-			d:           d,
-			r:           r,
-			ctx:         ctx,
-			startedAt:   time.Now().UTC(),
-			endpoint:    endpoint,
-			ident:       ident,
-			body:        body,
-			req:         req,
-			requestID:   requestID,
-			payloadHash: bodyHash(body),
-			amount:      req.Amount(),
-			quality:     req.NormalizedQuality(),
+			d:                d,
+			r:                r,
+			ctx:              ctx,
+			startedAt:        time.Now().UTC(),
+			endpoint:         endpoint,
+			ident:            ident,
+			body:             body,
+			req:              req,
+			requestID:        requestID,
+			payloadHash:      bodyHash(body),
+			amount:           req.Amount(),
+			quality:          req.NormalizedQuality(),
+			settlementIntent: settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		}
 		if !ex.prepareRoute(w) || !ex.validateFamilyConstraints(w) {
 			return

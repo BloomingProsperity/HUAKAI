@@ -17,7 +17,7 @@ func (s *PostgresStore) ListActiveFamiliesForDevicePolicy(
 		return nil, nil
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
+	SELECT id::text, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at,
        device_info, ip_baseline, revoked_at, revoked_reason
 FROM session_families
 WHERE tenant_id = $1 AND user_id = $2 AND status IN ('active', 'suspicious')

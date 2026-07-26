@@ -32,14 +32,17 @@ type storeStub struct {
 	audits  []admindb.InsertAdminAuditEventParams
 }
 
-func (s *storeStub) UpdateProviderAccountFingerprintProfile(_ context.Context, arg admindb.UpdateProviderAccountFingerprintProfileParams) error {
+func (s *storeStub) UpdateFingerprintProfileWithAudit(
+	_ context.Context,
+	arg admindb.UpdateProviderAccountFingerprintProfileParams,
+	audit admindb.InsertAdminAuditEventParams,
+) error {
 	s.bind = &arg
-	return s.bindErr
-}
-
-func (s *storeStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
-	s.audits = append(s.audits, arg)
-	return admindb.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
+	if s.bindErr != nil {
+		return s.bindErr
+	}
+	s.audits = append(s.audits, audit)
+	return nil
 }
 
 func platformAdmin() admin.AdminIdentity {

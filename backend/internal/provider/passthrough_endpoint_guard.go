@@ -32,6 +32,17 @@ func safePassthroughBaseURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// ValidateCustomEndpointURL 对账号材料中选择的完整上游地址执行统一静态校验。
+// 它只验证 URL 结构、协议、端口和显式主机；域名解析与实际拨号目标仍由
+// dispatcher 在发网前和拨号时分别复核。
+func ValidateCustomEndpointURL(raw string) (string, error) {
+	u, err := safePassthroughBaseURL(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
 func validatePassthroughEndpointURL(u *url.URL) (string, error) {
 	if u == nil {
 		return "", passthroughEndpointBlocked("invalid URL")
@@ -119,6 +130,59 @@ func UsesCustomPassthroughEndpoint(cred Credential) bool {
 		}
 	}
 	return false
+}
+
+// RequestUsesCustomPassthroughEndpoint 判断本次已构造请求是否真正采用了凭据
+// 中的自定义地址。API key/透传凭据沿用统一 endpoint 合同；session 凭据仅在
+// 请求 origin 与其地址字段一致时成立，避免其它适配器携带但忽略 base_url 时
+// 被误判并改变 transport。
+func RequestUsesCustomPassthroughEndpoint(cred Credential, endpoint *url.URL) bool {
+	if UsesCustomPassthroughEndpoint(cred) {
+		return true
+	}
+	if cred.Type != CredentialTypeSessionToken || endpoint == nil {
+		return false
+	}
+	for _, key := range []string{"base_url", "endpoint_api", "copilot_endpoint_api"} {
+		raw := strings.TrimSpace(cred.Extra[key])
+		if raw == "" {
+			continue
+		}
+		candidate, err := url.Parse(raw)
+		if err != nil || candidate.Scheme == "" || candidate.Host == "" {
+			continue
+		}
+		if sameEndpointOrigin(candidate, endpoint) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameEndpointOrigin(left, right *url.URL) bool {
+	if left == nil || right == nil ||
+		!strings.EqualFold(left.Scheme, right.Scheme) ||
+		!strings.EqualFold(left.Hostname(), right.Hostname()) {
+		return false
+	}
+	return endpointOriginPort(left) == endpointOriginPort(right)
+}
+
+func endpointOriginPort(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 var passthroughEndpointLookupNetIP = net.DefaultResolver.LookupNetIP
@@ -359,69 +423,6 @@ func numericObfuscatedHost(host string) bool {
 	return true
 }
 
-func publicPassthroughIP(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() ||
-		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() || addr.IsUnspecified() || !addr.IsGlobalUnicast() {
-		return false
-	}
-	for _, prefix := range passthroughSpecialUseDenyPrefixes {
-		if prefix.Contains(addr) {
-			return false
-		}
-	}
-	return true
-}
-
 func passthroughIPAllowedForHost(policy ssrfpolicy.Policy, host string, addr netip.Addr) bool {
-	if publicPassthroughIP(addr) {
-		return true
-	}
-	return policy.AllowsPrivateIPHost(host) && privatePassthroughIP(addr)
-}
-
-func privatePassthroughIP(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if !addr.IsValid() || !addr.IsPrivate() || addr.IsLoopback() ||
-		addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsMulticast() || addr.IsUnspecified() || !addr.IsGlobalUnicast() {
-		return false
-	}
-	for _, prefix := range passthroughSpecialUseDenyPrefixes {
-		if prefix.Contains(addr) {
-			return false
-		}
-	}
-	return true
-}
-
-var passthroughSpecialUseDenyPrefixes = []netip.Prefix{
-	mustPassthroughPrefix("0.0.0.0/8"),
-	mustPassthroughPrefix("100.64.0.0/10"),
-	mustPassthroughPrefix("192.0.0.0/24"),
-	mustPassthroughPrefix("192.0.2.0/24"),
-	mustPassthroughPrefix("192.88.99.0/24"),
-	mustPassthroughPrefix("198.18.0.0/15"),
-	mustPassthroughPrefix("198.51.100.0/24"),
-	mustPassthroughPrefix("203.0.113.0/24"),
-	mustPassthroughPrefix("240.0.0.0/4"),
-	mustPassthroughPrefix("255.255.255.255/32"),
-	mustPassthroughPrefix("::/96"),
-	mustPassthroughPrefix("64:ff9b::/96"),
-	mustPassthroughPrefix("64:ff9b:1::/48"),
-	mustPassthroughPrefix("100::/64"),
-	mustPassthroughPrefix("2001::/23"),
-	mustPassthroughPrefix("2001:db8::/32"),
-	mustPassthroughPrefix("2002::/16"),
-	mustPassthroughPrefix("3fff::/20"),
-	mustPassthroughPrefix("5f00::/16"),
-}
-
-func mustPassthroughPrefix(raw string) netip.Prefix {
-	prefix, err := netip.ParsePrefix(raw)
-	if err != nil {
-		panic(err)
-	}
-	return prefix
+	return policy.AllowsAddress(host, addr)
 }

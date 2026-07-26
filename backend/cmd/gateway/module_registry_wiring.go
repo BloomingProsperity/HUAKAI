@@ -209,6 +209,8 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 	// Probe: dlq 重放服务接线即 wired。只报 wired/degraded,不含任何队列内容。
 	dlqService := d.dlqService
 	settlementRecoveryReady := dlqService != nil && dlqService.HasHandler(legacydlq.EventKindPostDeliverySettlement)
+	settlementIntentEnabled := d.cfg != nil && d.cfg.SettlementIntentEnabled
+	settlementIntentReady := settlementIntentEnabled && d.settlementIntents != nil
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID:       "dlq.service",
 		Category: "reliability",
@@ -228,7 +230,7 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 
 	_ = reg.Register(moduleregistry.ModuleDescriptor{
 		ID: "settlement.recovery", Category: "reliability", Title: "Post-delivery settlement recovery",
-		Capabilities: []string{"durable settlement intent", "idempotent operator-visible replay"},
+		Capabilities: []string{"post-delivery failure capture", "idempotent operator-visible replay"},
 		Activation: moduleActivation(settlementRecoveryReady, "postgresql", true,
 			moduleEndpoint("chat", settlementRecoveryReady),
 			moduleEndpoint("completions", settlementRecoveryReady),
@@ -242,6 +244,28 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "settlement recovery handler unwired"}
 			}
 			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "wired"}
+		},
+	})
+
+	_ = reg.Register(moduleregistry.ModuleDescriptor{
+		ID: "settlement.intent", Category: "reliability", Title: "Pre-delivery settlement intent",
+		Capabilities: []string{"pre-delivery crash-gap tracking", "stale intent reconciliation"},
+		Activation: moduleActivation(d.settlementIntents != nil, "postgresql", true,
+			moduleEndpoint("chat", settlementIntentReady),
+			moduleEndpoint("completions", settlementIntentReady),
+			moduleEndpoint("embeddings", settlementIntentReady),
+			moduleEndpoint("rerank", settlementIntentReady),
+			moduleEndpoint("images", settlementIntentReady),
+			moduleEndpoint("audio", settlementIntentReady),
+			moduleEndpoint("gemini", settlementIntentReady)),
+		HealthProbe: func(context.Context) moduleregistry.ProbeResult {
+			if !settlementIntentEnabled {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "disabled by configuration"}
+			}
+			if d.settlementIntents == nil {
+				return moduleregistry.ProbeResult{Status: moduleregistry.StatusDegraded, Detail: "enabled but store unwired"}
+			}
+			return moduleregistry.ProbeResult{Status: moduleregistry.StatusOK, Detail: "all synchronous relay families wired"}
 		},
 	})
 

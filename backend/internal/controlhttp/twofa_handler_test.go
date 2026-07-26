@@ -248,6 +248,9 @@ func twoFATestRouterWithDeps(d TwoFADeps) http.Handler {
 }
 
 func twoFATestRouterWithDepsAndIdent(d TwoFADeps, ident sessionauth.SessionIdentity) http.Handler {
+	if d.Sessions == nil {
+		d.Sessions = &recordingSessionRevoker{}
+	}
 	r := chi.NewRouter()
 	r.Route("/v1/auth/2fa", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
@@ -301,6 +304,13 @@ func TestTwoFAStateChangeReportsSessionRevokeFailure(t *testing.T) {
 	assertTwoFAStatus(t, rec, http.StatusServiceUnavailable)
 	if code := twoFAErrorCode(t, rec); code != "session_revoke_failed" {
 		t.Fatalf("error code=%q want session_revoke_failed", code)
+	}
+	status, err := service.Status(context.Background(), 1, 1001)
+	if err != nil {
+		t.Fatalf("Status after failed enable: %v", err)
+	}
+	if status.Enabled {
+		t.Fatal("session revocation failed but 2FA stayed enabled; state change must roll back")
 	}
 }
 

@@ -13,7 +13,6 @@ package admin
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -137,12 +136,14 @@ func parseAdminBearer(header string) (string, bool) {
 	return tok, true
 }
 
-// CanIssueForTenant 在该身份被允许为 tenantID 签发 key 时返回 nil,
-// 否则返回 ErrAdminForbidden。
+// CanIssueForTenant 判断该身份能否操作一个通用租户资源。
 //
 // 规则:
-//   - platform_admin 可为任意 tenant 签发。
-//   - tenant_operator 只可为其 ScopeTenantID 签发。
+//   - platform_admin 可操作任意 tenant；
+//   - tenant_operator 只可操作其 ScopeTenantID。
+//
+// 终端用户与用户 Key 不得使用这条宽权限合同，应改用
+// CanManageFinalUsersForTenant。
 func (i AdminIdentity) CanIssueForTenant(tenantID int64) error {
 	switch i.Role {
 	case RolePlatformAdmin:
@@ -157,4 +158,38 @@ func (i AdminIdentity) CanIssueForTenant(tenantID int64) error {
 	}
 }
 
-var _ = errors.New // 保持 errors import 存活以备未来扩展
+// CanOperateOwnedTenant 判断该身份能否对目标租户执行经营性写操作。
+// 这类操作包括管理终端用户、用户 Key、订单、订阅、兑换码和人工恢复。
+// 它与平台级配置、只读日志和通用租户资源权限有意分离：
+//
+//   - platform_admin 只管理平台工作租户的终端用户；
+//   - tenant_operator 只管理自身作用域租户的终端用户；
+//   - 平台工作租户未接线时，platform_admin 必须 fail-closed。
+func (i AdminIdentity) CanOperateOwnedTenant(tenantID, platformTenantID int64) error {
+	if tenantID <= 0 {
+		return ErrAdminForbidden
+	}
+	switch i.Role {
+	case RolePlatformAdmin:
+		if platformTenantID <= 0 {
+			return fmt.Errorf("%w: platform tenant scope not configured", ErrAdminBackend)
+		}
+		if tenantID != platformTenantID {
+			return ErrAdminForbidden
+		}
+		return nil
+	case RoleTenantOperator:
+		if i.ScopeTenantID > 0 && i.ScopeTenantID == tenantID {
+			return nil
+		}
+		return ErrAdminForbidden
+	default:
+		return ErrAdminUnauthorized
+	}
+}
+
+// CanManageFinalUsersForTenant 保留终端用户域的语义入口，底层复用统一的
+// 所属租户经营边界，避免用户、资金和恢复各自维护一套容易漂移的角色判断。
+func (i AdminIdentity) CanManageFinalUsersForTenant(tenantID, platformTenantID int64) error {
+	return i.CanOperateOwnedTenant(tenantID, platformTenantID)
+}

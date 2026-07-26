@@ -6,7 +6,9 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -22,8 +24,10 @@ import (
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/browsersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	communityinvitation "github.com/BloomingProsperity/HUAKAI/internal/community/invitation"
 	runtimeconfig "github.com/BloomingProsperity/HUAKAI/internal/config"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
@@ -49,7 +53,7 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	privacyLogger := privacy.NewStdoutSystemLogger(privacyRedactor)
 	// 安全响应头放在最前,这样即便是提前退出的响应(例如
 	// RequestIDLengthLimiter 返回的 400)也携带浏览器安全响应头契约。
-	router.Use(securityHeaders)
+	router.Use(securityHeaders(d.clientIPResolver))
 	router.Use(middleware.RequestID)
 	router.Use(gatewayhttp.RequestIDLengthLimiter(gatewayhttp.MaxRequestIDLength))
 	router.Use(accesslog.Middleware(logger))
@@ -58,16 +62,15 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// 它运行在限流器之前,这样对白名单内浏览器源返回的 429
 	// 仍携带 Access-Control-Allow-Origin/Vary(前端看到的是 JSON
 	// 429 + Retry-After,而非不透明的 CORS 失败),并且白名单内的预检
-	// 在限流器尚未运行前就以 204 应答。corsMiddleware 只读
-	// Origin/Method,从不读 RemoteAddr,故与 RealIP 的顺序无关。
-	router.Use(corsMiddleware(parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS"))))
-	// 始终开启的按 IP 入站限流。它刻意运行在 middleware.RealIP 之前:
-	// chi 的 RealIP 会用客户端提供的
-	// True-Client-IP/X-Real-IP/X-Forwarded-For 覆盖 RemoteAddr,且不做可信代理校验,
-	// 所以一个以 RealIP 处理之后的 RemoteAddr 为键的限流器,会让攻击者通过轮换这些请求头
-	// 凭空铸造出新的按 IP 桶。运行在 RealIP 之前可让
-	// 网关的 fail-closed 可信代理解析器从真实的
-	// socket 对端推导出键(仅在对端是白名单内代理时才采信转发跳数)。
+	// 在限流器尚未运行前就以 204 应答。同源判定复用可信代理解析器：
+	// TLS 在可信边缘终止时才采信 X-Forwarded-Proto，公网直连伪造不会放行。
+	router.Use(corsMiddleware(
+		parseAllowedOrigins(os.Getenv("HUAKAI_CORS_ALLOWED_ORIGINS")),
+		d.clientIPResolver,
+	))
+	// 始终开启的按 IP 入站限流。它使用 fail-closed 的可信代理解析器：
+	// 只有 socket 对端位于运维白名单时才采信 X-Forwarded-For，其余请求
+	// 一律以真实 socket 对端为键，攻击者不能靠轮换转发头铸造新桶。
 	// 洪泛(包括开销很大的 argon2 auth 路径)会在任何路由 handler / 配额 / 上游账号
 	// 使用之前以 429 卸掉。增量式:它不改变
 	// securityHeaders/corsMiddleware 的行为,只是嵌在
@@ -85,11 +88,9 @@ func newRouter(d *deps, logger *zap.Logger) chi.Router {
 	// link-local;通过 HUAKAI_HERMES_INTERNAL_EXTRA_ALLOW_CIDRS 追加 CIDR),
 	// 使其无法从公网经由这个共享监听器被访问——
 	// 应用层的 internal_token 不再是唯一屏障(审计 B2)。必须
-	// 运行在 RealIP 之前(与限流器同样的 X-Forwarded-For 伪造原因):它
-	// 判定真实的 socket 对端,这是 `X-Forwarded-For: 127.0.0.1` 无法
-	// 伪造的。
+	// 它只判定真实 socket 对端，不读取任何转发头，因此
+	// `X-Forwarded-For: 127.0.0.1` 无法伪造内部来源。
 	router.Use(internalSourceGate(parseInternalAllowCIDRs(os.Getenv(internalAllowCIDRsEnv)), logger))
-	router.Use(middleware.RealIP)
 	router.Use(privacy.Recoverer(privacyLogger))
 	router.Use(aiAwareTimeout(60 * time.Second))
 	// relay 入站请求体上限(env 可配,MB 单位,默认 32MiB 抬到中转站量级):gatewayhttp 内 relay 请求体
@@ -201,83 +202,280 @@ func writeAdminGateError(w http.ResponseWriter, status int, code, message string
 func parseAllowedOrigins(raw string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, o := range strings.Split(raw, ",") {
-		if o = strings.TrimSpace(o); o != "" {
-			out[o] = struct{}{}
+		if normalized, ok := normalizeBrowserOrigin(o); ok {
+			out[normalized] = struct{}{}
 		}
 	}
 	return out
 }
 
+// normalizeBrowserOrigin 只接受浏览器 Origin 的标准形态。生产来源必须是 HTTPS；
+// HTTP 仅允许 loopback 开发地址，避免运维误把明文远端站点加入携带凭据的白名单。
+func normalizeBrowserOrigin(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "null") {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User != nil || parsed.Host == "" ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" || strings.IndexFunc(host, func(r rune) bool { return r > 127 }) >= 0 {
+		return "", false
+	}
+	if scheme != "https" && !(scheme == "http" && isLoopbackBrowserHost(host)) {
+		return "", false
+	}
+
+	port := parsed.Port()
+	if port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", false
+		}
+		if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+			port = ""
+		}
+	}
+	return scheme + "://" + browserAuthority(host, port), true
+}
+
+func isLoopbackBrowserHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func browserAuthority(host, port string) string {
+	if port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+func requestHostMatchesOrigin(
+	r *http.Request,
+	normalizedOrigin string,
+	proxyResolver *clientip.Resolver,
+) bool {
+	if r == nil {
+		return false
+	}
+	scheme := requestExternalScheme(r, proxyResolver)
+	target, ok := normalizeBrowserOrigin(scheme + "://" + strings.TrimSpace(r.Host))
+	if !ok {
+		return false
+	}
+	return target == normalizedOrigin
+}
+
+func requestExternalScheme(r *http.Request, proxyResolver *clientip.Resolver) string {
+	if r == nil {
+		return ""
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	if proxyResolver == nil || !proxyResolver.TrustedPeer(r) {
+		return "http"
+	}
+	values := r.Header.Values("X-Forwarded-Proto")
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return "http"
+	}
+	switch strings.ToLower(strings.TrimSpace(values[0])) {
+	case "https":
+		return "https"
+	case "http":
+		return "http"
+	default:
+		return "http"
+	}
+}
+
 // spaContentSecurityPolicy 是内嵌前端「文档面」的 CSP:允许加载同源脚本/样式/字体/图片、
-// 同源 fetch(connect-src),行内样式属性(React 的 style={} 会生成 inline style)需 'unsafe-inline';
-// 仍保留 frame-ancestors 'none' 防点击劫持、base-uri / form-action 'self' 收口跳转与表单目标。
+// 同源 fetch(connect-src),行内样式属性(React 的 style={} 会生成 inline style)需 'unsafe-inline'。
+// 脚本属性、插件对象和 frame 全部禁用。Trusted Types 仍是前端首版硬门，但必须与
+// 实际 SPA 中经过审查的集中策略同批启用；当前仓库只有占位壳，提前强制会让未来
+// Vite 产物在尚未创建策略时白屏。
 // 与 API 面的 default-src 'none' 分流:文档要能自举、API 要彻底锁死,两者 CSP 不能共用一份。
-const spaContentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+const spaContentSecurityPolicy = "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
 // securityHeaders 在每个响应上安装浏览器安全响应头契约。
 // 该网关是一个 JSON API,背后是面向浏览器的 /v1/auth、/v1/sessions、
 // /v1/api-keys、/v1/admin 路由,这些此前一个安全响应头都没有。
-// HSTS 仅在边缘为 TLS 时(r.TLS 或 X-Forwarded-Proto=https)才发出,
-// 因此绝不会在明文上被错误声明。
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		// CSP 按响应面分流:API 响应是 JSON、绝非文档上下文,default-src 'none' 把页面彻底锁死;
-		// 但内嵌 SPA 的 HTML 外壳(及其 /assets 静态资源)是文档,必须允许加载自身的同源
-		// 脚本/样式,否则 'none' 会连它自己的 JS/CSS 一起拦死 → 整个前端白屏。
-		if webui.IsAPIPath(r.URL.Path) {
-			h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-		} else {
-			h.Set("Content-Security-Policy", spaContentSecurityPolicy)
-		}
-		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-		}
-		next.ServeHTTP(w, r)
-	})
+// HSTS 仅在直连 TLS，或可信代理明确报告外部 HTTPS 时发出；公网直连请求
+// 不能通过伪造 X-Forwarded-Proto 让明文来源收到错误声明。
+func securityHeaders(proxyResolver *clientip.Resolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("X-Permitted-Cross-Domain-Policies", "none")
+			h.Set("Cross-Origin-Opener-Policy", "same-origin")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Permissions-Policy", "camera=(), geolocation=(), payment=(), serial=(), usb=(), microphone=(self)")
+			// CSP 按响应面分流:API 响应是 JSON、绝非文档上下文,default-src 'none' 把页面彻底锁死;
+			// 但内嵌 SPA 的 HTML 外壳(及其 /assets 静态资源)是文档,必须允许加载自身的同源
+			// 脚本/样式,否则 'none' 会连它自己的 JS/CSS 一起拦死 → 整个前端白屏。
+			if webui.IsAPIPath(r.URL.Path) {
+				h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+			} else {
+				h.Set("Content-Security-Policy", spaContentSecurityPolicy)
+			}
+			if requestExternalScheme(r, proxyResolver) == "https" {
+				h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// corsMiddleware 强制执行一套显式的、基于白名单的 CORS 策略。它【只】回显
-// 白名单内的 Origin(绝不回 "*"),因此携带凭据的跨源请求被
-// 限定到经过审核的前端——「通配符 + 携带凭据」这一反模式在
-// 结构上不可能出现。被拒绝/缺失的 Origin 拿不到任何 CORS 响应头
-// (浏览器拦截)。预检(OPTIONS)在此处以 204 应答,先于 auth。
-func corsMiddleware(allowed map[string]struct{}) func(http.Handler) http.Handler {
+var corsAllowedMethods = map[string]struct{}{
+	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {},
+	http.MethodPut: {}, http.MethodPatch: {}, http.MethodDelete: {}, http.MethodOptions: {},
+}
+
+var corsAllowedRequestHeaders = map[string]struct{}{
+	"accept": {}, "anthropic-beta": {}, "anthropic-dangerous-direct-browser-access": {},
+	"anthropic-version": {}, "authorization": {},
+	"content-type": {}, "idempotency-key": {}, "last-event-id": {}, "openai-beta": {},
+	"openai-organization": {}, "openai-project": {}, "prefer": {}, "x-api-key": {},
+	"x-chat-session-id": {}, "x-client-name": {}, "x-client-request-id": {},
+	"x-client-version": {}, "x-correlation-id": {}, "x-huakai-csrf": {},
+	"x-huakai-session-mode": {}, "x-huakai-setup-token": {}, "x-request-id": {},
+	"x-stainless-arch": {}, "x-stainless-custom-poll-interval": {},
+	"x-stainless-helper": {}, "x-stainless-helper-method": {}, "x-stainless-lang": {},
+	"x-stainless-os": {}, "x-stainless-package-version": {}, "x-stainless-poll-helper": {},
+	"x-stainless-retry-count": {}, "x-stainless-runtime": {},
+	"x-stainless-runtime-version": {}, "x-stainless-timeout": {},
+}
+
+const corsAllowHeaders = "Accept, Anthropic-Beta, Anthropic-Dangerous-Direct-Browser-Access, Anthropic-Version, Authorization, Content-Type, Idempotency-Key, Last-Event-ID, OpenAI-Beta, OpenAI-Organization, OpenAI-Project, Prefer, X-API-Key, X-Chat-Session-ID, X-Client-Name, X-Client-Request-ID, X-Client-Version, X-Correlation-ID, X-HUAKAI-CSRF, X-HUAKAI-Session-Mode, X-HUAKAI-Setup-Token, X-Request-ID, X-Stainless-Arch, X-Stainless-Custom-Poll-Interval, X-Stainless-Helper, X-Stainless-Helper-Method, X-Stainless-Lang, X-Stainless-OS, X-Stainless-Package-Version, X-Stainless-Poll-Helper, X-Stainless-Retry-Count, X-Stainless-Runtime, X-Stainless-Runtime-Version, X-Stainless-Timeout"
+
+const corsExposeHeaders = "Retry-After, X-Request-ID, X-HUAKAI-Request-ID, X-HUAKAI-Model-Requested, X-HUAKAI-Model-Delivered, X-HUAKAI-Model-Fallback, X-HUAKAI-Fallback-Attempts, X-HUAKAI-Trust-Status, X-HUAKAI-Upstream-Provider, X-HUAKAI-Upstream-Model, X-HUAKAI-Trust-Signature, X-HUAKAI-Trust-Pubkey-Fingerprint, X-HUAKAI-Trust-Schema, X-HUAKAI-Idempotency-Hit, X-HUAKAI-Cache-L2, X-HUAKAI-Ledger-ID, X-HUAKAI-Ledger-DLQ-Ref, X-HUAKAI-Verify, X-HUAKAI-Sig-Fingerprint, X-HUAKAI-Stream-State, X-HUAKAI-Delivered-Tokens, X-HUAKAI-Key-Display, X-Snapshot-Cache, X-Truncated"
+
+// corsMiddleware 强制执行显式来源、方法和请求头白名单。没有 Origin 的 CLI、SDK
+// 与服务器调用保持原样；浏览器同源请求自动允许，真正跨源请求必须命中配置白名单。
+// 不可信来源不只“不给浏览器读响应”，而是在业务 handler 前直接拒绝，避免带 Cookie
+// 的副作用请求已经执行。预检也不再回显调用方自报的任意请求头。
+func corsMiddleware(
+	allowed map[string]struct{},
+	proxyResolver *clientip.Resolver,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// 在此中间件经手的【每个】响应上加 Vary: Origin——共享
 			// 缓存绝不能把一个无源/被拒绝的响应(不含 CORS
 			// 响应头)复用给后续白名单内浏览器请求。
-			w.Header().Add("Vary", "Origin")
-			origin := r.Header.Get("Origin")
-			if origin != "" {
-				if _, ok := allowed[origin]; ok {
-					h := w.Header()
-					h.Set("Access-Control-Allow-Origin", origin)
-					h.Set("Access-Control-Allow-Credentials", "true")
-					if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-						h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-						reqHeaders := r.Header.Get("Access-Control-Request-Headers")
-						if reqHeaders == "" {
-							reqHeaders = "Authorization, Content-Type"
-						}
-						h.Set("Access-Control-Allow-Headers", reqHeaders)
-						h.Set("Access-Control-Max-Age", "600")
-						w.WriteHeader(http.StatusNoContent)
-						return
-					}
-				} else if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
-					// 被拒绝来源的预检:不带任何 CORS 响应头直接拒绝。
-					w.WriteHeader(http.StatusForbidden)
+			h := w.Header()
+			h.Add("Vary", "Origin")
+			origins := r.Header.Values("Origin")
+			if len(origins) == 0 {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if len(origins) != 1 || strings.Contains(origins[0], ",") {
+				writeCORSForbidden(w)
+				return
+			}
+			origin, valid := normalizeBrowserOrigin(origins[0])
+			if !valid {
+				writeCORSForbidden(w)
+				return
+			}
+			_, explicitlyAllowed := allowed[origin]
+			sameOrigin := requestHostMatchesOrigin(r, origin, proxyResolver)
+			if !explicitlyAllowed && !sameOrigin {
+				writeCORSForbidden(w)
+				return
+			}
+			if _, ok := corsAllowedMethods[r.Method]; !ok {
+				writeCORSForbidden(w)
+				return
+			}
+
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Credentials", "true")
+			h.Set("Access-Control-Expose-Headers", corsExposeHeaders)
+			// 正式浏览器会话依赖 SameSite=Strict 的主机 Cookie，只允许同源页面。
+			// 外置页面应把 /v1 反向代理到自身同源；CORS 白名单不负责放宽会话 Cookie。
+			if r.Method != http.MethodOptions && browsersession.IsBrowser(r) && !sameOrigin {
+				writeBrowserSessionOriginForbidden(w)
+				return
+			}
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				h.Add("Vary", "Access-Control-Request-Method")
+				h.Add("Vary", "Access-Control-Request-Headers")
+				requestedMethod := strings.ToUpper(strings.TrimSpace(r.Header.Get("Access-Control-Request-Method")))
+				if _, ok := corsAllowedMethods[requestedMethod]; !ok {
+					clearCORSGrantHeaders(h)
+					writeCORSForbidden(w)
 					return
 				}
+				if !corsRequestHeadersAllowed(r.Header.Values("Access-Control-Request-Headers")) {
+					clearCORSGrantHeaders(h)
+					writeCORSForbidden(w)
+					return
+				}
+				h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
+				h.Set("Access-Control-Allow-Headers", corsAllowHeaders)
+				h.Set("Access-Control-Max-Age", "600")
+				w.WriteHeader(http.StatusNoContent)
+				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func corsRequestHeadersAllowed(values []string) bool {
+	total := 0
+	for _, value := range values {
+		total += len(value)
+		if total > 4096 {
+			return false
+		}
+		for _, name := range strings.Split(value, ",") {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name == "" {
+				continue
+			}
+			if _, ok := corsAllowedRequestHeaders[name]; !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func clearCORSGrantHeaders(h http.Header) {
+	h.Del("Access-Control-Allow-Origin")
+	h.Del("Access-Control-Allow-Credentials")
+	h.Del("Access-Control-Expose-Headers")
+}
+
+func writeCORSForbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(`{"error":{"code":"cors_forbidden","message":"browser origin, method, or headers are not allowed"}}`))
+}
+
+func writeBrowserSessionOriginForbidden(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(`{"error":{"code":"browser_session_cross_origin_forbidden","message":"browser session mode requires a same-origin API"}}`))
 }
 
 // streamDurationEnv 读取 time.ParseDuration 格式(如 "120s"、"10m")的流超时配置;空或非法回退默认。

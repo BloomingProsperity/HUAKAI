@@ -126,6 +126,36 @@ func TestAT_OBS_005_005_DLQAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestAT_OBS_005_HandlerPanicAdvancesRetryState(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 24, 13, 0, 0, 0, time.UTC)
+	box := NewMemoryOutbox(WithMemoryClock(func() time.Time { return now }))
+	mustEnqueue(t, box, "panic-event", PriorityCritical)
+	worker := NewWorker(
+		box,
+		WorkerConfig{RetryPolicy: RetryPolicy{MaxAttempts: 2}},
+		WithWorkerClock(func() time.Time { return now }),
+	)
+	worker.Register("panic-event", func(context.Context, OutboxEvent) error {
+		panic("token=sk-testsecret")
+	})
+
+	processed, err := worker.RunOnce(ctx, PriorityCritical, "panic-worker")
+	if err != nil || !processed {
+		t.Fatalf("panic 应按一次已处理失败进入重试，processed=%v err=%v", processed, err)
+	}
+	ev := box.Snapshot()[0]
+	if ev.Status != StatusFailedRetry || ev.AttemptCount != 1 {
+		t.Fatalf("panic 后 status=%s attempts=%d，期望 failed_retry/1", ev.Status, ev.AttemptCount)
+	}
+	if ev.FailureReason != "obsdlq: handler panicked: "+redacted || ContainsForbiddenRawData([]byte(ev.FailureReason)) {
+		t.Fatalf("panic 原文必须脱敏，failure_reason=%q", ev.FailureReason)
+	}
+	if !ev.NextRetryAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("panic 后 next_retry_at=%s，期望 %s", ev.NextRetryAt, now.Add(time.Second))
+	}
+}
+
 func TestAT_OBS_005_006_AdvisoryLockCrossWorkerEquivalent(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 17, 12, 30, 0, 0, time.UTC)
@@ -194,6 +224,43 @@ func TestAT_OBS_005_012_AlertSinkPriorityDefault(t *testing.T) {
 	}
 	if ContainsForbiddenRawData(ev.Payload) {
 		t.Fatalf("alert payload redaction over/under applied: %s", ev.Payload)
+	}
+}
+
+func TestMemoryEnqueueSameIDIsIdempotentAndCannotRewriteCompletedEvent(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	box := NewMemoryOutbox(WithMemoryClock(func() time.Time { return now }))
+	input := OutboxEvent{
+		ID: "stable-event", TenantID: 7, EventType: EventTypeSignupReward,
+		Priority: PriorityHigh, Payload: json.RawMessage(`{"amount_cents":100}`),
+	}
+	first, err := box.Enqueue(ctx, input)
+	if err != nil {
+		t.Fatalf("first enqueue: %v", err)
+	}
+	claimed, ok, err := box.Dequeue(ctx, DequeueOptions{Priority: PriorityHigh, Now: now, WorkerID: "worker"})
+	if err != nil || !ok {
+		t.Fatalf("dequeue ok=%v err=%v", ok, err)
+	}
+	if err := box.MarkCompleted(ctx, claimed.ID, "worker"); err != nil {
+		t.Fatalf("MarkCompleted: %v", err)
+	}
+	replayed, err := box.Enqueue(ctx, input)
+	if err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	if replayed.ID != first.ID || replayed.Status != StatusCompleted {
+		t.Fatalf("replayed=%+v，期望保留原 completed 状态", replayed)
+	}
+	if _, ok, err := box.Dequeue(ctx, DequeueOptions{Priority: PriorityHigh, Now: now}); err != nil || ok {
+		t.Fatalf("幂等重入后不应重新可领取 ok=%v err=%v", ok, err)
+	}
+
+	conflict := input
+	conflict.Payload = json.RawMessage(`{"amount_cents":999}`)
+	if _, err := box.Enqueue(ctx, conflict); !errors.Is(err, ErrEventConflict) {
+		t.Fatalf("same ID different payload err=%v want ErrEventConflict", err)
 	}
 }
 

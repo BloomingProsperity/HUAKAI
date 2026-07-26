@@ -234,6 +234,22 @@ WHERE blc.status = 'reserving'
         AND d.event_kind = 'post_delivery_settlement'
         AND d.status <> 'delivered'
   )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM settlement_intents si
+      WHERE si.tenant_id = blc.tenant_id
+        AND si.claim_id = blc.id
+        -- pending 只证明预留后已建立意图，不代表响应已交付。只有存在交付或
+        -- 结算不确定证据时，才阻止 lease sweeper 做零成本 Abort。
+        AND si.status IN ('delivering', 'settling', 'failed')
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM media_tasks mt
+      WHERE mt.tenant_id = blc.tenant_id
+        AND mt.hold_ref = 'claim:' || blc.id::text
+        AND mt.status IN ('submission_unknown', 'submission_releasing', 'settlement_pending')
+  )
 ORDER BY blc.lease_expires_at
 LIMIT $1
 FOR UPDATE SKIP LOCKED

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const OPERATION_CONNECT: &str = "connect";
 pub const OPERATION_READY: &str = "ready";
 
@@ -14,6 +14,7 @@ pub const CAPABILITY_SOCKS5_PROXY: &str = "socks5_proxy";
 pub const CAPABILITY_H2_BRIDGE: &str = "h2_bridge";
 pub const CAPABILITY_FORCE_H1: &str = "force_h1";
 pub const CAPABILITY_TARGET_IP_PINNING: &str = "target_ip_pinning";
+pub const CAPABILITY_PROXY_IP_PINNING: &str = "proxy_ip_pinning";
 
 pub const ERROR_PROTOCOL_UNSUPPORTED: &str = "protocol_unsupported";
 pub const ERROR_OPERATION_UNSUPPORTED: &str = "operation_unsupported";
@@ -52,6 +53,8 @@ pub struct ControlRequest {
     pub force_h1: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxySpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_resolved_ips: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_target_ips: Vec<String>,
 }
@@ -133,6 +136,7 @@ impl ControlAck {
                 CAPABILITY_H2_BRIDGE.to_owned(),
                 CAPABILITY_FORCE_H1.to_owned(),
                 CAPABILITY_TARGET_IP_PINNING.to_owned(),
+                CAPABILITY_PROXY_IP_PINNING.to_owned(),
             ],
             profile_ids,
         }
@@ -246,6 +250,7 @@ mod tests {
             correlation_id: Some("corr-1".to_owned()),
             force_h1: None,
             proxy: None,
+            proxy_resolved_ips: Vec::new(),
             pinned_target_ips: Vec::new(),
         }
     }

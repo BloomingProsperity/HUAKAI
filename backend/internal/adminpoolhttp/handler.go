@@ -41,15 +41,31 @@ type AdminPoolAccountAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-type AdminPoolAccountStore interface {
+type AdminPoolAccountDataStore interface {
 	GetProviderProtocolForAccountCreate(context.Context, admindb.GetProviderProtocolForAccountCreateParams) (string, error)
 	InsertProviderAccount(context.Context, admindb.InsertProviderAccountParams) (int64, error)
 	ListAdminProviderAccounts(context.Context, admindb.ListAdminProviderAccountsParams) ([]admindb.AdminProviderAccountRow, error)
 	GetAdminProviderAccount(context.Context, admindb.GetAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
-	UpdateAdminProviderAccount(context.Context, admindb.UpdateAdminProviderAccountParams) (admindb.AdminProviderAccountRow, error)
-	UpdateProviderAccountEnabled(context.Context, admindb.UpdateProviderAccountEnabledParams) error
-	SoftDeleteProviderAccount(context.Context, admindb.SoftDeleteProviderAccountParams) error
 	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+}
+
+type AdminPoolAccountStore interface {
+	AdminPoolAccountDataStore
+	UpdateAdminProviderAccountWithAudit(
+		context.Context,
+		admindb.UpdateAdminProviderAccountParams,
+		admindb.InsertAdminAuditEventParams,
+	) (admindb.AdminProviderAccountRow, error)
+	UpdateProviderAccountEnabledWithAudit(
+		context.Context,
+		admindb.UpdateProviderAccountEnabledParams,
+		admindb.InsertAdminAuditEventParams,
+	) error
+	SoftDeleteProviderAccountWithAudit(
+		context.Context,
+		admindb.SoftDeleteProviderAccountParams,
+		admindb.InsertAdminAuditEventParams,
+	) error
 }
 
 type AdminPoolAccountRiskStore interface {
@@ -79,14 +95,15 @@ type AdminPoolAccountDeps struct {
 }
 
 func MountAdminPoolAccountRoutes(r chi.Router, d AdminPoolAccountDeps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListProviderAccountsHandler(d))
-	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/", newCreateProviderAccountHandler(d))
+	r.With(safe).Post("/", newCreateProviderAccountHandler(d))
 	r.Get("/{id}", newGetProviderAccountHandler(d))
-	r.Patch("/{id}", newUpdateProviderAccountHandler(d))
-	r.Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
-	r.Post("/{id}/clear-rate-limit", newClearProviderAccountRateLimitHandler(d))
-	r.Post("/{id}/recover", newRecoverProviderAccountStateHandler(d))
-	r.Delete("/{id}", newDeleteProviderAccountHandler(d))
+	r.With(safe).Patch("/{id}", newUpdateProviderAccountHandler(d))
+	r.With(safe).Patch("/{id}/enabled", newUpdateProviderAccountEnabledHandler(d))
+	r.With(safe).Post("/{id}/clear-rate-limit", newClearProviderAccountRateLimitHandler(d))
+	r.With(safe).Post("/{id}/recover", newRecoverProviderAccountStateHandler(d))
+	r.With(safe).Delete("/{id}", newDeleteProviderAccountHandler(d))
 }
 
 type createProviderAccountRequest struct {
@@ -143,57 +160,68 @@ type providerAccountPage struct {
 	HasMore    bool    `json:"has_more"`
 }
 
+type providerAccountTodayStats struct {
+	WindowStart        time.Time `json:"window_start"`
+	ObservedAt         time.Time `json:"observed_at"`
+	RequestCount       int64     `json:"request_count"`
+	SuccessCount       int64     `json:"success_count"`
+	FailureCount       int64     `json:"failure_count"`
+	FailureRatePercent float64   `json:"failure_rate_percent"`
+	TTFTP95MS          *float64  `json:"ttft_p95_ms"`
+}
+
 type providerAccountResponse struct {
-	ID                       int64                     `json:"id"`
-	TenantID                 int64                     `json:"tenant_id"`
-	ProviderID               int64                     `json:"provider_id"`
-	ChannelID                int64                     `json:"channel_id"`
-	Name                     string                    `json:"name"`
-	AccountType              string                    `json:"account_type"`
-	Enabled                  bool                      `json:"enabled"`
-	ExpiresAt                *time.Time                `json:"expires_at"`
-	HealthState              string                    `json:"health_state"`
-	CredentialState          string                    `json:"credential_state"`
-	CapConcurrency           int32                     `json:"cap_concurrency"`
-	InFlightCount            int32                     `json:"in_flight_count"`
-	Priority                 int32                     `json:"priority"`
-	StaticWeight             int32                     `json:"static_weight"`
-	UpstreamCostRatio        *float64                  `json:"upstream_cost_ratio"`
-	ProbeModel               *string                   `json:"probe_model"`
-	Tags                     []string                  `json:"tags"`
-	Subscription             *accountsubscription.View `json:"subscription,omitempty"`
-	SystemLabels             []string                  `json:"system_labels"`
-	Extra                    json.RawMessage           `json:"extra"`
-	LastDispatchAt           *time.Time                `json:"last_dispatch_at"`
-	LastProbeLatencyMS       *int32                    `json:"last_probe_latency_ms"`
-	LastProbeAt              *time.Time                `json:"last_probe_at"`
-	LastRequestObservedAt    *time.Time                `json:"last_request_observed_at"`
-	ObservationSource        string                    `json:"last_request_observation_source"`
-	QuotaWindows             quotawindowview.Matrix    `json:"quota_windows"`
-	QuotaFacts               []accountquota.ViewFact   `json:"quota_facts"`
-	ModelAllowList           []string                  `json:"model_allow_list"`
-	CapabilityFlags          []string                  `json:"capability_flags"`
-	RateLimitedAt            *time.Time                `json:"rate_limited_at"`
-	RateLimitResetAt         *time.Time                `json:"rate_limit_reset_at"`
-	RateLimitReason          *string                   `json:"rate_limit_reason"`
-	OverloadUntil            *time.Time                `json:"overload_until"`
-	TempUnschedulableUntil   *time.Time                `json:"temp_unschedulable_until"`
-	TokenVersion             int32                     `json:"token_version"`
-	LastRefreshAt            *time.Time                `json:"last_refresh_at"`
-	LastRefreshOutcome       *string                   `json:"last_refresh_outcome"`
-	OAuthEndpointHealth      string                    `json:"oauth_endpoint_health,omitempty"`
-	RPMLimit                 int64                     `json:"rpm_limit"`
-	TPMLimit                 int64                     `json:"tpm_limit"`
-	WindowCostLimitCents     int64                     `json:"window_cost_limit_cents"`
-	MaxSessions              int32                     `json:"max_sessions"`
-	DisableCooling           bool                      `json:"disable_cooling"`
-	RefreshLeadSeconds       *int32                    `json:"refresh_lead_seconds"`
-	TLSFingerprintRotate     bool                      `json:"tls_fingerprint_rotate"`
-	CustomErrorCodesEnabled  bool                      `json:"custom_error_codes_enabled"`
-	CustomErrorCodes         []int32                   `json:"custom_error_codes"`
-	PoolMode                 bool                      `json:"pool_mode"`
-	TempUnschedulableEnabled bool                      `json:"temp_unschedulable_enabled"`
-	TempUnschedulableRules   json.RawMessage           `json:"temp_unschedulable_rules,omitempty"`
+	ID                       int64                      `json:"id"`
+	TenantID                 int64                      `json:"tenant_id"`
+	ProviderID               int64                      `json:"provider_id"`
+	ChannelID                int64                      `json:"channel_id"`
+	Name                     string                     `json:"name"`
+	AccountType              string                     `json:"account_type"`
+	Enabled                  bool                       `json:"enabled"`
+	ExpiresAt                *time.Time                 `json:"expires_at"`
+	HealthState              string                     `json:"health_state"`
+	CredentialState          string                     `json:"credential_state"`
+	CapConcurrency           int32                      `json:"cap_concurrency"`
+	InFlightCount            int32                      `json:"in_flight_count"`
+	Priority                 int32                      `json:"priority"`
+	StaticWeight             int32                      `json:"static_weight"`
+	UpstreamCostRatio        *float64                   `json:"upstream_cost_ratio"`
+	ProbeModel               *string                    `json:"probe_model"`
+	Tags                     []string                   `json:"tags"`
+	Subscription             *accountsubscription.View  `json:"subscription,omitempty"`
+	SystemLabels             []string                   `json:"system_labels"`
+	Extra                    json.RawMessage            `json:"extra"`
+	LastDispatchAt           *time.Time                 `json:"last_dispatch_at"`
+	LastProbeLatencyMS       *int32                     `json:"last_probe_latency_ms"`
+	LastProbeAt              *time.Time                 `json:"last_probe_at"`
+	LastRequestObservedAt    *time.Time                 `json:"last_request_observed_at"`
+	ObservationSource        string                     `json:"last_request_observation_source"`
+	TodayStats               *providerAccountTodayStats `json:"today_stats,omitempty"`
+	QuotaWindows             quotawindowview.Matrix     `json:"quota_windows"`
+	QuotaFacts               []accountquota.ViewFact    `json:"quota_facts"`
+	ModelAllowList           []string                   `json:"model_allow_list"`
+	CapabilityFlags          []string                   `json:"capability_flags"`
+	RateLimitedAt            *time.Time                 `json:"rate_limited_at"`
+	RateLimitResetAt         *time.Time                 `json:"rate_limit_reset_at"`
+	RateLimitReason          *string                    `json:"rate_limit_reason"`
+	OverloadUntil            *time.Time                 `json:"overload_until"`
+	TempUnschedulableUntil   *time.Time                 `json:"temp_unschedulable_until"`
+	TokenVersion             int32                      `json:"token_version"`
+	LastRefreshAt            *time.Time                 `json:"last_refresh_at"`
+	LastRefreshOutcome       *string                    `json:"last_refresh_outcome"`
+	OAuthEndpointHealth      string                     `json:"oauth_endpoint_health,omitempty"`
+	RPMLimit                 int64                      `json:"rpm_limit"`
+	TPMLimit                 int64                      `json:"tpm_limit"`
+	WindowCostLimitCents     int64                      `json:"window_cost_limit_cents"`
+	MaxSessions              int32                      `json:"max_sessions"`
+	DisableCooling           bool                       `json:"disable_cooling"`
+	RefreshLeadSeconds       *int32                     `json:"refresh_lead_seconds"`
+	TLSFingerprintRotate     bool                       `json:"tls_fingerprint_rotate"`
+	CustomErrorCodesEnabled  bool                       `json:"custom_error_codes_enabled"`
+	CustomErrorCodes         []int32                    `json:"custom_error_codes"`
+	PoolMode                 bool                       `json:"pool_mode"`
+	TempUnschedulableEnabled bool                       `json:"temp_unschedulable_enabled"`
+	TempUnschedulableRules   json.RawMessage            `json:"temp_unschedulable_rules,omitempty"`
 	// ProxyBinding 由两个代理列派生，与 accountadvanced 写入契约同形。
 	ProxyBinding      accountadvanced.ProxyBinding              `json:"proxy_binding"`
 	CreatedAt         *time.Time                                `json:"created_at"`
@@ -410,6 +438,8 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, parseErr.Code, parseErr.Message)
 			return
 		}
+		observedAt := time.Now().UTC()
+		statsSince := time.Date(observedAt.Year(), observedAt.Month(), observedAt.Day(), 0, 0, 0, 0, time.UTC)
 		rows, err := d.Store.ListAdminProviderAccounts(r.Context(), admindb.ListAdminProviderAccountsParams{
 			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
 			PoolGroupID: poolGroupID, StateFilter: stateFilter, TagFilter: tagFilter,
@@ -418,6 +448,8 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			SubscriptionScopeFilter:  subscriptionFilters.Scope,
 			SubscriptionStatusFilter: subscriptionFilters.Status,
 			SubscriptionSourceFilter: subscriptionFilters.Source,
+			StatsSince:               statsSince,
+			StatsUntil:               observedAt,
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_list_failed", err.Error())
@@ -428,7 +460,6 @@ func newListProviderAccountsHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 			rows = rows[:limit]
 		}
 		items := make([]providerAccountResponse, 0, len(rows))
-		observedAt := time.Now().UTC()
 		for _, row := range rows {
 			item, err := providerAccountDTOAt(row, observedAt)
 			if err != nil {
@@ -526,20 +557,12 @@ func newUpdateProviderAccountHandler(d AdminPoolAccountDeps) http.HandlerFunc {
 		}
 		// 高级字段与创建路径共用 accountadvanced 写入契约。
 		accountadvanced.ApplyUpdate(advanced, &arg)
-		_, err := d.Store.UpdateAdminProviderAccount(r.Context(), arg)
+		payload, _ := json.Marshal(map[string]any{"tenant_id": tenantID, "updated": true})
+		audit := providerAccountAuditParams(r, ident, tenantID,
+			"update_provider_account", id, chineseReason(req.Reason, "更新 provider account"), payload)
+		account, err := d.Store.UpdateAdminProviderAccountWithAudit(r.Context(), arg, audit)
 		if err != nil {
 			writeProviderAccountReadError(w, err, "provider_account_update_failed")
-			return
-		}
-		payload, _ := json.Marshal(map[string]any{"tenant_id": tenantID, "updated": true})
-		if err := writeProviderAccountAudit(r.Context(), r, d.Store, ident, tenantID,
-			"update_provider_account", id, chineseReason(req.Reason, "更新 provider account"), payload); err != nil {
-			writeJSONError(w, http.StatusServiceUnavailable, "audit_write_failed", err.Error())
-			return
-		}
-		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
-		if err != nil {
-			writeProviderAccountReadError(w, err, "provider_account_get_failed")
 			return
 		}
 		response, err := providerAccountDTO(account)

@@ -35,6 +35,7 @@ var (
 	ErrRefreshReplay       = errors.New("usersession: refresh token replay")
 	ErrSessionUserMismatch = errors.New("usersession: session user mismatch")
 	ErrAnomalyRejected     = errors.New("usersession: session anomaly rejected")
+	ErrAuthenticationStale = errors.New("usersession: authenticated security state is stale")
 	// ErrUserIneligible: 会话主体账号已封禁/删除, 会话使用期复核拒绝 (UserGate)。
 	ErrUserIneligible             = errors.New("usersession: user ineligible for session")
 	ErrDeviceLimitExceeded        = errors.New("usersession: device limit exceeded")
@@ -93,6 +94,7 @@ type SessionFamily struct {
 	TenantID      int64          `json:"tenant_id"`
 	Status        FamilyStatus   `json:"status"`
 	Generation    int            `json:"generation"`
+	AuthVersion   int            `json:"-"`
 	CreatedAt     time.Time      `json:"created_at"`
 	LastActiveAt  time.Time      `json:"last_active_at"`
 	DeviceInfo    map[string]any `json:"device_info"`
@@ -126,15 +128,16 @@ type SessionToken struct {
 }
 
 type CreateInput struct {
-	TenantID   int64          `json:"tenant_id"`
-	UserID     int64          `json:"user_id"`
-	DeviceInfo map[string]any `json:"device_info,omitempty"`
-	IP         string         `json:"ip,omitempty"`
-	UserAgent  string         `json:"user_agent,omitempty"`
-	RefreshTTL time.Duration  `json:"-"`
-	SessionTTL time.Duration  `json:"-"`
-	AuthMethod string         `json:"auth_method,omitempty"`
-	Remember   bool           `json:"remember,omitempty"`
+	TenantID    int64          `json:"tenant_id"`
+	UserID      int64          `json:"user_id"`
+	AuthVersion int            `json:"-"`
+	DeviceInfo  map[string]any `json:"device_info,omitempty"`
+	IP          string         `json:"ip,omitempty"`
+	UserAgent   string         `json:"user_agent,omitempty"`
+	RefreshTTL  time.Duration  `json:"-"`
+	SessionTTL  time.Duration  `json:"-"`
+	AuthMethod  string         `json:"auth_method,omitempty"`
+	Remember    bool           `json:"remember,omitempty"`
 }
 
 type RefreshInput struct {
@@ -182,8 +185,9 @@ type SessionBundle struct {
 }
 
 type SessionCreatePolicy struct {
-	MaxActiveFamilies int
-	Mode              string
+	MaxActiveFamilies   int
+	Mode                string
+	ExpectedAuthVersion int
 }
 
 type RefreshRecord struct {
@@ -197,10 +201,11 @@ type SessionRecord struct {
 }
 
 type ValidatedSession struct {
-	TenantID   int64
-	UserID     int64
-	FamilyID   string
-	TokenID    string
-	Generation int
-	ExpiresAt  time.Time
+	TenantID    int64
+	UserID      int64
+	FamilyID    string
+	TokenID     string
+	Generation  int
+	AuthVersion int
+	ExpiresAt   time.Time
 }

@@ -245,7 +245,16 @@ FROM latency_percentiles;
 -- name: AggregateUsagePerformanceByModelBucketed :many
 -- Platform-admin performance panel by UTC requested_at bucket and
 -- requested_model. The caller must validate bucket is one of hour/day before
--- calling this query.
+-- calling this query. row_limit selects the top model series across the whole
+-- window; every time bucket for those series is returned.
+WITH top_models AS (
+    SELECT ur.requested_model
+    FROM usage_records ur
+    WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+    GROUP BY ur.requested_model
+    ORDER BY count(*) DESC, ur.requested_model ASC
+    LIMIT sqlc.arg(row_limit)::int
+)
 SELECT
     (date_trunc(sqlc.arg(bucket)::text, ur.requested_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS bucket,
     ur.requested_model                                               AS key,
@@ -262,10 +271,10 @@ SELECT
     count(*)::bigint                                                 AS request_count,
     count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
 FROM usage_records ur
+JOIN top_models tm ON tm.requested_model = ur.requested_model
 WHERE ur.settled_at >= sqlc.arg(settled_since)::timestamptz
 GROUP BY 1, ur.requested_model
-ORDER BY bucket ASC, count(*) DESC, key ASC
-LIMIT sqlc.arg(row_limit)::int;
+ORDER BY bucket ASC, count(*) DESC, key ASC;
 
 -- name: AggregateUsageOverviewTotals :one
 -- Platform-admin overview totals across the recent settled usage window.
@@ -274,6 +283,16 @@ SELECT
     count(*)::bigint                                             AS request_count,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
     COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS total_tokens_output,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint           AS total_cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint               AS total_cache_read_tokens,
+    COALESCE(sum(ur.image_output_tokens), 0)::bigint             AS total_image_output_tokens,
+    COALESCE(sum(ur.input_cost), 0)::numeric(20,8)::text         AS total_input_cost,
+    COALESCE(sum(ur.output_cost), 0)::numeric(20,8)::text        AS total_output_cost,
+    COALESCE(sum(ur.cache_creation_cost), 0)::numeric(20,8)::text AS total_cache_creation_cost,
+    COALESCE(sum(ur.cache_read_cost), 0)::numeric(20,8)::text    AS total_cache_read_cost,
+    COALESCE(sum(ur.image_output_cost), 0)::numeric(20,8)::text  AS total_image_output_cost,
     count(DISTINCT ur.user_id)::bigint                           AS active_users,
     count(DISTINCT ur.api_key_id)::bigint                        AS active_api_keys,
     count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count

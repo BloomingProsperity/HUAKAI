@@ -77,7 +77,7 @@ func TestSettleCompletionWithRecovery_EnqueueUsesFreshContext(t *testing.T) {
 	expired, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(expired, deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, _, err := settleCompletionWithRecovery(expired, deps, event, settlementrecovery.SourceStream)
 	if err == nil {
 		t.Fatal("settle err must propagate")
 	}
@@ -121,7 +121,7 @@ func TestSettleCompletionWithRecovery_SuccessDoesNotEnqueue(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, _, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err != nil {
 		t.Fatalf("settle success path returned err=%v", err)
 	}
@@ -144,7 +144,7 @@ func TestSettleCompletionWithRecovery_DirectSettleEnqueues(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceDirectSettle)
+	_, recoveryEnqueued, _, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceDirectSettle)
 	if err == nil {
 		t.Fatal("settle err must propagate")
 	}
@@ -167,7 +167,7 @@ func TestAT_GW_002_16_PostDeliverySettleFailureEnqueuesRecovery(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, _, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err == nil {
 		t.Fatal("settleCompletionWithRecovery must propagate settle err (caller may want to log)")
 	}
@@ -221,7 +221,7 @@ func TestSettleCompletionWithRecovery_NoSourceMeansNoEnqueue(t *testing.T) {
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.Source(""))
+	_, recoveryEnqueued, _, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.Source(""))
 	if err == nil {
 		t.Fatal("must still propagate settle err")
 	}
@@ -244,12 +244,15 @@ func TestSettleCompletionWithRecovery_NilDLQDoesNotPanic(t *testing.T) {
 	event := newPostDeliveryFixtureEvent()
 
 	// 不应 panic,settle err 原样返回
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, evidence, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if err == nil {
 		t.Fatal("must propagate settle err even when DLQ is nil")
 	}
 	if recoveryEnqueued {
 		t.Fatal("恢复队列未配置时不得报告恢复入队")
+	}
+	if len(evidence.Payload) == 0 || evidence.FailureClass == "" {
+		t.Fatalf("队列未配置时仍须返回意图表可持久化证据: %+v", evidence)
 	}
 }
 
@@ -274,7 +277,7 @@ func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T
 	}
 	event := newPostDeliveryFixtureEvent()
 
-	_, recoveryEnqueued, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
+	_, recoveryEnqueued, evidence, err := settleCompletionWithRecovery(context.Background(), deps, event, settlementrecovery.SourceStream)
 	if !errors.Is(err, settleErr) {
 		t.Fatalf("err=%v should be settle err (not enqueue err) — caller logs settle, ops alert reads slog", err)
 	}
@@ -283,6 +286,13 @@ func TestSettleCompletionWithRecovery_EnqueueErrLoggedNotPropagated(t *testing.T
 	}
 	if recoveryEnqueued {
 		t.Fatal("恢复队列写失败时不得报告成功入队")
+	}
+	if len(evidence.Payload) == 0 || evidence.FailureClass != "internal_error" {
+		t.Fatalf("双失败未返回稳定恢复证据: %+v", evidence)
+	}
+	decodedEvidence, decodeErr := settlementrecovery.Decode(evidence.Payload)
+	if decodeErr != nil || decodedEvidence.Settle.ClaimID != event.ClaimID {
+		t.Fatalf("恢复证据不可重放 decoded=%+v err=%v", decodedEvidence, decodeErr)
 	}
 	if spy.lastEvt.FailureReason != "internal_error" {
 		t.Fatalf("DLQ FailureReason=%q want error class internal_error", spy.lastEvt.FailureReason)

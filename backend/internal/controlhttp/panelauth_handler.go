@@ -49,8 +49,6 @@ type AuthMeDeps struct {
 	Sessions    AuthSessionRevoker
 	// SelfAccount 改密 + 软删(由 *userauth.Service 实现);nil = 自助账户端点未配置。
 	SelfAccount SelfAccountService
-	// SessionsOthers 撤其它 session(改密保留当前会话用),由 *usersession.Service 实现。
-	SessionsOthers AuthSessionRevokerOthers
 }
 
 // meResponse 是 /auth/me 的响应 DTO — 仅暴露面板归属与自身 id, 不含任何敏感字段。
@@ -214,6 +212,8 @@ func writeAuthSocialLinkError(w http.ResponseWriter, err error) {
 		controlWriteJSONError(w, http.StatusConflict, "social_identity_already_bound", "this social account is already bound to another user")
 	case errors.Is(err, userauth.ErrSocialLoginRejected):
 		controlWriteJSONError(w, http.StatusUnauthorized, "social_identity_verification_failed", "social identity verification failed")
+	case errors.Is(err, userauth.ErrAuthenticationStale):
+		controlWriteJSONError(w, http.StatusUnauthorized, "authentication_stale", "account security changed; authenticate again")
 	case errors.Is(err, userauth.ErrUserNotFound):
 		controlWriteJSONError(w, http.StatusNotFound, "user_not_found", "user was not found")
 	default:

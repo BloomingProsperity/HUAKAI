@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
 
@@ -23,7 +24,8 @@ type tenantDefaultProxyService interface {
 // /admin/v1/tenants 下，path 中的租户 ID 是唯一目标租户来源。
 func MountTenantRoutes(r chi.Router, d Deps) {
 	r.Get("/{id}/default-proxy", newTenantDefaultProxyGetHandler(d))
-	r.Put("/{id}/default-proxy", newTenantDefaultProxyPutHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Put("/{id}/default-proxy", newTenantDefaultProxyPutHandler(d))
 }
 
 type tenantDefaultProxyRequest struct {

@@ -615,6 +615,16 @@ SELECT
     count(*)::bigint                                             AS request_count,
     COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost,
     COALESCE(sum(ur.tokens_input::bigint + ur.tokens_output::bigint), 0)::bigint AS total_tokens,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS total_tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS total_tokens_output,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint           AS total_cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint               AS total_cache_read_tokens,
+    COALESCE(sum(ur.image_output_tokens), 0)::bigint             AS total_image_output_tokens,
+    COALESCE(sum(ur.input_cost), 0)::numeric(20,8)::text         AS total_input_cost,
+    COALESCE(sum(ur.output_cost), 0)::numeric(20,8)::text        AS total_output_cost,
+    COALESCE(sum(ur.cache_creation_cost), 0)::numeric(20,8)::text AS total_cache_creation_cost,
+    COALESCE(sum(ur.cache_read_cost), 0)::numeric(20,8)::text    AS total_cache_read_cost,
+    COALESCE(sum(ur.image_output_cost), 0)::numeric(20,8)::text  AS total_image_output_cost,
     count(DISTINCT ur.user_id)::bigint                           AS active_users,
     count(DISTINCT ur.api_key_id)::bigint                        AS active_api_keys,
     count(*) FILTER (WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming'))::bigint AS success_count
@@ -623,12 +633,22 @@ WHERE ur.settled_at >= $1::timestamptz
 `
 
 type AggregateUsageOverviewTotalsRow struct {
-	RequestCount  int64  `db:"request_count" json:"request_count"`
-	TotalCost     string `db:"total_cost" json:"total_cost"`
-	TotalTokens   int64  `db:"total_tokens" json:"total_tokens"`
-	ActiveUsers   int64  `db:"active_users" json:"active_users"`
-	ActiveApiKeys int64  `db:"active_api_keys" json:"active_api_keys"`
-	SuccessCount  int64  `db:"success_count" json:"success_count"`
+	RequestCount             int64  `db:"request_count" json:"request_count"`
+	TotalCost                string `db:"total_cost" json:"total_cost"`
+	TotalTokens              int64  `db:"total_tokens" json:"total_tokens"`
+	TotalTokensInput         int64  `db:"total_tokens_input" json:"total_tokens_input"`
+	TotalTokensOutput        int64  `db:"total_tokens_output" json:"total_tokens_output"`
+	TotalCacheCreationTokens int64  `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
+	TotalCacheReadTokens     int64  `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalImageOutputTokens   int64  `db:"total_image_output_tokens" json:"total_image_output_tokens"`
+	TotalInputCost           string `db:"total_input_cost" json:"total_input_cost"`
+	TotalOutputCost          string `db:"total_output_cost" json:"total_output_cost"`
+	TotalCacheCreationCost   string `db:"total_cache_creation_cost" json:"total_cache_creation_cost"`
+	TotalCacheReadCost       string `db:"total_cache_read_cost" json:"total_cache_read_cost"`
+	TotalImageOutputCost     string `db:"total_image_output_cost" json:"total_image_output_cost"`
+	ActiveUsers              int64  `db:"active_users" json:"active_users"`
+	ActiveApiKeys            int64  `db:"active_api_keys" json:"active_api_keys"`
+	SuccessCount             int64  `db:"success_count" json:"success_count"`
 }
 
 // Platform-admin overview totals across the recent settled usage window.
@@ -640,6 +660,16 @@ func (q *Queries) AggregateUsageOverviewTotals(ctx context.Context, settledSince
 		&i.RequestCount,
 		&i.TotalCost,
 		&i.TotalTokens,
+		&i.TotalTokensInput,
+		&i.TotalTokensOutput,
+		&i.TotalCacheCreationTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalImageOutputTokens,
+		&i.TotalInputCost,
+		&i.TotalOutputCost,
+		&i.TotalCacheCreationCost,
+		&i.TotalCacheReadCost,
+		&i.TotalImageOutputCost,
 		&i.ActiveUsers,
 		&i.ActiveApiKeys,
 		&i.SuccessCount,
@@ -749,6 +779,14 @@ func (q *Queries) AggregateUsagePerformanceByModel(ctx context.Context, arg Aggr
 }
 
 const aggregateUsagePerformanceByModelBucketed = `-- name: AggregateUsagePerformanceByModelBucketed :many
+WITH top_models AS (
+    SELECT ur.requested_model
+    FROM usage_records ur
+    WHERE ur.settled_at >= $2::timestamptz
+    GROUP BY ur.requested_model
+    ORDER BY count(*) DESC, ur.requested_model ASC
+    LIMIT $3::int
+)
 SELECT
     (date_trunc($1::text, ur.requested_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS bucket,
     ur.requested_model                                               AS key,
@@ -765,10 +803,10 @@ SELECT
     count(*)::bigint                                                 AS request_count,
     count(*) FILTER (WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming'))::bigint AS error_count
 FROM usage_records ur
+JOIN top_models tm ON tm.requested_model = ur.requested_model
 WHERE ur.settled_at >= $2::timestamptz
 GROUP BY 1, ur.requested_model
 ORDER BY bucket ASC, count(*) DESC, key ASC
-LIMIT $3::int
 `
 
 type AggregateUsagePerformanceByModelBucketedParams struct {
@@ -788,7 +826,8 @@ type AggregateUsagePerformanceByModelBucketedRow struct {
 
 // Platform-admin performance panel by UTC requested_at bucket and
 // requested_model. The caller must validate bucket is one of hour/day before
-// calling this query.
+// calling this query. row_limit selects the top model series across the whole
+// window; every time bucket for those series is returned.
 func (q *Queries) AggregateUsagePerformanceByModelBucketed(ctx context.Context, arg AggregateUsagePerformanceByModelBucketedParams) ([]AggregateUsagePerformanceByModelBucketedRow, error) {
 	rows, err := q.db.Query(ctx, aggregateUsagePerformanceByModelBucketed, arg.Bucket, arg.SettledSince, arg.RowLimit)
 	if err != nil {

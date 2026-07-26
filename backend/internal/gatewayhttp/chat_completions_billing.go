@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -115,7 +115,8 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		return markAttemptOutcomeDelivered(outcome)
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
-	actualCost, err := ex.actualCompletionCost(usageFromBufferedEnvelope(bufferedEnv))
+	usage := usageFromBufferedEnvelope(bufferedEnv)
+	actualCost, err := ex.actualCompletionCost(usage)
 	if err != nil {
 		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pricing_unavailable", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -148,6 +149,14 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusInternalServerError, settleErrorCode(rejectErr), rejectErr)
 		return markAttemptOutcomeDelivered(outcome)
 	}
+	if err := ex.settlementIntent.MarkDelivering(ex.ctx, time.Now().UTC()); err != nil {
+		abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "delivery_evidence_unavailable", int64(usage.InputTokens), ex.protocolLoss)
+		if abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeSettleError, err)
+		return markAttemptOutcomeDelivered(outcome)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if ex.d.ResponseCache != nil && ex.cacheKey != "" {
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
@@ -168,14 +177,18 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
 		logInternalError(ex.ctx, ex.requestID, "client_response_flush_uncertain", flushErr)
 	}
-	afterDelivery, waitForDeliveryIntent := ex.settlementIntent.AfterDeliveryAsync(ex.ctx)
-	afterDelivery(time.Now().UTC())
 	// 响应已交付后立即保存幂等重放证据，不依赖本次 Tx2 是否立即成功。
 	ex.recordIdempotencyReplay(ex.reserveRes.ClaimID, http.StatusOK, clientBody)
 	settleCtx, settleCancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 30*time.Second)
 	defer settleCancel()
-	_, recoveryEnqueued, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle)
-	ex.settlementIntent.WaitAndMarkSettlementResult(settleCtx, settleReq.ActualCost, settleErr, recoveryEnqueued, waitForDeliveryIntent)
+	_, recoveryEnqueued, evidence, settleErr := settleCompletionWithRecovery(settleCtx, ex.d, settleEvent, settlementrecovery.SourceDirectSettle)
+	ex.settlementIntent.MarkSettlementResult(
+		settleCtx,
+		settleReq.ActualCost,
+		settleErr,
+		recoveryEnqueued,
+		toSettlementIntentEvidence(evidence),
+	)
 	if settleErr != nil {
 		logInternalError(settleCtx, ex.requestID, settleErrorCode(settleErr), settleErr)
 	} else {
@@ -292,30 +305,6 @@ func mergeProtocolLossWithEntries(base json.RawMessage, entries []proto.Protocol
 	}
 	merged := append(baseEntries, entries...)
 	return protocolLossJSONFromEntries(merged)
-}
-
-func settleCompletionWithRecovery(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent, source settlementrecovery.Source) (*billing.SettleResult, bool, error) {
-	var res *billing.SettleResult
-	var err error
-	if source != "" {
-		if validationErr := validateMoneyPathAuditRefForSource(ctx, d, event, string(source)); validationErr != nil {
-			logMoneyPathAuditRefError(ctx, event, validationErr, string(source), false)
-			err = fmt.Errorf("post-delivery settlement deferred: %w", validationErr)
-		} else {
-			res, err = settleCompletion(ctx, d, event)
-		}
-	} else {
-		res, err = settleCompletion(ctx, d, event)
-	}
-	if err == nil {
-		return res, false, nil
-	}
-	if source == "" || d.SettleRecoveryDLQ == nil {
-		return res, false, err
-	}
-	payload := settlementrecovery.FromCompletionEvent(source, event)
-	enqueueErr := settlementrecovery.EnqueueFailure(ctx, d.SettleRecoveryDLQ, payload, err, "gatewayhttp.settle_recovery")
-	return res, enqueueErr == nil, err
 }
 
 func settleCompletion(ctx context.Context, d ChatHandlerDeps, event eventbus.RequestCompletionEvent) (*billing.SettleResult, error) {
@@ -553,7 +542,10 @@ func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.H
 		if production {
 			mode = "production"
 		}
-		log.Printf("[trust-chain] WARN: signer unavailable in %s mode, fail-open with unverified status (request_id=%s)", mode, env.RequestMeta.RequestID)
+		slog.WarnContext(ctx, "信任链签名器不可用，响应将标记为未验证并进入恢复队列",
+			"mode", mode,
+			"request_id", env.RequestMeta.RequestID,
+		)
 		prepared, prepareErr := auditledger.PrepareEntry(ctx, entry)
 		if prepareErr != nil {
 			return auditledger.DisabledLedgerResult(), nil

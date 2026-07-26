@@ -3,6 +3,8 @@ package adminhttpcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,7 +21,16 @@ type AuditStore interface {
 
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		WriteJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("request body must contain exactly one JSON value")
+		}
 		WriteJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return false
 	}

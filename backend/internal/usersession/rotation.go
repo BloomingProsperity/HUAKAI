@@ -114,8 +114,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (IssuedTokens, err
 	storedFamily, err := s.Store.CreateSession(ctx, SessionBundle{
 		Family: family, RefreshToken: token, SessionToken: sessionToken,
 	}, SessionCreatePolicy{
-		MaxActiveFamilies: s.MaxActiveFamilies,
-		Mode:              strings.TrimSpace(s.DevicePolicy),
+		MaxActiveFamilies:   s.MaxActiveFamilies,
+		Mode:                strings.TrimSpace(s.DevicePolicy),
+		ExpectedAuthVersion: in.AuthVersion,
 	}, now)
 	if errors.Is(err, ErrDeviceConfirmationRequired) {
 		return IssuedTokens{}, s.requireDeviceConfirmation(ctx, in)
@@ -196,14 +197,30 @@ func (s *Service) Refresh(ctx context.Context, in RefreshInput) (IssuedTokens, e
 		ExpiresAt:  now.Add(firstDuration(in.RefreshTTL, s.RefreshTTL, DefaultRefreshTTL)),
 		CreatedAt:  now,
 	}
-	family, err := s.Store.RotateRefreshToken(ctx, rec.Token, newToken, now)
+	sessionTTL := firstDuration(in.SessionTTL, s.SessionTTL, DefaultSessionTTL)
+	nextFamily := rec.Family
+	nextFamily.Generation = newToken.Generation
+	sessionRaw, sessionToken, sessionExpiry, err := s.prepareSessionToken(nextFamily, now, sessionTTL)
+	if err != nil {
+		return IssuedTokens{}, err
+	}
+	family, err := s.Store.RotateSession(
+		ctx, rec.Family, rec.Token, newToken, sessionToken, now,
+	)
 	if err != nil {
 		if err == ErrRefreshReplay {
 			_, _ = s.Store.RevokeFamily(ctx, rec.Family.TenantID, rec.Family.ID, "refresh_race_or_replay", now)
 		}
 		return IssuedTokens{}, err
 	}
-	return s.issuePair(ctx, family, refreshRaw, newToken.ExpiresAt, firstDuration(in.SessionTTL, s.SessionTTL, DefaultSessionTTL))
+	return IssuedTokens{
+		SessionToken:  sessionRaw,
+		RefreshToken:  refreshRaw,
+		SessionExpiry: sessionExpiry,
+		RefreshExpiry: newToken.ExpiresAt,
+		Family:        family,
+		Generation:    family.Generation,
+	}, nil
 }
 
 func GenerateRefreshToken() (string, []byte, error) {
@@ -234,11 +251,14 @@ type signedSessionPayload struct {
 	ExpiresAt  int64  `json:"exp"`
 }
 
-func (s *Service) issuePair(ctx context.Context, family SessionFamily, refreshRaw string, refreshExpires time.Time, sessionTTL time.Duration) (IssuedTokens, error) {
+func (s *Service) prepareSessionToken(
+	family SessionFamily,
+	now time.Time,
+	sessionTTL time.Duration,
+) (string, SessionToken, time.Time, error) {
 	if len(s.SigningKey) < 32 {
-		return IssuedTokens{}, ErrSigningKeyMissing
+		return "", SessionToken{}, time.Time{}, ErrSigningKeyMissing
 	}
-	now := s.now()
 	tokenID := uuid.NewString()
 	sessionExpiry := now.Add(sessionTTL)
 	payload := signedSessionPayload{
@@ -247,23 +267,14 @@ func (s *Service) issuePair(ctx context.Context, family SessionFamily, refreshRa
 	}
 	sessionToken, err := s.signPayload(payload)
 	if err != nil {
-		return IssuedTokens{}, err
+		return "", SessionToken{}, time.Time{}, err
 	}
-	if err := s.Store.InsertSessionToken(ctx, SessionToken{
+	storedToken := SessionToken{
 		ID: tokenID, TenantID: family.TenantID, FamilyID: family.ID,
 		TokenHash: HashSessionToken(sessionToken), Generation: family.Generation,
 		ExpiresAt: sessionExpiry, CreatedAt: now,
-	}); err != nil {
-		return IssuedTokens{}, err
 	}
-	return IssuedTokens{
-		SessionToken:  sessionToken,
-		RefreshToken:  refreshRaw,
-		SessionExpiry: sessionExpiry,
-		RefreshExpiry: refreshExpires,
-		Family:        family,
-		Generation:    family.Generation,
-	}, nil
+	return sessionToken, storedToken, sessionExpiry, nil
 }
 
 func (s *Service) Validate(ctx context.Context, token string, ip string, userAgent string) (ValidatedSession, error) {
@@ -317,7 +328,8 @@ func (s *Service) Validate(ctx context.Context, token string, ip string, userAge
 	_ = s.Store.TouchSessionToken(ctx, rec.Token.TenantID, rec.Token.ID, now)
 	return ValidatedSession{
 		TenantID: payload.TenantID, UserID: payload.UserID, FamilyID: payload.FamilyID,
-		TokenID: payload.ID, Generation: payload.Generation, ExpiresAt: rec.Token.ExpiresAt,
+		TokenID: payload.ID, Generation: payload.Generation, AuthVersion: rec.Family.AuthVersion,
+		ExpiresAt: rec.Token.ExpiresAt,
 	}, nil
 }
 

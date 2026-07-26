@@ -179,6 +179,9 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		return false
 	}
 	settleReq := ex.settleRequest(promptTokens, actualCost, costSnapshot, attemptSeq, pending)
+	if !ex.openDeliveryGate(w, int64(promptTokens)) {
+		return false
+	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")

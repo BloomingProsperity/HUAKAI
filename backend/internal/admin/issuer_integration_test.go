@@ -17,6 +17,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"strconv"
@@ -134,7 +135,7 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 		t.Fatalf("Role = %q; want platform_admin", ident.Role)
 	}
 
-	issuer := NewKeyIssuer(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
 	result, err := issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
 		TenantID:    f.tenantID,
@@ -173,6 +174,60 @@ func TestAdminIssue_HappyPath(t *testing.T) {
 	}
 }
 
+func TestAdminIssueTargetLockSerializesTenantDisable(t *testing.T) {
+	// 变异：删掉 AdminInsertAPIKey 的 FOR SHARE，租户状态是非键列，停用会越过
+	// 未提交的签发事务；本测试会在“停用必须阻塞”处转红。
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	f := newAdminFixture(t, ctx, pool)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始签发事务：%v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	hash, err := bcryptHashForTest("lifecycle-lock-" + f.suffix)
+	if err != nil {
+		t.Fatalf("生成测试 hash：%v", err)
+	}
+	if _, err := admindb.New(tx).AdminInsertAPIKey(ctx, admindb.AdminInsertAPIKeyParams{
+		TenantID:  f.tenantID,
+		UserID:    f.userID,
+		Name:      "lifecycle-lock",
+		KeyHash:   hash,
+		KeyPrefix: "hk_test_lock305",
+	}); err != nil {
+		t.Fatalf("事务内签发 Key：%v", err)
+	}
+
+	disabled := make(chan error, 1)
+	go func() {
+		_, updateErr := pool.Exec(ctx,
+			`UPDATE tenants SET status='disabled', updated_at=now() WHERE id=$1`,
+			f.tenantID,
+		)
+		disabled <- updateErr
+	}()
+	select {
+	case updateErr := <-disabled:
+		_ = tx.Rollback(ctx)
+		t.Fatalf("签发事务未提交时停用越过目标锁：%v", updateErr)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("提交签发事务：%v", err)
+	}
+	select {
+	case updateErr := <-disabled:
+		if updateErr != nil {
+			t.Fatalf("签发提交后停用：%v", updateErr)
+		}
+	case <-ctx.Done():
+		t.Fatalf("签发提交后停用仍阻塞：%v", ctx.Err())
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Test 2 — RevokeBlocksAuth:已吊销的 key 在客户 resolver 处失败
 // -----------------------------------------------------------------------------
@@ -189,8 +244,8 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	issuer := NewKeyIssuer(pool)
-	revoker := NewKeyRevoker(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
+	revoker := NewKeyRevoker(pool, f.tenantID)
 
 	result, err := issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
@@ -246,6 +301,100 @@ func TestAdminRevoke_BlocksAuth(t *testing.T) {
 	}
 }
 
+func TestAdminRevoke_RemainsAvailableAfterOwnerLifecycleChange(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	f := newAdminFixture(t, ctx, pool)
+	caller := AdminIdentity{
+		TokenID: f.adminTokenID,
+		Source:  AdminSourceToken,
+		Role:    RolePlatformAdmin,
+	}
+	issuer := NewKeyIssuer(pool, f.tenantID)
+	roleChangedKey, err := issuer.Issue(ctx, IssueRequest{
+		Caller: caller, TenantID: f.tenantID, UserID: f.userID,
+		Name: "role-change-" + f.suffix, Environment: EnvTest,
+	})
+	if err != nil {
+		t.Fatalf("签发角色变更测试 Key：%v", err)
+	}
+	deletedOwnerKey, err := issuer.Issue(ctx, IssueRequest{
+		Caller: caller, TenantID: f.tenantID, UserID: f.userID,
+		Name: "deleted-owner-" + f.suffix, Environment: EnvTest,
+	})
+	if err != nil {
+		t.Fatalf("签发软删除测试 Key：%v", err)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE users SET role='admin', updated_at=now() WHERE tenant_id=$1 AND id=$2`,
+		f.tenantID, f.userID,
+	); err != nil {
+		t.Fatalf("提升测试用户：%v", err)
+	}
+	assertAdminKeyListed(t, ctx, pool, f.tenantID, roleChangedKey.APIKeyID)
+	revoker := NewKeyRevoker(pool, f.tenantID)
+	if _, err := revoker.Revoke(ctx, RevokeRequest{
+		Caller: caller, APIKeyID: roleChangedKey.APIKeyID, TenantID: f.tenantID,
+		Reason: "owner_role_changed",
+	}); err != nil {
+		t.Fatalf("持有人升为管理员后仍应可撤销历史 Key：%v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+UPDATE users
+SET role='user', status='deleted', deleted_at=now(), updated_at=now()
+WHERE tenant_id=$1 AND id=$2`, f.tenantID, f.userID); err != nil {
+		t.Fatalf("软删除测试用户：%v", err)
+	}
+	assertAdminKeyListed(t, ctx, pool, f.tenantID, deletedOwnerKey.APIKeyID)
+	if _, err := revoker.Revoke(ctx, RevokeRequest{
+		Caller: caller, APIKeyID: deletedOwnerKey.APIKeyID, TenantID: f.tenantID,
+		Reason: "owner_deleted",
+	}); err != nil {
+		t.Fatalf("持有人软删除后仍应可撤销历史 Key：%v", err)
+	}
+
+	for _, keyID := range []int64{roleChangedKey.APIKeyID, deletedOwnerKey.APIKeyID} {
+		var status string
+		if err := pool.QueryRow(ctx,
+			`SELECT status FROM api_keys WHERE tenant_id=$1 AND id=$2`,
+			f.tenantID, keyID,
+		).Scan(&status); err != nil {
+			t.Fatalf("读取 Key %d 状态：%v", keyID, err)
+		}
+		if status != "revoked" {
+			t.Fatalf("Key %d 状态=%q，期望 revoked", keyID, status)
+		}
+	}
+}
+
+func assertAdminKeyListed(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	tenantID, keyID int64,
+) {
+	t.Helper()
+	rows, err := admindb.New(pool).AdminListAPIKeysForTenant(
+		ctx,
+		admindb.AdminListAPIKeysForTenantParams{
+			TenantID:  tenantID,
+			PageLimit: 100,
+		},
+	)
+	if err != nil {
+		t.Fatalf("列出运维 Key：%v", err)
+	}
+	for _, row := range rows {
+		if row.ID == keyID {
+			return
+		}
+	}
+	t.Fatalf("历史 Key %d 未出现在租户 %d 的运维列表", keyID, tenantID)
+}
+
 // -----------------------------------------------------------------------------
 // Test 3 — AuditNeverContainsPlaintext(回归)
 // -----------------------------------------------------------------------------
@@ -260,7 +409,7 @@ func TestAdminIssue_AuditNeverContainsPlaintext(t *testing.T) {
 	httpReq.Header.Set("Authorization", "Bearer "+f.adminBearer)
 	ident, _ := resolver.Resolve(ctx, httpReq)
 
-	issuer := NewKeyIssuer(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
 	result, err := issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
 		TenantID:    f.tenantID,
@@ -345,7 +494,7 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 	}
 
 	// 试图为 tenantB 签发 —— 必须以 ErrAdminForbidden 失败。
-	issuer := NewKeyIssuer(pool)
+	issuer := NewKeyIssuer(pool, f.tenantID)
 	_, err = issuer.Issue(ctx, IssueRequest{
 		Caller:      ident,
 		TenantID:    tenantB, // 错误的 scope
@@ -358,6 +507,87 @@ func TestAdminIssue_TenantOperatorCrossTenantBlocked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "forbidden") {
 		t.Fatalf("expected forbidden; got %v", err)
+	}
+}
+
+// 部署者只管理平台工作租户的终端用户。变异：若签发器或撤销器退回
+// CanIssueForTenant，两个动作都会改写下级租户数据，本测试立即变红。
+func TestAdminUserKey_PlatformAdminCannotOperateDownstreamTenant(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openIntegrationPool(t, ctx)
+	f := newAdminFixture(t, ctx, pool)
+
+	var downstreamTenantID, downstreamUserID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO tenants (name) VALUES ($1) RETURNING id`,
+		"admin-downstream-"+f.suffix,
+	).Scan(&downstreamTenantID); err != nil {
+		t.Fatalf("seed downstream tenant: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO users (tenant_id, display_name, role) VALUES ($1,$2,'user') RETURNING id`,
+		downstreamTenantID, "downstream-user-"+f.suffix,
+	).Scan(&downstreamUserID); err != nil {
+		t.Fatalf("seed downstream user: %v", err)
+	}
+	hash, err := bcryptHashForTest("hk_test_downstream_" + f.suffix)
+	if err != nil {
+		t.Fatalf("hash downstream key: %v", err)
+	}
+	var downstreamKeyID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id,user_id,name,key_hash,key_prefix,status)
+		 VALUES ($1,$2,$3,$4,$5,'active') RETURNING id`,
+		downstreamTenantID, downstreamUserID, "downstream-key", hash, "hk_test_downstre",
+	).Scan(&downstreamKeyID); err != nil {
+		t.Fatalf("seed downstream key: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE payload->>'tenant_id'=$1`, strconv.FormatInt(downstreamTenantID, 10))
+		_, _ = pool.Exec(c, `DELETE FROM api_keys WHERE tenant_id=$1`, downstreamTenantID)
+		_, _ = pool.Exec(c, `DELETE FROM users WHERE tenant_id=$1`, downstreamTenantID)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id=$1`, downstreamTenantID)
+	})
+
+	caller := AdminIdentity{TokenID: f.adminTokenID, Source: AdminSourceToken, Role: RolePlatformAdmin}
+	issuer := NewKeyIssuer(pool, f.tenantID)
+	if _, err := issuer.Issue(ctx, IssueRequest{
+		Caller:      caller,
+		TenantID:    downstreamTenantID,
+		UserID:      downstreamUserID,
+		Name:        "must-not-exist",
+		Environment: EnvLive,
+	}); !errors.Is(err, ErrAdminForbidden) {
+		t.Fatalf("部署者越级签发错误=%v，期望 ErrAdminForbidden", err)
+	}
+	var issued int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM api_keys WHERE tenant_id=$1 AND name='must-not-exist'`,
+		downstreamTenantID,
+	).Scan(&issued); err != nil {
+		t.Fatalf("count denied issue: %v", err)
+	}
+	if issued != 0 {
+		t.Fatalf("越级签发留下 %d 把 Key，期望 0", issued)
+	}
+
+	revoker := NewKeyRevoker(pool, f.tenantID)
+	if _, err := revoker.Revoke(ctx, RevokeRequest{
+		Caller:   caller,
+		APIKeyID: downstreamKeyID,
+		TenantID: downstreamTenantID,
+		Reason:   "must-not-revoke",
+	}); !errors.Is(err, ErrAdminForbidden) {
+		t.Fatalf("部署者越级撤销错误=%v，期望 ErrAdminForbidden", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM api_keys WHERE id=$1`, downstreamKeyID).Scan(&status); err != nil {
+		t.Fatalf("read downstream key: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("越级撤销改成 %q，期望仍为 active", status)
 	}
 }
 

@@ -52,6 +52,9 @@ type DisputeAdminDeps struct {
 	Auth     DisputeAdminAuth
 	Store    DisputeStore
 	Resolver DisputeResolver
+	// PlatformTenantID 只用于争议处理写动作。部署者可以跨租户查看争议，
+	// 但只能处理平台工作租户的用户争议。
+	PlatformTenantID int64
 }
 
 type disputeCreateRequest struct {
@@ -194,8 +197,12 @@ func NewAdminResolveDisputeHandler(d DisputeAdminDeps) http.HandlerFunc {
 		if !disputeDecodeJSON(w, r, &req) {
 			return
 		}
-		if err := ident.CanIssueForTenant(req.TenantID); err != nil {
-			disputeWriteAdminError(w, err)
+		if err := ident.CanOperateOwnedTenant(req.TenantID, d.PlatformTenantID); err != nil {
+			if errors.Is(err, admin.ErrAdminBackend) {
+				controlWriteJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is not configured")
+			} else {
+				disputeWriteAdminError(w, err)
+			}
 			return
 		}
 		result, err := d.Resolver.ResolveDispute(r.Context(), audit.ResolveCostDisputeInput{

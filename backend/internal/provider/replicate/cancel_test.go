@@ -114,6 +114,9 @@ func TestBuildRequestPreferWaitSecondsOverride(t *testing.T) {
 	if got := req.Header.Get("Prefer"); got != "wait=15" {
 		t.Fatalf("Prefer=%q want wait=15(凭据级覆盖)", got)
 	}
+	if got := req.Header.Get("Cancel-After"); got != "15s" {
+		t.Fatalf("Cancel-After=%q want 15s(必须与等待窗口同值)", got)
+	}
 }
 
 func TestBuildRequestPreferWaitSecondsInvalidFallsBackToDefault(t *testing.T) {
@@ -137,6 +140,9 @@ func TestBuildRequestPreferWaitSecondsInvalidFallsBackToDefault(t *testing.T) {
 		}
 		if got := req.Header.Get("Prefer"); got != "wait=60" {
 			t.Fatalf("prefer_wait_seconds=%q → Prefer=%q want wait=60", bad, got)
+		}
+		if got := req.Header.Get("Cancel-After"); got != "60s" {
+			t.Fatalf("prefer_wait_seconds=%q → Cancel-After=%q want 60s", bad, got)
 		}
 	}
 }

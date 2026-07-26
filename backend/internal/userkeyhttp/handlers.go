@@ -428,70 +428,22 @@ func writeUserKeyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_expires_at", "expires_at must be a future RFC3339 timestamp")
 	case errors.Is(err, userkey.ErrInvalidEnv):
 		writeError(w, http.StatusBadRequest, "invalid_environment", "environment must be 'live' or 'test'")
+	case errors.Is(err, userkey.ErrInvalidStatus):
+		writeError(w, http.StatusBadRequest, "invalid_status", "status must be 'active' or 'revoked'")
 	case errors.Is(err, userkey.ErrActiveKeyCapHit):
 		writeError(w, http.StatusConflict, "active_key_cap_reached",
 			"you have reached the active api_keys cap ("+strconv.Itoa(userkey.MaxActiveKeysPerUser)+"); revoke an existing key first")
+	case errors.Is(err, userkey.ErrAlreadyRevoked):
+		writeError(w, http.StatusConflict, "api_key_revoked_terminal",
+			"revoked api_key cannot be reactivated")
+	case errors.Is(err, userkey.ErrStatusManaged):
+		writeError(w, http.StatusConflict, "api_key_status_managed",
+			"disabled or expired api_key must be recovered by an operator")
 	case errors.Is(err, userkey.ErrNotFound):
 		writeError(w, http.StatusNotFound, "api_key_not_found", "api_key not found")
 	case errors.Is(err, userkey.ErrServiceMisconfig):
 		writeError(w, http.StatusServiceUnavailable, "userkey_service_unavailable", "user api key service unavailable")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "userkey_backend_error", "user api key backend transient failure")
-	}
-}
-
-type batchRevokeRequest struct {
-	IDs    []int64 `json:"ids"`
-	Reason string  `json:"reason"`
-}
-
-// newBatchRevokeHandler 在一个请求中批量吊销 caller 自己的多个 key。
-// 每个 id 都走同一个幂等、owner 作用域的 Service.Revoke;不属于自己或不存在的 id
-// (ErrNotFound)落入 not_found(反枚举,绝不触及另一租户的 key),而不会让整个 batch 失败。
-// KEY-028。
-func newBatchRevokeHandler(d Deps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveSession(w, r, d)
-		if !ok {
-			return
-		}
-		var req batchRevokeRequest
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_json", "request body must be valid JSON")
-			return
-		}
-		if len(req.IDs) == 0 || len(req.IDs) > 200 {
-			writeError(w, http.StatusBadRequest, "invalid_ids", "ids must contain between 1 and 200 entries")
-			return
-		}
-		reqID := requestIDFromReq(r)
-		revoked := make([]int64, 0, len(req.IDs))
-		notFound := make([]int64, 0)
-		seen := make(map[int64]bool, len(req.IDs))
-		for _, id := range req.IDs {
-			if id <= 0 || seen[id] {
-				continue
-			}
-			seen[id] = true
-			_, err := d.Service.Revoke(r.Context(), userkey.RevokeRequest{
-				TenantID:  ident.TenantID,
-				UserID:    ident.UserID,
-				APIKeyID:  id,
-				Reason:    req.Reason,
-				RequestID: reqID,
-			})
-			if err != nil {
-				if errors.Is(err, userkey.ErrNotFound) {
-					notFound = append(notFound, id)
-					continue
-				}
-				writeUserKeyError(w, err)
-				return
-			}
-			revoked = append(revoked, id)
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"revoked": revoked, "not_found": notFound})
 	}
 }

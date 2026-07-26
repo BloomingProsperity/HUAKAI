@@ -23,6 +23,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -47,21 +48,23 @@ type dispatcher interface {
 }
 
 type Deps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	Selector              pool.Selector
-	CredentialVault       provider.CredentialVault
-	Dispatcher            dispatcher
-	Settler               billing.Settler
-	SettleRecoveryDLQ     settlementrecovery.Enqueuer
-	BillingPolicyResolver *billing.PolicyResolver
-	BillingPolicyVersion  string
-	RequestClass          string
+	Auth                    authResolver
+	Registry                registry.Registry
+	Router                  router.Router
+	ClaimGate               billing.ClaimGate
+	QuotaReserver           quotaenforce.Reserver
+	RateTables              billing.RateTableSource
+	PricingRatioResolver    pricingRatioResolver
+	Selector                pool.Selector
+	CredentialVault         provider.CredentialVault
+	Dispatcher              dispatcher
+	Settler                 billing.Settler
+	SettlementIntents       settlementintent.Store
+	SettlementIntentEnabled bool
+	SettleRecoveryDLQ       settlementrecovery.Enqueuer
+	BillingPolicyResolver   *billing.PolicyResolver
+	BillingPolicyVersion    string
+	RequestClass            string
 	// Feedback 喂账号健康 FSM(坏号冷却→选号自动跳过=自动换号)。nil 时 no-op。
 	Feedback *upstreamfeedback.Observer
 	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
@@ -93,6 +96,7 @@ type execution struct {
 	cred             provider.Credential
 	classTransition  *bindingfallback.Transition
 	excludedAccounts map[int64]struct{}
+	settlementIntent *settlementintent.Tracker
 }
 
 func NewEmbeddingsHandler(d Deps) http.HandlerFunc {
@@ -133,17 +137,18 @@ func NewEmbeddingsHandler(d Deps) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		w.Header().Set(middleware.RequestIDHeader, requestID)
 		ex := &execution{
-			d:             d,
-			r:             r,
-			ctx:           ctx,
-			startedAt:     time.Now().UTC(),
-			ident:         ident,
-			body:          body,
-			req:           req,
-			texts:         texts,
-			requestID:     requestID,
-			payloadHash:   bodyHash(body),
-			inputEstimate: estimateInputTokens(texts),
+			d:                d,
+			r:                r,
+			ctx:              ctx,
+			startedAt:        time.Now().UTC(),
+			ident:            ident,
+			body:             body,
+			req:              req,
+			texts:            texts,
+			requestID:        requestID,
+			payloadHash:      bodyHash(body),
+			inputEstimate:    estimateInputTokens(texts),
+			settlementIntent: settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		}
 		if !ex.prepareRoute(w) {
 			return

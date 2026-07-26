@@ -20,6 +20,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/rate"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -299,6 +300,31 @@ func TestRerankUpstreamSuccessRecordedBeforeSettleFailure(t *testing.T) {
 	}
 }
 
+func TestRerankSettleAndRecoveryDoubleFailurePersistsIntent(t *testing.T) {
+	env := newRerankTestEnv(t)
+	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &rerankRecoveryEnqueuer{err: errors.New("recovery queue down")}
+	env.deps.SettleRecoveryDLQ = recovery
+	env.deps.CredentialVault = rerankRetryVault(t, 44)
+	intentStore := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = intentStore
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, rerankBody(2))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s，响应已交付不能反悔", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(intentStore.Events(), "->"); got != "pending->delivering->recovery_pending" {
+		t.Fatalf("双故障意图生命周期=%q", got)
+	}
+	raw, failureClass := intentStore.RecoveryEvidence()
+	payload, err := settlementrecovery.Decode(raw)
+	if err != nil || payload.Source != settlementrecovery.SourceRerankDelivered || failureClass == "" {
+		t.Fatalf("双故障恢复证据 source=%q class=%q err=%v", payload.Source, failureClass, err)
+	}
+}
+
 func successfulRerankBody() string {
 	return `{"results":[{"index":0,"relevance_score":0.99}]}`
 }
@@ -427,7 +453,8 @@ func (d *rerankRetryDispatcher) Dispatch(_ context.Context, in gateway.DispatchI
 }
 
 type rerankHealthSpy struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns int
 }
 
 func (s *rerankHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Signal) (channelhealth.Record, error) {
@@ -436,6 +463,7 @@ func (s *rerankHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Si
 }
 
 func (s *rerankHealthSpy) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, _ time.Time, _ string) (channelhealth.Record, error) {
+	s.forceCooldowns++
 	return channelhealth.Record{Key: key}, nil
 }
 

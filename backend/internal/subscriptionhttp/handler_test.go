@@ -183,6 +183,9 @@ func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 func newSubAdminTestRouter(d AdminDeps) http.Handler {
+	if d.PlatformTenantID == 0 {
+		d.PlatformTenantID = 5
+	}
 	r := chi.NewRouter()
 	r.Route("/subs", func(r chi.Router) { MountSubscriptionAdminRoutes(r, d) })
 	return r

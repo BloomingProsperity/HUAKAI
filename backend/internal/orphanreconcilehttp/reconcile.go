@@ -49,8 +49,7 @@ func newReconcileHandler(d Deps) http.HandlerFunc {
 			writeAdminAuthError(w, err)
 			return
 		}
-		// 任何对账动作都需 admin 角色;tenant_operator 还要进一步用 CanIssueForTenant
-		// 校验该孤儿属其租户(在 store 拿到 orphan.TenantID 后,见下方 audit hook 前的检查)。
+		// 任何对账动作都需 admin 角色；真实租户归属在事务读到孤儿后校验。
 		if ident.Role != admin.RolePlatformAdmin && ident.Role != admin.RoleTenantOperator {
 			writeError(w, http.StatusForbidden, "admin_forbidden_scope", "admin role required")
 			return
@@ -73,10 +72,10 @@ func newReconcileHandler(d Deps) http.HandlerFunc {
 			req.Status = "reconciled"
 		}
 
-		// 租户越权守卫:tenant_operator 只能对账自己租户的孤儿。把这层校验做进 audit hook,
-		// 因为孤儿的 tenant_id 只有进事务读到行后才知道——在 hook 内拒绝即回滚,绝不动钱。
+		// 租户越权守卫放在事务 hook：孤儿 tenant_id 只能锁行后取得。部署者只能
+		// 处置平台工作租户，租户管理员只能处置自身租户；拒绝会回滚状态和追扣。
 		reqID := middleware.GetReqID(r.Context())
-		audit := buildAuditHook(ident, req, reqID)
+		audit := buildAuditHook(ident, d.PlatformTenantID, req, reqID)
 
 		result, advanced, err := d.Store.ReconcileOrphan(
 			r.Context(), orphanID, req.Status, req.BackCharge, nowUTC(), audit)
@@ -102,17 +101,18 @@ func newReconcileHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// errOrphanForbiddenTenant 是越权哨兵:tenant_operator 试图对账不属其租户的孤儿。
-var errOrphanForbiddenTenant = errors.New("orphanreconcilehttp: orphan not in operator tenant scope")
-
 // buildAuditHook 返回在对账事务内执行的回调:先做租户越权守卫(回滚动钱),再把一行
 // admin_audit_events 与状态推进 + 追扣写在同一事务(原子)。审计行记录是否追扣 / 追扣额,
 // 形成"孤儿可见→admin 处置→状态推进(+可选追扣)"的闭环留痕。
-func buildAuditHook(ident admin.AdminIdentity, req reconcileRequest, reqID string) mediatask.OrphanReconcileAuditHook {
+func buildAuditHook(
+	ident admin.AdminIdentity,
+	platformTenantID int64,
+	req reconcileRequest,
+	reqID string,
+) mediatask.OrphanReconcileAuditHook {
 	return func(ctx context.Context, tx pgx.Tx, result mediatask.OrphanReconcileResult) error {
-		if err := ident.CanIssueForTenant(result.TenantID); err != nil {
-			// 越权:tenant_operator 对账他租户孤儿。回滚整笔(含任何追扣 Capture)。
-			return errOrphanForbiddenTenant
+		if err := authorizeOrphanMutation(ident, platformTenantID, result.TenantID); err != nil {
+			return err
 		}
 		payload, _ := json.Marshal(map[string]any{
 			"task_id":          result.TaskID,
@@ -146,6 +146,10 @@ func buildAuditHook(ident admin.AdminIdentity, req reconcileRequest, reqID strin
 	}
 }
 
+func authorizeOrphanMutation(ident admin.AdminIdentity, platformTenantID, targetTenantID int64) error {
+	return ident.CanOperateOwnedTenant(targetTenantID, platformTenantID)
+}
+
 func nowUTC() time.Time { return time.Now().UTC() }
 
 func auditAction(status string) string {
@@ -170,10 +174,14 @@ func auditActorRole(ident admin.AdminIdentity) string {
 
 func writeReconcileError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, errOrphanForbiddenTenant):
+	case errors.Is(err, admin.ErrAdminForbidden):
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "orphan is not in operator tenant scope")
+	case errors.Is(err, admin.ErrAdminBackend):
+		writeError(w, http.StatusServiceUnavailable, "orphan_scope_unavailable", "platform tenant scope is not configured")
 	case errors.Is(err, mediatask.ErrInvalidOrphanStatus):
 		writeError(w, http.StatusBadRequest, "invalid_orphan_status", "status must be reconciled/cancelled/ignored; back_charge only valid with reconciled")
+	case errors.Is(err, mediatask.ErrSubmissionRecoveryActionRequired):
+		writeError(w, http.StatusConflict, "submission_recovery_action_required", "submission unknown must be attached or confirmed not accepted")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "orphan_backend_error", "orphan reconcile backend unavailable")
 	}

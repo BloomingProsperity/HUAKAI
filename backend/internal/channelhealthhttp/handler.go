@@ -12,6 +12,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/redact"
 )
@@ -48,9 +49,10 @@ type channelHealthOverrideRequest struct {
 }
 
 func MountChannelHealthAdminRoutes(r chi.Router, d ChannelHealthAdminDeps) {
-	r.Post("/{id}/channel-health/pause", newChannelHealthPauseHandler(d))
-	r.Post("/{id}/channel-health/resume", newChannelHealthResumeHandler(d))
-	r.Post("/{id}/channel-health/force-active", newChannelHealthForceActiveHandler(d))
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/{id}/channel-health/pause", newChannelHealthPauseHandler(d))
+	r.With(safe).Post("/{id}/channel-health/resume", newChannelHealthResumeHandler(d))
+	r.With(safe).Post("/{id}/channel-health/force-active", newChannelHealthForceActiveHandler(d))
 }
 
 func MountChannelHealthReadAdminRoutes(r chi.Router, d ChannelHealthAdminDeps) {

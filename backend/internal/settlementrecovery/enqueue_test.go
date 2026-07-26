@@ -123,3 +123,37 @@ func TestEnqueuePayload_PropagatesEnqueuerError(t *testing.T) {
 		t.Fatal("EnqueuePayload should propagate Enqueuer err for P0 alert path")
 	}
 }
+
+// TestEnqueueFailureReturnsReplayEvidenceOnQueueFailure 守住正式队列不可用时，
+// 调用方仍能把同一份脱敏载荷写入结算意图，不能只剩一条易丢日志。
+func TestEnqueueFailureReturnsReplayEvidenceOnQueueFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		queue Enqueuer
+	}{
+		{name: "队列写失败", queue: &spyEnqueuer{retErr: errors.New("db down")}},
+		{name: "队列未接线", queue: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence, err := EnqueueFailure(
+				context.Background(),
+				tc.queue,
+				validPayload(),
+				errors.New("settle failed"),
+				"settlementrecovery.test",
+			)
+			if err == nil {
+				t.Fatal("队列失败必须返回错误")
+			}
+			if len(evidence.Payload) == 0 || evidence.FailureClass == "" {
+				t.Fatalf("双故障恢复证据=%+v", evidence)
+			}
+			decoded, decodeErr := Decode(evidence.Payload)
+			if decodeErr != nil ||
+				decoded.ToSettleRequest().ClaimID != validPayload().Settle.ClaimID ||
+				decoded.RequestID != validPayload().RequestID {
+				t.Fatalf("恢复证据 decoded=%+v err=%v", decoded, decodeErr)
+			}
+		})
+	}
+}

@@ -21,6 +21,7 @@ func TestMessageForKnownCodesAndFallback(t *testing.T) {
 		{CodeInvalidJSON, "request body is not valid JSON"},
 		{CodeUpstreamDispatchError, "upstream request failed"},
 		{CodeInsufficientBalance, "余额不足"},
+		{CodeTenantInactive, "租户已停用"},
 		{CodeCanonicalResponseError, "upstream response could not be converted"},
 		{CodeQueueWait, "request is queued; retry later"},
 		{CodeBindingConcurrencyLimited, "binding concurrency limit exceeded; retry later"},

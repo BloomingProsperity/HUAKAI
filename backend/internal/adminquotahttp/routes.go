@@ -1,5 +1,5 @@
 // Package adminquotahttp 暴露按租户作用域的、针对 quota policies 的 admin CRUD
-//(/admin/v1/quota-policies)。这属于防滥用的运维配置:它绝不触碰 user_balances
+// (/admin/v1/quota-policies)。这属于防滥用的运维配置:它绝不触碰 user_balances
 // 或计费账本。它与 adminuserhttp / adminhttp 的 channel-catalog 保持一致:
 // platform_admin/tenant_operator 守卫、显式的租户作用域,以及每次变更都原子写入
 // 一行 admin_audit_events。
@@ -61,15 +61,14 @@ func MountRoutes(r chi.Router, d Deps) {
 
 // MountQuotaPolicyRoutes 在 admin 根路由上内联挂载 quota-policy 全部端点(集合级 + /{id}),
 // 与原 gateway 内联挂载一致(不建 chi.Route 子树,保证路径遍历器报告规范、不带尾斜杠的路径)。
-// role 制单登录:SessionSafe = 创建/更新配额策略(防滥用 RPM/并发,可逆),登录 admin(session)
-// 可直接写;删除留 token-only(分级表对抗验证降档,登录 admin 够不到,只认令牌)。危险者靠前端确认弹窗。
+// 配额策略的增删改均执行租户引用约束，并把业务变更与操作日志放在同一事务。
 func MountQuotaPolicyRoutes(r chi.Router, d Deps) {
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/admin/v1/quota-policies", newListHandler(d))
 	r.With(safe).Post("/admin/v1/quota-policies", newCreateHandler(d))
 	r.Get("/admin/v1/quota-policies/{id}", newGetHandler(d))
 	r.With(safe).Put("/admin/v1/quota-policies/{id}", newUpdateHandler(d))
-	r.Delete("/admin/v1/quota-policies/{id}", newDeleteHandler(d))
+	r.With(safe).Delete("/admin/v1/quota-policies/{id}", newDeleteHandler(d))
 }
 
 // NewRouter 为 handler 逻辑测试构建独立 router,挂相对路径的集合级 GET/POST 与 id 子树。
@@ -121,7 +120,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 }
 
 // tenantFromQueryOrScope 解析目标租户:若带有 ?tenant_id,则通过 CanIssueForTenant
-//(跨租户守卫)校验;若不带,则回退到 tenant_operator 自身的作用域。
+// (跨租户守卫)校验;若不带,则回退到 tenant_operator 自身的作用域。
 func tenantFromQueryOrScope(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	tenantParam := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	var tenantID int64

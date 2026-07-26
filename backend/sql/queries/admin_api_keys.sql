@@ -1,47 +1,44 @@
 -- 管理侧 api_keys 查询由 internal/admin 调用，与 internal/auth 面向客户的
--- LookupAPIKeysByPrefix 热路径相互独立。
--- admin tooling MUST NOT use the prefix-only lookup that the customer
--- hot path optimizes for (it's a different security surface).
+-- LookupAPIKeysByPrefix 热路径相互独立。管理面不得复用只按前缀查找的热路径，
+-- 两者属于不同安全边界。
 
 -- name: AdminInsertAPIKey :one
--- Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being
--- active and not soft-deleted at the moment of write. INSERT ... SELECT
--- WHERE EXISTS makes "target validity" atomic with the row creation, so
--- a tenant/user that flips disabled between an external preflight and
--- this insert can no longer produce a freshly-minted-but-immediately-
--- rejected key. NoRows return → target became invalid; handler maps it
--- to ErrAdminBadRequest.
+-- 写入时锁定并确认租户和终端用户仍有效；目标在外部预检后失活或角色已不是
+-- user 时返回 NoRows。FOR SHARE 会与生命周期/用户状态的非键更新互斥，避免
+-- 停用提交后又从旧快照落下一把新 Key。
+WITH eligible_target AS MATERIALIZED (
+    SELECT t.id AS tenant_id, u.id AS user_id
+    FROM tenants t
+    JOIN users u
+      ON u.tenant_id = t.id
+     AND u.id = sqlc.arg(user_id)::bigint
+     AND u.principal_kind = 'human'
+     AND u.role = 'user'
+     AND u.deleted_at IS NULL
+     AND u.status = 'active'
+    WHERE t.id = sqlc.arg(tenant_id)::bigint
+      AND t.deleted_at IS NULL
+      AND t.status = 'active'
+    FOR SHARE OF t, u
+)
 INSERT INTO api_keys (
     tenant_id, user_id, name, key_hash, key_prefix, status, expires_at
 )
 SELECT
-    sqlc.arg(tenant_id)::bigint,
-    sqlc.arg(user_id)::bigint,
+    eligible_target.tenant_id,
+    eligible_target.user_id,
     sqlc.arg(name)::text,
     sqlc.arg(key_hash)::text,
     sqlc.arg(key_prefix)::text,
     'active',
     sqlc.narg(expires_at)::timestamptz
-WHERE EXISTS (
-    SELECT 1 FROM tenants t
-    WHERE t.id = sqlc.arg(tenant_id)::bigint
-      AND t.deleted_at IS NULL
-      AND t.status = 'active'
-)
-AND EXISTS (
-    SELECT 1 FROM users u
-    WHERE u.id = sqlc.arg(user_id)::bigint
-      AND u.tenant_id = sqlc.arg(tenant_id)::bigint
-      AND u.principal_kind = 'human'
-      AND u.deleted_at IS NULL
-      AND u.status = 'active'
-)
+FROM eligible_target
 RETURNING id, created_at;
 
 -- name: AdminListAPIKeysForTenant :many
--- Lists api_keys metadata for a tenant. NEVER returns key_hash. The
--- key_prefix is acceptable to expose (already public-safe per N+4a; 16
--- chars insufficient to authenticate without bcrypt match).
+-- 列出该租户全部 purpose=user Key 元数据，绝不返回 key_hash。这里不能按
+-- users 当前角色或 deleted_at 过滤：持有人升为管理员或被软删后，历史凭据
+-- 仍必须留在运维视野中并可被永久撤销。
 SELECT
     id, tenant_id, user_id, name, key_prefix, status,
     expires_at, last_used_at, revoked_at, revoked_reason,
@@ -55,10 +52,8 @@ LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;
 
 -- name: AdminRevokeAPIKey :execrows
--- Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
--- collapses ANY non-revoked status (active / disabled / expired) into
--- 'revoked' — only an already-revoked row is the idempotent path.
--- Returning 0 rows means "was already revoked".
+-- 将终端用户 Key 的任意非 revoked 状态收敛为 revoked。返回 0 行表示已撤销，
+-- 持有人的当前角色和删除状态不得阻断永久撤销。
 UPDATE api_keys
 SET status = 'revoked',
     revoked_at = NOW(),
@@ -71,11 +66,7 @@ WHERE id = sqlc.arg(id)::bigint
   AND deleted_at IS NULL;
 
 -- name: AdminCheckIssuanceTarget :one
--- Codex N+4b2 pass-5 P2: validate the target (tenant, user) is active
--- and not soft-deleted BEFORE we mint a bearer + bcrypt-hash. Returning
--- false → handler responds 400 (or 404), avoiding "the key was minted but
--- the customer resolver immediately rejects it" + the unhelpful 503 that
--- would result from leaning on the FK as our only validator.
+-- 在生成 bearer 与 bcrypt 前确认目标是有效终端用户。
 SELECT
     EXISTS (
         SELECT 1 FROM tenants t
@@ -88,6 +79,7 @@ SELECT
         WHERE u.id = sqlc.arg(user_id)::bigint
           AND u.tenant_id = sqlc.arg(tenant_id)::bigint
           AND u.principal_kind = 'human'
+          AND u.role = 'user'
           AND u.deleted_at IS NULL
           AND u.status = 'active'
     ) AS user_ok;
@@ -105,7 +97,8 @@ SELECT EXISTS (
 );
 
 -- name: AdminGetAPIKeyByID :one
--- Tenant-scoped read for revocation flow + audit lookup.
+-- 撤销流程使用的租户级 purpose=user Key 查询。不得依赖持有人当前状态，
+-- 否则最需要退役的历史凭据反而会从管理面消失。
 SELECT
     id, tenant_id, user_id, name, key_prefix, status,
     expires_at, last_used_at, revoked_at, revoked_reason,

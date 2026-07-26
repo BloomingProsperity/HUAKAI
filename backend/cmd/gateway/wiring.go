@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,13 +25,13 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/alerting"
 	"github.com/BloomingProsperity/HUAKAI/internal/alertmetrics"
 	"github.com/BloomingProsperity/HUAKAI/internal/announcement"
-	"github.com/BloomingProsperity/HUAKAI/internal/autolisting"
 	"github.com/BloomingProsperity/HUAKAI/internal/anthropicoauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/apikeyexpiry"
 	auditreceipt "github.com/BloomingProsperity/HUAKAI/internal/audit"
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
+	"github.com/BloomingProsperity/HUAKAI/internal/autolisting"
 	"github.com/BloomingProsperity/HUAKAI/internal/balanceledger"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/billingadminhttp"
@@ -743,7 +744,37 @@ func buildSettlementIntentStore(queries *dbbilling.Queries, enabled bool) settle
 	return settlementintent.NewConfiguredPostgresStore(queries, enabled)
 }
 
-func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *settlementintent.SettlementIntentSweeper {
+func buildSettlementIntentRecoveryPublisher(
+	enqueuer settlementrecovery.Enqueuer,
+) settlementintent.RecoveryPublisher {
+	if enqueuer == nil {
+		return nil
+	}
+	return settlementintent.RecoveryPublisherFunc(func(
+		ctx context.Context,
+		raw json.RawMessage,
+		failureClass string,
+	) error {
+		payload, err := settlementrecovery.Decode(raw)
+		if err != nil {
+			return fmt.Errorf("解码结算恢复载荷: %w", err)
+		}
+		failureClass = strings.TrimSpace(failureClass)
+		if failureClass == "" {
+			failureClass = "settlement_recovery_requeue"
+		}
+		if _, err := settlementrecovery.EnqueuePayload(ctx, enqueuer, payload, failureClass); err != nil {
+			return fmt.Errorf("写入结算恢复队列: %w", err)
+		}
+		return nil
+	})
+}
+
+func buildSettlementIntentSweeper(
+	queries *dbbilling.Queries,
+	enabled bool,
+	recoveryEnqueuer settlementrecovery.Enqueuer,
+) *settlementintent.SettlementIntentSweeper {
 	if !enabled {
 		return nil
 	}
@@ -751,7 +782,9 @@ func buildSettlementIntentSweeper(queries *dbbilling.Queries, enabled bool) *set
 	return settlementintent.NewSettlementIntentSweeper(
 		store,
 		settlementintent.NewPostgresClaimAuthority(queries),
-		settlementintent.SweeperOptions{},
+		settlementintent.SweeperOptions{
+			Recovery: buildSettlementIntentRecoveryPublisher(recoveryEnqueuer),
+		},
 	)
 }
 
@@ -1033,7 +1066,13 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	if err != nil {
 		return nil, fmt.Errorf("build auth email sender: %w", err)
 	}
-	userAuthService, userSessionService, err := buildUserServices(pgPool, credentialKeys, emailSettingsStore, logger)
+	userAuthService, userSessionService, err := buildUserServices(
+		pgPool,
+		credentialKeys,
+		emailSettingsStore,
+		logger,
+		platformTenantID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1113,8 +1152,12 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	paymentService := payment.NewService(paymentStore, paymentServiceOptions(cfg)...)
 	// NAPI-DIST-SIGNUP-03 + INVITEE-04:接线注册时的钱包入账签发器
 	//(默认关闭;金额从 env 读取,为 0 => IssueSignupBonus/Reward 在任何 insert
-	// 之前短路)。userauth 会吞掉返回的 error,因此一次入账失败绝不会回滚注册。
+	// 之前短路)。启用时先把金额快照与新用户同事务写入 outbox，再做即时入账。
 	signupInviteeCfg := payment.SignupInviteeConfigFromEnv()
+	userAuthService.SignupRewards = userauth.SignupRewardConfig{
+		SignupBonusCents:   signupInviteeCfg.SignupBonusCents,
+		InviteeRewardCents: signupInviteeCfg.ReferralInviteeCents,
+	}
 	userAuthService.SignupBonusFn = func(ctx context.Context, tenantID, userID int64) error {
 		_, err := paymentService.IssueSignupBonus(ctx, signupInviteeCfg, tenantID, userID)
 		return err
@@ -1123,11 +1166,11 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		_, err := paymentService.IssueInviteeReward(ctx, signupInviteeCfg, tenantID, userID)
 		return err
 	}
-	userAuthService.SignupRewardRecoveryFn = func(ctx context.Context, tenantID, userID int64, rewardKind string) error {
-		return payment.EnqueueSignupRewardRecovery(ctx, outboxStore, tenantID, userID, rewardKind)
+	userAuthService.SignupRewardRecoveryFn = func(ctx context.Context, tenantID, userID int64, rewardKind string, amountCents int64) error {
+		return payment.EnqueueSignupRewardRecovery(ctx, outboxStore, tenantID, userID, rewardKind, amountCents)
 	}
 	outboxWorker.Register(obsoutbox.EventTypeSignupReward,
-		payment.NewSignupRewardRecoveryHandler(paymentService, signupInviteeCfg))
+		payment.NewSignupRewardRecoveryHandler(paymentService))
 	// 启用配额强制时，把 mismatch 与成本争议退款的配额冲减加入同一 PostgreSQL 事务。
 	// 未启用配额强制时不创建冲减器，退款不需要触碰 quota 表。
 	var refundQuotaReverser auditreceipt.QuotaReverser
@@ -1248,9 +1291,14 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	leaseSweeper := billing.NewLeaseSweeper(pgPool, settler, 0)
 	leaseSweeper.Start(workerCtx)
 	rt.leaseSweepStop = leaseSweeper.Stop
-	// sweeper 与正向意图共用默认关闭的总开关：关闭时不构造、不启动，也不扫描数据库。
+	// sweeper 与正向意图共用默认开启的总开关：只有运维显式应急停用时才不构造、不启动，
+	// 也不扫描数据库。
 	// 多副本无需选主来保证正确性，终态写由意图行的 version 与悬挂状态守卫裁决单胜者。
-	settlementIntentSweeper := buildSettlementIntentSweeper(billingQueries, cfg.SettlementIntentEnabled)
+	settlementIntentSweeper := buildSettlementIntentSweeper(
+		billingQueries,
+		cfg.SettlementIntentEnabled,
+		dlqService,
+	)
 	if settlementIntentSweeper != nil {
 		settlementIntentSweeper.Start(workerCtx)
 		rt.settlementIntentSweepStop = settlementIntentSweeper.Stop
@@ -1560,8 +1608,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 			clientIPResolver,
 			platformTenantID,
 		),
-		adminIssuer:               admin.NewKeyIssuer(pgPool),
-		adminRevoker:              admin.NewKeyRevoker(pgPool),
+		adminIssuer:               admin.NewKeyIssuer(pgPool, platformTenantID),
+		adminRevoker:              admin.NewKeyRevoker(pgPool, platformTenantID),
 		adminTokenIssuer:          admin.NewAdminTokenIssuer(pgPool),
 		billingAuditUpdater:       billingadminhttp.NewAdminBillingSettingsAuditUpdater(pgPool),
 		platformSettings:          platformSettingsService,
@@ -1760,9 +1808,9 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	grokVideoProvider.SetFeedback(d.upstreamFeedback)
 	geminiVideoProvider.SetFeedback(d.upstreamFeedback)
 	mediaTaskWorker.Start(workerCtx)
-	if opts.obsDLQ.Enabled {
-		dlqWorker.Start(workerCtx)
-	}
+	// 该队列承载已交付请求的结算恢复与日志副作用，属于资金正确性基础设施，
+	// 不允许被“关闭观测”连带停用。
+	dlqWorker.Start(workerCtx)
 	outboxWorker.Start(workerCtx)
 	if opts.modelSync != nil && opts.modelSync.Enabled && modelSyncService != nil {
 		scheduler := modelsync.NewScheduler(modelSyncService, modelsync.SchedulerConfig{
@@ -1802,8 +1850,8 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	d.subExpiryWorker = subscriptionExpiryWorker
 	d.subReminderWorker = subscriptionReminderWorker
 
-	// 订阅自动续费 worker: money 动作 (扫到期 → 扣钱包余额 → 续期), 默认 KNOB 关 (零生产行为变),
-	// 仅 HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED=true 时构造并启动。非法值 fail-loud。
+	// 订阅自动续费 worker：持久化 auto_renew=true 就代表用户已选择自动续费，网关默认必须
+	// 执行这份合同；部署者仍可显式设为 false 做紧急停机。非法值 fail-loud。
 	autoRenewEnabled, err := subscriptionAutoRenewEnabledFromEnv(subscriptionAutoRenewEnabledEnv)
 	if err != nil {
 		return nil, err
@@ -1814,7 +1862,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		subscriptionAutoRenewWorker.Start(workerCtx)
 		if logger != nil {
 			logger.Info("订阅自动续费 worker 已启用 (将自动扣减钱包余额续期到期订阅)",
-				zap.String("enabled_by", subscriptionAutoRenewEnabledEnv+"=true"))
+				zap.String("runtime_switch", subscriptionAutoRenewEnabledEnv))
 		}
 	}
 	d.subAutoRenewWorker = subscriptionAutoRenewWorker
@@ -1825,7 +1873,6 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	rt.subscriptionExpiryWorker = subscriptionExpiryWorker
 	rt.subscriptionReminderWorker = subscriptionReminderWorker
 	rt.subscriptionAutoRenewWorker = subscriptionAutoRenewWorker
-	rt.obsDLQEnabled = opts.obsDLQ.Enabled
 	// 最后构建模块知识真相源，等待所有探针依赖的服务
 	//(settler、selector、credential store + scheduler)都接好之后,这样 seed
 	// probe 捕获到的是 live(非 nil)引用。不在请求热路径上。
@@ -1975,18 +2022,16 @@ const hermesLLMToolLoopEnabledEnv = "HUAKAI_HERMES_LLM_TOOLLOOP_ENABLED"
 // Proposable 的可逆工具，真正执行仍需运营者独立确认，并继续受工具循环和变更总开关约束。
 const hermesLLMProposeEnabledEnv = "HUAKAI_HERMES_LLM_PROPOSE_ENABLED"
 
-// subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的启用开关。默认 FALSE:
-// 不设/空都解析为 false → worker 不启动 → 现有 auto_renew=true 订阅行为零变化
-// (合并即零生产行为变)。Owner 显式翻 true 才激活"扫到期 → 扣钱包余额 → 续期"的自动扣费。
+// subscriptionAutoRenewEnabledEnv 是订阅自动续费 worker 的紧急停机开关。默认 TRUE：
+// 不设/空时执行持久化 auto_renew 合同；显式 false 才停止自动扣款与续期。
 const subscriptionAutoRenewEnabledEnv = "HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED"
 
-// subscriptionAutoRenewEnabledFromEnv 解析 DEFAULT-FALSE 运行时布尔旋钮: 不设/空 => false
-// (默认关, money 安全); 任意可解析布尔被尊重; 非法值 fail-loud 启动报错 (绝不静默退回, 以免
-// 把本该关闭的自动扣费悄悄打开)。形态对称 hermesBoolEnabledDefaultFalse, 语义专属订阅自动续费。
+// subscriptionAutoRenewEnabledFromEnv 解析默认开启的运行时开关。任意可解析布尔被尊重；
+// 非法值 fail-loud，避免部署者以为已经停机而 worker 仍继续扣款。
 func subscriptionAutoRenewEnabledFromEnv(envName string) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(envName))
 	if raw == "" {
-		return false, nil
+		return true, nil
 	}
 	enabled, err := strconv.ParseBool(raw)
 	if err != nil {

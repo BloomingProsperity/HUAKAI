@@ -129,6 +129,54 @@ func TestKeyPatchBothFields(t *testing.T) {
 	}
 }
 
+func TestKeyPatchCannotReactivateRevokedKey(t *testing.T) {
+	svc := &fakeKeyServicePatch{patchErr: userkey.ErrAlreadyRevoked}
+	r := buildPatchRouter(svc)
+	req := httptest.NewRequest(http.MethodPatch, "/5", strings.NewReader(`{"status":"active"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s，期望 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"api_key_revoked_terminal"`) {
+		t.Fatalf("body=%s，期望稳定错误码 api_key_revoked_terminal", w.Body.String())
+	}
+}
+
+func TestKeyPatchCannotReactivateOperatorManagedKey(t *testing.T) {
+	svc := &fakeKeyServicePatch{patchErr: userkey.ErrStatusManaged}
+	r := buildPatchRouter(svc)
+	req := httptest.NewRequest(http.MethodPatch, "/5", strings.NewReader(`{"status":"active","expires_at":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s，期望 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"api_key_status_managed"`) {
+		t.Fatalf("body=%s，期望稳定错误码 api_key_status_managed", w.Body.String())
+	}
+}
+
+func TestKeyPatchInvalidStatusReturnsBadRequest(t *testing.T) {
+	svc := &fakeKeyServicePatch{patchErr: userkey.ErrInvalidStatus}
+	r := buildPatchRouter(svc)
+	req := httptest.NewRequest(http.MethodPatch, "/5", strings.NewReader(`{"status":"paused"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s，期望 400", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"invalid_status"`) {
+		t.Fatalf("body=%s，期望稳定错误码 invalid_status", w.Body.String())
+	}
+}
+
 // expires_at 三态解码按生产接口合同执行。handler 必须把线上的 *string
 // 精确转换为 service 的「值 + 清除标志」二分形式。
 

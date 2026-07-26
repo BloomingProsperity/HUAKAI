@@ -18,6 +18,10 @@ type sqlDB interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+type txBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 type PostgresStore struct {
 	db   sqlDB
 	keys credentialstore.KeyProvider
@@ -175,21 +179,104 @@ func (s *PostgresStore) UpsertSettings(ctx context.Context, settings Settings) (
 	if s == nil || s.db == nil {
 		return Settings{}, ErrStoreUnavailable
 	}
-	normalized, err := ValidateSettings(scrubInactiveFields(settings))
+	normalized, storedSecret, storedGotifyToken, err := s.prepareSettings(ctx, settings)
 	if err != nil {
 		return Settings{}, err
+	}
+	return upsertSettingsRow(ctx, s.db, normalized, storedSecret, storedGotifyToken)
+}
+
+func (s *PostgresStore) UpsertSettingsWithAdminLog(
+	ctx context.Context,
+	settings Settings,
+	mutation AdminMutation,
+) (Settings, error) {
+	if s == nil || s.db == nil {
+		return Settings{}, ErrStoreUnavailable
+	}
+	beginner, ok := s.db.(txBeginner)
+	if !ok {
+		return Settings{}, ErrStoreUnavailable
+	}
+	mutation.Actor = strings.TrimSpace(mutation.Actor)
+	mutation.ActorRole = strings.TrimSpace(mutation.ActorRole)
+	mutation.RequestID = strings.TrimSpace(mutation.RequestID)
+	if mutation.Actor == "" || (mutation.ActorRole != "platform_admin" && mutation.ActorRole != "tenant_operator") {
+		return Settings{}, ErrStoreUnavailable
+	}
+	settings.UpdatedBy = mutation.Actor
+	normalized, storedSecret, storedGotifyToken, err := s.prepareSettings(ctx, settings)
+	if err != nil {
+		return Settings{}, err
+	}
+
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return Settings{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	saved, err := upsertSettingsRow(ctx, tx, normalized, storedSecret, storedGotifyToken)
+	if err != nil {
+		return Settings{}, err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"notify_type":                   saved.NotifyType,
+		"threshold_type":                saved.ThresholdType,
+		"extra_email_count":             len(saved.ExtraEmails),
+		"webhook_configured":            saved.WebhookURL != "" && saved.WebhookSecret != "",
+		"notification_email_configured": saved.NotificationEmail != "",
+		"bark_configured":               saved.BarkURL != "",
+		"gotify_configured":             saved.GotifyURL != "" && saved.GotifyToken != "",
+	})
+	if err != nil {
+		return Settings{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO admin_audit_events (
+    tenant_id, actor_id, actor_role, action, target_type, target_id,
+    request_id, payload, log_category
+) VALUES (
+    $1, $2, $3, 'update_user_notification_settings', 'user_notification_settings', $4,
+    NULLIF($5, ''), $6::jsonb, 'security'
+)
+`, saved.TenantID, mutation.Actor, mutation.ActorRole, saved.UserID, mutation.RequestID, payload); err != nil {
+		return Settings{}, fmt.Errorf("insert notification settings log: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Settings{}, fmt.Errorf("commit notification settings update: %w", err)
+	}
+	return saved, nil
+}
+
+func (s *PostgresStore) prepareSettings(ctx context.Context, settings Settings) (Settings, string, string, error) {
+	normalized, err := ValidateSettings(scrubInactiveFields(settings))
+	if err != nil {
+		return Settings{}, "", "", err
 	}
 	if normalized.NotifyType != TypeGotify {
 		normalized.GotifyPriority = 0
 	}
 	storedSecret, err := s.encodeSecret(ctx, normalized.TenantID, normalized.UserID, "webhook_secret", normalized.WebhookSecret)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, "", "", err
 	}
 	storedGotifyToken, err := s.encodeSecret(ctx, normalized.TenantID, normalized.UserID, "gotify_token", normalized.GotifyToken)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, "", "", err
 	}
+	return normalized, storedSecret, storedGotifyToken, nil
+}
+
+func upsertSettingsRow(
+	ctx context.Context,
+	db interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	},
+	normalized Settings,
+	storedSecret string,
+	storedGotifyToken string,
+) (Settings, error) {
 	const q = `
 INSERT INTO user_notification_settings (
 	tenant_id,
@@ -222,7 +309,7 @@ DO UPDATE SET notify_type = EXCLUDED.notify_type,
               updated_by = EXCLUDED.updated_by,
               updated_at = now()
 RETURNING updated_at`
-	if err := s.db.QueryRow(ctx, q,
+	if err := db.QueryRow(ctx, q,
 		normalized.TenantID,
 		normalized.UserID,
 		normalized.NotifyType,
@@ -263,6 +350,21 @@ func (s *Service) UpsertSettings(ctx context.Context, settings Settings) (Settin
 		return Settings{}, ErrStoreUnavailable
 	}
 	return s.store.UpsertSettings(ctx, settings)
+}
+
+func (s *Service) UpsertSettingsWithAdminLog(
+	ctx context.Context,
+	settings Settings,
+	mutation AdminMutation,
+) (Settings, error) {
+	if s == nil || s.store == nil {
+		return Settings{}, ErrStoreUnavailable
+	}
+	store, ok := s.store.(AdminStore)
+	if !ok {
+		return Settings{}, ErrStoreUnavailable
+	}
+	return store.UpsertSettingsWithAdminLog(ctx, settings, mutation)
 }
 
 func scrubInactiveFields(settings Settings) Settings {

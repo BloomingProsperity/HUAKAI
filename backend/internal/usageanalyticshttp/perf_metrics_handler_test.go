@@ -3,6 +3,7 @@ package usageanalyticshttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -230,11 +231,13 @@ func TestHealthScoreHandlerCombinesOverviewErrorRateAndP99(t *testing.T) {
 		Window        string `json:"window"`
 		OverallScore  int    `json:"overall_score"`
 		BusinessScore int    `json:"business_score"`
-		InfraScore    int    `json:"infra_score"`
+		InfraScore    *int   `json:"infra_score"`
+		ScoreBasis    string `json:"score_basis"`
 		Signals       struct {
 			ErrorRate              string  `json:"error_rate"`
 			TTFTP99MS              float64 `json:"ttft_p99_ms"`
 			ChannelHealthAvailable bool    `json:"channel_health_available"`
+			ChannelHealthStatus    string  `json:"channel_health_status"`
 		} `json:"signals"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -243,16 +246,17 @@ func TestHealthScoreHandlerCombinesOverviewErrorRateAndP99(t *testing.T) {
 	if body.Window != "24h" || body.Signals.ErrorRate != "0.1000" || body.Signals.TTFTP99MS != 3000 {
 		t.Fatalf("signals/window=%+v/%q want error_rate=0.1000 p99=3000 window=24h", body.Signals, body.Window)
 	}
-	// 业务面 10% 错误 + 3000ms p99 → business=0。无 tenant_id/无渠道冲减器 → infra 保守满分降级 100
-	// (不再复制业务分=旧 bug),Overall=Overall(0,100)=30,channel_health_available=false。
+	// 业务面 10% 错误 + 3000ms p99 → business=0。没有 tenant_id 时基础设施分为未知，
+	// overall 只使用业务分，不能用虚构的 100 分把结果抬到 30。
 	if body.BusinessScore != 0 {
 		t.Fatalf("business=%d want 0", body.BusinessScore)
 	}
-	if body.InfraScore != 100 || body.Signals.ChannelHealthAvailable {
-		t.Fatalf("infra=%d available=%v want 100/false(无 tenant_id 降级、与业务分解耦)", body.InfraScore, body.Signals.ChannelHealthAvailable)
+	if body.InfraScore != nil || body.Signals.ChannelHealthAvailable ||
+		body.Signals.ChannelHealthStatus != channelHealthNotRequested {
+		t.Fatalf("infra=%v signals=%+v want null/not_requested", body.InfraScore, body.Signals)
 	}
-	if body.OverallScore != 30 {
-		t.Fatalf("overall=%d want 30(=Overall(business=0, infra=100))", body.OverallScore)
+	if body.OverallScore != 0 || body.ScoreBasis != healthScoreBasisBusinessOnly {
+		t.Fatalf("overall=%d basis=%q want 0/business_only", body.OverallScore, body.ScoreBasis)
 	}
 }
 
@@ -279,12 +283,15 @@ func TestHealthScoreInfraIsPhysicallySeparateFromBusiness(t *testing.T) {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		BusinessScore int `json:"business_score"`
-		InfraScore    int `json:"infra_score"`
+		BusinessScore int    `json:"business_score"`
+		InfraScore    *int   `json:"infra_score"`
+		OverallScore  int    `json:"overall_score"`
+		ScoreBasis    string `json:"score_basis"`
 		Signals       struct {
-			ChannelHealthAvailable bool  `json:"channel_health_available"`
-			HealthyChannels        int64 `json:"healthy_channels"`
-			ManagedChannels        int64 `json:"managed_channels"`
+			ChannelHealthAvailable bool   `json:"channel_health_available"`
+			ChannelHealthStatus    string `json:"channel_health_status"`
+			HealthyChannels        int64  `json:"healthy_channels"`
+			ManagedChannels        int64  `json:"managed_channels"`
 		} `json:"signals"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -293,13 +300,72 @@ func TestHealthScoreInfraIsPhysicallySeparateFromBusiness(t *testing.T) {
 	if body.BusinessScore != 100 {
 		t.Fatalf("business=%d want 100(业务全好)", body.BusinessScore)
 	}
-	if body.InfraScore != 40 {
-		t.Fatalf("infra=%d want 40(健康2/自动托管5),应明显低于业务分", body.InfraScore)
+	if body.InfraScore == nil || *body.InfraScore != 40 {
+		t.Fatalf("infra=%v want 40(健康2/自动托管5),应明显低于业务分", body.InfraScore)
 	}
-	if body.BusinessScore == body.InfraScore {
-		t.Fatalf("business 与 infra 不应相同(物理不同源输入):both=%d", body.BusinessScore)
+	if body.BusinessScore == *body.InfraScore {
+		t.Fatalf("business 与 infra 不应相同(物理不同源输入):business=%d infra=%d", body.BusinessScore, *body.InfraScore)
 	}
-	if !body.Signals.ChannelHealthAvailable || body.Signals.HealthyChannels != 2 || body.Signals.ManagedChannels != 5 {
+	if body.OverallScore != 82 || body.ScoreBasis != healthScoreBasisBusinessAndInfra {
+		t.Fatalf("overall=%d basis=%q want 82/business_and_infra", body.OverallScore, body.ScoreBasis)
+	}
+	if !body.Signals.ChannelHealthAvailable || body.Signals.ChannelHealthStatus != channelHealthAvailable ||
+		body.Signals.HealthyChannels != 2 || body.Signals.ManagedChannels != 5 {
 		t.Fatalf("infra signals=%+v want available healthy=2 managed=5", body.Signals)
+	}
+}
+
+func TestHealthScoreRejectsInvalidTenantID(t *testing.T) {
+	store := &perfMetricsQueryStub{}
+	rec := invoke(NewHealthScoreHandler(store, fakeChannelSummarizer{}),
+		"/v1/admin/usage/health-score?window=24h&tenant_id=not-a-number")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHealthScoreExposesInfraQueryFailureAsPartialData(t *testing.T) {
+	store := &perfMetricsQueryStub{
+		overviewTotals: dbbilling.AggregateUsageOverviewTotalsRow{RequestCount: 10, SuccessCount: 10},
+		percentileRow:  dbbilling.AggregateUsageLatencyPercentilesRow{P99Ms: 500},
+	}
+	rec := invoke(NewHealthScoreHandler(store, fakeChannelSummarizer{err: errors.New("db unavailable")}),
+		"/v1/admin/usage/health-score?window=24h&tenant_id=7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var body healthScoreResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.InfraScore != nil || body.OverallScore != body.BusinessScore ||
+		body.ScoreBasis != healthScoreBasisBusinessOnly ||
+		body.Signals.ChannelHealthStatus != channelHealthQueryFailed ||
+		body.Signals.ChannelHealthAvailable {
+		t.Fatalf("query failure must be visible business-only partial data: %+v", body)
+	}
+}
+
+func TestHealthScoreNoManagedChannelsIsNotPerfectInfra(t *testing.T) {
+	store := &perfMetricsQueryStub{
+		overviewTotals: dbbilling.AggregateUsageOverviewTotalsRow{RequestCount: 10, SuccessCount: 10},
+		percentileRow:  dbbilling.AggregateUsageLatencyPercentilesRow{P99Ms: 500},
+	}
+	rec := invoke(NewHealthScoreHandler(store, fakeChannelSummarizer{
+		summary: channelhealth.ChannelHealthSummary{
+			ByState: map[channelhealth.HealthState]int64{channelhealth.StateManualPaused: 3},
+			Total:   3,
+		},
+	}), "/v1/admin/usage/health-score?window=24h&tenant_id=7")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	var body healthScoreResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.InfraScore != nil || body.Signals.ChannelHealthStatus != channelHealthNoManagedChannels ||
+		!body.Signals.ChannelHealthAvailable || body.OverallScore != body.BusinessScore {
+		t.Fatalf("无托管渠道不得伪装成满分: %+v", body)
 	}
 }

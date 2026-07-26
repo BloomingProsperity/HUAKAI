@@ -18,6 +18,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -25,8 +26,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 func TestEmbeddingsHandler_SuccessSettlesPromptTokensAndForwardsPassthrough(t *testing.T) {
@@ -71,6 +75,21 @@ func TestEmbeddingsHandler_SuccessSettlesPromptTokensAndForwardsPassthrough(t *t
 	}
 	if settle.RequestedModel != "embed-public" || settle.UpstreamModel != "text-embedding-3-small" {
 		t.Fatalf("model chain requested/upstream=%q/%q", settle.RequestedModel, settle.UpstreamModel)
+	}
+}
+
+func TestEmbeddingsHandler_DisabledTenantStopsBeforeUpstream(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{status: http.StatusOK, body: `{}`})
+	env.claims.err = billing.ErrTenantInactive
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"must not dispatch"}`)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"tenant_inactive"`) {
+		t.Fatalf("status=%d body=%s want 403 tenant_inactive", rec.Code, rec.Body.String())
+	}
+	if env.transport.called || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("停用租户仍触发 upstream/settle/abort=%v/%d/%d",
+			env.transport.called, len(env.settler.settles), len(env.settler.aborts))
 	}
 }
 
@@ -158,6 +177,89 @@ func TestEmbeddingsHandler_EmptyInputReturns400BeforeReserve(t *testing.T) {
 		if env.transport.called {
 			t.Fatalf("body=%s should not reach upstream", body)
 		}
+	}
+}
+
+// TestEmbeddingsHandler_SettlementIntentFailureStopsBeforeUpstream 守住资金恢复
+// 证据写失败时的交付前硬门。变异：删掉 InsertPending 或吞掉其错误，会让
+// transport 被调用且状态不再是 503。
+func TestEmbeddingsHandler_SettlementIntentFailureStopsBeforeUpstream(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+	})
+	env.deps.SettlementIntents = settlementintent.NewPostgresStore(nil)
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"must not dispatch"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+	}
+	if env.transport.called {
+		t.Fatal("恢复证据写失败后不得调用上游")
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+	env.assertNoHangingClaims(t)
+}
+
+func TestEmbeddingsHandler_SettlementIntentSuccessfulLifecycle(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+	})
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"lifecycle"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
+	}
+	if created := store.Created(); created.ClaimID != env.claims.reserves[0].claimID || created.TenantID != 7 {
+		t.Fatalf("intent identity=%+v 未绑定权威 claim/tenant", created)
+	}
+}
+
+func TestEmbeddingsDeliveryEvidenceFailureStopsClientDeliveryAndSettlement(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[{"embedding":[9.9]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+	})
+	store := &settlementintenttest.Store{DeliveryError: errors.New("注入交付证据故障")}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+	health := &embeddingHealthSpy{}
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"delivery gate"}`)
+
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "9.9") {
+		t.Fatalf("status/body=%d/%s want 503 且无上游业务体", rec.Code, rec.Body.String())
+	}
+	if len(env.settler.settles) != 0 || len(env.settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 0/1", len(env.settler.settles), len(env.settler.aborts))
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%q want pending->aborted", got)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("本地交付证据故障写入失败健康信号: %+v", health.signals)
+		}
+	}
+	if health.forceCooldowns != 0 {
+		t.Fatalf("本地交付证据故障污染账号健康: signals=%+v force_cooldowns=%d",
+			health.signals, health.forceCooldowns)
 	}
 }
 
@@ -277,6 +379,7 @@ func (routerStub) Plan(context.Context, router.PlanInput) (router.RoutePlan, err
 type recordingClaimGate struct {
 	nextClaimID int64
 	reserves    []reservedClaim
+	err         error
 }
 
 type reservedClaim struct {
@@ -286,6 +389,9 @@ type reservedClaim struct {
 
 func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
 	g.reserves = append(g.reserves, reservedClaim{claimID: g.nextClaimID, req: req})
+	if g.err != nil {
+		return nil, g.err
+	}
 	return &billing.ReserveResult{ClaimID: g.nextClaimID}, nil
 }
 
@@ -339,12 +445,13 @@ type recordingSettler struct {
 type embeddingsRecoveryEnqueuer struct {
 	calls int
 	event dlq.Event
+	err   error
 }
 
 func (q *embeddingsRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
 	q.calls++
 	q.event = event
-	return 1, nil
+	return 1, q.err
 }
 
 type abortCall struct {
@@ -454,6 +561,33 @@ func TestEmbeddingsHandler_SettleErrorKeepsDeliveredResponseAndEnqueuesRecovery(
 	}
 	if payload.Source != settlementrecovery.SourceEmbeddingsDelivered {
 		t.Fatalf("recovery source=%q，期望 %q", payload.Source, settlementrecovery.SourceEmbeddingsDelivered)
+	}
+}
+
+func TestEmbeddingsHandler_SettleAndRecoveryDoubleFailurePersistsIntent(t *testing.T) {
+	env := newEmbeddingsTestEnv(t, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":5,"total_tokens":5}}`,
+	})
+	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &embeddingsRecoveryEnqueuer{err: errors.New("recovery queue down")}
+	env.deps.SettleRecoveryDLQ = recovery
+	intentStore := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = intentStore
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, `{"model":"embed-public","input":"double fault"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s，响应已交付不能反悔", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(intentStore.Events(), "->"); got != "pending->delivering->recovery_pending" {
+		t.Fatalf("双故障意图生命周期=%q", got)
+	}
+	raw, failureClass := intentStore.RecoveryEvidence()
+	payload, err := settlementrecovery.Decode(raw)
+	if err != nil || payload.Source != settlementrecovery.SourceEmbeddingsDelivered || failureClass == "" {
+		t.Fatalf("双故障恢复证据 source=%q class=%q err=%v", payload.Source, failureClass, err)
 	}
 }
 

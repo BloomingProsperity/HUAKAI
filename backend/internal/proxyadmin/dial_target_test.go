@@ -19,14 +19,14 @@ func TestDialTargetDecryptsCredentialsAndEscapes(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	q := &mockProxyQuerier{getRow: admindb.GetProxyRow{
-		ID: 5, TenantID: 7, Protocol: "http", Host: "203.0.113.10", Port: 8080,
+		ID: 5, TenantID: 7, Protocol: "http", Host: "1.1.1.1", Port: 8080,
 		AuthUsername: strPtr("user"), AuthSecret: &enc, Status: "active",
 	}}
 	u, err := New(q, keys).DialTarget(ctx, 7, 5)
 	if err != nil {
 		t.Fatalf("DialTarget: %v", err)
 	}
-	if u.Scheme != "http" || u.Host != "203.0.113.10:8080" {
+	if u.Scheme != "http" || u.Host != "1.1.1.1:8080" {
 		t.Fatalf("URL 主机/scheme 错: %s", u.Redacted())
 	}
 	pw, _ := u.User.Password()
@@ -64,7 +64,7 @@ func TestDialTargetNotFoundIsTenantScoped(t *testing.T) {
 
 func TestDialTargetNoCredentialsOmitsUserinfo(t *testing.T) {
 	q := &mockProxyQuerier{getRow: admindb.GetProxyRow{
-		ID: 5, TenantID: 7, Protocol: "socks5", Host: "203.0.113.10", Port: 1080, Status: "active",
+		ID: 5, TenantID: 7, Protocol: "socks5", Host: "1.1.1.1", Port: 1080, Status: "active",
 	}}
 	u, err := New(q, testKeys(t)).DialTarget(context.Background(), 7, 5)
 	if err != nil {

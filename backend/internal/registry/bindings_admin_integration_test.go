@@ -13,6 +13,8 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,7 +33,7 @@ func baseCreate(f *registryFixture, modelID int64) CreateBindingInput {
 	return CreateBindingInput{
 		TenantID: f.tenantID, ModelID: modelID, PoolGroupID: f.poolGroupID,
 		Priority: 100, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "normal", Enabled: true,
-		Actor: "test", Reason: "integration",
+		Actor: "admin_token:test", ActorRole: "platform_admin", RequestID: "binding-integration", Reason: "integration",
 	}
 }
 
@@ -68,7 +70,10 @@ func TestBindingsAdmin_DeleteLastBindingBumps(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	v0 := readSnapVer(t, ctx, pool, f.tenantID) // 8
-	if err := r.DeletePoolBinding(ctx, got.ID, f.tenantID, "test", ""); err != nil {
+	if err := r.DeletePoolBinding(ctx, DeleteBindingInput{
+		ID: got.ID, TenantID: f.tenantID, Actor: "admin_token:test",
+		ActorRole: "platform_admin", RequestID: "binding-delete",
+	}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if v := readSnapVer(t, ctx, pool, f.tenantID); v != v0+1 {
@@ -105,10 +110,18 @@ func TestBindingsAdmin_CrossTenantByIDScoped(t *testing.T) {
 	if _, err := r.GetPoolBindingByID(ctx, got.ID, f.otherTenantID); !errors.Is(err, ErrBindingNotFound) {
 		t.Errorf("Get 跨租户 err=%v want ErrBindingNotFound", err)
 	}
-	if _, err := r.UpdatePoolBinding(ctx, UpdateBindingInput{ID: got.ID, TenantID: f.otherTenantID, Priority: 5, Weight: 1, SelectionMode: "strict_priority", FallbackClass: "normal", Enabled: true}); !errors.Is(err, ErrBindingNotFound) {
+	if _, err := r.UpdatePoolBinding(ctx, UpdateBindingInput{
+		ID:       got.ID,
+		TenantID: f.otherTenantID,
+		Priority: BindingField[int32]{Set: true, Value: 5},
+		Actor:    "admin_token:test", ActorRole: "platform_admin", RequestID: "binding-cross-update",
+	}); !errors.Is(err, ErrBindingNotFound) {
 		t.Errorf("Update 跨租户 err=%v want ErrBindingNotFound", err)
 	}
-	if err := r.DeletePoolBinding(ctx, got.ID, f.otherTenantID, "x", ""); !errors.Is(err, ErrBindingNotFound) {
+	if err := r.DeletePoolBinding(ctx, DeleteBindingInput{
+		ID: got.ID, TenantID: f.otherTenantID, Actor: "admin_token:test",
+		ActorRole: "platform_admin", RequestID: "binding-cross-delete",
+	}); !errors.Is(err, ErrBindingNotFound) {
 		t.Errorf("Delete 跨租户 err=%v want ErrBindingNotFound", err)
 	}
 	// 正控制:原租户能读到(证明不是恒 NotFound)。
@@ -180,6 +193,88 @@ func TestBindingsAdmin_ListIncludesDisabled(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("admin list 应含 disabled 绑定 #%d,实际 %d 条均未命中", got.ID, len(items))
+	}
+}
+
+// 日志写入失败时，绑定行与快照版本必须同时回滚。该用例覆盖新增、更新和删除三个
+// 独立事务；任一路把日志挪到提交之后，精确行状态或版本断言都会转红。
+func TestBindingsAdmin_LogFailureRollsBackBindingAndSnapshot(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	modelID := f.seedModel(modelOpts{canonicalID: "mb-log-" + f.suffix, providerModelID: "pm"})
+	f.setSnapshot(7)
+	registry := NewPostgresRegistry(pool, nil)
+	baseline, err := registry.CreatePoolBinding(ctx, baseCreate(f, modelID))
+	if err != nil {
+		t.Fatalf("create baseline binding: %v", err)
+	}
+
+	suffix := strings.ReplaceAll(f.suffix, "-", "")
+	functionName := "reject_binding_log_" + suffix
+	triggerName := "reject_binding_log_trigger_" + suffix
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+CREATE FUNCTION %s() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'binding log rejected for atomicity test';
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events
+FOR EACH ROW EXECUTE FUNCTION %s()`, functionName, triggerName, functionName)); err != nil {
+		t.Fatalf("install reject trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON admin_audit_events`, triggerName))
+		_, _ = pool.Exec(c, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
+	})
+
+	versionBefore := readSnapVer(t, ctx, pool, f.tenantID)
+	create := baseCreate(f, modelID)
+	create.PoolGroupID = f.seedPoolGroup("log-create")
+	if _, err := registry.CreatePoolBinding(ctx, create); err == nil {
+		t.Fatal("日志失败时新增绑定必须失败")
+	}
+	var count int64
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM model_pool_bindings
+WHERE tenant_id=$1 AND model_id=$2 AND pool_group_id=$3 AND deleted_at IS NULL`,
+		f.tenantID, modelID, create.PoolGroupID,
+	).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("新增日志失败留下绑定 count=%d err=%v", count, err)
+	}
+	if got := readSnapVer(t, ctx, pool, f.tenantID); got != versionBefore {
+		t.Fatalf("新增日志失败仍推进快照 version=%d want %d", got, versionBefore)
+	}
+
+	if _, err := registry.UpdatePoolBinding(ctx, UpdateBindingInput{
+		ID: baseline.ID, TenantID: f.tenantID,
+		Enabled: BindingField[bool]{Set: true, Value: false},
+		Actor:   "admin_token:test", ActorRole: "platform_admin",
+		RequestID: "binding-log-rejected-update",
+	}); err == nil {
+		t.Fatal("日志失败时更新绑定必须失败")
+	}
+	got, err := registry.GetPoolBindingByID(ctx, baseline.ID, f.tenantID)
+	if err != nil || !got.Enabled {
+		t.Fatalf("更新日志失败留下半状态 enabled=%v err=%v", got.Enabled, err)
+	}
+	if current := readSnapVer(t, ctx, pool, f.tenantID); current != versionBefore {
+		t.Fatalf("更新日志失败仍推进快照 version=%d want %d", current, versionBefore)
+	}
+
+	if err := registry.DeletePoolBinding(ctx, DeleteBindingInput{
+		ID: baseline.ID, TenantID: f.tenantID,
+		Actor: "admin_token:test", ActorRole: "platform_admin",
+		RequestID: "binding-log-rejected-delete",
+	}); err == nil {
+		t.Fatal("日志失败时删除绑定必须失败")
+	}
+	if _, err := registry.GetPoolBindingByID(ctx, baseline.ID, f.tenantID); err != nil {
+		t.Fatalf("删除日志失败后绑定应仍存在: %v", err)
+	}
+	if current := readSnapVer(t, ctx, pool, f.tenantID); current != versionBefore {
+		t.Fatalf("删除日志失败仍推进快照 version=%d want %d", current, versionBefore)
 	}
 }
 

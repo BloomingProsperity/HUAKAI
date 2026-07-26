@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -29,15 +30,22 @@ type routingPolicyPoolGetter interface {
 	GetPool(context.Context, dbbilling.GetPoolParams) (dbbilling.PoolGroup, error)
 }
 
+type routingPolicyModelGetter interface {
+	GetModelRoutingForGroup(context.Context, dbbilling.GetModelRoutingForGroupParams) ([]dbbilling.GetModelRoutingForGroupRow, error)
+}
+
 type routingPolicyCacheKey struct {
-	tenantID    int64
-	poolGroupID int64
+	tenantID       int64
+	poolGroupID    int64
+	requestedModel string
 }
 
 type routingPolicyCacheEntry struct {
 	fallbackTimeoutMS  int
 	fallbackMaxWaiting int
 	topKDefault        int
+	requestedModel     string
+	modelAccountIDs    []int64
 	expiresAt          time.Time
 }
 
@@ -51,7 +59,8 @@ type routingPolicyInflight struct {
 // SelectionRequest 的 selection_mode 返回选号模式,并用短 TTL 缓存补齐 fallback wait 配置。
 // selection_mode 已由 dispatch 端从 registry 解析的 BindingMetadata 透传到 req,这里只做映射。
 type bindingRoutingPolicySource struct {
-	q routingPolicyPoolGetter
+	q      routingPolicyPoolGetter
+	modelQ routingPolicyModelGetter
 
 	mu       sync.Mutex
 	cache    map[routingPolicyCacheKey]routingPolicyCacheEntry
@@ -63,11 +72,14 @@ type bindingRoutingPolicySource struct {
 // newBindingRoutingPolicySource 构造生产 RoutingPolicySource。
 func newBindingRoutingPolicySource(q ...routingPolicyPoolGetter) pool.RoutingPolicySource {
 	var queries routingPolicyPoolGetter
+	var modelQueries routingPolicyModelGetter
 	if len(q) > 0 {
 		queries = q[0]
+		modelQueries, _ = q[0].(routingPolicyModelGetter)
 	}
 	return &bindingRoutingPolicySource{
 		q:        queries,
+		modelQ:   modelQueries,
 		cacheTTL: defaultRoutingPolicyCacheTTL,
 		now:      time.Now,
 	}
@@ -92,7 +104,11 @@ func (s *bindingRoutingPolicySource) GetRoutingPolicy(ctx context.Context, req p
 	if s.q == nil || req.TenantID == 0 || req.PoolGroupID == 0 {
 		return policy, nil
 	}
-	key := routingPolicyCacheKey{tenantID: req.TenantID, poolGroupID: req.PoolGroupID}
+	key := routingPolicyCacheKey{
+		tenantID:       req.TenantID,
+		poolGroupID:    req.PoolGroupID,
+		requestedModel: req.RequestedModel,
+	}
 	entry, err := s.fallbackPolicy(ctx, key, dbbilling.GetPoolParams{
 		TenantID: req.TenantID,
 		ID:       req.PoolGroupID,
@@ -138,7 +154,24 @@ func (s *bindingRoutingPolicySource) fallbackPolicy(ctx context.Context, key rou
 			fallbackMaxWaiting: int(poolGroup.FallbackWaitMaxWaiting),
 			fallbackTimeoutMS:  int(poolGroup.FallbackWaitTimeoutMs),
 			topKDefault:        int(poolGroup.TopKDefault),
-			expiresAt:          s.currentTime().Add(s.effectiveCacheTTL()),
+			requestedModel:     key.requestedModel,
+		}
+		if s.modelQ != nil && key.requestedModel != "" {
+			rows, routeErr := s.modelQ.GetModelRoutingForGroup(ctx, dbbilling.GetModelRoutingForGroupParams{
+				TenantID:    key.tenantID,
+				PoolGroupID: key.poolGroupID,
+				Model:       key.requestedModel,
+			})
+			if routeErr != nil {
+				err = fmt.Errorf("读取模型账号强制路由：%w", routeErr)
+			} else if len(rows) > 1 {
+				err = fmt.Errorf("读取模型账号强制路由：同一池组和模型存在 %d 条启用配置", len(rows))
+			} else if len(rows) == 1 {
+				entry.modelAccountIDs = append([]int64(nil), rows[0].ProviderAccountIds...)
+			}
+		}
+		if err == nil {
+			entry.expiresAt = s.currentTime().Add(s.effectiveCacheTTL())
 		}
 	}
 
@@ -175,4 +208,9 @@ func applyRoutingPolicyFallback(policy *pool.RoutingPolicy, entry routingPolicyC
 	policy.FallbackMaxWaiting = entry.fallbackMaxWaiting
 	policy.FallbackTimeoutMS = entry.fallbackTimeoutMS
 	policy.TopKDefault = entry.topKDefault
+	if entry.requestedModel != "" && len(entry.modelAccountIDs) > 0 {
+		policy.ModelAccountIDs = map[string][]int64{
+			entry.requestedModel: append([]int64(nil), entry.modelAccountIDs...),
+		}
+	}
 }

@@ -11,10 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type PostgresStore struct {
 	db db.DBTX
+}
+
+type txBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
 }
 
 func NewPostgresStore(database db.DBTX) *PostgresStore {
@@ -47,6 +52,98 @@ RETURNING id, tenant_id, user_id, credential_id, public_key, sign_count, aaguid,
 		return CredentialRecord{}, ErrDuplicateCredential
 	}
 	return row, err
+}
+
+func (s *PostgresStore) SaveCredentialForSession(
+	ctx context.Context,
+	record CredentialRecord,
+	familyID string,
+	authVersion int,
+) (CredentialRecord, error) {
+	var saved CredentialRecord
+	err := s.runSessionBoundMutation(
+		ctx, record.TenantID, record.UserID, familyID, authVersion,
+		func(txStore *PostgresStore) error {
+			var err error
+			saved, err = txStore.SaveCredential(ctx, record)
+			return err
+		},
+	)
+	return saved, err
+}
+
+func (s *PostgresStore) DeleteCredentialForSession(
+	ctx context.Context,
+	tenantID, userID, credentialID int64,
+	familyID string,
+	authVersion int,
+) error {
+	return s.runSessionBoundMutation(
+		ctx, tenantID, userID, familyID, authVersion,
+		func(txStore *PostgresStore) error {
+			return txStore.DeleteCredential(ctx, tenantID, userID, credentialID)
+		},
+	)
+}
+
+func (s *PostgresStore) runSessionBoundMutation(
+	ctx context.Context,
+	tenantID, userID int64,
+	familyID string,
+	authVersion int,
+	mutate func(*PostgresStore) error,
+) error {
+	if s == nil || s.db == nil || mutate == nil {
+		return ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 || strings.TrimSpace(familyID) == "" || authVersion <= 0 {
+		return ErrInvalidInput
+	}
+	run := func(tx pgx.Tx) error {
+		if err := usersession.LockUserSessionsInTransaction(ctx, tx, tenantID, userID); err != nil {
+			return err
+		}
+		var familyVersion, userVersion int
+		err := tx.QueryRow(ctx, `
+SELECT sf.auth_version, u.password_version
+FROM session_families sf
+INNER JOIN users u
+  ON u.tenant_id = sf.tenant_id
+ AND u.id = sf.user_id
+WHERE sf.tenant_id = $1
+  AND sf.user_id = $2
+  AND sf.id = $3::uuid
+  AND sf.status IN ('active', 'suspicious')
+  AND u.status = 'active'
+  AND u.deleted_at IS NULL
+FOR UPDATE OF sf, u`, tenantID, userID, familyID).Scan(&familyVersion, &userVersion)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrSecurityStateChanged
+			}
+			return err
+		}
+		if familyVersion != authVersion || userVersion != authVersion {
+			return ErrSecurityStateChanged
+		}
+		return mutate(&PostgresStore{db: tx})
+	}
+	if tx, ok := s.db.(pgx.Tx); ok {
+		return run(tx)
+	}
+	beginner, ok := s.db.(txBeginner)
+	if !ok {
+		return ErrStoreNotConfigured
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := run(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) ListCredentials(ctx context.Context, tenantID, userID int64) ([]CredentialRecord, error) {

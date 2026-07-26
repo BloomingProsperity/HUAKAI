@@ -20,9 +20,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -31,10 +33,13 @@ type AdminAuth interface {
 	Resolve(context.Context, *http.Request) (admin.AdminIdentity, error)
 }
 
-// Store 是本端点需要的最小写面:绑定 FK + 写审计。*admindb.Queries 满足之。
+// Store 是本端点需要的原子写面。
 type Store interface {
-	UpdateProviderAccountFingerprintProfile(context.Context, admindb.UpdateProviderAccountFingerprintProfileParams) error
-	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
+	UpdateFingerprintProfileWithAudit(
+		context.Context,
+		admindb.UpdateProviderAccountFingerprintProfileParams,
+		admindb.InsertAdminAuditEventParams,
+	) error
 }
 
 type Deps struct {
@@ -45,7 +50,8 @@ type Deps struct {
 // MountRoutes 在 provider-accounts 路由组内挂 PATCH /{id}/fingerprint-profile。
 // 由 cmd/gateway 在挂载 /admin/v1/provider-accounts 组时一并调用(组内多 mount 合法)。
 func MountRoutes(r chi.Router, d Deps) {
-	r.Patch("/{id}/fingerprint-profile", newHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Patch("/{id}/fingerprint-profile", newHandler(d))
 }
 
 type setFingerprintRequest struct {
@@ -82,19 +88,7 @@ func newHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		actorID := ident.AuditActor()
-		if err := d.Store.UpdateProviderAccountFingerprintProfile(r.Context(), admindb.UpdateProviderAccountFingerprintProfileParams{
-			ProfileID: req.ProfileID, ActorID: &actorID, ID: id, TenantID: tenantID,
-		}); err != nil {
-			// FK 违反(profile 不存在,23503)或触发器 RAISE(跨租户,P0001)→ 400;其它瞬时错误 → 503。
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "P0001") {
-				writeErr(w, http.StatusBadRequest, "invalid_fingerprint_profile", "profile does not exist or does not belong to this tenant")
-				return
-			}
-			writeErr(w, http.StatusServiceUnavailable, "provider_account_update_failed", "could not update fingerprint profile binding")
-			return
-		}
-		// 复用既有审计 action update_provider_account(避免改 admin_audit_events CHECK 约束=schema 迁移);
+		// 复用账号更新日志事件，绑定/解绑差异落 payload + reason。
 		// 绑定/解绑差异落 payload + reason。
 		reason := "绑定账号 TLS 指纹 profile"
 		if req.ProfileID == nil {
@@ -105,12 +99,25 @@ func newHandler(d Deps) http.HandlerFunc {
 		}
 		payload, _ := json.Marshal(map[string]any{"tenant_id": tenantID, "op": "fingerprint_profile", "tls_fingerprint_profile_id": req.ProfileID})
 		reqID := middleware.GetReqID(r.Context())
-		if _, err := d.Store.InsertAdminAuditEvent(r.Context(), admindb.InsertAdminAuditEventParams{
+		err := d.Store.UpdateFingerprintProfileWithAudit(r.Context(), admindb.UpdateProviderAccountFingerprintProfileParams{
+			ProfileID: req.ProfileID, ActorID: &actorID, ID: id, TenantID: tenantID,
+		}, admindb.InsertAdminAuditEventParams{
 			TenantID: &tenantID, ActorID: actorID, ActorRole: ident.Role,
 			Action: "update_provider_account", TargetType: "provider_account", TargetID: &id,
 			RequestID: &reqID, Reason: &reason, Payload: payload,
-		}); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, "audit_write_failed", "audit write failed")
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeErr(w, http.StatusNotFound, "provider_account_not_found", "provider account not found")
+				return
+			}
+			// FK 违反(profile 不存在,23503)或触发器 RAISE(跨租户,P0001)→ 400;其它瞬时错误 → 503。
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && (pgErr.Code == "23503" || pgErr.Code == "P0001") {
+				writeErr(w, http.StatusBadRequest, "invalid_fingerprint_profile", "profile does not exist or does not belong to this tenant")
+				return
+			}
+			writeErr(w, http.StatusServiceUnavailable, "provider_account_update_failed", "could not update fingerprint profile binding")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "tls_fingerprint_profile_id": req.ProfileID})

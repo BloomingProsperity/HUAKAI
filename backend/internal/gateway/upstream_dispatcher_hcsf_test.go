@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -95,6 +96,40 @@ func TestDispatchHCSFHappyPathBuildsBodyFromEnvelope(t *testing.T) {
 	msgs := body["messages"].([]any)
 	if msgs[0].(map[string]any)["content"] != "graph text" {
 		t.Fatalf("messages = %+v; want CapabilityGraph text", msgs)
+	}
+}
+
+func TestDispatchHCSFRejectsSessionCustomEndpointResolvingToLoopback(t *testing.T) {
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" || host != "hcsf-session-proxy.example" {
+			t.Fatalf("lookup=(%q,%q)，期望 (ip,hcsf-session-proxy.example)", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	t.Cleanup(restore)
+
+	env := testHCSFEnvelope()
+	doer := &stubDoer{respStatus: http.StatusOK, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(&stubAdapter{
+		platform: "openai_codex",
+		endpoint: "https://hcsf-session-proxy.example/backend-api/codex/responses",
+	}, doer)
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gpt-4o-upstream",
+		Account:         provider.AccountInfo{AccountID: 82, Platform: "openai_codex", AccountType: "session"},
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "session-secret",
+			Extra: map[string]string{"base_url": "https://hcsf-session-proxy.example/backend-api/codex/responses"},
+		},
+	})
+	_, err := d.DispatchHCSF(ctx, env)
+	if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("DispatchHCSF error=%v，期望 ErrUnsafePassthroughEndpoint", err)
+	}
+	if doer.got != nil {
+		t.Fatal("不安全 HCSF session 自定义 endpoint 到达 HTTP doer")
 	}
 }
 

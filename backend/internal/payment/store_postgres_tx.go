@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
 type auditInsert struct {
@@ -220,8 +222,21 @@ FROM credits, refunds`, tenantID, userID).Scan(&balance); err != nil {
 }
 
 func lockPaymentUserTx(ctx context.Context, tx pgx.Tx, tenantID, userID int64) error {
+	if err := tenancy.LockActiveForWrite(ctx, tx, tenantID); err != nil {
+		if errors.Is(err, tenancy.ErrTenantInactive) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("payment: lock tenant: %w", err)
+	}
 	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM users WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, userID).Scan(&one)
+	err := tx.QueryRow(ctx, `
+SELECT 1
+FROM users
+WHERE tenant_id=$1
+  AND id=$2
+  AND status='active'
+  AND deleted_at IS NULL
+FOR UPDATE`, tenantID, userID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrUserNotFound
 	}

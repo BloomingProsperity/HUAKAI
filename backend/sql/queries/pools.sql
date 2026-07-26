@@ -81,9 +81,14 @@ SELECT
 FROM pool_groups
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL
-ORDER BY created_at DESC, id DESC
+  AND (
+      sqlc.arg(after_id)::bigint = 0
+      OR id < sqlc.arg(after_id)::bigint
+  )
+ORDER BY id DESC
 LIMIT sqlc.arg(limit_count)::integer
-OFFSET sqlc.arg(page_offset)::integer;
+OFFSET sqlc.arg(page_offset)::integer
+;
 
 -- name: UpdatePool :one
 UPDATE pool_groups

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -36,6 +37,12 @@ type AdminProviderAccountRow struct {
 	LastProbeLatencyMS          *int32             `db:"last_probe_latency_ms" json:"last_probe_latency_ms"`
 	LastProbeAt                 pgtype.Timestamptz `db:"last_probe_at" json:"last_probe_at"`
 	LastRequestObservedAt       pgtype.Timestamptz `db:"last_request_observed_at" json:"last_request_observed_at"`
+	TodayStatsWindowStart       pgtype.Timestamptz `db:"today_stats_window_start" json:"today_stats_window_start"`
+	TodayStatsObservedAt        pgtype.Timestamptz `db:"today_stats_observed_at" json:"today_stats_observed_at"`
+	TodayRequestCount           int64              `db:"today_request_count" json:"today_request_count"`
+	TodaySuccessCount           int64              `db:"today_success_count" json:"today_success_count"`
+	TodayFailureCount           int64              `db:"today_failure_count" json:"today_failure_count"`
+	TodayTTFTP95MS              *float64           `db:"today_ttft_p95_ms" json:"today_ttft_p95_ms"`
 	QuotaSnapshotObservedAt     pgtype.Timestamptz `db:"quota_snapshot_observed_at" json:"quota_snapshot_observed_at"`
 	QuotaSnapshotSource         *string            `db:"quota_snapshot_source" json:"quota_snapshot_source"`
 	QuotaSnapshotOutcome        *string            `db:"quota_snapshot_outcome" json:"quota_snapshot_outcome"`
@@ -87,17 +94,19 @@ type AdminProviderAccountRow struct {
 }
 
 type ListAdminProviderAccountsParams struct {
-	TenantID                 int64  `db:"tenant_id" json:"tenant_id"`
-	AfterID                  int64  `db:"after_id" json:"after_id"`
-	LimitCount               int32  `db:"limit_count" json:"limit_count"`
-	PoolGroupID              int64  `db:"pool_group_id" json:"pool_group_id"`
-	StateFilter              string `db:"state_filter" json:"state_filter"`
-	TagFilter                string `db:"tag_filter" json:"tag_filter"`
-	SubscriptionVendorFilter string `db:"subscription_vendor_filter" json:"subscription_vendor_filter"`
-	SubscriptionPlanFilter   string `db:"subscription_plan_filter" json:"subscription_plan_filter"`
-	SubscriptionScopeFilter  string `db:"subscription_scope_filter" json:"subscription_scope_filter"`
-	SubscriptionStatusFilter string `db:"subscription_status_filter" json:"subscription_status_filter"`
-	SubscriptionSourceFilter string `db:"subscription_source_filter" json:"subscription_source_filter"`
+	TenantID                 int64     `db:"tenant_id" json:"tenant_id"`
+	AfterID                  int64     `db:"after_id" json:"after_id"`
+	LimitCount               int32     `db:"limit_count" json:"limit_count"`
+	PoolGroupID              int64     `db:"pool_group_id" json:"pool_group_id"`
+	StateFilter              string    `db:"state_filter" json:"state_filter"`
+	TagFilter                string    `db:"tag_filter" json:"tag_filter"`
+	SubscriptionVendorFilter string    `db:"subscription_vendor_filter" json:"subscription_vendor_filter"`
+	SubscriptionPlanFilter   string    `db:"subscription_plan_filter" json:"subscription_plan_filter"`
+	SubscriptionScopeFilter  string    `db:"subscription_scope_filter" json:"subscription_scope_filter"`
+	SubscriptionStatusFilter string    `db:"subscription_status_filter" json:"subscription_status_filter"`
+	SubscriptionSourceFilter string    `db:"subscription_source_filter" json:"subscription_source_filter"`
+	StatsSince               time.Time `db:"stats_since" json:"stats_since"`
+	StatsUntil               time.Time `db:"stats_until" json:"stats_until"`
 }
 
 type GetAdminProviderAccountParams struct {
@@ -263,11 +272,43 @@ LEFT JOIN LATERAL (
       AND q.provider_account_id = pa.id
 ) quota ON true`
 
+const adminProviderAccountTodayStatsColumns = `,
+    $12::timestamptz AS today_stats_window_start,
+    $13::timestamptz AS today_stats_observed_at,
+    today_stats.request_count AS today_request_count,
+    today_stats.success_count AS today_success_count,
+    today_stats.failure_count AS today_failure_count,
+    today_stats.ttft_p95_ms AS today_ttft_p95_ms`
+
+const adminProviderAccountTodayStatsJoin = `
+LEFT JOIN LATERAL (
+    SELECT
+        count(*)::bigint AS request_count,
+        count(*) FILTER (
+            WHERE ur.end_class IN ('stream_end_graceful', 'non_streaming')
+        )::bigint AS success_count,
+        count(*) FILTER (
+            WHERE ur.end_class NOT IN ('stream_end_graceful', 'non_streaming')
+        )::bigint AS failure_count,
+        percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (ur.first_byte_at - ur.requested_at)) * 1000
+        ) FILTER (
+            WHERE ur.first_byte_at IS NOT NULL
+              AND ur.first_byte_at >= ur.requested_at
+        )::double precision AS ttft_p95_ms
+    FROM usage_records ur
+    WHERE ur.tenant_id = pa.tenant_id
+      AND ur.provider_account_id = pa.id
+      AND ur.settled_at >= $12::timestamptz
+      AND ur.settled_at < $13::timestamptz
+) today_stats ON true`
+
 const listAdminProviderAccounts = `
-SELECT` + adminProviderAccountColumns + adminProviderAccountSubscriptionColumns + adminProviderAccountQuotaColumns + `
+SELECT` + adminProviderAccountColumns + adminProviderAccountSubscriptionColumns + adminProviderAccountQuotaColumns + adminProviderAccountTodayStatsColumns + `
 FROM provider_accounts pa
 ` + adminProviderAccountSubscriptionJoin + `
 ` + adminProviderAccountQuotaJoin + `
+` + adminProviderAccountTodayStatsJoin + `
 WHERE pa.tenant_id = $1
   AND pa.deleted_at IS NULL
   AND pa.id > $2
@@ -304,7 +345,7 @@ func (q *Queries) ListAdminProviderAccounts(ctx context.Context, arg ListAdminPr
 	rows, err := q.db.Query(ctx, listAdminProviderAccounts,
 		arg.TenantID, arg.AfterID, arg.LimitCount, arg.PoolGroupID, arg.StateFilter, arg.TagFilter,
 		arg.SubscriptionVendorFilter, arg.SubscriptionPlanFilter, arg.SubscriptionScopeFilter,
-		arg.SubscriptionStatusFilter, arg.SubscriptionSourceFilter,
+		arg.SubscriptionStatusFilter, arg.SubscriptionSourceFilter, arg.StatsSince, arg.StatsUntil,
 	)
 	if err != nil {
 		return nil, err
@@ -313,7 +354,7 @@ func (q *Queries) ListAdminProviderAccounts(ctx context.Context, arg ListAdminPr
 	var items []AdminProviderAccountRow
 	for rows.Next() {
 		var i AdminProviderAccountRow
-		if err := scanAdminProviderAccountWithSubscription(rows, &i); err != nil {
+		if err := scanAdminProviderAccountWithSubscriptionAndTodayStats(rows, &i); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

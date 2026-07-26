@@ -55,6 +55,43 @@ func TestRecentUsageRollupByTenant(t *testing.T) {
 	}
 }
 
+func TestAggregateUsageOverviewTotalsPreservesTokenAndCostBreakdown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openUsageOutcomePool(t, ctx)
+	defer pool.Close()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始运营总览事务: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	fixture := seedUsageOutcomeFixture(t, ctx, tx)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	seedUsageOverviewBreakdownRecord(t, ctx, tx, fixture, "overview-breakdown", base.Add(4*time.Second))
+
+	got, err := New(tx).AggregateUsageOverviewTotals(ctx, pgtype.Timestamptz{
+		Time: base.Add(-time.Minute), Valid: true,
+	})
+	if err != nil {
+		t.Fatalf("AggregateUsageOverviewTotals: %v", err)
+	}
+	if got.RequestCount != 4 || got.TotalCost != "0.08000000" || got.TotalTokens != 160 {
+		t.Fatalf("总览总量=%+v，期望请求/费用/输入输出 Token=4/0.08/160", got)
+	}
+	if got.TotalTokensInput != 60 || got.TotalTokensOutput != 100 ||
+		got.TotalCacheCreationTokens != 5 || got.TotalCacheReadTokens != 7 ||
+		got.TotalImageOutputTokens != 2 {
+		t.Fatalf("Token 分项=%+v，期望 input/output/cache-create/cache-read/image=60/100/5/7/2", got)
+	}
+	if got.TotalInputCost != "0.02200000" || got.TotalOutputCost != "0.03800000" ||
+		got.TotalCacheCreationCost != "0.00300000" || got.TotalCacheReadCost != "0.00400000" ||
+		got.TotalImageOutputCost != "0.00500000" {
+		t.Fatalf("费用分项=%+v，必须与相同结算窗口的不可变记录一致", got)
+	}
+}
+
 // TTFT(first_byte_at - requested_at)的 p95/p99 只能在记录了 first byte 的行上
 // 计算,而没有记录任何 first byte 的租户必须 COALESCE 成 0(而非 NULL -> scan 报错)。
 // 额外三行带有不同的 TTFT,分别是 1000/2000/3000 ms,其 percentile_cont(0.95)=2900
@@ -160,6 +197,48 @@ func seedUsageRecordTTFT(t *testing.T, ctx context.Context, tx pgx.Tx, f usageOu
 			'claude-usage-outcome-upstream', false, 'provider_upstream')
 	`, f.tenantID, claimID, f.apiKeyID, f.userID, f.providerAccountID, acquisitionToken, requestedAt, requestedAt.Add(ttft), settledAt); err != nil {
 		t.Fatalf("insert usage %s: %v", logicalRequestID, err)
+	}
+}
+
+func seedUsageOverviewBreakdownRecord(t *testing.T, ctx context.Context, tx pgx.Tx, f usageOutcomeFixture, logicalRequestID string, settledAt time.Time) {
+	t.Helper()
+	acquisitionToken := uuid.New()
+	var claimID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO billing_ledger_claims (
+			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
+			logical_request_id, endpoint_family, requested_model, pooling_group_id,
+			provider_account_id, acquisition_token, attempt_seq, billing_policy_version,
+			request_class, predicted_cost, actual_cost, currency_code, status, settled_at,
+			lease_expires_at
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,'messages','claude-overview',$7,$8,$9,1,'bp-test',
+			'standard',0.05,0.05,'USD','committed',$10,$11
+		) RETURNING id`,
+		f.tenantID, "idem-"+logicalRequestID, "fingerprint-"+logicalRequestID,
+		f.apiKeyID, f.userID, logicalRequestID, f.poolID, f.providerAccountID,
+		acquisitionToken, settledAt, settledAt.Add(time.Hour),
+	).Scan(&claimID); err != nil {
+		t.Fatalf("写入总览 claim %s: %v", logicalRequestID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO usage_records (
+			tenant_id, claim_id, api_key_id, user_id, provider_account_id,
+			acquisition_token, attempt_seq, tokens_input, tokens_output,
+			cache_creation_tokens, cache_read_tokens, image_output_tokens,
+			actual_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost,
+			image_output_cost, end_class, usage_source, pending_reconciliation,
+			requested_at, settled_at, requested_model, upstream_model, stream,
+			settlement_source
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,1,30,40,5,7,2,0.05,0.01,0.02,0.003,0.004,
+			0.005,'non_streaming','reported',false,$7,$8,'claude-overview',
+			'claude-overview',false,'provider_upstream'
+		)`,
+		f.tenantID, claimID, f.apiKeyID, f.userID, f.providerAccountID,
+		acquisitionToken, settledAt.Add(-time.Second), settledAt,
+	); err != nil {
+		t.Fatalf("写入总览 usage %s: %v", logicalRequestID, err)
 	}
 }
 

@@ -8,6 +8,7 @@ package clienterr
 // pricing_unavailable | 503 | 计价暂不可用 | TestMessageForKnownCodesAndFallback
 // reserve_error | 500 | 请求预留失败 | TestMessageForKnownCodesAndFallback
 // insufficient_balance | 402 | 余额不足 | TestMessageForKnownCodesAndFallback
+// tenant_inactive | 403 | 租户已停用 | TestMessageForKnownCodesAndFallback
 // no_capacity | 503 | 当前无可用容量 | TestMessageForKnownCodesAndFallback
 // claim_race | 409 | 请求预留已变化;请重试请求 | TestPR5ClaimRaceAbortFailureSurfacesSafeHeader
 // pool_select_error | 500 | 账号选择失败 | TestMessageForKnownCodesAndFallback
@@ -45,6 +46,7 @@ const (
 	CodePricingUnavailable              = "pricing_unavailable"
 	CodeReserveError                    = "reserve_error"
 	CodeInsufficientBalance             = "insufficient_balance"
+	CodeTenantInactive                  = "tenant_inactive"
 	CodeNoCapacity                      = "no_capacity"
 	CodeClaimRace                       = "claim_race"
 	CodePoolSelectError                 = "pool_select_error"
@@ -86,6 +88,7 @@ var messages = map[string]string{
 	CodePricingUnavailable:              "pricing is temporarily unavailable",
 	CodeReserveError:                    "request reservation failed",
 	CodeInsufficientBalance:             "余额不足",
+	CodeTenantInactive:                  "租户已停用",
 	CodeNoCapacity:                      "no capacity is currently available",
 	CodeClaimRace:                       "request reservation changed; retry the request",
 	CodePoolSelectError:                 "account selection failed",

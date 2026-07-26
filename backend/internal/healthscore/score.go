@@ -24,11 +24,11 @@ func Business(errorRate, ttftP99Ms float64) int {
 //	managedChannels = 自动托管渠道数(健康 + degraded/cooling_down/disabled);不含 operator 手动暂停的
 //	                  manual_paused —— 那是人为意图、非基础设施故障,既不算健康也不进分母。
 //
-// managedChannels<=0(无渠道数据 / 全是手动暂停 / 取数不可用)时返回 100:保守不误报,避免"没数据"
-// 被当成"基础设施全挂"。否则按健康占比线性打分(沿用 clampScore 的 0-100 钳制风格)。
-func Infra(healthyChannels, managedChannels int64) int {
+// managedChannels<=0 表示没有可评分分母，返回 ok=false；调用方必须展示未知，
+// 不能把无数据伪装成满分或故障。其余情况按健康占比线性打分。
+func Infra(healthyChannels, managedChannels int64) (score int, ok bool) {
 	if managedChannels <= 0 {
-		return 100
+		return 0, false
 	}
 	if healthyChannels < 0 {
 		healthyChannels = 0
@@ -36,7 +36,7 @@ func Infra(healthyChannels, managedChannels int64) int {
 	if healthyChannels > managedChannels {
 		healthyChannels = managedChannels
 	}
-	return clampScore(math.Round(float64(healthyChannels) / float64(managedChannels) * 100))
+	return clampScore(math.Round(float64(healthyChannels) / float64(managedChannels) * 100)), true
 }
 
 // Overall 把业务健康度与基础设施健康度合成为一个 0-100 的分数。

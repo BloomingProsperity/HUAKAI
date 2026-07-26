@@ -3,22 +3,29 @@ package usersession
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
 func newSessionFamily(in CreateInput, now time.Time) SessionFamily {
+	authVersion := in.AuthVersion
+	if authVersion <= 0 {
+		authVersion = 1
+	}
 	return SessionFamily{
 		ID:           uuid.NewString(),
 		TenantID:     in.TenantID,
 		UserID:       in.UserID,
 		Status:       FamilyStatusActive,
 		Generation:   1,
+		AuthVersion:  authVersion,
 		CreatedAt:    now.UTC(),
 		LastActiveAt: now.UTC(),
 		DeviceInfo:   normalizeDeviceInfo(in.DeviceInfo, in.UserAgent),
@@ -54,9 +61,35 @@ func (s *PostgresStore) CreateSession(ctx context.Context, bundle SessionBundle,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	lockKey := strconv.FormatInt(bundle.Family.TenantID, 10) + ":" + strconv.FormatInt(bundle.Family.UserID, 10)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('usersession_device:' || $1, 0))`, lockKey); err != nil {
+	if err := LockUserSessionsInTransaction(ctx, tx, bundle.Family.TenantID, bundle.Family.UserID); err != nil {
 		return SessionFamily{}, err
+	}
+	if err := tenancy.LockActiveForWrite(ctx, tx, bundle.Family.TenantID); err != nil {
+		if errors.Is(err, tenancy.ErrTenantInactive) {
+			return SessionFamily{}, ErrUserIneligible
+		}
+		return SessionFamily{}, err
+	}
+	var currentAuthVersion int
+	err = tx.QueryRow(ctx, `
+SELECT u.password_version
+FROM users u
+WHERE u.tenant_id = $1
+  AND u.id = $2
+  AND u.status = 'active'
+  AND u.deleted_at IS NULL
+FOR UPDATE`, bundle.Family.TenantID, bundle.Family.UserID).Scan(&currentAuthVersion)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SessionFamily{}, ErrUserIneligible
+		}
+		return SessionFamily{}, err
+	}
+	if policy.ExpectedAuthVersion > 0 {
+		if currentAuthVersion != policy.ExpectedAuthVersion ||
+			bundle.Family.AuthVersion != policy.ExpectedAuthVersion {
+			return SessionFamily{}, ErrAuthenticationStale
+		}
 	}
 	revokedFamilyID, err := enforceDevicePolicyInTx(ctx, tx, bundle.Family.TenantID, bundle.Family.UserID, policy, now)
 	if err != nil {
@@ -155,14 +188,14 @@ func insertSessionBundle(ctx context.Context, tx pgx.Tx, bundle SessionBundle) (
 	}
 	const familyQuery = `
 INSERT INTO session_families (
-    id, tenant_id, user_id, status, generation, created_at, last_active_at, device_info, ip_baseline
-) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-RETURNING id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
-          device_info, ip_baseline, revoked_at, revoked_reason`
+	    id, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at, device_info, ip_baseline
+) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+RETURNING id::text, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at,
+	          device_info, ip_baseline, revoked_at, revoked_reason`
 	family, err := scanFamily(tx.QueryRow(ctx, familyQuery,
 		bundle.Family.ID, bundle.Family.TenantID, bundle.Family.UserID, bundle.Family.Status,
-		bundle.Family.Generation, bundle.Family.CreatedAt.UTC(), bundle.Family.LastActiveAt.UTC(),
-		deviceInfo, bundle.Family.IPBaseline,
+		bundle.Family.Generation, bundle.Family.AuthVersion, bundle.Family.CreatedAt.UTC(),
+		bundle.Family.LastActiveAt.UTC(), deviceInfo, bundle.Family.IPBaseline,
 	))
 	if err != nil {
 		return SessionFamily{}, err

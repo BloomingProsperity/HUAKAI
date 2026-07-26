@@ -25,8 +25,8 @@ const DefaultAutoRenewLeadWindow = 30 * time.Minute
 
 // AutoRenewWorker 后台 ticker: 周期扫"到点且 auto_renew=true"的订阅, 逐条尝试
 // "扣钱包余额 → 续期"。单 goroutine, 接 context cancellation 优雅退出。
-// 默认在 wiring 处不启动 (HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED 默认 false),
-// 翻 KNOB 才激活自动扣费续期 —— 关时现有 auto_renew=true 订阅行为零变化。
+// wiring 默认启动；部署者只在紧急停机时显式关闭。是否续费仍由每条订阅持久化的
+// auto_renew、余额、套餐状态和幂等事实共同决定。
 type AutoRenewWorker struct {
 	svc       *Service
 	interval  time.Duration

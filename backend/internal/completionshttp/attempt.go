@@ -23,10 +23,6 @@ import (
 // 与 gatewayhttp chat 流式路径同值(30s)。
 const settleRecoveryTimeout = 30 * time.Second
 
-// settleRecoveryEnqueueTimeout 给 DLQ 兜底 enqueue 一个独立(不复用已过期 settle ctx)的上限。
-// 交付后结算因 deadline 超时失败时，recovery intent 仍须落盘，故 enqueue 用 fresh ctx。
-const settleRecoveryEnqueueTimeout = 10 * time.Second
-
 func (ex *execution) selectAccount(w http.ResponseWriter, attemptSeq int, requestedModel string) *fallbackexec.Failure {
 	claimID := int64(0)
 	if ex.reserveRes != nil {
@@ -193,21 +189,36 @@ func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.Disp
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return false
 	}
-	// 交付后结算:上游 2xx body 已读回(平台已付费),结算必须在**脱钩 ctx**(WithoutCancel)上跑,
-	// 否则客户端在 body 读完、Tx2 未 commit 的窗口断连会取消请求 ctx → Tx2 回滚 → 已交付 token 永不
-	// 计费 + claim/hold/账号槽/配额预留冻结到 lease 过期。与流式路径、abort 路径同脱钩范式;失败经 DLQ 持久重试。
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), settleRecoveryTimeout)
-	defer cancel()
-	if err := ex.settleDirectWithRecovery(settleCtx, ex.settleRequest(usage, cost, attemptSeq, false)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+	settleReq := ex.settleRequest(usage, cost, attemptSeq, false)
+	if !ex.openDeliveryGate(w, int64(usage.PromptTokens)) {
 		return false
 	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	fullyWritten := written >= len(raw)
+	if !fullyWritten && writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	if !fullyWritten {
+		_ = ex.abortWithError(w, "client_response_write_error", int64(usage.PromptTokens))
+		return false
+	}
+	if writeErr != nil {
+		ex.logResponseDeliveryUncertain(writeErr)
+	}
+	// 小 JSON 仍可能停在 net/http 缓冲；结算前主动刷新。完整 Write 后的刷新
+	// 错误属于交付不确定，按已交付保守结算，不能释放预留。
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		ex.logResponseDeliveryUncertain(flushErr)
+	}
+	// 响应完整交付后再结算；结算必须在脱钩 ctx 上跑，否则客户端断连会
+	// 回滚 Tx2。失败经 DLQ 持久重试，不能把已交付的 200 改写成假 500。
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), settleRecoveryTimeout)
+	defer cancel()
+	_ = ex.settleDirectWithRecovery(settleCtx, settleReq)
 	return true
 }
 
@@ -240,6 +251,9 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 			failure = fallbackexec.AbortFailure()
 		}
 		return attemptOutcome{failure: failure}
+	}
+	if !ex.openDeliveryGate(w, int64(ex.inputEstimate)) {
+		return attemptOutcome{done: true}
 	}
 
 	copyAllowedHeaders(w.Header(), res.Headers)

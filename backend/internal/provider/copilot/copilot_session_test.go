@@ -4,6 +4,7 @@ package copilot
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -106,6 +107,46 @@ func TestCopilotSessionAdapter_NormalSessionReversal_RequestMatchesSpec(t *testi
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("fake upstream status=%d want 200", resp.StatusCode)
+	}
+}
+
+func TestCopilotSessionAdapter_CustomEndpointIsValidated(t *testing.T) {
+	t.Run("合法公网地址保留", func(t *testing.T) {
+		req, err := (&CopilotSessionAdapter{}).BuildRequest(context.Background(), provider.BuildInput{
+			UpstreamModelID: "gpt-4o",
+			Credential: provider.Credential{
+				Type:  provider.CredentialTypeSessionToken,
+				Value: "ghu_token",
+				Extra: map[string]string{"endpoint_api": "https://copilot-proxy.example/api"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("BuildRequest: %v", err)
+		}
+		if got, want := req.URL.String(), "https://copilot-proxy.example/api/chat/completions"; got != want {
+			t.Fatalf("URL=%q want %q", got, want)
+		}
+	})
+
+	for _, raw := range []string{
+		"http://127.0.0.1:8080",
+		"https://localhost",
+		"https://169.254.169.254",
+		"https://metadata.google.internal",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := (&CopilotSessionAdapter{}).BuildRequest(context.Background(), provider.BuildInput{
+				UpstreamModelID: "gpt-4o",
+				Credential: provider.Credential{
+					Type:  provider.CredentialTypeSessionToken,
+					Value: "ghu_token",
+					Extra: map[string]string{"endpoint_api": raw},
+				},
+			})
+			if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+				t.Fatalf("BuildRequest error=%v，期望 ErrUnsafePassthroughEndpoint", err)
+			}
+		})
 	}
 }
 

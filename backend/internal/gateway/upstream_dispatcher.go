@@ -109,6 +109,40 @@ type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// DispatchOutcomeUnknownError 表示 HTTP 请求已经交给 Do 执行，但调用方没有拿到
+// 可判定的上游响应。此时请求可能尚未送达，也可能已经产生外部副作用；上层不得把它
+// 当成“确定未发送”自动重提创建类请求。
+type DispatchOutcomeUnknownError struct {
+	err error
+}
+
+func (e *DispatchOutcomeUnknownError) Error() string {
+	if e == nil || e.err == nil {
+		return "dispatcher: 请求结果未知"
+	}
+	return "dispatcher: HTTP 请求结果未知: " + e.err.Error()
+}
+
+func (e *DispatchOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func newDispatchOutcomeUnknownError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &DispatchOutcomeUnknownError{err: err}
+}
+
+// IsDispatchOutcomeUnknown 供有外部副作用的调用方区分“发送前失败”和“可能已发送”。
+func IsDispatchOutcomeUnknown(err error) bool {
+	var target *DispatchOutcomeUnknownError
+	return errors.As(err, &target)
+}
+
 type AnthropicTTLSettings interface {
 	AnthropicTTL1hRewriteEnabled(context.Context) (bool, error)
 }
@@ -281,7 +315,8 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequest 失败: %w", err)
 	}
-	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
+	customEndpoint := provider.RequestUsesCustomPassthroughEndpoint(in.Credential, req.URL)
+	if err := validatePassthroughEndpointTarget(ctx, customEndpoint, req); err != nil {
 		return nil, err
 	}
 	if key := strings.TrimSpace(in.IdempotencyKey); key != "" {
@@ -293,11 +328,17 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	headerfirewall.StripHopByHopRequestHeaders(req.Header)
 	headerfirewall.NormalizeEgressRequestHeaders(req.Header)
 	if automaticTransport {
-		in.TransportMode = dispatchTransportModeForRequest(
-			transport.ProviderCode(in.Account.Platform),
-			in.Account.AccountType,
-			req.URL.Path,
-		)
+		if customEndpoint {
+			// 凭据自配地址不继承厂商官方客户端的 TLS 仿真；标准 transport
+			// 才能把预检解析与实际拨号都绑定到统一 SSRF 策略。
+			in.TransportMode = transport.TransportModeStandard
+		} else {
+			in.TransportMode = dispatchTransportModeForRequest(
+				transport.ProviderCode(in.Account.Platform),
+				in.Account.AccountType,
+				req.URL.Path,
+			)
+		}
 	}
 
 	// 3. 取 transport
@@ -318,7 +359,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 		if err != nil {
 			return nil, err
 		}
-		if provider.UsesCustomPassthroughEndpoint(in.Credential) {
+		if customEndpoint {
 			rt, err = provider.WrapPassthroughEndpointTransport(rt)
 			if err != nil {
 				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)
@@ -328,7 +369,7 @@ func (d *UpstreamDispatcher) Dispatch(ctx context.Context, in DispatchInput) (*D
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("dispatcher: HTTP Do 失败: %w", err)
+		return nil, newDispatchOutcomeUnknownError(err)
 	}
 
 	// 5. 组装结果
@@ -434,11 +475,16 @@ func (d *UpstreamDispatcher) applyProxy(ctx context.Context, rt http.RoundTrippe
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: ProxyResolver.Resolve 失败: %w", err)
 	}
+	if proxyURL != nil {
+		if err := provider.ValidateProxyEndpointTarget(ctx, proxyURL); err != nil {
+			return nil, fmt.Errorf("dispatcher: 代理目标被安全策略拒绝: %w", err)
+		}
+	}
 	return provider.WrapTransportWithProxy(rt, proxyURL), nil
 }
 
-func validatePassthroughEndpointTarget(ctx context.Context, cred provider.Credential, req *http.Request) error {
-	if !provider.UsesCustomPassthroughEndpoint(cred) {
+func validatePassthroughEndpointTarget(ctx context.Context, customEndpoint bool, req *http.Request) error {
+	if !customEndpoint {
 		return nil
 	}
 	if req == nil {

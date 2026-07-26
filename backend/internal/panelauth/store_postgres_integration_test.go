@@ -146,4 +146,14 @@ func TestPG_ActiveUserRoleExcludesNonActive(t *testing.T) {
 	if _, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("locked admin 应被 ActiveUserRole 拒,得 err=%v", err)
 	}
+
+	if _, err := pool.Exec(ctx, `UPDATE users SET status='active' WHERE id=$1`, admin); err != nil {
+		t.Fatalf("reactivate user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='disabled' WHERE id=$1`, tenant); err != nil {
+		t.Fatalf("suspend tenant: %v", err)
+	}
+	if _, err := store.ActiveUserRole(ctx, tenant, admin); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("停用租户的管理员仍有面板权限, err=%v", err)
+	}
 }

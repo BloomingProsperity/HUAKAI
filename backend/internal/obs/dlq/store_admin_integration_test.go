@@ -34,7 +34,10 @@ func TestPostgresAdminListAndReplayDead(t *testing.T) {
 		t.Fatalf("rows=%+v, want only email dead row with joined attempt count", rows)
 	}
 
-	result, err := store.ReplayDead(ctx, rows[0].ID)
+	if _, err := store.ReplayDead(ctx, tenantID+1, rows[0].ID, "admin_token:wrong"); !errors.Is(err, ErrReplayConflict) {
+		t.Fatalf("ReplayDead wrong tenant err=%v, want ErrReplayConflict", err)
+	}
+	result, err := store.ReplayDead(ctx, tenantID, rows[0].ID, "admin_token:7")
 	if err != nil {
 		t.Fatalf("ReplayDead first: %v", err)
 	}
@@ -49,8 +52,50 @@ func TestPostgresAdminListAndReplayDead(t *testing.T) {
 	if status != StatusPending || attempts != 0 {
 		t.Fatalf("outbox after replay status=%s attempts=%d, want pending/0", status, attempts)
 	}
-	if _, err := store.ReplayDead(ctx, rows[0].ID); !errors.Is(err, ErrReplayConflict) {
+	var actor string
+	var replayedAt time.Time
+	if err := pool.QueryRow(ctx, `SELECT last_replay_actor, last_replay_at FROM dlq_events WHERE id = $1`, rows[0].ID).Scan(&actor, &replayedAt); err != nil {
+		t.Fatalf("read replay actor: %v", err)
+	}
+	if actor != "admin_token:7" || replayedAt.IsZero() {
+		t.Fatalf("replay actor/time=%q/%v", actor, replayedAt)
+	}
+	if _, err := store.ReplayDead(ctx, tenantID, rows[0].ID, "admin_token:7"); !errors.Is(err, ErrReplayConflict) {
 		t.Fatalf("ReplayDead second err=%v, want ErrReplayConflict", err)
+	}
+}
+
+func TestPostgresEnqueueSameIDIsIdempotentAndRejectsDifferentPayload(t *testing.T) {
+	ctx := context.Background()
+	pool := obsDLQTestPool(t)
+	store := NewPostgresOutbox(pool)
+	tenantID := obsDLQInsertTenant(t, ctx, pool, "obs-dlq-idempotent-"+fmt.Sprint(time.Now().UnixNano()))
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenantID)
+	})
+	input := OutboxEvent{
+		ID:       "obs-idempotent-" + fmt.Sprint(time.Now().UnixNano()),
+		TenantID: tenantID, EventType: EventTypeSignupReward, Priority: PriorityHigh,
+		Payload: json.RawMessage(`{"amount_cents":100}`),
+	}
+	first, err := store.Enqueue(ctx, input)
+	if err != nil {
+		t.Fatalf("first enqueue: %v", err)
+	}
+	if err := store.MarkCompleted(ctx, first.ID, ""); err != nil {
+		t.Fatalf("MarkCompleted: %v", err)
+	}
+	replayed, err := store.Enqueue(ctx, input)
+	if err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	if replayed.Status != StatusCompleted || replayed.ID != first.ID {
+		t.Fatalf("replayed=%+v，期望返回原 completed 事件", replayed)
+	}
+	conflict := input
+	conflict.Payload = json.RawMessage(`{"amount_cents":999}`)
+	if _, err := store.Enqueue(ctx, conflict); !errors.Is(err, ErrEventConflict) {
+		t.Fatalf("same ID different payload err=%v want ErrEventConflict", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
@@ -14,6 +15,7 @@ import (
 const (
 	clearRateLimitAuditAction = "clear_provider_account_rate_limit"
 	recoverAccountAuditAction = "recover_provider_account_state"
+	channelFollowUpTimeout    = 5 * time.Second
 )
 
 var ErrPartialRecovery = errors.New("provider account recovery partially completed")
@@ -107,7 +109,9 @@ func (s *Service) ClearRateLimit(ctx context.Context, in ClearRateLimitInput) (C
 	}
 
 	result := ClearRateLimitResult{Account: account}
-	channel, changed, err := s.channels.ClearRateLimitByProviderAccount(ctx, in.TenantID, in.AccountID, in.ActorID)
+	channelCtx, channelCancel := detachedFollowUpContext(ctx)
+	defer channelCancel()
+	channel, changed, err := s.channels.ClearRateLimitByProviderAccount(channelCtx, in.TenantID, in.AccountID, in.ActorID)
 	if errors.Is(err, channelhealth.ErrNotFound) {
 		return result, nil
 	}
@@ -173,7 +177,9 @@ func (s *Service) RecoverAccountState(ctx context.Context, in RecoverAccountInpu
 	}
 
 	result := RecoverAccountResult{Account: account}
-	channel, changed, err := s.channels.ForceActiveByProviderAccount(ctx, in.TenantID, in.AccountID, in.ActorID, reason)
+	channelCtx, channelCancel := detachedFollowUpContext(ctx)
+	defer channelCancel()
+	channel, changed, err := s.channels.ForceActiveByProviderAccount(channelCtx, in.TenantID, in.AccountID, in.ActorID, reason)
 	if errors.Is(err, channelhealth.ErrNotFound) {
 		return result, nil
 	}
@@ -183,4 +189,13 @@ func (s *Service) RecoverAccountState(ctx context.Context, in RecoverAccountInpu
 	result.Channel = &channel
 	result.ChannelChanged = changed
 	return result, nil
+}
+
+func detachedFollowUpContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	} else {
+		parent = context.WithoutCancel(parent)
+	}
+	return context.WithTimeout(parent, channelFollowUpTimeout)
 }

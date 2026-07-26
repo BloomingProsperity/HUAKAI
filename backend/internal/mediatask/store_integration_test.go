@@ -166,6 +166,25 @@ func TestMediaTaskSuccessSettlesActual(t *testing.T) {
 	}
 	assertTaskStatus(t, ctx, pool, task.ID, StatusSucceeded)
 	assertClaimStatusCost(t, ctx, pool, task.HoldRef, "committed", decimal.RequireFromString("0.77"))
+	claimID, err := claimIDFromHoldRef(task.HoldRef)
+	if err != nil {
+		t.Fatalf("claimIDFromHoldRef: %v", err)
+	}
+	var source string
+	var providerless, tokenless bool
+	var usageCost decimal.Decimal
+	if err := pool.QueryRow(ctx, `
+SELECT settlement_source, provider_account_id IS NULL, acquisition_token IS NULL, actual_cost
+FROM usage_records
+WHERE tenant_id=$1 AND claim_id=$2`, seed.tenantID, claimID,
+	).Scan(&source, &providerless, &tokenless, &usageCost); err != nil {
+		t.Fatalf("read external relay usage: %v", err)
+	}
+	if source != billing.SettlementSourceExternalMediaRelay || !providerless || !tokenless ||
+		!usageCost.Equal(decimal.RequireFromString("0.77")) {
+		t.Fatalf("external relay usage source/account/token/cost=%q/%v/%v/%s",
+			source, providerless, tokenless, usageCost)
+	}
 }
 
 // TestMediaTaskSuccessZeroActualAnchorsToEstimate 锁住 bug ② 修复:上游 Poll 未回实际用量
@@ -506,6 +525,10 @@ SELECT binding_id FROM pool_slot_acquisitions WHERE acquisition_token=$1`, acqui
 	}
 
 	leased := leaseTaskForTest(t, ctx, pg, task.ID, providerName+"-submit-worker")
+	leased, err = store.MarkSubmitting(ctx, leased, providerName+"-submit-worker", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("MarkSubmitting: %v", err)
+	}
 	if _, err := store.MarkProviderSubmitted(ctx, leased, providerName+"-submit-worker", "video-upstream-1", time.Now().UTC()); err != nil {
 		t.Fatalf("MarkProviderSubmitted: %v", err)
 	}
@@ -689,6 +712,8 @@ func seedMediaUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix
 	seed = seedMediaUserInTenant(t, ctx, pool, seed.tenantID, suffix)
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, seed.tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM media_task_orphans WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM media_tasks WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, seed.tenantID)
 		_, _ = pool.Exec(c, `DELETE FROM balance_holds WHERE tenant_id=$1`, seed.tenantID)
@@ -832,6 +857,10 @@ func submitAndMarkSubmitted(t *testing.T, ctx context.Context, svc *Service, sto
 		t.Fatalf("Submit: %v", err)
 	}
 	leased := leaseTaskForTest(t, ctx, store.pool, task.ID, "submit-worker")
+	leased, err = store.MarkSubmitting(ctx, leased, "submit-worker", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("MarkSubmitting: %v", err)
+	}
 	task, err = store.MarkProviderSubmitted(ctx, leased, "submit-worker", "up-"+requestID, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("MarkProviderSubmitted: %v", err)
@@ -845,7 +874,7 @@ func leaseTaskForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tas
 	tag, err := pool.Exec(ctx, `
 	UPDATE media_tasks
 	SET lease_owner=$2, lease_expires_at=$3, updated_at=$4
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
+	WHERE id=$1 AND status IN ('queued','submitting','submission_releasing','in_progress','settlement_pending')`,
 		taskID, owner, now.Add(time.Minute), now)
 	if err != nil {
 		t.Fatalf("lease task %d: %v", taskID, err)

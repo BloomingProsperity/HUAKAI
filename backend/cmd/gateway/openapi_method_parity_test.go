@@ -87,6 +87,13 @@ func TestOpenAPI_ProxyAdminMethodParity(t *testing.T) {
 			t.Fatalf("OpenAPI 必须声明 %s %s(已实现,缺契约前端无法 codegen 这个变更动作)", op.method, op.specPath)
 		}
 	}
+	const deleteImpactPath = "/admin/v1/proxies/{id}/delete-impact"
+	if !hasOperation(implOps, http.MethodGet, deleteImpactPath) {
+		t.Fatalf("runtime 缺 GET %s；前端无法在删除前展示占用影响", deleteImpactPath)
+	}
+	if !hasOperation(specOps, http.MethodGet, deleteImpactPath) {
+		t.Fatalf("OpenAPI 必须声明 GET %s", deleteImpactPath)
+	}
 
 	const tenantDefaultPath = "/admin/v1/tenants/{id}/default-proxy"
 	for _, method := range []string{http.MethodGet, http.MethodPut} {

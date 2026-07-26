@@ -29,7 +29,7 @@ func proxyAdminRouteDeps(d *deps) proxyadminhttp.Deps {
 	}
 	return proxyadminhttp.Deps{
 		Auth:           d.adminAuth,
-		Service:        proxyadmin.New(d.adminQueries, d.credentialKeys),
+		Service:        proxyadmin.NewPostgres(d.pgPool, d.credentialKeys),
 		Prober:         buildProxyProber(d),
 		TenantDefaults: proxyadmin.NewPostgresTenantDefaultStore(d.pgPool),
 	}

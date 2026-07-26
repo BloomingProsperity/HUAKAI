@@ -14,6 +14,23 @@ INDEX_ROW_RE = re.compile(r"^\| `([^`]+)` \|", re.MULTILINE)
 FEATURE_ID_RE = re.compile(r"\b[A-Z][A-Z0-9_-]*-\d{3}\b")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+FRONTEND_CAPABILITY_STATUSES = (
+    "已有可接",
+    "已有但未接 UI",
+    "后端部分具备",
+    "前后端都缺",
+    "已领先",
+    "不适用",
+)
+EXPECTED_FRONTEND_CAPABILITY_COUNTS = {
+    "已有可接": 56,
+    "已有但未接 UI": 61,
+    "后端部分具备": 17,
+    "前后端都缺": 10,
+    "已领先": 12,
+    "不适用": 2,
+}
+EXPECTED_FRONTEND_CAPABILITY_TOTAL = 158
 
 
 def relative_path(path: Path, root: Path) -> str:
@@ -141,6 +158,93 @@ def declared_count(text: str, label: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def frontend_capability_counts(text: str) -> tuple[Counter[str], list[str]]:
+    start = text.find("### 19.2.2 首装、登录和账号安全")
+    end = text.find("### 19.11 全局前端交互合同")
+    if start < 0 or end < 0 or end <= start:
+        return Counter(), ["工程设计手册缺少完整的前端原子能力矩阵"]
+
+    page_spec_start = text.find("#### 19.8.1.1 租户管理页面规格", start, end)
+    page_spec_end = text.find("### 19.9 资金、订阅和用户自助", start, end)
+    page_spec = (
+        text[page_spec_start:page_spec_end]
+        if page_spec_start >= 0 and page_spec_end > page_spec_start
+        else ""
+    )
+    matrix = text[start:end].replace(page_spec, "")
+    counts: Counter[str] = Counter()
+    errors: list[str] = []
+    for line in matrix.splitlines():
+        if not line.startswith("|") or line.startswith("| ---"):
+            continue
+        if "原子能力与身份" in line or line.startswith("| 功能 |"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        statuses = [
+            status
+            for status in FRONTEND_CAPABILITY_STATUSES
+            if any(
+                re.search(
+                    rf"(?:^|[；，,。])\s*{re.escape(status)}"
+                    rf"(?:$|[；，,。])",
+                    cell,
+                )
+                for cell in cells
+            )
+        ]
+        if len(statuses) != 1:
+            errors.append(f"前端原子能力行必须且只能使用一个标准状态：{line}")
+            continue
+        counts[statuses[0]] += 1
+    return counts, errors
+
+
+def declared_frontend_capability_counts(text: str) -> dict[str, int]:
+    declared: dict[str, int] = {}
+    for status in FRONTEND_CAPABILITY_STATUSES:
+        match = re.search(rf"^\| {re.escape(status)} \| (\d+) \|", text, re.MULTILINE)
+        if match:
+            declared[status] = int(match.group(1))
+    total = re.search(r"^\| \*\*合计\*\* \| \*\*(\d+)\*\* \|", text, re.MULTILINE)
+    if total:
+        declared["合计"] = int(total.group(1))
+    return declared
+
+
+def frontend_capability_contract_errors(text: str) -> list[str]:
+    counts, errors = frontend_capability_counts(text)
+    declared = declared_frontend_capability_counts(text)
+    for status in FRONTEND_CAPABILITY_STATUSES:
+        actual = counts[status]
+        summary = declared.get(status)
+        expected = EXPECTED_FRONTEND_CAPABILITY_COUNTS[status]
+        if summary is None:
+            errors.append(f"工程设计手册缺少前端能力统计：{status}")
+        elif summary != actual:
+            errors.append(
+                f"工程设计手册前端能力统计错误：{status} 声明 {summary}，实际 {actual}"
+            )
+        if actual != expected:
+            errors.append(
+                f"工程设计手册前端能力基线漂移：{status} 期望 {expected}，实际 {actual}"
+            )
+
+    actual_total = sum(counts.values())
+    summary_total = declared.get("合计")
+    if summary_total is None:
+        errors.append("工程设计手册缺少前端能力合计")
+    elif summary_total != actual_total:
+        errors.append(
+            f"工程设计手册前端能力合计错误：声明 {summary_total}，实际 {actual_total}"
+        )
+    if actual_total != EXPECTED_FRONTEND_CAPABILITY_TOTAL:
+        errors.append(
+            "工程设计手册前端能力总基线漂移："
+            f"期望 {EXPECTED_FRONTEND_CAPABILITY_TOTAL}，实际 {actual_total}"
+        )
+    return errors
+
+
 def markdown_link_errors(root: Path) -> list[str]:
     errors: list[str] = []
     markdown_files = [
@@ -174,12 +278,14 @@ def run_checks(root: Path) -> list[str]:
     errors: list[str] = []
     index_path = root / "docs/源码责任索引.md"
     whitepaper_path = root / "docs/HUAKAI项目与架构白皮书.md"
+    handbook_path = root / "docs/HUAKAI工程设计手册.md"
 
-    if not index_path.exists() or not whitepaper_path.exists():
-        return ["缺少白皮书或源码责任索引，无法执行治理校验"]
+    if not index_path.exists() or not whitepaper_path.exists() or not handbook_path.exists():
+        return ["缺少白皮书、工程设计手册或源码责任索引，无法执行治理校验"]
 
     index_text = index_path.read_text(encoding="utf-8")
     whitepaper_text = whitepaper_path.read_text(encoding="utf-8")
+    handbook_text = handbook_path.read_text(encoding="utf-8")
     indexed_list = INDEX_ROW_RE.findall(index_text)
     indexed = set(indexed_list)
 
@@ -216,6 +322,8 @@ def run_checks(root: Path) -> list[str]:
         errors.append(f"白皮书功能编号未被源码责任索引使用：{feature_id}")
     for feature_id in sorted(index_ids - whitepaper_ids):
         errors.append(f"源码责任索引使用了白皮书未定义的功能编号：{feature_id}")
+
+    errors.extend(frontend_capability_contract_errors(handbook_text))
 
     errors.extend(markdown_link_errors(root))
     return errors

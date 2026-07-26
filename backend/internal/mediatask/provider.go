@@ -49,20 +49,31 @@ func (p *httpAsyncProvider) Submit(ctx context.Context, req SubmitReq) (string, 
 	}
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return "", err
+		return "", terminalProviderError("provider_submit_outcome_unknown", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("mediatask provider submit status %d", resp.StatusCode)
+		statusErr := fmt.Errorf("mediatask provider submit status %d", resp.StatusCode)
+		switch {
+		case submitHTTPOutcomeUnknown(resp.StatusCode):
+			return "", terminalProviderError("provider_submit_outcome_unknown", statusErr)
+		case resp.StatusCode == http.StatusTooManyRequests:
+			return "", retryableProviderError("upstream_rate_limited", statusErr)
+		default:
+			return "", terminalProviderError("provider_submit_rejected", statusErr)
+		}
 	}
 	var out struct {
 		ProviderTaskID string `json:"provider_task_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
+		return "", terminalProviderError("provider_submit_response_invalid", err)
 	}
 	if strings.TrimSpace(out.ProviderTaskID) == "" {
-		return "", fmt.Errorf("%w: empty provider task id", ErrProviderUnavailable)
+		return "", terminalProviderError(
+			"provider_submit_response_invalid",
+			fmt.Errorf("%w: empty provider task id", ErrProviderUnavailable),
+		)
 	}
 	return strings.TrimSpace(out.ProviderTaskID), nil
 }

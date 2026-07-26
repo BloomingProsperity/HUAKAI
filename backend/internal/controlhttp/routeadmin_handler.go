@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
@@ -34,8 +35,8 @@ type RouteAdminService interface {
 	List(context.Context, int64) ([]routeadmin.Route, error)
 	Get(context.Context, int64, int64) (routeadmin.Route, error)
 	Update(context.Context, routeadmin.UpdateInput) (routeadmin.Route, error)
-	SetEnabled(ctx context.Context, tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error)
-	Delete(context.Context, int64, int64, int64) (routeadmin.Route, error)
+	SetEnabledWithActor(context.Context, int64, int64, bool, routeadmin.MutationLog) (routeadmin.Route, error)
+	DeleteWithActor(context.Context, int64, int64, routeadmin.MutationLog) (routeadmin.Route, error)
 }
 
 // RouteAdminDeps 管理员路由依赖。
@@ -103,8 +104,8 @@ func routeAdminToRouteViews(routes []routeadmin.Route) []routeView {
 // MountRouteAdminRoutes 挂载管理员分组路由端点 (建 / 列 / 查 / 改 / 启停 / 软删)。
 // {id}/enabled 与 {id} 段深不同, chi 不冲突: PUT /55 命中 {id}(全替换), PUT /55/enabled 命中 {id}/enabled(启停)。
 func MountRouteAdminRoutes(r chi.Router, d RouteAdminDeps) {
-	// SessionSafe:分组路由(routes 表)增改停删都是可逆的选路配置,登录 admin(session)可直接写;
-	// 危险者(如删)靠前端确认弹窗防误操作。
+	// SessionSafe: 分组路由增改停删允许登录管理员会话写入；权限、租户条件和操作日志
+	// 全部由后端强制，前端确认弹窗只减少误操作，不承担鉴权职责。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.With(safe).Post("/", newRouteAdminCreateHandler(d))
 	r.Get("/", newRouteAdminListHandler(d))
@@ -131,7 +132,10 @@ func newRouteAdminCreateHandler(d RouteAdminDeps) http.HandlerFunc {
 			ModelPatternMatch: req.ModelPatternMatch,
 			PoolGroupID:       req.PoolGroupID,
 			MatchPriority:     req.MatchPriority,
-			AdminID:           ident.TokenID, // 审计归属取自已认证身份, 非请求体
+			AdminID:           ident.TokenID,
+			ActorID:           ident.AuditActor(),
+			ActorRole:         ident.Role,
+			RequestID:         middleware.GetReqID(r.Context()),
 		})
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
@@ -211,7 +215,10 @@ func newRouteAdminUpdateHandler(d RouteAdminDeps) http.HandlerFunc {
 			ModelPatternMatch: req.ModelPatternMatch,
 			PoolGroupID:       req.PoolGroupID,
 			MatchPriority:     req.MatchPriority,
-			AdminID:           ident.TokenID, // 审计归属取自已认证身份, 非请求体
+			AdminID:           ident.TokenID,
+			ActorID:           ident.AuditActor(),
+			ActorRole:         ident.Role,
+			RequestID:         middleware.GetReqID(r.Context()),
 		})
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
@@ -223,7 +230,7 @@ func newRouteAdminUpdateHandler(d RouteAdminDeps) http.HandlerFunc {
 
 // newRouteAdminSetEnabledHandler 处理 PUT /{id}/enabled: 独立翻转一条 route 的 enabled 闸(非全替换)。
 // 停用即把路由移出分组路由生效集(热路径 gate 过滤 enabled=true)而不软删, 可后续再启用。幂等。
-// tenant 取 query、id 取 path、adminID 取已认证身份(审计归属); enabled 必须显式在 body 给(*bool, 防空 body 静默停用)。
+// tenant 取 query、id 取 path、操作者取已认证身份；enabled 必须显式在 body 给(*bool, 防空 body 静默停用)。
 func newRouteAdminSetEnabledHandler(d RouteAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := routeAdminResolveAdmin(w, r, d)
@@ -246,7 +253,12 @@ func newRouteAdminSetEnabledHandler(d RouteAdminDeps) http.HandlerFunc {
 			controlWriteJSONError(w, http.StatusBadRequest, "invalid_route_request", "enabled field is required")
 			return
 		}
-		route, err := d.Service.SetEnabled(r.Context(), tenantID, id, *req.Enabled, ident.TokenID)
+		route, err := d.Service.SetEnabledWithActor(r.Context(), tenantID, id, *req.Enabled, routeadmin.MutationLog{
+			ActorID:       ident.AuditActor(),
+			ActorRole:     ident.Role,
+			RequestID:     middleware.GetReqID(r.Context()),
+			LegacyAdminID: ident.TokenID,
+		})
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
 			return
@@ -269,7 +281,12 @@ func newRouteAdminDeleteHandler(d RouteAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		route, err := d.Service.Delete(r.Context(), tenantID, id, ident.TokenID)
+		route, err := d.Service.DeleteWithActor(r.Context(), tenantID, id, routeadmin.MutationLog{
+			ActorID:       ident.AuditActor(),
+			ActorRole:     ident.Role,
+			RequestID:     middleware.GetReqID(r.Context()),
+			LegacyAdminID: ident.TokenID,
+		})
 		if err != nil {
 			routeAdminWriteRouteError(w, err)
 			return

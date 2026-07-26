@@ -179,6 +179,44 @@ VALUES ($1,$2,$3,'legacy','active','admin','default',$4,$5) RETURNING id`,
 	}
 }
 
+// 停用租户的订阅仍由到期 worker 正常收尾，但不得继续创建提醒投递事实或发送邮件。
+// mutation: 去掉 ListDueReminder 的活跃租户 join，会返回候选并触发 mailer。
+func TestPG_ReminderDisabledTenantIsNotDelivered(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	planID := f.seedPlan()
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	f.setUserEmail(f.tenantA, f.userA, "disabled@example.com")
+	subID := f.insertActiveSub(planID, f.userA, now.Add(2*24*time.Hour))
+	if _, err := pool.Exec(ctx, `
+UPDATE tenants
+SET status='disabled', version=version+1, status_changed_at=now()
+WHERE id=$1`, f.tenantA); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+
+	mailer := &fakeMailer{outcome: ReminderSent}
+	rsvc := NewReminderService(
+		NewPostgresStore(pool),
+		mailer,
+		WithReminderClock(func() time.Time { return now }),
+	)
+	sent, err := rsvc.ProcessDueReminders(ctx, 100)
+	if err != nil {
+		t.Fatalf("process reminders: %v", err)
+	}
+	if sent != 0 || mailer.count() != 0 {
+		t.Fatalf("sent=%d mailer_calls=%d, want 0/0", sent, mailer.count())
+	}
+	if n := f.countInt(`
+SELECT count(*)
+FROM subscription_expiry_reminders
+WHERE tenant_id=$1 AND user_subscription_id=$2`, f.tenantA, subID); n != 0 {
+		t.Fatalf("reminder rows=%d, want 0", n)
+	}
+}
+
 // TestPG_MissingRecipientSkippedNotSent 无邮箱 -> 记 skipped_no_recipient, mailer 不被调用。
 // 判别性: 去掉空邮箱守卫, 会用空 To 调 mailer -> count>0 -> 红。
 func TestPG_MissingRecipientSkippedNotSent(t *testing.T) {

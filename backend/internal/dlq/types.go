@@ -108,6 +108,8 @@ type Record struct {
 	SourceTable         string             `json:"source_table"`
 	SourceID            *int64             `json:"source_id,omitempty"`
 	OperatorReviewAt    pgtype.Timestamptz `json:"-"`
+	LastManualReplayAt  pgtype.Timestamptz `json:"-"`
+	LastManualActor     *string            `json:"last_manual_replay_actor,omitempty"`
 }
 
 func LaneForKind(kind EventKind) Lane {

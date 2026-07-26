@@ -25,7 +25,7 @@ type RevokeRequest struct {
 }
 
 // RevokeResult 告诉 handler 发生了什么。当吊销为幂等时
-//(status 原本不是 'active'),AlreadyRevoked=true。
+// (status 原本不是 'active'),AlreadyRevoked=true。
 type RevokeResult struct {
 	APIKeyID       int64
 	AlreadyRevoked bool
@@ -33,15 +33,16 @@ type RevokeResult struct {
 
 // KeyRevoker 与 KeyIssuer 的 TX 形态对应。通过 NewKeyRevoker 构造。
 type KeyRevoker struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	platformTenantID int64
 }
 
-func NewKeyRevoker(pool *pgxpool.Pool) *KeyRevoker {
-	return &KeyRevoker{pool: pool}
+func NewKeyRevoker(pool *pgxpool.Pool, platformTenantID int64) *KeyRevoker {
+	return &KeyRevoker{pool: pool, platformTenantID: platformTenantID}
 }
 
-// Revoke 把某一把 key 的 api_keys.status 翻转为 'revoked'。RBAC:与 Issue
-// 规则相同 —— platform_admin 全局、tenant_operator 仅限自身 tenant。
+// Revoke 把某一把 key 的 api_keys.status 翻转为 'revoked'。RBAC 与 Issue
+// 使用同一终端用户专用合同。
 // 幂等:吊销一把已吊销的 key 返回 AlreadyRevoked=true。
 func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, error) {
 	if r == nil || r.pool == nil {
@@ -50,7 +51,7 @@ func (r *KeyRevoker) Revoke(ctx context.Context, req RevokeRequest) (RevokeResul
 	if req.APIKeyID == 0 || req.TenantID == 0 {
 		return RevokeResult{}, fmt.Errorf("%w: api_key_id and tenant_id required", ErrAdminBadRequest)
 	}
-	if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
+	if err := req.Caller.CanManageFinalUsersForTenant(req.TenantID, r.platformTenantID); err != nil {
 		// 被拒绝的吊销尝试必须进入审计轨迹。
 		// best-effort 写入;即便 audit 插入失败,调用方仍会得到 403。
 		_ = r.auditDeny(ctx, req, "rbac_violation")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -275,6 +276,45 @@ func (s *adminPoolStoreStub) SoftDeleteProviderAccount(_ context.Context, arg ad
 	return nil
 }
 
+func (s *adminPoolStoreStub) UpdateAdminProviderAccountWithAudit(
+	ctx context.Context,
+	arg admindb.UpdateAdminProviderAccountParams,
+	audit admindb.InsertAdminAuditEventParams,
+) (admindb.AdminProviderAccountRow, error) {
+	row, err := s.UpdateAdminProviderAccount(ctx, arg)
+	if err != nil {
+		return admindb.AdminProviderAccountRow{}, err
+	}
+	if _, err := s.InsertAdminAuditEvent(ctx, audit); err != nil {
+		return admindb.AdminProviderAccountRow{}, err
+	}
+	return row, nil
+}
+
+func (s *adminPoolStoreStub) UpdateProviderAccountEnabledWithAudit(
+	ctx context.Context,
+	arg admindb.UpdateProviderAccountEnabledParams,
+	audit admindb.InsertAdminAuditEventParams,
+) error {
+	if err := s.UpdateProviderAccountEnabled(ctx, arg); err != nil {
+		return err
+	}
+	_, err := s.InsertAdminAuditEvent(ctx, audit)
+	return err
+}
+
+func (s *adminPoolStoreStub) SoftDeleteProviderAccountWithAudit(
+	ctx context.Context,
+	arg admindb.SoftDeleteProviderAccountParams,
+	audit admindb.InsertAdminAuditEventParams,
+) error {
+	if err := s.SoftDeleteProviderAccount(ctx, arg); err != nil {
+		return err
+	}
+	_, err := s.InsertAdminAuditEvent(ctx, audit)
+	return err
+}
+
 func (s *adminPoolStoreStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	if _, ok := adminAuditActionWhitelist[arg.Action]; !ok {
 		// 复现一个不在白名单中的 action 对 Postgres 触发的真实 CHECK 违反,
@@ -425,6 +465,28 @@ func TestAdminPoolAccounts_DeleteSoftDeletesAndAudits(t *testing.T) {
 	}
 }
 
+func TestAdminPoolAccounts_DeleteAcceptsEmptyOptionalBody(t *testing.T) {
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodDelete, "/admin/v1/provider-accounts/77", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("空请求体删除 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.delete == nil || store.delete.ID != 77 || store.delete.TenantID != 7 {
+		t.Fatalf("空请求体删除未命中租户内账号: %+v", store.delete)
+	}
+}
+
+func TestAdminPoolAccounts_DeleteRejectsMalformedOptionalBody(t *testing.T) {
+	store := &adminPoolStoreStub{}
+	rec := invokeAdminPool(t, store, providerAccountAdmin(), http.MethodDelete, "/admin/v1/provider-accounts/77", `{`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("畸形请求体删除 status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.delete != nil {
+		t.Fatalf("畸形请求体不得删除账号: %+v", store.delete)
+	}
+}
+
 func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	probeAt := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC)
 	observedAt := time.Date(2026, 7, 16, 7, 4, 0, 0, time.UTC)
@@ -453,6 +515,15 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	first.SubscriptionFirstObservedAt = pgtype.Timestamptz{Time: observedAt.Add(-time.Hour), Valid: true}
 	first.SubscriptionObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
 	first.SubscriptionChangedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
+	first.TodayStatsWindowStart = pgtype.Timestamptz{
+		Time:  time.Date(observedAt.Year(), observedAt.Month(), observedAt.Day(), 0, 0, 0, 0, time.UTC),
+		Valid: true,
+	}
+	first.TodayStatsObservedAt = pgtype.Timestamptz{Time: observedAt, Valid: true}
+	first.TodayRequestCount = 3
+	first.TodaySuccessCount = 2
+	first.TodayFailureCount = 1
+	first.TodayTTFTP95MS = testFloat64Ptr(480)
 	store := &adminPoolStoreStub{list: []admindb.AdminProviderAccountRow{
 		first,
 		adminProviderRow(78, 7),
@@ -465,7 +536,8 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 		store.listArg.StateFilter != "active" || store.listArg.PoolGroupID != 9 || store.listArg.TagFilter != "prod" ||
 		store.listArg.SubscriptionVendorFilter != "openai" || store.listArg.SubscriptionPlanFilter != "pro" ||
 		store.listArg.SubscriptionScopeFilter != "personal" || store.listArg.SubscriptionStatusFilter != "observed" ||
-		store.listArg.SubscriptionSourceFilter != "id_token_claim" {
+		store.listArg.SubscriptionSourceFilter != "id_token_claim" || store.listArg.StatsSince.IsZero() ||
+		store.listArg.StatsUntil.IsZero() || !store.listArg.StatsUntil.After(store.listArg.StatsSince) {
 		t.Fatalf("list arg mismatch: %+v", store.listArg)
 	}
 	var response struct {
@@ -489,6 +561,11 @@ func TestAdminPoolAccounts_ListProviderAccountsPaginated(t *testing.T) {
 	}
 	if response.Items[0].ObservationSource != "request_completion_event" {
 		t.Fatalf("列表 last_request_observation_source=%q want request_completion_event", response.Items[0].ObservationSource)
+	}
+	if got := response.Items[0].TodayStats; got == nil || got.RequestCount != 3 ||
+		got.SuccessCount != 2 || got.FailureCount != 1 || math.Abs(got.FailureRatePercent-100.0/3.0) > 1e-12 ||
+		got.TTFTP95MS == nil || *got.TTFTP95MS != 480 {
+		t.Fatalf("列表今日统计=%+v，期望一次列表请求返回请求、成功、失败和 TTFT P95", got)
 	}
 	if response.Items[0].Subscription == nil || response.Items[0].Subscription.Label != "openai:pro" ||
 		response.Items[0].Subscription.Plan != "pro" || response.Items[0].Subscription.Status != "observed" ||
@@ -623,7 +700,7 @@ func TestAdminPoolAccounts_UpdateProviderAccountFull(t *testing.T) {
 }
 
 func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
-	store := &adminPoolStoreStub{}
+	store := &adminPoolStoreStub{getErr: errors.New("secondary read must not run")}
 	recovery := &adminPoolRateLimitRecoveryStub{
 		result: provideraccountrecovery.ClearRateLimitResult{
 			Account:        adminProviderRow(77, 7),
@@ -652,6 +729,9 @@ func TestAdminPoolAccounts_ClearRateLimit(t *testing.T) {
 		body.RateLimitRecovery.ChannelState != channelhealth.StateRamping {
 		t.Fatalf("clear-rate-limit response mismatch: %+v", body)
 	}
+	if store.getArg != nil {
+		t.Fatalf("committed account row must be returned directly; unexpected secondary read: %+v", store.getArg)
+	}
 }
 
 func TestAdminPoolAccounts_ClearRateLimitPartialRecoveryIsExplicit(t *testing.T) {
@@ -665,6 +745,68 @@ func TestAdminPoolAccounts_ClearRateLimitPartialRecoveryIsExplicit(t *testing.T)
 	}
 	if !strings.Contains(rec.Body.String(), "provider_account_recovery_partial") {
 		t.Fatalf("partial recovery code missing: %s", rec.Body.String())
+	}
+	var body providerAccountRecoveryPartialResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode partial recovery response: %v body=%s", err, rec.Body.String())
+	}
+	if body.Error.Code != "provider_account_recovery_partial" ||
+		body.TenantID != 7 || body.AccountID != 77 ||
+		body.Operation != "clear_rate_limit" ||
+		!body.AccountBackoffCleared || body.AccountStateRecovered ||
+		!body.ChannelRecoveryPending || !body.Retryable {
+		t.Fatalf("partial recovery body does not expose committed/pending stages: %+v", body)
+	}
+}
+
+func TestAdminPoolAccounts_RecoverStateUsesCommittedAccountRow(t *testing.T) {
+	store := &adminPoolStoreStub{getErr: errors.New("secondary read must not run")}
+	recovery := &adminPoolRateLimitRecoveryStub{
+		result: provideraccountrecovery.ClearRateLimitResult{
+			Account:        adminProviderRow(77, 7),
+			Channel:        &channelhealth.Record{State: channelhealth.StateActive},
+			ChannelChanged: true,
+		},
+	}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, RateLimitRecovery: recovery,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/recover", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode recover response: %v body=%s", err, rec.Body.String())
+	}
+	if body.ID != 77 || body.RateLimitRecovery == nil ||
+		!body.RateLimitRecovery.AccountBackoffCleared ||
+		body.RateLimitRecovery.ChannelState != channelhealth.StateActive {
+		t.Fatalf("recover response mismatch: %+v", body)
+	}
+	if store.getArg != nil {
+		t.Fatalf("committed account row must be returned directly; unexpected secondary read: %+v", store.getArg)
+	}
+}
+
+func TestAdminPoolAccounts_RecoverStatePartialStagesAreExplicit(t *testing.T) {
+	store := &adminPoolStoreStub{}
+	recovery := &adminPoolRateLimitRecoveryStub{err: provideraccountrecovery.ErrPartialRecovery}
+	rec := invokeAdminPoolWithDeps(t, AdminPoolAccountDeps{
+		Auth: providerAccountAdmin(), Store: store, RateLimitRecovery: recovery,
+	}, http.MethodPost, "/admin/v1/provider-accounts/77/recover", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("partial recovery status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body providerAccountRecoveryPartialResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode partial recovery response: %v body=%s", err, rec.Body.String())
+	}
+	if body.Error.Code != "provider_account_recovery_partial" ||
+		body.TenantID != 7 || body.AccountID != 77 ||
+		body.Operation != "recover_account_state" ||
+		!body.AccountBackoffCleared || !body.AccountStateRecovered ||
+		!body.ChannelRecoveryPending || !body.Retryable {
+		t.Fatalf("recover partial body does not expose committed/pending stages: %+v", body)
 	}
 }
 
@@ -777,6 +919,10 @@ func testStringPtr(value string) *string {
 }
 
 func testInt32Ptr(value int32) *int32 {
+	return &value
+}
+
+func testFloat64Ptr(value float64) *float64 {
 	return &value
 }
 

@@ -61,6 +61,7 @@ func TestPG_RouteCRUD(t *testing.T) {
 	tenantB := seedTenant(t, ctx, pool, "rb-"+sfx)
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantA, tenantB)
@@ -147,6 +148,7 @@ func TestPG_RouteUpdate(t *testing.T) {
 	tenantB := seedTenant(t, ctx, pool, "ub-"+sfx)
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantA, tenantB)
@@ -238,6 +240,7 @@ func TestPG_RouteSetEnabled(t *testing.T) {
 	tenantB := seedTenant(t, ctx, pool, "eb-"+sfx)
 	t.Cleanup(func() {
 		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
 		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantA, tenantB)
@@ -305,5 +308,113 @@ func TestPG_RouteSetEnabled(t *testing.T) {
 	}
 	if _, err := svc.SetEnabled(ctx, tenantA, created.ID, true, 9); !errors.Is(err, ErrRouteNotFound) {
 		t.Fatalf("set-enabled on soft-deleted route: err=%v, want ErrRouteNotFound (deleted_at IS NULL excludes it)", err)
+	}
+}
+
+// TestPG_RouteMutationLogAtomicity 守浏览器会话操作者和四类路由写的同事务合同。
+// 判别:
+//   - 任何操作先提交 route 再写日志 → 拒绝日志的触发器生效后，业务状态断言转红。
+//   - HTTP 会话操作者退化为 admin_token:0 → 成功日志的 actor 断言转红。
+func TestPG_RouteMutationLogAtomicity(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	sfx := uuid.NewString()
+
+	tenantID := seedTenant(t, ctx, pool, "atomic-"+sfx)
+	poolGroupID := seedPoolGroup(t, ctx, pool, tenantID, "atomic-pg-"+sfx)
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DROP TRIGGER IF EXISTS routeadmin_test_reject_log ON admin_audit_events`)
+		_, _ = pool.Exec(c, `DROP FUNCTION IF EXISTS routeadmin_test_reject_log()`)
+		_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM routes WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM pool_groups WHERE tenant_id = $1`, tenantID)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id = $1`, tenantID)
+	})
+
+	svc := NewService(NewPostgresStore(pool), nil)
+	created, err := svc.Create(ctx, CreateInput{
+		TenantID: tenantID, Name: "atomic-base-" + sfx, UserGroupMatch: "premium",
+		ModelPatternMatch: "*", PoolGroupID: poolGroupID,
+		ActorID: "admin_user:88", ActorRole: "platform_admin", RequestID: "req-session-88",
+	})
+	if err != nil {
+		t.Fatalf("create with session actor: %v", err)
+	}
+	var actorID, actorRole, requestID, action, targetType string
+	if err := pool.QueryRow(ctx, `
+SELECT actor_id, actor_role, request_id, action, target_type
+FROM admin_audit_events
+WHERE tenant_id = $1 AND target_id = $2 AND action = 'create_route_rule'`,
+		tenantID, created.ID,
+	).Scan(&actorID, &actorRole, &requestID, &action, &targetType); err != nil {
+		t.Fatalf("read create operation log: %v", err)
+	}
+	if actorID != "admin_user:88" || actorRole != "platform_admin" ||
+		requestID != "req-session-88" || action != "create_route_rule" || targetType != "route_rule" {
+		t.Fatalf("unexpected create operation log: actor=%q role=%q request=%q action=%q target=%q",
+			actorID, actorRole, requestID, action, targetType)
+	}
+
+	// 只拒绝特定测试操作者的日志，避免把业务 SQL 本身人为改坏。
+	if _, err := pool.Exec(ctx, `
+CREATE OR REPLACE FUNCTION routeadmin_test_reject_log() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.actor_id = 'admin_user:999999' THEN
+        RAISE EXCEPTION 'routeadmin test rejects operation log';
+    END IF;
+    RETURN NEW;
+END
+$$;
+DROP TRIGGER IF EXISTS routeadmin_test_reject_log ON admin_audit_events;
+CREATE TRIGGER routeadmin_test_reject_log
+BEFORE INSERT ON admin_audit_events
+FOR EACH ROW EXECUTE FUNCTION routeadmin_test_reject_log();
+`); err != nil {
+		t.Fatalf("install rejecting operation-log trigger: %v", err)
+	}
+	rejected := MutationLog{
+		ActorID: "admin_user:999999", ActorRole: "platform_admin", RequestID: "req-rejected",
+	}
+
+	if _, err := svc.Create(ctx, CreateInput{
+		TenantID: tenantID, Name: "must-rollback-" + sfx, UserGroupMatch: "premium",
+		ModelPatternMatch: "*", PoolGroupID: poolGroupID,
+		ActorID: rejected.ActorID, ActorRole: rejected.ActorRole, RequestID: rejected.RequestID,
+	}); err == nil {
+		t.Fatal("create should fail when operation log is rejected")
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM routes WHERE tenant_id=$1 AND name=$2`,
+		tenantID, "must-rollback-"+sfx).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rejected create left route row: count=%d err=%v", count, err)
+	}
+
+	if _, err := svc.Update(ctx, UpdateInput{
+		TenantID: tenantID, ID: created.ID, Name: "must-not-stick-" + sfx,
+		UserGroupMatch: "vip", ModelPatternMatch: "gpt-*", PoolGroupID: poolGroupID,
+		ActorID: rejected.ActorID, ActorRole: rejected.ActorRole, RequestID: rejected.RequestID,
+	}); err == nil {
+		t.Fatal("update should fail when operation log is rejected")
+	}
+	afterUpdate, err := svc.Get(ctx, tenantID, created.ID)
+	if err != nil || afterUpdate.Name != created.Name || afterUpdate.UserGroupMatch != created.UserGroupMatch {
+		t.Fatalf("rejected update changed route: route=%+v err=%v", afterUpdate, err)
+	}
+
+	if _, err := svc.SetEnabledWithActor(ctx, tenantID, created.ID, false, rejected); err == nil {
+		t.Fatal("set-enabled should fail when operation log is rejected")
+	}
+	afterDisable, err := svc.Get(ctx, tenantID, created.ID)
+	if err != nil || !afterDisable.Enabled {
+		t.Fatalf("rejected disable changed route: route=%+v err=%v", afterDisable, err)
+	}
+
+	if _, err := svc.DeleteWithActor(ctx, tenantID, created.ID, rejected); err == nil {
+		t.Fatal("delete should fail when operation log is rejected")
+	}
+	if afterDelete, err := svc.Get(ctx, tenantID, created.ID); err != nil || afterDelete.ID != created.ID {
+		t.Fatalf("rejected delete removed route: route=%+v err=%v", afterDelete, err)
 	}
 }

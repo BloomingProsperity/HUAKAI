@@ -27,16 +27,19 @@ func (a dlqAuthStub) Resolve(context.Context, *http.Request) (admin.AdminIdentit
 }
 
 type dlqDepsStub struct {
-	auth  dlqAuthStub
-	store *dlqStoreStub
+	auth             dlqAuthStub
+	store            *dlqStoreStub
+	platformTenantID int64
 }
 
-func (d dlqDepsStub) AdminDLQAuth() AdminDLQAuth   { return d.auth }
-func (d dlqDepsStub) AdminDLQStore() AdminDLQStore { return d.store }
+func (d dlqDepsStub) AdminDLQAuth() AdminDLQAuth      { return d.auth }
+func (d dlqDepsStub) AdminDLQStore() AdminDLQStore    { return d.store }
+func (d dlqDepsStub) AdminDLQPlatformTenantID() int64 { return d.platformTenantID }
 
 type dlqStoreStub struct {
-	filter   dlq.ListFilter
-	replayID int64
+	filter       dlq.ListFilter
+	replayTenant int64
+	replayID     int64
 }
 
 func (s *dlqStoreStub) List(_ context.Context, f dlq.ListFilter) ([]dlq.Record, error) {
@@ -58,7 +61,8 @@ func (s *dlqStoreStub) List(_ context.Context, f dlq.ListFilter) ([]dlq.Record, 
 	}}, nil
 }
 
-func (s *dlqStoreStub) Replay(_ context.Context, id int64, _ string) (*dlq.Record, error) {
+func (s *dlqStoreStub) Replay(_ context.Context, tenantID, id int64, _ string) (*dlq.Record, error) {
+	s.replayTenant = tenantID
 	s.replayID = id
 	return &dlq.Record{
 		ID:             id,
@@ -77,20 +81,28 @@ func (s *dlqStoreStub) Replay(_ context.Context, id int64, _ string) (*dlq.Recor
 	}, nil
 }
 
-func TestAdminDLQListRequiresPlatformAdmin(t *testing.T) {
+func TestAdminDLQListTenantOperatorIsForcedToOwnTenant(t *testing.T) {
+	store := &dlqStoreStub{}
 	deps := dlqDepsStub{
 		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RoleTenantOperator, ScopeTenantID: 7}},
-		store: &dlqStoreStub{},
+		store: store,
 	}
 	rec := invokeDLQ(deps, http.MethodGet, "/admin/v1/dlq/usage_record", "")
+	assertStatus(t, rec, http.StatusOK)
+	if store.filter.TenantID == nil || *store.filter.TenantID != 7 {
+		t.Fatalf("tenant filter=%v want 7", store.filter.TenantID)
+	}
+
+	rec = invokeDLQ(deps, http.MethodGet, "/admin/v1/dlq/usage_record?tenant_id=8", "")
 	assertStatus(t, rec, http.StatusForbidden)
 }
 
 func TestAdminDLQListFiltersHandler(t *testing.T) {
 	store := &dlqStoreStub{}
 	deps := dlqDepsStub{
-		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
-		store: store,
+		auth:             dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		store:            store,
+		platformTenantID: 7,
 	}
 	rec := invokeDLQ(deps, http.MethodGet, "/admin/v1/dlq/billing_event_replica?status=operator_review&limit=25", "")
 	assertStatus(t, rec, http.StatusOK)
@@ -102,13 +114,27 @@ func TestAdminDLQListFiltersHandler(t *testing.T) {
 func TestAdminDLQReplayUsesID(t *testing.T) {
 	store := &dlqStoreStub{}
 	deps := dlqDepsStub{
-		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		auth:             dlqAuthStub{ident: admin.AdminIdentity{TokenID: 1, Role: admin.RolePlatformAdmin}},
+		store:            store,
+		platformTenantID: 7,
+	}
+	rec := invokeDLQ(deps, http.MethodPost, "/admin/v1/dlq/42/replay", "")
+	assertStatus(t, rec, http.StatusOK)
+	if store.replayTenant != 7 || store.replayID != 42 {
+		t.Fatalf("replay tenant/id=%d/%d want 7/42", store.replayTenant, store.replayID)
+	}
+}
+
+func TestAdminDLQReplayTenantOperatorUsesOwnTenant(t *testing.T) {
+	store := &dlqStoreStub{}
+	deps := dlqDepsStub{
+		auth:  dlqAuthStub{ident: admin.AdminIdentity{TokenID: 2, Role: admin.RoleTenantOperator, ScopeTenantID: 8}},
 		store: store,
 	}
 	rec := invokeDLQ(deps, http.MethodPost, "/admin/v1/dlq/42/replay", "")
 	assertStatus(t, rec, http.StatusOK)
-	if store.replayID != 42 {
-		t.Fatalf("replayID=%d want 42", store.replayID)
+	if store.replayTenant != 8 || store.replayID != 42 {
+		t.Fatalf("replay tenant/id=%d/%d want 8/42", store.replayTenant, store.replayID)
 	}
 }
 

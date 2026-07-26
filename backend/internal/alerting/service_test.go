@@ -140,6 +140,33 @@ func TestEvaluateRules_FiresOnBreach(t *testing.T) {
 	}
 }
 
+// 一个规则缺指标时，本轮必须可观测失败，但不能阻止同租户其它规则继续触发。
+// 旧实现静默 continue 会让错误断言转红；直接 return 会让第二条规则不产生事件。
+func TestEvaluateRules_MissingMetricIsVisibleWithoutBlockingOtherRules(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(NewMemoryStore())
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID: 7, Name: "missing", Metric: "gateway.missing",
+		Comparator: ComparatorGTE, Threshold: 1, Severity: SeverityWarning, WindowSeconds: 60,
+	})
+	mustCreateRule(t, svc, CreateRuleInput{
+		TenantID: 7, Name: "live", Metric: "gateway.requests",
+		Comparator: ComparatorGTE, Threshold: 100, Severity: SeverityCritical, WindowSeconds: 60,
+	})
+
+	err := svc.EvaluateRules(ctx, 7, map[string]float64{"gateway.requests": 150})
+	if !errors.Is(err, ErrMetricUnavailable) {
+		t.Fatalf("EvaluateRules err=%v want ErrMetricUnavailable", err)
+	}
+	events, listErr := svc.ListEvents(ctx, ListEventsInput{TenantID: 7, State: EventStateFiring, Limit: 50})
+	if listErr != nil {
+		t.Fatalf("ListEvents: %v", listErr)
+	}
+	if len(events) != 1 || events[0].MetricValue == nil || *events[0].MetricValue != 150 {
+		t.Fatalf("可用规则未继续触发: %+v", events)
+	}
+}
+
 func TestEvaluateRules_ResolvesWhenRecovered(t *testing.T) {
 	// MUTATION：在恢复时从不把 firing event 标记为 resolved；该 event 一直停在 firing，resolved_at 始终为 nil。
 	ctx := context.Background()

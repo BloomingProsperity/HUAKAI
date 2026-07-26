@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	SidecarProtocolVersion uint16 = 3
+	SidecarProtocolVersion uint16 = 4
 
 	sidecarOperationConnect = "connect"
 	sidecarOperationReady   = "ready"
@@ -25,6 +25,7 @@ const (
 	SidecarCapabilityH2Bridge        = "h2_bridge"
 	SidecarCapabilityForceH1         = "force_h1"
 	SidecarCapabilityTargetIPPinning = "target_ip_pinning"
+	SidecarCapabilityProxyIPPinning  = "proxy_ip_pinning"
 
 	SidecarProfileAnthropicCLIMimicryV1 = "anthropic-cli-mimicry-v1"
 	SidecarProfileOpenAICodexCLIV1      = "openai-codex-cli-v1"
@@ -221,16 +222,17 @@ func sidecarContainsUint16(values []uint16, wanted uint16) bool {
 }
 
 type sidecarControlRequest struct {
-	Version         uint16            `json:"version"`
-	Operation       string            `json:"operation"`
-	TargetHost      string            `json:"target_host,omitempty"`
-	Port            uint16            `json:"port,omitempty"`
-	ProfileID       string            `json:"profile_id,omitempty"`
-	InlineProfile   *InlineTLSProfile `json:"inline_profile,omitempty"`
-	CorrelationID   string            `json:"correlation_id,omitempty"`
-	ForceH1         *bool             `json:"force_h1,omitempty"`
-	Proxy           *sidecarProxySpec `json:"proxy,omitempty"`
-	PinnedTargetIPs []string          `json:"pinned_target_ips,omitempty"`
+	Version          uint16            `json:"version"`
+	Operation        string            `json:"operation"`
+	TargetHost       string            `json:"target_host,omitempty"`
+	Port             uint16            `json:"port,omitempty"`
+	ProfileID        string            `json:"profile_id,omitempty"`
+	InlineProfile    *InlineTLSProfile `json:"inline_profile,omitempty"`
+	CorrelationID    string            `json:"correlation_id,omitempty"`
+	ForceH1          *bool             `json:"force_h1,omitempty"`
+	Proxy            *sidecarProxySpec `json:"proxy,omitempty"`
+	ProxyResolvedIPs []string          `json:"proxy_resolved_ips,omitempty"`
+	PinnedTargetIPs  []string          `json:"pinned_target_ips,omitempty"`
 }
 
 type sidecarControlAck struct {

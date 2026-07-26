@@ -275,10 +275,24 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 				return true
 			}
 			if commitErr := d.Settler.CommitCacheHit(ctx, cacheHitReq); commitErr != nil {
-				in.SettlementIntent.MarkFailed(ctx, decimal.Zero)
+				if abortErr := detachedAbort(
+					ctx,
+					d.Settler,
+					in.Ident.TenantID,
+					in.ReserveResult.ClaimID,
+					"cache_hit_commit_failed",
+					in.RequestID,
+					0,
+					protocolLossJSONFromEnv(cachedEnv),
+				); abortErr != nil {
+					setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+				} else {
+					in.SettlementIntent.MarkAborted(ctx)
+				}
 				writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, clienterr.CodeCacheSettleError, commitErr)
 				return true
 			}
+			in.SettlementIntent.MarkSettled(ctx, decimal.Zero)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-HUAKAI-Cache-L2", "hit")
@@ -340,10 +354,24 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 		SettleRequest:             settleReq,
 		Metadata:                  completionMetadata(in.RouteID, in.ClientRequestID),
 	}); err != nil {
-		in.SettlementIntent.MarkFailed(ctx, settleReq.ActualCost)
+		if abortErr := detachedAbort(
+			ctx,
+			d.Settler,
+			in.Ident.TenantID,
+			in.ReserveResult.ClaimID,
+			"cache_hit_settlement_failed",
+			in.RequestID,
+			0,
+			settleReq.ProtocolLoss,
+		); abortErr != nil {
+			setAbortFailedHeader(w, ctx, in.RequestID, abortErr)
+		} else {
+			in.SettlementIntent.MarkAborted(ctx)
+		}
 		writeLoggedJSONError(ctx, in.RequestID, w, http.StatusInternalServerError, settleErrorCode(err), err)
 		return true
 	}
+	in.SettlementIntent.MarkSettled(ctx, settleReq.ActualCost)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-HUAKAI-Cache-L2", "hit")
 	WriteHuakaiHeaders(w.Header(), in.RequestedModel, cachedEnv, ledgerResult, in.RequestID, in.Ident.TenantID, d.Signer)
@@ -352,15 +380,13 @@ func serveL2CacheHit(ctx context.Context, w http.ResponseWriter, r *http.Request
 	return true
 }
 
-func writeL2CacheHitBody(ctx context.Context, w http.ResponseWriter, in l2CacheHitInput, actualCost decimal.Decimal) {
+func writeL2CacheHitBody(ctx context.Context, w http.ResponseWriter, in l2CacheHitInput, _ decimal.Decimal) {
 	w.WriteHeader(http.StatusOK)
 	delivered, err := streamdelivery.WriteBusinessAndFlush(w, in.Entry.Body)
 	if !delivered {
 		logInternalError(ctx, in.RequestID, "cache_hit_client_response_write_error", err)
 		return
 	}
-	in.SettlementIntent.MarkDelivering(ctx, time.Now().UTC())
-	in.SettlementIntent.MarkSettled(ctx, actualCost)
 }
 
 func cacheEntry(ex *chatExecution, cacheKey string, clientBody, cacheEnvelope []byte) l2cache.Entry {

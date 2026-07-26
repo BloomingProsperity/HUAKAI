@@ -1,8 +1,8 @@
 # HUAKAI 项目与架构白皮书
 
 > 文档状态：待 Owner 审核的唯一项目总纲候选
-> 事实基线：`origin/main@cb730be735986c47c945a0c7e3bee4d198f4bfd0`
-> 核实日期：2026-07-24
+> 事实基线：`origin/main@d32a2183788bee0cc8492518d9366ea71afb1244` 加本 PR 差量
+> 核实日期：2026-07-26
 > 语言：中文；代码标识符、协议名和环境变量保留英文
 > 当前权威性：本分支唯一总纲候选；Owner 批准 PR 并合入主线后成为项目级唯一总纲
 
@@ -10,12 +10,12 @@
 
 HUAKAI 已经是一个大型后端项目。当前主线包含：
 
-| 资产 | 主线实数 | 统计口径 |
+| 资产 | 本提交实数 | 统计口径 |
 | --- | ---: | --- |
-| Go 包 | 339 | `backend` 模块内 `go list ./...` |
-| Go 生产文件 | 1344 | `backend/**/*.go`，排除 `_test.go` |
+| Go 包 | 347 | `backend` 模块内 `go list ./...` |
+| Go 生产文件 | 1375 | `backend/**/*.go`，排除 `_test.go` |
 | 第一方 Rust 工作区源码 | 61 | 排除 `tests/` 与 `target/`；其中 9 个 Sidecar 文件进入生产镜像，其余不进入当前镜像 |
-| PostgreSQL 迁移文件 | 426 | `backend/sql/migrations/*.sql` |
+| PostgreSQL 迁移文件 | 452 | `backend/sql/migrations/*.sql` |
 | SQL 查询源 | 55 | 非迁移 SQL，作为 sqlc 或运行查询合同 |
 | PostgreSQL 业务表 | 149 | 从当前迁移最终态解析 |
 | 工程工具与部署资产 | 62 | 源码责任索引纳入的 Docker、Compose、CI、Hook、Python、Shell 与独立 Go 工具 |
@@ -136,8 +136,8 @@ OpenAI、Anthropic、Gemini 等兼容入口，并在每次调用中完成身份�
 ## 2. 三身份业务模型
 
 HUAKAI 只有三类业务身份。技术上可以有多种凭据形态，但不能因此增加第四种业务角色。
-本节先定义 Owner 已确认的产品合同；“源码边界证据”随后如实区分已经落实和仍未统一的入口，
-不能把目标合同冒充为全局已实现。
+本节定义 Owner 已确认的产品合同，并用当前生产入口说明系统资源、监督读取和最终用户写动作的
+不同边界；新增模块不得把其中一种权限借给另一种。
 
 ### 2.1 部署者
 
@@ -217,10 +217,29 @@ flowchart TB
 - `backend/internal/adminuserhttp/tenant_scope.go:15` 限定部署者只能管理平台自有租户用户。
 - `backend/internal/balanceledger/service.go:375` 区分平台到租户钱包、平台自有用户和租户到用户三类余额动作。
 - `backend/internal/tenantcapability/store.go:61` 对缺失授权默认拒绝。
-- 当前边界尚未全局统一：`backend/internal/adminhttp/api_keys_handler.go` 仍允许平台管理员指定任意
-  `tenant_id` 管理用户 Key，`backend/internal/controlhttp/dispute_handler.go` 也保留平台管理员跨租户
-  处理争议的路径。它们与上述 Owner 合同存在差距，必须在独立鉴权变更中收口；本白皮书不把它们
-  误报为已经完成。
+- `backend/internal/admin/operator_auth.go` 的所属租户经营边界由用户管理、用户 Key、订单、
+  订阅、兑换码、争议处理和人工恢复共同复用；部署者只管理平台工作租户的最终用户资源，
+  租户管理员只管理自身作用域。
+- `backend/internal/controlhttp/dispute_handler.go` 允许平台侧按租户查看争议用于日志与监督，
+  但争议处理写动作必须通过所属租户经营边界，不能越级替下级租户处理最终用户争议。
+
+### 2.5 租户生命周期
+
+租户不是只靠一行 `tenant_id` 临时存在，而是有可运营、可停用、可核验删除的完整生命周期：
+
+1. **创建**：部署者在一个数据库事务中创建租户、零余额租户钱包、首位租户管理员和操作日志；
+   任一步失败都不得留下半个租户。
+2. **启用**：只有 `active` 租户可以创建新会话、签发或使用管理凭据、进入新请求计费、
+   自动续订、提醒、账号凭据轮转、额度探测和周期性运营任务。
+3. **停用**：切为 `disabled` 时同步递增租户版本并撤销现有会话。停用阻止新业务副作用，
+   但已存在的结算、退款、DLQ 和媒体任务恢复仍可继续收敛，避免钱和状态悬空。
+4. **删除预检**：删除前返回资源影响、阻断项和影响摘要。存在余额、在途资金、未完成注册
+   奖励或其他待恢复事实时必须拒绝删除，不能依赖前端提示代替后端约束。
+5. **删除**：只允许对已停用且通过预检的租户执行软删除。用户、账本、日志和幂等事实按各自
+   保留合同继续存在，不做级联物理销毁。
+
+租户生命周期的管理入口位于 `backend/internal/tenantadminhttp`，事务与并发合同位于
+`backend/internal/tenantadmin`，数据库约束位于迁移 `0233_tenant_lifecycle_admin`。
 
 ## 3. 系统总体架构
 
@@ -1015,8 +1034,9 @@ Hermes 消息清理、用量清理、日志清理、DLQ 和 outbox 等 worker。
 
 - Go Gateway、PostgreSQL、Redis、Caddy、Rust TLS Sidecar 的生产构建与 Compose 拓扑存在。
 - 三身份所需的平台管理员、租户管理员、用户角色和租户 scope 基础存在。
-- 用户管理主入口已限制部署者越级管理下级租户用户，余额账本区分平台到租户和租户到用户；
-  但用户 Key 与争议处理仍有平台管理员可指定任意租户的旧路径，三身份边界尚未全局闭合。
+- 用户管理、用户 Key、余额、支付、订阅、兑换、争议处理、用户通知、社交身份安全变更和人工
+  恢复写口已使用所属租户经营边界；部署者只能写平台工作租户最终用户和下级租户经营钱包。
+  平台对下级租户订单、订阅、兑换和争议保留监督读取，不因此获得处理写权限。
 - Chat 主链包含身份、模型、路由、预扣、选号、凭据、出站、结算、日志和恢复。
 - OpenAI、Anthropic、Gemini 形态以及 embeddings、rerank、images、audio、video、
   Responses 和媒体任务入口已挂载；每个端点是否达到同等完整链路仍需逐项验收。

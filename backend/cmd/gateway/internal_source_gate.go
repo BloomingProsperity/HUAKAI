@@ -40,11 +40,9 @@ func parseInternalAllowCIDRs(raw string) []*net.IPNet {
 // 或运维配置的额外 CIDR。这增加了一道网络来源屏障,使内部控制面无法经共享 listener
 // 从公网直达;应用层的 internal_token / runner HMAC 不再是唯一的门(audit B2)。
 //
-// 它必须装在 middleware.RealIP 之前。RealIP 会用客户端提供的
-// X-Forwarded-For/X-Real-IP 覆盖 RemoteAddr 且不做 trusted-proxy 校验,因此若一个门
-// 读取 RealIP 之后的 RemoteAddr,攻击者只需发送 `X-Forwarded-For: 127.0.0.1` 即可
-// 伪造成 loopback 来源。本门先跑,判定的是真实的 TCP 对端(r.RemoteAddr),它无法在
-// 机器外被伪造 —— 与每 IP 限流器采用的排序理由一致。
+// 本门只读取 net/http 提供的 socket 对端，不读取或改写
+// X-Forwarded-For/X-Real-IP。攻击者即使发送
+// `X-Forwarded-For: 127.0.0.1`，也无法伪造成 loopback 来源。
 //
 // 非 /internal/ 路径原样放行。被拒请求返回 404(内部路由对不可信来源不可见),
 // 并打一条 WARN 日志记录真实对端,便于攻击可见性 / 配置错误诊断。

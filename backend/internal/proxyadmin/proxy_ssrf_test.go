@@ -36,24 +36,33 @@ func TestProxyHostSafe_BlocksNeverLegitTargets(t *testing.T) {
 	}
 }
 
-// TestProxyHostSafe_AllowsLegitProxies 守护反向不变量:RFC1918 私网与 .internal
-// 类主机名是【合法企业/内网出口代理】,必须放行,封死会误伤正常配置。
-// 变异证伪:若把 IsPrivate 也加进阻断面(模仿 passthrough endpoint 守卫),
-// 10.0.0.9 / 192.168.x / proxy.internal 行转红。
-func TestProxyHostSafe_AllowsLegitProxies(t *testing.T) {
+func TestProxyHostSafe_DefaultDeniesPrivateAndAllowsPublicHosts(t *testing.T) {
+	for _, h := range []string{"10.0.0.9", "192.168.1.1", "172.16.0.1", "fd00::1"} {
+		if proxyHostSafe(h) {
+			t.Errorf("未获部署者授权的私网代理 %q 必须被拒绝", h)
+		}
+	}
 	allowed := []string{
-		"10.0.0.9",         // 企业私网代理(现有集成测试 fixture)
-		"192.168.1.1",      // 私网
-		"172.16.0.1",       // 私网
-		"fd00::1",          // ULA 私网 v6
-		"proxy.internal",   // 内网主机名(现有集成测试 fixture)
+		"proxy.internal",    // 域名在实际拨号时解析并复核
 		"proxy.example.com", // 公网主机名
-		"1.1.1.1",          // 公网 v4
+		"1.1.1.1",           // 公网 v4
 	}
 	for _, h := range allowed {
 		if !proxyHostSafe(h) {
 			t.Errorf("host %q 是合法代理目标(私网/内网名/公网),却被误判不安全", h)
 		}
+	}
+}
+
+func TestProxyHostSafe_AllowsOnlyExplicitPrivateProxy(t *testing.T) {
+	allowPrivateProxyHosts(t, "10.0.0.9,fd00::1")
+	for _, host := range []string{"10.0.0.9", "fd00::1"} {
+		if !proxyHostSafe(host) {
+			t.Fatalf("部署者精确授权的私网代理 %q 应被允许", host)
+		}
+	}
+	if proxyHostSafe("10.0.0.10") {
+		t.Fatal("相邻但未授权的私网地址不得被放行")
 	}
 }
 
@@ -69,10 +78,14 @@ func TestValidateCreateRejectsUnsafeHost(t *testing.T) {
 		t.Fatalf("metadata host 应返 ErrUnsafeHost,got %v", err)
 	}
 
-	// 反向:合法私网代理 host 不被 SSRF 门拦下(应过校验)。
+	// 私网代理默认拒绝；部署者精确授权后才允许写入。
 	ok := base
 	ok.Host = "10.0.0.9"
+	if err := validateCreate(ok); !errors.Is(err, ErrUnsafeHost) {
+		t.Fatalf("未授权私网代理必须拒绝,got %v", err)
+	}
+	allowPrivateProxyHosts(t, "10.0.0.9")
 	if err := validateCreate(ok); err != nil {
-		t.Fatalf("合法私网代理 host 不应被拒,got %v", err)
+		t.Fatalf("部署者授权后的私网代理不应被拒,got %v", err)
 	}
 }

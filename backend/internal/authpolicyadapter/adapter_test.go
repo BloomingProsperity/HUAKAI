@@ -21,7 +21,7 @@ func TestRegPolicyAdapterReadsSettings(t *testing.T) {
 		},
 	}
 
-	gate := NewRegistrationGate(settings)
+	gate := NewRegistrationGate(settings, 1)
 	registerAllowed, err := gate.PasswordRegistrationAllowed(ctx, 42)
 	if err != nil {
 		t.Fatalf("PasswordRegistrationAllowed err=%v want nil", err)
@@ -62,17 +62,18 @@ func TestRegPolicyAdapterReadsSettings(t *testing.T) {
 }
 
 // TestRegPolicyFailsToDefaultsOnReadError:设置读失败时,适配器回落到各 key 的**默认值**
-//(AuthSettings.Get 吞错返回 defaultSetting),而非一律 fail-open。因此:
+// (AuthSettings.Get 吞错返回 defaultSetting),而非一律 fail-open。因此:
 //   - 注册主门 registration_enabled 默认 false(Owner 拍板「注册默认关」)→ 读错时注册被拒(fail-safe);
 //   - 密码登录 password_login_enabled 默认 true → 读错时登录仍放行;
 //   - 邮箱域名白名单/别名限制默认关 → 读错时不误开限制。
+//
 // 变异:若适配器改成"读错一律返回 true/开",注册断言(期望 false)会 RED;若改成"读错一律 false",
 // 登录断言(期望 true)会 RED——双向判别。
 func TestRegPolicyFailsToDefaultsOnReadError(t *testing.T) {
 	ctx := context.Background()
 	settings := stubSettings{err: errors.New("settings unavailable")}
 
-	gate := NewRegistrationGate(settings)
+	gate := NewRegistrationGate(settings, 1)
 	registerAllowed, err := gate.PasswordRegistrationAllowed(ctx, 42)
 	if err != nil {
 		t.Fatalf("PasswordRegistrationAllowed err=%v want nil(回落默认)", err)
@@ -109,6 +110,16 @@ func TestRegPolicyFailsToDefaultsOnReadError(t *testing.T) {
 	}
 	if reserved != "" {
 		t.Fatalf("ReservedEmailLocalparts=%q want empty fail-open; MUTATION: read error enabled reserved local-parts", reserved)
+	}
+}
+
+func TestRegistrationGateOnlyAllowsPlatformWorkingTenant(t *testing.T) {
+	gate := NewRegistrationGate(stubSettings{}, 7)
+	if allowed, err := gate.PublicRegistrationTenantAllowed(context.Background(), 7); err != nil || !allowed {
+		t.Fatalf("平台工作租户 allowed=%v err=%v, want true/nil", allowed, err)
+	}
+	if allowed, err := gate.PublicRegistrationTenantAllowed(context.Background(), 8); err != nil || allowed {
+		t.Fatalf("下级租户 allowed=%v err=%v, want false/nil", allowed, err)
 	}
 }
 

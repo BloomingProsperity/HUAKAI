@@ -23,14 +23,24 @@ type overviewQuery struct {
 }
 
 type overviewTotals struct {
-	Requests      int64  `json:"requests"`
-	TotalCost     string `json:"total_cost"`
-	TotalTokens   int64  `json:"total_tokens"`
-	ActiveUsers   int64  `json:"active_users"`
-	ActiveAPIKeys int64  `json:"active_api_keys"`
-	SuccessCount  int64  `json:"success_count"`
-	ErrorCount    int64  `json:"error_count"`
-	SuccessRate   string `json:"success_rate"`
+	Requests                 int64  `json:"requests"`
+	TotalCost                string `json:"total_cost"`
+	TotalTokens              int64  `json:"total_tokens"`
+	TotalTokensInput         int64  `json:"total_tokens_input"`
+	TotalTokensOutput        int64  `json:"total_tokens_output"`
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens"`
+	TotalCacheReadTokens     int64  `json:"total_cache_read_tokens"`
+	TotalImageOutputTokens   int64  `json:"total_image_output_tokens"`
+	TotalInputCost           string `json:"total_input_cost"`
+	TotalOutputCost          string `json:"total_output_cost"`
+	TotalCacheCreationCost   string `json:"total_cache_creation_cost"`
+	TotalCacheReadCost       string `json:"total_cache_read_cost"`
+	TotalImageOutputCost     string `json:"total_image_output_cost"`
+	ActiveUsers              int64  `json:"active_users"`
+	ActiveAPIKeys            int64  `json:"active_api_keys"`
+	SuccessCount             int64  `json:"success_count"`
+	ErrorCount               int64  `json:"error_count"`
+	SuccessRate              string `json:"success_rate"`
 }
 
 type overviewTrendPoint struct {
@@ -126,6 +136,26 @@ func overviewTotalsFromRow(row dbbilling.AggregateUsageOverviewTotalsRow) (overv
 	if err != nil {
 		return overviewTotals{}, err
 	}
+	inputCost, err := fixedMoneyText(row.TotalInputCost)
+	if err != nil {
+		return overviewTotals{}, err
+	}
+	outputCost, err := fixedMoneyText(row.TotalOutputCost)
+	if err != nil {
+		return overviewTotals{}, err
+	}
+	cacheCreationCost, err := fixedMoneyText(row.TotalCacheCreationCost)
+	if err != nil {
+		return overviewTotals{}, err
+	}
+	cacheReadCost, err := fixedMoneyText(row.TotalCacheReadCost)
+	if err != nil {
+		return overviewTotals{}, err
+	}
+	imageOutputCost, err := fixedMoneyText(row.TotalImageOutputCost)
+	if err != nil {
+		return overviewTotals{}, err
+	}
 	// 成功请求是总请求的过滤子集，因此该值保持非负；为与 perf-metrics
 	// handler 对称起见，仍做防御性钳制。
 	errorCount := row.RequestCount - row.SuccessCount
@@ -133,14 +163,24 @@ func overviewTotalsFromRow(row dbbilling.AggregateUsageOverviewTotalsRow) (overv
 		errorCount = 0
 	}
 	return overviewTotals{
-		Requests:      row.RequestCount,
-		TotalCost:     cost,
-		TotalTokens:   row.TotalTokens,
-		ActiveUsers:   row.ActiveUsers,
-		ActiveAPIKeys: row.ActiveApiKeys,
-		SuccessCount:  row.SuccessCount,
-		ErrorCount:    errorCount,
-		SuccessRate:   successRateText(row.SuccessCount, row.RequestCount),
+		Requests:                 row.RequestCount,
+		TotalCost:                cost,
+		TotalTokens:              row.TotalTokens,
+		TotalTokensInput:         row.TotalTokensInput,
+		TotalTokensOutput:        row.TotalTokensOutput,
+		TotalCacheCreationTokens: row.TotalCacheCreationTokens,
+		TotalCacheReadTokens:     row.TotalCacheReadTokens,
+		TotalImageOutputTokens:   row.TotalImageOutputTokens,
+		TotalInputCost:           inputCost,
+		TotalOutputCost:          outputCost,
+		TotalCacheCreationCost:   cacheCreationCost,
+		TotalCacheReadCost:       cacheReadCost,
+		TotalImageOutputCost:     imageOutputCost,
+		ActiveUsers:              row.ActiveUsers,
+		ActiveAPIKeys:            row.ActiveApiKeys,
+		SuccessCount:             row.SuccessCount,
+		ErrorCount:               errorCount,
+		SuccessRate:              successRateText(row.SuccessCount, row.RequestCount),
 	}, nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
@@ -143,9 +144,15 @@ func (s *adminModelAliasStoreStub) UpsertModelCapabilityBinding(_ context.Contex
 func invokeAdminCapabilityBindingUpsert(t *testing.T, deps AdminModelAliasesDeps, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
+	r.Use(chimiddleware.RequestID)
 	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings", NewAdminModelCapabilityBindingUpsertHandler(deps))
 	req := httptest.NewRequest(http.MethodPut, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-model-capability")
+	req = req.WithContext(admin.IdentityToContext(req.Context(), admin.AdminIdentity{
+		TokenID: 4242,
+		Role:    admin.RolePlatformAdmin,
+	}))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	return rec
@@ -154,7 +161,8 @@ func invokeAdminCapabilityBindingUpsert(t *testing.T, deps AdminModelAliasesDeps
 // 守 upsert 核心: model_id 取自 path(42), source 服务端【强制 operator】(不取 body), 其余字段如实透传到 store。
 // 用 enabled=false + scope=tenant + tenant_id=7 做判别值。
 // mutation: handler 不强制 source 写死 operator(留空/取 body)→ upsertParams.Source != "operator" → 红;
-//           model_id 不取 path → != 42 → 红; enabled 读错 → != false → 红。
+//
+//	model_id 不取 path → != 42 → 红; enabled 读错 → != false → 红。
 func TestAdminCapabilityBindingUpsertForcesOperatorSourceAndPathModelID(t *testing.T) {
 	store := &adminModelAliasStoreStub{upsertBinding: registry.ModelCapabilityBinding{ModelID: 42, Scope: "tenant", Capability: "vision", Enabled: false, Source: "operator"}}
 	rec := invokeAdminCapabilityBindingUpsert(t, AdminModelAliasesDeps{Store: store}, "/v1/admin/models/42/capability-bindings",
@@ -166,6 +174,9 @@ func TestAdminCapabilityBindingUpsertForcesOperatorSourceAndPathModelID(t *testi
 	p := store.upsertParams
 	if p.Source != "operator" {
 		t.Fatalf("upsert Source=%q want operator (服务端强制, 防伪装 vendor-sync)", p.Source)
+	}
+	if p.Actor != "admin_token:4242" || p.ActorRole != admin.RolePlatformAdmin || p.RequestID != "req-model-capability" {
+		t.Fatalf("操作日志元数据=%+v，必须来自认证身份和请求上下文", p)
 	}
 	if p.ModelID != 42 {
 		t.Fatalf("upsert ModelID=%d want 42 (取自 path)", p.ModelID)
@@ -183,6 +194,26 @@ func TestAdminCapabilityBindingUpsertForcesOperatorSourceAndPathModelID(t *testi
 	}
 	if !strings.Contains(rec.Body.String(), `"capability":"vision"`) {
 		t.Fatalf("response missing binding: %s", rec.Body.String())
+	}
+}
+
+// 生产路由由 adminGate 注入身份；若接线回归导致身份缺失，写接口必须在落库前失败，
+// 不能写出无法追责的能力绑定。
+func TestAdminCapabilityBindingUpsertRejectsMissingOperatorIdentity(t *testing.T) {
+	store := &adminModelAliasStoreStub{}
+	r := chi.NewRouter()
+	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings", NewAdminModelCapabilityBindingUpsertHandler(AdminModelAliasesDeps{Store: store}))
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/models/42/capability-bindings",
+		strings.NewReader(`{"scope":"global","capability":"vision","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+	}
+	if store.upsertCalls != 0 {
+		t.Fatalf("缺少操作者身份时仍触达 store，calls=%d", store.upsertCalls)
 	}
 }
 

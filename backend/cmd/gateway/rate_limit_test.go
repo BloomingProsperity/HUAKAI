@@ -286,10 +286,8 @@ func TestRateLimit_WiredIntoRouter(t *testing.T) {
 	}
 
 	// 端到端的抗伪造能力:同一个套接字对端现已耗尽;轮换
-	// X-Forwarded-For(chi 的 RealIP 否则会将其提升为 RemoteAddr)
-	// 必须不会铸造出一个新桶。由于限流器在 RealIP 之前运行,且该对端
-	// 不是受信任代理,伪造的头会被忽略,这些请求仍保持 429。
-	// 变异:把限流器接在 RealIP 之后,这些伪造波次就会通过(无 429)。
+	// X-Forwarded-For 必须不会铸造出一个新桶。该对端不是受信任代理，
+	// 因此可信解析器会忽略伪造头，这些请求仍保持 429。
 	for i := 0; i < 5; i++ {
 		req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
 		req.RemoteAddr = ip
@@ -297,7 +295,7 @@ func TestRateLimit_WiredIntoRouter(t *testing.T) {
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("forged X-Forwarded-For wave %d minted a fresh bucket (got %d) — limiter keyed off RealIP-spoofable address", i+1, rec.Code)
+			t.Fatalf("forged X-Forwarded-For wave %d minted a fresh bucket (got %d) — limiter trusted an unverified forwarding header", i+1, rec.Code)
 		}
 	}
 }
@@ -410,7 +408,7 @@ func TestRateLimit_DisableEnvBypassesWiring(t *testing.T) {
 // 在未配置任何受信任代理的情况下,resolver 以套接字对端为 key,因此
 // 轮换 XFF 不会铸造出新桶,已耗尽的对端仍保持 429。
 //
-// 变异:如果 clientKey 以伪造的头 / RealIP 重写后的值为 key,而非
+// 变异:如果 clientKey 以伪造的头为 key,而非
 // resolver 的受信任对端输出,则第二波伪造 IP 的请求就会通过(无 429),
 // 此断言便会变红。
 func TestRateLimit_KeyIgnoresForgedForwardingHeaders(t *testing.T) {

@@ -85,19 +85,31 @@ type healthScoreResponse struct {
 	Window        string             `json:"window"`
 	OverallScore  int                `json:"overall_score"`
 	BusinessScore int                `json:"business_score"`
-	InfraScore    int                `json:"infra_score"`
+	InfraScore    *int               `json:"infra_score"`
+	ScoreBasis    string             `json:"score_basis"`
 	Signals       healthScoreSignals `json:"signals"`
 }
 
 type healthScoreSignals struct {
 	ErrorRate string  `json:"error_rate"`
 	TTFTP99MS float64 `json:"ttft_p99_ms"`
-	// 基础设施面信号(与上面的业务面错误率/延迟物理不同源):自动托管上游渠道的健康分布。
-	// ChannelHealthAvailable=false 表示未传 tenant_id 或取数不可用,infra_score 走保守满分降级。
-	ChannelHealthAvailable bool  `json:"channel_health_available"`
-	HealthyChannels        int64 `json:"healthy_channels"`
-	ManagedChannels        int64 `json:"managed_channels"`
+	// 基础设施面信号与业务错误率/延迟物理不同源。不可用时 infra_score 返回 null，
+	// ChannelHealthStatus 说明原因，禁止把未知伪装成 100 分。
+	ChannelHealthAvailable bool   `json:"channel_health_available"`
+	ChannelHealthStatus    string `json:"channel_health_status"`
+	HealthyChannels        int64  `json:"healthy_channels"`
+	ManagedChannels        int64  `json:"managed_channels"`
 }
+
+const (
+	healthScoreBasisBusinessOnly     = "business_only"
+	healthScoreBasisBusinessAndInfra = "business_and_infra"
+	channelHealthAvailable           = "available"
+	channelHealthNotRequested        = "not_requested"
+	channelHealthNotConfigured       = "not_configured"
+	channelHealthQueryFailed         = "query_failed"
+	channelHealthNoManagedChannels   = "no_managed_channels"
+)
 
 // NewPerfMetricsSummaryHandler 提供只读的平台管理员性能汇总，
 // 包含 global/requested_model 维度的延迟分位数。
@@ -155,9 +167,9 @@ func NewPerfMetricsByBucketHandler(q Querier) http.HandlerFunc {
 	}
 }
 
-// NewHealthScoreHandler 提供只读的 0-100 健康分。业务面=近期业务可见的错误率与 TTFT p99;
-// 基础设施面=按 ?tenant_id 取的上游渠道健康状态分布(与业务面物理不同源,缺 tenant_id 则保守降级);
-// 二者经 healthscore.Overall 按 70/30 合成。
+// NewHealthScoreHandler 提供只读的 0-100 健康分。业务面=近期业务可见的错误率与 TTFT p99；
+// 基础设施面=按 ?tenant_id 取的上游渠道健康状态分布。只有基础设施信号可用且存在自动托管
+// 渠道时才按 70/30 合成，否则 overall_score 明确退化为 business_score，infra_score 为 null。
 func NewHealthScoreHandler(q Querier, ch ChannelHealthSummarizer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if q == nil {
@@ -187,20 +199,30 @@ func NewHealthScoreHandler(q Querier, ch ChannelHealthSummarizer) http.HandlerFu
 		errorRate := errorRateValue(errorCount, totals.RequestCount)
 		// 业务面:用户可见的错误率 + TTFT p99。
 		businessScore := healthscore.Business(errorRate, percentiles.P99Ms)
-		// 基础设施面:上游渠道健康分布(与业务面物理不同源)。按 ?tenant_id 取该租户的渠道健康汇总;
-		// 缺 tenant_id / 无冲减器 / 取数失败时,infra 走保守满分降级(ChannelHealthAvailable=false),
-		// 绝不回退成"复制业务分"——那会让两路输入相同、Overall 的 70/30 加权退化。
-		infraSignal := computeInfraSignal(r, ch)
-		infraScore := healthscore.Infra(infraSignal.HealthyChannels, infraSignal.ManagedChannels)
+		infraSignal, err := computeInfraSignal(r, ch)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive integer")
+			return
+		}
+		overallScore := businessScore
+		scoreBasis := healthScoreBasisBusinessOnly
+		var infraScore *int
+		if score, ok := healthscore.Infra(infraSignal.HealthyChannels, infraSignal.ManagedChannels); infraSignal.Available && ok {
+			infraScore = &score
+			overallScore = healthscore.Overall(businessScore, score)
+			scoreBasis = healthScoreBasisBusinessAndInfra
+		}
 		writeJSON(w, http.StatusOK, healthScoreResponse{
 			Window:        query.windowLabel,
 			BusinessScore: businessScore,
 			InfraScore:    infraScore,
-			OverallScore:  healthscore.Overall(businessScore, infraScore),
+			OverallScore:  overallScore,
+			ScoreBasis:    scoreBasis,
 			Signals: healthScoreSignals{
 				ErrorRate:              errorRateText(errorCount, totals.RequestCount),
 				TTFTP99MS:              percentiles.P99Ms,
 				ChannelHealthAvailable: infraSignal.Available,
+				ChannelHealthStatus:    infraSignal.Status,
 				HealthyChannels:        infraSignal.HealthyChannels,
 				ManagedChannels:        infraSignal.ManagedChannels,
 			},
@@ -210,24 +232,29 @@ func NewHealthScoreHandler(q Querier, ch ChannelHealthSummarizer) http.HandlerFu
 
 type infraHealthSignal struct {
 	Available       bool
+	Status          string
 	HealthyChannels int64
 	ManagedChannels int64
 }
 
 // computeInfraSignal 从请求的 ?tenant_id 取该租户上游渠道健康分布,折算成"可服务 / 自动托管"两数,
-// 供 healthscore.Infra 打分。SummarizeChannelHealth 要求 tenantID>0;缺 tenant_id、无冲减器或取数失败
-// 一律降级为 Available=false(infra 走保守满分),绝不 500、绝不回退复制业务分。
-func computeInfraSignal(r *http.Request, ch ChannelHealthSummarizer) infraHealthSignal {
-	if ch == nil {
-		return infraHealthSignal{}
+// 供 healthscore.Infra 打分。缺租户、依赖未接、查询失败和没有自动托管渠道是四种可判别状态；
+// 非法 tenant_id 返回错误，不能静默伪装成“未知”。
+func computeInfraSignal(r *http.Request, ch ChannelHealthSummarizer) (infraHealthSignal, error) {
+	rawTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if rawTenantID == "" {
+		return infraHealthSignal{Status: channelHealthNotRequested}, nil
 	}
-	tenantID, err := parseHealthScoreTenantID(r.URL.Query().Get("tenant_id"))
+	tenantID, err := parseHealthScoreTenantID(rawTenantID)
 	if err != nil || tenantID <= 0 {
-		return infraHealthSignal{}
+		return infraHealthSignal{}, errInvalidHealthScoreTenant
+	}
+	if ch == nil {
+		return infraHealthSignal{Status: channelHealthNotConfigured}, nil
 	}
 	summary, err := ch.SummarizeChannelHealth(r.Context(), tenantID)
 	if err != nil {
-		return infraHealthSignal{}
+		return infraHealthSignal{Status: channelHealthQueryFailed}, nil
 	}
 	healthy := summary.ByState[channelhealth.StateActive] + summary.ByState[channelhealth.StateRamping]
 	// 自动托管 = 健康 + 自动失败态(degraded/cooling_down/disabled);手动暂停(manual_paused)是人为意图,
@@ -236,8 +263,23 @@ func computeInfraSignal(r *http.Request, ch ChannelHealthSummarizer) infraHealth
 		summary.ByState[channelhealth.StateDegraded] +
 		summary.ByState[channelhealth.StateCoolingDown] +
 		summary.ByState[channelhealth.StateDisabled]
-	return infraHealthSignal{Available: true, HealthyChannels: healthy, ManagedChannels: managed}
+	status := channelHealthAvailable
+	if managed <= 0 {
+		status = channelHealthNoManagedChannels
+	}
+	return infraHealthSignal{
+		Available:       true,
+		Status:          status,
+		HealthyChannels: healthy,
+		ManagedChannels: managed,
+	}, nil
 }
+
+var errInvalidHealthScoreTenant = &healthScoreTenantError{}
+
+type healthScoreTenantError struct{}
+
+func (*healthScoreTenantError) Error() string { return "invalid health score tenant" }
 
 func parseHealthScoreTenantID(raw string) (int64, error) {
 	raw = strings.TrimSpace(raw)

@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
 
@@ -31,12 +33,13 @@ type adminAuth interface {
 // 在此声明(而非依赖具体的 *Service)既让 handler 可用桩测试,
 // 又把实际消费的方法清楚记录下来。
 type proxyService interface {
-	Create(ctx context.Context, in proxyadmin.CreateInput) (proxyadmin.Proxy, error)
-	Update(ctx context.Context, in proxyadmin.UpdateInput) (proxyadmin.Proxy, error)
+	CreateWithAudit(ctx context.Context, in proxyadmin.CreateInput, audit proxyadmin.MutationAudit) (proxyadmin.Proxy, error)
+	PatchWithAudit(ctx context.Context, in proxyadmin.PatchInput, audit proxyadmin.MutationAudit) (proxyadmin.Proxy, error)
 	Get(ctx context.Context, tenantID, id int64) (proxyadmin.Proxy, error)
 	List(ctx context.Context, tenantID int64) ([]proxyadmin.Proxy, error)
-	Delete(ctx context.Context, tenantID, id int64) error
-	SetStatus(ctx context.Context, tenantID, id int64, status string) error
+	DeleteImpact(ctx context.Context, tenantID, id int64) (proxyadmin.DeleteImpact, error)
+	DeleteWithAudit(ctx context.Context, tenantID, id int64, audit proxyadmin.MutationAudit) error
+	SetStatusWithAudit(ctx context.Context, tenantID, id int64, status string, audit proxyadmin.MutationAudit) error
 }
 
 // Deps 接线管理代理面。Auth 是共享的管理解析器;Service 是 proxyadmin 业务层;
@@ -65,13 +68,15 @@ type ProbeOutcome struct {
 // MountRoutes 把代理管理端点注册到 r 上。调用方将其挂在 /admin/v1/proxies 下
 // (与挂在 /admin/v1/users 下的 adminuserhttp.MountRoutes 对应)。
 func MountRoutes(r chi.Router, d Deps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListHandler(d))
-	r.Post("/", newCreateHandler(d))
+	r.With(safe).Post("/", newCreateHandler(d))
 	r.Get("/{id}", newGetHandler(d))
-	r.Patch("/{id}", newUpdateHandler(d))
-	r.Delete("/{id}", newDeleteHandler(d))
-	r.Put("/{id}/status", newSetStatusHandler(d))
-	r.Post("/{id}/test", newTestHandler(d))
+	r.Get("/{id}/delete-impact", newDeleteImpactHandler(d))
+	r.With(safe).Patch("/{id}", newUpdateHandler(d))
+	r.With(safe).Delete("/{id}", newDeleteHandler(d))
+	r.With(safe).Put("/{id}/status", newSetStatusHandler(d))
+	r.With(safe).Post("/{id}/test", newTestHandler(d))
 }
 
 // proxyResponse 是不含凭据的读取 DTO。它刻意没有 auth_secret 字段:
@@ -88,6 +93,26 @@ type proxyResponse struct {
 	LastCheckAt  *string `json:"last_check_at"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
+}
+
+type deleteImpactResponse struct {
+	ProxyID                   int64 `json:"proxy_id"`
+	DirectAccountCount        int64 `json:"direct_account_count"`
+	DefaultTenantCount        int64 `json:"default_tenant_count"`
+	GroupAccountCount         int64 `json:"group_account_count"`
+	GroupRemainingActiveCount int64 `json:"group_remaining_active_count"`
+	CanDelete                 bool  `json:"can_delete"`
+}
+
+func toDeleteImpactResponse(impact proxyadmin.DeleteImpact) deleteImpactResponse {
+	return deleteImpactResponse{
+		ProxyID:                   impact.ProxyID,
+		DirectAccountCount:        impact.DirectAccountCount,
+		DefaultTenantCount:        impact.DefaultTenantCount,
+		GroupAccountCount:         impact.GroupAccountCount,
+		GroupRemainingActiveCount: impact.GroupRemainingActiveCount,
+		CanDelete:                 impact.CanDelete(),
+	}
 }
 
 func toProxyResponse(p proxyadmin.Proxy) proxyResponse {
@@ -125,6 +150,46 @@ type updateProxyRequest struct {
 	AuthUsername *string `json:"auth_username,omitempty"`
 	AuthSecret   *string `json:"auth_secret,omitempty"`
 	GroupID      *string `json:"group_id"`
+	present      map[string]bool
+}
+
+var updateProxyFields = map[string]bool{
+	"name": true, "protocol": true, "host": true, "port": true,
+	"auth_username": true, "auth_secret": true, "group_id": true,
+}
+
+var nonNullableUpdateProxyFields = map[string]bool{
+	"name": true, "protocol": true, "host": true, "port": true,
+}
+
+func (r *updateProxyRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key, value := range raw {
+		if !updateProxyFields[key] {
+			return fmt.Errorf("unknown field %q", key)
+		}
+		if nonNullableUpdateProxyFields[key] && strings.TrimSpace(string(value)) == "null" {
+			return fmt.Errorf("field %q cannot be null", key)
+		}
+	}
+	type plain updateProxyRequest
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = updateProxyRequest(decoded)
+	r.present = make(map[string]bool, len(raw))
+	for key := range raw {
+		r.present[key] = true
+	}
+	return nil
+}
+
+func (r updateProxyRequest) has(field string) bool {
+	return r.present[field]
 }
 
 type setStatusRequest struct {
@@ -171,7 +236,7 @@ func newGetHandler(d Deps) http.HandlerFunc {
 
 func newCreateHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, d)
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
 		if !ok {
 			return
 		}
@@ -185,7 +250,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 				"name, protocol, host are required and port must be a positive integer")
 			return
 		}
-		p, err := d.Service.Create(r.Context(), proxyadmin.CreateInput{
+		p, err := d.Service.CreateWithAudit(r.Context(), proxyadmin.CreateInput{
 			TenantID:     tenantID,
 			Name:         req.Name,
 			Protocol:     req.Protocol,
@@ -195,7 +260,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			AuthSecret:   req.AuthSecret,
 			GroupID:      req.GroupID,
 			Status:       req.Status,
-		})
+		}, mutationAudit(r, ident))
 		if err != nil {
 			writeServiceError(w, err, "create proxy failed")
 			return
@@ -206,7 +271,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 
 func newUpdateHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, d)
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
 		if !ok {
 			return
 		}
@@ -218,23 +283,21 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Protocol) == "" ||
-			strings.TrimSpace(req.Host) == "" || req.Port <= 0 {
-			writeError(w, http.StatusBadRequest, "invalid_proxy",
-				"name, protocol, host are required and port must be a positive integer")
+		if len(req.present) == 0 {
+			writeError(w, http.StatusBadRequest, "empty_patch", "at least one mutable field is required")
 			return
 		}
-		p, err := d.Service.Update(r.Context(), proxyadmin.UpdateInput{
+		p, err := d.Service.PatchWithAudit(r.Context(), proxyadmin.PatchInput{
 			TenantID:     tenantID,
 			ID:           id,
-			Name:         req.Name,
-			Protocol:     req.Protocol,
-			Host:         req.Host,
-			Port:         req.Port,
-			AuthUsername: req.AuthUsername,
-			AuthSecret:   req.AuthSecret,
-			GroupID:      req.GroupID,
-		})
+			Name:         proxyadmin.PatchField[string]{Set: req.has("name"), Value: req.Name},
+			Protocol:     proxyadmin.PatchField[string]{Set: req.has("protocol"), Value: req.Protocol},
+			Host:         proxyadmin.PatchField[string]{Set: req.has("host"), Value: req.Host},
+			Port:         proxyadmin.PatchField[int32]{Set: req.has("port"), Value: req.Port},
+			AuthUsername: proxyadmin.PatchField[*string]{Set: req.has("auth_username"), Value: req.AuthUsername},
+			AuthSecret:   proxyadmin.PatchField[*string]{Set: req.has("auth_secret"), Value: req.AuthSecret},
+			GroupID:      proxyadmin.PatchField[*string]{Set: req.has("group_id"), Value: req.GroupID},
+		}, mutationAudit(r, ident))
 		if err != nil {
 			writeServiceError(w, err, "update proxy failed")
 			return
@@ -245,6 +308,24 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 
 func newDeleteHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
+		if !ok {
+			return
+		}
+		id, ok := pathID(w, r)
+		if !ok {
+			return
+		}
+		if err := d.Service.DeleteWithAudit(r.Context(), tenantID, id, mutationAudit(r, ident)); err != nil {
+			writeServiceError(w, err, "delete proxy failed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func newDeleteImpactHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID, ok := resolveTenant(w, r, d)
 		if !ok {
 			return
@@ -253,17 +334,18 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := d.Service.Delete(r.Context(), tenantID, id); err != nil {
-			writeServiceError(w, err, "delete proxy failed")
+		impact, err := d.Service.DeleteImpact(r.Context(), tenantID, id)
+		if err != nil {
+			writeServiceError(w, err, "get proxy delete impact failed")
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		writeJSON(w, http.StatusOK, toDeleteImpactResponse(impact))
 	}
 }
 
 func newSetStatusHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, d)
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
 		if !ok {
 			return
 		}
@@ -275,7 +357,7 @@ func newSetStatusHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		if err := d.Service.SetStatus(r.Context(), tenantID, id, req.Status); err != nil {
+		if err := d.Service.SetStatusWithAudit(r.Context(), tenantID, id, req.Status, mutationAudit(r, ident)); err != nil {
 			writeServiceError(w, err, "set proxy status failed")
 			return
 		}
@@ -286,31 +368,46 @@ func newSetStatusHandler(d Deps) http.HandlerFunc {
 // resolveTenant 运行管理门并返回本次操作的目标租户。在咨询 service 之前,
 // 它对任何鉴权/作用域失败都会短路(写出响应)。与 adminuserhttp.resolveTenantIdentity 对应。
 func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, bool) {
+	_, tenantID, ok := resolveTenantIdentity(w, r, d)
+	return tenantID, ok
+}
+
+func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admin.AdminIdentity, int64, bool) {
 	if d.Auth == nil || d.Service == nil {
 		writeError(w, http.StatusServiceUnavailable, "admin_proxies_not_configured",
 			"admin proxies dependency unset")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		writeAdminAuthError(w, err)
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
 	}
 	switch ident.Role {
 	case admin.RoleTenantOperator:
 		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required",
 				"tenant_operator scope_tenant_id required")
-			return 0, false
+			return admin.AdminIdentity{}, 0, false
 		}
-		return tenantFromQueryOrScope(w, r, ident)
+		tenantID, ok := tenantFromQueryOrScope(w, r, ident)
+		return ident, tenantID, ok
 	case admin.RolePlatformAdmin:
 		// 开箱单租户:platform_admin 必须指明 ?tenant_id,由 CanIssueForTenant 把关。
 		// RBAC 不变——跨租户但显式。
-		return tenantFromQueryOrScope(w, r, ident)
+		tenantID, ok := tenantFromQueryOrScope(w, r, ident)
+		return ident, tenantID, ok
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "admin role required")
-		return 0, false
+		return admin.AdminIdentity{}, 0, false
+	}
+}
+
+func mutationAudit(r *http.Request, ident admin.AdminIdentity) proxyadmin.MutationAudit {
+	return proxyadmin.MutationAudit{
+		ActorID:   ident.AuditActor(),
+		ActorRole: ident.Role,
+		RequestID: middleware.GetReqID(r.Context()),
 	}
 }
 
@@ -368,7 +465,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 // writeServiceError 把 proxyadmin 的 sentinel 错误映射为 HTTP 状态码:
 // ErrInvalidInput/ErrInvalidStatus/ErrUnsafeHost -> 400、ErrNotFound -> 404、
-// ErrBackend(及其它一切)-> 503。
+// ErrInUse -> 409、ErrBackend(及其它一切)-> 503。
 func writeServiceError(w http.ResponseWriter, err error, context string) {
 	switch {
 	case errors.Is(err, proxyadmin.ErrInvalidStatus):
@@ -378,9 +475,23 @@ func writeServiceError(w http.ResponseWriter, err error, context string) {
 		writeError(w, http.StatusBadRequest, "invalid_proxy", "proxy request is invalid")
 	case errors.Is(err, proxyadmin.ErrUnsafeHost):
 		writeError(w, http.StatusBadRequest, "unsafe_proxy_host",
-			"proxy host resolves to a blocked (loopback/private/metadata) target")
+			"proxy host is a blocked loopback, link-local, multicast, unspecified, or metadata target")
 	case errors.Is(err, proxyadmin.ErrNotFound):
 		writeError(w, http.StatusNotFound, "admin_proxy_not_found", "proxy not found")
+	case errors.Is(err, proxyadmin.ErrInUse):
+		var inUse *proxyadmin.InUseError
+		if errors.As(err, &inUse) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": map[string]any{
+					"code":    "admin_proxy_in_use",
+					"message": "proxy is still referenced; migrate or unbind it before deletion",
+					"details": toDeleteImpactResponse(inUse.Impact),
+				},
+			})
+			return
+		}
+		writeError(w, http.StatusConflict, "admin_proxy_in_use",
+			"proxy is still referenced; migrate or unbind it before deletion")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "admin_proxies_backend_error",
 			fmt.Sprintf("%s: %v", context, err))

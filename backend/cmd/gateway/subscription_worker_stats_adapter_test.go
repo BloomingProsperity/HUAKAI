@@ -20,8 +20,8 @@ func (f fakePendingReconciliationCounter) CountPendingReconciliationUsageRecords
 }
 
 // TestWorkerStatsAdapterAutoRenewWiring 守 B10: AutoRenewWorker money 指标接进
-// worker-stats。autoRenew 注入时 Enabled=true 且计数来自真实 worker; nil(默认关)
-// 时 Enabled=false, money 计数恒 0。
+// worker-stats。autoRenew 注入时 Enabled=true 且计数来自真实 worker；nil（显式应急停用）
+// 时 Enabled=false，money 计数恒 0。
 // mutation: 适配器不填 stats.AutoRenew → Enabled 恒 false → 第一断言红。
 func TestWorkerStatsAdapterAutoRenewWiring(t *testing.T) {
 	reminder := subscription.NewReminderWorker(subscription.ReminderWorkerConfig{})

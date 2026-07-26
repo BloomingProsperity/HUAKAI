@@ -86,6 +86,7 @@ async fn check_sidecar(socket_path: &PathBuf) -> Result<(), Box<dyn std::error::
         correlation_id: Some("entrypoint-ready-check".to_owned()),
         force_h1: None,
         proxy: None,
+        proxy_resolved_ips: Vec::new(),
         pinned_target_ips: Vec::new(),
     };
     proto::write_control_request(&mut stream, &request).await?;

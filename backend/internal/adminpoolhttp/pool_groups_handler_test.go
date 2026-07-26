@@ -26,10 +26,12 @@ type adminPoolsStoreStub struct {
 	get       *dbbilling.GetPoolParams
 	list      *dbbilling.ListPoolsParams
 	update    *dbbilling.UpdatePoolParams
+	delete    *dbbilling.DeletePoolParams
 	audits    []admindb.InsertAdminAuditEventParams
 	insertErr error
 	getErr    error
 	updateErr error
+	deleteErr error
 	pool      dbbilling.PoolGroup
 	items     []dbbilling.PoolGroup
 }
@@ -57,6 +59,7 @@ var adminPoolsAuditAllowedActions = map[string]struct{}{
 	"update_billing_settings":          {},
 	"create_pool_group":                {},
 	"update_pool_group":                {},
+	"delete_pool_group":                {},
 }
 
 var adminPoolsAuditAllowedTargetTypes = map[string]struct{}{
@@ -126,6 +129,19 @@ func (s *adminPoolsStoreStub) UpdatePool(_ context.Context, arg dbbilling.Update
 	return pool, nil
 }
 
+func (s *adminPoolsStoreStub) DeletePool(_ context.Context, arg dbbilling.DeletePoolParams) (dbbilling.PoolGroup, error) {
+	s.delete = &arg
+	if s.deleteErr != nil {
+		return dbbilling.PoolGroup{}, s.deleteErr
+	}
+	pool := poolOrDefault(s.pool, arg.TenantID, "primary")
+	pool.ID = arg.ID
+	pool.TenantID = arg.TenantID
+	pool.Enabled = false
+	s.pool = pool
+	return pool, nil
+}
+
 // CreatePoolWithAudit 模拟 adapter 的同事务方法。stub 用前/后快照模拟 rollback:
 // audit insert 失败时,把 s.pool 还原到 InsertPool 前的状态,反映真实 tx 回滚。
 //
@@ -160,6 +176,20 @@ func (s *adminPoolsStoreStub) UpdatePoolWithAudit(ctx context.Context, up dbbill
 	return pool, nil
 }
 
+func (s *adminPoolsStoreStub) DeletePoolWithAudit(ctx context.Context, dp dbbilling.DeletePoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error) {
+	prev := s.pool
+	pool, err := s.DeletePool(ctx, dp)
+	if err != nil {
+		return dbbilling.PoolGroup{}, err
+	}
+	ap.TargetID = &pool.ID
+	if _, err := s.InsertAdminAuditEvent(ctx, ap); err != nil {
+		s.pool = prev
+		return dbbilling.PoolGroup{}, err
+	}
+	return pool, nil
+}
+
 func (s *adminPoolsStoreStub) InsertAdminAuditEvent(_ context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	if _, ok := adminPoolsAuditAllowedActions[arg.Action]; !ok {
 		return admindb.InsertAdminAuditEventRow{}, &pgconn.PgError{
@@ -179,7 +209,7 @@ func (s *adminPoolsStoreStub) InsertAdminAuditEvent(_ context.Context, arg admin
 	return admindb.InsertAdminAuditEventRow{ID: int64(len(s.audits))}, nil
 }
 
-func TestATS1Tenant001TenantOperatorListCreateUpdateUsesOwnTenant(t *testing.T) {
+func TestATS1Tenant001TenantOperatorListCreateUpdateDeleteUsesOwnTenant(t *testing.T) {
 	store := &adminPoolsStoreStub{}
 	auth := adminPoolsTenantOperator(7)
 
@@ -207,6 +237,17 @@ func TestATS1Tenant001TenantOperatorListCreateUpdateUsesOwnTenant(t *testing.T) 
 	}
 	if store.update == nil || store.update.TenantID != 7 || store.update.ID != 77 {
 		t.Fatalf("update did not use operator tenant scope: %+v", store.update)
+	}
+
+	deleteRec := invokeAdminPools(t, store, auth, http.MethodDelete, "/admin/v1/pools/77", "")
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if store.delete == nil || store.delete.TenantID != 7 || store.delete.ID != 77 {
+		t.Fatalf("delete did not use operator tenant scope: %+v", store.delete)
+	}
+	if got := store.audits[len(store.audits)-1]; got.Action != "delete_pool_group" {
+		t.Fatalf("delete log action=%q，期望 delete_pool_group", got.Action)
 	}
 }
 
@@ -310,15 +351,22 @@ func TestAdminPools_ListSuccessUsesDefaultLimit(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if store.list == nil || store.list.TenantID != 7 || store.list.LimitCount != defaultAdminPoolsLimit {
+	if store.list == nil || store.list.TenantID != 7 || store.list.AfterID != 0 || store.list.LimitCount != defaultAdminPoolsLimit+1 {
 		t.Fatalf("list params mismatch: %+v", store.list)
+	}
+	var body adminPoolListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Page.HasMore || body.Page.Cursor != nil || body.Page.NextCursor != nil {
+		t.Fatalf("unexpected page state: %+v", body.Page)
 	}
 }
 
 func TestAdminPools_CreateSuccessInsertsTrimmedName(t *testing.T) {
 	store := &adminPoolsStoreStub{}
 	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodPost, "/admin/v1/pools/",
-		`{"name":" primary ","description":"owner visible label"}`)
+		`{"name":" primary "}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -329,6 +377,61 @@ func TestAdminPools_CreateSuccessInsertsTrimmedName(t *testing.T) {
 		store.insert.CapabilityDefault != defaultAdminPoolCapabilityDefault ||
 		store.insert.AllowLastResort {
 		t.Fatalf("insert defaults mismatch: %+v", store.insert)
+	}
+}
+
+func TestAdminPools_RejectsUnknownCreateFieldInsteadOfPretendingToPersist(t *testing.T) {
+	store := &adminPoolsStoreStub{}
+	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodPost, "/admin/v1/pools/",
+		`{"name":"primary","description":"不会被保存的字段"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.insert != nil {
+		t.Fatalf("unknown field request touched store: %+v", store.insert)
+	}
+}
+
+func TestAdminPools_ListUsesOpaqueCursorAndReportsPartialPage(t *testing.T) {
+	items := make([]dbbilling.PoolGroup, 0, defaultAdminPoolsLimit+1)
+	for id := int64(100); id >= 50; id-- {
+		items = append(items, dbbilling.PoolGroup{ID: id, TenantID: 7, Name: "pool", Enabled: true})
+	}
+	store := &adminPoolsStoreStub{items: items}
+	cursor := encodeAdminPoolsCursor(101)
+	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodGet,
+		"/admin/v1/pools?cursor="+cursor, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.list == nil || store.list.AfterID != 101 || store.list.LimitCount != defaultAdminPoolsLimit+1 {
+		t.Fatalf("list params mismatch: %+v", store.list)
+	}
+	var body adminPoolListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Items) != int(defaultAdminPoolsLimit) || !body.Page.HasMore {
+		t.Fatalf("items=%d page=%+v", len(body.Items), body.Page)
+	}
+	if body.Page.Cursor == nil || *body.Page.Cursor != cursor {
+		t.Fatalf("cursor=%v，期望输入游标", body.Page.Cursor)
+	}
+	wantNext := encodeAdminPoolsCursor(body.Items[len(body.Items)-1].ID)
+	if body.Page.NextCursor == nil || *body.Page.NextCursor != wantNext {
+		t.Fatalf("next_cursor=%v，期望=%q", body.Page.NextCursor, wantNext)
+	}
+}
+
+func TestAdminPools_ListRejectsInvalidCursor(t *testing.T) {
+	store := &adminPoolsStoreStub{}
+	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodGet,
+		"/admin/v1/pools?cursor=not-base64!", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.list != nil {
+		t.Fatalf("invalid cursor touched store: %+v", store.list)
 	}
 }
 
@@ -412,6 +515,14 @@ func TestAdminPools_CreateDuplicateNameReturns409(t *testing.T) {
 func TestAdminPools_GetNotFoundReturns404(t *testing.T) {
 	store := &adminPoolsStoreStub{getErr: pgx.ErrNoRows}
 	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodGet, "/admin/v1/pools/404", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminPools_DeleteNotFoundReturns404(t *testing.T) {
+	store := &adminPoolsStoreStub{deleteErr: pgx.ErrNoRows}
+	rec := invokeAdminPools(t, store, adminPoolsTenantOperator(7), http.MethodDelete, "/admin/v1/pools/404", "")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -659,6 +770,58 @@ func TestAdminPoolsUpdate_AuditFailureRollsBackPool(t *testing.T) {
 	}
 	if topK != 1 {
 		t.Fatalf("pool top_k MUST remain 1 when audit fails; got %d", topK)
+	}
+}
+
+// TestAdminPoolsDelete_AuditFailureRollsBackPool 守删除与日志同事务：日志写入失败时，
+// 账号池必须仍然启用且 deleted_at 为空。
+// mutation: 删除路径先提交 DeletePool，再单独写日志 → 本测试红。
+func TestAdminPoolsDelete_AuditFailureRollsBackPool(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminPoolsTestPool(t, ctx)
+	suffix := uuid.NewString()
+	tenantID := seedAdminPoolsTenant(t, ctx, pool, suffix)
+	rejectActor := "gw10-delete-" + suffix
+	installPoolGroupAuditRejectTrigger(t, ctx, pool, "delete_"+strings.ReplaceAll(suffix, "-", "_"), rejectActor)
+
+	adapter := NewAdminPoolsStoreAdapter(dbbilling.New(pool), admindb.New(pool), pool)
+	seeded, err := dbbilling.New(pool).InsertPool(ctx, dbbilling.InsertPoolParams{
+		TenantID:          tenantID,
+		Name:              "tx-delete-baseline-" + suffix,
+		TopKDefault:       1,
+		CapabilityDefault: "exact_capability_only",
+		AllowLastResort:   false,
+	})
+	if err != nil {
+		t.Fatalf("seed pool: %v", err)
+	}
+	requestID := "req-del-" + suffix
+	_, err = adapter.DeletePoolWithAudit(ctx,
+		dbbilling.DeletePoolParams{TenantID: tenantID, ID: seeded.ID},
+		admindb.InsertAdminAuditEventParams{
+			TenantID:   &tenantID,
+			ActorID:    rejectActor,
+			ActorRole:  admin.RolePlatformAdmin,
+			Action:     "delete_pool_group",
+			TargetType: "pool_group",
+			RequestID:  &requestID,
+			Payload:    []byte(`{"deleted":true}`),
+		},
+	)
+	if err == nil {
+		t.Fatal("DeletePoolWithAudit must fail when audit trigger rejects")
+	}
+
+	var enabled bool
+	var deleted bool
+	if err := pool.QueryRow(ctx,
+		`SELECT enabled, deleted_at IS NOT NULL FROM pool_groups WHERE id=$1 AND tenant_id=$2`,
+		seeded.ID, tenantID,
+	).Scan(&enabled, &deleted); err != nil {
+		t.Fatalf("read pool after rollback: %v", err)
+	}
+	if !enabled || deleted {
+		t.Fatalf("delete was not rolled back: enabled=%t deleted=%t", enabled, deleted)
 	}
 }
 

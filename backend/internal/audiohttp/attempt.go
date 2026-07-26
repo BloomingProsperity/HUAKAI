@@ -197,23 +197,45 @@ func (ex *execution) settleAndStreamSpeech(w http.ResponseWriter, res *gateway.D
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
 		return attemptOutcome{done: true}
 	}
+	if !ex.openDeliveryGate(w, 0) {
+		return attemptOutcome{done: true}
+	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.WriteHeader(http.StatusOK)
-	if _, cerr := io.Copy(w, buffered); cerr != nil {
+	deliveredBytes, deliveryErr := io.Copy(w, buffered)
+	if deliveryErr != nil && deliveredBytes == 0 {
 		ex.abort(w, "client_delivery_failed", 0)
 		return attemptOutcome{done: true}
 	}
-	ex.observeSuccess(res)
-	// 音频完整交付后才结算,避免二进制断流误扣费(F1);结算走 billingCtx 防客户端断连取消(F2)。
+	if deliveryErr != nil {
+		// 已写出部分音频后不能整笔退款，否则客户端拿到内容而平台承担上游成本。
+		// 读写错误来源无法从 io.Copy 可靠区分，因此不误伤账号健康，只记录交付
+		// 不确定并保守结算，交由日志与对账面处理。
+		ex.logResponseDeliveryUncertain(deliveryErr)
+		pending = true
+		costSnapshot = appendAudioDeliveryPending(costSnapshot)
+	} else {
+		ex.observeSuccess(res)
+	}
+	// 零字节交付才释放；完整或部分交付都在脱钩 ctx 上结算，避免客户端
+	// 断连取消钱路。
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
 	// 交付后结算走 DLQ 兜底:响应已发出、settle 失败不能回 500,必须持久化 settle intent
 	// 交统一 DLQ worker 幂等重放,防掉钱(codex 钱安全路径;#252 原实现只 log 会漏钱)。
 	_ = ex.settleDeliveredResponse(bctx, ex.settleRequest(audioTokenUsage{}, actualCost, costSnapshot, attemptSeq, pending))
 	return attemptOutcome{done: true}
+}
+
+func appendAudioDeliveryPending(snapshot string) string {
+	const marker = "pending_reconciliation=audio_delivery_interrupted"
+	if snapshot == "" {
+		return marker
+	}
+	return snapshot + ";" + marker
 }
 
 func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gateway.DispatchResult, raw []byte, attemptSeq int) bool {
@@ -255,22 +277,32 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		}
 	}
 	ex.observeSuccess(res)
-	sbctx, scancel := ex.billingCtx()
-	defer scancel()
-	if _, err := ex.d.Settler.Settle(sbctx, ex.settleRequest(usage, actualCost, costSnapshot, attemptSeq, pending)); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+	settleReq := ex.settleRequest(usage, actualCost, costSnapshot, attemptSeq, pending)
+	if !ex.openDeliveryGate(w, int64(usage.InputTokens)) {
 		return false
 	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
-		if ex.endpoint == audioEndpointSpeech {
-			w.Header().Set("Content-Type", "application/octet-stream")
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-		}
+		w.Header().Set("Content-Type", "application/json")
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(raw)
+	written, writeErr := w.Write(raw)
+	fullyWritten := written >= len(raw)
+	if !fullyWritten && writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	if !fullyWritten {
+		_ = ex.abortWithError(w, "client_response_write_error", int64(usage.InputTokens))
+		return false
+	}
+	if writeErr != nil {
+		ex.logResponseDeliveryUncertain(writeErr)
+	}
+	if flushErr := http.NewResponseController(w).Flush(); flushErr != nil {
+		ex.logResponseDeliveryUncertain(flushErr)
+	}
+	sbctx, scancel := ex.billingCtx()
+	defer scancel()
+	_ = ex.settleDeliveredResponse(sbctx, settleReq)
 	return true
 }
 

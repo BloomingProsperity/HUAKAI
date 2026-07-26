@@ -68,7 +68,11 @@ func TestProductionGateExcludesSystemPseudoTenant_Integration(t *testing.T) {
 
 	// 事务内隐藏既有正 id 工作租户(回滚自动恢复,无需快照/cleanup),
 	// 只留我们自己种的那个,避免别的未配 SMTP 租户干扰 AssertB。
-	if _, err := tx.Exec(ctx, `UPDATE tenants SET deleted_at = now() WHERE id > 0 AND deleted_at IS NULL`); err != nil {
+	if _, err := tx.Exec(ctx, `
+		UPDATE tenants
+		SET status = 'deleted', deleted_at = now()
+		WHERE id > 0 AND deleted_at IS NULL
+	`); err != nil {
 		t.Fatalf("hide working tenants: %v", err)
 	}
 

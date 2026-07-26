@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbauth "github.com/BloomingProsperity/HUAKAI/internal/db/auth"
@@ -408,6 +409,215 @@ func TestUserKey_Revoke_BlocksInboundAuth(t *testing.T) {
 	}
 }
 
+func TestUserKey_AdminRevokeIsTerminal(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	svc := newServiceFast(pool)
+
+	res, err := svc.Issue(ctx, IssueRequest{
+		TenantID: f.tenantID,
+		UserID:   f.userA,
+		Name:     "admin-terminal",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	revoker := admin.NewKeyRevoker(pool, f.tenantID)
+	if _, err := revoker.Revoke(ctx, admin.RevokeRequest{
+		Caller:   admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 77},
+		TenantID: f.tenantID,
+		APIKeyID: res.APIKeyID,
+		Reason:   "operator_revoked",
+	}); err != nil {
+		t.Fatalf("admin Revoke: %v", err)
+	}
+
+	active := "active"
+	if _, err := svc.Patch(ctx, PatchRequest{
+		TenantID: f.tenantID,
+		UserID:   f.userA,
+		APIKeyID: res.APIKeyID,
+		Status:   &active,
+	}); !errors.Is(err, ErrAlreadyRevoked) {
+		t.Fatalf("撤销后重新启用应返回 ErrAlreadyRevoked，得到 %v", err)
+	}
+
+	var status string
+	var revokedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, revoked_at FROM api_keys WHERE id=$1`,
+		res.APIKeyID,
+	).Scan(&status, &revokedAt); err != nil {
+		t.Fatalf("read revoked state: %v", err)
+	}
+	if status != "revoked" || revokedAt == nil {
+		t.Fatalf("撤销终态被破坏：status=%q revoked_at=%v", status, revokedAt)
+	}
+
+	resolver := auth.NewAPIKeyResolver(dbauth.New(pool))
+	if _, err := resolver.Resolve(ctx, newAuthHTTPReq(t, res.Plaintext)); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("撤销后的明文必须无法认证，得到 %v", err)
+	}
+}
+
+func TestUserKey_DisabledKeyCannotSelfReactivate(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	svc := newServiceFast(pool)
+
+	res, err := svc.Issue(ctx, IssueRequest{
+		TenantID: f.tenantID,
+		UserID:   f.userA,
+		Name:     "operator-disabled",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	future := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_keys SET status='disabled', expires_at=$2 WHERE id=$1`,
+		res.APIKeyID, future,
+	); err != nil {
+		t.Fatalf("disable key: %v", err)
+	}
+
+	active := "active"
+	if _, err := svc.Patch(ctx, PatchRequest{
+		TenantID:    f.tenantID,
+		UserID:      f.userA,
+		APIKeyID:    res.APIKeyID,
+		Status:      &active,
+		ClearExpiry: true,
+	}); !errors.Is(err, ErrStatusManaged) {
+		t.Fatalf("停用 Key 自助启用应返回 ErrStatusManaged，得到 %v", err)
+	}
+
+	var status string
+	var expiresAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, expires_at FROM api_keys WHERE id=$1`,
+		res.APIKeyID,
+	).Scan(&status, &expiresAt); err != nil {
+		t.Fatalf("read disabled state: %v", err)
+	}
+	if status != "disabled" || !expiresAt.Equal(future) {
+		t.Fatalf("受控状态被部分改写：status=%q expires_at=%v want disabled/%v", status, expiresAt, future)
+	}
+}
+
+func TestUserKey_ExpiredKeyCannotSelfReactivate(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	svc := newServiceFast(pool)
+
+	res, err := svc.Issue(ctx, IssueRequest{
+		TenantID: f.tenantID,
+		UserID:   f.userA,
+		Name:     "system-expired",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	expiredAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Second)
+	if _, err := pool.Exec(ctx,
+		`UPDATE api_keys SET status='expired', expires_at=$2 WHERE id=$1`,
+		res.APIKeyID, expiredAt,
+	); err != nil {
+		t.Fatalf("expire key: %v", err)
+	}
+
+	active := "active"
+	if _, err := svc.Patch(ctx, PatchRequest{
+		TenantID:    f.tenantID,
+		UserID:      f.userA,
+		APIKeyID:    res.APIKeyID,
+		Status:      &active,
+		ClearExpiry: true,
+	}); !errors.Is(err, ErrStatusManaged) {
+		t.Fatalf("过期 Key 自助启用应返回 ErrStatusManaged，得到 %v", err)
+	}
+
+	var status string
+	var expiresAt time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT status, expires_at FROM api_keys WHERE id=$1`,
+		res.APIKeyID,
+	).Scan(&status, &expiresAt); err != nil {
+		t.Fatalf("read expired state: %v", err)
+	}
+	if status != "expired" || !expiresAt.Equal(expiredAt) {
+		t.Fatalf("过期状态被部分改写：status=%q expires_at=%v want expired/%v",
+			status, expiresAt, expiredAt)
+	}
+
+	resolver := auth.NewAPIKeyResolver(dbauth.New(pool))
+	if _, err := resolver.Resolve(ctx, newAuthHTTPReq(t, res.Plaintext)); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("过期 Key 必须继续无法认证，得到 %v", err)
+	}
+}
+
+func TestUserKey_AdminRoleCannotUseUserKeySurface(t *testing.T) {
+	ctx := context.Background()
+	pool := openPool(t, ctx)
+	f := newFixture(t, ctx, pool)
+	svc := newServiceFast(pool)
+
+	if _, err := pool.Exec(ctx, `UPDATE users SET role='admin' WHERE id=$1`, f.userA); err != nil {
+		t.Fatalf("promote user: %v", err)
+	}
+	plaintext := "hk_test_admin_role_" + f.suffix
+	prefix := plaintext[:16]
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash bearer: %v", err)
+	}
+	var keyID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status)
+		 VALUES ($1,$2,'legacy-admin-key',$3,$4,'active') RETURNING id`,
+		f.tenantID, f.userA, string(hash), prefix,
+	).Scan(&keyID); err != nil {
+		t.Fatalf("seed legacy admin key: %v", err)
+	}
+
+	if _, err := svc.Issue(ctx, IssueRequest{
+		TenantID: f.tenantID, UserID: f.userA, Name: "new-admin-key",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("管理员身份不得自助签发普通 Key，得到 %v", err)
+	}
+	if rows, err := svc.List(ctx, ListRequest{
+		TenantID: f.tenantID, UserID: f.userA,
+	}); err != nil || len(rows) != 0 {
+		t.Fatalf("管理员身份不得看到普通 Key：rows=%v err=%v", rows, err)
+	}
+	if total, err := svc.Count(ctx, f.tenantID, f.userA); err != nil || total != 0 {
+		t.Fatalf("管理员身份普通 Key 计数必须为 0：total=%d err=%v", total, err)
+	}
+	if _, err := svc.Get(ctx, f.tenantID, f.userA, keyID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("管理员身份 Get 应返回 ErrNotFound，得到 %v", err)
+	}
+	rename := "changed"
+	if _, err := svc.Patch(ctx, PatchRequest{
+		TenantID: f.tenantID, UserID: f.userA, APIKeyID: keyID, Name: &rename,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("管理员身份 Patch 应返回 ErrNotFound，得到 %v", err)
+	}
+	if _, err := svc.Revoke(ctx, RevokeRequest{
+		TenantID: f.tenantID, UserID: f.userA, APIKeyID: keyID,
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("管理员身份 Revoke 应返回 ErrNotFound，得到 %v", err)
+	}
+
+	resolver := auth.NewAPIKeyResolver(dbauth.New(pool))
+	if _, err := resolver.Resolve(ctx, newAuthHTTPReq(t, plaintext)); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("管理员身份绑定的普通 Key 必须无法认证，得到 %v", err)
+	}
+}
+
 // T9: Issue 拒过期时刻;tenant inactive 时拒签 (实测 update tenant.status='disabled')。
 func TestUserKey_Issue_RejectsBadInputs(t *testing.T) {
 	ctx := context.Background()
@@ -447,8 +657,9 @@ func TestUserKey_Issue_RejectsBadInputs(t *testing.T) {
 // set 未来 → Get 反映; clear ("") → Get 为 nil; past → ErrInvalidExpiry 且有效期不变;
 // no-op → 保留当前有效期 (不静默清除)。
 // mutation 自检: 删 Patch 的 expires_at 子句 → set 后 Get 仍 nil → red;
-//   把 reject-past 校验删掉 → past Patch 成功把 key 设成过期 → ErrInvalidExpiry 断言 red;
-//   no-op 误走 UPDATE 清掉 expires_at → 末尾 Get 为 nil → red。
+//
+//	把 reject-past 校验删掉 → past Patch 成功把 key 设成过期 → ErrInvalidExpiry 断言 red;
+//	no-op 误走 UPDATE 清掉 expires_at → 末尾 Get 为 nil → red。
 func TestUserKey_PatchExpiry_TriStateAndRejectPast(t *testing.T) {
 	ctx := context.Background()
 	pool := openPool(t, ctx)

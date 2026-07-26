@@ -11,13 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auditledger"
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
@@ -31,6 +31,7 @@ type VerifyDeps struct {
 	Registry    auditledger.PubkeyRegistry
 	Revocations Revocations
 	Now         func() time.Time
+	ClientIP    *clientip.Resolver
 }
 
 type VerifyResponse struct {
@@ -67,7 +68,7 @@ func (h *verifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTrustJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
-	if !h.limiter.Allow(clientIP(r), trustNow(h.deps.Now)) {
+	if !h.limiter.Allow(h.deps.ClientIP.ClientIP(r), trustNow(h.deps.Now)) {
 		writeTrustJSONError(w, http.StatusTooManyRequests, "rate_limited", "anonymous trust verify limit is 60/min per IP")
 		return
 	}
@@ -327,17 +328,6 @@ func decodeBase64Flexible(value string) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("base64 decode failed")
-}
-
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err == nil && host != "" {
-		return host
-	}
-	if strings.TrimSpace(r.RemoteAddr) != "" {
-		return strings.TrimSpace(r.RemoteAddr)
-	}
-	return "unknown"
 }
 
 // ipRateLimiterMaxBuckets 限定 buckets map 的条目上限。公开匿名端点(/v1/trust/verify)被大量不同

@@ -199,8 +199,9 @@ func (a fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdent
 func newAdminTestRouter(svc Service) http.Handler {
 	r := chi.NewRouter()
 	d := AdminDeps{
-		Auth:    fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
-		Service: svc,
+		Auth:             fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
+		Service:          svc,
+		PlatformTenantID: 5,
 	}
 	r.Route("/orders", func(r chi.Router) { MountPaymentAdminRoutes(r, d) })
 	return r

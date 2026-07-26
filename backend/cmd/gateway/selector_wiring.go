@@ -136,6 +136,7 @@ func buildSelector(
 	// gate 静默退回 AllowAll 无测可抓)。同一 gates 值流入 default selector + actual/shadow PASR,
 	// 一处接线覆盖全 5 mode。
 	gates := buildGroupRoutingGates(subscriptionenforce.NewPostgresRoutesRepo(pgPool), healthService, windowCostReader, sessionCapRegistry, ratePrecheckCounter, logger)
+	routingPolicies := newBindingRoutingPolicySource(q)
 	defaultSel := pool.NewDefaultSelector(
 		pool.NewDBAccountSource(q),
 		pool.WithGateChain(gates),
@@ -145,7 +146,7 @@ func buildSelector(
 		// 路由加权激活闭环:注入生产 RoutingPolicySource,据请求命中 binding 的 selection_mode
 		// 返回选号策略。此前缺该注入 → policy() 恒 nil → priority_weighted 分支永不可达(断点1)。
 		// 默认 strict_priority 行为不变(opt-in 激活,非全局翻转)。
-		pool.WithRoutingPolicySource(newBindingRoutingPolicySource(q)),
+		pool.WithRoutingPolicySource(routingPolicies),
 	)
 
 	// 2. default mode: 直接返, 不启动 PASR 基础设施
@@ -183,6 +184,7 @@ func buildSelector(
 			Slots:    slotManager,
 			Segments: segments,
 			Gates:    gates,
+			Policies: routingPolicies,
 			// RingProvider 不注入 — 走 request-scoped ring。
 		})
 		if err != nil {
@@ -200,6 +202,7 @@ func buildSelector(
 			Segments:         segments,
 			ReadOnlySegments: true, // D2: shadow 段表只读, 不污染 actual 学习数据
 			Gates:            gates,
+			Policies:         routingPolicies,
 		})
 		if err != nil {
 			agingWorker.Stop()

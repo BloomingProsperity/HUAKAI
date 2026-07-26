@@ -67,6 +67,7 @@ func (r IssueResult) String() string {
 // KeyIssuer 铸造 api_keys 行。通过 NewKeyIssuer 构造。
 type KeyIssuer struct {
 	pool                *pgxpool.Pool
+	platformTenantID    int64
 	bcryptCost          int
 	rateLimitPerHour    int
 	rateLimitWindowSecs int
@@ -74,9 +75,10 @@ type KeyIssuer struct {
 
 // NewKeyIssuer 包装一个 pgxpool。默认值:bcrypt cost 10(与客户 key 一致)、
 // 每 actor 30 次签发/小时(D4)。
-func NewKeyIssuer(pool *pgxpool.Pool) *KeyIssuer {
+func NewKeyIssuer(pool *pgxpool.Pool, platformTenantID int64) *KeyIssuer {
 	return &KeyIssuer{
 		pool:                pool,
+		platformTenantID:    platformTenantID,
 		bcryptCost:          bcrypt.DefaultCost,
 		rateLimitPerHour:    30,
 		rateLimitWindowSecs: 3600,
@@ -97,8 +99,9 @@ func (i *KeyIssuer) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 		return IssueResult{}, fmt.Errorf("%w: environment must be live or test", ErrAdminBadRequest)
 	}
 
-	// RBAC。
-	if err := req.Caller.CanIssueForTenant(req.TenantID); err != nil {
+	// 用户 Key 使用终端用户专用权限合同。部署者只能管理平台工作租户，
+	// 下级租户的终端用户只归该租户管理员。
+	if err := req.Caller.CanManageFinalUsersForTenant(req.TenantID, i.platformTenantID); err != nil {
 		_ = i.audit(ctx, req, "denied", "rbac_violation", 0)
 		return IssueResult{}, err
 	}

@@ -14,6 +14,7 @@ type accountStoreStub struct {
 	recoverMutation AccountRecoverMutation
 	result          admindb.AdminProviderAccountRow
 	err             error
+	cancel          context.CancelFunc
 	order           *[]string
 }
 
@@ -22,6 +23,9 @@ func (s *accountStoreStub) ClearRateLimitWithAudit(_ context.Context, mutation A
 	if s.order != nil {
 		*s.order = append(*s.order, "account")
 	}
+	if s.cancel != nil {
+		s.cancel()
+	}
 	return s.result, s.err
 }
 
@@ -29,6 +33,9 @@ func (s *accountStoreStub) RecoverAccountStateWithAudit(_ context.Context, mutat
 	s.recoverMutation = mutation
 	if s.order != nil {
 		*s.order = append(*s.order, "account")
+	}
+	if s.cancel != nil {
+		s.cancel()
 	}
 	return s.result, s.err
 }
@@ -43,11 +50,13 @@ type channelControllerStub struct {
 	calls             int
 	forceActiveCalls  int
 	forceActiveReason string
+	contextErr        error
 	order             *[]string
 }
 
-func (s *channelControllerStub) ClearRateLimitByProviderAccount(_ context.Context, tenantID, accountID int64, actorID string) (channelhealth.Record, bool, error) {
+func (s *channelControllerStub) ClearRateLimitByProviderAccount(ctx context.Context, tenantID, accountID int64, actorID string) (channelhealth.Record, bool, error) {
 	s.calls++
+	s.contextErr = ctx.Err()
 	s.tenantID, s.accountID, s.actorID = tenantID, accountID, actorID
 	if s.order != nil {
 		*s.order = append(*s.order, "channel")
@@ -55,8 +64,9 @@ func (s *channelControllerStub) ClearRateLimitByProviderAccount(_ context.Contex
 	return s.result, s.changed, s.err
 }
 
-func (s *channelControllerStub) ForceActiveByProviderAccount(_ context.Context, tenantID, accountID int64, actorID, reason string) (channelhealth.Record, bool, error) {
+func (s *channelControllerStub) ForceActiveByProviderAccount(ctx context.Context, tenantID, accountID int64, actorID, reason string) (channelhealth.Record, bool, error) {
 	s.forceActiveCalls++
+	s.contextErr = ctx.Err()
 	s.tenantID, s.accountID, s.actorID, s.forceActiveReason = tenantID, accountID, actorID, reason
 	if s.order != nil {
 		*s.order = append(*s.order, "channel")
@@ -144,6 +154,35 @@ func TestClearRateLimitMissingChannelRecordIsIdempotentSuccess(t *testing.T) {
 	}
 }
 
+func TestClearRateLimitFinishesChannelStageAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	accounts := &accountStoreStub{
+		result: admindb.AdminProviderAccountRow{ID: 77, TenantID: 7},
+		cancel: cancel,
+	}
+	channels := &channelControllerStub{
+		result:  channelhealth.Record{State: channelhealth.StateRamping},
+		changed: true,
+	}
+
+	result, err := NewService(accounts, channels).ClearRateLimit(ctx, ClearRateLimitInput{
+		TenantID: 7, AccountID: 77, ActorID: "admin:11", ActorRole: "tenant_operator",
+	})
+	if err != nil {
+		t.Fatalf("ClearRateLimit after caller cancellation: %v", err)
+	}
+	if channels.calls != 1 || channels.contextErr != nil {
+		t.Fatalf(
+			"channel follow-up calls=%d context_err=%v; committed account stage must not be stranded by client cancellation",
+			channels.calls,
+			channels.contextErr,
+		)
+	}
+	if result.Channel == nil || !result.ChannelChanged {
+		t.Fatalf("channel follow-up result=%+v", result)
+	}
+}
+
 // TestRecoverAccountStateResetsHealthAndForcesChannelActive 守卫「完整恢复」原语必须走
 // 重置 health_state 的 recover 存储(而非只清限流的 clear)+ 渠道 force-active 满血(而非
 // clear-rate-limit 落 ramping 渐进)。变异任一即转红:①RecoverAccountState 改调
@@ -183,5 +222,34 @@ func TestRecoverAccountStateResetsHealthAndForcesChannelActive(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "account" || order[1] != "channel" {
 		t.Fatalf("mutation order=%v want [account channel]", order)
+	}
+}
+
+func TestRecoverAccountStateFinishesChannelStageAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	accounts := &accountStoreStub{
+		result: admindb.AdminProviderAccountRow{ID: 77, TenantID: 7, HealthState: "healthy"},
+		cancel: cancel,
+	}
+	channels := &channelControllerStub{
+		result:  channelhealth.Record{State: channelhealth.StateActive},
+		changed: true,
+	}
+
+	result, err := NewService(accounts, channels).RecoverAccountState(ctx, RecoverAccountInput{
+		TenantID: 7, AccountID: 77, ActorID: "admin:11", ActorRole: "tenant_operator",
+	})
+	if err != nil {
+		t.Fatalf("RecoverAccountState after caller cancellation: %v", err)
+	}
+	if channels.forceActiveCalls != 1 || channels.contextErr != nil {
+		t.Fatalf(
+			"channel follow-up calls=%d context_err=%v; committed account recovery must finish independently",
+			channels.forceActiveCalls,
+			channels.contextErr,
+		)
+	}
+	if result.Channel == nil || !result.ChannelChanged {
+		t.Fatalf("channel follow-up result=%+v", result)
 	}
 }

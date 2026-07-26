@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 	"github.com/BloomingProsperity/HUAKAI/internal/modality"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -421,6 +422,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, billing.ErrInsufficientBalance):
 		writeError(w, http.StatusPaymentRequired, "insufficient_balance", "insufficient balance")
+	case errors.Is(err, billing.ErrTenantInactive):
+		writeError(w, http.StatusForbidden, clienterr.CodeTenantInactive, clienterr.MessageFor(clienterr.CodeTenantInactive))
 	case errors.Is(err, mediatask.ErrQuotaDenied):
 		writeError(w, http.StatusTooManyRequests, "quota_exceeded", "quota exceeded")
 	case errors.Is(err, mediatask.ErrRequestIDConflict):

@@ -2,11 +2,9 @@
 // 注册的 chi 路由，报漂移。
 //
 // 设计取舍：
-//   - 不引 yaml dep（go.mod 直接依赖锁）。spec 的 paths 由行解析提取：
-//     找到顶层 `paths:` 行，往下吸收所有缩进 2-space 的 `/xxx:` 行。
-//     这套规则在 OpenAPI 3.1 + 2-space 缩进的本仓库 spec 上 work（已
-//     验过 45 条 path）。如果未来引入 1/4-space 缩进或 anchor，可
-//     再加 yaml dep。
+//   - spec 的 paths 和 operation 由轻量行解析器提取，权威文件另有严格
+//     YAML 解析测试守住语法和重复键。若以后改变缩进或引入 anchor，需同步
+//     升级提取器及其判别测试。
 //   - method 维度与 path 一起比较。否则 spec 写 GET、runtime 挂 POST
 //     会被 path-only 检查误判为一致。
 //   - 路径归一：把 `{param}` 与 chi 的 `:param` 都归一为 `:_`。这样
@@ -144,11 +142,13 @@ func WalkChiPaths(r chi.Router) []string {
 }
 
 // WalkChiOperations 用 chi.Walk 把 router 注册的 method + path 合同抽出。
+// 此处保留规范路径和兼容别名的真实形态；别名只在最终合同比较时归一。
+// 若在抽取阶段提前合并，规范入口被删而别名仍在时会产生假绿。
 func WalkChiOperations(r chi.Router) []Operation {
 	seen := make(map[string]Operation)
 	_ = chi.Walk(r, func(method string, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		op := Operation{Method: strings.ToUpper(method), Path: route}
-		seen[operationKey(op)] = op
+		seen[rawOperationKey(op)] = op
 		return nil
 	})
 	out := make([]Operation, 0, len(seen))
@@ -212,6 +212,20 @@ func normalize(p string) string {
 			break
 		}
 	}
+	return normalizeStructure(p)
+}
+
+// normalizeCanonical 只归一模板结构，不把兼容别名映射成规范路径。
+// 它用于证明 OpenAPI 声明的规范入口本身真实注册，而不是由别名冒充。
+func normalizeCanonical(p string) string {
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		p = "/"
+	}
+	return normalizeStructure(p)
+}
+
+func normalizeStructure(p string) string {
 	// chi mount 引入的 `/*` 段：`/admin/v1/pools/*` → `/admin/v1/pools`,
 	// `/admin/v1/pools/*/{id}` → `/admin/v1/pools/{id}`。
 	for chiMountGlobRe.MatchString(p) {
@@ -228,6 +242,14 @@ func normalize(p string) string {
 
 func operationKey(op Operation) string {
 	return strings.ToUpper(strings.TrimSpace(op.Method)) + " " + normalize(op.Path)
+}
+
+func canonicalOperationKey(op Operation) string {
+	return strings.ToUpper(strings.TrimSpace(op.Method)) + " " + normalizeCanonical(op.Path)
+}
+
+func rawOperationKey(op Operation) string {
+	return strings.ToUpper(strings.TrimSpace(op.Method)) + " " + strings.TrimSpace(op.Path)
 }
 
 func sortOperations(ops []Operation) {
@@ -279,13 +301,24 @@ func Compare(specPaths, implPaths []string) Report {
 
 // CompareOperations 计算 method + path 合同漂移。
 func CompareOperations(specOps, implOps []Operation) Report {
+	return compareOperationSets(specOps, implOps, operationKey)
+}
+
+// CompareCanonicalOperations 不应用兼容别名映射，证明 OpenAPI 中每个规范
+// method + path 都有同形态的生产入口。调用方通常只需阻断 SpecOnly；
+// ImplOnly 还会包含已明确保留的兼容别名。
+func CompareCanonicalOperations(specOps, implOps []Operation) Report {
+	return compareOperationSets(specOps, implOps, canonicalOperationKey)
+}
+
+func compareOperationSets(specOps, implOps []Operation, key func(Operation) string) Report {
 	specSet := make(map[string]struct{}, len(specOps))
 	for _, op := range specOps {
-		specSet[operationKey(op)] = struct{}{}
+		specSet[key(op)] = struct{}{}
 	}
 	implSet := make(map[string]struct{}, len(implOps))
 	for _, op := range implOps {
-		implSet[operationKey(op)] = struct{}{}
+		implSet[key(op)] = struct{}{}
 	}
 
 	rep := Report{}

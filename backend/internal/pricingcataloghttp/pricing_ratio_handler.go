@@ -15,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 )
 
@@ -65,13 +66,14 @@ type ratioListResponseBody struct {
 }
 
 func MountPricingRatioRoutes(r chi.Router, d AdminPricingRatioDeps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	// 这条静态的审计证明路由必须注册在 {pool_group_id} 通配段之前，
 	// 否则会被按组处理的倍率处理器遮蔽。
 	r.Get("/audit/verify", newRatioAuditVerifyHandler(d))
 	r.Get("/", newRatioListHandler(d))
 	r.Get("/{pool_group_id}", newRatioGetHandler(d))
-	r.Put("/{pool_group_id}", newRatioUpsertHandler(d))
-	r.Delete("/{pool_group_id}", newRatioDeleteHandler(d))
+	r.With(safe).Put("/{pool_group_id}", newRatioUpsertHandler(d))
+	r.With(safe).Delete("/{pool_group_id}", newRatioDeleteHandler(d))
 }
 
 func newRatioListHandler(d AdminPricingRatioDeps) http.HandlerFunc {

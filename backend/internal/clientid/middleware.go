@@ -4,11 +4,10 @@
 //
 // 用法（cmd/gateway/main.go chi router）:
 //
-//   router.Use(middleware.RequestID)
-//   router.Use(middleware.RealIP)
-//   router.Use(middleware.Recoverer)
-//   router.Use(middleware.Timeout(60 * time.Second))
-//   router.Use(clientid.Middleware())  // <-- 在 Recoverer 之后即可
+//	router.Use(middleware.RequestID)
+//	router.Use(middleware.Recoverer)
+//	router.Use(middleware.Timeout(60 * time.Second))
+//	router.Use(clientid.Middleware())  // <-- 在 Recoverer 之后即可
 //
 // 设计:
 //   - **不**因检测失败而拒绝请求（IdentityUnknown

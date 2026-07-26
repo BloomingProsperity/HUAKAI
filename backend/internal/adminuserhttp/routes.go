@@ -28,21 +28,14 @@ const (
 )
 
 type Deps struct {
-	Auth             adminAuth
-	Store            userReadStore
-	UsageStore       UsageStore
-	SocialLinks      socialLinkService
-	UnlockAudit      userUnlockAuditStore
-	Unlocker         userUnlockService
-	Audit            adminAuditStore
-	TwoFADisabler    twoFADisableService
-	PasskeyResetter  passkeyResetService
-	UserGroupSetter  userGroupSetter
-	UserRemarkSetter userRemarkSetter
-	UserStatusSetter userStatusSetter
-	UserCreator      userCreateService
-	UserSoftDeleter  userSoftDeleteService
-	SessionRevoker   userSessionRevoker
+	Auth          adminAuth
+	Store         userReadStore
+	UsageStore    UsageStore
+	UserMutations userMutationService
+	UnlockAudit   userUnlockAuditStore
+	Unlocker      userUnlockService
+	Audit         adminAuditStore
+	UserCreator   userCreateService
 	// PlatformTenantID 是平台自有租户(tenancy 工作租户)。platform_admin 经本包
 	// 只能管理该租户的终端用户;下级租户用户只归其租户管理员。0=未接线并拒绝请求。
 	PlatformTenantID int64
@@ -59,10 +52,6 @@ type userReadStore interface {
 	AdminListUserBalanceHistoryForTenant(context.Context, admindb.AdminListUserBalanceHistoryForTenantParams) ([]admindb.AdminListUserBalanceHistoryForTenantRow, error)
 }
 
-type socialLinkService interface {
-	UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error)
-}
-
 type userUnlockService interface {
 	UnlockUser(context.Context, int64, int64) (userauth.User, error)
 }
@@ -73,28 +62,6 @@ type userUnlockAuditStore interface {
 
 type adminAuditStore interface {
 	InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error)
-}
-
-type twoFADisableService interface {
-	Disable(ctx context.Context, tenantID, userID int64) error
-}
-
-type passkeyResetService interface {
-	AdminClearCredentials(ctx context.Context, tenantID, userID int64) (int, error)
-}
-
-type userGroupSetter interface {
-	SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error
-}
-
-type userRemarkSetter interface {
-	SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error
-}
-
-type userStatusSetter interface {
-	// SetUserStatusForTenant 设 users.status;返回受影响行数(0 = 该租户无此用户)
-	// 供 handler 区分 404 与成功,避免「改了别租户/不存在的用户却报成功」。
-	SetUserStatusForTenant(ctx context.Context, tenantID, userID int64, status string) (int64, error)
 }
 
 type unlockAuditInput struct {
@@ -121,6 +88,21 @@ func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenan
 	}
 	var updated userauth.User
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var lockedUserID int64
+		if err := tx.QueryRow(ctx, `
+SELECT id
+FROM users
+WHERE tenant_id=$1
+  AND id=$2
+  AND principal_kind='human'
+  AND role='user'
+  AND deleted_at IS NULL
+FOR UPDATE`, tenantID, userID).Scan(&lockedUserID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return userauth.ErrUserNotFound
+			}
+			return err
+		}
 		user, err := userauth.NewPostgresStore(tx).ClearLockout(ctx, tenantID, userID)
 		if err != nil {
 			return err
@@ -148,18 +130,17 @@ func (s postgresUnlockAuditStore) UnlockUserWithAudit(ctx context.Context, tenan
 }
 
 func MountRoutes(r chi.Router, d Deps) {
-	// SessionSafe:登录 admin(session)可直接写的用户账号运维/恢复类操作(危险者靠前端确认弹窗防误操作)。
-	// 未挂此中间件的写端点默认 token-only(建/删用户、删 passkey、改分组=耦合计费档,均高危,继续只认令牌)。
+	// 用户管理写入口均从认证上下文重算角色和租户，变更、会话撤销与操作日志在同一事务收敛。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListHandler(d))
-	r.Post("/", newCreateUserHandler(d))
-	r.Delete("/{id}", newDeleteUserHandler(d))
+	r.With(safe).Post("/", newCreateUserHandler(d))
+	r.With(safe).Delete("/{id}", newDeleteUserHandler(d))
 	r.Get("/2fa-adoption-stats", newTwoFAStatsHandler(d))
 	r.Get("/{id}", newGetHandler(d))
 	r.With(safe).Post("/{id}/unlock", newUnlockHandler(d))
 	r.With(safe).Post("/{id}/2fa/force-disable", newForceDisable2FAHandler(d))
-	r.Delete("/{id}/passkeys", newResetPasskeyHandler(d))
-	r.Put("/{id}/group", newSetUserGroupHandler(d))
+	r.With(safe).Delete("/{id}/passkeys", newResetPasskeyHandler(d))
+	r.With(safe).Put("/{id}/group", newSetUserGroupHandler(d))
 	r.With(safe).Put("/{id}/remark", newSetUserRemarkHandler(d))
 	r.With(safe).Put("/{id}/status", newSetUserStatusHandler(d))
 	r.Get("/{id}/balance-history", newBalanceHistoryHandler(d))
@@ -362,13 +343,13 @@ func newUnlockHandler(d Deps) http.HandlerFunc {
 
 func newUnlinkSocialIdentityHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, ok := resolveTenant(w, r, d)
+		ident, tenantID, ok := resolveTenantIdentity(w, r, d)
 		if !ok {
 			return
 		}
-		if d.SocialLinks == nil {
+		if d.UserMutations == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured",
-				"social link dependency unset")
+				"admin user mutation dependency unset")
 			return
 		}
 		userID, ok := pathID(w, r)
@@ -376,12 +357,17 @@ func newUnlinkSocialIdentityHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		provider := chi.URLParam(r, "provider")
-		unlinked, err := d.SocialLinks.UnlinkSocialIdentity(r.Context(), tenantID, userID, provider)
+		unlinked, sessionsRevoked, err := d.UserMutations.UnlinkSocialIdentityWithAudit(
+			r.Context(), tenantID, userID, provider, buildUnlockAuditInput(r, ident, ""),
+		)
 		if err != nil {
 			writeSocialLinkError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"unlinked": unlinked})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"unlinked":         unlinked,
+			"sessions_revoked": sessionsRevoked,
+		})
 	}
 }
 
@@ -414,10 +400,7 @@ func resolveTenantIdentity(w http.ResponseWriter, r *http.Request, d Deps) (admi
 		}
 		return admin.AdminIdentity{}, 0, false
 	case admin.RolePlatformAdmin:
-		// 单租户开箱即用(定位 2026-06-11):platform_admin 现可管理用户,镜像
-		// provider_catalog 的 parseAdminCatalogTenant 模式——必须显式带
-		// ?tenant_id,经 CanIssueForTenant 放行(单租户部署即默认租户 id)。
-		// RBAC 语义不变:platform_admin 跨租户但须指名,越权由 CanIssueForTenant 挡。
+		// platform_admin 必须显式指定平台工作租户，且不得越级管理下级租户用户。
 		if tenantID, ok := tenantFromQueryOrScope(w, r, d, ident); ok {
 			return ident, tenantID, true
 		}
@@ -485,7 +468,7 @@ func writeSocialLinkError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_account_binding", "account binding request is invalid")
 	case errors.Is(err, userauth.ErrLastLoginMethod):
 		writeError(w, http.StatusConflict, "last_login_method", "cannot remove the last login method")
-	case errors.Is(err, userauth.ErrUserNotFound):
+	case errors.Is(err, userauth.ErrUserNotFound), errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error",
@@ -578,28 +561,26 @@ func newForceDisable2FAHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if d.TwoFADisabler == nil || d.Audit == nil {
+		if d.UserMutations == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin 2fa mutation dependency unset")
 			return
 		}
-		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
-			return
-		} else if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
-			return
-		}
-		if err := d.TwoFADisabler.Disable(r.Context(), tenantID, userID); err != nil {
+		sessionsRevoked, err := d.UserMutations.ForceDisableTwoFAWithAudit(
+			r.Context(), tenantID, userID, buildUnlockAuditInput(r, ident, ""),
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+				return
+			}
 			writeError(w, http.StatusServiceUnavailable, "admin_2fa_disable_failed", fmt.Sprintf("force disable 2fa failed: %v", err))
 			return
 		}
-		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "force_disable_2fa", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
-		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write 2fa audit failed: %v", err))
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "two_factor_enabled": false})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":                 userID,
+			"two_factor_enabled": false,
+			"sessions_revoked":   sessionsRevoked,
+		})
 	}
 }
 
@@ -616,52 +597,31 @@ func newResetPasskeyHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if d.PasskeyResetter == nil || d.Audit == nil {
+		if d.UserMutations == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin passkey mutation dependency unset")
 			return
 		}
-		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
-			return
-		} else if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
-			return
-		}
-		cleared, err := d.PasskeyResetter.AdminClearCredentials(r.Context(), tenantID, userID)
+		cleared, sessionsRevoked, err := d.UserMutations.ResetPasskeysWithAudit(
+			r.Context(), tenantID, userID, buildUnlockAuditInput(r, ident, ""),
+		)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
+				return
+			}
 			writeError(w, http.StatusServiceUnavailable, "admin_passkey_reset_failed", fmt.Sprintf("reset passkeys failed: %v", err))
 			return
 		}
-		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole, Action: "reset_passkey", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID}
-		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write passkey audit failed: %v", err))
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "cleared": cleared})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":               userID,
+			"cleared":          cleared,
+			"sessions_revoked": sessionsRevoked,
+		})
 	}
 }
 
 type setUserGroupRequest struct {
 	Group string `json:"group"`
-}
-
-// postgresUserGroupStore 为某租户用户设置 users.user_group(路由权益)。
-type postgresUserGroupStore struct {
-	pool *pgxpool.Pool
-}
-
-// NewPostgresUserGroupStore 接线 admin 用户分组 setter。
-func NewPostgresUserGroupStore(pool *pgxpool.Pool) userGroupSetter {
-	if pool == nil {
-		return nil
-	}
-	return postgresUserGroupStore{pool: pool}
-}
-
-func (s postgresUserGroupStore) SetUserGroupForTenant(ctx context.Context, tenantID, userID int64, group string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET user_group=$3 WHERE tenant_id=$1 AND id=$2 AND principal_kind='human'`, tenantID, userID, group)
-	return err
 }
 
 // newSetUserGroupHandler 让 tenant operator 设置某用户的路由分组
@@ -689,28 +649,19 @@ func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_group", "group must be 1..64 chars")
 			return
 		}
-		if d.UserGroupSetter == nil || d.Audit == nil {
+		if d.UserMutations == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin user-group dependency unset")
 			return
 		}
-		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
-			return
-		} else if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
+		err := d.UserMutations.SetUserGroupWithAudit(
+			r.Context(), tenantID, userID, group, buildUnlockAuditInput(r, ident, ""),
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "final user not found")
 			return
 		}
-		if err := d.UserGroupSetter.SetUserGroupForTenant(r.Context(), tenantID, userID, group); err != nil {
+		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_user_group_failed", fmt.Sprintf("set user group failed: %v", err))
-			return
-		}
-		ai := buildUnlockAuditInput(r, ident, "")
-		audit := admindb.InsertAdminAuditEventParams{
-			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
-			Action: "set_user_group", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
-		}
-		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write group audit failed: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "user_group": group})
@@ -719,23 +670,6 @@ func newSetUserGroupHandler(d Deps) http.HandlerFunc {
 
 type setUserRemarkRequest struct {
 	Remark string `json:"remark"`
-}
-
-type postgresUserRemarkStore struct {
-	pool *pgxpool.Pool
-}
-
-// NewPostgresUserRemarkStore 接线 admin 用户备注 setter。
-func NewPostgresUserRemarkStore(pool *pgxpool.Pool) userRemarkSetter {
-	if pool == nil {
-		return nil
-	}
-	return postgresUserRemarkStore{pool: pool}
-}
-
-func (s postgresUserRemarkStore) SetUserRemarkForTenant(ctx context.Context, tenantID, userID int64, remark string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET remark=$3 WHERE tenant_id=$1 AND id=$2 AND principal_kind='human'`, tenantID, userID, remark)
-	return err
 }
 
 // newSetUserRemarkHandler 让 tenant operator 为某用户设置自由文本 admin 备注
@@ -763,36 +697,19 @@ func newSetUserRemarkHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_remark", "remark must be <= 1024 chars")
 			return
 		}
-		if d.UserRemarkSetter == nil || d.Audit == nil {
+		if d.UserMutations == nil {
 			writeError(w, http.StatusServiceUnavailable, "admin_users_not_configured", "admin user-remark dependency unset")
 			return
 		}
-		if _, err := d.Store.AdminGetUserForTenant(r.Context(), admindb.AdminGetUserForTenantParams{TenantID: tenantID, UserID: userID}); errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "admin_user_not_found", "user not found")
-			return
-		} else if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("get user failed: %v", err))
-			return
-		}
-		if err := d.UserRemarkSetter.SetUserRemarkForTenant(r.Context(), tenantID, userID, remark); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_user_remark_failed", fmt.Sprintf("set user remark failed: %v", err))
+		err := d.UserMutations.SetUserRemarkWithAudit(
+			r.Context(), tenantID, userID, remark, buildUnlockAuditInput(r, ident, ""),
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "admin_user_not_found", "final user not found")
 			return
 		}
-		ai := buildUnlockAuditInput(r, ident, "")
-		// payload 列 NOT NULL(默认 '{}');必须显式给非 NULL payload,否则 INSERT 撞 23502 → 503 且审计丢失。
-		// 记录改后的备注长度(不落原文,备注可能含敏感信息;长度足够审计追踪)。
-		remarkPayload, err := json.Marshal(map[string]any{"remark_length": len([]rune(remark))})
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, "audit_payload_failed", err.Error())
-			return
-		}
-		audit := admindb.InsertAdminAuditEventParams{
-			TenantID: &tenantID, ActorID: ai.ActorID, ActorRole: ai.ActorRole,
-			Action: "set_user_remark", TargetType: "user", TargetID: &userID, RequestID: ai.RequestID,
-			Payload: remarkPayload,
-		}
-		if _, err := d.Audit.InsertAdminAuditEvent(r.Context(), audit); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "admin_users_backend_error", fmt.Sprintf("write remark audit failed: %v", err))
+			writeError(w, http.StatusServiceUnavailable, "admin_user_remark_failed", fmt.Sprintf("set user remark failed: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": userID, "remark": remark})

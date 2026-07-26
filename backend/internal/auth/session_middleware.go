@@ -13,11 +13,12 @@ import (
 type sessionContextKey struct{}
 
 type SessionIdentity struct {
-	TenantID   int64
-	UserID     int64
-	FamilyID   string
-	TokenID    string
-	Generation int
+	TenantID    int64
+	UserID      int64
+	FamilyID    string
+	TokenID     string
+	Generation  int
+	AuthVersion int
 }
 
 type SessionValidator interface {
@@ -67,7 +68,7 @@ func SessionMiddleware(validator SessionValidator, resolver *clientip.Resolver) 
 			}
 			ctx := ContextWithSession(r.Context(), SessionIdentity{
 				TenantID: validated.TenantID, UserID: validated.UserID, FamilyID: validated.FamilyID,
-				TokenID: validated.TokenID, Generation: validated.Generation,
+				TokenID: validated.TokenID, Generation: validated.Generation, AuthVersion: validated.AuthVersion,
 			})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -82,6 +83,7 @@ func isSessionRejection(err error) bool {
 		errors.Is(err, usersession.ErrRefreshReplay) ||
 		errors.Is(err, usersession.ErrSessionUserMismatch) ||
 		errors.Is(err, usersession.ErrAnomalyRejected) ||
+		errors.Is(err, usersession.ErrAuthenticationStale) ||
 		errors.Is(err, usersession.ErrUserIneligible)
 }
 

@@ -33,12 +33,17 @@ func (s *PostgresRotationStore) DueForRotation(ctx context.Context, olderThan ti
 		return nil, nil
 	}
 	const q = `
-SELECT id, tenant_id, provider_account_id, vendor, auth_mode, COALESCE(last_refresh_at, created_at)
-FROM account_credentials
-WHERE state = 'active'
-  AND deleted_at IS NULL
-  AND COALESCE(last_refresh_at, created_at) < $1
-ORDER BY COALESCE(last_refresh_at, created_at) ASC
+SELECT ac.id, ac.tenant_id, ac.provider_account_id, ac.vendor, ac.auth_mode,
+       COALESCE(ac.last_refresh_at, ac.created_at)
+FROM account_credentials ac
+JOIN tenants t
+  ON t.id = ac.tenant_id
+ AND t.status = 'active'
+ AND t.deleted_at IS NULL
+WHERE ac.state = 'active'
+  AND ac.deleted_at IS NULL
+  AND COALESCE(ac.last_refresh_at, ac.created_at) < $1
+ORDER BY COALESCE(ac.last_refresh_at, ac.created_at) ASC
 LIMIT $2`
 	rows, err := s.pool.Query(ctx, q, olderThan, limit)
 	if err != nil {

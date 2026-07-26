@@ -177,7 +177,7 @@ func TestBuildUserServicesWiresPlatformPolicyAdapters(t *testing.T) {
 	t.Setenv("HUAKAI_USER_REGISTRATION_MODE", "open")
 	t.Setenv("HUAKAI_SESSION_SIGNING_KEY_B64", base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 
-	userAuthService, userSessionService, err := buildUserServices(nil, nil, nil, zap.NewNop())
+	userAuthService, userSessionService, err := buildUserServices(nil, nil, nil, zap.NewNop(), 1)
 	if err != nil {
 		t.Fatalf("buildUserServices err=%v want nil", err)
 	}

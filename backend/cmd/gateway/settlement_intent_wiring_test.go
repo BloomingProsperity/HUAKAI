@@ -12,20 +12,31 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 )
 
-// TestChatHandlerDepsWiresSettlementIntent 守住 routes 层同时传递 Store 和启用态。
-func TestChatHandlerDepsWiresSettlementIntent(t *testing.T) {
+// TestRelayHandlerDepsWireSettlementIntent 守住 routes 层向所有同步计费协议
+// 同时传递同一个 Store 和启用态；Gemini 复用 chat/embeddings 管线。
+func TestRelayHandlerDepsWireSettlementIntent(t *testing.T) {
 	marker := settlementintent.NewPostgresStore(nil)
 	d := &deps{
 		cfg:               &Config{SettlementIntentEnabled: true},
 		settlementIntents: marker,
 	}
 
-	got := chatHandlerDeps(d)
-	if got.SettlementIntents != marker {
-		t.Fatal("ChatHandlerDeps 未注入 settlement intent store")
+	checks := []struct {
+		name    string
+		store   settlementintent.Store
+		enabled bool
+	}{
+		{name: "chat", store: chatHandlerDeps(d).SettlementIntents, enabled: chatHandlerDeps(d).SettlementIntentEnabled},
+		{name: "completions", store: completionsHandlerDeps(d).SettlementIntents, enabled: completionsHandlerDeps(d).SettlementIntentEnabled},
+		{name: "embeddings", store: embeddingsHandlerDeps(d).SettlementIntents, enabled: embeddingsHandlerDeps(d).SettlementIntentEnabled},
+		{name: "rerank", store: rerankHandlerDeps(d).SettlementIntents, enabled: rerankHandlerDeps(d).SettlementIntentEnabled},
+		{name: "images", store: imageHandlerDeps(d).SettlementIntents, enabled: imageHandlerDeps(d).SettlementIntentEnabled},
+		{name: "audio", store: audioHandlerDeps(d).SettlementIntents, enabled: audioHandlerDeps(d).SettlementIntentEnabled},
 	}
-	if !got.SettlementIntentEnabled {
-		t.Fatal("ChatHandlerDeps 未注入 settlement intent 启用态")
+	for _, check := range checks {
+		if check.store != marker || !check.enabled {
+			t.Fatalf("%s settlement intent store/enabled=%T/%v，未复用生产接线", check.name, check.store, check.enabled)
+		}
 	}
 }
 

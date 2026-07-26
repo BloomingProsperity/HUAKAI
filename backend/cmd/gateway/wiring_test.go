@@ -427,13 +427,13 @@ func TestWiring_BuildTransportFactoryInjectsSidecarSocket(t *testing.T) {
 	}
 }
 
-func TestWiring_QuotaEnforceDefaultOffLeavesPlainSettlerAndNilReserver(t *testing.T) {
+func TestWiring_QuotaEnforceZeroValueLeavesPlainSettlerAndNilReserver(t *testing.T) {
 	plain := &wiringRecordingSettler{}
 
 	settler, reserver := buildQuotaEnforcement(&Config{}, nil, plain, nil)
 
 	if settler != plain {
-		t.Fatalf("settler=%T want original plain settler when HUAKAI_QUOTA_ENFORCE default is off", settler)
+		t.Fatalf("settler=%T want original plain settler for a zero-value runtime config", settler)
 	}
 	if reserver != nil {
 		t.Fatalf("quota reserver=%T want nil when enforcement is off", reserver)

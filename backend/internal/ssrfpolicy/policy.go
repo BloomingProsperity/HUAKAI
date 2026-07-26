@@ -3,6 +3,7 @@ package ssrfpolicy
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,11 @@ const (
 	// 显式为 false 时,无视 allowlist 强制拒绝每一个私网 IP 主机——这是一种只会收紧、
 	// 绝不会放宽策略的紧急封锁。
 	PrivateIPsEnabledEnv = "HUAKAI_PASSTHROUGH_PRIVATE_IPS_ENABLED"
+
+	ProxyAllowPrivateIPHostsEnv = "HUAKAI_PROXY_ALLOW_PRIVATE_IP_HOSTS"
+	// ProxyPrivateIPsEnabledEnv 是代理目标私网逃生口的总开关。默认仍要求
+	// ProxyAllowPrivateIPHostsEnv 精确列出主机；显式 false 可紧急封死全部私网代理。
+	ProxyPrivateIPsEnabledEnv = "HUAKAI_PROXY_PRIVATE_IPS_ENABLED"
 )
 
 type Policy struct {
@@ -48,6 +54,7 @@ type envCache struct {
 }
 
 var defaultEnvCache envCache
+var proxyEnvCache envCache
 
 func LoadFromEnv() (Policy, error) {
 	defaultEnvCache.once.Do(func() {
@@ -62,8 +69,24 @@ func LoadFromEnv() (Policy, error) {
 	return defaultEnvCache.policy, defaultEnvCache.err
 }
 
+// LoadProxyFromEnv 读取代理目标专用策略。代理与自定义上游是两种权限面，
+// 因此不能让一处私网放行自动扩大到另一处。
+func LoadProxyFromEnv() (Policy, error) {
+	proxyEnvCache.once.Do(func() {
+		proxyEnvCache.policy, proxyEnvCache.err = Parse(
+			"",
+			"",
+			"",
+			os.Getenv(ProxyAllowPrivateIPHostsEnv),
+			os.Getenv(ProxyPrivateIPsEnabledEnv),
+		)
+	})
+	return proxyEnvCache.policy, proxyEnvCache.err
+}
+
 func ResetForTesting() {
 	defaultEnvCache = envCache{}
+	proxyEnvCache = envCache{}
 }
 
 func Parse(portAllowlist, domainDenylist, domainAllowlist, allowPrivateIPHosts, privateIPsEnabled string) (Policy, error) {
@@ -148,6 +171,88 @@ func (p Policy) AllowsPrivateIPHost(host string) bool {
 	}
 	_, ok := p.allowPrivateIPHost[host]
 	return ok
+}
+
+// AllowsAddress 判定解析后的真实拨号地址。公网特殊用途段始终拒绝；RFC1918
+// 和 IPv6 ULA 只有在部署者精确列出原始主机时才允许，metadata、loopback、
+// link-local 等地址即使被列出也不会放行。
+func (p Policy) AllowsAddress(host string, addr netip.Addr) bool {
+	if PublicAddress(addr) {
+		return true
+	}
+	return p.AllowsPrivateIPHost(host) && PrivateAddress(addr)
+}
+
+// PublicAddress 报告地址是否可作为公网出站目标。
+func PublicAddress(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !baseAddressAllowed(addr) || addr.IsPrivate() {
+		return false
+	}
+	return !specialUseAddress(addr)
+}
+
+// PrivateAddress 只允许常规 RFC1918/ULA 私网地址，特殊用途与 metadata 地址
+// 不属于可配置逃生口。
+func PrivateAddress(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if !baseAddressAllowed(addr) || !addr.IsPrivate() {
+		return false
+	}
+	return !specialUseAddress(addr)
+}
+
+func baseAddressAllowed(addr netip.Addr) bool {
+	return addr.IsValid() &&
+		!addr.IsLoopback() &&
+		!addr.IsLinkLocalUnicast() &&
+		!addr.IsLinkLocalMulticast() &&
+		!addr.IsMulticast() &&
+		!addr.IsUnspecified() &&
+		addr.IsGlobalUnicast()
+}
+
+func specialUseAddress(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if addr == netip.MustParseAddr("fd00:ec2::254") {
+		return true
+	}
+	for _, prefix := range specialUseDenyPrefixes {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+var specialUseDenyPrefixes = []netip.Prefix{
+	mustPrefix("0.0.0.0/8"),
+	mustPrefix("100.64.0.0/10"),
+	mustPrefix("192.0.0.0/24"),
+	mustPrefix("192.0.2.0/24"),
+	mustPrefix("192.88.99.0/24"),
+	mustPrefix("198.18.0.0/15"),
+	mustPrefix("198.51.100.0/24"),
+	mustPrefix("203.0.113.0/24"),
+	mustPrefix("240.0.0.0/4"),
+	mustPrefix("255.255.255.255/32"),
+	mustPrefix("::/96"),
+	mustPrefix("64:ff9b::/96"),
+	mustPrefix("64:ff9b:1::/48"),
+	mustPrefix("100::/64"),
+	mustPrefix("2001::/23"),
+	mustPrefix("2001:db8::/32"),
+	mustPrefix("2002::/16"),
+	mustPrefix("3fff::/20"),
+	mustPrefix("5f00::/16"),
+}
+
+func mustPrefix(raw string) netip.Prefix {
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil {
+		panic(err)
+	}
+	return prefix
 }
 
 func parsePortRanges(raw string) ([]portRange, error) {

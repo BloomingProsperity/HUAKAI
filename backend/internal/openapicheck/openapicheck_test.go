@@ -132,6 +132,38 @@ func TestCompareOperations_DetectsSamePathMethodMismatch(t *testing.T) {
 	}
 }
 
+func TestCompareCanonicalOperations_DoesNotLetAliasReplaceCanonicalRoute(t *testing.T) {
+	spec := []Operation{{Method: http.MethodGet, Path: "/admin/v1/provider-accounts/{id}"}}
+	impl := []Operation{{Method: http.MethodGet, Path: "/v1/admin/provider-accounts/{account_id}"}}
+
+	aliasAware := CompareOperations(spec, impl)
+	if len(aliasAware.SpecOnly) != 0 || len(aliasAware.ImplOnly) != 0 {
+		t.Fatalf("兼容比较应接受已登记别名，结果=%+v", aliasAware)
+	}
+
+	canonical := CompareCanonicalOperations(spec, impl)
+	if !reflect.DeepEqual(canonical.SpecOnly, []string{"GET /admin/v1/provider-accounts/{}"}) {
+		t.Fatalf("规范入口缺失必须被识别，SpecOnly=%v", canonical.SpecOnly)
+	}
+}
+
+func TestWalkChiOperations_PreservesCanonicalAndAliasRoutes(t *testing.T) {
+	r := chi.NewRouter()
+	handler := func(http.ResponseWriter, *http.Request) {}
+	r.Get("/admin/v1/provider-accounts/{id}", handler)
+	r.Get("/v1/admin/provider-accounts/{id}", handler)
+
+	got := WalkChiOperations(r)
+	want := []Operation{
+		{Method: http.MethodGet, Path: "/admin/v1/provider-accounts/{id}"},
+		{Method: http.MethodGet, Path: "/v1/admin/provider-accounts/{id}"},
+	}
+	sortOperations(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("抽取阶段必须保留规范入口与兼容别名：got=%v want=%v", got, want)
+	}
+}
+
 func TestNormalize_ParamNameElision(t *testing.T) {
 	cases := []struct {
 		in, want string

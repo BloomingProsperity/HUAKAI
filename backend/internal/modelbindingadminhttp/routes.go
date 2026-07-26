@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
 
@@ -37,7 +39,7 @@ type bindingService interface {
 	GetPoolBindingByID(ctx context.Context, id, tenantID int64) (registry.AdminBinding, error)
 	CreatePoolBinding(ctx context.Context, in registry.CreateBindingInput) (registry.AdminBinding, error)
 	UpdatePoolBinding(ctx context.Context, in registry.UpdateBindingInput) (registry.AdminBinding, error)
-	DeletePoolBinding(ctx context.Context, id, tenantID int64, actor, reason string) error
+	DeletePoolBinding(ctx context.Context, in registry.DeleteBindingInput) error
 }
 
 // Deps 接线本面。Auth 是共享 admin 解析器;Service 是 registry 的绑定 admin 层。
@@ -48,11 +50,12 @@ type Deps struct {
 
 // MountRoutes 在 r 上注册端点。调用方挂在 /admin/v1/model-pool-bindings 下。
 func MountRoutes(r chi.Router, d Deps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListHandler(d))
-	r.Post("/", newCreateHandler(d))
+	r.With(safe).Post("/", newCreateHandler(d))
 	r.Get("/{id}", newGetHandler(d))
-	r.Patch("/{id}", newUpdateHandler(d))
-	r.Delete("/{id}", newDeleteHandler(d))
+	r.With(safe).Patch("/{id}", newUpdateHandler(d))
+	r.With(safe).Delete("/{id}", newDeleteHandler(d))
 }
 
 // NewRouter 返回一个根部挂好端点的独立 router。
@@ -134,6 +137,52 @@ type updateBindingRequest struct {
 	EffectiveFrom           *string `json:"effective_from,omitempty"`
 	EffectiveUntil          *string `json:"effective_until,omitempty"`
 	Reason                  string  `json:"reason,omitempty"`
+	present                 map[string]bool
+}
+
+var updateBindingFields = map[string]bool{
+	"priority": true, "weight": true, "selection_mode": true,
+	"provider_model_id_override": true, "rpm_limit": true, "tpm_limit": true,
+	"max_parallel_requests": true, "fallback_class": true, "enabled": true,
+	"disabled_reason": true, "effective_from": true, "effective_until": true,
+	"reason": true,
+}
+
+var nonNullableUpdateBindingFields = map[string]bool{
+	"priority": true, "weight": true, "selection_mode": true,
+	"fallback_class": true, "enabled": true, "reason": true,
+}
+
+// UnmarshalJSON 保留 PATCH 字段是否出现，并继续执行严格未知字段校验。可空字段的
+// JSON null 表示清空；不可空字段的 null 直接拒绝。
+func (r *updateBindingRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for key, value := range raw {
+		if !updateBindingFields[key] {
+			return fmt.Errorf("unknown field %q", key)
+		}
+		if nonNullableUpdateBindingFields[key] && strings.TrimSpace(string(value)) == "null" {
+			return fmt.Errorf("field %q cannot be null", key)
+		}
+	}
+	type plain updateBindingRequest
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = updateBindingRequest(decoded)
+	r.present = make(map[string]bool, len(raw))
+	for key := range raw {
+		r.present[key] = true
+	}
+	return nil
+}
+
+func (r updateBindingRequest) has(field string) bool {
+	return r.present[field]
 }
 
 // ---- handler ----
@@ -186,7 +235,7 @@ func newGetHandler(d Deps) http.HandlerFunc {
 
 func newCreateHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, actor, ok := resolveTenant(w, r, d)
+		tenantID, ident, ok := resolveTenant(w, r, d)
 		if !ok {
 			return
 		}
@@ -198,7 +247,18 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_binding", "model_id and pool_group_id are required positive ids")
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
+		ef, eu, ok := validateCommon(
+			w,
+			req.SelectionMode,
+			req.FallbackClass,
+			req.Priority,
+			req.Weight,
+			req.RPMLimit,
+			req.TPMLimit,
+			req.MaxParallelRequests,
+			req.EffectiveFrom,
+			req.EffectiveUntil,
+		)
 		if !ok {
 			return
 		}
@@ -210,7 +270,8 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 			RPMLimit:                req.RPMLimit, TPMLimit: req.TPMLimit, MaxParallelRequests: req.MaxParallelRequests,
 			FallbackClass: orDefault(req.FallbackClass, "normal"),
 			Enabled:       derefBool(req.Enabled, true), DisabledReason: req.DisabledReason,
-			EffectiveFrom: ef, EffectiveUntil: eu, Reason: req.Reason, Actor: actor,
+			EffectiveFrom: ef, EffectiveUntil: eu, Reason: req.Reason,
+			Actor: ident.AuditActor(), ActorRole: ident.Role, RequestID: middleware.GetReqID(r.Context()),
 		}
 		b, err := d.Service.CreatePoolBinding(r.Context(), in)
 		if err != nil {
@@ -223,7 +284,7 @@ func newCreateHandler(d Deps) http.HandlerFunc {
 
 func newUpdateHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, actor, ok := resolveTenant(w, r, d)
+		tenantID, ident, ok := resolveTenant(w, r, d)
 		if !ok {
 			return
 		}
@@ -235,19 +296,43 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
-		ef, eu, ok := validateCommon(w, req.SelectionMode, req.FallbackClass, req.Priority, req.Weight, req.MaxParallelRequests, req.EffectiveFrom, req.EffectiveUntil)
+		if len(req.present) == 0 {
+			writeError(w, http.StatusBadRequest, "empty_patch", "at least one mutable field is required")
+			return
+		}
+		ef, eu, ok := validateCommon(
+			w,
+			req.SelectionMode,
+			req.FallbackClass,
+			req.Priority,
+			req.Weight,
+			req.RPMLimit,
+			req.TPMLimit,
+			req.MaxParallelRequests,
+			req.EffectiveFrom,
+			req.EffectiveUntil,
+		)
 		if !ok {
 			return
 		}
 		in := registry.UpdateBindingInput{
 			ID: id, TenantID: tenantID,
-			Priority: deref32(req.Priority, 100), Weight: deref32(req.Weight, 1),
-			SelectionMode:           orDefault(req.SelectionMode, "strict_priority"),
-			ProviderModelIDOverride: req.ProviderModelIDOverride,
-			RPMLimit:                req.RPMLimit, TPMLimit: req.TPMLimit, MaxParallelRequests: req.MaxParallelRequests,
-			FallbackClass: orDefault(req.FallbackClass, "normal"),
-			Enabled:       derefBool(req.Enabled, true), DisabledReason: req.DisabledReason,
-			EffectiveFrom: ef, EffectiveUntil: eu, Reason: req.Reason, Actor: actor,
+			Priority:                registry.BindingField[int32]{Set: req.has("priority"), Value: deref32(req.Priority, 0)},
+			Weight:                  registry.BindingField[int32]{Set: req.has("weight"), Value: deref32(req.Weight, 0)},
+			SelectionMode:           registry.BindingField[string]{Set: req.has("selection_mode"), Value: req.SelectionMode},
+			ProviderModelIDOverride: registry.BindingField[*string]{Set: req.has("provider_model_id_override"), Value: req.ProviderModelIDOverride},
+			RPMLimit:                registry.BindingField[*int32]{Set: req.has("rpm_limit"), Value: req.RPMLimit},
+			TPMLimit:                registry.BindingField[*int32]{Set: req.has("tpm_limit"), Value: req.TPMLimit},
+			MaxParallelRequests:     registry.BindingField[*int32]{Set: req.has("max_parallel_requests"), Value: req.MaxParallelRequests},
+			FallbackClass:           registry.BindingField[string]{Set: req.has("fallback_class"), Value: req.FallbackClass},
+			Enabled:                 registry.BindingField[bool]{Set: req.has("enabled"), Value: derefBool(req.Enabled, false)},
+			DisabledReason:          registry.BindingField[*string]{Set: req.has("disabled_reason"), Value: req.DisabledReason},
+			EffectiveFrom:           registry.BindingField[*time.Time]{Set: req.has("effective_from"), Value: ef},
+			EffectiveUntil:          registry.BindingField[*time.Time]{Set: req.has("effective_until"), Value: eu},
+			Reason:                  registry.BindingField[string]{Set: req.has("reason"), Value: req.Reason},
+			Actor:                   ident.AuditActor(),
+			ActorRole:               ident.Role,
+			RequestID:               middleware.GetReqID(r.Context()),
 		}
 		b, err := d.Service.UpdatePoolBinding(r.Context(), in)
 		if err != nil {
@@ -260,7 +345,7 @@ func newUpdateHandler(d Deps) http.HandlerFunc {
 
 func newDeleteHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID, actor, ok := resolveTenant(w, r, d)
+		tenantID, ident, ok := resolveTenant(w, r, d)
 		if !ok {
 			return
 		}
@@ -268,7 +353,10 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		if err := d.Service.DeletePoolBinding(r.Context(), id, tenantID, actor, ""); err != nil {
+		if err := d.Service.DeletePoolBinding(r.Context(), registry.DeleteBindingInput{
+			ID: id, TenantID: tenantID,
+			Actor: ident.AuditActor(), ActorRole: ident.Role, RequestID: middleware.GetReqID(r.Context()),
+		}); err != nil {
 			writeServiceError(w, err, "delete binding failed")
 			return
 		}
@@ -277,7 +365,12 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 }
 
 // validateCommon 校验共享可变字段并解析生效窗。成功时返回解析出的 *time.Time 对。
-func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, weight, maxParallelRequests *int32, efRaw, euRaw *string) (*time.Time, *time.Time, bool) {
+func validateCommon(
+	w http.ResponseWriter,
+	selMode, fbClass string,
+	priority, weight, rpmLimit, tpmLimit, maxParallelRequests *int32,
+	efRaw, euRaw *string,
+) (*time.Time, *time.Time, bool) {
 	if selMode != "" && !validSelectionModes[selMode] {
 		writeError(w, http.StatusBadRequest, "invalid_selection_mode", "selection_mode must be strict_priority or priority_weighted")
 		return nil, nil, false
@@ -292,6 +385,14 @@ func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, we
 	}
 	if weight != nil && *weight <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_weight", "weight must be > 0")
+		return nil, nil, false
+	}
+	if rpmLimit != nil && *rpmLimit < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_rpm_limit", "rpm_limit must be >= 0")
+		return nil, nil, false
+	}
+	if tpmLimit != nil && *tpmLimit < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_tpm_limit", "tpm_limit must be >= 0")
 		return nil, nil, false
 	}
 	if maxParallelRequests != nil && *maxParallelRequests < 0 {
@@ -315,31 +416,30 @@ func validateCommon(w http.ResponseWriter, selMode, fbClass string, priority, we
 
 // ---- admin 门(照 proxyadminhttp;额外返回 actor 供快照审计) ----
 
-func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, string, bool) {
+func resolveTenant(w http.ResponseWriter, r *http.Request, d Deps) (int64, admin.AdminIdentity, bool) {
 	if d.Auth == nil || d.Service == nil {
 		writeError(w, http.StatusServiceUnavailable, "admin_bindings_not_configured", "admin bindings dependency unset")
-		return 0, "", false
+		return 0, admin.AdminIdentity{}, false
 	}
 	ident, err := d.Auth.Resolve(r.Context(), r)
 	if err != nil {
 		writeAdminAuthError(w, err)
-		return 0, "", false
+		return 0, admin.AdminIdentity{}, false
 	}
-	actor := ident.AuditActor()
 	switch ident.Role {
 	case admin.RoleTenantOperator:
 		if ident.ScopeTenantID <= 0 {
 			writeError(w, http.StatusForbidden, "admin_tenant_scope_required", "tenant_operator scope_tenant_id required")
-			return 0, "", false
+			return 0, admin.AdminIdentity{}, false
 		}
 		tid, ok := tenantFromQueryOrScope(w, r, ident)
-		return tid, actor, ok
+		return tid, ident, ok
 	case admin.RolePlatformAdmin:
 		tid, ok := tenantFromQueryOrScope(w, r, ident)
-		return tid, actor, ok
+		return tid, ident, ok
 	default:
 		writeError(w, http.StatusForbidden, "admin_forbidden_scope", "admin role required")
-		return 0, "", false
+		return 0, admin.AdminIdentity{}, false
 	}
 }
 
@@ -425,6 +525,10 @@ func writeServiceError(w http.ResponseWriter, err error, ctx string) {
 		writeError(w, http.StatusNotFound, "binding_not_found", "model pool binding not found")
 	case errors.Is(err, registry.ErrBindingConflict):
 		writeError(w, http.StatusConflict, "binding_already_exists", "a binding for this (model, pool) already exists")
+	case errors.Is(err, registry.ErrBindingWindow):
+		writeError(w, http.StatusBadRequest, "invalid_effective_window", "effective_from must be before effective_until")
+	case errors.Is(err, registry.ErrBindingInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_binding", "model pool binding contains an invalid value")
 	case errors.Is(err, registry.ErrModelNotBindable):
 		writeError(w, http.StatusUnprocessableEntity, "model_not_bindable", "model not found or not bindable by this tenant")
 	case errors.Is(err, registry.ErrPoolGroupNotFound):

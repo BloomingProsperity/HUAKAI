@@ -14,15 +14,22 @@ import (
 const adminGetTwoFAAdoptionStatsForTenant = `-- name: AdminGetTwoFAAdoptionStatsForTenant :one
 WITH enabled AS (
     SELECT COUNT(*)::bigint AS enabled_count
-    FROM two_factor_settings
-    WHERE tenant_id = $1::bigint
-      AND is_enabled = true
+    FROM two_factor_settings settings
+    JOIN users u
+      ON u.tenant_id = settings.tenant_id
+     AND u.id = settings.user_id
+     AND u.principal_kind = 'human'
+     AND u.role = 'user'
+     AND u.deleted_at IS NULL
+    WHERE settings.tenant_id = $1::bigint
+      AND settings.is_enabled = true
 ),
 total_users AS (
     SELECT COUNT(*)::bigint AS total_user_count
     FROM users
     WHERE tenant_id = $1::bigint
       AND principal_kind = 'human'
+      AND role = 'user'
       AND deleted_at IS NULL
 )
 SELECT
@@ -61,6 +68,7 @@ LEFT JOIN user_balances ub
 WHERE u.tenant_id = $1::bigint
   AND u.id = $2::bigint
   AND u.principal_kind = 'human'
+  AND u.role = 'user'
   AND u.deleted_at IS NULL
 `
 
@@ -229,6 +237,7 @@ LEFT JOIN user_balances ub
  AND ub.user_id = u.id
 WHERE u.tenant_id = $1::bigint
   AND u.principal_kind = 'human'
+  AND u.role = 'user'
   AND u.deleted_at IS NULL
   AND (
     $2::text = ''
@@ -258,9 +267,8 @@ type AdminListUsersForTenantRow struct {
 	CreatedAt pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }
 
-// Admin user read-only queries.
-// Tenant predicates are mandatory on every query. These queries never return
-// password hashes, API key hashes, or other credential material.
+// 管理端终端用户只读查询。每条查询都必须同时限定 tenant 与 role='user'，
+// 且绝不返回密码、Key hash 或其他凭据材料。
 func (q *Queries) AdminListUsersForTenant(ctx context.Context, arg AdminListUsersForTenantParams) ([]AdminListUsersForTenantRow, error) {
 	rows, err := q.db.Query(ctx, adminListUsersForTenant,
 		arg.TenantID,

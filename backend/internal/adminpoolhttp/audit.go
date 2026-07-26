@@ -28,8 +28,19 @@ func chineseReason(got, fallback string) *string {
 	return adminhttpcore.Reason(got, fallback)
 }
 
-func writeProviderAccountAudit(ctx context.Context, r *http.Request, store AdminPoolAccountStore, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) error {
-	return adminhttpcore.WriteAudit(ctx, r, store, ident, &tenantID, action, "provider_account", &targetID, reason, payload)
+func providerAccountAuditParams(r *http.Request, ident admin.AdminIdentity, tenantID int64, action string, targetID int64, reason *string, payload []byte) admindb.InsertAdminAuditEventParams {
+	reqID := middleware.GetReqID(r.Context())
+	return admindb.InsertAdminAuditEventParams{
+		TenantID:   &tenantID,
+		ActorID:    ident.AuditActor(),
+		ActorRole:  ident.Role,
+		Action:     action,
+		TargetType: "provider_account",
+		TargetID:   &targetID,
+		RequestID:  &reqID,
+		Reason:     reason,
+		Payload:    payload,
+	}
 }
 
 // writeProviderAccountAuditTx 在调用方事务内写管理审计，使建号的账号、凭据、审计同成同败。

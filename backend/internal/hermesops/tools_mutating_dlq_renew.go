@@ -16,7 +16,7 @@ import (
 // 凭据轮换则加入编排器事务，使凭据、凭据日志和 Hermes 日志同成同败。
 
 // ---------------------------------------------------------------------------
-// dlq_replay (仅限 platform_admin)
+// dlq_replay
 // ---------------------------------------------------------------------------
 
 // DLQReplayDeps 把 dlq_replay 工具接上依赖。Lookup 是 Resolve 用来读取目标记录
@@ -24,20 +24,21 @@ import (
 // 它按 id 重新 claim 该记录(用其 IdempotencyKey 去重)并重新运行投递 handler。
 type DLQReplayDeps struct {
 	Lookup func(ctx context.Context, id, tenantID int64) (dlq.Record, error)
-	Replay func(ctx context.Context, id int64, actorID string) (*dlq.Record, error)
+	Replay func(ctx context.Context, tenantID, id int64, actorID string) (*dlq.Record, error)
 }
 
-// DLQReplaySpec 构建 dlq_replay 改动型工具。仅限 platform_admin —— 禁止 tenant_operator
-// (RBAC 底线是 RolePlatformAdmin,与 admin DLQ handler 的 platform-admin 门一致)。Args: { "id": <int64> }。
+// DLQReplaySpec 构建 dlq_replay 改动型工具。部署者只能处理平台工作租户，
+// tenant_operator 只能处理自身租户；HTTP 身份层固定 req.TenantID，目标解析和
+// Replay 的数据库 claim 再分别复检一次。Args: { "id": <int64> }。
 func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 	return ToolSpec{
 		Name:                 ToolDLQReplay,
 		Category:             CategoryMutating,
-		Description:          "Re-deliver a dead-lettered event by id (idempotent on the record's idempotency key). platform_admin ONLY. MUTATING — dry-run + confirm required.",
+		Description:          "按 ID 重新投递本租户死信事件；按记录幂等键去重，必须先预览再确认。",
 		ReadOnly:             false,
 		Mutating:             true,
 		RequiresConfirmation: true,
-		RequiredRole:         RolePlatformAdmin,
+		RequiredRole:         RoleTenantOperator,
 		InputSchema: ObjectSchema(map[string]any{
 			"id": PositiveIntegerSchema("要重放的死信记录 ID"),
 		}, "id"),
@@ -81,7 +82,7 @@ func DLQReplaySpec(deps DLQReplayDeps) ToolSpec {
 			// 已投递的记录不会被重新处理(ClaimByID 会拒绝一个 active/closed 的 claim)。
 			// actorID 是传入的 operator 用户 id。
 			actorID := fmt.Sprintf("%s:%d", req.ActorSource, req.ActorID)
-			rec, err := deps.Replay(ctx, plan.TargetID, actorID)
+			rec, err := deps.Replay(ctx, req.TenantID, plan.TargetID, actorID)
 			if err != nil {
 				if errors.Is(err, dlq.ErrNotFound) {
 					return ToolResult{Summary: map[string]any{

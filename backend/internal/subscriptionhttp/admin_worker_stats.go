@@ -42,7 +42,7 @@ type ExpiryWorkerStats struct {
 }
 
 // AutoRenewWorkerStats 是自动续费 worker 的 money 计数器。Enabled=false 表示该 worker
-// 未启用(HUAKAI_SUBSCRIPTION_AUTO_RENEW_ENABLED 默认关),此时其余计数恒 0。
+// 被部署者显式停用时 Enabled=false，其余计数恒 0。
 type AutoRenewWorkerStats struct {
 	Enabled      bool   `json:"enabled"`
 	TickCount    uint64 `json:"tick_count"`

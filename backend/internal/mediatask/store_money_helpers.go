@@ -48,7 +48,7 @@ func updateTaskSuccess(ctx context.Context, tx pgx.Tx, id int64, result PollResu
 	UPDATE media_tasks
 	SET status='succeeded', result=$2, actual_cents=$3, progress=100,
 	    lease_owner=NULL, lease_expires_at=NULL, updated_at=$4, finished_at=$4
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
+	WHERE id=$1 AND status IN ('queued','in_progress','settlement_pending')`,
 		id, jsonOrNull(result.Result), result.ActualCents, now.UTC(),
 	)
 	return err

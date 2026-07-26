@@ -103,6 +103,47 @@ func TestGeminiVideoProviderKeepsPendingAndProviderFailureDistinct(t *testing.T)
 	}
 }
 
+func TestGeminiVideoProviderTruncatedAmbiguousSubmitResponseNeverRetries(t *testing.T) {
+	for _, status := range []int{
+		http.StatusRequestTimeout,
+		http.StatusConflict,
+		http.StatusTooEarly,
+		http.StatusInternalServerError,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			selector := &capturingVideoSelector{accountID: 41}
+			vault := provider.NewStaticVault()
+			_ = vault.Set(41,
+				provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				provider.AccountInfo{
+					AccountID: 41, TenantID: 7, Platform: "gemini",
+					AccountType: credentialstore.AuthModeAIStudioAPIKey,
+				},
+			)
+			mediaProvider := NewGeminiVideoProvider(GrokVideoProviderDeps{
+				Selector: selector, CredentialVault: vault,
+				Dispatcher: &videoDispatcherStub{responses: []*gateway.DispatchResult{
+					dispatchReadErrorResult(status),
+				}},
+			})
+			task := geminiBoundVideoTask()
+			_, err := mediaProvider.SubmitBound(context.Background(), task, SubmitReq{
+				TaskID: task.ID, RequestID: task.RequestID, TaskType: task.TaskType,
+				InputParams: jsonBody(`{"model":"veo","prompt":"x"}`),
+			})
+			class, retryable, recognized := providerErrorDetails(err)
+			if !recognized || retryable || class != "provider_submit_outcome_unknown" {
+				t.Fatalf("status=%d class=%q retryable=%v recognized=%v err=%v",
+					status, class, retryable, recognized, err)
+			}
+			if selector.releaseCount != 1 {
+				t.Fatalf("提交结果未知时本轮临时选择句柄释放次数=%d want 1", selector.releaseCount)
+			}
+		})
+	}
+}
+
 func geminiBoundVideoTask() Task {
 	return Task{
 		ID: 18, TenantID: 7, UserID: 11, APIKeyID: 13, TaskType: "video_generate",

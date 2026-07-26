@@ -13,6 +13,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/accountbundle"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountfphttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/accountprobe"
 	"github.com/BloomingProsperity/HUAKAI/internal/accountproxyimport"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminobservabilityhttp"
@@ -38,7 +39,6 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/claudecookie"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialacq/crssource"
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialprojecthttp"
-	"github.com/BloomingProsperity/HUAKAI/internal/credentialworker"
 	dbmodelroutingadmin "github.com/BloomingProsperity/HUAKAI/internal/db/modelroutingadmin"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlqhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailsettingshttp"
@@ -89,6 +89,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/subscriptionhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/sunoclient"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantadmin"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenantadminhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapabilityhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/tlsfpadmin"
@@ -118,6 +120,10 @@ func (d *deps) AdminDLQStore() dlqhttp.AdminDLQStore {
 	return d.dlqService
 }
 
+func (d *deps) AdminDLQPlatformTenantID() int64 {
+	return d.platformTenantID
+}
+
 func credentialAcquisitionRouteDeps(d *deps) credentialacqhttp.AdminCredentialAcquisitionDeps {
 	return credentialacqhttp.AdminCredentialAcquisitionDeps{
 		Auth: d.adminAuth, Sessions: d.credentialAcqStore,
@@ -139,18 +145,12 @@ func credentialProjectRouteDeps(d *deps) credentialprojecthttp.Deps {
 	}
 }
 
-func credentialModeAdapterRegistry(d *deps) *credentialworker.ModeAdapterRegistry {
-	if d == nil || d.cfg == nil {
-		return credentialworker.DefaultModeAdapterRegistry()
-	}
-	return credentialworker.DefaultModeAdapterRegistryWithRuntimeOAuth(d.cfg.VendorOAuth)
-}
-
 func disputeAdminRouteDeps(d *deps) controlhttp.DisputeAdminDeps {
 	return controlhttp.DisputeAdminDeps{
-		Auth:     d.adminAuth,
-		Store:    d.disputeStore,
-		Resolver: d.disputeResolver,
+		Auth:             d.adminAuth,
+		Store:            d.disputeStore,
+		Resolver:         d.disputeResolver,
+		PlatformTenantID: d.platformTenantID,
 	}
 }
 
@@ -219,7 +219,9 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	auditVerifyDeps := auditverifyhttp.AuditVerifyStaticDeps{Ledger: d.auditLedger, Registry: d.auditPubkeyRegistry}
 	auditPubkeyDeps := auditverifyhttp.AuditPubkeyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}
 	r.Get("/.well-known/huakai-pubkey.json", trusthttp.NewWellKnownHandler(trusthttp.WellKnownDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}))
-	r.Post("/v1/trust/verify", trusthttp.NewVerifyHandler(trusthttp.VerifyDeps{Signer: d.auditSigner, Registry: d.auditPubkeyRegistry}).ServeHTTP)
+	r.Post("/v1/trust/verify", trusthttp.NewVerifyHandler(trusthttp.VerifyDeps{
+		Signer: d.auditSigner, Registry: d.auditPubkeyRegistry, ClientIP: d.clientIPResolver,
+	}).ServeHTTP)
 	r.Route("/v1/audit", func(r chi.Router) {
 		r.Get("/pubkey", auditverifyhttp.NewAuditPubkeyHandler(auditPubkeyDeps))
 		r.Get("/pubkeys", auditverifyhttp.NewAuditPubkeysHandler(auditPubkeyDeps))
@@ -348,12 +350,11 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		// GET /v1/auth/me 需已认证 session(同块的 login/register 等不需要), 故用 per-route session 中间件,
 		// 不另起 /v1/auth Route 组(chi 同前缀重复 Mount 会 panic)。
 		controlhttp.MountAuthMeRoutes(r.With(auth.SessionMiddleware(d.userSessions, d.clientIPResolver)), controlhttp.AuthMeDeps{
-			Resolver:       d.panelAuthResolver,
-			Profiles:       d.userAuth,
-			SocialLinks:    d.userAuth,
-			Sessions:       d.userSessions,
-			SelfAccount:    d.userAuth,
-			SessionsOthers: d.userSessions,
+			Resolver:    d.panelAuthResolver,
+			Profiles:    d.userAuth,
+			SocialLinks: d.userAuth,
+			Sessions:    d.userSessions,
+			SelfAccount: d.userAuth,
 		})
 		r.Route("/2fa", func(r chi.Router) {
 			r.Use(auth.SessionMiddleware(d.userSessions, d.clientIPResolver))
@@ -470,6 +471,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 		Service: d.invitationService,
 	}))
 
+	// 管理写接口按各自风险显式标记 SessionSafe；未标记即保持 admin token only。
+	// 这里不能统一放行，否则会覆盖子模块对密钥、终态删除和未闭环写链的 fail-closed 分类。
 	mountAdminRoutes(r, d)
 	logger.Info("routes mounted")
 }
@@ -534,6 +537,7 @@ func authHandlerDeps(d *deps, logger *zap.Logger) gatewayhttp.AuthHandlerDeps {
 		AdminAuth:        d.adminAuth,
 		EventSink:        newAuthEventSink(logger),
 		ClientIPResolver: d.clientIPResolver,
+		PlatformTenantID: d.platformTenantID,
 		Captcha: captcha.NewVerifier(
 			d.platformSettings,
 			captchaSecretResolver(d),
@@ -665,44 +669,48 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 
 func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 	return embeddingshttp.Deps{
-		Auth:                  d.inboundAuth,
-		Registry:              d.modelRegistry,
-		Router:                d.routePlanner,
-		ClaimGate:             d.claimGate,
-		QuotaReserver:         d.quotaReserver,
-		RateTables:            d.rateTableSource,
-		PricingRatioResolver:  d.pricingRatioResolver,
-		Selector:              d.selector,
-		CredentialVault:       d.credentialVault,
-		Dispatcher:            d.dispatcher,
-		Settler:               d.settler,
-		SettleRecoveryDLQ:     d.dlqService,
-		BillingPolicyResolver: d.billingPolicyResolver,
-		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
-		RequestClass:          d.cfg.RequestClass,
-		Feedback:              d.upstreamFeedback,
-		RetryBudget:           d.retryBudget,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		Selector:                d.selector,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:       d.dlqService,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
+		RequestClass:            d.cfg.RequestClass,
+		Feedback:                d.upstreamFeedback,
+		RetryBudget:             d.retryBudget,
 	}
 }
 
 func completionsHandlerDeps(d *deps) completionshttp.Deps {
 	return completionshttp.Deps{
-		Auth:                  d.inboundAuth,
-		Registry:              d.modelRegistry,
-		Router:                d.routePlanner,
-		ClaimGate:             d.claimGate,
-		QuotaReserver:         d.quotaReserver,
-		RateTables:            d.rateTableSource,
-		PricingRatioResolver:  d.pricingRatioResolver,
-		Selector:              d.selector,
-		CredentialVault:       d.credentialVault,
-		Dispatcher:            d.dispatcher,
-		Settler:               d.settler,
-		BillingPolicyResolver: d.billingPolicyResolver,
-		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
-		RequestClass:          d.cfg.RequestClass,
-		Feedback:              d.upstreamFeedback,
-		RetryBudget:           d.retryBudget,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		Selector:                d.selector,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
+		RequestClass:            d.cfg.RequestClass,
+		Feedback:                d.upstreamFeedback,
+		RetryBudget:             d.retryBudget,
 		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
 		SettleRecoveryDLQ: d.dlqService,
 	}
@@ -710,46 +718,50 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 
 func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 	return rerankhttp.Deps{
-		Auth:                  d.inboundAuth,
-		Registry:              d.modelRegistry,
-		Router:                d.routePlanner,
-		ClaimGate:             d.claimGate,
-		QuotaReserver:         d.quotaReserver,
-		RateTables:            d.rateTableSource,
-		PricingRatioResolver:  d.pricingRatioResolver,
-		Selector:              d.selector,
-		CredentialVault:       d.credentialVault,
-		Dispatcher:            d.dispatcher,
-		Settler:               d.settler,
-		SettleRecoveryDLQ:     d.dlqService,
-		BillingPolicyResolver: d.billingPolicyResolver,
-		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
-		RequestClass:          d.cfg.RequestClass,
-		Feedback:              d.upstreamFeedback,
-		RetryBudget:           d.retryBudget,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		Selector:                d.selector,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:       d.dlqService,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
+		RequestClass:            d.cfg.RequestClass,
+		Feedback:                d.upstreamFeedback,
+		RetryBudget:             d.retryBudget,
 	}
 }
 
 func imageHandlerDeps(d *deps) imageshttp.Deps {
 	return imageshttp.Deps{
-		Auth:                  d.inboundAuth,
-		Registry:              d.modelRegistry,
-		Router:                d.routePlanner,
-		ClaimGate:             d.claimGate,
-		QuotaReserver:         d.quotaReserver,
-		RateTables:            d.rateTableSource,
-		PricingRatioResolver:  d.pricingRatioResolver,
-		Selector:              d.selector,
-		CredentialVault:       d.credentialVault,
-		Dispatcher:            d.dispatcher,
-		Settler:               d.settler,
-		SettleRecoveryDLQ:     d.dlqService,
-		BillingPolicyResolver: d.billingPolicyResolver,
-		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
-		RequestClass:          d.cfg.RequestClass,
-		ClientIPResolver:      d.clientIPResolver,
-		Feedback:              d.upstreamFeedback,
-		RetryBudget:           d.retryBudget,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		Selector:                d.selector,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:       d.dlqService,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
+		RequestClass:            d.cfg.RequestClass,
+		ClientIPResolver:        d.clientIPResolver,
+		Feedback:                d.upstreamFeedback,
+		RetryBudget:             d.retryBudget,
 		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
 		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}
@@ -757,23 +769,25 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 
 func audioHandlerDeps(d *deps) audiohttp.Deps {
 	return audiohttp.Deps{
-		Auth:                  d.inboundAuth,
-		Registry:              d.modelRegistry,
-		Router:                d.routePlanner,
-		ClaimGate:             d.claimGate,
-		QuotaReserver:         d.quotaReserver,
-		RateTables:            d.rateTableSource,
-		PricingRatioResolver:  d.pricingRatioResolver,
-		Selector:              d.selector,
-		CredentialVault:       d.credentialVault,
-		Dispatcher:            d.dispatcher,
-		Settler:               d.settler,
-		SettleRecoveryDLQ:     d.dlqService,
-		BillingPolicyResolver: d.billingPolicyResolver,
-		BillingPolicyVersion:  d.cfg.BillingPolicyVersion,
-		RequestClass:          d.cfg.RequestClass,
-		Feedback:              d.upstreamFeedback,
-		RetryBudget:           d.retryBudget,
+		Auth:                    d.inboundAuth,
+		Registry:                d.modelRegistry,
+		Router:                  d.routePlanner,
+		ClaimGate:               d.claimGate,
+		QuotaReserver:           d.quotaReserver,
+		RateTables:              d.rateTableSource,
+		PricingRatioResolver:    d.pricingRatioResolver,
+		Selector:                d.selector,
+		CredentialVault:         d.credentialVault,
+		Dispatcher:              d.dispatcher,
+		Settler:                 d.settler,
+		SettlementIntents:       d.settlementIntents,
+		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:       d.dlqService,
+		BillingPolicyResolver:   d.billingPolicyResolver,
+		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
+		RequestClass:            d.cfg.RequestClass,
+		Feedback:                d.upstreamFeedback,
+		RetryBudget:             d.retryBudget,
 	}
 }
 
@@ -789,16 +803,9 @@ func adminUserRouteDeps(d *deps) adminuserhttp.Deps {
 		Auth:             d.adminAuth,
 		Store:            d.adminQueries,
 		UsageStore:       d.billingQueries,
-		SocialLinks:      d.userAuth,
+		UserMutations:    adminuserhttp.NewPostgresUserMutationStore(d.pgPool),
 		UnlockAudit:      adminuserhttp.NewPostgresUnlockAuditStore(d.pgPool),
-		TwoFADisabler:    d.twoFactor,
-		PasskeyResetter:  d.passkeys,
-		UserGroupSetter:  adminuserhttp.NewPostgresUserGroupStore(d.pgPool),
-		UserRemarkSetter: adminuserhttp.NewPostgresUserRemarkStore(d.pgPool),
-		UserStatusSetter: adminuserhttp.NewPostgresUserStatusStore(d.pgPool),
 		UserCreator:      adminuserhttp.NewPostgresUserCreateStore(d.pgPool),
-		UserSoftDeleter:  adminuserhttp.NewPostgresUserSoftDeleteStore(d.pgPool),
-		SessionRevoker:   d.userSessions,
 		Unlocker:         d.userAuth,
 		Audit:            d.adminQueries,
 		PlatformTenantID: d.platformTenantID,
@@ -831,6 +838,7 @@ func modelAdminRouteDeps(d *deps) modeladminhttp.Deps {
 }
 
 func mountAdminRoutes(r chi.Router, d *deps) {
+	sessionSafe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Route("/v1/admin/email", func(r chi.Router) {
 		emailsettingshttp.MountAdminEmailSettingsRoutes(r, emailsettingshttp.AdminEmailSettingsDeps{
 			Auth:  d.adminAuth,
@@ -870,7 +878,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminGate(adminResolver, controlhttp.NewAdminModelAliasBulkImportHandler(modelAliasDeps)))
 	r.Method(http.MethodGet, "/v1/admin/models/{id}/capability-bindings",
 		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingsHandler(modelAliasDeps)))
-	r.Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings",
+	r.With(sessionSafe).Method(http.MethodPut, "/v1/admin/models/{id}/capability-bindings",
 		adminGate(adminResolver, controlhttp.NewAdminModelCapabilityBindingUpsertHandler(modelAliasDeps)))
 	// 租户目录继承策略(inherit_global_catalog)admin 写面 — platform_admin only(经 adminGate), tenant 取 query。
 	tenantPolicyDeps := controlhttp.AdminTenantPolicyDeps{Store: d.modelRegistry}
@@ -880,10 +888,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		adminGate(adminResolver, controlhttp.NewAdminTenantPolicySetHandler(tenantPolicyDeps)))
 	r.Route("/admin/v1/api-keys", func(r chi.Router) {
 		adminhttp.MountAPIKeyRoutes(r, adminhttp.AdminAPIKeysDeps{
-			Auth:    d.adminAuth,
-			Issuer:  d.adminIssuer,
-			Revoker: d.adminRevoker,
-			Queries: d.adminQueries,
+			Auth:             d.adminAuth,
+			Issuer:           d.adminIssuer,
+			Revoker:          d.adminRevoker,
+			Queries:          d.adminQueries,
+			PlatformTenantID: d.platformTenantID,
 		})
 	})
 	// admin token(运维凭证)签发 / 列举 / 吊销:支持临时/一次性 token
@@ -907,6 +916,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		proxyadminhttp.MountRoutes(r, proxyAdminDeps)
 	})
 	r.Route("/admin/v1/tenants", func(r chi.Router) {
+		tenantadminhttp.Mount(r, tenantadminhttp.Deps{
+			Auth: d.adminAuth, Service: tenantadmin.NewService(d.pgPool, d.platformTenantID),
+		})
 		proxyadminhttp.MountTenantRoutes(r, proxyAdminDeps)
 	})
 	// Model -> pool 绑定 admin 面:补上之前的死写路径缺口
@@ -930,19 +942,19 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		Store: adminhttp.NewProviderCatalogStoreAdapter(d.adminQueries, d.pgPool),
 	}
 	r.Get("/admin/v1/providers", adminhttp.NewProviderCatalogListHandler(providerCatalogDeps))
-	r.Post("/admin/v1/providers", adminhttp.NewProviderCatalogCreateHandler(providerCatalogDeps))
-	r.Put("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogUpdateHandler(providerCatalogDeps))
-	r.Delete("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogDeleteHandler(providerCatalogDeps))
+	r.With(sessionSafe).Post("/admin/v1/providers", adminhttp.NewProviderCatalogCreateHandler(providerCatalogDeps))
+	r.With(sessionSafe).Put("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogUpdateHandler(providerCatalogDeps))
+	r.With(sessionSafe).Delete("/admin/v1/providers/{code}", adminhttp.NewProviderCatalogDeleteHandler(providerCatalogDeps))
 	channelCatalogDeps := adminhttp.AdminChannelCatalogDeps{
 		Auth:    d.adminAuth,
 		Queries: d.adminQueries,
 		Store:   adminhttp.NewChannelCatalogStoreAdapter(d.adminQueries, d.pgPool),
 	}
 	r.Get("/admin/v1/channels", adminhttp.NewChannelCatalogListHandler(channelCatalogDeps))
-	r.Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
+	r.With(sessionSafe).Post("/admin/v1/channels", adminhttp.NewChannelCatalogCreateHandler(channelCatalogDeps))
 	r.Get("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogGetHandler(channelCatalogDeps))
-	r.Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
-	r.Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
+	r.With(sessionSafe).Put("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogUpdateHandler(channelCatalogDeps))
+	r.With(sessionSafe).Delete("/admin/v1/channels/{id}", adminhttp.NewChannelCatalogDeleteHandler(channelCatalogDeps))
 	quotaPolicyDeps := adminquotahttp.Deps{
 		Auth:  d.adminAuth,
 		Store: adminquotahttp.NewQuotaPolicyStoreAdapter(d.pgPool),
@@ -953,24 +965,30 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	// 孤儿对账闭环 admin 面:只读列表(可视化) + 显式手动对账动作。复用既有 admin 鉴权
 	// (d.adminAuth)。追扣走既有 billing settle、Manual-First、幂等防双扣(详见 orphanreconcilehttp)。
 	if d.mediaTaskStore != nil {
-		orphanDeps := orphanreconcilehttp.Deps{Auth: d.adminAuth, Store: d.mediaTaskStore}
+		orphanDeps := orphanreconcilehttp.Deps{
+			Auth:             d.adminAuth,
+			Store:            d.mediaTaskStore,
+			PlatformTenantID: d.platformTenantID,
+		}
 		r.Get("/admin/v1/media-task-orphans", orphanreconcilehttp.NewListHandler(orphanDeps))
-		r.Post("/admin/v1/media-task-orphans/{id}/reconcile", orphanreconcilehttp.NewReconcileHandler(orphanDeps))
+		r.With(sessionSafe).Post("/admin/v1/media-task-orphans/{id}/reconcile", orphanreconcilehttp.NewReconcileHandler(orphanDeps))
+		r.With(sessionSafe).Post("/admin/v1/media-task-orphans/{id}/attach", orphanreconcilehttp.NewAttachHandler(orphanDeps))
+		r.With(sessionSafe).Post("/admin/v1/media-task-orphans/{id}/confirm-not-accepted", orphanreconcilehttp.NewConfirmNotAcceptedHandler(orphanDeps))
 	}
 	channelTestTemplateDeps := adminhttp.AdminChannelTestTemplateDeps{
 		Auth:  d.adminAuth,
-		Store: d.adminQueries,
+		Store: adminhttp.NewChannelTestTemplateStoreAdapter(d.adminQueries, d.pgPool),
 	}
 	r.Get("/admin/v1/channel-test-templates", adminhttp.NewChannelTestTemplateListHandler(channelTestTemplateDeps))
-	r.Post("/admin/v1/channel-test-templates", adminhttp.NewChannelTestTemplateCreateHandler(channelTestTemplateDeps))
+	r.With(sessionSafe).Post("/admin/v1/channel-test-templates", adminhttp.NewChannelTestTemplateCreateHandler(channelTestTemplateDeps))
 	r.Get("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateGetHandler(channelTestTemplateDeps))
-	r.Put("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateUpdateHandler(channelTestTemplateDeps))
-	r.Delete("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateDeleteHandler(channelTestTemplateDeps))
+	r.With(sessionSafe).Put("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateUpdateHandler(channelTestTemplateDeps))
+	r.With(sessionSafe).Delete("/admin/v1/channel-test-templates/{id}", adminhttp.NewChannelTestTemplateDeleteHandler(channelTestTemplateDeps))
 
 	mountProviderAccountAdminRoutes := func(r chi.Router) {
 		adminpoolhttp.MountAdminPoolAccountRoutes(r, adminpoolhttp.AdminPoolAccountDeps{
 			Auth:              d.adminAuth,
-			Store:             d.adminQueries,
+			Store:             adminpoolhttp.NewAdminPoolAccountStoreAdapter(d.adminQueries, d.pgPool),
 			Credentials:       d.credentialStore,
 			ChannelHealth:     d.channelHealth,
 			RateLimitRecovery: provideraccountrecovery.NewService(provideraccountrecovery.NewPostgresStore(d.pgPool), d.channelHealth),
@@ -979,11 +997,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		})
 		adminhttp.MountProviderAccountTestRoutes(r, adminhttp.ProviderAccountTestDeps{
 			Auth:     d.adminAuth,
-			Accounts: d.adminQueries,
-			Tester:   adminhttp.NewProviderAccountCredentialTester(d.credentialStore, credentialModeAdapterRegistry(d)),
+			Accounts: adminhttp.NewProviderAccountTestStoreAdapter(d.pgPool),
+			Tester:   accountprobe.NewService(d.credentialVault, d.dispatcher, d.channelHealth),
 		})
 		// 账号 TLS 指纹 profile 绑定/解绑(独立包 accountfphttp,§13 不塞进 god 包 gatewayhttp)。
-		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: d.adminQueries})
+		accountfphttp.MountRoutes(r, accountfphttp.Deps{Auth: d.adminAuth, Store: accountfphttp.NewPostgresStore(d.pgPool)})
 		adminhttp.MountProviderAccountHealthRoutes(r, adminhttp.ProviderAccountHealthDeps{
 			Auth:          d.adminAuth,
 			Store:         d.adminQueries,
@@ -1107,7 +1125,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 			AuditUpdater:  d.billingAuditUpdater,
 		})
 		repriceService := billing.NewPostgresRepriceService(d.pgPool, d.rateTableSource, d.pricingRatioResolver, d.cfg.BillingPolicyVersion)
-		r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).Post("/reprice", billingreconhttp.NewHandler(billingreconhttp.Deps{
+		r.With(sessionSafe).Post("/reprice", billingreconhttp.NewHandler(billingreconhttp.Deps{
 			Auth:    d.adminAuth,
 			Service: repriceService,
 		}))
@@ -1134,8 +1152,9 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
 		voucherhttp.MountVoucherAdminRoutes(r, voucherhttp.VoucherAdminDeps{
-			Auth:    d.adminAuth,
-			Service: d.voucherService,
+			Auth:             d.adminAuth,
+			Service:          d.voucherService,
+			PlatformTenantID: d.platformTenantID,
 		})
 	})
 	exporthttp.MountRoutes(r, exporthttp.Deps{
@@ -1147,10 +1166,11 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/v1/admin/payments", func(r chi.Router) {
 		paymenthttp.MountPaymentAdminRoutes(r, paymenthttp.AdminDeps{
-			Auth:           d.adminAuth,
-			Service:        d.paymentService,
-			ProviderConfig: paymentProviderConfigRouteService(d),
-			RefundRequests: d.paymentRefundRequests,
+			Auth:             d.adminAuth,
+			Service:          d.paymentService,
+			ProviderConfig:   paymentProviderConfigRouteService(d),
+			RefundRequests:   d.paymentRefundRequests,
+			PlatformTenantID: d.platformTenantID,
 		})
 	})
 	r.Route("/v1/admin/cache-price-overrides", func(r chi.Router) {
@@ -1161,9 +1181,10 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	})
 	r.Route("/v1/admin/subscriptions", func(r chi.Router) {
 		subscriptionhttp.MountSubscriptionAdminRoutes(r, subscriptionhttp.AdminDeps{
-			Auth:           d.adminAuth,
-			Service:        d.subscriptionService,
-			VoucherService: d.voucherService,
+			Auth:             d.adminAuth,
+			Service:          d.subscriptionService,
+			VoucherService:   d.voucherService,
+			PlatformTenantID: d.platformTenantID,
 		})
 	})
 	r.Get("/v1/admin/referrals", referralhttp.NewAdminReferralsHandler(referralhttp.Deps{
@@ -1209,11 +1230,13 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 	r.Get("/admin/v1/billing/claims", adminobservabilityhttp.NewClaimsHandler(d))
 	r.Get("/admin/v1/audit-events", adminobservabilityhttp.NewAuditEventsHandler(d))
 	r.Get("/admin/v1/dlq/{handler}", dlqhttp.NewAdminDLQListHandler(d))
-	r.Post("/admin/v1/dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
-	r.Post("/admin/v1/usage-record-dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
-	obsDLQDeps := obsdlqhttp.Deps{Auth: d.adminAuth, Store: d.obsDLQAdminStore}
+	r.With(sessionSafe).Post("/admin/v1/dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
+	r.With(sessionSafe).Post("/admin/v1/usage-record-dlq/{id}/replay", dlqhttp.NewAdminDLQReplayHandler(d))
+	obsDLQDeps := obsdlqhttp.Deps{
+		Auth: d.adminAuth, Store: d.obsDLQAdminStore, PlatformTenantID: d.platformTenantID,
+	}
 	r.Get("/admin/v1/obs-dlq", obsdlqhttp.NewListHandler(obsDLQDeps))
-	r.Post("/admin/v1/obs-dlq/{id}/replay", obsdlqhttp.NewReplayHandler(obsDLQDeps))
+	r.With(sessionSafe).Post("/admin/v1/obs-dlq/{id}/replay", obsdlqhttp.NewReplayHandler(obsDLQDeps))
 	r.Route("/admin/v1/cache/l2", func(r chi.Router) {
 		cacheadminhttp.MountAdminL2CacheRoutes(r, cacheadminhttp.AdminL2CacheDeps{
 			Auth:  d.adminAuth,

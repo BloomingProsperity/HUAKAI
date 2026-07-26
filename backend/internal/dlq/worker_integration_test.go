@@ -253,7 +253,7 @@ func TestClaimByID_RefusesActiveLease(t *testing.T) {
 		t.Fatalf("active lease_until=%v; want future deadline", rec.LeaseUntil)
 	}
 
-	stolen, err := store.ClaimByID(ctx, id, "manual-replay", time.Minute)
+	stolen, err := store.ClaimByID(ctx, tenantID, id, "manual-replay", time.Minute)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ClaimByID active lease rec=%v err=%v; want ErrNotFound", stolen, err)
 	}
@@ -265,7 +265,14 @@ func TestClaimByID_RefusesActiveLease(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE usage_record_dlq SET lease_until = now() - interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatalf("expire active lease: %v", err)
 	}
-	reclaimed, err := store.ClaimByID(ctx, id, "manual-replay", time.Minute)
+	if crossTenant, err := store.ClaimByID(ctx, tenantID+1, id, "wrong-tenant", time.Minute); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ClaimByID wrong tenant rec=%v err=%v; want ErrNotFound", crossTenant, err)
+	}
+	status, owner = readDLQStatusAndOwner(t, ctx, pool, id)
+	if status != string(StatusInflight) || !owner.Valid || owner.String != activeOwner {
+		t.Fatalf("wrong-tenant ClaimByID changed row status=%s owner=%q", status, owner.String)
+	}
+	reclaimed, err := store.ClaimByID(ctx, tenantID, id, "manual-replay", time.Minute)
 	if err != nil {
 		t.Fatalf("ClaimByID expired lease: %v", err)
 	}
@@ -308,7 +315,7 @@ func claimExpiredThenReclaimedDLQRecordWithActors(t *testing.T, ctx context.Cont
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	recA, err := store.ClaimByID(ctx, id, actorA, 100*time.Millisecond)
+	recA, err := store.ClaimByID(ctx, tenantID, id, actorA, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("claim worker A: %v", err)
 	}
@@ -318,7 +325,7 @@ func claimExpiredThenReclaimedDLQRecordWithActors(t *testing.T, ctx context.Cont
 	if _, err := pool.Exec(ctx, `UPDATE usage_record_dlq SET lease_until = now() - interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatalf("expire worker A lease: %v", err)
 	}
-	recB, err := store.ClaimByID(ctx, id, actorB, time.Minute)
+	recB, err := store.ClaimByID(ctx, tenantID, id, actorB, time.Minute)
 	if err != nil {
 		t.Fatalf("claim worker B: %v", err)
 	}

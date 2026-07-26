@@ -2,6 +2,7 @@ package settlementrecovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -20,6 +21,14 @@ type Enqueuer interface {
 var ErrEnqueuerNil = errors.New("settlementrecovery: enqueuer not configured (post-delivery settle failure cannot be persisted)")
 
 const failureEnqueueTimeout = 10 * time.Second
+
+// FailureEvidence 是恢复队列与结算意图表共用的最小持久证据。
+// Payload 只包含已经过 Payload 合同校验的结算重放数据，FailureClass
+// 是脱敏稳定分类；调用方可在队列写入失败时把它存入结算意图。
+type FailureEvidence struct {
+	Payload      json.RawMessage
+	FailureClass string
+}
 
 // EnqueuePayload 把 Payload 转 dlq.Event 并通过 Enqueuer 落表。
 //
@@ -42,6 +51,19 @@ func EnqueuePayload(ctx context.Context, q Enqueuer, p Payload, failureReason st
 	if err != nil {
 		return 0, fmt.Errorf("settlementrecovery: encode payload: %w", err)
 	}
+	return enqueueEncodedPayload(ctx, q, p, body, failureReason)
+}
+
+func enqueueEncodedPayload(
+	ctx context.Context,
+	q Enqueuer,
+	p Payload,
+	body json.RawMessage,
+	failureReason string,
+) (int64, error) {
+	if q == nil {
+		return 0, ErrEnqueuerNil
+	}
 	idem := buildIdempotencyKey(p)
 	event := dlq.Event{
 		TenantID:       p.Settle.TenantID,
@@ -59,29 +81,58 @@ func EnqueuePayload(ctx context.Context, q Enqueuer, p Payload, failureReason st
 }
 
 // EnqueueFailure 用独立短上下文持久化结算失败；队列自身失败发脱敏 P0 critical
-// 信号，但不建立第二持久环。
-func EnqueueFailure(ctx context.Context, q Enqueuer, p Payload, settleErr error, component string) error {
+// 信号，并把同一份可持久证据返回给结算意图旁路。
+func EnqueueFailure(
+	ctx context.Context,
+	q Enqueuer,
+	p Payload,
+	settleErr error,
+	component string,
+) (FailureEvidence, error) {
 	failureClass := privacy.ErrorClassFor(ctx, settleErr)
+	evidence := FailureEvidence{FailureClass: failureClass}
+	if err := p.Validate(); err != nil {
+		enqueueErr := fmt.Errorf("settlementrecovery: validate before enqueue: %w", err)
+		logEnqueueFailure(ctx, p, component, failureClass, enqueueErr)
+		return evidence, enqueueErr
+	}
+	body, err := p.Encode()
+	if err != nil {
+		enqueueErr := fmt.Errorf("settlementrecovery: encode payload: %w", err)
+		logEnqueueFailure(ctx, p, component, failureClass, enqueueErr)
+		return evidence, enqueueErr
+	}
+	evidence.Payload = append(json.RawMessage(nil), body...)
 	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureEnqueueTimeout)
 	defer cancel()
-	_, enqueueErr := EnqueuePayload(enqueueCtx, q, p, failureClass)
+	_, enqueueErr := enqueueEncodedPayload(enqueueCtx, q, p, body, failureClass)
 	if enqueueErr == nil {
-		return nil
+		return evidence, nil
 	}
+	logEnqueueFailure(enqueueCtx, p, component, failureClass, enqueueErr)
+	return evidence, enqueueErr
+}
+
+func logEnqueueFailure(
+	ctx context.Context,
+	p Payload,
+	component string,
+	failureClass string,
+	enqueueErr error,
+) {
 	if component == "" {
 		component = "settlementrecovery.enqueue"
 	}
 	req := p.ToSettleRequest()
-	_ = privacy.LogSystem(enqueueCtx, privacy.SystemEvent{
+	_ = privacy.LogSystem(ctx, privacy.SystemEvent{
 		Severity: privacy.SeverityCritical, Component: component,
-		RequestID: p.RequestID, ErrorClass: privacy.ErrorClassFor(enqueueCtx, enqueueErr),
+		RequestID: p.RequestID, ErrorClass: privacy.ErrorClassFor(ctx, enqueueErr),
 		Attrs: map[string]any{
 			"event_class": "money_lost_double_fault", "event_type": string(p.Source),
 			"priority": "P0", "tenant_id": req.TenantID, "claim_id": req.ClaimID,
-			"failure_reason_class": failureClass, "recovery_failure_class": privacy.ErrorClassFor(enqueueCtx, enqueueErr),
+			"failure_reason_class": failureClass, "recovery_failure_class": privacy.ErrorClassFor(ctx, enqueueErr),
 		},
 	})
-	return enqueueErr
 }
 
 // buildIdempotencyKey 生成稳定的 post_delivery_settlement DLQ 行 idempotency 字符串。

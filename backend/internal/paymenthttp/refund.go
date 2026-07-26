@@ -52,6 +52,9 @@ func newAdminRefundHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		res, err := d.Service.RefundOrder(r.Context(), payment.RefundOrderInput{
 			TenantID:       req.TenantID,
 			OrderID:        id,

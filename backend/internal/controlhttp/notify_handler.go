@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
 )
@@ -31,8 +33,14 @@ type NotifyUserDeps struct {
 }
 
 type NotifyAdminDeps struct {
-	Auth    NotifyAdminAuth
-	Service NotifySettingsService
+	Auth             NotifyAdminAuth
+	Service          NotifyAdminSettingsService
+	PlatformTenantID int64
+}
+
+type NotifyAdminSettingsService interface {
+	GetSettings(context.Context, int64, int64) (notify.Settings, error)
+	UpsertSettingsWithAdminLog(context.Context, notify.Settings, notify.AdminMutation) (notify.Settings, error)
 }
 
 type notifySettingsRequest struct {
@@ -76,7 +84,8 @@ func MountNotifyUserRoutes(r chi.Router, d NotifyUserDeps) {
 func MountNotifyAdminRoutes(r chi.Router, d NotifyAdminDeps) {
 	h := notifyAdminHandler{deps: d}
 	r.Get("/v1/admin/users/{user_id}/notifications", h.get)
-	r.Put("/v1/admin/users/{user_id}/notifications", h.put)
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Put("/v1/admin/users/{user_id}/notifications", h.put)
 }
 
 type notifyUserHandler struct {
@@ -123,7 +132,7 @@ func (h notifyAdminHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, userID, ok := notifyAdminTarget(w, r, ident)
+	tenantID, userID, ok := notifyAdminTarget(w, r, ident, h.deps.PlatformTenantID)
 	if !ok {
 		return
 	}
@@ -140,7 +149,7 @@ func (h notifyAdminHandler) put(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tenantID, userID, ok := notifyAdminTarget(w, r, ident)
+	tenantID, userID, ok := notifyAdminTarget(w, r, ident, h.deps.PlatformTenantID)
 	if !ok {
 		return
 	}
@@ -149,7 +158,11 @@ func (h notifyAdminHandler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings := notifyRequestToSettings(req, tenantID, userID, ident.AuditActor())
-	saved, err := h.deps.Service.UpsertSettings(r.Context(), settings)
+	saved, err := h.deps.Service.UpsertSettingsWithAdminLog(r.Context(), settings, notify.AdminMutation{
+		Actor:     ident.AuditActor(),
+		ActorRole: ident.Role,
+		RequestID: middleware.GetReqID(r.Context()),
+	})
 	if err != nil {
 		writeNotifyError(w, err, "notification_settings_update_failed")
 		return
@@ -191,7 +204,12 @@ func notifyAdminIdentity(w http.ResponseWriter, r *http.Request, d NotifyAdminDe
 	return ident, true
 }
 
-func notifyAdminTarget(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, int64, bool) {
+func notifyAdminTarget(
+	w http.ResponseWriter,
+	r *http.Request,
+	ident admin.AdminIdentity,
+	platformTenantID int64,
+) (int64, int64, bool) {
 	rawUserID := strings.TrimSpace(chi.URLParam(r, "user_id"))
 	userID, err := strconv.ParseInt(rawUserID, 10, 64)
 	if err != nil || userID <= 0 {
@@ -211,7 +229,11 @@ func notifyAdminTarget(w http.ResponseWriter, r *http.Request, ident admin.Admin
 		notifyWriteJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id query parameter must be positive")
 		return 0, 0, false
 	}
-	if ident.Role == admin.RoleTenantOperator && ident.ScopeTenantID != tenantID {
+	if err := ident.CanManageFinalUsersForTenant(tenantID, platformTenantID); err != nil {
+		if errors.Is(err, admin.ErrAdminBackend) {
+			notifyWriteJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is unavailable")
+			return 0, 0, false
+		}
 		notifyWriteJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, 0, false
 	}

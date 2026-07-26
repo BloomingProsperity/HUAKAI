@@ -76,6 +76,34 @@ func TestRecordChannelHealthSignalCarriesAuthClass(t *testing.T) {
 	}
 }
 
+type failingChannelHealth struct {
+	err error
+}
+
+func (f failingChannelHealth) ApplySignal(context.Context, channelhealth.Signal) (channelhealth.Record, error) {
+	return channelhealth.Record{}, f.err
+}
+
+func (f failingChannelHealth) ForceCooldown(context.Context, channelhealth.ChannelKey, time.Time, string) (channelhealth.Record, error) {
+	return channelhealth.Record{}, f.err
+}
+
+// 健康状态写入失败不能改变用户响应，但必须从辅助函数返回并进入分类日志。
+// 旧实现固定丢弃错误，本测试会得到 nil。
+func TestRecordChannelHealthSignalReturnsPersistenceFailure(t *testing.T) {
+	want := errors.New("health store unavailable")
+	key := channelhealth.ChannelKey{
+		TenantID: 7, Vendor: "openai", ProviderAccountID: 101,
+		AccountCredentialID: 9001, CredentialVersion: 1,
+	}
+	err := recordChannelHealthSignal(context.Background(), ChatHandlerDeps{
+		ChannelHealth: failingChannelHealth{err: want},
+	}, key, channelhealth.SignalChannelError, http.StatusBadGateway, 10*time.Millisecond, "req-health-write", nil, 0)
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v want %v", err, want)
+	}
+}
+
 // TestWriteJSONErrorProducesValidJSONForControlChars 守护 gateway error writer:
 // 即便 code/message 带有控制字节(admin create 时 vendor="\x01" 会把 err.Error()
 // 流进 message),也必须发出 RFC 合法的 JSON。旧的手写格式化用 fmt %q,会输出

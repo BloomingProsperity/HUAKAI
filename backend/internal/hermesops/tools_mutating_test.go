@@ -16,17 +16,16 @@ import (
 
 // --- RBAC 底线(L1)--------------------------------------------------------
 
-func TestDLQReplay_RBACFloorIsPlatformAdminOnly(t *testing.T) {
-	// 回归(L1):dlq_replay 仅限 platform_admin —— tenant_operator 必须被
-	// AuthorizeMutating 拒绝。变异检验:把 DLQReplaySpec 的 RequiredRole 改成
-	// RoleTenantOperator,则 tenant_operator 的鉴权会通过(此断言翻转)。
+func TestDLQReplay_RBACFloorAllowsTenantOperator(t *testing.T) {
+	// 租户作用域由身份层、目标解析和数据库 claim 三层固定，因此租户管理员
+	// 可以恢复本租户死信。若角色门误升为 platform_admin，本测试会变红。
 	reg := NewRegistry()
 	reg.Register(DLQReplaySpec(DLQReplayDeps{
 		Lookup: func(context.Context, int64, int64) (dlq.Record, error) { return dlq.Record{}, nil },
-		Replay: func(context.Context, int64, string) (*dlq.Record, error) { return &dlq.Record{}, nil },
+		Replay: func(context.Context, int64, int64, string) (*dlq.Record, error) { return &dlq.Record{}, nil },
 	}))
-	if _, err := reg.AuthorizeMutating(ToolDLQReplay, RoleTenantOperator); !errors.Is(err, ErrToolForbidden) {
-		t.Fatalf("tenant_operator dlq_replay err=%v want ErrToolForbidden", err)
+	if _, err := reg.AuthorizeMutating(ToolDLQReplay, RoleTenantOperator); err != nil {
+		t.Fatalf("tenant_operator dlq_replay err=%v want nil", err)
 	}
 	if _, err := reg.AuthorizeMutating(ToolDLQReplay, RolePlatformAdmin); err != nil {
 		t.Fatalf("platform_admin dlq_replay err=%v want nil", err)
@@ -156,14 +155,14 @@ func TestDLQReplay_IdempotencyDoesNotDoubleProcess(t *testing.T) {
 		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
 			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusPending}, nil
 		},
-		Replay: func(_ context.Context, id int64, _ string) (*dlq.Record, error) {
+		Replay: func(_ context.Context, tenantID, id int64, _ string) (*dlq.Record, error) {
 			if delivered {
 				// 幂等键去重:已投递,不重新处理。
-				return &dlq.Record{ID: id, Status: dlq.StatusDelivered}, nil
+				return &dlq.Record{ID: id, TenantID: tenantID, Status: dlq.StatusDelivered}, nil
 			}
 			processCount++
 			delivered = true
-			return &dlq.Record{ID: id, Status: dlq.StatusDelivered}, nil
+			return &dlq.Record{ID: id, TenantID: tenantID, Status: dlq.StatusDelivered}, nil
 		},
 	}
 	spec := DLQReplaySpec(deps)
@@ -187,7 +186,7 @@ func TestDLQReplay_ErrNotFoundAfterPreviewIsIdempotentAlreadyProcessed(t *testin
 		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
 			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusDelivered}, nil
 		},
-		Replay: func(context.Context, int64, string) (*dlq.Record, error) {
+		Replay: func(context.Context, int64, int64, string) (*dlq.Record, error) {
 			return nil, dlq.ErrNotFound
 		},
 	})

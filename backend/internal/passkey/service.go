@@ -53,6 +53,11 @@ type Service struct {
 
 type Option func(*Service)
 
+type sessionBoundCredentialStore interface {
+	SaveCredentialForSession(context.Context, CredentialRecord, string, int) (CredentialRecord, error)
+	DeleteCredentialForSession(context.Context, int64, int64, int64, string, int) error
+}
+
 func NewService(store Store, users UserReader, configs ConfigSource, opts ...Option) *Service {
 	s := &Service{
 		store:   store,
@@ -139,7 +144,19 @@ func (s *Service) RegisterFinish(ctx context.Context, in RegisterFinishInput) (C
 	if err != nil {
 		return CredentialRecord{}, err
 	}
-	return s.store.SaveCredential(ctx, credentialRecordFromVerified(in.TenantID, in.User.ID, verified, cleanName(in.Name), s.now()))
+	record := credentialRecordFromVerified(
+		in.TenantID, in.User.ID, verified, cleanName(in.Name), s.now(),
+	)
+	if in.SessionFamilyID != "" && in.AuthVersion > 0 {
+		guarded, ok := s.store.(sessionBoundCredentialStore)
+		if !ok {
+			return CredentialRecord{}, ErrStoreNotConfigured
+		}
+		return guarded.SaveCredentialForSession(
+			ctx, record, in.SessionFamilyID, in.AuthVersion,
+		)
+	}
+	return s.store.SaveCredential(ctx, record)
 }
 
 func (s *Service) LoginBegin(ctx context.Context, in LoginBeginInput) (BeginResponse, error) {
@@ -246,6 +263,15 @@ func (s *Service) DeleteCredential(ctx context.Context, in DeleteCredentialInput
 	}
 	if in.TenantID <= 0 || in.UserID <= 0 || in.ID <= 0 {
 		return ErrInvalidInput
+	}
+	if in.SessionFamilyID != "" && in.AuthVersion > 0 {
+		guarded, ok := s.store.(sessionBoundCredentialStore)
+		if !ok {
+			return ErrStoreNotConfigured
+		}
+		return guarded.DeleteCredentialForSession(
+			ctx, in.TenantID, in.UserID, in.ID, in.SessionFamilyID, in.AuthVersion,
+		)
 	}
 	return s.store.DeleteCredential(ctx, in.TenantID, in.UserID, in.ID)
 }

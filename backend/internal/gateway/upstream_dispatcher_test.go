@@ -279,8 +279,23 @@ func TestDispatcher_HTTPDoFails(t *testing.T) {
 		Account:        provider.AccountInfo{Platform: "openai"},
 		Credential:     provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "sk-x"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "HTTP Do 失败") {
+	if err == nil || !IsDispatchOutcomeUnknown(err) {
 		t.Errorf("err=%v", err)
+	}
+}
+
+func TestDispatcher_BuildFailureIsNotMarkedOutcomeUnknown(t *testing.T) {
+	adapter := &stubAdapter{platform: "openai", buildErr: errors.New("bad request")}
+	d := newDispatcherForTest(adapter, &stubDoer{})
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_chat",
+		Account:        provider.AccountInfo{Platform: "openai"},
+	})
+	if err == nil {
+		t.Fatal("Dispatch succeeded; want build error")
+	}
+	if IsDispatchOutcomeUnknown(err) {
+		t.Fatalf("发送前 BuildRequest 失败被误标为结果未知: %v", err)
 	}
 }
 
@@ -433,6 +448,86 @@ func TestDispatcher_RejectsAPIKeyCustomEndpointResolvingToProtectedIPBeforeDo(t 
 				t.Fatal("不安全 API key 自定义 endpoint 到达 HTTP doer")
 			}
 		})
+	}
+}
+
+func TestDispatcher_RejectsSessionCustomEndpointResolvingToLoopbackBeforeDo(t *testing.T) {
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" || host != "session-proxy.example" {
+			t.Fatalf("lookup=(%q,%q)，期望 (ip,session-proxy.example)", network, host)
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	t.Cleanup(restore)
+
+	doer := &stubDoer{respStatus: http.StatusOK, respBody: "{}"}
+	d := newDispatcherForTest(
+		&stubAdapter{platform: "openai_codex", endpoint: "https://session-proxy.example/backend-api/codex/responses"},
+		doer,
+	)
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_codex",
+		Account:        provider.AccountInfo{AccountID: 80, Platform: "openai_codex", AccountType: "session"},
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "session-secret",
+			Extra: map[string]string{"base_url": "https://session-proxy.example/backend-api/codex/responses"},
+		},
+	})
+	if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("Dispatch error=%v，期望 ErrUnsafePassthroughEndpoint", err)
+	}
+	if doer.got != nil {
+		t.Fatal("不安全 session 自定义 endpoint 到达 HTTP doer")
+	}
+}
+
+func TestDispatcher_SessionCustomEndpointRejectsDNSRebindAtDial(t *testing.T) {
+	lookupCalls := 0
+	restore := provider.SwapPassthroughEndpointLookupForTesting(func(_ context.Context, network, host string) ([]netip.Addr, error) {
+		if network != "ip" || host != "session-rebind.example" {
+			t.Fatalf("lookup=(%q,%q)，期望 (ip,session-rebind.example)", network, host)
+		}
+		lookupCalls++
+		if lookupCalls == 1 {
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		}
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+	})
+	t.Cleanup(restore)
+
+	dialCalled := false
+	tf := transport.NewFactory()
+	tf.SetStandard(&http.Transport{
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			dialCalled = true
+			return nil, errors.New("不应到达底层拨号")
+		},
+	})
+	d := &UpstreamDispatcher{
+		Adapters: &stubRegistry{adapter: &stubAdapter{
+			platform: "openai_codex",
+			endpoint: "https://session-rebind.example/backend-api/codex/responses",
+		}},
+		TransportFactory: tf,
+	}
+	_, err := d.Dispatch(context.Background(), DispatchInput{
+		ProtocolFamily: "openai_codex",
+		Account:        provider.AccountInfo{AccountID: 81, Platform: "openai_codex", AccountType: "session"},
+		Credential: provider.Credential{
+			Type:  provider.CredentialTypeSessionToken,
+			Value: "session-secret",
+			Extra: map[string]string{"base_url": "https://session-rebind.example/backend-api/codex/responses"},
+		},
+	})
+	if !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("Dispatch error=%v，期望 ErrUnsafePassthroughEndpoint", err)
+	}
+	if lookupCalls != 2 {
+		t.Fatalf("lookup 次数=%d，期望预检和拨号各一次", lookupCalls)
+	}
+	if dialCalled {
+		t.Fatal("DNS 重绑定目标到达底层拨号")
 	}
 }
 
@@ -800,6 +895,12 @@ func TestDispatcher_ApplyProxy_DirectConnectExplicit(t *testing.T) {
 }
 
 func TestDispatcher_ApplyProxy_WithProxy(t *testing.T) {
+	restore := provider.SwapProxyEndpointLookupForTesting(
+		func(context.Context, string, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("1.1.1.1")}, nil
+		},
+	)
+	t.Cleanup(restore)
 	proxyURL, _ := url.Parse("http://proxy.example.com:3128")
 	res := &recordingProxyResolver{proxyURL: proxyURL}
 	d := &UpstreamDispatcher{ProxyResolver: res}

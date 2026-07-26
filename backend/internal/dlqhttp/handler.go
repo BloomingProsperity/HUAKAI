@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,21 +22,25 @@ type AdminDLQAuth interface {
 
 type AdminDLQStore interface {
 	List(context.Context, dlq.ListFilter) ([]dlq.Record, error)
-	Replay(context.Context, int64, string) (*dlq.Record, error)
+	Replay(context.Context, int64, int64, string) (*dlq.Record, error)
 }
 
 type AdminDLQDeps interface {
 	AdminDLQAuth() AdminDLQAuth
 	AdminDLQStore() AdminDLQStore
+	AdminDLQPlatformTenantID() int64
 }
 
 func NewAdminDLQListHandler(d AdminDLQDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ident, ok := resolvePlatformDLQ(w, r, d)
+		store, ident, ok := resolveDLQAdmin(w, r, d)
 		if !ok {
 			return
 		}
-		_ = ident
+		tenantID, ok := resolveDLQReadTenant(w, r, ident)
+		if !ok {
+			return
+		}
 		limit := 100
 		if raw := r.URL.Query().Get("limit"); raw != "" {
 			n, err := strconv.Atoi(raw)
@@ -48,6 +53,7 @@ func NewAdminDLQListHandler(d AdminDLQDeps) http.HandlerFunc {
 		filter := dlq.ListFilter{
 			EventKind: dlq.EventKind(chi.URLParam(r, "handler")),
 			Status:    dlq.Status(r.URL.Query().Get("status")),
+			TenantID:  tenantID,
 			Limit:     limit,
 		}
 		rows, err := store.List(r.Context(), filter)
@@ -65,7 +71,11 @@ func NewAdminDLQListHandler(d AdminDLQDeps) http.HandlerFunc {
 
 func NewAdminDLQReplayHandler(d AdminDLQDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		store, ident, ok := resolvePlatformDLQ(w, r, d)
+		store, ident, ok := resolveDLQAdmin(w, r, d)
+		if !ok {
+			return
+		}
+		tenantID, ok := resolveDLQWriteTenant(w, ident, d.AdminDLQPlatformTenantID())
 		if !ok {
 			return
 		}
@@ -74,7 +84,7 @@ func NewAdminDLQReplayHandler(d AdminDLQDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_dlq_id", "id must be a positive int64")
 			return
 		}
-		row, err := store.Replay(r.Context(), id, ident.AuditActor())
+		row, err := store.Replay(r.Context(), tenantID, id, ident.AuditActor())
 		if err != nil {
 			switch {
 			case errors.Is(err, dlq.ErrNotFound):
@@ -90,7 +100,7 @@ func NewAdminDLQReplayHandler(d AdminDLQDeps) http.HandlerFunc {
 	}
 }
 
-func resolvePlatformDLQ(w http.ResponseWriter, r *http.Request, d AdminDLQDeps) (AdminDLQStore, admin.AdminIdentity, bool) {
+func resolveDLQAdmin(w http.ResponseWriter, r *http.Request, d AdminDLQDeps) (AdminDLQStore, admin.AdminIdentity, bool) {
 	if d == nil || d.AdminDLQAuth() == nil || d.AdminDLQStore() == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "admin DLQ dependency unset")
 		return nil, admin.AdminIdentity{}, false
@@ -104,11 +114,59 @@ func resolvePlatformDLQ(w http.ResponseWriter, r *http.Request, d AdminDLQDeps) 
 		}
 		return nil, admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
+	switch ident.Role {
+	case admin.RolePlatformAdmin, admin.RoleTenantOperator:
+		return d.AdminDLQStore(), ident, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return nil, admin.AdminIdentity{}, false
 	}
-	return d.AdminDLQStore(), ident, true
+}
+
+func resolveDLQReadTenant(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (*int64, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	var requested *int64
+	if raw != "" {
+		tenantID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || tenantID <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "invalid_tenant_id", "tenant_id must be a positive int64")
+			return nil, false
+		}
+		requested = &tenantID
+	}
+	if ident.Role == admin.RolePlatformAdmin {
+		return requested, true
+	}
+	if ident.ScopeTenantID <= 0 {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+		return nil, false
+	}
+	if requested != nil && *requested != ident.ScopeTenantID {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot read this tenant")
+		return nil, false
+	}
+	tenantID := ident.ScopeTenantID
+	return &tenantID, true
+}
+
+func resolveDLQWriteTenant(w http.ResponseWriter, ident admin.AdminIdentity, platformTenantID int64) (int64, bool) {
+	switch ident.Role {
+	case admin.RolePlatformAdmin:
+		if platformTenantID <= 0 {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is not configured")
+			return 0, false
+		}
+		return platformTenantID, true
+	case admin.RoleTenantOperator:
+		if ident.ScopeTenantID <= 0 {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "tenant scope required")
+			return 0, false
+		}
+		return ident.ScopeTenantID, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return 0, false
+	}
 }
 
 func mapDLQRecord(row dlq.Record) map[string]any {
@@ -117,29 +175,31 @@ func mapDLQRecord(row dlq.Record) map[string]any {
 		payload = json.RawMessage(`{}`)
 	}
 	return map[string]any{
-		"id":                    row.ID,
-		"tenant_id":             row.TenantID,
-		"claim_id":              row.ClaimID,
-		"event_kind":            row.EventKind,
-		"lane":                  row.Lane,
-		"status":                row.Status,
-		"payload":               payload,
-		"failure_reason":        row.FailureReason,
-		"failure_at":            row.FailureAt.UTC().Format(time.RFC3339Nano),
-		"replay_attempts":       row.ReplayAttempts,
-		"last_replay_at":        formatDLQTS(row.LastReplayAt),
-		"replayed_at":           formatDLQTS(row.ReplayedAt),
-		"replay_failure_reason": row.ReplayFailureReason,
-		"next_retry_at":         row.NextRetryAt.UTC().Format(time.RFC3339Nano),
-		"lease_owner":           row.LeaseOwner,
-		"lease_until":           formatDLQTS(row.LeaseUntil),
-		"replica_status":        row.ReplicaStatus,
-		"replica_target":        row.ReplicaTarget,
-		"replica_committed_at":  formatDLQTS(row.ReplicaCommittedAt),
-		"idempotency_key":       row.IdempotencyKey,
-		"source_table":          row.SourceTable,
-		"source_id":             row.SourceID,
-		"operator_review_at":    formatDLQTS(row.OperatorReviewAt),
+		"id":                       row.ID,
+		"tenant_id":                row.TenantID,
+		"claim_id":                 row.ClaimID,
+		"event_kind":               row.EventKind,
+		"lane":                     row.Lane,
+		"status":                   row.Status,
+		"payload":                  payload,
+		"failure_reason":           row.FailureReason,
+		"failure_at":               row.FailureAt.UTC().Format(time.RFC3339Nano),
+		"replay_attempts":          row.ReplayAttempts,
+		"last_replay_at":           formatDLQTS(row.LastReplayAt),
+		"replayed_at":              formatDLQTS(row.ReplayedAt),
+		"replay_failure_reason":    row.ReplayFailureReason,
+		"next_retry_at":            row.NextRetryAt.UTC().Format(time.RFC3339Nano),
+		"lease_owner":              row.LeaseOwner,
+		"lease_until":              formatDLQTS(row.LeaseUntil),
+		"replica_status":           row.ReplicaStatus,
+		"replica_target":           row.ReplicaTarget,
+		"replica_committed_at":     formatDLQTS(row.ReplicaCommittedAt),
+		"idempotency_key":          row.IdempotencyKey,
+		"source_table":             row.SourceTable,
+		"source_id":                row.SourceID,
+		"operator_review_at":       formatDLQTS(row.OperatorReviewAt),
+		"last_manual_replay_at":    formatDLQTS(row.LastManualReplayAt),
+		"last_manual_replay_actor": row.LastManualActor,
 	}
 }
 

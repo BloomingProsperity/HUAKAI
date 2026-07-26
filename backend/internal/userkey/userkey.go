@@ -33,6 +33,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauditlog"
 )
 
@@ -63,9 +64,11 @@ var (
 	ErrInvalidName      = errors.New("userkey: name invalid")
 	ErrInvalidExpiry    = errors.New("userkey: expires_at must be future")
 	ErrInvalidEnv       = errors.New("userkey: environment must be live or test")
+	ErrInvalidStatus    = errors.New("userkey: status must be active or revoked")
 	ErrActiveKeyCapHit  = errors.New("userkey: user has reached active key cap")
 	ErrNotFound         = errors.New("userkey: api_key not found for owner")
-	ErrAlreadyRevoked   = errors.New("userkey: api_key already revoked")
+	ErrAlreadyRevoked   = errors.New("userkey: revoked api_key cannot be reactivated")
+	ErrStatusManaged    = errors.New("userkey: api_key status is managed by an operator")
 	ErrServiceMisconfig = errors.New("userkey: service not configured")
 	ErrBackend          = errors.New("userkey: backend datastore error")
 )
@@ -227,6 +230,10 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 		s.logIssue(req, "denied", "expires_in_past", 0, "")
 		return IssueResult{}, ErrInvalidExpiry
 	}
+	if err := s.requireActiveFinalUser(ctx, req.TenantID, req.UserID); err != nil {
+		s.logIssue(req, "denied", "tenant_or_final_user_inactive", 0, "")
+		return IssueResult{}, err
+	}
 
 	bearer, prefix, err := admin.GenerateBearer(env)
 	if err != nil {
@@ -241,6 +248,12 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 
 	out := IssueResult{KeyPrefix: prefix, Status: "active", ExpiresAt: req.ExpiresAt}
 	err = s.tx(ctx, func(tx pgx.Tx) error {
+		if err := tenancy.LockActiveForWrite(ctx, tx, req.TenantID); err != nil {
+			if errors.Is(err, tenancy.ErrTenantInactive) {
+				return fmt.Errorf("%w: tenant inactive", ErrNotFound)
+			}
+			return fmt.Errorf("%w: lock tenant: %v", ErrBackend, err)
+		}
 		// 拿 (tenant_id, user_id) 的 transaction-scoped advisory lock,保证并发 Issue
 		// 不会同时读到 cap 之下的 count 再各自 INSERT 越界。
 		// PostgreSQL pg_advisory_xact_lock 单 bigint 签名;Go 端把 (tenant, user)
@@ -255,8 +268,13 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 		var activeCount int
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM api_keys
-			   WHERE tenant_id = $1 AND user_id = $2
-			     AND purpose = 'user' AND status = 'active' AND deleted_at IS NULL`,
+				   WHERE tenant_id = $1 AND user_id = $2
+				     AND purpose = 'user' AND status = 'active' AND deleted_at IS NULL
+				     AND EXISTS (
+				         SELECT 1 FROM users u
+				          WHERE u.tenant_id=api_keys.tenant_id AND u.id=api_keys.user_id
+				            AND u.principal_kind='human' AND u.role='user'
+				            AND u.status='active' AND u.deleted_at IS NULL)`,
 			req.TenantID, req.UserID,
 		).Scan(&activeCount); err != nil {
 			return fmt.Errorf("%w: count active: %v", ErrBackend, err)
@@ -274,10 +292,24 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (IssueResult, err
 			expiresParam = pgtype.Timestamptz{Time: *req.ExpiresAt, Valid: true}
 		}
 		err := tx.QueryRow(ctx,
-			`INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status, expires_at)
-			 SELECT $1::bigint, $2::bigint, $3::text, $4::text, $5::text, 'active', $6::timestamptz
-			 WHERE EXISTS (SELECT 1 FROM tenants t WHERE t.id=$1::bigint AND t.deleted_at IS NULL AND t.status='active')
-			   AND EXISTS (SELECT 1 FROM users u WHERE u.id=$2::bigint AND u.tenant_id=$1::bigint AND u.principal_kind='human' AND u.deleted_at IS NULL AND u.status='active')
+			`WITH eligible_target AS MATERIALIZED (
+			     SELECT t.id AS tenant_id, u.id AS user_id
+			       FROM tenants t
+			       JOIN users u
+			         ON u.tenant_id=t.id
+			        AND u.id=$2::bigint
+			        AND u.principal_kind='human'
+			        AND u.role='user'
+			        AND u.deleted_at IS NULL
+			        AND u.status='active'
+			      WHERE t.id=$1::bigint
+			        AND t.deleted_at IS NULL
+			        AND t.status='active'
+			      FOR SHARE OF t, u
+			 )
+			 INSERT INTO api_keys (tenant_id, user_id, name, key_hash, key_prefix, status, expires_at)
+			 SELECT tenant_id, user_id, $3::text, $4::text, $5::text, 'active', $6::timestamptz
+			   FROM eligible_target
 			 RETURNING id, created_at`,
 			req.TenantID, req.UserID, name, string(hash), prefix, expiresParam,
 		).Scan(&id, &createdAt)
@@ -336,9 +368,9 @@ func (s *Service) List(ctx context.Context, req ListRequest) ([]KeyDescriptor, e
 		        k.expires_at, k.last_used_at, k.revoked_at, k.revoked_reason,
 		        k.created_at, k.updated_at
 		   FROM api_keys k
-		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-			                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+				   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+				                 AND u.principal_kind = 'human' AND u.role = 'user' AND u.deleted_at IS NULL AND u.status = 'active'
 			  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.purpose = 'user' AND k.deleted_at IS NULL
 		  ORDER BY k.created_at DESC, k.id DESC
 		  LIMIT $3 OFFSET $4`,
@@ -406,9 +438,9 @@ func (s *Service) Count(ctx context.Context, tenantID, userID int64) (int, error
 	err := s.pool.QueryRow(ctx,
 		`SELECT count(*)
 		   FROM api_keys k
-		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-			   JOIN users   u ON u.id = k.user_id AND u.tenant_id = k.tenant_id
-			                  AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+				   JOIN users   u ON u.id = k.user_id AND u.tenant_id = k.tenant_id
+				                  AND u.principal_kind = 'human' AND u.role = 'user' AND u.deleted_at IS NULL AND u.status = 'active'
 			  WHERE k.tenant_id = $1 AND k.user_id = $2 AND k.purpose = 'user' AND k.deleted_at IS NULL`,
 		tenantID, userID,
 	).Scan(&total)
@@ -442,9 +474,9 @@ func (s *Service) Get(ctx context.Context, tenantID, userID, apiKeyID int64) (Ke
 		        k.expires_at, k.last_used_at, k.revoked_at, k.revoked_reason,
 		        k.created_at, k.updated_at
 		   FROM api_keys k
-		   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-			   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-			                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+			   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+				   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+				                 AND u.principal_kind = 'human' AND u.role = 'user' AND u.deleted_at IS NULL AND u.status = 'active'
 			  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.purpose = 'user' AND k.deleted_at IS NULL`,
 		apiKeyID, tenantID, userID,
 	).Scan(&d.APIKeyID, &d.Name, &d.KeyPrefix, &d.Status,
@@ -505,11 +537,12 @@ func (s *Service) Revoke(ctx context.Context, req RevokeRequest) (RevokeResult, 
 		var status string
 		err := tx.QueryRow(ctx,
 			`SELECT k.status, k.key_prefix FROM api_keys k
-				   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
-				   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
-				                 AND u.principal_kind = 'human' AND u.deleted_at IS NULL AND u.status = 'active'
+					   JOIN tenants t ON t.id = k.tenant_id AND t.deleted_at IS NULL AND t.status = 'active'
+					   JOIN users   u ON u.id = k.user_id   AND u.tenant_id = k.tenant_id
+					                 AND u.principal_kind = 'human' AND u.role = 'user' AND u.deleted_at IS NULL AND u.status = 'active'
 				  WHERE k.id = $1 AND k.tenant_id = $2 AND k.user_id = $3 AND k.purpose = 'user' AND k.deleted_at IS NULL
-			  FOR UPDATE OF k`,
+			  FOR UPDATE OF k
+			  FOR SHARE OF t, u`,
 			req.APIKeyID, req.TenantID, req.UserID,
 		).Scan(&status, &keyPrefix)
 		if err != nil {
@@ -646,161 +679,4 @@ func auditAPIKeyID(id int64) *int64 {
 		return nil
 	}
 	return &id
-}
-
-// PatchRequest 是 KEY-026 的部分更新请求。字段使用指针,以便
-// handler 能区分「省略」(nil)与「显式设置」。只更新非 nil
-// 字段;被省略的字段保持不变。
-//
-// expires_at 携带单个 nullable 字段无法表达的三态
-// (nil 已经表示「保持不变」),所以 handler 把它拆成一个值
-// 指针加一个显式 clear 标志:
-//   - ExpiresAt == nil && !ClearExpiry → 截止时间保持不变
-//   - ExpiresAt != nil                 → 把截止时间设为 *ExpiresAt(必须是将来)
-//   - ClearExpiry == true              → 清除截止时间(key 变为永不过期)
-//
-// 优先级为 clear > set > unchanged;set 时若传入过去的截止时间会以
-// ErrInvalidExpiry 拒绝,与 Issue 创建路径中的将来时刻检查保持一致。
-type PatchRequest struct {
-	TenantID    int64
-	UserID      int64
-	APIKeyID    int64
-	Name        *string    // nil = 保持不变
-	Status      *string    // nil = 保持不变;可接受:"active" | "revoked"
-	ExpiresAt   *time.Time // 非 nil = 设置截止时间(校验为将来);nil = 保持不变,除非 ClearExpiry
-	ClearExpiry bool       // true = 清除截止时间 -> 永不过期(优先于 ExpiresAt)
-	RequestID   string
-}
-
-// PatchResult 是返回给 handler 的部分更新结果。ExpiresAt 是
-// 更新后的截止时间(nil = 永不过期)。
-type PatchResult struct {
-	APIKeyID  int64
-	Name      string
-	Status    string
-	ExpiresAt *time.Time
-}
-
-// Patch 部分更新 caller 名下某个 key 的 name 和/或 status。
-// 只写入非 nil 的请求字段。两者都为 nil 则是空操作。
-//
-// 安全:WHERE 子句强制 (id, tenant_id, user_id) 归属 —— 别人的
-// key 会静默映射为 ErrNotFound(与 Get/Revoke 一致,防枚举)。
-// CMB-5:这里绝不记录 key prefix。
-func (s *Service) Patch(ctx context.Context, req PatchRequest) (PatchResult, error) {
-	if s == nil || s.pool == nil {
-		return PatchResult{}, fmt.Errorf("%w: pool unset", ErrServiceMisconfig)
-	}
-	if req.TenantID <= 0 || req.UserID <= 0 || req.APIKeyID <= 0 {
-		return PatchResult{}, ErrNotFound
-	}
-	if req.Name == nil && req.Status == nil && req.ExpiresAt == nil && !req.ClearExpiry {
-		// 没有要更新的 —— 取出并返回当前状态。
-		row, err := s.Get(ctx, req.TenantID, req.UserID, req.APIKeyID)
-		if err != nil {
-			return PatchResult{}, err
-		}
-		return PatchResult{APIKeyID: row.APIKeyID, Name: row.Name, Status: row.Status, ExpiresAt: row.ExpiresAt}, nil
-	}
-	// set 时拒绝过去的截止时间，与创建路径(Issue)保持一致，避免更新后
-	// API key 立即且静默失效。clear 没有可校验的时刻。
-	if req.ExpiresAt != nil && !req.ExpiresAt.After(s.now().UTC()) {
-		return PatchResult{}, ErrInvalidExpiry
-	}
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if len(name) == 0 || len(name) > MaxNameLen {
-			return PatchResult{}, ErrInvalidName
-		}
-		req.Name = &name
-	}
-	if req.Status != nil {
-		switch *req.Status {
-		case "active", "revoked":
-		default:
-			return PatchResult{}, fmt.Errorf("%w: status must be active or revoked", ErrNotFound)
-		}
-	}
-	var out PatchResult
-	out.APIKeyID = req.APIKeyID
-	err := s.tx(ctx, func(tx pgx.Tx) error {
-		// 构造一条只触碰已提供字段的动态 UPDATE。
-		// 我们总是更新 updated_at。
-		var (
-			setClauses []string
-			args       []any
-			argIdx     = 1
-		)
-		if req.Name != nil {
-			setClauses = append(setClauses, fmt.Sprintf("name = $%d", argIdx))
-			args = append(args, *req.Name)
-			argIdx++
-		}
-		if req.Status != nil {
-			setClauses = append(setClauses, fmt.Sprintf("status = $%d", argIdx))
-			args = append(args, *req.Status)
-			argIdx++
-			// 转为 revoked 时设置 revoked_at
-			setClauses = append(setClauses, fmt.Sprintf(
-				"revoked_at = CASE WHEN $%d = 'revoked' THEN NOW() ELSE revoked_at END", argIdx))
-			args = append(args, *req.Status)
-			argIdx++
-		}
-		// expires_at 三态:clear 优先(-> NULL),否则设置
-		// 提供的将来截止时间;省略则不触碰该列。
-		if req.ClearExpiry {
-			setClauses = append(setClauses, "expires_at = NULL")
-		} else if req.ExpiresAt != nil {
-			setClauses = append(setClauses, fmt.Sprintf("expires_at = $%d", argIdx))
-			args = append(args, *req.ExpiresAt)
-			argIdx++
-		}
-		setClauses = append(setClauses, "updated_at = NOW()")
-		setSQL := strings.Join(setClauses, ", ")
-
-		// WHERE 强制 owner 三元组;tenant/user active 检查通过 JOIN 完成。
-		whereArgs := []any{req.APIKeyID, req.TenantID, req.UserID}
-		for i, a := range whereArgs {
-			_ = a
-			whereArgs[i] = a
-		}
-		query := fmt.Sprintf(
-			`UPDATE api_keys
-			    SET %s
-			  WHERE id = $%d
-			    AND tenant_id = $%d
-			    AND user_id = $%d
-			    AND purpose = 'user'
-			    AND deleted_at IS NULL
-			    AND EXISTS (
-			        SELECT 1 FROM tenants t
-			         WHERE t.id = api_keys.tenant_id
-			           AND t.status = 'active' AND t.deleted_at IS NULL)
-			    AND EXISTS (
-			        SELECT 1 FROM users u
-			         WHERE u.id = api_keys.user_id AND u.tenant_id = api_keys.tenant_id
-			           AND u.principal_kind = 'human'
-			           AND u.status = 'active' AND u.deleted_at IS NULL)
-			RETURNING name, status, expires_at`,
-			setSQL, argIdx, argIdx+1, argIdx+2,
-		)
-		allArgs := append(args, req.APIKeyID, req.TenantID, req.UserID)
-		var expiresAt pgtype.Timestamptz
-		row := tx.QueryRow(ctx, query, allArgs...)
-		if err := row.Scan(&out.Name, &out.Status, &expiresAt); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrNotFound
-			}
-			return fmt.Errorf("%w: patch: %v", ErrBackend, err)
-		}
-		if expiresAt.Valid {
-			t := expiresAt.Time
-			out.ExpiresAt = &t
-		}
-		return nil
-	})
-	if err != nil {
-		return PatchResult{}, err
-	}
-	return out, nil
 }

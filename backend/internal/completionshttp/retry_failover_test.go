@@ -501,7 +501,8 @@ func (d *retryDispatcher) Dispatch(_ context.Context, in gateway.DispatchInput) 
 }
 
 type completionHealthSpy struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns int
 }
 
 func (s *completionHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Signal) (channelhealth.Record, error) {
@@ -510,6 +511,7 @@ func (s *completionHealthSpy) ApplySignal(_ context.Context, signal channelhealt
 }
 
 func (s *completionHealthSpy) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, _ time.Time, _ string) (channelhealth.Record, error) {
+	s.forceCooldowns++
 	return channelhealth.Record{Key: key}, nil
 }
 

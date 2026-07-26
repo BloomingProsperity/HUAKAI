@@ -1,6 +1,9 @@
 package ssrfpolicy
 
-import "testing"
+import (
+	"net/netip"
+	"testing"
+)
 
 func TestParsePolicyPortRangesAndHostPatterns(t *testing.T) {
 	policy, err := Parse(
@@ -123,5 +126,30 @@ func TestParsePolicyRejectsInvalidOperatorInput(t *testing.T) {
 				t.Fatal("Parse returned nil error for invalid policy")
 			}
 		})
+	}
+}
+
+func TestPolicyAllowsAddressRequiresExactPrivateHost(t *testing.T) {
+	policy, err := Parse("", "", "", "proxy.internal,10.0.0.9", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.AllowsAddress("proxy.internal", netip.MustParseAddr("10.0.0.8")) {
+		t.Fatal("精确授权的主机应允许解析到常规私网地址")
+	}
+	if policy.AllowsAddress("other.internal", netip.MustParseAddr("10.0.0.8")) {
+		t.Fatal("同一私网地址不能扩散授权到其它主机")
+	}
+	if policy.AllowsAddress("proxy.internal", netip.MustParseAddr("127.0.0.1")) {
+		t.Fatal("loopback 即使主机获授权也必须拒绝")
+	}
+	if policy.AllowsAddress("proxy.internal", netip.MustParseAddr("fd00:ec2::254")) {
+		t.Fatal("metadata 地址不属于私网逃生口")
+	}
+	if !policy.AllowsAddress("public.example", netip.MustParseAddr("1.1.1.1")) {
+		t.Fatal("普通公网地址应允许")
+	}
+	if policy.AllowsAddress("public.example", netip.MustParseAddr("203.0.113.1")) {
+		t.Fatal("文档与特殊用途公网段必须拒绝")
 	}
 }

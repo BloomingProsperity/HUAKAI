@@ -13,6 +13,9 @@ type Store interface {
 	GetTask(context.Context, int64, int64, int64) (Task, error)
 	ListTasks(context.Context, int64, int64, int) ([]Task, error)
 	AcquireLease(context.Context, string, time.Duration, time.Time) (Task, error)
+	MarkSubmitting(context.Context, Task, string, time.Time) (Task, error)
+	DeferSubmission(context.Context, Task, string, time.Time, time.Time) error
+	MarkSubmissionUnknown(context.Context, Task, string, string, string, time.Time) (Task, error)
 	MarkProviderSubmitted(context.Context, Task, string, string, time.Time) (Task, error)
 	UpdateProgress(context.Context, Task, string, int, time.Time) error
 	CompleteSuccess(context.Context, Task, string, PollResult, time.Time) (bool, error)
@@ -114,7 +117,8 @@ func (s *Service) StatusForAPIKey(ctx context.Context, tenantID, userID, apiKeyI
 	if !ok {
 		return Task{}, ErrStoreNotConfigured
 	}
-	return store.GetTaskForAPIKey(ctx, tenantID, userID, apiKeyID, strings.TrimSpace(requestID))
+	task, err := store.GetTaskForAPIKey(ctx, tenantID, userID, apiKeyID, strings.TrimSpace(requestID))
+	return taskForClient(task), err
 }
 
 func (s *Service) ContentForAPIKey(ctx context.Context, tenantID, userID, apiKeyID int64, requestID string) (ContentResult, error) {
@@ -140,7 +144,8 @@ func (s *Service) Status(ctx context.Context, tenantID, userID, id int64) (Task,
 	if s == nil || s.store == nil {
 		return Task{}, ErrStoreNotConfigured
 	}
-	return s.store.GetTask(ctx, tenantID, userID, id)
+	task, err := s.store.GetTask(ctx, tenantID, userID, id)
+	return taskForClient(task), err
 }
 
 func (s *Service) List(ctx context.Context, tenantID, userID int64, limit int) ([]Task, error) {
@@ -150,7 +155,23 @@ func (s *Service) List(ctx context.Context, tenantID, userID int64, limit int) (
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	return s.store.ListTasks(ctx, tenantID, userID, limit)
+	tasks, err := s.store.ListTasks(ctx, tenantID, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		tasks[i] = taskForClient(tasks[i])
+	}
+	return tasks, nil
+}
+
+// taskForClient 只在任务和计费都已收敛后交付产物。内部 store 仍保存完整结果，
+// worker 可据此恢复 settlement_pending；用户查询面不能绕过结算提前拿到产物。
+func taskForClient(task Task) Task {
+	if task.Status != StatusSucceeded {
+		task.Result = nil
+	}
+	return task
 }
 
 func (s *Service) enabledConfig(ctx context.Context) (Config, error) {

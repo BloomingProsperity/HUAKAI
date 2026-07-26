@@ -95,13 +95,19 @@ func (a *CopilotSessionAdapter) BuildRequest(ctx context.Context, in provider.Bu
 	// 步骤 5：确定 endpoint
 	target := strings.TrimSpace(a.Endpoint)
 	if target == "" {
-		target = copilotChatEndpointFromAPIBase(firstNonEmptyString(
+		customTarget := firstNonEmptyString(
 			in.Credential.Extra["endpoint_api"],
 			in.Credential.Extra["copilot_endpoint_api"],
 			in.Credential.Extra["base_url"],
-		))
-		if target == "" {
+		)
+		if customTarget == "" {
 			target = defaultCopilotEndpoint
+		} else {
+			var err error
+			target, err = provider.ValidateCustomEndpointURL(copilotChatEndpointFromAPIBase(customTarget))
+			if err != nil {
+				return nil, fmt.Errorf("copilot session: 自定义 endpoint 非法: %w", err)
+			}
 		}
 	}
 

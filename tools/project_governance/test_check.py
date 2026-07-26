@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -97,6 +98,94 @@ ADR-002
                 encoding="utf-8",
             )
             self.assertEqual(check.markdown_link_errors(root), [])
+
+    def test_frontend_capability_counts_exclude_page_specs_and_reject_aliases(self) -> None:
+        text = """
+### 19.2.2 首装、登录和账号安全
+| 原子能力与身份 | 入口 | 数据 | 状态 |
+| --- | --- | --- | --- |
+| 登录 | /login | session | 已有可接；待做前端。 |
+| 安全设置 | /security | secret | 已有但未接 UI；待组合。 |
+#### 19.8.1.1 租户管理页面规格
+| 视图或动作 | 必须展示 | 交互与失败合同 |
+| --- | --- | --- |
+| 列表 | 名称 | 不属于原子能力统计。 |
+### 19.9 资金、订阅和用户自助
+| 功能 | 当前证据 | 状态 | 后端差量 |
+| --- | --- | --- | --- |
+| 钱包 | /wallet | 后端部分具备 | 待补聚合。 |
+### 19.11 全局前端交互合同
+"""
+        counts, errors = check.frontend_capability_counts(text)
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            counts,
+            {
+                "已有可接": 1,
+                "已有但未接 UI": 1,
+                "后端部分具备": 1,
+            },
+        )
+
+        alias_text = text.replace("已有可接；", "已有 API；", 1)
+        _, alias_errors = check.frontend_capability_counts(alias_text)
+        self.assertEqual(len(alias_errors), 1)
+        self.assertIn("标准状态", alias_errors[0])
+
+        missing_status = text.replace("已有可接；待做前端。", "待做前端。", 1)
+        _, missing_errors = check.frontend_capability_counts(missing_status)
+        self.assertEqual(len(missing_errors), 1)
+        self.assertIn("标准状态", missing_errors[0])
+
+        dual_status = text.replace(
+            "已有可接；待做前端。",
+            "已有可接；已有但未接 UI；待做前端。",
+            1,
+        )
+        _, dual_errors = check.frontend_capability_counts(dual_status)
+        self.assertEqual(len(dual_errors), 1)
+        self.assertIn("标准状态", dual_errors[0])
+
+    def test_frontend_capability_baseline_rejects_coordinated_shrink(self) -> None:
+        handbook_path = Path(__file__).resolve().parents[2] / "docs/HUAKAI工程设计手册.md"
+        handbook = handbook_path.read_text(encoding="utf-8")
+        self.assertEqual(check.frontend_capability_contract_errors(handbook), [])
+
+        start = handbook.index("### 19.2.2 首装、登录和账号安全")
+        end = handbook.index("### 19.11 全局前端交互合同", start)
+        lines = handbook[start:end].splitlines(keepends=True)
+        removed = False
+        for index, line in enumerate(lines):
+            if "已有可接" in line and line.startswith("|"):
+                del lines[index]
+                removed = True
+                break
+        self.assertTrue(removed, "测试素材应至少有一项“已有可接”能力")
+        shrunk = handbook[:start] + "".join(lines) + handbook[end:]
+        shrunk = re.sub(
+            r"^\| 已有可接 \| 56 \|",
+            "| 已有可接 | 55 |",
+            shrunk,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        shrunk = re.sub(
+            r"^\| \*\*合计\*\* \| \*\*158\*\* \|",
+            "| **合计** | **157** |",
+            shrunk,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+        errors = check.frontend_capability_contract_errors(shrunk)
+        self.assertTrue(
+            any("已有可接 期望 56，实际 55" in error for error in errors),
+            errors,
+        )
+        self.assertTrue(
+            any("期望 158，实际 157" in error for error in errors),
+            errors,
+        )
 
 
 if __name__ == "__main__":

@@ -292,7 +292,6 @@ func TestReplicateImages5xxDoesNotDuplicatePaidTask(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
 	claims := &imageRetryClaimLifecycle{claimID: 8306}
 	selector := &imageRetrySelector{accounts: []int64{44, 45}}
-	cancelDoer := &recordingCancelDoer{}
 	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{
 		{status: http.StatusInternalServerError, body: `{"id":"pred-5xx","status":"processing","error":"provider failed after submission"}`},
 		{status: http.StatusOK, body: `{"status":"succeeded","output":"https://r.test/out.webp"}`},
@@ -303,7 +302,6 @@ func TestReplicateImages5xxDoesNotDuplicatePaidTask(t *testing.T) {
 	env.deps.Dispatcher = dispatcher
 	env.deps.ClaimGate = claims
 	env.deps.Settler = claims
-	env.deps.ReplicateCancelClient = cancelDoer
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"do not duplicate task","size":"1024x1024"}`)
 
@@ -314,8 +312,8 @@ func TestReplicateImages5xxDoesNotDuplicatePaidTask(t *testing.T) {
 		t.Fatalf("replicate 5xx duplicated upstream task: dispatch/reserve=%d/%d want 1/1",
 			len(dispatcher.accounts), len(claims.reserves))
 	}
-	if len(cancelDoer.requests) != 1 {
-		t.Fatalf("replicate 5xx cancel requests=%d want 1", len(cancelDoer.requests))
+	if len(dispatcher.cancelInputs) != 1 {
+		t.Fatalf("replicate 5xx cancel requests=%d want 1", len(dispatcher.cancelInputs))
 	}
 	if len(claims.aborts) != 1 ||
 		!strings.Contains(string(claims.aborts[0].protocolLoss), "pred-5xx") ||
@@ -353,8 +351,7 @@ func TestReplicateImages429WithPredictionStopsWhenCancelFails(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
 	claims := &imageRetryClaimLifecycle{claimID: 8310}
 	selector := &imageRetrySelector{accounts: []int64{44, 45}}
-	cancelDoer := &recordingCancelDoer{err: errors.New("cancel timeout")}
-	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{
+	dispatcher := &imageRetryDispatcher{cancelErr: errors.New("cancel timeout"), steps: []imageRetryResponse{
 		{status: http.StatusTooManyRequests, body: `{"id":"pred-429-failed-cancel","status":"processing","error":"rate limited"}`},
 		{status: http.StatusOK, body: `{"status":"succeeded","output":"https://r.test/out.webp"}`},
 	}}
@@ -364,7 +361,6 @@ func TestReplicateImages429WithPredictionStopsWhenCancelFails(t *testing.T) {
 	env.deps.Dispatcher = dispatcher
 	env.deps.ClaimGate = claims
 	env.deps.Settler = claims
-	env.deps.ReplicateCancelClient = cancelDoer
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"cancel before failover","size":"1024x1024"}`)
 
@@ -386,7 +382,6 @@ func TestReplicateImages429WithPredictionCanFailOverAfterCancel(t *testing.T) {
 	env := newReplicateImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
 	claims := &imageRetryClaimLifecycle{claimID: 8311}
 	selector := &imageRetrySelector{accounts: []int64{44, 45}}
-	cancelDoer := &recordingCancelDoer{}
 	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{
 		{status: http.StatusTooManyRequests, body: `{"id":"pred-429-canceled","status":"processing","error":"rate limited"}`},
 		{status: http.StatusOK, body: `{"status":"succeeded","output":"https://r.test/out.webp"}`},
@@ -397,17 +392,16 @@ func TestReplicateImages429WithPredictionCanFailOverAfterCancel(t *testing.T) {
 	env.deps.Dispatcher = dispatcher
 	env.deps.ClaimGate = claims
 	env.deps.Settler = claims
-	env.deps.ReplicateCancelClient = cancelDoer
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"cancel then fail over","size":"1024x1024"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
-	if len(cancelDoer.requests) != 1 || len(dispatcher.accounts) != 2 ||
+	if len(dispatcher.cancelInputs) != 1 || len(dispatcher.accounts) != 2 ||
 		len(claims.settles) != 1 || claims.settles[0].AccountID != 45 {
 		t.Fatalf("cancel/dispatch/settle=%d/%v/%+v want 1/two/final account 45",
-			len(cancelDoer.requests), dispatcher.accounts, claims.settles)
+			len(dispatcher.cancelInputs), dispatcher.accounts, claims.settles)
 	}
 }
 
@@ -581,11 +575,31 @@ type imageRetryResponse struct {
 }
 
 type imageRetryDispatcher struct {
-	steps    []imageRetryResponse
-	accounts []int64
+	steps        []imageRetryResponse
+	accounts     []int64
+	cancelInputs []gateway.DispatchInput
+	cancelStatus int
+	cancelErr    error
 }
 
-func (d *imageRetryDispatcher) Dispatch(_ context.Context, in gateway.DispatchInput) (*gateway.DispatchResult, error) {
+func (d *imageRetryDispatcher) Dispatch(ctx context.Context, in gateway.DispatchInput) (*gateway.DispatchResult, error) {
+	if strings.HasSuffix(in.EndpointPath, "/cancel") {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		d.cancelInputs = append(d.cancelInputs, in)
+		if d.cancelErr != nil {
+			return nil, d.cancelErr
+		}
+		status := d.cancelStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		return &gateway.DispatchResult{
+			StatusCode: status, Headers: make(http.Header), UpstreamReader: http.NoBody,
+			Close: func() error { return nil },
+		}, nil
+	}
 	d.accounts = append(d.accounts, in.Account.AccountID)
 	step := imageRetryResponse{status: http.StatusOK, body: successfulImageBody()}
 	if len(d.accounts) <= len(d.steps) {
@@ -606,7 +620,8 @@ func (d *imageRetryDispatcher) Dispatch(_ context.Context, in gateway.DispatchIn
 }
 
 type imageHealthSpy struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns int
 }
 
 func (s *imageHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Signal) (channelhealth.Record, error) {
@@ -615,6 +630,7 @@ func (s *imageHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Sig
 }
 
 func (s *imageHealthSpy) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, _ time.Time, _ string) (channelhealth.Record, error) {
+	s.forceCooldowns++
 	return channelhealth.Record{Key: key}, nil
 }
 

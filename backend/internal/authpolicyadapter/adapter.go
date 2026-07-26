@@ -19,8 +19,8 @@ func NewAuthSettings(settings SettingsReader) AuthSettings {
 	return AuthSettings{settings: settings}
 }
 
-func NewRegistrationGate(settings SettingsReader) authpolicy.Policy {
-	return authpolicy.New(NewAuthSettings(settings))
+func NewRegistrationGate(settings SettingsReader, publicRegistrationTenantID int64) authpolicy.Policy {
+	return authpolicy.New(NewAuthSettings(settings), publicRegistrationTenantID)
 }
 
 func (s AuthSettings) Get(ctx context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {

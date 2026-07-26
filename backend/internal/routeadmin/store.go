@@ -22,6 +22,15 @@ type Store interface {
 	SoftDelete(ctx context.Context, tenantID, id int64) (Route, error)
 }
 
+// AtomicStore 把路由变更和分类操作日志提交在同一事务。生产 PostgreSQL store 必须实现；
+// Service 仅为内存测试 store 保留旧的 AuditSink 兼容路径。
+type AtomicStore interface {
+	CreateWithLog(context.Context, CreateInput, MutationLog) (Route, error)
+	UpdateWithLog(context.Context, UpdateInput, MutationLog) (Route, error)
+	SetEnabledWithLog(context.Context, int64, int64, bool, MutationLog) (Route, error)
+	SoftDeleteWithLog(context.Context, int64, int64, MutationLog) (Route, error)
+}
+
 // AuditSink 接收管理操作审计(可为 nil — 不注入则不记)。adminID 是发起操作的管理员令牌身份,
 // 用于审计归属, 不写入 routes 表本身。
 type AuditSink interface {

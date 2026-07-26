@@ -35,6 +35,7 @@ var (
 	ErrCloneDetected             = errors.New("passkey: cloned authenticator detected")
 	ErrCredentialOwnerMismatch   = errors.New("passkey: credential owner mismatch")
 	ErrCeremonyEngineUnavailable = errors.New("passkey: ceremony engine unavailable")
+	ErrSecurityStateChanged      = errors.New("passkey: account security state changed")
 )
 
 type Config struct {
@@ -112,11 +113,13 @@ type RegisterBeginInput struct {
 }
 
 type RegisterFinishInput struct {
-	TenantID       int64
-	User           userauth.User
-	SessionID      string
-	CredentialJSON []byte
-	Name           string
+	TenantID        int64
+	User            userauth.User
+	SessionFamilyID string
+	AuthVersion     int
+	SessionID       string
+	CredentialJSON  []byte
+	Name            string
 }
 
 type LoginBeginInput struct {
@@ -135,9 +138,11 @@ type LoginFinishResult struct {
 }
 
 type DeleteCredentialInput struct {
-	TenantID int64
-	UserID   int64
-	ID       int64
+	TenantID        int64
+	UserID          int64
+	SessionFamilyID string
+	AuthVersion     int
+	ID              int64
 }
 
 type WebAuthnUser struct {

@@ -31,14 +31,27 @@ func TestAT_ADMIN_001_IssueHandlerAuthRoleTenantValidationAndHappyPath(t *testin
 	})
 
 	t.Run("tenant operator cross tenant returns 403", func(t *testing.T) {
-		issuer := &apiKeyIssuerStub{enforceScope: true}
+		issuer := &apiKeyIssuerStub{}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
 			Auth:   apiKeyAuthStub{ident: tenantOperator(7)},
 			Issuer: issuer,
 		}, http.MethodPost, "/admin/v1/api-keys/", `{"tenant_id":8,"user_id":3,"name":"ops"}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
-		if !issuer.called || issuer.got.TenantID != 8 {
-			t.Fatalf("issuer did not receive the requested tenant scope: called=%v got=%+v", issuer.called, issuer.got)
+		if issuer.called {
+			t.Fatalf("跨租户请求不应触及签发器：%+v", issuer.got)
+		}
+	})
+
+	t.Run("platform admin downstream tenant returns 403", func(t *testing.T) {
+		issuer := &apiKeyIssuerStub{}
+		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Issuer:           issuer,
+			PlatformTenantID: 7,
+		}, http.MethodPost, "/admin/v1/api-keys/", `{"tenant_id":8,"user_id":3,"name":"ops"}`)
+		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
+		if issuer.called {
+			t.Fatalf("部署者越级请求不应触及签发器：%+v", issuer.got)
 		}
 	})
 
@@ -52,8 +65,9 @@ func TestAT_ADMIN_001_IssueHandlerAuthRoleTenantValidationAndHappyPath(t *testin
 			CreatedAt: created,
 		}}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
-			Auth:   apiKeyAuthStub{ident: platformAdmin()},
-			Issuer: issuer,
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Issuer:           issuer,
+			PlatformTenantID: 7,
 		}, http.MethodPost, "/admin/v1/api-keys/",
 			`{"tenant_id":7,"user_id":3,"name":"ops","environment":"test","reason":"rotation"}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusCreated)
@@ -73,8 +87,9 @@ func TestAT_ADMIN_001_IssueHandlerAuthRoleTenantValidationAndHappyPath(t *testin
 	t.Run("validation error returns 400 before issuer", func(t *testing.T) {
 		issuer := &apiKeyIssuerStub{}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
-			Auth:   apiKeyAuthStub{ident: platformAdmin()},
-			Issuer: issuer,
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Issuer:           issuer,
+			PlatformTenantID: 7,
 		}, http.MethodPost, "/admin/v1/api-keys/", `{"tenant_id":7,"user_id":3,"name":"ops","environment":"dev"}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusBadRequest)
 		if issuer.called {
@@ -105,6 +120,31 @@ func TestAT_ADMIN_001_ListHandlerAuthScopeValidationAndHappyPath(t *testing.T) {
 		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
 		if queries.existsCalls != 0 || queries.listCalls != 0 || queries.auditCalls != 0 {
 			t.Fatalf("cross-tenant list touched queries: %+v", queries)
+		}
+	})
+
+	t.Run("platform admin downstream tenant returns 403 without query", func(t *testing.T) {
+		queries := &apiKeyQueriesStub{exists: true}
+		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Queries:          queries,
+			PlatformTenantID: 7,
+		}, http.MethodGet, "/admin/v1/api-keys/?tenant_id=8", nil)
+		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
+		if queries.existsCalls != 0 || queries.listCalls != 0 || queries.auditCalls != 0 {
+			t.Fatalf("部署者越级列表不得触及查询：%+v", queries)
+		}
+	})
+
+	t.Run("platform scope missing fails closed without query", func(t *testing.T) {
+		queries := &apiKeyQueriesStub{exists: true}
+		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
+			Auth:    apiKeyAuthStub{ident: platformAdmin()},
+			Queries: queries,
+		}, http.MethodGet, "/admin/v1/api-keys/?tenant_id=7", nil)
+		assertAdminAPIKeyStatus(t, rec, http.StatusServiceUnavailable)
+		if queries.existsCalls != 0 || queries.listCalls != 0 || queries.auditCalls != 0 {
+			t.Fatalf("平台租户未接线时不得触及查询：%+v", queries)
 		}
 	})
 
@@ -145,8 +185,9 @@ func TestAT_ADMIN_001_ListHandlerAuthScopeValidationAndHappyPath(t *testing.T) {
 	t.Run("validation error returns 400 before query", func(t *testing.T) {
 		queries := &apiKeyQueriesStub{exists: true}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
-			Auth:    apiKeyAuthStub{ident: platformAdmin()},
-			Queries: queries,
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Queries:          queries,
+			PlatformTenantID: 7,
 		}, http.MethodGet, "/admin/v1/api-keys/?tenant_id=7&limit=0", nil)
 		assertAdminAPIKeyStatus(t, rec, http.StatusBadRequest)
 		if queries.listCalls != 0 || queries.auditCalls != 0 {
@@ -169,22 +210,36 @@ func TestAT_ADMIN_001_RevokeHandlerAuthRoleTenantValidationAndHappyPath(t *testi
 	})
 
 	t.Run("tenant operator cross tenant returns 403", func(t *testing.T) {
-		revoker := &apiKeyRevokerStub{enforceScope: true}
+		revoker := &apiKeyRevokerStub{}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
 			Auth:    apiKeyAuthStub{ident: tenantOperator(7)},
 			Revoker: revoker,
 		}, http.MethodPost, "/admin/v1/api-keys/5/revoke", `{"tenant_id":8,"reason":"rotation"}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
-		if !revoker.called || revoker.got.TenantID != 8 || revoker.got.APIKeyID != 5 {
-			t.Fatalf("revoker scope mismatch: called=%v got=%+v", revoker.called, revoker.got)
+		if revoker.called {
+			t.Fatalf("跨租户请求不应触及撤销器：%+v", revoker.got)
+		}
+	})
+
+	t.Run("platform admin downstream tenant returns 403", func(t *testing.T) {
+		revoker := &apiKeyRevokerStub{}
+		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Revoker:          revoker,
+			PlatformTenantID: 7,
+		}, http.MethodPost, "/admin/v1/api-keys/5/revoke", `{"tenant_id":8,"reason":"rotation"}`)
+		assertAdminAPIKeyStatus(t, rec, http.StatusForbidden)
+		if revoker.called {
+			t.Fatalf("部署者越级请求不应触及撤销器：%+v", revoker.got)
 		}
 	})
 
 	t.Run("happy path returns 200", func(t *testing.T) {
 		revoker := &apiKeyRevokerStub{result: admin.RevokeResult{APIKeyID: 5}}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
-			Auth:    apiKeyAuthStub{ident: platformAdmin()},
-			Revoker: revoker,
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Revoker:          revoker,
+			PlatformTenantID: 7,
 		}, http.MethodPost, "/admin/v1/api-keys/5/revoke", `{"tenant_id":7,"reason":"rotation"}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusOK)
 		if revoker.got.APIKeyID != 5 || revoker.got.TenantID != 7 || revoker.got.Reason != "rotation" {
@@ -200,8 +255,9 @@ func TestAT_ADMIN_001_RevokeHandlerAuthRoleTenantValidationAndHappyPath(t *testi
 	t.Run("validation error returns 400 before revoker", func(t *testing.T) {
 		revoker := &apiKeyRevokerStub{}
 		rec := invokeAdminAPIKeys(t, AdminAPIKeysDeps{
-			Auth:    apiKeyAuthStub{ident: platformAdmin()},
-			Revoker: revoker,
+			Auth:             apiKeyAuthStub{ident: platformAdmin()},
+			Revoker:          revoker,
+			PlatformTenantID: 7,
 		}, http.MethodPost, "/admin/v1/api-keys/not-a-number/revoke", `{"tenant_id":7}`)
 		assertAdminAPIKeyStatus(t, rec, http.StatusBadRequest)
 		if revoker.called {

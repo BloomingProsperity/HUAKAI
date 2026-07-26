@@ -8,7 +8,8 @@
 //   - 幂等防双扣:同一孤儿重复对账 / 追扣不双扣(reconcile_status 状态门 + billing.Capture
 //     的 hold.State 门双闸,见 mediatask.ReconcileOrphan)。
 //   - 复用既有 settle:追扣走既有 billing.Capture,不新写任何扣费 / ledger 逻辑。
-//   - RBAC:复用既有 admin 鉴权(platform_admin 跨租户;tenant_operator 限自己租户)。
+//   - RBAC:platform_admin 只能处置平台工作租户，tenant_operator 只能处置自己租户；
+//     platform_admin 仍可全局只读巡检，但不得越级处理下级租户最终用户的钱路。
 //   - 审计:每次对账 / 追扣在同一事务内写一行 admin_audit_events。
 package orphanreconcilehttp
 
@@ -44,18 +45,25 @@ type adminAuth interface {
 type orphanStore interface {
 	ListPendingOrphans(ctx context.Context, tenantID int64, limit int) ([]mediatask.OrphanRecord, error)
 	ReconcileOrphan(ctx context.Context, orphanID int64, status string, backCharge bool, now time.Time, audit mediatask.OrphanReconcileAuditHook) (mediatask.OrphanReconcileResult, bool, error)
+	AttachUnknownSubmission(ctx context.Context, orphanID int64, providerTaskID string, now time.Time, access mediatask.SubmissionRecoveryAccessHook, audit mediatask.SubmissionRecoveryAuditHook) (mediatask.SubmissionRecoveryResult, bool, error)
+	RequestUnknownSubmissionRelease(ctx context.Context, orphanID int64, now time.Time, access mediatask.SubmissionRecoveryAccessHook, audit mediatask.SubmissionRecoveryAuditHook) (mediatask.SubmissionRecoveryResult, bool, error)
 }
 
 // Deps 是孤儿对账 admin 面的依赖集。
 type Deps struct {
-	Auth  adminAuth
-	Store orphanStore
+	Auth             adminAuth
+	Store            orphanStore
+	PlatformTenantID int64
 }
 
 // NewListHandler / NewReconcileHandler 让 gateway 可内联挂载到规范无尾斜杠路径
 // (与 adminquotahttp 同款),避免 chi.Route 子树导致路径走样。
 func NewListHandler(d Deps) http.HandlerFunc      { return newListHandler(d) }
 func NewReconcileHandler(d Deps) http.HandlerFunc { return newReconcileHandler(d) }
+func NewAttachHandler(d Deps) http.HandlerFunc    { return newAttachHandler(d) }
+func NewConfirmNotAcceptedHandler(d Deps) http.HandlerFunc {
+	return newConfirmNotAcceptedHandler(d)
+}
 
 type orphanItem struct {
 	ID              int64  `json:"id"`
@@ -64,6 +72,10 @@ type orphanItem struct {
 	UserID          int64  `json:"user_id"`
 	Provider        string `json:"provider"`
 	ProviderTaskID  string `json:"provider_task_id"`
+	OrphanKind      string `json:"orphan_kind"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+	ErrorClass      string `json:"error_class,omitempty"`
+	TaskStatus      string `json:"task_status,omitempty"`
 	EstimatedCents  int64  `json:"estimated_cents"`
 	ReconcileStatus string `json:"reconcile_status"`
 	ObservedAt      string `json:"observed_at"`
@@ -97,13 +109,13 @@ func newListHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// toItem 把存储记录投影成对外 JSON。注意:OrphanRecord 不携带 estimated_cents(它在
-// media_tasks 行上),列表先以 0 占位;追扣时由 store 在事务内按 estimated_cents 结算,
-// 故金额真值以追扣返回为准,列表仅作发现/分诊视图。
 func toItem(rec mediatask.OrphanRecord) orphanItem {
 	return orphanItem{
 		ID: rec.ID, TaskID: rec.TaskID, TenantID: rec.TenantID, UserID: rec.UserID,
 		Provider: rec.Provider, ProviderTaskID: rec.ProviderTaskID,
+		OrphanKind: rec.OrphanKind, IdempotencyKey: rec.IdempotencyKey,
+		ErrorClass: rec.ErrorClass, TaskStatus: string(rec.TaskStatus),
+		EstimatedCents:  rec.EstimatedCents,
 		ReconcileStatus: rec.ReconcileStatus, ObservedAt: rec.ObservedAt.UTC().Format(timeRFC3339),
 	}
 }

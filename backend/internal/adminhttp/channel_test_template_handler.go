@@ -11,10 +11,14 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminhttp/channeltemplatestore"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -24,11 +28,17 @@ type AdminChannelTestTemplateDeps struct {
 }
 
 type adminChannelTestTemplateStore interface {
-	CreateChannelTestTemplate(context.Context, admindb.CreateChannelTestTemplateParams) (admindb.ChannelTestTemplate, error)
+	CreateChannelTestTemplateWithAudit(context.Context, admindb.CreateChannelTestTemplateParams, channelTestTemplateAudit) (admindb.ChannelTestTemplate, error)
 	ListChannelTestTemplatesByTenant(context.Context, admindb.ListChannelTestTemplatesByTenantParams) ([]admindb.ChannelTestTemplate, error)
 	GetChannelTestTemplate(context.Context, admindb.GetChannelTestTemplateParams) (admindb.ChannelTestTemplate, error)
-	UpdateChannelTestTemplate(context.Context, admindb.UpdateChannelTestTemplateParams) (admindb.ChannelTestTemplate, error)
-	DeleteChannelTestTemplate(context.Context, admindb.DeleteChannelTestTemplateParams) (admindb.ChannelTestTemplate, error)
+	UpdateChannelTestTemplateWithAudit(context.Context, admindb.UpdateChannelTestTemplateParams, channelTestTemplateAudit) (admindb.ChannelTestTemplate, error)
+	DeleteChannelTestTemplateWithAudit(context.Context, admindb.DeleteChannelTestTemplateParams, channelTestTemplateAudit) (admindb.ChannelTestTemplate, error)
+}
+
+type channelTestTemplateAudit = channeltemplatestore.Audit
+
+func NewChannelTestTemplateStoreAdapter(base *admindb.Queries, pool *pgxpool.Pool) adminChannelTestTemplateStore {
+	return channeltemplatestore.New(base, pool)
 }
 
 type channelTestTemplateListResponse struct {
@@ -64,11 +74,12 @@ type channelTestTemplateDeleteResponse struct {
 }
 
 func MountChannelTestTemplateRoutes(r chi.Router, d AdminChannelTestTemplateDeps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newChannelTestTemplateListHandler(d))
-	r.Post("/", newChannelTestTemplateCreateHandler(d))
+	r.With(safe).Post("/", newChannelTestTemplateCreateHandler(d))
 	r.Get("/{id}", newChannelTestTemplateGetHandler(d))
-	r.Put("/{id}", newChannelTestTemplateUpdateHandler(d))
-	r.Delete("/{id}", newChannelTestTemplateDeleteHandler(d))
+	r.With(safe).Put("/{id}", newChannelTestTemplateUpdateHandler(d))
+	r.With(safe).Delete("/{id}", newChannelTestTemplateDeleteHandler(d))
 }
 
 func NewChannelTestTemplateListHandler(d AdminChannelTestTemplateDeps) http.HandlerFunc {
@@ -141,14 +152,14 @@ func newChannelTestTemplateCreateHandler(d AdminChannelTestTemplateDeps) http.Ha
 		if !ok {
 			return
 		}
-		row, err := d.Store.CreateChannelTestTemplate(r.Context(), admindb.CreateChannelTestTemplateParams{
+		row, err := d.Store.CreateChannelTestTemplateWithAudit(r.Context(), admindb.CreateChannelTestTemplateParams{
 			TenantID:     arg.TenantID,
 			Name:         arg.Name,
 			Method:       arg.Method,
 			Path:         arg.Path,
 			BodyTemplate: arg.BodyTemplate,
 			Headers:      arg.Headers,
-		})
+		}, channelTemplateAuditFromRequest(r, ident))
 		if err != nil {
 			writeChannelTestTemplateError(w, err, "channel_test_template_create_failed")
 			return
@@ -202,7 +213,7 @@ func newChannelTestTemplateUpdateHandler(d AdminChannelTestTemplateDeps) http.Ha
 		if !ok {
 			return
 		}
-		row, err := d.Store.UpdateChannelTestTemplate(r.Context(), admindb.UpdateChannelTestTemplateParams{
+		row, err := d.Store.UpdateChannelTestTemplateWithAudit(r.Context(), admindb.UpdateChannelTestTemplateParams{
 			TenantID:     tenantID,
 			ID:           id,
 			Name:         arg.Name,
@@ -210,7 +221,7 @@ func newChannelTestTemplateUpdateHandler(d AdminChannelTestTemplateDeps) http.Ha
 			Path:         arg.Path,
 			BodyTemplate: arg.BodyTemplate,
 			Headers:      arg.Headers,
-		})
+		}, channelTemplateAuditFromRequest(r, ident))
 		if err != nil {
 			writeChannelTestTemplateError(w, err, "channel_test_template_update_failed")
 			return
@@ -233,7 +244,11 @@ func newChannelTestTemplateDeleteHandler(d AdminChannelTestTemplateDeps) http.Ha
 		if !ok {
 			return
 		}
-		row, err := d.Store.DeleteChannelTestTemplate(r.Context(), admindb.DeleteChannelTestTemplateParams{TenantID: tenantID, ID: id})
+		row, err := d.Store.DeleteChannelTestTemplateWithAudit(
+			r.Context(),
+			admindb.DeleteChannelTestTemplateParams{TenantID: tenantID, ID: id},
+			channelTemplateAuditFromRequest(r, ident),
+		)
 		if err != nil {
 			writeChannelTestTemplateError(w, err, "channel_test_template_delete_failed")
 			return
@@ -243,6 +258,14 @@ func newChannelTestTemplateDeleteHandler(d AdminChannelTestTemplateDeps) http.Ha
 			ID:      row.ID,
 			Deleted: true,
 		})
+	}
+}
+
+func channelTemplateAuditFromRequest(r *http.Request, ident admin.AdminIdentity) channelTestTemplateAudit {
+	return channelTestTemplateAudit{
+		ActorID:   ident.AuditActor(),
+		ActorRole: ident.Role,
+		RequestID: middleware.GetReqID(r.Context()),
 	}
 }
 

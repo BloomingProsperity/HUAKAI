@@ -40,8 +40,8 @@ type Prober interface {
 
 // StatusStore 写代理探测结果。
 type StatusStore interface {
-	Touch(ctx context.Context, tenantID, id int64) error                    // 仅更新 last_check_at
-	SetStatus(ctx context.Context, tenantID, id int64, status string) error // 翻 status (+last_check_at)
+	Touch(ctx context.Context, tenantID, id int64, expectedStatus string) (bool, error)
+	SetStatus(ctx context.Context, tenantID, id int64, expectedStatus, status string) (bool, error)
 }
 
 type counters struct{ fails, successes int }
@@ -217,13 +217,21 @@ func (w *Worker) tick(ctx context.Context) {
 		}
 		newStatus := decideStatus(row.Status, ok, c)
 		if newStatus == "" {
-			if err := w.store.Touch(ctx, row.TenantID, row.ID); err != nil {
-				w.logger.Warn("proxyhealth: touch 失败", "id", row.ID, "err", err)
+			updated, touchErr := w.store.Touch(ctx, row.TenantID, row.ID, row.Status)
+			if touchErr != nil {
+				w.logger.Warn("proxyhealth: touch 失败", "id", row.ID, "err", touchErr)
+			} else if !updated {
+				delete(w.state, row.ID)
 			}
 			continue
 		}
-		if err := w.store.SetStatus(ctx, row.TenantID, row.ID, newStatus); err != nil {
-			w.logger.Warn("proxyhealth: 写 status 失败", "id", row.ID, "status", newStatus, "err", err)
+		updated, setErr := w.store.SetStatus(ctx, row.TenantID, row.ID, row.Status, newStatus)
+		if setErr != nil {
+			w.logger.Warn("proxyhealth: 写 status 失败", "id", row.ID, "status", newStatus, "err", setErr)
+			continue
+		}
+		if !updated {
+			delete(w.state, row.ID)
 			continue
 		}
 		w.logger.Info("proxyhealth: 代理状态迁移", "id", row.ID, "from", row.Status, "to", newStatus)

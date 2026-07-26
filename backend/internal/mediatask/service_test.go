@@ -156,12 +156,57 @@ func TestServiceStatusAndListAreTenantUserScoped(t *testing.T) {
 	}
 }
 
+func TestServiceHidesResultUntilTaskAndSettlementSucceed(t *testing.T) {
+	// 变异：直接返回 store 中的任务，会让 settlement_pending 的结果从状态、
+	// 列表和 API Key 查询任一入口提前交付，本测试三处都会抓到。
+	pending := Task{
+		ID: 10, TenantID: 7, UserID: 42, APIKeyID: 9,
+		RequestID: "req-pending", Status: StatusSettlementPending,
+		Result: json.RawMessage(`{"url":"https://provider.invalid/result"}`),
+	}
+	store := &fakeStore{statusTask: pending, listTasks: []Task{pending}}
+	svc := NewService(store, StaticConfigSource{Config: testConfig()}, StaticProviderRegistry{"http": NewNoopProvider()})
+
+	statusTask, err := svc.Status(context.Background(), 7, 42, 10)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	listTasks, err := svc.List(context.Background(), 7, 42, 20)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	keyTask, err := svc.StatusForAPIKey(context.Background(), 7, 42, 9, "req-pending")
+	if err != nil {
+		t.Fatalf("StatusForAPIKey: %v", err)
+	}
+	if len(statusTask.Result) != 0 || len(listTasks) != 1 || len(listTasks[0].Result) != 0 || len(keyTask.Result) != 0 {
+		t.Fatalf("未结算产物泄露：status=%s list=%s key=%s",
+			statusTask.Result, listTasks[0].Result, keyTask.Result)
+	}
+
+	store.statusTask.Status = StatusSucceeded
+	succeeded, err := svc.Status(context.Background(), 7, 42, 10)
+	if err != nil {
+		t.Fatalf("读取成功任务: %v", err)
+	}
+	if string(succeeded.Result) != string(pending.Result) {
+		t.Fatalf("成功任务结果=%s want %s", succeeded.Result, pending.Result)
+	}
+}
+
 func TestCanTransitionRejectsTerminalRegression(t *testing.T) {
 	if CanTransition(StatusSucceeded, StatusInProgress) {
 		t.Fatal("succeeded -> in_progress must be rejected")
 	}
-	if !CanTransition(StatusQueued, StatusInProgress) || !CanTransition(StatusInProgress, StatusSucceeded) {
-		t.Fatal("valid queued/in_progress transitions rejected")
+	if CanTransition(StatusQueued, StatusInProgress) {
+		t.Fatal("queued -> in_progress 必须经过 submitting 写前状态")
+	}
+	if !CanTransition(StatusQueued, StatusSubmitting) ||
+		!CanTransition(StatusSubmitting, StatusInProgress) ||
+		!CanTransition(StatusInProgress, StatusSettlementPending) ||
+		!CanTransition(StatusSettlementPending, StatusSucceeded) ||
+		CanTransition(StatusSettlementPending, StatusFailed) {
+		t.Fatal("合法的写前提交、运行和成功状态迁移被拒绝")
 	}
 }
 
@@ -230,6 +275,10 @@ func (s *fakeStore) GetTask(ctx context.Context, tenantID, userID, id int64) (Ta
 	return s.statusTask, nil
 }
 
+func (s *fakeStore) GetTaskForAPIKey(context.Context, int64, int64, int64, string) (Task, error) {
+	return s.statusTask, nil
+}
+
 func (s *fakeStore) ListTasks(ctx context.Context, tenantID, userID int64, limit int) ([]Task, error) {
 	s.listTenant, s.listUser = tenantID, userID
 	return append([]Task(nil), s.listTasks...), nil
@@ -237,6 +286,18 @@ func (s *fakeStore) ListTasks(ctx context.Context, tenantID, userID int64, limit
 
 func (s *fakeStore) AcquireLease(context.Context, string, time.Duration, time.Time) (Task, error) {
 	return Task{}, ErrNoRunnableTask
+}
+
+func (s *fakeStore) MarkSubmitting(context.Context, Task, string, time.Time) (Task, error) {
+	return Task{}, nil
+}
+
+func (s *fakeStore) DeferSubmission(context.Context, Task, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (s *fakeStore) MarkSubmissionUnknown(context.Context, Task, string, string, string, time.Time) (Task, error) {
+	return Task{}, nil
 }
 
 func (s *fakeStore) MarkProviderSubmitted(context.Context, Task, string, string, time.Time) (Task, error) {

@@ -197,7 +197,7 @@ func TestMismatchRefundIdempotencyConflictQuarantinesFirstReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue refund event: %v", err)
 	}
-	if _, err := dlqService.Replay(ctx, eventID, "refund-conflict-test"); !errors.Is(err, dlq.ErrUnretryable) || !errors.Is(err, billing.ErrRefundIdempotencyConflict) {
+	if _, err := dlqService.Replay(ctx, seed.tenantID, eventID, "refund-conflict-test"); !errors.Is(err, dlq.ErrUnretryable) || !errors.Is(err, billing.ErrRefundIdempotencyConflict) {
 		t.Fatalf("Replay error=%v want unretryable refund conflict", err)
 	}
 	var dlqStatus string

@@ -69,12 +69,14 @@ INNER JOIN users u
     AND u.id = ak.user_id
     AND u.deleted_at IS NULL
     AND u.principal_kind = 'human'
+    AND u.role = 'user'
 INNER JOIN tenants t
     ON t.id = ak.tenant_id
     AND t.deleted_at IS NULL
 WHERE ak.key_prefix = $1
   AND ak.deleted_at IS NULL
   AND ak.status = 'active'
+  AND ak.revoked_at IS NULL
   AND ak.purpose = 'user'
 ORDER BY ak.id
 LIMIT 5
@@ -95,15 +97,8 @@ type LookupAPIKeysByPrefixRow struct {
 	TenantStatus  string             `db:"tenant_status" json:"tenant_status"`
 }
 
-// Inbound auth queries.
-//
-//	Queries here MUST NOT return key_hash to logs / traces; the resolver
-//	only uses key_hash for bcrypt comparison and discards it.
-//
-// Resolver writes stay limited to best-effort auth telemetry;
-//
-//	failed telemetry updates must not reject otherwise valid credentials.
-//
+// 入站鉴权查询。key_hash 只供 resolver 做 bcrypt 比对并立即丢弃，绝不进入
+// 日志或 trace。遥测写入保持 best-effort，不得因遥测失败拒绝有效凭据。
 // Returns active candidates whose key_prefix matches. Capped at 5 to
 // bound bcrypt-verify-fanout DOS via colliding prefixes.
 //

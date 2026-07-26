@@ -2,6 +2,7 @@
 
 use std::{
     fmt,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -105,11 +106,14 @@ impl AsyncWrite for TunnelStream {
 // HTTPS 先校验证书并与代理建立 TLS，三种代理最终都返回统一的异步隧道流。
 pub async fn connect_through_proxy(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
 ) -> Result<TunnelStream, ProxyTunnelError> {
     validate_proxy(proxy)?;
-    connect_through_proxy_with_timeout(proxy, target_host, target_port, proxy_timeout()).await
+    validate_proxy_ips(proxy_ips)?;
+    connect_through_proxy_with_timeout(proxy, proxy_ips, target_host, target_port, proxy_timeout())
+        .await
 }
 
 fn validate_proxy(proxy: &ProxySpec) -> Result<(), ProxyTunnelError> {
@@ -154,16 +158,26 @@ fn validate_proxy(proxy: &ProxySpec) -> Result<(), ProxyTunnelError> {
     Ok(())
 }
 
+fn validate_proxy_ips(proxy_ips: &[IpAddr]) -> Result<(), ProxyTunnelError> {
+    if proxy_ips.is_empty() || proxy_ips.len() > 16 {
+        return Err(ProxyTunnelError::Invalid(
+            "代理地址绑定数量必须为 1..16".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 // 整体超时覆盖代理拨号和隧道握手，避免无响应代理长期占用任务。
 async fn connect_through_proxy_with_timeout(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
     dur: Duration,
 ) -> Result<TunnelStream, ProxyTunnelError> {
     match tokio::time::timeout(
         dur,
-        connect_through_proxy_inner(proxy, target_host, target_port),
+        connect_through_proxy_inner(proxy, proxy_ips, target_host, target_port),
     )
     .await
     {
@@ -177,45 +191,59 @@ async fn connect_through_proxy_with_timeout(
 
 async fn connect_through_proxy_inner(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
 ) -> Result<TunnelStream, ProxyTunnelError> {
     match proxy.scheme.to_ascii_lowercase().as_str() {
-        "http" => http_connect_tunnel(proxy, target_host, target_port)
+        "http" => http_connect_tunnel(proxy, proxy_ips, target_host, target_port)
             .await
             .map(TunnelStream::new),
-        "https" => https_connect_tunnel(proxy, target_host, target_port)
+        "https" => https_connect_tunnel(proxy, proxy_ips, target_host, target_port)
             .await
             .map(TunnelStream::new),
         // 两种 SOCKS5 scheme 都把目标域名交给代理解析。
-        "socks5" | "socks5h" => socks5_tunnel(proxy, target_host, target_port)
+        "socks5" | "socks5h" => socks5_tunnel(proxy, proxy_ips, target_host, target_port)
             .await
             .map(TunnelStream::new),
         other => Err(ProxyTunnelError::UnsupportedScheme(other.to_owned())),
     }
 }
 
-fn proxy_endpoint(proxy: &ProxySpec) -> (String, u16) {
-    (proxy.host.clone(), proxy.port)
+fn proxy_endpoints(proxy: &ProxySpec, proxy_ips: &[IpAddr]) -> Vec<SocketAddr> {
+    proxy_ips
+        .iter()
+        .copied()
+        .map(|address| SocketAddr::new(address, proxy.port))
+        .collect()
+}
+
+async fn connect_proxy_tcp(
+    proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
+) -> Result<TcpStream, ProxyTunnelError> {
+    let endpoints = proxy_endpoints(proxy, proxy_ips);
+    Ok(TcpStream::connect(endpoints.as_slice()).await?)
 }
 
 async fn http_connect_tunnel(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
 ) -> Result<TcpStream, ProxyTunnelError> {
-    let (phost, pport) = proxy_endpoint(proxy);
-    let stream = TcpStream::connect((phost.as_str(), pport)).await?;
+    let stream = connect_proxy_tcp(proxy, proxy_ips).await?;
     establish_http_connect(stream, proxy, target_host, target_port).await
 }
 
 async fn https_connect_tunnel(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ProxyTunnelError> {
     let connector = https_proxy_connector()?;
-    https_connect_tunnel_with_connector(proxy, target_host, target_port, connector).await
+    https_connect_tunnel_with_connector(proxy, proxy_ips, target_host, target_port, connector).await
 }
 
 fn https_proxy_connector() -> Result<SslConnector, ProxyTunnelError> {
@@ -229,16 +257,16 @@ fn https_proxy_connector() -> Result<SslConnector, ProxyTunnelError> {
 
 async fn https_connect_tunnel_with_connector(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
     connector: SslConnector,
 ) -> Result<tokio_boring::SslStream<TcpStream>, ProxyTunnelError> {
-    let (phost, pport) = proxy_endpoint(proxy);
-    let tcp = TcpStream::connect((phost.as_str(), pport)).await?;
+    let tcp = connect_proxy_tcp(proxy, proxy_ips).await?;
     let config = connector
         .configure()
         .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
-    let tls = tokio_boring::connect(config, phost.as_str(), tcp)
+    let tls = tokio_boring::connect(config, proxy.host.as_str(), tcp)
         .await
         .map_err(|error| ProxyTunnelError::Tls(error.to_string()))?;
     establish_http_connect(tls, proxy, target_host, target_port).await
@@ -329,11 +357,11 @@ fn parse_http_status_code(head: &[u8]) -> Result<u16, ProxyTunnelError> {
 // 任何 reply 非 0x00 = fail-closed。
 async fn socks5_tunnel(
     proxy: &ProxySpec,
+    proxy_ips: &[IpAddr],
     target_host: &str,
     target_port: u16,
 ) -> Result<TcpStream, ProxyTunnelError> {
-    let (phost, pport) = proxy_endpoint(proxy);
-    let mut stream = TcpStream::connect((phost.as_str(), pport)).await?;
+    let mut stream = connect_proxy_tcp(proxy, proxy_ips).await?;
 
     let has_auth = proxy
         .username
@@ -689,10 +717,15 @@ mod tests {
             password: None,
         };
 
-        let mut tunnel =
-            super::https_connect_tunnel_with_connector(&spec, "api.example.test", 443, connector)
-                .await
-                .expect("受信 HTTPS 代理必须先完成 TLS 再建立 CONNECT 隧道");
+        let mut tunnel = super::https_connect_tunnel_with_connector(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.example.test",
+            443,
+            connector,
+        )
+        .await
+        .expect("受信 HTTPS 代理必须先完成 TLS 再建立 CONNECT 隧道");
         let mut marker = [0u8; 11];
         tunnel.read_exact(&mut marker).await.unwrap();
 
@@ -810,9 +843,14 @@ mod tests {
             password: Some("s3cr3t".to_owned()),
         };
 
-        let mut stream = super::connect_through_proxy(&spec, "api.anthropic.com", 443)
-            .await
-            .expect("CONNECT 200 必须建立隧道");
+        let mut stream = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.anthropic.com",
+            443,
+        )
+        .await
+        .expect("CONNECT 200 必须建立隧道");
 
         assert!(
             proxy.got_connect.load(Ordering::SeqCst),
@@ -845,7 +883,13 @@ mod tests {
             password: None,
         };
 
-        let result = super::connect_through_proxy(&spec, "api.anthropic.com", 443).await;
+        let result = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.anthropic.com",
+            443,
+        )
+        .await;
 
         let err = result.expect_err("CONNECT 403 必须 fail-closed 返回 error,绝不直连目标");
         assert!(
@@ -886,9 +930,13 @@ mod tests {
             password: None,
         };
 
-        let result =
-            super::connect_through_proxy(&spec, &target_addr.ip().to_string(), target_addr.port())
-                .await;
+        let result = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            &target_addr.ip().to_string(),
+            target_addr.port(),
+        )
+        .await;
 
         assert!(
             result.is_err(),
@@ -913,9 +961,14 @@ mod tests {
             username: None,
             password: None,
         };
-        let err = super::connect_through_proxy(&spec, "api.anthropic.com", 443)
-            .await
-            .expect_err("不支持的 scheme 必须 fail-loud");
+        let err = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.anthropic.com",
+            443,
+        )
+        .await
+        .expect_err("不支持的 scheme 必须 fail-loud");
         assert!(matches!(err, ProxyTunnelError::UnsupportedScheme(_)));
     }
 
@@ -966,9 +1019,14 @@ mod tests {
             username: None,
             password: None,
         };
-        let mut stream = super::connect_through_proxy(&spec, "api.anthropic.com", 443)
-            .await
-            .expect("SOCKS5 CONNECT 成功必须建立隧道");
+        let mut stream = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.anthropic.com",
+            443,
+        )
+        .await
+        .expect("SOCKS5 CONNECT 成功必须建立隧道");
 
         assert!(
             saw_target.load(Ordering::SeqCst),
@@ -1012,9 +1070,14 @@ mod tests {
             username: None,
             password: None,
         };
-        let err = super::connect_through_proxy(&spec, "api.anthropic.com", 443)
-            .await
-            .expect_err("SOCKS5 REP!=0 必须 fail-closed");
+        let err = super::connect_through_proxy(
+            &spec,
+            &["127.0.0.1".parse().unwrap()],
+            "api.anthropic.com",
+            443,
+        )
+        .await
+        .expect_err("SOCKS5 REP!=0 必须 fail-closed");
         assert!(
             err.to_string().contains("rep=2"),
             "fail-closed 错误应携带 rep 码,实际 {err}"
@@ -1052,6 +1115,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             super::connect_through_proxy_with_timeout(
                 &spec,
+                &["127.0.0.1".parse().unwrap()],
                 "api.anthropic.com",
                 443,
                 std::time::Duration::from_millis(300),

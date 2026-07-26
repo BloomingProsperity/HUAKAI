@@ -104,6 +104,30 @@ func TestResolverBareIPTrust(t *testing.T) {
 	}
 }
 
+func TestResolverTrustedPeer(t *testing.T) {
+	trusted := mustResolver(t, "10.0.0.0/8")
+	cases := []struct {
+		name     string
+		resolver *Resolver
+		request  *http.Request
+		want     bool
+	}{
+		{name: "可信代理", resolver: trusted, request: req("10.1.2.3:5000", ""), want: true},
+		{name: "公网对端", resolver: trusted, request: req("203.0.113.7:5000", ""), want: false},
+		{name: "畸形对端", resolver: trusted, request: req("not-an-address", ""), want: false},
+		{name: "空白名单", resolver: mustResolver(t), request: req("10.1.2.3:5000", ""), want: false},
+		{name: "空解析器", resolver: nil, request: req("10.1.2.3:5000", ""), want: false},
+		{name: "空请求", resolver: trusted, request: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.resolver.TrustedPeer(tc.request); got != tc.want {
+				t.Fatalf("TrustedPeer()=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNewResolverRejectsMalformedCIDR 证明非法的 allowlist 条目会在启动时大声失败,
 // 而不是被默默丢弃(那可能被理解成「谁都不信任」或与「信任所有人」混淆)。
 // 变异:吞掉解析 error → 此处返回 nil err → 红。

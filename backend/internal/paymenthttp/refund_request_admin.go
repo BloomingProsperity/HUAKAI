@@ -38,7 +38,8 @@ type refundRequestDecisionRequest struct {
 
 func newAdminListRefundRequestsHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		recorder := d.RefundRequests
@@ -48,6 +49,9 @@ func newAdminListRefundRequestsHandler(d AdminDeps) http.HandlerFunc {
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizePaymentReadTenant(w, ident, tenantID) {
 			return
 		}
 		requests, err := recorder.ListPendingRefundRequests(r.Context(), tenantID)
@@ -78,6 +82,9 @@ func newAdminApproveRefundRequestHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		rr, err := recorder.ApproveRefundRequest(r.Context(), req.TenantID, id, ident.TokenID, ident.AuditActor())
 		if err != nil {
 			writeRefundRequestError(w, err)
@@ -104,6 +111,9 @@ func newAdminRejectRefundRequestHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req refundRequestDecisionRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		rr, err := recorder.RejectRefundRequest(r.Context(), req.TenantID, id, req.Reason, ident.TokenID, ident.AuditActor())

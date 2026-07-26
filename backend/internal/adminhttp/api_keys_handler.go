@@ -26,16 +26,18 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // AdminAPIKeysDeps 是 api_keys 处理器所需依赖树的子集。
 // cmd/gateway/main.go 里的具体依赖通过 duck typing 隐式满足它。
 type AdminAPIKeysDeps struct {
-	Auth    adminAPIKeysAuth
-	Issuer  adminAPIKeysIssuer
-	Revoker adminAPIKeysRevoker
-	Queries adminAPIKeysQueries // 用于 LIST(只读)
+	Auth             adminAPIKeysAuth
+	Issuer           adminAPIKeysIssuer
+	Revoker          adminAPIKeysRevoker
+	Queries          adminAPIKeysQueries // 用于 LIST(只读)
+	PlatformTenantID int64
 }
 
 type adminAPIKeysAuth interface {
@@ -59,9 +61,10 @@ type adminAPIKeysQueries interface {
 // MountAPIKeyRoutes 把 POST/GET/POST-revoke 处理器挂到调用方的
 // chi router 上(通常作用域为 /admin/v1/api-keys)。
 func MountAPIKeyRoutes(r chi.Router, d AdminAPIKeysDeps) {
-	r.Post("/", newIssueHandler(d))
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
+	r.With(safe).Post("/", newIssueHandler(d))
 	r.Get("/", newListHandler(d))
-	r.Post("/{id}/revoke", newRevokeHandler(d))
+	r.With(safe).Post("/{id}/revoke", newRevokeHandler(d))
 }
 
 // -----------------------------------------------------------------------------
@@ -116,6 +119,10 @@ func newIssueHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		if req.TenantID == 0 || req.UserID == 0 || req.Name == "" {
 			writeError(w, http.StatusBadRequest, "missing_fields",
 				"tenant_id, user_id, and name are required")
+			return
+		}
+		if err := ident.CanManageFinalUsersForTenant(req.TenantID, d.PlatformTenantID); err != nil {
+			writeAdminError(w, err)
 			return
 		}
 		env := admin.EnvLive
@@ -230,7 +237,7 @@ func newListHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 				"tenant_id must be a positive int64")
 			return
 		}
-		if err := ident.CanIssueForTenant(tenantID); err != nil {
+		if err := ident.CanManageFinalUsersForTenant(tenantID, d.PlatformTenantID); err != nil {
 			writeAdminError(w, err)
 			return
 		}
@@ -412,6 +419,10 @@ func newRevokeHandler(d AdminAPIKeysDeps) http.HandlerFunc {
 		if req.TenantID == 0 {
 			writeError(w, http.StatusBadRequest, "tenant_id_required",
 				"body.tenant_id required (the tenant this api_key belongs to)")
+			return
+		}
+		if err := ident.CanManageFinalUsersForTenant(req.TenantID, d.PlatformTenantID); err != nil {
+			writeAdminError(w, err)
 			return
 		}
 

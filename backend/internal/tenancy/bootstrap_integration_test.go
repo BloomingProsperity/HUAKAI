@@ -27,33 +27,44 @@ func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	return p
 }
 
-// hideWorkingTenants 暂时软删既有工作租户(id>0)以模拟「从零部署」空库,
-// cleanup 时精确恢复——只动 deleted_at,不删任何行(-p 1 顺序执行下安全)。
+// hideWorkingTenants 暂时把既有工作租户(id>0)切到 deleted 终态以模拟
+// 「从零部署」空库，cleanup 时精确恢复原状态，不删任何行。
 func hideWorkingTenants(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	rows, err := pool.Query(ctx, `SELECT id FROM tenants WHERE id > 0 AND deleted_at IS NULL`)
+	rows, err := pool.Query(ctx, `SELECT id, status FROM tenants WHERE id > 0 AND deleted_at IS NULL`)
 	if err != nil {
 		t.Fatalf("snapshot working tenants: %v", err)
 	}
-	var ids []int64
+	type tenantState struct {
+		id     int64
+		status string
+	}
+	var states []tenantState
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var state tenantState
+		if err := rows.Scan(&state.id, &state.status); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		ids = append(ids, id)
+		states = append(states, state)
 	}
 	rows.Close()
-	if len(ids) > 0 {
-		if _, err := pool.Exec(ctx, `UPDATE tenants SET deleted_at = now() WHERE id = ANY($1)`, ids); err != nil {
+	for _, state := range states {
+		if _, err := pool.Exec(ctx,
+			`UPDATE tenants SET status = 'deleted', deleted_at = now() WHERE id = $1`,
+			state.id,
+		); err != nil {
 			t.Fatalf("hide working tenants: %v", err)
 		}
 	}
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if len(ids) > 0 {
-			if _, err := pool.Exec(cctx, `UPDATE tenants SET deleted_at = NULL WHERE id = ANY($1)`, ids); err != nil {
+		for _, state := range states {
+			if _, err := pool.Exec(cctx,
+				`UPDATE tenants SET status = $2, deleted_at = NULL WHERE id = $1`,
+				state.id,
+				state.status,
+			); err != nil {
 				t.Errorf("restore hidden tenants: %v", err)
 			}
 		}
@@ -195,7 +206,12 @@ func TestEnsureDefaultTenant_RestoresSoftDeletedSeed(t *testing.T) {
 	hideWorkingTenants(t, ctx, pool)
 	deleteTenant(t, pool, DefaultWorkingTenantID)
 
-	if _, err := pool.Exec(ctx, `INSERT INTO tenants (id, name, status, deleted_at) VALUES ($1, 'bricked', 'active', now()) ON CONFLICT (id) DO UPDATE SET deleted_at = now()`, DefaultWorkingTenantID); err != nil {
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tenants (id, name, status, deleted_at)
+		VALUES ($1, 'bricked', 'deleted', now())
+		ON CONFLICT (id) DO UPDATE
+		SET status = 'deleted', deleted_at = now()
+	`, DefaultWorkingTenantID); err != nil {
 		t.Fatalf("seed soft-deleted: %v", err)
 	}
 
@@ -225,7 +241,10 @@ func TestEnsureDefaultTenant_RestoreNameCollisionDoesNotCrash(t *testing.T) {
 
 	// 种子 id 以软删 + 与 id=0 哨兵同名('public-pricing')存在。
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO tenants (id, name, status, deleted_at) VALUES ($1, 'public-pricing', 'active', now()) ON CONFLICT (id) DO UPDATE SET name = 'public-pricing', deleted_at = now()`,
+		`INSERT INTO tenants (id, name, status, deleted_at)
+		 VALUES ($1, 'public-pricing', 'deleted', now())
+		 ON CONFLICT (id) DO UPDATE
+		 SET name = 'public-pricing', status = 'deleted', deleted_at = now()`,
 		DefaultWorkingTenantID); err != nil {
 		t.Fatalf("seed colliding soft-deleted: %v", err)
 	}

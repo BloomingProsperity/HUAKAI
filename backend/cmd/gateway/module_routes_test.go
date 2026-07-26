@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/payment"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/subscription"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
@@ -426,6 +427,37 @@ func TestModulesRegistrySettlementRecoveryRequiresRegisteredHandler(t *testing.T
 	}
 	assertModuleEndpoint(t, after, "embeddings", true, true)
 	assertModuleEndpoint(t, after, "rerank", true, true)
+}
+
+func TestModulesRegistrySeparatesRecoveryFromPreDeliveryIntent(t *testing.T) {
+	service := legacydlq.NewService(nil)
+	service.Register(legacydlq.EventKindPostDeliverySettlement, func(context.Context, legacydlq.Record) error { return nil })
+
+	disabled := moduleViewsForTest(t, &deps{dlqService: service, cfg: &Config{}})
+	recovery := disabled["settlement.recovery"]
+	assertModuleEndpoint(t, recovery, "chat", true, true)
+	assertModuleEndpoint(t, recovery, "audio", true, true)
+
+	intent := disabled["settlement.intent"]
+	assertModuleEndpoint(t, intent, "chat", false, false)
+	assertModuleEndpoint(t, intent, "completions", false, false)
+	if intent.LiveProbe.Status != moduleregistry.StatusDegraded {
+		t.Fatalf("显式关闭的持久意图必须显示 degraded，got %+v", intent.LiveProbe)
+	}
+
+	enabled := moduleViewsForTest(t, &deps{
+		dlqService:        service,
+		cfg:               &Config{SettlementIntentEnabled: true},
+		settlementIntents: settlementintent.NewPostgresStore(nil),
+	})
+	intent = enabled["settlement.intent"]
+	assertModuleEndpoint(t, intent, "chat", true, true)
+	for _, endpoint := range []string{"completions", "embeddings", "rerank", "images", "audio", "gemini"} {
+		assertModuleEndpoint(t, intent, endpoint, true, true)
+	}
+	if intent.LiveProbe.Status != moduleregistry.StatusOK {
+		t.Fatalf("全协议持久意图已接线时必须显示 ok，got %+v", intent.LiveProbe)
+	}
 }
 
 func moduleViewsForTest(t *testing.T, d *deps) map[string]modulehttp.ModuleView {

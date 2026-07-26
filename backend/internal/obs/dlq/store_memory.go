@@ -1,6 +1,7 @@
 package dlq
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -52,11 +53,23 @@ func (m *MemoryOutbox) Enqueue(_ context.Context, e OutboxEvent) (OutboxEvent, e
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.events[e.ID]; !exists {
-		m.order = append(m.order, e.ID)
+	if existing, exists := m.events[e.ID]; exists {
+		if !sameEventIdentity(existing, e) {
+			return OutboxEvent{}, fmt.Errorf("%w: %s", ErrEventConflict, e.ID)
+		}
+		return existing.clone(), nil
 	}
+	m.order = append(m.order, e.ID)
 	m.events[e.ID] = e.clone()
 	return e.clone(), nil
+}
+
+func sameEventIdentity(a, b OutboxEvent) bool {
+	return a.ID == b.ID &&
+		a.TenantID == b.TenantID &&
+		a.EventType == b.EventType &&
+		a.Priority == b.Priority &&
+		bytes.Equal(a.Payload, b.Payload)
 }
 
 func (m *MemoryOutbox) Dequeue(_ context.Context, opts DequeueOptions) (OutboxEvent, bool, error) {

@@ -75,7 +75,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue delivered seed: %v", err)
 	}
-	recDel, err := store.ClaimByID(ctx, idDel, "ops003-deliver-worker", time.Minute)
+	recDel, err := store.ClaimByID(ctx, tenantID, idDel, "ops003-deliver-worker", time.Minute)
 	if err != nil || recDel == nil || recDel.ID != idDel {
 		t.Fatalf("claim for delivery: rec=%v err=%v", recDel, err)
 	}
@@ -100,7 +100,7 @@ func TestOPS003_CountPendingByLaneAndDepthGauge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enqueue delivered settlement seed: %v", err)
 	}
-	settledRec, err := store.ClaimByID(ctx, settledID, "ops003-settlement-worker", time.Minute)
+	settledRec, err := store.ClaimByID(ctx, tenantID, settledID, "ops003-settlement-worker", time.Minute)
 	if err != nil {
 		t.Fatalf("claim delivered settlement seed: %v", err)
 	}

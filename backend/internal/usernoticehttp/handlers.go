@@ -38,8 +38,9 @@ type UserDeps struct {
 }
 
 type AdminDeps struct {
-	Auth    AdminAuth
-	Service Service
+	Auth             AdminAuth
+	Service          Service
+	PlatformTenantID int64
 }
 
 type broadcastRequest struct {
@@ -177,7 +178,7 @@ func (h adminHandler) broadcast(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	tenantID, ok := resolveAdminTenantValue(w, ident, req.TenantID)
+	tenantID, ok := resolveAdminTenantValue(w, ident, req.TenantID, h.deps.PlatformTenantID)
 	if !ok {
 		return
 	}
@@ -241,7 +242,7 @@ func adminIdentity(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.A
 	return ident, true
 }
 
-func resolveAdminTenantValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) (int64, bool) {
+func resolveAdminTenantValue(w http.ResponseWriter, ident admin.AdminIdentity, tenantID, platformTenantID int64) (int64, bool) {
 	if tenantID == 0 && ident.Role == admin.RoleTenantOperator {
 		tenantID = ident.ScopeTenantID
 	}
@@ -249,7 +250,7 @@ func resolveAdminTenantValue(w http.ResponseWriter, ident admin.AdminIdentity, t
 		writeJSONError(w, http.StatusBadRequest, "tenant_id_required", "tenant_id must be positive")
 		return 0, false
 	}
-	if err := ident.CanIssueForTenant(tenantID); err != nil {
+	if err := ident.CanManageFinalUsersForTenant(tenantID, platformTenantID); err != nil {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 		return 0, false
 	}

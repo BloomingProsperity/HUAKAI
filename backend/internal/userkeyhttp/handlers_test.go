@@ -429,8 +429,10 @@ func TestBatchRevokeOwnerScopedWithNotFound(t *testing.T) {
 		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Revoked  []int64 `json:"revoked"`
-		NotFound []int64 `json:"not_found"`
+		Outcome  string            `json:"outcome"`
+		Revoked  []int64           `json:"revoked"`
+		NotFound []int64           `json:"not_found"`
+		Results  []batchRevokeItem `json:"results"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
@@ -440,6 +442,11 @@ func TestBatchRevokeOwnerScopedWithNotFound(t *testing.T) {
 	}
 	if len(out.NotFound) != 1 || out.NotFound[0] != 99 {
 		t.Fatalf("not_found=%v want [99]", out.NotFound)
+	}
+	if out.Outcome != "partial" || len(out.Results) != 3 ||
+		out.Results[0].Status != "revoked" || out.Results[1].Status != "revoked" ||
+		out.Results[2].Status != "not_found" {
+		t.Fatalf("逐项结果不完整: %+v", out)
 	}
 	if len(svc.revokeCalls) != 3 {
 		t.Fatalf("revokeCalls=%d want 3", len(svc.revokeCalls))

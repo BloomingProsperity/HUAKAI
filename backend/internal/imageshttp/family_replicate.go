@@ -12,6 +12,7 @@ package imageshttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	provideropenai "github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
@@ -93,10 +95,9 @@ func (ex *execution) translateUpstreamResponseForFamily(w http.ResponseWriter, r
 	}
 	translated, err := replicate.TranslateImageResponse(raw, time.Now)
 	if err != nil {
-		// abort 给用户退款之前 best-effort 取消上游 prediction:Prefer: wait 超窗
-		// (starting/processing)时上游仍在跑、按产出向平台计费,不取消=平台单边
-		// 吃成本,客户端重试每轮再开新 prediction 叠加。prediction id + cancel
-		// 结局进 abort 的 protocol_loss 审计,供事后对账上游账单。
+		// abort 给用户退款之前仍主动取消上游 prediction；创建请求已用
+		// Cancel-After 把任务生命周期锁在同步等待窗口内，本次取消用于尽快
+		// 止损。prediction id + cancel 结局进入退款日志，供事后核对上游账单。
 		meta := replicate.PredictionMetaFromResponse(raw)
 		outcome := ex.bestEffortCancelReplicatePrediction(meta)
 		ex.abortWithLoss(w, "replicate_prediction_failed", 0, replicateAbortLoss(meta, outcome))
@@ -155,31 +156,9 @@ func countDeliveredImages(translated []byte) int {
 // prediction 审计链(评审 S3 竞态)。
 const replicateCancelTimeout = 3 * time.Second
 
-// defaultReplicateCancelClient 是 Deps.ReplicateCancelClient 未注入时的默认
-// 控制面 client,与 transport factory standard 路径同口径:clone DefaultTransport
-// 且显式 Proxy=nil(HUAKAI 唯一代理决策点是 dispatcher.applyProxy,cancel 不得
-// 被 HTTP(S)_PROXY env 截胡),再包 dial 时刻 passthrough IP 守卫——cancel 与
-// 主出站同享 fail-closed,不得成为绕过 SSRF 守卫的旁路。
-var defaultReplicateCancelClient = newDefaultReplicateCancelClient()
-
-func newDefaultReplicateCancelClient() cancelHTTPDoer {
-	rt := http.RoundTripper(http.DefaultTransport)
-	if base, ok := http.DefaultTransport.(*http.Transport); ok {
-		cloned := base.Clone()
-		cloned.Proxy = nil
-		rt = cloned
-	}
-	if wrapped, err := provider.WrapPassthroughEndpointTransport(rt); err == nil {
-		rt = wrapped
-	}
-	return &http.Client{Timeout: replicateCancelTimeout, Transport: rt}
-}
-
-// bestEffortCancelReplicatePrediction 取消上游未终态的 prediction。任何失败只
-// 进审计 outcome 字符串,绝不向调用方返回错误——cancel 失败不得阻断 abort 退款
-// 主路径。context 脱离请求取消(客户端断连正是最需要 cancel 的时刻)。
-// 已知残留(台账):绑定出站代理的账号 cancel 走网关直连而非账号代理,可能被
-// 上游拒——cancel 经 per-account 代理出口是 follow-up 切片。
+// bestEffortCancelReplicatePrediction 取消上游未终态的 prediction。创建请求
+// 已携带同窗口 Cancel-After，因此显式取消失败只记录 outcome，不阻断退款；
+// context 脱离请求取消，保证客户端断连后仍尝试尽快止损。
 func (ex *execution) bestEffortCancelReplicatePrediction(meta replicate.PredictionMeta) string {
 	if meta.ID == "" {
 		return "skipped_no_prediction_id"
@@ -189,30 +168,31 @@ func (ex *execution) bestEffortCancelReplicatePrediction(meta replicate.Predicti
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), replicateCancelTimeout)
 	defer cancel()
-	req, err := replicate.NewCancelRequest(cctx, ex.cred, meta.ID)
+	path, err := replicate.CancelEndpointPath(meta.ID)
 	if err != nil {
 		return "cancel_build_failed: " + err.Error()
 	}
-	// 与主出站同口径的运行时 SSRF 守卫:租户自填 base_url 的 host 静态检查能过,
-	// 但 DNS 可解析到内网/metadata(rebinding)。主路径在 dispatcher 里做这一步,
-	// cancel 自己发请求就必须自己做,否则 cancel 成为守卫旁路(评审 S1)。
-	if provider.UsesCustomPassthroughEndpoint(ex.cred) {
-		if err := provider.ValidatePassthroughEndpointTarget(cctx, req.URL); err != nil {
+	if ex.d.Dispatcher == nil {
+		return "cancel_dispatcher_unavailable"
+	}
+	res, err := ex.d.Dispatcher.Dispatch(cctx, gateway.DispatchInput{
+		ProtocolFamily:       replicateImageFamily,
+		EndpointPath:         path,
+		Account:              ex.accInfo,
+		Credential:           ex.cred,
+		NonStreamingBuffered: true,
+	})
+	if err != nil {
+		if errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
 			return "cancel_blocked_unsafe_endpoint: " + err.Error()
 		}
-	}
-	client := ex.d.ReplicateCancelClient
-	if client == nil {
-		client = defaultReplicateCancelClient
-	}
-	res, err := client.Do(req)
-	if err != nil {
 		return "cancel_send_failed: " + err.Error()
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, res.Body)
-		_ = res.Body.Close()
-	}()
+	if res == nil {
+		return "cancel_send_failed: empty dispatcher result"
+	}
+	defer res.Close()
+	_, _ = io.Copy(io.Discard, res.UpstreamReader)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Sprintf("cancel_rejected_status_%d", res.StatusCode)
 	}
@@ -228,7 +208,7 @@ func replicateAbortLoss(meta replicate.PredictionMeta, cancelOutcome string) jso
 		Vendor:   "replicate",
 		Severity: proto.ProtocolLossInfo,
 		Code:     "replicate_prediction_cancel",
-		Reason:   "prediction aborted before delivery; upstream task cancellation attempted best-effort",
+		Reason:   "prediction aborted before delivery; upstream task has a fixed deadline and cancellation was attempted",
 		Details: map[string]string{
 			"prediction_id":  meta.ID,
 			"status":         meta.Status,

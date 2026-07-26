@@ -34,7 +34,7 @@ func TestEgressDialMetricOK(t *testing.T) {
 	oldDial := sidecarDialContext
 	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
 	defer func() { sidecarDialContext = oldDial }()
-	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":3,"ok":true}`), nil)
+	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":4,"ok":true}`), nil)
 
 	client := NewSidecarClient(sidecarTestSocket).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	conn, err := client.DialTLS(context.Background(), "api.anthropic.com", 443, SidecarProfileAnthropicCLIMimicryV1, nil, nil)
@@ -67,7 +67,7 @@ func TestEgressDialMetricRejected(t *testing.T) {
 	oldDial := sidecarDialContext
 	sidecarDialContext = func(context.Context, string, string) (net.Conn, error) { return clientConn, nil }
 	defer func() { sidecarDialContext = oldDial }()
-	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":3,"ok":false,"error":{"code":"profile_unknown","message":"unknown profile foo"}}`), nil)
+	go fakeSidecarReadControlWriteAck(t, serverConn, []byte(`{"version":4,"ok":false,"error":{"code":"profile_unknown","message":"unknown profile foo"}}`), nil)
 
 	client := NewSidecarClient(sidecarTestSocket).WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	_, err := client.DialTLS(context.Background(), "api.example.com", 443, "some-profile", nil, nil)

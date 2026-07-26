@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrInsufficientBalance       = errors.New("billing: insufficient balance")
+	ErrTenantInactive            = errors.New("billing: tenant inactive")
 	ErrInvalidBillingEffect      = errors.New("billing: invalid billing effect")
 	ErrRefundNoCapturedCharge    = errors.New("billing: refund has no captured balance charge")
 	ErrRefundBalanceRowMissing   = errors.New("billing: refund balance row missing")

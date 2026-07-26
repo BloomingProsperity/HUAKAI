@@ -32,6 +32,9 @@ func newAdminConfirmHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		res, err := d.Service.AdminConfirmPaid(r.Context(), payment.AdminConfirmPaidInput{
 			TenantID:      req.TenantID,
 			OrderID:       id,
@@ -71,6 +74,9 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req cancelRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		order, err := d.Service.CancelOrder(r.Context(), payment.CancelOrderInput{

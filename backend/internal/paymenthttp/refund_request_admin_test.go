@@ -132,8 +132,8 @@ func TestAdminRefundRequestTenantIsolation(t *testing.T) {
 	router := newRefundRequestAdminRouter(&captureService{}, recorder)
 
 	resp := postRefundRequestAdminJSON(router, "/payments/refund-requests/"+itoa(req.ID)+"/approve", `{"tenant_id":6}`)
-	if resp.Code != http.StatusNotFound {
-		t.Fatalf("cross-tenant approve status=%d want 404; body=%s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("cross-tenant approve status=%d want 403; body=%s", resp.Code, resp.Body.String())
 	}
 	if refunds.refundCalls != 0 {
 		t.Fatalf("cross-tenant approve called RefundOrder %d times", refunds.refundCalls)
@@ -204,9 +204,10 @@ func newRefundRequestAdminRouter(svc Service, recorder RefundRequestRecorder) ht
 	r := chi.NewRouter()
 	r.Route("/payments", func(r chi.Router) {
 		MountPaymentAdminRoutes(r, AdminDeps{
-			Auth:           fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
-			Service:        svc,
-			RefundRequests: recorder,
+			Auth:             fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 99}},
+			Service:          svc,
+			RefundRequests:   recorder,
+			PlatformTenantID: 5,
 		})
 	})
 	return r

@@ -51,10 +51,9 @@ func TestBuildRequestModelSegmentsEscapedIndividually(t *testing.T) {
 	}
 }
 
-// TestBuildRequestPreferWaitHeader 计费正确性守卫:删 Prefer: wait → 上游
-// 立刻返回 status=starting,本侧单次读取 settle 会对未生成的图计费。
-// 变异:去掉该头本断言必红。
-func TestBuildRequestPreferWaitHeader(t *testing.T) {
+// TestBuildRequestWaitAndDeadlineHeaders 计费正确性守卫：同步等待结束时，上游
+// 自动取消边界也必须同时生效。删任一头或让两个秒数漂移，本断言必红。
+func TestBuildRequestWaitAndDeadlineHeaders(t *testing.T) {
 	a := &Adapter{}
 	req, err := a.BuildRequest(context.Background(), apikeyBuildInput("o/m"))
 	if err != nil {
@@ -62,6 +61,9 @@ func TestBuildRequestPreferWaitHeader(t *testing.T) {
 	}
 	if got := req.Header.Get("Prefer"); got != "wait=60" {
 		t.Fatalf("Prefer=%q want wait=60(同步等待是计费正确性承重墙)", got)
+	}
+	if got := req.Header.Get("Cancel-After"); got != "60s" {
+		t.Fatalf("Cancel-After=%q want 60s(退款后不得继续运行)", got)
 	}
 	if got := req.Header.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type=%q", got)

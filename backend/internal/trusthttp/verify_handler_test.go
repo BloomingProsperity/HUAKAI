@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/trustreceipt"
 )
 
@@ -142,6 +144,59 @@ func TestVerifyHandlerAnonymousIPLimitIsSixtyPerMinute(t *testing.T) {
 	}
 }
 
+func TestVerifyHandlerTrustedProxySeparatesRealClients(t *testing.T) {
+	signer := mustTestSigner(t)
+	canonical := mustCanonicalReceipt(t, sampleTrustReceipt())
+	body := verifyRequestBody(t, base64.StdEncoding.EncodeToString(canonical), base64.StdEncoding.EncodeToString(signer.Sign(canonical)), signer.Fingerprint())
+	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("build resolver: %v", err)
+	}
+	handler := NewVerifyHandler(VerifyDeps{
+		Registry: mustRegistryForSigner(t, signer),
+		ClientIP: resolver,
+	})
+
+	for i := 0; i < 60; i++ {
+		rec := doTrustVerifyFromProxy(t, handler, body, "10.1.2.3:1234", "198.51.100.10")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("client A request %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := doTrustVerifyFromProxy(t, handler, body, "10.1.2.3:1234", "198.51.100.11"); rec.Code != http.StatusOK {
+		t.Fatalf("client B behind same trusted proxy must have an independent bucket, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := doTrustVerifyFromProxy(t, handler, body, "10.1.2.3:1234", "198.51.100.10"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("client A request 61 status=%d want 429 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestVerifyHandlerUntrustedPeerCannotForgeFreshBuckets(t *testing.T) {
+	signer := mustTestSigner(t)
+	canonical := mustCanonicalReceipt(t, sampleTrustReceipt())
+	body := verifyRequestBody(t, base64.StdEncoding.EncodeToString(canonical), base64.StdEncoding.EncodeToString(signer.Sign(canonical)), signer.Fingerprint())
+	resolver, err := clientip.NewResolver([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("build resolver: %v", err)
+	}
+	handler := NewVerifyHandler(VerifyDeps{
+		Registry: mustRegistryForSigner(t, signer),
+		ClientIP: resolver,
+	})
+
+	for i := 0; i < 60; i++ {
+		xff := "198.51.100." + strconv.Itoa(i+1)
+		rec := doTrustVerifyFromProxy(t, handler, body, "203.0.113.10:1234", xff)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	rec := doTrustVerifyFromProxy(t, handler, body, "203.0.113.10:1234", "192.0.2.250")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("forged forwarding headers minted fresh buckets, status=%d want 429 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func sampleTrustReceipt() trustreceipt.TrustReceiptV1 {
 	return trustreceipt.TrustReceiptV1{
 		RequestID:       "req-trust-http",
@@ -195,6 +250,17 @@ func doTrustVerifyFromAddr(t *testing.T, handler http.Handler, body string, remo
 	req := httptest.NewRequest(http.MethodPost, "/v1/trust/verify", strings.NewReader(body))
 	req.RemoteAddr = remoteAddr
 	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func doTrustVerifyFromProxy(t *testing.T, handler http.Handler, body, remoteAddr, xff string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/trust/verify", strings.NewReader(body))
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", xff)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec

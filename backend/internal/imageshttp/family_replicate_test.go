@@ -339,21 +339,26 @@ func TestReplicateImagesHandler_SettlesByDeliveredImageCount(t *testing.T) {
 	}
 }
 
-// recordingCancelDoer 记录 best-effort cancel 请求的控制面 client 夹具。
-// 纪律:任何「带 prediction id 且非终态」的 fixture 必须注入本 doer——否则默认
-// client 会在单测里真发 api.replicate.com。
-// 与真实 http.Client 同口径:context 已取消则拒发(detached-context 判别用)。
-type recordingCancelDoer struct {
-	requests []*http.Request
-	status   int
-	err      error
+// recordingCancelDispatcher 只截获取消调用，其余请求继续交给真实测试
+// Dispatcher。这样用例既能控制取消结局，又能证明生产代码没有另开 HTTP 出口。
+type recordingCancelDispatcher struct {
+	next   dispatcher
+	inputs []gateway.DispatchInput
+	status int
+	err    error
 }
 
-func (d *recordingCancelDoer) Do(req *http.Request) (*http.Response, error) {
-	if err := req.Context().Err(); err != nil {
+func (d *recordingCancelDispatcher) Dispatch(ctx context.Context, in gateway.DispatchInput) (*gateway.DispatchResult, error) {
+	if !strings.HasSuffix(in.EndpointPath, "/cancel") {
+		if d.next == nil {
+			return nil, errors.New("测试 Dispatcher 未配置主请求下游")
+		}
+		return d.next.Dispatch(ctx, in)
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	d.requests = append(d.requests, req)
+	d.inputs = append(d.inputs, in)
 	if d.err != nil {
 		return nil, d.err
 	}
@@ -361,7 +366,18 @@ func (d *recordingCancelDoer) Do(req *http.Request) (*http.Response, error) {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	return &http.Response{StatusCode: status, Body: http.NoBody}, nil
+	return &gateway.DispatchResult{
+		StatusCode:     status,
+		Headers:        http.Header{"Content-Type": []string{"application/json"}},
+		UpstreamReader: http.NoBody,
+		Close:          func() error { return nil },
+	}, nil
+}
+
+func installCancelRecorder(env *imagesTestEnv, status int, err error) *recordingCancelDispatcher {
+	recorder := &recordingCancelDispatcher{next: env.deps.Dispatcher, status: status, err: err}
+	env.deps.Dispatcher = recorder
+	return recorder
 }
 
 // TestBestEffortCancelSurvivesCanceledRequestContext detached-context 守卫:
@@ -372,11 +388,12 @@ func (d *recordingCancelDoer) Do(req *http.Request) (*http.Response, error) {
 func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	doer := &recordingCancelDoer{}
+	recorder := &recordingCancelDispatcher{}
 	ex := &execution{
-		ctx:  ctx,
-		cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
-		d:    Deps{ReplicateCancelClient: doer},
+		ctx:     ctx,
+		accInfo: provider.AccountInfo{AccountID: 44, TenantID: 7, Platform: "replicate", AccountType: "api_key"},
+		cred:    provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
+		d:       Deps{Dispatcher: recorder},
 	}
 
 	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ctx", Status: "processing"})
@@ -384,8 +401,11 @@ func TestBestEffortCancelSurvivesCanceledRequestContext(t *testing.T) {
 	if outcome != "cancel_issued" {
 		t.Fatalf("outcome=%q want cancel_issued(断连后仍须取消上游任务)", outcome)
 	}
-	if got := len(doer.requests); got != 1 {
+	if got := len(recorder.inputs); got != 1 {
 		t.Fatalf("cancel requests=%d want 1", got)
+	}
+	if recorder.inputs[0].Account.AccountID != 44 {
+		t.Fatalf("cancel account=%d want 44(必须复用原账号出口)", recorder.inputs[0].Account.AccountID)
 	}
 }
 
@@ -409,28 +429,51 @@ func TestBestEffortCancelBlocksRebindingCustomEndpoint(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			doer := &recordingCancelDoer{}
-			ex := &execution{ctx: context.Background(), cred: tc.cred, d: Deps{ReplicateCancelClient: doer}}
+			adapters := provider.NewStaticRegistry()
+			adapters.MustRegister(registrydefault.ProtocolReplicateImage, &replicate.Adapter{})
+			tf := transport.NewFactory()
+			spy := &cancelTransportSpy{}
+			tf.SetStandard(spy)
+			ex := &execution{
+				ctx: context.Background(),
+				accInfo: provider.AccountInfo{
+					AccountID: 44, TenantID: 7, Platform: "replicate", AccountType: "api_key",
+				},
+				cred: tc.cred,
+				d: Deps{Dispatcher: &gateway.UpstreamDispatcher{
+					Adapters: adapters, TransportFactory: tf,
+				}},
+			}
 			outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-ssrf", Status: "processing"})
 			if !strings.HasPrefix(outcome, "cancel_blocked_unsafe_endpoint") {
 				t.Fatalf("outcome=%q want cancel_blocked_unsafe_endpoint 前缀(rebinding 必须拦截)", outcome)
 			}
-			if got := len(doer.requests); got != 0 {
-				t.Fatalf("cancel requests=%d want 0(被守卫拦截不得出站)", got)
+			if spy.calls != 0 {
+				t.Fatalf("cancel transport calls=%d want 0(被守卫拦截不得出站)", spy.calls)
 			}
 		})
 	}
+}
+
+type cancelTransportSpy struct {
+	calls int
+}
+
+func (s *cancelTransportSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	s.calls++
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
 }
 
 // TestBestEffortCancelRecordsRejectedStatus 非 2xx cancel 响应进审计结局
 // (评审遗留 X2:此前 cancel_rejected_status_* 是测试死路径)。
 // 变异:删 status 检查恒返 cancel_issued → 变红。
 func TestBestEffortCancelRecordsRejectedStatus(t *testing.T) {
-	doer := &recordingCancelDoer{status: 422}
+	recorder := &recordingCancelDispatcher{status: 422}
 	ex := &execution{
-		ctx:  context.Background(),
-		cred: provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
-		d:    Deps{ReplicateCancelClient: doer},
+		ctx:     context.Background(),
+		accInfo: provider.AccountInfo{AccountID: 44, TenantID: 7, Platform: "replicate", AccountType: "api_key"},
+		cred:    provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "r8"},
+		d:       Deps{Dispatcher: recorder},
 	}
 
 	outcome := ex.bestEffortCancelReplicatePrediction(replicate.PredictionMeta{ID: "pred-422", Status: "processing"})
@@ -450,8 +493,7 @@ func TestReplicateImagesHandler_WaitOverrunCancelsPrediction(t *testing.T) {
 		status: http.StatusOK,
 		body:   `{"id":"pred-42","status":"processing","output":null,"error":null}`,
 	})
-	doer := &recordingCancelDoer{}
-	env.deps.ReplicateCancelClient = doer
+	recorder := installCancelRecorder(env, http.StatusOK, nil)
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
 
@@ -461,18 +503,18 @@ func TestReplicateImagesHandler_WaitOverrunCancelsPrediction(t *testing.T) {
 	if got := len(env.settler.settles); got != 0 {
 		t.Fatalf("settle calls=%d want 0", got)
 	}
-	if got := len(doer.requests); got != 1 {
+	if got := len(recorder.inputs); got != 1 {
 		t.Fatalf("cancel requests=%d want 1(超窗 prediction 必须取消)", got)
 	}
-	cancelReq := doer.requests[0]
-	if cancelReq.Method != http.MethodPost {
-		t.Fatalf("cancel method=%s want POST", cancelReq.Method)
+	cancelInput := recorder.inputs[0]
+	if cancelInput.ProtocolFamily != registrydefault.ProtocolReplicateImage {
+		t.Fatalf("cancel family=%s want replicate_image", cancelInput.ProtocolFamily)
 	}
-	if got := cancelReq.URL.String(); got != "https://api.replicate.com/v1/predictions/pred-42/cancel" {
-		t.Fatalf("cancel url=%q want predictions/pred-42/cancel", got)
+	if got := cancelInput.EndpointPath; got != "/v1/predictions/pred-42/cancel" {
+		t.Fatalf("cancel path=%q want predictions/pred-42/cancel", got)
 	}
-	if got := cancelReq.Header.Get("Authorization"); got != "Bearer r8_test" {
-		t.Fatalf("cancel auth=%q want 与出站同口径 Bearer", got)
+	if cancelInput.Account.AccountID != 44 || cancelInput.Credential.Value != "r8_test" {
+		t.Fatalf("cancel account/credential=%d/%q want 原账号 44 及原凭据", cancelInput.Account.AccountID, cancelInput.Credential.Value)
 	}
 	if got := len(env.settler.aborts); got != 1 {
 		t.Fatalf("abort calls=%d want 1", got)
@@ -492,8 +534,7 @@ func TestReplicateImagesHandler_CancelFailureDoesNotBlockAbort(t *testing.T) {
 		status: http.StatusOK,
 		body:   `{"id":"pred-77","status":"starting","output":null,"error":null}`,
 	})
-	doer := &recordingCancelDoer{err: errors.New("upstream cancel unreachable")}
-	env.deps.ReplicateCancelClient = doer
+	installCancelRecorder(env, 0, errors.New("upstream cancel unreachable"))
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
 
@@ -523,15 +564,14 @@ func TestReplicateImagesHandler_TerminalPredictionNotCanceled(t *testing.T) {
 		status: http.StatusOK,
 		body:   `{"id":"pred-99","status":"failed","output":null,"error":"NSFW content"}`,
 	})
-	doer := &recordingCancelDoer{}
-	env.deps.ReplicateCancelClient = doer
+	recorder := installCancelRecorder(env, http.StatusOK, nil)
 
 	rec := env.invoke(t, `{"model":"flux-pro","prompt":"x","size":"1024x1024"}`)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d body=%s want 502", rec.Code, rec.Body.String())
 	}
-	if got := len(doer.requests); got != 0 {
+	if got := len(recorder.inputs); got != 0 {
 		t.Fatalf("cancel requests=%d want 0(终态 prediction 不取消)", got)
 	}
 	loss := string(env.settler.aborts[0].protocolLoss)
@@ -542,7 +582,8 @@ func TestReplicateImagesHandler_TerminalPredictionNotCanceled(t *testing.T) {
 
 // 静态断言:夹具 stub 满足接口(防 handler_test 夹具演化后本文件悄悄漂移)。
 var (
-	_                 = auth.Identity{}
-	_ billing.Settler = (*recordingSettler)(nil)
-	_ cancelHTTPDoer  = (*recordingCancelDoer)(nil)
+	_                   = auth.Identity{}
+	_ billing.Settler   = (*recordingSettler)(nil)
+	_ dispatcher        = (*recordingCancelDispatcher)(nil)
+	_ http.RoundTripper = (*cancelTransportSpy)(nil)
 )

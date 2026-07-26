@@ -33,8 +33,9 @@ var (
 // (provider_account_id / acquisition_token 必非空); response_cache_l2 = L2
 // 缓存命中路径 (两者必为空, 无上游账号)。
 const (
-	SettlementSourceProviderUpstream = "provider_upstream"
-	SettlementSourceResponseCacheL2  = "response_cache_l2"
+	SettlementSourceProviderUpstream   = "provider_upstream"
+	SettlementSourceResponseCacheL2    = "response_cache_l2"
+	SettlementSourceExternalMediaRelay = "external_media_relay"
 )
 
 type DefaultSettler struct {
@@ -380,20 +381,31 @@ func (s *DefaultSettler) abortOnce(ctx context.Context, tenantID, claimID int64,
 	if err != nil {
 		return fmt.Errorf("billing: stored billing effect for abort claim %d: %w", claimID, err)
 	}
-	// 候选清扫查询与本事务之间存在时间窗；在持有 claim 行锁时再次检查恢复队列，
-	// 防止已交付请求刚落下未决恢复行却仍被零成本中止。所有状态未闭合的恢复行都保护 claim。
+	// 候选清扫查询与本事务之间存在时间窗；在持有 claim 行锁时再次检查恢复队列
+	// 和已有交付证据的结算意图，防止已交付请求刚落下恢复证据却仍被零成本中止。
+	// pending 只证明预留完成，不证明业务字节已经交付；配额拒绝、上游失败和写出
+	// 失败都必须能正常 Abort。若交付成功但 delivering 写失败，系统按用户有利原则
+	// 在租约过期后释放，不凭不确定事实扣费。
 	var settlementRecoveryPending bool
 	if err := tx.QueryRow(ctx,
 		`SELECT EXISTS (
-			SELECT 1
-			FROM usage_record_dlq
-			WHERE tenant_id=$1
-			  AND claim_id=$2
-			  AND event_kind='post_delivery_settlement'
-			  AND status <> 'delivered'
+			SELECT 1 FROM (
+				SELECT 1
+				FROM usage_record_dlq
+				WHERE tenant_id=$1
+				  AND claim_id=$2
+				  AND event_kind='post_delivery_settlement'
+				  AND status <> 'delivered'
+				UNION ALL
+				SELECT 1
+				FROM settlement_intents
+				WHERE tenant_id=$1
+				  AND claim_id=$2
+				  AND status IN ('delivering', 'settling', 'failed')
+			) unresolved
 		)`, tenantID, claimID,
 	).Scan(&settlementRecoveryPending); err != nil {
-		return fmt.Errorf("billing: check post-delivery settlement recovery before abort: %w", err)
+		return fmt.Errorf("billing: check unresolved settlement evidence before abort: %w", err)
 	}
 	if settlementRecoveryPending {
 		return ErrPostDeliverySettlementPending

@@ -78,10 +78,10 @@ func mutatingRegistry(c *mutateCounters) *hermesops.Registry {
 			return hermesops.ToolResult{Summary: map[string]any{"enabled": false}}, nil
 		},
 	})
-	// 仅限 platform-admin 的 mutating 工具,用于检验 RBAC 拒绝。
+	// 租户管理员可执行的本租户死信恢复工具。
 	mustRegisterTestTool(reg, hermesops.ToolSpec{
 		Name: hermesops.ToolDLQReplay, Category: hermesops.CategoryMutating,
-		Description: "重放测试死信", Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RolePlatformAdmin,
+		Description: "重放测试死信", Mutating: true, RequiresConfirmation: true, RequiredRole: hermesops.RoleTenantOperator,
 		InputSchema: hermesops.ObjectSchema(map[string]any{
 			"id": hermesops.PositiveIntegerSchema("死信编号"),
 		}, "id"),
@@ -346,10 +346,7 @@ func TestMutate_确认前目标状态变化必须重新预览(t *testing.T) {
 
 // --- L1 RBAC ----------------------------------------------------------------
 
-func TestMutate_TenantOperatorCannotDLQReplay(t *testing.T) {
-	// 回归(L1,区分性):dlq_replay 仅限 platform_admin——tenant_operator 得到
-	// 403 + 一条 denied tool-call 行,且从不 preview 或变更。变异检查:把
-	// DLQReplaySpec 的下限降到 tenant_operator,这里就会返回 200。
+func TestMutate_TenantOperatorCanPreviewOwnTenantDLQReplay(t *testing.T) {
 	c := &mutateCounters{}
 	mut := &fakeMutator{}
 	calls := &fakeToolCalls{}
@@ -357,14 +354,14 @@ func TestMutate_TenantOperatorCannotDLQReplay(t *testing.T) {
 	ident, actor := operator(7) // tenant_operator(租户运营者)
 
 	rec := mutateRequest(h, ident, actor, `{"tool_name":"dlq_replay","args":{"id":1}}`)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("tenant_operator dlq_replay status=%d body=%s want 403", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant_operator dlq_replay status=%d body=%s want 200", rec.Code, rec.Body.String())
 	}
 	if mut.executions != 0 {
-		t.Fatalf("forbidden dlq_replay executed: %d want 0", mut.executions)
+		t.Fatalf("dry-run dlq_replay executed: %d want 0", mut.executions)
 	}
-	if len(calls.rows) != 1 || calls.rows[0].ResultStatus != string(hermesops.ResultDenied) {
-		t.Fatalf("denied row not recorded: %+v", calls.rows)
+	if len(calls.rows) != 1 || !calls.rows[0].DryRun || calls.rows[0].ResultStatus != string(hermesops.ResultOK) {
+		t.Fatalf("dry-run row not recorded: %+v", calls.rows)
 	}
 }
 
@@ -461,7 +458,7 @@ func TestMutate_DLQReplayAlreadyDeliveredIsIdempotentSuccess(t *testing.T) {
 		Lookup: func(_ context.Context, id, tenant int64) (dlq.Record, error) {
 			return dlq.Record{ID: id, TenantID: tenant, Status: dlq.StatusDelivered}, nil
 		},
-		Replay: func(context.Context, int64, string) (*dlq.Record, error) {
+		Replay: func(context.Context, int64, int64, string) (*dlq.Record, error) {
 			return nil, dlq.ErrNotFound
 		},
 	}))

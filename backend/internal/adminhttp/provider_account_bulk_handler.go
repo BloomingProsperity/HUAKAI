@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -215,7 +216,8 @@ func valueOrCurrentInt32(value *int32, current int32) int32 {
 
 // MountProviderAccountBulkRoutes 注册 POST /bulk-by-tag 路由。
 func MountProviderAccountBulkRoutes(r chi.Router, d ProviderAccountBulkDeps) {
-	r.Post("/bulk-by-tag", newProviderAccountBulkHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Post("/bulk-by-tag", newProviderAccountBulkHandler(d))
 }
 
 func newProviderAccountBulkHandler(d ProviderAccountBulkDeps) http.HandlerFunc {

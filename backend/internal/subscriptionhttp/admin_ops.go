@@ -55,6 +55,9 @@ func newAdminUpdatePlanHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		if req.ForSale == nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid_plan", "for_sale is required for plan update")
 			return
@@ -106,6 +109,9 @@ func newAdminBulkAssignHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		result, err := d.Service.BulkAssign(r.Context(), subscription.BulkAssignInput{
 			TenantID: req.TenantID, UserIDs: req.UserIDs, PlanID: req.PlanID,
 			ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(), RequestID: requestID(r),
@@ -130,6 +136,9 @@ func newAdminExtendHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req extendAssignmentRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		sub, err := d.Service.ExtendSubscription(r.Context(), subscription.ExtendSubscriptionInput{
@@ -158,6 +167,9 @@ func newAdminResetQuotaHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		sub, err := d.Service.ResetQuota(r.Context(), subscription.ResetQuotaInput{
 			TenantID: req.TenantID, SubscriptionID: id, ActorAdminID: ident.TokenID, ActorRef: ident.AuditActor(), RequestID: requestID(r),
 		})
@@ -181,6 +193,9 @@ func newAdminChangePlanHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req changePlanRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		sub, err := d.Service.ChangePlan(r.Context(), subscription.ChangePlanInput{
@@ -207,6 +222,9 @@ func newAdminRevokeHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req revokeAssignmentRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		sub, err := d.Service.RevokeSubscription(r.Context(), subscription.RevokeSubscriptionInput{

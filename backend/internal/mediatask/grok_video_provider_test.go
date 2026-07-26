@@ -2,6 +2,7 @@ package mediatask
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -132,6 +133,47 @@ func TestGrokVideoProviderUnknownPollStatusIsRetryable(t *testing.T) {
 	}
 }
 
+func TestGrokVideoProviderTruncatedAmbiguousSubmitResponseNeverRetries(t *testing.T) {
+	for _, status := range []int{
+		http.StatusRequestTimeout,
+		http.StatusConflict,
+		http.StatusTooEarly,
+		http.StatusInternalServerError,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			selector := &capturingVideoSelector{accountID: 41}
+			vault := provider.NewStaticVault()
+			_ = vault.Set(41,
+				provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				provider.AccountInfo{
+					AccountID: 41, TenantID: 7, Platform: "grok",
+					AccountType: credentialstore.AuthModeAPIKey,
+				},
+			)
+			mediaProvider := NewGrokVideoProvider(GrokVideoProviderDeps{
+				Selector: selector, CredentialVault: vault,
+				Dispatcher: &videoDispatcherStub{responses: []*gateway.DispatchResult{
+					dispatchReadErrorResult(status),
+				}},
+			})
+			task := boundVideoTask()
+			_, err := mediaProvider.SubmitBound(context.Background(), task, SubmitReq{
+				TaskID: task.ID, RequestID: task.RequestID, TaskType: task.TaskType,
+				InputParams: jsonBody(`{"model":"m","prompt":"x"}`),
+			})
+			class, retryable, recognized := providerErrorDetails(err)
+			if !recognized || retryable || class != "provider_submit_outcome_unknown" {
+				t.Fatalf("status=%d class=%q retryable=%v recognized=%v err=%v",
+					status, class, retryable, recognized, err)
+			}
+			if selector.releaseCount != 1 {
+				t.Fatalf("提交结果未知时本轮临时选择句柄释放次数=%d want 1", selector.releaseCount)
+			}
+		})
+	}
+}
+
 func TestVideoProviderRateLimitPreservesClassAndBackoff(t *testing.T) {
 	selector := &capturingVideoSelector{accountID: 41}
 	vault := provider.NewStaticVault()
@@ -232,6 +274,19 @@ func dispatchResult(status int, body string) *gateway.DispatchResult {
 		StatusCode: status, Headers: make(http.Header), UpstreamReader: strings.NewReader(body),
 		Close: func() error { return nil },
 	}
+}
+
+func dispatchReadErrorResult(status int) *gateway.DispatchResult {
+	return &gateway.DispatchResult{
+		StatusCode: status, Headers: make(http.Header), UpstreamReader: mediaReadError{},
+		Close: func() error { return nil },
+	}
+}
+
+type mediaReadError struct{}
+
+func (mediaReadError) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func boundVideoTask() Task {

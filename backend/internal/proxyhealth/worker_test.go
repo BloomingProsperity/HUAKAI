@@ -56,18 +56,40 @@ type fakeProber struct{ ok bool }
 
 func (f fakeProber) Probe(context.Context, ProxyTarget) bool { return f.ok }
 
+type proberFunc func(context.Context, ProxyTarget) bool
+
+func (f proberFunc) Probe(ctx context.Context, target ProxyTarget) bool {
+	return f(ctx, target)
+}
+
 type fakeStore struct {
 	touched []int64
 	set     []string
 }
 
-func (f *fakeStore) Touch(_ context.Context, _ int64, id int64) error {
+func (f *fakeStore) Touch(_ context.Context, _ int64, id int64, _ string) (bool, error) {
 	f.touched = append(f.touched, id)
-	return nil
+	return true, nil
 }
-func (f *fakeStore) SetStatus(_ context.Context, _, _ int64, status string) error {
+func (f *fakeStore) SetStatus(_ context.Context, _, _ int64, _, status string) (bool, error) {
 	f.set = append(f.set, status)
-	return nil
+	return true, nil
+}
+
+type casStatusStore struct {
+	status string
+}
+
+func (s *casStatusStore) Touch(_ context.Context, _, _ int64, expectedStatus string) (bool, error) {
+	return s.status == expectedStatus, nil
+}
+
+func (s *casStatusStore) SetStatus(_ context.Context, _, _ int64, expectedStatus, status string) (bool, error) {
+	if s.status != expectedStatus {
+		return false, nil
+	}
+	s.status = status
+	return true, nil
 }
 
 func TestWorker_Tick_FlipsDeadAfterThreshold(t *testing.T) {
@@ -121,6 +143,30 @@ func TestWorker_Tick_TouchesWhenNoChange(t *testing.T) {
 	}
 	if len(store.set) != 0 {
 		t.Fatalf("expected no status change, got %v", store.set)
+	}
+}
+
+func TestWorker_Tick_DoesNotOverwriteConcurrentAdminDisable(t *testing.T) {
+	store := &casStatusStore{status: "active"}
+	w := NewWorker(
+		fakeLister{rows: []ProxyTarget{{ID: 4, TenantID: 9, Status: "active", Host: "h", Port: 1}}},
+		proberFunc(func(context.Context, ProxyTarget) bool {
+			store.status = "disabled"
+			return false
+		}),
+		store,
+		time.Minute,
+		nil,
+	)
+	w.state[4] = &counters{fails: deadThreshold - 1}
+
+	w.tick(context.Background())
+
+	if store.status != "disabled" {
+		t.Fatalf("后台探测覆盖了管理员禁用：status=%q", store.status)
+	}
+	if _, exists := w.state[4]; exists {
+		t.Fatal("CAS 冲突后应丢弃旧探测计数，下一轮从新状态重新判断")
 	}
 }
 

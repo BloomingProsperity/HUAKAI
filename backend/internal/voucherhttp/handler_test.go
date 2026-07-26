@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -20,11 +21,14 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/voucher"
 )
 
-// promoSettingsStub 让 Get(promo_enabled) 返回固定值,测 promo 总开关门控。
-type promoSettingsStub struct{ value string }
+// promoSettingsStub 让权威读取返回固定值或故障，测兑换总开关的资金门控。
+type promoSettingsStub struct {
+	value string
+	err   error
+}
 
-func (s promoSettingsStub) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
-	return platformsettings.StoredSetting{Key: key, Value: s.value}, nil
+func (s promoSettingsStub) GetAuthoritative(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
+	return platformsettings.StoredSetting{Key: key, Value: s.value}, s.err
 }
 
 func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
@@ -35,7 +39,7 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
-		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc})
+		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc, PlatformTenantID: 1})
 	})
 	r.Route("/v1/users/me/vouchers", func(r chi.Router) {
 		r.Use(func(next http.Handler) http.Handler {
@@ -44,7 +48,7 @@ func TestVoucherHandlersAdminAndUserRoutes(t *testing.T) {
 				next.ServeHTTP(w, req.WithContext(ctx))
 			})
 		})
-		MountVoucherUserRoutes(r, VoucherUserDeps{Service: svc})
+		MountVoucherUserRoutes(r, VoucherUserDeps{Service: svc, PlatformSettings: promoSettingsStub{value: "true"}})
 	})
 
 	createBody := map[string]any{
@@ -126,7 +130,9 @@ func TestVoucherUserRedeemUsesTrustedProxyClientIP(t *testing.T) {
 				next.ServeHTTP(w, req.WithContext(ctx))
 			})
 		})
-		MountVoucherUserRoutes(r, VoucherUserDeps{Service: svc, ClientIPResolver: resolver})
+		MountVoucherUserRoutes(r, VoucherUserDeps{
+			Service: svc, ClientIPResolver: resolver, PlatformSettings: promoSettingsStub{value: "true"},
+		})
 	})
 
 	payload, err := json.Marshal(map[string]any{"code": "c", "idempotency_key": "k"})
@@ -155,7 +161,7 @@ func TestAT_BILL_002_011_VoucherGetBatchRouteTenantScoped(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Route("/v1/admin/vouchers", func(r chi.Router) {
-		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc})
+		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc, PlatformTenantID: 1})
 	})
 
 	createResp := doVoucherRequest(t, r, http.MethodPost, "/v1/admin/vouchers/batch", map[string]any{
@@ -192,9 +198,8 @@ func TestAT_BILL_002_011_VoucherGetBatchRouteTenantScoped(t *testing.T) {
 	}
 }
 
-// TestVoucherRedeemPromoGate 验证 promo 总开关(A 方案):运营者显式关闭(promo_enabled="false")
-// 时兑换被拦 403 promo_disabled 且码**未被消费**;未配置(nil,行为保持)时兑换照常成功。
-// 变异:删 newVoucherRedeemHandler 里的 promoRedeemEnabled 门控 → 关闭时兑换变 200 → 本测试转红。
+// TestVoucherRedeemPromoGate 验证运营者关闭、配置服务缺失和存储故障都会在调用
+// Redeem 前短路；恢复后原兑换码仍可使用，证明故障路径没有产生资金副作用。
 func TestVoucherRedeemPromoGate(t *testing.T) {
 	now := time.Now().UTC()
 	store := voucher.NewMemoryStore()
@@ -209,7 +214,9 @@ func TestVoucherRedeemPromoGate(t *testing.T) {
 	}
 
 	adminR := chi.NewRouter()
-	adminR.Route("/v1/admin/vouchers", func(r chi.Router) { MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc}) })
+	adminR.Route("/v1/admin/vouchers", func(r chi.Router) {
+		MountVoucherAdminRoutes(r, VoucherAdminDeps{Auth: auth, Service: svc, PlatformTenantID: 1})
+	})
 	createResp := doVoucherRequest(t, adminR, http.MethodPost, "/v1/admin/vouchers", map[string]any{
 		"tenant_id": 1, "code": "promo-gate-code", "amount_cents": 100,
 		"valid_from":  now.Add(-time.Minute).Format(time.RFC3339),
@@ -238,10 +245,25 @@ func TestVoucherRedeemPromoGate(t *testing.T) {
 		t.Fatalf("应返回 promo_disabled,实得 %s", blocked.Body.String())
 	}
 
-	// promo 未配置(nil)→ 行为保持,兑换成功(也证明上面被拦时码未被消费)。
-	ok := redeem(nil, "promo-gate-ok")
+	for name, settings := range map[string]platformSettingsReader{
+		"配置服务未接线": nil,
+		"配置存储故障":  promoSettingsStub{err: errors.New("settings unavailable")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			failed := redeem(settings, "promo-gate-"+name)
+			if failed.Code != http.StatusServiceUnavailable {
+				t.Fatalf("配置无法判定时兑换应 503,实得 %d body=%s", failed.Code, failed.Body.String())
+			}
+			if !strings.Contains(failed.Body.String(), "promo_state_unavailable") {
+				t.Fatalf("应返回 promo_state_unavailable,实得 %s", failed.Body.String())
+			}
+		})
+	}
+
+	// 配置恢复后成功，也证明上述三个拒绝分支均未消费兑换码。
+	ok := redeem(promoSettingsStub{value: "true"}, "promo-gate-ok")
 	if ok.Code != http.StatusOK {
-		t.Fatalf("promo 默认开启时兑换应成功,实得 %d body=%s", ok.Code, ok.Body.String())
+		t.Fatalf("promo 开启时兑换应成功,实得 %d body=%s", ok.Code, ok.Body.String())
 	}
 }
 

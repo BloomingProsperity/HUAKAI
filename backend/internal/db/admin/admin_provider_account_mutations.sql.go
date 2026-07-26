@@ -167,6 +167,36 @@ func (q *Queries) InsertProviderAccountRaw(ctx context.Context, arg InsertProvid
 	return id, err
 }
 
+const recordProviderAccountProbe = `-- name: RecordProviderAccountProbe :execrows
+UPDATE provider_accounts
+SET
+    last_probe_at = $1::timestamptz,
+    last_probe_latency_ms = $2::integer
+WHERE id = $3::bigint
+  AND tenant_id = $4::bigint
+  AND deleted_at IS NULL
+`
+
+type RecordProviderAccountProbeParams struct {
+	ProbeAt   pgtype.Timestamptz `db:"probe_at" json:"probe_at"`
+	LatencyMs int32              `db:"latency_ms" json:"latency_ms"`
+	ID        int64              `db:"id" json:"id"`
+	TenantID  int64              `db:"tenant_id" json:"tenant_id"`
+}
+
+func (q *Queries) RecordProviderAccountProbe(ctx context.Context, arg RecordProviderAccountProbeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordProviderAccountProbe,
+		arg.ProbeAt,
+		arg.LatencyMs,
+		arg.ID,
+		arg.TenantID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const softDeleteProviderAccount = `-- name: SoftDeleteProviderAccount :exec
 UPDATE provider_accounts
 SET

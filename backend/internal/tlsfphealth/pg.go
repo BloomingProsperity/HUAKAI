@@ -18,13 +18,17 @@ func NewPostgresDriftMarker(pool *pgxpool.Pool) DriftMarker { return &pgxStore{p
 
 func (p *pgxStore) ListActive(ctx context.Context) ([]ProfileRecord, error) {
 	const q = `
-		SELECT id, tenant_id, COALESCE(name,''), COALESCE(grease_enabled,false),
-		       cipher_suites, supported_curves, ec_point_formats, signature_algorithms,
-		       alpn_protocols, tls_supported_versions, key_share_groups, psk_modes,
-		       extensions_order, COALESCE(expected_ja3_hash,'')
-		FROM tls_fingerprint_profiles
-		WHERE status = 'active' AND deleted_at IS NULL
-		ORDER BY id
+		SELECT p.id, p.tenant_id, COALESCE(p.name,''), COALESCE(p.grease_enabled,false),
+		       p.cipher_suites, p.supported_curves, p.ec_point_formats, p.signature_algorithms,
+		       p.alpn_protocols, p.tls_supported_versions, p.key_share_groups, p.psk_modes,
+		       p.extensions_order, COALESCE(p.expected_ja3_hash,'')
+		FROM tls_fingerprint_profiles p
+		JOIN tenants t
+		  ON t.id = p.tenant_id
+		 AND t.status = 'active'
+		 AND t.deleted_at IS NULL
+		WHERE p.status = 'active' AND p.deleted_at IS NULL
+		ORDER BY p.id
 		LIMIT $1`
 	rows, err := p.pool.Query(ctx, q, maxPerTick)
 	if err != nil {

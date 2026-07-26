@@ -49,7 +49,10 @@ type CreateInput struct {
 	ModelPatternMatch string
 	PoolGroupID       int64
 	MatchPriority     *int
-	AdminID           int64
+	AdminID           int64 // 兼容内部调用；HTTP 入口使用下列可追责身份字段。
+	ActorID           string
+	ActorRole         string
+	RequestID         string
 }
 
 // UpdateInput 是全替换一条 route 可编辑字段的入参 (PUT 语义)。
@@ -65,5 +68,17 @@ type UpdateInput struct {
 	ModelPatternMatch string
 	PoolGroupID       int64
 	MatchPriority     *int
-	AdminID           int64
+	AdminID           int64 // 兼容内部调用；HTTP 入口使用下列可追责身份字段。
+	ActorID           string
+	ActorRole         string
+	RequestID         string
+}
+
+// MutationLog 是路由启停和删除使用的操作归属。ActorID 必须来自认证身份，
+// RequestID 只用于关联请求，不作为权限或幂等来源。
+type MutationLog struct {
+	ActorID       string
+	ActorRole     string
+	RequestID     string
+	LegacyAdminID int64
 }

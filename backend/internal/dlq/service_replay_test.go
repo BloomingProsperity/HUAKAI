@@ -26,7 +26,7 @@ func (f *fakeReplayStore) MarkDelivered(context.Context, Record) error        { 
 func (f *fakeReplayStore) Claim(context.Context, Lane, string, time.Duration) (*Record, error) {
 	return f.rec, nil
 }
-func (f *fakeReplayStore) ClaimByID(context.Context, int64, string, time.Duration) (*Record, error) {
+func (f *fakeReplayStore) ClaimByID(context.Context, int64, int64, string, time.Duration) (*Record, error) {
 	return f.rec, nil
 }
 func (f *fakeReplayStore) MarkFailed(_ context.Context, _ Record, reason string, decision RetryDecision) error {
@@ -41,7 +41,7 @@ func TestServiceReplayRedactsSecretFromPersistedFailureReason(t *testing.T) {
 	secretErr := errors.New("upstream failed with Authorization: Bearer sk-secret-material")
 	s := newReplayService(store, func(context.Context, Record) error { return secretErr })
 
-	if _, err := s.Replay(context.Background(), 1, "operator-1"); !errors.Is(err, secretErr) {
+	if _, err := s.Replay(context.Background(), 7, 1, "operator-1"); !errors.Is(err, secretErr) {
 		t.Fatalf("调用方仍应收到原始错误链: %v", err)
 	}
 	if store.lastReason != "[REDACTED]" {
@@ -89,7 +89,7 @@ func TestServiceReplaySurfacesMarkFailedError(t *testing.T) {
 	store := &fakeReplayStore{rec: &Record{EventKind: "k"}, markFailedErr: errReplayMarkFailed}
 	s := newReplayService(store, func(context.Context, Record) error { return errReplayHandlerBoom })
 
-	_, err := s.Replay(context.Background(), 1, "operator-1")
+	_, err := s.Replay(context.Background(), 7, 1, "operator-1")
 	if err == nil {
 		t.Fatal("Replay must return an error when MarkFailed fails after a handler failure")
 	}
@@ -112,7 +112,7 @@ func TestServiceReplayHandlerFailMarkFailedOK(t *testing.T) {
 	store := &fakeReplayStore{rec: &Record{EventKind: "k"}, markFailedErr: nil}
 	s := newReplayService(store, func(context.Context, Record) error { return errReplayHandlerBoom })
 
-	_, err := s.Replay(context.Background(), 1, "operator-1")
+	_, err := s.Replay(context.Background(), 7, 1, "operator-1")
 	if !errors.Is(err, errReplayHandlerBoom) {
 		t.Fatalf("handler error must be surfaced when MarkFailed succeeds; got %v", err)
 	}
@@ -142,7 +142,7 @@ func TestServiceReplayPoisonQuarantineToggle(t *testing.T) {
 	}
 
 	store, s := mk(false)
-	if _, err := s.Replay(context.Background(), 1, "op"); err == nil {
+	if _, err := s.Replay(context.Background(), 7, 1, "op"); err == nil {
 		t.Fatal("Replay must surface the poison handler error")
 	}
 	if store.lastDecision.Status != StatusQuarantined {
@@ -150,7 +150,7 @@ func TestServiceReplayPoisonQuarantineToggle(t *testing.T) {
 	}
 
 	store2, s2 := mk(true)
-	if _, err := s2.Replay(context.Background(), 1, "op"); err == nil {
+	if _, err := s2.Replay(context.Background(), 7, 1, "op"); err == nil {
 		t.Fatal("Replay must still surface the handler error when escape hatch disables quarantine")
 	}
 	if store2.lastDecision.Status == StatusQuarantined {
@@ -173,7 +173,7 @@ func TestServiceReplayNoHandlerQuarantines(t *testing.T) {
 		now:      func() time.Time { return time.Unix(0, 0).UTC() },
 	}
 
-	_, err := s.Replay(context.Background(), 1, "op")
+	_, err := s.Replay(context.Background(), 7, 1, "op")
 	if !errors.Is(err, ErrNoHandler) {
 		t.Fatalf("Replay error=%v want ErrNoHandler", err)
 	}

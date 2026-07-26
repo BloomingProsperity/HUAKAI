@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
 // ListAutoRenewDue 扫 expires_at<=dueCutoff 且 auto_renew=true 的 active 订阅 (worker 批处理)。
@@ -23,15 +25,26 @@ func (s *PostgresStore) ListAutoRenewDue(ctx context.Context, dueCutoff time.Tim
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumns+`
-FROM user_subscriptions
-WHERE status='active' AND auto_renew=true AND expires_at <= $1
-  AND (
+	rows, err := s.pool.Query(ctx, `SELECT`+subscriptionSelectColumnsS+`
+	FROM user_subscriptions s
+	JOIN tenants t ON t.id=s.tenant_id
+	JOIN users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id
+	WHERE s.status='active'
+	  AND s.auto_renew=true
+	  AND s.expires_at <= $1
+	  AND t.status='active'
+	  AND t.deleted_at IS NULL
+	  AND u.principal_kind='human'
+	  AND u.role='user'
+	  AND u.status='active'
+	  AND u.deleted_at IS NULL
+	  AND (
     $2::bigint = 0
-    OR expires_at > $3
-    OR (expires_at = $3 AND id > $2)
+    OR s.expires_at > $3
+    OR (s.expires_at = $3 AND s.id > $2)
   )
-ORDER BY expires_at, id LIMIT $4`, dueCutoff, after.ID, after.ExpiresAt, limit)
+ORDER BY s.expires_at, s.id
+LIMIT $4`, dueCutoff, after.ID, after.ExpiresAt, limit)
 	if err != nil {
 		return nil, fmt.Errorf("subscription: list auto renew due: %w", err)
 	}
@@ -79,7 +92,17 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1) 锁订阅行重查仍 active + auto_renew + due (并发/重复防护)。
+	// 1) 先锁住活跃租户事实，使停用与扣款严格串行。停用已经生效时零副作用跳过；
+	// 本事务先拿到共享锁时，停用会等待本次已开始的续费完整提交或回滚。
+	err = tenancy.LockActiveForWrite(ctx, tx, rec.TenantID)
+	if errors.Is(err, tenancy.ErrTenantInactive) {
+		return AutoRenewResult{Renewed: false, SkipReason: AutoRenewSkipTenantInactive}, nil
+	}
+	if err != nil {
+		return AutoRenewResult{}, fmt.Errorf("subscription: lock active tenant for auto renew: %w", err)
+	}
+
+	// 2) 锁订阅行重查仍 active + auto_renew + due (并发/重复防护)。
 	sub, err := getSubscriptionForUpdateTx(ctx, tx, rec.TenantID, rec.SubscriptionID)
 	if err != nil {
 		return AutoRenewResult{}, err
@@ -102,7 +125,25 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		return skipNoCommit(ctx, tx, sub, AutoRenewSkipNotDue)
 	}
 
-	// 2) 续费周期标识 = 本次续费前订阅 expires_at; 同窗口幂等只续一次。
+	// 3) 锁内复查订阅所属主体仍是活跃最终用户。列表 JOIN 只减少无效候选，
+	// 事务内锁才是直接重放、并发停用和删除场景的权威资金守卫。
+	var lockedUserID int64
+	if err := tx.QueryRow(ctx, `
+SELECT id
+FROM users
+WHERE tenant_id=$1
+  AND id=$2
+  AND principal_kind='human'
+  AND role='user'
+  AND status='active'
+  AND deleted_at IS NULL
+FOR UPDATE`, rec.TenantID, sub.UserID).Scan(&lockedUserID); errors.Is(err, pgx.ErrNoRows) {
+		return skipNoCommit(ctx, tx, sub, AutoRenewSkipUserInactive)
+	} else if err != nil {
+		return AutoRenewResult{}, fmt.Errorf("subscription: lock active user for auto renew: %w", err)
+	}
+
+	// 4) 续费周期标识 = 本次续费前订阅 expires_at; 同窗口幂等只续一次。
 	periodKey := sub.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	if exists, err := autoRenewalChargeExistsTx(ctx, tx, rec.TenantID, sub.ID, periodKey); err != nil {
 		return AutoRenewResult{}, err
@@ -110,7 +151,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		return skipNoCommit(ctx, tx, sub, AutoRenewSkipAlreadyRenewed)
 	}
 
-	// 3) 锁价: 续费价 = 套餐当前 price_cents (套餐停用/不存在 → 不续)。
+	// 5) 锁价: 续费价 = 套餐当前 price_cents (套餐停用/不存在 → 不续)。
 	plan, err := getPlanTx(ctx, tx, rec.TenantID, sub.PlanID)
 	if err != nil {
 		if errors.Is(err, ErrPlanNotFound) {
@@ -126,7 +167,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		priceCents = 0
 	}
 
-	// 4) 扣钱包余额 (price>0 才扣)。条件 UPDATE 原子守卫: 余额不足 → 不扣 → 跳过。
+	// 6) 扣钱包余额 (price>0 才扣)。条件 UPDATE 原子守卫: 余额不足 → 不扣 → 跳过。
 	if priceCents > 0 {
 		ok, err := debitUserBalanceTx(ctx, tx, rec.TenantID, sub.UserID, priceCents, rec.Now)
 		if err != nil {
@@ -138,7 +179,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		}
 	}
 
-	// 5) 续期 (同事务): 延长 expires_at + 刷新 caps 策略。EnforceUpgradeOnly=false: 续同档不触发降级闸。
+	// 7) 续期 (同事务): 延长 expires_at + 刷新 caps 策略。EnforceUpgradeOnly=false: 续同档不触发降级闸。
 	res, err := ActivateOrRenewTx(ctx, tx, ActivateInput{
 		TenantID:           rec.TenantID,
 		UserID:             sub.UserID,
@@ -152,7 +193,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		return AutoRenewResult{}, err
 	}
 
-	// 6) 写幂等锚 + money 审计行 (同事务)。撞唯一索引 → 外层当"已续过"。
+	// 8) 写幂等锚 + money 日志行 (同事务)。撞唯一索引 → 外层当"已续过"。
 	chargeID, err := insertAutoRenewalChargeTx(ctx, tx, autoRenewalCharge{
 		TenantID:           rec.TenantID,
 		UserID:             sub.UserID,
@@ -167,7 +208,7 @@ func (s *PostgresStore) tryAutoRenewOnce(ctx context.Context, rec autoRenewRecor
 		return AutoRenewResult{}, err
 	}
 
-	// 7) 统一 money 账本 (同事务): 扣款进 billing_events, 与充值/退款/兑换同流可对账。
+	// 9) 统一 money 账本 (同事务): 扣款进 billing_events, 与充值/退款/兑换同流可对账。
 	// 免费续费 (price<=0) 无钱移动, 不写事件行 (账本只记 money movement)。
 	if priceCents > 0 {
 		if err := insertAutoRenewalBillingEventTx(ctx, tx, rec.TenantID, sub.ID, chargeID, priceCents); err != nil {
