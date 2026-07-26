@@ -9,34 +9,52 @@ import (
 )
 
 type Querier interface {
+	// 人工禁用与解封的永久幂等事实。
+	AcquireModerationKeyOperationLock(ctx context.Context, lockKey string) error
 	BulkCreateModerationHashes(ctx context.Context, arg BulkCreateModerationHashesParams) ([]BulkCreateModerationHashesRow, error)
 	BulkCreateModerationKeywords(ctx context.Context, arg BulkCreateModerationKeywordsParams) ([]BulkCreateModerationKeywordsRow, error)
 	CountModerationBlocksInWindow(ctx context.Context, arg CountModerationBlocksInWindowParams) (int64, error)
 	CreateModerationHash(ctx context.Context, arg CreateModerationHashParams) (CreateModerationHashRow, error)
 	CreateModerationKeyword(ctx context.Context, arg CreateModerationKeywordParams) (CreateModerationKeywordRow, error)
-	DisableModerationAPIKey(ctx context.Context, arg DisableModerationAPIKeyParams) (int64, error)
-	EnableModerationAPIKey(ctx context.Context, arg EnableModerationAPIKeyParams) (EnableModerationAPIKeyRow, error)
+	DisableModerationAPIKey(ctx context.Context, arg DisableModerationAPIKeyParams) (DisableModerationAPIKeyRow, error)
+	EnableModerationAPIKeyCAS(ctx context.Context, arg EnableModerationAPIKeyCASParams) (EnableModerationAPIKeyCASRow, error)
+	FinalizeModerationViolationEvent(ctx context.Context, arg FinalizeModerationViolationEventParams) (int64, error)
 	FindEnabledModerationHash(ctx context.Context, arg FindEnabledModerationHashParams) (FindEnabledModerationHashRow, error)
-	GetModerationConfig(ctx context.Context, tenantID int64) (ModerationConfig, error)
+	// 内容审核租户配置查询。
+	GetModerationConfig(ctx context.Context, tenantID int64) (GetModerationConfigRow, error)
+	GetModerationKeyOperation(ctx context.Context, arg GetModerationKeyOperationParams) (ModerationKeyOperation, error)
 	// 供 Hermes mutating 工具 moderation_keyword_enable/disable 的 Resolve 按租户+id 读取单条
 	// 未软删关键词(复检租户归属 + 渲染预览)。
 	GetModerationKeyword(ctx context.Context, arg GetModerationKeywordParams) (GetModerationKeywordRow, error)
-	// 内容审核执行日志、违规计数与用户密钥封禁查询。
-	// 日志只保存元数据与载荷指纹，不保存原始请求、明文凭据或密钥哈希。
+	GetModerationViolationByRequest(ctx context.Context, arg GetModerationViolationByRequestParams) (GetModerationViolationByRequestRow, error)
+	InsertModerationKeyOperation(ctx context.Context, arg InsertModerationKeyOperationParams) (int64, error)
+	// 内容审核 30 天运营日志与租户证据读取。
+	// 所有查询都显式绑定 tenant_id；永久表不保存正文、摘录或载荷摘要。
 	InsertModerationLog(ctx context.Context, arg InsertModerationLogParams) (int64, error)
 	InsertModerationViolationEvent(ctx context.Context, arg InsertModerationViolationEventParams) (int64, error)
+	// 内容审核 Key 处置状态、人工禁用与恢复查询。
 	ListBannedKeys(ctx context.Context, arg ListBannedKeysParams) ([]ListBannedKeysRow, error)
-	// 内容审核规则、哈希与租户配置查询。
+	// 内容审核关键词规则查询。
 	ListEnabledModerationKeywords(ctx context.Context, tenantID int64) ([]ListEnabledModerationKeywordsRow, error)
+	// 内容审核哈希规则查询。
 	ListModerationHashes(ctx context.Context, arg ListModerationHashesParams) ([]ListModerationHashesRow, error)
 	ListModerationKeywords(ctx context.Context, arg ListModerationKeywordsParams) ([]ListModerationKeywordsRow, error)
 	ListModerationLog(ctx context.Context, arg ListModerationLogParams) ([]ListModerationLogRow, error)
+	ListModerationViolations(ctx context.Context, arg ListModerationViolationsParams) ([]ListModerationViolationsRow, error)
+	// 内容审核永久违规事实与自动处置写入。
+	// 永久表不保存正文、摘录或载荷摘要。
+	LockModerationAPIKey(ctx context.Context, arg LockModerationAPIKeyParams) (LockModerationAPIKeyRow, error)
+	LockModerationKeyState(ctx context.Context, arg LockModerationKeyStateParams) (LockModerationKeyStateRow, error)
+	LockThresholdModerationViolation(ctx context.Context, arg LockThresholdModerationViolationParams) (LockThresholdModerationViolationRow, error)
+	MarkModerationKeyStateActive(ctx context.Context, arg MarkModerationKeyStateActiveParams) (int64, error)
+	SetManualModerationDisposition(ctx context.Context, arg SetManualModerationDispositionParams) (int64, error)
 	// 供 Hermes mutating 工具在 orchestrator 事务内定向翻转单条未软删关键词的 enabled 列
 	// (只改 enabled + updated_at;租户 scope 绑死在 WHERE tenant_id)。
 	SetModerationKeywordEnabled(ctx context.Context, arg SetModerationKeywordEnabledParams) (int64, error)
 	SoftDeleteModerationHash(ctx context.Context, arg SoftDeleteModerationHashParams) (int64, error)
 	SoftDeleteModerationKeyword(ctx context.Context, arg SoftDeleteModerationKeywordParams) (int64, error)
-	UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (ModerationConfig, error)
+	UpsertModerationConfig(ctx context.Context, arg UpsertModerationConfigParams) (UpsertModerationConfigRow, error)
+	UpsertModerationKeyState(ctx context.Context, arg UpsertModerationKeyStateParams) error
 }
 
 var _ Querier = (*Queries)(nil)

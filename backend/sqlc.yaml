@@ -394,7 +394,12 @@ sql:
     schema: sql/migrations
     queries:
       - sql/queries/moderation.sql
+      - sql/queries/moderation_hashes.sql
+      - sql/queries/moderation_config.sql
       - sql/queries/moderation_enforcement.sql
+      - sql/queries/moderation_violation_write.sql
+      - sql/queries/moderation_key_state.sql
+      - sql/queries/moderation_key_operations.sql
     gen:
       go:
         package: moderation

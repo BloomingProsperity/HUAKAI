@@ -1070,6 +1070,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -14098,17 +14099,17 @@ paths:
   /admin/v1/moderation/keywords:
     get:
       tags: [admin-moderation]
-      summary: List tenant moderation keyword rules
+      summary: List moderation keyword rules for a target tenant
       operationId: listModerationKeywords
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_keywords_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       parameters:
         - in: query
           name: tenant_id
-          required: false
-          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          required: true
+          description: Target tenant selected by the platform administrator.
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: limit
@@ -14133,7 +14134,7 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_keywords_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       requestBody:
         required: true
         content:
@@ -14161,7 +14162,7 @@ paths:
         - backend/internal/moderationhttp/admin_bulk_handler.go
         - backend/internal/moderation/bulk_store.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       requestBody:
         required: true
         content:
@@ -14186,8 +14187,8 @@ paths:
         schema: { type: integer, format: int64, minimum: 1 }
       - in: query
         name: tenant_id
-        required: false
-        description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+        required: true
+        description: Target tenant selected by the platform administrator.
         schema: { type: integer, format: int64, minimum: 1 }
     delete:
       tags: [admin-moderation]
@@ -14196,7 +14197,7 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_keywords_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       responses:
         '204':
           description: Keyword rule deleted.
@@ -14209,17 +14210,17 @@ paths:
   /admin/v1/moderation/hashes:
     get:
       tags: [admin-moderation]
-      summary: List tenant moderation hash rules
+      summary: List moderation hash rules for a target tenant
       operationId: listModerationHashes
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_hashes_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       parameters:
         - in: query
           name: tenant_id
-          required: false
-          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          required: true
+          description: Target tenant selected by the platform administrator.
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: limit
@@ -14244,7 +14245,7 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_hashes_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       requestBody:
         required: true
         content:
@@ -14272,7 +14273,7 @@ paths:
         - backend/internal/moderationhttp/admin_bulk_handler.go
         - backend/internal/moderation/bulk_store.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       requestBody:
         required: true
         content:
@@ -14297,8 +14298,8 @@ paths:
         schema: { type: integer, format: int64, minimum: 1 }
       - in: query
         name: tenant_id
-        required: false
-        description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+        required: true
+        description: Target tenant selected by the platform administrator.
         schema: { type: integer, format: int64, minimum: 1 }
     delete:
       tags: [admin-moderation]
@@ -14307,7 +14308,7 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_hashes_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       responses:
         '204':
           description: Hash rule deleted.
@@ -14325,12 +14326,12 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_config_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       parameters:
         - in: query
           name: tenant_id
-          required: false
-          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          required: true
+          description: Target tenant selected by the platform administrator.
           schema: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
@@ -14349,7 +14350,7 @@ paths:
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_config_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       requestBody:
         required: true
         content:
@@ -14369,17 +14370,17 @@ paths:
   /admin/v1/moderation/logs:
     get:
       tags: [admin-moderation]
-      summary: List tenant moderation audit log rows
+      summary: List full moderation log rows for a target tenant
       operationId: listModerationLogs
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_visibility_handler.go
         - docs/HUAKAI工程设计手册.md
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: platform_admin
       parameters:
         - in: query
           name: tenant_id
-          required: false
-          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          required: true
+          description: Target tenant selected by the platform administrator.
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: api_key_id
@@ -14393,10 +14394,50 @@ paths:
           schema: { type: integer, minimum: 0, default: 0 }
       responses:
         '200':
-          description: Paginated tenant-scoped moderation audit log rows.
+          description: Paginated full moderation log rows for the selected tenant.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ModerationLogListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/violations:
+    get:
+      tags: [admin-moderation]
+      summary: List tenant-scoped moderation violation evidence
+      operationId: listModerationViolations
+      description: Tenant operators can only read evidence for their own tenant. Platform administrators may select a target tenant. The response exposes a redacted user-input excerpt, never a complete request body or server/runtime logs.
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: tenant_id
+          required: false
+          description: Required for platform_admin; tenant_operator callers may omit it and use token scope.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: api_key_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: user_id
+          required: false
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated tenant-scoped moderation violation evidence.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationViolationListResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -14415,7 +14456,7 @@ paths:
         - in: query
           name: tenant_id
           required: false
-          description: Required for platform_admin; tenant_operator callers may omit and use token scope.
+          description: Required for platform_admin; tenant_operator callers may omit it and use token scope.
           schema: { type: integer, format: int64, minimum: 1 }
         - in: query
           name: limit
@@ -14444,7 +14485,7 @@ paths:
       tags: [admin-moderation]
       summary: Re-enable a moderation-disabled tenant API key
       operationId: unbanModerationAPIKey
-      description: Re-enables only a tenant-scoped API key that is currently disabled and has moderation violation evidence. The status flip and admin_unban moderation audit row are one database statement.
+      description: Re-enables only a key in the caller's authorized tenant that is still disabled by moderation at the same status generation. The key state change, moderation state transition, and operator log row commit in one transaction.
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_visibility_handler.go
         - docs/HUAKAI工程设计手册.md
@@ -14463,7 +14504,40 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/moderation/api-keys/{id}/disable:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    post:
+      tags: [admin-moderation]
+      summary: Disable a user API key from confirmed moderation evidence
+      operationId: disableModerationAPIKey
+      description: Platform administrators may disable a target tenant's active user API key only by referencing a threshold-reached violation event bound to the same tenant and key. The key state, moderation state, event disposition, and operator log row commit in one transaction.
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationDisableAPIKeyRequest' }
+      responses:
+        '200':
+          description: API key disabled from confirmed moderation evidence.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModerationDisableAPIKeyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/audit-events:
@@ -17508,7 +17582,7 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_config_handler.go
-      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds]
+      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds, auto_disable_key_on_ban]
       properties:
         tenant_id: { type: integer, format: int64, minimum: 1 }
         enabled: { type: boolean }
@@ -17516,17 +17590,14 @@ components:
         sample_rate_pct: { type: integer, format: int32, minimum: 0, maximum: 100 }
         ban_threshold: { type: integer, format: int32, minimum: 0 }
         ban_window_seconds: { type: integer, format: int32, minimum: 1 }
-        violation_fee_usd:
-          type: string
-          pattern: '^[0-9]+(\.[0-9]+)?$'
-          default: "0"
+        auto_disable_key_on_ban: { type: boolean }
 
     ModerationConfig:
       type: object
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_config_handler.go
-      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds, violation_fee_usd]
+      required: [tenant_id, enabled, fail_closed, sample_rate_pct, ban_threshold, ban_window_seconds, auto_disable_key_on_ban]
       properties:
         tenant_id: { type: integer, format: int64, minimum: 1 }
         enabled: { type: boolean }
@@ -17534,9 +17605,7 @@ components:
         sample_rate_pct: { type: integer, format: int32, minimum: 0, maximum: 100 }
         ban_threshold: { type: integer, format: int32, minimum: 0 }
         ban_window_seconds: { type: integer, format: int32, minimum: 1 }
-        violation_fee_usd:
-          type: string
-          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
+        auto_disable_key_on_ban: { type: boolean }
         updated_by: { type: string }
         updated_at: { type: string, format: date-time }
 
@@ -17545,24 +17614,29 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_visibility_handler.go
-      required: [id, tenant_id, api_key_id, user_id, payload_hash, decision, reason_code, violation_fee_usd]
+      required: [id, tenant_id, api_key_id, user_id, decision, reason_code, violation_count, threshold_reached, key_disabled]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         api_key_id: { type: integer, format: int64, minimum: 1 }
         user_id: { type: integer, format: int64, minimum: 1 }
         request_id: { type: string }
-        payload_hash: { type: string, minLength: 1 }
+        violation_event_id: { type: integer, format: int64, minimum: 1 }
+        input_excerpt:
+          type: string
+          maxLength: 240
+          description: Redacted and truncated user-input excerpt; never a complete request body.
         decision:
           type: string
-          enum: [pass, block_keyword, block_hash, block_backend, fee_charged]
+          enum: [pass, block_keyword, block_hash, block_external, block_backend, fee_charged, admin_disable, admin_unban]
         reason_code: { type: string }
         matched_keyword_id: { type: integer, format: int64, minimum: 1 }
         matched_hash_id: { type: integer, format: int64, minimum: 1 }
-        violation_fee_usd:
-          type: string
-          pattern: '^[0-9]+(\.[0-9]{1,8})?$'
-        billing_event_id: { type: integer, format: int64, minimum: 1 }
+        violation_count: { type: integer, format: int64, minimum: 0 }
+        threshold_reached: { type: boolean }
+        key_disabled: { type: boolean }
+        actor_id: { type: string }
+        actor_role: { type: string }
         occurred_at: { type: string, format: date-time }
 
     ModerationLogListResponse:
@@ -17579,12 +17653,58 @@ components:
         limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
         offset: { type: integer, format: int32, minimum: 0 }
 
+    ModerationViolation:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      required: [id, tenant_id, api_key_id, user_id, request_id, decision, reason_code, ban_threshold_snapshot, ban_window_seconds_snapshot, violation_count, threshold_reached, auto_disable_enabled, disposition_source, disposition_result, key_disabled]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        user_id: { type: integer, format: int64, minimum: 1 }
+        request_id: { type: string, minLength: 1 }
+        decision:
+          type: string
+          enum: [block_keyword, block_hash, block_external]
+        reason_code: { type: string }
+        matched_keyword_id: { type: integer, format: int64, minimum: 1 }
+        matched_hash_id: { type: integer, format: int64, minimum: 1 }
+        ban_threshold_snapshot: { type: integer, format: int32, minimum: 0 }
+        ban_window_seconds_snapshot: { type: integer, format: int32, minimum: 1 }
+        violation_count: { type: integer, format: int64, minimum: 0 }
+        threshold_reached: { type: boolean }
+        auto_disable_enabled: { type: boolean }
+        disposition_source: { type: string, enum: [none, auto, manual] }
+        disposition_result: { type: string, enum: [unchanged, disabled, already_non_active] }
+        input_excerpt:
+          type: string
+          maxLength: 240
+          description: Redacted user-input excerpt from the 30-day operational log projection.
+        key_disabled: { type: boolean }
+        occurred_at: { type: string, format: date-time }
+
+    ModerationViolationListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      required: [object, items, limit, offset]
+      properties:
+        object: { type: string, enum: [moderation_violations_list] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ModerationViolation' }
+        limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        offset: { type: integer, format: int32, minimum: 0 }
+
     ModerationBannedKey:
       type: object
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_visibility_handler.go
-      required: [id, tenant_id, user_id, name, key_prefix, status, violation_count]
+      required: [id, tenant_id, user_id, name, key_prefix, status, source, reason_code, disable_generation, violation_count]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         tenant_id: { type: integer, format: int64, minimum: 1 }
@@ -17594,6 +17714,9 @@ components:
           type: string
           description: Indexed API key prefix only; plaintext bearer and key_hash are never returned.
         status: { type: string, enum: [disabled] }
+        source: { type: string, enum: [auto, manual] }
+        reason_code: { type: string }
+        disable_generation: { type: integer, format: int64, minimum: 1 }
         violation_count: { type: integer, format: int64, minimum: 1 }
         last_violation_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
@@ -17618,9 +17741,13 @@ components:
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/moderationhttp/admin_visibility_handler.go
-      required: [tenant_id]
+      required: [tenant_id, idempotency_key]
       properties:
         tenant_id: { type: integer, format: int64, minimum: 1 }
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 256
         reason:
           type: string
           description: Operator reason recorded in the moderation audit reason_code with admin_unban prefix.
@@ -17636,6 +17763,36 @@ components:
         tenant_id: { type: integer, format: int64, minimum: 1 }
         status: { type: string, enum: [active] }
         audit_log_id: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+
+    ModerationDisableAPIKeyRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      required: [tenant_id, violation_event_id, idempotency_key]
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        violation_event_id: { type: integer, format: int64, minimum: 1 }
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 256
+        reason:
+          type: string
+          description: Platform operator reason recorded in the moderation log.
+
+    ModerationDisableAPIKeyResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/moderationhttp/admin_visibility_handler.go
+      required: [api_key_id, tenant_id, status, log_id]
+      properties:
+        api_key_id: { type: integer, format: int64, minimum: 1 }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        status: { type: string, enum: [disabled] }
+        log_id: { type: integer, format: int64, minimum: 1 }
         updated_at: { type: string, format: date-time }
 
     # ---- Gateway request/response schemas (permissive: additionalProperties: true) ----

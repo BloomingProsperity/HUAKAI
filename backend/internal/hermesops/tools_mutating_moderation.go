@@ -70,9 +70,9 @@ func moderationKeywordToggleSpec(name, description string, targetEnabled bool, d
 		// 提议(LLM 可以提议它;在它真正执行前仍需 operator 确认)。对比 renew_trigger(凭证轮换),
 		// 其 Proposable 保持 false:不可逆 / A 级,LLM 永不提议。
 		Proposable: true,
-		// enable/disable 有 scope 限制:platform_admin 或目标租户内的 tenant_operator
-		// 身份授权和 Resolve 目标复检共同强制租户作用域；此处允许租户运营者进入解析阶段。
-		RequiredRole: RoleTenantOperator,
+		// 审核规则由部署者代租户维护；租户管理员只查看本租户违规并处理解封，
+		// 不通过 Hermes 修改审核策略。
+		RequiredRole: RolePlatformAdmin,
 		InputSchema: ObjectSchema(map[string]any{
 			"keyword_id": PositiveIntegerSchema("要切换状态的内容审核关键词规则 ID"),
 		}, "keyword_id"),

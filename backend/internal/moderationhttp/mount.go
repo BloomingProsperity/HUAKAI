@@ -32,14 +32,15 @@ type adminStore interface {
 	GetConfig(context.Context, int64) (moderation.ModerationConfig, error)
 	UpsertConfig(context.Context, moderation.ModerationConfig) (moderation.ModerationConfig, error)
 	ListModerationLogs(context.Context, int64, *int64, int32, int32) ([]moderation.ModerationLog, error)
+	ListModerationViolations(context.Context, int64, *int64, *int64, int32, int32) ([]moderation.ModerationViolation, error)
 	ListBannedAPIKeys(context.Context, int64, int32, int32) ([]moderation.BannedAPIKey, error)
+	DisableAPIKey(context.Context, moderation.DisableAPIKeyRequest) (moderation.DisableAPIKeyResult, error)
 	UnbanAPIKey(context.Context, moderation.UnbanAPIKeyRequest) (moderation.UnbanAPIKeyResult, error)
 }
 
 func MountModerationAdminRoutes(r chi.Router, deps ModerationAdminDeps) {
-	// SessionSafe:审核规则(关键词/内容哈希黑名单)增删 + 解封 API key,均可逆的内容治理配置,
-	// 登录 admin(session)可直接写;危险者(删/解封)靠前端确认弹窗。
-	// PUT /config 不挂——它调审核开关/阈值,归 token-only(分级表标 money 相关)。
+	// 规则和配置只允许部署者管理；租户管理员只能读取本租户违规投影并恢复仍由审核停用的 Key。
+	// 人工停用必须引用同租户、同 Key 且已经越线的永久违规事件。
 	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/keywords", newKeywordListHandler(deps))
 	r.With(safe).Post("/keywords", newKeywordCreateHandler(deps))
@@ -52,6 +53,8 @@ func MountModerationAdminRoutes(r chi.Router, deps ModerationAdminDeps) {
 	r.Get("/config", newConfigGetHandler(deps))
 	r.Put("/config", newConfigPutHandler(deps))
 	r.Get("/logs", newLogListHandler(deps))
+	r.Get("/violations", newViolationListHandler(deps))
 	r.Get("/banned", newBannedListHandler(deps))
+	r.With(safe).Post("/api-keys/{id}/disable", newAPIKeyDisableHandler(deps))
 	r.With(safe).Post("/api-keys/{id}/unban", newAPIKeyUnbanHandler(deps))
 }

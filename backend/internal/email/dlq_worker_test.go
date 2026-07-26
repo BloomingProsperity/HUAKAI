@@ -36,10 +36,19 @@ func TestAT_OBS_005_008_EmailTransientFailEnqueuesAndRetriesSuccess(t *testing.T
 	if strings.Contains(string(rows[0].Payload), "tok-secret-123") || obsdlq.ContainsForbiddenRawData(rows[0].Payload) {
 		t.Fatalf("email retry payload leaked token/body: %s", rows[0].Payload)
 	}
+	var queued retryPayload
+	if err := json.Unmarshal(rows[0].Payload, &queued); err != nil {
+		t.Fatalf("decode queued payload: %v", err)
+	}
+	if queued.To != "u@example.test" || queued.Subject == "" || !strings.HasPrefix(queued.BodyEnvelope, retryEnvelopeHexPrefix) {
+		t.Fatalf("queued retry payload lost dispatch fields: %+v", queued)
+	}
 
 	var retried Message
+	dispatched := false
 	worker := obsdlq.NewWorker(outbox, obsdlq.WorkerConfig{RetryPolicy: obsdlq.RetryPolicy{MaxAttempts: 2}})
 	worker.Register(obsdlq.EventTypeEmailRetry, NewDLQHandler(store, keys, func(_ context.Context, _ SMTPSettings, msg Message) error {
+		dispatched = true
 		retried = msg
 		return nil
 	}))
@@ -47,11 +56,113 @@ func TestAT_OBS_005_008_EmailTransientFailEnqueuesAndRetriesSuccess(t *testing.T
 	if err != nil || !processed {
 		t.Fatalf("retry processed=%v err=%v", processed, err)
 	}
-	if retried.To != "u@example.test" || !strings.Contains(retried.HTMLBody, "tok-secret-123") {
+	if !dispatched || retried.To != "u@example.test" || !strings.Contains(retried.HTMLBody, "tok-secret-123") {
 		t.Fatalf("retry message=%+v", retried)
 	}
 	if outbox.Snapshot()[0].Status != obsdlq.StatusCompleted {
 		t.Fatalf("status=%s want completed", outbox.Snapshot()[0].Status)
+	}
+}
+
+func TestRetryEnvelopeTransportCannotMimicCredentialMarkers(t *testing.T) {
+	// 旧版直接保存随机密文；密文若偶然含 eyJ，会被通用隐私扫描误判成 JWT 并删掉负载。
+	// 新格式只含十六进制字符，既保留完整信封，也不会命中这些凭据形态。
+	keys := testEmailKeys(t)
+	input, err := EncodeSecret(context.Background(), keys, 1, "<p>real encrypted retry body</p>")
+	if err != nil {
+		t.Fatalf("EncodeSecret: %v", err)
+	}
+	encoded := encodeRetryEnvelope(input)
+	if obsdlq.ContainsForbiddenRawData([]byte(`{"body_envelope":"` + encoded + `"}`)) {
+		t.Fatalf("encoded retry envelope still matches credential markers: %q", encoded)
+	}
+	decoded, err := decodeRetryEnvelope(encoded)
+	if err != nil || decoded != input {
+		t.Fatalf("retry envelope round trip decoded=%q err=%v", decoded, err)
+	}
+	plaintext, err := DecodeSecret(context.Background(), keys, 1, decoded)
+	if err != nil || plaintext != "<p>real encrypted retry body</p>" {
+		t.Fatalf("retry envelope decrypt plaintext=%q err=%v", plaintext, err)
+	}
+	legacy, err := decodeRetryEnvelope(input)
+	if err != nil || legacy != input {
+		t.Fatalf("legacy retry envelope decoded=%q err=%v", legacy, err)
+	}
+	collision := encodeRetryEnvelope(secretEnvelopePrefix + `{"ciphertext":"random-eyJ-collision"}`)
+	if strings.Contains(collision, "eyJ") || obsdlq.ContainsForbiddenRawData([]byte(`{"body_envelope":"`+collision+`"}`)) {
+		t.Fatalf("encoded collision still matches credential markers: %q", collision)
+	}
+	for _, damaged := range []string{"", retryEnvelopeHexPrefix, retryEnvelopeHexPrefix + "20", retryEnvelopeHexPrefix + "xyz"} {
+		if decoded, err := decodeRetryEnvelope(damaged); err == nil {
+			t.Fatalf("damaged retry envelope %q decoded=%q without error", damaged, decoded)
+		}
+	}
+}
+
+func TestDLQHandlerRejectsDamagedTransportEnvelope(t *testing.T) {
+	ctx := context.Background()
+	keys := testEmailKeys(t)
+	store := &fakeSettingsStore{settings: map[int64]StoredSettings{1: completeRawSettings(t, keys, 1)}}
+	payload, err := json.Marshal(retryPayload{
+		To:           "u@example.test",
+		Subject:      "Retry",
+		BodyEnvelope: retryEnvelopeHexPrefix + "20",
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	outbox := obsdlq.NewMemoryOutbox()
+	if _, err := outbox.Enqueue(ctx, obsdlq.OutboxEvent{
+		TenantID:  1,
+		EventType: obsdlq.EventTypeEmailRetry,
+		Priority:  obsdlq.PriorityCritical,
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	dispatched := false
+	worker := obsdlq.NewWorker(outbox, obsdlq.WorkerConfig{RetryPolicy: obsdlq.RetryPolicy{MaxAttempts: 2}})
+	worker.Register(obsdlq.EventTypeEmailRetry, NewDLQHandler(store, keys, func(context.Context, SMTPSettings, Message) error {
+		dispatched = true
+		return nil
+	}))
+	if processed, err := worker.RunOnce(ctx, obsdlq.PriorityCritical, "email"); err != nil || !processed {
+		t.Fatalf("retry processed=%v err=%v", processed, err)
+	}
+	row := outbox.Snapshot()[0]
+	if dispatched || row.Status != obsdlq.StatusFailedRetry || row.AttemptCount != 1 {
+		t.Fatalf("dispatched=%v status=%s attempts=%d", dispatched, row.Status, row.AttemptCount)
+	}
+}
+
+func TestDLQHandlerAcceptsLegacyEnvelope(t *testing.T) {
+	ctx := context.Background()
+	keys := testEmailKeys(t)
+	store := &fakeSettingsStore{settings: map[int64]StoredSettings{1: completeRawSettings(t, keys, 1)}}
+	body, err := EncodeSecret(ctx, keys, 1, "<p>legacy retry body</p>")
+	if err != nil {
+		t.Fatalf("EncodeSecret: %v", err)
+	}
+	payload, err := json.Marshal(retryPayload{
+		To:           "u@example.test",
+		Subject:      "Legacy retry",
+		BodyEnvelope: body,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var retried Message
+	handler := NewDLQHandler(store, keys, func(_ context.Context, _ SMTPSettings, msg Message) error {
+		retried = msg
+		return nil
+	})
+	if err := handler(ctx, obsdlq.OutboxEvent{TenantID: 1, Payload: payload}); err != nil {
+		t.Fatalf("legacy retry handler: %v", err)
+	}
+	if retried.To != "u@example.test" || retried.HTMLBody != "<p>legacy retry body</p>" {
+		t.Fatalf("legacy retry message=%+v", retried)
 	}
 }
 
@@ -159,7 +270,7 @@ func mustEmailPayload(t *testing.T, ctx context.Context, keys SecretKeyProvider)
 	raw, err := jsonMarshalRetryPayload(retryPayload{
 		To:           "u@example.test",
 		Subject:      "Retry",
-		BodyEnvelope: body,
+		BodyEnvelope: encodeRetryEnvelope(body),
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestAdminConfig_PutPersistsConfig(t *testing.T) {
 		Auth:  adminAuthStub{ident: platformAdmin()},
 		Store: store,
 	}, http.MethodPut, "/admin/v1/moderation/config",
-		`{"tenant_id":7,"enabled":true,"fail_closed":false,"sample_rate_pct":25,"ban_threshold":4,"ban_window_seconds":600}`)
+		`{"tenant_id":7,"enabled":true,"fail_closed":false,"sample_rate_pct":25,"ban_threshold":4,"ban_window_seconds":600,"auto_disable_key_on_ban":false}`)
 
 	assertStatus(t, rec, http.StatusOK)
 	if store.upsertCalls != 1 {
@@ -88,17 +89,36 @@ func TestAdminConfig_PutPersistsConfig(t *testing.T) {
 	}
 }
 
-func TestAdminKeywords_TenantOperatorCannotCrossTenant(t *testing.T) {
+func TestAdminConfig_PutRequiresExplicitAutoDisableChoice(t *testing.T) {
 	store := &adminStoreStub{}
 	rec := invokeModerationAdmin(t, ModerationAdminDeps{
-		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Auth:  adminAuthStub{ident: platformAdmin()},
 		Store: store,
-	}, http.MethodPost, "/admin/v1/moderation/keywords",
-		`{"tenant_id":8,"keyword":"forbidden","enabled":true}`)
+	}, http.MethodPut, "/admin/v1/moderation/config",
+		`{"tenant_id":7,"enabled":true,"fail_closed":true,"sample_rate_pct":25,"ban_threshold":4,"ban_window_seconds":600}`)
 
-	assertStatus(t, rec, http.StatusForbidden)
-	if store.createCalls != 0 {
-		t.Fatalf("cross-tenant request touched store: calls=%d", store.createCalls)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if store.upsertCalls != 0 {
+		t.Fatalf("缺少 auto_disable_key_on_ban 仍写配置: calls=%d", store.upsertCalls)
+	}
+	assertErrorCode(t, rec, "auto_disable_key_on_ban_required")
+}
+
+func TestAdminKeywords_TenantOperatorCannotManageRules(t *testing.T) {
+	for _, tenantID := range []int64{7, 8} {
+		t.Run("tenant_"+strconv.FormatInt(tenantID, 10), func(t *testing.T) {
+			store := &adminStoreStub{}
+			rec := invokeModerationAdmin(t, ModerationAdminDeps{
+				Auth:  adminAuthStub{ident: tenantOperator(7)},
+				Store: store,
+			}, http.MethodPost, "/admin/v1/moderation/keywords",
+				`{"tenant_id":`+strconv.FormatInt(tenantID, 10)+`,"keyword":"forbidden","enabled":true}`)
+
+			assertStatus(t, rec, http.StatusForbidden)
+			if store.createCalls != 0 {
+				t.Fatalf("tenant operator touched rule store: calls=%d", store.createCalls)
+			}
+		})
 	}
 }
 
@@ -122,6 +142,8 @@ func TestAdminHashes_PostAddsHashAndFeedsHotPath(t *testing.T) {
 	})
 	result, err := screener.Screen(context.Background(), moderation.ScreenRequest{
 		TenantID: 7, APIKeyID: 30, UserID: 40, RequestID: "req-hash", PayloadHash: payloadHash,
+		ClientProtocol: "openai_chat",
+		Body:           []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
 	})
 	if err != nil {
 		t.Fatalf("screen returned error: %v", err)
@@ -135,15 +157,15 @@ func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	store := &adminStoreStub{
 		moderationLogs: []moderation.ModerationLog{{
-			ID:          90,
-			TenantID:    7,
-			APIKeyID:    30,
-			UserID:      40,
-			RequestID:   "req-visible",
-			PayloadHash: "payload-hash-visible",
-			Decision:    moderation.DecisionBlockKeyword,
-			ReasonCode:  "policy_keyword",
-			OccurredAt:  now,
+			ID:           90,
+			TenantID:     7,
+			APIKeyID:     30,
+			UserID:       40,
+			RequestID:    "req-visible",
+			InputExcerpt: "违规原文",
+			Decision:     moderation.DecisionBlockKeyword,
+			ReasonCode:   "policy_keyword",
+			OccurredAt:   now,
 		}},
 	}
 	rec := invokeModerationAdmin(t, ModerationAdminDeps{
@@ -160,7 +182,7 @@ func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
 	var body moderationLogListResponse
 	decodeBody(t, rec, &body)
 	if body.Object != "moderation_logs_list" || len(body.Items) != 1 ||
-		body.Items[0].ID != 90 || body.Items[0].PayloadHash != "payload-hash-visible" {
+		body.Items[0].ID != 90 || body.Items[0].InputExcerpt != "违规原文" {
 		t.Fatalf("moderation logs response mismatch: %+v", body)
 	}
 	var raw map[string]any
@@ -178,6 +200,61 @@ func TestAdminModerationLogs_ListPassesTenantFilterAndPage(t *testing.T) {
 	}
 	if _, ok := item["billing_event_id"]; ok {
 		t.Fatalf("log response exposed billing_event_id; MUTATION: restoring removed billing API field makes this red")
+	}
+}
+
+func TestAdminModerationLogs_TenantOperatorCannotReadFullLogs(t *testing.T) {
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/moderation/logs?tenant_id=7", nil)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.listLogCalls != 0 {
+		t.Fatalf("tenant operator touched full log store: calls=%d", store.listLogCalls)
+	}
+}
+
+func TestAdminModerationViolations_TenantOperatorReadsOwnTenantExcerpt(t *testing.T) {
+	store := &adminStoreStub{
+		violations: []moderation.ModerationViolation{{
+			ID: 9, TenantID: 7, APIKeyID: 30, UserID: 40,
+			RequestID: "req-tenant", Decision: moderation.DecisionBlockKeyword,
+			ReasonCode: "policy_keyword", InputExcerpt: "租户可见的脱敏原文",
+		}},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/moderation/violations?user_id=40&limit=3&offset=2", nil)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.listViolationCalls != 1 || store.listViolationTenantID != 7 ||
+		store.listViolationUserID == nil || *store.listViolationUserID != 40 ||
+		store.listViolationLimit != 3 || store.listViolationOffset != 2 {
+		t.Fatalf("violation query escaped tenant scope: tenant=%d user=%v limit=%d offset=%d",
+			store.listViolationTenantID, store.listViolationUserID,
+			store.listViolationLimit, store.listViolationOffset)
+	}
+	var body moderationViolationListResponse
+	decodeBody(t, rec, &body)
+	if len(body.Items) != 1 || body.Items[0].TenantID != 7 ||
+		body.Items[0].InputExcerpt != "租户可见的脱敏原文" {
+		t.Fatalf("tenant violation response mismatch: %+v", body)
+	}
+}
+
+func TestAdminModerationViolations_TenantOperatorCannotCrossTenant(t *testing.T) {
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodGet, "/admin/v1/moderation/violations?tenant_id=8", nil)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.listViolationCalls != 0 {
+		t.Fatalf("cross-tenant violation request touched store: calls=%d", store.listViolationCalls)
 	}
 }
 
@@ -229,13 +306,14 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 		Auth:  adminAuthStub{ident: platformAdmin()},
 		Store: store,
 	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
-		`{"tenant_id":7,"reason":"manual review cleared"}`)
+		`{"tenant_id":7,"idempotency_key":"unban-30-1","reason":"manual review cleared"}`)
 
 	assertStatus(t, rec, http.StatusOK)
 	if store.unbanCalls != 1 {
 		t.Fatalf("unban calls=%d want 1", store.unbanCalls)
 	}
 	if store.unbanReq.TenantID != 7 || store.unbanReq.APIKeyID != 30 ||
+		store.unbanReq.IdempotencyKey != "unban-30-1" ||
 		store.unbanReq.ActorID != "admin_token:1" || store.unbanReq.Reason != "manual review cleared" {
 		t.Fatalf("unban request mismatch: %+v", store.unbanReq)
 	}
@@ -243,6 +321,132 @@ func TestAdminModerationUnban_PassesActorReasonAndReturnsAudit(t *testing.T) {
 	decodeBody(t, rec, &body)
 	if body.APIKeyID != 30 || body.Status != "active" || body.AuditLogID != 77 {
 		t.Fatalf("unban response mismatch: %+v", body)
+	}
+}
+
+func TestAdminModerationDisable_PlatformAdminUsesThresholdEvent(t *testing.T) {
+	store := &adminStoreStub{
+		disableResult: moderation.DisableAPIKeyResult{
+			APIKeyID: 30, TenantID: 7, Status: "disabled", LogID: 81,
+		},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/disable",
+		`{"tenant_id":7,"violation_event_id":90,"idempotency_key":"disable-30-1","reason":"operator confirmed"}`)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.disableCalls != 1 || store.disableReq.TenantID != 7 ||
+		store.disableReq.APIKeyID != 30 || store.disableReq.ViolationEventID != 90 ||
+		store.disableReq.IdempotencyKey != "disable-30-1" ||
+		store.disableReq.ActorRole != admin.RolePlatformAdmin {
+		t.Fatalf("disable request mismatch: %+v", store.disableReq)
+	}
+}
+
+func TestAdminModerationDisable_TenantOperatorForbidden(t *testing.T) {
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/disable",
+		`{"tenant_id":7,"violation_event_id":90,"idempotency_key":"disable-forbidden"}`)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.disableCalls != 0 {
+		t.Fatalf("tenant operator touched disable store: calls=%d", store.disableCalls)
+	}
+}
+
+func TestAdminModerationUnban_TenantOperatorCanUnbanOwnTenant(t *testing.T) {
+	store := &adminStoreStub{
+		unbanResult: moderation.UnbanAPIKeyResult{
+			APIKeyID: 30, TenantID: 7, Status: "active", AuditLogID: 77,
+		},
+	}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
+		`{"tenant_id":7,"idempotency_key":"tenant-unban-30","reason":"tenant review cleared"}`)
+
+	assertStatus(t, rec, http.StatusOK)
+	if store.unbanCalls != 1 || store.unbanReq.ActorRole != admin.RoleTenantOperator ||
+		store.unbanReq.TenantID != 7 {
+		t.Fatalf("tenant unban request mismatch: %+v", store.unbanReq)
+	}
+}
+
+func TestAdminModerationUnban_TenantOperatorCannotCrossTenant(t *testing.T) {
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
+		`{"tenant_id":8,"idempotency_key":"cross-tenant-unban","reason":"not my tenant"}`)
+
+	assertStatus(t, rec, http.StatusForbidden)
+	if store.unbanCalls != 0 {
+		t.Fatalf("cross-tenant unban touched store: calls=%d", store.unbanCalls)
+	}
+}
+
+func TestAdminModerationUnban_StateConflictReturns409(t *testing.T) {
+	store := &adminStoreStub{unbanErr: moderation.ErrStateConflict}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: tenantOperator(7)},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
+		`{"tenant_id":7,"idempotency_key":"conflicting-unban"}`)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+func TestAdminModerationKeyActions_RequireIdempotencyKey(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "unban",
+			path: "/admin/v1/moderation/api-keys/30/unban",
+			body: `{"tenant_id":7}`,
+		},
+		{
+			name: "disable",
+			path: "/admin/v1/moderation/api-keys/30/disable",
+			body: `{"tenant_id":7,"violation_event_id":90}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &adminStoreStub{}
+			rec := invokeModerationAdmin(t, ModerationAdminDeps{
+				Auth: adminAuthStub{ident: platformAdmin()}, Store: store,
+			}, http.MethodPost, tc.path, tc.body)
+
+			assertStatus(t, rec, http.StatusBadRequest)
+			assertErrorCode(t, rec, "invalid_idempotency_key")
+			if store.unbanCalls != 0 || store.disableCalls != 0 {
+				t.Fatalf("缺少幂等键仍调用存储: unban=%d disable=%d",
+					store.unbanCalls, store.disableCalls)
+			}
+		})
+	}
+}
+
+func TestAdminModerationWrite_RejectsUnknownJSONFields(t *testing.T) {
+	store := &adminStoreStub{}
+	rec := invokeModerationAdmin(t, ModerationAdminDeps{
+		Auth:  adminAuthStub{ident: platformAdmin()},
+		Store: store,
+	}, http.MethodPost, "/admin/v1/moderation/keywords",
+		`{"tenant_id":7,"keyword":"forbidden","unexpected":"ignored-before"}`)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+	if store.createCalls != 0 {
+		t.Fatalf("unknown-field request touched store: calls=%d", store.createCalls)
 	}
 }
 
@@ -254,7 +458,7 @@ func TestAdminModerationUnban_AdminAuthRequired(t *testing.T) {
 		Auth:  adminAuthStub{err: admin.ErrAdminForbidden},
 		Store: store,
 	}, http.MethodPost, "/admin/v1/moderation/api-keys/30/unban",
-		`{"tenant_id":7,"reason":"manual review cleared"}`)
+		`{"tenant_id":7,"idempotency_key":"unauthorized-unban","reason":"manual review cleared"}`)
 
 	assertStatus(t, rec, http.StatusForbidden)
 	if store.unbanCalls != 0 {
@@ -330,6 +534,19 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	}
 }
 
+func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, rec, &body)
+	if body.Error.Code != want {
+		t.Fatalf("error.code=%q want %q body=%s", body.Error.Code, want, rec.Body.String())
+	}
+}
+
 func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), dst); err != nil {
@@ -376,11 +593,19 @@ type adminStoreStub struct {
 	bulkHashRes      moderation.BulkCreateResult
 	bulkHashErr      error
 
-	moderationLogs  []moderation.ModerationLog
-	listLogTenantID int64
-	listLogAPIKeyID *int64
-	listLogLimit    int32
-	listLogOffset   int32
+	moderationLogs        []moderation.ModerationLog
+	listLogCalls          int
+	listLogTenantID       int64
+	listLogAPIKeyID       *int64
+	listLogLimit          int32
+	listLogOffset         int32
+	violations            []moderation.ModerationViolation
+	listViolationCalls    int
+	listViolationTenantID int64
+	listViolationAPIKeyID *int64
+	listViolationUserID   *int64
+	listViolationLimit    int32
+	listViolationOffset   int32
 
 	bannedKeys         []moderation.BannedAPIKey
 	listBannedTenantID int64
@@ -391,6 +616,11 @@ type adminStoreStub struct {
 	unbanReq    moderation.UnbanAPIKeyRequest
 	unbanResult moderation.UnbanAPIKeyResult
 	unbanErr    error
+
+	disableCalls  int
+	disableReq    moderation.DisableAPIKeyRequest
+	disableResult moderation.DisableAPIKeyResult
+	disableErr    error
 }
 
 func (s *adminStoreStub) CreateKeyword(_ context.Context, req moderation.CreateKeywordRequest) (moderation.KeywordRule, error) {
@@ -480,11 +710,22 @@ func (s *adminStoreStub) UpsertConfig(_ context.Context, cfg moderation.Moderati
 }
 
 func (s *adminStoreStub) ListModerationLogs(_ context.Context, tenantID int64, apiKeyID *int64, limit int32, offset int32) ([]moderation.ModerationLog, error) {
+	s.listLogCalls++
 	s.listLogTenantID = tenantID
 	s.listLogAPIKeyID = apiKeyID
 	s.listLogLimit = limit
 	s.listLogOffset = offset
 	return s.moderationLogs, nil
+}
+
+func (s *adminStoreStub) ListModerationViolations(_ context.Context, tenantID int64, apiKeyID *int64, userID *int64, limit int32, offset int32) ([]moderation.ModerationViolation, error) {
+	s.listViolationCalls++
+	s.listViolationTenantID = tenantID
+	s.listViolationAPIKeyID = apiKeyID
+	s.listViolationUserID = userID
+	s.listViolationLimit = limit
+	s.listViolationOffset = offset
+	return s.violations, nil
 }
 
 func (s *adminStoreStub) ListBannedAPIKeys(_ context.Context, tenantID int64, limit int32, offset int32) ([]moderation.BannedAPIKey, error) {
@@ -501,6 +742,15 @@ func (s *adminStoreStub) UnbanAPIKey(_ context.Context, req moderation.UnbanAPIK
 		return moderation.UnbanAPIKeyResult{}, s.unbanErr
 	}
 	return s.unbanResult, nil
+}
+
+func (s *adminStoreStub) DisableAPIKey(_ context.Context, req moderation.DisableAPIKeyRequest) (moderation.DisableAPIKeyResult, error) {
+	s.disableCalls++
+	s.disableReq = req
+	if s.disableErr != nil {
+		return moderation.DisableAPIKeyResult{}, s.disableErr
+	}
+	return s.disableResult, nil
 }
 
 func (s *adminStoreStub) Contains(_ context.Context, tenantID int64, hashHex string) (moderation.HashMatch, error) {

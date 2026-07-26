@@ -3,6 +3,7 @@ package moderation
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"expvar"
 	"io"
@@ -31,12 +32,13 @@ func TestScreener_KeywordMatchRejectsRequest(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		RequestID:   "req-keyword",
-		PayloadHash: "hash-keyword",
-		Body:        []byte(`{"messages":[{"content":"contains a forbidden phrase"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		RequestID:      "req-keyword",
+		PayloadHash:    "hash-keyword",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("contains a forbidden phrase"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -47,17 +49,17 @@ func TestScreener_KeywordMatchRejectsRequest(t *testing.T) {
 	if res.MatchedKeywordID == nil || *res.MatchedKeywordID != 17 {
 		t.Fatalf("matched keyword id=%v want 17", res.MatchedKeywordID)
 	}
-	if len(audit.events) != 1 || audit.events[0].PayloadHash != "hash-keyword" {
-		t.Fatalf("audit metadata mismatch: %+v", audit.events)
-	}
-	if audit.events[0].ReasonCode == "forbidden" {
-		t.Fatalf("audit reason leaked raw keyword: %+v", audit.events[0])
+	if len(audit.events) != 0 {
+		t.Fatalf("block must use one atomic violation write, separate audit events=%d", len(audit.events))
 	}
 	if ban.calls != 1 {
 		t.Fatalf("auto-ban calls=%d want 1 for keyword block", ban.calls)
 	}
 	if ban.events[0].TenantID != 7 || ban.events[0].APIKeyID != 11 || ban.events[0].UserID != 13 {
 		t.Fatalf("auto-ban identity mismatch: %+v", ban.events[0])
+	}
+	if ban.events[0].InputExcerpt != "contains a forbidden phrase" {
+		t.Fatalf("violation excerpt=%q", ban.events[0].InputExcerpt)
 	}
 	if ban.cfgs[0].BanThreshold != 3 || ban.cfgs[0].BanWindowSeconds != 3600 {
 		t.Fatalf("auto-ban config mismatch: %+v", ban.cfgs[0])
@@ -78,11 +80,12 @@ func TestScreener_HashPrecheckRejectsKnownHash(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-hit",
-		Body:        []byte("forbidden also appears"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-hit",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("forbidden also appears"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -104,11 +107,12 @@ func TestScreener_AllowsCleanRequest(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-clean",
-		Body:        []byte(`{"messages":[{"content":"ordinary request"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-clean",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("ordinary request"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -153,12 +157,13 @@ func TestScreener_ExternalBlocksOverThreshold(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		RequestID:   "req-external-block",
-		PayloadHash: "hash-external-block",
-		Body:        []byte(`{"messages":[{"content":"external threshold fixture"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		RequestID:      "req-external-block",
+		PayloadHash:    "hash-external-block",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("external threshold fixture"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -169,9 +174,8 @@ func TestScreener_ExternalBlocksOverThreshold(t *testing.T) {
 	if res.ReasonCode != "external_moderation:violence" {
 		t.Fatalf("reason=%q want external_moderation:violence", res.ReasonCode)
 	}
-	if len(audit.events) != 1 || audit.events[0].Decision != DecisionBlockExternal ||
-		audit.events[0].ReasonCode != "external_moderation:violence" {
-		t.Fatalf("external block audit mismatch: %+v", audit.events)
+	if len(audit.events) != 0 {
+		t.Fatalf("external block must not use separate audit write: %+v", audit.events)
 	}
 	if ban.calls != 1 || ban.events[0].Decision != DecisionBlockExternal {
 		t.Fatalf("external block must feed auto-ban: calls=%d events=%+v", ban.calls, ban.events)
@@ -199,8 +203,9 @@ func TestScreener_ExternalDisabledNoCall(t *testing.T) {
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
 		TenantID: 7, APIKeyID: 11, UserID: 13,
-		PayloadHash: "hash-external-disabled",
-		Body:        []byte(`{"messages":[{"content":"ordinary request"}]}`),
+		PayloadHash:    "hash-external-disabled",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("ordinary request"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -237,12 +242,13 @@ func TestScreener_ExternalFailOpenOnErrorAudits(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		RequestID:   "req-external-error",
-		PayloadHash: "hash-external-error",
-		Body:        []byte(`{"messages":[{"content":"ordinary request"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		RequestID:      "req-external-error",
+		PayloadHash:    "hash-external-error",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("ordinary request"),
 	})
 	if err != nil {
 		t.Fatalf("external fail-open Screen returned error: %v", err)
@@ -271,7 +277,7 @@ func TestScreenerExternalSamplingZeroSkipsAllCallsAndPasses(t *testing.T) {
 		RandomIntn: func(int) int { t.Fatal("pct=0 不应读取随机源"); return 0 },
 	})
 	for i := 0; i < 3; i++ {
-		res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "zero-sample"})
+		res, err := s.Screen(context.Background(), testScreenRequest(7, "zero-sample", "ordinary"))
 		if err != nil || res.Decision != DecisionPass {
 			t.Fatalf("第 %d 次 result=%+v err=%v, want pass", i, res, err)
 		}
@@ -293,12 +299,64 @@ func TestScreenerExternalSamplingHundredCallsEveryRequest(t *testing.T) {
 		RandomIntn: func(int) int { t.Fatal("pct=100 不应读取随机源"); return 0 },
 	})
 	for i := 0; i < 3; i++ {
-		if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "full-sample"}); err != nil {
+		if _, err := s.Screen(context.Background(), testScreenRequest(7, "full-sample", "ordinary")); err != nil {
 			t.Fatalf("第 %d 次 Screen: %v", i, err)
 		}
 	}
 	if external.calls != 3 {
 		t.Fatalf("external calls=%d, want 3", external.calls)
+	}
+}
+
+func TestScreenerPureImageReachesExternalModeration(t *testing.T) {
+	external := &externalModeratorStub{}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 100,
+			External: ExternalModerationConfig{Enabled: true, ImageEnabled: true},
+		}},
+		Keywords: &keywordStoreStub{}, Hashes: hashStoreStub{}, External: external,
+	})
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID:       7,
+		APIKeyID:       8,
+		UserID:         9,
+		RequestID:      "pure-image",
+		ClientProtocol: "openai_responses",
+		Body:           []byte(`{"input":[{"type":"input_image","image_url":"https://example.com/image.png"}]}`),
+	})
+	if err != nil || res.Decision != DecisionPass {
+		t.Fatalf("result=%+v err=%v, want pass", res, err)
+	}
+	if external.calls != 1 || len(external.reqs) != 1 {
+		t.Fatalf("external calls=%d reqs=%d, want 1", external.calls, len(external.reqs))
+	}
+	got := external.reqs[0]
+	if len(got.Body) != 0 || len(got.ImageURLs) != 1 ||
+		got.ImageURLs[0] != "https://example.com/image.png" {
+		t.Fatalf("外部审核输入未保留纯图片: %+v", got)
+	}
+}
+
+func TestScreenerPureImageSkipsExternalWhenImageReviewDisabled(t *testing.T) {
+	external := &externalModeratorStub{err: errors.New("图片审核关闭时不得调用")}
+	s := NewScreener(ScreenerDeps{
+		Config: configStub{cfg: ModerationConfig{
+			TenantID: 7, Enabled: true, FailClosed: true, SampleRatePct: 100,
+			External: ExternalModerationConfig{Enabled: true, ImageEnabled: false},
+		}},
+		External: external,
+	})
+	res, err := s.Screen(context.Background(), ScreenRequest{
+		TenantID: 7, APIKeyID: 8, UserID: 9, RequestID: "pure-image-disabled",
+		ClientProtocol: "openai_responses",
+		Body:           []byte(`{"input":[{"type":"input_image","image_url":"https://example.com/image.png"}]}`),
+	})
+	if err != nil || res.Decision != DecisionPass || res.ReasonCode != "clean" {
+		t.Fatalf("result=%+v err=%v, want clean pass", res, err)
+	}
+	if external.calls != 0 {
+		t.Fatalf("图片审核关闭仍调用外部服务: calls=%d", external.calls)
 	}
 }
 
@@ -327,7 +385,7 @@ func TestScreenerExternalSamplingIntermediateUsesInjectedRandomSource(t *testing
 					return tc.draw
 				},
 			})
-			res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: tc.name})
+			res, err := s.Screen(context.Background(), testScreenRequest(7, tc.name, "ordinary"))
 			if err != nil || res.Decision != DecisionPass {
 				t.Fatalf("result=%+v err=%v, want pass", res, err)
 			}
@@ -365,7 +423,8 @@ func TestScreenerExternalSamplingNeverSkipsLocalKeywordOrHash(t *testing.T) {
 				Keywords: tc.keywords, Hashes: tc.hashes, External: external,
 			})
 			res, err := s.Screen(context.Background(), ScreenRequest{
-				TenantID: 7, PayloadHash: "known", Body: []byte("forbidden"),
+				TenantID: 7, PayloadHash: "known", ClientProtocol: "openai_chat",
+				Body: testOpenAIChatBody("forbidden"),
 			})
 			if err != nil || res.Decision != tc.want {
 				t.Fatalf("result=%+v err=%v, want %s", res, err, tc.want)
@@ -395,11 +454,12 @@ func TestScreener_KeywordBoundaryDoesNotMatchInsideWord(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-passage",
-		Body:        []byte(`{"messages":[{"content":"read this passage carefully"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-passage",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("read this passage carefully"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -417,9 +477,9 @@ func TestScreener_KeywordMatchNoBoundaryScriptsBySubstring(t *testing.T) {
 		keyword string
 		body    string
 	}{
-		{name: "chinese", keyword: "违规", body: `{"messages":[{"content":"这是违规内容"}]}`},
-		{name: "japanese", keyword: "禁止", body: `{"messages":[{"content":"これは禁止内容です"}]}`},
-		{name: "mixed_cjk_english", keyword: "违规GPT", body: `{"messages":[{"content":"这是违规GPT内容"}]}`},
+		{name: "chinese", keyword: "违规", body: "这是违规内容"},
+		{name: "japanese", keyword: "禁止", body: "これは禁止内容です"},
+		{name: "mixed_cjk_english", keyword: "违规GPT", body: "这是违规GPT内容"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -431,11 +491,12 @@ func TestScreener_KeywordMatchNoBoundaryScriptsBySubstring(t *testing.T) {
 			})
 
 			res, err := s.Screen(context.Background(), ScreenRequest{
-				TenantID:    7,
-				APIKeyID:    11,
-				UserID:      13,
-				PayloadHash: "hash-no-boundary-" + tc.name,
-				Body:        []byte(tc.body),
+				TenantID:       7,
+				APIKeyID:       11,
+				UserID:         13,
+				PayloadHash:    "hash-no-boundary-" + tc.name,
+				ClientProtocol: "openai_chat",
+				Body:           testOpenAIChatBody(tc.body),
 			})
 			if err != nil {
 				t.Fatalf("Screen returned error: %v", err)
@@ -458,11 +519,12 @@ func TestScreener_KeywordMatchNormalizesNFKCAndZeroWidth(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-normalized",
-		Body:        []byte("{\"messages\":[{\"content\":\"\uff41t\u200bt\uff41ck\"}]}"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-normalized",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("\uff41t\u200bt\uff41ck"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -480,8 +542,8 @@ func TestScreener_AuditAndAutoBanFailuresEmitWarnAndMetric(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	auditBefore := moderationFailureMetricValue("audit_write_failed")
 	banBefore := moderationFailureMetricValue("auto_ban_record_failed")
+	audit := &auditSpy{}
 	s := NewScreener(ScreenerDeps{
 		Config: configStub{cfg: ModerationConfig{
 			Enabled: true, FailClosed: true, SampleRatePct: 100,
@@ -489,17 +551,18 @@ func TestScreener_AuditAndAutoBanFailuresEmitWarnAndMetric(t *testing.T) {
 		}},
 		Keywords: &keywordStoreStub{rules: []KeywordRule{{ID: 24, Keyword: "forbidden"}}},
 		Hashes:   hashStoreStub{},
-		Audit:    &auditSpy{err: errors.New("audit sink down")},
+		Audit:    audit,
 		Ban:      &banCounterSpy{err: errors.New("ban store down")},
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		RequestID:   "req-observe-failures",
-		PayloadHash: "hash-observe-failures",
-		Body:        []byte(`{"messages":[{"content":"forbidden"}]}`),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		RequestID:      "req-observe-failures",
+		PayloadHash:    "hash-observe-failures",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("forbidden"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -507,16 +570,16 @@ func TestScreener_AuditAndAutoBanFailuresEmitWarnAndMetric(t *testing.T) {
 	if res.Decision != DecisionBlockKeyword {
 		t.Fatalf("decision=%q want keyword block despite observer failures", res.Decision)
 	}
-	if got := moderationFailureMetricValue("audit_write_failed") - auditBefore; got != 1 {
-		t.Fatalf("audit failure metric delta=%d want 1", got)
-	}
 	if got := moderationFailureMetricValue("auto_ban_record_failed") - banBefore; got != 1 {
 		t.Fatalf("auto-ban failure metric delta=%d want 1", got)
 	}
+	if len(audit.events) != 1 || audit.events[0].Decision != DecisionBlockKeyword ||
+		audit.events[0].InputExcerpt != "forbidden" {
+		t.Fatalf("原子事务失败后未保留独立运营证据：%+v", audit.events)
+	}
 	logged := logs.String()
-	if !strings.Contains(logged, "moderation_audit_write_failed") ||
-		!strings.Contains(logged, "moderation_auto_ban_record_failed") {
-		t.Fatalf("missing WARN logs for audit/ban failures: %s", logged)
+	if !strings.Contains(logged, "moderation_auto_ban_record_failed") {
+		t.Fatalf("missing WARN log for atomic violation failure: %s", logged)
 	}
 }
 
@@ -529,11 +592,12 @@ func TestScreener_HashTakesPriorityOverKeyword(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-hit",
-		Body:        []byte("forbidden"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-hit",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("forbidden"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -553,11 +617,12 @@ func TestScreener_KeywordStoreErrorFailsClosed(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-error",
-		Body:        []byte("ordinary"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-error",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("ordinary"),
 	})
 	if !errors.Is(err, ErrScreenerBackend) {
 		t.Fatalf("error=%v want ErrScreenerBackend", err)
@@ -576,11 +641,12 @@ func TestScreener_KeywordStoreErrorFailsOpenWhenConfigured(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-open",
-		Body:        []byte("ordinary"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-open",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("ordinary"),
 	})
 	if err != nil {
 		t.Fatalf("fail-open Screen returned error: %v", err)
@@ -600,11 +666,12 @@ func TestScreener_DisabledConfigSkipsStores(t *testing.T) {
 	})
 
 	res, err := s.Screen(context.Background(), ScreenRequest{
-		TenantID:    7,
-		APIKeyID:    11,
-		UserID:      13,
-		PayloadHash: "hash-disabled",
-		Body:        []byte("forbidden"),
+		TenantID:       7,
+		APIKeyID:       11,
+		UserID:         13,
+		PayloadHash:    "hash-disabled",
+		ClientProtocol: "openai_chat",
+		Body:           testOpenAIChatBody("forbidden"),
 	})
 	if err != nil {
 		t.Fatalf("Screen returned error: %v", err)
@@ -749,15 +816,15 @@ func TestScreener_ClientTailRoleCannotSuppressBanCount(t *testing.T) {
 
 	// 尾角色由客户端提供：拦截、取证和 ban 都必须照常执行。
 	s, audit, ban := mk()
-	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r1", Body: blockedBody, TailRole: "assistant"})
+	res, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r1", ClientProtocol: "openai_chat", Body: blockedBody, TailRole: "assistant"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Decision != DecisionBlockKeyword {
 		t.Fatalf("重发轮拦截判定不得放水: %q", res.Decision)
 	}
-	if len(audit.events) != 1 {
-		t.Fatalf("block 审计必须写: %d", len(audit.events))
+	if len(audit.events) != 0 {
+		t.Fatalf("block 只能走原子违规写入，独立日志=%d", len(audit.events))
 	}
 	if ban.calls != 1 {
 		t.Fatalf("客户端 TailRole 不得绕过 ban 计数: calls=%d", ban.calls)
@@ -765,7 +832,7 @@ func TestScreener_ClientTailRoleCannotSuppressBanCount(t *testing.T) {
 
 	// 用户轮:ban 照计
 	s, _, ban = mk()
-	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r2", Body: blockedBody, TailRole: "user"}); err != nil {
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r2", ClientProtocol: "openai_chat", Body: blockedBody, TailRole: "user"}); err != nil {
 		t.Fatal(err)
 	}
 	if ban.calls != 1 {
@@ -775,17 +842,34 @@ func TestScreener_ClientTailRoleCannotSuppressBanCount(t *testing.T) {
 	// 干净请求:重发轮不写 clean 审计;未知 TailRole 照写(现行为)
 	s, audit, _ = mk()
 	clean := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}]}`)
-	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r3", Body: clean, TailRole: "assistant"}); err != nil {
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r3", ClientProtocol: "openai_chat", Body: clean, TailRole: "assistant"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(audit.events) != 0 {
 		t.Fatalf("重发轮 clean 审计应跳过: %d", len(audit.events))
 	}
 	s, audit, _ = mk()
-	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r4", Body: clean}); err != nil {
+	if _, err := s.Screen(context.Background(), ScreenRequest{TenantID: 7, RequestID: "r4", ClientProtocol: "openai_chat", Body: clean}); err != nil {
 		t.Fatal(err)
 	}
 	if len(audit.events) != 1 {
 		t.Fatalf("未知 TailRole 应保持现行为写 clean 审计: %d", len(audit.events))
+	}
+}
+
+func testOpenAIChatBody(text string) []byte {
+	body, err := json.Marshal(map[string]any{
+		"messages": []map[string]string{{"role": "user", "content": text}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return body
+}
+
+func testScreenRequest(tenantID int64, requestID string, text string) ScreenRequest {
+	return ScreenRequest{
+		TenantID: tenantID, RequestID: requestID,
+		ClientProtocol: "openai_chat", Body: testOpenAIChatBody(text),
 	}
 }

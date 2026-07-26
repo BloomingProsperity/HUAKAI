@@ -39,6 +39,9 @@ func newHashCreateHandler(deps ModerationAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !requirePlatformAdmin(w, ident) {
+			return
+		}
 		var body hashCreateRequest
 		if !readJSON(w, r, &body) {
 			return
@@ -76,6 +79,9 @@ func newHashListHandler(deps ModerationAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !requirePlatformAdmin(w, ident) {
+			return
+		}
 		tenantID, ok := tenantFromQuery(w, r, ident)
 		if !ok {
 			return
@@ -106,6 +112,9 @@ func newHashDeleteHandler(deps ModerationAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveAdmin(deps, w, r)
 		if !ok {
+			return
+		}
+		if !requirePlatformAdmin(w, ident) {
 			return
 		}
 		tenantID, ok := tenantFromQuery(w, r, ident)

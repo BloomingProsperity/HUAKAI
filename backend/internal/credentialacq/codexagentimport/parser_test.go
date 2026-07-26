@@ -62,6 +62,43 @@ func TestParseRejectsRawTokenWrongModeAndInjectedEndpoint(t *testing.T) {
 	}
 }
 
+func TestParseRejectsAgentIdentityMintDirective(t *testing.T) {
+	key := importPrivateKey(t)
+	for _, input := range []string{
+		`{"mint_agent_identity":true,"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"agent_identity":{"mintAgentIdentity":false,"agent_runtime_id":"runtime","agent_private_key":"` + key + `"},"account_id":"a","chatgpt_user_id":"u"}`,
+		`{"mint":true,"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"agent_identity":{"metadata":{"mint_identity":true},"agent_runtime_id":"runtime","agent_private_key":"` + key + `"},"account_id":"a","chatgpt_user_id":"u"}`,
+		`{"action":"mint_agent_identity","agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"actions":["inspect","mint_agent_identity"],"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"action":{"name":"mint"},"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"commands":[{"name":"mint_agent_identity"}],"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+		`{"operation":{"type":"mintAgentIdentity"},"agent_runtime_id":"runtime","agent_private_key":"` + key + `","account_id":"a","chatgpt_user_id":"u"}`,
+	} {
+		if _, err := Parse(input); err == nil {
+			t.Fatalf("Agent Identity 铸造指令未被拒绝：%s", input)
+		}
+	}
+}
+
+func TestParseAllowsUnrelatedMintMetadata(t *testing.T) {
+	key := importPrivateKey(t)
+	input := `{
+		"minted_at":"2026-07-26T00:00:00Z",
+		"admin_token":"metadata-only",
+		"metadata":{"minted_by":"upstream"},
+		"action":"sync_minted_at_metadata",
+		"agent_runtime_id":"runtime",
+		"agent_private_key":"` + key + `",
+		"account_id":"a",
+		"chatgpt_user_id":"u"
+	}`
+	candidates, err := Parse(input)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("合法元数据被误判为铸造指令：candidates=%d err=%v", len(candidates), err)
+	}
+}
+
 func TestParseRejectsUnsafeHTTPHeaderMetadata(t *testing.T) {
 	key := importPrivateKey(t)
 	for _, metadata := range []string{

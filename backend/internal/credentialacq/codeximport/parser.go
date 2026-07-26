@@ -131,6 +131,9 @@ func candidatesFromValue(value any) ([]credentialacq.CredentialCandidate, error)
 }
 
 func candidateFromObject(object map[string]any) (credentialacq.CredentialCandidate, error) {
+	if containsMintDirective(object) {
+		return credentialacq.CredentialCandidate{}, invalid("不支持通过 Codex OAuth 导入铸造 Agent Identity")
+	}
 	authMode := normalizeAuthMode(firstString(object, "auth_mode", "authMode"))
 	switch authMode {
 	case "", "chatgpt", "chatgptauthtokens":
@@ -160,6 +163,74 @@ func candidateFromObject(object map[string]any) (credentialacq.CredentialCandida
 		return credentialacq.CredentialCandidate{}, invalid("OpenAI API key 不是 Codex OAuth 凭据")
 	}
 	return candidateFromTokenObject(object, "token_object")
+}
+
+func containsMintDirective(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			normalized := strings.ToLower(key)
+			normalized = strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(normalized)
+			if isMintDirectiveKey(normalized) ||
+				isMintDirectiveValue(normalized, nested) ||
+				containsMintDirective(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if containsMintDirective(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isMintDirectiveKey(key string) bool {
+	switch key {
+	case "mint", "mintagentidentity", "mintidentity":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMintDirectiveValue(key string, value any) bool {
+	switch key {
+	case "action", "actions", "command", "commands", "directive", "directives",
+		"intent", "intents", "operation", "operations", "type", "types":
+	default:
+		return false
+	}
+	return containsMintDirectiveText(value)
+}
+
+func containsMintDirectiveText(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		text := strings.ToLower(strings.TrimSpace(typed))
+		text = strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(text)
+		switch text {
+		case "mint", "mintagentidentity", "mintidentity":
+			return true
+		default:
+			return false
+		}
+	case []any:
+		for _, nested := range typed {
+			if containsMintDirectiveText(nested) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, nested := range typed {
+			if containsMintDirectiveText(nested) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeAuthJSONMetadata(tokens, outer map[string]any) map[string]any {

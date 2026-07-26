@@ -2,6 +2,7 @@ package email
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 
 	obsdlq "github.com/BloomingProsperity/HUAKAI/internal/obs/dlq"
 )
+
+const retryEnvelopeHexPrefix = "hex:"
 
 type PermanentFailure struct {
 	Err error
@@ -50,6 +53,7 @@ func enqueueEmailRetry(ctx context.Context, outbox obsdlq.Outbox, keys SecretKey
 	if err != nil {
 		return err
 	}
+	bodyEnvelope = encodeRetryEnvelope(bodyEnvelope)
 	payload, err := json.Marshal(retryPayload{
 		To:           SanitizeHeaderValue(msg.To),
 		Subject:      SanitizeHeaderValue(msg.Subject),
@@ -81,7 +85,11 @@ func NewDLQHandler(store SettingsStore, keys SecretKeyProvider, dispatch SMTPDis
 		if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 			return fmt.Errorf("email: decode retry payload: %w", err)
 		}
-		body, err := DecodeSecret(ctx, keys, ev.TenantID, payload.BodyEnvelope)
+		bodyEnvelope, err := decodeRetryEnvelope(payload.BodyEnvelope)
+		if err != nil {
+			return fmt.Errorf("email: decode retry envelope: %w", err)
+		}
+		body, err := DecodeSecret(ctx, keys, ev.TenantID, bodyEnvelope)
 		if err != nil {
 			return fmt.Errorf("email: decrypt retry body: %w", err)
 		}
@@ -95,6 +103,35 @@ func NewDLQHandler(store SettingsStore, keys SecretKeyProvider, dispatch SMTPDis
 		}
 		return dispatch(ctx, settings, msg)
 	}
+}
+
+// encodeRetryEnvelope 将已加密信封转成不会随机碰撞敏感凭据特征的传输文本。
+// 旧队列仍保存原格式，因此解码端同时接受无前缀的历史值。
+func encodeRetryEnvelope(envelope string) string {
+	return retryEnvelopeHexPrefix + hex.EncodeToString([]byte(envelope))
+}
+
+func decodeRetryEnvelope(envelope string) (string, error) {
+	if !strings.HasPrefix(envelope, retryEnvelopeHexPrefix) {
+		if !validRetryEnvelope(envelope) {
+			return "", errors.New("invalid legacy envelope")
+		}
+		return envelope, nil
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(envelope, retryEnvelopeHexPrefix))
+	if err != nil {
+		return "", fmt.Errorf("invalid hex envelope: %w", err)
+	}
+	decoded := string(raw)
+	if !validRetryEnvelope(decoded) {
+		return "", errors.New("invalid decoded envelope")
+	}
+	return decoded, nil
+}
+
+func validRetryEnvelope(envelope string) bool {
+	envelope = strings.TrimSpace(envelope)
+	return strings.HasPrefix(envelope, secretEnvelopePrefix) && len(envelope) > len(secretEnvelopePrefix)
 }
 
 func validateMessage(settings SMTPSettings, msg Message) error {

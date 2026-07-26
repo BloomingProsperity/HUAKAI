@@ -6,17 +6,22 @@ package moderation
 
 import (
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/shopspring/decimal"
 )
 
-type ModerationConfig struct {
-	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
-	Enabled          bool               `db:"enabled" json:"enabled"`
-	FailClosed       bool               `db:"fail_closed" json:"fail_closed"`
-	SampleRatePct    int32              `db:"sample_rate_pct" json:"sample_rate_pct"`
-	BanThreshold     int32              `db:"ban_threshold" json:"ban_threshold"`
-	BanWindowSeconds int32              `db:"ban_window_seconds" json:"ban_window_seconds"`
-	ViolationFeeUsd  decimal.Decimal    `db:"violation_fee_usd" json:"violation_fee_usd"`
-	UpdatedBy        *string            `db:"updated_by" json:"updated_by"`
-	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+// 人工禁用与解封的永久幂等事实；同一租户的幂等键只能对应一个规范化请求和稳定结果。
+type ModerationKeyOperation struct {
+	ID                 int64              `db:"id" json:"id"`
+	TenantID           int64              `db:"tenant_id" json:"tenant_id"`
+	APIKeyID           int64              `db:"api_key_id" json:"api_key_id"`
+	IdempotencyKey     string             `db:"idempotency_key" json:"idempotency_key"`
+	RequestFingerprint string             `db:"request_fingerprint" json:"request_fingerprint"`
+	Action             string             `db:"action" json:"action"`
+	ViolationEventID   *int64             `db:"violation_event_id" json:"violation_event_id"`
+	ActorID            string             `db:"actor_id" json:"actor_id"`
+	ActorRole          string             `db:"actor_role" json:"actor_role"`
+	ResultStatus       string             `db:"result_status" json:"result_status"`
+	ResultLogID        int64              `db:"result_log_id" json:"result_log_id"`
+	ResultGeneration   int64              `db:"result_generation" json:"result_generation"`
+	ResultUpdatedAt    pgtype.Timestamptz `db:"result_updated_at" json:"result_updated_at"`
+	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
 }

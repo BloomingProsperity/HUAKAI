@@ -8,5 +8,8 @@ var (
 	ErrKeywordExists      = errors.New("moderation: keyword exists")
 	ErrHashExists         = errors.New("moderation: hash exists")
 	ErrNotFound           = errors.New("moderation: not found")
+	ErrStateConflict      = errors.New("moderation: key state conflict")
+	ErrInvalidEvent       = errors.New("moderation: invalid event")
+	ErrTransactionMissing = errors.New("moderation: transaction store unavailable")
 	ErrBulkImportTooLarge = errors.New("moderation: bulk import too large")
 )

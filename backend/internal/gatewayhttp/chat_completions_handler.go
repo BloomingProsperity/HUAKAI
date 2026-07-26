@@ -530,13 +530,14 @@ func (ex *chatExecution) screenModerationInput(w http.ResponseWriter) bool {
 	}
 	ex.ensureIdempotencyState()
 	res, err := ex.d.ModerationScreener.Screen(ex.ctx, moderation.ScreenRequest{
-		TenantID:    ex.ident.TenantID,
-		APIKeyID:    ex.ident.APIKeyID,
-		UserID:      ex.ident.UserID,
-		RequestID:   ex.requestID,
-		PayloadHash: ex.payloadHash,
-		Body:        ex.body,
-		TailRole:    clientTailMessageRole(ex.clientProtocol, ex.body),
+		TenantID:       ex.ident.TenantID,
+		APIKeyID:       ex.ident.APIKeyID,
+		UserID:         ex.ident.UserID,
+		RequestID:      ex.requestID,
+		PayloadHash:    ex.payloadHash,
+		ClientProtocol: string(ex.clientProtocol),
+		Body:           ex.body,
+		TailRole:       clientTailMessageRole(ex.clientProtocol, ex.body),
 	})
 	if err != nil {
 		logInternalError(ex.ctx, ex.requestID, clienterr.CodeContentPolicyViolation, err)

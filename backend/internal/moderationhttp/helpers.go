@@ -39,6 +39,15 @@ func requireTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID in
 	return true
 }
 
+func requirePlatformAdmin(w http.ResponseWriter, ident admin.AdminIdentity) bool {
+	if ident.Role != admin.RolePlatformAdmin {
+		writeError(w, http.StatusForbidden, "platform_admin_required",
+			"platform administrator required")
+		return false
+	}
+	return true
+}
+
 func tenantFromQuery(w http.ResponseWriter, r *http.Request, ident admin.AdminIdentity) (int64, bool) {
 	raw := r.URL.Query().Get("tenant_id")
 	if raw == "" && ident.Role == admin.RoleTenantOperator {
@@ -66,13 +75,14 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func readJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "body_read_error", err.Error())
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return false
 	}
-	if err := json.Unmarshal(body, dst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_json", "request body must contain exactly one JSON value")
 		return false
 	}
 	return true

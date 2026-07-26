@@ -1,30 +1,38 @@
--- 内容审核执行日志、违规计数与用户密钥封禁查询。
--- 日志只保存元数据与载荷指纹，不保存原始请求、明文凭据或密钥哈希。
+-- 内容审核 30 天运营日志与租户证据读取。
+-- 所有查询都显式绑定 tenant_id；永久表不保存正文、摘录或载荷摘要。
 
 -- name: InsertModerationLog :one
 INSERT INTO moderation_log (
-    tenant_id, api_key_id, user_id, request_id, payload_hash,
-    decision, reason_code, matched_keyword_id, matched_hash_id,
-    violation_fee_usd, billing_event_id
+    tenant_id, api_key_id, user_id, request_id, violation_event_id,
+    input_excerpt, decision, reason_code, matched_keyword_id, matched_hash_id,
+    violation_count, threshold_reached, key_disabled,
+    actor_id, actor_role, violation_fee_usd, billing_event_id
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(api_key_id)::bigint,
     sqlc.arg(user_id)::bigint,
     sqlc.narg(request_id)::text,
-    sqlc.arg(payload_hash)::text,
+    sqlc.narg(violation_event_id)::bigint,
+    sqlc.arg(input_excerpt)::text,
     sqlc.arg(decision)::text,
     sqlc.arg(reason_code)::text,
     sqlc.narg(matched_keyword_id)::bigint,
     sqlc.narg(matched_hash_id)::bigint,
-    sqlc.arg(violation_fee_usd)::numeric,
-    sqlc.narg(billing_event_id)::bigint
+    sqlc.arg(violation_count)::bigint,
+    sqlc.arg(threshold_reached)::boolean,
+    sqlc.arg(key_disabled)::boolean,
+    sqlc.narg(actor_id)::text,
+    sqlc.narg(actor_role)::text,
+    0,
+    NULL
 )
 RETURNING id;
 
 -- name: ListModerationLog :many
-SELECT id, tenant_id, api_key_id, user_id, request_id, payload_hash,
-       decision, reason_code, matched_keyword_id, matched_hash_id,
-       violation_fee_usd, billing_event_id, occurred_at
+SELECT id, tenant_id, api_key_id, user_id, request_id, violation_event_id,
+       input_excerpt, decision, reason_code, matched_keyword_id, matched_hash_id,
+       violation_count, threshold_reached, key_disabled, actor_id, actor_role,
+       occurred_at
 FROM moderation_log
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND (
@@ -35,92 +43,32 @@ ORDER BY occurred_at DESC, id DESC
 LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;
 
--- name: InsertModerationViolationEvent :one
-INSERT INTO moderation_violation_events (
-    tenant_id, api_key_id, user_id, request_id, payload_hash,
-    decision, reason_code, matched_keyword_id, matched_hash_id
-) VALUES (
-    sqlc.arg(tenant_id)::bigint,
-    sqlc.arg(api_key_id)::bigint,
-    sqlc.arg(user_id)::bigint,
-    sqlc.narg(request_id)::text,
-    sqlc.arg(payload_hash)::text,
-    sqlc.arg(decision)::text,
-    sqlc.arg(reason_code)::text,
-    sqlc.narg(matched_keyword_id)::bigint,
-    sqlc.narg(matched_hash_id)::bigint
-)
-RETURNING id;
-
--- name: CountModerationBlocksInWindow :one
-SELECT count(*)::bigint
-FROM moderation_violation_events
-WHERE tenant_id = sqlc.arg(tenant_id)::bigint
-  AND api_key_id = sqlc.arg(api_key_id)::bigint
-  AND occurred_at >= now() - make_interval(secs => sqlc.arg(window_seconds)::integer);
-
--- name: DisableModerationAPIKey :execrows
-UPDATE api_keys
-SET status = 'disabled',
-    updated_at = now()
-WHERE tenant_id = sqlc.arg(tenant_id)::bigint
-  AND id = sqlc.arg(api_key_id)::bigint
-  AND purpose = 'user'
-  AND status = 'active'
-  AND deleted_at IS NULL;
-
--- name: ListBannedKeys :many
-SELECT ak.id, ak.tenant_id, ak.user_id, ak.name, ak.key_prefix, ak.status,
-       ak.created_at, ak.updated_at,
-       count(v.id)::bigint AS violation_count,
-       max(v.occurred_at)::timestamptz AS last_violation_at
-FROM api_keys ak
-JOIN moderation_violation_events v
-  ON v.tenant_id = ak.tenant_id
- AND v.api_key_id = ak.id
- AND v.occurred_at >= ak.updated_at - interval '1 minute'
- AND v.occurred_at <= ak.updated_at + interval '1 second'
-WHERE ak.tenant_id = sqlc.arg(tenant_id)::bigint
-  AND ak.purpose = 'user'
-  AND ak.status = 'disabled'
-  AND ak.deleted_at IS NULL
-GROUP BY ak.id, ak.tenant_id, ak.user_id, ak.name, ak.key_prefix, ak.status,
-         ak.created_at, ak.updated_at
-ORDER BY last_violation_at DESC, ak.id DESC
+-- name: ListModerationViolations :many
+SELECT v.id, v.tenant_id, v.api_key_id, v.user_id, v.request_id,
+       v.decision, v.reason_code, v.matched_keyword_id, v.matched_hash_id,
+       v.ban_threshold_snapshot, v.ban_window_seconds_snapshot,
+       v.violation_count, v.threshold_reached, v.auto_disable_enabled,
+       v.disposition_source, v.disposition_result, v.occurred_at,
+       COALESCE(l.input_excerpt, '')::text AS input_excerpt,
+       COALESCE(l.key_disabled, false)::boolean AS key_disabled
+FROM moderation_violation_events v
+LEFT JOIN LATERAL (
+    SELECT ml.input_excerpt, ml.key_disabled
+    FROM moderation_log ml
+    WHERE ml.tenant_id = v.tenant_id
+      AND ml.violation_event_id = v.id
+    ORDER BY ml.id DESC
+    LIMIT 1
+) l ON true
+WHERE v.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND (
+    sqlc.narg(api_key_id)::bigint IS NULL
+    OR v.api_key_id = sqlc.narg(api_key_id)::bigint
+  )
+  AND (
+    sqlc.narg(user_id)::bigint IS NULL
+    OR v.user_id = sqlc.narg(user_id)::bigint
+  )
+ORDER BY v.occurred_at DESC, v.id DESC
 LIMIT sqlc.arg(page_limit)::integer
 OFFSET sqlc.arg(page_offset)::integer;
-
--- name: EnableModerationAPIKey :one
-WITH enabled_key AS (
-    UPDATE api_keys ak
-    SET status = 'active',
-        updated_at = now()
-    WHERE ak.tenant_id = sqlc.arg(tenant_id)::bigint
-      AND ak.id = sqlc.arg(api_key_id)::bigint
-      AND ak.purpose = 'user'
-      AND ak.status = 'disabled'
-      AND ak.deleted_at IS NULL
-      AND EXISTS (
-          SELECT 1
-          FROM moderation_violation_events v
-          WHERE v.tenant_id = ak.tenant_id
-            AND v.api_key_id = ak.id
-            AND v.occurred_at >= ak.updated_at - interval '1 minute'
-            AND v.occurred_at <= ak.updated_at + interval '1 second'
-      )
-    RETURNING ak.id, ak.tenant_id, ak.user_id, ak.status, ak.updated_at
-),
-audit_row AS (
-    INSERT INTO moderation_log (
-        tenant_id, api_key_id, user_id, request_id, payload_hash,
-        decision, reason_code, violation_fee_usd
-    )
-    SELECT tenant_id, id, user_id, sqlc.arg(audit_request_id)::text,
-           'admin_unban_no_payload', 'pass', sqlc.arg(reason_code)::text, 0
-    FROM enabled_key
-    RETURNING id
-)
-SELECT enabled_key.id AS api_key_id, enabled_key.tenant_id, enabled_key.status,
-       enabled_key.updated_at, audit_row.id AS audit_log_id
-FROM enabled_key
-JOIN audit_row ON true;

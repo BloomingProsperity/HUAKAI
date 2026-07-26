@@ -13,16 +13,20 @@ const (
 	DecisionBlockHash     Decision = "block_hash"
 	DecisionBlockExternal Decision = "block_external"
 	DecisionBlockBackend  Decision = "block_backend"
+	DecisionAdminDisable  Decision = "admin_disable"
+	DecisionAdminUnban    Decision = "admin_unban"
 )
 
 type ScreenRequest struct {
-	TenantID      int64
-	APIKeyID      int64
-	UserID        int64
-	RequestID     string
-	PayloadHash   string
-	Body          []byte
-	ImageDataURLs []string
+	TenantID       int64
+	APIKeyID       int64
+	UserID         int64
+	RequestID      string
+	PayloadHash    string
+	ClientProtocol string
+	Body           []byte
+	InputExcerpt   string
+	ImageURLs      []string
 	// TailRole 是请求体最后一条消息的角色(gatewayhttp 按客户端协议解析;
 	// 空 = 未知/不可解析,行为不变)。Agent 工具循环每轮重发整段对话,
 	// 尾消息非 user 时:拦截判定照旧(防绕过),但跳过 auto-ban 重复计数
@@ -64,15 +68,16 @@ type HashMatch struct {
 }
 
 type ModerationConfig struct {
-	TenantID         int64
-	Enabled          bool
-	FailClosed       bool
-	SampleRatePct    int32
-	BanThreshold     int32
-	BanWindowSeconds int32
-	External         ExternalModerationConfig
-	UpdatedBy        string
-	UpdatedAt        time.Time
+	TenantID            int64
+	Enabled             bool
+	FailClosed          bool
+	SampleRatePct       int32
+	BanThreshold        int32
+	BanWindowSeconds    int32
+	AutoDisableKeyOnBan bool
+	External            ExternalModerationConfig
+	UpdatedBy           string
+	UpdatedAt           time.Time
 }
 
 type ExternalModerationConfig struct {
@@ -113,10 +118,13 @@ type ModerationEvent struct {
 	UserID           int64
 	RequestID        string
 	PayloadHash      string
+	InputExcerpt     string
 	Decision         Decision
 	ReasonCode       string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
+	ActorID          string
+	ActorRole        string
 }
 
 type ModerationLog struct {
@@ -125,32 +133,83 @@ type ModerationLog struct {
 	APIKeyID         int64
 	UserID           int64
 	RequestID        string
-	PayloadHash      string
+	ViolationEventID *int64
+	InputExcerpt     string
 	Decision         Decision
 	ReasonCode       string
 	MatchedKeywordID *int64
 	MatchedHashID    *int64
+	ViolationCount   int64
+	ThresholdReached bool
+	KeyDisabled      bool
+	ActorID          string
+	ActorRole        string
 	OccurredAt       time.Time
 }
 
+type ModerationViolation struct {
+	ID                       int64
+	TenantID                 int64
+	APIKeyID                 int64
+	UserID                   int64
+	RequestID                string
+	Decision                 Decision
+	ReasonCode               string
+	MatchedKeywordID         *int64
+	MatchedHashID            *int64
+	BanThresholdSnapshot     int32
+	BanWindowSecondsSnapshot int32
+	ViolationCount           int64
+	ThresholdReached         bool
+	AutoDisableEnabled       bool
+	DispositionSource        string
+	DispositionResult        string
+	InputExcerpt             string
+	KeyDisabled              bool
+	OccurredAt               time.Time
+}
+
 type BannedAPIKey struct {
-	ID              int64
-	TenantID        int64
-	UserID          int64
-	Name            string
-	KeyPrefix       string
-	Status          string
-	ViolationCount  int64
-	LastViolationAt time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                int64
+	TenantID          int64
+	UserID            int64
+	Name              string
+	KeyPrefix         string
+	Status            string
+	Source            string
+	ReasonCode        string
+	DisableGeneration int64
+	ViolationCount    int64
+	LastViolationAt   time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type UnbanAPIKeyRequest struct {
-	TenantID int64
-	APIKeyID int64
-	ActorID  string
-	Reason   string
+	TenantID       int64
+	APIKeyID       int64
+	IdempotencyKey string
+	ActorID        string
+	ActorRole      string
+	Reason         string
+}
+
+type DisableAPIKeyRequest struct {
+	TenantID         int64
+	APIKeyID         int64
+	ViolationEventID int64
+	IdempotencyKey   string
+	ActorID          string
+	ActorRole        string
+	Reason           string
+}
+
+type DisableAPIKeyResult struct {
+	APIKeyID  int64
+	TenantID  int64
+	Status    string
+	LogID     int64
+	UpdatedAt time.Time
 }
 
 type UnbanAPIKeyResult struct {

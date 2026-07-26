@@ -126,8 +126,31 @@ func TestParseBatchShapesAndAccessTokenAliases(t *testing.T) {
 	}
 }
 
+func TestParseAllowsUnrelatedMintMetadata(t *testing.T) {
+	input := `{
+		"minted_at":"2026-07-26T00:00:00Z",
+		"admin_token":"metadata-only",
+		"metadata":{"minted_by":"upstream"},
+		"action":"sync_minted_at_metadata",
+		"tokens":{"access_token":"access-containing-mint-text"}
+	}`
+	candidates, err := Parse(input)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("合法元数据被误判为铸造指令：candidates=%d err=%v", len(candidates), err)
+	}
+}
+
 func TestParseRejectsAgentIdentityAPIKeyMalformedAndOversizedMaterial(t *testing.T) {
 	cases := []string{
+		`{"mint_agent_identity":true,"tokens":{"access_token":"access"}}`,
+		`{"tokens":{"access_token":"access","mintAgentIdentity":false}}`,
+		`{"mint":true,"tokens":{"access_token":"access"}}`,
+		`{"tokens":{"access_token":"access","metadata":{"mint_identity":true}}}`,
+		`{"action":"mint_agent_identity","tokens":{"access_token":"access"}}`,
+		`{"actions":["inspect","mint_agent_identity"],"tokens":{"access_token":"access"}}`,
+		`{"action":{"name":"mint"},"tokens":{"access_token":"access"}}`,
+		`{"commands":[{"name":"mint_agent_identity"}],"tokens":{"access_token":"access"}}`,
+		`{"tokens":{"access_token":"access"},"operation":{"type":"mintAgentIdentity"}}`,
 		`{"agent_identity":{"agent_runtime_id":"runtime","agent_private_key":"private"},"tokens":{"access_token":"access"}}`,
 		`{"auth_mode":"agentIdentity","tokens":{"access_token":"stale-access"}}`,
 		`{"personal_access_token":"personal-token"}`,

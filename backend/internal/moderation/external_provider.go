@@ -26,6 +26,7 @@ const (
 	MaxExternalModerationRetryCount     = 5
 	ExternalImageRawMaxBytes            = 8 * 1024 * 1024
 	ExternalImageDataURLMaxBytes        = 12 * 1024 * 1024
+	ExternalRemoteImageURLMaxBytes      = 16 * 1024
 
 	externalRateLimitFreeze  = time.Minute
 	externalAuthFreeze       = 10 * time.Minute
@@ -327,17 +328,17 @@ func sanitizeExternalCategory(category string) string {
 }
 
 func externalModerationInput(req ScreenRequest, cfg ExternalModerationConfig) any {
-	if !cfg.ImageEnabled || len(req.ImageDataURLs) == 0 {
+	if !cfg.ImageEnabled || len(req.ImageURLs) == 0 {
 		return string(req.Body)
 	}
-	parts := make([]map[string]any, 0, 1+len(req.ImageDataURLs))
+	parts := make([]map[string]any, 0, 1+len(req.ImageURLs))
 	if len(req.Body) > 0 {
 		parts = append(parts, map[string]any{
 			"type": "text",
 			"text": string(req.Body),
 		})
 	}
-	for _, imageURL := range req.ImageDataURLs {
+	for _, imageURL := range req.ImageURLs {
 		parts = append(parts, map[string]any{
 			"type": "image_url",
 			"image_url": map[string]string{
@@ -352,40 +353,59 @@ func externalImageCapResult(req ScreenRequest, cfg ExternalModerationConfig) (Ex
 	if !cfg.ImageEnabled {
 		return ExternalModerationResult{}, false
 	}
-	for _, imageURL := range req.ImageDataURLs {
-		if err := validateExternalImageDataURL(imageURL); err != nil {
+	for _, imageURL := range req.ImageURLs {
+		if err := validateExternalImageURL(imageURL); err != nil {
+			reasonCode := "external_image_invalid"
+			if errors.Is(err, errExternalImageTooLarge) {
+				reasonCode = "external_image_too_large"
+			}
 			return ExternalModerationResult{
 				Blocked:    true,
-				ReasonCode: "external_image_too_large",
+				ReasonCode: reasonCode,
 			}, true
 		}
 	}
 	return ExternalModerationResult{}, false
 }
 
-func validateExternalImageDataURL(imageURL string) error {
+var (
+	errExternalImageInvalid  = errors.New("moderation: invalid image url")
+	errExternalImageTooLarge = errors.New("moderation: image too large")
+)
+
+func validateExternalImageURL(imageURL string) error {
+	if strings.HasPrefix(strings.ToLower(imageURL), "https://") {
+		if len(imageURL) > ExternalRemoteImageURLMaxBytes {
+			return errExternalImageTooLarge
+		}
+		parsed, err := url.ParseRequestURI(imageURL)
+		if err != nil || parsed.Host == "" {
+			return errExternalImageInvalid
+		}
+		return nil
+	}
 	if len(imageURL) > ExternalImageDataURLMaxBytes {
-		return errors.New("moderation: image data url too large")
+		return errExternalImageTooLarge
 	}
 	prefix, payload, ok := strings.Cut(imageURL, ",")
 	if !ok || !strings.HasPrefix(strings.ToLower(prefix), "data:image/") {
-		return errors.New("moderation: invalid image data url")
+		return errExternalImageInvalid
 	}
 	if !strings.Contains(strings.ToLower(prefix), ";base64") {
 		if len(payload) > ExternalImageRawMaxBytes {
-			return errors.New("moderation: image payload too large")
+			return errExternalImageTooLarge
 		}
 		return nil
 	}
 	if base64.StdEncoding.DecodedLen(len(payload)) > ExternalImageRawMaxBytes+2 {
-		return errors.New("moderation: image raw bytes too large")
+		return errExternalImageTooLarge
 	}
 	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
-		return err
+		return errExternalImageInvalid
 	}
 	if len(decoded) > ExternalImageRawMaxBytes {
-		return errors.New("moderation: image raw bytes too large")
+		return errExternalImageTooLarge
 	}
 	return nil
 }

@@ -40,6 +40,9 @@ func newKeywordCreateHandler(deps ModerationAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !requirePlatformAdmin(w, ident) {
+			return
+		}
 		var body keywordCreateRequest
 		if !readJSON(w, r, &body) {
 			return
@@ -77,6 +80,9 @@ func newKeywordListHandler(deps ModerationAdminDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		if !requirePlatformAdmin(w, ident) {
+			return
+		}
 		tenantID, ok := tenantFromQuery(w, r, ident)
 		if !ok {
 			return
@@ -107,6 +113,9 @@ func newKeywordDeleteHandler(deps ModerationAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ident, ok := resolveAdmin(deps, w, r)
 		if !ok {
+			return
+		}
+		if !requirePlatformAdmin(w, ident) {
 			return
 		}
 		tenantID, ok := tenantFromQuery(w, r, ident)
@@ -145,6 +154,9 @@ func writeModerationStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "moderation_hash_exists", "hash already exists")
 	case errors.Is(err, moderation.ErrNotFound):
 		writeError(w, http.StatusNotFound, "moderation_not_found", "moderation resource not found")
+	case errors.Is(err, moderation.ErrStateConflict):
+		writeError(w, http.StatusConflict, "moderation_state_conflict",
+			"moderation state changed; refresh before retrying")
 	case errors.Is(err, moderation.ErrBulkImportTooLarge):
 		writeError(w, http.StatusBadRequest, "bulk_import_too_large", "items must contain at most 1000 rows")
 	default:

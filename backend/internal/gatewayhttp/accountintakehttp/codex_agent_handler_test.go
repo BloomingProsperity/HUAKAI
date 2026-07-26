@@ -29,7 +29,7 @@ func TestCodexAgentPlanForcesDedicatedModeAndSessionAccount(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "agent-secret") {
 		t.Fatalf("响应泄漏 Agent Identity 材料：%s", rec.Body.String())
 	}
-	for _, override := range []string{`,"source_kind":"json_import"`, `,"default_vendor":"anthropic"`, `,"default_auth_mode":"api_key"`} {
+	for _, override := range []string{`,"source_kind":"json_import"`, `,"default_vendor":"anthropic"`, `,"default_auth_mode":"api_key"`, `,"mint_agent_identity":true`} {
 		invalid := strings.TrimSuffix(body, "}") + override + "}"
 		rec = doAccountIntakeRequest(handler, "/admin/v1/credentials/account-imports/codex-agent/plan", invalid)
 		if rec.Code != http.StatusBadRequest {
