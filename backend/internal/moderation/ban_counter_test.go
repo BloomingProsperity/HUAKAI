@@ -13,7 +13,7 @@ func TestBanCounter_ThresholdTriggeredDisablesKey(t *testing.T) {
 		TenantID: 7,
 		APIKeyID: 11,
 		Decision: DecisionBlockKeyword,
-	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
+	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300, AutoDisableKeyOnBan: true})
 	if err != nil {
 		t.Fatalf("RecordAndCheck returned error: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestBanCounter_WindowExpiryDoesNotBan(t *testing.T) {
 		TenantID: 7,
 		APIKeyID: 11,
 		Decision: DecisionBlockKeyword,
-	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
+	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300, AutoDisableKeyOnBan: true})
 	if err != nil {
 		t.Fatalf("RecordAndCheck returned error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestBanCounter_SampleRateZeroStillCountsDedicatedViolationEvents(t *testing
 	// recordCalls=0 且第三次也不会 Disabled。
 	store := &banStoreStub{countFromRecorded: true}
 	counter := NewBanCounter(store)
-	cfg := ModerationConfig{SampleRatePct: 0, BanThreshold: 3, BanWindowSeconds: 300}
+	cfg := ModerationConfig{SampleRatePct: 0, BanThreshold: 3, BanWindowSeconds: 300, AutoDisableKeyOnBan: true}
 
 	var res BanResult
 	for i := 0; i < 3; i++ {
@@ -84,7 +84,7 @@ func TestBanCounter_PassDecisionDoesNotCount(t *testing.T) {
 		TenantID: 7,
 		APIKeyID: 11,
 		Decision: DecisionPass,
-	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300})
+	}, ModerationConfig{BanThreshold: 3, BanWindowSeconds: 300, AutoDisableKeyOnBan: true})
 	if err != nil {
 		t.Fatalf("RecordAndCheck returned error: %v", err)
 	}
@@ -101,10 +101,13 @@ type banStoreStub struct {
 	disableCalls      int
 	disabledTenantID  int64
 	disabledAPIKeyID  int64
+	// lastEvent 保留最近一次落库的违规事件，供断言字段传递不丢失。
+	lastEvent ModerationEvent
 }
 
-func (s *banStoreStub) RecordModerationViolationEvent(context.Context, ModerationEvent) error {
+func (s *banStoreStub) RecordModerationViolationEvent(_ context.Context, event ModerationEvent) error {
 	s.recordCalls++
+	s.lastEvent = event
 	return nil
 }
 

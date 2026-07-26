@@ -374,8 +374,20 @@ func eventFromResult(req ScreenRequest, res ScreenResult) ModerationEvent {
 		PayloadHash:      req.PayloadHash,
 		Decision:         res.Decision,
 		ReasonCode:       res.ReasonCode,
+		InputExcerpt:     excerptForDecision(req, res.Decision),
 		MatchedKeywordID: res.MatchedKeywordID,
 		MatchedHashID:    res.MatchedHashID,
+	}
+}
+
+// excerptForDecision 只为真实违规决策生成摘录。放行请求不需要留内容，
+// 后端故障导致的拦截也不是用户行为，都不值得为此解析请求体。
+func excerptForDecision(req ScreenRequest, decision Decision) string {
+	switch decision {
+	case DecisionBlockKeyword, DecisionBlockHash, DecisionBlockExternal:
+		return BuildExcerpt(req.Body, DefaultExcerptMaxRunes)
+	default:
+		return ""
 	}
 }
 

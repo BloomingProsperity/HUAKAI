@@ -10,13 +10,14 @@ import (
 )
 
 type ModerationConfig struct {
-	TenantID         int64              `db:"tenant_id" json:"tenant_id"`
-	Enabled          bool               `db:"enabled" json:"enabled"`
-	FailClosed       bool               `db:"fail_closed" json:"fail_closed"`
-	SampleRatePct    int32              `db:"sample_rate_pct" json:"sample_rate_pct"`
-	BanThreshold     int32              `db:"ban_threshold" json:"ban_threshold"`
-	BanWindowSeconds int32              `db:"ban_window_seconds" json:"ban_window_seconds"`
-	ViolationFeeUsd  decimal.Decimal    `db:"violation_fee_usd" json:"violation_fee_usd"`
-	UpdatedBy        *string            `db:"updated_by" json:"updated_by"`
-	UpdatedAt        pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
+	TenantID            int64              `db:"tenant_id" json:"tenant_id"`
+	Enabled             bool               `db:"enabled" json:"enabled"`
+	FailClosed          bool               `db:"fail_closed" json:"fail_closed"`
+	SampleRatePct       int32              `db:"sample_rate_pct" json:"sample_rate_pct"`
+	BanThreshold        int32              `db:"ban_threshold" json:"ban_threshold"`
+	BanWindowSeconds    int32              `db:"ban_window_seconds" json:"ban_window_seconds"`
+	ViolationFeeUsd     decimal.Decimal    `db:"violation_fee_usd" json:"violation_fee_usd"`
+	AutoDisableKeyOnBan bool               `db:"auto_disable_key_on_ban" json:"auto_disable_key_on_ban"`
+	UpdatedBy           *string            `db:"updated_by" json:"updated_by"`
+	UpdatedAt           pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 }

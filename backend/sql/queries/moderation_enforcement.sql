@@ -5,7 +5,7 @@
 INSERT INTO moderation_log (
     tenant_id, api_key_id, user_id, request_id, payload_hash,
     decision, reason_code, matched_keyword_id, matched_hash_id,
-    violation_fee_usd, billing_event_id
+    violation_fee_usd, billing_event_id, input_excerpt
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(api_key_id)::bigint,
@@ -17,14 +17,15 @@ INSERT INTO moderation_log (
     sqlc.narg(matched_keyword_id)::bigint,
     sqlc.narg(matched_hash_id)::bigint,
     sqlc.arg(violation_fee_usd)::numeric,
-    sqlc.narg(billing_event_id)::bigint
+    sqlc.narg(billing_event_id)::bigint,
+    sqlc.arg(input_excerpt)::text
 )
 RETURNING id;
 
 -- name: ListModerationLog :many
 SELECT id, tenant_id, api_key_id, user_id, request_id, payload_hash,
        decision, reason_code, matched_keyword_id, matched_hash_id,
-       violation_fee_usd, billing_event_id, occurred_at
+       violation_fee_usd, billing_event_id, input_excerpt, occurred_at
 FROM moderation_log
 WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND (
@@ -38,7 +39,8 @@ OFFSET sqlc.arg(page_offset)::integer;
 -- name: InsertModerationViolationEvent :one
 INSERT INTO moderation_violation_events (
     tenant_id, api_key_id, user_id, request_id, payload_hash,
-    decision, reason_code, matched_keyword_id, matched_hash_id
+    decision, reason_code, matched_keyword_id, matched_hash_id,
+    input_excerpt
 ) VALUES (
     sqlc.arg(tenant_id)::bigint,
     sqlc.arg(api_key_id)::bigint,
@@ -48,7 +50,8 @@ INSERT INTO moderation_violation_events (
     sqlc.arg(decision)::text,
     sqlc.arg(reason_code)::text,
     sqlc.narg(matched_keyword_id)::bigint,
-    sqlc.narg(matched_hash_id)::bigint
+    sqlc.narg(matched_hash_id)::bigint,
+    sqlc.arg(input_excerpt)::text
 )
 RETURNING id;
 

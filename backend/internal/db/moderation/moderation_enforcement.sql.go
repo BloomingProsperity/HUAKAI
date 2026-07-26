@@ -131,7 +131,7 @@ const insertModerationLog = `-- name: InsertModerationLog :one
 INSERT INTO moderation_log (
     tenant_id, api_key_id, user_id, request_id, payload_hash,
     decision, reason_code, matched_keyword_id, matched_hash_id,
-    violation_fee_usd, billing_event_id
+    violation_fee_usd, billing_event_id, input_excerpt
 ) VALUES (
     $1::bigint,
     $2::bigint,
@@ -143,7 +143,8 @@ INSERT INTO moderation_log (
     $8::bigint,
     $9::bigint,
     $10::numeric,
-    $11::bigint
+    $11::bigint,
+    $12::text
 )
 RETURNING id
 `
@@ -160,6 +161,7 @@ type InsertModerationLogParams struct {
 	MatchedHashID    *int64         `db:"matched_hash_id" json:"matched_hash_id"`
 	ViolationFeeUsd  pgtype.Numeric `db:"violation_fee_usd" json:"violation_fee_usd"`
 	BillingEventID   *int64         `db:"billing_event_id" json:"billing_event_id"`
+	InputExcerpt     string         `db:"input_excerpt" json:"input_excerpt"`
 }
 
 // 内容审核执行日志、违规计数与用户密钥封禁查询。
@@ -177,6 +179,7 @@ func (q *Queries) InsertModerationLog(ctx context.Context, arg InsertModerationL
 		arg.MatchedHashID,
 		arg.ViolationFeeUsd,
 		arg.BillingEventID,
+		arg.InputExcerpt,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -186,7 +189,8 @@ func (q *Queries) InsertModerationLog(ctx context.Context, arg InsertModerationL
 const insertModerationViolationEvent = `-- name: InsertModerationViolationEvent :one
 INSERT INTO moderation_violation_events (
     tenant_id, api_key_id, user_id, request_id, payload_hash,
-    decision, reason_code, matched_keyword_id, matched_hash_id
+    decision, reason_code, matched_keyword_id, matched_hash_id,
+    input_excerpt
 ) VALUES (
     $1::bigint,
     $2::bigint,
@@ -196,7 +200,8 @@ INSERT INTO moderation_violation_events (
     $6::text,
     $7::text,
     $8::bigint,
-    $9::bigint
+    $9::bigint,
+    $10::text
 )
 RETURNING id
 `
@@ -211,6 +216,7 @@ type InsertModerationViolationEventParams struct {
 	ReasonCode       string  `db:"reason_code" json:"reason_code"`
 	MatchedKeywordID *int64  `db:"matched_keyword_id" json:"matched_keyword_id"`
 	MatchedHashID    *int64  `db:"matched_hash_id" json:"matched_hash_id"`
+	InputExcerpt     string  `db:"input_excerpt" json:"input_excerpt"`
 }
 
 func (q *Queries) InsertModerationViolationEvent(ctx context.Context, arg InsertModerationViolationEventParams) (int64, error) {
@@ -224,6 +230,7 @@ func (q *Queries) InsertModerationViolationEvent(ctx context.Context, arg Insert
 		arg.ReasonCode,
 		arg.MatchedKeywordID,
 		arg.MatchedHashID,
+		arg.InputExcerpt,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -305,7 +312,7 @@ func (q *Queries) ListBannedKeys(ctx context.Context, arg ListBannedKeysParams) 
 const listModerationLog = `-- name: ListModerationLog :many
 SELECT id, tenant_id, api_key_id, user_id, request_id, payload_hash,
        decision, reason_code, matched_keyword_id, matched_hash_id,
-       violation_fee_usd, billing_event_id, occurred_at
+       violation_fee_usd, billing_event_id, input_excerpt, occurred_at
 FROM moderation_log
 WHERE tenant_id = $1::bigint
   AND (
@@ -337,6 +344,7 @@ type ListModerationLogRow struct {
 	MatchedHashID    *int64             `db:"matched_hash_id" json:"matched_hash_id"`
 	ViolationFeeUsd  decimal.Decimal    `db:"violation_fee_usd" json:"violation_fee_usd"`
 	BillingEventID   *int64             `db:"billing_event_id" json:"billing_event_id"`
+	InputExcerpt     string             `db:"input_excerpt" json:"input_excerpt"`
 	OccurredAt       pgtype.Timestamptz `db:"occurred_at" json:"occurred_at"`
 }
 
@@ -367,6 +375,7 @@ func (q *Queries) ListModerationLog(ctx context.Context, arg ListModerationLogPa
 			&i.MatchedHashID,
 			&i.ViolationFeeUsd,
 			&i.BillingEventID,
+			&i.InputExcerpt,
 			&i.OccurredAt,
 		); err != nil {
 			return nil, err

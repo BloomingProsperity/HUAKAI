@@ -58,6 +58,9 @@ func TestBanCounterBlockExternalPersistsAndDisables(t *testing.T) {
 		TenantID:         key.tenantID,
 		BanThreshold:     1,
 		BanWindowSeconds: 3600,
+		// 本用例咬的是「事件写入 -> 计数 -> 停用」这条真链是否通，故显式打开自动停用；
+		// 默认关闭时达阈值只记录不停用，那是另一条由 ban_switch_test 覆盖的路径。
+		AutoDisableKeyOnBan: true,
 	})
 	if err != nil {
 		t.Fatalf("RecordAndCheck block_external: %v", err)

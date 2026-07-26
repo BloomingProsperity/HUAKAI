@@ -13,17 +13,20 @@ type configRequest struct {
 	SampleRatePct    int32 `json:"sample_rate_pct"`
 	BanThreshold     int32 `json:"ban_threshold"`
 	BanWindowSeconds int32 `json:"ban_window_seconds"`
+	// AutoDisableKeyOnBan 为 false 时，达阈值只记录违规不停用 Key，交由运营人工处置。
+	AutoDisableKeyOnBan bool `json:"auto_disable_key_on_ban"`
 }
 
 type configResponse struct {
-	TenantID         int64  `json:"tenant_id"`
-	Enabled          bool   `json:"enabled"`
-	FailClosed       bool   `json:"fail_closed"`
-	SampleRatePct    int32  `json:"sample_rate_pct"`
-	BanThreshold     int32  `json:"ban_threshold"`
-	BanWindowSeconds int32  `json:"ban_window_seconds"`
-	UpdatedBy        string `json:"updated_by,omitempty"`
-	UpdatedAt        string `json:"updated_at,omitempty"`
+	TenantID            int64  `json:"tenant_id"`
+	Enabled             bool   `json:"enabled"`
+	FailClosed          bool   `json:"fail_closed"`
+	SampleRatePct       int32  `json:"sample_rate_pct"`
+	BanThreshold        int32  `json:"ban_threshold"`
+	BanWindowSeconds    int32  `json:"ban_window_seconds"`
+	AutoDisableKeyOnBan bool   `json:"auto_disable_key_on_ban"`
+	UpdatedBy           string `json:"updated_by,omitempty"`
+	UpdatedAt           string `json:"updated_at,omitempty"`
 }
 
 func newConfigGetHandler(deps ModerationAdminDeps) http.HandlerFunc {
@@ -89,24 +92,26 @@ func configFromRequest(w http.ResponseWriter, body configRequest) (moderation.Mo
 		return moderation.ModerationConfig{}, false
 	}
 	return moderation.ModerationConfig{
-		TenantID:         body.TenantID,
-		Enabled:          body.Enabled,
-		FailClosed:       body.FailClosed,
-		SampleRatePct:    body.SampleRatePct,
-		BanThreshold:     body.BanThreshold,
-		BanWindowSeconds: body.BanWindowSeconds,
+		TenantID:            body.TenantID,
+		Enabled:             body.Enabled,
+		FailClosed:          body.FailClosed,
+		SampleRatePct:       body.SampleRatePct,
+		BanThreshold:        body.BanThreshold,
+		BanWindowSeconds:    body.BanWindowSeconds,
+		AutoDisableKeyOnBan: body.AutoDisableKeyOnBan,
 	}, true
 }
 
 func configFromValue(cfg moderation.ModerationConfig) configResponse {
 	return configResponse{
-		TenantID:         cfg.TenantID,
-		Enabled:          cfg.Enabled,
-		FailClosed:       cfg.FailClosed,
-		SampleRatePct:    cfg.SampleRatePct,
-		BanThreshold:     cfg.BanThreshold,
-		BanWindowSeconds: cfg.BanWindowSeconds,
-		UpdatedBy:        cfg.UpdatedBy,
-		UpdatedAt:        formatTime(cfg.UpdatedAt),
+		TenantID:            cfg.TenantID,
+		Enabled:             cfg.Enabled,
+		FailClosed:          cfg.FailClosed,
+		SampleRatePct:       cfg.SampleRatePct,
+		BanThreshold:        cfg.BanThreshold,
+		BanWindowSeconds:    cfg.BanWindowSeconds,
+		AutoDisableKeyOnBan: cfg.AutoDisableKeyOnBan,
+		UpdatedBy:           cfg.UpdatedBy,
+		UpdatedAt:           formatTime(cfg.UpdatedAt),
 	}
 }
