@@ -164,7 +164,10 @@ func TestWorkerRecoversPreparedMutationOnceAcrossReplicasRealPG(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var replayCalls atomic.Int64
-	replay := func(context.Context, int64, string) (*dlq.Record, error) {
+	replay := func(_ context.Context, replayTenantID, _ int64, _ string) (*dlq.Record, error) {
+		if replayTenantID != tenantID {
+			return nil, errors.New("恢复任务丢失租户作用域")
+		}
 		if replayCalls.Add(1) == 1 {
 			close(entered)
 		}
@@ -219,7 +222,7 @@ func TestWorkerFinalizesExistingOutcomeWithoutReplayingRealPG(t *testing.T) {
 	if err := store.RecordOutcome(ctx, operationID, hermesops.ResultError, nil, "mutation_failed", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	worker, err := NewWorker(store, func(context.Context, int64, string) (*dlq.Record, error) {
+	worker, err := NewWorker(store, func(context.Context, int64, int64, string) (*dlq.Record, error) {
 		return nil, errors.New("结果已存在时不应再次重放")
 	})
 	if err != nil {
@@ -249,7 +252,7 @@ func TestWorkerReleasesTransientReplayFailureForRetryRealPG(t *testing.T) {
 	if err := store.Prepare(ctx, testRecoveryRecord(tenantID, operationID)); err != nil {
 		t.Fatal(err)
 	}
-	worker, err := NewWorker(store, func(context.Context, int64, string) (*dlq.Record, error) {
+	worker, err := NewWorker(store, func(context.Context, int64, int64, string) (*dlq.Record, error) {
 		return nil, errors.New("临时数据库故障")
 	})
 	if err != nil {

@@ -201,12 +201,12 @@ func TestAdminUsersNoMutation(t *testing.T) {
 
 func TestAdminUnlinkSocialIdentityTenantScoped(t *testing.T) {
 	store := &usersStoreStub{}
-	links := &adminSocialLinkStub{unlinked: true}
+	links := &adminSocialLinkStub{unlinked: true, sessionsRevoked: 2}
 
 	rec := invokeAdminUsers(t, Deps{
-		Auth:        usersAuthStub{ident: tenantOperator(7)},
-		Store:       store,
-		SocialLinks: links,
+		Auth:          usersAuthStub{ident: tenantOperator(7)},
+		Store:         store,
+		UserMutations: links,
 	}, http.MethodDelete, "/admin/v1/users/101/account-bindings/github", nil)
 
 	assertStatus(t, rec, http.StatusOK)
@@ -214,11 +214,12 @@ func TestAdminUnlinkSocialIdentityTenantScoped(t *testing.T) {
 		t.Fatalf("unlink call mismatch: calls=%d tenant=%d user=%d provider=%q", links.calls, links.gotTenantID, links.gotUserID, links.gotProvider)
 	}
 	var body struct {
-		Unlinked bool `json:"unlinked"`
+		Unlinked        bool  `json:"unlinked"`
+		SessionsRevoked int64 `json:"sessions_revoked"`
 	}
 	decodeBody(t, rec, &body)
-	if !body.Unlinked {
-		t.Fatalf("unlinked=%v want true", body.Unlinked)
+	if !body.Unlinked || body.SessionsRevoked != 2 {
+		t.Fatalf("unlink body=%+v want unlinked and two revoked sessions", body)
 	}
 }
 
@@ -226,9 +227,9 @@ func TestAdminUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
 	links := &adminSocialLinkStub{err: userauth.ErrLastLoginMethod}
 
 	rec := invokeAdminUsers(t, Deps{
-		Auth:        usersAuthStub{ident: tenantOperator(7)},
-		Store:       &usersStoreStub{},
-		SocialLinks: links,
+		Auth:          usersAuthStub{ident: tenantOperator(7)},
+		Store:         &usersStoreStub{},
+		UserMutations: links,
 	}, http.MethodDelete, "/admin/v1/users/101/account-bindings/google", nil)
 
 	assertStatus(t, rec, http.StatusConflict)
@@ -425,25 +426,124 @@ func (s *usersStoreStub) calls() int {
 	return s.listCalls + s.getCalls + s.historyCalls + s.twoFAStatsCalls
 }
 
-type adminSocialLinkStub struct {
-	calls       int
-	gotTenantID int64
-	gotUserID   int64
-	gotProvider string
-	unlinked    bool
-	err         error
+type userMutationStub struct {
+	calls           int
+	operation       string
+	tenantID        int64
+	userID          int64
+	gotTenantID     int64
+	gotUserID       int64
+	gotProvider     string
+	group           string
+	remark          string
+	status          string
+	reason          string
+	audit           unlockAuditInput
+	unlinked        bool
+	cleared         int
+	sessionsRevoked int64
+	affected        int64
+	err             error
 }
 
-func (s *adminSocialLinkStub) UnlinkSocialIdentity(_ context.Context, tenantID, userID int64, provider string) (bool, error) {
+func (s *userMutationStub) record(operation string, tenantID, userID int64, audit unlockAuditInput) error {
 	s.calls++
+	s.operation = operation
+	s.tenantID = tenantID
+	s.userID = userID
 	s.gotTenantID = tenantID
 	s.gotUserID = userID
-	s.gotProvider = provider
+	s.audit = audit
 	if s.err != nil {
-		return false, s.err
+		return s.err
 	}
-	return s.unlinked, nil
+	if s.affected < 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
+
+func (s *userMutationStub) UnlinkSocialIdentityWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	provider string,
+	audit unlockAuditInput,
+) (bool, int64, error) {
+	s.gotProvider = provider
+	if err := s.record("unlink_social_identity", tenantID, userID, audit); err != nil {
+		return false, 0, err
+	}
+	return s.unlinked, s.sessionsRevoked, nil
+}
+
+func (s *userMutationStub) ForceDisableTwoFAWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	audit unlockAuditInput,
+) (int64, error) {
+	if err := s.record("force_disable_2fa", tenantID, userID, audit); err != nil {
+		return 0, err
+	}
+	return s.sessionsRevoked, nil
+}
+
+func (s *userMutationStub) ResetPasskeysWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	audit unlockAuditInput,
+) (int, int64, error) {
+	if err := s.record("reset_passkey", tenantID, userID, audit); err != nil {
+		return 0, 0, err
+	}
+	return s.cleared, s.sessionsRevoked, nil
+}
+
+func (s *userMutationStub) SetUserGroupWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	group string,
+	audit unlockAuditInput,
+) error {
+	s.group = group
+	return s.record("set_user_group", tenantID, userID, audit)
+}
+
+func (s *userMutationStub) SetUserRemarkWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	remark string,
+	audit unlockAuditInput,
+) error {
+	s.remark = remark
+	return s.record("set_user_remark", tenantID, userID, audit)
+}
+
+func (s *userMutationStub) SetUserStatusWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	status, reason string,
+	audit unlockAuditInput,
+) (int64, error) {
+	s.status = status
+	s.reason = reason
+	if err := s.record("set_user_status", tenantID, userID, audit); err != nil {
+		return 0, err
+	}
+	return s.sessionsRevoked, nil
+}
+
+func (s *userMutationStub) SoftDeleteUserWithAudit(
+	_ context.Context,
+	tenantID, userID int64,
+	audit unlockAuditInput,
+) (int64, error) {
+	if err := s.record("delete_user", tenantID, userID, audit); err != nil {
+		return 0, err
+	}
+	return s.sessionsRevoked, nil
+}
+
+type adminSocialLinkStub = userMutationStub
 
 type adminUnlockStub struct {
 	calls    int
@@ -533,147 +633,102 @@ func pgTimestamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
 }
 
-type twoFADisableStub struct {
-	calls    int
-	tenantID int64
-	userID   int64
-	err      error
-}
-
-func (s *twoFADisableStub) Disable(_ context.Context, tenantID, userID int64) error {
-	s.calls++
-	s.tenantID, s.userID = tenantID, userID
-	return s.err
-}
+type twoFADisableStub = userMutationStub
 
 func TestAdminForceDisable2FATenantScopedAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
-	disabler := &twoFADisableStub{}
-	audit := &adminAuditStub{}
+	disabler := &twoFADisableStub{sessionsRevoked: 2}
 
 	rec := invokeAdminUsers(t, Deps{
 		Auth:          usersAuthStub{ident: tenantOperator(7)},
 		Store:         store,
-		TwoFADisabler: disabler,
-		Audit:         audit,
+		UserMutations: disabler,
 	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
 
 	assertStatus(t, rec, http.StatusOK)
 	if disabler.calls != 1 || disabler.tenantID != 7 || disabler.userID != 101 {
 		t.Fatalf("disable call mismatch: calls=%d tenant=%d user=%d", disabler.calls, disabler.tenantID, disabler.userID)
 	}
-	if audit.calls != 1 || audit.arg.Action != "force_disable_2fa" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
+	if disabler.operation != "force_disable_2fa" || disabler.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", disabler)
 	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	if !strings.Contains(rec.Body.String(), `"sessions_revoked":2`) {
+		t.Fatalf("force-disable response missing session count: %s", rec.Body.String())
 	}
 }
 
 func TestAdminForceDisable2FARequiresAdmin(t *testing.T) {
 	disabler := &twoFADisableStub{}
-	audit := &adminAuditStub{}
 	rec := invokeAdminUsers(t, Deps{
 		Auth:          usersAuthStub{err: admin.ErrAdminUnauthorized},
 		Store:         &usersStoreStub{},
-		TwoFADisabler: disabler,
-		Audit:         audit,
+		UserMutations: disabler,
 	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
 
 	assertStatus(t, rec, http.StatusUnauthorized)
-	if disabler.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unauthorized force-disable touched deps: disabler=%+v audit=%+v", disabler, audit)
+	if disabler.calls != 0 {
+		t.Fatalf("unauthorized force-disable touched deps: disabler=%+v", disabler)
 	}
 }
 
 func TestAdminForceDisable2FAUnknownUser404BeforeMutation(t *testing.T) {
-	store := &usersStoreStub{getErr: pgx.ErrNoRows}
-	disabler := &twoFADisableStub{}
-	audit := &adminAuditStub{}
+	store := &usersStoreStub{}
+	disabler := &twoFADisableStub{err: pgx.ErrNoRows}
 	rec := invokeAdminUsers(t, Deps{
 		Auth:          usersAuthStub{ident: tenantOperator(7)},
 		Store:         store,
-		TwoFADisabler: disabler,
-		Audit:         audit,
+		UserMutations: disabler,
 	}, http.MethodPost, "/admin/v1/users/101/2fa/force-disable", nil)
 
 	assertStatus(t, rec, http.StatusNotFound)
-	if disabler.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unknown user touched mutation deps: disabler=%+v audit=%+v", disabler, audit)
+	if disabler.calls != 1 {
+		t.Fatalf("unknown user must be decided inside atomic store: disabler=%+v", disabler)
 	}
 }
 
-type passkeyResetStub struct {
-	calls    int
-	tenantID int64
-	userID   int64
-	cleared  int
-	err      error
-}
-
-func (s *passkeyResetStub) AdminClearCredentials(_ context.Context, tenantID, userID int64) (int, error) {
-	s.calls++
-	s.tenantID, s.userID = tenantID, userID
-	return s.cleared, s.err
-}
+type passkeyResetStub = userMutationStub
 
 func TestAdminResetPasskeyTenantScopedAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
-	resetter := &passkeyResetStub{cleared: 3}
-	audit := &adminAuditStub{}
-	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	resetter := &passkeyResetStub{cleared: 3, sessionsRevoked: 2}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: resetter}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
 	assertStatus(t, rec, http.StatusOK)
 	if resetter.calls != 1 || resetter.tenantID != 7 || resetter.userID != 101 {
 		t.Fatalf("reset call mismatch: calls=%d tenant=%d user=%d", resetter.calls, resetter.tenantID, resetter.userID)
 	}
-	if audit.calls != 1 || audit.arg.Action != "reset_passkey" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
+	if resetter.operation != "reset_passkey" || resetter.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", resetter)
 	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	if !strings.Contains(rec.Body.String(), `"sessions_revoked":2`) {
+		t.Fatalf("passkey reset response missing session count: %s", rec.Body.String())
 	}
 }
 
 func TestAdminResetPasskeyRequiresAdmin(t *testing.T) {
 	resetter := &passkeyResetStub{}
-	audit := &adminAuditStub{}
-	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserMutations: resetter}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
 	assertStatus(t, rec, http.StatusUnauthorized)
-	if resetter.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unauthorized reset touched deps: resetter=%+v audit=%+v", resetter, audit)
+	if resetter.calls != 0 {
+		t.Fatalf("unauthorized reset touched deps: resetter=%+v", resetter)
 	}
 }
 
 func TestAdminResetPasskeyUnknownUser404BeforeMutation(t *testing.T) {
-	store := &usersStoreStub{getErr: pgx.ErrNoRows}
-	resetter := &passkeyResetStub{}
-	audit := &adminAuditStub{}
-	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, PasskeyResetter: resetter, Audit: audit}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
+	store := &usersStoreStub{}
+	resetter := &passkeyResetStub{err: pgx.ErrNoRows}
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: resetter}, http.MethodDelete, "/admin/v1/users/101/passkeys", nil)
 	assertStatus(t, rec, http.StatusNotFound)
-	if resetter.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unknown user touched mutation deps: resetter=%+v audit=%+v", resetter, audit)
+	if resetter.calls != 1 {
+		t.Fatalf("unknown user must be decided inside atomic store: resetter=%+v", resetter)
 	}
 }
 
-type userGroupSetterStub struct {
-	calls    int
-	tenantID int64
-	userID   int64
-	group    string
-	err      error
-}
-
-func (s *userGroupSetterStub) SetUserGroupForTenant(_ context.Context, tenantID, userID int64, group string) error {
-	s.calls++
-	s.tenantID, s.userID, s.group = tenantID, userID, group
-	return s.err
-}
+type userGroupSetterStub = userMutationStub
 
 func TestAdminSetUserGroupTenantScopedAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	setter := &userGroupSetterStub{}
-	audit := &adminAuditStub{}
-	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserGroupSetter: setter, Audit: audit}
+	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter}
 	router := chi.NewRouter()
 	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
 	req := httptest.NewRequest(http.MethodPut, "/admin/v1/users/101/group", strings.NewReader(`{"group":"premium"}`))
@@ -683,45 +738,28 @@ func TestAdminSetUserGroupTenantScopedAudited(t *testing.T) {
 	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.group != "premium" {
 		t.Fatalf("set group mismatch: %+v", setter)
 	}
-	if audit.calls != 1 || audit.arg.Action != "set_user_group" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
-	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	if setter.operation != "set_user_group" || setter.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", setter)
 	}
 }
 
 func TestAdminSetUserGroupRequiresAdmin(t *testing.T) {
 	setter := &userGroupSetterStub{}
-	audit := &adminAuditStub{}
 	rec := invokeAdminUsers(t, Deps{
-		Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserGroupSetter: setter, Audit: audit,
+		Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserMutations: setter,
 	}, http.MethodPut, "/admin/v1/users/101/group", []byte(`{"group":"premium"}`))
 	assertStatus(t, rec, http.StatusUnauthorized)
-	if setter.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unauthorized set-group touched deps: setter=%+v audit=%+v", setter, audit)
+	if setter.calls != 0 {
+		t.Fatalf("unauthorized set-group touched deps: setter=%+v", setter)
 	}
 }
 
-type userRemarkSetterStub struct {
-	calls    int
-	tenantID int64
-	userID   int64
-	remark   string
-	err      error
-}
-
-func (s *userRemarkSetterStub) SetUserRemarkForTenant(_ context.Context, tenantID, userID int64, remark string) error {
-	s.calls++
-	s.tenantID, s.userID, s.remark = tenantID, userID, remark
-	return s.err
-}
+type userRemarkSetterStub = userMutationStub
 
 func TestAdminSetUserRemarkTenantScopedAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	setter := &userRemarkSetterStub{}
-	audit := &adminAuditStub{}
-	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserRemarkSetter: setter, Audit: audit}
+	deps := Deps{Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter}
 	router := chi.NewRouter()
 	router.Route("/admin/v1/users", func(r chi.Router) { MountRoutes(r, deps) })
 	req := httptest.NewRequest(http.MethodPut, "/admin/v1/users/101/remark", strings.NewReader(`{"remark":"vip customer"}`))
@@ -731,21 +769,17 @@ func TestAdminSetUserRemarkTenantScopedAudited(t *testing.T) {
 	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.remark != "vip customer" {
 		t.Fatalf("set remark mismatch: %+v", setter)
 	}
-	if audit.calls != 1 || audit.arg.Action != "set_user_remark" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
-	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
+	if setter.operation != "set_user_remark" || setter.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", setter)
 	}
 }
 
 func TestAdminSetUserRemarkRequiresAdmin(t *testing.T) {
 	setter := &userRemarkSetterStub{}
-	audit := &adminAuditStub{}
-	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserRemarkSetter: setter, Audit: audit}, http.MethodPut, "/admin/v1/users/101/remark", nil)
+	rec := invokeAdminUsers(t, Deps{Auth: usersAuthStub{err: admin.ErrAdminUnauthorized}, Store: &usersStoreStub{}, UserMutations: setter}, http.MethodPut, "/admin/v1/users/101/remark", nil)
 	assertStatus(t, rec, http.StatusUnauthorized)
-	if setter.calls != 0 || audit.calls != 0 {
-		t.Fatalf("unauthorized set-remark touched deps: setter=%+v audit=%+v", setter, audit)
+	if setter.calls != 0 {
+		t.Fatalf("unauthorized set-remark touched deps: setter=%+v", setter)
 	}
 }
 
@@ -754,32 +788,7 @@ func platformAdmin() admin.AdminIdentity {
 	return admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}
 }
 
-type userStatusSetterStub struct {
-	calls    int
-	tenantID int64
-	userID   int64
-	status   string
-	affected int64
-	err      error
-}
-
-func (s *userStatusSetterStub) SetUserStatusForTenant(_ context.Context, tenantID, userID int64, status string) (int64, error) {
-	s.calls++
-	s.tenantID = tenantID
-	s.userID = userID
-	s.status = status
-	if s.err != nil {
-		return 0, s.err
-	}
-	switch {
-	case s.affected < 0: // 哨兵:模拟 UPDATE 命中 0 行(软删用户)
-		return 0, nil
-	case s.affected == 0: // 零值默认:1 行受影响(常态成功)
-		return 1, nil
-	default:
-		return s.affected, nil
-	}
-}
+type userStatusSetterStub = userMutationStub
 
 func invokeAdminUsersBody(t *testing.T, deps Deps, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -841,55 +850,45 @@ func TestAdminUsersTenantOperatorCrossTenantForbidden(t *testing.T) {
 
 // TestAdminSetUserStatusDisableAudited 封禁主路径:tenant_operator 设 disabled,
 // store 写入 + 审计 set_user_status(before/after payload)。
-// MUTATION: handler 不调 UserStatusSetter / 不写 audit → setter.calls/audit.calls 0 → 红。
+// MUTATION: handler 绕过原子 mutation store → setter.calls 0 → 红。
 func TestAdminSetUserStatusDisableAudited(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	setter := &userStatusSetterStub{}
-	audit := &adminAuditStub{}
 	rec := invokeAdminUsersBody(t, Deps{
-		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter,
 	}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled","reason":"abuse"}`)
 	assertStatus(t, rec, http.StatusOK)
 	if setter.calls != 1 || setter.tenantID != 7 || setter.userID != 101 || setter.status != "disabled" {
 		t.Fatalf("set status mismatch: %+v", setter)
 	}
-	if audit.calls != 1 || audit.arg.Action != "set_user_status" || audit.arg.TargetType != "user" {
-		t.Fatalf("audit mismatch: %+v", audit.arg)
-	}
-	if audit.arg.TenantID == nil || *audit.arg.TenantID != 7 || audit.arg.TargetID == nil || *audit.arg.TargetID != 101 {
-		t.Fatalf("audit scope mismatch: %+v", audit.arg)
-	}
-	if len(audit.arg.Payload) == 0 || !strings.Contains(string(audit.arg.Payload), "status_before") {
-		t.Fatalf("audit payload 缺 before/after: %s", audit.arg.Payload)
+	if setter.operation != "set_user_status" || setter.reason != "abuse" || setter.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", setter)
 	}
 }
 
-// TestAdminSetUserStatusDisable_RevokesSessions 封禁第三轴:置 disabled 必须撤该用户
-// 全部既有会话(登录门与 API key 联查只挡新入口,已签发 bearer/refresh 不撤能活到自然过期);
-// 重新启用(active)不撤;撤销失败映 503 不静默吞。
-// MUTATION: 去掉 handler 里 status=="disabled" 的 SessionRevoker 调用 → rev.calls==0 → 红。
+// TestAdminSetUserStatusDisableReportsAtomicSessionRevocation 证明 handler 使用事务存储
+// 返回的撤销数量，不再在状态提交后另走一条可能失败的会话路径。
 func TestAdminSetUserStatusDisable_RevokesSessions(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
-	setter := &userStatusSetterStub{}
-	rev := &sessionRevokerStub{}
-	audit := &adminAuditStub{}
+	setter := &userStatusSetterStub{sessionsRevoked: 2}
 	deps := Deps{
 		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store,
-		UserStatusSetter: setter, SessionRevoker: rev, Audit: audit,
+		UserMutations: setter,
 	}
 	rec := invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
 	assertStatus(t, rec, http.StatusOK)
-	if rev.calls != 1 || rev.in.TenantID != 7 || rev.in.UserID != 101 || rev.in.Reason != "admin_user_disabled" {
-		t.Fatalf("封禁未撤会话: calls=%d in=%+v", rev.calls, rev.in)
+	if !strings.Contains(rec.Body.String(), `"sessions_revoked":2`) {
+		t.Fatalf("封禁响应未返回事务内会话结果: %s", rec.Body.String())
 	}
 	// 重新启用不撤会话。
+	setter.sessionsRevoked = 0
 	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"active"}`)
 	assertStatus(t, rec, http.StatusOK)
-	if rev.calls != 1 {
-		t.Fatalf("启用不该撤会话: calls=%d want 1", rev.calls)
+	if !strings.Contains(rec.Body.String(), `"sessions_revoked":0`) {
+		t.Fatalf("启用响应的撤销数必须为 0: %s", rec.Body.String())
 	}
-	// 撤销失败 → 503(调用者可重试,RevokeUser 幂等)。
-	deps.SessionRevoker = &sessionRevokerStub{err: errors.New("revoke backend down")}
+	// 事务内撤销失败由 mutation store 整体回滚并返回 503。
+	setter.err = errors.New("atomic session revoke failed")
 	rec = invokeAdminUsersBody(t, deps, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
 	assertStatus(t, rec, http.StatusServiceUnavailable)
 }
@@ -900,14 +899,25 @@ func TestAdminSetUserStatusInvalidRejected(t *testing.T) {
 	for _, bad := range []string{"deleted", "locked", "", "ACTIVE", "banned"} {
 		store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 		setter := &userStatusSetterStub{}
-		audit := &adminAuditStub{}
 		rec := invokeAdminUsersBody(t, Deps{
-			Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+			Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter,
 		}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"`+bad+`"}`)
 		assertStatus(t, rec, http.StatusBadRequest)
-		if setter.calls != 0 || audit.calls != 0 {
-			t.Fatalf("status=%q 非法却触达 deps: setter=%+v audit=%+v", bad, setter, audit)
+		if setter.calls != 0 {
+			t.Fatalf("status=%q 非法却触达 deps: setter=%+v", bad, setter)
 		}
+	}
+}
+
+func TestAdminSetUserStatusRecoveryConflictMaps409(t *testing.T) {
+	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "reset_required"}}
+	setter := &userStatusSetterStub{err: errUserStatusTransitionConflict}
+	rec := invokeAdminUsersBody(t, Deps{
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter,
+	}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"active"}`)
+	assertStatus(t, rec, http.StatusConflict)
+	if !strings.Contains(rec.Body.String(), `"admin_user_status_conflict"`) {
+		t.Fatalf("body=%s want stable admin_user_status_conflict", rec.Body.String())
 	}
 }
 
@@ -916,12 +926,8 @@ func TestAdminSetUserStatusInvalidRejected(t *testing.T) {
 func TestAdminSetUserStatusSoftDeletedNotFound(t *testing.T) {
 	store := &usersStoreStub{getRow: admindb.AdminGetUserForTenantRow{ID: 101, Status: "active"}}
 	setter := &userStatusSetterStub{affected: -1} // 用 -1 哨兵表示"返回 0 affected"
-	audit := &adminAuditStub{}
 	rec := invokeAdminUsersBody(t, Deps{
-		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserStatusSetter: setter, Audit: audit,
+		Auth: usersAuthStub{ident: tenantOperator(7)}, Store: store, UserMutations: setter,
 	}, http.MethodPut, "/admin/v1/users/101/status", `{"status":"disabled"}`)
 	assertStatus(t, rec, http.StatusNotFound)
-	if audit.calls != 0 {
-		t.Fatalf("0 affected 不应写审计,got audit.calls=%d", audit.calls)
-	}
 }

@@ -289,6 +289,10 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	if errors.Is(err, billing.ErrTenantInactive) {
+		writeJSONError(w, http.StatusForbidden, clienterr.CodeTenantInactive, clienterr.MessageFor(clienterr.CodeTenantInactive))
+		return false
+	}
 	if errors.Is(err, billing.ErrClaimRace) {
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusConflict, clienterr.CodeClaimRace, clienterr.MessageFor(clienterr.CodeClaimRace))
@@ -309,7 +313,14 @@ func (ex *chatExecution) reserveClaim(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = reserveRes
-	ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, reserveRes.ClaimID, reserveRes.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predictedCost)
+	if err := ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, reserveRes.ClaimID, reserveRes.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predictedCost); err != nil {
+		abortErr := ex.abortReservation(reserveRes.ClaimID, "settlement_intent_unavailable", 0, ex.protocolLoss)
+		if abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusServiceUnavailable, clienterr.CodeSettleError, err)
+		return false
+	}
 	return ex.reserveQuota(w, reserveRes, predictedCost)
 }
 

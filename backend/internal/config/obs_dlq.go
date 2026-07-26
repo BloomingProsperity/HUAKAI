@@ -10,14 +10,13 @@ import (
 )
 
 var (
-	ErrInvalidObsDLQBool     = errors.New("config: invalid OBS DLQ enabled flag")
+	ErrObsDLQRequired        = errors.New("config: core DLQ worker cannot be disabled")
 	ErrInvalidObsDLQDuration = errors.New("config: invalid OBS DLQ duration seconds")
 	ErrInvalidObsDLQWorkers  = errors.New("config: invalid OBS DLQ worker count")
 	ErrInvalidObsDLQAttempts = errors.New("config: invalid OBS DLQ max attempts")
 )
 
 type ObsDLQConfig struct {
-	Enabled       bool
 	ReplicaDSN    string
 	BaseBackoff   time.Duration
 	CapBackoff    time.Duration
@@ -30,8 +29,10 @@ type ObsDLQConfig struct {
 }
 
 func LoadObsDLQ() (*ObsDLQConfig, error) {
+	if err := validateRequiredDLQEnv(os.Getenv("HUAKAI_OBS_DLQ_ENABLED")); err != nil {
+		return nil, err
+	}
 	cfg := &ObsDLQConfig{
-		Enabled:       true,
 		ReplicaDSN:    strings.TrimSpace(os.Getenv("HUAKAI_OBS_REPLICA_DSN")),
 		BaseBackoff:   time.Second,
 		CapBackoff:    5 * time.Minute,
@@ -41,13 +42,6 @@ func LoadObsDLQ() (*ObsDLQConfig, error) {
 		HighWorkers:   2,
 		MediumWorkers: 1,
 		LowWorkers:    1,
-	}
-	if raw := strings.TrimSpace(os.Getenv("HUAKAI_OBS_DLQ_ENABLED")); raw != "" {
-		enabled, err := parseObsDLQBool(raw)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Enabled = enabled
 	}
 	var err error
 	if cfg.BaseBackoff, err = envDurationSeconds("HUAKAI_OBS_DLQ_BASE_BACKOFF_SECONDS", cfg.BaseBackoff); err != nil {
@@ -77,14 +71,12 @@ func LoadObsDLQ() (*ObsDLQConfig, error) {
 	return cfg, nil
 }
 
-func parseObsDLQBool(raw string) (bool, error) {
+func validateRequiredDLQEnv(raw string) error {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "t", "yes", "y", "on":
-		return true, nil
-	case "0", "false", "f", "no", "n", "off":
-		return false, nil
+	case "", "1", "true", "t", "yes", "y", "on":
+		return nil
 	default:
-		return false, fmt.Errorf("%w: HUAKAI_OBS_DLQ_ENABLED=%q", ErrInvalidObsDLQBool, raw)
+		return fmt.Errorf("%w: HUAKAI_OBS_DLQ_ENABLED=%q", ErrObsDLQRequired, raw)
 	}
 }
 

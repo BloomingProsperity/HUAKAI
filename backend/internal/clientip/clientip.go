@@ -57,11 +57,7 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 		return ""
 	}
 	peer := remoteHost(req.RemoteAddr)
-	if r == nil || len(r.trusted) == 0 {
-		return peer
-	}
-	peerAddr, err := netip.ParseAddr(peer)
-	if err != nil || !r.isTrusted(peerAddr) {
+	if !r.TrustedPeer(req) {
 		// 直接对端不是已配置的可信代理,因此它呈现的任何 forwarded header 都受攻击者控制。
 		// 只信任 socket 地址。
 		return peer
@@ -98,6 +94,17 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 	}
 	// 链中每一个 hop 本身都是可信代理——没有可单独报告的客户端。
 	return peer
+}
+
+// TrustedPeer 报告请求的直接 socket 对端是否命中可信代理白名单。
+// 调用方只能在本方法返回 true 时采信 X-Forwarded-* 等代理写入的入站元数据。
+// nil、空白名单、空请求、畸形 RemoteAddr 均按不可信处理。
+func (r *Resolver) TrustedPeer(req *http.Request) bool {
+	if r == nil || len(r.trusted) == 0 || req == nil {
+		return false
+	}
+	peerAddr, err := netip.ParseAddr(remoteHost(req.RemoteAddr))
+	return err == nil && r.isTrusted(peerAddr)
 }
 
 func (r *Resolver) isTrusted(addr netip.Addr) bool {

@@ -25,6 +25,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -50,20 +51,22 @@ type dispatcher interface {
 }
 
 type Deps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	Selector              pool.Selector
-	CredentialVault       provider.CredentialVault
-	Dispatcher            dispatcher
-	Settler               billing.Settler
-	BillingPolicyResolver *billing.PolicyResolver
-	BillingPolicyVersion  string
-	RequestClass          string
+	Auth                    authResolver
+	Registry                registry.Registry
+	Router                  router.Router
+	ClaimGate               billing.ClaimGate
+	QuotaReserver           quotaenforce.Reserver
+	RateTables              billing.RateTableSource
+	PricingRatioResolver    pricingRatioResolver
+	Selector                pool.Selector
+	CredentialVault         provider.CredentialVault
+	Dispatcher              dispatcher
+	Settler                 billing.Settler
+	SettlementIntents       settlementintent.Store
+	SettlementIntentEnabled bool
+	BillingPolicyResolver   *billing.PolicyResolver
+	BillingPolicyVersion    string
+	RequestClass            string
 	// SettleRecoveryDLQ 交付后结算失败的 durable 兜底队列(防掉钱)。nil 时退回原行为。
 	SettleRecoveryDLQ settlementrecovery.Enqueuer
 	// Feedback 把上游结果喂账号健康 FSM(坏号冷却→下次选号自动跳过=自动换号)。nil 时 no-op。
@@ -105,6 +108,7 @@ type execution struct {
 	classTransition   *bindingfallback.Transition
 	// excludedAccounts 本请求已失败账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
 	excludedAccounts map[int64]struct{}
+	settlementIntent *settlementintent.Tracker
 }
 
 func NewSpeechHandler(d Deps) http.HandlerFunc {
@@ -156,17 +160,18 @@ func newHandler(d Deps, endpoint audioEndpoint) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		w.Header().Set(middleware.RequestIDHeader, requestID)
 		ex := &execution{
-			d:           d,
-			r:           r,
-			ctx:         ctx,
-			startedAt:   time.Now().UTC(),
-			endpoint:    endpoint,
-			ident:       ident,
-			body:        body,
-			contentType: contentType,
-			req:         req,
-			requestID:   requestID,
-			payloadHash: bodyHash(body),
+			d:                d,
+			r:                r,
+			ctx:              ctx,
+			startedAt:        time.Now().UTC(),
+			endpoint:         endpoint,
+			ident:            ident,
+			body:             body,
+			contentType:      contentType,
+			req:              req,
+			requestID:        requestID,
+			payloadHash:      bodyHash(body),
+			settlementIntent: settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		}
 		if endpoint == audioEndpointSpeech {
 			ex.charCount = utf8.RuneCountInString(req.Input)

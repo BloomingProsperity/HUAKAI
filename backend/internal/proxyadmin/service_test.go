@@ -93,6 +93,43 @@ func TestUpdateEncryptsAuthSecretBeforeDBWrite(t *testing.T) {
 	}
 }
 
+func TestPatchPreservesOmittedSecretAndAllowsExplicitClear(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("省略凭据使用数据库保留分支", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		_, err := New(q, testKeys(t)).Patch(ctx, PatchInput{
+			TenantID: 7,
+			ID:       11,
+			Name:     PatchField[string]{Set: true, Value: "renamed"},
+		})
+		if err != nil {
+			t.Fatalf("Patch: %v", err)
+		}
+		if !q.updateArg.NameSet || q.updateArg.Name != "renamed" {
+			t.Fatalf("name patch=%+v", q.updateArg)
+		}
+		if q.updateArg.AuthSecretSet || q.updateArg.AuthUsernameSet || q.updateArg.GroupIDSet {
+			t.Fatalf("省略的可空字段不得进入清空分支: %+v", q.updateArg)
+		}
+	})
+
+	t.Run("显式 null 清空凭据", func(t *testing.T) {
+		q := &mockProxyQuerier{}
+		_, err := New(q, testKeys(t)).Patch(ctx, PatchInput{
+			TenantID:   7,
+			ID:         11,
+			AuthSecret: PatchField[*string]{Set: true, Value: nil},
+		})
+		if err != nil {
+			t.Fatalf("Patch clear: %v", err)
+		}
+		if !q.updateArg.AuthSecretSet || q.updateArg.AuthSecret != nil {
+			t.Fatalf("显式 null 未进入清空分支: %+v", q.updateArg)
+		}
+	})
+}
+
 type mockProxyQuerier struct {
 	createCalls int
 	createArg   admindb.CreateProxyParams
@@ -109,12 +146,19 @@ type mockProxyQuerier struct {
 	listRows     []admindb.ListProxiesByTenantRow
 	listErr      error
 
-	setStatusCalls int
-	setStatusArg   admindb.SetProxyStatusParams
-	setStatusErr   error
+	setStatusCalls  int
+	setStatusArg    admindb.SetProxyStatusParams
+	setStatusErr    error
+	setStatusNoRows bool
+
+	impactCalls int
+	impactArg   admindb.GetProxyDeleteImpactParams
+	impactRow   admindb.GetProxyDeleteImpactRow
+	impactErr   error
 
 	deleteCalls int
-	deleteArg   admindb.SoftDeleteProxyParams
+	deleteArg   admindb.DeleteProxyIfUnusedParams
+	deleteRow   admindb.DeleteProxyIfUnusedRow
 	deleteErr   error
 }
 
@@ -264,16 +308,34 @@ func (m *mockProxyQuerier) ListProxiesByTenant(_ context.Context, tenantID int64
 	return m.listRows, nil
 }
 
-func (m *mockProxyQuerier) SetProxyStatus(_ context.Context, arg admindb.SetProxyStatusParams) error {
+func (m *mockProxyQuerier) SetProxyStatus(_ context.Context, arg admindb.SetProxyStatusParams) (int64, error) {
 	m.setStatusCalls++
 	m.setStatusArg = arg
-	return m.setStatusErr
+	if m.setStatusErr != nil {
+		return 0, m.setStatusErr
+	}
+	if m.setStatusNoRows {
+		return 0, nil
+	}
+	return 1, nil
 }
 
-func (m *mockProxyQuerier) SoftDeleteProxy(_ context.Context, arg admindb.SoftDeleteProxyParams) error {
+func (m *mockProxyQuerier) GetProxyDeleteImpact(_ context.Context, arg admindb.GetProxyDeleteImpactParams) (admindb.GetProxyDeleteImpactRow, error) {
+	m.impactCalls++
+	m.impactArg = arg
+	return m.impactRow, m.impactErr
+}
+
+func (m *mockProxyQuerier) DeleteProxyIfUnused(_ context.Context, arg admindb.DeleteProxyIfUnusedParams) (admindb.DeleteProxyIfUnusedRow, error) {
 	m.deleteCalls++
 	m.deleteArg = arg
-	return m.deleteErr
+	if m.deleteErr != nil {
+		return admindb.DeleteProxyIfUnusedRow{}, m.deleteErr
+	}
+	if m.deleteRow.ID == 0 {
+		m.deleteRow = admindb.DeleteProxyIfUnusedRow{ID: arg.TargetProxyID, Deleted: true}
+	}
+	return m.deleteRow, nil
 }
 
 // TestListProjectsNonSecretFieldsTenantScoped 守护读取路径的投影:List 必须把
@@ -396,12 +458,19 @@ func TestSetStatusValidatesAndScopes(t *testing.T) {
 			t.Fatalf("invalid status must not touch the querier; calls=%d", q.setStatusCalls)
 		}
 	})
+
+	t.Run("missing proxy yields ErrNotFound", func(t *testing.T) {
+		q := &mockProxyQuerier{setStatusNoRows: true}
+		err := New(q, testKeys(t)).SetStatus(ctx, 7, 404, "disabled")
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("SetStatus missing = %v; want ErrNotFound", err)
+		}
+	})
 }
 
-// TestDeleteTenantScopedIdempotent 守护 Delete:它把 {tenant_id,id} 透传给软删除
-// 查询,并把后端错误以 ErrBackend 暴露。变异:透传错误的 tenant → 参数断言转红;
-// 删掉 mapErr → 后端故障会以原始形态而非 ErrBackend 暴露。
-func TestDeleteTenantScopedIdempotent(t *testing.T) {
+// TestDeleteTenantScopedAndUsageGuarded 守护 Delete:租户与 id 必须透传给原子占用
+// 守卫，任何引用都必须返回可判别 ErrInUse。
+func TestDeleteTenantScopedAndUsageGuarded(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("forwards tenant-scoped delete", func(t *testing.T) {
@@ -409,8 +478,42 @@ func TestDeleteTenantScopedIdempotent(t *testing.T) {
 		if err := New(q, testKeys(t)).Delete(ctx, 7, 11); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		if q.deleteCalls != 1 || q.deleteArg.TenantID != 7 || q.deleteArg.ID != 11 {
+		if q.deleteCalls != 1 || q.deleteArg.TargetTenantID != 7 || q.deleteArg.TargetProxyID != 11 {
 			t.Fatalf("Delete arg mismatch: %+v (calls=%d)", q.deleteArg, q.deleteCalls)
+		}
+	})
+
+	t.Run("referenced proxy is rejected with impact", func(t *testing.T) {
+		q := &mockProxyQuerier{deleteRow: admindb.DeleteProxyIfUnusedRow{
+			ID: 11, DirectAccountCount: 2, DefaultTenantCount: 1,
+			GroupAccountCount: 4, GroupRemainingActiveCount: 0, Deleted: false,
+		}}
+		err := New(q, testKeys(t)).Delete(ctx, 7, 11)
+		if !errors.Is(err, ErrInUse) {
+			t.Fatalf("Delete in-use error=%v; want ErrInUse", err)
+		}
+		var inUse *InUseError
+		if !errors.As(err, &inUse) || inUse.Impact.DirectAccountCount != 2 ||
+			inUse.Impact.DefaultTenantCount != 1 || inUse.Impact.GroupAccountCount != 4 ||
+			inUse.Impact.CanDelete() {
+			t.Fatalf("Delete in-use impact=%+v", inUse)
+		}
+	})
+
+	t.Run("group member can be removed when another active member remains", func(t *testing.T) {
+		q := &mockProxyQuerier{deleteRow: admindb.DeleteProxyIfUnusedRow{
+			ID: 11, GroupAccountCount: 4, GroupRemainingActiveCount: 1, Deleted: true,
+		}}
+		if err := New(q, testKeys(t)).Delete(ctx, 7, 11); err != nil {
+			t.Fatalf("Delete redundant group member: %v", err)
+		}
+	})
+
+	t.Run("missing proxy returns not found", func(t *testing.T) {
+		q := &mockProxyQuerier{deleteErr: pgx.ErrNoRows}
+		err := New(q, testKeys(t)).Delete(ctx, 7, 11)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Delete missing error=%v; want ErrNotFound", err)
 		}
 	})
 
@@ -421,6 +524,22 @@ func TestDeleteTenantScopedIdempotent(t *testing.T) {
 			t.Fatalf("Delete backend error = %v; want ErrBackend", err)
 		}
 	})
+}
+
+func TestDeleteImpactReturnsExactCounts(t *testing.T) {
+	q := &mockProxyQuerier{impactRow: admindb.GetProxyDeleteImpactRow{
+		ID: 11, DirectAccountCount: 2, DefaultTenantCount: 1,
+		GroupAccountCount: 3, GroupRemainingActiveCount: 0,
+	}}
+	got, err := New(q, testKeys(t)).DeleteImpact(context.Background(), 7, 11)
+	if err != nil {
+		t.Fatalf("DeleteImpact: %v", err)
+	}
+	if q.impactArg.TargetTenantID != 7 || q.impactArg.TargetProxyID != 11 ||
+		got.ProxyID != 11 || got.DirectAccountCount != 2 || got.DefaultTenantCount != 1 ||
+		got.GroupAccountCount != 3 || got.GroupRemainingActiveCount != 0 || got.CanDelete() {
+		t.Fatalf("DeleteImpact=%+v arg=%+v", got, q.impactArg)
+	}
 }
 
 // TestReadPathRejectsBadScope 守护读取路径共用的廉价输入门:非正的 tenant/id
@@ -435,6 +554,9 @@ func TestReadPathRejectsBadScope(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, 0, 1); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("Get(0,1) = %v; want ErrInvalidInput", err)
+	}
+	if _, err := s.DeleteImpact(ctx, 0, 1); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("DeleteImpact(0,1) = %v; want ErrInvalidInput", err)
 	}
 	if err := s.Delete(ctx, 1, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("Delete(1,0) = %v; want ErrInvalidInput", err)

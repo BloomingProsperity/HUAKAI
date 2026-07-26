@@ -144,7 +144,9 @@ func TestRetryReserve_ExhaustsToClaimRace(t *testing.T) {
 // 绝不重试(它们是确定性业务结果)。变异契约:把 isReserveSerializationConflict 改成
 // 对所有 err 返 true → 哨兵被重试 calls>1,本测试红。
 func TestRetryReserve_BusinessSentinelsNotRetried(t *testing.T) {
-	for _, sentinel := range []error{ErrClaimRace, ErrFingerprintConflict, ErrInsufficientBalance, errors.New("plain")} {
+	for _, sentinel := range []error{
+		ErrClaimRace, ErrFingerprintConflict, ErrInsufficientBalance, ErrTenantInactive, errors.New("plain"),
+	} {
 		calls := 0
 		fn := func(context.Context) (*ReserveResult, error) {
 			calls++
@@ -187,7 +189,7 @@ func TestIsReserveSerializationConflict(t *testing.T) {
 	retryable := []error{fakePgErr("40001"), fakePgErr("40P01")}
 	notRetryable := []error{
 		fakePgErr("23505"), fakePgErr("23503"),
-		ErrClaimRace, ErrFingerprintConflict, ErrInsufficientBalance,
+		ErrClaimRace, ErrFingerprintConflict, ErrInsufficientBalance, ErrTenantInactive,
 		errors.New("x"), nil,
 	}
 	for _, e := range retryable {

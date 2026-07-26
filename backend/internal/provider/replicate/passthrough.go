@@ -4,10 +4,10 @@
 // model 是 "owner/name" 双段 id,直接落在 URL path 里(逐段 PathEscape,
 // 段间 "/" 是字面路径分隔)。鉴权 Authorization: Bearer <token>。
 //
-// Prefer: wait 头是计费正确性的承重墙:让上游同步等到 prediction 完成才
-// 返回(窗口内)。没有它上游立刻回 status=starting,本侧单次读取后 settle
-// 会对一张还没生成的图计费。响应侧 response_translator 对非 succeeded 状态
-// fail-loud,是第二道闸——两道都在,删任何一道相应测试转红。
+// Prefer: wait 与 Cancel-After 是计费正确性的两道承重墙:前者让上游同步等待
+// prediction 完成，后者保证响应丢失、客户端断连或显式取消失败时，上游任务也
+// 不会越过同一等待窗口继续烧成本。响应侧对非 succeeded 状态 fail-loud，
+// 三道都在，删任何一道相应测试转红。
 //
 // 请求 body 由 request_translator 把 OpenAI images 形翻译为 {"input":{...}}
 // (in-adapter 翻译先例:bedrock 的 AutoTranslateAnthropicAPIBody)。
@@ -72,6 +72,9 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 	if in.Credential.Value == "" {
 		return nil, errors.New("replicate: 凭据 Value 为空")
 	}
+	if cancelID, ok := predictionIDFromCancelPath(in.EndpointPath); ok {
+		return buildCancelRequest(ctx, in.Credential, cancelID)
+	}
 	if strings.TrimSpace(in.UpstreamModelID) == "" {
 		return nil, errors.New("replicate: UpstreamModelID 不能为空(endpoint path 需要 model id)")
 	}
@@ -103,8 +106,11 @@ func (a *Adapter) BuildRequest(ctx context.Context, in provider.BuildInput) (*ht
 	}
 
 	applyCredentialAuth(req, in.Credential)
-	// 计费正确性承重墙,见包注释。
-	req.Header.Set("Prefer", preferWaitHeader(in.Credential))
+	// 等待与自动取消共用同一秒数，避免两套配置漂移：同步窗口结束时任务必须
+	// 同时进入上游取消边界，不能在本侧退款后继续运行。
+	waitSeconds := configuredWaitSeconds(in.Credential)
+	req.Header.Set("Prefer", fmt.Sprintf("wait=%d", waitSeconds))
+	req.Header.Set("Cancel-After", fmt.Sprintf("%ds", waitSeconds))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	return req, nil
@@ -126,14 +132,12 @@ func applyCredentialAuth(req *http.Request, cred provider.Credential) {
 	}
 }
 
-// preferWaitHeader 产出 Prefer 头。Credential.Extra["prefer_wait_seconds"] 可按
-// 账号覆盖等待窗口(1..60,先例:Extra["auth_header"])。非法值 fail-safe 回默认
-// 并告警:这是调优旋钮而非计费正确性输入,默认 60 永远合法;fail-loud 会把存量
-// 凭据上的一个垃圾值放大成该账号全部请求 502(评审定级:爆炸半径 > typo 检出收益)。
-func preferWaitHeader(cred provider.Credential) string {
+// configuredWaitSeconds 解析同步等待与自动取消共用的账号级窗口。非法值
+// fail-safe 回默认并告警：默认值永远合法，不能让一个垃圾配置把整账号打成 502。
+func configuredWaitSeconds(cred provider.Credential) int {
 	rawValue := strings.TrimSpace(cred.Extra["prefer_wait_seconds"])
 	if rawValue == "" {
-		return fmt.Sprintf("wait=%d", preferWaitSecondsDefault)
+		return preferWaitSecondsDefault
 	}
 	seconds, err := strconv.Atoi(rawValue)
 	if err != nil || seconds < 1 || seconds > preferWaitSecondsMax {
@@ -141,9 +145,9 @@ func preferWaitHeader(cred provider.Credential) string {
 			"value", rawValue,
 			"default_seconds", preferWaitSecondsDefault,
 		)
-		return fmt.Sprintf("wait=%d", preferWaitSecondsDefault)
+		return preferWaitSecondsDefault
 	}
-	return fmt.Sprintf("wait=%d", seconds)
+	return seconds
 }
 
 // endpointTemplate 解析 EndpointPath 覆盖语义:

@@ -5,6 +5,7 @@ package subscriptionenforce
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	poolrouter "github.com/BloomingProsperity/HUAKAI/internal/pool/router"
 )
 
 func openPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -195,14 +197,14 @@ func TestPG_GroupRoutes(t *testing.T) {
 	assertSet(t, got.Allowed, pgC)
 }
 
-// TestPG_GroupRoutes_ExcludesInvalidTargets 守 F2/F4: JOIN pool_groups 排除目标池为
-// 已禁用/软删的路由, routes.deleted_at 谓词排除软删路由; 这些既不进 Allowed 也不让
-// Configured 误真。
+// TestPG_GroupRoutes_ExcludesInvalidTargets 守 F2/F4:目标池已禁用、软删或跨租户时
+// 不进入 Allowed，但路由本身仍算已配置；若它命中当前模型则必须标记目标无效并让 gate
+// fail-closed。只有路由自身软删才视为未配置。
 // 判别:
 //   - 漏 routes.deleted_at IS NULL → 软删路由 r-softroute 泄入 → Allowed 多一项 → 红。
 //   - 漏 JOIN pg.enabled → 目标池禁用的路由泄入 → 红。
 //   - 漏 JOIN pg.deleted_at IS NULL → 目标池软删的路由泄入 → 红。
-//   - Configured 误把无效路由也计真 → gold(唯一路由软删)的 Configured 断言红。
+//   - 目标失效后 Configured 误假 → silver/bronze 的断言红，抓住越级放行。
 func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 	ctx := context.Background()
 	pool := openPool(t, ctx)
@@ -236,6 +238,9 @@ func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 	if !got.Configured {
 		t.Fatal("premium 有一条有效路由(pgValid), Configured 应为 true")
 	}
+	if !got.InvalidMatchingTarget {
+		t.Fatal("premium 有命中当前模型但目标失效的路由，必须标记 InvalidMatchingTarget")
+	}
 
 	// gold 档唯一路由被软删 → 视同未配置: Configured=false (越档时该放行而非拒)。
 	seedRouteEx(t, ctx, pool, tenantID, "r-gold-soft-"+suffix, "gold", "*", pgValid, true, true)
@@ -248,19 +253,24 @@ func TestPG_GroupRoutes_ExcludesInvalidTargets(t *testing.T) {
 	}
 	assertSet(t, gold.Allowed)
 
-	// silver 档唯一路由指向他租户 pool → 被 JOIN 的 pg.tenant_id 排除, 视同未配置:
-	// Configured=false。这是 tenant isolation 安全关键判别。
-	// mutation: 删 SQL 的 `AND pg.tenant_id = r.tenant_id` → silver 会 Configured=true,
-	// 且上面 premium 的 Allowed 会泄入 pgCrossTenant → 两处断言红。
+	// silver 档唯一路由指向他租户 pool：不能进入 Allowed，也不能退化成未配置直通。
 	seedRouteEx(t, ctx, pool, tenantID, "r-silver-cross-"+suffix, "silver", "*", pgCrossTenant, true, false)
 	silver, err := repo.GroupRoutes(ctx, tenantID, "silver", "claude-3-5-sonnet")
 	if err != nil {
 		t.Fatalf("query silver: %v", err)
 	}
-	if silver.Configured {
-		t.Fatal("silver 唯一路由指向他租户 pool: Configured 应为 false(跨租户目标池被 JOIN 排除)")
+	if !silver.Configured || !silver.InvalidMatchingTarget {
+		t.Fatalf("silver 跨租户目标 configured=%v invalid=%v，期望 true/true", silver.Configured, silver.InvalidMatchingTarget)
 	}
 	assertSet(t, silver.Allowed)
+
+	gate := NewGroupPolicyGate(repo)
+	ok, reason, err := gate.Allow(ctx, nil, poolrouter.SelectionRequest{
+		TenantID: tenantID, UserGroup: "silver", RequestedModel: "claude-3-5-sonnet", PoolGroupID: pgValid,
+	})
+	if ok || reason != poolrouter.GateFailureGroupPolicy || !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) {
+		t.Fatalf("跨租户目标必须 fail-closed: ok=%v reason=%q err=%v", ok, reason, err)
+	}
 }
 
 // TestPG_GroupRoutes_PriorityArbitration 守 slice B 真裁决: 多条命中本 model 时只放最高优先档

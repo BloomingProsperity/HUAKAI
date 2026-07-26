@@ -4,6 +4,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -316,7 +317,7 @@ func TestCodexSessionAdapter_BuildRequest_ExtraBaseURLOverridesEndpoint(t *testi
 	}
 }
 
-func TestCodexSessionAdapter_BuildRequest_LocalBaseURLAllowedForE2E(t *testing.T) {
+func TestCodexSessionAdapter_BuildRequest_RejectsLocalBaseURL(t *testing.T) {
 	a := &CodexSessionAdapter{}
 	in := provider.BuildInput{
 		UpstreamModelID: "gpt-4o",
@@ -329,12 +330,8 @@ func TestCodexSessionAdapter_BuildRequest_LocalBaseURLAllowedForE2E(t *testing.T
 			},
 		},
 	}
-	req, err := a.BuildRequest(context.Background(), in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := req.URL.String(); got != "http://127.0.0.1:18080/backend-api/codex/completions" {
-		t.Fatalf("本机 base_url 未保留: URL=%q", got)
+	if _, err := a.BuildRequest(context.Background(), in); !errors.Is(err, provider.ErrUnsafePassthroughEndpoint) {
+		t.Fatalf("本机 base_url error=%v，期望 ErrUnsafePassthroughEndpoint", err)
 	}
 }
 

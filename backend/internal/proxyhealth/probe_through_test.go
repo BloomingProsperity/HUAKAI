@@ -12,12 +12,14 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/ssrfpolicy"
+	"github.com/BloomingProsperity/HUAKAI/internal/transport/mimicry"
 )
 
 // startConnectProxy 起一个进程内最小 HTTP CONNECT 代理,把 CONNECT 隧道转发到目标。
 // 用于验证 probe 经"真代理"建隧道的全链路(不依赖外网)。
 func startConnectProxy(t *testing.T) *url.URL {
 	t.Helper()
+	allowLoopbackProxy(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -49,6 +51,16 @@ func startConnectProxy(t *testing.T) *url.URL {
 		}
 	}()
 	return &url.URL{Scheme: "http", Host: ln.Addr().String()}
+}
+
+func allowLoopbackProxy(t *testing.T) {
+	t.Helper()
+	restore := mimicry.SwapProxyEndpointDialForTesting(
+		func(ctx context.Context, proxyURL *url.URL) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", proxyURL.Host)
+		},
+	)
+	t.Cleanup(restore)
 }
 
 // SSRF 守卫②:canary 未过 SSRF 策略 → target_denied,且**绝不拨号**(dialer 都不构造)。
@@ -105,6 +117,7 @@ func TestProbeThroughVerifiesCanaryTLSCertByDefault(t *testing.T) {
 }
 
 func TestProbeThroughDeadProxyIsTunnelRefused(t *testing.T) {
+	allowLoopbackProxy(t)
 	// 指向一个已关闭端口的代理 → 连代理都连不上 → tunnel_refused(非 ok)。
 	res := ProbeThrough(context.Background(), ssrfpolicy.Policy{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "example.com:443")
 	if res.OK {

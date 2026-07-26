@@ -210,4 +210,5 @@ var (
 	ErrNotFound           = errors.New("alerting: not found")
 	ErrRuleExists         = errors.New("alerting: rule exists")
 	ErrStoreNotConfigured = errors.New("alerting: store not configured")
+	ErrMetricUnavailable  = errors.New("alerting: configured metric unavailable")
 )

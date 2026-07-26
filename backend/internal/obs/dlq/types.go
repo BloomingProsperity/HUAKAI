@@ -35,6 +35,7 @@ const (
 var (
 	ErrOutboxNotConfigured = errors.New("obsdlq: outbox not configured")
 	ErrInvalidEvent        = errors.New("obsdlq: invalid event")
+	ErrEventConflict       = errors.New("obsdlq: event id conflict")
 	ErrEventNotFound       = errors.New("obsdlq: event not found")
 	ErrNoHandler           = errors.New("obsdlq: no handler registered")
 )

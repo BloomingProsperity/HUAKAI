@@ -35,6 +35,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/browsersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
@@ -352,8 +353,9 @@ func newCompleteHandler(d Deps) http.HandlerFunc {
 			ip = d.ClientIP.ClientIP(r)
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: ip, UserAgent: r.UserAgent(), AuthMethod: claims.Provider,
+			TenantID: user.TenantID, UserID: user.ID, AuthVersion: user.PasswordVersion,
+			DeviceInfo: req.DeviceInfo,
+			IP:         ip, UserAgent: r.UserAgent(), AuthMethod: claims.Provider,
 		})
 		if err != nil {
 			// 全新账号首个设备,设备策略不会触发确认;此处为真实后端故障。
@@ -361,7 +363,10 @@ func newCompleteHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		d.recordEvent(r, "oauth_pending_email_signup_succeeded", user.TenantID, user.ID, claims.Provider, "success", "")
-		writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user":    publicUser(user),
+			"session": browsersession.Deliver(w, r, tokens),
+		})
 	}
 }
 

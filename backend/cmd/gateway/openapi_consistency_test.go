@@ -122,6 +122,62 @@ func TestOpenAPI_ImplementationConsistency(t *testing.T) {
 	}
 }
 
+// 路径相同不代表接口相同。该门把 OpenAPI 的每个 method+path 与生产路由树
+// 双向比较，防止客户端按错误方法调用得到 405，也防止已上线操作从机器合同消失。
+func TestOpenAPI_OperationConsistency(t *testing.T) {
+	specAbs, err := filepath.Abs("../../../docs/openapi/openapi.yaml")
+	if err != nil {
+		t.Fatalf("解析 spec path: %v", err)
+	}
+	specOps, err := openapicheck.ParseSpecOperations(specAbs)
+	if err != nil {
+		t.Fatalf("解析 OpenAPI operations %s: %v", specAbs, err)
+	}
+	if len(specOps) == 0 {
+		t.Fatal("spec 解析出 0 个 operation，不能把解析失效当成一致")
+	}
+
+	implOps := openapicheck.WalkChiOperations(buildTestRouter(t))
+	if len(implOps) == 0 {
+		t.Fatal("生产路由树解析出 0 个 operation，不能把挂载失效当成一致")
+	}
+
+	// 两种 receipt 模板各有一个显式 404 哨兵：它们只用于拒绝不带
+	// /verify 或 /disputes 的畸形写请求，不是可调用的 API operation。
+	nonContractRuntime := map[string]struct{}{
+		http.MethodPost + " /v1/receipts/{request_id}":                        {},
+		http.MethodPost + " /v1/receipts/{request_id_host}/{request_id_tail}": {},
+	}
+	filteredImpl := make([]openapicheck.Operation, 0, len(implOps))
+	seenNonContract := make(map[string]int, len(nonContractRuntime))
+	for _, op := range implOps {
+		key := op.Method + " " + op.Path
+		if _, ok := nonContractRuntime[key]; ok {
+			seenNonContract[key]++
+			continue
+		}
+		filteredImpl = append(filteredImpl, op)
+	}
+	for key := range nonContractRuntime {
+		if seenNonContract[key] != 1 {
+			t.Fatalf("运行时拒绝哨兵 %q 注册次数=%d，期望 1", key, seenNonContract[key])
+		}
+	}
+
+	// 先不用别名归一证明每个规范 operation 本身存在。否则删掉规范入口后，
+	// 仍存活的兼容别名可能被映射成同一 key，让全局门假绿。
+	canonical := openapicheck.CompareCanonicalOperations(specOps, filteredImpl)
+	if len(canonical.SpecOnly) != 0 {
+		t.Fatalf("OpenAPI 规范 operation 缺少同形态生产入口:\n%s", openapicheck.FormatReport(canonical))
+	}
+
+	rep := openapicheck.CompareOperations(specOps, filteredImpl)
+	if len(rep.SpecOnly) != 0 || len(rep.ImplOnly) != 0 {
+		t.Fatalf("OpenAPI 与生产路由的 method+path 漂移:\n%s", openapicheck.FormatReport(rep))
+	}
+	t.Logf("OpenAPI 与生产路由一致：%d 个 method+path operation", len(specOps))
+}
+
 // TestOpenAPI_SecurityContractMatchesImpl 校验 security 维度的契约一致性:OpenAPI 标 security:[]
 // (公开)的操作,实现里不得挂会话认证中间件。否则前端/第三方按 spec 当公开调用会撞 401,且这类漂移
 // 是 IDOR 类回归(实现加了租户/会话校验却忘同步 spec)的征兆——本次正是审计 IDOR 修复后 receipts

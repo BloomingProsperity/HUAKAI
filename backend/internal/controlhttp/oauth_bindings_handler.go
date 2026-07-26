@@ -33,6 +33,28 @@ type VerifiedSocialBinder interface {
 	LinkVerifiedSocialIdentity(ctx context.Context, tenantID, userID int64, identity userauth.VerifiedIdentity) (userauth.User, error)
 }
 
+type verifiedSocialSessionBinder interface {
+	LinkVerifiedSocialIdentityForSession(
+		context.Context,
+		int64,
+		int64,
+		userauth.VerifiedIdentity,
+		string,
+		int,
+	) (userauth.User, error)
+}
+
+type socialSessionUnlinker interface {
+	UnlinkSocialIdentityForSession(
+		context.Context,
+		int64,
+		int64,
+		string,
+		string,
+		int,
+	) (bool, error)
+}
+
 // OAuthBindingsDeps 是 /v1/users/me/oauth-bindings 路由的依赖。列表/解绑由 *userauth.Service 满足。
 type OAuthBindingsDeps struct {
 	// Bindings 列出本人绑定(只读)。nil = 列表端点未配置。
@@ -114,8 +136,18 @@ func newOAuthBindingsTelegramHandler(d OAuthBindingsDeps) http.HandlerFunc {
 			return
 		}
 		// tenant/user 取自 session;接管保护(已绑他人 → 409)在 service 层。
-		if _, err := d.TelegramBinder.LinkVerifiedSocialIdentity(r.Context(), ident.TenantID, ident.UserID, identity); err != nil {
-			writeAuthSocialLinkError(w, err)
+		var bindErr error
+		if guarded, ok := d.TelegramBinder.(verifiedSocialSessionBinder); ok && ident.AuthVersion > 0 {
+			_, bindErr = guarded.LinkVerifiedSocialIdentityForSession(
+				r.Context(), ident.TenantID, ident.UserID, identity, ident.FamilyID, ident.AuthVersion,
+			)
+		} else {
+			_, bindErr = d.TelegramBinder.LinkVerifiedSocialIdentity(
+				r.Context(), ident.TenantID, ident.UserID, identity,
+			)
+		}
+		if bindErr != nil {
+			writeAuthSocialLinkError(w, bindErr)
 			return
 		}
 		controlWriteJSON(w, http.StatusOK, map[string]any{"status": "bound", "provider": userauth.SocialProviderTelegram})
@@ -163,7 +195,19 @@ func newOAuthBindingsUnlinkHandler(d OAuthBindingsDeps) http.HandlerFunc {
 		provider := chi.URLParam(r, "provider")
 		// service 层负责末位登录方式保护(无密码且这是唯一绑定 → ErrLastLoginMethod → 409),
 		// 以及 not-linked → unlinked=false(200 no-op,与既有 /account-bindings 解绑约定一致)。
-		unlinked, err := d.SocialLinks.UnlinkSocialIdentity(r.Context(), ident.TenantID, ident.UserID, provider)
+		var (
+			unlinked bool
+			err      error
+		)
+		if guarded, ok := d.SocialLinks.(socialSessionUnlinker); ok && ident.AuthVersion > 0 {
+			unlinked, err = guarded.UnlinkSocialIdentityForSession(
+				r.Context(), ident.TenantID, ident.UserID, provider, ident.FamilyID, ident.AuthVersion,
+			)
+		} else {
+			unlinked, err = d.SocialLinks.UnlinkSocialIdentity(
+				r.Context(), ident.TenantID, ident.UserID, provider,
+			)
+		}
 		if err != nil {
 			writeAuthSocialLinkError(w, err)
 			return

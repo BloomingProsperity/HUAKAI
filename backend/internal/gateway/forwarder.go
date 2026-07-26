@@ -71,8 +71,9 @@ type StreamForwarder struct {
 	HopChainBuilder StreamingHopChainBuilder
 	LedgerCallback  func(auditledger.AuditLedgerResult)
 	LedgerWarning   func(code, reason string)
-	// AfterFirstBusinessFrame 在首个业务帧完整写出并刷新后调用一次。
-	AfterFirstBusinessFrame func(time.Time)
+	// BeforeFirstBusinessFrame 在首个业务帧写出前调用一次。返回错误时禁止
+	// 写出业务字节，调用方据此释放预留且不得重放已成功的上游请求。
+	BeforeFirstBusinessFrame func(time.Time) error
 }
 
 // ErrNilStreamScannerRegistry 表示 StreamForwarder.Scanners 未注入。
@@ -124,11 +125,16 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 	})
 	clientWriter = ledgerWriter
 	var businessFrameDelivered bool
-	afterBusinessFrame := sync.OnceFunc(func() {
-		if f.AfterFirstBusinessFrame != nil {
-			f.AfterFirstBusinessFrame(time.Now().UTC())
-		}
-	})
+	var beforeBusinessFrameOnce sync.Once
+	var beforeBusinessFrameErr error
+	beforeBusinessFrame := func() error {
+		beforeBusinessFrameOnce.Do(func() {
+			if f.BeforeFirstBusinessFrame != nil {
+				beforeBusinessFrameErr = f.BeforeFirstBusinessFrame(time.Now().UTC())
+			}
+		})
+		return beforeBusinessFrameErr
+	}
 	finish := func(d UsageRecordDraft, acc UsageAccumulator, err error) (UsageRecordDraft, error) {
 		d.BusinessFrameDelivered = businessFrameDelivered
 		ledgerWriter.ensureLedger(time.Now())
@@ -209,7 +215,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 					if !acc.Empty() {
 						acc.Source = UsageSourceInferred
 					}
-					if err := f.emitFinalUpstreamEvents(ctx, adapter, upstreamState, clientWriter, clientState, &acc, req); err != nil {
+					if err := f.emitFinalUpstreamEvents(ctx, adapter, upstreamState, clientWriter, clientState, &acc, req, beforeBusinessFrame); err != nil {
 						if errors.Is(err, ErrClientDisconnect) {
 							draft.EndClass = ClientDisconnect
 						} else {
@@ -218,7 +224,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 						return finish(draft, acc, err)
 					}
 				}
-				if err := f.finalizeClientStream(ctx, clientWriter, clientState); err != nil {
+				if err := f.finalizeClientStream(ctx, clientWriter, clientState, beforeBusinessFrame); err != nil {
 					if errors.Is(err, ErrClientDisconnect) {
 						draft.EndClass = ClientDisconnect
 					} else {
@@ -239,7 +245,7 @@ func (f *StreamForwarder) Forward(ctx context.Context, upstreamReader io.Reader,
 				stopTimer(keepaliveTimer)
 				keepaliveTimer = newTimer(f.Timeouts.KeepAliveInterval) // 真事件来 → 重置心跳,只在空闲间隙发
 				// 将解析好的 adapter 传入 handleEvent，避免重复 registry 查询
-				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req, afterBusinessFrame)
+				seen, wrote, businessWritten, delivered, err := f.handleEventWithAdapter(upstreamCtx, adapter, res.event, clientWriter, upstreamState, clientState, &acc, req, beforeBusinessFrame)
 				terminalSeen = terminalSeen || seen
 				businessFrameDelivered = businessFrameDelivered || businessWritten
 				// 上游主动 error 帧已由 handleEventWithAdapter 写出协议终止帧,记账防双写。
@@ -311,12 +317,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
-	afterBusinessFrame ...func(),
+	beforeBusinessFrame ...func() error,
 ) (bool, bool, bool, int64, error) {
-	afterWrite := func(written bool) {
-		if written && len(afterBusinessFrame) > 0 && afterBusinessFrame[0] != nil {
-			afterBusinessFrame[0]()
+	beforeWrite := func() error {
+		if len(beforeBusinessFrame) > 0 && beforeBusinessFrame[0] != nil {
+			return beforeBusinessFrame[0]()
 		}
+		return nil
 	}
 	terminalSeen := evt.Type == "message_stop" || string(evt.Data) == "[DONE]"
 
@@ -342,11 +349,13 @@ func (f *StreamForwarder) handleEventWithAdapter(
 
 	// adapter 为 nil 时透传原始 SSE（保留既有 nil-adapter 行为）
 	if adapter == nil {
+		if err := beforeWrite(); err != nil {
+			return terminalSeen, false, false, 0, err
+		}
 		businessWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
 		if err != nil {
 			return terminalSeen, businessWritten, businessWritten, 0, ErrClientDisconnect
 		}
-		afterWrite(businessWritten)
 		return terminalSeen, true, businessWritten, 1, nil
 	}
 
@@ -406,13 +415,15 @@ func (f *StreamForwarder) handleEventWithAdapter(
 			if len(chunk) == 0 {
 				continue
 			}
+			if err := beforeWrite(); err != nil {
+				return terminalSeen, wrote, businessWritten, delivered, err
+			}
 			chunkWritten, err := streamdelivery.WriteBusinessAndFlush(w, chunk)
 			wrote = wrote || chunkWritten
 			businessWritten = businessWritten || chunkWritten
 			if err != nil {
 				return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 			}
-			afterWrite(chunkWritten)
 			wroteEvent = true
 		}
 		if wroteEvent && eventDelivered > 0 {
@@ -422,20 +433,22 @@ func (f *StreamForwarder) handleEventWithAdapter(
 	// raw 直通:原始上游帧只转发一次(仅当该帧确有 canonical 展开时;adapter 产 0 事件的帧
 	// 此前就不透传,保持既有 drop 语义不变,不在本 S0 修复内改动)。
 	if rawPassthrough && len(canonicalEvents) > 0 {
+		if err := beforeWrite(); err != nil {
+			return terminalSeen, wrote, businessWritten, delivered, err
+		}
 		frameWritten, err := streamdelivery.WriteBusinessAndFlush(w, forceOpenAIChatSSEChunkFormat(rawSSE(evt), f.ForceOpenAIChatFormat))
 		wrote = wrote || frameWritten
 		businessWritten = businessWritten || frameWritten
 		if err != nil {
 			return terminalSeen, wrote, businessWritten, delivered, ErrClientDisconnect
 		}
-		afterWrite(frameWritten)
 	}
 	return terminalSeen, wrote, businessWritten, delivered, nil
 }
 
 // finalizeClientStream 在上游 reader 结束后调用 client adapter 收尾 hook。
 // nil ClientAdapter 保留 raw passthrough：不合成任何客户端尾块。
-func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.ResponseWriter, state any) error {
+func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.ResponseWriter, state any, beforeBusinessFrame ...func() error) error {
 	if f.ClientAdapter == nil {
 		return nil
 	}
@@ -446,6 +459,11 @@ func (f *StreamForwarder) finalizeClientStream(ctx context.Context, w http.Respo
 	for _, chunk := range chunks {
 		if len(chunk) == 0 {
 			continue
+		}
+		if len(beforeBusinessFrame) > 0 && beforeBusinessFrame[0] != nil {
+			if err := beforeBusinessFrame[0](); err != nil {
+				return err
+			}
 		}
 		if err := streamdelivery.WriteAndFlush(w, chunk); err != nil {
 			return ErrClientDisconnect

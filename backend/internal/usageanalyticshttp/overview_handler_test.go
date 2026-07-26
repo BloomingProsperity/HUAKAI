@@ -18,14 +18,22 @@ import (
 )
 
 type overviewSeedEvent struct {
-	userID       int64
-	apiKeyID     int64
-	model        string
-	settledAt    time.Time
-	cost         decimal.Decimal
-	tokensInput  int64
-	tokensOutput int64
-	endClass     string
+	userID          int64
+	apiKeyID        int64
+	model           string
+	settledAt       time.Time
+	cost            decimal.Decimal
+	tokensInput     int64
+	tokensOutput    int64
+	cacheCreated    int64
+	cacheRead       int64
+	imageOutput     int64
+	inputCost       decimal.Decimal
+	outputCost      decimal.Decimal
+	cacheCreateCost decimal.Decimal
+	cacheReadCost   decimal.Decimal
+	imageOutputCost decimal.Decimal
+	endClass        string
 }
 
 type overviewQueryStub struct {
@@ -86,8 +94,13 @@ func (s *overviewQueryStub) AggregateUsageOverviewTotals(_ context.Context, sett
 		})
 		<-s.totalsRelease
 	}
-	var requests, tokens, successes int64
+	var requests, tokens, tokensInput, tokensOutput, cacheCreated, cacheRead, imageOutput, successes int64
 	cost := decimal.Zero
+	inputCost := decimal.Zero
+	outputCost := decimal.Zero
+	cacheCreateCost := decimal.Zero
+	cacheReadCost := decimal.Zero
+	imageOutputCost := decimal.Zero
 	users := map[int64]struct{}{}
 	keys := map[int64]struct{}{}
 	for _, event := range s.events {
@@ -96,7 +109,17 @@ func (s *overviewQueryStub) AggregateUsageOverviewTotals(_ context.Context, sett
 		}
 		requests++
 		tokens += event.tokensInput + event.tokensOutput
+		tokensInput += event.tokensInput
+		tokensOutput += event.tokensOutput
+		cacheCreated += event.cacheCreated
+		cacheRead += event.cacheRead
+		imageOutput += event.imageOutput
 		cost = cost.Add(event.cost)
+		inputCost = inputCost.Add(event.inputCost)
+		outputCost = outputCost.Add(event.outputCost)
+		cacheCreateCost = cacheCreateCost.Add(event.cacheCreateCost)
+		cacheReadCost = cacheReadCost.Add(event.cacheReadCost)
+		imageOutputCost = imageOutputCost.Add(event.imageOutputCost)
 		users[event.userID] = struct{}{}
 		keys[event.apiKeyID] = struct{}{}
 		if event.endClass == "stream_end_graceful" || event.endClass == "non_streaming" {
@@ -104,12 +127,22 @@ func (s *overviewQueryStub) AggregateUsageOverviewTotals(_ context.Context, sett
 		}
 	}
 	return dbbilling.AggregateUsageOverviewTotalsRow{
-		RequestCount:  requests,
-		TotalCost:     cost.StringFixed(8),
-		TotalTokens:   tokens,
-		ActiveUsers:   int64(len(users)),
-		ActiveApiKeys: int64(len(keys)),
-		SuccessCount:  successes,
+		RequestCount:             requests,
+		TotalCost:                cost.StringFixed(8),
+		TotalTokens:              tokens,
+		TotalTokensInput:         tokensInput,
+		TotalTokensOutput:        tokensOutput,
+		TotalCacheCreationTokens: cacheCreated,
+		TotalCacheReadTokens:     cacheRead,
+		TotalImageOutputTokens:   imageOutput,
+		TotalInputCost:           inputCost.StringFixed(8),
+		TotalOutputCost:          outputCost.StringFixed(8),
+		TotalCacheCreationCost:   cacheCreateCost.StringFixed(8),
+		TotalCacheReadCost:       cacheReadCost.StringFixed(8),
+		TotalImageOutputCost:     imageOutputCost.StringFixed(8),
+		ActiveUsers:              int64(len(users)),
+		ActiveApiKeys:            int64(len(keys)),
+		SuccessCount:             successes,
 	}, nil
 }
 
@@ -166,10 +199,10 @@ func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 	now := time.Now().UTC()
 	recentDay := now.Truncate(24 * time.Hour).Add(-12 * time.Hour)
 	store := &overviewQueryStub{events: []overviewSeedEvent{
-		{userID: 101, apiKeyID: 1001, model: "gpt-fast", settledAt: recentDay, cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 200, endClass: "stream_end_graceful"},
-		{userID: 101, apiKeyID: 1002, model: "gpt-fast", settledAt: recentDay.Add(time.Hour), cost: decimal.RequireFromString("1.25"), tokensInput: 50, tokensOutput: 50, endClass: "upstream_5xx"},
-		{userID: 202, apiKeyID: 1002, model: "gpt-stable", settledAt: recentDay.Add(-24 * time.Hour), cost: decimal.RequireFromString("3.25"), tokensInput: 250, tokensOutput: 150, endClass: "non_streaming"},
-		{userID: 202, apiKeyID: 1003, model: "gpt-stable", settledAt: recentDay.Add(-25 * time.Hour), cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 100, endClass: "stream_end_graceful"},
+		{userID: 101, apiKeyID: 1001, model: "gpt-fast", settledAt: recentDay, cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 200, cacheCreated: 20, cacheRead: 30, inputCost: decimal.RequireFromString("1.10"), outputCost: decimal.RequireFromString("2.20"), cacheCreateCost: decimal.RequireFromString("0.30"), cacheReadCost: decimal.RequireFromString("0.10"), endClass: "stream_end_graceful"},
+		{userID: 101, apiKeyID: 1002, model: "gpt-fast", settledAt: recentDay.Add(time.Hour), cost: decimal.RequireFromString("1.25"), tokensInput: 50, tokensOutput: 50, imageOutput: 2, inputCost: decimal.RequireFromString("0.25"), outputCost: decimal.RequireFromString("0.50"), imageOutputCost: decimal.RequireFromString("0.50"), endClass: "upstream_5xx"},
+		{userID: 202, apiKeyID: 1002, model: "gpt-stable", settledAt: recentDay.Add(-24 * time.Hour), cost: decimal.RequireFromString("3.25"), tokensInput: 250, tokensOutput: 150, cacheCreated: 10, cacheRead: 40, inputCost: decimal.RequireFromString("1.25"), outputCost: decimal.RequireFromString("1.50"), cacheCreateCost: decimal.RequireFromString("0.30"), cacheReadCost: decimal.RequireFromString("0.20"), endClass: "non_streaming"},
+		{userID: 202, apiKeyID: 1003, model: "gpt-stable", settledAt: recentDay.Add(-25 * time.Hour), cost: decimal.RequireFromString("4.50"), tokensInput: 100, tokensOutput: 100, inputCost: decimal.RequireFromString("2.00"), outputCost: decimal.RequireFromString("2.50"), endClass: "stream_end_graceful"},
 		{userID: 303, apiKeyID: 1004, model: "old-expensive", settledAt: recentDay.Add(-8 * 24 * time.Hour), cost: decimal.RequireFromString("90.00"), tokensInput: 4000, tokensOutput: 5000, endClass: "upstream_5xx"},
 	}}
 	rec := invoke(NewOverviewHandler(store), "/v1/admin/usage/overview?window=7d")
@@ -179,14 +212,24 @@ func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 	var body struct {
 		Window string `json:"window"`
 		Totals struct {
-			Requests      int64  `json:"requests"`
-			TotalCost     string `json:"total_cost"`
-			TotalTokens   int64  `json:"total_tokens"`
-			ActiveUsers   int64  `json:"active_users"`
-			ActiveAPIKeys int64  `json:"active_api_keys"`
-			SuccessCount  int64  `json:"success_count"`
-			ErrorCount    int64  `json:"error_count"`
-			SuccessRate   string `json:"success_rate"`
+			Requests                 int64  `json:"requests"`
+			TotalCost                string `json:"total_cost"`
+			TotalTokens              int64  `json:"total_tokens"`
+			TotalTokensInput         int64  `json:"total_tokens_input"`
+			TotalTokensOutput        int64  `json:"total_tokens_output"`
+			TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens"`
+			TotalCacheReadTokens     int64  `json:"total_cache_read_tokens"`
+			TotalImageOutputTokens   int64  `json:"total_image_output_tokens"`
+			TotalInputCost           string `json:"total_input_cost"`
+			TotalOutputCost          string `json:"total_output_cost"`
+			TotalCacheCreationCost   string `json:"total_cache_creation_cost"`
+			TotalCacheReadCost       string `json:"total_cache_read_cost"`
+			TotalImageOutputCost     string `json:"total_image_output_cost"`
+			ActiveUsers              int64  `json:"active_users"`
+			ActiveAPIKeys            int64  `json:"active_api_keys"`
+			SuccessCount             int64  `json:"success_count"`
+			ErrorCount               int64  `json:"error_count"`
+			SuccessRate              string `json:"success_rate"`
 		} `json:"totals"`
 		Trend []struct {
 			Day      string `json:"day"`
@@ -202,6 +245,16 @@ func TestOverviewTotalsTrendWindowAndRatesAreDiscriminating(t *testing.T) {
 	}
 	if body.Totals.Requests != 4 || body.Totals.TotalCost != "13.50000000" || body.Totals.TotalTokens != 1000 {
 		t.Fatalf("totals=%+v want requests=4 cost=13.50000000 tokens=1000; mutation without window admits old-expensive", body.Totals)
+	}
+	if body.Totals.TotalTokensInput != 500 || body.Totals.TotalTokensOutput != 500 ||
+		body.Totals.TotalCacheCreationTokens != 30 || body.Totals.TotalCacheReadTokens != 70 ||
+		body.Totals.TotalImageOutputTokens != 2 {
+		t.Fatalf("token breakdown=%+v，期望 input/output/cache-create/cache-read/image=500/500/30/70/2", body.Totals)
+	}
+	if body.Totals.TotalInputCost != "4.60000000" || body.Totals.TotalOutputCost != "6.70000000" ||
+		body.Totals.TotalCacheCreationCost != "0.60000000" || body.Totals.TotalCacheReadCost != "0.30000000" ||
+		body.Totals.TotalImageOutputCost != "0.50000000" {
+		t.Fatalf("cost breakdown=%+v，费用分项必须按同一窗口独立聚合", body.Totals)
 	}
 	if body.Totals.ActiveUsers != 2 || body.Totals.ActiveAPIKeys != 3 {
 		t.Fatalf("active users/keys=%d/%d want 2/3; mutation from COUNT(DISTINCT) to COUNT returns 4/4", body.Totals.ActiveUsers, body.Totals.ActiveAPIKeys)

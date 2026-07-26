@@ -14,7 +14,10 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // ---- stubs ----
@@ -35,13 +38,30 @@ type stubService struct {
 	lastListPool   *int64
 	lastCreate     registry.CreateBindingInput
 	lastUpdate     registry.UpdateBindingInput
-	lastDeleteID   int64
-	lastDeleteTen  int64
-	lastDeleteActr string
+	lastDelete     registry.DeleteBindingInput
 	createCalled   bool
+	updateCalled   bool
 
 	ret registry.AdminBinding
 	err error
+}
+
+func TestBindingWritesAreSessionSafe(t *testing.T) {
+	router := NewRouter(Deps{Auth: adminsessionauthtest.Resolver(), Service: &stubService{}})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/?tenant_id=1"},
+		{http.MethodPatch, "/7?tenant_id=1"},
+		{http.MethodDelete, "/7?tenant_id=1"},
+	} {
+		if status := adminsessionauthtest.Status(
+			router, tc.method, tc.path, adminsessionauthtest.SessionBearer,
+		); status == http.StatusUnauthorized {
+			t.Fatalf("%s %s 被管理员浏览器会话写分级门拒绝", tc.method, tc.path)
+		}
+	}
 }
 
 func (s *stubService) ListPoolBindingsAdmin(_ context.Context, tenantID int64, modelID, poolGroupID *int64) ([]registry.AdminBinding, error) {
@@ -66,13 +86,12 @@ func (s *stubService) CreatePoolBinding(_ context.Context, in registry.CreateBin
 
 func (s *stubService) UpdatePoolBinding(_ context.Context, in registry.UpdateBindingInput) (registry.AdminBinding, error) {
 	s.lastUpdate = in
+	s.updateCalled = true
 	return s.ret, s.err
 }
 
-func (s *stubService) DeletePoolBinding(_ context.Context, id, tenantID int64, actor, _ string) error {
-	s.lastDeleteID = id
-	s.lastDeleteTen = tenantID
-	s.lastDeleteActr = actor
+func (s *stubService) DeletePoolBinding(_ context.Context, in registry.DeleteBindingInput) error {
+	s.lastDelete = in
 	return s.err
 }
 
@@ -85,7 +104,9 @@ func tenantOperator(tokenID, scope int64) admin.AdminIdentity {
 
 func do(t *testing.T, auth stubAuth, svc *stubService, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewRouter(Deps{Auth: auth, Service: svc})
+	h := chi.NewRouter()
+	h.Use(middleware.RequestID)
+	MountRoutes(h, Deps{Auth: auth, Service: svc})
 	var rdr *strings.Reader
 	if body != "" {
 		rdr = strings.NewReader(body)
@@ -162,8 +183,8 @@ func TestCreateDefaultsAndActorPropagation(t *testing.T) {
 	if c.Priority != 100 || c.Weight != 1 || c.SelectionMode != "strict_priority" || c.FallbackClass != "normal" || !c.Enabled {
 		t.Fatalf("默认值错:pri=%d w=%d sel=%q fb=%q en=%v", c.Priority, c.Weight, c.SelectionMode, c.FallbackClass, c.Enabled)
 	}
-	if c.Actor != "admin_token:7" {
-		t.Fatalf("actor=%q want admin_token:7", c.Actor)
+	if c.Actor != "admin_token:7" || c.ActorRole != admin.RolePlatformAdmin || strings.TrimSpace(c.RequestID) == "" {
+		t.Fatalf("操作日志身份传播错误 actor=%q role=%q request_id=%q", c.Actor, c.ActorRole, c.RequestID)
 	}
 }
 
@@ -237,6 +258,23 @@ func TestCreateMaxParallelRequestsValidation(t *testing.T) {
 	}
 }
 
+// 负 RPM/TPM 必须在进入 service 前稳定返回 400，不能依赖数据库 CHECK 再变成 503。
+func TestCreateRejectsNegativeRateLimits(t *testing.T) {
+	for _, body := range []string{
+		`{"model_id":5,"pool_group_id":9,"rpm_limit":-1}`,
+		`{"model_id":5,"pool_group_id":9,"tpm_limit":-1}`,
+	} {
+		svc := &stubService{}
+		rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPost, "/?tenant_id=1", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body=%s code=%d want 400", body, rec.Code)
+		}
+		if svc.createCalled {
+			t.Errorf("body=%s 校验失败仍调用 create", body)
+		}
+	}
+}
+
 // 生效窗自证:from>=until 拒;from<until 收。两向都断,确保不是恒红/恒绿。
 // 变异:删 ef.Before(eu) 检查 → 倒序也放行(201)→ 第一半红。
 func TestCreateEffectiveWindowDiscriminates(t *testing.T) {
@@ -259,6 +297,58 @@ func TestCreateEffectiveWindowDiscriminates(t *testing.T) {
 	}
 }
 
+// PATCH 只传播请求中出现的字段。变异:恢复旧默认填充后，Priority/SelectionMode
+// 等字段的 Set 会错误变为 true，本测试转红。
+func TestUpdatePreservesOmittedFields(t *testing.T) {
+	svc := &stubService{}
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPatch, "/5?tenant_id=42", `{"enabled":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	got := svc.lastUpdate
+	if !svc.updateCalled || !got.Enabled.Set || got.Enabled.Value {
+		t.Fatalf("enabled PATCH 未传播: called=%v input=%+v", svc.updateCalled, got)
+	}
+	if got.Priority.Set || got.Weight.Set || got.SelectionMode.Set || got.FallbackClass.Set ||
+		got.ProviderModelIDOverride.Set || got.RPMLimit.Set || got.TPMLimit.Set ||
+		got.MaxParallelRequests.Set || got.DisabledReason.Set || got.EffectiveFrom.Set ||
+		got.EffectiveUntil.Set || got.Reason.Set {
+		t.Fatalf("省略字段被错误标成更新: %+v", got)
+	}
+	if got.Actor != "admin_token:7" || got.ActorRole != admin.RolePlatformAdmin || strings.TrimSpace(got.RequestID) == "" {
+		t.Fatalf("更新日志身份传播错误: %+v", got)
+	}
+}
+
+// 可空字段的显式 null 是清空，不是省略。
+func TestUpdateExplicitNullClearsNullableFields(t *testing.T) {
+	svc := &stubService{}
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPatch, "/5?tenant_id=42",
+		`{"provider_model_id_override":null,"rpm_limit":null,"effective_until":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	got := svc.lastUpdate
+	if !got.ProviderModelIDOverride.Set || got.ProviderModelIDOverride.Value != nil ||
+		!got.RPMLimit.Set || got.RPMLimit.Value != nil ||
+		!got.EffectiveUntil.Set || got.EffectiveUntil.Value != nil {
+		t.Fatalf("显式 null 未按清空传播: %+v", got)
+	}
+}
+
+func TestUpdateRejectsNullForRequiredFieldAndEmptyPatch(t *testing.T) {
+	for _, body := range []string{`{"enabled":null}`, `{}`} {
+		svc := &stubService{}
+		rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPatch, "/5?tenant_id=42", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body=%s code=%d want 400", body, rec.Code)
+		}
+		if svc.updateCalled {
+			t.Errorf("body=%s 校验失败仍调用 update", body)
+		}
+	}
+}
+
 // registry 哨兵 → HTTP 状态的映射,逐个判别(每个码不同)。
 // 变异:任一 case 映射改错 → 对应行红。
 func TestErrorMapping(t *testing.T) {
@@ -270,6 +360,7 @@ func TestErrorMapping(t *testing.T) {
 		{registry.ErrModelNotBindable, http.StatusUnprocessableEntity},
 		{registry.ErrPoolGroupNotFound, http.StatusUnprocessableEntity},
 		{registry.ErrBindingNotFound, http.StatusNotFound},
+		{registry.ErrBindingInvalid, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		svc := &stubService{err: c.err}
@@ -289,8 +380,9 @@ func TestDeletePropagatesIDTenantActor(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("code=%d want 204", rec.Code)
 	}
-	if svc.lastDeleteID != 5 || svc.lastDeleteTen != 42 || svc.lastDeleteActr != "admin_token:7" {
-		t.Fatalf("传播错:id=%d tenant=%d actor=%q", svc.lastDeleteID, svc.lastDeleteTen, svc.lastDeleteActr)
+	if svc.lastDelete.ID != 5 || svc.lastDelete.TenantID != 42 || svc.lastDelete.Actor != "admin_token:7" ||
+		svc.lastDelete.ActorRole != admin.RoleTenantOperator || strings.TrimSpace(svc.lastDelete.RequestID) == "" {
+		t.Fatalf("删除日志身份传播错误:%+v", svc.lastDelete)
 	}
 }
 

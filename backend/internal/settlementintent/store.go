@@ -2,8 +2,11 @@
 package settlementintent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -12,7 +15,10 @@ import (
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
 
-var errStoreNotConfigured = errors.New("结算意图存储未配置")
+var (
+	errStoreNotConfigured    = errors.New("结算意图存储未配置")
+	errInvalidRecoveryRecord = errors.New("结算恢复证据无效")
+)
 
 // CreateParams 是首字节交付前持久化的请求级结算证据。
 type CreateParams struct {
@@ -28,12 +34,15 @@ type CreateParams struct {
 
 // StaleSettlementIntent 是后台对账所需的最小意图快照。
 type StaleSettlementIntent struct {
-	ID         int64
-	TenantID   int64
-	ClaimID    int64
-	AttemptSeq int32
-	Version    int32
-	Status     string
+	ID                   int64
+	TenantID             int64
+	ClaimID              int64
+	AttemptSeq           int32
+	Version              int32
+	Status               string
+	ActualCost           decimal.Decimal
+	RecoveryPayload      json.RawMessage
+	RecoveryFailureClass string
 }
 
 // Store 定义结算意图所需的最小持久化接口，便于主链路注入故障测试。
@@ -44,10 +53,12 @@ type Store interface {
 	MarkSettled(context.Context, int64, int32, decimal.Decimal, time.Time) (int32, error)
 	MarkAborted(context.Context, int64, int32) (int32, error)
 	MarkFailed(context.Context, int64, int32, decimal.Decimal) (int32, error)
+	MarkRecoveryPending(context.Context, int64, int32, decimal.Decimal, json.RawMessage, string) (int32, error)
 	ListStaleNonTerminalSettlementIntents(context.Context, time.Time, time.Time, int32) ([]StaleSettlementIntent, error)
 	MarkSettledIfStale(context.Context, int64, int32, decimal.Decimal, time.Time) (int32, error)
 	MarkAbortedIfStale(context.Context, int64, int32) (int32, error)
 	MarkSupersededIfStale(context.Context, int64, int32) (int32, error)
+	MarkSettlingIfStale(context.Context, int64, int32) (int32, error)
 }
 
 // PostgresStore 把状态迁移委托给 sqlc 查询。
@@ -137,6 +148,30 @@ func (s *PostgresStore) MarkFailed(ctx context.Context, id int64, version int32,
 	})
 }
 
+func (s *PostgresStore) MarkRecoveryPending(
+	ctx context.Context,
+	id int64,
+	version int32,
+	actualCost decimal.Decimal,
+	payload json.RawMessage,
+	failureClass string,
+) (int32, error) {
+	if s == nil || s.queries == nil {
+		return 0, errStoreNotConfigured
+	}
+	payload = json.RawMessage(bytes.TrimSpace(payload))
+	if id <= 0 || version < 0 || len(payload) == 0 || !json.Valid(payload) || payload[0] != '{' {
+		return 0, errInvalidRecoveryRecord
+	}
+	return s.queries.MarkSettlementIntentRecoveryPending(ctx, dbbilling.MarkSettlementIntentRecoveryPendingParams{
+		ActualCost:           actualCost,
+		RecoveryPayload:      payload,
+		RecoveryFailureClass: optionalString(strings.TrimSpace(failureClass)),
+		ID:                   id,
+		Version:              version,
+	})
+}
+
 func (s *PostgresStore) ListStaleNonTerminalSettlementIntents(ctx context.Context, staleCutoff, createdBefore time.Time, limit int32) ([]StaleSettlementIntent, error) {
 	if s == nil || s.queries == nil {
 		return nil, errStoreNotConfigured
@@ -158,6 +193,12 @@ func (s *PostgresStore) ListStaleNonTerminalSettlementIntents(ctx context.Contex
 			AttemptSeq: row.AttemptSeq,
 			Version:    row.Version,
 			Status:     row.Status,
+			ActualCost: row.ActualCost,
+			RecoveryPayload: append(
+				json.RawMessage(nil),
+				row.RecoveryPayload...,
+			),
+			RecoveryFailureClass: optionalStringValue(row.RecoveryFailureClass),
 		})
 	}
 	return intents, nil
@@ -193,6 +234,23 @@ func (s *PostgresStore) MarkSupersededIfStale(ctx context.Context, id int64, ver
 		ID:      id,
 		Version: version,
 	})
+}
+
+func (s *PostgresStore) MarkSettlingIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	if s == nil || s.queries == nil {
+		return 0, errStoreNotConfigured
+	}
+	return s.queries.MarkSettlementIntentSettlingIfStale(ctx, dbbilling.MarkSettlementIntentSettlingIfStaleParams{
+		ID:      id,
+		Version: version,
+	})
+}
+
+func optionalStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func optionalString(value string) *string {

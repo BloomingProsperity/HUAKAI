@@ -17,28 +17,38 @@ import (
 type Status string
 
 const (
-	StatusQueued     Status = "queued"
-	StatusInProgress Status = "in_progress"
-	StatusSucceeded  Status = "succeeded"
-	StatusFailed     Status = "failed"
-	StatusExpired    Status = "expired"
+	StatusQueued              Status = "queued"
+	StatusSubmitting          Status = "submitting"
+	StatusSubmissionUnknown   Status = "submission_unknown"
+	StatusSubmissionReleasing Status = "submission_releasing"
+	StatusInProgress          Status = "in_progress"
+	StatusSettlementPending   Status = "settlement_pending"
+	StatusSucceeded           Status = "succeeded"
+	StatusFailed              Status = "failed"
+	StatusExpired             Status = "expired"
 )
 
 var (
-	ErrDisabled              = errors.New("mediatask: disabled")
-	ErrInvalidInput          = errors.New("mediatask: invalid input")
-	ErrRequestIDConflict     = errors.New("mediatask: request id conflict")
-	ErrNotFound              = errors.New("mediatask: not found")
-	ErrNoActiveAPIKey        = errors.New("mediatask: no active api key for user")
-	ErrAPIKeyAmbiguous       = errors.New("mediatask: multiple active api keys require explicit selection")
-	ErrQuotaDenied           = errors.New("mediatask: quota denied")
-	ErrProviderUnavailable   = errors.New("mediatask: provider unavailable")
-	ErrNoRunnableTask        = errors.New("mediatask: no runnable task")
-	ErrLeaseLost             = errors.New("mediatask: lease lost")
-	ErrActualExceedsEstimate = errors.New("mediatask: actual cost exceeds estimate")
-	ErrStoreNotConfigured    = errors.New("mediatask: store not configured")
-	ErrContentUnavailable    = errors.New("mediatask: content unavailable")
-	ErrInvalidOrphanStatus   = errors.New("mediatask: invalid orphan reconcile status")
+	ErrDisabled                         = errors.New("mediatask: disabled")
+	ErrInvalidInput                     = errors.New("mediatask: invalid input")
+	ErrRequestIDConflict                = errors.New("mediatask: request id conflict")
+	ErrNotFound                         = errors.New("mediatask: not found")
+	ErrNoActiveAPIKey                   = errors.New("mediatask: no active api key for user")
+	ErrAPIKeyAmbiguous                  = errors.New("mediatask: multiple active api keys require explicit selection")
+	ErrQuotaDenied                      = errors.New("mediatask: quota denied")
+	ErrProviderUnavailable              = errors.New("mediatask: provider unavailable")
+	ErrNoRunnableTask                   = errors.New("mediatask: no runnable task")
+	ErrLeaseLost                        = errors.New("mediatask: lease lost")
+	ErrActualExceedsEstimate            = errors.New("mediatask: actual cost exceeds estimate")
+	ErrStoreNotConfigured               = errors.New("mediatask: store not configured")
+	ErrContentUnavailable               = errors.New("mediatask: content unavailable")
+	ErrInvalidOrphanStatus              = errors.New("mediatask: invalid orphan reconcile status")
+	ErrSubmissionNotUnknown             = errors.New("mediatask: submission is not awaiting recovery")
+	ErrSubmissionClaimClosed            = errors.New("mediatask: submission billing claim is no longer reserving")
+	ErrSubmissionRecoveryActionRequired = errors.New("mediatask: submission unknown requires attach or confirm-not-accepted")
+	ErrSubmissionAccessNotConfigured    = errors.New("mediatask: submission recovery access guard not configured")
+	ErrProviderTaskIDConflict           = errors.New("mediatask: provider task id already belongs to another task")
+	ErrSettlementPending                = errors.New("mediatask: successful result awaits settlement")
 )
 
 type Config struct {
@@ -248,9 +258,19 @@ func CanTransition(from, to Status) bool {
 	}
 	switch from {
 	case StatusQueued:
-		return to == StatusInProgress || to == StatusFailed || to == StatusExpired
+		return to == StatusSubmitting || to == StatusFailed || to == StatusExpired
+	case StatusSubmitting:
+		return to == StatusQueued || to == StatusSubmissionUnknown || to == StatusInProgress ||
+			to == StatusFailed || to == StatusExpired
+	case StatusSubmissionUnknown:
+		return to == StatusSubmissionReleasing || to == StatusInProgress
+	case StatusSubmissionReleasing:
+		return to == StatusFailed || to == StatusExpired
 	case StatusInProgress:
-		return to == StatusSucceeded || to == StatusFailed || to == StatusExpired
+		return to == StatusSettlementPending || to == StatusSucceeded ||
+			to == StatusFailed || to == StatusExpired
+	case StatusSettlementPending:
+		return to == StatusSucceeded
 	default:
 		return false
 	}

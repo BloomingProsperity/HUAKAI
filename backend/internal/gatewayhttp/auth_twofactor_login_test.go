@@ -28,7 +28,7 @@ func (s twoFactorLoginStub) LoginRequired(context.Context, int64, int64) (bool, 
 	return true, nil
 }
 
-func (s twoFactorLoginStub) StartLoginChallenge(context.Context, int64, int64) (twofa.Challenge, error) {
+func (s twoFactorLoginStub) StartLoginChallengeAtVersion(context.Context, int64, int64, int) (twofa.Challenge, error) {
 	return twofa.Challenge{}, nil
 }
 
@@ -73,7 +73,9 @@ func TestAuthTwoFactorLogin_RejectsIneligibleUser(t *testing.T) {
 			r.Route("/v1/auth", func(r chi.Router) {
 				MountAuthRoutes(r, AuthHandlerDeps{
 					Auth: authSvc, Sessions: sessionSvc,
-					TwoFactor: twoFactorLoginStub{result: twofa.VerifyResult{TenantID: 1, UserID: 1001, Method: twofa.MethodTOTP}},
+					TwoFactor: twoFactorLoginStub{result: twofa.VerifyResult{
+						TenantID: 1, UserID: 1001, AuthVersion: 1, Method: twofa.MethodTOTP,
+					}},
 				})
 			})
 
@@ -87,5 +89,41 @@ func TestAuthTwoFactorLogin_RejectsIneligibleUser(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuthTwoFactorLoginRejectsUnversionedChallengeResult(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authStore := newGatewayMemoryAuthStore(now)
+	authStore.users[1001] = userauth.User{
+		ID: 1001, TenantID: 1, Email: "u@example.test",
+		Status: userauth.UserStatusActive, PasswordVersion: 9,
+	}
+	sessionStore := usersession.NewMemoryStore()
+	sessionSvc := usersession.NewService(sessionStore)
+	sessionSvc.Now = func() time.Time { return now }
+	sessionSvc.SigningKey = testSessionSigningKey()
+
+	r := chi.NewRouter()
+	r.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: userauth.NewService(authStore), Sessions: sessionSvc,
+			TwoFactor: twoFactorLoginStub{result: twofa.VerifyResult{
+				TenantID: 1, UserID: 1001, AuthVersion: 0, Method: twofa.MethodTOTP,
+			}},
+		})
+	})
+
+	rec := serveJSON(t, r, http.MethodPost, "/v1/auth/login/2fa", map[string]any{
+		"challenge_id": "legacy-challenge", "code": "123456",
+	})
+	assertHTTPStatus(t, rec, http.StatusUnauthorized)
+	if code := loginErrorCode(t, rec); code != "two_factor_invalid" {
+		t.Fatalf("error code=%q，期望 two_factor_invalid", code)
+	}
+	if families, err := sessionStore.ListFamilies(context.Background(), 1, 1001); err != nil {
+		t.Fatalf("读取会话族: %v", err)
+	} else if len(families) != 0 {
+		t.Fatalf("无版本挑战签发了会话: %+v", families)
 	}
 }

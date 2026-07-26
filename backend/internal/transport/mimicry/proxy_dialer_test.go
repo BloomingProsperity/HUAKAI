@@ -18,6 +18,7 @@ import (
 // Proxy-Authorization)。若拨号绕过了代理,桩永远收不到 CONNECT,gotTarget 保持
 // 为空 -> 转红。
 func TestHTTPConnectDialer_TunnelsThroughProxy(t *testing.T) {
+	allowLoopbackProxy(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

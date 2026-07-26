@@ -39,7 +39,8 @@ const recordColumnsDLQ = `
 	d.replay_attempts, d.last_replay_at, d.replayed_at, d.replay_failure_reason,
 	d.event_kind, d.lane, d.status, d.next_retry_at, d.lease_owner, d.lease_until,
 	d.replica_status, d.replica_target, d.replica_committed_at, d.idempotency_key,
-	d.source_table, d.source_id, d.operator_review_at`
+	d.source_table, d.source_id, d.operator_review_at,
+	d.last_manual_replay_at, d.last_manual_replay_actor`
 
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
@@ -175,9 +176,12 @@ RETURNING `+recordColumnsDLQ,
 	return &rec, nil
 }
 
-func (s *Store) ClaimByID(ctx context.Context, id int64, actorID string, leaseTTL time.Duration) (*Record, error) {
+func (s *Store) ClaimByID(ctx context.Context, tenantID, id int64, actorID string, leaseTTL time.Duration) (*Record, error) {
 	if s == nil || s.pool == nil {
 		return nil, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 {
+		return nil, ErrNotFound
 	}
 	if leaseTTL <= 0 {
 		leaseTTL = 30 * time.Second
@@ -186,16 +190,19 @@ func (s *Store) ClaimByID(ctx context.Context, id int64, actorID string, leaseTT
 UPDATE usage_record_dlq d
 SET status = 'inflight',
     lane = 'HIGH',
-    lease_owner = $2,
-    lease_ttl = $3::interval,
-    lease_until = now() + $3::interval,
+    lease_owner = $3,
+    lease_ttl = $4::interval,
+    lease_until = now() + $4::interval,
     last_replay_at = now(),
+    last_manual_replay_at = now(),
+    last_manual_replay_actor = $5,
     updated_at = now()
 WHERE d.id = $1
+  AND d.tenant_id = $2
   AND d.status <> 'delivered'
   AND (d.status <> 'inflight' OR d.lease_until < now())
 RETURNING `+recordColumnsDLQ,
-		id, "manual:"+actorID, intervalLiteral(leaseTTL),
+		id, tenantID, "manual:"+actorID, intervalLiteral(leaseTTL), actorID,
 	))
 	if err == pgx.ErrNoRows {
 		return nil, ErrNotFound
@@ -396,6 +403,8 @@ func scanRecord(s scanner) (Record, error) {
 		&rec.SourceTable,
 		&rec.SourceID,
 		&rec.OperatorReviewAt,
+		&rec.LastManualReplayAt,
+		&rec.LastManualActor,
 	)
 	rec.EventKind = EventKind(kind)
 	rec.Lane = Lane(lane)

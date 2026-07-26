@@ -191,4 +191,6 @@ const (
 	AutoRenewSkipAlreadyRenewed   = "already_renewed"   // 该续费周期已有扣款行 (幂等命中)
 	AutoRenewSkipInsufficientFund = "insufficient_fund" // 钱包余额 < 续费价, 绝不扣款
 	AutoRenewSkipPlanUnavailable  = "plan_unavailable"  // 套餐已停用 / 不存在, 不续
+	AutoRenewSkipTenantInactive   = "tenant_inactive"   // 租户已停用或删除，不再产生新扣款
+	AutoRenewSkipUserInactive     = "user_inactive"     // 最终用户已停用、删除或不再具备用户身份
 )

@@ -10,23 +10,26 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // PostgresStore 用裸 pgx 写 routes 表(镜像 internal/subscriptionenforce 的只读仓储 + voucher store 范式)。
 type PostgresStore struct {
 	pool *pgxpool.Pool
+	db   admindb.DBTX
 }
 
 // NewPostgresStore 构造基于连接池的 routes 写仓储。
 func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool}
+	return &PostgresStore{pool: pool, db: pool}
 }
 
 // routeColumns 是 RETURNING / SELECT 的统一列序(与 scanRoute 一一对应)。
 const routeColumns = `id, tenant_id, name, user_group_match, model_pattern_match, pool_group_id, match_priority, enabled, created_at, updated_at`
 
 func (s *PostgresStore) Create(ctx context.Context, in CreateInput) (Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return Route{}, ErrStoreNotConfigured
 	}
 	// 目标 pool_group 必须属于同租户且未软删: 单列 FK(REFERENCES pool_groups(id)) 拦不住跨租户引用
@@ -34,7 +37,7 @@ func (s *PostgresStore) Create(ctx context.Context, in CreateInput) (Route, erro
 	// 但写侧必须失败即关闭(fail-closed)不落脏数据(防御纵深 + 防 tenant B 内部 id 经 routes 列表泄给 A)。
 	// 条件 INSERT ... SELECT ... WHERE EXISTS 原子完成: 归属不成立 → 插 0 行 → pgx.ErrNoRows → ErrPoolGroupNotFound。
 	// MatchPriority 为 nil 时传 NULL, COALESCE 回落 DB 默认 100。
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 INSERT INTO routes (tenant_id, name, user_group_match, model_pattern_match, pool_group_id, match_priority)
 SELECT $1, $2, $3, $4, $5, COALESCE($6::integer, 100)
 WHERE EXISTS (
@@ -60,14 +63,14 @@ RETURNING `+routeColumns,
 }
 
 func (s *PostgresStore) Update(ctx context.Context, in UpdateInput) (Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return Route{}, ErrStoreNotConfigured
 	}
 	// 全替换可编辑字段。目标 pool_group 必须同租户且未软删(防跨租户引用, 与 Create 同的纵深防御):
 	// WHERE 同时要求 (本租户该行未软删) 与 EXISTS(同租户 pool_group)。更新 0 行 → pgx.ErrNoRows,
 	// 此时反查该行是否仍在以消歧: 行在 → pool_group 问题; 行不在 → 行本身不存在。
 	// MatchPriority 为 nil 时传 NULL, COALESCE 回落 DB 默认 100(全替换语义); enabled/created_at 不动。
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 UPDATE routes
 SET name = $3, user_group_match = $4, model_pattern_match = $5,
     pool_group_id = $6, match_priority = COALESCE($7::integer, 100), updated_at = now()
@@ -98,7 +101,7 @@ RETURNING `+routeColumns,
 // 只读, 仅错误路径触发; 并发软删该行的窄窗会落到 ErrRouteNotFound, 语义可接受。
 func (s *PostgresStore) disambiguateUpdateMiss(ctx context.Context, tenantID, id int64) error {
 	var exists int
-	err := s.pool.QueryRow(ctx, `
+	err := s.db.QueryRow(ctx, `
 SELECT 1 FROM routes WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRouteNotFound
@@ -110,10 +113,10 @@ SELECT 1 FROM routes WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, t
 }
 
 func (s *PostgresStore) List(ctx context.Context, tenantID int64) ([]Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return nil, ErrStoreNotConfigured
 	}
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.db.Query(ctx, `
 SELECT `+routeColumns+`
 FROM routes
 WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -137,10 +140,10 @@ ORDER BY match_priority, id`, tenantID)
 }
 
 func (s *PostgresStore) Get(ctx context.Context, tenantID, id int64) (Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return Route{}, ErrStoreNotConfigured
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 SELECT `+routeColumns+`
 FROM routes
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
@@ -163,10 +166,10 @@ WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id)
 // 须把它扩成小枚举(enabled / manual-disabled / auto-disabled)以区分运营手动停用与系统自动停用 —— 否则
 // 自动重新启用会覆盖运营的手动停用，因此扩展时必须用多态 status 区分来源。
 func (s *PostgresStore) SetEnabled(ctx context.Context, tenantID, id int64, enabled bool) (Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return Route{}, ErrStoreNotConfigured
 	}
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 UPDATE routes
 SET enabled = $3, updated_at = now()
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL
@@ -182,11 +185,11 @@ RETURNING `+routeColumns, tenantID, id, enabled)
 }
 
 func (s *PostgresStore) SoftDelete(ctx context.Context, tenantID, id int64) (Route, error) {
-	if s == nil || s.pool == nil {
+	if s == nil || s.db == nil {
 		return Route{}, ErrStoreNotConfigured
 	}
 	// 仅未软删的行可删; RETURNING 0 行 → pgx.ErrNoRows → ErrRouteNotFound(幂等: 再删返 not found)。
-	row := s.pool.QueryRow(ctx, `
+	row := s.db.QueryRow(ctx, `
 UPDATE routes
 SET deleted_at = now(), updated_at = now()
 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL

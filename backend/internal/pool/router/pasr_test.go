@@ -109,6 +109,34 @@ func TestPASR_Select_HappyPath_PicksHRWTop(t *testing.T) {
 	}
 }
 
+func TestPASR_Select_RespectsModelAccountRoute(t *testing.T) {
+	src := &fakeAccountSource{snapshots: []*AccountSnapshot{
+		{ID: 10, TenantID: 1, LoadRate: 0.1},
+		{ID: 20, TenantID: 1, LoadRate: 0.1},
+	}}
+	sel, err := NewPASRSelector(PASRSelectorConfig{
+		Accounts: src,
+		Segments: NewSegmentTable(SegmentTableConfig{}),
+		Policies: &stubPolicy{p: &RoutingPolicy{
+			ModelAccountIDs: map[string][]int64{"gpt-pin": {20}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewPASRSelector: %v", err)
+	}
+
+	res, err := sel.Select(context.Background(), SelectionRequest{
+		TenantID:       1,
+		RequestedModel: "gpt-pin",
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if res == nil || res.AccountID != 20 {
+		t.Fatalf("PASR 绕过模型账号强制路由：got=%+v want account=20", res)
+	}
+}
+
 func TestPASRSelect_PopulatesRoutingReason(t *testing.T) {
 	claims := &fakeClaimGate{}
 	sel, _ := newPASRSlotRig(t, []int64{10, 20, 30, 40, 50}, newMemSlotManager(), claims)

@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type routeTestAuth struct {
@@ -27,10 +30,29 @@ type routeTestService struct {
 	updated      UpdateInput
 	deletedID    int64
 	deletedTen   int64
+	deletedAudit MutationAudit
 	createCalled bool
 	updateCalled bool
 	result       Override
 	err          error
+}
+
+func TestRoutingOverrideWritesAreSessionSafe(t *testing.T) {
+	router := NewRouter(Deps{Auth: adminsessionauthtest.Resolver(), Service: &routeTestService{}})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/?tenant_id=1"},
+		{http.MethodPatch, "/7?tenant_id=1"},
+		{http.MethodDelete, "/7?tenant_id=1"},
+	} {
+		if status := adminsessionauthtest.Status(
+			router, tc.method, tc.path, adminsessionauthtest.SessionBearer,
+		); status == http.StatusUnauthorized {
+			t.Fatalf("%s %s 被管理员浏览器会话写分级门拒绝", tc.method, tc.path)
+		}
+	}
 }
 
 func (s *routeTestService) List(_ context.Context, tenantID int64) ([]Override, error) {
@@ -53,9 +75,10 @@ func (s *routeTestService) Update(_ context.Context, input UpdateInput) (Overrid
 	return s.result, s.err
 }
 
-func (s *routeTestService) Delete(_ context.Context, id, tenantID int64) error {
+func (s *routeTestService) Delete(_ context.Context, id, tenantID int64, audit MutationAudit) error {
 	s.deletedID = id
 	s.deletedTen = tenantID
+	s.deletedAudit = audit
 	return s.err
 }
 
@@ -71,7 +94,10 @@ func performRouteTest(t *testing.T, identity admin.AdminIdentity, service *route
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	NewRouter(Deps{Auth: routeTestAuth{identity: identity}, Service: service}).ServeHTTP(rec, req)
+	router := chi.NewRouter()
+	router.Use(middleware.RequestID)
+	MountRoutes(router, Deps{Auth: routeTestAuth{identity: identity}, Service: service})
+	router.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -92,6 +118,7 @@ func TestCreateMapsAllPinFields(t *testing.T) {
 	if len(got.ProviderAccountIDs) != 2 || got.ProviderAccountIDs[0] != 11 || got.ProviderAccountIDs[1] != 13 {
 		t.Fatalf("账号数组映射错误：%v", got.ProviderAccountIDs)
 	}
+	assertRoutingAudit(t, got.Audit, "admin_token:7", admin.RolePlatformAdmin)
 }
 
 // PATCH 只传播显式字段，避免编辑 enabled 时把账号数组清空。
@@ -112,6 +139,7 @@ func TestUpdatePreservesOmittedFields(t *testing.T) {
 	if service.updated.Enabled == nil || *service.updated.Enabled {
 		t.Fatalf("enabled=false 未精确传播：%v", service.updated.Enabled)
 	}
+	assertRoutingAudit(t, service.updated.Audit, "admin_token:8", admin.RoleTenantOperator)
 }
 
 // 账号数组必须非空且全部为正数，避免落一个看似启用但实际不收窄候选的空 pin。
@@ -161,6 +189,14 @@ func TestDeletePropagatesTenantAndID(t *testing.T) {
 	rec := performRouteTest(t, routeTestTenantOperator(42), service, http.MethodDelete, "/31", "")
 	if rec.Code != http.StatusNoContent || service.deletedID != 31 || service.deletedTen != 42 {
 		t.Fatalf("状态码=%d delete=(%d,%d)，期望 204/(31,42)", rec.Code, service.deletedID, service.deletedTen)
+	}
+	assertRoutingAudit(t, service.deletedAudit, "admin_token:8", admin.RoleTenantOperator)
+}
+
+func assertRoutingAudit(t *testing.T, got MutationAudit, actor, role string) {
+	t.Helper()
+	if got.ActorID != actor || got.ActorRole != role || strings.TrimSpace(got.RequestID) == "" {
+		t.Fatalf("操作日志身份传播错误：%+v", got)
 	}
 }
 

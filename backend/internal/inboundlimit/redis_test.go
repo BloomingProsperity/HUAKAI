@@ -3,6 +3,7 @@ package inboundlimit
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,12 +57,23 @@ func TestRedisStoreTokenBucketIntegration(t *testing.T) {
 		t.Fatalf("解析 Redis URL: %v", err)
 	}
 	client := redis.NewClient(opts)
-	defer func() { _ = client.Close() }()
+	t.Cleanup(func() { _ = client.Close() })
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("连接 Redis: %v", err)
 	}
 	store := NewRedisStore(client, "")
-	store.prefix = "huakai:test:inbound:" + strings.ReplaceAll(t.Name(), "/", "_")
+	store.prefix = "huakai:test:inbound:" + strings.ReplaceAll(t.Name(), "/", "_") +
+		":" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() {
+		keys := []string{
+			store.redisKey("global", "198.51.100.7"),
+			store.redisKey("global", "198.51.100.8"),
+			store.redisKey("auth_login", "198.51.100.7"),
+		}
+		if err := client.Del(context.Background(), keys...).Err(); err != nil {
+			t.Errorf("清理 Redis 测试桶: %v", err)
+		}
+	})
 
 	limit := Limit{RatePerSecond: 0.01, Burst: 2}
 	first, err := store.Allow(ctx, "global", "198.51.100.7", limit)

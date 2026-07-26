@@ -86,6 +86,90 @@ func (q *Queries) CreateProxy(ctx context.Context, arg CreateProxyParams) (Creat
 	return i, err
 }
 
+const deleteProxyIfUnused = `-- name: DeleteProxyIfUnused :one
+WITH target AS (
+    SELECT base.id, base.tenant_id AS proxy_tenant_id, base.group_id AS proxy_group_id
+    FROM proxies base
+    WHERE base.tenant_id = $1
+      AND base.id = $2
+      AND base.deleted_at IS NULL
+    FOR UPDATE
+),
+impact AS (
+    SELECT
+        p.id,
+        COUNT(DISTINCT direct_account.id)::bigint AS direct_account_count,
+        COUNT(DISTINCT default_tenant.id)::bigint AS default_tenant_count,
+        COUNT(DISTINCT group_account.id)::bigint AS group_account_count,
+        COUNT(DISTINCT peer.id)::bigint AS group_remaining_active_count
+    FROM target p
+    LEFT JOIN provider_accounts direct_account
+      ON direct_account.tenant_id = p.proxy_tenant_id
+     AND direct_account.proxy_id = p.id
+     AND direct_account.deleted_at IS NULL
+    LEFT JOIN tenants default_tenant
+      ON default_tenant.id = p.proxy_tenant_id
+     AND default_tenant.default_proxy_id = p.id
+    LEFT JOIN provider_accounts group_account
+      ON group_account.tenant_id = p.proxy_tenant_id
+     AND group_account.proxy_group_id = p.proxy_group_id
+     AND group_account.deleted_at IS NULL
+    LEFT JOIN proxies peer
+      ON peer.tenant_id = p.proxy_tenant_id
+     AND peer.group_id = p.proxy_group_id
+     AND peer.id <> p.id
+     AND peer.status = 'active'
+     AND peer.deleted_at IS NULL
+    GROUP BY p.id
+),
+deleted AS (
+    UPDATE proxies p
+    SET deleted_at = NOW(), updated_at = NOW()
+    FROM impact i
+    WHERE p.id = i.id
+      AND i.direct_account_count = 0
+      AND i.default_tenant_count = 0
+      AND (i.group_account_count = 0 OR i.group_remaining_active_count > 0)
+    RETURNING p.id
+)
+SELECT
+    i.id,
+    i.direct_account_count,
+    i.default_tenant_count,
+    i.group_account_count,
+    i.group_remaining_active_count,
+    EXISTS (SELECT 1 FROM deleted) AS deleted
+FROM impact i
+`
+
+type DeleteProxyIfUnusedParams struct {
+	TargetTenantID int64 `db:"target_tenant_id" json:"target_tenant_id"`
+	TargetProxyID  int64 `db:"target_proxy_id" json:"target_proxy_id"`
+}
+
+type DeleteProxyIfUnusedRow struct {
+	ID                        int64 `db:"id" json:"id"`
+	DirectAccountCount        int64 `db:"direct_account_count" json:"direct_account_count"`
+	DefaultTenantCount        int64 `db:"default_tenant_count" json:"default_tenant_count"`
+	GroupAccountCount         int64 `db:"group_account_count" json:"group_account_count"`
+	GroupRemainingActiveCount int64 `db:"group_remaining_active_count" json:"group_remaining_active_count"`
+	Deleted                   bool  `db:"deleted" json:"deleted"`
+}
+
+func (q *Queries) DeleteProxyIfUnused(ctx context.Context, arg DeleteProxyIfUnusedParams) (DeleteProxyIfUnusedRow, error) {
+	row := q.db.QueryRow(ctx, deleteProxyIfUnused, arg.TargetTenantID, arg.TargetProxyID)
+	var i DeleteProxyIfUnusedRow
+	err := row.Scan(
+		&i.ID,
+		&i.DirectAccountCount,
+		&i.DefaultTenantCount,
+		&i.GroupAccountCount,
+		&i.GroupRemainingActiveCount,
+		&i.Deleted,
+	)
+	return i, err
+}
+
 const getProxy = `-- name: GetProxy :one
 SELECT
     id, tenant_id, name, protocol, host, port,
@@ -135,6 +219,70 @@ func (q *Queries) GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow
 		&i.LastCheckAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProxyDeleteImpact = `-- name: GetProxyDeleteImpact :one
+SELECT
+    p.id,
+    (
+        SELECT COUNT(*)::bigint
+        FROM provider_accounts pa
+        WHERE pa.tenant_id = p.tenant_id
+          AND pa.proxy_id = p.id
+          AND pa.deleted_at IS NULL
+    ) AS direct_account_count,
+    (
+        SELECT COUNT(*)::bigint
+        FROM tenants t
+        WHERE t.id = p.tenant_id
+          AND t.default_proxy_id = p.id
+    ) AS default_tenant_count,
+    (
+        SELECT COUNT(*)::bigint
+        FROM provider_accounts pa
+        WHERE pa.tenant_id = p.tenant_id
+          AND pa.proxy_group_id = p.group_id
+          AND pa.deleted_at IS NULL
+    ) AS group_account_count,
+    (
+        SELECT COUNT(*)::bigint
+        FROM proxies peer
+        WHERE peer.tenant_id = p.tenant_id
+          AND peer.group_id = p.group_id
+          AND peer.id <> p.id
+          AND peer.status = 'active'
+          AND peer.deleted_at IS NULL
+    ) AS group_remaining_active_count
+FROM proxies p
+WHERE p.tenant_id = $1
+  AND p.id = $2
+  AND p.deleted_at IS NULL
+`
+
+type GetProxyDeleteImpactParams struct {
+	TargetTenantID int64 `db:"target_tenant_id" json:"target_tenant_id"`
+	TargetProxyID  int64 `db:"target_proxy_id" json:"target_proxy_id"`
+}
+
+type GetProxyDeleteImpactRow struct {
+	ID                        int64 `db:"id" json:"id"`
+	DirectAccountCount        int64 `db:"direct_account_count" json:"direct_account_count"`
+	DefaultTenantCount        int64 `db:"default_tenant_count" json:"default_tenant_count"`
+	GroupAccountCount         int64 `db:"group_account_count" json:"group_account_count"`
+	GroupRemainingActiveCount int64 `db:"group_remaining_active_count" json:"group_remaining_active_count"`
+}
+
+func (q *Queries) GetProxyDeleteImpact(ctx context.Context, arg GetProxyDeleteImpactParams) (GetProxyDeleteImpactRow, error) {
+	row := q.db.QueryRow(ctx, getProxyDeleteImpact, arg.TargetTenantID, arg.TargetProxyID)
+	var i GetProxyDeleteImpactRow
+	err := row.Scan(
+		&i.ID,
+		&i.DirectAccountCount,
+		&i.DefaultTenantCount,
+		&i.GroupAccountCount,
+		&i.GroupRemainingActiveCount,
 	)
 	return i, err
 }
@@ -265,7 +413,7 @@ func (q *Queries) ListProxiesByTenant(ctx context.Context, tenantID int64) ([]Li
 	return items, nil
 }
 
-const setProxyStatus = `-- name: SetProxyStatus :exec
+const setProxyStatus = `-- name: SetProxyStatus :execrows
 UPDATE proxies
 SET status = $1,
     last_check_at = NOW()
@@ -281,9 +429,12 @@ type SetProxyStatusParams struct {
 }
 
 // Phase 3 health check worker 标 dead/active, admin 手动 disable 走这。
-func (q *Queries) SetProxyStatus(ctx context.Context, arg SetProxyStatusParams) error {
-	_, err := q.db.Exec(ctx, setProxyStatus, arg.Status, arg.TenantID, arg.ID)
-	return err
+func (q *Queries) SetProxyStatus(ctx context.Context, arg SetProxyStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setProxyStatus, arg.Status, arg.TenantID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const softDeleteProxy = `-- name: SoftDeleteProxy :exec
@@ -307,16 +458,16 @@ func (q *Queries) SoftDeleteProxy(ctx context.Context, arg SoftDeleteProxyParams
 const updateProxy = `-- name: UpdateProxy :one
 UPDATE proxies
 SET
-    name = $1,
-    protocol = $2,
-    host = $3,
-    port = $4,
-    auth_username = $5,
-    auth_secret = $6,
-    group_id = $7,
+    name = CASE WHEN $1::boolean THEN $2::text ELSE name END,
+    protocol = CASE WHEN $3::boolean THEN $4::text ELSE protocol END,
+    host = CASE WHEN $5::boolean THEN $6::text ELSE host END,
+    port = CASE WHEN $7::boolean THEN $8::integer ELSE port END,
+    auth_username = CASE WHEN $9::boolean THEN $10::text ELSE auth_username END,
+    auth_secret = CASE WHEN $11::boolean THEN $12::text ELSE auth_secret END,
+    group_id = CASE WHEN $13::boolean THEN $14::text ELSE group_id END,
     updated_at = NOW()
-WHERE tenant_id = $8
-  AND id = $9
+WHERE tenant_id = $15
+  AND id = $16
   AND deleted_at IS NULL
 RETURNING
     id, tenant_id, name, protocol, host, port,
@@ -325,15 +476,22 @@ RETURNING
 `
 
 type UpdateProxyParams struct {
-	Name         string  `db:"name" json:"name"`
-	Protocol     string  `db:"protocol" json:"protocol"`
-	Host         string  `db:"host" json:"host"`
-	Port         int32   `db:"port" json:"port"`
-	AuthUsername *string `db:"auth_username" json:"auth_username"`
-	AuthSecret   *string `db:"auth_secret" json:"auth_secret"`
-	GroupID      *string `db:"group_id" json:"group_id"`
-	TenantID     int64   `db:"tenant_id" json:"tenant_id"`
-	ID           int64   `db:"id" json:"id"`
+	NameSet         bool    `db:"name_set" json:"name_set"`
+	Name            string  `db:"name" json:"name"`
+	ProtocolSet     bool    `db:"protocol_set" json:"protocol_set"`
+	Protocol        string  `db:"protocol" json:"protocol"`
+	HostSet         bool    `db:"host_set" json:"host_set"`
+	Host            string  `db:"host" json:"host"`
+	PortSet         bool    `db:"port_set" json:"port_set"`
+	Port            int32   `db:"port" json:"port"`
+	AuthUsernameSet bool    `db:"auth_username_set" json:"auth_username_set"`
+	AuthUsername    *string `db:"auth_username" json:"auth_username"`
+	AuthSecretSet   bool    `db:"auth_secret_set" json:"auth_secret_set"`
+	AuthSecret      *string `db:"auth_secret" json:"auth_secret"`
+	GroupIDSet      bool    `db:"group_id_set" json:"group_id_set"`
+	GroupID         *string `db:"group_id" json:"group_id"`
+	TenantID        int64   `db:"tenant_id" json:"tenant_id"`
+	ID              int64   `db:"id" json:"id"`
 }
 
 type UpdateProxyRow struct {
@@ -354,12 +512,19 @@ type UpdateProxyRow struct {
 
 func (q *Queries) UpdateProxy(ctx context.Context, arg UpdateProxyParams) (UpdateProxyRow, error) {
 	row := q.db.QueryRow(ctx, updateProxy,
+		arg.NameSet,
 		arg.Name,
+		arg.ProtocolSet,
 		arg.Protocol,
+		arg.HostSet,
 		arg.Host,
+		arg.PortSet,
 		arg.Port,
+		arg.AuthUsernameSet,
 		arg.AuthUsername,
+		arg.AuthSecretSet,
 		arg.AuthSecret,
+		arg.GroupIDSet,
 		arg.GroupID,
 		arg.TenantID,
 		arg.ID,

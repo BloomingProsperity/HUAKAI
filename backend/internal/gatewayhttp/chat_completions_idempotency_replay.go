@@ -2,12 +2,17 @@ package gatewayhttp
 
 import (
 	"context"
+	"fmt"
 	"mime"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
+	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 // maxIdempotencyReplayBodyBytes 是持久重放记录存储的响应体上限; 超限的响应不
@@ -42,9 +47,7 @@ func (ex *chatExecution) recordIdempotencyReplayWithContentType(claimID int64, s
 	if len(body) > maxIdempotencyReplayBodyBytes {
 		return
 	}
-	if contentType == "" {
-		contentType = idempotencyReplayContentTypeJSON
-	}
+	contentType = normalizeIdempotencyReplayContentType(contentType)
 	// replay 写入发生在响应已形成之后, 不能被客户端读完断连取消; 仅保留短
 	// 超时避免异常存储写入拖住 handler。
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), idempotencyReplayRecordTimeout)
@@ -86,10 +89,7 @@ func (ex *chatExecution) serveIdempotentReplay(w http.ResponseWriter, claimID in
 	if !ok || rec == nil {
 		return false
 	}
-	contentType := rec.ContentType
-	if contentType == "" {
-		contentType = idempotencyReplayContentTypeJSON
-	}
+	contentType := normalizeIdempotencyReplayContentType(rec.ContentType)
 	status := rec.ResponseStatus
 	if status == 0 {
 		status = http.StatusOK
@@ -118,4 +118,64 @@ func isIdempotencyReplayEventStream(contentType string) bool {
 	}
 	base, _, _ := strings.Cut(contentType, ";")
 	return strings.EqualFold(strings.TrimSpace(base), idempotencyReplayContentTypeSSE)
+}
+
+// normalizeIdempotencyReplayContentType 把持久化值收敛到 HUAKAI 实际支持的两种
+// 重放合同。即便数据库记录被误写或篡改为 text/html，也只能按 JSON 数据交付，
+// 不能借响应头把重放体提升为浏览器可执行文档。
+func normalizeIdempotencyReplayContentType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		return idempotencyReplayContentTypeJSON
+	}
+	switch {
+	case strings.EqualFold(mediaType, idempotencyReplayContentTypeSSE):
+		return idempotencyReplayContentTypeSSE
+	case strings.EqualFold(mediaType, idempotencyReplayContentTypeJSON):
+		return idempotencyReplayContentTypeJSON
+	default:
+		return idempotencyReplayContentTypeJSON
+	}
+}
+
+func settleCompletionWithRecovery(
+	ctx context.Context,
+	d ChatHandlerDeps,
+	event eventbus.RequestCompletionEvent,
+	source settlementrecovery.Source,
+) (*billing.SettleResult, bool, settlementrecovery.FailureEvidence, error) {
+	var res *billing.SettleResult
+	var err error
+	if source != "" {
+		if validationErr := validateMoneyPathAuditRefForSource(ctx, d, event, string(source)); validationErr != nil {
+			logMoneyPathAuditRefError(ctx, event, validationErr, string(source), false)
+			err = fmt.Errorf("post-delivery settlement deferred: %w", validationErr)
+		} else {
+			res, err = settleCompletion(ctx, d, event)
+		}
+	} else {
+		res, err = settleCompletion(ctx, d, event)
+	}
+	if err == nil {
+		return res, false, settlementrecovery.FailureEvidence{}, nil
+	}
+	if source == "" {
+		return res, false, settlementrecovery.FailureEvidence{}, err
+	}
+	payload := settlementrecovery.FromCompletionEvent(source, event)
+	evidence, enqueueErr := settlementrecovery.EnqueueFailure(
+		ctx,
+		d.SettleRecoveryDLQ,
+		payload,
+		err,
+		"gatewayhttp.settle_recovery",
+	)
+	return res, enqueueErr == nil, evidence, err
+}
+
+func toSettlementIntentEvidence(evidence settlementrecovery.FailureEvidence) settlementintent.RecoveryEvidence {
+	return settlementintent.RecoveryEvidence{
+		Payload:      evidence.Payload,
+		FailureClass: evidence.FailureClass,
+	}
 }

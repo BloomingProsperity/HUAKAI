@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/browsersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/passkey"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
@@ -119,6 +120,7 @@ func newRegisterFinishHandler(d Deps) http.HandlerFunc {
 		}
 		credential, err := d.Passkeys.RegisterFinish(r.Context(), passkey.RegisterFinishInput{
 			TenantID: ident.TenantID, User: user, SessionID: strings.TrimSpace(req.SessionID),
+			SessionFamilyID: ident.FamilyID, AuthVersion: ident.AuthVersion,
 			CredentialJSON: req.Credential, Name: req.Name,
 		})
 		if err != nil {
@@ -172,6 +174,7 @@ func newDeleteHandler(d Deps) http.HandlerFunc {
 		}
 		if err := d.Passkeys.DeleteCredential(r.Context(), passkey.DeleteCredentialInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, ID: id,
+			SessionFamilyID: ident.FamilyID, AuthVersion: ident.AuthVersion,
 		}); err != nil {
 			writePasskeyError(w, err)
 			return
@@ -219,14 +222,18 @@ func newLoginFinishHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: result.User.TenantID, UserID: result.User.ID, DeviceInfo: req.DeviceInfo,
+			TenantID: result.User.TenantID, UserID: result.User.ID,
+			AuthVersion: result.User.PasswordVersion, DeviceInfo: req.DeviceInfo,
 			IP: clientIP(d, r), UserAgent: r.UserAgent(), AuthMethod: "passkey",
 		})
 		if err != nil {
 			writeSessionError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"user": publicUser(result.User), "session": tokens})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user":    publicUser(result.User),
+			"session": browsersession.Deliver(w, r, tokens),
+		})
 	}
 }
 
@@ -325,6 +332,8 @@ func writePasskeyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "passkey_duplicate", "passkey credential already exists")
 	case errors.Is(err, passkey.ErrCloneDetected):
 		writeError(w, http.StatusForbidden, "passkey_clone_detected", "passkey authenticator clone detected")
+	case errors.Is(err, passkey.ErrSecurityStateChanged):
+		writeError(w, http.StatusUnauthorized, "authentication_stale", "account security changed; authenticate again")
 	case errors.Is(err, userauth.ErrUserNotFound),
 		errors.Is(err, userauth.ErrUserDisabled),
 		errors.Is(err, userauth.ErrUserLocked),
@@ -344,6 +353,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session signing key is not configured")
 	case errors.Is(err, usersession.ErrDeviceLimitExceeded):
 		writeError(w, http.StatusForbidden, "session_device_limit_exceeded", "too many active devices")
+	case errors.Is(err, usersession.ErrAuthenticationStale):
+		writeError(w, http.StatusUnauthorized, "authentication_stale", "account security changed; authenticate again")
 	default:
 		writeError(w, http.StatusServiceUnavailable, "session_backend_error", "session backend transient failure")
 	}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -25,6 +26,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 func TestCompletionsReserveThenSettle_HappyPath(t *testing.T) {
@@ -90,6 +95,107 @@ func TestCompletionsUpstreamErrorAborts(t *testing.T) {
 	}
 }
 
+// TestCompletionsSettlementIntentFailureStopsBeforeUpstream 守住资金恢复证据
+// 写失败时的交付前硬门。变异：删掉 InsertPending 或吞掉其错误，会调用
+// dispatcher 并失去崩溃恢复证据。
+func TestCompletionsSettlementIntentFailureStopsBeforeUpstream(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"choices":[{"text":"must not be delivered"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+	})
+	env.deps.SettlementIntents = settlementintent.NewPostgresStore(nil)
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"must not dispatch"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+	}
+	if got := env.dispatcher.calls; got != 0 {
+		t.Fatalf("dispatcher calls=%d want 0", got)
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+}
+
+func TestCompletionsSettlementIntentSuccessfulLifecycle(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"choices":[{"text":"ok"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+	})
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"lifecycle"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
+	}
+}
+
+func TestCompletionsDeliveryEvidenceFailureStopsClientDeliveryAndSettlement(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"choices":[{"text":"must-not-deliver"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+	})
+	store := &settlementintenttest.Store{DeliveryError: errors.New("注入交付证据故障")}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+	health := &completionHealthSpy{}
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"delivery gate"}`)
+
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "must-not-deliver") {
+		t.Fatalf("status/body=%d/%s want 503 且无上游业务体", rec.Code, rec.Body.String())
+	}
+	if len(env.settler.settles) != 0 || len(env.settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 0/1", len(env.settler.settles), len(env.settler.aborts))
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%q want pending->aborted", got)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("本地交付证据故障写入失败健康信号: %+v", health.signals)
+		}
+	}
+	if health.forceCooldowns != 0 {
+		t.Fatalf("本地交付证据故障污染账号健康: signals=%+v force_cooldowns=%d",
+			health.signals, health.forceCooldowns)
+	}
+}
+
+// TestCompletionsNonStreamSettleFailureKeepsDeliveryAndEnqueuesRecovery 守住
+// 非流式响应与流式响应相同的交付后恢复合同。
+func TestCompletionsNonStreamSettleFailureKeepsDeliveryAndEnqueuesRecovery(t *testing.T) {
+	const upstreamBody = `{"choices":[{"text":"delivered"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: upstreamBody})
+	env.settler.settleErr = errors.New("injected settle failure")
+	spy := &recordingRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = spy
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"keep delivery"}`)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != upstreamBody {
+		t.Fatalf("status/body=%d/%s want delivered 200 body", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort calls=%d want 0 after full delivery", got)
+	}
+	if spy.calls != 1 || spy.lastEvt.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q", spy.calls, spy.lastEvt.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+}
+
 func TestCompletionsTokenBilling(t *testing.T) {
 	env := newCompletionsTestEnv(upstreamResponse{
 		status: http.StatusOK,
@@ -132,6 +238,21 @@ func TestCompletionsInsufficientBalance(t *testing.T) {
 	}
 	if got := len(env.settler.settles); got != 0 {
 		t.Fatalf("settle calls=%d want 0", got)
+	}
+}
+
+func TestCompletionsDisabledTenantStopsBeforeUpstream(t *testing.T) {
+	env := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: `{}`})
+	env.claims.err = billing.ErrTenantInactive
+
+	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"must not dispatch"}`)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"tenant_inactive"`) {
+		t.Fatalf("status=%d body=%s want 403 tenant_inactive", rec.Code, rec.Body.String())
+	}
+	if env.dispatcher.calls != 0 || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("停用租户仍触发 dispatch/settle/abort=%d/%d/%d",
+			env.dispatcher.calls, len(env.settler.settles), len(env.settler.aborts))
 	}
 }
 
@@ -687,6 +808,9 @@ func TestCompletionsStreamSettleAndDLQEnqueueBothFail(t *testing.T) {
 	env.settler.settleErr = errors.New("settle tx aborted: " + secret)
 	spy := &recordingRecoveryEnqueuer{retErr: errors.New("dlq insert failed")}
 	env.deps.SettleRecoveryDLQ = spy
+	intentStore := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = intentStore
+	env.deps.SettlementIntentEnabled = true
 
 	rec := env.invokeCompletions(t, `{"model":"legacy-public","prompt":"stream please","stream":true}`)
 
@@ -700,6 +824,14 @@ func TestCompletionsStreamSettleAndDLQEnqueueBothFail(t *testing.T) {
 	// enqueue 仍被尝试(即便失败)。
 	if spy.calls != 1 {
 		t.Fatalf("enqueue calls=%d want 1 (recovery attempted even when DLQ persist fails)", spy.calls)
+	}
+	if got := strings.Join(intentStore.Events(), "->"); got != "pending->delivering->recovery_pending" {
+		t.Fatalf("双故障意图生命周期=%q", got)
+	}
+	raw, failureClass := intentStore.RecoveryEvidence()
+	persisted, err := settlementrecovery.Decode(raw)
+	if err != nil || persisted.Source != settlementrecovery.SourceStream || failureClass == "" {
+		t.Fatalf("双故障恢复证据 source=%q class=%q err=%v", persisted.Source, failureClass, err)
 	}
 	// DLQ failure_reason 必须是错误类别，绝不内插 raw settle 错误文本。
 	if strings.Contains(spy.lastEvt.FailureReason, secret) {

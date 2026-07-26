@@ -189,3 +189,12 @@ SET
 WHERE id = sqlc.arg(id)::bigint
   AND tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL;
+
+-- name: RecordProviderAccountProbe :execrows
+UPDATE provider_accounts
+SET
+    last_probe_at = sqlc.arg(probe_at)::timestamptz,
+    last_probe_latency_ms = sqlc.arg(latency_ms)::integer
+WHERE id = sqlc.arg(id)::bigint
+  AND tenant_id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;

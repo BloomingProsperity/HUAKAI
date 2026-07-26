@@ -131,7 +131,7 @@ func TestSignedReceiptMismatchRefundEndToEndPostgres(t *testing.T) {
 	}
 	assertReceiptRefundBalance(t, ctx, pool, seed, "执行退款前", "9.98000000")
 
-	delivered, err := dlqService.Replay(ctx, first.RefundEventID, "integration-refund-worker")
+	delivered, err := dlqService.Replay(ctx, seed.tenantID, first.RefundEventID, "integration-refund-worker")
 	if err != nil {
 		t.Fatalf("执行退款恢复任务：%v", err)
 	}

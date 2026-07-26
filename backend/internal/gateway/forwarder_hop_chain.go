@@ -121,6 +121,7 @@ func (f *StreamForwarder) emitFinalUpstreamEvents(
 	clientState any,
 	acc *UsageAccumulator,
 	req ForwardRequest,
+	beforeBusinessFrame ...func() error,
 ) error {
 	events, err := f.FinalizeUpstream(ctx, adapter, state, req)
 	if err != nil {
@@ -146,6 +147,11 @@ func (f *StreamForwarder) emitFinalUpstreamEvents(
 		for _, chunk := range chunks {
 			if len(chunk) == 0 {
 				continue
+			}
+			if len(beforeBusinessFrame) > 0 && beforeBusinessFrame[0] != nil {
+				if err := beforeBusinessFrame[0](); err != nil {
+					return err
+				}
 			}
 			if err := streamdelivery.WriteAndFlush(w, chunk); err != nil {
 				return ErrClientDisconnect

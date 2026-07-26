@@ -178,6 +178,35 @@ func TestServiceGetStoreErrorWithoutLastKnownReturnsSafeDefault(t *testing.T) {
 	}
 }
 
+func TestServiceGetAuthoritativeNeverFallsBackAfterStoreFailure(t *testing.T) {
+	base := NewMemoryStore()
+	if _, err := base.Upsert(context.Background(), GlobalScope, string(KeyPromoEnabled), "true", "seed"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	store := &failGetStore{Store: base}
+	now := fixedNow()
+	svc := NewService(store, nil, WithCacheTTL(time.Second), WithNow(func() time.Time { return now }))
+
+	warm, err := svc.Get(context.Background(), KeyPromoEnabled)
+	if err != nil {
+		t.Fatalf("warm Get: %v", err)
+	}
+	if warm.Value != "true" || warm.Source != SourceDB {
+		t.Fatalf("warm setting=%+v want db true", warm)
+	}
+
+	now = now.Add(2 * time.Second)
+	storeErr := errors.New("authoritative store unavailable")
+	store.getErr = storeErr
+	got, err := svc.GetAuthoritative(context.Background(), KeyPromoEnabled)
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("GetAuthoritative error=%v want %v", err, storeErr)
+	}
+	if got != (StoredSetting{}) {
+		t.Fatalf("GetAuthoritative under store error=%+v want zero value,不得回退历史值", got)
+	}
+}
+
 func TestServiceUpsertSeedsLastKnownForStoreErrorFallback(t *testing.T) {
 	cases := []struct {
 		name   string

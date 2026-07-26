@@ -421,6 +421,15 @@ func cleanupSmokeGraph(ctx context.Context, pgPool *pgxpool.Pool, tenantID int64
 		return err
 	}
 	for _, statement := range []string{
+		`DELETE FROM hermes_mutation_recovery WHERE tenant_id=$1`,
+		`DELETE FROM hermes_pending_confirmations WHERE tenant_id=$1`,
+		`DELETE FROM hermes_tool_calls WHERE tenant_id=$1`,
+		`DELETE FROM hermes_messages WHERE tenant_id=$1`,
+		`DELETE FROM hermes_conversations WHERE tenant_id=$1`,
+		`DELETE FROM hermes_settings WHERE tenant_id=$1`,
+		`DELETE FROM hermes_api_profiles WHERE tenant_id=$1`,
+		`DELETE FROM hermes_audit_events WHERE tenant_id=$1`,
+		`DELETE FROM hermes_service_principals WHERE tenant_id=$1`,
 		`DELETE FROM sticky_bindings WHERE tenant_id=$1`,
 		`DELETE FROM provider_account_routing_signals WHERE tenant_id=$1`,
 		`DELETE FROM provider_account_quota_facts WHERE tenant_id=$1`,

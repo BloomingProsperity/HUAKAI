@@ -44,8 +44,8 @@ var (
 
 // isReserveSerializationConflict 判定错误是否为可安全重试的 Serializable 冲突
 // (40001 序列化失败 / 40P01 死锁)。业务哨兵(ErrClaimRace / ErrFingerprintConflict /
-// ErrInsufficientBalance)是 Go error 值而非 *pgconn.PgError,天然不命中——它们是
-// 确定性业务结果,重试无意义、必须立即原样返回。
+// ErrInsufficientBalance / ErrTenantInactive)是 Go error 值而非 *pgconn.PgError,
+// 天然不命中——它们是确定性业务结果,重试无意义、必须立即原样返回。
 func isReserveSerializationConflict(err error) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {

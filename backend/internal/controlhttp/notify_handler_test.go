@@ -63,7 +63,8 @@ func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
 			Role:          admin.RoleTenantOperator,
 			ScopeTenantID: 7,
 		}},
-		Service: service,
+		Service:          service,
+		PlatformTenantID: 1,
 	})
 	body := `{"notify_type":"email","notification_email":"ops@example.test","balance_threshold":"3.00000000"}`
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/42/notifications", strings.NewReader(body))
@@ -80,6 +81,9 @@ func TestAdminTenantOperatorDefaultsToScopedTenant(t *testing.T) {
 	if service.saved.UpdatedBy != "admin_token:99" {
 		t.Fatalf("updated_by=%q want admin_token:99", service.saved.UpdatedBy)
 	}
+	if service.adminMutation.Actor != "admin_token:99" || service.adminMutation.ActorRole != admin.RoleTenantOperator {
+		t.Fatalf("admin mutation=%+v want authenticated tenant operator", service.adminMutation)
+	}
 }
 
 func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
@@ -91,7 +95,8 @@ func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
 			Role:          admin.RoleTenantOperator,
 			ScopeTenantID: 7,
 		}},
-		Service: service,
+		Service:          service,
+		PlatformTenantID: 1,
 	})
 	req := httptest.NewRequest(http.MethodPut, "/v1/admin/users/42/notifications?tenant_id=8", bytes.NewBufferString(`{"notify_type":"none"}`))
 	rec := httptest.NewRecorder()
@@ -103,6 +108,50 @@ func TestAdminTenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 	if service.upserts != 0 {
 		t.Fatalf("upserts=%d want 0; MUTATION: skipping tenant scope check should write", service.upserts)
+	}
+}
+
+func TestAdminPlatformScopeCannotManageSubtenantNotificationSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		tenantID   string
+		platformID int64
+		want       int
+	}{
+		{name: "平台工作租户", tenantID: "1", platformID: 1, want: http.StatusOK},
+		{name: "下级租户", tenantID: "7", platformID: 1, want: http.StatusForbidden},
+		{name: "部署范围缺失", tenantID: "1", platformID: 0, want: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &notifyRecordingSettingsService{}
+			router := chi.NewRouter()
+			MountNotifyAdminRoutes(router, NotifyAdminDeps{
+				Auth: notifyFakeAdminAuth{identity: admin.AdminIdentity{
+					TokenID: 77,
+					Role:    admin.RolePlatformAdmin,
+				}},
+				Service:          service,
+				PlatformTenantID: tc.platformID,
+			})
+			req := httptest.NewRequest(
+				http.MethodPut,
+				"/v1/admin/users/42/notifications?tenant_id="+tc.tenantID,
+				bytes.NewBufferString(`{"notify_type":"none"}`),
+			)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d body=%s want %d", rec.Code, rec.Body.String(), tc.want)
+			}
+			wantWrites := 0
+			if tc.want == http.StatusOK {
+				wantWrites = 1
+			}
+			if service.upserts != wantWrites {
+				t.Fatalf("upserts=%d want %d", service.upserts, wantWrites)
+			}
+		})
 	}
 }
 
@@ -174,7 +223,8 @@ func TestUserPutGotifyRejectsOutOfRangePriority(t *testing.T) {
 // 守 extra_emails 双向接线: PUT 的 extra_emails 经 notifyRequestToSettings 映射进 settings(service 收到),
 // 且 notifyResponseFromSettings 把它回写进响应(read-modify-write)。用两条判别邮箱。
 // MUTATION: notifyRequestToSettings 漏映射 ExtraEmails → saved.ExtraEmails 空 → 红;
-//           notifyResponseFromSettings 漏映射 → 响应缺 extra_emails → 红。
+//
+//	notifyResponseFromSettings 漏映射 → 响应缺 extra_emails → 红。
 func TestUserPutRoundTripsExtraEmails(t *testing.T) {
 	service := &notifyRecordingSettingsService{}
 	router := chi.NewRouter()
@@ -251,8 +301,9 @@ func TestUserPutRejectsTooManyExtraEmails(t *testing.T) {
 }
 
 type notifyRecordingSettingsService struct {
-	saved   notify.Settings
-	upserts int
+	saved         notify.Settings
+	adminMutation notify.AdminMutation
+	upserts       int
 }
 
 func (s *notifyRecordingSettingsService) GetSettings(context.Context, int64, int64) (notify.Settings, error) {
@@ -268,6 +319,15 @@ func (s *notifyRecordingSettingsService) UpsertSettings(_ context.Context, setti
 	s.saved = normalized
 	s.upserts++
 	return normalized, nil
+}
+
+func (s *notifyRecordingSettingsService) UpsertSettingsWithAdminLog(
+	ctx context.Context,
+	settings notify.Settings,
+	mutation notify.AdminMutation,
+) (notify.Settings, error) {
+	s.adminMutation = mutation
+	return s.UpsertSettings(ctx, settings)
 }
 
 type notifyFakeAdminAuth struct {

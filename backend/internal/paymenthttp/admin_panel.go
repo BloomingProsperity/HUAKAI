@@ -47,11 +47,15 @@ type dashboardStatsView struct {
 
 func newAdminListOrdersHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		filter, ok := parseOrderListFilter(w, r)
 		if !ok {
+			return
+		}
+		if !authorizePaymentReadTenant(w, ident, filter.TenantID) {
 			return
 		}
 		orders, err := d.Service.AdminListOrders(r.Context(), filter)
@@ -65,11 +69,15 @@ func newAdminListOrdersHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminDashboardHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		filter, ok := parseDashboardFilter(w, r)
 		if !ok {
+			return
+		}
+		if !authorizePaymentReadTenant(w, ident, filter.TenantID) {
 			return
 		}
 		stats, err := d.Service.DashboardStats(r.Context(), filter)
@@ -83,11 +91,15 @@ func newAdminDashboardHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminAuditHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizePaymentReadTenant(w, ident, tenantID) {
 			return
 		}
 		id, ok := parsePathID(w, r)
@@ -117,6 +129,9 @@ func newAdminRetryHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		res, err := d.Service.RetryFulfillment(r.Context(), payment.RetryFulfillmentInput{
 			TenantID:     req.TenantID,
 			OrderID:      id,
@@ -134,7 +149,7 @@ func newAdminRetryHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminGetProviderConfigHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		if _, ok := resolvePlatformAdmin(w, r, d); !ok {
 			return
 		}
 		kind, ok := providerKindFromPath(w, r)
@@ -157,7 +172,7 @@ func newAdminGetProviderConfigHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminPutProviderConfigHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ident, ok := resolveAdmin(w, r, d)
+		ident, ok := resolvePlatformAdmin(w, r, d)
 		if !ok {
 			return
 		}

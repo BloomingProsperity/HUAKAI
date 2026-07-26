@@ -119,8 +119,8 @@ var ErrUnknownMode = errors.New("transport: unknown mode")
 // allowedModesByProvider 是 provider × mode 的允许矩阵。在此表外的组合一
 // 律 reject，避免任何"默认放行"的合规漏洞。
 //
-// Anthropic 仅允许 standard/diagnostics mode；其它 vendor 的反转 + 对应
-// mimicry mode 正常允许。
+// 官方 Key 走 standard；只有账号模式合同明确要求客户端形态时才允许对应 mimicry。
+// diagnostics_only 只用于诊断，矩阵外组合一律拒绝。
 var allowedModesByProvider = map[ProviderCode]map[TransportMode]bool{
 	ProviderAnthropic: {
 		TransportModeStandard:          true,

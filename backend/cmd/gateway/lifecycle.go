@@ -69,7 +69,6 @@ type gatewayRuntime struct {
 	opsInspectionWorker         *opsinspection.InspectionWorker
 	mediaTaskWorker             *mediatask.Worker
 	serverMonitorWorker         *servermonitor.Worker
-	obsDLQEnabled               bool
 	outboxRuntime               obsoutbox.RuntimeConfig
 	// logSinkStop 停止运行日志落库 worker 并等 drain;必须在其余 worker 都停完、
 	// 关 DB 之前调用,否则停机窗口产生的 warn/error 会滞留队列丢失。
@@ -241,7 +240,7 @@ func shutdownGateway(srv *http.Server, rt *gatewayRuntime) error {
 		cancel()
 	}
 	var dlqStopErr error
-	if rt.obsDLQEnabled && rt.dlqWorker != nil {
+	if rt.dlqWorker != nil {
 		dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		dlqStopErr = rt.dlqWorker.Stop(dlqCtx)
 		cancel()
@@ -383,7 +382,7 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 		return nil, fmt.Errorf("load obs DLQ config: %w", err)
 	}
 	logger.Info("observability DLQ config loaded",
-		zap.Bool("enabled", obsDLQCfg.Enabled),
+		zap.Bool("core_recovery_worker_enabled", true),
 		zap.Bool("replica_configured", obsDLQCfg.ReplicaDSN != ""),
 		zap.Int("high_workers", obsDLQCfg.HighWorkers),
 		zap.Int("medium_workers", obsDLQCfg.MediumWorkers),
@@ -426,10 +425,16 @@ func loadRuntimeOptions(logger *zap.Logger) (*runtimeOptions, error) {
 	}, nil
 }
 
-func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, emailSettings *mailinfra.PostgresSettingsStore, logger *zap.Logger) (*userauth.Service, *usersession.Service, error) {
+func buildUserServices(
+	pgPool *pgxpool.Pool,
+	keys credentialstore.KeyProvider,
+	emailSettings *mailinfra.PostgresSettingsStore,
+	logger *zap.Logger,
+	platformTenantID int64,
+) (*userauth.Service, *usersession.Service, error) {
 	userAuthService := userauth.NewService(userauth.NewPostgresStoreWithKeys(pgPool, keys))
 	platformSettingsService := platformsettings.NewService(platformsettings.NewPostgresStore(pgPool), nil)
-	userAuthService.RegistrationGate = authpolicyadapter.NewRegistrationGate(platformSettingsService)
+	userAuthService.RegistrationGate = authpolicyadapter.NewRegistrationGate(platformSettingsService, platformTenantID)
 	userAuthService.EmailPolicy = authpolicyadapter.NewEmailPolicy(platformSettingsService)
 	registrationMode, err := loadUserRegistrationModeFromEnv()
 	if err != nil {
@@ -447,8 +452,8 @@ func buildUserServices(pgPool *pgxpool.Pool, keys credentialstore.KeyProvider, e
 	}
 	userSessionService := usersession.NewService(usersession.NewPostgresStore(pgPool))
 	userSessionService.SigningKey = sessionSigningKey
-	// 会话使用期资格复核: Validate/Refresh 每次复核 users.status, 封禁/删除下一请求即生效
-	// (主动吊销只是辅助, 这道闸不依赖各封禁入口记得调 Revoke)。
+	// 会话使用期资格复核：Validate/Refresh 每次同时复核租户与用户状态，任一停用或
+	// 删除都在下一请求生效；主动吊销只是辅助，不依赖每个管理入口都记得调用。
 	userSessionService.UserGate = sessionUserGate{auth: userAuthService}
 	// 漂移观测: Medium/Low 弱信号落结构化日志 (不消费则 token 盗用最常见形态检测全盲)。
 	userSessionService.DriftObserver = newSessionDriftObserver(logger)

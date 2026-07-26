@@ -278,6 +278,83 @@ func TestSettler_AbortRechecksDeliveredUnsettledRecoveryInsideTransaction(t *tes
 	}
 }
 
+func TestSettler_SettlementIntentDeliveryEvidenceControlsAbort(t *testing.T) {
+	// 变异检查：把 pending 也加入阻断集合会让正常失败后的 hold 永久卡住；
+	// 删掉 delivering 阻断则会把已经交付但尚未结算的请求零成本中止。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	pending := seedSettlerGraph(t, ctx, pool, "intent-pending-abort")
+	delivering := seedSettlerGraph(t, ctx, pool, "intent-delivering-protect")
+	for _, seed := range []settlerSeed{pending, delivering} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO user_balances (tenant_id, user_id, balance, held)
+			 VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+			seed.tenantID, seed.userID,
+		); err != nil {
+			t.Fatalf("seed user balance: %v", err)
+		}
+		if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+			t.Fatalf("reserve hold: %v", err)
+		}
+	}
+	seedSettlementIntent(t, ctx, pool, pending, "pending")
+	seedSettlementIntent(t, ctx, pool, delivering, "delivering")
+
+	settler := NewSettler(pool)
+	if err := settler.Abort(ctx, pending.tenantID, pending.claimID, "upstream_dispatch_error", uuid.NewString(), 0, nil); err != nil {
+		t.Fatalf("pending intent 应允许 Abort: %v", err)
+	}
+	err := settler.Abort(ctx, delivering.tenantID, delivering.claimID, "lease_expired", uuid.NewString(), 0, nil)
+	if !errors.Is(err, ErrPostDeliverySettlementPending) {
+		t.Fatalf("delivering intent Abort error=%v want ErrPostDeliverySettlementPending", err)
+	}
+
+	assertClaimAndHeld(t, ctx, pool, pending, "aborted", decimal.Zero)
+	assertClaimAndHeld(t, ctx, pool, delivering, "reserving", decimal.RequireFromString("0.01000000"))
+}
+
+func TestSettler_LeaseSweepUsesSettlementIntentDeliveryEvidence(t *testing.T) {
+	// 变异检查：候选 SQL 若忽略 delivering 会错退已交付请求；若排除 pending，
+	// 则普通上游失败留下的预留永远无法由 lease 回收。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool := openPool(t, ctx)
+	pending := seedSettlerGraph(t, ctx, pool, "intent-pending-sweep")
+	delivering := seedSettlerGraph(t, ctx, pool, "intent-delivering-sweep")
+	for _, seed := range []settlerSeed{pending, delivering} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO user_balances (tenant_id, user_id, balance, held)
+			 VALUES ($1, $2, 10, 0) ON CONFLICT (tenant_id, user_id) DO NOTHING`,
+			seed.tenantID, seed.userID,
+		); err != nil {
+			t.Fatalf("seed user balance: %v", err)
+		}
+		if err := reserveAndCommitBalanceHold(ctx, t, pool, seed.tenantID, seed.userID, seed.claimID, decimal.RequireFromString("0.01000000")); err != nil {
+			t.Fatalf("reserve hold: %v", err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE billing_ledger_claims
+			 SET lease_expires_at=NOW()-interval '100 years'
+			 WHERE tenant_id=$1 AND id=$2`,
+			seed.tenantID, seed.claimID,
+		); err != nil {
+			t.Fatalf("expire claim lease: %v", err)
+		}
+	}
+	seedSettlementIntent(t, ctx, pool, pending, "pending")
+	seedSettlementIntent(t, ctx, pool, delivering, "delivering")
+
+	if _, err := NewLeaseSweeper(pool, NewSettler(pool), 1000).SweepOnce(ctx); err != nil {
+		t.Logf("SweepOnce 其他隔离记录存在非致命错误: %v", err)
+	}
+
+	assertClaimAndHeld(t, ctx, pool, pending, "aborted", decimal.Zero)
+	assertClaimAndHeld(t, ctx, pool, delivering, "reserving", decimal.RequireFromString("0.01000000"))
+}
+
 func TestSettler_LeaseSweepProtectsSlotForUnresolvedDeliveryRecovery(t *testing.T) {
 	// 变异检查:移除 slot orphan 查询中的恢复行排除条件,遗留终态 claim 的槽会被清掉。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -537,6 +614,43 @@ func reserveAndCommitBalanceHold(ctx context.Context, t *testing.T, pool *pgxpoo
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func seedSettlementIntent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seed settlerSeed, status string) {
+	t.Helper()
+	requestID := "intent-" + uuid.NewString()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO settlement_intents (
+			tenant_id, request_id, logical_request_id, attempt_seq, claim_id,
+			api_key_id, request_fingerprint, predicted_cost, status, first_byte_at
+		 )
+		 SELECT tenant_id, $3, $3, attempt_seq, id, api_key_id,
+		        request_fingerprint, predicted_cost, $4,
+		        CASE WHEN $4::text='delivering' THEN NOW() ELSE NULL END
+		 FROM billing_ledger_claims
+		 WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, seed.claimID, requestID, status,
+	); err != nil {
+		t.Fatalf("seed settlement intent status=%s: %v", status, err)
+	}
+}
+
+func assertClaimAndHeld(t *testing.T, ctx context.Context, pool *pgxpool.Pool, seed settlerSeed, wantStatus string, wantHeld decimal.Decimal) {
+	t.Helper()
+	var status string
+	var held decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT c.status, b.held
+		 FROM billing_ledger_claims c
+		 JOIN user_balances b ON b.tenant_id=c.tenant_id AND b.user_id=c.user_id
+		 WHERE c.tenant_id=$1 AND c.id=$2`,
+		seed.tenantID, seed.claimID,
+	).Scan(&status, &held); err != nil {
+		t.Fatalf("read claim/held: %v", err)
+	}
+	if status != wantStatus || !held.Equal(wantHeld) {
+		t.Fatalf("claim status/held=%q/%s want %q/%s", status, held, wantStatus, wantHeld)
+	}
 }
 
 func seedPendingSettlementRecovery(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenantID, claimID int64) {

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
 // newEgressCorrelationID 生成一次出口拨号的关联 id；日志关联失败不影响拨号。
@@ -263,6 +265,9 @@ func (c *SidecarClient) dialTLSPinned(ctx context.Context, host string, port int
 		Proxy:           proxy,
 		PinnedTargetIPs: append([]string(nil), pinnedTargetIPs...),
 	}
+	if proxy != nil {
+		req.ProxyResolvedIPs = append([]string(nil), proxy.ResolvedIPs...)
+	}
 	frameBytes, err := writeSidecarFrame(conn, req)
 	if err != nil {
 		err = sidecarContextError(ctx, err)
@@ -329,7 +334,23 @@ func (rt *sidecarRoundTripper) DialTLSContext(ctx context.Context, network, addr
 			return nil, err
 		}
 	}
-	return rt.client.dialTLSPinned(ctx, host, port, rt.profileID, rt.inline, rt.forceH1, rt.proxy, pinnedTargetIPs)
+	proxy := rt.proxy
+	if proxy != nil {
+		proxy = proxy.clone()
+		proxyURL := &url.URL{
+			Scheme: proxy.Scheme,
+			Host:   net.JoinHostPort(proxy.Host, strconv.Itoa(int(proxy.Port))),
+		}
+		addresses, err := provider.ResolveProxyEndpointIPs(ctx, proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("mimicry sidecar: 代理地址校验失败: %w", err)
+		}
+		proxy.ResolvedIPs, err = normalizePinnedTargetIPs(addresses)
+		if err != nil {
+			return nil, fmt.Errorf("mimicry sidecar: 代理地址绑定失败: %w", err)
+		}
+	}
+	return rt.client.dialTLSPinned(ctx, host, port, rt.profileID, rt.inline, rt.forceH1, proxy, pinnedTargetIPs)
 }
 
 func normalizePinnedTargetIPs(addresses []netip.Addr) ([]string, error) {
@@ -366,11 +387,21 @@ func forceH1Ptr(forceH1 bool) *bool {
 // 结构化下发(而非原始 URL):password 等敏感段不混进一个可被整体打印的字符串。Username/Password
 // 仅在带认证时出现(omitempty),无认证时不写键。
 type sidecarProxySpec struct {
-	Scheme   string `json:"scheme"`
-	Host     string `json:"host"`
-	Port     uint16 `json:"port"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
+	Scheme      string   `json:"scheme"`
+	Host        string   `json:"host"`
+	Port        uint16   `json:"port"`
+	Username    string   `json:"username,omitempty"`
+	Password    string   `json:"password,omitempty"`
+	ResolvedIPs []string `json:"-"`
+}
+
+func (s *sidecarProxySpec) clone() *sidecarProxySpec {
+	if s == nil {
+		return nil
+	}
+	clone := *s
+	clone.ResolvedIPs = append([]string(nil), s.ResolvedIPs...)
+	return &clone
 }
 
 // proxySpecFromURL 把【已经过 proxyadmin SSRF 校验的】proxyURL 拆成 sidecarProxySpec。

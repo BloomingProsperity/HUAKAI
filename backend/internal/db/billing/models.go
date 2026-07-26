@@ -59,4 +59,8 @@ type SettlementIntent struct {
 	CreatedAt          pgtype.Timestamptz `db:"created_at" json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `db:"updated_at" json:"updated_at"`
 	SettledAt          pgtype.Timestamptz `db:"settled_at" json:"settled_at"`
+	// 已交付请求在主结算和恢复入队同时失败时保存的脱敏结算恢复载荷；追平终态后自动清除。
+	RecoveryPayload []byte `db:"recovery_payload" json:"recovery_payload"`
+	// 恢复载荷对应的稳定失败分类，不保存原始错误文本。
+	RecoveryFailureClass *string `db:"recovery_failure_class" json:"recovery_failure_class"`
 }

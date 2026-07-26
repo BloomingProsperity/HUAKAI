@@ -54,10 +54,10 @@ type Config struct {
 	CRSSource CRSSourceConfig
 
 	// QuotaEnforce 把配额预留/结清路径接入 chat 准入。
-	// 默认 false, 不改动热路径。
+	// 默认开启；显式设为 false 仅作为应急停用口。
 	QuotaEnforce bool
-	// SettlementIntentEnabled 在 relay 首字节前持久化结算意图。默认关闭；
-	// 意图写失败始终降级为 warning，不改变原有钱路结果。
+	// SettlementIntentEnabled 在 relay 首字节前持久化结算意图。默认开启；
+	// 启用时交付前证据写失败必须阻断请求，防止响应交付后崩溃而没有恢复事实。
 	SettlementIntentEnabled bool
 	// Budget 接入每分钟 RPM/TPM 预算跟踪。默认关闭, 不改动热路径;
 	// 启用时失败模式默认为 memory_fallback。
@@ -82,8 +82,9 @@ type Config struct {
 	PaymentEnableMock  bool
 	// 淘宝/闲鱼 manual-redirect 支付: 默认关闭。启用后下单返回 checkout_url + 订单号,
 	// 用户到淘宝/闲鱼扫码/点链接付款, 管理员手动确认入账(无程序回调)。
-	PaymentTaobaoEnabled         bool
-	PaymentTaobaoCheckoutURL     string
+	PaymentTaobaoEnabled     bool
+	PaymentTaobaoCheckoutURL string
+	// PaymentExpireSweepInterval 默认一分钟；显式设为 0 可应急暂停过期订单清理。
 	PaymentExpireSweepInterval   time.Duration
 	PaymentExpireSweepBatchLimit int
 	// APIKeyExpirySweep* 接入入站 API-key 显示状态过期 worker。
@@ -177,7 +178,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	paymentExpireSweepInterval, err := envOptionalDuration("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL")
+	paymentExpireSweepInterval, err := envNonNegativeDurationDefault(
+		"HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL",
+		DefaultPaymentExpireSweepInterval,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +213,7 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	settlementIntentEnabled, err := envBool("HUAKAI_SETTLEMENT_INTENT_ENABLED")
+	settlementIntentEnabled, err := envBoolDefault("HUAKAI_SETTLEMENT_INTENT_ENABLED", true)
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,23 @@ func scanAdminProviderAccount(row adminProviderAccountScanner, i *AdminProviderA
 }
 
 func scanAdminProviderAccountWithSubscription(row adminProviderAccountScanner, i *AdminProviderAccountRow) error {
+	return row.Scan(adminProviderAccountWithSubscriptionDestinations(i)...)
+}
+
+func scanAdminProviderAccountWithSubscriptionAndTodayStats(row adminProviderAccountScanner, i *AdminProviderAccountRow) error {
+	destinations := adminProviderAccountWithSubscriptionDestinations(i)
+	destinations = append(destinations,
+		&i.TodayStatsWindowStart,
+		&i.TodayStatsObservedAt,
+		&i.TodayRequestCount,
+		&i.TodaySuccessCount,
+		&i.TodayFailureCount,
+		&i.TodayTTFTP95MS,
+	)
+	return row.Scan(destinations...)
+}
+
+func adminProviderAccountWithSubscriptionDestinations(i *AdminProviderAccountRow) []any {
 	destinations := adminProviderAccountDestinations(i)
 	destinations = append(destinations,
 		&i.SubscriptionVendor,
@@ -28,7 +45,7 @@ func scanAdminProviderAccountWithSubscription(row adminProviderAccountScanner, i
 		&i.SubscriptionChangedAt,
 		&i.QuotaFacts,
 	)
-	return row.Scan(destinations...)
+	return destinations
 }
 
 func adminProviderAccountDestinations(i *AdminProviderAccountRow) []any {

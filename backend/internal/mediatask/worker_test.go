@@ -32,6 +32,217 @@ func TestWorkerQueuedTaskSubmitsProviderOnce(t *testing.T) {
 	}
 }
 
+func TestWorkerPersistsSubmittingBeforeCallingProvider(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 1, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 101, TenantID: 7, UserID: 42, RequestID: "req-write-ahead",
+		TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now,
+	})
+	var statusSeenByProvider Status
+	provider := &workerProvider{
+		submitID: "up-write-ahead",
+		onSubmit: func(SubmitReq) {
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			statusSeenByProvider = store.task.Status
+		},
+	}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "write-ahead-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if statusSeenByProvider != StatusSubmitting || store.submittingCalls != 1 {
+		t.Fatalf("上游调用看到的状态=%q，写前次数=%d；必须先耐久写入 submitting",
+			statusSeenByProvider, store.submittingCalls)
+	}
+	if store.task.Status != StatusInProgress || store.task.ProviderTaskID != "up-write-ahead" {
+		t.Fatalf("提交成功后任务未进入 in_progress: %+v", store.task)
+	}
+}
+
+func TestWorkerUnknownSubmitOutcomeNeverRetriesOrRefunds(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 2, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 102, TenantID: 7, UserID: 42, RequestID: "req-unknown",
+		TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now,
+	})
+	provider := &workerProvider{submitErr: errors.New("连接写出后被重置")}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "unknown-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if !processed || err == nil {
+		t.Fatalf("首次 RunOnce processed=%v err=%v", processed, err)
+	}
+	if store.task.Status != StatusSubmissionUnknown || store.unknownCalls != 1 {
+		t.Fatalf("未知提交结果未进入人工恢复态: %+v unknown_calls=%d", store.task, store.unknownCalls)
+	}
+	if store.failureCalls != 0 || store.deferCalls != 0 {
+		t.Fatalf("未知提交结果不得退款或重新排队: failure=%d defer=%d",
+			store.failureCalls, store.deferCalls)
+	}
+	if store.lastIdempotencyKey != DeriveIdempotencyKey(store.task.ID, store.task.RequestID) {
+		t.Fatalf("恢复记录幂等键=%q", store.lastIdempotencyKey)
+	}
+
+	processed, err = worker.RunOnce(context.Background())
+	if err != nil || processed {
+		t.Fatalf("未知态第二轮不应再获租约: processed=%v err=%v", processed, err)
+	}
+	if provider.submitCalls != 1 {
+		t.Fatalf("未知态被重复提交到上游，submit_calls=%d", provider.submitCalls)
+	}
+}
+
+func TestWorkerEmptyProviderTaskIDBecomesUnknownBeforePersistence(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 2, 30, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 1021, TenantID: 7, UserID: 42, RequestID: "req-empty-provider-id",
+		TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now,
+	})
+	provider := &workerProvider{returnEmptySubmitID: true}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "empty-id-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if store.task.Status != StatusSubmissionUnknown ||
+		store.task.ProviderTaskID != "" ||
+		store.task.ErrorClass != "provider_submit_response_invalid" ||
+		store.unknownCalls != 1 {
+		t.Fatalf("空上游任务号必须直接进入未知恢复态，task=%+v unknown_calls=%d",
+			store.task, store.unknownCalls)
+	}
+	if store.failureCalls != 0 || store.deferCalls != 0 {
+		t.Fatalf("空上游任务号不得退款或重提: failure=%d defer=%d",
+			store.failureCalls, store.deferCalls)
+	}
+}
+
+func TestWorkerRecoveredSubmittingBecomesUnknownWithoutCallingProvider(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 3, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 103, TenantID: 7, UserID: 42, RequestID: "req-crashed-submit",
+		TaskType: "image_generation", Provider: "http", Status: StatusSubmitting, CreatedAt: now,
+	})
+	provider := &workerProvider{submitID: "must-not-be-created"}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "recovery-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if provider.submitCalls != 0 || store.task.Status != StatusSubmissionUnknown {
+		t.Fatalf("进程中断后的 submitting 被错误重提: calls=%d task=%+v",
+			provider.submitCalls, store.task)
+	}
+}
+
+func TestWorkerDeterministicSubmitRejectionFailsWithoutUnknownState(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 4, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 104, TenantID: 7, UserID: 42, RequestID: "req-rejected",
+		TaskType: "image_generation", Provider: "http", Status: StatusQueued, CreatedAt: now,
+	})
+	provider := &workerProvider{
+		submitErr: terminalProviderError("provider_submit_rejected", ErrInvalidInput),
+	}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "reject-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if !processed || err == nil {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if store.failureCalls != 1 || store.unknownCalls != 0 ||
+		store.task.Status != StatusFailed || store.task.ErrorClass != "provider_submit_rejected" {
+		t.Fatalf("明确拒绝必须终态失败并释放，而不是进入未知态: %+v", store.task)
+	}
+}
+
+func TestWorkerSubmissionReleaseUsesFailureSettlementWithoutProviderCall(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 5, 0, 0, time.UTC)
+	store := newWorkerStore(Task{
+		ID: 105, TenantID: 7, UserID: 42, RequestID: "req-release",
+		TaskType: "image_generation", Provider: "http",
+		Status: StatusSubmissionReleasing, CreatedAt: now,
+	})
+	provider := &workerProvider{submitID: "must-not-submit"}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{"http": provider},
+		WorkerOptions{Owner: "release-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if provider.submitCalls != 0 || provider.pollCalls != 0 ||
+		store.failureCalls != 1 || store.task.Status != StatusFailed {
+		t.Fatalf("人工释放没有只走统一失败结算: submit=%d poll=%d task=%+v",
+			provider.submitCalls, provider.pollCalls, store.task)
+	}
+}
+
+func TestWorkerSettlementPendingResumesSettlementBeforeTimeoutOrProviderCall(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 6, 0, 0, time.UTC)
+	actual := int64(40)
+	store := newWorkerStore(Task{
+		ID: 106, TenantID: 7, UserID: 42, RequestID: "req-settlement-recovery",
+		TaskType: "video_generate", Provider: geminiVideoProviderName,
+		ProviderTaskID: "operations/op-106", Status: StatusSettlementPending,
+		Result: json.RawMessage(`{"status":"completed"}`), ActualCents: &actual,
+		CreatedAt: now.Add(-24 * time.Hour),
+	})
+	provider := &workerProvider{submitID: "must-not-submit"}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: testConfig()},
+		StaticProviderRegistry{geminiVideoProviderName: provider},
+		WorkerOptions{Owner: "settlement-recovery-worker", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if provider.submitCalls != 0 || provider.pollCalls != 0 ||
+		store.completeCalls != 1 || store.failureCalls != 0 || store.expireCalls != 0 ||
+		store.task.Status != StatusSucceeded {
+		t.Fatalf("待结算任务必须只续结算: submit=%d poll=%d complete=%d failure=%d expire=%d task=%+v",
+			provider.submitCalls, provider.pollCalls, store.completeCalls,
+			store.failureCalls, store.expireCalls, store.task)
+	}
+}
+
 func TestWorkerSuccessSettlesOnceAcrossConcurrentRunOnce(t *testing.T) {
 	// 变异:去掉 CompleteSuccess 里的 lease_owner / 终态守卫;
 	// 两个 worker 都会结算,completeCalls 变成 2。
@@ -154,6 +365,52 @@ func TestWorkerTimeoutExpiresAndRefunds(t *testing.T) {
 	}
 }
 
+func TestWorkerPersistedVideoSuccessSettlesAfterTaskTimeout(t *testing.T) {
+	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	actual := int64(91)
+	task := Task{
+		ID: 41, TenantID: 7, UserID: 42, APIKeyID: 13, RequestID: "video-41",
+		TaskType: "video_generate", Provider: "grok_video", ProviderTaskID: "up-41",
+		ProviderAccountID: 88, PoolGroupID: 9, RouteID: "route-video",
+		Status: StatusInProgress, CreatedAt: now.Add(-2 * time.Hour),
+		Result: json.RawMessage(`{"status":"completed"}`), ActualCents: &actual,
+	}
+	store := newWorkerStore(task)
+	cfg := testConfig()
+	cfg.TaskTimeout = time.Minute
+	provider := &boundWorkerProvider{}
+	worker := NewWorker(
+		store,
+		StaticConfigSource{Config: cfg},
+		StaticProviderRegistry{"grok_video": provider},
+		WorkerOptions{Owner: "w-video-recovery", Now: func() time.Time { return now }},
+	)
+
+	processed, err := worker.RunOnce(context.Background())
+	if err != nil || !processed {
+		t.Fatalf("RunOnce processed=%v err=%v", processed, err)
+	}
+	if store.completeCalls != 1 || store.expireCalls != 0 || store.task.Status != StatusSucceeded {
+		t.Fatalf("持久化成功未优先结算: complete=%d expire=%d task=%+v",
+			store.completeCalls, store.expireCalls, store.task)
+	}
+	if provider.boundPollCalls != 0 || provider.boundSubmitCalls != 0 {
+		t.Fatalf("恢复路径不应再次调用上游: submit=%d poll=%d",
+			provider.boundSubmitCalls, provider.boundPollCalls)
+	}
+	var reason struct {
+		AccountID   int64  `json:"selected_account_id"`
+		PoolGroupID int64  `json:"pool_group_id"`
+		RouteID     string `json:"route_id"`
+	}
+	if err := json.Unmarshal(store.lastSuccess.RoutingReason, &reason); err != nil {
+		t.Fatalf("解析恢复路由原因: %v", err)
+	}
+	if reason.AccountID != 88 || reason.PoolGroupID != 9 || reason.RouteID != "route-video" {
+		t.Fatalf("恢复路由原因=%+v, want account/pool/route=88/9/route-video", reason)
+	}
+}
+
 func TestWorkerLeaseLostReportsOrphanWithIdempotencyKey(t *testing.T) {
 	// 场景:worker A 已 Submit 创建真实上游任务,但租约在 Submit 期间过期被另一个
 	// worker 抢走,MarkProviderSubmitted 返回 ErrLeaseLost。
@@ -248,10 +505,13 @@ func (s *leaseStealingStore) MarkProviderSubmitted(_ context.Context, _ Task, _,
 }
 
 type workerProvider struct {
-	submitID    string
-	poll        PollResult
-	submitCalls int
-	pollCalls   int
+	submitID            string
+	submitErr           error
+	poll                PollResult
+	submitCalls         int
+	pollCalls           int
+	onSubmit            func(SubmitReq)
+	returnEmptySubmitID bool
 }
 
 type boundWorkerProvider struct {
@@ -283,8 +543,17 @@ func (p *boundWorkerProvider) PollBound(context.Context, Task, string) (PollResu
 	return PollResult{}, p.pollErr
 }
 
-func (p *workerProvider) Submit(context.Context, SubmitReq) (string, error) {
+func (p *workerProvider) Submit(_ context.Context, req SubmitReq) (string, error) {
 	p.submitCalls++
+	if p.onSubmit != nil {
+		p.onSubmit(req)
+	}
+	if p.submitErr != nil {
+		return "", p.submitErr
+	}
+	if p.returnEmptySubmitID {
+		return "", nil
+	}
 	if p.submitID == "" {
 		return "up-default", nil
 	}
@@ -297,12 +566,16 @@ func (p *workerProvider) Poll(context.Context, string) (PollResult, error) {
 }
 
 type workerStore struct {
-	mu            sync.Mutex
-	task          Task
-	completeCalls int
-	failureCalls  int
-	expireCalls   int
-	deferCalls    int
+	mu                 sync.Mutex
+	task               Task
+	lastSuccess        PollResult
+	lastIdempotencyKey string
+	completeCalls      int
+	failureCalls       int
+	expireCalls        int
+	deferCalls         int
+	submittingCalls    int
+	unknownCalls       int
 }
 
 func newWorkerStore(task Task) *workerStore {
@@ -324,7 +597,7 @@ func (s *workerStore) ListTasks(context.Context, int64, int64, int) ([]Task, err
 func (s *workerStore) AcquireLease(_ context.Context, owner string, ttl time.Duration, now time.Time) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if IsTerminal(s.task.Status) || s.task.LeaseOwner != "" ||
+	if !isRunnableWorkerStatus(s.task.Status) || s.task.LeaseOwner != "" ||
 		(s.task.LeaseExpiresAt != nil && s.task.LeaseExpiresAt.After(now)) {
 		return Task{}, ErrNoRunnableTask
 	}
@@ -334,10 +607,72 @@ func (s *workerStore) AcquireLease(_ context.Context, owner string, ttl time.Dur
 	return s.task, nil
 }
 
+func isRunnableWorkerStatus(status Status) bool {
+	switch status {
+	case StatusQueued, StatusSubmitting, StatusSubmissionReleasing, StatusInProgress, StatusSettlementPending:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *workerStore) MarkSubmitting(_ context.Context, task Task, owner string, now time.Time) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner || s.task.Status != StatusQueued {
+		return Task{}, ErrLeaseLost
+	}
+	s.submittingCalls++
+	s.task.Status = StatusSubmitting
+	s.task.UpdatedAt = now
+	return s.task, nil
+}
+
+func (s *workerStore) DeferSubmission(_ context.Context, task Task, owner string, now, retryAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner || s.task.Status != StatusSubmitting {
+		return ErrLeaseLost
+	}
+	s.deferCalls++
+	s.task.Status = StatusQueued
+	s.task.ErrorClass = ""
+	s.task.LeaseOwner = ""
+	s.task.LeaseExpiresAt = &retryAt
+	s.task.UpdatedAt = now
+	return nil
+}
+
+func (s *workerStore) MarkSubmissionUnknown(
+	_ context.Context,
+	task Task,
+	owner string,
+	errorClass string,
+	idempotencyKey string,
+	now time.Time,
+) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner ||
+		(s.task.Status != StatusSubmitting && s.task.Status != StatusInProgress) ||
+		s.task.ProviderTaskID != "" {
+		return Task{}, ErrLeaseLost
+	}
+	s.unknownCalls++
+	s.lastIdempotencyKey = idempotencyKey
+	s.task.Status = StatusSubmissionUnknown
+	s.task.ErrorClass = errorClass
+	s.task.LeaseOwner = ""
+	s.task.LeaseExpiresAt = nil
+	s.task.UpdatedAt = now
+	return s.task, nil
+}
+
 func (s *workerStore) DeferLease(_ context.Context, task Task, owner string, now, retryAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.task.ID != task.ID || s.task.LeaseOwner != owner || IsTerminal(s.task.Status) {
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner ||
+		(s.task.Status != StatusQueued && s.task.Status != StatusInProgress) {
 		return ErrLeaseLost
 	}
 	s.deferCalls++
@@ -350,8 +685,8 @@ func (s *workerStore) DeferLease(_ context.Context, task Task, owner string, now
 func (s *workerStore) MarkProviderSubmitted(_ context.Context, task Task, owner, providerTaskID string, now time.Time) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.task.ID != task.ID || s.task.LeaseOwner != owner || s.task.Status != StatusQueued {
-		return s.task, nil
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner || s.task.Status != StatusSubmitting {
+		return Task{}, ErrLeaseLost
 	}
 	s.task.ProviderTaskID = providerTaskID
 	s.task.Status = StatusInProgress
@@ -377,7 +712,8 @@ func (s *workerStore) UpdateProgress(_ context.Context, task Task, owner string,
 func (s *workerStore) ReleaseLease(_ context.Context, task Task, owner string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.task.ID != task.ID || s.task.LeaseOwner != owner || IsTerminal(s.task.Status) {
+	if s.task.ID != task.ID || s.task.LeaseOwner != owner ||
+		(s.task.Status != StatusQueued && s.task.Status != StatusInProgress) {
 		return ErrLeaseLost
 	}
 	s.task.LeaseOwner = ""
@@ -393,6 +729,7 @@ func (s *workerStore) CompleteSuccess(_ context.Context, task Task, owner string
 		return false, nil
 	}
 	s.completeCalls++
+	s.lastSuccess = result
 	s.task.Status = StatusSucceeded
 	s.task.Progress = 100
 	s.task.Result = result.Result

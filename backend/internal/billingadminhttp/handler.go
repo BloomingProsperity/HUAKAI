@@ -14,6 +14,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
@@ -79,7 +80,8 @@ type adminBillingSettingsResponse struct {
 
 func MountAdminBillingSettingsRoutes(r chi.Router, d AdminBillingSettingsDeps) {
 	r.Get("/settings", newAdminBillingSettingsGetHandler(d))
-	r.Put("/settings", newAdminBillingSettingsPutHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Put("/settings", newAdminBillingSettingsPutHandler(d))
 }
 
 func newAdminBillingSettingsGetHandler(d AdminBillingSettingsDeps) http.HandlerFunc {

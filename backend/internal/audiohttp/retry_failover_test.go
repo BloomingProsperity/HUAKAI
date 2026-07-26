@@ -417,7 +417,8 @@ func (d *audioRetryDispatcher) Dispatch(_ context.Context, in gateway.DispatchIn
 }
 
 type audioHealthSpy struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns int
 }
 
 func (s *audioHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Signal) (channelhealth.Record, error) {
@@ -426,6 +427,7 @@ func (s *audioHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Sig
 }
 
 func (s *audioHealthSpy) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, _ time.Time, _ string) (channelhealth.Record, error) {
+	s.forceCooldowns++
 	return channelhealth.Record{Key: key}, nil
 }
 

@@ -2,6 +2,7 @@ package alerting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -294,14 +295,21 @@ func (s *Service) evaluateRules(ctx context.Context, tenantID int64, resolveSnap
 	if err != nil {
 		return err
 	}
+	var evaluationErrors []error
 	for _, rule := range rules {
 		metricSnapshot, err := resolveSnapshot(rule)
 		if err != nil {
-			return err
+			s.clearBreachStart(tenantID, rule.ID)
+			evaluationErrors = append(evaluationErrors,
+				fmt.Errorf("%w: rule_id=%d metric=%s: %v", ErrMetricUnavailable, rule.ID, metricKeyForRule(rule), err))
+			continue
 		}
 		metricKey := metricKeyForRule(rule)
 		observed, ok := metricSnapshot[metricKey]
 		if !ok || math.IsNaN(observed) || math.IsInf(observed, 0) {
+			s.clearBreachStart(tenantID, rule.ID)
+			evaluationErrors = append(evaluationErrors,
+				fmt.Errorf("%w: rule_id=%d metric=%s", ErrMetricUnavailable, rule.ID, metricKey))
 			continue
 		}
 		if breaches(rule.Comparator, observed, rule.Threshold) {
@@ -348,7 +356,7 @@ func (s *Service) evaluateRules(ctx context.Context, tenantID int64, resolveSnap
 			return err
 		}
 	}
-	return nil
+	return errors.Join(evaluationErrors...)
 }
 
 func (s *Service) deliverFiring(ctx context.Context, tenantID int64, rule AlertRule, observed float64, firedAt time.Time) bool {

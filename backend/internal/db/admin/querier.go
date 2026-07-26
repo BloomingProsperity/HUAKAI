@@ -22,11 +22,7 @@ type Querier interface {
 	// commit/rollback. Must be called BEFORE CountIssuanceInWindow inside
 	// the same TX, otherwise the count→insert window remains racy.
 	AcquireAdminIssuanceLock(ctx context.Context, actorID string) error
-	// Codex N+4b2 pass-5 P2: validate the target (tenant, user) is active
-	// and not soft-deleted BEFORE we mint a bearer + bcrypt-hash. Returning
-	// false → handler responds 400 (or 404), avoiding "the key was minted but
-	// the customer resolver immediately rejects it" + the unhelpful 503 that
-	// would result from leaning on the FK as our only validator.
+	// 在生成 bearer 与 bcrypt 前确认目标是有效终端用户。
 	AdminCheckIssuanceTarget(ctx context.Context, arg AdminCheckIssuanceTargetParams) (AdminCheckIssuanceTargetRow, error)
 	// Codex N+4b2 pass-8 P2: list endpoint must verify the tenant exists
 	// before writing the audit row, otherwise the admin_audit_events.tenant_id
@@ -34,35 +30,28 @@ type Querier interface {
 	// of a clean 404. Active OR disabled is fine — we just need a valid FK
 	// target.
 	AdminCheckTenantExists(ctx context.Context, tenantID int64) (bool, error)
-	// Tenant-scoped read for revocation flow + audit lookup.
+	// 撤销流程使用的租户级 purpose=user Key 查询。不得依赖持有人当前状态，
+	// 否则最需要退役的历史凭据反而会从管理面消失。
 	AdminGetAPIKeyByID(ctx context.Context, arg AdminGetAPIKeyByIDParams) (AdminGetAPIKeyByIDRow, error)
 	AdminGetTwoFAAdoptionStatsForTenant(ctx context.Context, tenantID int64) (AdminGetTwoFAAdoptionStatsForTenantRow, error)
 	AdminGetUserForTenant(ctx context.Context, arg AdminGetUserForTenantParams) (AdminGetUserForTenantRow, error)
 	// 管理侧 api_keys 查询由 internal/admin 调用，与 internal/auth 面向客户的
-	// LookupAPIKeysByPrefix 热路径相互独立。
-	// admin tooling MUST NOT use the prefix-only lookup that the customer
-	// hot path optimizes for (it's a different security surface).
-	// Codex N+4b2 pass-9 P2: insert is conditioned on tenant + user being
-	// active and not soft-deleted at the moment of write. INSERT ... SELECT
-	// WHERE EXISTS makes "target validity" atomic with the row creation, so
-	// a tenant/user that flips disabled between an external preflight and
-	// this insert can no longer produce a freshly-minted-but-immediately-
-	// rejected key. NoRows return → target became invalid; handler maps it
-	// to ErrAdminBadRequest.
+	// LookupAPIKeysByPrefix 热路径相互独立。管理面不得复用只按前缀查找的热路径，
+	// 两者属于不同安全边界。
+	// 写入时锁定并确认租户和终端用户仍有效；目标在外部预检后失活或角色已不是
+	// user 时返回 NoRows。FOR SHARE 会与生命周期/用户状态的非键更新互斥，避免
+	// 停用提交后又从旧快照落下一把新 Key。
 	AdminInsertAPIKey(ctx context.Context, arg AdminInsertAPIKeyParams) (AdminInsertAPIKeyRow, error)
-	// Lists api_keys metadata for a tenant. NEVER returns key_hash. The
-	// key_prefix is acceptable to expose (already public-safe per N+4a; 16
-	// chars insufficient to authenticate without bcrypt match).
+	// 列出该租户全部 purpose=user Key 元数据，绝不返回 key_hash。这里不能按
+	// users 当前角色或 deleted_at 过滤：持有人升为管理员或被软删后，历史凭据
+	// 仍必须留在运维视野中并可被永久撤销。
 	AdminListAPIKeysForTenant(ctx context.Context, arg AdminListAPIKeysForTenantParams) ([]AdminListAPIKeysForTenantRow, error)
 	AdminListUserBalanceHistoryForTenant(ctx context.Context, arg AdminListUserBalanceHistoryForTenantParams) ([]AdminListUserBalanceHistoryForTenantRow, error)
-	// Admin user read-only queries.
-	// Tenant predicates are mandatory on every query. These queries never return
-	// password hashes, API key hashes, or other credential material.
+	// 管理端终端用户只读查询。每条查询都必须同时限定 tenant 与 role='user'，
+	// 且绝不返回密码、Key hash 或其他凭据材料。
 	AdminListUsersForTenant(ctx context.Context, arg AdminListUsersForTenantParams) ([]AdminListUsersForTenantRow, error)
-	// Soft-revokes a tenant's api_keys row. Codex N+4b2 pass-6 P2: revoke
-	// collapses ANY non-revoked status (active / disabled / expired) into
-	// 'revoked' — only an already-revoked row is the idempotent path.
-	// Returning 0 rows means "was already revoked".
+	// 将终端用户 Key 的任意非 revoked 状态收敛为 revoked。返回 0 行表示已撤销，
+	// 持有人的当前角色和删除状态不得阻断永久撤销。
 	AdminRevokeAPIKey(ctx context.Context, arg AdminRevokeAPIKeyParams) (int64, error)
 	CountActiveProviderAccountsForProvider(ctx context.Context, arg CountActiveProviderAccountsForProviderParams) (int64, error)
 	// Used by bootstrap: env-var bootstrap MUST only insert when NO
@@ -96,6 +85,7 @@ type Querier interface {
 	CreateProxy(ctx context.Context, arg CreateProxyParams) (CreateProxyRow, error)
 	CreateTLSFingerprintProfile(ctx context.Context, arg CreateTLSFingerprintProfileParams) (CreateTLSFingerprintProfileRow, error)
 	DeleteChannelTestTemplate(ctx context.Context, arg DeleteChannelTestTemplateParams) (ChannelTestTemplate, error)
+	DeleteProxyIfUnused(ctx context.Context, arg DeleteProxyIfUnusedParams) (DeleteProxyIfUnusedRow, error)
 	// After the operator issues a real (non-bootstrap) admin token, the
 	// bootstrap rows should be auto-disabled so the env-var token is no
 	// longer accepted by the resolver. Idempotent.
@@ -115,6 +105,7 @@ type Querier interface {
 	// FOR SHARE 与 FOR NO KEY UPDATE 冲突,把协议钉到创建事务提交,同时允许并发创建共存。
 	GetProviderProtocolForAccountCreate(ctx context.Context, arg GetProviderProtocolForAccountCreateParams) (string, error)
 	GetProxy(ctx context.Context, arg GetProxyParams) (GetProxyRow, error)
+	GetProxyDeleteImpact(ctx context.Context, arg GetProxyDeleteImpactParams) (GetProxyDeleteImpactRow, error)
 	// 单 profile 查询 (按 tenant + id 双过滤); admin UI 编辑 + resolver 走这条。
 	GetTLSFingerprintProfile(ctx context.Context, arg GetTLSFingerprintProfileParams) (GetTLSFingerprintProfileRow, error)
 	// Admin audit event queries.
@@ -168,12 +159,13 @@ type Querier interface {
 	// resolve, but tenant_operator tokens whose tenant is disabled/deleted
 	// get filtered at the SQL layer — no app-side check required.
 	LookupAdminTokenByPrefix(ctx context.Context, keyPrefix string) ([]LookupAdminTokenByPrefixRow, error)
+	RecordProviderAccountProbe(ctx context.Context, arg RecordProviderAccountProbeParams) (int64, error)
 	// Soft-revoke an admin token. Tenant-bound revocation isn't enforced here
 	// because admin_tokens has no tenant ownership for platform_admin rows;
 	// the handler-side RBAC check decides whether the caller can revoke.
 	RevokeAdminToken(ctx context.Context, arg RevokeAdminTokenParams) (int64, error)
 	// Phase 3 health check worker 标 dead/active, admin 手动 disable 走这。
-	SetProxyStatus(ctx context.Context, arg SetProxyStatusParams) error
+	SetProxyStatus(ctx context.Context, arg SetProxyStatusParams) (int64, error)
 	// status 转换专用; drift worker 标 'drift_detected', admin disable/enable 走这。
 	// 不动 updated_at (status 不算内容变); active 时刷 last_validated_at.
 	SetTLSFingerprintProfileStatus(ctx context.Context, arg SetTLSFingerprintProfileStatusParams) error

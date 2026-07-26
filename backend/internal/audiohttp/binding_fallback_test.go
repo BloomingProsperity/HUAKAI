@@ -79,8 +79,13 @@ func TestAudioBindingFallbackClass(t *testing.T) {
 		if len(env.selector.requests) != 1 || len(env.dispatcher.calls) != 1 {
 			t.Fatalf("交付后 selector/dispatch=%d/%d，目标类不得执行", len(env.selector.requests), len(env.dispatcher.calls))
 		}
-		if len(env.base.settler.aborts) != 1 || len(env.base.settler.settles) != 0 {
-			t.Fatalf("断流 abort/settle=%d/%d，期望 1/0", len(env.base.settler.aborts), len(env.base.settler.settles))
+		if len(env.base.settler.aborts) != 0 || len(env.base.settler.settles) != 1 {
+			t.Fatalf("断流 abort/settle=%d/%d，期望 0/1", len(env.base.settler.aborts), len(env.base.settler.settles))
+		}
+		settle := env.base.settler.settles[0]
+		if !settle.Draft.PendingReconciliation ||
+			!strings.Contains(settle.Draft.CostSnapshot, "pending_reconciliation=audio_delivery_interrupted") {
+			t.Fatalf("部分交付未进入待对账: pending=%v snapshot=%q", settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
 		}
 	})
 }

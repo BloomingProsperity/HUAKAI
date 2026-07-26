@@ -67,7 +67,7 @@ func (p *GeminiVideoProvider) SubmitBound(ctx context.Context, task Task, req Su
 	defer result.Close()
 	responseBody, err := readBoundedMediaBody(result.UpstreamReader)
 	if err != nil {
-		return "", terminalProviderError("provider_submit_response_invalid", err)
+		return "", p.bound.submitResponseReadError(ctx, task, account, result, startedAt, err)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
 		return "", p.bound.httpProviderError(ctx, task, account, result, responseBody, startedAt, true)
@@ -76,7 +76,10 @@ func (p *GeminiVideoProvider) SubmitBound(ctx context.Context, task Task, req Su
 	var response struct {
 		Name string `json:"name"`
 	}
-	if json.Unmarshal(responseBody, &response) != nil || strings.TrimSpace(response.Name) == "" {
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return "", terminalProviderError("provider_submit_response_invalid", err)
+	}
+	if strings.TrimSpace(response.Name) == "" {
 		return "", terminalProviderError("provider_submit_response_invalid", ErrProviderUnavailable)
 	}
 	releaseSelection = false

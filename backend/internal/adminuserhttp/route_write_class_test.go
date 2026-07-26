@@ -10,11 +10,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
-	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // 端到端验证 role 制单登录写门:挂了 AllowSessionWrite(SessionSafe) 的写端点,经 knob 开的组合解析器
-// session-admin 能过鉴权;未挂的写端点对 session-admin 仍 fail-closed 拒;token 通道恒豁免。
+// session-admin 能过鉴权；未挂的其他包写端点仍由默认拒绝合同保护。
 // 共享脚手架 adminsessionauthtest 提供拟真解析器(令牌拒非 hk_admin)+ 请求助手;本包补全量非 nil 后端 fake
 //(多个 handler 在鉴权【之前】做 nil 后端 503 兜底,后端为 nil 会用 503 掩盖 401 致判别失真 → 变异测不出)。
 
@@ -33,8 +32,26 @@ func (fakeBackend) AdminGetTwoFAAdoptionStatsForTenant(context.Context, int64) (
 func (fakeBackend) AdminListUserBalanceHistoryForTenant(context.Context, admindb.AdminListUserBalanceHistoryForTenantParams) ([]admindb.AdminListUserBalanceHistoryForTenantRow, error) {
 	return nil, nil
 }
-func (fakeBackend) UnlinkSocialIdentity(context.Context, int64, int64, string) (bool, error) {
-	return true, nil
+func (fakeBackend) UnlinkSocialIdentityWithAudit(context.Context, int64, int64, string, unlockAuditInput) (bool, int64, error) {
+	return true, 0, nil
+}
+func (fakeBackend) ForceDisableTwoFAWithAudit(context.Context, int64, int64, unlockAuditInput) (int64, error) {
+	return 0, nil
+}
+func (fakeBackend) ResetPasskeysWithAudit(context.Context, int64, int64, unlockAuditInput) (int, int64, error) {
+	return 0, 0, nil
+}
+func (fakeBackend) SetUserGroupWithAudit(context.Context, int64, int64, string, unlockAuditInput) error {
+	return nil
+}
+func (fakeBackend) SetUserRemarkWithAudit(context.Context, int64, int64, string, unlockAuditInput) error {
+	return nil
+}
+func (fakeBackend) SetUserStatusWithAudit(context.Context, int64, int64, string, string, unlockAuditInput) (int64, error) {
+	return 0, nil
+}
+func (fakeBackend) SoftDeleteUserWithAudit(context.Context, int64, int64, unlockAuditInput) (int64, error) {
+	return 0, nil
 }
 func (fakeBackend) UnlockUser(context.Context, int64, int64) (userauth.User, error) {
 	return userauth.User{}, nil
@@ -45,45 +62,32 @@ func (fakeBackend) UnlockUserWithAudit(context.Context, int64, int64, unlockAudi
 func (fakeBackend) InsertAdminAuditEvent(context.Context, admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
 	return admindb.InsertAdminAuditEventRow{}, nil
 }
-func (fakeBackend) Disable(context.Context, int64, int64) error                      { return nil }
-func (fakeBackend) AdminClearCredentials(context.Context, int64, int64) (int, error) { return 0, nil }
-func (fakeBackend) SetUserGroupForTenant(context.Context, int64, int64, string) error {
-	return nil
-}
-func (fakeBackend) SetUserRemarkForTenant(context.Context, int64, int64, string) error {
-	return nil
-}
-func (fakeBackend) SetUserStatusForTenant(context.Context, int64, int64, string) (int64, error) {
-	return 0, nil
-}
 func (fakeBackend) CreateUserWithAudit(context.Context, userCreateInput, unlockAuditInput) (userCreated, error) {
 	return userCreated{}, nil
 }
-func (fakeBackend) SoftDeleteForTenant(context.Context, int64, int64) (int64, error) { return 0, nil }
-func (fakeBackend) Revoke(context.Context, usersession.RevokeInput) (int64, error)   { return 0, nil }
-
 func mountForTest() http.Handler {
 	fb := fakeBackend{}
 	r := chi.NewRouter()
 	MountRoutes(r, Deps{
-		Auth: adminsessionauthtest.Resolver(), Store: fb, SocialLinks: fb, UnlockAudit: fb,
-		Unlocker: fb, Audit: fb, TwoFADisabler: fb, PasskeyResetter: fb, UserGroupSetter: fb,
-		UserRemarkSetter: fb, UserStatusSetter: fb, UserCreator: fb, UserSoftDeleter: fb, SessionRevoker: fb,
+		Auth: adminsessionauthtest.Resolver(), Store: fb, UserMutations: fb, UnlockAudit: fb,
+		Unlocker: fb, Audit: fb, UserCreator: fb,
 	})
 	return r
 }
 
-// SessionSafe 写端点:knob 开 + session-admin → 过鉴权(≠401);未挂 safe 的写端点 → fail-closed 401。
+// SessionSafe 写端点:session-admin → 过鉴权(≠401)。
 // 变异:把某 SessionSafe 路由的 .With(safe) 删掉 → 该路由 writeClassNone → session 写 401 → 首断言 RED;
-//
-//	把 safe 误挂到 token-only 路由 → 该路由不再 401 → 次断言 RED。
-func TestSessionSafeRoutesOpenTokenOnlyRoutesClosed(t *testing.T) {
+func TestSessionSafeRoutesOpen(t *testing.T) {
 	h := mountForTest()
 	sess := adminsessionauthtest.SessionBearer
 
 	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/"},
+		{http.MethodDelete, "/7"},
 		{http.MethodPost, "/7/unlock"},
 		{http.MethodPost, "/7/2fa/force-disable"},
+		{http.MethodDelete, "/7/passkeys"},
+		{http.MethodPut, "/7/group"},
 		{http.MethodPut, "/7/remark"},
 		{http.MethodPut, "/7/status"},
 		{http.MethodDelete, "/7/account-bindings/google"},
@@ -92,23 +96,12 @@ func TestSessionSafeRoutesOpenTokenOnlyRoutesClosed(t *testing.T) {
 			t.Fatalf("SessionSafe 写端点 %s %s 应过鉴权(≠401),得 401", tc.method, tc.path)
 		}
 	}
-
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, "/"},             // 建用户
-		{http.MethodDelete, "/7"},          // 删用户
-		{http.MethodDelete, "/7/passkeys"}, // 删 passkey
-		{http.MethodPut, "/7/group"},       // 改分组(耦合计费档)
-	} {
-		if code := adminsessionauthtest.Status(h, tc.method, tc.path, sess); code != http.StatusUnauthorized {
-			t.Fatalf("token-only 写端点 %s %s 对 session-admin 应 fail-closed 401,得 %d", tc.method, tc.path, code)
-		}
-	}
 }
 
-// token 通道豁免:hk_admin 令牌写 token-only 端点(group)也过鉴权(≠401),不吃写分级。
-func TestTokenChannelWritesTokenOnlyRoutes(t *testing.T) {
+// token 通道保持兼容，不受浏览器会话写分级影响。
+func TestTokenChannelWritesRoutes(t *testing.T) {
 	h := mountForTest()
 	if code := adminsessionauthtest.Status(h, http.MethodPut, "/7/group", adminsessionauthtest.TokenBearer); code == http.StatusUnauthorized {
-		t.Fatalf("hk_admin 令牌写 token-only 端点应过鉴权(≠401),得 401")
+		t.Fatalf("hk_admin 令牌写端点应过鉴权(≠401),得 401")
 	}
 }

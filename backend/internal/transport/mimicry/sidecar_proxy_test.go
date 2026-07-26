@@ -7,9 +7,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
 // proxyAwareShape 镜像 provider 包里【未导出的】proxyAwareRoundTripper 接口形状
@@ -56,6 +59,9 @@ func TestSidecarTransportWithProxyFillsControlRequest(t *testing.T) {
 	}
 	if req.Proxy.Password != "s3cr3t" {
 		t.Errorf("proxy.password = %q, want s3cr3t", req.Proxy.Password)
+	}
+	if len(req.ProxyResolvedIPs) != 1 || req.ProxyResolvedIPs[0] != "1.1.1.1" {
+		t.Errorf("代理解析结果必须绑定进独立字段,got %v", req.ProxyResolvedIPs)
 	}
 }
 
@@ -175,12 +181,22 @@ func dialWithProxyAndCaptureRequestJSON(t *testing.T, proxyRaw string) (sidecarC
 		err := json.Unmarshal(body, &req)
 		resultCh <- captured{req: req, raw: string(body), err: err}
 		// 回 ACK 让客户端 DialTLS 顺利返回。
-		writeSidecarTestFrame(t, conn, []byte(`{"version":3,"ok":true}`))
+		writeSidecarTestFrame(t, conn, []byte(`{"version":4,"ok":true}`))
 	}()
 
 	proxyURL, err := url.Parse(proxyRaw)
 	if err != nil {
 		t.Fatalf("parse proxy url %q: %v", proxyRaw, err)
+	}
+	if address, parseErr := netip.ParseAddr(proxyURL.Hostname()); parseErr == nil && address.IsPrivate() {
+		allowPrivateProxy(t, proxyURL.Hostname())
+	} else if parseErr != nil {
+		restore := provider.SwapProxyEndpointLookupForTesting(
+			func(context.Context, string, string) ([]netip.Addr, error) {
+				return []netip.Addr{netip.MustParseAddr("1.1.1.1")}, nil
+			},
+		)
+		t.Cleanup(restore)
 	}
 	client := NewSidecarClient("/tmp/tls-sidecar.sock")
 	base := NewSidecarRoundTripper(client, SidecarProfileAnthropicCLIMimicryV1).(proxyAwareShape)
@@ -198,9 +214,15 @@ func dialWithProxyAndCaptureRequestJSON(t *testing.T, proxyRaw string) (sidecarC
 	if conn != nil {
 		conn.Close()
 	}
+	if dialErr != nil {
+		_ = clientConn.Close()
+	}
 	res := <-resultCh
 	if res.err != nil {
 		t.Fatalf("捕获 control request 失败: %v(dialErr=%v)", res.err, dialErr)
+	}
+	if dialErr != nil {
+		t.Fatalf("DialTLSContext 失败: %v", dialErr)
 	}
 	return res.req, res.raw
 }

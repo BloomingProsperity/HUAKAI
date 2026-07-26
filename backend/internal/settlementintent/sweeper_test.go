@@ -3,6 +3,7 @@ package settlementintent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +78,17 @@ func (s *fakeSweeperStore) MarkFailed(_ context.Context, id int64, version int32
 	return s.forwardTransition(id, version, "failed")
 }
 
+func (s *fakeSweeperStore) MarkRecoveryPending(
+	_ context.Context,
+	id int64,
+	version int32,
+	_ decimal.Decimal,
+	_ json.RawMessage,
+	_ string,
+) (int32, error) {
+	return s.forwardTransition(id, version, "failed")
+}
+
 func (s *fakeSweeperStore) forwardTransition(id int64, version int32, status string) (int32, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,6 +135,10 @@ func (s *fakeSweeperStore) MarkSupersededIfStale(_ context.Context, id int64, ve
 	return s.recordMutation(id, version, "superseded", decimal.Zero, time.Time{})
 }
 
+func (s *fakeSweeperStore) MarkSettlingIfStale(_ context.Context, id int64, version int32) (int32, error) {
+	return s.recordMutation(id, version, "settling", decimal.Zero, time.Time{})
+}
+
 func (s *fakeSweeperStore) recordMutation(id int64, version int32, status string, cost decimal.Decimal, settledAt time.Time) (int32, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -141,6 +157,25 @@ type fakeClaimAuthority struct {
 	errs   map[int64]error
 	panics map[int64]bool
 	calls  []int64
+}
+
+type fakeRecoveryPublisher struct {
+	mu      sync.Mutex
+	payload []json.RawMessage
+	classes []string
+	err     error
+}
+
+func (p *fakeRecoveryPublisher) PublishSettlementRecovery(
+	_ context.Context,
+	payload json.RawMessage,
+	failureClass string,
+) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.payload = append(p.payload, append(json.RawMessage(nil), payload...))
+	p.classes = append(p.classes, failureClass)
+	return p.err
 }
 
 func (a *fakeClaimAuthority) GetClaim(_ context.Context, _ int64, claimID int64) (ClaimSnapshot, error) {
@@ -220,6 +255,63 @@ func TestSettlementIntentSweeperReconcilesByAttemptAndStatus(t *testing.T) {
 		if !strings.Contains(logs.String(), marker) {
 			t.Fatalf("结构化 warning 缺少 %q: %s", marker, logs.String())
 		}
+	}
+}
+
+// TestSettlementIntentSweeperRequeuesPersistedRecovery 守住“双失败”记录不会永久冻结：
+// 权威 claim 仍在 reserving 时，必须把原始恢复载荷送回正式队列，再用 CAS 推进 settling。
+func TestSettlementIntentSweeperRequeuesPersistedRecovery(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	payload := json.RawMessage(`{"version":1,"source":"stream"}`)
+	store := &fakeSweeperStore{intents: []StaleSettlementIntent{{
+		ID:                   9,
+		TenantID:             10,
+		ClaimID:              109,
+		AttemptSeq:           2,
+		Version:              4,
+		Status:               "failed",
+		ActualCost:           decimal.RequireFromString("0.75"),
+		RecoveryPayload:      payload,
+		RecoveryFailureClass: "database_unavailable",
+	}}}
+	authority := &fakeClaimAuthority{claims: map[int64]ClaimSnapshot{
+		109: {Status: "reserving", AttemptSeq: 2},
+	}}
+	publisher := &fakeRecoveryPublisher{}
+	worker := NewSettlementIntentSweeper(store, authority, SweeperOptions{Recovery: publisher})
+
+	result, err := worker.RunOnce(context.Background(), now)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if result != (SweepResult{Scanned: 1, Requeued: 1}) {
+		t.Fatalf("result=%+v want scanned=1 requeued=1", result)
+	}
+	publisher.mu.Lock()
+	if len(publisher.payload) != 1 ||
+		!bytes.Equal(publisher.payload[0], payload) ||
+		publisher.classes[0] != "database_unavailable" {
+		t.Fatalf("发布记录 payload=%s classes=%v", publisher.payload, publisher.classes)
+	}
+	publisher.mu.Unlock()
+	store.mu.Lock()
+	mutations := append([]sweepMutation(nil), store.mutations...)
+	store.mu.Unlock()
+	if len(mutations) != 1 {
+		t.Fatalf("CAS 写次数=%d want 1", len(mutations))
+	}
+	assertSweepMutation(t, mutations[0], 9, 4, "settling")
+
+	// 变异证：吞掉发布错误或先 CAS 再发布会让这里错误地出现 settling/requeued。
+	store = &fakeSweeperStore{intents: store.intents}
+	publisher = &fakeRecoveryPublisher{err: errors.New("注入的队列写失败")}
+	worker = NewSettlementIntentSweeper(store, authority, SweeperOptions{Recovery: publisher})
+	result, err = worker.RunOnce(context.Background(), now)
+	if err == nil || result != (SweepResult{Scanned: 1, Failed: 1}) {
+		t.Fatalf("发布失败 result=%+v err=%v", result, err)
+	}
+	if len(store.mutations) != 0 {
+		t.Fatalf("发布失败不得推进状态: %+v", store.mutations)
 	}
 }
 

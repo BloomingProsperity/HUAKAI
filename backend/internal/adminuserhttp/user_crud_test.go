@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type userCreateStub struct {
@@ -34,38 +33,7 @@ func (s *userCreateStub) CreateUserWithAudit(_ context.Context, in userCreateInp
 	return out, nil
 }
 
-type userSoftDeleteStub struct {
-	calls     int
-	gotTenant int64
-	gotUser   int64
-	affected  int64
-	err       error
-}
-
-func (s *userSoftDeleteStub) SoftDeleteForTenant(_ context.Context, tenantID, userID int64) (int64, error) {
-	s.calls++
-	s.gotTenant = tenantID
-	s.gotUser = userID
-	if s.err != nil {
-		return 0, s.err
-	}
-	return s.affected, nil
-}
-
-type sessionRevokerStub struct {
-	calls int
-	in    usersession.RevokeInput
-	err   error
-}
-
-func (s *sessionRevokerStub) Revoke(_ context.Context, in usersession.RevokeInput) (int64, error) {
-	s.calls++
-	s.in = in
-	if s.err != nil {
-		return 0, s.err
-	}
-	return 1, nil
-}
+type userSoftDeleteStub = userMutationStub
 
 func createDeps(creator *userCreateStub, audit *adminAuditStub) Deps {
 	return Deps{
@@ -139,59 +107,50 @@ func TestCreateUser_Duplicate(t *testing.T) {
 	}
 }
 
-func deleteDeps(getRow admindb.AdminGetUserForTenantRow, getErr error, del *userSoftDeleteStub, rev *sessionRevokerStub, audit *adminAuditStub) Deps {
+func deleteDeps(getRow admindb.AdminGetUserForTenantRow, getErr error, del *userSoftDeleteStub) Deps {
 	return Deps{
-		Auth:            usersAuthStub{ident: tenantOperator(7)},
-		Store:           &usersStoreStub{getRow: getRow, getErr: getErr},
-		UserSoftDeleter: del,
-		SessionRevoker:  rev,
-		Audit:           audit,
+		Auth:          usersAuthStub{ident: tenantOperator(7)},
+		Store:         &usersStoreStub{getRow: getRow, getErr: getErr},
+		UserMutations: del,
 	}
 }
 
-// TestDeleteUser_SoftDeletesAndRevokesSessions:删除一个 role=user 账号会
-// 软删它,并撤销其会话(关闭删除后的访问窗口),并写入一条 delete_user 审计。
-// 变异:去掉 SessionRevoker 调用 → revoker.calls==0 → 红。
+// TestDeleteUser_SoftDeletesAndRevokesSessions:删除一个 role=user 账号会在事务内
+// 软删、撤销会话并写日志，handler 返回事务实际撤销数量。
 func TestDeleteUser_SoftDeletesAndRevokesSessions(t *testing.T) {
-	del := &userSoftDeleteStub{affected: 1}
-	rev := &sessionRevokerStub{}
-	audit := &adminAuditStub{}
-	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 101, Role: "user", Status: "active"}, nil, del, rev, audit)
+	del := &userSoftDeleteStub{affected: 1, sessionsRevoked: 3}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 101, Role: "user", Status: "active"}, nil, del)
 	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/101", "")
 	assertStatus(t, rec, http.StatusOK)
-	if del.calls != 1 || del.gotUser != 101 || del.gotTenant != 7 {
-		t.Fatalf("softdelete calls=%d user=%d tenant=%d want 1/101/7", del.calls, del.gotUser, del.gotTenant)
+	if del.calls != 1 || del.userID != 101 || del.tenantID != 7 {
+		t.Fatalf("softdelete calls=%d user=%d tenant=%d want 1/101/7", del.calls, del.userID, del.tenantID)
 	}
-	if rev.calls != 1 || rev.in.UserID != 101 {
-		t.Fatalf("session revoke calls=%d user=%d want 1/101 (deleted user's sessions must be revoked)", rev.calls, rev.in.UserID)
+	if !strings.Contains(rec.Body.String(), `"sessions_revoked":3`) {
+		t.Fatalf("delete response missing atomic session count: %s", rec.Body.String())
 	}
-	if audit.calls != 1 || audit.arg.Action != "delete_user" {
-		t.Fatalf("audit calls=%d action=%q want 1/delete_user", audit.calls, audit.arg.Action)
+	if del.operation != "delete_user" || del.audit.ActorID != "admin_token:12" {
+		t.Fatalf("事务日志输入不完整: %+v", del)
 	}
 }
 
-// TestDeleteUser_RejectsAdminTarget 是防止经此端点删除 admin 的护栏。
-// 变异:去掉 before.Role=="admin" 校验 → 软删在 admin 上执行 → 红。
+// TestDeleteUser_RejectsAdminTarget 证明事务 store 不暴露也不修改 admin 身份。
 func TestDeleteUser_RejectsAdminTarget(t *testing.T) {
-	del := &userSoftDeleteStub{affected: 1}
-	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 9, Role: "admin", Status: "active"}, nil, del, &sessionRevokerStub{}, &adminAuditStub{})
+	del := &userSoftDeleteStub{affected: -1}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{ID: 9, Role: "admin", Status: "active"}, nil, del)
 	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/9", "")
-	assertStatus(t, rec, http.StatusForbidden)
-	if !strings.Contains(rec.Body.String(), "admin_cannot_delete_admin") {
-		t.Fatalf("body=%s want admin_cannot_delete_admin", rec.Body.String())
-	}
-	if del.calls != 0 {
-		t.Fatalf("admin target must NOT be soft-deleted; calls=%d", del.calls)
+	assertStatus(t, rec, http.StatusNotFound)
+	if del.calls != 1 {
+		t.Fatalf("admin target must be rejected by atomic store; calls=%d", del.calls)
 	}
 }
 
 // TestDeleteUser_NotFound:不存在的用户在任何改动前即返回 404。
 func TestDeleteUser_NotFound(t *testing.T) {
-	del := &userSoftDeleteStub{}
-	deps := deleteDeps(admindb.AdminGetUserForTenantRow{}, pgx.ErrNoRows, del, &sessionRevokerStub{}, &adminAuditStub{})
+	del := &userSoftDeleteStub{affected: -1}
+	deps := deleteDeps(admindb.AdminGetUserForTenantRow{}, pgx.ErrNoRows, del)
 	rec := invokeAdminUsersBody(t, deps, http.MethodDelete, "/admin/v1/users/404", "")
 	assertStatus(t, rec, http.StatusNotFound)
-	if del.calls != 0 {
-		t.Fatalf("missing user must not be soft-deleted; calls=%d", del.calls)
+	if del.calls != 1 {
+		t.Fatalf("missing user must be decided by atomic store; calls=%d", del.calls)
 	}
 }

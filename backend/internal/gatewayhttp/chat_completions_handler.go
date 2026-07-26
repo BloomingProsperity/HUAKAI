@@ -82,7 +82,8 @@ type ChatHandlerDeps struct {
 	Forwarder           *gateway.StreamForwarder
 	ResponseCache       l2cache.Store
 	Settler             billing.Settler
-	// SettlementIntents 关闭时静默禁用，开启但 Store 缺失时只告警并 fail-open。
+	// SettlementIntents 显式关闭时禁用；启用后 Store 缺失或 pending 写失败
+	// 必须在调用上游前 fail-closed 并中止 claim。
 	SettlementIntents       settlementintent.Store
 	SettlementIntentEnabled bool
 	ReplayStore             billing.ReplayStore

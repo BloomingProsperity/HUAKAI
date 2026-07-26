@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 )
@@ -126,6 +128,11 @@ func NewAdminModelCapabilityBindingUpsertHandler(d AdminModelAliasesDeps) http.H
 		if !ok {
 			return
 		}
+		identity, ok := admin.IdentityFromContext(r.Context())
+		if !ok {
+			modelWriteError(w, http.StatusServiceUnavailable, "operator_identity_unavailable", "authenticated operator identity unavailable")
+			return
+		}
 		binding, err := d.Store.UpsertModelCapabilityBinding(r.Context(), registry.UpsertModelCapabilityBindingParams{
 			TenantID:         req.TenantID,
 			Scope:            req.Scope,
@@ -135,6 +142,9 @@ func NewAdminModelCapabilityBindingUpsertHandler(d AdminModelAliasesDeps) http.H
 			CapabilityParams: req.CapabilityParams,
 			Enabled:          *req.Enabled,
 			Source:           "operator", // 强制运营来源, 不取 body, 防伪装 vendor-sync 来源
+			Actor:            identity.AuditActor(),
+			ActorRole:        identity.Role,
+			RequestID:        middleware.GetReqID(r.Context()),
 		})
 		if err != nil {
 			writeModelAliasStoreError(w, err)

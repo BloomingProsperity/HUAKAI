@@ -3,9 +3,11 @@ package proxyhealth
 import (
 	"context"
 	"net"
+	"net/url"
 	"strconv"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,10 +23,14 @@ func NewPostgresStatusStore(pool *pgxpool.Pool) StatusStore { return &pgxStore{p
 
 func (p *pgxStore) List(ctx context.Context) ([]ProxyTarget, error) {
 	const q = `
-		SELECT id, tenant_id, status, host, port
-		FROM proxies
-		WHERE deleted_at IS NULL AND status IN ('active','dead')
-		ORDER BY COALESCE(last_check_at, to_timestamp(0)) ASC
+		SELECT p.id, p.tenant_id, p.status, p.host, p.port
+		FROM proxies p
+		JOIN tenants t
+		  ON t.id = p.tenant_id
+		 AND t.status = 'active'
+		 AND t.deleted_at IS NULL
+		WHERE p.deleted_at IS NULL AND p.status IN ('active','dead')
+		ORDER BY COALESCE(p.last_check_at, to_timestamp(0)) ASC
 		LIMIT $1`
 	rows, err := p.pool.Query(ctx, q, maxPerTick)
 	if err != nil {
@@ -42,16 +48,28 @@ func (p *pgxStore) List(ctx context.Context) ([]ProxyTarget, error) {
 	return out, rows.Err()
 }
 
-func (p *pgxStore) Touch(ctx context.Context, tenantID, id int64) error {
-	_, err := p.pool.Exec(ctx, `UPDATE proxies SET last_check_at = NOW() WHERE id = $1 AND tenant_id = $2`, id, tenantID)
-	return err
+func (p *pgxStore) Touch(ctx context.Context, tenantID, id int64, expectedStatus string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE proxies
+		SET last_check_at = NOW()
+		WHERE id = $1
+		  AND tenant_id = $2
+		  AND status = $3
+		  AND deleted_at IS NULL`,
+		id, tenantID, expectedStatus)
+	return tag.RowsAffected() == 1, err
 }
 
-func (p *pgxStore) SetStatus(ctx context.Context, tenantID, id int64, status string) error {
-	_, err := p.pool.Exec(ctx,
-		`UPDATE proxies SET status = $1, last_check_at = NOW() WHERE id = $2 AND tenant_id = $3`,
-		status, id, tenantID)
-	return err
+func (p *pgxStore) SetStatus(ctx context.Context, tenantID, id int64, expectedStatus, status string) (bool, error) {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE proxies
+		SET status = $1, last_check_at = NOW()
+		WHERE id = $2
+		  AND tenant_id = $3
+		  AND status = $4
+		  AND deleted_at IS NULL`,
+		status, id, tenantID, expectedStatus)
+	return tag.RowsAffected() == 1, err
 }
 
 // tcpProber 用 TCP 连通性判代理存活:连得上 host:port 即视为活。它【只碰代理】、
@@ -68,11 +86,22 @@ func NewTCPProber(timeout time.Duration) Prober {
 }
 
 func (p *tcpProber) Probe(ctx context.Context, t ProxyTarget) bool {
-	d := net.Dialer{Timeout: p.timeout}
-	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(t.Host, strconv.Itoa(t.Port)))
+	proxyURL := &url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(t.Host, strconv.Itoa(t.Port)),
+	}
+	addresses, err := provider.ResolveProxyEndpointIPs(ctx, proxyURL)
 	if err != nil {
 		return false
 	}
-	_ = conn.Close()
-	return true
+	d := net.Dialer{Timeout: p.timeout}
+	for _, address := range addresses {
+		conn, dialErr := d.DialContext(ctx, "tcp", net.JoinHostPort(address.String(), strconv.Itoa(t.Port)))
+		if dialErr != nil {
+			continue
+		}
+		_ = conn.Close()
+		return true
+	}
+	return false
 }

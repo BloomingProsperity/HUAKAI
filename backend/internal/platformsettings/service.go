@@ -70,6 +70,27 @@ func (s *Service) Get(ctx context.Context, key SettingKey) (StoredSetting, error
 	return setting, nil
 }
 
+// GetAuthoritative 读取可用于资金、权限等关键决策的设置。有效期内的缓存仍可使用；
+// 缓存未命中时必须从存储确认，存储故障不会降级到历史值或默认值。
+func (s *Service) GetAuthoritative(ctx context.Context, key SettingKey) (StoredSetting, error) {
+	if s == nil || s.store == nil {
+		return StoredSetting{}, ErrStoreNotConfigured
+	}
+	if !IsAllowedKey(key) {
+		return StoredSetting{}, fmt.Errorf("%w: %s", ErrUnknownKey, key)
+	}
+	if cached, ok := s.getCached(key); ok {
+		return cached, nil
+	}
+	setting, err := s.readFresh(ctx, key)
+	if err != nil {
+		return StoredSetting{}, err
+	}
+	s.cacheSetting(setting)
+	s.rememberLastKnown(setting)
+	return setting, nil
+}
+
 func (s *Service) List(ctx context.Context) ([]StoredSetting, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrStoreNotConfigured

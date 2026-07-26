@@ -34,29 +34,31 @@ type VoucherService interface {
 type VoucherAdminDeps struct {
 	Auth    VoucherAdminAuth
 	Service VoucherService
+	// PlatformTenantID 是部署者可经营的平台工作租户。部署者可以查看下级
+	// 租户券状态，但不能代替下级租户创建、批量生成或吊销兑换码。
+	PlatformTenantID int64
 }
 
 type VoucherUserDeps struct {
 	Service          VoucherService
 	ClientIPResolver *clientip.Resolver
-	// PlatformSettings 供兑换总开关读取。未接线时按默认开启处理。
+	// PlatformSettings 供兑换总开关读取。钱路无法确认开关状态时拒绝兑换。
 	PlatformSettings platformSettingsReader
 }
 
 type platformSettingsReader interface {
-	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
+	GetAuthoritative(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
-// promoRedeemEnabled 仅在运营者明确关闭兑换时拒绝请求；读取失败不影响既有兑换。
-func promoRedeemEnabled(ctx context.Context, settings platformSettingsReader) bool {
+func promoRedeemEnabled(ctx context.Context, settings platformSettingsReader) (bool, error) {
 	if settings == nil {
-		return true
+		return false, platformsettings.ErrStoreNotConfigured
 	}
-	s, err := settings.Get(ctx, platformsettings.KeyPromoEnabled)
+	s, err := settings.GetAuthoritative(ctx, platformsettings.KeyPromoEnabled)
 	if err != nil {
-		return true
+		return false, err
 	}
-	return s.Value != "false"
+	return s.Value != "false", nil
 }
 
 type voucherCreateRequest struct {
@@ -115,6 +117,9 @@ func newVoucherCreateHandler(d VoucherAdminDeps) http.HandlerFunc {
 		if !adminhttpcore.DecodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeVoucherTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		result, err := d.Service.Create(r.Context(), voucher.CreateInput{
 			TenantID: req.TenantID, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Code: req.Code,
 			AmountCents: req.AmountCents, CurrencyCode: req.CurrencyCode,
@@ -138,6 +143,9 @@ func newVoucherBatchCreateHandler(d VoucherAdminDeps) http.HandlerFunc {
 		}
 		var req voucherBatchCreateRequest
 		if !adminhttpcore.DecodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeVoucherTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		result, err := d.Service.CreateBatch(r.Context(), voucher.BatchCreateInput{
@@ -169,6 +177,9 @@ func newVoucherRevokeHandler(d VoucherAdminDeps) http.HandlerFunc {
 		if !adminhttpcore.DecodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeVoucherTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		v, err := d.Service.Revoke(r.Context(), voucher.RevokeInput{
 			TenantID: req.TenantID, ID: id, AdminID: ident.TokenID, ActorRef: ident.AuditActor(), Reason: req.Reason,
 		})
@@ -182,11 +193,15 @@ func newVoucherRevokeHandler(d VoucherAdminDeps) http.HandlerFunc {
 
 func newVoucherListHandler(d VoucherAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveVoucherAdmin(w, r, d); !ok {
+		ident, ok := resolveVoucherAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := adminhttpcore.ParseRequiredPositiveQueryInt64(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeVoucherReadTenant(w, ident, tenantID) {
 			return
 		}
 		limit := 50
@@ -209,11 +224,15 @@ func newVoucherListHandler(d VoucherAdminDeps) http.HandlerFunc {
 
 func newVoucherGetBatchHandler(d VoucherAdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveVoucherAdmin(w, r, d); !ok {
+		ident, ok := resolveVoucherAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := adminhttpcore.ParseRequiredPositiveQueryInt64(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeVoucherReadTenant(w, ident, tenantID) {
 			return
 		}
 		id, ok := parseVoucherPathInt64(w, r, "batch_id", "invalid_batch_id")
@@ -240,8 +259,12 @@ func newVoucherRedeemHandler(d VoucherUserDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "session_token_required", "session bearer token is required")
 			return
 		}
-		// promo 总开关:运营者显式关闭兑换时 fail-closed 拒兑(默认开启,行为保持)。
-		if !promoRedeemEnabled(r.Context(), d.PlatformSettings) {
+		enabled, err := promoRedeemEnabled(r.Context(), d.PlatformSettings)
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "promo_state_unavailable", "voucher redemption policy is unavailable")
+			return
+		}
+		if !enabled {
 			writeJSONError(w, http.StatusForbidden, "promo_disabled", "voucher redemption is currently disabled")
 			return
 		}
@@ -276,11 +299,33 @@ func resolveVoucherAdmin(w http.ResponseWriter, r *http.Request, d VoucherAdminD
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
+	switch ident.Role {
+	case admin.RolePlatformAdmin, admin.RoleTenantOperator:
+		return ident, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, false
 	}
-	return ident, true
+}
+
+func authorizeVoucherTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID, platformTenantID int64) bool {
+	if err := ident.CanOperateOwnedTenant(tenantID, platformTenantID); err != nil {
+		if errors.Is(err, admin.ErrAdminBackend) {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is not configured")
+		} else {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot operate this tenant")
+		}
+		return false
+	}
+	return true
+}
+
+func authorizeVoucherReadTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) bool {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot read this tenant")
+		return false
+	}
+	return true
 }
 
 func parseVoucherPathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

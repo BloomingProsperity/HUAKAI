@@ -8,7 +8,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
-	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/provideraccountrecovery"
 )
 
@@ -25,6 +24,22 @@ type providerAccountRateLimitRecoveryResponse struct {
 	ChannelRecordFound    bool                      `json:"channel_record_found"`
 	ChannelChanged        bool                      `json:"channel_changed"`
 	ChannelState          channelhealth.HealthState `json:"channel_state,omitempty"`
+}
+
+type providerAccountRecoveryPartialError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type providerAccountRecoveryPartialResponse struct {
+	Error                  providerAccountRecoveryPartialError `json:"error"`
+	TenantID               int64                               `json:"tenant_id"`
+	AccountID              int64                               `json:"account_id"`
+	Operation              string                              `json:"operation"`
+	AccountBackoffCleared  bool                                `json:"account_backoff_cleared"`
+	AccountStateRecovered  bool                                `json:"account_state_recovered"`
+	ChannelRecoveryPending bool                                `json:"channel_recovery_pending"`
+	Retryable              bool                                `json:"retryable"`
 }
 
 func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.HandlerFunc {
@@ -48,18 +63,19 @@ func newClearProviderAccountRateLimitHandler(d AdminPoolAccountDeps) http.Handle
 		})
 		if err != nil {
 			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
-				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account backoff cleared, but channel rate-limit recovery failed; retry the operation")
+				writeProviderAccountRecoveryPartial(
+					w,
+					result,
+					"clear_rate_limit",
+					false,
+					"account backoff cleared, but channel rate-limit recovery failed; retry the operation",
+				)
 				return
 			}
 			writeProviderAccountReadError(w, err, "provider_account_clear_rate_limit_failed")
 			return
 		}
-		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
-		if err != nil {
-			writeProviderAccountReadError(w, err, "provider_account_get_failed")
-			return
-		}
-		response, err := providerAccountDTO(account)
+		response, err := providerAccountDTO(result.Account)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
 			return
@@ -100,18 +116,19 @@ func newRecoverProviderAccountStateHandler(d AdminPoolAccountDeps) http.HandlerF
 		})
 		if err != nil {
 			if errors.Is(err, provideraccountrecovery.ErrPartialRecovery) {
-				writeJSONError(w, http.StatusServiceUnavailable, "provider_account_recovery_partial", "account state recovered, but channel force-active failed; retry the operation")
+				writeProviderAccountRecoveryPartial(
+					w,
+					result,
+					"recover_account_state",
+					true,
+					"account state recovered, but channel force-active failed; retry the operation",
+				)
 				return
 			}
 			writeProviderAccountReadError(w, err, "provider_account_recover_failed")
 			return
 		}
-		account, err := d.Store.GetAdminProviderAccount(r.Context(), admindb.GetAdminProviderAccountParams{ID: id, TenantID: tenantID})
-		if err != nil {
-			writeProviderAccountReadError(w, err, "provider_account_get_failed")
-			return
-		}
-		response, err := providerAccountDTO(account)
+		response, err := providerAccountDTO(result.Account)
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "provider_account_quota_projection_invalid", "provider account quota projection is invalid")
 			return
@@ -127,4 +144,26 @@ func newRecoverProviderAccountStateHandler(d AdminPoolAccountDeps) http.HandlerF
 		response.RateLimitRecovery = recovery
 		writeAuditJSON(w, http.StatusOK, response)
 	}
+}
+
+func writeProviderAccountRecoveryPartial(
+	w http.ResponseWriter,
+	result provideraccountrecovery.ClearRateLimitResult,
+	operation string,
+	accountStateRecovered bool,
+	message string,
+) {
+	writeAuditJSON(w, http.StatusServiceUnavailable, providerAccountRecoveryPartialResponse{
+		Error: providerAccountRecoveryPartialError{
+			Code:    "provider_account_recovery_partial",
+			Message: message,
+		},
+		TenantID:               result.Account.TenantID,
+		AccountID:              result.Account.ID,
+		Operation:              operation,
+		AccountBackoffCleared:  true,
+		AccountStateRecovered:  accountStateRecovered,
+		ChannelRecoveryPending: true,
+		Retryable:              true,
+	})
 }

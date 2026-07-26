@@ -233,7 +233,7 @@ func TestLoadQuotaEnforceFlag(t *testing.T) {
 	}
 }
 
-// TestLoadSettlementIntentFlag 守住新旁路默认关闭、显式启用和非法值 fail-loud。
+// TestLoadSettlementIntentFlag 守住资金恢复证据默认开启、显式关闭逃生口和非法值 fail-loud。
 func TestLoadSettlementIntentFlag(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "")
@@ -241,17 +241,17 @@ func TestLoadSettlementIntentFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load default: %v", err)
 	}
-	if cfg.SettlementIntentEnabled {
-		t.Fatal("SettlementIntentEnabled 默认必须关闭")
+	if !cfg.SettlementIntentEnabled {
+		t.Fatal("SettlementIntentEnabled 默认必须开启")
 	}
 
-	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "true")
+	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "false")
 	cfg, err = Load()
 	if err != nil {
-		t.Fatalf("Load enabled: %v", err)
+		t.Fatalf("Load disabled: %v", err)
 	}
-	if !cfg.SettlementIntentEnabled {
-		t.Fatal("SettlementIntentEnabled 未读取显式 true")
+	if cfg.SettlementIntentEnabled {
+		t.Fatal("SettlementIntentEnabled 未读取显式 false")
 	}
 
 	t.Setenv("HUAKAI_SETTLEMENT_INTENT_ENABLED", "not-a-bool")
@@ -480,7 +480,7 @@ func TestLoadIncludesPaymentProviderSecretsWithoutLoggingValues(t *testing.T) {
 	}
 }
 
-func TestLoadPaymentExpireSweepDefaultsDisabledWithBatchDefault(t *testing.T) {
+func TestLoadPaymentExpireSweepDefaultsEnabledWithBatchDefault(t *testing.T) {
 	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
 	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", "")
 	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_BATCH_LIMIT", "")
@@ -489,11 +489,24 @@ func TestLoadPaymentExpireSweepDefaultsDisabledWithBatchDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PaymentExpireSweepInterval != 0 {
-		t.Fatalf("PaymentExpireSweepInterval=%s want 0 so empty env keeps worker disabled", cfg.PaymentExpireSweepInterval)
+	if cfg.PaymentExpireSweepInterval != DefaultPaymentExpireSweepInterval {
+		t.Fatalf("PaymentExpireSweepInterval=%s want default %s", cfg.PaymentExpireSweepInterval, DefaultPaymentExpireSweepInterval)
 	}
 	if cfg.PaymentExpireSweepBatchLimit != DefaultPaymentExpireSweepBatchLimit {
 		t.Fatalf("PaymentExpireSweepBatchLimit=%d want %d", cfg.PaymentExpireSweepBatchLimit, DefaultPaymentExpireSweepBatchLimit)
+	}
+}
+
+func TestLoadPaymentExpireSweepExplicitZeroDisablesWorker(t *testing.T) {
+	t.Setenv("HUAKAI_DATABASE_URL", "postgres://huakai:huakai@localhost:5432/huakai?sslmode=disable")
+	t.Setenv("HUAKAI_PAYMENT_EXPIRE_SWEEP_INTERVAL", "0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PaymentExpireSweepInterval != 0 {
+		t.Fatalf("PaymentExpireSweepInterval=%s want 0 from explicit emergency stop", cfg.PaymentExpireSweepInterval)
 	}
 }
 

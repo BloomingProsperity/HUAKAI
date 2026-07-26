@@ -120,6 +120,32 @@ func (s *Service) Setup(ctx context.Context, in SetupInput) (SetupResult, error)
 	}, nil
 }
 
+// SetupWithSessionGuard 把初始化资料写入与当前会话代际复核放进同一事务。
+func (s *Service) SetupWithSessionGuard(
+	ctx context.Context,
+	in SetupInput,
+	currentFamilyID string,
+	authVersion int,
+) (SetupResult, error) {
+	if strings.TrimSpace(currentFamilyID) == "" || authVersion <= 0 {
+		return SetupResult{}, ErrInvalidInput
+	}
+	runner, ok := s.store.(activeSessionMutationStore)
+	if !ok {
+		return SetupResult{}, ErrStoreNotConfigured
+	}
+	var result SetupResult
+	err := runner.RunActiveSessionMutation(
+		ctx, in.TenantID, in.UserID, currentFamilyID, authVersion,
+		func(txStore Store) error {
+			var err error
+			result, err = s.cloneWithStore(txStore).Setup(ctx, in)
+			return err
+		},
+	)
+	return result, err
+}
+
 func (s *Service) Enable(ctx context.Context, in VerifyInput) (Status, error) {
 	if err := validateUserScope(in.TenantID, in.UserID); err != nil {
 		return Status{}, err
@@ -214,6 +240,32 @@ func (s *Service) RegenerateBackupCodes(ctx context.Context, in VerifyInput) (Ba
 	return BackupCodesResult{BackupCodes: codes}, nil
 }
 
+// RegenerateBackupCodesWithSessionGuard 防止管理员恢复完成后，旧请求重新写入一批备用码。
+func (s *Service) RegenerateBackupCodesWithSessionGuard(
+	ctx context.Context,
+	in VerifyInput,
+	currentFamilyID string,
+	authVersion int,
+) (BackupCodesResult, error) {
+	if strings.TrimSpace(currentFamilyID) == "" || authVersion <= 0 {
+		return BackupCodesResult{}, ErrInvalidInput
+	}
+	runner, ok := s.store.(activeSessionMutationStore)
+	if !ok {
+		return BackupCodesResult{}, ErrStoreNotConfigured
+	}
+	var result BackupCodesResult
+	err := runner.RunActiveSessionMutation(
+		ctx, in.TenantID, in.UserID, currentFamilyID, authVersion,
+		func(txStore Store) error {
+			var err error
+			result, err = s.cloneWithStore(txStore).RegenerateBackupCodes(ctx, in)
+			return err
+		},
+	)
+	return result, err
+}
+
 func (s *Service) LoginRequired(ctx context.Context, tenantID, userID int64) (bool, error) {
 	if err := validateUserScope(tenantID, userID); err != nil {
 		return false, err
@@ -278,7 +330,21 @@ func (s *Service) VerifyLogin(ctx context.Context, in VerifyInput) (VerifyResult
 	return VerifyResult{}, ErrInvalidCode
 }
 
-func (s *Service) StartLoginChallenge(ctx context.Context, tenantID, userID int64) (Challenge, error) {
+// StartLoginChallengeAtVersion 把密码校验时看到的认证版本封进二次验证挑战，
+// 防止管理员重置安全状态后，旧挑战继续换取新会话。
+func (s *Service) StartLoginChallengeAtVersion(
+	ctx context.Context,
+	tenantID, userID int64,
+	authVersion int,
+) (Challenge, error) {
+	return s.startLoginChallenge(ctx, tenantID, userID, authVersion)
+}
+
+func (s *Service) startLoginChallenge(
+	ctx context.Context,
+	tenantID, userID int64,
+	authVersion int,
+) (Challenge, error) {
 	required, err := s.LoginRequired(ctx, tenantID, userID)
 	if err != nil {
 		return Challenge{}, err
@@ -286,14 +352,20 @@ func (s *Service) StartLoginChallenge(ctx context.Context, tenantID, userID int6
 	if !required {
 		return Challenge{}, ErrDisabled
 	}
+	if authVersion <= 0 {
+		return Challenge{}, ErrInvalidInput
+	}
 	expiresAt := s.now().UTC().Add(s.challengeTTL)
 	challengeID, err := s.signChallenge(ctx, challengePayload{
-		TenantID: tenantID, UserID: userID, ExpiresAt: expiresAt.Unix(),
+		TenantID: tenantID, UserID: userID, AuthVersion: authVersion, ExpiresAt: expiresAt.Unix(),
 	})
 	if err != nil {
 		return Challenge{}, err
 	}
-	return Challenge{ID: challengeID, TenantID: tenantID, UserID: userID, ExpiresAt: expiresAt}, nil
+	return Challenge{
+		ID: challengeID, TenantID: tenantID, UserID: userID,
+		AuthVersion: authVersion, ExpiresAt: expiresAt,
+	}, nil
 }
 
 func (s *Service) VerifyLoginChallenge(ctx context.Context, in ChallengeVerifyInput) (VerifyResult, error) {
@@ -309,8 +381,11 @@ func (s *Service) VerifyLoginChallenge(ctx context.Context, in ChallengeVerifyIn
 	if err != nil {
 		// challenge 已解出身份, 校验失败也回填 —— 调用方的失败/锁定审计才能归因到
 		// (tenant, user), 否则恒记 0/0 无法追查。
-		return VerifyResult{TenantID: payload.TenantID, UserID: payload.UserID}, err
+		return VerifyResult{
+			TenantID: payload.TenantID, UserID: payload.UserID, AuthVersion: payload.AuthVersion,
+		}, err
 	}
+	res.AuthVersion = payload.AuthVersion
 	return res, nil
 }
 

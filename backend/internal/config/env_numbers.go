@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func envPositiveIntDefault(name string, fallback int) (int, error) {
@@ -20,6 +21,13 @@ func envPositiveIntDefault(name string, fallback int) (int, error) {
 		return 0, fmt.Errorf("%s must be positive integer, got %q", name, raw)
 	}
 	return value, nil
+}
+
+func envNonNegativeDurationDefault(name string, fallback time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(os.Getenv(name)) == "" {
+		return fallback, nil
+	}
+	return envOptionalDuration(name)
 }
 
 // envOptionalInt32 从环境变量解析非负 int32；空值表示沿用包默认值。

@@ -19,7 +19,7 @@ type Handler func(context.Context, Record) error
 type recordStore interface {
 	Enqueue(context.Context, Event) (int64, error)
 	List(context.Context, ListFilter) ([]Record, error)
-	ClaimByID(context.Context, int64, string, time.Duration) (*Record, error)
+	ClaimByID(context.Context, int64, int64, string, time.Duration) (*Record, error)
 	Claim(context.Context, Lane, string, time.Duration) (*Record, error)
 	MarkFailed(context.Context, Record, string, RetryDecision) error
 	MarkDelivered(context.Context, Record) error
@@ -116,11 +116,11 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Record, error) {
 	return s.store.List(ctx, f)
 }
 
-func (s *Service) Replay(ctx context.Context, id int64, actorID string) (*Record, error) {
+func (s *Service) Replay(ctx context.Context, tenantID, id int64, actorID string) (*Record, error) {
 	if s == nil || s.store == nil {
 		return nil, ErrStoreNotConfigured
 	}
-	rec, err := s.store.ClaimByID(ctx, id, actorID, 30*time.Second)
+	rec, err := s.store.ClaimByID(ctx, tenantID, id, actorID, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}

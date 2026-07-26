@@ -106,6 +106,30 @@ func TestServeIdempotentReplayAddsNoCacheForEventStreamWithParameters(t *testing
 	}
 }
 
+func TestServeIdempotentReplayNeverPromotesStoredBodyToExecutableHTML(t *testing.T) {
+	store := billing.NewMemoryReplayStore()
+	body := []byte(`<script>globalThis.compromised=true</script>`)
+	if err := store.Record(context.Background(), 7, 100, http.StatusOK, "text/html; charset=utf-8", body, 0); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	ex := &chatExecution{
+		ctx:   context.Background(),
+		ident: auth.Identity{TenantID: 7},
+		d:     ChatHandlerDeps{ReplayStore: store},
+	}
+
+	rec := httptest.NewRecorder()
+	if ok := ex.serveIdempotentReplay(rec, 100); !ok {
+		t.Fatal("serveIdempotentReplay returned false")
+	}
+	if got := rec.Header().Get("Content-Type"); got != idempotencyReplayContentTypeJSON {
+		t.Fatalf("被污染的重放 Content-Type=%q，期望强制 %q", got, idempotencyReplayContentTypeJSON)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatalf("重放体不应被静默改写，得到 %q", rec.Body.Bytes())
+	}
+}
+
 func TestIdempotencyReplayRecordErrorsAreLogged(t *testing.T) {
 	const wantReplayRecordFailedCode = "idempotency_replay_record_failed"
 

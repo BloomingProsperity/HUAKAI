@@ -15,11 +15,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,13 +33,17 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/browsersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermes"
+	"github.com/BloomingProsperity/HUAKAI/internal/hermeschat"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
 func TestFrontendWiring(t *testing.T) {
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("HUAKAI_DATABASE_URL not set; skipping frontend wiring test")
+		t.Fatal("HUAKAI_DATABASE_URL 未配置，前端真实接线测试拒绝假绿")
 	}
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer setupCancel()
@@ -45,6 +55,7 @@ func TestFrontendWiring(t *testing.T) {
 	t.Cleanup(pgPool.Close)
 
 	seed := seedSmokeGraph(t, setupCtx, pgPool)
+	t.Setenv(tenancy.DefaultWorkingTenantIDEnv, strconv.FormatInt(seed.tenantID, 10))
 
 	// session/verification 这几张表不在 seedSmokeGraph 的租户清理范围内。
 	t.Cleanup(func() {
@@ -93,9 +104,8 @@ func TestFrontendWiring(t *testing.T) {
 
 	// 全局 platform-setting 的默认值会拦住这个密码认证测试:
 	// registration_enabled 默认 false、invitation_required 为 true、
-	// two_factor_enabled 为 true,而本次网关组装并未接线 2FA 服务
-	//(authTwoFactorRequired → 503)。配置成对密码登录友好的
-	// 值(global 作用域;在 dev DB 上无害)。
+	// two_factor_enabled 为 true。这里显式构造本测试所需的密码登录策略，
+	// 2FA 本身由独立的入口和状态测试覆盖。
 	for k, v := range map[string]string{
 		"registration_enabled": "true",
 		"invitation_required":  "false",
@@ -110,6 +120,7 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	}
 
+	configureFrontendWiringHermes(t)
 	binPath := buildGateway(t)
 	defer os.Remove(binPath)
 
@@ -147,10 +158,10 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("flip email_verified: %v", err)
 		}
 
-		// login(public)。前端解析 resp.session.session_token + resp.user。
-		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/auth/login", "", map[string]any{
+		// 浏览器登录只返回短期访问令牌和 CSRF 证明；长期刷新令牌只进受保护 Cookie。
+		st, body, obj, cookies := doBrowserJSON(t, ctx, http.MethodPost, base+"/v1/auth/login", map[string]any{
 			"tenant_id": seed.tenantID, "email": email, "password": password,
-		})
+		}, nil, "")
 		if st != http.StatusOK {
 			t.Fatalf("login expected 200; got %d body=%s", st, body)
 		}
@@ -162,10 +173,36 @@ func TestFrontendWiring(t *testing.T) {
 		if tok == "" {
 			t.Fatalf("login: session.session_token empty; body=%s", body)
 		}
-		if _, ok := session["refresh_token"].(string); !ok {
-			t.Fatalf("login: session.refresh_token missing (userClient refresh ring depends on it); body=%s", body)
+		if _, leaked := session["refresh_token"]; leaked {
+			t.Fatalf("login: browser response must not expose session.refresh_token; body=%s", body)
 		}
-		sessionToken = tok
+		csrf, _ := session["csrf_token"].(string)
+		if csrf == "" {
+			t.Fatalf("login: session.csrf_token empty; body=%s", body)
+		}
+		assertBrowserSessionCookies(t, cookies)
+
+		// 刷新必须只靠 Cookie + CSRF，请求体不携带 refresh token；短令牌和 CSRF 均轮换。
+		refreshStatus, refreshBody, refreshObj, refreshedCookies := doBrowserJSON(
+			t, ctx, http.MethodPost, base+"/v1/sessions/refresh", map[string]any{}, cookies, csrf,
+		)
+		if refreshStatus != http.StatusOK {
+			t.Fatalf("browser refresh expected 200; got %d body=%s", refreshStatus, refreshBody)
+		}
+		refreshSession, ok := refreshObj["session"].(map[string]any)
+		if !ok {
+			t.Fatalf("browser refresh: response missing session; body=%s", refreshBody)
+		}
+		refreshedToken, _ := refreshSession["session_token"].(string)
+		refreshedCSRF, _ := refreshSession["csrf_token"].(string)
+		if refreshedToken == "" || refreshedToken == tok || refreshedCSRF == "" || refreshedCSRF == csrf {
+			t.Fatalf("browser refresh did not rotate session token and CSRF; body=%s", refreshBody)
+		}
+		if _, leaked := refreshSession["refresh_token"]; leaked {
+			t.Fatalf("browser refresh response exposed refresh_token; body=%s", refreshBody)
+		}
+		assertBrowserSessionCookies(t, refreshedCookies)
+		sessionToken = refreshedToken
 
 		// 带 session token 调 GET /v1/auth/me(Header.tsx + fetchMe())。
 		// 真实契约:{ panel, user_id, tenant_id, display_name }——注意是 user_id
@@ -203,8 +240,13 @@ func TestFrontendWiring(t *testing.T) {
 			t.Fatalf("create api-key: plaintext %q lacks hk_ prefix", pt)
 		}
 		createdKey = pt
-		if idf, ok := obj["api_key_id"].(float64); ok {
-			createdKeyID = int64(idf)
+		idf, ok := obj["api_key_id"].(float64)
+		if !ok {
+			t.Fatalf("create api-key: `api_key_id` 类型不是 JSON number；body=%s", body)
+		}
+		createdKeyID = int64(idf)
+		if createdKeyID <= 0 || float64(createdKeyID) != idf {
+			t.Fatalf("create api-key: `api_key_id`=%v 不是正整数；body=%s", idf, body)
 		}
 
 		// list。前端读取 { api_keys: [...], count }。
@@ -233,17 +275,18 @@ func TestFrontendWiring(t *testing.T) {
 
 		// 单 key 的用量汇总——api-keys 页的行展开面板会调用
 		// GET /v1/me/keys/{id}/usage-summary(SESSION 认证)。读取 api_key_id/total_cost/request_count。
-		if createdKeyID != 0 {
-			st, body, sum := doJSON(t, ctx, http.MethodGet,
-				fmt.Sprintf("%s/v1/me/keys/%d/usage-summary", base, createdKeyID), sessionToken, nil)
-			if st != http.StatusOK {
-				t.Fatalf("usage-summary expected 200; got %d body=%s", st, body)
+		st, body, sum := doJSON(t, ctx, http.MethodGet,
+			fmt.Sprintf("%s/v1/me/keys/%d/usage-summary", base, createdKeyID), sessionToken, nil)
+		if st != http.StatusOK {
+			t.Fatalf("usage-summary expected 200; got %d body=%s", st, body)
+		}
+		for _, f := range []string{"api_key_id", "total_cost", "request_count"} {
+			if _, ok := sum[f]; !ok {
+				t.Fatalf("usage-summary missing %q (api-keys expand panel reads it); body=%s", f, body)
 			}
-			for _, f := range []string{"api_key_id", "total_cost", "request_count"} {
-				if _, ok := sum[f]; !ok {
-					t.Fatalf("usage-summary missing %q (api-keys expand panel reads it); body=%s", f, body)
-				}
-			}
+		}
+		if got, ok := sum["api_key_id"].(float64); !ok || int64(got) != createdKeyID || float64(int64(got)) != got {
+			t.Fatalf("usage-summary api_key_id=%v，期望 %d；body=%s", sum["api_key_id"], createdKeyID, body)
 		}
 	})
 
@@ -350,7 +393,7 @@ func TestFrontendWiring(t *testing.T) {
 	// ---- 衔接:刚创建的 key 是一个真实、可用的推理凭证 ----
 	t.Run("created_key_is_usable", func(t *testing.T) {
 		if createdKey == "" {
-			t.Skip("no created key (api_keys subtest failed)")
+			t.Fatal("API Key 创建链没有产出明文凭据，不能跳过可用性验证")
 		}
 		st, body, m := doJSON(t, ctx, http.MethodGet, base+"/v1/models", createdKey, nil)
 		if st != http.StatusOK {
@@ -371,23 +414,15 @@ func TestFrontendWiring(t *testing.T) {
 		getOK(t, ctx, base+"/v1/me/voucher-redemptions", sessionToken, "redemptions")
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/users/me/vouchers/redeem", sessionToken,
 			map[string]any{"code": "WIRE-NOPE-" + unique})
-		// 没有这张 voucher → 期望一个「结构化」的 {error}(说明 handler 已执行),而非 chi 的 404 路由未命中。
-		if st != http.StatusOK {
-			if _, ok := obj["error"].(map[string]any); !ok {
-				t.Fatalf("redeem bad-code: expected structured {error} (route wired); got %d body=%s", st, body)
-			}
-		}
+		assertJSONError(t, st, body, obj, http.StatusNotFound, "voucher_not_found")
 	})
 
-	// 模块:subscriptions —— current / list / plans(若 quota 未配置,progress 可能返回 503)。
+	// 模块:subscriptions —— current / list / plans / quota progress。
 	t.Run("subscriptions_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/users/me/subscriptions/", sessionToken, "subscriptions")
 		getOK(t, ctx, base+"/v1/users/me/subscriptions/me", sessionToken, "auto_renew")
 		getOK(t, ctx, base+"/v1/users/me/subscriptions/plans", sessionToken, "plans")
-		st, _, _ := doJSON(t, ctx, http.MethodGet, base+"/v1/users/me/subscriptions/me/progress", sessionToken, nil)
-		if st != http.StatusOK && st != http.StatusServiceUnavailable {
-			t.Fatalf("subscriptions progress expected 200 or 503; got %d", st)
-		}
+		getOK(t, ctx, base+"/v1/users/me/subscriptions/me/progress", sessionToken, "progress")
 	})
 
 	// 模块:notifications + announcements + 每用户的 notify 设置。
@@ -399,16 +434,14 @@ func TestFrontendWiring(t *testing.T) {
 	})
 
 	// 模块:account(groups / invitations / invite-code / checkin / referrals / rewards)。
-	// invite-code/referrals/rewards 依赖 invitation+referral 功能配置,
-	// 而这套最小 dev 组装并未配置它 → 结构化 503。我们断言
-	// 接线(路由已挂载、认证被接受、响应结构化),并容忍该 503。
+	// 每个依赖都必须由生产网关完整注入并返回可供页面直接消费的 200 响应。
 	t.Run("account_page", func(t *testing.T) {
 		getOK(t, ctx, base+"/v1/me/groups", sessionToken, "items")
 		getOK(t, ctx, base+"/v1/me/invitations", sessionToken, "qualified_count")
 		getOK(t, ctx, base+"/v1/me/checkin", sessionToken, "checked_in_today")
-		getOKorUnavailable(t, ctx, base+"/v1/me/invitation-code", sessionToken, "code")
-		getOKorUnavailable(t, ctx, base+"/v1/me/referrals", sessionToken, "items")
-		getOKorUnavailable(t, ctx, base+"/v1/me/referrals/rewards", sessionToken, "total_reward_usd")
+		getOK(t, ctx, base+"/v1/me/invitation-code", sessionToken, "code")
+		getOK(t, ctx, base+"/v1/me/referrals", sessionToken, "items")
+		getOK(t, ctx, base+"/v1/me/referrals/rewards", sessionToken, "total_reward_usd")
 	})
 
 	// ============ 批次 2:门户纵深模块 ============
@@ -427,23 +460,19 @@ func TestFrontendWiring(t *testing.T) {
 		getOK(t, ctx, base+"/v1/users/me/oauth-bindings", sessionToken, "bindings")
 	})
 
-	// 模块:pricing(public;page 是一个「数组」,若 dev 中目录未配置则可能返回 503)。
+	// 模块:pricing(public;page 是一个数组，目录和快照依赖必须完整接线)。
 	t.Run("pricing_page", func(t *testing.T) {
-		assertReachable(t, ctx, base+"/v1/pricing/page", "")
-		assertReachable(t, ctx, base+"/v1/pricing/snapshots", "")
+		assertOK(t, ctx, base+"/v1/pricing/page", "")
+		assertOK(t, ctx, base+"/v1/pricing/snapshots", "")
 	})
 
 	// 模块:audit & receipts(HUAKAI 护城河 —— receipt get / disputes / audit pubkey)。
 	t.Run("audit_page", func(t *testing.T) {
-		// 用一个不存在的 id 取 receipt → 结构化错误(路由已接线),而非 chi 路由未命中。
+		// 不存在的回执必须走租户和用户作用域查询，并稳定返回业务级 404。
 		st, body, obj := doJSON(t, ctx, http.MethodGet, base+"/v1/receipts/wire-nope-"+unique, sessionToken, nil)
-		if st != http.StatusOK {
-			if _, ok := obj["error"].(map[string]any); !ok {
-				t.Fatalf("receipt get bad-id: expected structured {error} (route wired); got %d body=%s", st, body)
-			}
-		}
-		getOK(t, ctx, base+"/v1/me/disputes", sessionToken)  // 列表可达(200,形状不固定)
-		assertReachable(t, ctx, base+"/v1/audit/pubkey", "") // public;200 或结构化 503(signer)
+		assertJSONError(t, st, body, obj, http.StatusNotFound, "receipt_not_found")
+		getOK(t, ctx, base+"/v1/me/disputes", sessionToken) // 列表可达(200,形状不固定)
+		assertOK(t, ctx, base+"/v1/audit/pubkey", "")
 	})
 
 	// ============ 批次 3:管理控制台核心(admin-token 轨道)============
@@ -460,11 +489,11 @@ func TestFrontendWiring(t *testing.T) {
 
 	// channel-health + ops/usage 是 platform_admin 的全局管理面。
 	t.Run("admin_channels_page", func(t *testing.T) {
-		assertReachable(t, ctx, fmt.Sprintf("%s/v1/admin/channel-health/?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+		assertOK(t, ctx, fmt.Sprintf("%s/v1/admin/channel-health/?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
 	})
 
 	t.Run("admin_ops_page", func(t *testing.T) {
-		assertReachable(t, ctx, base+"/v1/admin/usage/overview?window=24h", adminPlatformBearer)
+		assertOK(t, ctx, base+"/v1/admin/usage/overview?window=24h", adminPlatformBearer)
 	})
 
 	// ============ 批次 4:管理控制台纵深 ============
@@ -475,12 +504,12 @@ func TestFrontendWiring(t *testing.T) {
 		getOK(t, ctx, base+"/v1/admin/platform-settings", adminPlatformBearer, "items")
 	})
 	t.Run("admin_operations_page", func(t *testing.T) {
-		assertWired(t, ctx, fmt.Sprintf("%s/v1/admin/subscriptions/plans?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
-		assertWired(t, ctx, fmt.Sprintf("%s/v1/admin/vouchers?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+		assertOK(t, ctx, fmt.Sprintf("%s/v1/admin/subscriptions/plans?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
+		assertOK(t, ctx, fmt.Sprintf("%s/v1/admin/vouchers?tenant_id=%d", base, seed.tenantID), adminPlatformBearer)
 	})
 	t.Run("admin_system_page", func(t *testing.T) {
-		assertWired(t, ctx, base+"/admin/v1/system/health", adminPlatformBearer)
-		assertWired(t, ctx, base+"/admin/v1/modules", adminPlatformBearer)
+		assertOK(t, ctx, base+"/admin/v1/system/health", adminPlatformBearer)
+		assertOK(t, ctx, base+"/admin/v1/modules", adminPlatformBearer)
 	})
 
 	// ============ 收尾模块 ============
@@ -498,28 +527,51 @@ func TestFrontendWiring(t *testing.T) {
 		}
 	})
 
-	// 模块:hermes(管理助手)。/v1/hermes 在 hermesService 接线后挂载，身份和租户
-	// 完全从管理员凭据推导；最小开发网关未接 Hermes 服务时路由不存在(404)，如实跳过。
-	// 已挂载时必须走不含旧身份覆盖参数的真实管理员路径。
+	// 模块:hermes(管理助手)。本测试显式装配测试运行器身份，使生产组合根必须挂载
+	// /v1/hermes；身份和租户完全从管理员凭据推导，不允许用缺少依赖掩盖 404。
 	t.Run("hermes_page", func(t *testing.T) {
 		url := base + "/v1/hermes/settings"
-		st, _, _ := doJSON(t, ctx, http.MethodGet, url, adminPlatformBearer, nil)
+		st, body, _ := doJSON(t, ctx, http.MethodGet, url, adminPlatformBearer, nil)
 		if st == http.StatusNotFound {
-			t.Skip("hermes not mounted in minimal dev gateway (needs hermesService+hermesRunner); frontend page uses verified contract")
+			t.Fatalf("Hermes 已配置但生产网关未挂载设置端点: %s", body)
 		}
-		assertWired(t, ctx, url, adminPlatformBearer)
+		assertOK(t, ctx, url, adminPlatformBearer)
 	})
 
-	// 模块:inference console —— embeddings 路由已接线(未播种 embeddings 模型 → 结构化错误亦可接受)。
+	// 模块:inference console。该 fixture 只播种 chat 模型，因此 embeddings 必须
+	// 精确返回模型能力不适用；503 或其他泛化错误都说明生产依赖/错误分类接线有缺口。
 	t.Run("console_page", func(t *testing.T) {
 		st, body, obj := doJSON(t, ctx, http.MethodPost, base+"/v1/embeddings", seed.bearer,
 			map[string]any{"model": "gpt-4.1-mini", "input": "wire test"})
-		if st != http.StatusOK {
-			if _, ok := obj["error"].(map[string]any); !ok {
-				t.Fatalf("POST /v1/embeddings: expected 200 or structured error (route wired); got %d body=%s", st, body)
-			}
-		}
+		assertJSONError(t, st, body, obj, http.StatusNotFound, "model_not_available")
 	})
+}
+
+func configureFrontendWiringHermes(t *testing.T) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("生成 Hermes 测试身份密钥: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("编码 Hermes 测试身份密钥: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "hermes-runner-private.pem")
+	if err := os.WriteFile(
+		keyPath,
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}),
+		0o400,
+	); err != nil {
+		t.Fatalf("写入 Hermes 测试身份密钥: %v", err)
+	}
+	if err := os.Chmod(keyPath, 0o400); err != nil {
+		t.Fatalf("收紧 Hermes 测试身份密钥权限: %v", err)
+	}
+	t.Setenv(hermes.RunnerURLEnv, "http://127.0.0.1:1")
+	t.Setenv(hermes.RunnerJWTPrivateKeyEnv, keyPath)
+	t.Setenv(hermes.RunnerJWTKIDEnv, "frontend-wiring")
+	t.Setenv(hermeschat.InternalTokenSecretEnv, "frontend-wiring-internal-token-secret")
 }
 
 // doJSON 发送一个可选的 JSON body 并附带可选的 Bearer token,返回
@@ -555,6 +607,66 @@ func doJSON(t *testing.T, ctx context.Context, method, url, bearer string, body 
 	return resp.StatusCode, raw, obj
 }
 
+func doBrowserJSON(
+	t *testing.T,
+	ctx context.Context,
+	method, url string,
+	body any,
+	cookies []*http.Cookie,
+	csrf string,
+) (int, []byte, map[string]any, []*http.Cookie) {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal browser body: %v", err)
+		}
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		t.Fatalf("new browser request %s %s: %v", method, url, err)
+	}
+	req.Header.Set(browsersession.ModeHeader, browsersession.ModeBrowser)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if csrf != "" {
+		req.Header.Set(browsersession.CSRFHeader, csrf)
+	}
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do browser request %s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var obj map[string]any
+	_ = json.Unmarshal(raw, &obj)
+	return resp.StatusCode, raw, obj, resp.Cookies()
+}
+
+func assertBrowserSessionCookies(t *testing.T, cookies []*http.Cookie) {
+	t.Helper()
+	seen := make(map[string]*http.Cookie, len(cookies))
+	for _, cookie := range cookies {
+		seen[cookie.Name] = cookie
+	}
+	refresh := seen[browsersession.RefreshCookieName]
+	csrf := seen[browsersession.CSRFCookieName]
+	if refresh == nil || csrf == nil {
+		t.Fatalf("browser response missing refresh/CSRF cookies: %#v", cookies)
+	}
+	if !refresh.HttpOnly || csrf.HttpOnly || !refresh.Secure || !csrf.Secure ||
+		refresh.SameSite != http.SameSiteStrictMode || csrf.SameSite != http.SameSiteStrictMode ||
+		refresh.Path != "/" || csrf.Path != "/" {
+		t.Fatalf("browser session cookie flags are unsafe: refresh=%+v csrf=%+v", refresh, csrf)
+	}
+}
+
 // getOK 断言 GET url(带 bearer)返回 200,且解析出的 object 包含
 // 每一个必需的 key,然后返回该 object。用于覆盖面层面的接线检查。
 func getOK(t *testing.T, ctx context.Context, url, bearer string, keys ...string) map[string]any {
@@ -571,62 +683,26 @@ func getOK(t *testing.T, ctx context.Context, url, bearer string, keys ...string
 	return obj
 }
 
-// getOKorUnavailable 是同时也接受「结构化」503 的 getOK —— 用于那些
-// 后端功能在最小 dev 组装中未配置的端点。它依然能证明
-// 接线(路由已挂载、认证被接受、响应结构化形状);而 chi 的
-// 路由未命中(404、无 {error})或形状错误仍会失败。
-func getOKorUnavailable(t *testing.T, ctx context.Context, url, bearer string, keys ...string) {
+// assertOK 用于响应可能是 object 或数组、但生产依赖必须真实接通的端点。
+// 只接受 200；路由存在但生产依赖未完整注入仍属于接线失败。
+func assertOK(t *testing.T, ctx context.Context, url, bearer string) {
 	t.Helper()
-	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
-	if st == http.StatusServiceUnavailable {
-		if _, ok := obj["error"].(map[string]any); !ok {
-			t.Fatalf("GET %s 503 but not structured {error} (route may be unmounted); body=%s", url, body)
-		}
-		t.Logf("GET %s → 503 (feature unconfigured in dev assembly; wire OK)", url)
-		return
-	}
+	st, body, _ := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
 	if st != http.StatusOK {
-		t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
-	}
-	for _, k := range keys {
-		if _, ok := obj[k]; !ok {
-			t.Fatalf("GET %s missing key %q; body=%s", url, k, body)
-		}
+		t.Fatalf("GET %s expected 200; got %d body=%s", url, st, body)
 	}
 }
 
-// assertReachable 接受 200(任意 body 形状 —— 数组或 object)「或」一个结构化
-// 503。用于那些不适用 key 检查、但我们仍想证明路由已挂载
-// 而非 chi 404 路由未命中的 public/数组端点。
-func assertReachable(t *testing.T, ctx context.Context, url, bearer string) {
+func assertJSONError(t *testing.T, status int, body []byte, obj map[string]any, wantStatus int, wantCode string) {
 	t.Helper()
-	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
-	if st == http.StatusOK {
-		return
+	if status != wantStatus {
+		t.Fatalf("expected status %d; got %d body=%s", wantStatus, status, body)
 	}
-	if st == http.StatusServiceUnavailable {
-		if _, ok := obj["error"].(map[string]any); !ok {
-			t.Fatalf("GET %s 503 but not structured (route may be unmounted); body=%s", url, body)
-		}
-		t.Logf("GET %s → 503 (unconfigured in dev; wire OK)", url)
-		return
+	errObj, ok := obj["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structured error object; body=%s", body)
 	}
-	t.Fatalf("GET %s expected 200 or structured 503; got %d body=%s", url, st, body)
-}
-
-// assertWired 是最宽松的接线证明:200,「或」任何携带
-// 「结构化」{error} 的 4xx/5xx(路由已挂载 + handler 已执行 + 响应结构化 —— 而非 chi
-// 路由未命中)。用于那些精确的角色/租户细节在本最小播种中
-// 未能完全满足、但我们仍想证明其接线的管理纵深端点。
-func assertWired(t *testing.T, ctx context.Context, url, bearer string) {
-	t.Helper()
-	st, body, obj := doJSON(t, ctx, http.MethodGet, url, bearer, nil)
-	if st == http.StatusOK {
-		return
+	if got, _ := errObj["code"].(string); got != wantCode {
+		t.Fatalf("expected error code %q; got %q body=%s", wantCode, got, body)
 	}
-	if _, ok := obj["error"].(map[string]any); ok {
-		t.Logf("GET %s → %d structured (route wired; auth/param nuance)", url, st)
-		return
-	}
-	t.Fatalf("GET %s expected 200 or structured error (route wired, not route-miss); got %d body=%s", url, st, body)
 }

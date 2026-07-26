@@ -189,6 +189,27 @@ func TestAdminResolveTenantOperatorCannotCrossTenant(t *testing.T) {
 	}
 }
 
+// 部署者可跨租户查看争议，但资金性处理只能落在平台工作租户。删除所属
+// 租户守卫后，resolver 会被调用，本测试立即变红。
+func TestAdminResolvePlatformAdminCannotOperateDownstreamTenant(t *testing.T) {
+	resolver := &disputeFakeResolver{}
+	router := disputeAdminRouter(DisputeAdminDeps{
+		Auth:             disputeFakeAdminAuth{ident: admin.AdminIdentity{TokenID: 77, Role: admin.RolePlatformAdmin}},
+		Resolver:         resolver,
+		PlatformTenantID: 7,
+	})
+
+	rec := doDisputeJSON(router, http.MethodPost, "/v1/admin/disputes/55/resolve",
+		`{"tenant_id":8,"status":"resolved","operator_note":"downstream"}`)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want 403 body=%s", rec.Code, rec.Body.String())
+	}
+	if resolver.resolveCalled {
+		t.Fatal("downstream dispute must not reach ResolveDispute")
+	}
+}
+
 // 变异:把终态守卫零行错误继续映射成普通 404/503。
 // 运营重放必须得到明确冲突，且不能误以为可以安全再试同一终态裁决。
 func TestAdminResolveTerminalDisputeReturnsConflict(t *testing.T) {
@@ -398,6 +419,9 @@ func disputeUserRouter(d DisputeUserDeps, ident sessionauth.SessionIdentity) htt
 }
 
 func disputeAdminRouter(d DisputeAdminDeps) http.Handler {
+	if d.PlatformTenantID == 0 {
+		d.PlatformTenantID = 7
+	}
 	r := chi.NewRouter()
 	r.Get("/v1/admin/disputes", NewAdminListDisputesHandler(d))
 	r.Get("/v1/admin/disputes/", NewAdminListDisputesHandler(d))

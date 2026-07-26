@@ -18,6 +18,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -25,6 +26,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 func TestRerankSearchUnitsBilling(t *testing.T) {
@@ -140,6 +144,72 @@ func TestRerankUpstreamErrorAborts(t *testing.T) {
 	// reserved 状态, 从而让本测试变红。
 }
 
+// TestRerankSettlementIntentFailureStopsBeforeUpstream 守住资金恢复证据写失败
+// 时的交付前硬门。变异：删掉 InsertPending 或吞掉其错误，会触发 dispatcher。
+func TestRerankSettlementIntentFailureStopsBeforeUpstream(t *testing.T) {
+	env := newRerankTestEnv(t)
+	env.deps.SettlementIntents = settlementintent.NewPostgresStore(nil)
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, rerankBody(1))
+
+	assertRerankErrorCode(t, rec, http.StatusServiceUnavailable, clienterr.CodeSettleError)
+	if got := len(env.dispatcher.calls); got != 0 {
+		t.Fatalf("dispatch calls=%d want 0", got)
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+	env.assertNoHangingClaims(t)
+}
+
+func TestRerankSettlementIntentSuccessfulLifecycle(t *testing.T) {
+	env := newRerankTestEnv(t)
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, rerankBody(1))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
+	}
+}
+
+func TestRerankDeliveryEvidenceFailureStopsClientDeliveryAndSettlement(t *testing.T) {
+	env := newRerankTestEnv(t)
+	store := &settlementintenttest.Store{DeliveryError: errors.New("注入交付证据故障")}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+	health := &rerankHealthSpy{}
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+
+	rec := env.invoke(t, rerankBody(1))
+
+	assertRerankErrorCode(t, rec, http.StatusServiceUnavailable, clienterr.CodeSettleError)
+	if len(env.settler.settles) != 0 || len(env.settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 0/1", len(env.settler.settles), len(env.settler.aborts))
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%q want pending->aborted", got)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("本地交付证据故障写入失败健康信号: %+v", health.signals)
+		}
+	}
+	if health.forceCooldowns != 0 {
+		t.Fatalf("本地交付证据故障污染账号健康: signals=%+v force_cooldowns=%d",
+			health.signals, health.forceCooldowns)
+	}
+}
+
 func TestRerankInsufficientBalance(t *testing.T) {
 	env := newRerankTestEnv(t)
 	env.claims.err = billing.ErrInsufficientBalance
@@ -158,6 +228,19 @@ func TestRerankInsufficientBalance(t *testing.T) {
 	}
 	// 变异:在 ClaimGate.Reserve 之前就 dispatch, 或吞掉
 	// ErrInsufficientBalance, 会让本测试变红。
+}
+
+func TestRerankDisabledTenantStopsBeforeUpstream(t *testing.T) {
+	env := newRerankTestEnv(t)
+	env.claims.err = billing.ErrTenantInactive
+
+	rec := env.invoke(t, rerankBody(1))
+
+	assertRerankErrorCode(t, rec, http.StatusForbidden, clienterr.CodeTenantInactive)
+	if len(env.dispatcher.calls) != 0 || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("停用租户仍触发 dispatch/settle/abort=%d/%d/%d",
+			len(env.dispatcher.calls), len(env.settler.settles), len(env.settler.aborts))
+	}
 }
 
 func TestRerankValidation(t *testing.T) {
@@ -543,12 +626,13 @@ type rerankSettler struct {
 type rerankRecoveryEnqueuer struct {
 	calls int
 	event dlq.Event
+	err   error
 }
 
 func (q *rerankRecoveryEnqueuer) Enqueue(_ context.Context, event dlq.Event) (int64, error) {
 	q.calls++
 	q.event = event
-	return 1, nil
+	return 1, q.err
 }
 
 type rerankAbortCall struct {

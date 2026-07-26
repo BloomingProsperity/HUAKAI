@@ -163,7 +163,7 @@ func TestAT_SECURITY_W1_B14_PostgresLedgerTenantScopedLookup(t *testing.T) {
 	if got.LedgerID != entryA.LedgerID || got.TenantID != tenantA {
 		t.Fatalf("got wrong row: %+v want ledger=%s tenant=%d", got, entryA.LedgerID, tenantA)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE tenants SET deleted_at=NOW() WHERE id=$1`, tenantA); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='deleted', deleted_at=NOW() WHERE id=$1`, tenantA); err != nil {
 		t.Fatalf("soft delete tenant A: %v", err)
 	}
 	gotAfterDelete, err := l.GetByRequestIDAndTenantScope(ctx, entryA.RequestID, TenantScopeRef(tenantA))

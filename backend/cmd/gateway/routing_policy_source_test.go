@@ -185,8 +185,73 @@ type countingRoutingPolicyPoolStore struct {
 	calls []dbbilling.GetPoolParams
 }
 
+type modelAwareRoutingPolicyStore struct {
+	*countingRoutingPolicyPoolStore
+	modelMu    sync.Mutex
+	modelRows  []dbbilling.GetModelRoutingForGroupRow
+	modelErr   error
+	modelCalls int
+}
+
+func (s *modelAwareRoutingPolicyStore) GetModelRoutingForGroup(_ context.Context, _ dbbilling.GetModelRoutingForGroupParams) ([]dbbilling.GetModelRoutingForGroupRow, error) {
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	s.modelCalls++
+	if s.modelErr != nil {
+		return nil, s.modelErr
+	}
+	out := make([]dbbilling.GetModelRoutingForGroupRow, len(s.modelRows))
+	copy(out, s.modelRows)
+	return out, nil
+}
+
 func newCountingRoutingPolicyPoolStore() *countingRoutingPolicyPoolStore {
 	return &countingRoutingPolicyPoolStore{rows: make(map[routingPolicyCacheKey]dbbilling.PoolGroup)}
+}
+
+func TestBindingRoutingPolicySource_LoadsModelAccountRoute(t *testing.T) {
+	base := newCountingRoutingPolicyPoolStore()
+	base.set(7, 42, 3, 1500)
+	store := &modelAwareRoutingPolicyStore{
+		countingRoutingPolicyPoolStore: base,
+		modelRows: []dbbilling.GetModelRoutingForGroupRow{{
+			Model:              "gpt-pin",
+			ProviderAccountIds: []int64{11, 13},
+		}},
+	}
+	src := newBindingRoutingPolicySource(store)
+
+	policy, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{
+		TenantID:       7,
+		PoolGroupID:    42,
+		RequestedModel: "gpt-pin",
+	})
+	if err != nil {
+		t.Fatalf("GetRoutingPolicy: %v", err)
+	}
+	got := policy.ModelAccountIDs["gpt-pin"]
+	if len(got) != 2 || got[0] != 11 || got[1] != 13 {
+		t.Fatalf("模型账号强制路由未进入生产策略：got=%v", got)
+	}
+}
+
+func TestBindingRoutingPolicySource_ModelRouteReadFailureFailsClosed(t *testing.T) {
+	base := newCountingRoutingPolicyPoolStore()
+	base.set(7, 42, 3, 1500)
+	store := &modelAwareRoutingPolicyStore{
+		countingRoutingPolicyPoolStore: base,
+		modelErr:                       errors.New("route store unavailable"),
+	}
+	src := newBindingRoutingPolicySource(store)
+
+	_, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{
+		TenantID:       7,
+		PoolGroupID:    42,
+		RequestedModel: "gpt-pin",
+	})
+	if err == nil {
+		t.Fatal("模型强制路由读取失败时不得继续选号")
+	}
 }
 
 func (s *countingRoutingPolicyPoolStore) set(tenantID, poolGroupID int64, maxWaiting, timeoutMS int32) {

@@ -74,6 +74,10 @@ type PASRSelector struct {
 	// 既有测试不变。
 	gates GateChain
 
+	// policies 提供所有选号模式共享的模型账号强制路由合同。为空时保持旧测试兼容；
+	// 生产必须与 DefaultSelector 注入同一实例，防止 PASR 绕过运营端配置。
+	policies RoutingPolicySource
+
 	// ringSeed 用于 RingProvider 未注入时的 request-scoped ring 构造 (synthesis D3)。
 	// 0 时用默认 0xCAFEBABE — 与现有测试保持一致。
 	ringSeed uint64
@@ -94,6 +98,7 @@ type PASRSelectorConfig struct {
 	LoadCap          float64 // 0 用 0.95
 	ReadOnlySegments bool    // M4 (D2): true 时 Select 走 Lookup-only 段表路径, 不污染段
 	Gates            GateChain
+	Policies         RoutingPolicySource
 	RingSeed         uint64 // M5: request-scoped ring 的 HRW seed; 0 时用默认 0xCAFEBABE
 }
 
@@ -124,6 +129,7 @@ func NewPASRSelector(cfg PASRSelectorConfig) (*PASRSelector, error) {
 		loadCap:          cap,
 		readOnlySegments: cfg.ReadOnlySegments,
 		gates:            cfg.Gates,
+		policies:         cfg.Policies,
 		ringSeed:         seed,
 	}, nil
 }
@@ -136,6 +142,15 @@ func (p *PASRSelector) Select(ctx context.Context, req SelectionRequest) (*Selec
 	accs, err := p.accounts.ListAccounts(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("pasr: ListAccounts: %w", err)
+	}
+	if p.policies != nil {
+		policy, policyErr := p.policies.GetRoutingPolicy(ctx, req)
+		if policyErr != nil {
+			return nil, fmt.Errorf("pasr: GetRoutingPolicy: %w", policyErr)
+		}
+		if hasModelRoute(policy, req.RequestedModel) {
+			accs = modelRoute(policy, req.RequestedModel, accs)
+		}
 	}
 	snapshots := make(map[int64]*AccountSnapshot, len(accs))
 	for _, a := range accs {

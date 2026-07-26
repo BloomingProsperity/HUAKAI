@@ -18,7 +18,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 )
 
-type ReplayFunc func(context.Context, int64, string) (*dlq.Record, error)
+type ReplayFunc func(context.Context, int64, int64, string) (*dlq.Record, error)
 
 type Worker struct {
 	store      *Store
@@ -136,7 +136,7 @@ func (w *Worker) replayPrepared(parent context.Context, entry Entry) error {
 	ctx, cancel := context.WithTimeout(parent, w.opTimeout)
 	defer cancel()
 	actorID := entry.ActorSource + ":" + strconv.FormatInt(entry.ActorID, 10)
-	record, replayErr := w.replay(ctx, entry.TargetID, actorID)
+	record, replayErr := w.replay(ctx, entry.TenantID, entry.TargetID, actorID)
 	status := hermesops.ResultOK
 	errorClass := ""
 	summary := map[string]any{

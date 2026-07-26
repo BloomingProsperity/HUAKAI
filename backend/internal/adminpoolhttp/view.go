@@ -24,6 +24,7 @@ func providerAccountDTOAt(row admindb.AdminProviderAccountRow, now time.Time) (p
 	if err != nil {
 		return providerAccountResponse{}, err
 	}
+	todayStats := providerAccountTodayStatsDTO(row)
 	return providerAccountResponse{
 		ID: row.ID, TenantID: row.TenantID, ProviderID: row.ProviderID, ChannelID: row.ChannelID,
 		Name: row.Name, AccountType: row.AccountType, Enabled: row.Enabled, ExpiresAt: pgTimePtr(row.ExpiresAt),
@@ -37,6 +38,7 @@ func providerAccountDTOAt(row admindb.AdminProviderAccountRow, now time.Time) (p
 		LastProbeAt:           pgTimePtr(row.LastProbeAt),
 		LastRequestObservedAt: pgTimePtr(row.LastRequestObservedAt),
 		ObservationSource:     "request_completion_event",
+		TodayStats:            todayStats,
 		QuotaWindows: quotawindowview.FromPostgres(quotawindowview.PostgresSnapshot{
 			ObservedAt: row.QuotaSnapshotObservedAt, Source: row.QuotaSnapshotSource,
 			Outcome: row.QuotaSnapshotOutcome, ErrorClass: row.QuotaSnapshotErrorClass,
@@ -61,6 +63,25 @@ func providerAccountDTOAt(row admindb.AdminProviderAccountRow, now time.Time) (p
 		ProxyBinding:           accountadvanced.BindingFromColumns(row.ProxyID, row.ProxyGroupID),
 		CreatedAt:              pgTimePtr(row.CreatedAt), UpdatedAt: pgTimePtr(row.UpdatedAt),
 	}, nil
+}
+
+func providerAccountTodayStatsDTO(row admindb.AdminProviderAccountRow) *providerAccountTodayStats {
+	if !row.TodayStatsWindowStart.Valid || !row.TodayStatsObservedAt.Valid {
+		return nil
+	}
+	failureRate := 0.0
+	if row.TodayRequestCount > 0 {
+		failureRate = float64(row.TodayFailureCount) / float64(row.TodayRequestCount) * 100
+	}
+	return &providerAccountTodayStats{
+		WindowStart:        row.TodayStatsWindowStart.Time.UTC(),
+		ObservedAt:         row.TodayStatsObservedAt.Time.UTC(),
+		RequestCount:       row.TodayRequestCount,
+		SuccessCount:       row.TodaySuccessCount,
+		FailureCount:       row.TodayFailureCount,
+		FailureRatePercent: failureRate,
+		TTFTP95MS:          row.TodayTTFTP95MS,
+	}
 }
 
 func providerAccountDetailDTO(row admindb.AdminProviderAccountRow) (providerAccountResponse, error) {

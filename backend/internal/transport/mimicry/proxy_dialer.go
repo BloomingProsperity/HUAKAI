@@ -13,11 +13,25 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 )
 
 // ProxyDialerFunc 经指定代理建立到目标的 TCP 隧道，供代理健康探测复用。
 // 所有失败均明确返回，不会静默改为直连。
 type ProxyDialerFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+var proxyEndpointDial = dialGuardedProxyEndpoint
+
+// SwapProxyEndpointDialForTesting 只供其它包的端到端代理桩替换“连代理”这一步；
+// 生产代码不得调用，安全守卫另有独立判别测试。
+func SwapProxyEndpointDialForTesting(
+	fn func(context.Context, *url.URL) (net.Conn, error),
+) func() {
+	original := proxyEndpointDial
+	proxyEndpointDial = fn
+	return func() { proxyEndpointDial = original }
+}
 
 // proxyDialerFromURL 按代理 URL 构造 ProxyDialerFunc。
 //
@@ -49,9 +63,12 @@ func proxyHostPort(proxyURL *url.URL) string {
 	host := proxyURL.Hostname()
 	port := proxyURL.Port()
 	if port == "" {
-		if strings.EqualFold(proxyURL.Scheme, "https") {
+		switch strings.ToLower(proxyURL.Scheme) {
+		case "https":
 			port = "443"
-		} else {
+		case "socks5", "socks5h":
+			port = "1080"
+		default:
 			port = "80"
 		}
 	}
@@ -61,8 +78,7 @@ func proxyHostPort(proxyURL *url.URL) string {
 // httpConnectDialer 返回一个经 HTTP(S) CONNECT 代理拨号的 ProxyDialerFunc。
 func httpConnectDialer(proxyURL *url.URL) ProxyDialerFunc {
 	return func(ctx context.Context, _, addr string) (net.Conn, error) {
-		d := &net.Dialer{Timeout: 30 * time.Second}
-		proxyConn, err := d.DialContext(ctx, "tcp", proxyHostPort(proxyURL))
+		proxyConn, err := proxyEndpointDial(ctx, proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("mimicry proxy: 拨号代理 %s 失败: %w", RedactProxyURL(proxyURL), err)
 		}
@@ -135,8 +151,7 @@ func socks5Dialer(proxyURL *url.URL) ProxyDialerFunc {
 		if err != nil || port <= 0 || port > 65535 {
 			return nil, fmt.Errorf("mimicry proxy: socks5 bad port %q", portStr)
 		}
-		d := &net.Dialer{Timeout: 30 * time.Second}
-		conn, err := d.DialContext(ctx, "tcp", proxyURL.Host)
+		conn, err := proxyEndpointDial(ctx, proxyURL)
 		if err != nil {
 			return nil, fmt.Errorf("mimicry proxy: 拨号 socks5 %s 失败: %w", RedactProxyURL(proxyURL), err)
 		}
@@ -150,6 +165,31 @@ func socks5Dialer(proxyURL *url.URL) ProxyDialerFunc {
 		_ = conn.SetDeadline(time.Time{})
 		return conn, nil
 	}
+}
+
+func dialGuardedProxyEndpoint(ctx context.Context, proxyURL *url.URL) (net.Conn, error) {
+	addresses, err := provider.ResolveProxyEndpointIPs(ctx, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	_, port, err := net.SplitHostPort(proxyHostPort(proxyURL))
+	if err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	var lastErr error
+	for _, address := range addresses {
+		conn, dialErr := dialer.DialContext(ctx, "tcp", net.JoinHostPort(address.String(), port))
+		if dialErr != nil {
+			lastErr = dialErr
+			continue
+		}
+		return conn, nil
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("mimicry proxy: 没有允许的代理拨号地址")
 }
 
 // socks5Handshake 跑 SOCKS5 客户端握手(method negotiation + 可选 user/pass 认证

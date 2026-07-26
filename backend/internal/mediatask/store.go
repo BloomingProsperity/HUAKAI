@@ -186,6 +186,41 @@ func (s *PostgresStore) MarkProviderSubmitted(ctx context.Context, task Task, ow
 	return updated, err
 }
 
+func (s *PostgresStore) MarkSubmitting(ctx context.Context, task Task, owner string, now time.Time) (Task, error) {
+	if s == nil || s.pool == nil {
+		return Task{}, ErrStoreNotConfigured
+	}
+	updated, err := scanTask(s.pool.QueryRow(ctx, markSubmittingSQL, task.ID, owner, now.UTC()))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, ErrLeaseLost
+	}
+	return updated, err
+}
+
+// DeferSubmission 只用于能够证明尚未产生上游副作用的提交前失败。它把写前状态
+// submitting 恢复为 queued 并设置下一次运行时间；提交结果未知时绝不能调用本方法。
+func (s *PostgresStore) DeferSubmission(ctx context.Context, task Task, owner string, now, retryAt time.Time) error {
+	if s == nil || s.pool == nil {
+		return ErrStoreNotConfigured
+	}
+	if !retryAt.After(now) {
+		retryAt = now.Add(5 * time.Second)
+	}
+	tag, err := s.pool.Exec(ctx, `
+UPDATE media_tasks
+SET status='queued', error_class=NULL, lease_owner=NULL, lease_expires_at=$3, updated_at=$4
+WHERE id=$1 AND lease_owner=$2 AND status='submitting'`,
+		task.ID, owner, retryAt.UTC(), now.UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
 func (s *PostgresStore) UpdateProgress(ctx context.Context, task Task, owner string, progress int, now time.Time) error {
 	if s == nil || s.pool == nil {
 		return ErrStoreNotConfigured
@@ -427,7 +462,7 @@ const acquireLeaseSQL = `
 WITH candidate AS (
 	SELECT id
 	FROM media_tasks
-	WHERE status IN ('queued','in_progress')
+	WHERE status IN ('queued','submitting','submission_releasing','in_progress','settlement_pending')
 	  AND (lease_expires_at IS NULL OR lease_expires_at <= $3)
 	ORDER BY updated_at ASC, id ASC
 	LIMIT 1
@@ -446,8 +481,20 @@ RETURNING mt.id, mt.tenant_id, mt.user_id, mt.api_key_id, mt.task_type, mt.statu
 
 const markSubmittedSQL = `
 UPDATE media_tasks
-SET status='in_progress', provider_task_id=$3, progress=GREATEST(progress, 1),
+SET status='in_progress', provider_task_id=NULLIF(btrim($3), ''), progress=GREATEST(progress, 1),
     lease_owner=NULL, lease_expires_at=NULL, updated_at=$4
+WHERE id=$1 AND lease_owner=$2 AND status='submitting'
+  AND NULLIF(btrim($3), '') IS NOT NULL
+RETURNING id, tenant_id, user_id, api_key_id, task_type, status, provider, provider_task_id,
+       request_id, input_params, result, estimated_cents, actual_cents, hold_ref,
+       error_class, progress, provider_account_id, pool_group_id, protocol_family,
+       requested_model, provider_model_id, route_id, binding_id, binding_rpm_limit,
+       binding_tpm_limit, binding_max_parallel_requests, lease_owner, lease_expires_at,
+       created_at, updated_at, finished_at`
+
+const markSubmittingSQL = `
+UPDATE media_tasks
+SET status='submitting', error_class=NULL, updated_at=$3
 WHERE id=$1 AND lease_owner=$2 AND status='queued'
 RETURNING id, tenant_id, user_id, api_key_id, task_type, status, provider, provider_task_id,
        request_id, input_params, result, estimated_cents, actual_cents, hold_ref,

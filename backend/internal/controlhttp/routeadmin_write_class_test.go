@@ -24,10 +24,10 @@ func (fakeRouteService) Get(context.Context, int64, int64) (routeadmin.Route, er
 func (fakeRouteService) Update(context.Context, routeadmin.UpdateInput) (routeadmin.Route, error) {
 	return routeadmin.Route{}, nil
 }
-func (fakeRouteService) SetEnabled(context.Context, int64, int64, bool, int64) (routeadmin.Route, error) {
+func (fakeRouteService) SetEnabledWithActor(context.Context, int64, int64, bool, routeadmin.MutationLog) (routeadmin.Route, error) {
 	return routeadmin.Route{}, nil
 }
-func (fakeRouteService) Delete(context.Context, int64, int64, int64) (routeadmin.Route, error) {
+func (fakeRouteService) DeleteWithActor(context.Context, int64, int64, routeadmin.MutationLog) (routeadmin.Route, error) {
 	return routeadmin.Route{}, nil
 }
 

@@ -58,7 +58,7 @@ func (q *Queries) GetClaimByID(ctx context.Context, arg GetClaimByIDParams) (Get
 }
 
 const getSettlementIntentByClaimAttempt = `-- name: GetSettlementIntentByClaimAttempt :one
-SELECT id, tenant_id, request_id, logical_request_id, attempt_seq, claim_id, api_key_id, request_fingerprint, status, predicted_cost, actual_cost, hold_id, first_byte_at, retry_count, version, created_at, updated_at, settled_at
+SELECT id, tenant_id, request_id, logical_request_id, attempt_seq, claim_id, api_key_id, request_fingerprint, status, predicted_cost, actual_cost, hold_id, first_byte_at, retry_count, version, created_at, updated_at, settled_at, recovery_payload, recovery_failure_class
 FROM settlement_intents
 WHERE tenant_id = $1
   AND claim_id = $2
@@ -93,6 +93,8 @@ func (q *Queries) GetSettlementIntentByClaimAttempt(ctx context.Context, arg Get
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.SettledAt,
+		&i.RecoveryPayload,
+		&i.RecoveryFailureClass,
 	)
 	return i, err
 }
@@ -152,9 +154,10 @@ func (q *Queries) InsertSettlementIntent(ctx context.Context, arg InsertSettleme
 }
 
 const listStaleNonTerminalSettlementIntents = `-- name: ListStaleNonTerminalSettlementIntents :many
-SELECT id, tenant_id, claim_id, attempt_seq, version, status
+SELECT id, tenant_id, claim_id, attempt_seq, version, status, actual_cost,
+       recovery_payload, recovery_failure_class
 FROM settlement_intents
-WHERE status IN ('pending', 'delivering', 'settling')
+WHERE status IN ('pending', 'delivering', 'settling', 'failed')
   AND updated_at < $1
   AND created_at < $2
 ORDER BY updated_at
@@ -168,12 +171,15 @@ type ListStaleNonTerminalSettlementIntentsParams struct {
 }
 
 type ListStaleNonTerminalSettlementIntentsRow struct {
-	ID         int64  `db:"id" json:"id"`
-	TenantID   int64  `db:"tenant_id" json:"tenant_id"`
-	ClaimID    int64  `db:"claim_id" json:"claim_id"`
-	AttemptSeq int32  `db:"attempt_seq" json:"attempt_seq"`
-	Version    int32  `db:"version" json:"version"`
-	Status     string `db:"status" json:"status"`
+	ID                   int64           `db:"id" json:"id"`
+	TenantID             int64           `db:"tenant_id" json:"tenant_id"`
+	ClaimID              int64           `db:"claim_id" json:"claim_id"`
+	AttemptSeq           int32           `db:"attempt_seq" json:"attempt_seq"`
+	Version              int32           `db:"version" json:"version"`
+	Status               string          `db:"status" json:"status"`
+	ActualCost           decimal.Decimal `db:"actual_cost" json:"actual_cost"`
+	RecoveryPayload      []byte          `db:"recovery_payload" json:"recovery_payload"`
+	RecoveryFailureClass *string         `db:"recovery_failure_class" json:"recovery_failure_class"`
 }
 
 func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg ListStaleNonTerminalSettlementIntentsParams) ([]ListStaleNonTerminalSettlementIntentsRow, error) {
@@ -192,6 +198,9 @@ func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg
 			&i.AttemptSeq,
 			&i.Version,
 			&i.Status,
+			&i.ActualCost,
+			&i.RecoveryPayload,
+			&i.RecoveryFailureClass,
 		); err != nil {
 			return nil, err
 		}
@@ -206,6 +215,8 @@ func (q *Queries) ListStaleNonTerminalSettlementIntents(ctx context.Context, arg
 const markSettlementIntentAborted = `-- name: MarkSettlementIntentAborted :one
 UPDATE settlement_intents
 SET status = 'aborted',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = $1
@@ -228,11 +239,13 @@ func (q *Queries) MarkSettlementIntentAborted(ctx context.Context, arg MarkSettl
 const markSettlementIntentAbortedIfStale = `-- name: MarkSettlementIntentAbortedIfStale :one
 UPDATE settlement_intents
 SET status = 'aborted',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = $1
   AND version = $2
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
 RETURNING version
 `
 
@@ -296,11 +309,48 @@ func (q *Queries) MarkSettlementIntentFailed(ctx context.Context, arg MarkSettle
 	return version, err
 }
 
+const markSettlementIntentRecoveryPending = `-- name: MarkSettlementIntentRecoveryPending :one
+UPDATE settlement_intents
+SET status = 'failed',
+    actual_cost = $1,
+    recovery_payload = $2,
+    recovery_failure_class = $3,
+    retry_count = retry_count + 1,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $4
+  AND version = $5
+RETURNING version
+`
+
+type MarkSettlementIntentRecoveryPendingParams struct {
+	ActualCost           decimal.Decimal `db:"actual_cost" json:"actual_cost"`
+	RecoveryPayload      []byte          `db:"recovery_payload" json:"recovery_payload"`
+	RecoveryFailureClass *string         `db:"recovery_failure_class" json:"recovery_failure_class"`
+	ID                   int64           `db:"id" json:"id"`
+	Version              int32           `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentRecoveryPending(ctx context.Context, arg MarkSettlementIntentRecoveryPendingParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentRecoveryPending,
+		arg.ActualCost,
+		arg.RecoveryPayload,
+		arg.RecoveryFailureClass,
+		arg.ID,
+		arg.Version,
+	)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
 const markSettlementIntentSettled = `-- name: MarkSettlementIntentSettled :one
 UPDATE settlement_intents
 SET status = 'settled',
     actual_cost = $1,
     settled_at = $2,
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = $3
@@ -332,11 +382,13 @@ UPDATE settlement_intents
 SET status = 'settled',
     actual_cost = $1,
     settled_at = $2,
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = $3
   AND version = $4
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
 RETURNING version
 `
 
@@ -383,14 +435,41 @@ func (q *Queries) MarkSettlementIntentSettling(ctx context.Context, arg MarkSett
 	return version, err
 }
 
-const markSettlementIntentSupersededIfStale = `-- name: MarkSettlementIntentSupersededIfStale :one
+const markSettlementIntentSettlingIfStale = `-- name: MarkSettlementIntentSettlingIfStale :one
 UPDATE settlement_intents
-SET status = 'superseded',
+SET status = 'settling',
+    retry_count = retry_count + 1,
     updated_at = NOW(),
     version = version + 1
 WHERE id = $1
   AND version = $2
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status = 'failed'
+  AND recovery_payload IS NOT NULL
+RETURNING version
+`
+
+type MarkSettlementIntentSettlingIfStaleParams struct {
+	ID      int64 `db:"id" json:"id"`
+	Version int32 `db:"version" json:"version"`
+}
+
+func (q *Queries) MarkSettlementIntentSettlingIfStale(ctx context.Context, arg MarkSettlementIntentSettlingIfStaleParams) (int32, error) {
+	row := q.db.QueryRow(ctx, markSettlementIntentSettlingIfStale, arg.ID, arg.Version)
+	var version int32
+	err := row.Scan(&version)
+	return version, err
+}
+
+const markSettlementIntentSupersededIfStale = `-- name: MarkSettlementIntentSupersededIfStale :one
+UPDATE settlement_intents
+SET status = 'superseded',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = $1
+  AND version = $2
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
 RETURNING version
 `
 

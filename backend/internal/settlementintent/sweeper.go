@@ -2,6 +2,7 @@ package settlementintent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,8 @@ const (
 var (
 	errClaimAuthorityNotConfigured = errors.New("权威 claim 查询未配置")
 	errAuthoritativeClaimNotFound  = errors.New("权威 claim 不存在")
+	errRecoveryPublisherMissing    = errors.New("结算恢复发布器未配置")
+	errRecoveryPayloadMissing      = errors.New("失败意图缺少结算恢复载荷")
 	errSweepPanicked               = errors.New("结算意图对账轮次发生异常")
 	errSweepItemPanicked           = errors.New("单条结算意图对账发生异常")
 )
@@ -39,6 +42,21 @@ type ClaimSnapshot struct {
 // ClaimAuthority 按租户隔离读取单个权威 claim。
 type ClaimAuthority interface {
 	GetClaim(ctx context.Context, tenantID, claimID int64) (ClaimSnapshot, error)
+}
+
+// RecoveryPublisher 把意图行里已经持久化的载荷幂等送回正式结算恢复队列。
+type RecoveryPublisher interface {
+	PublishSettlementRecovery(context.Context, json.RawMessage, string) error
+}
+
+type RecoveryPublisherFunc func(context.Context, json.RawMessage, string) error
+
+func (f RecoveryPublisherFunc) PublishSettlementRecovery(
+	ctx context.Context,
+	payload json.RawMessage,
+	failureClass string,
+) error {
+	return f(ctx, payload, failureClass)
 }
 
 type claimByIDQuerier interface {
@@ -81,6 +99,7 @@ type SweeperOptions struct {
 	StaleAfter   time.Duration
 	CreatedGrace time.Duration
 	Batch        int32
+	Recovery     RecoveryPublisher
 	Logger       *slog.Logger
 	Now          func() time.Time
 }
@@ -91,18 +110,20 @@ type SweepResult struct {
 	Settled    int
 	Aborted    int
 	Superseded int
+	Requeued   int
 	Skipped    int
 	Failed     int
 }
 
 func (r SweepResult) changed() int {
-	return r.Settled + r.Aborted + r.Superseded
+	return r.Settled + r.Aborted + r.Superseded + r.Requeued
 }
 
 // SettlementIntentSweeper 把悬挂意图追平到权威 claim 的既有终态。
 type SettlementIntentSweeper struct {
 	store          Store
 	claimAuthority ClaimAuthority
+	recovery       RecoveryPublisher
 	interval       time.Duration
 	staleAfter     time.Duration
 	createdGrace   time.Duration
@@ -141,6 +162,7 @@ func NewSettlementIntentSweeper(store Store, claimAuthority ClaimAuthority, opts
 	return &SettlementIntentSweeper{
 		store:          store,
 		claimAuthority: claimAuthority,
+		recovery:       opts.Recovery,
 		interval:       opts.Interval,
 		staleAfter:     opts.StaleAfter,
 		createdGrace:   opts.CreatedGrace,
@@ -242,6 +264,8 @@ func (w *SettlementIntentSweeper) RunOnce(ctx context.Context, now time.Time) (r
 			result.Aborted++
 		case outcomeSuperseded:
 			result.Superseded++
+		case outcomeRequeued:
+			result.Requeued++
 		case outcomeSkipped:
 			result.Skipped++
 		}
@@ -256,6 +280,7 @@ const (
 	outcomeSettled
 	outcomeAborted
 	outcomeSuperseded
+	outcomeRequeued
 )
 
 func (w *SettlementIntentSweeper) reconcileSafely(ctx context.Context, intent StaleSettlementIntent, now time.Time) (outcome reconcileOutcome, err error) {
@@ -294,7 +319,28 @@ func (w *SettlementIntentSweeper) reconcileSafely(ctx context.Context, intent St
 			return w.store.MarkAbortedIfStale(ctx, intent.ID, intent.Version)
 		})
 	case "reserving":
-		return outcomeSkipped, nil
+		if intent.Status != "failed" {
+			return outcomeSkipped, nil
+		}
+		if len(intent.RecoveryPayload) == 0 {
+			return outcomeSkipped, errRecoveryPayloadMissing
+		}
+		if w.recovery == nil {
+			return outcomeSkipped, errRecoveryPublisherMissing
+		}
+		if err := w.recovery.PublishSettlementRecovery(
+			ctx,
+			intent.RecoveryPayload,
+			intent.RecoveryFailureClass,
+		); err != nil {
+			return outcomeSkipped, fmt.Errorf("重投结算恢复载荷: %w", err)
+		}
+		// 发布先于 CAS：多副本即使同时发布也由恢复队列的稳定幂等键去重；
+		// CAS 只负责把意图从 failed 推回 settling。若进程在两者之间退出，
+		// 下一轮重复发布仍是同一队列记录，不会产生第二次资金效果。
+		return w.applyCAS(intent, outcomeRequeued, func() (int32, error) {
+			return w.store.MarkSettlingIfStale(ctx, intent.ID, intent.Version)
+		})
 	default:
 		return outcomeSkipped, fmt.Errorf("未知权威 claim 状态 %q", claim.Status)
 	}
@@ -342,6 +388,7 @@ func (w *SettlementIntentSweeper) logRound(ctx context.Context, result SweepResu
 		"settled", result.Settled,
 		"aborted", result.Aborted,
 		"superseded", result.Superseded,
+		"requeued", result.Requeued,
 		"skipped", result.Skipped,
 		"failed", result.Failed,
 	}

@@ -3,6 +3,7 @@ package gatewayhttp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/parser"
@@ -24,24 +25,28 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	l2cache "github.com/BloomingProsperity/HUAKAI/internal/cache"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/quota"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 type recordingSettlementIntentStore struct {
-	insertErr      error
-	operationErrs  map[string]error
-	operationCalls map[string]int
-	returnZeroID   bool
-	insertCalls    int
-	created        settlementintent.CreateParams
-	events         []string
-	version        int32
-	firstByteAt    time.Time
-	actualCost     decimal.Decimal
-	settledAt      time.Time
+	insertErr       error
+	operationErrs   map[string]error
+	operationCalls  map[string]int
+	returnZeroID    bool
+	insertCalls     int
+	created         settlementintent.CreateParams
+	events          []string
+	version         int32
+	firstByteAt     time.Time
+	actualCost      decimal.Decimal
+	settledAt       time.Time
+	recoveryPayload json.RawMessage
+	recoveryClass   string
 }
 
 func (s *recordingSettlementIntentStore) Insert(ctx context.Context, in settlementintent.CreateParams) (int64, error) {
@@ -116,6 +121,26 @@ func (s *recordingSettlementIntentStore) MarkFailed(ctx context.Context, id int6
 	return s.advance("failed"), nil
 }
 
+func (s *recordingSettlementIntentStore) MarkRecoveryPending(
+	ctx context.Context,
+	id int64,
+	version int32,
+	actualCost decimal.Decimal,
+	payload json.RawMessage,
+	failureClass string,
+) (int32, error) {
+	if err := s.operationError(ctx, "mark_recovery_pending"); err != nil {
+		return 0, err
+	}
+	if err := s.checkVersion(id, version); err != nil {
+		return 0, err
+	}
+	s.actualCost = actualCost
+	s.recoveryPayload = append(json.RawMessage(nil), payload...)
+	s.recoveryClass = failureClass
+	return s.advance("failed"), nil
+}
+
 func (s *recordingSettlementIntentStore) ListStaleNonTerminalSettlementIntents(context.Context, time.Time, time.Time, int32) ([]settlementintent.StaleSettlementIntent, error) {
 	return nil, nil
 }
@@ -133,6 +158,10 @@ func (s *recordingSettlementIntentStore) MarkSupersededIfStale(_ context.Context
 		return 0, err
 	}
 	return s.advance("superseded"), nil
+}
+
+func (s *recordingSettlementIntentStore) MarkSettlingIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	return s.MarkSettling(ctx, id, version, s.actualCost)
 }
 
 func (s *recordingSettlementIntentStore) checkVersion(id int64, version int32) error {
@@ -187,8 +216,8 @@ func TestSettlementIntentSuccessfulRequestLifecycle(t *testing.T) {
 	if intentStore.firstByteAt.IsZero() {
 		t.Fatal("delivering 必须写入非空 first_byte_at")
 	}
-	if w.firstWriteCompletedAt.IsZero() || intentStore.firstByteAt.Before(w.firstWriteCompletedAt) {
-		t.Fatalf("first_byte_at=%s 早于业务写完成=%s", intentStore.firstByteAt, w.firstWriteCompletedAt)
+	if w.firstWriteCompletedAt.IsZero() || intentStore.firstByteAt.After(w.firstWriteCompletedAt) {
+		t.Fatalf("first_byte_at=%s 晚于业务写完成=%s", intentStore.firstByteAt, w.firstWriteCompletedAt)
 	}
 	if intentStore.settledAt.IsZero() {
 		t.Fatal("settled 必须写入非空 settled_at")
@@ -211,8 +240,9 @@ func TestSettlementIntentSuccessfulRequestLifecycle(t *testing.T) {
 	}
 }
 
-// TestSettlementIntentInsertFailureFailsOpen 守住旁路降级语义，意图写失败不改变交付和主结算。
-func TestSettlementIntentInsertFailureFailsOpen(t *testing.T) {
+// TestSettlementIntentInsertFailureFailsClosed 守住交付前恢复证据写失败时不发起上游请求，
+// 并释放已经创建的 claim，避免形成“响应已交付但无恢复事实”的资金黑洞。
+func TestSettlementIntentInsertFailureFailsClosed(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	intentStore := &recordingSettlementIntentStore{insertErr: errors.New("注入的意图数据库错误")}
 	settler := &recordingSettler{}
@@ -227,14 +257,14 @@ func TestSettlementIntentInsertFailureFailsOpen(t *testing.T) {
 
 	rec := invokeHandlerPath(t, d, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("intent 写失败不得阻断交付: status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("intent 写失败 status=%d want 503 body=%s", rec.Code, rec.Body.String())
 	}
 	if intentStore.insertCalls != 1 {
 		t.Fatalf("intent insert calls=%d want 1", intentStore.insertCalls)
 	}
-	if len(settler.calls) != 1 {
-		t.Fatalf("intent 写失败后主结算 calls=%d want 1", len(settler.calls))
+	if len(settler.calls) != 0 || len(settler.aborts) != 1 {
+		t.Fatalf("intent 写失败后 settle/abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
 	}
 	if len(intentStore.events) != 0 {
 		t.Fatalf("insert 失败后不得伪造状态迁移: %v", intentStore.events)
@@ -324,11 +354,110 @@ func TestSettlementIntentCacheHitLifecycle(t *testing.T) {
 	if len(settler.cacheHitCommits) != 1 {
 		t.Fatalf("cache-hit commit calls=%d want 1", len(settler.cacheHitCommits))
 	}
-	if got := strings.Join(intentStore.events, "->"); got != "pending->delivering->settled" {
-		t.Fatalf("cache-hit intent lifecycle=%s want pending->delivering->settled", got)
+	if got := strings.Join(intentStore.events, "->"); got != "pending->settled" {
+		t.Fatalf("cache-hit intent lifecycle=%s want pending->settled", got)
 	}
 	if !intentStore.actualCost.IsZero() {
 		t.Fatalf("cache-hit intent actual_cost=%s want 0", intentStore.actualCost)
+	}
+}
+
+// TestSettlementIntentCacheHitCommitFailureAbortsBeforeDelivery 守住未取得账号的
+// L2 命中在零成本提交失败时不会被写成“已交付待恢复”；响应体尚未发送，必须先中止 claim。
+func TestSettlementIntentCacheHitCommitFailureAbortsBeforeDelivery(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	cache := l2cache.NewMemoryStore(1<<20, time.Minute)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	firstDeps := clientAdapterDeps(t)
+	firstDeps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	firstDeps.ResponseCache = cache
+	if first := invokeHandlerPath(t, firstDeps, "/v1/chat/completions", body); first.Code != http.StatusOK {
+		t.Fatalf("填充 cache 失败: status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	intentStore := &recordingSettlementIntentStore{}
+	settler := &recordingSettler{cacheHitErr: errors.New("注入的 cache commit 失败")}
+	deps := clientAdapterDeps(t)
+	deps.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	deps.ResponseCache = cache
+	deps.Settler = settler
+	deps.SettlementIntents = intentStore
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", body)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.cacheHitCommits) != 1 || len(settler.aborts) != 1 {
+		t.Fatalf("commit/abort=%d/%d want 1/1", len(settler.cacheHitCommits), len(settler.aborts))
+	}
+	if got := strings.Join(intentStore.events, "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%s want pending->aborted", got)
+	}
+	if intentStore.operationCalls["mark_failed"] != 0 {
+		t.Fatalf("交付前失败不得写 failed: calls=%v", intentStore.operationCalls)
+	}
+}
+
+// TestSettlementIntentPostAcquireCacheSettleFailureAbortsBeforeDelivery 守住已取得账号的
+// 缓存命中同样只在响应体交付后才允许进入结算恢复；前置 settle 失败应中止 claim。
+func TestSettlementIntentPostAcquireCacheSettleFailureAbortsBeforeDelivery(t *testing.T) {
+	t.Setenv("HUAKAI_RELEASE_MODE", "development")
+	ctx := context.Background()
+	intentStore := &recordingSettlementIntentStore{}
+	tracker := settlementintent.NewTracker(intentStore)
+	tracker.InsertPending(ctx, validIdentity().TenantID, "req-cache-settle-fail", "logical-cache-settle-fail", 77995, 1, validIdentity().APIKeyID, "payload-cache-settle-fail", decimal.Zero)
+
+	env := proto.NewEmptyEnvelope()
+	env.BufferedResponse = &proto.CanonicalResponse{
+		ID:         "cache-settle-fail-response",
+		Model:      "gpt-4o",
+		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "cached"}},
+		StopReason: proto.CanonicalStopEndTurn,
+	}
+	envelope, ok := encodeL2CacheEnvelope(env)
+	if !ok {
+		t.Fatal("缓存 envelope 编码失败")
+	}
+	settler := &recordingSettler{settleErr: errors.New("注入的 cache settle 失败")}
+	deps := clientAdapterDeps(t)
+	deps.Settler = settler
+	rec := httptest.NewRecorder()
+	served := serveL2CacheHit(ctx, rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), deps, l2CacheHitInput{
+		Entry: l2cache.Entry{
+			Key:      "cache-settle-fail-key",
+			TenantID: validIdentity().TenantID,
+			Body:     []byte(`{"id":"cache-settle-fail-response"}`),
+			Envelope: envelope,
+		},
+		Ident:            validIdentity(),
+		ClientProtocol:   proto.ClientProtocolOpenAIChat,
+		ProtocolFamily:   "openai_chat",
+		RouteID:          "cache-settle-fail-route",
+		RequestID:        "req-cache-settle-fail",
+		AccountID:        1,
+		AcquisitionToken: uuid.New(),
+		PoolID:           "42",
+		UpstreamModelID:  "gpt-4o",
+		RequestedModel:   "gpt-4o",
+		Provider:         "openai",
+		RequestStartedAt: time.Now().UTC(),
+		ReserveResult:    &billing.ReserveResult{ClaimID: 77995, AttemptSeq: 1},
+		PayloadHash:      "payload-cache-settle-fail",
+		AttemptSeq:       1,
+		SettlementIntent: tracker,
+	})
+
+	if !served || rec.Code != http.StatusInternalServerError {
+		t.Fatalf("served/status=%v/%d want true/500 body=%s", served, rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 || len(settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 1/1", len(settler.calls), len(settler.aborts))
+	}
+	if got := strings.Join(intentStore.events, "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%s want pending->aborted", got)
+	}
+	if intentStore.operationCalls["mark_failed"] != 0 {
+		t.Fatalf("交付前失败不得写 failed: calls=%v", intentStore.operationCalls)
 	}
 }
 
@@ -356,9 +485,9 @@ func TestSettlementIntentUsesAuthoritativeReserveAttempt(t *testing.T) {
 	}
 }
 
-// TestSettlementIntentDoubleFailureBecomesFailedWithActualCost 守住结算与恢复同时失败时的
-// 终态和金额证据，恢复组件存在本身不能冒充成功入队。
-func TestSettlementIntentDoubleFailureBecomesFailedWithActualCost(t *testing.T) {
+// TestSettlementIntentDoubleFailurePersistsReplayEvidence 守住结算与恢复同时失败时的
+// 金额和可重放证据，恢复组件存在本身不能冒充成功入队。
+func TestSettlementIntentDoubleFailurePersistsReplayEvidence(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	intentStore := &recordingSettlementIntentStore{}
 	settler := &postDeliveryFakeSettler{settleErr: errors.New("结算失败")}
@@ -388,11 +517,25 @@ func TestSettlementIntentDoubleFailureBecomesFailedWithActualCost(t *testing.T) 
 	if !intentStore.actualCost.Equal(wantCost) {
 		t.Fatalf("failed actual_cost=%s want %s", intentStore.actualCost, wantCost)
 	}
+	recoveryPayload, err := settlementrecovery.Decode(intentStore.recoveryPayload)
+	if err != nil {
+		t.Fatalf("恢复载荷不可解码: %v", err)
+	}
+	if recoveryPayload.Source != settlementrecovery.SourceDirectSettle ||
+		recoveryPayload.ToSettleRequest().ClaimID != intentStore.created.ClaimID ||
+		intentStore.recoveryClass == "" {
+		t.Fatalf(
+			"恢复证据 source/claim/class=%q/%d/%q",
+			recoveryPayload.Source,
+			recoveryPayload.ToSettleRequest().ClaimID,
+			intentStore.recoveryClass,
+		)
+	}
 }
 
-// TestSettlementIntentCacheHitWriteFailureHasNoDeliveryState 守住缓存响应只有整帧无错写出后
-// 才能产生 delivering/settled 证据，账本提交与客户端交付分别表达。
-func TestSettlementIntentCacheHitWriteFailureHasNoDeliveryState(t *testing.T) {
+// TestSettlementIntentCacheHitWriteFailureKeepsCommittedMoneyState 守住缓存账本提交
+// 先于客户端写入；即使 socket 短写，意图仍必须与已提交 claim 同步为 settled。
+func TestSettlementIntentCacheHitWriteFailureKeepsCommittedMoneyState(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	cache := l2cache.NewMemoryStore(1<<20, time.Minute)
 	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
@@ -417,17 +560,17 @@ func TestSettlementIntentCacheHitWriteFailureHasNoDeliveryState(t *testing.T) {
 	if len(settler.cacheHitCommits) != 1 {
 		t.Fatalf("cache-hit commit calls=%d want 1", len(settler.cacheHitCommits))
 	}
-	if got := strings.Join(intentStore.events, "->"); got != "pending" {
-		t.Fatalf("短写后的 intent lifecycle=%s want pending", got)
+	if got := strings.Join(intentStore.events, "->"); got != "pending->settled" {
+		t.Fatalf("短写后的 intent lifecycle=%s want pending->settled", got)
 	}
-	if intentStore.operationCalls["mark_delivering"] != 0 || intentStore.operationCalls["mark_settled"] != 0 {
-		t.Fatalf("短写后不得调用交付终态: calls=%v", intentStore.operationCalls)
+	if intentStore.operationCalls["mark_delivering"] != 0 || intentStore.operationCalls["mark_settled"] != 1 {
+		t.Fatalf("缓存提交后的状态调用不符: calls=%v", intentStore.operationCalls)
 	}
 }
 
-// TestSettlementIntentPostAcquireCacheHitWriteFailureHasNoDeliveryState 守住已取得账号的
-// 缓存结算分支同样以整帧写证据推进意图，不把账本成功误写成客户端交付成功。
-func TestSettlementIntentPostAcquireCacheHitWriteFailureHasNoDeliveryState(t *testing.T) {
+// TestSettlementIntentPostAcquireCacheHitWriteFailureKeepsCommittedMoneyState 守住
+// 已取得账号的缓存结算分支同样先收敛账本和意图，再尝试客户端写入。
+func TestSettlementIntentPostAcquireCacheHitWriteFailureKeepsCommittedMoneyState(t *testing.T) {
 	t.Setenv("HUAKAI_RELEASE_MODE", "development")
 	ctx := context.Background()
 	intentStore := &recordingSettlementIntentStore{}
@@ -481,8 +624,8 @@ func TestSettlementIntentPostAcquireCacheHitWriteFailureHasNoDeliveryState(t *te
 	if len(settler.calls) != 1 || len(settler.aborts) != 0 {
 		t.Fatalf("cache settle/abort=%d/%d want 1/0", len(settler.calls), len(settler.aborts))
 	}
-	if got := strings.Join(intentStore.events, "->"); got != "pending" {
-		t.Fatalf("短写后的 intent lifecycle=%s want pending", got)
+	if got := strings.Join(intentStore.events, "->"); got != "pending->settled" {
+		t.Fatalf("短写后的 intent lifecycle=%s want pending->settled", got)
 	}
 }
 
@@ -503,8 +646,8 @@ func TestStreamingHandlerSettlementIntentLifecycle(t *testing.T) {
 		if got := strings.Join(intentStore.events, "->"); got != "pending->delivering->settled" {
 			t.Fatalf("stream intent lifecycle=%s want pending->delivering->settled", got)
 		}
-		if w.firstWriteCompletedAt.IsZero() || intentStore.firstByteAt.Before(w.firstWriteCompletedAt) {
-			t.Fatalf("stream first_byte_at=%s 早于首帧写完成=%s", intentStore.firstByteAt, w.firstWriteCompletedAt)
+		if w.firstWriteCompletedAt.IsZero() || intentStore.firstByteAt.After(w.firstWriteCompletedAt) {
+			t.Fatalf("stream first_byte_at=%s 晚于首帧写完成=%s", intentStore.firstByteAt, w.firstWriteCompletedAt)
 		}
 	})
 
@@ -538,17 +681,15 @@ func TestStreamingHandlerSettlementIntentLifecycle(t *testing.T) {
 		if len(settler.calls) != 0 || len(settler.aborts) != 1 {
 			t.Fatalf("首帧写失败 settle/abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
 		}
-		for _, state := range intentStore.events {
-			if state == "delivering" || state == "settled" || state == "settling" {
-				t.Fatalf("首帧写失败不得出现交付态: %v", intentStore.events)
-			}
+		if got := strings.Join(intentStore.events, "->"); got != "pending->delivering->aborted" {
+			t.Fatalf("首帧写失败 intent lifecycle=%s want pending->delivering->aborted", got)
 		}
 	})
 }
 
-// TestStreamingDeliveryDoesNotWaitForSlowIntentStore 守住首帧后的旁路数据库停顿不延迟
-// 后续业务帧，终态仍等待旁路尝试结束以保持乐观锁顺序。
-func TestStreamingDeliveryDoesNotWaitForSlowIntentStore(t *testing.T) {
+// TestStreamingDeliveryEvidenceTimeoutFailsBeforeBusinessFrame 守住交付证据数据库
+// 停顿时快速拒绝，不能先发业务帧或进入主结算。
+func TestStreamingDeliveryEvidenceTimeoutFailsBeforeBusinessFrame(t *testing.T) {
 	logs := captureSlogForTest(t)
 	store := &waitingDeliveringSettlementIntentStore{
 		recordingSettlementIntentStore: &recordingSettlementIntentStore{},
@@ -562,26 +703,24 @@ func TestStreamingDeliveryDoesNotWaitForSlowIntentStore(t *testing.T) {
 
 	serveSettlementIntentRequest(t, deps, w, openAIStreamingRequestBody(), nil)
 
-	if w.Code != http.StatusOK || len(settler.calls) != 1 {
-		t.Fatalf("status/settles=%d/%d want 200/1", w.Code, len(settler.calls))
+	if w.Code != http.StatusServiceUnavailable || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+		t.Fatalf("status/settles/aborts=%d/%d/%d want 503/0/1", w.Code, len(settler.calls), len(settler.aborts))
 	}
-	if len(w.completedAt) < 2 {
-		t.Fatalf("业务写次数=%d want >=2", len(w.completedAt))
-	}
-	if gap := w.completedAt[len(w.completedAt)-1].Sub(w.completedAt[0]); gap >= 75*time.Millisecond {
-		t.Fatalf("慢意图 Store 延迟了后续流式帧: 首尾写间隔=%s", gap)
+	if len(w.completedAt) != 1 {
+		// 只有最终 JSON 错误可以写入；业务 SSE 不得越过交付硬门。
+		t.Fatalf("响应写次数=%d want 1", len(w.completedAt))
 	}
 	if elapsed := time.Since(startedAt); elapsed < 90*time.Millisecond {
 		t.Fatalf("夹具未实际等待意图短超时: 总耗时=%s", elapsed)
 	}
-	if got := strings.Join(store.events, "->"); got != "pending->settled" {
-		t.Fatalf("慢 delivering 后 intent lifecycle=%s want pending->settled", got)
+	if got := strings.Join(store.events, "->"); got != "pending->aborted" {
+		t.Fatalf("慢 delivering 后 intent lifecycle=%s want pending->aborted", got)
 	}
 	assertSettlementIntentWarningSanitized(t, logs.String(), "mark_delivering")
 }
 
-// TestSettlementIntentPreDeliveryWritesRespectCancellation 守住交付前旁路写使用请求取消
-// 和短预算，数据库停顿不得无限拖住主响应。
+// TestSettlementIntentPreDeliveryWritesRespectCancellation 守住交付前证据写使用请求取消
+// 和短预算；数据库停顿必须快速拒绝并释放 claim，不能无限等待或继续发网。
 func TestSettlementIntentPreDeliveryWritesRespectCancellation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -635,11 +774,11 @@ func TestSettlementIntentPreDeliveryWritesRespectCancellation(t *testing.T) {
 			if tc.cancelSoon && time.Since(canceledAt) >= 75*time.Millisecond {
 				t.Fatalf("请求取消后旁路写仍等待 %s", time.Since(canceledAt))
 			}
-			if rec.Code != http.StatusOK {
-				t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d want 503 body=%s", rec.Code, rec.Body.String())
 			}
-			if len(settler.calls) != 1 || len(settler.aborts) != 0 {
-				t.Fatalf("主结算/Abort=%d/%d want 1/0", len(settler.calls), len(settler.aborts))
+			if len(settler.calls) != 0 || len(settler.aborts) != 1 {
+				t.Fatalf("主结算/Abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
 			}
 			if store.deadline.IsZero() {
 				t.Fatal("交付前写上下文缺少短 deadline")
@@ -649,8 +788,8 @@ func TestSettlementIntentPreDeliveryWritesRespectCancellation(t *testing.T) {
 	}
 }
 
-// TestSettlementIntentDeliveringRespectsCancellation 守住首帧写出后若请求已取消，
-// delivering 旁路立即放弃，而终态仍使用独立有界上下文完成。
+// TestSettlementIntentDeliveringRespectsCancellation 守住请求在交付硬门前取消时，
+// 不写业务响应、不结算，并使用独立上下文释放预留。
 func TestSettlementIntentDeliveringRespectsCancellation(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	logs := captureSlogForTest(t)
@@ -670,31 +809,31 @@ func TestSettlementIntentDeliveringRespectsCancellation(t *testing.T) {
 
 	serveSettlementIntentRequest(t, deps, rec, `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`, ctx)
 
-	if rec.Code != http.StatusOK || len(settler.calls) != 1 {
-		t.Fatalf("status/settles=%d/%d want 200/1", rec.Code, len(settler.calls))
+	if rec.Code != http.StatusServiceUnavailable || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+		t.Fatalf("status/settles/aborts=%d/%d/%d want 503/0/1", rec.Code, len(settler.calls), len(settler.aborts))
 	}
 	if baseStore.operationCalls["mark_delivering"] != 0 {
 		t.Fatalf("取消后 delivering store calls=%d want 0", baseStore.operationCalls["mark_delivering"])
 	}
-	if baseStore.operationCalls["mark_settled"] != 1 {
-		t.Fatalf("取消后 terminal store calls=%d want 1", baseStore.operationCalls["mark_settled"])
+	if baseStore.operationCalls["mark_aborted"] != 1 {
+		t.Fatalf("取消后 terminal store calls=%d want 1", baseStore.operationCalls["mark_aborted"])
 	}
-	if got := strings.Join(baseStore.events, "->"); got != "pending->settled" {
-		t.Fatalf("取消后 intent lifecycle=%s want pending->settled", got)
+	if got := strings.Join(baseStore.events, "->"); got != "pending->aborted" {
+		t.Fatalf("取消后 intent lifecycle=%s want pending->aborted", got)
 	}
 	assertSettlementIntentWarningSanitized(t, logs.String(), "mark_delivering")
 }
 
-// TestSettlementIntentOperationsFailOpen 覆盖每个状态写的普通错误和超时错误，旁路失败
-// 只能留下脱敏 warning，不能改变原有结算或 Abort 决策。
-func TestSettlementIntentOperationsFailOpen(t *testing.T) {
+// TestSettlementIntentOperationFailures 区分交付前硬门与交付后的尽力状态推进：
+// pending 写失败必须拒绝，后续状态写失败不得改写已交付响应或主结算结果。
+func TestSettlementIntentOperationFailures(t *testing.T) {
 	operations := []string{
 		"insert_pending",
 		"mark_delivering",
 		"mark_settling",
 		"mark_settled",
 		"mark_aborted",
-		"mark_failed",
+		"mark_recovery_pending",
 	}
 	modes := []struct {
 		name string
@@ -721,7 +860,7 @@ func TestSettlementIntentOperationsFailOpen(t *testing.T) {
 				switch operation {
 				case "mark_settling":
 					settler.err = errors.New("主结算失败")
-				case "mark_failed":
+				case "mark_recovery_pending":
 					settler.err = errors.New("主结算失败")
 					recovery.retErr = errors.New("恢复队列失败")
 				case "mark_aborted":
@@ -730,14 +869,22 @@ func TestSettlementIntentOperationsFailOpen(t *testing.T) {
 
 				rec := invokeHandlerPath(t, deps, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
-				if operation == "mark_aborted" {
+				switch operation {
+				case "insert_pending", "mark_delivering":
+					if rec.Code != http.StatusServiceUnavailable {
+						t.Fatalf("交付前证据失败 status=%d want 503 body=%s", rec.Code, rec.Body.String())
+					}
+					if len(settler.calls) != 0 || len(settler.aborts) != 1 {
+						t.Fatalf("主结算/Abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
+					}
+				case "mark_aborted":
 					if rec.Code == http.StatusOK {
 						t.Fatalf("上游失败的主响应不得因意图旁路改成 200: body=%s", rec.Body.String())
 					}
 					if len(settler.calls) != 0 || len(settler.aborts) != 1 {
 						t.Fatalf("主结算/Abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
 					}
-				} else {
+				default:
 					if rec.Code != http.StatusOK {
 						t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
 					}
@@ -754,9 +901,9 @@ func TestSettlementIntentOperationsFailOpen(t *testing.T) {
 	}
 }
 
-// TestSettlementIntentStoreBoundaryFaultsFailOpen 守住六种旁路写在真实停顿或 panic
-// 下仍不改变流式、非流式请求的交付结果和主钱路调用。
-func TestSettlementIntentStoreBoundaryFaultsFailOpen(t *testing.T) {
+// TestSettlementIntentStoreBoundaryFaults 守住存储真实停顿或 panic 时的边界：
+// pending 硬门快速拒绝，交付后状态故障不篡改已经发生的业务结果。
+func TestSettlementIntentStoreBoundaryFaults(t *testing.T) {
 	paths := []struct {
 		name   string
 		stream bool
@@ -770,7 +917,7 @@ func TestSettlementIntentStoreBoundaryFaultsFailOpen(t *testing.T) {
 		"mark_settling",
 		"mark_settled",
 		"mark_aborted",
-		"mark_failed",
+		"mark_recovery_pending",
 	}
 	modes := []settlementIntentFaultMode{
 		settlementIntentFaultBlock,
@@ -788,16 +935,24 @@ func TestSettlementIntentStoreBoundaryFaultsFailOpen(t *testing.T) {
 
 					rec, elapsed := runSettlementIntentFaultRequest(t, deps, body, store)
 
-					if operation == "mark_aborted" {
+					switch operation {
+					case "insert_pending", "mark_delivering":
+						if rec.Code != http.StatusServiceUnavailable {
+							t.Fatalf("交付前证据故障 status=%d want 503 body=%s", rec.Code, rec.Body.String())
+						}
+						if len(settler.calls) != 0 || len(settler.aborts) != 1 {
+							t.Fatalf("主结算/Abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
+						}
+					case "mark_aborted":
 						if rec.Code == http.StatusOK {
 							t.Fatalf("上游失败路径被旁路故障改成成功响应: body=%s", rec.Body.String())
 						}
 						if len(settler.calls) != 0 || len(settler.aborts) != 1 {
 							t.Fatalf("主结算/Abort=%d/%d want 0/1", len(settler.calls), len(settler.aborts))
 						}
-					} else {
+					default:
 						if rec.Code != http.StatusOK {
-							t.Fatalf("旁路故障阻断交付: status=%d body=%s", rec.Code, rec.Body.String())
+							t.Fatalf("终态状态故障改变已交付响应: status=%d body=%s", rec.Code, rec.Body.String())
 						}
 						if len(settler.calls) != 1 || len(settler.aborts) != 0 {
 							t.Fatalf("主结算/Abort=%d/%d want 1/0", len(settler.calls), len(settler.aborts))
@@ -816,9 +971,9 @@ func TestSettlementIntentStoreBoundaryFaultsFailOpen(t *testing.T) {
 	}
 }
 
-// TestSettlementIntentDeliveringCannotDelayMoneyPath 守住客户端已收到业务数据后，
-// 主结算先于受阻的 delivering 旁路完成，流式和非流式遵守同一优先级。
-func TestSettlementIntentDeliveringCannotDelayMoneyPath(t *testing.T) {
+// TestSettlementIntentDeliveringBlocksDeliveryAndMoneyPath 守住 delivering 持久化
+// 未完成时，流式和非流式都不得写业务响应或启动主结算。
+func TestSettlementIntentDeliveringBlocksDeliveryAndMoneyPath(t *testing.T) {
 	paths := []struct {
 		name   string
 		stream bool
@@ -832,6 +987,8 @@ func TestSettlementIntentDeliveringCannotDelayMoneyPath(t *testing.T) {
 			defer store.releaseAndWait(t)
 			settler := newSettlementIntentSignalSettler()
 			deps, body := settlementIntentSignalRequestDeps(t, path.stream, store, settler)
+			health := &recordingChannelHealth{}
+			deps.ChannelHealth = health
 			rec := httptest.NewRecorder()
 			done := serveSettlementIntentRequestAsync(deps, rec, body)
 
@@ -842,18 +999,25 @@ func TestSettlementIntentDeliveringCannotDelayMoneyPath(t *testing.T) {
 			}
 			select {
 			case <-settler.settleStarted:
-			case <-time.After(250 * time.Millisecond):
-				t.Fatal("主结算在等待旁路 delivering")
+				t.Fatal("交付证据未落库时启动了主结算")
+			case <-time.After(50 * time.Millisecond):
 			}
 
-			store.release()
 			select {
 			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("旁路恢复后请求仍未返回")
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("交付硬门未在短预算内返回")
 			}
-			if rec.Code != http.StatusOK || len(settler.calls) != 1 {
-				t.Fatalf("status/settles=%d/%d want 200/1", rec.Code, len(settler.calls))
+			if rec.Code != http.StatusServiceUnavailable || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+				t.Fatalf("status/settles/aborts=%d/%d/%d want 503/0/1", rec.Code, len(settler.calls), len(settler.aborts))
+			}
+			for _, signal := range health.signals {
+				if signal.Class != channelhealth.SignalSuccess {
+					t.Fatalf("本地交付证据故障污染账号健康: signals=%+v", health.signals)
+				}
+			}
+			if len(health.forceCooldowns) != 0 {
+				t.Fatalf("本地交付证据故障触发账号冷却: %+v", health.forceCooldowns)
 			}
 		})
 	}
@@ -892,8 +1056,8 @@ func TestSettlementIntentQuotaDenyClosesInsertedIntent(t *testing.T) {
 	if store.created.TenantID == 0 || store.created.RequestID == "" || store.created.ClaimID != 99021 {
 		t.Fatalf("quota deny intent 身份不完整: %+v", store.created)
 	}
-	if strings.Contains(logs.String(), "结算意图旁路写失败") {
-		t.Fatalf("quota deny 正常生命周期不应产生旁路告警: %s", logs.String())
+	if strings.Contains(logs.String(), "结算意图状态写失败") {
+		t.Fatalf("quota deny 正常生命周期不应产生状态告警: %s", logs.String())
 	}
 }
 
@@ -910,14 +1074,14 @@ func TestStreamingSettlementIntentDisabledHasNoTransitions(t *testing.T) {
 	if rec.Code != http.StatusOK || len(settler.calls) != 1 || len(settler.aborts) != 0 {
 		t.Fatalf("status/settle/abort=%d/%d/%d want 200/1/0", rec.Code, len(settler.calls), len(settler.aborts))
 	}
-	if strings.Contains(logs.String(), "结算意图旁路写失败") {
-		t.Fatalf("默认关闭不应产生旁路状态告警: %s", logs.String())
+	if strings.Contains(logs.String(), "结算意图状态写失败") {
+		t.Fatalf("默认关闭不应产生状态告警: %s", logs.String())
 	}
 }
 
-// TestSettlementIntentMissingStoreAndZeroIDFailOpen 区分默认关闭与启用态接线故障，
-// 并守住零标识不会伪造状态迁移。
-func TestSettlementIntentMissingStoreAndZeroIDFailOpen(t *testing.T) {
+// TestSettlementIntentMissingStoreAndZeroIDFailClosed 区分显式关闭与启用态接线故障，
+// 并守住启用时无存储或零标识都在上游调用前释放 claim。
+func TestSettlementIntentMissingStoreAndZeroIDFailClosed(t *testing.T) {
 	t.Run("enabled_nil_store", func(t *testing.T) {
 		enableHCSFDispatchForTest(t)
 		logs := captureSlogForTest(t)
@@ -930,8 +1094,8 @@ func TestSettlementIntentMissingStoreAndZeroIDFailOpen(t *testing.T) {
 
 		rec := invokeHandlerPath(t, deps, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
-		if rec.Code != http.StatusOK || len(settler.calls) != 1 {
-			t.Fatalf("enabled nil store status/settles=%d/%d want 200/1", rec.Code, len(settler.calls))
+		if rec.Code != http.StatusServiceUnavailable || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+			t.Fatalf("enabled nil store status/settle/abort=%d/%d/%d want 503/0/1", rec.Code, len(settler.calls), len(settler.aborts))
 		}
 		assertSettlementIntentWarningSanitized(t, logs.String(), "insert_pending")
 	})
@@ -949,7 +1113,7 @@ func TestSettlementIntentMissingStoreAndZeroIDFailOpen(t *testing.T) {
 		if rec.Code != http.StatusOK || len(settler.calls) != 1 {
 			t.Fatalf("disabled nil store status/settles=%d/%d want 200/1", rec.Code, len(settler.calls))
 		}
-		if strings.Contains(logs.String(), "结算意图旁路写失败") {
+		if strings.Contains(logs.String(), "结算意图状态写失败") {
 			t.Fatalf("默认关闭不应产生意图告警: %s", logs.String())
 		}
 	})
@@ -966,14 +1130,13 @@ func TestSettlementIntentMissingStoreAndZeroIDFailOpen(t *testing.T) {
 
 		rec := invokeHandlerPath(t, deps, "/v1/chat/completions", `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
 
-		if rec.Code != http.StatusOK || len(settler.calls) != 1 {
-			t.Fatalf("zero id status/settles=%d/%d want 200/1", rec.Code, len(settler.calls))
+		if rec.Code != http.StatusServiceUnavailable || len(settler.calls) != 0 || len(settler.aborts) != 1 {
+			t.Fatalf("zero id status/settle/abort=%d/%d/%d want 503/0/1", rec.Code, len(settler.calls), len(settler.aborts))
 		}
 		if len(store.events) != 0 {
 			t.Fatalf("zero id 不得伪造状态迁移: %v", store.events)
 		}
 		assertSettlementIntentWarningSanitized(t, logs.String(), "insert_pending")
-		assertSettlementIntentWarningSanitized(t, logs.String(), "mark_delivering")
 	})
 }
 
@@ -1056,10 +1219,6 @@ type waitingDeliveringSettlementIntentStore struct {
 }
 
 func (s *waitingDeliveringSettlementIntentStore) MarkDelivering(ctx context.Context, _ int64, _ int32, _ time.Time) (int32, error) {
-	if s.operationCalls == nil {
-		s.operationCalls = make(map[string]int)
-	}
-	s.operationCalls["mark_delivering"]++
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
@@ -1156,6 +1315,20 @@ func (s *settlementIntentFaultStore) MarkFailed(ctx context.Context, id int64, v
 	return s.base.MarkFailed(ctx, id, version, actualCost)
 }
 
+func (s *settlementIntentFaultStore) MarkRecoveryPending(
+	ctx context.Context,
+	id int64,
+	version int32,
+	actualCost decimal.Decimal,
+	payload json.RawMessage,
+	failureClass string,
+) (int32, error) {
+	if s.fault("mark_recovery_pending") {
+		return version + 1, nil
+	}
+	return s.base.MarkRecoveryPending(ctx, id, version, actualCost, payload, failureClass)
+}
+
 func (s *settlementIntentFaultStore) ListStaleNonTerminalSettlementIntents(ctx context.Context, staleCutoff, createdBefore time.Time, limit int32) ([]settlementintent.StaleSettlementIntent, error) {
 	return s.base.ListStaleNonTerminalSettlementIntents(ctx, staleCutoff, createdBefore, limit)
 }
@@ -1170,6 +1343,10 @@ func (s *settlementIntentFaultStore) MarkAbortedIfStale(ctx context.Context, id 
 
 func (s *settlementIntentFaultStore) MarkSupersededIfStale(ctx context.Context, id int64, version int32) (int32, error) {
 	return s.base.MarkSupersededIfStale(ctx, id, version)
+}
+
+func (s *settlementIntentFaultStore) MarkSettlingIfStale(ctx context.Context, id int64, version int32) (int32, error) {
+	return s.base.MarkSettlingIfStale(ctx, id, version)
 }
 
 func (s *settlementIntentFaultStore) release() {
@@ -1254,7 +1431,7 @@ func settlementIntentFaultRequestDeps(t *testing.T, stream bool, operation strin
 	switch operation {
 	case "mark_settling":
 		settler.err = errors.New("主结算失败")
-	case "mark_failed":
+	case "mark_recovery_pending":
 		settler.err = errors.New("主结算失败")
 		recovery.retErr = errors.New("恢复队列失败")
 	case "mark_aborted":
@@ -1356,7 +1533,7 @@ func serveSettlementIntentRequest(t *testing.T, deps ChatHandlerDeps, w http.Res
 
 func assertSettlementIntentWarningSanitized(t *testing.T, logs, operation string) {
 	t.Helper()
-	for _, want := range []string{"结算意图旁路写失败", operation, "tenant_id", "request_id", "claim_id", "error_type"} {
+	for _, want := range []string{"结算意图状态写失败", operation, "tenant_id", "request_id", "claim_id", "error_type"} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("意图 warning 缺少 %q: %s", want, logs)
 		}

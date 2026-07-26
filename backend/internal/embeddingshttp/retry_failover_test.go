@@ -419,7 +419,8 @@ func (d *embeddingRetryDispatcher) Dispatch(_ context.Context, in gateway.Dispat
 }
 
 type embeddingHealthSpy struct {
-	signals []channelhealth.Signal
+	signals        []channelhealth.Signal
+	forceCooldowns int
 }
 
 func (s *embeddingHealthSpy) ApplySignal(_ context.Context, signal channelhealth.Signal) (channelhealth.Record, error) {
@@ -428,6 +429,7 @@ func (s *embeddingHealthSpy) ApplySignal(_ context.Context, signal channelhealth
 }
 
 func (s *embeddingHealthSpy) ForceCooldown(_ context.Context, key channelhealth.ChannelKey, _ time.Time, _ string) (channelhealth.Record, error) {
+	s.forceCooldowns++
 	return channelhealth.Record{Key: key}, nil
 }
 

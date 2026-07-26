@@ -13,7 +13,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
-	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
 	"github.com/BloomingProsperity/HUAKAI/internal/authaudit"
 	"github.com/BloomingProsperity/HUAKAI/internal/captcha"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
@@ -47,7 +46,7 @@ type AuthEventSink interface {
 
 type AuthTwoFactor interface {
 	LoginRequired(context.Context, int64, int64) (bool, error)
-	StartLoginChallenge(context.Context, int64, int64) (twofa.Challenge, error)
+	StartLoginChallengeAtVersion(context.Context, int64, int64, int) (twofa.Challenge, error)
 	VerifyLoginChallenge(context.Context, twofa.ChallengeVerifyInput) (twofa.VerifyResult, error)
 }
 
@@ -88,6 +87,7 @@ type AuthHandlerDeps struct {
 	Captcha           captcha.CaptchaVerifier
 	TwoFactor         AuthTwoFactor
 	TwoFactorSettings AuthTwoFactorSettings
+	PlatformTenantID  int64
 	// LoginThrottle 是密码登录的「argon2 前置」IP 限流闸。nil = 不限流(测试/旧装配),
 	// 生产装配必须注入,否则未认证攻击者可对任意邮箱触发昂贵 argon2 放大 CPU。
 	LoginThrottle *loginthrottle.Limiter
@@ -331,7 +331,9 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		if required {
-			challenge, err := d.TwoFactor.StartLoginChallenge(r.Context(), user.TenantID, user.ID)
+			challenge, err := d.TwoFactor.StartLoginChallengeAtVersion(
+				r.Context(), user.TenantID, user.ID, user.PasswordVersion,
+			)
 			if err != nil {
 				recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 					EventType: "user_login_2fa_failed", TenantID: user.TenantID, UserID: user.ID, Outcome: "failure",
@@ -352,8 +354,9 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
+			TenantID: user.TenantID, UserID: user.ID, AuthVersion: user.PasswordVersion,
+			DeviceInfo: req.DeviceInfo,
+			IP:         d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: "password",
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
@@ -369,7 +372,7 @@ func newAuthLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: user.TenantID, UserID: user.ID, Outcome: "success", AuthMethod: "password",
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": deliverSession(w, r, tokens)})
 	}
 }
 
@@ -418,11 +421,21 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeTwoFactorLoginError(w, err)
 			return
 		}
+		if result.AuthVersion <= 0 {
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
+				EventType: "user_login_2fa_failed", TenantID: result.TenantID, UserID: result.UserID,
+				Outcome: "failure", ReasonClass: "two_factor_challenge_invalid", AuthMethod: "password+2fa",
+			})
+			writeTwoFactorLoginError(w, twofa.ErrChallengeInvalid)
+			return
+		}
 		authMethod := "password+" + result.Method
 		// 账号资格门:challenge 签发(密码对)到此刻之间账号可能被封禁/锁定/删除,
 		// 签发会话前必须复核(与 passkey/social 登录同一道门), 否则 challenge 窗口
 		// 成为停用控制的绕过口。对外统一 403 account_not_active, 不泄露具体状态。
-		if user, err := d.Auth.GetProfile(r.Context(), result.TenantID, result.UserID); err != nil || userauth.EnsureLoginEligible(user, time.Now()) != nil {
+		user, profileErr := d.Auth.GetProfile(r.Context(), result.TenantID, result.UserID)
+		if profileErr != nil || userauth.EnsureLoginEligible(user, time.Now()) != nil {
+			err := profileErr
 			if err == nil {
 				err = userauth.EnsureLoginEligible(user, time.Now())
 			}
@@ -442,8 +455,9 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: result.TenantID, UserID: result.UserID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,
+			TenantID: result.TenantID, UserID: result.UserID, AuthVersion: result.AuthVersion,
+			DeviceInfo: req.DeviceInfo,
+			IP:         d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: authMethod,
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
@@ -459,7 +473,7 @@ func newAuthTwoFactorLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "user_login_succeeded", TenantID: result.TenantID, UserID: result.UserID, Outcome: "success", AuthMethod: authMethod,
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"session": tokens})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"session": deliverSession(w, r, tokens)})
 	}
 }
 
@@ -723,8 +737,9 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			return
 		}
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: userauth.SocialProviderTelegram,
+			TenantID: user.TenantID, UserID: user.ID, AuthVersion: user.PasswordVersion,
+			DeviceInfo: req.DeviceInfo,
+			IP:         d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: userauth.SocialProviderTelegram,
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
@@ -742,7 +757,7 @@ func newAuthTelegramLoginHandler(d AuthHandlerDeps) http.HandlerFunc {
 			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
 			Provider: userauth.SocialProviderTelegram, Outcome: "success", AuthMethod: userauth.SocialProviderTelegram,
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": deliverSession(w, r, tokens)})
 	}
 }
 
@@ -822,7 +837,7 @@ func newAuthSocialIdentityChangedHandler(d AuthHandlerDeps) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "invalid_auth_request", "auth request is invalid")
 			return
 		}
-		if !adminhttpcore.CanAccessTenant(ident, req.TenantID) {
+		if err := ident.CanManageFinalUsersForTenant(req.TenantID, d.PlatformTenantID); err != nil {
 			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot act on this tenant scope")
 			return
 		}

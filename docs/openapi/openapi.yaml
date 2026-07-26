@@ -2015,8 +2015,8 @@ paths:
       description: |
         Platform-admin (adminGate RBAC) read-only overview for global settled
         usage over a recent window. Totals include request count, actual_cost
-        spend, input+output token total, distinct active users, distinct active
-        API keys, and success rate where successful end classes are
+        spend, input/output/cache/image token and cost breakdowns, distinct
+        active users, distinct active API keys, and success rate where successful end classes are
         stream_end_graceful and non_streaming. The daily trend is UTC-day
         bucketed request count plus actual_cost spend, ordered oldest to newest.
         Window is required (e.g. 24h, 7d, 30d) and capped at 90 days.
@@ -2040,6 +2040,16 @@ paths:
                       requests: { type: integer, format: int64 }
                       total_cost: { type: string }
                       total_tokens: { type: integer, format: int64 }
+                      total_tokens_input: { type: integer, format: int64 }
+                      total_tokens_output: { type: integer, format: int64 }
+                      total_cache_creation_tokens: { type: integer, format: int64 }
+                      total_cache_read_tokens: { type: integer, format: int64 }
+                      total_image_output_tokens: { type: integer, format: int64 }
+                      total_input_cost: { type: string }
+                      total_output_cost: { type: string }
+                      total_cache_creation_cost: { type: string }
+                      total_cache_read_cost: { type: string }
+                      total_image_output_cost: { type: string }
                       active_users: { type: integer, format: int64 }
                       active_api_keys: { type: integer, format: int64 }
                       success_count: { type: integer, format: int64, description: Successful requests in the window. }
@@ -2688,7 +2698,7 @@ paths:
         - backend/cmd/gateway/routes_usageadmin.go
       description: |
         Platform-admin (adminGate RBAC) read-only leaderboard ranking usage by
-        user, requested_model, or provider_account over a recent window, ordered
+        user, requested_model, provider_account, or api_key over a recent window, ordered
         by real upstream spend (actual_cost). Operator surface: actual cost is
         intentionally exposed. Window is required (e.g. 24h, 7d, 30d), capped at
         90 days; limit defaults to 20 and is capped at 100.
@@ -2696,7 +2706,12 @@ paths:
         - name: by
           in: query
           required: false
-          schema: { type: string, enum: [user, model, provider_account], default: user }
+          schema: { type: string, enum: [user, model, provider_account, api_key], default: user }
+        - name: tenant_id
+          in: query
+          required: false
+          description: Only used with by=api_key; omit or pass no value for the global platform view, or pass a positive tenant id for tenant drilldown.
+          schema: { type: integer, format: int64, minimum: 1 }
         - name: window
           in: query
           required: true
@@ -2847,8 +2862,9 @@ paths:
       description: |
         Platform-admin (adminGate RBAC) read-only performance metrics grouped
         by UTC requested_at bucket and requested_model. Bucket is validated by
-        the handler and must be hour or day. No cost fields are selected or
-        returned.
+        the handler and must be hour or day. limit selects the top model series
+        across the whole window, and every bucket for those series is returned.
+        No cost fields are selected or returned.
       parameters:
         - name: window
           in: query
@@ -2861,6 +2877,7 @@ paths:
         - name: limit
           in: query
           required: false
+          description: Maximum number of model series selected across the full window, not a limit on returned bucket rows.
           schema: { type: integer, default: 20, maximum: 100 }
       responses:
         '200':
@@ -2901,15 +2918,22 @@ paths:
         - backend/sql/queries/usage_analytics.sql
       description: |
         Platform-admin (adminGate RBAC) read-only health score for recent
-        settled usage. The score is 0-100. Business health combines recent
-        error rate and TTFT P99; overall health currently weights business 70%
-        and infra 30%, with infra using the same error/latency signal as a
-        first-cut placeholder. No cost fields are returned.
+        settled usage. Business health combines error rate and TTFT P99.
+        When tenant_id is supplied and channel health has managed channels,
+        overall health weights business 70% and infrastructure 30%. Otherwise
+        infra_score is null, score_basis is business_only, and overall_score
+        equals business_score; unknown infrastructure is never reported as 100.
+        No cost fields are returned.
       parameters:
         - name: window
           in: query
           required: true
           schema: { type: string, example: 24h }
+        - name: tenant_id
+          in: query
+          required: false
+          description: Positive tenant id used to include the tenant's channel-health distribution.
+          schema: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
           description: Recent usage health score and input signals.
@@ -2917,16 +2941,25 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [window, overall_score, business_score, infra_score, score_basis, signals]
                 properties:
                   window: { type: string }
                   overall_score: { type: integer, minimum: 0, maximum: 100 }
                   business_score: { type: integer, minimum: 0, maximum: 100 }
-                  infra_score: { type: integer, minimum: 0, maximum: 100 }
+                  infra_score: { type: integer, minimum: 0, maximum: 100, nullable: true }
+                  score_basis: { type: string, enum: [business_only, business_and_infra] }
                   signals:
                     type: object
+                    required: [error_rate, ttft_p99_ms, channel_health_available, channel_health_status, healthy_channels, managed_channels]
                     properties:
                       error_rate: { type: string }
                       ttft_p99_ms: { type: number }
+                      channel_health_available: { type: boolean }
+                      channel_health_status:
+                        type: string
+                        enum: [available, not_requested, not_configured, query_failed, no_managed_channels]
+                      healthy_channels: { type: integer, format: int64, minimum: 0 }
+                      managed_channels: { type: integer, format: int64, minimum: 0 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
@@ -3023,53 +3056,58 @@ paths:
   /v1/hermes/tools:
     get:
       tags: [hermes]
-      summary: List available read-only diagnostic tools (WAVE H3)
+      summary: 列出当前管理员可发现的 Hermes 运维工具
       operationId: listHermesTools
-      description: >-
-        Lists the gateway-mediated read-only diagnostic tools an operator (and the
-        Hermes assistant) can run, with each tool's input schema, minimum required
-        role, and read-only flag. Admin-gated.
+      description: |
+        返回只读和改动型工具的输入 schema、最低角色、只读/改动标记及是否要求人工确认。
+        租户作用域由认证上下文固定；发现工具不等于获准执行。
+      x-huakai-required-role: platform_admin_or_tenant_operator
       responses:
         '200':
-          description: Registered diagnostic tools.
+          description: 当前已注册且可发现的工具。
           content:
             application/json:
-              schema: { type: object }
+              schema: { $ref: '#/components/schemas/HermesToolListResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/hermes/tool-execute:
     post:
       tags: [hermes]
-      summary: Execute a read-only diagnostic tool (WAVE H3)
+      summary: 执行只读工具或预览/确认改动型工具
       operationId: postHermesToolExecute
-      description: >-
-        Runs one read-only diagnostic tool by name, records a sanitized
-        hermes_tool_calls audit row (success, error, or RBAC denial), mirrors the
-        invocation into the hermes audit ledger, and returns the structured,
-        privacy-bounded result. Admin-gated; tenant scope is enforced by the admin
-        middleware. No tool mutates state in this wave.
+      description: |
+        只读工具直接执行。改动型工具第一次以 confirm=false 请求，只返回预览和一次性
+        correlation_id；管理员确认后以 confirm=true 和同一 correlation_id 再请求，服务端
+        重新解析目标并恰好执行一次。确认绑定租户、管理员、工具、参数和目标，过期、已消费、
+        换参或跨工具复用都拒绝。每条路径写脱敏工具日志；真实变更与操作日志在同一事务提交。
+      x-huakai-required-role: platform_admin_or_tenant_operator
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              properties:
-                tool_name: { type: string }
-                args: { type: object }
-              required: [tool_name]
+            schema: { $ref: '#/components/schemas/HermesToolExecuteRequest' }
       responses:
         '200':
-          description: Structured diagnostic result.
+          description: 只读结果、改动预览或已确认的改动结果。
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/HermesReadOnlyToolResult'
+                  - $ref: '#/components/schemas/HermesMutationPreview'
+                  - $ref: '#/components/schemas/HermesMutationResult'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+        '504':
+          description: 已确认的改动超过执行预算并回滚。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   /v1/hermes/context:
     get:
@@ -4371,6 +4409,8 @@ paths:
       operationId: authLogin
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       description: |
         Login failures are collapsed to a single generic 401 invalid_credentials regardless of cause
         (wrong password, unknown email, or disabled/locked/unverified/reset-required account), so the
@@ -4409,6 +4449,8 @@ paths:
         - backend/internal/gatewayhttp/auth_handler.go
         - backend/internal/twofa/service.go
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       requestBody:
         required: true
         content:
@@ -4463,6 +4505,8 @@ paths:
         - backend/internal/passkey/service.go
         - docs/HUAKAI工程设计手册.md
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       description: |
         Consumes the server-side ceremony session exactly once, validates the authenticator
         assertion against configured RP/origin policy, rejects sign-count regression, and issues
@@ -4809,6 +4853,7 @@ paths:
             Path=/v1/auth/oauth-callback; Max-Age=600; HttpOnly; Secure;
             SameSite=Lax.
           schema: { type: string }
+        - $ref: '#/components/parameters/BrowserSessionMode'
       requestBody:
         required: true
         content:
@@ -4868,6 +4913,8 @@ paths:
       operationId: authOAuthPendingComplete
       x-huakai-spec-source: [backend/internal/oauthpendinghttp/oauth_pending.go]
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       requestBody:
         required: true
         content:
@@ -4898,6 +4945,8 @@ paths:
         - backend/internal/gatewayhttp/auth_handler.go
         - backend/internal/telegramauth/telegramauth.go
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       requestBody:
         required: true
         content:
@@ -4970,8 +5019,8 @@ paths:
       summary: Soft-delete the authenticated user's own account (GDPR self-delete)
       description: |
         Soft-deletes the caller's account (deleted_at set, status='deleted',
-        API keys revoked in the same transaction) and revokes all of the user's
-        sessions so deletion takes effect immediately. The last administrator of
+        API keys revoked) and revokes all of the user's sessions in one transaction
+        so deletion takes effect immediately. The last administrator of
         a tenant cannot self-delete (409). Identity is taken only from the
         session, never the request body.
       operationId: deleteAuthMeSelf
@@ -5000,7 +5049,7 @@ paths:
       summary: Change the authenticated user's password (verifies the current one)
       description: |
         Verifies old_password, sets new_password (bumping the password version),
-        then revokes all OTHER sessions while keeping the current one — so a
+        and revokes all OTHER sessions in the same transaction while keeping the current one — so a
         stolen pre-change session cannot survive a password change. Identity is
         taken only from the session.
       operationId: changeAuthMePassword
@@ -5306,10 +5355,10 @@ paths:
             schema: { $ref: '#/components/schemas/AuthTwoFactorCodeRequest' }
       responses:
         '200':
-          description: Two-factor authentication enabled.
+          description: Two-factor authentication enabled atomically while the current session family is retained and other session families are revoked.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AuthTwoFactorStatus' }
+              schema: { $ref: '#/components/schemas/AuthTwoFactorEnableResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -5343,9 +5392,14 @@ paths:
         - backend/internal/controlhttp/twofa_handler.go
       security:
         - sessionBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTwoFactorCodeRequest' }
       responses:
         '200':
-          description: Two-factor authentication disabled.
+          description: Two-factor authentication disabled after a fresh proof; the current session family is retained and other session families are revoked in the same transaction.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthTwoFactorDisableResponse' }
@@ -5501,6 +5555,9 @@ paths:
       operationId: sessionRefresh
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       security: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
+        - $ref: '#/components/parameters/BrowserSessionCSRF'
       requestBody:
         required: true
         content:
@@ -5508,11 +5565,13 @@ paths:
             schema: { $ref: '#/components/schemas/SessionRefreshRequest' }
       responses:
         '200':
-          description: Refresh token rotated.
+          description: 刷新令牌已轮换；浏览器模式同时轮换两个安全 Cookie。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SessionTokenResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
@@ -5524,6 +5583,8 @@ paths:
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       security:
         - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BrowserSessionMode'
       requestBody:
         required: true
         content:
@@ -5697,12 +5758,20 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
     patch:
       tags: [user-api-keys]
-      summary: Partially update name, status, and/or expiry of one of the authenticated user's API keys
+      summary: 部分更新当前用户自己的 Key 名称、状态或有效期
+      description: |
+        只修改请求中出现的字段。revoked 是不可逆终态：Key 一旦被用户或管理员撤销，
+        不能通过本接口重新设为 active；此时返回 409 api_key_revoked_terminal。
+        disabled 和 expired 由管理员或运行时状态机管理，用户不能自行重新激活；
+        此时返回 409 api_key_status_managed。status 只接受 active 或 revoked，
+        其他值返回 400 invalid_status。
       operationId: patchUserAPIKey
       x-huakai-spec-source:
         - backend/internal/userkeyhttp/handlers.go
       security:
         - sessionBearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ResourceId'
       requestBody:
         required: false
         content:
@@ -5716,14 +5785,12 @@ paths:
                 expires_at:
                   type: string
                   description: >-
-                    Tri-state. Omit to leave the deadline unchanged; send an empty string "" to
-                    clear it (key becomes never-expiring); send an RFC3339 timestamp to set a new
-                    deadline. A non-empty value that is not RFC3339 is rejected (400
-                    invalid_expires_at); a past timestamp is rejected (400 invalid_expires_at) to
-                    avoid silently disabling the key.
+                    三态字段：省略时保持原有效期；传空字符串 "" 时清除有效期，使 Key
+                    永不过期；传 RFC3339 时间时设置新有效期。非空值不符合 RFC3339，
+                    或时间已经过去时，均返回 400 invalid_expires_at，避免静默停用 Key。
       responses:
         '200':
-          description: Updated api_key fields. Only provided fields are changed.
+          description: 返回更新后的 Key 字段；只修改请求中明确提供的字段。
           content:
             application/json:
               schema:
@@ -5736,18 +5803,26 @@ paths:
                     type: string
                     format: date-time
                     nullable: true
-                    description: Deadline after the update; omitted when the key never expires.
+                    description: 更新后的有效期；Key 永不过期时省略。
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /v1/api-keys/batch-revoke:
     post:
       tags: [user-api-keys]
-      summary: 批量撤销当前用户自己的多条 api_keys (幂等, owner-scoped)
+      summary: 批量撤销当前用户自己的多条 api_keys
       operationId: batchRevokeUserAPIKeys
-      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+      description: |
+        每个 Key 独立复用 owner-scoped、幂等的单条撤销事务，并按请求顺序返回逐项结果。
+        普通单项存储错误不会遮蔽此前成功项，也不会阻止后续独立项；请求取消、超时或服务
+        配置不可用会把尚未执行的项明确标为 `not_executed`。响应只返回稳定错误码，不包含
+        数据库或内部错误文本。不属于当前用户的 Key 与不存在的 Key 均为 `not_found`。
+      x-huakai-spec-source:
+        - backend/internal/userkeyhttp/batch_revoke.go
+        - backend/internal/userkey/userkey.go
       security:
         - sessionBearerAuth: []
       requestBody:
@@ -5756,20 +5831,60 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [ids]
               properties:
-                ids: { type: array, items: { type: integer, format: int64, minimum: 1 }, minItems: 1, maxItems: 200 }
+                ids:
+                  type: array
+                  items: { type: integer, format: int64, minimum: 1 }
+                  minItems: 1
+                  maxItems: 200
+                  uniqueItems: true
                 reason: { type: string }
       responses:
         200:
-          description: 每条 id 的撤销结果;不归当前用户的 id 落 not_found (防 ID 枚举)。
+          description: 批次汇总和与请求顺序一致的逐项结果。
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [outcome, revoked, not_found, failed, not_executed, results]
                 properties:
-                  revoked: { type: array, items: { type: integer, format: int64 } }
-                  not_found: { type: array, items: { type: integer, format: int64 } }
+                  outcome: { type: string, enum: [success, partial, failed] }
+                  revoked:
+                    type: array
+                    description: 已撤销或此前已撤销的 Key，保留用于兼容旧客户端。
+                    items: { type: integer, format: int64, minimum: 1 }
+                  not_found:
+                    type: array
+                    items: { type: integer, format: int64, minimum: 1 }
+                  failed:
+                    type: array
+                    items: { type: integer, format: int64, minimum: 1 }
+                  not_executed:
+                    type: array
+                    items: { type: integer, format: int64, minimum: 1 }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, status, retryable]
+                      properties:
+                        id: { type: integer, format: int64, minimum: 1 }
+                        status:
+                          type: string
+                          enum: [revoked, already_revoked, not_found, failed, not_executed]
+                        error_code:
+                          type: string
+                          enum:
+                            - api_key_not_found
+                            - request_cancelled
+                            - request_timeout
+                            - userkey_service_unavailable
+                            - userkey_backend_error
+                        retryable: { type: boolean }
         400: { $ref: "#/components/responses/BadRequest" }
         401: { $ref: "#/components/responses/Unauthorized" }
         503: { $ref: "#/components/responses/ServiceBusy" }
@@ -7932,6 +8047,11 @@ paths:
       tags: [admin-notifications]
       summary: Read a user's notification settings
       operationId: adminGetUserNotificationSettings
+      description: |
+        Reads one final user's notification settings without returning stored
+        webhook or Gotify secrets. A platform administrator may only target a
+        final user in the platform working tenant; a tenant operator may only
+        target a final user in its authenticated tenant scope.
       x-huakai-spec-source:
         - backend/internal/controlhttp/notify_handler.go
         - docs/HUAKAI工程设计手册.md
@@ -7944,7 +8064,7 @@ paths:
         - in: query
           name: tenant_id
           required: false
-          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          description: Required for platform_admin and must equal the platform working tenant; tenant_operator defaults to and cannot leave its authenticated tenant scope.
           schema: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
@@ -7960,6 +8080,12 @@ paths:
       tags: [admin-notifications]
       summary: Replace a user's notification settings
       operationId: adminUpdateUserNotificationSettings
+      description: |
+        Replaces one final user's notification targets. The same three-identity
+        boundary as the read operation applies. The settings row and a
+        secret-free security log are committed in one database transaction;
+        a log failure rolls the settings change back. Stored secrets are masked
+        in the response and are never copied into the log payload.
       x-huakai-spec-source:
         - backend/internal/controlhttp/notify_handler.go
         - docs/HUAKAI工程设计手册.md
@@ -7972,7 +8098,7 @@ paths:
         - in: query
           name: tenant_id
           required: false
-          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          description: Required for platform_admin and must equal the platform working tenant; tenant_operator defaults to and cannot leave its authenticated tenant scope.
           schema: { type: integer, format: int64, minimum: 1 }
       requestBody:
         required: true
@@ -7981,7 +8107,7 @@ paths:
             schema: { $ref: '#/components/schemas/NotificationSettingsUpdate' }
       responses:
         '200':
-          description: Updated per-user notification settings; secrets are masked.
+          description: Updated per-user notification settings and security log committed atomically; secrets are masked.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/NotificationSettings' }
@@ -8575,6 +8701,56 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-routes]
+      summary: 完整更新一条分组路由规则
+      operationId: adminUpdateRoute
+      description: |
+        仅部署者可用。目标租户来自必填 query，规则 ID 来自 path，body 不接受
+        `tenant_id`。这是完整替换语义；省略 `match_priority` 会回到服务端默认值，
+        因此前端编辑必须先读当前值并显式回传。
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/routeadmin_handler.go
+        - backend/internal/routeadmin/service.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - in: query
+          name: tenant_id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, user_group_match, pool_group_id]
+              properties:
+                name: { type: string }
+                user_group_match: { type: string }
+                model_pattern_match:
+                  type: string
+                  description: 空或 `*` 匹配全部，尾部单星号表示前缀匹配，其余为精确匹配。
+                pool_group_id: { type: integer, format: int64, minimum: 1 }
+                match_priority: { type: integer, minimum: 0, default: 100 }
+      responses:
+        '200':
+          description: 返回更新后的路由规则。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [route]
+                properties:
+                  route: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
     delete:
       tags: [admin-routes]
       summary: Soft-delete a subscription group routing rule (removes it from the active gate set)
@@ -9133,16 +9309,184 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/tenants:
+    get:
+      tags: [admin-tenants]
+      summary: 列出部署者管理的全部工作租户
+      operationId: listAdminTenants
+      description: |
+        仅部署管理员可调用。返回活跃、停用和已软删除租户的生命周期元数据，
+        不返回租户用户、余额明细、账号凭据或其他业务数据。
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadminhttp/handler.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: 当前租户生命周期列表。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    post:
+      tags: [admin-tenants]
+      summary: 原子创建租户、零余额钱包和首位租户管理员
+      operationId: createAdminTenant
+      description: |
+        仅部署管理员可调用。租户、钱包、首位管理员和操作日志在同一事务中创建；
+        任一步失败都不会留下半成品。匿名注册不能选择新租户。
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadmin/service.go
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTenantCreateRequest' }
+      responses:
+        '201':
+          description: 租户及首位管理员创建成功。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantCreateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-tenants]
+      summary: 查询一个租户的生命周期元数据
+      operationId: getAdminTenant
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadmin/service.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: 租户生命周期元数据。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-tenants]
+      summary: 预检一致后软删除一个已停用租户
+      operationId: deleteAdminTenant
+      description: |
+        仅部署管理员可调用。租户必须先停用，请求必须携带当前版本和最新删除影响哈希；
+        钱包非零、用户余额或持有额、在途结算、媒体任务、恢复队列、退款或争议等任一
+        阻塞项存在时拒绝删除。删除只关闭租户身份，不清除用户、凭据、日志和资金事实。
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadmin/delete.go
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTenantDeleteRequest' }
+      responses:
+        '200':
+          description: 租户已软删除且现存会话已撤销。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenants/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    patch:
+      tags: [admin-tenants]
+      summary: 启用或停用一个下级租户
+      operationId: updateAdminTenantStatus
+      description: |
+        仅部署管理员可调用。状态变更使用版本比较；停用与新会话、新请求和新扣款串行，
+        并在同一事务撤销现存会话。恢复启用不会复活旧会话，用户必须重新登录。
+        部署者平台工作租户不可停用。
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadmin/service.go
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminTenantStatusRequest' }
+      responses:
+        '200':
+          description: 当前租户状态及本次撤销的会话数量。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantStatusResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/tenants/{id}/delete-impact:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [admin-tenants]
+      summary: 预检租户软删除影响和阻塞项
+      operationId: inspectAdminTenantDeleteImpact
+      description: |
+        返回资源计数、资金与恢复阻塞项、当前租户版本和一次性影响哈希。
+        删除操作必须原样带回版本与哈希；状态或影响面变化后旧确认自动失效。
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+        - backend/internal/tenantadmin/delete.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: 当前删除影响快照。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminTenantDeleteImpact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/users:
     get:
       tags: [admin-users]
-      summary: List users in the admin token tenant
+      summary: 列出当前管理作用域内的终端用户
       operationId: listAdminUsers
       description: |
-        Returns a paginated, tenant-scoped user list for read-only admin
-        visibility. The tenant is resolved from the tenant_operator admin
-        identity. The response never includes password hashes, API key hashes,
-        plaintext credentials, or mutation fields.
+        仅返回 role=user 的终端用户，管理员身份不会进入本列表。部署者只能管理平台
+        工作租户的终端用户；下级租户管理员只能管理自身租户。响应不包含密码哈希、
+        Key 哈希或明文凭据。
       x-huakai-spec-source:
         - docs/HUAKAI工程设计手册.md
       x-huakai-required-role: tenant_operator
@@ -9202,7 +9546,7 @@ paths:
       summary: Soft-delete an end-user in the admin token tenant
       description: |
         Soft-deletes a role='user' account (deleted_at set, status='deleted')
-        and revokes its sessions so deletion takes effect immediately. Deleting
+        and revokes all session families in the same transaction so deletion takes effect immediately. Deleting
         an admin via this endpoint is rejected 403; a missing user is 404. The
         email becomes reusable after deletion.
       operationId: deleteAdminUser
@@ -9215,10 +9559,11 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [id, deleted]
+                required: [id, deleted, sessions_revoked]
                 properties:
                   id: { type: integer, format: int64 }
                   deleted: { type: boolean }
+                  sessions_revoked: { type: integer, format: int64, minimum: 0 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -9289,10 +9634,12 @@ paths:
       summary: Force-disable a tenant user 2FA for account recovery
       operationId: adminForceDisableUserTwoFA
       description: |
-        Tenant-scoped admin recovery action that force-clears a locked-out
-        user TOTP 2FA enrollment and writes a force_disable_2fa admin audit
-        event. Cross-tenant ids are not distinguishable from missing users
-        and return 404.
+        Tenant-scoped admin recovery action that deletes the user's encrypted
+        TOTP enrollment and backup-code hashes, revokes all existing session families, and
+        writes a force_disable_2fa operation log in the same transaction.
+        Session invalidation still runs when no enrollment remains, so a repeated
+        recovery action closes pre-existing sessions. Cross-tenant ids are not
+        distinguishable from missing users and return 404.
       x-huakai-spec-source:
         - backend/internal/adminuserhttp/routes.go
         - backend/internal/twofa/service.go
@@ -9304,10 +9651,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, two_factor_enabled]
+                required: [id, two_factor_enabled, sessions_revoked]
                 properties:
                   id: { type: integer, format: int64 }
-                  two_factor_enabled: { type: boolean }
+                  two_factor_enabled: { type: boolean, enum: [false] }
+                  sessions_revoked: { type: integer, format: int64, minimum: 0 }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -9323,8 +9671,10 @@ paths:
       operationId: adminResetUserPasskeys
       description: |
         Tenant-scoped admin recovery action that removes every passkey
-        credential for a locked-out user and writes a reset_passkey admin
-        audit event. Cross-tenant ids return 404 (anti-enumeration).
+        credential for a locked-out user, revokes all existing session families
+        even when no passkey remains,
+        and writes a reset_passkey operation log in the same transaction.
+        Cross-tenant ids return 404 (anti-enumeration).
       x-huakai-spec-source:
         - backend/internal/adminuserhttp/routes.go
         - backend/internal/passkey/service.go
@@ -9336,10 +9686,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, cleared]
+                required: [id, cleared, sessions_revoked]
                 properties:
                   id: { type: integer, format: int64 }
-                  cleared: { type: integer }
+                  cleared: { type: integer, minimum: 0 }
+                  sessions_revoked: { type: integer, format: int64, minimum: 0 }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -9402,8 +9753,10 @@ paths:
       summary: Ban or reinstate a tenant user (active/disabled)
       description: >
         Sets users.status. A disabled user is cut off on both axes at once:
-        password/social login (ErrUserDisabled) and already-issued API keys
-        (the inbound resolver joins user_status). Only 'active' and 'disabled'
+        password/social login (ErrUserDisabled), already-issued API keys
+        (the inbound resolver joins user_status), and all existing session
+        families. Status, session invalidation, and the operation log commit in
+        one transaction. Only 'active' and 'disabled'
         are accepted; 'deleted' is a separate destructive operation. platform_admin
         must pass ?tenant_id; tenant_operator is scoped to its own tenant.
       operationId: adminSetUserStatus
@@ -9418,11 +9771,19 @@ paths:
           description: Status updated.
           content:
             application/json:
-              schema: { type: object, properties: { id: { type: integer, format: int64 }, status: { type: string } } }
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, status, sessions_revoked]
+                properties:
+                  id: { type: integer, format: int64 }
+                  status: { type: string, enum: [active, disabled] }
+                  sessions_revoked: { type: integer, format: int64, minimum: 0 }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "503": { $ref: "#/components/responses/ServiceBusy" }
 
   /admin/v1/users/{id}/account-bindings/{provider}:
@@ -9433,7 +9794,7 @@ paths:
         required: true
         schema:
           type: string
-          enum: [google, github, wechat, dingtalk, linuxdo, oidc]
+          enum: [google, github, wechat, dingtalk, linuxdo, oidc, qq, nodeseek, discord, telegram]
     delete:
       tags: [admin-users]
       summary: Clear one user's social login binding for a provider
@@ -9446,7 +9807,9 @@ paths:
       description: |
         Tenant-scoped admin action that calls the same social unlink service as
         self-service unlink. It refuses to remove a user's last login method
-        when the account has no local password.
+        when the account has no local password. Every accepted admin recovery
+        request revokes existing session families and writes the operation log
+        in the same transaction, including an already-absent binding.
       responses:
         '200':
           description: Binding delete completed or was already absent.
@@ -9454,8 +9817,11 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [unlinked, sessions_revoked]
                 properties:
                   unlinked: { type: boolean }
+                  sessions_revoked: { type: integer, format: int64, minimum: 0 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -10267,10 +10633,9 @@ paths:
       summary: Issue a new API Key
       operationId: issueAPIKey
       description: |
-        Mints a new tenant-scoped API Key. The plaintext bearer is returned
-        ONCE in `plaintext_bearer` and never again — operators must capture
-        it at issuance. Subsequent reads (LIST) return key_prefix only.
-        Rate-limited to 30 issues/hour per admin token (D4).
+        为 role=user 的终端用户签发租户级 Key，明文只在 plaintext_bearer
+        中返回一次，后续列表只返回 key_prefix。部署者只能操作平台工作租户；
+        下级租户管理员只能操作自身租户。每个管理员凭据每小时最多签发 30 次。
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       x-huakai-required-role: tenant_operator
       requestBody:
@@ -10298,9 +10663,9 @@ paths:
       summary: List API Keys for a tenant
       operationId: listAPIKeys
       description: |
-        Returns API Key metadata (never plaintext, never key_hash). The
-        tenant_id query param is required at L0 — full-fleet scans are
-        deferred. Successful reads write a list_api_keys audit row.
+        只返回 role=user 终端用户的 Key 元数据，不返回明文或 key_hash。
+        tenant_id 必填；部署者只能查询平台工作租户，下级租户管理员只能查询自身租户。
+        成功读取会写入 list_api_keys 日志事件。
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -10334,9 +10699,9 @@ paths:
       summary: Revoke an API Key
       operationId: revokeAPIKey
       description: |
-        Soft-revokes (status='revoked', revoked_at=now()). Idempotent:
-        revoking an already-revoked key returns 200 with
-        already_revoked=true. PATCH/DELETE intentionally deferred.
+        将 role=user 终端用户的 Key 收敛到 revoked 终态并写入 revoked_at。
+        重复撤销返回 200 和 already_revoked=true；撤销后用户不能自行重新启用。
+        部署者只能操作平台工作租户，下级租户管理员只能操作自身租户。
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       x-huakai-required-role: tenant_operator
       requestBody:
@@ -10527,13 +10892,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [admin-pools]
-      summary: Update Pool Group config
+      summary: 更新账号池
       operationId: updatePoolGroup
       description: |
-        Routing policy and forced-route authorization follow the current
-        contract in docs/HUAKAI工程设计手册.md.
-        Forced-route policy may require platform_admin role per Pool's
-        allow_tenant_operator_force flag.
+        只更新当前运行时选号合同真正消费的字段。只读策略字段仍会随详情返回，
+        但不会作为“提交成功却不生效”的空操作写入被接受。
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       x-huakai-required-role: tenant_operator
       parameters:
@@ -10557,12 +10920,38 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [admin-pools]
+      summary: 软删除账号池
+      operationId: deletePoolGroup
+      description: |
+        停用并软删除租户作用域内的账号池；业务变更与操作日志在同一事务提交。
+      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: platform_admin 必须指定；tenant_operator 可省略并使用认证得到的租户作用域。
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: 已软删除的账号池。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PoolGroup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ==========================================================================
   # Admin: Provider Accounts (F-POOL-001 + F-AUTH-005 + F-RATE-001)
   # ==========================================================================
 
   /admin/v1/provider-accounts:
+    parameters:
+      - $ref: '#/components/parameters/AdminTenantScope'
     get:
       tags: [admin-accounts]
       summary: List Provider Accounts
@@ -10644,6 +11033,7 @@ paths:
   /admin/v1/provider-accounts/{id}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     get:
       tags: [admin-accounts]
       summary: Get Provider Account
@@ -10710,6 +11100,7 @@ paths:
   /admin/v1/provider-accounts/{id}/clear-rate-limit:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     post:
       tags: [admin-accounts]
       summary: Cascade-clear Account cooldown state
@@ -10733,11 +11124,19 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
+        '503':
+          description: 依赖不可用，或账号阶段已提交但渠道恢复仍待重试。
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ProviderAccountRecoveryPartial'
 
   /admin/v1/provider-accounts/{id}/recover:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     post:
       tags: [admin-accounts]
       summary: Fully recover Account state
@@ -10761,7 +11160,14 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '503': { $ref: '#/components/responses/ServiceBusy' }
+        '503':
+          description: 依赖不可用，或账号阶段已提交但渠道恢复仍待重试。
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ProviderAccountRecoveryPartial'
 
   /admin/v1/provider-accounts/{id}/recovery-actions:
     parameters:
@@ -10803,26 +11209,33 @@ paths:
   /admin/v1/provider-accounts/{id}/test:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - in: query
+        name: tenant_id
+        required: false
+        description: 无固定租户作用域的 platform_admin 必须显式指定；tenant_operator 始终使用自身租户。
+        schema: { type: integer, format: int64, minimum: 1 }
     post:
       tags: [admin-accounts]
-      summary: Dry-run validate stored Provider Account credentials
-      operationId: testProviderAccountCredential
+      summary: 对指定上游账号执行受预算约束的真实模型探测
+      operationId: probeProviderAccountModel
       description: |
-        Runs a dry-run upstream credential validation against the provider account's currently stored
-        encrypted credential material. This endpoint never returns credential fields, raw upstream
-        response bodies, or secret-bearing error text, and it does not persist refresh results,
-        health changes, retry counters, credential versions, or token rotations.
+        使用该账号当前凭据、代理、TLS 与协议合同发送一次固定短提示的真实上游请求。
+        探测只命中路径中的指定账号，不经过用户选号、换号、重试或 fallback，也不创建用户
+        claim、余额扣费、配额消耗或结算记录。模型优先使用账号 `probe_model`，否则从
+        `model_allow_list` 中确定性选择；两者都为空时不发送上游请求。
 
-        Operational caution: this may call the upstream token/validation endpoint and can consume
-        upstream quota or rate-limit budget. Use only for operator validation and troubleshooting.
-        Credential modes whose validation would require a refresh-token grant that may rotate
-        upstream credentials, or whose adapter has no real non-mutating upstream validator,
-        fail closed until a non-mutating validator is available.
-      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+        真实上游调用仍可能消耗少量供应商额度或触发限流。结果使用统一错误分类，并尽力回流
+        账号健康；健康写入失败通过 `warnings` 和 `health_signal_recorded=false` 暴露，
+        不会把已成功的上游响应改写成失败。主动探测时间、延迟和操作日志在同一数据库事务中
+        落地。响应和日志均不包含凭据、原始上游响应体或可能携带秘密的错误文本。
+      x-huakai-spec-source:
+        - backend/internal/accountprobe/service.go
+        - backend/internal/adminhttp/provider_account_test_handler.go
+        - backend/internal/adminhttp/provider_account_test_store.go
       x-huakai-required-role: platform_admin_or_tenant_operator
       responses:
         '200':
-          description: Dry-run validation result.
+          description: 真实模型探测结果；上游拒绝或超时时仍返回结构化结果。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderAccountTestResponse' }
@@ -10835,6 +11248,7 @@ paths:
   /admin/v1/provider-accounts/{id}/health:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     get:
       tags: [admin-accounts]
       summary: Get Provider Account health and refresh snapshot
@@ -10954,6 +11368,7 @@ paths:
   /admin/v1/provider-accounts/{id}/enabled:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     patch:
       tags: [admin-accounts]
       summary: Enable or disable a Provider Account
@@ -10980,6 +11395,7 @@ paths:
   /admin/v1/provider-accounts/{id}/fingerprint-profile:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
+      - $ref: '#/components/parameters/AdminTenantScope'
     patch:
       tags: [admin-accounts]
       summary: Bind or unbind a Provider Account's TLS fingerprint profile
@@ -11541,6 +11957,7 @@ paths:
       x-huakai-required-role: tenant_operator
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - $ref: '#/components/parameters/AdminTenantScope'
       responses:
         "200":
           description: 实时上游模型目录，保留模型 ID 兼容字段并返回能力详情。
@@ -11561,6 +11978,7 @@ paths:
       x-huakai-required-role: tenant_operator
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - $ref: '#/components/parameters/AdminTenantScope'
       requestBody:
         required: false
         content:
@@ -11614,6 +12032,7 @@ paths:
       x-huakai-required-role: tenant_operator
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - $ref: '#/components/parameters/AdminTenantScope'
       responses:
         "200":
           description: 实时上游模型目录。
@@ -11634,6 +12053,7 @@ paths:
       x-huakai-required-role: tenant_operator
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+        - $ref: '#/components/parameters/AdminTenantScope'
       requestBody:
         required: false
         content:
@@ -12628,12 +13048,13 @@ paths:
         默认只把 pending 孤儿标记为 reconciled，不追扣。只有 back_charge=true
         且目标状态为 reconciled 时才尝试结算原 hold。追扣未真正发生时返回 409，
         孤儿保持 pending。不存在或已经终结的 ID 按当前实现返回 advanced=false
-        的幂等 200。
+        的幂等 200。platform_admin 只能处置平台工作租户，tenant_operator
+        只能处置自身租户；部署者不得越级处理下级租户最终用户的钱路。
       x-huakai-spec-source:
         - backend/internal/orphanreconcilehttp/reconcile.go
         - backend/internal/mediatask/store_orphan_backcharge.go
         - backend/cmd/gateway/routes.go
-      x-huakai-required-role: tenant_operator
+      x-huakai-required-role: tenant_scoped_admin
       requestBody:
         required: false
         content:
@@ -12653,6 +13074,78 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MediaTaskOrphanReconcileResponse' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/media-task-orphans/{id}/attach:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-media-tasks]
+      summary: 为提交结果未知的媒体任务补录上游任务号
+      operationId: attachAdminMediaTaskUnknownSubmission
+      security:
+        - adminBearerAuth: []
+      description: |
+        仅处理 submission_unknown。运营人员必须先从供应商侧取得明确任务号和证据；
+        服务端在同一事务中复核租户作用域、预扣仍为 reserving、任务号无冲突，
+        然后恢复为 in_progress。该操作不会重新提交上游，也不会释放预扣。
+      x-huakai-spec-source:
+        - backend/internal/orphanreconcilehttp/submission_recovery.go
+        - backend/internal/mediatask/store_submission_resolution.go
+        - backend/cmd/gateway/routes.go
+      x-huakai-required-role: tenant_scoped_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaTaskSubmissionAttachRequest' }
+      responses:
+        '200':
+          description: 已绑定任务号，或者同一绑定重放为幂等空操作。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmissionRecoveryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/media-task-orphans/{id}/confirm-not-accepted:
+    parameters:
+      - $ref: '#/components/parameters/ResourceId'
+    post:
+      tags: [admin-media-tasks]
+      summary: 确认供应商未受理并请求释放媒体任务预扣
+      operationId: confirmAdminMediaTaskSubmissionNotAccepted
+      security:
+        - adminBearerAuth: []
+      description: |
+        仅在运营人员取得供应商明确的“未受理”证据后使用。服务端先把裁决和管理员
+        日志原子落库，再由媒体任务 worker 通过统一结算器幂等释放预扣；网络超时、
+        无响应或仅凭等待时长都不能调用本接口。重复同一裁决返回 advanced=false。
+      x-huakai-spec-source:
+        - backend/internal/orphanreconcilehttp/submission_recovery.go
+        - backend/internal/mediatask/store_submission_resolution.go
+        - backend/cmd/gateway/routes.go
+      x-huakai-required-role: tenant_scoped_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MediaTaskSubmissionReleaseRequest' }
+      responses:
+        '202':
+          description: 释放请求已耐久入队，尚不代表预扣已经释放。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaTaskSubmissionRecoveryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/billing/claims:
@@ -12978,6 +13471,36 @@ paths:
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
   /admin/v1/model-sync:
+    get:
+      tags: [admin-model-sync]
+      summary: 读取本节点模型同步调度状态
+      operationId: getAdminModelSyncStatus
+      description: |
+        仅平台管理员可用。返回当前 Gateway 进程中 scheduler 的最后运行、最后成功和
+        最近错误；它不是多副本集群汇总。多副本部署中，非领导节点可能返回尚无运行记录，
+        前端必须把它显示为“本节点未知”，不能解释成整个集群从未同步。
+      x-huakai-spec-source:
+        - backend/internal/adminhttp/model_sync_handler.go
+        - backend/internal/modelsync/scheduler.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: 当前节点的模型同步调度快照。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, enabled, last_run_at, last_success_at]
+                properties:
+                  object: { type: string, enum: [admin_model_sync_status] }
+                  enabled: { type: boolean }
+                  last_run_at: { type: [string, 'null'], format: date-time }
+                  last_success_at: { type: [string, 'null'], format: date-time }
+                  last_error: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
     post:
       tags: [admin-model-sync]
       summary: Trigger dynamic vendor model catalog synchronization
@@ -13090,7 +13613,7 @@ paths:
         - backend/internal/modeldiscoveryhttp/routes.go
       x-huakai-required-role: platform_admin
       parameters:
-        - $ref: '#/components/parameters/PathID'
+        - $ref: '#/components/parameters/ResourceId'
       requestBody:
         required: true
         content:
@@ -13122,7 +13645,7 @@ paths:
         - backend/internal/modeldiscoveryhttp/routes.go
       x-huakai-required-role: platform_admin
       parameters:
-        - $ref: '#/components/parameters/PathID'
+        - $ref: '#/components/parameters/ResourceId'
       requestBody:
         required: true
         content:
@@ -13407,6 +13930,66 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/ModelCapabilityBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-models]
+      summary: 新增或更新模型能力绑定
+      operationId: putAdminModelCapabilityBinding
+      description: |
+        仅平台管理员可用。按模型、作用域、租户和能力名新增或更新一条绑定。
+        `source` 由服务端固定为 `operator`，请求体不得自报来源。租户作用域必须提供
+        `tenant_id`；全局作用域省略该字段。`enabled` 必须显式提供，避免遗漏时按
+        布尔零值意外停用现有绑定。租户绑定只能指向该租户自有或全局模型，全局绑定
+        只能指向全局模型。绑定、模型快照推进和操作日志在同一数据库事务内提交。
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/model_admin_aliases_handler.go
+        - backend/internal/registry/model_capabilities.go
+      x-huakai-required-role: platform_admin
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 内部 `models.id`。
+          schema: { type: integer, format: int64, minimum: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scope, capability, enabled]
+              properties:
+                scope: { type: string, enum: [tenant, global] }
+                tenant_id:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  description: "`scope=tenant` 时必填；`scope=global` 时省略。"
+                capability:
+                  type: string
+                  description: 必须属于 HUAKAI 已登记的模型能力词表。
+                capability_value: { type: [string, 'null'] }
+                capability_params:
+                  type: object
+                  additionalProperties: true
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: 返回新增或更新后的能力绑定。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, binding]
+                properties:
+                  object: { type: string, enum: [model_capability_binding] }
+                  binding: { $ref: '#/components/schemas/ModelCapabilityBinding' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -14153,7 +14736,8 @@ paths:
       description: |
         Updates the tunable fields of a binding selected by tenant scope plus path
         id. model_id / pool_group_id are immutable (change identity via delete +
-        create). The write bumps the tenant's snapshot version.
+        create). This is a field-level PATCH: omitted fields are preserved, while
+        explicit null clears nullable fields. The write bumps the tenant's snapshot version.
       x-huakai-required-role: tenant_operator
       parameters:
         - in: path
@@ -14433,9 +15017,10 @@ paths:
       summary: Update a tenant-scoped outbound proxy
       operationId: updateAdminProxy
       description: |
-        Replaces the proxy endpoint fields for a proxy selected by tenant scope plus
-        path id. An omitted auth_secret leaves the stored credential cleared; a
-        supplied auth_secret is re-encrypted server-side and never returned.
+        Field-level PATCH for a proxy selected by tenant scope plus path id.
+        Omitted fields, including auth_secret, are preserved. Explicit null clears
+        auth_username, auth_secret, or group_id. A supplied auth_secret is
+        re-encrypted server-side and never returned.
       x-huakai-required-role: tenant_operator
       parameters:
         - in: path
@@ -14468,8 +15053,9 @@ paths:
       summary: Delete a tenant-scoped outbound proxy
       operationId: deleteAdminProxy
       description: |
-        Soft-deletes a proxy selected by tenant scope plus path id. Idempotent — a
-        second delete is a no-op. Returns 204 No Content on success.
+        软删除租户内代理。数据库在持有目标代理行锁时原子复核单账号绑定、租户默认代理
+        和代理组引用；仍被直接使用，或删除后会让被使用的代理组失去最后一个 active
+        成员时返回 409，不会把受影响账号静默切成直连。
       x-huakai-required-role: tenant_operator
       parameters:
         - in: path
@@ -14484,6 +15070,39 @@ paths:
       responses:
         '204':
           description: Proxy was deleted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 代理仍被引用，必须先迁移或解绑。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProxyDeleteConflict' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/proxies/{id}/delete-impact:
+    get:
+      tags: [admin-proxies]
+      summary: 预览删除代理的运行影响
+      operationId: getAdminProxyDeleteImpact
+      description: |
+        返回不含凭据和对象明细的引用计数，供删除确认弹窗判断该代理是否可安全删除。
+        `can_delete=false` 时必须先迁移单账号绑定、租户默认绑定，或为被使用的代理组
+        保留至少一个其它 active 成员。
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+        - $ref: '#/components/parameters/AdminTenantScope'
+      responses:
+        '200':
+          description: 当前删除影响。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminProxyDeleteImpact' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -14690,6 +15309,29 @@ components:
       required: false
       schema: { type: boolean }
 
+    BrowserSessionMode:
+      name: X-HUAKAI-Session-Mode
+      in: header
+      required: false
+      description: |
+        设为 `browser` 时启用同源前端会话交付：响应体只返回短期访问令牌，
+        长期刷新令牌写入 `__Host-huakai_refresh`（HttpOnly、Secure、
+        SameSite=Strict、Path=/）Cookie。跨源请求即使命中普通 CORS 白名单也会
+        返回 `browser_session_cross_origin_forbidden`；外置页面必须把 `/v1`
+        反向代理到页面同源。省略时保持 API/CLI 的 JSON 令牌合同。
+      schema:
+        type: string
+        enum: [browser]
+
+    BrowserSessionCSRF:
+      name: X-HUAKAI-CSRF
+      in: header
+      required: false
+      description: |
+        浏览器刷新会话时必填，值取最近一次登录或刷新响应中的 `session.csrf_token`。
+        服务端会同时核对可读 CSRF Cookie 及其与 HttpOnly 刷新 Cookie 的绑定。
+      schema: { type: string, minLength: 1 }
+
     PageCursor:
       name: cursor
       in: query
@@ -14701,6 +15343,16 @@ components:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+
+    AdminTenantScope:
+      name: tenant_id
+      in: query
+      required: false
+      description: |
+        无固定租户作用域的 platform_admin 必须显式指定目标租户；
+        tenant_operator 与已绑定租户作用域的 platform_admin 始终使用认证上下文中的租户，
+        查询参数不能扩大权限。
+      schema: { type: integer, format: int64, minimum: 1 }
 
     ResourceId:
       name: id
@@ -14797,6 +15449,24 @@ components:
           schema: { $ref: '#/components/schemas/CredentialAcquisitionHelperResponse' }
 
   schemas:
+    BuildVersionResponse:
+      type: object
+      additionalProperties: false
+      required: [version, commit, build_time, go_version]
+      properties:
+        version:
+          type: string
+          description: 构建时注入的语义版本；本地构建为 dev。
+        commit:
+          type: string
+          description: 构建对应的 Git 提交标识；本地构建可为 unknown。
+        build_time:
+          type: string
+          description: 构建时注入的时间文本；本地构建可为 unknown。
+        go_version:
+          type: string
+          description: 当前进程使用的 Go 运行时版本。
+
     ModuleActivationEndpoint:
       type: object
       additionalProperties: false
@@ -15063,14 +15733,29 @@ components:
         locked_until: { type: [string, 'null'], format: date-time }
         last_used_at: { type: [string, 'null'], format: date-time }
 
+    AuthTwoFactorEnableResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/controlhttp/twofa_handler.go
+        - backend/internal/twofa/service.go
+      required: [enabled, backup_codes_remaining, sessions_revoked]
+      properties:
+        enabled: { type: boolean, enum: [true] }
+        backup_codes_remaining: { type: integer, minimum: 0 }
+        locked_until: { type: [string, 'null'], format: date-time }
+        last_used_at: { type: [string, 'null'], format: date-time }
+        sessions_revoked: { type: integer, format: int64, minimum: 0 }
+
     AuthTwoFactorDisableResponse:
       type: object
       additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/controlhttp/twofa_handler.go
-      required: [enabled]
+      required: [enabled, sessions_revoked]
       properties:
         enabled: { type: boolean, enum: [false] }
+        sessions_revoked: { type: integer, format: int64, minimum: 0 }
 
     AuthTwoFactorBackupCodesResponse:
       type: object
@@ -15385,9 +16070,10 @@ components:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
-      required: [refresh_token]
       properties:
-        refresh_token: { type: string }
+        refresh_token:
+          type: string
+          description: API/CLI 模式必填；浏览器模式禁止传入，改由 HttpOnly Cookie 提供。
 
     SessionRevokeRequest:
       type: object
@@ -15417,10 +16103,18 @@ components:
       type: object
       additionalProperties: false
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
-      required: [session_token, refresh_token, session_expires_at, refresh_expires_at, family, generation]
+      required: [session_token, session_expires_at, refresh_expires_at, family, generation]
+      oneOf:
+        - required: [refresh_token]
+        - required: [csrf_token]
       properties:
         session_token: { type: string }
-        refresh_token: { type: string }
+        refresh_token:
+          type: string
+          description: 仅 API/CLI 模式返回；浏览器模式绝不返回。
+        csrf_token:
+          type: string
+          description: 仅浏览器模式返回；刷新时通过 `X-HUAKAI-CSRF` 回传。
         session_expires_at: { type: string, format: date-time }
         refresh_expires_at: { type: string, format: date-time }
         family: { $ref: '#/components/schemas/SessionFamily' }
@@ -17429,6 +18123,7 @@ components:
         - user_id
         - provider
         - provider_task_id
+        - orphan_kind
         - estimated_cents
         - reconcile_status
         - observed_at
@@ -17439,14 +18134,20 @@ components:
         user_id: { type: integer, format: int64, minimum: 1 }
         provider: { type: string }
         provider_task_id: { type: string }
+        orphan_kind:
+          type: string
+          enum: [provider_task_orphan, submission_unknown]
+        idempotency_key: { type: string }
+        error_class: { type: string }
+        task_status: { $ref: '#/components/schemas/MediaTaskStatus' }
         estimated_cents:
           type: integer
           format: int64
           minimum: 0
-          description: 当前列表投影固定为 0；追扣金额以对账事务返回为准。
+          description: 原媒体任务的预估金额；任务已归档时为 0。
         reconcile_status:
           type: string
-          enum: [pending, reconciled, cancelled, ignored]
+          enum: [pending, release_requested, reconciled, cancelled, ignored]
         observed_at: { type: string, format: date-time }
 
     MediaTaskOrphanListResponse:
@@ -17462,7 +18163,7 @@ components:
 
     MediaTaskOrphanReconcileRequest:
       type: object
-      additionalProperties: true
+      additionalProperties: false
       x-huakai-spec-source:
         - backend/internal/orphanreconcilehttp/reconcile.go
       properties:
@@ -17475,6 +18176,45 @@ components:
           default: false
           description: 仅 status=reconciled 时合法。
         reason: { type: string }
+
+    MediaTaskSubmissionAttachRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/orphanreconcilehttp/submission_recovery.go
+      required: [provider_task_id, reason, evidence]
+      properties:
+        provider_task_id: { type: string, minLength: 1, maxLength: 512 }
+        reason: { type: string, minLength: 1, maxLength: 512 }
+        evidence: { type: string, minLength: 1, maxLength: 512 }
+
+    MediaTaskSubmissionReleaseRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/orphanreconcilehttp/submission_recovery.go
+      required: [reason, evidence]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 512 }
+        evidence: { type: string, minLength: 1, maxLength: 512 }
+
+    MediaTaskSubmissionRecoveryResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/orphanreconcilehttp/submission_recovery.go
+      required: [orphan_id, task_id, task_status, orphan_status, advanced]
+      properties:
+        orphan_id: { type: integer, format: int64, minimum: 1 }
+        task_id: { type: integer, format: int64, minimum: 1 }
+        task_status:
+          type: string
+          enum: [submission_releasing, in_progress]
+        orphan_status:
+          type: string
+          enum: [release_requested, reconciled]
+        provider_task_id: { type: string, minLength: 1, maxLength: 512 }
+        advanced: { type: boolean }
 
     MediaTaskOrphanReconcileResponse:
       type: object
@@ -17601,7 +18341,16 @@ components:
 
     MediaTaskStatus:
       type: string
-      enum: [queued, in_progress, succeeded, failed, expired]
+      enum:
+        - queued
+        - submitting
+        - submission_unknown
+        - submission_releasing
+        - in_progress
+        - settlement_pending
+        - succeeded
+        - failed
+        - expired
 
     ModelsListResponse:
       type: object
@@ -18764,6 +19513,111 @@ components:
               items: { $ref: '#/components/schemas/ProtocolLossEntry' }
             details: { type: object, additionalProperties: true }
 
+    HermesToolDescriptor:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - category
+        - description
+        - read_only
+        - mutating
+        - requires_confirmation
+        - required_role
+        - input_schema
+      properties:
+        name: { type: string, minLength: 1 }
+        category: { type: string, minLength: 1 }
+        description: { type: string }
+        read_only: { type: boolean }
+        mutating: { type: boolean }
+        requires_confirmation: { type: boolean }
+        required_role:
+          type: string
+          enum: [platform_admin, tenant_operator]
+        input_schema:
+          type: object
+          additionalProperties: true
+
+    HermesToolListResponse:
+      type: object
+      additionalProperties: false
+      required: [tools]
+      properties:
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/HermesToolDescriptor' }
+
+    HermesToolExecuteRequest:
+      type: object
+      additionalProperties: false
+      required: [tool_name]
+      properties:
+        tool_name: { type: string, minLength: 1 }
+        args:
+          type: object
+          additionalProperties: true
+          default: {}
+        confirm:
+          type: boolean
+          default: false
+          description: 改动型工具为 false 时只做预览；只读工具忽略本字段。
+        correlation_id:
+          type: string
+          description: confirm=true 时必填，取自同一工具和参数的预览响应。
+
+    HermesReadOnlyToolResult:
+      type: object
+      additionalProperties: false
+      required: [tool_name, result, error_class, read_only]
+      properties:
+        tool_name: { type: string, minLength: 1 }
+        result: { type: object, additionalProperties: true }
+        error_class: { type: [string, 'null'] }
+        read_only: { type: boolean, const: true }
+
+    HermesMutationPreview:
+      type: object
+      additionalProperties: false
+      required:
+        - tool_name
+        - mutating
+        - dry_run
+        - requires_confirmation
+        - correlation_id
+        - expires_in_seconds
+        - preview
+      properties:
+        tool_name: { type: string, minLength: 1 }
+        mutating: { type: boolean, const: true }
+        dry_run: { type: boolean, const: true }
+        requires_confirmation: { type: boolean, const: true }
+        correlation_id: { type: string, minLength: 1 }
+        expires_in_seconds: { type: integer, minimum: 1 }
+        preview: { type: object, additionalProperties: true }
+
+    HermesMutationResult:
+      type: object
+      additionalProperties: false
+      required:
+        - tool_name
+        - mutating
+        - dry_run
+        - result
+        - error_class
+        - target_type
+        - target_id
+        - operation_id
+      properties:
+        tool_name: { type: string, minLength: 1 }
+        mutating: { type: boolean, const: true }
+        dry_run: { type: boolean, const: false }
+        result: { type: object, additionalProperties: true }
+        error_class: { type: [string, 'null'] }
+        target_type: { type: string, minLength: 1 }
+        target_id: { type: integer, format: int64, minimum: 1 }
+        operation_id: { type: string, format: uuid }
+
     # ---- Admin schemas (strict: additionalProperties: false) ----
 
     AdminEmailSettingItem:
@@ -19175,7 +20029,7 @@ components:
         model_id: { type: integer, format: int64, minimum: 1 }
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0, description: "Lower routes first." }
-        weight: { type: integer, format: int32, minimum: 1 }
+        weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号；运行时加权使用账号 static_weight。" }
         selection_mode:
           type: string
           enum: [strict_priority, priority_weighted]
@@ -19209,7 +20063,7 @@ components:
         model_id: { type: integer, format: int64, minimum: 1 }
         pool_group_id: { type: integer, format: int64, minimum: 1 }
         priority: { type: integer, format: int32, minimum: 0 }
-        weight: { type: integer, format: int32, minimum: 1 }
+        weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号。" }
         selection_mode:
           type: string
           enum: [strict_priority, priority_weighted]
@@ -19236,32 +20090,34 @@ components:
     ModelPoolBindingUpdateRequest:
       type: object
       additionalProperties: false
+      minProperties: 1
       description: |
-        仅允许调整可变字段；model_id / pool_group_id 不可变。虽然方法名是 PATCH，当前写口采用整行默认覆盖：省略的标量回到服务端默认，可空字段会清空。尤其省略 fallback_class 会重置为 normal，因此客户端编辑其它字段时必须回填当前 fallback_class。
+        仅允许调整可变字段；model_id / pool_group_id 不可变。字段级 PATCH：
+        省略字段保持现值；provider_model_id_override、rpm_limit、tpm_limit、
+        max_parallel_requests、disabled_reason、effective_from、effective_until
+        可传 null 显式清空。不可空字段传 null 返回 400。
       properties:
         priority: { type: integer, format: int32, minimum: 0 }
-        weight: { type: integer, format: int32, minimum: 1 }
+        weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号。" }
         selection_mode:
           type: string
           enum: [strict_priority, priority_weighted]
-          default: strict_priority
-          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。省略时因整行覆盖回到 strict_priority。"
-        provider_model_id_override: { type: string }
-        rpm_limit: { type: integer, format: int32, minimum: 0 }
-        tpm_limit: { type: integer, format: int32, minimum: 0 }
-        max_parallel_requests: { type: integer, format: int32, minimum: 0 }
+          description: "运行时池内账号选号策略；省略时保持现值。"
+        provider_model_id_override: { type: string, nullable: true }
+        rpm_limit: { type: integer, format: int32, minimum: 0, nullable: true }
+        tpm_limit: { type: integer, format: int32, minimum: 0, nullable: true }
+        max_parallel_requests: { type: integer, format: int32, minimum: 0, nullable: true }
         fallback_class:
           type: string
           enum: [normal, context_window, safety, quota, manual]
-          default: normal
           description: |
-            绑定运行时类别；PATCH 省略该字段会按整行覆盖契约重置为 normal。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
+            绑定运行时类别；PATCH 省略时保持现值。normal 是唯一主类；context_window 只承接明确的上下文超限，管理员须确认目标池/模型确有更大窗口，系统不代验；safety 只承接上游内容策略拒绝，配置后即生效且没有额外环境开关；quota 承接绑定、账号或上游容量/限流耗尽；manual 承接上游 5xx、连接或首字节超时、空响应等通用瞬态故障。
             每个请求的每个模型总是从 normal 开始，最多转移一次到与规范化失败族精确匹配且已配置的目标类；目标类只有一次额外 attempt，失败后不得链式进入其它类。
             用户/key/tenant 配额、计费或 claim、认证、HUAKAI 本地审核与租户策略、无效请求、客户端取消，以及已向客户端交付首字节后的失败均为终态，绝不跨类。
         enabled: { type: boolean }
-        disabled_reason: { type: string }
-        effective_from: { type: string, format: date-time }
-        effective_until: { type: string, format: date-time }
+        disabled_reason: { type: string, nullable: true }
+        effective_from: { type: string, format: date-time, nullable: true }
+        effective_until: { type: string, format: date-time, nullable: true }
         reason: { type: string }
 
     ModelRoutingOverride:
@@ -19359,20 +20215,20 @@ components:
     AdminProxyUpdateRequest:
       type: object
       additionalProperties: false
-      required: [name, protocol, host, port]
+      minProperties: 1
       properties:
         name: { type: string, minLength: 1 }
         protocol: { type: string, minLength: 1 }
         host: { type: string, minLength: 1 }
         port: { type: integer, format: int32, minimum: 1, maximum: 65535 }
-        auth_username: { type: string, nullable: true }
-        auth_secret: { type: string, nullable: true, description: "Write-only proxy credential; encrypted server-side and never returned." }
+        auth_username: { type: string, nullable: true, description: "Omitted preserves the stored username; null clears it." }
+        auth_secret: { type: string, nullable: true, description: "Write-only proxy credential. Omitted preserves the encrypted value; null clears it; a string is encrypted server-side and never returned." }
         group_id:
           type: string
           nullable: true
           maxLength: 64
           pattern: '^[A-Za-z0-9_-]{0,64}$'
-          description: "代理组标识；空串或 null 会清除现有分组。"
+          description: "代理组标识；省略保持现值，空串或 null 清除现有分组。"
 
     AdminProxySetStatusRequest:
       type: object
@@ -19388,6 +20244,56 @@ components:
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         status: { type: string, enum: [active, disabled, dead] }
+
+    AdminProxyDeleteImpact:
+      type: object
+      additionalProperties: false
+      required:
+        - proxy_id
+        - direct_account_count
+        - default_tenant_count
+        - group_account_count
+        - group_remaining_active_count
+        - can_delete
+      properties:
+        proxy_id: { type: integer, format: int64, minimum: 1 }
+        direct_account_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 直接绑定该代理的未删除账号数。
+        default_tenant_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 把该代理设为默认出口的租户数；租户域内正常为 0 或 1。
+        group_account_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 绑定该代理所属组的未删除账号数。
+        group_remaining_active_count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 删除目标后同组剩余的 active 代理数。
+        can_delete:
+          type: boolean
+          description: 当前快照下是否不会打断直接、默认或组出口；最终删除仍在数据库内重新复核。
+
+    AdminProxyDeleteConflict:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: admin_proxy_in_use }
+            message: { type: string }
+            details: { $ref: '#/components/schemas/AdminProxyDeleteImpact' }
 
     AdminTenantDefaultProxyRequest:
       x-huakai-spec-source:
@@ -20103,7 +21009,6 @@ components:
           enum: [exact_capability_only, safe_equivalent_allowed]
         allow_tenant_operator_force: { type: boolean }
         allow_last_resort: { type: boolean }
-        allow_mid_stream_failover: { type: boolean, default: false }
         sticky_wait_max_waiting: { type: integer, minimum: 0 }
         fallback_wait_max_waiting: { type: integer, minimum: 0 }
         sticky_wait_timeout_ms: { type: integer, minimum: 0 }
@@ -20112,6 +21017,7 @@ components:
         enabled: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        deleted_at: { type: [string, 'null'], format: date-time }
 
     PoolGroupCreate:
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
@@ -20125,15 +21031,12 @@ components:
           minimum: 1
           description: Explicit tenant scope for platform_admin; tenant_operator body value must match its token scope.
         name: { type: string, minLength: 1 }
-        routing_policy_version: { type: string, default: '1.0' }
         top_k_default: { type: integer, minimum: 1, maximum: 10, default: 1 }
         capability_default:
           type: string
           enum: [exact_capability_only, safe_equivalent_allowed]
           default: exact_capability_only
-        allow_tenant_operator_force: { type: boolean, default: false }
         allow_last_resort: { type: boolean, default: false }
-        allow_mid_stream_failover: { type: boolean, default: false }
 
     PoolGroupUpdate:
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
@@ -20145,19 +21048,12 @@ components:
           format: int64
           minimum: 1
           description: Explicit tenant scope for platform_admin; if query tenant_id is also present, the values must match.
-        routing_policy_version: { type: string }
+        name: { type: string, minLength: 1 }
         top_k_default: { type: integer, minimum: 1, maximum: 10 }
         capability_default:
           type: string
           enum: [exact_capability_only, safe_equivalent_allowed]
-        allow_tenant_operator_force: { type: boolean }
         allow_last_resort: { type: boolean }
-        allow_mid_stream_failover: { type: boolean }
-        sticky_wait_max_waiting: { type: integer, minimum: 0 }
-        fallback_wait_max_waiting: { type: integer, minimum: 0 }
-        sticky_wait_timeout_ms: { type: integer, minimum: 0 }
-        fallback_wait_timeout_ms: { type: integer, minimum: 0 }
-        forced_route_rate_limit_per_hour: { type: integer, minimum: 0 }
         enabled: { type: boolean }
 
     PoolGroupList:
@@ -20464,8 +21360,6 @@ components:
         - pool_mode
         - temp_unschedulable_enabled
         - temp_unschedulable_rules
-        - proxy_id
-        - proxy_group_id
         - proxy_binding
         - created_at
         - updated_at
@@ -20536,6 +21430,9 @@ components:
           type: string
           enum: [request_completion_event]
           description: last_request_observed_at 的生产事件来源。
+        today_stats:
+          description: 列表响应按账号批量返回的 UTC 当日统计；详情响应可以省略。
+          $ref: '#/components/schemas/ProviderAccountTodayStats'
         quota_windows:
           $ref: '#/components/schemas/ProviderAccountQuotaWindowMatrix'
         quota_facts:
@@ -20559,10 +21456,45 @@ components:
           type: array
           items: { type: integer, format: int32, minimum: 100, maximum: 599 }
         rate_limit_recovery:
-          description: 仅 clear-rate-limit 成功响应返回。
+          description: clear-rate-limit 或 recover 成功响应返回，说明账号阶段和渠道阶段的实际结果。
           $ref: '#/components/schemas/ProviderAccountRateLimitRecovery'
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ProviderAccountTodayStats:
+      type: object
+      additionalProperties: false
+      description: 从不可变 usage_records 聚合的账号当日已结算请求统计，时间范围为 [window_start, observed_at)。
+      required:
+        - window_start
+        - observed_at
+        - request_count
+        - success_count
+        - failure_count
+        - failure_rate_percent
+        - ttft_p95_ms
+      properties:
+        window_start:
+          type: string
+          format: date-time
+          description: UTC 当日零点。
+        observed_at:
+          type: string
+          format: date-time
+          description: 本次列表查询的统一观测时间。
+        request_count: { type: integer, format: int64, minimum: 0 }
+        success_count: { type: integer, format: int64, minimum: 0 }
+        failure_count: { type: integer, format: int64, minimum: 0 }
+        failure_rate_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        ttft_p95_ms:
+          type: [number, 'null']
+          format: double
+          minimum: 0
+          description: 有合法首字节时间的请求 TTFT 第 95 百分位；没有样本时为 null。
 
     ProviderAccountQuotaWindowMatrix:
       type: object
@@ -20635,10 +21567,43 @@ components:
           description: 当前账号是否存在可用于调度的最新 channel-health 记录。
         channel_changed:
           type: boolean
-          description: 最新渠道记录是否确实从 rate-limit cooling 转入 ramp。
+          description: 最新渠道记录是否确实发生变化；清限流通常进入 ramp，完整恢复通常进入 active。
         channel_state:
           type: string
           enum: [active, degraded, cooling_down, ramping, disabled, manual_paused]
+
+    ProviderAccountRecoveryPartial:
+      type: object
+      additionalProperties: false
+      description: 账号数据库阶段已经提交、渠道健康阶段尚未完成时的可恢复合同；调用方不得把它显示成全失败。
+      required:
+        - error
+        - tenant_id
+        - account_id
+        - operation
+        - account_backoff_cleared
+        - account_state_recovered
+        - channel_recovery_pending
+        - retryable
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: provider_account_recovery_partial }
+            message: { type: string }
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        account_id: { type: integer, format: int64, minimum: 1 }
+        operation:
+          type: string
+          enum: [clear_rate_limit, recover_account_state]
+        account_backoff_cleared: { type: boolean, const: true }
+        account_state_recovered:
+          type: boolean
+          description: recover_account_state 已把账号健康态复位时为 true；仅清限流时为 false。
+        channel_recovery_pending: { type: boolean, const: true }
+        retryable: { type: boolean, const: true }
 
     ProviderAccountCreate:
       x-huakai-spec-source:
@@ -20865,29 +21830,66 @@ components:
         enabled: { type: boolean }
 
     ProviderAccountTestResponse:
-      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+      x-huakai-spec-source:
+        - backend/internal/accountprobe/service.go
+        - backend/internal/adminhttp/provider_account_test_handler.go
       type: object
       additionalProperties: false
-      required: [ok, error_class, message]
+      required:
+        - ok
+        - attempted
+        - error_class
+        - message
+        - latency_ms
+        - tested_at
+        - health_signal_recorded
+        - warnings
       properties:
         ok:
           type: boolean
-          description: True only when dry-run validation completed with a real non-mutating credential check.
+          description: 仅当指定账号的真实模型请求成功并返回可解析响应时为 true。
+        attempted:
+          type: boolean
+          description: 是否已经向上游发送请求；缺少模型或模式不支持时为 false。
+        model:
+          type: string
+          description: 实际用于探测的上游模型。
+        protocol_family:
+          type: string
+          description: 实际使用的已验证协议族。
+        upstream_status:
+          type: integer
+          format: int32
+          minimum: 100
+          maximum: 599
+          description: 上游返回 HTTP 状态时提供；本地网络错误时省略。
         error_class:
           type: [string, 'null']
-          description: Safe error class only; never raw upstream error text.
-          enum:
-            - invalid_grant
-            - rate_limit_exceeded
-            - risk_control_triggered
-            - account_disabled
-            - temporary
-            - payload_invalid
-            - operator_config_required
-            - null
+          description: 统一安全错误分类；绝不返回原始上游错误文本。
         message:
           type: string
-          description: Generic operator-facing message with no credential payload or raw upstream body.
+          description: 不含凭据或原始上游响应的运营提示。
+        latency_ms:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          description: 已发出探测时的端到端耗时；未发送时为 null。
+        tested_at:
+          type: [string, 'null']
+          format: date-time
+          description: 已发出探测时的完成时间；未发送时为 null。
+        health_signal:
+          type: string
+          description: 本次结果映射出的账号健康信号；无可用映射时省略。
+        health_signal_recorded:
+          type: boolean
+          description: 健康信号是否已成功写回统一健康状态机。
+        warnings:
+          type: array
+          description: 上游结果已取得但状态回流不完整时的稳定警告码。
+          items:
+            type: string
+            enum: [health_signal_not_recorded, legacy_credential_health_unavailable]
 
     ProviderAccountHealthSnapshot:
       x-huakai-spec-source:
@@ -21821,6 +22823,192 @@ components:
         pool_mode: { type: boolean }
         temp_unschedulable_enabled: { type: boolean }
         temp_unschedulable_rules: { type: array, items: { type: object, additionalProperties: true } }
+
+    AdminTenant:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - status
+        - version
+        - status_changed_at
+        - created_at
+        - updated_at
+        - is_platform
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        status: { type: string, enum: [active, disabled, deleted] }
+        version: { type: integer, format: int64, minimum: 1 }
+        status_reason: { type: string, maxLength: 1000 }
+        status_changed_at: { type: string, format: date-time }
+        status_changed_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: [string, 'null'], format: date-time }
+        is_platform:
+          type: boolean
+          description: true 表示部署者平台工作租户，该租户不可停用或删除。
+
+    AdminTenantListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminTenant' }
+
+    AdminTenantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, admin_email, admin_password, reason]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        admin_email: { type: string, format: email, maxLength: 254 }
+        admin_display_name: { type: string, maxLength: 120 }
+        admin_password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    AdminTenantCreateResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant, first_admin_user_id]
+      properties:
+        tenant: { $ref: '#/components/schemas/AdminTenant' }
+        first_admin_user_id: { type: integer, format: int64, minimum: 1 }
+
+    AdminTenantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status, expected_version, reason]
+      properties:
+        status: { type: string, enum: [active, disabled] }
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    AdminTenantStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant, changed, sessions_revoked]
+      properties:
+        tenant: { $ref: '#/components/schemas/AdminTenant' }
+        changed: { type: boolean }
+        sessions_revoked: { type: integer, format: int64, minimum: 0 }
+
+    AdminTenantResourceCounts:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_admins
+        - final_users
+        - api_keys
+        - provider_accounts
+        - account_credentials
+        - pool_groups
+        - proxies
+        - session_families
+      properties:
+        tenant_admins: { type: integer, format: int64, minimum: 0 }
+        final_users: { type: integer, format: int64, minimum: 0 }
+        api_keys: { type: integer, format: int64, minimum: 0 }
+        provider_accounts: { type: integer, format: int64, minimum: 0 }
+        account_credentials: { type: integer, format: int64, minimum: 0 }
+        pool_groups: { type: integer, format: int64, minimum: 0 }
+        proxies: { type: integer, format: int64, minimum: 0 }
+        session_families: { type: integer, format: int64, minimum: 0 }
+
+    AdminTenantBlockerCounts:
+      type: object
+      additionalProperties: false
+      required:
+        - user_balance_rows
+        - reserving_claims
+        - held_balances
+        - pool_slots
+        - quota_reservations
+        - quota_slots
+        - settlement_intents
+        - media_tasks
+        - media_orphans
+        - quota_reconciliation_jobs
+        - usage_dlq
+        - signup_reward_recoveries
+        - payment_orders
+        - recharge_orders
+        - refund_requests
+        - cost_disputes
+      properties:
+        user_balance_rows: { type: integer, format: int64, minimum: 0 }
+        reserving_claims: { type: integer, format: int64, minimum: 0 }
+        held_balances: { type: integer, format: int64, minimum: 0 }
+        pool_slots: { type: integer, format: int64, minimum: 0 }
+        quota_reservations: { type: integer, format: int64, minimum: 0 }
+        quota_slots: { type: integer, format: int64, minimum: 0 }
+        settlement_intents: { type: integer, format: int64, minimum: 0 }
+        media_tasks: { type: integer, format: int64, minimum: 0 }
+        media_orphans: { type: integer, format: int64, minimum: 0 }
+        quota_reconciliation_jobs: { type: integer, format: int64, minimum: 0 }
+        usage_dlq: { type: integer, format: int64, minimum: 0 }
+        signup_reward_recoveries:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 尚未完成的注册或受邀奖励恢复事实，包含待处理、处理中、待重试和人工恢复状态。
+        payment_orders: { type: integer, format: int64, minimum: 0 }
+        recharge_orders: { type: integer, format: int64, minimum: 0 }
+        refund_requests: { type: integer, format: int64, minimum: 0 }
+        cost_disputes: { type: integer, format: int64, minimum: 0 }
+
+    AdminTenantDeleteImpact:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - tenant_version
+        - tenant_status
+        - tenant_wallet_balance
+        - resources
+        - blockers
+        - blocked
+        - impact_hash
+      properties:
+        tenant_id: { type: integer, format: int64, minimum: 1 }
+        tenant_version: { type: integer, format: int64, minimum: 1 }
+        tenant_status: { type: string, enum: [active, disabled, deleted] }
+        tenant_wallet_balance:
+          type: string
+          description: 十进制定点金额字符串；非零时禁止删除。
+        resources: { $ref: '#/components/schemas/AdminTenantResourceCounts' }
+        blockers: { $ref: '#/components/schemas/AdminTenantBlockerCounts' }
+        blocked: { type: boolean }
+        impact_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: 与租户版本和全部影响项绑定的一次性确认摘要。
+
+    AdminTenantDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, impact_hash, reason]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        impact_hash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+
+    AdminTenantDeleteResponse:
+      type: object
+      additionalProperties: false
+      required: [tenant, sessions_revoked]
+      properties:
+        tenant: { $ref: '#/components/schemas/AdminTenant' }
+        sessions_revoked: { type: integer, format: int64, minimum: 0 }
 
     TenantCapabilityGrant:
       type: object

@@ -621,6 +621,7 @@ SELECT s.tenant_id, s.id, s.user_id, s.expires_at,
 	COALESCE(u.email, ''), COALESCE(p.name, '')
 FROM user_subscriptions s
 JOIN users u ON u.tenant_id = s.tenant_id AND u.id = s.user_id AND u.deleted_at IS NULL
+JOIN tenants t ON t.id = s.tenant_id AND t.status = 'active' AND t.deleted_at IS NULL
 LEFT JOIN subscription_plans p ON p.tenant_id = s.tenant_id AND p.id = s.plan_id
 WHERE s.status = 'active' AND s.expires_at > $1 AND s.expires_at <= $2
 	AND (s.expires_at, s.id) > ($4, $5)

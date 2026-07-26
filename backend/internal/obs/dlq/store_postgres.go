@@ -3,9 +3,11 @@ package dlq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -22,11 +24,21 @@ func (p *PostgresOutbox) Enqueue(ctx context.Context, e OutboxEvent) (OutboxEven
 	if p == nil || p.pool == nil {
 		return OutboxEvent{}, ErrOutboxNotConfigured
 	}
+	return EnqueueWithDB(ctx, p.pool, e)
+}
+
+// EnqueueWithDB 让业务事务把 outbox 事实与主业务事实同提交。
+// 相同 ID 且身份/载荷完全一致时返回原事件；相同 ID 指向不同事件时显式冲突。
+func EnqueueWithDB(ctx context.Context, database db.DBTX, e OutboxEvent) (OutboxEvent, error) {
+	if database == nil {
+		return OutboxEvent{}, ErrOutboxNotConfigured
+	}
 	e, err := normalizeEvent(e, time.Now().UTC())
 	if err != nil {
 		return OutboxEvent{}, err
 	}
-	err = p.pool.QueryRow(ctx, `
+	var stored OutboxEvent
+	err = database.QueryRow(ctx, `
 INSERT INTO outbox_events (
     id, tenant_id, event_type, priority, payload, created_at,
     attempt_count, next_retry_at, status, failure_reason
@@ -34,16 +46,25 @@ INSERT INTO outbox_events (
     $1, $2, $3, $4, $5::jsonb, $6,
     $7, $8, $9, $10
 )
+ON CONFLICT (id) DO UPDATE
+SET id = outbox_events.id
+WHERE outbox_events.tenant_id = EXCLUDED.tenant_id
+  AND outbox_events.event_type = EXCLUDED.event_type
+  AND outbox_events.priority = EXCLUDED.priority
+  AND outbox_events.payload = EXCLUDED.payload
 RETURNING id, tenant_id, event_type, priority, payload, created_at,
-          attempt_count, next_retry_at, status, failure_reason`,
+          attempt_count, next_retry_at, status, COALESCE(failure_reason, '')`,
 		e.ID, e.TenantID, e.EventType, string(e.Priority), []byte(e.Payload), e.CreatedAt,
 		e.AttemptCount, e.NextRetryAt, string(e.Status), e.FailureReason,
-	).Scan(&e.ID, &e.TenantID, &e.EventType, &e.Priority, &e.Payload, &e.CreatedAt,
-		&e.AttemptCount, &e.NextRetryAt, &e.Status, &e.FailureReason)
+	).Scan(&stored.ID, &stored.TenantID, &stored.EventType, &stored.Priority, &stored.Payload, &stored.CreatedAt,
+		&stored.AttemptCount, &stored.NextRetryAt, &stored.Status, &stored.FailureReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OutboxEvent{}, fmt.Errorf("%w: %s", ErrEventConflict, e.ID)
+	}
 	if err != nil {
 		return OutboxEvent{}, fmt.Errorf("obsdlq: enqueue: %w", err)
 	}
-	return e, nil
+	return stored, nil
 }
 
 func (p *PostgresOutbox) Dequeue(ctx context.Context, opts DequeueOptions) (OutboxEvent, bool, error) {

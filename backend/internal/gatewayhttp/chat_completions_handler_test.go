@@ -60,6 +60,12 @@ func (insufficientBalanceClaimGate) Reserve(_ context.Context, _ billing.Reserve
 	return nil, billing.ErrInsufficientBalance
 }
 
+type inactiveTenantClaimGate struct{}
+
+func (inactiveTenantClaimGate) Reserve(_ context.Context, _ billing.ReserveRequest) (*billing.ReserveResult, error) {
+	return nil, billing.ErrTenantInactive
+}
+
 type stubSelector struct{}
 
 func (stubSelector) Select(_ context.Context, _ pool.SelectionRequest) (*pool.SelectionResult, error) {
@@ -208,6 +214,26 @@ func TestHandler_InsufficientBalanceReturnsClientParseable402(t *testing.T) {
 		if strings.Contains(body, bad) {
 			t.Fatalf("body=%s leaked generic reserve error marker %q", body, bad)
 		}
+	}
+}
+
+func TestHandler_DisabledTenantReturnsStable403BeforeDispatch(t *testing.T) {
+	d := minimalDeps()
+	d.ClaimGate = inactiveTenantClaimGate{}
+	settler := &stubSettler{}
+	d.Settler = settler
+
+	rec := invokeHandler(t, d, validBody())
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s want 403", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"tenant_inactive"`) || !strings.Contains(body, `"message":"租户已停用"`) {
+		t.Fatalf("body=%s want stable tenant_inactive error", body)
+	}
+	if settler.abortCalls != 0 {
+		t.Fatalf("预占未成功时不应 abort，calls=%d", settler.abortCalls)
 	}
 }
 

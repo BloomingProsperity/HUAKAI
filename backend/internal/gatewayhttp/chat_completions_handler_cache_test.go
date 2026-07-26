@@ -22,6 +22,9 @@ type recordingSettler struct {
 	calls           []billing.SettleRequest
 	aborts          []recordedAbort
 	cacheHitCommits []int64
+	settleErr       error
+	abortErr        error
+	cacheHitErr     error
 }
 
 type recordedAbort struct {
@@ -35,6 +38,9 @@ type recordedAbort struct {
 
 func (s *recordingSettler) Settle(_ context.Context, req billing.SettleRequest) (*billing.SettleResult, error) {
 	s.calls = append(s.calls, req)
+	if s.settleErr != nil {
+		return nil, s.settleErr
+	}
 	return &billing.SettleResult{}, nil
 }
 
@@ -47,12 +53,12 @@ func (s *recordingSettler) Abort(_ context.Context, tenantID, claimID int64, rea
 		observedInputTokens: observedInputTokens,
 		protocolLoss:        protocolLoss,
 	})
-	return nil
+	return s.abortErr
 }
 
 func (s *recordingSettler) CommitCacheHit(_ context.Context, req billing.SettleRequest) error {
 	s.cacheHitCommits = append(s.cacheHitCommits, req.ClaimID)
-	return nil
+	return s.cacheHitErr
 }
 
 func (s *recordingSettler) Refund(context.Context, billing.RefundRequest) (*billing.RefundResult, error) {

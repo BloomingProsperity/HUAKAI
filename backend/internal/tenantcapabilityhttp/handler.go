@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/tenantcapability"
 )
 
@@ -40,7 +41,8 @@ type setRequest struct {
 
 func Mount(r chi.Router, d Deps) {
 	r.Get("/", listHandler(d))
-	r.Put("/{tenantID}/{capability}", setHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Put("/{tenantID}/{capability}", setHandler(d))
 }
 
 func listHandler(d Deps) http.HandlerFunc {

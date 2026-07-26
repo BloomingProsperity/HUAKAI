@@ -30,12 +30,16 @@ func NewPostgresLister(pool *pgxpool.Pool) *PostgresLister {
 // 放行(账号自愈),恢复本包"绝不错误下线健康账号"的安全不变量。
 func (l *PostgresLister) ListLimitedAccounts(ctx context.Context) ([]AccountRecord, error) {
 	const q = `
-SELECT id, tenant_id, session_window_5h_start
-FROM provider_accounts
-WHERE window_cost_limit_cents > 0
-  AND session_window_5h_start IS NOT NULL
-  AND session_window_5h_end > now()
-  AND deleted_at IS NULL
+SELECT pa.id, pa.tenant_id, pa.session_window_5h_start
+FROM provider_accounts pa
+JOIN tenants t
+  ON t.id = pa.tenant_id
+ AND t.status = 'active'
+ AND t.deleted_at IS NULL
+WHERE pa.window_cost_limit_cents > 0
+  AND pa.session_window_5h_start IS NOT NULL
+  AND pa.session_window_5h_end > now()
+  AND pa.deleted_at IS NULL
 `
 	rows, err := l.pool.Query(ctx, q)
 	if err != nil {

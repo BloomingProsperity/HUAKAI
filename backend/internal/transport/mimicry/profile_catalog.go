@@ -35,6 +35,7 @@ var requiredSidecarCapabilities = []string{
 	SidecarCapabilityH2Bridge,
 	SidecarCapabilityForceH1,
 	SidecarCapabilityTargetIPPinning,
+	SidecarCapabilityProxyIPPinning,
 }
 
 var requiredSidecarProfiles = []string{

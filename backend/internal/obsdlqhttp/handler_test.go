@@ -27,10 +27,12 @@ func (f fakeAdminAuth) Resolve(context.Context, *http.Request) (admin.AdminIdent
 }
 
 type fakeStore struct {
-	listFilter obsdlq.AdminListFilter
-	listCalls  int
-	rows       []obsdlq.AdminDeadEvent
-	replays    map[string]int
+	listFilter   obsdlq.AdminListFilter
+	listCalls    int
+	rows         []obsdlq.AdminDeadEvent
+	replays      map[string]int
+	replayTenant int64
+	replayActor  string
 }
 
 func (f *fakeStore) ListDead(_ context.Context, filter obsdlq.AdminListFilter) ([]obsdlq.AdminDeadEvent, error) {
@@ -39,7 +41,9 @@ func (f *fakeStore) ListDead(_ context.Context, filter obsdlq.AdminListFilter) (
 	return f.rows, nil
 }
 
-func (f *fakeStore) ReplayDead(_ context.Context, id string) (obsdlq.AdminReplayResult, error) {
+func (f *fakeStore) ReplayDead(_ context.Context, tenantID int64, id, actor string) (obsdlq.AdminReplayResult, error) {
+	f.replayTenant = tenantID
+	f.replayActor = actor
 	if f.replays == nil {
 		f.replays = map[string]int{}
 	}
@@ -93,15 +97,21 @@ func TestListRejectsLimitOverMaxBeforeStore(t *testing.T) {
 	}
 }
 
-func TestListRejectsNonPlatformAdmin(t *testing.T) {
+func TestListTenantOperatorIsForcedToOwnTenant(t *testing.T) {
 	store := &fakeStore{}
 	h := NewListHandler(Deps{Auth: fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}, Store: store})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/obs-dlq", nil))
 
-	if rec.Code != http.StatusForbidden || store.listCalls != 0 {
-		t.Fatalf("status=%d storeCalls=%d body=%s, want 403 before store", rec.Code, store.listCalls, rec.Body.String())
+	if rec.Code != http.StatusOK || store.listCalls != 1 || store.listFilter.TenantID == nil || *store.listFilter.TenantID != 7 {
+		t.Fatalf("status=%d storeCalls=%d filter=%+v body=%s", rec.Code, store.listCalls, store.listFilter, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/obs-dlq?tenant=8", nil))
+	if rec.Code != http.StatusForbidden || store.listCalls != 1 {
+		t.Fatalf("cross-tenant status=%d storeCalls=%d body=%s", rec.Code, store.listCalls, rec.Body.String())
 	}
 }
 
@@ -109,8 +119,9 @@ func TestReplaySecondCallReturnsConflict(t *testing.T) {
 	store := &fakeStore{}
 	router := chi.NewRouter()
 	router.Post("/admin/v1/obs-dlq/{id}/replay", NewReplayHandler(Deps{
-		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin}},
-		Store: store,
+		Auth:             fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RolePlatformAdmin, TokenID: 9}},
+		Store:            store,
+		PlatformTenantID: 7,
 	}))
 
 	first := httptest.NewRecorder()
@@ -118,9 +129,30 @@ func TestReplaySecondCallReturnsConflict(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d want 200 body=%s", first.Code, first.Body.String())
 	}
+	if store.replayTenant != 7 || store.replayActor != "admin_token:9" {
+		t.Fatalf("replay tenant/actor=%d/%q want 7/admin_token:9", store.replayTenant, store.replayActor)
+	}
 	second := httptest.NewRecorder()
 	router.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/admin/v1/obs-dlq/dead-1/replay", nil))
 	if second.Code != http.StatusConflict {
 		t.Fatalf("second status=%d want 409 body=%s", second.Code, second.Body.String())
+	}
+}
+
+func TestReplayTenantOperatorUsesOwnTenant(t *testing.T) {
+	store := &fakeStore{}
+	router := chi.NewRouter()
+	router.Post("/admin/v1/obs-dlq/{id}/replay", NewReplayHandler(Deps{
+		Auth:  fakeAdminAuth{ident: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 8, TokenID: 3}},
+		Store: store,
+	}))
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/obs-dlq/dead-2/replay", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if store.replayTenant != 8 || store.replayActor != "admin_token:3" {
+		t.Fatalf("replay tenant/actor=%d/%q want 8/admin_token:3", store.replayTenant, store.replayActor)
 	}
 }

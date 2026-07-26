@@ -13,30 +13,37 @@ import (
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/twofa"
-	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 type TwoFAService interface {
 	Setup(context.Context, twofa.SetupInput) (twofa.SetupResult, error)
 	Enable(context.Context, twofa.VerifyInput) (twofa.Status, error)
+	EnableWithSessionInvalidation(context.Context, twofa.VerifyInput, string, twofa.SessionInvalidator) (twofa.Status, error)
 	Disable(context.Context, int64, int64) error
+	DisableWithSessionInvalidation(context.Context, twofa.VerifyInput, string, twofa.SessionInvalidator) (int64, error)
 	Status(context.Context, int64, int64) (twofa.Status, error)
 	RegenerateBackupCodes(context.Context, twofa.VerifyInput) (twofa.BackupCodesResult, error)
 	VerifyLogin(context.Context, twofa.VerifyInput) (twofa.VerifyResult, error)
+}
+
+type twoFASessionGuardedService interface {
+	SetupWithSessionGuard(context.Context, twofa.SetupInput, string, int) (twofa.SetupResult, error)
+	RegenerateBackupCodesWithSessionGuard(
+		context.Context,
+		twofa.VerifyInput,
+		string,
+		int,
+	) (twofa.BackupCodesResult, error)
 }
 
 type TwoFASettings interface {
 	Get(context.Context, platformsettings.SettingKey) (platformsettings.StoredSetting, error)
 }
 
-type TwoFASessionRevoker interface {
-	RevokeOthers(context.Context, usersession.RevokeOthersInput) (int64, error)
-}
-
 type TwoFADeps struct {
 	Service  TwoFAService
 	Settings TwoFASettings
-	Sessions TwoFASessionRevoker
+	Sessions twofa.SessionInvalidator
 }
 
 type twoFASetupRequest struct {
@@ -73,9 +80,20 @@ func newSetupHandler(d TwoFADeps) http.HandlerFunc {
 		if !twoFADecodeOptionalJSON(w, r, &req) {
 			return
 		}
-		result, err := d.Service.Setup(r.Context(), twofa.SetupInput{
+		setupInput := twofa.SetupInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, AccountName: req.AccountName,
-		})
+		}
+		var (
+			result twofa.SetupResult
+			err    error
+		)
+		if guarded, ok := d.Service.(twoFASessionGuardedService); ok && ident.AuthVersion > 0 {
+			result, err = guarded.SetupWithSessionGuard(
+				r.Context(), setupInput, ident.FamilyID, ident.AuthVersion,
+			)
+		} else {
+			result, err = d.Service.Setup(r.Context(), setupInput)
+		}
 		if err != nil {
 			writeTwoFAError(w, err)
 			return
@@ -102,15 +120,11 @@ func newEnableHandler(d TwoFADeps) http.HandlerFunc {
 		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
-		status, err := d.Service.Enable(r.Context(), twofa.VerifyInput{
+		status, err := d.Service.EnableWithSessionInvalidation(r.Context(), twofa.VerifyInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, Code: req.Code,
-		})
+		}, ident.FamilyID, d.Sessions)
 		if err != nil {
 			writeTwoFAError(w, err)
-			return
-		}
-		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
-			twoFAWriteError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
 			return
 		}
 		twoFAWriteJSON(w, http.StatusOK, status)
@@ -162,21 +176,14 @@ func newDisableHandler(d TwoFADeps) http.HandlerFunc {
 		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
-		if _, err := d.Service.VerifyLogin(r.Context(), twofa.VerifyInput{
+		revoked, err := d.Service.DisableWithSessionInvalidation(r.Context(), twofa.VerifyInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, Code: req.Code,
-		}); err != nil {
+		}, ident.FamilyID, d.Sessions)
+		if err != nil {
 			writeTwoFAError(w, err)
 			return
 		}
-		if err := d.Service.Disable(r.Context(), ident.TenantID, ident.UserID); err != nil {
-			writeTwoFAError(w, err)
-			return
-		}
-		if err := revokeSessionsAfterTwoFAChange(r.Context(), d.Sessions, ident); err != nil {
-			twoFAWriteError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
-			return
-		}
-		twoFAWriteJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		twoFAWriteJSON(w, http.StatusOK, map[string]any{"enabled": false, "sessions_revoked": revoked})
 	}
 }
 
@@ -198,9 +205,20 @@ func newRegenerateBackupCodesHandler(d TwoFADeps) http.HandlerFunc {
 		if !twoFADecodeJSON(w, r, &req) {
 			return
 		}
-		result, err := d.Service.RegenerateBackupCodes(r.Context(), twofa.VerifyInput{
+		verifyInput := twofa.VerifyInput{
 			TenantID: ident.TenantID, UserID: ident.UserID, Code: req.Code,
-		})
+		}
+		var (
+			result twofa.BackupCodesResult
+			err    error
+		)
+		if guarded, ok := d.Service.(twoFASessionGuardedService); ok && ident.AuthVersion > 0 {
+			result, err = guarded.RegenerateBackupCodesWithSessionGuard(
+				r.Context(), verifyInput, ident.FamilyID, ident.AuthVersion,
+			)
+		} else {
+			result, err = d.Service.RegenerateBackupCodes(r.Context(), verifyInput)
+		}
 		if err != nil {
 			writeTwoFAError(w, err)
 			return
@@ -224,20 +242,6 @@ func platformTwoFAEnabled(ctx context.Context, settings TwoFASettings) bool {
 	}
 	setting, err := settings.Get(ctx, platformsettings.KeyTwoFactorEnabled)
 	return err == nil && setting.Value == "true"
-}
-
-func revokeSessionsAfterTwoFAChange(ctx context.Context, revoker TwoFASessionRevoker, ident sessionauth.SessionIdentity) error {
-	if revoker == nil {
-		return nil
-	}
-	// 保留当前 family,避免用户完成 2FA 开关后被自己的操作登出。
-	_, err := revoker.RevokeOthers(ctx, usersession.RevokeOthersInput{
-		TenantID:        ident.TenantID,
-		UserID:          ident.UserID,
-		CurrentFamilyID: ident.FamilyID,
-		Reason:          "two_factor_state_changed",
-	})
-	return err
 }
 
 func twoFADecodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
@@ -270,12 +274,16 @@ func writeTwoFAError(w http.ResponseWriter, err error) {
 		twoFAWriteError(w, http.StatusUnauthorized, "two_factor_code_reused", "two-factor code has already been used")
 	case errors.Is(err, twofa.ErrLocked):
 		twoFAWriteError(w, http.StatusTooManyRequests, "two_factor_locked", "two-factor verification is temporarily locked")
+	case errors.Is(err, twofa.ErrAuthenticationStale):
+		twoFAWriteError(w, http.StatusUnauthorized, "authentication_stale", "account security changed; authenticate again")
 	case errors.Is(err, twofa.ErrDisabled):
 		twoFAWriteError(w, http.StatusForbidden, "two_factor_disabled", "two-factor authentication is disabled")
 	case errors.Is(err, twofa.ErrNotSetup):
 		twoFAWriteError(w, http.StatusNotFound, "two_factor_not_setup", "two-factor authentication is not setup")
 	case errors.Is(err, twofa.ErrAlreadyEnabled):
 		twoFAWriteError(w, http.StatusConflict, "two_factor_already_enabled", "two-factor authentication is already enabled")
+	case errors.Is(err, twofa.ErrSessionInvalidation):
+		twoFAWriteError(w, http.StatusServiceUnavailable, "session_revoke_failed", "session revocation failed after two-factor state change")
 	default:
 		twoFAWriteError(w, http.StatusServiceUnavailable, "two_factor_backend_error", "two-factor service unavailable")
 	}

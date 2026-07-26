@@ -227,6 +227,27 @@ func TestUsesCustomPassthroughEndpointCredentialKinds(t *testing.T) {
 	}
 }
 
+func TestRequestUsesCustomPassthroughEndpointSessionMatchesActualOrigin(t *testing.T) {
+	customURL, err := url.Parse("https://session-proxy.example/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	officialURL, err := url.Parse("https://chatgpt.com/backend-api/codex/responses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := Credential{
+		Type:  CredentialTypeSessionToken,
+		Extra: map[string]string{"base_url": "https://session-proxy.example:443/api"},
+	}
+	if !RequestUsesCustomPassthroughEndpoint(cred, customURL) {
+		t.Fatal("session 请求已采用同 origin 的 base_url，应识别为自定义 endpoint")
+	}
+	if RequestUsesCustomPassthroughEndpoint(cred, officialURL) {
+		t.Fatal("适配器忽略 base_url 并使用官方地址时，不应误判为自定义 endpoint")
+	}
+}
+
 func TestBlockCloudMetadataHosts(t *testing.T) {
 	blocked := []string{
 		"metadata.google.internal",

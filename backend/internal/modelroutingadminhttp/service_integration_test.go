@@ -5,7 +5,9 @@ package modelroutingadminhttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +27,13 @@ type routingOverrideSeed struct {
 	providerAccountID  int64
 	alternateAccountID int64
 	otherAccountID     int64
+}
+
+func routingIntegrationAudit() MutationAudit {
+	return MutationAudit{
+		ActorID: "admin_token:routing-integration", ActorRole: "platform_admin",
+		RequestID: "routing-integration",
+	}
 }
 
 func openRoutingOverrideIntegrationPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
@@ -86,6 +95,7 @@ func seedRoutingOverrideGraph(t *testing.T, ctx context.Context, pool *pgxpool.P
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for _, tenantID := range []int64{seed.tenantID, seed.otherTenantID} {
+			_, _ = pool.Exec(cleanupCtx, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(cleanupCtx, `DELETE FROM model_routing_overrides WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(cleanupCtx, `DELETE FROM provider_accounts WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(cleanupCtx, `DELETE FROM channels WHERE tenant_id=$1`, tenantID)
@@ -110,6 +120,7 @@ func TestPostgresService_CRUDFeedsGetModelRoutingForGroup(t *testing.T) {
 	created, err := service.Create(ctx, CreateInput{
 		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID, Model: "gpt-pin",
 		ProviderAccountIDs: []int64{seed.providerAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
 	})
 	if err != nil {
 		t.Fatalf("创建 override：%v", err)
@@ -125,7 +136,7 @@ func TestPostgresService_CRUDFeedsGetModelRoutingForGroup(t *testing.T) {
 	}
 
 	replacement := []int64{seed.alternateAccountID}
-	updated, err := service.Update(ctx, UpdateInput{ID: created.ID, TenantID: seed.tenantID, ProviderAccountIDs: &replacement})
+	updated, err := service.Update(ctx, UpdateInput{ID: created.ID, TenantID: seed.tenantID, ProviderAccountIDs: &replacement, Audit: routingIntegrationAudit()})
 	if err != nil || len(updated.ProviderAccountIDs) != 1 || updated.ProviderAccountIDs[0] != seed.alternateAccountID {
 		t.Fatalf("更新账号子集：row=%+v err=%v", updated, err)
 	}
@@ -137,7 +148,7 @@ func TestPostgresService_CRUDFeedsGetModelRoutingForGroup(t *testing.T) {
 	}
 
 	disabled := false
-	updated, err = service.Update(ctx, UpdateInput{ID: created.ID, TenantID: seed.tenantID, Enabled: &disabled})
+	updated, err = service.Update(ctx, UpdateInput{ID: created.ID, TenantID: seed.tenantID, Enabled: &disabled, Audit: routingIntegrationAudit()})
 	if err != nil || updated.Enabled {
 		t.Fatalf("禁用 override：row=%+v err=%v", updated, err)
 	}
@@ -147,7 +158,7 @@ func TestPostgresService_CRUDFeedsGetModelRoutingForGroup(t *testing.T) {
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("禁用后消费查询仍命中：rows=%+v err=%v", rows, err)
 	}
-	if err := service.Delete(ctx, created.ID, seed.tenantID); err != nil {
+	if err := service.Delete(ctx, created.ID, seed.tenantID, routingIntegrationAudit()); err != nil {
 		t.Fatalf("删除 override：%v", err)
 	}
 	items, err := service.List(ctx, seed.tenantID)
@@ -157,6 +168,7 @@ func TestPostgresService_CRUDFeedsGetModelRoutingForGroup(t *testing.T) {
 	recreated, err := service.Create(ctx, CreateInput{
 		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID, Model: "gpt-pin",
 		ProviderAccountIDs: []int64{seed.providerAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
 	})
 	if err != nil || recreated.ID == created.ID {
 		t.Fatalf("软删后应可按同一池和模型重建：row=%+v err=%v", recreated, err)
@@ -174,6 +186,7 @@ func TestPostgresService_RejectsCrossTenantPool(t *testing.T) {
 	_, err := service.Create(ctx, CreateInput{
 		TenantID: seed.tenantID, PoolGroupID: seed.otherPoolGroupID, Model: "gpt-pin",
 		ProviderAccountIDs: []int64{seed.providerAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
 	})
 	if !errors.Is(err, ErrPoolNotOwned) {
 		t.Fatalf("错误=%v，期望 ErrPoolNotOwned", err)
@@ -192,6 +205,7 @@ func TestPostgresService_RejectsCrossTenantAccount(t *testing.T) {
 	_, err := service.Create(ctx, CreateInput{
 		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID, Model: "gpt-pin",
 		ProviderAccountIDs: []int64{seed.providerAccountID, seed.otherAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
 	})
 	if !errors.Is(err, ErrAccountsNotOwned) {
 		t.Fatalf("错误=%v，期望 ErrAccountsNotOwned", err)
@@ -199,5 +213,81 @@ func TestPostgresService_RejectsCrossTenantAccount(t *testing.T) {
 	items, listErr := service.List(ctx, seed.tenantID)
 	if listErr != nil || len(items) != 0 {
 		t.Fatalf("非法账号不应部分落库：items=%+v err=%v", items, listErr)
+	}
+}
+
+// 操作日志失败必须让强制 pin 的新增、更新和删除一并回滚。
+func TestPostgresService_LogFailureRollsBackOverrideMutation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openRoutingOverrideIntegrationPool(t, ctx)
+	seed := seedRoutingOverrideGraph(t, ctx, pool)
+	service := NewPostgresService(pool, dbmodelroutingadmin.New(pool))
+	baseline, err := service.Create(ctx, CreateInput{
+		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID, Model: "gpt-log-baseline",
+		ProviderAccountIDs: []int64{seed.providerAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
+	})
+	if err != nil {
+		t.Fatalf("create baseline override: %v", err)
+	}
+
+	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
+	functionName := "reject_routing_log_" + suffix
+	triggerName := "reject_routing_log_trigger_" + suffix
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+CREATE FUNCTION %s() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'routing log rejected for atomicity test';
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events
+FOR EACH ROW EXECUTE FUNCTION %s()`, functionName, triggerName, functionName)); err != nil {
+		t.Fatalf("install reject trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON admin_audit_events`, triggerName))
+		_, _ = pool.Exec(c, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
+	})
+
+	if _, err := service.Create(ctx, CreateInput{
+		TenantID: seed.tenantID, PoolGroupID: seed.poolGroupID, Model: "gpt-log-rejected",
+		ProviderAccountIDs: []int64{seed.providerAccountID}, Enabled: true,
+		Audit: routingIntegrationAudit(),
+	}); err == nil {
+		t.Fatal("日志失败时新增强制 pin 必须失败")
+	}
+	var count int64
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM model_routing_overrides WHERE tenant_id=$1 AND model='gpt-log-rejected' AND deleted_at IS NULL`,
+		seed.tenantID,
+	).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("新增日志失败留下强制 pin count=%d err=%v", count, err)
+	}
+
+	disabled := false
+	if _, err := service.Update(ctx, UpdateInput{
+		ID: baseline.ID, TenantID: seed.tenantID, Enabled: &disabled, Audit: routingIntegrationAudit(),
+	}); err == nil {
+		t.Fatal("日志失败时更新强制 pin 必须失败")
+	}
+	var enabled bool
+	if err := pool.QueryRow(ctx,
+		`SELECT enabled FROM model_routing_overrides WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, baseline.ID,
+	).Scan(&enabled); err != nil || !enabled {
+		t.Fatalf("更新日志失败留下半状态 enabled=%v err=%v", enabled, err)
+	}
+
+	if err := service.Delete(ctx, baseline.ID, seed.tenantID, routingIntegrationAudit()); err == nil {
+		t.Fatal("日志失败时删除强制 pin 必须失败")
+	}
+	var deletedAt any
+	if err := pool.QueryRow(ctx,
+		`SELECT deleted_at FROM model_routing_overrides WHERE tenant_id=$1 AND id=$2`,
+		seed.tenantID, baseline.ID,
+	).Scan(&deletedAt); err != nil || deletedAt != nil {
+		t.Fatalf("删除日志失败留下半状态 deleted_at=%v err=%v", deletedAt, err)
 	}
 }

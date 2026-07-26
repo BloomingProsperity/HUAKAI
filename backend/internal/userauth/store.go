@@ -17,6 +17,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/credentialstore"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/signupreward"
 )
 
 type PostgresStore struct {
@@ -66,39 +67,16 @@ func (s *PostgresStore) WithTx(ctx context.Context, fn func(Store) error) error 
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresStore) CreateUser(ctx context.Context, in CreateUserParams) (User, error) {
+func (s *PostgresStore) EnsureSignupRewardExpectation(
+	ctx context.Context,
+	tenantID, userID int64,
+	kind signupreward.Kind,
+	amountCents int64,
+) error {
 	if s == nil || s.db == nil {
-		return User{}, ErrStoreNotConfigured
+		return ErrStoreNotConfigured
 	}
-	email := NormalizeEmail(in.Email)
-	status := in.Status
-	if status == "" {
-		status = UserStatusPendingVerification
-	}
-	const q = `
-INSERT INTO users (
-    tenant_id, email, display_name, password_hash, email_verified,
-    invite_code_used, social_login_provider, status
-) VALUES (
-    $1, $2, $3, NULLIF($4, ''), $5, NULLIF($6, ''), NULLIF($7, ''), $8
-)
-RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
-          invite_code_used, social_login_provider, status, password_version,
-          failed_login_count, locked_until, created_at, updated_at`
-	user, err := scanUser(s.db.QueryRow(ctx, q,
-		in.TenantID,
-		email,
-		strings.TrimSpace(in.DisplayName),
-		strings.TrimSpace(in.PasswordHash),
-		in.EmailVerified,
-		strings.TrimSpace(in.InviteCodeUsed),
-		strings.TrimSpace(in.SocialLoginProvider),
-		status,
-	))
-	if err != nil {
-		return User{}, err
-	}
-	return user, nil
+	return signupreward.Ensure(ctx, s.db, tenantID, userID, kind, amountCents)
 }
 
 func (s *PostgresStore) GetUserByEmail(ctx context.Context, tenantID int64, email string) (User, error) {
@@ -106,14 +84,18 @@ func (s *PostgresStore) GetUserByEmail(ctx context.Context, tenantID int64, emai
 		return User{}, ErrStoreNotConfigured
 	}
 	const q = `
-SELECT id, tenant_id, email, display_name, password_hash, email_verified,
-       invite_code_used, social_login_provider, status, password_version,
-       failed_login_count, locked_until, created_at, updated_at
-FROM users
-WHERE tenant_id = $1
-  AND lower(email) = lower($2)
-  AND deleted_at IS NULL
-ORDER BY id
+SELECT u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.email_verified,
+       u.invite_code_used, u.social_login_provider, u.status, u.password_version,
+       u.failed_login_count, u.locked_until, u.created_at, u.updated_at
+FROM users u
+INNER JOIN tenants t
+    ON t.id = u.tenant_id
+   AND t.status = 'active'
+   AND t.deleted_at IS NULL
+WHERE u.tenant_id = $1
+  AND lower(u.email) = lower($2)
+  AND u.deleted_at IS NULL
+ORDER BY u.id
 LIMIT 1`
 	user, err := scanUser(s.db.QueryRow(ctx, q, tenantID, NormalizeEmail(email)))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -127,13 +109,17 @@ func (s *PostgresStore) GetUserByID(ctx context.Context, tenantID, userID int64)
 		return User{}, ErrStoreNotConfigured
 	}
 	const q = `
-SELECT id, tenant_id, email, display_name, password_hash, email_verified,
-       invite_code_used, social_login_provider, status, password_version,
-       failed_login_count, locked_until, created_at, updated_at
-FROM users
-WHERE tenant_id = $1
-  AND id = $2
-  AND deleted_at IS NULL`
+SELECT u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.email_verified,
+       u.invite_code_used, u.social_login_provider, u.status, u.password_version,
+       u.failed_login_count, u.locked_until, u.created_at, u.updated_at
+FROM users u
+INNER JOIN tenants t
+    ON t.id = u.tenant_id
+   AND t.status = 'active'
+   AND t.deleted_at IS NULL
+WHERE u.tenant_id = $1
+  AND u.id = $2
+  AND u.deleted_at IS NULL`
 	user, err := scanUser(s.db.QueryRow(ctx, q, tenantID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrUserNotFound
@@ -226,6 +212,10 @@ SELECT u.id, u.tenant_id, u.email, u.display_name, u.password_hash, u.email_veri
        u.failed_login_count, u.locked_until, u.created_at, u.updated_at
 FROM social_identity_links sil
 INNER JOIN users u ON u.tenant_id = sil.tenant_id AND u.id = sil.user_id
+INNER JOIN tenants t
+    ON t.id = sil.tenant_id
+   AND t.status = 'active'
+   AND t.deleted_at IS NULL
 WHERE sil.tenant_id = $1
   AND sil.provider = $2
   AND sil.subject = $3

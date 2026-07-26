@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
@@ -54,6 +55,10 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	if errors.Is(err, billing.ErrTenantInactive) {
+		writeJSONError(w, http.StatusForbidden, clienterr.CodeTenantInactive, clienterr.MessageFor(clienterr.CodeTenantInactive))
+		return false
+	}
 	// 幂等竞争 / Serializable 重试耗尽:可重试,返 409+Retry-After 让客户端稍后再试
 	//(镜像 chat completions;此前落进下方通用 500 = 把可重试竞争误报成服务端错误)。
 	if errors.Is(err, billing.ErrClaimRace) {
@@ -70,6 +75,11 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = res
+	if err := ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, res.ClaimID, res.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predictedCost); err != nil {
+		_ = ex.abortWithError(w, "settlement_intent_unavailable", 0)
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+		return false
+	}
 	return ex.reserveQuota(w, predictedCost)
 }
 
@@ -154,7 +164,10 @@ func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.Se
 	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
 		failureClass := privacy.ErrorClassFor(ctx, err)
 		payload := settlementrecovery.FromSettleRequest(settlementrecovery.SourceEmbeddingsDelivered, ex.requestID, req)
-		_ = settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "embeddingshttp.settle_recovery")
+		evidence, enqueueErr := settlementrecovery.EnqueueFailure(ctx, ex.d.SettleRecoveryDLQ, payload, err, "embeddingshttp.settle_recovery")
+		ex.settlementIntent.MarkSettlementResult(ctx, req.ActualCost, err, enqueueErr == nil, settlementintent.RecoveryEvidence{
+			Payload: evidence.Payload, FailureClass: evidence.FailureClass,
+		})
 		_ = privacy.LogSystem(ctx, privacy.SystemEvent{
 			Severity: privacy.SeverityError, Component: "embeddingshttp.settle_recovery",
 			RequestID: ex.requestID, ErrorClass: failureClass, Attrs: map[string]any{
@@ -164,6 +177,7 @@ func (ex *execution) settleDeliveredResponse(ctx context.Context, req billing.Se
 		})
 		return err
 	}
+	ex.settlementIntent.MarkSettled(ctx, req.ActualCost)
 	return nil
 }
 
@@ -183,12 +197,23 @@ func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observ
 	}
 	bctx, cancel := ex.billingCtx()
 	defer cancel()
-	if err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
+	err := ex.d.Settler.Abort(bctx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil)
+	ex.settlementIntent.MarkAbortResult(bctx, err)
+	if err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 		return err
 	}
 	ex.reserveRes = nil
 	return nil
+}
+
+func (ex *execution) openDeliveryGate(w http.ResponseWriter, observedInputTokens int64) bool {
+	if err := ex.settlementIntent.MarkDelivering(ex.ctx, time.Now().UTC()); err != nil {
+		_ = ex.abortWithError(w, "delivery_evidence_unavailable", observedInputTokens)
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+		return false
+	}
+	return true
 }
 
 func (ex *execution) ensureIdempotency() {

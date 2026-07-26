@@ -56,10 +56,9 @@ func TestCreateDeleteUser_RealStoreAndMigrationConstraint(t *testing.T) {
 	assertLatestAuditAction(t, ctx, pool, f.tenantID, created.ID, "create_user")
 
 	delDeps := Deps{
-		Auth:            usersAuthStub{ident: tenantOperator(f.tenantID)},
-		Store:           admindb.New(pool),
-		UserSoftDeleter: NewPostgresUserSoftDeleteStore(pool),
-		Audit:           admindb.New(pool),
+		Auth:          usersAuthStub{ident: tenantOperator(f.tenantID)},
+		Store:         admindb.New(pool),
+		UserMutations: NewPostgresUserMutationStore(pool),
 	}
 	delRec := invokeAdminUsersBody(t, delDeps, http.MethodDelete,
 		"/admin/v1/users/"+strconv.FormatInt(created.ID, 10), "")

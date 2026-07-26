@@ -38,6 +38,27 @@ func TestBroadcast_AdminAuthRequired(t *testing.T) {
 	}
 }
 
+func TestBroadcast_DeploymentAdminCannotWriteLowerTenantUsers(t *testing.T) {
+	// 变异：把终端用户域权限改回 CanIssueForTenant，部署者会给下级租户用户写入通知。
+	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	svc, store := newNoticeHTTPService(&now)
+	store.AddActiveUser(8, 801)
+	auth := fakeAdminAuth{identity: admin.AdminIdentity{TokenID: 99, Role: admin.RolePlatformAdmin}}
+
+	rec := serveUserNotices(t, svc, auth, nil, http.MethodPost,
+		"/v1/admin/notifications/broadcast",
+		[]byte(`{"tenant_id":8,"title":"越级","body":"不应写入"}`),
+	)
+	assertNoticeStatus(t, rec, http.StatusForbidden)
+	count, err := svc.UnreadCount(context.Background(), 8, 801)
+	if err != nil {
+		t.Fatalf("读取被拒后的未读数：%v", err)
+	}
+	if count != 0 {
+		t.Fatalf("越级广播后未读数=%d，期望 0", count)
+	}
+}
+
 func TestBroadcast_Validation(t *testing.T) {
 	// 变异：绕过 HTTP/service 校验；空 title/body 或非法 severity 会广播通知行而非返回 400。
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
@@ -172,7 +193,7 @@ func serveUserNotices(t *testing.T, svc *usernotice.Service, auth AdminAuth, ses
 	t.Helper()
 	router := chi.NewRouter()
 	MountUserRoutes(router, UserDeps{Service: svc})
-	MountAdminRoutes(router, AdminDeps{Auth: auth, Service: svc})
+	MountAdminRoutes(router, AdminDeps{Auth: auth, Service: svc, PlatformTenantID: 7})
 	var reader *bytes.Reader
 	if body == nil {
 		reader = bytes.NewReader(nil)

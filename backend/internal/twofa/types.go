@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 const (
@@ -30,10 +32,12 @@ var (
 	// ErrCodeReused 表示该 TOTP 码(或更早时间步的码)已被成功消费过,按防重放拒绝
 	// (RFC 6238 §5.2)。区别于 ErrInvalidCode:码本身有效,只是已用过,故**不计失败次数**,
 	// 避免合法用户在网络重试里重复提交同一码而被锁定。
-	ErrCodeReused       = errors.New("twofa: code already used")
-	ErrLocked           = errors.New("twofa: locked")
-	ErrChallengeInvalid = errors.New("twofa: challenge invalid")
-	ErrChallengeExpired = errors.New("twofa: challenge expired")
+	ErrCodeReused          = errors.New("twofa: code already used")
+	ErrLocked              = errors.New("twofa: locked")
+	ErrChallengeInvalid    = errors.New("twofa: challenge invalid")
+	ErrChallengeExpired    = errors.New("twofa: challenge expired")
+	ErrAuthenticationStale = errors.New("twofa: authenticated security state is stale")
+	ErrSessionInvalidation = errors.New("twofa: session invalidation failed")
 )
 
 type Settings struct {
@@ -79,6 +83,7 @@ type Status struct {
 	BackupCodesRemaining int        `json:"backup_codes_remaining"`
 	LockedUntil          *time.Time `json:"locked_until,omitempty"`
 	LastUsedAt           *time.Time `json:"last_used_at,omitempty"`
+	SessionsRevoked      int64      `json:"sessions_revoked,omitempty"`
 }
 
 type BackupCodesResult struct {
@@ -88,16 +93,18 @@ type BackupCodesResult struct {
 type VerifyResult struct {
 	TenantID             int64
 	UserID               int64
+	AuthVersion          int
 	Method               string
 	BackupCodesRemaining int
 	LockedUntil          *time.Time
 }
 
 type Challenge struct {
-	ID        string    `json:"id"`
-	TenantID  int64     `json:"tenant_id"`
-	UserID    int64     `json:"user_id"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID          string    `json:"id"`
+	TenantID    int64     `json:"tenant_id"`
+	UserID      int64     `json:"user_id"`
+	AuthVersion int       `json:"-"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 type TOTPConfig struct {
@@ -120,6 +127,32 @@ type Store interface {
 	CountUnusedBackupCodes(ctx context.Context, tenantID, userID int64) (int, error)
 	ConsumeBackupCode(ctx context.Context, tenantID, userID int64, hash []byte, now time.Time) (bool, error)
 	ReplaceBackupCodes(ctx context.Context, tenantID, userID int64, hashes [][]byte, now time.Time) error
+}
+
+// SessionInvalidator 是非 PostgreSQL 测试存储使用的会话失效边界。
+// 生产 PostgresStore 会把 2FA 状态与会话撤销收进同一数据库事务。
+type SessionInvalidator interface {
+	RevokeOthers(context.Context, usersession.RevokeOthersInput) (int64, error)
+}
+
+type sessionSecurityMutationStore interface {
+	RunSessionSecurityMutation(
+		ctx context.Context,
+		tenantID, userID int64,
+		currentFamilyID, reason string,
+		now time.Time,
+		mutate func(Store) error,
+	) (int64, error)
+}
+
+type activeSessionMutationStore interface {
+	RunActiveSessionMutation(
+		ctx context.Context,
+		tenantID, userID int64,
+		currentFamilyID string,
+		authVersion int,
+		mutate func(Store) error,
+	) error
 }
 
 type atomicFailureStore interface {

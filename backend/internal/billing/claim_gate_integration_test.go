@@ -34,7 +34,7 @@ func dsn(t *testing.T) string {
 
 // seedTenant 插入一个全新的 tenant + 真实 users + api_keys 行,并注册
 // 清理逻辑。返回各 ID。迁移 0009 用真实 seed 取代了此前的合成 id 模式
-//(apiKeyID = tenantID*100 + 1),因为迁移 0009 为 billing_ledger_claims
+// (apiKeyID = tenantID*100 + 1),因为迁移 0009 为 billing_ledger_claims
 // 增加了从 (tenant_id, api_key_id) -> api_keys (tenant_id, id) 以及从
 // (tenant_id, user_id) -> users (tenant_id, id) 的复合 FK。
 //
@@ -155,6 +155,44 @@ func TestClaimReserveLeaseCoversMaxRequestLifetime(t *testing.T) {
 	if covered < minCover {
 		t.Fatalf("claim 租约只覆盖 %v(< %v):长流会被 LeaseSweeper 中途 abort 致亏钱+超并发;租约须 >= 最大请求生命周期",
 			covered, minCover)
+	}
+}
+
+// 租户停用与资金预占共用 tenants 行锁。停用完成后，即使调用方在更早的
+// API Key 认证阶段拿到过有效身份，也不得再创建 claim、hold 或触发上游。
+// 变异：删除 ClaimGate 的 active tenant 锁定查询，本测试会落下一条 reserving claim。
+func TestClaimGateRejectsDisabledTenantBeforeCreatingMoneyFacts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool := openPool(t, ctx)
+	tenantID, apiKeyID, userID := seedTenant(t, ctx, pool, "tenant-disabled")
+	if _, err := pool.Exec(ctx,
+		`UPDATE tenants SET status='disabled', version=version+1 WHERE id=$1`,
+		tenantID,
+	); err != nil {
+		t.Fatalf("停用测试租户: %v", err)
+	}
+
+	_, err := NewClaimGate(pool).Reserve(ctx, baseRequest(tenantID, apiKeyID, userID))
+	if !errors.Is(err, ErrTenantInactive) {
+		t.Fatalf("停用租户 Reserve err=%v want ErrTenantInactive", err)
+	}
+	var claims int
+	var balance, held decimal.Decimal
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM billing_ledger_claims WHERE tenant_id=$1`,
+		tenantID,
+	).Scan(&claims); err != nil {
+		t.Fatalf("读取停用租户 claim: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT balance, held FROM user_balances WHERE tenant_id=$1 AND user_id=$2`,
+		tenantID, userID,
+	).Scan(&balance, &held); err != nil {
+		t.Fatalf("读取停用租户余额: %v", err)
+	}
+	if claims != 0 || !balance.Equal(decimal.NewFromInt(10)) || !held.IsZero() {
+		t.Fatalf("停用租户仍产生资金事实 claims=%d balance=%s held=%s", claims, balance, held)
 	}
 }
 

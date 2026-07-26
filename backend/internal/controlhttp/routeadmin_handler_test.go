@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/routeadmin"
@@ -30,22 +31,22 @@ type routeAdminStubService struct {
 	called     bool
 	lastCreate routeadmin.CreateInput
 	lastUpdate routeadmin.UpdateInput
-	lastDelAdm int64
+	lastDelete routeadmin.MutationLog
 	createFn   func(routeadmin.CreateInput) (routeadmin.Route, error)
 	listFn     func(int64) ([]routeadmin.Route, error)
 	getFn      func(int64, int64) (routeadmin.Route, error)
 	updateFn   func(routeadmin.UpdateInput) (routeadmin.Route, error)
-	deleteFn   func(int64, int64, int64) (routeadmin.Route, error)
+	deleteFn   func(int64, int64, routeadmin.MutationLog) (routeadmin.Route, error)
 
 	lastSetEnabled routeAdminSetEnabledCall
-	setEnabledFn   func(tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error)
+	setEnabledFn   func(int64, int64, bool, routeadmin.MutationLog) (routeadmin.Route, error)
 }
 
 type routeAdminSetEnabledCall struct {
 	tenantID int64
 	id       int64
 	enabled  bool
-	adminID  int64
+	log      routeadmin.MutationLog
 }
 
 func (s *routeAdminStubService) Create(_ context.Context, in routeadmin.CreateInput) (routeadmin.Route, error) {
@@ -86,20 +87,29 @@ func (s *routeAdminStubService) Update(_ context.Context, in routeadmin.UpdateIn
 		ModelPatternMatch: in.ModelPatternMatch, PoolGroupID: in.PoolGroupID, MatchPriority: mp, Enabled: true,
 	}, nil
 }
-func (s *routeAdminStubService) SetEnabled(_ context.Context, tenantID, id int64, enabled bool, adminID int64) (routeadmin.Route, error) {
+func (s *routeAdminStubService) SetEnabledWithActor(
+	_ context.Context,
+	tenantID, id int64,
+	enabled bool,
+	log routeadmin.MutationLog,
+) (routeadmin.Route, error) {
 	s.called = true
-	s.lastSetEnabled = routeAdminSetEnabledCall{tenantID: tenantID, id: id, enabled: enabled, adminID: adminID}
+	s.lastSetEnabled = routeAdminSetEnabledCall{tenantID: tenantID, id: id, enabled: enabled, log: log}
 	if s.setEnabledFn != nil {
-		return s.setEnabledFn(tenantID, id, enabled, adminID)
+		return s.setEnabledFn(tenantID, id, enabled, log)
 	}
 	// 默认回快照, Enabled 回显入参(让 handler 测试能断言响应体反映新值, 而非 stub 硬编码)。
 	return routeadmin.Route{ID: id, TenantID: tenantID, Enabled: enabled}, nil
 }
-func (s *routeAdminStubService) Delete(_ context.Context, tenantID, id, adminID int64) (routeadmin.Route, error) {
+func (s *routeAdminStubService) DeleteWithActor(
+	_ context.Context,
+	tenantID, id int64,
+	log routeadmin.MutationLog,
+) (routeadmin.Route, error) {
 	s.called = true
-	s.lastDelAdm = adminID
+	s.lastDelete = log
 	if s.deleteFn != nil {
-		return s.deleteFn(tenantID, id, adminID)
+		return s.deleteFn(tenantID, id, log)
 	}
 	return routeadmin.Route{ID: id, TenantID: tenantID}, nil
 }
@@ -110,6 +120,7 @@ func routeAdminPlatformAdmin(tokenID int64) routeAdminStubAuth {
 
 func newRouteAdminTestServer(d RouteAdminDeps) *httptest.Server {
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Route("/v1/admin/routes", func(r chi.Router) {
 		MountRouteAdminRoutes(r, d)
 	})
@@ -138,8 +149,8 @@ func doRouteAdminReq(t *testing.T, ts *httptest.Server, method, path, body strin
 	return resp.StatusCode, out
 }
 
-// 守审计/授权核心: 创建时传给 service 的 AdminID 必取自已认证身份 (TokenID=4242), 绝不来自请求体。
-// mutation: handler 把 AdminID 写成 0 / 体内字段 → captured.AdminID != 4242 → 红。
+// 守日志/授权核心: 创建时传给 service 的操作者必取自已认证身份，绝不来自请求体。
+// mutation: handler 把 ActorID 写成零值或请求体字段 → 断言转红。
 func TestCreate_UsesAuthenticatedAdminIDNotBody(t *testing.T) {
 	svc := &routeAdminStubService{}
 	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
@@ -153,8 +164,40 @@ func TestCreate_UsesAuthenticatedAdminIDNotBody(t *testing.T) {
 	if svc.lastCreate.AdminID != 4242 {
 		t.Fatalf("AdminID passed to service = %d, want 4242 (from authenticated identity, not body)", svc.lastCreate.AdminID)
 	}
+	if svc.lastCreate.ActorID != "admin_token:4242" ||
+		svc.lastCreate.ActorRole != admin.RolePlatformAdmin ||
+		svc.lastCreate.RequestID == "" {
+		t.Fatalf("authenticated operation identity not forwarded: %+v", svc.lastCreate)
+	}
 	if svc.lastCreate.TenantID != 5 || svc.lastCreate.Name != "premium-claude" || svc.lastCreate.PoolGroupID != 9 {
 		t.Fatalf("create input not faithfully forwarded: %+v", svc.lastCreate)
+	}
+}
+
+// 守浏览器管理员会话不会被误记成 admin_token:0。
+// mutation: HTTP 入口继续只传 TokenID → session 的 TokenID=0，ActorID 断言转红。
+func TestCreate_BrowserSessionUsesAdminUserActor(t *testing.T) {
+	svc := &routeAdminStubService{}
+	auth := routeAdminStubAuth{ident: admin.AdminIdentity{
+		UserID: 88,
+		Source: admin.AdminSourceSession,
+		Role:   admin.RolePlatformAdmin,
+	}}
+	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: auth, Service: svc})
+	defer ts.Close()
+
+	body := `{"tenant_id":5,"name":"session-route","user_group_match":"premium","model_pattern_match":"*","pool_group_id":9}`
+	status, _ := doRouteAdminReq(t, ts, http.MethodPost, "/v1/admin/routes/", body)
+	if status != http.StatusCreated {
+		t.Fatalf("session create status=%d, want 201", status)
+	}
+	if svc.lastCreate.AdminID != 0 {
+		t.Fatalf("session must not pretend to be an admin token, AdminID=%d", svc.lastCreate.AdminID)
+	}
+	if svc.lastCreate.ActorID != "admin_user:88" ||
+		svc.lastCreate.ActorRole != admin.RolePlatformAdmin ||
+		svc.lastCreate.RequestID == "" {
+		t.Fatalf("browser session actor not preserved: %+v", svc.lastCreate)
 	}
 }
 
@@ -255,8 +298,7 @@ func TestGet_NotFound(t *testing.T) {
 	}
 }
 
-// 守软删归属: DELETE 传给 service 的 adminID 取自已认证身份 (TokenID=7), 非请求体/零值。
-// mutation: handler 传 0 → lastDelAdm != 7 → 红。
+// 守软删归属: DELETE 传给 service 的操作者取自已认证身份，非请求体或零值。
 func TestDelete_UsesAuthenticatedAdminID(t *testing.T) {
 	svc := &routeAdminStubService{}
 	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(7), Service: svc})
@@ -265,8 +307,10 @@ func TestDelete_UsesAuthenticatedAdminID(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("delete status=%d, want 200", status)
 	}
-	if svc.lastDelAdm != 7 {
-		t.Fatalf("delete adminID passed to service = %d, want 7 (authenticated identity)", svc.lastDelAdm)
+	if svc.lastDelete.ActorID != "admin_token:7" ||
+		svc.lastDelete.ActorRole != admin.RolePlatformAdmin ||
+		svc.lastDelete.RequestID == "" {
+		t.Fatalf("delete operation identity not forwarded: %+v", svc.lastDelete)
 	}
 }
 
@@ -284,6 +328,11 @@ func TestUpdate_UsesAuthenticatedAdminIDAndTenantFromQuery(t *testing.T) {
 	}
 	if svc.lastUpdate.AdminID != 4242 {
 		t.Fatalf("AdminID passed to service = %d, want 4242 (authenticated identity)", svc.lastUpdate.AdminID)
+	}
+	if svc.lastUpdate.ActorID != "admin_token:4242" ||
+		svc.lastUpdate.ActorRole != admin.RolePlatformAdmin ||
+		svc.lastUpdate.RequestID == "" {
+		t.Fatalf("update operation identity not forwarded: %+v", svc.lastUpdate)
 	}
 	if svc.lastUpdate.TenantID != 5 || svc.lastUpdate.ID != 55 {
 		t.Fatalf("tenant/id not from query/path: tenant=%d id=%d, want 5/55", svc.lastUpdate.TenantID, svc.lastUpdate.ID)
@@ -407,8 +456,7 @@ func TestNilDeps_ServiceUnavailable(t *testing.T) {
 }
 
 // 守启停核心: PUT /{id}/enabled 把 enabled 取自 **body**(false)、tenant 取自 query(5)、id 取自 path(55)、
-// adminID 取自已认证身份(4242); 响应体序列化反映新 enabled。用 enabled=false(非默认 true)做判别值:
-// mutation: handler 误把 enabled 写死/读错(如恒传 true)、或 adminID 写 0、或 tenant 误取 body → 对应断言红。
+// 操作者取自已认证身份；响应体序列化反映新 enabled。用 enabled=false(非默认 true)做判别值。
 func TestSetEnabled_FlipsFromBodyWithAuthAdminAndQueryTenant(t *testing.T) {
 	svc := &routeAdminStubService{}
 	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(4242), Service: svc})
@@ -418,8 +466,10 @@ func TestSetEnabled_FlipsFromBodyWithAuthAdminAndQueryTenant(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("set-enabled status=%d, want 200", status)
 	}
-	if svc.lastSetEnabled.adminID != 4242 {
-		t.Fatalf("adminID passed to service = %d, want 4242 (authenticated identity, not body)", svc.lastSetEnabled.adminID)
+	if svc.lastSetEnabled.log.ActorID != "admin_token:4242" ||
+		svc.lastSetEnabled.log.ActorRole != admin.RolePlatformAdmin ||
+		svc.lastSetEnabled.log.RequestID == "" {
+		t.Fatalf("set-enabled operation identity not forwarded: %+v", svc.lastSetEnabled.log)
 	}
 	if svc.lastSetEnabled.tenantID != 5 || svc.lastSetEnabled.id != 55 {
 		t.Fatalf("tenant/id not from query/path: tenant=%d id=%d, want 5/55", svc.lastSetEnabled.tenantID, svc.lastSetEnabled.id)
@@ -501,7 +551,7 @@ func TestSetEnabled_RequiresTenantID(t *testing.T) {
 // 守服务层错误映射: ErrRouteNotFound → 404(启停一条不存在/已软删的路由)。
 // mutation: routeAdminWriteRouteError 的 ErrRouteNotFound 分支落 default → 503 ≠ 404 → 红。
 func TestSetEnabled_RouteNotFound(t *testing.T) {
-	svc := &routeAdminStubService{setEnabledFn: func(int64, int64, bool, int64) (routeadmin.Route, error) {
+	svc := &routeAdminStubService{setEnabledFn: func(int64, int64, bool, routeadmin.MutationLog) (routeadmin.Route, error) {
 		return routeadmin.Route{}, routeadmin.ErrRouteNotFound
 	}}
 	ts := newRouteAdminTestServer(RouteAdminDeps{Auth: routeAdminPlatformAdmin(1), Service: svc})

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
@@ -32,7 +33,7 @@ func TestAdminListUsers_TenantScoped(t *testing.T) {
 	a2 := f.seedUser("a-two", "disabled", "admin", "20.00000000")
 	b1 := f.seedOtherTenantUser("b-one", "active", "user", "99.00000000")
 
-	// 变异:从 AdminListUsersForTenant 移除 u.tenant_id/sqlc 租户过滤 → 租户 B 用户泄漏进租户 A 列表 → 红。
+	// 变异:移除 tenant 或 role='user' 谓词，会分别泄漏租户 B 用户或同租户管理员。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -47,9 +48,12 @@ func TestAdminListUsers_TenantScoped(t *testing.T) {
 		if item.ID == b1 {
 			t.Fatalf("cross-tenant user leaked into list: %+v", item)
 		}
+		if item.ID == a2 {
+			t.Fatalf("管理员身份泄漏进终端用户列表：%+v", item)
+		}
 	}
-	if got[a1] == "" || got[a2] == "" {
-		t.Fatalf("tenant A users missing from list: got=%v want ids %d/%d", got, a1, a2)
+	if got[a1] == "" || len(got) != 1 {
+		t.Fatalf("终端用户列表=%v，期望只含 id=%d", got, a1)
 	}
 }
 
@@ -89,6 +93,62 @@ func TestAdminGetUser_TenantScoped(t *testing.T) {
 	}, http.MethodGet, fmt.Sprintf("/admin/v1/users/%d", b1), nil)
 
 	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestAdminGetUser_HidesSameTenantAdminIdentity(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+	adminUserID := f.seedUser("tenant-admin", "active", "admin", "2.00000000")
+
+	rec := invokeAdminUsers(t, Deps{
+		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
+		Store: admindb.New(pool),
+	}, http.MethodGet, fmt.Sprintf("/admin/v1/users/%d", adminUserID), nil)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestAdminUserMutationStoresRejectAdminIdentity(t *testing.T) {
+	ctx := context.Background()
+	pool := openAdminUsersPool(t, ctx)
+	f := newAdminUsersFixture(t, ctx, pool)
+	adminUserID := f.seedUser("mutation-admin", "active", "admin", "2.00000000")
+
+	mutations := NewPostgresUserMutationStore(pool)
+	audit := unlockAuditInput{ActorID: "admin_token:12", ActorRole: "tenant_operator"}
+	if err := mutations.SetUserGroupWithAudit(ctx, f.tenantID, adminUserID, "premium", audit); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("管理员身份不得被改分组，得到 %v", err)
+	}
+	if err := mutations.SetUserRemarkWithAudit(ctx, f.tenantID, adminUserID, "hidden", audit); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("管理员身份不得被改备注，得到 %v", err)
+	}
+	if _, err := mutations.SetUserStatusWithAudit(ctx, f.tenantID, adminUserID, "disabled", "test", audit); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("管理员身份不得被禁用，得到 %v", err)
+	}
+	if _, err := mutations.SoftDeleteUserWithAudit(ctx, f.tenantID, adminUserID, audit); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("管理员身份不得被终端用户删除面软删，得到 %v", err)
+	}
+	unlockStore := NewPostgresUnlockAuditStore(pool)
+	if _, err := unlockStore.UnlockUserWithAudit(ctx, f.tenantID, adminUserID, unlockAuditInput{
+		ActorID:   "admin_token:12",
+		ActorRole: "tenant_operator",
+	}); !errors.Is(err, userauth.ErrUserNotFound) {
+		t.Fatalf("管理员身份不得进入终端用户解锁事务，得到 %v", err)
+	}
+
+	var role, status, group, remark string
+	var deletedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT role, status, user_group, remark, deleted_at FROM users WHERE id=$1`,
+		adminUserID,
+	).Scan(&role, &status, &group, &remark, &deletedAt); err != nil {
+		t.Fatalf("read admin identity: %v", err)
+	}
+	if role != "admin" || status != "active" || group != "default" || remark != "" || deletedAt != nil {
+		t.Fatalf("管理员身份被终端用户管理面修改：role=%q status=%q group=%q remark=%q deleted_at=%v",
+			role, status, group, remark, deletedAt)
+	}
 }
 
 func TestAdminBalanceHistory_ScopedNewestFirst(t *testing.T) {
@@ -172,14 +232,16 @@ func TestTwoFAStats_TenantScoped(t *testing.T) {
 	a1 := f.seedUser("2fa-a-one", "active", "user", "0.00000000")
 	a2 := f.seedUser("2fa-a-two", "active", "user", "0.00000000")
 	_ = f.seedUser("2fa-a-three", "active", "user", "0.00000000")
+	adminUser := f.seedUser("2fa-admin", "active", "admin", "0.00000000")
 	b1 := f.seedOtherTenantUser("2fa-b-one", "active", "user", "0.00000000")
 	b2 := f.seedOtherTenantUser("2fa-b-two", "active", "user", "0.00000000")
 	f.seedTwoFASetting(a1, true)
 	f.seedTwoFASetting(a2, true)
+	f.seedTwoFASetting(adminUser, true)
 	f.seedOtherTenantTwoFASetting(b1, true)
 	f.seedOtherTenantTwoFASetting(b2, true)
 
-	// 变异:去掉 enabled-count 的租户谓词,或在 handler 中忽略 ScopeTenantID → 租户 B 的启用行泄漏进租户 A 统计 → 红。
+	// 变异:去掉租户或 role='user' 谓词，会把租户 B 或管理员的启用行算进来。
 	rec := invokeAdminUsers(t, Deps{
 		Auth:  usersAuthStub{ident: tenantOperator(f.tenantID)},
 		Store: admindb.New(pool),
@@ -292,7 +354,14 @@ func newAdminUsersFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 		c := context.Background()
 		for _, tenantID := range []int64{f.tenantID, f.otherTenantID} {
 			_, _ = pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM refresh_tokens WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM session_tokens WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM session_families WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM passkey_credentials WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM social_identity_links WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM two_factor_backup_codes WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM two_factor_settings WHERE tenant_id=$1`, tenantID)
+			_, _ = pool.Exec(c, `DELETE FROM social_identity_links WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM billing_events WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM payment_credits WHERE tenant_id=$1`, tenantID)
 			_, _ = pool.Exec(c, `DELETE FROM payment_orders WHERE tenant_id=$1`, tenantID)
@@ -580,7 +649,7 @@ func TestPGAdminSetUserStatusBansBothAxes(t *testing.T) {
 	rec := invokeAdminUsersBody(t, Deps{
 		Auth:             usersAuthStub{ident: platformAdmin()},
 		Store:            admindb.New(pool),
-		UserStatusSetter: NewPostgresUserStatusStore(pool),
+		UserMutations:    NewPostgresUserMutationStore(pool),
 		Audit:            admindb.New(pool),
 		PlatformTenantID: f.tenantID,
 	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"disabled","reason":"abuse"}`)
@@ -613,7 +682,7 @@ func TestPGAdminSetUserStatusBansBothAxes(t *testing.T) {
 	rec = invokeAdminUsersBody(t, Deps{
 		Auth:             usersAuthStub{ident: platformAdmin()},
 		Store:            admindb.New(pool),
-		UserStatusSetter: NewPostgresUserStatusStore(pool),
+		UserMutations:    NewPostgresUserMutationStore(pool),
 		Audit:            admindb.New(pool),
 		PlatformTenantID: f.tenantID,
 	}, http.MethodPut, fmt.Sprintf("/admin/v1/users/%d/status?tenant_id=%d", userID, f.tenantID), `{"status":"active"}`)

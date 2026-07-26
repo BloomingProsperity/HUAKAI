@@ -71,6 +71,18 @@ type registryFixture struct {
 	createdGlobalRows bool
 }
 
+func (f *registryFixture) seedPoolGroup(label string) int64 {
+	f.t.Helper()
+	var id int64
+	if err := f.pool.QueryRow(f.ctx,
+		`INSERT INTO pool_groups (tenant_id, name) VALUES ($1, $2) RETURNING id`,
+		f.tenantID, label+"-"+f.suffix,
+	).Scan(&id); err != nil {
+		f.t.Fatalf("seed pool group: %v", err)
+	}
+	return id
+}
+
 func newFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *registryFixture {
 	t.Helper()
 	f := &registryFixture{
@@ -103,6 +115,7 @@ func newFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *registry
 
 func (f *registryFixture) cleanup() {
 	c := context.Background()
+	_, _ = f.pool.Exec(c, `DELETE FROM admin_audit_events WHERE tenant_id IN ($1, $2)`, f.tenantID, f.otherTenantID)
 	// 租户作用域的行:binding 始终是租户作用域。
 	_, _ = f.pool.Exec(c, `DELETE FROM model_pool_bindings WHERE tenant_id = $1`, f.tenantID)
 	// Capabilities/aliases/models:租户作用域 + 由演练继承的测试主动播种的

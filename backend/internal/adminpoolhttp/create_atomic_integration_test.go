@@ -317,7 +317,7 @@ func seedAdminPoolCreateFixture(t *testing.T, ctx context.Context, pool *pgxpool
 func adminPoolCreateDeps(pool *pgxpool.Pool, keys credentialstore.KeyProvider, tenantID, tokenID int64) AdminPoolAccountDeps {
 	return AdminPoolAccountDeps{
 		Auth:         adminPoolAuthStub{ident: admin.AdminIdentity{TokenID: tokenID, Role: admin.RoleTenantOperator, ScopeTenantID: tenantID}},
-		Store:        admindb.New(pool),
+		Store:        NewAdminPoolAccountStoreAdapter(admindb.New(pool), pool),
 		Credentials:  credentialstore.NewStore(pool, keys, credentialstore.DefaultHandlerRegistry()),
 		Capabilities: allowAdminPoolCapability{},
 	}

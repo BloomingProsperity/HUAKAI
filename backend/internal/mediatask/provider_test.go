@@ -3,6 +3,7 @@ package mediatask
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -108,6 +109,62 @@ func TestHTTPProviderSubmitSendsTaskDerivedIdempotencyHeader(t *testing.T) {
 	}
 	if gotIdemHeader != want {
 		t.Fatalf("Idempotency-Key 头=%q want %q(重复上游提交不会被去重)", gotIdemHeader, want)
+	}
+}
+
+func TestHTTPProviderSubmitSeparatesUnknownOutcomeFromDefiniteRejection(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		transportErr  error
+		wantClass     string
+		wantRetryable bool
+	}{
+		{
+			name: "网络结果未知", transportErr: errors.New("连接写出后被重置"),
+			wantClass: "provider_submit_outcome_unknown",
+		},
+		{
+			name: "服务端错误结果未知", status: http.StatusServiceUnavailable, body: `{"error":"busy"}`,
+			wantClass: "provider_submit_outcome_unknown",
+		},
+		{
+			name: "成功响应缺任务号", status: http.StatusOK, body: `{}`,
+			wantClass: "provider_submit_response_invalid",
+		},
+		{
+			name: "明确参数拒绝", status: http.StatusBadRequest, body: `{"error":"bad request"}`,
+			wantClass: "provider_submit_rejected",
+		},
+		{
+			name: "明确限流可重试", status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`,
+			wantClass: "upstream_rate_limited", wantRetryable: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if test.transportErr != nil {
+					return nil, test.transportErr
+				}
+				return &http.Response{
+					StatusCode: test.status,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(test.body)),
+					Request:    r,
+				}, nil
+			})}
+			provider := NewHTTPProvider("http://provider.test", client)
+			_, err := provider.Submit(context.Background(), SubmitReq{
+				TaskID: 56, RequestID: "req-56", TaskType: "image_generation",
+			})
+			class, retryable, recognized := providerErrorDetails(err)
+			if !recognized || class != test.wantClass || retryable != test.wantRetryable {
+				t.Fatalf("class=%q retryable=%v recognized=%v err=%v",
+					class, retryable, recognized, err)
+			}
+		})
 	}
 }
 

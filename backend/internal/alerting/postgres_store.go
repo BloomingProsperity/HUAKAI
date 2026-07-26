@@ -180,10 +180,13 @@ func (s *PostgresStore) ListTenantsWithEnabledRules(ctx context.Context) ([]int6
 		return nil, ErrStoreNotConfigured
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT DISTINCT tenant_id
-FROM alert_rules
-WHERE enabled=true
-ORDER BY tenant_id ASC`)
+SELECT DISTINCT r.tenant_id
+FROM alert_rules r
+JOIN tenants t ON t.id=r.tenant_id
+WHERE r.enabled=true
+  AND t.status='active'
+  AND t.deleted_at IS NULL
+ORDER BY r.tenant_id ASC`)
 	if err != nil {
 		return nil, err
 	}

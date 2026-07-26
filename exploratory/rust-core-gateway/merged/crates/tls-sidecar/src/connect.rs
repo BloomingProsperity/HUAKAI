@@ -21,6 +21,17 @@ type UpstreamTlsStream = tokio_boring::SslStream<TunnelStream>;
 
 const DEFAULT_UPSTREAM_CONNECT_TIMEOUT_MS: u64 = 30_000;
 
+#[derive(Clone, Copy)]
+struct UpstreamConnectRequest<'a> {
+    target_host: &'a str,
+    port: u16,
+    profile: &'a crate::profile::TlsProfile,
+    force_h1: bool,
+    proxy: Option<&'a crate::proto::ProxySpec>,
+    pinned_target_ips: &'a [IpAddr],
+    proxy_resolved_ips: &'a [IpAddr],
+}
+
 pub async fn handle_connection<S>(mut ipc: S, profiles: ProfileStore) -> Result<(), ConnectError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -128,6 +139,14 @@ where
                 return Ok(());
             }
         };
+    let proxy_resolved_ips =
+        match validate_proxy_resolved_ips(&request.proxy_resolved_ips, request.proxy.is_some()) {
+            Ok(addresses) => addresses,
+            Err(message) => {
+                write_rejection(&mut ipc, corr, proto::ERROR_PROXY_INVALID, message).await?;
+                return Ok(());
+            }
+        };
 
     let upstream_result = tokio::select! {
         _ = wait_for_ipc_cancel(&mut ipc) => {
@@ -147,6 +166,7 @@ where
             request.force_h1.unwrap_or(false),
             request.proxy.as_ref(),
             &pinned_target_ips,
+            &proxy_resolved_ips,
         ) => result,
     };
     let upstream = match upstream_result {
@@ -231,6 +251,32 @@ fn validate_pinned_target_ips(raw: &[String], proxied: bool) -> Result<Vec<IpAdd
     Ok(addresses)
 }
 
+fn validate_proxy_resolved_ips(raw: &[String], proxied: bool) -> Result<Vec<IpAddr>, String> {
+    if !proxied {
+        if raw.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err("未配置代理时不能携带代理地址绑定".to_owned());
+    }
+    if raw.is_empty() || raw.len() > 16 {
+        return Err("代理地址绑定数量必须为 1..16".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    let mut addresses = Vec::with_capacity(raw.len());
+    for value in raw {
+        let address = value
+            .parse::<IpAddr>()
+            .map_err(|_| "代理地址绑定包含无效 IP".to_owned())?;
+        if seen.insert(address) {
+            addresses.push(address);
+        }
+    }
+    if addresses.is_empty() {
+        return Err("代理地址绑定为空".to_owned());
+    }
+    Ok(addresses)
+}
+
 async fn wait_for_ipc_cancel<S>(ipc: &mut S)
 where
     S: AsyncRead + Unpin,
@@ -268,68 +314,51 @@ async fn connect_upstream(
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
     pinned_target_ips: &[IpAddr],
+    proxy_resolved_ips: &[IpAddr],
 ) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
     connect_upstream_with_timeout(
-        target_host,
-        port,
-        profile,
-        force_h1,
-        proxy,
-        pinned_target_ips,
-        upstream_connect_timeout(),
-    )
-    .await
-}
-
-async fn connect_upstream_with_timeout(
-    target_host: &str,
-    port: u16,
-    profile: &crate::profile::TlsProfile,
-    force_h1: bool,
-    proxy: Option<&crate::proto::ProxySpec>,
-    pinned_target_ips: &[IpAddr],
-    duration: Duration,
-) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
-    match timeout(
-        duration,
-        connect_upstream_without_timeout(
+        UpstreamConnectRequest {
             target_host,
             port,
             profile,
             force_h1,
             proxy,
             pinned_target_ips,
-        ),
+            proxy_resolved_ips,
+        },
+        upstream_connect_timeout(),
     )
     .await
-    {
+}
+
+async fn connect_upstream_with_timeout(
+    request: UpstreamConnectRequest<'_>,
+    duration: Duration,
+) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
+    match timeout(duration, connect_upstream_without_timeout(request)).await {
         Ok(result) => result,
         Err(_) => Err(ConnectError::Timeout(duration)),
     }
 }
 
 async fn connect_upstream_without_timeout(
-    target_host: &str,
-    port: u16,
-    profile: &crate::profile::TlsProfile,
-    force_h1: bool,
-    proxy: Option<&crate::proto::ProxySpec>,
-    pinned_target_ips: &[IpAddr],
+    request: UpstreamConnectRequest<'_>,
 ) -> Result<ConnectedUpstream<UpstreamTlsStream>, ConnectError> {
     let tls = connect_tls_upstream(
-        target_host,
-        port,
-        profile,
-        force_h1,
-        proxy,
-        pinned_target_ips,
+        request.target_host,
+        request.port,
+        request.profile,
+        request.force_h1,
+        request.proxy,
+        request.pinned_target_ips,
+        request.proxy_resolved_ips,
     )
     .await?;
     let selected_alpn = tls
         .ssl()
         .selected_alpn_protocol()
         .map(|value| value.to_vec());
-    finish_upstream_connect(tls, selected_alpn.as_deref(), profile).await
+    finish_upstream_connect(tls, selected_alpn.as_deref(), request.profile).await
 }
 
 async fn connect_tls_upstream(
@@ -339,12 +368,16 @@ async fn connect_tls_upstream(
     force_h1: bool,
     proxy: Option<&crate::proto::ProxySpec>,
     pinned_target_ips: &[IpAddr],
+    proxy_resolved_ips: &[IpAddr],
 ) -> Result<UpstreamTlsStream, ConnectError> {
     if !force_h1 {
         boring_ctx::validate_expected_ja4_before_connect(profile, target_host).await?;
     }
     let tunnel = match proxy {
-        Some(spec) => crate::proxy_tunnel::connect_through_proxy(spec, target_host, port).await?,
+        Some(spec) => {
+            crate::proxy_tunnel::connect_through_proxy(spec, proxy_resolved_ips, target_host, port)
+                .await?
+        }
         None => TunnelStream::new(connect_direct(target_host, port, pinned_target_ips).await?),
     };
     let config = boring_ctx::connect_config_force_h1(profile, force_h1)?;
@@ -445,7 +478,7 @@ pub(crate) async fn connect_h2_upstream(
     ),
     ConnectError,
 > {
-    let tls = connect_tls_upstream(target_host, port, profile, false, None, &[]).await?;
+    let tls = connect_tls_upstream(target_host, port, profile, false, None, &[], &[]).await?;
     start_profile_h2_connection(tls, profile).await
 }
 
@@ -587,6 +620,7 @@ mod tests {
             username: None,
             password: None,
         });
+        req.proxy_resolved_ips = vec!["127.0.0.1".to_owned()];
 
         crate::proto::write_control_request(&mut client, &req)
             .await
@@ -637,6 +671,7 @@ mod tests {
             correlation_id: Some("ready-check".to_owned()),
             force_h1: None,
             proxy: None,
+            proxy_resolved_ips: Vec::new(),
             pinned_target_ips: Vec::new(),
         };
 
@@ -778,6 +813,7 @@ mod tests {
             false,
             Some(&proxy),
             &[],
+            &[target_addr.ip()],
         )
         .await;
 
@@ -811,6 +847,7 @@ mod tests {
             username: None,
             password: None,
         });
+        request.proxy_resolved_ips = vec!["127.0.0.1".to_owned()];
         crate::proto::write_control_request(&mut client, &request)
             .await
             .unwrap();
@@ -854,12 +891,15 @@ mod tests {
         };
 
         let error = match super::connect_upstream_with_timeout(
-            "api.anthropic.com",
-            443,
-            profile,
-            false,
-            Some(&spec),
-            &[],
+            super::UpstreamConnectRequest {
+                target_host: "api.anthropic.com",
+                port: 443,
+                profile,
+                force_h1: false,
+                proxy: Some(&spec),
+                pinned_target_ips: &[],
+                proxy_resolved_ips: &["127.0.0.1".parse().unwrap()],
+            },
             Duration::from_millis(100),
         )
         .await
@@ -1013,6 +1053,7 @@ mod tests {
             correlation_id: None,
             force_h1: None,
             proxy: None,
+            proxy_resolved_ips: Vec::new(),
             pinned_target_ips: Vec::new(),
         }
     }

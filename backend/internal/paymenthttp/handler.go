@@ -35,6 +35,9 @@ type AdminDeps struct {
 	Service        Service
 	ProviderConfig ProviderRuntimeConfigService
 	RefundRequests RefundRequestRecorder
+	// PlatformTenantID 是部署者经营动作所属的平台工作租户。资金写操作必须
+	// 通过它区分“部署者自己的用户”和“下级租户的用户”。
+	PlatformTenantID int64
 }
 
 // UserDeps 用户路由依赖。
@@ -260,6 +263,9 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizePaymentTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		res, err := d.Service.CreateOrder(r.Context(), payment.CreateOrderInput{
 			TenantID:           req.TenantID,
 			UserID:             req.UserID,
@@ -287,11 +293,15 @@ func newAdminCreateOrderHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminGetOrderHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizePaymentReadTenant(w, ident, tenantID) {
 			return
 		}
 		id, ok := parsePathID(w, r)
@@ -366,11 +376,45 @@ func resolveAdmin(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.Ad
 		}
 		return admin.AdminIdentity{}, false
 	}
+	switch ident.Role {
+	case admin.RolePlatformAdmin, admin.RoleTenantOperator:
+		return ident, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
+		return admin.AdminIdentity{}, false
+	}
+}
+
+func resolvePlatformAdmin(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.AdminIdentity, bool) {
+	ident, ok := resolveAdmin(w, r, d)
+	if !ok {
+		return admin.AdminIdentity{}, false
+	}
 	if ident.Role != admin.RolePlatformAdmin {
 		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
 		return admin.AdminIdentity{}, false
 	}
 	return ident, true
+}
+
+func authorizePaymentTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID, platformTenantID int64) bool {
+	if err := ident.CanOperateOwnedTenant(tenantID, platformTenantID); err != nil {
+		if errors.Is(err, admin.ErrAdminBackend) {
+			writeJSONError(w, http.StatusServiceUnavailable, "admin_scope_unavailable", "platform tenant scope is not configured")
+		} else {
+			writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot operate this tenant")
+		}
+		return false
+	}
+	return true
+}
+
+func authorizePaymentReadTenant(w http.ResponseWriter, ident admin.AdminIdentity, tenantID int64) bool {
+	if err := ident.CanIssueForTenant(tenantID); err != nil {
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "caller cannot read this tenant")
+		return false
+	}
+	return true
 }
 
 func parsePathID(w http.ResponseWriter, r *http.Request) (int64, bool) {

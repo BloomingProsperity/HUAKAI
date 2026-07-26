@@ -12,6 +12,7 @@ import (
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
 )
 
@@ -150,6 +151,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "media_task_request_conflict", "request_id belongs to a different media task")
 	case errors.Is(err, billing.ErrInsufficientBalance):
 		writeError(w, http.StatusPaymentRequired, "insufficient_balance", "insufficient balance")
+	case errors.Is(err, billing.ErrTenantInactive):
+		writeError(w, http.StatusForbidden, clienterr.CodeTenantInactive, clienterr.MessageFor(clienterr.CodeTenantInactive))
 	default:
 		writeError(w, http.StatusServiceUnavailable, "media_task_backend_error", "media task backend unavailable")
 	}

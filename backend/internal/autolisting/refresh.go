@@ -54,6 +54,10 @@ func (r *AccountRefresher) RefreshReversedAccounts(ctx context.Context) (Refresh
 	rows, err := r.pool.Query(ctx, `
 SELECT pa.tenant_id, pa.id
 FROM provider_accounts pa
+JOIN tenants t
+  ON t.id = pa.tenant_id
+ AND t.status = 'active'
+ AND t.deleted_at IS NULL
 JOIN providers p ON p.id = pa.provider_id AND p.tenant_id = pa.tenant_id
 WHERE pa.account_type = 'oauth'
   AND pa.enabled = true

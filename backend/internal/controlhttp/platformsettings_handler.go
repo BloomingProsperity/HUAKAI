@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 )
 
@@ -74,7 +75,8 @@ type platformSettingsListResponse struct {
 func MountPlatformSettingsRoutes(r chi.Router, d PlatformSettingsDeps) {
 	r.Get("/", newPlatformSettingsListHandler(d))
 	r.Get("/{key}", newPlatformSettingsGetHandler(d))
-	r.Put("/{key}", newPlatformSettingsPutHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Put("/{key}", newPlatformSettingsPutHandler(d))
 }
 
 func newPlatformSettingsListHandler(d PlatformSettingsDeps) http.HandlerFunc {

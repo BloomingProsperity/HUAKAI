@@ -22,6 +22,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
@@ -48,20 +49,22 @@ type dispatcher interface {
 }
 
 type Deps struct {
-	Auth                  authResolver
-	Registry              registry.Registry
-	Router                router.Router
-	ClaimGate             billing.ClaimGate
-	QuotaReserver         quotaenforce.Reserver
-	RateTables            billing.RateTableSource
-	PricingRatioResolver  pricingRatioResolver
-	Selector              pool.Selector
-	CredentialVault       provider.CredentialVault
-	Dispatcher            dispatcher
-	Settler               billing.Settler
-	BillingPolicyResolver *billing.PolicyResolver
-	BillingPolicyVersion  string
-	RequestClass          string
+	Auth                    authResolver
+	Registry                registry.Registry
+	Router                  router.Router
+	ClaimGate               billing.ClaimGate
+	QuotaReserver           quotaenforce.Reserver
+	RateTables              billing.RateTableSource
+	PricingRatioResolver    pricingRatioResolver
+	Selector                pool.Selector
+	CredentialVault         provider.CredentialVault
+	Dispatcher              dispatcher
+	Settler                 billing.Settler
+	SettlementIntents       settlementintent.Store
+	SettlementIntentEnabled bool
+	BillingPolicyResolver   *billing.PolicyResolver
+	BillingPolicyVersion    string
+	RequestClass            string
 	// SettleRecoveryDLQ 是流式交付后(响应已发给客户端)settle 失败时的 durable 兜底队列。
 	// 镜像 gatewayhttp chat 路径的同名依赖。nil 时退回原行为(仅置 X-Huakai-Settle-Failed 头)，
 	// 不破坏现有 wiring；生产由 cmd/gateway/routes.go 注入 d.dlqService。
@@ -101,6 +104,7 @@ type execution struct {
 	classTransition  *bindingfallback.Transition
 	// excludedAccounts 本请求内已失败的账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
 	excludedAccounts map[int64]struct{}
+	settlementIntent *settlementintent.Tracker
 }
 
 func NewCompletionsHandler(d Deps) http.HandlerFunc {
@@ -126,19 +130,20 @@ func NewCompletionsHandler(d Deps) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		w.Header().Set(middleware.RequestIDHeader, requestID)
 		ex := &execution{
-			d:              d,
-			r:              r,
-			ctx:            ctx,
-			startedAt:      time.Now().UTC(),
-			ident:          ident,
-			body:           body,
-			req:            req,
-			promptTexts:    prompts,
-			requestID:      requestID,
-			endpointFamily: endpointFamilyCompletions,
-			upstreamPath:   upstreamCompletionsPath,
-			payloadHash:    bodyHash(body),
-			inputEstimate:  estimateInputTokens(prompts),
+			d:                d,
+			r:                r,
+			ctx:              ctx,
+			startedAt:        time.Now().UTC(),
+			ident:            ident,
+			body:             body,
+			req:              req,
+			promptTexts:      prompts,
+			requestID:        requestID,
+			endpointFamily:   endpointFamilyCompletions,
+			upstreamPath:     upstreamCompletionsPath,
+			payloadHash:      bodyHash(body),
+			inputEstimate:    estimateInputTokens(prompts),
+			settlementIntent: settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		}
 		if !ex.prepareRoute(w, req.Model) {
 			return

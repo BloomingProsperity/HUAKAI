@@ -4,6 +4,7 @@ package settlementintent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -19,8 +20,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	legacydlq "github.com/BloomingProsperity/HUAKAI/internal/dlq"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
 // TestSettlementIntentSweeperPostgresReconciliation 用真实 PostgreSQL 验证权威追平、
@@ -118,6 +122,180 @@ func TestSettlementIntentSweeperPostgresReconciliation(t *testing.T) {
 		row := loadIntent(t, ctx, pool, fixture, 1)
 		if row.Status != "delivering" || row.Version != 1 || !row.ActualCost.IsZero() {
 			t.Fatalf("在途意图被误改=%+v", row)
+		}
+	})
+
+	t.Run("failed_按权威终态追平并清除恢复载荷", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			arrange    func(t *testing.T, fixture sweepFixture)
+			wantStatus string
+			wantField  func(SweepResult) int
+		}{
+			{
+				name: "committed",
+				arrange: func(t *testing.T, fixture sweepFixture) {
+					commitClaim(t, ctx, pool, fixture, decimal.RequireFromString("0.75"))
+				},
+				wantStatus: "settled",
+				wantField:  func(result SweepResult) int { return result.Settled },
+			},
+			{
+				name: "aborted",
+				arrange: func(t *testing.T, fixture sweepFixture) {
+					abortClaim(t, ctx, pool, fixture)
+				},
+				wantStatus: "aborted",
+				wantField:  func(result SweepResult) int { return result.Aborted },
+			},
+			{
+				name: "new_attempt",
+				arrange: func(t *testing.T, fixture sweepFixture) {
+					abortClaim(t, ctx, pool, fixture)
+					if _, err := dbbilling.New(pool).ReReserveAbortedClaim(ctx, dbbilling.ReReserveAbortedClaimParams{
+						ID:             fixture.claimID,
+						LeaseExpiresAt: pgtype.Timestamptz{Time: time.Now().UTC().Add(time.Hour), Valid: true},
+						PredictedCost:  decimal.NewFromInt(2),
+						TenantID:       fixture.tenantID,
+					}); err != nil {
+						t.Fatalf("ReReserveAbortedClaim: %v", err)
+					}
+				},
+				wantStatus: "superseded",
+				wantField:  func(result SweepResult) int { return result.Superseded },
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				now := time.Now().UTC()
+				fixture := seedSweepFixture(t, ctx, pool, 1)
+				store := NewPostgresStore(dbbilling.New(pool))
+				payload := json.RawMessage(`{"source":"stream","settle":{"claim_id":1,"tenant_id":1},"request_id":"fixture"}`)
+				version, err := store.MarkRecoveryPending(
+					ctx,
+					fixture.intentID,
+					0,
+					decimal.RequireFromString("0.75"),
+					payload,
+					"database_unavailable",
+				)
+				if err != nil || version != 1 {
+					t.Fatalf("MarkRecoveryPending version=%d err=%v", version, err)
+				}
+				makeIntentOld(t, ctx, pool, fixture.intentID, now.Add(-20*time.Minute))
+				tc.arrange(t, fixture)
+
+				result, err := runPostgresSweep(ctx, pool, now, SweeperOptions{})
+				if err != nil || tc.wantField(result) != 1 {
+					t.Fatalf("RunOnce result=%+v err=%v", result, err)
+				}
+				row := loadIntent(t, ctx, pool, fixture, 1)
+				if row.Status != tc.wantStatus ||
+					len(row.RecoveryPayload) != 0 ||
+					row.RecoveryFailureClass != nil {
+					t.Fatalf("权威终态追平结果=%+v", row)
+				}
+			})
+		}
+	})
+
+	t.Run("failed_多副本重投只留一条正式恢复记录", func(t *testing.T) {
+		now := time.Now().UTC()
+		fixture := seedSweepFixture(t, ctx, pool, 1)
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cleanupCancel()
+			_, _ = pool.Exec(cleanupCtx, `
+				DELETE FROM usage_record_dlq
+				WHERE tenant_id=$1 AND event_kind='post_delivery_settlement' AND claim_id=$2`,
+				fixture.tenantID,
+				fixture.claimID,
+			)
+		})
+		recoveryPayload := settlementrecovery.FromSettleRequest(
+			settlementrecovery.SourceStream,
+			"request-requeue-"+uuid.NewString(),
+			billing.SettleRequest{
+				ClaimID:    fixture.claimID,
+				TenantID:   fixture.tenantID,
+				ActualCost: decimal.RequireFromString("0.75"),
+			},
+		)
+		raw, err := recoveryPayload.Encode()
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		store := NewPostgresStore(dbbilling.New(pool))
+		version, err := store.MarkRecoveryPending(
+			ctx,
+			fixture.intentID,
+			0,
+			decimal.RequireFromString("0.75"),
+			raw,
+			"database_unavailable",
+		)
+		if err != nil || version != 1 {
+			t.Fatalf("MarkRecoveryPending version=%d err=%v", version, err)
+		}
+		makeIntentOld(t, ctx, pool, fixture.intentID, now.Add(-20*time.Minute))
+
+		queue := legacydlq.NewStore(pool)
+		publisher := RecoveryPublisherFunc(func(
+			publishCtx context.Context,
+			encoded json.RawMessage,
+			failureClass string,
+		) error {
+			payload, decodeErr := settlementrecovery.Decode(encoded)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			_, enqueueErr := settlementrecovery.EnqueuePayload(publishCtx, queue, payload, failureClass)
+			return enqueueErr
+		})
+
+		const workers = 8
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var requeued atomic.Int32
+		errCh := make(chan error, workers)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				result, runErr := runPostgresSweep(ctx, pool, now, SweeperOptions{Recovery: publisher})
+				if runErr != nil {
+					errCh <- runErr
+					return
+				}
+				requeued.Add(int32(result.Requeued))
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errCh)
+		for runErr := range errCh {
+			t.Errorf("并发重投错误: %v", runErr)
+		}
+		if requeued.Load() != 1 {
+			t.Fatalf("重投 CAS 胜者=%d want 1", requeued.Load())
+		}
+		row := loadIntent(t, ctx, pool, fixture, 1)
+		if row.Status != "settling" || row.Version != 2 || len(row.RecoveryPayload) == 0 {
+			t.Fatalf("重投后意图=%+v", row)
+		}
+		var queueRows int
+		if err := pool.QueryRow(ctx, `
+			SELECT COUNT(*)
+			FROM usage_record_dlq
+			WHERE tenant_id=$1 AND event_kind='post_delivery_settlement' AND claim_id=$2`,
+			fixture.tenantID,
+			fixture.claimID,
+		).Scan(&queueRows); err != nil {
+			t.Fatalf("count recovery queue: %v", err)
+		}
+		if queueRows != 1 {
+			t.Fatalf("正式恢复记录=%d want 1", queueRows)
 		}
 	})
 

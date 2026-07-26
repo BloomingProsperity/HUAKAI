@@ -24,8 +24,6 @@ const timingEqualizationHash = "$argon2id$v=19$m=65536,t=3,p=1$0k8KjQ01TveJhg0da
 
 const MaxDisplayNameLength = 100
 
-const signupRewardRecoveryEnqueueTimeout = 5 * time.Second
-
 // equalizeLoginWork 跑一次与正常口令校验等价成本的 argon2(结果丢弃)。用于让「因不存在 / 账号状态 /
 // 无本地口令而提前返回」的登录失败路径与「口令错」路径耗时一致, 杜绝登录时序枚举侧信道。
 // 有真实口令 hash 用真实 hash(成本与正常校验完全一致), 否则用硬编码的合法 dummy argon2id 常量。
@@ -107,9 +105,11 @@ type Service struct {
 	// 被调用, 给新用户发放一笔钱包额度 (被邀请人奖励)。
 	// Nil = 功能缺席 = no-op。由调用方设置; 默认关闭。
 	InviteeRewardFn func(ctx context.Context, tenantID, userID int64) error
+	// SignupRewards 保存注册时承诺的金额。正值奖励会先与新用户在同一事务写入
+	// outbox，再尝试即时发放；重试始终使用该次注册的金额快照。
+	SignupRewards SignupRewardConfig
 	// SignupRewardRecoveryFn 在即时奖励失败后把该笔奖励交给可靠恢复层。
-	// 回调只接收奖励种类与身份 ID，不接收金额，重试时重新读取服务端配置。
-	SignupRewardRecoveryFn func(ctx context.Context, tenantID, userID int64, rewardKind string) error
+	SignupRewardRecoveryFn func(ctx context.Context, tenantID, userID int64, rewardKind string, amountCents int64) error
 }
 
 func NewService(store Store) *Service {
@@ -267,6 +267,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegistrationR
 			}
 			token = challenge.RawToken
 		}
+		if err := s.ensureSignupRewardExpectations(ctx, store, user.TenantID, user.ID, inviteHash != ""); err != nil {
+			return err
+		}
 		out = RegistrationResult{User: user, VerificationToken: token}
 		return nil
 	}); err != nil {
@@ -415,12 +418,25 @@ type registrationMasterGate interface {
 	InvitationRequired(context.Context, int64) (bool, error)
 }
 
+type publicRegistrationTenantGate interface {
+	PublicRegistrationTenantAllowed(context.Context, int64) (bool, error)
+}
+
 // registrationMode 决定社交注册门，优先读取请求期后台设置：
 // 若注入的 gate 支持后台设置读取,则 registration_enabled / invitation_required 由后台设置驱动
 // (运营在管理台改即生效,fail-closed);否则回退到 boot 时 env 注入的静态字段(back-compat)。
 func (s *Service) registrationMode(ctx context.Context, tenantID int64) (RegistrationMode, error) {
 	if s == nil {
 		return RegistrationModeOpen, nil
+	}
+	if gate, ok := s.RegistrationGate.(publicRegistrationTenantGate); ok {
+		allowed, err := gate.PublicRegistrationTenantAllowed(ctx, tenantID)
+		if err != nil {
+			return "", err
+		}
+		if !allowed {
+			return RegistrationModeDisabled, nil
+		}
 	}
 	if gate, ok := s.RegistrationGate.(registrationMasterGate); ok {
 		enabled, err := gate.RegistrationEnabled(ctx, tenantID)
@@ -531,50 +547,6 @@ func (s *Service) requireEmailVerification(ctx context.Context, tenantID int64) 
 		}
 	}
 	return s == nil || s.RequireVerified
-}
-
-// issueSignupCredits 在新用户注册成功后发放可选的注册时钱包额度。两个 fn 默认都为 nil
-// (功能关闭)。发放失败绝不能回滚注册,但也不能再静默吞掉:奖励是钱,失败=用户少余额/
-// 邀请奖励丢失,必须留高辨识度轨迹供运营核账(可靠重试属 money 层,另见 payment outbox/DLQ)。
-func (s *Service) issueSignupCredits(ctx context.Context, tenantID, userID int64, hadInvite bool) {
-	if s == nil {
-		return
-	}
-	if s.SignupBonusFn != nil {
-		if err := s.SignupBonusFn(ctx, tenantID, userID); err != nil {
-			logSignupRewardFailure(ctx, "signup_bonus", tenantID, userID, err)
-			s.enqueueSignupRewardRecovery(ctx, tenantID, userID, "signup_bonus")
-		}
-	}
-	if hadInvite && s.InviteeRewardFn != nil {
-		if err := s.InviteeRewardFn(ctx, tenantID, userID); err != nil {
-			logSignupRewardFailure(ctx, "invitee_reward", tenantID, userID, err)
-			s.enqueueSignupRewardRecovery(ctx, tenantID, userID, "invitee_reward")
-		}
-	}
-}
-
-func (s *Service) enqueueSignupRewardRecovery(ctx context.Context, tenantID, userID int64, rewardKind string) {
-	if s == nil || s.SignupRewardRecoveryFn == nil {
-		return
-	}
-	// 用户已经提交成功，恢复事件不能跟随 HTTP 请求取消；同时给数据库写入设置硬上限，
-	// 避免断开的请求长期占用 goroutine 或连接。
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signupRewardRecoveryEnqueueTimeout)
-	defer cancel()
-	if err := s.SignupRewardRecoveryFn(recoveryCtx, tenantID, userID, rewardKind); err != nil {
-		_ = privacy.LogSystem(recoveryCtx, privacy.SystemEvent{
-			Severity:   privacy.SeverityError,
-			Component:  "userauth.signup_reward",
-			ErrorClass: "signup_reward_recovery_enqueue_failed",
-			Attrs: map[string]any{
-				"reward_kind":          rewardKind,
-				"tenant_id":            tenantID,
-				"user_id":              userID,
-				"failure_reason_class": privacy.ErrorClassFor(recoveryCtx, err),
-			},
-		})
-	}
 }
 
 // logSignupRewardFailure 把奖励发放失败记为可查系统告警。两种奖励各自独立 error_class 前缀语义

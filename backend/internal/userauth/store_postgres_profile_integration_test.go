@@ -116,6 +116,71 @@ func TestPGUnlinkSocialIdentityRejectsLastLoginMethod(t *testing.T) {
 	}
 }
 
+// TestPGAuthLookupsRejectInactiveTenant 守住密码、社交和会话复核共用的三条认证查询。
+// 变异：任一查询移除 tenants 联表或 active 条件，对应断言会重新读到用户并转红。
+func TestPGAuthLookupsRejectInactiveTenant(t *testing.T) {
+	ctx := context.Background()
+	pool := openUserAuthProfilePool(t, ctx)
+	t.Cleanup(pool.Close)
+	store := NewPostgresStore(pool)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tenantID := seedUserAuthProfileTenant(t, ctx, pool, "inactive-auth-"+suffix)
+	t.Cleanup(func() { cleanupUserAuthProfileTenant(t, ctx, pool, tenantID) })
+
+	user, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: tenantID, Email: "inactive-" + suffix + "@example.test",
+		DisplayName: "Inactive Tenant User", EmailVerified: true, Status: UserStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	subject := "inactive-social-" + suffix
+	if _, err := store.LinkSocialIdentity(ctx, tenantID, user.ID, SocialProviderGoogle, subject); err != nil {
+		t.Fatalf("LinkSocialIdentity: %v", err)
+	}
+
+	if _, err := store.GetUserByID(ctx, tenantID, user.ID); err != nil {
+		t.Fatalf("active tenant GetUserByID: %v", err)
+	}
+	if _, err := store.GetUserByEmail(ctx, tenantID, user.Email); err != nil {
+		t.Fatalf("active tenant GetUserByEmail: %v", err)
+	}
+	if _, err := store.GetUserBySocialIdentity(ctx, tenantID, SocialProviderGoogle, subject); err != nil {
+		t.Fatalf("active tenant GetUserBySocialIdentity: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE tenants SET status='disabled' WHERE id=$1`, tenantID); err != nil {
+		t.Fatalf("suspend tenant: %v", err)
+	}
+	for name, lookup := range map[string]func() error{
+		"id": func() error {
+			_, err := store.GetUserByID(ctx, tenantID, user.ID)
+			return err
+		},
+		"email": func() error {
+			_, err := store.GetUserByEmail(ctx, tenantID, user.Email)
+			return err
+		},
+		"social": func() error {
+			_, err := store.GetUserBySocialIdentity(ctx, tenantID, SocialProviderGoogle, subject)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := lookup(); !errors.Is(err, ErrUserNotFound) {
+				t.Fatalf("停用租户认证查询 err=%v, want ErrUserNotFound", err)
+			}
+		})
+	}
+
+	if _, err := store.CreateUser(ctx, CreateUserParams{
+		TenantID: tenantID, Email: "blocked-create-" + suffix + "@example.test",
+		Status: UserStatusActive,
+	}); !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("停用租户 CreateUser err=%v, want ErrRegistrationDisabled", err)
+	}
+}
+
 func openUserAuthProfilePool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("HUAKAI_DATABASE_URL")

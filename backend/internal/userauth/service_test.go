@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/BloomingProsperity/HUAKAI/internal/emailpolicy"
+	"github.com/BloomingProsperity/HUAKAI/internal/signupreward"
 	"net/url"
 	"strconv"
 	"strings"
@@ -180,6 +181,41 @@ func TestPasswordRegisterToggle(t *testing.T) {
 	}
 }
 
+func TestPublicRegistrationRejectsUntrustedTenantSelection(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
+	store := newMemoryAuthStore(now)
+	svc := NewService(store)
+	svc.RequireVerified = false
+	svc.PasswordPolicy = cheapPasswordPolicy()
+	svc.Now = func() time.Time { return now }
+	svc.RegistrationGate = tenantScopedRegistrationGate{publicTenantID: 1}
+
+	if _, err := svc.Register(ctx, RegisterInput{
+		TenantID: 2, Email: "untrusted-tenant@example.test", Password: "secret12",
+	}); !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("下级租户匿名注册 err=%v, want ErrRegistrationDisabled", err)
+	}
+	if len(store.users) != 0 {
+		t.Fatalf("被拒的租户选择仍创建用户: %+v", store.users)
+	}
+
+	if _, err := svc.CompleteSocialSignupWithVerifiedEmail(ctx, 2, VerifiedIdentity{
+		Provider: SocialProviderQQ, Subject: "tenant-two-social",
+	}, "tenant-two-social@example.test"); !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("下级租户社交补全注册 err=%v, want ErrRegistrationDisabled", err)
+	}
+	if len(store.users) != 0 || len(store.socialLinks) != 0 {
+		t.Fatalf("被拒的社交注册产生副作用: users=%+v links=%+v", store.users, store.socialLinks)
+	}
+
+	if _, err := svc.Register(ctx, RegisterInput{
+		TenantID: 1, Email: "platform-user@example.test", Password: "secret12",
+	}); err != nil {
+		t.Fatalf("部署者工作租户注册应成功: %v", err)
+	}
+}
+
 func TestPasswordLoginToggle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 7, 8, 30, 0, 0, time.UTC)
@@ -275,6 +311,22 @@ func (g *mutableRegistrationGate) PasswordRegistrationAllowed(context.Context, i
 
 func (g *mutableRegistrationGate) PasswordLoginAllowed(context.Context, int64) (bool, error) {
 	return g.loginAllowed, nil
+}
+
+type tenantScopedRegistrationGate struct {
+	publicTenantID int64
+}
+
+func (g tenantScopedRegistrationGate) PasswordRegistrationAllowed(context.Context, int64) (bool, error) {
+	return true, nil
+}
+
+func (g tenantScopedRegistrationGate) PasswordLoginAllowed(context.Context, int64) (bool, error) {
+	return true, nil
+}
+
+func (g tenantScopedRegistrationGate) PublicRegistrationTenantAllowed(_ context.Context, tenantID int64) (bool, error) {
+	return tenantID == g.publicTenantID, nil
 }
 
 type staticEmailPolicy struct {
@@ -1141,20 +1193,22 @@ func TestRegisterCommunityInvitationCreatesPendingReferral(t *testing.T) {
 }
 
 type memoryAuthStore struct {
-	mu                 sync.Mutex
-	now                time.Time
-	nextID             int64
-	users              map[int64]User
-	byEmail            map[string]int64
-	emailTokens        map[string]TokenChallenge
-	resetTokens        map[string]resetChallenge
-	invites            map[string]InviteCode
-	oauthFlows         map[string]OAuthFlowSession
-	socialLinks        map[string]int64
-	bindings           []InviteBinding
-	communityReferrals []communityReferralRecord
-	failCreate         bool
-	failLink           bool
+	mu                    sync.Mutex
+	now                   time.Time
+	nextID                int64
+	users                 map[int64]User
+	byEmail               map[string]int64
+	emailTokens           map[string]TokenChallenge
+	resetTokens           map[string]resetChallenge
+	invites               map[string]InviteCode
+	oauthFlows            map[string]OAuthFlowSession
+	socialLinks           map[string]int64
+	bindings              []InviteBinding
+	communityReferrals    []communityReferralRecord
+	rewardExpectations    []rewardExpectationRecord
+	failCreate            bool
+	failLink              bool
+	failRewardExpectation bool
 }
 
 type communityReferralRecord struct {
@@ -1162,6 +1216,13 @@ type communityReferralRecord struct {
 	RefereeUserID  int64
 	ReferrerUserID int64
 	InvitationID   int64
+}
+
+type rewardExpectationRecord struct {
+	TenantID    int64
+	UserID      int64
+	Kind        signupreward.Kind
+	AmountCents int64
 }
 
 type resetChallenge struct {
@@ -1244,6 +1305,7 @@ func (s *memoryAuthStore) WithTx(_ context.Context, fn func(Store) error) error 
 	socialLinks := cloneInt64Map(s.socialLinks)
 	bindings := append([]InviteBinding(nil), s.bindings...)
 	communityReferrals := append([]communityReferralRecord(nil), s.communityReferrals...)
+	rewardExpectations := append([]rewardExpectationRecord(nil), s.rewardExpectations...)
 	nextID := s.nextID
 	s.mu.Unlock()
 
@@ -1258,10 +1320,28 @@ func (s *memoryAuthStore) WithTx(_ context.Context, fn func(Store) error) error 
 		s.socialLinks = socialLinks
 		s.bindings = bindings
 		s.communityReferrals = communityReferrals
+		s.rewardExpectations = rewardExpectations
 		s.nextID = nextID
 		s.mu.Unlock()
 		return err
 	}
+	return nil
+}
+
+func (s *memoryAuthStore) EnsureSignupRewardExpectation(
+	_ context.Context,
+	tenantID, userID int64,
+	kind signupreward.Kind,
+	amountCents int64,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failRewardExpectation {
+		return errors.New("forced reward expectation failure")
+	}
+	s.rewardExpectations = append(s.rewardExpectations, rewardExpectationRecord{
+		TenantID: tenantID, UserID: userID, Kind: kind, AmountCents: amountCents,
+	})
 	return nil
 }
 

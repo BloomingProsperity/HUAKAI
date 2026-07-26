@@ -92,6 +92,18 @@ type Store interface {
 	UpsertSettings(ctx context.Context, settings Settings) (Settings, error)
 }
 
+// AdminMutation 是管理员修改通知目标时必须持久化的操作者事实。
+// 目标租户和用户仍取自 Settings，不能由此结构覆盖业务作用域。
+type AdminMutation struct {
+	Actor     string
+	ActorRole string
+	RequestID string
+}
+
+type AdminStore interface {
+	UpsertSettingsWithAdminLog(ctx context.Context, settings Settings, mutation AdminMutation) (Settings, error)
+}
+
 func DefaultSettings(tenantID, userID int64) Settings {
 	return Settings{
 		TenantID:         tenantID,

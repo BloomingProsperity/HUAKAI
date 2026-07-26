@@ -20,12 +20,12 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // 哨兵错误,由 admin handler 映射成 HTTP 状态码。
@@ -34,6 +34,8 @@ var (
 	ErrModelNotBindable  = errors.New("registry: model not found or not bindable by tenant")
 	ErrPoolGroupNotFound = errors.New("registry: pool group not found for tenant")
 	ErrBindingConflict   = errors.New("registry: binding already exists for (tenant, model, pool)")
+	ErrBindingInvalid    = errors.New("registry: invalid model pool binding")
+	ErrBindingWindow     = errors.New("registry: invalid binding effective window")
 )
 
 // AdminBinding 是 model_pool_bindings 行的完整可编辑投影。区别于路由读
@@ -81,27 +83,48 @@ type CreateBindingInput struct {
 	EffectiveUntil          *time.Time
 	Reason                  string
 	Actor                   string
+	ActorRole               string
+	RequestID               string
 }
 
-// UpdateBindingInput 更新单条绑定的可调字段(按 id + 租户域)。ModelID / PoolGroupID
-// 【不可】更新 —— 改身份请走 删+建,顺便也绕开了唯一冲突这一情形。
+// BindingField 表示 PATCH 中一个字段是否出现。Value 可以是指针，以区分“未提供”
+// 和“显式清空为 NULL”。
+type BindingField[T any] struct {
+	Set   bool
+	Value T
+}
+
+// UpdateBindingInput 更新单条绑定的可调字段(按 id + 租户域)。每个字段都保留
+// “未提供/提供值/显式 NULL”语义，避免 PATCH 把未触及字段重置。ModelID /
+// PoolGroupID 不可更新，改身份请走删后重建。
 type UpdateBindingInput struct {
 	ID                      int64
 	TenantID                int64
-	Priority                int32
-	Weight                  int32 // 仅存储兼容，无运行时消费，UI 已不暴露。
-	SelectionMode           string
-	ProviderModelIDOverride *string
-	RPMLimit                *int32
-	TPMLimit                *int32
-	MaxParallelRequests     *int32 // binding 全局在途上限；nil 或 0 表示不限。
-	FallbackClass           string // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
-	Enabled                 bool
-	DisabledReason          *string
-	EffectiveFrom           *time.Time
-	EffectiveUntil          *time.Time
-	Reason                  string
+	Priority                BindingField[int32]
+	Weight                  BindingField[int32] // 仅存储兼容，无运行时消费，UI 已不暴露。
+	SelectionMode           BindingField[string]
+	ProviderModelIDOverride BindingField[*string]
+	RPMLimit                BindingField[*int32]
+	TPMLimit                BindingField[*int32]
+	MaxParallelRequests     BindingField[*int32] // binding 全局在途上限；nil 或 0 表示不限。
+	FallbackClass           BindingField[string] // Router 编译 normal 主 phase 与定向目标 phase；各协议 executor 消费精确目标 phase。
+	Enabled                 BindingField[bool]
+	DisabledReason          BindingField[*string]
+	EffectiveFrom           BindingField[*time.Time]
+	EffectiveUntil          BindingField[*time.Time]
+	Reason                  BindingField[string]
 	Actor                   string
+	ActorRole               string
+	RequestID               string
+}
+
+type DeleteBindingInput struct {
+	ID        int64
+	TenantID  int64
+	Actor     string
+	ActorRole string
+	RequestID string
+	Reason    string
 }
 
 const adminBindingCols = `id, tenant_id, model_id, pool_group_id, priority, weight,
@@ -177,6 +200,32 @@ func (r *PostgresRegistry) CreatePoolBinding(ctx context.Context, in CreateBindi
 	if r == nil || r.pool == nil {
 		return AdminBinding{}, ErrRegistryBackend
 	}
+	if in.TenantID <= 0 || in.ModelID <= 0 || in.PoolGroupID <= 0 {
+		return AdminBinding{}, fmt.Errorf("%w: tenant, model and pool ids must be positive", ErrBindingInvalid)
+	}
+	if err := validateBindingAudit(in.Actor, in.ActorRole); err != nil {
+		return AdminBinding{}, err
+	}
+	if err := validateAdminBinding(AdminBinding{
+		TenantID:                in.TenantID,
+		ModelID:                 in.ModelID,
+		PoolGroupID:             in.PoolGroupID,
+		Priority:                in.Priority,
+		Weight:                  in.Weight,
+		SelectionMode:           in.SelectionMode,
+		ProviderModelIDOverride: in.ProviderModelIDOverride,
+		RPMLimit:                in.RPMLimit,
+		TPMLimit:                in.TPMLimit,
+		MaxParallelRequests:     in.MaxParallelRequests,
+		FallbackClass:           in.FallbackClass,
+		Enabled:                 in.Enabled,
+		DisabledReason:          in.DisabledReason,
+		EffectiveFrom:           in.EffectiveFrom,
+		EffectiveUntil:          in.EffectiveUntil,
+		Reason:                  in.Reason,
+	}); err != nil {
+		return AdminBinding{}, err
+	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return AdminBinding{}, fmt.Errorf("%w: begin create binding: %v", ErrRegistryBackend, err)
@@ -211,17 +260,33 @@ RETURNING `+adminBindingCols,
 	if _, err := bumpAffectedSnapshots(ctx, tx, []int64{in.ModelID}, bindingReason(in.Reason, "create"), bindingActor(in.Actor)); err != nil {
 		return AdminBinding{}, err
 	}
+	payload, err := json.Marshal(map[string]any{
+		"model_id":       b.ModelID,
+		"pool_group_id":  b.PoolGroupID,
+		"enabled":        b.Enabled,
+		"selection_mode": b.SelectionMode,
+		"fallback_class": b.FallbackClass,
+	})
+	if err != nil {
+		return AdminBinding{}, fmt.Errorf("%w: encode create binding log: %v", ErrRegistryBackend, err)
+	}
+	if err := insertBindingMutationLog(ctx, tx, b.TenantID, b.ID, "create_model_pool_binding", in.Actor, in.ActorRole, in.RequestID, in.Reason, payload); err != nil {
+		return AdminBinding{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return AdminBinding{}, fmt.Errorf("%w: commit create binding: %v", ErrRegistryBackend, err)
 	}
 	return b, nil
 }
 
-// UpdatePoolBinding 更新可调字段(id + 租户域)并在同一 Tx 内 bump 快照。
-// model_id / pool_group_id 在此不可变。
+// UpdatePoolBinding 在同一个 Serializable Tx 中锁定当前行、合并 PATCH、写入并
+// bump 快照。先锁后合并可防止两个并发 PATCH 用各自的旧快照覆盖对方字段。
 func (r *PostgresRegistry) UpdatePoolBinding(ctx context.Context, in UpdateBindingInput) (AdminBinding, error) {
 	if r == nil || r.pool == nil {
 		return AdminBinding{}, ErrRegistryBackend
+	}
+	if err := validateBindingAudit(in.Actor, in.ActorRole); err != nil {
+		return AdminBinding{}, err
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -230,6 +295,22 @@ func (r *PostgresRegistry) UpdatePoolBinding(ctx context.Context, in UpdateBindi
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	b, err := scanAdminBinding(tx.QueryRow(ctx, `
+SELECT `+adminBindingCols+`
+FROM model_pool_bindings
+WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+FOR UPDATE`, in.ID, in.TenantID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminBinding{}, ErrBindingNotFound
+	}
+	if err != nil {
+		return AdminBinding{}, fmt.Errorf("%w: lock binding for update: %v", ErrRegistryBackend, err)
+	}
+
+	if err := applyBindingPatch(&b, in); err != nil {
+		return AdminBinding{}, err
+	}
+
+	b, err = scanAdminBinding(tx.QueryRow(ctx, `
 UPDATE model_pool_bindings SET
 	priority = $3, weight = $4, selection_mode = $5, provider_model_id_override = $6,
 	rpm_limit = $7, tpm_limit = $8, max_parallel_requests = $9, fallback_class = $10,
@@ -237,9 +318,9 @@ UPDATE model_pool_bindings SET
 	reason = $15, updated_at = now()
 WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
 RETURNING `+adminBindingCols,
-		in.ID, in.TenantID, in.Priority, in.Weight, in.SelectionMode, in.ProviderModelIDOverride,
-		in.RPMLimit, in.TPMLimit, in.MaxParallelRequests, in.FallbackClass,
-		in.Enabled, in.DisabledReason, in.EffectiveFrom, in.EffectiveUntil, in.Reason,
+		in.ID, in.TenantID, b.Priority, b.Weight, b.SelectionMode, b.ProviderModelIDOverride,
+		b.RPMLimit, b.TPMLimit, b.MaxParallelRequests, b.FallbackClass,
+		b.Enabled, b.DisabledReason, b.EffectiveFrom, b.EffectiveUntil, b.Reason,
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AdminBinding{}, ErrBindingNotFound
@@ -248,7 +329,14 @@ RETURNING `+adminBindingCols,
 		return AdminBinding{}, fmt.Errorf("%w: update binding: %v", ErrRegistryBackend, err)
 	}
 
-	if _, err := bumpAffectedSnapshots(ctx, tx, []int64{b.ModelID}, bindingReason(in.Reason, "update"), bindingActor(in.Actor)); err != nil {
+	if _, err := bumpAffectedSnapshots(ctx, tx, []int64{b.ModelID}, bindingReason(b.Reason, "update"), bindingActor(in.Actor)); err != nil {
+		return AdminBinding{}, err
+	}
+	payload, err := json.Marshal(map[string]any{"changed_fields": bindingChangedFields(in)})
+	if err != nil {
+		return AdminBinding{}, fmt.Errorf("%w: encode update binding log: %v", ErrRegistryBackend, err)
+	}
+	if err := insertBindingMutationLog(ctx, tx, b.TenantID, b.ID, "update_model_pool_binding", in.Actor, in.ActorRole, in.RequestID, b.Reason, payload); err != nil {
 		return AdminBinding{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -257,12 +345,93 @@ RETURNING `+adminBindingCols,
 	return b, nil
 }
 
+func applyBindingPatch(b *AdminBinding, in UpdateBindingInput) error {
+	if in.Priority.Set {
+		b.Priority = in.Priority.Value
+	}
+	if in.Weight.Set {
+		b.Weight = in.Weight.Value
+	}
+	if in.SelectionMode.Set {
+		b.SelectionMode = in.SelectionMode.Value
+	}
+	if in.ProviderModelIDOverride.Set {
+		b.ProviderModelIDOverride = in.ProviderModelIDOverride.Value
+	}
+	if in.RPMLimit.Set {
+		b.RPMLimit = in.RPMLimit.Value
+	}
+	if in.TPMLimit.Set {
+		b.TPMLimit = in.TPMLimit.Value
+	}
+	if in.MaxParallelRequests.Set {
+		b.MaxParallelRequests = in.MaxParallelRequests.Value
+	}
+	if in.FallbackClass.Set {
+		b.FallbackClass = in.FallbackClass.Value
+	}
+	if in.Enabled.Set {
+		b.Enabled = in.Enabled.Value
+	}
+	if in.DisabledReason.Set {
+		b.DisabledReason = in.DisabledReason.Value
+	}
+	if in.EffectiveFrom.Set {
+		b.EffectiveFrom = in.EffectiveFrom.Value
+	}
+	if in.EffectiveUntil.Set {
+		b.EffectiveUntil = in.EffectiveUntil.Value
+	}
+	if in.Reason.Set {
+		b.Reason = in.Reason.Value
+	}
+	return validateAdminBinding(*b)
+}
+
+func validateAdminBinding(b AdminBinding) error {
+	if b.Priority < 0 {
+		return fmt.Errorf("%w: priority must be nonnegative", ErrBindingInvalid)
+	}
+	if b.Weight <= 0 {
+		return fmt.Errorf("%w: weight must be positive", ErrBindingInvalid)
+	}
+	switch b.SelectionMode {
+	case "strict_priority", "priority_weighted":
+	default:
+		return fmt.Errorf("%w: unsupported selection mode", ErrBindingInvalid)
+	}
+	if b.RPMLimit != nil && *b.RPMLimit < 0 {
+		return fmt.Errorf("%w: rpm limit must be nonnegative", ErrBindingInvalid)
+	}
+	if b.TPMLimit != nil && *b.TPMLimit < 0 {
+		return fmt.Errorf("%w: tpm limit must be nonnegative", ErrBindingInvalid)
+	}
+	if b.MaxParallelRequests != nil && *b.MaxParallelRequests < 0 {
+		return fmt.Errorf("%w: max parallel requests must be nonnegative", ErrBindingInvalid)
+	}
+	switch b.FallbackClass {
+	case "normal", "context_window", "safety", "quota", "manual":
+	default:
+		return fmt.Errorf("%w: unsupported fallback class", ErrBindingInvalid)
+	}
+	if b.EffectiveFrom != nil && b.EffectiveUntil != nil && !b.EffectiveFrom.Before(*b.EffectiveUntil) {
+		return ErrBindingWindow
+	}
+	return nil
+}
+
 // DeletePoolBinding 软删一条绑定(id + 租户域)并 bump 快照。用【单租户直接 bump】
 // (而非 bumpAffectedSnapshots):软删后该行对那个 CTE 不可见,删掉某租户某 model 的最后
 // 一条存活绑定时,否则会漏掉版本 bump。
-func (r *PostgresRegistry) DeletePoolBinding(ctx context.Context, id, tenantID int64, actor, reason string) error {
+func (r *PostgresRegistry) DeletePoolBinding(ctx context.Context, in DeleteBindingInput) error {
 	if r == nil || r.pool == nil {
 		return ErrRegistryBackend
+	}
+	if in.ID <= 0 || in.TenantID <= 0 {
+		return ErrBindingInvalid
+	}
+	if err := validateBindingAudit(in.Actor, in.ActorRole); err != nil {
+		return err
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
@@ -270,14 +439,16 @@ func (r *PostgresRegistry) DeletePoolBinding(ctx context.Context, id, tenantID i
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tag, err := tx.Exec(ctx, `
-UPDATE model_pool_bindings SET deleted_at = now(), updated_at = now()
-WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, id, tenantID)
+	var modelID, poolGroupID int64
+	err = tx.QueryRow(ctx, `
+	UPDATE model_pool_bindings SET deleted_at = now(), updated_at = now()
+	WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+	RETURNING model_id, pool_group_id`, in.ID, in.TenantID).Scan(&modelID, &poolGroupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrBindingNotFound
+	}
 	if err != nil {
 		return fmt.Errorf("%w: soft-delete binding: %v", ErrRegistryBackend, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrBindingNotFound
 	}
 
 	// 单租户直接 bump —— 不依赖任何存活的绑定行。
@@ -285,69 +456,24 @@ WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, id, tenantID)
 INSERT INTO model_registry_snapshots (tenant_id, version, reason, updated_by_actor)
 VALUES ($1, 2, $2, $3)
 ON CONFLICT (tenant_id) DO UPDATE SET
-	version = model_registry_snapshots.version + 1,
-	reason = EXCLUDED.reason,
-	updated_by_actor = EXCLUDED.updated_by_actor,
-	updated_at = now()`, tenantID, bindingReason(reason, "delete"), bindingActor(actor)); err != nil {
+		version = model_registry_snapshots.version + 1,
+		reason = EXCLUDED.reason,
+		updated_by_actor = EXCLUDED.updated_by_actor,
+		updated_at = now()`, in.TenantID, bindingReason(in.Reason, "delete"), bindingActor(in.Actor)); err != nil {
 		return fmt.Errorf("%w: bump delete binding snapshot: %v", ErrRegistryBackend, err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"model_id":      modelID,
+		"pool_group_id": poolGroupID,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: encode delete binding log: %v", ErrRegistryBackend, err)
+	}
+	if err := insertBindingMutationLog(ctx, tx, in.TenantID, in.ID, "delete_model_pool_binding", in.Actor, in.ActorRole, in.RequestID, in.Reason, payload); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("%w: commit delete binding: %v", ErrRegistryBackend, err)
 	}
 	return nil
-}
-
-// checkModelBindable 校验 model 存在且该租户可绑:同租户的租户自有 model,或全局 model。
-// 谓词对齐 model_alias_import.go 的继承谓词(全局 model 的 tenant_id 为 NULL,简单的
-// tenant_id = $ 会误拒它们)。
-func checkModelBindable(ctx context.Context, tx pgx.Tx, modelID, tenantID int64) error {
-	var one int
-	err := tx.QueryRow(ctx, `
-SELECT 1 FROM models m
-WHERE m.id = $1 AND m.deleted_at IS NULL
-  AND ((m.scope = 'tenant' AND m.tenant_id = $2)
-       OR (m.scope = 'global' AND m.tenant_id IS NULL))`, modelID, tenantID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrModelNotBindable
-	}
-	if err != nil {
-		return fmt.Errorf("%w: check model bindable: %v", ErrRegistryBackend, err)
-	}
-	return nil
-}
-
-// checkPoolGroupOwned 校验 pool_group 归属该租户(复合 FK 在 insert 时也会兜底,但显式
-// 预检给的是 4xx 而非裸 FK 500)。
-func checkPoolGroupOwned(ctx context.Context, tx pgx.Tx, poolGroupID, tenantID int64) error {
-	var one int
-	err := tx.QueryRow(ctx, `
-SELECT 1 FROM pool_groups
-WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, poolGroupID, tenantID).Scan(&one)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrPoolGroupNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("%w: check pool group owned: %v", ErrRegistryBackend, err)
-	}
-	return nil
-}
-
-// isUniqueViolation 判断是否唯一约束冲突(pg 错误码 23505)。
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
-}
-
-func bindingReason(reason, op string) string {
-	if reason == "" {
-		return "admin binding " + op
-	}
-	return reason
-}
-
-func bindingActor(actor string) string {
-	if actor == "" {
-		return "admin"
-	}
-	return actor
 }

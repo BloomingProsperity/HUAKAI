@@ -15,11 +15,12 @@ import (
 )
 
 type challengePayload struct {
-	TenantID  int64  `json:"tenant_id"`
-	UserID    int64  `json:"user_id"`
-	ExpiresAt int64  `json:"expires_at"`
-	Nonce     string `json:"nonce"`
-	KeyID     string `json:"key_id"`
+	TenantID    int64  `json:"tenant_id"`
+	UserID      int64  `json:"user_id"`
+	AuthVersion int    `json:"auth_version,omitempty"`
+	ExpiresAt   int64  `json:"expires_at"`
+	Nonce       string `json:"nonce"`
+	KeyID       string `json:"key_id"`
 }
 
 func (s *Service) signChallenge(ctx context.Context, payload challengePayload) (string, error) {
@@ -59,7 +60,8 @@ func (s *Service) verifyChallenge(ctx context.Context, id string) (challengePayl
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return challengePayload{}, ErrChallengeInvalid
 	}
-	if payload.TenantID <= 0 || payload.UserID <= 0 || payload.ExpiresAt <= 0 || strings.TrimSpace(payload.KeyID) == "" {
+	if payload.TenantID <= 0 || payload.UserID <= 0 || payload.AuthVersion <= 0 ||
+		payload.ExpiresAt <= 0 || strings.TrimSpace(payload.KeyID) == "" {
 		return challengePayload{}, ErrChallengeInvalid
 	}
 	key, err := s.keys.Key(ctx, payload.KeyID)

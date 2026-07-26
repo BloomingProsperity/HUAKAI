@@ -399,7 +399,13 @@ func (q *AccountCredentialRefreshQueries) ListAccountsForRefresh(ctx context.Con
 	const sql = `
 SELECT ac.provider_account_id, ac.tenant_id, pa.provider_id, ac.vendor, ac.access_expires_at
 FROM account_credentials ac
-JOIN provider_accounts pa ON pa.id = ac.provider_account_id
+JOIN tenants t
+  ON t.id = ac.tenant_id
+ AND t.status = 'active'
+ AND t.deleted_at IS NULL
+JOIN provider_accounts pa
+  ON pa.id = ac.provider_account_id
+ AND pa.tenant_id = ac.tenant_id
 WHERE ac.deleted_at IS NULL
   AND pa.deleted_at IS NULL
   AND pa.enabled

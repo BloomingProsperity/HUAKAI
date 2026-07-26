@@ -24,6 +24,10 @@ func (l *PostgresAccountLister) ListQuotaProbeAccounts(ctx context.Context) ([]A
 	rows, err := l.pool.Query(ctx, `
 SELECT DISTINCT pa.tenant_id, pa.id
 FROM provider_accounts pa
+JOIN tenants t
+  ON t.id = pa.tenant_id
+ AND t.status = 'active'
+ AND t.deleted_at IS NULL
 JOIN account_credentials ac
   ON ac.tenant_id = pa.tenant_id
  AND ac.provider_account_id = pa.id

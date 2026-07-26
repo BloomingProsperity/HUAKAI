@@ -31,3 +31,12 @@ func TestHealthScoreOverallWeightsBusinessAndInfra(t *testing.T) {
 		t.Fatalf("Overall(0,100)=%d want 30 infra-weighted score", got)
 	}
 }
+
+func TestHealthScoreInfraDistinguishesUnknownFromPerfect(t *testing.T) {
+	if score, ok := Infra(0, 0); ok || score != 0 {
+		t.Fatalf("Infra(0,0)=(%d,%v) want 0,false", score, ok)
+	}
+	if score, ok := Infra(2, 5); !ok || score != 40 {
+		t.Fatalf("Infra(2,5)=(%d,%v) want 40,true", score, ok)
+	}
+}

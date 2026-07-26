@@ -198,18 +198,18 @@ func channelHealthKey(tenantID int64, account provider.AccountInfo) (channelheal
 // (auth 车道 iron-clad/ambiguous 分级);非 auth 信号传 0(ambiguous,不被消费)。SignalAuthChallenge
 // 刻意不喂 RecentReqRing——auth blip 既不进健康 FSM 也不污染 RPM 累计,与接线前(auth 返回空信号、
 // 直接跳过)的 RPM 行为逐字节等价。
-func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time, authClass authcooldown.FailureClass) {
+func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key channelhealth.ChannelKey, class channelhealth.SignalClass, statusCode int, latency time.Duration, requestID string, resetAt *time.Time, authClass authcooldown.FailureClass) error {
 	if d.RecentReqRing != nil && key.ProviderAccountID != 0 && class != "" && class != channelhealth.SignalAuthChallenge {
 		d.RecentReqRing.Record(key.ProviderAccountID, class == channelhealth.SignalSuccess)
 	}
 	if d.ChannelHealth == nil || class == "" {
-		return
+		return nil
 	}
 	latencyMS := latency.Milliseconds()
 	if latencyMS < 0 {
 		latencyMS = 0
 	}
-	_, _ = d.ChannelHealth.ApplySignal(ctx, channelhealth.Signal{
+	_, err := d.ChannelHealth.ApplySignal(ctx, channelhealth.Signal{
 		Key:              key,
 		Class:            class,
 		StatusCode:       statusCode,
@@ -218,6 +218,10 @@ func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key chann
 		RateLimitResetAt: resetAt,
 		AuthFailureClass: authClass,
 	})
+	if err != nil {
+		logInternalError(ctx, requestID, "channel_health_signal_failed", err)
+	}
+	return err
 }
 
 // triggerCredentialHotRefresh 在 401 时异步跑凭证热刷新,并把结果单向通报选号 auth 车道:

@@ -19,6 +19,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -26,8 +27,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 func TestImagesHandler_PerImageCostUsesSizeQualityAndNExactlyOnce(t *testing.T) {
@@ -55,6 +59,101 @@ func TestImagesHandler_PerImageCostUsesSizeQualityAndNExactlyOnce(t *testing.T) 
 	if env.settler.settles[0].Draft.TokensInput != 0 || env.settler.settles[0].Draft.TokensOutput != 0 {
 		t.Fatalf("per-image settle tokens input/output=%d/%d want 0/0",
 			env.settler.settles[0].Draft.TokensInput, env.settler.settles[0].Draft.TokensOutput)
+	}
+}
+
+func TestImagesHandler_DisabledTenantStopsBeforeUpstream(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{status: http.StatusOK, body: `{}`})
+	env.claims.err = billing.ErrTenantInactive
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"must not dispatch","n":1}`)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"tenant_inactive"`) {
+		t.Fatalf("status=%d body=%s want 403 tenant_inactive", rec.Code, rec.Body.String())
+	}
+	if env.transport.called || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("停用租户仍触发 upstream/settle/abort=%v/%d/%d",
+			env.transport.called, len(env.settler.settles), len(env.settler.aborts))
+	}
+}
+
+// TestImagesHandler_SettlementIntentFailureStopsBeforeUpstream 守住资金恢复
+// 证据写失败时的交付前硬门。变异：删掉 InsertPending 或吞掉其错误，会让
+// transport 被调用且预留没有按失败路径释放。
+func TestImagesHandler_SettlementIntentFailureStopsBeforeUpstream(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/forbidden.png"}]}`,
+	})
+	env.deps.SettlementIntents = settlementintent.NewPostgresStore(nil)
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"must not dispatch","n":1}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+	}
+	if env.transport.called {
+		t.Fatal("恢复证据写失败后不得调用上游")
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+	env.assertNoHangingClaims(t)
+}
+
+func TestImagesHandler_SettlementIntentSuccessfulLifecycle(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"lifecycle","n":1}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
+	}
+}
+
+func TestImagesDeliveryEvidenceFailureStopsClientDeliveryAndSettlement(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/must-not-deliver.png"}]}`,
+	})
+	store := &settlementintenttest.Store{DeliveryError: errors.New("注入交付证据故障")}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+	health := &imageHealthSpy{}
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"delivery gate","n":1}`)
+
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "must-not-deliver") {
+		t.Fatalf("status/body=%d/%s want 503 且无上游业务体", rec.Code, rec.Body.String())
+	}
+	if len(env.settler.settles) != 0 || len(env.settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 0/1", len(env.settler.settles), len(env.settler.aborts))
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%q want pending->aborted", got)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("本地交付证据故障写入失败健康信号: %+v", health.signals)
+		}
+	}
+	if health.forceCooldowns != 0 {
+		t.Fatalf("本地交付证据故障污染账号健康: signals=%+v force_cooldowns=%d",
+			health.signals, health.forceCooldowns)
 	}
 }
 
@@ -358,6 +457,9 @@ func TestImagesHandler_SettleAndRecoveryDoubleFailureEmitsP0(t *testing.T) {
 	env.settler.settleErr = errors.New("settle failed " + secret)
 	recovery := &imagesRecoveryEnqueuer{err: errors.New("recovery enqueue failed " + secret)}
 	env.deps.SettleRecoveryDLQ = recovery
+	intentStore := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = intentStore
+	env.deps.SettlementIntentEnabled = true
 
 	rec := env.invoke(t, `{"model":"dall-e-2","prompt":"double fault","size":"512x512"}`)
 	if rec.Code != http.StatusOK {
@@ -365,6 +467,14 @@ func TestImagesHandler_SettleAndRecoveryDoubleFailureEmitsP0(t *testing.T) {
 	}
 	if recovery.calls != 1 {
 		t.Fatalf("recovery calls=%d want 1", recovery.calls)
+	}
+	if got := strings.Join(intentStore.Events(), "->"); got != "pending->delivering->recovery_pending" {
+		t.Fatalf("双故障意图生命周期=%q", got)
+	}
+	raw, failureClass := intentStore.RecoveryEvidence()
+	persisted, err := settlementrecovery.Decode(raw)
+	if err != nil || persisted.Source != settlementrecovery.SourceImagesDelivered || failureClass == "" {
+		t.Fatalf("双故障恢复证据 source=%q class=%q err=%v", persisted.Source, failureClass, err)
 	}
 	got := logs.String()
 	for _, want := range []string{"money_lost_double_fault", "critical", "P0", "imageshttp.settle_recovery"} {
@@ -521,7 +631,7 @@ func TestImagesHandler_ResponseIsUpstreamBytesWithAllowedHeaders(t *testing.T) {
 }
 
 type imagesTestEnv struct {
-	selector *selectorStub
+	selector  *selectorStub
 	deps      Deps
 	claims    *recordingClaimGate
 	settler   *recordingSettler
@@ -660,6 +770,7 @@ func (routerStub) Plan(_ context.Context, in router.PlanInput) (router.RoutePlan
 type recordingClaimGate struct {
 	nextClaimID int64
 	reserves    []reservedClaim
+	err         error
 }
 
 type reservedClaim struct {
@@ -669,6 +780,9 @@ type reservedClaim struct {
 
 func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
 	g.reserves = append(g.reserves, reservedClaim{claimID: g.nextClaimID, req: req})
+	if g.err != nil {
+		return nil, g.err
+	}
 	return &billing.ReserveResult{ClaimID: g.nextClaimID}, nil
 }
 

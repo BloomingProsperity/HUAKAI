@@ -16,6 +16,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/tenancy"
 )
 
 // 对应 F-OBS-001 各 Failure Path 类别的哨兵错误。
@@ -114,6 +115,19 @@ func (g *DefaultClaimGate) reserveOnce(ctx context.Context, req ReserveRequest, 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	qtx := g.q.WithTx(tx)
+
+	// 租户状态与本次预扣在同一事务内串行。租户停用/删除持有该行的 UPDATE 锁；
+	// 本请求持有 SHARE 锁。两者谁先获得锁就成为明确边界：先预扣的请求继续
+	// 结算恢复，先停用的租户不再产生新 claim、hold 或上游副作用。
+	// 不能使用 KEY SHARE：租户状态是非键列，PostgreSQL 的 NO KEY UPDATE
+	// 与 KEY SHARE 可以并存，会让停用事务与新预扣同时越过边界。
+	err = tenancy.LockActiveForWrite(ctx, tx, req.TenantID)
+	if errors.Is(err, tenancy.ErrTenantInactive) {
+		return nil, ErrTenantInactive
+	}
+	if err != nil {
+		return nil, fmt.Errorf("billing: lock active tenant: %w", err)
+	}
 
 	// 步骤 1:带行锁的幂等查找。
 	existing, err := qtx.GetClaimByIdempotency(ctx, dbbilling.GetClaimByIdempotencyParams{

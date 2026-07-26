@@ -10,9 +10,9 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
-// sessionUserGate 把 userauth 的账号状态映射成会话使用期资格 (usersession.UserGate)。
-// 只拒 disabled/deleted(封禁与删除必须即时断会话); locked 是登录失败的临时锁, 只守登录门,
-// 不杀既有会话 —— 否则攻击者可用错误密码触发锁定, DoS 掉正常用户的活跃会话。
+// sessionUserGate 把 userauth 的租户和账号状态映射成会话使用期资格。
+// GetProfile 的生产查询已联表限定 active 租户；用户 disabled/deleted 同样即时断会话。
+// locked 是登录失败的临时锁，只守登录门，不杀既有会话，避免错误密码攻击变成会话拒绝服务。
 type sessionUserGate struct {
 	auth *userauth.Service
 }

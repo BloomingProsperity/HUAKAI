@@ -63,6 +63,8 @@ type AdminDeps struct {
 	Service Service
 	// VoucherService 仅订阅券创建端点用; 其余订阅 admin 端点不依赖它 (可为 nil, 该端点回 503)。
 	VoucherService VoucherService
+	// PlatformTenantID 是部署者经营动作所属的平台工作租户。
+	PlatformTenantID int64
 }
 
 // UserDeps 用户路由依赖。
@@ -286,11 +288,15 @@ func MountSubscriptionUserRoutes(r chi.Router, d UserDeps) {
 
 func newAdminCreatePlanHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		var req createPlanRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		daily, ok := parseCap(w, req.DailyCapUSD, "daily_cap_usd")
@@ -333,11 +339,15 @@ func newAdminCreatePlanHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminListPlansHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeSubscriptionReadTenant(w, ident, tenantID) {
 			return
 		}
 		onlyForSale := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("for_sale")), "true")
@@ -352,11 +362,15 @@ func newAdminListPlansHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminGetPlanHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeSubscriptionReadTenant(w, ident, tenantID) {
 			return
 		}
 		id, ok := parsePathID(w, r)
@@ -374,7 +388,8 @@ func newAdminGetPlanHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminDisablePlanHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		id, ok := parsePathID(w, r)
@@ -383,6 +398,9 @@ func newAdminDisablePlanHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req tenantBodyRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		if err := d.Service.DisablePlan(r.Context(), req.TenantID, id); err != nil {
@@ -401,6 +419,9 @@ func newAdminAssignHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req assignRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		res, err := d.Service.AssignSubscription(r.Context(), subscription.AssignSubscriptionInput{
@@ -427,11 +448,15 @@ func newAdminAssignHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminListAssignmentsHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeSubscriptionReadTenant(w, ident, tenantID) {
 			return
 		}
 		if group := strings.TrimSpace(r.URL.Query().Get("group")); group != "" {
@@ -462,11 +487,15 @@ func newAdminListAssignmentsHandler(d AdminDeps) http.HandlerFunc {
 
 func newAdminGetAssignmentHandler(d AdminDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := resolveAdmin(w, r, d); !ok {
+		ident, ok := resolveAdmin(w, r, d)
+		if !ok {
 			return
 		}
 		tenantID, ok := parsePositiveQuery(w, r, "tenant_id")
 		if !ok {
+			return
+		}
+		if !authorizeSubscriptionReadTenant(w, ident, tenantID) {
 			return
 		}
 		id, ok := parsePathID(w, r)
@@ -504,6 +533,9 @@ func newAdminCancelHandler(d AdminDeps) http.HandlerFunc {
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
+			return
+		}
 		sub, err := d.Service.CancelSubscription(r.Context(), req.TenantID, id, ident.TokenID, requestID(r), ident.AuditActor())
 		if err != nil {
 			writeSubscriptionError(w, err)
@@ -528,6 +560,9 @@ func newAdminCreateSubscriptionVoucherHandler(d AdminDeps) http.HandlerFunc {
 		}
 		var req createSubscriptionVoucherRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !authorizeSubscriptionTenant(w, ident, req.TenantID, d.PlatformTenantID) {
 			return
 		}
 		if req.PlanID <= 0 {
@@ -605,11 +640,13 @@ func resolveAdmin(w http.ResponseWriter, r *http.Request, d AdminDeps) (admin.Ad
 		}
 		return admin.AdminIdentity{}, false
 	}
-	if ident.Role != admin.RolePlatformAdmin {
-		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "platform_admin role required")
+	switch ident.Role {
+	case admin.RolePlatformAdmin, admin.RoleTenantOperator:
+		return ident, true
+	default:
+		writeJSONError(w, http.StatusForbidden, "admin_forbidden", "admin role required")
 		return admin.AdminIdentity{}, false
 	}
-	return ident, true
 }
 
 func resolveSession(w http.ResponseWriter, r *http.Request, d UserDeps) (sessionauth.SessionIdentity, bool) {

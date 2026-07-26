@@ -94,7 +94,7 @@ func (p *GrokVideoProvider) SubmitBound(ctx context.Context, task Task, req Subm
 	defer result.Close()
 	responseBody, err := readBoundedMediaBody(result.UpstreamReader)
 	if err != nil {
-		return "", terminalProviderError("provider_submit_response_invalid", err)
+		return "", p.submitResponseReadError(ctx, task, account, result, startedAt, err)
 	}
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
 		return "", p.httpProviderError(ctx, task, account, result, responseBody, startedAt, true)
@@ -103,8 +103,11 @@ func (p *GrokVideoProvider) SubmitBound(ctx context.Context, task Task, req Subm
 	var response struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.Unmarshal(responseBody, &response); err != nil || strings.TrimSpace(response.RequestID) == "" {
-		return "", terminalProviderError("provider_submit_response_invalid", errors.Join(err, ErrProviderUnavailable))
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return "", terminalProviderError("provider_submit_response_invalid", err)
+	}
+	if strings.TrimSpace(response.RequestID) == "" {
+		return "", terminalProviderError("provider_submit_response_invalid", ErrProviderUnavailable)
 	}
 	// 提交成功后槽位代表上游异步任务仍在运行，必须交给最终结算或失败回收释放。
 	// 轮询不得重新选号，否则 claim 会绑定到已经提前释放的临时槽。
@@ -175,7 +178,7 @@ func (p *GrokVideoProvider) dispatchBound(ctx context.Context, task Task, method
 		ProviderModelID:  task.ProviderModelID,
 		ModelCooldownKey: task.ProviderModelID, ProtocolFamily: task.ProtocolFamily,
 		EndpointFamily: "videos",
-		RequestID: task.RequestID, PinnedAccountID: task.ProviderAccountID,
+		RequestID:      task.RequestID, PinnedAccountID: task.ProviderAccountID,
 		ClaimID: claimID, AttemptSeq: 1, Vendor: pool.VendorFromProtocolFamily(task.ProtocolFamily),
 		BindingID: task.BindingID, BindingRPMLimit: task.BindingRPMLimit,
 		BindingTPMLimit: task.BindingTPMLimit, MaxParallelRequests: task.BindingMaxParallelRequests,
@@ -201,7 +204,10 @@ func (p *GrokVideoProvider) dispatchBound(ctx context.Context, task Task, method
 		if method == http.MethodGet {
 			return nil, account, startedAt, nil, retryableProviderError("provider_poll_dispatch_error", err)
 		}
-		return nil, account, startedAt, nil, terminalProviderError("provider_submit_outcome_unknown", err)
+		if gateway.IsDispatchOutcomeUnknown(err) {
+			return nil, account, startedAt, nil, terminalProviderError("provider_submit_outcome_unknown", err)
+		}
+		return nil, account, startedAt, nil, retryableProviderError("provider_submit_dispatch_unavailable", err)
 	}
 	return result, account, startedAt, selection, nil
 }
@@ -303,11 +309,40 @@ func (p *GrokVideoProvider) httpProviderError(ctx context.Context, task Task, ac
 		retryable = false
 		class = "provider_task_not_found"
 	}
+	if submit && submitHTTPOutcomeUnknown(result.StatusCode) {
+		return terminalProviderError("provider_submit_outcome_unknown", ErrProviderUnavailable)
+	}
 	if retryable {
 		retryAfter := time.Duration(failure.Classification.RetryAfterMs) * time.Millisecond
 		return retryableProviderErrorAfter(class, retryAfter, ErrProviderUnavailable)
 	}
 	return terminalProviderError(class, ErrProviderUnavailable)
+}
+
+func (p *GrokVideoProvider) submitResponseReadError(
+	ctx context.Context,
+	task Task,
+	account provider.AccountInfo,
+	result *gateway.DispatchResult,
+	startedAt time.Time,
+	readErr error,
+) error {
+	if result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+		return terminalProviderError("provider_submit_response_invalid", readErr)
+	}
+	// 这些状态无法证明上游没有创建异步任务。即使错误体截断或超限，也必须
+	// 进入提交结果未知态，禁止把“读不到拒绝体”误当成可安全重提。
+	if submitHTTPOutcomeUnknown(result.StatusCode) {
+		return terminalProviderError("provider_submit_outcome_unknown", readErr)
+	}
+	return p.httpProviderError(ctx, task, account, result, nil, startedAt, true)
+}
+
+func submitHTTPOutcomeUnknown(status int) bool {
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusConflict ||
+		status == http.StatusTooEarly ||
+		status >= http.StatusInternalServerError
 }
 
 func (p *GrokVideoProvider) observeSuccess(ctx context.Context, task Task, account provider.AccountInfo, result *gateway.DispatchResult, startedAt time.Time) {

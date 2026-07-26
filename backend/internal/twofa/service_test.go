@@ -134,12 +134,24 @@ func TestLoginChallengeRequiresValidSignatureAndCode(t *testing.T) {
 	svc := NewService(NewMemoryStore(), mustKeyProvider(t), WithNow(func() time.Time { return now }))
 	setup := setupAndEnable(t, ctx, svc, now)
 
-	challenge, err := svc.StartLoginChallenge(ctx, 1, 1001)
+	challenge, err := svc.StartLoginChallengeAtVersion(ctx, 1, 1001, 7)
 	if err != nil {
-		t.Fatalf("StartLoginChallenge: %v", err)
+		t.Fatalf("StartLoginChallengeAtVersion: %v", err)
 	}
-	if challenge.ID == "" || !challenge.ExpiresAt.After(now) {
+	if challenge.ID == "" || challenge.AuthVersion != 7 || !challenge.ExpiresAt.After(now) {
 		t.Fatalf("challenge=%+v", challenge)
+	}
+	legacyChallenge, err := svc.signChallenge(ctx, challengePayload{
+		TenantID: 1, UserID: 1001, ExpiresAt: now.Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("签发旧格式挑战夹具: %v", err)
+	}
+	if _, err := svc.VerifyLoginChallenge(ctx, ChallengeVerifyInput{
+		ChallengeID: legacyChallenge,
+		Code:        codeFromSetupSecret(t, setup.Secret, now),
+	}); !errors.Is(err, ErrChallengeInvalid) {
+		t.Fatalf("无认证版本的旧挑战 err=%v，期望 ErrChallengeInvalid", err)
 	}
 	tampered := challenge.ID[:len(challenge.ID)-1] + "x"
 	_, err = svc.VerifyLoginChallenge(ctx, ChallengeVerifyInput{ChallengeID: tampered, Code: codeFromSetupSecret(t, setup.Secret, now)})
@@ -159,7 +171,7 @@ func TestLoginChallengeRequiresValidSignatureAndCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyLoginChallenge: %v", err)
 	}
-	if result.TenantID != 1 || result.UserID != 1001 || result.Method != MethodTOTP {
+	if result.TenantID != 1 || result.UserID != 1001 || result.AuthVersion != 7 || result.Method != MethodTOTP {
 		t.Fatalf("challenge result=%+v", result)
 	}
 }

@@ -76,7 +76,8 @@ type Querier interface {
 	AggregateUsagePerformanceByModel(ctx context.Context, arg AggregateUsagePerformanceByModelParams) ([]AggregateUsagePerformanceByModelRow, error)
 	// Platform-admin performance panel by UTC requested_at bucket and
 	// requested_model. The caller must validate bucket is one of hour/day before
-	// calling this query.
+	// calling this query. row_limit selects the top model series across the whole
+	// window; every time bucket for those series is returned.
 	AggregateUsagePerformanceByModelBucketed(ctx context.Context, arg AggregateUsagePerformanceByModelBucketedParams) ([]AggregateUsagePerformanceByModelBucketedRow, error)
 	// Platform-admin performance panel by provider_account_id. Provider-less
 	// usage, such as cache-only settlement, is grouped under "unassigned".
@@ -177,8 +178,13 @@ type Querier interface {
 	//   - model_allow_list 空 数组 → 无限制
 	//   - model_allow_list 非空 → 必须包含 requested_model
 	//   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+	//     ※ 所有请求路径(chat 与媒体)现已不再输出 required_capabilities,该谓词对选号
+	//     恒中性;capability_flags 列仅作展示/历史标记,改它不影响选号。modality 由模型
+	//     注册表能力在各 handler 判定,账号侧由 model_allow_list 门(含下方媒体清单门)把关。
 	//   - requested_protocol_family 为空 → legacy bypass
 	//   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
+	//   - require_model_listed=true(媒体端点族)→ model_allow_list 必须显式含该模型,
+	//     空清单不放行(媒体静态必败不换号,选号前挡)
 	ListEligibleAccountsByPoolGroup(ctx context.Context, arg ListEligibleAccountsByPoolGroupParams) ([]ListEligibleAccountsByPoolGroupRow, error)
 	ListOrphanedAcquisitions(ctx context.Context) ([]ListOrphanedAcquisitionsRow, error)
 	ListPools(ctx context.Context, arg ListPoolsParams) ([]PoolGroup, error)
@@ -197,9 +203,11 @@ type Querier interface {
 	MarkSettlementIntentAbortedIfStale(ctx context.Context, arg MarkSettlementIntentAbortedIfStaleParams) (int32, error)
 	MarkSettlementIntentDelivering(ctx context.Context, arg MarkSettlementIntentDeliveringParams) (int32, error)
 	MarkSettlementIntentFailed(ctx context.Context, arg MarkSettlementIntentFailedParams) (int32, error)
+	MarkSettlementIntentRecoveryPending(ctx context.Context, arg MarkSettlementIntentRecoveryPendingParams) (int32, error)
 	MarkSettlementIntentSettled(ctx context.Context, arg MarkSettlementIntentSettledParams) (int32, error)
 	MarkSettlementIntentSettledIfStale(ctx context.Context, arg MarkSettlementIntentSettledIfStaleParams) (int32, error)
 	MarkSettlementIntentSettling(ctx context.Context, arg MarkSettlementIntentSettlingParams) (int32, error)
+	MarkSettlementIntentSettlingIfStale(ctx context.Context, arg MarkSettlementIntentSettlingIfStaleParams) (int32, error)
 	MarkSettlementIntentSupersededIfStale(ctx context.Context, arg MarkSettlementIntentSupersededIfStaleParams) (int32, error)
 	// Usage-log retention only. Deletes bounded batches from usage_records and
 	// deliberately does not touch billing_ledger_claims, billing_events, audit

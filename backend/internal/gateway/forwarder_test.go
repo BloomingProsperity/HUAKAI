@@ -681,6 +681,8 @@ func TestStreamingLedgerSubmitAfterForwardHasEntry(t *testing.T) {
 	f := newForwarder()
 	f.AuditLedger = ledger
 	f.Signer = signer
+	// 本测试只验证流终止后的账本提交，调度延迟不应触发无关的分片超时。
+	f.Timeouts.InterEventTimeout = 0
 	upstream := sseBytes(
 		messageStart("msg-ledger"),
 		messageDeltaWithUsage("end_turn", 3, 5),

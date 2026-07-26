@@ -19,24 +19,22 @@ func NewPostgresRoutesRepo(pool *pgxpool.Pool) *PostgresRoutesRepo {
 	return &PostgresRoutesRepo{pool: pool}
 }
 
-// GroupRoutes 查该租户该用户组下、启用且未软删、且目标 pool_group 有效(同租户/启用/未软删)
-// 的路由。JOIN pool_groups 校验目标池避免返回跨租户/已禁用/软删的 pool_group_id (F2)。
-// Configured = 是否存在任一这样的有效路由(不论是否命中本 model), 用于白名单语义区分
-// "未配置档"与"配置了但本 model 未授权"。model_pattern 的通配匹配放应用层 (而非 SQL LIKE),
-// 与 GroupPolicyGate 的 ModelPatternMatches 语义单一来源、可单测。
+// GroupRoutes 查该租户该用户组下启用且未软删的路由，并用 LEFT JOIN 单独判断目标池是否
+// 同租户、启用且未软删。路由是否配置与目标是否仍有效必须分开：否则池被停用或软删后，
+// 已配置白名单会被误判为“从未配置”并放行到其它池。
 //
 // match_priority 真裁决(slice B, Owner Q3): SELECT 取回 match_priority, 命中本 model 的路由
 // 交给 highestPriorityAllowed 只保留最高优先档(最小值)的 pool_group, 并列同档取并集。优先档
-// 计算放应用层纯函数, 与匹配语义同处一包、免 DB 单测。Configured 仍按"有任一有效路由"判, 与优先档
-// 无关。
+// 计算放应用层纯函数。Configured 按“有任一启用路由”判；命中当前 model 但目标失效时
+// InvalidMatchingTarget=true，由 gate 返回稳定的配置不可用错误。
 func (r *PostgresRoutesRepo) GroupRoutes(ctx context.Context, tenantID int64, userGroup, model string) (GroupRoutes, error) {
 	if r == nil || r.pool == nil {
 		return GroupRoutes{}, fmt.Errorf("subscriptionenforce: routes repo not configured")
 	}
 	rows, err := r.pool.Query(ctx, `
-SELECT r.pool_group_id, r.model_pattern_match, r.match_priority
+SELECT r.pool_group_id, r.model_pattern_match, r.match_priority, pg.id IS NOT NULL AS target_valid
 FROM routes r
-JOIN pool_groups pg
+LEFT JOIN pool_groups pg
   ON pg.id = r.pool_group_id
  AND pg.tenant_id = r.tenant_id
  AND pg.enabled = true
@@ -56,12 +54,17 @@ WHERE r.tenant_id = $1
 		var poolGroupID int64
 		var pattern string
 		var priority int
-		if err := rows.Scan(&poolGroupID, &pattern, &priority); err != nil {
+		var targetValid bool
+		if err := rows.Scan(&poolGroupID, &pattern, &priority, &targetValid); err != nil {
 			return GroupRoutes{}, fmt.Errorf("subscriptionenforce: scan route: %w", err)
 		}
-		// 有一条启用且目标池有效的路由即视为该档"已配置分组路由"(与是否命中本 model、优先档无关)。
+		// 路由本身启用即视为已配置；目标失效只能拒绝，不能退化为未配置直通。
 		out.Configured = true
 		if ModelPatternMatches(pattern, model) {
+			if !targetValid {
+				out.InvalidMatchingTarget = true
+				continue
+			}
 			matched = append(matched, matchedRoute{poolGroupID: poolGroupID, priority: priority})
 		}
 	}

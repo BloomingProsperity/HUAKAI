@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
@@ -202,6 +201,17 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		}); err != nil {
 			return err
 		} else if rows == 0 {
+			var claimStatus string
+			if err := tx.QueryRow(ctx, `
+SELECT status
+FROM billing_ledger_claims
+WHERE tenant_id=$1 AND id=$2
+FOR UPDATE`, locked.TenantID, claimID).Scan(&claimStatus); err != nil {
+				return err
+			}
+			if claimStatus != "aborted" {
+				return billing.ErrClaimNotReserving
+			}
 			// claim 已被 billing LeaseSweeper 抢先 abort (预扣已释放退回用户)。回滚整事务
 			// 会让任务卡 in_progress 每 ~30s 重试死循环且永远结算不了。任务在上游真实跑
 			// 成功: 强推终态 succeeded (用户拿到产物), 落孤儿对账线索 (admin Manual-First
@@ -221,6 +231,9 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 		if _, err := billing.Capture(ctx, tx, claimID, actual); err != nil {
 			return err
 		}
+		if err := insertExternalMediaUsage(ctx, tx, locked, claimID, billedCents, result, now); err != nil {
+			return err
+		}
 		if err := updateTaskSuccess(ctx, tx, locked.ID, result, now); err != nil {
 			return err
 		}
@@ -230,123 +243,52 @@ func (s *PostgresStore) CompleteSuccess(ctx context.Context, task Task, owner st
 	return settled, err
 }
 
-func (s *PostgresStore) completeSuccessWithUnifiedMoney(ctx context.Context, task Task, owner string, result PollResult, now time.Time) (bool, error) {
-	if result.ActualCents < 0 {
-		return false, fmt.Errorf("%w: actual_cents", ErrInvalidInput)
+func insertExternalMediaUsage(
+	ctx context.Context,
+	tx pgx.Tx,
+	task Task,
+	claimID int64,
+	billedCents int64,
+	result PollResult,
+	now time.Time,
+) error {
+	usageSource := string(gateway.UsageSourceReported)
+	var confidence any
+	if result.ActualCents <= 0 {
+		usageSource = string(gateway.UsageSourceInferred)
+		confidence = 0.5
 	}
-	if err := s.persistPendingSuccess(ctx, task, owner, result, now); err != nil {
-		return false, err
+	requestedAt := task.CreatedAt.UTC()
+	if task.CreatedAt.IsZero() {
+		requestedAt = now.UTC()
 	}
-	claimID, err := claimIDFromHoldRef(task.HoldRef)
-	if err != nil {
-		return false, err
-	}
-	status, acquisitionToken, err := s.claimSettlementState(ctx, task.TenantID, claimID)
-	if err != nil {
-		return false, err
-	}
-	if status == "committed" {
-		return s.markTaskSucceeded(ctx, task.ID, result, now)
-	}
-	if status == "aborted" {
-		return s.finishSuccessAfterSweptClaim(ctx, task, owner, result, now)
-	}
-	if status != "reserving" || acquisitionToken == uuid.Nil {
-		return false, billing.ErrClaimNotReserving
-	}
-
-	billedCents := result.ActualCents
-	if billedCents <= 0 {
-		billedCents = task.EstimatedCents
-	}
-	if billedCents > task.EstimatedCents {
-		billedCents = task.EstimatedCents
-	}
-	actual := centsToUSD(billedCents)
-	endpoint := durableVideoSubmitEndpoint(task)
-	_, err = s.settler.Settle(ctx, billing.SettleRequest{
-		ClaimID: claimID, TenantID: task.TenantID, APIKeyID: task.APIKeyID, UserID: task.UserID,
-		AccountID: task.ProviderAccountID, ProviderAccountID: task.ProviderAccountID,
-		AcquisitionToken: acquisitionToken, ActualCost: actual,
-		RequestedModel: task.RequestedModel, UpstreamModel: task.ProviderModelID,
-		Provider: task.Provider, RequestedAt: task.CreatedAt, Stream: false,
-		Fingerprint: payloadHash(task.InputParams), AuditRequestID: task.RequestID,
-		AuditRouteID: task.RouteID, AuditPoolGroupID: task.PoolGroupID,
-		AuditProviderEndpoint: endpoint,
-		Draft: gateway.UsageRecordDraft{
-			ActualCost: actual, RoutingReason: append([]byte(nil), result.RoutingReason...),
-			EndClass: gateway.StreamEndGraceful, UsageSource: gateway.UsageSourceReported,
-		},
-	})
-	if err != nil {
-		if errors.Is(err, billing.ErrClaimNotReserving) {
-			status, _, stateErr := s.claimSettlementState(ctx, task.TenantID, claimID)
-			if stateErr == nil && status == "committed" {
-				return s.markTaskSucceeded(ctx, task.ID, result, now)
-			}
-		}
-		return false, err
-	}
-	return s.markTaskSucceeded(ctx, task.ID, result, now)
-}
-
-func (s *PostgresStore) persistPendingSuccess(ctx context.Context, task Task, owner string, result PollResult, now time.Time) error {
-	actualCents := result.ActualCents
-	tag, err := s.pool.Exec(ctx, `
-UPDATE media_tasks
-SET result=$3, actual_cents=$4, progress=99, updated_at=$5
-WHERE id=$1 AND lease_owner=$2 AND status='in_progress'`,
-		task.ID, owner, jsonOrNull(result.Result), actualCents, now.UTC())
-	if err != nil {
+	var attemptSeq int32
+	if err := tx.QueryRow(ctx, `
+SELECT attempt_seq
+FROM billing_ledger_claims
+WHERE tenant_id=$1 AND id=$2`, task.TenantID, claimID).Scan(&attemptSeq); err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrLeaseLost
+	_, err := tx.Exec(ctx, `
+INSERT INTO usage_records (
+    tenant_id, claim_id, api_key_id, user_id, provider_account_id, acquisition_token,
+    settlement_source, attempt_seq, actual_cost, end_class, usage_source,
+    confidence_score, routing_reason, requested_at, requested_model, upstream_model,
+    stream, stream_state
+) VALUES (
+    $1,$2,$3,$4,NULL,NULL,$5,$6,$7,'non_streaming',$8,$9,
+    COALESCE(NULLIF($10::jsonb, 'null'::jsonb), '{}'::jsonb),$11,$12,NULLIF($13,''),false,$14
+)`,
+		task.TenantID, claimID, task.APIKeyID, task.UserID,
+		billing.SettlementSourceExternalMediaRelay, attemptSeq, centsToUSD(billedCents),
+		usageSource, confidence, jsonOrNull(result.RoutingReason), requestedAt,
+		firstNonEmpty(task.RequestedModel, task.TaskType), firstNonEmpty(task.ProviderModelID, task.Provider),
+		billing.StreamStatePartial,
+	)
+	if err != nil {
+		return fmt.Errorf("mediatask: insert external relay usage: %w", err)
 	}
 	return nil
-}
-
-func (s *PostgresStore) claimSettlementState(ctx context.Context, tenantID, claimID int64) (string, uuid.UUID, error) {
-	var status string
-	var token pgtype.UUID
-	if err := s.pool.QueryRow(ctx, `
-SELECT status, acquisition_token
-FROM billing_ledger_claims
-WHERE tenant_id=$1 AND id=$2`, tenantID, claimID).Scan(&status, &token); err != nil {
-		return "", uuid.Nil, err
-	}
-	if !token.Valid {
-		return status, uuid.Nil, nil
-	}
-	return status, uuid.UUID(token.Bytes), nil
-}
-
-func (s *PostgresStore) markTaskSucceeded(ctx context.Context, taskID int64, result PollResult, now time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
-UPDATE media_tasks
-SET status='succeeded', result=$2, actual_cents=$3, progress=100,
-    lease_owner=NULL, lease_expires_at=NULL, updated_at=$4, finished_at=$4
-WHERE id=$1 AND status IN ('queued','in_progress')`,
-		taskID, jsonOrNull(result.Result), result.ActualCents, now.UTC())
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-func (s *PostgresStore) finishSuccessAfterSweptClaim(ctx context.Context, task Task, owner string, result PollResult, now time.Time) (bool, error) {
-	var completed bool
-	err := s.withSerializableRetry(ctx, func(tx pgx.Tx) error {
-		if err := updateTaskSuccess(ctx, tx, task.ID, result, now); err != nil {
-			return err
-		}
-		if err := persistOrphanTx(ctx, tx, task, owner, now); err != nil {
-			return err
-		}
-		completed = true
-		return nil
-	})
-	return completed, err
 }
 
 func (s *PostgresStore) CompleteFailure(ctx context.Context, task Task, owner, errorClass string, now time.Time) (bool, error) {
@@ -364,6 +306,19 @@ func (s *PostgresStore) ExpireTask(ctx context.Context, task Task, owner string,
 }
 
 func (s *PostgresStore) abortTaskWithUnifiedMoney(ctx context.Context, task Task, owner string, status Status, errorClass string, now time.Time) (bool, error) {
+	current, err := scanTask(s.pool.QueryRow(ctx, selectTaskSQL+` WHERE id=$1`, task.ID))
+	if err != nil {
+		return false, err
+	}
+	if current.LeaseOwner != owner || IsTerminal(current.Status) {
+		return false, ErrLeaseLost
+	}
+	if current.Status == StatusSubmissionUnknown {
+		return false, ErrSubmissionRecoveryActionRequired
+	}
+	if current.Status == StatusSettlementPending {
+		return false, ErrSettlementPending
+	}
 	claimID, err := claimIDFromHoldRef(task.HoldRef)
 	if err != nil {
 		return false, err
@@ -379,15 +334,31 @@ func (s *PostgresStore) abortTaskWithUnifiedMoney(ctx context.Context, task Task
 	if claimStatus == "committed" {
 		return false, billing.ErrClaimNotReserving
 	}
-	tag, updateErr := s.pool.Exec(ctx, `
+	var completed bool
+	updateErr := s.withSerializableRetry(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
 UPDATE media_tasks
 SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
     updated_at=$4, finished_at=$4
-WHERE id=$1 AND status IN ('queued','in_progress')`, task.ID, status, errorClass, now.UTC())
+WHERE id=$1 AND lease_owner=$5
+  AND status IN ('queued','submitting','submission_releasing','in_progress')`,
+			task.ID, status, errorClass, now.UTC(), owner)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrLeaseLost
+		}
+		if err := finalizeUnknownSubmissionRelease(ctx, tx, task.ID, now); err != nil {
+			return err
+		}
+		completed = true
+		return nil
+	})
 	if updateErr != nil {
 		return false, updateErr
 	}
-	return tag.RowsAffected() > 0, nil
+	return completed, nil
 }
 
 func (s *PostgresStore) insertReservedTask(ctx context.Context, tx pgx.Tx, input CreateTaskInput) (Task, error) {
@@ -478,6 +449,12 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 		if err != nil || !ok {
 			return err
 		}
+		if locked.Status == StatusSubmissionUnknown {
+			return ErrSubmissionRecoveryActionRequired
+		}
+		if locked.Status == StatusSettlementPending {
+			return ErrSettlementPending
+		}
 		claimID, err := claimIDFromHoldRef(locked.HoldRef)
 		if err != nil {
 			return err
@@ -489,16 +466,29 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 		}); err != nil {
 			return err
 		} else if rows == 0 {
-			// claim 已被 billing LeaseSweeper 抢先 abort (billing 侧账已由 sweeper 写平)。
-			// 回滚整事务会让任务卡非终态死循环。强推终态, error_class 标 claim_swept 可追溯;
-			// 有上游任务 ID 则落孤儿线索 (上游可能仍在跑并计费)。
+			var claimStatus string
+			if err := tx.QueryRow(ctx, `
+SELECT status
+FROM billing_ledger_claims
+WHERE tenant_id=$1 AND id=$2
+FOR UPDATE`, locked.TenantID, claimID).Scan(&claimStatus); err != nil {
+				return err
+			}
+			if claimStatus != "aborted" {
+				return billing.ErrClaimNotReserving
+			}
+			// claim 已被清扫器抢先 abort，账务已释放。任务必须收敛为终态，
+			// 但不得把 committed 等其他 0 行原因冒充成“已退款”。
 			if _, err := tx.Exec(ctx, `
-	UPDATE media_tasks
-	SET status=$2, error_class='claim_swept', lease_owner=NULL, lease_expires_at=NULL,
-	    updated_at=$3, finished_at=$3
-	WHERE id=$1 AND status IN ('queued','in_progress')`,
+		UPDATE media_tasks
+		SET status=$2, error_class='claim_swept', lease_owner=NULL, lease_expires_at=NULL,
+		    updated_at=$3, finished_at=$3
+		WHERE id=$1 AND status IN ('queued','submitting','submission_releasing','in_progress')`,
 				locked.ID, status, now.UTC(),
 			); err != nil {
+				return err
+			}
+			if err := finalizeUnknownSubmissionRelease(ctx, tx, locked.ID, now); err != nil {
 				return err
 			}
 			if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {
@@ -517,9 +507,12 @@ func (s *PostgresStore) abortTask(ctx context.Context, taskID int64, owner strin
 		UPDATE media_tasks
 		SET status=$2, error_class=$3, lease_owner=NULL, lease_expires_at=NULL,
 		    updated_at=$4, finished_at=$4
-		WHERE id=$1 AND status IN ('queued','in_progress')`,
+		WHERE id=$1 AND status IN ('queued','submitting','submission_releasing','in_progress')`,
 			locked.ID, status, errorClass, now.UTC(),
 		); err != nil {
+			return err
+		}
+		if err := finalizeUnknownSubmissionRelease(ctx, tx, locked.ID, now); err != nil {
 			return err
 		}
 		if err := persistOrphanTx(ctx, tx, locked, owner, now); err != nil {

@@ -165,6 +165,9 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	// 结算是计费关注点,不应决定账号健康信号(与 codex 语义一致)。
 	ex.observeSuccess(res)
 	settleReq := ex.settleRequest(ex.costSnapshot, attemptSeq)
+	if !ex.openDeliveryGate(w, int64(ex.inputEstimate)) {
+		return false
+	}
 	copyAllowedHeaders(w.Header(), res.Headers)
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")

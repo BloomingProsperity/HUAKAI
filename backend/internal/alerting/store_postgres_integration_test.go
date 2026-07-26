@@ -81,6 +81,60 @@ func TestPostgresStoreAlertTenantScopeAndEvaluation(t *testing.T) {
 	}
 }
 
+func TestPostgresStoreSchedulerSkipsDisabledTenants(t *testing.T) {
+	// MUTATION：ListTenantsWithEnabledRules 去掉 tenants 活跃状态关联后，停用租户会重新进入告警评估和通知。
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool := openAlertingPool(t, ctx)
+	tenantA := seedAlertingTenant(t, ctx, pool, "alert-disabled")
+	tenantB := seedAlertingTenant(t, ctx, pool, "alert-active")
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = pool.Exec(c, `DELETE FROM alert_events WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
+		_, _ = pool.Exec(c, `DELETE FROM alert_rules WHERE tenant_id IN ($1,$2)`, tenantA, tenantB)
+		_, _ = pool.Exec(c, `DELETE FROM tenants WHERE id IN ($1,$2)`, tenantA, tenantB)
+	})
+
+	svc := NewService(NewPostgresStore(pool))
+	for _, tenantID := range []int64{tenantA, tenantB} {
+		mustCreateRule(t, svc, CreateRuleInput{
+			TenantID:      tenantID,
+			Name:          fmt.Sprintf("tenant-%d-rule", tenantID),
+			Metric:        "gateway.requests",
+			Comparator:    ComparatorGTE,
+			Threshold:     10,
+			Severity:      SeverityWarning,
+			WindowSeconds: 60,
+		})
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE tenants
+SET status='disabled', version=version+1, status_changed_at=now()
+WHERE id=$1`, tenantA); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+
+	tenants, err := NewPostgresStore(pool).ListTenantsWithEnabledRules(ctx)
+	if err != nil {
+		t.Fatalf("list tenants with rules: %v", err)
+	}
+	for _, tenantID := range tenants {
+		if tenantID == tenantA {
+			t.Fatalf("disabled tenant %d entered scheduler candidates: %v", tenantA, tenants)
+		}
+	}
+	foundActive := false
+	for _, tenantID := range tenants {
+		if tenantID == tenantB {
+			foundActive = true
+			break
+		}
+	}
+	if !foundActive {
+		t.Fatalf("active tenant %d missing from scheduler candidates: %v", tenantB, tenants)
+	}
+}
+
 func TestPostgresStoreAlertEnrichmentRoundTrip(t *testing.T) {
 	// MUTATION：在 SQL 中省略 event 的 threshold/metric/dimensions/email_sent 或 rule 的 last_triggered_at；这次往返会丢失告警触发的证据。
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

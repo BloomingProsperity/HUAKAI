@@ -65,6 +65,27 @@ func decodeAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return adminhttpcore.DecodeJSON(w, r, dst)
 }
 
+func decodeOptionalAdminPoolJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return true
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("request body must contain exactly one JSON value")
+		}
+		writeJSONError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	return true
+}
+
 func decodeAdminPoolJSONWithRaw(w http.ResponseWriter, r *http.Request, dst any) ([]byte, bool) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
 	if err != nil {

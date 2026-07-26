@@ -19,6 +19,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/quotaenforce"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 )
 
@@ -54,6 +55,10 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		writeInsufficientBalanceError(w)
 		return false
 	}
+	if errors.Is(err, billing.ErrTenantInactive) {
+		writeJSONError(w, http.StatusForbidden, clienterr.CodeTenantInactive, clienterr.MessageFor(clienterr.CodeTenantInactive))
+		return false
+	}
 	// 幂等竞争 / Serializable 重试耗尽:可重试,返 409+Retry-After 让客户端稍后再试
 	//(镜像 chat completions;此前落进下方通用 500 = 把可重试竞争误报成服务端错误)。
 	if errors.Is(err, billing.ErrClaimRace) {
@@ -70,6 +75,11 @@ func (ex *execution) reserve(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.reserveRes = res
+	if err := ex.settlementIntent.InsertPending(ex.ctx, ex.ident.TenantID, ex.requestID, ex.logicalRequestID, res.ClaimID, res.AttemptSeq, ex.ident.APIKeyID, ex.payloadHash, predicted.Total); err != nil {
+		_ = ex.abortWithError(w, "settlement_intent_unavailable", 0)
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+		return false
+	}
 	return ex.reserveQuota(w, predicted.Total)
 }
 
@@ -163,24 +173,26 @@ func (ex *execution) settleDirectWithRecovery(ctx context.Context, req billing.S
 // (context.WithoutCancel)，使客户端断连不取消 Tx2——否则已交付 token 永不计费(计费泄漏)。
 // settle 失败时把 SettleRequest 经 settlementrecovery DLQ 持久化(source 标记来路),worker 后续
 // 重 settle 防钱账丢失;DLQ 重结算靠既有三证 proof(claim/usage_records/billing_events)幂等防重扣。
-// SettleRecoveryDLQ 未注入时退回原行为(仅返 err,caller 置 X-Huakai-Settle-Failed 头)。
+// SettleRecoveryDLQ 未注入或写失败时，同一份恢复证据落入 settlement_intents，
+// 由 sweeper 在队列恢复后重投，不能把已交付请求永久留在 failed。
 // settle err 始终原样返回 caller。
 func (ex *execution) settleWithRecovery(ctx context.Context, source settlementrecovery.Source, req billing.SettleRequest) error {
 	if _, err := ex.d.Settler.Settle(ctx, req); err != nil {
-		if ex.d.SettleRecoveryDLQ == nil {
-			return err
-		}
 		payload := settlementrecovery.FromSettleRequest(source, ex.requestID, req)
-		failureClass := privacy.ErrorClassFor(ctx, err)
-		// DLQ 持久化必须用**独立 ctx**：settle 可能正因传入 ctx 的 deadline 耗尽(DB 锁等待/上游慢)
-		// 而失败，此刻复用同一已过期 ctx 会让 enqueue 的 INSERT 立即 deadline-exceeded、recovery
-		// intent 落不了盘——DB 受压时 DLQ 最该兜底却最易失效。WithoutCancel 去掉过期/取消传播后
-		// 重新 WithTimeout，使 enqueue 不受 settle ctx 状态影响。
-		enqCtx, enqCancel := context.WithTimeout(context.WithoutCancel(ctx), settleRecoveryEnqueueTimeout)
-		defer enqCancel()
-		if _, enqErr := settlementrecovery.EnqueuePayload(enqCtx, ex.d.SettleRecoveryDLQ, payload, failureClass); enqErr != nil {
+		evidence, enqErr := settlementrecovery.EnqueueFailure(
+			ctx,
+			ex.d.SettleRecoveryDLQ,
+			payload,
+			err,
+			"completionshttp.settle_recovery",
+		)
+		ex.settlementIntent.MarkSettlementResult(ctx, req.ActualCost, err, enqErr == nil, settlementintent.RecoveryEvidence{
+			Payload: evidence.Payload, FailureClass: evidence.FailureClass,
+		})
+		if enqErr != nil {
+			failureClass := privacy.ErrorClassFor(ctx, err)
 			// DLQ persist 自身失败 = money path 兜底链断 → P0 alert(不阻塞:响应已发不能反悔)。
-			_ = privacy.LogSystem(enqCtx, privacy.SystemEvent{
+			_ = privacy.LogSystem(ctx, privacy.SystemEvent{
 				Severity:   privacy.SeverityError,
 				Component:  "completionshttp.settle_recovery",
 				RequestID:  ex.requestID,
@@ -196,7 +208,22 @@ func (ex *execution) settleWithRecovery(ctx context.Context, source settlementre
 		}
 		return err
 	}
+	ex.settlementIntent.MarkSettled(ctx, req.ActualCost)
 	return nil
+}
+
+func (ex *execution) logResponseDeliveryUncertain(err error) {
+	_ = privacy.LogSystem(ex.ctx, privacy.SystemEvent{
+		Severity:   privacy.SeverityWarn,
+		Component:  "completionshttp.response_delivery",
+		RequestID:  ex.requestID,
+		ErrorClass: privacy.ErrorClassFor(ex.ctx, err),
+		Attrs: map[string]any{
+			"event_class": "completion_response_delivery_uncertain",
+			"tenant_id":   ex.ident.TenantID,
+			"claim_id":    ex.reserveRes.ClaimID,
+		},
+	})
 }
 
 func (ex *execution) abort(w http.ResponseWriter, reason string, observedInputTokens int64) bool {
@@ -211,12 +238,23 @@ func (ex *execution) abortWithError(w http.ResponseWriter, reason string, observ
 	// hold/并发槽泄漏到 lease 过期才回收(与 images/rerank/embeddings/audio 的 billingCtx 同)。
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ex.ctx), 5*time.Second)
 	defer cancel()
-	if err := ex.d.Settler.Abort(abortCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil); err != nil {
+	err := ex.d.Settler.Abort(abortCtx, ex.ident.TenantID, ex.reserveRes.ClaimID, reason, ex.requestID, observedInputTokens, nil)
+	ex.settlementIntent.MarkAbortResult(abortCtx, err)
+	if err != nil {
 		w.Header().Set("X-Huakai-Abort-Failed", clienterr.CodeAbortFailed)
 		return err
 	}
 	ex.reserveRes = nil
 	return nil
+}
+
+func (ex *execution) openDeliveryGate(w http.ResponseWriter, observedInputTokens int64) bool {
+	if err := ex.settlementIntent.MarkDelivering(ex.ctx, time.Now().UTC()); err != nil {
+		_ = ex.abortWithError(w, "delivery_evidence_unavailable", observedInputTokens)
+		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodeSettleError, clienterr.MessageFor(clienterr.CodeSettleError))
+		return false
+	}
+	return true
 }
 
 func (ex *execution) ensureIdempotency() {

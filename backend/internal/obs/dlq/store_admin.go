@@ -36,6 +36,8 @@ type AdminDeadEvent struct {
 	FailureReason string          `json:"failure_reason,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	NextRetryAt   time.Time       `json:"next_retry_at"`
+	LastReplayAt  *time.Time      `json:"last_replay_at,omitempty"`
+	LastActor     *string         `json:"last_replay_actor,omitempty"`
 }
 
 type AdminReplayResult struct {
@@ -72,7 +74,9 @@ func (p *PostgresOutbox) ListDead(ctx context.Context, filter AdminListFilter) (
 	       oe.status,
 	       COALESCE(oe.failure_reason, ''),
 	       oe.created_at,
-	       oe.next_retry_at
+	       oe.next_retry_at,
+	       de.last_replay_at,
+	       de.last_replay_actor
 	FROM dlq_events de
 	JOIN outbox_events oe ON oe.id = de.outbox_event_id
 	                  AND oe.tenant_id = de.tenant_id
@@ -104,6 +108,8 @@ func (p *PostgresOutbox) ListDead(ctx context.Context, filter AdminListFilter) (
 			&row.FailureReason,
 			&row.CreatedAt,
 			&row.NextRetryAt,
+			&row.LastReplayAt,
+			&row.LastActor,
 		); err != nil {
 			return nil, fmt.Errorf("obsdlq: scan dead: %w", err)
 		}
@@ -115,33 +121,53 @@ func (p *PostgresOutbox) ListDead(ctx context.Context, filter AdminListFilter) (
 	return out, nil
 }
 
-func (p *PostgresOutbox) ReplayDead(ctx context.Context, id string) (AdminReplayResult, error) {
+func (p *PostgresOutbox) ReplayDead(ctx context.Context, tenantID int64, id, actor string) (AdminReplayResult, error) {
 	if p == nil || p.pool == nil {
 		return AdminReplayResult{}, ErrOutboxNotConfigured
 	}
-	var result AdminReplayResult
-	tag, err := p.pool.Exec(ctx, `
-	UPDATE outbox_events
-	SET status = 'pending',
-	    attempt_count = 0,
-	    next_retry_at = now()
-	WHERE id = (
-	    SELECT outbox_event_id
-	    FROM dlq_events
-	    WHERE id = $1
-	)
-	  AND status = 'failed_dead'`, id)
-	if err != nil {
-		return AdminReplayResult{}, fmt.Errorf("obsdlq: replay dead: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
+	if tenantID <= 0 || strings.TrimSpace(id) == "" || strings.TrimSpace(actor) == "" {
 		return AdminReplayResult{}, ErrReplayConflict
 	}
-	if err := p.pool.QueryRow(ctx, `SELECT id, outbox_event_id FROM dlq_events WHERE id = $1`, id).Scan(&result.DLQEventID, &result.OutboxEventID); err != nil {
+	var result AdminReplayResult
+	err := p.pool.QueryRow(ctx, `
+	WITH target AS (
+	    SELECT de.id, de.outbox_event_id
+	    FROM dlq_events de
+	    JOIN outbox_events oe
+	      ON oe.id = de.outbox_event_id
+	     AND oe.tenant_id = de.tenant_id
+	    WHERE de.id = $1
+	      AND de.tenant_id = $2
+	      AND oe.status = 'failed_dead'
+	),
+	requeued AS (
+	    UPDATE outbox_events oe
+	    SET status = 'pending',
+	        attempt_count = 0,
+	        next_retry_at = now()
+	    FROM target t
+	    WHERE oe.id = t.outbox_event_id
+	      AND oe.tenant_id = $2
+	      AND oe.status = 'failed_dead'
+	    RETURNING oe.id
+	),
+	recorded AS (
+	    UPDATE dlq_events de
+	    SET last_replay_at = now(),
+	        last_replay_actor = $3
+	    FROM target t
+	    JOIN requeued r ON r.id = t.outbox_event_id
+	    WHERE de.id = t.id
+	      AND de.tenant_id = $2
+	    RETURNING de.id, de.outbox_event_id
+	)
+	SELECT id, outbox_event_id
+	FROM recorded`, id, tenantID, actor).Scan(&result.DLQEventID, &result.OutboxEventID)
+	if err != nil {
 		if err == pgx.ErrNoRows {
 			return AdminReplayResult{}, ErrReplayConflict
 		}
-		return AdminReplayResult{}, fmt.Errorf("obsdlq: replay dead result: %w", err)
+		return AdminReplayResult{}, fmt.Errorf("obsdlq: replay dead: %w", err)
 	}
 	return result, nil
 }

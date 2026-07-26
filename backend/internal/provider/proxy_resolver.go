@@ -124,6 +124,9 @@ func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundT
 	if proxyURL == nil {
 		return rt
 	}
+	if _, _, err := validateProxyEndpointURL(proxyURL); err != nil {
+		return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL, buildErr: err}
+	}
 	if pa, ok := rt.(proxyAwareRoundTripper); ok {
 		wrapped, err := pa.WithProxy(proxyURL)
 		if err != nil {
@@ -140,9 +143,11 @@ func WrapTransportWithProxy(rt http.RoundTripper, proxyURL *url.URL) http.RoundT
 			// 需把代理穿进 Rust 控制帧(PROXY-02b)。
 			return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL}
 		}
-		clone := t.Clone()
-		clone.Proxy = http.ProxyURL(proxyURL)
-		return clone
+		wrapped, err := wrapProxyEndpointTransport(t, proxyURL)
+		if err != nil {
+			return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL, buildErr: err}
+		}
+		return wrapped
 	}
 	return &proxyWrappedRoundTripper{inner: rt, proxyURL: proxyURL}
 }

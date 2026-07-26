@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/db"
+	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // store_self_account.go 承载已登录用户自助账户管理(改密 / 软删)的持久层方法。
@@ -42,6 +43,91 @@ RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
 		return User{}, ErrUserNotFound
 	}
 	return user, err
+}
+
+func (s *PostgresStore) UpdateOwnPasswordAndRevokeOthers(
+	ctx context.Context,
+	tenantID, userID int64,
+	passwordHash string,
+	expectedPasswordVersion int,
+	currentFamilyID string,
+	now time.Time,
+) (User, int64, error) {
+	if s == nil || s.db == nil {
+		return User{}, 0, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 || expectedPasswordVersion <= 0 {
+		return User{}, 0, ErrInvalidInput
+	}
+	beginner, ok := s.db.(txBeginner)
+	if !ok {
+		return User{}, 0, ErrStoreNotConfigured
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return User{}, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	revoked, err := usersession.RevokeOtherFamiliesInTransaction(
+		ctx,
+		tx,
+		tenantID,
+		userID,
+		currentFamilyID,
+		"password_change",
+		now,
+	)
+	if err != nil {
+		return User{}, 0, err
+	}
+	const q = `
+UPDATE users
+SET password_hash = $3,
+    password_version = password_version + 1,
+    updated_at = $5
+WHERE tenant_id = $1
+  AND id = $2
+  AND password_version = $4
+  AND deleted_at IS NULL
+RETURNING id, tenant_id, email, display_name, password_hash, email_verified,
+          invite_code_used, social_login_provider, status, password_version,
+          failed_login_count, locked_until, created_at, updated_at`
+	user, err := scanUser(tx.QueryRow(ctx, q,
+		tenantID,
+		userID,
+		passwordHash,
+		expectedPasswordVersion,
+		now.UTC(),
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, 0, ErrInvalidCredentials
+	}
+	if err != nil {
+		return User{}, 0, err
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE session_families
+SET auth_version = $4
+WHERE tenant_id = $1
+  AND user_id = $2
+  AND id = $3::uuid
+  AND status IN ('active', 'suspicious')`,
+		tenantID,
+		userID,
+		currentFamilyID,
+		user.PasswordVersion,
+	)
+	if err != nil {
+		return User{}, 0, err
+	}
+	if tag.RowsAffected() != 1 {
+		return User{}, 0, usersession.ErrFamilyNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, 0, err
+	}
+	return user, revoked, nil
 }
 
 // CountActiveAdmins 统计某 tenant 内 role='admin' 且未软删的活跃账号数。
@@ -108,6 +194,60 @@ func (s *PostgresStore) SoftDeleteUser(ctx context.Context, tenantID, userID int
 		return User{}, err
 	}
 	return user, nil
+}
+
+// SoftDeleteUserAndRevokeSessions 把账号软删、API Key 失效和全部会话撤销收进同一事务。
+func (s *PostgresStore) SoftDeleteUserAndRevokeSessions(
+	ctx context.Context,
+	tenantID, userID int64,
+	now time.Time,
+) (User, int64, error) {
+	if s == nil || s.db == nil {
+		return User{}, 0, ErrStoreNotConfigured
+	}
+	if tenantID <= 0 || userID <= 0 {
+		return User{}, 0, ErrInvalidInput
+	}
+	if tx, ok := s.db.(pgx.Tx); ok {
+		return softDeleteUserAndRevokeSessionsWithTx(ctx, tx, tenantID, userID, now)
+	}
+	beginner, ok := s.db.(txBeginner)
+	if !ok {
+		return User{}, 0, ErrStoreNotConfigured
+	}
+	tx, err := beginner.Begin(ctx)
+	if err != nil {
+		return User{}, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	user, revoked, err := softDeleteUserAndRevokeSessionsWithTx(ctx, tx, tenantID, userID, now)
+	if err != nil {
+		return User{}, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, 0, err
+	}
+	return user, revoked, nil
+}
+
+func softDeleteUserAndRevokeSessionsWithTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	tenantID, userID int64,
+	now time.Time,
+) (User, int64, error) {
+	if err := usersession.LockUserSessionsInTransaction(ctx, tx, tenantID, userID); err != nil {
+		return User{}, 0, err
+	}
+	user, err := softDeleteUserWithDB(ctx, tx, tenantID, userID, now)
+	if err != nil {
+		return User{}, 0, err
+	}
+	revoked, err := usersession.RevokeUserInTransaction(ctx, tx, tenantID, userID, "account_deleted", now)
+	if err != nil {
+		return User{}, 0, err
+	}
+	return user, revoked, nil
 }
 
 func softDeleteUserWithDB(ctx context.Context, dbtx db.DBTX, tenantID, userID int64, now time.Time) (User, error) {

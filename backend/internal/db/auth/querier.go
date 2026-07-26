@@ -22,11 +22,8 @@ type Querier interface {
 	// resolver to confirm user.status = 'active'.
 	GetUserByID(ctx context.Context, arg GetUserByIDParams) (GetUserByIDRow, error)
 	InsertOAuthRefreshAuditEvent(ctx context.Context, arg InsertOAuthRefreshAuditEventParams) error
-	// Inbound auth queries.
-	//   Queries here MUST NOT return key_hash to logs / traces; the resolver
-	//   only uses key_hash for bcrypt comparison and discards it.
-	// Resolver writes stay limited to best-effort auth telemetry;
-	//   failed telemetry updates must not reject otherwise valid credentials.
+	// 入站鉴权查询。key_hash 只供 resolver 做 bcrypt 比对并立即丢弃，绝不进入
+	// 日志或 trace。遥测写入保持 best-effort，不得因遥测失败拒绝有效凭据。
 	// Returns active candidates whose key_prefix matches. Capped at 5 to
 	// bound bcrypt-verify-fanout DOS via colliding prefixes.
 	//

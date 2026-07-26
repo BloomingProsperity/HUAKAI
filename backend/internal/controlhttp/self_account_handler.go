@@ -12,19 +12,18 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
-	"github.com/BloomingProsperity/HUAKAI/internal/usersession"
 )
 
 // SelfAccountService 改密 + 软删,由 *userauth.Service 实现。
 type SelfAccountService interface {
 	ChangeOwnPassword(ctx context.Context, tenantID, userID int64, oldPassword, newPassword string) (userauth.User, error)
+	ChangeOwnPasswordAndRevokeOthers(
+		ctx context.Context,
+		tenantID, userID int64,
+		oldPassword, newPassword, currentFamilyID string,
+	) (userauth.User, int64, error)
 	SoftDeleteSelf(ctx context.Context, tenantID, userID int64) (userauth.User, error)
-}
-
-// AuthSessionRevokerOthers 撤销「除当前 family 外」的全部 session(改密保留当前会话用)。
-// 与 AuthSessionRevoker(整 family / user 撤销)分开,二者均由 *usersession.Service 实现。
-type AuthSessionRevokerOthers interface {
-	RevokeOthers(ctx context.Context, in usersession.RevokeOthersInput) (int64, error)
+	SoftDeleteSelfAndRevokeSessions(ctx context.Context, tenantID, userID int64) (userauth.User, int64, error)
 }
 
 type changePasswordRequest struct {
@@ -36,7 +35,7 @@ type changePasswordRequest struct {
 // 校旧密 → 改新密(bump password_version)→ 撤其它 session、保留当前。
 func newAuthChangePasswordHandler(d AuthMeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.SelfAccount == nil || d.SessionsOthers == nil {
+		if d.SelfAccount == nil {
 			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "self-account dependency unset")
 			return
 		}
@@ -62,20 +61,16 @@ func newAuthChangePasswordHandler(d AuthMeDeps) http.HandlerFunc {
 			return
 		}
 		// 身份只取 session:即便 body 夹带 user_id 等也忽略,service 收到的永远是 session 身份。
-		if _, err := d.SelfAccount.ChangeOwnPassword(r.Context(), ident.TenantID, ident.UserID, req.OldPassword, req.NewPassword); err != nil {
-			writeAuthChangePasswordError(w, err)
-			return
-		}
-		// 改密成功后撤其它 session、保留当前(HUAKAI session.Validate 不校 password_version,
-		// 必须显式撤,否则改密后被盗的旧 session 仍有效——安全回退)。
-		revoked, err := d.SessionsOthers.RevokeOthers(r.Context(), usersession.RevokeOthersInput{
-			TenantID:        ident.TenantID,
-			UserID:          ident.UserID,
-			CurrentFamilyID: ident.FamilyID,
-			Reason:          "password_change",
-		})
+		_, revoked, err := d.SelfAccount.ChangeOwnPasswordAndRevokeOthers(
+			r.Context(),
+			ident.TenantID,
+			ident.UserID,
+			req.OldPassword,
+			req.NewPassword,
+			ident.FamilyID,
+		)
 		if err != nil {
-			writeAuthSelfSessionError(w, err)
+			writeAuthChangePasswordError(w, err)
 			return
 		}
 		controlWriteJSON(w, http.StatusOK, map[string]any{"changed": true, "sessions_revoked": revoked})
@@ -86,7 +81,7 @@ func newAuthChangePasswordHandler(d AuthMeDeps) http.HandlerFunc {
 // 软删本人(末位 admin 保护在 service/store 层)→ 撤本人全部 session(api_key 已在软删事务内失活)。
 func newAuthDeleteSelfHandler(d AuthMeDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.SelfAccount == nil || d.Sessions == nil {
+		if d.SelfAccount == nil {
 			controlWriteJSONError(w, http.StatusServiceUnavailable, "gateway_not_configured", "self-account dependency unset")
 			return
 		}
@@ -94,19 +89,13 @@ func newAuthDeleteSelfHandler(d AuthMeDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		// 先软删(同事务含 api_key revoke);成功后再撤 session。失败不撤 session,不留半删态。
-		if _, err := d.SelfAccount.SoftDeleteSelf(r.Context(), ident.TenantID, ident.UserID); err != nil {
-			writeAuthDeleteSelfError(w, err)
-			return
-		}
-		// 撤本人全部 session(UserID 全撤路径,无 FamilyID):删号后任何旧会话都失效。
-		revoked, err := d.Sessions.Revoke(r.Context(), usersession.RevokeInput{
-			TenantID: ident.TenantID,
-			UserID:   ident.UserID,
-			Reason:   "account_deleted",
-		})
+		_, revoked, err := d.SelfAccount.SoftDeleteSelfAndRevokeSessions(
+			r.Context(),
+			ident.TenantID,
+			ident.UserID,
+		)
 		if err != nil {
-			writeAuthSelfSessionError(w, err)
+			writeAuthDeleteSelfError(w, err)
 			return
 		}
 		controlWriteJSON(w, http.StatusOK, map[string]any{"deleted": true, "sessions_revoked": revoked})
@@ -136,16 +125,5 @@ func writeAuthDeleteSelfError(w http.ResponseWriter, err error) {
 		controlWriteJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
 	default:
 		controlWriteJSONError(w, http.StatusServiceUnavailable, "account_backend_error", "account backend unavailable")
-	}
-}
-
-func writeAuthSelfSessionError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, usersession.ErrInvalidInput):
-		controlWriteJSONError(w, http.StatusServiceUnavailable, "session_backend_error", "session backend unavailable")
-	case errors.Is(err, usersession.ErrStoreNotConfigured), errors.Is(err, usersession.ErrSigningKeyMissing):
-		controlWriteJSONError(w, http.StatusServiceUnavailable, "session_auth_not_configured", "session dependency unset")
-	default:
-		controlWriteJSONError(w, http.StatusServiceUnavailable, "session_backend_error", "session backend unavailable")
 	}
 }

@@ -79,19 +79,23 @@ func (s *PostgresStore) ReconcileOrphan(
 		// 锁定孤儿行 + 读出其 tenant/user/task,同时只对 pending 行加锁推进(状态门)。
 		var (
 			taskID, tenantID, userID int64
+			orphanKind               string
 		)
 		row := tx.QueryRow(ctx, `
-			SELECT task_id, tenant_id, user_id
+			SELECT task_id, tenant_id, user_id, orphan_kind
 			FROM media_task_orphans
 			WHERE id=$1 AND reconcile_status='pending'
 			FOR UPDATE`, orphanID)
-		if err := row.Scan(&taskID, &tenantID, &userID); err != nil {
+		if err := row.Scan(&taskID, &tenantID, &userID, &orphanKind); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// 不存在或已终态:幂等 no-op,不进 Capture、不写审计。
 				advanced = false
 				return nil
 			}
 			return err
+		}
+		if orphanKind == "submission_unknown" {
+			return ErrSubmissionRecoveryActionRequired
 		}
 
 		result = OrphanReconcileResult{

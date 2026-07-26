@@ -18,6 +18,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	dbbilling "github.com/BloomingProsperity/HUAKAI/internal/db/billing"
 )
@@ -40,6 +41,7 @@ type AdminPoolsDataStore interface {
 	GetPool(context.Context, dbbilling.GetPoolParams) (dbbilling.PoolGroup, error)
 	ListPools(context.Context, dbbilling.ListPoolsParams) ([]dbbilling.PoolGroup, error)
 	UpdatePool(context.Context, dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error)
+	DeletePool(context.Context, dbbilling.DeletePoolParams) (dbbilling.PoolGroup, error)
 }
 
 type AdminPoolsAuditStore interface {
@@ -58,6 +60,9 @@ type AdminPoolsStore interface {
 
 	// UpdatePoolWithAudit 同事务 UpdatePool + audit insert,语义同上。
 	UpdatePoolWithAudit(ctx context.Context, up dbbilling.UpdatePoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error)
+
+	// DeletePoolWithAudit 同事务软删除 pool + 写入日志。日志失败时删除不得提交。
+	DeletePoolWithAudit(ctx context.Context, dp dbbilling.DeletePoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error)
 }
 
 type AdminPoolsDeps struct {
@@ -97,6 +102,10 @@ func (s adminPoolsStoreAdapter) ListPools(ctx context.Context, arg dbbilling.Lis
 
 func (s adminPoolsStoreAdapter) UpdatePool(ctx context.Context, arg dbbilling.UpdatePoolParams) (dbbilling.PoolGroup, error) {
 	return s.data.UpdatePool(ctx, arg)
+}
+
+func (s adminPoolsStoreAdapter) DeletePool(ctx context.Context, arg dbbilling.DeletePoolParams) (dbbilling.PoolGroup, error) {
+	return s.data.DeletePool(ctx, arg)
 }
 
 func (s adminPoolsStoreAdapter) InsertAdminAuditEvent(ctx context.Context, arg admindb.InsertAdminAuditEventParams) (admindb.InsertAdminAuditEventRow, error) {
@@ -160,12 +169,37 @@ func (s adminPoolsStoreAdapter) UpdatePoolWithAudit(ctx context.Context, up dbbi
 	return out, nil
 }
 
+func (s adminPoolsStoreAdapter) DeletePoolWithAudit(ctx context.Context, dp dbbilling.DeletePoolParams, ap admindb.InsertAdminAuditEventParams) (dbbilling.PoolGroup, error) {
+	if s.pool == nil {
+		return dbbilling.PoolGroup{}, ErrAdminPoolsTxPoolUnset
+	}
+	var out dbbilling.PoolGroup
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		p, err := dbbilling.New(tx).DeletePool(ctx, dp)
+		if err != nil {
+			return err
+		}
+		out = p
+		ap.TargetID = &p.ID
+		if _, err := admindb.New(tx).InsertAdminAuditEvent(ctx, ap); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return dbbilling.PoolGroup{}, err
+	}
+	return out, nil
+}
+
 func NewAdminPoolsHandler(d AdminPoolsDeps) http.Handler {
 	r := chi.NewRouter()
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newListPoolsHandler(d))
-	r.Post("/", newCreatePoolHandler(d))
+	r.With(safe).Post("/", newCreatePoolHandler(d))
 	r.Get("/{id}", newGetPoolHandler(d))
-	r.Patch("/{id}", newUpdatePoolHandler(d))
+	r.With(safe).Patch("/{id}", newUpdatePoolHandler(d))
+	r.With(safe).Delete("/{id}", newDeletePoolHandler(d))
 	return r
 }
 
@@ -175,8 +209,6 @@ type adminPoolCreateRequest struct {
 	TopKDefault       *int32  `json:"top_k_default,omitempty"`
 	CapabilityDefault *string `json:"capability_default,omitempty"`
 	AllowLastResort   *bool   `json:"allow_last_resort,omitempty"`
-	// 兼容本轮 body contract；当前 pool_groups schema 尚无 description 列。
-	Description string `json:"description,omitempty"`
 }
 
 type adminPoolUpdateRequest struct {
@@ -185,9 +217,18 @@ type adminPoolUpdateRequest struct {
 	TopKDefault       *int32  `json:"top_k_default,omitempty"`
 	CapabilityDefault *string `json:"capability_default,omitempty"`
 	AllowLastResort   *bool   `json:"allow_last_resort,omitempty"`
-	// 兼容请求字段；本 slice 不改 schema，因此不落库。
-	Description *string `json:"description,omitempty"`
-	Enabled     *bool   `json:"enabled,omitempty"`
+	Enabled           *bool   `json:"enabled,omitempty"`
+}
+
+type adminPoolListResponse struct {
+	Items []dbbilling.PoolGroup `json:"items"`
+	Page  adminPoolPage         `json:"page"`
+}
+
+type adminPoolPage struct {
+	Cursor     *string `json:"cursor"`
+	NextCursor *string `json:"next_cursor"`
+	HasMore    bool    `json:"has_more"`
 }
 
 func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
@@ -204,12 +245,30 @@ func newListPoolsHandler(d AdminPoolsDeps) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		items, err := d.Store.ListPools(r.Context(), dbbilling.ListPoolsParams{TenantID: tenantID, LimitCount: limit})
+		afterID, cursor, ok := parseAdminPoolsCursor(w, r)
+		if !ok {
+			return
+		}
+		items, err := d.Store.ListPools(r.Context(), dbbilling.ListPoolsParams{
+			TenantID: tenantID, AfterID: afterID, LimitCount: limit + 1,
+		})
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "pool_list_failed", err.Error())
 			return
 		}
-		writeAuditJSON(w, http.StatusOK, map[string]any{"items": items})
+		hasMore := int32(len(items)) > limit
+		if hasMore {
+			items = items[:limit]
+		}
+		var nextCursor *string
+		if hasMore && len(items) > 0 {
+			next := encodeAdminPoolsCursor(items[len(items)-1].ID)
+			nextCursor = &next
+		}
+		writeAuditJSON(w, http.StatusOK, adminPoolListResponse{
+			Items: items,
+			Page:  adminPoolPage{Cursor: cursor, NextCursor: nextCursor, HasMore: hasMore},
+		})
 	}
 }
 

@@ -49,6 +49,8 @@ UPDATE settlement_intents
 SET status = 'settled',
     actual_cost = @actual_cost,
     settled_at = @settled_at,
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
@@ -58,6 +60,8 @@ RETURNING version;
 -- name: MarkSettlementIntentAborted :one
 UPDATE settlement_intents
 SET status = 'aborted',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
@@ -68,6 +72,19 @@ RETURNING version;
 UPDATE settlement_intents
 SET status = 'failed',
     actual_cost = @actual_cost,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = @id
+  AND version = @version
+RETURNING version;
+
+-- name: MarkSettlementIntentRecoveryPending :one
+UPDATE settlement_intents
+SET status = 'failed',
+    actual_cost = @actual_cost,
+    recovery_payload = @recovery_payload,
+    recovery_failure_class = @recovery_failure_class,
+    retry_count = retry_count + 1,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
@@ -89,9 +106,10 @@ WHERE tenant_id = @tenant_id
   AND status NOT IN ('settled', 'aborted', 'superseded');
 
 -- name: ListStaleNonTerminalSettlementIntents :many
-SELECT id, tenant_id, claim_id, attempt_seq, version, status
+SELECT id, tenant_id, claim_id, attempt_seq, version, status, actual_cost,
+       recovery_payload, recovery_failure_class
 FROM settlement_intents
-WHERE status IN ('pending', 'delivering', 'settling')
+WHERE status IN ('pending', 'delivering', 'settling', 'failed')
   AND updated_at < @stale_cutoff
   AND created_at < @created_before
 ORDER BY updated_at
@@ -102,31 +120,49 @@ UPDATE settlement_intents
 SET status = 'settled',
     actual_cost = @actual_cost,
     settled_at = @settled_at,
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
   AND version = @version
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
 RETURNING version;
 
 -- name: MarkSettlementIntentAbortedIfStale :one
 UPDATE settlement_intents
 SET status = 'aborted',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
   AND version = @version
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
 RETURNING version;
 
 -- name: MarkSettlementIntentSupersededIfStale :one
 UPDATE settlement_intents
 SET status = 'superseded',
+    recovery_payload = NULL,
+    recovery_failure_class = NULL,
     updated_at = NOW(),
     version = version + 1
 WHERE id = @id
   AND version = @version
-  AND status IN ('pending', 'delivering', 'settling')
+  AND status IN ('pending', 'delivering', 'settling', 'failed')
+RETURNING version;
+
+-- name: MarkSettlementIntentSettlingIfStale :one
+UPDATE settlement_intents
+SET status = 'settling',
+    retry_count = retry_count + 1,
+    updated_at = NOW(),
+    version = version + 1
+WHERE id = @id
+  AND version = @version
+  AND status = 'failed'
+  AND recovery_payload IS NOT NULL
 RETURNING version;
 -- name: GetClaimByID :one
 -- 结算意图追平只读取权威 claim 的终态、尝试序号和实际费用，并强制租户隔离。

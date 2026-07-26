@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -87,6 +89,35 @@ func TestChannelTestTemplateHandlersCRUD(t *testing.T) {
 	if len(listed.Items) != 0 {
 		t.Fatalf("listed after delete=%+v want empty", listed.Items)
 	}
+	if len(store.audits) != 3 {
+		t.Fatalf("写操作日志数=%d want 3", len(store.audits))
+	}
+	for _, audit := range store.audits {
+		if audit.ActorID != "admin_token:12" || audit.ActorRole != "tenant_operator" || audit.RequestID == "" {
+			t.Fatalf("操作日志身份传播错误: %+v", audit)
+		}
+	}
+}
+
+func TestChannelTestTemplateWritesAreSessionSafe(t *testing.T) {
+	router := chi.NewRouter()
+	MountChannelTestTemplateRoutes(router, AdminChannelTestTemplateDeps{
+		Auth: adminsessionauthtest.Resolver(), Store: newChannelTestTemplateStoreStub(),
+	})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/"},
+		{http.MethodPut, "/7"},
+		{http.MethodDelete, "/7"},
+	} {
+		if status := adminsessionauthtest.Status(
+			router, tc.method, tc.path, adminsessionauthtest.SessionBearer,
+		); status == http.StatusUnauthorized {
+			t.Fatalf("%s %s 被管理员浏览器会话写分级门拒绝", tc.method, tc.path)
+		}
+	}
 }
 
 func TestChannelTestTemplateRejectsCredentialHeaders(t *testing.T) {
@@ -114,6 +145,7 @@ func TestChannelTestTemplateRejectsCredentialHeaders(t *testing.T) {
 func invokeChannelTestTemplates(t *testing.T, deps AdminChannelTestTemplateDeps, method, target string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Route("/admin/v1/channel-test-templates", func(r chi.Router) {
 		MountChannelTestTemplateRoutes(r, deps)
 	})
@@ -136,10 +168,29 @@ func invokeChannelTestTemplates(t *testing.T, deps AdminChannelTestTemplateDeps,
 type channelTestTemplateStoreStub struct {
 	rows   map[int64]admindb.ChannelTestTemplate
 	nextID int64
+	audits []channelTestTemplateAudit
+}
+
+func (s *channelTestTemplateStoreStub) CreateChannelTestTemplateWithAudit(
+	ctx context.Context,
+	arg admindb.CreateChannelTestTemplateParams,
+	audit channelTestTemplateAudit,
+) (admindb.ChannelTestTemplate, error) {
+	s.audits = append(s.audits, audit)
+	return s.CreateChannelTestTemplate(ctx, arg)
 }
 
 func newChannelTestTemplateStoreStub() *channelTestTemplateStoreStub {
 	return &channelTestTemplateStoreStub{rows: map[int64]admindb.ChannelTestTemplate{}, nextID: 1}
+}
+
+func (s *channelTestTemplateStoreStub) UpdateChannelTestTemplateWithAudit(
+	ctx context.Context,
+	arg admindb.UpdateChannelTestTemplateParams,
+	audit channelTestTemplateAudit,
+) (admindb.ChannelTestTemplate, error) {
+	s.audits = append(s.audits, audit)
+	return s.UpdateChannelTestTemplate(ctx, arg)
 }
 
 func (s *channelTestTemplateStoreStub) CreateChannelTestTemplate(_ context.Context, arg admindb.CreateChannelTestTemplateParams) (admindb.ChannelTestTemplate, error) {
@@ -151,6 +202,15 @@ func (s *channelTestTemplateStoreStub) CreateChannelTestTemplate(_ context.Conte
 	s.nextID++
 	s.rows[row.ID] = row
 	return row, nil
+}
+
+func (s *channelTestTemplateStoreStub) DeleteChannelTestTemplateWithAudit(
+	ctx context.Context,
+	arg admindb.DeleteChannelTestTemplateParams,
+	audit channelTestTemplateAudit,
+) (admindb.ChannelTestTemplate, error) {
+	s.audits = append(s.audits, audit)
+	return s.DeleteChannelTestTemplate(ctx, arg)
 }
 
 func (s *channelTestTemplateStoreStub) ListChannelTestTemplatesByTenant(_ context.Context, arg admindb.ListChannelTestTemplatesByTenantParams) ([]admindb.ChannelTestTemplate, error) {

@@ -317,6 +317,141 @@ func TestPG_AutoRenew_AutoRenewOffNotRenewed(t *testing.T) {
 	}
 }
 
+// 停用租户不得再进入续费扫描；即使调用方拿着停用前的订阅 ID 直接重放，
+// 扣款事务内的租户锁也必须让它零副作用跳过。
+// mutation: 去掉列表的 tenants join 或事务内活跃租户锁，扫描数、余额或扣款行断言会变红。
+func TestPG_AutoRenew_DisabledTenantCannotBeCharged(t *testing.T) {
+	ctx := context.Background()
+	pool := openIntegrationPool(t, ctx)
+	f := newSubFixture(t, ctx, pool)
+	clk := &fakeClock{t: baseTime()}
+	svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+	plan := createPaidPlan(t, ctx, svc, f.tenantA, 500)
+	f.seedBalance(f.tenantA, f.userA, "20")
+
+	assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+		TenantID: f.tenantA,
+		UserID:   f.userA,
+		PlanID:   plan.ID,
+	})
+	if err != nil {
+		t.Fatalf("assign subscription: %v", err)
+	}
+	originalExpiry := assigned.Subscription.ExpiresAt
+	clk.set(originalExpiry.Add(time.Hour))
+	if _, err := pool.Exec(ctx, `
+UPDATE tenants
+SET status='disabled', version=version+1, status_changed_at=now()
+WHERE id=$1`, f.tenantA); err != nil {
+		t.Fatalf("disable tenant: %v", err)
+	}
+
+	batch, err := svc.ProcessAutoRenewal(ctx, 100)
+	if err != nil {
+		t.Fatalf("process auto renewal: %v", err)
+	}
+	if batch.Scanned != 0 || batch.Renewed != 0 || batch.Skipped != 0 {
+		t.Fatalf("disabled tenant batch=%+v, want no scanned work", batch)
+	}
+
+	replayed, err := svc.store.TryAutoRenewSubscription(ctx, autoRenewRecord{
+		TenantID:       f.tenantA,
+		SubscriptionID: assigned.Subscription.ID,
+		Now:            clk.now(),
+		DueCutoff:      clk.now(),
+	})
+	if err != nil {
+		t.Fatalf("direct replay: %v", err)
+	}
+	if replayed.Renewed || replayed.SkipReason != AutoRenewSkipTenantInactive {
+		t.Fatalf("direct replay=%+v, want tenant_inactive zero-side-effect skip", replayed)
+	}
+	if got := f.balanceOf(f.tenantA, f.userA); !got.Equal(decimal.RequireFromString("20")) {
+		t.Fatalf("balance=%s, want 20 unchanged", got.String())
+	}
+	if got := f.userSubExpires(f.tenantA, f.userA); !got.Equal(originalExpiry) {
+		t.Fatalf("expiry=%v, want %v unchanged", got, originalExpiry)
+	}
+	if n := f.countInt(`SELECT count(*) FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, f.tenantA); n != 0 {
+		t.Fatalf("charge rows=%d, want 0", n)
+	}
+	if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA); n != 0 {
+		t.Fatalf("billing events=%d, want 0", n)
+	}
+}
+
+// 停用或删除的最终用户不得进入续费扫描；直接重放旧订阅 ID 也必须在同一事务内
+// 零副作用跳过。变异：删除列表 JOIN 或事务内用户锁，会使扫描、余额或账本断言变红。
+func TestPG_AutoRenew_InactiveUserCannotBeCharged(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		deletedSQL string
+	}{
+		{name: "停用用户", status: "disabled", deletedSQL: "NULL"},
+		{name: "删除用户", status: "deleted", deletedSQL: "now()"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := openIntegrationPool(t, ctx)
+			f := newSubFixture(t, ctx, pool)
+			clk := &fakeClock{t: baseTime()}
+			svc := NewService(NewPostgresStore(pool), WithClock(clk.now))
+			plan := createPaidPlan(t, ctx, svc, f.tenantA, 500)
+			f.seedBalance(f.tenantA, f.userA, "20")
+
+			assigned, err := svc.AssignSubscription(ctx, AssignSubscriptionInput{
+				TenantID: f.tenantA,
+				UserID:   f.userA,
+				PlanID:   plan.ID,
+			})
+			if err != nil {
+				t.Fatalf("assign subscription: %v", err)
+			}
+			originalExpiry := assigned.Subscription.ExpiresAt
+			clk.set(originalExpiry.Add(time.Hour))
+			query := `UPDATE users SET status=$2, deleted_at=` + tc.deletedSQL + ` WHERE tenant_id=$1 AND id=$3`
+			if _, err := pool.Exec(ctx, query, f.tenantA, tc.status, f.userA); err != nil {
+				t.Fatalf("mark user inactive: %v", err)
+			}
+
+			batch, err := svc.ProcessAutoRenewal(ctx, 100)
+			if err != nil {
+				t.Fatalf("process auto renewal: %v", err)
+			}
+			if batch.Scanned != 0 || batch.Renewed != 0 || batch.Skipped != 0 {
+				t.Fatalf("inactive user batch=%+v, want no scanned work", batch)
+			}
+
+			replayed, err := svc.store.TryAutoRenewSubscription(ctx, autoRenewRecord{
+				TenantID:       f.tenantA,
+				SubscriptionID: assigned.Subscription.ID,
+				Now:            clk.now(),
+				DueCutoff:      clk.now(),
+			})
+			if err != nil {
+				t.Fatalf("direct replay: %v", err)
+			}
+			if replayed.Renewed || replayed.SkipReason != AutoRenewSkipUserInactive {
+				t.Fatalf("direct replay=%+v, want user_inactive zero-side-effect skip", replayed)
+			}
+			if got := f.balanceOf(f.tenantA, f.userA); !got.Equal(decimal.RequireFromString("20")) {
+				t.Fatalf("balance=%s, want 20 unchanged", got.String())
+			}
+			if got := f.userSubExpires(f.tenantA, f.userA); !got.Equal(originalExpiry) {
+				t.Fatalf("expiry=%v, want %v unchanged", got, originalExpiry)
+			}
+			if n := f.countInt(`SELECT count(*) FROM subscription_auto_renewal_charges WHERE tenant_id=$1`, f.tenantA); n != 0 {
+				t.Fatalf("charge rows=%d, want 0", n)
+			}
+			if n := f.countInt(`SELECT count(*) FROM billing_events WHERE tenant_id=$1 AND event_type='subscription_auto_renewed'`, f.tenantA); n != 0 {
+				t.Fatalf("billing events=%d, want 0", n)
+			}
+		})
+	}
+}
+
 // A5: 免费套餐 (price_cents<=0) → 不扣款仍续期 (无钱包行也能续)。
 // mutation: tryAutoRenewOnce 把 priceCents>0 改成 priceCents>=0 → 免费套餐去查不存在的钱包行扣款失败 →
 // 续期被错误跳过 → 红。

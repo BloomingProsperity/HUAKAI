@@ -84,6 +84,30 @@ func TestGroupPolicyGate_ConfiguredButModelMissDenies(t *testing.T) {
 	}
 }
 
+// 命中当前模型的路由目标池一旦停用、软删或跨租户，必须返回可辨识的配置不可用错误，
+// 不能把已配置白名单退化成“未配置直通”。
+func TestGroupPolicyGate_InvalidMatchingTargetFailsClosed(t *testing.T) {
+	repo := &fakeRoutesRepo{result: GroupRoutes{
+		Configured:            true,
+		InvalidMatchingTarget: true,
+		Allowed:               map[int64]struct{}{},
+	}}
+	var observed error
+	g := NewGroupPolicyGate(repo, WithFailClosedObserver(func(_ context.Context, _ poolrouter.SelectionRequest, err error) {
+		observed = err
+	}))
+
+	ok, reason, err := g.Allow(context.Background(), nil, req("premium", 9))
+	if ok || reason != poolrouter.GateFailureGroupPolicy {
+		t.Fatalf("invalid target: ok=%v reason=%q want deny+group_policy", ok, reason)
+	}
+	if !errors.Is(err, poolrouter.ErrGroupPolicyUnavailable) ||
+		!errors.Is(err, errGroupRouteTargetInvalid) ||
+		!errors.Is(observed, errGroupRouteTargetInvalid) {
+		t.Fatalf("invalid target err=%v observed=%v", err, observed)
+	}
+}
+
 // 守空档放行 + 不查库: user_group 空时直接放行, 绝不触 repo (无谓 DB 往返 + 老链路零影响)。
 // mutation: gate 漏掉空档短路 → repo.called>0 / 行为依赖库 → 红。
 func TestGroupPolicyGate_EmptyUserGroupAllowsWithoutRepo(t *testing.T) {
@@ -99,7 +123,7 @@ func TestGroupPolicyGate_EmptyUserGroupAllowsWithoutRepo(t *testing.T) {
 	}
 }
 
-// 守未配置直通: 该 (租户,档) 无任何有效路由 (Configured=false) → 放行 (不破坏未启用分组路由
+// 守未配置直通: 该 (租户,档) 没有启用路由 (Configured=false) → 放行 (不破坏未启用分组路由
 // 的老租户)。mutation: 把"未配置→放行"改成"未配置→拒" → 红 (会拒掉所有未配置分组路由的付费用户)。
 func TestGroupPolicyGate_UnconfiguredGroupAllows(t *testing.T) {
 	repo := &fakeRoutesRepo{result: GroupRoutes{Configured: false, Allowed: map[int64]struct{}{}}}

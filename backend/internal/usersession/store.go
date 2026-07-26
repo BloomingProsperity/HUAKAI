@@ -26,7 +26,7 @@ type Store interface {
 	RevokeSessionToken(context.Context, int64, []byte, time.Time) error
 	InsertRefreshToken(context.Context, RefreshToken) error
 	LookupRefreshToken(context.Context, []byte) (RefreshRecord, error)
-	RotateRefreshToken(context.Context, RefreshToken, RefreshToken, time.Time) (SessionFamily, error)
+	RotateSession(context.Context, SessionFamily, RefreshToken, RefreshToken, SessionToken, time.Time) (SessionFamily, error)
 	RevokeToken(context.Context, int64, []byte, string, time.Time) error
 	RevokeFamily(context.Context, int64, string, string, time.Time) (SessionFamily, error)
 	FamilyBelongsToUser(context.Context, int64, int64, string) (bool, error)
@@ -62,16 +62,16 @@ func (s *PostgresStore) CreateFamily(ctx context.Context, in CreateInput, now ti
 		return SessionFamily{}, err
 	}
 	const q = `
-INSERT INTO session_families (
-    id, tenant_id, user_id, status, generation, created_at, last_active_at, device_info, ip_baseline
-) VALUES (
-    $1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9
-)
-RETURNING id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
-          device_info, ip_baseline, revoked_at, revoked_reason`
+	INSERT INTO session_families (
+	    id, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at, device_info, ip_baseline
+	) VALUES (
+	    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10
+	)
+	RETURNING id::text, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at,
+	          device_info, ip_baseline, revoked_at, revoked_reason`
 	row, err := scanFamily(s.db.QueryRow(ctx, q,
 		family.ID, family.TenantID, family.UserID, family.Status, family.Generation,
-		family.CreatedAt, family.LastActiveAt, deviceInfo, family.IPBaseline,
+		family.AuthVersion, family.CreatedAt, family.LastActiveAt, deviceInfo, family.IPBaseline,
 	))
 	if err == nil && s.cache != nil {
 		s.cache.putFamily(row)
@@ -100,7 +100,7 @@ func (s *PostgresStore) LookupSessionToken(ctx context.Context, tokenHash []byte
 	const q = `
 SELECT st.id::text, st.tenant_id, st.family_id::text, st.token_hash, st.generation,
        st.expires_at, st.created_at, st.last_used_at, st.revoked_at,
-       sf.id::text, sf.tenant_id, sf.user_id, sf.status, sf.generation, sf.created_at,
+       sf.id::text, sf.tenant_id, sf.user_id, sf.status, sf.generation, sf.auth_version, sf.created_at,
        sf.last_active_at, sf.device_info, sf.ip_baseline, sf.revoked_at, sf.revoked_reason
 FROM session_tokens st
 INNER JOIN session_families sf ON sf.id = st.family_id AND sf.tenant_id = st.tenant_id
@@ -172,7 +172,7 @@ func (s *PostgresStore) LookupRefreshToken(ctx context.Context, tokenHash []byte
 	const q = `
 SELECT rt.id::text, rt.tenant_id, rt.family_id::text, rt.token_hash, rt.generation, rt.status,
        rt.expires_at, rt.created_at, rt.consumed_at,
-       sf.id::text, sf.tenant_id, sf.user_id, sf.status, sf.generation, sf.created_at,
+       sf.id::text, sf.tenant_id, sf.user_id, sf.status, sf.generation, sf.auth_version, sf.created_at,
        sf.last_active_at, sf.device_info, sf.ip_baseline, sf.revoked_at, sf.revoked_reason
 FROM refresh_tokens rt
 INNER JOIN session_families sf ON sf.id = rt.family_id AND sf.tenant_id = rt.tenant_id
@@ -194,74 +194,6 @@ WHERE rt.token_hash = $1`
 		return s.cache.LookupRefreshToken(ctx, tokenHash)
 	}
 	return RefreshRecord{}, err
-}
-
-func (s *PostgresStore) RotateRefreshToken(ctx context.Context, oldToken RefreshToken, newToken RefreshToken, now time.Time) (SessionFamily, error) {
-	if s == nil || s.db == nil {
-		return SessionFamily{}, ErrStoreNotConfigured
-	}
-	if beginner, ok := s.db.(txBeginner); ok {
-		tx, err := beginner.Begin(ctx)
-		if err != nil {
-			return SessionFamily{}, err
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		family, err := rotateWithDB(ctx, tx, oldToken, newToken, now)
-		if err != nil {
-			return SessionFamily{}, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return SessionFamily{}, err
-		}
-		if s.cache != nil {
-			_, _ = s.cache.RotateRefreshToken(ctx, oldToken, newToken, now)
-			s.cache.putFamily(family)
-		}
-		return family, nil
-	}
-	family, err := rotateWithDB(ctx, s.db, oldToken, newToken, now)
-	if err == nil && s.cache != nil {
-		_, _ = s.cache.RotateRefreshToken(ctx, oldToken, newToken, now)
-		s.cache.putFamily(family)
-	}
-	return family, err
-}
-
-func rotateWithDB(ctx context.Context, database db.DBTX, oldToken RefreshToken, newToken RefreshToken, now time.Time) (SessionFamily, error) {
-	tag, err := database.Exec(ctx, `
-UPDATE refresh_tokens
-SET status = 'consumed',
-    consumed_at = $3
-WHERE id = $1::uuid
-  AND family_id = $2::uuid
-  AND status = 'active'
-`, oldToken.ID, oldToken.FamilyID, now.UTC())
-	if err != nil {
-		return SessionFamily{}, err
-	}
-	if tag.RowsAffected() != 1 {
-		return SessionFamily{}, ErrRefreshReplay
-	}
-	if _, err := database.Exec(ctx, `
-INSERT INTO refresh_tokens (id, tenant_id, family_id, token_hash, generation, status, expires_at, created_at)
-VALUES ($1::uuid, $2, $3::uuid, $4, $5, 'active', $6, $7)
-`, newToken.ID, newToken.TenantID, newToken.FamilyID, newToken.TokenHash, newToken.Generation, newToken.ExpiresAt.UTC(), newToken.CreatedAt.UTC()); err != nil {
-		return SessionFamily{}, err
-	}
-	const q = `
-UPDATE session_families
-SET generation = $3,
-    last_active_at = $4
-WHERE id = $1::uuid
-  AND tenant_id = $2
-  AND status IN ('active', 'suspicious')
-RETURNING id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
-          device_info, ip_baseline, revoked_at, revoked_reason`
-	family, err := scanFamily(database.QueryRow(ctx, q, oldToken.FamilyID, oldToken.TenantID, newToken.Generation, now.UTC()))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return SessionFamily{}, ErrFamilyRevoked
-	}
-	return family, err
 }
 
 func (s *PostgresStore) RevokeToken(ctx context.Context, tenantID int64, tokenHash []byte, reason string, now time.Time) error {
@@ -318,7 +250,7 @@ SET status = 'revoked',
     revoked_reason = NULLIF($3, ''),
     last_active_at = $4
 WHERE tenant_id = $1 AND id = $2::uuid
-RETURNING id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
+RETURNING id::text, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at,
           device_info, ip_baseline, revoked_at, revoked_reason`
 	family, err := scanFamily(s.db.QueryRow(ctx, q, tenantID, familyID, strings.TrimSpace(reason), now.UTC()))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -351,44 +283,29 @@ func (s *PostgresStore) RevokeUser(ctx context.Context, tenantID, userID int64, 
 	if s == nil || s.db == nil {
 		return 0, ErrStoreNotConfigured
 	}
-	tag, err := s.db.Exec(ctx, `
-UPDATE session_families
-SET status = 'revoked',
-    revoked_at = $4,
-    revoked_reason = NULLIF($3, ''),
-    last_active_at = $4
-WHERE tenant_id = $1
-  AND user_id = $2
-  AND status IN ('active', 'suspicious')
-`, tenantID, userID, strings.TrimSpace(reason), now.UTC())
-	if err != nil {
-		return 0, err
-	}
-	_, err = s.db.Exec(ctx, `
-UPDATE refresh_tokens rt
-SET status = 'revoked',
-    consumed_at = COALESCE(consumed_at, $3)
-FROM session_families sf
-WHERE rt.family_id = sf.id
-  AND rt.tenant_id = $1
-  AND sf.user_id = $2
-  AND rt.status = 'active'
-`, tenantID, userID, now.UTC())
-	if err == nil {
-		_, err = s.db.Exec(ctx, `
-UPDATE session_tokens st
-SET revoked_at = COALESCE(revoked_at, $3)
-FROM session_families sf
-WHERE st.family_id = sf.id
-  AND st.tenant_id = $1
-  AND sf.user_id = $2
-  AND st.revoked_at IS NULL
-`, tenantID, userID, now.UTC())
+	var (
+		count int64
+		err   error
+	)
+	if tx, ok := s.db.(pgx.Tx); ok {
+		count, err = RevokeUserInTransaction(ctx, tx, tenantID, userID, reason, now)
+	} else if beginner, ok := s.db.(txBeginner); ok {
+		tx, beginErr := beginner.Begin(ctx)
+		if beginErr != nil {
+			return 0, beginErr
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		count, err = RevokeUserInTransaction(ctx, tx, tenantID, userID, reason, now)
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+	} else {
+		return 0, ErrStoreNotConfigured
 	}
 	if err == nil && s.cache != nil {
 		_, _ = s.cache.RevokeUser(ctx, tenantID, userID, reason, now)
 	}
-	return tag.RowsAffected(), err
+	return count, err
 }
 
 func (s *PostgresStore) ListFamilies(ctx context.Context, tenantID, userID int64) ([]SessionFamily, error) {
@@ -396,7 +313,7 @@ func (s *PostgresStore) ListFamilies(ctx context.Context, tenantID, userID int64
 		return nil, ErrStoreNotConfigured
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT id::text, tenant_id, user_id, status, generation, created_at, last_active_at,
+	SELECT id::text, tenant_id, user_id, status, generation, auth_version, created_at, last_active_at,
        device_info, ip_baseline, revoked_at, revoked_reason
 FROM session_families
 WHERE tenant_id = $1 AND user_id = $2
@@ -554,35 +471,6 @@ func (s *MemoryStore) LookupRefreshToken(_ context.Context, tokenHash []byte) (R
 		return RefreshRecord{}, ErrFamilyNotFound
 	}
 	return RefreshRecord{Token: token, Family: family}, nil
-}
-
-func (s *MemoryStore) RotateRefreshToken(_ context.Context, oldToken RefreshToken, newToken RefreshToken, now time.Time) (SessionFamily, error) {
-	if s == nil {
-		return SessionFamily{}, ErrStoreNotConfigured
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.tokens[oldToken.ID]
-	if !ok || current.Status != RefreshTokenStatusActive {
-		return SessionFamily{}, ErrRefreshReplay
-	}
-	current.Status = RefreshTokenStatusConsumed
-	t := now.UTC()
-	current.ConsumedAt = &t
-	s.tokens[current.ID] = current
-	s.tokens[newToken.ID] = newToken
-	s.byHash[hashKey(newToken.TokenHash)] = newToken.ID
-	family, ok := s.families[oldToken.FamilyID]
-	if !ok {
-		return SessionFamily{}, ErrFamilyNotFound
-	}
-	if family.Status != FamilyStatusActive && family.Status != FamilyStatusSuspicious {
-		return SessionFamily{}, ErrFamilyRevoked
-	}
-	family.Generation = newToken.Generation
-	family.LastActiveAt = t
-	s.families[family.ID] = family
-	return family, nil
 }
 
 func (s *MemoryStore) RevokeToken(_ context.Context, tenantID int64, tokenHash []byte, _ string, now time.Time) error {
@@ -787,6 +675,7 @@ func scanRefreshRecord(row pgx.Row) (RefreshRecord, error) {
 		&rec.Family.UserID,
 		&familyStatus,
 		&rec.Family.Generation,
+		&rec.Family.AuthVersion,
 		&rec.Family.CreatedAt,
 		&rec.Family.LastActiveAt,
 		&deviceInfo,
@@ -839,6 +728,7 @@ func scanSessionRecord(row pgx.Row) (SessionRecord, error) {
 		&rec.Family.UserID,
 		&familyStatus,
 		&rec.Family.Generation,
+		&rec.Family.AuthVersion,
 		&rec.Family.CreatedAt,
 		&rec.Family.LastActiveAt,
 		&deviceInfo,
@@ -885,6 +775,7 @@ func scanFamily(row pgx.Row) (SessionFamily, error) {
 		&out.UserID,
 		&status,
 		&out.Generation,
+		&out.AuthVersion,
 		&out.CreatedAt,
 		&out.LastActiveAt,
 		&deviceInfo,

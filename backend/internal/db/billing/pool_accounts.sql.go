@@ -428,6 +428,9 @@ type ListEligibleAccountsByPoolGroupRow struct {
 //   - model_allow_list 空 数组 → 无限制
 //   - model_allow_list 非空 → 必须包含 requested_model
 //   - capability_flags 必须包含 required_capabilities 全集 (空 req → 自动 true)
+//     ※ 所有请求路径(chat 与媒体)现已不再输出 required_capabilities,该谓词对选号
+//     恒中性;capability_flags 列仅作展示/历史标记,改它不影响选号。modality 由模型
+//     注册表能力在各 handler 判定,账号侧由 model_allow_list 门(含下方媒体清单门)把关。
 //   - requested_protocol_family 为空 → legacy bypass
 //   - requested_protocol_family 非空 → 必须匹配 providers.upstream_protocol
 //   - require_model_listed=true(媒体端点族)→ model_allow_list 必须显式含该模型,

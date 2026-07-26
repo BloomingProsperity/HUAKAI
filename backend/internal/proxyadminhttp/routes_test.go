@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauthtest"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/proxyadmin"
 )
@@ -32,10 +34,13 @@ func (panicProxyQuerier) GetProxy(context.Context, admindb.GetProxyParams) (admi
 func (panicProxyQuerier) ListProxiesByTenant(context.Context, int64) ([]admindb.ListProxiesByTenantRow, error) {
 	panic("测试不应列代理")
 }
-func (panicProxyQuerier) SetProxyStatus(context.Context, admindb.SetProxyStatusParams) error {
+func (panicProxyQuerier) GetProxyDeleteImpact(context.Context, admindb.GetProxyDeleteImpactParams) (admindb.GetProxyDeleteImpactRow, error) {
+	panic("测试不应读取删除影响")
+}
+func (panicProxyQuerier) SetProxyStatus(context.Context, admindb.SetProxyStatusParams) (int64, error) {
 	panic("测试不应改状态")
 }
-func (panicProxyQuerier) SoftDeleteProxy(context.Context, admindb.SoftDeleteProxyParams) error {
+func (panicProxyQuerier) DeleteProxyIfUnused(context.Context, admindb.DeleteProxyIfUnusedParams) (admindb.DeleteProxyIfUnusedRow, error) {
 	panic("测试不应删除代理")
 }
 
@@ -55,24 +60,57 @@ type proxyServiceStub struct {
 
 	createCalls int
 	createIn    proxyadmin.CreateInput
+	createAudit proxyadmin.MutationAudit
 	createRet   proxyadmin.Proxy
 	createErr   error
 
 	updateCalls int
-	updateIn    proxyadmin.UpdateInput
+	updateIn    proxyadmin.PatchInput
+	updateAudit proxyadmin.MutationAudit
 	updateRet   proxyadmin.Proxy
 	updateErr   error
 
 	deleteCalls  int
 	deleteTenant int64
 	deleteID     int64
+	deleteAudit  proxyadmin.MutationAudit
 	deleteErr    error
+
+	impactCalls  int
+	impactTenant int64
+	impactID     int64
+	impactRet    proxyadmin.DeleteImpact
+	impactErr    error
 
 	statusCalls  int
 	statusTenant int64
 	statusID     int64
 	statusValue  string
+	statusAudit  proxyadmin.MutationAudit
 	statusErr    error
+}
+
+func TestProxyWritesAreSessionSafe(t *testing.T) {
+	router := chi.NewRouter()
+	MountRoutes(router, Deps{
+		Auth: adminsessionauthtest.Resolver(), Service: &proxyServiceStub{},
+	})
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/?tenant_id=1"},
+		{http.MethodPatch, "/7?tenant_id=1"},
+		{http.MethodDelete, "/7?tenant_id=1"},
+		{http.MethodPut, "/7/status?tenant_id=1"},
+		{http.MethodPost, "/7/test?tenant_id=1"},
+	} {
+		if status := adminsessionauthtest.Status(
+			router, tc.method, tc.path, adminsessionauthtest.SessionBearer,
+		); status == http.StatusUnauthorized {
+			t.Fatalf("%s %s 被管理员浏览器会话写分级门拒绝", tc.method, tc.path)
+		}
+	}
 }
 
 func (s *proxyServiceStub) List(_ context.Context, tenantID int64) ([]proxyadmin.Proxy, error) {
@@ -87,32 +125,42 @@ func (s *proxyServiceStub) Get(_ context.Context, tenantID, id int64) (proxyadmi
 	return s.getRet, s.getErr
 }
 
-func (s *proxyServiceStub) Create(_ context.Context, in proxyadmin.CreateInput) (proxyadmin.Proxy, error) {
+func (s *proxyServiceStub) CreateWithAudit(_ context.Context, in proxyadmin.CreateInput, audit proxyadmin.MutationAudit) (proxyadmin.Proxy, error) {
 	s.createCalls++
 	s.createIn = in
+	s.createAudit = audit
 	return s.createRet, s.createErr
 }
 
-func (s *proxyServiceStub) Update(_ context.Context, in proxyadmin.UpdateInput) (proxyadmin.Proxy, error) {
+func (s *proxyServiceStub) PatchWithAudit(_ context.Context, in proxyadmin.PatchInput, audit proxyadmin.MutationAudit) (proxyadmin.Proxy, error) {
 	s.updateCalls++
 	s.updateIn = in
+	s.updateAudit = audit
 	return s.updateRet, s.updateErr
 }
 
-func (s *proxyServiceStub) Delete(_ context.Context, tenantID, id int64) error {
+func (s *proxyServiceStub) DeleteWithAudit(_ context.Context, tenantID, id int64, audit proxyadmin.MutationAudit) error {
 	s.deleteCalls++
 	s.deleteTenant, s.deleteID = tenantID, id
+	s.deleteAudit = audit
 	return s.deleteErr
 }
 
-func (s *proxyServiceStub) SetStatus(_ context.Context, tenantID, id int64, status string) error {
+func (s *proxyServiceStub) DeleteImpact(_ context.Context, tenantID, id int64) (proxyadmin.DeleteImpact, error) {
+	s.impactCalls++
+	s.impactTenant, s.impactID = tenantID, id
+	return s.impactRet, s.impactErr
+}
+
+func (s *proxyServiceStub) SetStatusWithAudit(_ context.Context, tenantID, id int64, status string, audit proxyadmin.MutationAudit) error {
 	s.statusCalls++
 	s.statusTenant, s.statusID, s.statusValue = tenantID, id, status
+	s.statusAudit = audit
 	return s.statusErr
 }
 
 func (s *proxyServiceStub) calls() int {
-	return s.listCalls + s.getCalls + s.createCalls + s.updateCalls + s.deleteCalls + s.statusCalls
+	return s.listCalls + s.getCalls + s.createCalls + s.updateCalls + s.deleteCalls + s.impactCalls + s.statusCalls
 }
 
 type authStub struct {
@@ -138,6 +186,7 @@ func platformAdmin() admin.AdminIdentity {
 func invoke(t *testing.T, d Deps, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
 	r.Route("/admin/v1/proxies", func(r chi.Router) { MountRoutes(r, d) })
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -358,6 +407,11 @@ func TestServiceErrorMapping(t *testing.T) {
 			http.MethodPatch, "/admin/v1/proxies/5", `{"name":"p","protocol":"http","host":"h","port":1}`, http.StatusBadRequest},
 		{"set status invalid -> 400", func(s *proxyServiceStub) { s.statusErr = proxyadmin.ErrInvalidStatus },
 			http.MethodPut, "/admin/v1/proxies/5/status", `{"status":"banned"}`, http.StatusBadRequest},
+		{"delete in use -> 409", func(s *proxyServiceStub) {
+			s.deleteErr = &proxyadmin.InUseError{Impact: proxyadmin.DeleteImpact{
+				ProxyID: 5, DirectAccountCount: 2,
+			}}
+		}, http.MethodDelete, "/admin/v1/proxies/5", "", http.StatusConflict},
 		{"create backend -> 503", func(s *proxyServiceStub) { s.createErr = proxyadmin.ErrBackend },
 			http.MethodPost, "/admin/v1/proxies", `{"name":"p","protocol":"http","host":"h","port":1}`, http.StatusServiceUnavailable},
 	}
@@ -368,6 +422,25 @@ func TestServiceErrorMapping(t *testing.T) {
 			rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, c.method, c.target, c.body)
 			assertStatus(t, rec, c.wantStatus)
 		})
+	}
+}
+
+func TestDeleteImpactForwardsScopeAndReturnsCounts(t *testing.T) {
+	svc := &proxyServiceStub{impactRet: proxyadmin.DeleteImpact{
+		ProxyID: 11, GroupAccountCount: 4, GroupRemainingActiveCount: 0,
+	}}
+	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc},
+		http.MethodGet, "/admin/v1/proxies/11/delete-impact", "")
+	assertStatus(t, rec, http.StatusOK)
+	if svc.impactCalls != 1 || svc.impactTenant != 7 || svc.impactID != 11 {
+		t.Fatalf("delete impact scope tenant=%d id=%d calls=%d", svc.impactTenant, svc.impactID, svc.impactCalls)
+	}
+	var body deleteImpactResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode delete impact: %v", err)
+	}
+	if body.ProxyID != 11 || body.GroupAccountCount != 4 || body.GroupRemainingActiveCount != 0 || body.CanDelete {
+		t.Fatalf("delete impact response=%+v", body)
 	}
 }
 
@@ -382,6 +455,7 @@ func TestSetStatusForwardsScopeAndValue(t *testing.T) {
 		t.Fatalf("set status forward mismatch: calls=%d tenant=%d id=%d value=%q",
 			svc.statusCalls, svc.statusTenant, svc.statusID, svc.statusValue)
 	}
+	assertMutationAudit(t, svc.statusAudit)
 }
 
 // TestCreateValidationRejectsMissingFields:必填字段为空的 create 在抵达 service
@@ -409,6 +483,7 @@ func TestDeleteReturns204(t *testing.T) {
 	if strings.TrimSpace(rec.Body.String()) != "" {
 		t.Fatalf("204 must have empty body; got %q", rec.Body.String())
 	}
+	assertMutationAudit(t, svc.deleteAudit)
 }
 
 // TestCreateForwardsTenantFromScope:create 输入携带的是管理门解析出的租户,
@@ -421,6 +496,15 @@ func TestCreateForwardsTenantFromScope(t *testing.T) {
 	assertStatus(t, rec, http.StatusCreated)
 	if svc.createIn.TenantID != 7 {
 		t.Fatalf("create tenant=%d want 7 (from gate scope)", svc.createIn.TenantID)
+	}
+	assertMutationAudit(t, svc.createAudit)
+}
+
+func assertMutationAudit(t *testing.T, got proxyadmin.MutationAudit) {
+	t.Helper()
+	if got.ActorID != "admin_token:1" || got.ActorRole != admin.RoleTenantOperator ||
+		strings.TrimSpace(got.RequestID) == "" {
+		t.Fatalf("操作日志身份未从认证上下文完整传播: %+v", got)
 	}
 }
 
@@ -453,8 +537,8 @@ func TestProxyGroupDTOForwardsAndResponds(t *testing.T) {
 		rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPatch,
 			"/admin/v1/proxies/5", `{"name":"p","protocol":"http","host":"h","port":3128,"group_id":null}`)
 		assertStatus(t, rec, http.StatusOK)
-		if svc.updateIn.GroupID != nil {
-			t.Fatalf("update clear group_id=%v want nil", svc.updateIn.GroupID)
+		if !svc.updateIn.GroupID.Set || svc.updateIn.GroupID.Value != nil {
+			t.Fatalf("update clear group_id=%+v want explicit nil", svc.updateIn.GroupID)
 		}
 		var body map[string]any
 		decodeBody(t, rec, &body)
@@ -477,6 +561,45 @@ func TestProxyGroupDTOForwardsAndResponds(t *testing.T) {
 			t.Fatalf("get response group_id=%v want %q", body["group_id"], groupID)
 		}
 	})
+}
+
+// PATCH 只传播出现的字段，未提供凭据不得被解释成清空。
+func TestProxyPatchPreservesOmittedCredentials(t *testing.T) {
+	ret := proxyadmin.Proxy{ID: 5, TenantID: 7, Name: "renamed", Protocol: "http", Host: "h", Port: 3128, Status: "active"}
+	svc := &proxyServiceStub{updateRet: ret}
+	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPatch,
+		"/admin/v1/proxies/5", `{"name":"renamed"}`)
+	assertStatus(t, rec, http.StatusOK)
+	if !svc.updateIn.Name.Set || svc.updateIn.Name.Value != "renamed" {
+		t.Fatalf("name PATCH 未传播: %+v", svc.updateIn.Name)
+	}
+	if svc.updateIn.AuthUsername.Set || svc.updateIn.AuthSecret.Set || svc.updateIn.GroupID.Set ||
+		svc.updateIn.Protocol.Set || svc.updateIn.Host.Set || svc.updateIn.Port.Set {
+		t.Fatalf("省略字段被错误标成更新: %+v", svc.updateIn)
+	}
+	assertMutationAudit(t, svc.updateAudit)
+}
+
+func TestProxyPatchExplicitNullClearsSecret(t *testing.T) {
+	svc := &proxyServiceStub{updateRet: proxyadmin.Proxy{ID: 5, Status: "active"}}
+	rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPatch,
+		"/admin/v1/proxies/5", `{"auth_secret":null}`)
+	assertStatus(t, rec, http.StatusOK)
+	if !svc.updateIn.AuthSecret.Set || svc.updateIn.AuthSecret.Value != nil {
+		t.Fatalf("auth_secret null 未按清空传播: %+v", svc.updateIn.AuthSecret)
+	}
+}
+
+func TestProxyPatchRejectsEmptyAndNullRequiredField(t *testing.T) {
+	for _, body := range []string{`{}`, `{"port":null}`} {
+		svc := &proxyServiceStub{}
+		rec := invoke(t, Deps{Auth: authStub{ident: tenantOperator(7)}, Service: svc}, http.MethodPatch,
+			"/admin/v1/proxies/5", body)
+		assertStatus(t, rec, http.StatusBadRequest)
+		if svc.updateCalls != 0 {
+			t.Errorf("body=%s 校验失败仍调用 Patch", body)
+		}
+	}
 }
 
 // TestProxyGroupHTTPValidationUsesRealService 通过真实 proxyadmin.Service 验证非法

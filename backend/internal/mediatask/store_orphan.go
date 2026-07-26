@@ -18,6 +18,11 @@ type OrphanRecord struct {
 	UserID          int64
 	Provider        string
 	ProviderTaskID  string
+	OrphanKind      string
+	IdempotencyKey  string
+	ErrorClass      string
+	TaskStatus      Status
+	EstimatedCents  int64
 	LeaseOwner      string
 	ObservedAt      time.Time
 	ReconcileStatus string
@@ -29,7 +34,7 @@ const insertOrphanSQL = `
 INSERT INTO media_task_orphans
     (task_id, tenant_id, user_id, provider, provider_task_id, lease_owner, observed_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (task_id, provider_task_id) DO NOTHING`
+ON CONFLICT (task_id, provider_task_id) WHERE provider_task_id IS NOT NULL DO NOTHING`
 
 // PersistOrphan 幂等持久化一条孤儿线索。ProviderTaskID 为空时无对账价值,直接跳过不入账。
 func (s *PostgresStore) PersistOrphan(ctx context.Context, rec OrphanRecord) error {
@@ -51,11 +56,16 @@ func (s *PostgresStore) PersistOrphan(ctx context.Context, rec OrphanRecord) err
 }
 
 const listPendingOrphansSQL = `
-SELECT id, task_id, tenant_id, user_id, provider, provider_task_id, lease_owner,
-       observed_at, reconcile_status, reconciled_at
-FROM media_task_orphans
-WHERE reconcile_status = 'pending' AND ($1 <= 0 OR tenant_id = $1)
-ORDER BY observed_at ASC, id ASC
+SELECT o.id, o.task_id, o.tenant_id, o.user_id, o.provider, o.provider_task_id,
+       o.orphan_kind, o.idempotency_key, o.error_class, mt.status, mt.estimated_cents,
+       o.lease_owner, o.observed_at, o.reconcile_status, o.reconciled_at
+FROM media_task_orphans o
+LEFT JOIN media_tasks mt
+  ON mt.id = o.task_id
+ AND mt.tenant_id = o.tenant_id
+WHERE o.reconcile_status IN ('pending', 'release_requested')
+  AND ($1 <= 0 OR o.tenant_id = $1)
+ORDER BY o.observed_at ASC, o.id ASC
 LIMIT $2`
 
 // ListPendingOrphans 列出待对账孤儿(对账消费者 / 运维用)。tenantID<=0 表示跨租户全局扫(管理员);
@@ -78,10 +88,29 @@ func (s *PostgresStore) ListPendingOrphans(ctx context.Context, tenantID int64, 
 	var out []OrphanRecord
 	for rows.Next() {
 		var rec OrphanRecord
+		var providerTaskID, idempotencyKey, errorClass pgtype.Text
+		var taskStatus pgtype.Text
+		var estimatedCents pgtype.Int8
 		var reconciledAt pgtype.Timestamptz
 		if err := rows.Scan(&rec.ID, &rec.TaskID, &rec.TenantID, &rec.UserID, &rec.Provider,
-			&rec.ProviderTaskID, &rec.LeaseOwner, &rec.ObservedAt, &rec.ReconcileStatus, &reconciledAt); err != nil {
+			&providerTaskID, &rec.OrphanKind, &idempotencyKey, &errorClass, &taskStatus, &estimatedCents,
+			&rec.LeaseOwner, &rec.ObservedAt, &rec.ReconcileStatus, &reconciledAt); err != nil {
 			return nil, err
+		}
+		if providerTaskID.Valid {
+			rec.ProviderTaskID = providerTaskID.String
+		}
+		if idempotencyKey.Valid {
+			rec.IdempotencyKey = idempotencyKey.String
+		}
+		if errorClass.Valid {
+			rec.ErrorClass = errorClass.String
+		}
+		if taskStatus.Valid {
+			rec.TaskStatus = Status(taskStatus.String)
+		}
+		if estimatedCents.Valid {
+			rec.EstimatedCents = estimatedCents.Int64
 		}
 		if reconciledAt.Valid {
 			t := reconciledAt.Time

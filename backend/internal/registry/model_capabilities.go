@@ -33,6 +33,9 @@ type UpsertModelCapabilityBindingParams struct {
 	CapabilityParams json.RawMessage
 	Enabled          bool
 	Source           string
+	Actor            string
+	ActorRole        string
+	RequestID        string
 }
 
 type ModelCapabilityBinding struct {
@@ -61,7 +64,41 @@ func (r *PostgresRegistry) UpsertModelCapabilityBinding(ctx context.Context, par
 	if r == nil || r.pool == nil {
 		return ModelCapabilityBinding{}, ErrRegistryBackend
 	}
-	return upsertModelCapabilityBinding(ctx, r.pool, params)
+	normalizedScope, err := normalizeModelCapabilityBindingTarget(params)
+	if err != nil {
+		return ModelCapabilityBinding{}, err
+	}
+	params.Scope = normalizedScope
+	params.Actor = strings.TrimSpace(params.Actor)
+	params.ActorRole = strings.TrimSpace(params.ActorRole)
+	params.RequestID = strings.TrimSpace(params.RequestID)
+	if params.Actor == "" || params.ActorRole != "platform_admin" {
+		return ModelCapabilityBinding{}, fmt.Errorf("%w: model capability binding operator metadata unavailable", ErrRegistryBackend)
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ModelCapabilityBinding{}, fmt.Errorf("%w: begin model capability binding update: %v", ErrRegistryBackend, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := checkModelCapabilityTarget(ctx, tx, params); err != nil {
+		return ModelCapabilityBinding{}, err
+	}
+	binding, err := upsertModelCapabilityBinding(ctx, tx, params)
+	if err != nil {
+		return ModelCapabilityBinding{}, err
+	}
+	if err := bumpModelCapabilitySnapshot(ctx, tx, binding, params.Actor); err != nil {
+		return ModelCapabilityBinding{}, err
+	}
+	if err := insertModelCapabilityBindingLog(ctx, tx, binding, params); err != nil {
+		return ModelCapabilityBinding{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ModelCapabilityBinding{}, fmt.Errorf("%w: commit model capability binding update: %v", ErrRegistryBackend, err)
+	}
+	return binding, nil
 }
 
 func (r *PostgresRegistry) ListModelCapabilityBindings(ctx context.Context, modelID int64) ([]ModelCapabilityBinding, error) {
@@ -261,6 +298,114 @@ RETURNING model_id, capability, capability_value, capability_params, enabled, so
 	}
 	out.CapabilityParams = normalizeCapabilityParamsRaw(rawOut)
 	return out, nil
+}
+
+func checkModelCapabilityTarget(ctx context.Context, tx pgx.Tx, params UpsertModelCapabilityBindingParams) error {
+	var one int
+	err := tx.QueryRow(ctx, `
+SELECT 1
+FROM models
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND (
+        ($2 = 'global' AND scope = 'global' AND tenant_id IS NULL)
+     OR ($2 = 'tenant' AND (
+            (scope = 'global' AND tenant_id IS NULL)
+         OR (scope = 'tenant' AND tenant_id = $3)
+        ))
+      )
+FOR SHARE
+`, params.ModelID, params.Scope, params.TenantID).Scan(&one)
+	if err == pgx.ErrNoRows {
+		return ErrUnknownModel
+	}
+	if err != nil {
+		return fmt.Errorf("%w: check model capability target: %v", ErrRegistryBackend, err)
+	}
+	return nil
+}
+
+func normalizeModelCapabilityBindingTarget(params UpsertModelCapabilityBindingParams) (string, error) {
+	if params.ModelID <= 0 {
+		return "", ErrUnknownModel
+	}
+	if _, err := normalizeKnownModelCapability(params.Capability); err != nil {
+		return "", err
+	}
+	scope := strings.TrimSpace(params.Scope)
+	if scope == "" {
+		scope = "tenant"
+	}
+	if scope != "tenant" && scope != "global" {
+		return "", fmt.Errorf("%w: invalid scope %q", ErrInvalidModelCapability, scope)
+	}
+	if scope == "tenant" && params.TenantID <= 0 {
+		return "", fmt.Errorf("%w: tenant_id required", ErrInvalidModelCapability)
+	}
+	if scope == "global" && params.TenantID != 0 {
+		return "", fmt.Errorf("%w: tenant_id must be omitted for global scope", ErrInvalidModelCapability)
+	}
+	return scope, nil
+}
+
+func bumpModelCapabilitySnapshot(ctx context.Context, tx pgx.Tx, binding ModelCapabilityBinding, actor string) error {
+	const reason = "model capability binding update"
+	if binding.Scope == "global" {
+		_, err := bumpAffectedSnapshots(ctx, tx, []int64{binding.ModelID}, reason, actor)
+		return err
+	}
+	if binding.TenantID == nil || *binding.TenantID <= 0 {
+		return fmt.Errorf("%w: tenant capability binding missing tenant", ErrRegistryBackend)
+	}
+	_, err := tx.Exec(ctx, `
+INSERT INTO model_registry_snapshots (tenant_id, version, reason, updated_by_actor)
+VALUES ($1, 2, $2, $3)
+ON CONFLICT (tenant_id) DO UPDATE SET
+    version = model_registry_snapshots.version + 1,
+    reason = EXCLUDED.reason,
+    updated_by_actor = EXCLUDED.updated_by_actor,
+    updated_at = now()
+`, *binding.TenantID, reason, actor)
+	if err != nil {
+		return fmt.Errorf("%w: bump model capability snapshot: %v", ErrRegistryBackend, err)
+	}
+	return nil
+}
+
+func insertModelCapabilityBindingLog(
+	ctx context.Context,
+	tx pgx.Tx,
+	binding ModelCapabilityBinding,
+	params UpsertModelCapabilityBindingParams,
+) error {
+	payload, err := json.Marshal(map[string]any{
+		"model_id":             binding.ModelID,
+		"scope":                binding.Scope,
+		"capability":           binding.Capability,
+		"enabled":              binding.Enabled,
+		"source":               binding.Source,
+		"has_capability_value": binding.CapabilityValue != nil,
+	})
+	if err != nil {
+		return fmt.Errorf("%w: encode model capability binding log: %v", ErrRegistryBackend, err)
+	}
+	var tenantID any
+	if binding.TenantID != nil {
+		tenantID = *binding.TenantID
+	}
+	_, err = tx.Exec(ctx, `
+INSERT INTO admin_audit_events (
+    tenant_id, actor_id, actor_role, action, target_type, target_id,
+    request_id, payload, log_category
+) VALUES (
+    $1, $2, $3, 'update_model_capability_binding', 'model_capability_binding', $4,
+    NULLIF($5, ''), $6::jsonb, 'operation'
+)
+`, tenantID, params.Actor, params.ActorRole, binding.ModelID, params.RequestID, payload)
+	if err != nil {
+		return fmt.Errorf("%w: insert model capability binding log: %v", ErrRegistryBackend, err)
+	}
+	return nil
 }
 
 func normalizeModelCapabilityMap(in map[string]bool) map[string]bool {

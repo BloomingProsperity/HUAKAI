@@ -23,6 +23,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/auth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	"github.com/BloomingProsperity/HUAKAI/internal/channelhealth"
 	"github.com/BloomingProsperity/HUAKAI/internal/dlq"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
@@ -30,8 +31,11 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/registry"
 	"github.com/BloomingProsperity/HUAKAI/internal/router"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
+	"github.com/BloomingProsperity/HUAKAI/internal/settlementintenttest"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/transport"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamfeedback"
 )
 
 func TestAudioSpeech_ChargesUTF8RunesAndSettlesExactlyOnce(t *testing.T) {
@@ -62,6 +66,104 @@ func TestAudioSpeech_ChargesUTF8RunesAndSettlesExactlyOnce(t *testing.T) {
 	byteCountMutation := decimal.RequireFromString("0.006")
 	if env.claims.reserves[0].req.PredictedCost.Equal(byteCountMutation) {
 		t.Fatal("fixture is non-discriminating: byte-count pricing matched reserve")
+	}
+}
+
+func TestAudioSpeech_DisabledTenantStopsBeforeUpstream(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{status: http.StatusOK, body: "audio"})
+	env.claims.err = billing.ErrTenantInactive
+
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"must not dispatch","voice":"alloy"}`)
+
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"tenant_inactive"`) {
+		t.Fatalf("status=%d body=%s want 403 tenant_inactive", rec.Code, rec.Body.String())
+	}
+	if env.transport.called || len(env.settler.settles) != 0 || len(env.settler.aborts) != 0 {
+		t.Fatalf("停用租户仍触发 upstream/settle/abort=%v/%d/%d",
+			env.transport.called, len(env.settler.settles), len(env.settler.aborts))
+	}
+}
+
+// TestAudioSpeech_SettlementIntentFailureStopsBeforeUpstream 守住资金恢复
+// 证据写失败时的交付前硬门。变异：删掉 InsertPending 或吞掉其错误，会让
+// transport 被调用并把音频交付给客户端。
+func TestAudioSpeech_SettlementIntentFailureStopsBeforeUpstream(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{
+		status:  http.StatusOK,
+		body:    "must-not-be-delivered",
+		headers: http.Header{"Content-Type": []string{"audio/mpeg"}},
+	})
+	env.deps.SettlementIntents = settlementintent.NewPostgresStore(nil)
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"must not dispatch","voice":"alloy"}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s want 503", rec.Code, rec.Body.String())
+	}
+	if env.transport.called {
+		t.Fatal("恢复证据写失败后不得调用上游")
+	}
+	if got := len(env.settler.settles); got != 0 {
+		t.Fatalf("settle calls=%d want 0", got)
+	}
+	if got := len(env.settler.aborts); got != 1 {
+		t.Fatalf("abort calls=%d want 1", got)
+	}
+	env.assertNoHangingClaims(t)
+}
+
+func TestAudioSpeech_SettlementIntentSuccessfulLifecycle(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{
+		status:  http.StatusOK,
+		body:    "audio-ok",
+		headers: http.Header{"Content-Type": []string{"audio/mpeg"}},
+	})
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"lifecycle","voice":"alloy"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200", rec.Code, rec.Body.String())
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
+	}
+}
+
+func TestAudioSpeech_DeliveryEvidenceFailureStopsClientDeliveryAndSettlement(t *testing.T) {
+	env := newAudioTestEnv(t, audioEndpointSpeech, upstreamResponse{
+		status:  http.StatusOK,
+		body:    "must-not-deliver-audio",
+		headers: http.Header{"Content-Type": []string{"audio/mpeg"}},
+	})
+	store := &settlementintenttest.Store{DeliveryError: errors.New("注入交付证据故障")}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
+	health := &audioHealthSpy{}
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+
+	rec := env.invokeJSON(t, `{"model":"tts-1","input":"delivery gate","voice":"alloy"}`)
+
+	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "must-not-deliver-audio") {
+		t.Fatalf("status/body=%d/%s want 503 且无上游业务体", rec.Code, rec.Body.String())
+	}
+	if len(env.settler.settles) != 0 || len(env.settler.aborts) != 1 {
+		t.Fatalf("settle/abort=%d/%d want 0/1", len(env.settler.settles), len(env.settler.aborts))
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->aborted" {
+		t.Fatalf("intent lifecycle=%q want pending->aborted", got)
+	}
+	for _, signal := range health.signals {
+		if signal.Class != channelhealth.SignalSuccess {
+			t.Fatalf("本地交付证据故障写入失败健康信号: %+v", health.signals)
+		}
+	}
+	if health.forceCooldowns != 0 {
+		t.Fatalf("本地交付证据故障污染账号健康: signals=%+v force_cooldowns=%d",
+			health.signals, health.forceCooldowns)
 	}
 }
 
@@ -104,6 +206,9 @@ func TestAudioTranscriptions_WavDurationDrivesReserveAndSettle(t *testing.T) {
 		status: http.StatusOK,
 		body:   `{"text":"done"}`,
 	})
+	store := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = store
+	env.deps.SettlementIntentEnabled = true
 	body, contentType := multipartAudioBody(t, "file", "clip.wav", "audio/wav", wavPCM16Fixture(16000, 40000), map[string]string{"model": "whisper-1"})
 
 	rec := env.invokeMultipart(t, body, contentType)
@@ -120,6 +225,9 @@ func TestAudioTranscriptions_WavDurationDrivesReserveAndSettle(t *testing.T) {
 	assertAudioDecimal(t, "settle ActualCost", env.settler.settles[0].ActualCost, want)
 	if env.settler.settles[0].Draft.TokensInput != 0 || env.settler.settles[0].Draft.TokensOutput != 0 {
 		t.Fatalf("wav second billing unexpectedly used token counts: %+v", env.settler.settles[0].Draft)
+	}
+	if got := strings.Join(store.Events(), "->"); got != "pending->delivering->settled" {
+		t.Fatalf("intent lifecycle=%q want pending->delivering->settled", got)
 	}
 }
 
@@ -352,6 +460,28 @@ func TestAudioSpeech_SettleErrorAfterDeliveryKeeps200AndEnqueuesRecovery(t *test
 	}
 }
 
+func TestAudioTranscription_SettleErrorAfterDeliveryKeeps200AndEnqueuesRecovery(t *testing.T) {
+	const upstreamBody = `{"text":"delivered transcription"}`
+	env := newAudioTestEnv(t, audioEndpointTranscriptions, upstreamResponse{status: http.StatusOK, body: upstreamBody})
+	env.settler.settleErr = errors.New("settle backend down")
+	recovery := &audioRecoveryEnqueuer{}
+	env.deps.SettleRecoveryDLQ = recovery
+	body, contentType := multipartAudioBody(t, "file", "clip.wav", "audio/wav", wavPCM16Fixture(16000, 16000), map[string]string{"model": "whisper-1"})
+
+	rec := env.invokeMultipart(t, body, contentType)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != upstreamBody {
+		t.Fatalf("status/body=%d/%s want delivered 200 body", rec.Code, rec.Body.String())
+	}
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("abort calls=%d want 0 after full delivery", got)
+	}
+	if recovery.calls != 1 || recovery.event.EventKind != dlq.EventKindPostDeliverySettlement {
+		t.Fatalf("recovery calls/kind=%d/%q want 1/%q",
+			recovery.calls, recovery.event.EventKind, dlq.EventKindPostDeliverySettlement)
+	}
+}
+
 func TestAudioSpeech_SettleAndRecoveryDoubleFailureEmitsP0WithoutSecret(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
@@ -363,6 +493,9 @@ func TestAudioSpeech_SettleAndRecoveryDoubleFailureEmitsP0WithoutSecret(t *testi
 	env.settler.settleErr = errors.New("settle failed " + secret)
 	recovery := &audioRecoveryEnqueuer{err: errors.New("recovery enqueue failed " + secret)}
 	env.deps.SettleRecoveryDLQ = recovery
+	intentStore := &settlementintenttest.Store{}
+	env.deps.SettlementIntents = intentStore
+	env.deps.SettlementIntentEnabled = true
 
 	rec := env.invokeJSON(t, `{"model":"tts-1","input":"double fault","voice":"alloy"}`)
 
@@ -371,6 +504,14 @@ func TestAudioSpeech_SettleAndRecoveryDoubleFailureEmitsP0WithoutSecret(t *testi
 	}
 	if recovery.calls != 1 {
 		t.Fatalf("recovery calls=%d want 1", recovery.calls)
+	}
+	if got := strings.Join(intentStore.Events(), "->"); got != "pending->delivering->recovery_pending" {
+		t.Fatalf("双故障意图生命周期=%q", got)
+	}
+	raw, failureClass := intentStore.RecoveryEvidence()
+	persisted, err := settlementrecovery.Decode(raw)
+	if err != nil || persisted.Source != settlementrecovery.SourceAudioDelivered || failureClass == "" {
+		t.Fatalf("双故障恢复证据 source=%q class=%q err=%v", persisted.Source, failureClass, err)
 	}
 	got := logs.String()
 	for _, want := range []string{"money_lost_double_fault", "critical", "P0", "audiohttp.settle_recovery"} {
@@ -448,7 +589,7 @@ func TestAudioTranslations_RoutesToTranslationsPath(t *testing.T) {
 }
 
 type audioTestEnv struct {
-	selector *selectorStub
+	selector  *selectorStub
 	deps      Deps
 	claims    *recordingClaimGate
 	settler   *recordingSettler
@@ -591,6 +732,7 @@ type recordingClaimGate struct {
 	nextClaimID    int64
 	reserves       []reservedClaim
 	idempotencyHit bool
+	err            error
 }
 
 type reservedClaim struct {
@@ -600,6 +742,9 @@ type reservedClaim struct {
 
 func (g *recordingClaimGate) Reserve(_ context.Context, req billing.ReserveRequest) (*billing.ReserveResult, error) {
 	g.reserves = append(g.reserves, reservedClaim{claimID: g.nextClaimID, req: req})
+	if g.err != nil {
+		return nil, g.err
+	}
 	return &billing.ReserveResult{ClaimID: g.nextClaimID, IdempotencyHit: g.idempotencyHit}, nil
 }
 

@@ -49,8 +49,16 @@ func (s *PostgresRoleStore) ActiveUserRole(ctx context.Context, tenantID, userID
 	}
 	var role string
 	err := s.pool.QueryRow(ctx, `
-SELECT role FROM users
-WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND status = 'active'`,
+SELECT u.role
+FROM users u
+INNER JOIN tenants t
+    ON t.id = u.tenant_id
+   AND t.status = 'active'
+   AND t.deleted_at IS NULL
+WHERE u.id = $1
+  AND u.tenant_id = $2
+  AND u.deleted_at IS NULL
+  AND u.status = 'active'`,
 		userID, tenantID).Scan(&role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrUserNotFound

@@ -128,7 +128,7 @@ func (w *Worker) RunOnce(ctx context.Context, priority Priority, workerID string
 	if err != nil || !ok {
 		return false, err
 	}
-	if err := w.handle(ctx, ev); err != nil {
+	if err := w.handleRecovered(ctx, ev); err != nil {
 		delay, dead := w.cfg.RetryPolicy.NextDelay(ev.AttemptCount)
 		if dead {
 			return true, w.outbox.MarkFailedDead(ctx, ev.ID, workerID, err.Error())
@@ -160,16 +160,32 @@ func (w *Worker) runLane(ctx context.Context, priority Priority) {
 }
 
 // runOnceRecovered 包一层 recover:单次 RunOnce(含 handler 调用)的 panic 不会杀死该优先级泳道的 goroutine
-//(否则该泳道永久静默、DLQ 积压不再被消费)。panic 被当作本轮一次失败(返回 processed=false + err),使循环
+// (否则该泳道永久静默、DLQ 积压不再被消费)。panic 被当作本轮一次失败(返回 processed=false + err),使循环
 // 进入 IdleSleep 而非崩溃。与仓内既定 worker recover 范式一致。
 func (w *Worker) runOnceRecovered(ctx context.Context, priority Priority, workerID string) (processed bool, err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("obsdlq: RunOnce panicked: %v", rec)
-			slog.ErrorContext(ctx, "obs dlq worker RunOnce panicked; recovered to keep lane alive", "priority", string(priority), "recover", rec)
+			reason := RedactString(fmt.Sprint(rec))
+			err = fmt.Errorf("obsdlq: RunOnce panicked: %s", reason)
+			slog.ErrorContext(ctx, "obs dlq worker RunOnce panicked; recovered to keep lane alive", "priority", string(priority), "reason", reason)
 		}
 	}()
 	return w.RunOnce(ctx, priority, workerID)
+}
+
+func (w *Worker) handleRecovered(ctx context.Context, ev OutboxEvent) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			reason := RedactString(fmt.Sprint(rec))
+			err = fmt.Errorf("obsdlq: handler panicked: %s", reason)
+			slog.ErrorContext(ctx, "obs dlq handler panicked; event enters retry policy",
+				"event_id", ev.ID,
+				"event_type", ev.EventType,
+				"reason", reason,
+			)
+		}
+	}()
+	return w.handle(ctx, ev)
 }
 
 func (w *Worker) handle(ctx context.Context, ev OutboxEvent) error {

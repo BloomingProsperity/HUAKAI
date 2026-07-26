@@ -4,6 +4,7 @@ package mediatask
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
+	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
 // TestReconcileOrphanBackChargeNoOpWhenHoldReleased 守 S2:hold 已被 Release 后追扣静默
@@ -288,12 +291,11 @@ func TestReconcileOrphanMarkOnlyDoesNotChargeBalance(t *testing.T) {
 	}
 }
 
-// TestReconcileOrphanAuditHookRollsBackOnError 证审计 hook 与状态推进 + 追扣同事务原子:
-// hook 返回错误时整笔回滚——孤儿仍 pending、余额预扣保持不变。
+// TestReconcileOrphanScopeGuardRollsBackBackCharge 证明部署者越级处置下级租户时，
+// 所属租户经营边界在事务 hook 内拒绝，状态推进、claim 提交、资金事件和追扣全部回滚。
 //
-// 变异:若把 audit hook 移出事务(对账先提交再写审计)→ hook 失败后孤儿已 reconciled / 钱已扣,
-// 本测试断言 pending + held=1.23 RED。
-func TestReconcileOrphanAuditHookRollsBackOnError(t *testing.T) {
+// 变异：若把 hook 移出事务或改回 CanIssueForTenant，孤儿会被推进且余额被扣，本测试转红。
+func TestReconcileOrphanScopeGuardRollsBackBackCharge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	pool := openMediaPool(t, ctx)
@@ -313,12 +315,15 @@ func TestReconcileOrphanAuditHookRollsBackOnError(t *testing.T) {
 	}
 	orphanID := mustOrphanID(t, ctx, pool, task.ID, "up-orphan-audit")
 
-	boom := func(ctx context.Context, tx pgx.Tx, _ OrphanReconcileResult) error {
-		return context.Canceled // 模拟审计写入失败
+	ident := admin.AdminIdentity{Role: admin.RolePlatformAdmin}
+	downstreamTenantID := seed.tenantID
+	platformTenantID := seed.tenantID + 100000
+	scopeGuard := func(_ context.Context, _ pgx.Tx, result OrphanReconcileResult) error {
+		return ident.CanOperateOwnedTenant(result.TenantID, platformTenantID)
 	}
-	_, ok, err := store.ReconcileOrphan(ctx, orphanID, "reconciled", true, time.Now().UTC(), boom)
-	if err == nil || ok {
-		t.Fatalf("审计失败应整笔失败回滚 ok=%v err=%v", ok, err)
+	_, ok, err := store.ReconcileOrphan(ctx, orphanID, "reconciled", true, time.Now().UTC(), scopeGuard)
+	if !errors.Is(err, admin.ErrAdminForbidden) || ok {
+		t.Fatalf("部署者越级处置应整笔失败回滚 tenant=%d ok=%v err=%v", downstreamTenantID, ok, err)
 	}
 	// 孤儿仍 pending、预扣保持。
 	var status string
@@ -331,6 +336,45 @@ func TestReconcileOrphanAuditHookRollsBackOnError(t *testing.T) {
 	bal, held := readBalance(t, ctx, pool, seed.tenantID, seed.userID)
 	if !bal.Equal(decimal.RequireFromString("10.00")) || !held.Equal(decimal.RequireFromString("1.23")) {
 		t.Fatalf("审计回滚后 balance/held=%s/%s want 10.00/1.23", bal, held)
+	}
+}
+
+func TestReconcileOrphanCurrentAuditConstraintAcceptsAllTerminalActions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	pool := openMediaPool(t, ctx)
+
+	for _, status := range []string{"reconciled", "cancelled", "ignored"} {
+		t.Run(status, func(t *testing.T) {
+			seed := seedMediaUser(t, ctx, pool, "orphan-audit-"+status)
+			svc := newIntegrationService(pool)
+			store := svc.store.(*PostgresStore)
+			task, err := svc.Submit(ctx, seed.tenantID, seed.userID, submitInput("req-orphan-audit-"+status))
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+			providerTaskID := "up-orphan-audit-" + status
+			if err := store.PersistOrphan(ctx, OrphanRecord{
+				TaskID: task.ID, TenantID: seed.tenantID, UserID: seed.userID, Provider: "http",
+				ProviderTaskID: providerTaskID, LeaseOwner: "it-audit-" + status, ObservedAt: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("PersistOrphan: %v", err)
+			}
+			orphanID := mustOrphanID(t, ctx, pool, task.ID, providerTaskID)
+			audit := func(ctx context.Context, tx pgx.Tx, result OrphanReconcileResult) error {
+				tenantID := result.TenantID
+				targetID := result.OrphanID
+				_, err := admindb.New(tx).InsertAdminAuditEvent(ctx, admindb.InsertAdminAuditEventParams{
+					TenantID: &tenantID, ActorID: "integration-test", ActorRole: admin.RoleTenantOperator,
+					Action: "orphan_" + status, TargetType: "media_task_orphan", TargetID: &targetID,
+					Payload: []byte(`{}`),
+				})
+				return err
+			}
+			if _, advanced, err := store.ReconcileOrphan(ctx, orphanID, status, false, time.Now().UTC(), audit); err != nil || !advanced {
+				t.Fatalf("当前日志约束拒绝孤儿终态 action=%q: advanced=%v err=%v", status, advanced, err)
+			}
+		})
 	}
 }
 

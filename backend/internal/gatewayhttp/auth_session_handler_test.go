@@ -91,9 +91,7 @@ func TestAuthAndSessionHandlersRegisterVerifyLoginRefreshList(t *testing.T) {
 		t.Fatalf("decode refresh response: %v", err)
 	}
 
-	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{
-		"tenant_id": 999, "user_id": int64(999999),
-	}, refreshResp.Session.SessionToken)
+	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{}, refreshResp.Session.SessionToken)
 	assertHTTPStatus(t, rec, http.StatusOK)
 }
 
@@ -425,7 +423,7 @@ func TestAuthLogin_TwoFactorMaterialsAreNotLoggedOrReturned(t *testing.T) {
 	}, sentinels)
 }
 
-func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T) {
+func TestAT_SESSION_001_004_HandlersRequireBearerAndRejectBodyIdentity(t *testing.T) {
 	now := time.Date(2026, 5, 16, 14, 0, 0, 0, time.UTC)
 	sessionSvc := usersession.NewService(usersession.NewMemoryStore())
 	sessionSvc.Now = func() time.Time { return now }
@@ -451,7 +449,7 @@ func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T)
 	rec := serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{"tenant_id": 7, "user_id": 7001})
 	assertHTTPStatus(t, rec, http.StatusUnauthorized)
 
-	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{"tenant_id": 999, "user_id": 7002}, issued.SessionToken)
+	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/list", map[string]any{}, issued.SessionToken)
 	assertHTTPStatus(t, rec, http.StatusOK)
 	var listResp struct {
 		Families []usersession.SessionFamily `json:"families"`
@@ -464,6 +462,11 @@ func TestAT_SESSION_001_004_HandlersRequireBearerAndIgnoreBodyUser(t *testing.T)
 	}
 
 	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/revoke", map[string]any{"tenant_id": 7, "user_id": 7002}, issued.SessionToken)
+	assertHTTPStatus(t, rec, http.StatusBadRequest)
+	if _, err := sessionSvc.Validate(context.Background(), issued.SessionToken, "10.1.1.1", "Chrome/1"); err != nil {
+		t.Fatalf("被拒绝的未知字段请求不应撤销当前用户会话: %v", err)
+	}
+	rec = serveJSON(t, r, http.MethodPost, "/v1/sessions/revoke", map[string]any{}, issued.SessionToken)
 	assertHTTPStatus(t, rec, http.StatusOK)
 	if _, err := sessionSvc.Validate(context.Background(), other.SessionToken, "10.2.1.1", "Firefox/1"); err != nil {
 		t.Fatalf("body user revoke should not revoke another user: %v", err)
@@ -740,14 +743,24 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	blockedRouter.Route("/v1/auth", func(r chi.Router) {
 		MountAuthRoutes(r, AuthHandlerDeps{
 			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
-			AdminAuth: authAdminStub{ident: admin.AdminIdentity{TokenID: 7, Role: admin.RoleTenantOperator, ScopeTenantID: 2}},
+			AdminAuth:        authAdminStub{ident: admin.AdminIdentity{TokenID: 7, Role: admin.RoleTenantOperator, ScopeTenantID: 2}},
+			PlatformTenantID: 1,
 		})
 	})
 	allowedRouter := chi.NewRouter()
 	allowedRouter.Route("/v1/auth", func(r chi.Router) {
 		MountAuthRoutes(r, AuthHandlerDeps{
 			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
-			AdminAuth: authAdminStub{ident: admin.AdminIdentity{TokenID: 8, Role: admin.RoleTenantOperator, ScopeTenantID: 1}},
+			AdminAuth:        authAdminStub{ident: admin.AdminIdentity{TokenID: 8, Role: admin.RoleTenantOperator, ScopeTenantID: 1}},
+			PlatformTenantID: 1,
+		})
+	})
+	platformBlockedRouter := chi.NewRouter()
+	platformBlockedRouter.Route("/v1/auth", func(r chi.Router) {
+		MountAuthRoutes(r, AuthHandlerDeps{
+			Auth: authSvc, Sessions: sessionSvc, EventSink: events,
+			AdminAuth:        authAdminStub{ident: admin.AdminIdentity{TokenID: 9, Role: admin.RolePlatformAdmin}},
+			PlatformTenantID: 9,
 		})
 	})
 
@@ -788,6 +801,11 @@ func TestAT_AUTH_007_009_SocialIdentityChangeRevokesExistingSessions(t *testing.
 	assertHTTPStatus(t, rec, http.StatusForbidden)
 	if _, err := sessionSvc.Validate(context.Background(), callbackResp.Session.SessionToken, "192.0.2.1", ""); err != nil {
 		t.Fatalf("cross-tenant blocked webhook should not revoke session: %v", err)
+	}
+	rec = serveJSON(t, platformBlockedRouter, http.MethodPost, "/v1/auth/social/identity-changed", body)
+	assertHTTPStatus(t, rec, http.StatusForbidden)
+	if _, err := sessionSvc.Validate(context.Background(), callbackResp.Session.SessionToken, "192.0.2.1", ""); err != nil {
+		t.Fatalf("部署者越级身份变更不应撤销下级租户会话：%v", err)
 	}
 
 	rec = serveJSON(t, allowedRouter, http.MethodPost, "/v1/auth/social/identity-changed", body)

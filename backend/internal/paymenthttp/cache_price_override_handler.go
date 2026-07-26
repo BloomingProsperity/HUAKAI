@@ -10,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 )
 
@@ -47,9 +48,10 @@ type cacheOverrideView struct {
 //
 // model scope 需 query ?model=<name>;tenant scope 需 query ?tenant_id=<id>。
 func MountCacheOverrideAdminRoutes(r chi.Router, d CacheOverrideAdminDeps) {
+	safe := adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)
 	r.Get("/", newCacheOverrideListHandler(d))
-	r.Put("/{scope}", newCacheOverrideSetHandler(d))
-	r.Delete("/{scope}", newCacheOverrideDeleteHandler(d))
+	r.With(safe).Put("/{scope}", newCacheOverrideSetHandler(d))
+	r.With(safe).Delete("/{scope}", newCacheOverrideDeleteHandler(d))
 }
 
 func newCacheOverrideListHandler(d CacheOverrideAdminDeps) http.HandlerFunc {

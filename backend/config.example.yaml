@@ -86,10 +86,9 @@ observability:
   # F-OBS-001 outbox lag alert threshold.
   scheduler_outbox_lag_alert_seconds: 60
   dlq:
+    # 恢复 worker 始终启动；它同时承载已交付请求的资金恢复，不能作为普通观测开关关闭。
     # Runtime env equivalents:
-    # HUAKAI_OBS_DLQ_ENABLED=true
     # HUAKAI_OBS_REPLICA_DSN=postgres://replica-writer:.../huakai_obs_replica
-    enabled: true
     priority_lanes:
       high_workers: 2   # Billing + audit
       med_workers: 1    # Account health

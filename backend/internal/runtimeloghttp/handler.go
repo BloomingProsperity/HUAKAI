@@ -15,6 +15,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
+	"github.com/BloomingProsperity/HUAKAI/internal/adminsessionauth"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
 	"github.com/BloomingProsperity/HUAKAI/internal/logretention"
@@ -55,7 +56,8 @@ type AdminRuntimeLogsDeps struct {
 
 func MountAdminRuntimeLogRoutes(r chi.Router, d AdminRuntimeLogsDeps) {
 	r.Get("/runtime-logs", newAdminRuntimeLogsListHandler(d))
-	r.Post("/runtime-logs/cleanup", newAdminRuntimeLogsCleanupHandler(d))
+	r.With(adminsessionauth.AllowSessionWrite(adminsessionauth.SessionSafe)).
+		Post("/runtime-logs/cleanup", newAdminRuntimeLogsCleanupHandler(d))
 	r.Get("/runtime-logs/health", newAdminRuntimeLogsHealthHandler(d))
 }
 

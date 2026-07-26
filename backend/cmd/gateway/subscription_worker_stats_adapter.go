@@ -19,7 +19,7 @@ type pendingReconciliationCounter interface {
 type subscriptionWorkerStatsAdapter struct {
 	reminder                     *subscription.ReminderWorker
 	expiry                       *subscription.ExpiryWorker
-	autoRenew                    *subscription.AutoRenewWorker // nil = worker 未启用(默认关)
+	autoRenew                    *subscription.AutoRenewWorker // nil = 部署者显式停用或装配失败
 	pendingReconciliationCounter pendingReconciliationCounter
 }
 
@@ -50,7 +50,8 @@ func (a subscriptionWorkerStatsAdapter) ReadWorkerStats(ctx context.Context) sub
 			FailedTicks:  a.expiry.FailedTicks(),
 		},
 	}
-	// autoRenew 默认关(nil): Enabled=false, money 计数恒 0; 启用则暴露真实计数。
+	// autoRenew 正常默认注入；只有部署者显式应急停用或装配失败时为 nil，
+	// 此时 Enabled=false 且资金计数保持 0，不能误报 worker 正在运行。
 	if a.autoRenew != nil {
 		stats.AutoRenew = subscriptionhttp.AutoRenewWorkerStats{
 			Enabled:      true,

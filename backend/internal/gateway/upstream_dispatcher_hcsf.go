@@ -148,8 +148,12 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
 	}
-	if err := validatePassthroughEndpointTarget(ctx, in.Credential, req); err != nil {
+	customEndpoint := provider.RequestUsesCustomPassthroughEndpoint(in.Credential, req.URL)
+	if err := validatePassthroughEndpointTarget(ctx, customEndpoint, req); err != nil {
 		return nil, err
+	}
+	if in.TransportMode == "" && customEndpoint {
+		mode = transport.TransportModeStandard
 	}
 
 	rt, err := d.TransportFactory.For(transport.ProviderCode(account.Platform), mode)
@@ -166,7 +170,7 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		if err != nil {
 			return nil, err
 		}
-		if provider.UsesCustomPassthroughEndpoint(in.Credential) {
+		if customEndpoint {
 			rt, err = provider.WrapPassthroughEndpointTransport(rt)
 			if err != nil {
 				return nil, fmt.Errorf("dispatcher: passthrough endpoint rejected: %w", err)

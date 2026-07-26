@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	sessionauth "github.com/BloomingProsperity/HUAKAI/internal/auth"
+	"github.com/BloomingProsperity/HUAKAI/internal/browsersession"
 	"github.com/BloomingProsperity/HUAKAI/internal/clientip"
 	"github.com/BloomingProsperity/HUAKAI/internal/oauthpendinghttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/userauth"
@@ -100,9 +101,18 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 		if !decodeAdminPoolJSON(w, r, &req) {
 			return
 		}
+		refreshToken, browserMode, err := browsersession.ResolveRefresh(r, req.RefreshToken)
+		if err != nil {
+			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
+				EventType: "session_refresh_failed", Outcome: "failure",
+				ReasonClass: browserRefreshReasonClass(err),
+			})
+			writeBrowserRefreshError(w, err)
+			return
+		}
 		ident, hasValidBearer := optionalSessionIdentity(r, d)
 		input := usersession.RefreshInput{
-			RefreshToken: req.RefreshToken,
+			RefreshToken: refreshToken,
 			IP:           d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(),
 		}
 		if hasValidBearer {
@@ -111,6 +121,9 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 		}
 		result, err := d.Sessions.Refresh(r.Context(), input)
 		if err != nil {
+			if browserMode && terminalRefreshError(err) {
+				browsersession.Clear(w)
+			}
 			tenantID, userID := int64(0), int64(0)
 			if hasValidBearer {
 				tenantID, userID = ident.TenantID, ident.UserID
@@ -125,7 +138,7 @@ func newSessionRefreshHandler(d SessionHandlerDeps) http.HandlerFunc {
 		recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
 			EventType: "session_refreshed", TenantID: result.Family.TenantID, UserID: result.Family.UserID, Outcome: "success",
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"session": result})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"session": deliverSession(w, r, result)})
 	}
 }
 
@@ -142,11 +155,12 @@ func optionalSessionIdentity(r *http.Request, d SessionHandlerDeps) (sessionauth
 		return sessionauth.SessionIdentity{}, false
 	}
 	return sessionauth.SessionIdentity{
-		TenantID:   validated.TenantID,
-		UserID:     validated.UserID,
-		FamilyID:   validated.FamilyID,
-		TokenID:    validated.TokenID,
-		Generation: validated.Generation,
+		TenantID:    validated.TenantID,
+		UserID:      validated.UserID,
+		FamilyID:    validated.FamilyID,
+		TokenID:     validated.TokenID,
+		Generation:  validated.Generation,
+		AuthVersion: validated.AuthVersion,
 	}, true
 }
 
@@ -193,8 +207,55 @@ func newSessionRevokeHandler(d SessionHandlerDeps) http.HandlerFunc {
 			writeSessionError(w, err)
 			return
 		}
+		if browsersession.IsBrowser(r) &&
+			(strings.TrimSpace(req.FamilyID) == "" || strings.TrimSpace(req.FamilyID) == ident.FamilyID) {
+			browsersession.Clear(w)
+		}
 		writeAuditJSON(w, http.StatusOK, map[string]any{"revoked": count})
 	}
+}
+
+func deliverSession(w http.ResponseWriter, r *http.Request, tokens usersession.IssuedTokens) browsersession.Tokens {
+	return browsersession.Deliver(w, r, tokens)
+}
+
+func writeBrowserRefreshError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, browsersession.ErrRefreshBodyConflict):
+		writeJSONError(w, http.StatusBadRequest, "browser_refresh_body_forbidden", "browser refresh token must only be sent by secure cookie")
+	case errors.Is(err, browsersession.ErrRefreshCookieMissing):
+		browsersession.Clear(w)
+		writeJSONError(w, http.StatusUnauthorized, "browser_refresh_cookie_missing", "browser refresh session is missing")
+	case errors.Is(err, browsersession.ErrCSRFInvalid):
+		writeJSONError(w, http.StatusForbidden, "browser_csrf_invalid", "browser CSRF proof is invalid")
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_session_request", "session request is invalid")
+	}
+}
+
+func browserRefreshReasonClass(err error) string {
+	switch {
+	case errors.Is(err, browsersession.ErrRefreshBodyConflict):
+		return "browser_refresh_body_forbidden"
+	case errors.Is(err, browsersession.ErrRefreshCookieMissing):
+		return "browser_refresh_cookie_missing"
+	case errors.Is(err, browsersession.ErrCSRFInvalid):
+		return "browser_csrf_invalid"
+	default:
+		return "invalid_session_request"
+	}
+}
+
+func terminalRefreshError(err error) bool {
+	return errors.Is(err, usersession.ErrTokenNotFound) ||
+		errors.Is(err, usersession.ErrRefreshReplay) ||
+		errors.Is(err, usersession.ErrSessionUserMismatch) ||
+		errors.Is(err, usersession.ErrTokenExpired) ||
+		errors.Is(err, usersession.ErrFamilyRevoked) ||
+		errors.Is(err, usersession.ErrFamilyNotFound) ||
+		errors.Is(err, usersession.ErrAnomalyRejected) ||
+		errors.Is(err, usersession.ErrAuthenticationStale) ||
+		errors.Is(err, usersession.ErrUserIneligible)
 }
 
 func sessionFamilyBelongsToCurrentUser(r *http.Request, sessions *usersession.Service, ident sessionauth.SessionIdentity, familyID string) (bool, error) {
@@ -244,6 +305,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, usersession.ErrUserIneligible):
 		// 与登录路径资格门同口径 (passkey/2FA), 不泄露具体账号状态。
 		writeJSONError(w, http.StatusForbidden, "account_not_active", "account is no longer active")
+	case errors.Is(err, usersession.ErrAuthenticationStale):
+		writeJSONError(w, http.StatusUnauthorized, "authentication_stale", "account security changed; authenticate again")
 	case errors.Is(err, usersession.ErrDeviceLimitExceeded):
 		writeJSONError(w, http.StatusForbidden, "session_device_limit_exceeded", "too many active devices")
 	case errors.Is(err, usersession.ErrDeviceConfirmationRequired):
@@ -269,6 +332,8 @@ func sessionReasonClass(err error) string {
 		return "session_family_revoked"
 	case errors.Is(err, usersession.ErrAnomalyRejected):
 		return "session_anomaly_rejected"
+	case errors.Is(err, usersession.ErrAuthenticationStale):
+		return "authentication_stale"
 	case errors.Is(err, usersession.ErrDeviceLimitExceeded):
 		return "session_device_limit_exceeded"
 	case errors.Is(err, usersession.ErrDeviceConfirmationRequired):
@@ -392,8 +457,9 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 		}
 		user := completion.User
 		tokens, err := d.Sessions.Create(r.Context(), usersession.CreateInput{
-			TenantID: user.TenantID, UserID: user.ID, DeviceInfo: req.DeviceInfo,
-			IP: d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
+			TenantID: user.TenantID, UserID: user.ID, AuthVersion: user.PasswordVersion,
+			DeviceInfo: req.DeviceInfo,
+			IP:         d.ClientIPResolver.ClientIP(r), UserAgent: r.UserAgent(), AuthMethod: req.Provider,
 		})
 		if err != nil {
 			recordAuthEvent(r.Context(), d.EventSink, r, d.ClientIPResolver, AuthEvent{
@@ -411,6 +477,6 @@ func newAuthOAuthCallbackHandler(d AuthHandlerDeps) http.HandlerFunc {
 			EventType: "user_social_login_succeeded", TenantID: user.TenantID, UserID: user.ID,
 			Provider: safeProviderForEvent(req.Provider), Outcome: "success", AuthMethod: safeProviderForEvent(req.Provider),
 		})
-		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": tokens})
+		writeAuditJSON(w, http.StatusOK, map[string]any{"user": publicUser(user), "session": deliverSession(w, r, tokens)})
 	}
 }

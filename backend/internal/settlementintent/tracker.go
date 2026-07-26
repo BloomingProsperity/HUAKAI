@@ -2,6 +2,7 @@ package settlementintent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,15 +15,17 @@ import (
 const (
 	preDeliveryOperationTimeout = 100 * time.Millisecond
 	terminalOperationTimeout    = 2 * time.Second
-	deliveryWaitHardLimit       = 500 * time.Millisecond
 	completedResultGrace        = 5 * time.Millisecond
 )
 
 var (
+	// ErrDeliveryEvidenceUnavailable 表示首个业务字节前无法持久化交付保护证据。
+	// 调用方必须停止交付并释放 claim，且不得把已成功的上游请求换号重放。
+	ErrDeliveryEvidenceUnavailable = errors.New("结算交付证据不可用")
+
 	errIntentIDUnavailable = errors.New("结算意图标识不可用")
 	errStoreCallTimeout    = &storeCallTimeoutError{}
 	errStorePanicked       = &storePanicError{}
-	errDeliveryWaitTimeout = &deliveryWaitTimeoutError{}
 )
 
 type storeCallTimeoutError struct{}
@@ -33,19 +36,9 @@ type storePanicError struct{}
 
 func (*storePanicError) Error() string { return "结算意图存储发生异常" }
 
-type deliveryWaitTimeoutError struct{}
-
-func (*deliveryWaitTimeoutError) Error() string {
-	return "结算意图交付状态等待超过硬上限"
-}
-
-var (
-	noopAfterDelivery = func(time.Time) {}
-	noopWaitDelivery  = func() {}
-)
-
 // Tracker 保存单个 HTTP 请求当前 attempt 的意图标识和乐观锁版本。
-// 所有方法都只记录 warning，不把旁路存储错误返回给 relay 主链路。
+// pending 创建与 delivering 推进都属于交付前硬门并向调用方返回错误；
+// 交付后的终态推进只记录脱敏 warning，不能撤回已经写给客户端的响应。
 type Tracker struct {
 	store           Store
 	enabled         bool
@@ -58,18 +51,30 @@ type Tracker struct {
 	claimID         int64
 }
 
+// RecoveryEvidence 是主结算与恢复入队同时失败时写入结算意图的最小持久证据。
+// Payload 与 post_delivery_settlement 恢复队列使用同一脱敏 JSON 合同，
+// FailureClass 只保存稳定分类，不保存数据库或上游原始错误。
+type RecoveryEvidence struct {
+	Payload      json.RawMessage
+	FailureClass string
+}
+
 func NewTracker(store Store, enabled ...bool) *Tracker {
 	active := store != nil
 	if len(enabled) > 0 {
+		// 生产工厂在显式关闭时不会构造 Store；测试和局部集成允许直接
+		// 注入 Store 而不重复设置开关。
 		active = enabled[0] || store != nil
 	}
 	return &Tracker{store: store, enabled: active}
 }
 
 // InsertPending 在 Reserve 成功后创建 pending 行，attemptSeq 只接受账本返回的权威值。
-func (t *Tracker) InsertPending(ctx context.Context, tenantID int64, requestID, logicalRequestID string, claimID int64, attemptSeq int32, apiKeyID int64, requestFingerprint string, predictedCost decimal.Decimal) {
+// 未启用时返回 nil；显式启用后，任何存储错误都返回调用方，由交付前主链路
+// fail-closed 并中止 claim，不能在没有崩溃恢复证据时继续向上游发起收费请求。
+func (t *Tracker) InsertPending(ctx context.Context, tenantID int64, requestID, logicalRequestID string, claimID int64, attemptSeq int32, apiKeyID int64, requestFingerprint string, predictedCost decimal.Decimal) error {
 	if t == nil || !t.enabled {
-		return
+		return nil
 	}
 	t.mu.Lock()
 	t.insertAttempted = true
@@ -81,7 +86,7 @@ func (t *Tracker) InsertPending(ctx context.Context, tenantID int64, requestID, 
 	t.mu.Unlock()
 	if t.store == nil {
 		t.warn(ctx, "insert_pending", errStoreNotConfigured)
-		return
+		return errStoreNotConfigured
 	}
 	in := CreateParams{
 		TenantID: tenantID, RequestID: requestID, LogicalRequestID: logicalRequestID,
@@ -92,28 +97,48 @@ func (t *Tracker) InsertPending(ctx context.Context, tenantID int64, requestID, 
 	defer cancel()
 	if err := opCtx.Err(); err != nil {
 		t.warn(ctx, "insert_pending", err)
-		return
+		return err
 	}
 	id, err := callStoreWithinLimit(opCtx, preDeliveryOperationTimeout, func() (int64, error) {
 		return t.store.Insert(opCtx, in)
 	})
 	if err != nil {
 		t.warn(ctx, "insert_pending", err)
-		return
+		return err
 	}
 	if id == 0 {
 		t.warn(ctx, "insert_pending", errIntentIDUnavailable)
-		return
+		return errIntentIDUnavailable
 	}
 	t.mu.Lock()
 	t.id = id
 	t.mu.Unlock()
+	return nil
 }
 
-func (t *Tracker) MarkDelivering(ctx context.Context, firstByteAt time.Time) {
-	t.transition(ctx, "mark_delivering", preDeliveryWriteContext, preDeliveryOperationTimeout, func(opCtx context.Context, id int64, version int32) (int32, error) {
-		return t.store.MarkDelivering(opCtx, id, version, firstByteAt)
+func (t *Tracker) MarkDelivering(ctx context.Context, firstByteAt time.Time) error {
+	if t == nil || !t.enabled {
+		return nil
+	}
+	store, id, version, ok := t.transitionSnapshot(ctx, "mark_delivering")
+	if !ok {
+		return ErrDeliveryEvidenceUnavailable
+	}
+	opCtx, cancel := preDeliveryWriteContext(ctx)
+	defer cancel()
+	if err := opCtx.Err(); err != nil {
+		t.warn(ctx, "mark_delivering", err)
+		return ErrDeliveryEvidenceUnavailable
+	}
+	nextVersion, err := callStoreWithinLimit(opCtx, preDeliveryOperationTimeout, func() (int32, error) {
+		return store.MarkDelivering(opCtx, id, version, firstByteAt)
 	})
+	if err != nil {
+		t.warn(ctx, "mark_delivering", err)
+		return ErrDeliveryEvidenceUnavailable
+	}
+	t.applyVersion(id, version, nextVersion)
+	return nil
 }
 
 func (t *Tracker) MarkSettling(ctx context.Context, actualCost decimal.Decimal) {
@@ -147,9 +172,21 @@ func (t *Tracker) MarkFailed(ctx context.Context, actualCost decimal.Decimal) {
 	})
 }
 
+func (t *Tracker) MarkRecoveryPending(ctx context.Context, actualCost decimal.Decimal, evidence RecoveryEvidence) {
+	t.transition(ctx, "mark_recovery_pending", terminalWriteContext, terminalOperationTimeout, func(opCtx context.Context, id int64, version int32) (int32, error) {
+		return t.store.MarkRecoveryPending(opCtx, id, version, actualCost, evidence.Payload, evidence.FailureClass)
+	})
+}
+
 // MarkSettlementResult 根据主结算的真实结果选择 settled、settling 或 failed，
 // 只更新旁路意图，不改变主结算错误。
-func (t *Tracker) MarkSettlementResult(ctx context.Context, actualCost decimal.Decimal, settleErr error, recoveryEnqueued bool) {
+func (t *Tracker) MarkSettlementResult(
+	ctx context.Context,
+	actualCost decimal.Decimal,
+	settleErr error,
+	recoveryEnqueued bool,
+	recoveryEvidence ...RecoveryEvidence,
+) {
 	if settleErr == nil {
 		t.MarkSettled(ctx, actualCost)
 		return
@@ -158,74 +195,11 @@ func (t *Tracker) MarkSettlementResult(ctx context.Context, actualCost decimal.D
 		t.MarkSettling(ctx, actualCost)
 		return
 	}
+	if len(recoveryEvidence) > 0 && len(recoveryEvidence[0].Payload) > 0 {
+		t.MarkRecoveryPending(ctx, actualCost, recoveryEvidence[0])
+		return
+	}
 	t.MarkFailed(ctx, actualCost)
-}
-
-// WaitAndMarkSettlementResult 在主结算完成后有界等待交付态，再记录旁路终态。
-func (t *Tracker) WaitAndMarkSettlementResult(ctx context.Context, actualCost decimal.Decimal, settleErr error, recoveryEnqueued bool, wait func()) {
-	if wait != nil {
-		wait()
-	}
-	t.MarkSettlementResult(ctx, actualCost, settleErr, recoveryEnqueued)
-}
-
-// AfterDeliveryAsync 返回首帧后的非阻塞记录函数，以及主链路结束后用于保持终态顺序的等待函数。
-func (t *Tracker) AfterDeliveryAsync(ctx context.Context) (func(time.Time), func()) {
-	if t == nil || !t.enabled || t.store == nil {
-		return noopAfterDelivery, noopWaitDelivery
-	}
-	var once sync.Once
-	started := make(chan struct{})
-	done := make(chan struct{})
-	after := func(firstByteAt time.Time) {
-		once.Do(func() {
-			close(started)
-			go func() {
-				defer close(done)
-				defer func() {
-					if recover() != nil {
-						t.warn(ctx, "mark_delivering", errStorePanicked)
-					}
-				}()
-				t.markDeliveringAsync(ctx, firstByteAt)
-			}()
-		})
-	}
-	wait := func() {
-		select {
-		case <-started:
-			timer := time.NewTimer(deliveryWaitHardLimit)
-			defer timer.Stop()
-			select {
-			case <-done:
-			case <-timer.C:
-				t.warn(ctx, "mark_delivering", errDeliveryWaitTimeout)
-			}
-		default:
-		}
-	}
-	return after, wait
-}
-
-func (t *Tracker) markDeliveringAsync(ctx context.Context, firstByteAt time.Time) {
-	store, id, version, ok := t.transitionSnapshot(ctx, "mark_delivering")
-	if !ok {
-		return
-	}
-	opCtx, cancel := preDeliveryWriteContext(ctx)
-	defer cancel()
-	if err := opCtx.Err(); err != nil {
-		t.warn(ctx, "mark_delivering", err)
-		return
-	}
-	result := callStoreSafely(func() (int32, error) {
-		return store.MarkDelivering(opCtx, id, version, firstByteAt)
-	})
-	if result.err != nil {
-		t.warn(ctx, "mark_delivering", result.err)
-		return
-	}
-	t.applyVersion(id, version, result.value)
 }
 
 func (t *Tracker) transition(ctx context.Context, operation string, contextFactory func(context.Context) (context.Context, context.CancelFunc), hardLimit time.Duration, update func(context.Context, int64, int32) (int32, error)) {
@@ -293,7 +267,7 @@ func (t *Tracker) warn(ctx context.Context, operation string, err error) {
 	requestID := t.requestID
 	claimID := t.claimID
 	t.mu.Unlock()
-	slog.WarnContext(ctx, "结算意图旁路写失败，主链路继续",
+	slog.WarnContext(ctx, "结算意图状态写失败",
 		slog.String("operation", operation),
 		slog.Int64("tenant_id", tenantID),
 		slog.String("request_id", requestID),

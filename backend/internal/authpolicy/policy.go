@@ -11,11 +11,18 @@ type Settings interface {
 }
 
 type Policy struct {
-	settings Settings
+	settings                   Settings
+	publicRegistrationTenantID int64
 }
 
-func New(settings Settings) Policy {
-	return Policy{settings: settings}
+func New(settings Settings, publicRegistrationTenantID int64) Policy {
+	return Policy{settings: settings, publicRegistrationTenantID: publicRegistrationTenantID}
+}
+
+// PublicRegistrationTenantAllowed 限定匿名注册只能创建部署者工作租户的最终用户。
+// 下级租户用户由该租户管理员在已认证的管理入口创建，不接受匿名请求自报租户。
+func (p Policy) PublicRegistrationTenantAllowed(_ context.Context, tenantID int64) (bool, error) {
+	return p.publicRegistrationTenantID > 0 && tenantID == p.publicRegistrationTenantID, nil
 }
 
 func (p Policy) PasswordRegistrationAllowed(ctx context.Context, tenantID int64) (bool, error) {
