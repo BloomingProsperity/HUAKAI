@@ -1051,6 +1051,7 @@ func mountAdminRoutes(r chi.Router, d *deps) {
 		stagedStore := accountintake.NewStagedStore(d.pgPool, d.credentialKeys)
 		intakeService := accountintake.NewService(d.pgPool, d.credentialStore).
 			WithAgentTaskRegistrar(codexagent.NewTaskBroker(auth.NewSSRFProtectedOAuthClient(nil))).
+			WithAgentRuntimeRegistrar(codexagent.NewRuntimeRegistrar(auth.NewSSRFProtectedOAuthClient(nil))).
 			WithProjectEnricher(d.projectEnricher).
 			WithImportCredentialRefresher(d.importCredentialRefresher).
 			WithProxyResolver(accountproxyimport.New(d.credentialKeys)).
