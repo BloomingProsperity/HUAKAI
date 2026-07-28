@@ -44,40 +44,15 @@ func TestSecurityHeaders_Present(t *testing.T) {
 	}
 }
 
-// SPA「文档面」(非 API 路径,如 /login、/oauth/callback)必须拿到能加载自身脚本/样式的 CSP,
-// 否则 default-src 'none' 会连内嵌前端自己的 JS/CSS 一起拦死 → 整个页面白屏。
-// 变异:若 securityHeaders 对所有路径恒设 default-src 'none'(退回分流前),script-src 'self'
-// 断言与"不得含 default-src 'none'"断言即 RED —— 这正是活栈测抓到的白屏 bug。
-func TestSecurityHeaders_SPADocumentGetsLoadableCSP(t *testing.T) {
+// 当前进程只提供 API，未命中路由也不得获得可自举脚本或样式的文档 CSP。
+// 变异：恢复页面专用 CSP 分支后，非 API 路径会包含 script-src 'self'，本测试转红。
+func TestSecurityHeaders_APIOnlyPathsRemainLockedDown(t *testing.T) {
 	for _, path := range []string{"/login", "/oauth/callback", "/"} {
 		rec := httptest.NewRecorder()
 		securityHeaders(nil)(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-		csp := rec.Header().Get("Content-Security-Policy")
-		if strings.Contains(csp, "default-src 'none'") {
-			t.Fatalf("%s 是 SPA 文档,不得用 default-src 'none'(会白屏);got %q", path, csp)
+		if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'" {
+			t.Errorf("%s 的 CSP=%q，期望 API-only 严格策略", path, got)
 		}
-		if !strings.Contains(csp, "script-src 'self'") {
-			t.Errorf("%s 的 CSP 必须允许 script-src 'self' 以自举;got %q", path, csp)
-		}
-		if !strings.Contains(csp, "frame-ancestors 'none'") {
-			t.Errorf("%s 的 CSP 仍须保留 frame-ancestors 'none' 防点击劫持;got %q", path, csp)
-		}
-		for _, required := range []string{
-			"script-src-attr 'none'",
-			"object-src 'none'",
-			"frame-src 'none'",
-			"base-uri 'none'",
-		} {
-			if !strings.Contains(csp, required) {
-				t.Errorf("%s 的 CSP 缺少 %q;got %q", path, required, csp)
-			}
-		}
-	}
-	// 对照:API 路径必须仍是彻底锁死的严格 CSP(分流不能把 API 也放松)。
-	rec := httptest.NewRecorder()
-	securityHeaders(nil)(okHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/auth/login", nil))
-	if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'none'; frame-ancestors 'none'" {
-		t.Errorf("API 路径 CSP 必须保持严格 default-src 'none';got %q", got)
 	}
 }
 

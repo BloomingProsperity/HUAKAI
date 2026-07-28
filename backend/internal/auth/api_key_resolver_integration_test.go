@@ -155,6 +155,37 @@ func readAPIKeyLastUsedAt(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	return ts
 }
 
+func waitForAPIKeyLastUsedAtAfter(
+	t *testing.T,
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	resolver *APIKeyResolver,
+	plaintext string,
+	apiKeyID int64,
+	after time.Time,
+) pgtype.Timestamptz {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var observed pgtype.Timestamptz
+	for {
+		if _, err := resolver.Resolve(ctx, newRequest(t, "Bearer "+plaintext)); err != nil {
+			t.Fatalf("有效 Key 解析失败: %v", err)
+		}
+		observed = readAPIKeyLastUsedAt(t, ctx, pool, apiKeyID)
+		if observed.Valid && observed.Time.After(after) {
+			return observed
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("尽力写入在重试窗口内未推进 last_used_at: got %v, after %s", observed, after)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("等待 last_used_at 推进: %v", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
 func TestAPIKeyResolver_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -222,7 +253,7 @@ func TestAPIKeyResolver_IPBlacklistFromQueryDeniesBeforeAllowlist(t *testing.T) 
 }
 
 func TestAPIKeyResolver_TouchesLastUsedAtOnSuccessfulResolve(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := openIntegrationPool(t, ctx)
 	seed := seedAPIKey(t, ctx, pool, apiKeySeedOpts{})
@@ -230,30 +261,8 @@ func TestAPIKeyResolver_TouchesLastUsedAtOnSuccessfulResolve(t *testing.T) {
 	setAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID, old)
 
 	r := NewAPIKeyResolver(dbauth.New(pool))
-	if _, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext)); err != nil {
-		t.Fatalf("first Resolve: %v", err)
-	}
-	first := readAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID)
-	if !first.Valid {
-		t.Fatalf("successful Resolve must set last_used_at; got NULL")
-	}
-	if !first.Time.After(old) {
-		t.Fatalf("successful Resolve must advance last_used_at beyond old timestamp: got %s, old %s",
-			first.Time, old)
-	}
-
-	time.Sleep(20 * time.Millisecond)
-	if _, err := r.Resolve(ctx, newRequest(t, "Bearer "+seed.plaintext)); err != nil {
-		t.Fatalf("second Resolve: %v", err)
-	}
-	second := readAPIKeyLastUsedAt(t, ctx, pool, seed.apiKeyID)
-	if !second.Valid {
-		t.Fatalf("second successful Resolve must keep last_used_at non-NULL")
-	}
-	if !second.Time.After(first.Time) {
-		t.Fatalf("second successful Resolve must advance last_used_at again: first %s, second %s",
-			first.Time, second.Time)
-	}
+	first := waitForAPIKeyLastUsedAtAfter(t, ctx, pool, r, seed.plaintext, seed.apiKeyID, old)
+	_ = waitForAPIKeyLastUsedAtAfter(t, ctx, pool, r, seed.plaintext, seed.apiKeyID, first.Time)
 }
 
 func TestAPIKeyResolver_FailedAuthDoesNotTouchLastUsedAt(t *testing.T) {

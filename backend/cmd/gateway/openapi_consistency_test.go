@@ -616,6 +616,23 @@ func TestAT_GATEWAY_route_uncovered_404(t *testing.T) {
 	}
 }
 
+// Gateway 只提供 API。变异：重新挂载 SPA NotFound 处理器后，这些文档路径会返回
+// 200 HTML，本测试必须转红。
+func TestAT_GATEWAY_APIOnlyDocumentPathsReturn404(t *testing.T) {
+	r := buildTestRouter(t)
+	for _, path := range []string{"/", "/login", "/oauth/callback"} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status=%d body=%s，期望 API-only 404", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(strings.ToLower(rec.Header().Get("Content-Type")), "text/html") {
+			t.Errorf("%s 不得返回 HTML 文档，Content-Type=%q", path, rec.Header().Get("Content-Type"))
+		}
+	}
+}
+
 func TestAT_RT_001_RealtimeRouteReturnsExplicitRoadmapError(t *testing.T) {
 	r := buildTestRouter(t)
 	rec := httptest.NewRecorder()

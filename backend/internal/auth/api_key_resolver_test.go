@@ -148,6 +148,39 @@ func TestAPIKeyResolverCarriesModelAllowlist(t *testing.T) {
 	}
 }
 
+func TestAPIKeyResolverTouchFailureDoesNotRejectValidKey(t *testing.T) {
+	token := "hk_test_touch_failure_token"
+	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("生成测试 hash: %v", err)
+	}
+	store := &fakeInboundAuthQueries{
+		rows: []dbauth.LookupAPIKeysByPrefixRow{{
+			ID:           101,
+			TenantID:     11,
+			UserID:       22,
+			KeyHash:      string(hash),
+			KeyStatus:    "active",
+			UserStatus:   "active",
+			UserGroup:    "default",
+			TenantStatus: "active",
+		}},
+		touchErr: errors.New("模拟遥测写入失败"),
+	}
+	resolver := &APIKeyResolver{q: store}
+
+	identity, err := resolver.Resolve(context.Background(), apiKeyTestRequest("Bearer "+token, "203.0.113.7:5100", ""))
+	if err != nil {
+		t.Fatalf("遥测写入失败不得拒绝有效 Key: %v", err)
+	}
+	if identity.TenantID != 11 || identity.APIKeyID != 101 || identity.UserID != 22 {
+		t.Fatalf("identity=%+v, want tenant=11 key=101 user=22", identity)
+	}
+	if store.touchCalls != 1 {
+		t.Fatalf("touchCalls=%d, want 1", store.touchCalls)
+	}
+}
+
 func mustClientIPResolver(t *testing.T, cidrs ...string) *clientip.Resolver {
 	t.Helper()
 	r, err := clientip.NewResolver(cidrs)

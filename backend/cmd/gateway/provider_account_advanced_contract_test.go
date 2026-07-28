@@ -1,30 +1,12 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountadvanced"
 )
-
-func TestProviderAccountAdvancedFieldMirrors完全一致(t *testing.T) {
-	raw, err := os.ReadFile("../../../frontend/src/features/accounts/advancedFields.json")
-	if err != nil {
-		// 前端已按 Owner 决定整体抛弃重写,mirror 文件暂缺;前端重建带回该文件后
-		// 本测试自动恢复守护前后端高级字段规格一致(accountadvanced.Specs())。
-		t.Skip("前端 mirror 文件暂缺(前端重写中),跳过前后端字段一致性校验")
-	}
-	var frontend []accountadvanced.FieldSpec
-	if err := json.Unmarshal(raw, &frontend); err != nil {
-		t.Fatalf("解析前端高级字段 mirror: %v", err)
-	}
-	if backend := accountadvanced.Specs(); !reflect.DeepEqual(frontend, backend) {
-		t.Fatalf("前后端高级字段规格漂移\nfrontend=%+v\nbackend=%+v", frontend, backend)
-	}
-}
 
 func TestProviderAccountAdvancedOpenAPI三类Schema字段齐全(t *testing.T) {
 	raw, err := os.ReadFile("../../../docs/openapi/openapi.yaml")
