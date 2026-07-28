@@ -1275,3 +1275,137 @@ WHERE c.conrelid=$1::regclass AND c.conname=$2`, table, constraint).Scan(&defini
 		t.Fatalf("约束 %s.%s=%q，模式 %q presence=%v，期望 %v", table, constraint, definition, mode, strings.Contains(definition, mode), present)
 	}
 }
+
+// TestSessionUpgradeToAgentIdentityCompletesUpdate 咬住「把已有会话号升级成 Agent
+// Identity」这条主用法能真的写进库。
+//
+// 变异：把事务内稳定性复核改回用铸号后的候选（ensureStableItem 传 candidate 而非
+// planCandidate），重算会拿铸后材料去匹配已有凭据、匹配不上而判成 create ≠ 计划的
+// update，本用例即报 ErrExecutionStale——而那时上游身份已经白铸出去了。
+// TestSessionImportWithMintCreatesAgentIdentity 咬住"导入会话号并就地铸成 Agent
+// Identity"这条真链能端到端落库。
+//
+// 覆盖三处本次修复：
+//   - 凭据刷新先于铸号（顺序颠倒会拿过期票去注册）；
+//   - 铸号前候选必须深拷贝 payload：铸号会把会话材料清零，共享底层数组会让事务内复核
+//     只看到一串零字节而判成无效凭据（变异：去掉深拷贝即在此转红）；
+//   - 成功路径不得报孤儿 runtime 告警。
+//
+// 两处覆盖边界（如实记录，不虚报）：
+//
+//  1. "预检与写库按同一最终 auth_mode 判定"这条端到端属性本用例咬不住：该 fixture 下
+//     渠道内没有其它账号，codex_cli_oauth 与 codex_agent 的混合渠道风险和协议兼容判定
+//     结果相同，不一致显现不出来。effectiveAuthMode 的行为本身由单元用例
+//     TestEffectiveAuthModeReflectsMintOutcome 判别性覆盖；端到端一致性目前靠代码审查。
+//     要真正咬住，需要先在同渠道种一个不同 auth_mode 的账号作为风险对照。
+//
+//  2. ensureStableItem 改用铸号前候选（修复"升级已有账号必判 stale"）没有集成覆盖：
+//     JSON 导入的身份来源恒为 import_payload、不可信，命中已有账号会先被
+//     subject_identity_unverified 判成 conflict，走不到 update 分支。构造 update 需要一条
+//     OAuth 采集流程产出的可信身份 fixture，不在本次修复范围内。
+func TestSessionImportWithMintCreatesAgentIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
+	service := newAccountIntakeService(t, pool)
+	reg := &fakeRuntimeRegistrar{runtimeID: "rt-minted-e2e"}
+	service = service.WithAgentRuntimeRegistrar(reg).
+		WithAgentTaskRegistrar(&taskIDStampingRegistrar{taskID: "task-minted-e2e"})
+
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceJSON,
+		DefaultVendor:   credentialstore.VendorOpenAI,
+		DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content: `{"refresh_token":"refresh-live","access_token":"tok-live",` +
+			`"chatgpt_user_id":"user-mint","chatgpt_account_id":"workspace-mint"}`,
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "mint-" + seed.suffix, AccountType: "session",
+			MintAgentIdentity: true,
+		},
+		Now: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Plan.Summary.Create != 1 {
+		t.Fatalf("plan=%+v，期望 create=1", planned.Plan)
+	}
+
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		Confirmations: confirmationsFor(planned.Plan.Items[0]),
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID:     "req-mint-e2e",
+	})
+	if err != nil {
+		t.Fatalf("铸号导入返回错误: %v", err)
+	}
+	if executed.Summary.Created != 1 || executed.Items[0].Status != StatusCreated {
+		t.Fatalf("execution=%+v，期望成功创建", executed)
+	}
+	if !reg.called || reg.gotToken != "tok-live" {
+		t.Fatalf("未用会话 access_token 发起注册: called=%v token=%q", reg.called, reg.gotToken)
+	}
+	// 成功路径不得报孤儿告警：那只应在铸号成功而写库失败时出现。
+	for _, w := range executed.Items[0].Warnings {
+		if strings.Contains(w, "agent_identity_orphan_runtime") {
+			t.Fatalf("成功却报孤儿 runtime 告警: %v", executed.Items[0].Warnings)
+		}
+	}
+
+	var authMode string
+	if err := pool.QueryRow(ctx,
+		`SELECT auth_mode FROM account_credentials
+		 WHERE tenant_id=$1 AND provider_account_id=$2 AND deleted_at IS NULL`,
+		seed.tenantID, executed.Items[0].ProviderAccountID,
+	).Scan(&authMode); err != nil {
+		t.Fatal(err)
+	}
+	if authMode != credentialstore.AuthModeCodexAgent {
+		t.Fatalf("落库 auth_mode=%q，期望 %q", authMode, credentialstore.AuthModeCodexAgent)
+	}
+
+	// 铸号换掉了候选形态，必须再走一次 Agent 任务登记，否则落库的凭据没有 task_id，
+	// 账号看着导入成功、首次转发必然失败（转发授权强制要求该字段）。
+	// 变异：去掉铸号后的二次 prepareExecutionCandidate 调用时，本断言转红。
+	record, err := service.credentials.ResolveActive(ctx, seed.tenantID, executed.Items[0].ProviderAccountID)
+	if err != nil {
+		t.Fatalf("读取落库凭据失败: %v", err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	var mintedFields map[string]any
+	if err := json.Unmarshal(record.PlaintextPayload, &mintedFields); err != nil {
+		t.Fatalf("落库材料不是 JSON: %v", err)
+	}
+	if taskID, _ := mintedFields["task_id"].(string); strings.TrimSpace(taskID) == "" {
+		t.Fatalf("落库的 Agent Identity 缺少 task_id，账号首次转发必然失败: %v", mintedFields)
+	}
+}
+
+// confirmationsFor 把计划项要求的确认原样回填，让集成用例聚焦被测行为而不是确认清单。
+func confirmationsFor(item intake.Item) []string {
+	return append([]string(nil), item.RequiredConfirmations...)
+}
+
+// taskIDStampingRegistrar 模拟 Agent 任务登记的真实语义:在既有材料上补一个 task_id，
+// 而不是整包替换——整包替换会把铸出的身份字段抹掉，测不出真实链路。
+type taskIDStampingRegistrar struct {
+	taskID string
+	calls  int
+}
+
+func (r *taskIDStampingRegistrar) EnsureTask(_ context.Context, payload []byte) ([]byte, error) {
+	r.calls++
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, err
+	}
+	if id, _ := fields["task_id"].(string); strings.TrimSpace(id) == "" {
+		fields["task_id"] = r.taskID
+	}
+	return json.Marshal(fields)
+}

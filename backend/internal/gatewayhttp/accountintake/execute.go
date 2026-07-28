@@ -83,19 +83,41 @@ func (s *Service) Execute(ctx context.Context, in ExecuteInput) (ExecutionResult
 				break
 			}
 			candidate := prepared.candidates[item.Index]
+			// 先补齐凭据(过期即刷新)再考虑铸号:铸号要拿 access_token 去上游注册,
+			// 用一张已过期的会话票必然 401。顺序颠倒会出现「不开铸号能导入、开了反而
+			// 整批失败」的反直觉结果。
 			candidate, err = s.prepareExecutionCandidate(ctx, candidate)
 			if err != nil {
 				result.Status, result.Code, result.Message = preparationFailure(candidate, err)
 				break
 			}
+			minted, mintErr := s.mintForExecution(ctx, prepared.input.Account.MintAgentIdentity, candidate)
+			if mintErr != nil {
+				// 复核副本是独立分配，外层 defer 覆盖不到；失败分支必须就地擦，
+				// 否则会话 token 会一直留在堆上等 GC。
+				privacy.Zeroize(minted.PlanCandidate.Payload)
+				result.Status, result.Code, result.Message = preparationFailure(minted.Candidate, mintErr)
+				result.Warnings = appendOrphanRuntimeWarning(result.Warnings, minted.RuntimeID)
+				break
+			}
+			candidate = minted.Candidate
+			preMintCandidate, mintedRuntimeID := minted.PlanCandidate, minted.RuntimeID
 			if candidate.AuthMode == credentialstore.AuthModeCodexAgent {
 				privacy.Zeroize(prepared.candidates[item.Index].Payload)
 				prepared.candidates[item.Index] = candidate
 			}
 			if item.Action == intake.ActionCreate {
-				result = s.executeCreate(ctx, prepared, in, item, candidate)
+				result = s.executeCreate(ctx, prepared, in, item, candidate, preMintCandidate)
 			} else {
-				result = s.executeUpdate(ctx, prepared, in, item, candidate)
+				result = s.executeUpdate(ctx, prepared, in, item, candidate, preMintCandidate)
+			}
+			// 复核副本是独立分配，不在 prepared.candidates 的 defer 清零覆盖面内；
+			// 它整份持有会话 token 或 Agent 私钥，用完立即擦，不等 GC。
+			privacy.Zeroize(preMintCandidate.Payload)
+			// 铸号是不可回滚的上游副作用:写库没成功就意味着上游多了一个无人认领的
+			// runtime,必须让运营在结果里直接看到它,否则只能去翻日志。
+			if result.Status != StatusCreated && result.Status != StatusUpdated {
+				result.Warnings = appendOrphanRuntimeWarning(result.Warnings, mintedRuntimeID)
 			}
 		default:
 			result.Status = StatusFailed
@@ -176,26 +198,6 @@ func (s *Service) prepareExecutionCandidate(ctx context.Context, candidate crede
 	return candidate, nil
 }
 
-func preparationFailure(candidate credentialacq.CredentialCandidate, err error) (ExecutionStatus, string, string) {
-	switch {
-	case errors.Is(err, ErrImportCredentialRefreshUnavailable):
-		return StatusFailed, "credential_refresh_unavailable", "账号凭据已经过期，但导入刷新器不可用，账号未写入"
-	case errors.Is(err, ErrImportCredentialRefreshFailed):
-		return StatusFailed, "credential_refresh_failed", "账号凭据已经过期且刷新失败，账号未写入"
-	case errors.Is(err, projectenrich.ErrProjectMetadataConflict):
-		return StatusConflict, "project_metadata_conflict", "账号项目身份与上游识别结果冲突，需要人工消歧"
-	case errors.Is(err, projectenrich.ErrProjectInputRequired):
-		return StatusFailed, "project_id_required", "当前套餐要求部署者提供 Google Cloud project_id，账号未写入"
-	case errors.Is(err, projectenrich.ErrProjectMetadataUnavailable):
-		return StatusFailed, "project_metadata_unavailable", "账号项目身份无法确认，账号未写入"
-	case credentialstore.Normalize(candidate.Vendor) == credentialstore.VendorOpenAI &&
-		credentialstore.Normalize(candidate.AuthMode) == credentialstore.AuthModeCodexAgent:
-		return StatusFailed, "agent_task_registration_failed", "Agent Identity 任务登记失败，账号未写入"
-	default:
-		return StatusFailed, "account_metadata_preparation_failed", "账号元数据准备失败，账号未写入"
-	}
-}
-
 func importCredentialNeedsRefresh(payload []byte, now time.Time) bool {
 	var fields map[string]any
 	if json.Unmarshal(payload, &fields) != nil {
@@ -209,7 +211,9 @@ func importCredentialNeedsRefresh(payload []byte, now time.Time) bool {
 	return !expiresAt.After(now.Add(2 * time.Minute))
 }
 
-func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {
+// executeCreate 的 planCandidate 是预检据以成案的那份候选(铸号前)，只用于事务内
+// 稳定性复核；写库一律用 candidate(铸号后的最终材料)。
+func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate, planCandidate credentialacq.CredentialCandidate) ExecutionItem {
 	result := baseExecutionItem(expected)
 	applyExecutionSubscription(&result, candidate.Subscription)
 	var accountID int64
@@ -222,7 +226,7 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 		if err := lockTenantIntake(ctx, tx, prepared.input.TenantID); err != nil {
 			return err
 		}
-		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
+		if err := ensureStableItem(ctx, txStore, prepared.input, planCandidate, expected); err != nil {
 			return err
 		}
 		if isCodexIntake(prepared.input) {
@@ -338,7 +342,8 @@ func (s *Service) executeCreate(ctx context.Context, prepared preparedPlan, in E
 	return result
 }
 
-func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate credentialacq.CredentialCandidate) ExecutionItem {
+// executeUpdate 的 planCandidate 同 executeCreate：复核用铸号前候选，写库用铸号后材料。
+func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in ExecuteInput, expected intake.Item, candidate, planCandidate credentialacq.CredentialCandidate) ExecutionItem {
 	result := baseExecutionItem(expected)
 	applyExecutionSubscription(&result, candidate.Subscription)
 	var metadata credentialstore.CredentialMetadata
@@ -350,7 +355,7 @@ func (s *Service) executeUpdate(ctx context.Context, prepared preparedPlan, in E
 		if err := lockTenantIntake(ctx, tx, prepared.input.TenantID); err != nil {
 			return err
 		}
-		if err := ensureStableItem(ctx, txStore, prepared.input, candidate, expected); err != nil {
+		if err := ensureStableItem(ctx, txStore, prepared.input, planCandidate, expected); err != nil {
 			return err
 		}
 		if err := accountcreate.ValidateCredentialCompatibility(

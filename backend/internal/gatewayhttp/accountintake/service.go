@@ -23,13 +23,14 @@ import (
 )
 
 type Service struct {
-	pool        *pgxpool.Pool
-	credentials *credentialstore.Store
-	agentTasks  AgentTaskRegistrar
-	proxies     ProxyResolver
-	projects    projectenrich.Enricher
-	refresher   ImportCredentialRefresher
-	activation  AccountActivationNotifier
+	pool           *pgxpool.Pool
+	credentials    *credentialstore.Store
+	agentTasks     AgentTaskRegistrar
+	agentRegistrar AgentRuntimeRegistrar
+	proxies        ProxyResolver
+	projects       projectenrich.Enricher
+	refresher      ImportCredentialRefresher
+	activation     AccountActivationNotifier
 }
 
 type ImportCredentialRefresher interface {
@@ -87,6 +88,14 @@ func NewService(pool *pgxpool.Pool, credentials *credentialstore.Store) *Service
 func (s *Service) WithAgentTaskRegistrar(registrar AgentTaskRegistrar) *Service {
 	if s != nil {
 		s.agentTasks = registrar
+	}
+	return s
+}
+
+// WithAgentRuntimeRegistrar 接入"从会话铸 Agent Identity"能力；仅当导入显式请求铸号时触发。
+func (s *Service) WithAgentRuntimeRegistrar(registrar AgentRuntimeRegistrar) *Service {
+	if s != nil {
+		s.agentRegistrar = registrar
 	}
 	return s
 }
@@ -324,11 +333,32 @@ func enrichPlan(plan *intake.Plan, candidates []credentialacq.CredentialCandidat
 	}
 	for index := range plan.Items {
 		item := &plan.Items[index]
-		if item.Action != intake.ActionCreate || index >= len(candidates) {
+		if index >= len(candidates) {
 			continue
 		}
 		candidate := candidates[index]
-		if err := accountcreate.ValidateProtocolCompatibility(family, defaults.AccountType, candidate.Vendor, candidate.AuthMode); err != nil {
+		// 按最终形态判定:开了铸号开关的会话号，落库时已是 Agent Identity。
+		planAuthMode := effectiveAuthMode(defaults.MintAgentIdentity, candidate.Vendor, candidate.AuthMode)
+		// 更新项本不做这层预检(轮换既有账号的凭据不改变其形态)，但开了铸号的更新项
+		// 会把既有账号换成 Agent Identity——形态确实变了。执行阶段是先铸号(不可回滚)
+		// 再写库，等到事务里才发现协议不兼容就已经在上游留下孤儿 runtime 了，
+		// 所以这类更新项必须在产生任何上游副作用之前先过同一道协议兼容门。
+		if item.Action == intake.ActionUpdate {
+			if planAuthMode != candidate.AuthMode {
+				if err := accountcreate.ValidateProtocolCompatibility(family, defaults.AccountType, candidate.Vendor, planAuthMode); err != nil {
+					item.Action = intake.ActionFail
+					item.Code = "provider_protocol_incompatible"
+					item.Message = "铸号后的凭据模式与 provider 协议不兼容"
+					item.FieldChanges = nil
+					item.RequiredConfirmations = nil
+				}
+			}
+			continue
+		}
+		if item.Action != intake.ActionCreate {
+			continue
+		}
+		if err := accountcreate.ValidateProtocolCompatibility(family, defaults.AccountType, candidate.Vendor, planAuthMode); err != nil {
 			item.Action = intake.ActionFail
 			item.Code = "provider_protocol_incompatible"
 			item.Message = "账号类型或凭据模式与 provider 协议不兼容"
@@ -338,7 +368,7 @@ func enrichPlan(plan *intake.Plan, candidates []credentialacq.CredentialCandidat
 		}
 		account := mixedchannelrisk.Account{
 			ProviderID: defaults.ProviderID, ChannelID: defaults.ChannelID,
-			AccountType: defaults.AccountType, Vendor: candidate.Vendor, AuthMode: candidate.AuthMode,
+			AccountType: defaults.AccountType, Vendor: candidate.Vendor, AuthMode: planAuthMode,
 		}
 		report := mixedchannelrisk.Evaluate(account, peers)
 		if report.HighRisk {
