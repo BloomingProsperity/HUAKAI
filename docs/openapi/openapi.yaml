@@ -2009,6 +2009,7 @@ paths:
       tags: [admin]
       summary: Platform-admin usage overview
       operationId: getAdminUsageOverview
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/overview_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2073,6 +2074,7 @@ paths:
       tags: [admin]
       summary: Platform-admin usage counts by provider account
       operationId: getAdminUsageProviderAccountCounts
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/provider_account_counts_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2173,6 +2175,7 @@ paths:
         (provider_order_ref, request_fingerprint, compliance fields). Requires
         tenant-scoped admin credential.
       operationId: adminExportOrdersCSV
+      x-huakai-required-role: tenant_scoped_admin
       tags: [admin, payments]
       parameters:
         - name: from
@@ -2212,6 +2215,7 @@ paths:
         given date window (max 366 days). Excludes sensitive columns. Requires
         tenant-scoped admin credential.
       operationId: adminExportRefundsCSV
+      x-huakai-required-role: tenant_scoped_admin
       tags: [admin, payments]
       parameters:
         - name: from
@@ -2349,6 +2353,7 @@ paths:
         前端以短间隔轮询无 before_id 的首页即得"实时"视图。platform_admin only。
         本端点不汇总其他权限域的领域日志。
       operationId: listAdminRuntimeLogs
+      x-huakai-required-role: platform_admin
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/runtimeloghttp/handler.go]
       parameters:
@@ -2419,6 +2424,7 @@ paths:
         不能清空全表，也不能删除 30 天内日志；需要显式 confirm=true，且管理操作日志写入失败时拒绝执行。
         资金账本、幂等事实、处罚状态和待恢复任务不在普通日志白名单内。platform_admin only。
       operationId: cleanupAdminRuntimeLogs
+      x-huakai-required-role: platform_admin
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/runtimeloghttp/handler.go]
       requestBody:
@@ -2444,6 +2450,7 @@ paths:
         同时返回异常优先/Info 队列容量、入库与丢弃计数，以及固定 30 天保留器的最近尝试、
         成功、积压、租约冲突和失败分类。platform_admin only。
       operationId: getAdminRuntimeLogSinkHealth
+      x-huakai-required-role: platform_admin
       tags: [admin, observability]
       x-huakai-spec-source: [backend/internal/runtimeloghttp/handler.go]
       responses:
@@ -2651,6 +2658,7 @@ paths:
         system-diagnostic enums/counts only — never secrets or user data. No
         upstream paid calls; zero billing side effects. Requires platform-admin.
       operationId: getAdminModules
+      x-huakai-required-role: platform_admin
       tags: [admin, observability]
       parameters:
         - name: category
@@ -2673,6 +2681,7 @@ paths:
       summary: Module-knowledge spine (alias)
       description: Alias for /admin/v1/modules for path-prefix compatibility.
       operationId: getAdminModulesAlias
+      x-huakai-required-role: platform_admin
       tags: [admin, observability]
       parameters:
         - name: category
@@ -2694,6 +2703,7 @@ paths:
       tags: [admin]
       summary: Platform-admin usage cost leaderboard
       operationId: getAdminUsageLeaderboard
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/leaderboard_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2750,6 +2760,7 @@ paths:
       tags: [admin]
       summary: Platform-admin usage performance panel
       operationId: getAdminUsagePerformance
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/performance_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2804,6 +2815,7 @@ paths:
       tags: [admin]
       summary: Platform-admin performance metrics summary
       operationId: getAdminUsagePerfMetricsSummary
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/perf_metrics_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2856,6 +2868,7 @@ paths:
       tags: [admin]
       summary: Platform-admin performance metrics by requested_model bucket
       operationId: getAdminUsagePerfMetricsByBucket
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/perf_metrics_handler.go
         - backend/cmd/gateway/routes_usageadmin.go
@@ -2912,6 +2925,7 @@ paths:
       tags: [admin]
       summary: Platform-admin usage health score
       operationId: getAdminUsageHealthScore
+      x-huakai-required-role: platform_admin
       x-huakai-spec-source:
         - backend/internal/usageanalyticshttp/perf_metrics_handler.go
         - backend/internal/healthscore/score.go
@@ -3493,6 +3507,7 @@ paths:
       tags: [admin-audit]
       summary: List cost disputes for an admin-authorized tenant
       operationId: listAdminCostDisputes
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source:
         - docs/HUAKAI工程设计手册.md
       security:
@@ -3757,6 +3772,7 @@ paths:
       tags: [admin-audit]
       summary: Resolve, reject, or mark a cost dispute under review
       operationId: resolveCostDispute
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       security:
         - adminBearerAuth: []
@@ -4637,6 +4653,7 @@ paths:
       tags: [admin-email]
       summary: Read tenant SMTP email settings
       operationId: getAdminEmailSettings
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       parameters:
         - name: tenant_id
@@ -4657,6 +4674,7 @@ paths:
       tags: [admin-email]
       summary: Upsert tenant SMTP email settings
       operationId: updateAdminEmailSettings
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       requestBody:
         required: true
@@ -4679,6 +4697,7 @@ paths:
       tags: [admin-email]
       summary: Send a test email using tenant SMTP settings
       operationId: testAdminEmailSettings
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
       requestBody:
         required: true
@@ -4701,6 +4720,7 @@ paths:
       tags: [admin-email]
       summary: Render an auth email template with sample values (no send)
       operationId: previewAdminEmailTemplate
+      x-huakai-required-role: tenant_scoped_admin
       x-huakai-spec-source: [backend/internal/emailsettingshttp/handler.go]
       requestBody:
         required: true
@@ -13419,6 +13439,7 @@ paths:
       tags: [admin-billing]
       summary: 查询下级租户经营钱包
       operationId: getAdminTenantWallet
+      x-huakai-required-role: tenant_scoped_admin
       description: 部署者可查询下级租户；下级租户管理员只能查询自身租户。
       parameters:
         - in: query
@@ -13442,6 +13463,7 @@ paths:
       tags: [admin-billing]
       summary: 查询人工额度交易日志
       operationId: listAdminBalanceTransactions
+      x-huakai-required-role: tenant_scoped_admin
       description: 返回不可变双边账本的交易事实；部署者可按租户查询，下级租户管理员只能查询自身租户。
       parameters:
         - in: query
