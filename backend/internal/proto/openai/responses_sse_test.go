@@ -207,3 +207,34 @@ func runResponsesGoldenSSE(t *testing.T, fixture string) ([]proto.CanonicalEvent
 	events = append(events, anyToCanonicalEvents(t, final)...)
 	return events, losses, state
 }
+
+func TestResponsesAdapterBufferedHostedCallsAndCitations(t *testing.T) {
+	adapter := &ResponsesAdapter{}
+	env, _, err := adapter.ProviderResponseToCanonical(context.Background(), []byte(`{
+		"id":"resp_hosted",
+		"model":"gpt-5.5",
+		"status":"completed",
+		"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},
+		"output":[
+			{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"go"}},
+			{"type":"image_generation_call","id":"img_1","status":"failed"},
+			{"type":"message","content":[{"type":"output_text","text":"see","annotations":[{"type":"url_citation","url":"https://example.com","title":"ex"}]}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("ProviderResponseToCanonical: %v", err)
+	}
+	resp := env.BufferedResponse
+	if resp.Usage.WebSearchCalls != 1 || resp.Usage.ImageGenerationCalls != 0 {
+		t.Fatalf("per-call usage=%+v", resp.Usage)
+	}
+	if len(resp.Content) != 3 {
+		t.Fatalf("content=%+v", resp.Content)
+	}
+	if resp.Content[0].Type != "web_search_call" || !strings.Contains(string(resp.Content[0].Raw), "ws_1") {
+		t.Fatalf("hosted call dropped: %+v", resp.Content[0])
+	}
+	if resp.Content[2].Type != "text" || !strings.Contains(string(resp.Content[2].Annotations), "url_citation") {
+		t.Fatalf("citation dropped: %+v", resp.Content[1])
+	}
+}

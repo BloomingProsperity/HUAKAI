@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -1096,5 +1097,41 @@ func TestMarshalReplicateImageFamilyFailsClosedOnChatLane(t *testing.T) {
 	}
 	if _, ok := BuildDefaultProtocolAdapterRegistry().adapters["replicate_image"]; ok {
 		t.Fatal("replicate_image 被注册进入站协议注册表——图片 lane 不需要;若有意接 chat lane,须同步 marshal 支持或例外表登记")
+	}
+}
+
+func TestInjectRequestControlsKeepsHostedToolsOnResponses(t *testing.T) {
+	env := &proto.HCSF{
+		RequestControls: proto.RequestControls{
+			Tools: []proto.CanonicalTool{
+				{Name: "f1", Kind: "function", Description: "fn", InputSchema: json.RawMessage(`{}`)},
+				{Name: "web_search", Kind: "web_search", Declaration: json.RawMessage(`{"type":"web_search","filters":{"allowed_domains":["example.com"]}}`)},
+			},
+		},
+	}
+	out, err := injectRequestControls([]byte(`{}`), env, "openai_responses")
+	if err != nil {
+		t.Fatalf("inject responses: %v", err)
+	}
+	if !strings.Contains(string(out), `"type":"web_search"`) || !strings.Contains(string(out), "allowed_domains") {
+		t.Fatalf("hosted declaration lost: %s", out)
+	}
+	if _, err := injectRequestControls([]byte(`{}`), env, "openai_chat"); err == nil {
+		t.Fatal("chat must fail-closed when hosted tools are present")
+	}
+}
+
+func TestMarshalOpenAIChatRejectsHostedTools(t *testing.T) {
+	env := &proto.HCSF{
+		RequestMeta: proto.RequestMeta{Model: "gpt-4o"},
+		RequestControls: proto.RequestControls{
+			Tools: []proto.CanonicalTool{{
+				Name: "web_search", Kind: "web_search",
+				Declaration: json.RawMessage(`{"type":"web_search"}`),
+			}},
+		},
+	}
+	if _, err := MarshalToProviderRequest(env, "openai_chat"); err == nil {
+		t.Fatal("marshal chat must fail-closed")
 	}
 }

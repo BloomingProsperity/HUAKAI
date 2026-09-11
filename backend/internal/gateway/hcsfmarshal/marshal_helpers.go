@@ -265,6 +265,9 @@ func InjectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 	if family == "gemini_messages" {
 		return injectGeminiRequestControls(body, env)
 	}
+	if err := proto.RejectHostedToolsOnFamily(family, env.RequestControls.Tools); err != nil {
+		return nil, err
+	}
 	c := env.RequestControls
 	if c.MaxTokens != nil {
 		if family == "openai_responses" {
@@ -485,6 +488,10 @@ func renderGeminiControlTools(tools []proto.CanonicalTool) ([]any, error) {
 func renderControlTools(family string, tools []proto.CanonicalTool) []any {
 	out := make([]any, 0, len(tools))
 	for _, t := range tools {
+		if proto.ToolKeepsHostedDeclaration(t) {
+			out = append(out, rawJSONValue(t.Declaration))
+			continue
+		}
 		schema := rawJSONValue(t.InputSchema)
 		switch family {
 		case "openai_chat":

@@ -70,7 +70,11 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 	for i, b := range resp.Content {
 		switch b.Type {
 		case "text":
-			msgTexts = append(msgTexts, map[string]any{"type": "output_text", "text": b.Text})
+			part := map[string]any{"type": "output_text", "text": b.Text}
+			if len(b.Annotations) > 0 {
+				part["annotations"] = json.RawMessage(b.Annotations)
+			}
+			msgTexts = append(msgTexts, part)
 		case "tool_use":
 			flushMessage()
 			if b.CallID == "" || b.Name == "" {
@@ -97,6 +101,15 @@ func (o *OpenAIResponsesClient) CanonicalToClientResponse(ctx context.Context, c
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "image_in_response_d10_pending", "d10_image_response_pending", CapabilityImage, "")
 			losses = append(losses, loss)
 		default:
+			if HostedCallItem(b.Type) && len(b.Raw) > 0 {
+				flushMessage()
+				var item map[string]any
+				if err := json.Unmarshal(b.Raw, &item); err != nil {
+					return nil, nil, fmt.Errorf("proto: openai_responses hosted call unmarshal: %w", err)
+				}
+				output = append(output, item)
+				continue
+			}
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "unknown_response_block_type:"+b.Type, "unknown_response_block_type", "", "")
 			losses = append(losses, loss)
 		}

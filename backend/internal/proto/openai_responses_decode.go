@@ -199,15 +199,16 @@ func convertOpenAIResponsesTools(tools []json.RawMessage) ([]CanonicalTool, []Pr
 			if name == "" {
 				return nil, nil, fmt.Errorf("proto: openai_responses tools[%d] function tool missing name", i)
 			}
-			canonicalTools = append(canonicalTools, CanonicalTool{Name: name, Description: description, InputSchema: parameters})
-		case "web_search", "web_search_preview", "code_interpreter", "computer_use_preview", "file_search":
-			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_builtin_tool_native_required:"+head.Type, "builtin_tool_native_required", CapabilityToolUse, "")
-			loss.NativePath = "/v1/native/openai/responses"
-			loss.Suggestion = "use native passthrough at /v1/native/openai/responses; Mandatory Roadmap for plugin shell"
-			losses = append(losses, loss)
+			canonicalTools = append(canonicalTools, CanonicalTool{Name: name, Description: description, InputSchema: parameters, Kind: "function"})
 		default:
-			loss, _ := NewClientLossEntry(ProtocolLossWarning, "responses_unknown_tool_type:"+head.Type, "unknown_tool_type", CapabilityToolUse, "")
-			losses = append(losses, loss)
+			if !HostedToolKind(head.Type) {
+				return nil, nil, fmt.Errorf("%w: %s", ErrUnknownHostedToolKind, head.Type)
+			}
+			canonicalTools = append(canonicalTools, CanonicalTool{
+				Name:        head.Type,
+				Kind:        head.Type,
+				Declaration: cloneRawJSON(rt),
+			})
 		}
 	}
 	return canonicalTools, losses, nil

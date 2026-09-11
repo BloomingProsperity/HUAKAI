@@ -189,7 +189,7 @@ func responsesEventToCanonical(evt responsesStreamEvent, st *ResponsesUpstreamSt
 		usage := responsesCanonicalUsage(nil)
 		stopReason := proto.CanonicalStopEndTurn
 		if evt.Response != nil {
-			usage = responsesCanonicalUsage(evt.Response.Usage)
+			usage = addResponsesOutputHostedUsage(responsesCanonicalUsage(evt.Response.Usage), evt.Response.Output)
 			stopReason = responsesStopReason(evt.Response, responsesHasOpenTool(st))
 		}
 		events = append(events, proto.CanonicalEvent{
@@ -535,35 +535,8 @@ func responsesJSONToCanonical(raw []byte) (proto.CanonicalResponse, []proto.Prot
 		out.Passthrough = &passthrough
 	}
 	for _, item := range resp.Output {
-		switch item.Type {
-		case "message":
-			for _, part := range item.Content {
-				if part.Type == "output_text" && part.Text != "" {
-					out.Content = append(out.Content, proto.CanonicalContentBlock{Type: "text", Text: part.Text})
-				}
-			}
-		case "function_call":
-			args := json.RawMessage(item.Arguments)
-			if len(args) == 0 {
-				args = json.RawMessage("{}")
-			}
-			out.Content = append(out.Content, proto.CanonicalContentBlock{
-				Type:   "tool_use",
-				CallID: firstNonEmptyResponseString(item.CallID, item.ID),
-				Name:   item.Name,
-				Input:  args,
-			})
-		case "reasoning":
-			var summary strings.Builder
-			for _, part := range item.Summary {
-				summary.WriteString(part.Text)
-			}
-			out.Content = append(out.Content, proto.CanonicalContentBlock{
-				Type:             "thinking",
-				Thinking:         summary.String(),
-				ReasoningSummary: summary.String(),
-				Signature:        item.EncryptedContent,
-			})
+		if err := appendResponsesBufferedItem(&out, item); err != nil {
+			return proto.CanonicalResponse{}, nil, err
 		}
 	}
 	if resp.Error != nil && resp.Error.Message != "" {

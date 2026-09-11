@@ -108,6 +108,9 @@ func anthropicRequestThinkingControl(env *proto.HCSF, n proto.CapabilityNode) (m
 }
 
 func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
+	if err := proto.RejectHostedToolsOnFamily("anthropic_messages", env.RequestControls.Tools); err != nil {
+		return nil, err
+	}
 	body := map[string]any{"model": hcsfModel(env), "messages": []any{}, "stream": false}
 	cache := cacheTargets(env)
 	applied := map[string]bool{}
@@ -254,6 +257,9 @@ func marshalOpenAIResponses(env *proto.HCSF) ([]byte, error) {
 }
 
 func marshalGeminiMessages(env *proto.HCSF) ([]byte, error) {
+	if err := proto.RejectHostedToolsOnFamily("gemini_messages", env.RequestControls.Tools); err != nil {
+		return nil, err
+	}
 	if err := protogemini.EnforceThoughtCarry(env); err != nil {
 		return nil, err
 	}

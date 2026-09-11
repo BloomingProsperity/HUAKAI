@@ -31,6 +31,10 @@ type CanonicalTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+	// Kind 区分函数工具与托管/检索档。空或 function 表示函数。
+	Kind string `json:"kind,omitempty"`
+	// Declaration 保存托管/检索档的原始声明，同协议出站必须原样使用。
+	Declaration json.RawMessage `json:"declaration,omitempty"`
 }
 
 // CanonicalMessage 是规范第 1-3 节定义的、按 role 划分的 HCSF 消息。
@@ -43,6 +47,8 @@ type CanonicalMessage struct {
 type CanonicalContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+	// Annotations 保存正文引用/注解原件，支持的路由必须回传。
+	Annotations json.RawMessage `json:"annotations,omitempty"`
 	// Thinking 保存 Anthropic buffered thinking block 的可见思考文本。
 	Thinking string `json:"thinking,omitempty"`
 	// Signature 保存 Anthropic thinking signature；只在协议允许路径透传。

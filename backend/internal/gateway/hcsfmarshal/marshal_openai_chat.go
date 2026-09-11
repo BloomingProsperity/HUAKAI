@@ -8,6 +8,9 @@ import (
 )
 
 func marshalOpenAIChat(env *proto.HCSF) ([]byte, error) {
+	if err := proto.RejectHostedToolsOnFamily("openai_chat", env.RequestControls.Tools); err != nil {
+		return nil, err
+	}
 	body := map[string]any{"model": hcsfModel(env), "messages": []any{}, "stream": false}
 	var messages []any
 	pendingReasoning := ""

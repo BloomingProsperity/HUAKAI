@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -68,11 +69,15 @@ type responsesOutputItem struct {
 	EncryptedContent string                   `json:"encrypted_content,omitempty"`
 	Content          []responsesOutputContent `json:"content,omitempty"`
 	Summary          []responsesReasoningPart `json:"summary,omitempty"`
+	Action           json.RawMessage          `json:"action,omitempty"`
+	Sources          json.RawMessage          `json:"sources,omitempty"`
+	Results          json.RawMessage          `json:"results,omitempty"`
 }
 
 type responsesOutputContent struct {
-	Type string `json:"type,omitempty"`
-	Text string `json:"text,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
 }
 
 type responsesReasoningPart struct {
