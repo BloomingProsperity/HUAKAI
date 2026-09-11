@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 )
 
 func openAIChatToolCall(t *proto.ToolUseNode) map[string]any {
@@ -210,6 +211,7 @@ func InjectRequestControls(raw []byte, env *proto.HCSF, family string) ([]byte, 
 			body["max_tokens"] = *c.MaxTokens
 		}
 	}
+	applyClaudeTranslatedMaxTokens(body, env, family)
 	if c.Temperature != nil {
 		body["temperature"] = *c.Temperature
 	}
@@ -360,7 +362,13 @@ func injectGeminiRequestControls(body map[string]any, env *proto.HCSF) ([]byte, 
 		body["generationConfig"] = generation
 	}
 	if len(c.Tools) > 0 {
-		body["tools"] = renderGeminiControlTools(c.Tools)
+		tools, err := renderGeminiControlTools(c.Tools)
+		if err != nil {
+			return nil, err
+		}
+		if tools != nil {
+			body["tools"] = tools
+		}
 	}
 	mergeRequestPassthrough(body, env)
 	return json.Marshal(body)
@@ -393,20 +401,23 @@ func openAIResponseFormatToGemini(raw map[string]any) (mime string, schema any) 
 	return "", nil
 }
 
-func renderGeminiControlTools(tools []proto.CanonicalTool) []any {
+func renderGeminiControlTools(tools []proto.CanonicalTool) ([]any, error) {
 	decls := make([]any, 0, len(tools))
 	for _, t := range tools {
-		decl := map[string]any{
+		schema, err := protogemini.ProjectToolSchema(t.InputSchema)
+		if err != nil {
+			return nil, err
+		}
+		decls = append(decls, map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
-			"parameters":  rawJSONValue(t.InputSchema),
-		}
-		decls = append(decls, decl)
+			"parameters":  rawJSONValue(schema),
+		})
 	}
 	if len(decls) == 0 {
-		return nil
+		return nil, nil
 	}
-	return []any{map[string]any{"functionDeclarations": decls}}
+	return []any{map[string]any{"functionDeclarations": decls}}, nil
 }
 
 func renderControlTools(family string, tools []proto.CanonicalTool) []any {

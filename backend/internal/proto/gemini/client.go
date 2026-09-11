@@ -42,6 +42,7 @@ type geminiClientPart struct {
 	InlineData       json.RawMessage     `json:"inlineData,omitempty"`
 	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse json.RawMessage     `json:"functionResponse,omitempty"`
+	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
 	VideoMetadata    json.RawMessage     `json:"videoMetadata,omitempty"`
 	MediaResolution  json.RawMessage     `json:"mediaResolution,omitempty"`
 }
@@ -159,13 +160,19 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 					})
 				}
 			}
-			if len(blocks) == 0 && part.Text == nil && len(bytes.TrimSpace(part.InlineData)) == 0 && part.FunctionCall == nil {
+			if len(blocks) == 0 && part.Text == nil && len(bytes.TrimSpace(part.InlineData)) == 0 && part.FunctionCall == nil && len(bytes.TrimSpace(part.FunctionResponse)) == 0 {
 				losses = append(losses, geminiClientWarningLoss(fmt.Sprintf("gemini contents[%d].parts[%d] has no supported payload", mi, pi), "gemini_empty_part", ""))
 			}
 		}
 		if len(msg.Content) > 0 {
 			env.Messages = append(env.Messages, msg)
 		}
+	}
+	if err := linkGeminiToolResultEdges(env); err != nil {
+		return nil, losses, err
+	}
+	if err := EnforceThoughtCarry(env); err != nil {
+		return nil, losses, err
 	}
 	if len(env.Messages) == 0 && hasInteractionInput {
 		env.Messages = append(env.Messages, interactionMessages...)
@@ -372,10 +379,14 @@ func convertGeminiTools(tools []geminiClientTool) ([]proto.CanonicalTool, []prot
 			if decl.Name == "" {
 				return nil, nil, fmt.Errorf("proto: gemini tools[%d].functionDeclarations[%d] missing name", ti, fi)
 			}
+			schema, projectErr := ProjectToolSchema(decl.Parameters)
+			if projectErr != nil {
+				return nil, nil, fmt.Errorf("proto: gemini tools[%d].functionDeclarations[%d]: %w", ti, fi, projectErr)
+			}
 			out = append(out, proto.CanonicalTool{
 				Name:        decl.Name,
 				Description: decl.Description,
-				InputSchema: normalizeRawObject(decl.Parameters),
+				InputSchema: schema,
 			})
 		}
 		if len(bytes.TrimSpace(tool.GoogleSearch)) > 0 {
@@ -389,56 +400,6 @@ func convertGeminiTools(tools []geminiClientTool) ([]proto.CanonicalTool, []prot
 		}
 	}
 	return out, losses, nil
-}
-
-func geminiPartToCanonicalBlocks(env *proto.HCSF, msgIndex, partIndex int, part geminiClientPart) ([]proto.CanonicalContentBlock, []proto.ProtocolLossEntry) {
-	var blocks []proto.CanonicalContentBlock
-	var losses []proto.ProtocolLossEntry
-	if len(bytes.TrimSpace(part.VideoMetadata)) > 0 {
-		attachGeminiPartPassthrough(env, msgIndex, partIndex, "videoMetadata", part.VideoMetadata)
-		losses = append(losses, geminiClientInfoLoss("gemini part videoMetadata preserved as request passthrough; HCSF has no first-class Gemini video metadata field yet", "gemini_part_video_metadata_passthrough", proto.CapabilityVideo))
-	}
-	if len(bytes.TrimSpace(part.MediaResolution)) > 0 {
-		attachGeminiPartPassthrough(env, msgIndex, partIndex, "mediaResolution", part.MediaResolution)
-		losses = append(losses, geminiClientInfoLoss("gemini part mediaResolution preserved as request passthrough; HCSF has no first-class media resolution control yet", "gemini_part_media_resolution_passthrough", proto.CapabilityVideo))
-	}
-	if part.Text != nil {
-		blocks = append(blocks, proto.CanonicalContentBlock{Type: "text", Text: *part.Text})
-	}
-	if len(bytes.TrimSpace(part.InlineData)) > 0 {
-		raw := cloneRaw(part.InlineData)
-		blocks = append(blocks, proto.CanonicalContentBlock{Type: "image", Image: raw})
-	}
-	if part.FunctionCall != nil {
-		callID := part.FunctionCall.ID
-		if callID == "" {
-			callID = part.FunctionCall.Name
-		}
-		blocks = append(blocks, proto.CanonicalContentBlock{
-			Type:   "tool_use",
-			CallID: callID,
-			Name:   part.FunctionCall.Name,
-			Input:  normalizeGeminiFunctionArgs(part.FunctionCall.Args),
-		})
-	}
-	if len(bytes.TrimSpace(part.FunctionResponse)) > 0 {
-		losses = append(losses, geminiClientInfoLoss("gemini functionResponse part has no inbound HCSF tool_result projection yet", "gemini_function_response_unmodeled", proto.CapabilityToolResult))
-	}
-	return blocks, losses
-}
-
-func attachGeminiPartPassthrough(env *proto.HCSF, msgIndex, partIndex int, field string, raw json.RawMessage) {
-	if env == nil || field == "" || len(bytes.TrimSpace(raw)) == 0 {
-		return
-	}
-	if env.Passthrough == nil {
-		env.Passthrough = &proto.PassthroughEnvelope{}
-	}
-	if env.Passthrough.Extra == nil {
-		env.Passthrough.Extra = map[string]json.RawMessage{}
-	}
-	key := fmt.Sprintf("contents[%d].parts[%d].%s", msgIndex, partIndex, field)
-	env.Passthrough.Extra[key] = cloneRaw(raw)
 }
 
 func geminiCapabilityNode(id, role string, block proto.CanonicalContentBlock, msgIdx, blockIdx int) proto.CapabilityNode {
@@ -468,12 +429,15 @@ func geminiCapabilityNode(id, role string, block proto.CanonicalContentBlock, ms
 			StreamReady: proto.StreamReadyPartial,
 			Source:      source,
 			ToolUse: &proto.ToolUseNode{
-				ToolCallID: block.CallID,
-				Name:       block.Name,
-				Input:      normalizeRawObject(block.Input),
-				Status:     proto.ToolNodeComplete,
+				ToolCallID:  block.CallID,
+				Name:        block.Name,
+				Input:       normalizeRawObject(block.Input),
+				Status:      proto.ToolNodeComplete,
+				OpaqueState: block.Signature,
 			},
 		}
+	case "tool_result":
+		return geminiToolResultCapabilityNode(id, source, block)
 	default:
 		return proto.CapabilityNode{}
 	}
@@ -516,9 +480,10 @@ func geminiPartFromCanonicalBlock(block proto.CanonicalContentBlock) (geminiPart
 		return geminiPart{Text: &text, Thought: true}, nil
 	case "tool_use":
 		return geminiPart{FunctionCall: &geminiFunctionCall{
-			ID:   block.CallID,
-			Name: block.Name,
-			Args: normalizeRawObject(block.Input),
+			ID:               block.CallID,
+			Name:             block.Name,
+			Args:             normalizeRawObject(block.Input),
+			ThoughtSignature: block.Signature,
 		}}, nil
 	case "image":
 		return geminiPart{InlineData: cloneRaw(block.Image)}, nil

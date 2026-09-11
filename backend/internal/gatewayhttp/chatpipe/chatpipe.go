@@ -14,6 +14,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	"github.com/BloomingProsperity/HUAKAI/internal/provider/registrydefault"
 )
 
@@ -432,24 +433,34 @@ func injectStreamingGeminiRequestControls(body map[string]any, env *proto.HCSF) 
 		body["generationConfig"] = generation
 	}
 	if len(c.Tools) > 0 {
-		body["tools"] = streamingGeminiControlTools(c.Tools)
+		tools, err := streamingGeminiControlTools(c.Tools)
+		if err != nil {
+			return nil, err
+		}
+		if tools != nil {
+			body["tools"] = tools
+		}
 	}
 	return json.Marshal(body)
 }
 
-func streamingGeminiControlTools(tools []proto.CanonicalTool) []any {
+func streamingGeminiControlTools(tools []proto.CanonicalTool) ([]any, error) {
 	decls := make([]any, 0, len(tools))
 	for _, tool := range tools {
+		schema, err := protogemini.ProjectToolSchema(tool.InputSchema)
+		if err != nil {
+			return nil, err
+		}
 		decls = append(decls, map[string]any{
 			"name":        tool.Name,
 			"description": tool.Description,
-			"parameters":  streamingRawJSONValue(tool.InputSchema),
+			"parameters":  streamingRawJSONValue(schema),
 		})
 	}
 	if len(decls) == 0 {
-		return nil
+		return nil, nil
 	}
-	return []any{map[string]any{"functionDeclarations": decls}}
+	return []any{map[string]any{"functionDeclarations": decls}}, nil
 }
 
 func forceStreamingRequest(raw []byte) ([]byte, error) {
