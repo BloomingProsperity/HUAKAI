@@ -49,7 +49,10 @@ type Resolved struct {
 	ProviderModelID        string
 
 	// Capabilities + 协议——喂给 router 的纯元数据。
-	ContextWindow    int
+	ContextWindow int
+	// MaxOutputTokens 来自 models.max_output_tokens；nil 表示目录未登记正上限。
+	// 只给翻译路径缺省补值，不是客户端请求的 max_tokens，也不进入选号预留。
+	MaxOutputTokens  *int
 	Capabilities     []string
 	PricingClass     string
 	ProtocolFamily   string

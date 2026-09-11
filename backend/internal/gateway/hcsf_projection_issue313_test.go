@@ -151,10 +151,68 @@ func TestHCSFTranslatedClaudeGetsConservativeMaxTokens(t *testing.T) {
 	}
 }
 
+func TestHCSFTranslatedClaudeUsesCatalogMaxTokens(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	env.RequestMeta.ClientProtocol = proto.ClientProtocolOpenAIChat
+	catalog := 8192
+	env.RequestMeta.CatalogMaxOutputTokens = &catalog
+	raw, err := hcsfRequestBody(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("hcsfRequestBody: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	got, ok := body["max_tokens"].(float64)
+	if !ok || got != 8192 {
+		t.Fatalf("目录上限未进翻译默认值: %s（变异：忽略 CatalogMaxOutputTokens）", raw)
+	}
+	if !hasProtocolLossCode(env.CapabilityGraph.ProtocolLoss, "claude_max_tokens_translated_default") {
+		t.Fatalf("目录补值仍须记翻译 loss: %+v", env.CapabilityGraph.ProtocolLoss)
+	}
+}
+
+func TestHCSFTranslatedClaudeCatalogBelowFallback(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	catalog := 2048
+	env.RequestMeta.CatalogMaxOutputTokens = &catalog
+	raw, err := hcsfRequestBody(env, "anthropic_claude_session")
+	if err != nil {
+		t.Fatalf("hcsfRequestBody: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if body["max_tokens"].(float64) != 2048 {
+		t.Fatalf("不得超过目录上限: %s", raw)
+	}
+}
+
+func TestHCSFTranslatedClaudeIgnoresNonPositiveCatalog(t *testing.T) {
+	env := graphEnv(textNode("n1", "user", "hello"))
+	zero := 0
+	env.RequestMeta.CatalogMaxOutputTokens = &zero
+	raw, err := hcsfRequestBody(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("hcsfRequestBody: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if body["max_tokens"].(float64) != 4096 {
+		t.Fatalf("非正目录必须回退兜底: %s", raw)
+	}
+}
+
 func TestHCSFTranslatedClaudeKeepsCallerMaxTokens(t *testing.T) {
 	env := graphEnv(textNode("n1", "user", "hello"))
 	max := 128
 	env.RequestControls.MaxTokens = &max
+	catalog := 8192
+	env.RequestMeta.CatalogMaxOutputTokens = &catalog
 	raw, err := hcsfRequestBody(env, "anthropic_messages")
 	if err != nil {
 		t.Fatalf("hcsfRequestBody: %v", err)

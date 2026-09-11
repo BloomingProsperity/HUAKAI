@@ -144,6 +144,7 @@ func (r *PostgresRegistry) ResolveModel(ctx context.Context, publicAlias string,
 		DefaultProviderModelID: modelRow.DefaultProviderModelID,
 		ProviderModelID:        modelRow.DefaultProviderModelID,
 		ContextWindow:          int(modelRow.DefaultContextWindow),
+		MaxOutputTokens:        positiveInt32(modelRow.MaxOutputTokens),
 		PricingClass:           modelRow.PricingClass,
 		ProtocolFamily:         modelRow.ProtocolFamily,
 		RequestTimeoutMS:       int(modelRow.DefaultRequestTimeoutMs),
@@ -299,3 +300,12 @@ func (r *PostgresRegistry) lookupAlias(ctx context.Context, q *dbregistry.Querie
 
 // 编译期断言:PostgresRegistry 实现了 Registry。
 var _ Registry = (*PostgresRegistry)(nil)
+
+// positiveInt32 把目录里的正整数输出上限拷成独立 *int；nil/非正视为未登记。
+func positiveInt32(v *int32) *int {
+	if v == nil || *v <= 0 {
+		return nil
+	}
+	n := int(*v)
+	return &n
+}

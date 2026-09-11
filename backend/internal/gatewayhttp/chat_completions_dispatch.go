@@ -644,6 +644,7 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		canonicalReq.CapabilityGraph.ProtocolLoss = append(canonicalReq.CapabilityGraph.ProtocolLoss, requestLosses...)
 	}
 	enrichCanonicalRequestMeta(canonicalReq, ex.upstreamModelID, ex.accInfo.Platform, ex.idempotencyHeader, ex.sessionHash)
+	bindCatalogOutputLimit(canonicalReq, ex.resolved.MaxOutputTokens)
 	canonicalReq.RequestMeta.EndpointFamily = ex.resolved.ProtocolFamily
 	setAccountingModelRequested(canonicalReq, ex.req.Model)
 	setAccountingModelRouteDecided(canonicalReq, ex.forwardReq.Model)
