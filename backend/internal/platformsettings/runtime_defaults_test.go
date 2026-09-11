@@ -12,6 +12,7 @@ func TestRuntimeSettingDefaultsMatchPreWiringReality(t *testing.T) {
 		{key: KeyStreamTimeoutSeconds, want: "600"},
 		{key: KeyCooldown429Seconds, want: "300"},
 		{key: KeyCooldown529Seconds, want: "300"},
+		{key: KeySameAccountTransientRetries, want: "0"},
 		{key: KeyAdminNotificationEmail, want: ""},
 	}
 	for _, tt := range tests {

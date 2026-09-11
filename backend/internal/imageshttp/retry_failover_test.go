@@ -83,6 +83,75 @@ func TestImages500RetriesSecondAccountAndSettlesOnce(t *testing.T) {
 	}
 }
 
+func TestImages500SameAccountRetryKeepsAccountAndDefersHealth(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
+	claims := &imageRetryClaimLifecycle{claimID: 8310}
+	selector := &imageRetrySelector{accounts: []int64{44, 45}}
+	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{
+		{status: http.StatusInternalServerError, body: `{"error":"upstream busy"}`},
+		{status: http.StatusOK, body: successfulImageBody()},
+	}}
+	health := &imageHealthSpy{}
+	env.deps.Router = imageRetryRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = imageRetryVault(t, "openai", 44, 45)
+	env.deps.Dispatcher = dispatcher
+	env.deps.ClaimGate = claims
+	env.deps.Settler = claims
+	env.deps.Feedback = upstreamfeedback.NewObserver(upstreamfeedback.Dependencies{ChannelHealth: health})
+	env.deps.SameAccountTransientRetries = func(context.Context) int { return 1 }
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"same account then recover","size":"1024x1024"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 after same-account retry", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(selector.requests))
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[44]; excluded {
+		t.Fatalf("同号重试不得排除 44: %+v", selector.requests[1].ExcludedAccounts)
+	}
+	if got := dispatcher.accounts; len(got) != 2 || got[0] != 44 || got[1] != 44 {
+		t.Fatalf("dispatcher accounts=%v want [44 44]", got)
+	}
+	if len(health.signals) != 1 || health.signals[0].Class != channelhealth.SignalSuccess {
+		t.Fatalf("同号成功前不得写 5xx 健康, signals=%+v", health.signals)
+	}
+}
+
+func TestImages401WithSameAccountBudgetStillSwitches(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
+	claims := &imageRetryClaimLifecycle{claimID: 8311}
+	selector := &imageRetrySelector{accounts: []int64{44, 45}}
+	dispatcher := &imageRetryDispatcher{steps: []imageRetryResponse{
+		{status: http.StatusUnauthorized, body: ""},
+		{status: http.StatusOK, body: successfulImageBody()},
+	}}
+	env.deps.Router = imageRetryRouter{}
+	env.deps.Selector = selector
+	env.deps.CredentialVault = imageRetryVault(t, "openai", 44, 45)
+	env.deps.Dispatcher = dispatcher
+	env.deps.ClaimGate = claims
+	env.deps.Settler = claims
+	env.deps.SameAccountTransientRetries = func(context.Context) int { return 1 }
+
+	rec := env.invoke(t, `{"model":"dall-e-3","prompt":"auth still switches","size":"1024x1024"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s want 200 after auth switch", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 2 {
+		t.Fatalf("selector calls=%d want 2", len(selector.requests))
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[44]; !excluded {
+		t.Fatalf("401 即使同号预算>0 也必须换号: %+v", selector.requests[1].ExcludedAccounts)
+	}
+	if got := dispatcher.accounts; len(got) != 2 || got[0] != 44 || got[1] != 45 {
+		t.Fatalf("dispatcher accounts=%v want [44 45]", got)
+	}
+}
+
 func TestImagesCredentialMismatchSkipsDispatchAndUsesNextAccount(t *testing.T) {
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{})
 	claims := &imageRetryClaimLifecycle{claimID: 9110}

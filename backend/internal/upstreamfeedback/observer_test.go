@@ -61,6 +61,41 @@ func TestObserveHTTPError429WritesModelCooldownWithoutAccountSignal(t *testing.T
 	}
 }
 
+func TestObserveHTTPErrorUnlessSameAccountRetryDefersCooldown(t *testing.T) {
+	now := time.Date(2026, 9, 11, 16, 0, 0, 0, time.UTC)
+	health := &channelHealthSpy{}
+	models := &modelCooldownSpy{}
+	observer := NewObserver(Dependencies{
+		ChannelHealth:  health,
+		ModelCooldowns: models,
+		Now:            func() time.Time { return now },
+	})
+	headers := http.Header{"Retry-After": []string{"60"}}
+	body := []byte(`{"error":"rate limited"}`)
+
+	deferred := ObserveHTTPErrorUnlessSameAccountRetry(
+		context.Background(), observer, validAttempt("openai"),
+		http.StatusTooManyRequests, headers, body, 0, 1, false,
+	)
+	if deferred.Classification.Class != gateway.ErrorClassRateLimited {
+		t.Fatalf("classification=%s want rate_limited", deferred.Classification.Class)
+	}
+	if len(models.inputs) != 0 {
+		t.Fatalf("同号预算未用尽时不得写模型冷却, calls=%d", len(models.inputs))
+	}
+
+	written := ObserveHTTPErrorUnlessSameAccountRetry(
+		context.Background(), observer, validAttempt("openai"),
+		http.StatusTooManyRequests, headers, body, 1, 1, false,
+	)
+	if !written.Decision.SwitchAccount {
+		t.Fatalf("预算用尽后应换号: %+v", written.Decision)
+	}
+	if len(models.inputs) != 1 {
+		t.Fatalf("预算用尽后应写一次模型冷却, calls=%d", len(models.inputs))
+	}
+}
+
 func TestObserveHTTPErrorUsesProtocolProviderForBedrockRules(t *testing.T) {
 	observer := NewObserver(Dependencies{})
 	attempt := validAttempt("anthropic")

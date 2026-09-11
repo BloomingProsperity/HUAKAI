@@ -265,6 +265,8 @@ type chatExecution struct {
 	queueWaitSpentMS int
 	queueWaitNow     func() time.Time
 	classTransition  *bindingClassTransition
+
+	sameAccountTransientUsed int
 }
 
 type bindingClassTransition = bindingfallback.Transition

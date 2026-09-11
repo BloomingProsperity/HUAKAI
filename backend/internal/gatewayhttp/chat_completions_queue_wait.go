@@ -10,6 +10,8 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/logcontract"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool/queuewait"
 	"github.com/BloomingProsperity/HUAKAI/internal/warmupintercept"
@@ -218,7 +220,24 @@ func (ex *chatExecution) runSingleModel(w http.ResponseWriter, fallbackAttempts 
 			if outcome.Failure.Decision.RefreshIntent == gateway.RefreshOAuthHotPath {
 				ex.triggerCredentialHotRefresh(outcome.AccountID)
 			}
-			if outcome.Failure.Decision.SwitchAccount {
+			if gateway.ReserveSameAccountTransientRetry(
+				&outcome.Failure.Decision,
+				outcome.Failure.Classification.Class,
+				&ex.sameAccountTransientUsed,
+				ex.sameAccountRetryBudget(),
+				outcome.DeliveryStarted || outcome.Failure.DeliveredToClient,
+			) {
+				slog.InfoContext(ex.ctx, "交付前同号瞬时重试",
+					slog.String(logcontract.FieldCategory, string(logcontract.CategoryError)),
+					slog.String(logcontract.FieldEventType, "upstream_error.same_account_retry"),
+					slog.String(logcontract.FieldResult, string(logcontract.ResultPartial)),
+					slog.String("request_id", ex.requestID),
+					slog.Int64("tenant_id", ex.ident.TenantID),
+					slog.Int64("provider_account_id", outcome.AccountID),
+					slog.Int("same_account_used", ex.sameAccountTransientUsed),
+					slog.String("error_class", string(outcome.Failure.Classification.Class)),
+				)
+			} else if outcome.Failure.Decision.SwitchAccount {
 				failedAccounts[outcome.AccountID] = struct{}{}
 				lastReroutableFailure = outcome.Failure
 			}
@@ -394,4 +413,29 @@ func allowModelFallbackAfterClass(failure *classifiedAttemptFailure) bool {
 	}
 	// 静态池耗尽只禁止换 binding class；它在本能力之前就允许外层换模型。
 	return failure.FallbackSignal == bindingfallback.SignalPoolStaticMismatch
+}
+
+func sameAccountTransientRetryBudget(ctx context.Context, settings platformSettingsReader) int {
+	if settings == nil {
+		return 0
+	}
+	setting, err := settings.Get(ctx, platformsettings.KeySameAccountTransientRetries)
+	if err != nil {
+		return 0
+	}
+	return gateway.ParseSameAccountTransientRetryBudget(setting.Value)
+}
+
+func (ex *chatExecution) sameAccountRetryBudget() int {
+	if ex == nil {
+		return 0
+	}
+	return sameAccountTransientRetryBudget(ex.ctx, ex.d.PlatformSettings)
+}
+
+func (ex *chatExecution) shouldDeferTransientCooldown(classification gateway.Classification, decision gateway.AttemptRetryDecision) bool {
+	if ex == nil {
+		return false
+	}
+	return gateway.WillSameAccountTransientRetry(decision, classification.Class, ex.sameAccountTransientUsed, ex.sameAccountRetryBudget(), false)
 }

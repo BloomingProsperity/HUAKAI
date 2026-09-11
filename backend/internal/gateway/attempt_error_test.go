@@ -502,3 +502,61 @@ func TestClassifyAttemptDispatchError_PersistentTransportFailures(t *testing.T) 
 		t.Fatalf("dns timeout 应 network_timeout: %+v", dnsTimeout)
 	}
 }
+
+func TestSameAccountTransientRetryBudgetZeroKeepsSwitch(t *testing.T) {
+	decision := AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true}
+	used := 0
+	if ReserveSameAccountTransientRetry(&decision, ErrorClassRateLimited, &used, 0, false) {
+		t.Fatal("预算 0 不得占用同号重试")
+	}
+	if !decision.SwitchAccount || used != 0 {
+		t.Fatalf("decision=%+v used=%d", decision, used)
+	}
+}
+
+func TestSameAccountTransientRetryFirst429KeepsAccount(t *testing.T) {
+	decision := AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true}
+	used := 0
+	if !ReserveSameAccountTransientRetry(&decision, ErrorClassRateLimited, &used, 1, false) {
+		t.Fatal("预算 1 的首次 429 应留在同号")
+	}
+	if decision.SwitchAccount || used != 1 {
+		t.Fatalf("decision=%+v used=%d", decision, used)
+	}
+	if ReserveSameAccountTransientRetry(&decision, ErrorClassRateLimited, &used, 1, false) {
+		t.Fatal("预算用尽后不得再留同号")
+	}
+}
+
+func TestSameAccountTransientRetryRejectsAuthAndPersistentTransport(t *testing.T) {
+	used := 0
+	auth := AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true, CountsAgainstAuthFailoverBudget: true}
+	if ReserveSameAccountTransientRetry(&auth, ErrorClassRateLimited, &used, 1, false) {
+		t.Fatal("鉴权子预算不得走同号瞬时重试")
+	}
+	used = 0
+	refused := AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true, TransportClass: TransportErrorDNSFailure}
+	if ReserveSameAccountTransientRetry(&refused, ErrorClassServerError, &used, 1, false) {
+		t.Fatal("持久传输失败不得走同号瞬时重试")
+	}
+	used = 0
+	delivered := AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true}
+	if ReserveSameAccountTransientRetry(&delivered, ErrorClassRateLimited, &used, 1, true) {
+		t.Fatal("已交付不得同号重试")
+	}
+}
+
+func TestParseSameAccountTransientRetryBudget(t *testing.T) {
+	if got := ParseSameAccountTransientRetryBudget(""); got != 0 {
+		t.Fatalf("空值=%d want 0", got)
+	}
+	if got := ParseSameAccountTransientRetryBudget("-1"); got != 0 {
+		t.Fatalf("负数=%d want 0", got)
+	}
+	if got := ParseSameAccountTransientRetryBudget("2"); got != 2 {
+		t.Fatalf("2=%d", got)
+	}
+	if got := ParseSameAccountTransientRetryBudget("99"); got != maxSameAccountTransientRetries {
+		t.Fatalf("超上限=%d want %d", got, maxSameAccountTransientRetries)
+	}
+}

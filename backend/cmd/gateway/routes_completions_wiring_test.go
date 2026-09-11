@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -35,6 +36,30 @@ func TestNonChatHandlerDepsInjectSharedFeedbackAndRetryBudget(t *testing.T) {
 			}
 			if tc.budget != budget {
 				t.Fatal("handler 未收到生产租户重试预算")
+			}
+		})
+	}
+}
+
+func TestNonChatHandlerDepsInjectSameAccountTransientRetries(t *testing.T) {
+	d := &deps{cfg: &Config{}}
+	fns := []struct {
+		name string
+		fn   func(context.Context) int
+	}{
+		{name: "completions", fn: completionsHandlerDeps(d).SameAccountTransientRetries},
+		{name: "embeddings", fn: embeddingsHandlerDeps(d).SameAccountTransientRetries},
+		{name: "rerank", fn: rerankHandlerDeps(d).SameAccountTransientRetries},
+		{name: "images", fn: imageHandlerDeps(d).SameAccountTransientRetries},
+		{name: "audio", fn: audioHandlerDeps(d).SameAccountTransientRetries},
+	}
+	for _, tc := range fns {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.fn == nil {
+				t.Fatal("未注入同号瞬时重试读取函数")
+			}
+			if got := tc.fn(context.Background()); got != 0 {
+				t.Fatalf("平台设置未接时应默认 0, got=%d", got)
 			}
 		})
 	}

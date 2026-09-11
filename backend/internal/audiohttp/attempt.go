@@ -155,6 +155,7 @@ func (ex *execution) finishUpstreamResponse(w http.ResponseWriter, res *gateway.
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		observed := ex.observeHTTPError(res, raw)
 		failure := fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)
+		fallbackexec.MarkSameAccountRetry(failure, &observed.Decision, observed.Classification.Class, &ex.sameAccountUsed, ex.sameAccountBudget(), false)
 		if ex.abortWithError(w, failure.AbortReason, 0) != nil {
 			// abort 失败=预留状态不明,终态不再换号(防双份扣费);仍按上游语义回
 			// 客户端,X-Huakai-Abort-Failed 头已由 abort 助手落下。
@@ -380,12 +381,19 @@ func (ex *execution) observeChannelError(statusCode int) {
 	}
 }
 
+func (ex *execution) sameAccountBudget() int {
+	if ex == nil || ex.d.SameAccountTransientRetries == nil {
+		return 0
+	}
+	return ex.d.SameAccountTransientRetries(ex.ctx)
+}
+
 func (ex *execution) observeHTTPError(res *gateway.DispatchResult, raw []byte) upstreamfeedback.HTTPFailure {
 	attempt := ex.feedbackAttempt()
-	if ex.d.Feedback != nil {
-		return ex.d.Feedback.ObserveHTTPError(ex.ctx, attempt, res.StatusCode, res.Headers, raw)
-	}
-	return upstreamfeedback.ClassifyHTTPError(attempt, res.StatusCode, res.Headers, raw)
+	return upstreamfeedback.ObserveHTTPErrorUnlessSameAccountRetry(
+		ex.ctx, ex.d.Feedback, attempt, res.StatusCode, res.Headers, raw,
+		ex.sameAccountUsed, ex.sameAccountBudget(), false,
+	)
 }
 
 func (ex *execution) observeSuccess(res *gateway.DispatchResult) {

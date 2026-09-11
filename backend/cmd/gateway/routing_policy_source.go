@@ -10,7 +10,7 @@
 //     与接线前逐一字节一致。
 //   - 仅 binding 显式 'priority_weighted' → 返回 SelectionMode=priority_weighted 的 policy
 //     → selector 走 weightedReservoirIndex 加权选号。
-//   - 返回值始终非 nil;SelectionMode 只受 binding 控制,fallback wait 配置按池组短 TTL
+//   - 返回值始终非 nil;SelectionMode 只受 binding 控制,fallback/sticky wait 配置按池组短 TTL
 //     补齐,避免 selector 热路径每轮都查库。
 package main
 
@@ -43,6 +43,8 @@ type routingPolicyCacheKey struct {
 type routingPolicyCacheEntry struct {
 	fallbackTimeoutMS  int
 	fallbackMaxWaiting int
+	stickyTimeoutMS    int
+	stickyMaxWaiting   int
 	topKDefault        int
 	requestedModel     string
 	modelAccountIDs    []int64
@@ -157,6 +159,8 @@ func (s *bindingRoutingPolicySource) fallbackPolicy(ctx context.Context, key rou
 		entry = routingPolicyCacheEntry{
 			fallbackMaxWaiting: int(poolGroup.FallbackWaitMaxWaiting),
 			fallbackTimeoutMS:  int(poolGroup.FallbackWaitTimeoutMs),
+			stickyMaxWaiting:   int(poolGroup.StickyWaitMaxWaiting),
+			stickyTimeoutMS:    int(poolGroup.StickyWaitTimeoutMs),
 			topKDefault:        int(poolGroup.TopKDefault),
 			requestedModel:     key.requestedModel,
 		}
@@ -211,6 +215,8 @@ func (s *bindingRoutingPolicySource) effectiveCacheTTL() time.Duration {
 func applyRoutingPolicyFallback(policy *pool.RoutingPolicy, entry routingPolicyCacheEntry) {
 	policy.FallbackMaxWaiting = entry.fallbackMaxWaiting
 	policy.FallbackTimeoutMS = entry.fallbackTimeoutMS
+	policy.StickyMaxWaiting = entry.stickyMaxWaiting
+	policy.StickyTimeoutMS = entry.stickyTimeoutMS
 	policy.TopKDefault = entry.topKDefault
 	if entry.requestedModel != "" && len(entry.modelAccountIDs) > 0 {
 		policy.ModelAccountIDs = map[string][]int64{

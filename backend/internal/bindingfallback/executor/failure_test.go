@@ -47,3 +47,18 @@ func TestUpstreamFailureFromDecisionPropagatesRetryAfter(t *testing.T) {
 		t.Fatalf("Retry-After=%q，期望 2", got)
 	}
 }
+
+func TestMarkSameAccountRetryKeepsAccountUntilBudgetExhausted(t *testing.T) {
+	decision := gateway.AttemptRetryDecision{RetryableBeforeDelivery: true, SwitchAccount: true}
+	failure := UpstreamFailureFromDecision(http.StatusTooManyRequests, nil, decision, gateway.Classification{Class: gateway.ErrorClassRateLimited})
+	used := 0
+	MarkSameAccountRetry(failure, &decision, gateway.ErrorClassRateLimited, &used, 1, false)
+	if !failure.KeepSameAccount || decision.SwitchAccount || used != 1 {
+		t.Fatalf("首次 429 应留同号: failure=%+v decision=%+v used=%d", failure, decision, used)
+	}
+	failure.KeepSameAccount = false
+	MarkSameAccountRetry(failure, &decision, gateway.ErrorClassRateLimited, &used, 1, false)
+	if failure.KeepSameAccount {
+		t.Fatal("预算用尽后不得再留同号")
+	}
+}

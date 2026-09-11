@@ -45,6 +45,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/embeddingshttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/engineembeddingsalias"
 	"github.com/BloomingProsperity/HUAKAI/internal/exporthttp"
+	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintake"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/accountintakehttp"
@@ -671,48 +672,50 @@ func chatHandlerDeps(d *deps) gatewayhttp.ChatHandlerDeps {
 
 func embeddingsHandlerDeps(d *deps) embeddingshttp.Deps {
 	return embeddingshttp.Deps{
-		Auth:                    d.inboundAuth,
-		Registry:                d.modelRegistry,
-		Router:                  d.routePlanner,
-		ClaimGate:               d.claimGate,
-		QuotaReserver:           d.quotaReserver,
-		RateTables:              d.rateTableSource,
-		PricingRatioResolver:    d.pricingRatioResolver,
-		Selector:                d.selector,
-		CredentialVault:         d.credentialVault,
-		Dispatcher:              d.dispatcher,
-		Settler:                 d.settler,
-		SettlementIntents:       d.settlementIntents,
-		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
-		SettleRecoveryDLQ:       d.dlqService,
-		BillingPolicyResolver:   d.billingPolicyResolver,
-		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
-		RequestClass:            d.cfg.RequestClass,
-		Feedback:                d.upstreamFeedback,
-		RetryBudget:             d.retryBudget,
+		Auth:                        d.inboundAuth,
+		Registry:                    d.modelRegistry,
+		Router:                      d.routePlanner,
+		ClaimGate:                   d.claimGate,
+		QuotaReserver:               d.quotaReserver,
+		RateTables:                  d.rateTableSource,
+		PricingRatioResolver:        d.pricingRatioResolver,
+		Selector:                    d.selector,
+		CredentialVault:             d.credentialVault,
+		Dispatcher:                  d.dispatcher,
+		Settler:                     d.settler,
+		SettlementIntents:           d.settlementIntents,
+		SettlementIntentEnabled:     d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:           d.dlqService,
+		BillingPolicyResolver:       d.billingPolicyResolver,
+		BillingPolicyVersion:        d.cfg.BillingPolicyVersion,
+		RequestClass:                d.cfg.RequestClass,
+		Feedback:                    d.upstreamFeedback,
+		RetryBudget:                 d.retryBudget,
+		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 	}
 }
 
 func completionsHandlerDeps(d *deps) completionshttp.Deps {
 	return completionshttp.Deps{
-		Auth:                    d.inboundAuth,
-		Registry:                d.modelRegistry,
-		Router:                  d.routePlanner,
-		ClaimGate:               d.claimGate,
-		QuotaReserver:           d.quotaReserver,
-		RateTables:              d.rateTableSource,
-		PricingRatioResolver:    d.pricingRatioResolver,
-		Selector:                d.selector,
-		CredentialVault:         d.credentialVault,
-		Dispatcher:              d.dispatcher,
-		Settler:                 d.settler,
-		SettlementIntents:       d.settlementIntents,
-		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
-		BillingPolicyResolver:   d.billingPolicyResolver,
-		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
-		RequestClass:            d.cfg.RequestClass,
-		Feedback:                d.upstreamFeedback,
-		RetryBudget:             d.retryBudget,
+		Auth:                        d.inboundAuth,
+		Registry:                    d.modelRegistry,
+		Router:                      d.routePlanner,
+		ClaimGate:                   d.claimGate,
+		QuotaReserver:               d.quotaReserver,
+		RateTables:                  d.rateTableSource,
+		PricingRatioResolver:        d.pricingRatioResolver,
+		Selector:                    d.selector,
+		CredentialVault:             d.credentialVault,
+		Dispatcher:                  d.dispatcher,
+		Settler:                     d.settler,
+		SettlementIntents:           d.settlementIntents,
+		SettlementIntentEnabled:     d.cfg.SettlementIntentEnabled,
+		BillingPolicyResolver:       d.billingPolicyResolver,
+		BillingPolicyVersion:        d.cfg.BillingPolicyVersion,
+		RequestClass:                d.cfg.RequestClass,
+		Feedback:                    d.upstreamFeedback,
+		RetryBudget:                 d.retryBudget,
+		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 		// 流式交付后 settle 失败的 durable 兜底队列，与 chat 路径同一注入(S1-2/S1-3)。
 		SettleRecoveryDLQ: d.dlqService,
 	}
@@ -720,50 +723,52 @@ func completionsHandlerDeps(d *deps) completionshttp.Deps {
 
 func rerankHandlerDeps(d *deps) rerankhttp.Deps {
 	return rerankhttp.Deps{
-		Auth:                    d.inboundAuth,
-		Registry:                d.modelRegistry,
-		Router:                  d.routePlanner,
-		ClaimGate:               d.claimGate,
-		QuotaReserver:           d.quotaReserver,
-		RateTables:              d.rateTableSource,
-		PricingRatioResolver:    d.pricingRatioResolver,
-		Selector:                d.selector,
-		CredentialVault:         d.credentialVault,
-		Dispatcher:              d.dispatcher,
-		Settler:                 d.settler,
-		SettlementIntents:       d.settlementIntents,
-		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
-		SettleRecoveryDLQ:       d.dlqService,
-		BillingPolicyResolver:   d.billingPolicyResolver,
-		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
-		RequestClass:            d.cfg.RequestClass,
-		Feedback:                d.upstreamFeedback,
-		RetryBudget:             d.retryBudget,
+		Auth:                        d.inboundAuth,
+		Registry:                    d.modelRegistry,
+		Router:                      d.routePlanner,
+		ClaimGate:                   d.claimGate,
+		QuotaReserver:               d.quotaReserver,
+		RateTables:                  d.rateTableSource,
+		PricingRatioResolver:        d.pricingRatioResolver,
+		Selector:                    d.selector,
+		CredentialVault:             d.credentialVault,
+		Dispatcher:                  d.dispatcher,
+		Settler:                     d.settler,
+		SettlementIntents:           d.settlementIntents,
+		SettlementIntentEnabled:     d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:           d.dlqService,
+		BillingPolicyResolver:       d.billingPolicyResolver,
+		BillingPolicyVersion:        d.cfg.BillingPolicyVersion,
+		RequestClass:                d.cfg.RequestClass,
+		Feedback:                    d.upstreamFeedback,
+		RetryBudget:                 d.retryBudget,
+		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 	}
 }
 
 func imageHandlerDeps(d *deps) imageshttp.Deps {
 	return imageshttp.Deps{
-		Auth:                    d.inboundAuth,
-		Registry:                d.modelRegistry,
-		Router:                  d.routePlanner,
-		ClaimGate:               d.claimGate,
-		QuotaReserver:           d.quotaReserver,
-		RateTables:              d.rateTableSource,
-		PricingRatioResolver:    d.pricingRatioResolver,
-		Selector:                d.selector,
-		CredentialVault:         d.credentialVault,
-		Dispatcher:              d.dispatcher,
-		Settler:                 d.settler,
-		SettlementIntents:       d.settlementIntents,
-		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
-		SettleRecoveryDLQ:       d.dlqService,
-		BillingPolicyResolver:   d.billingPolicyResolver,
-		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
-		RequestClass:            d.cfg.RequestClass,
-		ClientIPResolver:        d.clientIPResolver,
-		Feedback:                d.upstreamFeedback,
-		RetryBudget:             d.retryBudget,
+		Auth:                        d.inboundAuth,
+		Registry:                    d.modelRegistry,
+		Router:                      d.routePlanner,
+		ClaimGate:                   d.claimGate,
+		QuotaReserver:               d.quotaReserver,
+		RateTables:                  d.rateTableSource,
+		PricingRatioResolver:        d.pricingRatioResolver,
+		Selector:                    d.selector,
+		CredentialVault:             d.credentialVault,
+		Dispatcher:                  d.dispatcher,
+		Settler:                     d.settler,
+		SettlementIntents:           d.settlementIntents,
+		SettlementIntentEnabled:     d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:           d.dlqService,
+		BillingPolicyResolver:       d.billingPolicyResolver,
+		BillingPolicyVersion:        d.cfg.BillingPolicyVersion,
+		RequestClass:                d.cfg.RequestClass,
+		ClientIPResolver:            d.clientIPResolver,
+		Feedback:                    d.upstreamFeedback,
+		RetryBudget:                 d.retryBudget,
+		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
 		// 图片生成强制 buffered、可达数十秒;反代前设 HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL 保活。默认 0=关。
 		NonStreamKeepAliveInterval: streamDurationEnv("HUAKAI_NONSTREAM_KEEPALIVE_INTERVAL", 0),
 	}
@@ -771,25 +776,39 @@ func imageHandlerDeps(d *deps) imageshttp.Deps {
 
 func audioHandlerDeps(d *deps) audiohttp.Deps {
 	return audiohttp.Deps{
-		Auth:                    d.inboundAuth,
-		Registry:                d.modelRegistry,
-		Router:                  d.routePlanner,
-		ClaimGate:               d.claimGate,
-		QuotaReserver:           d.quotaReserver,
-		RateTables:              d.rateTableSource,
-		PricingRatioResolver:    d.pricingRatioResolver,
-		Selector:                d.selector,
-		CredentialVault:         d.credentialVault,
-		Dispatcher:              d.dispatcher,
-		Settler:                 d.settler,
-		SettlementIntents:       d.settlementIntents,
-		SettlementIntentEnabled: d.cfg.SettlementIntentEnabled,
-		SettleRecoveryDLQ:       d.dlqService,
-		BillingPolicyResolver:   d.billingPolicyResolver,
-		BillingPolicyVersion:    d.cfg.BillingPolicyVersion,
-		RequestClass:            d.cfg.RequestClass,
-		Feedback:                d.upstreamFeedback,
-		RetryBudget:             d.retryBudget,
+		Auth:                        d.inboundAuth,
+		Registry:                    d.modelRegistry,
+		Router:                      d.routePlanner,
+		ClaimGate:                   d.claimGate,
+		QuotaReserver:               d.quotaReserver,
+		RateTables:                  d.rateTableSource,
+		PricingRatioResolver:        d.pricingRatioResolver,
+		Selector:                    d.selector,
+		CredentialVault:             d.credentialVault,
+		Dispatcher:                  d.dispatcher,
+		Settler:                     d.settler,
+		SettlementIntents:           d.settlementIntents,
+		SettlementIntentEnabled:     d.cfg.SettlementIntentEnabled,
+		SettleRecoveryDLQ:           d.dlqService,
+		BillingPolicyResolver:       d.billingPolicyResolver,
+		BillingPolicyVersion:        d.cfg.BillingPolicyVersion,
+		RequestClass:                d.cfg.RequestClass,
+		Feedback:                    d.upstreamFeedback,
+		RetryBudget:                 d.retryBudget,
+		SameAccountTransientRetries: sameAccountTransientRetriesFn(d),
+	}
+}
+
+func sameAccountTransientRetriesFn(d *deps) func(context.Context) int {
+	return func(ctx context.Context) int {
+		if d == nil || d.platformSettings == nil {
+			return 0
+		}
+		setting, err := d.platformSettings.Get(ctx, platformsettings.KeySameAccountTransientRetries)
+		if err != nil {
+			return 0
+		}
+		return gateway.ParseSameAccountTransientRetryBudget(setting.Value)
 	}
 }
 

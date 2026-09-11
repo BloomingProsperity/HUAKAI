@@ -49,11 +49,14 @@ const (
 	// KeyTelegramBotToken 是 Telegram Login Widget HMAC 校验用的 bot token(密钥)。secret key,
 	// at-rest 加密、写后不回显。配置后 telegram 登录/绑定端点读它做校验;空则回退 env
 	// HUAKAI_TELEGRAM_LOGIN_BOT_TOKEN(back-compat)。
-	KeyTelegramBotToken               SettingKey = "telegram_bot_token"
-	KeyPromoEnabled                   SettingKey = "promo_enabled"
-	KeyStreamTimeoutSeconds           SettingKey = "stream_timeout_seconds"
-	KeyCooldown429Seconds             SettingKey = "cooldown_429_seconds"
-	KeyCooldown529Seconds             SettingKey = "cooldown_529_seconds"
+	KeyTelegramBotToken     SettingKey = "telegram_bot_token"
+	KeyPromoEnabled         SettingKey = "promo_enabled"
+	KeyStreamTimeoutSeconds SettingKey = "stream_timeout_seconds"
+	KeyCooldown429Seconds   SettingKey = "cooldown_429_seconds"
+	KeyCooldown529Seconds   SettingKey = "cooldown_529_seconds"
+	// KeySameAccountTransientRetries 是交付前 429/瞬时上游错误允许留在同一账号再试的次数。
+	// 默认 0 = 立刻换号（接线前行为）。正数上限见网关解析夹紧。
+	KeySameAccountTransientRetries    SettingKey = "same_account_transient_retries"
 	KeyResponseHeaderDenyExtra        SettingKey = "response_header_deny_extra"
 	KeyResponseHeaderAllowOverride    SettingKey = "response_header_allow_override"
 	KeyModelFallbackChains            SettingKey = "model_fallback_chains"
@@ -118,7 +121,7 @@ var (
 	ErrUnknownKey          = errors.New("platformsettings: unknown setting key")
 	ErrInvalidValue        = errors.New("platformsettings: invalid setting value")
 	ErrStoreNotConfigured  = errors.New("platformsettings: store not configured")
-	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyQuotaProbeIntervalMinutes, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail, KeyAutoListingEnabled, KeyAutoListingAutoVendors}
+	orderedSettingKeys     = []SettingKey{KeyRegistrationEnabled, KeyInvitationRequired, KeyPasswordRegisterEnabled, KeyPasswordLoginEnabled, KeyEmailDomainAllowlistEnabled, KeyEmailDomainAllowlist, KeyEmailAliasRestrictionEnabled, KeyReservedEmailLocalparts, KeyCaptchaEnabled, KeyTwoFactorEnabled, KeyCaptchaProvider, KeyCaptchaSiteKey, KeyCaptchaSecret, KeyOAuthProvidersEnabled, KeyOAuthProvidersConfig, KeyOAuthProvidersSecrets, KeyTelegramBotUsername, KeyTelegramBotToken, KeyPromoEnabled, KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeySameAccountTransientRetries, KeyResponseHeaderDenyExtra, KeyResponseHeaderAllowOverride, KeyModelFallbackChains, KeyBudgetLimits, KeyPaymentProviderConfig, KeyCheckinEnabled, KeyCheckinMinCents, KeyCheckinMaxCents, KeyReferralRewardEnabled, KeyReferralRewardCents, KeyPasskeyEnabled, KeyPasskeyRegistrationEnabled, KeyPasskeyRPID, KeyPasskeyRPDisplayName, KeyPasskeyRPOrigins, KeyMediaTaskEnabled, KeyMediaTaskProviderBaseURL, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs, KeyMediaTaskDefaultEstimatedCents, KeyModerationExternalEnabled, KeyModerationExternalBaseURL, KeyModerationExternalAPIKeys, KeyModerationExternalModel, KeyModerationExternalThresholds, KeyModerationExternalTimeoutMS, KeyModerationExternalRetryCount, KeyModerationExternalImageEnabled, KeyWarmupInterceptEnabled, KeyQuotaProbeEnabled, KeyQuotaProbeIntervalMinutes, KeyCacheAnthropicTTL1hRewrite, KeyCodexClientAccessBlacklist, KeyCodexClientAccessWhitelist, KeyCodexClientAccessMinVersion, KeyCodexClientAccessMaxVersion, KeyCodexClientAccessAllowAppServer, KeyCodexClientAccessEngineFingerprintSignals, KeyCodexClientAccessForceAllow, KeySiteName, KeySiteLogo, KeySiteFooter, KeySiteHomeContent, KeySiteSubtitle, KeySiteContactInfo, KeySiteDocURL, KeySiteAPIBaseURL, KeySiteFrontendBaseURL, KeyAdminNotificationEmail, KeyAutoListingEnabled, KeyAutoListingAutoVendors}
 	defaultSettingValueMap = map[SettingKey]string{
 		KeyRegistrationEnabled:          "false",
 		KeyInvitationRequired:           "true",
@@ -145,6 +148,7 @@ var (
 		KeyCooldown429Seconds: "300",
 		// 现实默认来自 channelhealth.DefaultPolicy().Upstream5xxCooldown 与 rate.defaultUpstreamCooldown（均为 5 分钟）。
 		KeyCooldown529Seconds:             "300",
+		KeySameAccountTransientRetries:    "0",
 		KeyResponseHeaderDenyExtra:        "",
 		KeyResponseHeaderAllowOverride:    "",
 		KeyModelFallbackChains:            "",
@@ -307,7 +311,7 @@ func ValidateValue(key SettingKey, raw string) (string, error) {
 		return validateBoolValue(key, value)
 	case KeyStreamTimeoutSeconds, KeyCooldown429Seconds, KeyCooldown529Seconds, KeyCheckinMinCents, KeyCheckinMaxCents, KeyMediaTaskPollIntervalSecs, KeyMediaTaskTimeoutSecs:
 		return validatePositiveIntValue(key, value)
-	case KeyReferralRewardCents:
+	case KeyReferralRewardCents, KeySameAccountTransientRetries:
 		return validateNonNegativeIntValue(key, value)
 	case KeyCaptchaProvider:
 		return validateCaptchaProvider(value)

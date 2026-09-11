@@ -72,7 +72,8 @@ type Deps struct {
 	// Feedback 把上游结果喂账号健康 FSM(坏号冷却→下次选号自动跳过=自动换号)。nil 时 no-op。
 	Feedback *upstreamfeedback.Observer
 	// RetryBudget 每租户重试预算限流,防重试风暴(nil 不限)。
-	RetryBudget retryBudgetGate
+	RetryBudget                 retryBudgetGate
+	SameAccountTransientRetries func(context.Context) int
 }
 
 type execution struct {
@@ -108,6 +109,7 @@ type execution struct {
 	classTransition   *bindingfallback.Transition
 	// excludedAccounts 本请求已失败账号,重试选号经 SelectionRequest.ExcludedAccounts 跳过。
 	excludedAccounts map[int64]struct{}
+	sameAccountUsed  int
 	settlementIntent *settlementintent.Tracker
 }
 
@@ -245,7 +247,7 @@ func (ex *execution) run(w http.ResponseWriter) {
 		if outcome.done {
 			return
 		}
-		if ex.selRes != nil {
+		if ex.selRes != nil && (outcome.failure == nil || !outcome.failure.KeepSameAccount) {
 			ex.excludeAccount(ex.selRes.AccountID)
 		}
 		// 上游 401/发网前凭据错配走授权换号子预算:整请求最多一次、预算末位也放行

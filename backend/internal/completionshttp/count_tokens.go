@@ -77,7 +77,7 @@ func (ex *execution) runCountTokens(w http.ResponseWriter, requestedModel string
 		if outcome.done {
 			return
 		}
-		if ex.selRes != nil {
+		if ex.selRes != nil && (outcome.failure == nil || !outcome.failure.KeepSameAccount) {
 			ex.excludeAccount(ex.selRes.AccountID)
 		}
 		if failure := outcome.failure; failure != nil && failure.AuthFailoverEligible && failure.RetryPermitted {
@@ -166,7 +166,9 @@ func (ex *execution) dispatchCountTokens(w http.ResponseWriter) attemptOutcome {
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		observed := ex.observeHTTPError(res, raw)
-		return attemptOutcome{failure: fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)}
+		failure := fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)
+		fallbackexec.MarkSameAccountRetry(failure, &observed.Decision, observed.Classification.Class, &ex.sameAccountUsed, ex.sameAccountBudget(), false)
+		return attemptOutcome{failure: failure}
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		ex.observeChannelError(res.StatusCode)
