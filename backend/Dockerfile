@@ -14,7 +14,7 @@
 # 缺关键 env 启动 fail-loud。
 
 # ── Go 构建阶段：后端 API 独立构建。──
-FROM golang:1.25.12-alpine AS builder
+FROM golang:1.25.13-alpine AS builder
 WORKDIR /src
 COPY backend/go.mod backend/go.sum* ./
 RUN go mod download

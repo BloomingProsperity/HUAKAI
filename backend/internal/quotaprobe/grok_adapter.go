@@ -112,15 +112,9 @@ func (a *GrokBillingAdapter) fetch(ctx context.Context, client *http.Client, cre
 	if err != nil {
 		return grokFetchResult{}, withErrorClass(ErrorClassConfigurationInvalid, err)
 	}
-	version := strings.TrimSpace(credential.Extra["client_version"])
-	if version == "" {
-		version = "0.2.93"
-	}
 	req.Header.Set("Authorization", "Bearer "+accessToken(credential))
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-xai-token-auth", "xai-grok-cli")
-	req.Header.Set("x-grok-client-version", version)
-	req.Header.Set("User-Agent", "HUAKAI-GrokCLI/"+version)
+	provider.ApplyGrokCLIIdentityHeaders(req, credential)
 	resp, err := client.Do(req)
 	if err != nil {
 		return grokFetchResult{}, withErrorClass(ErrorClassUpstreamUnreachable, err)

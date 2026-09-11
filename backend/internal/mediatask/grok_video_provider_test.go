@@ -117,6 +117,29 @@ func TestGrokVideoProviderRejectsSelectorAccountDrift(t *testing.T) {
 	}
 }
 
+func TestGrokVideoProviderPollClassifiesMissingTaskAsNonRetryable(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			selector := &capturingVideoSelector{accountID: 41}
+			vault := provider.NewStaticVault()
+			_ = vault.Set(41, provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "secret"},
+				provider.AccountInfo{AccountID: 41, TenantID: 7, Platform: "grok", AccountType: credentialstore.AuthModeAPIKey})
+			mediaProvider := NewGrokVideoProvider(GrokVideoProviderDeps{
+				Selector: selector, CredentialVault: vault,
+				Dispatcher: &videoDispatcherStub{responses: []*gateway.DispatchResult{
+					dispatchResult(status, `{"error":{"message":"gone"}}`),
+				}},
+			})
+			_, err := mediaProvider.PollBound(context.Background(), boundVideoTask(), "upstream-video-1")
+			class, retryable, recognized := providerErrorDetails(err)
+			if !recognized || retryable || class != "provider_task_not_found" {
+				t.Fatalf("status=%d class=%q retryable=%v recognized=%v err=%v",
+					status, class, retryable, recognized, err)
+			}
+		})
+	}
+}
+
 func TestGrokVideoProviderUnknownPollStatusIsRetryable(t *testing.T) {
 	selector := &capturingVideoSelector{accountID: 41}
 	vault := provider.NewStaticVault()

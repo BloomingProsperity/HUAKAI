@@ -37,6 +37,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/servingcapability"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementintent"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokenestimate"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamcontract"
 )
 
 var quotaReserveFailedOpenTotal = expvar.NewInt("quota_reserve_failed_open_total")
@@ -62,6 +63,8 @@ func newChatExecution(d ChatHandlerDeps, r *http.Request, ident auth.Identity, v
 		clientAdapter:                    validated.ClientAdapter,
 		requestID:                        validated.RequestID,
 		clientRequestID:                  validated.ClientRequestID,
+		endpointPath:                     validated.EndpointPath,
+		httpMethod:                       validated.HTTPMethod,
 		clientSessionID:                  requestClientSessionID(r, validated),
 		settlementIntent:                 settlementintent.NewTracker(d.SettlementIntents, d.SettlementIntentEnabled),
 		streamInputOnlyInterruptedPolicy: d.BillingPolicyResolver.ResolveStreamInputOnlyInterruptedPolicy(r.Context(), ident.TenantID),
@@ -131,6 +134,15 @@ func (ex *chatExecution) prepareRoute(w http.ResponseWriter) bool {
 		return false
 	}
 	ex.resolved = resolved
+	if err := upstreamcontract.Validate(ex.clientProtocol, []string{
+		ex.req.Model,
+		resolved.PublicAlias,
+		resolved.ProviderModelID,
+		resolved.DefaultProviderModelID,
+	}, ex.body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, publicUpstreamContractMessage(err))
+		return false
+	}
 	resolvedModel := routerResolvedModelFromRegistry(resolved)
 
 	// 在任何尝试之前,从原始请求体一次性推导出请求的能力需求——它们在重试间
@@ -381,7 +393,11 @@ func (ex *chatExecution) ensureIdempotencyState() {
 		}
 	}
 	if ex.payloadHash == "" {
-		ex.payloadHash = payloadhash.Sum(ex.body)
+		raw := ex.body
+		if ex.endpointPath != "" {
+			raw = append([]byte(ex.httpMethod+"\n"+ex.endpointPath+"\n"), ex.body...)
+		}
+		ex.payloadHash = payloadhash.Sum(raw)
 	}
 }
 
@@ -653,6 +669,8 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 		BodyControls:      ex.activeDispatchBodyControls(),
 		InboundBetaTokens: ex.clientBetaTokens(),
 		OfficialDirect:    ex.officialDirect,
+		EndpointPath:      ex.endpointPath,
+		HTTPMethod:        ex.httpMethod,
 		// R7 三路闭环第三路:HCSF canonical 非流式(默认走)。改写施加在 dispatcher marshal 出的最终上游 body 上(anthropic 往返丢 metadata,入口改 ex.body 流不过去);默认关时空操作字节等价、不污染缓存键。
 		IdentityRewrite: func(body []byte) []byte {
 			return chatpipe.OutboundDispatchBody(ex.officialDirect, ex.resolved.ProtocolFamily, body, ex.identityRewrite)

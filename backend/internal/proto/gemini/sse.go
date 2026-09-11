@@ -143,6 +143,9 @@ func (a *Adapter) ProviderEventToCanonicalEvents(ctx context.Context, providerEv
 		events, losses := finalizeGeminiState(st, true)
 		return geminiEventsToAny(events), losses, nil
 	}
+	if interaction, ok := interactionCanonicalResponse([]byte(payload)); ok {
+		return geminiEventsToAny(interactionStreamEvents(interaction, st)), nil, nil
+	}
 
 	var chunk geminiGenerateContentResponse
 	var env proto.PassthroughEnvelope
@@ -344,6 +347,34 @@ func finalizeGeminiState(state *UpstreamState, fromSentinel bool) ([]proto.Canon
 	return events, nil
 }
 
+func interactionStreamEvents(resp proto.CanonicalResponse, state *UpstreamState) []proto.CanonicalEvent {
+	ensureGeminiState(state)
+	if resp.ID != "" {
+		state.MessageID = resp.ID
+	}
+	if resp.Model != "" {
+		state.Model = resp.Model
+	}
+	if proto.UsageHasValue(resp.Usage) {
+		state.AccumulatedUsage = resp.Usage
+	}
+	if resp.StopReason != "" {
+		state.LastStopReason = resp.StopReason
+	}
+	events := ensureGeminiMessageStart(state)
+	if !proto.UsageHasValue(state.AccumulatedUsage) {
+		return events
+	}
+	usage := state.AccumulatedUsage
+	events = append(events, proto.CanonicalEvent{
+		Type:       "message_delta",
+		Usage:      &usage,
+		StopReason: state.LastStopReason,
+	})
+	state.UsageEmitted = true
+	return events
+}
+
 func updateGeminiUsage(state *UpstreamState, usage *geminiUsageMetadata) bool {
 	if usage == nil {
 		return false
@@ -479,6 +510,9 @@ func geminiEventsToAny(events []proto.CanonicalEvent) []any {
 }
 
 func geminiResponseToCanonicalResponse(raw []byte) (proto.CanonicalResponse, []proto.ProtocolLossEntry, error) {
+	if interaction, ok := interactionCanonicalResponse(raw); ok {
+		return interaction, nil, nil
+	}
 	var resp geminiGenerateContentResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return proto.CanonicalResponse{}, nil, err

@@ -142,6 +142,15 @@ func (a *PassthroughAdapter) BuildRequest(ctx context.Context, in provider.Build
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if isGeminiInteractionsRequest(in.EndpointPath, req.URL.Path) {
+		if strings.TrimSpace(req.Header.Get("Api-Revision")) == "" {
+			revision := strings.TrimSpace(in.Credential.Extra["api_revision"])
+			if revision == "" {
+				revision = "2026-05-20"
+			}
+			req.Header.Set("Api-Revision", revision)
+		}
+	}
 
 	// 可选：X-Goog-User-Project（用于 Cloud quota / billing 归属）
 	if proj := in.Credential.Extra["goog_user_project"]; proj != "" {
@@ -167,6 +176,16 @@ func (a *PassthroughAdapter) endpointFor(stream bool) string {
 func (a *PassthroughAdapter) acceptsCredential(t provider.CredentialType) bool {
 	for _, ok := range a.AcceptableCredentialTypes() {
 		if ok == t {
+			return true
+		}
+	}
+	return false
+}
+
+func isGeminiInteractionsRequest(paths ...string) bool {
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "/v1beta/interactions" || strings.HasPrefix(path, "/v1beta/interactions/") {
 			return true
 		}
 	}

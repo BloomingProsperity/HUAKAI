@@ -251,3 +251,25 @@ func TestPassthroughAdapter_ExplicitExtraStreamFalseBeatsIntent(t *testing.T) {
 		t.Fatalf("URL=%q Extra[stream]=false 显式值必须压过 intent", req.URL.String())
 	}
 }
+
+func TestPassthroughAdapter_BuildRequest_InteractionsOfficialPath(t *testing.T) {
+	a := &PassthroughAdapter{}
+	req, err := a.BuildRequest(context.Background(), provider.BuildInput{
+		UpstreamModelID: "gemini-3.6-flash",
+		EndpointPath:    "/v1beta/interactions",
+		InboundBody:     []byte(`{"model":"gemini-3.6-flash","input":"hi"}`),
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "AIzaTestKey"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Path != "/v1beta/interactions" {
+		t.Fatalf("URL=%s want /v1beta/interactions", req.URL)
+	}
+	if req.Header.Get("Api-Revision") != "2026-05-20" {
+		t.Fatalf("Api-Revision=%q", req.Header.Get("Api-Revision"))
+	}
+	if strings.Contains(req.URL.String(), "generateContent") {
+		t.Fatalf("会话协议不得落到 generateContent: %s", req.URL)
+	}
+}

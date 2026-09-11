@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	"github.com/BloomingProsperity/HUAKAI/internal/protosse"
@@ -27,6 +28,8 @@ type HCSFDispatchInput struct {
 	BodyControls      DispatchBodyControls
 	InboundBetaTokens []string
 	OfficialDirect    bool
+	EndpointPath      string
+	HTTPMethod        string
 	// IdentityRewrite 作用于 HCSF marshal 后的最终 body；nil 表示不改写。
 	// 开关、fail-open 与身份投影语义由接线方统一提供。
 	IdentityRewrite func([]byte) []byte
@@ -140,10 +143,12 @@ func (d *UpstreamDispatcher) DispatchHCSF(ctx context.Context, env *proto.HCSF) 
 		return nil, fmt.Errorf("dispatcher: 取 provider adapter 失败 (protocol=%q): %w", family, err)
 	}
 	req, err := buildHCSFProviderRequest(ctx, providerAdapter, provider.BuildInput{
+		HTTPMethod:        in.HTTPMethod,
 		UpstreamModelID:   upstreamModel,
 		Credential:        in.Credential,
 		Account:           account,
 		InboundBetaTokens: in.InboundBetaTokens,
+		EndpointPath:      in.EndpointPath,
 	}, env, ingressFamily, endpointFamily, in.RawBody, in.IdentityRewrite, in.BodyControls)
 	if err != nil {
 		return nil, fmt.Errorf("dispatcher: BuildRequestFromEnvelope/BuildRequest 失败: %w", err)
@@ -295,6 +300,18 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		}
 		return applyRequestBodyControls(req, controls)
 	}
+	if officialGeminiInteractionsPath(in.EndpointPath) {
+		if len(nativeRawBody) == 0 && !strings.EqualFold(strings.TrimSpace(in.HTTPMethod), http.MethodGet) {
+			return nil, fmt.Errorf("dispatcher: official interactions request missing raw body")
+		}
+		body, err := ApplyDispatchBodyControls(nativeRawBody, controls)
+		if err != nil {
+			return nil, err
+		}
+		body = applyIdentityRewrite(body, identityRewrite)
+		in.InboundBody = body
+		return a.BuildRequest(ctx, in)
+	}
 	if hcsfProviderRequestUsesNativeRawBody(endpointFamily, ingressFamily) {
 		if err := validateNativeRawBodyIngress(ingressFamily, endpointFamily); err != nil {
 			return nil, err
@@ -429,6 +446,16 @@ func hcsfProviderRequestModelFamily(endpointFamily string) string {
 // 协议同形 ⇒ raw 直通"。保持单一映射真相源,禁止在调用方复制这张表。
 func HCSFEndpointModelFamily(endpointFamily string) string {
 	return hcsfProviderRequestModelFamily(endpointFamily)
+}
+
+// OfficialGeminiInteractionsPath 识别官方 Gemini 会话协议入口/出站 path。
+func OfficialGeminiInteractionsPath(path string) bool {
+	p := strings.TrimSpace(path)
+	return p == "/v1beta/interactions" || strings.HasPrefix(p, "/v1beta/interactions/")
+}
+
+func officialGeminiInteractionsPath(path string) bool {
+	return OfficialGeminiInteractionsPath(path)
 }
 
 func hcsfProviderRequestUsesNativeRawBody(endpointFamily, ingressFamily string) bool {

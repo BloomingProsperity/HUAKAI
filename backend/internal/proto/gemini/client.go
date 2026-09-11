@@ -80,6 +80,9 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 	if !ok {
 		return nil, nil, proto.ErrMissingRequestMetaSeed
 	}
+	if len(bytes.TrimSpace(raw)) == 0 && IsInteractionsPath(seed.IngressPath) {
+		return emptyInteractionsEnvelope(seed, seed.Model)
+	}
 
 	var req geminiClientRequest
 	var extras proto.PassthroughEnvelope
@@ -93,7 +96,11 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 	if model == "" {
 		return nil, nil, errors.New("proto: gemini missing path model")
 	}
-	if len(req.Contents) == 0 {
+	interactionMessages, hasInteractionInput := interactionsInputMessages(raw)
+	if len(req.Contents) == 0 && !hasInteractionInput {
+		if IsInteractionsPath(seed.IngressPath) {
+			return emptyInteractionsEnvelope(seed, model)
+		}
 		return nil, nil, errors.New("proto: gemini contents must not be empty")
 	}
 
@@ -160,6 +167,9 @@ func (c *GeminiClient) RequestToCanonical(ctx context.Context, raw []byte) (*pro
 			env.Messages = append(env.Messages, msg)
 		}
 	}
+	if len(env.Messages) == 0 && hasInteractionInput {
+		env.Messages = append(env.Messages, interactionMessages...)
+	}
 	if len(env.Messages) == 0 {
 		return nil, losses, errors.New("proto: gemini contents produced no canonical messages")
 	}
@@ -175,6 +185,9 @@ func (c *GeminiClient) CanonicalToClientResponse(ctx context.Context, canonical 
 	}
 	if canonical.BufferedResponse == nil {
 		return nil, nil, errors.New("proto: gemini CanonicalToClientResponse envelope has no buffered_response")
+	}
+	if raw := officialInteractionRaw(canonical.BufferedResponse); len(raw) > 0 {
+		return append([]byte(nil), raw...), nil, nil
 	}
 	resp := canonical.BufferedResponse
 	parts, losses, err := canonicalBlocksToGeminiParts(resp.Content)

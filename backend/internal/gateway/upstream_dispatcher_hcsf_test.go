@@ -867,6 +867,72 @@ func TestDispatchHCSFPrefersProviderEnvelopeBuilder(t *testing.T) {
 
 // 变异: DispatchHCSF 构造 provider.BuildInput 时丢 InboundBetaTokens
 // 映射 → 红(DM-03 HCSF 路径穿线守卫)。
+func TestDispatchHCSFUsesOfficialInteractionsRawBody(t *testing.T) {
+	adapter := &stubAdapter{platform: "gemini"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+	raw := []byte(`{"model":"gemini-3.6-flash","input":"official-raw-must-survive"}`)
+	withPath := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gemini-3.6-flash",
+		Account:         provider.AccountInfo{AccountID: 7, Platform: "gemini", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "gk-test"},
+		RawBody:         raw,
+		EndpointPath:    "/v1beta/interactions",
+		HTTPMethod:      http.MethodPost,
+	})
+	if _, err := d.DispatchHCSF(withPath, testHCSFEnvelope()); err != nil {
+		t.Fatalf("DispatchHCSF: %v", err)
+	}
+	if adapter.lastInput.EndpointPath != "/v1beta/interactions" {
+		t.Fatalf("EndpointPath=%q", adapter.lastInput.EndpointPath)
+	}
+	if string(adapter.lastInput.InboundBody) != string(raw) {
+		t.Fatalf("官方会话必须原样出站, got %s", adapter.lastInput.InboundBody)
+	}
+
+	adapter.lastInput = provider.BuildInput{}
+	withoutPath := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gemini-3.6-flash",
+		Account:         provider.AccountInfo{AccountID: 7, Platform: "gemini", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "gk-test"},
+		RawBody:         raw,
+	})
+	if _, err := d.DispatchHCSF(withoutPath, testHCSFEnvelope()); err != nil {
+		t.Fatalf("DispatchHCSF without path: %v", err)
+	}
+	if string(adapter.lastInput.InboundBody) == string(raw) {
+		t.Fatalf("无会话 path 时必须走族 marshal,不得原样转发官方会话 body")
+	}
+	if !strings.Contains(string(adapter.lastInput.InboundBody), `"messages"`) {
+		t.Fatalf("无会话 path 的基线应 marshal 出 messages: %s", adapter.lastInput.InboundBody)
+	}
+}
+
+func TestDispatchHCSFAllowsEmptyInteractionsGet(t *testing.T) {
+	adapter := &stubAdapter{platform: "gemini"}
+	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}
+	d := newDispatcherForTest(adapter, doer)
+	ctx := ContextWithHCSFDispatchInput(context.Background(), HCSFDispatchInput{
+		ProtocolFamily:  "openai_chat",
+		UpstreamModelID: "gemini-3.6-flash",
+		Account:         provider.AccountInfo{AccountID: 7, Platform: "gemini", AccountType: "apikey"},
+		Credential:      provider.Credential{Type: provider.CredentialTypeAPIKey, Value: "gk-test"},
+		EndpointPath:    "/v1beta/interactions/v1_abc",
+		HTTPMethod:      http.MethodGet,
+	})
+	if _, err := d.DispatchHCSF(ctx, testHCSFEnvelope()); err != nil {
+		t.Fatalf("GET 检索不得因空 body 失败: %v", err)
+	}
+	if adapter.lastInput.HTTPMethod != http.MethodGet {
+		t.Fatalf("HTTPMethod=%q", adapter.lastInput.HTTPMethod)
+	}
+	if len(adapter.lastInput.InboundBody) != 0 {
+		t.Fatalf("GET 检索不得伪造 body: %s", adapter.lastInput.InboundBody)
+	}
+}
+
 func TestDispatchHCSFPassesInboundBetaTokensToAdapter(t *testing.T) {
 	adapter := &stubAdapter{platform: "openai"}
 	doer := &stubDoer{respStatus: 200, respBody: openAIHCSFResponse}

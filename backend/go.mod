@@ -2,7 +2,7 @@ module github.com/BloomingProsperity/HUAKAI
 
 go 1.25.0
 
-toolchain go1.25.12
+toolchain go1.25.13
 
 require (
 	github.com/andybalholm/brotli v1.0.6

@@ -1040,6 +1040,74 @@ paths:
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /v1beta/interactions:
+    post:
+      tags: [gateway]
+      summary: Gemini official interactions create
+      operationId: createGeminiInteraction
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+      description: |
+        Official Gemini Interactions create. The JSON body is forwarded without
+        rewriting it into generateContent. Exactly one of `model` or `agent`
+        is required so the gateway can select an authorized Gemini account.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GeminiInteractionRequest' }
+      responses:
+        '200':
+          description: Official interaction object or SSE stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeminiInteractionResponse' }
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/PaymentRequired' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /v1beta/interactions/{id}:
+    get:
+      tags: [gateway]
+      summary: Gemini official interactions retrieve
+      operationId: getGeminiInteraction
+      x-huakai-spec-source:
+        - docs/HUAKAI工程设计手册.md
+      description: |
+        Official Gemini Interactions retrieve. The `model` query is required so
+        the gateway can select an authorized Gemini account for the outbound GET.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: model
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: stream
+          in: query
+          required: false
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Official interaction object or SSE stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeminiInteractionResponse' }
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/SSEFrame' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /v1/generation:
     get:
       tags: [user-audit]
@@ -19020,6 +19088,33 @@ components:
             promptTokenCount: { type: integer, minimum: 0 }
             candidatesTokenCount: { type: integer, minimum: 0 }
             totalTokenCount: { type: integer, minimum: 0 }
+
+    GeminiInteractionRequest:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+      properties:
+        model: { type: string, minLength: 1 }
+        agent: { type: string, minLength: 1 }
+        input: {}
+        stream: { type: boolean }
+
+    GeminiInteractionResponse:
+      type: object
+      additionalProperties: true
+      x-huakai-spec-source: [docs/HUAKAI工程设计手册.md]
+      properties:
+        id: { type: string }
+        object: { type: string }
+        status: { type: string }
+        model: { type: string }
+        usage:
+          type: object
+          additionalProperties: true
+          properties:
+            total_tokens: { type: integer, minimum: 0 }
+            total_input_tokens: { type: integer, minimum: 0 }
+            total_output_tokens: { type: integer, minimum: 0 }
 
     UsageBlock:
       type: object

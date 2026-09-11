@@ -88,6 +88,10 @@ func NewGenerateContentHandler(d Deps) http.Handler {
 			d.Models.ServeHTTP(w, r)
 			return
 		}
+		if r.URL.Path == officialInteractionsPath || strings.HasPrefix(r.URL.Path, officialInteractionsPath+"/") {
+			serveGeminiInteractions(w, r, d)
+			return
+		}
 
 		model, action, ok := parseModelAction(r.URL.Path)
 		if !ok {

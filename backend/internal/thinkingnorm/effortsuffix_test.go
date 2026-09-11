@@ -279,6 +279,31 @@ func TestNormalizeEffortSuffix_NonObjectBodyStripsModelOnly(t *testing.T) {
 }
 
 // 钉住 level->budget 表,使将来对某个预算值的修改是一次有意识的变更。
+// 回归:官方前沿档 max / xhigh 必须原样发出,不得再折叠成 high。
+// 变异:把 max 折回 high,或把 xhigh 误剥成 high → 转红。
+func TestNormalizeEffortSuffix_MaxAndXHighPassThrough(t *testing.T) {
+	resolver := &fakeResolver{
+		resolves:  map[string]bool{"gpt-6-astra": true},
+		reasoning: map[string]bool{"gpt-6-astra": true},
+	}
+	for _, tc := range []struct {
+		model string
+		want  string
+	}{
+		{"gpt-6-astra-max", "max"},
+		{"gpt-6-astra-xhigh", "xhigh"},
+	} {
+		body := []byte(`{"model":"` + tc.model + `","messages":[]}`)
+		out, gotBody := NormalizeEffortSuffix(tc.model, body, IngressOpenAIChat, resolver)
+		if !out.Normalized || out.BaseModel != "gpt-6-astra" || out.Level != tc.want {
+			t.Fatalf("%s: outcome=%+v", tc.model, out)
+		}
+		if v, _ := bodyField(t, gotBody, "reasoning_effort"); v != tc.want {
+			t.Fatalf("%s reasoning_effort=%v want %s", tc.model, v, tc.want)
+		}
+	}
+}
+
 func TestNormalizeEffortSuffix_LevelBudgetTablePin(t *testing.T) {
 	want := map[effortLevel]int{
 		effortMinimal: 512,
@@ -286,6 +311,7 @@ func TestNormalizeEffortSuffix_LevelBudgetTablePin(t *testing.T) {
 		effortMedium:  8192,
 		effortHigh:    24576,
 		effortMax:     32768,
+		effortXHigh:   28672,
 		effortNone:    0,
 	}
 	for lvl, w := range want {
