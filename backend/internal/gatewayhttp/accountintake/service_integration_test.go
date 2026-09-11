@@ -961,6 +961,101 @@ WHERE tenant_id=$1 AND provider_account_id=$2 AND account_credential_id=$3 AND c
 	}
 }
 
+func TestServiceKeepsExistingRefreshWhenCodexImportOmitsIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool := openAccountIntakePool(t, ctx)
+	seed := seedAccountIntake(t, ctx, pool)
+	enableCodexLane(t, ctx, pool, seed)
+	service := newAccountIntakeService(t, pool)
+	oldRefresh := "refresh-keep-" + seed.suffix
+	newAccess := "access-after-" + seed.suffix
+	var accountID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO provider_accounts (
+    tenant_id, provider_id, channel_id, name, account_type, credentials, extra
+) VALUES ($1,$2,$3,$4,'session','{}','{}')
+RETURNING id`,
+		seed.tenantID, seed.providerID, seed.channelID, "keep-refresh-"+seed.suffix,
+	).Scan(&accountID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.credentials.Create(ctx, credentialstore.CreateCredentialInput{
+		TenantID: seed.tenantID, ProviderAccountID: accountID,
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload:                []byte(`{"access_token":"access-before","session_token":"access-before","refresh_token":"` + oldRefresh + `"}`),
+		ExternalAccountID:      "workspace-keep-refresh",
+		ExternalIdentitySource: "import_payload",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := PlanInput{
+		TenantID: seed.tenantID, SourceKind: intake.SourceCLI,
+		DefaultVendor:   credentialstore.VendorOpenAI,
+		DefaultAuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Content:         fmt.Sprintf(`{"tokens":{"access_token":%q,"account_id":"workspace-keep-refresh"}}`, newAccess),
+		Account: AccountDefaults{
+			ProviderID: seed.providerID, ChannelID: seed.channelID,
+			NamePrefix: "unused-keep-" + seed.suffix, AccountType: "session",
+		},
+		Now: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+	}
+	planned, err := service.Plan(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Plan.Summary.Update != 1 || planned.Plan.Items[0].ExistingAccountID != accountID ||
+		planned.Plan.Items[0].ExistingCredentialID != created.ID ||
+		planned.Plan.Items[0].Lifecycle.HasRefreshMaterial {
+		t.Fatalf("plan=%+v，期望仅访问令牌材料命中已有账号；若指纹短路直接建新号则本断言变红", planned)
+	}
+	if !containsString(planned.Plan.Items[0].Warnings, "access_only_update_keeps_existing_refresh") {
+		t.Fatalf("预检警告=%v，缺少仅访问令牌保留续期标记", planned.Plan.Items[0].Warnings)
+	}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	executed, err := service.Execute(ctx, ExecuteInput{
+		PlanInput: input, PlanHash: planned.PlanHash,
+		Confirmations: []string{"confirm_unverified_account_match", "confirm_credential_rotation"},
+		ActorID:       "admin_token:9", ActorRole: admin.RoleTenantOperator,
+		RequestID: "req-keep-refresh",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Summary.Updated != 1 || executed.Items[0].Status != StatusUpdated ||
+		executed.Items[0].CredentialVersion != created.Version+1 {
+		t.Fatalf("execution=%+v，期望原凭据轮换成功", executed)
+	}
+	if !containsString(executed.Items[0].Warnings, "本次材料未提供刷新令牌；已保留账号已有续期凭据，若原先没有则仍无法自动续期") {
+		t.Fatalf("执行警告=%v，缺少运营可识别的保留说明", executed.Items[0].Warnings)
+	}
+	record, err := service.credentials.ResolveActive(ctx, seed.tenantID, accountID)
+	if err != nil {
+		t.Fatalf("ResolveActive 失败：%v", err)
+	}
+	defer privacy.Zeroize(record.PlaintextPayload)
+	var payload map[string]string
+	if err := json.Unmarshal(record.PlaintextPayload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["access_token"] != newAccess {
+		t.Fatalf("访问令牌=%q，期望已更新为 %q", payload["access_token"], newAccess)
+	}
+	if payload["refresh_token"] != oldRefresh {
+		t.Fatalf("续期材料=%q，期望保留 %q；轮换整包替换时本断言变红", payload["refresh_token"], oldRefresh)
+	}
+	leaked := logs.String() + fmt.Sprint(executed)
+	for _, secret := range []string{oldRefresh, newAccess, "access-before"} {
+		if strings.Contains(leaked, secret) {
+			t.Fatalf("执行结果或日志泄漏凭据材料 %q", secret)
+		}
+	}
+}
+
 func TestServiceRejectsUpdatingCredentialIntoIncompatibleExistingAccount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -38,7 +38,15 @@ func matchExisting(identity candidateIdentity, lifecycle LifecycleSummary, candi
 			return identity.CredentialFingerprint != "" &&
 				strings.EqualFold(strings.TrimSpace(current.CredentialFingerprint), identity.CredentialFingerprint)
 		})
-		return resolveExistingMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
+		match, conflict := resolveExistingMatches(matches, candidate, "credential_fingerprint_ambiguous", "同一凭据指纹命中多个已有账号")
+		if conflict != nil {
+			return nil, conflict
+		}
+		if match != nil {
+			return match, nil
+		}
+		// 指纹未命中时继续按上游账号身份尝试。仅访问令牌材料的指纹与已有可续期
+		// 账号的长期材料指纹不同，若在这里直接返回，运营更新会被拆成新号。
 	}
 
 	if identity.SharedAccountScope && identity.SubjectID != "" {

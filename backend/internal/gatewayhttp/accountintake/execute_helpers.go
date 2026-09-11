@@ -3,6 +3,7 @@ package accountintake
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -136,6 +137,15 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+func payloadHasRefreshToken(raw []byte) bool {
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	value, _ := fields["refresh_token"].(string)
+	return strings.TrimSpace(value) != ""
 }
 
 func addExecutionSummary(summary *ExecutionSummary, status ExecutionStatus) {

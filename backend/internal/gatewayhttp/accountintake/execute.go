@@ -447,6 +447,9 @@ WHERE id=$2 AND tenant_id=$3`, *proxyID, expected.ExistingAccountID, prepared.in
 	result.AccountCredentialID = metadata.ID
 	result.CredentialVersion = metadata.Version
 	result.ChannelHealthInitialized = true
+	if !payloadHasRefreshToken(candidate.Payload) {
+		result.Warnings = append(result.Warnings, "本次材料未提供刷新令牌；已保留账号已有续期凭据，若原先没有则仍无法自动续期")
+	}
 	return result
 }
 

@@ -281,6 +281,48 @@ func TestBuildCLIPlanUsesStrictCodexParser(t *testing.T) {
 	}
 }
 
+func TestBuildCandidatesUpdatesAccessOnlyWhenAccountScopeMatches(t *testing.T) {
+	existing := existingCredential(11, 101, credentialstore.StateActive, "workspace-existing")
+	existing.CredentialFingerprint = "refresh-based-fingerprint"
+
+	accessOnly := oauthCandidate("workspace-existing", "", `{"access_token":"access-only-new"}`)
+	matched := requireSingleItem(t, BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{existing},
+	}, []credentialacq.CredentialCandidate{accessOnly}).Plan)
+	if matched.Action != ActionUpdate || matched.ExistingAccountID != existing.ProviderAccountID ||
+		matched.ExistingCredentialID != existing.CredentialID {
+		t.Fatalf("仅访问令牌按账号范围命中=%+v，期望轮换已有可续期账号；若指纹未命中就直接返回则本断言变红", matched)
+	}
+	if !contains(matched.Warnings, "access_only_update_keeps_existing_refresh") ||
+		!contains(matched.Warnings, "unverified_account_match") {
+		t.Fatalf("警告=%v，期望同时标记仅访问令牌更新与未验证账号匹配", matched.Warnings)
+	}
+
+	otherWorkspace := oauthCandidate("workspace-other", "", `{"access_token":"access-only-other"}`)
+	created := requireSingleItem(t, BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{existing},
+	}, []credentialacq.CredentialCandidate{otherWorkspace}).Plan)
+	if created.Action != ActionCreate {
+		t.Fatalf("不同上游账号=%+v，不能误轮换", created)
+	}
+
+	sameAccess := []byte(`{"access_token":"same-access","session_token":"same-access"}`)
+	fingerprint := credentialstore.CredentialMaterialFingerprint(7, credentialstore.VendorOpenAI, credentialstore.AuthModeCodexCLIOAuth, sameAccess)
+	fingerprintExisting := existing
+	fingerprintExisting.ExternalAccountID = "unrelated-workspace"
+	fingerprintExisting.CredentialFingerprint = fingerprint
+	fingerprinted := requireSingleItem(t, BuildCandidates(BuildInput{
+		TenantID: 7, SourceKind: SourceJSON, Existing: []ExistingCredential{fingerprintExisting},
+	}, []credentialacq.CredentialCandidate{{
+		Vendor: credentialstore.VendorOpenAI, AuthMode: credentialstore.AuthModeCodexCLIOAuth,
+		Payload: sameAccess, ExternalAccountID: "another-workspace",
+		AccountIDSource: accountident.SourceImportPayload,
+	}}).Plan)
+	if fingerprinted.Action != ActionUpdate || fingerprinted.ExistingCredentialID != fingerprintExisting.CredentialID {
+		t.Fatalf("相同材料指纹=%+v，期望仍按指纹轮换", fingerprinted)
+	}
+}
+
 func TestBuildCandidatesExposesSubscriptionLabelWithoutIdentityLeak(t *testing.T) {
 	candidate := oauthCandidate("workspace-secret", "person@example.com", `{
 		"refresh_token":"refresh-secret",
