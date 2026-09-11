@@ -31,6 +31,9 @@ type Store struct {
 	cached   []Override
 	cachedAt time.Time
 	cacheGen uint64
+
+	// afterListLoad 仅测试注入:在读库之后、写回内存缓存之前运行,用来复现写后失效竞态。
+	afterListLoad func()
 }
 
 func NewPostgresStore(pool *pgxpool.Pool, signer *sign.Signer) *Store {
@@ -99,6 +102,9 @@ SELECT id, vendor, model,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%w: iterate model rate overrides: %w", ErrBackend, err)
+	}
+	if s.afterListLoad != nil {
+		s.afterListLoad()
 	}
 
 	s.mu.Lock()
