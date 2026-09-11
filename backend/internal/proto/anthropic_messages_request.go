@@ -327,6 +327,10 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 		if err := json.Unmarshal(req.Thinking, &thinkCfg); err != nil {
 			return nil, nil, fmt.Errorf("proto: anthropic_messages 'thinking' parse: %w", err)
 		}
+		display, err := normalizeThinkingDisplay(thinkCfg.Display, thinkCfg.Type, seed.InboundBetaTokens)
+		if err != nil {
+			return nil, nil, err
+		}
 		// enabled(手动 budget)与 adaptive(always-on，无 budget，如 claude-fable-5 /
 		// opus-4.7+)都建 CapabilityThinking 节点。此前只认 enabled，adaptive 不建节点
 		// 且零 loss 记录 → fable-5 客户端的 thinking 配置在 HCSF 重组路径整个蒸发。
@@ -340,6 +344,7 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 				Thinking: &ThinkingNode{
 					Mode:         thinkCfg.Type,
 					BudgetTokens: thinkCfg.BudgetTokens,
+					Display:      display,
 					Blocks:       []CanonicalContentBlock{},
 					Redaction:    RedactionPublic,
 				},

@@ -97,14 +97,19 @@ func anthropicRequestThinkingControl(env *proto.HCSF, n proto.CapabilityNode) (m
 	}
 	// adaptive(claude-fable-5 / opus-4.7+ always-on thinking)无 budget_tokens：
 	// 回写 {type:"adaptive"}，绝不要求 budget>0(否则 fable-5 thinking 被丢)。
+	var body map[string]any
 	if n.Thinking.Mode == "adaptive" {
-		return map[string]any{"type": "adaptive"}, true
-	}
-	if n.Thinking.BudgetTokens <= 0 {
+		body = map[string]any{"type": "adaptive"}
+	} else if n.Thinking.BudgetTokens <= 0 {
 		addMarshalLoss(env, "anthropic_messages", n, "thinking request control missing budget_tokens", "missing_thinking_budget_tokens")
 		return nil, false
+	} else {
+		body = map[string]any{"type": "enabled", "budget_tokens": n.Thinking.BudgetTokens}
 	}
-	return map[string]any{"type": "enabled", "budget_tokens": n.Thinking.BudgetTokens}, true
+	if display := strings.TrimSpace(n.Thinking.Display); display != "" {
+		body["display"] = display
+	}
+	return body, true
 }
 
 func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {

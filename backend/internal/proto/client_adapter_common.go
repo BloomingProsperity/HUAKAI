@@ -67,6 +67,9 @@ type RequestMetaSeed struct {
 
 	// ForceFormat 可选；默认 false，保持客户端响应格式现状。
 	ForceFormat bool
+
+	// InboundBetaTokens 是入站 anthropic-beta 已规范化列表；校验 updates 档需要。
+	InboundBetaTokens []string
 }
 
 type requestMetaSeedKey struct{}

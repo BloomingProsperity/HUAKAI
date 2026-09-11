@@ -45,14 +45,19 @@ type openAIChatResponseToolCallFunc struct {
 }
 
 type openAIChatResponseUsage struct {
-	PromptTokens     int                           `json:"prompt_tokens"`
-	CompletionTokens int                           `json:"completion_tokens"`
-	TotalTokens      int                           `json:"total_tokens"`
-	PromptDetails    *openAIChatUsagePromptDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens       int                               `json:"prompt_tokens"`
+	CompletionTokens   int                               `json:"completion_tokens"`
+	TotalTokens        int                               `json:"total_tokens"`
+	PromptDetails      *openAIChatUsagePromptDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionDetails  *openAIChatUsageCompletionDetails `json:"completion_tokens_details,omitempty"`
 }
 
 type openAIChatUsagePromptDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+}
+
+type openAIChatUsageCompletionDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 func canonicalToOpenAIFinishReason(c CanonicalStopReason) (*string, []ProtocolLossEntry) {
@@ -103,6 +108,9 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 		case "thinking", "reasoning":
 			if piece := firstNonEmptyString(b.Thinking, b.Text, b.ReasoningSummary); piece != "" {
 				reasoningParts = append(reasoningParts, piece)
+			} else if b.Type == "thinking" {
+				loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_chat_omitted_thinking_unprojected", "thinking_omitted_unprojected", CapabilityThinking, "")
+				losses = append(losses, loss)
 			}
 		case "redacted_thinking":
 			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_redacted_thinking_unprojected", "thinking_redacted_unprojected", CapabilityThinking, "")
@@ -162,6 +170,9 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 	}
 	if resp.Usage.CacheReadInputTokens > 0 {
 		usage.PromptDetails = &openAIChatUsagePromptDetails{CachedTokens: resp.Usage.CacheReadInputTokens}
+	}
+	if resp.Usage.ThinkingTokensKnown || resp.Usage.ReasoningTokens > 0 {
+		usage.CompletionDetails = &openAIChatUsageCompletionDetails{ReasoningTokens: resp.Usage.ReasoningTokens}
 	}
 
 	out := openAIChatCompletion{

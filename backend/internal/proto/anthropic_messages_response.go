@@ -40,6 +40,11 @@ type anthropicResponseUsage struct {
 	CacheCreationInputTokens int                             `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int                             `json:"cache_read_input_tokens,omitempty"`
 	CacheCreation            *anthropicResponseCacheCreation `json:"cache_creation,omitempty"`
+	OutputTokensDetails      *anthropicOutputTokensDetails   `json:"output_tokens_details,omitempty"`
+}
+
+type anthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 type anthropicResponseCacheCreation struct {
@@ -169,6 +174,9 @@ func (a *AnthropicMessagesClient) CanonicalToClientResponse(ctx context.Context,
 			Ephemeral5mInputTokens: resp.Usage.CacheCreationInputTokens5m,
 			Ephemeral1hInputTokens: resp.Usage.CacheCreationInputTokens1h,
 		}
+	}
+	if resp.Usage.ThinkingTokensKnown {
+		usage.OutputTokensDetails = &anthropicOutputTokensDetails{ThinkingTokens: resp.Usage.ReasoningTokens}
 	}
 
 	out := anthropicMessagesResponse{
