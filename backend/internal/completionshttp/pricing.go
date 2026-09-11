@@ -33,19 +33,11 @@ func (ex *execution) predictedCost() (completionCostBreakdown, error) {
 	}, "", true)
 }
 
-func (ex *execution) actualCost(usage completionUsage) (completionCostBreakdown, error) {
-	return ex.actualCostFromRaw(usage, nil)
-}
-
 func (ex *execution) actualCostFromRaw(usage completionUsage, raw []byte) (completionCostBreakdown, error) {
 	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
 		return completionCostBreakdown{}, fmt.Errorf("reported usage missing")
 	}
 	return ex.pricedCost(usage, servicetier.FromSSE(raw), false)
-}
-
-func (ex *execution) completionCost(usage completionUsage) (completionCostBreakdown, error) {
-	return ex.pricedCost(usage, "", false)
 }
 
 func (ex *execution) pricedCost(usage completionUsage, actualLane string, reserve bool) (completionCostBreakdown, error) {
