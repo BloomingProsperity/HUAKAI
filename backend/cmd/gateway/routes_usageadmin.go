@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/db/usageoverview"
 	"github.com/BloomingProsperity/HUAKAI/internal/usageanalyticshttp"
 )
 
@@ -13,11 +14,14 @@ import (
 // 供运维做支出分析。typed-nil resolver 的坍缩处理沿用 /debug/vars 的做法，
 // 这样在 deps 未配置时仍会返回 admin_gate_not_configured(503) 而非 panic。
 func mountUsageAdminRoutes(r chi.Router, d *deps) {
+	mountUsageAdminRoutesResolved(r, d, nil)
+}
+
+func mountUsageAdminRoutesResolved(r chi.Router, d *deps, resolver adminIdentityResolver) {
 	if d == nil {
 		return
 	}
-	var resolver adminIdentityResolver
-	if d.adminAuth != nil {
+	if resolver == nil && d.adminAuth != nil {
 		resolver = d.adminAuth
 	}
 	r.Method(http.MethodGet, "/v1/admin/usage/leaderboard",
@@ -34,4 +38,13 @@ func mountUsageAdminRoutes(r chi.Router, d *deps) {
 		adminGate(resolver, usageanalyticshttp.NewOverviewHandler(d.billingQueries)))
 	r.Method(http.MethodGet, "/v1/admin/usage/provider-account-counts",
 		adminGate(resolver, usageanalyticshttp.NewProviderAccountCountsHandler(d.billingQueries)))
+	// 租户作用域经营总览：双角色，不经 adminGate（否则租户管理员会被打成 403）。
+	// 部署者必须显式 tenant_id；省略不得回落全平台。旧平台总览仍仅部署者。
+	// typed-nil *Queries 必须先收成无类型 nil，否则 handler 的 q==nil 守卫失效。
+	var tenantOverview usageanalyticshttp.TenantOverviewQuerier
+	if d.pgPool != nil {
+		tenantOverview = usageoverview.New(d.pgPool)
+	}
+	r.Method(http.MethodGet, "/admin/v1/usage/overview",
+		usageanalyticshttp.NewTenantOverviewHandler(resolver, tenantOverview))
 }

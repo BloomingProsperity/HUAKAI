@@ -2578,6 +2578,81 @@ paths:
         '403': { description: platform_admin role required. }
         '503': { description: Backup manifest backend unavailable. }
 
+  /admin/v1/usage/overview:
+    get:
+      tags: [admin]
+      summary: Tenant-scoped usage overview for platform_admin or tenant_operator
+      operationId: adminTenantUsageOverview
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/tenant_overview_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_tenant_overview.sql
+      description: |
+        Read-only tenant-scoped settled usage overview. Totals match the platform
+        overview columns (request count, actual_cost, input/output/prompt-cache/
+        image token and cost breakdowns, active users/keys, success rate). Daily
+        trend is UTC-day request count plus actual_cost. tenant_operator is locked
+        to its authenticated tenant; querying another tenant is 403.
+        platform_admin must pass tenant_id; omitting it is 400 and never falls
+        back to platform-wide totals. HTTP snapshot cache hits are a response
+        header, not prompt-cache tokens. Window is required (e.g. 24h, 7d, 30d)
+        and capped at 90 days.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped usage overview for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, window, totals, trend]
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  window: { type: string }
+                  totals:
+                    type: object
+                    properties:
+                      requests: { type: integer, format: int64 }
+                      total_cost: { type: string }
+                      total_tokens: { type: integer, format: int64 }
+                      total_tokens_input: { type: integer, format: int64 }
+                      total_tokens_output: { type: integer, format: int64 }
+                      total_cache_creation_tokens: { type: integer, format: int64 }
+                      total_cache_read_tokens: { type: integer, format: int64 }
+                      total_image_output_tokens: { type: integer, format: int64 }
+                      total_input_cost: { type: string }
+                      total_output_cost: { type: string }
+                      total_cache_creation_cost: { type: string }
+                      total_cache_read_cost: { type: string }
+                      total_image_output_cost: { type: string }
+                      active_users: { type: integer, format: int64 }
+                      active_api_keys: { type: integer, format: int64 }
+                      success_count: { type: integer, format: int64 }
+                      error_count: { type: integer, format: int64 }
+                      success_rate: { type: string }
+                  trend:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        day: { type: string, format: date }
+                        requests: { type: integer, format: int64 }
+                        cost: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/risk/overview:
     get:
       tags: [admin-risk]
