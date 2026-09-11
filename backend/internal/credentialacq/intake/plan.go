@@ -356,6 +356,9 @@ func planCandidate(
 		item.ExistingCredentialVersion = match.credential.CredentialVersion
 		item.FieldChanges = []string{"credential_payload", "credential_version", "credential_lifecycle", "identity_metadata", "subscription_profile"}
 		item.Warnings = append(item.Warnings, match.warnings...)
+		if !item.Lifecycle.HasRefreshMaterial {
+			item.Warnings = append(item.Warnings, "access_only_update_keeps_existing_refresh")
+		}
 		item.RequiredConfirmations = append(item.RequiredConfirmations, match.confirmations...)
 		markSeen(seenPayload, seenIdentity, seenUntrusted, payloadKey, identityKey, untrustedKey, index)
 		return item

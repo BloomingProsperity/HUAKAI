@@ -414,6 +414,17 @@ func (s *Store) Rotate(ctx context.Context, in RotateCredentialInput) (Credentia
 	if err != nil {
 		return CredentialMetadata{}, err
 	}
+	if handler.Refreshable() && payloadOmitsRefreshMaterial(payload) && len(current.EncryptedPayload) > 0 {
+		currentPlain, err := s.decryptRecord(ctx, current)
+		if err != nil {
+			return CredentialMetadata{}, err
+		}
+		defer privacy.Zeroize(currentPlain)
+		payload, _, err = copyExistingRefreshMaterial(payload, currentPlain)
+		if err != nil {
+			return CredentialMetadata{}, err
+		}
+	}
 	if err := handler.ValidatePayload(payload); err != nil {
 		return CredentialMetadata{}, err
 	}
