@@ -228,7 +228,8 @@ func TestOrdinaryLogAllowlistExcludesDurableBusinessFacts(t *testing.T) {
 	forbidden := map[string]bool{
 		"billing_events": true, "audit_ledger_entries": true, "billing_refund_operations": true,
 		"payment_audit_log": true, "subscription_audit_events": true, "pricing_ratio_audit_log": true,
-		"moderation_violation_events": true, "outbox_events": true, "dlq_events": true,
+		"model_rate_override_audit_log": true,
+		"moderation_violation_events":   true, "outbox_events": true, "dlq_events": true,
 		"audit_refund_pending": true, "audit_signer_pubkeys": true,
 		"usage_record_reconciliation_events": true, "async_processor_events": true,
 		"alert_events": true, "channel_health_admin_alerts": true,
