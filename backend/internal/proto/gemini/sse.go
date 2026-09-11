@@ -78,16 +78,18 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text         *string             `json:"text,omitempty"`
-	Thought      bool                `json:"thought,omitempty"`
-	FunctionCall *geminiFunctionCall `json:"functionCall,omitempty"`
-	InlineData   json.RawMessage     `json:"inlineData,omitempty"`
+	Text             *string             `json:"text,omitempty"`
+	Thought          bool                `json:"thought,omitempty"`
+	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
+	ThoughtSignature string              `json:"thoughtSignature,omitempty"`
+	InlineData       json.RawMessage     `json:"inlineData,omitempty"`
 }
 
 type geminiFunctionCall struct {
-	ID   string          `json:"id,omitempty"`
-	Name string          `json:"name,omitempty"`
-	Args json.RawMessage `json:"args,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Args             json.RawMessage `json:"args,omitempty"`
+	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
 }
 
 type geminiUsageMetadata struct {

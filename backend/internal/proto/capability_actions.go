@@ -21,6 +21,8 @@ type ToolUseNode struct {
 	Input              json.RawMessage `json:"input"`
 	PartialInput       json.RawMessage `json:"partial_input,omitempty"`
 	Status             ToolNodeStatus  `json:"status"`
+	// OpaqueState 保存必须原样回放的上游思考状态。只能来自上一轮真实响应，禁止合成。
+	OpaqueState string `json:"opaque_state,omitempty"`
 }
 
 // ToolResultNode 是 tool_result capability 的 payload。

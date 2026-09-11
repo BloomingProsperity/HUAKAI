@@ -7,6 +7,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
+	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 )
 
@@ -196,6 +197,7 @@ func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 	}
 	body["messages"] = messages
 	emitUnappliedCacheLoss(env, "anthropic_messages", cache, applied)
+	applyClaudeTranslatedMaxTokens(body, env, "anthropic_messages")
 	return json.Marshal(body)
 }
 
@@ -293,6 +295,9 @@ func marshalOpenAIResponses(env *proto.HCSF) ([]byte, error) {
 }
 
 func marshalGeminiMessages(env *proto.HCSF) ([]byte, error) {
+	if err := protogemini.EnforceThoughtCarry(env); err != nil {
+		return nil, err
+	}
 	body := map[string]any{"contents": []any{}}
 	if len(env.CapabilityGraph.Nodes) == 0 {
 		return marshalGeminiMessagesFromLegacyMessages(env, body)
@@ -422,6 +427,9 @@ func geminiPartFromCanonicalBlock(env *proto.HCSF, block proto.CanonicalContentB
 		if block.CallID != "" {
 			call["id"] = block.CallID
 		}
+		if state := strings.TrimSpace(block.Signature); state != "" {
+			call["thoughtSignature"] = state
+		}
 		return map[string]any{"functionCall": call}, true
 	default:
 		return nil, false
@@ -464,6 +472,13 @@ func geminiToolNames(env *proto.HCSF) map[string]string {
 	return names
 }
 
+func geminiThoughtState(t *proto.ToolUseNode) string {
+	if t == nil {
+		return ""
+	}
+	return strings.TrimSpace(t.OpaqueState)
+}
+
 func geminiToolUsePart(t *proto.ToolUseNode) map[string]any {
 	call := map[string]any{
 		"name": t.Name,
@@ -471,6 +486,9 @@ func geminiToolUsePart(t *proto.ToolUseNode) map[string]any {
 	}
 	if t.ToolCallID != "" {
 		call["id"] = t.ToolCallID
+	}
+	if state := geminiThoughtState(t); state != "" {
+		call["thoughtSignature"] = state
 	}
 	return map[string]any{"functionCall": call}
 }
@@ -485,10 +503,14 @@ func geminiToolResultPart(env *proto.HCSF, n proto.CapabilityNode, toolNames map
 	if n.ToolResult.IsError {
 		response["isError"] = true
 	}
-	return map[string]any{"functionResponse": map[string]any{
+	out := map[string]any{
 		"name":     name,
 		"response": response,
-	}}
+	}
+	if n.ToolResult.ToolCallID != "" {
+		out["id"] = n.ToolResult.ToolCallID
+	}
+	return map[string]any{"functionResponse": out}
 }
 
 func geminiImagePart(env *proto.HCSF, n proto.CapabilityNode) (map[string]any, bool) {
