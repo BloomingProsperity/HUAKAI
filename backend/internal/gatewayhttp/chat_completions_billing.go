@@ -507,6 +507,16 @@ func enrichCanonicalRequestMeta(env *proto.HCSF, upstreamModelID, providerName, 
 	}
 }
 
+// bindCatalogOutputLimit 把已解析模型的目录输出上限拷进 envelope。
+// 非正或缺失保持空，翻译路径回退既有兜底；不覆盖调用方 max_tokens。
+func bindCatalogOutputLimit(env *proto.HCSF, catalog *int) {
+	if env == nil || catalog == nil || *catalog <= 0 {
+		return
+	}
+	n := *catalog
+	env.RequestMeta.CatalogMaxOutputTokens = &n
+}
+
 func submitAuditLedgerEntry(ctx context.Context, d ChatHandlerDeps, env *proto.HCSF, tenantID int64, requestID string) (auditledger.AuditLedgerResult, error) {
 	production := auditLedgerProductionMode()
 	if env == nil {

@@ -34,6 +34,30 @@ func TestStreamingTranslatedClaudeGetsConservativeMaxTokens(t *testing.T) {
 	}
 }
 
+func TestStreamingTranslatedClaudeUsesCatalogMaxTokens(t *testing.T) {
+	env := proto.NewEmptyEnvelope()
+	env.RequestMeta.Model = "claude-sonnet"
+	catalog := 8192
+	env.RequestMeta.CatalogMaxOutputTokens = &catalog
+	env.CapabilityGraph.Nodes = []proto.CapabilityNode{{
+		ID:          "n1",
+		Kind:        proto.CapabilityText,
+		StreamReady: proto.StreamReadyYes,
+		Text:        &proto.TextNode{Role: "user", Block: proto.CanonicalContentBlock{Type: "text", Text: "hi"}},
+	}}
+	raw, err := StreamingProviderRequestBody(env, "anthropic_claude_session")
+	if err != nil {
+		t.Fatalf("StreamingProviderRequestBody: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if body["max_tokens"].(float64) != 8192 {
+		t.Fatalf("流式翻译必须用目录上限: %s", raw)
+	}
+}
+
 func TestStreamingGeminiRejectsPatternProperties(t *testing.T) {
 	env := proto.NewEmptyEnvelope()
 	env.RequestMeta.Model = "gemini-2.5-pro"

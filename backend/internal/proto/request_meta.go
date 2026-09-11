@@ -54,6 +54,10 @@ type RequestMeta struct {
 	// UpstreamModel 可选；registry 解析后的真实上游模型名。
 	UpstreamModel string `json:"upstream_model,omitempty"`
 
+	// CatalogMaxOutputTokens 可选；模型目录登记的输出上限。
+	// 仅翻译路径在调用方未给上限时读取；官方直发不得消费。
+	CatalogMaxOutputTokens *int `json:"catalog_max_output_tokens,omitempty"`
+
 	// IngressPath 必填；如 /v1/chat/completions、/v1/messages、/v1/native/openai/responses。
 	IngressPath string `json:"ingress_path"`
 

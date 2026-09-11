@@ -1023,4 +1023,12 @@ func TestPostgresRegistry_UpdateModelCapabilitiesPersistsIntoListModels(t *testi
 	if visible.Mode != "chat" {
 		t.Fatalf("mode=%q want chat", visible.Mode)
 	}
+
+	resolved, err := r.ResolveModel(ctx, "capability-visible-"+f.suffix, f.tenantID)
+	if err != nil {
+		t.Fatalf("ResolveModel: %v", err)
+	}
+	if resolved.MaxOutputTokens == nil || *resolved.MaxOutputTokens != 8192 {
+		t.Fatalf("ResolveModel MaxOutputTokens=%v want 8192（变异：解析丢掉目录列）", resolved.MaxOutputTokens)
+	}
 }
