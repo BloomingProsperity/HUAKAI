@@ -2097,4 +2097,21 @@ func TestNeedsStreamingHCSFTranslation_CompatFamiliesRawPassthrough(t *testing.T
 			}
 		})
 	}
+
+	interactions := &chatExecution{
+		clientProtocol: proto.ClientProtocolGemini,
+		resolved:       registry.Resolved{ProtocolFamily: "gemini_messages"},
+		endpointPath:   "/v1beta/interactions",
+	}
+	if interactions.needsStreamingHCSFTranslation() {
+		t.Fatal("官方会话流必须跳过 generateContent SSE 翻译,否则用量会被读成 0")
+	}
+	generate := &chatExecution{
+		clientProtocol: proto.ClientProtocolGemini,
+		resolved:       registry.Resolved{ProtocolFamily: "gemini_messages"},
+		endpointPath:   "/v1beta/models/gemini-pro:streamGenerateContent",
+	}
+	if !generate.needsStreamingHCSFTranslation() {
+		t.Fatal("generateContent 流不得被会话直通误伤")
+	}
 }

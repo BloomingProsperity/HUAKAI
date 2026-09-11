@@ -315,7 +315,8 @@ func ClientProtocolByIngressPath(path string) (ClientProtocol, bool) {
 	case "/v1/messages":
 		return ClientProtocolAnthropicMessages, true
 	default:
-		if path == "/v1beta/models" || strings.HasPrefix(path, "/v1beta/models/") {
+		if path == "/v1beta/models" || strings.HasPrefix(path, "/v1beta/models/") ||
+			path == "/v1beta/interactions" || strings.HasPrefix(path, "/v1beta/interactions/") {
 			return ClientProtocolGemini, true
 		}
 		return "", false

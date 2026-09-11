@@ -42,6 +42,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/toolpricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/upstreamcontract"
 )
 
 type authResolver interface {
@@ -176,6 +177,23 @@ func (d ChatHandlerDeps) effectiveCacheScope() string {
 	return d.CacheScope
 }
 
+func (ex *chatExecution) nativeDispatchInput(in gateway.DispatchInput) gateway.DispatchInput {
+	if ex == nil {
+		return in
+	}
+	in.HTTPMethod = ex.httpMethod
+	in.EndpointPath = ex.endpointPath
+	return in
+}
+
+func publicUpstreamContractMessage(err error) string {
+	var rejection upstreamcontract.Rejection
+	if errors.As(err, &rejection) && rejection.Message != "" {
+		return rejection.Message
+	}
+	return clienterr.MessageFor(clienterr.CodeInvalidRequestBody)
+}
+
 func (d ChatHandlerDeps) effectiveBillingEffect() billing.BillingEffect {
 	effect, err := billing.NormalizeBillingEffect(d.BillingEffect)
 	if err != nil {
@@ -198,6 +216,8 @@ type chatExecution struct {
 	requestID       string
 	clientRequestID string
 	clientSessionID string
+	endpointPath    string
+	httpMethod      string
 
 	resolved          registry.Resolved
 	plan              router.RoutePlan
@@ -378,6 +398,8 @@ type NativeClientRequest struct {
 	ClientProtocol proto.ClientProtocol
 	ClientAdapter  proto.ClientAdapter
 	EndpointFamily string
+	EndpointPath   string
+	HTTPMethod     string
 }
 
 // NativeClientGateway 为原生的、按路径限定的客户端协议(如 Gemini v1beta)
@@ -475,6 +497,8 @@ func (g *NativeClientGateway) ServeNativeClient(w http.ResponseWriter, r *http.R
 		ClientAdapter:   clientAdapter,
 		RequestID:       requestID,
 		ClientRequestID: clientRequestID,
+		EndpointPath:    native.EndpointPath,
+		HTTPMethod:      native.HTTPMethod,
 	}
 	exec := newChatExecution(d, r, ident, validated, requestStartedAt)
 	exec.runWithModelFallback(newDeliveryTracker(w))

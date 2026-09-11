@@ -143,7 +143,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		}
 	}
 	dispatchAccount, transportMode := gateway.ResolveDispatchTransport(ex.accInfo, ex.resolved.ProtocolFamily)
-	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
+	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, ex.nativeDispatchInput(gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
@@ -157,7 +157,7 @@ func (ex *chatExecution) executeStreamingAttempt(w http.ResponseWriter) attemptO
 		// gemini body 又无顶层 stream 字段,没有这条 gemini-shaped 上游会错选
 		// 非流 :generateContent(评审 A4/A5 共识缺口)。
 		ClientStreamIntent: ex.req.Stream,
-	})
+	}))
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.errorClassProvider())
 		decision := gateway.ClassifyAttemptDispatchError(err)
@@ -403,7 +403,7 @@ func (ex *chatExecution) abortObservedInputTokens(draft gateway.UsageRecordDraft
 }
 
 func (ex *chatExecution) needsStreamingHCSFTranslation() bool {
-	if ex.clientProtocol == "" {
+	if ex == nil || ex.clientProtocol == "" || gateway.OfficialGeminiInteractionsPath(ex.endpointPath) {
 		return false
 	}
 	cp := string(ex.clientProtocol)

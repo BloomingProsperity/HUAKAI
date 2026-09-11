@@ -516,6 +516,8 @@ func TestOpenAPI_GeminiV1BetaRoutesMountedAndDocumented(t *testing.T) {
 		{method: http.MethodGet, implPath: "/v1beta/models", specPath: "/v1beta/models"},
 		{method: http.MethodPost, implPath: "/v1beta/models/{rest:.*}", specPath: "/v1beta/models/{rest}"},
 		{method: http.MethodGet, implPath: "/v1beta/models/{rest:.*}", specPath: "/v1beta/models/{rest}"},
+		{method: http.MethodPost, implPath: "/v1beta/interactions", specPath: "/v1beta/interactions"},
+		{method: http.MethodGet, implPath: "/v1beta/interactions/{id}", specPath: "/v1beta/interactions/{id}"},
 	}
 	for _, check := range checks {
 		if !hasOperation(implOps, check.method, check.implPath) {

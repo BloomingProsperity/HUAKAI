@@ -1237,6 +1237,48 @@ func TestSessionHashFallbackUnchanged(t *testing.T) {
 	}
 }
 
+func TestSessionHashUsesOpenAILeadingSystemWithoutTools(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+	selector := &recordingSelectionRequestSelector{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Selector = selector
+
+	bodyTurn1 := `{"model":"gpt-4o","stream":false,"messages":[{"role":"system","content":"policy"},{"role":"user","content":"q1"}]}`
+	bodyTurn2 := `{"model":"gpt-4o","stream":false,"messages":[{"role":"system","content":"policy"},{"role":"user","content":"q1"},{"role":"assistant","content":"a1"},{"role":"user","content":"q2"}]}`
+	bodyUserOnly := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"q1"}]}`
+	want := cache_routing.ComputePromptHash([]byte(bodyTurn1))
+	if want == "" || want != cache_routing.ComputePromptHash([]byte(bodyTurn2)) {
+		t.Fatal("fixture 的 leading system 必须跨轮产生同一非空 prompt hash")
+	}
+	if cache_routing.ComputePromptHash([]byte(bodyUserOnly)) != "" {
+		t.Fatal("无 system 的 user-only 基线必须空 hash")
+	}
+
+	for _, body := range []string{bodyTurn1, bodyTurn2} {
+		rec := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+		}
+	}
+	rec := invokeHandlerPath(t, d, "/v1/chat/completions", bodyUserOnly)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user-only status = %d; want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if len(selector.requests) != 3 {
+		t.Fatalf("selector requests = %d; want 3", len(selector.requests))
+	}
+	if got := selector.requests[0].SessionHash; got != want {
+		t.Fatalf("turn1 SessionHash=%q want leading-system prompt hash %q", got, want)
+	}
+	if got := selector.requests[1].SessionHash; got != want {
+		t.Fatalf("turn2 SessionHash=%q want same leading-system prompt hash %q", got, want)
+	}
+	if got := selector.requests[2].SessionHash; got != "" {
+		t.Fatalf("user-only SessionHash=%q want empty (无前缀则不 sticky)", got)
+	}
+}
+
 func TestAffinityRulesOverrideDefaultSessionHashWhenConfigured(t *testing.T) {
 	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
 	selector := &recordingSelectionRequestSelector{}
@@ -2183,6 +2225,37 @@ func TestPrepareRoute_StreamOnlyWhenBodyHasNoCaps(t *testing.T) {
 	}
 	if caps := ex.attempt.RequiredCapabilities; len(caps) != 0 {
 		t.Fatalf("chat 特性不进账号门;流式 body 的 RequiredCapabilities 应为空,got %v", caps)
+	}
+}
+
+func TestPrepareRoute_GPT6AstraRejectsSampling(t *testing.T) {
+	ex := &chatExecution{
+		ctx:       context.Background(),
+		ident:     auth.Identity{TenantID: 7, UserID: 3, APIKeyID: 9},
+		d:         ChatHandlerDeps{Router: router.NewDefaultRouter()},
+		body:      []byte(`{"model":"gpt-6-astra","temperature":0.3,"messages":[{"role":"user","content":"hi"}]}`),
+		req:       chatRequest{Model: "gpt-6-astra"},
+		requestID: "r-route-astra-sampling",
+	}
+	ex.d.Registry = stubRegistry{resolved: registry.Resolved{
+		PublicAlias:      "gpt-6-astra",
+		CanonicalModelID: "openai/gpt-6-astra",
+		ProviderModelID:  "gpt-6-astra",
+		ProtocolFamily:   "openai_chat",
+		PoolCandidates:   []int64{42},
+	}}
+	rec := httptest.NewRecorder()
+	if ok := ex.prepareRoute(rec); ok {
+		t.Fatal("gpt-6-astra 自定义 temperature 必须被 prepareRoute 拒绝")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), clienterr.CodeInvalidRequestBody) {
+		t.Fatalf("body=%s 应含 invalid_request_body", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "temperature") {
+		t.Fatalf("body=%s 应说明拒绝 temperature", rec.Body.String())
 	}
 }
 

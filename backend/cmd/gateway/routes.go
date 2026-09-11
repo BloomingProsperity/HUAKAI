@@ -203,6 +203,8 @@ func mountRoutes(r chi.Router, d *deps, logger *zap.Logger) {
 	r.Get("/v1beta/models", geminiV1BetaHandler.ServeHTTP)
 	r.Post("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1beta/models/{rest:.*}", geminiV1BetaHandler.ServeHTTP)
+	r.Post("/v1beta/interactions", geminiV1BetaHandler.ServeHTTP)
+	r.Get("/v1beta/interactions/{id}", geminiV1BetaHandler.ServeHTTP)
 	r.Get("/v1/me/usage", meusagehttp.NewHandler(meusagehttp.Deps{
 		Auth:  d.inboundAuth,
 		Store: d.billingQueries,

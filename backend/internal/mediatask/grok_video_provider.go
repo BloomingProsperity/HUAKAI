@@ -305,7 +305,7 @@ func (p *GrokVideoProvider) httpProviderError(ctx context.Context, task Task, ac
 		class = string(failure.Classification.Class)
 	}
 	retryable := failure.Decision.RetryableBeforeDelivery
-	if !submit && result.StatusCode == http.StatusNotFound {
+	if !submit && (result.StatusCode == http.StatusNotFound || result.StatusCode == http.StatusGone) {
 		retryable = false
 		class = "provider_task_not_found"
 	}

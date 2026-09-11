@@ -2,6 +2,9 @@
 package cache_routing
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -119,5 +122,145 @@ func TestComputePromptHash_NestedSystemBlocksRespected(t *testing.T) {
 	b := []byte(`{"system":[{"type":"text","text":"x"}],"tools":[]}`)
 	if ComputePromptHash(a) == ComputePromptHash(b) {
 		t.Errorf("不同 cache_control 标记应 hash 不同 (嵌套 raw 字节进 hash)")
+	}
+}
+
+func TestComputePromptHash_TopLevelSystemKeepsLegacyDigest(t *testing.T) {
+	body := []byte(`{"system":"You are helpful","tools":[{"name":"calc"}],"messages":[{"role":"system","content":"must-not-override"},{"role":"user","content":"hi"}]}`)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	h.Write([]byte("system:"))
+	h.Write(top["system"])
+	h.Write([]byte("|tools:"))
+	h.Write(top["tools"])
+	want := hex.EncodeToString(h.Sum(nil))
+	if got := ComputePromptHash(body); got != want {
+		t.Fatalf("顶层 system 必须保持旧 digest, 不得被 messages 改写: got %q want %q", got, want)
+	}
+}
+
+func TestComputePromptHash_OpenAILeadingSystemIgnoresUserTurns(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"model":"gpt-4o","messages":[{"role":"system","content":"policy"},{"role":"user","content":"q1"}]}`)
+	b := []byte(`{"model":"gpt-4o","messages":[{"role":"system","content":"policy"},{"role":"user","content":"q1"},{"role":"assistant","content":"a1"},{"role":"user","content":"q2"}]}`)
+	loser := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"q1"}]}`)
+	ha, hb := ComputePromptHash(a), ComputePromptHash(b)
+	if ha == PromptHashEmpty || ha != hb {
+		t.Fatalf("OpenAI leading system 应在不同用户轮次上稳定: %q vs %q", ha, hb)
+	}
+	if got := ComputePromptHash(loser); got != PromptHashEmpty {
+		t.Fatalf("只有 user 消息的基线必须空 hash, 得 %q", got)
+	}
+	other := []byte(`{"model":"gpt-4o","messages":[{"role":"system","content":"other"},{"role":"user","content":"q1"}]}`)
+	if ComputePromptHash(other) == ha {
+		t.Fatal("不同 system 文本必须得到不同 hash")
+	}
+}
+
+func TestComputePromptHash_OpenAIDeveloperCountsAsPrefix(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"messages":[{"role":"developer","content":"rules"},{"role":"user","content":"q1"}]}`)
+	b := []byte(`{"messages":[{"role":"developer","content":"rules"},{"role":"user","content":"q2"}]}`)
+	if ComputePromptHash(a) == PromptHashEmpty || ComputePromptHash(a) != ComputePromptHash(b) {
+		t.Fatalf("developer 前缀应稳定: %q vs %q", ComputePromptHash(a), ComputePromptHash(b))
+	}
+}
+
+func TestComputePromptHash_SystemAfterUserIsNotPrefix(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"messages":[{"role":"user","content":"hi"},{"role":"system","content":"late"}]}`)
+	if got := ComputePromptHash(body); got != PromptHashEmpty {
+		t.Fatalf("user 之后的 system 不是稳定前缀, 得 %q", got)
+	}
+}
+
+func TestComputePromptHash_GeminiSystemInstructionStableAcrossTurns(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"systemInstruction":{"parts":[{"text":"be concise"}]},"contents":[{"role":"user","parts":[{"text":"q1"}]}]}`)
+	b := []byte(`{"systemInstruction":{"parts":[{"text":"be concise"}]},"contents":[{"role":"user","parts":[{"text":"q2"}]}]}`)
+	ha, hb := ComputePromptHash(a), ComputePromptHash(b)
+	if ha == PromptHashEmpty || ha != hb {
+		t.Fatalf("Gemini systemInstruction 应跨轮稳定: %q vs %q", ha, hb)
+	}
+	other := []byte(`{"systemInstruction":{"parts":[{"text":"be verbose"}]},"contents":[{"role":"user","parts":[{"text":"q1"}]}]}`)
+	if ComputePromptHash(other) == ha {
+		t.Fatal("不同 systemInstruction 必须得到不同 hash")
+	}
+	if got := ComputePromptHash([]byte(`{"contents":[{"role":"user","parts":[{"text":"q1"}]}]}`)); got != PromptHashEmpty {
+		t.Fatalf("无 systemInstruction 的 generateContent 必须空 hash, 得 %q", got)
+	}
+}
+
+func TestComputePromptHash_ResponsesInstructionsStableAcrossInput(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"model":"gpt-4o","instructions":"follow policy","input":"hi"}`)
+	b := []byte(`{"model":"gpt-4o","instructions":"follow policy","input":"later turn","previous_response_id":"resp_1"}`)
+	ha, hb := ComputePromptHash(a), ComputePromptHash(b)
+	if ha == PromptHashEmpty || ha != hb {
+		t.Fatalf("Responses instructions 应跨 input 稳定: %q vs %q", ha, hb)
+	}
+	if got := ComputePromptHash([]byte(`{"model":"gpt-4o","input":"hi"}`)); got != PromptHashEmpty {
+		t.Fatalf("无 instructions 的 Responses 必须空 hash, 得 %q", got)
+	}
+}
+
+func TestComputePromptHash_TopLevelSystemBeatsOtherPrefixes(t *testing.T) {
+	t.Parallel()
+	withSystem := []byte(`{"system":"A","systemInstruction":{"parts":[{"text":"B"}]},"instructions":"C","messages":[{"role":"system","content":"D"}]}`)
+	onlyA := []byte(`{"system":"A"}`)
+	if ComputePromptHash(withSystem) != ComputePromptHash(onlyA) {
+		t.Fatal("出现顶层 system 时不得回退到其它协议前缀")
+	}
+}
+
+func TestComputePromptHash_ExplicitNullSystemDoesNotFallback(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"system":null,"messages":[{"role":"system","content":"from-messages"}]}`)
+	onlyNull := []byte(`{"system":null}`)
+	if ComputePromptHash(body) != ComputePromptHash(onlyNull) {
+		t.Fatal("显式 system=null 不得回退到 messages 前缀")
+	}
+}
+
+func TestComputePromptHash_ToolsOnlyWithoutPrefixKeepsLegacyDigest(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"name":"calc"}],"messages":[{"role":"user","content":"hi"}]}`)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		t.Fatal(err)
+	}
+	h := sha256.New()
+	h.Write([]byte("system:"))
+	h.Write([]byte("|tools:"))
+	h.Write(top["tools"])
+	want := hex.EncodeToString(h.Sum(nil))
+	if got := ComputePromptHash(body); got != want {
+		t.Fatalf("仅 tools、无 system 前缀必须保持旧 digest: got %q want %q", got, want)
+	}
+}
+
+func TestComputePromptHash_StopsAtFirstNonPrefixRole(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"messages":[{"role":"system","content":"keep"},{"role":"user","content":"q1"}]}`)
+	b := []byte(`{"messages":[{"role":"system","content":"keep"},{"role":"user","content":"q1"},{"role":"system","content":"late"}]}`)
+	if ComputePromptHash(a) != ComputePromptHash(b) {
+		t.Fatal("夹在对话中的后置 system 不得进入 hash")
+	}
+}
+
+func TestComputePromptHash_MultipleLeadingPrefixMessages(t *testing.T) {
+	t.Parallel()
+	a := []byte(`{"messages":[{"role":"system","content":"a"},{"role":"developer","content":"b"},{"role":"user","content":"q1"}]}`)
+	b := []byte(`{"messages":[{"role":"system","content":"a"},{"role":"developer","content":"b"},{"role":"user","content":"q2"}]}`)
+	onlyFirst := []byte(`{"messages":[{"role":"system","content":"a"},{"role":"user","content":"q1"}]}`)
+	ha := ComputePromptHash(a)
+	if ha == PromptHashEmpty || ha != ComputePromptHash(b) {
+		t.Fatalf("连续 system/developer 前缀应跨轮稳定: %q vs %q", ha, ComputePromptHash(b))
+	}
+	if ComputePromptHash(onlyFirst) == ha {
+		t.Fatal("少一段 leading prefix 必须得到不同 hash")
 	}
 }

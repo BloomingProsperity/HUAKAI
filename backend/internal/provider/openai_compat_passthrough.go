@@ -71,6 +71,9 @@ func (a *OpenAICompatPassthroughAdapter) BuildRequest(ctx context.Context, in Bu
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if err := applyGrokSessionOutbound(a.PlatformName, req, in); err != nil {
+		return nil, fmt.Errorf("%s passthrough: grok session outbound rejected: %w", a.PlatformName, err)
+	}
 
 	return req, nil
 }

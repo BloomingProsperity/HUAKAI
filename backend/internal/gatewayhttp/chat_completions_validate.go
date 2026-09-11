@@ -40,6 +40,8 @@ type chatValidatedRequest struct {
 	ClientAdapter   proto.ClientAdapter
 	RequestID       string
 	ClientRequestID string
+	EndpointPath    string
+	HTTPMethod      string
 }
 
 func validateChatCompletionsRequest(w http.ResponseWriter, r *http.Request, ctx context.Context) (chatValidatedRequest, bool) {

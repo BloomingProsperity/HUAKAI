@@ -59,6 +59,7 @@ const (
 	effortMedium  effortLevel = "medium"
 	effortHigh    effortLevel = "high"
 	effortMax     effortLevel = "max"
+	effortXHigh   effortLevel = "xhigh"
 	effortNone    effortLevel = "none"
 )
 
@@ -78,6 +79,7 @@ type suffixEntry struct {
 var effortSuffixes = []suffixEntry{
 	{"-minimal", effortMinimal},
 	{"-medium", effortMedium},
+	{"-xhigh", effortXHigh},
 	{"-high", effortHigh},
 	{"-low", effortLow},
 	{"-none", effortNone},
@@ -94,21 +96,24 @@ var levelToBudget = map[effortLevel]int{
 	effortMedium:  8192,
 	effortHigh:    24576,
 	effortMax:     32768,
+	effortXHigh:   28672,
 	effortNone:    0,
 }
 
 // openAIEffortLevels 是 OpenAI-chat 规范解析器能理解的离散 reasoning_effort
-// 字符串值。"max" 会折叠为 "high",以确保永远不会发出 OpenAI 无效的等级;
-// "none" 则移除该字段。
+// 字符串值。现行官方线(GPT-5.6 / GPT-6 Astra)接受 max 与 xhigh,必须原样
+// 发出,不得折叠成 high。"none" 则移除该字段。
 var openAIEffortLevels = map[effortLevel]bool{
 	effortMinimal: true,
 	effortLow:     true,
 	effortMedium:  true,
 	effortHigh:    true,
+	effortXHigh:   true,
+	effortMax:     true,
 }
 
 // ModelResolver 针对一个候选模型名,回答它是否在模型注册表中可解析,以及
-//(若可解析)它是否具备推理/思考能力。调用方将其接到网关的注册表;本包从不
+// (若可解析)它是否具备推理/思考能力。调用方将其接到网关的注册表;本包从不
 // 自行解析模型。实现应当调用代价低廉,但即便如此也只会在带后缀且完整名
 // 无法解析的路径上被调用。
 type ModelResolver interface {
@@ -223,8 +228,8 @@ func parseEffortSuffix(model string) (string, effortLevel, bool) {
 }
 
 // applyOpenAIReasoningEffort 设置由 openai-chat 规范解析器消费的顶层
-// reasoning_effort 字符串。"none" 移除该字段(不推理);"max" 折叠为 "high",
-// 以确保永远不会发出 OpenAI 无效的等级;其余等级原样发出。
+// reasoning_effort 字符串。"none" 移除该字段(不推理);max / xhigh 与其余
+// 已识别等级原样发出,不再折叠,以免前沿模型被静默降档。
 func applyOpenAIReasoningEffort(obj map[string]json.RawMessage, level effortLevel) {
 	switch {
 	case level == effortNone:
@@ -232,8 +237,6 @@ func applyOpenAIReasoningEffort(obj map[string]json.RawMessage, level effortLeve
 		return
 	case openAIEffortLevels[level]:
 		// 原样发出
-	case level == effortMax:
-		level = effortHigh
 	default:
 		return
 	}
@@ -245,7 +248,7 @@ func applyOpenAIReasoningEffort(obj map[string]json.RawMessage, level effortLeve
 // applyAnthropicThinkingBudget 写入由 anthropic 规范解析器消费的顶层
 // thinking 对象。"none" 禁用 thinking;其它等级则用 level<->budget 表中的
 // 预算启用它,当请求自身的 max-output 预算更小时会被下钳到其之下
-//(thinking 预算永远不能超过回答预算)。
+// (thinking 预算永远不能超过回答预算)。
 func applyAnthropicThinkingBudget(obj map[string]json.RawMessage, level effortLevel) {
 	if level == effortNone {
 		thinking, _ := json.Marshal(map[string]any{"type": "disabled", "budget_tokens": 0})

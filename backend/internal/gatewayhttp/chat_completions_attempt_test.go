@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -44,6 +45,37 @@ func TestConstrainResolvedPool只保留服务端授权池(t *testing.T) {
 	missing := int64(44)
 	if _, ok := constrainResolvedPool(original, &missing); ok {
 		t.Fatal("不存在的授权池被错误放行")
+	}
+}
+
+func TestEnsureIdempotencyStateSeparatesEmptyInteractionGets(t *testing.T) {
+	a := &chatExecution{
+		r:            httptest.NewRequest(http.MethodGet, "/v1beta/interactions/v1_a", nil),
+		httpMethod:   http.MethodGet,
+		endpointPath: "/v1beta/interactions/v1_a",
+	}
+	b := &chatExecution{
+		r:            httptest.NewRequest(http.MethodGet, "/v1beta/interactions/v1_b", nil),
+		httpMethod:   http.MethodGet,
+		endpointPath: "/v1beta/interactions/v1_b",
+	}
+	chat := &chatExecution{
+		r:    httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		body: []byte(`{"model":"gpt-4.1-mini","messages":[]}`),
+	}
+	a.ensureIdempotencyState()
+	b.ensureIdempotencyState()
+	chat.ensureIdempotencyState()
+	if a.payloadHash == "" || a.payloadHash == b.payloadHash {
+		t.Fatalf("空 body 的会话检索必须按 path 区分指纹: a=%q b=%q", a.payloadHash, b.payloadHash)
+	}
+	chatAgain := &chatExecution{
+		r:    httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		body: []byte(`{"model":"gpt-4.1-mini","messages":[]}`),
+	}
+	chatAgain.ensureIdempotencyState()
+	if chat.payloadHash != chatAgain.payloadHash {
+		t.Fatalf("未带 endpointPath 的 chat 指纹不得漂移")
 	}
 }
 

@@ -76,6 +76,8 @@ func TestClientProtocolByIngressPath(t *testing.T) {
 		{"/v1/messages", ClientProtocolAnthropicMessages, true},
 		{"/v1beta/models", ClientProtocolGemini, true},
 		{"/v1beta/models/gemini-pro:generateContent", ClientProtocolGemini, true},
+		{"/v1beta/interactions", ClientProtocolGemini, true},
+		{"/v1beta/interactions/v1_abc", ClientProtocolGemini, true},
 		{"/v1/unknown", "", false},
 		{"", "", false},
 		{"/v1/completions", "", false},

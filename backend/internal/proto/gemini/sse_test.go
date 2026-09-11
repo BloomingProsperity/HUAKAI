@@ -358,3 +358,39 @@ func TestGeminiAdapterFunctionCallNonPrefixedIDPreserved(t *testing.T) {
 		t.Fatalf("provided non-prefixed id should be preserved as call_<id>, got %q", tool.CallID)
 	}
 }
+
+func TestGeminiAdapterInteractionSSEReportsUsage(t *testing.T) {
+	adapter := &Adapter{}
+	state := &UpstreamState{}
+	payload := []byte(`{"interaction":{"id":"v1_stream","object":"interaction","status":"completed","model":"gemini-3.6-flash","usage":{"total_input_tokens":8,"total_output_tokens":12,"total_tokens":20}}}`)
+	out, losses, err := adapter.ProviderEventToCanonicalEvents(context.Background(), payload, state)
+	if err != nil {
+		t.Fatalf("ProviderEventToCanonicalEvents: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("官方会话帧不应记损失: %+v", losses)
+	}
+	events := geminiAnyToCanonicalEvents(t, out)
+	if state.AccumulatedUsage.InputTokens != 8 || state.AccumulatedUsage.OutputTokens != 12 {
+		t.Fatalf("流式会话用量未进入结算累计: %+v", state.AccumulatedUsage)
+	}
+	var sawUsage bool
+	for _, event := range events {
+		if event.Usage != nil && event.Usage.InputTokens == 8 && event.Usage.OutputTokens == 12 {
+			sawUsage = true
+		}
+	}
+	if !sawUsage {
+		t.Fatalf("必须发出带官方用量的 message_delta: %+v", events)
+	}
+
+	generateOnly := []byte(`{"modelVersion":"gemini-2.5-pro","usageMetadata":{"promptTokenCount":5,"totalTokenCount":5}}`)
+	state2 := &UpstreamState{}
+	out2, _, err := adapter.ProviderEventToCanonicalEvents(context.Background(), generateOnly, state2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out2) != 0 {
+		t.Fatalf("generateContent 元数据帧不得被当成会话协议: %d events", len(out2))
+	}
+}

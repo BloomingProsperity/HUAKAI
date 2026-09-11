@@ -163,7 +163,7 @@ func readRawBufferedUpstreamBody(r io.Reader) ([]byte, error) {
 
 func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.RequestMetaSeed, seedCtx context.Context, startedAt time.Time) (*proto.HCSF, *classifiedAttemptFailure, bool) {
 	dispatchAccount, transportMode := gateway.ResolveDispatchTransport(ex.accInfo, ex.resolved.ProtocolFamily)
-	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, gateway.DispatchInput{
+	dispatchRes, err := ex.d.Dispatcher.Dispatch(ex.ctx, ex.nativeDispatchInput(gateway.DispatchInput{
 		ProtocolFamily:  ex.resolved.ProtocolFamily,
 		UpstreamModelID: ex.upstreamModelID,
 		// R7 身份改写(默认关 + fail-open,只动 dispatch 专用拷贝、不动 ex.body)。
@@ -174,7 +174,7 @@ func (ex *chatExecution) dispatchRawBuffered(w http.ResponseWriter, seed proto.R
 		Credential:           ex.cred,
 		TransportMode:        transportMode,
 		NonStreamingBuffered: true,
-	})
+	}))
 	if err != nil {
 		classification, _ := gateway.Classify(0, nil, []byte(err.Error()), ex.errorClassProvider())
 		decision := gateway.ClassifyAttemptDispatchError(err)

@@ -70,6 +70,36 @@ func TestAnthropicAdaptiveThinking_SurvivesHCSFRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdaptiveThinking_Fable51SurvivesHCSFRoundTrip(t *testing.T) {
+	client := &proto.AnthropicMessagesClient{}
+	reqBody := []byte(`{
+		"model":"claude-fable-5-1",
+		"max_tokens":1024,
+		"thinking":{"type":"adaptive"},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	env, _, err := client.RequestToCanonical(newAdaptiveTestCtx(), reqBody)
+	if err != nil {
+		t.Fatalf("ClientRequestToCanonical: %v", err)
+	}
+	var thinkingNode *proto.ThinkingNode
+	for i := range env.CapabilityGraph.Nodes {
+		if env.CapabilityGraph.Nodes[i].Kind == proto.CapabilityThinking {
+			thinkingNode = env.CapabilityGraph.Nodes[i].Thinking
+		}
+	}
+	if thinkingNode == nil || thinkingNode.Mode != "adaptive" {
+		t.Fatalf("fable-5-1 adaptive 节点丢失: %+v", thinkingNode)
+	}
+	out, err := MarshalToProviderRequest(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("MarshalToProviderRequest: %v", err)
+	}
+	if !strings.Contains(string(out), `"adaptive"`) || strings.Contains(string(out), "budget_tokens") {
+		t.Fatalf("fable-5-1 adaptive 回写错误: %s", out)
+	}
+}
+
 // enabled+budget 回归不变。
 func TestAnthropicEnabledThinking_StillMarshalsBudget(t *testing.T) {
 	client := &proto.AnthropicMessagesClient{}

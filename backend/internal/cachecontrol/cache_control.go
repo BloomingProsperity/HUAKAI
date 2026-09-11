@@ -72,6 +72,11 @@ var ModelMinCacheableTokens = map[string]int{
 	"claude-haiku-4-5": 4096,
 	// Haiku 3.5
 	"claude-haiku-3-5": 2048,
+	// 2026-09 官方新一代:1M 上下文,沿用 Opus 4.5+ 的 4096 下限。
+	"claude-fable-5":   4096,
+	"claude-fable-5-1": 4096,
+	"claude-opus-5":    4096,
+	"claude-sonnet-5":  4096,
 }
 
 // MinCacheableTokensForModel 返回给定模型的最小可缓存 token 阈值。

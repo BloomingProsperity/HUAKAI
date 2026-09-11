@@ -388,6 +388,10 @@ func TestCacheControl_ModelThresholds(t *testing.T) {
 		{"claude-haiku-3-5", 2048},
 		{"claude-opus-4-1", 1024},
 		{"claude-opus-4", 1024},
+		{"claude-fable-5", 4096},
+		{"claude-fable-5-1", 4096},
+		{"claude-opus-5", 4096},
+		{"claude-sonnet-5", 4096},
 	}
 	for _, tc := range cases {
 		got := MinCacheableTokensForModel(tc.model)
