@@ -154,15 +154,15 @@ func NewDeliveryTracker(w http.ResponseWriter) *DeliveryTracker {
 	return newDeliveryTracker(w)
 }
 
-func WriteFull(w http.ResponseWriter, body []byte) (bool, error) {
+func WriteFull(w http.ResponseWriter, body []byte) (int, bool, error) {
 	written, err := w.Write(body)
 	if written >= len(body) {
-		return true, err
+		return written, true, err
 	}
 	if err == nil {
 		err = io.ErrShortWrite
 	}
-	return false, err
+	return written, false, err
 }
 
 // DeliveredStreamAttempt 归一业务帧已交付但底层写入失败的保守终态。

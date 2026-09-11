@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -261,9 +262,12 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	if !fullyWritten && writeErr == nil {
 		writeErr = io.ErrShortWrite
 	}
-	if !fullyWritten {
+	if !fullyWritten && written == 0 {
 		ex.abortAfterResponseWriteFailure("client_response_write_error", int64(tokens.InputTokens), writeErr)
 		return false
+	}
+	if !fullyWritten {
+		billing.MarkClientDeliveryInterrupted(&settleReq.Draft)
 	}
 	if writeErr != nil {
 		ex.observeResponseWriteUncertainty(writeErr)

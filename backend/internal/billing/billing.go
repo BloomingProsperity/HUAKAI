@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
@@ -198,3 +199,27 @@ type RefundResult struct {
 }
 
 // 表,并为待处理的 usage records 增加对账 worker。
+
+// ClientDeliveryInterruptedMarker 标记客户端已收到部分业务字节后的待对账。
+// 金额仍按上游用量/次数，不按已写字节比例拆价。
+const ClientDeliveryInterruptedMarker = "pending_reconciliation=client_delivery_interrupted"
+
+// AppendSnapshotMarker 把运维可检索的标记接到费用快照；已存在则保持原样。
+func AppendSnapshotMarker(snapshot, marker string) string {
+	if marker == "" || strings.Contains(snapshot, marker) {
+		return snapshot
+	}
+	if snapshot == "" {
+		return marker
+	}
+	return snapshot + ";" + marker
+}
+
+// MarkClientDeliveryInterrupted 在已写出任意业务字节后挂待对账，禁止整笔释放预扣。
+func MarkClientDeliveryInterrupted(draft *gateway.UsageRecordDraft) {
+	if draft == nil {
+		return
+	}
+	draft.PendingReconciliation = true
+	draft.CostSnapshot = AppendSnapshotMarker(draft.CostSnapshot, ClientDeliveryInterruptedMarker)
+}

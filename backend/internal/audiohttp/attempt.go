@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/BloomingProsperity/HUAKAI/internal/audiopricing"
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -291,9 +292,12 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	if !fullyWritten && writeErr == nil {
 		writeErr = io.ErrShortWrite
 	}
-	if !fullyWritten {
+	if !fullyWritten && written == 0 {
 		_ = ex.abortWithError(w, "client_response_write_error", int64(usage.InputTokens))
 		return false
+	}
+	if !fullyWritten {
+		billing.MarkClientDeliveryInterrupted(&settleReq.Draft)
 	}
 	if writeErr != nil {
 		ex.logResponseDeliveryUncertain(writeErr)
