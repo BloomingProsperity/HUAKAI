@@ -42,9 +42,14 @@ func mountUsageAdminRoutesResolved(r chi.Router, d *deps, resolver adminIdentity
 	// 部署者必须显式 tenant_id；省略不得回落全平台。旧平台总览仍仅部署者。
 	// typed-nil *Queries 必须先收成无类型 nil，否则 handler 的 q==nil 守卫失效。
 	var tenantOverview usageanalyticshttp.TenantOverviewQuerier
+	var tenantHourly usageanalyticshttp.TenantHourlyQuerier
 	if d.pgPool != nil {
-		tenantOverview = usageoverview.New(d.pgPool)
+		q := usageoverview.New(d.pgPool)
+		tenantOverview = q
+		tenantHourly = q
 	}
 	r.Method(http.MethodGet, "/admin/v1/usage/overview",
 		usageanalyticshttp.NewTenantOverviewHandler(resolver, tenantOverview))
+	r.Method(http.MethodGet, "/admin/v1/usage/hourly",
+		usageanalyticshttp.NewTenantHourlyHandler(resolver, tenantHourly))
 }

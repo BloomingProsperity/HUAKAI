@@ -9,6 +9,9 @@ import (
 )
 
 type Querier interface {
+	// 同一租户、同一结算窗口的 UTC 小时桶：输入/输出/提示缓存写读 Token 与实扣费用。
+	// 不补零点；不把网关响应缓存命中折进提示缓存 Token。
+	AggregateTenantUsageHourlyTrend(ctx context.Context, arg AggregateTenantUsageHourlyTrendParams) ([]AggregateTenantUsageHourlyTrendRow, error)
 	// 租户作用域经营总览 totals。tenant_id 强制，禁止省略成全平台。
 	// 列口径与平台总览一致：请求数、实扣费用、输入/输出/提示缓存写读/图像 Token
 	// 与费用分项、活跃用户/密钥、成功数。不把网关响应缓存命中折进提示缓存 Token。

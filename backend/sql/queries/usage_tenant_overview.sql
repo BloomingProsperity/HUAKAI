@@ -34,3 +34,19 @@ WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
   AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz
 GROUP BY 1
 ORDER BY 1 ASC;
+
+-- name: AggregateTenantUsageHourlyTrend :many
+-- 同一租户、同一结算窗口的 UTC 小时桶：输入/输出/提示缓存写读 Token 与实扣费用。
+-- 不补零点；不把网关响应缓存命中折进提示缓存 Token。
+SELECT
+    (date_trunc('hour', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS hour,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS tokens_output,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint           AS cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint               AS cache_read_tokens,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND ur.settled_at >= sqlc.arg(settled_since)::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC;

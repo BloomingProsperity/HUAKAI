@@ -11,6 +11,64 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const aggregateTenantUsageHourlyTrend = `-- name: AggregateTenantUsageHourlyTrend :many
+SELECT
+    (date_trunc('hour', ur.settled_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')::timestamptz AS hour,
+    COALESCE(sum(ur.tokens_input), 0)::bigint                    AS tokens_input,
+    COALESCE(sum(ur.tokens_output), 0)::bigint                   AS tokens_output,
+    COALESCE(sum(ur.cache_creation_tokens), 0)::bigint           AS cache_creation_tokens,
+    COALESCE(sum(ur.cache_read_tokens), 0)::bigint               AS cache_read_tokens,
+    COALESCE(sum(ur.actual_cost), 0)::numeric(20,8)::text        AS total_cost
+FROM usage_records ur
+WHERE ur.tenant_id = $1::bigint
+  AND ur.settled_at >= $2::timestamptz
+GROUP BY 1
+ORDER BY 1 ASC
+`
+
+type AggregateTenantUsageHourlyTrendParams struct {
+	TenantID     int64              `db:"tenant_id" json:"tenant_id"`
+	SettledSince pgtype.Timestamptz `db:"settled_since" json:"settled_since"`
+}
+
+type AggregateTenantUsageHourlyTrendRow struct {
+	Hour                pgtype.Timestamptz `db:"hour" json:"hour"`
+	TokensInput         int64              `db:"tokens_input" json:"tokens_input"`
+	TokensOutput        int64              `db:"tokens_output" json:"tokens_output"`
+	CacheCreationTokens int64              `db:"cache_creation_tokens" json:"cache_creation_tokens"`
+	CacheReadTokens     int64              `db:"cache_read_tokens" json:"cache_read_tokens"`
+	TotalCost           string             `db:"total_cost" json:"total_cost"`
+}
+
+// 同一租户、同一结算窗口的 UTC 小时桶：输入/输出/提示缓存写读 Token 与实扣费用。
+// 不补零点；不把网关响应缓存命中折进提示缓存 Token。
+func (q *Queries) AggregateTenantUsageHourlyTrend(ctx context.Context, arg AggregateTenantUsageHourlyTrendParams) ([]AggregateTenantUsageHourlyTrendRow, error) {
+	rows, err := q.db.Query(ctx, aggregateTenantUsageHourlyTrend, arg.TenantID, arg.SettledSince)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AggregateTenantUsageHourlyTrendRow
+	for rows.Next() {
+		var i AggregateTenantUsageHourlyTrendRow
+		if err := rows.Scan(
+			&i.Hour,
+			&i.TokensInput,
+			&i.TokensOutput,
+			&i.CacheCreationTokens,
+			&i.CacheReadTokens,
+			&i.TotalCost,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const aggregateTenantUsageOverviewTotals = `-- name: AggregateTenantUsageOverviewTotals :one
 SELECT
     count(*)::bigint                                             AS request_count,

@@ -104,6 +104,7 @@ func TestFrontendVisibleAdminOperationsDeclareRuntimeRoles(t *testing.T) {
 	expected := map[string]string{
 		"getAdminUsageOverview":              "platform_admin",
 		"adminTenantUsageOverview":           "platform_admin_or_tenant_operator",
+		"adminTenantUsageHourly":             "platform_admin_or_tenant_operator",
 		"getAdminUsageProviderAccountCounts": "platform_admin",
 		"getAdminUsageLeaderboard":           "platform_admin",
 		"getAdminUsagePerformance":           "platform_admin",
