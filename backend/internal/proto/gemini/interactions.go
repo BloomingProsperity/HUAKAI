@@ -18,10 +18,7 @@ func IsInteractionsPath(path string) bool {
 }
 
 type interactionsRequestProbe struct {
-	Model  string          `json:"model"`
-	Agent  string          `json:"agent"`
-	Input  json.RawMessage `json:"input"`
-	Stream *bool           `json:"stream"`
+	Input json.RawMessage `json:"input"`
 }
 
 type interactionsResponseProbe struct {
@@ -41,24 +38,6 @@ type interactionsResponseProbe struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"steps"`
-}
-
-func interactionsRoutingModel(raw []byte) (model string, stream bool, ok bool) {
-	var probe interactionsRequestProbe
-	if json.Unmarshal(raw, &probe) != nil {
-		return "", false, false
-	}
-	model = strings.TrimSpace(probe.Model)
-	if model == "" {
-		model = strings.TrimSpace(probe.Agent)
-	}
-	if model == "" {
-		return "", false, false
-	}
-	if probe.Stream != nil {
-		stream = *probe.Stream
-	}
-	return model, stream, true
 }
 
 func interactionsInputMessages(raw []byte) ([]proto.CanonicalMessage, bool) {
