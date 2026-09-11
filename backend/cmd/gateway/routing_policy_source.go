@@ -87,14 +87,18 @@ func newBindingRoutingPolicySource(q ...routingPolicyPoolGetter) pool.RoutingPol
 
 // GetRoutingPolicy 据 req.SelectionMode 返回选号策略。
 //   - "priority_weighted" → 加权分支(按账号 static_weight)。
+//   - "fill_first" → 同健康档内按优先级再按账号 ID 稳定取第一张。
 //   - 其它(""/"strict_priority"/未知)→ strict_priority 等价,走均匀 Shuffle(默认保持)。
 //
 // 始终返回非 nil policy 让 selector 的 policy() 拿到确定结果;SelectionMode 与 fallback
 // wait 配置彼此独立,默认 strict 不会被 fallback 缓存翻成加权。
 func (s *bindingRoutingPolicySource) GetRoutingPolicy(ctx context.Context, req pool.SelectionRequest) (*pool.RoutingPolicy, error) {
 	mode := pool.SelectionModeStrictPriority
-	if pool.SelectionMode(req.SelectionMode) == pool.SelectionModePriorityWeighted {
+	switch pool.SelectionMode(req.SelectionMode) {
+	case pool.SelectionModePriorityWeighted:
 		mode = pool.SelectionModePriorityWeighted
+	case pool.SelectionModeFillFirst:
+		mode = pool.SelectionModeFillFirst
 	}
 	policy := &pool.RoutingPolicy{SelectionMode: mode}
 	if mode == pool.SelectionModePriorityWeighted {

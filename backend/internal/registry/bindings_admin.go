@@ -396,7 +396,7 @@ func validateAdminBinding(b AdminBinding) error {
 		return fmt.Errorf("%w: weight must be positive", ErrBindingInvalid)
 	}
 	switch b.SelectionMode {
-	case "strict_priority", "priority_weighted":
+	case "strict_priority", "priority_weighted", "fill_first":
 	default:
 		return fmt.Errorf("%w: unsupported selection mode", ErrBindingInvalid)
 	}

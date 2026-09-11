@@ -82,6 +82,7 @@ func TestApplyBindingPatchRejectsInvalidDomainValues(t *testing.T) {
 		{Priority: BindingField[int32]{Set: true, Value: -1}},
 		{Weight: BindingField[int32]{Set: true, Value: 0}},
 		{SelectionMode: BindingField[string]{Set: true, Value: "unknown"}},
+		{SelectionMode: BindingField[string]{Set: true, Value: "round_robin"}},
 		{RPMLimit: BindingField[*int32]{Set: true, Value: &negative}},
 		{TPMLimit: BindingField[*int32]{Set: true, Value: &negative}},
 		{MaxParallelRequests: BindingField[*int32]{Set: true, Value: &negative}},
@@ -92,5 +93,15 @@ func TestApplyBindingPatchRejectsInvalidDomainValues(t *testing.T) {
 		if err := applyBindingPatch(&got, in); !errors.Is(err, ErrBindingInvalid) {
 			t.Errorf("case %d err=%v want ErrBindingInvalid", i, err)
 		}
+	}
+
+	accepted := valid
+	if err := applyBindingPatch(&accepted, UpdateBindingInput{
+		SelectionMode: BindingField[string]{Set: true, Value: "fill_first"},
+	}); err != nil {
+		t.Fatalf("fill_first 应被接受: %v", err)
+	}
+	if accepted.SelectionMode != "fill_first" {
+		t.Fatalf("SelectionMode=%q want fill_first", accepted.SelectionMode)
 	}
 }

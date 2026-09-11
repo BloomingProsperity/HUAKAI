@@ -73,7 +73,7 @@ type BindingMetadata struct {
 	PoolGroupID             int64
 	Priority                int32
 	Weight                  int32   // Router 在相同 Priority 的绑定候选间实际消费。
-	SelectionMode           string  // 'strict_priority' | 'priority_weighted'
+	SelectionMode           string  // 'strict_priority' | 'priority_weighted' | 'fill_first'
 	ProviderModelIDOverride *string // 可空；覆盖该绑定使用的上游模型标识。
 	RPMLimit                *int32  // 绑定级每分钟请求上限。
 	TPMLimit                *int32

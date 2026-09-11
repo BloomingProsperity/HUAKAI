@@ -20507,9 +20507,9 @@ components:
         weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号；运行时加权使用账号 static_weight。" }
         selection_mode:
           type: string
-          enum: [strict_priority, priority_weighted]
+          enum: [strict_priority, priority_weighted, fill_first]
           default: strict_priority
-          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择；fill_first 在同健康档内按优先级再按账号 ID 稳定取第一张，直到该号被门挡下。不配或未知值保持 strict_priority。"
         provider_model_id_override: { type: string, nullable: true, description: "Upstream model name override; null uses the model's own id." }
         rpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
         tpm_limit: { type: integer, format: int32, nullable: true, minimum: 0 }
@@ -20541,9 +20541,9 @@ components:
         weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号。" }
         selection_mode:
           type: string
-          enum: [strict_priority, priority_weighted]
+          enum: [strict_priority, priority_weighted, fill_first]
           default: strict_priority
-          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择。"
+          description: "运行时池内账号选号策略：strict_priority 在最高可用优先级内均匀选择；priority_weighted 在该优先级内按账号 static_weight 加权选择；fill_first 在同健康档内按优先级再按账号 ID 稳定取第一张，直到该号被门挡下。不配或未知值保持 strict_priority。"
         provider_model_id_override: { type: string }
         rpm_limit: { type: integer, format: int32, minimum: 0 }
         tpm_limit: { type: integer, format: int32, minimum: 0 }
@@ -20576,8 +20576,8 @@ components:
         weight: { type: integer, format: int32, minimum: 1, description: "历史兼容存储字段，不参与运行时选号。" }
         selection_mode:
           type: string
-          enum: [strict_priority, priority_weighted]
-          description: "运行时池内账号选号策略；省略时保持现值。"
+          enum: [strict_priority, priority_weighted, fill_first]
+          description: "运行时池内账号选号策略；省略时保持现值。fill_first 仅在显式配置时启用。"
         provider_model_id_override: { type: string, nullable: true }
         rpm_limit: { type: integer, format: int32, minimum: 0, nullable: true }
         tpm_limit: { type: integer, format: int32, minimum: 0, nullable: true }

@@ -176,6 +176,22 @@ func TestBindingRoutingPolicySource_ReturnsNonNilByMode(t *testing.T) {
 		if strict.SelectionMode == poolrouter.SelectionModePriorityWeighted {
 			t.Fatalf("mode=%q 误判为 priority_weighted, 默认不该走加权", mode)
 		}
+		if strict.SelectionMode == poolrouter.SelectionModeFillFirst {
+			t.Fatalf("mode=%q 误判为 fill_first, 默认不该走填满优先", mode)
+		}
+	}
+
+	fillFirst, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{
+		SelectionMode: string(poolrouter.SelectionModeFillFirst),
+	})
+	if err != nil {
+		t.Fatalf("fill_first GetRoutingPolicy 失败: %v", err)
+	}
+	if fillFirst == nil || fillFirst.SelectionMode != poolrouter.SelectionModeFillFirst {
+		t.Fatalf("fill_first policy=%+v", fillFirst)
+	}
+	if fillFirst.OperatorScoring {
+		t.Fatal("fill_first 不得打开自适应打分（否则稳定顺序被分数打散）")
 	}
 }
 

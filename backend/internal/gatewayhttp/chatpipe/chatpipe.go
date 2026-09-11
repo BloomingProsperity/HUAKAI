@@ -29,6 +29,10 @@ var clientSessionIDHeaderPriority = []string{
 	"X-Amp-Thread-Id",
 	"Session-Id",
 	"X-Client-Request-Id",
+	// 官方 CLI 会话头排在通用头之后：已有显式会话 id 仍赢，缺省时才用来钉号。
+	"X-Claude-Code-Session-Id",
+	"OpenAI-Session-Id",
+	"ChatGPT-Thread-Id",
 }
 
 var openAIMetadataUserIDSessionSuffixRE = regexp.MustCompile(`_session_([a-f0-9-]+)$`)
@@ -69,7 +73,7 @@ func openAITopLevelClientSessionID(rawBody []byte) string {
 	if err := json.Unmarshal(rawBody, &top); err != nil || top == nil {
 		return ""
 	}
-	for _, key := range []string{"conversation_id", "session_id"} {
+	for _, key := range []string{"conversation_id", "session_id", "prompt_cache_key"} {
 		raw, ok := top[key]
 		if !ok {
 			continue

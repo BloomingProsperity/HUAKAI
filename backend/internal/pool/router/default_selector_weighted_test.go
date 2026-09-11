@@ -105,6 +105,46 @@ func TestRankFreshDefaultModeUnchanged(t *testing.T) {
 	}
 }
 
+func TestRankFreshFillFirstStableByID(t *testing.T) {
+	now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+	newer := snap(30, 1, 1, 0.01, now.Add(-time.Minute))
+	olderHeavy := snap(31, 1, 1, 0.90, now.Add(-24*time.Hour))
+	olderHeavy.Weight = 100
+	lowerPriority := snap(20, 1, 2, 0, now.Add(-48*time.Hour))
+	lowerPriority.Weight = 10000
+
+	selector := NewDefaultSelector(&stubAccountSource{})
+	selector.rand = rand.New(rand.NewSource(0xF11F1571))
+	policy := &RoutingPolicy{SelectionMode: SelectionModeFillFirst}
+
+	for i := 0; i < 64; i++ {
+		got := selector.rankFresh([]*AccountSnapshot{olderHeavy, newer, lowerPriority}, policy)
+		if got[0].ID != 30 {
+			t.Fatalf("draw %d fill_first winner=%d want 30（同优先级稳定取最小 ID，不看权重/最近使用）", i, got[0].ID)
+		}
+		if got[1].ID != 31 || got[2].ID != 20 {
+			t.Fatalf("draw %d order=%d,%d,%d want 30,31,20", i, got[0].ID, got[1].ID, got[2].ID)
+		}
+	}
+}
+
+func TestRankFreshFillFirstDoesNotShuffleDefaultBand(t *testing.T) {
+	now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
+	accounts := []*AccountSnapshot{
+		snap(22, 1, 100, 0.2, now),
+		snap(20, 1, 100, 0.2, now),
+		snap(21, 1, 100, 0.2, now),
+	}
+	selector := NewDefaultSelector(&stubAccountSource{})
+	selector.rand = rand.New(rand.NewSource(0xD3FA017))
+	policy := &RoutingPolicy{SelectionMode: SelectionModeFillFirst}
+
+	got := selector.rankFresh(accounts, policy)
+	if got[0].ID != 20 || got[1].ID != 21 || got[2].ID != 22 {
+		t.Fatalf("fill_first order=%d,%d,%d want 20,21,22（变异：仍 Shuffle 会打乱）", got[0].ID, got[1].ID, got[2].ID)
+	}
+}
+
 func TestAccountSnapshotWeightPopulated(t *testing.T) {
 	now := time.Date(2026, 6, 7, 0, 0, 0, 0, time.UTC)
 	weighted := snap(30, 1, 100, 0.2, now)
