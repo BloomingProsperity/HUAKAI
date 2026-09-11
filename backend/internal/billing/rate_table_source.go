@@ -33,6 +33,12 @@ type RateTableSnapshot struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+// PricingDataOverlay 把运营绝对价叠进公开价表。叠加失败必须 fail-closed,
+// 不得假装当前仍是未经覆盖的官方价。
+type PricingDataOverlay interface {
+	OverlayPricingData(ctx context.Context, data json.RawMessage) (json.RawMessage, error)
+}
+
 // RateTableSource 读取 F-BILL-001 的 immutable pricing history。
 type RateTableSource interface {
 	GetRateTable(ctx context.Context, version string) (RateTable, error)
@@ -47,7 +53,8 @@ type rateTableQueryer interface {
 
 // PGXRateTableSource 使用现有 billing_pricing_versions 表提供只读公开查询。
 type PGXRateTableSource struct {
-	pool rateTableQueryer
+	pool    rateTableQueryer
+	overlay PricingDataOverlay
 }
 
 const getPublicRateTableSQL = `
@@ -74,7 +81,27 @@ func NewPGXRateTableSource(pool *pgxpool.Pool) *PGXRateTableSource {
 	return &PGXRateTableSource{pool: pool}
 }
 
+func (s *PGXRateTableSource) SetPricingOverlay(overlay PricingDataOverlay) *PGXRateTableSource {
+	if s == nil {
+		return nil
+	}
+	s.overlay = overlay
+	return s
+}
+
+func (s *PGXRateTableSource) GetOfficialRateTable(ctx context.Context, version string) (RateTable, error) {
+	return s.loadPublicRateTable(ctx, version)
+}
+
 func (s *PGXRateTableSource) GetRateTable(ctx context.Context, version string) (RateTable, error) {
+	table, err := s.loadPublicRateTable(ctx, version)
+	if err != nil {
+		return RateTable{}, err
+	}
+	return s.withOverlay(ctx, table)
+}
+
+func (s *PGXRateTableSource) loadPublicRateTable(ctx context.Context, version string) (RateTable, error) {
 	if s == nil || s.pool == nil {
 		return RateTable{}, ErrPoolNotConfigured
 	}
@@ -98,6 +125,21 @@ func (s *PGXRateTableSource) GetRateTable(ctx context.Context, version string) (
 		row.PricingData = json.RawMessage(`{}`)
 	}
 	return row, nil
+}
+
+func (s *PGXRateTableSource) withOverlay(ctx context.Context, table RateTable) (RateTable, error) {
+	if s == nil || s.overlay == nil {
+		return table, nil
+	}
+	overlaid, err := s.overlay.OverlayPricingData(ctx, table.PricingData)
+	if err != nil {
+		return RateTable{}, fmt.Errorf("billing: apply model rate overlay: %w", err)
+	}
+	if len(overlaid) == 0 {
+		overlaid = json.RawMessage(`{}`)
+	}
+	table.PricingData = overlaid
+	return table, nil
 }
 
 func (s *PGXRateTableSource) GetRateTableSnapshot(ctx context.Context, snapshotID int64) (RateTable, error) {

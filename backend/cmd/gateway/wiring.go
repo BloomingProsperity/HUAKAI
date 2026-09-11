@@ -78,6 +78,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/logretention"
 	"github.com/BloomingProsperity/HUAKAI/internal/logsink"
 	"github.com/BloomingProsperity/HUAKAI/internal/mediatask"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelrate"
 	"github.com/BloomingProsperity/HUAKAI/internal/modelsync"
 	"github.com/BloomingProsperity/HUAKAI/internal/moduleregistry"
 	"github.com/BloomingProsperity/HUAKAI/internal/notify"
@@ -231,6 +232,7 @@ type deps struct {
 	auditLedger               auditledger.Ledger
 	auditSigner               *sign.Signer
 	cacheOverrideStore        *billing.CacheOverrideStore
+	modelRateStore            *modelrate.Store
 	auditPubkeyRegistry       auditledger.PubkeyRegistry
 	receiptStore              *auditreceipt.PGXReceiptStorage
 	receiptFormatter          *auditreceipt.ReceiptFormatter
@@ -1508,6 +1510,10 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 	})
 	rt.mediaTaskWorker = mediaTaskWorker
 	userAuditStore := userauditlog.NewPostgresStore(pgPool)
+	modelRateStore := modelrate.NewPostgresStore(pgPool, auditSigner)
+	if rateTableSource != nil {
+		rateTableSource.SetPricingOverlay(modelRateStore)
+	}
 
 	d := &deps{
 		cfg:                   cfg,
@@ -1589,6 +1595,7 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		auditLedger:           auditLedger,
 		auditSigner:           auditSigner,
 		cacheOverrideStore:    billing.NewCacheOverrideStore(auditSigner, nil),
+		modelRateStore:        modelRateStore,
 		auditPubkeyRegistry:   auditPubkeyRegistry,
 		receiptStore:          receiptStore,
 		receiptFormatter:      receiptFormatter,

@@ -17,6 +17,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/clientid"
 	"github.com/BloomingProsperity/HUAKAI/internal/eventbus"
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
+	"github.com/BloomingProsperity/HUAKAI/internal/modelrate"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingcatalog"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
@@ -287,6 +288,62 @@ func TestSettleCompletion_CacheOverrideScalesOnlyCacheCosts(t *testing.T) {
 		Sub(overrideSettler.calls[0].Draft.CacheCreationCost).
 		Sub(overrideSettler.calls[0].Draft.CacheReadCost)
 	assertDecimalEqual(t, "non-cache cost after override", overrideNonCache, officialNonCache)
+}
+
+func TestSettleCompletion_AbsoluteRateOverlayThenCacheMultiplier(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	body := `{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`
+	usage := proto.CanonicalUsage{
+		InputTokens:              20,
+		OutputTokens:             3,
+		CacheCreationInputTokens: 5,
+		CacheReadInputTokens:     7,
+	}
+	official := json.RawMessage(`{
+		"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000,"cache_creation_micro_usd":1000,"cache_read_micro_usd":2000}},
+		"providers":{"openai":{"models":{"gpt-4o":{"input_micro_usd":1000,"output_micro_usd":2000,"cache_creation_micro_usd":1000,"cache_read_micro_usd":2000}}}}
+	}`)
+	input := decimal.NewFromInt(500)
+	cacheRead := decimal.NewFromInt(400)
+	overlaid, err := modelrate.ApplyOverrides(official, []modelrate.Override{{
+		Vendor: "openai",
+		Model:  "gpt-4o",
+		Rates:  modelrate.RateBuckets{Input: &input, CacheRead: &cacheRead},
+	}})
+	if err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+
+	settler := &recordingSettler{}
+	deps := clientAdapterDeps(t)
+	deps.CanonicalDispatcher = &cacheUsageBufferedDispatcher{usage: usage}
+	deps.Settler = settler
+	deps.RateTables = &rateTableSourceStub{table: billing.RateTable{Version: "test-policy", PricingData: overlaid}}
+	deps.CacheOverrideStore = &cacheOverrideResolverStub{
+		tenantID: 7, model: "gpt-4o", multiplier: decimal.RequireFromString("1.5"),
+	}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1", len(settler.calls))
+	}
+	// 非缓存 input=8*500/1e6=0.004, output=0.006; 缓存写=0.005*1.5=0.0075;
+	// 缓存读=7*400/1e6*1.5=0.0042; 合计 0.0217。
+	assertDecimalEqual(t, "overlay+cache-mult ActualCost", settler.calls[0].ActualCost, decimal.RequireFromString("0.0217"))
+	assertDecimalEqual(t, "overlay cache_creation after multiplier", settler.calls[0].Draft.CacheCreationCost, decimal.RequireFromString("0.0075"))
+	assertDecimalEqual(t, "overlay cache_read after multiplier", settler.calls[0].Draft.CacheReadCost, decimal.RequireFromString("0.0042"))
+	if settler.calls[0].ActualCost.Equal(decimal.RequireFromString("0.0425")) {
+		t.Fatal("settled official cache base * 1.5; overlay did not reach chat pricing")
+	}
+	if settler.calls[0].Draft.CacheReadCost.Equal(decimal.RequireFromString("0.021")) {
+		t.Fatal("cache multiplier landed on official 2000 rather than overlay 400")
+	}
+	if settler.calls[0].Draft.CacheReadCost.Equal(decimal.RequireFromString("0.0028")) {
+		t.Fatal("absolute overlay applied but existing cache multiplier was dropped")
+	}
 }
 
 func TestSettleCompletion_UsesTieredPricingDataWhenConfigured(t *testing.T) {

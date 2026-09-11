@@ -370,6 +370,10 @@ func effectiveSpec(op operation, base tagSpec) tagSpec {
 		return tagSpec{"公共排行", "internal/publicrankinghttp", "FE-PG-002", "公共排行"}
 	case strings.Contains(path, "/orders/export") || strings.Contains(path, "/refunds/export"):
 		return tagSpec{"资金数据导出", "internal/paymenthttp", "FE-PG-005", "订单与退款导出"}
+	case strings.Contains(path, "/pricing/models/audit"):
+		return tagSpec{"模型绝对价", "internal/modelratehttp", "FE-PG-007", "日志、证明与恢复"}
+	case strings.Contains(path, "/pricing/models"):
+		return tagSpec{"模型绝对价", "internal/modelratehttp", "FE-PG-005", "模型绝对价目录"}
 	default:
 		return base
 	}
@@ -421,6 +425,8 @@ func classify(op operation, base tagSpec) (page, scene string, integration bool)
 		return "FE-PG-004", "推荐关系与奖励", false
 	case strings.Contains(path, "/orders/export") || strings.Contains(path, "/refunds/export"):
 		return "FE-PG-005", "资金数据导出", false
+	case strings.Contains(path, "/pricing/models") && !strings.Contains(path, "/audit"):
+		return "FE-PG-005", "模型绝对价目录", false
 	case strings.Contains(path, "/receipts/") || strings.Contains(path, "/disputes"):
 		return "FE-PG-005", "收据与争议", false
 	case strings.Contains(path, "/audit") || strings.Contains(path, "/dlq") ||

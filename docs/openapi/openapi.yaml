@@ -110,7 +110,7 @@ tags:
   - name: admin-billing
     description: Billing Ledger query + adjustments. F-OBS-001.
   - name: admin-pricing
-    description: Tenant-scoped admin pricing ratio catalog for pool groups.
+    description: Platform model absolute USD rates and tenant-scoped pool-group pricing ratios.
   - name: admin-notifications
     description: Admin broadcast notifications, worker observability, and tenant-scoped user notification settings.
   - name: admin-announcements
@@ -13471,6 +13471,137 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/pricing/models:
+    get:
+      tags: [admin-pricing]
+      summary: List official and effective model USD rates by vendor
+      operationId: listAdminModelRates
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+        - docs/HUAKAI工程设计手册.md
+      x-huakai-required-role: tenant_operator
+      parameters:
+        - in: query
+          name: vendor
+          required: false
+          description: Restrict the catalog to one vendor key such as openai or anthropic.
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Paginated official and effective model rates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModelRateListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/pricing/models/audit/verify:
+    get:
+      tags: [admin-pricing]
+      summary: Verify the signed model-rate override audit hash chain
+      operationId: verifyAdminModelRateAudit
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Model-rate audit chain integrity proof (secret-masked).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [object, ok]
+                properties:
+                  object: { type: string }
+                  ok: { type: boolean }
+                  row_id: { type: integer, format: int64 }
+                  reason: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
+  /admin/v1/pricing/models/{vendor}/{model}:
+    parameters:
+      - in: path
+        name: vendor
+        required: true
+        schema: { type: string }
+      - in: path
+        name: model
+        required: true
+        schema: { type: string }
+    get:
+      tags: [admin-pricing]
+      summary: Read official and effective USD rates for one vendor model
+      operationId: getAdminModelRate
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+        - docs/HUAKAI工程设计手册.md
+      x-huakai-required-role: tenant_operator
+      responses:
+        '200':
+          description: Official and effective rates for the model.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModelRate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    put:
+      tags: [admin-pricing]
+      summary: Set absolute USD rates for one vendor model
+      operationId: upsertAdminModelRate
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+        - docs/HUAKAI工程设计手册.md
+      x-huakai-required-role: platform_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminModelRateRequest' }
+      responses:
+        '200':
+          description: Effective rates after the override.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModelRate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+    delete:
+      tags: [admin-pricing]
+      summary: Delete one model rate override and restore official USD rates
+      operationId: deleteAdminModelRate
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+        - docs/HUAKAI工程设计手册.md
+      x-huakai-required-role: platform_admin
+      responses:
+        '200':
+          description: Override deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminModelRateDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/balances/adjustments:
     post:
       tags: [admin-billing]
@@ -16948,6 +17079,76 @@ components:
         object: { type: string, enum: [pricing_ratio_deleted] }
         tenant_id: { type: integer, format: int64, minimum: 1 }
         pool_group_id: { type: integer, format: int64, minimum: 1 }
+
+    AdminModelRateBuckets:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      properties:
+        input_usd_per_million: { type: string }
+        output_usd_per_million: { type: string }
+        cache_read_usd_per_million: { type: string }
+        cache_creation_usd_per_million: { type: string }
+        cache_creation_5m_usd_per_million: { type: string }
+        cache_creation_1h_usd_per_million: { type: string }
+
+    AdminModelRateRequest:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      properties:
+        input_usd_per_million: { type: string }
+        output_usd_per_million: { type: string }
+        cache_read_usd_per_million: { type: string }
+        cache_creation_usd_per_million: { type: string }
+        cache_creation_5m_usd_per_million: { type: string }
+        cache_creation_1h_usd_per_million: { type: string }
+
+    AdminModelRate:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      required: [object, vendor, model, currency, unit, official, effective, overridden, source]
+      properties:
+        object: { type: string, enum: [model_rate] }
+        vendor: { type: string }
+        model: { type: string }
+        currency: { type: string, enum: [USD] }
+        unit: { type: string, enum: [usd_per_million_tokens] }
+        official: { $ref: '#/components/schemas/AdminModelRateBuckets' }
+        effective: { $ref: '#/components/schemas/AdminModelRateBuckets' }
+        overridden: { type: boolean }
+        source: { type: string, enum: [official, override] }
+
+    AdminModelRateListResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      required: [object, currency, unit, items, limit, offset]
+      properties:
+        object: { type: string, enum: [model_rate_catalog] }
+        currency: { type: string, enum: [USD] }
+        unit: { type: string, enum: [usd_per_million_tokens] }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminModelRate' }
+        limit: { type: integer, format: int32, minimum: 1, maximum: 500 }
+        offset: { type: integer, format: int32, minimum: 0 }
+
+    AdminModelRateDeleteResponse:
+      type: object
+      additionalProperties: false
+      x-huakai-spec-source:
+        - backend/internal/modelratehttp/handler.go
+      required: [object, vendor, model]
+      properties:
+        object: { type: string, enum: [model_rate_override_deleted] }
+        vendor: { type: string }
+        model: { type: string }
 
     Announcement:
       type: object

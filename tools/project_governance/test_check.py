@@ -162,16 +162,18 @@ ADR-002
                 break
         self.assertTrue(removed, "测试素材应至少有一项“已有可接”能力")
         shrunk = handbook[:start] + "".join(lines) + handbook[end:]
+        expected_ready = check.EXPECTED_FRONTEND_CAPABILITY_COUNTS["已有可接"]
+        expected_total = check.EXPECTED_FRONTEND_CAPABILITY_TOTAL
         shrunk = re.sub(
-            r"^\| 已有可接 \| 56 \|",
-            "| 已有可接 | 55 |",
+            rf"^\| 已有可接 \| {expected_ready} \|",
+            f"| 已有可接 | {expected_ready - 1} |",
             shrunk,
             count=1,
             flags=re.MULTILINE,
         )
         shrunk = re.sub(
-            r"^\| \*\*合计\*\* \| \*\*158\*\* \|",
-            "| **合计** | **157** |",
+            rf"^\| \*\*合计\*\* \| \*\*{expected_total}\*\* \|",
+            f"| **合计** | **{expected_total - 1}** |",
             shrunk,
             count=1,
             flags=re.MULTILINE,
@@ -179,11 +181,17 @@ ADR-002
 
         errors = check.frontend_capability_contract_errors(shrunk)
         self.assertTrue(
-            any("已有可接 期望 56，实际 55" in error for error in errors),
+            any(
+                f"已有可接 期望 {expected_ready}，实际 {expected_ready - 1}" in error
+                for error in errors
+            ),
             errors,
         )
         self.assertTrue(
-            any("期望 158，实际 157" in error for error in errors),
+            any(
+                f"期望 {expected_total}，实际 {expected_total - 1}" in error
+                for error in errors
+            ),
             errors,
         )
 

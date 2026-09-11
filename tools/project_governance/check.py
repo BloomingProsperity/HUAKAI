@@ -23,14 +23,14 @@ FRONTEND_CAPABILITY_STATUSES = (
     "不适用",
 )
 EXPECTED_FRONTEND_CAPABILITY_COUNTS = {
-    "已有可接": 56,
+    "已有可接": 57,
     "已有但未接 UI": 61,
     "后端部分具备": 17,
     "前后端都缺": 10,
     "已领先": 12,
     "不适用": 2,
 }
-EXPECTED_FRONTEND_CAPABILITY_TOTAL = 158
+EXPECTED_FRONTEND_CAPABILITY_TOTAL = 159
 
 
 def relative_path(path: Path, root: Path) -> str:

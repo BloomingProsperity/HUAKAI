@@ -80,6 +80,10 @@ func (s *PGXRateTableSource) PublicModelPrices(ctx context.Context, tenantID int
 	if err != nil {
 		return PublicPriceTable{}, err
 	}
+	table, err = s.withOverlay(ctx, table)
+	if err != nil {
+		return PublicPriceTable{}, err
+	}
 	return parsePublicPriceTable(table.Version, table.PricingData)
 }
 
