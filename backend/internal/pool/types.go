@@ -41,6 +41,7 @@ type SelectionMode = router.SelectionMode
 const (
 	SelectionModeStrictPriority   = router.SelectionModeStrictPriority
 	SelectionModePriorityWeighted = router.SelectionModePriorityWeighted
+	SelectionModeFillFirst        = router.SelectionModeFillFirst
 )
 
 type GateFailureReason = router.GateFailureReason

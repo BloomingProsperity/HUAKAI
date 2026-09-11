@@ -323,6 +323,7 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 
 func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *RoutingPolicy) []*AccountSnapshot {
 	out := append([]*AccountSnapshot(nil), accounts...)
+	fillFirst := policy != nil && policy.SelectionMode == SelectionModeFillFirst
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		if accountHealthRank(a) != accountHealthRank(b) {
@@ -330,6 +331,9 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 		}
 		if a.Priority != b.Priority {
 			return a.Priority < b.Priority
+		}
+		if fillFirst {
+			return a.ID < b.ID
 		}
 		if policy != nil && policy.OperatorScoring {
 			aScore, bScore := adaptiveScore(a, s.currentTime()), adaptiveScore(b, s.currentTime())
@@ -342,6 +346,9 @@ func (s *DefaultSelector) rankFresh(accounts []*AccountSnapshot, policy *Routing
 		}
 		return a.LastUsedAt.Before(b.LastUsedAt)
 	})
+	if fillFirst {
+		return out
+	}
 	k := topK(policy, out)
 	if k > 1 {
 		if policy != nil && policy.SelectionMode == SelectionModePriorityWeighted {

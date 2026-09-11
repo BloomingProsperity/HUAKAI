@@ -1494,6 +1494,70 @@ func TestSessionHashHeaderPriority(t *testing.T) {
 	})
 }
 
+func TestSessionHashPromptCacheKeyAndClaudeHeader(t *testing.T) {
+	unsetEnvForTest(t, "HUAKAI_DISPATCH_HCSF")
+
+	t.Run("prompt_cache_key_beats_system_tools_hash", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		bodyA := `{"model":"gpt-4o","stream":false,"prompt_cache_key":"cache-stable","tools":[{"type":"function","function":{"name":"lookup_a","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"first"}]}`
+		bodyB := `{"model":"gpt-4o","stream":false,"prompt_cache_key":"cache-stable","tools":[{"type":"function","function":{"name":"lookup_b","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"second"}]}`
+		if cache_routing.ComputePromptHash([]byte(bodyA)) == cache_routing.ComputePromptHash([]byte(bodyB)) {
+			t.Fatal("夹具必须让两轮 system/tools hash 不同")
+		}
+
+		for _, body := range []string{bodyA, bodyB} {
+			rec := invokeHandlerPath(t, d, "/v1/chat/completions", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+		}
+		if len(selector.requests) != 2 {
+			t.Fatalf("selector requests=%d want 2", len(selector.requests))
+		}
+		want := expectedClientSessionHashForTest("cache-stable")
+		if selector.requests[0].SessionHash != want || selector.requests[1].SessionHash != want {
+			t.Fatalf("prompt_cache_key 未钉住两轮: %q %q want %q", selector.requests[0].SessionHash, selector.requests[1].SessionHash, want)
+		}
+	})
+
+	t.Run("x_session_id_still_beats_prompt_cache_key", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		body := `{"model":"gpt-4o","stream":false,"prompt_cache_key":"cache-stable","tools":[{"type":"function","function":{"name":"priority_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"priority"}]}`
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{"X-Session-ID": "header-thread"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		want := expectedClientSessionHashForTest("header-thread")
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("SessionHash=%q want X-Session-ID %q（变异：prompt_cache_key 抢到了前面）", got, want)
+		}
+	})
+
+	t.Run("claude_session_header_used_when_generic_headers_absent", func(t *testing.T) {
+		selector := &recordingSelectionRequestSelector{}
+		d := clientAdapterDeps(t)
+		d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+		d.Selector = selector
+		body := `{"model":"gpt-4o","stream":false,"tools":[{"type":"function","function":{"name":"claude_lookup","parameters":{"type":"object"}}}],"messages":[{"role":"user","content":"claude"}]}`
+		rec := invokeHandlerPathWithHeaders(t, d, "/v1/chat/completions", body, map[string]string{
+			"X-Claude-Code-Session-Id": "claude-thread",
+		})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		want := expectedClientSessionHashForTest("claude-thread")
+		if got := selector.requests[0].SessionHash; got != want {
+			t.Fatalf("SessionHash=%q want Claude 会话头 %q", got, want)
+		}
+	})
+}
+
 func TestHandler_WaitPlanReturnsQueueWait(t *testing.T) {
 	settler := &stubSettler{}
 	d := minimalDeps()

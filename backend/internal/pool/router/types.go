@@ -118,7 +118,8 @@ type SelectionRequest struct {
 
 	// SelectionMode 是本次请求命中 binding 的选号策略 (model_pool_bindings.selection_mode)，
 	// 由 dispatch 端从 activeBindingMetadata 透传:""/"strict_priority" = 同优先级账号均匀
-	// Shuffle (接线前一致行为);"priority_weighted" = 按账号 static_weight 加权选号。
+	// Shuffle (接线前一致行为);"priority_weighted" = 按账号 static_weight 加权选号；
+	// "fill_first" = 同健康档内按优先级再按账号 ID 稳定取第一张，直到该号被门挡下。
 	// 生产 RoutingPolicySource 据此字段返回 RoutingPolicy.SelectionMode,opt-in 激活加权分支,
 	// 不设/默认时与接线前逐一字节一致 (非全局翻转)。
 	SelectionMode string
@@ -264,6 +265,7 @@ type SelectionMode string
 const (
 	SelectionModeStrictPriority   SelectionMode = "strict_priority"
 	SelectionModePriorityWeighted SelectionMode = "priority_weighted"
+	SelectionModeFillFirst        SelectionMode = "fill_first"
 )
 
 type AccountSource interface {

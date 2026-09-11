@@ -231,6 +231,18 @@ func TestCreateRejectsBadSelectionMode(t *testing.T) {
 	}
 }
 
+func TestCreateAcceptsFillFirstSelectionMode(t *testing.T) {
+	svc := &stubService{}
+	rec := do(t, stubAuth{ident: platformAdmin(7)}, svc, http.MethodPost, "/?tenant_id=42",
+		`{"model_id":5,"pool_group_id":9,"selection_mode":"fill_first"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("code=%d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	if !svc.createCalled || svc.lastCreate.SelectionMode != "fill_first" {
+		t.Fatalf("fill_first 未透传: called=%v mode=%q", svc.createCalled, svc.lastCreate.SelectionMode)
+	}
+}
+
 // weight<=0 → 400。
 func TestCreateRejectsNonPositiveWeight(t *testing.T) {
 	svc := &stubService{}

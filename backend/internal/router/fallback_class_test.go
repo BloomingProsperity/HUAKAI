@@ -176,7 +176,7 @@ func TestATBFC003NormalOnlyLegacyProjectionIsByteStable(t *testing.T) {
 // selection_mode 开关。低优先级候选即使巨权重也不得被编入单次目标 attempt。
 // executor 必须把目标 binding 自身的 selection_mode 原样交给账号选择器。
 func TestATBFC008FallbackClassPreservesPriorityWeightAcrossSelectionModes(t *testing.T) {
-	for _, mode := range []string{"", "strict_priority", "priority_weighted"} {
+	for _, mode := range []string{"", "strict_priority", "priority_weighted", "fill_first"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			r := newDefaultRouterWithSeed(0xBFC008)
 			input := fallbackPlanInput(

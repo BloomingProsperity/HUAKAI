@@ -65,7 +65,11 @@ func NewRouter(d Deps) http.Handler {
 	return r
 }
 
-var validSelectionModes = map[string]bool{"strict_priority": true, "priority_weighted": true}
+var validSelectionModes = map[string]bool{
+	"strict_priority":   true,
+	"priority_weighted": true,
+	"fill_first":        true,
+}
 var validFallbackClasses = map[string]bool{
 	"normal": true, "context_window": true, "safety": true, "quota": true, "manual": true,
 }
@@ -372,7 +376,7 @@ func validateCommon(
 	efRaw, euRaw *string,
 ) (*time.Time, *time.Time, bool) {
 	if selMode != "" && !validSelectionModes[selMode] {
-		writeError(w, http.StatusBadRequest, "invalid_selection_mode", "selection_mode must be strict_priority or priority_weighted")
+		writeError(w, http.StatusBadRequest, "invalid_selection_mode", "selection_mode must be strict_priority, priority_weighted, or fill_first")
 		return nil, nil, false
 	}
 	if fbClass != "" && !validFallbackClasses[fbClass] {
