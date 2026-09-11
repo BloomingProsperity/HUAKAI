@@ -20,9 +20,10 @@ import (
 )
 
 type mockCanonicalBufferedDispatcher struct {
-	calls    int
-	err      error
-	observed *proto.HCSF
+	calls      int
+	err        error
+	observed   *proto.HCSF
+	actualLane string
 }
 
 func (m *mockCanonicalBufferedDispatcher) DispatchHCSF(_ context.Context, requestEnvelope *proto.HCSF) (*proto.HCSF, error) {
@@ -39,6 +40,11 @@ func (m *mockCanonicalBufferedDispatcher) DispatchHCSF(_ context.Context, reques
 		Content:    []proto.CanonicalContentBlock{{Type: "text", Text: "hello from canonical"}},
 		Usage:      proto.CanonicalUsage{InputTokens: 2, OutputTokens: 3},
 		StopReason: proto.CanonicalStopEndTurn,
+	}
+	if lane := strings.TrimSpace(m.actualLane); lane != "" {
+		env.BufferedResponse.Passthrough = &proto.PassthroughEnvelope{
+			Extra: map[string]json.RawMessage{"service_tier": json.RawMessage(`"` + lane + `"`)},
+		}
 	}
 	env.Accounting.Usage = env.BufferedResponse.Usage
 	env.Accounting.EvidenceLabel = proto.EvidenceMock

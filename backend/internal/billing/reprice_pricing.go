@@ -11,6 +11,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
+	"github.com/BloomingProsperity/HUAKAI/internal/servicetier"
 )
 
 var ErrRepricePricingUnavailable = errors.New("billing: reprice pricing unavailable")
@@ -49,6 +50,12 @@ func repriceCostFromCurrentPricing(ctx context.Context, table RateTable, row rep
 	result, err := pricingeval.Resolve(ctx, selection.Raw, usage, fallback, table.Version)
 	if err != nil {
 		return decimal.Zero, "", repricePricingUnavailable(err.Error())
+	}
+	if decision, ok := servicetier.ParseBilled(row.CostSnapshot); ok {
+		if decision.Pending {
+			return decimal.Zero, "", repricePricingUnavailable("service tier still requires reconciliation")
+		}
+		result = servicetier.Apply(result, decision)
 	}
 	if result.PendingReconciliation {
 		return decimal.Zero, "", repricePricingUnavailable("current pricing still requires reconciliation")

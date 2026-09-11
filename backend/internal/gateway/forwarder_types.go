@@ -142,6 +142,9 @@ type UsageRecordDraft struct {
 	// SettleRequest.ProtocolLoss。命名为 StreamProtocolLoss(而非 ProtocolLoss)是
 	// 为避免复活 已删除的死字段 Draft.ProtocolLoss(settler 曾误读它)。
 	StreamProtocolLoss []proto.ProtocolLossEntry `json:"stream_protocol_loss,omitempty"`
+
+	// ObservedProcessingLane 是流上最后一次看到的上游实档字面量，供结算按实档计价。
+	ObservedProcessingLane string `json:"observed_processing_lane,omitempty"`
 }
 
 // ForwardRequest 携带 F-GW-002 请求身份和协议元数据。
@@ -201,6 +204,8 @@ type UsageAccumulator struct {
 	EstimatedReasoningTokens int `json:"estimated_reasoning_tokens,omitempty"`
 	// StreamProtocolLoss 累积逐事件协议损失,finishDraft 拷入 UsageRecordDraft。
 	StreamProtocolLoss []proto.ProtocolLossEntry `json:"stream_protocol_loss,omitempty"`
+	// ObservedProcessingLane 记录流上最后一次非空处理档，不受终态 usage 冻结影响。
+	ObservedProcessingLane string `json:"observed_processing_lane,omitempty"`
 }
 
 // Update 合并 F-GW-002 Phase B usage 信号。

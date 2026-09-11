@@ -10,6 +10,7 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
+	"github.com/BloomingProsperity/HUAKAI/internal/servicetier"
 )
 
 type completionCostBreakdown struct {
@@ -26,20 +27,28 @@ type pricingRatioResolverWithSignal interface {
 const defaultEstimatedOutputTokens = 1000
 
 func (ex *execution) predictedCost() (completionCostBreakdown, error) {
-	return ex.completionCost(completionUsage{
+	return ex.pricedCost(completionUsage{
 		PromptTokens:     ex.inputEstimate,
 		CompletionTokens: estimateOutputTokens(ex.req),
-	})
+	}, "", true)
 }
 
 func (ex *execution) actualCost(usage completionUsage) (completionCostBreakdown, error) {
+	return ex.actualCostFromRaw(usage, nil)
+}
+
+func (ex *execution) actualCostFromRaw(usage completionUsage, raw []byte) (completionCostBreakdown, error) {
 	if usage.PromptTokens <= 0 && usage.CompletionTokens <= 0 {
 		return completionCostBreakdown{}, fmt.Errorf("reported usage missing")
 	}
-	return ex.completionCost(usage)
+	return ex.pricedCost(usage, servicetier.FromSSE(raw), false)
 }
 
 func (ex *execution) completionCost(usage completionUsage) (completionCostBreakdown, error) {
+	return ex.pricedCost(usage, "", false)
+}
+
+func (ex *execution) pricedCost(usage completionUsage, actualLane string, reserve bool) (completionCostBreakdown, error) {
 	version := strings.TrimSpace(ex.d.BillingPolicyVersion)
 	if version == "" {
 		return completionCostBreakdown{}, fmt.Errorf("billing policy version empty")
@@ -64,6 +73,11 @@ func (ex *execution) completionCost(usage completionUsage) (completionCostBreakd
 	}, fallback, version)
 	if err != nil {
 		return completionCostBreakdown{}, err
+	}
+	if reserve {
+		result = servicetier.Apply(result, servicetier.Reserve(servicetier.FromJSON(ex.body)))
+	} else {
+		result = servicetier.Apply(result, servicetier.Settle(servicetier.FromJSON(ex.body), actualLane))
 	}
 	if ratioPendingReconciliation {
 		result.PendingReconciliation = true

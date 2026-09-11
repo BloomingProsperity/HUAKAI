@@ -100,6 +100,7 @@ type repriceUsageRecordRow struct {
 	UpstreamModel          string
 	ClaimRequestedModel    string
 	HasReconciliationEvent bool
+	CostSnapshot           string
 }
 
 func NewPostgresRepriceService(pool *pgxpool.Pool, rateTables RateTableSource, ratioResolver RepricePricingRatioResolver, billingPolicyVersion string) *RepriceService {
@@ -309,6 +310,7 @@ func scanRepriceUsageRecord(rows pgx.Rows) (repriceUsageRecordRow, error) {
 		&row.UpstreamModel,
 		&row.ClaimRequestedModel,
 		&row.HasReconciliationEvent,
+		&row.CostSnapshot,
 	); err != nil {
 		return repriceUsageRecordRow{}, fmt.Errorf("billing: scan reprice usage record: %w", err)
 	}
@@ -406,7 +408,8 @@ const repriceUsageSelectColumns = `
 		FROM usage_record_reconciliation_events re
 		WHERE re.tenant_id = ur.tenant_id
 		  AND re.original_usage_record_id = ur.id
-	) AS has_reconciliation_event
+	) AS has_reconciliation_event,
+	COALESCE(ur.cost_snapshot, '') AS cost_snapshot
 FROM usage_records ur
 INNER JOIN billing_ledger_claims blc
 	ON blc.id = ur.claim_id
