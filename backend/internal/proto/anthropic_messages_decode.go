@@ -36,6 +36,9 @@ type anthropicMessage struct {
 type anthropicContentBlock struct {
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text,omitempty"`
+	Thinking     string                 `json:"thinking,omitempty"`
+	Signature    string                 `json:"signature,omitempty"`
+	Data         json.RawMessage        `json:"data,omitempty"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 	Raw          json.RawMessage        `json:"-"`
 	ID           string                 `json:"id,omitempty"`

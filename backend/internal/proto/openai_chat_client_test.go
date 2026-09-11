@@ -778,3 +778,34 @@ func TestOpenAIChatRequestPassthroughPromptCacheKey(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAIChatStreamReasoningDeltaEmitsReasoningContent(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	state := NewOpenAIChatStreamState()
+	ctx := context.Background()
+	if _, _, err := adapter.CanonicalEventToClientChunk(ctx, &CanonicalEvent{
+		Type: "message_start", MessageID: "chatcmpl-r", Model: "deepseek-r1",
+	}, state); err != nil {
+		t.Fatalf("message_start: %v", err)
+	}
+	chunks, losses, err := adapter.CanonicalEventToClientChunk(ctx, &CanonicalEvent{
+		Type: "content_block_delta", Index: 0,
+		Delta: &CanonicalContentDelta{Type: "reasoning_delta", ReasoningText: "step 1"},
+	}, state)
+	if err != nil {
+		t.Fatalf("reasoning_delta: %v", err)
+	}
+	if len(losses) != 0 {
+		t.Fatalf("reasoning_delta 不得再被丢: %+v", losses)
+	}
+	joined := ""
+	for _, c := range chunks {
+		joined += string(c)
+	}
+	if !strings.Contains(joined, "reasoning_content") || !strings.Contains(joined, "step 1") {
+		t.Fatalf("Chat 流式未投影推理字段: %s", joined)
+	}
+	if strings.Contains(joined, `"content":"step 1"`) {
+		t.Fatal("推理不得污染 content")
+	}
+}

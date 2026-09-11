@@ -196,6 +196,28 @@ func (o *OpenAIChatClient) RequestToCanonical(ctx context.Context, raw []byte) (
 		// 通用 role（system / developer / user / assistant）；text/image
 		// 交织顺序按 parsed-part 原序落 Content 与 CapabilityGraph
 		// （image 接线逐字段镜像 anthropic_messages_request.go 的 image 分支）。
+		if m.Role == "assistant" && strings.TrimSpace(m.ReasoningContent) != "" {
+			msgIdx := mi
+			blkIdx := len(cm.Content)
+			thinkBlock := CanonicalContentBlock{Type: "thinking", Thinking: m.ReasoningContent, Text: m.ReasoningContent}
+			cm.Content = append(cm.Content, thinkBlock)
+			nodeSeq++
+			nodeID := fmt.Sprintf("n_thinking_%d", nodeSeq)
+			env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+				ID:          nodeID,
+				Kind:        CapabilityThinking,
+				StreamReady: StreamReadyPartial,
+				Source:      &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+				Thinking: &ThinkingNode{
+					Blocks:    []CanonicalContentBlock{thinkBlock},
+					Redaction: RedactionPublic,
+				},
+			})
+			env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+				Capability: CapabilityThinking, NodeID: nodeID, Verdict: ProjectionPreserved,
+			})
+		}
+
 		parts, contentLoss, err := parseOpenAIChatContent(m.Content, mi)
 		if err != nil {
 			return nil, nil, err
