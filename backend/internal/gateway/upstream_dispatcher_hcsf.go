@@ -293,6 +293,8 @@ func buildHCSFProviderRequest(ctx context.Context, a provider.Adapter, in provid
 		in.InboundBody = applyIdentityRewrite(nativeRawBody, identityRewrite)
 		return a.BuildRequest(ctx, in)
 	}
+	// 重组路径的思考族只信出站账号 vendor；客户端自报模型名与空 Provider 不得改写族。
+	bindReplayProviderFromAccount(env, in.Account.Platform)
 	if b, ok := a.(envelopeRequestBuilder); ok {
 		req, err := b.BuildRequestFromEnvelope(ctx, in, env)
 		if err != nil {
@@ -376,6 +378,15 @@ func applyRequestBodyControls(req *http.Request, controls DispatchBodyControls) 
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}
 	return req, nil
+}
+
+func bindReplayProviderFromAccount(env *proto.HCSF, platform string) {
+	if env == nil {
+		return
+	}
+	if p := strings.TrimSpace(platform); p != "" {
+		env.RequestMeta.Provider = p
+	}
 }
 
 func hcsfRequestBody(env *proto.HCSF, endpointFamily string) ([]byte, error) {

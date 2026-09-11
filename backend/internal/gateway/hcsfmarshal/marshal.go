@@ -9,6 +9,7 @@ import (
 	protodify "github.com/BloomingProsperity/HUAKAI/internal/proto/dify"
 	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
+	"github.com/BloomingProsperity/HUAKAI/internal/thinkingnorm"
 )
 
 // requestMarshalers 是生产编组与能力闭合检查共享的唯一请求投影登记面。
@@ -167,11 +168,11 @@ func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 				}
 				continue
 			}
-			for _, b := range thinkingBlocks(n.Thinking) {
-				block := map[string]any{"type": "thinking", "thinking": firstNonEmpty(b.Thinking, b.Text, b.ReasoningSummary)}
-				if sig := firstNonEmpty(b.Signature, n.Thinking.Signature); sig != "" {
-					block["signature"] = sig
-				}
+			if thinkingnorm.DropUnsignedHistory(env.RequestMeta.Provider, n) {
+				addMarshalLoss(env, "anthropic_messages", n, "official family dropped unsigned thinking history", "official_unsigned_thinking_dropped")
+				continue
+			}
+			for _, block := range anthropicThinkingWireBlocks(n) {
 				appendMsg("assistant", withCache(block, n.ID, cache, applied))
 			}
 		case proto.CapabilityCacheControl:
@@ -198,48 +199,6 @@ func marshalAnthropicMessages(env *proto.HCSF) ([]byte, error) {
 	body["messages"] = messages
 	emitUnappliedCacheLoss(env, "anthropic_messages", cache, applied)
 	applyClaudeTranslatedMaxTokens(body, env, "anthropic_messages")
-	return json.Marshal(body)
-}
-
-func marshalOpenAIChat(env *proto.HCSF) ([]byte, error) {
-	body := map[string]any{"model": hcsfModel(env), "messages": []any{}, "stream": false}
-	var messages []any
-	for _, n := range env.CapabilityGraph.Nodes {
-		switch n.Kind {
-		case proto.CapabilityText:
-			if n.Text == nil {
-				addMarshalLoss(env, "openai_chat", n, "text node missing payload", "missing_text_payload")
-				continue
-			}
-			messages = append(messages, map[string]any{"role": openAITextRole(n.Text.Role), "content": n.Text.Block.Text})
-		case proto.CapabilityToolUse:
-			if n.ToolUse == nil {
-				addMarshalLoss(env, "openai_chat", n, "tool_use node missing payload", "missing_tool_use_payload")
-				continue
-			}
-			messages = append(messages, map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{openAIChatToolCall(n.ToolUse)}})
-		case proto.CapabilityToolResult:
-			if n.ToolResult == nil {
-				addMarshalLoss(env, "openai_chat", n, "tool_result node missing payload", "missing_tool_result_payload")
-				continue
-			}
-			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": n.ToolResult.ToolCallID, "content": flattenContent(n.ToolResult.Content)})
-		case proto.CapabilityImage:
-			if block, ok := openAIImagePart(env, "openai_chat", n); ok {
-				messages = append(messages, map[string]any{"role": "user", "content": []any{block}})
-			}
-		case proto.CapabilityThinking:
-			if isOpenAIChatRequestThinkingControl(n) {
-				continue
-			}
-			addMarshalLoss(env, "openai_chat", n, "capability not supported by OpenAI Chat request schema", "unsupported_capability")
-		case proto.CapabilityCacheControl:
-			addMarshalLoss(env, "openai_chat", n, "capability not supported by OpenAI Chat request schema", "unsupported_capability")
-		default:
-			addMarshalLoss(env, "openai_chat", n, "capability unsupported by openai_chat marshal", "unsupported_capability")
-		}
-	}
-	body["messages"] = messages
 	return json.Marshal(body)
 }
 

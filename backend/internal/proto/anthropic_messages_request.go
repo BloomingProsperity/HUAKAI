@@ -260,9 +260,38 @@ func (a *AnthropicMessagesClient) RequestToCanonical(ctx context.Context, raw []
 					Capability: CapabilityImage, NodeID: nodeID, Verdict: ProjectionPreserved,
 				})
 				maybeEmitAnthropicCacheControl(env, b.CacheControl, nodeID, mi, bi, &nodeSeq, &edgeSeq)
-			case "thinking":
-				loss, _ := NewClientLossEntry(ProtocolLossInfo, "anthropic_thinking_block_d1x_pending", "d1x_thinking_block_pending", CapabilityThinking, "")
-				losses = append(losses, loss)
+			case "thinking", "redacted_thinking":
+				thinkText := b.Thinking
+				if thinkText == "" {
+					thinkText = b.Text
+				}
+				block := CanonicalContentBlock{
+					Type:      b.Type,
+					Thinking:  thinkText,
+					Text:      thinkText,
+					Signature: b.Signature,
+					Data:      append(json.RawMessage(nil), b.Data...),
+				}
+				cm.Content = append(cm.Content, block)
+				nodeSeq++
+				nodeID := fmt.Sprintf("n_thinking_%d", nodeSeq)
+				redaction := RedactionPublic
+				if b.Type == "redacted_thinking" {
+					redaction = RedactionRedacted
+				}
+				env.CapabilityGraph.Nodes = append(env.CapabilityGraph.Nodes, CapabilityNode{
+					ID: nodeID, Kind: CapabilityThinking, StreamReady: StreamReadyPartial,
+					Source: &NodeSourceRef{MessageIndex: &msgIdx, BlockIndex: &blkIdx},
+					Thinking: &ThinkingNode{
+						Blocks:    []CanonicalContentBlock{block},
+						Signature: b.Signature,
+						Redaction: redaction,
+					},
+				})
+				env.ProviderProjection.CapabilityResults = append(env.ProviderProjection.CapabilityResults, CapabilityProjection{
+					Capability: CapabilityThinking, NodeID: nodeID, Verdict: ProjectionPreserved,
+				})
+				maybeEmitAnthropicCacheControl(env, b.CacheControl, nodeID, mi, bi, &nodeSeq, &edgeSeq)
 			default:
 				loss, _ := NewClientLossEntry(ProtocolLossWarning, "anthropic_unknown_block_type:"+b.Type, "unknown_block_type", CapabilityText, "")
 				losses = append(losses, loss)

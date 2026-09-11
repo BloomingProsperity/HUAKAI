@@ -27,9 +27,10 @@ type openAIChatChoice struct {
 }
 
 type openAIChatChoiceMsg struct {
-	Role      string                       `json:"role"`
-	Content   *string                      `json:"content"` // 存在 tool_calls 时为 null
-	ToolCalls []openAIChatResponseToolCall `json:"tool_calls,omitempty"`
+	Role             string                       `json:"role"`
+	Content          *string                      `json:"content"` // 存在 tool_calls 时为 null
+	ReasoningContent *string                      `json:"reasoning_content,omitempty"`
+	ToolCalls        []openAIChatResponseToolCall `json:"tool_calls,omitempty"`
 }
 
 type openAIChatResponseToolCall struct {
@@ -93,11 +94,19 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 
 	// 拼 message.content / tool_calls
 	var textParts []string
+	var reasoningParts []string
 	var toolCalls []openAIChatResponseToolCall
 	for i, b := range resp.Content {
 		switch b.Type {
 		case "text":
 			textParts = append(textParts, b.Text)
+		case "thinking", "reasoning":
+			if piece := firstNonEmptyString(b.Thinking, b.Text, b.ReasoningSummary); piece != "" {
+				reasoningParts = append(reasoningParts, piece)
+			}
+		case "redacted_thinking":
+			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_redacted_thinking_unprojected", "thinking_redacted_unprojected", CapabilityThinking, "")
+			losses = append(losses, loss)
 		case "tool_use":
 			if b.CallID == "" || b.Name == "" {
 				return nil, nil, fmt.Errorf("proto: openai_chat content[%d] tool_use missing call_id or name", i)
@@ -117,9 +126,6 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 		case "tool_result":
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "tool_result_in_assistant_response_dropped", "tool_result_in_response", CapabilityToolResult, "")
 			losses = append(losses, loss)
-		case "reasoning":
-			loss, _ := NewClientLossEntry(ProtocolLossWarning, "reasoning_block_d5_pending", "d5_reasoning_pending", CapabilityThinking, "")
-			losses = append(losses, loss)
 		case "image":
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "image_in_response_d5_pending", "d5_image_response_pending", CapabilityImage, "")
 			losses = append(losses, loss)
@@ -130,6 +136,10 @@ func (o *OpenAIChatClient) CanonicalToClientResponse(ctx context.Context, canoni
 	}
 
 	msg := openAIChatChoiceMsg{Role: "assistant"}
+	if len(reasoningParts) > 0 {
+		joinedReasoning := joinNonEmpty(reasoningParts, "\n")
+		msg.ReasoningContent = &joinedReasoning
+	}
 	if len(toolCalls) > 0 {
 		msg.ToolCalls = toolCalls
 		// OpenAI 规范：有 tool_calls 时 content 可以是 null。

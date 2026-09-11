@@ -185,7 +185,7 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 			return nil, nil, errors.New("proto: openai_chat content_block_start missing content_block")
 		}
 		switch evt.ContentBlock.Type {
-		case "text":
+		case "text", "thinking", "reasoning", "redacted_thinking":
 			return nil, nil, nil
 		case "tool_use":
 			if evt.ContentBlock.CallID == "" || evt.ContentBlock.Name == "" {
@@ -244,6 +244,21 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 			}
 			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
+		case "thinking_delta", "reasoning_delta":
+			text := evt.Delta.ReasoningText
+			if text == "" {
+				text = evt.Delta.Text
+			}
+			chunk := s.openAIChunkBase()
+			chunk["choices"] = []any{
+				map[string]any{
+					"index":         0,
+					"delta":         map[string]any{"reasoning_content": text},
+					"finish_reason": nil,
+				},
+			}
+			body := o.marshalChunk(ctx, chunk)
+			return [][]byte{EmitSSEDataLine(body)}, nil, nil
 		case "tool_input_delta", "input_json_delta":
 			// 上游解析器统一产出 canonical 类型 tool_input_delta;此前只认 input_json_delta → 跨协议
 			// 流式工具入参 delta 掉 default 被丢。两种拼写都接,输出仍为 OpenAI function.arguments 增量。
@@ -270,8 +285,8 @@ func (o *OpenAIChatClient) CanonicalEventToClientChunk(ctx context.Context, cano
 			}
 			body := o.marshalChunk(ctx, chunk)
 			return [][]byte{EmitSSEDataLine(body)}, nil, nil
-		case "thinking_delta", "signature_delta":
-			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_no_thinking_channel_dropped:"+evt.Delta.Type, "thinking_in_chat", CapabilityThinking, "")
+		case "signature_delta":
+			loss, _ := NewClientLossEntry(ProtocolLossInfo, "openai_chat_signature_not_projected", "thinking_signature_unprojected", CapabilityThinking, "")
 			return nil, []ProtocolLossEntry{loss}, nil
 		default:
 			loss, _ := NewClientLossEntry(ProtocolLossWarning, "openai_chat_unknown_delta_type:"+evt.Delta.Type, "unknown_delta_type", "", "")
