@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -402,4 +403,63 @@ func isTLSError(err error, lower string) bool {
 	return strings.Contains(lower, "tls handshake") ||
 		strings.Contains(lower, "tls:") ||
 		strings.Contains(lower, "x509:")
+}
+
+const maxSameAccountTransientRetries = 5
+
+// SameAccountTransientEligible 判断一次交付前失败是否允许留在同一账号再试。
+// 只覆盖限流与瞬时上游错误；鉴权子预算和持久传输失败必须立刻换号。
+func SameAccountTransientEligible(class ErrorClass, decision AttemptRetryDecision) bool {
+	if !decision.RetryableBeforeDelivery || decision.CountsAgainstAuthFailoverBudget {
+		return false
+	}
+	switch decision.TransportClass {
+	case TransportErrorConnectionRefused,
+		TransportErrorDNSFailure,
+		TransportErrorNetworkUnreachable,
+		TransportErrorProxyFailure,
+		TransportErrorUpstreamConnect,
+		TransportErrorTLSProfileInvalid:
+		return false
+	}
+	switch class {
+	case ErrorClassRateLimited, ErrorClassOverloaded, ErrorClassServerError, ErrorClassUpstreamTimeout, ErrorClassNetworkTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// WillSameAccountTransientRetry 报告在尚未占用预算时，这次失败是否还应留在同号。
+func WillSameAccountTransientRetry(decision AttemptRetryDecision, class ErrorClass, used, budget int, delivered bool) bool {
+	if delivered || budget <= 0 || used < 0 || used >= budget {
+		return false
+	}
+	return SameAccountTransientEligible(class, decision)
+}
+
+// ReserveSameAccountTransientRetry 占用一次同号预算并把换号关掉。
+// 返回 true 时调用方不得把该账号加入排除集，也不得写冷却。
+func ReserveSameAccountTransientRetry(decision *AttemptRetryDecision, class ErrorClass, used *int, budget int, delivered bool) bool {
+	if decision == nil || used == nil {
+		return false
+	}
+	if !WillSameAccountTransientRetry(*decision, class, *used, budget, delivered) {
+		return false
+	}
+	*used++
+	decision.SwitchAccount = false
+	return true
+}
+
+// ParseSameAccountTransientRetryBudget 解析平台设置。非法、负数或空值视为 0（立刻换号）。
+func ParseSameAccountTransientRetryBudget(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > maxSameAccountTransientRetries {
+		return maxSameAccountTransientRetries
+	}
+	return n
 }

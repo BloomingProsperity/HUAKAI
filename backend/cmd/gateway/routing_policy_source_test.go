@@ -281,6 +281,18 @@ func (s *countingRoutingPolicyPoolStore) set(tenantID, poolGroupID int64, maxWai
 	}
 }
 
+func (s *countingRoutingPolicyPoolStore) setSticky(tenantID, poolGroupID int64, maxWaiting, timeoutMS int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := routingPolicyCacheKey{tenantID: tenantID, poolGroupID: poolGroupID}
+	row := s.rows[key]
+	row.ID = poolGroupID
+	row.TenantID = tenantID
+	row.StickyWaitMaxWaiting = maxWaiting
+	row.StickyWaitTimeoutMs = timeoutMS
+	s.rows[key] = row
+}
+
 func (s *countingRoutingPolicyPoolStore) GetPool(_ context.Context, arg dbbilling.GetPoolParams) (dbbilling.PoolGroup, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -459,6 +471,26 @@ func TestBindingRoutingPolicySource_CachesFallbackForTenantPoolGroup(t *testing.
 		if policy.FallbackMaxWaiting != 3 || policy.FallbackTimeoutMS != 2500 {
 			t.Fatalf("policy[%d] fallback=%d/%d want 3/2500", i, policy.FallbackMaxWaiting, policy.FallbackTimeoutMS)
 		}
+	}
+}
+
+func TestBindingRoutingPolicySource_InjectsStickyWaitFromPoolGroup(t *testing.T) {
+	store := newCountingRoutingPolicyPoolStore()
+	store.set(7, 42, 3, 2500)
+	store.setSticky(7, 42, 2, 5000)
+	src := newBindingRoutingPolicySource(store)
+
+	got, err := src.GetRoutingPolicy(context.Background(), poolrouter.SelectionRequest{
+		TenantID: 7, PoolGroupID: 42,
+	})
+	if err != nil {
+		t.Fatalf("GetRoutingPolicy: %v", err)
+	}
+	if got.StickyMaxWaiting != 2 || got.StickyTimeoutMS != 5000 {
+		t.Fatalf("sticky wait=%d/%d want 2/5000", got.StickyMaxWaiting, got.StickyTimeoutMS)
+	}
+	if got.FallbackMaxWaiting != 3 || got.FallbackTimeoutMS != 2500 {
+		t.Fatalf("fallback 不得被 sticky 覆盖: %d/%d", got.FallbackMaxWaiting, got.FallbackTimeoutMS)
 	}
 }
 

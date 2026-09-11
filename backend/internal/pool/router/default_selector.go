@@ -284,8 +284,14 @@ func (s *DefaultSelector) tryLayer(ctx context.Context, gates GateChain, req Sel
 		}
 		acquired, err := s.slots.Acquire(ctx, account, req)
 		if errors.Is(err, ErrNoSlotAvailable) {
+			if isStickyRoutingLayer(layer) {
+				if plan := stickyWaitPlan(account, policy); plan != nil {
+					reason.Wait(plan)
+					return &SelectionResult{WaitPlan: plan, RoutingReasonJSON: reason.JSON()}, true, nil
+				}
+			}
 			reason.GateFailure(account.ID, GateFailureSlotCapacity)
-			if layer == RoutingLayerStickyStandalone || layer == RoutingLayerStickyWithinRoute {
+			if isStickyRoutingLayer(layer) {
 				reason.StickyBreak(string(GateFailureSlotCapacity))
 			}
 			continue
@@ -485,6 +491,21 @@ func modelRoute(policy *RoutingPolicy, model string, accounts []*AccountSnapshot
 
 func hasModelRoute(policy *RoutingPolicy, model string) bool {
 	return policy != nil && len(policy.ModelAccountIDs[model]) > 0
+}
+
+func isStickyRoutingLayer(layer RoutingLayer) bool {
+	return layer == RoutingLayerStickyStandalone || layer == RoutingLayerStickyWithinRoute
+}
+
+func stickyWaitPlan(account *AccountSnapshot, policy *RoutingPolicy) *WaitPlan {
+	if account == nil || policy == nil {
+		return nil
+	}
+	timeout, waiting := policy.StickyTimeoutMS, policy.StickyMaxWaiting
+	if timeout <= 0 && waiting <= 0 {
+		return nil
+	}
+	return &WaitPlan{AccountID: account.ID, MaxConcurrency: account.MaxConcurrency, TimeoutMS: timeout, MaxWaiting: waiting}
 }
 
 func fallbackPlan(candidates []*AccountSnapshot, policy *RoutingPolicy) *WaitPlan {

@@ -258,6 +258,8 @@ type RoutingPolicy struct {
 	ScoringPolicyVersion string
 	FallbackTimeoutMS    int
 	FallbackMaxWaiting   int
+	StickyTimeoutMS      int
+	StickyMaxWaiting     int
 }
 
 type SelectionMode string

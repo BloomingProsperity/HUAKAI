@@ -21,6 +21,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp"
 	"github.com/BloomingProsperity/HUAKAI/internal/modality"
+	"github.com/BloomingProsperity/HUAKAI/internal/platformsettings"
 	"github.com/BloomingProsperity/HUAKAI/internal/pool"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
 	protogemini "github.com/BloomingProsperity/HUAKAI/internal/proto/gemini"
@@ -203,12 +204,13 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 	authFailoverUsed := false
 	var coordinator bindingfallback.Coordinator
 	excludedAccounts := make(map[int64]struct{})
+	sameAccountUsed := 0
 	for i := 0; i < budget; i++ {
 		planIdx := i
 		if planIdx >= len(plan.Attempts) {
 			planIdx = len(plan.Attempts) - 1
 		}
-		outcome := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, plan.Attempts[planIdx], i+1, excludedAccounts, nil)
+		outcome := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, plan.Attempts[planIdx], i+1, excludedAccounts, nil, &sameAccountUsed)
 		if outcome.done {
 			return
 		}
@@ -230,7 +232,7 @@ func (relay *countTokensRelay) ServeGeminiCountTokens(w http.ResponseWriter, r *
 			}
 			continue
 		case bindingfallback.ActionTransition:
-			target := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, phase.Attempts[0], i+2, excludedAccounts, &decision.Transition)
+			target := relay.runCountTokensAttempt(w, ctx, requestID, ident, model, body, resolved, phase.Attempts[0], i+2, excludedAccounts, &decision.Transition, &sameAccountUsed)
 			if !target.done {
 				fallbackexec.WriteHTTP(w, target.failure)
 			}
@@ -247,7 +249,18 @@ type countTokensAttemptOutcome struct {
 	done    bool
 }
 
-func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, requestID string, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}, transition *bindingfallback.Transition) countTokensAttemptOutcome {
+func (relay *countTokensRelay) sameAccountBudget(ctx context.Context) int {
+	if relay == nil || relay.d.PlatformSettings == nil {
+		return 0
+	}
+	setting, err := relay.d.PlatformSettings.Get(ctx, platformsettings.KeySameAccountTransientRetries)
+	if err != nil {
+		return 0
+	}
+	return gateway.ParseSameAccountTransientRetryBudget(setting.Value)
+}
+
+func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx context.Context, requestID string, ident auth.Identity, model string, body []byte, resolved registry.Resolved, attempt router.AttemptPlan, attemptSeq int, excludedAccounts map[int64]struct{}, transition *bindingfallback.Transition, sameAccountUsed *int) countTokensAttemptOutcome {
 	upstreamModelID := firstNonEmpty(attempt.UpstreamModelID, resolved.ProviderModelID, model)
 	selRes, failure := relay.selectAccount(ctx, requestID, ident, model, body, resolved, attempt, attemptSeq, excludedAccounts)
 	if failure != nil {
@@ -266,9 +279,9 @@ func (relay *countTokensRelay) runCountTokensAttempt(w http.ResponseWriter, ctx 
 		excludedAccounts[selRes.AccountID] = struct{}{}
 		return countTokensAttemptOutcome{failure: fallbackexec.CredentialCompatibilityFailure()}
 	}
-	outcome := relay.dispatchCountTokens(w, ctx, requestID, ident.TenantID, resolved, attempt, upstreamModelID, body, cred, accInfo)
+	outcome := relay.dispatchCountTokens(w, ctx, requestID, ident.TenantID, resolved, attempt, upstreamModelID, body, cred, accInfo, sameAccountUsed)
 	releaseCountTokensSelection(ctx, selRes)
-	if outcome.failure != nil && selRes.AccountID > 0 {
+	if outcome.failure != nil && selRes.AccountID > 0 && !outcome.failure.KeepSameAccount {
 		excludedAccounts[selRes.AccountID] = struct{}{}
 	}
 	return outcome
@@ -402,7 +415,7 @@ func (relay *countTokensRelay) resolveCredential(w http.ResponseWriter, ctx cont
 	return cred, accInfo, true
 }
 
-func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, requestID string, tenantID int64, resolved registry.Resolved, attempt router.AttemptPlan, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo) countTokensAttemptOutcome {
+func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx context.Context, requestID string, tenantID int64, resolved registry.Resolved, attempt router.AttemptPlan, upstreamModelID string, body []byte, cred provider.Credential, accInfo provider.AccountInfo, sameAccountUsed *int) countTokensAttemptOutcome {
 	startedAt := time.Now().UTC()
 	feedbackAttempt := upstreamfeedback.Attempt{
 		TenantID: tenantID, Account: accInfo, ProtocolFamily: resolved.ProtocolFamily,
@@ -442,11 +455,17 @@ func (relay *countTokensRelay) dispatchCountTokens(w http.ResponseWriter, ctx co
 		return countTokensAttemptOutcome{failure: fallbackexec.ReadFailure(readErr)}
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		observed := upstreamfeedback.ClassifyHTTPError(feedbackAttempt, res.StatusCode, res.Headers, raw)
-		if relay.feedback != nil {
-			observed = relay.feedback.ObserveHTTPError(ctx, feedbackAttempt, res.StatusCode, res.Headers, raw)
+		used := 0
+		if sameAccountUsed != nil {
+			used = *sameAccountUsed
 		}
-		return countTokensAttemptOutcome{failure: fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)}
+		observed := upstreamfeedback.ObserveHTTPErrorUnlessSameAccountRetry(
+			ctx, relay.feedback, feedbackAttempt, res.StatusCode, res.Headers, raw,
+			used, relay.sameAccountBudget(ctx), false,
+		)
+		failure := fallbackexec.UpstreamFailureFromDecision(res.StatusCode, raw, observed.Decision, observed.Classification)
+		fallbackexec.MarkSameAccountRetry(failure, &observed.Decision, observed.Classification.Class, sameAccountUsed, relay.sameAccountBudget(ctx), false)
+		return countTokensAttemptOutcome{failure: failure}
 	}
 	if strings.TrimSpace(string(raw)) == "" {
 		if relay.feedback != nil {

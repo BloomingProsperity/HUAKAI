@@ -227,6 +227,29 @@ func ClassifyHTTPError(attempt Attempt, statusCode int, headers http.Header, bod
 	return failure
 }
 
+// ObserveHTTPErrorUnlessSameAccountRetry 在同号预算尚未用尽时只做无副作用分类，
+// 避免先写冷却再把同号重试挡死。预算为 0 时与 ObserveHTTPError 一致。
+func ObserveHTTPErrorUnlessSameAccountRetry(
+	ctx context.Context,
+	observer *Observer,
+	attempt Attempt,
+	statusCode int,
+	headers http.Header,
+	body []byte,
+	used int,
+	budget int,
+	delivered bool,
+) HTTPFailure {
+	classified := ClassifyHTTPError(attempt, statusCode, headers, body)
+	if gateway.WillSameAccountTransientRetry(classified.Decision, classified.Classification.Class, used, budget, delivered) {
+		return classified
+	}
+	if observer != nil {
+		return observer.ObserveHTTPError(ctx, attempt, statusCode, headers, body)
+	}
+	return classified
+}
+
 func classifyHTTPError(attempt Attempt, statusCode int, headers http.Header, body []byte) (HTTPFailure, error) {
 	providerName := classificationProvider(attempt)
 	decision, classification, err := gateway.ClassifyAttemptHTTPError(statusCode, headers, body, providerName)

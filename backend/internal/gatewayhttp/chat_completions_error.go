@@ -393,12 +393,18 @@ func (ex *chatExecution) applyUpstreamErrorCooldown(upstreamErr *gateway.Upstrea
 		outcome.ModelScoped = true
 		return outcome
 	}
-	// 账号规则可以命中任意状态码；规则明确要求整号暂不可调度时，不能受内置
-	// 状态码白名单限制，否则 400/403/404 规则只改响应、不影响下一次选号。
 	if hasDecision && dec.StateChange == rate.StateTempUnsched {
 		if applyAccountCooldown {
 			ex.forceCooldownFromDecision(dec)
 		}
+		return outcome
+	}
+	if ex.shouldDeferTransientCooldown(classification, gateway.AttemptRetryDecision{RetryableBeforeDelivery: true}) &&
+		(classification.Class == gateway.ErrorClassRateLimited ||
+			classification.Class == gateway.ErrorClassOverloaded ||
+			classification.Class == gateway.ErrorClassServerError ||
+			classification.Class == gateway.ErrorClassUpstreamTimeout) {
+		outcome.ModelScoped = true
 		return outcome
 	}
 	if upstreamErr.StatusCode == http.StatusNotFound {

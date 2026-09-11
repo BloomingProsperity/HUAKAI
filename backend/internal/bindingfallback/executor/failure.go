@@ -28,6 +28,8 @@ type Failure struct {
 	// SideEffectRetrySafe 表示当前 attempt 未留下未确认的上游付费副作用。
 	// false 是硬终态门，任何主池重试或跨类转移都不得继续。
 	SideEffectRetrySafe bool
+	// KeepSameAccount 表示交付前瞬时失败仍占用同号预算，调用方不得加入排除集。
+	KeepSameAccount bool
 }
 
 // PoolFailure 归一化 selector 失败；调用方仍负责先 abort/release。
@@ -103,6 +105,16 @@ func UpstreamFailureFromDecision(status int, body []byte, decision gateway.Attem
 	failure.Message = message
 	failure.AuthFailoverEligible = decision.CountsAgainstAuthFailoverBudget
 	return failure
+}
+
+// MarkSameAccountRetry 在调用方仍持有统一决策时占用同号预算。
+func MarkSameAccountRetry(failure *Failure, decision *gateway.AttemptRetryDecision, class gateway.ErrorClass, used *int, budget int, delivered bool) {
+	if failure == nil || decision == nil {
+		return
+	}
+	if gateway.ReserveSameAccountTransientRetry(decision, class, used, budget, delivered) {
+		failure.KeepSameAccount = true
+	}
 }
 
 func retryAfterSeconds(milliseconds int64) int {

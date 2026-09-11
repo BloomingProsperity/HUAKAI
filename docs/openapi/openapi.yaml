@@ -4844,6 +4844,7 @@ paths:
             - stream_timeout_seconds
             - cooldown_429_seconds
             - cooldown_529_seconds
+            - same_account_transient_retries
             - passkey_enabled
             - passkey_registration_enabled
             - passkey_rp_id
@@ -16985,6 +16986,7 @@ components:
             - stream_timeout_seconds
             - cooldown_429_seconds
             - cooldown_529_seconds
+            - same_account_transient_retries
             - passkey_enabled
             - passkey_registration_enabled
             - passkey_rp_id

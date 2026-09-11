@@ -161,6 +161,126 @@ func TestPR5NonStream429RecordsModelCooldownAndRetriesNextAccount(t *testing.T) 
 	}
 }
 
+type mapPlatformSettings map[platformsettings.SettingKey]string
+
+func (m mapPlatformSettings) Get(_ context.Context, key platformsettings.SettingKey) (platformsettings.StoredSetting, error) {
+	return platformsettings.StoredSetting{Key: key, Value: m[key], Source: "test"}, nil
+}
+
+func TestPR5NonStream429SameAccountRetrySucceedsWithoutCooldown(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 501, 502)
+	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, headers: http.Header{"Retry-After": []string{"3600"}}},
+			{successText: "same account recovered"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88021}, &recordingSettler{}, dispatcher)
+	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
+	deps.PlatformSettings = mapPlatformSettings{platformsettings.KeySameAccountTransientRetries: "1"}
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "same_account"},
+	)}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after same-account retry", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 {
+		t.Fatalf("selector calls=%d want 2", selector.calls)
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[501]; excluded {
+		t.Fatalf("同号重试不得排除 501: %+v", selector.requests[1].ExcludedAccounts)
+	}
+	if len(selector.requests[1].ExcludedAccounts) != 0 {
+		t.Fatalf("第二次选号排除集应为空: %+v", selector.requests[1].ExcludedAccounts)
+	}
+	if modelCooldowns.calls != 0 {
+		t.Fatalf("同号成功前不得写模型冷却, calls=%d", modelCooldowns.calls)
+	}
+	if got := countHealthSignals(health, channelhealth.SignalRateLimit); got != 0 {
+		t.Fatalf("SignalRateLimit count=%d want 0", got)
+	}
+}
+
+func TestPR5NonStream429SameAccountRetryExhaustedWritesCooldownAndSwitches(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	now := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	selector := newPR5Selector(t, 601, 602)
+	health := &recordingChannelHealth{}
+	modelCooldowns := &recordingModelRateLimiter{}
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, headers: http.Header{"Retry-After": []string{"60"}}},
+			{status: http.StatusTooManyRequests, body: `{"error":"still limited"}`, headers: http.Header{"Retry-After": []string{"60"}}},
+			{successText: "third account"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88022}, &recordingSettler{}, dispatcher)
+	deps.ChannelHealth = health
+	deps.ModelCooldowns = modelCooldowns
+	deps.RateService = rate.NewUpstreamRateService(func() time.Time { return now }, time.Minute)
+	deps.PlatformSettings = mapPlatformSettings{platformsettings.KeySameAccountTransientRetries: "1"}
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "same_account"},
+		router.AttemptPlan{Index: 2, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "switch"},
+	)}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after exhausted same-account then switch", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 3 {
+		t.Fatalf("selector calls=%d want 3", selector.calls)
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[601]; excluded {
+		t.Fatalf("第二次仍应留在 601: %+v", selector.requests[1].ExcludedAccounts)
+	}
+	if _, excluded := selector.requests[2].ExcludedAccounts[601]; !excluded {
+		t.Fatalf("同号用尽后必须排除 601: %+v", selector.requests[2].ExcludedAccounts)
+	}
+	if modelCooldowns.calls != 1 {
+		t.Fatalf("用尽后应写一次模型冷却, calls=%d", modelCooldowns.calls)
+	}
+	if modelCooldowns.input.ProviderAccountID != 601 {
+		t.Fatalf("冷却账号=%d want 601", modelCooldowns.input.ProviderAccountID)
+	}
+}
+
+func TestPR5NonStream401WithSameAccountBudgetStillSwitches(t *testing.T) {
+	enableHCSFDispatchForTest(t)
+	selector := newPR5Selector(t, 711, 712)
+	dispatcher := &pr5CanonicalSequenceDispatcher{
+		steps: []pr5CanonicalStep{
+			{status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`},
+			{successText: "auth failover account"},
+		},
+	}
+	deps := pr5NonStreamDeps(t, selector, &pr5ClaimGate{claimID: 88023}, &recordingSettler{}, dispatcher)
+	deps.PlatformSettings = mapPlatformSettings{platformsettings.KeySameAccountTransientRetries: "1"}
+	deps.Router = stubRouter{plan: pr5RoutePlan(
+		router.AttemptPlan{Index: 0, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "primary"},
+		router.AttemptPlan{Index: 1, PoolGroupID: 42, UpstreamModelID: "provider-gpt-4o", Reason: "auth_failover"},
+	)}
+
+	rec := invokeHandlerPath(t, deps, "/v1/chat/completions", pr5NonStreamBody())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s; want 200 after auth switch", rec.Code, rec.Body.String())
+	}
+	if selector.calls != 2 {
+		t.Fatalf("selector calls=%d want 2", selector.calls)
+	}
+	if _, excluded := selector.requests[1].ExcludedAccounts[711]; !excluded {
+		t.Fatalf("401 即使同号预算>0 也必须换号: %+v", selector.requests[1].ExcludedAccounts)
+	}
+}
+
 func TestPR5NonStreamQuota429RecordsAccountSuspendedNotModelCooldown(t *testing.T) {
 	enableHCSFDispatchForTest(t)
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
@@ -1819,7 +1939,14 @@ func newPR5Selector(t *testing.T, accounts ...int64) *pr5Selector {
 
 func (s *pr5Selector) Select(_ context.Context, req pool.SelectionRequest) (*pool.SelectionResult, error) {
 	s.calls++
-	s.requests = append(s.requests, req)
+	stored := req
+	if req.ExcludedAccounts != nil {
+		stored.ExcludedAccounts = make(map[int64]struct{}, len(req.ExcludedAccounts))
+		for accountID, marker := range req.ExcludedAccounts {
+			stored.ExcludedAccounts[accountID] = marker
+		}
+	}
+	s.requests = append(s.requests, stored)
 	for _, accountID := range s.accounts {
 		if _, excluded := req.ExcludedAccounts[accountID]; excluded {
 			continue
