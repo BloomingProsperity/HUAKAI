@@ -1,7 +1,6 @@
 package rerankhttp
 
 import (
-	"io"
 	"net/http"
 	"strings"
 
@@ -175,11 +174,8 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 	if w.Header().Get("Content-Type") == "" {
 		w.Header().Set("Content-Type", "application/json")
 	}
-	written, writeErr := w.Write(raw)
+	written, _ := w.Write(raw)
 	fullyWritten := written >= len(raw)
-	if !fullyWritten && writeErr == nil {
-		writeErr = io.ErrShortWrite
-	}
 	if !fullyWritten && written == 0 {
 		_ = ex.abortWithError(w, "client_response_write_error", int64(ex.inputEstimate))
 		return false
