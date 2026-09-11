@@ -66,6 +66,68 @@ func thinkingBlocks(t *proto.ThinkingNode) []proto.CanonicalContentBlock {
 	return t.Blocks
 }
 
+func thinkingReplayText(t *proto.ThinkingNode) string {
+	if t == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(t.Blocks))
+	for _, b := range t.Blocks {
+		if b.Type == "redacted_thinking" {
+			continue
+		}
+		if piece := firstNonEmpty(b.Thinking, b.Text, b.ReasoningSummary); piece != "" {
+			parts = append(parts, piece)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func attachReasoningToLastAssistant(messages []any, reasoning string) bool {
+	if reasoning == "" || len(messages) == 0 {
+		return false
+	}
+	last, ok := messages[len(messages)-1].(map[string]any)
+	if !ok || last["role"] != "assistant" {
+		return false
+	}
+	last["reasoning_content"] = reasoning
+	return true
+}
+
+func anthropicThinkingWireBlocks(n proto.CapabilityNode) []map[string]any {
+	t := n.Thinking
+	if t == nil {
+		return nil
+	}
+	if t.Redaction == proto.RedactionRedacted {
+		out := make([]map[string]any, 0, len(t.Blocks)+1)
+		if len(t.Blocks) == 0 {
+			block := map[string]any{"type": "redacted_thinking"}
+			if len(t.Signature) > 0 {
+				block["data"] = t.Signature
+			}
+			return []map[string]any{block}
+		}
+		for _, b := range t.Blocks {
+			block := map[string]any{"type": "redacted_thinking"}
+			if len(b.Data) > 0 {
+				block["data"] = rawJSONValue(b.Data)
+			}
+			out = append(out, block)
+		}
+		return out
+	}
+	out := make([]map[string]any, 0, len(t.Blocks))
+	for _, b := range thinkingBlocks(t) {
+		block := map[string]any{"type": "thinking", "thinking": firstNonEmpty(b.Thinking, b.Text, b.ReasoningSummary)}
+		if sig := firstNonEmpty(b.Signature, t.Signature); sig != "" {
+			block["signature"] = sig
+		}
+		out = append(out, block)
+	}
+	return out
+}
+
 func responsesThinkingItems(t *proto.ThinkingNode) []any {
 	if t == nil || (t.Redaction != "" && t.Redaction != proto.RedactionPublic && t.Redaction != proto.RedactionProviderOnly) {
 		return nil

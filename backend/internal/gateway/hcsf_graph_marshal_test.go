@@ -352,9 +352,12 @@ func TestMarshalThinkingFamilyBehavior(t *testing.T) {
 		t.Fatalf("anthropic thinking = %+v", anthropic)
 	}
 	chatEnv := graphEnv(thinkingNode())
-	_ = marshalBody(t, chatEnv, "openai_chat")
-	if len(chatEnv.CapabilityGraph.ProtocolLoss) == 0 {
-		t.Fatal("openai_chat thinking must emit loss")
+	chat := marshalBody(t, chatEnv, "openai_chat")
+	if len(chatEnv.CapabilityGraph.ProtocolLoss) != 0 {
+		t.Fatalf("compat/unknown chat thinking must not emit loss: %+v", chatEnv.CapabilityGraph.ProtocolLoss)
+	}
+	if msg0(chat)["reasoning_content"] != "visible thought" {
+		t.Fatalf("openai_chat thinking = %+v", chat)
 	}
 	responses := marshalBody(t, graphEnv(thinkingNode()), "openai_responses")
 	if responseInput0(responses)["type"] != "reasoning" {
