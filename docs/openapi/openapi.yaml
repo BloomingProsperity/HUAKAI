@@ -2653,6 +2653,87 @@ paths:
         '403': { description: Caller cannot act on this tenant scope. }
         '503': { $ref: '#/components/responses/ServiceBusy' }
 
+  /admin/v1/usage/hourly:
+    get:
+      tags: [admin]
+      summary: Tenant-scoped hourly token and prompt-cache trend
+      operationId: adminTenantUsageHourly
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/usageanalyticshttp/tenant_hourly_handler.go
+        - backend/cmd/gateway/routes_usageadmin.go
+        - backend/sql/queries/usage_tenant_overview.sql
+      description: |
+        Read-only tenant-scoped hourly usage trend. The server aggregates UTC
+        hour buckets; clients must not sum page/log detail. Each hour lists
+        input tokens, output tokens, prompt-cache write tokens, prompt-cache
+        read tokens, and actual_cost for the same half-open window as totals.
+        total_tokens remains input+output and does not fold prompt-cache
+        columns. tenant_operator is locked to its authenticated tenant;
+        querying another tenant is 403. platform_admin must pass tenant_id;
+        omitting, blank, or empty tenant_id is 400 and never falls back to
+        platform-wide totals. HTTP snapshot cache hits are a response header,
+        not prompt-cache tokens. timezone is rejected. Window is required
+        (e.g. 24h, 7d, 30d) and capped at 90 days. Empty hours are omitted.
+      parameters:
+        - name: window
+          in: query
+          required: true
+          schema: { type: string, example: 7d }
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Tenant-scoped hourly usage trend for the requested window.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, window, totals, hours]
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  window: { type: string }
+                  totals:
+                    type: object
+                    properties:
+                      requests: { type: integer, format: int64 }
+                      total_cost: { type: string }
+                      total_tokens: { type: integer, format: int64 }
+                      total_tokens_input: { type: integer, format: int64 }
+                      total_tokens_output: { type: integer, format: int64 }
+                      total_cache_creation_tokens: { type: integer, format: int64 }
+                      total_cache_read_tokens: { type: integer, format: int64 }
+                      total_image_output_tokens: { type: integer, format: int64 }
+                      total_input_cost: { type: string }
+                      total_output_cost: { type: string }
+                      total_cache_creation_cost: { type: string }
+                      total_cache_read_cost: { type: string }
+                      total_image_output_cost: { type: string }
+                      active_users: { type: integer, format: int64 }
+                      active_api_keys: { type: integer, format: int64 }
+                      success_count: { type: integer, format: int64 }
+                      error_count: { type: integer, format: int64 }
+                      success_rate: { type: string }
+                  hours:
+                    type: array
+                    items:
+                      type: object
+                      required: [hour, tokens_input, tokens_output, cache_creation_tokens, cache_read_tokens, cost]
+                      properties:
+                        hour: { type: string, format: date-time }
+                        tokens_input: { type: integer, format: int64 }
+                        tokens_output: { type: integer, format: int64 }
+                        cache_creation_tokens: { type: integer, format: int64 }
+                        cache_read_tokens: { type: integer, format: int64 }
+                        cost: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/risk/overview:
     get:
       tags: [admin-risk]

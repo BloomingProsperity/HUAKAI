@@ -53,3 +53,36 @@ func TestPlatformAdminMissingTenantIDOnTenantUsageOverview(t *testing.T) {
 		t.Fatalf("体=%s 必须含 tenant_id_required，禁止回落全平台", rec.Body.String())
 	}
 }
+
+func TestTenantOperatorForbiddenOnPlatformUsageOverviewButReachesTenantHourly(t *testing.T) {
+	r := chi.NewRouter()
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RoleTenantOperator, ScopeTenantID: 7}}
+	mountUsageAdminRoutesResolved(r, &deps{}, resolver)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/usage/hourly?window=24h", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("租户小时趋势应越过 adminGate 进入双角色 handler，实得 %d 体=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "admin_forbidden_scope") {
+		t.Fatalf("租户小时趋势被 adminGate 拒掉了：%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gateway_not_configured") {
+		t.Fatalf("租户小时趋势体=%s 必须到达 NewTenantHourlyHandler", rec.Body.String())
+	}
+}
+
+func TestPlatformAdminMissingTenantIDOnTenantUsageHourly(t *testing.T) {
+	r := chi.NewRouter()
+	resolver := fakeAdminResolver{id: admin.AdminIdentity{Role: admin.RolePlatformAdmin}}
+	mountUsageAdminRoutesResolved(r, &deps{}, resolver)
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/v1/usage/hourly?window=24h", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("部署者省略 tenant_id 应为 400，实得 %d 体=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tenant_id_required") {
+		t.Fatalf("体=%s 必须含 tenant_id_required，禁止回落全平台", rec.Body.String())
+	}
+}

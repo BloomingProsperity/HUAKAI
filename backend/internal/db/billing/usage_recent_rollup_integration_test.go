@@ -161,6 +161,82 @@ func TestAggregateTenantUsageOverviewIsolatesTenants(t *testing.T) {
 	}
 }
 
+func TestAggregateTenantUsageHourlyTrendIsolatesTenants(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openUsageOutcomePool(t, ctx)
+	defer pool.Close()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始小时趋势事务: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tenantA := seedUsageOutcomeFixture(t, ctx, tx)
+	tenantB := seedUsageOutcomeFixture(t, ctx, tx)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	seedUsageOverviewBreakdownRecord(t, ctx, tx, tenantA, "tenant-hourly-a", base.Add(4*time.Second))
+	seedUsageOutcomeRecord(t, ctx, tx, tenantA, "tenant-hourly-a-13", "non_streaming", base.Add(time.Hour))
+
+	q := dboverview.New(tx)
+	since := pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true}
+	gotA, err := q.AggregateTenantUsageOverviewTotals(ctx, dboverview.AggregateTenantUsageOverviewTotalsParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A totals: %v", err)
+	}
+	hoursA, err := q.AggregateTenantUsageHourlyTrend(ctx, dboverview.AggregateTenantUsageHourlyTrendParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A 小时: %v", err)
+	}
+	hoursB, err := q.AggregateTenantUsageHourlyTrend(ctx, dboverview.AggregateTenantUsageHourlyTrendParams{
+		TenantID: tenantB.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 B 小时: %v", err)
+	}
+	// fixture 3 行在 12:00；breakdown 同小时；13:00 再一行。变异:去掉 tenant_id -> A 会吃到 B。
+	if gotA.RequestCount != 5 || gotA.TotalCost != "0.09000000" || gotA.TotalTokens != 190 {
+		t.Fatalf("租户 A totals=%+v，期望 5/0.09/190", gotA)
+	}
+	if gotA.TotalTokensInput != 70 || gotA.TotalTokensOutput != 120 ||
+		gotA.TotalCacheCreationTokens != 5 || gotA.TotalCacheReadTokens != 7 {
+		t.Fatalf("租户 A Token 分项=%+v，期望 70/120/5/7", gotA)
+	}
+	if len(hoursA) != 2 {
+		t.Fatalf("租户 A 小时点数=%d 期望 2，禁止合成一日或补零", len(hoursA))
+	}
+	if hoursA[0].TokensInput != 60 || hoursA[0].TokensOutput != 100 ||
+		hoursA[0].CacheCreationTokens != 5 || hoursA[0].CacheReadTokens != 7 ||
+		hoursA[0].TotalCost != "0.08000000" {
+		t.Fatalf("租户 A 12 点=%+v，期望 60/100/5/7/0.08", hoursA[0])
+	}
+	if hoursA[1].TokensInput != 10 || hoursA[1].TokensOutput != 20 ||
+		hoursA[1].CacheCreationTokens != 0 || hoursA[1].CacheReadTokens != 0 ||
+		hoursA[1].TotalCost != "0.01000000" {
+		t.Fatalf("租户 A 13 点=%+v，期望 10/20/0/0/0.01", hoursA[1])
+	}
+	var sumIn, sumOut, sumCreate, sumRead int64
+	for _, hour := range hoursA {
+		sumIn += hour.TokensInput
+		sumOut += hour.TokensOutput
+		sumCreate += hour.CacheCreationTokens
+		sumRead += hour.CacheReadTokens
+	}
+	if sumIn != gotA.TotalTokensInput || sumOut != gotA.TotalTokensOutput ||
+		sumCreate != gotA.TotalCacheCreationTokens || sumRead != gotA.TotalCacheReadTokens {
+		t.Fatalf("小时序列之和必须与同窗 totals 对账 hours=%+v totals=%+v", hoursA, gotA)
+	}
+	if len(hoursB) != 1 || hoursB[0].TokensInput != 30 || hoursB[0].TokensOutput != 60 ||
+		hoursB[0].CacheCreationTokens != 0 || hoursB[0].TotalCost != "0.03000000" {
+		t.Fatalf("租户 B 小时=%+v，必须看不见 A 的 breakdown 与 13 点", hoursB)
+	}
+}
+
 // TTFT(first_byte_at - requested_at)的 p95/p99 只能在记录了 first byte 的行上
 // 计算,而没有记录任何 first byte 的租户必须 COALESCE 成 0(而非 NULL -> scan 报错)。
 // 额外三行带有不同的 TTFT,分别是 1000/2000/3000 ms,其 percentile_cont(0.95)=2900
