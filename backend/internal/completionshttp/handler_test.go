@@ -460,6 +460,15 @@ func (e *completionsTestEnv) invokeCompletions(t *testing.T, body string) *httpt
 	return e.invokeCompletionsCtx(t, context.Background(), body)
 }
 
+func (e *completionsTestEnv) invokeCompletionsWithWriter(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	h := middleware.RequestID(NewCompletionsHandler(e.deps))
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(w, req)
+}
+
 // invokeCompletionsCtx 用指定父 ctx 跑请求，供模拟客户端断连(父 ctx 已取消)的脱钩测试。
 func (e *completionsTestEnv) invokeCompletionsCtx(t *testing.T, parent context.Context, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -1012,3 +1021,48 @@ func TestCompletionsStreamPricingFailureAfterDeliveryDoesNotRefund(t *testing.T)
 		t.Fatalf("CostSnapshot=%q 应含 pricing_unavailable 因由", settle.Draft.CostSnapshot)
 	}
 }
+
+func TestCompletionsHandler_PartialWriteSettlesPendingAndZeroWriteAborts(t *testing.T) {
+	const upstream = `{"id":"cmpl_1","object":"text_completion","model":"text-davinci-003","choices":[{"text":"world","index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`
+	const reqBody = `{"model":"legacy-public","prompt":"hello","max_tokens":8}`
+	full := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: upstream})
+	if rec := full.invokeCompletions(t, reqBody); rec.Code != http.StatusOK || len(full.settler.settles) != 1 {
+		t.Fatalf("full status/settles=%d/%d", rec.Code, len(full.settler.settles))
+	}
+	wantCost := full.settler.settles[0].ActualCost
+
+	partial := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: upstream})
+	w := &completionsPartialWriteResponseWriter{header: make(http.Header), limit: 5, err: io.ErrClosedPipe}
+	partial.invokeCompletionsWithWriter(t, w, reqBody)
+	if len(partial.settler.aborts) != 0 || len(partial.settler.settles) != 1 {
+		t.Fatalf("partial abort/settle=%d/%d want 0/1", len(partial.settler.aborts), len(partial.settler.settles))
+	}
+	settle := partial.settler.settles[0]
+	if !settle.ActualCost.Equal(wantCost) || !settle.Draft.PendingReconciliation || !strings.Contains(settle.Draft.CostSnapshot, billing.ClientDeliveryInterruptedMarker) {
+		t.Fatalf("partial cost/pending/snapshot=%s/%v/%q", settle.ActualCost, settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
+	}
+
+	zero := newCompletionsTestEnv(upstreamResponse{status: http.StatusOK, body: upstream})
+	zw := &completionsPartialWriteResponseWriter{header: make(http.Header), limit: 0, err: io.ErrClosedPipe}
+	zero.invokeCompletionsWithWriter(t, zw, reqBody)
+	if len(zero.settler.settles) != 0 || len(zero.settler.aborts) != 1 || zero.settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("zero settle/abort=%d/%+v", len(zero.settler.settles), zero.settler.aborts)
+	}
+}
+
+type completionsPartialWriteResponseWriter struct {
+	header http.Header
+	limit  int
+	err    error
+}
+
+func (w *completionsPartialWriteResponseWriter) Header() http.Header { return w.header }
+func (w *completionsPartialWriteResponseWriter) WriteHeader(int)     {}
+func (w *completionsPartialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	return n, w.err
+}
+func (w *completionsPartialWriteResponseWriter) Flush() {}

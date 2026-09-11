@@ -660,6 +660,14 @@ func (e *audioTestEnv) invokeMultipartWithKey(t *testing.T, body []byte, content
 	return rec
 }
 
+func (e *audioTestEnv) invokeMultipartWithWriter(t *testing.T, w http.ResponseWriter, body []byte, contentType string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, e.endpoint.Path(), bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", contentType)
+	middleware.RequestID(e.handler()).ServeHTTP(w, req)
+}
+
 func (e *audioTestEnv) handler() http.HandlerFunc {
 	switch e.endpoint {
 	case audioEndpointTranscriptions:
@@ -981,3 +989,67 @@ func sha256Hex(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
+
+func TestAudioJSONPartialWriteSettlesPendingAndZeroWriteAborts(t *testing.T) {
+	// 转写 JSON 已写出部分字节必须按上游用量结算并挂待对账；零字节才 abort。
+	// 变异：部分写仍整笔退，或零字节误结算，本测试必红。
+	fullEnv := newAudioTestEnv(t, audioEndpointTranscriptions, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"text":"done","usage":{"input_tokens":7,"output_tokens":11}}`,
+	})
+	fullBody, fullType := multipartAudioBody(t, "file", "clip.wav", "audio/wav", wavPCM16Fixture(16000, 16000), map[string]string{"model": "gpt-4o-transcribe"})
+	fullRec := fullEnv.invokeMultipart(t, fullBody, fullType)
+	if fullRec.Code != http.StatusOK || len(fullEnv.settler.settles) != 1 {
+		t.Fatalf("full path status=%d settles=%d", fullRec.Code, len(fullEnv.settler.settles))
+	}
+	wantCost := fullEnv.settler.settles[0].ActualCost
+
+	partial := newAudioTestEnv(t, audioEndpointTranscriptions, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"text":"done","usage":{"input_tokens":7,"output_tokens":11}}`,
+	})
+	body, contentType := multipartAudioBody(t, "file", "clip.wav", "audio/wav", wavPCM16Fixture(16000, 16000), map[string]string{"model": "gpt-4o-transcribe"})
+	w := &audioPartialWriteResponseWriter{header: make(http.Header), limit: 8, err: io.ErrClosedPipe}
+	partial.invokeMultipartWithWriter(t, w, body, contentType)
+	if len(partial.settler.aborts) != 0 || len(partial.settler.settles) != 1 {
+		t.Fatalf("partial abort/settle=%d/%d want 0/1", len(partial.settler.aborts), len(partial.settler.settles))
+	}
+	settle := partial.settler.settles[0]
+	if !settle.ActualCost.Equal(wantCost) {
+		t.Fatalf("partial cost=%s full cost=%s want same token amount", settle.ActualCost, wantCost)
+	}
+	if !settle.Draft.PendingReconciliation || !strings.Contains(settle.Draft.CostSnapshot, billing.ClientDeliveryInterruptedMarker) {
+		t.Fatalf("pending/snapshot=%v/%q", settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
+	}
+
+	zero := newAudioTestEnv(t, audioEndpointTranscriptions, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"text":"done","usage":{"input_tokens":7,"output_tokens":11}}`,
+	})
+	zeroBody, zeroType := multipartAudioBody(t, "file", "clip.wav", "audio/wav", wavPCM16Fixture(16000, 16000), map[string]string{"model": "gpt-4o-transcribe"})
+	zw := &audioPartialWriteResponseWriter{header: make(http.Header), limit: 0, err: io.ErrClosedPipe}
+	zero.invokeMultipartWithWriter(t, zw, zeroBody, zeroType)
+	if len(zero.settler.settles) != 0 || len(zero.settler.aborts) != 1 || zero.settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("zero settle/abort=%d/%+v", len(zero.settler.settles), zero.settler.aborts)
+	}
+}
+
+type audioPartialWriteResponseWriter struct {
+	header http.Header
+	limit  int
+	err    error
+}
+
+func (w *audioPartialWriteResponseWriter) Header() http.Header { return w.header }
+
+func (w *audioPartialWriteResponseWriter) WriteHeader(int) {}
+
+func (w *audioPartialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	return n, w.err
+}
+
+func (w *audioPartialWriteResponseWriter) Flush() {}

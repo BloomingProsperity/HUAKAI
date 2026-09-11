@@ -165,14 +165,18 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 		w.Header().Set("X-HUAKAI-Cache-L2", "miss")
 	}
 	WriteHuakaiHeaders(w.Header(), ex.req.Model, bufferedEnv, ledgerResult, ex.requestID, ex.ident.TenantID, ex.d.Signer)
-	fullyWritten, writeErr := chatpipe.WriteFull(w, clientBody)
-	if !fullyWritten {
+	written, fullyWritten, writeErr := chatpipe.WriteFull(w, clientBody)
+	if !fullyWritten && written == 0 {
 		logInternalError(ex.ctx, ex.requestID, "client_response_write_error", writeErr)
 		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "client_response_write_error", 0, ex.protocolLoss); abortErr != nil {
 			logInternalError(ex.ctx, ex.requestID, clienterr.CodeAbortFailed, abortErr)
 		}
 		outcome.DeliveryStarted = true
 		return outcome
+	}
+	if !fullyWritten {
+		billing.MarkClientDeliveryInterrupted(&settleReq.Draft)
+		settleEvent.SettleRequest = settleReq
 	} else if writeErr != nil {
 		logInternalError(ex.ctx, ex.requestID, "client_response_write_uncertain", writeErr)
 	}

@@ -487,33 +487,56 @@ func TestImagesHandler_SettleAndRecoveryDoubleFailureEmitsP0(t *testing.T) {
 	}
 }
 
-func TestImagesHandler_PartialWriteAbortsWithoutSettlement(t *testing.T) {
-	// 该测试守住图片未完整交付不得计费：部分写后报错必须 Abort，且不能创建 post-delivery 恢复。
-	// 变异：忽略 Write 的 n/err 会产生一次 Settle 且 Abort 为零，本测试必红。
+func TestImagesHandler_PartialWriteSettlesPending(t *testing.T) {
+	// 已写出部分图片 JSON 后不得整笔退款：必须结算并挂待对账。
+	// 变异：仍 abort 或金额为 0 / 未挂 pending，本测试必红。
 	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
 		status: http.StatusOK,
 		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
 	})
+	full := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	full.invoke(t, `{"model":"dall-e-2","prompt":"write fails","size":"512x512"}`)
 	recovery := &imagesRecoveryEnqueuer{}
 	env.deps.SettleRecoveryDLQ = recovery
 	w := &imagesPartialWriteResponseWriter{header: make(http.Header), limit: 7, err: io.ErrClosedPipe}
 
 	env.invokeWithWriter(t, w, `{"model":"dall-e-2","prompt":"write fails","size":"512x512"}`)
 
+	if got := len(env.settler.aborts); got != 0 {
+		t.Fatalf("aborts=%+v want 0 after partial image write", env.settler.aborts)
+	}
+	if got := len(env.settler.settles); got != 1 {
+		t.Fatalf("settle calls=%d want 1 on partial write", got)
+	}
+	settle := env.settler.settles[0]
+	if !settle.Draft.PendingReconciliation || !strings.Contains(settle.Draft.CostSnapshot, billing.ClientDeliveryInterruptedMarker) {
+		t.Fatalf("pending/snapshot=%v/%q want interrupted pending", settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
+	}
+	if len(full.settler.settles) != 1 || !settle.ActualCost.Equal(full.settler.settles[0].ActualCost) {
+		t.Fatalf("partial cost=%s full cost=%v want same upstream amount", settle.ActualCost, full.settler.settles)
+	}
+	if recovery.calls != 0 {
+		t.Fatalf("recovery calls=%d want 0 after successful settlement", recovery.calls)
+	}
+}
+
+func TestImagesHandler_ZeroWriteAbortsWithoutSettlement(t *testing.T) {
+	env := newImagesTestEnv(t, imageEndpointGenerations, upstreamResponse{
+		status: http.StatusOK,
+		body:   `{"created":1,"data":[{"url":"https://img.test/ok.png"}]}`,
+	})
+	w := &imagesPartialWriteResponseWriter{header: make(http.Header), limit: 0, err: io.ErrClosedPipe}
+
+	env.invokeWithWriter(t, w, `{"model":"dall-e-2","prompt":"write fails","size":"512x512"}`)
+
 	if got := len(env.settler.settles); got != 0 {
-		t.Fatalf("settle calls=%d want 0 on partial write", got)
+		t.Fatalf("settle calls=%d want 0 on zero-byte write", got)
 	}
 	if got := len(env.settler.aborts); got != 1 || env.settler.aborts[0].reason != "client_response_write_error" {
 		t.Fatalf("aborts=%+v want one client_response_write_error", env.settler.aborts)
-	}
-	if recovery.calls != 0 {
-		t.Fatalf("recovery calls=%d want 0 for incomplete image body", recovery.calls)
-	}
-	if w.writeHeaderCalls != 0 {
-		t.Fatalf("WriteHeader calls=%d want 0 before fallible body write", w.writeHeaderCalls)
-	}
-	if w.flushes != 0 {
-		t.Fatalf("flushes=%d want 0 after incomplete image body", w.flushes)
 	}
 }
 

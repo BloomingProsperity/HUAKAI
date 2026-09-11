@@ -1,9 +1,11 @@
 package embeddingshttp
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/BloomingProsperity/HUAKAI/internal/billing"
 	"github.com/BloomingProsperity/HUAKAI/internal/bindingfallback"
 	fallbackexec "github.com/BloomingProsperity/HUAKAI/internal/bindingfallback/executor"
 	"github.com/BloomingProsperity/HUAKAI/internal/clienterr"
@@ -188,9 +190,16 @@ func (ex *execution) settleSuccessfulResponse(w http.ResponseWriter, res *gatewa
 		w.Header().Set("Content-Type", "application/json")
 	}
 	written, writeErr := w.Write(raw)
-	if writeErr != nil || written < len(raw) {
+	fullyWritten := written >= len(raw)
+	if !fullyWritten && writeErr == nil {
+		writeErr = io.ErrShortWrite
+	}
+	if !fullyWritten && written == 0 {
 		_ = ex.abortWithError(w, "client_response_write_error", int64(promptTokens))
 		return false
+	}
+	if !fullyWritten {
+		billing.MarkClientDeliveryInterrupted(&settleReq.Draft)
 	}
 	_ = http.NewResponseController(w).Flush()
 	sbctx, scancel := ex.billingCtx()

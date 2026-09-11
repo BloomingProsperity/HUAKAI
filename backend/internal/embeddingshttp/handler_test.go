@@ -319,6 +319,15 @@ func (e *embeddingsTestEnv) invoke(t *testing.T, body string) *httptest.Response
 	return rec
 }
 
+func (e *embeddingsTestEnv) invokeWithWriter(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	h := middleware.RequestID(NewEmbeddingsHandler(e.deps))
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer hk-test")
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(w, req)
+}
+
 func (e *embeddingsTestEnv) assertNoHangingClaims(t *testing.T) {
 	t.Helper()
 	closed := map[int64]string{}
@@ -671,3 +680,48 @@ func TestEmbeddings_AttemptBudgetRetriesAfterDispatchFailure(t *testing.T) {
 		t.Fatalf("aborts=%d want 1 (attempt1 claim aborted before retry)", got)
 	}
 }
+
+func TestEmbeddingsHandler_PartialWriteSettlesPendingAndZeroWriteAborts(t *testing.T) {
+	const upstream = `{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"model":"text-embedding-3-small","usage":{"prompt_tokens":7,"total_tokens":7}}`
+	const reqBody = `{"model":"embed-public","input":["alpha beta"]}`
+	full := newEmbeddingsTestEnv(t, upstreamResponse{status: http.StatusOK, body: upstream})
+	if rec := full.invoke(t, reqBody); rec.Code != http.StatusOK || len(full.settler.settles) != 1 {
+		t.Fatalf("full status/settles=%d/%d", rec.Code, len(full.settler.settles))
+	}
+	wantCost := full.settler.settles[0].ActualCost
+
+	partial := newEmbeddingsTestEnv(t, upstreamResponse{status: http.StatusOK, body: upstream})
+	w := &embeddingsPartialWriteResponseWriter{header: make(http.Header), limit: 6, err: io.ErrClosedPipe}
+	partial.invokeWithWriter(t, w, reqBody)
+	if len(partial.settler.aborts) != 0 || len(partial.settler.settles) != 1 {
+		t.Fatalf("partial abort/settle=%d/%d want 0/1", len(partial.settler.aborts), len(partial.settler.settles))
+	}
+	settle := partial.settler.settles[0]
+	if !settle.ActualCost.Equal(wantCost) || !settle.Draft.PendingReconciliation || !strings.Contains(settle.Draft.CostSnapshot, billing.ClientDeliveryInterruptedMarker) {
+		t.Fatalf("partial cost/pending/snapshot=%s/%v/%q", settle.ActualCost, settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
+	}
+
+	zero := newEmbeddingsTestEnv(t, upstreamResponse{status: http.StatusOK, body: upstream})
+	zw := &embeddingsPartialWriteResponseWriter{header: make(http.Header), limit: 0, err: io.ErrClosedPipe}
+	zero.invokeWithWriter(t, zw, reqBody)
+	if len(zero.settler.settles) != 0 || len(zero.settler.aborts) != 1 || zero.settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("zero settle/abort=%d/%+v", len(zero.settler.settles), zero.settler.aborts)
+	}
+}
+
+type embeddingsPartialWriteResponseWriter struct {
+	header http.Header
+	limit  int
+	err    error
+}
+
+func (w *embeddingsPartialWriteResponseWriter) Header() http.Header { return w.header }
+func (w *embeddingsPartialWriteResponseWriter) WriteHeader(int)     {}
+func (w *embeddingsPartialWriteResponseWriter) Write(p []byte) (int, error) {
+	n := w.limit
+	if n < 0 || n > len(p) {
+		n = len(p)
+	}
+	return n, w.err
+}
+func (w *embeddingsPartialWriteResponseWriter) Flush() {}

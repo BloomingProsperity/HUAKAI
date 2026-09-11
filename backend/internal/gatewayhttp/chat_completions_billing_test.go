@@ -66,9 +66,9 @@ func TestChatCompletionsNonStreamingSettleFailureKeepsDeliveredResponseAndEnqueu
 	}
 }
 
-func TestChatCompletionsNonStreamingPartialWriteAbortsWithoutSettlement(t *testing.T) {
-	// 该测试守住未完整交付不得计费：写出部分业务字节后报错时，只能释放预留，不能结算或入恢复。
-	// 变异：忽略 Write 的 n/err 会产生一次 Settle 且没有 Abort，本测试必红。
+func TestChatCompletionsNonStreamingPartialWriteSettlesPending(t *testing.T) {
+	// 已写出部分业务字节后不得整笔释放预留：必须按上游用量结算并挂待对账。
+	// 变异：仍走 abort 或结算金额为 0 / 未挂 pending，本测试必红。
 	enableHCSFDispatchForTest(t)
 	settler := &recordingSettler{}
 	recovery := &postDeliverySpyEnqueuer{}
@@ -83,23 +83,49 @@ func TestChatCompletionsNonStreamingPartialWriteAbortsWithoutSettlement(t *testi
 
 	h.ServeHTTP(w, req)
 
-	if len(settler.calls) != 0 {
-		t.Fatalf("settle calls=%d want 0 on partial write", len(settler.calls))
+	if len(settler.aborts) != 0 {
+		t.Fatalf("aborts=%+v want 0 after partial client write", settler.aborts)
 	}
-	if len(settler.aborts) != 1 || settler.aborts[0].reason != "client_response_write_error" {
-		t.Fatalf("aborts=%+v want one client_response_write_error", settler.aborts)
+	if len(settler.calls) != 1 {
+		t.Fatalf("settle calls=%d want 1 on partial write", len(settler.calls))
+	}
+	settle := settler.calls[0]
+	if !settle.Draft.PendingReconciliation || !strings.Contains(settle.Draft.CostSnapshot, billing.ClientDeliveryInterruptedMarker) {
+		t.Fatalf("pending/snapshot=%v/%q want interrupted pending", settle.Draft.PendingReconciliation, settle.Draft.CostSnapshot)
+	}
+	if !settle.ActualCost.IsPositive() {
+		t.Fatalf("ActualCost=%s want positive upstream cost, not a refund", settle.ActualCost)
 	}
 	if recovery.calls != 0 {
-		t.Fatalf("recovery calls=%d want 0 for undelivered body", recovery.calls)
-	}
-	if w.writeHeaderCalls != 0 {
-		t.Fatalf("WriteHeader calls=%d want 0 before fallible body write", w.writeHeaderCalls)
+		t.Fatalf("recovery calls=%d want 0 after successful direct settlement", recovery.calls)
 	}
 	if w.body.Len() == 0 {
 		t.Fatal("fixture did not exercise a partial write")
 	}
-	if w.flushes != 0 {
-		t.Fatalf("flushes=%d want 0 after incomplete body", w.flushes)
+}
+
+func TestChatCompletionsNonStreamingZeroWriteAbortsWithoutSettlement(t *testing.T) {
+	// 零业务字节才允许释放预留。变异：written==0 仍结算，本测试必红。
+	enableHCSFDispatchForTest(t)
+	settler := &recordingSettler{}
+	d := clientAdapterDeps(t)
+	d.CanonicalDispatcher = &mockCanonicalBufferedDispatcher{}
+	d.Settler = settler
+	w := &partialWriteResponseWriter{header: make(http.Header), limit: 0, err: io.ErrClosedPipe}
+	h := NewChatCompletionsHandler(d)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	h.ServeHTTP(w, req)
+
+	if len(settler.calls) != 0 {
+		t.Fatalf("settle calls=%d want 0 on zero-byte write", len(settler.calls))
+	}
+	if len(settler.aborts) != 1 || settler.aborts[0].reason != "client_response_write_error" {
+		t.Fatalf("aborts=%+v want one client_response_write_error", settler.aborts)
+	}
+	if w.body.Len() != 0 {
+		t.Fatalf("zero-write fixture leaked %d bytes", w.body.Len())
 	}
 }
 
