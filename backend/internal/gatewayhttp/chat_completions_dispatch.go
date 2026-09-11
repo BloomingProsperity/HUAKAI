@@ -650,6 +650,14 @@ func (ex *chatExecution) dispatchCanonicalBuffered(w http.ResponseWriter, seedCt
 	setAccountingModelRouteDecided(canonicalReq, ex.forwardReq.Model)
 	gateway.ApplyForwardRequestHopChain(canonicalReq, ex.forwardReq)
 
+	if err := proto.RejectHostedToolsOnFamily(canonicalReq.RequestMeta.EndpointFamily, canonicalReq.RequestControls.Tools); err != nil {
+		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "invalid_request_body", 0, ex.protocolLoss); abortErr != nil {
+			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
+		}
+		writeLoggedJSONError(ex.ctx, ex.requestID, w, http.StatusBadRequest, clienterr.CodeInvalidRequestBody, err)
+		return nil, nil, false
+	}
+
 	dispatcher := hcsfDispatcher(ex.d)
 	if dispatcher == nil {
 		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "non_streaming_not_yet_wired", 0, ex.protocolLoss); abortErr != nil {

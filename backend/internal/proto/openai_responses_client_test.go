@@ -176,41 +176,43 @@ func TestOpenAIResponsesClient_FunctionCallThenOutputChain(t *testing.T) {
 	}
 }
 
-func TestOpenAIResponsesClient_BuiltinToolNativeRequired(t *testing.T) {
+func TestOpenAIResponsesClient_KeepsHostedToolsAndRejectsUnknown(t *testing.T) {
 	adapter := &OpenAIResponsesClient{}
 	body := []byte(`{
 		"model":"gpt-4o",
 		"input":"hi",
 		"tools":[
 			{"type":"function","name":"f1","description":"...","parameters":{}},
-			{"type":"web_search"},
-			{"type":"code_interpreter"}
+			{"type":"web_search","filters":{"allowed_domains":["example.com"]}},
+			{"type":"code_interpreter"},
+			{"type":"tool_search"}
 		]
 	}`)
-	env, losses, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
+	env, _, err := adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), body)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(env.RequestControls.Tools) != 1 || env.RequestControls.Tools[0].Name != "f1" {
-		t.Errorf("expected only function tool registered, got %+v", env.RequestControls.Tools)
+	if len(env.RequestControls.Tools) != 4 {
+		t.Fatalf("want 4 tools kept, got %+v", env.RequestControls.Tools)
 	}
-	var web, code bool
-	for _, l := range losses {
-		if l.Severity == "" {
-			t.Errorf("loss must not be silent: %+v", l)
-		}
-		if strings.Contains(l.Reason, "web_search") {
-			web = true
-		}
-		if strings.Contains(l.Reason, "code_interpreter") {
-			code = true
-		}
-		if l.NativePath != "" && l.NativePath != "/v1/native/openai/responses" {
-			t.Errorf("unexpected NativePath: %q", l.NativePath)
-		}
+	if env.RequestControls.Tools[0].Kind != "function" || env.RequestControls.Tools[0].Name != "f1" {
+		t.Fatalf("function tool: %+v", env.RequestControls.Tools[0])
 	}
-	if !web || !code {
-		t.Errorf("expected both builtin tools to emit native_required losses, web=%v code=%v", web, code)
+	if !ToolKeepsHostedDeclaration(env.RequestControls.Tools[1]) {
+		t.Fatalf("web_search must keep declaration: %+v", env.RequestControls.Tools[1])
+	}
+	if !strings.Contains(string(env.RequestControls.Tools[1].Declaration), "allowed_domains") {
+		t.Fatalf("declaration lost filters: %s", env.RequestControls.Tools[1].Declaration)
+	}
+	if env.RequestControls.Tools[3].Kind != "tool_search" {
+		t.Fatalf("tool_search: %+v", env.RequestControls.Tools[3])
+	}
+
+	_, _, err = adapter.RequestToCanonical(newTestOpenAIResponsesCtx(t), []byte(`{
+		"model":"gpt-4o","input":"hi","tools":[{"type":"not_a_published_lane"}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown hosted") && !errors.Is(err, ErrUnknownHostedToolKind) {
+		t.Fatalf("unknown kind must fail-closed, err=%v", err)
 	}
 }
 
@@ -791,5 +793,25 @@ func TestOpenAIResponsesClient_EnvelopeIsValidateReady(t *testing.T) {
 	}
 	if err := ValidateEnvelopeVersionGuard(env); err != nil {
 		t.Fatalf("ValidateEnvelopeVersionGuard: %v", err)
+	}
+}
+
+func TestOpenAIResponsesClient_EmitsHostedCallsAndCitations(t *testing.T) {
+	adapter := &OpenAIResponsesClient{}
+	env := NewEmptyEnvelope()
+	env.BufferedResponse = &CanonicalResponse{
+		ID:    "resp_cite",
+		Model: "gpt-4o",
+		Content: []CanonicalContentBlock{
+			{Type: "web_search_call", CallID: "ws_1", Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_1","status":"completed"}`)},
+			{Type: "text", Text: "see", Annotations: json.RawMessage(`[{"type":"url_citation","url":"https://example.com"}]`)},
+		},
+	}
+	raw, _, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	if !strings.Contains(string(raw), `"type":"web_search_call"`) || !strings.Contains(string(raw), "url_citation") {
+		t.Fatalf("client response lost hosted call or citation: %s", raw)
 	}
 }
