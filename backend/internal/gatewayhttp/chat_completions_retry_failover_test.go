@@ -197,7 +197,7 @@ func TestPR5NonStream429SameAccountRetrySucceedsWithoutCooldown(t *testing.T) {
 	if _, excluded := selector.requests[1].ExcludedAccounts[501]; excluded {
 		t.Fatalf("同号重试不得排除 501: %+v", selector.requests[1].ExcludedAccounts)
 	}
-	if selector.requests[1].ExcludedAccounts != nil && len(selector.requests[1].ExcludedAccounts) != 0 {
+	if len(selector.requests[1].ExcludedAccounts) != 0 {
 		t.Fatalf("第二次选号排除集应为空: %+v", selector.requests[1].ExcludedAccounts)
 	}
 	if modelCooldowns.calls != 0 {
