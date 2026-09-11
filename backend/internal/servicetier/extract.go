@@ -46,7 +46,8 @@ func FromExtras(extra map[string]json.RawMessage) string {
 	return ""
 }
 
-// FromEnvelope 从缓冲响应、信封透传、流式事件由近到远取最后一次非空实档。
+// FromEnvelope 只采信缓冲终态或带用量/终止语义的事件。中间事件上的处理档
+// 可能只是请求回声，不能当实档结算。
 func FromEnvelope(env *proto.HCSF) string {
 	if env == nil {
 		return ""
@@ -56,20 +57,34 @@ func FromEnvelope(env *proto.HCSF) string {
 			return got
 		}
 	}
-	if got := fromPassthrough(env.Passthrough); got != "" {
-		return got
-	}
-	for i := len(env.StreamEvents) - 1; i >= 0; i-- {
-		if got := fromPassthrough(env.StreamEvents[i].Passthrough); got != "" {
-			return got
+	found := ""
+	for _, ev := range env.StreamEvents {
+		if got := AuthoritativeFromEvent(ev); got != "" {
+			found = got
 		}
 	}
-	return ""
+	return found
 }
 
-// FromSSE 从 SSE 数据行由近到远取最后一次顶层处理档。
+// AuthoritativeFromEvent 仅在终止帧或带用量的事件上读取处理档。
+func AuthoritativeFromEvent(evt proto.CanonicalEvent) string {
+	if !eventLaneAuthoritative(evt) {
+		return ""
+	}
+	return fromPassthrough(evt.Passthrough)
+}
+
+func eventLaneAuthoritative(evt proto.CanonicalEvent) bool {
+	if evt.Type == "message_stop" {
+		return true
+	}
+	return evt.Usage != nil
+}
+
+// FromSSE 只采信带用量或终态类型的数据行，避免把中间回声当实档。
 func FromSSE(raw []byte) string {
 	found := ""
+	sawAuthoritative := false
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
@@ -79,14 +94,42 @@ func FromSSE(raw []byte) string {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
+		if !payloadLaneAuthoritative([]byte(payload)) {
+			continue
+		}
 		if got := FromJSON([]byte(payload)); got != "" {
 			found = got
+			sawAuthoritative = true
 		}
 	}
-	if found != "" {
+	if sawAuthoritative {
 		return found
 	}
-	return FromJSON(raw)
+	// 非 SSE 的整包 JSON（补全缓冲体）仍可读；整段 SSE 回声不得回落到任意一行。
+	if payloadLaneAuthoritative(raw) {
+		return FromJSON(raw)
+	}
+	return ""
+}
+
+func payloadLaneAuthoritative(raw []byte) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return false
+	}
+	if _, ok := obj["usage"]; ok {
+		return true
+	}
+	var typ string
+	if err := json.Unmarshal(obj["type"], &typ); err != nil {
+		return false
+	}
+	switch strings.TrimSpace(typ) {
+	case "message_stop", "response.completed", "response.incomplete":
+		return true
+	default:
+		return false
+	}
 }
 
 func fromPassthrough(env *proto.PassthroughEnvelope) string {

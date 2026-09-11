@@ -786,10 +786,7 @@ func observeProcessingLane(acc *UsageAccumulator, v any) {
 		}
 		evt = *ptr
 	}
-	if evt.Passthrough == nil {
-		return
-	}
-	if lane := servicetier.FromExtras(evt.Passthrough.Extra); lane != "" {
+	if lane := servicetier.AuthoritativeFromEvent(evt); lane != "" {
 		acc.ObservedProcessingLane = lane
 	}
 }
