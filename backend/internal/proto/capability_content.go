@@ -134,6 +134,7 @@ const (
 type ThinkingNode struct {
 	Mode         string                  `json:"mode,omitempty"`
 	BudgetTokens int                     `json:"budget_tokens"`
+	Display      string                  `json:"display,omitempty"`
 	Blocks       []CanonicalContentBlock `json:"blocks"`
 	HiddenTokens int                     `json:"hidden_tokens,omitempty"`
 	Signature    string                  `json:"signature,omitempty"`

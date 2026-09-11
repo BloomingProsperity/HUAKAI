@@ -116,3 +116,36 @@ func TestAnthropicEnabledThinking_StillMarshalsBudget(t *testing.T) {
 		t.Fatalf("enabled+budget 回归: %s", out)
 	}
 }
+
+func TestAnthropicThinkingDisplay_SurvivesHCSFRoundTrip(t *testing.T) {
+	client := &proto.AnthropicMessagesClient{}
+	reqBody := []byte(`{
+		"model":"claude-opus-4-7",
+		"max_tokens":1024,
+		"thinking":{"type":"adaptive","display":"summarized"},
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	env, _, err := client.RequestToCanonical(newAdaptiveTestCtx(), reqBody)
+	if err != nil {
+		t.Fatalf("canonical: %v", err)
+	}
+	var display string
+	for i := range env.CapabilityGraph.Nodes {
+		if env.CapabilityGraph.Nodes[i].Thinking != nil {
+			display = env.CapabilityGraph.Nodes[i].Thinking.Display
+		}
+	}
+	if display != "summarized" {
+		t.Fatalf("解析后 Display=%q", display)
+	}
+	out, err := MarshalToProviderRequest(env, "anthropic_messages")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"display":"summarized"`) {
+		t.Fatalf("出站必须原样带 display，不得改档: %s", out)
+	}
+	if strings.Contains(string(out), `"updates"`) {
+		t.Fatalf("不得注入 updates: %s", out)
+	}
+}

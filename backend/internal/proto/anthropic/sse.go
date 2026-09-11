@@ -100,9 +100,15 @@ type anthropicBufferedResponse struct {
 type anthropicBufferedUsage struct {
 	InputTokens              int                              `json:"input_tokens"`
 	OutputTokens             int                              `json:"output_tokens"`
+	ThinkingTokens           *int                             `json:"thinking_tokens,omitempty"`
+	OutputTokensDetails      *anthropicOutputTokensDetails    `json:"output_tokens_details,omitempty"`
 	CacheReadInputTokens     int                              `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int                              `json:"cache_creation_input_tokens"`
 	CacheCreation            *anthropicCacheCreationBreakdown `json:"cache_creation,omitempty"`
+}
+
+type anthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
 }
 
 type anthropicCacheCreationBreakdown struct {
@@ -424,6 +430,13 @@ func (u anthropicBufferedUsage) canonical() proto.CanonicalUsage {
 			out.CacheCreationInputTokens = out.CacheCreationInputTokens5m + out.CacheCreationInputTokens1h
 		}
 	}
+	if u.OutputTokensDetails != nil {
+		out.ReasoningTokens = u.OutputTokensDetails.ThinkingTokens
+		out.ThinkingTokensKnown = true
+	} else if u.ThinkingTokens != nil {
+		out.ReasoningTokens = *u.ThinkingTokens
+		out.ThinkingTokensKnown = true
+	}
 	out.TotalTokens = out.InputTokens + out.OutputTokens
 	return out
 }
@@ -589,8 +602,11 @@ func overlayNonZeroUsage(dst, src proto.CanonicalUsage) proto.CanonicalUsage {
 	if src.OutputTokens != 0 {
 		dst.OutputTokens = src.OutputTokens
 	}
-	if src.ReasoningTokens != 0 {
+	if src.ThinkingTokensKnown || src.ReasoningTokens != 0 {
 		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if src.ThinkingTokensKnown {
+		dst.ThinkingTokensKnown = true
 	}
 	if src.TotalTokens != 0 {
 		dst.TotalTokens = src.TotalTokens

@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -64,6 +65,39 @@ type anthropicImageSource struct {
 type anthropicThinkingConfig struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens"`
+	Display      string `json:"display,omitempty"`
+}
+
+var (
+	ErrUnknownThinkingDisplay        = errors.New("proto: unknown thinking display")
+	ErrThinkingDisplayNeedsBeta      = errors.New("proto: thinking display updates requires beta")
+	ErrThinkingDisplayWhenDisabled   = errors.New("proto: thinking display requires active thinking")
+)
+
+const thinkingDisplayUpdatesBeta = "thinking-display-updates-2026-08-18"
+
+func normalizeThinkingDisplay(display, typ string, betas []string) (string, error) {
+	d := strings.TrimSpace(display)
+	if d == "" {
+		return "", nil
+	}
+	t := strings.TrimSpace(typ)
+	if t == "" || t == "disabled" {
+		return "", ErrThinkingDisplayWhenDisabled
+	}
+	switch d {
+	case "summarized", "omitted":
+		return d, nil
+	case "updates":
+		for _, b := range betas {
+			if strings.EqualFold(strings.TrimSpace(b), thinkingDisplayUpdatesBeta) {
+				return d, nil
+			}
+		}
+		return "", ErrThinkingDisplayNeedsBeta
+	default:
+		return "", ErrUnknownThinkingDisplay
+	}
 }
 
 // parseAnthropicSystemField 解 system 字段；string 直接返回；array of

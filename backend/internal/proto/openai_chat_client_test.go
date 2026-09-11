@@ -809,3 +809,41 @@ func TestOpenAIChatStreamReasoningDeltaEmitsReasoningContent(t *testing.T) {
 		t.Fatal("推理不得污染 content")
 	}
 }
+
+
+func TestOpenAIChat_ProjectsThinkingTokensAndOmittedLoss(t *testing.T) {
+	adapter := &OpenAIChatClient{}
+	env := NewEmptyEnvelope()
+	env.BufferedResponse = &CanonicalResponse{
+		ID:    "chat_1",
+		Model: "gpt-x",
+		Content: []CanonicalContentBlock{{
+			Type: "thinking", Thinking: "", Signature: "sig",
+		}, {
+			Type: "text", Text: "hi",
+		}},
+		Usage: CanonicalUsage{
+			InputTokens:         2,
+			OutputTokens:        10,
+			ReasoningTokens:     7,
+			ThinkingTokensKnown: true,
+		},
+		StopReason: CanonicalStopEndTurn,
+	}
+	raw, losses, err := adapter.CanonicalToClientResponse(context.Background(), env)
+	if err != nil {
+		t.Fatalf("CanonicalToClientResponse: %v", err)
+	}
+	var sawLoss bool
+	for _, l := range losses {
+		if l.Code == "thinking_omitted_unprojected" {
+			sawLoss = true
+		}
+	}
+	if !sawLoss {
+		t.Fatalf("空思考块投影到 Chat 必须记显式损失: %+v", losses)
+	}
+	if !strings.Contains(string(raw), `"reasoning_tokens":7`) || !strings.Contains(string(raw), `"completion_tokens":10`) {
+		t.Fatalf("Chat 必须把思考分解映射到完成明细且不改包容性输出: %s", raw)
+	}
+}

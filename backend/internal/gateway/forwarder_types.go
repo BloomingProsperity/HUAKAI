@@ -220,8 +220,11 @@ func (a *UsageAccumulator) Update(source UsageSource, usage proto.CanonicalUsage
 	if usage.OutputTokens != 0 {
 		a.Usage.OutputTokens = usage.OutputTokens
 	}
-	if usage.ReasoningTokens != 0 {
+	if usage.ThinkingTokensKnown || usage.ReasoningTokens != 0 {
 		a.Usage.ReasoningTokens = usage.ReasoningTokens
+	}
+	if usage.ThinkingTokensKnown {
+		a.Usage.ThinkingTokensKnown = true
 	}
 	if usage.TotalTokens != 0 {
 		a.Usage.TotalTokens = usage.TotalTokens

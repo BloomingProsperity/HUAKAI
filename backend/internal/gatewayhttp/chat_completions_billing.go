@@ -26,6 +26,7 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/provider"
 	"github.com/BloomingProsperity/HUAKAI/internal/servicetier"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
@@ -478,16 +479,17 @@ func requestMetaSeed(r *http.Request, ident auth.Identity, clientProtocol proto.
 		token = acquisitionToken.String()
 	}
 	return proto.RequestMetaSeed{
-		RequestID:        requestID,
-		ClientProtocol:   clientProtocol,
-		ProtocolFamily:   protocolFamily,
-		IngressPath:      r.URL.Path,
-		Model:            model,
-		TenantID:         ident.TenantID,
-		RouteID:          routeID,
-		AccountID:        accountID,
-		AcquisitionToken: token,
-		EvidenceLabel:    proto.EvidenceMock,
+		RequestID:         requestID,
+		ClientProtocol:    clientProtocol,
+		ProtocolFamily:    protocolFamily,
+		IngressPath:       r.URL.Path,
+		Model:             model,
+		TenantID:          ident.TenantID,
+		RouteID:           routeID,
+		AccountID:         accountID,
+		AcquisitionToken:  token,
+		EvidenceLabel:     proto.EvidenceMock,
+		InboundBetaTokens: provider.ParseInboundBetaTokens(r.Header.Values("Anthropic-Beta")),
 	}
 }
 

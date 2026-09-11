@@ -117,12 +117,12 @@ type CanonicalUsage struct {
 	OutputTokens int `json:"output_tokens,omitempty"`
 	TotalTokens  int `json:"total_tokens,omitempty"`
 
-	// ReasoningTokens: 隐藏推理 token（OpenAI o1/o3 的
-	// completion_tokens_details.reasoning_tokens）。它已被上游计入 OutputTokens，
-	// 但对客户端不可见、估算器无法从可见内容数出。token 交叉校验须从 OutputTokens
-	// 扣除它再与可见内容估算对比，否则推理重的合法响应会被误判为 usage 不一致
-	// （纯审计明细，不参与计费/落账）。
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// ReasoningTokens: 隐藏推理子集（OpenAI 完成明细的推理计数，或 Anthropic
+	// output_tokens_details.thinking_tokens）。它已被上游计入 OutputTokens，
+	// 只进用量明细，不得再加一笔输出费。交叉校验须从 OutputTokens 扣除后再与
+	// 可见内容对比。ThinkingTokensKnown 区分“上游明确给了分解（可为 0）”和“字段缺失”。
+	ReasoningTokens      int  `json:"reasoning_tokens,omitempty"`
+	ThinkingTokensKnown  bool `json:"thinking_tokens_known,omitempty"`
 
 	// CacheCreationInputTokens: vendor 写入新缓存的 prompt token 数（首次见
 	// 该 prefix）。Anthropic Messages API + Bedrock 同字段。命中率指标分母。
