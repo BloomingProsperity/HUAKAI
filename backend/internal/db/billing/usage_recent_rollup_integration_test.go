@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	dboverview "github.com/BloomingProsperity/HUAKAI/internal/db/usageoverview"
 )
 
 func TestRecentUsageRollupByTenant(t *testing.T) {
@@ -89,6 +91,73 @@ func TestAggregateUsageOverviewTotalsPreservesTokenAndCostBreakdown(t *testing.T
 		got.TotalCacheCreationCost != "0.00300000" || got.TotalCacheReadCost != "0.00400000" ||
 		got.TotalImageOutputCost != "0.00500000" {
 		t.Fatalf("费用分项=%+v，必须与相同结算窗口的不可变记录一致", got)
+	}
+}
+
+func TestAggregateTenantUsageOverviewIsolatesTenants(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openUsageOutcomePool(t, ctx)
+	defer pool.Close()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始租户总览事务: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tenantA := seedUsageOutcomeFixture(t, ctx, tx)
+	tenantB := seedUsageOutcomeFixture(t, ctx, tx)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	seedUsageOverviewBreakdownRecord(t, ctx, tx, tenantA, "tenant-overview-a", base.Add(4*time.Second))
+
+	q := dboverview.New(tx)
+	since := pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true}
+	gotA, err := q.AggregateTenantUsageOverviewTotals(ctx, dboverview.AggregateTenantUsageOverviewTotalsParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A totals: %v", err)
+	}
+	gotB, err := q.AggregateTenantUsageOverviewTotals(ctx, dboverview.AggregateTenantUsageOverviewTotalsParams{
+		TenantID: tenantB.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 B totals: %v", err)
+	}
+	// fixture=3 行 0.03/90 Token；A 另加 breakdown 0.05/70。变异:去掉 tenant_id -> A/B 都会吃到对方 -> 红。
+	if gotA.RequestCount != 4 || gotA.TotalCost != "0.08000000" || gotA.TotalTokens != 160 {
+		t.Fatalf("租户 A totals=%+v，期望 4/0.08/160", gotA)
+	}
+	if gotA.TotalTokensInput != 60 || gotA.TotalTokensOutput != 100 ||
+		gotA.TotalCacheCreationTokens != 5 || gotA.TotalCacheReadTokens != 7 ||
+		gotA.TotalImageOutputTokens != 2 {
+		t.Fatalf("租户 A Token 分项=%+v，期望 60/100/5/7/2", gotA)
+	}
+	if gotB.RequestCount != 3 || gotB.TotalCost != "0.03000000" || gotB.TotalTokens != 90 {
+		t.Fatalf("租户 B totals=%+v，必须看不见 A 的 breakdown", gotB)
+	}
+	if gotB.TotalCacheCreationTokens != 0 || gotB.TotalCacheReadTokens != 0 || gotB.TotalImageOutputTokens != 0 {
+		t.Fatalf("租户 B 提示缓存/图像分项=%+v 必须为 0", gotB)
+	}
+
+	trendA, err := q.AggregateTenantUsageOverviewTrendByDay(ctx, dboverview.AggregateTenantUsageOverviewTrendByDayParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A 趋势: %v", err)
+	}
+	trendB, err := q.AggregateTenantUsageOverviewTrendByDay(ctx, dboverview.AggregateTenantUsageOverviewTrendByDayParams{
+		TenantID: tenantB.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 B 趋势: %v", err)
+	}
+	if len(trendA) != 1 || trendA[0].RequestCount != 4 || trendA[0].TotalCost != "0.08000000" {
+		t.Fatalf("租户 A 日趋势=%+v，期望一日 4/0.08", trendA)
+	}
+	if len(trendB) != 1 || trendB[0].RequestCount != 3 || trendB[0].TotalCost != "0.03000000" {
+		t.Fatalf("租户 B 日趋势=%+v，必须与 A 分列", trendB)
 	}
 }
 
