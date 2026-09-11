@@ -76,6 +76,61 @@ func TestRepriceCostUsesCurrentRateTableAndRatio(t *testing.T) {
 	}
 }
 
+func TestRepriceCostAppliesBilledProcessingLane(t *testing.T) {
+	table := RateTable{
+		ID:      56,
+		Version: "current-v1",
+		PricingData: []byte(`{
+			"providers":{
+				"openai":{
+					"models":{
+						"gpt-4o":{
+							"input_micro_usd":"1000",
+							"output_micro_usd":"2000"
+						}
+					}
+				}
+			}
+		}`),
+	}
+	row := repriceUsageRecordRow{
+		ID:             12,
+		TenantID:       7,
+		PoolGroupID:    3,
+		ProviderCode:   "openai",
+		ProtocolFamily: "openai_chat",
+		TokensInput:    100,
+		TokensOutput:   50,
+		RequestedModel: "gpt-4o",
+		CostSnapshot:   "flat;service_tier_requested=fast;service_tier_actual=priority;service_tier_billed=priority;service_tier_mult=2;service_tier_reason=actual",
+	}
+	got, _, err := repriceCostFromCurrentPricing(context.Background(), table, row, decimal.RequireFromString("0.5"))
+	if err != nil {
+		t.Fatalf("repriceCostFromCurrentPricing: %v", err)
+	}
+	// 基线 100*1000 + 50*2000 = 200000 micro = 0.2，再乘分组 0.5 → 0.1，再乘 billed 2× → 0.2
+	if got.StringFixed(8) != "0.20000000" {
+		t.Fatalf("cost=%s want 0.20000000 after billed lane", got.StringFixed(8))
+	}
+}
+
+func TestRepriceRejectsUnpublishedLaneAsAuthoritative(t *testing.T) {
+	table := RateTable{
+		Version:     "current-v1",
+		PricingData: []byte(`{"providers":{"openai":{"models":{"gpt-4o":{"input_micro_usd":"1000","output_micro_usd":"2000"}}}}}`),
+	}
+	row := repriceUsageRecordRow{
+		ProviderCode: "openai",
+		TokensInput:  10,
+		TokensOutput: 10,
+		CostSnapshot: "flat;service_tier_billed=ultrafast;service_tier_mult=1;pending_reconciliation=service_tier",
+	}
+	_, _, err := repriceCostFromCurrentPricing(context.Background(), table, row, decimal.NewFromInt(1))
+	if err == nil {
+		t.Fatal("unpublished pending snapshot must refuse authoritative reprice")
+	}
+}
+
 func TestRepriceRejectsRatioFallbackAsAuthoritative(t *testing.T) {
 	svc := &RepriceService{PricingRatioResolver: repriceRatioStub{ratio: decimal.NewFromInt(1), pending: true}}
 	_, err := svc.groupRatio(context.Background(), repriceUsageRecordRow{TenantID: 7, PoolGroupID: 3})

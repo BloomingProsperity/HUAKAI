@@ -112,6 +112,8 @@ type pricingRatioResolverWithSignal interface {
 }
 
 func (ex *chatExecution) predictedCompletionCost() (decimal.Decimal, error) {
+	ex.billingReserve = true
+	defer func() { ex.billingReserve = false }()
 	cost, err := ex.completionCost(completionUsageForCost{
 		InputTokens:  estimateInputTokens(ex.req.Model, ex.body),
 		OutputTokens: estimateOutputTokens(ex.req),
@@ -163,11 +165,13 @@ func (ex *chatExecution) estimatedStreamingCost(draft gateway.UsageRecordDraft) 
 		InputTokens:  tokencheck.EstimateRequestInputTokens(ex.body),
 		OutputTokens: estimatedOutput,
 	}
+	ex.billingActualLane = draft.ObservedProcessingLane
 	cost, err := ex.completionCost(usage)
+	ex.billingActualLane = ""
 	if err != nil {
 		return completionCostBreakdown{}, completionUsageForCost{}, false
 	}
-	cost.PendingReconciliation = false
+	cost.PendingReconciliation = strings.Contains(cost.CostSnapshot, "pending_reconciliation=service_tier")
 	cost.CostSnapshot = snapshotWithEstimatedUsageBasis(cost.CostSnapshot)
 	return cost, usage, true
 }
@@ -249,6 +253,7 @@ func (ex *chatExecution) completionCost(usage completionUsageForCost) (completio
 		return completionCostBreakdown{}, pricingUnavailable(err.Error())
 	}
 	result = ex.applyCacheCostOverride(result)
+	result = ex.applyRequestedProcessingLane(result)
 	result = ex.applyToolCallSurcharge(result, usage.ToolCallCounts, groupRatio)
 	if ratioPendingReconciliation {
 		result.PendingReconciliation = true

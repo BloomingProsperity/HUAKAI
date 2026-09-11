@@ -184,7 +184,7 @@ func (ex *execution) settleAndWriteJSON(w http.ResponseWriter, res *gateway.Disp
 		return false
 	}
 	ex.observeSuccess(res)
-	cost, err := ex.actualCost(usage)
+	cost, err := ex.actualCostFromRaw(usage, raw)
 	if err != nil {
 		ex.abort(w, "pricing_unavailable", int64(usage.PromptTokens))
 		writeJSONError(w, http.StatusServiceUnavailable, clienterr.CodePricingUnavailable, clienterr.MessageFor(clienterr.CodePricingUnavailable))
@@ -290,7 +290,7 @@ func (ex *execution) finishStreamingResponse(w http.ResponseWriter, res *gateway
 		usage = completionUsage{PromptTokens: ex.inputEstimate}
 	}
 
-	cost, costErr := ex.actualCost(usage)
+	cost, costErr := ex.actualCostFromRaw(usage, copied.Bytes())
 	if costErr != nil {
 		// 定价此刻不可用(费率表缺失/解析失败等),但交付已发生:绝不能退款。以零成本占位并标
 		// PendingReconciliation,留下一条可对账的 usage_record 审计行(供运维/后续对账消费者补价),

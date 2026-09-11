@@ -254,6 +254,8 @@ type chatExecution struct {
 	groupRatioCachePoolGroupID           int64
 	groupRatioCache                      decimal.Decimal
 	groupRatioCachePendingReconciliation bool
+	billingReserve                       bool
+	billingActualLane                    string
 
 	cred                        provider.Credential
 	accInfo                     provider.AccountInfo

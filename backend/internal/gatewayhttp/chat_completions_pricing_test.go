@@ -147,7 +147,7 @@ func TestSettleCompletion_UsesRateTableActualCost(t *testing.T) {
 	if !settler.calls[0].Draft.ActualCost.Equal(want) {
 		t.Fatalf("Draft.ActualCost=%s want %s", settler.calls[0].Draft.ActualCost, want)
 	}
-	if settler.calls[0].Draft.CostSnapshot != "flat" {
+	if !strings.Contains(settler.calls[0].Draft.CostSnapshot, "flat") {
 		t.Fatalf("Draft.CostSnapshot=%q want flat", settler.calls[0].Draft.CostSnapshot)
 	}
 }
@@ -378,7 +378,7 @@ func TestSettleCompletion_UsesTieredPricingDataWhenConfigured(t *testing.T) {
 		t.Fatalf("tiered branch not used: ActualCost=%s equals flat baseline", settler.calls[0].ActualCost)
 	}
 	assertDecimalEqual(t, "ActualCost", settler.calls[0].ActualCost, want)
-	if settler.calls[0].Draft.CostSnapshot != "tiered:vtest-policy" {
+	if !strings.Contains(settler.calls[0].Draft.CostSnapshot, "tiered:vtest-policy") {
 		t.Fatalf("Draft.CostSnapshot=%q want tiered:vtest-policy", settler.calls[0].Draft.CostSnapshot)
 	}
 }
@@ -412,7 +412,7 @@ func TestSettleCompletion_InvalidTieredPricingFallsBackToFlatAndSignals(t *testi
 	}
 	wantFlat := decimal.RequireFromString("0.008")
 	assertDecimalEqual(t, "ActualCost", settler.calls[0].ActualCost, wantFlat)
-	if settler.calls[0].Draft.CostSnapshot != "flat" {
+	if !strings.Contains(settler.calls[0].Draft.CostSnapshot, "flat") {
 		t.Fatalf("Draft.CostSnapshot=%q want flat fallback model", settler.calls[0].Draft.CostSnapshot)
 	}
 	if !settler.calls[0].Draft.PendingReconciliation {
@@ -495,7 +495,7 @@ func TestStreamingCompletionEvent_CarriesCostSnapshotToDraft(t *testing.T) {
 
 	// 变异:去掉流式 draft 的 CostSnapshot 赋值,会让这里为空而成本仍正确,
 	// 把审计回归藏起来。
-	if event.SettleRequest.Draft.CostSnapshot != "flat" {
+	if !strings.Contains(event.SettleRequest.Draft.CostSnapshot, "flat") {
 		t.Fatalf("Draft.CostSnapshot=%q want flat", event.SettleRequest.Draft.CostSnapshot)
 	}
 }
@@ -781,7 +781,7 @@ func TestStreamingCompletionEvent_DeepSeekCacheUsageChargesReportedTokens(t *tes
 	if event.SettleRequest.Draft.PendingReconciliation {
 		t.Fatal("真实 DeepSeek 流式 usage 不应进入待对账")
 	}
-	if event.SettleRequest.Draft.CostSnapshot != "flat" {
+	if !strings.Contains(event.SettleRequest.Draft.CostSnapshot, "flat") {
 		t.Fatalf("CostSnapshot=%q want flat", event.SettleRequest.Draft.CostSnapshot)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	protoollama "github.com/BloomingProsperity/HUAKAI/internal/proto/ollama"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto/openai"
 	"github.com/BloomingProsperity/HUAKAI/internal/redact"
+	"github.com/BloomingProsperity/HUAKAI/internal/servicetier"
 	"github.com/BloomingProsperity/HUAKAI/internal/sign"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 	"github.com/google/uuid"
@@ -387,6 +388,7 @@ func (f *StreamForwarder) handleEventWithAdapter(
 		if usage, ok := canonicalUsage(canonical); ok {
 			acc.Update(UsageSourceReported, usage)
 		}
+		observeProcessingLane(acc, canonical)
 		// 逐事件累加可见输出 token 估算(排除隐藏 reasoning delta),settle 时与 reported
 		// OutputTokens 交叉校验。O(1) 内存、不滞留响应内容(流式交叉校验)。
 		acc.EstimatedOutputTokens += canonicalVisibleEstimate(canonical)
@@ -514,6 +516,7 @@ func (f *StreamForwarder) drainWithAdapter(
 						if usage, ok := canonicalUsage(canonical); ok {
 							acc.Update(UsageSourcePartial, usage)
 						}
+						observeProcessingLane(acc, canonical)
 						// drain 阶段产生的可见输出也累加进估算:settle 比对的 reported
 						// OutputTokens 已含 drain 期 usage(上方 acc.Update),估算须同步含
 						// drain 期可见内容,否则断连后 drain 完成的长响应会因估算偏低被误判
@@ -595,6 +598,7 @@ func (f *StreamForwarder) finishDraft(d UsageRecordDraft, acc UsageAccumulator, 
 	d.ReasoningTokens = acc.Usage.ReasoningTokens
 	d.EstimatedOutputTokens = acc.EstimatedOutputTokens
 	d.EstimatedReasoningTokens = acc.EstimatedReasoningTokens
+	d.ObservedProcessingLane = acc.ObservedProcessingLane
 	if d.UsageSource == UsageSourceAmbiguous && acc.Source != "" {
 		d.UsageSource = acc.Source
 	}
@@ -767,6 +771,23 @@ func streamTerminatedReason(endClass StreamEndClass, delivered int64) string {
 			return "upstream_5xx"
 		}
 		return "output_token_zero"
+	}
+}
+
+func observeProcessingLane(acc *UsageAccumulator, v any) {
+	if acc == nil {
+		return
+	}
+	evt, ok := v.(proto.CanonicalEvent)
+	if !ok {
+		ptr, ok := v.(*proto.CanonicalEvent)
+		if !ok || ptr == nil {
+			return
+		}
+		evt = *ptr
+	}
+	if lane := servicetier.AuthoritativeFromEvent(evt); lane != "" {
+		acc.ObservedProcessingLane = lane
 	}
 }
 

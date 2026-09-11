@@ -544,7 +544,7 @@ func (ex *chatExecution) streamingCompletionEventWithContext(pricingCtx context.
 	}
 	usage := usageFromDraft(draft)
 	usageBasisEstimated := false
-	actualCost, err := pricingExecution.actualCompletionCost(usage)
+	actualCost, err := pricingExecution.actualCompletionCostWithLane(usage, draft.ObservedProcessingLane)
 	if err != nil {
 		slog.ErrorContext(pricingExecution.ctx, "流式响应计价失败，转入待对账",
 			"request_id", ex.requestID,

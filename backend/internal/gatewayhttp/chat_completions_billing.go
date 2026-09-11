@@ -23,8 +23,10 @@ import (
 	"github.com/BloomingProsperity/HUAKAI/internal/gateway"
 	"github.com/BloomingProsperity/HUAKAI/internal/gatewayhttp/chatpipe"
 	"github.com/BloomingProsperity/HUAKAI/internal/payloadhash"
+	"github.com/BloomingProsperity/HUAKAI/internal/pricingeval"
 	"github.com/BloomingProsperity/HUAKAI/internal/privacy"
 	"github.com/BloomingProsperity/HUAKAI/internal/proto"
+	"github.com/BloomingProsperity/HUAKAI/internal/servicetier"
 	"github.com/BloomingProsperity/HUAKAI/internal/settlementrecovery"
 	"github.com/BloomingProsperity/HUAKAI/internal/tokencheck"
 )
@@ -116,7 +118,7 @@ func (ex *chatExecution) executeNonStreamingAttempt(w http.ResponseWriter) attem
 	}
 	cacheEnvelope, cacheEnvelopeOK := encodeL2CacheEnvelope(bufferedEnv)
 	usage := usageFromBufferedEnvelope(bufferedEnv)
-	actualCost, err := ex.actualCompletionCost(usage)
+	actualCost, err := ex.actualCompletionCostWithLane(usage, servicetier.FromEnvelope(bufferedEnv))
 	if err != nil {
 		if abortErr := ex.abortReservation(ex.reserveRes.ClaimID, "pricing_unavailable", 0, ex.protocolLoss); abortErr != nil {
 			setAbortFailedHeader(w, ex.ctx, ex.requestID, abortErr)
@@ -696,4 +698,18 @@ func nonStreamingUsageDraft(env *proto.HCSF, actualCost completionCostBreakdown,
 		DrainOutcome:          gateway.DrainNotDrained,
 		PendingReconciliation: pendingReconciliation || actualCost.PendingReconciliation,
 	}
+}
+
+func (ex *chatExecution) actualCompletionCostWithLane(usage completionUsageForCost, actualLane string) (completionCostBreakdown, error) {
+	ex.billingActualLane = actualLane
+	defer func() { ex.billingActualLane = "" }()
+	return ex.actualCompletionCost(usage)
+}
+
+func (ex *chatExecution) applyRequestedProcessingLane(result pricingeval.Result) pricingeval.Result {
+	requested := servicetier.FromJSON(ex.body)
+	if ex.billingReserve {
+		return servicetier.Apply(result, servicetier.Reserve(requested))
+	}
+	return servicetier.Apply(result, servicetier.Settle(requested, ex.billingActualLane))
 }
