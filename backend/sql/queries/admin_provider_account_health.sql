@@ -157,3 +157,174 @@ WHERE tenant_id = sqlc.arg(tenant_id)::bigint
   AND deleted_at IS NULL
 GROUP BY health_state, enabled
 ORDER BY health_state, enabled;
+
+-- name: GetPoolHealthTenant :one
+-- 按池健康投影的租户存在性门:部署者显式指定的 tenant_id 指向不存在或已软删的租户时
+-- 必须返回可辨识的 404,而不是把它当成空租户放行成空投影。租户 status 不影响只读投影,不取。
+SELECT id
+FROM tenants
+WHERE id = sqlc.arg(tenant_id)::bigint
+  AND deleted_at IS NULL;
+
+-- name: SummarizeProviderAccountHealthByPool :many
+-- 按账号池聚合的账号调度健康投影(FE-GAP-002 第四切),服务端一次算完,不倒行给浏览器求和。
+-- 分母 = 该池下经未软删渠道挂接的未软删账号(含运维停用账号)。每个账号恰属一个渠道、一个池,
+-- 不会重复计数。分类互斥,优先级 unavailable > cooling_down > degraded > schedulable,
+-- 谓词逐字对齐选号候选查询(ListEligibleAccountsByPoolGroup)与进程内健康门中**与请求无关**的账号级判定;
+-- 按模型/协议/能力清单、模型限流、上游额度、并发与会话容量等按请求维度的门不在本投影内,
+-- 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它:
+--   unavailable  运维停用 / 渠道停用 / 上游 provider 停用或软删 / 账号已过期 /
+--                revoked 未到期或无截止 / 无可服务凭据 / 最新 FSM disabled|manual_paused
+--   cooling_down throttled|cooldown 未到期或无截止 / 最新 FSM cooling_down 且未开 disable_cooling /
+--                FSM ramping 但放量阶段为空(尚未放行任何流量)且未开 disable_cooling
+--   degraded     最新 FSM degraded / FSM ramping 按比例放量(阶段非空)且未开 disable_cooling
+--   schedulable  其余(数据库层与 FSM 门都放行)
+-- 最新 FSM 记录按 credential_version DESC, updated_at DESC 取,与健康门读取顺序一致;无记录视为放行。
+-- schedulable_ids / degraded_ids / cooling_ids(及对齐的 cooling_recovery_at)/ cooling_exempt_ids 只回传
+-- 各栏账号 id、冷却账号的已知恢复时刻与 disable_cooling 豁免标记,供进程内 auth 降级车道叠加
+-- (软冷却可被豁免,硬禁不可;硬禁的冷却账号要抬升为 unavailable 并从恢复时刻里剔除),这些 id 不进响应体。
+WITH latest_fsm AS (
+    SELECT DISTINCT ON (chs.provider_account_id)
+        chs.provider_account_id,
+        chs.state,
+        chs.cooldown_until,
+        chs.ramp_stage_pct
+    FROM channel_health_state chs
+    WHERE chs.tenant_id = sqlc.arg(tenant_id)::bigint
+      AND chs.provider_account_id IS NOT NULL
+    ORDER BY chs.provider_account_id, chs.credential_version DESC, chs.updated_at DESC
+),
+classified AS (
+    SELECT
+        pg.id AS pool_group_id,
+        pa.id AS account_id,
+        COALESCE(pa.disable_cooling, false) AS cooling_exempt,
+        CASE
+            WHEN pa.id IS NULL THEN NULL
+            WHEN NOT pa.enabled
+                 OR NOT c.enabled
+                 OR p.id IS NULL
+                 OR (pa.expires_at IS NOT NULL AND pa.expires_at <= NOW())
+                 OR (pa.health_state = 'revoked'
+                     AND (pa.health_state_until IS NULL OR pa.health_state_until > NOW()))
+                 OR NOT EXISTS (
+                     SELECT 1 FROM account_credentials ac
+                     WHERE ac.provider_account_id = pa.id
+                       AND ac.tenant_id = pa.tenant_id
+                       AND ac.deleted_at IS NULL
+                       AND (
+                           ac.state = 'active'
+                           OR (ac.state = 'refreshing_with_grace'
+                               AND (ac.grace_until IS NULL OR ac.grace_until > NOW()))
+                       )
+                 )
+                 OR lf.state IN ('disabled', 'manual_paused')
+                THEN 'unavailable'
+            WHEN (pa.health_state IN ('throttled', 'cooldown')
+                  AND (pa.health_state_until IS NULL OR pa.health_state_until > NOW()))
+                 OR (lf.state = 'cooling_down' AND NOT pa.disable_cooling)
+                 OR (lf.state = 'ramping' AND NOT pa.disable_cooling
+                     AND COALESCE(lf.ramp_stage_pct, 0) <= 0)
+                THEN 'cooling_down'
+            WHEN lf.state = 'degraded'
+                 OR (lf.state = 'ramping' AND NOT pa.disable_cooling)
+                THEN 'degraded'
+            ELSE 'schedulable'
+        END AS account_class,
+        -- 冷却账号最早可能恢复的时刻:数据库健康态截止与 FSM 冷却截止取较晚者(两者都要过);
+        -- 任一生效中的冷却没有截止时间就是未知(NULL),不用另一层的截止冒充。
+        CASE
+            WHEN pa.health_state IN ('throttled', 'cooldown') AND pa.health_state_until IS NULL
+                THEN NULL
+            WHEN lf.state = 'cooling_down' AND NOT pa.disable_cooling AND lf.cooldown_until IS NULL
+                THEN NULL
+            WHEN pa.health_state IN ('throttled', 'cooldown')
+                 AND pa.health_state_until > NOW()
+                 AND lf.state = 'cooling_down'
+                 AND NOT pa.disable_cooling
+                THEN GREATEST(pa.health_state_until, lf.cooldown_until)
+            WHEN pa.health_state IN ('throttled', 'cooldown')
+                 AND pa.health_state_until > NOW()
+                THEN pa.health_state_until
+            WHEN lf.state = 'cooling_down' AND NOT pa.disable_cooling
+                THEN lf.cooldown_until
+            ELSE NULL
+        END AS recovery_at
+    FROM pool_groups pg
+    LEFT JOIN channels c
+        ON c.pool_group_id = pg.id
+       AND c.tenant_id = pg.tenant_id
+       AND c.deleted_at IS NULL
+    LEFT JOIN provider_accounts pa
+        ON pa.channel_id = c.id
+       AND pa.tenant_id = pg.tenant_id
+       AND pa.deleted_at IS NULL
+    LEFT JOIN providers p
+        ON p.id = pa.provider_id
+       AND p.tenant_id = pa.tenant_id
+       AND p.enabled = true
+       AND p.deleted_at IS NULL
+    LEFT JOIN latest_fsm lf
+        ON lf.provider_account_id = pa.id
+    WHERE pg.tenant_id = sqlc.arg(tenant_id)::bigint
+      AND pg.deleted_at IS NULL
+)
+SELECT
+    pg.id AS pool_group_id,
+    pg.name AS pool_name,
+    pg.enabled AS pool_enabled,
+    count(cl.account_id)::bigint AS total_accounts,
+    count(*) FILTER (WHERE cl.account_class = 'schedulable')::bigint AS schedulable_accounts,
+    count(*) FILTER (WHERE cl.account_class = 'degraded')::bigint AS degraded_accounts,
+    count(*) FILTER (WHERE cl.account_class = 'cooling_down')::bigint AS cooling_down_accounts,
+    count(*) FILTER (WHERE cl.account_class = 'unavailable')::bigint AS unavailable_accounts,
+    COALESCE(
+        array_agg(cl.account_id ORDER BY cl.account_id)
+            FILTER (WHERE cl.account_class = 'schedulable'),
+        ARRAY[]::bigint[]
+    )::bigint[] AS schedulable_ids,
+    COALESCE(
+        array_agg(cl.account_id ORDER BY cl.account_id)
+            FILTER (WHERE cl.account_class = 'degraded'),
+        ARRAY[]::bigint[]
+    )::bigint[] AS degraded_ids,
+    COALESCE(
+        array_agg(cl.account_id ORDER BY cl.account_id)
+            FILTER (WHERE cl.account_class = 'cooling_down'),
+        ARRAY[]::bigint[]
+    )::bigint[] AS cooling_ids,
+    COALESCE(
+        array_agg(cl.recovery_at ORDER BY cl.account_id)
+            FILTER (WHERE cl.account_class = 'cooling_down'),
+        ARRAY[]::timestamptz[]
+    )::timestamptz[] AS cooling_recovery_at,
+    COALESCE(
+        array_agg(cl.account_id ORDER BY cl.account_id)
+            FILTER (WHERE cl.account_class <> 'unavailable' AND cl.cooling_exempt),
+        ARRAY[]::bigint[]
+    )::bigint[] AS cooling_exempt_ids
+FROM pool_groups pg
+LEFT JOIN classified cl ON cl.pool_group_id = pg.id
+WHERE pg.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND pg.deleted_at IS NULL
+GROUP BY pg.id, pg.name, pg.enabled
+ORDER BY pg.id;
+
+-- name: CountUnpooledProviderAccounts :one
+-- 未挂在任何有效池下的未删账号(渠道或池已软删):按池投影不含它们,单列出来让
+-- Σ池.total_accounts + unpooled == SummarizeProviderAccountHealth 的总数可对账。
+SELECT count(*)::bigint AS n
+FROM provider_accounts pa
+WHERE pa.tenant_id = sqlc.arg(tenant_id)::bigint
+  AND pa.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM channels c
+      INNER JOIN pool_groups pg
+          ON pg.id = c.pool_group_id
+         AND pg.tenant_id = c.tenant_id
+         AND pg.deleted_at IS NULL
+      WHERE c.id = pa.channel_id
+        AND c.tenant_id = pa.tenant_id
+        AND c.deleted_at IS NULL
+  );

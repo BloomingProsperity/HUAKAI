@@ -106,6 +106,7 @@ func TestFrontendVisibleAdminOperationsDeclareRuntimeRoles(t *testing.T) {
 		"adminTenantUsageOverview":           "platform_admin_or_tenant_operator",
 		"adminTenantUsageHourly":             "platform_admin_or_tenant_operator",
 		"adminTenantUsageCacheComposition":   "platform_admin_or_tenant_operator",
+		"adminPoolHealthSummary":             "platform_admin_or_tenant_operator",
 		"getAdminUsageProviderAccountCounts": "platform_admin",
 		"getAdminUsageLeaderboard":           "platform_admin",
 		"getAdminUsagePerformance":           "platform_admin",

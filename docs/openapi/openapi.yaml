@@ -11195,6 +11195,130 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/v1/pools/health-summary:
+    get:
+      tags: [admin, admin-pools]
+      summary: Tenant-scoped per-pool account scheduling health projection
+      operationId: adminPoolHealthSummary
+      x-huakai-required-role: platform_admin_or_tenant_operator
+      x-huakai-spec-source:
+        - backend/internal/poolhealthhttp/handler.go
+        - backend/cmd/gateway/routes.go
+        - backend/sql/queries/admin_provider_account_health.sql
+      description: |
+        Read-only, server-side per-pool projection of account scheduling health.
+        Every non-deleted account attached through a non-deleted channel of the
+        pool is counted exactly once in one of four mutually exclusive columns.
+        Only request-independent, account-level predicates are used: the same
+        account/channel/provider/credential predicates as the scheduler candidate
+        query, the in-process channel-health gate and the auth cooldown lane.
+        Per-request gates (model allow list, protocol family, capability flags,
+        per-model rate limits, upstream quota, concurrency and session capacity)
+        are out of scope, so schedulable means "admitted by the health layer",
+        not "guaranteed to be selected for a given request". Priority:
+        unavailable (operator-disabled account/channel/provider, expired account,
+        revoked not yet expired or without expiry, no servable credential, FSM
+        disabled/manual_paused, auth hard disable, including hard-disabled
+        accounts that were cooling down) > cooling_down (throttled/cooldown not
+        yet expired or without expiry, FSM cooling_down without disable_cooling,
+        FSM ramping with an empty ramp stage, auth cooldown) > degraded (FSM
+        degraded, or FSM ramping with a ramp stage and without disable_cooling)
+        > schedulable. disable_cooling only exempts soft cooldown and ramping,
+        never hard stops. Ratios are 4-decimal strings; an empty pool yields
+        "0.0000". Pool status: disabled > empty > unavailable (no schedulable or
+        degraded account) > healthy (all schedulable) > degraded.
+        earliest_recovery_at is the earliest known recovery time among
+        cooling_down accounts after the auth overlay: per account the later of
+        the database and FSM expiries (unknown if either active cooldown has no
+        expiry), extended by a later auth cooldown expiry; null when nothing is
+        known. unpooled_accounts counts non-deleted accounts whose channel or pool
+        is soft-deleted so that totals.total_accounts + unpooled_accounts equals
+        the tenant-level /admin/v1/provider-accounts/health-summary total. The
+        auth cooldown overlay reflects this gateway replica's in-memory lane;
+        replicas may differ until that lane is persisted. The three queries are
+        not one snapshot, so concurrent account changes can transiently break the
+        reconciliation identity. The response never contains account
+        identifiers, credential metadata or upstream addresses. tenant_operator is locked to its authenticated tenant and gets
+        403 for any other tenant_id. platform_admin must pass a positive
+        tenant_id; omitting or blank is 400 tenant_id_required, aliases such as
+        all/*/null are 400 invalid_tenant_id, an unknown tenant is 404
+        tenant_not_found. Any query failure is 503 and never an empty projection.
+      parameters:
+        - name: tenant_id
+          in: query
+          required: false
+          description: Required for platform_admin; tenant_operator defaults to its scoped tenant.
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Per-pool account scheduling health for the tenant.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tenant_id, generated_at, pools, totals, unpooled_accounts]
+                properties:
+                  tenant_id: { type: integer, format: int64 }
+                  generated_at: { type: string, format: date-time }
+                  pools:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - pool_group_id
+                        - pool_name
+                        - pool_enabled
+                        - status
+                        - total_accounts
+                        - schedulable_accounts
+                        - degraded_accounts
+                        - cooling_down_accounts
+                        - unavailable_accounts
+                        - auth_cooldown_accounts
+                        - schedulable_ratio
+                        - degraded_ratio
+                        - cooling_down_ratio
+                        - unavailable_ratio
+                        - earliest_recovery_at
+                      properties:
+                        pool_group_id: { type: integer, format: int64 }
+                        pool_name: { type: string }
+                        pool_enabled: { type: boolean }
+                        status:
+                          type: string
+                          enum: [disabled, empty, unavailable, degraded, healthy]
+                        total_accounts: { type: integer, format: int64 }
+                        schedulable_accounts: { type: integer, format: int64 }
+                        degraded_accounts: { type: integer, format: int64 }
+                        cooling_down_accounts: { type: integer, format: int64 }
+                        unavailable_accounts: { type: integer, format: int64 }
+                        auth_cooldown_accounts:
+                          type: integer
+                          format: int64
+                          description: Accounts whose column or recovery time was set by the auth cooldown lane (subset of cooling_down + unavailable).
+                        schedulable_ratio: { type: string, example: "0.7500" }
+                        degraded_ratio: { type: string }
+                        cooling_down_ratio: { type: string }
+                        unavailable_ratio: { type: string }
+                        earliest_recovery_at: { type: string, format: date-time, nullable: true }
+                  totals:
+                    type: object
+                    required: [pools, total_accounts, schedulable_accounts, degraded_accounts, cooling_down_accounts, unavailable_accounts, auth_cooldown_accounts]
+                    properties:
+                      pools: { type: integer, format: int64 }
+                      total_accounts: { type: integer, format: int64 }
+                      schedulable_accounts: { type: integer, format: int64 }
+                      degraded_accounts: { type: integer, format: int64 }
+                      cooling_down_accounts: { type: integer, format: int64 }
+                      unavailable_accounts: { type: integer, format: int64 }
+                      auth_cooldown_accounts: { type: integer, format: int64 }
+                  unpooled_accounts: { type: integer, format: int64 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Caller cannot act on this tenant scope. }
+        '404': { description: tenant_id does not refer to an existing tenant. }
+        '503': { $ref: '#/components/responses/ServiceBusy' }
+
   /admin/v1/pools/{id}:
     parameters:
       - $ref: '#/components/parameters/ResourceId'
