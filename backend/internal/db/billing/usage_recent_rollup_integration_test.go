@@ -237,6 +237,62 @@ func TestAggregateTenantUsageHourlyTrendIsolatesTenants(t *testing.T) {
 	}
 }
 
+func TestAggregateTenantUsageCacheCompositionIsolatesTenants(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool := openUsageOutcomePool(t, ctx)
+	defer pool.Close()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("开始缓存构成事务: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tenantA := seedUsageOutcomeFixture(t, ctx, tx)
+	tenantB := seedUsageOutcomeFixture(t, ctx, tx)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	seedUsageOverviewBreakdownRecord(t, ctx, tx, tenantA, "tenant-cache-a", base.Add(4*time.Second))
+	seedUsageResponseCacheHitRecord(t, ctx, tx, tenantA, "tenant-cache-a-l2", base.Add(8*time.Second))
+
+	q := dboverview.New(tx)
+	since := pgtype.Timestamptz{Time: base.Add(-time.Minute), Valid: true}
+	gotA, err := q.AggregateTenantUsageCacheComposition(ctx, dboverview.AggregateTenantUsageCacheCompositionParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A 构成: %v", err)
+	}
+	gotB, err := q.AggregateTenantUsageCacheComposition(ctx, dboverview.AggregateTenantUsageCacheCompositionParams{
+		TenantID: tenantB.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 B 构成: %v", err)
+	}
+	totalsA, err := q.AggregateTenantUsageOverviewTotals(ctx, dboverview.AggregateTenantUsageOverviewTotalsParams{
+		TenantID: tenantA.tenantID, SettledSince: since,
+	})
+	if err != nil {
+		t.Fatalf("租户 A totals: %v", err)
+	}
+	// fixture 3 上游 + breakdown 1 上游 + L2 1。L2 草稿 Token=99/88 不得进提示缓存栏。
+	if gotA.RequestCount != 5 || gotA.UpstreamRequests != 4 || gotA.ResponseCacheHits != 1 {
+		t.Fatalf("租户 A 构成计数=%+v，期望 5/4/1", gotA)
+	}
+	if gotA.PromptCacheCreationTokens != 5 || gotA.PromptCacheReadTokens != 7 {
+		t.Fatalf("租户 A 提示缓存=%+v，期望 5/7，禁止把 L2 草稿 99/88 折进来", gotA)
+	}
+	if gotA.ResponseCacheCost != "0.00000000" {
+		t.Fatalf("L2 费用=%q 必须为 0", gotA.ResponseCacheCost)
+	}
+	if totalsA.RequestCount != gotA.RequestCount {
+		t.Fatalf("同窗 totals.requests=%d 必须与构成 requests=%d 对账", totalsA.RequestCount, gotA.RequestCount)
+	}
+	if gotB.RequestCount != 3 || gotB.ResponseCacheHits != 0 || gotB.PromptCacheReadTokens != 0 {
+		t.Fatalf("租户 B 构成=%+v 必须看不见 A", gotB)
+	}
+}
+
 // TTFT(first_byte_at - requested_at)的 p95/p99 只能在记录了 first byte 的行上
 // 计算,而没有记录任何 first byte 的租户必须 COALESCE 成 0(而非 NULL -> scan 报错)。
 // 额外三行带有不同的 TTFT,分别是 1000/2000/3000 ms,其 percentile_cont(0.95)=2900
@@ -384,6 +440,41 @@ func seedUsageOverviewBreakdownRecord(t *testing.T, ctx context.Context, tx pgx.
 		acquisitionToken, settledAt.Add(-time.Second), settledAt,
 	); err != nil {
 		t.Fatalf("写入总览 usage %s: %v", logicalRequestID, err)
+	}
+}
+
+func seedUsageResponseCacheHitRecord(t *testing.T, ctx context.Context, tx pgx.Tx, f usageOutcomeFixture, logicalRequestID string, settledAt time.Time) {
+	t.Helper()
+	var claimID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO billing_ledger_claims (
+			tenant_id, idempotency_key, request_fingerprint, api_key_id, user_id,
+			logical_request_id, endpoint_family, requested_model, attempt_seq,
+			billing_policy_version, request_class, predicted_cost, actual_cost,
+			currency_code, status, settled_at, lease_expires_at
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,'messages','claude-l2',1,'bp-test','standard',
+			0,0,'USD','committed',$7,$8
+		) RETURNING id`,
+		f.tenantID, "idem-"+logicalRequestID, "fingerprint-"+logicalRequestID,
+		f.apiKeyID, f.userID, logicalRequestID, settledAt, settledAt.Add(time.Hour),
+	).Scan(&claimID); err != nil {
+		t.Fatalf("写入 L2 claim %s: %v", logicalRequestID, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO usage_records (
+			tenant_id, claim_id, api_key_id, user_id, attempt_seq,
+			tokens_input, tokens_output, cache_creation_tokens, cache_read_tokens,
+			actual_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost,
+			end_class, usage_source, pending_reconciliation, requested_at, settled_at,
+			requested_model, stream, settlement_source
+		) VALUES (
+			$1,$2,$3,$4,1,8,2,99,88,0,0,0,0,0,'non_streaming','reported',false,
+			$5,$6,'claude-l2',false,'response_cache_l2'
+		)`,
+		f.tenantID, claimID, f.apiKeyID, f.userID, settledAt.Add(-time.Second), settledAt,
+	); err != nil {
+		t.Fatalf("写入 L2 usage %s: %v", logicalRequestID, err)
 	}
 }
 
