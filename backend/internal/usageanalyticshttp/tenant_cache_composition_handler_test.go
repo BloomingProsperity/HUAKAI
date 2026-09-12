@@ -25,6 +25,7 @@ func (s *tenantOverviewQueryStub) AggregateTenantUsageCacheComposition(_ context
 		return dboverview.AggregateTenantUsageCacheCompositionRow{}, fail
 	}
 	var requests, upstream, hits, created, read int64
+	var replayedInput, replayedOutput, replayedCreated, replayedRead int64
 	createCost := decimal.Zero
 	readCost := decimal.Zero
 	hitCost := decimal.Zero
@@ -44,6 +45,10 @@ func (s *tenantOverviewQueryStub) AggregateTenantUsageCacheComposition(_ context
 		case billing.SettlementSourceResponseCacheL2:
 			hits++
 			hitCost = hitCost.Add(event.cost)
+			replayedInput += event.tokensInput
+			replayedOutput += event.tokensOutput
+			replayedCreated += event.cacheCreated
+			replayedRead += event.cacheRead
 		case billing.SettlementSourceProviderUpstream:
 			upstream++
 			created += event.cacheCreated
@@ -53,15 +58,36 @@ func (s *tenantOverviewQueryStub) AggregateTenantUsageCacheComposition(_ context
 		}
 	}
 	return dboverview.AggregateTenantUsageCacheCompositionRow{
-		RequestCount:              requests,
-		UpstreamRequests:          upstream,
-		ResponseCacheHits:         hits,
-		PromptCacheCreationTokens: created,
-		PromptCacheReadTokens:     read,
-		PromptCacheCreationCost:   createCost.StringFixed(8),
-		PromptCacheReadCost:       readCost.StringFixed(8),
-		ResponseCacheCost:         hitCost.StringFixed(8),
+		RequestCount:                             requests,
+		UpstreamRequests:                         upstream,
+		ResponseCacheHits:                        hits,
+		PromptCacheCreationTokens:                created,
+		PromptCacheReadTokens:                    read,
+		PromptCacheCreationCost:                  createCost.StringFixed(8),
+		PromptCacheReadCost:                      readCost.StringFixed(8),
+		ResponseCacheCost:                        hitCost.StringFixed(8),
+		ResponseCacheReplayedInputTokens:         replayedInput,
+		ResponseCacheReplayedOutputTokens:        replayedOutput,
+		ResponseCacheReplayedCacheCreationTokens: replayedCreated,
+		ResponseCacheReplayedCacheReadTokens:     replayedRead,
 	}, nil
+}
+
+// assertCacheCompositionReconciles 断言同窗 totals 的提示缓存 Token 恒等于
+// 上游提示缓存 + L2 回放两栏之和。变异：去掉任一栏的 settlement_source 过滤、
+// 或把回放列算成上游列 -> 恒等式破裂 -> 红。
+func assertCacheCompositionReconciles(t *testing.T, body cacheCompositionResponse) {
+	t.Helper()
+	comp := body.Composition
+	if got := comp.PromptCacheReadTokens + comp.ResponseCacheReplayedCacheReadTokens; got != body.Totals.TotalCacheReadTokens {
+		t.Fatalf("提示缓存读 Token 对账失败：totals=%d != 上游 %d + 回放 %d", body.Totals.TotalCacheReadTokens, comp.PromptCacheReadTokens, comp.ResponseCacheReplayedCacheReadTokens)
+	}
+	if got := comp.PromptCacheCreationTokens + comp.ResponseCacheReplayedCacheCreationTokens; got != body.Totals.TotalCacheCreationTokens {
+		t.Fatalf("提示缓存写 Token 对账失败：totals=%d != 上游 %d + 回放 %d", body.Totals.TotalCacheCreationTokens, comp.PromptCacheCreationTokens, comp.ResponseCacheReplayedCacheCreationTokens)
+	}
+	if comp.UpstreamRequests+comp.ResponseCacheHits > comp.Requests || comp.Requests != body.Totals.Requests {
+		t.Fatalf("请求数对账失败：%+v vs totals.requests=%d", comp, body.Totals.Requests)
+	}
 }
 
 func twoTenantCacheCompositionEvents(now time.Time) []tenantOverviewEvent {
@@ -121,6 +147,11 @@ func TestTenantCacheCompositionOperatorSeesOnlyOwnTenant(t *testing.T) {
 	if body.Composition.ResponseCacheHits != 1 || body.Composition.ResponseCacheCost != "0.00000000" {
 		t.Fatalf("响应缓存命中=%+v 必须单独一栏且费用为 0", body.Composition)
 	}
+	// L2 命中回放给客户端的 Token 单列：input 8 / output 2 / 写 99 / 读 88，与提示缓存栏分开。
+	if body.Composition.ResponseCacheReplayedInputTokens != 8 || body.Composition.ResponseCacheReplayedOutputTokens != 2 ||
+		body.Composition.ResponseCacheReplayedCacheCreationTokens != 99 || body.Composition.ResponseCacheReplayedCacheReadTokens != 88 {
+		t.Fatalf("回放 Token=%+v 期望 8/2/99/88", body.Composition)
+	}
 	if body.Composition.Requests != 2 || body.Composition.UpstreamRequests != 1 {
 		t.Fatalf("请求构成=%+v 必须 2=1 上游+1 命中", body.Composition)
 	}
@@ -130,6 +161,11 @@ func TestTenantCacheCompositionOperatorSeesOnlyOwnTenant(t *testing.T) {
 	if body.Totals.Requests != 2 {
 		t.Fatalf("同窗 totals.requests=%d 必须与构成请求数对账", body.Totals.Requests)
 	}
+	// totals 是客户端可见口径（30+88=118 读、20+99=119 写），必须能用两栏之和对上。
+	if body.Totals.TotalCacheReadTokens != 118 || body.Totals.TotalCacheCreationTokens != 119 {
+		t.Fatalf("同窗 totals 提示缓存 Token=%d/%d 期望 118/119", body.Totals.TotalCacheReadTokens, body.Totals.TotalCacheCreationTokens)
+	}
+	assertCacheCompositionReconciles(t, body)
 	for _, tenantID := range store.seenTenants() {
 		if tenantID != 7 {
 			t.Fatalf("查询租户=%v 必须只传 7", store.seenTenants())
@@ -190,6 +226,7 @@ func TestTenantCacheCompositionPlatformAdminSeesExplicitTenantOnly(t *testing.T)
 	if body.TenantID != 7 || body.Composition.ResponseCacheHits != 1 || body.Window != "23h" {
 		t.Fatalf("部署者显式租户 7 实得 %+v", body)
 	}
+	assertCacheCompositionReconciles(t, body)
 }
 
 func TestTenantCacheCompositionRejectsTimezoneRewrite(t *testing.T) {
@@ -229,6 +266,10 @@ func TestTenantCacheCompositionCacheKeyIsolatesTenants(t *testing.T) {
 	if body.TenantID != 9 || body.Composition.PromptCacheReadTokens != 900 || body.Composition.ResponseCacheHits != 0 {
 		t.Fatalf("租户 9 被串栏：%+v", body)
 	}
+	if body.Composition.ResponseCacheReplayedCacheReadTokens != 0 || body.Composition.ResponseCacheReplayedInputTokens != 0 {
+		t.Fatalf("租户 9 无 L2 命中，回放 Token 必须为 0：%+v", body.Composition)
+	}
+	assertCacheCompositionReconciles(t, body)
 	third := invoke(h, "/admin/v1/usage/cache-composition?window=29h&tenant_id=7")
 	if third.Header().Get(snapshotCacheHeader) != "hit" {
 		t.Fatalf("同租户再查应 hit，实得 %q", third.Header().Get(snapshotCacheHeader))
