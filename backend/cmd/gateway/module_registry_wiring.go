@@ -173,7 +173,8 @@ func buildModuleRegistry(d *deps) *moduleregistry.Registry {
 			available := channelHealth != nil && selector != nil
 			backend := "postgresql"
 			sharedSafe := true
-			if d.authCooldown != nil {
+			// auth 降级车道退化为纯进程内(无持久化后端)时,选号门的 auth 轴不再跨副本共享。
+			if d.authCooldown != nil && d.authCooldown.PersistenceKind() != "postgres" {
 				backend = "mixed"
 				sharedSafe = false
 			}

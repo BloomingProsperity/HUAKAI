@@ -66,6 +66,9 @@ func seedPoolHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		fsm            string // "" = 无 FSM 记录
 		fsmUntil       *time.Time
 		rampPct        *int32
+		laneHard       bool       // auth 降级车道硬禁
+		laneUntil      *time.Time // auth 降级车道软退避截止(nil = 无软退避)
+		laneRow        bool       // 是否写入车道真相行
 	}
 	plus := func(d time.Duration) *time.Time { t := fx.now.Add(d); return &t }
 	pct := func(v int32) *int32 { return &v }
@@ -103,6 +106,20 @@ func seedPoolHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		// 软删账号不进任何栏也不进 unpooled;活池下软删渠道的账号进 unpooled。
 		{key: "deleted_acct", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", deleted: true, credState: "active"},
 		{key: "chan_deleted_live_pool", channel: chanDeletedLive, provider: providerOn, enabled: true, health: "healthy", credState: "active"},
+		// auth 降级车道(跨副本真相表)折入:硬禁不可豁免 → unavailable;软退避未过期 → cooling_down,
+		// disable_cooling 豁免软退避;已过期的软退避不影响;数据库层已冷却的账号恢复时刻取两层较晚者,
+		// 数据库层未知仍未知;基础栏已是 unavailable 的账号不计入 auth_cooldown_accounts。
+		{key: "lane_hard", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", credState: "active", laneRow: true, laneHard: true},
+		{key: "lane_soft", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", credState: "active", laneRow: true, laneUntil: plus(3 * time.Minute)},
+		{key: "lane_soft_exempt", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", disableCooling: true, credState: "active", laneRow: true, laneUntil: plus(2 * time.Minute)},
+		{key: "lane_hard_exempt", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", disableCooling: true, credState: "active", laneRow: true, laneHard: true},
+		{key: "lane_expired", channel: chanOn, provider: providerOn, enabled: true, health: "healthy", credState: "active", laneRow: true, laneUntil: plus(-time.Minute)},
+		{key: "lane_soft_on_throttled", channel: chanOn, provider: providerOn, enabled: true, health: "throttled", until: plus(6 * time.Minute), credState: "active", laneRow: true, laneUntil: plus(8 * time.Minute)},
+		{key: "lane_soft_on_throttled_null", channel: chanOn, provider: providerOn, enabled: true, health: "throttled", credState: "active", laneRow: true, laneUntil: plus(time.Minute)},
+		{key: "lane_hard_on_cooling", channel: chanOn, provider: providerOn, enabled: true, health: "throttled", until: plus(10 * time.Minute), credState: "active", laneRow: true, laneHard: true},
+		{key: "lane_hard_on_disabled", channel: chanOn, provider: providerOn, enabled: false, health: "healthy", credState: "active", laneRow: true, laneHard: true},
+		// 车道截止早于数据库层恢复:栏位与恢复时刻都没变,不计入 auth_cooldown_accounts。
+		{key: "lane_soft_shorter", channel: chanOn, provider: providerOn, enabled: true, health: "throttled", until: plus(9 * time.Minute), credState: "active", laneRow: true, laneUntil: plus(7 * time.Minute)},
 	}
 	for i, a := range accounts {
 		var id int64
@@ -116,6 +133,19 @@ func seedPoolHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 			) VALUES ($1, $2, $3, $4, 'api_key', $5, $6, $7, $8, $9, $10) RETURNING id`,
 			fx.tenantID, a.provider, a.channel, fmt.Sprintf("ph-%s-%s", a.key, suffix), a.enabled, a.health, a.until, a.expiresAt, a.disableCooling, deletedAt)
 		fx.accounts[a.key] = id
+		if a.laneRow {
+			var hardAt *time.Time
+			if a.laneHard {
+				hardAt = plus(-time.Minute)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO provider_account_auth_cooldowns (
+					provider_account_id, tenant_id, strike, auth_until, hard_disabled, credential_version,
+					last_failure_class, last_escalated_at, hard_disabled_at
+				) VALUES ($1, $2, 2, $3, $4, 1, 'iron_clad', $5, $6)`,
+				id, fx.tenantID, a.laneUntil, a.laneHard, plus(-time.Minute), hardAt); err != nil {
+				t.Fatalf("insert provider_account_auth_cooldowns %s: %v", a.key, err)
+			}
+		}
 		if a.credState == "" {
 			continue
 		}
@@ -161,16 +191,17 @@ func cleanupPoolHealthGraph(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	cleanupAdminProviderAccountHealthGraph(t, ctx, pool, tenantID)
 }
 
-// TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth 用真实 SQL 验证按池分栏(30 个账号:主池 27 + 未挂池 2 + 软删 1):
-// 每个账号事实只落一栏且与选号候选谓词/健康门一致,叠加多种事实的账号按优先级只落一栏;
-// 最新 FSM 按 credential_version 优先;disable_cooling 只豁免 FSM 冷却/放量,不豁免 disabled;
-// 停用渠道/停用 provider/过期账号/无可服务凭据都进 unavailable;冷却账号的已知恢复时刻逐个对齐、
-// 未知为 NULL;软删账号不计入任何地方,软删池或软删渠道下的账号只计入 unpooled,
-// 使 Σ池.total + unpooled == 租户级健康汇总总数;生产选号候选查询在同一图谱上的结果集
-// 恰好等于投影的数据库层可调度集;另一租户完全不可见;查询前后不产生任何写入。
-// 变异守卫:去掉凭据 EXISTS 谓词 → nocred/grace_expired 变 schedulable;最新 FSM 排序反向 →
-// fsm_latest 变 unavailable;unavailable 与 cooling 段对调 → disabled_throttled 变 cooling;
-// 去掉 recovery 的 NULL 守卫 → throttled_null_fsm 出现 +1m;任一都让本测试变红。
+// TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth 用真实 SQL 验证按池分栏(40 个账号:主池 37 + 未挂池 2 + 软删 1):
+// 每个账号事实只落一栏且与选号候选谓词/健康门/auth 降级车道真相表一致,叠加多种事实的账号按优先级只落一栏;
+// 最新 FSM 按 credential_version 优先;disable_cooling 只豁免 FSM 冷却/放量与车道软退避,不豁免 disabled 与车道硬禁;
+// 停用渠道/停用 provider/过期账号/无可服务凭据都进 unavailable;最早恢复时刻取冷却账号已知时刻的最小值、
+// 未知不参与;auth_cooldown_accounts 只统计车道改变了栏位或恢复时刻的账号;软删账号不计入任何地方,
+// 软删池或软删渠道下的账号只计入 unpooled,使 Σ池.total + unpooled == 租户级健康汇总总数;生产选号候选查询
+// 在同一图谱上的结果集恰好等于投影的数据库层可调度集(含车道排除);另一租户完全不可见;查询前后不产生任何写入。
+// 变异守卫:去掉凭据 EXISTS 谓词 → nocred/grace_expired 变 schedulable;最新 FSM 排序反向 → fsm_latest 变
+// unavailable;unavailable 与 cooling 段对调 → disabled_throttled 变 cooling;去掉 recovery 的 NULL 守卫 →
+// 最早恢复变 +1m;去掉车道折入 → 最早恢复变 +5m 且 auth_cooldown_accounts 为 0;去掉车道 disable_cooling
+// 豁免 → 最早恢复变 +2m;候选查询漏掉车道谓词 → 候选集多出 lane_* 账号;任一都让本测试变红。
 func TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -204,57 +235,43 @@ func TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth(t *testing.T
 	if main.PoolGroupID != fx.poolMainID || idle.PoolGroupID != fx.poolIdleID {
 		t.Fatalf("池顺序应按 id 稳定: %+v", rows)
 	}
-	if main.TotalAccounts != 27 || main.SchedulableAccounts != 6 || main.DegradedAccounts != 2 ||
-		main.CoolingDownAccounts != 7 || main.UnavailableAccounts != 12 {
+	// 期望栏位(按 fixture 逐账号推导):
+	//   schedulable  ok、revoked_expired、grace、fsm_cooling_exempt、fsm_latest、fsm_ramping_exempt、
+	//                lane_soft_exempt、lane_expired                                            = 8
+	//   degraded     fsm_degraded、fsm_ramping                                                  = 2
+	//   cooling_down throttled、throttled_null、fsm_cooling、throttled_null_fsm、throttled_fsm_degraded、
+	//                fsm_ramping_null、throttled_exempt、lane_soft、lane_soft_on_throttled、
+	//                lane_soft_on_throttled_null、lane_soft_shorter                              = 11
+	//   unavailable  其余 16(含 lane_hard、lane_hard_exempt、lane_hard_on_cooling、lane_hard_on_disabled)
+	if main.TotalAccounts != 37 || main.SchedulableAccounts != 8 || main.DegradedAccounts != 2 ||
+		main.CoolingDownAccounts != 11 || main.UnavailableAccounts != 16 {
 		t.Fatalf("主池分栏不符: total=%d schedulable=%d degraded=%d cooling=%d unavailable=%d",
 			main.TotalAccounts, main.SchedulableAccounts, main.DegradedAccounts, main.CoolingDownAccounts, main.UnavailableAccounts)
 	}
 	if main.SchedulableAccounts+main.DegradedAccounts+main.CoolingDownAccounts+main.UnavailableAccounts != main.TotalAccounts {
 		t.Fatalf("四栏之和必须等于 total: %+v", main)
 	}
-	if want := sortedIDs(fx, "ok", "revoked_expired", "grace", "fsm_cooling_exempt", "fsm_latest", "fsm_ramping_exempt"); !equalIDs(main.SchedulableIds, want) {
-		t.Fatalf("schedulable_ids=%v，期望=%v(实得 %s)", main.SchedulableIds, want, describeIDs(fx, main.SchedulableIds))
+	// 车道真正改变了栏位或恢复时刻的账号:lane_hard、lane_hard_exempt、lane_soft、lane_soft_on_throttled
+	//(+8m 推后了 +6m)、lane_hard_on_cooling;lane_soft_exempt(豁免)、lane_expired(已过期)、
+	// lane_hard_on_disabled(基础栏已 unavailable)、lane_soft_on_throttled_null(数据库层恢复未知,车道
+	// 没改变任何结果)、lane_soft_shorter(车道截止更早)不计。
+	if main.AuthCooldownAccounts != 5 {
+		t.Fatalf("auth_cooldown_accounts=%d，期望 5", main.AuthCooldownAccounts)
 	}
-	if want := sortedIDs(fx, "fsm_degraded", "fsm_ramping"); !equalIDs(main.DegradedIds, want) {
-		t.Fatalf("degraded_ids=%v，期望=%v(实得 %s)", main.DegradedIds, want, describeIDs(fx, main.DegradedIds))
-	}
-	if want := sortedIDs(fx, "throttled", "throttled_null", "fsm_cooling", "throttled_null_fsm", "throttled_fsm_degraded", "fsm_ramping_null", "throttled_exempt"); !equalIDs(main.CoolingIds, want) {
-		t.Fatalf("cooling_ids=%v，期望=%v(实得 %s)", main.CoolingIds, want, describeIDs(fx, main.CoolingIds))
-	}
-	if want := sortedIDs(fx, "fsm_cooling_exempt", "fsm_ramping_exempt", "throttled_exempt"); !equalIDs(main.CoolingExemptIds, want) {
-		t.Fatalf("cooling_exempt_ids=%v，期望=%v(实得 %s)", main.CoolingExemptIds, want, describeIDs(fx, main.CoolingExemptIds))
-	}
-	// 冷却账号已知恢复时刻逐个对齐:throttled +10m、FSM 冷却 +5m、throttled+FSM degraded +20m、
-	// throttled 且豁免 +40m;throttled 无截止、throttled 无截止但 FSM 冷却 +1m(数据库层未知 → 整体未知,
-	// 不得用 FSM 的 +1m 冒充)、ramping 阶段为空 → NULL。
-	if len(main.CoolingRecoveryAt) != len(main.CoolingIds) {
-		t.Fatalf("cooling_recovery_at 长度=%d 与 cooling_ids 长度=%d 不对齐", len(main.CoolingRecoveryAt), len(main.CoolingIds))
-	}
-	wantRecovery := map[string]*time.Time{
-		"throttled": ptrTime(fx.now.Add(10 * time.Minute)), "throttled_null": nil, "fsm_cooling": ptrTime(fx.now.Add(5 * time.Minute)),
-		"throttled_null_fsm": nil, "throttled_fsm_degraded": ptrTime(fx.now.Add(20 * time.Minute)), "fsm_ramping_null": nil,
-		"throttled_exempt": ptrTime(fx.now.Add(40 * time.Minute)),
-	}
-	for i, id := range main.CoolingIds {
-		key := describeIDs(fx, []int64{id})
-		want, known := wantRecovery[key[:len(key)-1]]
-		if !known {
-			t.Fatalf("冷却账号 %s 不在期望表中", key)
-		}
-		got := main.CoolingRecoveryAt[i]
-		switch {
-		case want == nil && got.Valid:
-			t.Fatalf("%s 恢复时刻应未知,实得 %v", key, got.Time)
-		case want != nil && (!got.Valid || !got.Time.Equal(*want)):
-			t.Fatalf("%s 恢复时刻=%v，期望=%v", key, got, *want)
-		}
+	// 最早恢复:冷却账号已知恢复时刻 {throttled +10m, fsm_cooling +5m, throttled_fsm_degraded +20m,
+	// throttled_exempt +40m, lane_soft +3m, lane_soft_on_throttled GREATEST(+6m,+8m)=+8m,
+	// lane_soft_shorter GREATEST(+9m,+7m)=+9m};
+	// throttled_null / throttled_null_fsm / fsm_ramping_null / lane_soft_on_throttled_null 未知不参与
+	//(尤其 lane_soft_on_throttled_null 的车道 +1m 不得冒充数据库层未知的截止)→ 最小 = +3m。
+	if !main.EarliestRecoveryAt.Valid || !main.EarliestRecoveryAt.Time.Equal(fx.now.Add(3*time.Minute)) {
+		t.Fatalf("earliest_recovery_at=%v，期望 %v", main.EarliestRecoveryAt, fx.now.Add(3*time.Minute))
 	}
 	if idle.TotalAccounts != 0 || idle.SchedulableAccounts != 0 || idle.UnavailableAccounts != 0 ||
-		len(idle.SchedulableIds) != 0 || len(idle.CoolingIds) != 0 {
-		t.Fatalf("空池必须全 0 且无任何账号: %+v", idle)
+		idle.AuthCooldownAccounts != 0 || idle.EarliestRecoveryAt.Valid {
+		t.Fatalf("空池必须全 0 且无恢复时刻: %+v", idle)
 	}
 
-	// 投影与调度真相一致性:生产选号候选查询(不含 FSM 门)在同一图谱上返回的账号集合,
+	// 投影与调度真相一致性:生产选号候选查询(不含 FSM 门,但含车道真相门)在同一图谱上返回的账号集合,
 	// 必须恰好等于 schedulable ∪ degraded ∪「仅被 FSM 门挡下」的账号;任一方向的谓词漂移都会让集合不等。
 	candidates, err := dbbilling.New(pool).ListEligibleAccountsByPoolGroup(ctx, dbbilling.ListEligibleAccountsByPoolGroupParams{
 		RequestedModel: "any-model", TenantID: fx.tenantID, PoolGroupID: fx.poolMainID,
@@ -267,9 +284,11 @@ func TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth(t *testing.T
 	for _, c := range candidates {
 		gotCandidates = append(gotCandidates, c.ID)
 	}
-	wantCandidates := append(append([]int64{}, main.SchedulableIds...), main.DegradedIds...)
-	wantCandidates = append(wantCandidates, sortedIDs(fx, "fsm_cooling", "fsm_disabled", "fsm_paused", "fsm_disabled_exempt", "fsm_ramping_null")...)
-	if !equalIDs(sortInts(gotCandidates), sortInts(wantCandidates)) {
+	wantCandidates := sortedIDs(fx,
+		"ok", "revoked_expired", "grace", "fsm_cooling_exempt", "fsm_latest", "fsm_ramping_exempt", "lane_soft_exempt", "lane_expired",
+		"fsm_degraded", "fsm_ramping",
+		"fsm_cooling", "fsm_disabled", "fsm_paused", "fsm_disabled_exempt", "fsm_ramping_null")
+	if !equalIDs(sortInts(gotCandidates), wantCandidates) {
 		t.Fatalf("选号候选集(%s)与投影的数据库层可调度集(%s)不一致", describeIDs(fx, gotCandidates), describeIDs(fx, wantCandidates))
 	}
 
@@ -292,17 +311,17 @@ func TestSummarizeProviderAccountHealthByPoolMatchesSchedulingTruth(t *testing.T
 		t.Fatalf("对账失败: Σ池.total(%d) + unpooled(%d) != 租户级总数(%d)", main.TotalAccounts+idle.TotalAccounts, unpooled, tenantTotal)
 	}
 
-	// 跨租户隔离:另一租户同构图谱,但本租户的行里不得出现它的任何账号 id。
-	for _, id := range append(append(append([]int64{}, main.SchedulableIds...), main.DegradedIds...), main.CoolingIds...) {
+	// 跨租户隔离:另一租户同构图谱(含同样的车道行),本租户的计数不受影响,另一租户得到自己的同构投影。
+	otherRows, err := q.SummarizeProviderAccountHealthByPool(ctx, other.tenantID)
+	if err != nil || len(otherRows) != 2 || otherRows[0].TotalAccounts != 37 || otherRows[0].AuthCooldownAccounts != 5 {
+		t.Fatalf("另一租户应得到自己的同构投影: err=%v rows=%+v", err, otherRows)
+	}
+	for _, id := range gotCandidates {
 		for key, otherID := range other.accounts {
 			if id == otherID {
-				t.Fatalf("跨租户泄漏: 账号 %s(%d) 属于另一租户", key, id)
+				t.Fatalf("跨租户泄漏: 候选账号 %s(%d) 属于另一租户", key, id)
 			}
 		}
-	}
-	otherRows, err := q.SummarizeProviderAccountHealthByPool(ctx, other.tenantID)
-	if err != nil || len(otherRows) != 2 || otherRows[0].TotalAccounts != 27 {
-		t.Fatalf("另一租户应得到自己的同构投影: err=%v rows=%+v", err, otherRows)
 	}
 
 	// 只读:三条查询 + 选号候选查询跑完后,账号、FSM 与用量事实的行数和最新更新时间都不变。
@@ -320,13 +339,12 @@ func snapshotWriteWitness(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 			(SELECT count(*) || ':' || coalesce(max(updated_at)::text, '') FROM provider_accounts WHERE tenant_id = $1),
 			(SELECT count(*) || ':' || coalesce(max(updated_at)::text, '') FROM channel_health_state WHERE tenant_id = $1),
 			(SELECT count(*) || ':' || coalesce(max(updated_at)::text, '') FROM account_credentials WHERE tenant_id = $1),
+			(SELECT count(*) || ':' || coalesce(max(updated_at)::text, '') FROM provider_account_auth_cooldowns WHERE tenant_id = $1),
 			(SELECT count(*)::text FROM usage_records WHERE tenant_id = $1))`, tenantID).Scan(&witness); err != nil {
 		t.Fatalf("snapshotWriteWitness: %v", err)
 	}
 	return witness
 }
-
-func ptrTime(t time.Time) *time.Time { return &t }
 
 func sortedIDs(fx poolHealthFixture, keys ...string) []int64 {
 	ids := make([]int64, 0, len(keys))

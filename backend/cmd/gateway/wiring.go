@@ -731,15 +731,42 @@ func loadClientIPResolverFromEnv() (*clientip.Resolver, error) {
 	return clientip.NewResolver(parseCSVAllowlistEnv(trustedProxyCIDRsEnv))
 }
 
-// buildAuthCooldownStore 按 HUAKAI_AUTH_COOLDOWN_ENABLED 决定是否接线 auth 降级车道(缺口① S1)。
-// 默认关(未设/false)→ 返回 nil → 车道未接线,auth 失败对选号仍是 no-op(逐字节保持既有行为);
-// 翻默认开 = 默认行为翻转(§2 硬门 A1,Owner-gated):auth 失败后临时把坏号移出选号、短 TTL 自愈。
-// 退避参数(base=30s/cap=30min/硬禁 strike K=3)用 Config 默认;进一步调参为 Owner-gated 后续项(F2)。
-func buildAuthCooldownStore() *authcooldown.Store {
-	if on, _ := strconv.ParseBool(os.Getenv("HUAKAI_AUTH_COOLDOWN_ENABLED")); !on {
+// authCooldownEnabledFromEnv 读取 HUAKAI_AUTH_COOLDOWN_ENABLED:默认开;只有显式解析为 false
+// 才关闭车道(关闭 = auth 失败对选号 no-op,退回坏号黑洞行为,仅作紧急逃生阀)。
+// 无法解析的值按默认开处理并记日志,不让一次拼写错误静默关掉保护。
+func authCooldownEnabledFromEnv() bool {
+	raw := strings.TrimSpace(os.Getenv("HUAKAI_AUTH_COOLDOWN_ENABLED"))
+	if raw == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(raw)
+	if err != nil {
+		slog.Warn("HUAKAI_AUTH_COOLDOWN_ENABLED 无法解析,按默认开启处理", "value", raw)
+		return true
+	}
+	return on
+}
+
+// buildAuthCooldownStore 构造 auth 降级车道。真相在 provider_account_auth_cooldowns 表
+// (跨副本一致、重启可恢复),进程镜像只承担选号门本地即时性与写失败兜底;db 为 nil(无数据库的
+// 测试装配)时退化为纯进程内。退避参数(base=30s/cap=30min/硬禁 strike K=3)用 Config 默认。
+func buildAuthCooldownStore(db *pgxpool.Pool) *authcooldown.Store {
+	if !authCooldownEnabledFromEnv() {
 		return nil
 	}
-	return authcooldown.NewStore(authcooldown.Config{})
+	if db == nil {
+		return authcooldown.NewStore(authcooldown.Config{})
+	}
+	return authcooldown.NewPersistentStore(authcooldown.Config{}, authcooldown.NewPostgresPersistence(db))
+}
+
+// configureAuthCooldownLane 是车道装配的唯一入口:构造车道,并让与车道绑定的分类规则
+// (R-024/R-025 + xai→grok 归一化)与开关同源生效——它们改变 grok/xai 400 坏 key 的客户端契约
+// (400 透传→401 换号)与健康记账,开关关时必须保持基底行为。
+func configureAuthCooldownLane(db *pgxpool.Pool) *authcooldown.Store {
+	store := buildAuthCooldownStore(db)
+	gateway.SetAuthLaneRulesEnabled(store != nil)
+	return store
 }
 
 func buildSettlementIntentStore(queries *dbbilling.Queries, enabled bool) settlementintent.Store {
@@ -1103,12 +1130,21 @@ func buildGatewayRuntime(ctx context.Context, cfg *Config, logger *zap.Logger, s
 		channelHealthStoreOptions = append(channelHealthStoreOptions, channelhealth.WithProductionRequired())
 	}
 	channelHealthStore := channelhealth.NewPostgresStoreWithAuditSigner(pgPool, auditSigner, channelHealthStoreOptions...)
-	// auth 降级车道(缺口① S1):默认关(HUAKAI_AUTH_COOLDOWN_ENABLED 未设=nil→车道未接线,行为逐字节不变)。
-	// 翻默认开=默认行为翻转(§2 硬门,Owner-gated A1):auth 失败从对选号 no-op 变临时排除坏号。
-	authCooldownStore := buildAuthCooldownStore()
-	// 车道绑定的分类规则(R-024/R-025 + xai→grok 归一化)与 knob 同源生效:它们改变 grok/xai
-	// 400 坏 key 的客户端契约(400 透传→401 换号)与健康记账,knob 关时必须保持基底行为。
-	gateway.SetAuthLaneRulesEnabled(authCooldownStore != nil)
+	// auth 降级车道:默认开,HUAKAI_AUTH_COOLDOWN_ENABLED=false 才关闭。真相表跨副本共享,
+	// 启动即从真相灌回镜像(重启后硬禁坏号不会复活),之后定时重载收敛其他副本的写入。
+	authCooldownStore := configureAuthCooldownLane(pgPool)
+	authCooldownDone := authCooldownStore.Start(workerCtx)
+	rt.contextWorkerWaiters = append(rt.contextWorkerWaiters, contextWorkerWaiter{
+		name: "auth cooldown lane reloader",
+		wait: func(ctx context.Context) error {
+			select {
+			case <-authCooldownDone:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	})
 	// 渠道健康状态转换的 stdout 结构化运维日志走进程默认 slog 实例(与 billing lease sweeper /
 	// quota reconciler 同源;片D slog 门面合并后自动升级 JSON)。显式注入 = 等价 nil 兜底,零行为变化。
 	channelHealthOptions := []channelhealth.ServiceOption{

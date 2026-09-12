@@ -342,6 +342,17 @@ WHERE pa.tenant_id = $2
           AND pa.health_state_until <= NOW()
       )
   )
+  -- auth 降级车道真相门(provider_account_auth_cooldowns 跨副本共享):硬禁一律排除;
+  -- 软退避未过期排除,disable_cooling 逃生阀只豁免软退避、不豁免硬禁。与进程内选号门
+  -- 语义一致,但这里不依赖任何副本的内存镜像,重启与多副本下同样生效。
+  AND NOT EXISTS (
+      SELECT 1 FROM provider_account_auth_cooldowns al
+      WHERE al.provider_account_id = pa.id
+        AND (
+            al.hard_disabled
+            OR (al.auth_until IS NOT NULL AND al.auth_until > NOW() AND NOT pa.disable_cooling)
+        )
+  )
   AND (cardinality(pa.model_allow_list) = 0
        OR pa.model_allow_list @> ARRAY[$1::text])
   AND ($4::text = ''

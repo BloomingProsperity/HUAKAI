@@ -467,7 +467,7 @@ type authCooldownSpy struct {
 	results chan<- authRefreshResult
 }
 
-func (s authCooldownSpy) OnRefreshResult(_ context.Context, accountID int64, succeeded, permanentFailure bool) {
+func (s authCooldownSpy) OnRefreshResult(_ context.Context, accountID int64, _ int, succeeded, permanentFailure bool) {
 	s.results <- authRefreshResult{
 		accountID:        accountID,
 		succeeded:        succeeded,

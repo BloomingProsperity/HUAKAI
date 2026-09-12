@@ -11211,7 +11211,9 @@ paths:
         pool is counted exactly once in one of four mutually exclusive columns.
         Only request-independent, account-level predicates are used: the same
         account/channel/provider/credential predicates as the scheduler candidate
-        query, the in-process channel-health gate and the auth cooldown lane.
+        query, the channel-health FSM gate and the auth cooldown lane, all
+        evaluated in one SQL statement against shared database truth (the auth
+        cooldown lane table is replica-shared and restart-safe).
         Per-request gates (model allow list, protocol family, capability flags,
         per-model rate limits, upstream quota, concurrency and session capacity)
         are out of scope, so schedulable means "admitted by the health layer",
@@ -11228,14 +11230,13 @@ paths:
         "0.0000". Pool status: disabled > empty > unavailable (no schedulable or
         degraded account) > healthy (all schedulable) > degraded.
         earliest_recovery_at is the earliest known recovery time among
-        cooling_down accounts after the auth overlay: per account the later of
-        the database and FSM expiries (unknown if either active cooldown has no
-        expiry), extended by a later auth cooldown expiry; null when nothing is
-        known. unpooled_accounts counts non-deleted accounts whose channel or pool
-        is soft-deleted so that totals.total_accounts + unpooled_accounts equals
-        the tenant-level /admin/v1/provider-accounts/health-summary total. The
-        auth cooldown overlay reflects this gateway replica's in-memory lane;
-        replicas may differ until that lane is persisted. The three queries are
+        cooling_down accounts: per account the later of the database and FSM
+        expiries (unknown if either active cooldown has no expiry), extended by a
+        later auth cooldown expiry; accounts cooled only by the auth lane use the
+        lane expiry; null when nothing is known. unpooled_accounts counts
+        non-deleted accounts whose channel or pool is soft-deleted so that
+        totals.total_accounts + unpooled_accounts equals the tenant-level
+        /admin/v1/provider-accounts/health-summary total. The three queries are
         not one snapshot, so concurrent account changes can transiently break the
         reconciliation identity. The response never contains account
         identifiers, credential metadata or upstream addresses. tenant_operator is locked to its authenticated tenant and gets
@@ -23054,8 +23055,40 @@ components:
             bypassed_by_disable_cooling: { type: boolean }
             persistence:
               type: string
-              enum: [process_local]
-              description: Auth cooldown is local to the gateway process in the current phase.
+              enum: [postgres, process_local]
+              description: |
+                Where the reported auth cooldown state lives. postgres is the
+                replica-shared, restart-safe lane table; process_local means the
+                lane is running without a database backend or this state exists
+                only in this replica because persisting it failed (the replica
+                still excludes the account locally, logs the failure and replays
+                hard disables into the shared table once it is reachable).
+            failure_class:
+              type: string
+              enum: [ambiguous, iron_clad, refresh_permanent]
+              description: |
+                Why the lane last acted: ambiguous (plain 401, exponential
+                backoff only), iron_clad (revocation/bad-key evidence, hard
+                disable after the strike ceiling) or refresh_permanent (credential
+                refresh returned a permanent failure). Omitted when no record.
+            last_escalated_at:
+              type: string
+              format: date-time
+              description: Last time a failure escalated the strike/backoff window.
+            hard_disabled_at:
+              type: string
+              format: date-time
+              description: |
+                When the account entered hard disable. Hard disables are lifted
+                only by operator resume/force-active or an explicit credential
+                rotation; a successful request only clears the soft backoff.
+            replica_id:
+              type: string
+              description: |
+                Present only when persistence is process_local and a record was
+                found: the gateway replica (host name) that holds this
+                replica-local state. Another replica may answer differently until
+                the state is replayed into the shared table.
         model_cooldowns:
           type: array
           items:

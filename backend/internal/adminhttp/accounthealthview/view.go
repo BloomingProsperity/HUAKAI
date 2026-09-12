@@ -2,6 +2,7 @@ package accounthealthview
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -72,6 +73,14 @@ type AuthCooldownAxis struct {
 	CredentialVersion        int     `json:"credential_version,omitempty"`
 	BypassedByDisableCooling bool    `json:"bypassed_by_disable_cooling"`
 	Persistence              string  `json:"persistence"`
+	// FailureClass / LastEscalatedAt / HardDisabledAt 让运营看到"为什么、什么时候"被移出选号,
+	// 而不只是一个截止时间。
+	FailureClass    string  `json:"failure_class,omitempty"`
+	LastEscalatedAt *string `json:"last_escalated_at,omitempty"`
+	HardDisabledAt  *string `json:"hard_disabled_at,omitempty"`
+	// ReplicaID 只在状态仅由应答本请求的副本持有(persistence=process_local 且有记录)时给出,
+	// 让运营知道该状态在哪个网关副本上,而不是把它当成全局真相。
+	ReplicaID string `json:"replica_id,omitempty"`
 }
 
 type ModelCooldown struct {
@@ -263,10 +272,20 @@ func buildAuthAxis(disableCooling bool, snap authcooldown.Snapshot, configured b
 	if !configured {
 		return axis
 	}
+	// 车道真相所在由快照自带:配置了持久化后端时为 postgres(跨副本一致),否则仍是本进程内存。
+	if snap.Persistence != "" {
+		axis.Persistence = snap.Persistence
+	}
+	if axis.Persistence == "process_local" && snap.Found {
+		axis.ReplicaID = replicaID()
+	}
 	axis.HardDisabled = snap.HardDisabled
 	axis.Strike = snap.Strike
 	axis.AuthUntil = formatOptionalTime(snap.AuthUntil)
 	axis.CredentialVersion = snap.CredentialVersion
+	axis.FailureClass = snap.FailureClass
+	axis.LastEscalatedAt = formatOptionalTime(snap.LastEscalatedAt)
+	axis.HardDisabledAt = formatOptionalTime(snap.HardDisabledAt)
 	if !snap.Eligible && disableCooling && !snap.HardDisabled {
 		axis.BypassedByDisableCooling = true
 	} else if !snap.Eligible {
@@ -362,4 +381,13 @@ func formatOptionalTime(ts *time.Time) *string {
 	}
 	value := ts.UTC().Format(time.RFC3339)
 	return &value
+}
+
+// replicaID 返回本进程所在副本的标识(主机名);取不到时给固定占位,避免把空串当成"全局"。
+func replicaID() string {
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "unknown-replica"
+	}
+	return name
 }

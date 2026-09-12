@@ -70,18 +70,18 @@ func TestSnapshotMatchesEligibleAndPreservesExpiredStrike(t *testing.T) {
 	now := time.Unix(1_000_000, 0).UTC()
 	s.Suspend(context.Background(), 7, ClassAmbiguous, 4, now)
 
-	active := s.Snapshot(7, now.Add(time.Second))
+	active := s.Snapshot(context.Background(), 7, now.Add(time.Second))
 	if !active.Found || active.Eligible || active.HardDisabled || active.Strike != 1 ||
 		active.CredentialVersion != 4 || active.AuthUntil == nil || !active.AuthUntil.Equal(now.Add(30*time.Second)) {
 		t.Fatalf("活动冷却快照不一致：%+v", active)
 	}
 
-	expired := s.Snapshot(7, now.Add(30*time.Second))
+	expired := s.Snapshot(context.Background(), 7, now.Add(30*time.Second))
 	if !expired.Found || !expired.Eligible || expired.Strike != 1 || expired.AuthUntil == nil {
 		t.Fatalf("过期冷却应恢复合格但保留失败历史：%+v", expired)
 	}
 
-	missing := s.Snapshot(8, now)
+	missing := s.Snapshot(context.Background(), 8, now)
 	if missing.Found || !missing.Eligible || missing.AuthUntil != nil {
 		t.Fatalf("无状态账号快照不一致：%+v", missing)
 	}
@@ -197,20 +197,60 @@ func TestOnRefreshResultSuccessDoesNotClear(t *testing.T) {
 	if ok, _ := s.Eligible(7, now); ok {
 		t.Fatal("前置:应被暂停")
 	}
-	s.OnRefreshResult(context.Background(), 7, true, false)
+	s.OnRefreshResult(context.Background(), 7, 0, true, false)
 	if ok, _ := s.Eligible(7, now); ok {
 		t.Fatal("刷新 success(可能只是 no-op nil)不得解除冷却")
 	}
 	// 硬禁死号也不得被假成功复活。
-	s.OnRefreshResult(context.Background(), 7, false, true) // 先证实永久失效 → HardDisabled
-	s.OnRefreshResult(context.Background(), 7, true, false) // 随后的假成功
+	s.OnRefreshResult(context.Background(), 7, 0, false, true) // 先证实永久失效 → HardDisabled
+	s.OnRefreshResult(context.Background(), 7, 0, true, false) // 随后的假成功
 	if ok, hard := s.Eligible(7, now.Add(time.Hour)); ok || !hard {
 		t.Fatalf("假成功不得复活硬禁死号:ok=%v hard=%v", ok, hard)
 	}
-	// 真恢复路径仍在:一次成功请求/运营 resume 走 Clear。
+	// 成功请求只清软退避,不解除硬禁(在途请求的迟到成功不得复活刚确认永久失效的账号);
+	// 真恢复路径 = 运营 resume。
 	s.Clear(context.Background(), 7, ClearReasonSuccess)
+	if ok, hard := s.Eligible(7, now); ok || !hard {
+		t.Fatalf("成功请求不得解除硬禁:ok=%v hard=%v", ok, hard)
+	}
+	s.Clear(context.Background(), 7, ClearReasonOperatorResume)
 	if ok, hard := s.Eligible(7, now); !ok || hard {
-		t.Fatalf("Clear 后应完全恢复:ok=%v hard=%v", ok, hard)
+		t.Fatalf("运营 resume 后应完全恢复:ok=%v hard=%v", ok, hard)
+	}
+}
+
+// TestSuccessClearsOnlySoftBackoff:成功请求清除软退避(strike 归零),硬禁保留;
+// 判别:若成功也删硬禁条目,第二段断言红。
+func TestSuccessClearsOnlySoftBackoff(t *testing.T) {
+	s := NewStore(testCfg())
+	now := time.Unix(1_000_000, 0)
+	s.Suspend(context.Background(), 7, ClassAmbiguous, 1, now)
+	s.Clear(context.Background(), 7, ClearReasonSuccess)
+	if ok, _ := s.Eligible(7, now); !ok {
+		t.Fatal("成功请求应清除软退避")
+	}
+	if strike, _, _ := inspect(s, 7); strike != 0 {
+		t.Fatalf("成功请求后 strike 应归零,实际 %d", strike)
+	}
+	s.OnRefreshResult(context.Background(), 8, 0, false, true)
+	s.Clear(context.Background(), 8, ClearReasonSuccess)
+	if ok, hard := s.Eligible(8, now); ok || !hard {
+		t.Fatalf("成功请求不得解除硬禁:ok=%v hard=%v", ok, hard)
+	}
+}
+
+// TestRefreshPermanentRespectsNewerCredentialVersion:迟到的旧凭据永久失效结论不得硬禁已轮换的新凭据。
+func TestRefreshPermanentRespectsNewerCredentialVersion(t *testing.T) {
+	s := NewStore(testCfg())
+	now := time.Unix(1_000_000, 0)
+	s.Suspend(context.Background(), 7, ClassAmbiguous, 2, now) // 镜像已知当前版本 v2
+	s.OnRefreshResult(context.Background(), 7, 1, false, true) // v1 的刷新结论迟到
+	if _, hard := s.Eligible(7, now); hard {
+		t.Fatal("旧版本刷新失败不得硬禁新版本凭据")
+	}
+	s.OnRefreshResult(context.Background(), 7, 2, false, true) // 当前版本的结论才生效
+	if _, hard := s.Eligible(7, now); !hard {
+		t.Fatal("当前版本的永久失效必须硬禁")
 	}
 }
 
@@ -220,7 +260,7 @@ func TestOnRefreshResultPermanentHardDisables(t *testing.T) {
 	s := NewStore(testCfg())
 	now := time.Unix(1_000_000, 0)
 	s.Suspend(context.Background(), 7, ClassAmbiguous, 1, now) // 先 ambiguous 暂停
-	s.OnRefreshResult(context.Background(), 7, false, true)    // 刷新证实永久失效
+	s.OnRefreshResult(context.Background(), 7, 0, false, true) // 刷新证实永久失效
 	if ok, hard := s.Eligible(7, now.Add(time.Hour)); ok || !hard {
 		t.Fatalf("刷新证实 invalid_grant 应升 HardDisabled:ok=%v hard=%v", ok, hard)
 	}
@@ -232,7 +272,7 @@ func TestOnRefreshResultTransientKeepsBackoff(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	s.Suspend(context.Background(), 7, ClassAmbiguous, 1, now)
 	_, until1, _ := inspect(s, 7)
-	s.OnRefreshResult(context.Background(), 7, false, false)
+	s.OnRefreshResult(context.Background(), 7, 0, false, false)
 	_, until2, hard := inspect(s, 7)
 	if hard {
 		t.Fatal("transient 刷新失败不应 HardDisabled")
@@ -286,14 +326,14 @@ func TestStaleCredentialVersionDoesNotReset(t *testing.T) {
 	if _, hard := s.Eligible(7, now); !hard {
 		t.Fatal("前置:v2 应已 HardDisabled")
 	}
-	// 迟到的 v1(旧版本)401 事件到达 → 不得重置。
+	// 迟到的 v1(旧版本)401 事件到达 → 不得重置,也不得替新版本累加 strike(它不是新凭据的证据)。
 	s.Suspend(context.Background(), 7, ClassIronClad, 1, now)
 	strike, _, hard := inspect(s, 7)
 	if !hard {
 		t.Fatal("迟到旧版本事件不得解除 HardDisabled")
 	}
-	if strike < 3 {
-		t.Fatalf("迟到旧版本事件不得重置 strike:实际 %d", strike)
+	if strike != 3 {
+		t.Fatalf("迟到旧版本事件不得改变 strike:实际 %d,期望 3", strike)
 	}
 }
 
@@ -352,7 +392,7 @@ func TestNilStoreSafe(t *testing.T) {
 	var s *Store
 	s.Suspend(context.Background(), 1, ClassIronClad, 1, time.Now())
 	s.Clear(context.Background(), 1, ClearReasonSuccess)
-	s.OnRefreshResult(context.Background(), 1, false, true)
+	s.OnRefreshResult(context.Background(), 1, 0, false, true)
 	if ok, hard := s.Eligible(1, time.Now()); !ok || hard {
 		t.Fatalf("nil Store 应恒放行:ok=%v hard=%v", ok, hard)
 	}
@@ -377,5 +417,25 @@ func TestIsPermanentRefreshError(t *testing.T) {
 		if got := IsPermanentRefreshError(c.err); got != c.want {
 			t.Fatalf("IsPermanentRefreshError(%v)=%v, 期望 %v", c.err, got, c.want)
 		}
+	}
+}
+
+// TestCredentialVersionAdvanceKeepsHardDisable:版本前进只重置 strike/软退避,不解除硬禁。
+// 判别:若版本前进把 hardDisabled 清掉,断言红。
+func TestCredentialVersionAdvanceKeepsHardDisable(t *testing.T) {
+	s := NewStore(testCfg())
+	now := time.Unix(1_000_000, 0)
+	for i := 0; i < 3; i++ {
+		s.Suspend(context.Background(), 7, ClassIronClad, 1, now)
+		_, until, _ := inspect(s, 7)
+		now = until.Add(time.Millisecond)
+	}
+	if _, hard := s.Eligible(7, now); !hard {
+		t.Fatal("前置:应已 HardDisabled")
+	}
+	s.Suspend(context.Background(), 7, ClassIronClad, 2, now)
+	strike, _, hard := inspect(s, 7)
+	if !hard || strike != 1 {
+		t.Fatalf("版本前进应重置 strike 为 1 且保持硬禁: strike=%d hard=%v", strike, hard)
 	}
 }

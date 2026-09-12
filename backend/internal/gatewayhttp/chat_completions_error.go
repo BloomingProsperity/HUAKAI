@@ -225,8 +225,9 @@ func recordChannelHealthSignal(ctx context.Context, d ChatHandlerDeps, key chann
 }
 
 // triggerCredentialHotRefresh 在 401 时异步跑凭证热刷新,并把结果单向通报选号 auth 车道:
-// 拿到 invalid_grant→即时升 HardDisabled(authLane 为 nil 时空操作)。刷新「成功」刻意不解除
-// 冷却——RefreshHotPath 返回 nil 不代表真的刷新了(去抖窗口跳过/storm 预算拒绝/静态 API-key
+// 拿到 invalid_grant→即时升 HardDisabled(authLane 为 nil 时空操作)。通报携带本次请求所用的
+// 凭据版本:账号在此期间已轮换出更新凭据时,车道不会拿旧凭据的结论硬禁新凭据。刷新「成功」刻意
+// 不解除冷却——RefreshHotPath 返回 nil 不代表真的刷新了(去抖窗口跳过/storm 预算拒绝/静态 API-key
 // 无可刷新都返回 nil),车道侧对 success 一律不动状态(见 authcooldown.OnRefreshResult)。
 func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 	if ex == nil || ex.d.CredentialHotRefresher == nil || accountID == 0 {
@@ -237,6 +238,7 @@ func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 	if vendor == "" {
 		vendor = pool.VendorFromProtocolFamily(ex.resolved.ProtocolFamily)
 	}
+	credentialVersion := ex.accInfo.CredentialVersion
 	requestID := ex.requestID
 	refresher := ex.d.CredentialHotRefresher
 	authLane := ex.d.AuthCooldown
@@ -244,7 +246,7 @@ func (ex *chatExecution) triggerCredentialHotRefresh(accountID int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), credentialHotRefreshTimeout)
 		defer cancel()
 		err := refresher.RefreshHotPath(ctx, tenantID, accountID, vendor)
-		authLane.OnRefreshResult(ctx, accountID, err == nil, err != nil && authcooldown.IsPermanentRefreshError(err))
+		authLane.OnRefreshResult(ctx, accountID, credentialVersion, err == nil, err != nil && authcooldown.IsPermanentRefreshError(err))
 		if err != nil {
 			logInternalError(ctx, requestID, "credential_hot_refresh_failed", err)
 		}

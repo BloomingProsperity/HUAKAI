@@ -3,9 +3,10 @@
 //
 // 投影按池给出账号的调度健康分栏(schedulable / degraded / cooling_down / unavailable)、占比、
 // 最早恢复时刻与池级状态,全部在服务端一次算完;不倒行给浏览器求和,不探测上游,不改任何状态。
-// 分栏只纳入与请求无关的账号级谓词与两层健康门(选号候选查询的账号/渠道/厂商/凭据谓词、
-// 进程内健康 FSM 门、auth 降级车道),按模型/协议/能力/限流/额度/容量的请求维门不在投影内;
-// 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它。
+// 分栏只纳入与请求无关的账号级谓词与三层健康门(选号候选查询的账号/渠道/厂商/凭据谓词、
+// 健康 FSM 门、auth 降级车道的跨副本真相表),按模型/协议/能力/限流/额度/容量的请求维门不在投影内;
+// 因此 schedulable 表示"健康层放行",不表示某个具体请求一定会选中它。三层全部在同一条
+// SQL 内折算,投影不依赖任何一个网关副本的内存状态。
 package poolhealthhttp
 
 import (
@@ -19,7 +20,6 @@ import (
 
 	"github.com/BloomingProsperity/HUAKAI/internal/admin"
 	"github.com/BloomingProsperity/HUAKAI/internal/adminhttpcore"
-	"github.com/BloomingProsperity/HUAKAI/internal/authcooldown"
 	admindb "github.com/BloomingProsperity/HUAKAI/internal/db/admin"
 )
 
@@ -35,17 +35,11 @@ type Store interface {
 	CountUnpooledProviderAccounts(context.Context, int64) (int64, error)
 }
 
-// AuthCooldownReader 暴露 auth 降级车道的只读快照;nil 表示车道未接线(不叠加)。
-type AuthCooldownReader interface {
-	Snapshot(int64, time.Time) authcooldown.Snapshot
-}
-
 // Deps 是接口依赖。Store 为空表示网关未配置数据库真相,接口 fail-closed 返回 503。
 type Deps struct {
-	Auth         Auth
-	Store        Store
-	AuthCooldown AuthCooldownReader
-	Now          func() time.Time
+	Auth  Auth
+	Store Store
+	Now   func() time.Time
 }
 
 // PoolHealth 是单个池的投影行。四个计数互斥且相加等于 total_accounts;
@@ -145,7 +139,7 @@ func NewHandler(d Deps) http.HandlerFunc {
 			UnpooledAccounts: unpooled,
 		}
 		for _, row := range rows {
-			pool := projectPool(row, d.AuthCooldown, at)
+			pool := projectPool(row)
 			resp.Pools = append(resp.Pools, pool)
 			resp.Totals.Pools++
 			resp.Totals.TotalAccounts += pool.TotalAccounts
@@ -164,95 +158,26 @@ func writeQueryError(w http.ResponseWriter) {
 	adminhttpcore.WriteJSONError(w, http.StatusServiceUnavailable, "pool_health_query_failed", "pool health projection is temporarily unavailable")
 }
 
-// projectPool 把数据库层分栏与进程内 auth 降级车道叠加成最终投影,判定顺序与选号门一致:
-//   - 数据库层 schedulable/degraded 的账号:auth 硬禁 → unavailable;auth 临时冷却且未被
-//     disable_cooling 豁免 → cooling_down,恢复时刻取 AuthUntil;
-//   - 数据库层已在 cooling_down 的账号:auth 硬禁 → 抬升为 unavailable(需人工恢复,不能再显示为到点自愈),
-//     并从恢复时刻里剔除;auth 临时冷却 → 仍是 cooling_down,恢复时刻取两层截止的较晚者;
-//   - earliest_recovery_at 是叠加后所有 cooling_down 账号已知恢复时刻的最小值,未知不参与。
-//
-// 车道未接线(lane==nil)时,投影就是数据库层的分栏。
-func projectPool(row admindb.SummarizeProviderAccountHealthByPoolRow, lane AuthCooldownReader, now time.Time) PoolHealth {
+// projectPool 把 SQL 已折算好的分栏行投影为响应行:补占比、恢复时刻格式与池级状态。
+// earliest_recovery_at 只在仍有 cooling_down 账号且至少一个恢复时刻已知时输出。
+func projectPool(row admindb.SummarizeProviderAccountHealthByPoolRow) PoolHealth {
 	pool := PoolHealth{
-		PoolGroupID:         row.PoolGroupID,
-		PoolName:            row.PoolName,
-		PoolEnabled:         row.PoolEnabled,
-		TotalAccounts:       row.TotalAccounts,
-		SchedulableAccounts: row.SchedulableAccounts,
-		DegradedAccounts:    row.DegradedAccounts,
-		CoolingDownAccounts: row.CoolingDownAccounts,
-		UnavailableAccounts: row.UnavailableAccounts,
-	}
-	var recovery *time.Time
-	noteRecovery := func(t *time.Time) {
-		if t == nil {
-			return
-		}
-		if recovery == nil || t.Before(*recovery) {
-			u := t.UTC()
-			recovery = &u
-		}
-	}
-	snapshot := func(id int64) authcooldown.Snapshot {
-		if lane == nil {
-			return authcooldown.Snapshot{Eligible: true}
-		}
-		return lane.Snapshot(id, now)
-	}
-	exempt := make(map[int64]struct{}, len(row.CoolingExemptIds))
-	for _, id := range row.CoolingExemptIds {
-		exempt[id] = struct{}{}
-	}
-	// 数据库层放行的账号只可能被 auth 车道往下降。
-	overlayEligible := func(ids []int64, from *int64) {
-		for _, id := range ids {
-			snap := snapshot(id)
-			switch {
-			case snap.HardDisabled:
-				*from--
-				pool.UnavailableAccounts++
-				pool.AuthCooldownAccounts++
-			case !snap.Eligible:
-				if _, ok := exempt[id]; ok {
-					continue
-				}
-				*from--
-				pool.CoolingDownAccounts++
-				pool.AuthCooldownAccounts++
-				noteRecovery(snap.AuthUntil)
-			}
-		}
-	}
-	overlayEligible(row.SchedulableIds, &pool.SchedulableAccounts)
-	overlayEligible(row.DegradedIds, &pool.DegradedAccounts)
-	// 数据库层已冷却的账号:硬禁抬升为 unavailable,否则按两层截止的较晚者登记恢复时刻。
-	for i, id := range row.CoolingIds {
-		snap := snapshot(id)
-		if snap.HardDisabled {
-			pool.CoolingDownAccounts--
-			pool.UnavailableAccounts++
-			pool.AuthCooldownAccounts++
-			continue
-		}
-		var dbRecovery *time.Time
-		if i < len(row.CoolingRecoveryAt) && row.CoolingRecoveryAt[i].Valid {
-			t := row.CoolingRecoveryAt[i].Time
-			dbRecovery = &t
-		}
-		if _, ok := exempt[id]; !snap.Eligible && !ok {
-			pool.AuthCooldownAccounts++
-			if snap.AuthUntil != nil && dbRecovery != nil && snap.AuthUntil.After(*dbRecovery) {
-				dbRecovery = snap.AuthUntil
-			}
-		}
-		noteRecovery(dbRecovery)
+		PoolGroupID:          row.PoolGroupID,
+		PoolName:             row.PoolName,
+		PoolEnabled:          row.PoolEnabled,
+		TotalAccounts:        row.TotalAccounts,
+		SchedulableAccounts:  row.SchedulableAccounts,
+		DegradedAccounts:     row.DegradedAccounts,
+		CoolingDownAccounts:  row.CoolingDownAccounts,
+		UnavailableAccounts:  row.UnavailableAccounts,
+		AuthCooldownAccounts: row.AuthCooldownAccounts,
 	}
 	pool.SchedulableRatio = formatRatio(pool.SchedulableAccounts, pool.TotalAccounts)
 	pool.DegradedRatio = formatRatio(pool.DegradedAccounts, pool.TotalAccounts)
 	pool.CoolingDownRatio = formatRatio(pool.CoolingDownAccounts, pool.TotalAccounts)
 	pool.UnavailableRatio = formatRatio(pool.UnavailableAccounts, pool.TotalAccounts)
-	if recovery != nil && pool.CoolingDownAccounts > 0 {
-		s := recovery.Format(time.RFC3339)
+	if row.EarliestRecoveryAt.Valid && pool.CoolingDownAccounts > 0 {
+		s := row.EarliestRecoveryAt.Time.UTC().Format(time.RFC3339)
 		pool.EarliestRecoveryAt = &s
 	}
 	pool.Status = poolStatus(pool)
